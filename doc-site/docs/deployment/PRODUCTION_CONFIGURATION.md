@@ -1,4 +1,4 @@
-# ConfigBuddy CMDB - Production Configuration Guide
+# HappyCMDB - Production Configuration Guide
 
 ## Table of Contents
 
@@ -17,7 +17,7 @@
 
 ## Overview
 
-This guide provides comprehensive production configuration recommendations for ConfigBuddy CMDB v2.0. It covers security, performance, scalability, and reliability considerations for enterprise deployments.
+This guide provides comprehensive production configuration recommendations for HappyCMDB v2.0. It covers security, performance, scalability, and reliability considerations for enterprise deployments.
 
 ### Deployment Tiers
 
@@ -355,13 +355,13 @@ mkdir -p infrastructure/docker/ssl/{nginx,neo4j,postgres,redis}
 openssl req -x509 -newkey rsa:4096 -nodes \
   -keyout infrastructure/docker/ssl/ca.key \
   -out infrastructure/docker/ssl/ca.crt \
-  -days 3650 -subj "/CN=ConfigBuddy-CA"
+  -days 3650 -subj "/CN=HappyCMDB-CA"
 
 # Generate Nginx certificate
 openssl req -newkey rsa:4096 -nodes \
   -keyout infrastructure/docker/ssl/nginx/key.pem \
   -out infrastructure/docker/ssl/nginx/csr.pem \
-  -subj "/CN=configbuddy.example.com"
+  -subj "/CN=happycmdb.example.com"
 
 openssl x509 -req -in infrastructure/docker/ssl/nginx/csr.pem \
   -CA infrastructure/docker/ssl/ca.crt \
@@ -382,16 +382,16 @@ sudo apt-get install certbot
 
 # Generate certificate
 sudo certbot certonly --standalone \
-  -d configbuddy.example.com \
+  -d happycmdb.example.com \
   --email admin@example.com \
   --agree-tos
 
 # Copy certificates to Docker volume
-cp /etc/letsencrypt/live/configbuddy.example.com/fullchain.pem \
+cp /etc/letsencrypt/live/happycmdb.example.com/fullchain.pem \
    infrastructure/docker/ssl/nginx/cert.pem
-cp /etc/letsencrypt/live/configbuddy.example.com/privkey.pem \
+cp /etc/letsencrypt/live/happycmdb.example.com/privkey.pem \
    infrastructure/docker/ssl/nginx/key.pem
-cp /etc/letsencrypt/live/configbuddy.example.com/chain.pem \
+cp /etc/letsencrypt/live/happycmdb.example.com/chain.pem \
    infrastructure/docker/ssl/nginx/chain.pem
 
 # Set up auto-renewal
@@ -476,12 +476,12 @@ Already configured in `infrastructure/docker/nginx.conf`:
 ```bash
 # Store secrets in AWS Secrets Manager
 aws secretsmanager create-secret \
-  --name configbuddy/production/jwt-secret \
+  --name happycmdb/production/jwt-secret \
   --secret-string "<jwt-secret>"
 
 # Retrieve at runtime
 export JWT_SECRET=$(aws secretsmanager get-secret-value \
-  --secret-id configbuddy/production/jwt-secret \
+  --secret-id happycmdb/production/jwt-secret \
   --query SecretString --output text)
 ```
 
@@ -489,13 +489,13 @@ export JWT_SECRET=$(aws secretsmanager get-secret-value \
 
 ```bash
 # Write secrets to Vault
-vault kv put secret/configbuddy/production \
+vault kv put secret/happycmdb/production \
   jwt_secret="<jwt-secret>" \
   encryption_key="<encryption-key>" \
   neo4j_password="<neo4j-password>"
 
 # Read at runtime
-export JWT_SECRET=$(vault kv get -field=jwt_secret secret/configbuddy/production)
+export JWT_SECRET=$(vault kv get -field=jwt_secret secret/happycmdb/production)
 ```
 
 ---
@@ -1028,7 +1028,7 @@ AUDIT_LOG_ENABLED=true
 ```yaml
 # alerts.yml
 groups:
-  - name: ConfigBuddy
+  - name: HappyCMDB
     interval: 30s
     rules:
       - alert: HighErrorRate
@@ -1064,7 +1064,7 @@ groups:
 
 ```bash
 # Backup directory (host path)
-BACKUP_DIR=/var/backups/configbuddy
+BACKUP_DIR=/var/backups/happycmdb
 
 # Retention policy
 BACKUP_RETENTION_DAILY=7
@@ -1076,7 +1076,7 @@ BACKUP_UPLOAD_ENABLED=true
 BACKUP_STORAGE_TYPE=s3  # or 'azure'
 
 # AWS S3 Configuration
-BACKUP_S3_BUCKET=configbuddy-backups-prod
+BACKUP_S3_BUCKET=happycmdb-backups-prod
 BACKUP_S3_PREFIX=production
 AWS_ACCESS_KEY_ID=<aws-access-key>
 AWS_SECRET_ACCESS_KEY=<aws-secret-key>
@@ -1102,10 +1102,10 @@ BACKUP_NOTIFICATION_WEBHOOK=https://hooks.slack.com/services/YOUR/WEBHOOK/URL
 
 ```bash
 # Daily backup at 2 AM
-0 2 * * * /path/to/configbuddy/infrastructure/scripts/backup-all.sh
+0 2 * * * /path/to/happycmdb/infrastructure/scripts/backup-all.sh
 
 # Weekly backup verification
-0 3 * * 0 /path/to/configbuddy/infrastructure/scripts/backup-health-check.sh
+0 3 * * 0 /path/to/happycmdb/infrastructure/scripts/backup-health-check.sh
 ```
 
 ### Recovery Testing
@@ -1289,8 +1289,8 @@ spec:
 ## Support & Resources
 
 - **Documentation**: http://localhost:8080 (when running)
-- **GitHub Issues**: https://github.com/configbuddy/cmdb/issues
-- **Community**: https://community.configbuddy.io
+- **GitHub Issues**: https://github.com/happycmdb/cmdb/issues
+- **Community**: https://community.happycmdb.io
 
 ---
 

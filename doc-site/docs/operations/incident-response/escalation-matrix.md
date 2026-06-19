@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document defines escalation paths, contact information, and procedures for incident response in ConfigBuddy production environment.
+This document defines escalation paths, contact information, and procedures for incident response in HappyCMDB production environment.
 
 ## Severity Definitions
 
@@ -361,7 +361,7 @@ Print and keep this handy:
 
 ```
 ╔═══════════════════════════════════════════════════════════╗
-║           CONFIGBUDDY ESCALATION QUICK REFERENCE          ║
+║           HAPPYCMDB ESCALATION QUICK REFERENCE            ║
 ╠═══════════════════════════════════════════════════════════╣
 ║ PRIMARY ON-CALL:  [Name]     [Phone]                     ║
 ║ SECONDARY:        [Name]     [Phone]                     ║
@@ -375,6 +375,6 @@ Print and keep this handy:
 ╠═══════════════════════════════════════════════════════════╣
 ║ WAR ROOM: #incident-YYYY-MM-DD-NNN                       ║
 ║ RUNBOOKS: /docs/operations/runbooks/                     ║
-║ STATUS PAGE: https://status.configbuddy.com              ║
+║ STATUS PAGE: https://status.happycmdb.com              ║
 ╚═══════════════════════════════════════════════════════════╝
 ```

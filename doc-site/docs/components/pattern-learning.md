@@ -1,6 +1,6 @@
 # Pattern Learning
 
-Pattern Learning is ConfigBuddy's system for automatically learning from successful AI discoveries and compiling them into reusable, high-performance discovery patterns.
+Pattern Learning is HappyCMDB's system for automatically learning from successful AI discoveries and compiling them into reusable, high-performance discovery patterns.
 
 ## Overview
 

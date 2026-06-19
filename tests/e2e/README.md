@@ -1,6 +1,6 @@
 # E2E Testing Guide
 
-Comprehensive end-to-end testing framework for the ConfigBuddy CMDB platform.
+Comprehensive end-to-end testing framework for the HappyCMDB platform.
 
 ## Overview
 

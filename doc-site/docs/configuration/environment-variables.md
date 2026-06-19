@@ -1,11 +1,11 @@
 ---
 title: Environment Variables
-description: Complete reference for all ConfigBuddy environment variables
+description: Complete reference for all HappyCMDB environment variables
 ---
 
 # Environment Variables
 
-Complete reference for configuring ConfigBuddy CMDB platform through environment variables.
+Complete reference for configuring HappyCMDB platform through environment variables.
 
 ## Core Application Settings
 
@@ -223,7 +223,7 @@ METRICS_INTERVAL=15000
 ## Legacy v1.0 Configuration (Deprecated)
 
 ::: warning DEPRECATED
-The following sections are for ConfigBuddy v1.0 only and are **deprecated** in v2.0.
+The following sections are for HappyCMDB v1.0 only and are **deprecated** in v2.0.
 
 **v2.0 uses a unified credential system** stored in PostgreSQL. Do NOT use environment variables for connector credentials. See [Credentials Management](/components/credentials) for v2.0 configuration.
 :::

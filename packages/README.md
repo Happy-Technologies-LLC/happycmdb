@@ -1,10 +1,10 @@
-# ConfigBuddy Packages
+# HappyCMDB Packages
 
-This directory contains all backend packages for the ConfigBuddy CMDB platform, organized as a TypeScript monorepo using npm/pnpm workspaces.
+This directory contains all backend packages for the HappyCMDB platform, organized as a TypeScript monorepo using npm/pnpm workspaces.
 
 ## 📦 Package Overview
 
-ConfigBuddy follows a **layered architecture** with 14 packages organized by responsibility:
+HappyCMDB follows a **layered architecture** with 14 packages organized by responsibility:
 
 ### Layer 1: Foundation (1 package)
 

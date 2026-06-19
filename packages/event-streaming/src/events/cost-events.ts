@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Cost Allocation Event Types for ConfigBuddy v3.0
+ * Cost Allocation Event Types for HappyCMDB v3.0
  *
  * Events emitted during cost calculation and allocation
  */

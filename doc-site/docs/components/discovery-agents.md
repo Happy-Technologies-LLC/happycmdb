@@ -2,7 +2,7 @@
 
 ## Overview
 
-Discovery Agents are lightweight processes that run in your network to perform local infrastructure scanning and discovery. Unlike agentless discovery (which runs from the ConfigBuddy server), agents run closer to the targets, enabling discovery behind firewalls, in air-gapped networks, and across distributed locations.
+Discovery Agents are lightweight processes that run in your network to perform local infrastructure scanning and discovery. Unlike agentless discovery (which runs from the HappyCMDB server), agents run closer to the targets, enabling discovery behind firewalls, in air-gapped networks, and across distributed locations.
 
 ## Key Features
 
@@ -18,7 +18,7 @@ Discovery Agents are lightweight processes that run in your network to perform l
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│               ConfigBuddy API Server                        │
+│               HappyCMDB API Server                        │
 │                                                             │
 │  ┌──────────────────────────────────────────────────────┐  │
 │  │       Agent Management Service                        │  │
@@ -124,7 +124,7 @@ GROUP BY network;
 1. **Agent Startup** - Agent starts and auto-detects its environment
 2. **Network Detection** - Identify locally reachable networks
 3. **Capability Detection** - Check which discovery tools are installed
-4. **Registration API Call** - Register with ConfigBuddy API
+4. **Registration API Call** - Register with HappyCMDB API
 5. **Heartbeat Start** - Begin sending periodic heartbeats (every 60s)
 
 ### Registration Request
@@ -339,7 +339,7 @@ const definition = {
 
 ```bash
 # Download agent package
-wget https://github.com/configbuddy/configbuddy/releases/download/v1.0.0/cmdb-agent-linux-x64.tar.gz
+wget https://github.com/happycmdb/happycmdb/releases/download/v1.0.0/cmdb-agent-linux-x64.tar.gz
 
 # Extract
 tar -xzf cmdb-agent-linux-x64.tar.gz
@@ -357,7 +357,7 @@ agent:
   # Unique agent ID (auto-generated if not provided)
   id: dc1-scanner-01
 
-  # ConfigBuddy API URL
+  # HappyCMDB API URL
   api_url: https://cmdb.company.com
 
   # Authentication token
@@ -398,7 +398,7 @@ logging:
 ```ini
 # /etc/systemd/system/cmdb-agent.service
 [Unit]
-Description=ConfigBuddy Discovery Agent
+Description=HappyCMDB Discovery Agent
 After=network.target
 
 [Service]
@@ -449,7 +449,7 @@ CMD ["node", "dist/index.js"]
 version: '3.8'
 services:
   cmdb-agent:
-    image: configbuddy/agent:latest
+    image: happycmdb/agent:latest
     environment:
       - CMDB_API_URL=https://cmdb.company.com
       - CMDB_API_TOKEN=${CMDB_API_TOKEN}

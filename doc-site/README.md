@@ -1,6 +1,6 @@
-# ConfigBuddy CMDB Documentation Site
+# HappyCMDB Documentation Site
 
-This directory contains the VitePress-powered documentation site for ConfigBuddy CMDB.
+This directory contains the VitePress-powered documentation site for HappyCMDB.
 
 ## Quick Start
 
@@ -195,7 +195,7 @@ This is an info message
 
 ````markdown
 ```typescript
-const greeting: string = "Hello, ConfigBuddy!";
+const greeting: string = "Hello, HappyCMDB!";
 console.log(greeting);
 ```
 ````
@@ -232,8 +232,8 @@ pnpm install
 
 Place your logo files in `docs/public/logos/`:
 
-- `configbuddy-logo.svg` - Navigation bar logo
-- `configbuddy-hero.svg` - Homepage hero image
+- `happycmdb-logo.svg` - Navigation bar logo
+- `happycmdb-hero.svg` - Homepage hero image
 - `favicon.svg` / `favicon.png` - Browser favicon
 - `og-image.png` - Social sharing image (1200x630px)
 
@@ -269,10 +269,10 @@ The documentation site can be deployed as a standalone Docker container using th
 
 ```bash
 # Build the Docker image
-docker build -t configbuddy-docs .
+docker build -t happycmdb-docs .
 
 # Run the container
-docker run -d -p 8080:80 --name configbuddy-docs configbuddy-docs
+docker run -d -p 8080:80 --name happycmdb-docs happycmdb-docs
 
 # Access the documentation
 # Open http://localhost:8080 in your browser
@@ -325,7 +325,7 @@ cd docs/.vitepress/dist
 git init
 git add -A
 git commit -m 'Deploy documentation'
-git push -f git@github.com:configbuddy/configbuddy.git main:gh-pages
+git push -f git@github.com:happycmdb/happycmdb.git main:gh-pages
 ```
 
 ### Deploy to Netlify
@@ -356,7 +356,7 @@ git push -f git@github.com:configbuddy/configbuddy.git main:gh-pages
 
 - [VitePress Documentation](https://vitepress.dev/)
 - [Markdown Guide](https://www.markdownguide.org/)
-- [ConfigBuddy GitHub](https://github.com/configbuddy/configbuddy)
+- [HappyCMDB GitHub](https://github.com/happycmdb/happycmdb)
 
 ## Contributing
 
@@ -370,4 +370,4 @@ To contribute to the documentation:
 
 ## License
 
-This documentation is part of the ConfigBuddy CMDB project and is released under the MIT License.
+This documentation is part of the HappyCMDB project and is released under the MIT License.

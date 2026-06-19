@@ -289,7 +289,7 @@ async function seedDiscoveryDefinitions() {
 // Main seeding function
 async function main() {
   console.log('='.repeat(60));
-  console.log('ConfigBuddy Load Test Data Seeding');
+  console.log('HappyCMDB Load Test Data Seeding');
   console.log('='.repeat(60));
   console.log(`\nConfiguration:`);
   console.log(`  API URL: ${API_URL}`);

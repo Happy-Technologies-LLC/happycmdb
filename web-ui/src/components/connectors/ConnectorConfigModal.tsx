@@ -400,7 +400,7 @@ export const ConnectorConfigModal: React.FC<ConnectorConfigModalProps> = ({
               <div className="bg-purple-50 border border-purple-200 rounded-lg p-4 mb-6">
                 <h3 className="font-semibold text-purple-900 mb-1">Field Mapping by Resource</h3>
                 <p className="text-sm text-purple-700">
-                  Map fields from each {template.name} resource to ConfigBuddy CI attributes.
+                  Map fields from each {template.name} resource to HappyCMDB CI attributes.
                   Predefined mappings are loaded from the connector template.
                 </p>
               </div>

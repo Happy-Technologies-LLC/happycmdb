@@ -1,6 +1,6 @@
 [Unit]
-Description=ConfigBuddy Database Backup Service
-Documentation=https://github.com/configbuddy/configbuddy
+Description=HappyCMDB Database Backup Service
+Documentation=https://github.com/happycmdb/happycmdb
 After=docker.service
 Requires=docker.service
 
@@ -9,12 +9,12 @@ Type=oneshot
 User=root
 Group=root
 
-# Environment variables (can also be loaded from /etc/configbuddy/backup.env)
-EnvironmentFile=-/etc/configbuddy/backup.env
+# Environment variables (can also be loaded from /etc/happycmdb/backup.env)
+EnvironmentFile=-/etc/happycmdb/backup.env
 
 # Default environment variables if not set in EnvironmentFile
-Environment="BACKUP_DIR=/var/backups/configbuddy"
-Environment="BACKUP_LOG_DIR=/var/log/configbuddy/backups"
+Environment="BACKUP_DIR=/var/backups/happycmdb"
+Environment="BACKUP_LOG_DIR=/var/log/happycmdb/backups"
 Environment="BACKUP_RETENTION_DAILY=7"
 Environment="BACKUP_RETENTION_WEEKLY=4"
 Environment="BACKUP_RETENTION_MONTHLY=12"
@@ -29,14 +29,14 @@ Environment="NEO4J_DATABASE=cmdb"
 Environment="NEO4J_USERNAME=neo4j"
 
 # Working directory
-WorkingDirectory=/opt/configbuddy/infrastructure/scripts
+WorkingDirectory=/opt/happycmdb/infrastructure/scripts
 
 # Execute backup script
-ExecStart=/opt/configbuddy/infrastructure/scripts/backup-all.sh
+ExecStart=/opt/happycmdb/infrastructure/scripts/backup-all.sh
 
 # Logging
-StandardOutput=append:/var/log/configbuddy/backups/backup.log
-StandardError=append:/var/log/configbuddy/backups/backup-error.log
+StandardOutput=append:/var/log/happycmdb/backups/backup.log
+StandardError=append:/var/log/happycmdb/backups/backup-error.log
 
 # Restart policy
 Restart=no

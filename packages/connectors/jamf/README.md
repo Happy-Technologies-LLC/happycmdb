@@ -4,7 +4,7 @@ Integration connector for JAMF Pro - Apple device management platform.
 
 ## Overview
 
-The JAMF Pro connector provides comprehensive integration with JAMF Pro for discovering and managing Apple devices (macOS, iOS, iPadOS), applications, and management policies in your ConfigBuddy CMDB.
+The JAMF Pro connector provides comprehensive integration with JAMF Pro for discovering and managing Apple devices (macOS, iOS, iPadOS), applications, and management policies in your HappyCMDB.
 
 **Connector Type:** `jamf`
 **Version:** 1.0.0
@@ -246,7 +246,7 @@ The connector automatically infers the following relationships:
 
 ## CI Type Mappings
 
-| JAMF Resource | ConfigBuddy CI Type |
+| JAMF Resource | HappyCMDB CI Type |
 |---------------|---------------------|
 | Computer | `server` |
 | Mobile Device | `mobile-device` |
@@ -255,7 +255,7 @@ The connector automatically infers the following relationships:
 
 ## Status Mappings
 
-| JAMF Status | ConfigBuddy Status |
+| JAMF Status | HappyCMDB Status |
 |-------------|-------------------|
 | Managed | `active` |
 | Unmanaged | `inactive` |
@@ -323,7 +323,7 @@ npm run test:watch # Run tests in watch mode
 
 ## Support
 
-For issues, questions, or feature requests, please refer to the ConfigBuddy documentation or file an issue in the repository.
+For issues, questions, or feature requests, please refer to the HappyCMDB documentation or file an issue in the repository.
 
 ## License
 

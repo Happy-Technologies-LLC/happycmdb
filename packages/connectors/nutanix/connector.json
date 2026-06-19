@@ -4,7 +4,7 @@
   "name": "Nutanix",
   "description": "Discovers and manages infrastructure from Nutanix Prism Central and Prism Element, including clusters, hosts, virtual machines, and storage containers",
   "version": "1.0.0",
-  "author": "ConfigBuddy",
+  "author": "HappyCMDB",
   "category": "connector",
   "connector_category": "virtualization",
   "icon": "nutanix",

@@ -6,7 +6,7 @@
 
 ## Purpose
 
-This document defines ConfigBuddy's security incident response procedures to ensure rapid, coordinated, and effective response to security incidents.
+This document defines HappyCMDB's security incident response procedures to ensure rapid, coordinated, and effective response to security incidents.
 
 ---
 
@@ -38,7 +38,7 @@ This document defines ConfigBuddy's security incident response procedures to ens
 
 - **Primary On-Call**: Rotates weekly (Monday 00:00 - Sunday 23:59)
 - **Backup On-Call**: Always available as secondary responder
-- **PagerDuty**: `configbuddy-security` schedule
+- **PagerDuty**: `happycmdb-security` schedule
 - **Slack Channel**: `#security-incidents` (private)
 
 ### Escalation Path
@@ -318,10 +318,10 @@ What You Should Do:
 
 We take the security of your data very seriously. This incident has been fully contained, and we have implemented additional safeguards to prevent similar incidents.
 
-If you have any questions or concerns, please contact our security team at security@configbuddy.io.
+If you have any questions or concerns, please contact our security team at security@happycmdb.io.
 
 Sincerely,
-ConfigBuddy Security Team
+HappyCMDB Security Team
 ```
 
 ### Regulatory Notification
@@ -433,9 +433,9 @@ ConfigBuddy Security Team
 ### Communication Channels
 
 - **Slack**: `#security-incidents` (private, incident response team only)
-- **PagerDuty**: `configbuddy-security` escalation policy
+- **PagerDuty**: `happycmdb-security` escalation policy
 - **Zoom**: Security incident bridge (always-on URL)
-- **Email**: security@configbuddy.io (monitored 24/7)
+- **Email**: security@happycmdb.io (monitored 24/7)
 
 ### Forensics Tools
 
@@ -634,4 +634,4 @@ All 50 US states have data breach notification laws. Consult legal counsel for s
 
 ---
 
-**For Emergencies**: Call Security Hotline at [PHONE NUMBER] or email security@configbuddy.io
+**For Emergencies**: Call Security Hotline at [PHONE NUMBER] or email security@happycmdb.io

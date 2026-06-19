@@ -1,7 +1,7 @@
 {
   "name": "@cmdb/connector-wiz",
   "version": "1.0.0",
-  "description": "Wiz Cloud Security connector for ConfigBuddy CMDB",
+  "description": "Wiz Cloud Security connector for HappyCMDB",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
@@ -20,7 +20,7 @@
     "cloud-compliance",
     "security"
   ],
-  "author": "ConfigBuddy",
+  "author": "HappyCMDB",
   "license": "Apache-2.0",
   "dependencies": {
     "@cmdb/common": "*",

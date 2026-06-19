@@ -21,7 +21,7 @@
           "w": 6,
           "h": 5
         },
-        "datasource": "ConfigBuddy CMDB",
+        "datasource": "HappyCMDB",
         "targets": [
           {
             "rawSql": "SELECT COUNT(*) AS \"Total Jobs\" FROM connector_run_history WHERE started_at >= NOW() - INTERVAL '24 hours';",
@@ -62,7 +62,7 @@
           "w": 6,
           "h": 5
         },
-        "datasource": "ConfigBuddy CMDB",
+        "datasource": "HappyCMDB",
         "targets": [
           {
             "rawSql": "SELECT COUNT(*) AS \"Completed\" FROM connector_run_history WHERE status = 'completed' AND started_at >= NOW() - INTERVAL '24 hours';",
@@ -103,7 +103,7 @@
           "w": 6,
           "h": 5
         },
-        "datasource": "ConfigBuddy CMDB",
+        "datasource": "HappyCMDB",
         "targets": [
           {
             "rawSql": "SELECT COUNT(*) AS \"Failed\" FROM connector_run_history WHERE status = 'failed' AND started_at >= NOW() - INTERVAL '24 hours';",
@@ -148,7 +148,7 @@
           "w": 6,
           "h": 5
         },
-        "datasource": "ConfigBuddy CMDB",
+        "datasource": "HappyCMDB",
         "targets": [
           {
             "rawSql": "SELECT COUNT(*) AS \"Running\" FROM connector_run_history WHERE status = 'running';",
@@ -189,7 +189,7 @@
           "w": 12,
           "h": 10
         },
-        "datasource": "ConfigBuddy CMDB",
+        "datasource": "HappyCMDB",
         "targets": [
           {
             "rawSql": "SELECT time_bucket('1 hour', started_at) AS time, connector_type, AVG(duration_ms / 1000.0) AS \"Avg Duration (sec)\" FROM connector_run_history WHERE started_at >= NOW() - INTERVAL '24 hours' AND duration_ms IS NOT NULL GROUP BY time_bucket('1 hour', started_at), connector_type ORDER BY time;",
@@ -231,7 +231,7 @@
           "w": 12,
           "h": 10
         },
-        "datasource": "ConfigBuddy CMDB",
+        "datasource": "HappyCMDB",
         "targets": [
           {
             "rawSql": "SELECT connector_type AS metric, ROUND(100.0 * SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) / COUNT(*), 2) AS \"Success Rate %\" FROM connector_run_history WHERE started_at >= NOW() - INTERVAL '7 days' GROUP BY connector_type ORDER BY \"Success Rate %\" DESC;",
@@ -284,7 +284,7 @@
           "w": 12,
           "h": 10
         },
-        "datasource": "ConfigBuddy CMDB",
+        "datasource": "HappyCMDB",
         "targets": [
           {
             "rawSql": "SELECT connector_type AS \"Connector\", config_name AS \"Configuration\", COUNT(*) AS \"Failures\", MAX(started_at) AS \"Last Failure\", SUBSTRING(error_message, 1, 100) AS \"Last Error\" FROM connector_run_history WHERE status = 'failed' AND started_at >= NOW() - INTERVAL '7 days' GROUP BY connector_type, config_name, error_message ORDER BY \"Failures\" DESC, \"Last Failure\" DESC LIMIT 20;",
@@ -354,7 +354,7 @@
           "w": 12,
           "h": 5
         },
-        "datasource": "ConfigBuddy CMDB",
+        "datasource": "HappyCMDB",
         "targets": [
           {
             "rawSql": "SELECT ROUND(AVG(records_loaded), 2) AS \"Avg CIs Per Job\" FROM connector_run_history WHERE status = 'completed' AND started_at >= NOW() - INTERVAL '7 days' AND records_loaded > 0;",
@@ -396,7 +396,7 @@
           "w": 12,
           "h": 5
         },
-        "datasource": "ConfigBuddy CMDB",
+        "datasource": "HappyCMDB",
         "targets": [
           {
             "rawSql": "SELECT SUM(records_loaded) AS \"Total CIs\" FROM connector_run_history WHERE status = 'completed' AND started_at >= NOW() - INTERVAL '7 days';",
@@ -437,7 +437,7 @@
           "w": 24,
           "h": 10
         },
-        "datasource": "ConfigBuddy CMDB",
+        "datasource": "HappyCMDB",
         "targets": [
           {
             "rawSql": "SELECT time_bucket('1 hour', started_at) AS time, status, COUNT(*) AS count FROM connector_run_history WHERE started_at >= NOW() - INTERVAL '7 days' GROUP BY time_bucket('1 hour', started_at), status ORDER BY time;",
@@ -528,7 +528,7 @@
           "w": 24,
           "h": 10
         },
-        "datasource": "ConfigBuddy CMDB",
+        "datasource": "HappyCMDB",
         "targets": [
           {
             "rawSql": "SELECT connector_type AS \"Connector\", COUNT(*) AS \"Total Runs\", SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS \"Completed\", SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS \"Failed\", ROUND(100.0 * SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) / COUNT(*), 2) AS \"Success Rate %\", ROUND(AVG(duration_ms / 1000.0), 2) AS \"Avg Duration (sec)\", SUM(records_loaded) AS \"Total CIs\", ROUND(AVG(records_loaded), 2) AS \"Avg CIs/Run\" FROM connector_run_history WHERE started_at >= NOW() - INTERVAL '24 hours' GROUP BY connector_type ORDER BY \"Total Runs\" DESC;",

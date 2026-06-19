@@ -2,7 +2,7 @@
   "name": "@cmdb/event-processor",
   "version": "2.0.0",
   "license": "Apache-2.0",
-  "description": "ConfigBuddy Event Processing with Kafka",
+  "description": "HappyCMDB Event Processing with Kafka",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {

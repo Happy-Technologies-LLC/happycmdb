@@ -2,19 +2,19 @@
 layout: home
 
 hero:
-  name: ConfigBuddy CMDB
+  name: HappyCMDB
   text: Open-Source Enterprise CMDB
   tagline: Graph-powered Configuration Management Database for multi-cloud infrastructure discovery and dependency mapping
   image:
-    src: /logos/configbuddy-logo.svg
-    alt: ConfigBuddy CMDB
+    src: /logos/happycmdb-logo.svg
+    alt: HappyCMDB
   actions:
     - theme: brand
       text: Get Started
       link: /getting-started/quick-start
     - theme: alt
       text: View on GitHub
-      link: https://github.com/configbuddy/configbuddy
+      link: https://github.com/happycmdb/happycmdb
     - theme: alt
       text: Architecture Guide
       link: /architecture/system-overview
@@ -75,9 +75,9 @@ features:
     linkText: Credential Management
 ---
 
-## Why ConfigBuddy?
+## Why HappyCMDB?
 
-ConfigBuddy CMDB is a modern, open-source Configuration Management Database designed for cloud-native infrastructure. Unlike traditional CMDBs, ConfigBuddy leverages graph database technology to provide intuitive relationship mapping and dependency tracking across your entire technology stack.
+HappyCMDB is a modern, open-source Configuration Management Database designed for cloud-native infrastructure. Unlike traditional CMDBs, HappyCMDB leverages graph database technology to provide intuitive relationship mapping and dependency tracking across your entire technology stack.
 
 ### Built for Modern Infrastructure
 
@@ -97,7 +97,7 @@ ConfigBuddy CMDB is a modern, open-source Configuration Management Database desi
 
 ## Technology Stack
 
-ConfigBuddy is built with modern, proven technologies:
+HappyCMDB is built with modern, proven technologies:
 
 - **Backend**: Node.js 20 LTS + TypeScript 5.x
 - **Graph Database**: Neo4j Community Edition (v5.x)
@@ -109,12 +109,12 @@ ConfigBuddy is built with modern, proven technologies:
 
 ## Quick Start
 
-Get ConfigBuddy running in minutes with Docker Compose:
+Get HappyCMDB running in minutes with Docker Compose:
 
 ```bash
 # Clone the repository
-git clone https://github.com/configbuddy/configbuddy.git
-cd configbuddy
+git clone https://github.com/happycmdb/happycmdb.git
+cd happycmdb
 
 # Start all services
 docker-compose up -d
@@ -141,23 +141,23 @@ For detailed installation instructions, see the [Quick Start Guide](/getting-sta
 This documentation is designed for:
 
 - **Developers**: Build integrations, extend discovery capabilities, contribute to the project
-- **DevOps Engineers**: Deploy, configure, and operate ConfigBuddy in production
+- **DevOps Engineers**: Deploy, configure, and operate HappyCMDB in production
 - **Security Teams**: Understand security architecture and compliance features
 - **Data Analysts**: Leverage the data mart for reporting and analytics
 - **Project Managers**: Understand capabilities and integration options
 
 ## Community & Support
 
-- **GitHub**: [Report issues and contribute](https://github.com/configbuddy/configbuddy)
-- **Discussions**: [Community forum](https://github.com/configbuddy/configbuddy/discussions)
+- **GitHub**: [Report issues and contribute](https://github.com/happycmdb/happycmdb)
+- **Discussions**: [Community forum](https://github.com/happycmdb/happycmdb/discussions)
 - **Documentation**: You're here!
 
 ## License
 
-ConfigBuddy CMDB is released under the [MIT License](https://github.com/configbuddy/configbuddy/blob/main/LICENSE). All components are 100% open source.
+HappyCMDB is released under the [MIT License](https://github.com/happycmdb/happycmdb/blob/main/LICENSE). All components are 100% open source.
 
 ---
 
 <div style="text-align: center; margin-top: 3rem; color: #666;">
-  <p>Built with ❤️ by the ConfigBuddy community</p>
+  <p>Built with ❤️ by the HappyCMDB community</p>
 </div>

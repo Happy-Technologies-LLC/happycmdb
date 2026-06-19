@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**ConfigBuddy** - Open-source enterprise Configuration Management Database (CMDB) platform
+**HappyCMDB** - Open-source enterprise Configuration Management Database (CMDB) platform
 - **Status**: Production-ready (5 phases complete)
 - **Stack**: Node.js 20 LTS + TypeScript 5.x
 - **Architecture**: Microservices with graph database (Neo4j) as primary datastore
@@ -151,7 +151,7 @@ docker-compose -f infrastructure/docker/docker-compose.yml up -d api-server
 
 ## v2.0 Features
 
-ConfigBuddy v2.0 introduces a major architectural evolution focused on extensibility and declarative configuration:
+HappyCMDB v2.0 introduces a major architectural evolution focused on extensibility and declarative configuration:
 
 ### Unified Credential System
 - **Protocol-based authentication**: Single credential record supports multiple auth methods
@@ -214,7 +214,7 @@ infrastructure/        # Docker, Kubernetes, Terraform configs
 
 ### Discovery System
 
-ConfigBuddy uses a hybrid discovery approach:
+HappyCMDB uses a hybrid discovery approach:
 
 #### Network Discovery (Agent-based)
 Agents handle infrastructure protocols that require network access:
@@ -233,7 +233,7 @@ Connectors handle cloud/SaaS platforms with REST/GraphQL APIs:
 
 ## Connector Architecture
 
-ConfigBuddy supports two types of connectors for maximum flexibility:
+HappyCMDB supports two types of connectors for maximum flexibility:
 
 ### TypeScript Connectors (Custom Logic)
 For complex integrations requiring custom business logic:
@@ -410,7 +410,7 @@ npm run connector:test    # Test connector(s)
 
 ## Cleanup Policies
 
-ConfigBuddy v2.0 was developed as a **greenfield application** with no backwards compatibility requirements. The following cleanup policies were applied:
+HappyCMDB v2.0 was developed as a **greenfield application** with no backwards compatibility requirements. The following cleanup policies were applied:
 
 ### Database Migrations
 - **Before**: 16 separate SQL migration files (v1.0 incremental changes)
@@ -433,7 +433,7 @@ ConfigBuddy v2.0 was developed as a **greenfield application** with no backwards
 - **Benefit**: Consistent configuration across all integrations
 
 ### No Migration Path Needed
-Since ConfigBuddy is a new application with no prior production deployments:
+Since HappyCMDB is a new application with no prior production deployments:
 - No backwards compatibility requirements
 - No data migration scripts needed
 - Clean slate architecture without legacy constraints
@@ -501,7 +501,7 @@ AUDIT_LOG_ENABLED=true
 
 ### v2.0 Credential Management
 
-**IMPORTANT**: ConfigBuddy v2.0 uses a **unified credential system** stored in PostgreSQL. Connector credentials (AWS, Azure, GCP, ServiceNow, etc.) are **NOT** configured via environment variables.
+**IMPORTANT**: HappyCMDB v2.0 uses a **unified credential system** stored in PostgreSQL. Connector credentials (AWS, Azure, GCP, ServiceNow, etc.) are **NOT** configured via environment variables.
 
 **To configure connector credentials**:
 1. Create credential records via Web UI or API
@@ -527,7 +527,7 @@ All connector authentication now uses the PostgreSQL credential system with encr
 **Location**: `/doc-site/`
 **URL (when running)**: http://localhost:8080
 
-ConfigBuddy has a comprehensive VitePress documentation site that consolidates all project documentation:
+HappyCMDB has a comprehensive VitePress documentation site that consolidates all project documentation:
 
 - **30+ structured documentation pages** organized by topic (updated Oct 2025)
 - **Full-text search** with fuzzy matching (Ctrl+K / ⌘K)

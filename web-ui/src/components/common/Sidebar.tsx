@@ -239,7 +239,7 @@ const Sidebar: React.FC<SidebarProps> = ({
 
         <div className="px-4 py-4 border-t">
           <p className="text-xs text-muted-foreground text-center">
-            ConfigBuddy CMDB v3.0
+            HappyCMDB v3.0
           </p>
           <p className="text-xs text-muted-foreground text-center">
             Open Source

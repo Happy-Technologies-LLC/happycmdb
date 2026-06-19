@@ -1,4 +1,4 @@
-# ConfigBuddy CMDB - Deployment Runbook
+# HappyCMDB - Deployment Runbook
 
 **Version**: 2.0
 **Last Updated**: 2025-10-19
@@ -22,7 +22,7 @@
 
 ## Overview
 
-ConfigBuddy CMDB uses a multi-stage deployment pipeline with automated validation, blue-green deployment for zero downtime, and comprehensive rollback capabilities.
+HappyCMDB uses a multi-stage deployment pipeline with automated validation, blue-green deployment for zero downtime, and comprehensive rollback capabilities.
 
 ### Deployment Environments
 
@@ -69,7 +69,7 @@ ConfigBuddy CMDB uses a multi-stage deployment pipeline with automated validatio
 ### Container Architecture
 
 ```
-ConfigBuddy Stack:
+HappyCMDB Stack:
   ├── cmdb-api-server      (Port 3000)
   ├── cmdb-web-ui          (Port 3001)
   ├── cmdb-neo4j           (Port 7474, 7687)
@@ -125,7 +125,7 @@ bash infrastructure/scripts/backup-all.sh
 bash infrastructure/scripts/backup-health-check.sh
 ```
 
-Backups are stored in: `/var/backups/configbuddy/<environment>/`
+Backups are stored in: `/var/backups/happycmdb/<environment>/`
 
 ---
 
@@ -136,7 +136,7 @@ Backups are stored in: `/var/backups/configbuddy/<environment>/`
 #### 1. Pre-Deployment Validation
 
 ```bash
-cd /path/to/configbuddy
+cd /path/to/happycmdb
 bash infrastructure/scripts/pre-deploy-checklist.sh staging
 ```
 
@@ -194,9 +194,9 @@ bash infrastructure/scripts/post-deploy-validation.sh staging
 #### 5. Notify QA Team
 
 Send notification to QA team with staging environment URL:
-- **Web UI**: http://staging.configbuddy.local:3001
-- **API**: http://staging.configbuddy.local:3000/api/v1
-- **GraphQL**: http://staging.configbuddy.local:3000/graphql
+- **Web UI**: http://staging.happycmdb.local:3001
+- **API**: http://staging.happycmdb.local:3000/api/v1
+- **GraphQL**: http://staging.happycmdb.local:3000/graphql
 
 ---
 
@@ -226,12 +226,12 @@ bash infrastructure/scripts/pre-deploy-checklist.sh production
 
 **30 minutes before deployment**:
 - Email all stakeholders
-- Post in #configbuddy-deployments Slack channel
+- Post in #happycmdb-deployments Slack channel
 - Update status page (if applicable)
 
 **Template**:
 ```
-Subject: [ConfigBuddy] Production Deployment Starting
+Subject: [HappyCMDB] Production Deployment Starting
 
 Production deployment will begin at: <TIME>
 Expected duration: 1-2 hours
@@ -349,7 +349,7 @@ docker stats cmdb-api-server cmdb-neo4j cmdb-postgres
 
 **Template**:
 ```
-Subject: [ConfigBuddy] Production Deployment Complete
+Subject: [HappyCMDB] Production Deployment Complete
 
 Production deployment completed successfully at: <TIME>
 Version: <GIT TAG>
@@ -383,7 +383,7 @@ Release Notes: <LINK>
 
 ```bash
 # List available backups
-ls -lh /var/backups/configbuddy/production/
+ls -lh /var/backups/happycmdb/production/
 
 # Full rollback (containers + databases)
 bash infrastructure/scripts/rollback.sh <BACKUP_TIMESTAMP> full
@@ -432,7 +432,7 @@ The rollback script will:
 
 4. **Notify Stakeholders**:
    ```
-   Subject: [ConfigBuddy] Production Rollback Executed
+   Subject: [HappyCMDB] Production Rollback Executed
 
    Production deployment was rolled back at: <TIME>
    Reason: <DESCRIPTION>
@@ -608,7 +608,7 @@ docker system df
    docker system prune -a -f
 
    # Remove old images
-   docker images | grep configbuddy | awk '{print $3}' | xargs docker rmi -f
+   docker images | grep happycmdb | awk '{print $3}' | xargs docker rmi -f
    ```
 
 2. **Build context too large**: Check `.dockerignore` file
@@ -622,8 +622,8 @@ docker system df
 **Diagnosis**:
 ```bash
 # Verify backup integrity
-tar -tzf /var/backups/configbuddy/production/<TIMESTAMP>/neo4j-backup.tar.gz
-gunzip -t /var/backups/configbuddy/production/<TIMESTAMP>/postgres-backup.sql.gz
+tar -tzf /var/backups/happycmdb/production/<TIMESTAMP>/neo4j-backup.tar.gz
+gunzip -t /var/backups/happycmdb/production/<TIMESTAMP>/postgres-backup.sql.gz
 ```
 
 **Solutions**:
@@ -677,7 +677,7 @@ docker exec cmdb-api-server node --expose-gc -e "console.log(process.memoryUsage
 openssl x509 -enddate -noout -in /path/to/cert.pem
 
 # Test SSL connection
-openssl s_client -connect configbuddy.example.com:443
+openssl s_client -connect happycmdb.example.com:443
 ```
 
 **Solutions**:
@@ -706,10 +706,10 @@ openssl s_client -connect configbuddy.example.com:443
 
 ### Communication Channels
 
-- **Slack**: `#configbuddy-deployments`
-- **Slack (Incidents)**: `#configbuddy-incidents`
-- **PagerDuty**: ConfigBuddy Production Service
-- **Email**: configbuddy-ops@example.com
+- **Slack**: `#happycmdb-deployments`
+- **Slack (Incidents)**: `#happycmdb-incidents`
+- **PagerDuty**: HappyCMDB Production Service
+- **Email**: happycmdb-ops@example.com
 
 ---
 
@@ -765,7 +765,7 @@ logs/
 ### C. Backup Locations
 
 ```
-/var/backups/configbuddy/
+/var/backups/happycmdb/
 ├── staging/
 │   └── YYYYMMDD-HHMMSS/
 │       ├── neo4j-backup.tar.gz
@@ -818,5 +818,5 @@ git tag --sort=-creatordate | head -10
 ---
 
 **Questions or Issues?**
-Contact: configbuddy-ops@example.com
+Contact: happycmdb-ops@example.com
 Documentation: http://localhost:8080

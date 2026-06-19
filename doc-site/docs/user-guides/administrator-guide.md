@@ -1,10 +1,10 @@
 # Administrator Guide
 
-Complete guide for ConfigBuddy system administrators managing users, security, backups, and system maintenance.
+Complete guide for HappyCMDB system administrators managing users, security, backups, and system maintenance.
 
 ## Overview
 
-As a System Administrator, you're responsible for the operational health, security, and availability of the ConfigBuddy platform. This guide covers day-to-day administration tasks.
+As a System Administrator, you're responsible for the operational health, security, and availability of the HappyCMDB platform. This guide covers day-to-day administration tasks.
 
 **Target Audience**: System Administrators, DevOps Engineers, IT Operations
 
@@ -120,9 +120,9 @@ curl -X POST http://localhost:3000/api/v1/credentials \
 **Quarterly rotation recommended**:
 
 1. Create new credential in cloud provider
-2. Add new credential to ConfigBuddy
+2. Add new credential to HappyCMDB
 3. Test discovery with new credential
-4. Delete old credential from ConfigBuddy
+4. Delete old credential from HappyCMDB
 5. Revoke old credential in cloud provider
 
 ---
@@ -133,7 +133,7 @@ curl -X POST http://localhost:3000/api/v1/credentials \
 
 **Backup All Databases**:
 ```bash
-cd /path/to/configbuddy
+cd /path/to/happycmdb
 ./infrastructure/scripts/backup-all.sh
 ```
 
@@ -147,7 +147,7 @@ cd /path/to/configbuddy
 ./infrastructure/scripts/backup-postgres.sh
 ```
 
-**Backup Location**: `/var/backups/configbuddy/`
+**Backup Location**: `/var/backups/happycmdb/`
 
 ---
 
@@ -156,10 +156,10 @@ cd /path/to/configbuddy
 **Set up cron** (recommended):
 ```bash
 # Daily backup at 2 AM
-0 2 * * * /path/to/configbuddy/infrastructure/scripts/backup-all.sh
+0 2 * * * /path/to/happycmdb/infrastructure/scripts/backup-all.sh
 
 # Weekly backup health check
-0 3 * * 0 /path/to/configbuddy/infrastructure/scripts/backup-health-check.sh
+0 3 * * 0 /path/to/happycmdb/infrastructure/scripts/backup-health-check.sh
 ```
 
 ---
@@ -169,7 +169,7 @@ cd /path/to/configbuddy
 **PostgreSQL**:
 ```bash
 ./infrastructure/scripts/restore-postgres.sh \
-  --file /var/backups/configbuddy/postgres/daily/backup-2025-11-15.sql.gz \
+  --file /var/backups/happycmdb/postgres/daily/backup-2025-11-15.sql.gz \
   --drop \
   --verify
 ```
@@ -177,7 +177,7 @@ cd /path/to/configbuddy
 **Neo4j**:
 ```bash
 ./infrastructure/scripts/restore-neo4j.sh \
-  --file /var/backups/configbuddy/neo4j/daily/backup-2025-11-15.dump.gz \
+  --file /var/backups/happycmdb/neo4j/daily/backup-2025-11-15.dump.gz \
   --force \
   --verify
 ```
@@ -486,7 +486,7 @@ environment:
 
 ---
 
-## Upgrading ConfigBuddy
+## Upgrading HappyCMDB
 
 **See**: [Migrating to v3.0](/getting-started/migrating-to-v3.md) for upgrade procedures.
 

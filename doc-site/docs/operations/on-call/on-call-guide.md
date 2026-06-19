@@ -2,7 +2,7 @@
 
 ## Welcome to On-Call
 
-This guide will help you prepare for and succeed during your on-call rotation for ConfigBuddy production systems.
+This guide will help you prepare for and succeed during your on-call rotation for HappyCMDB production systems.
 
 ## On-Call Schedule
 
@@ -93,7 +93,7 @@ Meet with previous on-call engineer (15-30 minutes):
 
 **Handoff Template**:
 ```
-CONFIGBUDDY ON-CALL HANDOFF
+HAPPYCMDB ON-CALL HANDOFF
 Week of: [Date]
 From: [Previous On-Call]
 To: [New On-Call]
@@ -165,19 +165,19 @@ Questions? Contact me at: [Contact info]
 - Escalation Matrix: /docs/operations/incident-response/escalation-matrix.md
 
 **Systems**:
-- Status Page: https://status.configbuddy.com (admin)
+- Status Page: https://status.happycmdb.com (admin)
 - AWS Console: https://console.aws.amazon.com
-- Production API: https://api.configbuddy.com/health
+- Production API: https://api.happycmdb.com/health
 
 **Communication**:
 - Slack: https://company.slack.com
-- Support Portal: https://support.configbuddy.com
+- Support Portal: https://support.happycmdb.com
 
 ### Key Commands
 
 ```bash
 # SSH to API server
-ssh -i ~/.ssh/production.pem ubuntu@api-server-1.configbuddy.com
+ssh -i ~/.ssh/production.pem ubuntu@api-server-1.happycmdb.com
 
 # Check service health
 curl http://localhost:3000/health | jq
@@ -513,7 +513,7 @@ Share feedback with team lead.
 
 - **PagerDuty**: https://company.pagerduty.com
 - **Slack**: #incidents, #engineering
-- **Status Page**: https://status.configbuddy.com
+- **Status Page**: https://status.happycmdb.com
 
 ## FAQ
 

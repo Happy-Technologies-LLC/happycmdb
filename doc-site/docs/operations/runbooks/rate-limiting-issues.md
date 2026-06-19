@@ -368,7 +368,7 @@ rate(http_requests_total{status="429"}[5m]) / rate(http_requests_total[5m])
 
 ## Rate Limit Headers
 
-ConfigBuddy API returns standard rate limit headers:
+HappyCMDB API returns standard rate limit headers:
 
 ```
 X-RateLimit-Limit: 100

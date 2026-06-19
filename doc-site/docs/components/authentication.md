@@ -61,7 +61,7 @@ function AppHeader() {
   return (
     <AppBar>
       <Toolbar>
-        <Typography variant="h6">ConfigBuddy</Typography>
+        <Typography variant="h6">HappyCMDB</Typography>
         <Box sx={{ flexGrow: 1 }} />
         <UserMenu />
       </Toolbar>

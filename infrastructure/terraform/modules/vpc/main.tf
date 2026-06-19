@@ -4,7 +4,7 @@ resource "aws_vpc" "main" {
   enable_dns_support   = true
 
   tags = {
-    Name        = "configbuddy-vpc-${var.environment}"
+    Name        = "happycmdb-vpc-${var.environment}"
     Environment = var.environment
   }
 }
@@ -14,7 +14,7 @@ resource "aws_internet_gateway" "main" {
   vpc_id = aws_vpc.main.id
 
   tags = {
-    Name        = "configbuddy-igw-${var.environment}"
+    Name        = "happycmdb-igw-${var.environment}"
     Environment = var.environment
   }
 }
@@ -29,7 +29,7 @@ resource "aws_subnet" "public" {
   map_public_ip_on_launch = true
 
   tags = {
-    Name        = "configbuddy-public-${var.availability_zones[count.index]}-${var.environment}"
+    Name        = "happycmdb-public-${var.availability_zones[count.index]}-${var.environment}"
     Environment = var.environment
     Type        = "Public"
   }
@@ -44,7 +44,7 @@ resource "aws_subnet" "private" {
   availability_zone = var.availability_zones[count.index]
 
   tags = {
-    Name        = "configbuddy-private-${var.availability_zones[count.index]}-${var.environment}"
+    Name        = "happycmdb-private-${var.availability_zones[count.index]}-${var.environment}"
     Environment = var.environment
     Type        = "Private"
   }
@@ -59,7 +59,7 @@ resource "aws_subnet" "database" {
   availability_zone = var.availability_zones[count.index]
 
   tags = {
-    Name        = "configbuddy-database-${var.availability_zones[count.index]}-${var.environment}"
+    Name        = "happycmdb-database-${var.availability_zones[count.index]}-${var.environment}"
     Environment = var.environment
     Type        = "Database"
   }
@@ -71,7 +71,7 @@ resource "aws_eip" "nat" {
   domain = "vpc"
 
   tags = {
-    Name        = "configbuddy-nat-eip-${var.availability_zones[count.index]}-${var.environment}"
+    Name        = "happycmdb-nat-eip-${var.availability_zones[count.index]}-${var.environment}"
     Environment = var.environment
   }
 }
@@ -84,7 +84,7 @@ resource "aws_nat_gateway" "main" {
   subnet_id     = aws_subnet.public[count.index].id
 
   tags = {
-    Name        = "configbuddy-nat-${var.availability_zones[count.index]}-${var.environment}"
+    Name        = "happycmdb-nat-${var.availability_zones[count.index]}-${var.environment}"
     Environment = var.environment
   }
 
@@ -101,7 +101,7 @@ resource "aws_route_table" "public" {
   }
 
   tags = {
-    Name        = "configbuddy-public-rt-${var.environment}"
+    Name        = "happycmdb-public-rt-${var.environment}"
     Environment = var.environment
   }
 }
@@ -126,7 +126,7 @@ resource "aws_route_table" "private" {
   }
 
   tags = {
-    Name        = "configbuddy-private-rt-${var.availability_zones[count.index]}-${var.environment}"
+    Name        = "happycmdb-private-rt-${var.availability_zones[count.index]}-${var.environment}"
     Environment = var.environment
   }
 }
@@ -149,7 +149,7 @@ resource "aws_route_table_association" "database" {
 
 # Application Security Group
 resource "aws_security_group" "app" {
-  name_prefix = "configbuddy-app-${var.environment}-"
+  name_prefix = "happycmdb-app-${var.environment}-"
   description = "Security group for application servers"
   vpc_id      = aws_vpc.main.id
 
@@ -178,7 +178,7 @@ resource "aws_security_group" "app" {
   }
 
   tags = {
-    Name        = "configbuddy-app-sg-${var.environment}"
+    Name        = "happycmdb-app-sg-${var.environment}"
     Environment = var.environment
   }
 }

@@ -17,7 +17,7 @@
           "query": "SELECT deployment_model, monthly_cost, pct_of_total FROM v_cloud_vs_onprem_costs ORDER BY monthly_cost DESC",
           "template-tags": {}
         },
-        "database": "ConfigBuddy CMDB"
+        "database": "HappyCMDB"
       },
       "display": "pie",
       "visualization_type": "pie"
@@ -36,7 +36,7 @@
           "query": "SELECT tbm_resource_tower, total_monthly_cost, pct_of_total_cost FROM v_cost_by_tower GROUP BY tbm_resource_tower, total_monthly_cost, pct_of_total_cost ORDER BY total_monthly_cost DESC",
           "template-tags": {}
         },
-        "database": "ConfigBuddy CMDB"
+        "database": "HappyCMDB"
       },
       "display": "bar",
       "visualization_type": "bar"
@@ -60,7 +60,7 @@
           "query": "SELECT business_service, monthly_cost, cost_per_transaction, cost_per_customer, revenue_ratio FROM v_unit_economics WHERE revenue_ratio > 0 ORDER BY revenue_ratio DESC LIMIT 10",
           "template-tags": {}
         },
-        "database": "ConfigBuddy CMDB"
+        "database": "HappyCMDB"
       },
       "display": "table",
       "visualization_type": "table"
@@ -84,7 +84,7 @@
           "query": "SELECT cost_center, cost_pool_name, monthly_budget, actual_monthly_cost, monthly_variance, variance_pct FROM v_cost_allocation_summary ORDER BY ABS(variance_pct) DESC LIMIT 10",
           "template-tags": {}
         },
-        "database": "ConfigBuddy CMDB"
+        "database": "HappyCMDB"
       },
       "display": "table",
       "visualization_type": "table"
@@ -103,7 +103,7 @@
           "query": "SELECT month, environment, SUM(monthly_cost) AS monthly_cost FROM v_cost_trends WHERE month >= NOW() - INTERVAL '6 months' GROUP BY month, environment ORDER BY month",
           "template-tags": {}
         },
-        "database": "ConfigBuddy CMDB"
+        "database": "HappyCMDB"
       },
       "display": "line",
       "visualization_type": "line"
@@ -127,7 +127,7 @@
           "query": "SELECT ci_name, ci_type, current_book_value, remaining_months, depreciation_pct FROM v_depreciation_summary WHERE fully_depreciated = FALSE ORDER BY current_book_value DESC LIMIT 10",
           "template-tags": {}
         },
-        "database": "ConfigBuddy CMDB"
+        "database": "HappyCMDB"
       },
       "display": "table",
       "visualization_type": "table"
@@ -151,7 +151,7 @@
           "query": "SELECT ci_name, ci_type, COALESCE((tbm_attributes->>'monthly_cost')::DECIMAL, 0) AS monthly_cost, COALESCE((metadata->>'utilization_pct')::DECIMAL, 0) AS utilization_pct, COALESCE((tbm_attributes->>'monthly_cost')::DECIMAL, 0) * (1 - COALESCE((metadata->>'utilization_pct')::DECIMAL, 0) / 100) AS potential_savings FROM cmdb.dim_ci WHERE is_current = TRUE AND ci_status = 'active' AND (metadata->>'utilization_pct')::DECIMAL < 50 ORDER BY potential_savings DESC LIMIT 10",
           "template-tags": {}
         },
-        "database": "ConfigBuddy CMDB"
+        "database": "HappyCMDB"
       },
       "display": "table",
       "visualization_type": "table"
@@ -170,7 +170,7 @@
           "query": "SELECT ci_type, SUM(total_monthly_cost) AS total_monthly_cost FROM v_cost_by_tower GROUP BY ci_type ORDER BY total_monthly_cost DESC LIMIT 8",
           "template-tags": {}
         },
-        "database": "ConfigBuddy CMDB"
+        "database": "HappyCMDB"
       },
       "display": "pie",
       "visualization_type": "pie"

@@ -54,7 +54,7 @@ export class EncryptionService {
 
     // Derive encryption key using PBKDF2
     // Using a fixed salt is acceptable here because the master key should be unique per deployment
-    const salt = 'configbuddy-cmdb-encryption-salt';
+    const salt = 'happycmdb-cmdb-encryption-salt';
     this.encryptionKey = pbkdf2Sync(key, salt, 100000, this.keyLength, 'sha256');
   }
 

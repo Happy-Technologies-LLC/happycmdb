@@ -1,10 +1,10 @@
 # Discovery Guide
 
-A comprehensive guide to discovering and managing your infrastructure with ConfigBuddy's ServiceNow-style 3-tier discovery architecture.
+A comprehensive guide to discovering and managing your infrastructure with HappyCMDB's ServiceNow-style 3-tier discovery architecture.
 
 ## Overview
 
-ConfigBuddy uses a modern 3-tier discovery architecture that separates credentials, discovery configurations, and job execution:
+HappyCMDB uses a modern 3-tier discovery architecture that separates credentials, discovery configurations, and job execution:
 
 1. **Credentials** - Reusable encrypted credentials for authentication
 2. **Discovery Definitions** - Reusable discovery configurations with scheduling
@@ -16,7 +16,7 @@ This architecture provides better security, reusability, audit trails, and sched
 
 Before setting up discovery:
 
-- ConfigBuddy API server running
+- HappyCMDB API server running
 - Neo4j graph database accessible
 - Cloud provider accounts (AWS, Azure, GCP) or on-premise access
 - Appropriate IAM permissions for discovery operations
@@ -36,7 +36,7 @@ Discovery credentials are securely stored, encrypted authentication details used
 
 ### Creating Credentials via UI
 
-1. Navigate to **Settings > Credentials** in the ConfigBuddy UI
+1. Navigate to **Settings > Credentials** in the HappyCMDB UI
 2. Click **New Credential**
 3. Select the credential type (AWS, Azure, GCP, SSH, etc.)
 4. Enter the required fields:
@@ -566,4 +566,4 @@ curl http://localhost:3000/api/v1/cis/{ci_id}/relationships \
 ---
 
 **Last Updated**: 2025-10-05
-**Maintainer**: ConfigBuddy Team
+**Maintainer**: HappyCMDB Team

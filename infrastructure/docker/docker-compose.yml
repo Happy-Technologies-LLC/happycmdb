@@ -65,7 +65,7 @@ services:
       - neo4j_logs:/logs
       - neo4j_plugins:/plugins
       - ./ssl/neo4j:/ssl:ro
-      - ${BACKUP_DIR:-/var/backups/configbuddy}/neo4j:/backups
+      - ${BACKUP_DIR:-/var/backups/happycmdb}/neo4j:/backups
     networks:
       - cmdb_network
     healthcheck:
@@ -92,7 +92,7 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ../../infrastructure/scripts/init-postgres.sql:/docker-entrypoint-initdb.d/init.sql:ro
       - ./ssl/postgres:/ssl:ro
-      - ${BACKUP_DIR:-/var/backups/configbuddy}/postgres:/backups
+      - ${BACKUP_DIR:-/var/backups/happycmdb}/postgres:/backups
     networks:
       - cmdb_network
     healthcheck:
@@ -426,7 +426,7 @@ services:
       MB_DB_PASS: ${METABASE_DB_PASSWORD}
       MB_DB_HOST: postgres
       # Site configuration
-      MB_SITE_NAME: "ConfigBuddy v3.0 Analytics"
+      MB_SITE_NAME: "HappyCMDB v3.0 Analytics"
       MB_SITE_URL: ${METABASE_SITE_URL:-http://localhost:3002}
       # Security
       MB_ENCRYPTION_SECRET_KEY: ${METABASE_ENCRYPTION_KEY}
@@ -438,7 +438,7 @@ services:
       MB_EMAIL_SMTP_PORT: ${SMTP_PORT:-587}
       MB_EMAIL_SMTP_USERNAME: ${SMTP_USERNAME:-}
       MB_EMAIL_SMTP_PASSWORD: ${SMTP_PASSWORD:-}
-      MB_EMAIL_FROM_ADDRESS: ${SMTP_FROM_ADDRESS:-noreply@configbuddy.local}
+      MB_EMAIL_FROM_ADDRESS: ${SMTP_FROM_ADDRESS:-noreply@happycmdb.local}
       # Java options for memory tuning
       JAVA_OPTS: "-Xmx2g -XX:+UseG1GC -XX:MaxGCPauseMillis=200"
     volumes:

@@ -1,13 +1,13 @@
 #!/bin/bash
 #
-# PostgreSQL Backup Script for ConfigBuddy
+# PostgreSQL Backup Script for HappyCMDB
 # Supports full backups, compression, retention policies, and cloud upload
 #
 
 set -euo pipefail
 
 # Configuration from environment variables or defaults
-BACKUP_DIR="${BACKUP_DIR:-/var/backups/configbuddy/postgres}"
+BACKUP_DIR="${BACKUP_DIR:-/var/backups/happycmdb/postgres}"
 POSTGRES_HOST="${POSTGRES_HOST:-localhost}"
 POSTGRES_PORT="${POSTGRES_PORT:-5432}"
 POSTGRES_DATABASE="${POSTGRES_DATABASE:-cmdb}"
@@ -23,9 +23,9 @@ RETENTION_MONTHLY="${BACKUP_RETENTION_MONTHLY:-12}"
 BACKUP_UPLOAD_ENABLED="${BACKUP_UPLOAD_ENABLED:-false}"
 BACKUP_STORAGE_TYPE="${BACKUP_STORAGE_TYPE:-s3}"  # s3 or azure
 S3_BUCKET="${BACKUP_S3_BUCKET:-}"
-S3_PREFIX="${BACKUP_S3_PREFIX:-configbuddy/postgres}"
+S3_PREFIX="${BACKUP_S3_PREFIX:-happycmdb/postgres}"
 AZURE_CONTAINER="${BACKUP_AZURE_CONTAINER:-}"
-AZURE_PREFIX="${BACKUP_AZURE_PREFIX:-configbuddy/postgres}"
+AZURE_PREFIX="${BACKUP_AZURE_PREFIX:-happycmdb/postgres}"
 
 # Notification configuration
 BACKUP_NOTIFICATION_ENABLED="${BACKUP_NOTIFICATION_ENABLED:-false}"
@@ -61,7 +61,7 @@ send_notification() {
     if [[ "${BACKUP_NOTIFICATION_ENABLED}" == "true" ]] && [[ -n "${BACKUP_NOTIFICATION_WEBHOOK}" ]]; then
         curl -X POST "${BACKUP_NOTIFICATION_WEBHOOK}" \
             -H "Content-Type: application/json" \
-            -d "{\"service\":\"ConfigBuddy PostgreSQL Backup\",\"status\":\"${status}\",\"message\":\"${message}\",\"timestamp\":\"$(date -Iseconds)\"}" \
+            -d "{\"service\":\"HappyCMDB PostgreSQL Backup\",\"status\":\"${status}\",\"message\":\"${message}\",\"timestamp\":\"$(date -Iseconds)\"}" \
             2>/dev/null || log_error "Failed to send notification"
     fi
 }
@@ -258,7 +258,7 @@ generate_report() {
 
 # Main execution
 main() {
-    log_info "===== ConfigBuddy PostgreSQL Backup ====="
+    log_info "===== HappyCMDB PostgreSQL Backup ====="
 
     # Create directory structure
     create_backup_dirs

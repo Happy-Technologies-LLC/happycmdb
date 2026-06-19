@@ -1,4 +1,4 @@
-# ConfigBuddy OpenAPI 3.0 Implementation
+# HappyCMDB OpenAPI 3.0 Implementation
 
 **Implementation Date**: October 18, 2025
 **OpenAPI Version**: 3.0.0
@@ -6,7 +6,7 @@
 
 ## Summary
 
-Comprehensive OpenAPI 3.0 specification and Swagger UI integration for the ConfigBuddy CMDB REST API.
+Comprehensive OpenAPI 3.0 specification and Swagger UI integration for the HappyCMDB REST API.
 
 ### Files Created
 
@@ -319,7 +319,7 @@ To verify the implementation:
 
 1. **Start API Server**:
    ```bash
-   cd /Users/nczitzer/WebstormProjects/configbuddy
+   cd /Users/nczitzer/WebstormProjects/happycmdb
    ./deploy.sh
    ```
 

@@ -63,7 +63,7 @@ export const configSchema = Joi.object({
 
     kafka: Joi.object({
       brokers: Joi.array().items(Joi.string()).required(),
-      clientId: Joi.string().default('configbuddy'),
+      clientId: Joi.string().default('happycmdb'),
       groupId: Joi.string().default('cmdb-consumers'),
       ssl: Joi.boolean().default(false),
       sasl: Joi.object({
@@ -137,7 +137,7 @@ export const configSchema = Joi.object({
       secret: Joi.string().min(32).required(),
       accessTokenExpiresIn: Joi.string().default('15m'),
       refreshTokenExpiresIn: Joi.string().default('7d'),
-      issuer: Joi.string().default('configbuddy'),
+      issuer: Joi.string().default('happycmdb'),
       audience: Joi.string().default('cmdb-api'),
     }).required(),
 

@@ -2,7 +2,7 @@ apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: api-ingress
-  namespace: configbuddy-cmdb
+  namespace: happycmdb-cmdb
   annotations:
     kubernetes.io/ingress.class: nginx
     cert-manager.io/cluster-issuer: letsencrypt-prod
@@ -14,10 +14,10 @@ metadata:
 spec:
   tls:
     - hosts:
-        - api.configbuddy.example.com
+        - api.happycmdb.example.com
       secretName: api-tls-certificate
   rules:
-    - host: api.configbuddy.example.com
+    - host: api.happycmdb.example.com
       http:
         paths:
           - path: /
@@ -32,7 +32,7 @@ apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: neo4j-ingress
-  namespace: configbuddy-cmdb
+  namespace: happycmdb-cmdb
   annotations:
     kubernetes.io/ingress.class: nginx
     cert-manager.io/cluster-issuer: letsencrypt-prod
@@ -41,10 +41,10 @@ metadata:
 spec:
   tls:
     - hosts:
-        - neo4j.configbuddy.example.com
+        - neo4j.happycmdb.example.com
       secretName: neo4j-tls-certificate
   rules:
-    - host: neo4j.configbuddy.example.com
+    - host: neo4j.happycmdb.example.com
       http:
         paths:
           - path: /

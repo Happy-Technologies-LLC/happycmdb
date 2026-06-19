@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: discovery-engine
-  namespace: configbuddy-cmdb
+  namespace: happycmdb-cmdb
   labels:
     app: discovery-engine
     component: backend
@@ -36,13 +36,13 @@ spec:
                 topologyKey: kubernetes.io/hostname
       containers:
         - name: discovery-engine
-          image: configbuddy/discovery-engine:latest
+          image: happycmdb/discovery-engine:latest
           imagePullPolicy: Always
           env:
             - name: NODE_ENV
               value: "production"
             - name: NEO4J_URI
-              value: "neo4j://neo4j-0.neo4j-cluster.configbuddy-cmdb.svc.cluster.local:7687,neo4j://neo4j-1.neo4j-cluster.configbuddy-cmdb.svc.cluster.local:7687,neo4j://neo4j-2.neo4j-cluster.configbuddy-cmdb.svc.cluster.local:7687"
+              value: "neo4j://neo4j-0.neo4j-cluster.happycmdb-cmdb.svc.cluster.local:7687,neo4j://neo4j-1.neo4j-cluster.happycmdb-cmdb.svc.cluster.local:7687,neo4j://neo4j-2.neo4j-cluster.happycmdb-cmdb.svc.cluster.local:7687"
             - name: NEO4J_USER
               value: "neo4j"
             - name: NEO4J_PASSWORD
@@ -51,7 +51,7 @@ spec:
                   name: cmdb-secrets
                   key: neo4j-password
             - name: POSTGRES_HOST
-              value: "postgres-primary.configbuddy-cmdb.svc.cluster.local"
+              value: "postgres-primary.happycmdb-cmdb.svc.cluster.local"
             - name: POSTGRES_PORT
               value: "5432"
             - name: POSTGRES_DB
@@ -67,7 +67,7 @@ spec:
                   name: cmdb-secrets
                   key: postgres-password
             - name: KAFKA_BROKERS
-              value: "kafka-0.kafka.configbuddy-cmdb.svc.cluster.local:9092,kafka-1.kafka.configbuddy-cmdb.svc.cluster.local:9092,kafka-2.kafka.configbuddy-cmdb.svc.cluster.local:9092"
+              value: "kafka-0.kafka.happycmdb-cmdb.svc.cluster.local:9092,kafka-1.kafka.happycmdb-cmdb.svc.cluster.local:9092,kafka-2.kafka.happycmdb-cmdb.svc.cluster.local:9092"
             - name: AWS_ACCESS_KEY_ID
               valueFrom:
                 secretKeyRef:
@@ -146,7 +146,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: discovery-engine
-  namespace: configbuddy-cmdb
+  namespace: happycmdb-cmdb
   labels:
     app: discovery-engine
 spec:

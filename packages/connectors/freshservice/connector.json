@@ -7,7 +7,7 @@
   "name": "Freshservice",
   "version": "1.0.0",
   "description": "Integration with Freshservice IT Service Management for asset management, incidents, and changes",
-  "author": "ConfigBuddy",
+  "author": "HappyCMDB",
   "verified": true,
   "icon": "freshservice",
   "provider": "freshworks",

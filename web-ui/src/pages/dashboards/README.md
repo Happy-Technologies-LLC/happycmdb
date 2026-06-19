@@ -1,4 +1,4 @@
-# ConfigBuddy v3.0 Multi-Stakeholder Dashboards
+# HappyCMDB v3.0 Multi-Stakeholder Dashboards
 
 This directory contains 5 comprehensive dashboards tailored for different stakeholder personas.
 
@@ -131,19 +131,19 @@ navigate('/dashboards/business-service'); // Business Service Dashboard
 
 All dashboards use GraphQL queries defined in:
 ```
-/home/user/configbuddy/web-ui/src/graphql/queries/dashboard.queries.ts
+/home/user/happycmdb/web-ui/src/graphql/queries/dashboard.queries.ts
 ```
 
 Custom hooks for data fetching:
 ```
-/home/user/configbuddy/web-ui/src/hooks/useDashboardData.ts
+/home/user/happycmdb/web-ui/src/hooks/useDashboardData.ts
 ```
 
 ## Shared Components
 
 Reusable dashboard components in:
 ```
-/home/user/configbuddy/web-ui/src/components/dashboard/
+/home/user/happycmdb/web-ui/src/components/dashboard/
 ```
 
 - `KPICard` - Key Performance Indicator card

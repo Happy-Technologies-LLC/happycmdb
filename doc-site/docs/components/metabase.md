@@ -2,7 +2,7 @@
 
 ## Overview
 
-Metabase provides advanced business intelligence and ad-hoc reporting capabilities for ConfigBuddy v3.0, complementing the built-in React dashboards with powerful SQL-based analytics and customizable reporting.
+Metabase provides advanced business intelligence and ad-hoc reporting capabilities for HappyCMDB v3.0, complementing the built-in React dashboards with powerful SQL-based analytics and customizable reporting.
 
 ### Key Features
 
@@ -11,7 +11,7 @@ Metabase provides advanced business intelligence and ad-hoc reporting capabiliti
 - Advanced SQL editor for power users
 - 24+ pre-built optimized database views
 - 15+ pre-configured SQL questions
-- Real-time data refresh from ConfigBuddy CMDB
+- Real-time data refresh from HappyCMDB
 
 **Pre-Built Dashboards**
 - **Executive Dashboard**: High-level IT spend, service health, and risk metrics for CEO/CFO/CIO
@@ -29,7 +29,7 @@ Metabase provides advanced business intelligence and ad-hoc reporting capabiliti
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    ConfigBuddy CMDB                         │
+│                    HappyCMDB                         │
 │                                                             │
 │  ┌──────────────┐     ┌──────────────┐    ┌─────────────┐ │
 │  │   Neo4j      │────▶│  PostgreSQL  │───▶│  Metabase   │ │
@@ -61,12 +61,12 @@ Metabase provides advanced business intelligence and ad-hoc reporting capabiliti
 
 ### Docker Compose Deployment
 
-Metabase is included in the main ConfigBuddy docker-compose configuration.
+Metabase is included in the main HappyCMDB docker-compose configuration.
 
 #### 1. Start All Services
 
 ```bash
-cd /home/user/configbuddy
+cd /home/user/happycmdb
 ./deploy.sh
 ```
 
@@ -83,7 +83,7 @@ Once deployed, Metabase is available at:
 **URL**: `http://localhost:3002`
 
 **Default Credentials** (change immediately after first login):
-- Email: `admin@configbuddy.local`
+- Email: `admin@happycmdb.local`
 - Password: `admin_password_change_me`
 
 #### 3. Automated Setup
@@ -97,7 +97,7 @@ Run the setup automation script to configure Metabase:
 This script performs:
 - Wait for Metabase startup
 - Create admin user
-- Connect to ConfigBuddy CMDB database
+- Connect to HappyCMDB database
 - Import pre-built dashboards
 - Set up collections
 - Sync database schema
@@ -160,7 +160,7 @@ kubectl logs -f metabase-0
 
 ## Database Views
 
-ConfigBuddy v3.0 provides 24 optimized PostgreSQL views organized into three categories: **Cost Analysis**, **ITIL Service Management**, and **Business Service Mapping (BSM)**.
+HappyCMDB v3.0 provides 24 optimized PostgreSQL views organized into three categories: **Cost Analysis**, **ITIL Service Management**, and **Business Service Mapping (BSM)**.
 
 ### Cost Analysis Views (8 views)
 
@@ -716,7 +716,7 @@ These views provide business impact analysis, compliance tracking, and disaster 
 
 ## Pre-Built Dashboards
 
-ConfigBuddy v3.0 includes three comprehensive dashboards optimized for different stakeholders.
+HappyCMDB v3.0 includes three comprehensive dashboards optimized for different stakeholders.
 
 ### 1. Executive Dashboard
 
@@ -939,7 +939,7 @@ ConfigBuddy v3.0 includes three comprehensive dashboards optimized for different
 
 ## Pre-Configured Questions
 
-ConfigBuddy provides 15 pre-configured SQL questions organized into 5 categories. These questions are ready to use and can be added to custom dashboards.
+HappyCMDB provides 15 pre-configured SQL questions organized into 5 categories. These questions are ready to use and can be added to custom dashboards.
 
 ### Cost Analysis Questions (5)
 
@@ -1048,7 +1048,7 @@ Best for non-technical users and simple queries.
 
 1. Click **+ New** in top navigation
 2. Select **Question**
-3. Choose **ConfigBuddy CMDB** database
+3. Choose **HappyCMDB** database
 
 #### Step 2: Select Data Source
 
@@ -1089,7 +1089,7 @@ Best for power users and complex queries.
 #### Step 1: Create SQL Question
 
 1. Click **+ New** → **SQL Query**
-2. Select **ConfigBuddy CMDB** database
+2. Select **HappyCMDB** database
 3. SQL editor opens
 
 #### Step 2: Write Query
@@ -1251,7 +1251,7 @@ curl -X POST http://localhost:3002/api/user \
 #### Recommended Collection Structure
 
 ```
-ConfigBuddy Metabase
+HappyCMDB Metabase
 ├── Executive Reports (CEO, CFO, CIO - Viewer access)
 │   ├── Executive Dashboard
 │   └── Board Reports
@@ -1299,7 +1299,7 @@ environment:
   MB_EMAIL_SMTP_USERNAME: noreply@company.com
   MB_EMAIL_SMTP_PASSWORD: ${SMTP_PASSWORD}
   MB_EMAIL_SMTP_SECURITY: tls
-  MB_EMAIL_FROM_ADDRESS: noreply@configbuddy.local
+  MB_EMAIL_FROM_ADDRESS: noreply@happycmdb.local
 ```
 
 #### Test Email
@@ -1387,7 +1387,7 @@ docker exec -i cmdb-postgres psql -U postgres metabase < metabase_backup_2025110
 
 #### Backing Up CMDB Data
 
-ConfigBuddy data is in separate `cmdb` database:
+HappyCMDB data is in separate `cmdb` database:
 
 ```bash
 # Backup CMDB database
@@ -1554,7 +1554,7 @@ docker logs cmdb-metabase > metabase_logs_$(date +%Y%m%d).log
 
 **Solutions**:
 1. Sync database schema:
-   - Admin → Databases → ConfigBuddy CMDB
+   - Admin → Databases → HappyCMDB
    - Click **Sync database schema now**
 
 2. Re-create views:
@@ -1634,14 +1634,14 @@ docker logs cmdb-metabase > metabase_logs_$(date +%Y%m%d).log
 - **Official Documentation**: [https://www.metabase.com/docs/latest/](https://www.metabase.com/docs/latest/)
 - **SQL Best Practices**: [https://www.metabase.com/learn/sql-questions/](https://www.metabase.com/learn/sql-questions/)
 - **Dashboard Design Guide**: [https://www.metabase.com/learn/dashboards/](https://www.metabase.com/learn/dashboards/)
-- **ConfigBuddy Documentation**: [http://localhost:8080](http://localhost:8080) (when running)
+- **HappyCMDB Documentation**: [http://localhost:8080](http://localhost:8080) (when running)
 - **Metabase Community**: [https://discourse.metabase.com/](https://discourse.metabase.com/)
 
 ---
 
 ## Summary
 
-Metabase provides ConfigBuddy v3.0 with enterprise-grade business intelligence capabilities:
+Metabase provides HappyCMDB v3.0 with enterprise-grade business intelligence capabilities:
 
 - **24 optimized database views** for Cost Analysis, ITIL, and BSM
 - **3 pre-built dashboards** for Executive, FinOps, and ITIL stakeholders
@@ -1650,10 +1650,10 @@ Metabase provides ConfigBuddy v3.0 with enterprise-grade business intelligence c
 - **Scheduled reports** with PDF, Excel, and CSV exports
 - **Role-based access control** with collection-level permissions
 
-For implementation assistance or customization, consult the ConfigBuddy documentation or open an issue on the repository.
+For implementation assistance or customization, consult the HappyCMDB documentation or open an issue on the repository.
 
 ---
 
-**Version**: ConfigBuddy v3.0
+**Version**: HappyCMDB v3.0
 **Last Updated**: November 6, 2025
-**Maintained By**: ConfigBuddy Development Team
+**Maintained By**: HappyCMDB Development Team

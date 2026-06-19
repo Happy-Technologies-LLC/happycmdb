@@ -2,7 +2,7 @@
 
 ## Overview
 
-Complete Microsoft Intune connector for ConfigBuddy CMDB, built following the ServiceNow connector pattern. Provides full integration with Microsoft Graph API for mobile device management (MDM), application deployment, compliance policies, and user management.
+Complete Microsoft Intune connector for HappyCMDB, built following the ServiceNow connector pattern. Provides full integration with Microsoft Graph API for mobile device management (MDM), application deployment, compliance policies, and user management.
 
 ## Implementation Statistics
 
@@ -307,7 +307,7 @@ Application permissions (not Delegated):
 
 ## Integration Points
 
-### ConfigBuddy Integration
+### HappyCMDB Integration
 - Uses `@cmdb/common` for logging
 - Uses `@cmdb/integration-framework` for base connector
 - Follows multi-resource connector pattern (v3.0)
@@ -392,7 +392,7 @@ console.log(`Extracted ${relationships.length} relationships`);
 
 ## Compliance
 
-- ✅ Follows ConfigBuddy connector standards
+- ✅ Follows HappyCMDB connector standards
 - ✅ Compatible with integration framework v3.0
 - ✅ TypeScript 5.x compatible
 - ✅ Node.js 20 LTS compatible
@@ -420,6 +420,6 @@ console.log(`Extracted ${relationships.length} relationships`);
 
 ## Conclusion
 
-The Microsoft Intune connector is a production-ready, enterprise-grade integration that follows ConfigBuddy best practices and patterns. It provides comprehensive coverage of Intune resources, robust error handling, and extensive configurability. The connector is fully tested, well-documented, and ready for deployment.
+The Microsoft Intune connector is a production-ready, enterprise-grade integration that follows HappyCMDB best practices and patterns. It provides comprehensive coverage of Intune resources, robust error handling, and extensive configurability. The connector is fully tested, well-documented, and ready for deployment.
 
 **Status**: ✅ **COMPLETE AND READY FOR USE**

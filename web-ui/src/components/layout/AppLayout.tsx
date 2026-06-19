@@ -44,7 +44,7 @@ export const AppLayout: React.FC = () => {
           <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
             <span className="text-white font-bold">CB</span>
           </div>
-          <span className="font-bold text-xl">ConfigBuddy</span>
+          <span className="font-bold text-xl">HappyCMDB</span>
         </div>
         <button
           onClick={() => setSidebarOpen(!sidebarOpen)}
@@ -66,7 +66,7 @@ export const AppLayout: React.FC = () => {
             <span className="text-white font-bold text-lg">CB</span>
           </div>
           <div>
-            <div className="font-bold text-xl">ConfigBuddy</div>
+            <div className="font-bold text-xl">HappyCMDB</div>
             <div className="text-xs text-gray-500">CMDB Platform v2.0</div>
           </div>
         </div>
@@ -95,7 +95,7 @@ export const AppLayout: React.FC = () => {
 
         {/* Footer */}
         <div className="px-6 py-4 border-t text-xs text-gray-500">
-          <div>© 2025 ConfigBuddy</div>
+          <div>© 2025 HappyCMDB</div>
           <div>Open Source CMDB</div>
         </div>
       </div>

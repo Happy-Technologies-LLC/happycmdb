@@ -31,7 +31,7 @@ interface Example {
 
 const example: Example = {
   id: '123',
-  name: 'ConfigBuddy'
+  name: 'HappyCMDB'
 };
 ```
 
@@ -88,7 +88,7 @@ npm run fix
 apiVersion: v1
 kind: Service
 metadata:
-  name: configbuddy
+  name: happycmdb
 spec:
   type: ClusterIP
   ports:
@@ -102,7 +102,7 @@ spec:
   "apiVersion": "v1",
   "kind": "ConfigMap",
   "metadata": {
-    "name": "configbuddy-config"
+    "name": "happycmdb-config"
   },
   "data": {
     "database.host": "localhost"
@@ -183,4 +183,4 @@ Links to related documentation:
 ---
 
 **Last Updated**: 2025-10-04
-**Maintainer**: ConfigBuddy Team
+**Maintainer**: HappyCMDB Team

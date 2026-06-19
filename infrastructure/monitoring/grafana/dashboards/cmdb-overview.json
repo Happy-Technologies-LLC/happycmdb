@@ -21,7 +21,7 @@
           "w": 12,
           "h": 10
         },
-        "datasource": "ConfigBuddy CMDB",
+        "datasource": "HappyCMDB",
         "targets": [
           {
             "rawSql": "SELECT ci_type AS metric, COUNT(*) AS value FROM cmdb.dim_ci WHERE is_current = TRUE GROUP BY ci_type ORDER BY value DESC;",
@@ -56,7 +56,7 @@
           "w": 12,
           "h": 10
         },
-        "datasource": "ConfigBuddy CMDB",
+        "datasource": "HappyCMDB",
         "targets": [
           {
             "rawSql": "SELECT time_bucket('1 day', created_at) AS time, COUNT(*) AS \"CIs Created\" FROM cmdb.dim_ci WHERE created_at >= NOW() - INTERVAL '30 days' GROUP BY time_bucket('1 day', created_at) ORDER BY time;",
@@ -98,7 +98,7 @@
           "w": 12,
           "h": 10
         },
-        "datasource": "ConfigBuddy CMDB",
+        "datasource": "HappyCMDB",
         "targets": [
           {
             "rawSql": "SELECT time_bucket('1 day', changed_at) AS time, COUNT(*) AS \"Changes\" FROM cmdb.fact_ci_changes WHERE changed_at >= NOW() - INTERVAL '30 days' GROUP BY time_bucket('1 day', changed_at) ORDER BY time;",
@@ -132,7 +132,7 @@
           "w": 6,
           "h": 10
         },
-        "datasource": "ConfigBuddy CMDB",
+        "datasource": "HappyCMDB",
         "targets": [
           {
             "rawSql": "SELECT ROUND(AVG(CASE WHEN status = 'completed' THEN 100.0 ELSE 0.0 END), 2) AS \"Success Rate %\" FROM connector_run_history WHERE started_at >= NOW() - INTERVAL '7 days';",
@@ -179,7 +179,7 @@
           "w": 6,
           "h": 5
         },
-        "datasource": "ConfigBuddy CMDB",
+        "datasource": "HappyCMDB",
         "targets": [
           {
             "rawSql": "SELECT COUNT(*) AS \"Active CIs\" FROM cmdb.dim_ci WHERE is_current = TRUE AND ci_status = 'active';",
@@ -220,7 +220,7 @@
           "w": 6,
           "h": 5
         },
-        "datasource": "ConfigBuddy CMDB",
+        "datasource": "HappyCMDB",
         "targets": [
           {
             "rawSql": "SELECT COUNT(*) AS \"Active Relationships\" FROM cmdb.fact_ci_relationships WHERE is_active = TRUE;",
@@ -261,7 +261,7 @@
           "w": 24,
           "h": 10
         },
-        "datasource": "ConfigBuddy CMDB",
+        "datasource": "HappyCMDB",
         "targets": [
           {
             "rawSql": "SELECT c.ci_name AS \"CI Name\", c.ci_type AS \"Type\", c.environment AS \"Environment\", (SELECT COUNT(*) FROM cmdb.fact_ci_relationships r WHERE (r.from_ci_key = c.ci_key OR r.to_ci_key = c.ci_key) AND r.is_active = TRUE) AS \"Total Connections\", (SELECT COUNT(*) FROM cmdb.fact_ci_relationships r WHERE r.from_ci_key = c.ci_key AND r.is_active = TRUE) AS \"Outgoing\", (SELECT COUNT(*) FROM cmdb.fact_ci_relationships r WHERE r.to_ci_key = c.ci_key AND r.is_active = TRUE) AS \"Incoming\" FROM cmdb.dim_ci c WHERE c.is_current = TRUE ORDER BY \"Total Connections\" DESC LIMIT 10;",
@@ -311,7 +311,7 @@
           "w": 12,
           "h": 10
         },
-        "datasource": "ConfigBuddy CMDB",
+        "datasource": "HappyCMDB",
         "targets": [
           {
             "rawSql": "SELECT COALESCE(environment, 'unassigned') AS metric, COUNT(*) AS value FROM cmdb.dim_ci WHERE is_current = TRUE GROUP BY COALESCE(environment, 'unassigned') ORDER BY value DESC;",
@@ -344,7 +344,7 @@
           "w": 12,
           "h": 10
         },
-        "datasource": "ConfigBuddy CMDB",
+        "datasource": "HappyCMDB",
         "targets": [
           {
             "rawSql": "SELECT ci_status AS metric, COUNT(*) AS value FROM cmdb.dim_ci WHERE is_current = TRUE GROUP BY ci_status ORDER BY value DESC;",

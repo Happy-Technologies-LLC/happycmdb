@@ -1,12 +1,12 @@
 openapi: 3.0.0
 
 info:
-  title: ConfigBuddy CMDB API
+  title: HappyCMDB API
   version: 2.0.0
   description: |
-    Comprehensive REST API for ConfigBuddy - Enterprise Configuration Management Database (CMDB) platform.
+    Comprehensive REST API for HappyCMDB - Enterprise Configuration Management Database (CMDB) platform.
 
-    ConfigBuddy v2.0 features:
+    HappyCMDB v2.0 features:
     - Graph-based CI relationships with Neo4j
     - 43 connectors (17 TypeScript + 26 JSON-only)
     - Unified credential system with affinity matching
@@ -32,9 +32,9 @@ info:
     - `X-RateLimit-Reset`: Unix timestamp when limit resets
 
   contact:
-    name: ConfigBuddy Support
+    name: HappyCMDB Support
     url: http://localhost:8080
-    email: support@configbuddy.io
+    email: support@happycmdb.io
   license:
     name: MIT License
     url: https://opensource.org/licenses/MIT
@@ -42,9 +42,9 @@ info:
 servers:
   - url: http://localhost:3000/api/v1
     description: Development server
-  - url: http://staging-api.configbuddy.io/api/v1
+  - url: http://staging-api.happycmdb.io/api/v1
     description: Staging server
-  - url: https://api.configbuddy.io/api/v1
+  - url: https://api.happycmdb.io/api/v1
     description: Production server
 
 tags:

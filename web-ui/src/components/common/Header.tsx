@@ -54,11 +54,11 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
         <div className="flex items-center gap-3 flex-1">
           <img
             src="/assets/logo.svg"
-            alt="ConfigBuddy Logo"
+            alt="HappyCMDB Logo"
             className="h-8 w-auto"
           />
           <h1 className="text-lg font-semibold text-primary">
-            ConfigBuddy CMDB
+            HappyCMDB
           </h1>
         </div>
 

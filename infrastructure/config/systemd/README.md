@@ -1,13 +1,13 @@
 # SystemD Service and Timer Configuration
 
-This directory contains systemd service and timer units for automated ConfigBuddy database backups.
+This directory contains systemd service and timer units for automated HappyCMDB database backups.
 
 ## Files
 
-- `configbuddy-backup.service` - Main backup service unit
-- `configbuddy-backup.timer` - Timer for daily backup execution (2:00 AM)
-- `configbuddy-backup-healthcheck.service` - Backup health check service
-- `configbuddy-backup-healthcheck.timer` - Timer for health checks (every 6 hours)
+- `happycmdb-backup.service` - Main backup service unit
+- `happycmdb-backup.timer` - Timer for daily backup execution (2:00 AM)
+- `happycmdb-backup-healthcheck.service` - Backup health check service
+- `happycmdb-backup-healthcheck.timer` - Timer for health checks (every 6 hours)
 
 ## Installation
 
@@ -22,22 +22,22 @@ sudo cp *.service *.timer /etc/systemd/system/
 Edit the service files and update the `WorkingDirectory` and `ExecStart` paths to match your installation:
 
 ```bash
-sudo nano /etc/systemd/system/configbuddy-backup.service
-# Update: WorkingDirectory=/opt/configbuddy/infrastructure/scripts
-# Update: ExecStart=/opt/configbuddy/infrastructure/scripts/backup-all.sh
+sudo nano /etc/systemd/system/happycmdb-backup.service
+# Update: WorkingDirectory=/opt/happycmdb/infrastructure/scripts
+# Update: ExecStart=/opt/happycmdb/infrastructure/scripts/backup-all.sh
 ```
 
 ### 3. Create environment file (optional)
 
 ```bash
-sudo mkdir -p /etc/configbuddy
-sudo nano /etc/configbuddy/backup.env
+sudo mkdir -p /etc/happycmdb
+sudo nano /etc/happycmdb/backup.env
 ```
 
 Add your configuration:
 
 ```bash
-BACKUP_DIR=/var/backups/configbuddy
+BACKUP_DIR=/var/backups/happycmdb
 POSTGRES_PASSWORD=your-postgres-password
 NEO4J_PASSWORD=your-neo4j-password
 BACKUP_UPLOAD_ENABLED=true
@@ -47,9 +47,9 @@ BACKUP_S3_BUCKET=my-backup-bucket
 ### 4. Create log directory
 
 ```bash
-sudo mkdir -p /var/log/configbuddy/backups
-sudo chown root:root /var/log/configbuddy/backups
-sudo chmod 755 /var/log/configbuddy/backups
+sudo mkdir -p /var/log/happycmdb/backups
+sudo chown root:root /var/log/happycmdb/backups
+sudo chmod 755 /var/log/happycmdb/backups
 ```
 
 ### 5. Reload systemd
@@ -62,12 +62,12 @@ sudo systemctl daemon-reload
 
 ```bash
 # Enable backup timer (starts on boot)
-sudo systemctl enable configbuddy-backup.timer
-sudo systemctl start configbuddy-backup.timer
+sudo systemctl enable happycmdb-backup.timer
+sudo systemctl start happycmdb-backup.timer
 
 # Enable health check timer
-sudo systemctl enable configbuddy-backup-healthcheck.timer
-sudo systemctl start configbuddy-backup-healthcheck.timer
+sudo systemctl enable happycmdb-backup-healthcheck.timer
+sudo systemctl start happycmdb-backup-healthcheck.timer
 ```
 
 ## Management Commands
@@ -79,39 +79,39 @@ sudo systemctl start configbuddy-backup-healthcheck.timer
 sudo systemctl list-timers
 
 # Check specific timer
-sudo systemctl status configbuddy-backup.timer
-sudo systemctl status configbuddy-backup-healthcheck.timer
+sudo systemctl status happycmdb-backup.timer
+sudo systemctl status happycmdb-backup-healthcheck.timer
 ```
 
 ### Manual backup execution
 
 ```bash
 # Run backup manually
-sudo systemctl start configbuddy-backup.service
+sudo systemctl start happycmdb-backup.service
 
 # Run health check manually
-sudo systemctl start configbuddy-backup-healthcheck.service
+sudo systemctl start happycmdb-backup-healthcheck.service
 ```
 
 ### View logs
 
 ```bash
 # View backup service logs
-sudo journalctl -u configbuddy-backup.service -f
+sudo journalctl -u happycmdb-backup.service -f
 
 # View health check logs
-sudo journalctl -u configbuddy-backup-healthcheck.service -f
+sudo journalctl -u happycmdb-backup-healthcheck.service -f
 
 # View backup script logs
-sudo tail -f /var/log/configbuddy/backups/backup.log
-sudo tail -f /var/log/configbuddy/backups/health-check.log
+sudo tail -f /var/log/happycmdb/backups/backup.log
+sudo tail -f /var/log/happycmdb/backups/health-check.log
 ```
 
 ### Stop/disable timers
 
 ```bash
-sudo systemctl stop configbuddy-backup.timer
-sudo systemctl disable configbuddy-backup.timer
+sudo systemctl stop happycmdb-backup.timer
+sudo systemctl disable happycmdb-backup.timer
 ```
 
 ## Scheduling Details
@@ -133,7 +133,7 @@ sudo systemctl disable configbuddy-backup.timer
 Edit the timer file:
 
 ```bash
-sudo nano /etc/systemd/system/configbuddy-backup.timer
+sudo nano /etc/systemd/system/happycmdb-backup.timer
 ```
 
 Change `OnCalendar` value:
@@ -156,7 +156,7 @@ Reload after changes:
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl restart configbuddy-backup.timer
+sudo systemctl restart happycmdb-backup.timer
 ```
 
 ## Troubleshooting
@@ -165,26 +165,26 @@ sudo systemctl restart configbuddy-backup.timer
 
 ```bash
 # Check if timer is enabled
-sudo systemctl is-enabled configbuddy-backup.timer
+sudo systemctl is-enabled happycmdb-backup.timer
 
 # Check timer status
-sudo systemctl status configbuddy-backup.timer
+sudo systemctl status happycmdb-backup.timer
 
 # View timer details
-sudo systemctl show configbuddy-backup.timer
+sudo systemctl show happycmdb-backup.timer
 ```
 
 ### Service failing
 
 ```bash
 # Check service status
-sudo systemctl status configbuddy-backup.service
+sudo systemctl status happycmdb-backup.service
 
 # View recent logs
-sudo journalctl -u configbuddy-backup.service -n 50
+sudo journalctl -u happycmdb-backup.service -n 50
 
 # Test service manually
-sudo systemctl start configbuddy-backup.service
+sudo systemctl start happycmdb-backup.service
 ```
 
 ### Permissions issues
@@ -192,13 +192,13 @@ sudo systemctl start configbuddy-backup.service
 Ensure backup directories exist and are writable:
 
 ```bash
-sudo mkdir -p /var/backups/configbuddy/{postgres,neo4j}/{daily,weekly,monthly}
-sudo chmod 755 /var/backups/configbuddy
+sudo mkdir -p /var/backups/happycmdb/{postgres,neo4j}/{daily,weekly,monthly}
+sudo chmod 755 /var/backups/happycmdb
 ```
 
 ## Security Considerations
 
-- **Passwords**: Store sensitive credentials in `/etc/configbuddy/backup.env` with restricted permissions (`chmod 600`)
+- **Passwords**: Store sensitive credentials in `/etc/happycmdb/backup.env` with restricted permissions (`chmod 600`)
 - **User**: Services run as `root` (required for Docker access and backup directory writes)
 - **Resource Limits**: CPU and memory limits prevent backup jobs from impacting production workloads
 - **PrivateTmp**: Enabled for service isolation

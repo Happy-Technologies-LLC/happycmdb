@@ -1,6 +1,6 @@
 # CrowdStrike Falcon Connector
 
-Real-time threat intelligence and endpoint protection integration for ConfigBuddy CMDB.
+Real-time threat intelligence and endpoint protection integration for HappyCMDB.
 
 ## Overview
 

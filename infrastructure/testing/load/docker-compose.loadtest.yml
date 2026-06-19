@@ -28,7 +28,7 @@ services:
       - DOCKER_INFLUXDB_INIT_MODE=setup
       - DOCKER_INFLUXDB_INIT_USERNAME=admin
       - DOCKER_INFLUXDB_INIT_PASSWORD=loadtest123
-      - DOCKER_INFLUXDB_INIT_ORG=configbuddy
+      - DOCKER_INFLUXDB_INIT_ORG=happycmdb
       - DOCKER_INFLUXDB_INIT_BUCKET=k6
       - DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=loadtest-token-123
     volumes:

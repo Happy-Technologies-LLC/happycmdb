@@ -1,7 +1,7 @@
 # =============================================================================
 # Grafana Datasource Provisioning - PostgreSQL/TimescaleDB
 # =============================================================================
-# This file automatically provisions the ConfigBuddy CMDB PostgreSQL datasource
+# This file automatically provisions the HappyCMDB PostgreSQL datasource
 # when Grafana starts. No manual configuration needed.
 # =============================================================================
 
@@ -9,7 +9,7 @@ apiVersion: 1
 
 datasources:
   # PostgreSQL CMDB Data Mart (Primary)
-  - name: ConfigBuddy CMDB
+  - name: HappyCMDB
     type: postgres
     access: proxy
     url: ${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}
@@ -29,7 +29,7 @@ datasources:
     version: 1
 
   # PostgreSQL CMDB Data Mart (Explore - allows custom queries)
-  - name: ConfigBuddy CMDB (Explore)
+  - name: HappyCMDB (Explore)
     type: postgres
     access: proxy
     url: ${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}

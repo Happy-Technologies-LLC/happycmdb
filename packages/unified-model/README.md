@@ -1,10 +1,10 @@
 # @cmdb/unified-model
 
-Unified data model for ConfigBuddy v3.0, providing TypeScript types and runtime validators for the integration of ITIL v4, TBM v5.0.1, and Business Service Mapping (BSM) frameworks.
+Unified data model for HappyCMDB v3.0, providing TypeScript types and runtime validators for the integration of ITIL v4, TBM v5.0.1, and Business Service Mapping (BSM) frameworks.
 
 ## Overview
 
-ConfigBuddy v3.0 introduces a **unified data model** that serves as the single source of truth for all entities across the platform. This package consolidates type definitions previously scattered across multiple packages and adds comprehensive support for three industry-standard frameworks:
+HappyCMDB v3.0 introduces a **unified data model** that serves as the single source of truth for all entities across the platform. This package consolidates type definitions previously scattered across multiple packages and adds comprehensive support for three industry-standard frameworks:
 
 - **ITIL v4** - IT Service Management practices (Configuration, Incident, Change, Problem)
 - **TBM v5.0.1** - Technology Business Management cost transparency and allocation
@@ -470,7 +470,7 @@ packages/unified-model/
 
 ## Contributing
 
-This package is part of the ConfigBuddy v3.0 monorepo. See the main [CLAUDE.md](../../CLAUDE.md) for development guidelines.
+This package is part of the HappyCMDB v3.0 monorepo. See the main [CLAUDE.md](../../CLAUDE.md) for development guidelines.
 
 ## License
 

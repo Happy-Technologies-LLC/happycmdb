@@ -1,10 +1,10 @@
 # Migrating to v3.0
 
-Complete guide for upgrading ConfigBuddy from v2.0 to v3.0.
+Complete guide for upgrading HappyCMDB from v2.0 to v3.0.
 
 ## Overview
 
-ConfigBuddy v3.0 introduces significant new capabilities while maintaining backward compatibility for most features. This guide walks you through the upgrade process step-by-step.
+HappyCMDB v3.0 introduces significant new capabilities while maintaining backward compatibility for most features. This guide walks you through the upgrade process step-by-step.
 
 **Estimated Migration Time**: 2-4 hours (depending on data volume)
 
@@ -182,8 +182,8 @@ Before starting the migration, complete these prerequisites:
 ./infrastructure/scripts/backup-postgres.sh
 
 # Verify backups exist
-ls -lh /var/backups/configbuddy/neo4j/
-ls -lh /var/backups/configbuddy/postgres/
+ls -lh /var/backups/happycmdb/neo4j/
+ls -lh /var/backups/happycmdb/postgres/
 ```
 
 ### 2. Document Current Configuration
@@ -232,7 +232,7 @@ docker info | grep -E '(CPUs|Total Memory)'
 
 ```bash
 # Stop all running containers
-cd /path/to/configbuddy
+cd /path/to/happycmdb
 docker-compose -f infrastructure/docker/docker-compose.yml down
 
 # Verify all containers stopped
@@ -497,7 +497,7 @@ open http://localhost:3002
 # Complete setup wizard:
 # 1. Create admin account
 # 2. Add PostgreSQL database:
-#    - Name: ConfigBuddy CMDB
+#    - Name: HappyCMDB
 #    - Host: postgres
 #    - Port: 5432
 #    - Database: cmdb
@@ -641,8 +641,8 @@ cp .env.v2.0.backup .env
 git checkout v2.0-stable  # or your v2.0 branch
 
 # 4. Restore databases from backup
-./infrastructure/scripts/restore-postgres.sh --file /var/backups/configbuddy/postgres/latest.sql.gz
-./infrastructure/scripts/restore-neo4j.sh --file /var/backups/configbuddy/neo4j/latest.dump.gz
+./infrastructure/scripts/restore-postgres.sh --file /var/backups/happycmdb/postgres/latest.sql.gz
+./infrastructure/scripts/restore-neo4j.sh --file /var/backups/happycmdb/neo4j/latest.dump.gz
 
 # 5. Start v2.0 services
 docker-compose up -d
@@ -832,8 +832,8 @@ If you encounter issues during migration:
    - [API Reference](/api/overview.md)
 
 3. **Community Support**:
-   - GitHub Issues: https://github.com/configbuddy/configbuddy/issues
-   - Discussions: https://github.com/configbuddy/configbuddy/discussions
+   - GitHub Issues: https://github.com/happycmdb/happycmdb/issues
+   - Discussions: https://github.com/happycmdb/happycmdb/discussions
 
 4. **Emergency Rollback**: Follow [Rollback Procedure](#rollback-procedure)
 
@@ -924,4 +924,4 @@ On-premises: No additional cost (uses existing infrastructure).
 
 **Migration Guide Version**: 1.0
 **Last Updated**: November 2025
-**Applies To**: ConfigBuddy v2.0 → v3.0
+**Applies To**: HappyCMDB v2.0 → v3.0

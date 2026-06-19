@@ -1,8 +1,8 @@
-# Secret Rotation Guide - ConfigBuddy CMDB v2.0
+# Secret Rotation Guide - HappyCMDB v2.0
 
 ## Overview
 
-This document provides procedures for rotating secrets and credentials in the ConfigBuddy CMDB platform. Secret rotation should be performed:
+This document provides procedures for rotating secrets and credentials in the HappyCMDB platform. Secret rotation should be performed:
 
 - **Immediately** if secrets were exposed (committed to Git, logged, etc.)
 - **Regularly** as part of security best practices (quarterly recommended)
@@ -412,5 +412,5 @@ Consider implementing automated secret rotation:
 For assistance with secret rotation:
 
 - **Documentation**: http://localhost:8080/operations/troubleshooting
-- **Security Team**: security@configbuddy.local
+- **Security Team**: security@happycmdb.local
 - **Emergency**: Follow incident response procedures

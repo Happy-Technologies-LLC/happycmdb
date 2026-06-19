@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: metabase
-  namespace: configbuddy-cmdb
+  namespace: happycmdb-cmdb
   labels:
     app: metabase
     component: analytics
@@ -31,7 +31,7 @@ spec:
             - name: MB_DB_TYPE
               value: "postgres"
             - name: MB_DB_HOST
-              value: "postgres-primary.configbuddy-cmdb.svc.cluster.local"
+              value: "postgres-primary.happycmdb-cmdb.svc.cluster.local"
             - name: MB_DB_PORT
               value: "5432"
             - name: MB_DB_DBNAME
@@ -54,11 +54,11 @@ spec:
               value: "false"
             - name: JAVA_OPTS
               value: "-Xmx2g -XX:+UseG1GC"
-            # ConfigBuddy v3.0 Integration
+            # HappyCMDB v3.0 Integration
             - name: MB_SITE_NAME
-              value: "ConfigBuddy Analytics"
+              value: "HappyCMDB Analytics"
             - name: MB_SITE_URL
-              value: "http://metabase.configbuddy-cmdb.svc.cluster.local:3000"
+              value: "http://metabase.happycmdb-cmdb.svc.cluster.local:3000"
           resources:
             requests:
               cpu: "500m"
@@ -93,7 +93,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: metabase
-  namespace: configbuddy-cmdb
+  namespace: happycmdb-cmdb
   labels:
     app: metabase
 spec:
@@ -110,7 +110,7 @@ apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: metabase
-  namespace: configbuddy-cmdb
+  namespace: happycmdb-cmdb
   labels:
     app: metabase
   annotations:
@@ -123,10 +123,10 @@ metadata:
 spec:
   tls:
     - hosts:
-        - metabase.configbuddy.io
+        - metabase.happycmdb.io
       secretName: metabase-tls
   rules:
-    - host: metabase.configbuddy.io
+    - host: metabase.happycmdb.io
       http:
         paths:
           - path: /

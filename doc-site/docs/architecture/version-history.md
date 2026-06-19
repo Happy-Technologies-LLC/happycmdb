@@ -1,8 +1,8 @@
-# ConfigBuddy Version History
+# HappyCMDB Version History
 
 ## Overview
 
-ConfigBuddy has evolved significantly from v1.0 to v2.0+, transitioning from a basic CMDB with discovery workers to an enterprise integration platform with advanced features like connector framework, unified credentials, and multi-resource support.
+HappyCMDB has evolved significantly from v1.0 to v2.0+, transitioning from a basic CMDB with discovery workers to an enterprise integration platform with advanced features like connector framework, unified credentials, and multi-resource support.
 
 ## Version 1.0 - Core CMDB (Initial Release)
 
@@ -220,16 +220,16 @@ Self-hosted catalog with browse, install, update functionality:
 **Workflow**:
 ```bash
 # Browse catalog
-configbuddy connector list
+happycmdb connector list
 
 # Install connector
-configbuddy connector install servicenow
+happycmdb connector install servicenow
 
 # Check for updates
-configbuddy connector outdated
+happycmdb connector outdated
 
 # Update connector
-configbuddy connector update servicenow
+happycmdb connector update servicenow
 ```
 
 #### 6. Identity Resolution Engine

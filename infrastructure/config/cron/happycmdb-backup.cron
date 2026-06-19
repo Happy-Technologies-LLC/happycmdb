@@ -1,17 +1,17 @@
-# ConfigBuddy Database Backup Cron Jobs
+# HappyCMDB Database Backup Cron Jobs
 #
 # Install this crontab file:
-#   sudo crontab -u root /path/to/configbuddy-backup.cron
+#   sudo crontab -u root /path/to/happycmdb-backup.cron
 #
 # Or append to existing crontab:
-#   cat /path/to/configbuddy-backup.cron | sudo crontab -u root -
+#   cat /path/to/happycmdb-backup.cron | sudo crontab -u root -
 #
 # View installed crontab:
 #   sudo crontab -u root -l
 
 # Set environment variables for backup scripts
-BACKUP_DIR=/var/backups/configbuddy
-BACKUP_LOG_DIR=/var/log/configbuddy/backups
+BACKUP_DIR=/var/backups/happycmdb
+BACKUP_LOG_DIR=/var/log/happycmdb/backups
 BACKUP_RETENTION_DAILY=7
 BACKUP_RETENTION_WEEKLY=4
 BACKUP_RETENTION_MONTHLY=12
@@ -32,7 +32,7 @@ NEO4J_USERNAME=neo4j
 NEO4J_PASSWORD=changeme
 
 # Path to backup scripts
-SCRIPT_DIR=/path/to/configbuddy/infrastructure/scripts
+SCRIPT_DIR=/path/to/happycmdb/infrastructure/scripts
 
 # ========================================
 # BACKUP SCHEDULES

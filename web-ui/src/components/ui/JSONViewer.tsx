@@ -21,8 +21,8 @@ export const JSONViewer: React.FC<JSONViewerProps> = ({
 }) => {
   // Custom theme matching our dark UI
   const theme = {
-    scheme: 'configbuddy',
-    author: 'ConfigBuddy',
+    scheme: 'happycmdb',
+    author: 'HappyCMDB',
     base00: 'transparent', // background
     base01: '#2a2a2a', // lighter background
     base02: '#3a3a3a', // selection background

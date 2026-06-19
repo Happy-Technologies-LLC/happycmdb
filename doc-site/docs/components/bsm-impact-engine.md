@@ -709,7 +709,7 @@ console.log(`Frameworks: ${weight.frameworks.join(', ')}`);
 console.log(`Penalty Risk: $${weight.penaltyRisk.toLocaleString()}`);
 ```
 
-## Integration with ConfigBuddy
+## Integration with HappyCMDB
 
 ### ITIL Service Manager Integration
 
@@ -1386,6 +1386,6 @@ const updatedService = await updateBusinessService(businessService.id, {
 ---
 
 **Last Updated**: 2025-11-06
-**Maintainer**: ConfigBuddy Team
+**Maintainer**: HappyCMDB Team
 **Package Version**: 3.0.0
 **Status**: Production-Ready

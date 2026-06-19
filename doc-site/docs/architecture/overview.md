@@ -2,7 +2,7 @@
 
 ## Introduction
 
-ConfigBuddy is an open-source, enterprise-grade Configuration Management Database (CMDB) platform built with Node.js, TypeScript, and Neo4j. It provides comprehensive infrastructure discovery, relationship mapping, and change management across multi-cloud and on-premise environments.
+HappyCMDB is an open-source, enterprise-grade Configuration Management Database (CMDB) platform built with Node.js, TypeScript, and Neo4j. It provides comprehensive infrastructure discovery, relationship mapping, and change management across multi-cloud and on-premise environments.
 
 ## System Architecture
 

@@ -6,7 +6,7 @@
   "name": "Microsoft Defender for Endpoint",
   "version": "1.0.0",
   "description": "Integration with Microsoft Defender for Endpoint for security monitoring, threat detection, and vulnerability management",
-  "author": "ConfigBuddy",
+  "author": "HappyCMDB",
   "verified": true,
   "capabilities": {
     "extraction": true,

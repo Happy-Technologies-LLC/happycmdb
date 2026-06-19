@@ -1,11 +1,11 @@
 ---
 title: Multi-Stakeholder Dashboards
-description: Executive, CIO, ITSM, FinOps, and Business Service dashboards for ConfigBuddy v3.0
+description: Executive, CIO, ITSM, FinOps, and Business Service dashboards for HappyCMDB v3.0
 ---
 
 # Multi-Stakeholder Dashboards
 
-ConfigBuddy v3.0 provides five specialized dashboards designed for different organizational personas, each tailored to specific decision-making needs and operational workflows. These dashboards integrate data from ITIL Service Management, TBM Cost Engine, and BSM Impact Engine to provide comprehensive, role-specific insights.
+HappyCMDB v3.0 provides five specialized dashboards designed for different organizational personas, each tailored to specific decision-making needs and operational workflows. These dashboards integrate data from ITIL Service Management, TBM Cost Engine, and BSM Impact Engine to provide comprehensive, role-specific insights.
 
 ## Overview
 
@@ -1413,7 +1413,7 @@ The ITSM dashboard uses WebSocket for real-time updates:
 
 ```typescript
 // Client-side subscription
-const ws = new WebSocket('wss://configbuddy.example.com/ws');
+const ws = new WebSocket('wss://happycmdb.example.com/ws');
 
 ws.on('incident.created', (incident) => {
   // Add new incident to table
@@ -1507,7 +1507,7 @@ All Capabilities > Customer Experience > E-commerce Platform > API Gateway
 
 **Report Delivery**:
 - Sent via email with attachment
-- Subject: "[ConfigBuddy] Executive Dashboard - Week of Nov 4, 2025"
+- Subject: "[HappyCMDB] Executive Dashboard - Week of Nov 4, 2025"
 - Body: Brief summary with key highlights
 
 ### 5. Alerts & Notifications
@@ -1741,7 +1741,7 @@ console.error(...);
 # - Export specific sections only
 
 # Check popup blocker:
-# - Allow popups from configbuddy.example.com
+# - Allow popups from happycmdb.example.com
 # - Or right-click export button → "Save link as"
 ```
 
@@ -1757,7 +1757,7 @@ console.error(...);
 **Solution**:
 ```typescript
 // Check WebSocket connection in browser console
-const ws = new WebSocket('wss://configbuddy.example.com/ws');
+const ws = new WebSocket('wss://happycmdb.example.com/ws');
 ws.onopen = () => console.log('✅ WebSocket connected');
 ws.onerror = (err) => console.error('❌ WebSocket error:', err);
 
@@ -1851,4 +1851,4 @@ ws.onerror = (err) => console.error('❌ WebSocket error:', err);
 
 **Last Updated**: November 6, 2025
 **Version**: 3.0
-**Maintainer**: ConfigBuddy Team
+**Maintainer**: HappyCMDB Team

@@ -1,10 +1,10 @@
-# ConfigBuddy CMDB - Grafana Dashboards
+# HappyCMDB - Grafana Dashboards
 
-This directory contains Grafana dashboards and provisioning configurations for visualizing ConfigBuddy's CMDB data mart (PostgreSQL/TimescaleDB).
+This directory contains Grafana dashboards and provisioning configurations for visualizing HappyCMDB's CMDB data mart (PostgreSQL/TimescaleDB).
 
 ## Overview
 
-ConfigBuddy provides **4 comprehensive dashboards** that query the TimescaleDB data mart:
+HappyCMDB provides **4 comprehensive dashboards** that query the TimescaleDB data mart:
 
 1. **CMDB Overview Dashboard** - High-level inventory and metrics
 2. **CMDB Discovery Operations** - Connector execution and performance
@@ -21,7 +21,7 @@ All dashboards use **PostgreSQL queries** against the `cmdb` schema tables (dime
 
 ```bash
 # From project root
-cd /Users/nczitzer/WebstormProjects/configbuddy
+cd /Users/nczitzer/WebstormProjects/happycmdb
 
 # Start all services (including Grafana)
 docker-compose -f infrastructure/docker/docker-compose.yml up -d grafana
@@ -40,7 +40,7 @@ docker-compose -f infrastructure/docker/docker-compose.yml up -d grafana
 
 Dashboards are **automatically provisioned** on startup. No manual import needed!
 
-Navigate to: **Home → Dashboards → ConfigBuddy CMDB** folder
+Navigate to: **Home → Dashboards → HappyCMDB** folder
 
 ---
 
@@ -162,7 +162,7 @@ PostgreSQL/TimescaleDB (Data Mart)
     Grafana Dashboards
 ```
 
-ConfigBuddy uses a **dual-database architecture**:
+HappyCMDB uses a **dual-database architecture**:
 - **Neo4j**: Source of truth for CI relationships (graph queries)
 - **PostgreSQL/TimescaleDB**: Optimized data mart for analytics (SQL queries)
 
@@ -252,7 +252,7 @@ Datasource is **auto-configured** via `/provisioning/datasources/postgres.yml`:
 
 ```yaml
 datasources:
-  - name: ConfigBuddy CMDB
+  - name: HappyCMDB
     type: postgres
     url: postgres:5432
     database: cmdb
@@ -295,7 +295,7 @@ ORDER BY value DESC;
 
 **Panel Type**: Bar Chart / Pie Chart / Table
 **Format**: Table
-**Datasource**: ConfigBuddy CMDB
+**Datasource**: HappyCMDB
 
 ### Creating New Dashboards
 
@@ -538,7 +538,7 @@ docker exec cmdb-grafana grafana-cli admin stats
 - **Grafana**: https://grafana.com/docs/grafana/latest/
 - **PostgreSQL Datasource**: https://grafana.com/docs/grafana/latest/datasources/postgres/
 - **TimescaleDB**: https://docs.timescale.com/
-- **ConfigBuddy Docs**: http://localhost:8080 (when services are running)
+- **HappyCMDB Docs**: http://localhost:8080 (when services are running)
 
 ### Query Examples
 
@@ -550,7 +550,7 @@ See `/packages/database/src/postgres/migrations/001_complete_schema.sql` for:
 
 ### Support
 
-- **GitHub Issues**: https://github.com/your-org/configbuddy/issues
+- **GitHub Issues**: https://github.com/your-org/happycmdb/issues
 - **Documentation**: http://localhost:8080/operations/monitoring
 
 ---
@@ -569,5 +569,5 @@ See `/packages/database/src/postgres/migrations/001_complete_schema.sql` for:
 ---
 
 **Last Updated**: 2025-10-18
-**ConfigBuddy Version**: v2.0
+**HappyCMDB Version**: v2.0
 **Grafana Version**: 10.2.0

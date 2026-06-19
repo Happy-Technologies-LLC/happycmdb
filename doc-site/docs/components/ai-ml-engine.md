@@ -2,14 +2,14 @@
 
 ## Overview
 
-The ConfigBuddy AI/ML Engine provides intelligent automation for CMDB operations through three integrated machine learning engines. These engines analyze CI behavior patterns, detect configuration drift, and predict change impacts to enable proactive IT operations management.
+The HappyCMDB AI/ML Engine provides intelligent automation for CMDB operations through three integrated machine learning engines. These engines analyze CI behavior patterns, detect configuration drift, and predict change impacts to enable proactive IT operations management.
 
 **Key Capabilities**:
 - **Anomaly Detection** - Statistical analysis of CI change patterns, relationships, and configurations
 - **Configuration Drift Detection** - Baseline tracking and drift analysis with field-level granularity
 - **Impact Prediction** - Dependency graph analysis for change risk assessment and blast radius calculation
 
-The AI/ML Engine integrates with ConfigBuddy's event streaming infrastructure (Kafka) to provide real-time analysis and automated remediation workflows.
+The AI/ML Engine integrates with HappyCMDB's event streaming infrastructure (Kafka) to provide real-time analysis and automated remediation workflows.
 
 ## Architecture
 
@@ -365,7 +365,7 @@ severity_weights = {
 
 ### Auto-Baseline Workflow
 
-ConfigBuddy automatically creates baselines for newly discovered CIs:
+HappyCMDB automatically creates baselines for newly discovered CIs:
 
 ```typescript
 // Triggered on ci.discovered event
@@ -834,7 +834,7 @@ CREATE INDEX idx_criticality_calculated ON ci_criticality_scores(calculated_at);
 
 ## Event Streaming Integration
 
-The AI/ML Engine integrates with ConfigBuddy's Kafka event infrastructure for real-time analysis.
+The AI/ML Engine integrates with HappyCMDB's Kafka event infrastructure for real-time analysis.
 
 ### Event Consumers
 
@@ -1314,7 +1314,7 @@ CREATE INDEX idx_criticality_score ON ci_criticality_scores(criticality_score DE
 ## Related Resources
 
 ### Architecture Documentation
-- [System Overview](/architecture/system-overview) - ConfigBuddy architecture
+- [System Overview](/architecture/system-overview) - HappyCMDB architecture
 - [Event Streaming](/architecture/event-streaming) - Kafka integration (future)
 - [Database Design](/architecture/database/overview) - Neo4j and PostgreSQL
 
@@ -1344,5 +1344,5 @@ CREATE INDEX idx_criticality_score ON ci_criticality_scores(criticality_score DE
 ---
 
 **Last Updated**: 2025-11-06
-**Maintainer**: ConfigBuddy Team
+**Maintainer**: HappyCMDB Team
 **Package Version**: @cmdb/ai-ml-engine v2.0.0

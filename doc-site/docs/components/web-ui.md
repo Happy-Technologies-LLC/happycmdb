@@ -5,7 +5,7 @@ description: React dashboard setup, components, and development guide
 
 # Web UI
 
-React dashboard for ConfigBuddy CMDB platform.
+React dashboard for HappyCMDB platform.
 
 ## Getting Started
 
@@ -13,7 +13,7 @@ React dashboard for ConfigBuddy CMDB platform.
 
 ```bash
 # Navigate to web-ui directory
-cd /path/to/configbuddy/web-ui
+cd /path/to/happycmdb/web-ui
 
 # Install dependencies
 npm install

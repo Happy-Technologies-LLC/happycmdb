@@ -1,4 +1,4 @@
-# ConfigBuddy Web UI - Navigation Assessment Report
+# HappyCMDB Web UI - Navigation Assessment Report
 
 **Date:** October 3, 2025
 **Author:** Claude Code Analysis
@@ -8,7 +8,7 @@
 
 ## Executive Summary
 
-The ConfigBuddy web UI has **strong foundational pages** but suffers from **poor discoverability**. Three fully-built, critical pages (Analytics, Jobs, Settings) are completely hidden from navigation. Additionally, there's redundancy between CIList and Inventory pages that creates user confusion.
+The HappyCMDB web UI has **strong foundational pages** but suffers from **poor discoverability**. Three fully-built, critical pages (Analytics, Jobs, Settings) are completely hidden from navigation. Additionally, there's redundancy between CIList and Inventory pages that creates user confusion.
 
 **Key Findings:**
 - ✅ 8 pages exist in `/src/pages/`

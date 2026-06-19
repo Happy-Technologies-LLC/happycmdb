@@ -21,7 +21,7 @@
           "w": 12,
           "h": 12
         },
-        "datasource": "ConfigBuddy CMDB",
+        "datasource": "HappyCMDB",
         "targets": [
           {
             "rawSql": "SELECT relationship_type AS metric, COUNT(*) AS value FROM cmdb.fact_ci_relationships WHERE is_active = TRUE GROUP BY relationship_type ORDER BY value DESC;",
@@ -56,7 +56,7 @@
           "w": 6,
           "h": 6
         },
-        "datasource": "ConfigBuddy CMDB",
+        "datasource": "HappyCMDB",
         "targets": [
           {
             "rawSql": "SELECT COUNT(*) AS \"Active Relationships\" FROM cmdb.fact_ci_relationships WHERE is_active = TRUE;",
@@ -97,7 +97,7 @@
           "w": 6,
           "h": 6
         },
-        "datasource": "ConfigBuddy CMDB",
+        "datasource": "HappyCMDB",
         "targets": [
           {
             "rawSql": "SELECT COUNT(*) AS \"Orphaned CIs\" FROM cmdb.dim_ci c WHERE c.is_current = TRUE AND NOT EXISTS (SELECT 1 FROM cmdb.fact_ci_relationships r WHERE (r.from_ci_key = c.ci_key OR r.to_ci_key = c.ci_key) AND r.is_active = TRUE);",
@@ -146,7 +146,7 @@
           "w": 6,
           "h": 6
         },
-        "datasource": "ConfigBuddy CMDB",
+        "datasource": "HappyCMDB",
         "targets": [
           {
             "rawSql": "SELECT ROUND(AVG(connection_count), 2) AS \"Avg Connections\" FROM (SELECT c.ci_key, COUNT(*) AS connection_count FROM cmdb.dim_ci c INNER JOIN cmdb.fact_ci_relationships r ON (r.from_ci_key = c.ci_key OR r.to_ci_key = c.ci_key) WHERE c.is_current = TRUE AND r.is_active = TRUE GROUP BY c.ci_key) AS ci_connections;",
@@ -188,7 +188,7 @@
           "w": 6,
           "h": 6
         },
-        "datasource": "ConfigBuddy CMDB",
+        "datasource": "HappyCMDB",
         "targets": [
           {
             "rawSql": "SELECT MAX(connection_count) AS \"Max Connections\" FROM (SELECT c.ci_key, COUNT(*) AS connection_count FROM cmdb.dim_ci c INNER JOIN cmdb.fact_ci_relationships r ON (r.from_ci_key = c.ci_key OR r.to_ci_key = c.ci_key) WHERE c.is_current = TRUE AND r.is_active = TRUE GROUP BY c.ci_key) AS ci_connections;",
@@ -237,7 +237,7 @@
           "w": 12,
           "h": 12
         },
-        "datasource": "ConfigBuddy CMDB",
+        "datasource": "HappyCMDB",
         "targets": [
           {
             "rawSql": "SELECT c.ci_name AS \"CI Name\", c.ci_type AS \"Type\", c.environment AS \"Environment\", (SELECT COUNT(*) FROM cmdb.fact_ci_relationships r WHERE r.to_ci_key = c.ci_key AND r.is_active = TRUE) AS \"Incoming Dependencies\", (SELECT COUNT(*) FROM cmdb.fact_ci_relationships r WHERE r.from_ci_key = c.ci_key AND r.is_active = TRUE) AS \"Outgoing Dependencies\", (SELECT COUNT(*) FROM cmdb.fact_ci_relationships r WHERE (r.from_ci_key = c.ci_key OR r.to_ci_key = c.ci_key) AND r.is_active = TRUE) AS \"Total Connections\" FROM cmdb.dim_ci c WHERE c.is_current = TRUE AND EXISTS (SELECT 1 FROM cmdb.fact_ci_relationships r WHERE (r.from_ci_key = c.ci_key OR r.to_ci_key = c.ci_key) AND r.is_active = TRUE) ORDER BY \"Total Connections\" DESC LIMIT 20;",
@@ -313,7 +313,7 @@
           "w": 12,
           "h": 12
         },
-        "datasource": "ConfigBuddy CMDB",
+        "datasource": "HappyCMDB",
         "targets": [
           {
             "rawSql": "SELECT time_bucket('1 day', discovered_at) AS time, COUNT(*) AS \"New Relationships\" FROM cmdb.fact_ci_relationships WHERE discovered_at >= NOW() - INTERVAL '30 days' GROUP BY time_bucket('1 day', discovered_at) ORDER BY time;",
@@ -393,7 +393,7 @@
           "w": 12,
           "h": 12
         },
-        "datasource": "ConfigBuddy CMDB",
+        "datasource": "HappyCMDB",
         "targets": [
           {
             "rawSql": "SELECT from_ci.ci_type AS \"From Type\", r.relationship_type AS \"Relationship\", to_ci.ci_type AS \"To Type\", COUNT(*) AS \"Count\" FROM cmdb.fact_ci_relationships r INNER JOIN cmdb.dim_ci from_ci ON r.from_ci_key = from_ci.ci_key INNER JOIN cmdb.dim_ci to_ci ON r.to_ci_key = to_ci.ci_key WHERE r.is_active = TRUE AND from_ci.is_current = TRUE AND to_ci.is_current = TRUE GROUP BY from_ci.ci_type, r.relationship_type, to_ci.ci_type ORDER BY \"Count\" DESC LIMIT 50;",
@@ -449,7 +449,7 @@
           "w": 12,
           "h": 12
         },
-        "datasource": "ConfigBuddy CMDB",
+        "datasource": "HappyCMDB",
         "targets": [
           {
             "rawSql": "SELECT c.ci_type AS metric, COUNT(*) AS value FROM cmdb.dim_ci c WHERE c.is_current = TRUE AND NOT EXISTS (SELECT 1 FROM cmdb.fact_ci_relationships r WHERE (r.from_ci_key = c.ci_key OR r.to_ci_key = c.ci_key) AND r.is_active = TRUE) GROUP BY c.ci_type ORDER BY value DESC;",
@@ -500,7 +500,7 @@
           "w": 12,
           "h": 10
         },
-        "datasource": "ConfigBuddy CMDB",
+        "datasource": "HappyCMDB",
         "targets": [
           {
             "rawSql": "SELECT relationship_strength AS value FROM cmdb.fact_ci_relationships WHERE is_active = TRUE AND relationship_strength IS NOT NULL;",
@@ -533,7 +533,7 @@
           "w": 12,
           "h": 10
         },
-        "datasource": "ConfigBuddy CMDB",
+        "datasource": "HappyCMDB",
         "targets": [
           {
             "rawSql": "SELECT from_ci.ci_name AS \"From CI\", r.relationship_type AS \"Type\", to_ci.ci_name AS \"To CI\", r.last_verified_at AS \"Last Verified\", r.relationship_strength AS \"Strength\" FROM cmdb.fact_ci_relationships r INNER JOIN cmdb.dim_ci from_ci ON r.from_ci_key = from_ci.ci_key INNER JOIN cmdb.dim_ci to_ci ON r.to_ci_key = to_ci.ci_key WHERE r.is_active = TRUE AND r.last_verified_at >= NOW() - INTERVAL '7 days' AND from_ci.is_current = TRUE AND to_ci.is_current = TRUE ORDER BY r.last_verified_at DESC LIMIT 50;",

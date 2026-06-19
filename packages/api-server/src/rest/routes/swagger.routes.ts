@@ -27,7 +27,7 @@ try {
   swaggerDocument = {
     openapi: '3.0.0',
     info: {
-      title: 'ConfigBuddy CMDB API',
+      title: 'HappyCMDB API',
       version: '2.0.0',
       description: 'API documentation is currently unavailable. Please check server logs.',
     },
@@ -56,7 +56,7 @@ const swaggerOptions: swaggerUi.SwaggerUiOptions = {
       border-radius: 4px;
     }
   `,
-  customSiteTitle: 'ConfigBuddy API Documentation',
+  customSiteTitle: 'HappyCMDB API Documentation',
   customfavIcon: '/favicon.ico',
   swaggerOptions: {
     persistAuthorization: true,

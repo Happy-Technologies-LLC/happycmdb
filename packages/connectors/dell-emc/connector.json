@@ -4,7 +4,7 @@
   "name": "Dell EMC Storage",
   "version": "1.0.0",
   "description": "Dell EMC Storage connector for Unity, PowerStore, and PowerMax storage arrays. Discovers storage arrays, pools, volumes, and connected hosts.",
-  "author": "ConfigBuddy",
+  "author": "HappyCMDB",
   "category": "connector",
   "connector_category": "storage",
   "icon": "dell-emc",
@@ -666,9 +666,9 @@
     "created_at": "2025-01-15T00:00:00Z",
     "updated_at": "2025-01-15T00:00:00Z",
     "license": "MIT",
-    "homepage": "https://github.com/configbuddy/connectors/tree/main/dell-emc",
-    "repository": "https://github.com/configbuddy/connectors",
-    "support_url": "https://github.com/configbuddy/connectors/issues",
+    "homepage": "https://github.com/happycmdb/connectors/tree/main/dell-emc",
+    "repository": "https://github.com/happycmdb/connectors",
+    "support_url": "https://github.com/happycmdb/connectors/issues",
     "minimum_platform_version": "1.0.0"
   }
 }

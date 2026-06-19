@@ -1,6 +1,6 @@
 ---
 name: Bug Report
-about: Report a bug in ConfigBuddy
+about: Report a bug in HappyCMDB
 title: '[Bug] '
 labels: bug
 assignees: ''
@@ -22,7 +22,7 @@ What you expected to happen.
 What actually happened. Include error messages or logs if applicable.
 
 **Environment**
-- ConfigBuddy version:
+- HappyCMDB version:
 - Node.js version:
 - OS:
 - Deployment method: [Docker / manual / Kubernetes]

@@ -1,10 +1,10 @@
 # Event Streaming (Kafka)
 
-Event streaming infrastructure powering ConfigBuddy's real-time, event-driven architecture using Apache Kafka. This component enables asynchronous processing, decoupled microservices, and scalable data pipelines across discovery, cost management, and impact analysis workflows.
+Event streaming infrastructure powering HappyCMDB's real-time, event-driven architecture using Apache Kafka. This component enables asynchronous processing, decoupled microservices, and scalable data pipelines across discovery, cost management, and impact analysis workflows.
 
 ## Overview
 
-ConfigBuddy v3.0 uses **Apache Kafka** as its event streaming backbone to enable:
+HappyCMDB v3.0 uses **Apache Kafka** as its event streaming backbone to enable:
 
 - **Real-time event processing** - Process CI changes, cost allocations, and impact scores as they happen
 - **Decoupled microservices** - Services communicate via events without tight coupling
@@ -29,7 +29,7 @@ ConfigBuddy v3.0 uses **Apache Kafka** as its event streaming backbone to enable
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│                         ConfigBuddy Event Bus                            │
+│                         HappyCMDB Event Bus                            │
 │                         (Apache Kafka Cluster)                           │
 └──────────────────────────────────────────────────────────────────────────┘
          ▲                        ▲                        ▲
@@ -108,7 +108,7 @@ ConfigBuddy v3.0 uses **Apache Kafka** as its event streaming backbone to enable
 
 ## Event Topics
 
-ConfigBuddy uses **24 Kafka topics** organized by domain, each with specific configurations for retention, partitioning, and compression.
+HappyCMDB uses **24 Kafka topics** organized by domain, each with specific configurations for retention, partitioning, and compression.
 
 ### Topic Naming Convention
 
@@ -528,7 +528,7 @@ interface ImpactAnalysisCompletedEvent extends BaseEvent {
 
 ## Producer Patterns
 
-Producers publish events to Kafka topics. ConfigBuddy provides three producer implementations.
+Producers publish events to Kafka topics. HappyCMDB provides three producer implementations.
 
 ### Discovery Producer
 
@@ -669,7 +669,7 @@ await producer.disconnect();
 
 ## Consumer Patterns
 
-Consumers subscribe to topics and process events. ConfigBuddy uses **consumer groups** for parallel processing.
+Consumers subscribe to topics and process events. HappyCMDB uses **consumer groups** for parallel processing.
 
 ### Discovery Consumer
 
@@ -1151,7 +1151,7 @@ Consumer lag indicates processing bottlenecks. Set alerts:
 Idempotent producers prevent duplicate messages:
 
 ```typescript
-// Already enabled by default in ConfigBuddy producers
+// Already enabled by default in HappyCMDB producers
 const DEFAULT_PRODUCER_CONFIG: ProducerConfig = {
   idempotent: true,
   maxInFlightRequests: 5
@@ -1298,5 +1298,5 @@ kafka-configs --bootstrap-server localhost:9092 \
 ---
 
 **Last Updated**: 2025-11-06
-**Maintainer**: ConfigBuddy Team
+**Maintainer**: HappyCMDB Team
 **Package**: `@cmdb/event-streaming` v3.0.0

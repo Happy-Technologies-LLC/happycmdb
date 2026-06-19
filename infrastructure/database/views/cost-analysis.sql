@@ -1,5 +1,5 @@
 -- ============================================
--- ConfigBuddy v3.0 - Cost Analysis Views for Metabase
+-- HappyCMDB v3.0 - Cost Analysis Views for Metabase
 -- ============================================
 -- Optimized views for TBM cost allocation, unit economics, and financial reporting
 -- ============================================

@@ -1,11 +1,11 @@
 ---
 title: Daily Operations
-description: Daily operational procedures and checklists for managing ConfigBuddy
+description: Daily operational procedures and checklists for managing HappyCMDB
 ---
 
 # Daily Operations
 
-Comprehensive operational procedures for managing ConfigBuddy CMDB platform.
+Comprehensive operational procedures for managing HappyCMDB platform.
 
 ## Morning Checklist
 

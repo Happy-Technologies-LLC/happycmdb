@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Analytics Event Consumer for ConfigBuddy v3.0
+ * Analytics Event Consumer for HappyCMDB v3.0
  *
  * Consumes all events for analytics and aggregation
  */

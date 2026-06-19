@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Unified Backup Orchestration Script for ConfigBuddy
+# Unified Backup Orchestration Script for HappyCMDB
 # Backs up both PostgreSQL and Neo4j databases
 #
 
@@ -10,7 +10,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Configuration
-BACKUP_LOG_DIR="${BACKUP_LOG_DIR:-/var/log/configbuddy/backups}"
+BACKUP_LOG_DIR="${BACKUP_LOG_DIR:-/var/log/happycmdb/backups}"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 LOG_FILE="${BACKUP_LOG_DIR}/backup_${TIMESTAMP}.log"
 
@@ -45,7 +45,7 @@ send_notification() {
     if [[ "${BACKUP_NOTIFICATION_ENABLED}" == "true" ]] && [[ -n "${BACKUP_NOTIFICATION_WEBHOOK}" ]]; then
         curl -X POST "${BACKUP_NOTIFICATION_WEBHOOK}" \
             -H "Content-Type: application/json" \
-            -d "{\"service\":\"ConfigBuddy Backup System\",\"status\":\"${status}\",\"message\":\"${message}\",\"timestamp\":\"$(date -Iseconds)\"}" \
+            -d "{\"service\":\"HappyCMDB Backup System\",\"status\":\"${status}\",\"message\":\"${message}\",\"timestamp\":\"$(date -Iseconds)\"}" \
             2>/dev/null || log_error "Failed to send notification"
     fi
 }
@@ -116,7 +116,7 @@ clean_old_logs() {
 
 # Main execution
 main() {
-    log_info "===== ConfigBuddy Database Backup ====="
+    log_info "===== HappyCMDB Database Backup ====="
     log_info "Starting unified backup for PostgreSQL and Neo4j"
 
     # Create log directory

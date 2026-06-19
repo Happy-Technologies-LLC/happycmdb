@@ -353,7 +353,7 @@ export const ConnectorDetailModal: React.FC<ConnectorDetailModalProps> = ({
                     </h4>
                   </div>
                   <p className="text-sm text-green-700 dark:text-green-300">
-                    This connector has been verified by the ConfigBuddy team and meets all
+                    This connector has been verified by the HappyCMDB team and meets all
                     security and quality standards.
                   </p>
                 </div>

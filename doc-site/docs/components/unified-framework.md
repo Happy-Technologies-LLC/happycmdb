@@ -1,6 +1,6 @@
 # Unified Framework Integration
 
-ConfigBuddy v3.0 unifies **ITIL v4**, **TBM v5.0.1**, and **BSM** (Business Service Mapping) frameworks into a single, cohesive platform that provides complete 360° visibility into IT services. The Unified Framework eliminates data silos and provides enriched incident management, unified change risk assessment, and comprehensive service views that combine operational, financial, and business impact perspectives.
+HappyCMDB v3.0 unifies **ITIL v4**, **TBM v5.0.1**, and **BSM** (Business Service Mapping) frameworks into a single, cohesive platform that provides complete 360° visibility into IT services. The Unified Framework eliminates data silos and provides enriched incident management, unified change risk assessment, and comprehensive service views that combine operational, financial, and business impact perspectives.
 
 ## Overview
 
@@ -135,7 +135,7 @@ interface CompleteServiceView {
 
 ## Unified KPIs
 
-ConfigBuddy v3.0 provides **10 unified KPIs** that synthesize data from all three frameworks:
+HappyCMDB v3.0 provides **10 unified KPIs** that synthesize data from all three frameworks:
 
 ### 1. Service Health Score (0-100)
 
@@ -730,7 +730,7 @@ The Unified Framework provides **12 REST API endpoints** for programmatic access
 ### Base URL
 
 ```
-https://configbuddy.example.com/api/v1/unified
+https://happycmdb.example.com/api/v1/unified
 ```
 
 ### Authentication
@@ -755,7 +755,7 @@ Get a comprehensive 360° view of a business service.
 
 **Example Request**:
 ```bash
-curl -X GET "https://configbuddy.example.com/api/v1/unified/services/bs-payment-001/complete?useCache=true" \
+curl -X GET "https://happycmdb.example.com/api/v1/unified/services/bs-payment-001/complete?useCache=true" \
   -H "Authorization: Bearer <token>"
 ```
 
@@ -784,7 +784,7 @@ Get only the 10 unified KPIs for a service.
 
 **Example Request**:
 ```bash
-curl -X GET "https://configbuddy.example.com/api/v1/unified/services/bs-payment-001/kpis" \
+curl -X GET "https://happycmdb.example.com/api/v1/unified/services/bs-payment-001/kpis" \
   -H "Authorization: Bearer <token>"
 ```
 
@@ -823,7 +823,7 @@ Get complete dashboard data including trends, incidents, changes, and alerts.
 
 **Example Request**:
 ```bash
-curl -X GET "https://configbuddy.example.com/api/v1/unified/services/bs-payment-001/dashboard" \
+curl -X GET "https://happycmdb.example.com/api/v1/unified/services/bs-payment-001/dashboard" \
   -H "Authorization: Bearer <token>"
 ```
 
@@ -871,7 +871,7 @@ Create an incident with automatic multi-framework enrichment.
 
 **Example Request**:
 ```bash
-curl -X POST "https://configbuddy.example.com/api/v1/unified/incidents/enriched" \
+curl -X POST "https://happycmdb.example.com/api/v1/unified/incidents/enriched" \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
   -d @incident.json
@@ -923,7 +923,7 @@ Assess change risk across all three frameworks.
 
 **Example Request**:
 ```bash
-curl -X POST "https://configbuddy.example.com/api/v1/unified/changes/assess-unified" \
+curl -X POST "https://happycmdb.example.com/api/v1/unified/changes/assess-unified" \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
   -d @change-request.json
@@ -968,7 +968,7 @@ Query services with unified filters (criticality, cost, health, risk).
 
 **Example Request**:
 ```bash
-curl -X POST "https://configbuddy.example.com/api/v1/unified/services/query" \
+curl -X POST "https://happycmdb.example.com/api/v1/unified/services/query" \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
   -d @query-filters.json
@@ -1086,7 +1086,7 @@ Get top N services ranked by monthly cost.
 
 **Example Request**:
 ```bash
-curl -X GET "https://configbuddy.example.com/api/v1/unified/services/top-by-cost?limit=5" \
+curl -X GET "https://happycmdb.example.com/api/v1/unified/services/top-by-cost?limit=5" \
   -H "Authorization: Bearer <token>"
 ```
 
@@ -1103,7 +1103,7 @@ Get top N services ranked by risk score.
 
 **Example Request**:
 ```bash
-curl -X GET "https://configbuddy.example.com/api/v1/unified/services/top-by-risk?limit=5" \
+curl -X GET "https://happycmdb.example.com/api/v1/unified/services/top-by-risk?limit=5" \
   -H "Authorization: Bearer <token>"
 ```
 
@@ -1120,7 +1120,7 @@ Get top N services ranked by value score.
 
 **Example Request**:
 ```bash
-curl -X GET "https://configbuddy.example.com/api/v1/unified/services/top-by-value?limit=5" \
+curl -X GET "https://happycmdb.example.com/api/v1/unified/services/top-by-value?limit=5" \
   -H "Authorization: Bearer <token>"
 ```
 
@@ -1133,7 +1133,7 @@ The Unified Framework also provides a comprehensive GraphQL API with **12 operat
 ### GraphQL Endpoint
 
 ```
-https://configbuddy.example.com/graphql
+https://happycmdb.example.com/graphql
 ```
 
 ### Schema Overview
@@ -1942,4 +1942,4 @@ try {
 
 **Last Updated**: 2025-11-06
 **Version**: v3.0.0
-**Maintainer**: ConfigBuddy Team
+**Maintainer**: HappyCMDB Team

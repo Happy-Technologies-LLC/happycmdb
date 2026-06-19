@@ -1,7 +1,7 @@
 {
   "name": "@cmdb/itil-service-manager",
   "version": "3.0.0",
-  "description": "ITIL v4 Service Management for ConfigBuddy v3.0",
+  "description": "ITIL v4 Service Management for HappyCMDB v3.0",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
@@ -40,6 +40,6 @@
     "change-management",
     "configuration-management"
   ],
-  "author": "ConfigBuddy Team",
+  "author": "HappyCMDB Team",
   "license": "Apache-2.0"
 }

@@ -8,7 +8,7 @@ The TBM Cost Engine provides Technology Business Management capabilities for cos
 
 ## Overview
 
-ConfigBuddy v3.0 implements TBM v5.0.1 taxonomy with automated cost allocation, cloud cost integration, and comprehensive financial reporting.
+HappyCMDB v3.0 implements TBM v5.0.1 taxonomy with automated cost allocation, cloud cost integration, and comprehensive financial reporting.
 
 ### Key Features
 

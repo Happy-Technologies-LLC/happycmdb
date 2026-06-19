@@ -3,7 +3,7 @@
 
 /**
  * TBM Cost Engine
- * Technology Business Management v5.0.1 implementation for ConfigBuddy v3.0
+ * Technology Business Management v5.0.1 implementation for HappyCMDB v3.0
  */
 
 // Export enums (values)

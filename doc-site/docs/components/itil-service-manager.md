@@ -8,7 +8,7 @@ The ITIL Service Manager provides comprehensive IT Service Management capabiliti
 
 ## Overview
 
-ConfigBuddy v3.0 implements ITIL v4 service management with automated incident priority calculation, change risk assessment, configuration management, and baseline tracking.
+HappyCMDB v3.0 implements ITIL v4 service management with automated incident priority calculation, change risk assessment, configuration management, and baseline tracking.
 
 ### Key Features
 
@@ -211,7 +211,7 @@ const history = await cmService.getConfigurationHistory('ci-001');
 
 ### Drift Detection
 
-ConfigBuddy automatically detects configuration drift:
+HappyCMDB automatically detects configuration drift:
 
 ```typescript
 import { getBaselineService } from '@cmdb/itil-service-manager';

@@ -1,7 +1,7 @@
 {
   "name": "@cmdb/load-testing",
   "version": "2.0.0",
-  "description": "ConfigBuddy load testing and performance benchmarking suite",
+  "description": "HappyCMDB load testing and performance benchmarking suite",
   "private": true,
   "scripts": {
     "test": "./run-loadtest.sh all",
@@ -22,6 +22,6 @@
     "benchmarking",
     "cmdb"
   ],
-  "author": "ConfigBuddy Team",
+  "author": "HappyCMDB Team",
   "license": "Apache-2.0"
 }

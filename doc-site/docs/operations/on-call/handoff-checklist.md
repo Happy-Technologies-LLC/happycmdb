@@ -270,7 +270,7 @@ Use this template for handoff notes:
 
 ```
 ═══════════════════════════════════════════════════════════
-CONFIGBUDDY ON-CALL HANDOFF
+HAPPYCMDB ON-CALL HANDOFF
 ═══════════════════════════════════════════════════════════
 Week of: [Start Date] to [End Date]
 From: [Outgoing On-Call Name]

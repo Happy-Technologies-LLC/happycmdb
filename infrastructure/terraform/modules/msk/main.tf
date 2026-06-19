@@ -1,5 +1,5 @@
 resource "aws_security_group" "msk" {
-  name_prefix = "configbuddy-msk-${var.environment}-"
+  name_prefix = "happycmdb-msk-${var.environment}-"
   description = "Security group for MSK Kafka"
   vpc_id      = var.vpc_id
 
@@ -36,13 +36,13 @@ resource "aws_security_group" "msk" {
   }
 
   tags = {
-    Name        = "configbuddy-msk-sg-${var.environment}"
+    Name        = "happycmdb-msk-sg-${var.environment}"
     Environment = var.environment
   }
 }
 
 resource "aws_cloudwatch_log_group" "msk" {
-  name              = "/aws/msk/configbuddy-${var.environment}"
+  name              = "/aws/msk/happycmdb-${var.environment}"
   retention_in_days = 7
 
   tags = {
@@ -51,7 +51,7 @@ resource "aws_cloudwatch_log_group" "msk" {
 }
 
 resource "aws_msk_cluster" "main" {
-  cluster_name           = "configbuddy-kafka-${var.environment}"
+  cluster_name           = "happycmdb-kafka-${var.environment}"
   kafka_version          = var.kafka_version
   number_of_broker_nodes = var.number_of_brokers
 
@@ -100,13 +100,13 @@ resource "aws_msk_cluster" "main" {
   }
 
   tags = {
-    Name        = "configbuddy-kafka-${var.environment}"
+    Name        = "happycmdb-kafka-${var.environment}"
     Environment = var.environment
   }
 }
 
 resource "aws_msk_configuration" "main" {
-  name              = "configbuddy-kafka-config-${var.environment}"
+  name              = "happycmdb-kafka-config-${var.environment}"
   kafka_versions    = [var.kafka_version]
   server_properties = <<PROPERTIES
 auto.create.topics.enable=false
@@ -127,13 +127,13 @@ resource "aws_kms_key" "msk" {
   deletion_window_in_days = 10
 
   tags = {
-    Name        = "configbuddy-msk-kms-${var.environment}"
+    Name        = "happycmdb-msk-kms-${var.environment}"
     Environment = var.environment
   }
 }
 
 resource "aws_kms_alias" "msk" {
-  name          = "alias/configbuddy-msk-${var.environment}"
+  name          = "alias/happycmdb-msk-${var.environment}"
   target_key_id = aws_kms_key.msk.key_id
 }
 

@@ -5,7 +5,7 @@ description: Protocol-based credential storage with affinity matching and creden
 
 # Unified Credential Management
 
-ConfigBuddy's unified credential system provides protocol-based authentication with affinity matching, credential sets, and intelligent credential selection. Introduced in v2.0, it replaces provider-specific credentials with standardized authentication protocols.
+HappyCMDB's unified credential system provides protocol-based authentication with affinity matching, credential sets, and intelligent credential selection. Introduced in v2.0, it replaces provider-specific credentials with standardized authentication protocols.
 
 ## Overview
 
@@ -706,7 +706,7 @@ ORDER BY al.performed_at DESC;
 1. **Schedule**: Rotate credentials every 90 days
 2. **Process**:
    - Create new credentials in provider (AWS, Azure, etc.)
-   - Update credential in ConfigBuddy
+   - Update credential in HappyCMDB
    - Test with discovery definition
    - Deactivate old credentials in provider
 3. **Zero Downtime**: Update credential, definitions continue using new values
@@ -717,7 +717,7 @@ ORDER BY al.performed_at DESC;
 # 1. Create new credentials in cloud provider
 # (AWS Console, Azure Portal, etc.)
 
-# 2. Update credential in ConfigBuddy
+# 2. Update credential in HappyCMDB
 curl -X PUT http://localhost:3000/api/v1/credentials/cred-123-abc \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer YOUR_JWT_TOKEN" \
@@ -852,4 +852,4 @@ cmdb credentials test cred-123-abc
 ---
 
 **Last Updated**: 2025-10-05
-**Maintainer**: ConfigBuddy Team
+**Maintainer**: HappyCMDB Team

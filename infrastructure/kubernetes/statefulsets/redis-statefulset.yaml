@@ -2,7 +2,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: redis-cluster
-  namespace: configbuddy-cmdb
+  namespace: happycmdb-cmdb
   labels:
     app: redis
 spec:
@@ -21,7 +21,7 @@ apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: redis
-  namespace: configbuddy-cmdb
+  namespace: happycmdb-cmdb
 spec:
   serviceName: redis-cluster
   replicas: 6
@@ -133,7 +133,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: redis-cluster-init
-  namespace: configbuddy-cmdb
+  namespace: happycmdb-cmdb
 data:
   init-cluster.sh: |
     #!/bin/sh
@@ -145,7 +145,7 @@ data:
     # Get pod IPs
     REDIS_NODES=""
     for i in $(seq 0 5); do
-      POD_IP=$(getent hosts redis-$i.redis-cluster.configbuddy-cmdb.svc.cluster.local | awk '{ print $1 }')
+      POD_IP=$(getent hosts redis-$i.redis-cluster.happycmdb-cmdb.svc.cluster.local | awk '{ print $1 }')
       REDIS_NODES="$REDIS_NODES $POD_IP:6379"
     done
 
@@ -156,7 +156,7 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: redis-cluster-init
-  namespace: configbuddy-cmdb
+  namespace: happycmdb-cmdb
 spec:
   template:
     spec:
@@ -178,6 +178,6 @@ spec:
               sleep 30
               REDIS_NODES=""
               for i in 0 1 2 3 4 5; do
-                REDIS_NODES="$REDIS_NODES redis-$i.redis-cluster.configbuddy-cmdb.svc.cluster.local:6379"
+                REDIS_NODES="$REDIS_NODES redis-$i.redis-cluster.happycmdb-cmdb.svc.cluster.local:6379"
               done
               redis-cli -a $REDIS_PASSWORD --cluster create $REDIS_NODES --cluster-replicas 1 --cluster-yes

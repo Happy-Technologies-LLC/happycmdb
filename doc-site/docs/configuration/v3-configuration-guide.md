@@ -1,10 +1,10 @@
 # v3.0 Configuration Guide
 
-Complete reference for configuring ConfigBuddy v3.0 with environment variables, BSM thresholds, and deployment best practices.
+Complete reference for configuring HappyCMDB v3.0 with environment variables, BSM thresholds, and deployment best practices.
 
 ## Overview
 
-ConfigBuddy v3.0 introduces significant configuration changes from v2.0:
+HappyCMDB v3.0 introduces significant configuration changes from v2.0:
 
 **Key Changes**:
 - **Unified Credentials** - Cloud provider credentials moved from `.env` to PostgreSQL
@@ -166,7 +166,7 @@ REDIS_DISCOVERY_CACHE_TTL=3600         # Discovery results cache (1 hour)
 ```bash
 # Kafka Broker
 KAFKA_BROKER=localhost:9092            # Kafka broker address(es), comma-separated
-KAFKA_CLIENT_ID=configbuddy-api        # Client identifier
+KAFKA_CLIENT_ID=happycmdb-api        # Client identifier
 
 # Zookeeper (managed by Kafka)
 ZOOKEEPER_CLIENT_PORT=2181             # Default: 2181
@@ -182,7 +182,7 @@ KAFKA_PRODUCER_BATCH_SIZE=16384        # Batch size in bytes
 KAFKA_PRODUCER_LINGER_MS=10            # Wait time before sending batch
 
 # Consumer Configuration
-KAFKA_CONSUMER_GROUP_ID=configbuddy-consumers
+KAFKA_CONSUMER_GROUP_ID=happycmdb-consumers
 KAFKA_CONSUMER_SESSION_TIMEOUT=30000   # Session timeout (ms)
 KAFKA_CONSUMER_AUTO_COMMIT=false       # Manual commit for reliability
 ```
@@ -217,7 +217,7 @@ KAFKA_CONSUMER_AUTO_COMMIT=false       # Manual commit for reliability
 ```bash
 # Application
 METABASE_PORT=3002                     # Web UI port
-METABASE_SITE_NAME=ConfigBuddy Analytics
+METABASE_SITE_NAME=HappyCMDB Analytics
 METABASE_SITE_URL=http://localhost:3002
 
 # Database (PostgreSQL backend)
@@ -240,7 +240,7 @@ METABASE_QUERY_TIMEOUT=120             # Query timeout in seconds
 **First-Time Setup**:
 1. Navigate to `http://localhost:3002`
 2. Complete setup wizard with admin credentials
-3. Add ConfigBuddy PostgreSQL data mart as data source:
+3. Add HappyCMDB PostgreSQL data mart as data source:
    - Host: `postgres` (Docker) or `localhost`
    - Database: `cmdb`
    - User: `cmdb_user`
@@ -500,7 +500,7 @@ SLA_P3_RESOLUTION_TIME=1440
 
 **ITIL Workflow Integration**:
 
-- **Incident Management**: Sync incidents from ServiceNow/Jira → ConfigBuddy
+- **Incident Management**: Sync incidents from ServiceNow/Jira → HappyCMDB
 - **Change Management**: Update CI baseline on approved changes
 - **Problem Management**: Link problems to affected CIs
 - **Service Requests**: Track service request fulfillment
@@ -535,7 +535,7 @@ METRICS_PATH=/metrics                  # Metrics endpoint path
 
 # Logging
 LOG_DESTINATION=stdout                 # stdout | file | syslog
-LOG_FILE_PATH=/var/log/configbuddy/app.log
+LOG_FILE_PATH=/var/log/happycmdb/app.log
 LOG_MAX_SIZE=100M                      # Max log file size
 LOG_MAX_FILES=10                       # Log rotation count
 LOG_COMPRESS=true                      # Compress rotated logs
@@ -554,13 +554,13 @@ AUDIT_LOG_INCLUDE_READ=false           # Log read operations (verbose!)
 
 **Prometheus Metrics Exposed**:
 
-- `configbuddy_discovery_jobs_total` - Total discovery jobs
-- `configbuddy_discovery_jobs_duration_seconds` - Job duration histogram
-- `configbuddy_ci_count` - Total CIs by type
-- `configbuddy_api_requests_total` - API request count
-- `configbuddy_api_request_duration_seconds` - API latency histogram
-- `configbuddy_neo4j_connections_active` - Active Neo4j connections
-- `configbuddy_postgres_connections_active` - Active PostgreSQL connections
+- `happycmdb_discovery_jobs_total` - Total discovery jobs
+- `happycmdb_discovery_jobs_duration_seconds` - Job duration histogram
+- `happycmdb_ci_count` - Total CIs by type
+- `happycmdb_api_requests_total` - API request count
+- `happycmdb_api_request_duration_seconds` - API latency histogram
+- `happycmdb_neo4j_connections_active` - Active Neo4j connections
+- `happycmdb_postgres_connections_active` - Active PostgreSQL connections
 
 ---
 

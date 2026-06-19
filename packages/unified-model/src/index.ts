@@ -4,7 +4,7 @@
 /**
  * @cmdb/unified-model
  *
- * Unified data model for ConfigBuddy v3.0
+ * Unified data model for HappyCMDB v3.0
  * Provides TypeScript types and validators for ITIL + TBM + BSM integration
  *
  * @packageDocumentation

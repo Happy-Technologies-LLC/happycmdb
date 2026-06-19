@@ -1,6 +1,6 @@
 # AI-Powered Discovery
 
-**AI Discovery** is ConfigBuddy's intelligent infrastructure discovery system that uses Large Language Models (LLMs) to automatically discover, identify, and classify configuration items without predefined connectors.
+**AI Discovery** is HappyCMDB's intelligent infrastructure discovery system that uses Large Language Models (LLMs) to automatically discover, identify, and classify configuration items without predefined connectors.
 
 ## Overview
 
@@ -390,7 +390,7 @@ GET /api/v1/ai/analytics/cost-summary
 
 ## Industry Patterns
 
-ConfigBuddy ships with 9 pre-built industry patterns:
+HappyCMDB ships with 9 pre-built industry patterns:
 
 1. **Nginx Web Server** - Detects Nginx installations
 2. **Apache Web Server** - Identifies Apache HTTP servers

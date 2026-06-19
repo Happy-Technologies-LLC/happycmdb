@@ -1,7 +1,7 @@
 {
   "name": "@cmdb/bsm-impact-engine",
   "version": "3.0.0",
-  "description": "Business Service Mapping Impact Engine for ConfigBuddy v3.0",
+  "description": "Business Service Mapping Impact Engine for HappyCMDB v3.0",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
@@ -41,6 +41,6 @@
     "risk-assessment",
     "configuration-management"
   ],
-  "author": "ConfigBuddy Team",
+  "author": "HappyCMDB Team",
   "license": "Apache-2.0"
 }

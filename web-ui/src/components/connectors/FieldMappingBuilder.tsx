@@ -44,7 +44,7 @@ interface FieldMappingBuilderProps {
   onChange: (mappings: FieldMapping[]) => void;
 }
 
-// Standard ConfigBuddy CI fields (NOT stored in metadata)
+// Standard HappyCMDB CI fields (NOT stored in metadata)
 const STANDARD_CI_FIELDS = [
   { value: 'name', label: 'Name', required: true, category: 'Core' },
   { value: 'type', label: 'CI Type', required: true, category: 'Core' },

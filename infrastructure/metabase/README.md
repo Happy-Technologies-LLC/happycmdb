@@ -1,8 +1,8 @@
-# Metabase Business Intelligence for ConfigBuddy v3.0
+# Metabase Business Intelligence for HappyCMDB v3.0
 
 ## Overview
 
-Metabase provides advanced business intelligence and ad-hoc reporting capabilities for ConfigBuddy v3.0. It complements the React dashboards by offering:
+Metabase provides advanced business intelligence and ad-hoc reporting capabilities for HappyCMDB v3.0. It complements the React dashboards by offering:
 
 - **Executive Dashboards**: High-level IT spend, service health, and risk metrics
 - **FinOps Analysis**: Cloud cost optimization, unit economics, and budget variance
@@ -30,7 +30,7 @@ Metabase is included in the main `docker-compose.yml`:
 
 ```bash
 # Start all services (including Metabase)
-cd /home/user/configbuddy
+cd /home/user/happycmdb
 ./deploy.sh
 
 # Or start Metabase specifically
@@ -50,7 +50,7 @@ The setup script automates initial configuration:
 This script will:
 - Wait for Metabase to start
 - Create admin user
-- Connect to ConfigBuddy CMDB database
+- Connect to HappyCMDB database
 - Create optimized BI views
 - Set up collections
 - Sync database schema
@@ -58,7 +58,7 @@ This script will:
 ### 3. Login and Explore
 
 **Default Credentials:**
-- Email: `admin@configbuddy.local`
+- Email: `admin@happycmdb.local`
 - Password: `admin_password_change_me`
 
 **⚠️ IMPORTANT:** Change the admin password immediately after first login!
@@ -86,7 +86,7 @@ This script will:
 ### Data Flow
 
 ```
-ConfigBuddy CMDB (PostgreSQL)
+HappyCMDB (PostgreSQL)
     ↓
 Optimized BI Views (cost-analysis.sql, itil-analysis.sql, bsm-analysis.sql)
     ↓
@@ -321,7 +321,7 @@ environment:
   MB_EMAIL_SMTP_PORT: 587
   MB_EMAIL_SMTP_USERNAME: your-email@gmail.com
   MB_EMAIL_SMTP_PASSWORD: your-app-password
-  MB_EMAIL_FROM_ADDRESS: noreply@configbuddy.local
+  MB_EMAIL_FROM_ADDRESS: noreply@happycmdb.local
 ```
 
 ### Create Scheduled Report
@@ -437,7 +437,7 @@ Best practice: Organize by team/function
 **Solutions:**
 1. Trigger schema sync:
    ```
-   Admin → Databases → ConfigBuddy CMDB → Sync database schema now
+   Admin → Databases → HappyCMDB → Sync database schema now
    ```
 
 2. Check view permissions:
@@ -554,18 +554,18 @@ environment:
 - **Official Documentation**: https://www.metabase.com/docs/latest/
 - **SQL Best Practices**: https://www.metabase.com/learn/sql-questions/
 - **Dashboard Design**: https://www.metabase.com/learn/dashboards/
-- **ConfigBuddy Docs**: http://localhost:8080 (when running)
+- **HappyCMDB Docs**: http://localhost:8080 (when running)
 
 ## Support
 
-For ConfigBuddy-specific Metabase issues:
+For HappyCMDB-specific Metabase issues:
 1. Check this README
-2. Review ConfigBuddy documentation
+2. Review HappyCMDB documentation
 3. Check Metabase logs: `docker logs cmdb-metabase`
-4. Open an issue on the ConfigBuddy repository
+4. Open an issue on the HappyCMDB repository
 
 ---
 
-**Version:** ConfigBuddy v3.0
+**Version:** HappyCMDB v3.0
 **Last Updated:** 2025-11-06
-**Maintained By:** ConfigBuddy Development Team
+**Maintained By:** HappyCMDB Development Team

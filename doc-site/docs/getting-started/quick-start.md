@@ -1,6 +1,6 @@
 # Quick Start Guide
 
-Get ConfigBuddy CMDB up and running in under 5 minutes using Docker Compose.
+Get HappyCMDB up and running in under 5 minutes using Docker Compose.
 
 ## Prerequisites
 
@@ -20,8 +20,8 @@ Get ConfigBuddy CMDB up and running in under 5 minutes using Docker Compose.
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/configbuddy/configbuddy.git
-cd configbuddy
+git clone https://github.com/happycmdb/happycmdb.git
+cd happycmdb
 ```
 
 ### 2. Start All Services
@@ -136,5 +136,5 @@ Increase Docker's memory limit to at least 4GB in Docker Desktop preferences.
 ## Getting Help
 
 - [Troubleshooting Guide](/troubleshooting/overview)
-- [GitHub Issues](https://github.com/configbuddy/configbuddy/issues)
-- [Community Discussions](https://github.com/configbuddy/configbuddy/discussions)
+- [GitHub Issues](https://github.com/happycmdb/happycmdb/issues)
+- [Community Discussions](https://github.com/happycmdb/happycmdb/discussions)

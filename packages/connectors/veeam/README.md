@@ -1,10 +1,10 @@
 # Veeam Backup & Replication Connector
 
-ConfigBuddy integration connector for Veeam Enterprise Manager REST API.
+HappyCMDB integration connector for Veeam Enterprise Manager REST API.
 
 ## Overview
 
-This connector enables ConfigBuddy to discover and manage configuration items (CIs) from Veeam Backup & Replication through the Enterprise Manager REST API.
+This connector enables HappyCMDB to discover and manage configuration items (CIs) from Veeam Backup & Replication through the Enterprise Manager REST API.
 
 ## Features
 
@@ -201,7 +201,7 @@ await connector.cleanup();
 
 ## License
 
-Part of ConfigBuddy CMDB platform - see main project LICENSE.
+Part of HappyCMDB platform - see main project LICENSE.
 
 ## References
 

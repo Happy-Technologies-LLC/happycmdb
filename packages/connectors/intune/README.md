@@ -1,6 +1,6 @@
 # Microsoft Intune Connector
 
-Enterprise-grade connector for integrating Microsoft Intune with ConfigBuddy CMDB. Supports mobile device management, application deployment, compliance policies, and configuration profiles.
+Enterprise-grade connector for integrating Microsoft Intune with HappyCMDB. Supports mobile device management, application deployment, compliance policies, and configuration profiles.
 
 ## Features
 
@@ -18,7 +18,7 @@ Enterprise-grade connector for integrating Microsoft Intune with ConfigBuddy CMD
 
 1. Navigate to [Azure Portal](https://portal.azure.com) → Azure Active Directory → App registrations
 2. Click "New registration"
-3. Name: `ConfigBuddy-Intune-Integration`
+3. Name: `HappyCMDB-Intune-Integration`
 4. Supported account types: "Accounts in this organizational directory only"
 5. Click "Register"
 
@@ -38,7 +38,7 @@ After adding permissions, click **Grant admin consent**.
 
 1. In the app registration, go to "Certificates & secrets"
 2. Click "New client secret"
-3. Description: `ConfigBuddy Integration`
+3. Description: `HappyCMDB Integration`
 4. Expiration: 24 months (recommended)
 5. Click "Add" and **copy the secret value immediately**
 
@@ -48,8 +48,8 @@ After adding permissions, click **Grant admin consent**.
 # Install the connector
 npm install @cmdb/connector-intune
 
-# Or add to ConfigBuddy connectors directory
-cp -r packages/connectors/intune /path/to/configbuddy/connectors/
+# Or add to HappyCMDB connectors directory
+cp -r packages/connectors/intune /path/to/happycmdb/connectors/
 ```
 
 ## Configuration
@@ -253,7 +253,7 @@ The connector automatically infers the following relationships:
 
 ## CI Type Mapping
 
-| Intune Type | Operating System | ConfigBuddy CI Type |
+| Intune Type | Operating System | HappyCMDB CI Type |
 |------------|------------------|---------------------|
 | Managed Device | iOS, Android | `mobile-device` |
 | Managed Device | Windows, macOS | `virtual-machine` |
@@ -427,7 +427,7 @@ The connector automatically handles rate limiting with exponential backoff.
 - [Microsoft Graph API Documentation](https://docs.microsoft.com/en-us/graph/)
 - [Intune API Reference](https://docs.microsoft.com/en-us/graph/api/resources/intune-graph-overview)
 - [Azure AD App Registrations](https://docs.microsoft.com/en-us/azure/active-directory/develop/quickstart-register-app)
-- [ConfigBuddy Integration Framework](../../integration-framework/README.md)
+- [HappyCMDB Integration Framework](../../integration-framework/README.md)
 
 ## License
 
@@ -435,4 +435,4 @@ MIT License - see LICENSE file for details
 
 ## Support
 
-For issues and feature requests, please open an issue on the [ConfigBuddy GitHub repository](https://github.com/configbuddy/configbuddy).
+For issues and feature requests, please open an issue on the [HappyCMDB GitHub repository](https://github.com/happycmdb/happycmdb).

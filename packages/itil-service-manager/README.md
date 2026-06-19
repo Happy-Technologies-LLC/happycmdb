@@ -1,10 +1,10 @@
 # @cmdb/itil-service-manager
 
-ITIL v4 Service Management for ConfigBuddy v3.0
+ITIL v4 Service Management for HappyCMDB v3.0
 
 ## Overview
 
-This package provides comprehensive ITIL v4 service management capabilities for ConfigBuddy, including:
+This package provides comprehensive ITIL v4 service management capabilities for HappyCMDB, including:
 
 - **Configuration Management**: CI lifecycle management, audits, and compliance tracking
 - **Incident Management**: Automated priority calculation based on ITIL matrix (Impact x Urgency)
@@ -387,4 +387,4 @@ MIT
 
 ## Contributing
 
-Contributions welcome! Please follow the ConfigBuddy contribution guidelines.
+Contributions welcome! Please follow the HappyCMDB contribution guidelines.

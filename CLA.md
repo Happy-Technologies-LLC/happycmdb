@@ -1,8 +1,8 @@
-# ConfigBuddy Individual Contributor License Agreement (CLA)
+# HappyCMDB Individual Contributor License Agreement (CLA)
 
 Based on the Apache Software Foundation Individual Contributor License Agreement.
 
-Thank you for your interest in contributing to ConfigBuddy, owned and maintained
+Thank you for your interest in contributing to HappyCMDB, owned and maintained
 by Happy Technologies LLC ("Happy Technologies"). To clarify the intellectual
 property license granted with Contributions from any person or entity, Happy
 Technologies must have a Contributor License Agreement on file from each
@@ -18,7 +18,7 @@ future Contributions submitted to Happy Technologies.
    entity authorized by the copyright owner that is making this Agreement.
    "Contribution" shall mean any original work of authorship, including any
    modifications or additions to an existing work, that is intentionally
-   submitted by You to Happy Technologies for inclusion in the ConfigBuddy
+   submitted by You to Happy Technologies for inclusion in the HappyCMDB
    project.
 
 2. **Grant of Copyright License.** Subject to the terms and conditions of this

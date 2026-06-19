@@ -2,7 +2,7 @@
 
 ## Overview
 
-The ConfigBuddy Connector Framework is a plugin-based architecture that enables dynamic integration with external systems for data discovery, synchronization, and management. Introduced in v2.0, it replaces the v1.0 ad-hoc discovery workers with a standardized, scalable integration platform.
+The HappyCMDB Connector Framework is a plugin-based architecture that enables dynamic integration with external systems for data discovery, synchronization, and management. Introduced in v2.0, it replaces the v1.0 ad-hoc discovery workers with a standardized, scalable integration platform.
 
 ## Key Features
 
@@ -17,7 +17,7 @@ The ConfigBuddy Connector Framework is a plugin-based architecture that enables 
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    ConfigBuddy Platform                     │
+│                    HappyCMDB Platform                     │
 ├─────────────────────────────────────────────────────────────┤
 │                                                             │
 │  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────┐│
@@ -351,13 +351,13 @@ CREATE TABLE connector_run_history (
 
 ## Connector Registry (Remote Catalog)
 
-ConfigBuddy hosts a self-hosted connector registry on GitHub:
+HappyCMDB hosts a self-hosted connector registry on GitHub:
 
-**Repository:** `https://github.com/configbuddy/connectors`
+**Repository:** `https://github.com/happycmdb/connectors`
 
 **Structure:**
 ```
-configbuddy-connectors/
+happycmdb-connectors/
 ├── catalog.json                  # Main manifest
 ├── connectors/
 │   ├── servicenow/
@@ -392,13 +392,13 @@ configbuddy-connectors/
         {
           "version": "2.0.0",
           "released_at": "2025-10-01T00:00:00Z",
-          "download_url": "https://github.com/configbuddy/connectors/releases/download/servicenow-2.0.0/package.tgz",
+          "download_url": "https://github.com/happycmdb/connectors/releases/download/servicenow-2.0.0/package.tgz",
           "checksum": "sha256:abc123...",
           "size_bytes": 524288,
           "breaking_changes": false
         }
       ],
-      "author": "ConfigBuddy",
+      "author": "HappyCMDB",
       "license": "Apache-2.0",
       "downloads": 1523,
       "rating": 4.8,

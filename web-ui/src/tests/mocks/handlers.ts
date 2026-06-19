@@ -25,7 +25,7 @@ export const mockApiHandlers = {
     success: {
       id: 'user-1',
       username: 'admin',
-      email: 'admin@configbuddy.com',
+      email: 'admin@happycmdb.com',
       role: 'admin',
       created_at: '2024-01-01T00:00:00Z',
     },

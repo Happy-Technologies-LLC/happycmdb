@@ -1,5 +1,5 @@
 /**
- * ConfigBuddy Database Performance Load Test
+ * HappyCMDB Database Performance Load Test
  *
  * Tests database query performance, cache hit rates, and resource utilization
  *
@@ -444,8 +444,8 @@ export function redisCacheOps() {
 // Summary handler
 export function handleSummary(data) {
   return {
-    '/Users/nczitzer/WebstormProjects/configbuddy/infrastructure/testing/load/reports/database-summary.html': htmlReport(data),
-    '/Users/nczitzer/WebstormProjects/configbuddy/infrastructure/testing/load/reports/database-summary.json': JSON.stringify(data, null, 2),
+    '/Users/nczitzer/WebstormProjects/happycmdb/infrastructure/testing/load/reports/database-summary.html': htmlReport(data),
+    '/Users/nczitzer/WebstormProjects/happycmdb/infrastructure/testing/load/reports/database-summary.json': JSON.stringify(data, null, 2),
     stdout: textSummary(data),
   };
 }
@@ -459,7 +459,7 @@ function htmlReport(data) {
 <!DOCTYPE html>
 <html>
 <head>
-  <title>ConfigBuddy Database Performance Test Results</title>
+  <title>HappyCMDB Database Performance Test Results</title>
   <style>
     body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
     .container { max-width: 1200px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; }
@@ -478,7 +478,7 @@ function htmlReport(data) {
 </head>
 <body>
   <div class="container">
-    <h1>ConfigBuddy Database Performance Test Results</h1>
+    <h1>HappyCMDB Database Performance Test Results</h1>
     <p>Test Duration: ${data.state.testRunDurationMs / 1000}s</p>
 
     <h2>Cache Performance</h2>
@@ -581,7 +581,7 @@ function htmlReport(data) {
 
     <p style="margin-top: 30px; color: #666; font-size: 12px;">
       Generated: ${new Date().toISOString()}<br>
-      ConfigBuddy v2.0 Database Performance Testing Suite
+      HappyCMDB v2.0 Database Performance Testing Suite
     </p>
   </div>
 </body>
@@ -591,7 +591,7 @@ function htmlReport(data) {
 
 function textSummary(data) {
   let output = '\n' + '='.repeat(60) + '\n';
-  output += 'ConfigBuddy Database Performance Test Summary\n';
+  output += 'HappyCMDB Database Performance Test Summary\n';
   output += '='.repeat(60) + '\n\n';
 
   const cacheHitRate = data.metrics.cache_hit_rate

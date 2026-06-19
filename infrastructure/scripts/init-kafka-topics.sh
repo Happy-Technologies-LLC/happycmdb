@@ -1,6 +1,6 @@
 #!/bin/bash
 # Kafka Topics Initialization Script
-# Creates topics required by ConfigBuddy CMDB
+# Creates topics required by HappyCMDB
 
 set -e
 

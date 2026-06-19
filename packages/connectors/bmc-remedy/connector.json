@@ -7,7 +7,7 @@
   "name": "BMC Remedy ITSM",
   "version": "1.0.0",
   "description": "Integration with BMC Remedy IT Service Management for CMDB, incidents, and changes",
-  "author": "ConfigBuddy",
+  "author": "HappyCMDB",
   "verified": true,
   "icon": "bmc",
   "provider": "bmc",

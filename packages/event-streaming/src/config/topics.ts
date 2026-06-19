@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Kafka Topics Configuration for ConfigBuddy v3.0
+ * Kafka Topics Configuration for HappyCMDB v3.0
  *
  * Defines all Kafka topics used across the platform
  */

@@ -6,7 +6,7 @@
   "name": "Veeam Backup & Replication",
   "version": "1.0.0",
   "description": "Integration with Veeam Enterprise Manager for backup server, protected VM, backup job, and repository discovery",
-  "author": "ConfigBuddy",
+  "author": "HappyCMDB",
   "verified": true,
   "capabilities": {
     "extraction": true,

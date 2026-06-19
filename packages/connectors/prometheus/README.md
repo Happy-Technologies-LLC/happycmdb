@@ -1,4 +1,4 @@
-# Prometheus Connector for ConfigBuddy CMDB
+# Prometheus Connector for HappyCMDB
 
 Multi-resource integration connector for Prometheus monitoring system.
 
@@ -273,5 +273,5 @@ MIT
 ## Support
 
 For issues and questions, please visit:
-- GitHub Issues: https://github.com/configbuddy/cmdb/issues
+- GitHub Issues: https://github.com/happycmdb/cmdb/issues
 - Documentation: http://localhost:8080/docs/connectors/prometheus

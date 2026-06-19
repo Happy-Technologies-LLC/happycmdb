@@ -4,7 +4,7 @@
 /**
  * @cmdb/framework-integration
  *
- * Unified Interface for ConfigBuddy v3.0
+ * Unified Interface for HappyCMDB v3.0
  * Combines ITIL + TBM + BSM frameworks for complete service views
  *
  * @packageDocumentation

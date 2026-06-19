@@ -2,7 +2,7 @@
 
 ## Overview
 
-Complete Veeam Backup & Replication connector for ConfigBuddy CMDB with multi-resource architecture following ServiceNow connector patterns.
+Complete Veeam Backup & Replication connector for HappyCMDB with multi-resource architecture following ServiceNow connector patterns.
 
 ## Implementation Status: ✅ COMPLETE
 
@@ -114,7 +114,7 @@ Complete documentation including:
 
 ✅ **TypeScript Compilation**: PASSED
 ```bash
-cd /Users/nczitzer/WebstormProjects/configbuddy/packages/connectors/veeam
+cd /Users/nczitzer/WebstormProjects/happycmdb/packages/connectors/veeam
 npm run build
 # Output: Success, no errors
 ```
@@ -327,7 +327,7 @@ The Veeam connector has been successfully implemented with:
 6. ✅ Full documentation
 7. ✅ UnifiedCredential integration
 
-All requirements have been met and verified. The connector is ready for integration with the ConfigBuddy CMDB platform.
+All requirements have been met and verified. The connector is ready for integration with the HappyCMDB platform.
 
 ---
 

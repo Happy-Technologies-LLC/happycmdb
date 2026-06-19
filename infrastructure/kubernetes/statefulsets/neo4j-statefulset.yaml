@@ -2,7 +2,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: neo4j-cluster
-  namespace: configbuddy-cmdb
+  namespace: happycmdb-cmdb
   labels:
     app: neo4j
 spec:
@@ -24,7 +24,7 @@ apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: neo4j
-  namespace: configbuddy-cmdb
+  namespace: happycmdb-cmdb
 spec:
   serviceName: neo4j-cluster
   replicas: 3
@@ -83,21 +83,21 @@ spec:
             - name: NEO4J_initial_dbms_default__secondaries__count
               value: "0"
             - name: NEO4J_dbms_cluster_discovery_endpoints
-              value: "neo4j-0.neo4j-cluster.configbuddy-cmdb.svc.cluster.local:5000,neo4j-1.neo4j-cluster.configbuddy-cmdb.svc.cluster.local:5000,neo4j-2.neo4j-cluster.configbuddy-cmdb.svc.cluster.local:5000"
+              value: "neo4j-0.neo4j-cluster.happycmdb-cmdb.svc.cluster.local:5000,neo4j-1.neo4j-cluster.happycmdb-cmdb.svc.cluster.local:5000,neo4j-2.neo4j-cluster.happycmdb-cmdb.svc.cluster.local:5000"
             - name: NEO4J_server_default__advertised__address
-              value: "$(POD_NAME).neo4j-cluster.configbuddy-cmdb.svc.cluster.local"
+              value: "$(POD_NAME).neo4j-cluster.happycmdb-cmdb.svc.cluster.local"
             - name: NEO4J_server_default__listen__address
               value: "0.0.0.0"
             - name: NEO4J_dbms_cluster_raft_advertised__address
-              value: "$(POD_NAME).neo4j-cluster.configbuddy-cmdb.svc.cluster.local:7000"
+              value: "$(POD_NAME).neo4j-cluster.happycmdb-cmdb.svc.cluster.local:7000"
             - name: NEO4J_dbms_cluster_raft_listen__address
               value: "0.0.0.0:7000"
             - name: NEO4J_dbms_cluster_discovery_advertised__address
-              value: "$(POD_NAME).neo4j-cluster.configbuddy-cmdb.svc.cluster.local:5000"
+              value: "$(POD_NAME).neo4j-cluster.happycmdb-cmdb.svc.cluster.local:5000"
             - name: NEO4J_dbms_cluster_discovery_listen__address
               value: "0.0.0.0:5000"
             - name: NEO4J_dbms_connector_bolt_advertised__address
-              value: "$(POD_NAME).neo4j-cluster.configbuddy-cmdb.svc.cluster.local:7687"
+              value: "$(POD_NAME).neo4j-cluster.happycmdb-cmdb.svc.cluster.local:7687"
             - name: NEO4J_dbms_connector_bolt_listen__address
               value: "0.0.0.0:7687"
             - name: NEO4J_dbms_memory_heap_initial__size

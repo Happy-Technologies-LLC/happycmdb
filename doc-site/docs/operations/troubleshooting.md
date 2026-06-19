@@ -5,7 +5,7 @@ description: Comprehensive guide for diagnosing and resolving common issues
 
 # Troubleshooting
 
-Comprehensive guide for diagnosing and resolving common issues in ConfigBuddy CMDB platform.
+Comprehensive guide for diagnosing and resolving common issues in HappyCMDB platform.
 
 ## Quick Diagnosis
 
@@ -1107,7 +1107,7 @@ kubectl rollout restart deployment/etl-processor -n cmdb
 
 ```bash
 # Log into Metabase (http://localhost:3002 or https://cmdb.example.com/metabase)
-# Settings → Admin → Databases → ConfigBuddy Data Mart
+# Settings → Admin → Databases → HappyCMDB Data Mart
 # Click "Test Connection"
 
 # If connection fails, update connection string:

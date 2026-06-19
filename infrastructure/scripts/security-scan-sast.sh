@@ -429,7 +429,7 @@ main() {
   # Create results directory
   mkdir -p "$SCAN_RESULTS_DIR"
 
-  print_header "ConfigBuddy Static Application Security Testing (SAST)"
+  print_header "HappyCMDB Static Application Security Testing (SAST)"
   echo "Timestamp: $TIMESTAMP"
   echo "Results directory: $SCAN_RESULTS_DIR"
   echo ""

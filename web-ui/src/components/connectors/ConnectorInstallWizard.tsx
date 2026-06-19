@@ -302,7 +302,7 @@ export const ConnectorInstallWizard: React.FC<ConnectorInstallWizardProps> = ({
                 <div className="space-y-2">
                   <Label className="text-sm font-semibold">Author</Label>
                   <p className="text-sm text-muted-foreground">
-                    {connector.author || 'ConfigBuddy Community'}
+                    {connector.author || 'HappyCMDB Community'}
                   </p>
                 </div>
                 <div className="space-y-2">
@@ -318,7 +318,7 @@ export const ConnectorInstallWizard: React.FC<ConnectorInstallWizardProps> = ({
                   <div className="flex items-center gap-2">
                     <CheckCircle className="h-5 w-5 text-green-600" />
                     <span className="text-sm font-medium text-green-900 dark:text-green-100">
-                      This is a verified connector by the ConfigBuddy team
+                      This is a verified connector by the HappyCMDB team
                     </span>
                   </div>
                 </div>

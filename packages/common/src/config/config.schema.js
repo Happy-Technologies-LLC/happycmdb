@@ -53,7 +53,7 @@ exports.configSchema = joi_1.default.object({
         }).required(),
         kafka: joi_1.default.object({
             brokers: joi_1.default.array().items(joi_1.default.string()).required(),
-            clientId: joi_1.default.string().default('configbuddy'),
+            clientId: joi_1.default.string().default('happycmdb'),
             groupId: joi_1.default.string().default('cmdb-consumers'),
             ssl: joi_1.default.boolean().default(false),
             sasl: joi_1.default.object({
@@ -121,7 +121,7 @@ exports.configSchema = joi_1.default.object({
             secret: joi_1.default.string().min(32).required(),
             accessTokenExpiresIn: joi_1.default.string().default('15m'),
             refreshTokenExpiresIn: joi_1.default.string().default('7d'),
-            issuer: joi_1.default.string().default('configbuddy'),
+            issuer: joi_1.default.string().default('happycmdb'),
             audience: joi_1.default.string().default('cmdb-api'),
         }).required(),
         bcrypt: joi_1.default.object({

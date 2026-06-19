@@ -123,8 +123,8 @@ export class ConnectorRunCommand {
       }
 
       console.log(chalk.cyan('\nMonitoring:'));
-      console.log(`  Check status: ${chalk.yellow(`configbuddy connector run-status ${run.id}`)}`);
-      console.log(`  Watch progress: ${chalk.yellow(`configbuddy connector run-status ${run.id} --watch`)}`);
+      console.log(`  Check status: ${chalk.yellow(`happycmdb connector run-status ${run.id}`)}`);
+      console.log(`  Watch progress: ${chalk.yellow(`happycmdb connector run-status ${run.id} --watch`)}`);
 
       // Wait for completion if requested
       if (options.wait) {
@@ -191,7 +191,7 @@ export class ConnectorRunCommand {
 
       console.log(chalk.cyan('╚═══════════════════════════════════════════════════════════════════════════════════╝'));
       console.log(chalk.gray(`\nTotal: ${runs.length} runs`));
-      console.log(chalk.gray('Run "configbuddy connector run-status <runId>" for details'));
+      console.log(chalk.gray('Run "happycmdb connector run-status <runId>" for details'));
     } catch (error: any) {
       spinner.fail(chalk.red('Failed to fetch runs'));
       this.handleError(error);
@@ -352,7 +352,7 @@ export class ConnectorRunCommand {
         if (elapsed > timeoutSeconds) {
           clearInterval(checkInterval);
           spinner.warn(chalk.yellow('Timeout reached - run still in progress'));
-          console.log(chalk.gray(`  Check status: configbuddy connector run-status ${runId}`));
+          console.log(chalk.gray(`  Check status: happycmdb connector run-status ${runId}`));
           return;
         }
 

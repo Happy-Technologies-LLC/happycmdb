@@ -1,8 +1,8 @@
-# ConfigBuddy CMDB - Production Deployment Checklist
+# HappyCMDB - Production Deployment Checklist
 
 ## Quick Reference Guide
 
-This checklist ensures all production readiness requirements are met before deploying ConfigBuddy CMDB to production.
+This checklist ensures all production readiness requirements are met before deploying HappyCMDB to production.
 
 **Related Documents:**
 - [Production Configuration Guide](./PRODUCTION_CONFIGURATION.md) - Comprehensive configuration details
@@ -135,16 +135,16 @@ sudo apt-get install certbot
 
 # Generate certificate
 sudo certbot certonly --standalone \
-  -d configbuddy.example.com \
+  -d happycmdb.example.com \
   --email admin@example.com \
   --agree-tos
 
 # Copy to Docker volume
-cp /etc/letsencrypt/live/configbuddy.example.com/fullchain.pem \
+cp /etc/letsencrypt/live/happycmdb.example.com/fullchain.pem \
    infrastructure/docker/ssl/nginx/cert.pem
-cp /etc/letsencrypt/live/configbuddy.example.com/privkey.pem \
+cp /etc/letsencrypt/live/happycmdb.example.com/privkey.pem \
    infrastructure/docker/ssl/nginx/key.pem
-cp /etc/letsencrypt/live/configbuddy.example.com/chain.pem \
+cp /etc/letsencrypt/live/happycmdb.example.com/chain.pem \
    infrastructure/docker/ssl/nginx/chain.pem
 
 # Set up auto-renewal
@@ -237,7 +237,7 @@ iptables-save > /etc/iptables/rules.v4
 
 ### 5. Backup Configuration
 
-- [ ] Set backup directory: `BACKUP_DIR=/var/backups/configbuddy`
+- [ ] Set backup directory: `BACKUP_DIR=/var/backups/happycmdb`
 - [ ] Configure retention policy:
   - Daily: 7 backups
   - Weekly: 4 backups
@@ -251,10 +251,10 @@ iptables-save > /etc/iptables/rules.v4
 
 ```bash
 # Daily backup at 2 AM
-0 2 * * * /path/to/configbuddy/infrastructure/scripts/backup-all.sh
+0 2 * * * /path/to/happycmdb/infrastructure/scripts/backup-all.sh
 
 # Weekly backup verification
-0 3 * * 0 /path/to/configbuddy/infrastructure/scripts/backup-health-check.sh
+0 3 * * 0 /path/to/happycmdb/infrastructure/scripts/backup-health-check.sh
 ```
 
 ---
@@ -337,11 +337,11 @@ monitoring/grafana/dashboards/
 - [ ] Test SSL configuration: https://www.ssllabs.com/ssltest/
 - [ ] Test API endpoints:
   ```bash
-  curl -k https://configbuddy.example.com/api/v1/cmdb-health
+  curl -k https://happycmdb.example.com/api/v1/cmdb-health
   ```
 - [ ] Test authentication:
   ```bash
-  curl -X POST https://configbuddy.example.com/api/v1/auth/login \
+  curl -X POST https://happycmdb.example.com/api/v1/auth/login \
     -H "Content-Type: application/json" \
     -d '{"username":"admin","password":"password"}'
   ```
@@ -378,8 +378,8 @@ monitoring/grafana/dashboards/
 
 ```bash
 # Clone repository
-git clone https://github.com/your-org/configbuddy.git
-cd configbuddy
+git clone https://github.com/your-org/happycmdb.git
+cd happycmdb
 
 # Checkout production branch/tag
 git checkout v2.0.0
@@ -408,7 +408,7 @@ nano .env.production
 openssl dhparam -out infrastructure/docker/ssl/nginx/dhparam.pem 4096
 
 # Obtain Let's Encrypt certificates
-sudo certbot certonly --standalone -d configbuddy.example.com
+sudo certbot certonly --standalone -d happycmdb.example.com
 
 # Copy certificates to Docker volume
 ./infrastructure/scripts/setup-ssl.sh
@@ -454,7 +454,7 @@ docker exec cmdb-api-server npm run db:migrate
 
 ```bash
 # Check service health
-curl -k https://configbuddy.example.com/api/v1/cmdb-health
+curl -k https://happycmdb.example.com/api/v1/cmdb-health
 
 # Check Docker container status
 docker-compose -f infrastructure/docker/docker-compose.yml ps
@@ -463,7 +463,7 @@ docker-compose -f infrastructure/docker/docker-compose.yml ps
 docker-compose -f infrastructure/docker/docker-compose.yml logs --tail=100
 
 # Access Grafana dashboards
-# URL: https://grafana.configbuddy.example.com
+# URL: https://grafana.happycmdb.example.com
 ```
 
 ### Step 8: Configure Monitoring
@@ -485,7 +485,7 @@ open http://localhost:3001
 ./infrastructure/scripts/backup-all.sh
 
 # Verify backup files
-ls -lh /var/backups/configbuddy/
+ls -lh /var/backups/happycmdb/
 
 # Test restore procedure (on test environment)
 ./infrastructure/scripts/restore-neo4j.sh <backup-file>
@@ -569,10 +569,10 @@ NEO4J_dbms_memory_heap_max__size=2G
 **Solution**: Check backup logs and permissions:
 ```bash
 # Check backup logs
-tail -100 /var/log/configbuddy/backups/backup.log
+tail -100 /var/log/happycmdb/backups/backup.log
 
 # Verify backup directory permissions
-ls -ld /var/backups/configbuddy/
+ls -ld /var/backups/happycmdb/
 
 # Run backup with verbose output
 ./infrastructure/scripts/backup-all.sh -v
@@ -592,14 +592,14 @@ docker-compose -f infrastructure/docker/docker-compose.yml down
 git checkout v1.9.0
 
 # Restore from backup (if database changes)
-./infrastructure/scripts/restore-neo4j.sh /var/backups/configbuddy/neo4j/backup-YYYYMMDD.tar.gz
-./infrastructure/scripts/restore-postgres.sh /var/backups/configbuddy/postgres/backup-YYYYMMDD.sql.gz
+./infrastructure/scripts/restore-neo4j.sh /var/backups/happycmdb/neo4j/backup-YYYYMMDD.tar.gz
+./infrastructure/scripts/restore-postgres.sh /var/backups/happycmdb/postgres/backup-YYYYMMDD.sql.gz
 
 # Redeploy
 ./deploy.sh
 
 # Verify rollback
-curl -k https://configbuddy.example.com/api/v1/cmdb-health
+curl -k https://happycmdb.example.com/api/v1/cmdb-health
 ```
 
 ### Emergency Shutdown
@@ -618,7 +618,7 @@ docker-compose -f infrastructure/docker/docker-compose.yml kill
 
 - **Documentation**: http://localhost:8080 (when running)
 - **Production Configuration Guide**: `/docs/deployment/PRODUCTION_CONFIGURATION.md`
-- **GitHub Issues**: https://github.com/configbuddy/cmdb/issues
+- **GitHub Issues**: https://github.com/happycmdb/cmdb/issues
 - **Emergency Contact**: [Your on-call rotation]
 
 ---

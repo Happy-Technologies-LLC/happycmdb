@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Business Impact Event Types for ConfigBuddy v3.0
+ * Business Impact Event Types for HappyCMDB v3.0
  *
  * Events emitted during impact scoring and business service mapping
  */

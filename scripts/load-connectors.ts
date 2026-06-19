@@ -15,7 +15,7 @@ import { logger } from '../packages/common/src/logger';
 
 async function main() {
   try {
-    logger.info('=== ConfigBuddy Connector Loader ===');
+    logger.info('=== HappyCMDB Connector Loader ===');
 
     const loader = new ConnectorLoader();
 

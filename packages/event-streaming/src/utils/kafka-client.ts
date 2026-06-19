@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Kafka Client Utilities for ConfigBuddy v3.0
+ * Kafka Client Utilities for HappyCMDB v3.0
  *
  * Singleton Kafka client and admin utilities
  */

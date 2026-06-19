@@ -16,7 +16,7 @@ export const connectorTypeDefs = `
     name: String!
     """Description"""
     description: String
-    """Verified by ConfigBuddy"""
+    """Verified by HappyCMDB"""
     verified: Boolean!
     """Latest available version"""
     latestVersion: String!

@@ -1,6 +1,6 @@
 # API Overview
 
-ConfigBuddy CMDB provides both REST and GraphQL APIs for comprehensive access to all CMDB functionality.
+HappyCMDB provides both REST and GraphQL APIs for comprehensive access to all CMDB functionality.
 
 ## API Endpoints
 

@@ -1,7 +1,7 @@
 # =============================================================================
-# Grafana Dashboard Provisioning - ConfigBuddy CMDB
+# Grafana Dashboard Provisioning - HappyCMDB
 # =============================================================================
-# This file automatically provisions all ConfigBuddy dashboards when Grafana
+# This file automatically provisions all HappyCMDB dashboards when Grafana
 # starts. Dashboards are loaded from the /dashboards directory.
 # =============================================================================
 
@@ -9,9 +9,9 @@ apiVersion: 1
 
 providers:
   # CMDB Data Mart Dashboards (PostgreSQL/TimescaleDB)
-  - name: 'ConfigBuddy CMDB Dashboards'
+  - name: 'HappyCMDB Dashboards'
     orgId: 1
-    folder: 'ConfigBuddy CMDB'
+    folder: 'HappyCMDB'
     type: file
     disableDeletion: false
     updateIntervalSeconds: 30
@@ -21,9 +21,9 @@ providers:
       foldersFromFilesStructure: false
 
   # Prometheus Monitoring Dashboards (Legacy)
-  - name: 'ConfigBuddy Monitoring Dashboards'
+  - name: 'HappyCMDB Monitoring Dashboards'
     orgId: 1
-    folder: 'ConfigBuddy Monitoring'
+    folder: 'HappyCMDB Monitoring'
     type: file
     disableDeletion: false
     updateIntervalSeconds: 30

@@ -1,10 +1,10 @@
-# ConfigBuddy Load Testing - Quick Start Guide
+# HappyCMDB Load Testing - Quick Start Guide
 
 ## 30-Second Quick Start
 
 ```bash
-# 1. Start ConfigBuddy
-cd /Users/nczitzer/WebstormProjects/configbuddy
+# 1. Start HappyCMDB
+cd /Users/nczitzer/WebstormProjects/happycmdb
 ./deploy.sh
 
 # 2. Run load tests
@@ -136,8 +136,8 @@ Database:
 # Check health
 curl http://localhost:3000/health
 
-# Restart ConfigBuddy
-cd /Users/nczitzer/WebstormProjects/configbuddy
+# Restart HappyCMDB
+cd /Users/nczitzer/WebstormProjects/happycmdb
 ./deploy.sh
 ```
 

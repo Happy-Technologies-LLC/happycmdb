@@ -1901,6 +1901,6 @@ All list endpoints support pagination:
 ## Support
 
 For issues or questions:
-- GitHub Issues: https://github.com/your-org/configbuddy/issues
-- Documentation: https://docs.configbuddy.io
-- Email: support@configbuddy.io
+- GitHub Issues: https://github.com/your-org/happycmdb/issues
+- Documentation: https://docs.happycmdb.io
+- Email: support@happycmdb.io

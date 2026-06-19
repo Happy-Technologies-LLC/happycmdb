@@ -13,7 +13,7 @@
 #
 # Examples:
 #   ./security-scan-docker.sh cmdb-api-server:latest
-#   ./security-scan-docker.sh all  # Scan all ConfigBuddy images
+#   ./security-scan-docker.sh all  # Scan all HappyCMDB images
 ###############################################################################
 
 set -e  # Exit on error
@@ -31,8 +31,8 @@ SCAN_RESULTS_DIR="./security-scan-results"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 SEVERITY_THRESHOLD="HIGH"  # Fail on HIGH or CRITICAL
 
-# ConfigBuddy images to scan
-CONFIGBUDDY_IMAGES=(
+# HappyCMDB images to scan
+HAPPYCMDB_IMAGES=(
   "cmdb-api-server:latest"
   "cmdb-web-ui:latest"
   "cmdb-discovery-engine:latest"
@@ -285,17 +285,17 @@ main() {
   # Create results directory
   mkdir -p "$SCAN_RESULTS_DIR"
 
-  print_header "ConfigBuddy Docker Image Security Scanner"
+  print_header "HappyCMDB Docker Image Security Scanner"
   echo "Timestamp: $TIMESTAMP"
   echo "Results directory: $SCAN_RESULTS_DIR"
   echo ""
 
   # Check if specific image provided or scan all
   if [ $# -eq 0 ] || [ "$1" == "all" ]; then
-    print_header "Scanning all ConfigBuddy images"
+    print_header "Scanning all HappyCMDB images"
 
     local failed_images=()
-    for image in "${CONFIGBUDDY_IMAGES[@]}"; do
+    for image in "${HAPPYCMDB_IMAGES[@]}"; do
       if ! scan_image "$image"; then
         failed_images+=("$image")
       fi

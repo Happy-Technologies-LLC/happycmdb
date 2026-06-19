@@ -230,7 +230,7 @@ export const ConnectorCatalog: React.FC = () => {
       <div>
         <h2 className="text-3xl font-bold tracking-tight">Connector Catalog</h2>
         <p className="text-muted-foreground mt-1">
-          Browse and install connectors from the ConfigBuddy registry
+          Browse and install connectors from the HappyCMDB registry
         </p>
       </div>
 

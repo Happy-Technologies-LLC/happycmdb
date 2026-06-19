@@ -1,11 +1,11 @@
 ---
 title: CLI Commands Reference
-description: Complete reference for all ConfigBuddy CLI commands
+description: Complete reference for all HappyCMDB CLI commands
 ---
 
 # CLI Commands Reference
 
-Complete reference for all ConfigBuddy command-line interface commands.
+Complete reference for all HappyCMDB command-line interface commands.
 
 ## Worker Management
 

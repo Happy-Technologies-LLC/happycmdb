@@ -1,5 +1,5 @@
 -- ============================================
--- ConfigBuddy v3.0 - Metabase Database Initialization
+-- HappyCMDB v3.0 - Metabase Database Initialization
 -- ============================================
 -- This script creates the Metabase application database and users
 -- Run this as PostgreSQL superuser before starting Metabase
@@ -110,4 +110,4 @@ SELECT usename FROM pg_user WHERE usename IN ('metabase_user', 'metabase_readonl
 -- WHERE grantee = 'metabase_readonly' AND privilege_type = 'SELECT'
 -- ORDER BY table_schema, table_name;
 
-COMMENT ON DATABASE metabase IS 'Metabase application database for ConfigBuddy v3.0 BI';
+COMMENT ON DATABASE metabase IS 'Metabase application database for HappyCMDB v3.0 BI';

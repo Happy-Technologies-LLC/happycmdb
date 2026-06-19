@@ -4,7 +4,7 @@
 /**
  * Event Types Index
  *
- * Exports all event types for ConfigBuddy v3.0 event streaming
+ * Exports all event types for HappyCMDB v3.0 event streaming
  */
 
 export * from './discovery-events';

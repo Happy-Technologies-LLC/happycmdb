@@ -1,6 +1,6 @@
-# ConfigBuddy OpenAPI Documentation
+# HappyCMDB OpenAPI Documentation
 
-This directory contains the comprehensive OpenAPI 3.0 specification for the ConfigBuddy CMDB REST API.
+This directory contains the comprehensive OpenAPI 3.0 specification for the HappyCMDB REST API.
 
 ## Overview
 
@@ -408,11 +408,11 @@ When adding new endpoints:
 - **Swagger Editor**: https://editor.swagger.io/ (paste YAML for validation)
 - **OpenAPI Specification**: https://swagger.io/specification/
 - **Swagger UI Documentation**: https://swagger.io/tools/swagger-ui/
-- **ConfigBuddy Docs**: http://localhost:8080
+- **HappyCMDB Docs**: http://localhost:8080
 
 ## Support
 
 For issues or questions about the API:
-- GitHub Issues: https://github.com/configbuddy/configbuddy/issues
+- GitHub Issues: https://github.com/happycmdb/happycmdb/issues
 - Documentation: http://localhost:8080
-- Email: support@configbuddy.io
+- Email: support@happycmdb.io

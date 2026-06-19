@@ -7,7 +7,7 @@
   "name": "Zendesk",
   "version": "1.0.0",
   "description": "Integration with Zendesk for IT support tickets and incidents (read-only for dashboard reference)",
-  "author": "ConfigBuddy",
+  "author": "HappyCMDB",
   "verified": true,
   "icon": "zendesk",
   "provider": "zendesk",

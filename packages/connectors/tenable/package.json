@@ -1,7 +1,7 @@
 {
   "name": "@cmdb/connector-tenable",
   "version": "1.0.0",
-  "description": "Tenable.io vulnerability management connector for ConfigBuddy CMDB",
+  "description": "Tenable.io vulnerability management connector for HappyCMDB",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
@@ -19,7 +19,7 @@
     "vulnerability-scanning",
     "nessus"
   ],
-  "author": "ConfigBuddy",
+  "author": "HappyCMDB",
   "license": "Apache-2.0",
   "dependencies": {
     "@cmdb/common": "*",

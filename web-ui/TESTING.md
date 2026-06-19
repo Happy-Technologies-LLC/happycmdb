@@ -2,7 +2,7 @@
 
 ## Overview
 
-Comprehensive React Testing Library test suite for ConfigBuddy's critical user flows.
+Comprehensive React Testing Library test suite for HappyCMDB's critical user flows.
 
 ## Test Infrastructure
 

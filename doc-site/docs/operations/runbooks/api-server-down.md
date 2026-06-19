@@ -100,7 +100,7 @@ docker stop cmdb-api-server
 docker rm cmdb-api-server
 
 # Rebuild image
-cd /Users/nczitzer/WebstormProjects/configbuddy
+cd /Users/nczitzer/WebstormProjects/happycmdb
 docker-compose -f infrastructure/docker/docker-compose.yml build api-server
 
 # Start fresh container

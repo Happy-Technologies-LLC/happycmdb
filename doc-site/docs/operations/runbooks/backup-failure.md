@@ -89,11 +89,11 @@ docker exec cmdb-postgres psql -U cmdb_user -d cmdb -c \
 ```bash
 # If using cloud storage (S3, Azure Blob, GCS)
 # AWS S3
-aws s3 ls s3://configbuddy-backups/neo4j/ --recursive | tail -10
-aws s3 ls s3://configbuddy-backups/postgresql/ --recursive | tail -10
+aws s3 ls s3://happycmdb-backups/neo4j/ --recursive | tail -10
+aws s3 ls s3://happycmdb-backups/postgresql/ --recursive | tail -10
 
 # Check storage access permissions
-aws s3 cp /tmp/test.txt s3://configbuddy-backups/test.txt
+aws s3 cp /tmp/test.txt s3://happycmdb-backups/test.txt
 ```
 
 ## Resolution Steps
@@ -158,14 +158,14 @@ pg_restore --list /backup/postgresql/cmdb-backup-$(date +%Y%m%d-%H%M%S).dump.gz 
 ```bash
 # Upload to S3
 aws s3 cp /backup/neo4j/neo4j-backup-$(date +%Y%m%d-%H%M%S).tar.gz \
-  s3://configbuddy-backups/neo4j/
+  s3://happycmdb-backups/neo4j/
 
 aws s3 cp /backup/postgresql/cmdb-backup-$(date +%Y%m%d-%H%M%S).dump.gz \
-  s3://configbuddy-backups/postgresql/
+  s3://happycmdb-backups/postgresql/
 
 # Verify upload
-aws s3 ls s3://configbuddy-backups/neo4j/ | tail -5
-aws s3 ls s3://configbuddy-backups/postgresql/ | tail -5
+aws s3 ls s3://happycmdb-backups/neo4j/ | tail -5
+aws s3 ls s3://happycmdb-backups/postgresql/ | tail -5
 ```
 
 ### Step 4: Fix Backup Job Issues
@@ -379,7 +379,7 @@ tar tzf /backup/neo4j/neo4j-backup-YYYYMMDD.tar.gz > /dev/null && echo "OK" || e
 du -sh /backup/neo4j/*.tar.gz | tail -5
 
 # Test cloud backup
-aws s3 ls s3://configbuddy-backups/ --recursive | tail -20
+aws s3 ls s3://happycmdb-backups/ --recursive | tail -20
 
 # Manual backup all databases
 /usr/local/bin/backup-databases.sh

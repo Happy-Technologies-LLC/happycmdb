@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Cost Event Consumer for ConfigBuddy v3.0
+ * Cost Event Consumer for HappyCMDB v3.0
  *
  * Consumes cost allocation, update, and anomaly events from Kafka
  */

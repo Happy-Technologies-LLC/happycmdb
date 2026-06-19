@@ -6,7 +6,7 @@
   "name": "AppDynamics APM",
   "version": "1.0.0",
   "description": "Integration with AppDynamics Application Performance Monitoring for discovering applications, tiers, nodes, and backend dependencies",
-  "author": "ConfigBuddy",
+  "author": "HappyCMDB",
   "verified": true,
   "capabilities": {
     "extraction": true,

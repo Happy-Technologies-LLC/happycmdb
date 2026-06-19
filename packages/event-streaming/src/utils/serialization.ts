@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Event Serialization Utilities for ConfigBuddy v3.0
+ * Event Serialization Utilities for HappyCMDB v3.0
  *
  * Handles serialization and deserialization of events
  */

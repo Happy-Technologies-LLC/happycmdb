@@ -1,4 +1,4 @@
-# ConfigBuddy Production Monitoring - Quick Reference Card
+# HappyCMDB Production Monitoring - Quick Reference Card
 
 **Print this page and keep it handy during on-call shifts!**
 
@@ -24,7 +24,7 @@
 | **Grafana Dashboards** | http://localhost:3001 |
 | **Prometheus Alerts** | http://localhost:9090/alerts |
 | **API Health Check** | http://localhost:3000/health |
-| **Status Page Admin** | https://status.configbuddy.com |
+| **Status Page Admin** | https://status.happycmdb.com |
 | **Runbooks** | /docs/operations/runbooks/ |
 
 ---

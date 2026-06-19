@@ -125,7 +125,7 @@ export const AgentDashboard: React.FC = () => {
                   <div># Download and install the agent</div>
                   <div>npm install -g @cmdb/agent</div>
                   <div className="mt-2"># Or with Docker</div>
-                  <div>docker pull configbuddy/agent:latest</div>
+                  <div>docker pull happycmdb/agent:latest</div>
                 </div>
               </div>
 
@@ -152,7 +152,7 @@ export const AgentDashboard: React.FC = () => {
                   <div className="ml-4">-e CMDB_CAPABILITIES=nmap,ssh \</div>
                   <div className="ml-4">-e CMDB_NETWORKS=10.0.0.0/8 \</div>
                   <div className="ml-4">--cap-add=NET_RAW --cap-add=NET_ADMIN \</div>
-                  <div className="ml-4">configbuddy/agent:latest</div>
+                  <div className="ml-4">happycmdb/agent:latest</div>
                 </div>
               </div>
 

@@ -1,8 +1,8 @@
 {
   "dashboard": {
-    "title": "ConfigBuddy v3.0 - ITIL Service Management",
+    "title": "HappyCMDB v3.0 - ITIL Service Management",
     "uid": "v3-itil-service-mgmt",
-    "tags": ["configbuddy", "v3.0", "itil", "itsm"],
+    "tags": ["happycmdb", "v3.0", "itil", "itsm"],
     "timezone": "browser",
     "schemaVersion": 38,
     "version": 1,

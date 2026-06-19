@@ -6,7 +6,7 @@
   "name": "Microsoft Intune",
   "version": "1.0.0",
   "description": "Integration with Microsoft Intune for mobile device management, applications, and compliance policies",
-  "author": "ConfigBuddy",
+  "author": "HappyCMDB",
   "verified": true,
   "capabilities": {
     "extraction": true,

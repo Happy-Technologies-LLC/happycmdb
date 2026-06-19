@@ -1,10 +1,10 @@
-# ConfigBuddy Load Testing Suite
+# HappyCMDB Load Testing Suite
 
-Comprehensive load testing and performance benchmarking for ConfigBuddy v2.0 using [k6](https://k6.io/).
+Comprehensive load testing and performance benchmarking for HappyCMDB v2.0 using [k6](https://k6.io/).
 
 ## Overview
 
-This suite tests ConfigBuddy's performance under various load conditions:
+This suite tests HappyCMDB's performance under various load conditions:
 
 - **API Endpoints**: REST API performance (smoke, load, stress, spike scenarios)
 - **GraphQL Queries**: Query complexity, nested relationships, mixed workloads
@@ -32,12 +32,12 @@ docker-compose -f docker-compose.loadtest.yml up
 
 ## Quick Start
 
-### 1. Start ConfigBuddy
+### 1. Start HappyCMDB
 
-Ensure ConfigBuddy services are running:
+Ensure HappyCMDB services are running:
 
 ```bash
-cd /Users/nczitzer/WebstormProjects/configbuddy
+cd /Users/nczitzer/WebstormProjects/happycmdb
 ./deploy.sh
 ```
 
@@ -387,7 +387,7 @@ Run nightly performance tests:
 
 ```bash
 # Add to crontab
-0 2 * * * cd /path/to/configbuddy/infrastructure/testing/load && ./run-loadtest.sh all
+0 2 * * * cd /path/to/happycmdb/infrastructure/testing/load && ./run-loadtest.sh all
 ```
 
 ## Troubleshooting
@@ -406,8 +406,8 @@ brew install k6  # macOS
 # Check if API is running
 curl http://localhost:3000/health
 
-# Start ConfigBuddy if not running
-cd /Users/nczitzer/WebstormProjects/configbuddy
+# Start HappyCMDB if not running
+cd /Users/nczitzer/WebstormProjects/happycmdb
 ./deploy.sh
 ```
 
@@ -445,7 +445,7 @@ chmod -R 755 reports/
 
 ## Performance Baselines
 
-### Expected Performance (ConfigBuddy v2.0)
+### Expected Performance (HappyCMDB v2.0)
 
 | Metric | Target | Production |
 |--------|--------|------------|
@@ -464,12 +464,12 @@ chmod -R 755 reports/
 - [k6 Documentation](https://k6.io/docs/)
 - [k6 Examples](https://k6.io/docs/examples/)
 - [Performance Testing Best Practices](https://k6.io/docs/testing-guides/load-testing/)
-- [ConfigBuddy Documentation](http://localhost:8080)
+- [HappyCMDB Documentation](http://localhost:8080)
 
 ## Support
 
 For issues or questions:
 
 1. Check the [troubleshooting section](#troubleshooting)
-2. Review [ConfigBuddy documentation](http://localhost:8080)
+2. Review [HappyCMDB documentation](http://localhost:8080)
 3. Open an issue in the project repository

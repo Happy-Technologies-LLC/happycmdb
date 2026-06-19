@@ -2,7 +2,7 @@
 
 ## Overview
 
-Complete implementation of Microsoft Defender for Endpoint connector for ConfigBuddy CMDB platform.
+Complete implementation of Microsoft Defender for Endpoint connector for HappyCMDB platform.
 
 **Implementation Date**: 2025-10-10
 **Version**: 1.0.0
@@ -318,7 +318,7 @@ npm run build
 
 ## File Locations
 
-All files located at: `/Users/nczitzer/WebstormProjects/configbuddy/packages/connectors/defender/`
+All files located at: `/Users/nczitzer/WebstormProjects/happycmdb/packages/connectors/defender/`
 
 ```
 defender/
@@ -337,7 +337,7 @@ defender/
 
 ## Conclusion
 
-Complete, production-ready Microsoft Defender for Endpoint connector implementation following ConfigBuddy's multi-resource connector pattern. Includes:
+Complete, production-ready Microsoft Defender for Endpoint connector implementation following HappyCMDB's multi-resource connector pattern. Includes:
 
 - ✅ Full Azure AD OAuth 2.0 authentication
 - ✅ 4 resource extractors with filtering

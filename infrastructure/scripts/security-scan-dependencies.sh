@@ -331,7 +331,7 @@ main() {
   # Create results directory
   mkdir -p "$SCAN_RESULTS_DIR"
 
-  print_header "ConfigBuddy Dependency Security Scanner"
+  print_header "HappyCMDB Dependency Security Scanner"
   echo "Timestamp: $TIMESTAMP"
   echo "Results directory: $SCAN_RESULTS_DIR"
   echo ""

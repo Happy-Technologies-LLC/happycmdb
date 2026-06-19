@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [main, develop]
 
+permissions:
+  contents: read
+  checks: write
+  pull-requests: write
+
 jobs:
   unit-tests:
     name: Unit Tests
@@ -14,7 +19,7 @@ jobs:
 
     strategy:
       matrix:
-        node-version: [20.x]
+        node-version: [22.x]
 
     steps:
       - name: Checkout code
@@ -49,14 +54,11 @@ jobs:
   integration-tests:
     name: Integration Tests
     runs-on: ubuntu-latest
-    # Non-blocking: pre-existing test-level rot (undeclared deps, API drift).
-    # Runs for visibility but must not gate merges until repaired. Tracked in #9.
-    continue-on-error: true
     timeout-minutes: 20
 
     strategy:
       matrix:
-        node-version: [20.x]
+        node-version: [22.x]
 
     steps:
       - name: Checkout code
@@ -91,14 +93,11 @@ jobs:
   e2e-tests:
     name: E2E Tests
     runs-on: ubuntu-latest
-    # Non-blocking: pre-existing test-level rot / full-stack deps.
-    # Runs for visibility but must not gate merges until repaired. Tracked in #9.
-    continue-on-error: true
     timeout-minutes: 30
 
     strategy:
       matrix:
-        node-version: [20.x]
+        node-version: [22.x]
 
     steps:
       - name: Checkout code
@@ -126,8 +125,6 @@ jobs:
   test-report:
     name: Generate Test Report
     runs-on: ubuntu-latest
-    # Non-blocking: cascades from the WIP integration/e2e suites above. Tracked in #9.
-    continue-on-error: true
     needs: [unit-tests, integration-tests, e2e-tests]
     if: always()
 
@@ -139,6 +136,7 @@ jobs:
 
       - name: Publish Test Results
         uses: EnricoMi/publish-unit-test-result-action@v2
+        continue-on-error: true
         with:
           files: |
             test-results/**/*.xml
@@ -148,8 +146,6 @@ jobs:
   coverage-report:
     name: Coverage Report
     runs-on: ubuntu-latest
-    # Non-blocking: full-coverage run depends on the WIP integration suite. Tracked in #9.
-    continue-on-error: true
     needs: [unit-tests, integration-tests]
     if: always()
 
@@ -160,7 +156,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20.x
+          node-version: 22.x
           cache: 'npm'
 
       - name: Install dependencies
@@ -178,6 +174,7 @@ jobs:
 
       - name: Comment coverage on PR
         uses: romeovs/lcov-reporter-action@v0.3.1
+        continue-on-error: true
         if: github.event_name == 'pull_request'
         with:
           lcov-file: ./coverage/lcov.info

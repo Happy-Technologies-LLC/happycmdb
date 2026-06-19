@@ -23,6 +23,7 @@ jest.mock('@cmdb/common', () => ({
     warn: jest.fn(),
     error: jest.fn(),
   },
+  sanitizeCITypeForLabel: (ciType: string): string => ciType.replace(/-/g, '_').toLowerCase(),
 }));
 
 const mockNeo4jClient = {

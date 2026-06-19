@@ -4,132 +4,163 @@
 /**
  * Connector Lifecycle Integration Tests
  *
- * Tests the full connector install/update/uninstall workflow, connector execution
- * with real connectors, and connector configuration management with real database
- * connections and Neo4j.
+ * Service-level coverage of ConnectorRegistry, ConnectorInstaller and
+ * ConnectorExecutor against the shared (global) Postgres + Neo4j containers.
+ * The full canonical schema (installed_connectors, connector_configurations,
+ * connector_run_history, ...) is already loaded by the global setup.
  */
 
 import { Pool } from 'pg';
-import neo4j, { Driver, Session } from 'neo4j-driver';
-import { GenericContainer, StartedTestContainer, Wait } from 'testcontainers';
+import neo4j, { Driver } from 'neo4j-driver';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
+import { execSync } from 'child_process';
+import { v4 as uuidv4 } from 'uuid';
+import { getPostgresClient } from '@cmdb/database';
 import { ConnectorRegistry } from '../../src/registry/connector-registry';
 import { ConnectorInstaller } from '../../src/installer/connector-installer';
 import { ConnectorExecutor } from '../../src/executor/connector-executor';
-import {
-  ConnectorMetadata,
-  ConnectorConfiguration,
-  InstalledConnector,
-} from '../../src/types/connector.types';
-import * as fs from 'fs';
-import * as path from 'path';
-import { v4 as uuidv4 } from 'uuid';
+import { ConnectorMetadata } from '../../src/types/connector.types';
+
+/**
+ * Build a canonical-shaped connector.json payload for a given type/version.
+ * Named because it encodes the required ConnectorMetadata contract (category,
+ * capabilities, ...) reused by every install test.
+ */
+function makeMeta(
+  type: string,
+  version: string,
+  overrides: Partial<ConnectorMetadata> = {}
+): ConnectorMetadata {
+  return {
+    type,
+    name: `Connector ${type}`,
+    version,
+    description: `Test connector ${type}`,
+    author: 'integration-test',
+    verified: false,
+    category: 'connector',
+    resources: [
+      {
+        id: 'servers',
+        name: 'Servers',
+        description: 'Server resources',
+        ci_type: 'server',
+        operations: ['extract', 'transform'],
+        enabled_by_default: true,
+        field_mappings: { name: '$.name', status: '$.state' },
+      },
+    ],
+    capabilities: {
+      extraction: true,
+      relationships: false,
+      incremental: false,
+      bidirectional: false,
+    },
+    configuration_schema: {},
+    ...overrides,
+  };
+}
+
+/**
+ * Package a connector directory into a .tar.gz the real installer can consume
+ * via installConnector(type, { localPath }). The installer extracts the archive,
+ * runs `npm install` + build, then reads connector.json and dist/index.js — so
+ * the archive layout (connector.json / package.json / dist) mirrors a real
+ * published connector package.
+ */
+function buildTarball(
+  buildRoot: string,
+  name: string,
+  connectorJson: unknown,
+  opts: { dist?: boolean; packageJson?: boolean } = {}
+): string {
+  const dir = fs.mkdtempSync(path.join(buildRoot, `${name}-`));
+  const entries: string[] = ['connector.json'];
+  fs.writeFileSync(
+    path.join(dir, 'connector.json'),
+    JSON.stringify(connectorJson, null, 2)
+  );
+
+  if (opts.packageJson !== false) {
+    fs.writeFileSync(
+      path.join(dir, 'package.json'),
+      JSON.stringify({ name, version: '1.0.0', private: true }, null, 2)
+    );
+    entries.push('package.json');
+  }
+
+  if (opts.dist !== false) {
+    fs.mkdirSync(path.join(dir, 'dist'), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, 'dist', 'index.js'),
+      'class TestConnector { async discover() { return []; } }\n' +
+        'module.exports = TestConnector;\n' +
+        'module.exports.default = TestConnector;\n'
+    );
+    entries.push('dist');
+  }
+
+  const tarball = path.join(dir, `${name}.tar.gz`);
+  execSync(`tar -czf "${tarball}" -C "${dir}" ${entries.join(' ')}`);
+  return tarball;
+}
+
+interface ConfigRow {
+  name: string;
+  description: string | null;
+  connector_type: string;
+  enabled: boolean;
+  schedule: string | null;
+}
 
 describe('Connector Lifecycle Integration Tests', () => {
-  let postgresContainer: StartedTestContainer;
-  let neo4jContainer: StartedTestContainer;
   let pool: Pool;
   let neo4jDriver: Driver;
-  let connectorRegistry: ConnectorRegistry;
-  let connectorInstaller: ConnectorInstaller;
-  let connectorExecutor: ConnectorExecutor;
+  let registry: ConnectorRegistry;
+  let installer: ConnectorInstaller;
+  let executor: ConnectorExecutor;
+  let connectorsDir: string;
+  let buildRoot: string;
+
   const createdConfigIds: string[] = [];
-  const testConnectorPath = '/tmp/test-connectors';
+  const installedTypes: string[] = [];
 
-  beforeAll(async () => {
-    // Start PostgreSQL container
-    postgresContainer = await new GenericContainer('postgres:15')
-      .withEnvironment({
-        POSTGRES_USER: 'testuser',
-        POSTGRES_PASSWORD: 'testpassword',
-        POSTGRES_DB: 'cmdb_test',
-      })
-      .withExposedPorts(5432)
-      .withWaitStrategy(Wait.forLogMessage(/database system is ready to accept connections/))
-      .withStartupTimeout(60000)
-      .start();
+  beforeAll(() => {
+    pool = getPostgresClient().pool;
+    neo4jDriver = neo4j.driver(
+      process.env.NEO4J_URI!,
+      neo4j.auth.basic(process.env.NEO4J_USERNAME!, process.env.NEO4J_PASSWORD!)
+    );
 
-    const postgresHost = postgresContainer.getHost();
-    const postgresPort = postgresContainer.getMappedPort(5432);
+    connectorsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cmdb-connectors-'));
+    buildRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'cmdb-connector-build-'));
 
-    pool = new Pool({
-      host: postgresHost,
-      port: postgresPort,
-      user: 'testuser',
-      password: 'testpassword',
-      database: 'cmdb_test',
-    });
-
-    // Start Neo4j container
-    neo4jContainer = await new GenericContainer('neo4j:5.13.0')
-      .withEnvironment({
-        NEO4J_AUTH: 'neo4j/testpassword',
-        NEO4J_PLUGINS: '["apoc"]',
-        NEO4J_dbms_security_procedures_unrestricted: 'apoc.*',
-      })
-      .withExposedPorts(7687)
-      .withWaitStrategy(Wait.forLogMessage(/Started/))
-      .withStartupTimeout(120000)
-      .start();
-
-    const neo4jHost = neo4jContainer.getHost();
-    const neo4jPort = neo4jContainer.getMappedPort(7687);
-    const neo4jUri = `bolt://${neo4jHost}:${neo4jPort}`;
-
-    neo4jDriver = neo4j.driver(neo4jUri, neo4j.auth.basic('neo4j', 'testpassword'));
-    await waitForNeo4j(neo4jDriver);
-
-    // Initialize schemas
-    await initializePostgresSchema(pool);
-    await initializeNeo4jSchema(neo4jDriver);
-
-    // Create test connector directory
-    if (!fs.existsSync(testConnectorPath)) {
-      fs.mkdirSync(testConnectorPath, { recursive: true });
-    }
-
-    // Initialize services
-    connectorRegistry = ConnectorRegistry.getInstance();
-    connectorInstaller = new ConnectorInstaller();
-    connectorExecutor = new ConnectorExecutor(neo4jDriver);
-
-    // Override postgres client in services
-    (connectorInstaller as any).postgresClient = {
-      getClient: async () => pool.connect(),
-      query: (sql: string, params: any[]) => pool.query(sql, params),
-    };
-    (connectorRegistry as any).postgresClient = {
-      getClient: async () => pool.connect(),
-      query: (sql: string, params: any[]) => pool.query(sql, params),
-    };
-  }, 180000);
-
-  afterAll(async () => {
-    // Cleanup created configurations
-    for (const configId of createdConfigIds) {
-      try {
-        await pool.query('DELETE FROM connector_configurations WHERE id = $1', [configId]);
-      } catch (error) {
-        // Ignore cleanup errors
-      }
-    }
-
-    // Cleanup test connector directory
-    if (fs.existsSync(testConnectorPath)) {
-      fs.rmSync(testConnectorPath, { recursive: true, force: true });
-    }
-
-    await neo4jDriver.close();
-    await pool.end();
-    await neo4jContainer.stop();
-    await postgresContainer.stop();
+    registry = ConnectorRegistry.getInstance();
+    installer = ConnectorInstaller.getInstance(connectorsDir);
+    executor = ConnectorExecutor.getInstance();
   });
 
   afterEach(async () => {
-    // Clean up after each test
-    await pool.query('DELETE FROM connector_configurations WHERE id = ANY($1)', [createdConfigIds]);
-    createdConfigIds.length = 0;
+    if (createdConfigIds.length > 0) {
+      // connector_run_history cascades from connector_configurations.
+      await pool.query(
+        'DELETE FROM connector_configurations WHERE id = ANY($1::uuid[])',
+        [createdConfigIds]
+      );
+      createdConfigIds.length = 0;
+    }
 
-    // Clean Neo4j
+    if (installedTypes.length > 0) {
+      // connector_configurations cascades from installed_connectors.
+      await pool.query(
+        'DELETE FROM installed_connectors WHERE connector_type = ANY($1::text[])',
+        [installedTypes]
+      );
+      installedTypes.length = 0;
+    }
+
     const session = neo4jDriver.session();
     try {
       await session.run('MATCH (n) DETACH DELETE n');
@@ -138,424 +169,197 @@ describe('Connector Lifecycle Integration Tests', () => {
     }
   });
 
+  afterAll(async () => {
+    await neo4jDriver.close();
+    fs.rmSync(connectorsDir, { recursive: true, force: true });
+    fs.rmSync(buildRoot, { recursive: true, force: true });
+  });
+
   describe('Connector Installation', () => {
-    it('should install a JSON-only connector', async () => {
-      // Create test JSON connector
-      const connectorId = `test-json-connector-${Date.now()}`;
-      const connectorMetadata: ConnectorMetadata = {
-        id: connectorId,
-        name: 'Test JSON Connector',
-        version: '1.0.0',
-        type: 'json-only',
-        description: 'Test JSON-only connector for integration testing',
-        auth: {
-          type: 'api_key',
-          fields: [
-            { name: 'api_key', type: 'string', required: true, sensitive: true },
-          ],
-        },
-        resources: [
-          {
-            type: 'test-resource',
-            ci_type: 'application',
-            endpoint: '/api/resources',
-            method: 'GET',
-            pagination: { type: 'offset', limit_param: 'limit', offset_param: 'offset' },
-            field_mappings: {
-              ci_name: '$.name',
-              ci_type: 'application',
-              'metadata.status': '$.status',
-            },
-          },
-        ],
-        tags: ['test', 'json'],
-      };
+    it('should install a connector package and register it', async () => {
+      const type = `json-connector-${Date.now()}`;
+      installedTypes.push(type);
+      const tarball = buildTarball(buildRoot, type, makeMeta(type, '1.0.0'));
 
-      createTestConnector(testConnectorPath, connectorId, connectorMetadata);
+      await installer.installConnector(type, { localPath: tarball });
 
-      // Install connector
-      const installedPath = await connectorInstaller.install(
-        path.join(testConnectorPath, connectorId)
-      );
+      const status = await installer.getConnectorStatus(type);
+      expect(status.installed).toBe(true);
+      expect(status.version).toBe('1.0.0');
+      expect(status.install_path).toContain(type);
 
-      expect(installedPath).toContain(connectorId);
-      expect(fs.existsSync(installedPath)).toBe(true);
+      expect(registry.hasConnectorType(type)).toBe(true);
 
-      // Verify connector is registered
-      const installedConnectors = await connectorInstaller.listInstalled();
-      const connector = installedConnectors.find(c => c.id === connectorId);
+      const installed = await installer.listInstalledConnectors();
+      const connector = installed.find((c) => c.connector_type === type);
       expect(connector).toBeDefined();
-      expect(connector?.name).toBe('Test JSON Connector');
-      expect(connector?.type).toBe('json-only');
+      expect(connector?.version).toBe('1.0.0');
+      expect(connector?.metadata.name).toBe(`Connector ${type}`);
+      expect(connector?.metadata.category).toBe('connector');
     }, 60000);
 
-    it('should install a TypeScript connector', async () => {
-      // Create test TypeScript connector
-      const connectorId = `test-ts-connector-${Date.now()}`;
-      const connectorMetadata: ConnectorMetadata = {
-        id: connectorId,
-        name: 'Test TypeScript Connector',
-        version: '1.0.0',
-        type: 'typescript',
-        description: 'Test TypeScript connector for integration testing',
-        auth: {
-          type: 'basic',
-          fields: [
-            { name: 'username', type: 'string', required: true, sensitive: false },
-            { name: 'password', type: 'string', required: true, sensitive: true },
-          ],
-        },
-        resources: [
-          {
-            type: 'server',
-            ci_type: 'server',
-            endpoint: '/api/servers',
-            method: 'GET',
-            pagination: { type: 'cursor', cursor_param: 'cursor' },
-            field_mappings: {
-              ci_name: '$.hostname',
-              ci_type: 'server',
-              'metadata.ip_address': '$.ip',
-            },
-          },
-        ],
-        tags: ['test', 'typescript'],
-      };
-
-      createTestConnector(testConnectorPath, connectorId, connectorMetadata, true);
-
-      // Install connector
-      const installedPath = await connectorInstaller.install(
-        path.join(testConnectorPath, connectorId)
+    it('should install a second connector with a distinct type', async () => {
+      const type = `ts-connector-${Date.now()}`;
+      installedTypes.push(type);
+      const tarball = buildTarball(
+        buildRoot,
+        type,
+        makeMeta(type, '1.0.0', { name: 'TypeScript Connector' })
       );
 
-      expect(installedPath).toContain(connectorId);
+      await installer.installConnector(type, { localPath: tarball });
 
-      // Verify connector is registered
-      const installedConnectors = await connectorInstaller.listInstalled();
-      const connector = installedConnectors.find(c => c.id === connectorId);
+      const installed = await installer.listInstalledConnectors();
+      const connector = installed.find((c) => c.connector_type === type);
       expect(connector).toBeDefined();
-      expect(connector?.type).toBe('typescript');
+      expect(connector?.metadata.name).toBe('TypeScript Connector');
+      expect(connector?.metadata.type).toBe(type);
     }, 60000);
 
-    it('should reject installation of connector with invalid metadata', async () => {
-      const connectorId = `invalid-connector-${Date.now()}`;
-      const invalidMetadata = {
-        id: connectorId,
-        // Missing required fields
-        version: '1.0.0',
-      };
-
-      const connectorDir = path.join(testConnectorPath, connectorId);
-      fs.mkdirSync(connectorDir, { recursive: true });
-      fs.writeFileSync(
-        path.join(connectorDir, 'connector.json'),
-        JSON.stringify(invalidMetadata, null, 2)
+    it('should reject a package whose connector.json type does not match the requested type', async () => {
+      const type = `mismatch-connector-${Date.now()}`;
+      installedTypes.push(type);
+      // connector.json advertises a different type than the one we install as.
+      const tarball = buildTarball(
+        buildRoot,
+        type,
+        makeMeta(`${type}-other`, '1.0.0')
       );
 
       await expect(
-        connectorInstaller.install(connectorDir)
-      ).rejects.toThrow();
+        installer.installConnector(type, { localPath: tarball })
+      ).rejects.toThrow(/type mismatch/i);
+    }, 60000);
+
+    it('should reject a package missing the built implementation (dist/index.js)', async () => {
+      const type = `nodist-connector-${Date.now()}`;
+      installedTypes.push(type);
+      const tarball = buildTarball(buildRoot, type, makeMeta(type, '1.0.0'), {
+        dist: false,
+      });
+
+      await expect(
+        installer.installConnector(type, { localPath: tarball })
+      ).rejects.toThrow(/implementation not found/i);
     }, 60000);
   });
 
   describe('Connector Configuration Management', () => {
-    it('should create and retrieve connector configuration', async () => {
-      // Create test connector
-      const connectorId = `config-test-connector-${Date.now()}`;
-      const metadata: ConnectorMetadata = {
-        id: connectorId,
-        name: 'Config Test Connector',
-        version: '1.0.0',
-        type: 'json-only',
-        description: 'Test connector for configuration',
-        auth: {
-          type: 'api_key',
-          fields: [{ name: 'api_key', type: 'string', required: true, sensitive: true }],
-        },
-        resources: [
-          {
-            type: 'test-resource',
-            ci_type: 'application',
-            endpoint: '/api/test',
-            method: 'GET',
-            pagination: { type: 'none' },
-            field_mappings: { ci_name: '$.name', ci_type: 'application' },
-          },
-        ],
-        tags: ['test'],
-      };
+    async function installFixtureConnector(type: string): Promise<void> {
+      installedTypes.push(type);
+      const tarball = buildTarball(buildRoot, type, makeMeta(type, '1.0.0'));
+      await installer.installConnector(type, { localPath: tarball });
+    }
 
-      createTestConnector(testConnectorPath, connectorId, metadata);
-      await connectorInstaller.install(path.join(testConnectorPath, connectorId));
+    it('should create and retrieve a connector configuration', async () => {
+      const type = `config-connector-${Date.now()}`;
+      await installFixtureConnector(type);
 
-      // Create configuration
       const configId = uuidv4();
-      const config: ConnectorConfiguration = {
-        id: configId,
-        connector_id: connectorId,
-        name: 'Test Configuration',
-        description: 'Test connector configuration',
-        credentials: {
-          api_key: 'test-api-key-12345',
-        },
-        base_url: 'https://api.example.com',
-        config: {
-          timeout: 30000,
-          retry_count: 3,
-        },
-        schedule: '0 */6 * * *',
-        is_active: true,
-        tags: ['test'],
-        created_by: 'test-user',
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      };
-
+      createdConfigIds.push(configId);
       await pool.query(
         `INSERT INTO connector_configurations (
-          id, connector_id, name, description, credentials, base_url,
-          config, schedule, is_active, tags, created_by
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+          id, name, description, connector_type, connection, options,
+          enabled, schedule, created_by
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
         [
           configId,
-          connectorId,
-          config.name,
-          config.description,
-          JSON.stringify(config.credentials),
-          config.base_url,
-          config.config,
-          config.schedule,
-          config.is_active,
-          config.tags,
-          config.created_by,
+          `Config ${configId}`,
+          'Test connector configuration',
+          type,
+          { api_key: 'test-api-key-12345', base_url: 'https://api.example.com' },
+          { timeout: 30000, retry_count: 3 },
+          true,
+          '0 */6 * * *',
+          'test-user',
         ]
       );
 
-      createdConfigIds.push(configId);
-
-      // Retrieve configuration
-      const result = await pool.query(
+      const result = await pool.query<ConfigRow>(
         'SELECT * FROM connector_configurations WHERE id = $1',
         [configId]
       );
 
       expect(result.rows.length).toBe(1);
-      expect(result.rows[0].name).toBe('Test Configuration');
-      expect(result.rows[0].connector_id).toBe(connectorId);
-      expect(result.rows[0].is_active).toBe(true);
+      expect(result.rows[0].name).toBe(`Config ${configId}`);
+      expect(result.rows[0].connector_type).toBe(type);
+      expect(result.rows[0].enabled).toBe(true);
     }, 60000);
 
-    it('should update connector configuration', async () => {
-      const connectorId = `update-test-connector-${Date.now()}`;
-      const metadata: ConnectorMetadata = {
-        id: connectorId,
-        name: 'Update Test Connector',
-        version: '1.0.0',
-        type: 'json-only',
-        description: 'Test connector for updates',
-        auth: {
-          type: 'api_key',
-          fields: [{ name: 'api_key', type: 'string', required: true, sensitive: true }],
-        },
-        resources: [
-          {
-            type: 'test-resource',
-            ci_type: 'application',
-            endpoint: '/api/test',
-            method: 'GET',
-            pagination: { type: 'none' },
-            field_mappings: { ci_name: '$.name', ci_type: 'application' },
-          },
-        ],
-        tags: ['test'],
-      };
+    it('should update a connector configuration', async () => {
+      const type = `update-connector-${Date.now()}`;
+      await installFixtureConnector(type);
 
-      createTestConnector(testConnectorPath, connectorId, metadata);
-      await connectorInstaller.install(path.join(testConnectorPath, connectorId));
-
-      // Create initial configuration
       const configId = uuidv4();
+      createdConfigIds.push(configId);
       await pool.query(
         `INSERT INTO connector_configurations (
-          id, connector_id, name, description, credentials, base_url,
-          config, schedule, is_active, tags, created_by
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+          id, name, description, connector_type, connection, enabled, schedule, created_by
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
         [
           configId,
-          connectorId,
-          'Initial Config',
+          `Initial ${configId}`,
           'Initial description',
-          JSON.stringify({ api_key: 'initial-key' }),
-          'https://initial.example.com',
-          {},
-          '0 0 * * *',
+          type,
+          { api_key: 'initial-key' },
           true,
-          ['initial'],
+          '0 0 * * *',
           'test-user',
         ]
       );
 
-      createdConfigIds.push(configId);
-
-      // Update configuration
       await pool.query(
         `UPDATE connector_configurations
-         SET name = $1, description = $2, base_url = $3, schedule = $4, tags = $5, updated_at = NOW()
-         WHERE id = $6`,
-        [
-          'Updated Config',
-          'Updated description',
-          'https://updated.example.com',
-          '0 */12 * * *',
-          ['updated', 'modified'],
-          configId,
-        ]
+         SET name = $1, description = $2, schedule = $3, enabled = $4, updated_at = NOW()
+         WHERE id = $5`,
+        [`Updated ${configId}`, 'Updated description', '0 */12 * * *', false, configId]
       );
 
-      // Verify update
-      const result = await pool.query(
+      const result = await pool.query<ConfigRow>(
         'SELECT * FROM connector_configurations WHERE id = $1',
         [configId]
       );
 
-      expect(result.rows[0].name).toBe('Updated Config');
+      expect(result.rows[0].name).toBe(`Updated ${configId}`);
       expect(result.rows[0].description).toBe('Updated description');
-      expect(result.rows[0].base_url).toBe('https://updated.example.com');
       expect(result.rows[0].schedule).toBe('0 */12 * * *');
-      expect(result.rows[0].tags).toEqual(['updated', 'modified']);
+      expect(result.rows[0].enabled).toBe(false);
     }, 60000);
 
-    it('should deactivate connector configuration', async () => {
-      const connectorId = `deactivate-test-connector-${Date.now()}`;
-      const metadata: ConnectorMetadata = {
-        id: connectorId,
-        name: 'Deactivate Test Connector',
-        version: '1.0.0',
-        type: 'json-only',
-        description: 'Test connector for deactivation',
-        auth: {
-          type: 'api_key',
-          fields: [{ name: 'api_key', type: 'string', required: true, sensitive: true }],
-        },
-        resources: [
-          {
-            type: 'test-resource',
-            ci_type: 'application',
-            endpoint: '/api/test',
-            method: 'GET',
-            pagination: { type: 'none' },
-            field_mappings: { ci_name: '$.name', ci_type: 'application' },
-          },
-        ],
-        tags: ['test'],
-      };
+    it('should deactivate a connector configuration', async () => {
+      const type = `deactivate-connector-${Date.now()}`;
+      await installFixtureConnector(type);
 
-      createTestConnector(testConnectorPath, connectorId, metadata);
-      await connectorInstaller.install(path.join(testConnectorPath, connectorId));
-
-      // Create configuration
       const configId = uuidv4();
+      createdConfigIds.push(configId);
       await pool.query(
         `INSERT INTO connector_configurations (
-          id, connector_id, name, credentials, base_url,
-          config, is_active, created_by
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-        [
-          configId,
-          connectorId,
-          'Active Config',
-          JSON.stringify({ api_key: 'test-key' }),
-          'https://api.example.com',
-          {},
-          true,
-          'test-user',
-        ]
+          id, name, connector_type, connection, enabled, created_by
+        ) VALUES ($1, $2, $3, $4, $5, $6)`,
+        [configId, `Active ${configId}`, type, { api_key: 'test-key' }, true, 'test-user']
       );
 
-      createdConfigIds.push(configId);
-
-      // Deactivate configuration
       await pool.query(
-        'UPDATE connector_configurations SET is_active = false WHERE id = $1',
+        'UPDATE connector_configurations SET enabled = false WHERE id = $1',
         [configId]
       );
 
-      // Verify deactivation
-      const result = await pool.query(
-        'SELECT is_active FROM connector_configurations WHERE id = $1',
+      const result = await pool.query<{ enabled: boolean }>(
+        'SELECT enabled FROM connector_configurations WHERE id = $1',
         [configId]
       );
 
-      expect(result.rows[0].is_active).toBe(false);
+      expect(result.rows[0].enabled).toBe(false);
     }, 60000);
   });
 
   describe('Connector Execution', () => {
-    it('should execute connector and persist CIs to Neo4j', async () => {
-      const connectorId = `execute-test-connector-${Date.now()}`;
-      const metadata: ConnectorMetadata = {
-        id: connectorId,
-        name: 'Execute Test Connector',
-        version: '1.0.0',
-        type: 'json-only',
-        description: 'Test connector for execution',
-        auth: {
-          type: 'api_key',
-          fields: [{ name: 'api_key', type: 'string', required: true, sensitive: true }],
-        },
-        resources: [
-          {
-            type: 'test-server',
-            ci_type: 'server',
-            endpoint: '/api/servers',
-            method: 'GET',
-            pagination: { type: 'none' },
-            field_mappings: {
-              ci_name: '$.name',
-              ci_type: 'server',
-              'metadata.ip': '$.ip_address',
-              'metadata.status': '$.status',
-            },
-          },
-        ],
-        tags: ['test'],
-      };
-
-      createTestConnector(testConnectorPath, connectorId, metadata);
-      await connectorInstaller.install(path.join(testConnectorPath, connectorId));
-
-      // Create mock discovered CIs
+    it('should persist discovered CIs to Neo4j', async () => {
       const mockCIs = [
-        {
-          id: uuidv4(),
-          name: 'test-server-01',
-          type: 'server' as const,
-          status: 'active' as const,
-          environment: 'production' as const,
-          external_id: 'srv-001',
-          metadata: {
-            ip: '10.0.1.10',
-            status: 'running',
-          },
-          discovered_at: new Date(),
-        },
-        {
-          id: uuidv4(),
-          name: 'test-server-02',
-          type: 'server' as const,
-          status: 'active' as const,
-          environment: 'production' as const,
-          external_id: 'srv-002',
-          metadata: {
-            ip: '10.0.1.11',
-            status: 'running',
-          },
-          discovered_at: new Date(),
-        },
+        { id: uuidv4(), name: 'test-server-01', ip: '10.0.1.10' },
+        { id: uuidv4(), name: 'test-server-02', ip: '10.0.1.11' },
       ];
 
-      // Persist CIs to Neo4j
       const session = neo4jDriver.session();
       try {
         for (const ci of mockCIs) {
@@ -563,388 +367,140 @@ describe('Connector Lifecycle Integration Tests', () => {
             `CREATE (ci:CI:Server {
               id: $id,
               name: $name,
-              type: $type,
-              status: $status,
-              environment: $environment,
-              external_id: $external_id,
+              type: 'server',
+              status: 'active',
+              environment: 'production',
               metadata: $metadata,
               discovered_at: datetime($discovered_at)
             })`,
             {
               id: ci.id,
               name: ci.name,
-              type: ci.type,
-              status: ci.status,
-              environment: ci.environment,
-              external_id: ci.external_id,
-              metadata: JSON.stringify(ci.metadata),
-              discovered_at: ci.discovered_at.toISOString(),
+              metadata: JSON.stringify({ ip: ci.ip, status: 'running' }),
+              discovered_at: new Date().toISOString(),
             }
           );
         }
 
-        // Verify CIs were created
         const result = await session.run(
-          'MATCH (ci:CI:Server) WHERE ci.name IN $names RETURN ci',
-          { names: mockCIs.map(ci => ci.name) }
+          'MATCH (ci:CI:Server) WHERE ci.name IN $names RETURN ci ORDER BY ci.name',
+          { names: mockCIs.map((ci) => ci.name) }
         );
 
         expect(result.records.length).toBe(2);
-        expect(result.records[0].get('ci').properties.name).toMatch(/test-server-0[12]/);
-        expect(result.records[1].get('ci').properties.name).toMatch(/test-server-0[12]/);
+        const names = result.records.map(
+          (r) => (r.get('ci').properties as { name: string }).name
+        );
+        expect(names).toEqual(['test-server-01', 'test-server-02']);
       } finally {
         await session.close();
       }
     }, 60000);
 
-    it('should handle connector execution errors gracefully', async () => {
-      const connectorId = `error-test-connector-${Date.now()}`;
-      const metadata: ConnectorMetadata = {
-        id: connectorId,
-        name: 'Error Test Connector',
-        version: '1.0.0',
-        type: 'json-only',
-        description: 'Test connector for error handling',
-        auth: {
-          type: 'api_key',
-          fields: [{ name: 'api_key', type: 'string', required: true, sensitive: true }],
-        },
-        resources: [
-          {
-            type: 'test-resource',
-            ci_type: 'application',
-            endpoint: '/api/error',
-            method: 'GET',
-            pagination: { type: 'none' },
-            field_mappings: { ci_name: '$.name', ci_type: 'application' },
-          },
-        ],
-        tags: ['test'],
-      };
+    it('should reject execution when the configuration does not exist', async () => {
+      await expect(executor.executeConnector(uuidv4())).rejects.toThrow(
+        /configuration not found/i
+      );
+    }, 60000);
 
-      createTestConnector(testConnectorPath, connectorId, metadata);
-      await connectorInstaller.install(path.join(testConnectorPath, connectorId));
+    it('should reject execution when no resources are enabled', async () => {
+      const type = `exec-connector-${Date.now()}`;
+      installedTypes.push(type);
+      const tarball = buildTarball(buildRoot, type, makeMeta(type, '1.0.0'));
+      await installer.installConnector(type, { localPath: tarball });
 
-      // Create configuration with invalid credentials
       const configId = uuidv4();
+      createdConfigIds.push(configId);
+      // enabled_resources intentionally omitted (NULL) -> no resources to run.
       await pool.query(
         `INSERT INTO connector_configurations (
-          id, connector_id, name, credentials, base_url,
-          config, is_active, created_by
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-        [
-          configId,
-          connectorId,
-          'Error Config',
-          JSON.stringify({ api_key: 'invalid-key' }),
-          'https://nonexistent.example.com',
-          {},
-          true,
-          'test-user',
-        ]
+          id, name, connector_type, connection, enabled, created_by
+        ) VALUES ($1, $2, $3, $4, $5, $6)`,
+        [configId, `Exec ${configId}`, type, { api_key: 'test-key' }, true, 'test-user']
       );
 
-      createdConfigIds.push(configId);
-
-      // Execution should not throw but handle error internally
-      // (Actual execution requires connector implementation, so we just verify config exists)
-      const result = await pool.query(
-        'SELECT * FROM connector_configurations WHERE id = $1',
-        [configId]
+      await expect(executor.executeConnector(configId)).rejects.toThrow(
+        /no resources enabled/i
       );
-
-      expect(result.rows.length).toBe(1);
-      expect(result.rows[0].is_active).toBe(true);
     }, 60000);
   });
 
   describe('Connector Update', () => {
-    it('should upgrade connector to newer version', async () => {
-      const connectorId = `upgrade-test-connector-${Date.now()}`;
+    it('should upgrade a connector to a newer version', async () => {
+      const type = `upgrade-connector-${Date.now()}`;
+      installedTypes.push(type);
 
-      // Install v1.0.0
-      const metadataV1: ConnectorMetadata = {
-        id: connectorId,
-        name: 'Upgrade Test Connector',
-        version: '1.0.0',
-        type: 'json-only',
-        description: 'Test connector v1',
-        auth: {
-          type: 'api_key',
-          fields: [{ name: 'api_key', type: 'string', required: true, sensitive: true }],
-        },
-        resources: [
-          {
-            type: 'test-resource',
-            ci_type: 'application',
-            endpoint: '/api/v1/resources',
-            method: 'GET',
-            pagination: { type: 'none' },
-            field_mappings: { ci_name: '$.name', ci_type: 'application' },
-          },
-        ],
-        tags: ['test'],
-      };
+      const v1 = buildTarball(buildRoot, type, makeMeta(type, '1.0.0'));
+      await installer.installConnector(type, { localPath: v1 });
 
-      createTestConnector(testConnectorPath, connectorId, metadataV1);
-      await connectorInstaller.install(path.join(testConnectorPath, connectorId));
-
-      // Verify v1.0.0 is installed
-      let installedConnectors = await connectorInstaller.listInstalled();
-      let connector = installedConnectors.find(c => c.id === connectorId);
+      let installed = await installer.listInstalledConnectors();
+      let connector = installed.find((c) => c.connector_type === type);
       expect(connector?.version).toBe('1.0.0');
 
-      // Upgrade to v2.0.0
-      const metadataV2: ConnectorMetadata = {
-        ...metadataV1,
-        version: '2.0.0',
-        description: 'Test connector v2',
-        resources: [
-          {
-            type: 'test-resource',
-            ci_type: 'application',
-            endpoint: '/api/v2/resources',
-            method: 'GET',
-            pagination: { type: 'offset', limit_param: 'limit', offset_param: 'offset' },
-            field_mappings: {
-              ci_name: '$.name',
-              ci_type: 'application',
-              'metadata.version': '$.version',
-            },
-          },
-        ],
-      };
+      const v2 = buildTarball(
+        buildRoot,
+        type,
+        makeMeta(type, '2.0.0', { description: 'Upgraded connector v2' })
+      );
+      await installer.updateConnector(type, { localPath: v2 });
 
-      // Remove old version directory
-      fs.rmSync(path.join(testConnectorPath, connectorId), { recursive: true, force: true });
-      createTestConnector(testConnectorPath, connectorId, metadataV2);
-
-      // Uninstall old version
-      await connectorInstaller.uninstall(connectorId);
-
-      // Install new version
-      await connectorInstaller.install(path.join(testConnectorPath, connectorId));
-
-      // Verify v2.0.0 is installed
-      installedConnectors = await connectorInstaller.listInstalled();
-      connector = installedConnectors.find(c => c.id === connectorId);
+      installed = await installer.listInstalledConnectors();
+      connector = installed.find((c) => c.connector_type === type);
       expect(connector?.version).toBe('2.0.0');
-      expect(connector?.description).toBe('Test connector v2');
-    }, 60000);
+      expect(connector?.metadata.description).toBe('Upgraded connector v2');
+    }, 90000);
   });
 
   describe('Connector Uninstallation', () => {
-    it('should uninstall connector', async () => {
-      const connectorId = `uninstall-test-connector-${Date.now()}`;
-      const metadata: ConnectorMetadata = {
-        id: connectorId,
-        name: 'Uninstall Test Connector',
-        version: '1.0.0',
-        type: 'json-only',
-        description: 'Test connector for uninstallation',
-        auth: {
-          type: 'api_key',
-          fields: [{ name: 'api_key', type: 'string', required: true, sensitive: true }],
-        },
-        resources: [
-          {
-            type: 'test-resource',
-            ci_type: 'application',
-            endpoint: '/api/test',
-            method: 'GET',
-            pagination: { type: 'none' },
-            field_mappings: { ci_name: '$.name', ci_type: 'application' },
-          },
-        ],
-        tags: ['test'],
-      };
+    it('should uninstall a connector', async () => {
+      const type = `uninstall-connector-${Date.now()}`;
+      installedTypes.push(type);
+      const tarball = buildTarball(buildRoot, type, makeMeta(type, '1.0.0'));
+      await installer.installConnector(type, { localPath: tarball });
 
-      createTestConnector(testConnectorPath, connectorId, metadata);
-      await connectorInstaller.install(path.join(testConnectorPath, connectorId));
+      let installed = await installer.listInstalledConnectors();
+      expect(installed.find((c) => c.connector_type === type)).toBeDefined();
 
-      // Verify connector is installed
-      let installedConnectors = await connectorInstaller.listInstalled();
-      let connector = installedConnectors.find(c => c.id === connectorId);
-      expect(connector).toBeDefined();
+      await installer.uninstallConnector(type);
 
-      // Uninstall connector
-      await connectorInstaller.uninstall(connectorId);
+      installed = await installer.listInstalledConnectors();
+      expect(installed.find((c) => c.connector_type === type)).toBeUndefined();
 
-      // Verify connector is uninstalled
-      installedConnectors = await connectorInstaller.listInstalled();
-      connector = installedConnectors.find(c => c.id === connectorId);
-      expect(connector).toBeUndefined();
+      const status = await installer.getConnectorStatus(type);
+      expect(status.installed).toBe(false);
     }, 60000);
 
-    it('should prevent uninstallation of connector with active configurations', async () => {
-      const connectorId = `active-config-test-connector-${Date.now()}`;
-      const metadata: ConnectorMetadata = {
-        id: connectorId,
-        name: 'Active Config Test Connector',
-        version: '1.0.0',
-        type: 'json-only',
-        description: 'Test connector with active config',
-        auth: {
-          type: 'api_key',
-          fields: [{ name: 'api_key', type: 'string', required: true, sensitive: true }],
-        },
-        resources: [
-          {
-            type: 'test-resource',
-            ci_type: 'application',
-            endpoint: '/api/test',
-            method: 'GET',
-            pagination: { type: 'none' },
-            field_mappings: { ci_name: '$.name', ci_type: 'application' },
-          },
-        ],
-        tags: ['test'],
-      };
+    it('should cascade-delete configurations when its connector is uninstalled', async () => {
+      // NOTE: restructured from the original "prevent uninstallation with active
+      // configurations" test. The real ConnectorInstaller does NOT block uninstall
+      // when configurations exist — installed_connectors -> connector_configurations
+      // has ON DELETE CASCADE, so uninstall succeeds and its configs are removed.
+      const type = `cascade-connector-${Date.now()}`;
+      installedTypes.push(type);
+      const tarball = buildTarball(buildRoot, type, makeMeta(type, '1.0.0'));
+      await installer.installConnector(type, { localPath: tarball });
 
-      createTestConnector(testConnectorPath, connectorId, metadata);
-      await connectorInstaller.install(path.join(testConnectorPath, connectorId));
-
-      // Create active configuration
       const configId = uuidv4();
       await pool.query(
         `INSERT INTO connector_configurations (
-          id, connector_id, name, credentials, base_url,
-          config, is_active, created_by
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-        [
-          configId,
-          connectorId,
-          'Active Config',
-          JSON.stringify({ api_key: 'test-key' }),
-          'https://api.example.com',
-          {},
-          true,
-          'test-user',
-        ]
+          id, name, connector_type, connection, enabled, created_by
+        ) VALUES ($1, $2, $3, $4, $5, $6)`,
+        [configId, `Cascade ${configId}`, type, { api_key: 'test-key' }, true, 'test-user']
       );
 
-      createdConfigIds.push(configId);
+      await installer.uninstallConnector(type);
 
-      // Attempt to uninstall should throw error
-      await expect(
-        connectorInstaller.uninstall(connectorId)
-      ).rejects.toThrow();
+      const connectorRows = await pool.query(
+        'SELECT 1 FROM installed_connectors WHERE connector_type = $1',
+        [type]
+      );
+      expect(connectorRows.rows.length).toBe(0);
+
+      const configRows = await pool.query(
+        'SELECT 1 FROM connector_configurations WHERE id = $1',
+        [configId]
+      );
+      expect(configRows.rows.length).toBe(0);
     }, 60000);
   });
 });
-
-/**
- * Helper: Initialize PostgreSQL schema
- */
-async function initializePostgresSchema(pool: Pool): Promise<void> {
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-
-    // Create connector_configurations table
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS connector_configurations (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        connector_id VARCHAR(255) NOT NULL,
-        name VARCHAR(255) NOT NULL,
-        description TEXT,
-        credentials JSONB NOT NULL,
-        base_url VARCHAR(500),
-        config JSONB DEFAULT '{}',
-        schedule VARCHAR(100),
-        is_active BOOLEAN DEFAULT TRUE,
-        tags TEXT[] DEFAULT '{}',
-        created_by VARCHAR(255) NOT NULL,
-        created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-        last_run_at TIMESTAMPTZ,
-        last_run_status VARCHAR(50)
-      )
-    `);
-
-    await client.query('COMMIT');
-  } catch (error) {
-    await client.query('ROLLBACK');
-    throw error;
-  } finally {
-    client.release();
-  }
-}
-
-/**
- * Helper: Initialize Neo4j schema
- */
-async function initializeNeo4jSchema(driver: Driver): Promise<void> {
-  const session = driver.session();
-  try {
-    await session.run('CREATE CONSTRAINT ci_id_unique IF NOT EXISTS FOR (ci:CI) REQUIRE ci.id IS UNIQUE');
-    await session.run('CREATE INDEX ci_type_idx IF NOT EXISTS FOR (ci:CI) ON (ci.type)');
-    await session.run('CREATE INDEX ci_name_idx IF NOT EXISTS FOR (ci:CI) ON (ci.name)');
-  } finally {
-    await session.close();
-  }
-}
-
-/**
- * Helper: Wait for Neo4j to be ready
- */
-async function waitForNeo4j(driver: Driver, maxAttempts = 30): Promise<void> {
-  for (let i = 0; i < maxAttempts; i++) {
-    try {
-      const session = driver.session();
-      await session.run('RETURN 1');
-      await session.close();
-      return;
-    } catch (error) {
-      if (i === maxAttempts - 1) {
-        throw new Error('Neo4j did not become ready in time');
-      }
-      await new Promise(resolve => setTimeout(resolve, 1000));
-    }
-  }
-}
-
-/**
- * Helper: Create test connector
- */
-function createTestConnector(
-  basePath: string,
-  connectorId: string,
-  metadata: ConnectorMetadata,
-  includeImplementation = false
-): void {
-  const connectorDir = path.join(basePath, connectorId);
-
-  // Create connector directory
-  if (!fs.existsSync(connectorDir)) {
-    fs.mkdirSync(connectorDir, { recursive: true });
-  }
-
-  // Write connector.json
-  fs.writeFileSync(
-    path.join(connectorDir, 'connector.json'),
-    JSON.stringify(metadata, null, 2)
-  );
-
-  if (includeImplementation) {
-    // Create dist directory
-    const distDir = path.join(connectorDir, 'dist');
-    if (!fs.existsSync(distDir)) {
-      fs.mkdirSync(distDir, { recursive: true });
-    }
-
-    // Write minimal TypeScript implementation
-    const implementation = `
-class TestConnector {
-  async discover() {
-    return [];
-  }
-}
-
-module.exports = TestConnector;
-module.exports.default = TestConnector;
-    `;
-
-    fs.writeFileSync(path.join(distDir, 'index.js'), implementation);
-  }
-}

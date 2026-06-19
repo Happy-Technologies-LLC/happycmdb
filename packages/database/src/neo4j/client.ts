@@ -187,7 +187,7 @@ export class Neo4jClient {
         `,
         {
           id: ciId,
-          external_id: ci.external_id,
+          external_id: ci.external_id ?? null,
           name: ci.name,
           type: ciType,
           status: ci.status || 'active',

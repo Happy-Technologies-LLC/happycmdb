@@ -9,11 +9,17 @@
  * - Transformation to dimensional model
  * - Loading into PostgreSQL data mart
  * - SCD Type 2 change tracking
+ *
+ * Infrastructure: connects to the shared global integration containers
+ * (Neo4j + TimescaleDB/Postgres) started by the global setup, via the env
+ * vars it exports. The ETL job issues UNQUALIFIED SQL (e.g. `dim_ci`) which
+ * resolves to the `public` schema; the canonical data-mart lives in the
+ * `cmdb` schema with a different column layout, so the public-schema data-mart
+ * tables this job targets are created here in beforeAll.
  */
 
-import { GenericContainer, StartedTestContainer, Wait } from 'testcontainers';
 import neo4j, { Driver } from 'neo4j-driver';
-import { Pool, PoolClient } from 'pg';
+import { Pool } from 'pg';
 import { v4 as uuidv4 } from 'uuid';
 import { Job } from 'bullmq';
 import {
@@ -21,69 +27,53 @@ import {
   Neo4jToPostgresJobData,
 } from '../../src/jobs/neo4j-to-postgres.job';
 import { Neo4jClient, PostgresClient } from '@cmdb/database';
-import { CI } from '@cmdb/common';
+
+interface CISeed {
+  _id: string;
+  _name: string;
+  _type: string;
+  _status?: string;
+  _environment?: string;
+  _external_id?: string;
+}
 
 describe('ETL Processor Integration Tests', () => {
-  let neo4jContainer: StartedTestContainer;
-  let postgresContainer: StartedTestContainer;
   let neo4jDriver: Driver;
   let postgresPool: Pool;
   let neo4jClient: Neo4jClient;
   let postgresClient: PostgresClient;
 
   beforeAll(async () => {
-    // Start Neo4j container
-    neo4jContainer = await new GenericContainer('neo4j:5.13.0')
-      .withEnvironment({
-        _NEO4J_AUTH: 'neo4j/testpassword',
-      })
-      .withExposedPorts(7687, 7474)
-      .withWaitStrategy(Wait.forLogMessage(/Started/))
-      .withStartupTimeout(120000)
-      .start();
+    // Connect to the shared global Neo4j container.
+    neo4jDriver = neo4j.driver(
+      process.env.NEO4J_URI!,
+      neo4j.auth.basic(process.env.NEO4J_USERNAME!, process.env.NEO4J_PASSWORD!)
+    );
 
-    // Start PostgreSQL container
-    postgresContainer = await new GenericContainer('postgres:15')
-      .withEnvironment({
-        _POSTGRES_USER: 'testuser',
-        _POSTGRES_PASSWORD: 'testpassword',
-        _POSTGRES_DB: 'cmdb_test',
-      })
-      .withExposedPorts(5432)
-      .withWaitStrategy(Wait.forLogMessage(/database system is ready to accept connections/))
-      .withStartupTimeout(60000)
-      .start();
-
-    // Initialize Neo4j
-    const neo4jHost = neo4jContainer.getHost();
-    const neo4jPort = neo4jContainer.getMappedPort(7687);
-    const neo4jUri = `bolt://${neo4jHost}:${neo4jPort}`;
-
-    neo4jDriver = neo4j.driver(neo4jUri, neo4j.auth.basic('neo4j', 'testpassword'));
-    await waitForNeo4j(neo4jDriver);
-
-    // Initialize PostgreSQL
-    const postgresHost = postgresContainer.getHost();
-    const postgresPort = postgresContainer.getMappedPort(5432);
-
-    postgresPool = new Pool({
-      _host: postgresHost,
-      _port: postgresPort,
-      _user: 'testuser',
-      _password: 'testpassword',
-      _database: 'cmdb_test',
+    // Connect to the shared global Postgres container.
+    postgresClient = new PostgresClient({
+      _host: process.env.POSTGRES_HOST!,
+      _port: Number(process.env.POSTGRES_PORT),
+      _database: process.env.POSTGRES_DB!,
+      _user: process.env.POSTGRES_USER!,
+      _password: process.env.POSTGRES_PASSWORD!,
     });
+    postgresPool = postgresClient.pool;
 
-    // Create database schemas
+    // Create the public-schema data-mart tables the ETL job targets. These are
+    // NOT part of the canonical schema (which uses the `cmdb` schema with a
+    // different column layout), so they must be created for this suite.
     await initializePostgresSchema(postgresPool);
 
-    // Create client instances
-    neo4jClient = new Neo4jClient(neo4jDriver);
-    postgresClient = new PostgresClient(postgresPool);
-  }, 120000);
+    neo4jClient = new Neo4jClient(
+      process.env.NEO4J_URI!,
+      process.env.NEO4J_USERNAME!,
+      process.env.NEO4J_PASSWORD!
+    );
+  }, 60000);
 
   afterEach(async () => {
-    // Clean both databases
+    // Clean the rows this suite creates in both databases.
     const neo4jSession = neo4jDriver.session();
     try {
       await neo4jSession.run('MATCH (n) DETACH DELETE n');
@@ -102,10 +92,9 @@ describe('ETL Processor Integration Tests', () => {
   });
 
   afterAll(async () => {
+    await neo4jClient.close();
     await neo4jDriver.close();
-    await postgresPool.end();
-    await neo4jContainer.stop();
-    await postgresContainer.stop();
+    await postgresClient.close();
   }, 30000);
 
   describe('Basic ETL Flow', () => {
@@ -153,21 +142,21 @@ describe('ETL Processor Integration Tests', () => {
 
         expect(dimResult.rows).toHaveLength(2);
         expect(dimResult.rows[0]).toMatchObject({
-          _ci_id: ciId2,
-          _ci_name: 'database-01',
-          _ci_type: 'database',
-          _status: 'active',
-          _environment: 'production',
-          _is_current: true,
+          ci_id: ciId2,
+          ci_name: 'database-01',
+          ci_type: 'database',
+          status: 'active',
+          environment: 'production',
+          is_current: true,
         });
 
         expect(dimResult.rows[1]).toMatchObject({
-          _ci_id: ciId1,
-          _ci_name: 'web-server-01',
-          _ci_type: 'server',
-          _status: 'active',
-          _environment: 'production',
-          _is_current: true,
+          ci_id: ciId1,
+          ci_name: 'web-server-01',
+          ci_type: 'server',
+          status: 'active',
+          environment: 'production',
+          is_current: true,
         });
       } finally {
         pgClient.release();
@@ -239,15 +228,17 @@ describe('ETL Processor Integration Tests', () => {
       const result2 = await etlJob.execute(createMockJob({}));
 
       expect(result2.cisProcessed).toBe(1);
+      // SCD Type 2 update path increments recordsUpdated (the new version is
+      // counted as an update, not an insert).
       expect(result2.recordsUpdated).toBe(1);
-      expect(result2.recordsInserted).toBe(1); // New version inserted
+      expect(result2.recordsInserted).toBe(0);
 
       // 3. Verify SCD Type 2 in PostgreSQL
       const pgClient = await postgresPool.connect();
       try {
         // Should have 2 versions
         const allVersions = await pgClient.query(
-          'SELECT * FROM dim_ci WHERE ci_id = $1 ORDER BY effective_date',
+          'SELECT * FROM dim_ci WHERE ci_id = $1 ORDER BY effective_date, ci_key',
           [ciId]
         );
 
@@ -255,17 +246,17 @@ describe('ETL Processor Integration Tests', () => {
 
         // First version should be expired
         expect(allVersions.rows[0]).toMatchObject({
-          _ci_id: ciId,
-          _status: 'active',
-          _is_current: false,
+          ci_id: ciId,
+          status: 'active',
+          is_current: false,
         });
         expect(allVersions.rows[0].end_date).not.toBeNull();
 
         // Second version should be current
         expect(allVersions.rows[1]).toMatchObject({
-          _ci_id: ciId,
-          _status: 'maintenance',
-          _is_current: true,
+          ci_id: ciId,
+          status: 'maintenance',
+          is_current: true,
         });
         expect(allVersions.rows[1].end_date).toBeNull();
 
@@ -290,6 +281,7 @@ describe('ETL Processor Integration Tests', () => {
         _name: 'static-server',
         _type: 'server',
         _status: 'active',
+        _environment: 'production',
       });
 
       const etlJob = new Neo4jToPostgresJob(neo4jClient, postgresClient);
@@ -346,7 +338,7 @@ describe('ETL Processor Integration Tests', () => {
       const pgClient = await postgresPool.connect();
       try {
         const history = await pgClient.query(
-          'SELECT * FROM dim_ci WHERE ci_id = $1 ORDER BY effective_date',
+          'SELECT * FROM dim_ci WHERE ci_id = $1 ORDER BY effective_date, ci_key',
           [ciId]
         );
 
@@ -354,30 +346,30 @@ describe('ETL Processor Integration Tests', () => {
 
         // Version 1: active, development
         expect(history.rows[0]).toMatchObject({
-          _status: 'active',
-          _environment: 'development',
-          _is_current: false,
+          status: 'active',
+          environment: 'development',
+          is_current: false,
         });
 
         // Version 2: maintenance, development
         expect(history.rows[1]).toMatchObject({
-          _status: 'maintenance',
-          _environment: 'development',
-          _is_current: false,
+          status: 'maintenance',
+          environment: 'development',
+          is_current: false,
         });
 
         // Version 3: maintenance, staging
         expect(history.rows[2]).toMatchObject({
-          _status: 'maintenance',
-          _environment: 'staging',
-          _is_current: false,
+          status: 'maintenance',
+          environment: 'staging',
+          is_current: false,
         });
 
         // Version 4: active, staging (current)
         expect(history.rows[3]).toMatchObject({
-          _status: 'active',
-          _environment: 'staging',
-          _is_current: true,
+          status: 'active',
+          environment: 'staging',
+          is_current: true,
         });
       } finally {
         pgClient.release();
@@ -575,28 +567,13 @@ describe('ETL Processor Integration Tests', () => {
 
 // Helper Functions
 
-async function waitForNeo4j(driver: Driver, maxAttempts = 30): Promise<void> {
-  for (let i = 0; i < maxAttempts; i++) {
-    try {
-      const session = driver.session();
-      await session.run('RETURN 1');
-      await session.close();
-      return;
-    } catch (error) {
-      if (i === maxAttempts - 1) {
-        throw new Error('Neo4j did not become ready in time');
-      }
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-    }
-  }
-}
-
 async function initializePostgresSchema(pool: Pool): Promise<void> {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
-    // Create dim_ci table (SCD Type 2)
+    // Create dim_ci table (SCD Type 2) in the public schema, matching the
+    // column layout the ETL job's unqualified SQL expects.
     await client.query(`
       CREATE TABLE IF NOT EXISTS dim_ci (
         ci_key SERIAL PRIMARY KEY,
@@ -655,32 +632,32 @@ async function initializePostgresSchema(pool: Pool): Promise<void> {
   }
 }
 
-async function createCIInNeo4j(driver: Driver, ci: Partial<CI>): Promise<void> {
+async function createCIInNeo4j(driver: Driver, ci: CISeed): Promise<void> {
   const session = driver.session();
   try {
     await session.run(
       `
       CREATE (ci:CI {
-        _id: $id,
-        _name: $name,
-        _type: $type,
-        _status: $status,
-        _environment: $environment,
-        _external_id: $external_id,
-        _created_at: datetime(),
-        _updated_at: datetime(),
-        _discovered_at: datetime(),
-        _metadata: $metadata
+        id: $id,
+        name: $name,
+        type: $type,
+        status: $status,
+        environment: $environment,
+        external_id: $external_id,
+        created_at: datetime(),
+        updated_at: datetime(),
+        discovered_at: datetime(),
+        metadata: $metadata
       })
       `,
       {
-        _id: ci.id,
-        _name: ci.name,
-        _type: ci.type,
-        _status: ci.status || 'active',
-        _environment: ci.environment || null,
-        _external_id: ci.external_id || null,
-        _metadata: JSON.stringify(ci.metadata || {}),
+        id: ci._id,
+        name: ci._name,
+        type: ci._type,
+        status: ci._status || 'active',
+        environment: ci._environment ?? null,
+        external_id: ci._external_id ?? null,
+        metadata: JSON.stringify({}),
       }
     );
   } finally {
@@ -689,14 +666,14 @@ async function createCIInNeo4j(driver: Driver, ci: Partial<CI>): Promise<void> {
 }
 
 async function updateCIInNeo4j(
-  _driver: Driver,
-  _ciId: string,
-  _updates: Partial<CI>
+  driver: Driver,
+  ciId: string,
+  updates: Record<string, string>
 ): Promise<void> {
   const session = driver.session();
   try {
-    const setStatements = Object.entries(updates)
-      .map(([key, _]) => `ci.${key} = $${key}`)
+    const setStatements = Object.keys(updates)
+      .map((key) => `ci.${key} = $${key}`)
       .join(', ');
 
     await session.run(
@@ -713,13 +690,13 @@ async function updateCIInNeo4j(
 
 function createMockJob(data: Partial<Neo4jToPostgresJobData>): Job<Neo4jToPostgresJobData> {
   return {
-    _id: uuidv4(),
-    _name: 'neo4j-to-postgres',
-    _data: {
-      _batchSize: 100,
-      _fullRefresh: false,
+    id: uuidv4(),
+    name: 'neo4j-to-postgres',
+    data: {
+      batchSize: 100,
+      fullRefresh: false,
       ...data,
     },
-    _updateProgress: async () => {},
-  } as any;
+    updateProgress: async () => {},
+  } as unknown as Job<Neo4jToPostgresJobData>;
 }

@@ -1,207 +1,157 @@
 /**
- * E2E Test Setup
+ * E2E Test Global Setup
  *
- * Global setup script that runs before all E2E tests.
- * Responsibilities:
- * - Start Docker Compose services
- * - Wait for all services to be healthy
- * - Initialize databases with test schemas
- * - Verify connectivity to all services
+ * Starts shared backing services (Neo4j, PostgreSQL/TimescaleDB, Redis) via
+ * Testcontainers, loads the canonical database schema, initializes Neo4j
+ * constraints/indexes, and exports connection details as environment variables.
  */
 
-import { execSync } from 'child_process';
-import * as path from 'path';
-import { waitForService, waitForNeo4j, waitForPostgres, waitForRedis } from './utils/wait-for-services';
-import { logger } from './utils/logger';
+import { readFileSync } from 'fs';
+import { resolve } from 'path';
+import { GenericContainer, StartedTestContainer, Wait } from 'testcontainers';
+import neo4j from 'neo4j-driver';
 
-const E2E_COMPOSE_FILE = path.join(__dirname, 'docker-compose.e2e.yml');
-const MAX_STARTUP_TIME = 120000; // 2 minutes
+interface ContainerStore {
+  __NEO4J_CONTAINER__?: StartedTestContainer;
+  __POSTGRES_CONTAINER__?: StartedTestContainer;
+  __REDIS_CONTAINER__?: StartedTestContainer;
+}
 
-/**
- * Global setup function
- * Called once before all test suites
- */
-export default async function globalSetup() {
-  logger.info('========================================');
-  logger.info('Starting E2E Test Environment Setup');
-  logger.info('========================================');
+const containerStore = globalThis as typeof globalThis & ContainerStore;
 
-  const startTime = Date.now();
+const POSTGRES_USER = 'test';
+const POSTGRES_PASSWORD = 'testpassword';
+const POSTGRES_DB = 'cmdb_test';
+const NEO4J_PASSWORD = 'testpassword';
+
+const SCHEMA_PATH = resolve(
+  process.cwd(),
+  'packages/database/src/postgres/migrations/001_complete_schema.sql'
+);
+
+export default async function globalSetup(): Promise<void> {
+  console.log('Starting E2E test containers...');
 
   try {
-    // Step 1: Stop any existing E2E containers
-    logger.info('Step 1: Cleaning up existing E2E containers...');
-    try {
-      execSync(`docker-compose -f ${E2E_COMPOSE_FILE} down -v`, {
-        stdio: 'pipe',
-        timeout: 30000,
-      });
-      logger.info('Cleanup completed');
-    } catch (error) {
-      logger.warn('No existing containers to clean up');
-    }
+    // ---- Neo4j -------------------------------------------------------------
+    console.log('Starting Neo4j container...');
+    const neo4jContainer = await new GenericContainer('neo4j:5.15.0')
+      .withExposedPorts(7687, 7474)
+      .withEnvironment({
+        NEO4J_AUTH: `neo4j/${NEO4J_PASSWORD}`,
+        NEO4J_PLUGINS: '["apoc"]',
+      })
+      .withWaitStrategy(Wait.forLogMessage('Started.'))
+      .withStartupTimeout(120000)
+      .start();
 
-    // Step 2: Build and start Docker Compose services
-    logger.info('Step 2: Building and starting Docker Compose services...');
-    execSync(`docker-compose -f ${E2E_COMPOSE_FILE} up -d --build`, {
-      stdio: 'inherit',
-      timeout: 180000, // 3 minutes for build + start
-    });
-    logger.info('Docker Compose services started');
+    const neo4jBoltPort = neo4jContainer.getMappedPort(7687);
+    process.env.NEO4J_URI = `bolt://localhost:${neo4jBoltPort}`;
+    process.env.NEO4J_USERNAME = 'neo4j';
+    process.env.NEO4J_PASSWORD = NEO4J_PASSWORD;
+    containerStore.__NEO4J_CONTAINER__ = neo4jContainer;
+    console.log(`Neo4j started on ${process.env.NEO4J_URI}`);
 
-    // Step 3: Wait for infrastructure services to be healthy
-    logger.info('Step 3: Waiting for infrastructure services...');
+    await initializeNeo4jSchema(process.env.NEO4J_URI, NEO4J_PASSWORD);
+    console.log('Neo4j schema initialized');
 
-    await Promise.all([
-      waitForNeo4j({
-        uri: 'bolt://localhost:7688',
-        user: 'neo4j',
-        password: 'test_password',
-        timeout: 60000,
-      }),
-      waitForPostgres({
-        host: 'localhost',
-        port: 5433,
-        database: 'cmdb_test',
-        user: 'test_user',
-        password: 'test_password',
-        timeout: 60000,
-      }),
-      waitForRedis({
-        host: 'localhost',
-        port: 6380,
-        timeout: 30000,
-      }),
-    ]);
+    // ---- PostgreSQL / TimescaleDB -----------------------------------------
+    console.log('Starting PostgreSQL (TimescaleDB) container...');
+    const postgresContainer = await new GenericContainer('timescale/timescaledb:latest-pg15')
+      .withExposedPorts(5432)
+      .withEnvironment({ POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD })
+      .withWaitStrategy(Wait.forLogMessage('database system is ready to accept connections', 2))
+      .withStartupTimeout(120000)
+      .start();
 
-    logger.info('Infrastructure services are healthy');
+    const postgresPort = postgresContainer.getMappedPort(5432);
+    process.env.POSTGRES_HOST = 'localhost';
+    process.env.POSTGRES_PORT = String(postgresPort);
+    process.env.POSTGRES_DB = POSTGRES_DB;
+    process.env.POSTGRES_USER = POSTGRES_USER;
+    process.env.POSTGRES_PASSWORD = POSTGRES_PASSWORD;
+    containerStore.__POSTGRES_CONTAINER__ = postgresContainer;
+    console.log(`PostgreSQL started on localhost:${postgresPort}`);
 
-    // Step 4: Wait for application services
-    logger.info('Step 4: Waiting for application services...');
+    await loadPostgresSchema(postgresContainer);
+    console.log('PostgreSQL schema loaded');
 
-    await Promise.all([
-      waitForService({
-        name: 'API Server',
-        url: 'http://localhost:3001/health',
-        timeout: 60000,
-      }),
-      // Discovery Engine and ETL Processor don't have HTTP endpoints
-      // They're verified by checking if processes are running (via healthcheck)
-    ]);
+    // ---- Redis -------------------------------------------------------------
+    console.log('Starting Redis container...');
+    const redisContainer = await new GenericContainer('redis:7-alpine')
+      .withExposedPorts(6379)
+      .withWaitStrategy(Wait.forLogMessage('Ready to accept connections'))
+      .withStartupTimeout(60000)
+      .start();
 
-    logger.info('Application services are healthy');
+    const redisPort = redisContainer.getMappedPort(6379);
+    process.env.REDIS_HOST = 'localhost';
+    process.env.REDIS_PORT = String(redisPort);
+    containerStore.__REDIS_CONTAINER__ = redisContainer;
+    console.log(`Redis started on localhost:${redisPort}`);
 
-    // Step 5: Initialize test databases
-    logger.info('Step 5: Initializing test databases...');
-    await initializeDatabases();
-    logger.info('Databases initialized');
+    // ---- Secrets required by services at import time ----------------------
+    process.env.CREDENTIAL_ENCRYPTION_KEY =
+      process.env.CREDENTIAL_ENCRYPTION_KEY ||
+      'test-encryption-key-minimum-32-chars-required-for-security';
+    process.env.JWT_SECRET =
+      process.env.JWT_SECRET || 'test-jwt-secret-for-e2e-tests';
 
-    const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
-    logger.info('========================================');
-    logger.info(`E2E Test Environment Ready (${elapsed}s)`);
-    logger.info('========================================');
-
+    console.log('All E2E test containers started successfully');
   } catch (error) {
-    const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
-    logger.error('========================================');
-    logger.error(`E2E Setup Failed (${elapsed}s)`);
-    logger.error('========================================');
-    logger.error(error);
-
-    // Cleanup on failure
-    try {
-      execSync(`docker-compose -f ${E2E_COMPOSE_FILE} logs`, { stdio: 'inherit' });
-      execSync(`docker-compose -f ${E2E_COMPOSE_FILE} down -v`, { stdio: 'inherit' });
-    } catch (cleanupError) {
-      logger.error('Cleanup failed:', cleanupError);
-    }
-
+    console.error('Failed to start E2E test containers:', error);
     throw error;
   }
 }
 
 /**
- * Initialize test databases with schemas and constraints
+ * Initialize Neo4j constraints/indexes. Idempotent — uses IF NOT EXISTS.
  */
-async function initializeDatabases() {
-  const neo4j = require('neo4j-driver');
-  const { Pool } = require('pg');
-
-  // Neo4j initialization
-  const neo4jDriver = neo4j.driver(
-    'bolt://localhost:7688',
-    neo4j.auth.basic('neo4j', 'test_password')
-  );
-
+async function initializeNeo4jSchema(uri: string, password: string): Promise<void> {
+  const driver = neo4j.driver(uri, neo4j.auth.basic('neo4j', password));
+  const session = driver.session();
   try {
-    const session = neo4jDriver.session();
-
-    // Create constraints and indexes
-    await session.run(`
-      CREATE CONSTRAINT ci_id_unique IF NOT EXISTS
-      FOR (ci:CI) REQUIRE ci.id IS UNIQUE
-    `);
-
-    await session.run(`
-      CREATE INDEX ci_type_index IF NOT EXISTS
-      FOR (ci:CI) ON (ci.type)
-    `);
-
-    await session.run(`
-      CREATE INDEX ci_status_index IF NOT EXISTS
-      FOR (ci:CI) ON (ci.status)
-    `);
-
-    await session.close();
-    logger.info('Neo4j schema initialized');
+    await session.run(
+      'CREATE CONSTRAINT ci_id_unique IF NOT EXISTS FOR (ci:CI) REQUIRE ci.id IS UNIQUE'
+    );
+    await session.run('CREATE INDEX ci_type_idx IF NOT EXISTS FOR (ci:CI) ON (ci.type)');
+    await session.run('CREATE INDEX ci_status_idx IF NOT EXISTS FOR (ci:CI) ON (ci.status)');
+    await session.run(
+      'CREATE INDEX ci_environment_idx IF NOT EXISTS FOR (ci:CI) ON (ci.environment)'
+    );
+    await session.run('CREATE INDEX ci_name_idx IF NOT EXISTS FOR (ci:CI) ON (ci.name)');
+    await session.run(
+      `CREATE FULLTEXT INDEX ci_search IF NOT EXISTS
+       FOR (ci:CI) ON EACH [ci.name, ci.type, ci.external_id]`
+    );
   } finally {
-    await neo4jDriver.close();
+    await session.close();
+    await driver.close();
+  }
+}
+
+/**
+ * Load the canonical PostgreSQL schema into the running container.
+ */
+async function loadPostgresSchema(container: StartedTestContainer): Promise<void> {
+  const schemaSql = readFileSync(SCHEMA_PATH, 'utf-8');
+  await container.copyContentToContainer([{ content: schemaSql, target: '/tmp/schema.sql' }]);
+
+  const load = await container.exec([
+    'psql', '-v', 'ON_ERROR_STOP=0',
+    '-U', POSTGRES_USER, '-d', POSTGRES_DB, '-f', '/tmp/schema.sql',
+  ]);
+  if (load.exitCode !== 0) {
+    console.warn(`psql schema load exited with code ${load.exitCode} (non-fatal notices expected)`);
   }
 
-  // PostgreSQL initialization
-  const pgPool = new Pool({
-    host: 'localhost',
-    port: 5433,
-    database: 'cmdb_test',
-    user: 'test_user',
-    password: 'test_password',
-  });
-
-  try {
-    // Create TimescaleDB extension
-    await pgPool.query('CREATE EXTENSION IF NOT EXISTS timescaledb');
-
-    // Create test tables (basic structure)
-    await pgPool.query(`
-      CREATE TABLE IF NOT EXISTS dim_ci (
-        ci_key SERIAL PRIMARY KEY,
-        ci_id VARCHAR(255) UNIQUE NOT NULL,
-        name VARCHAR(255) NOT NULL,
-        type VARCHAR(50) NOT NULL,
-        status VARCHAR(50) NOT NULL,
-        environment VARCHAR(50),
-        created_at TIMESTAMPTZ DEFAULT NOW(),
-        updated_at TIMESTAMPTZ DEFAULT NOW()
-      )
-    `);
-
-    await pgPool.query(`
-      CREATE TABLE IF NOT EXISTS fact_ci_metrics (
-        time TIMESTAMPTZ NOT NULL,
-        ci_key INTEGER REFERENCES dim_ci(ci_key),
-        metric_name VARCHAR(100) NOT NULL,
-        metric_value DOUBLE PRECISION,
-        PRIMARY KEY (time, ci_key, metric_name)
-      )
-    `);
-
-    // Convert to hypertable
-    await pgPool.query(`
-      SELECT create_hypertable('fact_ci_metrics', 'time', if_not_exists => TRUE)
-    `);
-
-    logger.info('PostgreSQL schema initialized');
-  } finally {
-    await pgPool.end();
+  const check = await container.exec([
+    'psql', '-U', POSTGRES_USER, '-d', POSTGRES_DB, '-tAc',
+    "SELECT count(*) FROM information_schema.tables WHERE table_name = 'api_keys'",
+  ]);
+  if (check.output.trim() !== '1') {
+    throw new Error(
+      `PostgreSQL schema load failed: core table 'api_keys' missing (psql output: ${check.output.trim()})`
+    );
   }
 }

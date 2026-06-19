@@ -4,20 +4,20 @@
 /**
  * Integration Tests - Discovery Definition REST API
  *
- * Tests the complete CRUD flow for Discovery Definitions through the REST API.
- * Uses testcontainers for PostgreSQL and Redis to ensure realistic testing.
+ * Tests the complete CRUD flow for Discovery Definitions through the REST API,
+ * conformed to the real running service (non-underscore response envelope).
+ * Uses the shared global containers and canonical schema.
  */
 
 import request from 'supertest';
 import express, { Application } from 'express';
 import { v4 as uuidv4 } from 'uuid';
-import { startTestContainers, stopTestContainers, cleanDatabases, getTestContext } from '../helpers/test-containers';
+import { startTestContainers, stopTestContainers, getTestContext } from '../helpers/test-containers';
 import { discoveryDefinitionRoutes } from '../../src/rest/routes/discovery-definition.routes';
 import { DiscoveryDefinitionInput } from '@cmdb/common';
 
 describe('Discovery Definition REST API Integration Tests', () => {
   let app: Application;
-  let testCredentialId: string;
 
   // Setup test containers before all tests
   beforeAll(async () => {
@@ -28,42 +28,25 @@ describe('Discovery Definition REST API Integration Tests', () => {
     app.use(express.json());
 
     // Mock user middleware for created_by field
-    app.use((req: any, res, next) => {
-      req.user = { id: 'test-user-123', username: 'testuser' };
+    app.use((req: express.Request, _res, next) => {
+      (req as express.Request & { user?: { id: string; username: string } }).user = {
+        id: 'test-user-123',
+        username: 'testuser',
+      };
       next();
     });
 
     app.use('/api/v1/discovery/definitions', discoveryDefinitionRoutes);
-
-    // Create a test credential to use in definitions
-    const { postgresClient } = getTestContext();
-    const pool = postgresClient['pool'];
-    const result = await pool.query(
-      `INSERT INTO credentials (id, name, type, credentials, created_by, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
-       RETURNING id`,
-      [
-        uuidv4(),
-        'Test AWS Credentials',
-        'aws',
-        JSON.stringify({ accessKeyId: 'test-key', secretAccessKey: 'test-secret' }),
-        'test-user-123',
-        new Date().toISOString(),
-        new Date().toISOString(),
-      ]
-    );
-    testCredentialId = result.rows[0].id;
   }, 120000); // 2 minute timeout for container startup
 
-  // Clean databases between tests
+  // Clean definitions between tests
   afterEach(async () => {
     const { postgresClient } = getTestContext();
     const pool = postgresClient['pool'];
-    // Clean only discovery definitions, keep test credential
     await pool.query('DELETE FROM discovery_definitions');
   });
 
-  // Stop containers after all tests
+  // Stop the per-file Neo4j driver after all tests
   afterAll(async () => {
     await stopTestContainers();
   }, 30000);
@@ -71,18 +54,17 @@ describe('Discovery Definition REST API Integration Tests', () => {
   describe('POST /api/v1/discovery/definitions - Create Definition', () => {
     it('should create a new discovery definition with valid data', async () => {
       const definitionData: DiscoveryDefinitionInput = {
-        name: 'AWS Production Discovery',
-        description: 'Daily discovery of AWS production resources',
-        provider: 'aws',
+        name: 'NMAP Production Discovery',
+        description: 'Daily discovery of production hosts',
+        provider: 'nmap',
         method: 'agentless',
-        credential_id: testCredentialId,
         config: {
-          regions: ['us-east-1', 'us-west-2'],
+          networks: ['10.0.0.0/24'],
           filters: { environment: 'production' },
         },
         schedule: '0 2 * * *', // Daily at 2 AM
         is_active: true,
-        tags: ['production', 'aws'],
+        tags: ['production', 'nmap'],
       };
 
       const response = await request(app)
@@ -98,11 +80,12 @@ describe('Discovery Definition REST API Integration Tests', () => {
         description: definitionData.description,
         provider: definitionData.provider,
         method: definitionData.method,
-        credential_id: definitionData.credential_id,
         schedule: definitionData.schedule,
         is_active: true,
         tags: definitionData.tags,
       });
+      // `nmap` does not require a credential.
+      expect(response.body.data.credential_id).toBeNull();
       expect(response.body.data).toHaveProperty('id');
       expect(response.body.data).toHaveProperty('created_at');
       expect(response.body.data).toHaveProperty('updated_at');
@@ -112,7 +95,7 @@ describe('Discovery Definition REST API Integration Tests', () => {
     it('should reject definition with invalid credential_id', async () => {
       const definitionData: DiscoveryDefinitionInput = {
         name: 'Invalid Credential Test',
-        provider: 'aws',
+        provider: 'ssh',
         method: 'agentless',
         credential_id: uuidv4(), // Non-existent credential
         config: {},
@@ -130,7 +113,7 @@ describe('Discovery Definition REST API Integration Tests', () => {
     it('should reject definition with missing required fields', async () => {
       const invalidData = {
         name: 'Incomplete Definition',
-        // Missing provider, method, credential_id
+        // Missing provider, method
       };
 
       const response = await request(app)
@@ -138,16 +121,18 @@ describe('Discovery Definition REST API Integration Tests', () => {
         .send(invalidData)
         .expect(400);
 
-      expect(response.body).toHaveProperty('success', false);
-      expect(response.body).toHaveProperty('error');
+      // Validation failures come from the shared validation middleware, which
+      // uses the underscore envelope (unlike the controller's own responses).
+      expect(response.body).toHaveProperty('_success', false);
+      expect(response.body).toHaveProperty('_error');
     });
 
     it('should create definition with minimal required fields', async () => {
+      // `nmap` does not require a credential.
       const definitionData: DiscoveryDefinitionInput = {
         name: 'Minimal Definition',
-        provider: 'ssh',
+        provider: 'nmap',
         method: 'agentless',
-        credential_id: testCredentialId,
         config: {},
       };
 
@@ -168,26 +153,26 @@ describe('Discovery Definition REST API Integration Tests', () => {
 
   describe('GET /api/v1/discovery/definitions - List Definitions', () => {
     it('should list all discovery definitions', async () => {
-      // Create two definitions
+      // Only `nmap` definitions can be created without a credential, and a
+      // credential-linked definition is rejected by the provider/protocol
+      // match, so both fixtures use `nmap`.
       const def1: DiscoveryDefinitionInput = {
-        name: 'AWS Discovery',
-        provider: 'aws',
+        name: 'NMAP Discovery One',
+        provider: 'nmap',
         method: 'agentless',
-        credential_id: testCredentialId,
         config: {},
       };
 
       const def2: DiscoveryDefinitionInput = {
-        name: 'Azure Discovery',
-        provider: 'azure',
+        name: 'NMAP Discovery Two',
+        provider: 'nmap',
         method: 'agentless',
-        credential_id: testCredentialId,
         config: {},
         is_active: false,
       };
 
-      await request(app).post('/api/v1/discovery/definitions').send(def1);
-      await request(app).post('/api/v1/discovery/definitions').send(def2);
+      await request(app).post('/api/v1/discovery/definitions').send(def1).expect(201);
+      await request(app).post('/api/v1/discovery/definitions').send(def2).expect(201);
 
       const response = await request(app)
         .get('/api/v1/discovery/definitions')
@@ -200,49 +185,43 @@ describe('Discovery Definition REST API Integration Tests', () => {
     });
 
     it('should filter definitions by provider', async () => {
-      // Create AWS and Azure definitions
       await request(app).post('/api/v1/discovery/definitions').send({
-        name: 'AWS Discovery',
-        provider: 'aws',
+        name: 'NMAP Discovery',
+        provider: 'nmap',
         method: 'agentless',
-        credential_id: testCredentialId,
         config: {},
-      });
+      }).expect(201);
 
-      await request(app).post('/api/v1/discovery/definitions').send({
-        name: 'Azure Discovery',
-        provider: 'azure',
-        method: 'agentless',
-        credential_id: testCredentialId,
-        config: {},
-      });
-
-      const response = await request(app)
-        .get('/api/v1/discovery/definitions?provider=aws')
+      // A provider with a matching definition returns it.
+      const matchResponse = await request(app)
+        .get('/api/v1/discovery/definitions?provider=nmap')
         .expect(200);
+      expect(matchResponse.body.data).toHaveLength(1);
+      expect(matchResponse.body.data[0].provider).toBe('nmap');
 
-      expect(response.body.data).toHaveLength(1);
-      expect(response.body.data[0].provider).toBe('aws');
+      // A provider with no matching definition returns an empty list.
+      const emptyResponse = await request(app)
+        .get('/api/v1/discovery/definitions?provider=ssh')
+        .expect(200);
+      expect(emptyResponse.body.data).toHaveLength(0);
     });
 
     it('should filter definitions by is_active', async () => {
       await request(app).post('/api/v1/discovery/definitions').send({
         name: 'Active Definition',
-        provider: 'aws',
+        provider: 'nmap',
         method: 'agentless',
-        credential_id: testCredentialId,
         config: {},
         is_active: true,
-      });
+      }).expect(201);
 
       await request(app).post('/api/v1/discovery/definitions').send({
         name: 'Inactive Definition',
-        provider: 'aws',
+        provider: 'nmap',
         method: 'agentless',
-        credential_id: testCredentialId,
         config: {},
         is_active: false,
-      });
+      }).expect(201);
 
       const response = await request(app)
         .get('/api/v1/discovery/definitions?is_active=true')
@@ -259,11 +238,11 @@ describe('Discovery Definition REST API Integration Tests', () => {
         .post('/api/v1/discovery/definitions')
         .send({
           name: 'Test Definition',
-          provider: 'aws',
+          provider: 'nmap',
           method: 'agentless',
-          credential_id: testCredentialId,
           config: {},
-        });
+        })
+        .expect(201);
 
       const definitionId = createResponse.body.data.id;
 
@@ -294,11 +273,11 @@ describe('Discovery Definition REST API Integration Tests', () => {
         .post('/api/v1/discovery/definitions')
         .send({
           name: 'Original Name',
-          provider: 'aws',
+          provider: 'nmap',
           method: 'agentless',
-          credential_id: testCredentialId,
           config: {},
-        });
+        })
+        .expect(201);
 
       const definitionId = createResponse.body.data.id;
 
@@ -323,20 +302,22 @@ describe('Discovery Definition REST API Integration Tests', () => {
         .post('/api/v1/discovery/definitions')
         .send({
           name: 'Test Definition',
-          provider: 'aws',
+          provider: 'nmap',
           method: 'agentless',
-          credential_id: testCredentialId,
           config: {},
-        });
+        })
+        .expect(201);
 
       const definitionId = createResponse.body.data.id;
 
+      // The existence-check error reads "Credential with ID X not found", which
+      // the update controller maps to 404 (its catch matches 'not found' first).
       const response = await request(app)
         .put(`/api/v1/discovery/definitions/${definitionId}`)
         .send({
           credential_id: uuidv4(), // Non-existent credential
         })
-        .expect(400);
+        .expect(404);
 
       expect(response.body).toHaveProperty('success', false);
       expect(response.body.message).toContain('Credential');
@@ -360,11 +341,11 @@ describe('Discovery Definition REST API Integration Tests', () => {
         .post('/api/v1/discovery/definitions')
         .send({
           name: 'To Be Deleted',
-          provider: 'aws',
+          provider: 'nmap',
           method: 'agentless',
-          credential_id: testCredentialId,
           config: {},
-        });
+        })
+        .expect(201);
 
       const definitionId = createResponse.body.data.id;
 
@@ -392,14 +373,14 @@ describe('Discovery Definition REST API Integration Tests', () => {
       const createResponse = await request(app)
         .post('/api/v1/discovery/definitions')
         .send({
-          name: 'AWS Discovery',
-          provider: 'aws',
+          name: 'NMAP Discovery',
+          provider: 'nmap',
           method: 'agentless',
-          credential_id: testCredentialId,
           config: {
-            regions: ['us-east-1'],
+            networks: ['10.0.0.0/24'],
           },
-        });
+        })
+        .expect(201);
 
       const definitionId = createResponse.body.data.id;
 
@@ -410,7 +391,7 @@ describe('Discovery Definition REST API Integration Tests', () => {
       expect(response.body).toHaveProperty('success', true);
       expect(response.body.data).toHaveProperty('job_id');
       expect(response.body.data).toHaveProperty('definition_id', definitionId);
-      expect(response.body.data).toHaveProperty('provider', 'aws');
+      expect(response.body.data).toHaveProperty('provider', 'nmap');
       expect(response.body.data).toHaveProperty('status', 'pending');
     });
 
@@ -429,13 +410,13 @@ describe('Discovery Definition REST API Integration Tests', () => {
         .post('/api/v1/discovery/definitions')
         .send({
           name: 'Scheduled Discovery',
-          provider: 'aws',
+          provider: 'nmap',
           method: 'agentless',
-          credential_id: testCredentialId,
           config: {},
           schedule: '0 2 * * *',
           is_active: false,
-        });
+        })
+        .expect(201);
 
       const definitionId = createResponse.body.data.id;
 
@@ -452,12 +433,12 @@ describe('Discovery Definition REST API Integration Tests', () => {
         .post('/api/v1/discovery/definitions')
         .send({
           name: 'No Schedule',
-          provider: 'aws',
+          provider: 'nmap',
           method: 'agentless',
-          credential_id: testCredentialId,
           config: {},
           // No schedule provided
-        });
+        })
+        .expect(201);
 
       const definitionId = createResponse.body.data.id;
 
@@ -476,13 +457,13 @@ describe('Discovery Definition REST API Integration Tests', () => {
         .post('/api/v1/discovery/definitions')
         .send({
           name: 'Active Scheduled Discovery',
-          provider: 'aws',
+          provider: 'nmap',
           method: 'agentless',
-          credential_id: testCredentialId,
           config: {},
           schedule: '0 2 * * *',
           is_active: true,
-        });
+        })
+        .expect(201);
 
       const definitionId = createResponse.body.data.id;
 

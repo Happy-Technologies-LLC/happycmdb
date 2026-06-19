@@ -1,29 +1,36 @@
 /**
  * Integration Test Global Teardown
  *
- * Stops Testcontainers after all integration tests complete.
+ * Stops the shared Testcontainers started in integration.global-setup.ts after
+ * the entire integration suite completes.
  */
 
-export default async function globalTeardown() {
+import type { StartedTestContainer } from 'testcontainers';
+
+interface ContainerStore {
+  __NEO4J_CONTAINER__?: StartedTestContainer;
+  __POSTGRES_CONTAINER__?: StartedTestContainer;
+  __REDIS_CONTAINER__?: StartedTestContainer;
+}
+
+const containerStore = globalThis as typeof globalThis & ContainerStore;
+
+export default async function globalTeardown(): Promise<void> {
   console.log('Stopping integration test containers...');
 
   try {
-    const neo4jContainer = (global as any).__NEO4J_CONTAINER__;
-    const postgresContainer = (global as any).__POSTGRES_CONTAINER__;
-    const redisContainer = (global as any).__REDIS_CONTAINER__;
-
-    if (neo4jContainer) {
-      await neo4jContainer.stop();
+    if (containerStore.__NEO4J_CONTAINER__) {
+      await containerStore.__NEO4J_CONTAINER__.stop();
       console.log('Neo4j container stopped');
     }
 
-    if (postgresContainer) {
-      await postgresContainer.stop();
+    if (containerStore.__POSTGRES_CONTAINER__) {
+      await containerStore.__POSTGRES_CONTAINER__.stop();
       console.log('PostgreSQL container stopped');
     }
 
-    if (redisContainer) {
-      await redisContainer.stop();
+    if (containerStore.__REDIS_CONTAINER__) {
+      await containerStore.__REDIS_CONTAINER__.stop();
       console.log('Redis container stopped');
     }
 

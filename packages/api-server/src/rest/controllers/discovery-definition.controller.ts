@@ -109,7 +109,7 @@ export class DiscoveryDefinitionController {
       }
 
       if (is_active !== undefined) {
-        filters.is_active = is_active === 'true';
+        filters.active = is_active === 'true';
       }
 
       if (created_by) {

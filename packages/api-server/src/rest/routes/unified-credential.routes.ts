@@ -69,24 +69,24 @@ const credentialAffinitySchema = Joi.object({
  * Create Credential schema
  */
 const createCredentialSchema = Joi.object({
-  _name: Joi.string().required().min(1).max(255),
-  _description: Joi.string().optional().max(1000),
-  _protocol: authProtocolSchema.required(),
-  _scope: credentialScopeSchema.required(),
-  _credentials: Joi.object().required(),
-  _affinity: credentialAffinitySchema.optional(),
-  _tags: Joi.array().items(Joi.string()).optional(),
+  name: Joi.string().required().min(1).max(255),
+  description: Joi.string().optional().max(1000),
+  protocol: authProtocolSchema.required(),
+  scope: credentialScopeSchema.required(),
+  credentials: Joi.object().required(),
+  affinity: credentialAffinitySchema.optional(),
+  tags: Joi.array().items(Joi.string()).optional(),
 });
 
 /**
  * Update Credential schema
  */
 const updateCredentialSchema = Joi.object({
-  _name: Joi.string().optional().min(1).max(255),
-  _description: Joi.string().optional().max(1000),
-  _credentials: Joi.object().optional(),
-  _affinity: credentialAffinitySchema.optional(),
-  _tags: Joi.array().items(Joi.string()).optional(),
+  name: Joi.string().optional().min(1).max(255),
+  description: Joi.string().optional().max(1000),
+  credentials: Joi.object().optional(),
+  affinity: credentialAffinitySchema.optional(),
+  tags: Joi.array().items(Joi.string()).optional(),
 });
 
 /**

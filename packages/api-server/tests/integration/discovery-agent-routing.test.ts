@@ -9,7 +9,7 @@
  */
 
 import { Pool } from 'pg';
-import { GenericContainer, StartedTestContainer, Wait } from 'testcontainers';
+import { getPostgresClient } from '@cmdb/database';
 import { DiscoveryAgentService } from '../../src/services/discovery-agent.service';
 import {
   DiscoveryAgentRegistration,
@@ -20,46 +20,16 @@ import {
 import { v4 as uuidv4 } from 'uuid';
 
 describe('Discovery Agent Routing Integration Tests', () => {
-  let postgresContainer: StartedTestContainer;
   let pool: Pool;
   let agentService: DiscoveryAgentService;
   const createdAgentIds: string[] = [];
 
   beforeAll(async () => {
-    // Start PostgreSQL container
-    postgresContainer = await new GenericContainer('postgres:15')
-      .withEnvironment({
-        POSTGRES_USER: 'testuser',
-        POSTGRES_PASSWORD: 'testpassword',
-        POSTGRES_DB: 'cmdb_test',
-      })
-      .withExposedPorts(5432)
-      .withWaitStrategy(Wait.forLogMessage(/database system is ready to accept connections/))
-      .withStartupTimeout(60000)
-      .start();
+    // Connect to the global Postgres container (canonical schema already loaded).
+    pool = getPostgresClient().pool;
 
-    const postgresHost = postgresContainer.getHost();
-    const postgresPort = postgresContainer.getMappedPort(5432);
-
-    // Create PostgreSQL pool
-    pool = new Pool({
-      host: postgresHost,
-      port: postgresPort,
-      user: 'testuser',
-      password: 'testpassword',
-      database: 'cmdb_test',
-    });
-
-    // Initialize schema
-    await initializeSchema(pool);
-
-    // Initialize service (mock the PostgreSQL client getter)
+    // The service reads the same global Postgres client via env vars.
     agentService = new DiscoveryAgentService();
-    // Override the postgres client to use our test pool
-    (agentService as any).postgresClient = {
-      getClient: async () => pool.connect(),
-      query: (sql: string, params: any[]) => pool.query(sql, params),
-    };
   }, 120000);
 
   afterAll(async () => {
@@ -73,7 +43,6 @@ describe('Discovery Agent Routing Integration Tests', () => {
     }
 
     await pool.end();
-    await postgresContainer.stop();
   });
 
   afterEach(async () => {
@@ -656,60 +625,3 @@ describe('Discovery Agent Routing Integration Tests', () => {
     }, 60000);
   });
 });
-
-/**
- * Helper: Initialize database schema
- */
-async function initializeSchema(pool: Pool): Promise<void> {
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-
-    // Create discovery_agents table
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS discovery_agents (
-        id SERIAL PRIMARY KEY,
-        agent_id VARCHAR(255) UNIQUE NOT NULL,
-        hostname VARCHAR(255) NOT NULL,
-        provider_capabilities TEXT[] DEFAULT '{}',
-        reachable_networks INET[] DEFAULT '{}',
-        version VARCHAR(50),
-        platform VARCHAR(50),
-        arch VARCHAR(50),
-        api_endpoint VARCHAR(500),
-        status VARCHAR(20) DEFAULT 'active',
-        last_heartbeat_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-        last_job_at TIMESTAMPTZ,
-        total_jobs_completed INTEGER DEFAULT 0,
-        total_jobs_failed INTEGER DEFAULT 0,
-        total_cis_discovered INTEGER DEFAULT 0,
-        tags TEXT[] DEFAULT '{}',
-        registered_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    // Create indexes
-    await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_agents_status
-      ON discovery_agents(status)
-    `);
-
-    await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_agents_capabilities
-      ON discovery_agents USING GIN(provider_capabilities)
-    `);
-
-    await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_agents_networks
-      ON discovery_agents USING GIN(reachable_networks)
-    `);
-
-    await client.query('COMMIT');
-  } catch (error) {
-    await client.query('ROLLBACK');
-    throw error;
-  } finally {
-    client.release();
-  }
-}

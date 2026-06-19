@@ -586,7 +586,7 @@ export class CIController {
           ORDER BY score DESC
           LIMIT $limit
           `,
-          { query: query.trim(), limit: limitNum }
+          { query: query.trim(), limit: neo4j.int(limitNum) }
         );
 
         const cis = result.records.map((r: any) => ({

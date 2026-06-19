@@ -10,6 +10,7 @@ import {
   LineChart, Line, AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
 } from 'recharts';
+import { brand, chartSeries } from '@/lib/brandColors';
 
 export const CostAnalyticsDashboard: React.FC = () => {
   const { costAnalytics, loadCostAnalytics, loading } = useDiscoverySessions();
@@ -47,7 +48,7 @@ export const CostAnalyticsDashboard: React.FC = () => {
     sessions: provider.sessions,
   })) || [];
 
-  const COLORS = ['#3b82f6', '#8b5cf6', '#10b981', '#f59e0b', '#ef4444'];
+  const COLORS = chartSeries;
 
   return (
     <div className="space-y-6">
@@ -72,7 +73,7 @@ export const CostAnalyticsDashboard: React.FC = () => {
           <div className="p-6">
             <div className="flex items-center justify-between mb-2">
               <p className="text-sm text-muted-foreground">Total Cost</p>
-              <DollarSign className="h-5 w-5 text-yellow-500" />
+              <DollarSign className="h-5 w-5 text-warning" />
             </div>
             <p className="text-3xl font-bold">${costAnalytics.totalCost.toFixed(2)}</p>
             <p className="text-xs text-muted-foreground mt-2">
@@ -85,7 +86,7 @@ export const CostAnalyticsDashboard: React.FC = () => {
           <div className="p-6">
             <div className="flex items-center justify-between mb-2">
               <p className="text-sm text-muted-foreground">Avg Cost/Session</p>
-              <Brain className="h-5 w-5 text-purple-500" />
+              <Brain className="h-5 w-5 text-navy" />
             </div>
             <p className="text-3xl font-bold">
               ${costAnalytics.avgCostPerSession.toFixed(4)}
@@ -97,12 +98,12 @@ export const CostAnalyticsDashboard: React.FC = () => {
           <div className="p-6">
             <div className="flex items-center justify-between mb-2">
               <p className="text-sm text-muted-foreground">Savings</p>
-              <TrendingDown className="h-5 w-5 text-green-500" />
+              <TrendingDown className="h-5 w-5 text-success" />
             </div>
-            <p className="text-3xl font-bold text-green-600">
+            <p className="text-3xl font-bold text-success">
               ${costAnalytics.savingsFromPatterns?.totalSaved?.toFixed(2) || '0.00'}
             </p>
-            <div className="flex items-center gap-1 mt-2 text-sm text-green-600">
+            <div className="flex items-center gap-1 mt-2 text-sm text-success">
               <Zap className="h-4 w-4" />
               <span>{costAnalytics.savingsFromPatterns?.percentSaved?.toFixed(0) || 0}% saved</span>
             </div>
@@ -113,7 +114,7 @@ export const CostAnalyticsDashboard: React.FC = () => {
           <div className="p-6">
             <div className="flex items-center justify-between mb-2">
               <p className="text-sm text-muted-foreground">Pattern Efficiency</p>
-              <Database className="h-5 w-5 text-blue-500" />
+              <Database className="h-5 w-5 text-sky-text" />
             </div>
             <div className="space-y-1">
               <div className="flex justify-between items-center">
@@ -146,8 +147,8 @@ export const CostAnalyticsDashboard: React.FC = () => {
                 <AreaChart data={costTrendData}>
                   <defs>
                     <linearGradient id="costGradient" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3}/>
-                      <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}/>
+                      <stop offset="5%" stopColor={brand.sky} stopOpacity={0.3}/>
+                      <stop offset="95%" stopColor={brand.sky} stopOpacity={0}/>
                     </linearGradient>
                   </defs>
                   <CartesianGrid strokeDasharray="3 3" stroke="currentColor" opacity={0.1} />
@@ -165,8 +166,8 @@ export const CostAnalyticsDashboard: React.FC = () => {
                   />
                   <Tooltip
                     contentStyle={{
-                      backgroundColor: 'var(--background)',
-                      border: '1px solid var(--border)',
+                      backgroundColor: '#fff',
+                      border: '1px solid ' + brand.line,
                       borderRadius: '8px'
                     }}
                     formatter={(value: any) => [`$${value.toFixed(4)}`, 'Cost']}
@@ -174,7 +175,7 @@ export const CostAnalyticsDashboard: React.FC = () => {
                   <Area
                     type="monotone"
                     dataKey="cost"
-                    stroke="#3b82f6"
+                    stroke={brand.sky}
                     fillOpacity={1}
                     fill="url(#costGradient)"
                   />
@@ -207,12 +208,12 @@ export const CostAnalyticsDashboard: React.FC = () => {
                   />
                   <Tooltip
                     contentStyle={{
-                      backgroundColor: 'var(--background)',
-                      border: '1px solid var(--border)',
+                      backgroundColor: '#fff',
+                      border: '1px solid ' + brand.line,
                       borderRadius: '8px'
                     }}
                   />
-                  <Bar dataKey="sessions" fill="#8b5cf6" radius={[8, 8, 0, 0]} />
+                  <Bar dataKey="sessions" fill={brand.navy} radius={[8, 8, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             </CardContent>
@@ -238,7 +239,7 @@ export const CostAnalyticsDashboard: React.FC = () => {
                     labelLine={false}
                     label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
                     outerRadius={100}
-                    fill="#8884d8"
+                    fill={brand.sky}
                     dataKey="cost"
                   >
                     {providerData.map((entry, index) => (
@@ -248,8 +249,8 @@ export const CostAnalyticsDashboard: React.FC = () => {
                   <Tooltip
                     formatter={(value: any) => `$${value.toFixed(4)}`}
                     contentStyle={{
-                      backgroundColor: 'var(--background)',
-                      border: '1px solid var(--border)',
+                      backgroundColor: '#fff',
+                      border: '1px solid ' + brand.line,
                       borderRadius: '8px'
                     }}
                   />
@@ -301,43 +302,43 @@ export const CostAnalyticsDashboard: React.FC = () => {
           <Card className="border-0 bg-transparent">
             <CardHeader>
               <CardTitle className="text-lg flex items-center gap-2">
-                <Zap className="h-5 w-5 text-yellow-500" />
+                <Zap className="h-5 w-5 text-warning" />
                 Pattern Learning Impact
               </CardTitle>
             </CardHeader>
             <CardContent>
               <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
                 <div className="text-center">
-                  <p className="text-3xl font-bold text-green-600">
+                  <p className="text-3xl font-bold text-success">
                     ${costAnalytics.savingsFromPatterns.totalSaved.toFixed(2)}
                   </p>
                   <p className="text-sm text-muted-foreground mt-1">Total Saved</p>
                 </div>
                 <div className="text-center">
-                  <p className="text-3xl font-bold text-blue-600">
+                  <p className="text-3xl font-bold text-sky-text">
                     {costAnalytics.savingsFromPatterns.percentSaved.toFixed(0)}%
                   </p>
                   <p className="text-sm text-muted-foreground mt-1">Cost Reduction</p>
                 </div>
                 <div className="text-center">
-                  <p className="text-3xl font-bold text-purple-600">
+                  <p className="text-3xl font-bold text-navy">
                     {costAnalytics.savingsFromPatterns.patternHits}
                   </p>
                   <p className="text-sm text-muted-foreground mt-1">Pattern Matches</p>
                 </div>
                 <div className="text-center">
-                  <p className="text-3xl font-bold text-orange-600">
+                  <p className="text-3xl font-bold text-warning">
                     {costAnalytics.savingsFromPatterns.aiDiscoveries}
                   </p>
                   <p className="text-sm text-muted-foreground mt-1">AI Discoveries</p>
                 </div>
               </div>
 
-              <div className="mt-6 p-4 bg-green-500/10 border border-green-500/20 rounded-lg">
+              <div className="mt-6 p-4 bg-success-soft border border-success/20 rounded-lg">
                 <div className="flex items-start gap-3">
-                  <TrendingDown className="h-5 w-5 text-green-500 mt-0.5" />
+                  <TrendingDown className="h-5 w-5 text-success mt-0.5" />
                   <div>
-                    <p className="font-semibold text-green-700 dark:text-green-400">
+                    <p className="font-semibold text-success">
                       Pattern Learning is Saving You Money
                     </p>
                     <p className="text-sm text-muted-foreground mt-1">

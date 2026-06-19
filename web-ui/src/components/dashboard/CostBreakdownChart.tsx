@@ -11,6 +11,7 @@ import {
   Cell,
 } from 'recharts';
 import { LiquidGlass } from '@/components/ui/liquid-glass';
+import { brand, chartSeries } from '@/lib/brandColors';
 
 export interface CostBreakdownItem {
   name: string;
@@ -27,16 +28,7 @@ interface CostBreakdownChartProps {
   onItemClick?: (item: CostBreakdownItem) => void;
 }
 
-const COLORS = [
-  '#8b5cf6', // purple
-  '#3b82f6', // blue
-  '#10b981', // green
-  '#f59e0b', // yellow
-  '#ef4444', // red
-  '#ec4899', // pink
-  '#14b8a6', // teal
-  '#f97316', // orange
-];
+const COLORS = chartSeries;
 
 export const CostBreakdownChart: React.FC<CostBreakdownChartProps> = ({
   data,
@@ -139,7 +131,7 @@ export const CostBreakdownChart: React.FC<CostBreakdownChartProps> = ({
                   `${name}: ${(percent * 100).toFixed(1)}%`
                 }
                 outerRadius={150}
-                fill="#8884d8"
+                fill={brand.sky}
                 dataKey="value"
                 onClick={(data) => onItemClick?.(data)}
               >
@@ -172,7 +164,7 @@ export const CostBreakdownChart: React.FC<CostBreakdownChartProps> = ({
             dataKey="value"
             aspectRatio={4 / 3}
             stroke="#fff"
-            fill="#8884d8"
+            fill={brand.sky}
             content={<CustomTreemapContent />}
             onClick={(data) => onItemClick?.(data)}
           >

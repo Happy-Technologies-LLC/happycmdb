@@ -97,13 +97,13 @@ export const AnomalyDetectionView: React.FC = () => {
           </LiquidGlass>
           <LiquidGlass variant="default" rounded="xl">
             <div className="text-sm font-medium text-muted-foreground">Critical</div>
-            <div className="text-2xl font-bold mt-1 text-red-600">
+            <div className="text-2xl font-bold mt-1 text-danger">
               {stats.by_severity.critical || 0}
             </div>
           </LiquidGlass>
           <LiquidGlass variant="default" rounded="xl">
             <div className="text-sm font-medium text-muted-foreground">High</div>
-            <div className="text-2xl font-bold mt-1 text-orange-600">
+            <div className="text-2xl font-bold mt-1 text-warning">
               {stats.by_severity.high || 0}
             </div>
           </LiquidGlass>
@@ -242,7 +242,7 @@ export const AnomalyDetectionView: React.FC = () => {
                   </>
                 )}
                 {anomaly.status === 'resolved' && (
-                  <div className="flex items-center gap-2 text-green-600 text-sm">
+                  <div className="flex items-center gap-2 text-success text-sm">
                     <CheckCircle className="h-4 w-4" />
                     Resolved
                     {anomaly.resolved_at &&

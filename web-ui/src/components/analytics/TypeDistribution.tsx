@@ -13,19 +13,9 @@ import { Loader2 } from 'lucide-react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Legend, Tooltip } from 'recharts';
 import { useCICountsByType } from '../../hooks/useAnalytics';
 import { ExportButton } from './ExportButton';
+import { brand, chartSeries } from '@/lib/brandColors';
 
-const COLORS = [
-  '#007AFF', // Blue
-  '#34C759', // Green
-  '#FF9500', // Orange
-  '#FF3B30', // Red
-  '#5856D6', // Purple
-  '#FF2D55', // Pink
-  '#5AC8FA', // Teal
-  '#FFCC00', // Yellow
-  '#AF52DE', // Violet
-  '#32ADE6', // Light Blue
-];
+const COLORS = chartSeries;
 
 export const TypeDistribution: React.FC = () => {
   const { data, loading, error } = useCICountsByType();
@@ -143,7 +133,7 @@ export const TypeDistribution: React.FC = () => {
               cy="50%"
               innerRadius={60}
               outerRadius={100}
-              fill="#8884d8"
+              fill={brand.sky}
               dataKey="value"
               label={({ name, percent }) =>
                 `${name}: ${(percent * 100).toFixed(0)}%`

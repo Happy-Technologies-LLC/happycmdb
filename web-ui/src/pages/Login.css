@@ -1,6 +1,6 @@
 .login-page {
   min-height: 100vh;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: linear-gradient(135deg, #5cc3fb 0%, #1e2a4a 100%);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -76,13 +76,13 @@
 .login-footer {
   margin-top: 2rem;
   padding-top: 2rem;
-  border-top: 1px solid #e5e7eb;
+  border-top: 1px solid #dce4ed;
   text-align: center;
 }
 
 .footer-text {
   font-size: 0.875rem;
-  color: #6b7280;
+  color: #4a5568;
   margin: 0 0 0.75rem 0;
 }
 
@@ -96,17 +96,17 @@
 
 .footer-links a {
   font-size: 0.875rem;
-  color: #2563eb;
+  color: #1a7fb8;
   text-decoration: none;
 }
 
 .footer-links a:hover {
-  color: #1d4ed8;
+  color: #1a7fb8;
   text-decoration: underline;
 }
 
 .footer-separator {
-  color: #d1d5db;
+  color: #c7d2de;
 }
 
 /* Responsive design */

@@ -1,45 +1,40 @@
 // Copyright 2026 Happy Technologies LLC
 // SPDX-License-Identifier: Apache-2.0
 
-import * as React from "react"
-import { cva, type VariantProps } from "class-variance-authority"
+import * as React from 'react';
+import { cva, type VariantProps } from 'class-variance-authority';
 
-import { cn } from "@/lib/utils"
+import { cn } from '@/lib/utils';
 
+// Happy Technologies status pill: soft tinted background, colored text,
+// pill radius. Tones map to the design-system semantic palette. Variant
+// names are kept backwards-compatible with the prior shadcn set.
 const badgeVariants = cva(
-  "inline-flex items-center rounded-md border px-2.5 py-0.5 text-xs font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2",
+  'inline-flex items-center gap-1 rounded-full border border-transparent px-2.5 py-0.5 font-display text-xs font-semibold tracking-[0.01em] transition-colors',
   {
     variants: {
       variant: {
-        default:
-          "border-transparent bg-primary text-primary-foreground shadow hover:bg-primary/80",
-        secondary:
-          "border-transparent bg-secondary text-secondary-foreground hover:bg-secondary/80",
-        destructive:
-          "border-transparent bg-destructive text-destructive-foreground shadow hover:bg-destructive/80",
-        outline: "text-foreground",
-        success:
-          "border-transparent bg-green-500 text-white shadow hover:bg-green-600",
-        warning:
-          "border-transparent bg-yellow-500 text-white shadow hover:bg-yellow-600",
-        info:
-          "border-transparent bg-blue-500 text-white shadow hover:bg-blue-600",
+        default: 'bg-sky-soft text-sky-text',
+        secondary: 'bg-line-soft text-ink-soft',
+        destructive: 'bg-danger-soft text-danger',
+        outline: 'border-line text-ink-soft',
+        success: 'bg-success-soft text-success',
+        warning: 'bg-warning-soft text-warning-text',
+        info: 'bg-sky-soft text-sky-text',
       },
     },
     defaultVariants: {
-      variant: "default",
+      variant: 'default',
     },
   }
-)
+);
 
 export interface BadgeProps
   extends React.HTMLAttributes<HTMLDivElement>,
     VariantProps<typeof badgeVariants> {}
 
 function Badge({ className, variant, ...props }: BadgeProps) {
-  return (
-    <div className={cn(badgeVariants({ variant }), className)} {...props} />
-  )
+  return <div className={cn(badgeVariants({ variant }), className)} {...props} />;
 }
 
-export { Badge, badgeVariants }
+export { Badge, badgeVariants };

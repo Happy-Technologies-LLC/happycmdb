@@ -6,7 +6,6 @@ import { render, RenderOptions } from '@testing-library/react';
 import { BrowserRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AuthProvider } from '@contexts/AuthContext';
-import { ThemeProvider } from '@/contexts/ThemeContext';
 import { ToastProvider } from '@/contexts/ToastContext';
 
 // Create a custom render function that includes all necessary providers
@@ -26,11 +25,9 @@ const AllProviders = ({ children }: { children: React.ReactNode }) => {
   return (
     <BrowserRouter>
       <QueryClientProvider client={queryClient}>
-        <ThemeProvider>
-          <ToastProvider>
-            <AuthProvider>{children}</AuthProvider>
-          </ToastProvider>
-        </ThemeProvider>
+        <ToastProvider>
+          <AuthProvider>{children}</AuthProvider>
+        </ToastProvider>
       </QueryClientProvider>
     </BrowserRouter>
   );
@@ -63,9 +60,7 @@ export const renderWithQueryClient = (
   const Wrapper = ({ children }: { children: React.ReactNode }) => (
     <BrowserRouter>
       <QueryClientProvider client={testQueryClient}>
-        <ThemeProvider>
-          <ToastProvider>{children}</ToastProvider>
-        </ThemeProvider>
+        <ToastProvider>{children}</ToastProvider>
       </QueryClientProvider>
     </BrowserRouter>
   );

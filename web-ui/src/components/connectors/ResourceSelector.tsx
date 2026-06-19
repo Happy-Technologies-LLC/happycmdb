@@ -109,7 +109,7 @@ export function ResourceSelector({
               className={cn(
                 'p-4 transition-all',
                 isEnabled && 'border-primary',
-                hasMissingDeps && 'border-yellow-500'
+                hasMissingDeps && 'border-warning'
               )}
             >
               <Collapsible open={isExpanded} onOpenChange={() => toggleExpanded(resource.id)}>

@@ -5,6 +5,7 @@ import React from 'react';
 import { Plus } from 'lucide-react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
+import { Eyebrow } from '@/components/ui/eyebrow';
 import CIList from '../components/ci/CIList';
 
 /**
@@ -28,12 +29,11 @@ export const CIListPage: React.FC = () => {
 
   return (
     <div>
-      <div className="flex justify-between items-center mb-6">
+      <div className="mb-6 flex items-end justify-between gap-5 flex-wrap">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">
-            Configuration Items
-          </h1>
-          <p className="text-sm text-muted-foreground mt-1">
+          <Eyebrow>CMDB · Configuration Items</Eyebrow>
+          <h1 className="mt-3 text-[1.9rem]">Configuration Items</h1>
+          <p className="mt-1.5 text-ink-soft">
             Browse and manage all configuration items in your CMDB
           </p>
         </div>

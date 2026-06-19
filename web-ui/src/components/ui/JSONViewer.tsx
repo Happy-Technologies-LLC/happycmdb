@@ -36,7 +36,7 @@ export const JSONViewer: React.FC<JSONViewerProps> = ({
     base0A: '#e0af68', // classes, markup bold
     base0B: '#98c379', // strings, markup code
     base0C: '#56b6c2', // support, regex, escape chars
-    base0D: '#3b82f6', // functions, methods, headings
+    base0D: '#5cc3fb', // functions, methods, headings (brand sky)
     base0E: '#bb9af7', // keywords, storage, selector
     base0F: '#e06c75', // deprecated, embedded
   };

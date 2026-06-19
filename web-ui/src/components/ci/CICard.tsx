@@ -74,7 +74,7 @@ export const CICard: React.FC<CICardProps> = ({
           <CIStatusBadge status={ci.status} />
         </div>
 
-        <h2 className="text-lg font-semibold mb-2 truncate text-foreground">
+        <h2 className="text-lg font-semibold mb-2 truncate text-navy">
           {ci.name}
         </h2>
 
@@ -85,7 +85,7 @@ export const CICard: React.FC<CICardProps> = ({
         )}
 
         <div className="mb-2">
-          <span className="inline-block px-2 py-1 text-xs font-medium border border-input rounded-md capitalize text-foreground">
+          <span className="inline-block px-2 py-1 text-xs font-medium border border-line rounded-md capitalize text-ink-soft">
             {ci.environment}
           </span>
         </div>
@@ -95,14 +95,14 @@ export const CICard: React.FC<CICardProps> = ({
             {ci.tags.slice(0, 3).map((tag) => (
               <span
                 key={tag}
-                className="inline-flex items-center gap-1 px-2 py-0.5 text-xs bg-muted rounded-md text-foreground"
+                className="inline-flex items-center gap-1 px-2 py-0.5 text-xs bg-warm-alt rounded-md text-ink"
               >
                 <Tag className="w-3 h-3" />
                 {tag}
               </span>
             ))}
             {ci.tags.length > 3 && (
-              <span className="inline-block px-2 py-0.5 text-xs bg-muted rounded-md text-foreground">
+              <span className="inline-block px-2 py-0.5 text-xs bg-warm-alt rounded-md text-ink">
                 +{ci.tags.length - 3}
               </span>
             )}
@@ -125,7 +125,7 @@ export const CICard: React.FC<CICardProps> = ({
         <div className="flex justify-end gap-1 px-4 pb-4">
           <button
             onClick={handleView}
-            className="p-1.5 hover:bg-muted rounded transition-colors"
+            className="p-1.5 hover:bg-warm rounded transition-colors"
             title="View Details"
           >
             <Eye className="w-4 h-4 text-muted-foreground" />
@@ -133,19 +133,19 @@ export const CICard: React.FC<CICardProps> = ({
           {onEdit && (
             <button
               onClick={handleEdit}
-              className="p-1.5 hover:bg-primary/10 rounded transition-colors"
+              className="p-1.5 hover:bg-sky-soft rounded transition-colors"
               title="Edit"
             >
-              <Pencil className="w-4 h-4 text-primary" />
+              <Pencil className="w-4 h-4 text-sky-text" />
             </button>
           )}
           {onDelete && (
             <button
               onClick={handleDelete}
-              className="p-1.5 hover:bg-destructive/10 rounded transition-colors"
+              className="p-1.5 hover:bg-danger-soft rounded transition-colors"
               title="Delete"
             >
-              <Trash2 className="w-4 h-4 text-destructive" />
+              <Trash2 className="w-4 h-4 text-danger" />
             </button>
           )}
         </div>

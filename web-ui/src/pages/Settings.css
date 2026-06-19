@@ -11,13 +11,13 @@
 .settings-header h1 {
   font-size: 2rem;
   font-weight: 700;
-  color: #1a1a1a;
+  color: #1e2a4a;
   margin: 0 0 0.5rem 0;
 }
 
 .settings-header p {
   font-size: 1rem;
-  color: #6b7280;
+  color: #4a5568;
   margin: 0;
 }
 
@@ -26,15 +26,15 @@
   grid-template-columns: 250px 1fr;
   gap: 2rem;
   background: white;
-  border: 1px solid #e5e7eb;
+  border: 1px solid #dce4ed;
   border-radius: 0.5rem;
   overflow: hidden;
 }
 
 .settings-sidebar {
-  background: #f9fafb;
+  background: #f5f8fb;
   padding: 1.5rem 0;
-  border-right: 1px solid #e5e7eb;
+  border-right: 1px solid #dce4ed;
 }
 
 .settings-tabs {
@@ -54,21 +54,21 @@
   border-left: 3px solid transparent;
   font-size: 0.875rem;
   font-weight: 500;
-  color: #6b7280;
+  color: #4a5568;
   text-align: left;
   cursor: pointer;
   transition: all 0.2s;
 }
 
 .settings-tab:hover {
-  background: #f3f4f6;
-  color: #374151;
+  background: #f0f4f8;
+  color: #2d3748;
 }
 
 .settings-tab.active {
   background: white;
-  color: #2563eb;
-  border-left-color: #2563eb;
+  color: #1a7fb8;
+  border-left-color: #1a7fb8;
 }
 
 .settings-tab-icon {
@@ -95,7 +95,7 @@
 .settings-content-header h2 {
   font-size: 1.5rem;
   font-weight: 600;
-  color: #1a1a1a;
+  color: #1e2a4a;
   margin: 0;
 }
 
@@ -126,7 +126,7 @@
 
   .settings-sidebar {
     border-right: none;
-    border-bottom: 1px solid #e5e7eb;
+    border-bottom: 1px solid #dce4ed;
     padding: 1rem 0;
   }
 

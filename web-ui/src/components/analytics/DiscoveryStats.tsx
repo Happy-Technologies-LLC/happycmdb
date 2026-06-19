@@ -14,6 +14,7 @@ import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
 import { useDiscoveryStats } from '../../hooks/useAnalytics';
 import { MetricCard } from './MetricCard';
 import { DateRangeParams } from '../../services/analytics.service';
+import { brand } from '@/lib/brandColors';
 
 interface DiscoveryStatsProps {
   dateRange?: DateRangeParams;
@@ -68,8 +69,8 @@ export const DiscoveryStats: React.FC<DiscoveryStatsProps> = ({ dateRange }) => 
   }
 
   const chartData = [
-    { name: 'Successful', value: data.successfulJobs, color: '#34C759' },
-    { name: 'Failed', value: data.failedJobs, color: '#FF3B30' },
+    { name: 'Successful', value: data.successfulJobs, color: brand.success },
+    { name: 'Failed', value: data.failedJobs, color: brand.danger },
   ];
 
   const CustomTooltip = ({ active, payload }: any) => {
@@ -101,13 +102,13 @@ export const DiscoveryStats: React.FC<DiscoveryStatsProps> = ({ dateRange }) => 
             title="Total Jobs"
             value={data.totalJobs}
             subtitle="All configuration items"
-            color="#007AFF"
+            color={brand.sky}
             loading={!data}
           />
           <MetricCard
             title="Success Rate"
             value={`${(data.successRate * 100).toFixed(1)}%`}
-            color="#34C759"
+            color={brand.success}
             trend={{
               value: data.successRate * 100,
               direction: 'up',
@@ -119,26 +120,26 @@ export const DiscoveryStats: React.FC<DiscoveryStatsProps> = ({ dateRange }) => 
             title="Avg Duration"
             value={`${data.avgDuration.toFixed(0)}s`}
             subtitle="Per job"
-            color="#FF9500"
+            color={brand.warning}
             loading={!data}
           />
           <MetricCard
             title="Successful Jobs"
             value={data.successfulJobs}
-            color="#34C759"
+            color={brand.success}
             loading={!data}
           />
           <MetricCard
             title="Failed Jobs"
             value={data.failedJobs}
-            color="#FF3B30"
+            color={brand.danger}
             loading={!data}
           />
           {data.lastRunTime && (
             <MetricCard
               title="Last Run"
               value={new Date(data.lastRunTime).toLocaleString()}
-              color="#8E8E93"
+              color={brand.inkSoft}
             />
           )}
         </div>

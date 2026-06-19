@@ -1,57 +1,125 @@
-@import "tailwindcss";
+/* ============================================================
+   HappyCMDB — Happy Technologies design system integration
+   Tailwind v4 + vendored DS tokens.
+
+   We import only the DS token files (pure :root custom properties)
+   so they never collide with Tailwind's layered utilities. `@theme
+   inline` then points every semantic color utility at a DS variable,
+   making a whole-app re-skin a single source of truth. Brand element
+   defaults (fonts, surfaces) are declared in `@layer base` so utility
+   classes always win the cascade.
+   ============================================================ */
+@import 'tailwindcss';
+@import './styles/ds/tokens/fonts.css';
+@import './styles/ds/tokens/colors.css';
+@import './styles/ds/tokens/typography.css';
+@import './styles/ds/tokens/spacing.css';
 
 @plugin "tailwindcss-animate";
 
+@theme inline {
+  /* ---- shadcn semantic tokens → Happy Technologies brand ---- */
+  --color-background: var(--warm-bg);
+  --color-foreground: var(--text-strong);
+
+  --color-card: var(--white);
+  --color-card-foreground: var(--text-strong);
+
+  --color-popover: var(--white);
+  --color-popover-foreground: var(--text-strong);
+
+  /* Primary actions are sky-blue (matches the mockup CTAs) */
+  --color-primary: var(--accent);
+  --color-primary-foreground: var(--white);
+
+  /* Secondary = quiet warm surface, navy ink */
+  --color-secondary: var(--warm-bg-alt);
+  --color-secondary-foreground: var(--primary);
+
+  --color-muted: var(--gray-100);
+  --color-muted-foreground: var(--gray-600);
+
+  /* shadcn "accent" = subtle hover surface (sky tint), not the vivid sky */
+  --color-accent: var(--accent-bg);
+  --color-accent-foreground: var(--accent-text);
+
+  --color-destructive: var(--danger);
+  --color-destructive-foreground: var(--white);
+
+  --color-border: var(--gray-200);
+  --color-input: var(--gray-200);
+  --color-ring: var(--accent);
+
+  /* ---- Brand-named utilities for new console UI ---- */
+  --color-navy: var(--primary);
+  --color-navy-light: var(--primary-light);
+  --color-navy-deep: var(--primary-deep);
+  --color-sky: var(--accent);
+  --color-sky-light: var(--accent-light);
+  --color-sky-soft: var(--accent-bg);
+  --color-sky-text: var(--accent-text);
+  --color-coral: var(--coral);
+  --color-coral-dark: var(--coral-dark);
+  --color-coral-soft: var(--coral-bg);
+  --color-warm: var(--warm-bg);
+  --color-warm-alt: var(--warm-bg-alt);
+  --color-success: var(--success);
+  --color-success-soft: var(--success-bg);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-bg);
+  --color-warning-text: var(--warning-text);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-bg);
+  --color-ink: var(--gray-800);
+  --color-ink-soft: var(--gray-600);
+  --color-line: var(--gray-200);
+  --color-line-soft: var(--gray-100);
+
+  /* Default sans = Jost (body); headings use the font-display utility */
+  --font-sans: var(--font-body);
+}
+
 @theme {
-  --color-background: #ffffff;
-  --color-foreground: #0a0a0a;
-  --color-card: #ffffff;
-  --color-card-foreground: #0a0a0a;
-  --color-popover: #ffffff;
-  --color-popover-foreground: #0a0a0a;
-  --color-primary: #3b82f6;
-  --color-primary-foreground: #f8fafc;
-  --color-secondary: #f1f5f9;
-  --color-secondary-foreground: #1e293b;
-  --color-muted: #f1f5f9;
-  --color-muted-foreground: #64748b;
-  --color-accent: #f1f5f9;
-  --color-accent-foreground: #1e293b;
-  --color-destructive: #ef4444;
-  --color-destructive-foreground: #f8fafc;
-  --color-border: #e2e8f0;
-  --color-input: #e2e8f0;
-  --color-ring: #3b82f6;
-  --radius: 0.5rem;
+  /* Brand corner radii drive rounded-{sm,md,lg,xl} */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 20px;
+  --radius-xl: 28px;
+  --radius-2xl: 24px;
 }
 
-.dark {
-  --color-background: #0a0a0a;
-  --color-foreground: #f8fafc;
-  --color-card: #1e293b;
-  --color-card-foreground: #f8fafc;
-  --color-popover: #1e293b;
-  --color-popover-foreground: #f8fafc;
-  --color-primary: #60a5fa;
-  --color-primary-foreground: #1e293b;
-  --color-secondary: #334155;
-  --color-secondary-foreground: #f8fafc;
-  --color-muted: #334155;
-  --color-muted-foreground: #94a3b8;
-  --color-accent: #334155;
-  --color-accent-foreground: #f8fafc;
-  --color-destructive: #dc2626;
-  --color-destructive-foreground: #f8fafc;
-  --color-border: #334155;
-  --color-input: #334155;
-  --color-ring: #60a5fa;
+/* Inter for headings, numbers, UI labels */
+@utility font-display {
+  font-family: var(--font-display);
 }
 
-* {
-  border-color: var(--color-border);
-}
+@layer base {
+  /* Tailwind v4 defaults border-color to currentColor; restore the
+     brand hairline so unstyled borders match the design system. */
+  *,
+  ::before,
+  ::after {
+    border-color: var(--gray-200);
+  }
 
-body {
-  background-color: var(--color-background);
-  color: var(--color-foreground);
+  body {
+    font-family: var(--font-body);
+    background: var(--warm-bg);
+    color: var(--text-strong);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Brand headings: Inter, navy, bold — size stays under utility control */
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    font-family: var(--font-display);
+    font-weight: var(--weight-bold);
+    color: var(--text-heading);
+    letter-spacing: var(--tracking-tight);
+  }
 }

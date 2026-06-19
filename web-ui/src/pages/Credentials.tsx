@@ -6,6 +6,7 @@ import { Plus, Search, Filter, Trash2, Edit2, Eye } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { LiquidGlass } from '@/components/ui/liquid-glass';
+import { Eyebrow } from '@/components/ui/eyebrow';
 import {
   Dialog,
   DialogContent,
@@ -219,8 +220,9 @@ export const Credentials: React.FC = () => {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold">Discovery Credentials</h1>
-          <p className="text-muted-foreground mt-1">
+          <Eyebrow>Discovery · Credentials</Eyebrow>
+          <h1 className="mt-3 text-[1.9rem]">Discovery Credentials</h1>
+          <p className="mt-1.5 text-ink-soft">
             Manage reusable credentials for discovery definitions
           </p>
         </div>

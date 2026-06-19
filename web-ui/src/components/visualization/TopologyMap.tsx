@@ -16,6 +16,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '../ui/select';
+import { brand, environmentColors } from '@/lib/brandColors';
 
 interface TopologyMapProps {
   environment?: Environment;
@@ -60,13 +61,6 @@ export const TopologyMap: React.FC<TopologyMapProps> = ({
       environmentGroups.get(ci.environment)?.push(ci.id);
     });
 
-    const environmentColors: Record<Environment, string> = {
-      production: '#d32f2f',
-      staging: '#f57c00',
-      development: '#388e3c',
-      test: '#1976d2',
-    };
-
     const cy = cytoscape({
       container: containerRef.current,
       elements,
@@ -76,20 +70,20 @@ export const TopologyMap: React.FC<TopologyMapProps> = ({
           style: {
             'background-color': (ele) => {
               const env = ele.data('environment');
-              return environmentColors[env as Environment] || '#757575';
+              return environmentColors[env as Environment] || brand.inkSoft;
             },
             'border-width': 2,
             'border-color': (ele) => {
               const status = ele.data('status');
-              if (status === 'active') return '#4caf50';
-              if (status === 'inactive') return '#9e9e9e';
-              if (status === 'maintenance') return '#ff9800';
-              return '#f44336';
+              if (status === 'active') return brand.success;
+              if (status === 'inactive') return brand.inkSoft;
+              if (status === 'maintenance') return brand.warning;
+              return brand.danger;
             },
             label: 'data(label)',
             'text-valign': 'bottom',
             'text-halign': 'center',
-            color: '#333',
+            color: brand.ink,
             'font-size': 9,
             'text-margin-y': 5,
             width: (ele: any) => {
@@ -118,7 +112,7 @@ export const TopologyMap: React.FC<TopologyMapProps> = ({
           selector: 'node:selected',
           style: {
             'border-width': 4,
-            'border-color': '#ffc107',
+            'border-color': brand.warning,
           },
         },
       ],
@@ -239,28 +233,28 @@ export const TopologyMap: React.FC<TopologyMapProps> = ({
 
       <div className="mt-4 flex gap-4 flex-wrap items-center">
         <span className="text-xs text-muted-foreground">Environments:</span>
-        <Badge className="bg-red-700 hover:bg-red-800">Production</Badge>
-        <Badge className="bg-orange-600 hover:bg-orange-700">Staging</Badge>
-        <Badge className="bg-green-700 hover:bg-green-800">Development</Badge>
-        <Badge className="bg-blue-600 hover:bg-blue-700">Test</Badge>
+        <Badge className="bg-danger text-white">Production</Badge>
+        <Badge className="bg-coral text-white">Staging</Badge>
+        <Badge className="bg-success text-white">Development</Badge>
+        <Badge className="bg-sky text-white">Test</Badge>
       </div>
 
       <div className="mt-2 flex gap-4 flex-wrap items-center">
         <span className="text-xs text-muted-foreground">Status:</span>
         <div className="flex items-center gap-2">
-          <div className="w-3 h-3 rounded-full bg-green-500/100" />
+          <div className="w-3 h-3 rounded-full bg-success" />
           <span className="text-xs">Active</span>
         </div>
         <div className="flex items-center gap-2">
-          <div className="w-3 h-3 rounded-full bg-orange-500" />
+          <div className="w-3 h-3 rounded-full bg-warning" />
           <span className="text-xs">Maintenance</span>
         </div>
         <div className="flex items-center gap-2">
-          <div className="w-3 h-3 rounded-full bg-gray-400" />
+          <div className="w-3 h-3 rounded-full bg-ink-soft" />
           <span className="text-xs">Inactive</span>
         </div>
         <div className="flex items-center gap-2">
-          <div className="w-3 h-3 rounded-full bg-destructive/100" />
+          <div className="w-3 h-3 rounded-full bg-danger" />
           <span className="text-xs">Decommissioned</span>
         </div>
       </div>

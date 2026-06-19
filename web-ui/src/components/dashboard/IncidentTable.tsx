@@ -27,18 +27,18 @@ interface IncidentTableProps {
 }
 
 const PRIORITY_COLORS = {
-  P1: 'bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300',
-  P2: 'bg-orange-100 text-orange-800 dark:bg-orange-950 dark:text-orange-300',
-  P3: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-950 dark:text-yellow-300',
-  P4: 'bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300',
-  P5: 'bg-gray-100 text-gray-800 dark:bg-gray-950 dark:text-gray-300',
+  P1: 'bg-danger-soft text-danger',
+  P2: 'bg-warning-soft text-warning',
+  P3: 'bg-warning-soft text-warning',
+  P4: 'bg-sky-soft text-sky-text',
+  P5: 'bg-warm-alt text-ink-soft',
 };
 
 const STATUS_COLORS = {
-  open: 'bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300',
-  'in-progress': 'bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300',
-  resolved: 'bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300',
-  closed: 'bg-gray-100 text-gray-800 dark:bg-gray-950 dark:text-gray-300',
+  open: 'bg-danger-soft text-danger',
+  'in-progress': 'bg-sky-soft text-sky-text',
+  resolved: 'bg-success-soft text-success',
+  closed: 'bg-warm-alt text-ink-soft',
 };
 
 export const IncidentTable: React.FC<IncidentTableProps> = ({
@@ -133,7 +133,7 @@ export const IncidentTable: React.FC<IncidentTableProps> = ({
                     </td>
                     <td className="py-3 px-2">
                       <div className="flex items-start gap-2">
-                        <AlertCircle className="h-4 w-4 mt-0.5 text-red-500" />
+                        <AlertCircle className="h-4 w-4 mt-0.5 text-danger" />
                         <span className="text-sm font-medium">{incident.title}</span>
                       </div>
                     </td>

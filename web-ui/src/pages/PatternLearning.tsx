@@ -4,7 +4,7 @@
 import React, { useState } from 'react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { LiquidGlass } from '@/components/ui/liquid-glass';
-import { ParticleBackground } from '@/components/ui/particle-background';
+import { Eyebrow } from '@/components/ui/eyebrow';
 import { Button } from '@/components/ui/button';
 import { HelpCircle, RefreshCw } from 'lucide-react';
 import { PatternLibrary } from '@/components/ai/PatternLibrary';
@@ -28,18 +28,16 @@ const PatternLearning: React.FC = () => {
   };
 
   return (
-    <div className="relative min-h-screen">
-      <ParticleBackground opacity={0.15} />
-
-      <div className="relative z-10 space-y-6">
-        {/* Header */}
+    <div className="space-y-6">
+      {/* Header */}
         <div className="flex items-start justify-between">
-          <div>
-            <h2 className="text-3xl font-bold tracking-tight">AI Pattern Learning</h2>
-            <p className="text-muted-foreground mt-1">
-              Automatically learn and compile patterns from AI discoveries
-            </p>
-          </div>
+        <div>
+          <Eyebrow>AI · Pattern Learning</Eyebrow>
+          <h1 className="mt-3 text-[1.9rem]">AI Pattern Learning</h1>
+          <p className="mt-1.5 text-ink-soft">
+            Automatically learn and compile patterns from AI discoveries
+          </p>
+        </div>
           <div className="flex gap-2">
             <Button
               variant="outline"
@@ -87,7 +85,6 @@ const PatternLearning: React.FC = () => {
             <CostAnalyticsDashboard />
           </TabsContent>
         </Tabs>
-      </div>
     </div>
   );
 };

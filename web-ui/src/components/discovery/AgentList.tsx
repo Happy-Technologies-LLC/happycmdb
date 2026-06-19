@@ -230,11 +230,11 @@ export const AgentList: React.FC = () => {
                   </TableCell>
                   <TableCell>
                     <div className="text-sm">
-                      <div className="text-green-600">
+                      <div className="text-success">
                         ✓ {agent.total_jobs_completed}
                       </div>
                       {agent.total_jobs_failed > 0 && (
-                        <div className="text-red-600">
+                        <div className="text-danger">
                           ✗ {agent.total_jobs_failed}
                         </div>
                       )}

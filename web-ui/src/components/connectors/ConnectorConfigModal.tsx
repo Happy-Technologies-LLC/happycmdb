@@ -200,7 +200,7 @@ export const ConnectorConfigModal: React.FC<ConnectorConfigModalProps> = ({
                   stepNum === step
                     ? 'bg-primary text-primary-foreground'
                     : stepNum < step
-                    ? 'bg-green-500 text-white'
+                    ? 'bg-success text-white'
                     : 'bg-muted text-muted-foreground'
                 }`}
               >
@@ -332,9 +332,9 @@ export const ConnectorConfigModal: React.FC<ConnectorConfigModalProps> = ({
           {/* Step 2: Connection Config */}
           {step === 2 && (
             <div className="space-y-6 max-w-2xl mx-auto">
-              <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
-                <h3 className="font-semibold text-blue-900 mb-1">Connection Settings</h3>
-                <p className="text-sm text-blue-700">
+              <div className="bg-sky-soft border border-sky rounded-lg p-4 mb-6">
+                <h3 className="font-semibold text-navy mb-1">Connection Settings</h3>
+                <p className="text-sm text-sky-text">
                   Configure the connection details to connect to your {template.name} instance
                 </p>
               </div>
@@ -342,7 +342,7 @@ export const ConnectorConfigModal: React.FC<ConnectorConfigModalProps> = ({
               {Object.entries(template.config_schema).map(([key, field]: [string, any]) => (
                 <div key={key} className="space-y-2">
                   <Label htmlFor={key}>
-                    {field.label} {field.required && <span className="text-red-500">*</span>}
+                    {field.label} {field.required && <span className="text-danger">*</span>}
                   </Label>
 
                   {field.type === 'select' ? (
@@ -385,9 +385,9 @@ export const ConnectorConfigModal: React.FC<ConnectorConfigModalProps> = ({
                 </div>
               ))}
 
-              <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mt-6">
-                <h4 className="font-semibold text-yellow-900 text-sm mb-1">Security Note</h4>
-                <p className="text-xs text-yellow-700">
+              <div className="bg-warning-soft border border-warning/20 rounded-lg p-4 mt-6">
+                <h4 className="font-semibold text-warning-text text-sm mb-1">Security Note</h4>
+                <p className="text-xs text-warning-text">
                   Credentials are encrypted at rest and never exposed in logs or API responses
                 </p>
               </div>
@@ -397,9 +397,9 @@ export const ConnectorConfigModal: React.FC<ConnectorConfigModalProps> = ({
           {/* Step 3: Field Mapping */}
           {step === 3 && (
             <div className="space-y-6">
-              <div className="bg-purple-50 border border-purple-200 rounded-lg p-4 mb-6">
-                <h3 className="font-semibold text-purple-900 mb-1">Field Mapping by Resource</h3>
-                <p className="text-sm text-purple-700">
+              <div className="bg-sky-soft border border-sky rounded-lg p-4 mb-6">
+                <h3 className="font-semibold text-navy mb-1">Field Mapping by Resource</h3>
+                <p className="text-sm text-sky-text">
                   Map fields from each {template.name} resource to HappyCMDB CI attributes.
                   Predefined mappings are loaded from the connector template.
                 </p>

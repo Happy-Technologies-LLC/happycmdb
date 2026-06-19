@@ -15,6 +15,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
 import { Alert, AlertDescription, AlertTitle } from '../ui/alert';
 import { Badge } from '../ui/badge';
 import { Separator } from '../ui/separator';
+import { brand, ciTypeColors } from '@/lib/brandColors';
 
 interface ImpactChartProps {
   data: ImpactAnalysis;
@@ -29,9 +30,9 @@ interface TreemapData {
 }
 
 const IMPACT_COLORS: Record<string, string> = {
-  high: '#d32f2f',
-  medium: '#f57c00',
-  low: '#388e3c',
+  high: brand.danger,
+  medium: brand.warning,
+  low: brand.success,
 };
 
 export const ImpactChart: React.FC<ImpactChartProps> = ({ data }) => {
@@ -64,21 +65,8 @@ export const ImpactChart: React.FC<ImpactChartProps> = ({ data }) => {
 
     if (width < 60 || height < 30 || !name) return null;
 
-    const typeColors: Record<string, string> = {
-      server: '#1976d2',
-      'virtual-machine': '#9c27b0',
-      container: '#0288d1',
-      application: '#f57c00',
-      service: '#388e3c',
-      database: '#d32f2f',
-      'network-device': '#512da8',
-      storage: '#00796b',
-      'load-balancer': '#c2185b',
-      'cloud-resource': '#5e35b1',
-    };
-
-    const bgColor = typeColors[type] || '#757575';
-    const borderColor = status === 'active' ? '#4caf50' : '#f44336';
+    const bgColor = ciTypeColors[type] || brand.inkSoft;
+    const borderColor = status === 'active' ? brand.success : brand.danger;
 
     return (
       <g>
@@ -131,7 +119,7 @@ export const ImpactChart: React.FC<ImpactChartProps> = ({ data }) => {
               Impact Score
             </p>
             <Badge
-              className={impactLevel === 'high' ? 'bg-red-700' : impactLevel === 'medium' ? 'bg-orange-600' : 'bg-green-700'}
+              className={impactLevel === 'high' ? 'bg-danger text-white' : impactLevel === 'medium' ? 'bg-warning text-white' : 'bg-success text-white'}
             >
               {impactLevel.toUpperCase()}
             </Badge>

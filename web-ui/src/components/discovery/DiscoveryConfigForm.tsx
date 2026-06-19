@@ -455,7 +455,7 @@ export const DiscoveryConfigForm = forwardRef<DiscoveryConfigFormRef, DiscoveryC
               <Label htmlFor="service-detection" className="cursor-pointer">
                 Service Detection (-sV)
               </Label>
-              <Badge variant="outline" className="ml-2 text-xs bg-green-50 text-green-700 border-green-200">
+              <Badge variant="success" className="ml-2 text-xs">
                 Recommended
               </Badge>
             </div>
@@ -500,7 +500,7 @@ export const DiscoveryConfigForm = forwardRef<DiscoveryConfigFormRef, DiscoveryC
               <Label htmlFor="os-detection" className="cursor-pointer">
                 OS Detection (-O)
               </Label>
-              <Badge variant="outline" className="ml-2 text-xs bg-red-50 text-red-700 border-red-200">
+              <Badge variant="destructive" className="ml-2 text-xs">
                 Requires Root
               </Badge>
             </div>
@@ -524,7 +524,7 @@ export const DiscoveryConfigForm = forwardRef<DiscoveryConfigFormRef, DiscoveryC
               <Label htmlFor="aggressive" className="cursor-pointer">
                 Aggressive Scan (-A)
               </Label>
-              <Badge variant="outline" className="ml-2 text-xs bg-red-50 text-red-700 border-red-200">
+              <Badge variant="destructive" className="ml-2 text-xs">
                 Requires Root
               </Badge>
             </div>

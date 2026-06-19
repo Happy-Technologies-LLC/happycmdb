@@ -8,6 +8,8 @@ import { LiquidGlass } from '@/components/ui/liquid-glass';
 import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
+import { Eyebrow } from '@/components/ui/eyebrow';
+import { brand } from '@/lib/brandColors';
 import {
   BarChart,
   Bar,
@@ -74,8 +76,8 @@ export const FinOpsDashboard: React.FC = () => {
   const totalPotentialSavings = costOptimization.data?.totalPotentialSavings || 0;
 
   const onPremVsCloudData = [
-    { name: 'On-Premise', value: onPremVsCloud.data?.onPremCost || 0, color: '#8b5cf6' },
-    { name: 'Cloud', value: onPremVsCloud.data?.cloudCost || 0, color: '#3b82f6' },
+    { name: 'On-Premise', value: onPremVsCloud.data?.onPremCost || 0, color: brand.navy },
+    { name: 'Cloud', value: onPremVsCloud.data?.cloudCost || 0, color: brand.sky },
   ];
 
   return (
@@ -83,8 +85,9 @@ export const FinOpsDashboard: React.FC = () => {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-4xl font-bold tracking-tight">FinOps Dashboard</h1>
-          <p className="text-muted-foreground mt-1">
+          <Eyebrow>Dashboards · FinOps</Eyebrow>
+          <h1 className="mt-3 text-[1.9rem]">FinOps Dashboard</h1>
+          <p className="mt-1.5 text-ink-soft">
             Cloud cost management and optimization opportunities
           </p>
         </div>
@@ -187,7 +190,7 @@ export const FinOpsDashboard: React.FC = () => {
                     `${name}: ${(percent * 100).toFixed(1)}%`
                   }
                   outerRadius={100}
-                  fill="#8884d8"
+                  fill={brand.sky}
                   dataKey="value"
                 >
                   {onPremVsCloudData.map((entry, index) => (
@@ -220,13 +223,13 @@ export const FinOpsDashboard: React.FC = () => {
           <p className="text-sm text-muted-foreground mb-4">Total Cost of Ownership by category</p>
             <ResponsiveContainer width="100%" height={300}>
               <BarChart data={onPremVsCloud.data?.tcoComparison || []}>
-                <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
-                <XAxis dataKey="category" angle={-45} textAnchor="end" height={80} />
-                <YAxis tickFormatter={formatCurrency} />
+                <CartesianGrid strokeDasharray="3 3" stroke={brand.line} />
+                <XAxis dataKey="category" angle={-45} textAnchor="end" height={80} tick={{ fill: brand.inkSoft, fontSize: 12 }} />
+                <YAxis tickFormatter={formatCurrency} tick={{ fill: brand.inkSoft, fontSize: 12 }} />
                 <Tooltip formatter={(value: number) => formatCurrency(value)} />
                 <Legend />
-                <Bar dataKey="onPrem" fill="#8b5cf6" name="On-Premise" radius={[8, 8, 0, 0]} />
-                <Bar dataKey="cloud" fill="#3b82f6" name="Cloud" radius={[8, 8, 0, 0]} />
+                <Bar dataKey="onPrem" fill={brand.navy} name="On-Premise" radius={[8, 8, 0, 0]} />
+                <Bar dataKey="cloud" fill={brand.sky} name="Cloud" radius={[8, 8, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </div>
@@ -255,13 +258,13 @@ export const FinOpsDashboard: React.FC = () => {
           <p className="text-sm text-muted-foreground mb-4">Actual spend vs. budget allocation</p>
           <ResponsiveContainer width="100%" height={400}>
             <BarChart data={budgetVariance.data} layout="vertical">
-              <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
-              <XAxis type="number" tickFormatter={formatCurrency} />
-              <YAxis dataKey="capability" type="category" width={150} />
+              <CartesianGrid strokeDasharray="3 3" stroke={brand.line} />
+              <XAxis type="number" tickFormatter={formatCurrency} tick={{ fill: brand.inkSoft, fontSize: 12 }} />
+              <YAxis dataKey="capability" type="category" width={150} tick={{ fill: brand.inkSoft, fontSize: 12 }} />
               <Tooltip formatter={(value: number) => formatCurrency(value)} />
               <Legend />
-              <Bar dataKey="budgetAllocated" fill="#10b981" name="Budget" radius={[0, 8, 8, 0]} />
-              <Bar dataKey="actualSpend" fill="#3b82f6" name="Actual" radius={[0, 8, 8, 0]} />
+              <Bar dataKey="budgetAllocated" fill={brand.success} name="Budget" radius={[0, 8, 8, 0]} />
+              <Bar dataKey="actualSpend" fill={brand.sky} name="Actual" radius={[0, 8, 8, 0]} />
             </BarChart>
           </ResponsiveContainer>
           <div className="mt-4 space-y-2">
@@ -275,14 +278,7 @@ export const FinOpsDashboard: React.FC = () => {
                   <span className="text-sm">
                     {formatCurrency(item.actualSpend)} / {formatCurrency(item.budgetAllocated)}
                   </span>
-                  <Badge
-                    variant={item.variance < 0 ? 'default' : 'destructive'}
-                    className={
-                      item.variance < 0
-                        ? 'bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300'
-                        : ''
-                    }
-                  >
+                  <Badge variant={item.variance < 0 ? 'success' : 'destructive'}>
                     {item.variance > 0 ? '+' : ''}{item.variancePercent.toFixed(1)}%
                   </Badge>
                 </div>
@@ -308,15 +304,15 @@ export const FinOpsDashboard: React.FC = () => {
                 {metric.trend && (
                   <div className="flex items-center gap-1 mt-2">
                     {metric.trend === 'up' ? (
-                      <TrendingUp className="h-3 w-3 text-red-600 dark:text-red-400" />
+                      <TrendingUp className="h-3 w-3 text-danger" />
                     ) : (
-                      <TrendingDown className="h-3 w-3 text-green-600 dark:text-green-400" />
+                      <TrendingDown className="h-3 w-3 text-success" />
                     )}
                     <span
                       className={`text-xs ${
                         metric.trend === 'up'
-                          ? 'text-red-600 dark:text-red-400'
-                          : 'text-green-600 dark:text-green-400'
+                          ? 'text-danger'
+                          : 'text-success'
                       }`}
                     >
                       {metric.trend === 'up' ? '+' : ''}{metric.changePercent.toFixed(1)}%
@@ -352,10 +348,10 @@ export const FinOpsDashboard: React.FC = () => {
                         variant="outline"
                         className={
                           rec.priority === 'high'
-                            ? 'bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300'
+                            ? 'bg-danger-soft text-danger'
                             : rec.priority === 'medium'
-                            ? 'bg-yellow-100 text-yellow-800 dark:bg-yellow-950 dark:text-yellow-300'
-                            : 'bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300'
+                            ? 'bg-warning-soft text-warning-text'
+                            : 'bg-sky-soft text-sky-text'
                         }
                       >
                         {rec.priority}
@@ -367,7 +363,7 @@ export const FinOpsDashboard: React.FC = () => {
                   <div className="text-right ml-4">
                     <p className="text-sm text-muted-foreground">Current Cost</p>
                     <p className="text-sm font-medium">{formatCurrency(rec.currentCost)}/mo</p>
-                    <p className="text-sm text-green-600 dark:text-green-400 font-bold mt-1">
+                    <p className="text-sm text-success font-bold mt-1">
                       Save {formatCurrency(rec.potentialSavings)}/mo
                     </p>
                   </div>

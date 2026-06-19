@@ -22,12 +22,13 @@ import {
 } from 'recharts';
 import { useCICountsByStatus } from '../../hooks/useAnalytics';
 import { ExportButton } from './ExportButton';
+import { brand } from '@/lib/brandColors';
 
 const STATUS_COLORS: Record<string, string> = {
-  active: '#34C759',
-  inactive: '#8E8E93',
-  maintenance: '#FF9500',
-  decommissioned: '#FF3B30',
+  active: brand.success,
+  inactive: brand.inkSoft,
+  maintenance: brand.warning,
+  decommissioned: brand.danger,
 };
 
 export const StatusBreakdown: React.FC = () => {
@@ -121,21 +122,21 @@ export const StatusBreakdown: React.FC = () => {
             data={chartData}
             margin={{ top: 20, right: 30, left: 20, bottom: 5 }}
           >
-            <CartesianGrid strokeDasharray="3 3" stroke="#E5E5EA" />
+            <CartesianGrid strokeDasharray="3 3" stroke={brand.line} />
             <XAxis
               dataKey="status"
-              tick={{ fill: '#8E8E93', fontSize: 12 }}
+              tick={{ fill: brand.inkSoft, fontSize: 12 }}
               tickFormatter={(value) =>
                 value.charAt(0).toUpperCase() + value.slice(1)
               }
             />
-            <YAxis tick={{ fill: '#8E8E93', fontSize: 12 }} />
-            <Tooltip content={<CustomTooltip />} cursor={{ fill: '#F2F2F7' }} />
+            <YAxis tick={{ fill: brand.inkSoft, fontSize: 12 }} />
+            <Tooltip content={<CustomTooltip />} cursor={{ fill: brand.warmAlt }} />
             <Bar dataKey="count" radius={[8, 8, 0, 0]}>
               {chartData.map((entry, index) => (
                 <Cell
                   key={`cell-${index}`}
-                  fill={STATUS_COLORS[entry.status] || '#007AFF'}
+                  fill={STATUS_COLORS[entry.status] || brand.sky}
                 />
               ))}
             </Bar>

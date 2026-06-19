@@ -32,7 +32,7 @@ const Login: React.FC = () => {
   return (
     <div className="min-h-screen flex flex-col lg:flex-row">
       {/* Left side - Branding with solid gradient (no particles) */}
-      <div className="lg:flex-1 flex flex-col justify-center items-center bg-gradient-to-br from-primary to-destructive text-white p-8 lg:p-12 min-h-[300px] lg:min-h-screen relative z-20">
+      <div className="lg:flex-1 flex flex-col justify-center items-center bg-gradient-to-br from-sky to-navy text-white p-8 lg:p-12 min-h-[300px] lg:min-h-screen relative z-20">
         <div className="text-center max-w-lg w-full">
           <div className="mb-8">
             <img

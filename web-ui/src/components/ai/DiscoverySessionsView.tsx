@@ -143,7 +143,7 @@ export const DiscoverySessionsView: React.FC = () => {
                   <TableCell>{getStatusBadge(session.status)}</TableCell>
                   <TableCell>
                     <div className="flex items-center gap-2">
-                      <Brain className="h-4 w-4 text-purple-500" />
+                      <Brain className="h-4 w-4 text-navy" />
                       <span className="text-sm">{session.provider}</span>
                     </div>
                   </TableCell>
@@ -156,7 +156,7 @@ export const DiscoverySessionsView: React.FC = () => {
                     {session.discoveredCIs?.length || 0}
                   </TableCell>
                   <TableCell className="text-right">
-                    <span className={session.estimatedCost > 0 ? 'text-yellow-600' : 'text-green-600'}>
+                    <span className={session.estimatedCost > 0 ? 'text-warning' : 'text-success'}>
                       ${session.estimatedCost?.toFixed(4) || '0.0000'}
                     </span>
                   </TableCell>

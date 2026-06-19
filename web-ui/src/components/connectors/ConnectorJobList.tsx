@@ -176,15 +176,15 @@ export const ConnectorJobList: React.FC = () => {
                           <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                             <div>
                               <p className="text-xs text-muted-foreground mb-1">Records Created</p>
-                              <p className="text-lg font-semibold text-green-600">{job.records_created}</p>
+                              <p className="text-lg font-semibold text-success">{job.records_created}</p>
                             </div>
                             <div>
                               <p className="text-xs text-muted-foreground mb-1">Records Updated</p>
-                              <p className="text-lg font-semibold text-blue-600">{job.records_updated}</p>
+                              <p className="text-lg font-semibold text-sky-text">{job.records_updated}</p>
                             </div>
                             <div>
                               <p className="text-xs text-muted-foreground mb-1">Records Failed</p>
-                              <p className="text-lg font-semibold text-red-600">{job.records_failed}</p>
+                              <p className="text-lg font-semibold text-danger">{job.records_failed}</p>
                             </div>
                             <div>
                               <p className="text-xs text-muted-foreground mb-1">Duration</p>
@@ -193,9 +193,9 @@ export const ConnectorJobList: React.FC = () => {
                           </div>
 
                           {job.records_failed > 0 && (
-                            <div className="bg-red-50 border border-red-200 rounded-lg p-3">
-                              <p className="text-sm font-semibold text-red-900 mb-1">Sync Errors</p>
-                              <p className="text-xs text-red-700">
+                            <div className="bg-danger-soft border border-danger/20 rounded-lg p-3">
+                              <p className="text-sm font-semibold text-danger mb-1">Sync Errors</p>
+                              <p className="text-xs text-danger">
                                 {job.records_failed} records failed to sync. Check logs for details.
                               </p>
                             </div>

@@ -9,8 +9,6 @@ import { ToastProvider } from './contexts/ToastContext';
 import ErrorBoundary from './components/common/ErrorBoundary';
 import LoadingSpinner from './components/common/LoadingSpinner';
 import MainLayout from './components/layout/MainLayout';
-import { ParticleBackground } from './components/ui/particle-background';
-import { GlassFilters } from './components/ui/glass-filters';
 
 // Lazy loaded page components
 const Dashboard = React.lazy(() => import('./pages/Dashboard'));
@@ -78,9 +76,7 @@ const App: React.FC = () => {
   return (
     <ErrorBoundary>
       <ToastProvider>
-        <GlassFilters />
-        <div className="min-h-screen relative">
-          <ParticleBackground opacity={.2} />
+        <div className="min-h-screen">
           <React.Suspense fallback={<LoadingSpinner />}>
             <Routes>
               {/* Public Routes */}

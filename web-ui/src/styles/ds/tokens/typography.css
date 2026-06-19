@@ -1,0 +1,44 @@
+/* ============================================================
+   TYPOGRAPHY SCALE — Happy Technologies
+   Headings use Inter (tight tracking, heavy weight).
+   Body uses Jost at a comfortable 1.6–1.7 line height.
+   Display sizes are fluid (clamp) to match the live site.
+   ============================================================ */
+:root {
+  /* ---- Font sizes (fluid display, fixed text) ---- */
+  --text-display: clamp(2.5rem, 5vw, 3.5rem);   /* hero H1 */
+  --text-display-xl: clamp(4rem, 10vw, 7rem);   /* oversized highlight word */
+  --text-h1: clamp(2.5rem, 5vw, 3.5rem);
+  --text-h2: clamp(1.75rem, 3.5vw, 2.5rem);
+  --text-h3: clamp(1.15rem, 2vw, 1.4rem);
+  --text-lead: 1.25rem;     /* hero / section subtitles */
+  --text-lg: 1.15rem;
+  --text-base: 1.05rem;     /* default paragraph */
+  --text-md: 1rem;
+  --text-sm: 0.95rem;
+  --text-xs: 0.85rem;       /* labels, eyebrows, captions */
+  --text-2xs: 0.75rem;      /* badges, pills */
+
+  /* ---- Font weights ---- */
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+  --weight-extrabold: 800;
+
+  /* ---- Line heights ---- */
+  --leading-tight: 1.1;     /* display headings */
+  --leading-snug: 1.15;     /* headings */
+  --leading-normal: 1.6;
+  --leading-relaxed: 1.7;   /* body copy */
+  --leading-loose: 1.8;     /* dark-section body */
+
+  /* ---- Letter spacing ---- */
+  --tracking-tighter: -0.02em;  /* large headings */
+  --tracking-tight: -0.01em;
+  --tracking-normal: 0;
+  --tracking-wide: 0.02em;      /* nav links, buttons */
+  --tracking-wider: 0.05em;     /* product subtitles */
+  --tracking-widest: 0.08em;    /* eyebrow / section labels */
+  --tracking-caps: 0.1em;       /* uppercase highlight word */
+}

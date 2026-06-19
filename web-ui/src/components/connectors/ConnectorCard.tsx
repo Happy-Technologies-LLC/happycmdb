@@ -93,18 +93,18 @@ export function ConnectorCard({
             )}>
               <IconComponent className={cn(
                 'w-6 h-6',
-                displayCategory === 'itsm' && 'text-blue-600',
-                displayCategory === 'cloud' && 'text-purple-600',
-                displayCategory === 'monitoring' && 'text-green-600',
-                displayCategory === 'security' && 'text-red-600'
+                displayCategory === 'itsm' && 'text-sky-text',
+                displayCategory === 'cloud' && 'text-navy',
+                displayCategory === 'monitoring' && 'text-success',
+                displayCategory === 'security' && 'text-danger'
               )} />
             </div>
             <div className="flex-1 min-w-0">
               <h3 className="text-lg font-semibold truncate">{connector.name}</h3>
               {connector.verified && (
                 <div className="flex items-center gap-1 mt-0.5">
-                  <CheckCircle className="h-4 w-4 text-green-500 flex-shrink-0" />
-                  <span className="text-xs text-green-600">Verified</span>
+                  <CheckCircle className="h-4 w-4 text-success flex-shrink-0" />
+                  <span className="text-xs text-success">Verified</span>
                 </div>
               )}
             </div>
@@ -153,7 +153,7 @@ export function ConnectorCard({
           <span>{connector.downloads.toLocaleString()}</span>
         </div>
         <div className="flex items-center gap-1">
-          <Star className="h-4 w-4 fill-yellow-400 text-yellow-400" />
+          <Star className="h-4 w-4 fill-warning text-warning" />
           <span>{connector.rating.toFixed(1)}</span>
         </div>
       </div>

@@ -7,6 +7,8 @@ import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
+import { Eyebrow } from '@/components/ui/eyebrow';
+import { brand } from '@/lib/brandColors';
 import {
   BarChart,
   Bar,
@@ -76,9 +78,9 @@ export const CIODashboard: React.FC = () => {
     : 0;
 
   const changeData = [
-    { name: 'Successful', value: changeSuccessRates.successful ?? 0, color: '#10b981' },
-    { name: 'Failed', value: changeSuccessRates.failed ?? 0, color: '#ef4444' },
-    { name: 'Rollbacks', value: changeSuccessRates.rollbacks ?? 0, color: '#f59e0b' },
+    { name: 'Successful', value: changeSuccessRates.successful ?? 0, color: brand.success },
+    { name: 'Failed', value: changeSuccessRates.failed ?? 0, color: brand.danger },
+    { name: 'Rollbacks', value: changeSuccessRates.rollbacks ?? 0, color: brand.warning },
   ];
 
   return (
@@ -86,8 +88,9 @@ export const CIODashboard: React.FC = () => {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-4xl font-bold tracking-tight">CIO Dashboard</h1>
-          <p className="text-muted-foreground mt-1">
+          <Eyebrow>Dashboards · CIO</Eyebrow>
+          <h1 className="mt-3 text-[1.9rem]">CIO Dashboard</h1>
+          <p className="mt-1.5 text-ink-soft">
             IT operations, service quality, and capacity planning
           </p>
         </div>
@@ -165,13 +168,13 @@ export const CIODashboard: React.FC = () => {
           <p className="text-sm text-muted-foreground mb-4">SLA compliance by service tier</p>
             <ResponsiveContainer width="100%" height={300}>
               <BarChart data={serviceAvailability}>
-                <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
-                <XAxis dataKey="tier" />
-                <YAxis domain={[95, 100]} />
+                <CartesianGrid strokeDasharray="3 3" stroke={brand.line} />
+                <XAxis dataKey="tier" tick={{ fill: brand.inkSoft, fontSize: 12 }} />
+                <YAxis domain={[95, 100]} tick={{ fill: brand.inkSoft, fontSize: 12 }} />
                 <Tooltip />
                 <Legend />
-                <Bar dataKey="averageAvailability" fill="#8b5cf6" name="Availability %" radius={[8, 8, 0, 0]} />
-                <Bar dataKey="slaTarget" fill="#10b981" name="SLA Target %" radius={[8, 8, 0, 0]} />
+                <Bar dataKey="averageAvailability" fill={brand.sky} name="Availability %" radius={[8, 8, 0, 0]} />
+                <Bar dataKey="slaTarget" fill={brand.success} name="SLA Target %" radius={[8, 8, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
             <div className="mt-4 space-y-2">
@@ -180,14 +183,7 @@ export const CIODashboard: React.FC = () => {
                   <span className="text-sm font-medium">{tier.tier}</span>
                   <div className="flex items-center gap-2">
                     <span className="text-sm">{tier.averageAvailability.toFixed(2)}%</span>
-                    <Badge
-                      variant={tier.complianceStatus === 'compliant' ? 'default' : 'destructive'}
-                      className={
-                        tier.complianceStatus === 'compliant'
-                          ? 'bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300'
-                          : ''
-                      }
-                    >
+                    <Badge variant={tier.complianceStatus === 'compliant' ? 'success' : 'destructive'}>
                       {tier.complianceStatus === 'compliant' ? 'Within SLA' : 'Below SLA'}
                     </Badge>
                   </div>
@@ -212,7 +208,7 @@ export const CIODashboard: React.FC = () => {
                     `${name}: ${(percent * 100).toFixed(0)}%`
                   }
                   outerRadius={100}
-                  fill="#8884d8"
+                  fill={brand.sky}
                   dataKey="value"
                 >
                   {changeData.map((entry, index) => (
@@ -224,19 +220,19 @@ export const CIODashboard: React.FC = () => {
             </ResponsiveContainer>
             <div className="mt-4 grid grid-cols-3 gap-4 text-center">
               <div>
-                <p className="text-2xl font-bold text-green-600 dark:text-green-400">
+                <p className="text-2xl font-bold text-success">
                   {changeSuccessRates.successful}
                 </p>
                 <p className="text-xs text-muted-foreground">Successful</p>
               </div>
               <div>
-                <p className="text-2xl font-bold text-red-600 dark:text-red-400">
+                <p className="text-2xl font-bold text-danger">
                   {changeSuccessRates.failed}
                 </p>
                 <p className="text-xs text-muted-foreground">Failed</p>
               </div>
               <div>
-                <p className="text-2xl font-bold text-yellow-600 dark:text-yellow-400">
+                <p className="text-2xl font-bold text-warning">
                   {changeSuccessRates.rollbacks}
                 </p>
                 <p className="text-xs text-muted-foreground">Rollbacks</p>
@@ -253,13 +249,13 @@ export const CIODashboard: React.FC = () => {
           <p className="text-sm text-muted-foreground mb-4">Mean Time to Resolution by priority</p>
           <ResponsiveContainer width="100%" height={300}>
             <BarChart data={incidentResponseTimes}>
-              <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
-              <XAxis dataKey="priority" />
-              <YAxis label={{ value: 'Hours', angle: -90, position: 'insideLeft' }} />
+              <CartesianGrid strokeDasharray="3 3" stroke={brand.line} />
+              <XAxis dataKey="priority" tick={{ fill: brand.inkSoft, fontSize: 12 }} />
+              <YAxis label={{ value: 'Hours', angle: -90, position: 'insideLeft' }} tick={{ fill: brand.inkSoft, fontSize: 12 }} />
               <Tooltip />
               <Legend />
-              <Bar dataKey="mttr" fill="#ef4444" name="Actual MTTR" radius={[8, 8, 0, 0]} />
-              <Bar dataKey="target" fill="#10b981" name="Target MTTR" radius={[8, 8, 0, 0]} />
+              <Bar dataKey="mttr" fill={brand.danger} name="Actual MTTR" radius={[8, 8, 0, 0]} />
+              <Bar dataKey="target" fill={brand.success} name="Target MTTR" radius={[8, 8, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
           <div className="mt-4 space-y-2">
@@ -271,14 +267,7 @@ export const CIODashboard: React.FC = () => {
                   <span className="text-sm">
                     MTTR: {priority.mttr.toFixed(1)}h / Target: {priority.target.toFixed(1)}h
                   </span>
-                  <Badge
-                    variant={priority.mttr <= priority.target ? 'default' : 'destructive'}
-                    className={
-                      priority.mttr <= priority.target
-                        ? 'bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300'
-                        : ''
-                    }
-                  >
+                  <Badge variant={priority.mttr <= priority.target ? 'success' : 'destructive'}>
                     {priority.mttr <= priority.target ? 'On Target' : 'Over Target'}
                   </Badge>
                 </div>
@@ -309,13 +298,13 @@ export const CIODashboard: React.FC = () => {
                 <p className="text-sm text-muted-foreground">Total CIs</p>
               </div>
               <div className="text-center p-4 border border-border rounded-lg">
-                <p className="text-2xl font-bold text-green-600 dark:text-green-400">
+                <p className="text-2xl font-bold text-success">
                   {configurationAccuracy.accurateCIs}
                 </p>
                 <p className="text-sm text-muted-foreground">Accurate CIs</p>
               </div>
               <div className="text-center p-4 border border-border rounded-lg">
-                <p className="text-2xl font-bold text-yellow-600 dark:text-yellow-400">
+                <p className="text-2xl font-bold text-warning">
                   {configurationAccuracy.driftDetected}
                 </p>
                 <p className="text-sm text-muted-foreground">Drift Detected</p>
@@ -335,13 +324,13 @@ export const CIODashboard: React.FC = () => {
           <p className="text-sm text-muted-foreground mb-4">Budget allocation and variance</p>
           <ResponsiveContainer width="100%" height={350}>
             <BarChart data={costByCapability.slice(0, 10)} layout="vertical">
-              <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
-              <XAxis type="number" tickFormatter={formatCurrency} />
-              <YAxis dataKey="capability" type="category" width={150} />
+              <CartesianGrid strokeDasharray="3 3" stroke={brand.line} />
+              <XAxis type="number" tickFormatter={formatCurrency} tick={{ fill: brand.inkSoft, fontSize: 12 }} />
+              <YAxis dataKey="capability" type="category" width={150} tick={{ fill: brand.inkSoft, fontSize: 12 }} />
               <Tooltip formatter={(value: number) => formatCurrency(value)} />
               <Legend />
-              <Bar dataKey="cost" fill="#8b5cf6" name="Actual Cost" radius={[0, 8, 8, 0]} />
-              <Bar dataKey="budgetAllocated" fill="#10b981" name="Budget" radius={[0, 8, 8, 0]} />
+              <Bar dataKey="cost" fill={brand.navy} name="Actual Cost" radius={[0, 8, 8, 0]} />
+              <Bar dataKey="budgetAllocated" fill={brand.success} name="Budget" radius={[0, 8, 8, 0]} />
             </BarChart>
           </ResponsiveContainer>
         </div>
@@ -354,15 +343,15 @@ export const CIODashboard: React.FC = () => {
           <p className="text-sm text-muted-foreground mb-4">Resource utilization trends and forecast</p>
           <ResponsiveContainer width="100%" height={350}>
             <LineChart data={capacityPlanning}>
-              <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
-              <XAxis dataKey="month" />
-              <YAxis domain={[0, 100]} label={{ value: 'Utilization %', angle: -90, position: 'insideLeft' }} />
+              <CartesianGrid strokeDasharray="3 3" stroke={brand.line} />
+              <XAxis dataKey="month" tick={{ fill: brand.inkSoft, fontSize: 12 }} />
+              <YAxis domain={[0, 100]} label={{ value: 'Utilization %', angle: -90, position: 'insideLeft' }} tick={{ fill: brand.inkSoft, fontSize: 12 }} />
               <Tooltip />
               <Legend />
               <Line
                 type="monotone"
                 dataKey="computeUtilization"
-                stroke="#8b5cf6"
+                stroke={brand.navy}
                 strokeWidth={2}
                 name="Compute"
                 dot={{ r: 4 }}
@@ -370,7 +359,7 @@ export const CIODashboard: React.FC = () => {
               <Line
                 type="monotone"
                 dataKey="storageUtilization"
-                stroke="#3b82f6"
+                stroke={brand.sky}
                 strokeWidth={2}
                 name="Storage"
                 dot={{ r: 4 }}
@@ -378,7 +367,7 @@ export const CIODashboard: React.FC = () => {
               <Line
                 type="monotone"
                 dataKey="networkUtilization"
-                stroke="#10b981"
+                stroke={brand.success}
                 strokeWidth={2}
                 name="Network"
                 dot={{ r: 4 }}

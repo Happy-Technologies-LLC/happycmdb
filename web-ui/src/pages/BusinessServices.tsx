@@ -7,6 +7,7 @@ import { LiquidGlass } from '../components/ui/liquid-glass';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Badge } from '../components/ui/badge';
+import { Eyebrow } from '../components/ui/eyebrow';
 import {
   Dialog,
   DialogContent,
@@ -106,16 +107,16 @@ const mapUIToAPI = (uiService: Partial<BusinessService> & { name: string }): Par
 };
 
 const CRITICALITY_COLORS = {
-  TIER_0: 'bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300',
-  TIER_1: 'bg-orange-100 text-orange-800 dark:bg-orange-950 dark:text-orange-300',
-  TIER_2: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-950 dark:text-yellow-300',
-  TIER_3: 'bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300',
+  TIER_0: 'bg-danger-soft text-danger',
+  TIER_1: 'bg-warning-soft text-warning-text',
+  TIER_2: 'bg-warning-soft text-warning-text',
+  TIER_3: 'bg-sky-soft text-sky-text',
 };
 
 const STATUS_COLORS = {
-  active: 'bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300',
-  inactive: 'bg-gray-100 text-gray-800 dark:bg-gray-950 dark:text-gray-300',
-  planned: 'bg-purple-100 text-purple-800 dark:bg-purple-950 dark:text-purple-300',
+  active: 'bg-success-soft text-success',
+  inactive: 'bg-warm-alt text-ink-soft',
+  planned: 'bg-sky-soft text-sky-text',
 };
 
 export const BusinessServices: React.FC = () => {
@@ -264,8 +265,9 @@ export const BusinessServices: React.FC = () => {
       {/* Header */}
       <div className="flex justify-between items-center">
         <div>
-          <h1 className="text-3xl font-bold">Business Services</h1>
-          <p className="text-muted-foreground mt-1">
+          <Eyebrow>Service Catalog</Eyebrow>
+          <h1 className="mt-3 text-[1.9rem]">Business Services</h1>
+          <p className="mt-1.5 text-ink-soft">
             Manage and monitor your business-critical services
           </p>
         </div>

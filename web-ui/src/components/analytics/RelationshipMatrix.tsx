@@ -12,6 +12,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Loader2 } from 'lucide-react';
 import { useRelationshipMatrix } from '../../hooks/useAnalytics';
 import { ExportButton } from './ExportButton';
+import { brand } from '@/lib/brandColors';
 
 export const RelationshipMatrix: React.FC = () => {
   const { data, loading, error } = useRelationshipMatrix();
@@ -46,12 +47,12 @@ export const RelationshipMatrix: React.FC = () => {
   }, [data]);
 
   const getColorForCount = (count: number, max: number): string => {
-    if (count === 0) return '#F2F2F7';
+    if (count === 0) return brand.warmAlt;
     const intensity = count / max;
-    if (intensity > 0.75) return '#007AFF';
-    if (intensity > 0.5) return '#5AC8FA';
-    if (intensity > 0.25) return '#A0D9F5';
-    return '#D4ECFA';
+    if (intensity > 0.75) return brand.navy;
+    if (intensity > 0.5) return brand.skyText;
+    if (intensity > 0.25) return brand.sky;
+    return brand.skyLight;
   };
 
   if (loading) {
@@ -182,7 +183,7 @@ export const RelationshipMatrix: React.FC = () => {
             Intensity
           </p>
           <div className="flex h-6 mb-1">
-            {['#F2F2F7', '#D4ECFA', '#A0D9F5', '#5AC8FA', '#007AFF'].map((color, idx) => (
+            {[brand.warmAlt, brand.skyLight, brand.sky, brand.skyText, brand.navy].map((color, idx) => (
               <div
                 key={idx}
                 className="flex-1 border border-border"

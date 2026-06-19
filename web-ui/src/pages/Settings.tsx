@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Card } from '@/components/ui/card';
+import { Eyebrow } from '@/components/ui/eyebrow';
 import { useAuth } from '../hooks/useAuth';
 import { GeneralSettings } from '../components/settings/GeneralSettings';
 import { DiscoverySettings } from '../components/settings/DiscoverySettings';
@@ -42,10 +43,9 @@ export const Settings: React.FC = () => {
   return (
     <div>
       <div className="mb-6">
-        <h1 className="text-3xl font-semibold tracking-tight">
-          Settings
-        </h1>
-        <p className="text-muted-foreground mt-1">
+        <Eyebrow>Platform · Settings</Eyebrow>
+        <h1 className="mt-3 text-[1.9rem]">Settings</h1>
+        <p className="mt-1.5 text-ink-soft">
           Manage your application preferences and configurations
         </p>
       </div>

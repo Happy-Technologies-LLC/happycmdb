@@ -50,7 +50,7 @@ jobs:
     name: Integration Tests
     runs-on: ubuntu-latest
     # Non-blocking: pre-existing test-level rot (undeclared deps, API drift).
-    # Runs for visibility but must not gate merges until repaired.
+    # Runs for visibility but must not gate merges until repaired. Tracked in #9.
     continue-on-error: true
     timeout-minutes: 20
 
@@ -92,7 +92,7 @@ jobs:
     name: E2E Tests
     runs-on: ubuntu-latest
     # Non-blocking: pre-existing test-level rot / full-stack deps.
-    # Runs for visibility but must not gate merges until repaired.
+    # Runs for visibility but must not gate merges until repaired. Tracked in #9.
     continue-on-error: true
     timeout-minutes: 30
 
@@ -126,7 +126,7 @@ jobs:
   test-report:
     name: Generate Test Report
     runs-on: ubuntu-latest
-    # Non-blocking: cascades from the WIP integration/e2e suites above.
+    # Non-blocking: cascades from the WIP integration/e2e suites above. Tracked in #9.
     continue-on-error: true
     needs: [unit-tests, integration-tests, e2e-tests]
     if: always()
@@ -148,7 +148,7 @@ jobs:
   coverage-report:
     name: Coverage Report
     runs-on: ubuntu-latest
-    # Non-blocking: full-coverage run depends on the WIP integration suite.
+    # Non-blocking: full-coverage run depends on the WIP integration suite. Tracked in #9.
     continue-on-error: true
     needs: [unit-tests, integration-tests]
     if: always()

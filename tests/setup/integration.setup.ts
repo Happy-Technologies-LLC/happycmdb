@@ -28,6 +28,12 @@ process.env.CREDENTIAL_ENCRYPTION_KEY =
   'test-encryption-key-minimum-32-chars-required-for-security';
 process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-jwt-secret-for-integration-tests';
 
+// auth.routes loads + validates the full app config at module load (loadConfig).
+// The schema rejects empty databases.kafka.clientId/groupId, so provide test
+// values (CI has no .env to supply them).
+process.env.KAFKA_CLIENT_ID = process.env.KAFKA_CLIENT_ID || 'cmdb-test';
+process.env.KAFKA_GROUP_ID = process.env.KAFKA_GROUP_ID || 'cmdb-test-group';
+
 // Global error handler
 process.on('unhandledRejection', (error) => {
   console.error('Unhandled Promise Rejection in integration test:', error);

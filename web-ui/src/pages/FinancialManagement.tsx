@@ -16,6 +16,8 @@ import { LiquidGlass } from '../components/ui/liquid-glass';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import { Card } from '../components/ui/card';
+import { Eyebrow } from '../components/ui/eyebrow';
+import { brand, chartSeries } from '../lib/brandColors';
 import {
   Select,
   SelectContent,
@@ -101,7 +103,7 @@ const optimizationOpportunities = [
   },
 ];
 
-const COLORS = ['#8b5cf6', '#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#ec4899'];
+const COLORS = chartSeries;
 
 export const FinancialManagement: React.FC = () => {
   const [timeRange, setTimeRange] = useState('6m');
@@ -129,8 +131,9 @@ export const FinancialManagement: React.FC = () => {
       {/* Header */}
       <div className="flex justify-between items-center">
         <div>
-          <h1 className="text-3xl font-bold">Financial Management</h1>
-          <p className="text-muted-foreground mt-1">
+          <Eyebrow>Finance · FinOps</Eyebrow>
+          <h1 className="mt-3 text-[1.9rem]">Financial Management</h1>
+          <p className="mt-1.5 text-ink-soft">
             Technology Business Management (TBM) & FinOps
           </p>
         </div>
@@ -165,8 +168,8 @@ export const FinancialManagement: React.FC = () => {
             </div>
             <div className="text-3xl font-bold">{formatCurrency(totalMonthlyCost)}</div>
             <div className="flex items-center gap-1 mt-2">
-              <TrendingUp className="h-3 w-3 text-red-500" />
-              <span className="text-xs text-red-500">+18.5% vs last month</span>
+              <TrendingUp className="h-3 w-3 text-danger" />
+              <span className="text-xs text-danger">+18.5% vs last month</span>
             </div>
           </div>
         </LiquidGlass>
@@ -181,7 +184,7 @@ export const FinancialManagement: React.FC = () => {
             <div className="flex items-center gap-1 mt-2">
               <div className="w-full bg-secondary rounded-full h-2">
                 <div
-                  className="bg-gradient-to-r from-green-500 via-yellow-500 to-red-500 h-2 rounded-full"
+                  className="bg-gradient-to-r from-success via-warning to-danger h-2 rounded-full"
                   style={{ width: `${budgetUtilization}%` }}
                 />
               </div>
@@ -197,7 +200,7 @@ export const FinancialManagement: React.FC = () => {
             </div>
             <div className="text-3xl font-bold">{formatCurrency(totalPotentialSavings)}</div>
             <div className="flex items-center gap-1 mt-2">
-              <span className="text-xs text-green-500">{optimizationOpportunities.length} opportunities identified</span>
+              <span className="text-xs text-success">{optimizationOpportunities.length} opportunities identified</span>
             </div>
           </div>
         </LiquidGlass>
@@ -274,10 +277,10 @@ export const FinancialManagement: React.FC = () => {
                   <YAxis tickFormatter={(value) => `$${(value / 1000).toFixed(0)}K`} />
                   <Tooltip formatter={(value: number) => formatCurrency(value)} />
                   <Legend />
-                  <Line type="monotone" dataKey="compute" stroke="#8b5cf6" strokeWidth={2} name="Compute" />
-                  <Line type="monotone" dataKey="applications" stroke="#3b82f6" strokeWidth={2} name="Applications" />
-                  <Line type="monotone" dataKey="storage" stroke="#10b981" strokeWidth={2} name="Storage" />
-                  <Line type="monotone" dataKey="budget" stroke="#f59e0b" strokeWidth={2} strokeDasharray="5 5" name="Budget" />
+                  <Line type="monotone" dataKey="compute" stroke={brand.navy} strokeWidth={2} name="Compute" />
+                  <Line type="monotone" dataKey="applications" stroke={brand.sky} strokeWidth={2} name="Applications" />
+                  <Line type="monotone" dataKey="storage" stroke={brand.success} strokeWidth={2} name="Storage" />
+                  <Line type="monotone" dataKey="budget" stroke={brand.warning} strokeWidth={2} strokeDasharray="5 5" name="Budget" />
                 </LineChart>
               </ResponsiveContainer>
             </div>
@@ -296,7 +299,7 @@ export const FinancialManagement: React.FC = () => {
                     labelLine={false}
                     label={({ name, percentage }) => `${name}: ${percentage}%`}
                     outerRadius={100}
-                    fill="#8884d8"
+                    fill={brand.sky}
                     dataKey="value"
                   >
                     {costByTower.map((entry, index) => (
@@ -372,14 +375,14 @@ export const FinancialManagement: React.FC = () => {
                       <div className="flex items-center gap-2">
                         {service.trend === 'up' && (
                           <>
-                            <TrendingUp className="h-4 w-4 text-red-500" />
-                            <span className="text-xs text-red-500">+{service.change}%</span>
+                            <TrendingUp className="h-4 w-4 text-danger" />
+                            <span className="text-xs text-danger">+{service.change}%</span>
                           </>
                         )}
                         {service.trend === 'down' && (
                           <>
-                            <TrendingDown className="h-4 w-4 text-green-500" />
-                            <span className="text-xs text-green-500">{service.change}%</span>
+                            <TrendingDown className="h-4 w-4 text-success" />
+                            <span className="text-xs text-success">{service.change}%</span>
                           </>
                         )}
                         {service.trend === 'stable' && (
@@ -399,7 +402,7 @@ export const FinancialManagement: React.FC = () => {
         <div className="space-y-4">
           <div className="flex items-center justify-between">
             <h3 className="text-lg font-semibold">Cost Optimization Opportunities</h3>
-            <Badge variant="outline" className="bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300">
+            <Badge variant="outline" className="bg-success-soft text-success">
               Total Potential Savings: {formatCurrency(totalPotentialSavings)}
             </Badge>
           </div>
@@ -410,9 +413,9 @@ export const FinancialManagement: React.FC = () => {
                 <div className="flex items-start justify-between">
                   <div className="flex-1">
                     <div className="flex items-center gap-2 mb-2">
-                      <AlertCircle className={`h-5 w-5 ${opp.priority === 'high' ? 'text-red-500' : 'text-yellow-500'}`} />
+                      <AlertCircle className={`h-5 w-5 ${opp.priority === 'high' ? 'text-danger' : 'text-warning'}`} />
                       <h4 className="font-semibold">{opp.type}</h4>
-                      <Badge className={opp.priority === 'high' ? 'bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300' : 'bg-yellow-100 text-yellow-800 dark:bg-yellow-950 dark:text-yellow-300'}>
+                      <Badge className={opp.priority === 'high' ? 'bg-danger-soft text-danger' : 'bg-warning-soft text-warning-text'}>
                         {opp.priority}
                       </Badge>
                     </div>
@@ -422,7 +425,7 @@ export const FinancialManagement: React.FC = () => {
                     </div>
                   </div>
                   <div className="text-right">
-                    <div className="text-2xl font-bold text-green-600">{formatCurrency(opp.potentialSavings)}</div>
+                    <div className="text-2xl font-bold text-success">{formatCurrency(opp.potentialSavings)}</div>
                     <div className="text-xs text-muted-foreground">per month</div>
                     <Button className="mt-3" size="sm">
                       Take Action

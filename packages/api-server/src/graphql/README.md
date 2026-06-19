@@ -1,6 +1,6 @@
 # GraphQL API for CMDB Platform
 
-This directory contains the complete GraphQL implementation for the ConfigBuddy CMDB platform, providing a powerful and flexible query interface for configuration items and their relationships.
+This directory contains the complete GraphQL implementation for the HappyCMDB platform, providing a powerful and flexible query interface for configuration items and their relationships.
 
 ## Architecture Overview
 

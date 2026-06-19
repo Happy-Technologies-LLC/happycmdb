@@ -189,7 +189,7 @@ export const PatternLibrary: React.FC = () => {
                     <TableCell className="font-medium">
                       <div className="flex items-center gap-2">
                         {pattern.isActive && (
-                          <Sparkles className="h-4 w-4 text-yellow-500" />
+                          <Sparkles className="h-4 w-4 text-warning" />
                         )}
                         {pattern.name}
                       </div>
@@ -205,7 +205,7 @@ export const PatternLibrary: React.FC = () => {
                     </TableCell>
                     <TableCell className="text-right">{pattern.usageCount}</TableCell>
                     <TableCell className="text-right">
-                      <span className={successRate >= 80 ? 'text-green-600' : 'text-yellow-600'}>
+                      <span className={successRate >= 80 ? 'text-success' : 'text-warning'}>
                         {successRate.toFixed(0)}%
                       </span>
                     </TableCell>
@@ -221,7 +221,7 @@ export const PatternLibrary: React.FC = () => {
                             onClick={() => handleApprove(pattern)}
                             title="Approve"
                           >
-                            <CheckCircle className="h-4 w-4 text-green-600" />
+                            <CheckCircle className="h-4 w-4 text-success" />
                           </Button>
                         )}
                         {pattern.status === 'approved' && !pattern.isActive && (
@@ -231,7 +231,7 @@ export const PatternLibrary: React.FC = () => {
                             onClick={() => handleActivate(pattern)}
                             title="Activate"
                           >
-                            <Play className="h-4 w-4 text-blue-600" />
+                            <Play className="h-4 w-4 text-sky-text" />
                           </Button>
                         )}
                         {pattern.isActive && (
@@ -241,7 +241,7 @@ export const PatternLibrary: React.FC = () => {
                             onClick={() => handleDeactivate(pattern)}
                             title="Deactivate"
                           >
-                            <Pause className="h-4 w-4 text-yellow-600" />
+                            <Pause className="h-4 w-4 text-warning" />
                           </Button>
                         )}
                         <Button

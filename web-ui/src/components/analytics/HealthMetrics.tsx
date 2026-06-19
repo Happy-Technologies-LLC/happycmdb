@@ -26,6 +26,7 @@ import { useHealthMetrics } from '../../hooks/useAnalytics';
 import { DateRangeSelector } from './DateRangeSelector';
 import { ExportButton } from './ExportButton';
 import { DateRangeParams } from '../../services/analytics.service';
+import { brand } from '@/lib/brandColors';
 
 export interface HealthMetricsProps {
   dateRange?: DateRangeParams;
@@ -125,13 +126,13 @@ export const HealthMetrics: React.FC<HealthMetricsProps> = ({ dateRange: externa
             data={chartData}
             margin={{ top: 20, right: 30, left: 20, bottom: 5 }}
           >
-            <CartesianGrid strokeDasharray="3 3" stroke="#E5E5EA" />
+            <CartesianGrid strokeDasharray="3 3" stroke={brand.line} />
             <XAxis
               dataKey="timestamp"
-              tick={{ fill: '#8E8E93', fontSize: 10 }}
+              tick={{ fill: brand.inkSoft, fontSize: 10 }}
             />
             <YAxis
-              tick={{ fill: '#8E8E93', fontSize: 12 }}
+              tick={{ fill: brand.inkSoft, fontSize: 12 }}
               domain={[0, 100]}
               label={{ value: 'Usage (%)', angle: -90, position: 'insideLeft' }}
             />
@@ -140,7 +141,7 @@ export const HealthMetrics: React.FC<HealthMetricsProps> = ({ dateRange: externa
             <Line
               type="monotone"
               dataKey="CPU"
-              stroke="#FF9500"
+              stroke={brand.warning}
               strokeWidth={2}
               dot={false}
               activeDot={{ r: 4 }}
@@ -148,7 +149,7 @@ export const HealthMetrics: React.FC<HealthMetricsProps> = ({ dateRange: externa
             <Line
               type="monotone"
               dataKey="Memory"
-              stroke="#007AFF"
+              stroke={brand.sky}
               strokeWidth={2}
               dot={false}
               activeDot={{ r: 4 }}
@@ -156,7 +157,7 @@ export const HealthMetrics: React.FC<HealthMetricsProps> = ({ dateRange: externa
             <Line
               type="monotone"
               dataKey="Disk"
-              stroke="#34C759"
+              stroke={brand.success}
               strokeWidth={2}
               dot={false}
               activeDot={{ r: 4 }}

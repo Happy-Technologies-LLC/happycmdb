@@ -1,6 +1,6 @@
 # @cmdb/framework-integration
 
-Unified Interface for ConfigBuddy v3.0 combining ITIL v4, TBM v5.0.1, and BSM frameworks into a single, comprehensive service management platform.
+Unified Interface for HappyCMDB v3.0 combining ITIL v4, TBM v5.0.1, and BSM frameworks into a single, comprehensive service management platform.
 
 ## Overview
 
@@ -48,7 +48,7 @@ npm install @cmdb/framework-integration
 
 ### Dependencies
 
-This package requires the following ConfigBuddy packages:
+This package requires the following HappyCMDB packages:
 - `@cmdb/itil-service-manager` - Phase 2 ITIL implementation
 - `@cmdb/tbm-cost-engine` - Phase 3 TBM implementation
 - `@cmdb/bsm-impact-engine` - Phase 4 BSM implementation (built by Agent 11)
@@ -543,8 +543,8 @@ MIT
 
 ## Contributing
 
-See the main ConfigBuddy repository for contribution guidelines.
+See the main HappyCMDB repository for contribution guidelines.
 
 ## Support
 
-For questions or issues, please open an issue in the ConfigBuddy repository.
+For questions or issues, please open an issue in the HappyCMDB repository.

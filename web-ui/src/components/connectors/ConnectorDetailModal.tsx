@@ -92,7 +92,7 @@ export const ConnectorDetailModal: React.FC<ConnectorDetailModalProps> = ({
               <div className="flex items-center gap-2 mb-1">
                 <DialogTitle className="text-2xl">{connector.name}</DialogTitle>
                 {connector.verified && (
-                  <CheckCircle className="h-5 w-5 text-green-500 flex-shrink-0" />
+                  <CheckCircle className="h-5 w-5 text-success flex-shrink-0" />
                 )}
               </div>
               <DialogDescription className="text-base">
@@ -105,12 +105,12 @@ export const ConnectorDetailModal: React.FC<ConnectorDetailModalProps> = ({
                   <Badge variant="secondary">{connector.license}</Badge>
                 )}
                 {isInstalled && (
-                  <Badge variant="default" className="bg-green-600">
+                  <Badge variant="success">
                     Installed (v{installedVersion})
                   </Badge>
                 )}
                 {hasUpdate && (
-                  <Badge variant="default" className="bg-orange-600">
+                  <Badge variant="warning">
                     Update Available
                   </Badge>
                 )}
@@ -136,7 +136,7 @@ export const ConnectorDetailModal: React.FC<ConnectorDetailModalProps> = ({
               {/* Quick Stats */}
               <div className="grid grid-cols-3 gap-4">
                 <div className="flex items-center gap-3 p-4 border rounded-lg">
-                  <Download className="h-5 w-5 text-blue-500" />
+                  <Download className="h-5 w-5 text-sky-text" />
                   <div>
                     <div className="text-sm text-muted-foreground">Downloads</div>
                     <div className="text-lg font-semibold">
@@ -145,7 +145,7 @@ export const ConnectorDetailModal: React.FC<ConnectorDetailModalProps> = ({
                   </div>
                 </div>
                 <div className="flex items-center gap-3 p-4 border rounded-lg">
-                  <Star className="h-5 w-5 text-yellow-500 fill-yellow-500" />
+                  <Star className="h-5 w-5 text-warning fill-warning" />
                   <div>
                     <div className="text-sm text-muted-foreground">Rating</div>
                     <div className="text-lg font-semibold">
@@ -154,7 +154,7 @@ export const ConnectorDetailModal: React.FC<ConnectorDetailModalProps> = ({
                   </div>
                 </div>
                 <div className="flex items-center gap-3 p-4 border rounded-lg">
-                  <GitBranch className="h-5 w-5 text-purple-500" />
+                  <GitBranch className="h-5 w-5 text-navy" />
                   <div>
                     <div className="text-sm text-muted-foreground">Versions</div>
                     <div className="text-lg font-semibold">{connector.versions.length}</div>
@@ -202,7 +202,7 @@ export const ConnectorDetailModal: React.FC<ConnectorDetailModalProps> = ({
                       href={connector.homepage}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="flex items-center gap-2 text-sm text-blue-600 hover:underline"
+                      className="flex items-center gap-2 text-sm text-sky-text hover:underline"
                     >
                       <ExternalLink className="h-4 w-4" />
                       Homepage
@@ -213,7 +213,7 @@ export const ConnectorDetailModal: React.FC<ConnectorDetailModalProps> = ({
                       href={connector.repository}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="flex items-center gap-2 text-sm text-blue-600 hover:underline"
+                      className="flex items-center gap-2 text-sm text-sky-text hover:underline"
                     >
                       <GitBranch className="h-4 w-4" />
                       Repository
@@ -264,19 +264,19 @@ export const ConnectorDetailModal: React.FC<ConnectorDetailModalProps> = ({
                     key={version.version}
                     className={cn(
                       'p-4 border rounded-lg',
-                      isCurrent && 'border-green-500 bg-green-50 dark:bg-green-900/10'
+                      isCurrent && 'border-success bg-success-soft'
                     )}
                   >
                     <div className="flex items-start justify-between mb-2">
                       <div className="flex items-center gap-2">
                         <h4 className="font-semibold">v{version.version}</h4>
                         {isLatest && (
-                          <Badge variant="default" className="bg-blue-600">
+                          <Badge variant="info">
                             Latest
                           </Badge>
                         )}
                         {isCurrent && (
-                          <Badge variant="default" className="bg-green-600">
+                          <Badge variant="success">
                             Installed
                           </Badge>
                         )}
@@ -345,15 +345,15 @@ export const ConnectorDetailModal: React.FC<ConnectorDetailModalProps> = ({
               )}
 
               {connector.verified && (
-                <div className="p-4 bg-green-50 dark:bg-green-900/10 border border-green-200 dark:border-green-800 rounded-lg">
+                <div className="p-4 bg-success-soft border border-success/20 rounded-lg">
                   <div className="flex items-center gap-2 mb-2">
-                    <CheckCircle className="h-5 w-5 text-green-600" />
-                    <h4 className="font-semibold text-green-900 dark:text-green-100">
+                    <CheckCircle className="h-5 w-5 text-success" />
+                    <h4 className="font-semibold text-success">
                       Verified Connector
                     </h4>
                   </div>
-                  <p className="text-sm text-green-700 dark:text-green-300">
-                    This connector has been verified by the ConfigBuddy team and meets all
+                  <p className="text-sm text-success">
+                    This connector has been verified by the HappyCMDB team and meets all
                     security and quality standards.
                   </p>
                 </div>
@@ -365,7 +365,7 @@ export const ConnectorDetailModal: React.FC<ConnectorDetailModalProps> = ({
               <div className="grid grid-cols-2 gap-4">
                 <div className="p-4 border rounded-lg">
                   <div className="flex items-center gap-2 mb-2">
-                    <Download className="h-5 w-5 text-blue-500" />
+                    <Download className="h-5 w-5 text-sky-text" />
                     <h4 className="font-semibold">Total Downloads</h4>
                   </div>
                   <div className="text-3xl font-bold">
@@ -375,7 +375,7 @@ export const ConnectorDetailModal: React.FC<ConnectorDetailModalProps> = ({
 
                 <div className="p-4 border rounded-lg">
                   <div className="flex items-center gap-2 mb-2">
-                    <Star className="h-5 w-5 text-yellow-500 fill-yellow-500" />
+                    <Star className="h-5 w-5 text-warning fill-warning" />
                     <h4 className="font-semibold">Average Rating</h4>
                   </div>
                   <div className="text-3xl font-bold">{connector.rating.toFixed(1)}</div>
@@ -384,7 +384,7 @@ export const ConnectorDetailModal: React.FC<ConnectorDetailModalProps> = ({
 
                 <div className="p-4 border rounded-lg">
                   <div className="flex items-center gap-2 mb-2">
-                    <GitBranch className="h-5 w-5 text-purple-500" />
+                    <GitBranch className="h-5 w-5 text-navy" />
                     <h4 className="font-semibold">Available Versions</h4>
                   </div>
                   <div className="text-3xl font-bold">{connector.versions.length}</div>
@@ -392,7 +392,7 @@ export const ConnectorDetailModal: React.FC<ConnectorDetailModalProps> = ({
 
                 <div className="p-4 border rounded-lg">
                   <div className="flex items-center gap-2 mb-2">
-                    <Calendar className="h-5 w-5 text-green-500" />
+                    <Calendar className="h-5 w-5 text-success" />
                     <h4 className="font-semibold">Latest Release</h4>
                   </div>
                   <div className="text-lg font-semibold">

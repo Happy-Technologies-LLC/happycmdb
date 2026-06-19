@@ -1,6 +1,6 @@
 # Kubernetes Deployment
 
-Deploy ConfigBuddy CMDB on Kubernetes for production-grade scalability and high availability.
+Deploy HappyCMDB on Kubernetes for production-grade scalability and high availability.
 
 ## Prerequisites
 
@@ -14,21 +14,21 @@ Deploy ConfigBuddy CMDB on Kubernetes for production-grade scalability and high 
 
 ### Method 1: Helm Chart (Recommended)
 
-#### Install ConfigBuddy using Helm
+#### Install HappyCMDB using Helm
 
 ```bash
-# Add the ConfigBuddy Helm repository
-helm repo add configbuddy https://charts.configbuddy.io
+# Add the HappyCMDB Helm repository
+helm repo add happycmdb https://charts.happycmdb.io
 helm repo update
 
 # Install with default values
-helm install configbuddy configbuddy/configbuddy \\
-  --namespace configbuddy \\
+helm install happycmdb happycmdb/happycmdb \\
+  --namespace happycmdb \\
   --create-namespace
 
 # Or install with custom values
-helm install configbuddy configbuddy/configbuddy \\
-  --namespace configbuddy \\
+helm install happycmdb happycmdb/happycmdb \\
+  --namespace happycmdb \\
   --create-namespace \\
   --values custom-values.yaml
 ```
@@ -38,7 +38,7 @@ helm install configbuddy configbuddy/configbuddy \\
 Create `custom-values.yaml`:
 
 ```yaml
-# ConfigBuddy Helm Values (v3.0)
+# HappyCMDB Helm Values (v3.0)
 
 # Global settings
 global:
@@ -160,7 +160,7 @@ ingress:
         - path: /
           pathType: Prefix
   tls:
-    - secretName: configbuddy-tls
+    - secretName: happycmdb-tls
       hosts:
         - cmdb.example.com
 
@@ -178,7 +178,7 @@ monitoring:
 #### 1. Create Namespace
 
 ```bash
-kubectl create namespace configbuddy
+kubectl create namespace happycmdb
 ```
 
 #### 2. Create Secrets
@@ -186,20 +186,20 @@ kubectl create namespace configbuddy
 ```bash
 # Database credentials
 kubectl create secret generic db-credentials \\
-  --namespace configbuddy \\
+  --namespace happycmdb \\
   --from-literal=neo4j-password='your-neo4j-password' \\
   --from-literal=postgres-password='your-postgres-password' \\
   --from-literal=redis-password='your-redis-password'
 
 # Application secrets
 kubectl create secret generic app-secrets \\
-  --namespace configbuddy \\
+  --namespace happycmdb \\
   --from-literal=jwt-secret='your-jwt-secret' \\
   --from-literal=api-key='your-api-key'
 
 # Cloud provider credentials (if using discovery)
 kubectl create secret generic cloud-credentials \\
-  --namespace configbuddy \\
+  --namespace happycmdb \\
   --from-literal=aws-access-key-id='your-aws-key' \\
   --from-literal=aws-secret-access-key='your-aws-secret' \\
   --from-literal=azure-client-id='your-azure-client' \\
@@ -228,45 +228,45 @@ kubectl apply -f k8s/ingress/
 ### Check Pod Status
 
 ```bash
-kubectl get pods -n configbuddy
+kubectl get pods -n happycmdb
 ```
 
 Expected output (v3.0):
 ```
 NAME                                READY   STATUS    RESTARTS   AGE
-configbuddy-api-xxx                 1/1     Running   0          5m
-configbuddy-discovery-xxx           1/1     Running   0          5m
-configbuddy-etl-xxx                 1/1     Running   0          5m
-configbuddy-neo4j-0                 1/1     Running   0          5m
-configbuddy-postgresql-0            1/1     Running   0          5m
-configbuddy-redis-0                 1/1     Running   0          5m
-configbuddy-kafka-0                 1/1     Running   0          5m
-configbuddy-kafka-1                 1/1     Running   0          5m
-configbuddy-kafka-2                 1/1     Running   0          5m
-configbuddy-metabase-xxx            1/1     Running   0          5m
-configbuddy-web-ui-xxx              1/1     Running   0          5m
+happycmdb-api-xxx                 1/1     Running   0          5m
+happycmdb-discovery-xxx           1/1     Running   0          5m
+happycmdb-etl-xxx                 1/1     Running   0          5m
+happycmdb-neo4j-0                 1/1     Running   0          5m
+happycmdb-postgresql-0            1/1     Running   0          5m
+happycmdb-redis-0                 1/1     Running   0          5m
+happycmdb-kafka-0                 1/1     Running   0          5m
+happycmdb-kafka-1                 1/1     Running   0          5m
+happycmdb-kafka-2                 1/1     Running   0          5m
+happycmdb-metabase-xxx            1/1     Running   0          5m
+happycmdb-web-ui-xxx              1/1     Running   0          5m
 ```
 
 ### Check Services
 
 ```bash
-kubectl get svc -n configbuddy
+kubectl get svc -n happycmdb
 ```
 
 ### Check Ingress
 
 ```bash
-kubectl get ingress -n configbuddy
+kubectl get ingress -n happycmdb
 ```
 
 ### View Logs
 
 ```bash
 # API Server logs
-kubectl logs -n configbuddy -l app=configbuddy-api -f
+kubectl logs -n happycmdb -l app=happycmdb-api -f
 
 # Discovery Engine logs
-kubectl logs -n configbuddy -l app=configbuddy-discovery -f
+kubectl logs -n happycmdb -l app=happycmdb-discovery -f
 ```
 
 ## Scaling
@@ -275,13 +275,13 @@ kubectl logs -n configbuddy -l app=configbuddy-discovery -f
 
 ```bash
 # Scale API servers
-kubectl scale deployment configbuddy-api \\
-  --namespace configbuddy \\
+kubectl scale deployment happycmdb-api \\
+  --namespace happycmdb \\
   --replicas=5
 
 # Scale discovery workers
-kubectl scale deployment configbuddy-discovery \\
-  --namespace configbuddy \\
+kubectl scale deployment happycmdb-discovery \\
+  --namespace happycmdb \\
   --replicas=3
 ```
 
@@ -289,8 +289,8 @@ kubectl scale deployment configbuddy-discovery \\
 
 ```bash
 # Enable autoscaling for API servers
-kubectl autoscale deployment configbuddy-api \\
-  --namespace configbuddy \\
+kubectl autoscale deployment happycmdb-api \\
+  --namespace happycmdb \\
   --min=3 \\
   --max=10 \\
   --cpu-percent=70
@@ -342,10 +342,10 @@ kubectl apply -f k8s/backup/postgres-backup-cronjob.yaml
 
 ```bash
 # Describe pod to see events
-kubectl describe pod <pod-name> -n configbuddy
+kubectl describe pod <pod-name> -n happycmdb
 
 # Check logs
-kubectl logs <pod-name> -n configbuddy
+kubectl logs <pod-name> -n happycmdb
 ```
 
 ### Database Connection Issues
@@ -354,16 +354,16 @@ kubectl logs <pod-name> -n configbuddy
 # Test Neo4j connection
 kubectl run -it --rm debug \\
   --image=neo4j:5 \\
-  --namespace configbuddy \\
+  --namespace happycmdb \\
   --restart=Never \\
-  -- cypher-shell -u neo4j -p password -a bolt://configbuddy-neo4j:7687
+  -- cypher-shell -u neo4j -p password -a bolt://happycmdb-neo4j:7687
 
 # Test PostgreSQL connection
 kubectl run -it --rm debug \\
   --image=postgres:15 \\
-  --namespace configbuddy \\
+  --namespace happycmdb \\
   --restart=Never \\
-  -- psql -h configbuddy-postgresql -U postgres
+  -- psql -h happycmdb-postgresql -U postgres
 ```
 
 ## Production Checklist

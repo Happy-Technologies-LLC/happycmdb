@@ -50,7 +50,7 @@ describe('CIList Component', () => {
     expect(screen.getByText('Name')).toBeInTheDocument();
     expect(screen.getByText('Type')).toBeInTheDocument();
     expect(screen.getByText('Status')).toBeInTheDocument();
-    expect(screen.getByText('Environment')).toBeInTheDocument();
+    expect(screen.getByText('Confidence')).toBeInTheDocument();
   });
 
   it('displays loading state', () => {
@@ -90,7 +90,7 @@ describe('CIList Component', () => {
 
     renderWithQueryClient(<CIList />);
 
-    expect(screen.getByText('No configuration items found')).toBeInTheDocument();
+    expect(screen.getByText('No configuration items match this filter.')).toBeInTheDocument();
   });
 
   it('filters CIs by search term', async () => {
@@ -100,7 +100,7 @@ describe('CIList Component', () => {
 
     renderWithQueryClient(<CIList />);
 
-    const searchInput = screen.getByPlaceholderText('Search CIs...');
+    const searchInput = screen.getByPlaceholderText('Search items…');
 
     // Type in search
     await user.type(searchInput, 'web-server');
@@ -145,9 +145,8 @@ describe('CIList Component', () => {
 
     renderWithQueryClient(<CIList />);
 
-    const statusFilter = screen.getByDisplayValue('All Statuses');
-
-    await user.selectOptions(statusFilter, 'active');
+    // Status is now a brand pill-filter group rather than a <select>
+    await user.click(screen.getByRole('button', { name: 'Active' }));
 
     await waitFor(() => {
       const lastCall = mockUseCIs.mock.calls[mockUseCIs.mock.calls.length - 1];
@@ -280,7 +279,7 @@ describe('CIList Component', () => {
     if (firstRow) {
       await user.click(firstRow);
 
-      expect(mockNavigate).toHaveBeenCalledWith('/inventory/ci-1');
+      expect(mockNavigate).toHaveBeenCalledWith('/cis/ci-1');
     }
   });
 

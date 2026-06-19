@@ -1,6 +1,6 @@
 # System Architecture Overview
 
-ConfigBuddy CMDB is designed as a modern, cloud-native microservices application with a graph database at its core.
+HappyCMDB is designed as a modern, cloud-native microservices application with a graph database at its core.
 
 ## High-Level Architecture
 

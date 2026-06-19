@@ -2,7 +2,7 @@
 
 #
 # Kafka Topic Initialization Script
-# Creates all required topics for ConfigBuddy v3.0 event streaming
+# Creates all required topics for HappyCMDB v3.0 event streaming
 #
 # Usage: ./init-kafka.sh [kafka-host:port]
 #
@@ -13,7 +13,7 @@ KAFKA_HOST="${1:-localhost:9092}"
 KAFKA_CONTAINER="${KAFKA_CONTAINER:-cmdb-kafka}"
 
 echo "============================================"
-echo "ConfigBuddy v3.0 - Kafka Topic Initialization"
+echo "HappyCMDB v3.0 - Kafka Topic Initialization"
 echo "============================================"
 echo "Kafka Host: $KAFKA_HOST"
 echo ""

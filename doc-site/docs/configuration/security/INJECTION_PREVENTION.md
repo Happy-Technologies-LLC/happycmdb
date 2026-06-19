@@ -6,7 +6,7 @@
 
 ## Overview
 
-This guide provides comprehensive strategies to prevent SQL and NoSQL injection attacks in ConfigBuddy. Injection vulnerabilities occur when untrusted data is sent to an interpreter as part of a command or query.
+This guide provides comprehensive strategies to prevent SQL and NoSQL injection attacks in HappyCMDB. Injection vulnerabilities occur when untrusted data is sent to an interpreter as part of a command or query.
 
 ---
 
@@ -432,7 +432,7 @@ function buildLabelQuery(label: string) {
 
 ## 3. NoSQL Injection Prevention (MongoDB/Redis)
 
-While ConfigBuddy primarily uses PostgreSQL and Neo4j, here are best practices for other databases:
+While HappyCMDB primarily uses PostgreSQL and Neo4j, here are best practices for other databases:
 
 ### 3.1 MongoDB
 

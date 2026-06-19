@@ -2,7 +2,7 @@
 
 ## Overview
 
-This guide provides links to all monitoring dashboards, key metrics to watch, and how to interpret them for ConfigBuddy production systems.
+This guide provides links to all monitoring dashboards, key metrics to watch, and how to interpret them for HappyCMDB production systems.
 
 ## Quick Access Links
 
@@ -13,7 +13,7 @@ This guide provides links to all monitoring dashboards, key metrics to watch, an
 | **Grafana** | http://localhost:3001 | Dashboards and visualizations | admin / [from .env] |
 | **Prometheus** | http://localhost:9090 | Metrics and alerts | - |
 | **PagerDuty** | https://company.pagerduty.com | Alert management and escalation | SSO |
-| **Status Page** | https://status.configbuddy.com | Public status and incidents | Admin SSO |
+| **Status Page** | https://status.happycmdb.com | Public status and incidents | Admin SSO |
 
 ### Application Access
 
@@ -36,7 +36,7 @@ This guide provides links to all monitoring dashboards, key metrics to watch, an
 
 ### v3.0 Dashboards
 
-ConfigBuddy v3.0 introduces comprehensive monitoring for ITIL, TBM, BSM, AI Discovery, and Kafka event streaming.
+HappyCMDB v3.0 introduces comprehensive monitoring for ITIL, TBM, BSM, AI Discovery, and Kafka event streaming.
 
 #### v3.0 Platform Overview
 
@@ -190,7 +190,7 @@ ConfigBuddy v3.0 introduces comprehensive monitoring for ITIL, TBM, BSM, AI Disc
 
 ### 1. Overview Dashboard
 
-**URL**: http://localhost:3001/d/overview/configbuddy-overview
+**URL**: http://localhost:3001/d/overview/happycmdb-overview
 
 **Purpose**: High-level system health at a glance (v2.0 base platform)
 
@@ -741,7 +741,7 @@ Print and keep this handy:
 
 ```
 ╔═══════════════════════════════════════════════════════════╗
-║         CONFIGBUDDY MONITORING QUICK REFERENCE            ║
+║         HAPPYCMDB MONITORING QUICK REFERENCE              ║
 ╠═══════════════════════════════════════════════════════════╣
 ║ GRAFANA:     http://localhost:3001                       ║
 ║ PROMETHEUS:  http://localhost:9090                       ║
@@ -749,7 +749,7 @@ Print and keep this handy:
 ║ ALERTS:      http://localhost:9090/alerts                ║
 ╠═══════════════════════════════════════════════════════════╣
 ║ KEY DASHBOARDS                                            ║
-║ • Overview: /d/overview/configbuddy-overview             ║
+║ • Overview: /d/overview/happycmdb-overview             ║
 ║ • API Perf: /d/api-perf/api-performance                  ║
 ║ • Database: /d/db-perf/database-performance              ║
 ║ • Discovery:/d/discovery/discovery-engine                ║

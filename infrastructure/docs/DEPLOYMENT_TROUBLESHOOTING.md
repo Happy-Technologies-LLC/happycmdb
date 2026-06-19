@@ -1,4 +1,4 @@
-# ConfigBuddy Deployment - Troubleshooting Guide
+# HappyCMDB Deployment - Troubleshooting Guide
 
 **Version**: 2.0
 **Last Updated**: 2025-10-19
@@ -294,7 +294,7 @@ df -h /
 docker system df
 
 # Check backup directory size
-du -sh /var/backups/configbuddy
+du -sh /var/backups/happycmdb
 ```
 
 **Solution**:
@@ -306,7 +306,7 @@ docker system prune -a -f --volumes
 docker images --filter "dangling=true" -q | xargs docker rmi
 
 # Remove old backups (keep last 7 days)
-find /var/backups/configbuddy -type f -mtime +7 -delete
+find /var/backups/happycmdb -type f -mtime +7 -delete
 
 # Clean old logs
 find logs -type f -mtime +30 -delete
@@ -588,7 +588,7 @@ sudo ufw status
 # Should be: API_HOST=0.0.0.0 (not 127.0.0.1)
 
 # Check Docker network
-docker network inspect configbuddy-network
+docker network inspect happycmdb-network
 
 # Recreate container with correct ports
 docker stop cmdb-api-server
@@ -611,7 +611,7 @@ getaddrinfo ENOTFOUND cmdb-neo4j
 **Diagnosis**:
 ```bash
 # Check Docker network exists
-docker network ls | grep configbuddy
+docker network ls | grep happycmdb
 
 # Check container network attachment
 docker inspect cmdb-api-server | jq '.[0].NetworkSettings.Networks'
@@ -625,8 +625,8 @@ docker exec cmdb-api-server ping -c 3 cmdb-neo4j
 ```bash
 # Recreate Docker network
 docker-compose -f infrastructure/docker/docker-compose.yml down
-docker network rm configbuddy-network
-docker network create configbuddy-network
+docker network rm happycmdb-network
+docker network create happycmdb-network
 docker-compose -f infrastructure/docker/docker-compose.yml up -d
 
 # Or use docker-compose networking
@@ -792,16 +792,16 @@ docker-compose -f infrastructure/docker/docker-compose.yml restart
 
 **Error Message**:
 ```
-✗ Backup not found: /var/backups/configbuddy/production/20251019-143000
+✗ Backup not found: /var/backups/happycmdb/production/20251019-143000
 ```
 
 **Solution**:
 ```bash
 # List available backups
-ls -lh /var/backups/configbuddy/production/
+ls -lh /var/backups/happycmdb/production/
 
 # Use most recent backup
-LATEST_BACKUP=$(ls -t /var/backups/configbuddy/production/ | head -1)
+LATEST_BACKUP=$(ls -t /var/backups/happycmdb/production/ | head -1)
 bash infrastructure/scripts/rollback.sh "$LATEST_BACKUP" full
 
 # If no backups exist - manual recovery required
@@ -822,14 +822,14 @@ tar: Error is not recoverable: exiting now
 **Diagnosis**:
 ```bash
 # Verify backup integrity
-tar -tzf /var/backups/configbuddy/production/<TIMESTAMP>/neo4j-backup.tar.gz
-gunzip -t /var/backups/configbuddy/production/<TIMESTAMP>/postgres-backup.sql.gz
+tar -tzf /var/backups/happycmdb/production/<TIMESTAMP>/neo4j-backup.tar.gz
+gunzip -t /var/backups/happycmdb/production/<TIMESTAMP>/postgres-backup.sql.gz
 ```
 
 **Solution**:
 ```bash
 # Try previous backup
-ls -lt /var/backups/configbuddy/production/
+ls -lt /var/backups/happycmdb/production/
 
 # If all backups corrupted - contact DBA team
 # May need to restore from cloud storage (S3/Azure)
@@ -918,7 +918,7 @@ docker-compose -f infrastructure/docker/docker-compose.yml down -v
 2. **Restore from backup**:
 ```bash
 # Find latest good backup
-ls -lt /var/backups/configbuddy/production/
+ls -lt /var/backups/happycmdb/production/
 
 # Restore databases
 bash infrastructure/scripts/restore-neo4j.sh <BACKUP_PATH>/neo4j-backup.tar.gz
@@ -991,32 +991,32 @@ docker logs -f cmdb-api-server
 
 ```bash
 # Create diagnostic bundle
-mkdir -p /tmp/configbuddy-diagnostics
+mkdir -p /tmp/happycmdb-diagnostics
 
 # Container status
-docker-compose -f infrastructure/docker/docker-compose.yml ps > /tmp/configbuddy-diagnostics/containers.txt
+docker-compose -f infrastructure/docker/docker-compose.yml ps > /tmp/happycmdb-diagnostics/containers.txt
 
 # Logs
-docker logs cmdb-api-server > /tmp/configbuddy-diagnostics/api-server.log 2>&1
-docker logs cmdb-neo4j > /tmp/configbuddy-diagnostics/neo4j.log 2>&1
-docker logs cmdb-postgres > /tmp/configbuddy-diagnostics/postgres.log 2>&1
+docker logs cmdb-api-server > /tmp/happycmdb-diagnostics/api-server.log 2>&1
+docker logs cmdb-neo4j > /tmp/happycmdb-diagnostics/neo4j.log 2>&1
+docker logs cmdb-postgres > /tmp/happycmdb-diagnostics/postgres.log 2>&1
 
 # Configuration
-cp .env /tmp/configbuddy-diagnostics/env.txt
+cp .env /tmp/happycmdb-diagnostics/env.txt
 
 # System info
-docker info > /tmp/configbuddy-diagnostics/docker-info.txt
-df -h > /tmp/configbuddy-diagnostics/disk-usage.txt
+docker info > /tmp/happycmdb-diagnostics/docker-info.txt
+df -h > /tmp/happycmdb-diagnostics/disk-usage.txt
 
 # Create tarball
-tar -czf configbuddy-diagnostics-$(date +%Y%m%d-%H%M%S).tar.gz -C /tmp configbuddy-diagnostics/
+tar -czf happycmdb-diagnostics-$(date +%Y%m%d-%H%M%S).tar.gz -C /tmp happycmdb-diagnostics/
 ```
 
 ### Contact Support
 
-- **Slack**: #configbuddy-support
-- **Email**: configbuddy-ops@example.com
-- **PagerDuty**: ConfigBuddy Production Service
+- **Slack**: #happycmdb-support
+- **Email**: happycmdb-ops@example.com
+- **PagerDuty**: HappyCMDB Production Service
 - **Documentation**: http://localhost:8080
 
 ---

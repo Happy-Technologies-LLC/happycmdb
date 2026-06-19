@@ -1,13 +1,13 @@
-# ConfigBuddy Monitoring Infrastructure
+# HappyCMDB Monitoring Infrastructure
 
 **Version**: v3.0
 **Last Updated**: November 2025
 
-This directory contains the complete monitoring infrastructure for ConfigBuddy v3.0, including Prometheus, Grafana dashboards, and alert rules.
+This directory contains the complete monitoring infrastructure for HappyCMDB v3.0, including Prometheus, Grafana dashboards, and alert rules.
 
 ## Overview
 
-ConfigBuddy v3.0 monitoring provides comprehensive observability across:
+HappyCMDB v3.0 monitoring provides comprehensive observability across:
 
 - **ITIL v4 Service Management**: Incidents, changes, baselines, drift detection
 - **TBM v5.0.1 Cost Transparency**: Cost allocation, cloud spend, budget tracking
@@ -280,8 +280,8 @@ Dashboards are automatically provisioned on Grafana startup:
 # grafana/provisioning/dashboards/cmdb-dashboards.yml
 apiVersion: 1
 providers:
-  - name: 'ConfigBuddy v3.0'
-    folder: 'ConfigBuddy'
+  - name: 'HappyCMDB v3.0'
+    folder: 'HappyCMDB'
     type: file
     options:
       path: /etc/grafana/dashboards
@@ -382,7 +382,7 @@ apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
   name: api-server
-  namespace: configbuddy-cmdb
+  namespace: happycmdb-cmdb
 spec:
   selector:
     matchLabels:
@@ -528,8 +528,8 @@ kubectl rollout restart statefulset/prometheus -n monitoring
 
 - **Documentation**: http://localhost:8080/operations/monitoring-dashboards
 - **Runbooks**: `/docs/operations/runbooks/`
-- **Slack**: #configbuddy-monitoring
-- **PagerDuty**: ConfigBuddy v3.0 service
+- **Slack**: #happycmdb-monitoring
+- **PagerDuty**: HappyCMDB v3.0 service
 
 ## Related Documentation
 
@@ -540,5 +540,5 @@ kubectl rollout restart statefulset/prometheus -n monitoring
 
 ---
 
-**ConfigBuddy v3.0 Monitoring Infrastructure**
-© 2025 ConfigBuddy Project
+**HappyCMDB v3.0 Monitoring Infrastructure**
+© 2025 HappyCMDB Project

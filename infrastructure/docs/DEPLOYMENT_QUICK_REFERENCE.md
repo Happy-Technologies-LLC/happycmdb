@@ -1,4 +1,4 @@
-# ConfigBuddy Deployment - Quick Reference
+# HappyCMDB Deployment - Quick Reference
 
 **TL;DR**: Fast reference guide for common deployment tasks.
 
@@ -47,7 +47,7 @@ bash infrastructure/scripts/pre-deploy-checklist.sh <staging|production>
 npm test
 
 # Verify backups exist
-ls -lh /var/backups/configbuddy/production/
+ls -lh /var/backups/happycmdb/production/
 
 # Check disk space
 df -h /
@@ -64,7 +64,7 @@ openssl x509 -enddate -noout -in /path/to/cert.pem
 
 ```bash
 # List available backups
-ls -lh /var/backups/configbuddy/production/
+ls -lh /var/backups/happycmdb/production/
 
 # Full rollback (containers + databases)
 bash infrastructure/scripts/rollback.sh <BACKUP_TIMESTAMP> full
@@ -190,10 +190,10 @@ npm run build
 docker system prune -a -f
 
 # Remove old images
-docker images | grep configbuddy | tail -n +5 | awk '{print $3}' | xargs docker rmi -f
+docker images | grep happycmdb | tail -n +5 | awk '{print $3}' | xargs docker rmi -f
 
 # Clean old backups (keep last 7)
-find /var/backups/configbuddy -type d -mtime +7 -exec rm -rf {} +
+find /var/backups/happycmdb -type d -mtime +7 -exec rm -rf {} +
 ```
 
 ### Issue: Database connection fails
@@ -385,7 +385,7 @@ SSL_ENABLED=true
 
 ## Contact
 
-**Deployment Issues**: Slack #configbuddy-deployments
-**Emergencies**: PagerDuty - ConfigBuddy Production Service
+**Deployment Issues**: Slack #happycmdb-deployments
+**Emergencies**: PagerDuty - HappyCMDB Production Service
 **Documentation**: http://localhost:8080
 **Full Runbook**: infrastructure/docs/DEPLOYMENT_RUNBOOK.md

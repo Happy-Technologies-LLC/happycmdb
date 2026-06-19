@@ -5,7 +5,7 @@
  * Jobs API Service
  *
  * Handles all job monitoring, queue management, and scheduling operations
- * for the ConfigBuddy CMDB platform.
+ * for the HappyCMDB platform.
  */
 
 export interface Job {

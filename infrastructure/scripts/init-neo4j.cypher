@@ -131,7 +131,7 @@ ON EACH [ci.name, ci.metadata];
 
 // Create admin user
 // Password: Admin123! (bcrypt hash)
-MERGE (u:User {email: 'admin@configbuddy.local'})
+MERGE (u:User {email: 'admin@happycmdb.local'})
 SET u.id = 'user-admin-001',
     u.username = 'admin',
     u.passwordHash = '$2b$10$rKZLwXqF6kE7H4N5gHx.pOzF9bXZC.qvJKE7Bz7YLqGxHWqP6H8Jy',
@@ -146,7 +146,7 @@ SET u.id = 'user-admin-001',
 
 // Production Linux Servers
 MERGE (s1:CI:Server {id: 'srv-prod-web-01'})
-SET s1.name = 'web-prod-01.configbuddy.local',
+SET s1.name = 'web-prod-01.happycmdb.local',
     s1.type = 'server',
     s1.status = 'active',
     s1.environment = 'production',
@@ -171,7 +171,7 @@ SET s1.name = 'web-prod-01.configbuddy.local',
     }';
 
 MERGE (s2:CI:Server {id: 'srv-prod-web-02'})
-SET s2.name = 'web-prod-02.configbuddy.local',
+SET s2.name = 'web-prod-02.happycmdb.local',
     s2.type = 'server',
     s2.status = 'active',
     s2.environment = 'production',
@@ -196,7 +196,7 @@ SET s2.name = 'web-prod-02.configbuddy.local',
     }';
 
 MERGE (s3:CI:Server {id: 'srv-prod-api-01'})
-SET s3.name = 'api-prod-01.configbuddy.local',
+SET s3.name = 'api-prod-01.happycmdb.local',
     s3.type = 'server',
     s3.status = 'active',
     s3.environment = 'production',
@@ -221,7 +221,7 @@ SET s3.name = 'api-prod-01.configbuddy.local',
     }';
 
 MERGE (s4:CI:Server {id: 'srv-prod-db-01'})
-SET s4.name = 'db-prod-01.configbuddy.local',
+SET s4.name = 'db-prod-01.happycmdb.local',
     s4.type = 'server',
     s4.status = 'active',
     s4.environment = 'production',
@@ -246,7 +246,7 @@ SET s4.name = 'db-prod-01.configbuddy.local',
 
 // Windows Servers
 MERGE (s5:CI:Server {id: 'srv-prod-win-01'})
-SET s5.name = 'win-prod-01.configbuddy.local',
+SET s5.name = 'win-prod-01.happycmdb.local',
     s5.type = 'server',
     s5.status = 'active',
     s5.environment = 'production',
@@ -270,7 +270,7 @@ SET s5.name = 'win-prod-01.configbuddy.local',
 
 // Staging Servers
 MERGE (s6:CI:Server {id: 'srv-stg-web-01'})
-SET s6.name = 'web-stg-01.configbuddy.local',
+SET s6.name = 'web-stg-01.happycmdb.local',
     s6.type = 'server',
     s6.status = 'active',
     s6.environment = 'staging',
@@ -293,7 +293,7 @@ SET s6.name = 'web-stg-01.configbuddy.local',
     }';
 
 MERGE (s7:CI:Server {id: 'srv-stg-api-01'})
-SET s7.name = 'api-stg-01.configbuddy.local',
+SET s7.name = 'api-stg-01.happycmdb.local',
     s7.type = 'server',
     s7.status = 'active',
     s7.environment = 'staging',
@@ -317,7 +317,7 @@ SET s7.name = 'api-stg-01.configbuddy.local',
 
 // Development Servers
 MERGE (s8:CI:Server {id: 'srv-dev-web-01'})
-SET s8.name = 'web-dev-01.configbuddy.local',
+SET s8.name = 'web-dev-01.happycmdb.local',
     s8.type = 'server',
     s8.status = 'active',
     s8.environment = 'development',
@@ -340,7 +340,7 @@ SET s8.name = 'web-dev-01.configbuddy.local',
     }';
 
 MERGE (s9:CI:Server {id: 'srv-maint-01'})
-SET s9.name = 'backup-maint-01.configbuddy.local',
+SET s9.name = 'backup-maint-01.happycmdb.local',
     s9.type = 'server',
     s9.status = 'maintenance',
     s9.environment = 'production',
@@ -363,7 +363,7 @@ SET s9.name = 'backup-maint-01.configbuddy.local',
     }';
 
 MERGE (s10:CI:Server {id: 'srv-decom-01'})
-SET s10.name = 'old-web-decom-01.configbuddy.local',
+SET s10.name = 'old-web-decom-01.happycmdb.local',
     s10.type = 'server',
     s10.status = 'decommissioned',
     s10.environment = 'production',
@@ -390,7 +390,7 @@ SET s10.name = 'old-web-decom-01.configbuddy.local',
 // ============================================
 
 MERGE (a1:CI:Application {id: 'app-web-frontend'})
-SET a1.name = 'ConfigBuddy Web Frontend',
+SET a1.name = 'HappyCMDB Web Frontend',
     a1.type = 'application',
     a1.status = 'active',
     a1.environment = 'production',
@@ -404,13 +404,13 @@ SET a1.name = 'ConfigBuddy Web Frontend',
       "language": "TypeScript",
       "port": 3000,
       "health_endpoint": "/health",
-      "repository": "github.com/configbuddy/web-ui",
+      "repository": "github.com/happycmdb/web-ui",
       "deployment_method": "docker",
       "tags": ["frontend", "react", "typescript"]
     }';
 
 MERGE (a2:CI:Application {id: 'app-api-backend'})
-SET a2.name = 'ConfigBuddy API Server',
+SET a2.name = 'HappyCMDB API Server',
     a2.type = 'application',
     a2.status = 'active',
     a2.environment = 'production',
@@ -424,7 +424,7 @@ SET a2.name = 'ConfigBuddy API Server',
       "language": "TypeScript",
       "port": 8080,
       "health_endpoint": "/api/health",
-      "repository": "github.com/configbuddy/api-server",
+      "repository": "github.com/happycmdb/api-server",
       "deployment_method": "docker",
       "tags": ["backend", "api", "express", "nodejs"]
     }';
@@ -442,7 +442,7 @@ SET a3.name = 'Discovery Engine',
       "version": "1.5.0",
       "framework": "BullMQ Worker",
       "language": "TypeScript",
-      "repository": "github.com/configbuddy/discovery-engine",
+      "repository": "github.com/happycmdb/discovery-engine",
       "deployment_method": "docker",
       "tags": ["worker", "discovery", "aws", "azure"]
     }';
@@ -460,7 +460,7 @@ SET a4.name = 'ETL Processor',
       "version": "1.3.2",
       "framework": "BullMQ Worker",
       "language": "TypeScript",
-      "repository": "github.com/configbuddy/etl-processor",
+      "repository": "github.com/happycmdb/etl-processor",
       "deployment_method": "docker",
       "tags": ["worker", "etl", "data-sync"]
     }';
@@ -477,7 +477,7 @@ SET a5.name = 'Monitoring Agent',
     a5.metadata = '{
       "version": "1.0.5",
       "language": "Go",
-      "repository": "github.com/configbuddy/agent",
+      "repository": "github.com/happycmdb/agent",
       "deployment_method": "binary",
       "tags": ["agent", "monitoring", "metrics"]
     }';
@@ -692,7 +692,7 @@ SET net1.name = 'Production Load Balancer',
     net1.metadata = '{
       "device_type": "Application Load Balancer",
       "provider": "AWS ELB",
-      "public_dns": "lb-prod-01.configbuddy.com",
+      "public_dns": "lb-prod-01.happycmdb.com",
       "ip_address": "54.210.200.100",
       "algorithm": "round-robin",
       "health_check_interval": 30,
@@ -788,14 +788,14 @@ SET st1.name = 'S3 Backup Bucket',
     st1.type = 'storage',
     st1.status = 'active',
     st1.environment = 'production',
-    st1.external_id = 's3://configbuddy-backups-prod',
+    st1.external_id = 's3://happycmdb-backups-prod',
     st1.created_at = datetime(),
     st1.updated_at = datetime(),
     st1.discovered_at = datetime(),
     st1.metadata = '{
       "storage_type": "Object Storage",
       "provider": "AWS S3",
-      "bucket_name": "configbuddy-backups-prod",
+      "bucket_name": "happycmdb-backups-prod",
       "size_gb": 2500,
       "versioning": true,
       "encryption": "AES-256",

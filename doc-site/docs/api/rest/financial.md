@@ -648,7 +648,7 @@ curl "http://localhost:3000/api/v1/tbm/licenses/renewals?days=180" \
 
 ## TBM Attributes
 
-All CIs in ConfigBuddy v3.0 automatically receive TBM enrichment with the following attributes:
+All CIs in HappyCMDB v3.0 automatically receive TBM enrichment with the following attributes:
 
 ### TBM Attribute Structure
 
@@ -741,7 +741,7 @@ Examples:
 
 ## Integration with Cloud Providers
 
-ConfigBuddy automatically syncs cost data from cloud providers:
+HappyCMDB automatically syncs cost data from cloud providers:
 
 ### AWS Cost Sync
 

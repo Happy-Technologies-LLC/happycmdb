@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # =============================================================================
-# ConfigBuddy v3.0 - Deployment Verification Script
+# HappyCMDB v3.0 - Deployment Verification Script
 # =============================================================================
 # This script verifies that all v3.0 services are running and healthy
 # Run after: ./deploy.sh
@@ -103,7 +103,7 @@ check_port() {
 # Main Verification Checks
 # =============================================================================
 
-print_header "ConfigBuddy v3.0 Deployment Verification"
+print_header "HappyCMDB v3.0 Deployment Verification"
 
 echo "Starting comprehensive health checks..."
 echo "Timestamp: $(date)"
@@ -290,7 +290,7 @@ echo ""
 SUCCESS_RATE=$((PASSED_CHECKS * 100 / TOTAL_CHECKS))
 
 if [ $FAILED_CHECKS -eq 0 ]; then
-    echo -e "${GREEN}✓ All checks passed! ConfigBuddy v3.0 is fully operational.${NC}"
+    echo -e "${GREEN}✓ All checks passed! HappyCMDB v3.0 is fully operational.${NC}"
     echo ""
     echo "Access Points:"
     echo "  - Web UI:     http://localhost"

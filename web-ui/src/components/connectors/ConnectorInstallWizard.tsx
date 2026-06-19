@@ -233,9 +233,9 @@ export const ConnectorInstallWizard: React.FC<ConnectorInstallWizardProps> = ({
                   <div
                     className={cn(
                       'flex items-center justify-center w-10 h-10 rounded-full border-2',
-                      isCompleted && 'bg-green-500 border-green-500 text-white',
-                      isActive && 'border-blue-500 text-blue-500',
-                      !isActive && !isCompleted && 'border-gray-300 text-gray-400'
+                      isCompleted && 'bg-success border-success text-white',
+                      isActive && 'border-sky text-sky-text',
+                      !isActive && !isCompleted && 'border-line text-ink-soft'
                     )}
                   >
                     {isCompleted ? (
@@ -247,8 +247,8 @@ export const ConnectorInstallWizard: React.FC<ConnectorInstallWizardProps> = ({
                   <div
                     className={cn(
                       'text-xs font-medium text-center',
-                      isActive && 'text-blue-600',
-                      !isActive && 'text-gray-500'
+                      isActive && 'text-sky-text',
+                      !isActive && 'text-ink-soft'
                     )}
                   >
                     {getStepTitle(step)}
@@ -258,7 +258,7 @@ export const ConnectorInstallWizard: React.FC<ConnectorInstallWizardProps> = ({
                   <div
                     className={cn(
                       'h-0.5 flex-1 mx-2 mt-[-2rem]',
-                      isCompleted ? 'bg-green-500' : 'bg-gray-300'
+                      isCompleted ? 'bg-success' : 'bg-line'
                     )}
                   />
                 )}
@@ -274,14 +274,14 @@ export const ConnectorInstallWizard: React.FC<ConnectorInstallWizardProps> = ({
           {/* Step 1: Confirm Installation */}
           {currentStep === 'confirm' && (
             <div className="space-y-4">
-              <div className="bg-blue-50 dark:bg-blue-900/10 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
+              <div className="bg-sky-soft border border-sky rounded-lg p-4">
                 <div className="flex items-start gap-3">
-                  <Info className="h-5 w-5 text-blue-600 mt-0.5 flex-shrink-0" />
+                  <Info className="h-5 w-5 text-sky-text mt-0.5 flex-shrink-0" />
                   <div>
-                    <h4 className="font-semibold text-blue-900 dark:text-blue-100 mb-1">
+                    <h4 className="font-semibold text-navy mb-1">
                       About This Connector
                     </h4>
-                    <p className="text-sm text-blue-700 dark:text-blue-300">
+                    <p className="text-sm text-sky-text">
                       {connector.description}
                     </p>
                   </div>
@@ -302,7 +302,7 @@ export const ConnectorInstallWizard: React.FC<ConnectorInstallWizardProps> = ({
                 <div className="space-y-2">
                   <Label className="text-sm font-semibold">Author</Label>
                   <p className="text-sm text-muted-foreground">
-                    {connector.author || 'ConfigBuddy Community'}
+                    {connector.author || 'HappyCMDB Community'}
                   </p>
                 </div>
                 <div className="space-y-2">
@@ -314,11 +314,11 @@ export const ConnectorInstallWizard: React.FC<ConnectorInstallWizardProps> = ({
               </div>
 
               {connector.verified && (
-                <div className="bg-green-50 dark:bg-green-900/10 border border-green-200 dark:border-green-800 rounded-lg p-4">
+                <div className="bg-success-soft border border-success/20 rounded-lg p-4">
                   <div className="flex items-center gap-2">
-                    <CheckCircle className="h-5 w-5 text-green-600" />
-                    <span className="text-sm font-medium text-green-900 dark:text-green-100">
-                      This is a verified connector by the ConfigBuddy team
+                    <CheckCircle className="h-5 w-5 text-success" />
+                    <span className="text-sm font-medium text-success">
+                      This is a verified connector by the HappyCMDB team
                     </span>
                   </div>
                 </div>
@@ -342,14 +342,14 @@ export const ConnectorInstallWizard: React.FC<ConnectorInstallWizardProps> = ({
           {/* Step 2: Configure Connector */}
           {currentStep === 'configure' && (
             <div className="space-y-4">
-              <div className="bg-yellow-50 dark:bg-yellow-900/10 border border-yellow-200 dark:border-yellow-800 rounded-lg p-4">
+              <div className="bg-warning-soft border border-warning/20 rounded-lg p-4">
                 <div className="flex items-start gap-3">
-                  <AlertTriangle className="h-5 w-5 text-yellow-600 mt-0.5 flex-shrink-0" />
+                  <AlertTriangle className="h-5 w-5 text-warning mt-0.5 flex-shrink-0" />
                   <div>
-                    <h4 className="font-semibold text-yellow-900 dark:text-yellow-100 mb-1">
+                    <h4 className="font-semibold text-warning-text mb-1">
                       Configuration Required
                     </h4>
-                    <p className="text-sm text-yellow-700 dark:text-yellow-300">
+                    <p className="text-sm text-warning-text">
                       After installation, you'll need to create a connector configuration
                       to set up credentials and resource selection. This can be done in the
                       Connectors Dashboard.
@@ -401,11 +401,11 @@ export const ConnectorInstallWizard: React.FC<ConnectorInstallWizardProps> = ({
                 )}
               </div>
 
-              <div className="bg-blue-50 dark:bg-blue-900/10 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
+              <div className="bg-sky-soft border border-sky rounded-lg p-4">
                 <div className="flex items-start gap-3">
-                  <Info className="h-5 w-5 text-blue-600 mt-0.5 flex-shrink-0" />
+                  <Info className="h-5 w-5 text-sky-text mt-0.5 flex-shrink-0" />
                   <div>
-                    <p className="text-sm text-blue-700 dark:text-blue-300">
+                    <p className="text-sm text-sky-text">
                       Detailed configuration including credentials, resource selection, and
                       field mappings will be available after installation in the Connectors
                       Dashboard.
@@ -431,7 +431,7 @@ export const ConnectorInstallWizard: React.FC<ConnectorInstallWizardProps> = ({
 
               {installMutation.isPending && (
                 <div className="text-center py-8">
-                  <Loader2 className="h-16 w-16 mx-auto mb-4 text-blue-600 animate-spin" />
+                  <Loader2 className="h-16 w-16 mx-auto mb-4 text-sky-text animate-spin" />
                   <h3 className="text-lg font-semibold mb-2">Installing Connector...</h3>
                   <p className="text-sm text-muted-foreground">
                     Downloading and installing {connector.name}
@@ -440,14 +440,14 @@ export const ConnectorInstallWizard: React.FC<ConnectorInstallWizardProps> = ({
               )}
 
               {installMutation.isError && (
-                <div className="bg-red-50 dark:bg-red-900/10 border border-red-200 dark:border-red-800 rounded-lg p-4">
+                <div className="bg-danger-soft border border-danger/20 rounded-lg p-4">
                   <div className="flex items-start gap-3">
-                    <XCircle className="h-5 w-5 text-red-600 mt-0.5 flex-shrink-0" />
+                    <XCircle className="h-5 w-5 text-danger mt-0.5 flex-shrink-0" />
                     <div>
-                      <h4 className="font-semibold text-red-900 dark:text-red-100 mb-1">
+                      <h4 className="font-semibold text-danger mb-1">
                         Installation Failed
                       </h4>
-                      <p className="text-sm text-red-700 dark:text-red-300">
+                      <p className="text-sm text-danger">
                         {(installMutation.error as any)?.message ||
                           'An error occurred during installation'}
                       </p>
@@ -462,18 +462,18 @@ export const ConnectorInstallWizard: React.FC<ConnectorInstallWizardProps> = ({
           {currentStep === 'complete' && (
             <div className="text-center py-8">
               <div className="mb-6">
-                <CheckCircle className="h-20 w-20 mx-auto text-green-600 mb-4" />
+                <CheckCircle className="h-20 w-20 mx-auto text-success mb-4" />
                 <h3 className="text-2xl font-bold mb-2">Installation Complete!</h3>
                 <p className="text-muted-foreground">
                   {connector.name} has been successfully installed
                 </p>
               </div>
 
-              <div className="bg-green-50 dark:bg-green-900/10 border border-green-200 dark:border-green-800 rounded-lg p-4 text-left mb-6">
-                <h4 className="font-semibold text-green-900 dark:text-green-100 mb-2">
+              <div className="bg-success-soft border border-success/20 rounded-lg p-4 text-left mb-6">
+                <h4 className="font-semibold text-success mb-2">
                   Next Steps
                 </h4>
-                <ol className="text-sm text-green-700 dark:text-green-300 space-y-2 list-decimal list-inside">
+                <ol className="text-sm text-success space-y-2 list-decimal list-inside">
                   <li>Go to the Connectors Dashboard</li>
                   <li>Create a new connector configuration</li>
                   <li>Set up credentials and resource selection</li>

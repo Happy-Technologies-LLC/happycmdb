@@ -1,5 +1,5 @@
 -- ============================================
--- ConfigBuddy v3.0 - Metabase Pre-Configured Questions
+-- HappyCMDB v3.0 - Metabase Pre-Configured Questions
 -- ============================================
 -- Common SQL queries for ad-hoc analysis and reporting
 -- These can be imported into Metabase as saved questions

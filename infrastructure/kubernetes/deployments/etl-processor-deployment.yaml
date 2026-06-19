@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: etl-processor
-  namespace: configbuddy-cmdb
+  namespace: happycmdb-cmdb
   labels:
     app: etl-processor
     component: backend
@@ -36,13 +36,13 @@ spec:
                 topologyKey: kubernetes.io/hostname
       containers:
         - name: etl-processor
-          image: configbuddy/etl-processor:latest
+          image: happycmdb/etl-processor:latest
           imagePullPolicy: Always
           env:
             - name: NODE_ENV
               value: "production"
             - name: POSTGRES_HOST
-              value: "postgres-primary.configbuddy-cmdb.svc.cluster.local"
+              value: "postgres-primary.happycmdb-cmdb.svc.cluster.local"
             - name: POSTGRES_PORT
               value: "5432"
             - name: POSTGRES_DB
@@ -58,7 +58,7 @@ spec:
                   name: cmdb-secrets
                   key: postgres-password
             - name: KAFKA_BROKERS
-              value: "kafka-0.kafka.configbuddy-cmdb.svc.cluster.local:9092,kafka-1.kafka.configbuddy-cmdb.svc.cluster.local:9092,kafka-2.kafka.configbuddy-cmdb.svc.cluster.local:9092"
+              value: "kafka-0.kafka.happycmdb-cmdb.svc.cluster.local:9092,kafka-1.kafka.happycmdb-cmdb.svc.cluster.local:9092,kafka-2.kafka.happycmdb-cmdb.svc.cluster.local:9092"
           resources:
             requests:
               cpu: "1"
@@ -71,7 +71,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: etl-processor
-  namespace: configbuddy-cmdb
+  namespace: happycmdb-cmdb
   labels:
     app: etl-processor
 spec:

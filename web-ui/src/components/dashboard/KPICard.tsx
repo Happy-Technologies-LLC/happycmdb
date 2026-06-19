@@ -16,19 +16,19 @@ export interface KPICardProps {
 }
 
 const COLOR_CLASSES = {
-  green: 'text-green-600 dark:text-green-400 bg-green-50 dark:bg-green-950',
-  red: 'text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950',
-  yellow: 'text-yellow-600 dark:text-yellow-400 bg-yellow-50 dark:bg-yellow-950',
-  blue: 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-950',
-  purple: 'text-purple-600 dark:text-purple-400 bg-purple-50 dark:bg-purple-950',
+  green: 'text-success bg-success-soft',
+  red: 'text-danger bg-danger-soft',
+  yellow: 'text-warning bg-warning-soft',
+  blue: 'text-sky-text bg-sky-soft',
+  purple: 'text-navy bg-sky-soft',
 };
 
 const ICON_COLOR_CLASSES = {
-  green: 'text-green-600 dark:text-green-400',
-  red: 'text-red-600 dark:text-red-400',
-  yellow: 'text-yellow-600 dark:text-yellow-400',
-  blue: 'text-blue-600 dark:text-blue-400',
-  purple: 'text-purple-600 dark:text-purple-400',
+  green: 'text-success',
+  red: 'text-danger',
+  yellow: 'text-warning',
+  blue: 'text-sky-text',
+  purple: 'text-navy',
 };
 
 export const KPICard: React.FC<KPICardProps> = ({
@@ -51,9 +51,9 @@ export const KPICard: React.FC<KPICardProps> = ({
 
   const getTrendColor = () => {
     if (!trend) return '';
-    if (trend === 'up') return 'text-green-600 dark:text-green-400';
-    if (trend === 'down') return 'text-red-600 dark:text-red-400';
-    return 'text-gray-600 dark:text-gray-400';
+    if (trend === 'up') return 'text-success';
+    if (trend === 'down') return 'text-danger';
+    return 'text-ink-soft';
   };
 
   const getVariant = () => {

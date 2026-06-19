@@ -2,11 +2,11 @@
 
 ## Overview
 
-ConfigBuddy's connector framework supports flexible field mapping that automatically handles:
+HappyCMDB's connector framework supports flexible field mapping that automatically handles:
 - **Standard CI fields** - Core attributes stored directly on the CI object
 - **Dynamic metadata fields** - Custom attributes stored in the `_metadata` object
 
-This allows you to map ANY field from your source system to ConfigBuddy, whether it's a predefined standard field or a completely custom attribute.
+This allows you to map ANY field from your source system to HappyCMDB, whether it's a predefined standard field or a completely custom attribute.
 
 ---
 

@@ -1,10 +1,10 @@
 # Authentication API
 
-Complete API reference for user authentication, token management, and API key operations in ConfigBuddy v3.0.
+Complete API reference for user authentication, token management, and API key operations in HappyCMDB v3.0.
 
 ## Overview
 
-ConfigBuddy supports two authentication methods:
+HappyCMDB supports two authentication methods:
 1. **JWT Tokens** - For interactive user sessions (recommended for web/mobile apps)
 2. **API Keys** - For service-to-service communication and automation
 
@@ -35,7 +35,7 @@ Authenticate with username/email and password to obtain JWT tokens.
 **Alternative (email-based)**:
 ```json
 {
-  "email": "admin@configbuddy.local",
+  "email": "admin@happycmdb.local",
   "password": "Admin123!"
 }
 ```
@@ -52,7 +52,7 @@ Authenticate with username/email and password to obtain JWT tokens.
     "user": {
       "_id": "user-admin-001",
       "_username": "admin",
-      "_email": "admin@configbuddy.local",
+      "_email": "admin@happycmdb.local",
       "_role": "admin",
       "_enabled": true,
       "_createdAt": "2025-01-01T00:00:00Z",
@@ -148,7 +148,7 @@ Authorization: Bearer YOUR_ACCESS_TOKEN
   "data": {
     "_id": "user-admin-001",
     "_username": "admin",
-    "_email": "admin@configbuddy.local",
+    "_email": "admin@happycmdb.local",
     "_role": "admin",
     "_enabled": true,
     "_createdAt": "2025-01-01T00:00:00Z",
@@ -379,7 +379,7 @@ response = requests.get('http://localhost:3000/api/v1/cis', headers=headers)
 
 ## Role-Based Access Control (RBAC)
 
-ConfigBuddy uses role-based access control to manage permissions.
+HappyCMDB uses role-based access control to manage permissions.
 
 ### Roles
 
@@ -476,7 +476,7 @@ Passwords must meet these criteria:
 
 **Example Strong Passwords**:
 - `MySecure#Pass123`
-- `ConfigBuddy2025!`
+- `HappyCMDB2025!`
 - `Admin@CMDB$2025`
 
 ---

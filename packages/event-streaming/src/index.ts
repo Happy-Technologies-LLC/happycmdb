@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * ConfigBuddy Event Streaming Package
+ * HappyCMDB Event Streaming Package
  *
- * Kafka-based event streaming for ConfigBuddy v3.0
+ * Kafka-based event streaming for HappyCMDB v3.0
  *
  * @module @cmdb/event-streaming
  * @version 3.0.0

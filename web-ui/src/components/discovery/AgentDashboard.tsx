@@ -5,6 +5,7 @@ import { AgentStatusCard } from './AgentStatusCard';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { LiquidGlass } from '@/components/ui/liquid-glass';
 import { Badge } from '@/components/ui/badge';
+import { Eyebrow } from '@/components/ui/eyebrow';
 import { Server, Network, FileCode } from 'lucide-react';
 
 interface AgentStats {
@@ -80,8 +81,9 @@ export const AgentDashboard: React.FC = () => {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-3xl font-bold tracking-tight">Discovery Agents</h1>
-        <p className="text-muted-foreground mt-2">
+        <Eyebrow>Discovery · Agents</Eyebrow>
+        <h1 className="mt-3 text-[1.9rem]">Discovery Agents</h1>
+        <p className="mt-1.5 text-ink-soft">
           Manage and monitor distributed discovery agents across your networks
         </p>
       </div>
@@ -125,7 +127,7 @@ export const AgentDashboard: React.FC = () => {
                   <div># Download and install the agent</div>
                   <div>npm install -g @cmdb/agent</div>
                   <div className="mt-2"># Or with Docker</div>
-                  <div>docker pull configbuddy/agent:latest</div>
+                  <div>docker pull happycmdb/agent:latest</div>
                 </div>
               </div>
 
@@ -152,7 +154,7 @@ export const AgentDashboard: React.FC = () => {
                   <div className="ml-4">-e CMDB_CAPABILITIES=nmap,ssh \</div>
                   <div className="ml-4">-e CMDB_NETWORKS=10.0.0.0/8 \</div>
                   <div className="ml-4">--cap-add=NET_RAW --cap-add=NET_ADMIN \</div>
-                  <div className="ml-4">configbuddy/agent:latest</div>
+                  <div className="ml-4">happycmdb/agent:latest</div>
                 </div>
               </div>
 
@@ -164,7 +166,7 @@ export const AgentDashboard: React.FC = () => {
                 </p>
               </div>
 
-              <div className="bg-blue-50 dark:bg-blue-950 p-4 rounded-md">
+              <div className="bg-sky-soft p-4 rounded-md">
                 <h4 className="font-semibold mb-2 flex items-center gap-2">
                   <Network className="h-4 w-4" />
                   Network Requirements

@@ -4,7 +4,7 @@ Integration connector for Datadog monitoring platform.
 
 ## Overview
 
-The Datadog connector enables ConfigBuddy CMDB to discover and synchronize infrastructure, containers, services, and monitors from Datadog's monitoring platform.
+The Datadog connector enables HappyCMDB to discover and synchronize infrastructure, containers, services, and monitors from Datadog's monitoring platform.
 
 ## Supported Resources
 
@@ -253,4 +253,4 @@ Current version: **1.0.0**
 
 ## License
 
-Part of ConfigBuddy CMDB platform.
+Part of HappyCMDB platform.

@@ -15,6 +15,7 @@ import {
 } from 'recharts';
 import { LiquidGlass } from '@/components/ui/liquid-glass';
 import { AlertCircle } from 'lucide-react';
+import { brand } from '@/lib/brandColors';
 
 export interface HealthDataPoint {
   timestamp: string;
@@ -46,7 +47,7 @@ export const ServiceHealthChart: React.FC<ServiceHealthChartProps> = ({
             Health Score: <span className="font-bold">{payload[0].value.toFixed(1)}%</span>
           </p>
           {payload[0].payload.incidents > 0 && (
-            <p className="text-sm text-red-600 dark:text-red-400 flex items-center gap-1 mt-1">
+            <p className="text-sm text-danger flex items-center gap-1 mt-1">
               <AlertCircle className="h-3 w-3" />
               {payload[0].payload.incidents} incident{payload[0].payload.incidents > 1 ? 's' : ''}
             </p>
@@ -58,9 +59,9 @@ export const ServiceHealthChart: React.FC<ServiceHealthChartProps> = ({
   };
 
   const getHealthColor = (score: number) => {
-    if (score >= 80) return '#10b981'; // green
-    if (score >= 60) return '#f59e0b'; // yellow
-    return '#ef4444'; // red
+    if (score >= 80) return brand.success;
+    if (score >= 60) return brand.warning;
+    return brand.danger;
   };
 
   const CustomDot = (props: any) => {
@@ -68,7 +69,7 @@ export const ServiceHealthChart: React.FC<ServiceHealthChartProps> = ({
     if (showIncidentMarkers && payload.incidents > 0) {
       return (
         <g>
-          <circle cx={cx} cy={cy} r={6} fill="#ef4444" stroke="#fff" strokeWidth={2} />
+          <circle cx={cx} cy={cy} r={6} fill={brand.danger} stroke="#fff" strokeWidth={2} />
           <circle cx={cx} cy={cy} r={3} fill="#fff" />
         </g>
       );
@@ -93,12 +94,12 @@ export const ServiceHealthChart: React.FC<ServiceHealthChartProps> = ({
             <YAxis domain={[0, 100]} label={{ value: 'Health Score (%)', angle: -90, position: 'insideLeft' }} />
             <Tooltip content={<CustomTooltip />} />
             <Legend />
-            <ReferenceLine y={80} stroke="#10b981" strokeDasharray="3 3" label="Good" />
-            <ReferenceLine y={60} stroke="#f59e0b" strokeDasharray="3 3" label="Warning" />
+            <ReferenceLine y={80} stroke={brand.success} strokeDasharray="3 3" label="Good" />
+            <ReferenceLine y={60} stroke={brand.warning} strokeDasharray="3 3" label="Warning" />
             <Line
               type="monotone"
               dataKey="healthScore"
-              stroke="#8b5cf6"
+              stroke={brand.sky}
               strokeWidth={2}
               name="Health Score"
               dot={<CustomDot />}

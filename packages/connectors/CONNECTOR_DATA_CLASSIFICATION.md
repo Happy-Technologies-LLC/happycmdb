@@ -1,6 +1,6 @@
 # Connector Data Classification
 
-This document classifies ConfigBuddy connectors by the **type of data** they provide, enabling proper routing, processing, and storage of discovered information.
+This document classifies HappyCMDB connectors by the **type of data** they provide, enabling proper routing, processing, and storage of discovered information.
 
 ## Data Type Categories
 

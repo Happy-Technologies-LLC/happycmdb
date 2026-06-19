@@ -158,11 +158,11 @@ export const ConnectorMarketplace: React.FC = () => {
   const getStatusIcon = (status: string) => {
     switch (status) {
       case 'active':
-        return <CheckCircle className="h-5 w-5 text-green-500" />;
+        return <CheckCircle className="h-5 w-5 text-success" />;
       case 'inactive':
-        return <Clock className="h-5 w-5 text-gray-400" />;
+        return <Clock className="h-5 w-5 text-ink-soft" />;
       case 'error':
-        return <XCircle className="h-5 w-5 text-red-500" />;
+        return <XCircle className="h-5 w-5 text-danger" />;
       default:
         return null;
     }
@@ -179,10 +179,10 @@ export const ConnectorMarketplace: React.FC = () => {
       </div>
 
       {/* Discovery Banner */}
-      <LiquidGlass variant="default" rounded="xl" className="border-l-4 border-l-blue-500">
+      <LiquidGlass variant="default" rounded="xl" className="border-l-4 border-l-sky">
         <div className="flex items-start gap-4">
-          <div className="p-2 bg-blue-100 rounded-lg">
-            <Info className="h-6 w-6 text-blue-600" />
+          <div className="p-2 bg-sky-soft rounded-lg">
+            <Info className="h-6 w-6 text-sky-text" />
           </div>
           <div className="flex-1">
             <h3 className="font-semibold text-lg mb-1">Looking for Cloud Infrastructure Discovery?</h3>

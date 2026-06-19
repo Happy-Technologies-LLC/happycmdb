@@ -1,13 +1,13 @@
 #!/bin/bash
 #
-# Neo4j Restore Script for ConfigBuddy
+# Neo4j Restore Script for HappyCMDB
 # Supports restore from compressed database dumps with verification
 #
 
 set -euo pipefail
 
 # Configuration from environment variables or defaults
-BACKUP_DIR="${BACKUP_DIR:-/var/backups/configbuddy/neo4j}"
+BACKUP_DIR="${BACKUP_DIR:-/var/backups/happycmdb/neo4j}"
 NEO4J_CONTAINER="${NEO4J_CONTAINER:-cmdb-neo4j}"
 NEO4J_DATABASE="${NEO4J_DATABASE:-cmdb}"
 NEO4J_USERNAME="${NEO4J_USERNAME:-neo4j}"
@@ -329,7 +329,7 @@ main() {
         usage
     fi
 
-    log_info "===== ConfigBuddy Neo4j Restore ====="
+    log_info "===== HappyCMDB Neo4j Restore ====="
 
     # Verify backup file
     verify_backup_file "${backup_file}"

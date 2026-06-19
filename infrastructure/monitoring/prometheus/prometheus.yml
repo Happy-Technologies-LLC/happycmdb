@@ -174,7 +174,7 @@ scrape_configs:
       - target_label: __address__
         replacement: blackbox-exporter:9115
 
-  # ConfigBuddy v3.0 - ITIL Service Manager Metrics
+  # HappyCMDB v3.0 - ITIL Service Manager Metrics
   - job_name: 'cmdb-itil-manager'
     metrics_path: '/metrics/itil'
     scrape_interval: 30s
@@ -186,7 +186,7 @@ scrape_configs:
           component: 'itil'
           framework: 'itil-v4'
 
-  # ConfigBuddy v3.0 - TBM Cost Engine Metrics
+  # HappyCMDB v3.0 - TBM Cost Engine Metrics
   - job_name: 'cmdb-tbm-engine'
     metrics_path: '/metrics/tbm'
     scrape_interval: 60s
@@ -198,7 +198,7 @@ scrape_configs:
           component: 'tbm'
           framework: 'tbm-v5'
 
-  # ConfigBuddy v3.0 - BSM Impact Engine Metrics
+  # HappyCMDB v3.0 - BSM Impact Engine Metrics
   - job_name: 'cmdb-bsm-engine'
     metrics_path: '/metrics/bsm'
     scrape_interval: 30s
@@ -210,7 +210,7 @@ scrape_configs:
           component: 'bsm'
           framework: 'bsm'
 
-  # ConfigBuddy v3.0 - AI Discovery Metrics
+  # HappyCMDB v3.0 - AI Discovery Metrics
   - job_name: 'cmdb-ai-discovery'
     metrics_path: '/metrics/ai'
     scrape_interval: 60s
@@ -222,7 +222,7 @@ scrape_configs:
           component: 'discovery'
           feature: 'ai-powered'
 
-  # ConfigBuddy v3.0 - Unified Framework Metrics
+  # HappyCMDB v3.0 - Unified Framework Metrics
   - job_name: 'cmdb-unified-framework'
     metrics_path: '/metrics/unified'
     scrape_interval: 30s
@@ -243,7 +243,7 @@ scrape_configs:
         labels:
           service: 'kafka'
           component: 'event-streaming'
-          cluster: 'configbuddy-kafka'
+          cluster: 'happycmdb-kafka'
 
   # Metabase Analytics Platform
   - job_name: 'metabase'

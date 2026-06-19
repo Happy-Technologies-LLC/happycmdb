@@ -1,6 +1,6 @@
 # ITSM Operations User Guide
 
-Complete guide to IT Service Management (ITSM) operations using ConfigBuddy's ITIL v4-aligned dashboards and workflows.
+Complete guide to IT Service Management (ITSM) operations using HappyCMDB's ITIL v4-aligned dashboards and workflows.
 
 ## Overview
 

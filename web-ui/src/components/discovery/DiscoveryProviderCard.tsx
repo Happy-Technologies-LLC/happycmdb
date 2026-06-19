@@ -5,6 +5,7 @@ import { Badge } from '../ui/badge';
 import { Avatar, AvatarFallback } from '../ui/avatar';
 import { Separator } from '../ui/separator';
 import { Network, Server, Users, Activity } from 'lucide-react';
+import { brand } from '@/lib/brandColors';
 
 interface DiscoveryProviderCardProps {
   stats: DiscoveryStats;
@@ -14,10 +15,10 @@ const PROVIDER_CONFIG: Record<
   DiscoveryProvider,
   { name: string; color: string; Icon: React.ElementType }
 > = {
-  nmap: { name: 'Network Scan (Nmap)', color: '#9C27B0', Icon: Network },
-  ssh: { name: 'SSH Discovery', color: '#4CAF50', Icon: Server },
-  'active-directory': { name: 'Active Directory', color: '#0078D4', Icon: Users },
-  snmp: { name: 'SNMP Discovery', color: '#FF6B6B', Icon: Activity },
+  nmap: { name: 'Network Scan (Nmap)', color: brand.navy, Icon: Network },
+  ssh: { name: 'SSH Discovery', color: brand.success, Icon: Server },
+  'active-directory': { name: 'Active Directory', color: brand.sky, Icon: Users },
+  snmp: { name: 'SNMP Discovery', color: brand.danger, Icon: Activity },
 };
 
 const formatDuration = (ms: number): string => {
@@ -90,11 +91,11 @@ export const DiscoveryProviderCard: React.FC<DiscoveryProviderCardProps> = ({
             <p className="text-xs text-muted-foreground">Total Jobs</p>
           </div>
           <div>
-            <p className="text-2xl font-bold text-green-600">{stats.successfulJobs}</p>
+            <p className="text-2xl font-bold text-success">{stats.successfulJobs}</p>
             <p className="text-xs text-muted-foreground">Success</p>
           </div>
           <div>
-            <p className="text-2xl font-bold text-red-600">{stats.failedJobs}</p>
+            <p className="text-2xl font-bold text-danger">{stats.failedJobs}</p>
             <p className="text-xs text-muted-foreground">Failed</p>
           </div>
           <div>

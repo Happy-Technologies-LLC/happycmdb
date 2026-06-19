@@ -19,7 +19,7 @@ import axios from 'axios';
  */
 export class ConnectorController {
   private postgresClient = getPostgresClient();
-  private registryUrl = process.env['CONNECTOR_REGISTRY_URL'] || 'https://raw.githubusercontent.com/configbuddy/connectors/main/catalog.json';
+  private registryUrl = process.env['CONNECTOR_REGISTRY_URL'] || 'https://raw.githubusercontent.com/happycmdb/connectors/main/catalog.json';
 
   /**
    * GET /api/v1/connectors/registry
@@ -323,7 +323,7 @@ export class ConnectorController {
       // 6. Load metadata and resources
 
       // For now, create stub installation record
-      const installPath = `/opt/configbuddy/connectors/${connector_type}`;
+      const installPath = `/opt/happycmdb/connectors/${connector_type}`;
 
       const insertQuery = `
         INSERT INTO installed_connectors (

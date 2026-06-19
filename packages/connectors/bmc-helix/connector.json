@@ -7,7 +7,7 @@
   "name": "BMC Helix ITSM",
   "version": "1.0.0",
   "description": "Integration with BMC Helix IT Service Management (cloud-native) for CMDB, incidents, and changes",
-  "author": "ConfigBuddy",
+  "author": "HappyCMDB",
   "verified": true,
   "icon": "bmc",
   "provider": "bmc",

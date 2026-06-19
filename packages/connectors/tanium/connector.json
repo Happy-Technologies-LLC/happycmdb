@@ -6,7 +6,7 @@
   "name": "Tanium Endpoint Management",
   "version": "1.0.0",
   "description": "Real-time endpoint management and security platform integration with comprehensive endpoint, software, patch, and sensor data",
-  "author": "ConfigBuddy",
+  "author": "HappyCMDB",
   "verified": true,
   "capabilities": {
     "extraction": true,

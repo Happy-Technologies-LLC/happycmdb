@@ -1,7 +1,7 @@
 #!/usr/bin/env ts-node
 
 /**
- * Seed Data Loader for ConfigBuddy CMDB
+ * Seed Data Loader for HappyCMDB
  *
  * This script loads comprehensive test data into Neo4j including:
  * - Admin user with authentication
@@ -30,7 +30,7 @@ if (!NEO4J_PASSWORD) {
 // SECURITY NOTE: These are test credentials for development only.
 // Password is read from environment variable for security.
 const TEST_USER = {
-  email: process.env['SEED_USER_EMAIL'] || 'admin@configbuddy.local',
+  email: process.env['SEED_USER_EMAIL'] || 'admin@happycmdb.local',
   username: process.env['SEED_USER_USERNAME'] || 'admin',
   password: process.env['SEED_USER_PASSWORD'] || '',
   // bcrypt hash generated from SEED_USER_PASSWORD
@@ -115,7 +115,7 @@ async function cleanData(session: Session): Promise<void> {
   await session.run('MATCH (n:CI) DETACH DELETE n');
 
   // Delete test users
-  await session.run("MATCH (u:User {email: 'admin@configbuddy.local'}) DELETE u");
+  await session.run("MATCH (u:User {email: 'admin@happycmdb.local'}) DELETE u");
 
   // Delete discovery jobs
   await session.run('MATCH (j:DiscoveryJob) DELETE j');
@@ -163,7 +163,7 @@ async function createTestCIs(session: Session): Promise<void> {
     // Production Servers (10)
     {
       id: 'srv-prod-web-01',
-      name: 'web-prod-01.configbuddy.local',
+      name: 'web-prod-01.happycmdb.local',
       type: 'server',
       status: 'active',
       environment: 'production',
@@ -187,7 +187,7 @@ async function createTestCIs(session: Session): Promise<void> {
     },
     {
       id: 'srv-prod-web-02',
-      name: 'web-prod-02.configbuddy.local',
+      name: 'web-prod-02.happycmdb.local',
       type: 'server',
       status: 'active',
       environment: 'production',
@@ -210,7 +210,7 @@ async function createTestCIs(session: Session): Promise<void> {
     },
     {
       id: 'srv-prod-api-01',
-      name: 'api-prod-01.configbuddy.local',
+      name: 'api-prod-01.happycmdb.local',
       type: 'server',
       status: 'active',
       environment: 'production',
@@ -233,7 +233,7 @@ async function createTestCIs(session: Session): Promise<void> {
     },
     {
       id: 'srv-prod-db-01',
-      name: 'db-prod-01.configbuddy.local',
+      name: 'db-prod-01.happycmdb.local',
       type: 'server',
       status: 'active',
       environment: 'production',
@@ -255,7 +255,7 @@ async function createTestCIs(session: Session): Promise<void> {
     },
     {
       id: 'srv-prod-win-01',
-      name: 'win-prod-01.configbuddy.local',
+      name: 'win-prod-01.happycmdb.local',
       type: 'server',
       status: 'active',
       environment: 'production',
@@ -277,7 +277,7 @@ async function createTestCIs(session: Session): Promise<void> {
     },
     {
       id: 'srv-stg-web-01',
-      name: 'web-stg-01.configbuddy.local',
+      name: 'web-stg-01.happycmdb.local',
       type: 'server',
       status: 'active',
       environment: 'staging',
@@ -299,7 +299,7 @@ async function createTestCIs(session: Session): Promise<void> {
     },
     {
       id: 'srv-stg-api-01',
-      name: 'api-stg-01.configbuddy.local',
+      name: 'api-stg-01.happycmdb.local',
       type: 'server',
       status: 'active',
       environment: 'staging',
@@ -321,7 +321,7 @@ async function createTestCIs(session: Session): Promise<void> {
     },
     {
       id: 'srv-dev-web-01',
-      name: 'web-dev-01.configbuddy.local',
+      name: 'web-dev-01.happycmdb.local',
       type: 'server',
       status: 'active',
       environment: 'development',
@@ -343,7 +343,7 @@ async function createTestCIs(session: Session): Promise<void> {
     },
     {
       id: 'srv-maint-01',
-      name: 'backup-maint-01.configbuddy.local',
+      name: 'backup-maint-01.happycmdb.local',
       type: 'server',
       status: 'maintenance',
       environment: 'production',
@@ -365,7 +365,7 @@ async function createTestCIs(session: Session): Promise<void> {
     },
     {
       id: 'srv-decom-01',
-      name: 'old-web-decom-01.configbuddy.local',
+      name: 'old-web-decom-01.happycmdb.local',
       type: 'server',
       status: 'decommissioned',
       environment: 'production',
@@ -388,7 +388,7 @@ async function createTestCIs(session: Session): Promise<void> {
     // Applications (5)
     {
       id: 'app-web-frontend',
-      name: 'ConfigBuddy Web Frontend',
+      name: 'HappyCMDB Web Frontend',
       type: 'application',
       status: 'active',
       environment: 'production',
@@ -400,14 +400,14 @@ async function createTestCIs(session: Session): Promise<void> {
         language: 'TypeScript',
         port: 3000,
         health_endpoint: '/health',
-        repository: 'github.com/configbuddy/web-ui',
+        repository: 'github.com/happycmdb/web-ui',
         deployment_method: 'docker',
         tags: ['frontend', 'react', 'typescript'],
       },
     },
     {
       id: 'app-api-backend',
-      name: 'ConfigBuddy API Server',
+      name: 'HappyCMDB API Server',
       type: 'application',
       status: 'active',
       environment: 'production',
@@ -419,7 +419,7 @@ async function createTestCIs(session: Session): Promise<void> {
         language: 'TypeScript',
         port: 8080,
         health_endpoint: '/api/health',
-        repository: 'github.com/configbuddy/api-server',
+        repository: 'github.com/happycmdb/api-server',
         deployment_method: 'docker',
         tags: ['backend', 'api', 'express', 'nodejs'],
       },
@@ -436,7 +436,7 @@ async function createTestCIs(session: Session): Promise<void> {
         version: '1.5.0',
         framework: 'BullMQ Worker',
         language: 'TypeScript',
-        repository: 'github.com/configbuddy/discovery-engine',
+        repository: 'github.com/happycmdb/discovery-engine',
         deployment_method: 'docker',
         tags: ['worker', 'discovery', 'aws', 'azure'],
       },
@@ -453,7 +453,7 @@ async function createTestCIs(session: Session): Promise<void> {
         version: '1.3.2',
         framework: 'BullMQ Worker',
         language: 'TypeScript',
-        repository: 'github.com/configbuddy/etl-processor',
+        repository: 'github.com/happycmdb/etl-processor',
         deployment_method: 'docker',
         tags: ['worker', 'etl', 'data-sync'],
       },
@@ -469,7 +469,7 @@ async function createTestCIs(session: Session): Promise<void> {
       metadata: {
         version: '1.0.5',
         language: 'Go',
-        repository: 'github.com/configbuddy/agent',
+        repository: 'github.com/happycmdb/agent',
         deployment_method: 'binary',
         tags: ['agent', 'monitoring', 'metrics'],
       },
@@ -664,7 +664,7 @@ async function createTestCIs(session: Session): Promise<void> {
       metadata: {
         device_type: 'Application Load Balancer',
         provider: 'AWS ELB',
-        public_dns: 'lb-prod-01.configbuddy.com',
+        public_dns: 'lb-prod-01.happycmdb.com',
         ip_address: '54.210.200.100',
         algorithm: 'round-robin',
         health_check_interval: 30,
@@ -754,12 +754,12 @@ async function createTestCIs(session: Session): Promise<void> {
       type: 'storage',
       status: 'active',
       environment: 'production',
-      external_id: 's3://configbuddy-backups-prod',
+      external_id: 's3://happycmdb-backups-prod',
       labels: ['CI', 'Storage'],
       metadata: {
         storage_type: 'Object Storage',
         provider: 'AWS S3',
-        bucket_name: 'configbuddy-backups-prod',
+        bucket_name: 'happycmdb-backups-prod',
         size_gb: 2500,
         versioning: true,
         encryption: 'AES-256',
@@ -1045,7 +1045,7 @@ async function displayStatistics(session: Session): Promise<void> {
  * Main function
  */
 async function main() {
-  console.log('ConfigBuddy CMDB Seed Data Loader');
+  console.log('HappyCMDB Seed Data Loader');
   console.log('==================================\n');
 
   const driver = createDriver();

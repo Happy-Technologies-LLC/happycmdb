@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # =============================================================================
-# ConfigBuddy CMDB - Staging Deployment Script
+# HappyCMDB - Staging Deployment Script
 # =============================================================================
 # Automated deployment to staging environment with:
 # - Pre-deployment validation
@@ -24,7 +24,7 @@ NC='\033[0m' # No Color
 DEPLOY_ENV="staging"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-BACKUP_DIR="${BACKUP_DIR:-/var/backups/configbuddy/staging}"
+BACKUP_DIR="${BACKUP_DIR:-/var/backups/happycmdb/staging}"
 DEPLOYMENT_LOG="$PROJECT_ROOT/logs/deployment-staging-$(date +%Y%m%d-%H%M%S).log"
 
 # State tracking for rollback
@@ -87,7 +87,7 @@ trap cleanup_on_failure ERR
 # Create log directory
 mkdir -p "$(dirname "$DEPLOYMENT_LOG")"
 
-print_header "ConfigBuddy CMDB - Staging Deployment"
+print_header "HappyCMDB - Staging Deployment"
 log_info "Deployment started at: $(date)"
 log_info "Deployment log: $DEPLOYMENT_LOG"
 
@@ -372,7 +372,7 @@ run_smoke_test "GraphQL Endpoint" \
 
 # Test 3: Web UI loads
 run_smoke_test "Web UI Homepage" \
-    "curl -sf http://localhost:3001 | grep -q 'ConfigBuddy'" \
+    "curl -sf http://localhost:3001 | grep -q 'HappyCMDB'" \
     || SMOKE_TESTS_PASSED=false
 
 # Test 4: Discovery endpoint accessible
@@ -415,13 +415,13 @@ log_info "Deployment log saved to: $DEPLOYMENT_LOG"
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  ConfigBuddy CMDB - Staging Environment"
+echo "  HappyCMDB - Staging Environment"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 echo "📡 Service URLs:"
-echo "  🌐 Web UI:         http://staging.configbuddy.local:3001"
-echo "  🔌 API:            http://staging.configbuddy.local:3000/api/v1"
-echo "  🚀 GraphQL:        http://staging.configbuddy.local:3000/graphql"
+echo "  🌐 Web UI:         http://staging.happycmdb.local:3001"
+echo "  🔌 API:            http://staging.happycmdb.local:3000/api/v1"
+echo "  🚀 GraphQL:        http://staging.happycmdb.local:3000/graphql"
 echo ""
 echo "📊 Container Status:"
 docker-compose -f "$PROJECT_ROOT/infrastructure/docker/docker-compose.yml" ps

@@ -1,6 +1,6 @@
 # Scripts Directory
 
-This directory contains utility scripts for ConfigBuddy CMDB development and deployment.
+This directory contains utility scripts for HappyCMDB development and deployment.
 
 ## Scripts Overview
 

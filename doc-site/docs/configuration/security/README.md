@@ -1,6 +1,6 @@
-# ConfigBuddy Security Documentation
+# HappyCMDB Security Documentation
 
-This directory contains comprehensive security documentation, hardening procedures, and incident response plans for ConfigBuddy.
+This directory contains comprehensive security documentation, hardening procedures, and incident response plans for HappyCMDB.
 
 ---
 
@@ -91,7 +91,7 @@ All security scanning scripts are located in `/infrastructure/scripts/`:
 Scans Docker images for vulnerabilities using Trivy, Grype, and Snyk.
 
 ```bash
-# Scan all ConfigBuddy images
+# Scan all HappyCMDB images
 ./infrastructure/scripts/security-scan-docker.sh all
 
 # Scan specific image
@@ -198,7 +198,7 @@ All security middleware is located in `/packages/api-server/src/middleware/`:
 
 ### Real-Time Threat Detection
 
-ConfigBuddy monitors the following security events:
+HappyCMDB monitors the following security events:
 
 | Event Type | Threshold | Action |
 |------------|-----------|--------|
@@ -211,15 +211,15 @@ ConfigBuddy monitors the following security events:
 
 ### Alerting Channels
 
-- **PagerDuty**: `configbuddy-security` schedule
+- **PagerDuty**: `happycmdb-security` schedule
 - **Slack**: `#security-incidents` (private channel)
-- **Email**: security@configbuddy.io
+- **Email**: security@happycmdb.io
 
 ---
 
 ## Compliance
 
-ConfigBuddy is designed to support compliance with:
+HappyCMDB is designed to support compliance with:
 
 - **GDPR** (General Data Protection Regulation) - 72-hour breach notification
 - **CCPA** (California Consumer Privacy Act) - Data subject rights
@@ -250,9 +250,9 @@ See [`SECURITY_HARDENING_CHECKLIST.md`](./SECURITY_HARDENING_CHECKLIST.md) for c
 ## Resources
 
 ### Internal
-- **Security Lead**: security@configbuddy.io
-- **Incident Response**: incidents@configbuddy.io
-- **On-Call**: PagerDuty `configbuddy-security`
+- **Security Lead**: security@happycmdb.io
+- **Incident Response**: incidents@happycmdb.io
+- **On-Call**: PagerDuty `happycmdb-security`
 
 ### External
 - **FBI IC3**: https://www.ic3.gov/
@@ -290,4 +290,4 @@ See [`SECURITY_HARDENING_CHECKLIST.md`](./SECURITY_HARDENING_CHECKLIST.md) for c
 
 ---
 
-**For Questions**: Contact security@configbuddy.io
+**For Questions**: Contact security@happycmdb.io

@@ -1,7 +1,7 @@
 {
   "name": "@cmdb/unified-model",
   "version": "3.0.0",
-  "description": "Unified data model for ConfigBuddy v3.0 (ITIL + TBM + BSM)",
+  "description": "Unified data model for HappyCMDB v3.0 (ITIL + TBM + BSM)",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
@@ -20,7 +20,7 @@
     "configuration-management",
     "service-management"
   ],
-  "author": "ConfigBuddy Team",
+  "author": "HappyCMDB Team",
   "license": "Apache-2.0",
   "dependencies": {
     "tslib": "^2.8.1",

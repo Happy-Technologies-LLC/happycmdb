@@ -3,7 +3,7 @@
   "name": "Jira Asset Management",
   "version": "2.0.0",
   "description": "Integration with Jira for asset tracking and project-CI relationships",
-  "author": "ConfigBuddy",
+  "author": "HappyCMDB",
   "verified": true,
   "category": "connector",
   "connector_category": "ticketing",

@@ -22,12 +22,13 @@ import {
 } from 'recharts';
 import { useCICountsByEnvironment } from '../../hooks/useAnalytics';
 import { ExportButton } from './ExportButton';
+import { brand } from '@/lib/brandColors';
 
 const ENVIRONMENT_COLORS: Record<string, string> = {
-  production: '#FF3B30',
-  staging: '#FF9500',
-  development: '#34C759',
-  test: '#007AFF',
+  production: brand.danger,
+  staging: brand.warning,
+  development: brand.success,
+  test: brand.sky,
 };
 
 export const EnvironmentStats: React.FC = () => {
@@ -121,21 +122,21 @@ export const EnvironmentStats: React.FC = () => {
             data={chartData}
             margin={{ top: 20, right: 30, left: 20, bottom: 5 }}
           >
-            <CartesianGrid strokeDasharray="3 3" stroke="#E5E5EA" />
+            <CartesianGrid strokeDasharray="3 3" stroke={brand.line} />
             <XAxis
               dataKey="environment"
-              tick={{ fill: '#8E8E93', fontSize: 12 }}
+              tick={{ fill: brand.inkSoft, fontSize: 12 }}
               tickFormatter={(value) =>
                 value.charAt(0).toUpperCase() + value.slice(1)
               }
             />
-            <YAxis tick={{ fill: '#8E8E93', fontSize: 12 }} />
-            <Tooltip content={<CustomTooltip />} cursor={{ fill: '#F2F2F7' }} />
+            <YAxis tick={{ fill: brand.inkSoft, fontSize: 12 }} />
+            <Tooltip content={<CustomTooltip />} cursor={{ fill: brand.warmAlt }} />
             <Bar dataKey="count" radius={[8, 8, 0, 0]}>
               {chartData.map((entry, index) => (
                 <Cell
                   key={`cell-${index}`}
-                  fill={ENVIRONMENT_COLORS[entry.environment] || '#007AFF'}
+                  fill={ENVIRONMENT_COLORS[entry.environment] || brand.sky}
                 />
               ))}
             </Bar>

@@ -1,0 +1,44 @@
+[Unit]
+Description=HappyCMDB Backup Health Check Service
+Documentation=https://github.com/happycmdb/happycmdb
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+
+# Environment variables
+EnvironmentFile=-/etc/happycmdb/backup.env
+
+Environment="BACKUP_DIR=/var/backups/happycmdb"
+Environment="BACKUP_LOG_DIR=/var/log/happycmdb/backups"
+Environment="BACKUP_MAX_AGE_HOURS=25"
+Environment="BACKUP_MIN_COUNT=3"
+Environment="DISK_USAGE_THRESHOLD=85"
+Environment="BACKUP_NOTIFICATION_ENABLED=false"
+
+# Working directory
+WorkingDirectory=/opt/happycmdb/infrastructure/scripts
+
+# Execute health check script
+ExecStart=/opt/happycmdb/infrastructure/scripts/backup-health-check.sh
+
+# Logging
+StandardOutput=append:/var/log/happycmdb/backups/health-check.log
+StandardError=append:/var/log/happycmdb/backups/health-check-error.log
+
+# Restart policy
+Restart=no
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+
+# Resource limits
+CPUQuota=25%
+MemoryLimit=512M
+
+[Install]
+WantedBy=multi-user.target

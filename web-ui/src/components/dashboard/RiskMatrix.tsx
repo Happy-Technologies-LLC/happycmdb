@@ -37,22 +37,22 @@ const RISK_ORDER = {
 };
 
 const CELL_COLORS = {
-  '0-0': 'bg-green-100 dark:bg-green-950',
-  '0-1': 'bg-green-100 dark:bg-green-950',
-  '0-2': 'bg-yellow-100 dark:bg-yellow-950',
-  '0-3': 'bg-yellow-100 dark:bg-yellow-950',
-  '1-0': 'bg-green-100 dark:bg-green-950',
-  '1-1': 'bg-yellow-100 dark:bg-yellow-950',
-  '1-2': 'bg-yellow-100 dark:bg-yellow-950',
-  '1-3': 'bg-orange-100 dark:bg-orange-950',
-  '2-0': 'bg-yellow-100 dark:bg-yellow-950',
-  '2-1': 'bg-yellow-100 dark:bg-yellow-950',
-  '2-2': 'bg-orange-100 dark:bg-orange-950',
-  '2-3': 'bg-red-100 dark:bg-red-950',
-  '3-0': 'bg-yellow-100 dark:bg-yellow-950',
-  '3-1': 'bg-orange-100 dark:bg-orange-950',
-  '3-2': 'bg-red-100 dark:bg-red-950',
-  '3-3': 'bg-red-100 dark:bg-red-950',
+  '0-0': 'bg-success-soft',
+  '0-1': 'bg-success-soft',
+  '0-2': 'bg-warning-soft',
+  '0-3': 'bg-warning-soft',
+  '1-0': 'bg-success-soft',
+  '1-1': 'bg-warning-soft',
+  '1-2': 'bg-warning-soft',
+  '1-3': 'bg-warning-soft',
+  '2-0': 'bg-warning-soft',
+  '2-1': 'bg-warning-soft',
+  '2-2': 'bg-warning-soft',
+  '2-3': 'bg-danger-soft',
+  '3-0': 'bg-warning-soft',
+  '3-1': 'bg-warning-soft',
+  '3-2': 'bg-danger-soft',
+  '3-3': 'bg-danger-soft',
 };
 
 export const RiskMatrix: React.FC<RiskMatrixProps> = ({

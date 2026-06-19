@@ -2,7 +2,7 @@
   "name": "@cmdb/ai-ml-engine",
   "version": "2.0.0",
   "license": "Apache-2.0",
-  "description": "ConfigBuddy AI/ML Engines for Anomaly Detection and Impact Prediction",
+  "description": "HappyCMDB AI/ML Engines for Anomaly Detection and Impact Prediction",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {

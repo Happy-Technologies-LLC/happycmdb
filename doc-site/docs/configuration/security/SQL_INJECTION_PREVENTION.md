@@ -2,11 +2,11 @@
 
 **Document Status**: ✅ **CRITICAL SECURITY REQUIREMENTS**
 **Last Updated**: October 2025
-**Applies To**: All ConfigBuddy v2.0+ deployments
+**Applies To**: All HappyCMDB v2.0+ deployments
 
 ## Overview
 
-This document outlines **mandatory security practices** for preventing SQL and Cypher injection vulnerabilities in ConfigBuddy. All developers must follow these guidelines when writing database queries.
+This document outlines **mandatory security practices** for preventing SQL and Cypher injection vulnerabilities in HappyCMDB. All developers must follow these guidelines when writing database queries.
 
 **Security Rating Impact**: Proper implementation of these practices is **CRITICAL** for achieving API Security scores above 60%.
 

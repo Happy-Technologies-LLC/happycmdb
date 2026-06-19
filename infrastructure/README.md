@@ -1,6 +1,6 @@
 # Infrastructure Directory
 
-This directory contains all deployment, configuration, and infrastructure-related files for ConfigBuddy CMDB.
+This directory contains all deployment, configuration, and infrastructure-related files for HappyCMDB.
 
 ## Directory Structure
 

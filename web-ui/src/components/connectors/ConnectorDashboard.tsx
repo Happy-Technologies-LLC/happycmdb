@@ -68,13 +68,13 @@ export const ConnectorDashboard: React.FC = () => {
         <LiquidGlass size="sm" rounded="xl">
           <div className="p-6">
             <p className="text-sm text-muted-foreground mb-2">Active</p>
-            <p className="text-3xl font-bold text-green-600">{activeConnectors}</p>
+            <p className="text-3xl font-bold text-success">{activeConnectors}</p>
           </div>
         </LiquidGlass>
         <LiquidGlass size="sm" rounded="xl">
           <div className="p-6">
             <p className="text-sm text-muted-foreground mb-2">Success Rate</p>
-            <p className="text-3xl font-bold text-green-600">
+            <p className="text-3xl font-bold text-success">
               {successRate.toFixed(1)}%
             </p>
           </div>
@@ -82,7 +82,7 @@ export const ConnectorDashboard: React.FC = () => {
         <LiquidGlass size="sm" rounded="xl">
           <div className="p-6">
             <p className="text-sm text-muted-foreground mb-2">Errors</p>
-            <p className="text-3xl font-bold text-red-600">{errorConnectors}</p>
+            <p className="text-3xl font-bold text-danger">{errorConnectors}</p>
           </div>
         </LiquidGlass>
       </div>
@@ -110,8 +110,8 @@ export const ConnectorDashboard: React.FC = () => {
               const icon = connector.type === 'servicenow' ? '🔷' : connector.type === 'jira' ? '📘' :
                           connector.type === 'datadog' ? '🐕' : connector.type === 'splunk' ? '🔍' :
                           connector.type === 'bmc_remedy' ? '🔶' : '⚙️';
-              const statusColor = connector.status === 'active' ? 'text-green-600' :
-                                connector.status === 'error' ? 'text-red-600' : 'text-gray-400';
+              const statusColor = connector.status === 'active' ? 'text-success' :
+                                connector.status === 'error' ? 'text-danger' : 'text-ink-soft';
               return (
                 <LiquidGlass
                   key={connector.id}

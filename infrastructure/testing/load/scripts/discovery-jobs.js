@@ -1,5 +1,5 @@
 /**
- * ConfigBuddy Discovery Operations Load Test
+ * HappyCMDB Discovery Operations Load Test
  *
  * Tests discovery job execution, connector performance, and CI persistence throughput
  *
@@ -407,8 +407,8 @@ export function highVolumeIngestion() {
 // Summary handler
 export function handleSummary(data) {
   return {
-    '/Users/nczitzer/WebstormProjects/configbuddy/infrastructure/testing/load/reports/discovery-summary.html': htmlReport(data),
-    '/Users/nczitzer/WebstormProjects/configbuddy/infrastructure/testing/load/reports/discovery-summary.json': JSON.stringify(data, null, 2),
+    '/Users/nczitzer/WebstormProjects/happycmdb/infrastructure/testing/load/reports/discovery-summary.html': htmlReport(data),
+    '/Users/nczitzer/WebstormProjects/happycmdb/infrastructure/testing/load/reports/discovery-summary.json': JSON.stringify(data, null, 2),
     stdout: textSummary(data),
   };
 }
@@ -418,7 +418,7 @@ function htmlReport(data) {
 <!DOCTYPE html>
 <html>
 <head>
-  <title>ConfigBuddy Discovery Operations Load Test Results</title>
+  <title>HappyCMDB Discovery Operations Load Test Results</title>
   <style>
     body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
     .container { max-width: 1200px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; }
@@ -437,7 +437,7 @@ function htmlReport(data) {
 </head>
 <body>
   <div class="container">
-    <h1>ConfigBuddy Discovery Operations Load Test Results</h1>
+    <h1>HappyCMDB Discovery Operations Load Test Results</h1>
     <p>Test Duration: ${data.state.testRunDurationMs / 1000}s</p>
 
     <h2>Discovery Job Metrics</h2>
@@ -530,7 +530,7 @@ function htmlReport(data) {
 
     <p style="margin-top: 30px; color: #666; font-size: 12px;">
       Generated: ${new Date().toISOString()}<br>
-      ConfigBuddy v2.0 Discovery Load Testing Suite
+      HappyCMDB v2.0 Discovery Load Testing Suite
     </p>
   </div>
 </body>
@@ -540,7 +540,7 @@ function htmlReport(data) {
 
 function textSummary(data) {
   let output = '\n' + '='.repeat(60) + '\n';
-  output += 'ConfigBuddy Discovery Operations Load Test Summary\n';
+  output += 'HappyCMDB Discovery Operations Load Test Summary\n';
   output += '='.repeat(60) + '\n\n';
 
   output += `Jobs Created: ${data.metrics.discovery_jobs_created?.values.count || '0'}\n`;

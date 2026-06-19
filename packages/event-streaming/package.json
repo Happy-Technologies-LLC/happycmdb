@@ -1,7 +1,7 @@
 {
   "name": "@cmdb/event-streaming",
   "version": "3.0.0",
-  "description": "Kafka event streaming for ConfigBuddy v3.0 - Real-time event processing",
+  "description": "Kafka event streaming for HappyCMDB v3.0 - Real-time event processing",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {

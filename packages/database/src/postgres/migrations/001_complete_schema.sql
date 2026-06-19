@@ -1,8 +1,8 @@
 -- ============================================
--- ConfigBuddy CMDB - Complete Database Schema
+-- HappyCMDB - Complete Database Schema
 -- Consolidated Migration: 001_complete_schema.sql
 -- ============================================
--- This migration creates the complete PostgreSQL schema for ConfigBuddy CMDB.
+-- This migration creates the complete PostgreSQL schema for HappyCMDB.
 -- It consolidates all tables, indexes, views, and functions into a single
 -- clean migration file.
 --

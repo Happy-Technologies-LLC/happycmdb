@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# ConfigBuddy CMDB - Complete Deployment Script
+# HappyCMDB - Complete Deployment Script
 # Deploys all services: infrastructure + applications + web UI
 
 set -e
@@ -82,7 +82,7 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --help|-h)
-            echo "ConfigBuddy CMDB Deployment Script"
+            echo "HappyCMDB Deployment Script"
             echo ""
             echo "Usage: ./deploy.sh [options]"
             echo ""
@@ -117,7 +117,7 @@ if [ -f ".env" ]; then
 fi
 
 # Start deployment
-print_header "ConfigBuddy CMDB - Complete Deployment"
+print_header "HappyCMDB - Complete Deployment"
 
 # Step 1: Clean start or preserve data
 if [ "$CLEAN_START" = true ]; then
@@ -148,8 +148,8 @@ fi
 # Copy logos if they exist
 if [ -f "web-ui/public/assets/logo.svg" ]; then
     mkdir -p doc-site/docs/public/logos
-    cp web-ui/public/assets/logo.svg doc-site/docs/public/logos/configbuddy-logo.svg 2>/dev/null || true
-    cp web-ui/public/assets/logo.png doc-site/docs/public/logos/configbuddy-logo.png 2>/dev/null || true
+    cp web-ui/public/assets/logo.svg doc-site/docs/public/logos/happycmdb-logo.svg 2>/dev/null || true
+    cp web-ui/public/assets/logo.png doc-site/docs/public/logos/happycmdb-logo.png 2>/dev/null || true
     cp web-ui/public/favicon.png doc-site/docs/public/favicon.png 2>/dev/null || true
     log_success "Logos copied to documentation site"
 fi
@@ -273,7 +273,7 @@ fi
 
 # Remove specific images to force rebuild (critical for code changes)
 log_info "Removing old Docker images..."
-docker rmi configbuddy-api-server configbuddy-web-ui 2>/dev/null || log_warning "Some images not found (OK if first deploy)"
+docker rmi happycmdb-api-server happycmdb-web-ui 2>/dev/null || log_warning "Some images not found (OK if first deploy)"
 
 log_success "Docker environment cleaned"
 
@@ -360,7 +360,7 @@ if [ "$SEED_DATA" = true ]; then
         log_success "Database seeded successfully"
         echo ""
         echo "Test Credentials:"
-        echo "  Email:    admin@configbuddy.local"
+        echo "  Email:    admin@happycmdb.local"
         echo "  Password: Admin123!"
         echo "  Role:     admin"
     else
@@ -401,10 +401,10 @@ else
 fi
 
 # Step 11: Display summary
-print_header "ConfigBuddy CMDB v2.0 - Deployment Complete! 🎉"
+print_header "HappyCMDB v2.0 - Deployment Complete! 🎉"
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  ConfigBuddy CMDB Platform v2.0"
+echo "  HappyCMDB Platform v2.0"
 echo "  Enterprise Configuration Management Database"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
@@ -426,7 +426,7 @@ echo "🔐 Default Credentials:"
 echo "  Neo4j:             neo4j / cmdb_password_dev"
 echo "  PostgreSQL:        postgres / cmdb_password_dev"
 if [ "$SEED_DATA" = true ]; then
-    echo "  Admin User:        admin@configbuddy.local / Admin123!"
+    echo "  Admin User:        admin@happycmdb.local / Admin123!"
 fi
 echo ""
 echo "🚀 v2.0 Features Deployed:"

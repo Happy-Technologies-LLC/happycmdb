@@ -20,7 +20,7 @@ class EncryptionService {
         if (key.length < 32) {
             throw new Error('CREDENTIAL_ENCRYPTION_KEY must be at least 32 characters long');
         }
-        const salt = 'configbuddy-cmdb-encryption-salt';
+        const salt = 'happycmdb-cmdb-encryption-salt';
         this.encryptionKey = (0, crypto_1.pbkdf2Sync)(key, salt, 100000, this.keyLength, 'sha256');
     }
     encrypt(plaintext) {

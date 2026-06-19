@@ -1,10 +1,10 @@
 # Financial Data Integration Guide
 
-This guide explains how to integrate financial cost data into ConfigBuddy v3.0 to enable Technology Business Management (TBM) features, cost transparency, and FinOps optimization dashboards.
+This guide explains how to integrate financial cost data into HappyCMDB v3.0 to enable Technology Business Management (TBM) features, cost transparency, and FinOps optimization dashboards.
 
 ## Overview
 
-ConfigBuddy v3.0's TBM Cost Engine supports multiple financial data sources:
+HappyCMDB v3.0's TBM Cost Engine supports multiple financial data sources:
 
 - **Cloud Provider APIs**: Automated cost fetching from AWS, Azure, and GCP
 - **General Ledger (GL) Systems**: Cost center and departmental allocation data
@@ -17,7 +17,7 @@ All financial data flows into the PostgreSQL data mart (`tbm_cost_pools`, `gl_ac
 
 Before integrating financial data, ensure:
 
-- ConfigBuddy v3.0 is deployed with PostgreSQL and Redis
+- HappyCMDB v3.0 is deployed with PostgreSQL and Redis
 - Discovery has run and populated CIs in Neo4j
 - You have credentials for cloud providers (AWS, Azure, GCP) or GL systems
 - ETL processor service is running (`packages/etl-processor`)
@@ -67,7 +67,7 @@ Create a custom IAM policy with Cost Explorer read permissions:
 2. Attach the Cost Explorer policy created above
 3. Create Access Key → Copy Access Key ID and Secret Access Key
 
-#### Step 3: Add Credentials to ConfigBuddy
+#### Step 3: Add Credentials to HappyCMDB
 
 Use the unified credential system (v2.0+):
 
@@ -151,7 +151,7 @@ LIMIT 20;
 ```bash
 # Azure CLI
 az ad sp create-for-rbac \
-  --name "ConfigBuddy-CostManagement" \
+  --name "HappyCMDB-CostManagement" \
   --role "Cost Management Reader" \
   --scopes /subscriptions/{subscription-id}
 
@@ -161,7 +161,7 @@ az ad sp create-for-rbac \
 # - tenant (Tenant ID)
 ```
 
-#### Step 2: Add Credentials to ConfigBuddy
+#### Step 2: Add Credentials to HappyCMDB
 
 ```bash
 cmdb credentials create \
@@ -216,20 +216,20 @@ await costSync.scheduleCostSync({
 
 ```bash
 # Create service account
-gcloud iam service-accounts create configbuddy-billing \
-  --display-name "ConfigBuddy Billing Reader"
+gcloud iam service-accounts create happycmdb-billing \
+  --display-name "HappyCMDB Billing Reader"
 
 # Grant BigQuery Data Viewer role
 gcloud projects add-iam-policy-binding {project-id} \
-  --member "serviceAccount:configbuddy-billing@{project-id}.iam.gserviceaccount.com" \
+  --member "serviceAccount:happycmdb-billing@{project-id}.iam.gserviceaccount.com" \
   --role "roles/bigquery.dataViewer"
 
 # Create and download key
 gcloud iam service-accounts keys create billing-key.json \
-  --iam-account configbuddy-billing@{project-id}.iam.gserviceaccount.com
+  --iam-account happycmdb-billing@{project-id}.iam.gserviceaccount.com
 ```
 
-#### Step 3: Add Credentials to ConfigBuddy
+#### Step 3: Add Credentials to HappyCMDB
 
 ```bash
 cmdb credentials create \
@@ -696,4 +696,4 @@ After integrating financial data:
 ---
 
 **Last Updated**: 2025-11-17
-**Maintainer**: ConfigBuddy Team
+**Maintainer**: HappyCMDB Team

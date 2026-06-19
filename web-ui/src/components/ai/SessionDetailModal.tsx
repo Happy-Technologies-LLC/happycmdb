@@ -27,7 +27,7 @@ export const SessionDetailModal: React.FC<SessionDetailModalProps> = ({ session,
       <DialogContent className="max-w-5xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-3">
-            <Brain className="h-5 w-5 text-purple-500" />
+            <Brain className="h-5 w-5 text-navy" />
             <span>Discovery Session</span>
             <Badge variant="outline" className="font-mono text-xs">
               {session.sessionId}
@@ -152,15 +152,15 @@ export const SessionDetailModal: React.FC<SessionDetailModalProps> = ({ session,
                       <div
                         key={index}
                         className={`p-4 border rounded-lg ${
-                          toolCall.success ? 'border-green-500/30 bg-green-500/5' : 'border-red-500/30 bg-red-500/5'
+                          toolCall.success ? 'border-success/30 bg-success-soft' : 'border-danger/30 bg-danger-soft'
                         }`}
                       >
                         <div className="flex items-start justify-between mb-3">
                           <div className="flex items-center gap-2">
                             {toolCall.success ? (
-                              <CheckCircle className="h-5 w-5 text-green-500" />
+                              <CheckCircle className="h-5 w-5 text-success" />
                             ) : (
-                              <XCircle className="h-5 w-5 text-red-500" />
+                              <XCircle className="h-5 w-5 text-danger" />
                             )}
                             <div>
                               <p className="font-semibold text-sm">{toolCall.toolName}</p>
@@ -236,7 +236,7 @@ export const SessionDetailModal: React.FC<SessionDetailModalProps> = ({ session,
               </CardHeader>
               <CardContent>
                 {session.aiReasoning ? (
-                  <div className="prose prose-sm dark:prose-invert max-w-none">
+                  <div className="prose prose-sm max-w-none">
                     <p className="whitespace-pre-wrap">{session.aiReasoning}</p>
                   </div>
                 ) : (

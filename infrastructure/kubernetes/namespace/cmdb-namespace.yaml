@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: configbuddy-cmdb
+  name: happycmdb-cmdb
   labels:
-    app: configbuddy-cmdb
+    app: happycmdb-cmdb
     environment: production

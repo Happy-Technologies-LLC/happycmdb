@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# ConfigBuddy Load Testing Runner
+# HappyCMDB Load Testing Runner
 # Executes load tests with proper setup and teardown
 
 set -e
@@ -27,7 +27,7 @@ TEST_TYPE="${1:-all}"
 
 # Print banner
 echo -e "${BLUE}========================================${NC}"
-echo -e "${BLUE}  ConfigBuddy Load Testing Suite${NC}"
+echo -e "${BLUE}  HappyCMDB Load Testing Suite${NC}"
 echo -e "${BLUE}========================================${NC}"
 echo ""
 
@@ -135,7 +135,7 @@ generate_summary_report() {
 <!DOCTYPE html>
 <html>
 <head>
-    <title>ConfigBuddy Load Test Summary</title>
+    <title>HappyCMDB Load Test Summary</title>
     <style>
         body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
         .container { max-width: 1200px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; }
@@ -147,7 +147,7 @@ generate_summary_report() {
 </head>
 <body>
     <div class="container">
-        <h1>ConfigBuddy Load Test Summary</h1>
+        <h1>HappyCMDB Load Test Summary</h1>
         <p class="timestamp">Generated: $(date -u +"%Y-%m-%d %H:%M:%S UTC")</p>
 
         <h2>Test Reports</h2>

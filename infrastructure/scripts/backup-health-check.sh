@@ -1,16 +1,16 @@
 #!/bin/bash
 #
-# Backup Health Check and Monitoring Script for ConfigBuddy
+# Backup Health Check and Monitoring Script for HappyCMDB
 # Checks backup status, disk usage, and sends alerts
 #
 
 set -euo pipefail
 
 # Configuration
-BACKUP_DIR="${BACKUP_DIR:-/var/backups/configbuddy}"
+BACKUP_DIR="${BACKUP_DIR:-/var/backups/happycmdb}"
 POSTGRES_BACKUP_DIR="${BACKUP_DIR}/postgres"
 NEO4J_BACKUP_DIR="${BACKUP_DIR}/neo4j"
-LOG_DIR="${BACKUP_LOG_DIR:-/var/log/configbuddy/backups}"
+LOG_DIR="${BACKUP_LOG_DIR:-/var/log/happycmdb/backups}"
 
 # Alert thresholds
 BACKUP_MAX_AGE_HOURS="${BACKUP_MAX_AGE_HOURS:-25}"  # Alert if latest backup is older than 25 hours
@@ -52,7 +52,7 @@ send_notification() {
     if [[ "${BACKUP_NOTIFICATION_ENABLED}" == "true" ]] && [[ -n "${BACKUP_NOTIFICATION_WEBHOOK}" ]]; then
         curl -X POST "${BACKUP_NOTIFICATION_WEBHOOK}" \
             -H "Content-Type: application/json" \
-            -d "{\"service\":\"ConfigBuddy Backup Health Check\",\"status\":\"${status}\",\"message\":\"${message}\",\"timestamp\":\"$(date -Iseconds)\"}" \
+            -d "{\"service\":\"HappyCMDB Backup Health Check\",\"status\":\"${status}\",\"message\":\"${message}\",\"timestamp\":\"$(date -Iseconds)\"}" \
             2>/dev/null || log_error "Failed to send notification"
     fi
 }
@@ -281,7 +281,7 @@ generate_health_report() {
 
 # Main execution
 main() {
-    log_info "===== ConfigBuddy Backup Health Check ====="
+    log_info "===== HappyCMDB Backup Health Check ====="
 
     local overall_status="${EXIT_OK}"
     local status_text="HEALTHY"

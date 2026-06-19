@@ -21,6 +21,7 @@ import {
 } from 'recharts';
 import { useTopConnectedCIs } from '../../hooks/useAnalytics';
 import { ExportButton } from './ExportButton';
+import { brand } from '@/lib/brandColors';
 
 export const TopConnectedCIs: React.FC = () => {
   const { data, loading, error } = useTopConnectedCIs(10);
@@ -111,16 +112,16 @@ export const TopConnectedCIs: React.FC = () => {
             layout="vertical"
             margin={{ top: 20, right: 30, left: 150, bottom: 5 }}
           >
-            <CartesianGrid strokeDasharray="3 3" stroke="#E5E5EA" />
-            <XAxis type="number" tick={{ fill: '#8E8E93', fontSize: 12 }} />
+            <CartesianGrid strokeDasharray="3 3" stroke={brand.line} />
+            <XAxis type="number" tick={{ fill: brand.inkSoft, fontSize: 12 }} />
             <YAxis
               type="category"
               dataKey="name"
-              tick={{ fill: '#8E8E93', fontSize: 12 }}
+              tick={{ fill: brand.inkSoft, fontSize: 12 }}
               width={140}
             />
-            <Tooltip content={<CustomTooltip />} cursor={{ fill: '#F2F2F7' }} />
-            <Bar dataKey="connections" fill="#007AFF" radius={[0, 8, 8, 0]} />
+            <Tooltip content={<CustomTooltip />} cursor={{ fill: brand.warmAlt }} />
+            <Bar dataKey="connections" fill={brand.sky} radius={[0, 8, 8, 0]} />
           </BarChart>
         </ResponsiveContainer>
       </CardContent>

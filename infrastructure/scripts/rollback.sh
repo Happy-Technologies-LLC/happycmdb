@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # =============================================================================
-# ConfigBuddy CMDB - Automated Rollback Script
+# HappyCMDB - Automated Rollback Script
 # =============================================================================
 # Rollback to previous state after failed deployment:
 # - Stop current (failed) containers
@@ -60,7 +60,7 @@ send_notification() {
     if [[ -n "$webhook" ]]; then
         curl -X POST "$webhook" \
             -H 'Content-Type: application/json' \
-            -d "{\"text\":\"[ConfigBuddy ROLLBACK] $status: $message\"}" \
+            -d "{\"text\":\"[HappyCMDB ROLLBACK] $status: $message\"}" \
             > /dev/null 2>&1 || true
     fi
 }
@@ -68,13 +68,13 @@ send_notification() {
 # Configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-BACKUP_DIR="${BACKUP_DIR:-/var/backups/configbuddy}"
+BACKUP_DIR="${BACKUP_DIR:-/var/backups/happycmdb}"
 ROLLBACK_LOG="$PROJECT_ROOT/logs/rollback-$(date +%Y%m%d-%H%M%S).log"
 
 # Create log directory
 mkdir -p "$(dirname "$ROLLBACK_LOG")"
 
-print_header "ConfigBuddy CMDB - ROLLBACK PROCEDURE"
+print_header "HappyCMDB - ROLLBACK PROCEDURE"
 log_critical "ROLLBACK INITIATED"
 log_info "Rollback started at: $(date)"
 log_info "Rollback log: $ROLLBACK_LOG"
@@ -200,7 +200,7 @@ log_info "Snapshot location: $SAFETY_SNAPSHOT_DIR"
 
 # Save current container state
 docker-compose -f "$PROJECT_ROOT/infrastructure/docker/docker-compose.yml" ps > "$SAFETY_SNAPSHOT_DIR/container-state.txt" 2>&1 || true
-docker images | grep configbuddy > "$SAFETY_SNAPSHOT_DIR/image-state.txt" 2>&1 || true
+docker images | grep happycmdb > "$SAFETY_SNAPSHOT_DIR/image-state.txt" 2>&1 || true
 
 log_success "Safety snapshot created"
 
@@ -210,7 +210,7 @@ log_success "Safety snapshot created"
 if [[ "$ROLLBACK_TYPE" == "full" || "$ROLLBACK_TYPE" == "containers-only" ]]; then
     print_header "Step 3: Stopping Current Containers"
 
-    log_info "Stopping all ConfigBuddy containers..."
+    log_info "Stopping all HappyCMDB containers..."
     docker-compose -f "$PROJECT_ROOT/infrastructure/docker/docker-compose.yml" down 2>&1 | tee -a "$ROLLBACK_LOG"
 
     # Also stop any green environment containers if they exist

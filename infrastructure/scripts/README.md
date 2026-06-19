@@ -1,4 +1,4 @@
-# ConfigBuddy Infrastructure Scripts
+# HappyCMDB Infrastructure Scripts
 
 This directory contains scripts for database initialization, backup/restore, and operational tasks.
 
@@ -29,7 +29,7 @@ This directory contains scripts for database initialization, backup/restore, and
 
 ```bash
 # Add to .env file
-BACKUP_DIR=/var/backups/configbuddy
+BACKUP_DIR=/var/backups/happycmdb
 POSTGRES_PASSWORD=your-password
 NEO4J_PASSWORD=your-password
 ```
@@ -37,8 +37,8 @@ NEO4J_PASSWORD=your-password
 ### 2. Create Backup Directories
 
 ```bash
-mkdir -p /var/backups/configbuddy/{postgres,neo4j}/{daily,weekly,monthly}
-mkdir -p /var/log/configbuddy/backups
+mkdir -p /var/backups/happycmdb/{postgres,neo4j}/{daily,weekly,monthly}
+mkdir -p /var/log/happycmdb/backups
 ```
 
 ### 3. Run Backup
@@ -66,7 +66,7 @@ mkdir -p /var/log/configbuddy/backups
 
 # Restore latest backup
 ./restore-postgres.sh \
-  --file $(ls -t /var/backups/configbuddy/postgres/daily/*.sql.gz | head -1) \
+  --file $(ls -t /var/backups/happycmdb/postgres/daily/*.sql.gz | head -1) \
   --drop \
   --verify
 ```
@@ -79,7 +79,7 @@ mkdir -p /var/log/configbuddy/backups
 
 # Restore latest backup
 ./restore-neo4j.sh \
-  --file $(ls -t /var/backups/configbuddy/neo4j/daily/*.dump.gz | head -1) \
+  --file $(ls -t /var/backups/happycmdb/neo4j/daily/*.dump.gz | head -1) \
   --force \
   --verify
 ```
@@ -88,14 +88,14 @@ mkdir -p /var/log/configbuddy/backups
 
 For detailed backup/restore documentation, see:
 - [Backup & Restore Guide](/doc-site/docs/operations/backup-restore.md)
-- Cron configuration: `/infrastructure/config/cron/configbuddy-backup.cron`
+- Cron configuration: `/infrastructure/config/cron/happycmdb-backup.cron`
 - Systemd configuration: `/infrastructure/config/systemd/`
 
 ---
 
 # Database Initialization & Seed Data Scripts
 
-This section contains comprehensive scripts for initializing and populating the ConfigBuddy CMDB database with test data.
+This section contains comprehensive scripts for initializing and populating the HappyCMDB database with test data.
 
 ## v3.0 Initialization Scripts
 
@@ -204,7 +204,7 @@ open http://localhost:3002
 
 ### 1. init-neo4j.cypher
 
-**Location**: `/Users/nczitzer/WebstormProjects/configbuddy/infrastructure/scripts/init-neo4j.cypher`
+**Location**: `/Users/nczitzer/WebstormProjects/happycmdb/infrastructure/scripts/init-neo4j.cypher`
 
 **Purpose**: Neo4j database schema initialization and comprehensive test data creation
 
@@ -234,7 +234,7 @@ cat infrastructure/scripts/init-neo4j.cypher | docker exec -i neo4j cypher-shell
 ```
 
 **Test Credentials Created**:
-- Email: `admin@configbuddy.local`
+- Email: `admin@happycmdb.local`
 - Username: `admin`
 - Password: `Admin123!`
 - Role: `admin`
@@ -251,7 +251,7 @@ cat infrastructure/scripts/init-neo4j.cypher | docker exec -i neo4j cypher-shell
 
 ### 2. seed-data.ts
 
-**Location**: `/Users/nczitzer/WebstormProjects/configbuddy/infrastructure/scripts/seed-data.ts`
+**Location**: `/Users/nczitzer/WebstormProjects/happycmdb/infrastructure/scripts/seed-data.ts`
 
 **Purpose**: TypeScript/Node.js script to programmatically load comprehensive test data into Neo4j
 
@@ -298,13 +298,13 @@ npx ts-node infrastructure/scripts/seed-data.ts
 
 **Output**:
 ```
-ConfigBuddy CMDB Seed Data Loader
+HappyCMDB Seed Data Loader
 ==================================
 
 Cleaning existing test data...
 Cleanup complete
 Creating admin user...
-Admin user created: admin@configbuddy.local / Admin123!
+Admin user created: admin@happycmdb.local / Admin123!
 Creating test CIs...
 Created 32 test CIs
 Creating relationships...
@@ -336,7 +336,7 @@ Total discovery jobs: 7
 === Seed Data Loading Complete ===
 
 Test Credentials:
-  Email: admin@configbuddy.local
+  Email: admin@happycmdb.local
   Password: Admin123!
   Role: admin
 
@@ -347,7 +347,7 @@ You can now login to the application using these credentials.
 
 ### 3. start-full-stack.sh
 
-**Location**: `/Users/nczitzer/WebstormProjects/configbuddy/scripts/start-full-stack.sh`
+**Location**: `/Users/nczitzer/WebstormProjects/happycmdb/scripts/start-full-stack.sh`
 
 **Purpose**: Complete full-stack startup script that orchestrates all services
 
@@ -396,7 +396,7 @@ docker-compose up -d
 **Output**:
 ```
 =========================================
-ConfigBuddy Full Stack Started Successfully!
+HappyCMDB Full Stack Started Successfully!
 =========================================
 
 Service URLs:
@@ -406,7 +406,7 @@ Service URLs:
   Metrics:          http://localhost:8080/metrics
 
 Test Credentials:
-  Email:            admin@configbuddy.local
+  Email:            admin@happycmdb.local
   Password:         Admin123!
   Role:             admin
 
@@ -451,7 +451,7 @@ Happy Testing! 🎉
 
 ```bash
 # 1. Clone repository
-cd /Users/nczitzer/WebstormProjects/configbuddy
+cd /Users/nczitzer/WebstormProjects/happycmdb
 
 # 2. Install dependencies
 npm install
@@ -599,7 +599,7 @@ npx ts-node infrastructure/scripts/seed-data.ts
 
 | Field | Value |
 |-------|-------|
-| Email | admin@configbuddy.local |
+| Email | admin@happycmdb.local |
 | Username | admin |
 | Password | Admin123! |
 | Role | admin |

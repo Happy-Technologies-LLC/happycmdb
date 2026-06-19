@@ -4,7 +4,7 @@ Enterprise-grade integration connector for Microsoft Defender for Endpoint secur
 
 ## Overview
 
-This connector enables ConfigBuddy to discover and manage security-related configuration items from Microsoft Defender for Endpoint, including protected devices, security alerts, vulnerabilities, and software inventory.
+This connector enables HappyCMDB to discover and manage security-related configuration items from Microsoft Defender for Endpoint, including protected devices, security alerts, vulnerabilities, and software inventory.
 
 ## Features
 
@@ -376,10 +376,10 @@ npm run test:watch
 
 ## License
 
-Part of ConfigBuddy - See root LICENSE file
+Part of HappyCMDB - See root LICENSE file
 
 ## Support
 
 - Documentation: http://localhost:8080/components/defender-connector
 - Issues: GitHub Issues
-- Community: ConfigBuddy Slack Channel
+- Community: HappyCMDB Slack Channel

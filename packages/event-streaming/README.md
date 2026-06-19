@@ -1,10 +1,10 @@
 # @cmdb/event-streaming
 
-Event streaming infrastructure for ConfigBuddy v3.0 using Apache Kafka.
+Event streaming infrastructure for HappyCMDB v3.0 using Apache Kafka.
 
 ## Overview
 
-This package provides a comprehensive event streaming solution for ConfigBuddy, enabling real-time event processing across:
+This package provides a comprehensive event streaming solution for HappyCMDB, enabling real-time event processing across:
 
 - **Discovery Events**: CI discovery, updates, and relationship changes
 - **Cost Events**: Cost allocation, updates, anomaly detection, and budget alerts
@@ -13,7 +13,7 @@ This package provides a comprehensive event streaming solution for ConfigBuddy, 
 
 ## Installation
 
-This package is part of the ConfigBuddy monorepo and is not published separately.
+This package is part of the HappyCMDB monorepo and is not published separately.
 
 ```bash
 # Install dependencies
@@ -491,4 +491,4 @@ MIT
 
 ## Support
 
-For issues and questions, see the main ConfigBuddy documentation at http://localhost:8080
+For issues and questions, see the main HappyCMDB documentation at http://localhost:8080

@@ -15,6 +15,7 @@ import {
   AreaChart,
 } from 'recharts';
 import { LiquidGlass } from '@/components/ui/liquid-glass';
+import { brand } from '@/lib/brandColors';
 
 export interface CostDataPoint {
   month: string;
@@ -89,48 +90,48 @@ export const CostTrendChart: React.FC<CostTrendChartProps> = ({
                 type="monotone"
                 dataKey="compute"
                 stackId="1"
-                stroke="#8b5cf6"
-                fill="#8b5cf6"
+                stroke={brand.navy}
+                fill={brand.navy}
                 name="Compute"
               />
               <Area
                 type="monotone"
                 dataKey="storage"
                 stackId="1"
-                stroke="#3b82f6"
-                fill="#3b82f6"
+                stroke={brand.sky}
+                fill={brand.sky}
                 name="Storage"
               />
               <Area
                 type="monotone"
                 dataKey="network"
                 stackId="1"
-                stroke="#10b981"
-                fill="#10b981"
+                stroke={brand.success}
+                fill={brand.success}
                 name="Network"
               />
               <Area
                 type="monotone"
                 dataKey="data"
                 stackId="1"
-                stroke="#f59e0b"
-                fill="#f59e0b"
+                stroke={brand.warning}
+                fill={brand.warning}
                 name="Data"
               />
               <Area
                 type="monotone"
                 dataKey="security"
                 stackId="1"
-                stroke="#ef4444"
-                fill="#ef4444"
+                stroke={brand.danger}
+                fill={brand.danger}
                 name="Security"
               />
               <Area
                 type="monotone"
                 dataKey="applications"
                 stackId="1"
-                stroke="#ec4899"
-                fill="#ec4899"
+                stroke={brand.coral}
+                fill={brand.coral}
                 name="Applications"
               />
             </AreaChart>
@@ -157,7 +158,7 @@ export const CostTrendChart: React.FC<CostTrendChartProps> = ({
             <Line
               type="monotone"
               dataKey="total"
-              stroke="#8b5cf6"
+              stroke={brand.sky}
               strokeWidth={3}
               name="Total Cost"
               dot={{ r: 4 }}
@@ -167,7 +168,7 @@ export const CostTrendChart: React.FC<CostTrendChartProps> = ({
               <Line
                 type="monotone"
                 dataKey="budget"
-                stroke="#10b981"
+                stroke={brand.success}
                 strokeWidth={2}
                 strokeDasharray="5 5"
                 name="Budget"

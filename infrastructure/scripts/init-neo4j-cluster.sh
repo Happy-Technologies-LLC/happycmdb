@@ -58,7 +58,7 @@ execute_cypher "SHOW INDEXES;"
 # Create sample data structure
 echo "Creating initial system nodes..."
 execute_cypher "
-MERGE (sys:System {id: 'configbuddy-cmdb', name: 'ConfigBuddy CMDB'})
+MERGE (sys:System {id: 'happycmdb-cmdb', name: 'HappyCMDB'})
 SET sys.version = '1.0.0',
     sys.initialized_at = datetime(),
     sys.last_updated = datetime()

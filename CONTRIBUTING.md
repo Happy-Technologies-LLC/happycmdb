@@ -1,11 +1,11 @@
-# Contributing to ConfigBuddy
+# Contributing to HappyCMDB
 
-Thank you for your interest in contributing to ConfigBuddy. This guide covers
+Thank you for your interest in contributing to HappyCMDB. This guide covers
 the development setup, coding standards, and pull request process.
 
 ## Contributor License Agreement (CLA)
 
-All contributors must sign the ConfigBuddy CLA before their first pull request
+All contributors must sign the HappyCMDB CLA before their first pull request
 can be merged. The CLA bot will automatically comment on your PR with instructions.
 See [CLA.md](CLA.md) for the full agreement text.
 
@@ -20,8 +20,8 @@ See [CLA.md](CLA.md) for the full agreement text.
 
 ```bash
 # Fork and clone
-git clone https://github.com/YOUR_USERNAME/configbuddy.git
-cd configbuddy
+git clone https://github.com/YOUR_USERNAME/happycmdb.git
+cd happycmdb
 
 # Install dependencies
 npm install
@@ -99,7 +99,7 @@ All PRs must pass the CI pipeline (unit + integration tests).
 
 ## Adding a Connector
 
-ConfigBuddy supports two connector types:
+HappyCMDB supports two connector types:
 
 ### JSON-Only Connector (for simple REST APIs)
 ```bash

@@ -1,7 +1,7 @@
 {
   "name": "@cmdb/framework-integration",
   "version": "3.0.0",
-  "description": "Unified interface combining ITIL + TBM + BSM frameworks for ConfigBuddy v3.0",
+  "description": "Unified interface combining ITIL + TBM + BSM frameworks for HappyCMDB v3.0",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
@@ -34,6 +34,6 @@
     "business-impact",
     "unified-interface"
   ],
-  "author": "ConfigBuddy Team",
+  "author": "HappyCMDB Team",
   "license": "Apache-2.0"
 }

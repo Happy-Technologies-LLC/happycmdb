@@ -71,7 +71,7 @@ const testMetadata: ConnectorMetadata = {
   name: 'Lansweeper Asset Discovery',
   version: '1.0.0',
   description: 'Test connector',
-  author: 'ConfigBuddy',
+  author: 'HappyCMDB',
   verified: true,
   category: 'connector',
   capabilities: {

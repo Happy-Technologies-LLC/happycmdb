@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # =============================================================================
-# ConfigBuddy CMDB - Secret Detection Script
+# HappyCMDB - Secret Detection Script
 # =============================================================================
 # Scans the codebase for hardcoded secrets and sensitive information.
 # This script should be run:
@@ -49,7 +49,7 @@ for pattern in "${EXCLUDE_PATTERNS[@]}"; do
 done
 
 echo -e "${BLUE}=============================================${NC}"
-echo -e "${BLUE}ConfigBuddy CMDB - Secret Detection Scanner${NC}"
+echo -e "${BLUE}HappyCMDB - Secret Detection Scanner${NC}"
 echo -e "${BLUE}=============================================${NC}"
 echo ""
 echo "Repository: $REPO_ROOT"

@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # =============================================================================
-# ConfigBuddy CMDB - Production Deployment Script
+# HappyCMDB - Production Deployment Script
 # =============================================================================
 # Production deployment with blue-green strategy:
 # - Pre-deployment validation with strict checks
@@ -26,7 +26,7 @@ NC='\033[0m' # No Color
 DEPLOY_ENV="production"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-BACKUP_DIR="${BACKUP_DIR:-/var/backups/configbuddy/production}"
+BACKUP_DIR="${BACKUP_DIR:-/var/backups/happycmdb/production}"
 DEPLOYMENT_LOG="$PROJECT_ROOT/logs/deployment-production-$(date +%Y%m%d-%H%M%S).log"
 
 # Blue-Green deployment configuration
@@ -126,7 +126,7 @@ send_notification() {
     if [[ -n "$webhook" ]]; then
         curl -X POST "$webhook" \
             -H 'Content-Type: application/json' \
-            -d "{\"text\":\"[ConfigBuddy] Deployment $status: $message\"}" \
+            -d "{\"text\":\"[HappyCMDB] Deployment $status: $message\"}" \
             > /dev/null 2>&1 || true
     fi
 }
@@ -137,7 +137,7 @@ trap cleanup_on_failure ERR
 # Create log directory
 mkdir -p "$(dirname "$DEPLOYMENT_LOG")"
 
-print_header "ConfigBuddy CMDB - PRODUCTION Deployment"
+print_header "HappyCMDB - PRODUCTION Deployment"
 log_critical "PRODUCTION DEPLOYMENT INITIATED"
 log_info "Deployment started at: $(date)"
 log_info "Deployment log: $DEPLOYMENT_LOG"
@@ -354,8 +354,8 @@ log_info "Building Docker images for green environment..."
 docker-compose -f "$PROJECT_ROOT/infrastructure/docker/docker-compose.yml" build --no-cache api-server web-ui
 
 # Tag images for green deployment
-docker tag configbuddy-api-server configbuddy-api-server:green
-docker tag configbuddy-web-ui configbuddy-web-ui:green
+docker tag happycmdb-api-server happycmdb-api-server:green
+docker tag happycmdb-web-ui happycmdb-web-ui:green
 
 log_success "Green environment images built"
 
@@ -370,18 +370,18 @@ log_info "Starting green environment on alternate ports..."
 # Start green containers with environment overrides
 docker run -d \
     --name cmdb-api-server-green \
-    --network configbuddy-network \
+    --network happycmdb-network \
     -p "$GREEN_PORT:3000" \
     -e NODE_ENV=production \
     -e API_PORT=3000 \
     --env-file "$PROJECT_ROOT/.env.production" \
-    configbuddy-api-server:green
+    happycmdb-api-server:green
 
 docker run -d \
     --name cmdb-web-ui-green \
-    --network configbuddy-network \
+    --network happycmdb-network \
     -p "$GREEN_UI_PORT:80" \
-    configbuddy-web-ui:green
+    happycmdb-web-ui:green
 
 log_success "Green environment started"
 log_info "Green API: http://localhost:$GREEN_PORT"
@@ -544,19 +544,19 @@ docker rename cmdb-web-ui-green cmdb-web-ui
 docker rm -f cmdb-api-server cmdb-web-ui
 docker run -d \
     --name cmdb-api-server \
-    --network configbuddy-network \
+    --network happycmdb-network \
     -p "$BLUE_PORT:3000" \
     -e NODE_ENV=production \
     --env-file "$PROJECT_ROOT/.env.production" \
     --restart unless-stopped \
-    configbuddy-api-server:green
+    happycmdb-api-server:green
 
 docker run -d \
     --name cmdb-web-ui \
-    --network configbuddy-network \
+    --network happycmdb-network \
     -p "$BLUE_UI_PORT:80" \
     --restart unless-stopped \
-    configbuddy-web-ui:green
+    happycmdb-web-ui:green
 
 log_success "Green environment promoted to production"
 
@@ -590,7 +590,7 @@ log_info "Release tag: $RELEASE_TAG"
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  ConfigBuddy CMDB - Production Deployment Summary"
+echo "  HappyCMDB - Production Deployment Summary"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 echo "✅ Deployment Status: SUCCESS"
@@ -600,9 +600,9 @@ echo "🏷️  Release: $RELEASE_TAG"
 echo "💾 Backup: $BACKUP_PATH"
 echo ""
 echo "📡 Production URLs:"
-echo "  🌐 Web UI:    https://configbuddy.example.com"
-echo "  🔌 API:       https://api.configbuddy.example.com"
-echo "  ❤️  Health:   https://api.configbuddy.example.com/api/v1/health"
+echo "  🌐 Web UI:    https://happycmdb.example.com"
+echo "  🔌 API:       https://api.happycmdb.example.com"
+echo "  ❤️  Health:   https://api.happycmdb.example.com/api/v1/health"
 echo ""
 echo "📊 Monitoring:"
 echo "  View logs:     docker logs -f cmdb-api-server"

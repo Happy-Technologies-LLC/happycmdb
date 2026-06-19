@@ -24,6 +24,7 @@ import { useChangeTimeline } from '../../hooks/useAnalytics';
 import { DateRangeSelector } from './DateRangeSelector';
 import { ExportButton } from './ExportButton';
 import { DateRangeParams } from '../../services/analytics.service';
+import { brand } from '@/lib/brandColors';
 
 export interface ChangeTimelineProps {
   dateRange?: DateRangeParams;
@@ -147,18 +148,18 @@ export const ChangeTimeline: React.FC<ChangeTimelineProps> = ({ dateRange: exter
             data={chartData}
             margin={{ top: 20, right: 30, left: 20, bottom: 5 }}
           >
-            <CartesianGrid strokeDasharray="3 3" stroke="#E5E5EA" />
+            <CartesianGrid strokeDasharray="3 3" stroke={brand.line} />
             <XAxis
               dataKey="date"
-              tick={{ fill: '#8E8E93', fontSize: 12 }}
+              tick={{ fill: brand.inkSoft, fontSize: 12 }}
             />
-            <YAxis tick={{ fill: '#8E8E93', fontSize: 12 }} />
+            <YAxis tick={{ fill: brand.inkSoft, fontSize: 12 }} />
             <Tooltip content={<CustomTooltip />} />
             <Legend />
             <Line
               type="monotone"
               dataKey="Created"
-              stroke="#34C759"
+              stroke={brand.success}
               strokeWidth={2}
               dot={{ r: 4 }}
               activeDot={{ r: 6 }}
@@ -166,7 +167,7 @@ export const ChangeTimeline: React.FC<ChangeTimelineProps> = ({ dateRange: exter
             <Line
               type="monotone"
               dataKey="Updated"
-              stroke="#007AFF"
+              stroke={brand.sky}
               strokeWidth={2}
               dot={{ r: 4 }}
               activeDot={{ r: 6 }}
@@ -174,7 +175,7 @@ export const ChangeTimeline: React.FC<ChangeTimelineProps> = ({ dateRange: exter
             <Line
               type="monotone"
               dataKey="Deleted"
-              stroke="#FF3B30"
+              stroke={brand.danger}
               strokeWidth={2}
               dot={{ r: 4 }}
               activeDot={{ r: 6 }}

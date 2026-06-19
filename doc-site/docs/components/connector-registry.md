@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Connector Registry is a self-hosted catalog of available connectors that can be browsed, installed, and updated through the ConfigBuddy platform. It provides a marketplace-like experience for discovering and managing integration connectors.
+The Connector Registry is a self-hosted catalog of available connectors that can be browsed, installed, and updated through the HappyCMDB platform. It provides a marketplace-like experience for discovering and managing integration connectors.
 
 ## Architecture
 
@@ -14,10 +14,10 @@ The registry consists of three components:
 
 ## Remote Catalog Structure
 
-**Repository**: `https://github.com/configbuddy/connectors`
+**Repository**: `https://github.com/happycmdb/connectors`
 
 ```
-configbuddy-connectors/
+happycmdb-connectors/
 ├── catalog.json                  # Main manifest (auto-generated)
 ├── connectors/
 │   ├── servicenow/
@@ -55,16 +55,16 @@ configbuddy-connectors/
         {
           "version": "2.0.0",
           "released_at": "2025-10-01T00:00:00Z",
-          "download_url": "https://github.com/configbuddy/connectors/releases/download/servicenow-2.0.0/package.tgz",
+          "download_url": "https://github.com/happycmdb/connectors/releases/download/servicenow-2.0.0/package.tgz",
           "checksum": "sha256:abc123...",
           "size_bytes": 524288,
           "breaking_changes": false,
           "changelog": "Added support for custom CI types"
         }
       ],
-      "author": "ConfigBuddy",
-      "homepage": "https://docs.configbuddy.io/connectors/servicenow",
-      "repository": "https://github.com/configbuddy/connectors/tree/main/connectors/servicenow",
+      "author": "HappyCMDB",
+      "homepage": "https://docs.happycmdb.io/connectors/servicenow",
+      "repository": "https://github.com/happycmdb/connectors/tree/main/connectors/servicenow",
       "license": "Apache-2.0",
       "downloads": 1523,
       "rating": 4.8,
@@ -226,7 +226,7 @@ GET /api/v1/connectors/registry/:type
         "changelog": "..."
       }
     ],
-    "author": "ConfigBuddy",
+    "author": "HappyCMDB",
     "homepage": "...",
     "repository": "...",
     "license": "Apache-2.0",
@@ -260,19 +260,19 @@ query {
 
 ```bash
 # List all connectors
-configbuddy connector list
+happycmdb connector list
 
 # Search connectors
-configbuddy connector search vmware
+happycmdb connector search vmware
 
 # Show connector details
-configbuddy connector info vmware-vsphere
+happycmdb connector info vmware-vsphere
 
 # Filter by category
-configbuddy connector list --category discovery
+happycmdb connector list --category discovery
 
 # Show only verified
-configbuddy connector list --verified
+happycmdb connector list --verified
 ```
 
 ## Installing Connectors
@@ -331,16 +331,16 @@ Body:
 
 ```bash
 # Install latest version
-configbuddy connector install servicenow
+happycmdb connector install servicenow
 
 # Install specific version
-configbuddy connector install servicenow@1.5.0
+happycmdb connector install servicenow@1.5.0
 
 # Force reinstall
-configbuddy connector install servicenow --force
+happycmdb connector install servicenow --force
 
 # Install from local file
-configbuddy connector install --file ./servicenow-2.0.0.tgz
+happycmdb connector install --file ./servicenow-2.0.0.tgz
 ```
 
 ## Updating Connectors
@@ -402,16 +402,16 @@ configbuddy connector install --file ./servicenow-2.0.0.tgz
 
 ```bash
 # Check for updates
-configbuddy connector outdated
+happycmdb connector outdated
 
 # Update specific connector
-configbuddy connector update servicenow
+happycmdb connector update servicenow
 
 # Update all connectors
-configbuddy connector update --all
+happycmdb connector update --all
 
 # Update to specific version
-configbuddy connector update servicenow --version 2.0.0
+happycmdb connector update servicenow --version 2.0.0
 ```
 
 ## Uninstalling Connectors
@@ -460,17 +460,17 @@ Query Parameters:
 
 ```bash
 # Uninstall connector
-configbuddy connector uninstall servicenow
+happycmdb connector uninstall servicenow
 
 # Force uninstall (skip checks)
-configbuddy connector uninstall servicenow --force
+happycmdb connector uninstall servicenow --force
 ```
 
 ## Connector Verification
 
 ### Verified Badge
 
-Connectors can be marked as "verified" by the ConfigBuddy team, indicating:
+Connectors can be marked as "verified" by the HappyCMDB team, indicating:
 - **Code Review** - Source code reviewed for security and quality
 - **Testing** - Automated tests with >80% coverage
 - **Documentation** - Complete README with examples
@@ -479,9 +479,9 @@ Connectors can be marked as "verified" by the ConfigBuddy team, indicating:
 
 ### Verification Process
 
-1. **Submit PR** - Connector submitted to `configbuddy/connectors` repo
+1. **Submit PR** - Connector submitted to `happycmdb/connectors` repo
 2. **Automated Checks** - CI runs tests, linting, security scans
-3. **Code Review** - ConfigBuddy team reviews implementation
+3. **Code Review** - HappyCMDB team reviews implementation
 4. **Manual Testing** - Test with real external systems
 5. **Documentation Review** - Verify docs are complete
 6. **Approval** - Mark as verified in `catalog.json`
@@ -498,14 +498,14 @@ The registry cache is automatically refreshed every 24 hours. Manual refresh:
 POST /api/v1/connectors/registry/refresh
 
 # CLI
-configbuddy connector cache refresh
+happycmdb connector cache refresh
 ```
 
 ### Clear Cache
 
 ```bash
 # CLI
-configbuddy connector cache clear
+happycmdb connector cache clear
 ```
 
 ## Private Registries
@@ -523,7 +523,7 @@ Organizations can host private connector registries for:
 # config/connectors.yml
 registries:
   - name: public
-    url: https://raw.githubusercontent.com/configbuddy/connectors/main/catalog.json
+    url: https://raw.githubusercontent.com/happycmdb/connectors/main/catalog.json
     priority: 2
     enabled: true
 
@@ -597,7 +597,7 @@ Planned for future releases:
 1. Retry download (may be corrupted)
 2. Check network connectivity
 3. Verify catalog cache is up-to-date
-4. Report to ConfigBuddy team if persistent
+4. Report to HappyCMDB team if persistent
 
 ### Connector Not Appearing in Catalog
 

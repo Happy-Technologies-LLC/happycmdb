@@ -1,7 +1,7 @@
 {
   "name": "@cmdb/connector-rubrik",
   "version": "1.0.0",
-  "description": "Rubrik CDM connector for ConfigBuddy CMDB",
+  "description": "Rubrik CDM connector for HappyCMDB",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
@@ -19,7 +19,7 @@
     "cdm",
     "cloud-data-management"
   ],
-  "author": "ConfigBuddy",
+  "author": "HappyCMDB",
   "license": "Apache-2.0",
   "dependencies": {
     "@cmdb/common": "*",

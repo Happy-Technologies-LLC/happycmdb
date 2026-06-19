@@ -1,5 +1,5 @@
 // ============================================
-// ConfigBuddy v3.0 - Sample Data
+// HappyCMDB v3.0 - Sample Data
 // ============================================
 // This file creates sample business entities to demonstrate the v3.0 unified data model.
 // It builds upon the existing CI data from v2.0.

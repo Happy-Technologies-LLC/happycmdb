@@ -6,6 +6,8 @@ import { LiquidGlass } from '@/components/ui/liquid-glass';
 import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
+import { Eyebrow } from '@/components/ui/eyebrow';
+import { brand } from '@/lib/brandColors';
 import cytoscape from 'cytoscape';
 
 export const BusinessServiceDashboard: React.FC = () => {
@@ -60,9 +62,9 @@ export const BusinessServiceDashboard: React.FC = () => {
               style: {
                 'background-color': (ele: any) => {
                   const health = ele.data('healthScore');
-                  if (health >= 80) return '#10b981';
-                  if (health >= 60) return '#f59e0b';
-                  return '#ef4444';
+                  if (health >= 80) return brand.success;
+                  if (health >= 60) return brand.warning;
+                  return brand.danger;
                 },
                 label: 'data(label)',
                 width: 60,
@@ -99,20 +101,20 @@ export const BusinessServiceDashboard: React.FC = () => {
               selector: 'edge',
               style: {
                 width: 2,
-                'line-color': '#999',
-                'target-arrow-color': '#999',
+                'line-color': brand.inkSoft,
+                'target-arrow-color': brand.inkSoft,
                 'target-arrow-shape': 'triangle',
                 'curve-style': 'bezier',
                 label: 'data(label)',
                 'font-size': '8px',
-                color: '#666',
+                color: brand.inkSoft,
               },
             },
             {
               selector: 'edge[healthImpact="high"]',
               style: {
-                'line-color': '#ef4444',
-                'target-arrow-color': '#ef4444',
+                'line-color': brand.danger,
+                'target-arrow-color': brand.danger,
                 width: 3,
               },
             },
@@ -160,8 +162,9 @@ export const BusinessServiceDashboard: React.FC = () => {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-4xl font-bold tracking-tight">Business Service Dashboard</h1>
-          <p className="text-muted-foreground mt-1">
+          <Eyebrow>Dashboards · Business Service</Eyebrow>
+          <h1 className="mt-3 text-[1.9rem]">Business Service Dashboard</h1>
+          <p className="mt-1.5 text-ink-soft">
             Business value, customer impact, and service health
           </p>
         </div>
@@ -237,10 +240,10 @@ export const BusinessServiceDashboard: React.FC = () => {
                         style={{
                           backgroundColor:
                             service.healthScore >= 80
-                              ? '#10b981'
+                              ? brand.success
                               : service.healthScore >= 60
-                              ? '#f59e0b'
-                              : '#ef4444',
+                              ? brand.warning
+                              : brand.danger,
                           color: '#fff',
                         }}
                         onClick={() => setSelectedService(service.serviceId)}
@@ -318,20 +321,20 @@ export const BusinessServiceDashboard: React.FC = () => {
                       className="flex items-center justify-between p-3 border border-border rounded-lg"
                     >
                       <div className="flex items-center gap-2">
-                        <AlertTriangle className="h-4 w-4 text-red-600 dark:text-red-400" />
+                        <AlertTriangle className="h-4 w-4 text-danger" />
                         <span className="text-sm font-medium">Incident {incident.id}</span>
                         <Badge
                           variant="outline"
                           className={
                             incident.priority === 'P1'
-                              ? 'bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300'
-                              : 'bg-yellow-100 text-yellow-800 dark:bg-yellow-950 dark:text-yellow-300'
+                              ? 'bg-danger-soft text-danger'
+                              : 'bg-warning-soft text-warning-text'
                           }
                         >
                           {incident.priority}
                         </Badge>
                       </div>
-                      <span className="text-sm font-bold text-red-600 dark:text-red-400">
+                      <span className="text-sm font-bold text-danger">
                         {formatCurrency(incident.estimatedImpact)} at risk
                       </span>
                     </div>
@@ -360,13 +363,13 @@ export const BusinessServiceDashboard: React.FC = () => {
                   <div key={compliance.name} className="p-4 border border-border rounded-lg text-center">
                     <div className="flex items-center justify-center mb-2">
                       {compliance.value ? (
-                        <CheckCircle className="h-8 w-8 text-green-600 dark:text-green-400" />
+                        <CheckCircle className="h-8 w-8 text-success" />
                       ) : (
-                        <XCircle className="h-8 w-8 text-red-600 dark:text-red-400" />
+                        <XCircle className="h-8 w-8 text-danger" />
                       )}
                     </div>
                     <p className="text-sm font-medium">{compliance.name}</p>
-                    <Badge variant={compliance.value ? 'default' : 'destructive'} className="mt-2">
+                    <Badge variant={compliance.value ? 'success' : 'destructive'} className="mt-2">
                       {compliance.value ? 'Compliant' : 'Non-Compliant'}
                     </Badge>
                   </div>
@@ -377,7 +380,7 @@ export const BusinessServiceDashboard: React.FC = () => {
                   <h4 className="font-semibold mb-3">Non-Compliant Items</h4>
                   <div className="space-y-2">
                     {complianceStatus.data?.nonCompliantItems?.map((item: any, index: number) => (
-                      <div key={index} className="p-3 border border-border rounded-lg bg-red-50 dark:bg-red-950">
+                      <div key={index} className="p-3 border border-border rounded-lg bg-danger-soft">
                         <p className="text-sm font-medium">{item.requirement}</p>
                         <p className="text-xs text-muted-foreground mt-1">
                           Status: {item.status} | Remediation: {item.remediation}
@@ -417,16 +420,16 @@ export const BusinessServiceDashboard: React.FC = () => {
                       <div className="relative pt-1">
                         <div className="flex mb-2 items-center justify-between">
                           <div className="w-full">
-                            <div className="overflow-hidden h-3 text-xs flex rounded bg-gray-200 dark:bg-gray-700">
+                            <div className="overflow-hidden h-3 text-xs flex rounded bg-warm-alt">
                               <div
                                 style={{
                                   width: `${stage.healthScore}%`,
                                   backgroundColor:
                                     stage.healthScore >= 80
-                                      ? '#10b981'
+                                      ? brand.success
                                       : stage.healthScore >= 60
-                                      ? '#f59e0b'
-                                      : '#ef4444',
+                                      ? brand.warning
+                                      : brand.danger,
                                 }}
                                 className="shadow-none flex flex-col text-center whitespace-nowrap text-white justify-center"
                               ></div>
@@ -458,7 +461,7 @@ export const BusinessServiceDashboard: React.FC = () => {
               ) : serviceDependencies.data && serviceDependencies.data.nodes.length > 0 ? (
                 <div
                   id="dependency-graph"
-                  style={{ width: '100%', height: '600px', border: '1px solid #e5e7eb', borderRadius: '8px' }}
+                  style={{ width: '100%', height: '600px', border: `1px solid ${brand.line}`, borderRadius: '8px' }}
                 ></div>
               ) : (
                 <p className="text-center text-muted-foreground py-8">
@@ -467,15 +470,15 @@ export const BusinessServiceDashboard: React.FC = () => {
               )}
               <div className="mt-4 flex items-center gap-4 text-sm">
                 <div className="flex items-center gap-2">
-                  <div className="w-4 h-4 rounded-full bg-green-600"></div>
+                  <div className="w-4 h-4 rounded-full bg-success"></div>
                   <span>Healthy (&gt;80%)</span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <div className="w-4 h-4 rounded-full bg-yellow-600"></div>
+                  <div className="w-4 h-4 rounded-full bg-warning"></div>
                   <span>Warning (60-80%)</span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <div className="w-4 h-4 rounded-full bg-red-600"></div>
+                  <div className="w-4 h-4 rounded-full bg-danger"></div>
                   <span>Critical (&lt;60%)</span>
                 </div>
               </div>

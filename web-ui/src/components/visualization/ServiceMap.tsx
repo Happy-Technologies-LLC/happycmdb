@@ -20,7 +20,7 @@ import { Card } from '../ui/card';
 import { Switch } from '../ui/switch';
 import { Label } from '../ui/label';
 import { Badge } from '../ui/badge';
-import { useTheme } from '../../contexts/ThemeContext';
+import { brand, ciTypeColors } from '@/lib/brandColors';
 
 interface BusinessService {
   id: string;
@@ -44,24 +44,13 @@ interface ServiceMapProps {
 }
 
 const SERVICE_COLORS = {
-  TIER_0: '#dc2626', // red
-  TIER_1: '#ea580c', // orange
-  TIER_2: '#ca8a04', // yellow
-  TIER_3: '#2563eb', // blue
+  TIER_0: brand.danger,
+  TIER_1: brand.coral,
+  TIER_2: brand.warning,
+  TIER_3: brand.sky,
 };
 
-const CI_TYPE_COLORS: Record<string, string> = {
-  server: '#1976d2',
-  'virtual-machine': '#9c27b0',
-  container: '#0288d1',
-  application: '#f57c00',
-  service: '#388e3c',
-  database: '#d32f2f',
-  'network-device': '#512da8',
-  storage: '#00796b',
-  'load-balancer': '#c2185b',
-  'cloud-resource': '#5e35b1',
-};
+const CI_TYPE_COLORS = ciTypeColors;
 
 const CI_TYPE_SHAPES: Record<string, string> = {
   server: 'rectangle',
@@ -109,7 +98,6 @@ export const ServiceMap: React.FC<ServiceMapProps> = ({
   const [layout, setLayout] = useState<'hierarchical' | 'dagre' | 'breadthfirst'>('hierarchical');
   const [showLabels, setShowLabels] = useState(true);
   const [groupByLayer, setGroupByLayer] = useState(true);
-  const { resolvedTheme } = useTheme();
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -162,10 +150,8 @@ export const ServiceMap: React.FC<ServiceMapProps> = ({
       }
     });
 
-    // Theme-aware colors
-    const isDark = resolvedTheme === 'dark';
-    const textColor = isDark ? '#e5e7eb' : '#1f2937';
-    const edgeColor = isDark ? '#6b7280' : '#9ca3af';
+    const textColor = brand.ink;
+    const edgeColor = brand.line;
 
     const cy = cytoscape({
       container: containerRef.current,
@@ -178,10 +164,10 @@ export const ServiceMap: React.FC<ServiceMapProps> = ({
             shape: 'round-rectangle',
             'background-color': ((ele: NodeSingular) => {
               const criticality = ele.data('criticality');
-              return SERVICE_COLORS[criticality as keyof typeof SERVICE_COLORS] || '#6b7280';
+              return SERVICE_COLORS[criticality as keyof typeof SERVICE_COLORS] || brand.inkSoft;
             }) as any,
             'border-width': 4,
-            'border-color': '#fbbf24',
+            'border-color': brand.warning,
             label: showLabels ? 'data(label)' : '',
             'text-valign': 'center',
             'text-halign': 'center',
@@ -191,7 +177,7 @@ export const ServiceMap: React.FC<ServiceMapProps> = ({
             'text-outline-width': 2,
             'text-outline-color': ((ele: NodeSingular) => {
               const criticality = ele.data('criticality');
-              return SERVICE_COLORS[criticality as keyof typeof SERVICE_COLORS] || '#6b7280';
+              return SERVICE_COLORS[criticality as keyof typeof SERVICE_COLORS] || brand.inkSoft;
             }) as any,
             width: 120,
             height: 80,
@@ -208,18 +194,18 @@ export const ServiceMap: React.FC<ServiceMapProps> = ({
             }) as any,
             'background-color': ((ele: NodeSingular) => {
               const type = ele.data('type');
-              return CI_TYPE_COLORS[type] || '#757575';
+              return CI_TYPE_COLORS[type] || brand.inkSoft;
             }) as any,
             'border-width': 3,
             'border-color': ((ele: NodeSingular) => {
               const status = ele.data('status');
               const colors: Record<string, string> = {
-                active: '#22c55e',
-                inactive: '#6b7280',
-                maintenance: '#eab308',
-                decommissioned: '#dc2626',
+                active: brand.success,
+                inactive: brand.inkSoft,
+                maintenance: brand.warning,
+                decommissioned: brand.danger,
               };
-              return colors[status] || '#6b7280';
+              return colors[status] || brand.inkSoft;
             }) as any,
             label: showLabels ? 'data(label)' : '',
             'text-valign': 'bottom',
@@ -230,7 +216,7 @@ export const ServiceMap: React.FC<ServiceMapProps> = ({
             'text-outline-width': 2,
             'text-outline-color': ((ele: NodeSingular) => {
               const type = ele.data('type');
-              return CI_TYPE_COLORS[type] || '#757575';
+              return CI_TYPE_COLORS[type] || brand.inkSoft;
             }) as any,
             width: 50,
             height: 50,
@@ -250,7 +236,7 @@ export const ServiceMap: React.FC<ServiceMapProps> = ({
             color: textColor,
             'text-rotation': 'autorotate',
             'text-margin-y': -10,
-            'text-background-color': isDark ? '#1f2937' : '#ffffff',
+            'text-background-color': '#fff',
             'text-background-opacity': 0.8,
             'text-background-padding': '2px',
           },
@@ -260,7 +246,7 @@ export const ServiceMap: React.FC<ServiceMapProps> = ({
           selector: 'node:selected',
           style: {
             'border-width': 5,
-            'border-color': '#fbbf24',
+            'border-color': brand.warning,
           },
         },
       ],
@@ -284,7 +270,7 @@ export const ServiceMap: React.FC<ServiceMapProps> = ({
     return () => {
       cy.destroy();
     };
-  }, [businessServiceId, showLabels, layout, resolvedTheme]);
+  }, [businessServiceId, showLabels, layout]);
 
   const getLayoutConfig = (layoutType: string) => {
     switch (layoutType) {
@@ -340,9 +326,7 @@ export const ServiceMap: React.FC<ServiceMapProps> = ({
 
   const handleDownload = () => {
     if (cyRef.current) {
-      const isDark = resolvedTheme === 'dark';
-      const backgroundColor = isDark ? '#1f2937' : '#ffffff';
-      const png = cyRef.current.png({ scale: 2, bg: backgroundColor });
+      const png = cyRef.current.png({ scale: 2, bg: '#fff' });
       const link = document.createElement('a');
       link.href = png;
       link.download = `service-map-${businessServiceId || 'all'}.png`;
@@ -463,19 +447,19 @@ export const ServiceMap: React.FC<ServiceMapProps> = ({
           </h4>
           <div className="grid grid-cols-2 gap-2">
             <div className="flex items-center gap-2">
-              <div className="w-4 h-4 rounded-full border-[3px] border-green-500" />
+              <div className="w-4 h-4 rounded-full border-[3px] border-success" />
               <span className="text-xs">Active</span>
             </div>
             <div className="flex items-center gap-2">
-              <div className="w-4 h-4 rounded-full border-[3px] border-gray-500" />
+              <div className="w-4 h-4 rounded-full border-[3px] border-ink-soft" />
               <span className="text-xs">Inactive</span>
             </div>
             <div className="flex items-center gap-2">
-              <div className="w-4 h-4 rounded-full border-[3px] border-yellow-500" />
+              <div className="w-4 h-4 rounded-full border-[3px] border-warning" />
               <span className="text-xs">Maintenance</span>
             </div>
             <div className="flex items-center gap-2">
-              <div className="w-4 h-4 rounded-full border-[3px] border-red-600" />
+              <div className="w-4 h-4 rounded-full border-[3px] border-danger" />
               <span className="text-xs">Decommissioned</span>
             </div>
           </div>

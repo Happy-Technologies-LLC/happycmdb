@@ -56,7 +56,7 @@
       "secret": "dev-secret-change-in-production-minimum-32-characters",
       "accessTokenExpiresIn": "30m",
       "refreshTokenExpiresIn": "7d",
-      "issuer": "configbuddy",
+      "issuer": "happycmdb",
       "audience": "cmdb-api"
     },
     "bcrypt": {

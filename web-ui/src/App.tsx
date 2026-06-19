@@ -9,8 +9,6 @@ import { ToastProvider } from './contexts/ToastContext';
 import ErrorBoundary from './components/common/ErrorBoundary';
 import LoadingSpinner from './components/common/LoadingSpinner';
 import MainLayout from './components/layout/MainLayout';
-import { ParticleBackground } from './components/ui/particle-background';
-import { GlassFilters } from './components/ui/glass-filters';
 
 // Lazy loaded page components
 const Dashboard = React.lazy(() => import('./pages/Dashboard'));
@@ -35,6 +33,9 @@ const BusinessServiceDashboard = React.lazy(() => import('./pages/dashboards/Bus
 // v3.0 Business Service Management & Financial Management
 const BusinessServices = React.lazy(() => import('./pages/BusinessServices'));
 const FinancialManagement = React.lazy(() => import('./pages/FinancialManagement'));
+
+// Settings
+const Settings = React.lazy(() => import('./pages/Settings').then((m) => ({ default: m.Settings })));
 
 // v2.0 Components
 import { HealthDashboard } from './components/health/HealthDashboard';
@@ -78,9 +79,7 @@ const App: React.FC = () => {
   return (
     <ErrorBoundary>
       <ToastProvider>
-        <GlassFilters />
-        <div className="min-h-screen relative">
-          <ParticleBackground opacity={.2} />
+        <div className="min-h-screen">
           <React.Suspense fallback={<LoadingSpinner />}>
             <Routes>
               {/* Public Routes */}
@@ -286,6 +285,16 @@ const App: React.FC = () => {
                   <ProtectedRoute>
                     <MainLayout>
                       <FinancialManagement />
+                    </MainLayout>
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/settings"
+                element={
+                  <ProtectedRoute>
+                    <MainLayout>
+                      <Settings />
                     </MainLayout>
                   </ProtectedRoute>
                 }

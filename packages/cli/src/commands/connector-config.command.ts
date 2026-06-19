@@ -137,7 +137,7 @@ export class ConnectorConfigCommand {
       console.log(chalk.gray('Example:'));
       console.log(
         chalk.gray(
-          '  configbuddy connector config create --non-interactive --type vmware-vsphere --name my-vcenter --connection \'{"host":"vcenter.local","username":"admin","password":"pass"}\''
+          '  happycmdb connector config create --non-interactive --type vmware-vsphere --name my-vcenter --connection \'{"host":"vcenter.local","username":"admin","password":"pass"}\''
         )
       );
       return;
@@ -187,8 +187,8 @@ export class ConnectorConfigCommand {
       }
 
       console.log(chalk.cyan('\nNext steps:'));
-      console.log(`  1. Test connection: ${chalk.yellow(`configbuddy connector config test ${config.name}`)}`);
-      console.log(`  2. Run connector: ${chalk.yellow(`configbuddy connector run ${config.name}`)}`);
+      console.log(`  1. Test connection: ${chalk.yellow(`happycmdb connector config test ${config.name}`)}`);
+      console.log(`  2. Run connector: ${chalk.yellow(`happycmdb connector run ${config.name}`)}`);
     } catch (error: any) {
       spinner.fail(chalk.red('Failed to create configuration'));
       this.handleError(error);
@@ -216,7 +216,7 @@ export class ConnectorConfigCommand {
 
       if (configs.length === 0) {
         console.log(chalk.yellow('\nNo configurations found'));
-        console.log(chalk.gray('Create one with: configbuddy connector config create'));
+        console.log(chalk.gray('Create one with: happycmdb connector config create'));
         return;
       }
 
@@ -241,7 +241,7 @@ export class ConnectorConfigCommand {
 
       console.log(chalk.cyan('╚═══════════════════════════════════════════════════════════════════════╝'));
       console.log(chalk.gray(`\nTotal: ${configs.length} configurations`));
-      console.log(chalk.gray('Run "configbuddy connector config show <name>" for details'));
+      console.log(chalk.gray('Run "happycmdb connector config show <name>" for details'));
     } catch (error: any) {
       spinner.fail(chalk.red('Failed to fetch configurations'));
       this.handleError(error);

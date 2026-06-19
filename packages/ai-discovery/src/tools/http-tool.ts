@@ -67,7 +67,7 @@ export const httpProbeTool: DiscoveryTool = {
         maxRedirects: 0, // Don't follow redirects
         validateStatus: () => true, // Accept any status code
         headers: {
-          'User-Agent': 'ConfigBuddy-Discovery/2.0',
+          'User-Agent': 'HappyCMDB-Discovery/2.0',
         },
       });
 

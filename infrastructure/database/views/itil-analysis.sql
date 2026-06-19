@@ -1,5 +1,5 @@
 -- ============================================
--- ConfigBuddy v3.0 - ITIL Service Management Views for Metabase
+-- HappyCMDB v3.0 - ITIL Service Management Views for Metabase
 -- ============================================
 -- Optimized views for incident management, change management, and configuration accuracy
 -- ============================================

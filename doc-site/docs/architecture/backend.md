@@ -2,7 +2,7 @@
 
 ## Overview
 
-The ConfigBuddy backend is built as a monorepo of TypeScript microservices, each with a specific responsibility. The architecture follows clean architecture principles with clear separation between layers.
+The HappyCMDB backend is built as a monorepo of TypeScript microservices, each with a specific responsibility. The architecture follows clean architecture principles with clear separation between layers.
 
 ## Monorepo Structure
 
@@ -135,7 +135,7 @@ discovery-engine/src/
 
 **3-Tier Discovery Architecture**:
 
-ConfigBuddy implements a ServiceNow-style discovery architecture with three tiers:
+HappyCMDB implements a ServiceNow-style discovery architecture with three tiers:
 
 1. **Credentials** - Encrypted authentication credentials stored in PostgreSQL
 2. **Discovery Definitions** - Reusable discovery configurations with scheduling

@@ -1,5 +1,5 @@
 // ============================================
-// Neo4j Schema for ConfigBuddy CMDB v3.0
+// Neo4j Schema for HappyCMDB v3.0
 // ============================================
 // This script creates all constraints, indexes, and full-text search
 // capabilities for the CMDB graph database with v3.0 unified data model.

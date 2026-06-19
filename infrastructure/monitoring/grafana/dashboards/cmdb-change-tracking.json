@@ -21,7 +21,7 @@
           "w": 12,
           "h": 10
         },
-        "datasource": "ConfigBuddy CMDB",
+        "datasource": "HappyCMDB",
         "targets": [
           {
             "rawSql": "SELECT ch.change_type AS metric, COUNT(*) AS value FROM cmdb.fact_ci_changes ch WHERE ch.changed_at >= NOW() - INTERVAL '7 days' GROUP BY ch.change_type ORDER BY value DESC;",
@@ -55,7 +55,7 @@
           "w": 6,
           "h": 5
         },
-        "datasource": "ConfigBuddy CMDB",
+        "datasource": "HappyCMDB",
         "targets": [
           {
             "rawSql": "SELECT COUNT(*) AS \"Total Changes\" FROM cmdb.fact_ci_changes WHERE changed_at >= NOW() - INTERVAL '24 hours';",
@@ -96,7 +96,7 @@
           "w": 6,
           "h": 5
         },
-        "datasource": "ConfigBuddy CMDB",
+        "datasource": "HappyCMDB",
         "targets": [
           {
             "rawSql": "SELECT COUNT(*) AS \"Total Changes\" FROM cmdb.fact_ci_changes WHERE changed_at >= NOW() - INTERVAL '7 days';",
@@ -137,7 +137,7 @@
           "w": 6,
           "h": 5
         },
-        "datasource": "ConfigBuddy CMDB",
+        "datasource": "HappyCMDB",
         "targets": [
           {
             "rawSql": "SELECT ROUND(COUNT(*) / 24.0, 2) AS \"Changes Per Hour\" FROM cmdb.fact_ci_changes WHERE changed_at >= NOW() - INTERVAL '24 hours';",
@@ -187,7 +187,7 @@
           "w": 6,
           "h": 5
         },
-        "datasource": "ConfigBuddy CMDB",
+        "datasource": "HappyCMDB",
         "targets": [
           {
             "rawSql": "SELECT ROUND(COUNT(*) / 7.0, 2) AS \"Changes Per Day\" FROM cmdb.fact_ci_changes WHERE changed_at >= NOW() - INTERVAL '7 days';",
@@ -237,7 +237,7 @@
           "w": 24,
           "h": 10
         },
-        "datasource": "ConfigBuddy CMDB",
+        "datasource": "HappyCMDB",
         "targets": [
           {
             "rawSql": "SELECT time_bucket('1 hour', changed_at) AS time, COUNT(*) AS \"Changes\" FROM cmdb.fact_ci_changes WHERE changed_at >= NOW() - INTERVAL '7 days' GROUP BY time_bucket('1 hour', changed_at) ORDER BY time;",
@@ -278,7 +278,7 @@
           "w": 12,
           "h": 12
         },
-        "datasource": "ConfigBuddy CMDB",
+        "datasource": "HappyCMDB",
         "targets": [
           {
             "rawSql": "SELECT c.ci_name AS \"CI Name\", c.ci_type AS \"Type\", c.environment AS \"Environment\", COUNT(ch.change_key) AS \"Change Count\", MAX(ch.changed_at) AS \"Last Changed\" FROM cmdb.fact_ci_changes ch INNER JOIN cmdb.dim_ci c ON ch.ci_key = c.ci_key WHERE ch.changed_at >= NOW() - INTERVAL '7 days' AND c.is_current = TRUE GROUP BY c.ci_name, c.ci_type, c.environment ORDER BY \"Change Count\" DESC LIMIT 25;",
@@ -354,7 +354,7 @@
           "w": 12,
           "h": 12
         },
-        "datasource": "ConfigBuddy CMDB",
+        "datasource": "HappyCMDB",
         "targets": [
           {
             "rawSql": "SELECT COALESCE(change_source, 'unknown') AS metric, COUNT(*) AS value FROM cmdb.fact_ci_changes WHERE changed_at >= NOW() - INTERVAL '7 days' GROUP BY COALESCE(change_source, 'unknown') ORDER BY value DESC;",
@@ -389,7 +389,7 @@
           "w": 24,
           "h": 10
         },
-        "datasource": "ConfigBuddy CMDB",
+        "datasource": "HappyCMDB",
         "targets": [
           {
             "rawSql": "SELECT time_bucket('1 day', ch.changed_at) AS time, c.ci_type, COUNT(*) AS count FROM cmdb.fact_ci_changes ch INNER JOIN cmdb.dim_ci c ON ch.ci_key = c.ci_key WHERE ch.changed_at >= NOW() - INTERVAL '30 days' AND c.is_current = TRUE GROUP BY time_bucket('1 day', ch.changed_at), c.ci_type ORDER BY time, c.ci_type;",
@@ -436,7 +436,7 @@
           "w": 24,
           "h": 12
         },
-        "datasource": "ConfigBuddy CMDB",
+        "datasource": "HappyCMDB",
         "targets": [
           {
             "rawSql": "SELECT c.ci_name AS \"CI Name\", c.ci_type AS \"Type\", ch.change_type AS \"Change Type\", ch.field_name AS \"Field\", ch.old_value AS \"Old Value\", ch.new_value AS \"New Value\", ch.changed_by AS \"Changed By\", ch.change_source AS \"Source\", ch.changed_at AS \"Changed At\" FROM cmdb.fact_ci_changes ch INNER JOIN cmdb.dim_ci c ON ch.ci_key = c.ci_key WHERE ch.changed_at >= NOW() - INTERVAL '24 hours' AND c.is_current = TRUE ORDER BY ch.changed_at DESC LIMIT 100;",
@@ -498,7 +498,7 @@
           "w": 12,
           "h": 10
         },
-        "datasource": "ConfigBuddy CMDB",
+        "datasource": "HappyCMDB",
         "targets": [
           {
             "rawSql": "SELECT change_type AS metric, COUNT(*) AS value FROM cmdb.fact_ci_changes WHERE changed_at >= NOW() - INTERVAL '30 days' GROUP BY change_type ORDER BY value DESC;",
@@ -530,7 +530,7 @@
           "w": 12,
           "h": 10
         },
-        "datasource": "ConfigBuddy CMDB",
+        "datasource": "HappyCMDB",
         "targets": [
           {
             "rawSql": "SELECT COALESCE(field_name, 'multiple') AS metric, COUNT(*) AS value FROM cmdb.fact_ci_changes WHERE changed_at >= NOW() - INTERVAL '7 days' AND field_name IS NOT NULL GROUP BY COALESCE(field_name, 'multiple') ORDER BY value DESC LIMIT 15;",
@@ -564,7 +564,7 @@
           "w": 24,
           "h": 10
         },
-        "datasource": "ConfigBuddy CMDB",
+        "datasource": "HappyCMDB",
         "targets": [
           {
             "rawSql": "SELECT EXTRACT(HOUR FROM changed_at) AS metric, COUNT(*) AS value FROM cmdb.fact_ci_changes WHERE changed_at >= NOW() - INTERVAL '7 days' GROUP BY EXTRACT(HOUR FROM changed_at) ORDER BY metric;",

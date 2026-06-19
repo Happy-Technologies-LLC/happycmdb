@@ -1,13 +1,13 @@
 #!/bin/bash
 #
-# Neo4j Backup Script for ConfigBuddy
+# Neo4j Backup Script for HappyCMDB
 # Supports database dumps, compression, retention policies, and cloud upload
 #
 
 set -euo pipefail
 
 # Configuration from environment variables or defaults
-BACKUP_DIR="${BACKUP_DIR:-/var/backups/configbuddy/neo4j}"
+BACKUP_DIR="${BACKUP_DIR:-/var/backups/happycmdb/neo4j}"
 NEO4J_CONTAINER="${NEO4J_CONTAINER:-cmdb-neo4j}"
 NEO4J_DATABASE="${NEO4J_DATABASE:-cmdb}"
 NEO4J_USERNAME="${NEO4J_USERNAME:-neo4j}"
@@ -23,9 +23,9 @@ RETENTION_MONTHLY="${BACKUP_RETENTION_MONTHLY:-12}"
 BACKUP_UPLOAD_ENABLED="${BACKUP_UPLOAD_ENABLED:-false}"
 BACKUP_STORAGE_TYPE="${BACKUP_STORAGE_TYPE:-s3}"  # s3 or azure
 S3_BUCKET="${BACKUP_S3_BUCKET:-}"
-S3_PREFIX="${BACKUP_S3_PREFIX:-configbuddy/neo4j}"
+S3_PREFIX="${BACKUP_S3_PREFIX:-happycmdb/neo4j}"
 AZURE_CONTAINER="${BACKUP_AZURE_CONTAINER:-}"
-AZURE_PREFIX="${BACKUP_AZURE_PREFIX:-configbuddy/neo4j}"
+AZURE_PREFIX="${BACKUP_AZURE_PREFIX:-happycmdb/neo4j}"
 
 # Notification configuration
 BACKUP_NOTIFICATION_ENABLED="${BACKUP_NOTIFICATION_ENABLED:-false}"
@@ -61,7 +61,7 @@ send_notification() {
     if [[ "${BACKUP_NOTIFICATION_ENABLED}" == "true" ]] && [[ -n "${BACKUP_NOTIFICATION_WEBHOOK}" ]]; then
         curl -X POST "${BACKUP_NOTIFICATION_WEBHOOK}" \
             -H "Content-Type: application/json" \
-            -d "{\"service\":\"ConfigBuddy Neo4j Backup\",\"status\":\"${status}\",\"message\":\"${message}\",\"timestamp\":\"$(date -Iseconds)\"}" \
+            -d "{\"service\":\"HappyCMDB Neo4j Backup\",\"status\":\"${status}\",\"message\":\"${message}\",\"timestamp\":\"$(date -Iseconds)\"}" \
             2>/dev/null || log_error "Failed to send notification"
     fi
 }
@@ -278,7 +278,7 @@ generate_report() {
 
 # Main execution
 main() {
-    log_info "===== ConfigBuddy Neo4j Backup ====="
+    log_info "===== HappyCMDB Neo4j Backup ====="
 
     # Check if container is running
     check_container

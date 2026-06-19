@@ -1,6 +1,6 @@
 # SSL/TLS Certificate Setup Guide
 
-This guide provides comprehensive instructions for setting up SSL/TLS certificates for ConfigBuddy CMDB, including Let's Encrypt (production), self-signed certificates (development), and enterprise CA certificates.
+This guide provides comprehensive instructions for setting up SSL/TLS certificates for HappyCMDB, including Let's Encrypt (production), self-signed certificates (development), and enterprise CA certificates.
 
 ## Table of Contents
 
@@ -15,7 +15,7 @@ This guide provides comprehensive instructions for setting up SSL/TLS certificat
 
 ## Overview
 
-ConfigBuddy v2.0 supports SSL/TLS encryption for:
+HappyCMDB v2.0 supports SSL/TLS encryption for:
 
 - **Web UI (Nginx)**: HTTPS connections on port 443
 - **Neo4j**: Bolt protocol with TLS and HTTPS web interface
@@ -61,7 +61,7 @@ brew install certbot
 
 ### Step 2: Obtain Certificates
 
-Run Certbot in standalone mode (before starting ConfigBuddy):
+Run Certbot in standalone mode (before starting HappyCMDB):
 
 ```bash
 # Stop any services using port 80
@@ -81,7 +81,7 @@ sudo certbot certonly --standalone \
 # /etc/letsencrypt/live/cmdb.example.com/chain.pem
 ```
 
-### Step 3: Copy Certificates to ConfigBuddy
+### Step 3: Copy Certificates to HappyCMDB
 
 ```bash
 # Create SSL directories
@@ -122,7 +122,7 @@ SSL_ENABLED=true
 NGINX_SSL_ENABLED=true
 ```
 
-### Step 6: Start ConfigBuddy
+### Step 6: Start HappyCMDB
 
 ```bash
 ./deploy.sh
@@ -180,7 +180,7 @@ openssl genrsa -out ca.key 4096
 
 # Generate CA certificate (valid for 10 years)
 openssl req -x509 -new -nodes -key ca.key -sha256 -days 3650 -out ca.crt \
-  -subj "/C=US/ST=State/L=City/O=ConfigBuddy Dev/OU=IT/CN=ConfigBuddy Root CA"
+  -subj "/C=US/ST=State/L=City/O=HappyCMDB Dev/OU=IT/CN=HappyCMDB Root CA"
 ```
 
 #### 3. Generate Nginx Certificates
@@ -191,7 +191,7 @@ openssl genrsa -out nginx/key.pem 2048
 
 # Generate certificate signing request
 openssl req -new -key nginx/key.pem -out nginx/cert.csr \
-  -subj "/C=US/ST=State/L=City/O=ConfigBuddy/OU=IT/CN=localhost"
+  -subj "/C=US/ST=State/L=City/O=HappyCMDB/OU=IT/CN=localhost"
 
 # Create SAN configuration
 cat > nginx/san.cnf <<EOF
@@ -204,7 +204,7 @@ prompt = no
 C = US
 ST = State
 L = City
-O = ConfigBuddy
+O = HappyCMDB
 OU = IT
 CN = localhost
 
@@ -244,7 +244,7 @@ openssl genrsa -out neo4j/neo4j.key 2048
 
 # Generate certificate signing request
 openssl req -new -key neo4j/neo4j.key -out neo4j/neo4j.csr \
-  -subj "/C=US/ST=State/L=City/O=ConfigBuddy/OU=IT/CN=cmdb-neo4j"
+  -subj "/C=US/ST=State/L=City/O=HappyCMDB/OU=IT/CN=cmdb-neo4j"
 
 # Sign certificate
 openssl x509 -req -in neo4j/neo4j.csr -CA ca.crt -CAkey ca.key \
@@ -265,7 +265,7 @@ openssl genrsa -out postgres/server.key 2048
 
 # Generate certificate signing request
 openssl req -new -key postgres/server.key -out postgres/server.csr \
-  -subj "/C=US/ST=State/L=City/O=ConfigBuddy/OU=IT/CN=cmdb-postgres"
+  -subj "/C=US/ST=State/L=City/O=HappyCMDB/OU=IT/CN=cmdb-postgres"
 
 # Sign certificate
 openssl x509 -req -in postgres/server.csr -CA ca.crt -CAkey ca.key \
@@ -289,7 +289,7 @@ openssl genrsa -out redis/redis.key 2048
 
 # Generate certificate signing request
 openssl req -new -key redis/redis.key -out redis/redis.csr \
-  -subj "/C=US/ST=State/L=City/O=ConfigBuddy/OU=IT/CN=cmdb-redis"
+  -subj "/C=US/ST=State/L=City/O=HappyCMDB/OU=IT/CN=cmdb-redis"
 
 # Sign certificate
 openssl x509 -req -in redis/redis.csr -CA ca.crt -CAkey ca.key \
@@ -327,7 +327,7 @@ sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keyc
 
 **Ubuntu/Debian:**
 ```bash
-sudo cp ca.crt /usr/local/share/ca-certificates/configbuddy-ca.crt
+sudo cp ca.crt /usr/local/share/ca-certificates/happycmdb-ca.crt
 sudo update-ca-certificates
 ```
 
@@ -587,6 +587,6 @@ redis-cli --tls --cert infrastructure/docker/ssl/redis/redis.crt \
 ## Support
 
 For issues or questions:
-- GitHub Issues: https://github.com/yourusername/configbuddy/issues
+- GitHub Issues: https://github.com/yourusername/happycmdb/issues
 - Documentation: http://localhost:8080 (when running)
-- Email: support@configbuddy.io
+- Email: support@happycmdb.io

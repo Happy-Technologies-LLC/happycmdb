@@ -1,10 +1,10 @@
 # Getting Started Overview
 
-Welcome to ConfigBuddy CMDB! This guide will help you get started with installation, configuration, and understanding the core concepts.
+Welcome to HappyCMDB! This guide will help you get started with installation, configuration, and understanding the core concepts.
 
-## What is ConfigBuddy?
+## What is HappyCMDB?
 
-ConfigBuddy is an open-source enterprise Configuration Management Database (CMDB) built for modern cloud infrastructure. It provides:
+HappyCMDB is an open-source enterprise Configuration Management Database (CMDB) built for modern cloud infrastructure. It provides:
 
 - Automated multi-cloud discovery (AWS, Azure, GCP)
 - Graph-based relationship mapping using Neo4j
@@ -14,7 +14,7 @@ ConfigBuddy is an open-source enterprise Configuration Management Database (CMDB
 
 ## Prerequisites
 
-Before installing ConfigBuddy, ensure you have:
+Before installing HappyCMDB, ensure you have:
 
 - **Node.js**: 20.x LTS or higher
 - **Docker**: 20.10+ and Docker Compose 2.0+ (for quickstart)
@@ -27,7 +27,7 @@ For production deployments, you'll also need:
 
 ## Quick Navigation
 
-- **[Quick Start](./quick-start)** - Get ConfigBuddy running in 5 minutes
+- **[Quick Start](./quick-start)** - Get HappyCMDB running in 5 minutes
 - **[Installation](./installation)** - Detailed installation instructions
 - **[Project Structure](./project-structure)** - Understanding the codebase
 - **[Key Concepts](./key-concepts)** - Core CMDB terminology and concepts
@@ -43,5 +43,5 @@ For production deployments, you'll also need:
 ## Need Help?
 
 - Check the [Troubleshooting Guide](/troubleshooting/overview)
-- Visit our [GitHub Discussions](https://github.com/configbuddy/configbuddy/discussions)
+- Visit our [GitHub Discussions](https://github.com/happycmdb/happycmdb/discussions)
 - Review [Common Issues](/troubleshooting/common-issues)

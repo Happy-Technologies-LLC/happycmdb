@@ -24,29 +24,29 @@
 
 ```bash
 # Check certificate expiration for domain
-echo | openssl s_client -servername configbuddy.example.com -connect configbuddy.example.com:443 2>/dev/null | openssl x509 -noout -dates
+echo | openssl s_client -servername happycmdb.example.com -connect happycmdb.example.com:443 2>/dev/null | openssl x509 -noout -dates
 
 # Check all certificates
-for domain in api.configbuddy.example.com configbuddy.example.com; do
+for domain in api.happycmdb.example.com happycmdb.example.com; do
   echo "=== $domain ==="
   echo | openssl s_client -servername $domain -connect $domain:443 2>/dev/null | openssl x509 -noout -subject -dates
 done
 
 # Check days until expiration
-echo | openssl s_client -servername configbuddy.example.com -connect configbuddy.example.com:443 2>/dev/null | openssl x509 -noout -checkend 2592000 && echo "Certificate valid for >30 days" || echo "Certificate expires in <30 days"
+echo | openssl s_client -servername happycmdb.example.com -connect happycmdb.example.com:443 2>/dev/null | openssl x509 -noout -checkend 2592000 && echo "Certificate valid for >30 days" || echo "Certificate expires in <30 days"
 ```
 
 ### 2. Check Certificate Details
 
 ```bash
 # View full certificate details
-echo | openssl s_client -servername configbuddy.example.com -connect configbuddy.example.com:443 2>/dev/null | openssl x509 -noout -text
+echo | openssl s_client -servername happycmdb.example.com -connect happycmdb.example.com:443 2>/dev/null | openssl x509 -noout -text
 
 # Check SAN (Subject Alternative Names)
-echo | openssl s_client -servername configbuddy.example.com -connect configbuddy.example.com:443 2>/dev/null | openssl x509 -noout -text | grep -A1 "Subject Alternative Name"
+echo | openssl s_client -servername happycmdb.example.com -connect happycmdb.example.com:443 2>/dev/null | openssl x509 -noout -text | grep -A1 "Subject Alternative Name"
 
 # Check issuer
-echo | openssl s_client -servername configbuddy.example.com -connect configbuddy.example.com:443 2>/dev/null | openssl x509 -noout -issuer
+echo | openssl s_client -servername happycmdb.example.com -connect happycmdb.example.com:443 2>/dev/null | openssl x509 -noout -issuer
 ```
 
 ### 3. Check Certificate Location
@@ -56,10 +56,10 @@ echo | openssl s_client -servername configbuddy.example.com -connect configbuddy
 find /etc/ssl /etc/nginx /etc/letsencrypt -name "*.crt" -o -name "*.pem" 2>/dev/null
 
 # Check Kubernetes secrets (if using K8s)
-kubectl get secrets -n configbuddy | grep tls
+kubectl get secrets -n happycmdb | grep tls
 
 # Check certificate in Kubernetes secret
-kubectl get secret configbuddy-tls -n configbuddy -o jsonpath='{.data.tls\.crt}' | base64 -d | openssl x509 -noout -dates
+kubectl get secret happycmdb-tls -n happycmdb -o jsonpath='{.data.tls\.crt}' | base64 -d | openssl x509 -noout -dates
 ```
 
 ### 4. Check Certificate Renewal Process
@@ -105,7 +105,7 @@ sudo certbot renew
 sudo certbot renew --force-renewal
 
 # Renew specific certificate
-sudo certbot certonly --force-renewal -d configbuddy.example.com -d api.configbuddy.example.com
+sudo certbot certonly --force-renewal -d happycmdb.example.com -d api.happycmdb.example.com
 ```
 
 #### Step 3: Reload Web Server
@@ -142,19 +142,19 @@ echo "0 0,12 * * * certbot renew --quiet --post-hook 'systemctl reload nginx'" |
 ```bash
 # Generate private key and CSR
 openssl req -new -newkey rsa:2048 -nodes \
-  -keyout configbuddy.key \
-  -out configbuddy.csr \
-  -subj "/C=US/ST=State/L=City/O=Organization/CN=configbuddy.example.com"
+  -keyout happycmdb.key \
+  -out happycmdb.csr \
+  -subj "/C=US/ST=State/L=City/O=Organization/CN=happycmdb.example.com"
 
 # Verify CSR
-openssl req -text -noout -verify -in configbuddy.csr
+openssl req -text -noout -verify -in happycmdb.csr
 ```
 
 #### Step 2: Submit CSR to Certificate Authority
 
 ```bash
 # Copy CSR content
-cat configbuddy.csr
+cat happycmdb.csr
 
 # Submit to CA (e.g., DigiCert, Comodo, etc.)
 # Follow CA's web interface to submit CSR
@@ -168,17 +168,17 @@ cat configbuddy.csr
 # Usually receive: certificate.crt, intermediate.crt, root.crt
 
 # Create certificate bundle
-cat certificate.crt intermediate.crt root.crt > configbuddy-bundle.crt
+cat certificate.crt intermediate.crt root.crt > happycmdb-bundle.crt
 
 # Install certificate (Nginx example)
-sudo cp configbuddy.key /etc/ssl/private/
-sudo cp configbuddy-bundle.crt /etc/ssl/certs/
-sudo chmod 600 /etc/ssl/private/configbuddy.key
+sudo cp happycmdb.key /etc/ssl/private/
+sudo cp happycmdb-bundle.crt /etc/ssl/certs/
+sudo chmod 600 /etc/ssl/private/happycmdb.key
 
 # Update Nginx configuration
-sudo nano /etc/nginx/sites-available/configbuddy
-# ssl_certificate /etc/ssl/certs/configbuddy-bundle.crt;
-# ssl_certificate_key /etc/ssl/private/configbuddy.key;
+sudo nano /etc/nginx/sites-available/happycmdb
+# ssl_certificate /etc/ssl/certs/happycmdb-bundle.crt;
+# ssl_certificate_key /etc/ssl/private/happycmdb.key;
 
 # Test and reload
 sudo nginx -t && sudo systemctl reload nginx
@@ -193,32 +193,32 @@ sudo nginx -t && sudo systemctl reload nginx
 kubectl get pods -n cert-manager
 
 # Check certificate resource
-kubectl get certificate -n configbuddy
-kubectl describe certificate configbuddy-tls -n configbuddy
+kubectl get certificate -n happycmdb
+kubectl describe certificate happycmdb-tls -n happycmdb
 ```
 
 #### Step 2: Manually Trigger Renewal
 
 ```bash
 # Delete certificate to force renewal
-kubectl delete certificate configbuddy-tls -n configbuddy
+kubectl delete certificate happycmdb-tls -n happycmdb
 
 # Or annotate to force renewal
-kubectl annotate certificate configbuddy-tls -n configbuddy cert-manager.io/issue-temporary-certificate="true"
+kubectl annotate certificate happycmdb-tls -n happycmdb cert-manager.io/issue-temporary-certificate="true"
 
 # Check certificate request status
-kubectl get certificaterequest -n configbuddy
-kubectl describe certificaterequest -n configbuddy
+kubectl get certificaterequest -n happycmdb
+kubectl describe certificaterequest -n happycmdb
 ```
 
 #### Step 3: Verify New Certificate
 
 ```bash
 # Wait for certificate to be ready
-kubectl wait --for=condition=Ready certificate/configbuddy-tls -n configbuddy --timeout=300s
+kubectl wait --for=condition=Ready certificate/happycmdb-tls -n happycmdb --timeout=300s
 
 # Check certificate expiration
-kubectl get secret configbuddy-tls -n configbuddy -o jsonpath='{.data.tls\.crt}' | base64 -d | openssl x509 -noout -dates
+kubectl get secret happycmdb-tls -n happycmdb -o jsonpath='{.data.tls\.crt}' | base64 -d | openssl x509 -noout -dates
 ```
 
 ### Option 4: AWS Certificate Manager (ACM)
@@ -226,8 +226,8 @@ kubectl get secret configbuddy-tls -n configbuddy -o jsonpath='{.data.tls\.crt}'
 ```bash
 # Request new certificate
 aws acm request-certificate \
-  --domain-name configbuddy.example.com \
-  --subject-alternative-names api.configbuddy.example.com \
+  --domain-name happycmdb.example.com \
+  --subject-alternative-names api.happycmdb.example.com \
   --validation-method DNS
 
 # Get validation CNAME records
@@ -255,13 +255,13 @@ After renewal:
 
 ```bash
 # Verify new certificate
-echo | openssl s_client -servername configbuddy.example.com -connect configbuddy.example.com:443 2>/dev/null | openssl x509 -noout -dates
+echo | openssl s_client -servername happycmdb.example.com -connect happycmdb.example.com:443 2>/dev/null | openssl x509 -noout -dates
 
 # Test HTTPS endpoint
-curl -v https://configbuddy.example.com 2>&1 | grep -E "expire|valid"
+curl -v https://happycmdb.example.com 2>&1 | grep -E "expire|valid"
 
 # Test API
-curl -v https://api.configbuddy.example.com/health 2>&1 | grep -E "expire|valid"
+curl -v https://api.happycmdb.example.com/health 2>&1 | grep -E "expire|valid"
 ```
 
 ## Escalation
@@ -302,19 +302,19 @@ If renewal fails after 2 attempts:
 curl -s "https://crt.sh/?q=example.com&output=json" | jq 'length'
 
 # Use DNS validation instead of HTTP
-sudo certbot certonly --dns-route53 -d configbuddy.example.com
+sudo certbot certonly --dns-route53 -d happycmdb.example.com
 ```
 
 ### Issue: DNS Validation Failing
 
 ```bash
 # Check DNS records are properly set
-dig _acme-challenge.configbuddy.example.com TXT
+dig _acme-challenge.happycmdb.example.com TXT
 
 # Verify DNS propagation
 for ns in 8.8.8.8 1.1.1.1; do
   echo "=== $ns ==="
-  dig @$ns _acme-challenge.configbuddy.example.com TXT +short
+  dig @$ns _acme-challenge.happycmdb.example.com TXT +short
 done
 
 # Wait for DNS propagation (can take up to 24 hours)
@@ -324,10 +324,10 @@ done
 
 ```bash
 # Test certificate chain
-openssl s_client -connect configbuddy.example.com:443 -showcerts
+openssl s_client -connect happycmdb.example.com:443 -showcerts
 
 # Verify against Mozilla CA bundle
-openssl s_client -connect configbuddy.example.com:443 -CAfile /etc/ssl/certs/ca-certificates.crt
+openssl s_client -connect happycmdb.example.com:443 -CAfile /etc/ssl/certs/ca-certificates.crt
 
 # Fix: Include intermediate certificates in bundle
 cat certificate.crt intermediate.crt > fullchain.crt
@@ -342,7 +342,7 @@ cat certificate.crt intermediate.crt > fullchain.crt
 
 ```bash
 # Check certificate expiration for all domains
-for domain in configbuddy.example.com api.configbuddy.example.com; do
+for domain in happycmdb.example.com api.happycmdb.example.com; do
   echo "=== $domain ==="
   echo | timeout 5 openssl s_client -servername $domain -connect $domain:443 2>/dev/null | openssl x509 -noout -dates
 done
@@ -357,7 +357,7 @@ curl -s http://localhost:9090/api/v1/query?query=ssl_certificate_expiry_timestam
 sudo tar czf /backup/ssl-certs-$(date +%Y%m%d).tar.gz /etc/ssl /etc/letsencrypt
 
 # Test SSL configuration
-curl https://www.ssllabs.com/ssltest/analyze.html?d=configbuddy.example.com
+curl https://www.ssllabs.com/ssltest/analyze.html?d=happycmdb.example.com
 ```
 
 ## Monitoring Queries

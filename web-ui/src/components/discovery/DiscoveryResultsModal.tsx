@@ -129,14 +129,14 @@ export const DiscoveryResultsModal: React.FC<DiscoveryResultsModalProps> = ({
                   </TableCell>
                   <TableCell>
                     <div className="flex items-center gap-2">
-                      <div className="w-10 h-2 bg-muted rounded-full overflow-hidden">
+                      <div className="w-10 h-2 bg-line-soft rounded-full overflow-hidden">
                         <div
                           className={`h-full ${
                             ci.confidenceScore >= 0.8
-                              ? 'bg-green-500'
+                              ? 'bg-success'
                               : ci.confidenceScore >= 0.5
-                              ? 'bg-yellow-500'
-                              : 'bg-red-500'
+                              ? 'bg-warning'
+                              : 'bg-danger'
                           }`}
                           style={{ width: `${ci.confidenceScore * 100}%` }}
                         />

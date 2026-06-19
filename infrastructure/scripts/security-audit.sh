@@ -549,7 +549,7 @@ EOF
 
 main() {
   if [ "$OUTPUT_FORMAT" == "text" ]; then
-    print_header "ConfigBuddy Security Audit"
+    print_header "HappyCMDB Security Audit"
     echo "Date: $(date)"
     echo ""
   fi

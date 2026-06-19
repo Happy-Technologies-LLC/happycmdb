@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # =============================================================================
-# ConfigBuddy CMDB - Pre-Deployment Validation Checklist
+# HappyCMDB - Pre-Deployment Validation Checklist
 # =============================================================================
 # Automated checks to verify system is ready for deployment
 # Run this before any staging or production deployment
@@ -50,7 +50,7 @@ print_header() {
 # Parse environment (staging or production)
 DEPLOY_ENV="${1:-staging}"
 
-print_header "ConfigBuddy CMDB - Pre-Deployment Validation"
+print_header "HappyCMDB - Pre-Deployment Validation"
 echo "Environment: $DEPLOY_ENV"
 echo "Date: $(date)"
 echo ""
@@ -127,7 +127,7 @@ fi
 # =============================================================================
 print_header "Database Backup Status"
 
-BACKUP_DIR="${BACKUP_DIR:-/var/backups/configbuddy}"
+BACKUP_DIR="${BACKUP_DIR:-/var/backups/happycmdb}"
 
 # Check if backup directory exists
 if [[ ! -d "$BACKUP_DIR" ]]; then

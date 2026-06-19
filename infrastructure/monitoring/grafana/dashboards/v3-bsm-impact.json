@@ -1,8 +1,8 @@
 {
   "dashboard": {
-    "title": "ConfigBuddy v3.0 - BSM Business Impact",
+    "title": "HappyCMDB v3.0 - BSM Business Impact",
     "uid": "v3-bsm-impact",
-    "tags": ["configbuddy", "v3.0", "bsm", "business"],
+    "tags": ["happycmdb", "v3.0", "bsm", "business"],
     "timezone": "browser",
     "schemaVersion": 38,
     "version": 1,

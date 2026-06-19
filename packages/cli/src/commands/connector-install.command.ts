@@ -144,8 +144,8 @@ export class ConnectorInstallCommand {
         }
 
         console.log(chalk.green('\nNext steps:'));
-        console.log(`  1. Create a configuration: ${chalk.yellow(`configbuddy connector config create`)}`);
-        console.log(`  2. View connector details: ${chalk.yellow(`configbuddy connector info ${type}`)}`);
+        console.log(`  1. Create a configuration: ${chalk.yellow(`happycmdb connector config create`)}`);
+        console.log(`  2. View connector details: ${chalk.yellow(`happycmdb connector info ${type}`)}`);
       } else {
         spinner.fail(chalk.red('Installation failed'));
         if (result.message) {
@@ -362,8 +362,8 @@ export class ConnectorInstallCommand {
       });
 
       console.log(chalk.cyan('╚═════════════════════════════════════════════════════════════╝'));
-      console.log(chalk.gray('\nUpdate with: configbuddy connector update <type>'));
-      console.log(chalk.gray('Update all: configbuddy connector update --all'));
+      console.log(chalk.gray('\nUpdate with: happycmdb connector update <type>'));
+      console.log(chalk.gray('Update all: happycmdb connector update --all'));
     } catch (error: any) {
       spinner.fail(chalk.red('Failed to check for updates'));
       this.handleError(error);

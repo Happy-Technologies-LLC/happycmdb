@@ -1,8 +1,8 @@
 <p align="center">
-  <img src=".github/assets/configbuddy-logo.png" alt="ConfigBuddy" width="120" />
+  <img src=".github/assets/happycmdb-logo.png" alt="HappyCMDB" width="120" />
 </p>
 
-<h1 align="center">ConfigBuddy</h1>
+<h1 align="center">HappyCMDB</h1>
 
 <p align="center">
   Open-source Configuration Management Database (CMDB) with graph-based relationship modeling, AI-powered discovery, and 43 integration connectors.
@@ -16,7 +16,7 @@
 
 ## What Is This
 
-ConfigBuddy is an enterprise CMDB platform that discovers, maps, and tracks infrastructure across multi-cloud and on-premise environments. It stores configuration items (CIs) and their relationships in a Neo4j graph database, syncs to a PostgreSQL analytics data mart, and exposes everything via REST and GraphQL APIs.
+HappyCMDB is an enterprise CMDB platform that discovers, maps, and tracks infrastructure across multi-cloud and on-premise environments. It stores configuration items (CIs) and their relationships in a Neo4j graph database, syncs to a PostgreSQL analytics data mart, and exposes everything via REST and GraphQL APIs.
 
 ### Key Capabilities
 
@@ -59,8 +59,8 @@ ConfigBuddy is an enterprise CMDB platform that discovers, maps, and tracks infr
 **Prerequisites**: Docker >= 20.10, Docker Compose >= 2.0, Node.js >= 20
 
 ```bash
-git clone https://github.com/Happy-Technologies-LLC/configbuddy.git
-cd configbuddy
+git clone https://github.com/Happy-Technologies-LLC/happycmdb.git
+cd happycmdb
 cp .env.example .env
 ./deploy.sh --seed
 ```
@@ -115,7 +115,7 @@ npm run dev:api
 
 - **Connector SDK** — Standalone SDK for building custom connectors for any REST/GraphQL API
 - **AI Discovery Module** — Standalone AI-powered infrastructure discovery with pattern learning
-- **Terraform Provider** — Manage ConfigBuddy resources as infrastructure-as-code
+- **Terraform Provider** — Manage HappyCMDB resources as infrastructure-as-code
 - **Helm Chart** — Production Kubernetes deployment with auto-scaling
 
 ## Development

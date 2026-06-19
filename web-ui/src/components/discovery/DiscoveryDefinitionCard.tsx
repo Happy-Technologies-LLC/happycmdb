@@ -34,6 +34,7 @@ import {
   AlertDialogTrigger,
 } from '../ui/alert-dialog';
 import { useToast } from '../../contexts/ToastContext';
+import { brand } from '@/lib/brandColors';
 
 interface DiscoveryDefinitionCardProps {
   definition: DiscoveryDefinition;
@@ -47,10 +48,10 @@ const PROVIDER_CONFIG: Record<
   DiscoveryProvider,
   { name: string; color: string; Icon: React.ElementType }
 > = {
-  nmap: { name: 'Network Scan (Nmap)', color: '#9C27B0', Icon: Network },
-  ssh: { name: 'SSH Discovery', color: '#4CAF50', Icon: HardDrive },
-  'active-directory': { name: 'Active Directory', color: '#0078D4', Icon: Users },
-  snmp: { name: 'SNMP Discovery', color: '#FF6B6B', Icon: Network },
+  nmap: { name: 'Network Scan (Nmap)', color: brand.navy, Icon: Network },
+  ssh: { name: 'SSH Discovery', color: brand.success, Icon: HardDrive },
+  'active-directory': { name: 'Active Directory', color: brand.sky, Icon: Users },
+  snmp: { name: 'SNMP Discovery', color: brand.danger, Icon: Network },
 };
 
 const formatRelativeTime = (dateString?: string): string => {

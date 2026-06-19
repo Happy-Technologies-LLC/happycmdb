@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document provides a step-by-step guide for migrating ConfigBuddy CMDB from unencrypted database connections to SSL/TLS encrypted connections.
+This document provides a step-by-step guide for migrating HappyCMDB from unencrypted database connections to SSL/TLS encrypted connections.
 
 **Target Audience**: DevOps Engineers, System Administrators
 **Estimated Time**: 30-60 minutes
@@ -14,7 +14,7 @@ This document provides a step-by-step guide for migrating ConfigBuddy CMDB from 
 
 ### Gradual Migration (Recommended)
 
-ConfigBuddy supports a gradual migration approach to minimize risk:
+HappyCMDB supports a gradual migration approach to minimize risk:
 
 1. **Phase 1**: Enable SSL with `OPTIONAL` mode (allows both encrypted and unencrypted connections)
 2. **Phase 2**: Verify all clients connect with SSL
@@ -41,7 +41,7 @@ For non-production environments or during initial deployment, you can enable SSL
 ### Step 1: Generate SSL Certificates
 
 ```bash
-cd /Users/nczitzer/WebstormProjects/configbuddy/infrastructure/docker/ssl
+cd /Users/nczitzer/WebstormProjects/happycmdb/infrastructure/docker/ssl
 
 # Generate self-signed certificates (development/staging)
 ./generate-self-signed-certs.sh
@@ -97,7 +97,7 @@ NEO4J_SSL_TRUST_STRATEGY=TRUST_SYSTEM_CA_SIGNED_CERTIFICATES  # Production
 ### Step 3: Restart Services
 
 ```bash
-cd /Users/nczitzer/WebstormProjects/configbuddy
+cd /Users/nczitzer/WebstormProjects/happycmdb
 
 # Restart all services to load new configuration
 ./deploy.sh
@@ -427,7 +427,7 @@ SSL/TLS encryption adds minimal overhead:
 
 ### Connection Pooling
 
-ConfigBuddy uses connection pooling to minimize SSL handshake overhead:
+HappyCMDB uses connection pooling to minimize SSL handshake overhead:
 
 - **PostgreSQL**: 20 connections per pool (configurable via `POSTGRES_MAX_CONNECTIONS`)
 - **Neo4j**: 50 connections per pool (configurable via `NEO4J_MAX_CONNECTION_POOL_SIZE`)
@@ -436,7 +436,7 @@ Connections are reused, so SSL handshake only occurs once per connection.
 
 ### Cipher Suite Selection
 
-ConfigBuddy uses strong, modern cipher suites:
+HappyCMDB uses strong, modern cipher suites:
 
 - **PostgreSQL**: `HIGH:MEDIUM:+3DES:!aNULL` (TLSv1.2+)
 - **Neo4j**: Default Neo4j cipher suite (TLSv1.2+)
@@ -448,7 +448,7 @@ ConfigBuddy uses strong, modern cipher suites:
 
 ### Standards Met
 
-With SSL/TLS enabled, ConfigBuddy meets:
+With SSL/TLS enabled, HappyCMDB meets:
 
 - ✅ **PCI-DSS 4.0**: Requirement 4.1 (encrypt data in transit)
 - ✅ **HIPAA**: § 164.312(e)(1) (transmission security)
@@ -488,5 +488,5 @@ After successful SSL migration:
 ---
 
 **Last Updated**: October 2025
-**Version**: ConfigBuddy CMDB v2.0
+**Version**: HappyCMDB v2.0
 **Maintained By**: Platform Security Team

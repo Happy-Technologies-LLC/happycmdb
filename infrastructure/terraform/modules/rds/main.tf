@@ -1,15 +1,15 @@
 resource "aws_db_subnet_group" "main" {
-  name_prefix = "configbuddy-rds-${var.environment}-"
+  name_prefix = "happycmdb-rds-${var.environment}-"
   subnet_ids  = var.database_subnet_ids
 
   tags = {
-    Name        = "configbuddy-rds-subnet-group-${var.environment}"
+    Name        = "happycmdb-rds-subnet-group-${var.environment}"
     Environment = var.environment
   }
 }
 
 resource "aws_security_group" "rds" {
-  name_prefix = "configbuddy-rds-${var.environment}-"
+  name_prefix = "happycmdb-rds-${var.environment}-"
   description = "Security group for RDS PostgreSQL"
   vpc_id      = var.vpc_id
 
@@ -30,7 +30,7 @@ resource "aws_security_group" "rds" {
   }
 
   tags = {
-    Name        = "configbuddy-rds-sg-${var.environment}"
+    Name        = "happycmdb-rds-sg-${var.environment}"
     Environment = var.environment
   }
 }
@@ -41,7 +41,7 @@ resource "random_password" "master" {
 }
 
 resource "aws_secretsmanager_secret" "rds_password" {
-  name_prefix = "configbuddy-rds-password-${var.environment}-"
+  name_prefix = "happycmdb-rds-password-${var.environment}-"
   description = "RDS PostgreSQL master password"
 
   tags = {
@@ -55,7 +55,7 @@ resource "aws_secretsmanager_secret_version" "rds_password" {
 }
 
 resource "aws_db_instance" "main" {
-  identifier     = "configbuddy-postgres-${var.environment}"
+  identifier     = "happycmdb-postgres-${var.environment}"
   engine         = "postgres"
   engine_version = "16.1"
   instance_class = var.instance_class
@@ -84,10 +84,10 @@ resource "aws_db_instance" "main" {
 
   deletion_protection = true
   skip_final_snapshot = false
-  final_snapshot_identifier = "configbuddy-postgres-${var.environment}-final-${formatdate("YYYY-MM-DD-hhmm", timestamp())}"
+  final_snapshot_identifier = "happycmdb-postgres-${var.environment}-final-${formatdate("YYYY-MM-DD-hhmm", timestamp())}"
 
   tags = {
-    Name        = "configbuddy-postgres-${var.environment}"
+    Name        = "happycmdb-postgres-${var.environment}"
     Environment = var.environment
   }
 }

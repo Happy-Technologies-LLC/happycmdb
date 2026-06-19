@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Discovery Event Consumer for ConfigBuddy v3.0
+ * Discovery Event Consumer for HappyCMDB v3.0
  *
  * Consumes CI discovery, update, and relationship events from Kafka
  */

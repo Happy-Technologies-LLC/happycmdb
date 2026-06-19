@@ -1,6 +1,6 @@
 # Business Insights Dashboards
 
-ConfigBuddy v3.0 provides five specialized dashboards designed for different stakeholder personas. All dashboards use REST API endpoints for data retrieval, ensuring simplicity, performance, and maintainability.
+HappyCMDB v3.0 provides five specialized dashboards designed for different stakeholder personas. All dashboards use REST API endpoints for data retrieval, ensuring simplicity, performance, and maintainability.
 
 ## Architecture
 

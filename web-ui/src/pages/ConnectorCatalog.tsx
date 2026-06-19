@@ -33,6 +33,7 @@ import { LiquidGlass } from '@/components/ui/liquid-glass';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
+import { Eyebrow } from '@/components/ui/eyebrow';
 import {
   Select,
   SelectContent,
@@ -228,9 +229,10 @@ export const ConnectorCatalog: React.FC = () => {
     <div className="space-y-6">
       {/* Page Header */}
       <div>
-        <h2 className="text-3xl font-bold tracking-tight">Connector Catalog</h2>
-        <p className="text-muted-foreground mt-1">
-          Browse and install connectors from the ConfigBuddy registry
+        <Eyebrow>Registry · Connectors</Eyebrow>
+        <h1 className="mt-3 text-[1.9rem]">Connector Catalog</h1>
+        <p className="mt-1.5 text-ink-soft">
+          Browse and install connectors from the HappyCMDB registry
         </p>
       </div>
 
@@ -238,8 +240,8 @@ export const ConnectorCatalog: React.FC = () => {
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <LiquidGlass variant="default" rounded="lg" className="p-4">
           <div className="flex items-center gap-3">
-            <div className="p-2 bg-blue-100 dark:bg-blue-900/20 rounded-lg">
-              <Package className="h-5 w-5 text-blue-600" />
+            <div className="p-2 bg-sky-soft rounded-lg">
+              <Package className="h-5 w-5 text-sky-text" />
             </div>
             <div>
               <div className="text-2xl font-bold">{stats.total}</div>
@@ -250,8 +252,8 @@ export const ConnectorCatalog: React.FC = () => {
 
         <LiquidGlass variant="default" rounded="lg" className="p-4">
           <div className="flex items-center gap-3">
-            <div className="p-2 bg-green-100 dark:bg-green-900/20 rounded-lg">
-              <CheckCircle className="h-5 w-5 text-green-600" />
+            <div className="p-2 bg-success-soft rounded-lg">
+              <CheckCircle className="h-5 w-5 text-success" />
             </div>
             <div>
               <div className="text-2xl font-bold">{stats.installed}</div>
@@ -262,8 +264,8 @@ export const ConnectorCatalog: React.FC = () => {
 
         <LiquidGlass variant="default" rounded="lg" className="p-4">
           <div className="flex items-center gap-3">
-            <div className="p-2 bg-orange-100 dark:bg-orange-900/20 rounded-lg">
-              <Clock className="h-5 w-5 text-orange-600" />
+            <div className="p-2 bg-warning-soft rounded-lg">
+              <Clock className="h-5 w-5 text-warning-text" />
             </div>
             <div>
               <div className="text-2xl font-bold">{stats.updates}</div>
@@ -274,8 +276,8 @@ export const ConnectorCatalog: React.FC = () => {
 
         <LiquidGlass variant="default" rounded="lg" className="p-4">
           <div className="flex items-center gap-3">
-            <div className="p-2 bg-purple-100 dark:bg-purple-900/20 rounded-lg">
-              <TrendingUp className="h-5 w-5 text-purple-600" />
+            <div className="p-2 bg-sky-soft rounded-lg">
+              <TrendingUp className="h-5 w-5 text-navy" />
             </div>
             <div>
               <div className="text-2xl font-bold">
@@ -346,7 +348,7 @@ export const ConnectorCatalog: React.FC = () => {
                 checked={verifiedOnly}
                 onCheckedChange={setVerifiedOnly}
               >
-                <CheckCircle className="h-4 w-4 mr-2 text-green-500" />
+                <CheckCircle className="h-4 w-4 mr-2 text-success" />
                 Verified Only
               </DropdownMenuCheckboxItem>
             </DropdownMenuContent>

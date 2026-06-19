@@ -9,6 +9,8 @@ import { LiquidGlass } from '@/components/ui/liquid-glass';
 import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
+import { Eyebrow } from '@/components/ui/eyebrow';
+import { brand } from '@/lib/brandColors';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 
 export const ExecutiveDashboard: React.FC = () => {
@@ -73,8 +75,9 @@ export const ExecutiveDashboard: React.FC = () => {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-4xl font-bold tracking-tight">Executive Dashboard</h1>
-          <p className="text-muted-foreground mt-1">
+          <Eyebrow>Dashboards · Executive</Eyebrow>
+          <h1 className="mt-3 text-[1.9rem]">Executive Dashboard</h1>
+          <p className="mt-1.5 text-ink-soft">
             Strategic overview of IT investment and business value
           </p>
         </div>
@@ -181,14 +184,14 @@ export const ExecutiveDashboard: React.FC = () => {
           <p className="text-sm text-muted-foreground mb-4">Average health across service tiers</p>
           <ResponsiveContainer width="100%" height={300}>
             <BarChart data={serviceHealthByTier}>
-              <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
-              <XAxis dataKey="tier" />
-              <YAxis domain={[0, 100]} />
+              <CartesianGrid strokeDasharray="3 3" stroke={brand.line} />
+              <XAxis dataKey="tier" tick={{ fill: brand.inkSoft, fontSize: 12 }} />
+              <YAxis domain={[0, 100]} tick={{ fill: brand.inkSoft, fontSize: 12 }} />
               <Tooltip />
               <Legend />
               <Bar
                 dataKey="averageHealthScore"
-                fill="#8b5cf6"
+                fill={brand.navy}
                 name="Health Score"
                 radius={[8, 8, 0, 0]}
               />
@@ -218,11 +221,11 @@ export const ExecutiveDashboard: React.FC = () => {
           <p className="text-sm text-muted-foreground mb-4">Services with highest monthly cost</p>
           <ResponsiveContainer width="100%" height={300}>
             <BarChart data={topCostDrivers.slice(0, 5)} layout="vertical">
-              <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
-              <XAxis type="number" tickFormatter={formatCurrency} />
-              <YAxis dataKey="serviceName" type="category" width={150} />
+              <CartesianGrid strokeDasharray="3 3" stroke={brand.line} />
+              <XAxis type="number" tickFormatter={formatCurrency} tick={{ fill: brand.inkSoft, fontSize: 12 }} />
+              <YAxis dataKey="serviceName" type="category" width={150} tick={{ fill: brand.inkSoft, fontSize: 12 }} />
               <Tooltip formatter={(value: number) => formatCurrency(value)} />
-              <Bar dataKey="monthlyCost" fill="#3b82f6" name="Monthly Cost" radius={[0, 8, 8, 0]}>
+              <Bar dataKey="monthlyCost" fill={brand.sky} name="Monthly Cost" radius={[0, 8, 8, 0]}>
               </Bar>
             </BarChart>
           </ResponsiveContainer>
@@ -276,14 +279,7 @@ export const ExecutiveDashboard: React.FC = () => {
                         {formatCurrency(service.monthlyCost)}
                       </td>
                       <td className="py-3 px-2 text-sm text-right">
-                        <Badge
-                          variant={service.roi >= 100 ? 'default' : 'secondary'}
-                          className={
-                            service.roi >= 100
-                              ? 'bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300'
-                              : ''
-                          }
-                        >
+                        <Badge variant={service.roi >= 100 ? 'success' : 'secondary'}>
                           {service.roi.toFixed(1)}%
                         </Badge>
                       </td>

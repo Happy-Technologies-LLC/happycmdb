@@ -4,7 +4,7 @@
 /**
  * @cmdb/itil-service-manager
  *
- * ITIL v4 Service Management for ConfigBuddy v3.0
+ * ITIL v4 Service Management for HappyCMDB v3.0
  *
  * Provides comprehensive ITIL v4 service management capabilities:
  * - Configuration Management: CI lifecycle, audits, baselines

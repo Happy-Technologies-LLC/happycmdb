@@ -1,6 +1,6 @@
 # TBM Cost Engine
 
-Technology Business Management (TBM) v5.0.1 cost allocation engine for ConfigBuddy v3.0.
+Technology Business Management (TBM) v5.0.1 cost allocation engine for HappyCMDB v3.0.
 
 ## Overview
 
@@ -653,4 +653,4 @@ All integrations include comprehensive error handling with retry logic:
 
 ## Support
 
-For questions and support, please refer to the ConfigBuddy documentation at `/doc-site/`.
+For questions and support, please refer to the HappyCMDB documentation at `/doc-site/`.

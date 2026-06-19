@@ -356,7 +356,7 @@ python -m vllm.entrypoints.openai.api_server \
   --port 8000 \
   --served-model-name llama-3-70b
 
-# Configure ConfigBuddy
+# Configure HappyCMDB
 AI_DISCOVERY_PROVIDER=custom
 AI_DISCOVERY_BASE_URL=http://localhost:8000/v1
 AI_DISCOVERY_MODEL=llama-3-70b
@@ -371,7 +371,7 @@ ollama serve
 # Pull model
 ollama pull llama3:70b
 
-# Configure ConfigBuddy
+# Configure HappyCMDB
 AI_DISCOVERY_PROVIDER=custom
 AI_DISCOVERY_BASE_URL=http://localhost:11434/v1
 AI_DISCOVERY_MODEL=llama3:70b
@@ -385,7 +385,7 @@ docker run -p 8080:8080 \
   -v $PWD/models:/models \
   localai/localai:latest
 
-# Configure ConfigBuddy
+# Configure HappyCMDB
 AI_DISCOVERY_PROVIDER=custom
 AI_DISCOVERY_BASE_URL=http://localhost:8080/v1
 AI_DISCOVERY_MODEL=your-model-name
@@ -481,4 +481,4 @@ AI_DISCOVERY_MONTHLY_BUDGET=100.00
 
 ## License
 
-MIT - See main ConfigBuddy LICENSE file
+MIT - See main HappyCMDB LICENSE file

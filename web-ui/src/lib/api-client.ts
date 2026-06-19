@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * API Client for ConfigBuddy Backend
+ * API Client for HappyCMDB Backend
  */
 
 import axios, { AxiosInstance, AxiosRequestConfig } from 'axios';

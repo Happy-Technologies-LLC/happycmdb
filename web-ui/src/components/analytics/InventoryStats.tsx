@@ -15,6 +15,7 @@ import { MetricCard } from './MetricCard';
 import { TypeDistribution } from './TypeDistribution';
 import { StatusBreakdown } from './StatusBreakdown';
 import { EnvironmentStats } from './EnvironmentStats';
+import { brand } from '@/lib/brandColors';
 
 export const InventoryStats: React.FC = () => {
   const {
@@ -85,14 +86,14 @@ export const InventoryStats: React.FC = () => {
           title="Total CIs"
           value={dashboardStats?.totalCIs || 0}
           subtitle="All configuration items"
-          color="#007AFF"
+          color={brand.sky}
           loading={!dashboardStats}
         />
         <MetricCard
           title="Active CIs"
           value={dashboardStats?.activeCIs || 0}
           subtitle={`${calculateActiveCIPercentage().toFixed(1)}% of total`}
-          color="#34C759"
+          color={brand.success}
           trend={{
             value: calculateActiveCIPercentage(),
             direction: 'up',
@@ -104,14 +105,14 @@ export const InventoryStats: React.FC = () => {
           title="Total Relationships"
           value={dashboardStats?.totalRelationships || 0}
           subtitle="CI connections"
-          color="#5856D6"
+          color={brand.navy}
           loading={!dashboardStats}
         />
         <MetricCard
           title="Health Score"
           value={`${dashboardStats?.healthScore || 0}%`}
           subtitle="Overall system health"
-          color="#FF9500"
+          color={brand.warning}
           trend={calculateHealthTrend()}
           loading={!dashboardStats}
         />
@@ -119,7 +120,7 @@ export const InventoryStats: React.FC = () => {
           title="Discovery Jobs Today"
           value={dashboardStats?.discoveryJobsToday || 0}
           subtitle="Completed today"
-          color="#FF2D55"
+          color={brand.coral}
           loading={!dashboardStats}
         />
       </div>
@@ -130,7 +131,7 @@ export const InventoryStats: React.FC = () => {
             title="Discovery Success Rate"
             value={`${(discoveryStats.successRate * 100).toFixed(1)}%`}
             subtitle={`${discoveryStats.totalJobs} total jobs`}
-            color="#34C759"
+            color={brand.success}
             trend={{
               value: discoveryStats.successRate * 100,
               direction: discoveryStats.successRate >= 0.9 ? 'up' : 'down',

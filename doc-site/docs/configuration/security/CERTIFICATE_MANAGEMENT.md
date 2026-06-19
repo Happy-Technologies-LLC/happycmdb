@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document outlines the SSL/TLS certificate management procedures for ConfigBuddy CMDB v2.0. Database encryption is **CRITICAL** for production deployments to protect sensitive CMDB data in transit.
+This document outlines the SSL/TLS certificate management procedures for HappyCMDB v2.0. Database encryption is **CRITICAL** for production deployments to protect sensitive CMDB data in transit.
 
 **Affected Services**:
 - PostgreSQL (primary data store for credentials, connector registry, metadata)
@@ -26,7 +26,7 @@ This document outlines the SSL/TLS certificate management procedures for ConfigB
 
 ## Certificate Types
 
-ConfigBuddy uses SSL/TLS certificates for the following services:
+HappyCMDB uses SSL/TLS certificates for the following services:
 
 | Service | Certificate Path | Key Path | CA Path | Purpose |
 |---------|------------------|----------|---------|---------|
@@ -49,10 +49,10 @@ ConfigBuddy uses SSL/TLS certificates for the following services:
 
 ### Quick Start
 
-ConfigBuddy includes an automated script to generate self-signed certificates for all services:
+HappyCMDB includes an automated script to generate self-signed certificates for all services:
 
 ```bash
-cd /Users/nczitzer/WebstormProjects/configbuddy/infrastructure/docker/ssl
+cd /Users/nczitzer/WebstormProjects/happycmdb/infrastructure/docker/ssl
 ./generate-self-signed-certs.sh
 ```
 
@@ -120,7 +120,7 @@ sudo security add-trusted-cert -d -r trustRoot \
 
 **Ubuntu/Debian**:
 ```bash
-sudo cp infrastructure/docker/ssl/ca.crt /usr/local/share/ca-certificates/configbuddy-ca.crt
+sudo cp infrastructure/docker/ssl/ca.crt /usr/local/share/ca-certificates/happycmdb-ca.crt
 sudo update-ca-certificates
 ```
 
@@ -142,10 +142,10 @@ certutil -addstore -f ROOT infrastructure\docker\ssl\ca.crt
 
 ### Automated Setup
 
-ConfigBuddy includes a Let's Encrypt setup script:
+HappyCMDB includes a Let's Encrypt setup script:
 
 ```bash
-cd /Users/nczitzer/WebstormProjects/configbuddy/infrastructure/ssl
+cd /Users/nczitzer/WebstormProjects/happycmdb/infrastructure/ssl
 
 # Set environment variables
 export DOMAIN="cmdb.example.com"
@@ -159,7 +159,7 @@ sudo ./setup-ssl.sh
 **What the script does**:
 1. Installs certbot (if not already installed)
 2. Requests Let's Encrypt certificate via HTTP challenge
-3. Copies certificates to ConfigBuddy SSL directories
+3. Copies certificates to HappyCMDB SSL directories
 4. Sets correct file permissions
 5. Configures automatic renewal cron job
 
@@ -180,15 +180,15 @@ sudo certbot certonly \
   --email admin@example.com \
   --domains cmdb.example.com
 
-# Copy certificates to ConfigBuddy
+# Copy certificates to HappyCMDB
 sudo cp /etc/letsencrypt/live/cmdb.example.com/fullchain.pem \
-  /Users/nczitzer/WebstormProjects/configbuddy/infrastructure/docker/ssl/nginx/cert.pem
+  /Users/nczitzer/WebstormProjects/happycmdb/infrastructure/docker/ssl/nginx/cert.pem
 
 sudo cp /etc/letsencrypt/live/cmdb.example.com/privkey.pem \
-  /Users/nczitzer/WebstormProjects/configbuddy/infrastructure/docker/ssl/nginx/key.pem
+  /Users/nczitzer/WebstormProjects/happycmdb/infrastructure/docker/ssl/nginx/key.pem
 
 sudo cp /etc/letsencrypt/live/cmdb.example.com/chain.pem \
-  /Users/nczitzer/WebstormProjects/configbuddy/infrastructure/docker/ssl/nginx/chain.pem
+  /Users/nczitzer/WebstormProjects/happycmdb/infrastructure/docker/ssl/nginx/chain.pem
 
 # Set permissions
 sudo chmod 644 infrastructure/docker/ssl/nginx/cert.pem
@@ -244,7 +244,7 @@ crontab -l | grep renew-ssl
 
 **Manual renewal**:
 ```bash
-cd /Users/nczitzer/WebstormProjects/configbuddy/infrastructure/ssl
+cd /Users/nczitzer/WebstormProjects/happycmdb/infrastructure/ssl
 sudo ./renew-ssl.sh
 ```
 
@@ -253,7 +253,7 @@ sudo ./renew-ssl.sh
 For self-signed certificates, regenerate before expiration:
 
 ```bash
-cd /Users/nczitzer/WebstormProjects/configbuddy/infrastructure/docker/ssl
+cd /Users/nczitzer/WebstormProjects/happycmdb/infrastructure/docker/ssl
 
 # Backup existing certificates
 tar -czf ssl-backup-$(date +%Y%m%d).tar.gz *.crt *.key nginx/ neo4j/ postgres/ redis/
@@ -299,7 +299,7 @@ docker exec cmdb-neo4j cypher-shell -u neo4j -p "$NEO4J_PASSWORD" \
 
 ### Prometheus Alerts
 
-ConfigBuddy includes Prometheus alerts for certificate expiration. Add to `monitoring/prometheus/alerts/ssl.yml`:
+HappyCMDB includes Prometheus alerts for certificate expiration. Add to `monitoring/prometheus/alerts/ssl.yml`:
 
 ```yaml
 groups:
@@ -561,7 +561,7 @@ tar -czf ssl-backup-$(date +%Y%m%d-%H%M%S).tar.gz \
 gpg --encrypt --recipient admin@example.com ssl-backup-*.tar.gz
 
 # Upload to secure backup location
-aws s3 cp ssl-backup-*.tar.gz.gpg s3://backups/configbuddy/ssl/
+aws s3 cp ssl-backup-*.tar.gz.gpg s3://backups/happycmdb/ssl/
 ```
 
 ### 7. Incident Response
@@ -639,11 +639,11 @@ cypher-shell -a bolt+s://localhost:7687 -u neo4j -p password \
 For questions or issues with certificate management:
 
 - **Documentation**: http://localhost:8080/operations/troubleshooting
-- **GitHub Issues**: https://github.com/configbuddy/cmdb/issues
-- **Security Issues**: security@configbuddy.example.com (use PGP key for sensitive reports)
+- **GitHub Issues**: https://github.com/happycmdb/cmdb/issues
+- **Security Issues**: security@happycmdb.example.com (use PGP key for sensitive reports)
 
 ---
 
 **Last Updated**: October 2025
-**Version**: ConfigBuddy CMDB v2.0
+**Version**: HappyCMDB v2.0
 **Maintained By**: Platform Engineering Team

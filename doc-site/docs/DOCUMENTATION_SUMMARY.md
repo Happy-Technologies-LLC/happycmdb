@@ -1,7 +1,7 @@
-# ConfigBuddy Documentation Reorganization - Summary
+# HappyCMDB Documentation Reorganization - Summary
 
 ## Overview
-This document summarizes the reorganization of ConfigBuddy documentation into a clean, structured format for the VitePress docs site at `/doc-site/docs/`.
+This document summarizes the reorganization of HappyCMDB documentation into a clean, structured format for the VitePress docs site at `/doc-site/docs/`.
 
 ## Files Created
 

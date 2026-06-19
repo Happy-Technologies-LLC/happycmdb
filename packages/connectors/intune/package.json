@@ -1,7 +1,7 @@
 {
   "name": "@cmdb/connector-intune",
   "version": "1.0.0",
-  "description": "Microsoft Intune connector for ConfigBuddy CMDB",
+  "description": "Microsoft Intune connector for HappyCMDB",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
@@ -19,7 +19,7 @@
     "azure",
     "graph-api"
   ],
-  "author": "ConfigBuddy",
+  "author": "HappyCMDB",
   "license": "Apache-2.0",
   "dependencies": {
     "@cmdb/common": "*",

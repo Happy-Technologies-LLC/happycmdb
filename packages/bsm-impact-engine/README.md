@@ -1,6 +1,6 @@
 # @cmdb/bsm-impact-engine
 
-Business Service Mapping (BSM) Impact Engine for ConfigBuddy v3.0 Phase 4.
+Business Service Mapping (BSM) Impact Engine for HappyCMDB v3.0 Phase 4.
 
 Provides comprehensive impact analysis, blast radius calculation, risk assessment, and business criticality scoring for IT infrastructure and business services.
 
@@ -395,4 +395,4 @@ MIT
 
 ## Author
 
-ConfigBuddy Team
+HappyCMDB Team

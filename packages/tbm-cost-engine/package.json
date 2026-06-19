@@ -1,7 +1,7 @@
 {
   "name": "@cmdb/tbm-cost-engine",
   "version": "3.0.0",
-  "description": "TBM Cost Engine for ConfigBuddy v3.0 - Cloud cost tracking and financial transparency",
+  "description": "TBM Cost Engine for HappyCMDB v3.0 - Cloud cost tracking and financial transparency",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {

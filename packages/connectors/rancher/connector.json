@@ -6,7 +6,7 @@
   "name": "Rancher Kubernetes Management",
   "version": "1.0.0",
   "description": "Bi-directional integration with Rancher for multi-cluster Kubernetes management, nodes, projects, and workloads",
-  "author": "ConfigBuddy",
+  "author": "HappyCMDB",
   "verified": true,
   "capabilities": {
     "extraction": true,

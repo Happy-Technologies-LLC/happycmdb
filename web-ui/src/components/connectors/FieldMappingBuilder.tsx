@@ -44,7 +44,7 @@ interface FieldMappingBuilderProps {
   onChange: (mappings: FieldMapping[]) => void;
 }
 
-// Standard ConfigBuddy CI fields (NOT stored in metadata)
+// Standard HappyCMDB CI fields (NOT stored in metadata)
 const STANDARD_CI_FIELDS = [
   { value: 'name', label: 'Name', required: true, category: 'Core' },
   { value: 'type', label: 'CI Type', required: true, category: 'Core' },
@@ -115,26 +115,26 @@ export const FieldMappingBuilder: React.FC<FieldMappingBuilderProps> = ({
   const getTransformationIcon = (type?: string) => {
     switch (type) {
       case 'expression':
-        return <Zap className="h-4 w-4 text-yellow-600" />;
+        return <Zap className="h-4 w-4 text-warning" />;
       case 'lookup':
-        return <Database className="h-4 w-4 text-blue-600" />;
+        return <Database className="h-4 w-4 text-sky-text" />;
       case 'conditional':
-        return <Settings2 className="h-4 w-4 text-purple-600" />;
+        return <Settings2 className="h-4 w-4 text-navy" />;
       default:
-        return <ArrowRight className="h-4 w-4 text-gray-400" />;
+        return <ArrowRight className="h-4 w-4 text-ink-soft" />;
     }
   };
 
   const getTransformationBadge = (type?: string) => {
     switch (type) {
       case 'expression':
-        return <Badge variant="outline" className="bg-yellow-50 text-yellow-700 border-yellow-200">Expression</Badge>;
+        return <Badge variant="outline" className="bg-warning-soft text-warning border-warning/20">Expression</Badge>;
       case 'lookup':
-        return <Badge variant="outline" className="bg-blue-50 text-blue-700 border-blue-200">Lookup</Badge>;
+        return <Badge variant="outline" className="bg-sky-soft text-sky-text border-sky">Lookup</Badge>;
       case 'conditional':
-        return <Badge variant="outline" className="bg-purple-50 text-purple-700 border-purple-200">Conditional</Badge>;
+        return <Badge variant="outline" className="bg-sky-soft text-navy border-sky">Conditional</Badge>;
       default:
-        return <Badge variant="outline" className="bg-gray-50 text-gray-600">Direct</Badge>;
+        return <Badge variant="outline" className="bg-warm-alt text-ink-soft">Direct</Badge>;
     }
   };
 
@@ -267,7 +267,7 @@ export const FieldMappingBuilder: React.FC<FieldMappingBuilderProps> = ({
                                   <span>{field.label}</span>
                                   <span className="text-xs text-muted-foreground ml-2">
                                     {field.category}
-                                    {field.required && <span className="text-red-500 ml-1">*</span>}
+                            {field.required && <span className="text-danger ml-1">*</span>}
                                   </span>
                                 </div>
                               </SelectItem>
@@ -478,7 +478,7 @@ export const FieldMappingBuilder: React.FC<FieldMappingBuilderProps> = ({
 
                     <div className="flex items-center gap-3 flex-1">
                       <div className="text-sm">
-                        <span className="font-medium text-blue-600">{mapping.source_field || '(empty)'}</span>
+                        <span className="font-medium text-sky-text">{mapping.source_field || '(empty)'}</span>
                       </div>
 
                       <div className="flex items-center gap-2">
@@ -487,7 +487,7 @@ export const FieldMappingBuilder: React.FC<FieldMappingBuilderProps> = ({
                       </div>
 
                       <div className="text-sm">
-                        <span className="font-medium text-green-600">{mapping.target_field || '(empty)'}</span>
+                        <span className="font-medium text-success">{mapping.target_field || '(empty)'}</span>
                       </div>
                     </div>
 

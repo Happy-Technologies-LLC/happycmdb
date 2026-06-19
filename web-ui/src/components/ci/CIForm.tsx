@@ -104,7 +104,7 @@ export const CIForm: React.FC<CIFormProps> = ({
           {/* Name Field */}
           <div>
             <label htmlFor="name" className="block text-sm font-medium text-foreground mb-1">
-              Name <span className="text-red-500">*</span>
+              Name <span className="text-danger">*</span>
             </label>
             <Controller
               name="name"
@@ -117,8 +117,8 @@ export const CIForm: React.FC<CIFormProps> = ({
                     id="name"
                     type="text"
                     className={cn(
-                      'w-full px-3 py-2 border rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500',
-                      errors.name ? 'border-red-500' : 'border-input'
+                      'w-full px-3 py-2 border rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-sky/30 focus:border-sky',
+                      errors.name ? 'border-danger' : 'border-line'
                     )}
                   />
                   {errors.name && (
@@ -133,7 +133,7 @@ export const CIForm: React.FC<CIFormProps> = ({
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label htmlFor="type" className="block text-sm font-medium text-foreground mb-1">
-                Type <span className="text-red-500">*</span>
+                Type <span className="text-danger">*</span>
               </label>
               <Controller
                 name="type"
@@ -145,8 +145,8 @@ export const CIForm: React.FC<CIFormProps> = ({
                       {...field}
                       id="type"
                       className={cn(
-                        'w-full px-3 py-2 border rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500',
-                        errors.type ? 'border-red-500' : 'border-input'
+                        'w-full px-3 py-2 border rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-sky/30 focus:border-sky',
+                        errors.type ? 'border-danger' : 'border-line'
                       )}
                     >
                       {CI_TYPES.map((type) => (
@@ -165,7 +165,7 @@ export const CIForm: React.FC<CIFormProps> = ({
 
             <div>
               <label htmlFor="status" className="block text-sm font-medium text-foreground mb-1">
-                Status <span className="text-red-500">*</span>
+                Status <span className="text-danger">*</span>
               </label>
               <Controller
                 name="status"
@@ -177,8 +177,8 @@ export const CIForm: React.FC<CIFormProps> = ({
                       {...field}
                       id="status"
                       className={cn(
-                        'w-full px-3 py-2 border rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500',
-                        errors.status ? 'border-red-500' : 'border-input'
+                        'w-full px-3 py-2 border rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-sky/30 focus:border-sky',
+                        errors.status ? 'border-danger' : 'border-line'
                       )}
                     >
                       {CI_STATUSES.map((status) => (
@@ -199,7 +199,7 @@ export const CIForm: React.FC<CIFormProps> = ({
           {/* Environment Field */}
           <div>
             <label htmlFor="environment" className="block text-sm font-medium text-foreground mb-1">
-              Environment <span className="text-red-500">*</span>
+              Environment <span className="text-danger">*</span>
             </label>
             <Controller
               name="environment"
@@ -211,8 +211,8 @@ export const CIForm: React.FC<CIFormProps> = ({
                     {...field}
                     id="environment"
                     className={cn(
-                      'w-full px-3 py-2 border rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500',
-                      errors.environment ? 'border-red-500' : 'border-input'
+                      'w-full px-3 py-2 border rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-sky/30 focus:border-sky',
+                      errors.environment ? 'border-danger' : 'border-line'
                     )}
                   >
                     {ENVIRONMENTS.map((env) => (
@@ -244,8 +244,8 @@ export const CIForm: React.FC<CIFormProps> = ({
                     id="description"
                     rows={3}
                     className={cn(
-                      'w-full px-3 py-2 border rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500',
-                      errors.description ? 'border-red-500' : 'border-input'
+                      'w-full px-3 py-2 border rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-sky/30 focus:border-sky',
+                      errors.description ? 'border-danger' : 'border-line'
                     )}
                   />
                   {errors.description && (
@@ -269,7 +269,7 @@ export const CIForm: React.FC<CIFormProps> = ({
                 onChange={(e) => setTagInput(e.target.value)}
                 onKeyDown={handleAddTag}
                 placeholder="Add tags and press Enter"
-                className="w-full px-3 py-2 border border-input rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full px-3 py-2 border border-line rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-sky/30 focus:border-sky"
               />
               <p className="text-sm text-muted-foreground">Press Enter to add a tag</p>
               {tags.length > 0 && (
@@ -277,13 +277,13 @@ export const CIForm: React.FC<CIFormProps> = ({
                   {tags.map((tag) => (
                     <span
                       key={tag}
-                      className="inline-flex items-center gap-1 px-3 py-1 bg-primary/10 text-primary rounded-full text-sm"
+                      className="inline-flex items-center gap-1 px-3 py-1 bg-sky-soft text-sky-text rounded-full text-sm"
                     >
                       {tag}
                       <button
                         type="button"
                         onClick={() => handleDeleteTag(tag)}
-                        className="hover:bg-blue-100 rounded-full p-0.5"
+                        className="hover:bg-sky rounded-full p-0.5"
                       >
                         <X className="w-4 h-4" />
                       </button>
@@ -300,7 +300,7 @@ export const CIForm: React.FC<CIFormProps> = ({
               type="button"
               onClick={onCancel}
               disabled={isSubmitting}
-              className="inline-flex items-center gap-2 px-4 py-2 border border-input rounded-md shadow-sm text-sm font-medium text-foreground bg-card hover:bg-muted focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+              className="inline-flex items-center gap-2 px-4 py-2 border border-line rounded-md shadow-sm text-sm font-medium text-ink bg-white hover:bg-warm focus:outline-none focus:ring-2 focus:ring-sky/30 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <X className="w-4 h-4" />
               Cancel
@@ -308,7 +308,7 @@ export const CIForm: React.FC<CIFormProps> = ({
             <button
               type="submit"
               disabled={isSubmitting}
-              className="inline-flex items-center gap-2 px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+              className="inline-flex items-center gap-2 px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-sky hover:bg-sky/90 focus:outline-none focus:ring-2 focus:ring-sky/30 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <Save className="w-4 h-4" />
               {isSubmitting ? 'Saving...' : 'Save'}

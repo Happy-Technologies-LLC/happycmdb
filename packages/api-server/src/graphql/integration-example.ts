@@ -74,7 +74,7 @@ async function createAPIServer() {
   // Root endpoint
   app.get('/', (_req, res) => {
     res.json({
-      _service: 'ConfigBuddy CMDB API',
+      _service: 'HappyCMDB API',
       _version: '1.0.0',
       _endpoints: {
         _graphql: '/graphql',

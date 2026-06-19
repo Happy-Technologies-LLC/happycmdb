@@ -43,7 +43,7 @@ describe('Login Page', () => {
 
     // Wait for AuthProvider to finish initializing (isLoading -> false)
     await waitFor(() => {
-      expect(screen.getByText('ConfigBuddy')).toBeInTheDocument();
+      expect(screen.getByText('HappyCMDB')).toBeInTheDocument();
     });
 
     expect(screen.getByText('Welcome back')).toBeInTheDocument();

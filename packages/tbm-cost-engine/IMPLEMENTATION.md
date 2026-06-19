@@ -270,7 +270,7 @@ Recommended test coverage:
 
 ## License
 
-MIT (consistent with ConfigBuddy project)
+MIT (consistent with HappyCMDB project)
 
 ---
 

@@ -6,8 +6,8 @@ This directory contains static assets for the documentation site:
 - `/images/` - Screenshots, diagrams, and other images
 - `/downloads/` - Downloadable files (if any)
 
-Place your ConfigBuddy logo files here:
-- `configbuddy-logo.svg` - Main logo for navigation
-- `configbuddy-hero.svg` - Hero image for homepage
+Place your HappyCMDB logo files here:
+- `happycmdb-logo.svg` - Main logo for navigation
+- `happycmdb-hero.svg` - Hero image for homepage
 - `favicon.svg` / `favicon.png` - Favicon
 - `og-image.png` - Open Graph image for social sharing (1200x630px recommended)

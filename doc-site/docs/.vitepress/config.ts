@@ -2,7 +2,7 @@ import { defineConfig } from 'vitepress'
 
 // https://vitepress.dev/reference/site-config
 export default defineConfig({
-  title: 'ConfigBuddy CMDB',
+  title: 'HappyCMDB',
   description: 'Open-source enterprise Configuration Management Database platform',
 
   // Base URL for deployment (adjust for production)
@@ -23,7 +23,7 @@ export default defineConfig({
     ['meta', { name: 'theme-color', content: '#0ea5e9' }],
     ['meta', { name: 'og:type', content: 'website' }],
     ['meta', { name: 'og:locale', content: 'en' }],
-    ['meta', { name: 'og:site_name', content: 'ConfigBuddy CMDB Documentation' }],
+    ['meta', { name: 'og:site_name', content: 'HappyCMDB Documentation' }],
     ['meta', { name: 'og:image', content: '/logos/og-image.png' }],
     ['meta', { name: 'twitter:card', content: 'summary_large_image' }],
   ],
@@ -34,7 +34,7 @@ export default defineConfig({
     logo: '/logos/logo.svg',
 
     // Site title in nav
-    siteTitle: 'ConfigBuddy CMDB',
+    siteTitle: 'HappyCMDB',
 
     // Navigation bar
     nav: [
@@ -525,18 +525,18 @@ export default defineConfig({
 
     // Social links
     socialLinks: [
-      { icon: 'github', link: 'https://github.com/configbuddy/configbuddy' }
+      { icon: 'github', link: 'https://github.com/happycmdb/happycmdb' }
     ],
 
     // Footer
     footer: {
       message: 'Released under the MIT License.',
-      copyright: 'Copyright © 2025 ConfigBuddy Project'
+      copyright: 'Copyright © 2025 HappyCMDB Project'
     },
 
     // Edit link
     editLink: {
-      pattern: 'https://github.com/configbuddy/configbuddy/edit/main/doc-site/docs/:path',
+      pattern: 'https://github.com/happycmdb/happycmdb/edit/main/doc-site/docs/:path',
       text: 'Edit this page on GitHub'
     },
 

@@ -6,7 +6,7 @@
   "name": "Azure AD (Entra ID)",
   "version": "1.0.0",
   "description": "Cloud identity and access management integration with Microsoft Azure AD (Entra ID) for users, devices, applications, and groups",
-  "author": "ConfigBuddy",
+  "author": "HappyCMDB",
   "verified": true,
   "capabilities": {
     "extraction": true,

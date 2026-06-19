@@ -5,10 +5,10 @@ apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
   name: api-server
-  namespace: configbuddy-cmdb
+  namespace: happycmdb-cmdb
   labels:
     app: api-server
-    prometheus: configbuddy
+    prometheus: happycmdb
 spec:
   selector:
     matchLabels:
@@ -23,10 +23,10 @@ apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
   name: discovery-engine
-  namespace: configbuddy-cmdb
+  namespace: happycmdb-cmdb
   labels:
     app: discovery-engine
-    prometheus: configbuddy
+    prometheus: happycmdb
 spec:
   selector:
     matchLabels:
@@ -46,10 +46,10 @@ apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
   name: etl-processor
-  namespace: configbuddy-cmdb
+  namespace: happycmdb-cmdb
   labels:
     app: etl-processor
-    prometheus: configbuddy
+    prometheus: happycmdb
 spec:
   selector:
     matchLabels:
@@ -64,10 +64,10 @@ apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
   name: kafka
-  namespace: configbuddy-cmdb
+  namespace: happycmdb-cmdb
   labels:
     app: kafka
-    prometheus: configbuddy
+    prometheus: happycmdb
 spec:
   selector:
     matchLabels:
@@ -87,10 +87,10 @@ apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
   name: metabase
-  namespace: configbuddy-cmdb
+  namespace: happycmdb-cmdb
   labels:
     app: metabase
-    prometheus: configbuddy
+    prometheus: happycmdb
 spec:
   selector:
     matchLabels:
@@ -105,10 +105,10 @@ apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
   name: neo4j
-  namespace: configbuddy-cmdb
+  namespace: happycmdb-cmdb
   labels:
     app: neo4j
-    prometheus: configbuddy
+    prometheus: happycmdb
 spec:
   selector:
     matchLabels:
@@ -123,10 +123,10 @@ apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
   name: postgresql
-  namespace: configbuddy-cmdb
+  namespace: happycmdb-cmdb
   labels:
     app: postgresql
-    prometheus: configbuddy
+    prometheus: happycmdb
 spec:
   selector:
     matchLabels:
@@ -141,10 +141,10 @@ apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
   name: redis
-  namespace: configbuddy-cmdb
+  namespace: happycmdb-cmdb
   labels:
     app: redis
-    prometheus: configbuddy
+    prometheus: happycmdb
 spec:
   selector:
     matchLabels:

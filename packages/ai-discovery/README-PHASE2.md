@@ -481,4 +481,4 @@ The system gets **smarter and cheaper** over time as more patterns are learned!
 
 ## 📄 License
 
-MIT - See main ConfigBuddy LICENSE file
+MIT - See main HappyCMDB LICENSE file

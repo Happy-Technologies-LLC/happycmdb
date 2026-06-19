@@ -1,11 +1,11 @@
 version: '3.9'
 
 services:
-  configbuddy-docs:
+  happycmdb-docs:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: configbuddy-docs
+    container_name: happycmdb-docs
     ports:
       - "8080:80"
     restart: unless-stopped

@@ -2,7 +2,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: postgres-init-scripts
-  namespace: configbuddy-cmdb
+  namespace: happycmdb-cmdb
 data:
   01-init.sql: |
     -- Enable TimescaleDB extension

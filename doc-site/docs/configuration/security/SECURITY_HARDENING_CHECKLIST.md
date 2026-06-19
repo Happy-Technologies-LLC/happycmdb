@@ -1,4 +1,4 @@
-# ConfigBuddy Security Hardening Checklist
+# HappyCMDB Security Hardening Checklist
 
 **Version**: 2.0
 **Last Updated**: 2025-10-19
@@ -6,7 +6,7 @@
 
 ## Overview
 
-This checklist provides a comprehensive security hardening guide for ConfigBuddy production deployments. All items should be verified before deploying to production and regularly audited thereafter.
+This checklist provides a comprehensive security hardening guide for HappyCMDB production deployments. All items should be verified before deploying to production and regularly audited thereafter.
 
 ---
 
@@ -672,9 +672,9 @@ See `/infrastructure/scripts/security-audit.sh` for automated validation of this
 
 ## Contacts
 
-**Security Lead**: security@configbuddy.io
-**Incident Response**: incidents@configbuddy.io
-**On-Call**: PagerDuty `configbuddy-security`
+**Security Lead**: security@happycmdb.io
+**Incident Response**: incidents@happycmdb.io
+**On-Call**: PagerDuty `happycmdb-security`
 
 ---
 

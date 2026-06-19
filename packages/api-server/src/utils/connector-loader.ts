@@ -205,7 +205,7 @@ export class ConnectorLoader {
             sizeBytes: 0,
             checksum: ''
           }]),
-          metadata.author || 'ConfigBuddy',
+          metadata.author || 'HappyCMDB',
           metadata.homepage || '',
           metadata.repository || '',
           metadata.license || 'MIT',

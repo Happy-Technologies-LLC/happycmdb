@@ -4,7 +4,7 @@
 /**
  * Credential Set Service
  *
- * Manages credential sets for ConfigBuddy's unified credential system.
+ * Manages credential sets for HappyCMDB's unified credential system.
  * Credential sets allow grouping multiple credentials to try in order,
  * perfect for NMAP scanning where you want to try admin creds, then root, then service accounts.
  */

@@ -14,7 +14,7 @@ data "aws_ami" "ubuntu" {
 }
 
 resource "aws_security_group" "instances" {
-  name_prefix = "configbuddy-${var.name_prefix}-${var.environment}-"
+  name_prefix = "happycmdb-${var.name_prefix}-${var.environment}-"
   description = "Security group for ${var.name_prefix} instances"
   vpc_id      = var.vpc_id
 
@@ -67,13 +67,13 @@ resource "aws_security_group" "instances" {
   }
 
   tags = {
-    Name        = "configbuddy-${var.name_prefix}-sg-${var.environment}"
+    Name        = "happycmdb-${var.name_prefix}-sg-${var.environment}"
     Environment = var.environment
   }
 }
 
 resource "aws_iam_role" "instances" {
-  name_prefix = "configbuddy-${var.name_prefix}-${var.environment}-"
+  name_prefix = "happycmdb-${var.name_prefix}-${var.environment}-"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -89,7 +89,7 @@ resource "aws_iam_role" "instances" {
   })
 
   tags = {
-    Name        = "configbuddy-${var.name_prefix}-role-${var.environment}"
+    Name        = "happycmdb-${var.name_prefix}-role-${var.environment}"
     Environment = var.environment
   }
 }
@@ -100,7 +100,7 @@ resource "aws_iam_role_policy_attachment" "ssm" {
 }
 
 resource "aws_iam_instance_profile" "instances" {
-  name_prefix = "configbuddy-${var.name_prefix}-${var.environment}-"
+  name_prefix = "happycmdb-${var.name_prefix}-${var.environment}-"
   role        = aws_iam_role.instances.name
 }
 
@@ -132,7 +132,7 @@ resource "aws_instance" "instances" {
   }
 
   tags = {
-    Name        = "configbuddy-${var.name_prefix}-${count.index + 1}-${var.environment}"
+    Name        = "happycmdb-${var.name_prefix}-${count.index + 1}-${var.environment}"
     Environment = var.environment
     Cluster     = var.name_prefix
   }

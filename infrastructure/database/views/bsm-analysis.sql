@@ -1,5 +1,5 @@
 -- ============================================
--- ConfigBuddy v3.0 - Business Service Mapping (BSM) Views for Metabase
+-- HappyCMDB v3.0 - Business Service Mapping (BSM) Views for Metabase
 -- ============================================
 -- Optimized views for business impact analysis, revenue at risk, and compliance
 -- ============================================

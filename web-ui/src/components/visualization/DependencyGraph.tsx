@@ -24,7 +24,7 @@ import { Button } from '../ui/button';
 import { Card } from '../ui/card';
 import { Switch } from '../ui/switch';
 import { Label } from '../ui/label';
-import { useTheme } from '../../contexts/ThemeContext';
+import { brand, ciTypeColors, statusColors } from '@/lib/brandColors';
 
 interface DependencyGraphProps {
   ciId: string;
@@ -34,18 +34,7 @@ interface DependencyGraphProps {
   onDepthChange?: (depth: number) => void;
 }
 
-const CI_TYPE_COLORS: Record<string, string> = {
-  server: '#1976d2',           // Blue
-  'virtual-machine': '#9c27b0', // Purple
-  container: '#0288d1',         // Light Blue
-  application: '#f57c00',       // Orange
-  service: '#388e3c',           // Green
-  database: '#d32f2f',          // Red
-  'network-device': '#512da8',  // Deep Purple
-  storage: '#00796b',           // Teal
-  'load-balancer': '#c2185b',   // Pink
-  'cloud-resource': '#5e35b1',  // Violet
-};
+const CI_TYPE_COLORS = ciTypeColors;
 
 const CI_TYPE_SHAPES: Record<string, string> = {
   server: 'rectangle',
@@ -74,16 +63,6 @@ const CI_TYPE_ICONS: Record<string, string> = {
   'cloud-resource': 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCI+PGNpcmNsZSBjeD0iMTIiIGN5PSIxMiIgcj0iMyIvPjxwYXRoIGQ9Ik0xMiAzdjMiLz48cGF0aCBkPSJNMTIgMTh2MyIvPjxwYXRoIGQ9Ik0zIDEyaDMiLz48cGF0aCBkPSJNMTggMTJoMyIvPjxwYXRoIGQ9Im0xOSA2LTIuMSAyLjEiLz48cGF0aCBkPSJtNy4xIDE1LjktMi4xIDIuMSIvPjxwYXRoIGQ9Im0xOSAxOC0yLjEtMi4xIi8+PHBhdGggZD0ibTcuMSA4LjEtMi4xLTIuMSIvPjwvc3ZnPg==',
 };
 
-// Status border colors - theme aware
-const getStatusBorderColor = (status: string, isDark: boolean): string => {
-  const colors: Record<string, { light: string; dark: string }> = {
-    active: { light: '#22c55e', dark: '#16a34a' },      // green-500 / green-600
-    inactive: { light: '#6b7280', dark: '#4b5563' },    // gray-500 / gray-600
-    maintenance: { light: '#eab308', dark: '#ca8a04' }, // yellow-500 / yellow-600
-    decommissioned: { light: '#dc2626', dark: '#dc2626' }, // red-600 / red-600
-  };
-  return colors[status]?.[isDark ? 'dark' : 'light'] || (isDark ? '#4b5563' : '#6b7280');
-};
 
 export const DependencyGraph: React.FC<DependencyGraphProps> = ({
   ciId,
@@ -97,7 +76,6 @@ export const DependencyGraph: React.FC<DependencyGraphProps> = ({
   const [layout, setLayout] = useState<'hierarchical' | 'circular' | 'grid'>('hierarchical');
   const [showLabels, setShowLabels] = useState(true);
   const [localDepth, setLocalDepth] = useState(depth);
-  const { resolvedTheme } = useTheme();
 
   useEffect(() => {
     if (!containerRef.current || !relationships.length) return;
@@ -141,18 +119,15 @@ export const DependencyGraph: React.FC<DependencyGraphProps> = ({
       });
     });
 
-    // Theme-aware colors
-    const isDark = resolvedTheme === 'dark';
-    const textColor = isDark ? '#e5e7eb' : '#1f2937';
-    const edgeColor = isDark ? '#6b7280' : '#9ca3af';
-    const backgroundColor = isDark ? '#1f2937' : '#ffffff';
+    const textColor = brand.ink;
+    const edgeColor = brand.line;
 
-    // Pre-compute status border colors for current theme
+    // Status border colors by lifecycle state
     const statusBorderColors: Record<string, string> = {
-      active: isDark ? '#16a34a' : '#22c55e',       // green-600 / green-500
-      inactive: isDark ? '#4b5563' : '#6b7280',     // gray-600 / gray-500
-      maintenance: isDark ? '#ca8a04' : '#eab308',  // yellow-600 / yellow-500
-      decommissioned: '#dc2626',                     // red-600 (same for both)
+      active: statusColors.active,
+      inactive: statusColors.inactive,
+      maintenance: statusColors.maintenance,
+      decommissioned: statusColors.decommissioned,
     };
 
     const cy = cytoscape({
@@ -168,7 +143,7 @@ export const DependencyGraph: React.FC<DependencyGraphProps> = ({
             }) as any,
             'background-color': ((ele: NodeSingular) => {
               const type = ele.data('type');
-              return CI_TYPE_COLORS[type] || '#757575';
+              return CI_TYPE_COLORS[type] || brand.inkSoft;
             }) as any,
             'background-image': ((ele: NodeSingular) => {
               const type = ele.data('type');
@@ -180,7 +155,7 @@ export const DependencyGraph: React.FC<DependencyGraphProps> = ({
             'border-width': 3,
             'border-color': ((ele: NodeSingular) => {
               const status = ele.data('status');
-              return statusBorderColors[status] || (isDark ? '#4b5563' : '#6b7280');
+              return statusBorderColors[status] || statusColors.inactive;
             }) as any,
             label: showLabels ? 'data(label)' : '',
             'text-valign': 'bottom',
@@ -191,7 +166,7 @@ export const DependencyGraph: React.FC<DependencyGraphProps> = ({
             'text-outline-width': 2,
             'text-outline-color': ((ele: NodeSingular) => {
               const type = ele.data('type');
-              return CI_TYPE_COLORS[type] || '#757575';
+              return CI_TYPE_COLORS[type] || brand.inkSoft;
             }) as any,
             width: 50,
             height: 50,
@@ -201,7 +176,7 @@ export const DependencyGraph: React.FC<DependencyGraphProps> = ({
           selector: `node[id="${ciId}"]`,
           style: {
             'border-width': 5,
-            'border-color': '#ffc107',
+            'border-color': brand.warning,
             width: 70,
             height: 70,
           },
@@ -225,7 +200,7 @@ export const DependencyGraph: React.FC<DependencyGraphProps> = ({
           selector: 'node:selected',
           style: {
             'border-width': 5,
-            'border-color': '#ffc107',
+            'border-color': brand.warning,
           },
         },
       ],
@@ -245,7 +220,7 @@ export const DependencyGraph: React.FC<DependencyGraphProps> = ({
     return () => {
       cy.destroy();
     };
-  }, [relationships, ciId, showLabels, layout, resolvedTheme]);
+  }, [relationships, ciId, showLabels, layout]);
 
   const getLayoutConfig = (layoutType: string) => {
     switch (layoutType) {
@@ -301,9 +276,7 @@ export const DependencyGraph: React.FC<DependencyGraphProps> = ({
 
   const handleDownload = () => {
     if (cyRef.current) {
-      const isDark = resolvedTheme === 'dark';
-      const backgroundColor = isDark ? '#1f2937' : '#ffffff';
-      const png = cyRef.current.png({ scale: 2, bg: backgroundColor });
+      const png = cyRef.current.png({ scale: 2, bg: '#fff' });
       const link = document.createElement('a');
       link.href = png;
       link.download = `dependency-graph-${ciId}.png`;
@@ -415,32 +388,32 @@ export const DependencyGraph: React.FC<DependencyGraphProps> = ({
           <h4 className="text-xs font-semibold text-muted-foreground mb-2 uppercase tracking-wider">Status (Border Color)</h4>
           <div className="flex gap-4 flex-wrap">
             <div className="flex items-center gap-2">
-              <div className="w-4 h-4 rounded-full border-[3px]" style={{ borderColor: '#ffc107' }} />
+              <div className="w-4 h-4 rounded-full border-[3px]" style={{ borderColor: brand.warning }} />
               <span className="text-xs">Current CI</span>
             </div>
             <div className="flex items-center gap-2">
               <div
                 className="w-4 h-4 rounded-full border-[3px]"
-                style={{ borderColor: resolvedTheme === 'dark' ? '#16a34a' : '#22c55e' }}
+                style={{ borderColor: statusColors.active }}
               />
               <span className="text-xs capitalize">Active</span>
             </div>
             <div className="flex items-center gap-2">
               <div
                 className="w-4 h-4 rounded-full border-[3px]"
-                style={{ borderColor: resolvedTheme === 'dark' ? '#4b5563' : '#6b7280' }}
+                style={{ borderColor: statusColors.inactive }}
               />
               <span className="text-xs capitalize">Inactive</span>
             </div>
             <div className="flex items-center gap-2">
               <div
                 className="w-4 h-4 rounded-full border-[3px]"
-                style={{ borderColor: resolvedTheme === 'dark' ? '#ca8a04' : '#eab308' }}
+                style={{ borderColor: statusColors.maintenance }}
               />
               <span className="text-xs capitalize">Maintenance</span>
             </div>
             <div className="flex items-center gap-2">
-              <div className="w-4 h-4 rounded-full border-[3px]" style={{ borderColor: '#dc2626' }} />
+              <div className="w-4 h-4 rounded-full border-[3px]" style={{ borderColor: statusColors.decommissioned }} />
               <span className="text-xs capitalize">Decommissioned</span>
             </div>
           </div>

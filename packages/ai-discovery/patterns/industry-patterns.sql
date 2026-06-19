@@ -120,7 +120,7 @@ async function discover(context) {
 }
   $$,
   'Detects Spring Boot applications via Actuator endpoints and extracts app info, dependencies',
-  'configbuddy',
+  'happycmdb',
   'active',
   true,
   0.95
@@ -219,7 +219,7 @@ async function discover(context) {
 }
   $$,
   'Detects Node.js Express applications via headers and common patterns',
-  'configbuddy',
+  'happycmdb',
   'active',
   true,
   0.85
@@ -297,7 +297,7 @@ async function discover(context) {
 }
   $$,
   'Detects PostgreSQL database servers on standard port 5432',
-  'configbuddy',
+  'happycmdb',
   'active',
   true,
   0.90
@@ -374,7 +374,7 @@ async function discover(context) {
 }
   $$,
   'Detects MongoDB database servers on standard port 27017',
-  'configbuddy',
+  'happycmdb',
   'active',
   true,
   0.90
@@ -451,7 +451,7 @@ async function discover(context) {
 }
   $$,
   'Detects Redis cache servers on standard port 6379',
-  'configbuddy',
+  'happycmdb',
   'active',
   true,
   0.95
@@ -528,7 +528,7 @@ async function discover(context) {
 }
   $$,
   'Detects Nginx web servers via Server header',
-  'configbuddy',
+  'happycmdb',
   'active',
   true,
   0.95
@@ -612,7 +612,7 @@ async function discover(context) {
 }
   $$,
   'Detects Docker Engine via API port and endpoints',
-  'configbuddy',
+  'happycmdb',
   'active',
   true,
   0.85
@@ -699,7 +699,7 @@ async function discover(context) {
 }
   $$,
   'Detects Elasticsearch clusters on standard ports 9200/9300',
-  'configbuddy',
+  'happycmdb',
   'active',
   true,
   0.90
@@ -781,7 +781,7 @@ async function discover(context) {
 }
   $$,
   'Detects RabbitMQ message brokers on standard AMQP ports',
-  'configbuddy',
+  'happycmdb',
   'active',
   true,
   0.88

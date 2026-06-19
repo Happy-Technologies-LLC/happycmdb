@@ -1,8 +1,8 @@
-# ConfigBuddy Load Testing Suite - Implementation Summary
+# HappyCMDB Load Testing Suite - Implementation Summary
 
 ## Overview
 
-Comprehensive load testing and performance benchmarking suite for ConfigBuddy v2.0 using k6, covering all critical system components with realistic workload scenarios.
+Comprehensive load testing and performance benchmarking suite for HappyCMDB v2.0 using k6, covering all critical system components with realistic workload scenarios.
 
 **Created**: October 19, 2025
 **Location**: `/infrastructure/testing/load/`
@@ -210,7 +210,7 @@ Comprehensive load testing and performance benchmarking suite for ConfigBuddy v2
 
 ## Expected Performance Baseline
 
-### ConfigBuddy v2.0 Production Targets
+### HappyCMDB v2.0 Production Targets
 
 ```yaml
 API:
@@ -245,8 +245,8 @@ Resources:
 ### Quick Start
 
 ```bash
-# Start ConfigBuddy
-cd /Users/nczitzer/WebstormProjects/configbuddy
+# Start HappyCMDB
+cd /Users/nczitzer/WebstormProjects/happycmdb
 ./deploy.sh
 
 # Run all tests
@@ -352,7 +352,7 @@ Add to GitHub Actions:
 
 ```bash
 # Scheduled nightly tests
-0 2 * * * cd /path/to/configbuddy/infrastructure/testing/load && ./run-loadtest.sh all
+0 2 * * * cd /path/to/happycmdb/infrastructure/testing/load && ./run-loadtest.sh all
 ```
 
 ---
@@ -362,7 +362,7 @@ Add to GitHub Actions:
 ### Common Issues
 
 1. **API not available**
-   - Solution: Start ConfigBuddy with `./deploy.sh`
+   - Solution: Start HappyCMDB with `./deploy.sh`
 
 2. **Tests failing**
    - Solution: Check service health, review logs
@@ -430,7 +430,7 @@ infrastructure/testing/load/
 ## Resources
 
 - [k6 Documentation](https://k6.io/docs/)
-- [ConfigBuddy Documentation](http://localhost:8080)
+- [HappyCMDB Documentation](http://localhost:8080)
 - [Performance Testing Best Practices](https://k6.io/docs/testing-guides/load-testing/)
 
 ---

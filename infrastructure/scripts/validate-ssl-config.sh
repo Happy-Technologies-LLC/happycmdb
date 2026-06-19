@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # =============================================================================
-# ConfigBuddy CMDB - SSL/TLS Configuration Validation Script
+# HappyCMDB - SSL/TLS Configuration Validation Script
 # =============================================================================
-# This script validates SSL/TLS configuration for all ConfigBuddy services:
+# This script validates SSL/TLS configuration for all HappyCMDB services:
 # - PostgreSQL
 # - Neo4j
 # - Redis
@@ -446,7 +446,7 @@ display_summary() {
         fi
 
         echo "  2. Update environment variables in .env file"
-        echo "  3. Restart ConfigBuddy services:"
+        echo "  3. Restart HappyCMDB services:"
         echo "     cd ${PROJECT_ROOT}"
         echo "     ./deploy.sh"
         echo ""
@@ -461,7 +461,7 @@ display_summary() {
 # =============================================================================
 
 main() {
-    print_header "ConfigBuddy CMDB - SSL/TLS Configuration Validator"
+    print_header "HappyCMDB - SSL/TLS Configuration Validator"
     echo ""
     print_info "Environment: $ENVIRONMENT"
     print_info "SSL Directory: $SSL_DIR"

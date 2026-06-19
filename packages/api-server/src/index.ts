@@ -23,7 +23,7 @@ const PORT = parseInt(process.env['PORT'] || '3000', 10);
 
 async function startServer() {
   try {
-    logger.info('Starting ConfigBuddy CMDB API Server', { port: PORT });
+    logger.info('Starting HappyCMDB API Server', { port: PORT });
 
     // Load built-in connectors into database
     logger.info('Loading built-in connectors...');

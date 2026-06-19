@@ -10,6 +10,7 @@ import { useDiscoverySessions } from '@/hooks/useDiscoverySessions';
 import { useAIPatterns } from '@/hooks/useAIPatterns';
 import LoadingSpinner from '@/components/common/LoadingSpinner';
 import { LineChart, Line, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
+import { brand } from '@/lib/brandColors';
 
 export const PatternLearningOverview: React.FC = () => {
   const { learningStats, costAnalytics, loading } = useDiscoverySessions();
@@ -28,10 +29,10 @@ export const PatternLearningOverview: React.FC = () => {
 
   // Pattern status distribution
   const statusData = [
-    { name: 'Active', value: patterns.filter(p => p.status === 'active').length, color: '#10b981' },
-    { name: 'Approved', value: patterns.filter(p => p.status === 'approved').length, color: '#3b82f6' },
-    { name: 'Review', value: patterns.filter(p => p.status === 'review').length, color: '#f59e0b' },
-    { name: 'Draft', value: patterns.filter(p => p.status === 'draft').length, color: '#6b7280' },
+    { name: 'Active', value: patterns.filter(p => p.status === 'active').length, color: brand.success },
+    { name: 'Approved', value: patterns.filter(p => p.status === 'approved').length, color: brand.sky },
+    { name: 'Review', value: patterns.filter(p => p.status === 'review').length, color: brand.warning },
+    { name: 'Draft', value: patterns.filter(p => p.status === 'draft').length, color: brand.inkSoft },
   ];
 
   // Cost trend data (mock - replace with real data)
@@ -64,10 +65,10 @@ export const PatternLearningOverview: React.FC = () => {
           <div className="p-6">
             <div className="flex items-center justify-between mb-2">
               <p className="text-sm text-muted-foreground">Discovery Sessions</p>
-              <Brain className="h-5 w-5 text-purple-500" />
+              <Brain className="h-5 w-5 text-navy" />
             </div>
             <p className="text-3xl font-bold">{learningStats?.totalSessions || 0}</p>
-            <div className="flex items-center gap-1 mt-2 text-sm text-green-600">
+            <div className="flex items-center gap-1 mt-2 text-sm text-success">
               <TrendingUp className="h-4 w-4" />
               <span>Learning active</span>
             </div>
@@ -78,7 +79,7 @@ export const PatternLearningOverview: React.FC = () => {
           <div className="p-6">
             <div className="flex items-center justify-between mb-2">
               <p className="text-sm text-muted-foreground">Avg Confidence</p>
-              <Target className="h-5 w-5 text-blue-500" />
+              <Target className="h-5 w-5 text-sky-text" />
             </div>
             <p className="text-3xl font-bold">{(avgConfidence * 100).toFixed(0)}%</p>
             <div className="flex items-center gap-2 mt-2">
@@ -96,7 +97,7 @@ export const PatternLearningOverview: React.FC = () => {
           <div className="p-6">
             <div className="flex items-center justify-between mb-2">
               <p className="text-sm text-muted-foreground">Cost Savings</p>
-              <DollarSign className="h-5 w-5 text-green-500" />
+              <DollarSign className="h-5 w-5 text-success" />
             </div>
             <p className="text-3xl font-bold">
               {costAnalytics?.savingsFromPatterns?.percentSaved
@@ -126,8 +127,8 @@ export const PatternLearningOverview: React.FC = () => {
                 <AreaChart data={costTrendData}>
                   <defs>
                     <linearGradient id="costGradient" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3}/>
-                      <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}/>
+                      <stop offset="5%" stopColor={brand.sky} stopOpacity={0.3}/>
+                      <stop offset="95%" stopColor={brand.sky} stopOpacity={0}/>
                     </linearGradient>
                   </defs>
                   <CartesianGrid strokeDasharray="3 3" stroke="currentColor" opacity={0.1} />
@@ -144,15 +145,15 @@ export const PatternLearningOverview: React.FC = () => {
                   />
                   <Tooltip
                     contentStyle={{
-                      backgroundColor: 'var(--background)',
-                      border: '1px solid var(--border)',
+                      backgroundColor: '#fff',
+                      border: '1px solid ' + brand.line,
                       borderRadius: '8px'
                     }}
                   />
                   <Area
                     type="monotone"
                     dataKey="cost"
-                    stroke="#3b82f6"
+                    stroke={brand.sky}
                     fillOpacity={1}
                     fill="url(#costGradient)"
                   />
@@ -178,7 +179,7 @@ export const PatternLearningOverview: React.FC = () => {
                     labelLine={false}
                     label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
                     outerRadius={80}
-                    fill="#8884d8"
+                    fill={brand.sky}
                     dataKey="value"
                   >
                     {statusData.map((entry, index) => (
@@ -198,14 +199,14 @@ export const PatternLearningOverview: React.FC = () => {
         <Card className="border-0 bg-transparent">
           <CardHeader>
             <CardTitle className="text-lg flex items-center gap-2">
-              <Zap className="h-5 w-5 text-yellow-500" />
+              <Zap className="h-5 w-5 text-warning" />
               Learning Flywheel
             </CardTitle>
           </CardHeader>
           <CardContent>
             <div className="space-y-4">
               <div className="flex items-start gap-4">
-                <div className="flex-shrink-0 w-8 h-8 rounded-full bg-blue-500/20 flex items-center justify-center text-sm font-bold text-blue-500">
+                <div className="flex-shrink-0 w-8 h-8 rounded-full bg-sky-soft flex items-center justify-center text-sm font-bold text-sky-text">
                   1
                 </div>
                 <div>
@@ -217,7 +218,7 @@ export const PatternLearningOverview: React.FC = () => {
               </div>
 
               <div className="flex items-start gap-4">
-                <div className="flex-shrink-0 w-8 h-8 rounded-full bg-purple-500/20 flex items-center justify-center text-sm font-bold text-purple-500">
+                <div className="flex-shrink-0 w-8 h-8 rounded-full bg-navy/10 flex items-center justify-center text-sm font-bold text-navy">
                   2
                 </div>
                 <div>
@@ -229,7 +230,7 @@ export const PatternLearningOverview: React.FC = () => {
               </div>
 
               <div className="flex items-start gap-4">
-                <div className="flex-shrink-0 w-8 h-8 rounded-full bg-green-500/20 flex items-center justify-center text-sm font-bold text-green-500">
+                <div className="flex-shrink-0 w-8 h-8 rounded-full bg-success-soft flex items-center justify-center text-sm font-bold text-success">
                   3
                 </div>
                 <div>
@@ -241,7 +242,7 @@ export const PatternLearningOverview: React.FC = () => {
               </div>
 
               <div className="flex items-start gap-4">
-                <div className="flex-shrink-0 w-8 h-8 rounded-full bg-yellow-500/20 flex items-center justify-center text-sm font-bold text-yellow-500">
+                <div className="flex-shrink-0 w-8 h-8 rounded-full bg-warning-soft flex items-center justify-center text-sm font-bold text-warning">
                   4
                 </div>
                 <div>
@@ -253,7 +254,7 @@ export const PatternLearningOverview: React.FC = () => {
               </div>
 
               <div className="flex items-start gap-4">
-                <div className="flex-shrink-0 w-8 h-8 rounded-full bg-orange-500/20 flex items-center justify-center text-sm font-bold text-orange-500">
+                <div className="flex-shrink-0 w-8 h-8 rounded-full bg-warning-soft flex items-center justify-center text-sm font-bold text-warning">
                   5
                 </div>
                 <div>
@@ -272,7 +273,7 @@ export const PatternLearningOverview: React.FC = () => {
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <LiquidGlass size="sm" rounded="xl">
           <div className="p-4 flex items-center gap-3">
-            <CheckCircle className="h-8 w-8 text-green-500" />
+            <CheckCircle className="h-8 w-8 text-success" />
             <div>
               <p className="text-2xl font-bold">{learningStats?.autoApproved || 0}</p>
               <p className="text-xs text-muted-foreground">Auto-Approved</p>
@@ -282,7 +283,7 @@ export const PatternLearningOverview: React.FC = () => {
 
         <LiquidGlass size="sm" rounded="xl">
           <div className="p-4 flex items-center gap-3">
-            <Clock className="h-8 w-8 text-yellow-500" />
+            <Clock className="h-8 w-8 text-warning" />
             <div>
               <p className="text-2xl font-bold">{pendingPatterns.length}</p>
               <p className="text-xs text-muted-foreground">Pending Review</p>
@@ -292,7 +293,7 @@ export const PatternLearningOverview: React.FC = () => {
 
         <LiquidGlass size="sm" rounded="xl">
           <div className="p-4 flex items-center gap-3">
-            <Zap className="h-8 w-8 text-blue-500" />
+            <Zap className="h-8 w-8 text-sky-text" />
             <div>
               <p className="text-2xl font-bold">{(avgSuccessRate * 100).toFixed(0)}%</p>
               <p className="text-xs text-muted-foreground">Success Rate</p>
@@ -302,7 +303,7 @@ export const PatternLearningOverview: React.FC = () => {
 
         <LiquidGlass size="sm" rounded="xl">
           <div className="p-4 flex items-center gap-3">
-            <TrendingUp className="h-8 w-8 text-purple-500" />
+            <TrendingUp className="h-8 w-8 text-navy" />
             <div>
               <p className="text-2xl font-bold">
                 {costAnalytics?.savingsFromPatterns?.patternHits || 0}

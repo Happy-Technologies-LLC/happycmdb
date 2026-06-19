@@ -1,0 +1,79 @@
+/* ============================================================
+   BASE / RESET — Happy Technologies
+   Light global defaults so specimen cards and primitives render
+   with brand typography out of the box. Consumers get sensible
+   element styling without a CSS framework.
+   ============================================================ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: var(--text-base);
+  line-height: var(--leading-relaxed);
+  color: var(--text-strong);
+  background: var(--surface-page);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-weight: var(--weight-bold);
+  color: var(--text-heading);
+  letter-spacing: var(--tracking-tighter);
+  line-height: var(--leading-snug);
+}
+
+h1 { font-size: var(--text-h1); }
+h2 { font-size: var(--text-h2); }
+h3 { font-size: var(--text-h3); }
+
+p {
+  margin: 0;
+  color: var(--text-body);
+  line-height: var(--leading-relaxed);
+}
+
+a {
+  color: var(--text-link);
+  text-decoration: none;
+  transition: color var(--transition);
+}
+
+a:hover {
+  color: var(--accent-text-hover);
+}
+
+img {
+  max-width: 100%;
+  height: auto;
+}
+
+small {
+  font-size: var(--text-xs);
+}
+
+code, kbd, samp {
+  font-family: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+}
+
+/* Eyebrow / section label — used across site + slides */
+.ht-eyebrow {
+  display: inline-block;
+  background: var(--accent-bg);
+  color: var(--accent-text);
+  text-transform: uppercase;
+  font-family: var(--font-display);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-bold);
+  letter-spacing: var(--tracking-widest);
+  padding: 0.4rem 1rem;
+  border-radius: var(--radius-sm);
+}

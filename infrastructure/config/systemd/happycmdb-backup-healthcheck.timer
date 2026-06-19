@@ -1,7 +1,7 @@
 [Unit]
-Description=ConfigBuddy Backup Health Check Timer
-Documentation=https://github.com/configbuddy/configbuddy
-Requires=configbuddy-backup-healthcheck.service
+Description=HappyCMDB Backup Health Check Timer
+Documentation=https://github.com/happycmdb/happycmdb
+Requires=happycmdb-backup-healthcheck.service
 
 [Timer]
 # Run every 6 hours

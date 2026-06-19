@@ -1,6 +1,6 @@
 # Dashboard REST API Reference
 
-This document describes the REST API endpoints for ConfigBuddy v3.0's Multi-Stakeholder Business Insights dashboards.
+This document describes the REST API endpoints for HappyCMDB v3.0's Multi-Stakeholder Business Insights dashboards.
 
 ## Overview
 
@@ -714,4 +714,4 @@ For large environments (>10,000 CIs), dashboard queries may take 2-5 seconds. Co
 ---
 
 **Last Updated**: 2025-11-17
-**Maintainer**: ConfigBuddy Team
+**Maintainer**: HappyCMDB Team

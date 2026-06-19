@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # =============================================================================
-# ConfigBuddy CMDB - Post-Deployment Validation
+# HappyCMDB - Post-Deployment Validation
 # =============================================================================
 # Comprehensive validation after deployment to verify:
 # - All services are running and healthy
@@ -59,7 +59,7 @@ DEPLOY_ENV="${1:-staging}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-print_header "ConfigBuddy CMDB - Post-Deployment Validation"
+print_header "HappyCMDB - Post-Deployment Validation"
 echo "Environment: $DEPLOY_ENV"
 echo "Date: $(date)"
 echo ""
@@ -161,7 +161,7 @@ test_endpoint "API Health" "http://$API_HOST:$API_PORT/api/v1/health" '"status":
 test_endpoint "GraphQL" "http://$API_HOST:$API_PORT/graphql"
 
 # Test Web UI
-test_endpoint "Web UI" "http://$API_HOST:$WEB_UI_PORT" "ConfigBuddy"
+test_endpoint "Web UI" "http://$API_HOST:$WEB_UI_PORT" "HappyCMDB"
 
 # Test specific API endpoints
 test_endpoint "Discovery Definitions" "http://$API_HOST:$API_PORT/api/v1/discovery/definitions" "\\["

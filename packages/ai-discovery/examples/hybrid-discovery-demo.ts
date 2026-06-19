@@ -13,7 +13,7 @@ import { HybridDiscoveryOrchestrator, AIDiscoveryContext } from '../src';
 
 async function main() {
   console.log('='.repeat(70));
-  console.log('ConfigBuddy Hybrid Discovery Demo');
+  console.log('HappyCMDB Hybrid Discovery Demo');
   console.log('='.repeat(70));
   console.log('');
 

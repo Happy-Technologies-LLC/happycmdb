@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# ConfigBuddy CMDB - Configuration Validation Script
+# HappyCMDB - Configuration Validation Script
 # =============================================================================
 # Validates environment configuration before deployment
 # Usage: ./validate-config.sh [development|staging|production]
@@ -186,7 +186,7 @@ check_ssl_cert() {
 # Load Environment File
 # =============================================================================
 
-print_header "ConfigBuddy Configuration Validator"
+print_header "HappyCMDB Configuration Validator"
 print_info "Environment: $ENVIRONMENT"
 print_info "Config file: $ENV_FILE"
 

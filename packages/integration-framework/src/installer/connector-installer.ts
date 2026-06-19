@@ -79,7 +79,7 @@ export class ConnectorInstaller {
       } else {
         // Download from connector registry (implement based on your registry)
         const version = options?.version || 'latest';
-        const registryUrl = process.env['CONNECTOR_REGISTRY_URL'] || 'https://registry.configbuddy.io';
+        const registryUrl = process.env['CONNECTOR_REGISTRY_URL'] || 'https://registry.happycmdb.io';
         const downloadUrl = `${registryUrl}/connectors/${type}/${version}/package.tar.gz`;
 
         logger.info('Downloading from registry', { url: downloadUrl });

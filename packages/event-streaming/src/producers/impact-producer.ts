@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Impact Event Producer for ConfigBuddy v3.0
+ * Impact Event Producer for HappyCMDB v3.0
  *
  * Publishes impact scoring and business service events to Kafka
  */

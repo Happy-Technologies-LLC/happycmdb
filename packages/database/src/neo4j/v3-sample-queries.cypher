@@ -1,5 +1,5 @@
 // ============================================
-// ConfigBuddy v3.0 - Sample Cypher Queries
+// HappyCMDB v3.0 - Sample Cypher Queries
 // ============================================
 // This file contains sample queries demonstrating how to use the
 // v3.0 unified data model with business entities.
@@ -204,7 +204,7 @@ RETURN
   collect(DISTINCT vs.name) as affected_value_streams;
 
 // Example execution:
-// MATCH (ci:CI {name: 'db-prod-01.configbuddy.local'})
+// MATCH (ci:CI {name: 'db-prod-01.happycmdb.local'})
 // [use ci.id in the query above]
 
 // ============================================

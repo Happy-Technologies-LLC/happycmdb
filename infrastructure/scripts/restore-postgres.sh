@@ -1,13 +1,13 @@
 #!/bin/bash
 #
-# PostgreSQL Restore Script for ConfigBuddy
+# PostgreSQL Restore Script for HappyCMDB
 # Supports restore from compressed backups with verification
 #
 
 set -euo pipefail
 
 # Configuration from environment variables or defaults
-BACKUP_DIR="${BACKUP_DIR:-/var/backups/configbuddy/postgres}"
+BACKUP_DIR="${BACKUP_DIR:-/var/backups/happycmdb/postgres}"
 POSTGRES_HOST="${POSTGRES_HOST:-localhost}"
 POSTGRES_PORT="${POSTGRES_PORT:-5432}"
 POSTGRES_DATABASE="${POSTGRES_DATABASE:-cmdb}"
@@ -300,7 +300,7 @@ main() {
         usage
     fi
 
-    log_info "===== ConfigBuddy PostgreSQL Restore ====="
+    log_info "===== HappyCMDB PostgreSQL Restore ====="
 
     # Verify backup file
     verify_backup_file "${backup_file}"

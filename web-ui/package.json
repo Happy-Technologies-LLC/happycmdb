@@ -2,7 +2,7 @@
   "name": "@cmdb/web-ui",
   "version": "1.0.0",
   "license": "Apache-2.0",
-  "description": "ConfigBuddy CMDB Web UI - React Dashboard",
+  "description": "HappyCMDB Web UI - React Dashboard",
   "private": true,
   "type": "module",
   "scripts": {

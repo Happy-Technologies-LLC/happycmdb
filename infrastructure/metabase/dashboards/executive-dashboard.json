@@ -1,5 +1,5 @@
 {
-  "name": "Executive Dashboard - ConfigBuddy v3.0",
+  "name": "Executive Dashboard - HappyCMDB v3.0",
   "description": "High-level IT spend, service health, and risk metrics for executive leadership",
   "parameters": [],
   "cards": [
@@ -17,7 +17,7 @@
           "query": "SELECT SUM(COALESCE((tbm_attributes->>'monthly_cost')::DECIMAL, 0) * 12) AS annual_spend FROM cmdb.dim_ci WHERE is_current = TRUE AND ci_status = 'active'",
           "template-tags": {}
         },
-        "database": "ConfigBuddy CMDB"
+        "database": "HappyCMDB"
       },
       "display": "scalar",
       "visualization_type": "scalar"
@@ -36,7 +36,7 @@
           "query": "SELECT business_capability, annual_cost FROM v_executive_cost_summary ORDER BY annual_cost DESC LIMIT 10",
           "template-tags": {}
         },
-        "database": "ConfigBuddy CMDB"
+        "database": "HappyCMDB"
       },
       "display": "bar",
       "visualization_type": "bar"
@@ -55,7 +55,7 @@
           "query": "SELECT month, tbm_resource_tower, monthly_cost FROM v_cost_trends WHERE month >= NOW() - INTERVAL '12 months' ORDER BY month",
           "template-tags": {}
         },
-        "database": "ConfigBuddy CMDB"
+        "database": "HappyCMDB"
       },
       "display": "line",
       "visualization_type": "line"
@@ -74,7 +74,7 @@
           "query": "SELECT business_criticality, ROUND(AVG(health_score), 2) AS avg_health_score FROM v_service_health_scorecard GROUP BY business_criticality ORDER BY business_criticality",
           "template-tags": {}
         },
-        "database": "ConfigBuddy CMDB"
+        "database": "HappyCMDB"
       },
       "display": "row",
       "visualization_type": "row"
@@ -97,7 +97,7 @@
           "query": "SELECT business_service, business_criticality, open_incidents, total_revenue_at_risk, pct_revenue_at_risk FROM v_revenue_at_risk ORDER BY total_revenue_at_risk DESC LIMIT 5",
           "template-tags": {}
         },
-        "database": "ConfigBuddy CMDB"
+        "database": "HappyCMDB"
       },
       "display": "table",
       "visualization_type": "table"
@@ -120,7 +120,7 @@
           "query": "SELECT * FROM v_top_cost_drivers LIMIT 10",
           "template-tags": {}
         },
-        "database": "ConfigBuddy CMDB"
+        "database": "HappyCMDB"
       },
       "display": "table",
       "visualization_type": "table"
@@ -139,7 +139,7 @@
           "query": "SELECT compliance_framework, compliance_rate FROM v_compliance_summary ORDER BY compliance_rate ASC",
           "template-tags": {}
         },
-        "database": "ConfigBuddy CMDB"
+        "database": "HappyCMDB"
       },
       "display": "bar",
       "visualization_type": "bar"
@@ -158,7 +158,7 @@
           "query": "SELECT priority, incident_count FROM v_incident_summary WHERE status IN ('new', 'assigned', 'in_progress', 'pending') ORDER BY priority",
           "template-tags": {}
         },
-        "database": "ConfigBuddy CMDB"
+        "database": "HappyCMDB"
       },
       "display": "pie",
       "visualization_type": "pie"

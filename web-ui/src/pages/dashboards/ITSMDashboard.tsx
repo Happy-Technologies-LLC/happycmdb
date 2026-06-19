@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
+import { Eyebrow } from '@/components/ui/eyebrow';
 
 export const ITSMDashboard: React.FC = () => {
   const [priorityFilter, setPriorityFilter] = useState<string | null>(null);
@@ -58,8 +59,9 @@ export const ITSMDashboard: React.FC = () => {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-4xl font-bold tracking-tight">ITSM Dashboard</h1>
-          <p className="text-muted-foreground mt-1">
+          <Eyebrow>Dashboards · ITSM</Eyebrow>
+          <h1 className="mt-3 text-[1.9rem]">ITSM Dashboard</h1>
+          <p className="mt-1.5 text-ink-soft">
             Incident and change management overview
           </p>
         </div>
@@ -173,10 +175,10 @@ export const ITSMDashboard: React.FC = () => {
                               variant="outline"
                               className={
                                 change.riskLevel === 'high'
-                                  ? 'bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300'
+                                  ? 'bg-danger-soft text-danger'
                                   : change.riskLevel === 'medium'
-                                  ? 'bg-yellow-100 text-yellow-800 dark:bg-yellow-950 dark:text-yellow-300'
-                                  : 'bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300'
+                                  ? 'bg-warning-soft text-warning-text'
+                                  : 'bg-success-soft text-success'
                               }
                             >
                               {change.riskLevel}
@@ -204,7 +206,7 @@ export const ITSMDashboard: React.FC = () => {
                 {changes.data
                   .filter((c: any) => c.status === 'in-progress')
                   .map((change: any) => (
-                    <LiquidGlass variant="default" rounded="xl" key={change.id} className="cursor-pointer hover:shadow-md transition-shadow border-blue-500">
+                    <LiquidGlass variant="default" rounded="xl" key={change.id} className="cursor-pointer hover:shadow-md transition-shadow border-sky">
                       <div className="p-3">
                         <p className="text-sm font-medium truncate">{change.title}</p>
                         <div className="flex items-center gap-1 mt-2">
@@ -216,10 +218,10 @@ export const ITSMDashboard: React.FC = () => {
                               variant="outline"
                               className={
                                 change.riskLevel === 'high'
-                                  ? 'bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300'
+                                  ? 'bg-danger-soft text-danger'
                                   : change.riskLevel === 'medium'
-                                  ? 'bg-yellow-100 text-yellow-800 dark:bg-yellow-950 dark:text-yellow-300'
-                                  : 'bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300'
+                                  ? 'bg-warning-soft text-warning-text'
+                                  : 'bg-success-soft text-success'
                               }
                             >
                               {change.riskLevel}
@@ -245,7 +247,7 @@ export const ITSMDashboard: React.FC = () => {
                 {changes.data
                   .filter((c: any) => c.status === 'rollback')
                   .map((change: any) => (
-                    <LiquidGlass variant="default" rounded="xl" key={change.id} className="cursor-pointer hover:shadow-md transition-shadow border-red-500">
+                    <LiquidGlass variant="default" rounded="xl" key={change.id} className="cursor-pointer hover:shadow-md transition-shadow border-danger">
                       <div className="p-3">
                         <p className="text-sm font-medium truncate">{change.title}</p>
                         <div className="flex items-center gap-1 mt-2">
@@ -266,7 +268,7 @@ export const ITSMDashboard: React.FC = () => {
             <div>
               <div className="flex items-center justify-between mb-3">
                 <h4 className="font-semibold text-sm">Completed</h4>
-                <Badge variant="default" className="bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300">
+                <Badge variant="success">
                   {changesByStatus.completed}
                 </Badge>
               </div>
@@ -275,14 +277,14 @@ export const ITSMDashboard: React.FC = () => {
                   .filter((c: any) => c.status === 'completed')
                   .slice(0, 5)
                   .map((change: any) => (
-                    <LiquidGlass variant="default" rounded="xl" key={change.id} className="cursor-pointer hover:shadow-md transition-shadow border-green-500">
+                    <LiquidGlass variant="default" rounded="xl" key={change.id} className="cursor-pointer hover:shadow-md transition-shadow border-success">
                       <div className="p-3">
                         <p className="text-sm font-medium truncate">{change.title}</p>
                         <div className="flex items-center gap-1 mt-2">
                           <Badge variant="outline" className="text-xs">
                             {change.type}
                           </Badge>
-                          <CheckCircle className="h-3 w-3 text-green-600 dark:text-green-400" />
+                          <CheckCircle className="h-3 w-3 text-success" />
                         </div>
                       </div>
                     </LiquidGlass>
@@ -381,7 +383,7 @@ export const ITSMDashboard: React.FC = () => {
                 <Progress
                   value={sla.compliancePercentage}
                   className={`h-2 ${
-                    sla.compliancePercentage >= sla.target ? '' : 'bg-red-200'
+                    sla.compliancePercentage >= sla.target ? '' : 'bg-danger-soft'
                   }`}
                 />
               </div>
@@ -424,10 +426,10 @@ export const ITSMDashboard: React.FC = () => {
                           variant="outline"
                           className={
                             ci.driftSeverity === 'high'
-                              ? 'bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300'
+                              ? 'bg-danger-soft text-danger'
                               : ci.driftSeverity === 'medium'
-                              ? 'bg-yellow-100 text-yellow-800 dark:bg-yellow-950 dark:text-yellow-300'
-                              : 'bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300'
+                              ? 'bg-warning-soft text-warning-text'
+                              : 'bg-sky-soft text-sky-text'
                           }
                         >
                           {ci.driftSeverity}

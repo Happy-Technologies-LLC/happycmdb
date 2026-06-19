@@ -1,5 +1,5 @@
 /**
- * ConfigBuddy GraphQL Load Test
+ * HappyCMDB GraphQL Load Test
  *
  * Tests GraphQL API performance with complex queries, nested relationships,
  * and query complexity scenarios
@@ -476,8 +476,8 @@ export function mixedWorkload() {
 // Summary handler
 export function handleSummary(data) {
   return {
-    '/Users/nczitzer/WebstormProjects/configbuddy/infrastructure/testing/load/reports/graphql-summary.html': htmlReport(data),
-    '/Users/nczitzer/WebstormProjects/configbuddy/infrastructure/testing/load/reports/graphql-summary.json': JSON.stringify(data, null, 2),
+    '/Users/nczitzer/WebstormProjects/happycmdb/infrastructure/testing/load/reports/graphql-summary.html': htmlReport(data),
+    '/Users/nczitzer/WebstormProjects/happycmdb/infrastructure/testing/load/reports/graphql-summary.json': JSON.stringify(data, null, 2),
     stdout: textSummary(data),
   };
 }
@@ -487,7 +487,7 @@ function htmlReport(data) {
 <!DOCTYPE html>
 <html>
 <head>
-  <title>ConfigBuddy GraphQL Load Test Results</title>
+  <title>HappyCMDB GraphQL Load Test Results</title>
   <style>
     body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
     .container { max-width: 1200px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; }
@@ -506,7 +506,7 @@ function htmlReport(data) {
 </head>
 <body>
   <div class="container">
-    <h1>ConfigBuddy GraphQL Load Test Results</h1>
+    <h1>HappyCMDB GraphQL Load Test Results</h1>
     <p>Test Duration: ${data.state.testRunDurationMs / 1000}s</p>
 
     <h2>Key Metrics</h2>
@@ -587,7 +587,7 @@ function htmlReport(data) {
 
     <p style="margin-top: 30px; color: #666; font-size: 12px;">
       Generated: ${new Date().toISOString()}<br>
-      ConfigBuddy v2.0 GraphQL Load Testing Suite
+      HappyCMDB v2.0 GraphQL Load Testing Suite
     </p>
   </div>
 </body>
@@ -597,7 +597,7 @@ function htmlReport(data) {
 
 function textSummary(data) {
   let output = '\n' + '='.repeat(60) + '\n';
-  output += 'ConfigBuddy GraphQL Load Test Summary\n';
+  output += 'HappyCMDB GraphQL Load Test Summary\n';
   output += '='.repeat(60) + '\n\n';
 
   output += `Total Queries: ${data.metrics.graphql_queries_executed?.values.count || '0'}\n`;

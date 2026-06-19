@@ -4,7 +4,7 @@
 /**
  * @cmdb/bsm-impact-engine
  *
- * Business Service Mapping Impact Engine for ConfigBuddy v3.0 Phase 4
+ * Business Service Mapping Impact Engine for HappyCMDB v3.0 Phase 4
  * Provides impact scoring, blast radius analysis, and risk assessment
  *
  * @packageDocumentation

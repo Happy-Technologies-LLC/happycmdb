@@ -7,6 +7,7 @@ import React from 'react';
 import { Card, CardContent } from '@/components/ui/card';
 import { TrendingUp, TrendingDown, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { brand } from '@/lib/brandColors';
 
 export interface MetricCardProps {
   title: string;
@@ -29,16 +30,16 @@ export const MetricCard: React.FC<MetricCardProps> = ({
   subtitle,
   icon,
   trend,
-  color = '#007AFF',
+  color = brand.sky,
   onPress,
   loading = false,
 }) => {
   const getTrendColor = () => {
     if (!trend) return undefined;
     if (trend.isPositive !== undefined) {
-      return trend.isPositive ? '#34C759' : '#FF3B30';
+      return trend.isPositive ? brand.success : brand.danger;
     }
-    return trend.direction === 'up' ? '#34C759' : '#FF3B30';
+    return trend.direction === 'up' ? brand.success : brand.danger;
   };
 
   const TrendIcon = trend?.direction === 'up' ? TrendingUp : TrendingDown;

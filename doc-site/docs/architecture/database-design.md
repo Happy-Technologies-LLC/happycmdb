@@ -2,7 +2,7 @@
 
 ## Overview
 
-ConfigBuddy uses a dual-database architecture:
+HappyCMDB uses a dual-database architecture:
 - **Neo4j**: Primary graph database for CIs and relationships (source of truth)
 - **PostgreSQL**: Data mart for analytics and reporting (dimensional model)
 

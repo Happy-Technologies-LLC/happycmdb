@@ -136,7 +136,7 @@ export class ConnectorListCommand {
 
       if (connectors.length === 0) {
         console.log(chalk.yellow('\nNo installed connectors found'));
-        console.log(chalk.gray('Install connectors with: configbuddy connector install <type>'));
+        console.log(chalk.gray('Install connectors with: happycmdb connector install <type>'));
         return;
       }
 
@@ -324,7 +324,7 @@ export class ConnectorListCommand {
 
     console.log(chalk.cyan('╚════════════════════════════════════════════════════════════════════════╝'));
     console.log(chalk.gray(`\nTotal: ${connectors.length} connectors`));
-    console.log(chalk.gray('Run "configbuddy connector info <type>" for detailed information'));
+    console.log(chalk.gray('Run "happycmdb connector info <type>" for detailed information'));
   }
 
   /**

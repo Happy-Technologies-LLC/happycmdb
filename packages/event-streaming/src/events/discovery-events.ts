@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Discovery Event Types for ConfigBuddy v3.0
+ * Discovery Event Types for HappyCMDB v3.0
  *
  * Events emitted during CI discovery, updates, and deletion
  */

@@ -185,9 +185,9 @@ export const DiscoveryJobList: React.FC = () => {
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2 w-full max-w-[150px]">
-                        <div className="flex-1 h-2 bg-muted rounded-full overflow-hidden">
+                        <div className="flex-1 h-2 bg-line-soft rounded-full overflow-hidden">
                           <div
-                            className="h-full bg-primary transition-all"
+                            className="h-full bg-sky transition-all"
                             style={{ width: `${job.progress}%` }}
                           />
                         </div>

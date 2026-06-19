@@ -9,7 +9,7 @@ Reusable discovery configurations that define what to discover, how to authentic
 
 ## Overview
 
-Discovery Definitions are the cornerstone of ConfigBuddy's ServiceNow-style discovery architecture. They provide a reusable, schedulable, and auditable way to configure infrastructure discovery operations.
+Discovery Definitions are the cornerstone of HappyCMDB's ServiceNow-style discovery architecture. They provide a reusable, schedulable, and auditable way to configure infrastructure discovery operations.
 
 ### Benefits Over Ad-Hoc Discovery
 
@@ -91,7 +91,7 @@ CREATE INDEX idx_jobs_status ON discovery_jobs(status);
     "resourceTypes": ["ec2", "rds", "s3", "elb", "lambda"],
     "tags": {
       "Environment": "production",
-      "ManagedBy": "configbuddy"
+      "ManagedBy": "happycmdb"
     },
     "filters": {
       "ec2": {
@@ -869,4 +869,4 @@ curl -X PUT http://localhost:3000/api/v1/discovery/definitions/{def_id} \
 ---
 
 **Last Updated**: 2025-10-05
-**Maintainer**: ConfigBuddy Team
+**Maintainer**: HappyCMDB Team

@@ -1,10 +1,10 @@
 # Microsoft SCCM (Configuration Manager) Connector
 
-Enterprise connector for Microsoft System Center Configuration Manager (SCCM) integration with ConfigBuddy CMDB.
+Enterprise connector for Microsoft System Center Configuration Manager (SCCM) integration with HappyCMDB.
 
 ## Overview
 
-This connector enables bi-directional synchronization between Microsoft SCCM and ConfigBuddy CMDB, providing comprehensive visibility into managed devices, software inventory, device collections, and software updates.
+This connector enables bi-directional synchronization between Microsoft SCCM and HappyCMDB, providing comprehensive visibility into managed devices, software inventory, device collections, and software updates.
 
 ## Features
 
@@ -308,5 +308,5 @@ MIT License - see LICENSE file for details
 ## Support
 
 For issues, questions, or contributions, please visit:
-- GitHub: https://github.com/configbuddy/configbuddy
+- GitHub: https://github.com/happycmdb/happycmdb
 - Documentation: http://localhost:8080/connectors/sccm

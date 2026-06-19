@@ -1,8 +1,8 @@
 {
   "dashboard": {
-    "title": "ConfigBuddy v3.0 - Platform Overview",
+    "title": "HappyCMDB v3.0 - Platform Overview",
     "uid": "v3-platform-overview",
-    "tags": ["configbuddy", "v3.0", "overview"],
+    "tags": ["happycmdb", "v3.0", "overview"],
     "timezone": "browser",
     "schemaVersion": 38,
     "version": 1,

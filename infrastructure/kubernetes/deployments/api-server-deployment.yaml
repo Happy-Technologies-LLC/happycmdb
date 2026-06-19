@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: api-server
-  namespace: configbuddy-cmdb
+  namespace: happycmdb-cmdb
   labels:
     app: api-server
     component: backend
@@ -36,7 +36,7 @@ spec:
                 topologyKey: kubernetes.io/hostname
       containers:
         - name: api-server
-          image: configbuddy/api-server:latest
+          image: happycmdb/api-server:latest
           imagePullPolicy: Always
           ports:
             - containerPort: 3000
@@ -48,7 +48,7 @@ spec:
             - name: PORT
               value: "3000"
             - name: NEO4J_URI
-              value: "neo4j://neo4j-0.neo4j-cluster.configbuddy-cmdb.svc.cluster.local:7687,neo4j://neo4j-1.neo4j-cluster.configbuddy-cmdb.svc.cluster.local:7687,neo4j://neo4j-2.neo4j-cluster.configbuddy-cmdb.svc.cluster.local:7687"
+              value: "neo4j://neo4j-0.neo4j-cluster.happycmdb-cmdb.svc.cluster.local:7687,neo4j://neo4j-1.neo4j-cluster.happycmdb-cmdb.svc.cluster.local:7687,neo4j://neo4j-2.neo4j-cluster.happycmdb-cmdb.svc.cluster.local:7687"
             - name: NEO4J_USER
               value: "neo4j"
             - name: NEO4J_PASSWORD
@@ -57,7 +57,7 @@ spec:
                   name: cmdb-secrets
                   key: neo4j-password
             - name: POSTGRES_HOST
-              value: "postgres-primary.configbuddy-cmdb.svc.cluster.local"
+              value: "postgres-primary.happycmdb-cmdb.svc.cluster.local"
             - name: POSTGRES_PORT
               value: "5432"
             - name: POSTGRES_DB
@@ -73,14 +73,14 @@ spec:
                   name: cmdb-secrets
                   key: postgres-password
             - name: REDIS_CLUSTER_NODES
-              value: "redis-0.redis-cluster.configbuddy-cmdb.svc.cluster.local:6379,redis-1.redis-cluster.configbuddy-cmdb.svc.cluster.local:6379,redis-2.redis-cluster.configbuddy-cmdb.svc.cluster.local:6379,redis-3.redis-cluster.configbuddy-cmdb.svc.cluster.local:6379,redis-4.redis-cluster.configbuddy-cmdb.svc.cluster.local:6379,redis-5.redis-cluster.configbuddy-cmdb.svc.cluster.local:6379"
+              value: "redis-0.redis-cluster.happycmdb-cmdb.svc.cluster.local:6379,redis-1.redis-cluster.happycmdb-cmdb.svc.cluster.local:6379,redis-2.redis-cluster.happycmdb-cmdb.svc.cluster.local:6379,redis-3.redis-cluster.happycmdb-cmdb.svc.cluster.local:6379,redis-4.redis-cluster.happycmdb-cmdb.svc.cluster.local:6379,redis-5.redis-cluster.happycmdb-cmdb.svc.cluster.local:6379"
             - name: REDIS_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: cmdb-secrets
                   key: redis-password
             - name: KAFKA_BROKERS
-              value: "kafka-0.kafka.configbuddy-cmdb.svc.cluster.local:9092,kafka-1.kafka.configbuddy-cmdb.svc.cluster.local:9092,kafka-2.kafka.configbuddy-cmdb.svc.cluster.local:9092"
+              value: "kafka-0.kafka.happycmdb-cmdb.svc.cluster.local:9092,kafka-1.kafka.happycmdb-cmdb.svc.cluster.local:9092,kafka-2.kafka.happycmdb-cmdb.svc.cluster.local:9092"
             # v3.0 Environment Variables
             - name: ENABLE_ITIL
               value: "true"
@@ -99,7 +99,7 @@ spec:
               value: "true"
             # Metabase Integration
             - name: METABASE_URL
-              value: "http://metabase.configbuddy-cmdb.svc.cluster.local:3000"
+              value: "http://metabase.happycmdb-cmdb.svc.cluster.local:3000"
             - name: METABASE_API_KEY
               valueFrom:
                 secretKeyRef:
@@ -134,7 +134,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: api-server
-  namespace: configbuddy-cmdb
+  namespace: happycmdb-cmdb
   labels:
     app: api-server
 spec:

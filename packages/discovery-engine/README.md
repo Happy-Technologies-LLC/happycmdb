@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Discovery Engine has been enhanced with ITIL v4 enrichment capabilities as part of ConfigBuddy v3.0. During the discovery process, all discovered CIs are automatically enriched with ITIL attributes including CI class, lifecycle stage, configuration status, version information, and audit metadata.
+The Discovery Engine has been enhanced with ITIL v4 enrichment capabilities as part of HappyCMDB v3.0. During the discovery process, all discovered CIs are automatically enriched with ITIL attributes including CI class, lifecycle stage, configuration status, version information, and audit metadata.
 
 ## Features
 
@@ -310,7 +310,7 @@ console.log(stats);
 
 ### Phase 1 Complete
 
-The ITIL enrichment module is part of ConfigBuddy v3.0 Phase 2 implementation:
+The ITIL enrichment module is part of HappyCMDB v3.0 Phase 2 implementation:
 
 ✅ **Completed**:
 - ITIL CI class inference
@@ -362,4 +362,4 @@ When extending the ITIL enrichment module:
 
 ## License
 
-Part of ConfigBuddy v3.0 - Open Source CMDB Platform
+Part of HappyCMDB v3.0 - Open Source CMDB Platform

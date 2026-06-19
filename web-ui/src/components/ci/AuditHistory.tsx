@@ -167,7 +167,7 @@ export const AuditHistory: React.FC<AuditHistoryProps> = ({ ciId }) => {
                 <span className="text-xs text-muted-foreground shrink-0 mt-1">To:</span>
                 <code
                   className={cn(
-                    'text-xs bg-green-500/10 text-green-600 dark:text-green-400 px-2 py-1 rounded flex-1',
+                    'text-xs bg-success-soft text-success px-2 py-1 rounded flex-1',
                     isLongValue && !isExpanded && 'truncate'
                   )}
                 >

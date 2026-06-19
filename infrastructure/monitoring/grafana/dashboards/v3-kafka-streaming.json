@@ -1,8 +1,8 @@
 {
   "dashboard": {
-    "title": "ConfigBuddy v3.0 - Kafka Event Streaming",
+    "title": "HappyCMDB v3.0 - Kafka Event Streaming",
     "uid": "v3-kafka-streaming",
-    "tags": ["configbuddy", "v3.0", "kafka", "events"],
+    "tags": ["happycmdb", "v3.0", "kafka", "events"],
     "timezone": "browser",
     "schemaVersion": 38,
     "version": 1,

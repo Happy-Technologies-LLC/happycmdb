@@ -6,7 +6,7 @@
 
 ## Overview
 
-Successfully implemented the `@cmdb/framework-integration` package that provides a unified interface combining ITIL v4, TBM v5.0.1, and BSM frameworks for ConfigBuddy v3.0.
+Successfully implemented the `@cmdb/framework-integration` package that provides a unified interface combining ITIL v4, TBM v5.0.1, and BSM frameworks for HappyCMDB v3.0.
 
 ## Deliverables
 

@@ -77,11 +77,11 @@ Full incident report: [Link]
 ### 1.4 Email - Critical Incident Notification
 
 ```
-Subject: [CRITICAL] ConfigBuddy Incident - [Brief Description]
+Subject: [CRITICAL] HappyCMDB Incident - [Brief Description]
 
 Team,
 
-We are experiencing a critical incident affecting ConfigBuddy production environment.
+We are experiencing a critical incident affecting HappyCMDB production environment.
 
 INCIDENT DETAILS
 -----------------
@@ -116,7 +116,7 @@ Next update expected: [Time]
 Questions? Please use #incident-[id] on Slack.
 
 [Incident Commander Name]
-ConfigBuddy Operations Team
+HappyCMDB Operations Team
 ```
 
 ## 2. External Communication Templates
@@ -219,11 +219,11 @@ Total Duration: [HH:MM]
 ### 2.5 Customer Email - Service Disruption
 
 ```
-Subject: ConfigBuddy Service Disruption - [Date]
+Subject: HappyCMDB Service Disruption - [Date]
 
 Dear Valued Customer,
 
-We are writing to inform you about a service disruption that occurred on [date] affecting ConfigBuddy services.
+We are writing to inform you about a service disruption that occurred on [date] affecting HappyCMDB services.
 
 WHAT HAPPENED
 -------------
@@ -253,7 +253,7 @@ We want to assure you that no data was lost during this incident. All your confi
 
 WE'RE SORRY
 -----------
-We sincerely apologize for any inconvenience this disruption may have caused to your operations. We understand that you rely on ConfigBuddy for critical infrastructure management, and we take our responsibility seriously.
+We sincerely apologize for any inconvenience this disruption may have caused to your operations. We understand that you rely on HappyCMDB for critical infrastructure management, and we take our responsibility seriously.
 
 QUESTIONS?
 ----------
@@ -262,33 +262,33 @@ If you have any questions or concerns, please don't hesitate to contact our supp
 - Phone: +1-XXX-XXX-XXXX
 - Support Portal: https://support.example.com
 
-Thank you for your patience and continued trust in ConfigBuddy.
+Thank you for your patience and continued trust in HappyCMDB.
 
 Sincerely,
 
 [Name]
 [Title]
-ConfigBuddy Operations Team
+HappyCMDB Operations Team
 ```
 
 ### 2.6 Social Media - Service Issue
 
 ```
-🔧 We're aware of an issue affecting ConfigBuddy API performance. Our team is investigating and we'll post updates here and on our status page: https://status.configbuddy.com
+🔧 We're aware of an issue affecting HappyCMDB API performance. Our team is investigating and we'll post updates here and on our status page: https://status.happycmdb.com
 
 We apologize for any inconvenience.
 
-#ConfigBuddyStatus
+#HappyCMDBStatus
 ```
 
 ### 2.7 Social Media - Service Restored
 
 ```
-✅ The ConfigBuddy API issue has been resolved. All services are operating normally.
+✅ The HappyCMDB API issue has been resolved. All services are operating normally.
 
-Thanks for your patience! Full details: https://status.configbuddy.com/incidents/[id]
+Thanks for your patience! Full details: https://status.happycmdb.com/incidents/[id]
 
-#ConfigBuddyStatus
+#HappyCMDBStatus
 ```
 
 ## 3. Escalation Communication
@@ -402,7 +402,7 @@ Estimated Time to Resolution: [Time or "Under investigation"]
 We appreciate your patience.
 
 Best regards,
-ConfigBuddy Support Team
+HappyCMDB Support Team
 
 Ticket #[Number]
 ```
@@ -429,7 +429,7 @@ We expect to have a permanent fix deployed by [estimated time].
 Please let us know if you have any questions about this workaround.
 
 Best regards,
-ConfigBuddy Support Team
+HappyCMDB Support Team
 
 Ticket #[Number]
 ```

@@ -1,6 +1,6 @@
 # Database Backup and Restore
 
-ConfigBuddy includes a comprehensive automated backup system for both PostgreSQL and Neo4j databases. This guide covers backup configuration, execution, monitoring, and restore procedures.
+HappyCMDB includes a comprehensive automated backup system for both PostgreSQL and Neo4j databases. This guide covers backup configuration, execution, monitoring, and restore procedures.
 
 ## Overview
 
@@ -22,8 +22,8 @@ Add backup configuration to your `.env` file:
 
 ```bash
 # Backup directory
-BACKUP_DIR=/var/backups/configbuddy
-BACKUP_LOG_DIR=/var/log/configbuddy/backups
+BACKUP_DIR=/var/backups/happycmdb
+BACKUP_LOG_DIR=/var/log/happycmdb/backups
 
 # Retention policy
 BACKUP_RETENTION_DAILY=7
@@ -43,10 +43,10 @@ BACKUP_S3_BUCKET=my-backup-bucket
 ### 2. Create Backup Directories
 
 ```bash
-sudo mkdir -p /var/backups/configbuddy/{postgres,neo4j}/{daily,weekly,monthly}
-sudo mkdir -p /var/log/configbuddy/backups
-sudo chmod 755 /var/backups/configbuddy
-sudo chmod 755 /var/log/configbuddy/backups
+sudo mkdir -p /var/backups/happycmdb/{postgres,neo4j}/{daily,weekly,monthly}
+sudo mkdir -p /var/log/happycmdb/backups
+sudo chmod 755 /var/backups/happycmdb
+sudo chmod 755 /var/log/happycmdb/backups
 ```
 
 ### 3. Run Manual Backup
@@ -137,12 +137,12 @@ Restores PostgreSQL database from compressed backup.
 
 # Restore latest daily backup
 ./infrastructure/scripts/restore-postgres.sh \
-  --file $(ls -t /var/backups/configbuddy/postgres/daily/*.sql.gz | head -1) \
+  --file $(ls -t /var/backups/happycmdb/postgres/daily/*.sql.gz | head -1) \
   --verify
 
 # Restore specific backup (with database drop)
 ./infrastructure/scripts/restore-postgres.sh \
-  --file /var/backups/configbuddy/postgres/daily/postgres_cmdb_20250118_020000.sql.gz \
+  --file /var/backups/happycmdb/postgres/daily/postgres_cmdb_20250118_020000.sql.gz \
   --drop \
   --verify
 
@@ -183,13 +183,13 @@ Restores Neo4j database from compressed dump.
 
 # Restore latest daily backup
 ./infrastructure/scripts/restore-neo4j.sh \
-  --file $(ls -t /var/backups/configbuddy/neo4j/daily/*.dump.gz | head -1) \
+  --file $(ls -t /var/backups/happycmdb/neo4j/daily/*.dump.gz | head -1) \
   --force \
   --verify
 
 # Restore specific backup
 ./infrastructure/scripts/restore-neo4j.sh \
-  --file /var/backups/configbuddy/neo4j/daily/neo4j_cmdb_20250118_020000.dump.gz \
+  --file /var/backups/happycmdb/neo4j/daily/neo4j_cmdb_20250118_020000.dump.gz \
   --force \
   --verify
 ```
@@ -221,13 +221,13 @@ Restores Neo4j database from compressed dump.
 
 ```bash
 # Edit cron configuration
-sudo nano /infrastructure/config/cron/configbuddy-backup.cron
+sudo nano /infrastructure/config/cron/happycmdb-backup.cron
 
 # Update SCRIPT_DIR path
-SCRIPT_DIR=/path/to/configbuddy/infrastructure/scripts
+SCRIPT_DIR=/path/to/happycmdb/infrastructure/scripts
 
 # Install crontab
-sudo crontab -u root /path/to/configbuddy/infrastructure/config/cron/configbuddy-backup.cron
+sudo crontab -u root /path/to/happycmdb/infrastructure/config/cron/happycmdb-backup.cron
 ```
 
 #### Cron Schedule
@@ -256,23 +256,23 @@ sudo cp infrastructure/config/systemd/*.service /etc/systemd/system/
 sudo cp infrastructure/config/systemd/*.timer /etc/systemd/system/
 
 # Edit service files to update paths
-sudo nano /etc/systemd/system/configbuddy-backup.service
+sudo nano /etc/systemd/system/happycmdb-backup.service
 # Update WorkingDirectory and ExecStart paths
 
 # Create environment file
-sudo mkdir -p /etc/configbuddy
-sudo nano /etc/configbuddy/backup.env
+sudo mkdir -p /etc/happycmdb
+sudo nano /etc/happycmdb/backup.env
 # Add your configuration (see .env.example)
 
 # Reload systemd
 sudo systemctl daemon-reload
 
 # Enable and start timers
-sudo systemctl enable configbuddy-backup.timer
-sudo systemctl start configbuddy-backup.timer
+sudo systemctl enable happycmdb-backup.timer
+sudo systemctl start happycmdb-backup.timer
 
-sudo systemctl enable configbuddy-backup-healthcheck.timer
-sudo systemctl start configbuddy-backup-healthcheck.timer
+sudo systemctl enable happycmdb-backup-healthcheck.timer
+sudo systemctl start happycmdb-backup-healthcheck.timer
 ```
 
 #### Systemd Timer Schedule
@@ -284,19 +284,19 @@ sudo systemctl start configbuddy-backup-healthcheck.timer
 
 ```bash
 # Check timer status
-sudo systemctl status configbuddy-backup.timer
+sudo systemctl status happycmdb-backup.timer
 sudo systemctl list-timers
 
 # Run backup manually
-sudo systemctl start configbuddy-backup.service
+sudo systemctl start happycmdb-backup.service
 
 # View logs
-sudo journalctl -u configbuddy-backup.service -f
-sudo tail -f /var/log/configbuddy/backups/backup.log
+sudo journalctl -u happycmdb-backup.service -f
+sudo tail -f /var/log/happycmdb/backups/backup.log
 
 # Stop/disable timer
-sudo systemctl stop configbuddy-backup.timer
-sudo systemctl disable configbuddy-backup.timer
+sudo systemctl stop happycmdb-backup.timer
+sudo systemctl disable happycmdb-backup.timer
 ```
 
 ## Backup Monitoring
@@ -344,7 +344,7 @@ BACKUP_NOTIFICATION_WEBHOOK=https://hooks.slack.com/services/YOUR/WEBHOOK/URL
 **Webhook Payload**:
 ```json
 {
-  "service": "ConfigBuddy PostgreSQL Backup",
+  "service": "HappyCMDB PostgreSQL Backup",
   "status": "SUCCESS",
   "message": "PostgreSQL backup completed successfully (cmdb)",
   "timestamp": "2025-01-18T02:00:00Z"
@@ -360,7 +360,7 @@ BACKUP_NOTIFICATION_WEBHOOK=https://hooks.slack.com/services/YOUR/WEBHOOK/URL
 BACKUP_UPLOAD_ENABLED=true
 BACKUP_STORAGE_TYPE=s3
 BACKUP_S3_BUCKET=my-backup-bucket
-BACKUP_S3_PREFIX=configbuddy
+BACKUP_S3_PREFIX=happycmdb
 AWS_ACCESS_KEY_ID=your-aws-access-key-id
 AWS_SECRET_ACCESS_KEY=your-aws-secret-access-key
 AWS_DEFAULT_REGION=us-east-1
@@ -372,8 +372,8 @@ AWS_DEFAULT_REGION=us-east-1
 - S3 bucket created
 
 **S3 Bucket Path**:
-- PostgreSQL: `s3://my-backup-bucket/configbuddy/postgres_cmdb_YYYYMMDD_HHMMSS.sql.gz`
-- Neo4j: `s3://my-backup-bucket/configbuddy/neo4j_cmdb_YYYYMMDD_HHMMSS.dump.gz`
+- PostgreSQL: `s3://my-backup-bucket/happycmdb/postgres_cmdb_YYYYMMDD_HHMMSS.sql.gz`
+- Neo4j: `s3://my-backup-bucket/happycmdb/neo4j_cmdb_YYYYMMDD_HHMMSS.dump.gz`
 
 ### Azure Blob Storage Configuration
 
@@ -381,8 +381,8 @@ AWS_DEFAULT_REGION=us-east-1
 # In .env file
 BACKUP_UPLOAD_ENABLED=true
 BACKUP_STORAGE_TYPE=azure
-BACKUP_AZURE_CONTAINER=configbuddy-backups
-BACKUP_AZURE_PREFIX=configbuddy
+BACKUP_AZURE_CONTAINER=happycmdb-backups
+BACKUP_AZURE_PREFIX=happycmdb
 AZURE_STORAGE_ACCOUNT=your-storage-account
 AZURE_STORAGE_ACCESS_KEY=your-storage-access-key
 ```
@@ -422,13 +422,13 @@ BACKUP_RETENTION_MONTHLY=24    # Keep 24 monthly backups
 
 ```bash
 # Test backup integrity
-gzip -t /var/backups/configbuddy/postgres/daily/postgres_cmdb_20250118_020000.sql.gz
+gzip -t /var/backups/happycmdb/postgres/daily/postgres_cmdb_20250118_020000.sql.gz
 
 # View backup contents (first 100 lines)
-gunzip -c /var/backups/configbuddy/postgres/daily/postgres_cmdb_20250118_020000.sql.gz | head -100
+gunzip -c /var/backups/happycmdb/postgres/daily/postgres_cmdb_20250118_020000.sql.gz | head -100
 
 # Check backup size
-du -h /var/backups/configbuddy/postgres/daily/*.sql.gz
+du -h /var/backups/happycmdb/postgres/daily/*.sql.gz
 ```
 
 ### Test Restore
@@ -438,7 +438,7 @@ Periodically test restore to ensure backups are recoverable:
 ```bash
 # Restore to test database
 ./infrastructure/scripts/restore-postgres.sh \
-  --file $(ls -t /var/backups/configbuddy/postgres/daily/*.sql.gz | head -1) \
+  --file $(ls -t /var/backups/happycmdb/postgres/daily/*.sql.gz | head -1) \
   --database cmdb_test \
   --drop \
   --verify
@@ -449,17 +449,17 @@ psql -U cmdb_user -d cmdb_test -c "SELECT COUNT(*) FROM information_schema.table
 
 ## Docker Integration
 
-ConfigBuddy's Docker Compose configuration includes backup volume mounts:
+HappyCMDB's Docker Compose configuration includes backup volume mounts:
 
 ```yaml
 services:
   neo4j:
     volumes:
-      - ${BACKUP_DIR:-/var/backups/configbuddy}/neo4j:/backups
+      - ${BACKUP_DIR:-/var/backups/happycmdb}/neo4j:/backups
 
   postgres:
     volumes:
-      - ${BACKUP_DIR:-/var/backups/configbuddy}/postgres:/backups
+      - ${BACKUP_DIR:-/var/backups/happycmdb}/postgres:/backups
 ```
 
 This allows:
@@ -492,8 +492,8 @@ docker start cmdb-neo4j
 **Permission denied**:
 ```bash
 # Ensure backup directory is writable
-sudo chown -R $(whoami):$(whoami) /var/backups/configbuddy
-sudo chmod 755 /var/backups/configbuddy
+sudo chown -R $(whoami):$(whoami) /var/backups/happycmdb
+sudo chmod 755 /var/backups/happycmdb
 ```
 
 ### Restore Failures
@@ -507,17 +507,17 @@ sudo chmod 755 /var/backups/configbuddy
 **Out of disk space**:
 ```bash
 # Check available space
-df -h /var/backups/configbuddy
+df -h /var/backups/happycmdb
 
 # Clean old backups manually
-find /var/backups/configbuddy -name "*.gz" -mtime +30 -delete
+find /var/backups/happycmdb -name "*.gz" -mtime +30 -delete
 ```
 
 ### Health Check Issues
 
 **Backup age warning**:
 - Check if backup cron job is running
-- View backup logs: `tail -f /var/log/configbuddy/backups/backup.log`
+- View backup logs: `tail -f /var/log/happycmdb/backups/backup.log`
 - Run manual backup to test
 
 **Disk usage high**:
@@ -535,7 +535,7 @@ find /var/backups/configbuddy -name "*.gz" -mtime +30 -delete
 ### Security
 
 1. **Encrypt backups**: Use encrypted cloud storage (S3 SSE, Azure encryption)
-2. **Secure credentials**: Store passwords in `/etc/configbuddy/backup.env` with `chmod 600`
+2. **Secure credentials**: Store passwords in `/etc/happycmdb/backup.env` with `chmod 600`
 3. **Off-site backups**: Enable cloud upload for disaster recovery
 4. **Access control**: Restrict backup directory permissions (`chmod 700`)
 
@@ -564,16 +564,16 @@ find /var/backups/configbuddy -name "*.gz" -mtime +30 -delete
 
 ```bash
 # 1. Create directories
-sudo mkdir -p /var/backups/configbuddy/{postgres,neo4j}/{daily,weekly,monthly}
-sudo mkdir -p /var/log/configbuddy/backups
+sudo mkdir -p /var/backups/happycmdb/{postgres,neo4j}/{daily,weekly,monthly}
+sudo mkdir -p /var/log/happycmdb/backups
 
 # 2. Configure environment
 cat >> .env <<EOF
-BACKUP_DIR=/var/backups/configbuddy
+BACKUP_DIR=/var/backups/happycmdb
 BACKUP_RETENTION_DAILY=7
 BACKUP_UPLOAD_ENABLED=true
 BACKUP_STORAGE_TYPE=s3
-BACKUP_S3_BUCKET=my-configbuddy-backups
+BACKUP_S3_BUCKET=my-happycmdb-backups
 BACKUP_NOTIFICATION_ENABLED=true
 BACKUP_NOTIFICATION_WEBHOOK=https://hooks.slack.com/services/YOUR/WEBHOOK/URL
 EOF
@@ -581,8 +581,8 @@ EOF
 # 3. Install systemd timers
 sudo cp infrastructure/config/systemd/*.{service,timer} /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable configbuddy-backup.timer
-sudo systemctl start configbuddy-backup.timer
+sudo systemctl enable happycmdb-backup.timer
+sudo systemctl start happycmdb-backup.timer
 
 # 4. Run initial backup
 ./infrastructure/scripts/backup-all.sh
@@ -592,7 +592,7 @@ sudo systemctl start configbuddy-backup.timer
 
 # 6. Test restore
 ./infrastructure/scripts/restore-postgres.sh \
-  --file $(ls -t /var/backups/configbuddy/postgres/daily/*.sql.gz | head -1) \
+  --file $(ls -t /var/backups/happycmdb/postgres/daily/*.sql.gz | head -1) \
   --database cmdb_test \
   --drop \
   --verify

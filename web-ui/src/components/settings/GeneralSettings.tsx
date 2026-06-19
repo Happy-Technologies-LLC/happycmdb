@@ -3,7 +3,7 @@
 
 /**
  * General settings component
- * Theme, language, timezone, date format preferences
+ * Language, timezone, and date format preferences
  */
 
 import React, { useState } from 'react';
@@ -12,7 +12,6 @@ import { apiClient } from '../../services/auth.service';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Switch } from '@/components/ui/switch';
 import {
   Select,
   SelectContent,
@@ -23,7 +22,6 @@ import {
 import { Alert, AlertDescription } from '@/components/ui/alert';
 
 interface GeneralSettingsData {
-  theme: 'light' | 'dark';
   language: string;
   timezone: string;
   dateFormat: string;
@@ -51,17 +49,14 @@ export const GeneralSettings: React.FC = () => {
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  const { control, handleSubmit, watch } = useForm<GeneralSettingsData>({
+  const { control, handleSubmit } = useForm<GeneralSettingsData>({
     defaultValues: {
-      theme: 'light',
       language: 'en',
       timezone: 'UTC',
       dateFormat: 'MM/DD/YYYY',
       defaultPage: '/dashboard',
     },
   });
-
-  const theme = watch('theme');
 
   const onSubmit = async (data: GeneralSettingsData) => {
     setIsLoading(true);
@@ -102,26 +97,6 @@ export const GeneralSettings: React.FC = () => {
 
       <form onSubmit={handleSubmit(onSubmit)} className="space-y-6 max-w-2xl">
         <div className="space-y-4">
-          <Controller
-            name="theme"
-            control={control}
-            render={({ field }) => (
-              <div className="flex items-center justify-between">
-                <div className="space-y-0.5">
-                  <Label htmlFor="dark-mode">Dark Mode</Label>
-                  <p className="text-sm text-muted-foreground">
-                    Toggle between light and dark themes
-                  </p>
-                </div>
-                <Switch
-                  id="dark-mode"
-                  checked={field.value === 'dark'}
-                  onCheckedChange={(checked) => field.onChange(checked ? 'dark' : 'light')}
-                />
-              </div>
-            )}
-          />
-
           <div className="space-y-2">
             <Label htmlFor="language">Language</Label>
             <Controller

@@ -1,7 +1,7 @@
 [Unit]
-Description=ConfigBuddy Database Backup Timer
-Documentation=https://github.com/configbuddy/configbuddy
-Requires=configbuddy-backup.service
+Description=HappyCMDB Database Backup Timer
+Documentation=https://github.com/happycmdb/happycmdb
+Requires=happycmdb-backup.service
 
 [Timer]
 # Run daily at 2:00 AM

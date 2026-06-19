@@ -1,7 +1,7 @@
 {
-  "name": "configbuddy-docs",
+  "name": "happycmdb-docs",
   "version": "1.0.0",
-  "description": "ConfigBuddy CMDB Documentation Site",
+  "description": "HappyCMDB Documentation Site",
   "type": "module",
   "scripts": {
     "docs:dev": "vitepress dev docs",
@@ -15,7 +15,7 @@
     "documentation",
     "vitepress"
   ],
-  "author": "ConfigBuddy Team",
+  "author": "HappyCMDB Team",
   "license": "Apache-2.0",
   "devDependencies": {
     "vitepress": "^1.0.0",

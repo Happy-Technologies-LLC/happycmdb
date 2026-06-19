@@ -365,7 +365,7 @@ async function discover(context) {
 }
   ',
   'Detects Spring Boot applications via Actuator endpoints',
-  'configbuddy-team',
+  'happycmdb-team',
   'active',
   true,
   0.95

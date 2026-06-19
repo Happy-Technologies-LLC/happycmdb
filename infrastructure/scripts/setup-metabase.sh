@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================
-# ConfigBuddy v3.0 - Metabase Setup Automation
+# HappyCMDB v3.0 - Metabase Setup Automation
 # ============================================
 # This script automates the initial setup of Metabase:
 # - Waits for Metabase to be ready
@@ -23,7 +23,7 @@ NC='\033[0m' # No Color
 
 # Configuration
 METABASE_URL="${METABASE_URL:-http://localhost:3002}"
-METABASE_ADMIN_EMAIL="${METABASE_ADMIN_EMAIL:-admin@configbuddy.local}"
+METABASE_ADMIN_EMAIL="${METABASE_ADMIN_EMAIL:-admin@happycmdb.local}"
 METABASE_ADMIN_PASSWORD="${METABASE_ADMIN_PASSWORD:-admin_password_change_me}"
 METABASE_ADMIN_FIRST_NAME="${METABASE_ADMIN_FIRST_NAME:-Admin}"
 METABASE_ADMIN_LAST_NAME="${METABASE_ADMIN_LAST_NAME:-User}"
@@ -116,11 +116,11 @@ setup_metabase() {
         "last_name": "${METABASE_ADMIN_LAST_NAME}",
         "email": "${METABASE_ADMIN_EMAIL}",
         "password": "${METABASE_ADMIN_PASSWORD}",
-        "site_name": "ConfigBuddy v3.0 Analytics"
+        "site_name": "HappyCMDB v3.0 Analytics"
     },
     "database": {
         "engine": "postgres",
-        "name": "ConfigBuddy CMDB",
+        "name": "HappyCMDB",
         "details": {
             "host": "${DB_HOST}",
             "port": ${DB_PORT},
@@ -133,7 +133,7 @@ setup_metabase() {
         }
     },
     "prefs": {
-        "site_name": "ConfigBuddy v3.0 Analytics",
+        "site_name": "HappyCMDB v3.0 Analytics",
         "allow_tracking": false
     }
 }
@@ -286,7 +286,7 @@ create_collections() {
 {
     "name": "${collection_name}",
     "color": "#509EE3",
-    "description": "ConfigBuddy v3.0 ${collection_name}"
+    "description": "HappyCMDB v3.0 ${collection_name}"
 }
 EOF
 )

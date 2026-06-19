@@ -1,6 +1,6 @@
 # ITIL Service Management API Reference
 
-This document describes the REST API endpoints for ConfigBuddy v3.0's ITIL v4 Service Management features, including incident management, change control, and configuration baselines.
+This document describes the REST API endpoints for HappyCMDB v3.0's ITIL v4 Service Management features, including incident management, change control, and configuration baselines.
 
 ## Overview
 
@@ -895,4 +895,4 @@ All endpoints return errors in this format:
 ---
 
 **Last Updated**: 2025-11-17
-**Maintainer**: ConfigBuddy Team
+**Maintainer**: HappyCMDB Team

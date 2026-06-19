@@ -6,6 +6,7 @@ import { useSearchParams, useNavigate } from 'react-router-dom';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { LiquidGlass } from '@/components/ui/liquid-glass';
 import { Button } from '@/components/ui/button';
+import { Eyebrow } from '@/components/ui/eyebrow';
 import { Info, ArrowRight, HelpCircle } from 'lucide-react';
 import {
   Dialog,
@@ -41,8 +42,9 @@ export const Connectors: React.FC = () => {
       {/* Page Header */}
       <div className="flex items-start justify-between">
         <div>
-          <h2 className="text-3xl font-bold tracking-tight">Integration Connectors</h2>
-          <p className="text-muted-foreground mt-1">
+          <Eyebrow>Integrations · Connectors</Eyebrow>
+          <h1 className="mt-3 text-[1.9rem]">Integration Connectors</h1>
+          <p className="mt-1.5 text-ink-soft">
             Deploy bi-directional integrations with ITSM, ticketing, and monitoring systems
           </p>
         </div>

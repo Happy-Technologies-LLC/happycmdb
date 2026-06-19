@@ -1,10 +1,10 @@
 # Service Owner Guide
 
-Complete guide for business service owners managing their services in ConfigBuddy v3.0.
+Complete guide for business service owners managing their services in HappyCMDB v3.0.
 
 ## Overview
 
-As a Service Owner, you're responsible for the health, availability, cost, and evolution of your business service. This guide helps you use ConfigBuddy to monitor, manage, and optimize your service.
+As a Service Owner, you're responsible for the health, availability, cost, and evolution of your business service. This guide helps you use HappyCMDB to monitor, manage, and optimize your service.
 
 **Target Audience**: Product Owners, Service Managers, Business Application Owners
 

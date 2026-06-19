@@ -50,15 +50,15 @@ module.exports = {
     '!**/node_modules/**',
   ],
 
-  // Module path aliases
+  // Module path aliases — resolve every @cmdb/* workspace package to its TS source.
   moduleNameMapper: {
-    '^@cmdb/common$': '<rootDir>/packages/common/src',
-    '^@cmdb/database$': '<rootDir>/packages/database/src',
-    '^@cmdb/api-server$': '<rootDir>/packages/api-server/src',
-    '^@cmdb/discovery-engine$': '<rootDir>/packages/discovery-engine/src',
-    '^@cmdb/etl-processor$': '<rootDir>/packages/etl-processor/src',
+    '^@cmdb/([^/]+)/(.*)$': '<rootDir>/packages/$1/src/$2',
+    '^@cmdb/([^/]+)$': '<rootDir>/packages/$1/src',
     '^@test/utils$': '<rootDir>/tests/utils',
   },
+
+  // Prefer TypeScript source over stale compiled .js artifacts in packages/*/src.
+  moduleFileExtensions: ['ts', 'tsx', 'js', 'mjs', 'cjs', 'jsx', 'json', 'node'],
 
   // Transform TypeScript files
   transform: {
@@ -66,10 +66,12 @@ module.exports = {
       'ts-jest',
       {
         tsconfig: {
+          module: 'commonjs',
+          moduleResolution: 'node',
+          isolatedModules: true,
           esModuleInterop: true,
           allowSyntheticDefaultImports: true,
           resolveJsonModule: true,
-          moduleResolution: 'node',
         },
       },
     ],

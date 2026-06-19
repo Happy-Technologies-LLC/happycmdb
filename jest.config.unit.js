@@ -59,15 +59,18 @@ module.exports = {
     },
   },
 
-  // Module path aliases
+  // Module path aliases — resolve every @cmdb/* workspace package to its TS source.
+  // (dist/ is gitignored, so built output is absent in CI; mapping to src lets
+  // ts-jest transform the source directly with no build step.)
   moduleNameMapper: {
-    '^@cmdb/common$': '<rootDir>/packages/common/src',
-    '^@cmdb/database$': '<rootDir>/packages/database/src',
-    '^@cmdb/api-server$': '<rootDir>/packages/api-server/src',
-    '^@cmdb/discovery-engine$': '<rootDir>/packages/discovery-engine/src',
-    '^@cmdb/etl-processor$': '<rootDir>/packages/etl-processor/src',
+    '^@cmdb/([^/]+)/(.*)$': '<rootDir>/packages/$1/src/$2',
+    '^@cmdb/([^/]+)$': '<rootDir>/packages/$1/src',
     '^@test/utils$': '<rootDir>/tests/utils',
   },
+
+  // Prefer TypeScript source over the stale compiled .js artifacts committed in
+  // packages/*/src (those are incomplete in a clean checkout).
+  moduleFileExtensions: ['ts', 'tsx', 'js', 'mjs', 'cjs', 'jsx', 'json', 'node'],
 
   // Transform TypeScript files
   transform: {
@@ -78,6 +81,7 @@ module.exports = {
           target: 'ES2022',
           module: 'commonjs',
           moduleResolution: 'node',
+          isolatedModules: true,
           esModuleInterop: true,
           allowSyntheticDefaultImports: true,
           resolveJsonModule: true,

@@ -35,14 +35,14 @@ module.exports = {
   // Run tests sequentially (not in parallel) to avoid Docker conflicts
   maxWorkers: 1,
 
-  // Module path aliases
+  // Module path aliases — resolve every @cmdb/* workspace package to its TS source.
   moduleNameMapper: {
-    '^@cmdb/common$': '<rootDir>/packages/common/src',
-    '^@cmdb/database$': '<rootDir>/packages/database/src',
-    '^@cmdb/api-server$': '<rootDir>/packages/api-server/src',
-    '^@cmdb/discovery-engine$': '<rootDir>/packages/discovery-engine/src',
-    '^@cmdb/etl-processor$': '<rootDir>/packages/etl-processor/src',
+    '^@cmdb/([^/]+)/(.*)$': '<rootDir>/packages/$1/src/$2',
+    '^@cmdb/([^/]+)$': '<rootDir>/packages/$1/src',
   },
+
+  // Prefer TypeScript source over stale compiled .js artifacts in packages/*/src.
+  moduleFileExtensions: ['ts', 'tsx', 'js', 'mjs', 'cjs', 'jsx', 'json', 'node'],
 
   // Coverage configuration (optional for E2E)
   collectCoverage: false, // Enable with --coverage flag
@@ -92,10 +92,12 @@ module.exports = {
       'ts-jest',
       {
         tsconfig: {
+          module: 'commonjs',
+          moduleResolution: 'node',
+          isolatedModules: true,
           esModuleInterop: true,
           allowSyntheticDefaultImports: true,
           resolveJsonModule: true,
-          moduleResolution: 'node',
         },
       },
     ],

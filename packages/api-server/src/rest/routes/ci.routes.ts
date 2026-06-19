@@ -16,24 +16,24 @@ ciRoutes.use(auditMiddleware);
 
 // Validation schemas
 const updateCISchema = Joi.object({
-  _name: Joi.string().min(1).max(500).optional(),
-  _type: schemas.ciType.optional(),
-  _status: schemas.ciStatus.optional(),
-  _environment: schemas.environment.optional(),
-  _metadata: Joi.object().optional(),
+  name: Joi.string().min(1).max(500).optional(),
+  type: schemas.ciType.optional(),
+  status: schemas.ciStatus.optional(),
+  environment: schemas.environment.optional(),
+  metadata: Joi.object().optional(),
 });
 
 const searchCISchema = Joi.object({
-  _query: Joi.string().required().min(1),
-  _limit: Joi.number().integer().min(1).max(1000).default(50),
+  query: Joi.string().required().min(1),
+  limit: Joi.number().integer().min(1).max(1000).default(50),
 });
 
 const relationshipQuerySchema = Joi.object({
-  _direction: Joi.string().valid('in', 'out', 'both').default('both'),
+  direction: Joi.string().valid('in', 'out', 'both').default('both'),
 });
 
 const depthQuerySchema = Joi.object({
-  _depth: Joi.number().integer().min(1).max(10).default(5),
+  depth: Joi.number().integer().min(1).max(10).default(5),
 });
 
 // Get all CIs with filtering

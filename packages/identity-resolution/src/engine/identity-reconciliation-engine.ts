@@ -6,7 +6,7 @@
  * Multi-source CI deduplication and reconciliation
  */
 
-import { logger } from '@cmdb/common';
+import { logger, sanitizeCITypeForLabel } from '@cmdb/common';
 import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
 import { IdentificationAttributes, TransformedCI } from '@cmdb/integration-framework';
 import { MatchResult, ReconciliationConfig } from '../types/reconciliation.types';
@@ -370,7 +370,7 @@ export class IdentityReconciliationEngine {
       const ciId = this.generateCIId();
 
       const result = await session.run(
-        `CREATE (ci:CI:${ci.ci_type})
+        `CREATE (ci:CI:${sanitizeCITypeForLabel(ci.ci_type)})
          SET ci = $properties
          RETURN ci.id as ci_id`,
         {

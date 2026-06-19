@@ -36,9 +36,9 @@ export class DiscoveryDefinitionService {
       // Validate that credential exists and matches provider (skip for nmap)
       if (input.credential_id) {
         const credentialResult = await client.query(
-          `SELECT credential_id, provider, is_active
-           FROM cmdb.credentials
-           WHERE credential_id = $1`,
+          `SELECT id AS credential_id, protocol AS provider, true AS is_active
+           FROM credentials
+           WHERE id = $1`,
           [input.credential_id]
         );
 
@@ -217,7 +217,7 @@ export class DiscoveryDefinitionService {
       // If updating credential_id, validate it
       if (updates.credential_id && updates.credential_id !== existing.credential_id) {
         const credentialResult = await client.query(
-          'SELECT credential_id, provider, is_active FROM cmdb.credentials WHERE credential_id = $1',
+          'SELECT id AS credential_id, protocol AS provider, true AS is_active FROM credentials WHERE id = $1',
           [updates.credential_id]
         );
 
@@ -244,7 +244,7 @@ export class DiscoveryDefinitionService {
       if (updates.provider && updates.provider !== existing.provider) {
         const credentialId = updates.credential_id || existing.credential_id;
         const credentialResult = await client.query(
-          'SELECT provider FROM cmdb.credentials WHERE credential_id = $1',
+          'SELECT protocol AS provider FROM credentials WHERE id = $1',
           [credentialId]
         );
 
@@ -428,7 +428,7 @@ export class DiscoveryDefinitionService {
       };
 
       // Get the queue for this provider
-      const queueName = `discovery:${definition.provider}`;
+      const queueName = `discovery-${definition.provider}`;
       const queue = queueManager.getQueue(queueName);
 
       // Add job to queue

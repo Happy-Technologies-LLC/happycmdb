@@ -279,11 +279,10 @@ export class ConnectorRegistry {
       const row = result.rows[0];
       return {
         connector_type: row.connector_type,
-        version: row.version,
+        version: row.installed_version,
         installed_at: row.installed_at,
         metadata: row.metadata,
         install_path: row.install_path,
-        checksum: row.checksum,
       };
     } catch (error) {
       logger.error('Failed to get installed connector', { type, error });
@@ -299,22 +298,24 @@ export class ConnectorRegistry {
       await this.postgresClient.query(
         `
         INSERT INTO installed_connectors
-        (connector_type, version, metadata, install_path, checksum, installed_at)
-        VALUES ($1, $2, $3, $4, $5, $6)
+        (connector_type, category, name, installed_version, metadata, install_path, installed_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
         ON CONFLICT (connector_type)
         DO UPDATE SET
-          version = EXCLUDED.version,
+          category = EXCLUDED.category,
+          name = EXCLUDED.name,
+          installed_version = EXCLUDED.installed_version,
           metadata = EXCLUDED.metadata,
           install_path = EXCLUDED.install_path,
-          checksum = EXCLUDED.checksum,
           installed_at = EXCLUDED.installed_at
         `,
         [
           connector.connector_type,
+          connector.metadata.category,
+          connector.metadata.name,
           connector.version,
           JSON.stringify(connector.metadata),
           connector.install_path,
-          connector.checksum,
           connector.installed_at,
         ]
       );

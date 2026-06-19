@@ -9,8 +9,8 @@
  */
 
 import { Pool } from 'pg';
-import { GenericContainer, StartedTestContainer, Wait } from 'testcontainers';
-import { CredentialSetService } from '@cmdb/database/src/postgres/credential-set.service';
+import { getPostgresClient } from '@cmdb/database';
+import { CredentialSetService } from '@cmdb/database/postgres/credential-set.service';
 import {
   UnifiedCredential,
   UnifiedCredentialInput,
@@ -22,44 +22,14 @@ import { v4 as uuidv4 } from 'uuid';
 import { getEncryptionService } from '@cmdb/common';
 
 describe('Credential Affinity Integration Tests', () => {
-  let postgresContainer: StartedTestContainer;
   let pool: Pool;
   let credentialSetService: CredentialSetService;
   const createdCredentialIds: string[] = [];
   const createdSetIds: string[] = [];
 
   beforeAll(async () => {
-    // Ensure encryption key is set
-    if (!process.env.CREDENTIAL_ENCRYPTION_KEY) {
-      process.env.CREDENTIAL_ENCRYPTION_KEY = 'test-encryption-key-minimum-32-chars-required-for-security';
-    }
-
-    // Start PostgreSQL container
-    postgresContainer = await new GenericContainer('postgres:15')
-      .withEnvironment({
-        POSTGRES_USER: 'testuser',
-        POSTGRES_PASSWORD: 'testpassword',
-        POSTGRES_DB: 'cmdb_test',
-      })
-      .withExposedPorts(5432)
-      .withWaitStrategy(Wait.forLogMessage(/database system is ready to accept connections/))
-      .withStartupTimeout(60000)
-      .start();
-
-    const postgresHost = postgresContainer.getHost();
-    const postgresPort = postgresContainer.getMappedPort(5432);
-
-    // Create PostgreSQL pool
-    pool = new Pool({
-      host: postgresHost,
-      port: postgresPort,
-      user: 'testuser',
-      password: 'testpassword',
-      database: 'cmdb_test',
-    });
-
-    // Initialize schema
-    await initializeSchema(pool);
+    // Connect to the global Postgres container (canonical schema already loaded).
+    pool = getPostgresClient().pool;
 
     // Initialize service
     credentialSetService = new CredentialSetService(pool);
@@ -84,7 +54,6 @@ describe('Credential Affinity Integration Tests', () => {
     }
 
     await pool.end();
-    await postgresContainer.stop();
   });
 
   afterEach(async () => {
@@ -581,67 +550,6 @@ describe('Credential Affinity Integration Tests', () => {
     }, 60000);
   });
 });
-
-/**
- * Helper: Initialize database schema
- */
-async function initializeSchema(pool: Pool): Promise<void> {
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-
-    // Create credentials table
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS credentials (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        name VARCHAR(255) NOT NULL,
-        description TEXT,
-        protocol VARCHAR(50) NOT NULL,
-        scope VARCHAR(50) NOT NULL,
-        credentials JSONB NOT NULL,
-        affinity JSONB DEFAULT '{}',
-        tags TEXT[] DEFAULT '{}',
-        created_by VARCHAR(255) NOT NULL,
-        created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-        last_validated_at TIMESTAMPTZ,
-        validation_status VARCHAR(20)
-      )
-    `);
-
-    // Create credential_sets table
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS credential_sets (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        name VARCHAR(255) NOT NULL UNIQUE,
-        description TEXT,
-        credential_ids UUID[] NOT NULL,
-        strategy VARCHAR(20) NOT NULL DEFAULT 'sequential',
-        stop_on_success BOOLEAN DEFAULT TRUE,
-        tags TEXT[] DEFAULT '{}',
-        created_by VARCHAR(255) NOT NULL,
-        created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    // Create discovery_definitions table (for usage count)
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS discovery_definitions (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        name VARCHAR(255) NOT NULL,
-        credential_set_id UUID REFERENCES credential_sets(id)
-      )
-    `);
-
-    await client.query('COMMIT');
-  } catch (error) {
-    await client.query('ROLLBACK');
-    throw error;
-  } finally {
-    client.release();
-  }
-}
 
 /**
  * Helper: Create credential with encryption

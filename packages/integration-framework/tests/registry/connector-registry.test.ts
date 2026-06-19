@@ -484,7 +484,6 @@ describe('ConnectorRegistry', () => {
       installed_at: new Date('2025-01-15'),
       metadata: sampleMetadata,
       install_path: '/opt/cmdb/connectors/test-connector',
-      checksum: 'abc123',
     };
 
     describe('loadInstalledConnectors', () => {
@@ -556,11 +555,10 @@ describe('ConnectorRegistry', () => {
           rows: [
             {
               connector_type: 'test-connector',
-              version: '1.0.0',
+              installed_version: '1.0.0',
               installed_at: new Date('2025-01-15'),
               metadata: sampleMetadata,
               install_path: '/opt/cmdb/connectors/test-connector',
-              checksum: 'abc123',
             },
           ],
         });
@@ -601,10 +599,11 @@ describe('ConnectorRegistry', () => {
           expect.stringContaining('INSERT INTO installed_connectors'),
           [
             'test-connector',
+            'connector',
+            'Test Connector',
             '1.0.0',
             JSON.stringify(sampleMetadata),
             '/opt/cmdb/connectors/test-connector',
-            'abc123',
             installedConnector.installed_at,
           ]
         );

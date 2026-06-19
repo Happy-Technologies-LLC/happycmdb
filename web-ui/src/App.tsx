@@ -34,6 +34,9 @@ const BusinessServiceDashboard = React.lazy(() => import('./pages/dashboards/Bus
 const BusinessServices = React.lazy(() => import('./pages/BusinessServices'));
 const FinancialManagement = React.lazy(() => import('./pages/FinancialManagement'));
 
+// Settings
+const Settings = React.lazy(() => import('./pages/Settings').then((m) => ({ default: m.Settings })));
+
 // v2.0 Components
 import { HealthDashboard } from './components/health/HealthDashboard';
 import { AnomalyDetectionView } from './components/anomalies/AnomalyDetectionView';
@@ -282,6 +285,16 @@ const App: React.FC = () => {
                   <ProtectedRoute>
                     <MainLayout>
                       <FinancialManagement />
+                    </MainLayout>
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/settings"
+                element={
+                  <ProtectedRoute>
+                    <MainLayout>
+                      <Settings />
                     </MainLayout>
                   </ProtectedRoute>
                 }

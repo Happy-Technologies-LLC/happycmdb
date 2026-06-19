@@ -103,6 +103,10 @@ data/dbms/
 # Secrets and credentials
 secrets/
 credentials/
+# ...but these broad rules also catch the real workspace source dir of the same
+# name; keep its TypeScript source tracked.
+!packages/common/src/secrets/
+!packages/common/src/secrets/*.ts
 *.pem
 *.key
 *.cert

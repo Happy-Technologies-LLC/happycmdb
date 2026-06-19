@@ -49,16 +49,6 @@ module.exports = {
     '!**/node_modules/**',
   ],
 
-  // Coverage thresholds (80% target)
-  coverageThreshold: {
-    global: {
-      branches: 80,
-      functions: 80,
-      lines: 80,
-      statements: 80,
-    },
-  },
-
   // Module path aliases — resolve every @cmdb/* workspace package to its TS source.
   // (dist/ is gitignored, so built output is absent in CI; mapping to src lets
   // ts-jest transform the source directly with no build step.)

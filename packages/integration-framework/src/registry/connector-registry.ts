@@ -11,7 +11,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { logger } from '@cmdb/common';
 import { getPostgresClient } from '@cmdb/database';
+import type { ConnectorDescriptor } from '@happy-technologies/connector-core';
 import { BaseIntegrationConnector } from '../core/base-connector';
+import { mapConnectorMetadataToDescriptor } from '../descriptor-mapper';
 import {
   ConnectorMetadata,
   ConnectorConfiguration,
@@ -24,6 +26,7 @@ export class ConnectorRegistry {
   private connectorTypes: Map<string, ConnectorMetadata> = new Map();
   private connectorClasses: Map<string, typeof BaseIntegrationConnector> = new Map();
   private postgresClient = getPostgresClient();
+  private connectorDescriptors: Map<string, ConnectorDescriptor> = new Map();
 
   private constructor() {}
 
@@ -106,6 +109,7 @@ export class ConnectorRegistry {
     // Register connector
     this.connectorTypes.set(metadata.type, metadata);
     this.connectorClasses.set(metadata.type, ConnectorClass);
+    this.registerDescriptor(metadata);
 
     logger.info('Connector loaded', {
       type: metadata.type,
@@ -123,6 +127,7 @@ export class ConnectorRegistry {
   ): void {
     this.connectorTypes.set(metadata.type, metadata);
     this.connectorClasses.set(metadata.type, connectorClass);
+    this.registerDescriptor(metadata);
     logger.info('Connector registered', { type: metadata.type });
   }
 
@@ -237,6 +242,7 @@ export class ConnectorRegistry {
             if (ConnectorClass) {
               this.connectorTypes.set(metadata.type, metadata);
               this.connectorClasses.set(metadata.type, ConnectorClass);
+              this.registerDescriptor(metadata);
               logger.info('Installed connector loaded from database', {
                 type: metadata.type,
                 version: row.version,
@@ -348,6 +354,49 @@ export class ConnectorRegistry {
       logger.error('Failed to remove installed connector', { type, error });
       throw error;
     }
+  }
+
+  /**
+   * Map a connector's metadata onto the connector-core 0.2.0 ConnectorDescriptor
+   * and validate it; the validated descriptor is stored for catalog/UI consumers.
+   *
+   * Intentionally non-fatal: a connector that fails mapping or validation still
+   * registers under its legacy metadata, so runtime availability is never coupled
+   * to the new contract. The precise reason is logged so the connector.json drift
+   * can be fixed.
+   */
+  private registerDescriptor(metadata: ConnectorMetadata): void {
+    try {
+      const { descriptor, unsupportedFields } =
+        mapConnectorMetadataToDescriptor(metadata);
+      this.connectorDescriptors.set(metadata.type, descriptor);
+      if (unsupportedFields.length > 0) {
+        logger.warn('Connector descriptor has unsupported fields', {
+          type: metadata.type,
+          unsupportedFields,
+        });
+      }
+    } catch (error) {
+      this.connectorDescriptors.delete(metadata.type);
+      logger.warn(
+        'connector.json does not satisfy the connector-core 0.2.0 descriptor contract',
+        { type: metadata.type, error }
+      );
+    }
+  }
+
+  /**
+   * Get the validated connector-core descriptor for a type, if it mapped cleanly.
+   */
+  getConnectorDescriptor(type: string): ConnectorDescriptor | undefined {
+    return this.connectorDescriptors.get(type);
+  }
+
+  /**
+   * Get every validated connector-core descriptor currently registered.
+   */
+  getAllConnectorDescriptors(): ConnectorDescriptor[] {
+    return Array.from(this.connectorDescriptors.values());
   }
 }
 

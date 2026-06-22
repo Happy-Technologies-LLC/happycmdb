@@ -56,13 +56,13 @@ export class ITILServiceManager {
   async getServiceMetrics(serviceId: string): Promise<ITILMetrics> {
     try {
       // Fetch business service
-      const businessService = await this.businessServiceRepo.findById(serviceId);
+      const businessService = await this.businessServiceRepo.getBusinessServiceById(serviceId);
       if (!businessService) {
         throw new Error(`Business service not found: ${serviceId}`);
       }
 
       // Get incident metrics
-      const incidents = await this.incidentRepo.findByBusinessService(serviceId);
+      const incidents = await this.incidentRepo.getIncidentsByBusinessServiceId(serviceId);
       const openIncidents = incidents.filter(i =>
         ['new', 'assigned', 'in_progress', 'pending'].includes(i.status)
       ).length;
@@ -182,7 +182,7 @@ export class ITILServiceManager {
     team: string;
   } | null> {
     try {
-      const businessService = await this.businessServiceRepo.findById(serviceId);
+      const businessService = await this.businessServiceRepo.getBusinessServiceById(serviceId);
       if (!businessService) {
         return null;
       }
@@ -209,7 +209,7 @@ export class ITILServiceManager {
     resolutionTime: number;
   } | null> {
     try {
-      const businessService = await this.businessServiceRepo.findById(serviceId);
+      const businessService = await this.businessServiceRepo.getBusinessServiceById(serviceId);
       if (!businessService) {
         return null;
       }
@@ -260,7 +260,7 @@ export class ITILServiceManager {
     resolvedAt?: Date;
   }>> {
     try {
-      const incidents = await this.incidentRepo.findByBusinessService(serviceId);
+      const incidents = await this.incidentRepo.getIncidentsByBusinessServiceId(serviceId);
       const cutoffDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
 
       return incidents

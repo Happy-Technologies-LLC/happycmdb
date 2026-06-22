@@ -30,6 +30,12 @@ import { swaggerRoutes } from './routes/swagger.routes';
 import { itilRoutes } from './routes/itil.routes';
 import { businessServiceRoutes } from './routes/business-service.routes';
 import { architectureRoutes } from './routes/architecture.routes';
+import metricsRoutes from '../metrics/metrics.routes';
+import { tbmRoutes } from './routes/tbm.routes';
+import { createRateLimitMetricsRoutes } from './routes/rate-limit-metrics.routes';
+import { RateLimitMiddleware } from '../middleware/rate-limit.middleware';
+import { getRedisClient } from '@cmdb/database';
+import { loadConfig } from '@cmdb/common';
 
 export class RestAPIServer {
   private app: Express;
@@ -41,7 +47,12 @@ export class RestAPIServer {
     this.port = port;
     this.setupMiddleware();
     this.setupRoutes();
-    this.setupErrorHandling();
+    // Note: setupErrorHandling() is invoked from index.ts AFTER GraphQL is mounted,
+    // so the catch-all 404/error handler does not shadow /graphql.
+  }
+
+  getApp(): Express {
+    return this.app;
   }
 
   private setupMiddleware(): void {
@@ -97,12 +108,24 @@ export class RestAPIServer {
     this.app.use('/api/v1/itil', itilRoutes);
     this.app.use('/api/v1/business-services', businessServiceRoutes);
     this.app.use('/api/v1/architecture', architectureRoutes);
-    // TEMPORARILY DISABLED - V3.0 routes need repository implementations
-    // this.app.use('/api/v1/ai', aiPatternRoutes);
+    this.app.use('/api/v1/tbm', tbmRoutes);
+    // Prometheus metrics (public, root path -> /metrics)
+    this.app.use('/', metricsRoutes);
+    // Rate-limit monitoring (admin)
+    try {
+      const config = loadConfig();
+      const rateLimitMiddleware = new RateLimitMiddleware(
+        getRedisClient().getConnection(),
+        config.rateLimit
+      );
+      this.app.use('/api/v1/metrics/rate-limits', createRateLimitMetricsRoutes(rateLimitMiddleware));
+    } catch (err) {
+      logger.warn('Rate-limit metrics routes not mounted', { error: (err as Error).message });
+    }
     this.app.use('/api/v1', jobsRoutes);
   }
 
-  private setupErrorHandling(): void {
+  setupErrorHandling(): void {
     this.app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
       logger.error('API Error', { error: err.message, stack: err.stack });
       res.status(500).json({

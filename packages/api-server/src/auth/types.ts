@@ -54,8 +54,8 @@ export interface AuthenticatedRequest extends Request {
 }
 
 export interface LoginRequest {
-  _username: string;
-  _password: string;
+  username: string;
+  password: string;
 }
 
 export interface LoginResponse {
@@ -70,11 +70,11 @@ export interface LoginResponse {
 }
 
 export interface RefreshTokenRequest {
-  _refreshToken: string;
+  refreshToken: string;
 }
 
 export interface ApiKeyRequest {
-  _name: string;
+  name: string;
   expiresInDays?: number;
 }
 

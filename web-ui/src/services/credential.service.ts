@@ -291,7 +291,8 @@ class CredentialService {
     const response = await this.axiosInstance.get<{
       success: boolean;
       data: UnifiedCredentialSummary[];
-      pagination: {
+      count?: number;
+      pagination?: {
         total: number;
         page: number;
         limit: number;
@@ -299,12 +300,16 @@ class CredentialService {
       };
     }>(`/credentials?${params.toString()}`);
 
+    const data = response.data.data ?? [];
+    const pg = response.data.pagination;
+    const total = pg?.total ?? response.data.count ?? data.length;
+    const limit = pg?.limit ?? filters?.limit ?? data.length;
     return {
-      data: response.data.data,
-      total: response.data.pagination.total,
-      page: response.data.pagination.page,
-      limit: response.data.pagination.limit,
-      total_pages: response.data.pagination.totalPages,
+      data,
+      total,
+      page: pg?.page ?? filters?.page ?? 1,
+      limit,
+      total_pages: pg?.totalPages ?? (limit > 0 ? Math.ceil(total / limit) : 1),
     };
   }
 

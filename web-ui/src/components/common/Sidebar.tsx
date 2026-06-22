@@ -62,6 +62,7 @@ const menuCategories: MenuCategory[] = [
     title: 'CMDB',
     items: [
       { text: 'Configuration Items', icon: 'database', path: '/cis', count: 'cis' },
+      { text: 'Inventory', icon: 'list', path: '/inventory' },
       { text: 'Health Monitoring', icon: 'heartbeat', path: '/cmdb-health' },
       { text: 'Anomaly Detection', icon: 'warning', path: '/anomalies' },
     ],
@@ -82,11 +83,16 @@ const menuCategories: MenuCategory[] = [
   },
   {
     title: 'AI & Analytics',
-    items: [{ text: 'Pattern Learning', icon: 'sparkle', path: '/ai/patterns' }],
+    items: [
+      { text: 'Pattern Learning', icon: 'sparkle', path: '/ai/patterns' },
+    ],
   },
   {
     title: 'Administration',
-    items: [{ text: 'Credentials', icon: 'key', path: '/credentials' }],
+    items: [
+      { text: 'Credentials', icon: 'key', path: '/credentials' },
+      { text: 'Credential Sets', icon: 'key', path: '/credential-sets' },
+    ],
   },
 ];
 

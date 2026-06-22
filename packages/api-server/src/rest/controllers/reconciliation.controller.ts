@@ -26,9 +26,9 @@ export class ReconciliationController {
 
       if (!identifiers || typeof identifiers !== 'object') {
         res.status(400).json({
-          _success: false,
-          _error: 'Bad Request',
-          _message: 'identifiers object is required'
+          success: false,
+          error: 'Bad Request',
+          message: 'identifiers object is required'
         });
         return;
       }
@@ -62,16 +62,16 @@ export class ReconciliationController {
 
       if (!match) {
         res.json({
-          _success: true,
-          _data: null,
-          _message: 'No matching CI found'
+          success: true,
+          data: null,
+          message: 'No matching CI found'
         });
         return;
       }
 
       res.json({
-        _success: true,
-        _data: {
+        success: true,
+        data: {
           ci_id: match.ci_id,
           confidence: match.confidence,
           match_strategy: match.match_strategy,
@@ -81,9 +81,9 @@ export class ReconciliationController {
     } catch (error) {
       logger.error('Error finding CI matches', error);
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to find matches',
-        _message: error instanceof Error ? error.message : 'Unknown error'
+        success: false,
+        error: 'Failed to find matches',
+        message: error instanceof Error ? error.message : 'Unknown error'
       });
     }
   }
@@ -99,9 +99,9 @@ export class ReconciliationController {
       // Validate required fields
       if (!discoveredCI.name || !discoveredCI.ci_type || !discoveredCI.source) {
         res.status(400).json({
-          _success: false,
-          _error: 'Bad Request',
-          _message: 'Missing required fields: name, ci_type, source'
+          success: false,
+          error: 'Bad Request',
+          message: 'Missing required fields: name, ci_type, source'
         });
         return;
       }
@@ -110,19 +110,19 @@ export class ReconciliationController {
       const ciId = await this.reconciliationEngine.reconcileCI(discoveredCI);
 
       res.json({
-        _success: true,
-        _data: {
+        success: true,
+        data: {
           ci_id: ciId,
           action: ciId.includes('_') ? 'created' : 'updated'
         },
-        _message: 'CI reconciled successfully'
+        message: 'CI reconciled successfully'
       });
     } catch (error) {
       logger.error('Error merging CI', error);
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to merge CI',
-        _message: error instanceof Error ? error.message : 'Unknown error'
+        success: false,
+        error: 'Failed to merge CI',
+        message: error instanceof Error ? error.message : 'Unknown error'
       });
     }
   }
@@ -154,8 +154,8 @@ export class ReconciliationController {
       );
 
       res.json({
-        _success: true,
-        _data: result.rows.map(row => ({
+        success: true,
+        data: result.rows.map(row => ({
           id: row.id,
           ci_id: row.ci_id,
           conflict_type: row.conflict_type,
@@ -165,7 +165,7 @@ export class ReconciliationController {
           status: row.status,
           created_at: row.created_at
         })),
-        _pagination: {
+        pagination: {
           total: parseInt(total.rows[0].count),
           count: result.rows.length,
           offset: offsetNum,
@@ -175,9 +175,9 @@ export class ReconciliationController {
     } catch (error) {
       logger.error('Error listing conflicts', error);
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to list conflicts',
-        _message: error instanceof Error ? error.message : 'Unknown error'
+        success: false,
+        error: 'Failed to list conflicts',
+        message: error instanceof Error ? error.message : 'Unknown error'
       });
     }
   }
@@ -193,9 +193,9 @@ export class ReconciliationController {
 
       if (!resolution || !['accept_source', 'accept_target', 'merge'].includes(resolution)) {
         res.status(400).json({
-          _success: false,
-          _error: 'Bad Request',
-          _message: 'resolution must be one of: accept_source, accept_target, merge'
+          success: false,
+          error: 'Bad Request',
+          message: 'resolution must be one of: accept_source, accept_target, merge'
         });
         return;
       }
@@ -208,9 +208,9 @@ export class ReconciliationController {
 
       if (conflictResult.rows.length === 0) {
         res.status(404).json({
-          _success: false,
-          _error: 'Not Found',
-          _message: `Conflict with ID '${id}' not found`
+          success: false,
+          error: 'Not Found',
+          message: `Conflict with ID '${id}' not found`
         });
         return;
       }
@@ -226,20 +226,20 @@ export class ReconciliationController {
       );
 
       res.json({
-        _success: true,
-        _data: {
+        success: true,
+        data: {
           conflict_id: id,
           resolution: resolution,
           status: 'resolved'
         },
-        _message: 'Conflict resolved successfully'
+        message: 'Conflict resolved successfully'
       });
     } catch (error) {
       logger.error('Error resolving conflict', error);
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to resolve conflict',
-        _message: error instanceof Error ? error.message : 'Unknown error'
+        success: false,
+        error: 'Failed to resolve conflict',
+        message: error instanceof Error ? error.message : 'Unknown error'
       });
     }
   }
@@ -258,8 +258,8 @@ export class ReconciliationController {
       );
 
       res.json({
-        _success: true,
-        _data: result.rows.map(row => ({
+        success: true,
+        data: result.rows.map(row => ({
           id: row.id,
           name: row.name,
           identification_rules: row.identification_rules,
@@ -272,9 +272,9 @@ export class ReconciliationController {
     } catch (error) {
       logger.error('Error listing reconciliation rules', error);
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to list rules',
-        _message: error instanceof Error ? error.message : 'Unknown error'
+        success: false,
+        error: 'Failed to list rules',
+        message: error instanceof Error ? error.message : 'Unknown error'
       });
     }
   }
@@ -289,9 +289,9 @@ export class ReconciliationController {
 
       if (!name || !identification_rules || !Array.isArray(identification_rules)) {
         res.status(400).json({
-          _success: false,
-          _error: 'Bad Request',
-          _message: 'name and identification_rules (array) are required'
+          success: false,
+          error: 'Bad Request',
+          message: 'name and identification_rules (array) are required'
         });
         return;
       }
@@ -305,8 +305,8 @@ export class ReconciliationController {
       );
 
       res.status(201).json({
-        _success: true,
-        _data: {
+        success: true,
+        data: {
           id: result.rows[0].id,
           name: result.rows[0].name,
           identification_rules: result.rows[0].identification_rules,
@@ -314,14 +314,14 @@ export class ReconciliationController {
           enabled: result.rows[0].enabled,
           created_at: result.rows[0].created_at
         },
-        _message: 'Reconciliation rule created successfully'
+        message: 'Reconciliation rule created successfully'
       });
     } catch (error) {
       logger.error('Error creating reconciliation rule', error);
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to create rule',
-        _message: error instanceof Error ? error.message : 'Unknown error'
+        success: false,
+        error: 'Failed to create rule',
+        message: error instanceof Error ? error.message : 'Unknown error'
       });
     }
   }
@@ -339,8 +339,8 @@ export class ReconciliationController {
       );
 
       res.json({
-        _success: true,
-        _data: result.rows.map(row => ({
+        success: true,
+        data: result.rows.map(row => ({
           source_name: row.source_name,
           authority_score: row.authority_score,
           description: row.description
@@ -349,9 +349,9 @@ export class ReconciliationController {
     } catch (error) {
       logger.error('Error listing source authorities', error);
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to list source authorities',
-        _message: error instanceof Error ? error.message : 'Unknown error'
+        success: false,
+        error: 'Failed to list source authorities',
+        message: error instanceof Error ? error.message : 'Unknown error'
       });
     }
   }
@@ -367,9 +367,9 @@ export class ReconciliationController {
 
       if (!authority_score || authority_score < 1 || authority_score > 10) {
         res.status(400).json({
-          _success: false,
-          _error: 'Bad Request',
-          _message: 'authority_score must be between 1 and 10'
+          success: false,
+          error: 'Bad Request',
+          message: 'authority_score must be between 1 and 10'
         });
         return;
       }
@@ -383,20 +383,20 @@ export class ReconciliationController {
       );
 
       res.json({
-        _success: true,
-        _data: {
+        success: true,
+        data: {
           source_name: source,
           authority_score: authority_score,
           description: description
         },
-        _message: 'Source authority updated successfully'
+        message: 'Source authority updated successfully'
       });
     } catch (error) {
       logger.error('Error updating source authority', error);
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to update source authority',
-        _message: error instanceof Error ? error.message : 'Unknown error'
+        success: false,
+        error: 'Failed to update source authority',
+        message: error instanceof Error ? error.message : 'Unknown error'
       });
     }
   }
@@ -419,8 +419,8 @@ export class ReconciliationController {
       );
 
       res.json({
-        _success: true,
-        _data: {
+        success: true,
+        data: {
           ci_id: ci_id,
           sources: result.rows.map(row => ({
             source_name: row.source_name,
@@ -434,9 +434,9 @@ export class ReconciliationController {
     } catch (error) {
       logger.error('Error getting CI lineage', error);
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to get lineage',
-        _message: error instanceof Error ? error.message : 'Unknown error'
+        success: false,
+        error: 'Failed to get lineage',
+        message: error instanceof Error ? error.message : 'Unknown error'
       });
     }
   }
@@ -458,8 +458,8 @@ export class ReconciliationController {
       );
 
       res.json({
-        _success: true,
-        _data: {
+        success: true,
+        data: {
           ci_id: ci_id,
           fields: result.rows.map(row => ({
             field_name: row.field_name,
@@ -472,9 +472,9 @@ export class ReconciliationController {
     } catch (error) {
       logger.error('Error getting CI field sources', error);
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to get field sources',
-        _message: error instanceof Error ? error.message : 'Unknown error'
+        success: false,
+        error: 'Failed to get field sources',
+        message: error instanceof Error ? error.message : 'Unknown error'
       });
     }
   }

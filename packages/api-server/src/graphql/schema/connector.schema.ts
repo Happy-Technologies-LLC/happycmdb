@@ -47,15 +47,15 @@ export const connectorTypeDefs = `
     """Version string (e.g., 1.0.0)"""
     version: String!
     """Release date"""
-    releasedAt: DateTime!
+    releasedAt: DateTime
     """Download URL"""
-    downloadUrl: String!
+    downloadUrl: String
     """Checksum for verification"""
-    checksum: String!
+    checksum: String
     """Package size in bytes"""
-    sizeBytes: Int!
+    sizeBytes: Int
     """Has breaking changes"""
-    breakingChanges: Boolean!
+    breakingChanges: Boolean
     """Changelog text"""
     changelog: String
   }
@@ -115,13 +115,13 @@ export const connectorTypeDefs = `
   """
   type ConnectorCapabilities {
     """Supports data extraction"""
-    extraction: Boolean!
+    extraction: Boolean
     """Supports relationship discovery"""
-    relationships: Boolean!
+    relationships: Boolean
     """Supports incremental updates"""
-    incremental: Boolean!
+    incremental: Boolean
     """Supports bidirectional sync"""
-    bidirectional: Boolean!
+    bidirectional: Boolean
   }
 
   """
@@ -129,17 +129,17 @@ export const connectorTypeDefs = `
   """
   type ConnectorResource {
     """Resource identifier"""
-    id: String!
+    id: String
     """Display name"""
-    name: String!
+    name: String
     """Description"""
     description: String
     """CI type this resource maps to"""
     ciType: String
     """Enabled by default"""
-    enabledByDefault: Boolean!
+    enabledByDefault: Boolean
     """Supported operations"""
-    operations: [String!]!
+    operations: [String!]
     """Resource-specific configuration schema"""
     configurationSchema: JSON
     """Extraction settings"""

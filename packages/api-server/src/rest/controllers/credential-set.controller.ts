@@ -34,9 +34,9 @@ export class CredentialSetController {
       const credentialSet = await this.credentialSetService.create(input, createdBy);
 
       res.status(201).json({
-        _success: true,
-        _data: credentialSet,
-        _message: 'Credential set created successfully',
+        success: true,
+        data: credentialSet,
+        message: 'Credential set created successfully',
       });
     } catch (error) {
       logger.error('Error creating credential set', { error });
@@ -44,9 +44,9 @@ export class CredentialSetController {
       // Check for duplicate name error
       if (error instanceof Error && error.message.includes('already exists')) {
         res.status(409).json({
-          _success: false,
-          _error: 'Conflict',
-          _message: error.message,
+          success: false,
+          error: 'Conflict',
+          message: error.message,
         });
         return;
       }
@@ -54,17 +54,17 @@ export class CredentialSetController {
       // Check for invalid credential IDs error
       if (error instanceof Error && error.message.includes('do not exist')) {
         res.status(400).json({
-          _success: false,
-          _error: 'Bad Request',
-          _message: error.message,
+          success: false,
+          error: 'Bad Request',
+          message: error.message,
         });
         return;
       }
 
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to create credential set',
-        _message: error instanceof Error ? error.message : 'Unknown error',
+        success: false,
+        error: 'Failed to create credential set',
+        message: error instanceof Error ? error.message : 'Unknown error',
       });
     }
   }
@@ -77,16 +77,16 @@ export class CredentialSetController {
       const credentialSets = await this.credentialSetService.list();
 
       res.status(200).json({
-        _success: true,
-        _data: credentialSets,
-        _count: credentialSets.length,
+        success: true,
+        data: credentialSets,
+        count: credentialSets.length,
       });
     } catch (error) {
       logger.error('Error listing credential sets', { error });
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to list credential sets',
-        _message: error instanceof Error ? error.message : 'Unknown error',
+        success: false,
+        error: 'Failed to list credential sets',
+        message: error instanceof Error ? error.message : 'Unknown error',
       });
     }
   }
@@ -100,9 +100,9 @@ export class CredentialSetController {
 
       if (!id) {
         res.status(400).json({
-          _success: false,
-          _error: 'Bad Request',
-          _message: 'Credential set ID is required',
+          success: false,
+          error: 'Bad Request',
+          message: 'Credential set ID is required',
         });
         return;
       }
@@ -112,23 +112,23 @@ export class CredentialSetController {
 
       if (!credentialSet) {
         res.status(404).json({
-          _success: false,
-          _error: 'Not Found',
-          _message: `Credential set with ID '${id}' not found`,
+          success: false,
+          error: 'Not Found',
+          message: `Credential set with ID '${id}' not found`,
         });
         return;
       }
 
       res.status(200).json({
-        _success: true,
-        _data: credentialSet,
+        success: true,
+        data: credentialSet,
       });
     } catch (error) {
       logger.error('Error getting credential set', { error, id: req.params['id'] });
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to get credential set',
-        _message: error instanceof Error ? error.message : 'Unknown error',
+        success: false,
+        error: 'Failed to get credential set',
+        message: error instanceof Error ? error.message : 'Unknown error',
       });
     }
   }
@@ -142,9 +142,9 @@ export class CredentialSetController {
 
       if (!id) {
         res.status(400).json({
-          _success: false,
-          _error: 'Bad Request',
-          _message: 'Credential set ID is required',
+          success: false,
+          error: 'Bad Request',
+          message: 'Credential set ID is required',
         });
         return;
       }
@@ -154,9 +154,9 @@ export class CredentialSetController {
       const credentialSet = await this.credentialSetService.update(id, input);
 
       res.status(200).json({
-        _success: true,
-        _data: credentialSet,
-        _message: 'Credential set updated successfully',
+        success: true,
+        data: credentialSet,
+        message: 'Credential set updated successfully',
       });
     } catch (error) {
       logger.error('Error updating credential set', { error, id: req.params['id'] });
@@ -164,9 +164,9 @@ export class CredentialSetController {
       // Check for not found error
       if (error instanceof Error && error.message.includes('not found')) {
         res.status(404).json({
-          _success: false,
-          _error: 'Not Found',
-          _message: error.message,
+          success: false,
+          error: 'Not Found',
+          message: error.message,
         });
         return;
       }
@@ -174,9 +174,9 @@ export class CredentialSetController {
       // Check for duplicate name error
       if (error instanceof Error && error.message.includes('already exists')) {
         res.status(409).json({
-          _success: false,
-          _error: 'Conflict',
-          _message: error.message,
+          success: false,
+          error: 'Conflict',
+          message: error.message,
         });
         return;
       }
@@ -184,17 +184,17 @@ export class CredentialSetController {
       // Check for invalid credential IDs error
       if (error instanceof Error && error.message.includes('do not exist')) {
         res.status(400).json({
-          _success: false,
-          _error: 'Bad Request',
-          _message: error.message,
+          success: false,
+          error: 'Bad Request',
+          message: error.message,
         });
         return;
       }
 
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to update credential set',
-        _message: error instanceof Error ? error.message : 'Unknown error',
+        success: false,
+        error: 'Failed to update credential set',
+        message: error instanceof Error ? error.message : 'Unknown error',
       });
     }
   }
@@ -208,9 +208,9 @@ export class CredentialSetController {
 
       if (!id) {
         res.status(400).json({
-          _success: false,
-          _error: 'Bad Request',
-          _message: 'Credential set ID is required',
+          success: false,
+          error: 'Bad Request',
+          message: 'Credential set ID is required',
         });
         return;
       }
@@ -224,9 +224,9 @@ export class CredentialSetController {
       // Check for not found error
       if (error instanceof Error && error.message.includes('not found')) {
         res.status(404).json({
-          _success: false,
-          _error: 'Not Found',
-          _message: error.message,
+          success: false,
+          error: 'Not Found',
+          message: error.message,
         });
         return;
       }
@@ -234,17 +234,17 @@ export class CredentialSetController {
       // Check for in-use error
       if (error instanceof Error && error.message.includes('currently used')) {
         res.status(409).json({
-          _success: false,
-          _error: 'Conflict',
-          _message: error.message,
+          success: false,
+          error: 'Conflict',
+          message: error.message,
         });
         return;
       }
 
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to delete credential set',
-        _message: error instanceof Error ? error.message : 'Unknown error',
+        success: false,
+        error: 'Failed to delete credential set',
+        message: error instanceof Error ? error.message : 'Unknown error',
       });
     }
   }
@@ -259,9 +259,9 @@ export class CredentialSetController {
 
       if (!id) {
         res.status(400).json({
-          _success: false,
-          _error: 'Bad Request',
-          _message: 'Credential set ID is required',
+          success: false,
+          error: 'Bad Request',
+          message: 'Credential set ID is required',
         });
         return;
       }
@@ -282,9 +282,9 @@ export class CredentialSetController {
       }));
 
       res.status(200).json({
-        _success: true,
-        _data: safeCredentials,
-        _count: safeCredentials.length,
+        success: true,
+        data: safeCredentials,
+        count: safeCredentials.length,
       });
     } catch (error) {
       logger.error('Error selecting credentials from set', { error, id: req.params['id'] });
@@ -292,17 +292,17 @@ export class CredentialSetController {
       // Check for not found error
       if (error instanceof Error && error.message.includes('not found')) {
         res.status(404).json({
-          _success: false,
-          _error: 'Not Found',
-          _message: error.message,
+          success: false,
+          error: 'Not Found',
+          message: error.message,
         });
         return;
       }
 
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to select credentials',
-        _message: error instanceof Error ? error.message : 'Unknown error',
+        success: false,
+        error: 'Failed to select credentials',
+        message: error instanceof Error ? error.message : 'Unknown error',
       });
     }
   }

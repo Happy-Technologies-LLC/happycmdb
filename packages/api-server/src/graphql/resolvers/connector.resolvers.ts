@@ -79,8 +79,7 @@ const ConnectorQueryResolvers = {
           license,
           downloads,
           rating,
-          tags,
-          metadata
+          tags
         FROM connector_registry_cache
         ${whereClause}
         ORDER BY verified DESC, downloads DESC, name ASC
@@ -141,8 +140,7 @@ const ConnectorQueryResolvers = {
           license,
           downloads,
           rating,
-          tags,
-          metadata
+          tags
         FROM connector_registry_cache
         WHERE connector_type = $1
       `;

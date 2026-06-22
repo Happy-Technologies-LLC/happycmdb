@@ -4,6 +4,7 @@
 import { Request, Response } from 'express';
 import { getNeo4jClient } from '@cmdb/database';
 import { logger } from '@cmdb/common';
+import neo4j from 'neo4j-driver';
 
 export class SearchController {
   private neo4jClient = getNeo4jClient();
@@ -26,9 +27,9 @@ export class SearchController {
 
       if (!query || typeof query !== 'string' || query.trim().length === 0) {
         res.status(400).json({
-          _success: false,
-          _error: 'Bad Request',
-          _message: 'Search query is required and must be a non-empty string',
+          success: false,
+          error: 'Bad Request',
+          message: 'Search query is required and must be a non-empty string',
         });
         return;
       }
@@ -39,10 +40,12 @@ export class SearchController {
         const conditions: string[] = [
           '(ci.name CONTAINS $query OR ci.external_id CONTAINS $query)',
         ];
+        const limitNum = Math.min(parseInt(String(limit)), 1000);
+        const offsetNum = parseInt(String(offset));
         const params: any = {
-          _query: query.trim(),
-          _limit: Math.min(parseInt(String(limit)), 1000),
-          _offset: parseInt(String(offset)),
+          query: query.trim(),
+          limit: neo4j.int(limitNum),
+          offset: neo4j.int(offsetNum),
         };
 
         if (type) {
@@ -94,30 +97,30 @@ export class SearchController {
         const cis = result.records.map((r) => {
           const props = r.get('ci').properties;
           return {
-            _id: props.id,
-            _external_id: props.external_id,
-            _name: props.name,
-            _type: props.type,
-            _status: props.status,
-            _environment: props.environment,
-            _created_at: props.created_at,
-            _updated_at: props.updated_at,
-            _discovered_at: props.discovered_at,
-            _metadata: props.metadata ? JSON.parse(props.metadata) : {},
+            id: props.id,
+            external_id: props.external_id,
+            name: props.name,
+            type: props.type,
+            status: props.status,
+            environment: props.environment,
+            created_at: props.created_at,
+            updated_at: props.updated_at,
+            discovered_at: props.discovered_at,
+            metadata: props.metadata ? JSON.parse(props.metadata) : {},
           };
         });
 
         res.json({
-          _success: true,
-          _data: cis,
-          _pagination: {
+          success: true,
+          data: cis,
+          pagination: {
             total,
-            _count: cis.length,
-            _offset: params.offset,
-            _limit: params.limit,
+            count: cis.length,
+            offset: offsetNum,
+            limit: limitNum,
           },
-          _query: query.trim(),
-          _filters: {
+          query: query.trim(),
+          filters: {
             type,
             status,
             environment,
@@ -130,9 +133,9 @@ export class SearchController {
     } catch (error) {
       logger.error('Error performing advanced search', error);
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to perform advanced search',
-        _message: error instanceof Error ? error.message : 'Unknown error',
+        success: false,
+        error: 'Failed to perform advanced search',
+        message: error instanceof Error ? error.message : 'Unknown error',
       });
     }
   }
@@ -147,9 +150,9 @@ export class SearchController {
 
       if (!query || typeof query !== 'string' || query.trim().length === 0) {
         res.status(400).json({
-          _success: false,
-          _error: 'Bad Request',
-          _message: 'Search query is required and must be a non-empty string',
+          success: false,
+          error: 'Bad Request',
+          message: 'Search query is required and must be a non-empty string',
         });
         return;
       }
@@ -160,39 +163,39 @@ export class SearchController {
       try {
         const result = await session.run(
           `
-          CALL db.index.fulltext.queryNodes('ci_search', $query)
+          CALL db.index.fulltext.queryNodes('ci_fulltext_search', $query)
           YIELD node, score
           RETURN node, score
           ORDER BY score DESC
           LIMIT $limit
           `,
-          { query: query.trim(), limit: limitNum }
+          { query: query.trim(), limit: neo4j.int(limitNum) }
         );
 
         const cis = result.records.map((r) => {
           const props = r.get('node').properties;
           return {
-            _ci: {
-              _id: props.id,
-              _external_id: props.external_id,
-              _name: props.name,
-              _type: props.type,
-              _status: props.status,
-              _environment: props.environment,
-              _created_at: props.created_at,
-              _updated_at: props.updated_at,
-              _discovered_at: props.discovered_at,
-              _metadata: props.metadata ? JSON.parse(props.metadata) : {},
+            ci: {
+              id: props.id,
+              external_id: props.external_id,
+              name: props.name,
+              type: props.type,
+              status: props.status,
+              environment: props.environment,
+              created_at: props.created_at,
+              updated_at: props.updated_at,
+              discovered_at: props.discovered_at,
+              metadata: props.metadata ? JSON.parse(props.metadata) : {},
             },
-            _score: r.get('score'),
+            score: r.get('score'),
           };
         });
 
         res.json({
-          _success: true,
-          _data: cis,
-          _count: cis.length,
-          _query: query.trim(),
+          success: true,
+          data: cis,
+          count: cis.length,
+          query: query.trim(),
         });
       } finally {
         await session.close();
@@ -201,20 +204,20 @@ export class SearchController {
       logger.error('Error performing full-text search', error);
 
       // Check if full-text index doesn't exist
-      if (error instanceof Error && error.message.includes('ci_search')) {
+      if (error instanceof Error && error.message.includes('ci_fulltext_search')) {
         res.status(500).json({
-          _success: false,
-          _error: 'Full-text index not configured',
-          _message:
-            'The full-text search index "ci_search" does not exist. Please run the database initialization script.',
+          success: false,
+          error: 'Full-text index not configured',
+          message:
+            'The full-text search index "ci_fulltext_search" does not exist. Please run the database initialization script.',
         });
         return;
       }
 
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to perform full-text search',
-        _message: error instanceof Error ? error.message : 'Unknown error',
+        success: false,
+        error: 'Failed to perform full-text search',
+        message: error instanceof Error ? error.message : 'Unknown error',
       });
     }
   }
@@ -229,9 +232,9 @@ export class SearchController {
 
       if (!ci_type || !relationship_type || !related_ci_type) {
         res.status(400).json({
-          _success: false,
-          _error: 'Bad Request',
-          _message: 'Missing required fields: ci_type, relationship_type, related_ci_type',
+          success: false,
+          error: 'Bad Request',
+          message: 'Missing required fields: ci_type, relationship_type, related_ci_type',
         });
         return;
       }
@@ -250,31 +253,31 @@ export class SearchController {
           {
             ci_type,
             related_ci_type,
-            _limit: limitNum,
+            limit: neo4j.int(limitNum),
           }
         );
 
         const cis = result.records.map((r) => {
           const props = r.get('ci').properties;
           return {
-            _id: props.id,
-            _external_id: props.external_id,
-            _name: props.name,
-            _type: props.type,
-            _status: props.status,
-            _environment: props.environment,
-            _created_at: props.created_at,
-            _updated_at: props.updated_at,
-            _discovered_at: props.discovered_at,
-            _metadata: props.metadata ? JSON.parse(props.metadata) : {},
+            id: props.id,
+            external_id: props.external_id,
+            name: props.name,
+            type: props.type,
+            status: props.status,
+            environment: props.environment,
+            created_at: props.created_at,
+            updated_at: props.updated_at,
+            discovered_at: props.discovered_at,
+            metadata: props.metadata ? JSON.parse(props.metadata) : {},
           };
         });
 
         res.json({
-          _success: true,
-          _data: cis,
-          _count: cis.length,
-          _pattern: {
+          success: true,
+          data: cis,
+          count: cis.length,
+          pattern: {
             ci_type,
             relationship_type,
             related_ci_type,
@@ -286,9 +289,9 @@ export class SearchController {
     } catch (error) {
       logger.error('Error searching by relationship pattern', error);
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to search by relationship pattern',
-        _message: error instanceof Error ? error.message : 'Unknown error',
+        success: false,
+        error: 'Failed to search by relationship pattern',
+        message: error instanceof Error ? error.message : 'Unknown error',
       });
     }
   }
@@ -325,33 +328,33 @@ export class SearchController {
           SKIP $offset
           LIMIT $limit
           `,
-          { offset: offsetNum, limit: limitNum }
+          { offset: neo4j.int(offsetNum), limit: neo4j.int(limitNum) }
         );
 
         const cis = result.records.map((r) => {
           const props = r.get('ci').properties;
           return {
-            _id: props.id,
-            _external_id: props.external_id,
-            _name: props.name,
-            _type: props.type,
-            _status: props.status,
-            _environment: props.environment,
-            _created_at: props.created_at,
-            _updated_at: props.updated_at,
-            _discovered_at: props.discovered_at,
-            _metadata: props.metadata ? JSON.parse(props.metadata) : {},
+            id: props.id,
+            external_id: props.external_id,
+            name: props.name,
+            type: props.type,
+            status: props.status,
+            environment: props.environment,
+            created_at: props.created_at,
+            updated_at: props.updated_at,
+            discovered_at: props.discovered_at,
+            metadata: props.metadata ? JSON.parse(props.metadata) : {},
           };
         });
 
         res.json({
-          _success: true,
-          _data: cis,
-          _pagination: {
+          success: true,
+          data: cis,
+          pagination: {
             total,
-            _count: cis.length,
-            _offset: offsetNum,
-            _limit: limitNum,
+            count: cis.length,
+            offset: offsetNum,
+            limit: limitNum,
           },
         });
       } finally {
@@ -360,9 +363,9 @@ export class SearchController {
     } catch (error) {
       logger.error('Error getting orphaned CIs', error);
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to retrieve orphaned CIs',
-        _message: error instanceof Error ? error.message : 'Unknown error',
+        success: false,
+        error: 'Failed to retrieve orphaned CIs',
+        message: error instanceof Error ? error.message : 'Unknown error',
       });
     }
   }

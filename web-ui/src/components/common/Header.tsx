@@ -7,6 +7,13 @@ import { useQuery } from '@tanstack/react-query';
 import { Icon } from '@happy-technologies/design-system';
 import { apiClient } from '../../lib/api-client';
 import { HealthStatus } from '../../types';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 
 interface HeaderProps {
   onMenuClick?: () => void;
@@ -68,13 +75,21 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
       </div>
 
       {/* Tenant switcher */}
-      <button className="hh-focus hidden items-center gap-2.5 rounded-[var(--hh-radius-pill)] border border-[var(--hh-border)] bg-[var(--hh-bg-page)] px-3 py-1.5 transition-colors hover:border-[var(--hh-accent)] sm:flex">
-        <Icon name="buildings" size={16} className="text-[var(--hh-accent-text)]" />
-        <span className="hh-display text-[13px] font-semibold text-[var(--hh-text-primary)]">
-          Happy Technologies
-        </span>
-        <Icon name="caret-down" size={13} className="text-[var(--hh-border-strong)]" />
-      </button>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <button className="hh-focus hidden items-center gap-2.5 rounded-[var(--hh-radius-pill)] border border-[var(--hh-border)] bg-[var(--hh-bg-page)] px-3 py-1.5 transition-colors hover:border-[var(--hh-accent)] sm:flex">
+            <Icon name="buildings" size={16} className="text-[var(--hh-accent-text)]" />
+            <span className="hh-display text-[13px] font-semibold text-[var(--hh-text-primary)]">
+              Happy Technologies
+            </span>
+            <Icon name="caret-down" size={13} className="text-[var(--hh-border-strong)]" />
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          <DropdownMenuLabel>Tenant</DropdownMenuLabel>
+          <DropdownMenuItem>Happy Technologies</DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
 
       {/* Service status - driven by live /cmdb-health/services */}
       <div className="hidden items-center gap-3.5 lg:flex">
@@ -99,12 +114,20 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
       </div>
 
       {/* Notifications */}
-      <button
-        aria-label="Notifications"
-        className="hh-focus flex h-10 w-10 flex-none items-center justify-center rounded-[var(--hh-radius-md)] border border-[var(--hh-border)] bg-white text-[var(--hh-text-body)] transition-colors hover:border-[var(--hh-accent)] hover:text-[var(--hh-accent-text)]"
-      >
-        <Icon name="bell" size={19} />
-      </button>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <button
+            aria-label="Notifications"
+            className="hh-focus flex h-10 w-10 flex-none items-center justify-center rounded-[var(--hh-radius-md)] border border-[var(--hh-border)] bg-white text-[var(--hh-text-body)] transition-colors hover:border-[var(--hh-accent)] hover:text-[var(--hh-accent-text)]"
+          >
+            <Icon name="bell" size={19} />
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          <DropdownMenuLabel>Notifications</DropdownMenuLabel>
+          <DropdownMenuItem disabled>No new notifications</DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
     </header>
   );
 };

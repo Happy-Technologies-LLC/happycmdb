@@ -49,9 +49,9 @@ export class UnifiedCredentialController {
       };
 
       res.status(201).json({
-        _success: true,
-        _data: safeCredential,
-        _message: 'Credential created successfully',
+        success: true,
+        data: safeCredential,
+        message: 'Credential created successfully',
       });
     } catch (error) {
       logger.error('Error creating credential', { error });
@@ -59,17 +59,17 @@ export class UnifiedCredentialController {
       // Check for duplicate name error
       if (error instanceof Error && error.message.includes('already exists')) {
         res.status(409).json({
-          _success: false,
-          _error: 'Conflict',
-          _message: error.message,
+          success: false,
+          error: 'Conflict',
+          message: error.message,
         });
         return;
       }
 
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to create credential',
-        _message: error instanceof Error ? error.message : 'Unknown error',
+        success: false,
+        error: 'Failed to create credential',
+        message: error instanceof Error ? error.message : 'Unknown error',
       });
     }
   }
@@ -91,16 +91,16 @@ export class UnifiedCredentialController {
       const credentials = await this.credentialService.list(filters);
 
       res.status(200).json({
-        _success: true,
-        _data: credentials,
-        _count: credentials.length,
+        success: true,
+        data: credentials,
+        count: credentials.length,
       });
     } catch (error) {
       logger.error('Error listing credentials', { error });
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to list credentials',
-        _message: error instanceof Error ? error.message : 'Unknown error',
+        success: false,
+        error: 'Failed to list credentials',
+        message: error instanceof Error ? error.message : 'Unknown error',
       });
     }
   }
@@ -115,9 +115,9 @@ export class UnifiedCredentialController {
 
       if (!id) {
         res.status(400).json({
-          _success: false,
-          _error: 'Bad Request',
-          _message: 'Credential ID is required',
+          success: false,
+          error: 'Bad Request',
+          message: 'Credential ID is required',
         });
         return;
       }
@@ -126,9 +126,9 @@ export class UnifiedCredentialController {
 
       if (!credential) {
         res.status(404).json({
-          _success: false,
-          _error: 'Not Found',
-          _message: `Credential with ID '${id}' not found`,
+          success: false,
+          error: 'Not Found',
+          message: `Credential with ID '${id}' not found`,
         });
         return;
       }
@@ -141,15 +141,15 @@ export class UnifiedCredentialController {
       };
 
       res.status(200).json({
-        _success: true,
-        _data: safeCredential,
+        success: true,
+        data: safeCredential,
       });
     } catch (error) {
       logger.error('Error getting credential', { error, id: req.params['id'] });
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to get credential',
-        _message: error instanceof Error ? error.message : 'Unknown error',
+        success: false,
+        error: 'Failed to get credential',
+        message: error instanceof Error ? error.message : 'Unknown error',
       });
     }
   }
@@ -163,9 +163,9 @@ export class UnifiedCredentialController {
 
       if (!id) {
         res.status(400).json({
-          _success: false,
-          _error: 'Bad Request',
-          _message: 'Credential ID is required',
+          success: false,
+          error: 'Bad Request',
+          message: 'Credential ID is required',
         });
         return;
       }
@@ -181,9 +181,9 @@ export class UnifiedCredentialController {
       };
 
       res.status(200).json({
-        _success: true,
-        _data: safeCredential,
-        _message: 'Credential updated successfully',
+        success: true,
+        data: safeCredential,
+        message: 'Credential updated successfully',
       });
     } catch (error) {
       logger.error('Error updating credential', { error, id: req.params['id'] });
@@ -191,9 +191,9 @@ export class UnifiedCredentialController {
       // Check for not found error
       if (error instanceof Error && error.message.includes('not found')) {
         res.status(404).json({
-          _success: false,
-          _error: 'Not Found',
-          _message: error.message,
+          success: false,
+          error: 'Not Found',
+          message: error.message,
         });
         return;
       }
@@ -201,17 +201,17 @@ export class UnifiedCredentialController {
       // Check for duplicate name error
       if (error instanceof Error && error.message.includes('already exists')) {
         res.status(409).json({
-          _success: false,
-          _error: 'Conflict',
-          _message: error.message,
+          success: false,
+          error: 'Conflict',
+          message: error.message,
         });
         return;
       }
 
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to update credential',
-        _message: error instanceof Error ? error.message : 'Unknown error',
+        success: false,
+        error: 'Failed to update credential',
+        message: error instanceof Error ? error.message : 'Unknown error',
       });
     }
   }
@@ -225,9 +225,9 @@ export class UnifiedCredentialController {
 
       if (!id) {
         res.status(400).json({
-          _success: false,
-          _error: 'Bad Request',
-          _message: 'Credential ID is required',
+          success: false,
+          error: 'Bad Request',
+          message: 'Credential ID is required',
         });
         return;
       }
@@ -241,9 +241,9 @@ export class UnifiedCredentialController {
       // Check for not found error
       if (error instanceof Error && error.message.includes('not found')) {
         res.status(404).json({
-          _success: false,
-          _error: 'Not Found',
-          _message: error.message,
+          success: false,
+          error: 'Not Found',
+          message: error.message,
         });
         return;
       }
@@ -251,17 +251,17 @@ export class UnifiedCredentialController {
       // Check for in-use error
       if (error instanceof Error && error.message.includes('currently used')) {
         res.status(409).json({
-          _success: false,
-          _error: 'Conflict',
-          _message: error.message,
+          success: false,
+          error: 'Conflict',
+          message: error.message,
         });
         return;
       }
 
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to delete credential',
-        _message: error instanceof Error ? error.message : 'Unknown error',
+        success: false,
+        error: 'Failed to delete credential',
+        message: error instanceof Error ? error.message : 'Unknown error',
       });
     }
   }
@@ -275,9 +275,9 @@ export class UnifiedCredentialController {
 
       if (!id) {
         res.status(400).json({
-          _success: false,
-          _error: 'Bad Request',
-          _message: 'Credential ID is required',
+          success: false,
+          error: 'Bad Request',
+          message: 'Credential ID is required',
         });
         return;
       }
@@ -285,15 +285,15 @@ export class UnifiedCredentialController {
       const result = await this.credentialService.validate(id);
 
       res.status(200).json({
-        _success: true,
-        _data: result,
+        success: true,
+        data: result,
       });
     } catch (error) {
       logger.error('Error validating credential', { error, id: req.params['id'] });
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to validate credential',
-        _message: error instanceof Error ? error.message : 'Unknown error',
+        success: false,
+        error: 'Failed to validate credential',
+        message: error instanceof Error ? error.message : 'Unknown error',
       });
     }
   }
@@ -309,9 +309,9 @@ export class UnifiedCredentialController {
 
       if (!result) {
         res.status(404).json({
-          _success: false,
-          _error: 'Not Found',
-          _message: 'No matching credential found for the given context',
+          success: false,
+          error: 'Not Found',
+          message: 'No matching credential found for the given context',
         });
         return;
       }
@@ -326,15 +326,15 @@ export class UnifiedCredentialController {
       };
 
       res.status(200).json({
-        _success: true,
-        _data: safeResult,
+        success: true,
+        data: safeResult,
       });
     } catch (error) {
       logger.error('Error matching credentials', { error });
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to match credentials',
-        _message: error instanceof Error ? error.message : 'Unknown error',
+        success: false,
+        error: 'Failed to match credentials',
+        message: error instanceof Error ? error.message : 'Unknown error',
       });
     }
   }
@@ -358,16 +358,16 @@ export class UnifiedCredentialController {
       }));
 
       res.status(200).json({
-        _success: true,
-        _data: safeResults,
-        _count: safeResults.length,
+        success: true,
+        data: safeResults,
+        count: safeResults.length,
       });
     } catch (error) {
       logger.error('Error ranking credentials', { error });
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to rank credentials',
-        _message: error instanceof Error ? error.message : 'Unknown error',
+        success: false,
+        error: 'Failed to rank credentials',
+        message: error instanceof Error ? error.message : 'Unknown error',
       });
     }
   }
@@ -387,9 +387,9 @@ export class UnifiedCredentialController {
       const rawScopes = req.body.scopes ?? [];
       if (!Array.isArray(rawScopes) || !rawScopes.every((s) => typeof s === 'string')) {
         res.status(400).json({
-          _success: false,
-          _error: 'Bad Request',
-          _message: 'scopes must be an array of strings',
+          success: false,
+          error: 'Bad Request',
+          message: 'scopes must be an array of strings',
         });
         return;
       }
@@ -399,18 +399,18 @@ export class UnifiedCredentialController {
 
       if (credential === null) {
         res.status(404).json({
-          _success: false,
-          _error: 'Not Found',
-          _message: `Credential with ID '${id}' not found`,
+          success: false,
+          error: 'Not Found',
+          message: `Credential with ID '${id}' not found`,
         });
         return;
       }
 
       if (credential.protocol !== 'oauth2') {
         res.status(400).json({
-          _success: false,
-          _error: 'Bad Request',
-          _message: 'OAuth authorize is only valid for oauth2 credentials',
+          success: false,
+          error: 'Bad Request',
+          message: 'OAuth authorize is only valid for oauth2 credentials',
         });
         return;
       }
@@ -422,8 +422,8 @@ export class UnifiedCredentialController {
       });
 
       res.status(200).json({
-        _success: true,
-        _data: {
+        success: true,
+        data: {
           authorization_url: url,
           state,
         },
@@ -431,9 +431,9 @@ export class UnifiedCredentialController {
     } catch (error) {
       logger.error('Error starting OAuth authorization', { error, id: req.params['id'] });
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to start OAuth authorization',
-        _message: error instanceof Error ? error.message : 'Unknown error',
+        success: false,
+        error: 'Failed to start OAuth authorization',
+        message: error instanceof Error ? error.message : 'Unknown error',
       });
     }
   }
@@ -445,9 +445,9 @@ export class UnifiedCredentialController {
     try {
       if (typeof req.query['error'] === 'string' && req.query['error'] !== '') {
         res.status(400).json({
-          _success: false,
-          _error: 'Bad Request',
-          _message: `OAuth authorization failed: ${req.query['error']}`,
+          success: false,
+          error: 'Bad Request',
+          message: `OAuth authorization failed: ${req.query['error']}`,
         });
         return;
       }
@@ -457,9 +457,9 @@ export class UnifiedCredentialController {
 
       if (typeof state !== 'string' || state === '' || typeof code !== 'string' || code === '') {
         res.status(400).json({
-          _success: false,
-          _error: 'Bad Request',
-          _message: 'state and code query parameters are required',
+          success: false,
+          error: 'Bad Request',
+          message: 'state and code query parameters are required',
         });
         return;
       }
@@ -467,8 +467,8 @@ export class UnifiedCredentialController {
       const result = await getOAuthSubstrate(this.oauthPool).handleCallback({ state, code });
 
       res.status(200).json({
-        _success: true,
-        _data: {
+        success: true,
+        data: {
           source_id: result.sourceId,
           connected: true,
         },
@@ -478,17 +478,17 @@ export class UnifiedCredentialController {
 
       if (error instanceof Error && error.message.includes('invalid or expired OAuth state')) {
         res.status(400).json({
-          _success: false,
-          _error: 'Bad Request',
-          _message: error.message,
+          success: false,
+          error: 'Bad Request',
+          message: error.message,
         });
         return;
       }
 
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to handle OAuth callback',
-        _message: error instanceof Error ? error.message : 'Unknown error',
+        success: false,
+        error: 'Failed to handle OAuth callback',
+        message: error instanceof Error ? error.message : 'Unknown error',
       });
     }
   }

@@ -49,7 +49,7 @@ export class TBMServiceManager {
   async getServiceCosts(serviceId: string): Promise<TBMCosts> {
     try {
       // Fetch business service
-      const businessService = await this.businessServiceRepo.findById(serviceId);
+      const businessService = await this.businessServiceRepo.getBusinessServiceById(serviceId);
       if (!businessService) {
         throw new Error(`Business service not found: ${serviceId}`);
       }
@@ -128,7 +128,7 @@ export class TBMServiceManager {
     try {
       // Get business services supported by this CI
       const neo4jClient = getNeo4jClient();
-      const session = neo4jClient.getDriver().session();
+      const session = neo4jClient.getSession();
 
       try {
         const result = await session.run(
@@ -148,7 +148,7 @@ export class TBMServiceManager {
         // Calculate total revenue impact
         let totalRevenueImpact = 0;
         for (const bs of businessServices) {
-          const service = await this.businessServiceRepo.findById(bs.serviceId);
+          const service = await this.businessServiceRepo.getBusinessServiceById(bs.serviceId);
           if (service) {
             const annualRevenue = service.bsm_attributes.annual_revenue_supported;
             const revenuePerHour = annualRevenue / 8760; // 365 days * 24 hours

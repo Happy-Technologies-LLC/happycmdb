@@ -45,10 +45,13 @@ export class CICommand {
     // Create CI
     ci.command('create')
       .description('Create a new CI')
+      .requiredOption('-i, --id <id>', 'Unique CI identifier')
       .requiredOption('-t, --type <type>', 'CI type (server, database, application, etc.)')
       .requiredOption('-n, --name <name>', 'CI name')
+      .option('-s, --status <status>', 'CI status (active, inactive, maintenance)')
+      .option('-e, --environment <environment>', 'CI environment (production, staging, development)')
       .option('-d, --description <description>', 'CI description')
-      .option('--attributes <json>', 'CI attributes as JSON string')
+      .option('--attributes <json>', 'CI metadata as JSON string')
       .action(async (options) => {
         await this.createCI(options);
       });
@@ -204,19 +207,25 @@ export class CICommand {
 
     try {
       const data: any = {
-        _type: options.type,
-        _name: options.name,
+        id: options.id,
+        name: options.name,
+        type: options.type,
       };
 
-      if (options.description) data.description = options.description;
+      if (options.status) data.status = options.status;
+      if (options.environment) data.environment = options.environment;
+
+      const metadata: Record<string, any> = {};
       if (options.attributes) {
         try {
-          data.attributes = JSON.parse(options.attributes);
+          Object.assign(metadata, JSON.parse(options.attributes));
         } catch {
           spinner.fail(chalk.red('Invalid JSON in --attributes'));
           return;
         }
       }
+      if (options.description) metadata.description = options.description;
+      if (Object.keys(metadata).length > 0) data.metadata = metadata;
 
       const response = await axios.post(`${this.apiUrl}/cis`, data, {
         headers: this.getHeaders(),
@@ -259,7 +268,7 @@ export class CICommand {
         return;
       }
 
-      await axios.patch(`${this.apiUrl}/cis/${ciId}`, data, {
+      await axios.put(`${this.apiUrl}/cis/${ciId}`, data, {
         headers: this.getHeaders(),
       });
 
@@ -302,9 +311,9 @@ export class CICommand {
 
     try {
       const data = {
-        _fromCiId: options.from,
-        _toCiId: options.to,
-        _type: options.type,
+        from_id: options.from,
+        to_id: options.to,
+        type: options.type,
       };
 
       const response = await axios.post(`${this.apiUrl}/relationships`, data, {
@@ -369,17 +378,13 @@ export class CICommand {
     const spinner = ora('Searching CIs...').start();
 
     try {
-      const params: any = {
-        query,
-        _limit: options.limit,
-      };
-
-      if (options.type) params.type = options.type;
-
-      const response = await axios.get(`${this.apiUrl}/cis/search`, {
-        params,
-        headers: this.getHeaders(),
-      });
+      const response = await axios.post(
+        `${this.apiUrl}/cis/search`,
+        { query, limit: parseInt(options.limit, 10) },
+        {
+          headers: this.getHeaders(),
+        }
+      );
 
       spinner.succeed(chalk.green(`Found ${response.data.length} matching CIs`));
 

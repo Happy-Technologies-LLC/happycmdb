@@ -178,6 +178,11 @@ export const typeDefs = `
   scalar JSON
 
   """
+  Custom DateTime scalar type (ISO-8601 string)
+  """
+  scalar DateTime
+
+  """
   Query operations
   """
   type Query {

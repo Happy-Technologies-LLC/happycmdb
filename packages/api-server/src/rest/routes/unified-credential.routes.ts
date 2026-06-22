@@ -56,13 +56,13 @@ const credentialScopeSchema = Joi.string().valid(
  * Credential Affinity schema
  */
 const credentialAffinitySchema = Joi.object({
-  _networks: Joi.array().items(Joi.string()).optional(),
-  _hostname_patterns: Joi.array().items(Joi.string()).optional(),
-  _os_types: Joi.array().items(Joi.string()).optional(),
-  _device_types: Joi.array().items(Joi.string()).optional(),
-  _environments: Joi.array().items(Joi.string()).optional(),
-  _cloud_providers: Joi.array().items(Joi.string()).optional(),
-  _priority: Joi.number().integer().min(1).max(10).optional(),
+  networks: Joi.array().items(Joi.string()).optional(),
+  hostname_patterns: Joi.array().items(Joi.string()).optional(),
+  os_types: Joi.array().items(Joi.string()).optional(),
+  device_types: Joi.array().items(Joi.string()).optional(),
+  environments: Joi.array().items(Joi.string()).optional(),
+  cloud_providers: Joi.array().items(Joi.string()).optional(),
+  priority: Joi.number().integer().min(1).max(10).optional(),
 });
 
 /**
@@ -93,58 +93,58 @@ const updateCredentialSchema = Joi.object({
  * Credential Match Context schema
  */
 const credentialMatchContextSchema = Joi.object({
-  _ip: Joi.string().optional(),
-  _hostname: Joi.string().optional(),
-  _os_type: Joi.string().optional(),
-  _device_type: Joi.string().optional(),
-  _environment: Joi.string().optional(),
-  _cloud_provider: Joi.string().optional(),
-  _required_protocol: authProtocolSchema.optional(),
-  _required_scope: credentialScopeSchema.optional(),
+  ip: Joi.string().optional(),
+  hostname: Joi.string().optional(),
+  os_type: Joi.string().optional(),
+  device_type: Joi.string().optional(),
+  environment: Joi.string().optional(),
+  cloud_provider: Joi.string().optional(),
+  required_protocol: authProtocolSchema.optional(),
+  required_scope: credentialScopeSchema.optional(),
 });
 
 /**
  * List Credentials Query schema
  */
 const listCredentialsQuerySchema = Joi.object({
-  _protocol: authProtocolSchema.optional(),
-  _scope: credentialScopeSchema.optional(),
-  _tags: Joi.string().optional(),
-  _created_by: Joi.string().optional(),
-  _limit: Joi.number().integer().min(1).max(1000).default(100),
-  _offset: Joi.number().integer().min(0).default(0),
+  protocol: authProtocolSchema.optional(),
+  scope: credentialScopeSchema.optional(),
+  tags: Joi.string().optional(),
+  created_by: Joi.string().optional(),
+  limit: Joi.number().integer().min(1).max(1000).default(100),
+  offset: Joi.number().integer().min(0).default(0),
 });
 
 /**
  * Create Credential Set schema
  */
 const createCredentialSetSchema = Joi.object({
-  _name: Joi.string().required().min(1).max(255),
-  _description: Joi.string().optional().max(1000),
-  _credential_ids: Joi.array().items(Joi.string().uuid()).min(1).required(),
-  _strategy: Joi.string().valid('sequential', 'parallel', 'adaptive').optional().default('sequential'),
-  _stop_on_success: Joi.boolean().optional().default(true),
-  _tags: Joi.array().items(Joi.string()).optional(),
+  name: Joi.string().required().min(1).max(255),
+  description: Joi.string().optional().max(1000),
+  credential_ids: Joi.array().items(Joi.string().uuid()).min(1).required(),
+  strategy: Joi.string().valid('sequential', 'parallel', 'adaptive').optional().default('sequential'),
+  stop_on_success: Joi.boolean().optional().default(true),
+  tags: Joi.array().items(Joi.string()).optional(),
 });
 
 /**
  * Update Credential Set schema
  */
 const updateCredentialSetSchema = Joi.object({
-  _name: Joi.string().optional().min(1).max(255),
-  _description: Joi.string().optional().max(1000),
-  _credential_ids: Joi.array().items(Joi.string().uuid()).min(1).optional(),
-  _strategy: Joi.string().valid('sequential', 'parallel', 'adaptive').optional(),
-  _stop_on_success: Joi.boolean().optional(),
-  _tags: Joi.array().items(Joi.string()).optional(),
+  name: Joi.string().optional().min(1).max(255),
+  description: Joi.string().optional().max(1000),
+  credential_ids: Joi.array().items(Joi.string().uuid()).min(1).optional(),
+  strategy: Joi.string().valid('sequential', 'parallel', 'adaptive').optional(),
+  stop_on_success: Joi.boolean().optional(),
+  tags: Joi.array().items(Joi.string()).optional(),
 });
 
 /**
  * Select Credentials schema
  */
 const selectCredentialsSchema = Joi.object({
-  _context: credentialMatchContextSchema.optional(),
-  _strategy: Joi.string().valid('sequential', 'parallel', 'adaptive').optional(),
+  context: credentialMatchContextSchema.optional(),
+  strategy: Joi.string().valid('sequential', 'parallel', 'adaptive').optional(),
 });
 
 // =============================================================================

@@ -1,7 +1,6 @@
+#!/usr/bin/env node
 // Copyright 2026 Happy Technologies LLC
 // SPDX-License-Identifier: Apache-2.0
-
-#!/usr/bin/env node
 
 import * as os from 'os';
 import * as schedule from 'node-schedule';

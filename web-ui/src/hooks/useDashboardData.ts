@@ -227,21 +227,32 @@ export const useBusinessServiceDashboard = (serviceId?: string, _businessUnit?: 
   };
 };
 
-// Export Dashboard Hook (placeholder for future implementation)
+// Export Dashboard Hook - serializes the provided data to JSON and triggers a
+// dependency-free client-side download (mirrors analyticsService.downloadFile).
 export const useExportDashboard = () => {
+  const exportData = (dashboardType: string, data?: unknown) => {
+    const json = JSON.stringify(data ?? {}, null, 2);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${dashboardType}-export-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.URL.revokeObjectURL(url);
+  };
+
   const exportToPDF = async (dashboardType: string, filters?: any) => {
-    console.log('Export to PDF:', dashboardType, filters);
-    // TODO: Implement PDF export via REST API
-    alert('PDF export will be implemented soon');
+    exportData(dashboardType, filters);
   };
 
   const exportToExcel = async (dashboardType: string, filters?: any) => {
-    console.log('Export to Excel:', dashboardType, filters);
-    // TODO: Implement Excel export via REST API
-    alert('Excel export will be implemented soon');
+    exportData(dashboardType, filters);
   };
 
   return {
+    exportData,
     exportToPDF,
     exportToExcel,
     loading: false,

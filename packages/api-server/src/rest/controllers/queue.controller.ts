@@ -49,7 +49,7 @@ export class QueueController {
             logger.error(`Error getting stats for ${queueName}`, err);
             return {
               queueName,
-              _error: err.message,
+              error: err.message,
             };
           }
         })
@@ -57,26 +57,26 @@ export class QueueController {
 
       // Calculate aggregate statistics
       const aggregate = {
-        _totalQueues: queueNames.length,
-        _totalWaiting: stats.reduce((sum: number, s: any) => sum + (s['waiting'] || 0), 0),
-        _totalActive: stats.reduce((sum: number, s: any) => sum + (s['active'] || 0), 0),
-        _totalCompleted: stats.reduce((sum: number, s: any) => sum + (s['completed'] || 0), 0),
-        _totalFailed: stats.reduce((sum: number, s: any) => sum + (s['failed'] || 0), 0),
-        _totalDelayed: stats.reduce((sum: number, s: any) => sum + (s['delayed'] || 0), 0),
+        totalQueues: queueNames.length,
+        totalWaiting: stats.reduce((sum: number, s: any) => sum + (s['waiting'] || 0), 0),
+        totalActive: stats.reduce((sum: number, s: any) => sum + (s['active'] || 0), 0),
+        totalCompleted: stats.reduce((sum: number, s: any) => sum + (s['completed'] || 0), 0),
+        totalFailed: stats.reduce((sum: number, s: any) => sum + (s['failed'] || 0), 0),
+        totalDelayed: stats.reduce((sum: number, s: any) => sum + (s['delayed'] || 0), 0),
       };
 
       res.json({
-        _success: true,
-        _data: {
-          _queues: stats,
+        success: true,
+        data: {
+          queues: stats,
           aggregate,
         },
       });
     } catch (err: any) {
       logger.error('Error getting queue stats', err);
       res.status(500).json({
-        _success: false,
-        _error: err.message,
+        success: false,
+        error: err.message,
       });
     }
   }
@@ -110,38 +110,38 @@ export class QueueController {
       const recentFailed = await queue.getFailed(0, 9);
 
       res.json({
-        _success: true,
-        _data: {
+        success: true,
+        data: {
           queueName,
-          _stats: queueStats,
+          stats: queueStats,
           isPaused,
           jobCounts,
-          _repeatableJobs: repeatableJobs.map((job: any) => ({
-            _key: job.key,
-            _name: job.name,
-            _pattern: job.pattern,
+          repeatableJobs: repeatableJobs.map((job: any) => ({
+            key: job.key,
+            name: job.name,
+            pattern: job.pattern,
             _next: job.next,
           })),
-          _recentCompleted: recentCompleted.map((job: any) => ({
-            _id: job.id,
-            _name: job.name,
-            _timestamp: job.timestamp,
-            _finishedOn: job.finishedOn,
+          recentCompleted: recentCompleted.map((job: any) => ({
+            id: job.id,
+            name: job.name,
+            timestamp: job.timestamp,
+            finishedOn: job.finishedOn,
           })),
-          _recentFailed: recentFailed.map((job: any) => ({
-            _id: job.id,
-            _name: job.name,
-            _failedReason: job.failedReason,
-            _timestamp: job.timestamp,
-            _finishedOn: job.finishedOn,
+          recentFailed: recentFailed.map((job: any) => ({
+            id: job.id,
+            name: job.name,
+            failedReason: job.failedReason,
+            timestamp: job.timestamp,
+            finishedOn: job.finishedOn,
           })),
         },
       });
     } catch (err: any) {
       logger.error('Error getting queue stats', err);
       res.status(500).json({
-        _success: false,
-        _error: err.message,
+        success: false,
+        error: err.message,
       });
     }
   }
@@ -224,30 +224,30 @@ export class QueueController {
       const throughput = (recentJobs.length / 60).toFixed(2); // jobs per minute
 
       res.json({
-        _success: true,
-        _data: {
+        success: true,
+        data: {
           queueName,
-          _metrics: {
-            _latency: {
-              _avg: Math.round(avgLatency),
-              _min: Math.round(minLatency),
-              _max: Math.round(maxLatency),
-              _unit: 'ms',
+          metrics: {
+            latency: {
+              avg: Math.round(avgLatency),
+              min: Math.round(minLatency),
+              max: Math.round(maxLatency),
+              unit: 'ms',
             },
-            _throughput: {
-              _value: parseFloat(throughput),
-              _unit: 'jobs/min',
+            throughput: {
+              value: parseFloat(throughput),
+              unit: 'jobs/min',
             },
-            _completedJobs: completedJobs.length,
-            _timeWindow: '1 hour',
+            completedJobs: completedJobs.length,
+            timeWindow: '1 hour',
           },
         },
       });
     } catch (err: any) {
       logger.error('Error getting queue metrics', err);
       res.status(500).json({
-        _success: false,
-        _error: err.message,
+        success: false,
+        error: err.message,
       });
     }
   }
@@ -275,17 +275,17 @@ export class QueueController {
       logger.info(`Queue ${queueName} paused`);
 
       res.json({
-        _success: true,
-        _data: {
+        success: true,
+        data: {
           queueName,
-          _message: 'Queue paused successfully',
+          message: 'Queue paused successfully',
         },
       });
     } catch (err: any) {
       logger.error('Error pausing queue', err);
       res.status(500).json({
-        _success: false,
-        _error: err.message,
+        success: false,
+        error: err.message,
       });
     }
   }
@@ -313,17 +313,17 @@ export class QueueController {
       logger.info(`Queue ${queueName} resumed`);
 
       res.json({
-        _success: true,
-        _data: {
+        success: true,
+        data: {
           queueName,
-          _message: 'Queue resumed successfully',
+          message: 'Queue resumed successfully',
         },
       });
     } catch (err: any) {
       logger.error('Error resuming queue', err);
       res.status(500).json({
-        _success: false,
-        _error: err.message,
+        success: false,
+        error: err.message,
       });
     }
   }
@@ -371,8 +371,8 @@ export class QueueController {
           } catch (err: any) {
             return {
               queueName,
-              _status: 'unhealthy',
-              _issues: [err.message],
+              status: 'unhealthy',
+              issues: [err.message],
             };
           }
         })
@@ -394,26 +394,26 @@ export class QueueController {
       }
 
       res.json({
-        _success: true,
-        _data: {
+        success: true,
+        data: {
           overallStatus,
-          _queues: healthChecks,
-          _summary: {
-            _total: queueNames.length,
-            _healthy: healthChecks.filter((hc) => hc.status === 'healthy')
+          queues: healthChecks,
+          summary: {
+            total: queueNames.length,
+            healthy: healthChecks.filter((hc) => hc.status === 'healthy')
               .length,
-            _warning: healthChecks.filter((hc) => hc.status === 'warning')
+            warning: healthChecks.filter((hc) => hc.status === 'warning')
               .length,
-            _degraded: degradedCount,
-            _unhealthy: unhealthyCount,
+            degraded: degradedCount,
+            unhealthy: unhealthyCount,
           },
         },
       });
     } catch (err: any) {
       logger.error('Error getting queue health', err);
       res.status(500).json({
-        _success: false,
-        _error: err.message,
+        success: false,
+        error: err.message,
       });
     }
   }
@@ -438,28 +438,30 @@ export class QueueController {
 
       if (!job) {
         res.status(404).json({
-          _success: false,
-          _error: `Job ${jobId} not found in queue ${queueName}`,
+          success: false,
+          error: `Job ${jobId} not found in queue ${queueName}`,
         });
         return;
       }
 
-      // Get job logs (if available)
-      const logs = await job.log;
+      // Fetch job logs via the queue (BullMQ getJobLogs returns { logs, count })
+      const queue = this.queueManager.getQueue(queueName);
+      const { logs, count } = await queue.getJobLogs(jobId);
 
       res.json({
-        _success: true,
-        _data: {
+        success: true,
+        data: {
           jobId,
           queueName,
           logs,
+          count,
         },
       });
     } catch (err: any) {
       logger.error('Error getting job logs', err);
       res.status(500).json({
-        _success: false,
-        _error: err.message,
+        success: false,
+        error: err.message,
       });
     }
   }

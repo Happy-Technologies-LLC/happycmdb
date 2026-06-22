@@ -57,8 +57,8 @@ export class RateLimitMetricsController {
       });
 
       res.json({
-        _success: true,
-        _data: {
+        success: true,
+        data: {
           totalRateLimitHits: totalHits,
           byEndpoint,
           byTier,
@@ -72,8 +72,8 @@ export class RateLimitMetricsController {
         error instanceof Error ? error : new Error(String(error))
       );
       res.status(500).json({
-        _error: 'Internal Server Error',
-        _message: 'Failed to retrieve rate limit metrics',
+        error: 'Internal Server Error',
+        message: 'Failed to retrieve rate limit metrics',
       });
     }
   };
@@ -87,8 +87,8 @@ export class RateLimitMetricsController {
       // This would ideally come from the config service
       // For now, return a summary of the configuration
       res.json({
-        _success: true,
-        _data: {
+        success: true,
+        data: {
           message: 'Rate limit configuration summary',
           note: 'Use environment variables or config files to view full configuration',
           endpoints: {
@@ -112,8 +112,8 @@ export class RateLimitMetricsController {
         error instanceof Error ? error : new Error(String(error))
       );
       res.status(500).json({
-        _error: 'Internal Server Error',
-        _message: 'Failed to retrieve rate limit configuration',
+        error: 'Internal Server Error',
+        message: 'Failed to retrieve rate limit configuration',
       });
     }
   };

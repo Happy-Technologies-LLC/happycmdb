@@ -21,5 +21,13 @@ export type { DownloadOptions } from './installer/connector-installer';
 export { ConnectorExecutor, getConnectorExecutor } from './executor/connector-executor';
 export type { ExecutionOptions } from './executor/connector-executor';
 
+// connector-core 0.2.0 descriptor bridge: map a CMDB connector.json
+// (ConnectorMetadata) onto the shared ConnectorDescriptor contract.
+export { mapConnectorMetadataToDescriptor } from './descriptor-mapper';
+export type {
+  ConnectorDescriptorMappingResult,
+  UnsupportedDescriptorField,
+} from './descriptor-mapper';
+
 // Types
 export * from './types/connector.types';

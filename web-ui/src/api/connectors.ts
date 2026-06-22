@@ -11,8 +11,8 @@ import { Connector, ConnectorRun } from '../types';
 export const connectorsApi = {
   // List all connector CONFIGURATIONS (deployed instances)
   list: async () => {
-    const response = await apiClient.get<{ connectors: Connector[] }>('/connector-configs');
-    return response.connectors;
+    const response = await apiClient.get<{ success: boolean; data: Connector[] }>('/connector-configs');
+    return response.data ?? [];
   },
 
   // List installed connectors (available templates from registry)

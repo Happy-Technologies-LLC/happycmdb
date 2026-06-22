@@ -53,13 +53,7 @@ connectorRoutes.get(
   controller.getRegistry.bind(controller)
 );
 
-// Get connector details from catalog
-connectorRoutes.get(
-  '/registry/:type',
-  controller.getRegistryDetails.bind(controller)
-);
-
-// Search catalog
+// Search catalog (must precede /registry/:type to avoid being shadowed)
 connectorRoutes.get(
   '/registry/search',
   validateRequest(
@@ -70,6 +64,12 @@ connectorRoutes.get(
     'query'
   ),
   controller.searchRegistry.bind(controller)
+);
+
+// Get connector details from catalog
+connectorRoutes.get(
+  '/registry/:type',
+  controller.getRegistryDetails.bind(controller)
 );
 
 // List installed connectors

@@ -49,19 +49,19 @@ export class JobsController {
       );
 
       res.status(202).json({
-        _success: true,
-        _data: {
+        success: true,
+        data: {
           jobId,
           provider,
-          _status: 'queued',
-          _message: `Discovery job for ${provider} has been queued`,
+          status: 'queued',
+          message: `Discovery job for ${provider} has been queued`,
         },
       });
     } catch (err: any) {
       logger.error('Error triggering discovery job', err);
       res.status(500).json({
-        _success: false,
-        _error: err.message,
+        success: false,
+        error: err.message,
       });
     }
   }
@@ -111,8 +111,8 @@ export class JobsController {
 
       if (!job) {
         res.status(404).json({
-          _success: false,
-          _error: `Job ${jobId} not found in queue ${queueName}`,
+          success: false,
+          error: `Job ${jobId} not found in queue ${queueName}`,
         });
         return;
       }
@@ -122,27 +122,27 @@ export class JobsController {
       const failedReason = job.failedReason;
 
       res.json({
-        _success: true,
-        _data: {
-          _id: job.id,
-          _name: job.name,
+        success: true,
+        data: {
+          id: job.id,
+          name: job.name,
           queueName,
           state,
           progress,
-          _data: job.data,
-          _returnvalue: job.returnvalue,
+          data: job.data,
+          returnvalue: job.returnvalue,
           failedReason,
-          _attemptsMade: job.attemptsMade,
-          _processedOn: job.processedOn,
-          _finishedOn: job.finishedOn,
-          _timestamp: job.timestamp,
+          attemptsMade: job.attemptsMade,
+          processedOn: job.processedOn,
+          finishedOn: job.finishedOn,
+          timestamp: job.timestamp,
         },
       });
     } catch (err: any) {
       logger.error('Error getting job status', err);
       res.status(500).json({
-        _success: false,
-        _error: err.message,
+        success: false,
+        error: err.message,
       });
     }
   }
@@ -190,32 +190,32 @@ export class JobsController {
 
       const jobsData = await Promise.all(
         jobs.map(async (job) => ({
-          _id: job.id,
-          _name: job.name,
-          _state: await job.getState(),
-          _data: job.data,
-          _progress: job.progress,
-          _attemptsMade: job.attemptsMade,
-          _timestamp: job.timestamp,
-          _processedOn: job.processedOn,
-          _finishedOn: job.finishedOn,
+          id: job.id,
+          name: job.name,
+          state: await job.getState(),
+          data: job.data,
+          progress: job.progress,
+          attemptsMade: job.attemptsMade,
+          timestamp: job.timestamp,
+          processedOn: job.processedOn,
+          finishedOn: job.finishedOn,
         }))
       );
 
       res.json({
-        _success: true,
-        _data: {
+        success: true,
+        data: {
           queueName,
           state,
-          _jobs: jobsData,
-          _count: jobsData.length,
+          jobs: jobsData,
+          count: jobsData.length,
         },
       });
     } catch (err: any) {
       logger.error('Error listing jobs', err);
       res.status(500).json({
-        _success: false,
-        _error: err.message,
+        success: false,
+        error: err.message,
       });
     }
   }
@@ -241,18 +241,18 @@ export class JobsController {
       logger.info(`Job ${jobId} cancelled in queue ${queueName}`);
 
       res.json({
-        _success: true,
-        _data: {
+        success: true,
+        data: {
           jobId,
           queueName,
-          _message: 'Job cancelled successfully',
+          message: 'Job cancelled successfully',
         },
       });
     } catch (err: any) {
       logger.error('Error cancelling job', err);
       res.status(500).json({
-        _success: false,
-        _error: err.message,
+        success: false,
+        error: err.message,
       });
     }
   }
@@ -278,18 +278,18 @@ export class JobsController {
       logger.info(`Job ${jobId} retried in queue ${queueName}`);
 
       res.json({
-        _success: true,
-        _data: {
+        success: true,
+        data: {
           jobId,
           queueName,
-          _message: 'Job retried successfully',
+          message: 'Job retried successfully',
         },
       });
     } catch (err: any) {
       logger.error('Error retrying job', err);
       res.status(500).json({
-        _success: false,
-        _error: err.message,
+        success: false,
+        error: err.message,
       });
     }
   }
@@ -319,24 +319,24 @@ export class JobsController {
             logger.error(`Error getting stats for ${queueName}`, err);
             return {
               queueName,
-              _error: 'Failed to get stats',
+              error: 'Failed to get stats',
             };
           }
         })
       );
 
       res.json({
-        _success: true,
-        _data: {
-          _queues: stats,
-          _totalQueues: queueNames.length,
+        success: true,
+        data: {
+          queues: stats,
+          totalQueues: queueNames.length,
         },
       });
     } catch (err: any) {
       logger.error('Error getting job stats', err);
       res.status(500).json({
-        _success: false,
-        _error: err.message,
+        success: false,
+        error: err.message,
       });
     }
   }
@@ -481,9 +481,9 @@ export class JobsController {
       const total = flatJobs.length;
 
       res.json({
-        _success: true,
-        _data: paginatedJobs,
-        _pagination: {
+        success: true,
+        data: paginatedJobs,
+        pagination: {
           page: pageNum,
           limit: limitNum,
           total,
@@ -493,8 +493,8 @@ export class JobsController {
     } catch (err: any) {
       logger.error('Error listing discovery jobs', err);
       res.status(500).json({
-        _success: false,
-        _error: err.message,
+        success: false,
+        error: err.message,
       });
     }
   }
@@ -556,21 +556,21 @@ export class JobsController {
               failed: 0,
               delayed: 0,
               totalDiscoveredCIs: 0,
-              _error: 'Queue not configured',
+              error: 'Queue not configured',
             };
           }
         })
       );
 
       res.json({
-        _success: true,
-        _data: stats,
+        success: true,
+        data: stats,
       });
     } catch (err: any) {
       logger.error('Error getting discovery stats', err);
       res.status(500).json({
-        _success: false,
-        _error: err.message,
+        success: false,
+        error: err.message,
       });
     }
   }
@@ -601,31 +601,31 @@ export class JobsController {
 
       const jobsData = await Promise.all(
         failedJobs.map(async (job) => ({
-          _id: job.id,
-          _name: job.name,
-          _data: job.data,
-          _failedReason: job.failedReason,
-          _stacktrace: job.stacktrace,
-          _attemptsMade: job.attemptsMade,
-          _timestamp: job.timestamp,
-          _processedOn: job.processedOn,
-          _finishedOn: job.finishedOn,
+          id: job.id,
+          name: job.name,
+          data: job.data,
+          failedReason: job.failedReason,
+          stacktrace: job.stacktrace,
+          attemptsMade: job.attemptsMade,
+          timestamp: job.timestamp,
+          processedOn: job.processedOn,
+          finishedOn: job.finishedOn,
         }))
       );
 
       res.json({
-        _success: true,
-        _data: {
+        success: true,
+        data: {
           queueName,
-          _failedJobs: jobsData,
-          _count: jobsData.length,
+          failedJobs: jobsData,
+          count: jobsData.length,
         },
       });
     } catch (err: any) {
       logger.error('Error getting failed jobs', err);
       res.status(500).json({
-        _success: false,
-        _error: err.message,
+        success: false,
+        error: err.message,
       });
     }
   }
@@ -661,17 +661,17 @@ export class JobsController {
       });
 
       res.json({
-        _success: true,
-        _data: {
+        success: true,
+        data: {
           queueName,
-          _message: `Cleaned ${type} jobs older than ${grace}ms`,
+          message: `Cleaned ${type} jobs older than ${grace}ms`,
         },
       });
     } catch (err: any) {
       logger.error('Error cleaning queue', err);
       res.status(500).json({
-        _success: false,
-        _error: err.message,
+        success: false,
+        error: err.message,
       });
     }
   }
@@ -688,15 +688,15 @@ export class JobsController {
       // const schedules = this.discoveryScheduler.getSchedules();
 
       res.status(200).json({
-        _success: true,
-        _data: [],
-        _message: 'No scheduled discovery jobs configured',
+        success: true,
+        data: [],
+        message: 'No scheduled discovery jobs configured',
       });
     } catch (err: any) {
       logger.error('Error getting discovery schedules', err);
       res.status(500).json({
-        _success: false,
-        _error: err.message,
+        success: false,
+        error: err.message,
       });
     }
   }
@@ -741,15 +741,15 @@ export class JobsController {
       });
 
       res.status(501).json({
-        _success: false,
-        _error: 'Not Implemented',
-        _message: 'Discovery schedule update not yet implemented',
+        success: false,
+        error: 'Not Implemented',
+        message: 'Discovery schedule update not yet implemented',
       });
     } catch (err: any) {
       logger.error('Error updating discovery schedule', err);
       res.status(500).json({
-        _success: false,
-        _error: err.message,
+        success: false,
+        error: err.message,
       });
     }
   }

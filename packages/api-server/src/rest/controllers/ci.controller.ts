@@ -131,16 +131,16 @@ export class CIController {
         const cis = result.records.map((r: any) => convertNeo4jTypes(r.get('ci').properties));
 
         res.json({
-          _success: true,
-          _data: cis,
-          _pagination: {
+          success: true,
+          data: cis,
+          pagination: {
             total,
-            _count: cis.length,
-            _offset: finalOffset,
-            _limit: finalLimit,
-            _page: finalPage,
-            _pageSize: finalLimit,
-            _totalPages: Math.ceil(total / finalLimit),
+            count: cis.length,
+            offset: finalOffset,
+            limit: finalLimit,
+            page: finalPage,
+            pageSize: finalLimit,
+            totalPages: Math.ceil(total / finalLimit),
           },
         });
       } finally {
@@ -149,9 +149,9 @@ export class CIController {
     } catch (error) {
       logger.error('Error getting CIs', error);
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to retrieve CIs',
-        _message: error instanceof Error ? error.message : 'Unknown error'
+        success: false,
+        error: 'Failed to retrieve CIs',
+        message: error instanceof Error ? error.message : 'Unknown error'
       });
     }
   }
@@ -162,9 +162,9 @@ export class CIController {
 
       if (!id) {
         res.status(400).json({
-          _success: false,
-          _error: 'Bad Request',
-          _message: 'CI ID is required'
+          success: false,
+          error: 'Bad Request',
+          message: 'CI ID is required'
         });
         return;
       }
@@ -173,23 +173,23 @@ export class CIController {
 
       if (!ci) {
         res.status(404).json({
-          _success: false,
-          _error: 'Not Found',
-          _message: `CI with ID '${id}' not found`
+          success: false,
+          error: 'Not Found',
+          message: `CI with ID '${id}' not found`
         });
         return;
       }
 
       res.json({
-        _success: true,
-        _data: convertNeo4jTypes(ci)
+        success: true,
+        data: convertNeo4jTypes(ci)
       });
     } catch (error) {
       logger.error('Error getting CI', error);
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to retrieve CI',
-        _message: error instanceof Error ? error.message : 'Unknown error'
+        success: false,
+        error: 'Failed to retrieve CI',
+        message: error instanceof Error ? error.message : 'Unknown error'
       });
     }
   }
@@ -199,18 +199,18 @@ export class CIController {
       // Validation is handled by middleware, but double-check required fields
       if (!req.body.id || !req.body.name || !req.body.type) {
         res.status(400).json({
-          _success: false,
-          _error: 'Bad Request',
-          _message: 'Missing required fields: id, name, type'
+          success: false,
+          error: 'Bad Request',
+          message: 'Missing required fields: id, name, type'
         });
         return;
       }
 
       const ci = await this.neo4jClient.createCI(req.body);
       res.status(201).json({
-        _success: true,
-        _data: ci,
-        _message: 'CI created successfully'
+        success: true,
+        data: convertNeo4jTypes(ci),
+        message: 'CI created successfully'
       });
     } catch (error) {
       logger.error('Error creating CI', error);
@@ -218,17 +218,17 @@ export class CIController {
       // Check for duplicate ID error
       if (error instanceof Error && error.message.includes('already exists')) {
         res.status(409).json({
-          _success: false,
-          _error: 'Conflict',
-          _message: 'CI with this ID already exists'
+          success: false,
+          error: 'Conflict',
+          message: 'CI with this ID already exists'
         });
         return;
       }
 
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to create CI',
-        _message: error instanceof Error ? error.message : 'Unknown error'
+        success: false,
+        error: 'Failed to create CI',
+        message: error instanceof Error ? error.message : 'Unknown error'
       });
     }
   }
@@ -239,9 +239,9 @@ export class CIController {
 
       if (!id) {
         res.status(400).json({
-          _success: false,
-          _error: 'Bad Request',
-          _message: 'CI ID is required'
+          success: false,
+          error: 'Bad Request',
+          message: 'CI ID is required'
         });
         return;
       }
@@ -250,25 +250,25 @@ export class CIController {
       const existing = await this.neo4jClient.getCI(id);
       if (!existing) {
         res.status(404).json({
-          _success: false,
-          _error: 'Not Found',
-          _message: `CI with ID '${id}' not found`
+          success: false,
+          error: 'Not Found',
+          message: `CI with ID '${id}' not found`
         });
         return;
       }
 
       const ci = await this.neo4jClient.updateCI(id, req.body);
       res.json({
-        _success: true,
-        _data: ci,
-        _message: 'CI updated successfully'
+        success: true,
+        data: ci,
+        message: 'CI updated successfully'
       });
     } catch (error) {
       logger.error('Error updating CI', error);
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to update CI',
-        _message: error instanceof Error ? error.message : 'Unknown error'
+        success: false,
+        error: 'Failed to update CI',
+        message: error instanceof Error ? error.message : 'Unknown error'
       });
     }
   }
@@ -279,9 +279,9 @@ export class CIController {
 
       if (!id) {
         res.status(400).json({
-          _success: false,
-          _error: 'Bad Request',
-          _message: 'CI ID is required'
+          success: false,
+          error: 'Bad Request',
+          message: 'CI ID is required'
         });
         return;
       }
@@ -290,9 +290,9 @@ export class CIController {
       const existing = await this.neo4jClient.getCI(id);
       if (!existing) {
         res.status(404).json({
-          _success: false,
-          _error: 'Not Found',
-          _message: `CI with ID '${id}' not found`
+          success: false,
+          error: 'Not Found',
+          message: `CI with ID '${id}' not found`
         });
         return;
       }
@@ -307,9 +307,9 @@ export class CIController {
     } catch (error) {
       logger.error('Error deleting CI', error);
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to delete CI',
-        _message: error instanceof Error ? error.message : 'Unknown error'
+        success: false,
+        error: 'Failed to delete CI',
+        message: error instanceof Error ? error.message : 'Unknown error'
       });
     }
   }
@@ -321,9 +321,9 @@ export class CIController {
 
       if (!id) {
         res.status(400).json({
-          _success: false,
-          _error: 'Bad Request',
-          _message: 'CI ID is required'
+          success: false,
+          error: 'Bad Request',
+          message: 'CI ID is required'
         });
         return;
       }
@@ -331,9 +331,9 @@ export class CIController {
       // Validate direction parameter
       if (direction && !['in', 'out', 'both'].includes(direction as string)) {
         res.status(400).json({
-          _success: false,
-          _error: 'Bad Request',
-          _message: 'Direction must be one of: in, out, both'
+          success: false,
+          error: 'Bad Request',
+          message: 'Direction must be one of: in, out, both'
         });
         return;
       }
@@ -342,9 +342,9 @@ export class CIController {
       const depthNum = parseInt(depth as string);
       if (isNaN(depthNum) || depthNum < 1 || depthNum > 10) {
         res.status(400).json({
-          _success: false,
-          _error: 'Bad Request',
-          _message: 'Depth must be a number between 1 and 10'
+          success: false,
+          error: 'Bad Request',
+          message: 'Depth must be a number between 1 and 10'
         });
         return;
       }
@@ -353,9 +353,9 @@ export class CIController {
       const ci = await this.neo4jClient.getCI(id);
       if (!ci) {
         res.status(404).json({
-          _success: false,
-          _error: 'Not Found',
-          _message: `CI with ID '${id}' not found`
+          success: false,
+          error: 'Not Found',
+          message: `CI with ID '${id}' not found`
         });
         return;
       }
@@ -387,17 +387,17 @@ export class CIController {
       });
 
       res.json({
-        _success: true,
-        _data: transformedRelationships,
-        _count: transformedRelationships.length,
-        _depth: depthNum
+        success: true,
+        data: transformedRelationships,
+        count: transformedRelationships.length,
+        depth: depthNum
       });
     } catch (error) {
       logger.error('Error getting relationships', error);
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to retrieve relationships',
-        _message: error instanceof Error ? error.message : 'Unknown error'
+        success: false,
+        error: 'Failed to retrieve relationships',
+        message: error instanceof Error ? error.message : 'Unknown error'
       });
     }
   }
@@ -409,9 +409,9 @@ export class CIController {
 
       if (!id) {
         res.status(400).json({
-          _success: false,
-          _error: 'Bad Request',
-          _message: 'CI ID is required'
+          success: false,
+          error: 'Bad Request',
+          message: 'CI ID is required'
         });
         return;
       }
@@ -419,9 +419,9 @@ export class CIController {
       const depthNum = parseInt(depth as string);
       if (isNaN(depthNum) || depthNum < 1 || depthNum > 10) {
         res.status(400).json({
-          _success: false,
-          _error: 'Bad Request',
-          _message: 'Depth must be a number between 1 and 10'
+          success: false,
+          error: 'Bad Request',
+          message: 'Depth must be a number between 1 and 10'
         });
         return;
       }
@@ -430,9 +430,9 @@ export class CIController {
       const ci = await this.neo4jClient.getCI(id);
       if (!ci) {
         res.status(404).json({
-          _success: false,
-          _error: 'Not Found',
-          _message: `CI with ID '${id}' not found`
+          success: false,
+          error: 'Not Found',
+          message: `CI with ID '${id}' not found`
         });
         return;
       }
@@ -440,17 +440,17 @@ export class CIController {
       const dependencies = await this.neo4jClient.getDependencies(id, depthNum);
 
       res.json({
-        _success: true,
-        _data: dependencies,
-        _count: dependencies.length,
-        _depth: depthNum
+        success: true,
+        data: dependencies,
+        count: dependencies.length,
+        depth: depthNum
       });
     } catch (error) {
       logger.error('Error getting dependencies', error);
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to retrieve dependencies',
-        _message: error instanceof Error ? error.message : 'Unknown error'
+        success: false,
+        error: 'Failed to retrieve dependencies',
+        message: error instanceof Error ? error.message : 'Unknown error'
       });
     }
   }
@@ -462,9 +462,9 @@ export class CIController {
 
       if (!id) {
         res.status(400).json({
-          _success: false,
-          _error: 'Bad Request',
-          _message: 'CI ID is required'
+          success: false,
+          error: 'Bad Request',
+          message: 'CI ID is required'
         });
         return;
       }
@@ -472,9 +472,9 @@ export class CIController {
       const depthNum = parseInt(depth as string);
       if (isNaN(depthNum) || depthNum < 1 || depthNum > 10) {
         res.status(400).json({
-          _success: false,
-          _error: 'Bad Request',
-          _message: 'Depth must be a number between 1 and 10'
+          success: false,
+          error: 'Bad Request',
+          message: 'Depth must be a number between 1 and 10'
         });
         return;
       }
@@ -483,9 +483,9 @@ export class CIController {
       const ci = await this.neo4jClient.getCI(id);
       if (!ci) {
         res.status(404).json({
-          _success: false,
-          _error: 'Not Found',
-          _message: `CI with ID '${id}' not found`
+          success: false,
+          error: 'Not Found',
+          message: `CI with ID '${id}' not found`
         });
         return;
       }
@@ -538,17 +538,17 @@ export class CIController {
       };
 
       res.json({
-        _success: true,
-        _data: impactAnalysis,
-        _totalImpacted: totalImpacted,
-        _depth: depthNum
+        success: true,
+        data: impactAnalysis,
+        totalImpacted: totalImpacted,
+        depth: depthNum
       });
     } catch (error) {
       logger.error('Error performing impact analysis', error);
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to perform impact analysis',
-        _message: error instanceof Error ? error.message : 'Unknown error'
+        success: false,
+        error: 'Failed to perform impact analysis',
+        message: error instanceof Error ? error.message : 'Unknown error'
       });
     }
   }
@@ -559,9 +559,9 @@ export class CIController {
 
       if (!query || typeof query !== 'string' || query.trim().length === 0) {
         res.status(400).json({
-          _success: false,
-          _error: 'Bad Request',
-          _message: 'Search query is required and must be a non-empty string'
+          success: false,
+          error: 'Bad Request',
+          message: 'Search query is required and must be a non-empty string'
         });
         return;
       }
@@ -569,9 +569,9 @@ export class CIController {
       const limitNum = parseInt(limit as string);
       if (isNaN(limitNum) || limitNum < 1 || limitNum > 1000) {
         res.status(400).json({
-          _success: false,
-          _error: 'Bad Request',
-          _message: 'Limit must be a number between 1 and 1000'
+          success: false,
+          error: 'Bad Request',
+          message: 'Limit must be a number between 1 and 1000'
         });
         return;
       }
@@ -580,7 +580,7 @@ export class CIController {
       try {
         const result = await session.run(
           `
-          CALL db.index.fulltext.queryNodes('ci_search', $query)
+          CALL db.index.fulltext.queryNodes('ci_fulltext_search', $query)
           YIELD node, score
           RETURN node, score
           ORDER BY score DESC
@@ -590,15 +590,15 @@ export class CIController {
         );
 
         const cis = result.records.map((r: any) => ({
-          _ci: r.get('node').properties,
-          _score: r.get('score'),
+          ci: r.get('node').properties,
+          score: r.get('score'),
         }));
 
         res.json({
-          _success: true,
-          _data: cis,
-          _count: cis.length,
-          _query: query.trim()
+          success: true,
+          data: cis,
+          count: cis.length,
+          query: query.trim()
         });
       } finally {
         await session.close();
@@ -606,9 +606,9 @@ export class CIController {
     } catch (error) {
       logger.error('Error searching CIs', error);
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to search CIs',
-        _message: error instanceof Error ? error.message : 'Unknown error'
+        success: false,
+        error: 'Failed to search CIs',
+        message: error instanceof Error ? error.message : 'Unknown error'
       });
     }
   }
@@ -620,9 +620,9 @@ export class CIController {
 
       if (!id) {
         res.status(400).json({
-          _success: false,
-          _error: 'Bad Request',
-          _message: 'CI ID is required'
+          success: false,
+          error: 'Bad Request',
+          message: 'CI ID is required'
         });
         return;
       }
@@ -630,9 +630,9 @@ export class CIController {
       const limitNum = parseInt(limit as string);
       if (isNaN(limitNum) || limitNum < 1 || limitNum > 1000) {
         res.status(400).json({
-          _success: false,
-          _error: 'Bad Request',
-          _message: 'Limit must be between 1 and 1000'
+          success: false,
+          error: 'Bad Request',
+          message: 'Limit must be between 1 and 1000'
         });
         return;
       }
@@ -643,16 +643,16 @@ export class CIController {
       const auditHistory = await auditService.getCIAuditHistory(id, limitNum);
 
       res.json({
-        _success: true,
-        _data: auditHistory,
-        _count: auditHistory.length
+        success: true,
+        data: auditHistory,
+        count: auditHistory.length
       });
     } catch (error) {
       logger.error('Error getting CI audit history', error);
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to retrieve audit history',
-        _message: error instanceof Error ? error.message : 'Unknown error'
+        success: false,
+        error: 'Failed to retrieve audit history',
+        message: error instanceof Error ? error.message : 'Unknown error'
       });
     }
   }

@@ -9,6 +9,7 @@ import { Badge } from '../components/ui/badge';
 import { Card } from '../components/ui/card';
 import { Eyebrow } from '../components/ui/eyebrow';
 import { brand, chartSeries } from '../lib/brandColors';
+import { useExportDashboard } from '../hooks/useDashboardData';
 import {
   Select,
   SelectContent,
@@ -99,10 +100,22 @@ const COLORS = chartSeries;
 export const FinancialManagement: React.FC = () => {
   const [timeRange, setTimeRange] = useState('6m');
   const [viewType, setViewType] = useState<'overview' | 'tower' | 'service' | 'optimization'>('overview');
+  const { exportData } = useExportDashboard();
 
   const totalMonthlyCost = costByTower.reduce((sum, item) => sum + item.value, 0);
   const budgetUtilization = (totalMonthlyCost / 100000) * 100;
   const totalPotentialSavings = optimizationOpportunities.reduce((sum, opp) => sum + opp.potentialSavings, 0);
+
+  const handleExport = () => {
+    exportData('financial-management', {
+      timeRange,
+      summary: { totalMonthlyCost, budgetUtilization, totalPotentialSavings },
+      monthlyTrends,
+      costByTower,
+      businessServiceCosts,
+      optimizationOpportunities,
+    });
+  };
 
   const formatCurrency = (amount: number) => {
     return new Intl.NumberFormat('en-US', {
@@ -142,7 +155,7 @@ export const FinancialManagement: React.FC = () => {
             </SelectContent>
           </Select>
 
-          <Button variant="outline">
+          <Button variant="outline" onClick={handleExport}>
             <Icon name="download-simple" size={16} className="mr-2" />
             Export Report
           </Button>

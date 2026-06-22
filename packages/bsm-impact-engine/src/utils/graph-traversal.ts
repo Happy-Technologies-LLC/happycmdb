@@ -38,7 +38,7 @@ export class GraphTraversal {
     options?: BlastRadiusOptions
   ): Promise<DependencyTree> {
     const neo4j = getNeo4jClient();
-    const session = neo4j.session();
+    const session = neo4j.getSession();
 
     try {
       // Query to find all downstream dependencies
@@ -133,7 +133,7 @@ export class GraphTraversal {
    */
   async findUpstreamBusinessServices(ciId: string): Promise<ImpactedBusinessService[]> {
     const neo4j = getNeo4jClient();
-    const session = neo4j.session();
+    const session = neo4j.getSession();
 
     try {
       // Query to find business services that depend on this CI
@@ -187,7 +187,7 @@ export class GraphTraversal {
    */
   async findCriticalPath(fromCiId: string, toServiceId: string): Promise<CriticalPath> {
     const neo4j = getNeo4jClient();
-    const session = neo4j.session();
+    const session = neo4j.getSession();
 
     try {
       // Find shortest path using Cypher's shortestPath function
@@ -252,7 +252,7 @@ export class GraphTraversal {
    */
   private async identifyBottlenecks(nodeIds: string[]): Promise<string[]> {
     const neo4j = getNeo4jClient();
-    const session = neo4j.session();
+    const session = neo4j.getSession();
 
     try {
       // For each node, check how many incoming and outgoing relationships it has
@@ -291,7 +291,7 @@ export class GraphTraversal {
     maxDepth: number = 5
   ): Promise<number> {
     const neo4j = getNeo4jClient();
-    const session = neo4j.session();
+    const session = neo4j.getSession();
 
     try {
       // Update all downstream CIs with minimum criticality
@@ -342,7 +342,7 @@ export class GraphTraversal {
    */
   async findBlastRadius(ciId: string, options?: BlastRadiusOptions): Promise<ImpactedCI[]> {
     const neo4j = getNeo4jClient();
-    const session = neo4j.session();
+    const session = neo4j.getSession();
     const maxHops = options?.maxHops || 10;
 
     try {

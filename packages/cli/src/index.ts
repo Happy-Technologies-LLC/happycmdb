@@ -1,7 +1,6 @@
+#!/usr/bin/env node
 // Copyright 2026 Happy Technologies LLC
 // SPDX-License-Identifier: Apache-2.0
-
-#!/usr/bin/env node
 
 import { Command } from 'commander';
 import chalk from 'chalk';
@@ -14,6 +13,8 @@ import { ConnectorListCommand } from './commands/connector-list.command';
 import { ConnectorInstallCommand } from './commands/connector-install.command';
 import { ConnectorConfigCommand } from './commands/connector-config.command';
 import { ConnectorRunCommand } from './commands/connector-run.command';
+import { createWorkerCommand } from './commands/worker.command';
+import { createJobsCommand } from './commands/jobs.command';
 
 /**
  * CMDB CLI - Command-line interface for CMDB platform
@@ -25,7 +26,7 @@ class CMDBCli {
 
   constructor() {
     this.program = new Command();
-    this.apiUrl = process.env['CMDB_API_URL'] || 'http://localhost:3000/api';
+    this.apiUrl = process.env['CMDB_API_URL'] || 'http://localhost:3000/api/v1';
     this.apiKey = process.env['CMDB_API_KEY'];
 
     this.setupProgram();
@@ -82,18 +83,19 @@ class CMDBCli {
     const dataMartCommand = new DataMartCommand(this.apiUrl, this.apiKey);
     dataMartCommand.register(this.program);
 
-    // Connector commands
-    const connectorListCommand = new ConnectorListCommand(this.apiUrl, this.apiKey);
-    connectorListCommand.register(this.program);
+    // Connector commands (single shared parent command to avoid shadowing)
+    const connectorCommand = new Command('connector').description('Manage connectors');
+    new ConnectorListCommand(this.apiUrl, this.apiKey).register(connectorCommand);
+    new ConnectorInstallCommand(this.apiUrl, this.apiKey).register(connectorCommand);
+    new ConnectorConfigCommand(this.apiUrl, this.apiKey).register(connectorCommand);
+    new ConnectorRunCommand(this.apiUrl, this.apiKey).register(connectorCommand);
+    this.program.addCommand(connectorCommand);
 
-    const connectorInstallCommand = new ConnectorInstallCommand(this.apiUrl, this.apiKey);
-    connectorInstallCommand.register(this.program);
+    // Worker commands
+    this.program.addCommand(createWorkerCommand());
 
-    const connectorConfigCommand = new ConnectorConfigCommand(this.apiUrl, this.apiKey);
-    connectorConfigCommand.register(this.program);
-
-    const connectorRunCommand = new ConnectorRunCommand(this.apiUrl, this.apiKey);
-    connectorRunCommand.register(this.program);
+    // Jobs commands
+    this.program.addCommand(createJobsCommand());
 
     // Config command
     this.program
@@ -134,7 +136,7 @@ class CMDBCli {
     const spinner = ora('Checking API server health...').start();
 
     try {
-      const response = await axios.get(`${this.apiUrl}/health`, {
+      const response = await axios.get(`${this.apiUrl}/cmdb-health`, {
         timeout: 5000,
       });
 

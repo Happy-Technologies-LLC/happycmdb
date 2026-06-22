@@ -26,15 +26,15 @@ export class AnalyticsController {
       `);
 
       res.json({
-        _success: true,
-        _data: result.rows,
+        success: true,
+        data: result.rows,
       });
     } catch (error) {
       logger.error('Error getting CI counts by type', error);
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to retrieve CI counts',
-        _message: error instanceof Error ? error.message : 'Unknown error',
+        success: false,
+        error: 'Failed to retrieve CI counts',
+        message: error instanceof Error ? error.message : 'Unknown error',
       });
     }
   }
@@ -56,15 +56,15 @@ export class AnalyticsController {
       `);
 
       res.json({
-        _success: true,
-        _data: result.rows,
+        success: true,
+        data: result.rows,
       });
     } catch (error) {
       logger.error('Error getting CI counts by status', error);
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to retrieve CI status counts',
-        _message: error instanceof Error ? error.message : 'Unknown error',
+        success: false,
+        error: 'Failed to retrieve CI status counts',
+        message: error instanceof Error ? error.message : 'Unknown error',
       });
     }
   }
@@ -86,15 +86,15 @@ export class AnalyticsController {
       `);
 
       res.json({
-        _success: true,
-        _data: result.rows,
+        success: true,
+        data: result.rows,
       });
     } catch (error) {
       logger.error('Error getting CI counts by environment', error);
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to retrieve CI environment counts',
-        _message: error instanceof Error ? error.message : 'Unknown error',
+        success: false,
+        error: 'Failed to retrieve CI environment counts',
+        message: error instanceof Error ? error.message : 'Unknown error',
       });
     }
   }
@@ -115,15 +115,15 @@ export class AnalyticsController {
       `);
 
       res.json({
-        _success: true,
-        _data: result.rows,
+        success: true,
+        data: result.rows,
       });
     } catch (error) {
       logger.error('Error getting relationship counts', error);
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to retrieve relationship counts',
-        _message: error instanceof Error ? error.message : 'Unknown error',
+        success: false,
+        error: 'Failed to retrieve relationship counts',
+        message: error instanceof Error ? error.message : 'Unknown error',
       });
     }
   }
@@ -176,12 +176,12 @@ export class AnalyticsController {
       );
 
       res.json({
-        _success: true,
-        _data: {
-          _summary: result.rows[0],
-          _by_provider: providerStats.rows,
+        success: true,
+        data: {
+          summary: result.rows[0],
+          by_provider: providerStats.rows,
         },
-        _filters: {
+        filters: {
           start_date,
           end_date,
         },
@@ -189,9 +189,9 @@ export class AnalyticsController {
     } catch (error) {
       logger.error('Error getting discovery stats', error);
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to retrieve discovery statistics',
-        _message: error instanceof Error ? error.message : 'Unknown error',
+        success: false,
+        error: 'Failed to retrieve discovery statistics',
+        message: error instanceof Error ? error.message : 'Unknown error',
       });
     }
   }
@@ -208,9 +208,9 @@ export class AnalyticsController {
       const validIntervals = ['hour', 'day', 'week', 'month'];
       if (!validIntervals.includes(interval as string)) {
         res.status(400).json({
-          _success: false,
-          _error: 'Bad Request',
-          _message: `Invalid interval. Must be one of: ${validIntervals.join(', ')}`,
+          success: false,
+          error: 'Bad Request',
+          message: `Invalid interval. Must be one of: ${validIntervals.join(', ')}`,
         });
         return;
       }
@@ -233,16 +233,16 @@ export class AnalyticsController {
       );
 
       res.json({
-        _success: true,
-        _data: result.rows,
+        success: true,
+        data: result.rows,
         interval,
       });
     } catch (error) {
       logger.error('Error getting discovery timeline', error);
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to retrieve discovery timeline',
-        _message: error instanceof Error ? error.message : 'Unknown error',
+        success: false,
+        error: 'Failed to retrieve discovery timeline',
+        message: error instanceof Error ? error.message : 'Unknown error',
       });
     }
   }
@@ -306,16 +306,16 @@ export class AnalyticsController {
       const result = await this.postgresClient.query(query, [limitNum]);
 
       res.json({
-        _success: true,
-        _data: result.rows,
+        success: true,
+        data: result.rows,
         direction,
       });
     } catch (error) {
       logger.error('Error getting top connected CIs', error);
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to retrieve top connected CIs',
-        _message: error instanceof Error ? error.message : 'Unknown error',
+        success: false,
+        error: 'Failed to retrieve top connected CIs',
+        message: error instanceof Error ? error.message : 'Unknown error',
       });
     }
   }
@@ -390,18 +390,18 @@ export class AnalyticsController {
       `);
 
       res.json({
-        _success: true,
-        _data: {
-          _top_cis: result.rows,
-          _depth_distribution: depthDistribution.rows,
+        success: true,
+        data: {
+          top_cis: result.rows,
+          depth_distribution: depthDistribution.rows,
         },
       });
     } catch (error) {
       logger.error('Error getting dependency depth stats', error);
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to retrieve dependency depth statistics',
-        _message: error instanceof Error ? error.message : 'Unknown error',
+        success: false,
+        error: 'Failed to retrieve dependency depth statistics',
+        message: error instanceof Error ? error.message : 'Unknown error',
       });
     }
   }
@@ -416,9 +416,9 @@ export class AnalyticsController {
 
       if (!ci_id) {
         res.status(400).json({
-          _success: false,
-          _error: 'Bad Request',
-          _message: 'CI ID is required',
+          success: false,
+          error: 'Bad Request',
+          message: 'CI ID is required',
         });
         return;
       }
@@ -428,31 +428,31 @@ export class AnalyticsController {
       const result = await this.postgresClient.query(
         `
         SELECT
-          change_timestamp,
+          changed_at,
           change_type,
-          field_name,
-          old_value,
-          new_value,
+          changed_fields,
+          previous_values,
+          new_values,
           changed_by
         FROM ci_change_history
         WHERE ci_id = $1
-        ORDER BY change_timestamp DESC
+        ORDER BY changed_at DESC
         LIMIT $2
         `,
         [ci_id, limitNum]
       );
 
       res.json({
-        _success: true,
-        _data: result.rows,
+        success: true,
+        data: result.rows,
         ci_id,
       });
     } catch (error) {
       logger.error('Error getting change history', error);
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to retrieve change history',
-        _message: error instanceof Error ? error.message : 'Unknown error',
+        success: false,
+        error: 'Failed to retrieve change history',
+        message: error instanceof Error ? error.message : 'Unknown error',
       });
     }
   }
@@ -582,9 +582,9 @@ export class AnalyticsController {
     } catch (error) {
       logger.error('Error getting dashboard stats', error);
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to retrieve dashboard statistics',
-        _message: error instanceof Error ? error.message : 'Unknown error',
+        success: false,
+        error: 'Failed to retrieve dashboard statistics',
+        message: error instanceof Error ? error.message : 'Unknown error',
       });
     } finally {
       await session.close();

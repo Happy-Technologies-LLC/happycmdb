@@ -113,7 +113,7 @@ const Query = {
   /**
    * Get all CIs with optional filtering
    */
-  _getCIs: async (
+  getCIs: async (
     __parent: any,
     _args: {
       filter?: {
@@ -198,7 +198,7 @@ const Query = {
   /**
    * Get a single CI by ID
    */
-  _getCI: async (
+  getCI: async (
     __parent: any,
     _args: { id: string },
     _context: GraphQLContext
@@ -219,7 +219,7 @@ const Query = {
   /**
    * Search CIs using full-text search
    */
-  _searchCIs: async (
+  searchCIs: async (
     __parent: any,
     _args: {
       _query: string;
@@ -295,7 +295,7 @@ const Query = {
   /**
    * Get relationships for a specific CI
    */
-  _getCIRelationships: async (
+  getCIRelationships: async (
     __parent: any,
     _args: { id: string; direction?: string },
     _context: GraphQLContext
@@ -328,7 +328,7 @@ const Query = {
   /**
    * Get all dependencies for a CI (recursive)
    */
-  _getCIDependencies: async (
+  getCIDependencies: async (
     __parent: any,
     _args: { id: string; depth?: number },
     _context: GraphQLContext
@@ -376,7 +376,7 @@ const Query = {
   /**
    * Perform impact analysis for a CI
    */
-  _getImpactAnalysis: async (
+  getImpactAnalysis: async (
     __parent: any,
     _args: { id: string; depth?: number },
     _context: GraphQLContext
@@ -433,7 +433,7 @@ const Mutation = {
   /**
    * Create a new CI
    */
-  _createCI: async (
+  createCI: async (
     __parent: any,
     _args: { input: any },
     _context: GraphQLContext
@@ -474,7 +474,7 @@ const Mutation = {
   /**
    * Update an existing CI
    */
-  _updateCI: async (
+  updateCI: async (
     __parent: any,
     _args: { id: string; input: any },
     _context: GraphQLContext
@@ -517,7 +517,7 @@ const Mutation = {
   /**
    * Delete a CI
    */
-  _deleteCI: async (
+  deleteCI: async (
     __parent: any,
     _args: { id: string },
     _context: GraphQLContext
@@ -564,7 +564,7 @@ const Mutation = {
   /**
    * Create a relationship between two CIs
    */
-  _createRelationship: async (
+  createRelationship: async (
     __parent: any,
     _args: {
       _input: {
@@ -602,7 +602,7 @@ const Mutation = {
   /**
    * Delete a relationship between two CIs
    */
-  _deleteRelationship: async (
+  deleteRelationship: async (
     __parent: any,
     _args: {
       _fromId: string;
@@ -731,14 +731,14 @@ export const resolvers = {
     ...reconciliationResolvers.Mutation,
     // ...itilResolvers.Mutation,
   },
-  _CI: {
+  CI: {
     ...CIResolvers,
     // ...itilResolvers.CI,
   },
-  _JSON: JSONScalar,
-  _AnalyticsQuery: analyticsResolvers.AnalyticsQuery,
-  _ReconciliationQuery: reconciliationResolvers.ReconciliationQuery,
-  _ReconciliationMutation: reconciliationResolvers.ReconciliationMutation,
+  JSON: JSONScalar,
+  AnalyticsQuery: analyticsResolvers.AnalyticsQuery,
+  ReconciliationQuery: reconciliationResolvers.ReconciliationQuery,
+  ReconciliationMutation: reconciliationResolvers.ReconciliationMutation,
 //   _Incident: itilResolvers.Incident,
 //   _Change: itilResolvers.Change,
 //   _ConfigurationBaseline: itilResolvers.ConfigurationBaseline,

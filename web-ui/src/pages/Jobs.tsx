@@ -127,7 +127,7 @@ export const Jobs: React.FC = () => {
   });
 
   // Create queue metrics from health data for WorkerStatus
-  const queueMetrics: QueueMetrics[] = health.map((h) => ({
+  const queueMetrics: QueueMetrics[] = (health ?? []).map((h) => ({
     queueName: h.queueName,
     throughput: {
       completed: 0,

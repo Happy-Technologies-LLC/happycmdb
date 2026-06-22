@@ -22,7 +22,7 @@ const ReconciliationQuery = {
   /**
    * Find matching CIs based on identification attributes
    */
-  _findMatches: async (
+  findMatches: async (
     _parent: any,
     _args: {
       _identifiers: any;
@@ -83,7 +83,7 @@ const ReconciliationQuery = {
   /**
    * List reconciliation conflicts
    */
-  _listConflicts: async (
+  listConflicts: async (
     _parent: any,
     _args: {
       _status?: string;
@@ -130,7 +130,7 @@ const ReconciliationQuery = {
   /**
    * Get reconciliation rules
    */
-  _getRules: async () => {
+  getRules: async () => {
     try {
       const result = await postgresClient.query(
         `SELECT id, name, identification_rules, merge_strategies,
@@ -172,7 +172,7 @@ const ReconciliationQuery = {
   /**
    * Get source authorities
    */
-  _getSourceAuthorities: async () => {
+  getSourceAuthorities: async () => {
     try {
       const result = await postgresClient.query(
         `SELECT source_name, authority_score, description
@@ -199,7 +199,7 @@ const ReconciliationQuery = {
   /**
    * Get CI source lineage
    */
-  _getCILineage: async (
+  getCILineage: async (
     _parent: any,
     _args: { _ciId: string }
   ) => {
@@ -237,7 +237,7 @@ const ReconciliationQuery = {
   /**
    * Get CI field sources
    */
-  _getCIFieldSources: async (
+  getCIFieldSources: async (
     _parent: any,
     _args: { _ciId: string }
   ) => {
@@ -278,7 +278,7 @@ const ReconciliationMutation = {
   /**
    * Merge/reconcile a discovered CI into CMDB
    */
-  _mergeCI: async (
+  mergeCI: async (
     _parent: any,
     _args: {
       _name: string;
@@ -338,7 +338,7 @@ const ReconciliationMutation = {
   /**
    * Resolve a reconciliation conflict
    */
-  _resolveConflict: async (
+  resolveConflict: async (
     _parent: any,
     _args: {
       _id: string;
@@ -406,7 +406,7 @@ const ReconciliationMutation = {
   /**
    * Create a reconciliation rule
    */
-  _createRule: async (
+  createRule: async (
     _parent: any,
     _args: {
       _input: {
@@ -478,7 +478,7 @@ const ReconciliationMutation = {
   /**
    * Update source authority
    */
-  _updateSourceAuthority: async (
+  updateSourceAuthority: async (
     _parent: any,
     _args: {
       _input: {

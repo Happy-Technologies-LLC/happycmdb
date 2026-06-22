@@ -9,8 +9,8 @@ import { apiClient } from '../lib/api-client';
 import { Anomaly } from '../types';
 
 interface ApiResponse<T> {
-  _success: boolean;
-  _data: T;
+  success: boolean;
+  data: T;
   _error?: string;
   _message?: string;
 }
@@ -21,7 +21,7 @@ export const anomaliesApi = {
     const response = await apiClient.get<ApiResponse<Anomaly[]>>('/anomalies/recent', {
       params: { hours, limit },
     });
-    return response._data;
+    return response.data;
   },
 
   // Get anomalies for a specific CI
@@ -29,7 +29,7 @@ export const anomaliesApi = {
     const response = await apiClient.get<ApiResponse<Anomaly[]>>(`/anomalies/ci/${ciId}`, {
       params: { limit },
     });
-    return response._data;
+    return response.data;
   },
 
   // Update anomaly status
@@ -42,7 +42,7 @@ export const anomaliesApi = {
       status,
       resolved_by: resolvedBy,
     });
-    return response._data;
+    return response.data;
   },
 
   // Get anomaly statistics
@@ -58,6 +58,6 @@ export const anomaliesApi = {
       by_type: Record<string, number>;
       by_status: Record<string, number>;
     }>>('/anomalies/stats');
-    return response._data;
+    return response.data;
   },
 };

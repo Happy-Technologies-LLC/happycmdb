@@ -110,7 +110,7 @@ describe('GraphQL CI Resolvers', () => {
 
       // Act: Execute query - resolver is at resolvers.Query (spread from Query object)
       // The resolver function name has underscore prefix in source: _getCIs
-      const getCIs = (resolvers.Query as any)._getCIs;
+      const getCIs = (resolvers.Query as any).getCIs;
       const result = await getCIs(
         null,
         { limit: 100, offset: 0 },
@@ -137,7 +137,7 @@ describe('GraphQL CI Resolvers', () => {
       // Arrange: Mock database error
       mockNeo4j.session.run.mockRejectedValueOnce(new Error('Connection lost'));
 
-      const getCIs = (resolvers.Query as any)._getCIs;
+      const getCIs = (resolvers.Query as any).getCIs;
 
       // Act & Assert: Expect GraphQL error
       await expect(
@@ -152,7 +152,7 @@ describe('GraphQL CI Resolvers', () => {
       // Arrange
       mockNeo4j.session.run.mockResolvedValueOnce(createMockNeo4jResult([]));
 
-      const getCIs = (resolvers.Query as any)._getCIs;
+      const getCIs = (resolvers.Query as any).getCIs;
 
       // Act: Query with pagination
       await getCIs(
@@ -183,7 +183,7 @@ describe('GraphQL CI Resolvers', () => {
       const mockCI = createCI({ id: 'ci-123', name: 'web-server' });
       mockLoaders.ciLoader.load.mockResolvedValueOnce(mockCI);
 
-      const getCI = (resolvers.Query as any)._getCI;
+      const getCI = (resolvers.Query as any).getCI;
 
       // Act: Execute query
       const result = await getCI(
@@ -203,7 +203,7 @@ describe('GraphQL CI Resolvers', () => {
       // Arrange: DataLoader returns null
       mockLoaders.ciLoader.load.mockResolvedValueOnce(null);
 
-      const getCI = (resolvers.Query as any)._getCI;
+      const getCI = (resolvers.Query as any).getCI;
 
       // Act
       const result = await getCI(
@@ -220,7 +220,7 @@ describe('GraphQL CI Resolvers', () => {
       // Arrange: Mock DataLoader error
       mockLoaders.ciLoader.load.mockRejectedValueOnce(new Error('Database error'));
 
-      const getCI = (resolvers.Query as any)._getCI;
+      const getCI = (resolvers.Query as any).getCI;
 
       // Act & Assert
       await expect(
@@ -243,7 +243,7 @@ describe('GraphQL CI Resolvers', () => {
         )
       );
 
-      const getCIDeps = (resolvers.Query as any)._getCIDependencies;
+      const getCIDeps = (resolvers.Query as any).getCIDependencies;
 
       // Act: Get dependencies with depth 3
       const result = await getCIDeps(
@@ -265,7 +265,7 @@ describe('GraphQL CI Resolvers', () => {
       // Arrange
       mockNeo4j.session.run.mockResolvedValueOnce(createMockNeo4jResult([]));
 
-      const getCIDeps = (resolvers.Query as any)._getCIDependencies;
+      const getCIDeps = (resolvers.Query as any).getCIDependencies;
 
       // Act: Get dependencies without depth
       await getCIDeps(
@@ -303,7 +303,7 @@ describe('GraphQL CI Resolvers', () => {
         })),
       });
 
-      const getImpact = (resolvers.Query as any)._getImpactAnalysis;
+      const getImpact = (resolvers.Query as any).getImpactAnalysis;
 
       // Act: Perform impact analysis
       const result = await getImpact(
@@ -329,7 +329,7 @@ describe('GraphQL CI Resolvers', () => {
       // Arrange
       mockNeo4j.session.run.mockResolvedValueOnce(createMockNeo4jResult([]));
 
-      const getImpact = (resolvers.Query as any)._getImpactAnalysis;
+      const getImpact = (resolvers.Query as any).getImpactAnalysis;
 
       // Act
       await getImpact(
@@ -352,7 +352,7 @@ describe('GraphQL CI Resolvers', () => {
       const newCI = createCI({ id: 'ci-new', name: 'new-server' });
       (mockContext._neo4jClient as any).createCI.mockResolvedValue(newCI);
 
-      const createCIMut = (resolvers.Mutation as any)._createCI;
+      const createCIMut = (resolvers.Mutation as any).createCI;
 
       // Act: Create mutation
       const result = await createCIMut(
@@ -377,7 +377,7 @@ describe('GraphQL CI Resolvers', () => {
     });
 
     it('should validate required fields', async () => {
-      const createCIMut = (resolvers.Mutation as any)._createCI;
+      const createCIMut = (resolvers.Mutation as any).createCI;
 
       // Act & Assert: Missing ID
       await expect(
@@ -429,7 +429,7 @@ describe('GraphQL CI Resolvers', () => {
       const updatedCI = createCI({ id: 'ci-123', name: 'updated-name' });
       (mockContext._neo4jClient as any).updateCI.mockResolvedValue(updatedCI);
 
-      const updateCIMut = (resolvers.Mutation as any)._updateCI;
+      const updateCIMut = (resolvers.Mutation as any).updateCI;
 
       // Act: Update mutation
       const result = await updateCIMut(
@@ -467,7 +467,7 @@ describe('GraphQL CI Resolvers', () => {
         records: [{ get: () => ({ toNumber: () => 1 }) }],
       });
 
-      const deleteCIMut = (resolvers.Mutation as any)._deleteCI;
+      const deleteCIMut = (resolvers.Mutation as any).deleteCI;
 
       // Act: Delete mutation
       const result = await deleteCIMut(
@@ -495,7 +495,7 @@ describe('GraphQL CI Resolvers', () => {
         records: [{ get: () => ({ toNumber: () => 0 }) }],
       });
 
-      const deleteCIMut = (resolvers.Mutation as any)._deleteCI;
+      const deleteCIMut = (resolvers.Mutation as any).deleteCI;
 
       // Act & Assert: Expect NOT_FOUND error
       await expect(
@@ -511,7 +511,7 @@ describe('GraphQL CI Resolvers', () => {
       // Arrange
       (mockContext._neo4jClient as any).createRelationship.mockResolvedValue(undefined);
 
-      const createRelMut = (resolvers.Mutation as any)._createRelationship;
+      const createRelMut = (resolvers.Mutation as any).createRelationship;
 
       // Act: Create relationship (source uses _input, _fromId, _toId, _type)
       const result = await createRelMut(
@@ -548,7 +548,7 @@ describe('GraphQL CI Resolvers', () => {
       // Arrange
       mockNeo4j.session.run.mockResolvedValueOnce(createMockNeo4jResult([]));
 
-      const getCIs = (resolvers.Query as any)._getCIs;
+      const getCIs = (resolvers.Query as any).getCIs;
 
       // Act: Execute any query
       await getCIs(null, {}, mockContext);
@@ -573,7 +573,7 @@ describe('GraphQL CI Resolvers', () => {
       // Arrange: Database error
       mockNeo4j.session.run.mockRejectedValueOnce(new Error('Connection timeout'));
 
-      const getCIs = (resolvers.Query as any)._getCIs;
+      const getCIs = (resolvers.Query as any).getCIs;
 
       // Act & Assert: Should wrap in GraphQLError with proper code
       try {

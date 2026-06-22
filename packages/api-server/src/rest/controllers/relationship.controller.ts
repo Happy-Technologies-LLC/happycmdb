@@ -4,6 +4,7 @@
 import { Request, Response } from 'express';
 import { getNeo4jClient } from '@cmdb/database';
 import { logger, RelationshipType } from '@cmdb/common';
+import neo4j from 'neo4j-driver';
 
 export class RelationshipController {
   private neo4jClient = getNeo4jClient();
@@ -57,8 +58,8 @@ export class RelationshipController {
         const offsetNum = parseInt(offset as string);
 
         query += ' RETURN from, r, to ORDER BY from.name, to.name SKIP $offset LIMIT $limit';
-        params.offset = offsetNum;
-        params.limit = limitNum;
+        params.offset = neo4j.int(offsetNum);
+        params.limit = neo4j.int(limitNum);
 
         const result = await session.run(query, params);
 
@@ -68,27 +69,27 @@ export class RelationshipController {
           const rel = record.get('r');
 
           return {
-            _from_id: from.id,
-            _from_name: from.name,
-            _from_type: from.type,
-            _to_id: to.id,
-            _to_name: to.name,
-            _to_type: to.type,
-            _type: rel.type,
-            _properties: rel.properties,
-            _created_at: rel.properties.created_at,
-            _updated_at: rel.properties.updated_at,
+            from_id: from.id,
+            from_name: from.name,
+            from_type: from.type,
+            to_id: to.id,
+            to_name: to.name,
+            to_type: to.type,
+            type: rel.type,
+            properties: rel.properties,
+            created_at: rel.properties.created_at,
+            updated_at: rel.properties.updated_at,
           };
         });
 
         res.json({
-          _success: true,
-          _data: relationships,
-          _pagination: {
+          success: true,
+          data: relationships,
+          pagination: {
             total,
-            _count: relationships.length,
-            _offset: offsetNum,
-            _limit: limitNum,
+            count: relationships.length,
+            offset: offsetNum,
+            limit: limitNum,
           },
         });
       } finally {
@@ -97,9 +98,9 @@ export class RelationshipController {
     } catch (error) {
       logger.error('Error listing relationships', error);
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to list relationships',
-        _message: error instanceof Error ? error.message : 'Unknown error'
+        success: false,
+        error: 'Failed to list relationships',
+        message: error instanceof Error ? error.message : 'Unknown error'
       });
     }
   }
@@ -115,9 +116,9 @@ export class RelationshipController {
       // Validate required fields
       if (!from_id || !to_id || !type) {
         res.status(400).json({
-          _success: false,
-          _error: 'Bad Request',
-          _message: 'Missing required fields: from_id, to_id, type'
+          success: false,
+          error: 'Bad Request',
+          message: 'Missing required fields: from_id, to_id, type'
         });
         return;
       }
@@ -136,9 +137,9 @@ export class RelationshipController {
 
       if (!validTypes.includes(type)) {
         res.status(400).json({
-          _success: false,
-          _error: 'Bad Request',
-          _message: `Invalid relationship type. Must be one of: ${validTypes.join(', ')}`
+          success: false,
+          error: 'Bad Request',
+          message: `Invalid relationship type. Must be one of: ${validTypes.join(', ')}`
         });
         return;
       }
@@ -149,18 +150,18 @@ export class RelationshipController {
 
       if (!fromCI) {
         res.status(404).json({
-          _success: false,
-          _error: 'Not Found',
-          _message: `Source CI with ID '${from_id}' not found`
+          success: false,
+          error: 'Not Found',
+          message: `Source CI with ID '${from_id}' not found`
         });
         return;
       }
 
       if (!toCI) {
         res.status(404).json({
-          _success: false,
-          _error: 'Not Found',
-          _message: `Target CI with ID '${to_id}' not found`
+          success: false,
+          error: 'Not Found',
+          message: `Target CI with ID '${to_id}' not found`
         });
         return;
       }
@@ -168,9 +169,9 @@ export class RelationshipController {
       // Prevent self-relationships
       if (from_id === to_id) {
         res.status(400).json({
-          _success: false,
-          _error: 'Bad Request',
-          _message: 'Cannot create relationship from CI to itself'
+          success: false,
+          error: 'Bad Request',
+          message: 'Cannot create relationship from CI to itself'
         });
         return;
       }
@@ -185,18 +186,18 @@ export class RelationshipController {
       });
 
       res.status(201).json({
-        _success: true,
-        _data: {
+        success: true,
+        data: {
           from_id,
-          _from_name: fromCI.name,
-          _from_type: fromCI._type,
+          from_name: fromCI.name,
+          from_type: fromCI._type,
           to_id,
-          _to_name: toCI.name,
-          _to_type: toCI._type,
+          to_name: toCI.name,
+          to_type: toCI._type,
           type,
           properties,
         },
-        _message: 'Relationship created successfully',
+        message: 'Relationship created successfully',
       });
     } catch (error) {
       logger.error('Error creating relationship', error);
@@ -204,17 +205,17 @@ export class RelationshipController {
       // Check for duplicate relationship error
       if (error instanceof Error && error.message.includes('already exists')) {
         res.status(409).json({
-          _success: false,
-          _error: 'Conflict',
-          _message: 'Relationship already exists'
+          success: false,
+          error: 'Conflict',
+          message: 'Relationship already exists'
         });
         return;
       }
 
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to create relationship',
-        _message: error instanceof Error ? error.message : 'Unknown error'
+        success: false,
+        error: 'Failed to create relationship',
+        message: error instanceof Error ? error.message : 'Unknown error'
       });
     }
   }
@@ -238,13 +239,23 @@ export class RelationshipController {
         if (id) {
           // Delete by relationship ID (if Neo4j internal ID or custom ID)
           res.status(400).json({
-            _success: false,
-            _error: 'Bad Request',
-            _message: 'Deletion by relationship ID not supported. Use from_id, to_id, and type query parameters.'
+            success: false,
+            error: 'Bad Request',
+            message: 'Deletion by relationship ID not supported. Use from_id, to_id, and type query parameters.'
           });
           return;
         } else if (from_id && to_id && type) {
           // Delete by from_id, to_id, and type
+          // Validate relationship type against the allowed enum to prevent Cypher injection
+          const allowedTypes = Object.values(RelationshipType) as string[];
+          if (!allowedTypes.includes(type as string)) {
+            res.status(400).json({
+              success: false,
+              error: 'Bad Request',
+              message: `Invalid relationship type. Allowed: ${allowedTypes.join(', ')}`,
+            });
+            return;
+          }
           // First check if relationship exists
           const checkQuery = `
             MATCH (from:CI {id: $from_id})-[r:${type}]->(to:CI {id: $to_id})
@@ -255,9 +266,9 @@ export class RelationshipController {
 
           if (checkResult.records.length === 0) {
             res.status(404).json({
-              _success: false,
-              _error: 'Not Found',
-              _message: 'Relationship not found'
+              success: false,
+              error: 'Not Found',
+              message: 'Relationship not found'
             });
             return;
           }
@@ -278,9 +289,9 @@ export class RelationshipController {
           });
 
           res.json({
-            _success: true,
-            _message: 'Relationship deleted successfully',
-            _data: {
+            success: true,
+            message: 'Relationship deleted successfully',
+            data: {
               from_id,
               to_id,
               type,
@@ -288,9 +299,9 @@ export class RelationshipController {
           });
         } else {
           res.status(400).json({
-            _success: false,
-            _error: 'Bad Request',
-            _message: 'Missing required parameters: from_id, to_id, and type'
+            success: false,
+            error: 'Bad Request',
+            message: 'Missing required parameters: from_id, to_id, and type'
           });
         }
       } finally {
@@ -299,9 +310,9 @@ export class RelationshipController {
     } catch (error) {
       logger.error('Error deleting relationship', error);
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to delete relationship',
-        _message: error instanceof Error ? error.message : 'Unknown error'
+        success: false,
+        error: 'Failed to delete relationship',
+        message: error instanceof Error ? error.message : 'Unknown error'
       });
     }
   }
@@ -317,9 +328,9 @@ export class RelationshipController {
 
       if (!type) {
         res.status(400).json({
-          _success: false,
-          _error: 'Bad Request',
-          _message: 'Relationship type is required'
+          success: false,
+          error: 'Bad Request',
+          message: 'Relationship type is required'
         });
         return;
       }
@@ -338,9 +349,9 @@ export class RelationshipController {
 
       if (!validTypes.includes(type as RelationshipType)) {
         res.status(400).json({
-          _success: false,
-          _error: 'Bad Request',
-          _message: `Invalid relationship type. Must be one of: ${validTypes.join(', ')}`
+          success: false,
+          error: 'Bad Request',
+          message: `Invalid relationship type. Must be one of: ${validTypes.join(', ')}`
         });
         return;
       }
@@ -368,8 +379,8 @@ export class RelationshipController {
         `;
 
         const result = await session.run(query, {
-          offset: offsetNum,
-          limit: limitNum,
+          offset: neo4j.int(offsetNum),
+          limit: neo4j.int(limitNum),
         });
 
         const relationships = result.records.map((record) => {
@@ -378,27 +389,27 @@ export class RelationshipController {
           const rel = record.get('r');
 
           return {
-            _from_id: from.id,
-            _from_name: from.name,
-            _from_type: from.type,
-            _to_id: to.id,
-            _to_name: to.name,
-            _to_type: to.type,
-            _type: rel.type,
-            _properties: rel.properties,
-            _created_at: rel.properties.created_at,
-            _updated_at: rel.properties.updated_at,
+            from_id: from.id,
+            from_name: from.name,
+            from_type: from.type,
+            to_id: to.id,
+            to_name: to.name,
+            to_type: to.type,
+            type: rel.type,
+            properties: rel.properties,
+            created_at: rel.properties.created_at,
+            updated_at: rel.properties.updated_at,
           };
         });
 
         res.json({
-          _success: true,
-          _data: relationships,
-          _pagination: {
+          success: true,
+          data: relationships,
+          pagination: {
             total,
-            _count: relationships.length,
-            _offset: offsetNum,
-            _limit: limitNum,
+            count: relationships.length,
+            offset: offsetNum,
+            limit: limitNum,
           },
           type,
         });
@@ -408,9 +419,9 @@ export class RelationshipController {
     } catch (error) {
       logger.error('Error getting relationships by type', error);
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to retrieve relationships',
-        _message: error instanceof Error ? error.message : 'Unknown error'
+        success: false,
+        error: 'Failed to retrieve relationships',
+        message: error instanceof Error ? error.message : 'Unknown error'
       });
     }
   }

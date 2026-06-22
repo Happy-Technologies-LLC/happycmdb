@@ -51,9 +51,9 @@ export class DiscoveryController {
       // Validate provider
       if (!provider) {
         res.status(400).json({
-          _success: false,
-          _error: 'Bad Request',
-          _message: 'Provider is required'
+          success: false,
+          error: 'Bad Request',
+          message: 'Provider is required'
         });
         return;
       }
@@ -70,9 +70,9 @@ export class DiscoveryController {
       const queueName = queueNameMap[provider as DiscoveryProvider];
       if (!queueName) {
         res.status(400).json({
-          _success: false,
-          _error: 'Bad Request',
-          _message: `Unsupported provider: ${provider}`
+          success: false,
+          error: 'Bad Request',
+          message: `Unsupported provider: ${provider}`
         });
         return;
       }
@@ -111,21 +111,21 @@ export class DiscoveryController {
       });
 
       res.status(201).json({
-        _success: true,
-        _data: {
+        success: true,
+        data: {
           id: jobId,
           provider,
           status: 'pending',
           created_at: discoveryJob.created_at,
         },
-        _message: 'Discovery job scheduled successfully',
+        message: 'Discovery job scheduled successfully',
       });
     } catch (error) {
       logger.error('Error scheduling discovery job', error);
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to schedule discovery job',
-        _message: error instanceof Error ? error.message : 'Unknown error'
+        success: false,
+        error: 'Failed to schedule discovery job',
+        message: error instanceof Error ? error.message : 'Unknown error'
       });
     }
   }
@@ -140,9 +140,9 @@ export class DiscoveryController {
 
       if (!id) {
         res.status(400).json({
-          _success: false,
-          _error: 'Bad Request',
-          _message: 'Job ID is required'
+          success: false,
+          error: 'Bad Request',
+          message: 'Job ID is required'
         });
         return;
       }
@@ -171,9 +171,9 @@ export class DiscoveryController {
 
       if (!foundJob) {
         res.status(404).json({
-          _success: false,
-          _error: 'Not Found',
-          _message: `Discovery job with ID '${id}' not found`
+          success: false,
+          error: 'Not Found',
+          message: `Discovery job with ID '${id}' not found`
         });
         return;
       }
@@ -187,26 +187,26 @@ export class DiscoveryController {
       const sanitizedData = this.sanitizeJobData(foundJob.data);
 
       res.json({
-        _success: true,
-        _data: {
-          _id: foundJob.id,
+        success: true,
+        data: {
+          id: foundJob.id,
           ...sanitizedData,
-          _status: state,
+          status: state,
           progress,
-          _result: returnValue,
-          _error: failedReason,
-          _queue: foundQueue,
-          _attemptsMade: foundJob.attemptsMade,
-          _processedOn: foundJob.processedOn,
-          _finishedOn: foundJob.finishedOn,
+          result: returnValue,
+          error: failedReason,
+          queue: foundQueue,
+          attemptsMade: foundJob.attemptsMade,
+          processedOn: foundJob.processedOn,
+          finishedOn: foundJob.finishedOn,
         },
       });
     } catch (error) {
       logger.error('Error getting job status', error);
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to retrieve job status',
-        _message: error instanceof Error ? error.message : 'Unknown error'
+        success: false,
+        error: 'Failed to retrieve job status',
+        message: error instanceof Error ? error.message : 'Unknown error'
       });
     }
   }
@@ -272,14 +272,14 @@ export class DiscoveryController {
           const returnValue = (state === 'completed' && job.returnvalue) ? job.returnvalue : null;
 
           allJobs.push({
-            _id: job.id,
+            id: job.id,
             ...sanitizedData,
-            _status: state,
-            _queue: queueName,
-            _attemptsMade: job.attemptsMade,
-            _processedOn: job.processedOn,
-            _finishedOn: job.finishedOn,
-            _returnValue: returnValue,
+            status: state,
+            queue: queueName,
+            attemptsMade: job.attemptsMade,
+            processedOn: job.processedOn,
+            finishedOn: job.finishedOn,
+            returnValue: returnValue,
           });
         }
       }
@@ -295,21 +295,21 @@ export class DiscoveryController {
       const paginatedJobs = allJobs.slice(offsetNum, offsetNum + limitNum);
 
       res.json({
-        _success: true,
-        _data: paginatedJobs,
-        _pagination: {
-          _total: allJobs.length,
-          _count: paginatedJobs.length,
-          _offset: offsetNum,
-          _limit: limitNum,
+        success: true,
+        data: paginatedJobs,
+        pagination: {
+          total: allJobs.length,
+          count: paginatedJobs.length,
+          offset: offsetNum,
+          limit: limitNum,
         },
       });
     } catch (error) {
       logger.error('Error listing discovery jobs', error);
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to list discovery jobs',
-        _message: error instanceof Error ? error.message : 'Unknown error'
+        success: false,
+        error: 'Failed to list discovery jobs',
+        message: error instanceof Error ? error.message : 'Unknown error'
       });
     }
   }
@@ -324,9 +324,9 @@ export class DiscoveryController {
 
       if (!id) {
         res.status(400).json({
-          _success: false,
-          _error: 'Bad Request',
-          _message: 'Job ID is required'
+          success: false,
+          error: 'Bad Request',
+          message: 'Job ID is required'
         });
         return;
       }
@@ -353,9 +353,9 @@ export class DiscoveryController {
 
       if (!foundJob) {
         res.status(404).json({
-          _success: false,
-          _error: 'Not Found',
-          _message: `Discovery job with ID '${id}' not found`
+          success: false,
+          error: 'Not Found',
+          message: `Discovery job with ID '${id}' not found`
         });
         return;
       }
@@ -364,9 +364,9 @@ export class DiscoveryController {
       const state = await foundJob.getState();
       if (state === 'completed' || state === 'failed') {
         res.status(400).json({
-          _success: false,
-          _error: 'Bad Request',
-          _message: `Cannot cancel job in '${state}' state`
+          success: false,
+          error: 'Bad Request',
+          message: `Cannot cancel job in '${state}' state`
         });
         return;
       }
@@ -377,19 +377,19 @@ export class DiscoveryController {
       logger.info(`Discovery job cancelled: ${id}`, { state });
 
       res.json({
-        _success: true,
-        _message: 'Discovery job cancelled successfully',
-        _data: {
+        success: true,
+        message: 'Discovery job cancelled successfully',
+        data: {
           id,
-          _previousState: state,
+          previousState: state,
         },
       });
     } catch (error) {
       logger.error('Error cancelling discovery job', error);
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to cancel discovery job',
-        _message: error instanceof Error ? error.message : 'Unknown error'
+        success: false,
+        error: 'Failed to cancel discovery job',
+        message: error instanceof Error ? error.message : 'Unknown error'
       });
     }
   }

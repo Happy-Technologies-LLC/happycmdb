@@ -18,6 +18,7 @@ import { getDiscoveryOrchestrator } from '@cmdb/discovery-engine';
 import { getAnomalyDetectionEngine } from '@cmdb/ai-ml-engine';
 import { loadConnectorsAtStartup } from './utils/connector-loader';
 import { getWebSocketService } from './services/websocket.service';
+import { createGraphQLServer } from './graphql/server';
 
 const PORT = parseInt(process.env['PORT'] || '3000', 10);
 
@@ -31,6 +32,16 @@ async function startServer() {
     logger.info('Built-in connectors loaded successfully');
 
     const server = new RestAPIServer(PORT);
+
+    // Mount GraphQL onto the same Express app, before the catch-all error handler.
+    try {
+      await createGraphQLServer(server.getApp());
+      logger.info('GraphQL endpoint mounted at /graphql');
+    } catch (err) {
+      logger.error('Failed to mount GraphQL endpoint', err);
+    }
+    server.setupErrorHandling();
+
     const httpServer = server.start();
 
     // Initialize WebSocket service for real-time updates

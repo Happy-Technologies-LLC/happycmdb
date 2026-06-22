@@ -23,15 +23,15 @@ export class AnomalyController {
       const anomalies = await this.anomalyEngine.getRecentAnomalies(hours, limit);
 
       res.json({
-        _success: true,
-        _data: anomalies,
+        success: true,
+        data: anomalies,
       });
     } catch (error) {
       logger.error('Error getting recent anomalies', error);
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to retrieve recent anomalies',
-        _message: error instanceof Error ? error.message : 'Unknown error',
+        success: false,
+        error: 'Failed to retrieve recent anomalies',
+        message: error instanceof Error ? error.message : 'Unknown error',
       });
     }
   }
@@ -48,15 +48,15 @@ export class AnomalyController {
       const anomalies = await this.anomalyEngine.getAnomaliesForCI(ciId, limit);
 
       res.json({
-        _success: true,
-        _data: anomalies,
+        success: true,
+        data: anomalies,
       });
     } catch (error) {
       logger.error('Error getting anomalies for CI', error);
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to retrieve anomalies for CI',
-        _message: error instanceof Error ? error.message : 'Unknown error',
+        success: false,
+        error: 'Failed to retrieve anomalies for CI',
+        message: error instanceof Error ? error.message : 'Unknown error',
       });
     }
   }
@@ -81,9 +81,9 @@ export class AnomalyController {
 
       if (!validStatuses.includes(status)) {
         res.status(400).json({
-          _success: false,
-          _error: 'Bad Request',
-          _message: `Invalid status. Must be one of: ${validStatuses.join(', ')}`,
+          success: false,
+          error: 'Bad Request',
+          message: `Invalid status. Must be one of: ${validStatuses.join(', ')}`,
         });
         return;
       }
@@ -101,23 +101,23 @@ export class AnomalyController {
 
       if (result.rows.length === 0) {
         res.status(404).json({
-          _success: false,
-          _error: 'Not Found',
-          _message: 'Anomaly not found',
+          success: false,
+          error: 'Not Found',
+          message: 'Anomaly not found',
         });
         return;
       }
 
       res.json({
-        _success: true,
-        _data: this.mapRowToAnomaly(result.rows[0]),
+        success: true,
+        data: this.mapRowToAnomaly(result.rows[0]),
       });
     } catch (error) {
       logger.error('Error updating anomaly status', error);
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to update anomaly status',
-        _message: error instanceof Error ? error.message : 'Unknown error',
+        success: false,
+        error: 'Failed to update anomaly status',
+        message: error instanceof Error ? error.message : 'Unknown error',
       });
     }
   }
@@ -171,8 +171,8 @@ export class AnomalyController {
       });
 
       res.json({
-        _success: true,
-        _data: {
+        success: true,
+        data: {
           total: parseInt(totalResult.rows[0].total),
           by_severity: bySeverity,
           by_type: byType,
@@ -182,9 +182,9 @@ export class AnomalyController {
     } catch (error) {
       logger.error('Error getting anomaly stats', error);
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to retrieve anomaly statistics',
-        _message: error instanceof Error ? error.message : 'Unknown error',
+        success: false,
+        error: 'Failed to retrieve anomaly statistics',
+        message: error instanceof Error ? error.message : 'Unknown error',
       });
     }
   }
@@ -199,8 +199,8 @@ export class AnomalyController {
       const anomalies = await this.anomalyEngine.detectAnomalies();
 
       res.json({
-        _success: true,
-        _data: {
+        success: true,
+        data: {
           detected_count: anomalies.length,
           anomalies: anomalies,
         },
@@ -208,9 +208,9 @@ export class AnomalyController {
     } catch (error) {
       logger.error('Error running anomaly detection', error);
       res.status(500).json({
-        _success: false,
-        _error: 'Failed to run anomaly detection',
-        _message: error instanceof Error ? error.message : 'Unknown error',
+        success: false,
+        error: 'Failed to run anomaly detection',
+        message: error instanceof Error ? error.message : 'Unknown error',
       });
     }
   }

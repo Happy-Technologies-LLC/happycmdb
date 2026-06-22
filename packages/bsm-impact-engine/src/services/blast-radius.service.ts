@@ -120,7 +120,7 @@ export class BlastRadiusService {
     ciId: string
   ): Promise<{ id: string; name: string; type: string } | null> {
     const neo4j = getNeo4jClient();
-    const session = neo4j.session();
+    const session = neo4j.getSession();
 
     try {
       const query = `
@@ -192,7 +192,7 @@ export class BlastRadiusService {
    */
   private async getBusinessService(serviceId: string): Promise<BusinessService | null> {
     const neo4j = getNeo4jClient();
-    const session = neo4j.session();
+    const session = neo4j.getSession();
 
     try {
       const query = `
@@ -407,7 +407,7 @@ export class BlastRadiusService {
     }>
   > {
     const neo4j = getNeo4jClient();
-    const session = neo4j.session();
+    const session = neo4j.getSession();
 
     try {
       // Find CIs where there's only one path to the business service

@@ -19,10 +19,7 @@ export class ConnectorListCommand {
   /**
    * Register connector list commands
    */
-  register(program: Command): void {
-    const connector = program
-      .command('connector')
-      .description('Manage connectors');
+  register(connector: Command): void {
 
     // List available connectors from registry
     connector

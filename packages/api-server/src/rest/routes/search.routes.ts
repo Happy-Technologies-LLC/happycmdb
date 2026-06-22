@@ -12,30 +12,30 @@ const controller = new SearchController();
 
 // Validation schemas
 const advancedSearchSchema = Joi.object({
-  _query: Joi.string().required().min(1),
-  _type: schemas.ciType.optional(),
-  _status: schemas.ciStatus.optional(),
-  _environment: schemas.environment.optional(),
-  _metadata_filters: Joi.object().optional(),
-  _limit: Joi.number().integer().min(1).max(1000).default(50),
-  _offset: Joi.number().integer().min(0).default(0),
+  query: Joi.string().required().min(1),
+  type: schemas.ciType.optional(),
+  status: schemas.ciStatus.optional(),
+  environment: schemas.environment.optional(),
+  metadata_filters: Joi.object().optional(),
+  limit: Joi.number().integer().min(1).max(1000).default(50),
+  offset: Joi.number().integer().min(0).default(0),
 });
 
 const fulltextSearchSchema = Joi.object({
-  _query: Joi.string().required().min(1),
-  _limit: Joi.number().integer().min(1).max(1000).default(50),
+  query: Joi.string().required().min(1),
+  limit: Joi.number().integer().min(1).max(1000).default(50),
 });
 
 const relationshipSearchSchema = Joi.object({
-  _ci_type: schemas.ciType.required(),
-  _relationship_type: schemas.relationshipType.required(),
-  _related_ci_type: schemas.ciType.required(),
-  _limit: Joi.number().integer().min(1).max(1000).default(50),
+  ci_type: schemas.ciType.required(),
+  relationship_type: schemas.relationshipType.required(),
+  related_ci_type: schemas.ciType.required(),
+  limit: Joi.number().integer().min(1).max(1000).default(50),
 });
 
 const orphanedQuerySchema = Joi.object({
-  _limit: Joi.number().integer().min(1).max(1000).default(100),
-  _offset: Joi.number().integer().min(0).default(0),
+  limit: Joi.number().integer().min(1).max(1000).default(100),
+  offset: Joi.number().integer().min(0).default(0),
 });
 
 // Advanced search with multiple filters

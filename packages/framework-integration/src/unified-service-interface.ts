@@ -85,7 +85,7 @@ export class UnifiedServiceInterface {
 
       // Fetch data from all three frameworks in parallel
       const [businessService, itilMetrics, tbmCosts, bsmImpact] = await Promise.all([
-        this.businessServiceRepo.findById(serviceId),
+        this.businessServiceRepo.getBusinessServiceById(serviceId),
         this.itilManager.getServiceMetrics(serviceId),
         this.tbmManager.getServiceCosts(serviceId),
         this.bsmManager.getServiceImpact(serviceId)

@@ -50,10 +50,10 @@ export class AuthService {
    * Login with username and password
    */
   async login(request: LoginRequest): Promise<LoginResponse> {
-    const { _username, _password } = request;
+    const { username, password } = request;
 
     // Find user
-    const user = await this.repository.findUserByUsername(_username);
+    const user = await this.repository.findUserByUsername(username);
     if (!user) {
       throw new Error('Invalid credentials');
     }
@@ -64,7 +64,7 @@ export class AuthService {
     }
 
     // Verify password
-    const isValid = await this.passwordService.verify(_password, user._passwordHash);
+    const isValid = await this.passwordService.verify(password, user._passwordHash);
     if (!isValid) {
       throw new Error('Invalid credentials');
     }
@@ -92,12 +92,12 @@ export class AuthService {
    * Refresh access token using refresh token
    */
   async refreshToken(request: RefreshTokenRequest): Promise<LoginResponse> {
-    const { _refreshToken } = request;
+    const { refreshToken } = request;
 
     // Verify refresh token
     let payload: TokenPayload;
     try {
-      payload = this.jwtService.verifyToken(_refreshToken);
+      payload = this.jwtService.verifyToken(refreshToken);
     } catch (error) {
       throw new Error('Invalid or expired refresh token');
     }

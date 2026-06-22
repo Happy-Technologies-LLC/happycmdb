@@ -12,12 +12,12 @@ const controller = new RelationshipController();
 
 // Validation schemas
 const listRelationshipsQuerySchema = Joi.object({
-  _type: schemas.relationshipType.optional(),
-  _from_id: Joi.string().optional(),
-  _to_id: Joi.string().optional(),
-  _ci_id: Joi.string().optional(),
-  _limit: Joi.number().integer().min(1).max(1000).default(100),
-  _offset: Joi.number().integer().min(0).default(0),
+  type: schemas.relationshipType.optional(),
+  from_id: Joi.string().optional(),
+  to_id: Joi.string().optional(),
+  ci_id: Joi.string().optional(),
+  limit: Joi.number().integer().min(1).max(1000).default(100),
+  offset: Joi.number().integer().min(0).default(0),
 });
 
 // GET /relationships - List relationships with filtering

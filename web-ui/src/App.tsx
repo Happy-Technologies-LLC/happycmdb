@@ -34,6 +34,9 @@ const BusinessServiceDashboard = React.lazy(() => import('./pages/dashboards/Bus
 const BusinessServices = React.lazy(() => import('./pages/BusinessServices'));
 const FinancialManagement = React.lazy(() => import('./pages/FinancialManagement'));
 
+// Inventory (Analytics & Jobs pages are not routed: their backend endpoints are incomplete)
+const Inventory = React.lazy(() => import('./pages/Inventory'));
+
 // Settings
 const Settings = React.lazy(() => import('./pages/Settings').then((m) => ({ default: m.Settings })));
 
@@ -159,6 +162,16 @@ const App: React.FC = () => {
                   <ProtectedRoute>
                     <MainLayout>
                       <CredentialSets />
+                    </MainLayout>
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/inventory"
+                element={
+                  <ProtectedRoute>
+                    <MainLayout>
+                      <Inventory />
                     </MainLayout>
                   </ProtectedRoute>
                 }

@@ -13,17 +13,17 @@ import Joi from 'joi';
  */
 export const authSchemas = {
   _login: Joi.object({
-    _username: Joi.string().alphanum().min(3).max(30).required(),
-    _password: Joi.string().min(8).required(),
+    username: Joi.string().alphanum().min(3).max(30).required(),
+    password: Joi.string().min(8).required(),
   }),
 
   _refreshToken: Joi.object({
-    _refreshToken: Joi.string().required(),
+    refreshToken: Joi.string().required(),
   }),
 
   _generateApiKey: Joi.object({
-    _name: Joi.string().min(3).max(100).required(),
-    _expiresInDays: Joi.number().integer().min(1).max(365).optional(),
+    name: Joi.string().min(3).max(100).required(),
+    expiresInDays: Joi.number().integer().min(1).max(365).optional(),
   }),
 };
 

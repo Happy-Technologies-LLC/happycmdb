@@ -21,20 +21,20 @@ const controller = new DiscoveryController();
 
 // Validation schemas
 const scheduleDiscoverySchema = Joi.object({
-  _provider: schemas.discoveryProvider.required(),
-  _config: Joi.object({
-    _credentials: Joi.any().optional(),
-    _regions: Joi.array().items(Joi.string()).optional(),
-    _filters: Joi.object().optional(),
-    _targets: Joi.array().items(Joi.string()).optional(),
+  provider: schemas.discoveryProvider.required(),
+  config: Joi.object({
+    credentials: Joi.any().optional(),
+    regions: Joi.array().items(Joi.string()).optional(),
+    filters: Joi.object().optional(),
+    targets: Joi.array().items(Joi.string()).optional(),
   }).optional().default({}),
 });
 
 const listJobsQuerySchema = Joi.object({
-  _status: schemas.jobStatus.optional(),
-  _provider: schemas.discoveryProvider.optional(),
-  _limit: Joi.number().integer().min(1).max(1000).default(100),
-  _offset: Joi.number().integer().min(0).default(0),
+  status: schemas.jobStatus.optional(),
+  provider: schemas.discoveryProvider.optional(),
+  limit: Joi.number().integer().min(1).max(1000).default(100),
+  offset: Joi.number().integer().min(0).default(0),
 });
 
 // POST /discovery/schedule - Schedule discovery job

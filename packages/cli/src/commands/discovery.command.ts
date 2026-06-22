@@ -7,8 +7,7 @@ import axios from 'axios';
  * Discovery scan configuration
  */
 interface DiscoveryScanConfig {
-  _targets: string[];
-  _scanType: 'quick' | 'full' | 'custom';
+  targets: string[];
   credentials?: {
     username?: string;
     password?: string;
@@ -41,6 +40,7 @@ export class DiscoveryCommand {
     discovery
       .command('scan')
       .description('Start a discovery scan')
+      .requiredOption('--provider <provider>', 'Discovery provider: nmap, ssh, snmp, active-directory')
       .option('-t, --targets <targets>', 'Comma-separated list of IP addresses or ranges')
       .option('-f, --file <file>', 'File containing target list (one per line)')
       .option('--type <type>', 'Scan type: quick, full, custom', 'quick')
@@ -81,6 +81,7 @@ export class DiscoveryCommand {
     discovery
       .command('schedule')
       .description('Schedule a recurring discovery scan')
+      .requiredOption('--provider <provider>', 'Discovery provider: nmap, ssh, snmp, active-directory')
       .option('-t, --targets <targets>', 'Comma-separated list of targets')
       .option('--cron <cron>', 'Cron expression for schedule', '0 2 * * *')
       .option('--type <type>', 'Scan type: quick, full, custom', 'quick')
@@ -110,8 +111,7 @@ export class DiscoveryCommand {
       }
 
       const config: DiscoveryScanConfig = {
-        _targets: targets,
-        _scanType: options.type || 'quick',
+        targets,
       };
 
       if (options.username || options.password || options.key) {
@@ -123,19 +123,20 @@ export class DiscoveryCommand {
       }
 
       const response = await axios.post(
-        `${this.apiUrl}/discovery/scan`,
-        config,
+        `${this.apiUrl}/discovery/schedule`,
+        { provider: options.provider, config },
         {
           headers: this.getHeaders(),
         }
       );
 
+      const jobId = response.data?.data?.id ?? response.data?.id;
       spinner.succeed(chalk.green('Discovery scan started successfully'));
       console.log(chalk.cyan('\nScan Details:'));
-      console.log(`  Scan ID: ${chalk.bold(response.data.scanId)}`);
+      console.log(`  Job ID: ${chalk.bold(jobId)}`);
+      console.log(`  Provider: ${chalk.bold(options.provider)}`);
       console.log(`  Targets: ${chalk.bold(targets.length)}`);
-      console.log(`  Type: ${chalk.bold(config._scanType)}`);
-      console.log(`\nMonitor progress with: ${chalk.yellow(`cmdb discovery status ${response.data.scanId}`)}`);
+      console.log(`\nMonitor progress with: ${chalk.yellow(`cmdb discovery status ${jobId}`)}`);
     } catch (error: any) {
       spinner.fail(chalk.red('Failed to start discovery scan'));
       this.handleError(error);
@@ -150,14 +151,14 @@ export class DiscoveryCommand {
 
     try {
       const params: any = {
-        _limit: options.limit,
+        limit: options.limit,
       };
 
       if (options.status) {
         params.status = options.status;
       }
 
-      const response = await axios.get(`${this.apiUrl}/discovery/scans`, {
+      const response = await axios.get(`${this.apiUrl}/discovery/jobs`, {
         params,
         headers: this.getHeaders(),
       });
@@ -195,7 +196,7 @@ export class DiscoveryCommand {
 
     try {
       const response = await axios.get(
-        `${this.apiUrl}/discovery/scans/${scanId}`,
+        `${this.apiUrl}/discovery/jobs/${scanId}`,
         {
           headers: this.getHeaders(),
         }
@@ -234,9 +235,8 @@ export class DiscoveryCommand {
     const spinner = ora('Cancelling scan...').start();
 
     try {
-      await axios.post(
-        `${this.apiUrl}/discovery/scans/${scanId}/cancel`,
-        {},
+      await axios.delete(
+        `${this.apiUrl}/discovery/jobs/${scanId}`,
         {
           headers: this.getHeaders(),
         }
@@ -265,24 +265,19 @@ export class DiscoveryCommand {
         return;
       }
 
-      const config = {
-        targets,
-        _scanType: options.type || 'quick',
-        _schedule: options.cron,
-      };
-
       const response = await axios.post(
         `${this.apiUrl}/discovery/schedule`,
-        config,
+        { provider: options.provider, config: { targets } },
         {
           headers: this.getHeaders(),
         }
       );
 
+      const jobId = response.data?.data?.id ?? response.data?.id;
       spinner.succeed(chalk.green('Discovery scheduled successfully'));
       console.log(chalk.cyan('\nSchedule Details:'));
-      console.log(`  Schedule ID: ${chalk.bold(response.data.scheduleId)}`);
-      console.log(`  Cron: ${chalk.bold(config._schedule)}`);
+      console.log(`  Job ID: ${chalk.bold(jobId)}`);
+      console.log(`  Provider: ${chalk.bold(options.provider)}`);
       console.log(`  Targets: ${chalk.bold(targets.length)}`);
     } catch (error: any) {
       spinner.fail(chalk.red('Failed to schedule discovery'));

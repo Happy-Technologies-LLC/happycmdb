@@ -19,10 +19,7 @@ export class ConnectorRunCommand {
   /**
    * Register connector run commands
    */
-  register(program: Command): void {
-    const connector = program
-      .command('connector')
-      .description('Manage connectors');
+  register(connector: Command): void {
 
     // Run connector
     connector

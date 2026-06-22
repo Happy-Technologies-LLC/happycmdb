@@ -19,10 +19,8 @@ export class ConnectorConfigCommand {
   /**
    * Register connector config commands
    */
-  register(program: Command): void {
-    const config = program
-      .command('connector')
-      .description('Manage connectors')
+  register(connector: Command): void {
+    const config = connector
       .command('config')
       .description('Manage connector configurations');
 

@@ -143,47 +143,47 @@ class CIService {
 
   async getCIs(params?: CIListParams): Promise<CIListResponse> {
     const response = await this.axiosInstance.get<{
-      _success: boolean;
-      _data: CI[];
-      _pagination: {
+      success: boolean;
+      data: CI[];
+      pagination: {
         total: number;
-        _page: number;
-        _limit: number;
-        _totalPages: number;
+        page: number;
+        limit: number;
+        totalPages: number;
       };
     }>('/cis', { params });
 
     return {
-      data: response.data._data,
-      total: response.data._pagination.total,
-      page: response.data._pagination._page,
-      limit: response.data._pagination._limit,
-      total_pages: response.data._pagination._totalPages,
+      data: response.data.data,
+      total: response.data.pagination.total,
+      page: response.data.pagination.page,
+      limit: response.data.pagination.limit,
+      total_pages: response.data.pagination.totalPages,
     };
   }
 
   async getCIById(id: string): Promise<CI> {
     const response = await this.axiosInstance.get<{
-      _success: boolean;
-      _data: CI;
+      success: boolean;
+      data: CI;
     }>(`/cis/${id}`);
-    return response.data._data;
+    return response.data.data;
   }
 
   async createCI(data: CreateCIRequest): Promise<CI> {
     const response = await this.axiosInstance.post<{
-      _success: boolean;
-      _data: CI;
+      success: boolean;
+      data: CI;
     }>('/cis', data);
-    return response.data._data;
+    return response.data.data;
   }
 
   async updateCI(id: string, data: UpdateCIRequest): Promise<CI> {
     const response = await this.axiosInstance.put<{
-      _success: boolean;
-      _data: CI;
+      success: boolean;
+      data: CI;
     }>(`/cis/${id}`, data);
-    return response.data._data;
+    return response.data.data;
   }
 
   async deleteCI(id: string): Promise<void> {
@@ -192,20 +192,20 @@ class CIService {
 
   async getCIRelationships(id: string, depth: number = 1): Promise<CIRelationship[]> {
     const response = await this.axiosInstance.get<{
-      _success: boolean;
-      _data: CIRelationship[];
+      success: boolean;
+      data: CIRelationship[];
     }>(`/cis/${id}/relationships`, {
       params: { depth }
     });
-    return response.data._data;
+    return response.data.data;
   }
 
   async getImpactAnalysis(id: string): Promise<ImpactAnalysis> {
     const response = await this.axiosInstance.get<{
-      _success: boolean;
-      _data: ImpactAnalysis;
+      success: boolean;
+      data: ImpactAnalysis;
     }>(`/cis/${id}/impact`);
-    return response.data._data;
+    return response.data.data;
   }
 
   async getDashboardStats(): Promise<DashboardStats> {
@@ -250,10 +250,10 @@ class CIService {
 
   async getCIAuditHistory(id: string): Promise<AuditLogEntry[]> {
     const response = await this.axiosInstance.get<{
-      _success: boolean;
-      _data: AuditLogEntry[];
+      success: boolean;
+      data: AuditLogEntry[];
     }>(`/cis/${id}/audit`);
-    return response.data._data;
+    return response.data.data;
   }
 }
 

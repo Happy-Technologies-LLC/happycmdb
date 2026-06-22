@@ -16,6 +16,7 @@
   "exclude": ["node_modules", "dist", "**/*.test.ts"],
   "references": [
     { "path": "../common" },
-    { "path": "../database" }
+    { "path": "../database" },
+    { "path": "../ai-discovery" }
   ]
 }

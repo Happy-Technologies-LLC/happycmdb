@@ -226,7 +226,7 @@ class DiscoveryService {
     const { data } = await api.get(`/jobs/discovery?${params.toString()}`);
 
     // Transform API response to match expected format
-    const jobs = (data._data || []).map((job: any) => ({
+    const jobs = (data.data || []).map((job: any) => ({
       id: job.data?.jobId || job.id,
       provider: job.data?.provider || job.provider,
       status: this.mapJobStatus(job.status),
@@ -243,10 +243,10 @@ class DiscoveryService {
 
     return {
       jobs,
-      total: data._pagination?.total || 0,
-      page: data._pagination?.page || 1,
-      limit: data._pagination?.limit || 10,
-      totalPages: data._pagination?.totalPages || 0,
+      total: data.pagination?.total || 0,
+      page: data.pagination?.page || 1,
+      limit: data.pagination?.limit || 10,
+      totalPages: data.pagination?.totalPages || 0,
     };
   }
 
@@ -305,7 +305,7 @@ class DiscoveryService {
    */
   async getSchedules(): Promise<DiscoverySchedule[]> {
     const { data } = await api.get('/jobs/schedules/discovery');
-    return data._data || [];
+    return data.data || [];
   }
 
   /**
@@ -326,7 +326,7 @@ class DiscoveryService {
     const { data } = await api.get('/jobs/discovery/stats');
 
     // Transform queue stats to DiscoveryStats format
-    return (data._data || []).map((stat: any) => {
+    return (data.data || []).map((stat: any) => {
       const totalJobs = (stat.waiting || 0) + (stat.active || 0) + (stat.completed || 0) + (stat.failed || 0);
       const successfulJobs = stat.completed || 0;
       const failedJobs = stat.failed || 0;

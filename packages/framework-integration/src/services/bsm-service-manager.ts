@@ -45,7 +45,7 @@ export class BSMServiceManager {
   async getServiceImpact(serviceId: string): Promise<BSMImpact> {
     try {
       // Fetch business service
-      const businessService = await this.businessServiceRepo.findById(serviceId);
+      const businessService = await this.businessServiceRepo.getBusinessServiceById(serviceId);
       if (!businessService) {
         throw new Error(`Business service not found: ${serviceId}`);
       }
@@ -93,7 +93,7 @@ export class BSMServiceManager {
     try {
       // Get business services supported by this CI
       const neo4jClient = getNeo4jClient();
-      const session = neo4jClient.getDriver().session();
+      const session = neo4jClient.getSession();
 
       try {
         const result = await session.run(
@@ -114,7 +114,7 @@ export class BSMServiceManager {
 
         // Get the most critical business service
         const serviceId = result.records[0].get('serviceId');
-        const businessService = await this.businessServiceRepo.findById(serviceId);
+        const businessService = await this.businessServiceRepo.getBusinessServiceById(serviceId);
 
         if (!businessService) {
           return this.createMinimalImpact(ciId);
@@ -180,7 +180,7 @@ export class BSMServiceManager {
   async calculateBlastRadius(ciId: string): Promise<BlastRadiusAnalysis> {
     try {
       const neo4jClient = getNeo4jClient();
-      const session = neo4jClient.getDriver().session();
+      const session = neo4jClient.getSession();
 
       try {
         // Find all downstream dependencies
@@ -218,7 +218,7 @@ export class BSMServiceManager {
         let totalRevenue = 0;
 
         for (const node of impactedServiceNodes) {
-          const service = await this.businessServiceRepo.findById(node.id);
+          const service = await this.businessServiceRepo.getBusinessServiceById(node.id);
           if (service) {
             const customers = service.bsm_attributes.customer_count;
             const revenue = service.bsm_attributes.annual_revenue_supported;

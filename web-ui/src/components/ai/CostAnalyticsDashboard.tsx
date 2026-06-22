@@ -3,7 +3,7 @@ import { LiquidGlass } from '@/components/ui/liquid-glass';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { DollarSign, TrendingDown, TrendingUp, Zap, Brain, Database } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { useDiscoverySessions } from '@/hooks/useDiscoverySessions';
 import LoadingSpinner from '@/components/common/LoadingSpinner';
 import {
@@ -73,7 +73,7 @@ export const CostAnalyticsDashboard: React.FC = () => {
           <div className="p-6">
             <div className="flex items-center justify-between mb-2">
               <p className="text-sm text-muted-foreground">Total Cost</p>
-              <DollarSign className="h-5 w-5 text-warning" />
+              <Icon name="currency-dollar" size={20} className="text-warning" />
             </div>
             <p className="text-3xl font-bold">${costAnalytics.totalCost.toFixed(2)}</p>
             <p className="text-xs text-muted-foreground mt-2">
@@ -86,7 +86,7 @@ export const CostAnalyticsDashboard: React.FC = () => {
           <div className="p-6">
             <div className="flex items-center justify-between mb-2">
               <p className="text-sm text-muted-foreground">Avg Cost/Session</p>
-              <Brain className="h-5 w-5 text-navy" />
+              <Icon name="brain" size={20} className="text-navy" />
             </div>
             <p className="text-3xl font-bold">
               ${costAnalytics.avgCostPerSession.toFixed(4)}
@@ -98,13 +98,13 @@ export const CostAnalyticsDashboard: React.FC = () => {
           <div className="p-6">
             <div className="flex items-center justify-between mb-2">
               <p className="text-sm text-muted-foreground">Savings</p>
-              <TrendingDown className="h-5 w-5 text-success" />
+              <Icon name="trend-down" size={20} className="text-success" />
             </div>
             <p className="text-3xl font-bold text-success">
               ${costAnalytics.savingsFromPatterns?.totalSaved?.toFixed(2) || '0.00'}
             </p>
             <div className="flex items-center gap-1 mt-2 text-sm text-success">
-              <Zap className="h-4 w-4" />
+              <Icon name="lightning" size={16} />
               <span>{costAnalytics.savingsFromPatterns?.percentSaved?.toFixed(0) || 0}% saved</span>
             </div>
           </div>
@@ -114,7 +114,7 @@ export const CostAnalyticsDashboard: React.FC = () => {
           <div className="p-6">
             <div className="flex items-center justify-between mb-2">
               <p className="text-sm text-muted-foreground">Pattern Efficiency</p>
-              <Database className="h-5 w-5 text-sky-text" />
+              <Icon name="database" size={20} className="text-sky-text" />
             </div>
             <div className="space-y-1">
               <div className="flex justify-between items-center">
@@ -302,7 +302,7 @@ export const CostAnalyticsDashboard: React.FC = () => {
           <Card className="border-0 bg-transparent">
             <CardHeader>
               <CardTitle className="text-lg flex items-center gap-2">
-                <Zap className="h-5 w-5 text-warning" />
+                <Icon name="lightning" size={20} className="text-warning" />
                 Pattern Learning Impact
               </CardTitle>
             </CardHeader>
@@ -336,7 +336,7 @@ export const CostAnalyticsDashboard: React.FC = () => {
 
               <div className="mt-6 p-4 bg-success-soft border border-success/20 rounded-lg">
                 <div className="flex items-start gap-3">
-                  <TrendingDown className="h-5 w-5 text-success mt-0.5" />
+                  <Icon name="trend-down" size={20} className="text-success mt-0.5" />
                   <div>
                     <p className="font-semibold text-success">
                       Pattern Learning is Saving You Money

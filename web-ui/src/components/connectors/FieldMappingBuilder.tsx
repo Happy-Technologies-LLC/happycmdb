@@ -7,7 +7,7 @@
  */
 
 import React, { useState } from 'react';
-import { Plus, Trash2, ArrowRight, Settings2, Database, Zap } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -115,13 +115,13 @@ export const FieldMappingBuilder: React.FC<FieldMappingBuilderProps> = ({
   const getTransformationIcon = (type?: string) => {
     switch (type) {
       case 'expression':
-        return <Zap className="h-4 w-4 text-warning" />;
+        return <Icon name="lightning" size={16} className="text-warning" />;
       case 'lookup':
-        return <Database className="h-4 w-4 text-sky-text" />;
+        return <Icon name="database" size={16} className="text-sky-text" />;
       case 'conditional':
-        return <Settings2 className="h-4 w-4 text-navy" />;
+        return <Icon name="gear-six" size={16} className="text-navy" />;
       default:
-        return <ArrowRight className="h-4 w-4 text-ink-soft" />;
+        return <Icon name="arrow-right" size={16} className="text-ink-soft" />;
     }
   };
 
@@ -144,7 +144,7 @@ export const FieldMappingBuilder: React.FC<FieldMappingBuilderProps> = ({
       {mappings.length === 0 ? (
         <Card className="p-8 text-center border-dashed">
           <div className="text-muted-foreground mb-4">
-            <Database className="h-12 w-12 mx-auto mb-2 opacity-50" />
+            <Icon name="database" size={48} className="mx-auto mb-2 opacity-50" />
             <p>No field mappings configured yet</p>
             <p className="text-sm">Add your first mapping to get started</p>
           </div>
@@ -176,7 +176,7 @@ export const FieldMappingBuilder: React.FC<FieldMappingBuilderProps> = ({
                         variant="destructive"
                         onClick={() => deleteMapping(mapping.id)}
                       >
-                        <Trash2 className="h-4 w-4" />
+                        <Icon name="trash" size={16} />
                       </Button>
                     </div>
                   </div>
@@ -294,7 +294,7 @@ export const FieldMappingBuilder: React.FC<FieldMappingBuilderProps> = ({
                             </div>
                             <SelectItem value="custom">
                               <div className="flex items-center gap-2">
-                                <Plus className="h-3 w-3" />
+                                <Icon name="plus" size={12} />
                                 <span className="font-medium">Enter custom field name...</span>
                               </div>
                             </SelectItem>
@@ -496,7 +496,7 @@ export const FieldMappingBuilder: React.FC<FieldMappingBuilderProps> = ({
                     )}
                   </div>
 
-                  <Settings2 className="h-5 w-5 text-muted-foreground" />
+                  <Icon name="gear-six" size={20} className="text-muted-foreground" />
                 </div>
               )}
             </Card>
@@ -506,7 +506,7 @@ export const FieldMappingBuilder: React.FC<FieldMappingBuilderProps> = ({
 
       {/* Add Mapping Button */}
       <Button onClick={addMapping} variant="outline" className="w-full">
-        <Plus className="h-4 w-4 mr-2" />
+        <Icon name="plus" size={16} className="mr-2" />
         Add Field Mapping
       </Button>
 

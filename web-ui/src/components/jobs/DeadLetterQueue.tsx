@@ -8,7 +8,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { ChevronDown, XCircle, RotateCw, Loader2 } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { format } from 'date-fns';
 import { Card, CardContent } from '../ui/card';
 import { Alert, AlertDescription } from '../ui/alert';
@@ -50,7 +50,7 @@ export const DeadLetterQueue: React.FC<DeadLetterQueueProps> = ({ queueName }) =
   if (loading) {
     return (
       <div className="flex justify-center py-8">
-        <Loader2 className="h-8 w-8 animate-spin" />
+        <Icon name="spinner-gap" size={32} className="animate-spin" />
       </div>
     );
   }
@@ -94,7 +94,7 @@ export const DeadLetterQueue: React.FC<DeadLetterQueueProps> = ({ queueName }) =
           onClick={fetchDeadLetterJobs}
           className="gap-1"
         >
-          <RotateCw className="h-4 w-4" />
+          <Icon name="arrow-clockwise" size={16} />
           Refresh
         </Button>
       </div>
@@ -106,7 +106,7 @@ export const DeadLetterQueue: React.FC<DeadLetterQueueProps> = ({ queueName }) =
               <CollapsibleTrigger className="w-full">
                 <CardContent className="p-4">
                   <div className="flex items-center w-full">
-                    <XCircle className="h-5 w-5 text-destructive mr-3" />
+                    <Icon name="x-circle" size={20} className="text-destructive mr-3" />
                     <div className="flex-grow text-left">
                       <div className="font-medium text-sm">{job.name}</div>
                       <div className="text-xs text-muted-foreground">
@@ -116,7 +116,7 @@ export const DeadLetterQueue: React.FC<DeadLetterQueueProps> = ({ queueName }) =
                     <Badge variant="destructive" className="mr-3">
                       {job.attempts}/{job.maxAttempts} attempts
                     </Badge>
-                    <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                    <Icon name="caret-down" size={16} className="text-muted-foreground" />
                   </div>
                 </CardContent>
               </CollapsibleTrigger>

@@ -6,7 +6,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { connectorsApi } from '../../api/connectors';
 import { Button } from '../ui/button';
 import { LiquidGlass } from '../ui/liquid-glass';
-import { Plus, Search, Filter, Pencil, Trash2, Play, CheckCircle, XCircle, Clock } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { ConnectorConfigModal } from './ConnectorConfigModal';
 import { toast } from 'sonner';
 import { Badge } from '../ui/badge';
@@ -162,11 +162,11 @@ export const ConnectorDefinitionList: React.FC = () => {
   const getStatusIcon = (status: string) => {
     switch (status) {
       case 'active':
-        return <CheckCircle className="h-5 w-5 text-success" />;
+        return <Icon name="check-circle" size={20} className="text-success" />;
       case 'inactive':
-        return <Clock className="h-5 w-5 text-ink-soft" />;
+        return <Icon name="clock" size={20} className="text-ink-soft" />;
       case 'error':
-        return <XCircle className="h-5 w-5 text-danger" />;
+        return <Icon name="x-circle" size={20} className="text-danger" />;
       default:
         return null;
     }
@@ -195,7 +195,7 @@ export const ConnectorDefinitionList: React.FC = () => {
           </p>
         </div>
         <Button onClick={() => setShowMarketplace(true)} size="lg">
-          <Plus className="h-4 w-4 mr-2" />
+          <Icon name="plus" size={16} className="mr-2" />
           Install Connector
         </Button>
       </div>
@@ -204,7 +204,7 @@ export const ConnectorDefinitionList: React.FC = () => {
         {/* Filters */}
         <div className="p-4 flex flex-wrap gap-3 items-center border-b border-border/50">
           <div className="relative flex-1 min-w-[250px]">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+            <Icon name="magnifying-glass" size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
             <input
               type="text"
               placeholder="Search connectors..."
@@ -215,7 +215,7 @@ export const ConnectorDefinitionList: React.FC = () => {
           </div>
 
           <div className="relative min-w-[150px]">
-            <Filter className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+            <Icon name="funnel" size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
             <select
               value={filterCategory}
               onChange={(e) => setFilterCategory(e.target.value)}
@@ -338,21 +338,21 @@ export const ConnectorDefinitionList: React.FC = () => {
                           className="p-1.5 hover:bg-primary/10 rounded transition-colors"
                           title="Run Now"
                         >
-                          <Play className="w-4 h-4 text-primary" />
+                          <Icon name="play" size={16} className="text-primary" />
                         </button>
                         <button
                           onClick={() => {/* TODO: Open edit modal */}}
                           className="p-1.5 hover:bg-primary/10 rounded transition-colors"
                           title="Edit"
                         >
-                          <Pencil className="w-4 h-4 text-primary" />
+                          <Icon name="pencil-simple" size={16} className="text-primary" />
                         </button>
                         <button
                           onClick={() => setDeletingConnector(connector)}
                           className="p-1.5 hover:bg-destructive/10 rounded transition-colors"
                           title="Delete"
                         >
-                          <Trash2 className="w-4 h-4 text-destructive" />
+                          <Icon name="trash" size={16} className="text-destructive" />
                         </button>
                       </div>
                     </TableCell>
@@ -386,7 +386,7 @@ export const ConnectorDefinitionList: React.FC = () => {
           <FormDialogBody className="flex flex-col space-y-4">
             {/* Search Bar */}
             <div className="relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+              <Icon name="magnifying-glass" size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
               <input
                 type="text"
                 placeholder="Search connectors by name, type, or category..."
@@ -452,7 +452,7 @@ export const ConnectorDefinitionList: React.FC = () => {
                                 setShowMarketplace(false);
                               }}
                             >
-                              <Plus className="h-3 w-3 mr-1" />
+                              <Icon name="plus" size={12} className="mr-1" />
                               Deploy
                             </Button>
                           </div>

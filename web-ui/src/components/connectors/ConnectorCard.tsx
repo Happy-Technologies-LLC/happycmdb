@@ -1,5 +1,5 @@
 import React from 'react';
-import { Download, Star, CheckCircle, ExternalLink } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -91,8 +91,7 @@ export function ConnectorCard({
               getCategoryColor(displayCategory),
               'bg-opacity-10'
             )}>
-              <IconComponent className={cn(
-                'w-6 h-6',
+              <IconComponent size={24} className={cn(
                 displayCategory === 'itsm' && 'text-sky-text',
                 displayCategory === 'cloud' && 'text-navy',
                 displayCategory === 'monitoring' && 'text-success',
@@ -103,7 +102,7 @@ export function ConnectorCard({
               <h3 className="text-lg font-semibold truncate">{connector.name}</h3>
               {connector.verified && (
                 <div className="flex items-center gap-1 mt-0.5">
-                  <CheckCircle className="h-4 w-4 text-success flex-shrink-0" />
+                  <Icon name="check-circle" size={16} className="text-success flex-shrink-0" />
                   <span className="text-xs text-success">Verified</span>
                 </div>
               )}
@@ -149,11 +148,11 @@ export function ConnectorCard({
       {/* Stats */}
       <div className="flex items-center gap-4 mb-4 text-sm text-muted-foreground">
         <div className="flex items-center gap-1">
-          <Download className="h-4 w-4" />
+          <Icon name="download-simple" size={16} />
           <span>{connector.downloads.toLocaleString()}</span>
         </div>
         <div className="flex items-center gap-1">
-          <Star className="h-4 w-4 fill-warning text-warning" />
+          <Icon name="star" size={16} className="fill-warning text-warning" />
           <span>{connector.rating.toFixed(1)}</span>
         </div>
       </div>
@@ -198,7 +197,7 @@ export function ConnectorCard({
               window.open(connector.homepage, '_blank');
             }}
           >
-            <ExternalLink className="h-4 w-4" />
+            <Icon name="arrow-square-out" size={16} />
           </Button>
         )}
       </div>

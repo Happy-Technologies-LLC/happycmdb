@@ -8,7 +8,7 @@
  */
 
 import React from 'react';
-import { CheckCircle, AlertTriangle, XCircle, Pause } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { Badge } from '../ui/badge';
 import {
   Popover,
@@ -46,18 +46,18 @@ export const QueueHealthIndicator: React.FC<QueueHealthIndicatorProps> = ({
 
   const getHealthIcon = () => {
     if (health.isPaused) {
-      return <Pause className="h-3 w-3" />;
+      return <Icon name="pause" size={12} />;
     }
 
     switch (health.status) {
       case 'healthy':
-        return <CheckCircle className="h-3 w-3" />;
+        return <Icon name="check-circle" size={12} />;
       case 'degraded':
-        return <AlertTriangle className="h-3 w-3" />;
+        return <Icon name="warning" size={12} />;
       case 'unhealthy':
-        return <XCircle className="h-3 w-3" />;
+        return <Icon name="x-circle" size={12} />;
       default:
-        return <CheckCircle className="h-3 w-3" />;
+        return <Icon name="check-circle" size={12} />;
     }
   };
 

@@ -2,17 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import React, { useState, useMemo } from 'react';
-import {
-  Clock,
-  User,
-  Bot,
-  Search,
-  Filter,
-  Calendar,
-  ArrowRight,
-  ChevronDown,
-  ChevronUp,
-} from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { useCIAuditHistory } from '../../hooks/useCIs';
 import { AuditLogEntry, AuditChange } from '../../services/ci.service';
 import { Badge } from '../ui/badge';
@@ -41,9 +31,9 @@ const ACTION_LABELS = {
 };
 
 const ACTOR_TYPE_ICONS = {
-  user: User,
-  system: Bot,
-  discovery: Search,
+  user: 'user',
+  system: 'robot',
+  discovery: 'magnifying-glass',
 };
 
 export const AuditHistory: React.FC<AuditHistoryProps> = ({ ciId }) => {
@@ -161,7 +151,7 @@ export const AuditHistory: React.FC<AuditHistoryProps> = ({ ciId }) => {
                 </code>
               </div>
               <div className="flex items-center justify-center">
-                <ArrowRight className="w-3 h-3 text-muted-foreground" />
+                <Icon name="arrow-right" size={12} className="text-muted-foreground" />
               </div>
               <div className="flex items-start gap-2">
                 <span className="text-xs text-muted-foreground shrink-0 mt-1">To:</span>
@@ -183,9 +173,9 @@ export const AuditHistory: React.FC<AuditHistoryProps> = ({ ciId }) => {
               title={isExpanded ? 'Collapse' : 'Expand'}
             >
               {isExpanded ? (
-                <ChevronUp className="w-4 h-4 text-muted-foreground" />
+                <Icon name="caret-up" size={16} className="text-muted-foreground" />
               ) : (
-                <ChevronDown className="w-4 h-4 text-muted-foreground" />
+                <Icon name="caret-down" size={16} className="text-muted-foreground" />
               )}
             </button>
           )}
@@ -195,7 +185,7 @@ export const AuditHistory: React.FC<AuditHistoryProps> = ({ ciId }) => {
   };
 
   const renderAuditEntry = (entry: AuditLogEntry) => {
-    const ActorIcon = ACTOR_TYPE_ICONS[entry.actor_type] || User;
+    const actorIconName = ACTOR_TYPE_ICONS[entry.actor_type] || 'user';
     const isExpanded = expandedEntries.has(entry.id);
     const hasChanges = entry.changes && entry.changes.length > 0;
 
@@ -207,7 +197,7 @@ export const AuditHistory: React.FC<AuditHistoryProps> = ({ ciId }) => {
         <div className="flex items-start justify-between gap-4 mb-3">
           <div className="flex items-start gap-3 flex-1">
             <div className="p-2 bg-primary/10 rounded-lg shrink-0">
-              <ActorIcon className="w-4 h-4 text-primary" />
+              <Icon name={actorIconName} size={16} className="text-primary" />
             </div>
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2 flex-wrap mb-1">
@@ -220,7 +210,7 @@ export const AuditHistory: React.FC<AuditHistoryProps> = ({ ciId }) => {
                 </span>
               </div>
               <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                <Clock className="w-3 h-3" />
+                <Icon name="clock" size={12} />
                 <span title={formatFullTimestamp(entry.timestamp)}>
                   {formatTimestamp(entry.timestamp)}
                 </span>
@@ -241,9 +231,9 @@ export const AuditHistory: React.FC<AuditHistoryProps> = ({ ciId }) => {
               title={isExpanded ? 'Collapse changes' : 'Expand changes'}
             >
               {isExpanded ? (
-                <ChevronUp className="w-5 h-5 text-muted-foreground" />
+                <Icon name="caret-up" size={20} className="text-muted-foreground" />
               ) : (
-                <ChevronDown className="w-5 h-5 text-muted-foreground" />
+                <Icon name="caret-down" size={20} className="text-muted-foreground" />
               )}
             </button>
           )}
@@ -295,7 +285,7 @@ export const AuditHistory: React.FC<AuditHistoryProps> = ({ ciId }) => {
   if (!auditLogs || auditLogs.length === 0) {
     return (
       <div className="bg-primary/10 border border-primary/20 rounded-lg p-8 text-center">
-        <Clock className="w-12 h-12 text-primary mx-auto mb-3 opacity-50" />
+        <Icon name="clock" size={48} className="text-primary mx-auto mb-3 opacity-50" />
         <p className="text-primary text-lg font-medium">No audit history available</p>
         <p className="text-muted-foreground text-sm mt-1">
           Changes to this CI will appear here once they occur.
@@ -309,7 +299,7 @@ export const AuditHistory: React.FC<AuditHistoryProps> = ({ ciId }) => {
       {/* Filters */}
       <div className="flex flex-wrap gap-3 items-center justify-between bg-muted/30 border border-border/30 rounded-lg p-4">
         <div className="flex items-center gap-2">
-          <Filter className="w-4 h-4 text-muted-foreground" />
+          <Icon name="funnel" size={16} className="text-muted-foreground" />
           <span className="text-sm font-medium text-foreground">Filters:</span>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -329,7 +319,7 @@ export const AuditHistory: React.FC<AuditHistoryProps> = ({ ciId }) => {
 
           {/* Date Range Filter */}
           <div className="flex items-center gap-1 border border-input rounded-lg bg-background overflow-hidden">
-            <Calendar className="w-4 h-4 text-muted-foreground ml-2" />
+            <Icon name="calendar" size={16} className="text-muted-foreground ml-2" />
             <select
               value={dateRange}
               onChange={(e) => setDateRange(e.target.value as any)}

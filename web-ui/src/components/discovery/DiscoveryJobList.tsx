@@ -8,7 +8,7 @@ import DiscoveryJobStatus from './DiscoveryJobStatus';
 import { useDiscovery } from '../../hooks/useDiscovery';
 import { LiquidGlass } from '../ui/liquid-glass';
 import { Badge } from '../ui/badge';
-import { Search, Filter, ChevronDown, RefreshCw, X } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 
 const STATUS_CONFIG: Record<JobStatus, { variant: 'default' | 'secondary' | 'destructive' | 'outline'; label: string }> = {
   pending: { variant: 'outline', label: 'Pending' },
@@ -83,7 +83,7 @@ export const DiscoveryJobList: React.FC = () => {
       {/* Filters */}
       <div className="p-4 flex flex-wrap gap-3 items-center border-b border-border/50">
         <div className="relative min-w-[150px]">
-          <Filter className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+          <Icon name="funnel" size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
           <select
             value={filters.provider || 'all'}
             onChange={(e) => handleProviderChange(e.target.value === 'all' ? [] : [e.target.value])}
@@ -157,8 +157,10 @@ export const DiscoveryJobList: React.FC = () => {
                     onClick={() => handleRowClick(job.id)}
                   >
                     <td className="px-4 py-3">
-                      <ChevronDown
-                        className={`h-4 w-4 text-muted-foreground transition-transform ${
+                      <Icon
+                        name="caret-down"
+                        size={16}
+                        className={`text-muted-foreground transition-transform ${
                           expandedJobId === job.id ? 'rotate-180' : ''
                         }`}
                       />

@@ -24,22 +24,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Separator } from '@/components/ui/separator';
-import {
-  Download,
-  Star,
-  CheckCircle,
-  ExternalLink,
-  Package,
-  Calendar,
-  GitBranch,
-  Shield,
-  Users,
-  FileText,
-  Info,
-  AlertTriangle,
-  Trash2,
-  RefreshCw,
-} from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { ConnectorRegistry } from '@/services/connector.service';
 import { getConnectorIcon, getCategoryColor, getCategoryLabel } from '@/lib/connector-icons';
 import { cn } from '@/lib/utils';
@@ -86,13 +71,13 @@ export const ConnectorDetailModal: React.FC<ConnectorDetailModalProps> = ({
                 'bg-opacity-10'
               )}
             >
-              <IconComponent className="w-10 h-10" />
+              <IconComponent size={40} />
             </div>
             <div className="flex-1">
               <div className="flex items-center gap-2 mb-1">
                 <DialogTitle className="text-2xl">{connector.name}</DialogTitle>
                 {connector.verified && (
-                  <CheckCircle className="h-5 w-5 text-success flex-shrink-0" />
+                  <Icon name="check-circle" size={20} className="text-success flex-shrink-0" />
                 )}
               </div>
               <DialogDescription className="text-base">
@@ -136,7 +121,7 @@ export const ConnectorDetailModal: React.FC<ConnectorDetailModalProps> = ({
               {/* Quick Stats */}
               <div className="grid grid-cols-3 gap-4">
                 <div className="flex items-center gap-3 p-4 border rounded-lg">
-                  <Download className="h-5 w-5 text-sky-text" />
+                  <Icon name="download-simple" size={20} className="text-sky-text" />
                   <div>
                     <div className="text-sm text-muted-foreground">Downloads</div>
                     <div className="text-lg font-semibold">
@@ -145,7 +130,7 @@ export const ConnectorDetailModal: React.FC<ConnectorDetailModalProps> = ({
                   </div>
                 </div>
                 <div className="flex items-center gap-3 p-4 border rounded-lg">
-                  <Star className="h-5 w-5 text-warning fill-warning" />
+                  <Icon name="star" size={20} className="text-warning fill-warning" />
                   <div>
                     <div className="text-sm text-muted-foreground">Rating</div>
                     <div className="text-lg font-semibold">
@@ -154,7 +139,7 @@ export const ConnectorDetailModal: React.FC<ConnectorDetailModalProps> = ({
                   </div>
                 </div>
                 <div className="flex items-center gap-3 p-4 border rounded-lg">
-                  <GitBranch className="h-5 w-5 text-navy" />
+                  <Icon name="git-branch" size={20} className="text-navy" />
                   <div>
                     <div className="text-sm text-muted-foreground">Versions</div>
                     <div className="text-lg font-semibold">{connector.versions.length}</div>
@@ -166,7 +151,7 @@ export const ConnectorDetailModal: React.FC<ConnectorDetailModalProps> = ({
               {connector.tags && connector.tags.length > 0 && (
                 <div>
                   <h4 className="text-sm font-semibold mb-2 flex items-center gap-2">
-                    <Package className="h-4 w-4" />
+                    <Icon name="package" size={16} />
                     Tags
                   </h4>
                   <div className="flex flex-wrap gap-2">
@@ -183,7 +168,7 @@ export const ConnectorDetailModal: React.FC<ConnectorDetailModalProps> = ({
               {connector.author && (
                 <div>
                   <h4 className="text-sm font-semibold mb-2 flex items-center gap-2">
-                    <Users className="h-4 w-4" />
+                    <Icon name="users" size={16} />
                     Author
                   </h4>
                   <p className="text-sm text-muted-foreground">{connector.author}</p>
@@ -193,7 +178,7 @@ export const ConnectorDetailModal: React.FC<ConnectorDetailModalProps> = ({
               {/* Links */}
               <div>
                 <h4 className="text-sm font-semibold mb-2 flex items-center gap-2">
-                  <ExternalLink className="h-4 w-4" />
+                  <Icon name="arrow-square-out" size={16} />
                   Links
                 </h4>
                 <div className="space-y-2">
@@ -204,7 +189,7 @@ export const ConnectorDetailModal: React.FC<ConnectorDetailModalProps> = ({
                       rel="noopener noreferrer"
                       className="flex items-center gap-2 text-sm text-sky-text hover:underline"
                     >
-                      <ExternalLink className="h-4 w-4" />
+                      <Icon name="arrow-square-out" size={16} />
                       Homepage
                     </a>
                   )}
@@ -215,7 +200,7 @@ export const ConnectorDetailModal: React.FC<ConnectorDetailModalProps> = ({
                       rel="noopener noreferrer"
                       className="flex items-center gap-2 text-sm text-sky-text hover:underline"
                     >
-                      <GitBranch className="h-4 w-4" />
+                      <Icon name="git-branch" size={16} />
                       Repository
                     </a>
                   )}
@@ -226,7 +211,7 @@ export const ConnectorDetailModal: React.FC<ConnectorDetailModalProps> = ({
               {connector.metadata && (
                 <div>
                   <h4 className="text-sm font-semibold mb-2 flex items-center gap-2">
-                    <Info className="h-4 w-4" />
+                    <Icon name="info" size={16} />
                     Additional Information
                   </h4>
                   <div className="space-y-2 text-sm">
@@ -282,13 +267,13 @@ export const ConnectorDetailModal: React.FC<ConnectorDetailModalProps> = ({
                         )}
                         {version.breakingChanges && (
                           <Badge variant="destructive">
-                            <AlertTriangle className="h-3 w-3 mr-1" />
+                            <Icon name="warning" size={12} className="mr-1" />
                             Breaking Changes
                           </Badge>
                         )}
                       </div>
                       <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                        <Calendar className="h-4 w-4" />
+                        <Icon name="calendar" size={16} />
                         {format(new Date(version.releasedAt), 'MMM d, yyyy')}
                       </div>
                     </div>
@@ -318,7 +303,7 @@ export const ConnectorDetailModal: React.FC<ConnectorDetailModalProps> = ({
             <TabsContent value="details" className="mt-0 space-y-4">
               <div>
                 <h4 className="text-sm font-semibold mb-2 flex items-center gap-2">
-                  <FileText className="h-4 w-4" />
+                  <Icon name="file-text" size={16} />
                   Connector Type
                 </h4>
                 <p className="text-sm text-muted-foreground font-mono bg-muted p-2 rounded">
@@ -328,7 +313,7 @@ export const ConnectorDetailModal: React.FC<ConnectorDetailModalProps> = ({
 
               <div>
                 <h4 className="text-sm font-semibold mb-2 flex items-center gap-2">
-                  <Package className="h-4 w-4" />
+                  <Icon name="package" size={16} />
                   Category
                 </h4>
                 <p className="text-sm text-muted-foreground">{connector.category}</p>
@@ -337,7 +322,7 @@ export const ConnectorDetailModal: React.FC<ConnectorDetailModalProps> = ({
               {connector.license && (
                 <div>
                   <h4 className="text-sm font-semibold mb-2 flex items-center gap-2">
-                    <Shield className="h-4 w-4" />
+                    <Icon name="shield" size={16} />
                     License
                   </h4>
                   <p className="text-sm text-muted-foreground">{connector.license}</p>
@@ -347,7 +332,7 @@ export const ConnectorDetailModal: React.FC<ConnectorDetailModalProps> = ({
               {connector.verified && (
                 <div className="p-4 bg-success-soft border border-success/20 rounded-lg">
                   <div className="flex items-center gap-2 mb-2">
-                    <CheckCircle className="h-5 w-5 text-success" />
+                    <Icon name="check-circle" size={20} className="text-success" />
                     <h4 className="font-semibold text-success">
                       Verified Connector
                     </h4>
@@ -365,7 +350,7 @@ export const ConnectorDetailModal: React.FC<ConnectorDetailModalProps> = ({
               <div className="grid grid-cols-2 gap-4">
                 <div className="p-4 border rounded-lg">
                   <div className="flex items-center gap-2 mb-2">
-                    <Download className="h-5 w-5 text-sky-text" />
+                    <Icon name="download-simple" size={20} className="text-sky-text" />
                     <h4 className="font-semibold">Total Downloads</h4>
                   </div>
                   <div className="text-3xl font-bold">
@@ -375,7 +360,7 @@ export const ConnectorDetailModal: React.FC<ConnectorDetailModalProps> = ({
 
                 <div className="p-4 border rounded-lg">
                   <div className="flex items-center gap-2 mb-2">
-                    <Star className="h-5 w-5 text-warning fill-warning" />
+                    <Icon name="star" size={20} className="text-warning fill-warning" />
                     <h4 className="font-semibold">Average Rating</h4>
                   </div>
                   <div className="text-3xl font-bold">{connector.rating.toFixed(1)}</div>
@@ -384,7 +369,7 @@ export const ConnectorDetailModal: React.FC<ConnectorDetailModalProps> = ({
 
                 <div className="p-4 border rounded-lg">
                   <div className="flex items-center gap-2 mb-2">
-                    <GitBranch className="h-5 w-5 text-navy" />
+                    <Icon name="git-branch" size={20} className="text-navy" />
                     <h4 className="font-semibold">Available Versions</h4>
                   </div>
                   <div className="text-3xl font-bold">{connector.versions.length}</div>
@@ -392,7 +377,7 @@ export const ConnectorDetailModal: React.FC<ConnectorDetailModalProps> = ({
 
                 <div className="p-4 border rounded-lg">
                   <div className="flex items-center gap-2 mb-2">
-                    <Calendar className="h-5 w-5 text-success" />
+                    <Icon name="calendar" size={20} className="text-success" />
                     <h4 className="font-semibold">Latest Release</h4>
                   </div>
                   <div className="text-lg font-semibold">
@@ -412,7 +397,7 @@ export const ConnectorDetailModal: React.FC<ConnectorDetailModalProps> = ({
             <>
               {hasUpdate && (
                 <Button onClick={onInstall} variant="default">
-                  <RefreshCw className="h-4 w-4 mr-2" />
+                  <Icon name="arrows-clockwise" size={16} className="mr-2" />
                   Update to v{connector.latestVersion}
                 </Button>
               )}
@@ -420,13 +405,13 @@ export const ConnectorDetailModal: React.FC<ConnectorDetailModalProps> = ({
                 onClick={() => onUninstall(connector.connectorType)}
                 variant="destructive"
               >
-                <Trash2 className="h-4 w-4 mr-2" />
+                <Icon name="trash" size={16} className="mr-2" />
                 Uninstall
               </Button>
             </>
           ) : (
             <Button onClick={onInstall} variant="default">
-              <Download className="h-4 w-4 mr-2" />
+              <Icon name="download-simple" size={16} className="mr-2" />
               Install Connector
             </Button>
           )}

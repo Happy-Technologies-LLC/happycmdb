@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import React, { useState, useEffect } from 'react';
-import { Edit } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { DiscoverySchedule, DiscoveryProvider } from '../../services/discovery.service';
 import { useDiscovery } from '../../hooks/useDiscovery';
 import { Button } from '../ui/button';
@@ -222,7 +222,7 @@ export const DiscoveryScheduleManager: React.FC = () => {
                       size="sm"
                       onClick={() => handleEdit(schedule)}
                     >
-                      <Edit className="mr-2 h-4 w-4" />
+                      <Icon name="pencil-simple" size={16} className="mr-2" />
                       Edit
                     </Button>
                   </TableCell>

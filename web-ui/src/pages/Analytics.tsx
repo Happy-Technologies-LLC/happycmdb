@@ -7,14 +7,7 @@
  */
 
 import React, { useState } from 'react';
-import {
-  BarChart3,
-  TrendingUp,
-  Activity,
-  Network,
-  GitBranch,
-  Search,
-} from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Card } from '@/components/ui/card';
 import { InventoryStats } from '../components/analytics/InventoryStats';
@@ -56,27 +49,27 @@ export const Analytics: React.FC = () => {
         <Card className="mb-6">
           <TabsList className="w-full justify-start overflow-x-auto flex-nowrap">
             <TabsTrigger value="inventory" className="gap-2">
-              <BarChart3 className="h-4 w-4" />
+              <Icon name="chart-bar" size={16} />
               Inventory
             </TabsTrigger>
             <TabsTrigger value="changes" className="gap-2">
-              <TrendingUp className="h-4 w-4" />
+              <Icon name="trend-up" size={16} />
               Changes
             </TabsTrigger>
             <TabsTrigger value="health" className="gap-2">
-              <Activity className="h-4 w-4" />
+              <Icon name="pulse" size={16} />
               Health
             </TabsTrigger>
             <TabsTrigger value="connections" className="gap-2">
-              <Network className="h-4 w-4" />
+              <Icon name="share-network" size={16} />
               Connections
             </TabsTrigger>
             <TabsTrigger value="relationships" className="gap-2">
-              <GitBranch className="h-4 w-4" />
+              <Icon name="git-branch" size={16} />
               Relationships
             </TabsTrigger>
             <TabsTrigger value="discovery" className="gap-2">
-              <Search className="h-4 w-4" />
+              <Icon name="magnifying-glass" size={16} />
               Discovery
             </TabsTrigger>
           </TabsList>

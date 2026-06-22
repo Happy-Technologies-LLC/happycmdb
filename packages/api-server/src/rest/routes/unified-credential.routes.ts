@@ -189,6 +189,15 @@ unifiedCredentialRoutes.post(
 );
 
 /**
+ * GET /api/v1/credentials/oauth/callback - Handle OAuth provider redirect callback
+ * Must be before /:id routes to avoid param capture
+ */
+unifiedCredentialRoutes.get(
+  '/credentials/oauth/callback',
+  credentialController.oauthCallback.bind(credentialController)
+);
+
+/**
  * GET /api/v1/credentials/:id - Get credential by ID
  */
 unifiedCredentialRoutes.get(
@@ -219,6 +228,14 @@ unifiedCredentialRoutes.delete(
 unifiedCredentialRoutes.post(
   '/credentials/:id/validate',
   credentialController.validate.bind(credentialController)
+);
+
+/**
+ * POST /api/v1/credentials/:id/oauth/authorize - Begin OAuth authorization for an oauth2 credential
+ */
+unifiedCredentialRoutes.post(
+  '/credentials/:id/oauth/authorize',
+  credentialController.authorize.bind(credentialController)
 );
 
 // =============================================================================

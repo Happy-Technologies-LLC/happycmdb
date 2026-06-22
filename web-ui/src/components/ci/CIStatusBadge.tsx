@@ -2,12 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import React from 'react';
-import {
-  CheckCircle,
-  X,
-  Wrench,
-  Trash2,
-} from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { CIStatus } from '../../services/ci.service';
 import { cn } from '../../utils/cn';
 
@@ -31,25 +26,25 @@ const statusConfig: Record<
     label: 'Active',
     filled: 'bg-success text-white border-success',
     outlined: 'bg-success-soft text-success border-success',
-    icon: <CheckCircle className="w-4 h-4" />,
+    icon: <Icon name="check-circle" size={16} />,
   },
   inactive: {
     label: 'Inactive',
     filled: 'bg-ink-soft text-white border-ink-soft',
     outlined: 'bg-line-soft text-ink-soft border-line',
-    icon: <X className="w-4 h-4" />,
+    icon: <Icon name="x" size={16} />,
   },
   maintenance: {
     label: 'Maintenance',
     filled: 'bg-warning text-white border-warning',
     outlined: 'bg-warning-soft text-warning-text border-warning',
-    icon: <Wrench className="w-4 h-4" />,
+    icon: <Icon name="wrench" size={16} />,
   },
   decommissioned: {
     label: 'Decommissioned',
     filled: 'bg-danger text-white border-danger',
     outlined: 'bg-danger-soft text-danger border-danger',
-    icon: <Trash2 className="w-4 h-4" />,
+    icon: <Icon name="trash" size={16} />,
   },
 };
 

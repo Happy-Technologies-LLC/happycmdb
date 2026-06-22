@@ -31,6 +31,30 @@ export class CredentialCRUDService {
 
   constructor(private pool: Pool) {}
 
+  private decodeStoredCredentials(raw: unknown): Record<string, unknown> {
+    if (this.isEncryptionEnvelope(raw)) {
+      return JSON.parse(this.encryptionService.decrypt(raw)) as Record<
+        string,
+        unknown
+      >;
+    }
+    return raw as Record<string, unknown>;
+  }
+
+  private isEncryptionEnvelope(
+    raw: unknown
+  ): raw is { iv: string; encryptedData: string; authTag: string } {
+    if (typeof raw !== 'object' || raw === null) {
+      return false;
+    }
+    const obj = raw as Record<string, unknown>;
+    return (
+      typeof obj['iv'] === 'string' &&
+      typeof obj['encryptedData'] === 'string' &&
+      typeof obj['authTag'] === 'string'
+    );
+  }
+
   async create(
     input: UnifiedCredentialInput,
     createdBy: string
@@ -73,10 +97,8 @@ export class CredentialCRUDService {
         created_by: createdBy,
       });
 
-      // Decrypt credentials before returning
-      const credentialsData = JSON.parse(
-        this.encryptionService.decrypt(row.credentials)
-      );
+      // Decode credentials before returning (envelope or legacy plaintext)
+      const credentialsData = this.decodeStoredCredentials(row.credentials);
 
       return {
         id: row.id,
@@ -123,11 +145,10 @@ export class CredentialCRUDService {
 
       const row = result.rows[0];
 
-      // Decrypt credentials
-      let credentialsData;
+      // Decode credentials (envelope or legacy plaintext)
+      let credentialsData: Record<string, unknown>;
       try {
-        const decrypted = this.encryptionService.decrypt(row.credentials);
-        credentialsData = JSON.parse(decrypted);
+        credentialsData = this.decodeStoredCredentials(row.credentials);
       } catch (error) {
         logger.error('Failed to decrypt credential', { id, error });
         throw new Error(
@@ -291,9 +312,7 @@ export class CredentialCRUDService {
         name: row.name,
       });
 
-      const credentialsData = JSON.parse(
-        this.encryptionService.decrypt(row.credentials)
-      );
+      const credentialsData = this.decodeStoredCredentials(row.credentials);
 
       return {
         id: row.id,

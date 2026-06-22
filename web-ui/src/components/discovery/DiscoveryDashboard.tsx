@@ -6,7 +6,7 @@ import { DiscoveryProvider, JobStatus } from '../../services/discovery.service';
 import { useNavigate } from 'react-router-dom';
 import { LiquidGlass } from '../ui/liquid-glass';
 import { Badge } from '../ui/badge';
-import { Activity, CheckCircle, Clock, Boxes } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import {
   Table,
   TableBody,
@@ -73,7 +73,7 @@ export const DiscoveryDashboard: React.FC = () => {
           <div className="flex items-center justify-between">
             <span className="font-display text-[12.5px] font-semibold text-ink-soft">Total Jobs</span>
             <span className="flex h-11 w-11 items-center justify-center rounded-md bg-sky-soft text-sky-text">
-              <Activity className="h-5 w-5" />
+              <Icon name="pulse" size={20} />
             </span>
           </div>
           <div className="mt-3 font-display text-[2.3rem] font-extrabold leading-none tracking-[-0.02em] text-navy">
@@ -84,7 +84,7 @@ export const DiscoveryDashboard: React.FC = () => {
           <div className="flex items-center justify-between">
             <span className="font-display text-[12.5px] font-semibold text-ink-soft">Success Rate</span>
             <span className="flex h-11 w-11 items-center justify-center rounded-md bg-success-soft text-success">
-              <CheckCircle className="h-5 w-5" />
+              <Icon name="check-circle" size={20} />
             </span>
           </div>
           <div className="mt-3 font-display text-[2.3rem] font-extrabold leading-none tracking-[-0.02em] text-success">
@@ -95,7 +95,7 @@ export const DiscoveryDashboard: React.FC = () => {
           <div className="flex items-center justify-between">
             <span className="font-display text-[12.5px] font-semibold text-ink-soft">Avg Duration</span>
             <span className="flex h-11 w-11 items-center justify-center rounded-md bg-sky-soft text-sky-text">
-              <Clock className="h-5 w-5" />
+              <Icon name="clock" size={20} />
             </span>
           </div>
           <div className="mt-3 font-display text-[2.3rem] font-extrabold leading-none tracking-[-0.02em] text-navy">
@@ -106,7 +106,7 @@ export const DiscoveryDashboard: React.FC = () => {
           <div className="flex items-center justify-between">
             <span className="font-display text-[12.5px] font-semibold text-ink-soft">Discovered CIs</span>
             <span className="flex h-11 w-11 items-center justify-center rounded-md bg-sky-soft text-sky-text">
-              <Boxes className="h-5 w-5" />
+              <Icon name="stack" size={20} />
             </span>
           </div>
           <div className="mt-3 font-display text-[2.3rem] font-extrabold leading-none tracking-[-0.02em] text-navy">

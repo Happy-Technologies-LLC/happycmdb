@@ -5,7 +5,7 @@ import * as React from 'react';
 import { cn } from '@/lib/utils';
 
 // Happy Technologies icon button: square/circular control wrapping a single
-// (lucide) icon passed as children. Used for toolbar and topbar actions.
+// icon passed as children. Used for toolbar and topbar actions.
 const variantMap = {
   solid: 'bg-sky text-white hover:bg-sky-light',
   soft: 'bg-sky-soft text-sky-text hover:bg-sky-soft/70',

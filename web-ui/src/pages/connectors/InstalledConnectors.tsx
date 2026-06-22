@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import React, { useState, useEffect } from 'react';
-import { Trash2, Settings, PlayCircle, CheckCircle, AlertCircle, TrendingUp } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -109,7 +109,7 @@ export default function InstalledConnectors() {
         <div>
           <div className="flex items-center gap-2">
             <span className="font-medium">{value as React.ReactNode}</span>
-            {row.verified && <CheckCircle className="h-4 w-4 text-green-500" />}
+            {row.verified && <Icon name="check-circle" size={16} className="text-green-500" />}
           </div>
           <div className="text-xs text-muted-foreground">{row.connectorType}</div>
         </div>
@@ -134,7 +134,7 @@ export default function InstalledConnectors() {
           <div className="text-sm">v{value as React.ReactNode}</div>
           {hasUpdate(row) && (
             <div className="flex items-center gap-1 text-xs text-yellow-600">
-              <TrendingUp className="h-3 w-3" />
+              <Icon name="trend-up" size={12} />
               v{row.latestAvailableVersion}
             </div>
           )}
@@ -279,7 +279,7 @@ export default function InstalledConnectors() {
           </AlertDialogHeader>
           {connectorToDelete && connectorToDelete.totalRuns > 0 && (
             <div className="flex items-start gap-2 p-3 rounded-md bg-yellow-50 dark:bg-yellow-950">
-              <AlertCircle className="h-4 w-4 text-yellow-600 mt-0.5" />
+              <Icon name="warning-circle" size={16} className="text-yellow-600 mt-0.5" />
               <div className="text-sm text-yellow-800 dark:text-yellow-200">
                 This connector has {connectorToDelete.totalRuns} recorded runs. Historical
                 data will be preserved.

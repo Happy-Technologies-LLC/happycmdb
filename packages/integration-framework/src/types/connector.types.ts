@@ -96,6 +96,8 @@ export interface ConnectorConfiguration {
   id?: string;
   name: string;
   type: string;
+  /** Credential to resolve at run time; when set, auth is injected into `connection` from the encrypted credential store */
+  credential_id?: string;
   enabled: boolean;
   schedule?: string;
 

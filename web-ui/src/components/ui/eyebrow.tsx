@@ -2,37 +2,32 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import * as React from 'react';
-import { cn } from '@/lib/utils';
+import { Eyebrow as DsEyebrow } from '@happy-technologies/design-system';
 
-// Happy Technologies eyebrow: the uppercase section-label chip that sits
-// above page titles throughout the consoles.
-const toneMap = {
-  accent: 'bg-sky-soft text-sky-text',
-  coral: 'bg-coral-soft text-coral-dark',
-  success: 'bg-success-soft text-success',
-  warning: 'bg-warning-soft text-warning-text',
-  danger: 'bg-danger-soft text-danger',
-  neutral: 'bg-line-soft text-ink-soft',
-} as const;
+// Brand eyebrow chip: the uppercase section-label that sits above page titles.
+// Thin adapter over the design-system <Eyebrow> primitive so every screen renders
+// the single source-of-truth component. The design system expresses two tones
+// (accent, danger); the legacy tone names collapse onto the nearest DS tone.
+type LegacyTone = 'accent' | 'coral' | 'success' | 'warning' | 'danger' | 'neutral';
 
 export interface EyebrowProps extends React.HTMLAttributes<HTMLSpanElement> {
-  tone?: keyof typeof toneMap;
+  tone?: LegacyTone;
 }
 
+const dsTone = (tone: LegacyTone): 'accent' | 'danger' => (tone === 'danger' ? 'danger' : 'accent');
+
 const Eyebrow = React.forwardRef<HTMLSpanElement, EyebrowProps>(
-  ({ tone = 'accent', className, children, ...props }, ref) => (
-    <span
-      ref={ref}
-      className={cn(
-        'inline-block rounded-sm px-3 py-1.5 font-display text-xs font-bold uppercase tracking-[0.13em]',
-        toneMap[tone],
-        className
-      )}
-      {...props}
-    >
-      {children}
-    </span>
-  )
+  ({ tone = 'accent', className, children, ...props }, ref) => {
+    const chip = <DsEyebrow tone={dsTone(tone)}>{children}</DsEyebrow>;
+    // The DS primitive owns its own styling and takes no className/ref; only wrap
+    // when a caller supplies extra span attributes (none do today).
+    if (!className && !ref && Object.keys(props).length === 0) return chip;
+    return (
+      <span ref={ref} className={className} {...props}>
+        {chip}
+      </span>
+    );
+  }
 );
 Eyebrow.displayName = 'Eyebrow';
 

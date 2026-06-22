@@ -3,8 +3,8 @@
 
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Menu, Bell, Search, Building2, ChevronDown } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
+import { Icon } from '@happy-technologies/design-system';
 import { apiClient } from '../../lib/api-client';
 import { HealthStatus } from '../../types';
 
@@ -12,11 +12,11 @@ interface HeaderProps {
   onMenuClick?: () => void;
 }
 
-// Live service-health → topbar status-dot color. Unknown/missing → neutral line.
+// Live service-health -> topbar status-dot color. Unknown/missing -> neutral line.
 const STATUS_DOT: Record<HealthStatus['status'], string> = {
-  healthy: 'bg-success',
-  degraded: 'bg-warning',
-  down: 'bg-danger',
+  healthy: 'bg-[var(--hh-success)]',
+  degraded: 'bg-[var(--hh-warning)]',
+  down: 'bg-[var(--hh-danger)]',
 };
 
 const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
@@ -40,51 +40,59 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
   };
 
   return (
-    <header className="sticky top-0 z-20 flex items-center gap-5 border-b border-line bg-white/[0.86] px-5 py-3 backdrop-blur-md md:px-8">
+    <header className="sticky top-0 z-20 flex items-center gap-5 border-b border-[var(--hh-border)] bg-[var(--hh-bg-glass)] px-5 py-3 backdrop-blur-md md:px-8">
       {onMenuClick && (
         <button
           onClick={onMenuClick}
           aria-label="Open menu"
-          className="flex h-10 w-10 flex-none items-center justify-center rounded-md text-ink-soft hover:bg-warm lg:hidden"
+          className="hh-focus flex h-10 w-10 flex-none items-center justify-center rounded-[var(--hh-radius-md)] text-[var(--hh-text-body)] hover:bg-[var(--hh-bg-elevated)] lg:hidden"
         >
-          <Menu className="h-5 w-5" />
+          <Icon name="list" size={20} />
         </button>
       )}
 
-      {/* Global search */}
+      {/* Natural-language search */}
       <div className="relative flex min-w-0 max-w-[520px] flex-1 items-center">
-        <Search className="pointer-events-none absolute left-4 h-[18px] w-[18px] text-line" />
+        <Icon
+          name="magnifying-glass"
+          size={18}
+          className="pointer-events-none absolute left-4 text-[var(--hh-border-strong)]"
+        />
         <input
           onKeyDown={handleSearch}
           placeholder="Search CIs, services, hostnames, IPs…"
-          className="w-full rounded-full border-2 border-line bg-warm py-[10px] pl-11 pr-4 font-body text-sm text-ink outline-none transition-all placeholder:text-ink-soft/70 focus:border-sky focus:bg-white focus:ring-4 focus:ring-sky/10"
+          spellCheck={false}
+          aria-label="Search CIs, services, hostnames, IPs"
+          className="hh-focus hh-body w-full rounded-[var(--hh-radius-pill)] border-2 border-[var(--hh-border)] bg-[var(--hh-bg-page)] py-[10px] pl-11 pr-4 text-sm text-[var(--hh-text-primary)] outline-none transition-colors placeholder:text-[var(--hh-text-muted)] focus:border-[var(--hh-accent)] focus:bg-white"
         />
       </div>
 
-      {/* Tenant selector */}
-      <button className="hidden items-center gap-2.5 rounded-full border border-line bg-warm px-3 py-1.5 transition-colors hover:border-sky sm:flex">
-        <Building2 className="h-4 w-4 text-sky-text" />
-        <span className="font-display text-[13px] font-semibold text-navy">Happy Technologies</span>
-        <ChevronDown className="h-3.5 w-3.5 text-line" />
+      {/* Tenant switcher */}
+      <button className="hh-focus hidden items-center gap-2.5 rounded-[var(--hh-radius-pill)] border border-[var(--hh-border)] bg-[var(--hh-bg-page)] px-3 py-1.5 transition-colors hover:border-[var(--hh-accent)] sm:flex">
+        <Icon name="buildings" size={16} className="text-[var(--hh-accent-text)]" />
+        <span className="hh-display text-[13px] font-semibold text-[var(--hh-text-primary)]">
+          Happy Technologies
+        </span>
+        <Icon name="caret-down" size={13} className="text-[var(--hh-border-strong)]" />
       </button>
 
-      {/* Service status — driven by live /cmdb-health/services */}
+      {/* Service status - driven by live /cmdb-health/services */}
       <div className="hidden items-center gap-3.5 lg:flex">
         <span
-          className="flex items-center gap-1.5 font-display text-xs text-ink-soft"
+          className="hh-display flex items-center gap-1.5 text-xs text-[var(--hh-text-body)]"
           title={`Neo4j graph: ${graph?.status ?? 'unknown'}`}
         >
           <span
-            className={`h-2 w-2 rounded-full ${graph ? STATUS_DOT[graph.status] : 'bg-line'} ${graph ? 'animate-pulse' : ''}`}
+            className={`h-2 w-2 rounded-full ${graph ? STATUS_DOT[graph.status] : 'bg-[var(--hh-border-strong)]'} ${graph ? 'animate-[hh-pulse_2.4s_ease-in-out_infinite]' : ''}`}
           />
           Graph
         </span>
         <span
-          className="flex items-center gap-1.5 font-display text-xs text-ink-soft"
+          className="hh-display flex items-center gap-1.5 text-xs text-[var(--hh-text-body)]"
           title={`Data mart: ${mart?.status ?? 'unknown'}`}
         >
           <span
-            className={`h-2 w-2 rounded-full ${mart ? STATUS_DOT[mart.status] : 'bg-line'} ${mart ? 'animate-pulse' : ''}`}
+            className={`h-2 w-2 rounded-full ${mart ? STATUS_DOT[mart.status] : 'bg-[var(--hh-border-strong)]'} ${mart ? 'animate-[hh-pulse_2.4s_ease-in-out_infinite]' : ''}`}
           />
           Mart
         </span>
@@ -93,9 +101,9 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
       {/* Notifications */}
       <button
         aria-label="Notifications"
-        className="flex h-10 w-10 flex-none items-center justify-center rounded-md border border-line bg-white text-ink-soft transition-colors hover:border-sky hover:text-sky-text"
+        className="hh-focus flex h-10 w-10 flex-none items-center justify-center rounded-[var(--hh-radius-md)] border border-[var(--hh-border)] bg-white text-[var(--hh-text-body)] transition-colors hover:border-[var(--hh-accent)] hover:text-[var(--hh-accent-text)]"
       >
-        <Bell className="h-[19px] w-[19px]" />
+        <Icon name="bell" size={19} />
       </button>
     </header>
   );

@@ -1,5 +1,5 @@
 import React from 'react';
-import { TrendingUp, TrendingDown, Minus, LucideIcon } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { LiquidGlass } from '@/components/ui/liquid-glass';
 import { Badge } from '@/components/ui/badge';
 
@@ -9,7 +9,7 @@ export interface KPICardProps {
   unit?: string;
   trend?: 'up' | 'down' | 'stable';
   trendValue?: number;
-  icon?: LucideIcon;
+  icon?: string;
   color?: 'green' | 'red' | 'yellow' | 'blue' | 'purple';
   description?: string;
   onClick?: () => void;
@@ -37,16 +37,16 @@ export const KPICard: React.FC<KPICardProps> = ({
   unit,
   trend,
   trendValue,
-  icon: Icon,
+  icon,
   color = 'blue',
   description,
   onClick,
 }) => {
   const getTrendIcon = () => {
     if (!trend) return null;
-    if (trend === 'up') return <TrendingUp className="h-4 w-4" />;
-    if (trend === 'down') return <TrendingDown className="h-4 w-4" />;
-    return <Minus className="h-4 w-4" />;
+    if (trend === 'up') return <Icon name="trend-up" size={16} />;
+    if (trend === 'down') return <Icon name="trend-down" size={16} />;
+    return <Icon name="minus" size={16} />;
   };
 
   const getTrendColor = () => {
@@ -75,8 +75,8 @@ export const KPICard: React.FC<KPICardProps> = ({
       <div className="space-y-3">
         <div className="flex items-center justify-between">
           <p className="text-sm font-medium text-muted-foreground">{title}</p>
-          {Icon && (
-            <Icon className={`h-5 w-5 ${ICON_COLOR_CLASSES[color]} opacity-60`} />
+          {icon && (
+            <Icon name={icon} size={20} className={`${ICON_COLOR_CLASSES[color]} opacity-60`} />
           )}
         </div>
 

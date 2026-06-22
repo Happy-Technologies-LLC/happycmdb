@@ -7,7 +7,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { CheckCircle, XCircle, Loader2 } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { apiClient } from '../../services/auth.service';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -93,19 +93,19 @@ export const DatabaseSettings: React.FC = () => {
   const getStatusIcon = (status: string) => {
     switch (status) {
       case 'connected':
-        return <CheckCircle className="h-5 w-5 text-green-600" />;
+        return <Icon name="check-circle" size={20} className="text-green-600" />;
       case 'disconnected':
       case 'error':
-        return <XCircle className="h-5 w-5 text-destructive" />;
+        return <Icon name="x-circle" size={20} className="text-destructive" />;
       default:
-        return <Loader2 className="h-5 w-5 animate-spin" />;
+        return <Icon name="spinner-gap" size={20} className="animate-spin" />;
     }
   };
 
   if (isLoading) {
     return (
       <div className="flex justify-center py-8">
-        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+        <Icon name="spinner-gap" size={32} className="animate-spin text-muted-foreground" />
       </div>
     );
   }

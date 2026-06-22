@@ -10,7 +10,7 @@ import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { TransformationRule, FieldMapping } from '../../types';
 import { apiClient } from '../../lib/api-client';
-import { Plus, Trash2, ArrowRight, Save, Code } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { LiquidGlass } from '@/components/ui/liquid-glass';
@@ -179,7 +179,7 @@ export const TransformationBuilder: React.FC<TransformationBuilderProps> = ({ ru
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-lg font-semibold">Field Mappings</h3>
           <Button onClick={addMapping}>
-            <Plus className="h-4 w-4" />
+            <Icon name="plus" size={16} />
             Add Mapping
           </Button>
         </div>
@@ -213,7 +213,7 @@ export const TransformationBuilder: React.FC<TransformationBuilderProps> = ({ ru
 
                 {/* Arrow */}
                 <div className="col-span-1 flex justify-center">
-                  <ArrowRight className="h-5 w-5 text-muted-foreground" />
+                  <Icon name="arrow-right" size={20} className="text-muted-foreground" />
                 </div>
 
                 {/* Transformation Type */}
@@ -268,7 +268,7 @@ export const TransformationBuilder: React.FC<TransformationBuilderProps> = ({ ru
                     size="sm"
                     className="h-8 w-8 p-0 text-destructive hover:text-destructive"
                   >
-                    <Trash2 className="h-4 w-4" />
+                    <Icon name="trash" size={16} />
                   </Button>
                 </div>
 
@@ -276,7 +276,7 @@ export const TransformationBuilder: React.FC<TransformationBuilderProps> = ({ ru
                 {mapping.transformation_type === 'script' && (
                   <div className="col-span-12 mt-2">
                     <Label>
-                      <Code className="h-4 w-4 inline mr-1" />
+                      <Icon name="code" size={16} className="inline mr-1" />
                       Transformation Script (JavaScript)
                     </Label>
                     <textarea
@@ -322,7 +322,7 @@ export const TransformationBuilder: React.FC<TransformationBuilderProps> = ({ ru
           onClick={handleSave}
           disabled={saveMutation.isPending}
         >
-          <Save className="h-4 w-4" />
+          <Icon name="floppy-disk" size={16} />
           {saveMutation.isPending ? 'Saving...' : 'Save Rule'}
         </Button>
       </div>

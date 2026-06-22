@@ -13,7 +13,7 @@ import {
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Server, Network, Sparkles, AlertCircle } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 
 interface Agent {
   id: string;
@@ -102,7 +102,7 @@ export const AgentSelector: React.FC<AgentSelectorProps> = ({
     <div className="space-y-4">
       <div className="space-y-2">
         <Label htmlFor="agent-selector" className="flex items-center gap-2">
-          <Server className="h-4 w-4" />
+          <Icon name="computer-tower" size={16} />
           Discovery Agent
         </Label>
 
@@ -119,7 +119,7 @@ export const AgentSelector: React.FC<AgentSelectorProps> = ({
           <SelectContent>
             <SelectItem value="auto">
               <div className="flex items-center gap-2">
-                <Sparkles className="h-4 w-4" />
+                <Icon name="sparkle" size={16} />
                 Auto-select (Smart Routing)
                 {recommendedAgent && (
                   <Badge variant="outline" className="ml-2 text-xs">
@@ -146,7 +146,7 @@ export const AgentSelector: React.FC<AgentSelectorProps> = ({
                         )}
                       </div>
                       <div className="flex items-center gap-2 text-xs text-muted-foreground mt-1">
-                        <Network className="h-3 w-3" />
+                        <Icon name="graph" size={12} />
                         {agent.reachable_networks.slice(0, 2).join(', ')}
                         {agent.reachable_networks.length > 2 && (
                           <span>+{agent.reachable_networks.length - 2} more</span>
@@ -162,7 +162,7 @@ export const AgentSelector: React.FC<AgentSelectorProps> = ({
 
         {selectedAgentId === undefined && (
           <Alert className="mt-2">
-            <Sparkles className="h-4 w-4" />
+            <Icon name="sparkle" size={16} />
             <AlertDescription>
               <strong>Smart Routing Enabled:</strong> The system will automatically
               select the best agent based on network reachability and performance.
@@ -181,7 +181,7 @@ export const AgentSelector: React.FC<AgentSelectorProps> = ({
 
         {activeAgents.length === 0 && (
           <Alert variant="destructive" className="mt-2">
-            <AlertCircle className="h-4 w-4" />
+            <Icon name="warning-circle" size={16} />
             <AlertDescription>
               No active agents found for provider <strong>{provider}</strong>.
               Please deploy and register an agent before using agent-based discovery.

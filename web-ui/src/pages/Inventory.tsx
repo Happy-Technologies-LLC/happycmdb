@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import React, { useState } from 'react';
-import { Plus, LayoutList, LayoutGrid, AlertTriangle } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { useNavigate } from 'react-router-dom';
 import { useToast } from '@/contexts/ToastContext';
 import { Button } from '@/components/ui/button';
@@ -108,7 +108,7 @@ export const Inventory: React.FC = () => {
               onClick={() => setViewMode('list')}
               className="rounded-r-none"
             >
-              <LayoutList className="h-4 w-4" />
+              <Icon name="rows" size={16} />
             </Button>
             <Button
               variant={viewMode === 'grid' ? 'default' : 'ghost'}
@@ -116,11 +116,11 @@ export const Inventory: React.FC = () => {
               onClick={() => setViewMode('grid')}
               className="rounded-l-none"
             >
-              <LayoutGrid className="h-4 w-4" />
+              <Icon name="squares-four" size={16} />
             </Button>
           </div>
           <Button onClick={handleCreateClick}>
-            <Plus className="mr-2 h-4 w-4" />
+            <Icon name="plus" size={16} className="mr-2" />
             Add CI
           </Button>
         </div>
@@ -199,7 +199,7 @@ export const Inventory: React.FC = () => {
             </DialogDescription>
           </DialogHeader>
           <Alert variant="warning" className="my-4">
-            <AlertTriangle className="h-4 w-4" />
+            <Icon name="warning" size={16} />
             <AlertDescription>
               This action cannot be undone. All relationships and data associated with this CI will be lost.
             </AlertDescription>

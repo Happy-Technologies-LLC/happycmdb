@@ -2,16 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import React, { useState } from 'react';
-import {
-  DollarSign,
-  TrendingUp,
-  TrendingDown,
-  PieChart,
-  BarChart3,
-  Download,
-  Calendar,
-  AlertCircle,
-} from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { LiquidGlass } from '../components/ui/liquid-glass';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
@@ -152,7 +143,7 @@ export const FinancialManagement: React.FC = () => {
           </Select>
 
           <Button variant="outline">
-            <Download className="mr-2 h-4 w-4" />
+            <Icon name="download-simple" size={16} className="mr-2" />
             Export Report
           </Button>
         </div>
@@ -164,11 +155,11 @@ export const FinancialManagement: React.FC = () => {
           <div className="p-6">
             <div className="flex items-center justify-between mb-2">
               <span className="text-sm text-muted-foreground">Monthly IT Spend</span>
-              <DollarSign className="h-4 w-4 text-muted-foreground" />
+              <Icon name="currency-dollar" size={16} className="text-muted-foreground" />
             </div>
             <div className="text-3xl font-bold">{formatCurrency(totalMonthlyCost)}</div>
             <div className="flex items-center gap-1 mt-2">
-              <TrendingUp className="h-3 w-3 text-danger" />
+              <Icon name="trend-up" size={12} className="text-danger" />
               <span className="text-xs text-danger">+18.5% vs last month</span>
             </div>
           </div>
@@ -178,7 +169,7 @@ export const FinancialManagement: React.FC = () => {
           <div className="p-6">
             <div className="flex items-center justify-between mb-2">
               <span className="text-sm text-muted-foreground">Budget Utilization</span>
-              <BarChart3 className="h-4 w-4 text-muted-foreground" />
+              <Icon name="chart-bar" size={16} className="text-muted-foreground" />
             </div>
             <div className="text-3xl font-bold">{budgetUtilization.toFixed(1)}%</div>
             <div className="flex items-center gap-1 mt-2">
@@ -196,7 +187,7 @@ export const FinancialManagement: React.FC = () => {
           <div className="p-6">
             <div className="flex items-center justify-between mb-2">
               <span className="text-sm text-muted-foreground">Potential Savings</span>
-              <TrendingDown className="h-4 w-4 text-muted-foreground" />
+              <Icon name="trend-down" size={16} className="text-muted-foreground" />
             </div>
             <div className="text-3xl font-bold">{formatCurrency(totalPotentialSavings)}</div>
             <div className="flex items-center gap-1 mt-2">
@@ -209,7 +200,7 @@ export const FinancialManagement: React.FC = () => {
           <div className="p-6">
             <div className="flex items-center justify-between mb-2">
               <span className="text-sm text-muted-foreground">Cost per User</span>
-              <PieChart className="h-4 w-4 text-muted-foreground" />
+              <Icon name="chart-pie" size={16} className="text-muted-foreground" />
             </div>
             <div className="text-3xl font-bold">$45.20</div>
             <div className="flex items-center gap-1 mt-2">
@@ -375,13 +366,13 @@ export const FinancialManagement: React.FC = () => {
                       <div className="flex items-center gap-2">
                         {service.trend === 'up' && (
                           <>
-                            <TrendingUp className="h-4 w-4 text-danger" />
+                            <Icon name="trend-up" size={16} className="text-danger" />
                             <span className="text-xs text-danger">+{service.change}%</span>
                           </>
                         )}
                         {service.trend === 'down' && (
                           <>
-                            <TrendingDown className="h-4 w-4 text-success" />
+                            <Icon name="trend-down" size={16} className="text-success" />
                             <span className="text-xs text-success">{service.change}%</span>
                           </>
                         )}
@@ -413,7 +404,7 @@ export const FinancialManagement: React.FC = () => {
                 <div className="flex items-start justify-between">
                   <div className="flex-1">
                     <div className="flex items-center gap-2 mb-2">
-                      <AlertCircle className={`h-5 w-5 ${opp.priority === 'high' ? 'text-danger' : 'text-warning'}`} />
+                      <Icon name="warning-circle" size={20} className={opp.priority === 'high' ? 'text-danger' : 'text-warning'} />
                       <h4 className="font-semibold">{opp.type}</h4>
                       <Badge className={opp.priority === 'high' ? 'bg-danger-soft text-danger' : 'bg-warning-soft text-warning-text'}>
                         {opp.priority}

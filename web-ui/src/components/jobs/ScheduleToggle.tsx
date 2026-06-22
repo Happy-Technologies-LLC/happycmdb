@@ -8,7 +8,7 @@
  */
 
 import React, { useState } from 'react';
-import { Loader2 } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { Switch } from '../ui/switch';
 import { JobSchedule } from '../../services/jobs.service';
 
@@ -41,7 +41,7 @@ export const ScheduleToggle: React.FC<ScheduleToggleProps> = ({
   return (
     <div className="inline-flex items-center" title={enabled ? 'Disable schedule' : 'Enable schedule'}>
       {loading ? (
-        <Loader2 className="h-5 w-5 animate-spin" />
+        <Icon name="spinner-gap" size={20} className="animate-spin" />
       ) : (
         <Switch
           checked={enabled}

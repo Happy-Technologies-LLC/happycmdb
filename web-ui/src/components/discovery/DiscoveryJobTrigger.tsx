@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import React, { useState } from 'react';
-import { PlayCircle, Save } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { useNavigate } from 'react-router-dom';
 import { DiscoveryProvider, DiscoveryDefinitionInput } from '../../services/discovery.service';
 import { useDiscovery } from '../../hooks/useDiscovery';
@@ -11,7 +11,6 @@ import { Button } from '../ui/button';
 import { LiquidGlass } from '../ui/liquid-glass';
 import { Alert, AlertDescription } from '../ui/alert';
 import DiscoveryDefinitionForm from './DiscoveryDefinitionForm';
-import { Info } from 'lucide-react';
 
 export const DiscoveryJobTrigger: React.FC = () => {
   const navigate = useNavigate();
@@ -52,7 +51,7 @@ export const DiscoveryJobTrigger: React.FC = () => {
       </div>
 
       <Alert className="mb-6">
-        <Info className="h-4 w-4" />
+        <Icon name="info" size={16} />
         <AlertDescription>
           Configure your discovery settings below. Click <strong>Run Once</strong> for a one-time job, or <strong>Save & Run</strong> to create a reusable definition.
         </AlertDescription>

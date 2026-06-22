@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import React from 'react';
-import { Loader2 } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { cn } from '@/lib/utils';
 
 interface LoadingSpinnerProps {
@@ -20,7 +20,7 @@ const LoadingSpinner: React.FC<LoadingSpinnerProps> = ({
 }) => {
   const content = (
     <div className={cn('flex flex-col items-center justify-center gap-4', className)}>
-      <Loader2 className="animate-spin text-primary" style={{ width: size, height: size }} />
+      <Icon name="spinner-gap" size={size} className="animate-spin text-primary" />
       {message && (
         <p className="text-sm text-muted-foreground">
           {message}

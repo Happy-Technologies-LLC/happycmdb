@@ -6,7 +6,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { LiquidGlass } from '@/components/ui/liquid-glass';
 import { Eyebrow } from '@/components/ui/eyebrow';
 import { Button } from '@/components/ui/button';
-import { HelpCircle, RefreshCw } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { PatternLibrary } from '@/components/ai/PatternLibrary';
 import { DiscoverySessionsView } from '@/components/ai/DiscoverySessionsView';
 import { CostAnalyticsDashboard } from '@/components/ai/CostAnalyticsDashboard';
@@ -46,14 +46,14 @@ const PatternLearning: React.FC = () => {
               disabled={compiling}
             >
               {compiling ? (
-                <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                <Icon name="arrows-clockwise" size={16} className="mr-2 animate-spin" />
               ) : (
-                <RefreshCw className="h-4 w-4 mr-2" />
+                <Icon name="arrows-clockwise" size={16} className="mr-2" />
               )}
               Compile Patterns
             </Button>
             <Button variant="ghost" size="sm">
-              <HelpCircle className="h-5 w-5" />
+              <Icon name="question" size={20} />
             </Button>
           </div>
         </div>

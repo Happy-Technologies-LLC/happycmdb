@@ -10,7 +10,7 @@ import React, { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { apiClient } from '../../lib/api-client';
 import { MetricsSummary, HealthStatus } from '../../types';
-import { Activity, AlertCircle, CheckCircle, XCircle, TrendingUp, Database } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 
 interface TimeSeriesData {
@@ -64,13 +64,13 @@ export const HealthDashboard: React.FC = () => {
   const getStatusIcon = (status: string) => {
     switch (status) {
       case 'healthy':
-        return <CheckCircle className="h-5 w-5" />;
+        return <Icon name="check-circle" size={20} />;
       case 'degraded':
-        return <AlertCircle className="h-5 w-5" />;
+        return <Icon name="warning-circle" size={20} />;
       case 'down':
-        return <XCircle className="h-5 w-5" />;
+        return <Icon name="x-circle" size={20} />;
       default:
-        return <Activity className="h-5 w-5" />;
+        return <Icon name="pulse" size={20} />;
     }
   };
 
@@ -88,7 +88,7 @@ export const HealthDashboard: React.FC = () => {
           <LiquidGlass variant="primary" rounded="xl" size="md">
             <div className="flex items-center justify-between mb-2">
               <span className="text-sm font-medium text-muted-foreground">Total CIs</span>
-              <Database className="h-5 w-5 text-blue-500" />
+              <Icon name="database" size={20} className="text-blue-500" />
             </div>
             <div className="text-3xl font-bold">{metrics.total_cis.toLocaleString()}</div>
             <div className="text-sm text-muted-foreground mt-1">
@@ -99,7 +99,7 @@ export const HealthDashboard: React.FC = () => {
           <LiquidGlass variant="default" rounded="xl" size="md">
             <div className="flex items-center justify-between mb-2">
               <span className="text-sm font-medium text-muted-foreground">Active Connectors</span>
-              <Activity className="h-5 w-5 text-green-500" />
+              <Icon name="pulse" size={20} className="text-green-500" />
             </div>
             <div className="text-3xl font-bold">{metrics.active_connectors}</div>
             <div className="text-sm text-green-600 mt-1">
@@ -110,7 +110,7 @@ export const HealthDashboard: React.FC = () => {
           <LiquidGlass variant="accent" rounded="xl" size="md">
             <div className="flex items-center justify-between mb-2">
               <span className="text-sm font-medium text-muted-foreground">Recent Anomalies</span>
-              <AlertCircle className="h-5 w-5 text-yellow-500" />
+              <Icon name="warning-circle" size={20} className="text-yellow-500" />
             </div>
             <div className="text-3xl font-bold">{metrics.recent_anomalies}</div>
             <div className="text-sm text-muted-foreground mt-1">Last 24 hours</div>
@@ -119,7 +119,7 @@ export const HealthDashboard: React.FC = () => {
           <LiquidGlass variant="muted" rounded="xl" size="md">
             <div className="flex items-center justify-between mb-2">
               <span className="text-sm font-medium text-muted-foreground">High Risk Changes</span>
-              <TrendingUp className="h-5 w-5 text-red-500" />
+              <Icon name="trend-up" size={20} className="text-red-500" />
             </div>
             <div className="text-3xl font-bold">{metrics.high_risk_changes}</div>
             <div className="text-sm text-muted-foreground mt-1">

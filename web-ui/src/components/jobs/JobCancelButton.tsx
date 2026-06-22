@@ -8,7 +8,7 @@
  */
 
 import React, { useState } from 'react';
-import { XCircle, Loader2 } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { Button } from '../ui/button';
 import {
   Dialog,
@@ -74,7 +74,7 @@ export const JobCancelButton: React.FC<JobCancelButtonProps> = ({
         title={canCancel ? 'Cancel this job' : 'Cannot cancel this job'}
         className="gap-1 text-destructive hover:text-destructive"
       >
-        <XCircle className="h-4 w-4" />
+        <Icon name="x-circle" size={16} />
         Cancel
       </Button>
 
@@ -120,12 +120,12 @@ export const JobCancelButton: React.FC<JobCancelButtonProps> = ({
             >
               {loading ? (
                 <>
-                  <Loader2 className="h-4 w-4 animate-spin" />
+                  <Icon name="spinner-gap" size={16} className="animate-spin" />
                   Canceling...
                 </>
               ) : (
                 <>
-                  <XCircle className="h-4 w-4" />
+                  <Icon name="x-circle" size={16} />
                   Yes, Cancel Job
                 </>
               )}

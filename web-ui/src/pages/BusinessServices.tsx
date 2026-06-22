@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import React, { useState, useEffect } from 'react';
-import { Plus, Search, Edit, Trash2, Network, DollarSign, Users, TrendingUp } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { LiquidGlass } from '../components/ui/liquid-glass';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -285,7 +285,7 @@ export const BusinessServices: React.FC = () => {
                 owner: '',
               });
             }}>
-              <Plus className="mr-2 h-4 w-4" />
+              <Icon name="plus" size={16} className="mr-2" />
               Create Service
             </Button>
           </DialogTrigger>
@@ -391,7 +391,7 @@ export const BusinessServices: React.FC = () => {
           <div className="p-6">
             <div className="flex items-center justify-between mb-2">
               <span className="text-sm text-muted-foreground">Total Services</span>
-              <Network className="h-4 w-4 text-muted-foreground" />
+              <Icon name="graph" size={16} className="text-muted-foreground" />
             </div>
             <div className="text-3xl font-bold">{services.length}</div>
             <p className="text-xs text-muted-foreground mt-1">
@@ -404,7 +404,7 @@ export const BusinessServices: React.FC = () => {
           <div className="p-6">
             <div className="flex items-center justify-between mb-2">
               <span className="text-sm text-muted-foreground">Total Revenue Impact</span>
-              <DollarSign className="h-4 w-4 text-muted-foreground" />
+              <Icon name="currency-dollar" size={16} className="text-muted-foreground" />
             </div>
             <div className="text-3xl font-bold">
               {formatCurrency(services.reduce((sum, s) => sum + s.revenueImpact, 0))}
@@ -417,7 +417,7 @@ export const BusinessServices: React.FC = () => {
           <div className="p-6">
             <div className="flex items-center justify-between mb-2">
               <span className="text-sm text-muted-foreground">Total Users</span>
-              <Users className="h-4 w-4 text-muted-foreground" />
+              <Icon name="users" size={16} className="text-muted-foreground" />
             </div>
             <div className="text-3xl font-bold">
               {formatNumber(services.reduce((sum, s) => sum + s.userCount, 0))}
@@ -430,7 +430,7 @@ export const BusinessServices: React.FC = () => {
           <div className="p-6">
             <div className="flex items-center justify-between mb-2">
               <span className="text-sm text-muted-foreground">Monthly IT Cost</span>
-              <TrendingUp className="h-4 w-4 text-muted-foreground" />
+              <Icon name="trend-up" size={16} className="text-muted-foreground" />
             </div>
             <div className="text-3xl font-bold">
               {formatCurrency(services.reduce((sum, s) => sum + (s.monthlyCost || 0), 0))}
@@ -446,7 +446,7 @@ export const BusinessServices: React.FC = () => {
           <div className="flex gap-4 items-center">
             <div className="flex-1">
               <div className="relative">
-                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <Icon name="magnifying-glass" size={16} className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground" />
                 <Input
                   placeholder="Search services..."
                   value={searchQuery}
@@ -544,14 +544,14 @@ export const BusinessServices: React.FC = () => {
                           variant="ghost"
                           onClick={() => handleEdit(service)}
                         >
-                          <Edit className="h-4 w-4" />
+                          <Icon name="pencil-simple" size={16} />
                         </Button>
                         <Button
                           size="icon"
                           variant="ghost"
                           onClick={() => handleDelete(service.id)}
                         >
-                          <Trash2 className="h-4 w-4" />
+                          <Icon name="trash" size={16} />
                         </Button>
                       </div>
                     </td>

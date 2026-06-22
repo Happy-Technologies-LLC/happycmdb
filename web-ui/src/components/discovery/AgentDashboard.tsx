@@ -6,7 +6,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { LiquidGlass } from '@/components/ui/liquid-glass';
 import { Badge } from '@/components/ui/badge';
 import { Eyebrow } from '@/components/ui/eyebrow';
-import { Server, Network, FileCode } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 
 interface AgentStats {
   totalAgents: number;
@@ -99,11 +99,11 @@ export const AgentDashboard: React.FC = () => {
       <Tabs defaultValue="agents" className="space-y-4">
         <TabsList>
           <TabsTrigger value="agents">
-            <Server className="h-4 w-4 mr-2" />
+            <Icon name="computer-tower" size={16} className="mr-2" />
             Agents
           </TabsTrigger>
           <TabsTrigger value="setup">
-            <FileCode className="h-4 w-4 mr-2" />
+            <Icon name="file-code" size={16} className="mr-2" />
             Setup Guide
           </TabsTrigger>
         </TabsList>
@@ -168,7 +168,7 @@ export const AgentDashboard: React.FC = () => {
 
               <div className="bg-sky-soft p-4 rounded-md">
                 <h4 className="font-semibold mb-2 flex items-center gap-2">
-                  <Network className="h-4 w-4" />
+                  <Icon name="graph" size={16} />
                   Network Requirements
                 </h4>
                 <ul className="list-disc list-inside text-sm space-y-1 text-muted-foreground">

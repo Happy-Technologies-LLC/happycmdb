@@ -25,20 +25,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Separator } from '@/components/ui/separator';
-import {
-  Download,
-  CheckCircle,
-  XCircle,
-  Loader2,
-  ArrowRight,
-  ArrowLeft,
-  Package,
-  Settings,
-  TestTube,
-  PartyPopper,
-  AlertTriangle,
-  Info,
-} from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { toast } from 'sonner';
 import { ConnectorRegistry } from '@/services/connector.service';
 import connectorService from '@/services/connector.service';
@@ -170,13 +157,13 @@ export const ConnectorInstallWizard: React.FC<ConnectorInstallWizardProps> = ({
   const getStepIcon = (step: WizardStep) => {
     switch (step) {
       case 'confirm':
-        return Package;
+        return 'package';
       case 'configure':
-        return Settings;
+        return 'gear-six';
       case 'test':
-        return TestTube;
+        return 'test-tube';
       case 'complete':
-        return PartyPopper;
+        return 'confetti';
     }
   };
 
@@ -209,7 +196,7 @@ export const ConnectorInstallWizard: React.FC<ConnectorInstallWizardProps> = ({
                 'bg-opacity-10'
               )}
             >
-              <IconComponent className="w-8 h-8" />
+              <IconComponent size={32} />
             </div>
             <div>
               <DialogTitle className="text-xl">Install {connector.name}</DialogTitle>
@@ -223,7 +210,7 @@ export const ConnectorInstallWizard: React.FC<ConnectorInstallWizardProps> = ({
         {/* Progress Steps */}
         <div className="flex items-center justify-between mb-6">
           {steps.slice(0, -1).map((step, index) => {
-            const StepIcon = getStepIcon(step);
+            const stepIconName = getStepIcon(step);
             const isActive = step === currentStep;
             const isCompleted = index < currentStepIndex;
 
@@ -239,9 +226,9 @@ export const ConnectorInstallWizard: React.FC<ConnectorInstallWizardProps> = ({
                     )}
                   >
                     {isCompleted ? (
-                      <CheckCircle className="h-5 w-5" />
+                      <Icon name="check-circle" size={20} />
                     ) : (
-                      <StepIcon className="h-5 w-5" />
+                      <Icon name={stepIconName} size={20} />
                     )}
                   </div>
                   <div
@@ -276,7 +263,7 @@ export const ConnectorInstallWizard: React.FC<ConnectorInstallWizardProps> = ({
             <div className="space-y-4">
               <div className="bg-sky-soft border border-sky rounded-lg p-4">
                 <div className="flex items-start gap-3">
-                  <Info className="h-5 w-5 text-sky-text mt-0.5 flex-shrink-0" />
+                  <Icon name="info" size={20} className="text-sky-text mt-0.5 flex-shrink-0" />
                   <div>
                     <h4 className="font-semibold text-navy mb-1">
                       About This Connector
@@ -316,7 +303,7 @@ export const ConnectorInstallWizard: React.FC<ConnectorInstallWizardProps> = ({
               {connector.verified && (
                 <div className="bg-success-soft border border-success/20 rounded-lg p-4">
                   <div className="flex items-center gap-2">
-                    <CheckCircle className="h-5 w-5 text-success" />
+                    <Icon name="check-circle" size={20} className="text-success" />
                     <span className="text-sm font-medium text-success">
                       This is a verified connector by the HappyCMDB team
                     </span>
@@ -344,7 +331,7 @@ export const ConnectorInstallWizard: React.FC<ConnectorInstallWizardProps> = ({
             <div className="space-y-4">
               <div className="bg-warning-soft border border-warning/20 rounded-lg p-4">
                 <div className="flex items-start gap-3">
-                  <AlertTriangle className="h-5 w-5 text-warning mt-0.5 flex-shrink-0" />
+                  <Icon name="warning" size={20} className="text-warning mt-0.5 flex-shrink-0" />
                   <div>
                     <h4 className="font-semibold text-warning-text mb-1">
                       Configuration Required
@@ -403,7 +390,7 @@ export const ConnectorInstallWizard: React.FC<ConnectorInstallWizardProps> = ({
 
               <div className="bg-sky-soft border border-sky rounded-lg p-4">
                 <div className="flex items-start gap-3">
-                  <Info className="h-5 w-5 text-sky-text mt-0.5 flex-shrink-0" />
+                  <Icon name="info" size={20} className="text-sky-text mt-0.5 flex-shrink-0" />
                   <div>
                     <p className="text-sm text-sky-text">
                       Detailed configuration including credentials, resource selection, and
@@ -421,7 +408,7 @@ export const ConnectorInstallWizard: React.FC<ConnectorInstallWizardProps> = ({
             <div className="space-y-4">
               {!installMutation.isPending && !installMutation.isSuccess && (
                 <div className="text-center py-8">
-                  <Package className="h-16 w-16 mx-auto mb-4 text-muted-foreground" />
+                  <Icon name="package" size={64} className="mx-auto mb-4 text-muted-foreground" />
                   <h3 className="text-lg font-semibold mb-2">Ready to Install</h3>
                   <p className="text-sm text-muted-foreground mb-6">
                     Click "Install" to begin the installation process
@@ -431,7 +418,7 @@ export const ConnectorInstallWizard: React.FC<ConnectorInstallWizardProps> = ({
 
               {installMutation.isPending && (
                 <div className="text-center py-8">
-                  <Loader2 className="h-16 w-16 mx-auto mb-4 text-sky-text animate-spin" />
+                  <Icon name="spinner-gap" size={64} className="mx-auto mb-4 text-sky-text animate-spin" />
                   <h3 className="text-lg font-semibold mb-2">Installing Connector...</h3>
                   <p className="text-sm text-muted-foreground">
                     Downloading and installing {connector.name}
@@ -442,7 +429,7 @@ export const ConnectorInstallWizard: React.FC<ConnectorInstallWizardProps> = ({
               {installMutation.isError && (
                 <div className="bg-danger-soft border border-danger/20 rounded-lg p-4">
                   <div className="flex items-start gap-3">
-                    <XCircle className="h-5 w-5 text-danger mt-0.5 flex-shrink-0" />
+                    <Icon name="x-circle" size={20} className="text-danger mt-0.5 flex-shrink-0" />
                     <div>
                       <h4 className="font-semibold text-danger mb-1">
                         Installation Failed
@@ -462,7 +449,7 @@ export const ConnectorInstallWizard: React.FC<ConnectorInstallWizardProps> = ({
           {currentStep === 'complete' && (
             <div className="text-center py-8">
               <div className="mb-6">
-                <CheckCircle className="h-20 w-20 mx-auto text-success mb-4" />
+                <Icon name="check-circle" size={80} className="mx-auto text-success mb-4" />
                 <h3 className="text-2xl font-bold mb-2">Installation Complete!</h3>
                 <p className="text-muted-foreground">
                   {connector.name} has been successfully installed
@@ -502,7 +489,7 @@ export const ConnectorInstallWizard: React.FC<ConnectorInstallWizardProps> = ({
                 variant="outline"
                 disabled={currentStep === 'confirm' || installMutation.isPending}
               >
-                <ArrowLeft className="h-4 w-4 mr-2" />
+                <Icon name="arrow-left" size={16} className="mr-2" />
                 Back
               </Button>
               <div className="flex gap-2">
@@ -515,18 +502,18 @@ export const ConnectorInstallWizard: React.FC<ConnectorInstallWizardProps> = ({
                 >
                   {installMutation.isPending ? (
                     <>
-                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                      <Icon name="spinner-gap" size={16} className="mr-2 animate-spin" />
                       Installing...
                     </>
                   ) : currentStep === 'test' ? (
                     <>
-                      <Download className="h-4 w-4 mr-2" />
+                      <Icon name="download-simple" size={16} className="mr-2" />
                       Install
                     </>
                   ) : (
                     <>
                       Next
-                      <ArrowRight className="h-4 w-4 ml-2" />
+                      <Icon name="arrow-right" size={16} className="ml-2" />
                     </>
                   )}
                 </Button>

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import React, { useEffect, useRef, useState } from 'react';
-import { ZoomIn, ZoomOut, Focus, Download, RefreshCw } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import cytoscape, { Core, ElementDefinition } from 'cytoscape';
 import { useCIs } from '../../hooks/useCIs';
 import { Environment } from '../../services/ci.service';
@@ -194,23 +194,23 @@ export const TopologyMap: React.FC<TopologyMapProps> = ({
           </Select>
 
           <Button size="icon" variant="outline" onClick={handleRefresh} title="Refresh">
-            <RefreshCw className="h-4 w-4" />
+            <Icon name="arrows-clockwise" size={16} />
           </Button>
 
           <Button size="icon" variant="outline" onClick={handleZoomIn} title="Zoom In">
-            <ZoomIn className="h-4 w-4" />
+            <Icon name="magnifying-glass-plus" size={16} />
           </Button>
 
           <Button size="icon" variant="outline" onClick={handleZoomOut} title="Zoom Out">
-            <ZoomOut className="h-4 w-4" />
+            <Icon name="magnifying-glass-minus" size={16} />
           </Button>
 
           <Button size="icon" variant="outline" onClick={handleCenter} title="Center">
-            <Focus className="h-4 w-4" />
+            <Icon name="crosshair" size={16} />
           </Button>
 
           <Button size="icon" variant="outline" onClick={handleDownload} title="Download as PNG">
-            <Download className="h-4 w-4" />
+            <Icon name="download-simple" size={16} />
           </Button>
         </div>
       </div>

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import React, { useState, useEffect } from 'react';
-import { Clock, Copy, Check } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { Label } from './label';
 import {
   Select,
@@ -216,7 +216,7 @@ export const CronBuilder: React.FC<CronBuilderProps> = ({ value = '0 9 * * *', o
 
       <div className="bg-muted rounded-lg p-4 border">
         <div className="flex items-center gap-2 mb-2">
-          <Clock className="w-4 h-4 text-muted-foreground" />
+          <Icon name="clock" size={16} className="text-muted-foreground" />
           <span className="text-sm font-semibold">Schedule Summary</span>
         </div>
 

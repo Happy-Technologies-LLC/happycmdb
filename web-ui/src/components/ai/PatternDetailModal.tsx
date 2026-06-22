@@ -8,7 +8,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { AIPattern } from '@/services/ai-pattern.service';
-import { Code2, FileCode, TestTube, History, CheckCircle, XCircle } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 
 interface PatternDetailModalProps {
   pattern: AIPattern;
@@ -146,7 +146,7 @@ export const PatternDetailModal: React.FC<PatternDetailModalProps> = ({ pattern,
             <Card>
               <CardHeader>
                 <CardTitle className="text-sm flex items-center gap-2">
-                  <Code2 className="h-4 w-4" />
+                  <Icon name="code" size={16} />
                   Detection Function
                 </CardTitle>
               </CardHeader>
@@ -162,7 +162,7 @@ export const PatternDetailModal: React.FC<PatternDetailModalProps> = ({ pattern,
             <Card>
               <CardHeader>
                 <CardTitle className="text-sm flex items-center gap-2">
-                  <FileCode className="h-4 w-4" />
+                  <Icon name="file-code" size={16} />
                   Discovery Function
                 </CardTitle>
               </CardHeader>
@@ -178,7 +178,7 @@ export const PatternDetailModal: React.FC<PatternDetailModalProps> = ({ pattern,
             <Card>
               <CardHeader>
                 <CardTitle className="text-sm flex items-center gap-2">
-                  <TestTube className="h-4 w-4" />
+                  <Icon name="test-tube" size={16} />
                   Test Cases
                 </CardTitle>
               </CardHeader>
@@ -194,12 +194,12 @@ export const PatternDetailModal: React.FC<PatternDetailModalProps> = ({ pattern,
                           <p className="font-semibold text-sm">{testCase.name}</p>
                           {testCase.expectedMatch ? (
                             <Badge variant="default" className="text-xs">
-                              <CheckCircle className="h-3 w-3 mr-1" />
+                              <Icon name="check-circle" size={12} className="mr-1" />
                               Should Match
                             </Badge>
                           ) : (
                             <Badge variant="secondary" className="text-xs">
-                              <XCircle className="h-3 w-3 mr-1" />
+                              <Icon name="x-circle" size={12} className="mr-1" />
                               Should Not Match
                             </Badge>
                           )}

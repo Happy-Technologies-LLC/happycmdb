@@ -1,5 +1,5 @@
 import React from 'react';
-import { Activity, CheckCircle, AlertTriangle, Database, DollarSign, TrendingUp, Download } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { useCIODashboard, useTimeRange, useExportDashboard } from '@/hooks/useDashboardData';
 import { KPICard } from '@/components/dashboard/KPICard';
 import { LiquidGlass } from '@/components/ui/liquid-glass';
@@ -109,7 +109,7 @@ export const CIODashboard: React.FC = () => {
             size="sm"
             onClick={() => exportToPDF('cio', { timeRange })}
           >
-            <Download className="h-4 w-4 mr-2" />
+            <Icon name="download-simple" size={16} className="mr-2" />
             Export PDF
           </Button>
           <Button
@@ -117,7 +117,7 @@ export const CIODashboard: React.FC = () => {
             size="sm"
             onClick={() => exportToExcel('cio', { timeRange })}
           >
-            <Download className="h-4 w-4 mr-2" />
+            <Icon name="download-simple" size={16} className="mr-2" />
             Export Excel
           </Button>
           <Button variant="outline" size="sm" onClick={() => refetch()}>
@@ -131,21 +131,21 @@ export const CIODashboard: React.FC = () => {
         <KPICard
           title="Average Availability"
           value={`${avgAvailability.toFixed(2)}%`}
-          icon={Activity}
+          icon="pulse"
           color={avgAvailability >= 99.9 ? 'green' : avgAvailability >= 99 ? 'yellow' : 'red'}
           description="Across all service tiers"
         />
         <KPICard
           title="Change Success Rate"
           value={`${(changeSuccessRates?.successRate ?? 0).toFixed(1)}%`}
-          icon={CheckCircle}
+          icon="check-circle"
           color={(changeSuccessRates?.successRate ?? 0) >= 85 ? 'green' : 'yellow'}
           description={`${changeSuccessRates?.total ?? 0} changes (${timeRange.label})`}
         />
         <KPICard
           title="Config Accuracy"
           value={`${(configurationAccuracy?.accuracyPercentage ?? 0).toFixed(1)}%`}
-          icon={Database}
+          icon="database"
           color={(configurationAccuracy?.accuracyPercentage ?? 0) >= 95 ? 'green' : 'yellow'}
           description={`${configurationAccuracy?.driftDetected ?? 0} CIs with drift`}
         />
@@ -154,7 +154,7 @@ export const CIODashboard: React.FC = () => {
           value={formatCurrency(
             costByCapability.reduce((acc: number, c: any) => acc + c.budgetAllocated, 0)
           )}
-          icon={DollarSign}
+          icon="currency-dollar"
           color="blue"
           description="Allocated across capabilities"
         />

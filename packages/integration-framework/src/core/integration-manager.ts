@@ -8,7 +8,7 @@
 
 import * as cron from 'node-cron';
 import { logger } from '@cmdb/common';
-import { getPostgresClient } from '@cmdb/database';
+import { getPostgresClient, getUnifiedCredentialService, getOAuthSubstrate } from '@cmdb/database';
 import { BaseIntegrationConnector } from './base-connector';
 import { getConnectorRegistry } from '../registry/connector-registry';
 import { ConnectorConfiguration, ConnectorRunResult } from '../types/connector.types';
@@ -152,9 +152,9 @@ export class IntegrationManager {
    * Run connector manually
    */
   async runConnector(connectorName: string): Promise<ConnectorRunResult> {
-    const connector = this.connectors.get(connectorName);
+    const registered = this.connectors.get(connectorName);
 
-    if (!connector) {
+    if (registered === undefined) {
       throw new Error(`Connector not found: ${connectorName}`);
     }
 
@@ -163,6 +163,13 @@ export class IntegrationManager {
 
     // Get connector config for type
     const config = await this.getConnectorConfig(connectorName);
+
+    // When the config references a credential, resolve a fresh instance with
+    // run-time auth injected; otherwise use the pre-registered instance.
+    const connector =
+      config !== null && config.credential_id !== undefined
+        ? await this.resolveConnectorForRun(config)
+        : registered;
 
     try {
       logger.info('Running connector', { connector: connectorName, run_id: runId });
@@ -273,13 +280,22 @@ export class IntegrationManager {
    * Test connector connection
    */
   async testConnector(connectorName: string): Promise<any> {
-    const connector = this.connectors.get(connectorName);
+    const registered = this.connectors.get(connectorName);
 
-    if (!connector) {
+    if (registered === undefined) {
       throw new Error(`Connector not found: ${connectorName}`);
     }
 
     logger.info('Testing connector connection', { connector: connectorName });
+
+    // When the config references a credential, resolve a fresh instance with
+    // run-time auth injected; otherwise use the pre-registered instance.
+    const config = await this.getConnectorConfig(connectorName);
+    const connector =
+      config !== null && config.credential_id !== undefined
+        ? await this.resolveConnectorForRun(config)
+        : registered;
+
     return await connector.testConnection();
   }
 
@@ -388,6 +404,41 @@ export class IntegrationManager {
   }
 
   /**
+   * Resolve a fresh connector instance with run-time credentials injected.
+   * Only called when config.credential_id !== undefined.
+   */
+  private async resolveConnectorForRun(
+    config: ConnectorConfiguration
+  ): Promise<BaseIntegrationConnector> {
+    const pool = this.postgresClient.pool;
+    const credentialId = config.credential_id as string;
+
+    const credential = await getUnifiedCredentialService(pool).getById(credentialId);
+    if (credential === null) {
+      throw new Error('Credential not found: ' + credentialId);
+    }
+
+    const connection: Record<string, unknown> = { ...config.connection };
+
+    if (credential.protocol === 'oauth2') {
+      const resolved = await getOAuthSubstrate(pool).resolve(credentialId);
+      connection['auth_type'] = 'oauth2';
+      connection['access_token'] = resolved.token;
+
+      const instanceUrl = credential.credentials['instance_url'] as string | undefined;
+      if (connection['instance_url'] === undefined && typeof instanceUrl === 'string') {
+        connection['instance_url'] = instanceUrl;
+      }
+    } else {
+      // basic/api_key/etc.: the encrypted store is authoritative for secrets.
+      Object.assign(connection, credential.credentials);
+    }
+
+    const resolvedConfig: ConnectorConfiguration = { ...config, connection };
+    return getConnectorRegistry().createConnector(resolvedConfig);
+  }
+
+  /**
    * Generate unique run ID
    */
   private generateRunId(): string {
@@ -402,6 +453,7 @@ export class IntegrationManager {
       id: row.id,
       name: row.name,
       type: row.type,
+      credential_id: row.credential_id ?? undefined,
       enabled: row.enabled,
       schedule: row.schedule,
       connection: row.connection,

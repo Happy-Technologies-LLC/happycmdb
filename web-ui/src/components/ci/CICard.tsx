@@ -1,11 +1,5 @@
 import React from 'react';
-import {
-  Pencil,
-  Trash2,
-  Eye,
-  Clock,
-  Tag,
-} from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { useNavigate } from 'react-router-dom';
 import { CI } from '../../services/ci.service';
 import CIStatusBadge from './CIStatusBadge';
@@ -97,7 +91,7 @@ export const CICard: React.FC<CICardProps> = ({
                 key={tag}
                 className="inline-flex items-center gap-1 px-2 py-0.5 text-xs bg-warm-alt rounded-md text-ink"
               >
-                <Tag className="w-3 h-3" />
+                <Icon name="tag" size={12} />
                 {tag}
               </span>
             ))}
@@ -110,7 +104,7 @@ export const CICard: React.FC<CICardProps> = ({
         )}
 
         <div className="flex items-center mt-3 text-xs text-muted-foreground">
-          <Clock className="w-3.5 h-3.5 mr-1" />
+          <Icon name="clock" size={14} className="mr-1" />
           <span>Updated {formatDate(ci.updated_at)}</span>
         </div>
 
@@ -128,7 +122,7 @@ export const CICard: React.FC<CICardProps> = ({
             className="p-1.5 hover:bg-warm rounded transition-colors"
             title="View Details"
           >
-            <Eye className="w-4 h-4 text-muted-foreground" />
+            <Icon name="eye" size={16} className="text-muted-foreground" />
           </button>
           {onEdit && (
             <button
@@ -136,7 +130,7 @@ export const CICard: React.FC<CICardProps> = ({
               className="p-1.5 hover:bg-sky-soft rounded transition-colors"
               title="Edit"
             >
-              <Pencil className="w-4 h-4 text-sky-text" />
+              <Icon name="pencil-simple" size={16} className="text-sky-text" />
             </button>
           )}
           {onDelete && (
@@ -145,7 +139,7 @@ export const CICard: React.FC<CICardProps> = ({
               className="p-1.5 hover:bg-danger-soft rounded transition-colors"
               title="Delete"
             >
-              <Trash2 className="w-4 h-4 text-danger" />
+              <Icon name="trash" size={16} className="text-danger" />
             </button>
           )}
         </div>

@@ -14,7 +14,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { Trash2, RefreshCw, Server, Activity, Network } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { formatDistanceToNow } from 'date-fns';
 
 interface DiscoveryAgent {
@@ -107,7 +107,7 @@ export const AgentList: React.FC = () => {
     return (
       <LiquidGlass size="sm" rounded="xl" className="p-6">
         <div className="flex items-center justify-center h-32">
-          <RefreshCw className="h-6 w-6 animate-spin text-muted-foreground" />
+          <Icon name="arrows-clockwise" size={24} className="animate-spin text-muted-foreground" />
         </div>
       </LiquidGlass>
     );
@@ -119,7 +119,7 @@ export const AgentList: React.FC = () => {
         <div className="flex items-center justify-between">
           <div>
             <h2 className="text-xl font-semibold flex items-center gap-2">
-              <Server className="h-5 w-5" />
+              <Icon name="computer-tower" size={20} />
               Discovery Agents
             </h2>
             <p className="text-sm text-muted-foreground mt-1">
@@ -127,7 +127,7 @@ export const AgentList: React.FC = () => {
             </p>
           </div>
           <Button onClick={fetchAgents} variant="outline" size="sm">
-            <RefreshCw className="h-4 w-4 mr-2" />
+            <Icon name="arrows-clockwise" size={16} className="mr-2" />
             Refresh
           </Button>
         </div>
@@ -141,7 +141,7 @@ export const AgentList: React.FC = () => {
 
         {agents.length === 0 ? (
           <div className="text-center py-12">
-            <Server className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+            <Icon name="computer-tower" size={48} className="text-muted-foreground mx-auto mb-4" />
             <h3 className="text-lg font-medium mb-2">No agents registered</h3>
             <p className="text-sm text-muted-foreground">
               Deploy and start a discovery agent to begin distributed network scanning
@@ -190,7 +190,7 @@ export const AgentList: React.FC = () => {
                   </TableCell>
                   <TableCell>
                     <div className="flex items-start gap-1 max-w-xs">
-                      <Network className="h-4 w-4 mt-0.5 text-muted-foreground flex-shrink-0" />
+                      <Icon name="graph" size={16} className="mt-0.5 text-muted-foreground flex-shrink-0" />
                       <div className="text-sm">
                         {agent.reachable_networks.length > 0 ? (
                           agent.reachable_networks.map((network, i) => (
@@ -215,7 +215,7 @@ export const AgentList: React.FC = () => {
                   </TableCell>
                   <TableCell>
                     <div className="flex items-center gap-1 text-sm">
-                      <Activity className="h-3 w-3 text-muted-foreground" />
+                      <Icon name="pulse" size={12} className="text-muted-foreground" />
                       <span className="text-muted-foreground">
                         {formatDistanceToNow(new Date(agent.last_heartbeat_at), {
                           addSuffix: true,
@@ -252,7 +252,7 @@ export const AgentList: React.FC = () => {
                       size="sm"
                       className="text-destructive hover:text-destructive"
                     >
-                      <Trash2 className="h-4 w-4" />
+                      <Icon name="trash" size={16} />
                     </Button>
                   </TableCell>
                 </TableRow>

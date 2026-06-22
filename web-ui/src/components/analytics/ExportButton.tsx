@@ -14,7 +14,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { Download, Loader2 } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { analyticsService } from '../../services/analytics.service';
 
 export interface ExportButtonProps {
@@ -62,12 +62,12 @@ export const ExportButton: React.FC<ExportButtonProps> = ({
         >
           {exporting ? (
             <>
-              <Loader2 className="h-4 w-4 animate-spin" />
+              <Icon name="spinner-gap" size={16} className="animate-spin" />
               Exporting...
             </>
           ) : (
             <>
-              <Download className="h-4 w-4" />
+              <Icon name="download-simple" size={16} />
               Export
             </>
           )}

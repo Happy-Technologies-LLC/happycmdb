@@ -10,19 +10,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { impactApi } from '../../api/impact';
 import { useImpactAnalysis } from '../../hooks/useCIRelationships';
-import {
-  AlertTriangle,
-  TrendingUp,
-  TrendingDown,
-  Clock,
-  Shield,
-  GitBranch,
-  CheckCircle,
-  XCircle,
-  AlertCircle,
-  Zap,
-  BarChart3
-} from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { LiquidGlass } from '@/components/ui/liquid-glass';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -298,12 +286,12 @@ export const ImpactPredictionPanel: React.FC<ImpactPredictionPanelProps> = ({
 
   const getRiskIcon = (level: string) => {
     switch (level?.toLowerCase()) {
-      case 'critical': return <XCircle className="h-5 w-5 text-red-500" />;
-      case 'high': return <AlertTriangle className="h-5 w-5 text-orange-500" />;
-      case 'medium': return <AlertCircle className="h-5 w-5 text-yellow-500" />;
-      case 'low': return <CheckCircle className="h-5 w-5 text-blue-500" />;
-      case 'minimal': return <CheckCircle className="h-5 w-5 text-green-500" />;
-      default: return <AlertCircle className="h-5 w-5 text-gray-500" />;
+      case 'critical': return <Icon name="x-circle" size={20} className="text-red-500" />;
+      case 'high': return <Icon name="warning" size={20} className="text-orange-500" />;
+      case 'medium': return <Icon name="warning-circle" size={20} className="text-yellow-500" />;
+      case 'low': return <Icon name="check-circle" size={20} className="text-blue-500" />;
+      case 'minimal': return <Icon name="check-circle" size={20} className="text-green-500" />;
+      default: return <Icon name="warning-circle" size={20} className="text-gray-500" />;
     }
   };
 
@@ -346,7 +334,7 @@ export const ImpactPredictionPanel: React.FC<ImpactPredictionPanelProps> = ({
       <div className="flex items-center justify-between">
         <div>
           <h3 className="text-2xl font-bold tracking-tight flex items-center gap-2">
-            <Zap className="h-6 w-6 text-primary" />
+            <Icon name="lightning" size={24} className="text-primary" />
             Impact Prediction
           </h3>
           <p className="text-muted-foreground mt-1">
@@ -357,7 +345,7 @@ export const ImpactPredictionPanel: React.FC<ImpactPredictionPanelProps> = ({
           variant={compareMode ? "default" : "outline"}
           onClick={() => setCompareMode(!compareMode)}
         >
-          <BarChart3 className="h-4 w-4 mr-2" />
+          <Icon name="chart-bar" size={16} className="mr-2" />
           Compare Scenarios
         </Button>
       </div>
@@ -381,7 +369,7 @@ export const ImpactPredictionPanel: React.FC<ImpactPredictionPanelProps> = ({
               </>
             ) : (
               <>
-                <Zap className="h-4 w-4 mr-2" />
+                <Icon name="lightning" size={16} className="mr-2" />
                 Run Impact Prediction
               </>
             )}
@@ -411,7 +399,7 @@ export const ImpactPredictionPanel: React.FC<ImpactPredictionPanelProps> = ({
         <LiquidGlass variant="default" rounded="xl">
           <div className="flex flex-col items-center justify-center py-12 text-center">
             <div className="bg-primary/10 p-6 rounded-full mb-4">
-              <Zap className="h-12 w-12 text-primary" />
+              <Icon name="lightning" size={48} className="text-primary" />
             </div>
             <h4 className="text-xl font-semibold mb-2">Ready to Analyze Impact</h4>
             <p className="text-muted-foreground max-w-md mb-6">
@@ -456,7 +444,7 @@ export const ImpactPredictionPanel: React.FC<ImpactPredictionPanelProps> = ({
             <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
               <div className="bg-gradient-to-br from-blue-50 to-blue-100 dark:from-blue-900/20 dark:to-blue-800/20 p-4 rounded-lg border border-blue-200 dark:border-blue-800">
                 <div className="flex items-center gap-2 mb-2">
-                  <TrendingUp className="h-5 w-5 text-blue-600 dark:text-blue-400" />
+                  <Icon name="trend-up" size={20} className="text-blue-600 dark:text-blue-400" />
                   <span className="text-sm font-medium text-muted-foreground">Impact Score</span>
                 </div>
                 <div className="text-3xl font-bold text-blue-600 dark:text-blue-400">
@@ -466,7 +454,7 @@ export const ImpactPredictionPanel: React.FC<ImpactPredictionPanelProps> = ({
 
               <div className="bg-gradient-to-br from-orange-50 to-orange-100 dark:from-orange-900/20 dark:to-orange-800/20 p-4 rounded-lg border border-orange-200 dark:border-orange-800">
                 <div className="flex items-center gap-2 mb-2">
-                  <AlertTriangle className="h-5 w-5 text-orange-600 dark:text-orange-400" />
+                  <Icon name="warning" size={20} className="text-orange-600 dark:text-orange-400" />
                   <span className="text-sm font-medium text-muted-foreground">Blast Radius</span>
                 </div>
                 <div className="text-3xl font-bold text-orange-600 dark:text-orange-400">
@@ -477,7 +465,7 @@ export const ImpactPredictionPanel: React.FC<ImpactPredictionPanelProps> = ({
 
               <div className="bg-gradient-to-br from-purple-50 to-purple-100 dark:from-purple-900/20 dark:to-purple-800/20 p-4 rounded-lg border border-purple-200 dark:border-purple-800">
                 <div className="flex items-center gap-2 mb-2">
-                  <GitBranch className="h-5 w-5 text-purple-600 dark:text-purple-400" />
+                  <Icon name="git-branch" size={20} className="text-purple-600 dark:text-purple-400" />
                   <span className="text-sm font-medium text-muted-foreground">Critical Path</span>
                 </div>
                 <div className="text-3xl font-bold text-purple-600 dark:text-purple-400">
@@ -488,7 +476,7 @@ export const ImpactPredictionPanel: React.FC<ImpactPredictionPanelProps> = ({
 
               <div className="bg-gradient-to-br from-red-50 to-red-100 dark:from-red-900/20 dark:to-red-800/20 p-4 rounded-lg border border-red-200 dark:border-red-800">
                 <div className="flex items-center gap-2 mb-2">
-                  <Clock className="h-5 w-5 text-red-600 dark:text-red-400" />
+                  <Icon name="clock" size={20} className="text-red-600 dark:text-red-400" />
                   <span className="text-sm font-medium text-muted-foreground">Est. Downtime</span>
                 </div>
                 <div className="text-3xl font-bold text-red-600 dark:text-red-400">
@@ -501,7 +489,7 @@ export const ImpactPredictionPanel: React.FC<ImpactPredictionPanelProps> = ({
             {/* Recommendations */}
             <div className="bg-muted/30 border border-border/50 rounded-lg p-4">
               <div className="flex items-center gap-2 mb-3">
-                <Shield className="h-5 w-5 text-primary" />
+                <Icon name="shield" size={20} className="text-primary" />
                 <h5 className="font-semibold">Recommendations</h5>
               </div>
               <ul className="space-y-2">
@@ -650,7 +638,7 @@ export const ImpactPredictionPanel: React.FC<ImpactPredictionPanelProps> = ({
             <Card>
               <CardHeader>
                 <div className="flex items-center gap-2">
-                  <TrendingUp className="h-5 w-5 text-primary" />
+                  <Icon name="trend-up" size={20} className="text-primary" />
                   <CardTitle className="text-base">Upstream Dependencies</CardTitle>
                 </div>
                 <p className="text-xs text-muted-foreground">
@@ -719,7 +707,7 @@ export const ImpactPredictionPanel: React.FC<ImpactPredictionPanelProps> = ({
             <Card>
               <CardHeader>
                 <div className="flex items-center gap-2">
-                  <TrendingDown className="h-5 w-5 text-secondary" />
+                  <Icon name="trend-down" size={20} className="text-secondary" />
                   <CardTitle className="text-base">Downstream Dependencies</CardTitle>
                 </div>
                 <p className="text-xs text-muted-foreground">

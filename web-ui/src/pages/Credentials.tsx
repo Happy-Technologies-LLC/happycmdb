@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import React, { useState, useEffect } from 'react';
-import { Plus, Search, Filter, Trash2, Edit2, Eye } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { LiquidGlass } from '@/components/ui/liquid-glass';
@@ -227,7 +227,7 @@ export const Credentials: React.FC = () => {
           </p>
         </div>
         <Button onClick={() => setCreateDialogOpen(true)}>
-          <Plus className="h-4 w-4 mr-2" />
+          <Icon name="plus" size={16} className="mr-2" />
           Create Credential
         </Button>
       </div>
@@ -236,7 +236,7 @@ export const Credentials: React.FC = () => {
         {/* Filters */}
         <div className="p-4 flex flex-wrap gap-3 items-center border-b border-border/50">
           <div className="relative flex-1 min-w-[250px]">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+            <Icon name="magnifying-glass" size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
             <input
               type="text"
               placeholder="Search credentials by name or type..."
@@ -247,7 +247,7 @@ export const Credentials: React.FC = () => {
           </div>
 
           <div className="relative min-w-[150px]">
-            <Filter className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+            <Icon name="funnel" size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
             <select
               value={categoryFilter}
               onChange={(e) => {
@@ -263,7 +263,7 @@ export const Credentials: React.FC = () => {
           </div>
 
           <div className="relative min-w-[180px]">
-            <Filter className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+            <Icon name="funnel" size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
             <select
               value={protocolFilter}
               onChange={(e) => {
@@ -397,7 +397,7 @@ export const Credentials: React.FC = () => {
                           className="p-1.5 hover:bg-muted rounded transition-colors"
                           title="View Details"
                         >
-                          <Eye className="w-4 h-4 text-muted-foreground" />
+                          <Icon name="eye" size={16} className="text-muted-foreground" />
                         </button>
                         <button
                           onClick={(e) => {
@@ -407,7 +407,7 @@ export const Credentials: React.FC = () => {
                           className="p-1.5 hover:bg-primary/10 rounded transition-colors"
                           title="Edit"
                         >
-                          <Edit2 className="w-4 h-4 text-primary" />
+                          <Icon name="pencil-simple" size={16} className="text-primary" />
                         </button>
                         <button
                           onClick={(e) => {
@@ -417,7 +417,7 @@ export const Credentials: React.FC = () => {
                           className="p-1.5 hover:bg-destructive/10 rounded transition-colors"
                           title="Delete"
                         >
-                          <Trash2 className="w-4 h-4 text-destructive" />
+                          <Icon name="trash" size={16} className="text-destructive" />
                         </button>
                       </div>
                     </td>

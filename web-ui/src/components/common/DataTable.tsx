@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import React from 'react';
-import { ArrowUpDown, Eye, Edit2, Trash2 } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import {
   Table,
   TableBody,
@@ -130,9 +130,11 @@ function DataTable<T extends Record<string, any>>({
                       onClick={() => handleSort(String(column.field))}
                     >
                       <span>{column.headerName}</span>
-                      <ArrowUpDown
+                      <Icon
+                        name="arrows-down-up"
+                        size={16}
                         className={cn(
-                          'ml-2 h-4 w-4',
+                          'ml-2',
                           sortBy === column.field ? 'opacity-100' : 'opacity-50'
                         )}
                       />
@@ -203,7 +205,7 @@ function DataTable<T extends Record<string, any>>({
                               className="h-8 w-8"
                               onClick={() => onView(row)}
                             >
-                              <Eye className="h-4 w-4" />
+                              <Icon name="eye" size={16} />
                               <span className="sr-only">View</span>
                             </Button>
                           )}
@@ -214,7 +216,7 @@ function DataTable<T extends Record<string, any>>({
                               className="h-8 w-8"
                               onClick={() => onEdit(row)}
                             >
-                              <Edit2 className="h-4 w-4" />
+                              <Icon name="pencil-simple" size={16} />
                               <span className="sr-only">Edit</span>
                             </Button>
                           )}
@@ -225,7 +227,7 @@ function DataTable<T extends Record<string, any>>({
                               className="h-8 w-8 text-destructive"
                               onClick={() => onDelete(row)}
                             >
-                              <Trash2 className="h-4 w-4" />
+                              <Icon name="trash" size={16} />
                               <span className="sr-only">Delete</span>
                             </Button>
                           )}

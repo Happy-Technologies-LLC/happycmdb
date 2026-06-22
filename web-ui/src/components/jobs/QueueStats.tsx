@@ -8,7 +8,7 @@
  */
 
 import React from 'react';
-import { Play, HourglassIcon, CheckCircle, XCircle, Pause, Clock } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { Card, CardContent } from '../ui/card';
 import { QueueStats as QueueStatsType } from '../../services/jobs.service';
 import { cn } from '../../lib/utils';
@@ -87,42 +87,42 @@ export const QueueStats: React.FC<QueueStatsProps> = ({
       <StatCard
         title="Active"
         value={aggregatedStats.active}
-        icon={<Play className="h-5 w-5 text-primary" />}
+        icon={<Icon name="play" size={20} className="text-primary" />}
         colorClass="bg-blue-100"
         loading={loading}
       />
       <StatCard
         title="Waiting"
         value={aggregatedStats.waiting}
-        icon={<HourglassIcon className="h-5 w-5 text-yellow-700" />}
+        icon={<Icon name="hourglass" size={20} className="text-yellow-700" />}
         colorClass="bg-yellow-100"
         loading={loading}
       />
       <StatCard
         title="Completed"
         value={aggregatedStats.completed}
-        icon={<CheckCircle className="h-5 w-5 text-green-700" />}
+        icon={<Icon name="check-circle" size={20} className="text-green-700" />}
         colorClass="bg-green-100"
         loading={loading}
       />
       <StatCard
         title="Failed"
         value={aggregatedStats.failed}
-        icon={<XCircle className="h-5 w-5 text-red-700" />}
+        icon={<Icon name="x-circle" size={20} className="text-red-700" />}
         colorClass="bg-red-100"
         loading={loading}
       />
       <StatCard
         title="Delayed"
         value={aggregatedStats.delayed}
-        icon={<Clock className="h-5 w-5 text-primary" />}
+        icon={<Icon name="clock" size={20} className="text-primary" />}
         colorClass="bg-blue-100"
         loading={loading}
       />
       <StatCard
         title="Paused"
         value={aggregatedStats.paused}
-        icon={<Pause className="h-5 w-5 text-foreground" />}
+        icon={<Icon name="pause" size={20} className="text-foreground" />}
         colorClass="bg-muted"
         loading={loading}
       />

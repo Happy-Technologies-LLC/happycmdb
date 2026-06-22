@@ -9,7 +9,7 @@
 import React, { useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Loader2 } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import {
   LineChart,
   Line,
@@ -75,7 +75,7 @@ export const ChangeTimeline: React.FC<ChangeTimelineProps> = ({ dateRange: exter
         <CardContent>
           <DateRangeSelector onChange={setDateRange} />
           <div className="flex justify-center items-center h-[350px]">
-            <Loader2 className="h-8 w-8 animate-spin text-primary" />
+            <Icon name="spinner-gap" size={32} className="animate-spin text-primary" />
           </div>
         </CardContent>
       </Card>

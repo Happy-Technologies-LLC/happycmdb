@@ -9,7 +9,7 @@
 import React from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Loader2 } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
 import { useDiscoveryStats } from '../../hooks/useAnalytics';
 import { MetricCard } from './MetricCard';
@@ -31,7 +31,7 @@ export const DiscoveryStats: React.FC<DiscoveryStatsProps> = ({ dateRange }) => 
         </CardHeader>
         <CardContent>
           <div className="flex justify-center items-center h-[300px]">
-            <Loader2 className="h-8 w-8 animate-spin text-primary" />
+            <Icon name="spinner-gap" size={32} className="animate-spin text-primary" />
           </div>
         </CardContent>
       </Card>

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import React from 'react';
-import { AlertCircle } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import CIDetail from '../components/ci/CIDetail';
@@ -33,7 +33,7 @@ export const CIDetailPage: React.FC = () => {
     return (
       <div>
         <Alert variant="destructive">
-          <AlertCircle className="h-4 w-4" />
+          <Icon name="warning-circle" size={16} />
           <AlertDescription>Invalid CI ID</AlertDescription>
         </Alert>
       </div>

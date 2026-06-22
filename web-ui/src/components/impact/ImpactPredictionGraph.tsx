@@ -14,7 +14,7 @@ import { useQuery } from '@tanstack/react-query';
 import { impactApi } from '../../api/impact';
 import { ImpactAnalysis, DependencyGraph } from '../../types';
 import Cytoscape from 'cytoscape';
-import { AlertTriangle, TrendingUp, GitBranch, Clock } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 
 interface ImpactPredictionGraphProps {
   ciId: string;
@@ -218,7 +218,7 @@ export const ImpactPredictionGraph: React.FC<ImpactPredictionGraphProps> = ({ ci
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
           <div className="bg-white p-4 rounded-lg shadow-sm border">
             <div className="flex items-center gap-2 mb-2">
-              <TrendingUp className="h-5 w-5 text-blue-500" />
+              <Icon name="trend-up" size={20} className="text-blue-500" />
               <span className="text-sm font-medium text-muted-foreground mt-1">Impact Score</span>
             </div>
             <div className="text-3xl font-bold">{impactAnalysis.impact_score}</div>
@@ -235,7 +235,7 @@ export const ImpactPredictionGraph: React.FC<ImpactPredictionGraphProps> = ({ ci
 
           <div className="bg-white p-4 rounded-lg shadow-sm border">
             <div className="flex items-center gap-2 mb-2">
-              <AlertTriangle className="h-5 w-5 text-orange-500" />
+              <Icon name="warning" size={20} className="text-orange-500" />
               <span className="text-sm font-medium text-muted-foreground mt-1">Blast Radius</span>
             </div>
             <div className="text-3xl font-bold">{impactAnalysis.blast_radius}</div>
@@ -244,7 +244,7 @@ export const ImpactPredictionGraph: React.FC<ImpactPredictionGraphProps> = ({ ci
 
           <div className="bg-white p-4 rounded-lg shadow-sm border">
             <div className="flex items-center gap-2 mb-2">
-              <GitBranch className="h-5 w-5 text-purple-500" />
+              <Icon name="git-branch" size={20} className="text-purple-500" />
               <span className="text-sm font-medium text-muted-foreground mt-1">Critical Path</span>
             </div>
             <div className="text-3xl font-bold">{impactAnalysis.critical_path.length}</div>
@@ -253,7 +253,7 @@ export const ImpactPredictionGraph: React.FC<ImpactPredictionGraphProps> = ({ ci
 
           <div className="bg-white p-4 rounded-lg shadow-sm border">
             <div className="flex items-center gap-2 mb-2">
-              <Clock className="h-5 w-5 text-red-500" />
+              <Icon name="clock" size={20} className="text-red-500" />
               <span className="text-sm font-medium text-muted-foreground mt-1">Est. Downtime</span>
             </div>
             <div className="text-3xl font-bold">

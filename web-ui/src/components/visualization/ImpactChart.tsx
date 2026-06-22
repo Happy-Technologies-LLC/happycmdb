@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import React from 'react';
-import { TrendingUp, TrendingDown, AlertTriangle } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import {
   Treemap,
   ResponsiveContainer,
@@ -100,7 +100,7 @@ export const ImpactChart: React.FC<ImpactChartProps> = ({ data }) => {
   return (
     <div className="space-y-6">
       <Alert variant={impactLevel === 'high' ? 'destructive' : 'default'}>
-        <AlertTriangle className="h-4 w-4" />
+        <Icon name="warning" size={16} />
         <AlertTitle>Impact Analysis for {data.ci.name}</AlertTitle>
         <AlertDescription>
           This CI has a {impactLevel} impact score of {(data.impact_score * 100).toFixed(1)}%.
@@ -129,7 +129,7 @@ export const ImpactChart: React.FC<ImpactChartProps> = ({ data }) => {
         <Card>
           <CardContent className="pt-6">
             <div className="flex items-center gap-2 mb-2">
-              <TrendingUp className="h-6 w-6 text-primary" />
+              <Icon name="trend-up" size={24} className="text-primary" />
               <span className="text-4xl font-bold">{data.upstream.length}</span>
             </div>
             <p className="text-sm text-muted-foreground mb-1">
@@ -144,7 +144,7 @@ export const ImpactChart: React.FC<ImpactChartProps> = ({ data }) => {
         <Card>
           <CardContent className="pt-6">
             <div className="flex items-center gap-2 mb-2">
-              <TrendingDown className="h-6 w-6 text-secondary" />
+              <Icon name="trend-down" size={24} className="text-secondary" />
               <span className="text-4xl font-bold">{data.downstream.length}</span>
             </div>
             <p className="text-sm text-muted-foreground mb-1">

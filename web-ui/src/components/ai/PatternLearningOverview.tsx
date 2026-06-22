@@ -5,7 +5,7 @@ import React from 'react';
 import { LiquidGlass } from '@/components/ui/liquid-glass';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Brain, TrendingUp, Database, Zap, CheckCircle, Clock, DollarSign, Target } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { useDiscoverySessions } from '@/hooks/useDiscoverySessions';
 import { useAIPatterns } from '@/hooks/useAIPatterns';
 import LoadingSpinner from '@/components/common/LoadingSpinner';
@@ -50,7 +50,7 @@ export const PatternLearningOverview: React.FC = () => {
           <div className="p-6">
             <div className="flex items-center justify-between mb-2">
               <p className="text-sm text-muted-foreground">Total Patterns</p>
-              <Database className="h-5 w-5 text-primary" />
+              <Icon name="database" size={20} className="text-primary" />
             </div>
             <p className="text-3xl font-bold">{learningStats?.totalPatterns || patterns.length}</p>
             <div className="flex items-center gap-2 mt-2">
@@ -65,11 +65,11 @@ export const PatternLearningOverview: React.FC = () => {
           <div className="p-6">
             <div className="flex items-center justify-between mb-2">
               <p className="text-sm text-muted-foreground">Discovery Sessions</p>
-              <Brain className="h-5 w-5 text-navy" />
+              <Icon name="brain" size={20} className="text-navy" />
             </div>
             <p className="text-3xl font-bold">{learningStats?.totalSessions || 0}</p>
             <div className="flex items-center gap-1 mt-2 text-sm text-success">
-              <TrendingUp className="h-4 w-4" />
+              <Icon name="trend-up" size={16} />
               <span>Learning active</span>
             </div>
           </div>
@@ -79,7 +79,7 @@ export const PatternLearningOverview: React.FC = () => {
           <div className="p-6">
             <div className="flex items-center justify-between mb-2">
               <p className="text-sm text-muted-foreground">Avg Confidence</p>
-              <Target className="h-5 w-5 text-sky-text" />
+              <Icon name="target" size={20} className="text-sky-text" />
             </div>
             <p className="text-3xl font-bold">{(avgConfidence * 100).toFixed(0)}%</p>
             <div className="flex items-center gap-2 mt-2">
@@ -97,7 +97,7 @@ export const PatternLearningOverview: React.FC = () => {
           <div className="p-6">
             <div className="flex items-center justify-between mb-2">
               <p className="text-sm text-muted-foreground">Cost Savings</p>
-              <DollarSign className="h-5 w-5 text-success" />
+              <Icon name="currency-dollar" size={20} className="text-success" />
             </div>
             <p className="text-3xl font-bold">
               {costAnalytics?.savingsFromPatterns?.percentSaved
@@ -199,7 +199,7 @@ export const PatternLearningOverview: React.FC = () => {
         <Card className="border-0 bg-transparent">
           <CardHeader>
             <CardTitle className="text-lg flex items-center gap-2">
-              <Zap className="h-5 w-5 text-warning" />
+              <Icon name="lightning" size={20} className="text-warning" />
               Learning Flywheel
             </CardTitle>
           </CardHeader>
@@ -273,7 +273,7 @@ export const PatternLearningOverview: React.FC = () => {
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <LiquidGlass size="sm" rounded="xl">
           <div className="p-4 flex items-center gap-3">
-            <CheckCircle className="h-8 w-8 text-success" />
+            <Icon name="check-circle" size={32} className="text-success" />
             <div>
               <p className="text-2xl font-bold">{learningStats?.autoApproved || 0}</p>
               <p className="text-xs text-muted-foreground">Auto-Approved</p>
@@ -283,7 +283,7 @@ export const PatternLearningOverview: React.FC = () => {
 
         <LiquidGlass size="sm" rounded="xl">
           <div className="p-4 flex items-center gap-3">
-            <Clock className="h-8 w-8 text-warning" />
+            <Icon name="clock" size={32} className="text-warning" />
             <div>
               <p className="text-2xl font-bold">{pendingPatterns.length}</p>
               <p className="text-xs text-muted-foreground">Pending Review</p>
@@ -293,7 +293,7 @@ export const PatternLearningOverview: React.FC = () => {
 
         <LiquidGlass size="sm" rounded="xl">
           <div className="p-4 flex items-center gap-3">
-            <Zap className="h-8 w-8 text-sky-text" />
+            <Icon name="lightning" size={32} className="text-sky-text" />
             <div>
               <p className="text-2xl font-bold">{(avgSuccessRate * 100).toFixed(0)}%</p>
               <p className="text-xs text-muted-foreground">Success Rate</p>
@@ -303,7 +303,7 @@ export const PatternLearningOverview: React.FC = () => {
 
         <LiquidGlass size="sm" rounded="xl">
           <div className="p-4 flex items-center gap-3">
-            <TrendingUp className="h-8 w-8 text-navy" />
+            <Icon name="trend-up" size={32} className="text-navy" />
             <div>
               <p className="text-2xl font-bold">
                 {costAnalytics?.savingsFromPatterns?.patternHits || 0}

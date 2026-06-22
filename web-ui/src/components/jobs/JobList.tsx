@@ -8,7 +8,7 @@
  */
 
 import React from 'react';
-import { Eye } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { format } from 'date-fns';
 import {
   Table,
@@ -175,7 +175,7 @@ export const JobList: React.FC<JobListProps> = ({
                     onClick={() => onViewDetails(job)}
                     title="View Details"
                   >
-                    <Eye className="h-4 w-4" />
+                    <Icon name="eye" size={16} />
                   </Button>
                   {job.status === 'failed' && (
                     <JobRetryButton

@@ -21,6 +21,9 @@ export {
   CredentialSetService,
   getCredentialSetService
 } from './postgres/credential-set.service';
+export {
+  migratePlaintextCredentials
+} from './postgres/credential-services/migrate-plaintext';
 
 // Data Mart exports
 export { DataMartClient, getDataMartClient, resetDataMartClient } from './clients/datamart.client';
@@ -30,3 +33,17 @@ export { RedisClient, getRedisClient } from './redis/client';
 
 // BullMQ exports
 export { QueueManager, queueManager, QUEUE_NAMES } from './bullmq/queue-manager';
+
+// OAuth substrate exports (connector-core bindings)
+export {
+  CmdbSecretCipher,
+  getCmdbSecretCipher,
+  CmdbOAuthCredentialStore,
+  CmdbOAuthStateStore,
+  ServiceNowOAuthClient,
+  createOAuthSubstrate,
+  getOAuthSubstrate,
+  resetOAuthSubstrate,
+  SERVICENOW_PROVIDER_ID,
+} from './oauth/index';
+export type { ServiceNowOAuthConfig } from './oauth/index';

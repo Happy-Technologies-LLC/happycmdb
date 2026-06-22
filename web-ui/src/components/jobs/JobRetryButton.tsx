@@ -8,7 +8,7 @@
  */
 
 import React, { useState } from 'react';
-import { RotateCw, Loader2 } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { Button } from '../ui/button';
 import {
   Dialog,
@@ -74,7 +74,7 @@ export const JobRetryButton: React.FC<JobRetryButtonProps> = ({
         title={canRetry ? 'Retry this job' : 'Cannot retry this job'}
         className="gap-1"
       >
-        <RotateCw className="h-4 w-4" />
+        <Icon name="arrow-clockwise" size={16} />
         Retry
       </Button>
 
@@ -119,12 +119,12 @@ export const JobRetryButton: React.FC<JobRetryButtonProps> = ({
             >
               {loading ? (
                 <>
-                  <Loader2 className="h-4 w-4 animate-spin" />
+                  <Icon name="spinner-gap" size={16} className="animate-spin" />
                   Retrying...
                 </>
               ) : (
                 <>
-                  <RotateCw className="h-4 w-4" />
+                  <Icon name="arrow-clockwise" size={16} />
                   Retry
                 </>
               )}

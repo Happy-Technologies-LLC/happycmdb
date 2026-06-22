@@ -3,17 +3,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import {
-  PlayCircle,
-  Edit,
-  Trash2,
-  MoreVertical,
-  CheckCircle,
-  XCircle,
-  Clock,
-  TrendingUp,
-  ArrowLeft,
-} from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Card } from '@/components/ui/card';
@@ -131,18 +121,18 @@ export default function ConnectorConfigDetail() {
 
   const getStatusBadge = (status: ConnectorRun['status']) => {
     const variants: Record<ConnectorRun['status'], { variant: any; icon: any }> = {
-      COMPLETED: { variant: 'success', icon: CheckCircle },
-      FAILED: { variant: 'destructive', icon: XCircle },
-      RUNNING: { variant: 'default', icon: Clock },
-      QUEUED: { variant: 'outline', icon: Clock },
-      CANCELLED: { variant: 'outline', icon: XCircle },
+      COMPLETED: { variant: 'success', icon: 'check-circle' },
+      FAILED: { variant: 'destructive', icon: 'x-circle' },
+      RUNNING: { variant: 'default', icon: 'clock' },
+      QUEUED: { variant: 'outline', icon: 'clock' },
+      CANCELLED: { variant: 'outline', icon: 'x-circle' },
     };
 
-    const { variant, icon: Icon } = variants[status] || variants.QUEUED;
+    const { variant, icon: iconName } = variants[status] || variants.QUEUED;
 
     return (
       <Badge variant={variant} className="flex items-center gap-1">
-        <Icon className="h-3 w-3" />
+        <Icon name={iconName} size={12} />
         {status}
       </Badge>
     );
@@ -230,7 +220,7 @@ export default function ConnectorConfigDetail() {
       {/* Header */}
       <div className="flex items-center gap-4 mb-6">
         <Button variant="ghost" size="icon" onClick={() => navigate(-1)}>
-          <ArrowLeft className="h-5 w-5" />
+          <Icon name="arrow-left" size={20} />
         </Button>
         <div className="flex-1">
           <h1 className="text-3xl font-bold">{config.name}</h1>
@@ -240,18 +230,18 @@ export default function ConnectorConfigDetail() {
         </div>
         <div className="flex items-center gap-2">
           <Button onClick={handleRunNow} disabled={running || !config.enabled}>
-            <PlayCircle className="h-4 w-4 mr-2" />
+            <Icon name="play-circle" size={16} className="mr-2" />
             {running ? 'Running...' : 'Run Now'}
           </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="outline" size="icon">
-                <MoreVertical className="h-4 w-4" />
+                <Icon name="dots-three-vertical" size={16} />
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
               <DropdownMenuItem onClick={() => navigate(`/connectors/configs/${id}/edit`)}>
-                <Edit className="h-4 w-4 mr-2" />
+                <Icon name="pencil-simple" size={16} className="mr-2" />
                 Edit Configuration
               </DropdownMenuItem>
               <DropdownMenuItem onClick={handleToggleEnabled}>
@@ -261,7 +251,7 @@ export default function ConnectorConfigDetail() {
                 onClick={() => setShowDeleteDialog(true)}
                 className="text-destructive"
               >
-                <Trash2 className="h-4 w-4 mr-2" />
+                <Icon name="trash" size={16} className="mr-2" />
                 Delete
               </DropdownMenuItem>
             </DropdownMenuContent>
@@ -300,7 +290,7 @@ export default function ConnectorConfigDetail() {
           <div className="text-sm text-muted-foreground mb-1">Success Rate</div>
           <div className="flex items-baseline gap-2">
             <div className="text-2xl font-bold">{successRate.toFixed(0)}%</div>
-            {successRate >= 90 && <TrendingUp className="h-4 w-4 text-green-500" />}
+            {successRate >= 90 && <Icon name="trend-up" size={16} className="text-green-500" />}
           </div>
           <div className="text-xs text-muted-foreground mt-1">
             {config.metrics?.successfulRuns || 0} of {config.metrics?.totalRuns || 0} runs

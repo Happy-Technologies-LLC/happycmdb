@@ -7,7 +7,7 @@
  */
 
 import React from 'react';
-import { User, Settings, LogOut } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../hooks/useAuth';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
@@ -85,19 +85,19 @@ export const UserMenu: React.FC = () => {
         </div>
 
         <DropdownMenuItem onClick={handleProfileClick}>
-          <User className="mr-2 h-4 w-4" />
+          <Icon name="user" size={16} className="mr-2" />
           <span>Profile</span>
         </DropdownMenuItem>
 
         <DropdownMenuItem onClick={handleSettingsClick}>
-          <Settings className="mr-2 h-4 w-4" />
+          <Icon name="gear-six" size={16} className="mr-2" />
           <span>Settings</span>
         </DropdownMenuItem>
 
         <DropdownMenuSeparator />
 
         <DropdownMenuItem onClick={handleLogoutClick}>
-          <LogOut className="mr-2 h-4 w-4" />
+          <Icon name="sign-out" size={16} className="mr-2" />
           <span>Logout</span>
         </DropdownMenuItem>
       </DropdownMenuContent>

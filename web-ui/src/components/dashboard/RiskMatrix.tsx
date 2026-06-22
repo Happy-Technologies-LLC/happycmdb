@@ -4,7 +4,7 @@
 import React, { useState } from 'react';
 import { LiquidGlass } from '@/components/ui/liquid-glass';
 import { Badge } from '@/components/ui/badge';
-import { AlertTriangle } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 
 export interface RiskItem {
   id: string;
@@ -114,7 +114,7 @@ export const RiskMatrix: React.FC<RiskMatrixProps> = ({
                   <div className="text-center">
                     <div className="text-2xl font-bold">{count}</div>
                     {count > 0 && (
-                      <AlertTriangle className="h-4 w-4 mx-auto mt-1 text-muted-foreground" />
+                      <Icon name="warning" size={16} className="mx-auto mt-1 text-muted-foreground" />
                     )}
                   </div>
                 </div>

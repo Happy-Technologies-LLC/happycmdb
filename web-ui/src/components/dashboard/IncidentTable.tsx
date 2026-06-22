@@ -4,7 +4,7 @@
 import React from 'react';
 import { LiquidGlass } from '@/components/ui/liquid-glass';
 import { Badge } from '@/components/ui/badge';
-import { AlertCircle, Clock, User } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { formatDistanceToNow } from 'date-fns';
 
 export interface Incident {
@@ -133,7 +133,7 @@ export const IncidentTable: React.FC<IncidentTableProps> = ({
                     </td>
                     <td className="py-3 px-2">
                       <div className="flex items-start gap-2">
-                        <AlertCircle className="h-4 w-4 mt-0.5 text-danger" />
+                        <Icon name="warning-circle" size={16} className="mt-0.5 text-danger" />
                         <span className="text-sm font-medium">{incident.title}</span>
                       </div>
                     </td>
@@ -145,14 +145,14 @@ export const IncidentTable: React.FC<IncidentTableProps> = ({
                     </td>
                     <td className="py-3 px-2">
                       <div className="flex items-center gap-1 text-sm text-muted-foreground">
-                        <Clock className="h-3 w-3" />
+                        <Icon name="clock" size={12} />
                         {getAgeDisplay(incident.createdAt)}
                       </div>
                     </td>
                     <td className="py-3 px-2">
                       {incident.assignedTeam ? (
                         <div className="flex items-center gap-1 text-sm">
-                          <User className="h-3 w-3" />
+                          <Icon name="user" size={12} />
                           {incident.assignedTeam}
                         </div>
                       ) : (

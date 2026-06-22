@@ -53,6 +53,12 @@ module.exports = {
   // (dist/ is gitignored, so built output is absent in CI; mapping to src lets
   // ts-jest transform the source directly with no build step.)
   moduleNameMapper: {
+    // connector-core is ESM-only; map it to its TS source so ts-jest transpiles
+    // it to CJS (Jest cannot require the ESM dist). The .js strip lets Jest
+    // resolve the package's internal ESM `./x.js` specifiers to their .ts source.
+    '^@happy-technologies/connector-core$':
+      '<rootDir>/node_modules/@happy-technologies/connector-core/src/index.ts',
+    '^(\\.{1,2}/.*)\\.js$': '$1',
     '^@cmdb/([^/]+)/(.*)$': '<rootDir>/packages/$1/src/$2',
     '^@cmdb/([^/]+)$': '<rootDir>/packages/$1/src',
     '^@test/utils$': '<rootDir>/tests/utils',
@@ -88,6 +94,10 @@ module.exports = {
       },
     ],
   },
+
+  // Transform connector-core's TS source (mapped above); leave the rest of
+  // node_modules untransformed.
+  transformIgnorePatterns: ['/node_modules/(?!@happy-technologies/connector-core/)'],
 
   // Setup files
   setupFilesAfterEnv: ['<rootDir>/tests/setup/unit.setup.ts'],

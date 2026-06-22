@@ -2,16 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import React, { useState } from 'react';
-import {
-  Search,
-  Pencil,
-  Trash2,
-  Eye,
-  Filter,
-  ArrowUp,
-  ArrowDown,
-  ChevronRight,
-} from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { useNavigate } from 'react-router-dom';
 import { useCIs } from '../../hooks/useCIs';
 import { CI, CIType, CIStatus, Environment } from '../../services/ci.service';
@@ -157,7 +148,7 @@ export const CIList: React.FC<CIListProps> = ({
       <div className="p-4 border-b border-line space-y-3">
         <div className="flex flex-wrap gap-3 items-center">
           <div className="relative flex-1 min-w-[250px]">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-ink-soft" />
+            <Icon name="magnifying-glass" size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-soft" />
             <input
               type="text"
               placeholder="Search items…"
@@ -172,7 +163,7 @@ export const CIList: React.FC<CIListProps> = ({
           </div>
 
           <div className="relative min-w-[150px]">
-            <Filter className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-ink-soft" />
+            <Icon name="funnel" size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-soft" />
             <select
               value={typeFilter}
               onChange={(e) => {
@@ -242,7 +233,7 @@ export const CIList: React.FC<CIListProps> = ({
                 >
                   Name
                   {sortBy === 'name' && (
-                    sortOrder === 'asc' ? <ArrowUp className="w-3.5 h-3.5" /> : <ArrowDown className="w-3.5 h-3.5" />
+                    sortOrder === 'asc' ? <Icon name="arrow-up" size={14} /> : <Icon name="arrow-down" size={14} />
                   )}
                 </button>
               </th>
@@ -262,7 +253,7 @@ export const CIList: React.FC<CIListProps> = ({
                 >
                   Last Updated
                   {sortBy === 'updated_at' && (
-                    sortOrder === 'asc' ? <ArrowUp className="w-3.5 h-3.5" /> : <ArrowDown className="w-3.5 h-3.5" />
+                    sortOrder === 'asc' ? <Icon name="arrow-up" size={14} /> : <Icon name="arrow-down" size={14} />
                   )}
                 </button>
               </th>
@@ -332,7 +323,7 @@ export const CIList: React.FC<CIListProps> = ({
                           </span>
                         </div>
                       ) : (
-                        <span className="text-sm text-ink-soft">—</span>
+                        <span className="text-sm text-ink-soft">-</span>
                       )}
                     </td>
                     <td className="px-[22px] py-[15px]">
@@ -346,7 +337,7 @@ export const CIList: React.FC<CIListProps> = ({
                             className="p-1.5 hover:bg-warm-alt rounded transition-colors"
                             title="View Details"
                           >
-                            <Eye className="w-4 h-4 text-ink-soft" />
+                            <Icon name="eye" size={16} className="text-ink-soft" />
                           </button>
                           {onEdit && (
                             <button
@@ -354,7 +345,7 @@ export const CIList: React.FC<CIListProps> = ({
                               className="p-1.5 hover:bg-sky-soft rounded transition-colors"
                               title="Edit"
                             >
-                              <Pencil className="w-4 h-4 text-sky-text" />
+                              <Icon name="pencil-simple" size={16} className="text-sky-text" />
                             </button>
                           )}
                           {onDelete && (
@@ -363,14 +354,14 @@ export const CIList: React.FC<CIListProps> = ({
                               className="p-1.5 hover:bg-danger-soft rounded transition-colors"
                               title="Delete"
                             >
-                              <Trash2 className="w-4 h-4 text-danger" />
+                              <Icon name="trash" size={16} className="text-danger" />
                             </button>
                           )}
                         </div>
                       </td>
                     ) : (
                       <td className="px-[22px] py-[15px] text-center">
-                        <ChevronRight className="w-4 h-4 text-ink-soft inline" />
+                        <Icon name="caret-right" size={16} className="text-ink-soft inline" />
                       </td>
                     )}
                   </tr>

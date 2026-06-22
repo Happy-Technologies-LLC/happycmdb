@@ -8,7 +8,7 @@
  */
 
 import React from 'react';
-import { Pause, Play } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import {
   Table,
   TableBody,
@@ -194,9 +194,9 @@ export const WorkerStatus: React.FC<WorkerStatusProps> = ({
                       className="gap-1"
                     >
                       {queueHealth.isPaused ? (
-                        <Play className="h-4 w-4 text-green-600" />
+                        <Icon name="play" size={16} className="text-green-600" />
                       ) : (
-                        <Pause className="h-4 w-4 text-yellow-600" />
+                        <Icon name="pause" size={16} className="text-yellow-600" />
                       )}
                     </Button>
                   )}

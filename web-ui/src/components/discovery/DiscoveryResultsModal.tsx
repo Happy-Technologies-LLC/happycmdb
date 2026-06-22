@@ -30,7 +30,7 @@ import {
   TableHeader,
   TableRow,
 } from '../ui/table';
-import { ExternalLink } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 
 interface DiscoveryResultsModalProps {
   open: boolean;
@@ -155,7 +155,7 @@ export const DiscoveryResultsModal: React.FC<DiscoveryResultsModalProps> = ({
                         onClose();
                       }}
                     >
-                      <ExternalLink className="h-4 w-4 mr-1" />
+                      <Icon name="arrow-square-out" size={16} className="mr-1" />
                       View
                     </Button>
                   </TableCell>

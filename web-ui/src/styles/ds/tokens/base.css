@@ -1,5 +1,5 @@
 /* ============================================================
-   BASE / RESET — Happy Technologies
+   BASE / RESET - Happy Technologies
    Light global defaults so specimen cards and primitives render
    with brand typography out of the box. Consumers get sensible
    element styling without a CSS framework.
@@ -64,7 +64,7 @@ code, kbd, samp {
   font-family: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
 }
 
-/* Eyebrow / section label — used across site + slides */
+/* Eyebrow / section label - used across site + slides */
 .ht-eyebrow {
   display: inline-block;
   background: var(--accent-bg);

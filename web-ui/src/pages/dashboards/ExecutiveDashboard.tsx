@@ -1,5 +1,5 @@
 import React from 'react';
-import { DollarSign, TrendingUp, Shield, Activity, Download } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { useExecutiveDashboard, useTimeRange, useExportDashboard } from '@/hooks/useDashboardData';
 import { KPICard } from '@/components/dashboard/KPICard';
 import { CostTrendChart } from '@/components/dashboard/CostTrendChart';
@@ -99,7 +99,7 @@ export const ExecutiveDashboard: React.FC = () => {
             size="sm"
             onClick={() => exportToPDF('executive', { timeRange })}
           >
-            <Download className="h-4 w-4 mr-2" />
+            <Icon name="download-simple" size={16} className="mr-2" />
             Export PDF
           </Button>
           <Button
@@ -107,7 +107,7 @@ export const ExecutiveDashboard: React.FC = () => {
             size="sm"
             onClick={() => exportToExcel('executive', { timeRange })}
           >
-            <Download className="h-4 w-4 mr-2" />
+            <Icon name="download-simple" size={16} className="mr-2" />
             Export Excel
           </Button>
           <Button variant="outline" size="sm" onClick={() => refetch()}>
@@ -121,14 +121,14 @@ export const ExecutiveDashboard: React.FC = () => {
         <KPICard
           title="Total IT Spend"
           value={formatCurrency(data.totalITSpend)}
-          icon={DollarSign}
+          icon="currency-dollar"
           color="blue"
           description={timeRange.label}
         />
         <KPICard
           title="Overall Health Score"
           value={`${overallHealthScore.toFixed(0)}%`}
-          icon={Activity}
+          icon="pulse"
           color={overallHealthScore >= 80 ? 'green' : overallHealthScore >= 60 ? 'yellow' : 'red'}
           trend={data.serviceHealthByTier[0]?.trend as "down" | "stable" | "up" | undefined}
           description="Across all service tiers"
@@ -136,7 +136,7 @@ export const ExecutiveDashboard: React.FC = () => {
         <KPICard
           title="High Risk Services"
           value={highRiskServices}
-          icon={Shield}
+          icon="shield"
           color={highRiskServices > 0 ? 'red' : 'green'}
           description="Requiring immediate attention"
         />
@@ -148,7 +148,7 @@ export const ExecutiveDashboard: React.FC = () => {
                 valueScorecard.length
               : 0
           ).toFixed(1)}%`}
-          icon={TrendingUp}
+          icon="trend-up"
           color="green"
           description="Return on IT investment"
         />

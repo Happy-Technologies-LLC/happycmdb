@@ -15,19 +15,7 @@
 
 import React, { useState, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import {
-  Search,
-  Grid3x3,
-  List,
-  SlidersHorizontal,
-  Package,
-  Download,
-  CheckCircle,
-  Clock,
-  TrendingUp,
-  Star,
-  ArrowUpDown
-} from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { toast } from 'sonner';
 import { LiquidGlass } from '@/components/ui/liquid-glass';
 import { Button } from '@/components/ui/button';
@@ -241,7 +229,7 @@ export const ConnectorCatalog: React.FC = () => {
         <LiquidGlass variant="default" rounded="lg" className="p-4">
           <div className="flex items-center gap-3">
             <div className="p-2 bg-sky-soft rounded-lg">
-              <Package className="h-5 w-5 text-sky-text" />
+              <Icon name="package" size={20} className="text-sky-text" />
             </div>
             <div>
               <div className="text-2xl font-bold">{stats.total}</div>
@@ -253,7 +241,7 @@ export const ConnectorCatalog: React.FC = () => {
         <LiquidGlass variant="default" rounded="lg" className="p-4">
           <div className="flex items-center gap-3">
             <div className="p-2 bg-success-soft rounded-lg">
-              <CheckCircle className="h-5 w-5 text-success" />
+              <Icon name="check-circle" size={20} className="text-success" />
             </div>
             <div>
               <div className="text-2xl font-bold">{stats.installed}</div>
@@ -265,7 +253,7 @@ export const ConnectorCatalog: React.FC = () => {
         <LiquidGlass variant="default" rounded="lg" className="p-4">
           <div className="flex items-center gap-3">
             <div className="p-2 bg-warning-soft rounded-lg">
-              <Clock className="h-5 w-5 text-warning-text" />
+              <Icon name="clock" size={20} className="text-warning-text" />
             </div>
             <div>
               <div className="text-2xl font-bold">{stats.updates}</div>
@@ -277,7 +265,7 @@ export const ConnectorCatalog: React.FC = () => {
         <LiquidGlass variant="default" rounded="lg" className="p-4">
           <div className="flex items-center gap-3">
             <div className="p-2 bg-sky-soft rounded-lg">
-              <TrendingUp className="h-5 w-5 text-navy" />
+              <Icon name="trend-up" size={20} className="text-navy" />
             </div>
             <div>
               <div className="text-2xl font-bold">
@@ -294,7 +282,7 @@ export const ConnectorCatalog: React.FC = () => {
         <div className="flex flex-col md:flex-row gap-4">
           {/* Search */}
           <div className="flex-1 relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <Icon name="magnifying-glass" size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
             <Input
               placeholder="Search connectors by name, description, or tags..."
               value={searchQuery}
@@ -306,7 +294,7 @@ export const ConnectorCatalog: React.FC = () => {
           {/* Sort */}
           <Select value={sortBy} onValueChange={(v) => setSortBy(v as SortOption)}>
             <SelectTrigger className="w-full md:w-[180px]">
-              <ArrowUpDown className="h-4 w-4 mr-2" />
+              <Icon name="arrows-down-up" size={16} className="mr-2" />
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -321,7 +309,7 @@ export const ConnectorCatalog: React.FC = () => {
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="outline" className="w-full md:w-auto">
-                <SlidersHorizontal className="h-4 w-4 mr-2" />
+                <Icon name="sliders-horizontal" size={16} className="mr-2" />
                 Filters
                 {(selectedCategories.length > 0 || verifiedOnly) && (
                   <Badge variant="secondary" className="ml-2">
@@ -348,7 +336,7 @@ export const ConnectorCatalog: React.FC = () => {
                 checked={verifiedOnly}
                 onCheckedChange={setVerifiedOnly}
               >
-                <CheckCircle className="h-4 w-4 mr-2 text-success" />
+                <Icon name="check-circle" size={16} className="mr-2 text-success" />
                 Verified Only
               </DropdownMenuCheckboxItem>
             </DropdownMenuContent>
@@ -362,7 +350,7 @@ export const ConnectorCatalog: React.FC = () => {
               onClick={() => setViewMode('grid')}
               className="px-3"
             >
-              <Grid3x3 className="h-4 w-4" />
+              <Icon name="grid-four" size={16} />
             </Button>
             <Button
               variant={viewMode === 'list' ? 'default' : 'ghost'}
@@ -370,7 +358,7 @@ export const ConnectorCatalog: React.FC = () => {
               onClick={() => setViewMode('list')}
               className="px-3"
             >
-              <List className="h-4 w-4" />
+              <Icon name="list" size={16} />
             </Button>
           </div>
         </div>
@@ -424,7 +412,7 @@ export const ConnectorCatalog: React.FC = () => {
       {/* Connector Grid/List */}
       {filteredConnectors.length === 0 ? (
         <LiquidGlass variant="default" rounded="xl" className="p-12 text-center">
-          <Package className="h-12 w-12 mx-auto mb-4 text-muted-foreground" />
+          <Icon name="package" size={48} className="mx-auto mb-4 text-muted-foreground" />
           <h3 className="text-lg font-semibold mb-2">No connectors found</h3>
           <p className="text-sm text-muted-foreground">
             Try adjusting your search or filters

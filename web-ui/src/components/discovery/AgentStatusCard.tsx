@@ -1,6 +1,6 @@
 import React from 'react';
 import { LiquidGlass } from '@/components/ui/liquid-glass';
-import { Server, Activity, CheckCircle, XCircle } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 
 interface AgentStatusCardProps {
   totalAgents: number;
@@ -23,7 +23,7 @@ export const AgentStatusCard: React.FC<AgentStatusCardProps> = ({
         <div className="flex items-center justify-between">
           <span className="font-display text-[12.5px] font-semibold text-ink-soft">Total Agents</span>
           <span className="flex h-11 w-11 items-center justify-center rounded-md bg-sky-soft text-sky-text">
-            <Server className="h-5 w-5" />
+            <Icon name="computer-tower" size={20} />
           </span>
         </div>
         <div className="mt-3 font-display text-[2.3rem] font-extrabold leading-none tracking-[-0.02em] text-navy">
@@ -36,7 +36,7 @@ export const AgentStatusCard: React.FC<AgentStatusCardProps> = ({
         <div className="flex items-center justify-between">
           <span className="font-display text-[12.5px] font-semibold text-ink-soft">Active</span>
           <span className="flex h-11 w-11 items-center justify-center rounded-md bg-success-soft text-success">
-            <CheckCircle className="h-5 w-5" />
+            <Icon name="check-circle" size={20} />
           </span>
         </div>
         <div className="mt-3 font-display text-[2.3rem] font-extrabold leading-none tracking-[-0.02em] text-success">
@@ -53,7 +53,7 @@ export const AgentStatusCard: React.FC<AgentStatusCardProps> = ({
         <div className="flex items-center justify-between">
           <span className="font-display text-[12.5px] font-semibold text-ink-soft">Offline</span>
           <span className="flex h-11 w-11 items-center justify-center rounded-md bg-danger-soft text-danger">
-            <XCircle className="h-5 w-5" />
+            <Icon name="x-circle" size={20} />
           </span>
         </div>
         <div className="mt-3 font-display text-[2.3rem] font-extrabold leading-none tracking-[-0.02em] text-danger">
@@ -66,7 +66,7 @@ export const AgentStatusCard: React.FC<AgentStatusCardProps> = ({
         <div className="flex items-center justify-between">
           <span className="font-display text-[12.5px] font-semibold text-ink-soft">Total Jobs</span>
           <span className="flex h-11 w-11 items-center justify-center rounded-md bg-sky-soft text-sky-text">
-            <Activity className="h-5 w-5" />
+            <Icon name="pulse" size={20} />
           </span>
         </div>
         <div className="mt-3 font-display text-[2.3rem] font-extrabold leading-none tracking-[-0.02em] text-navy">
@@ -79,7 +79,7 @@ export const AgentStatusCard: React.FC<AgentStatusCardProps> = ({
         <div className="flex items-center justify-between">
           <span className="font-display text-[12.5px] font-semibold text-ink-soft">Success Rate</span>
           <span className="flex h-11 w-11 items-center justify-center rounded-md bg-sky-soft text-sky-text">
-            <Activity className="h-5 w-5" />
+            <Icon name="pulse" size={20} />
           </span>
         </div>
         <div className="mt-3 font-display text-[2.3rem] font-extrabold leading-none tracking-[-0.02em] text-navy">

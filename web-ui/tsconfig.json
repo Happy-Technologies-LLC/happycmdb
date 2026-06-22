@@ -32,7 +32,8 @@
       "@types/*": ["./src/types/*"],
       "@styles/*": ["./src/styles/*"],
       "@utils/*": ["./src/utils/*"],
-      "@lib/*": ["./src/lib/*"]
+      "@lib/*": ["./src/lib/*"],
+      "csstype": ["../node_modules/csstype"]
     }
   },
   "include": ["src"],

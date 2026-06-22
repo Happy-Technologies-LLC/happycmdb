@@ -22,7 +22,7 @@ import {
 } from '../ui/select';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../ui/card';
 import { Alert, AlertDescription } from '../ui/alert';
-import { AlertCircle, Info, PlayCircle, Save } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import DiscoveryConfigForm, { DiscoveryConfigFormRef } from './DiscoveryConfigForm';
 import { AgentSelector } from './AgentSelector';
 import { useCredentials } from '../../hooks/useCredentials';
@@ -486,7 +486,7 @@ export const DiscoveryDefinitionForm: React.FC<DiscoveryDefinitionFormProps> = (
 
       {errors.submit && (
         <Alert variant="destructive">
-          <AlertCircle className="h-4 w-4" />
+          <Icon name="warning-circle" size={16} />
           <AlertDescription>{errors.submit}</AlertDescription>
         </Alert>
       )}
@@ -497,14 +497,14 @@ export const DiscoveryDefinitionForm: React.FC<DiscoveryDefinitionFormProps> = (
         </Button>
         {showAdHocAction && onAdHocRun && (
           <Button type="button" variant="secondary" onClick={handleAdHocRun}>
-            <PlayCircle className="mr-2 h-4 w-4" />
+            <Icon name="play-circle" size={16} className="mr-2" />
             Run Once
           </Button>
         )}
         <Button type="submit">
           {showAdHocAction ? (
             <>
-              <Save className="mr-2 h-4 w-4" />
+              <Icon name="floppy-disk" size={16} className="mr-2" />
               Save & Run
             </>
           ) : (

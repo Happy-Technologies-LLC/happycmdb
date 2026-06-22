@@ -8,7 +8,7 @@
  */
 
 import React, { useState } from 'react';
-import { RefreshCw, Home } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -213,7 +213,7 @@ export const Jobs: React.FC = () => {
         <ol className="inline-flex items-center space-x-1 md:space-x-3">
           <li className="inline-flex items-center">
             <a href="/" className="inline-flex items-center text-sm font-medium text-muted-foreground hover:text-foreground">
-              <Home className="w-4 h-4 mr-2" />
+              <Icon name="house" size={16} className="mr-2" />
               Home
             </a>
           </li>
@@ -258,7 +258,7 @@ export const Jobs: React.FC = () => {
           </Select>
           {activeTab !== 'monitor' && activeTab !== 'workers' && (
             <Button variant="outline" onClick={handleRefresh}>
-              <RefreshCw className="mr-2 h-4 w-4" />
+              <Icon name="arrows-clockwise" size={16} className="mr-2" />
               Refresh
             </Button>
           )}
@@ -318,7 +318,7 @@ export const Jobs: React.FC = () => {
             </Alert>
           ) : completedLoading && completedJobs.length === 0 ? (
             <div className="flex justify-center py-8">
-              <RefreshCw className="h-8 w-8 animate-spin text-muted-foreground" />
+              <Icon name="arrows-clockwise" size={32} className="animate-spin text-muted-foreground" />
             </div>
           ) : (
             <JobList
@@ -345,7 +345,7 @@ export const Jobs: React.FC = () => {
             </Alert>
           ) : failedLoading && failedJobs.length === 0 ? (
             <div className="flex justify-center py-8">
-              <RefreshCw className="h-8 w-8 animate-spin text-muted-foreground" />
+              <Icon name="arrows-clockwise" size={32} className="animate-spin text-muted-foreground" />
             </div>
           ) : (
             <JobList

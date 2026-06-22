@@ -2,15 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import React, { useMemo, useState } from 'react';
-import {
-  Pencil,
-  Trash2,
-  ArrowLeft,
-  Tag,
-  Calendar,
-  User,
-  Network,
-} from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { useNavigate } from 'react-router-dom';
 import { useCI } from '../../hooks/useCIs';
 import { useCIRelationships, useImpactAnalysis } from '../../hooks/useCIRelationships';
@@ -112,7 +104,7 @@ export const CIDetail: React.FC<CIDetailProps> = ({
               className="p-2 hover:bg-warm rounded-lg transition-colors mt-0.5"
               title="Back to list"
             >
-              <ArrowLeft className="w-5 h-5 text-ink-soft" />
+              <Icon name="arrow-left" size={20} className="text-ink-soft" />
             </button>
             <span className="flex h-12 w-12 flex-none items-center justify-center rounded-md bg-sky-soft text-sky-text">
               {typeIcons[ci.type]}
@@ -135,7 +127,7 @@ export const CIDetail: React.FC<CIDetailProps> = ({
                 className="p-2 hover:bg-sky-soft rounded-lg transition-colors"
                 title="Edit"
               >
-                <Pencil className="w-5 h-5 text-sky-text" />
+                <Icon name="pencil-simple" size={20} className="text-sky-text" />
               </button>
             )}
             {onDelete && (
@@ -144,7 +136,7 @@ export const CIDetail: React.FC<CIDetailProps> = ({
                 className="p-2 hover:bg-danger-soft rounded-lg transition-colors"
                 title="Delete"
               >
-                <Trash2 className="w-5 h-5 text-danger" />
+                <Icon name="trash" size={20} className="text-danger" />
               </button>
             )}
           </div>
@@ -158,7 +150,7 @@ export const CIDetail: React.FC<CIDetailProps> = ({
 
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-6">
           <div className="flex items-start gap-2">
-            <Calendar className="w-4 h-4 text-muted-foreground mt-1" />
+            <Icon name="calendar" size={16} className="text-muted-foreground mt-1" />
             <div>
               <p className="text-xs text-muted-foreground mb-1">Created</p>
               <p className="text-sm text-foreground">{formatDate(ci.created_at)}</p>
@@ -166,7 +158,7 @@ export const CIDetail: React.FC<CIDetailProps> = ({
           </div>
 
           <div className="flex items-start gap-2">
-            <Calendar className="w-4 h-4 text-muted-foreground mt-1" />
+            <Icon name="calendar" size={16} className="text-muted-foreground mt-1" />
             <div>
               <p className="text-xs text-muted-foreground mb-1">Last Updated</p>
               <p className="text-sm text-foreground">{formatDate(ci.updated_at)}</p>
@@ -175,7 +167,7 @@ export const CIDetail: React.FC<CIDetailProps> = ({
 
           {ci.discovered_by && (
             <div className="flex items-start gap-2">
-              <User className="w-4 h-4 text-muted-foreground mt-1" />
+              <Icon name="user" size={16} className="text-muted-foreground mt-1" />
               <div>
                 <p className="text-xs text-muted-foreground mb-1">Discovered By</p>
                 <p className="text-sm text-foreground">{ci.discovered_by}</p>
@@ -196,7 +188,7 @@ export const CIDetail: React.FC<CIDetailProps> = ({
         {ci.tags && ci.tags.length > 0 && (
           <div className="mt-6">
             <div className="flex items-center gap-2 mb-2">
-              <Tag className="w-4 h-4 text-muted-foreground" />
+              <Icon name="tag" size={16} className="text-muted-foreground" />
               <p className="text-xs text-muted-foreground uppercase tracking-wider">Tags</p>
             </div>
             <div className="flex flex-wrap gap-2">
@@ -352,16 +344,16 @@ export const CIDetail: React.FC<CIDetailProps> = ({
                     <div className="mb-1.5 flex items-center justify-between">
                       <h3 className="text-lg font-semibold text-navy">Dependency topology</h3>
                       <span className="inline-flex items-center gap-1.5 font-display text-xs text-ink-soft">
-                        <Network className="h-4 w-4 text-sky-text" />
+                        <Icon name="share-network" size={16} className="text-sky-text" />
                         Neo4j · direct
                       </span>
                     </div>
                     <p className="mb-6 text-[13.5px] text-ink-soft">
                       Direct relationships from the graph. Upstream dependencies feed this CI;
-                      downstream services depend on it — the basis for impact analysis.
+                      downstream services depend on it - the basis for impact analysis.
                     </p>
                     <div className="grid grid-cols-[1fr_auto_1fr] items-center">
-                      {/* Upstream — depends on */}
+                      {/* Upstream - depends on */}
                       <div className="flex flex-col items-stretch gap-3.5">
                         <div className="mb-0.5 text-right font-display text-[10.5px] font-bold uppercase tracking-[0.08em] text-ink-soft">
                           Depends on
@@ -388,10 +380,10 @@ export const CIDetail: React.FC<CIDetailProps> = ({
                         )}
                       </div>
 
-                      {/* Focal node — navy gradient per mockup */}
+                      {/* Focal node - navy gradient per mockup */}
                       <div className="relative z-[2] mx-2 min-w-[200px] rounded-lg bg-gradient-to-br from-navy to-navy-deep p-5 text-center text-white shadow-lg">
                         <span className="mb-3 inline-flex h-[46px] w-[46px] items-center justify-center rounded-md bg-sky/20 text-sky-light">
-                          {React.cloneElement(typeIcons[ci.type], { className: 'h-6 w-6' })}
+                          {React.cloneElement(typeIcons[ci.type], { size: 24 })}
                         </span>
                         <div className="font-display text-sm font-bold leading-tight">{ci.name}</div>
                         <div className="mt-1 text-[11px] capitalize text-white/65">
@@ -403,7 +395,7 @@ export const CIDetail: React.FC<CIDetailProps> = ({
                         </div>
                       </div>
 
-                      {/* Downstream — impacts */}
+                      {/* Downstream - impacts */}
                       <div className="flex flex-col items-stretch gap-3.5">
                         <div className="mb-0.5 text-left font-display text-[10.5px] font-bold uppercase tracking-[0.08em] text-ink-soft">
                           Impacts

@@ -14,7 +14,7 @@ import React, { useState, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { driftApi } from '../../api/drift';
 import { DriftDetectionResult } from '../../types';
-import { GitCompare, AlertCircle, CheckCircle, Calendar, Activity, TrendingUp, TrendingDown } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { toast } from 'sonner';
 import { formatDistanceToNow, format, startOfMonth, endOfMonth, eachDayOfInterval, isSameDay, isToday, isSameMonth } from 'date-fns';
 
@@ -192,7 +192,7 @@ export const DriftTrackingPanel: React.FC<DriftTrackingPanelProps> = ({
             size="sm"
             onClick={() => setViewMode(viewMode === 'calendar' ? 'timeline' : 'calendar')}
           >
-            {viewMode === 'calendar' ? <Activity className="h-4 w-4 mr-2" /> : <Calendar className="h-4 w-4 mr-2" />}
+            {viewMode === 'calendar' ? <Icon name="pulse" size={16} className="mr-2" /> : <Icon name="calendar" size={16} className="mr-2" />}
             {viewMode === 'calendar' ? 'Timeline View' : 'Calendar View'}
           </Button>
           <Button
@@ -201,7 +201,7 @@ export const DriftTrackingPanel: React.FC<DriftTrackingPanelProps> = ({
             onClick={() => createBaselineMutation.mutate()}
             disabled={createBaselineMutation.isPending}
           >
-            <Calendar className="h-4 w-4 mr-2" />
+            <Icon name="calendar" size={16} className="mr-2" />
             Create Baseline
           </Button>
           <Button
@@ -209,7 +209,7 @@ export const DriftTrackingPanel: React.FC<DriftTrackingPanelProps> = ({
             onClick={() => detectDriftMutation.mutate()}
             disabled={detectDriftMutation.isPending}
           >
-            <GitCompare className="h-4 w-4 mr-2" />
+            <Icon name="git-diff" size={16} className="mr-2" />
             {detectDriftMutation.isPending ? 'Detecting...' : 'Detect Now'}
           </Button>
         </div>
@@ -223,7 +223,7 @@ export const DriftTrackingPanel: React.FC<DriftTrackingPanelProps> = ({
               <div className="text-sm font-medium text-muted-foreground">Total Detections</div>
               <div className="text-3xl font-bold mt-1">{stats.total}</div>
             </div>
-            <Activity className="h-8 w-8 text-muted-foreground opacity-50" />
+            <Icon name="pulse" size={32} className="text-muted-foreground opacity-50" />
           </div>
         </LiquidGlass>
 
@@ -233,7 +233,7 @@ export const DriftTrackingPanel: React.FC<DriftTrackingPanelProps> = ({
               <div className="text-sm font-medium text-muted-foreground">With Drift</div>
               <div className="text-3xl font-bold mt-1 text-orange-600">{stats.withDrift}</div>
             </div>
-            <AlertCircle className="h-8 w-8 text-orange-500 opacity-50" />
+            <Icon name="warning-circle" size={32} className="text-orange-500 opacity-50" />
           </div>
         </LiquidGlass>
 
@@ -243,7 +243,7 @@ export const DriftTrackingPanel: React.FC<DriftTrackingPanelProps> = ({
               <div className="text-sm font-medium text-muted-foreground">Avg Drift Score</div>
               <div className="text-3xl font-bold mt-1">{stats.avgScore}</div>
             </div>
-            <GitCompare className="h-8 w-8 text-muted-foreground opacity-50" />
+            <Icon name="git-diff" size={32} className="text-muted-foreground opacity-50" />
           </div>
         </LiquidGlass>
 
@@ -256,9 +256,9 @@ export const DriftTrackingPanel: React.FC<DriftTrackingPanelProps> = ({
               </div>
             </div>
             {stats.trend > 0 ? (
-              <TrendingUp className="h-8 w-8 text-red-500 opacity-50" />
+              <Icon name="trend-up" size={32} className="text-red-500 opacity-50" />
             ) : (
-              <TrendingDown className="h-8 w-8 text-green-500 opacity-50" />
+              <Icon name="trend-down" size={32} className="text-green-500 opacity-50" />
             )}
           </div>
         </LiquidGlass>
@@ -268,7 +268,7 @@ export const DriftTrackingPanel: React.FC<DriftTrackingPanelProps> = ({
       {baseline && (
         <Card className="p-4 border-l-4 border-l-green-500">
           <div className="flex items-center gap-3">
-            <CheckCircle className="h-6 w-6 text-green-500" />
+            <Icon name="check-circle" size={24} className="text-green-500" />
             <div className="flex-1">
               <h4 className="font-semibold">Current Approved Baseline</h4>
               <p className="text-sm text-muted-foreground">
@@ -396,7 +396,7 @@ export const DriftTrackingPanel: React.FC<DriftTrackingPanelProps> = ({
                           {format(new Date(drift.detected_at), 'h:mm a')}
                         </p>
                       </div>
-                      {drift.has_drift && <AlertCircle className="h-5 w-5 text-orange-500" />}
+                      {drift.has_drift && <Icon name="warning-circle" size={20} className="text-orange-500" />}
                     </div>
 
                     {drift.has_drift && drift.drifted_fields.length > 0 && (
@@ -485,7 +485,7 @@ export const DriftTrackingPanel: React.FC<DriftTrackingPanelProps> = ({
                             {format(new Date(drift.detected_at), 'PPpp')}
                           </p>
                         </div>
-                        {drift.has_drift && <AlertCircle className="h-5 w-5 text-orange-500" />}
+                        {drift.has_drift && <Icon name="warning-circle" size={20} className="text-orange-500" />}
                       </div>
 
                       {/* Drifted Fields */}

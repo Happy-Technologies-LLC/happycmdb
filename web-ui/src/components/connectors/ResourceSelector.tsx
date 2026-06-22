@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import React, { useState } from 'react';
-import { RefreshCw, Layers, Timer, Link, AlertCircle } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Badge } from '@/components/ui/badge';
 import { Card } from '@/components/ui/card';
@@ -167,19 +167,19 @@ export function ResourceSelector({
                         <div className="flex items-center gap-4 flex-wrap text-xs text-muted-foreground">
                           {resource.extraction.incremental && (
                             <div className="flex items-center gap-1">
-                              <RefreshCw className="h-3 w-3" />
+                              <Icon name="arrows-clockwise" size={12} />
                               <span>Incremental</span>
                             </div>
                           )}
                           {resource.extraction.batchSize && (
                             <div className="flex items-center gap-1">
-                              <Layers className="h-3 w-3" />
+                              <Icon name="stack" size={12} />
                               <span>Batch: {resource.extraction.batchSize}</span>
                             </div>
                           )}
                           {resource.extraction.rateLimit && (
                             <div className="flex items-center gap-1">
-                              <Timer className="h-3 w-3" />
+                              <Icon name="timer" size={12} />
                               <span>Limit: {resource.extraction.rateLimit} req/s</span>
                             </div>
                           )}
@@ -189,7 +189,7 @@ export function ResourceSelector({
                       {/* Dependencies Warning */}
                       {hasMissingDeps && (
                         <Alert variant="destructive" className="mt-2">
-                          <AlertCircle className="h-4 w-4" />
+                          <Icon name="warning-circle" size={16} />
                           <AlertDescription className="text-xs">
                             This resource requires:{' '}
                             {resource.extraction?.dependsOn
@@ -206,7 +206,7 @@ export function ResourceSelector({
                         resource.extraction.dependsOn.length > 0 && (
                           <div className="mt-2 p-2 bg-muted rounded-md">
                             <div className="flex items-center gap-1 text-xs text-muted-foreground mb-1">
-                              <Link className="h-3 w-3" />
+                              <Icon name="link" size={12} />
                               <span>Depends on:</span>
                             </div>
                             <div className="flex flex-wrap gap-1">
@@ -231,7 +231,7 @@ export function ResourceSelector({
                       {showDependencies && isEnabled && dependents.length > 0 && (
                         <div className="mt-2 p-2 bg-muted rounded-md">
                           <div className="flex items-center gap-1 text-xs text-muted-foreground mb-1">
-                            <Link className="h-3 w-3" />
+                            <Icon name="link" size={12} />
                             <span>Required by:</span>
                           </div>
                           <div className="flex flex-wrap gap-1">

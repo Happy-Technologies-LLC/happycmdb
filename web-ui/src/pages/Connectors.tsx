@@ -7,7 +7,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { LiquidGlass } from '@/components/ui/liquid-glass';
 import { Button } from '@/components/ui/button';
 import { Eyebrow } from '@/components/ui/eyebrow';
-import { Info, ArrowRight, HelpCircle } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import {
   Dialog,
   DialogContent,
@@ -53,7 +53,7 @@ export const Connectors: React.FC = () => {
           className="p-2 hover:bg-muted rounded-lg transition-colors"
           title="Help"
         >
-          <HelpCircle className="h-6 w-6 text-muted-foreground" />
+          <Icon name="question" size={24} className="text-muted-foreground" />
         </button>
       </div>
 
@@ -80,7 +80,7 @@ export const Connectors: React.FC = () => {
                 className="mt-4"
               >
                 Go to Discovery
-                <ArrowRight className="h-4 w-4 ml-2" />
+                <Icon name="arrow-right" size={16} className="ml-2" />
               </Button>
             </DialogDescription>
           </DialogHeader>

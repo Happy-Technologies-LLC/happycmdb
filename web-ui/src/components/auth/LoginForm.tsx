@@ -10,7 +10,7 @@ import React, { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import { Eye, EyeOff, Loader2 } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { useAuth } from '../../contexts/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -129,9 +129,9 @@ export const LoginForm: React.FC = () => {
                     disabled={isSubmitting}
                   >
                     {showPassword ? (
-                      <EyeOff className="h-4 w-4 text-muted-foreground" />
+                      <Icon name="eye-slash" size={16} className="text-muted-foreground" />
                     ) : (
-                      <Eye className="h-4 w-4 text-muted-foreground" />
+                      <Icon name="eye" size={16} className="text-muted-foreground" />
                     )}
                   </Button>
                 </div>
@@ -169,7 +169,7 @@ export const LoginForm: React.FC = () => {
         >
           {isSubmitting ? (
             <>
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              <Icon name="spinner-gap" size={16} className="mr-2 animate-spin" />
               Signing in...
             </>
           ) : (

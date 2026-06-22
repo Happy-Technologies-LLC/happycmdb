@@ -9,7 +9,7 @@
 import React from 'react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Loader2 } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { useAnalyticsOverview } from '../../hooks/useAnalytics';
 import { MetricCard } from './MetricCard';
 import { TypeDistribution } from './TypeDistribution';
@@ -32,7 +32,7 @@ export const InventoryStats: React.FC = () => {
     return (
       <div className="p-6">
         <div className="flex justify-center items-center h-[400px]">
-          <Loader2 className="h-8 w-8 animate-spin text-primary mr-4" />
+          <Icon name="spinner-gap" size={32} className="animate-spin text-primary mr-4" />
           <p className="text-muted-foreground">
             Loading inventory statistics...
           </p>

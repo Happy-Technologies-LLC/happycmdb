@@ -10,10 +10,7 @@ import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import {
-  Search, Play, Pause, CheckCircle, XCircle, Eye, Edit, Trash2,
-  GitMerge, TrendingUp, Clock, Sparkles
-} from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { useAIPatterns } from '@/hooks/useAIPatterns';
 import { useAuth } from '@/contexts/AuthContext';
 import { AIPattern } from '@/services/ai-pattern.service';
@@ -64,11 +61,11 @@ export const PatternLibrary: React.FC = () => {
 
   const getStatusBadge = (status: string) => {
     const variants: Record<string, { variant: any; label: string; icon: any }> = {
-      active: { variant: 'default', label: 'Active', icon: <CheckCircle className="h-3 w-3" /> },
-      approved: { variant: 'secondary', label: 'Approved', icon: <CheckCircle className="h-3 w-3" /> },
-      review: { variant: 'outline', label: 'In Review', icon: <Clock className="h-3 w-3" /> },
-      draft: { variant: 'outline', label: 'Draft', icon: <Edit className="h-3 w-3" /> },
-      deprecated: { variant: 'destructive', label: 'Deprecated', icon: <XCircle className="h-3 w-3" /> },
+      active: { variant: 'default', label: 'Active', icon: <Icon name="check-circle" size={12} /> },
+      approved: { variant: 'secondary', label: 'Approved', icon: <Icon name="check-circle" size={12} /> },
+      review: { variant: 'outline', label: 'In Review', icon: <Icon name="clock" size={12} /> },
+      draft: { variant: 'outline', label: 'Draft', icon: <Icon name="pencil-simple" size={12} /> },
+      deprecated: { variant: 'destructive', label: 'Deprecated', icon: <Icon name="x-circle" size={12} /> },
     };
 
     const config = variants[status] || variants.draft;
@@ -116,7 +113,7 @@ export const PatternLibrary: React.FC = () => {
       <LiquidGlass size="sm" rounded="xl">
         <div className="p-4 flex flex-col md:flex-row gap-4">
           <div className="flex-1 relative">
-            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <Icon name="magnifying-glass" size={16} className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground" />
             <Input
               placeholder="Search patterns..."
               value={searchTerm}
@@ -189,7 +186,7 @@ export const PatternLibrary: React.FC = () => {
                     <TableCell className="font-medium">
                       <div className="flex items-center gap-2">
                         {pattern.isActive && (
-                          <Sparkles className="h-4 w-4 text-warning" />
+                          <Icon name="sparkle" size={16} className="text-warning" />
                         )}
                         {pattern.name}
                       </div>
@@ -221,7 +218,7 @@ export const PatternLibrary: React.FC = () => {
                             onClick={() => handleApprove(pattern)}
                             title="Approve"
                           >
-                            <CheckCircle className="h-4 w-4 text-success" />
+                            <Icon name="check-circle" size={16} className="text-success" />
                           </Button>
                         )}
                         {pattern.status === 'approved' && !pattern.isActive && (
@@ -231,7 +228,7 @@ export const PatternLibrary: React.FC = () => {
                             onClick={() => handleActivate(pattern)}
                             title="Activate"
                           >
-                            <Play className="h-4 w-4 text-sky-text" />
+                            <Icon name="play" size={16} className="text-sky-text" />
                           </Button>
                         )}
                         {pattern.isActive && (
@@ -241,7 +238,7 @@ export const PatternLibrary: React.FC = () => {
                             onClick={() => handleDeactivate(pattern)}
                             title="Deactivate"
                           >
-                            <Pause className="h-4 w-4 text-warning" />
+                            <Icon name="pause" size={16} className="text-warning" />
                           </Button>
                         )}
                         <Button
@@ -250,7 +247,7 @@ export const PatternLibrary: React.FC = () => {
                           onClick={() => handleViewDetails(pattern)}
                           title="View Details"
                         >
-                          <Eye className="h-4 w-4" />
+                          <Icon name="eye" size={16} />
                         </Button>
                         {pattern.status === 'draft' && (
                           <Button
@@ -259,7 +256,7 @@ export const PatternLibrary: React.FC = () => {
                             onClick={() => handleDelete(pattern)}
                             title="Delete"
                           >
-                            <Trash2 className="h-4 w-4 text-destructive" />
+                            <Icon name="trash" size={16} className="text-destructive" />
                           </Button>
                         )}
                       </div>

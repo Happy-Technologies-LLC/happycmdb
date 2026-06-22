@@ -9,7 +9,7 @@
  * the `test-containers` helper — no suite starts its own containers.
  */
 
-import { readFileSync } from 'fs';
+import { readdirSync, readFileSync } from 'fs';
 import { resolve } from 'path';
 import { GenericContainer, StartedTestContainer, Wait } from 'testcontainers';
 import neo4j from 'neo4j-driver';
@@ -27,10 +27,7 @@ const POSTGRES_PASSWORD = 'testpassword';
 const POSTGRES_DB = 'cmdb_test';
 const NEO4J_PASSWORD = 'testpassword';
 
-const SCHEMA_PATH = resolve(
-  process.cwd(),
-  'packages/database/src/postgres/migrations/001_complete_schema.sql'
-);
+const MIGRATIONS_DIR = resolve(process.cwd(), 'packages/database/src/postgres/migrations');
 
 export default async function globalSetup(): Promise<void> {
   console.log('Starting integration test containers...');
@@ -139,28 +136,36 @@ async function initializeNeo4jSchema(uri: string, password: string): Promise<voi
 /**
  * Load the canonical PostgreSQL schema into the running container.
  *
- * The schema is executed via `psql` inside the container (statement-per-line
- * autocommit) rather than a single multi-statement query, so the two expected
- * non-fatal hypertable primary-key notices do not abort the whole load. After
- * loading we assert a core table exists to catch a genuinely broken load.
+ * Applies every migration in packages/database/src/postgres/migrations in
+ * sorted order (001_complete_schema, 002_oauth_substrate, ...), mirroring the
+ * migrator's own discovery. Each file is executed via `psql` (statement-per-line
+ * autocommit, ON_ERROR_STOP=0) so the expected non-fatal hypertable primary-key
+ * notices do not abort the load. After loading we assert a core table and the
+ * OAuth state table exist to catch a genuinely broken load.
  */
 async function loadPostgresSchema(container: StartedTestContainer): Promise<void> {
-  const schemaSql = readFileSync(SCHEMA_PATH, 'utf-8');
-  await container.copyContentToContainer([{ content: schemaSql, target: '/tmp/schema.sql' }]);
+  const migrationFiles = readdirSync(MIGRATIONS_DIR)
+    .filter((file) => file.endsWith('.sql'))
+    .sort();
 
-  const load = await container.exec([
-    'psql',
-    '-v',
-    'ON_ERROR_STOP=0',
-    '-U',
-    POSTGRES_USER,
-    '-d',
-    POSTGRES_DB,
-    '-f',
-    '/tmp/schema.sql',
-  ]);
-  if (load.exitCode !== 0) {
-    console.warn(`psql schema load exited with code ${load.exitCode} (non-fatal notices expected)`);
+  for (const file of migrationFiles) {
+    const sql = readFileSync(resolve(MIGRATIONS_DIR, file), 'utf-8');
+    const target = `/tmp/${file}`;
+    await container.copyContentToContainer([{ content: sql, target }]);
+    const load = await container.exec([
+      'psql',
+      '-v',
+      'ON_ERROR_STOP=0',
+      '-U',
+      POSTGRES_USER,
+      '-d',
+      POSTGRES_DB,
+      '-f',
+      target,
+    ]);
+    if (load.exitCode !== 0) {
+      console.warn(`psql load of ${file} exited with code ${load.exitCode} (non-fatal notices expected)`);
+    }
   }
 
   const check = await container.exec([
@@ -170,11 +175,11 @@ async function loadPostgresSchema(container: StartedTestContainer): Promise<void
     '-d',
     POSTGRES_DB,
     '-tAc',
-    "SELECT count(*) FROM information_schema.tables WHERE table_name = 'api_keys'",
+    "SELECT count(*) FROM information_schema.tables WHERE table_name IN ('api_keys', 'oauth_states')",
   ]);
-  if (check.output.trim() !== '1') {
+  if (check.output.trim() !== '2') {
     throw new Error(
-      `PostgreSQL schema load failed: core table 'api_keys' missing (psql output: ${check.output.trim()})`
+      `PostgreSQL schema load failed: expected core tables missing (psql output: ${check.output.trim()})`
     );
   }
 }

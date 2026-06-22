@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import React, { Component, ErrorInfo, ReactNode } from 'react';
-import { AlertCircle, RefreshCw } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 
@@ -62,7 +62,7 @@ class ErrorBoundary extends Component<Props, State> {
             <Card className="shadow-lg">
               <CardHeader className="text-center pb-4">
                 <div className="flex justify-center mb-4">
-                  <AlertCircle className="h-20 w-20 text-destructive" />
+                  <Icon name="warning-circle" size={80} className="text-destructive" />
                 </div>
                 <CardTitle className="text-2xl text-destructive">
                   Oops! Something went wrong
@@ -92,7 +92,7 @@ class ErrorBoundary extends Component<Props, State> {
                   onClick={this.handleReset}
                   className="gap-2"
                 >
-                  <RefreshCw className="h-4 w-4" />
+                  <Icon name="arrows-clockwise" size={16} />
                   Try Again
                 </Button>
                 <Button

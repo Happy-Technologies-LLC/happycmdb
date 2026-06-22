@@ -8,7 +8,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Eye, Search, CheckCircle, XCircle, Clock, Sparkles, Brain } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { useDiscoverySessions } from '@/hooks/useDiscoverySessions';
 import { AIDiscoverySession } from '@/services/ai-pattern.service';
 import LoadingSpinner from '@/components/common/LoadingSpinner';
@@ -43,9 +43,9 @@ export const DiscoverySessionsView: React.FC = () => {
 
   const getStatusBadge = (status: string) => {
     const variants: Record<string, { variant: any; label: string; icon: any }> = {
-      completed: { variant: 'default', label: 'Completed', icon: <CheckCircle className="h-3 w-3" /> },
-      failed: { variant: 'destructive', label: 'Failed', icon: <XCircle className="h-3 w-3" /> },
-      running: { variant: 'outline', label: 'Running', icon: <Clock className="h-3 w-3 animate-spin" /> },
+      completed: { variant: 'default', label: 'Completed', icon: <Icon name="check-circle" size={12} /> },
+      failed: { variant: 'destructive', label: 'Failed', icon: <Icon name="x-circle" size={12} /> },
+      running: { variant: 'outline', label: 'Running', icon: <Icon name="clock" size={12} className="animate-spin" /> },
     };
 
     const config = variants[status] || variants.running;
@@ -69,7 +69,7 @@ export const DiscoverySessionsView: React.FC = () => {
       <LiquidGlass size="sm" rounded="xl">
         <div className="p-4 flex flex-col md:flex-row gap-4">
           <div className="flex-1 relative">
-            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <Icon name="magnifying-glass" size={16} className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground" />
             <Input
               placeholder="Search by host or session ID..."
               value={searchTerm}
@@ -143,7 +143,7 @@ export const DiscoverySessionsView: React.FC = () => {
                   <TableCell>{getStatusBadge(session.status)}</TableCell>
                   <TableCell>
                     <div className="flex items-center gap-2">
-                      <Brain className="h-4 w-4 text-navy" />
+                      <Icon name="brain" size={16} className="text-navy" />
                       <span className="text-sm">{session.provider}</span>
                     </div>
                   </TableCell>
@@ -175,7 +175,7 @@ export const DiscoverySessionsView: React.FC = () => {
                       onClick={() => handleViewDetails(session)}
                       title="View Details"
                     >
-                      <Eye className="h-4 w-4" />
+                      <Icon name="eye" size={16} />
                     </Button>
                   </TableCell>
                 </TableRow>

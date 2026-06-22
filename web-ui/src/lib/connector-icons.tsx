@@ -2,22 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import React from 'react';
-import {
-  Cloud,
-  Server,
-  Database,
-  Shield,
-  Activity,
-  Network,
-  HardDrive,
-  Container,
-  Box,
-  FileText,
-  Lock,
-  Monitor,
-  Gauge,
-  Layers,
-} from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 
 /**
  * Connector icon mapping
@@ -47,9 +32,7 @@ export const ConnectorIcons: Record<string, React.FC<ConnectorIconProps>> = {
     </svg>
   ),
   'sccm': ({ className, size = 24 }) => (
-    <svg className={className} width={size} height={size} viewBox="0 0 24 24">
-      <Monitor className="w-full h-full" />
-    </svg>
+    <Icon name="monitor" size={size} className={className} />
   ),
   'azure-ad': ({ className, size = 24 }) => (
     <svg className={className} width={size} height={size} viewBox="0 0 24 24" fill="currentColor">
@@ -57,24 +40,16 @@ export const ConnectorIcons: Record<string, React.FC<ConnectorIconProps>> = {
     </svg>
   ),
   'okta': ({ className, size = 24 }) => (
-    <svg className={className} width={size} height={size} viewBox="0 0 24 24">
-      <Lock className="w-full h-full" />
-    </svg>
+    <Icon name="lock" size={size} className={className} />
   ),
   'intune': ({ className, size = 24 }) => (
-    <svg className={className} width={size} height={size} viewBox="0 0 24 24">
-      <Shield className="w-full h-full" />
-    </svg>
+    <Icon name="shield" size={size} className={className} />
   ),
   'jamf': ({ className, size = 24 }) => (
-    <svg className={className} width={size} height={size} viewBox="0 0 24 24">
-      <Monitor className="w-full h-full" />
-    </svg>
+    <Icon name="monitor" size={size} className={className} />
   ),
   'tanium': ({ className, size = 24 }) => (
-    <svg className={className} width={size} height={size} viewBox="0 0 24 24">
-      <Activity className="w-full h-full" />
-    </svg>
+    <Icon name="pulse" size={size} className={className} />
   ),
 
   // Cloud Infrastructure
@@ -89,19 +64,13 @@ export const ConnectorIcons: Record<string, React.FC<ConnectorIconProps>> = {
     </svg>
   ),
   'dell-emc': ({ className, size = 24 }) => (
-    <svg className={className} width={size} height={size} viewBox="0 0 24 24">
-      <Database className="w-full h-full" />
-    </svg>
+    <Icon name="database" size={size} className={className} />
   ),
   'netapp': ({ className, size = 24 }) => (
-    <svg className={className} width={size} height={size} viewBox="0 0 24 24">
-      <HardDrive className="w-full h-full" />
-    </svg>
+    <Icon name="hard-drive" size={size} className={className} />
   ),
   'nutanix': ({ className, size = 24 }) => (
-    <svg className={className} width={size} height={size} viewBox="0 0 24 24">
-      <Layers className="w-full h-full" />
-    </svg>
+    <Icon name="stack" size={size} className={className} />
   ),
   'openshift': ({ className, size = 24 }) => (
     <svg className={className} width={size} height={size} viewBox="0 0 24 24" fill="currentColor">
@@ -109,9 +78,7 @@ export const ConnectorIcons: Record<string, React.FC<ConnectorIconProps>> = {
     </svg>
   ),
   'rancher': ({ className, size = 24 }) => (
-    <svg className={className} width={size} height={size} viewBox="0 0 24 24">
-      <Container className="w-full h-full" />
-    </svg>
+    <Icon name="shipping-container" size={size} className={className} />
   ),
 
   // Monitoring / Observability
@@ -121,14 +88,10 @@ export const ConnectorIcons: Record<string, React.FC<ConnectorIconProps>> = {
     </svg>
   ),
   'dynatrace': ({ className, size = 24 }) => (
-    <svg className={className} width={size} height={size} viewBox="0 0 24 24">
-      <Activity className="w-full h-full" />
-    </svg>
+    <Icon name="pulse" size={size} className={className} />
   ),
   'appdynamics': ({ className, size = 24 }) => (
-    <svg className={className} width={size} height={size} viewBox="0 0 24 24">
-      <Gauge className="w-full h-full" />
-    </svg>
+    <Icon name="gauge" size={size} className={className} />
   ),
   'prometheus': ({ className, size = 24 }) => (
     <svg className={className} width={size} height={size} viewBox="0 0 24 24" fill="currentColor">
@@ -136,68 +99,44 @@ export const ConnectorIcons: Record<string, React.FC<ConnectorIconProps>> = {
     </svg>
   ),
   'lansweeper': ({ className, size = 24 }) => (
-    <svg className={className} width={size} height={size} viewBox="0 0 24 24">
-      <Network className="w-full h-full" />
-    </svg>
+    <Icon name="graph" size={size} className={className} />
   ),
   'zabbix': ({ className, size = 24 }) => (
-    <svg className={className} width={size} height={size} viewBox="0 0 24 24">
-      <Activity className="w-full h-full" />
-    </svg>
+    <Icon name="pulse" size={size} className={className} />
   ),
   'cisco-meraki': ({ className, size = 24 }) => (
-    <svg className={className} width={size} height={size} viewBox="0 0 24 24">
-      <Network className="w-full h-full" />
-    </svg>
+    <Icon name="graph" size={size} className={className} />
   ),
   'infoblox': ({ className, size = 24 }) => (
-    <svg className={className} width={size} height={size} viewBox="0 0 24 24">
-      <Network className="w-full h-full" />
-    </svg>
+    <Icon name="graph" size={size} className={className} />
   ),
   'rubrik': ({ className, size = 24 }) => (
-    <svg className={className} width={size} height={size} viewBox="0 0 24 24">
-      <Database className="w-full h-full" />
-    </svg>
+    <Icon name="database" size={size} className={className} />
   ),
   'veeam': ({ className, size = 24 }) => (
-    <svg className={className} width={size} height={size} viewBox="0 0 24 24">
-      <HardDrive className="w-full h-full" />
-    </svg>
+    <Icon name="hard-drive" size={size} className={className} />
   ),
 
   // Security
   'crowdstrike': ({ className, size = 24 }) => (
-    <svg className={className} width={size} height={size} viewBox="0 0 24 24">
-      <Shield className="w-full h-full" />
-    </svg>
+    <Icon name="shield" size={size} className={className} />
   ),
   'defender': ({ className, size = 24 }) => (
-    <svg className={className} width={size} height={size} viewBox="0 0 24 24">
-      <Shield className="w-full h-full" />
-    </svg>
+    <Icon name="shield" size={size} className={className} />
   ),
   'wiz': ({ className, size = 24 }) => (
-    <svg className={className} width={size} height={size} viewBox="0 0 24 24">
-      <Shield className="w-full h-full" />
-    </svg>
+    <Icon name="shield" size={size} className={className} />
   ),
   'tenable': ({ className, size = 24 }) => (
-    <svg className={className} width={size} height={size} viewBox="0 0 24 24">
-      <Shield className="w-full h-full" />
-    </svg>
+    <Icon name="shield" size={size} className={className} />
   ),
   'prisma-cloud': ({ className, size = 24 }) => (
-    <svg className={className} width={size} height={size} viewBox="0 0 24 24">
-      <Shield className="w-full h-full" />
-    </svg>
+    <Icon name="shield" size={size} className={className} />
   ),
 
   // Default/Fallback
   'default': ({ className, size = 24 }) => (
-    <svg className={className} width={size} height={size} viewBox="0 0 24 24">
-      <Box className="w-full h-full" />
-    </svg>
+    <Icon name="cube" size={size} className={className} />
   ),
 };
 

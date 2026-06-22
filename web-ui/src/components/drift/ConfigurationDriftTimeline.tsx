@@ -13,7 +13,7 @@ import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { driftApi } from '../../api/drift';
 import { DriftDetectionResult, DriftedField, BaselineSnapshot } from '../../types';
-import { GitCompare, AlertCircle, CheckCircle, TrendingUp, Calendar } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { toast } from 'sonner';
 import { formatDistanceToNow, format } from 'date-fns';
 
@@ -118,7 +118,7 @@ export const ConfigurationDriftTimeline: React.FC<ConfigurationDriftTimelineProp
           disabled={detectDriftMutation.isPending}
           className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
         >
-          <GitCompare className="h-4 w-4" />
+          <Icon name="git-diff" size={16} />
           {detectDriftMutation.isPending ? 'Detecting...' : 'Detect Drift Now'}
         </button>
         <button
@@ -126,7 +126,7 @@ export const ConfigurationDriftTimeline: React.FC<ConfigurationDriftTimelineProp
           disabled={createBaselineMutation.isPending}
           className="flex items-center gap-2 px-4 py-2 border rounded hover:bg-accent/50 transition-colors"
         >
-          <Calendar className="h-4 w-4" />
+          <Icon name="calendar" size={16} />
           Create Baseline
         </button>
         <button
@@ -142,7 +142,7 @@ export const ConfigurationDriftTimeline: React.FC<ConfigurationDriftTimelineProp
         <div className="bg-white rounded-lg shadow-sm border p-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <CheckCircle className="h-6 w-6 text-green-500" />
+              <Icon name="check-circle" size={24} className="text-green-500" />
               <div>
                 <h3 className="font-semibold">Current Approved Baseline</h3>
                 <p className="text-sm text-muted-foreground">
@@ -201,7 +201,7 @@ export const ConfigurationDriftTimeline: React.FC<ConfigurationDriftTimelineProp
                           {format(new Date(drift.detected_at), 'PPpp')}
                         </p>
                       </div>
-                      {drift.has_drift && <AlertCircle className="h-5 w-5 text-orange-500" />}
+                      {drift.has_drift && <Icon name="warning-circle" size={20} className="text-orange-500" />}
                     </div>
 
                     {/* Drifted Fields */}

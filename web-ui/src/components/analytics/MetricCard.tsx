@@ -5,7 +5,7 @@
 
 import React from 'react';
 import { Card, CardContent } from '@/components/ui/card';
-import { TrendingUp, TrendingDown, Loader2 } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { cn } from '@/lib/utils';
 import { brand } from '@/lib/brandColors';
 
@@ -13,7 +13,7 @@ export interface MetricCardProps {
   title: string;
   value: string | number;
   subtitle?: string;
-  icon?: React.ReactNode;
+  icon?: string;
   trend?: {
     value: number;
     direction: 'up' | 'down';
@@ -42,7 +42,7 @@ export const MetricCard: React.FC<MetricCardProps> = ({
     return trend.direction === 'up' ? brand.success : brand.danger;
   };
 
-  const TrendIcon = trend?.direction === 'up' ? TrendingUp : TrendingDown;
+  const trendIconName = trend?.direction === 'up' ? 'trend-up' : 'trend-down';
 
   return (
     <Card
@@ -59,14 +59,14 @@ export const MetricCard: React.FC<MetricCardProps> = ({
           </p>
           {icon && (
             <div className="w-8 h-8 flex items-center justify-center">
-              {icon}
+              <Icon name={icon} size={24} />
             </div>
           )}
         </div>
 
         {loading ? (
           <div className="flex justify-center items-center h-20">
-            <Loader2 className="h-6 w-6 animate-spin text-primary" />
+            <Icon name="spinner-gap" size={24} className="animate-spin text-primary" />
           </div>
         ) : (
           <>
@@ -83,8 +83,9 @@ export const MetricCard: React.FC<MetricCardProps> = ({
                 )}
                 {trend && (
                   <div className="flex items-center gap-1">
-                    <TrendIcon
-                      className="h-4 w-4"
+                    <Icon
+                      name={trendIconName}
+                      size={16}
                       style={{ color: getTrendColor() }}
                     />
                     <span

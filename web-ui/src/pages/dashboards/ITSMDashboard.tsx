@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { AlertCircle, Clock, CheckCircle, XCircle, RefreshCw, Download } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { useITSMDashboard, useExportDashboard } from '@/hooks/useDashboardData';
 import { KPICard } from '@/components/dashboard/KPICard';
 import { IncidentTable } from '@/components/dashboard/IncidentTable';
@@ -71,7 +71,7 @@ export const ITSMDashboard: React.FC = () => {
             size="sm"
             onClick={() => exportToPDF('itsm', {})}
           >
-            <Download className="h-4 w-4 mr-2" />
+            <Icon name="download-simple" size={16} className="mr-2" />
             Export PDF
           </Button>
           <Button
@@ -79,7 +79,7 @@ export const ITSMDashboard: React.FC = () => {
             size="sm"
             onClick={() => exportToExcel('itsm', {})}
           >
-            <Download className="h-4 w-4 mr-2" />
+            <Icon name="download-simple" size={16} className="mr-2" />
             Export Excel
           </Button>
           <Button
@@ -91,7 +91,7 @@ export const ITSMDashboard: React.FC = () => {
               ciStatus.refetch();
             }}
           >
-            <RefreshCw className="h-4 w-4 mr-2" />
+            <Icon name="arrows-clockwise" size={16} className="mr-2" />
             Refresh
           </Button>
         </div>
@@ -102,28 +102,28 @@ export const ITSMDashboard: React.FC = () => {
         <KPICard
           title="Open Incidents"
           value={openIncidents}
-          icon={AlertCircle}
+          icon="warning-circle"
           color={openIncidents > 10 ? 'red' : openIncidents > 5 ? 'yellow' : 'green'}
           description={`${p1Incidents} P1 incidents`}
         />
         <KPICard
           title="In Progress"
           value={inProgressIncidents}
-          icon={Clock}
+          icon="clock"
           color="blue"
           description="Currently being worked on"
         />
         <KPICard
           title="Active CIs"
           value={activeCIs}
-          icon={CheckCircle}
+          icon="check-circle"
           color="green"
           description={`${totalCIs} total CIs`}
         />
         <KPICard
           title="Changes in Progress"
           value={changesByStatus.inProgress}
-          icon={RefreshCw}
+          icon="arrows-clockwise"
           color="yellow"
           description={`${changesByStatus.scheduled} scheduled`}
         />
@@ -284,7 +284,7 @@ export const ITSMDashboard: React.FC = () => {
                           <Badge variant="outline" className="text-xs">
                             {change.type}
                           </Badge>
-                          <CheckCircle className="h-3 w-3 text-success" />
+                          <Icon name="check-circle" size={12} className="text-success" />
                         </div>
                       </div>
                     </LiquidGlass>

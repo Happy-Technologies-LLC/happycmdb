@@ -4,7 +4,7 @@ import { LiquidGlass } from '../ui/liquid-glass';
 import { Badge } from '../ui/badge';
 import { Avatar, AvatarFallback } from '../ui/avatar';
 import { Separator } from '../ui/separator';
-import { Network, Server, Users, Activity } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { brand } from '@/lib/brandColors';
 
 interface DiscoveryProviderCardProps {
@@ -13,12 +13,12 @@ interface DiscoveryProviderCardProps {
 
 const PROVIDER_CONFIG: Record<
   DiscoveryProvider,
-  { name: string; color: string; Icon: React.ElementType }
+  { name: string; color: string; icon: string }
 > = {
-  nmap: { name: 'Network Scan (Nmap)', color: brand.navy, Icon: Network },
-  ssh: { name: 'SSH Discovery', color: brand.success, Icon: Server },
-  'active-directory': { name: 'Active Directory', color: brand.sky, Icon: Users },
-  snmp: { name: 'SNMP Discovery', color: brand.danger, Icon: Activity },
+  nmap: { name: 'Network Scan (Nmap)', color: brand.navy, icon: 'share-network' },
+  ssh: { name: 'SSH Discovery', color: brand.success, icon: 'computer-tower' },
+  'active-directory': { name: 'Active Directory', color: brand.sky, icon: 'users' },
+  snmp: { name: 'SNMP Discovery', color: brand.danger, icon: 'pulse' },
 };
 
 const formatDuration = (ms: number): string => {
@@ -57,7 +57,6 @@ export const DiscoveryProviderCard: React.FC<DiscoveryProviderCardProps> = ({
     return null;
   }
 
-  const ProviderIcon = config.Icon;
 
   return (
     <LiquidGlass size="sm" rounded="xl" className={`h-full flex flex-col ${stats.enabled ? '' : 'opacity-70'}`}>
@@ -67,7 +66,7 @@ export const DiscoveryProviderCard: React.FC<DiscoveryProviderCardProps> = ({
           <div className="flex items-center gap-3">
             <Avatar className="w-12 h-12" style={{ backgroundColor: config.color }}>
               <AvatarFallback>
-                <ProviderIcon className="h-6 w-6 text-white" />
+                <Icon name={config.icon} size={24} className="text-white" />
               </AvatarFallback>
             </Avatar>
             <div>

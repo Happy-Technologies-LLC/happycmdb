@@ -1,34 +1,34 @@
 /* ============================================================
-   COLORS — Happy Technologies
+   COLORS - Happy Technologies
    Warm, friendly, professional. Deep navy anchors the brand,
    sky blue is the signature accent, coral is reserved strictly
    for primary "talk to us" conversion actions.
    ============================================================ */
 :root {
   /* ---- Brand core ---- */
-  --primary: #1e2a4a;          /* deep navy — headings, dark sections */
-  --primary-light: #2d3d66;    /* lifted navy — gradients, hovers */
-  --primary-deep: #1a2744;     /* darkest navy — gradient tail */
-  --navy-logo: #262261;        /* mascot navy — logo / illustration ink */
-  --dark: #1a1a2e;             /* near-black navy — dark section tail */
+  --primary: #1e2a4a;          /* deep navy - headings, dark sections */
+  --primary-light: #2d3d66;    /* lifted navy - gradients, hovers */
+  --primary-deep: #1a2744;     /* darkest navy - gradient tail */
+  --navy-logo: #262261;        /* mascot navy - logo / illustration ink */
+  --dark: #1a1a2e;             /* near-black navy - dark section tail */
 
   /* ---- Sky blue (signature accent) ---- */
-  --secondary: #5cc3fb;        /* sky blue — primary accent */
+  --secondary: #5cc3fb;        /* sky blue - primary accent */
   --accent: #5cc3fb;
-  --accent-light: #7ad0fc;     /* lighter sky — hovers, highlights */
+  --accent-light: #7ad0fc;     /* lighter sky - hovers, highlights */
   --accent-bright: #5ec1fb;    /* logo sky blue */
   --accent-bg: rgba(92, 195, 251, 0.08);  /* tinted chip / icon wells */
-  --accent-text: #1a7fb8;      /* darker sky — accessible text/links on light */
+  --accent-text: #1a7fb8;      /* darker sky - accessible text/links on light */
   --accent-text-hover: #1570a3;
 
   /* ---- Coral (conversion only) ---- */
-  --coral: #ff7564;            /* coral — reserved for "Start a Conversation" */
+  --coral: #ff7564;            /* coral - reserved for "Start a Conversation" */
   --coral-dark: #f0604e;       /* coral hover */
   --coral-bg: rgba(255, 117, 100, 0.1);
 
   /* ---- Surfaces ---- */
   --white: #ffffff;
-  --warm-bg: #f5f8fb;          /* page background — cool warm white */
+  --warm-bg: #f5f8fb;          /* page background - cool warm white */
   --warm-bg-alt: #edf2f7;      /* alternating section background */
 
   /* ---- Neutral gray ramp ---- */
@@ -49,7 +49,7 @@
   --success-bg: rgba(16, 185, 129, 0.1);
   --warning: #f5a623;
   --warning-bg: rgba(245, 166, 35, 0.1);
-  --warning-text: #b9791a;       /* darkened warning — accessible text on warning-bg */
+  --warning-text: #b9791a;       /* darkened warning - accessible text on warning-bg */
   --danger: #f0604e;
   --danger-bg: rgba(240, 96, 78, 0.1);
   --info: var(--accent-text);

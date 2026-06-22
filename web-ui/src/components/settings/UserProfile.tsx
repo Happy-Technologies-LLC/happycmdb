@@ -10,7 +10,7 @@ import React, { useState } from 'react';
 import { useForm, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import { Camera } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { useAuth } from '../../hooks/useAuth';
 import { updateProfile, changePassword, deleteAccount } from '../../services/auth.service';
 import { Button } from '@/components/ui/button';
@@ -165,7 +165,7 @@ export const UserProfile: React.FC = () => {
             <label htmlFor="avatar-upload" className="cursor-pointer">
               <Button type="button" variant="outline" size="icon" asChild>
                 <span>
-                  <Camera className="h-4 w-4" />
+                  <Icon name="camera" size={16} />
                 </span>
               </Button>
               <input

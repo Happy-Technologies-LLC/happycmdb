@@ -8,7 +8,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { AIDiscoverySession } from '@/services/ai-pattern.service';
-import { Brain, Wrench, FileJson, MessageSquare, CheckCircle, XCircle } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { useAIPatterns } from '@/hooks/useAIPatterns';
 import { useToast } from '@/contexts/ToastContext';
 
@@ -27,7 +27,7 @@ export const SessionDetailModal: React.FC<SessionDetailModalProps> = ({ session,
       <DialogContent className="max-w-5xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-3">
-            <Brain className="h-5 w-5 text-navy" />
+            <Icon name="brain" size={20} className="text-navy" />
             <span>Discovery Session</span>
             <Badge variant="outline" className="font-mono text-xs">
               {session.sessionId}
@@ -141,7 +141,7 @@ export const SessionDetailModal: React.FC<SessionDetailModalProps> = ({ session,
             <Card>
               <CardHeader>
                 <CardTitle className="text-sm flex items-center gap-2">
-                  <Wrench className="h-4 w-4" />
+                  <Icon name="wrench" size={16} />
                   Tool Execution Timeline
                 </CardTitle>
               </CardHeader>
@@ -158,9 +158,9 @@ export const SessionDetailModal: React.FC<SessionDetailModalProps> = ({ session,
                         <div className="flex items-start justify-between mb-3">
                           <div className="flex items-center gap-2">
                             {toolCall.success ? (
-                              <CheckCircle className="h-5 w-5 text-success" />
+                              <Icon name="check-circle" size={20} className="text-success" />
                             ) : (
-                              <XCircle className="h-5 w-5 text-danger" />
+                              <Icon name="x-circle" size={20} className="text-danger" />
                             )}
                             <div>
                               <p className="font-semibold text-sm">{toolCall.toolName}</p>
@@ -200,7 +200,7 @@ export const SessionDetailModal: React.FC<SessionDetailModalProps> = ({ session,
             <Card>
               <CardHeader>
                 <CardTitle className="text-sm flex items-center gap-2">
-                  <FileJson className="h-4 w-4" />
+                  <Icon name="file-code" size={16} />
                   Discovered Configuration Items
                 </CardTitle>
               </CardHeader>
@@ -230,7 +230,7 @@ export const SessionDetailModal: React.FC<SessionDetailModalProps> = ({ session,
             <Card>
               <CardHeader>
                 <CardTitle className="text-sm flex items-center gap-2">
-                  <MessageSquare className="h-4 w-4" />
+                  <Icon name="chat-text" size={16} />
                   AI Reasoning
                 </CardTitle>
               </CardHeader>

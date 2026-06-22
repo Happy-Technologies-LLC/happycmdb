@@ -12,9 +12,10 @@
   },
   "dependencies": {
     "@cmdb/common": "*",
+    "@happy-technologies/connector-core": "^0.1.0",
+    "ioredis": "^5.0.0",
     "neo4j-driver": "^5.0.0",
-    "pg": "^8.0.0",
-    "ioredis": "^5.0.0"
+    "pg": "^8.0.0"
   },
   "devDependencies": {
     "@types/pg": "^8.0.0",

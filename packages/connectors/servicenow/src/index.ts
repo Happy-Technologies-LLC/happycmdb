@@ -30,18 +30,34 @@ export default class ServiceNowConnector extends BaseIntegrationConnector {
 
     this.instanceUrl = config.connection['instance_url'];
 
-    this.client = axios.create({
-      baseURL: `${this.instanceUrl}/api/now`,
-      auth: {
-        username: config.connection['username'],
-        password: config.connection['password'],
-      },
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-      },
-      timeout: 30000,
-    });
+    const authType = config.connection['auth_type'] as string | undefined;
+    const accessToken = config.connection['access_token'] as string | undefined;
+
+    const baseHeaders: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+    };
+
+    if (authType === 'oauth2' && accessToken !== undefined && accessToken !== '') {
+      this.client = axios.create({
+        baseURL: `${this.instanceUrl}/api/now`,
+        headers: {
+          ...baseHeaders,
+          Authorization: `Bearer ${accessToken}`,
+        },
+        timeout: 30000,
+      });
+    } else {
+      this.client = axios.create({
+        baseURL: `${this.instanceUrl}/api/now`,
+        auth: {
+          username: config.connection['username'],
+          password: config.connection['password'],
+        },
+        headers: baseHeaders,
+        timeout: 30000,
+      });
+    }
   }
 
   async initialize(): Promise<void> {

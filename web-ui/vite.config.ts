@@ -22,6 +22,12 @@ export default defineConfig({
   server: {
     port: 3000,
     host: true,
+    // The design-system is a file-linked sibling package that lives outside this
+    // app's root; allow vite dev to serve its bundled fonts/assets (the Phosphor
+    // duotone icon font and the Inter/Jost faces) instead of 403-ing them.
+    fs: {
+      allow: ['..', '../../happy-technologies-design-system'],
+    },
     watch: {
       usePolling: true,
     },
@@ -46,13 +52,13 @@ export default defineConfig({
         manualChunks: {
           'react-vendor': ['react', 'react-dom', 'react-router-dom'],
           'query-vendor': ['@tanstack/react-query', '@apollo/client'],
-          'ui-vendor': ['lucide-react', 'recharts'],
+          'ui-vendor': ['recharts'],
         },
       },
     },
   },
   optimizeDeps: {
-    include: ['react', 'react-dom', 'react-router-dom', '@apollo/client', 'lucide-react'],
+    include: ['react', 'react-dom', 'react-router-dom', '@apollo/client'],
   },
   test: {
     environment: 'happy-dom',

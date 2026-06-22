@@ -8,7 +8,7 @@
  */
 
 import React, { useState } from 'react';
-import { Loader2 } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../ui/tabs';
 import {
   Select,
@@ -221,7 +221,7 @@ export const JobMonitor: React.FC<JobMonitorProps> = ({
         </Alert>
       ) : jobsLoading && jobs.length === 0 ? (
         <div className="flex justify-center py-16">
-          <Loader2 className="h-8 w-8 animate-spin" />
+          <Icon name="spinner-gap" size={32} className="animate-spin" />
         </div>
       ) : (
         <JobList

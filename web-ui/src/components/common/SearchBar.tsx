@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { Search, X, Filter } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
@@ -107,7 +107,7 @@ const SearchBar: React.FC<SearchBarProps> = ({
         'flex items-center gap-2 rounded-lg border bg-card px-3 py-2 shadow-sm',
         fullWidth ? 'w-full' : 'w-[400px]'
       )}>
-        <Search className="h-4 w-4 text-muted-foreground" />
+        <Icon name="magnifying-glass" size={16} className="text-muted-foreground" />
         <Input
           ref={inputRef}
           placeholder={placeholder}
@@ -124,7 +124,7 @@ const SearchBar: React.FC<SearchBarProps> = ({
               onClick={handleClear}
               className="h-6 w-6"
             >
-              <X className="h-4 w-4" />
+              <Icon name="x" size={16} />
             </Button>
             <Separator orientation="vertical" className="h-6" />
           </>
@@ -136,7 +136,7 @@ const SearchBar: React.FC<SearchBarProps> = ({
             onClick={onFilterClick}
             className="h-6 w-6"
           >
-            <Filter className="h-4 w-4" />
+            <Icon name="funnel" size={16} />
           </Button>
         )}
       </div>

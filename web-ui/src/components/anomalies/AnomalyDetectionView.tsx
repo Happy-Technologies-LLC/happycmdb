@@ -10,7 +10,7 @@ import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { anomaliesApi } from '../../api/anomalies';
 import { Anomaly } from '../../types';
-import { AlertTriangle, CheckCircle, XCircle, Eye, Filter } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { toast } from 'sonner';
 import { formatDistanceToNow } from 'date-fns';
 import { Button } from '@/components/ui/button';
@@ -64,11 +64,11 @@ export const AnomalyDetectionView: React.FC = () => {
     switch (severity) {
       case 'critical':
       case 'high':
-        return <XCircle className="h-5 w-5" />;
+        return <Icon name="x-circle" size={20} />;
       case 'medium':
-        return <AlertTriangle className="h-5 w-5" />;
+        return <Icon name="warning" size={20} />;
       default:
-        return <Eye className="h-5 w-5" />;
+        return <Icon name="eye" size={20} />;
     }
   };
 
@@ -119,7 +119,7 @@ export const AnomalyDetectionView: React.FC = () => {
       {/* Filters */}
       <LiquidGlass variant="default" rounded="xl">
         <div className="flex items-center gap-4 flex-wrap">
-          <Filter className="h-5 w-5 text-muted-foreground" />
+          <Icon name="funnel" size={20} className="text-muted-foreground" />
           <div className="flex gap-2 flex-wrap">
             <span className="text-sm font-medium">Severity:</span>
             {['all', 'critical', 'high', 'medium', 'low', 'info'].map((severity) => (
@@ -243,7 +243,7 @@ export const AnomalyDetectionView: React.FC = () => {
                 )}
                 {anomaly.status === 'resolved' && (
                   <div className="flex items-center gap-2 text-success text-sm">
-                    <CheckCircle className="h-4 w-4" />
+                    <Icon name="check-circle" size={16} />
                     Resolved
                     {anomaly.resolved_at &&
                       ` ${formatDistanceToNow(new Date(anomaly.resolved_at))} ago`}

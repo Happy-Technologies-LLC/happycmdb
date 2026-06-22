@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import React from 'react';
-import { Plus } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Eyebrow } from '@/components/ui/eyebrow';
@@ -38,7 +38,7 @@ export const CIListPage: React.FC = () => {
           </p>
         </div>
         <Button onClick={() => navigate('/inventory')}>
-          <Plus className="mr-2 h-4 w-4" />
+          <Icon name="plus" size={16} className="mr-2" />
           Manage CIs
         </Button>
       </div>

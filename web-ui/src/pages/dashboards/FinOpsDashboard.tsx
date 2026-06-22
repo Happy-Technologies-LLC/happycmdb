@@ -1,5 +1,5 @@
 import React from 'react';
-import { DollarSign, TrendingUp, TrendingDown, Cloud, Server, Lightbulb, Download } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { useFinOpsDashboard, useTimeRange, useExportDashboard } from '@/hooks/useDashboardData';
 import { KPICard } from '@/components/dashboard/KPICard';
 import { CostTrendChart } from '@/components/dashboard/CostTrendChart';
@@ -106,7 +106,7 @@ export const FinOpsDashboard: React.FC = () => {
             size="sm"
             onClick={() => exportToPDF('finops', { timeRange })}
           >
-            <Download className="h-4 w-4 mr-2" />
+            <Icon name="download-simple" size={16} className="mr-2" />
             Export PDF
           </Button>
           <Button
@@ -114,7 +114,7 @@ export const FinOpsDashboard: React.FC = () => {
             size="sm"
             onClick={() => exportToExcel('finops', { timeRange })}
           >
-            <Download className="h-4 w-4 mr-2" />
+            <Icon name="download-simple" size={16} className="mr-2" />
             Export Excel
           </Button>
           <Button
@@ -136,14 +136,14 @@ export const FinOpsDashboard: React.FC = () => {
         <KPICard
           title="Total Cloud Spend"
           value={formatCurrency(totalCloudCost)}
-          icon={Cloud}
+          icon="cloud"
           color="blue"
           description={timeRange.label}
         />
         <KPICard
           title="Monthly Average"
           value={formatCurrency(avgMonthlyCloudCost)}
-          icon={DollarSign}
+          icon="currency-dollar"
           color="purple"
           trend={costTrend}
           trendValue={Math.abs(costTrendPercent)}
@@ -152,14 +152,14 @@ export const FinOpsDashboard: React.FC = () => {
         <KPICard
           title="Total IT Cost"
           value={formatCurrency(onPremVsCloud.data?.totalCost || 0)}
-          icon={Server}
+          icon="computer-tower"
           color="yellow"
           description="On-prem + Cloud"
         />
         <KPICard
           title="Potential Savings"
           value={formatCurrency(totalPotentialSavings)}
-          icon={Lightbulb}
+          icon="lightbulb"
           color="green"
           description="Optimization opportunities"
         />
@@ -304,9 +304,9 @@ export const FinOpsDashboard: React.FC = () => {
                 {metric.trend && (
                   <div className="flex items-center gap-1 mt-2">
                     {metric.trend === 'up' ? (
-                      <TrendingUp className="h-3 w-3 text-danger" />
+                      <Icon name="trend-up" size={12} className="text-danger" />
                     ) : (
-                      <TrendingDown className="h-3 w-3 text-success" />
+                      <Icon name="trend-down" size={12} className="text-success" />
                     )}
                     <span
                       className={`text-xs ${

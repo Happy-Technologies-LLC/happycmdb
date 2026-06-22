@@ -1,5 +1,5 @@
 /* ============================================================
-   HappyCMDB — Happy Technologies design system integration
+   HappyCMDB - Happy Technologies design system integration
    Tailwind v4 + vendored DS tokens.
 
    We import only the DS token files (pure :root custom properties)
@@ -14,6 +14,16 @@
 @import './styles/ds/tokens/colors.css';
 @import './styles/ds/tokens/typography.css';
 @import './styles/ds/tokens/spacing.css';
+
+/* Shared design-system theme: scopes the --hh-* tokens under .hh-theme and
+   ships the Inter/Jost faces plus the Phosphor duotone icon font that the
+   <Icon> primitive renders. */
+@import '@happy-technologies/design-system/theme.css';
+
+/* The DS primitives ship as TypeScript source, so Tailwind must scan them to
+   generate the utility classes they use (node_modules is hoisted to the
+   workspace root). */
+@source '../../node_modules/@happy-technologies/design-system/src/**/*.{ts,tsx}';
 
 @plugin "tailwindcss-animate";
 
@@ -110,7 +120,7 @@
     text-rendering: optimizeLegibility;
   }
 
-  /* Brand headings: Inter, navy, bold — size stays under utility control */
+  /* Brand headings: Inter, navy, bold - size stays under utility control */
   h1,
   h2,
   h3,

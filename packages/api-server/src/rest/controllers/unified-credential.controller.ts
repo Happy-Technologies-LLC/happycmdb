@@ -2,7 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Request, Response } from 'express';
-import { getUnifiedCredentialService, getPostgresClient } from '@cmdb/database';
+import { Pool } from 'pg';
+import {
+  getUnifiedCredentialService,
+  getPostgresClient,
+  getOAuthSubstrate,
+  SERVICENOW_PROVIDER_ID,
+} from '@cmdb/database';
 import {
   UnifiedCredentialInput,
   UnifiedCredentialUpdateInput,
@@ -18,9 +24,11 @@ import {
  */
 export class UnifiedCredentialController {
   private credentialService;
+  private oauthPool: Pool;
 
   constructor() {
     const pool = getPostgresClient().pool;
+    this.oauthPool = pool;
     this.credentialService = getUnifiedCredentialService(pool);
   }
 
@@ -359,6 +367,127 @@ export class UnifiedCredentialController {
       res.status(500).json({
         _success: false,
         _error: 'Failed to rank credentials',
+        _message: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+
+  /**
+   * POST /api/v1/credentials/:id/oauth/authorize - Begin OAuth authorization for an oauth2 credential
+   */
+  async authorize(req: Request, res: Response): Promise<void> {
+    try {
+      const { id } = req.params;
+
+      const provider =
+        typeof req.body.provider === 'string' && req.body.provider !== ''
+          ? (req.body.provider as string)
+          : SERVICENOW_PROVIDER_ID;
+
+      const rawScopes = req.body.scopes ?? [];
+      if (!Array.isArray(rawScopes) || !rawScopes.every((s) => typeof s === 'string')) {
+        res.status(400).json({
+          _success: false,
+          _error: 'Bad Request',
+          _message: 'scopes must be an array of strings',
+        });
+        return;
+      }
+      const scopes = rawScopes as string[];
+
+      const credential = await this.credentialService.getById(id);
+
+      if (credential === null) {
+        res.status(404).json({
+          _success: false,
+          _error: 'Not Found',
+          _message: `Credential with ID '${id}' not found`,
+        });
+        return;
+      }
+
+      if (credential.protocol !== 'oauth2') {
+        res.status(400).json({
+          _success: false,
+          _error: 'Bad Request',
+          _message: 'OAuth authorize is only valid for oauth2 credentials',
+        });
+        return;
+      }
+
+      const { url, state } = await getOAuthSubstrate(this.oauthPool).authorizationUrl({
+        sourceId: id,
+        providerId: provider,
+        scopes,
+      });
+
+      res.status(200).json({
+        _success: true,
+        _data: {
+          authorization_url: url,
+          state,
+        },
+      });
+    } catch (error) {
+      logger.error('Error starting OAuth authorization', { error, id: req.params['id'] });
+      res.status(500).json({
+        _success: false,
+        _error: 'Failed to start OAuth authorization',
+        _message: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+
+  /**
+   * GET /api/v1/credentials/oauth/callback - Handle OAuth provider redirect callback
+   */
+  async oauthCallback(req: Request, res: Response): Promise<void> {
+    try {
+      if (typeof req.query['error'] === 'string' && req.query['error'] !== '') {
+        res.status(400).json({
+          _success: false,
+          _error: 'Bad Request',
+          _message: `OAuth authorization failed: ${req.query['error']}`,
+        });
+        return;
+      }
+
+      const state = req.query['state'];
+      const code = req.query['code'];
+
+      if (typeof state !== 'string' || state === '' || typeof code !== 'string' || code === '') {
+        res.status(400).json({
+          _success: false,
+          _error: 'Bad Request',
+          _message: 'state and code query parameters are required',
+        });
+        return;
+      }
+
+      const result = await getOAuthSubstrate(this.oauthPool).handleCallback({ state, code });
+
+      res.status(200).json({
+        _success: true,
+        _data: {
+          source_id: result.sourceId,
+          connected: true,
+        },
+      });
+    } catch (error) {
+      logger.error('Error handling OAuth callback', { error });
+
+      if (error instanceof Error && error.message.includes('invalid or expired OAuth state')) {
+        res.status(400).json({
+          _success: false,
+          _error: 'Bad Request',
+          _message: error.message,
+        });
+        return;
+      }
+
+      res.status(500).json({
+        _success: false,
+        _error: 'Failed to handle OAuth callback',
         _message: error instanceof Error ? error.message : 'Unknown error',
       });
     }

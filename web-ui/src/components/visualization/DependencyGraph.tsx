@@ -2,22 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import React, { useEffect, useRef, useState } from 'react';
-import {
-  ZoomIn,
-  ZoomOut,
-  Focus,
-  Download,
-  Server,
-  Cloud as CloudIcon,
-  Box,
-  Grid3x3,
-  Code,
-  Database,
-  Network,
-  HardDrive,
-  Scale,
-  CloudCog,
-} from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import cytoscape, { Core, ElementDefinition, NodeSingular } from 'cytoscape';
 import { CIRelationship } from '../../services/ci.service';
 import { Button } from '../ui/button';
@@ -359,19 +344,19 @@ export const DependencyGraph: React.FC<DependencyGraphProps> = ({
           </div>
 
           <Button size="icon" variant="outline" onClick={handleZoomIn} title="Zoom In">
-            <ZoomIn className="h-4 w-4" />
+            <Icon name="magnifying-glass-plus" size={16} />
           </Button>
 
           <Button size="icon" variant="outline" onClick={handleZoomOut} title="Zoom Out">
-            <ZoomOut className="h-4 w-4" />
+            <Icon name="magnifying-glass-minus" size={16} />
           </Button>
 
           <Button size="icon" variant="outline" onClick={handleCenter} title="Center">
-            <Focus className="h-4 w-4" />
+            <Icon name="crosshair" size={16} />
           </Button>
 
           <Button size="icon" variant="outline" onClick={handleDownload} title="Download as PNG">
-            <Download className="h-4 w-4" />
+            <Icon name="download-simple" size={16} />
           </Button>
         </div>
       </div>
@@ -424,61 +409,61 @@ export const DependencyGraph: React.FC<DependencyGraphProps> = ({
           <div className="flex gap-4 flex-wrap">
             <div className="flex items-center gap-2">
               <div className="w-4 h-4 flex items-center justify-center" style={{ backgroundColor: CI_TYPE_COLORS.server }}>
-                <Server className="w-3 h-3 text-white" />
+                <Icon name="computer-tower" size={12} className="text-white" />
               </div>
               <span className="text-xs">Server</span>
             </div>
             <div className="flex items-center gap-2">
               <div className="w-4 h-4 rounded-sm flex items-center justify-center" style={{ backgroundColor: CI_TYPE_COLORS['virtual-machine'] }}>
-                <CloudIcon className="w-3 h-3 text-white" />
+                <Icon name="cloud" size={12} className="text-white" />
               </div>
               <span className="text-xs">VM</span>
             </div>
             <div className="flex items-center gap-2">
               <div className="w-4 h-4 flex items-center justify-center" style={{ backgroundColor: CI_TYPE_COLORS.container, clipPath: 'polygon(25% 0%, 75% 0%, 100% 50%, 75% 100%, 25% 100%, 0% 50%)' }}>
-                <Box className="w-3 h-3 text-white" />
+                <Icon name="cube" size={12} className="text-white" />
               </div>
               <span className="text-xs">Container</span>
             </div>
             <div className="flex items-center justify-center gap-2">
               <div className="w-4 h-4 rounded-full flex items-center justify-center" style={{ backgroundColor: CI_TYPE_COLORS.application }}>
-                <Grid3x3 className="w-3 h-3 text-white" />
+                <Icon name="grid-four" size={12} className="text-white" />
               </div>
               <span className="text-xs">Application</span>
             </div>
             <div className="flex items-center gap-2">
               <div className="w-4 h-4 flex items-center justify-center" style={{ backgroundColor: CI_TYPE_COLORS.service, clipPath: 'polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%)' }}>
-                <Code className="w-3 h-3 text-white" />
+                <Icon name="code" size={12} className="text-white" />
               </div>
               <span className="text-xs">Service</span>
             </div>
             <div className="flex items-center gap-2">
               <div className="w-4 h-4 rounded-sm flex items-center justify-center" style={{ backgroundColor: CI_TYPE_COLORS.database }}>
-                <Database className="w-3 h-3 text-white" />
+                <Icon name="database" size={12} className="text-white" />
               </div>
               <span className="text-xs">Database</span>
             </div>
             <div className="flex items-center gap-2">
               <div className="w-4 h-4 flex items-center justify-center" style={{ backgroundColor: CI_TYPE_COLORS['network-device'], clipPath: 'polygon(30% 0%, 70% 0%, 100% 30%, 100% 70%, 70% 100%, 30% 100%, 0% 70%, 0% 30%)' }}>
-                <Network className="w-3 h-3 text-white" />
+                <Icon name="graph" size={12} className="text-white" />
               </div>
               <span className="text-xs">Network</span>
             </div>
             <div className="flex items-center gap-2">
               <div className="w-4 h-4 flex items-center justify-center" style={{ backgroundColor: CI_TYPE_COLORS.storage, clipPath: 'polygon(50% 0%, 100% 100%, 0% 100%)' }}>
-                <HardDrive className="w-3 h-3 text-white" />
+                <Icon name="hard-drive" size={12} className="text-white" />
               </div>
               <span className="text-xs">Storage</span>
             </div>
             <div className="flex items-center gap-2">
               <div className="w-4 h-4 flex items-center justify-center" style={{ backgroundColor: CI_TYPE_COLORS['load-balancer'], clipPath: 'polygon(25% 0%, 75% 0%, 100% 50%, 75% 100%, 25% 100%, 0% 50%)' }}>
-                <Scale className="w-3 h-3 text-white" />
+                <Icon name="scales" size={12} className="text-white" />
               </div>
               <span className="text-xs">Load Balancer</span>
             </div>
             <div className="flex items-center gap-2">
               <div className="w-4 h-4 flex items-center justify-center" style={{ backgroundColor: CI_TYPE_COLORS['cloud-resource'], clipPath: 'polygon(50% 0%, 61% 35%, 98% 35%, 68% 57%, 79% 91%, 50% 70%, 21% 91%, 32% 57%, 2% 35%, 39% 35%)' }}>
-                <CloudCog className="w-3 h-3 text-white" />
+                <Icon name="cloud-check" size={12} className="text-white" />
               </div>
               <span className="text-xs">Cloud</span>
             </div>

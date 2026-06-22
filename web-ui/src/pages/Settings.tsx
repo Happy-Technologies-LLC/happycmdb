@@ -8,14 +8,7 @@
 
 import React, { useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import {
-  Settings as SettingsIcon,
-  Cloud,
-  Bell,
-  UserCircle,
-  Key,
-  Database,
-} from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Card } from '@/components/ui/card';
 import { Eyebrow } from '@/components/ui/eyebrow';
@@ -54,28 +47,28 @@ export const Settings: React.FC = () => {
         <Card>
           <TabsList className="w-full justify-start overflow-x-auto flex-nowrap">
             <TabsTrigger value="general" className="gap-2">
-              <SettingsIcon className="h-4 w-4" />
+              <Icon name="gear-six" size={16} />
               General
             </TabsTrigger>
             <TabsTrigger value="discovery" className="gap-2">
-              <Cloud className="h-4 w-4" />
+              <Icon name="cloud" size={16} />
               Discovery
             </TabsTrigger>
             <TabsTrigger value="notifications" className="gap-2">
-              <Bell className="h-4 w-4" />
+              <Icon name="bell" size={16} />
               Notifications
             </TabsTrigger>
             <TabsTrigger value="profile" className="gap-2">
-              <UserCircle className="h-4 w-4" />
+              <Icon name="user-circle" size={16} />
               Profile
             </TabsTrigger>
             <TabsTrigger value="api-keys" className="gap-2">
-              <Key className="h-4 w-4" />
+              <Icon name="key" size={16} />
               API Keys
             </TabsTrigger>
             {isAdmin && (
               <TabsTrigger value="database" className="gap-2">
-                <Database className="h-4 w-4" />
+                <Icon name="database" size={16} />
                 Database
               </TabsTrigger>
             )}

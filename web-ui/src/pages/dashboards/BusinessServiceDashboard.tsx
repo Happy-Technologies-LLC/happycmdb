@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Activity, DollarSign, Users, Shield, CheckCircle, XCircle, Download, AlertTriangle } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { useBusinessServiceDashboard, useExportDashboard } from '@/hooks/useDashboardData';
 import { KPICard } from '@/components/dashboard/KPICard';
 import { LiquidGlass } from '@/components/ui/liquid-glass';
@@ -186,7 +186,7 @@ export const BusinessServiceDashboard: React.FC = () => {
             size="sm"
             onClick={() => exportToPDF('business-service', { selectedService, selectedBusinessUnit })}
           >
-            <Download className="h-4 w-4 mr-2" />
+            <Icon name="download-simple" size={16} className="mr-2" />
             Export PDF
           </Button>
           <Button
@@ -194,7 +194,7 @@ export const BusinessServiceDashboard: React.FC = () => {
             size="sm"
             onClick={() => exportToExcel('business-service', { selectedService, selectedBusinessUnit })}
           >
-            <Download className="h-4 w-4 mr-2" />
+            <Icon name="download-simple" size={16} className="mr-2" />
             Export Excel
           </Button>
           <Button
@@ -272,21 +272,21 @@ export const BusinessServiceDashboard: React.FC = () => {
             <KPICard
               title="Revenue at Risk"
               value={formatCurrency(revenueAtRisk.data?.revenueAtRisk || 0)}
-              icon={DollarSign}
+              icon="currency-dollar"
               color={(revenueAtRisk.data?.percentageAtRisk ?? 0) > 10 ? 'red' : 'green'}
               description={`${revenueAtRisk.data?.percentageAtRisk?.toFixed(1) || 0}% of total revenue`}
             />
             <KPICard
               title="Customers Impacted"
               value={customerImpact.data?.customersImpacted || 0}
-              icon={Users}
+              icon="users"
               color={(customerImpact.data?.customersImpacted ?? 0) > 0 ? 'red' : 'green'}
               description={`${customerImpact.data?.totalCustomers || 0} total customers`}
             />
             <KPICard
               title="Estimated User Impact"
               value={customerImpact.data?.estimatedUserImpact?.toLocaleString() || '0'}
-              icon={AlertTriangle}
+              icon="warning"
               color={(customerImpact.data?.estimatedUserImpact ?? 0) > 0 ? 'red' : 'green'}
               description="Users affected by incidents"
             />
@@ -295,7 +295,7 @@ export const BusinessServiceDashboard: React.FC = () => {
               value={`${
                 Object.values(complianceStatus.data || {}).filter((v) => v === true).length
               }/${Object.keys(complianceStatus.data || {}).filter((k) => k.endsWith('Compliant')).length}`}
-              icon={Shield}
+              icon="shield"
               color={
                 Object.values(complianceStatus.data || {}).filter((v) => v === true).length ===
                 Object.keys(complianceStatus.data || {}).filter((k) => k.endsWith('Compliant')).length
@@ -321,7 +321,7 @@ export const BusinessServiceDashboard: React.FC = () => {
                       className="flex items-center justify-between p-3 border border-border rounded-lg"
                     >
                       <div className="flex items-center gap-2">
-                        <AlertTriangle className="h-4 w-4 text-danger" />
+                        <Icon name="warning" size={16} className="text-danger" />
                         <span className="text-sm font-medium">Incident {incident.id}</span>
                         <Badge
                           variant="outline"
@@ -363,9 +363,9 @@ export const BusinessServiceDashboard: React.FC = () => {
                   <div key={compliance.name} className="p-4 border border-border rounded-lg text-center">
                     <div className="flex items-center justify-center mb-2">
                       {compliance.value ? (
-                        <CheckCircle className="h-8 w-8 text-success" />
+                        <Icon name="check-circle" size={32} className="text-success" />
                       ) : (
-                        <XCircle className="h-8 w-8 text-danger" />
+                        <Icon name="x-circle" size={32} className="text-danger" />
                       )}
                     </div>
                     <p className="text-sm font-medium">{compliance.name}</p>
@@ -491,7 +491,7 @@ export const BusinessServiceDashboard: React.FC = () => {
         <LiquidGlass variant="default" rounded="xl">
           <div className="py-12">
             <div className="text-center">
-              <Activity className="h-16 w-16 mx-auto text-muted-foreground mb-4" />
+              <Icon name="pulse" size={64} className="mx-auto text-muted-foreground mb-4" />
               <h3 className="text-lg font-semibold mb-2">Select a Business Service</h3>
               <p className="text-muted-foreground">
                 Click on a service in the heat map above to view detailed metrics, compliance status, and dependencies.

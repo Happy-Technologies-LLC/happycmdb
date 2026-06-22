@@ -7,7 +7,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { Trash2, Plus, Copy } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { apiClient } from '../../services/auth.service';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -132,7 +132,7 @@ export const ApiKeysManager: React.FC = () => {
           </p>
         </div>
         <Button onClick={() => setCreateDialogOpen(true)}>
-          <Plus className="h-4 w-4 mr-2" />
+          <Icon name="plus" size={16} className="mr-2" />
           Generate New Key
         </Button>
       </div>
@@ -171,7 +171,7 @@ export const ApiKeysManager: React.FC = () => {
                         className="h-8 w-8"
                         onClick={() => copyToClipboard(key.key)}
                       >
-                        <Copy className="h-4 w-4" />
+                        <Icon name="copy" size={16} />
                       </Button>
                     </div>
                   </TableCell>
@@ -198,7 +198,7 @@ export const ApiKeysManager: React.FC = () => {
                         setRevokeDialogOpen(true);
                       }}
                     >
-                      <Trash2 className="h-4 w-4" />
+                      <Icon name="trash" size={16} />
                     </Button>
                   </TableCell>
                 </TableRow>
@@ -236,7 +236,7 @@ export const ApiKeysManager: React.FC = () => {
                       size="icon"
                       onClick={() => copyToClipboard(generatedKey)}
                     >
-                      <Copy className="h-4 w-4" />
+                      <Icon name="copy" size={16} />
                     </Button>
                   </div>
                 </AlertDescription>

@@ -7,7 +7,7 @@
  */
 
 import React, { useState } from 'react';
-import { ChevronDown, CheckCircle, XCircle, Loader2 } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { apiClient } from '../../services/auth.service';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -126,15 +126,15 @@ export const DiscoverySettings: React.FC = () => {
     if (!status) return null;
 
     if (status.status === 'testing') {
-      return <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />;
+      return <Icon name="spinner-gap" size={20} className="animate-spin text-muted-foreground" />;
     }
 
     if (status.status === 'success') {
-      return <CheckCircle className="h-5 w-5 text-green-600" />;
+      return <Icon name="check-circle" size={20} className="text-green-600" />;
     }
 
     if (status.status === 'error') {
-      return <XCircle className="h-5 w-5 text-destructive" />;
+      return <Icon name="x-circle" size={20} className="text-destructive" />;
     }
 
     return null;
@@ -162,7 +162,7 @@ export const DiscoverySettings: React.FC = () => {
                 <span className="font-medium">AWS</span>
                 {renderStatus('aws')}
               </div>
-              <ChevronDown className={`h-5 w-5 transition-transform ${openSections.aws ? 'transform rotate-180' : ''}`} />
+              <Icon name="caret-down" size={20} className={`transition-transform ${openSections.aws ? 'transform rotate-180' : ''}`} />
             </CollapsibleTrigger>
             <CollapsibleContent>
               <div className="p-4 pt-0 space-y-4">
@@ -221,7 +221,7 @@ export const DiscoverySettings: React.FC = () => {
                 <span className="font-medium">Azure</span>
                 {renderStatus('azure')}
               </div>
-              <ChevronDown className={`h-5 w-5 transition-transform ${openSections.azure ? 'transform rotate-180' : ''}`} />
+              <Icon name="caret-down" size={20} className={`transition-transform ${openSections.azure ? 'transform rotate-180' : ''}`} />
             </CollapsibleTrigger>
             <CollapsibleContent>
               <div className="p-4 pt-0 space-y-4">
@@ -288,7 +288,7 @@ export const DiscoverySettings: React.FC = () => {
                 <span className="font-medium">Google Cloud Platform</span>
                 {renderStatus('gcp')}
               </div>
-              <ChevronDown className={`h-5 w-5 transition-transform ${openSections.gcp ? 'transform rotate-180' : ''}`} />
+              <Icon name="caret-down" size={20} className={`transition-transform ${openSections.gcp ? 'transform rotate-180' : ''}`} />
             </CollapsibleTrigger>
             <CollapsibleContent>
               <div className="p-4 pt-0 space-y-4">
@@ -339,7 +339,7 @@ export const DiscoverySettings: React.FC = () => {
                 <span className="font-medium">SSH</span>
                 {renderStatus('ssh')}
               </div>
-              <ChevronDown className={`h-5 w-5 transition-transform ${openSections.ssh ? 'transform rotate-180' : ''}`} />
+              <Icon name="caret-down" size={20} className={`transition-transform ${openSections.ssh ? 'transform rotate-180' : ''}`} />
             </CollapsibleTrigger>
             <CollapsibleContent>
               <div className="p-4 pt-0 space-y-4">

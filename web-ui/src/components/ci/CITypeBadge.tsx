@@ -2,18 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import React from 'react';
-import {
-  Server,
-  Cloud as CloudIcon,
-  Box,
-  Grid3x3,
-  Code,
-  Database,
-  Network,
-  HardDrive,
-  Scale,
-  CloudCog,
-} from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { CIType } from '../../services/ci.service';
 import { cn } from '../../utils/cn';
 
@@ -26,16 +15,16 @@ interface CITypeBadgeProps {
 }
 
 export const typeIcons: Record<CIType, React.ReactElement> = {
-  server: <Server className="w-4 h-4" />,
-  'virtual-machine': <CloudIcon className="w-4 h-4" />,
-  container: <Box className="w-4 h-4" />,
-  application: <Grid3x3 className="w-4 h-4" />,
-  service: <Code className="w-4 h-4" />,
-  database: <Database className="w-4 h-4" />,
-  'network-device': <Network className="w-4 h-4" />,
-  storage: <HardDrive className="w-4 h-4" />,
-  'load-balancer': <Scale className="w-4 h-4" />,
-  'cloud-resource': <CloudCog className="w-4 h-4" />,
+  server: <Icon name="computer-tower" size={16} />,
+  'virtual-machine': <Icon name="cloud" size={16} />,
+  container: <Icon name="cube" size={16} />,
+  application: <Icon name="grid-four" size={16} />,
+  service: <Icon name="code" size={16} />,
+  database: <Icon name="database" size={16} />,
+  'network-device': <Icon name="graph" size={16} />,
+  storage: <Icon name="hard-drive" size={16} />,
+  'load-balancer': <Icon name="scales" size={16} />,
+  'cloud-resource': <Icon name="cloud-check" size={16} />,
 };
 
 const typeConfig: Record<CIType, { label: string; icon: React.ReactElement }> = {

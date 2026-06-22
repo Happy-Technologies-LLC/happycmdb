@@ -9,7 +9,7 @@ import {
 } from '../../services/discovery.service';
 import { Button } from '../ui/button';
 import { LiquidGlass } from '../ui/liquid-glass';
-import { Plus, Search, Filter, Pencil, Trash2, Play, Eye } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import DiscoveryDefinitionForm from './DiscoveryDefinitionForm';
 import {
   Dialog,
@@ -158,7 +158,7 @@ export const DiscoveryDefinitionList: React.FC<DiscoveryDefinitionListProps> = (
           </p>
         </div>
         <Button onClick={() => setShowCreateDialog(true)}>
-          <Plus className="h-4 w-4 mr-2" />
+          <Icon name="plus" size={16} className="mr-2" />
           Create Definition
         </Button>
       </div>
@@ -167,7 +167,7 @@ export const DiscoveryDefinitionList: React.FC<DiscoveryDefinitionListProps> = (
         {/* Filters */}
         <div className="p-4 flex flex-wrap gap-3 items-center border-b border-border/50">
           <div className="relative flex-1 min-w-[250px]">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+            <Icon name="magnifying-glass" size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
             <input
               type="text"
               placeholder="Search definitions..."
@@ -178,7 +178,7 @@ export const DiscoveryDefinitionList: React.FC<DiscoveryDefinitionListProps> = (
           </div>
 
           <div className="relative min-w-[150px]">
-            <Filter className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+            <Icon name="funnel" size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
             <select
               value={filterProvider}
               onChange={(e) => setFilterProvider(e.target.value as DiscoveryProvider | 'all')}
@@ -304,21 +304,21 @@ export const DiscoveryDefinitionList: React.FC<DiscoveryDefinitionListProps> = (
                           className="p-1.5 hover:bg-primary/10 rounded transition-colors"
                           title="Run Now"
                         >
-                          <Play className="w-4 h-4 text-primary" />
+                          <Icon name="play" size={16} className="text-primary" />
                         </button>
                         <button
                           onClick={() => handleEdit(definition)}
                           className="p-1.5 hover:bg-primary/10 rounded transition-colors"
                           title="Edit"
                         >
-                          <Pencil className="w-4 h-4 text-primary" />
+                          <Icon name="pencil-simple" size={16} className="text-primary" />
                         </button>
                         <button
                           onClick={() => setDeletingDefinition(definition)}
                           className="p-1.5 hover:bg-destructive/10 rounded transition-colors"
                           title="Delete"
                         >
-                          <Trash2 className="w-4 h-4 text-destructive" />
+                          <Icon name="trash" size={16} className="text-destructive" />
                         </button>
                       </div>
                     </td>

@@ -11,7 +11,7 @@ import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { connectorsApi } from '../../api/connectors';
 import { Connector } from '../../types';
-import { Play, Settings, Trash2, CheckCircle, XCircle, Clock, Info, ArrowRight } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { LiquidGlass } from '@/components/ui/liquid-glass';
@@ -158,11 +158,11 @@ export const ConnectorMarketplace: React.FC = () => {
   const getStatusIcon = (status: string) => {
     switch (status) {
       case 'active':
-        return <CheckCircle className="h-5 w-5 text-success" />;
+        return <Icon name="check-circle" size={20} className="text-success" />;
       case 'inactive':
-        return <Clock className="h-5 w-5 text-ink-soft" />;
+        return <Icon name="clock" size={20} className="text-ink-soft" />;
       case 'error':
-        return <XCircle className="h-5 w-5 text-danger" />;
+        return <Icon name="x-circle" size={20} className="text-danger" />;
       default:
         return null;
     }
@@ -182,7 +182,7 @@ export const ConnectorMarketplace: React.FC = () => {
       <LiquidGlass variant="default" rounded="xl" className="border-l-4 border-l-sky">
         <div className="flex items-start gap-4">
           <div className="p-2 bg-sky-soft rounded-lg">
-            <Info className="h-6 w-6 text-sky-text" />
+            <Icon name="info" size={24} className="text-sky-text" />
           </div>
           <div className="flex-1">
             <h3 className="font-semibold text-lg mb-1">Looking for Cloud Infrastructure Discovery?</h3>
@@ -197,7 +197,7 @@ export const ConnectorMarketplace: React.FC = () => {
               variant="outline"
             >
               Go to Discovery
-              <ArrowRight className="h-4 w-4 ml-2" />
+              <Icon name="arrow-right" size={16} className="ml-2" />
             </Button>
           </div>
         </div>
@@ -255,7 +255,7 @@ export const ConnectorMarketplace: React.FC = () => {
                     className="flex-1"
                     size="sm"
                   >
-                    <Play className="h-4 w-4" />
+                    <Icon name="play" size={16} />
                     Run Now
                   </Button>
                   <Button
@@ -265,14 +265,14 @@ export const ConnectorMarketplace: React.FC = () => {
                     variant="outline"
                     size="sm"
                   >
-                    <Settings className="h-4 w-4" />
+                    <Icon name="gear-six" size={16} />
                   </Button>
                   <Button
                     onClick={() => deleteMutation.mutate(connector.id)}
                     variant="destructive"
                     size="sm"
                   >
-                    <Trash2 className="h-4 w-4" />
+                    <Icon name="trash" size={16} />
                   </Button>
                 </div>
               </div>

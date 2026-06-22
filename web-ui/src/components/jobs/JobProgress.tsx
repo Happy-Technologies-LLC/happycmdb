@@ -8,7 +8,7 @@
  */
 
 import React from 'react';
-import { CheckCircle, XCircle, HourglassIcon, Play, Pause } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { Progress } from '../ui/progress';
 import { Job } from '../../services/jobs.service';
 import { cn } from '../../lib/utils';
@@ -29,16 +29,16 @@ export const JobProgress: React.FC<JobProgressProps> = ({
   const getStatusIcon = () => {
     switch (job.status) {
       case 'completed':
-        return <CheckCircle className="h-4 w-4 text-green-600 dark:text-green-400" />;
+        return <Icon name="check-circle" size={16} className="text-green-600 dark:text-green-400" />;
       case 'failed':
-        return <XCircle className="h-4 w-4 text-destructive" />;
+        return <Icon name="x-circle" size={16} className="text-destructive" />;
       case 'active':
-        return <Play className="h-4 w-4 text-primary" />;
+        return <Icon name="play" size={16} className="text-primary" />;
       case 'waiting':
       case 'delayed':
-        return <HourglassIcon className="h-4 w-4 text-yellow-600 dark:text-yellow-400" />;
+        return <Icon name="hourglass" size={16} className="text-yellow-600 dark:text-yellow-400" />;
       case 'paused':
-        return <Pause className="h-4 w-4 text-muted-foreground" />;
+        return <Icon name="pause" size={16} className="text-muted-foreground" />;
       default:
         return null;
     }

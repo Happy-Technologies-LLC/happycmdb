@@ -2,18 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import React, { useEffect, useRef, useState } from 'react';
-import {
-  ZoomIn,
-  ZoomOut,
-  Focus,
-  Download,
-  RefreshCw,
-  Layers,
-  Server,
-  Database,
-  Network,
-  Box,
-} from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import cytoscape, { Core, ElementDefinition, NodeSingular } from 'cytoscape';
 import { Button } from '../ui/button';
 import { Card } from '../ui/card';
@@ -390,19 +379,19 @@ export const ServiceMap: React.FC<ServiceMapProps> = ({
           </div>
 
           <Button size="icon" variant="outline" onClick={handleZoomIn} title="Zoom In">
-            <ZoomIn className="h-4 w-4" />
+            <Icon name="magnifying-glass-plus" size={16} />
           </Button>
 
           <Button size="icon" variant="outline" onClick={handleZoomOut} title="Zoom Out">
-            <ZoomOut className="h-4 w-4" />
+            <Icon name="magnifying-glass-minus" size={16} />
           </Button>
 
           <Button size="icon" variant="outline" onClick={handleCenter} title="Center">
-            <Focus className="h-4 w-4" />
+            <Icon name="crosshair" size={16} />
           </Button>
 
           <Button size="icon" variant="outline" onClick={handleDownload} title="Download as PNG">
-            <Download className="h-4 w-4" />
+            <Icon name="download-simple" size={16} />
           </Button>
         </div>
       </div>
@@ -417,7 +406,7 @@ export const ServiceMap: React.FC<ServiceMapProps> = ({
       <div className="grid grid-cols-2 gap-4">
         <Card className="p-4">
           <h4 className="text-sm font-semibold mb-3 flex items-center gap-2">
-            <Layers className="h-4 w-4" />
+            <Icon name="stack" size={16} />
             Business Service Tiers
           </h4>
           <div className="space-y-2">
@@ -442,7 +431,7 @@ export const ServiceMap: React.FC<ServiceMapProps> = ({
 
         <Card className="p-4">
           <h4 className="text-sm font-semibold mb-3 flex items-center gap-2">
-            <Server className="h-4 w-4" />
+            <Icon name="computer-tower" size={16} />
             CI Status (Border Color)
           </h4>
           <div className="grid grid-cols-2 gap-2">

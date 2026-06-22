@@ -10,7 +10,7 @@ import { Progress } from '../ui/progress';
 import { Alert, AlertDescription } from '../ui/alert';
 import { Separator } from '../ui/separator';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '../ui/collapsible';
-import { ChevronDown, RefreshCw, X } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 
 interface DiscoveryJobStatusProps {
   job: DiscoveryJob;
@@ -163,7 +163,7 @@ export const DiscoveryJobStatus: React.FC<DiscoveryJobStatusProps> = ({
               size="sm"
               onClick={() => onRetry(job.id)}
             >
-              <RefreshCw className="h-4 w-4 mr-2" />
+              <Icon name="arrows-clockwise" size={16} className="mr-2" />
               Retry
             </Button>
           )}
@@ -173,7 +173,7 @@ export const DiscoveryJobStatus: React.FC<DiscoveryJobStatusProps> = ({
               variant="destructive"
               onClick={() => onCancel(job.id)}
             >
-              <X className="h-4 w-4 mr-2" />
+              <Icon name="x" size={16} className="mr-2" />
               Cancel
             </Button>
           )}
@@ -181,8 +181,10 @@ export const DiscoveryJobStatus: React.FC<DiscoveryJobStatusProps> = ({
             <CollapsibleTrigger asChild>
               <Button size="sm" variant="ghost">
                 {logsExpanded ? 'Hide' : 'Show'} Logs
-                <ChevronDown
-                  className={`h-4 w-4 ml-2 transition-transform ${
+                <Icon
+                  name="caret-down"
+                  size={16}
+                  className={`ml-2 transition-transform ${
                     logsExpanded ? 'rotate-180' : ''
                   }`}
                 />

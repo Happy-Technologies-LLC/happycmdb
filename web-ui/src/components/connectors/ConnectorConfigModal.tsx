@@ -7,7 +7,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { X, Check, ArrowRight, ArrowLeft } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { Button } from '@/components/ui/button';
 import { LiquidGlass } from '@/components/ui/liquid-glass';
 import { Badge } from '@/components/ui/badge';
@@ -187,7 +187,7 @@ export const ConnectorConfigModal: React.FC<ConnectorConfigModalProps> = ({
             onClick={onClose}
             className="p-2 hover:bg-muted rounded-lg transition-colors"
           >
-            <X className="h-5 w-5" />
+            <Icon name="x" size={20} />
           </button>
         </div>
 
@@ -204,7 +204,7 @@ export const ConnectorConfigModal: React.FC<ConnectorConfigModalProps> = ({
                     : 'bg-muted text-muted-foreground'
                 }`}
               >
-                {stepNum < step ? <Check className="h-5 w-5" /> : stepNum}
+                {stepNum < step ? <Icon name="check" size={20} /> : stepNum}
               </div>
               <span className={`text-sm font-medium ${stepNum === step ? 'text-foreground' : 'text-muted-foreground'}`}>
                 {stepNum === 1 && 'Basic Info'}
@@ -212,7 +212,7 @@ export const ConnectorConfigModal: React.FC<ConnectorConfigModalProps> = ({
                 {stepNum === 3 && 'Field Mapping'}
               </span>
               {stepNum < 3 && (
-                <ArrowRight className="h-4 w-4 text-muted-foreground ml-2" />
+                <Icon name="arrow-right" size={16} className="text-muted-foreground ml-2" />
               )}
             </div>
           ))}
@@ -453,7 +453,7 @@ export const ConnectorConfigModal: React.FC<ConnectorConfigModalProps> = ({
           </div>
           <div className="flex gap-2">
             <Button variant="outline" onClick={step === 1 ? onClose : handleBack}>
-              <ArrowLeft className="h-4 w-4 mr-2" />
+              <Icon name="arrow-left" size={16} className="mr-2" />
               {step === 1 ? 'Cancel' : 'Back'}
             </Button>
             <Button
@@ -461,7 +461,7 @@ export const ConnectorConfigModal: React.FC<ConnectorConfigModalProps> = ({
               disabled={!canProceed()}
             >
               {step === totalSteps ? 'Deploy Connector' : 'Next'}
-              {step < totalSteps && <ArrowRight className="h-4 w-4 ml-2" />}
+              {step < totalSteps && <Icon name="arrow-right" size={16} className="ml-2" />}
             </Button>
           </div>
         </div>

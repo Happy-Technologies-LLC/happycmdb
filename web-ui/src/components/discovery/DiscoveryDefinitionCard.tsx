@@ -6,22 +6,7 @@ import { Badge } from '../ui/badge';
 import { Avatar, AvatarFallback } from '../ui/avatar';
 import { Separator } from '../ui/separator';
 import { Switch } from '../ui/switch';
-import {
-  Play,
-  Edit,
-  Trash2,
-  Cloud,
-  HardDrive,
-  Network,
-  Clock,
-  Calendar,
-  AlertCircle,
-  CheckCircle,
-  Container,
-  Server,
-  Boxes,
-  Users,
-} from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -46,12 +31,12 @@ interface DiscoveryDefinitionCardProps {
 
 const PROVIDER_CONFIG: Record<
   DiscoveryProvider,
-  { name: string; color: string; Icon: React.ElementType }
+  { name: string; color: string; icon: string }
 > = {
-  nmap: { name: 'Network Scan (Nmap)', color: brand.navy, Icon: Network },
-  ssh: { name: 'SSH Discovery', color: brand.success, Icon: HardDrive },
-  'active-directory': { name: 'Active Directory', color: brand.sky, Icon: Users },
-  snmp: { name: 'SNMP Discovery', color: brand.danger, Icon: Network },
+  nmap: { name: 'Network Scan (Nmap)', color: brand.navy, icon: 'share-network' },
+  ssh: { name: 'SSH Discovery', color: brand.success, icon: 'hard-drive' },
+  'active-directory': { name: 'Active Directory', color: brand.sky, icon: 'users' },
+  snmp: { name: 'SNMP Discovery', color: brand.danger, icon: 'share-network' },
 };
 
 const formatRelativeTime = (dateString?: string): string => {
@@ -95,7 +80,6 @@ export const DiscoveryDefinitionCard: React.FC<DiscoveryDefinitionCardProps> = (
   onToggleSchedule,
 }) => {
   const config = PROVIDER_CONFIG[definition.provider];
-  const ProviderIcon = config.Icon;
   const [isScheduleEnabled, setIsScheduleEnabled] = useState(definition.schedule.enabled);
   const { showToast } = useToast();
 
@@ -128,21 +112,21 @@ export const DiscoveryDefinitionCard: React.FC<DiscoveryDefinitionCardProps> = (
       case 'completed':
         return (
           <Badge variant="secondary" className="flex items-center gap-1">
-            <CheckCircle className="h-3 w-3" />
+            <Icon name="check-circle" size={12} />
             Success
           </Badge>
         );
       case 'failed':
         return (
           <Badge variant="destructive" className="flex items-center gap-1">
-            <AlertCircle className="h-3 w-3" />
+            <Icon name="warning-circle" size={12} />
             Failed
           </Badge>
         );
       case 'running':
         return (
           <Badge variant="default" className="flex items-center gap-1">
-            <Clock className="h-3 w-3 animate-spin" />
+            <Icon name="clock" size={12} className="animate-spin" />
             Running
           </Badge>
         );
@@ -158,7 +142,7 @@ export const DiscoveryDefinitionCard: React.FC<DiscoveryDefinitionCardProps> = (
           <div className="flex items-center gap-3">
             <Avatar className="w-12 h-12" style={{ backgroundColor: config.color }}>
               <AvatarFallback>
-                <ProviderIcon className="h-6 w-6 text-white" />
+                <Icon name={config.icon} size={24} className="text-white" />
               </AvatarFallback>
             </Avatar>
             <div>
@@ -184,7 +168,7 @@ export const DiscoveryDefinitionCard: React.FC<DiscoveryDefinitionCardProps> = (
         <div className="space-y-3">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <Calendar className="h-4 w-4" />
+              <Icon name="calendar" size={16} />
               <span>Schedule:</span>
             </div>
             <div className="flex items-center gap-2">
@@ -224,19 +208,19 @@ export const DiscoveryDefinitionCard: React.FC<DiscoveryDefinitionCardProps> = (
           onClick={handleRun}
           disabled={!definition.active}
         >
-          <Play className="h-4 w-4 mr-2" />
+          <Icon name="play" size={16} className="mr-2" />
           Run Now
         </Button>
         <Button
           variant="outline"
           onClick={() => onEdit(definition.id)}
         >
-          <Edit className="h-4 w-4" />
+          <Icon name="pencil-simple" size={16} />
         </Button>
         <AlertDialog>
           <AlertDialogTrigger asChild>
             <Button variant="outline">
-              <Trash2 className="h-4 w-4 text-destructive" />
+              <Icon name="trash" size={16} className="text-destructive" />
             </Button>
           </AlertDialogTrigger>
           <AlertDialogContent>

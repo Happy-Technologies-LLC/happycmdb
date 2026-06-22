@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import React, { useState, useEffect } from 'react';
-import { Search, Filter, X } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Select } from '@/components/ui/select';
@@ -164,7 +164,7 @@ export default function ConnectorCatalog() {
         <div className="flex flex-col sm:flex-row gap-3">
           {/* Search */}
           <div className="relative flex-1">
-            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <Icon name="magnifying-glass" size={16} className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground" />
             <Input
               type="text"
               placeholder="Search connectors..."
@@ -200,7 +200,7 @@ export default function ConnectorCatalog() {
           {/* Clear Filters */}
           {hasActiveFilters && (
             <Button variant="ghost" size="sm" onClick={clearFilters} className="whitespace-nowrap">
-              <X className="h-4 w-4 mr-1" />
+              <Icon name="x" size={16} className="mr-1" />
               Clear
             </Button>
           )}
@@ -209,7 +209,7 @@ export default function ConnectorCatalog() {
         {/* Tags Filter */}
         {allTags.length > 0 && (
           <div className="flex items-center gap-2 flex-wrap">
-            <Filter className="h-4 w-4 text-muted-foreground" />
+            <Icon name="funnel" size={16} className="text-muted-foreground" />
             <span className="text-sm text-muted-foreground">Tags:</span>
             {allTags.slice(0, 15).map((tag) => (
               <Badge

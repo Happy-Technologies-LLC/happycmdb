@@ -14,7 +14,7 @@ import {
   ReferenceLine,
 } from 'recharts';
 import { LiquidGlass } from '@/components/ui/liquid-glass';
-import { AlertCircle } from 'lucide-react';
+import { Icon } from '@happy-technologies/design-system';
 import { brand } from '@/lib/brandColors';
 
 export interface HealthDataPoint {
@@ -48,7 +48,7 @@ export const ServiceHealthChart: React.FC<ServiceHealthChartProps> = ({
           </p>
           {payload[0].payload.incidents > 0 && (
             <p className="text-sm text-danger flex items-center gap-1 mt-1">
-              <AlertCircle className="h-3 w-3" />
+              <Icon name="warning-circle" size={12} />
               {payload[0].payload.incidents} incident{payload[0].payload.incidents > 1 ? 's' : ''}
             </p>
           )}

@@ -165,6 +165,13 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). All contributors must sign the [CLA](CLA
 
 For deployment assistance, custom connectors, or commercial licensing inquiries, contact **commercial@happy-tech.biz**.
 
+## Support
+
+If you find this project valuable, there are two ways to support its development:
+
+- **GitHub Sponsors:** [github.com/sponsors/Happy-Technologies-LLC](https://github.com/sponsors/Happy-Technologies-LLC)
+- **Buy Me a Coffee:** [buymeacoffee.com/nickzitzer](https://buymeacoffee.com/nickzitzer)
+
 ## License
 
 Copyright 2026 Happy Technologies LLC. Licensed under the [Apache License, Version 2.0](LICENSE).

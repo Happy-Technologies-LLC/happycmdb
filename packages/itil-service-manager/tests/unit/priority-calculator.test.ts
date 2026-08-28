@@ -76,10 +76,15 @@ describe('PriorityCalculator', () => {
   });
 
   describe('calculateUrgency', () => {
-    it('should return critical for service down during business hours with high SLA', () => {
-      const urgency = PriorityCalculator.calculateUrgency('down', 99.9, true);
+    it('should return critical for service in outage during business hours with high SLA', () => {
+      const urgency = PriorityCalculator.calculateUrgency('outage', 99.9, true);
       expect(urgency).toBe('critical');
     });
+    it('should return high for a service in outage with medium SLA', () => {
+      const urgency = PriorityCalculator.calculateUrgency('outage', 99.0, true);
+      expect(urgency).toBe('high');
+    });
+
 
     it('should return high for service degraded with high SLA', () => {
       const urgency = PriorityCalculator.calculateUrgency('degraded', 99.9, true);

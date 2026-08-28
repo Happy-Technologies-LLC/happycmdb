@@ -6,13 +6,13 @@
  * Profile information and password management
  */
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useForm, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { Icon } from '@happy-technologies/design-system';
-import { useAuth } from '../../hooks/useAuth';
-import { updateProfile, changePassword, deleteAccount } from '../../services/auth.service';
+import { useAuth } from '../../contexts/AuthContext';
+import { api } from '../../services/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -47,15 +47,22 @@ type PasswordFormData = z.infer<typeof passwordSchema>;
 
 export const UserProfile: React.FC = () => {
   const { user, refreshUser, logout } = useAuth();
-  const [avatar, setAvatar] = useState<string | null>(user?.avatar || null);
+  const [avatar, setAvatar] = useState<string | null>(user?.avatar ?? null);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
+  // Keep the avatar preview in sync with the authenticated user's persisted
+  // value - covers the initial mount (user may load after this component
+  // does) and any later refreshUser() that pulls in a server-side change.
+  useEffect(() => {
+    setAvatar(user?.avatar ?? null);
+  }, [user?.avatar]);
+
   const profileForm = useForm<ProfileFormData>({
     resolver: zodResolver(profileSchema),
     defaultValues: {
-      name: user?.name || '',
+      name: user?.full_name || '',
       email: user?.email || '',
     },
   });
@@ -82,7 +89,7 @@ export const UserProfile: React.FC = () => {
 
   const onProfileSubmit = async (data: ProfileFormData) => {
     try {
-      await updateProfile({
+      await api.updateProfile({
         name: data.name,
         avatar: avatar || undefined,
       });
@@ -97,7 +104,7 @@ export const UserProfile: React.FC = () => {
 
   const onPasswordSubmit = async (data: PasswordFormData) => {
     try {
-      await changePassword({
+      await api.changePassword({
         currentPassword: data.currentPassword,
         newPassword: data.newPassword,
       });
@@ -112,7 +119,7 @@ export const UserProfile: React.FC = () => {
 
   const handleDeleteAccount = async () => {
     try {
-      await deleteAccount();
+      await api.deleteAccount();
       setDeleteDialogOpen(false);
       await logout();
     } catch (error: any) {
@@ -157,9 +164,9 @@ export const UserProfile: React.FC = () => {
 
           <div className="flex items-center gap-4 mb-6">
             <Avatar className="h-24 w-24">
-              <AvatarImage src={avatar || undefined} alt={user?.name} />
+              <AvatarImage src={avatar || undefined} alt={user?.full_name} />
               <AvatarFallback className="text-lg">
-                {user?.name && getInitials(user.name)}
+                {user?.full_name && getInitials(user.full_name)}
               </AvatarFallback>
             </Avatar>
             <label htmlFor="avatar-upload" className="cursor-pointer">

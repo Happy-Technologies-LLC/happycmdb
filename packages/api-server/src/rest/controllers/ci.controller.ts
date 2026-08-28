@@ -580,7 +580,7 @@ export class CIController {
       try {
         const result = await session.run(
           `
-          CALL db.index.fulltext.queryNodes('ci_fulltext_search', $query)
+          CALL db.index.fulltext.queryNodes('ci_fulltext_idx', $query)
           YIELD node, score
           RETURN node, score
           ORDER BY score DESC

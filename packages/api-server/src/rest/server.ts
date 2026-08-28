@@ -24,18 +24,20 @@ import { connectorConfigRoutes } from './routes/connector-config.routes';
 import { unifiedCredentialRoutes } from './routes/unified-credential.routes';
 import { reconciliationRoutes } from './routes/reconciliation.routes';
 import { dashboardRoutes } from './routes/dashboard.routes';
-// TEMPORARILY DISABLED - V3.0 routes need repository implementations
-// import { aiPatternRoutes } from './routes/ai-pattern.routes';
+import { aiPatternRoutes } from './routes/ai-pattern.routes';
 import { swaggerRoutes } from './routes/swagger.routes';
 import { itilRoutes } from './routes/itil.routes';
 import { businessServiceRoutes } from './routes/business-service.routes';
 import { architectureRoutes } from './routes/architecture.routes';
 import metricsRoutes from '../metrics/metrics.routes';
 import { tbmRoutes } from './routes/tbm.routes';
+import { settingsRoutes } from './routes/settings.routes';
+import { driftRoutes, impactRoutes } from './routes/drift-impact.routes';
 import { createRateLimitMetricsRoutes } from './routes/rate-limit-metrics.routes';
 import { RateLimitMiddleware } from '../middleware/rate-limit.middleware';
 import { getRedisClient } from '@cmdb/database';
 import { loadConfig } from '@cmdb/common';
+import { getAuthMiddleware } from '../auth/auth-bootstrap';
 
 export class RestAPIServer {
   private app: Express;
@@ -92,6 +94,16 @@ export class RestAPIServer {
     // API endpoints
     this.app.use('/api/v1/cmdb-health', healthRoutes);
     this.app.use('/api/v1/auth', authRoutes);
+
+    // Every remaining /api/v1 route requires authentication (JWT bearer or
+    // API key -- discovery agents authenticate with an agent-role API key
+    // through the same check). Public endpoints (Swagger docs, health
+    // check, and /api/v1/auth's own login/register/refresh routes) are all
+    // mounted above this line and are therefore unaffected. Individual
+    // routers layer `requirePermission()`/`requireRole()` on top for
+    // write/admin gating; they must not call `.authenticate()` themselves
+    // to avoid re-verifying the same credential twice per request.
+    this.app.use('/api/v1', getAuthMiddleware().authenticate());
     this.app.use('/api/v1/cis', ciRoutes);
     this.app.use('/api/v1/discovery/definitions', discoveryDefinitionRoutes);
     this.app.use('/api/v1/discovery', discoveryRoutes);
@@ -109,6 +121,10 @@ export class RestAPIServer {
     this.app.use('/api/v1/business-services', businessServiceRoutes);
     this.app.use('/api/v1/architecture', architectureRoutes);
     this.app.use('/api/v1/tbm', tbmRoutes);
+    this.app.use('/api/v1/settings', settingsRoutes);
+    this.app.use('/api/v1/drift', driftRoutes);
+    this.app.use('/api/v1/impact', impactRoutes);
+    this.app.use('/api/v1/ai', aiPatternRoutes);
     // Prometheus metrics (public, root path -> /metrics)
     this.app.use('/', metricsRoutes);
     // Rate-limit monitoring (admin)
@@ -118,7 +134,11 @@ export class RestAPIServer {
         getRedisClient().getConnection(),
         config.rateLimit
       );
-      this.app.use('/api/v1/metrics/rate-limits', createRateLimitMetricsRoutes(rateLimitMiddleware));
+      this.app.use(
+        '/api/v1/metrics/rate-limits',
+        getAuthMiddleware().requireRole('admin'),
+        createRateLimitMetricsRoutes(rateLimitMiddleware)
+      );
     } catch (err) {
       logger.warn('Rate-limit metrics routes not mounted', { error: (err as Error).message });
     }

@@ -100,25 +100,25 @@ export class PriorityCalculator {
     slaAvailabilityTarget: number,
     isBusinessHours: boolean
   ): 'critical' | 'high' | 'medium' | 'low' {
-    // Critical: Service down during business hours with high SLA
-    if (operationalStatus === 'down' && isBusinessHours && slaAvailabilityTarget >= 99.9) {
+    // Critical: Service in outage during business hours with high SLA
+    if (operationalStatus === 'outage' && isBusinessHours && slaAvailabilityTarget >= 99.9) {
       return 'critical';
     }
 
-    // High: Service degraded with high SLA OR down with medium SLA
+    // High: Service degraded with high SLA OR in outage with medium SLA
     if (
       (operationalStatus === 'degraded' && slaAvailabilityTarget >= 99.9) ||
-      (operationalStatus === 'down' && slaAvailabilityTarget >= 99.0)
+      (operationalStatus === 'outage' && slaAvailabilityTarget >= 99.0)
     ) {
       return 'high';
     }
 
-    // Medium: Service degraded OR down outside business hours
+    // Medium: Service degraded OR outage outside business hours
     if (operationalStatus === 'degraded' || !isBusinessHours) {
       return 'medium';
     }
 
-    // Low: Service operational or low SLA
+    // Low: Service operational (or in maintenance) or low SLA
     return 'low';
   }
 

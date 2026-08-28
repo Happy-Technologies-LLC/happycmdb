@@ -10,6 +10,7 @@
 
 import { getQueueManager, QUEUE_NAMES, logger } from '@cmdb/common';
 import type { ETLJobData, ETLJobType } from '@cmdb/common';
+import { getScheduleConfigStore } from '@cmdb/database';
 import { v4 as uuidv4 } from 'uuid';
 
 /**
@@ -74,6 +75,12 @@ const DEFAULT_SCHEDULES: ETLSchedule[] = [
 ];
 
 /**
+ * Redis "kind" discriminator this scheduler's persisted schedule configs are stored under.
+ * Paired with the ETL type as the persisted key's id: cmdb:schedule-config:v1:etl:<type>.
+ */
+const SCHEDULE_KIND = 'etl';
+
+/**
  * ETL Scheduler
  */
 export class ETLScheduler {
@@ -104,9 +111,15 @@ export class ETLScheduler {
 
     logger.info('Starting ETL scheduler...');
 
+    // Hydrate every ETL schedule from the shared Redis-backed config before deciding what to
+    // create or remove, so this process agrees with whatever the last process to mutate a
+    // schedule (API server or worker) actually persisted.
+    await this.loadPersistedSchedules();
+
     for (const [type, schedule] of this.schedules.entries()) {
       if (!schedule._enabled) {
         logger.info(`Skipping disabled schedule for ${type}`);
+        await this.removeSchedule(type);
         continue;
       }
 
@@ -194,36 +207,54 @@ export class ETLScheduler {
    * Update schedule for an ETL type
    */
   async updateSchedule(type: ETLJobType, cronPattern: string): Promise<void> {
-    const schedule = this.schedules.get(type);
-    if (!schedule) {
+    if (!this.schedules.has(type)) {
       throw new Error(`No schedule found for ETL type: ${type}`);
     }
 
-    // Remove old schedule
-    await this.removeSchedule(type);
+    // Seed the store first so an unseeded schedule's first cron-only edit keeps its known
+    // enabled/config defaults instead of the store's update() falling back to enabled=false.
+    await this.refreshScheduleFromStore(type);
 
-    // Update and add new schedule
-    schedule._cronPattern = cronPattern;
-    await this.scheduleETLJob(schedule);
+    const persisted = await getScheduleConfigStore().update(SCHEDULE_KIND, type, {
+      cronExpression: cronPattern,
+    });
+    const schedule = this.schedules.get(type)!;
+    schedule._cronPattern = persisted.cronExpression;
+    schedule._enabled = persisted.enabled;
+    schedule._config = persisted.config;
 
-    logger.info(`Updated schedule for ${type}`, { cronPattern });
+    // A disabled schedule stores the new cron but stays real: no repeatable job is created
+    // until the schedule is explicitly enabled. An enabled schedule gets its repeatable
+    // replaced immediately so the live cadence matches the newly stored cron.
+    if (schedule._enabled) {
+      await this.removeSchedule(type);
+      await this.scheduleETLJob(schedule);
+    }
+
+    logger.info(`Updated schedule for ${type}`, { cronPattern, enabled: schedule._enabled });
   }
 
   /**
    * Enable schedule for an ETL type
    */
   async enableSchedule(type: ETLJobType): Promise<void> {
-    const schedule = this.schedules.get(type);
-    if (!schedule) {
+    if (!this.schedules.has(type)) {
       throw new Error(`No schedule found for ETL type: ${type}`);
     }
 
+    const schedule = await this.refreshScheduleFromStore(type);
     if (schedule._enabled) {
       logger.warn(`Schedule for ${type} already enabled`);
       return;
     }
 
-    schedule._enabled = true;
+    const persisted = await getScheduleConfigStore().update(SCHEDULE_KIND, type, {
+      enabled: true,
+    });
+    schedule._cronPattern = persisted.cronExpression;
+    schedule._enabled = persisted.enabled;
+    schedule._config = persisted.config;
+
     await this.scheduleETLJob(schedule);
 
     logger.info(`Enabled schedule for ${type}`);
@@ -233,17 +264,23 @@ export class ETLScheduler {
    * Disable schedule for an ETL type
    */
   async disableSchedule(type: ETLJobType): Promise<void> {
-    const schedule = this.schedules.get(type);
-    if (!schedule) {
+    if (!this.schedules.has(type)) {
       throw new Error(`No schedule found for ETL type: ${type}`);
     }
 
+    const schedule = await this.refreshScheduleFromStore(type);
     if (!schedule._enabled) {
       logger.warn(`Schedule for ${type} already disabled`);
       return;
     }
 
-    schedule._enabled = false;
+    const persisted = await getScheduleConfigStore().update(SCHEDULE_KIND, type, {
+      enabled: false,
+    });
+    schedule._cronPattern = persisted.cronExpression;
+    schedule._enabled = persisted.enabled;
+    schedule._config = persisted.config;
+
     await this.removeSchedule(type);
 
     logger.info(`Disabled schedule for ${type}`);
@@ -281,6 +318,77 @@ export class ETLScheduler {
    */
   getSchedule(type: ETLJobType): ETLSchedule | undefined {
     return this.schedules.get(type);
+  }
+
+  /**
+   * Load the persisted schedule config for an ETL type from the shared Redis store, seeding it
+   * with this instance's current in-memory schedule as the default the first time any process
+   * asks for it. Mutates and returns the in-memory schedule so every caller in this class stays
+   * on the shared truth instead of stale constructor defaults.
+   */
+  private async refreshScheduleFromStore(type: ETLJobType): Promise<ETLSchedule> {
+    const schedule = this.schedules.get(type);
+    if (!schedule) {
+      throw new Error(`No schedule found for ETL type: ${type}`);
+    }
+
+    const persisted = await getScheduleConfigStore().seedIfAbsent(SCHEDULE_KIND, type, {
+      cronExpression: schedule._cronPattern,
+      enabled: schedule._enabled,
+      config: schedule._config,
+    });
+
+    schedule._cronPattern = persisted.cronExpression;
+    schedule._enabled = persisted.enabled;
+    schedule._config = persisted.config;
+
+    return schedule;
+  }
+
+  /**
+   * Hydrate every ETL schedule from the shared Redis store. Called by start() before it decides
+   * what to create or remove.
+   */
+  private async loadPersistedSchedules(): Promise<void> {
+    for (const type of this.schedules.keys()) {
+      await this.refreshScheduleFromStore(type);
+    }
+  }
+
+  /**
+   * Whether a BullMQ repeatable job actually exists for a queue/job name pair, independent of
+   * any cached "enabled" flag.
+   */
+  private async hasRepeatableJob(queueName: string, jobName: string): Promise<boolean> {
+    const queue = this.queueManager.getQueue(queueName);
+    const repeatableJobs = await queue.getRepeatableJobs();
+    return repeatableJobs.some((job) => job.name === jobName);
+  }
+
+  /**
+   * Get the schedule for an ETL type resolved against the shared Redis-backed config and the
+   * actual BullMQ repeatable job state. This is the source of truth for the schedules REST API:
+   * unlike getSchedule(), it is never limited to whatever this process's in-memory map last held.
+   */
+  async getScheduleView(type: ETLJobType): Promise<ETLSchedule | undefined> {
+    if (!this.schedules.has(type)) {
+      return undefined;
+    }
+
+    const schedule = await this.refreshScheduleFromStore(type);
+    schedule._enabled = await this.hasRepeatableJob(schedule._queueName, `etl-${type}`);
+    return schedule;
+  }
+
+  /**
+   * Get every ETL schedule resolved against the shared Redis-backed config and actual BullMQ
+   * repeatable job state.
+   */
+  async getSchedulesView(): Promise<ETLSchedule[]> {
+    const views = await Promise.all(
+      Array.from(this.schedules.keys()).map((type) => this.getScheduleView(type))
+    );
+    return views.filter((schedule): schedule is ETLSchedule => schedule !== undefined);
   }
 
   /**

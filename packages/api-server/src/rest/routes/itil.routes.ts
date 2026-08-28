@@ -6,9 +6,11 @@ import Joi from 'joi';
 import { ITILController } from '../controllers/itil.controller';
 import { validateRequest, validateOptional } from '../middleware/validation.middleware';
 import { auditMiddleware } from '../../middleware/audit.middleware';
+import { getAuthMiddleware } from '../../auth/auth-bootstrap';
 
 export const itilRoutes = Router();
 const controller = new ITILController();
+const authMiddleware = getAuthMiddleware();
 
 // Apply audit middleware to all routes
 itilRoutes.use(auditMiddleware);
@@ -73,7 +75,7 @@ const createChangeSchema = Joi.object({
 
 const updateChangeSchema = Joi.object({
   status: Joi.string()
-    .valid('REQUESTED', 'APPROVED', 'SCHEDULED', 'IN_PROGRESS', 'IMPLEMENTED', 'CLOSED', 'CANCELLED')
+    .valid('DRAFT', 'PENDING_APPROVAL', 'APPROVED', 'SCHEDULED', 'IN_PROGRESS', 'IMPLEMENTED', 'CLOSED', 'CANCELLED')
     .optional(),
   implementedBy: Joi.string().optional(),
   actualDuration: Joi.number().integer().min(1).optional(),
@@ -122,7 +124,7 @@ const incidentFiltersSchema = Joi.object({
 
 const changeFiltersSchema = Joi.object({
   status: Joi.string()
-    .valid('REQUESTED', 'APPROVED', 'SCHEDULED', 'IN_PROGRESS', 'IMPLEMENTED', 'CLOSED', 'CANCELLED')
+    .valid('DRAFT', 'PENDING_APPROVAL', 'APPROVED', 'SCHEDULED', 'IN_PROGRESS', 'IMPLEMENTED', 'CLOSED', 'CANCELLED')
     .optional(),
   changeType: Joi.string().valid('STANDARD', 'NORMAL', 'EMERGENCY').optional(),
   requestedBy: Joi.string().optional(),
@@ -147,12 +149,14 @@ itilRoutes.get(
 
 itilRoutes.patch(
   '/configuration-items/:id/lifecycle',
+  authMiddleware.requirePermission('write'),
   validateRequest(updateLifecycleSchema, 'body'),
   controller.updateLifecycleStage.bind(controller)
 );
 
 itilRoutes.patch(
   '/configuration-items/:id/status',
+  authMiddleware.requirePermission('write'),
   validateRequest(updateConfigStatusSchema, 'body'),
   controller.updateConfigurationStatus.bind(controller)
 );
@@ -169,12 +173,14 @@ itilRoutes.get(
 
 itilRoutes.post(
   '/configuration-items/:id/audit',
+  authMiddleware.requirePermission('write'),
   validateRequest(scheduleAuditSchema, 'body'),
   controller.scheduleAudit.bind(controller)
 );
 
 itilRoutes.post(
   '/configuration-items/:id/audit/complete',
+  authMiddleware.requirePermission('write'),
   validateRequest(completeAuditSchema, 'body'),
   controller.completeAudit.bind(controller)
 );
@@ -185,6 +191,7 @@ itilRoutes.post(
 
 itilRoutes.post(
   '/incidents',
+  authMiddleware.requirePermission('write'),
   validateRequest(createIncidentSchema, 'body'),
   controller.createIncident.bind(controller)
 );
@@ -202,12 +209,14 @@ itilRoutes.get(
 
 itilRoutes.patch(
   '/incidents/:id',
+  authMiddleware.requirePermission('write'),
   validateRequest(updateIncidentSchema, 'body'),
   controller.updateIncident.bind(controller)
 );
 
 itilRoutes.post(
   '/incidents/:id/resolve',
+  authMiddleware.requirePermission('write'),
   validateRequest(resolveIncidentSchema, 'body'),
   controller.resolveIncident.bind(controller)
 );
@@ -223,6 +232,7 @@ itilRoutes.get(
 
 itilRoutes.post(
   '/changes',
+  authMiddleware.requirePermission('write'),
   validateRequest(createChangeSchema, 'body'),
   controller.createChange.bind(controller)
 );
@@ -240,6 +250,7 @@ itilRoutes.get(
 
 itilRoutes.patch(
   '/changes/:id',
+  authMiddleware.requirePermission('write'),
   validateRequest(updateChangeSchema, 'body'),
   controller.updateChange.bind(controller)
 );
@@ -251,16 +262,19 @@ itilRoutes.get(
 
 itilRoutes.post(
   '/changes/:id/approve',
+  authMiddleware.requirePermission('write'),
   controller.approveChange.bind(controller)
 );
 
 itilRoutes.post(
   '/changes/:id/implement',
+  authMiddleware.requirePermission('write'),
   controller.implementChange.bind(controller)
 );
 
 itilRoutes.post(
   '/changes/:id/close',
+  authMiddleware.requirePermission('write'),
   validateRequest(closeChangeSchema, 'body'),
   controller.closeChange.bind(controller)
 );
@@ -271,6 +285,7 @@ itilRoutes.post(
 
 itilRoutes.post(
   '/baselines',
+  authMiddleware.requirePermission('write'),
   validateRequest(createBaselineSchema, 'body'),
   controller.createBaseline.bind(controller)
 );
@@ -287,6 +302,7 @@ itilRoutes.get(
 
 itilRoutes.delete(
   '/baselines/:id',
+  authMiddleware.requirePermission('write'),
   controller.deleteBaseline.bind(controller)
 );
 
@@ -297,6 +313,7 @@ itilRoutes.get(
 
 itilRoutes.post(
   '/baselines/:id/restore',
+  authMiddleware.requirePermission('write'),
   validateRequest(restoreFromBaselineSchema, 'body'),
   controller.restoreFromBaseline.bind(controller)
 );

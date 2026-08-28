@@ -12,7 +12,7 @@ import { Icon } from '@happy-technologies/design-system';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Card } from '@/components/ui/card';
 import { Eyebrow } from '@/components/ui/eyebrow';
-import { useAuth } from '../hooks/useAuth';
+import { useAuth } from '../contexts/AuthContext';
 import { GeneralSettings } from '../components/settings/GeneralSettings';
 import { DiscoverySettings } from '../components/settings/DiscoverySettings';
 import { NotificationSettings } from '../components/settings/NotificationSettings';

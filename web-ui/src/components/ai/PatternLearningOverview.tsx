@@ -35,9 +35,9 @@ export const PatternLearningOverview: React.FC = () => {
     { name: 'Draft', value: patterns.filter(p => p.status === 'draft').length, color: brand.inkSoft },
   ];
 
-  // Cost trend data (mock - replace with real data)
+  // Cost trend data
   const costTrendData = costAnalytics?.costByDay?.map(day => ({
-    date: new Date(day.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+    date: new Date(`${day.date}T00:00:00`).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
     cost: day.cost,
     sessions: day.sessions,
   })) || [];

@@ -8,7 +8,7 @@
 
 import React, { useState } from 'react';
 import { useForm, Controller } from 'react-hook-form';
-import { apiClient } from '../../services/auth.service';
+import { apiClient } from '../../services/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -63,7 +63,7 @@ export const GeneralSettings: React.FC = () => {
     setErrorMessage(null);
 
     try {
-      await apiClient.put('/api/v1/settings', data);
+      await apiClient.put('/settings', data);
       setSuccessMessage('Settings saved successfully');
       setTimeout(() => setSuccessMessage(null), 3000);
     } catch (error: any) {

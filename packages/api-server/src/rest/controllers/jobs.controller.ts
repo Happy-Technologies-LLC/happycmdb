@@ -13,12 +13,33 @@
  */
 
 import { Request, Response } from 'express';
+import type { Job } from 'bullmq';
 import { getQueueManager, logger } from '@cmdb/common';
 import type { DiscoveryProvider, ETLJobType } from '@cmdb/common';
-import { getDiscoveryScheduler } from '@cmdb/discovery-engine';
+import { getDiscoveryScheduler, getDiscoveryJobScheduler } from '@cmdb/discovery-engine';
 import { getNeo4jClient } from '@cmdb/database';
-// ETLScheduler not used currently - ETL jobs are triggered via queue directly
-// import { getETLScheduler } from '@cmdb/etl-processor';
+import { getETLScheduler } from '@cmdb/etl-processor';
+
+interface ScheduleUpdate {
+  cronExpression?: string;
+  enabled?: boolean;
+}
+
+const SCHEDULE_UPDATE_FIELDS: Record<string, true> = {
+  cronExpression: true,
+  enabled: true,
+};
+
+/**
+ * True when a completed BullMQ job carries both timestamps needed to
+ * compute its duration. Narrows the optional fields so callers never
+ * fabricate a 0ms duration from a missing timestamp.
+ */
+function hasCompletionTimestamps(
+  job: Job
+): job is Job & { processedOn: number; finishedOn: number } {
+  return typeof job.processedOn === 'number' && typeof job.finishedOn === 'number';
+}
 
 /**
  * Jobs Controller
@@ -26,8 +47,9 @@ import { getNeo4jClient } from '@cmdb/database';
 export class JobsController {
   private queueManager = getQueueManager();
   private discoveryScheduler = getDiscoveryScheduler();
+  private discoveryJobScheduler = getDiscoveryJobScheduler();
   private neo4jClient = getNeo4jClient();
-  // private etlScheduler = getETLScheduler();
+  private etlScheduler = getETLScheduler();
 
   /**
    * POST /api/v1/jobs/discovery/:provider
@@ -120,6 +142,7 @@ export class JobsController {
       const state = await job.getState();
       const progress = job.progress;
       const failedReason = job.failedReason;
+      const maxAttempts = job.opts?.attempts ?? 1;
 
       res.json({
         success: true,
@@ -133,6 +156,7 @@ export class JobsController {
           returnvalue: job.returnvalue,
           failedReason,
           attemptsMade: job.attemptsMade,
+          maxAttempts,
           processedOn: job.processedOn,
           finishedOn: job.finishedOn,
           timestamp: job.timestamp,
@@ -164,43 +188,61 @@ export class JobsController {
       }
 
       const { state = 'waiting', start = 0, end = 99 } = req.query;
+      const startNum = Number(start);
+      const endNum = Number(end);
+      const JOB_STATE_FIELDS = ['waiting', 'active', 'completed', 'failed', 'delayed', 'paused'] as const;
 
       const queue = this.queueManager.getQueue(queueName);
 
       let jobs;
       switch (state) {
         case 'waiting':
-          jobs = await queue.getWaiting(Number(start), Number(end));
+          jobs = await queue.getWaiting(startNum, endNum);
           break;
         case 'active':
-          jobs = await queue.getActive(Number(start), Number(end));
+          jobs = await queue.getActive(startNum, endNum);
           break;
         case 'completed':
-          jobs = await queue.getCompleted(Number(start), Number(end));
+          jobs = await queue.getCompleted(startNum, endNum);
           break;
         case 'failed':
-          jobs = await queue.getFailed(Number(start), Number(end));
+          jobs = await queue.getFailed(startNum, endNum);
           break;
         case 'delayed':
-          jobs = await queue.getDelayed(Number(start), Number(end));
+          jobs = await queue.getDelayed(startNum, endNum);
           break;
         default:
-          jobs = await queue.getWaiting(Number(start), Number(end));
+          jobs = await queue.getWaiting(startNum, endNum);
       }
 
       const jobsData = await Promise.all(
         jobs.map(async (job) => ({
           id: job.id,
           name: job.name,
+          queueName,
           state: await job.getState(),
           data: job.data,
           progress: job.progress,
           attemptsMade: job.attemptsMade,
+          maxAttempts: job.opts?.attempts ?? 1,
+          failedReason: job.failedReason,
+          returnvalue: job.returnvalue,
           timestamp: job.timestamp,
           processedOn: job.processedOn,
           finishedOn: job.finishedOn,
         }))
       );
+
+      // Real total for the requested state, from BullMQ's job counts
+      // (queue.getJobCounts under the hood) rather than an inferred/guessed
+      // slice-based value.
+      const counts = await this.queueManager.getQueueStats(queueName);
+      const stateKey = (typeof state === 'string' && (JOB_STATE_FIELDS as readonly string[]).includes(state)
+        ? state
+        : 'waiting') as (typeof JOB_STATE_FIELDS)[number];
+      const total = counts[stateKey] ?? 0;
+      const limit = endNum - startNum + 1;
+      const offset = startNum;
 
       res.json({
         success: true,
@@ -209,6 +251,12 @@ export class JobsController {
           state,
           jobs: jobsData,
           count: jobsData.length,
+        },
+        pagination: {
+          total,
+          limit,
+          offset,
+          hasMore: offset + jobsData.length < total,
         },
       });
     } catch (err: any) {
@@ -301,14 +349,14 @@ export class JobsController {
   async getJobStats(_req: Request, res: Response): Promise<void> {
     try {
       const queueNames = [
-        'discovery:nmap',
-        'discovery:ssh',
-        'discovery:active-directory',
-        'discovery:snmp',
-        'etl:sync',
-        'etl:full-refresh',
-        'etl:change-detection',
-        'etl:reconciliation',
+        'discovery-nmap',
+        'discovery-ssh',
+        'discovery-active-directory',
+        'discovery-snmp',
+        'etl-sync',
+        'etl-full-refresh',
+        'etl-change-detection',
+        'etl-reconciliation',
       ];
 
       const stats = await Promise.all(
@@ -357,12 +405,12 @@ export class JobsController {
       const end = start + limitNum - 1;
 
       const discoveryQueues = provider
-        ? [`discovery:${provider}`]
+        ? [`discovery-${provider}`]
         : [
-            'discovery:nmap',
-            'discovery:ssh',
-            'discovery:active-directory',
-            'discovery:snmp',
+            'discovery-nmap',
+            'discovery-ssh',
+            'discovery-active-directory',
+            'discovery-snmp',
           ];
 
       // Get jobs from all discovery queues using scalable Redis approach
@@ -371,7 +419,7 @@ export class JobsController {
           try {
             const queue = this.queueManager.getQueue(queueName);
             const redis = await queue.client;
-            const providerName = queueName.split(':')[1];
+            const providerName = queueName.replace(/^discovery-/, '');
 
             // Fetch job IDs directly from Redis sorted sets (much more scalable)
             const jobIdSets: string[][] = [];
@@ -503,21 +551,25 @@ export class JobsController {
    * GET /api/v1/jobs/discovery/stats
    * Get discovery-specific statistics across all discovery providers
    */
-  async getDiscoveryStats(_req: Request, res: Response): Promise<void> {
+  async getDiscoveryStats(req: Request, res: Response): Promise<void> {
     try {
-      const discoveryQueues = [
-        'discovery:nmap',
-        'discovery:ssh',
-        'discovery:active-directory',
-        'discovery:snmp',
-      ];
+      const { provider: providerFilter } = req.query;
+
+      const discoveryQueues = providerFilter
+        ? [`discovery-${providerFilter}`]
+        : [
+            'discovery-nmap',
+            'discovery-ssh',
+            'discovery-active-directory',
+            'discovery-snmp',
+          ];
 
       // Get queue stats and CI counts from Neo4j
       const stats = await Promise.all(
         discoveryQueues.map(async (queueName) => {
           try {
             const queueStats = await this.queueManager.getQueueStats(queueName);
-            const provider = queueName.split(':')[1];
+            const provider = queueName.replace(/^discovery-/, '') as DiscoveryProvider;
 
             // Query Neo4j for CI count by provider
             // Check both top-level discovery_provider and metadata for backward compatibility
@@ -539,14 +591,27 @@ export class JobsController {
               logger.error(`Error querying Neo4j for ${provider} CIs`, neoErr);
             }
 
+            // Real average duration computed from a recent sample of completed
+            // jobs on this queue (finishedOn - processedOn). null when no
+            // completed job in the sample carries both timestamps.
+            const averageDurationMs = await this.getAverageJobDuration(queueName);
+
+            // Real schedule-enabled state from the shared discovery job
+            // scheduler contract (same source of truth as
+            // GET /jobs/schedules/discovery). undefined (not fabricated
+            // true/false) when this provider has no registered schedule.
+            const schedule = this.discoveryJobScheduler.getSchedule(provider);
+
             return {
               provider,
               ...queueStats,
               totalDiscoveredCIs: ciCount,
+              averageDurationMs,
+              enabled: schedule?._enabled,
             };
           } catch (err) {
             logger.error(`Error getting stats for ${queueName}`, err);
-            const provider = queueName.split(':')[1];
+            const provider = queueName.replace(/^discovery-/, '');
             return {
               provider,
               queueName,
@@ -556,6 +621,8 @@ export class JobsController {
               failed: 0,
               delayed: 0,
               totalDiscoveredCIs: 0,
+              averageDurationMs: null,
+              enabled: undefined,
               error: 'Queue not configured',
             };
           }
@@ -572,6 +639,32 @@ export class JobsController {
         success: false,
         error: err.message,
       });
+    }
+  }
+
+  /**
+   * Compute the average duration (ms) of a recent sample of completed jobs
+   * on the given queue, from BullMQ's own processedOn/finishedOn
+   * timestamps. Returns null when no sampled job has both timestamps
+   * (e.g. queue not configured, or nothing has completed yet) rather than
+   * fabricating a 0ms duration.
+   */
+  private async getAverageJobDuration(queueName: string): Promise<number | null> {
+    try {
+      const queue = this.queueManager.getQueue(queueName);
+      const completedJobs = await queue.getCompleted(0, 99);
+      const durations = completedJobs
+        .filter(hasCompletionTimestamps)
+        .map((job) => job.finishedOn - job.processedOn);
+
+      if (durations.length === 0) {
+        return null;
+      }
+
+      return durations.reduce((sum, duration) => sum + duration, 0) / durations.length;
+    } catch (err) {
+      logger.error(`Error computing average job duration for ${queueName}`, err);
+      return null;
     }
   }
 
@@ -603,10 +696,14 @@ export class JobsController {
         failedJobs.map(async (job) => ({
           id: job.id,
           name: job.name,
+          queueName,
+          status: 'failed' as const,
           data: job.data,
           failedReason: job.failedReason,
           stacktrace: job.stacktrace,
+          progress: job.progress,
           attemptsMade: job.attemptsMade,
+          maxAttempts: job.opts?.attempts ?? 1,
           timestamp: job.timestamp,
           processedOn: job.processedOn,
           finishedOn: job.finishedOn,
@@ -679,18 +776,20 @@ export class JobsController {
   /**
    * GET /api/v1/jobs/schedules/discovery
    * Get all discovery schedules
-   * TODO: getSchedules() method not yet implemented on DiscoveryOrchestrator
    */
   async getDiscoverySchedules(_req: Request, res: Response): Promise<void> {
     try {
-      // TODO: Implement getSchedules() on DiscoveryOrchestrator
-      // For now, return empty array to prevent UI errors
-      // const schedules = this.discoveryScheduler.getSchedules();
+      const schedules = (await this.discoveryJobScheduler.getSchedulesView()).map((schedule) => ({
+        provider: schedule._provider,
+        queueName: schedule._queueName,
+        cronExpression: schedule._cronPattern,
+        enabled: schedule._enabled,
+        config: schedule._config,
+      }));
 
       res.status(200).json({
         success: true,
-        data: [],
-        message: 'No scheduled discovery jobs configured',
+        data: schedules,
       });
     } catch (err: any) {
       logger.error('Error getting discovery schedules', err);
@@ -704,15 +803,20 @@ export class JobsController {
   /**
    * GET /api/v1/jobs/schedules/etl
    * Get all ETL schedules
-   * NOTE: Not yet implemented - schedule management not available
    */
   async getETLSchedules(_req: Request, res: Response): Promise<void> {
     try {
-      // TODO: Implement ETL schedule management
-      res.status(501).json({
-        success: false,
-        error: 'ETL schedule management not yet implemented',
-        message: 'Please use BullMQ repeatable jobs directly',
+      const schedules = (await this.etlScheduler.getSchedulesView()).map((schedule) => ({
+        type: schedule._type,
+        queueName: schedule._queueName,
+        cronExpression: schedule._cronPattern,
+        enabled: schedule._enabled,
+        config: schedule._config,
+      }));
+
+      res.status(200).json({
+        success: true,
+        data: schedules,
       });
     } catch (err: any) {
       logger.error('Error getting ETL schedules', err);
@@ -726,30 +830,64 @@ export class JobsController {
   /**
    * PUT /api/v1/jobs/schedules/discovery/:provider
    * Update discovery schedule
-   * TODO: updateSchedule() method not yet implemented on DiscoveryOrchestrator
    */
   async updateDiscoverySchedule(req: Request, res: Response): Promise<void> {
     try {
       const provider = req.params['provider'] as DiscoveryProvider;
-      const { cronPattern } = req.body;
+      const update = this.parseScheduleUpdate(req.body);
+      if (!update) {
+        res.status(400).json({
+          success: false,
+          error: 'Bad Request',
+          message: 'cronExpression must be a five-part cron expression and enabled must be a boolean; no other fields are supported',
+        });
+        return;
+      }
 
-      // TODO: Implement updateSchedule() on DiscoveryOrchestrator
-      // await this.discoveryScheduler.updateSchedule(provider, cronPattern);
+      const { cronExpression, enabled } = update;
 
-      logger.info(`Schedule update requested for ${provider}`, {
-        cronPattern,
+      const schedule = await this.discoveryJobScheduler.getScheduleView(provider);
+      if (!schedule) {
+        res.status(404).json({
+          success: false,
+          error: 'Not Found',
+          message: `No schedule found for provider: ${provider}`,
+        });
+        return;
+      }
+
+      if (cronExpression !== undefined) {
+        await this.discoveryJobScheduler.updateSchedule(provider, cronExpression);
+      }
+
+      if (enabled !== undefined && enabled !== schedule._enabled) {
+        if (enabled) {
+          await this.discoveryJobScheduler.enableSchedule(provider);
+        } else {
+          await this.discoveryJobScheduler.disableSchedule(provider);
+        }
+      }
+
+      const updated = (await this.discoveryJobScheduler.getScheduleView(provider))!;
+
+      logger.info(`Schedule updated for ${provider}`, { cronExpression, enabled });
+
+      res.status(200).json({
+        success: true,
+        data: {
+          provider,
+          queueName: updated._queueName,
+          cronExpression: updated._cronPattern,
+          enabled: updated._enabled,
+          config: updated._config,
+        },
+        message: `Discovery schedule for ${provider} updated successfully`,
       });
-
-      res.status(501).json({
-        success: false,
-        error: 'Not Implemented',
-        message: 'Discovery schedule update not yet implemented',
-      });
-    } catch (err: any) {
+    } catch (err) {
       logger.error('Error updating discovery schedule', err);
       res.status(500).json({
         success: false,
-        error: err.message,
+        error: err instanceof Error ? err.message : String(err),
       });
     }
   }
@@ -757,27 +895,90 @@ export class JobsController {
   /**
    * PUT /api/v1/jobs/schedules/etl/:type
    * Update ETL schedule
-   * NOTE: Not yet implemented - schedule management not available
    */
   async updateETLSchedule(req: Request, res: Response): Promise<void> {
     try {
       const type = req.params['type'] as ETLJobType;
+      const update = this.parseScheduleUpdate(req.body);
+      if (!update) {
+        res.status(400).json({
+          success: false,
+          error: 'Bad Request',
+          message: 'cronExpression must be a five-part cron expression and enabled must be a boolean; no other fields are supported',
+        });
+        return;
+      }
 
-      // TODO: Implement ETL schedule management
-      res.status(501).json({
-        success: false,
-        error: 'ETL schedule management not yet implemented',
-        message: 'Please use BullMQ repeatable jobs directly',
-        type,
+      const { cronExpression, enabled } = update;
+
+      const schedule = await this.etlScheduler.getScheduleView(type);
+      if (!schedule) {
+        res.status(404).json({
+          success: false,
+          error: 'Not Found',
+          message: `No schedule found for ETL type: ${type}`,
+        });
+        return;
+      }
+
+      if (cronExpression !== undefined) {
+        await this.etlScheduler.updateSchedule(type, cronExpression);
+      }
+
+      if (enabled !== undefined && enabled !== schedule._enabled) {
+        if (enabled) {
+          await this.etlScheduler.enableSchedule(type);
+        } else {
+          await this.etlScheduler.disableSchedule(type);
+        }
+      }
+
+      const updated = (await this.etlScheduler.getScheduleView(type))!;
+
+      logger.info(`Schedule updated for ${type}`, { cronExpression, enabled });
+
+      res.status(200).json({
+        success: true,
+        data: {
+          type,
+          queueName: updated._queueName,
+          cronExpression: updated._cronPattern,
+          enabled: updated._enabled,
+          config: updated._config,
+        },
+        message: `ETL schedule for ${type} updated successfully`,
       });
-    } catch (err: any) {
+    } catch (err) {
       logger.error('Error updating ETL schedule', err);
       res.status(500).json({
         success: false,
-        error: err.message,
+        error: err instanceof Error ? err.message : String(err),
       });
     }
   }
+  private parseScheduleUpdate(body: unknown): ScheduleUpdate | undefined {
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return undefined;
+    }
+
+    const update = body as Record<string, unknown>;
+    if (
+      Object.keys(update).some((field) => !Object.hasOwn(SCHEDULE_UPDATE_FIELDS, field)) ||
+      (update.cronExpression === undefined && update.enabled === undefined) ||
+      (update.cronExpression !== undefined &&
+        (typeof update.cronExpression !== 'string' ||
+          update.cronExpression.trim().split(/\s+/).length !== 5)) ||
+      (update.enabled !== undefined && typeof update.enabled !== 'boolean')
+    ) {
+      return undefined;
+    }
+
+    return {
+      ...(typeof update.cronExpression === 'string' && { cronExpression: update.cronExpression }),
+      ...(typeof update.enabled === 'boolean' && { enabled: update.enabled }),
+    };
+  }
+
 }
 
 // Export singleton instance

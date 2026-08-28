@@ -12,14 +12,15 @@ import {
   ConfigurationManagementService,
   BaselineService,
   IncidentRepository,
-  ChangeRepository,
   BusinessServiceRepository,
   IncidentInput,
   IncidentPriority,
   ChangeRequest,
-  ChangeRiskAssessment
+  ChangeRiskAssessment,
+  Change,
+  BaselineComparison
 } from '@cmdb/itil-service-manager';
-import { getPostgresClient } from '@cmdb/database';
+import { getPostgresClient, getNeo4jClient } from '@cmdb/database';
 import { ITILMetrics } from '../types/kpi-types';
 
 /**
@@ -32,19 +33,15 @@ export class ITILServiceManager {
   private configMgmtService: ConfigurationManagementService;
   private baselineService: BaselineService;
   private incidentRepo: IncidentRepository;
-  private changeRepo: ChangeRepository;
   private businessServiceRepo: BusinessServiceRepository;
 
   constructor() {
-    const pgClient = getPostgresClient();
-
     this.priorityService = new IncidentPriorityService();
     this.changeRiskService = new ChangeRiskService();
     this.configMgmtService = new ConfigurationManagementService();
     this.baselineService = new BaselineService();
-    this.incidentRepo = new IncidentRepository(pgClient);
-    this.changeRepo = new ChangeRepository(pgClient);
-    this.businessServiceRepo = new BusinessServiceRepository(pgClient);
+    this.incidentRepo = new IncidentRepository();
+    this.businessServiceRepo = new BusinessServiceRepository();
   }
 
   /**
@@ -86,7 +83,7 @@ export class ITILServiceManager {
 
       // Get change metrics (last 30 days)
       const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-      const changes = await this.changeRepo.findByBusinessService(serviceId);
+      const changes = await this.getChangesForBusinessService(serviceId);
       const recentChanges = changes.filter(c => c.createdAt >= thirtyDaysAgo);
       const changesLast30Days = recentChanges.length;
 
@@ -102,11 +99,11 @@ export class ITILServiceManager {
         : 1.0;
 
       // Get configuration accuracy
-      const accuracyMetrics = await this.configMgmtService.getAccuracyMetrics();
+      const accuracyMetrics = await this.configMgmtService.getConfigurationAccuracy();
       const configurationAccuracy = accuracyMetrics.accuracyPercentage / 100;
 
       // Get baseline metrics
-      const baselineComparisons = await this.baselineService.getRecentComparisons(serviceId);
+      const baselineComparisons = await this.getRecentBaselineComparisons(serviceId);
       const latestBaseline = baselineComparisons.length > 0
         ? baselineComparisons[0]
         : null;
@@ -164,7 +161,7 @@ export class ITILServiceManager {
    */
   async assessChangeRisk(change: ChangeRequest): Promise<ChangeRiskAssessment> {
     try {
-      return await this.changeRiskService.assessRisk(change);
+      return await this.changeRiskService.assessChangeRisk(change);
     } catch (error) {
       throw new Error(`Failed to assess change risk: ${error.message}`);
     }
@@ -295,7 +292,7 @@ export class ITILServiceManager {
     outcome?: string;
   }>> {
     try {
-      const changes = await this.changeRepo.findByBusinessService(serviceId);
+      const changes = await this.getChangesForBusinessService(serviceId);
       const cutoffDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
 
       return changes
@@ -312,5 +309,170 @@ export class ITILServiceManager {
     } catch (error) {
       throw new Error(`Failed to get recent changes: ${error.message}`);
     }
+  }
+
+  /**
+   * Get the IDs of CIs that support a business service.
+   *
+   * Traverses both canonical paths from packages/database/src/neo4j/v3-sample-queries.cypher
+   * ("Find all CIs supporting a Business Service"):
+   *   - direct:   (ci:CI)-[:SUPPORTS*1..3]->(bs:BusinessService)
+   *   - indirect: (bs)<-[:ENABLES]-(as:ApplicationService)-[:RUNS_ON]->(ci:CI)
+   * A service whose infrastructure is only reachable through an
+   * ApplicationService (no direct SUPPORTS edge) would otherwise report
+   * zero supporting CIs and falsely show 100% baseline compliance.
+   *
+   * @param serviceId - Business service ID
+   * @returns Supporting CI IDs (direct + indirect, deduped)
+   */
+  private async getCIIdsForBusinessService(serviceId: string): Promise<string[]> {
+    const neo4jClient = getNeo4jClient();
+    const session = neo4jClient.getSession();
+
+    try {
+      const result = await session.run(
+        `
+        MATCH (bs:BusinessService {id: $serviceId})
+        OPTIONAL MATCH (ciDirect:CI)-[:SUPPORTS*1..3]->(bs)
+        OPTIONAL MATCH (bs)<-[:ENABLES]-(as:ApplicationService)-[:RUNS_ON]->(ciIndirect:CI)
+        WITH collect(DISTINCT ciDirect) + collect(DISTINCT ciIndirect) as allCIs
+        UNWIND allCIs as ci
+        WITH DISTINCT ci
+        WHERE ci IS NOT NULL
+        RETURN ci.id as ciId
+        `,
+        { serviceId }
+      );
+
+      return result.records.map(record => record.get('ciId'));
+    } finally {
+      await session.close();
+    }
+  }
+
+  /**
+   * Get recent baseline drift comparisons for a business service
+   * BaselineService has no business-service lookup, so this resolves the
+   * service's supporting CIs, finds each CI's most recent baseline, and
+   * runs the existing drift comparison against it.
+   *
+   * @param serviceId - Business service ID
+   * @returns Baseline comparisons, most recently created baseline first
+   */
+  private async getRecentBaselineComparisons(serviceId: string): Promise<BaselineComparison[]> {
+    const ciIds = await this.getCIIdsForBusinessService(serviceId);
+    if (ciIds.length === 0) {
+      return [];
+    }
+
+    const baselinesByCI = await Promise.all(
+      ciIds.map(ciId => this.baselineService.getBaselinesByCIId(ciId))
+    );
+
+    const uniqueBaselines = Array.from(
+      new Map(baselinesByCI.flat().map(baseline => [baseline.id, baseline])).values()
+    ).sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+
+    return Promise.all(
+      uniqueBaselines.map(baseline => this.baselineService.compareToBaseline(baseline.id))
+    );
+  }
+
+  /**
+   * Get changes affecting a business service
+   * ChangeRepository has no business-service lookup, so this queries the
+   * itil_changes table directly by its affected_business_service_ids column
+   * (the same array-membership pattern ChangeRepository.getChangesByCIId uses
+   * for affected_ci_ids).
+   *
+   * @param serviceId - Business service ID
+   * @param limit - Maximum number of changes to return
+   * @returns Changes affecting the business service, most recent first
+   */
+  private async getChangesForBusinessService(serviceId: string, limit: number = 100): Promise<Change[]> {
+    const pgClient = getPostgresClient();
+
+    const result = await pgClient.query(
+      `
+      SELECT * FROM itil_changes
+      WHERE $1 = ANY(affected_business_service_ids)
+      ORDER BY created_at DESC
+      LIMIT $2
+      `,
+      [serviceId, limit]
+    );
+
+    return result.rows.map(row => this.rowToChange(row));
+  }
+
+  /**
+   * Raw itil_changes row shape as returned by the Postgres driver
+   */
+  private rowToChange(row: {
+    id: string;
+    change_number: string;
+    title: string;
+    description: string;
+    change_type: Change['changeType'];
+    category: string | null;
+    risk_assessment: Change['riskAssessment'];
+    business_impact: Change['businessImpact'];
+    financial_impact: Change['financialImpact'];
+    affected_ci_ids: string[] | null;
+    affected_business_service_ids: string[] | null;
+    affected_application_service_ids: string[] | null;
+    implementation_plan: string;
+    backout_plan: string;
+    test_plan: string | null;
+    approval_status: Change['approvalStatus'];
+    approved_by: string | null;
+    approved_at: Date | null;
+    assigned_to: string | null;
+    assigned_group: string | null;
+    status: Change['status'];
+    scheduled_start: Date | null;
+    scheduled_end: Date | null;
+    actual_start: Date | null;
+    actual_end: Date | null;
+    outcome: Change['outcome'];
+    closure_notes: string | null;
+    requested_by: string;
+    created_at: Date;
+    updated_at: Date;
+    closed_at: Date | null;
+  }): Change {
+    return {
+      id: row.id,
+      changeNumber: row.change_number,
+      title: row.title,
+      description: row.description,
+      changeType: row.change_type,
+      category: row.category,
+      riskAssessment: row.risk_assessment,
+      businessImpact: row.business_impact,
+      financialImpact: row.financial_impact,
+      affectedCiIds: row.affected_ci_ids || [],
+      affectedBusinessServiceIds: row.affected_business_service_ids || [],
+      affectedApplicationServiceIds: row.affected_application_service_ids || [],
+      implementationPlan: row.implementation_plan,
+      backoutPlan: row.backout_plan,
+      testPlan: row.test_plan,
+      approvalStatus: row.approval_status,
+      approvedBy: row.approved_by,
+      approvedAt: row.approved_at,
+      assignedTo: row.assigned_to,
+      assignedGroup: row.assigned_group,
+      status: row.status,
+      scheduledStart: row.scheduled_start,
+      scheduledEnd: row.scheduled_end,
+      actualStart: row.actual_start,
+      actualEnd: row.actual_end,
+      outcome: row.outcome,
+      closureNotes: row.closure_notes,
+      requestedBy: row.requested_by,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      closedAt: row.closed_at,
+    };
   }
 }

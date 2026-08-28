@@ -23,6 +23,34 @@ import { BusinessCriticality } from '../types/bsm-types';
  * Provides efficient graph traversal methods for dependency and impact analysis
  */
 export class GraphTraversal {
+
+  /**
+   * Build a safe relationship-type pattern for interpolation into a Cypher
+   * variable-length relationship pattern (e.g. "DEPENDS_ON|RUNS_ON"). Neo4j
+   * does not support parameterizing relationship types inside a pattern, so
+   * each type is validated against a strict identifier before being joined
+   * to prevent Cypher injection via caller-supplied BlastRadiusOptions.
+   *
+   * @param relationshipTypes - Caller-supplied relationship types to filter by
+   * @param defaultTypes - Relationship types used when none are supplied
+   * @returns Pipe-delimited relationship type pattern for use inside `[r:...]`
+   */
+  private buildRelationshipTypePattern(
+    relationshipTypes: string[] | undefined,
+    defaultTypes: string[]
+  ): string {
+    const types =
+      relationshipTypes && relationshipTypes.length > 0 ? relationshipTypes : defaultTypes;
+
+    for (const type of types) {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(type)) {
+        throw new Error(`Invalid relationship type: ${type}`);
+      }
+    }
+
+    return types.join('|');
+  }
+
   /**
    * Find all downstream dependencies from a source CI
    * Traverses relationships like DEPENDS_ON, RUNS_ON, CONNECTS_TO
@@ -43,8 +71,14 @@ export class GraphTraversal {
     try {
       // Query to find all downstream dependencies
       // Uses variable-length pattern matching with depth limit
+      const relPattern = this.buildRelationshipTypePattern(options?.relationshipTypes, [
+        'DEPENDS_ON',
+        'RUNS_ON',
+        'CONNECTS_TO',
+        'USES',
+      ]);
       const query = `
-        MATCH path = (source:CI {id: $ciId})-[r:DEPENDS_ON|RUNS_ON|CONNECTS_TO|USES*1..${maxHops}]->(dependent:CI)
+        MATCH path = (source:CI {id: $ciId})-[r:${relPattern}*1..${maxHops}]->(dependent:CI)
         WHERE source.id = $ciId
           ${options?.includeInactive ? '' : 'AND dependent.status = "active"'}
         WITH source, dependent, path, length(path) as depth
@@ -141,14 +175,18 @@ export class GraphTraversal {
       const query = `
         MATCH path = (ci:CI {id: $ciId})<-[r:DEPENDS_ON|RUNS_ON|USES|ENABLES|DELIVERS*1..15]-(bs:BusinessService)
         WHERE ci.id = $ciId
-        WITH bs, path, length(path) as hops
+        WITH bs, path, length(path) as hops,
+             CASE WHEN bs.bsm_attributes IS NOT NULL
+                  THEN apoc.convert.fromJsonMap(bs.bsm_attributes)
+                  ELSE {}
+             END as bsmAttrs
         RETURN DISTINCT
                bs.id as serviceId,
                bs.name as serviceName,
-               bs.bsm_attributes.annual_revenue_supported as annualRevenue,
-               bs.bsm_attributes.customer_count as customerCount,
-               bs.bsm_attributes.business_criticality as criticality,
-               bs.bsm_attributes.business_impact_score as impactScore,
+               bsmAttrs.annual_revenue_supported as annualRevenue,
+               bsmAttrs.customer_count as customerCount,
+               bsmAttrs.business_criticality as criticality,
+               bsmAttrs.business_impact_score as impactScore,
                hops,
                [rel in relationships(path) | type(rel)] as relationshipTypes
         ORDER BY annualRevenue DESC
@@ -261,8 +299,8 @@ export class GraphTraversal {
         MATCH (n:CI)
         WHERE n.id IN $nodeIds
         WITH n,
-             size((n)<-[:DEPENDS_ON|RUNS_ON|USES]-()) as incomingCount,
-             size((n)-[:DEPENDS_ON|RUNS_ON|USES]->()) as outgoingCount
+             COUNT { (n)<-[:DEPENDS_ON|RUNS_ON|USES]-() } as incomingCount,
+             COUNT { (n)-[:DEPENDS_ON|RUNS_ON|USES]->() } as outgoingCount
         WHERE incomingCount = 1 OR outgoingCount = 1
         RETURN n.id as bottleneckId
       `;
@@ -346,17 +384,27 @@ export class GraphTraversal {
     const maxHops = options?.maxHops || 10;
 
     try {
+      const relPattern = this.buildRelationshipTypePattern(options?.relationshipTypes, [
+        'DEPENDS_ON',
+        'RUNS_ON',
+        'CONNECTS_TO',
+        'USES',
+      ]);
       const query = `
-        MATCH path = (source:CI {id: $ciId})<-[r:DEPENDS_ON|RUNS_ON|CONNECTS_TO|USES*1..${maxHops}]-(impacted:CI)
+        MATCH path = (source:CI {id: $ciId})<-[r:${relPattern}*1..${maxHops}]-(impacted:CI)
         WHERE source.id = $ciId
           ${options?.includeInactive ? '' : 'AND impacted.status = "active"'}
-        WITH impacted, path, length(path) as hops
+        WITH impacted, path, length(path) as hops,
+             CASE WHEN impacted.bsm_attributes IS NOT NULL
+                  THEN apoc.convert.fromJsonMap(impacted.bsm_attributes)
+                  ELSE {}
+             END as bsmAttrs
         RETURN DISTINCT
                impacted.id as ciId,
                impacted.name as ciName,
                impacted.type as ciType,
                impacted.business_criticality as criticality,
-               impacted.bsm_attributes.impact_score as impactScore,
+               bsmAttrs.impact_score as impactScore,
                hops,
                [rel in relationships(path) | type(rel)] as relationshipPath
         ORDER BY hops, impactScore DESC

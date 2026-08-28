@@ -1,16 +1,30 @@
 // Copyright 2026 Happy Technologies LLC
 // SPDX-License-Identifier: Apache-2.0
 
+/**
+ * Unified Credential & Credential Set Routes. Authentication is enforced
+ * centrally: server.ts mounts `authMiddleware.authenticate()` on every
+ * /api/v1 route before this router. Reads (list/get credential(s)/
+ * credential-set(s), the OAuth provider redirect callback) and the
+ * read-like query endpoints -- match, rank, validate, and select, none of
+ * which mutate stored credential state -- stay open to any authenticated
+ * role. Creating, updating, or deleting a credential or credential set,
+ * and beginning an OAuth authorization, additionally require the 'write'
+ * permission via `authMiddleware.requirePermission('write')`.
+ */
+
 import { Router } from 'express';
 import Joi from 'joi';
 import { UnifiedCredentialController } from '../controllers/unified-credential.controller';
 import { CredentialSetController } from '../controllers/credential-set.controller';
 import { validateRequest, validateOptional } from '../middleware/validation.middleware';
 import { auditMiddleware } from '../../middleware/audit.middleware';
+import { getAuthMiddleware } from '../../auth/auth-bootstrap';
 
 export const unifiedCredentialRoutes = Router();
 const credentialController = new UnifiedCredentialController();
 const credentialSetController = new CredentialSetController();
+const authMiddleware = getAuthMiddleware();
 
 // Apply audit middleware to all routes
 unifiedCredentialRoutes.use(auditMiddleware);
@@ -184,6 +198,7 @@ unifiedCredentialRoutes.get(
  */
 unifiedCredentialRoutes.post(
   '/credentials',
+  authMiddleware.requirePermission('write'),
   validateRequest(createCredentialSchema, 'body'),
   credentialController.create.bind(credentialController)
 );
@@ -210,6 +225,7 @@ unifiedCredentialRoutes.get(
  */
 unifiedCredentialRoutes.put(
   '/credentials/:id',
+  authMiddleware.requirePermission('write'),
   validateRequest(updateCredentialSchema, 'body'),
   credentialController.update.bind(credentialController)
 );
@@ -219,6 +235,7 @@ unifiedCredentialRoutes.put(
  */
 unifiedCredentialRoutes.delete(
   '/credentials/:id',
+  authMiddleware.requirePermission('write'),
   credentialController.delete.bind(credentialController)
 );
 
@@ -235,6 +252,7 @@ unifiedCredentialRoutes.post(
  */
 unifiedCredentialRoutes.post(
   '/credentials/:id/oauth/authorize',
+  authMiddleware.requirePermission('write'),
   credentialController.authorize.bind(credentialController)
 );
 
@@ -255,6 +273,7 @@ unifiedCredentialRoutes.get(
  */
 unifiedCredentialRoutes.post(
   '/credential-sets',
+  authMiddleware.requirePermission('write'),
   validateRequest(createCredentialSetSchema, 'body'),
   credentialSetController.create.bind(credentialSetController)
 );
@@ -272,6 +291,7 @@ unifiedCredentialRoutes.get(
  */
 unifiedCredentialRoutes.put(
   '/credential-sets/:id',
+  authMiddleware.requirePermission('write'),
   validateRequest(updateCredentialSetSchema, 'body'),
   credentialSetController.update.bind(credentialSetController)
 );
@@ -281,6 +301,7 @@ unifiedCredentialRoutes.put(
  */
 unifiedCredentialRoutes.delete(
   '/credential-sets/:id',
+  authMiddleware.requirePermission('write'),
   credentialSetController.delete.bind(credentialSetController)
 );
 

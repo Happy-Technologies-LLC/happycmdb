@@ -87,6 +87,9 @@ describe('GraphQL CI Resolvers', () => {
         _relationshipLoader: mockLoaders.relationshipLoader,
         _dependentLoader: mockLoaders.dependentLoader,
       },
+      // Mutation resolvers now call checkGraphQLPermission(context, 'write');
+      // an operator role carries the 'write' permission (see ROLE_PERMISSIONS).
+      user: { _userId: 'u1', _username: 'tester', _role: 'operator', _type: 'access' },
     };
   });
 

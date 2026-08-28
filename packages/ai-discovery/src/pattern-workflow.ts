@@ -6,14 +6,15 @@
  * Manages pattern lifecycle: draft → review → approved → active
  */
 
-import { DiscoveryPattern } from './types';
-import { PatternStorageService } from './pattern-storage';
+import { DiscoveryPattern, AIDiscoverySession } from './types';
+import { PatternStorageService, type PatternReviewAction } from './pattern-storage';
 import { PatternValidator, ValidationResult } from './pattern-validator';
 import { PatternCompiler } from './pattern-compiler';
 import { logger } from '@cmdb/common';
+import { getPostgresClient } from '@cmdb/database';
 
 export interface WorkflowAction {
-  action: 'submit' | 'approve' | 'reject' | 'activate' | 'deactivate';
+  action: PatternReviewAction;
   performedBy: string;
   comment?: string;
   timestamp: Date;
@@ -23,6 +24,7 @@ export class PatternWorkflow {
   private storage: PatternStorageService;
   private validator: PatternValidator;
   private compiler: PatternCompiler;
+  private postgresClient = getPostgresClient();
 
   constructor(
     storage?: PatternStorageService,
@@ -45,6 +47,7 @@ export class PatternWorkflow {
     success: boolean;
     validation?: ValidationResult;
     error?: string;
+    internal?: boolean;
   }> {
     try {
       const pattern = await this.storage.getPattern(patternId);
@@ -76,19 +79,34 @@ export class PatternWorkflow {
         };
       }
 
-      // Update status to review
-      await this.storage.updatePattern(patternId, {
-        status: 'review',
-      });
+      // Persist the status transition and its ai_pattern_review_history
+      // row (submit comment, see 004_run_logs_and_pattern_review.sql)
+      // atomically -- a pattern can be commented on at more than one
+      // transition, so the comment isn't a column on the pattern itself,
+      // but the status change and its audit row must commit or roll back
+      // together.
+      await this.storage.transitionPattern(
+        patternId,
+        { status: 'review' },
+        'submit',
+        submittedBy,
+        comment
+      );
 
       logger.info('Pattern submitted for review', { patternId, submittedBy });
 
       return { success: true, validation };
     } catch (error) {
+      // Infrastructure/transaction failure (e.g. the transitionPattern()
+      // DB round-trip itself), not a guard/validation rejection -- tag it
+      // so callers (the REST controller) surface a generic 500 rather than
+      // mapping it to the same 409 used for expected guard failures, and
+      // never echo the raw error text.
       logger.error('Error submitting pattern for review', { patternId, error });
       return {
         success: false,
-        error: error instanceof Error ? error.message : String(error),
+        internal: true,
+        error: 'Internal error while submitting pattern for review',
       };
     }
   }
@@ -103,6 +121,7 @@ export class PatternWorkflow {
   ): Promise<{
     success: boolean;
     error?: string;
+    internal?: boolean;
   }> {
     try {
       const pattern = await this.storage.getPattern(patternId);
@@ -128,12 +147,15 @@ export class PatternWorkflow {
         };
       }
 
-      // Update status to approved
-      await this.storage.updatePattern(patternId, {
-        status: 'approved',
+      // Status/approval fields and the audit row commit or roll back
+      // together -- see transitionPattern().
+      await this.storage.transitionPattern(
+        patternId,
+        { status: 'approved', approvedBy, approvedAt: new Date() },
+        'approve',
         approvedBy,
-        approvedAt: new Date(),
-      } as any);
+        comment
+      );
 
       logger.info('Pattern approved', { patternId, approvedBy });
 
@@ -142,7 +164,8 @@ export class PatternWorkflow {
       logger.error('Error approving pattern', { patternId, error });
       return {
         success: false,
-        error: error instanceof Error ? error.message : String(error),
+        internal: true,
+        error: 'Internal error while approving pattern',
       };
     }
   }
@@ -157,6 +180,7 @@ export class PatternWorkflow {
   ): Promise<{
     success: boolean;
     error?: string;
+    internal?: boolean;
   }> {
     try {
       const pattern = await this.storage.getPattern(patternId);
@@ -173,10 +197,15 @@ export class PatternWorkflow {
 
       logger.info('Rejecting pattern', { patternId, rejectedBy, reason });
 
-      // Update status back to draft
-      await this.storage.updatePattern(patternId, {
-        status: 'draft',
-      });
+      // Status and the audit row commit or roll back together -- see
+      // transitionPattern().
+      await this.storage.transitionPattern(
+        patternId,
+        { status: 'draft' },
+        'reject',
+        rejectedBy,
+        reason
+      );
 
       logger.info('Pattern rejected', { patternId, rejectedBy, reason });
 
@@ -185,7 +214,8 @@ export class PatternWorkflow {
       logger.error('Error rejecting pattern', { patternId, error });
       return {
         success: false,
-        error: error instanceof Error ? error.message : String(error),
+        internal: true,
+        error: 'Internal error while rejecting pattern',
       };
     }
   }
@@ -199,6 +229,7 @@ export class PatternWorkflow {
   ): Promise<{
     success: boolean;
     error?: string;
+    internal?: boolean;
   }> {
     try {
       const pattern = await this.storage.getPattern(patternId);
@@ -215,11 +246,14 @@ export class PatternWorkflow {
 
       logger.info('Activating pattern', { patternId, activatedBy });
 
-      // Update status to active and set is_active flag
-      await this.storage.updatePattern(patternId, {
-        status: 'active',
-        isActive: true,
-      });
+      // Status/is_active fields and the audit row commit or roll back
+      // together -- see transitionPattern().
+      await this.storage.transitionPattern(
+        patternId,
+        { status: 'active', isActive: true },
+        'activate',
+        activatedBy
+      );
 
       logger.info('Pattern activated', { patternId, activatedBy });
 
@@ -228,7 +262,8 @@ export class PatternWorkflow {
       logger.error('Error activating pattern', { patternId, error });
       return {
         success: false,
-        error: error instanceof Error ? error.message : String(error),
+        internal: true,
+        error: 'Internal error while activating pattern',
       };
     }
   }
@@ -243,6 +278,7 @@ export class PatternWorkflow {
   ): Promise<{
     success: boolean;
     error?: string;
+    internal?: boolean;
   }> {
     try {
       const pattern = await this.storage.getPattern(patternId);
@@ -259,11 +295,15 @@ export class PatternWorkflow {
 
       logger.info('Deactivating pattern', { patternId, deactivatedBy, reason });
 
-      // Update status to deprecated and unset is_active flag
-      await this.storage.updatePattern(patternId, {
-        status: 'deprecated',
-        isActive: false,
-      });
+      // Status/is_active fields and the audit row commit or roll back
+      // together -- see transitionPattern().
+      await this.storage.transitionPattern(
+        patternId,
+        { status: 'deprecated', isActive: false },
+        'deactivate',
+        deactivatedBy,
+        reason
+      );
 
       logger.info('Pattern deactivated', { patternId, deactivatedBy });
 
@@ -272,7 +312,8 @@ export class PatternWorkflow {
       logger.error('Error deactivating pattern', { patternId, error });
       return {
         success: false,
-        error: error instanceof Error ? error.message : String(error),
+        internal: true,
+        error: 'Internal error while deactivating pattern',
       };
     }
   }
@@ -345,7 +386,14 @@ export class PatternWorkflow {
   }
 
   /**
-   * Get pattern workflow history (simplified - in production would query audit log)
+   * Get pattern workflow history, oldest first.
+   *
+   * Backed by ai_pattern_review_history (004_run_logs_and_pattern_review.sql),
+   * which records the actual actor, timestamp, and comment/reason for every
+   * submit/approve/reject/activate/deactivate call -- including reject and
+   * deactivate transitions the field-based reconstruction below can't see
+   * at all, since rejecting/deactivating a pattern doesn't leave a trace on
+   * ai_discovery_patterns itself.
    */
   async getPatternHistory(patternId: string): Promise<WorkflowAction[]> {
     const pattern = await this.storage.getPattern(patternId);
@@ -353,7 +401,20 @@ export class PatternWorkflow {
       return [];
     }
 
-    // Reconstruct basic history from pattern fields
+    const reviewHistory = await this.storage.getReviewHistory(patternId);
+    if (reviewHistory.length > 0) {
+      return reviewHistory.map(entry => ({
+        action: entry.action,
+        performedBy: entry.performedBy,
+        timestamp: entry.createdAt,
+        comment: entry.comment ?? undefined,
+      }));
+    }
+
+    // Fallback for patterns that predate this history table (or were saved
+    // directly via storage.savePattern() without going through a workflow
+    // method): reconstruct a best-effort history from the pattern's own
+    // fields, same as before.
     const history: WorkflowAction[] = [
       {
         action: 'submit',
@@ -466,12 +527,94 @@ export class PatternWorkflow {
 
   /**
    * Get sessions by IDs (helper method)
+   *
+   * Backs compileAndSubmitPatterns(): candidate.signature.sessions holds the
+   * session_ids the analyzer already grouped as similar; resolve them to
+   * full AIDiscoverySession rows so the compiler has real data to work from.
    */
   private async getSessionsForCandidate(
     sessionIds: string[]
-  ): Promise<any[]> {
-    // This would query the database for sessions
-    // For now, return empty array (will be implemented when integrated)
-    return [];
+  ): Promise<AIDiscoverySession[]> {
+    if (sessionIds.length === 0) {
+      return [];
+    }
+
+    const client = await this.postgresClient.getClient();
+
+    try {
+      const result = await client.query(
+        `SELECT
+          id, session_id, target_host, target_port,
+          scan_result, status, started_at, completed_at,
+          duration_ms, ai_model, total_tokens, prompt_tokens,
+          completion_tokens, estimated_cost, discovered_cis,
+          confidence_score, tool_calls, ai_reasoning,
+          pattern_matched, error_message, retry_count,
+          created_at
+        FROM ai_discovery_sessions
+        WHERE session_id = ANY($1)`,
+        [sessionIds]
+      );
+
+      return result.rows.map(row => this.rowToSession(row));
+    } catch (error) {
+      logger.error('Failed to fetch sessions for candidate', {
+        sessionIds,
+        error,
+      });
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Convert database row to AIDiscoverySession
+   * (mirrors PatternAnalyzer.rowToSession's column mapping)
+   */
+  private rowToSession(row: {
+    id: string;
+    session_id: string;
+    target_host: string;
+    target_port: number;
+    status: 'running' | 'completed' | 'failed';
+    started_at: Date;
+    completed_at: Date | null;
+    duration_ms: number | null;
+    ai_model: string;
+    total_tokens: number | null;
+    prompt_tokens: number | null;
+    completion_tokens: number | null;
+    estimated_cost: string | null;
+    discovered_cis: unknown[] | null;
+    confidence_score: number | null;
+    tool_calls: AIDiscoverySession['toolCalls'] | null;
+    ai_reasoning: string | null;
+    pattern_matched: string | null;
+    error_message: string | null;
+    retry_count: number | null;
+  }): AIDiscoverySession {
+    return {
+      id: row.id,
+      sessionId: row.session_id,
+      targetHost: row.target_host,
+      targetPort: row.target_port,
+      status: row.status,
+      startedAt: row.started_at,
+      completedAt: row.completed_at ?? undefined,
+      durationMs: row.duration_ms ?? undefined,
+      aiModel: row.ai_model,
+      totalTokens: row.total_tokens ?? undefined,
+      promptTokens: row.prompt_tokens ?? undefined,
+      completionTokens: row.completion_tokens ?? undefined,
+      estimatedCost: row.estimated_cost ? parseFloat(row.estimated_cost) : undefined,
+      discoveredCIs: row.discovered_cis || [],
+      confidenceScore: row.confidence_score ?? undefined,
+      toolCalls: row.tool_calls || [],
+      aiReasoning: row.ai_reasoning ?? undefined,
+      patternMatched: row.pattern_matched ?? undefined,
+      errorMessage: row.error_message ?? undefined,
+      retryCount: row.retry_count || 0,
+    };
   }
 }

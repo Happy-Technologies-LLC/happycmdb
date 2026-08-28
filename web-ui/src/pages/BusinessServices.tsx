@@ -64,6 +64,25 @@ interface BusinessServiceAPI {
   updated_at?: string;
 }
 
+/** Standard {success, data} envelope every business-services endpoint responds with. */
+interface ApiResponse<T> {
+  success: boolean;
+  data: T;
+  error?: string;
+  message?: string;
+}
+
+interface PaginatedResponse<T> {
+  success: boolean;
+  data: T[];
+  pagination: {
+    page: number;
+    limit: number;
+    total: number;
+    totalPages: number;
+  };
+}
+
 // Mapper functions to convert between UI and API formats
 const mapAPIToUI = (apiService: BusinessServiceAPI): BusinessService => {
   const tierMatch = apiService.business_criticality.match(/tier_(\d)/);
@@ -146,10 +165,10 @@ export const BusinessServices: React.FC = () => {
   const loadServices = async () => {
     try {
       setLoading(true);
-      const response = await apiClient.get<{ services: BusinessServiceAPI[]; total: number }>(
+      const response = await apiClient.get<PaginatedResponse<BusinessServiceAPI>>(
         '/business-services'
       );
-      const uiServices = response.services.map(mapAPIToUI);
+      const uiServices = response.data.map(mapAPIToUI);
       setServices(uiServices);
     } catch (error: any) {
       console.error('Failed to load business services:', error);
@@ -185,18 +204,18 @@ export const BusinessServices: React.FC = () => {
         // Update existing service
         uiService.id = editingService.id;
         const apiData = mapUIToAPI(uiService);
-        const updatedService = await apiClient.patch<BusinessServiceAPI>(
+        const updatedService = await apiClient.patch<ApiResponse<BusinessServiceAPI>>(
           `/business-services/${editingService.id}`,
           apiData
         );
-        setServices(services.map(s => s.id === editingService.id ? mapAPIToUI(updatedService) : s));
+        setServices(services.map(s => s.id === editingService.id ? mapAPIToUI(updatedService.data) : s));
         showToast('Business service updated successfully', 'success');
         setEditingService(null);
       } else {
         // Create new service
         const apiData = mapUIToAPI(uiService);
-        const createdService = await apiClient.post<BusinessServiceAPI>('/business-services', apiData);
-        setServices([...services, mapAPIToUI(createdService)]);
+        const createdService = await apiClient.post<ApiResponse<BusinessServiceAPI>>('/business-services', apiData);
+        setServices([...services, mapAPIToUI(createdService.data)]);
         showToast('Business service created successfully', 'success');
       }
 

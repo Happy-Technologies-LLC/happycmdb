@@ -278,7 +278,7 @@ export class ReconciliationJob {
    */
   private async getPostgresCI(ciId: string): Promise<CI | null> {
     const result = await this.postgresClient.query(
-      `SELECT * FROM dim_ci WHERE ci_id = $1 AND is_current = true`,
+      `SELECT * FROM cmdb.dim_ci WHERE ci_id = $1 AND is_current = true`,
       [ciId]
     );
 
@@ -292,7 +292,7 @@ export class ReconciliationJob {
       external_id: row.external_id,
       name: row.ci_name,
       _type: row.ci_type,
-      _status: row.status,
+      _status: row.ci_status,
       environment: row.environment,
       _created_at: row.created_at,
       _updated_at: row.updated_at,
@@ -315,7 +315,7 @@ export class ReconciliationJob {
 
       // Get from PostgreSQL
       const pgResult = await this.postgresClient.query(
-        'SELECT DISTINCT ci_id FROM dim_ci WHERE is_current = true'
+        'SELECT DISTINCT ci_id FROM cmdb.dim_ci WHERE is_current = true'
       );
       pgResult.rows.forEach((row: any) => ciIds.add(row.ci_id));
 
@@ -367,7 +367,7 @@ export class ReconciliationJob {
    */
   private async updatePostgresStatus(ciId: string, status: CIStatus): Promise<void> {
     await this.postgresClient.query(
-      `UPDATE dim_ci SET status = $1, updated_at = NOW()
+      `UPDATE cmdb.dim_ci SET ci_status = $1, updated_at = NOW()
        WHERE ci_id = $2 AND is_current = true`,
       [status, ciId]
     );
@@ -395,8 +395,8 @@ export class ReconciliationJob {
    */
   private async resolveByCreatingInPostgres(ci: CI): Promise<void> {
     await this.postgresClient.query(
-      `INSERT INTO dim_ci
-       (ci_id, ci_name, ci_type, environment, status, effective_date, is_current)
+      `INSERT INTO cmdb.dim_ci
+       (ci_id, ci_name, ci_type, environment, ci_status, effective_from, is_current)
        VALUES ($1, $2, $3, $4, $5, NOW(), true)`,
       [ci._id, ci.name, ci._type, ci.environment, ci._status]
     );

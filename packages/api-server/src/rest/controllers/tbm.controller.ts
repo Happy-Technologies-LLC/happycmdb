@@ -5,6 +5,21 @@ import { Request, Response } from 'express';
 import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
 import { logger } from '@cmdb/common';
 
+
+/**
+ * A single GL account entry accepted by importGLData. Mirrors the fields the
+ * tbm-cost-engine GLIntegration package models for a GL account (account
+ * number/name, cost center, and the TBM cost pool it maps to).
+ */
+interface GLImportRecord {
+  accountNumber?: string;
+  accountName?: string;
+  costPool?: string;
+  costCenter?: string;
+  department?: string;
+  allocationPercentage?: number;
+}
+
 /**
  * TBM (Technology Business Management) Controller
  *
@@ -256,22 +271,27 @@ export class TBMController {
   async getCostTrends(req: Request, res: Response): Promise<void> {
     try {
       const { months = 6 } = req.query;
+      const monthsBack = Math.min(Math.max(parseInt(months as string, 10) || 6, 1), 36);
 
       const pool = this.postgresClient.pool;
 
-      // Query cost history from PostgreSQL data mart
+      // Query cost history from cmdb.dim_ci, the real SCD Type-2 dimension table that
+      // versions CI attributes (including TBM monthly_cost) over time; ci_snapshot does
+      // not exist in any migration. Each CI version is bucketed by the month it became
+      // effective, approximating a monthly cost trend from real dimensional history.
       const result = await pool.query(
         `
         SELECT
-          date_trunc('month', snapshot_date) as month,
-          sum(tbm_monthly_cost) as total_cost,
-          count(*) as ci_count
-        FROM ci_snapshot
-        WHERE snapshot_date >= NOW() - INTERVAL '${parseInt(months as string)} months'
-          AND tbm_monthly_cost IS NOT NULL
-        GROUP BY date_trunc('month', snapshot_date)
+          date_trunc('month', effective_from) as month,
+          sum((tbm_attributes->>'monthly_cost')::numeric) as total_cost,
+          count(DISTINCT ci_id) as ci_count
+        FROM cmdb.dim_ci
+        WHERE effective_from >= NOW() - ($1 * INTERVAL '1 month')
+          AND tbm_attributes->>'monthly_cost' IS NOT NULL
+        GROUP BY date_trunc('month', effective_from)
         ORDER BY month DESC
-        `
+        `,
+        [monthsBack]
       );
 
       const trends = result.rows.map((row) => ({
@@ -405,12 +425,105 @@ export class TBMController {
 
   async importGLData(req: Request, res: Response): Promise<void> {
     try {
-      // TODO: Implement GL data import from CSV/Excel
-      // This would parse GL data and match to CIs
+      const rawRecords = req.body?.records;
+      const importedBy = typeof req.body?.importedBy === 'string' ? req.body.importedBy : 'gl-import';
+
+      if (!Array.isArray(rawRecords) || rawRecords.length === 0) {
+        res.status(400).json({
+          success: false,
+          error: 'Bad Request',
+          message: 'records (a non-empty array of GL account entries) is required',
+        });
+        return;
+      }
+
+      const pool = this.postgresClient.pool;
+      const imported: unknown[] = [];
+      const unmatched: Array<{ record: unknown; reason: string }> = [];
+
+      // Match each GL record to an existing TBM cost pool (the real target of GL account
+      // mapping in this schema - tbm_gl_mappings/tbm_cost_pools; there is no gl_accounts or
+      // gl_transactions table), then persist the mapping and roster the account code on the
+      // cost pool it was matched to.
+      for (const raw of rawRecords as unknown[]) {
+        const record = (raw && typeof raw === 'object' ? raw : {}) as GLImportRecord;
+        const { accountNumber, accountName, costPool: costPoolName } = record;
+
+        if (!accountNumber || !accountName) {
+          unmatched.push({ record, reason: 'accountNumber and accountName are required' });
+          continue;
+        }
+
+        if (!costPoolName) {
+          unmatched.push({ record, reason: 'No costPool specified to match against' });
+          continue;
+        }
+
+        const allocationPercentage = record.allocationPercentage ?? 100;
+        if (allocationPercentage < 0 || allocationPercentage > 100) {
+          unmatched.push({ record, reason: 'allocationPercentage must be between 0 and 100' });
+          continue;
+        }
+
+        const poolResult = await pool.query(
+          'SELECT id, name, gl_account_codes FROM tbm_cost_pools WHERE name = $1',
+          [costPoolName]
+        );
+
+        if (poolResult.rows.length === 0) {
+          unmatched.push({ record, reason: `Cost pool '${costPoolName}' not found` });
+          continue;
+        }
+
+        const costPool = poolResult.rows[0];
+
+        const mappingResult = await pool.query(
+          `
+          INSERT INTO tbm_gl_mappings (
+            entity_type, entity_id, entity_name, gl_account_code, gl_account_name,
+            gl_cost_center, gl_business_unit, mapping_rules, created_by
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+          RETURNING *
+          `,
+          [
+            'cost_pool',
+            costPool.id,
+            costPool.name,
+            accountNumber,
+            accountName,
+            record.costCenter || null,
+            record.department || null,
+            JSON.stringify({
+              allocation_percentage: allocationPercentage,
+              allocation_driver: 'direct',
+              notes: '',
+            }),
+            importedBy,
+          ]
+        );
+
+        if (!(costPool.gl_account_codes || []).includes(accountNumber)) {
+          await pool.query(
+            `UPDATE tbm_cost_pools SET gl_account_codes = array_append(gl_account_codes, $1), updated_at = NOW() WHERE id = $2`,
+            [accountNumber, costPool.id]
+          );
+        }
+
+        imported.push(mappingResult.rows[0]);
+      }
+
+      logger.info('GL data import completed', {
+        importedCount: imported.length,
+        unmatchedCount: unmatched.length,
+      });
 
       res.json({
         success: true,
-        message: 'GL import feature coming soon',
+        message: `Imported ${imported.length} GL account mapping(s); ${unmatched.length} record(s) could not be matched`,
+        data: {
+          imported,
+          unmatched,
+        },
       });
     } catch (error) {
       logger.error('Error importing GL data', error);

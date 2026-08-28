@@ -8,11 +8,10 @@
 
 import React, { useState, useEffect } from 'react';
 import { Icon } from '@happy-technologies/design-system';
-import { apiClient } from '../../services/auth.service';
+import { apiClient } from '../../services/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Checkbox } from '@/components/ui/checkbox';
 import {
   Table,
   TableBody,
@@ -33,12 +32,28 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 
 interface ApiKey {
-  id: string;
-  name: string;
-  key: string;
-  scopes: string[];
-  created_at: string;
-  last_used?: string;
+  _id: string;
+  _name: string;
+  _role: string;
+  _enabled: boolean;
+  _createdAt: string;
+  expiresAt?: string | null;
+  lastUsedAt?: string | null;
+}
+
+interface ApiKeysResponse {
+  success: boolean;
+  data: ApiKey[];
+}
+
+interface GenerateApiKeyResponse {
+  success: boolean;
+  data: {
+    _apiKey: string;
+    _id: string;
+    _name: string;
+    expiresAt?: string | null;
+  };
 }
 
 export const ApiKeysManager: React.FC = () => {
@@ -48,12 +63,6 @@ export const ApiKeysManager: React.FC = () => {
   const [selectedKeyId, setSelectedKeyId] = useState<string | null>(null);
   const [newKeyData, setNewKeyData] = useState({
     name: '',
-    scopes: {
-      read: true,
-      write: false,
-      delete: false,
-      admin: false,
-    },
   });
   const [generatedKey, setGeneratedKey] = useState<string | null>(null);
 
@@ -63,8 +72,8 @@ export const ApiKeysManager: React.FC = () => {
 
   const fetchApiKeys = async () => {
     try {
-      const response = await apiClient.get<{ keys: ApiKey[] }>('/api/v1/auth/api-keys');
-      setApiKeys(response.data.keys);
+      const response = await apiClient.get<ApiKeysResponse>('/auth/api-keys');
+      setApiKeys(response.data.data);
     } catch (error) {
       console.error('Failed to fetch API keys:', error);
     }
@@ -72,22 +81,14 @@ export const ApiKeysManager: React.FC = () => {
 
   const handleGenerateKey = async () => {
     try {
-      const scopes = Object.entries(newKeyData.scopes)
-        .filter(([_, enabled]) => enabled)
-        .map(([scope]) => scope);
-
-      const response = await apiClient.post<{ key: ApiKey }>('/api/v1/auth/api-keys', {
+      const response = await apiClient.post<GenerateApiKeyResponse>('/auth/api-key', {
         name: newKeyData.name,
-        scopes,
       });
 
-      setGeneratedKey(response.data.key.key);
+      setGeneratedKey(response.data.data._apiKey);
       await fetchApiKeys();
-      setNewKeyData({
-        name: '',
-        scopes: { read: true, write: false, delete: false, admin: false },
-      });
-    } catch (error: any) {
+      setNewKeyData({ name: '' });
+    } catch (error: unknown) {
       console.error('Failed to generate API key:', error);
     }
   };
@@ -96,7 +97,7 @@ export const ApiKeysManager: React.FC = () => {
     if (!selectedKeyId) return;
 
     try {
-      await apiClient.delete(`/api/v1/auth/api-keys/${selectedKeyId}`);
+      await apiClient.delete(`/auth/api-key/${selectedKeyId}`);
       await fetchApiKeys();
       setRevokeDialogOpen(false);
       setSelectedKeyId(null);
@@ -107,11 +108,6 @@ export const ApiKeysManager: React.FC = () => {
 
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text);
-  };
-
-  const maskKey = (key: string): string => {
-    if (key.length <= 8) return key;
-    return `${key.substring(0, 4)}...${key.substring(key.length - 4)}`;
   };
 
   const formatDate = (dateString: string): string => {
@@ -142,8 +138,7 @@ export const ApiKeysManager: React.FC = () => {
           <TableHeader>
             <TableRow>
               <TableHead>Name</TableHead>
-              <TableHead>Key</TableHead>
-              <TableHead>Scopes</TableHead>
+              <TableHead>Role</TableHead>
               <TableHead>Created</TableHead>
               <TableHead>Last Used</TableHead>
               <TableHead className="text-right">Actions</TableHead>
@@ -152,49 +147,29 @@ export const ApiKeysManager: React.FC = () => {
           <TableBody>
             {apiKeys.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
+                <TableCell colSpan={5} className="text-center py-8 text-muted-foreground">
                   No API keys yet. Generate one to get started.
                 </TableCell>
               </TableRow>
             ) : (
               apiKeys.map((key) => (
-                <TableRow key={key.id}>
-                  <TableCell className="font-medium">{key.name}</TableCell>
+                <TableRow key={key._id}>
+                  <TableCell className="font-medium">{key._name}</TableCell>
                   <TableCell>
-                    <div className="flex items-center gap-2">
-                      <code className="text-sm bg-muted px-2 py-1 rounded">
-                        {maskKey(key.key)}
-                      </code>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-8 w-8"
-                        onClick={() => copyToClipboard(key.key)}
-                      >
-                        <Icon name="copy" size={16} />
-                      </Button>
-                    </div>
+                    <Badge variant="secondary">{key._role}</Badge>
                   </TableCell>
+                  <TableCell>{formatDate(key._createdAt)}</TableCell>
                   <TableCell>
-                    <div className="flex gap-1 flex-wrap">
-                      {key.scopes.map((scope) => (
-                        <Badge key={scope} variant="secondary">
-                          {scope}
-                        </Badge>
-                      ))}
-                    </div>
-                  </TableCell>
-                  <TableCell>{formatDate(key.created_at)}</TableCell>
-                  <TableCell>
-                    {key.last_used ? formatDate(key.last_used) : 'Never'}
+                    {key.lastUsedAt ? formatDate(key.lastUsedAt) : 'Never'}
                   </TableCell>
                   <TableCell className="text-right">
                     <Button
                       variant="ghost"
                       size="icon"
                       className="h-8 w-8 text-destructive hover:text-destructive"
+                      aria-label={`Revoke ${key._name}`}
                       onClick={() => {
-                        setSelectedKeyId(key.id);
+                        setSelectedKeyId(key._id);
                         setRevokeDialogOpen(true);
                       }}
                     >
@@ -219,6 +194,9 @@ export const ApiKeysManager: React.FC = () => {
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>Generate New API Key</DialogTitle>
+            <DialogDescription>
+              Create an API key for programmatic access.
+            </DialogDescription>
           </DialogHeader>
           {generatedKey ? (
             <div className="space-y-4">
@@ -249,74 +227,9 @@ export const ApiKeysManager: React.FC = () => {
                 <Input
                   id="key-name"
                   value={newKeyData.name}
-                  onChange={(e) => setNewKeyData({ ...newKeyData, name: e.target.value })}
+                  onChange={(e) => setNewKeyData({ name: e.target.value })}
                   placeholder="My API Key"
                 />
-              </div>
-              <div className="space-y-3">
-                <Label>Scopes</Label>
-                <div className="space-y-2">
-                  <div className="flex items-center space-x-2">
-                    <Checkbox
-                      id="scope-read"
-                      checked={newKeyData.scopes.read}
-                      onCheckedChange={(checked: boolean) =>
-                        setNewKeyData({
-                          ...newKeyData,
-                          scopes: { ...newKeyData.scopes, read: checked as boolean },
-                        })
-                      }
-                    />
-                    <Label htmlFor="scope-read" className="text-sm font-normal cursor-pointer">
-                      Read
-                    </Label>
-                  </div>
-                  <div className="flex items-center space-x-2">
-                    <Checkbox
-                      id="scope-write"
-                      checked={newKeyData.scopes.write}
-                      onCheckedChange={(checked: boolean) =>
-                        setNewKeyData({
-                          ...newKeyData,
-                          scopes: { ...newKeyData.scopes, write: checked as boolean },
-                        })
-                      }
-                    />
-                    <Label htmlFor="scope-write" className="text-sm font-normal cursor-pointer">
-                      Write
-                    </Label>
-                  </div>
-                  <div className="flex items-center space-x-2">
-                    <Checkbox
-                      id="scope-delete"
-                      checked={newKeyData.scopes.delete}
-                      onCheckedChange={(checked: boolean) =>
-                        setNewKeyData({
-                          ...newKeyData,
-                          scopes: { ...newKeyData.scopes, delete: checked as boolean },
-                        })
-                      }
-                    />
-                    <Label htmlFor="scope-delete" className="text-sm font-normal cursor-pointer">
-                      Delete
-                    </Label>
-                  </div>
-                  <div className="flex items-center space-x-2">
-                    <Checkbox
-                      id="scope-admin"
-                      checked={newKeyData.scopes.admin}
-                      onCheckedChange={(checked: boolean) =>
-                        setNewKeyData({
-                          ...newKeyData,
-                          scopes: { ...newKeyData.scopes, admin: checked as boolean },
-                        })
-                      }
-                    />
-                    <Label htmlFor="scope-admin" className="text-sm font-normal cursor-pointer">
-                      Admin
-                    </Label>
-                  </div>
-                </div>
               </div>
             </div>
           )}

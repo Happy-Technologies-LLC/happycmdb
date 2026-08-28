@@ -11,6 +11,9 @@ import CITypeBadge, { typeIcons } from './CITypeBadge';
 import { cn } from '../../utils/cn';
 import { LiquidGlass } from '../ui/liquid-glass';
 import { healthColor } from '../../lib/brandColors';
+import SearchBar from '../common/SearchBar';
+import DataTable from '../common/DataTable';
+import type { DataTableColumn, SortOptions } from '../../types';
 
 interface CIListProps {
   onEdit?: (ci: CI) => void;
@@ -83,10 +86,9 @@ export const CIList: React.FC<CIListProps> = ({
     sort_order: sortOrder,
   });
 
-  const handleSort = (column: string) => {
-    const isAsc = sortBy === column && sortOrder === 'asc';
-    setSortOrder(isAsc ? 'desc' : 'asc');
-    setSortBy(column);
+  const handleSort = (sort: SortOptions) => {
+    setSortBy(sort.field);
+    setSortOrder(sort.order);
   };
 
   const handleView = (ci: CI) => {
@@ -97,18 +99,12 @@ export const CIList: React.FC<CIListProps> = ({
     }
   };
 
-  const handleEdit = (ci: CI, e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (onEdit) {
-      onEdit(ci);
-    }
+  const handleEdit = (ci: CI) => {
+    onEdit?.(ci);
   };
 
-  const handleDelete = (ci: CI, e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (onDelete) {
-      onDelete(ci);
-    }
+  const handleDelete = (ci: CI) => {
+    onDelete?.(ci);
   };
 
   const formatDate = (dateString: string) => {
@@ -129,6 +125,79 @@ export const CIList: React.FC<CIListProps> = ({
       .join(' ');
   };
 
+  const searchResults = search
+    ? (data?.data || []).map((ci) => ({
+        id: ci.id,
+        title: ci.name,
+        subtitle: formatLabel(ci.environment),
+        type: formatLabel(ci.type),
+      }))
+    : [];
+
+  const columns: DataTableColumn<CI>[] = [
+    {
+      field: 'name',
+      headerName: 'Name',
+      sortable: true,
+      renderCell: (_value, ci) => (
+        <div className="flex items-center gap-3 min-w-0">
+          <span className="flex h-[34px] w-[34px] flex-none items-center justify-center rounded-sm bg-sky-soft text-sky-text">
+            {typeIcons[ci.type]}
+          </span>
+          <span className="min-w-0">
+            <span className="block font-display font-semibold text-[13.5px] text-navy truncate">
+              {ci.name}
+            </span>
+            <span className="text-[11.5px] text-ink-soft capitalize">{ci.environment}</span>
+          </span>
+        </div>
+      ),
+    },
+    {
+      field: 'type',
+      headerName: 'Type',
+      sortable: false,
+      renderCell: (_value, ci) => <CITypeBadge type={ci.type} />,
+    },
+    {
+      field: 'status',
+      headerName: 'Status',
+      sortable: false,
+      renderCell: (_value, ci) => <CIStatusBadge status={ci.status} />,
+    },
+    {
+      field: 'confidence_score',
+      headerName: 'Confidence',
+      sortable: false,
+      renderCell: (_value, ci) => {
+        const healthPct = ci.confidence_score != null ? Math.round(ci.confidence_score * 100) : null;
+        return healthPct != null ? (
+          <div className="flex items-center gap-2 min-w-[110px]">
+            <span className="flex-1 h-1.5 rounded bg-line-soft overflow-hidden">
+              <span
+                className="block h-full rounded"
+                style={{ width: `${healthPct}%`, backgroundColor: healthColor(healthPct) }}
+              />
+            </span>
+            <span className="font-display text-[11.5px] font-bold" style={{ color: healthColor(healthPct) }}>
+              {healthPct}%
+            </span>
+          </div>
+        ) : (
+          <span className="text-sm text-ink-soft">-</span>
+        );
+      },
+    },
+    {
+      field: 'updated_at',
+      headerName: 'Last Updated',
+      sortable: true,
+      renderCell: (_value, ci) => (
+        <span className="font-display text-xs text-ink-soft">{formatDate(ci.updated_at)}</span>
+      ),
+    },
+  ];
+
   if (error) {
     return (
       <div className="p-6 text-center">
@@ -148,17 +217,23 @@ export const CIList: React.FC<CIListProps> = ({
       <div className="p-4 border-b border-line space-y-3">
         <div className="flex flex-wrap gap-3 items-center">
           <div className="relative flex-1 min-w-[250px]">
-            <Icon name="magnifying-glass" size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-soft" />
-            <input
-              type="text"
+            <SearchBar
+              fullWidth
               placeholder="Search items…"
               value={search}
-              onChange={(e) => {
-                const newSearch = e.target.value;
+              results={searchResults}
+              debounceTime={300}
+              onChange={(newValue) => {
+                if (newValue === '') {
+                  setSearch('');
+                  updateURLFilters(typeFilter, statusFilter, environmentFilter, '');
+                }
+              }}
+              onSearch={(newSearch) => {
                 setSearch(newSearch);
                 updateURLFilters(typeFilter, statusFilter, environmentFilter, newSearch);
               }}
-              className="w-full pl-10 pr-3 py-2 border-2 border-line rounded-md text-sm bg-white text-ink focus:outline-none focus:border-sky focus:ring-4 focus:ring-sky/10"
+              onResultClick={(result) => navigate(`/cis/${result.id}`)}
             />
           </div>
 
@@ -222,199 +297,28 @@ export const CIList: React.FC<CIListProps> = ({
       </div>
 
       {/* Table */}
-      <div className="overflow-x-auto">
-        <table className="w-full">
-          <thead className="bg-warm border-b border-line">
-            <tr>
-              <th className="px-[22px] py-3 text-left">
-                <button
-                  onClick={() => handleSort('name')}
-                  className="flex items-center gap-1 font-display text-[10.5px] font-bold tracking-[0.08em] uppercase text-ink-soft hover:text-navy"
-                >
-                  Name
-                  {sortBy === 'name' && (
-                    sortOrder === 'asc' ? <Icon name="arrow-up" size={14} /> : <Icon name="arrow-down" size={14} />
-                  )}
-                </button>
-              </th>
-              <th className="px-[22px] py-3 text-left font-display text-[10.5px] font-bold tracking-[0.08em] uppercase text-ink-soft">
-                Type
-              </th>
-              <th className="px-[22px] py-3 text-left font-display text-[10.5px] font-bold tracking-[0.08em] uppercase text-ink-soft">
-                Status
-              </th>
-              <th className="px-[22px] py-3 text-left font-display text-[10.5px] font-bold tracking-[0.08em] uppercase text-ink-soft">
-                Confidence
-              </th>
-              <th className="px-[22px] py-3 text-left">
-                <button
-                  onClick={() => handleSort('updated_at')}
-                  className="flex items-center gap-1 font-display text-[10.5px] font-bold tracking-[0.08em] uppercase text-ink-soft hover:text-navy"
-                >
-                  Last Updated
-                  {sortBy === 'updated_at' && (
-                    sortOrder === 'asc' ? <Icon name="arrow-up" size={14} /> : <Icon name="arrow-down" size={14} />
-                  )}
-                </button>
-              </th>
-              <th className="px-[22px] py-3 text-right font-display text-[10.5px] font-bold tracking-[0.08em] uppercase text-ink-soft">
-                {showActions ? 'Actions' : ''}
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {isLoading ? (
-              <tr>
-                <td colSpan={6} className="px-4 py-8 text-center">
-                  <div className="flex justify-center">
-                    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-sky"></div>
-                  </div>
-                </td>
-              </tr>
-            ) : data?.data.length === 0 ? (
-              <tr>
-                <td colSpan={6} className="px-4 py-12 text-center text-sm text-ink-soft">
-                  No configuration items match this filter.
-                </td>
-              </tr>
-            ) : (
-              data?.data.map((ci) => {
-                const healthPct =
-                  ci.confidence_score != null ? Math.round(ci.confidence_score * 100) : null;
-                return (
-                  <tr
-                    key={ci.id}
-                    onClick={() => handleView(ci)}
-                    className="border-b border-line-soft hover:bg-warm cursor-pointer transition-colors"
-                  >
-                    <td className="px-[22px] py-[15px]">
-                      <div className="flex items-center gap-3 min-w-0">
-                        <span className="flex h-[34px] w-[34px] flex-none items-center justify-center rounded-sm bg-sky-soft text-sky-text">
-                          {typeIcons[ci.type]}
-                        </span>
-                        <span className="min-w-0">
-                          <span className="block font-display font-semibold text-[13.5px] text-navy truncate">
-                            {ci.name}
-                          </span>
-                          <span className="text-[11.5px] text-ink-soft capitalize">{ci.environment}</span>
-                        </span>
-                      </div>
-                    </td>
-                    <td className="px-[22px] py-[15px]">
-                      <CITypeBadge type={ci.type} />
-                    </td>
-                    <td className="px-[22px] py-[15px]">
-                      <CIStatusBadge status={ci.status} />
-                    </td>
-                    <td className="px-[22px] py-[15px]">
-                      {healthPct != null ? (
-                        <div className="flex items-center gap-2 min-w-[110px]">
-                          <span className="flex-1 h-1.5 rounded bg-line-soft overflow-hidden">
-                            <span
-                              className="block h-full rounded"
-                              style={{ width: `${healthPct}%`, backgroundColor: healthColor(healthPct) }}
-                            />
-                          </span>
-                          <span
-                            className="font-display text-[11.5px] font-bold"
-                            style={{ color: healthColor(healthPct) }}
-                          >
-                            {healthPct}%
-                          </span>
-                        </div>
-                      ) : (
-                        <span className="text-sm text-ink-soft">-</span>
-                      )}
-                    </td>
-                    <td className="px-[22px] py-[15px]">
-                      <span className="font-display text-xs text-ink-soft">{formatDate(ci.updated_at)}</span>
-                    </td>
-                    {showActions ? (
-                      <td className="px-[22px] py-[15px] text-right">
-                        <div className="flex justify-end gap-1">
-                          <button
-                            onClick={() => handleView(ci)}
-                            className="p-1.5 hover:bg-warm-alt rounded transition-colors"
-                            title="View Details"
-                          >
-                            <Icon name="eye" size={16} className="text-ink-soft" />
-                          </button>
-                          {onEdit && (
-                            <button
-                              onClick={(e) => handleEdit(ci, e)}
-                              className="p-1.5 hover:bg-sky-soft rounded transition-colors"
-                              title="Edit"
-                            >
-                              <Icon name="pencil-simple" size={16} className="text-sky-text" />
-                            </button>
-                          )}
-                          {onDelete && (
-                            <button
-                              onClick={(e) => handleDelete(ci, e)}
-                              className="p-1.5 hover:bg-danger-soft rounded transition-colors"
-                              title="Delete"
-                            >
-                              <Icon name="trash" size={16} className="text-danger" />
-                            </button>
-                          )}
-                        </div>
-                      </td>
-                    ) : (
-                      <td className="px-[22px] py-[15px] text-center">
-                        <Icon name="caret-right" size={16} className="text-ink-soft inline" />
-                      </td>
-                    )}
-                  </tr>
-                );
-              })
-            )}
-          </tbody>
-        </table>
-      </div>
-
-      {/* Pagination */}
-      <div className="px-4 py-3 flex items-center justify-between border-t border-line">
-        <div className="flex items-center gap-2">
-          <span className="text-sm text-ink">Rows per page:</span>
-          <select
-            value={rowsPerPage}
-            onChange={(e) => {
-              setRowsPerPage(parseInt(e.target.value, 10));
-              setPage(0);
-            }}
-            className="px-2 py-1 border border-line rounded text-sm bg-white text-ink focus:outline-none focus:border-sky focus:ring-2 focus:ring-sky/20"
-          >
-            {[5, 10, 25, 50].map((value) => (
-              <option key={value} value={value}>
-                {value}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <span className="text-sm text-ink">
-            {page * rowsPerPage + 1}-{Math.min((page + 1) * rowsPerPage, data?.total || 0)} of{' '}
-            {data?.total || 0}
-          </span>
-          <div className="flex gap-1">
-            <button
-              onClick={() => setPage(Math.max(0, page - 1))}
-              disabled={page === 0}
-              className="px-3 py-1 border border-line rounded text-sm bg-white text-ink hover:bg-warm disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              Previous
-            </button>
-            <button
-              onClick={() => setPage(page + 1)}
-              disabled={!data || (page + 1) * rowsPerPage >= data.total}
-              className="px-3 py-1 border border-line rounded text-sm bg-white text-ink hover:bg-warm disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              Next
-            </button>
-          </div>
-        </div>
-      </div>
+      <DataTable
+        columns={columns}
+        data={data?.data || []}
+        total={data?.total || 0}
+        page={page}
+        rowsPerPage={rowsPerPage}
+        sortBy={sortBy}
+        sortOrder={sortOrder}
+        onSortChange={handleSort}
+        onPageChange={setPage}
+        onRowsPerPageChange={(rows) => {
+          setRowsPerPage(rows);
+          setPage(0);
+        }}
+        onRowClick={handleView}
+        onView={showActions ? handleView : undefined}
+        onEdit={showActions ? onEdit : undefined}
+        onDelete={showActions ? onDelete : undefined}
+        rowIdField="id"
+        emptyMessage="No configuration items match this filter."
+        loading={isLoading}
+      />
     </LiquidGlass>
   );
 };

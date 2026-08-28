@@ -605,17 +605,6 @@ export const DELETE_CONNECTOR_CONFIG_MUTATION = gql`
   }
 `;
 
-export const TEST_CONNECTOR_CONNECTION_MUTATION = gql`
-  mutation TestConnectorConnection($id: ID!) {
-    testConnectorConnection(id: $id) {
-      success
-      message
-      details
-      errors
-    }
-  }
-`;
-
 export const RUN_CONNECTOR_MUTATION = gql`
   mutation RunConnector($id: ID!) {
     runConnector(id: $id) {
@@ -626,15 +615,6 @@ export const RUN_CONNECTOR_MUTATION = gql`
       startedAt
       status
       triggeredBy
-    }
-  }
-`;
-
-export const CANCEL_CONNECTOR_RUN_MUTATION = gql`
-  mutation CancelConnectorRun($id: ID!) {
-    cancelConnectorRun(id: $id) {
-      success
-      message
     }
   }
 `;
@@ -813,32 +793,12 @@ class ConnectorService {
     return data.deleteConnectorConfiguration;
   }
 
-  async testConnectorConnection(
-    id: string
-  ): Promise<{ success: boolean; message?: string; details?: any; errors?: string[] }> {
-    const { data } = await apolloClient.mutate({
-      mutation: TEST_CONNECTOR_CONNECTION_MUTATION,
-      variables: { id },
-    });
-    return data.testConnectorConnection;
-  }
-
   async runConnector(id: string): Promise<ConnectorRun> {
     const { data } = await apolloClient.mutate({
       mutation: RUN_CONNECTOR_MUTATION,
       variables: { id },
     });
     return data.runConnector;
-  }
-
-  async cancelConnectorRun(
-    id: string
-  ): Promise<{ success: boolean; message?: string }> {
-    const { data } = await apolloClient.mutate({
-      mutation: CANCEL_CONNECTOR_RUN_MUTATION,
-      variables: { id },
-    });
-    return data.cancelConnectorRun;
   }
 
   async enableConnectorConfiguration(

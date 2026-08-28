@@ -223,7 +223,7 @@ describe('IntegrationManager', () => {
           {
             id: sampleConfig.id,
             name: sampleConfig.name,
-            type: sampleConfig.type,
+            connector_type: sampleConfig.type,
           },
         ],
       });
@@ -268,7 +268,7 @@ describe('IntegrationManager', () => {
       await manager.runConnector(sampleConfig.name);
 
       expect(mockPostgresClient.query).toHaveBeenCalledWith(
-        expect.stringContaining('INSERT INTO connector_runs'),
+        expect.stringContaining('INSERT INTO connector_run_history'),
         expect.arrayContaining([
           expect.stringContaining('run_'),
           sampleConfig.name,
@@ -280,10 +280,9 @@ describe('IntegrationManager', () => {
       await manager.runConnector(sampleConfig.name);
 
       expect(mockPostgresClient.query).toHaveBeenCalledWith(
-        expect.stringContaining('UPDATE connector_runs'),
+        expect.stringContaining('UPDATE connector_run_history'),
         expect.arrayContaining([
           expect.stringContaining('run_'),
-          sampleConfig.name,
           expect.any(Date), // completed_at
           'completed',
         ])
@@ -299,7 +298,7 @@ describe('IntegrationManager', () => {
 
       // Should still save failed run
       expect(mockPostgresClient.query).toHaveBeenCalledWith(
-        expect.stringContaining('UPDATE connector_runs'),
+        expect.stringContaining('UPDATE connector_run_history'),
         expect.arrayContaining(['failed'])
       );
     });

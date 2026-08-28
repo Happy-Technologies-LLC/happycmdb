@@ -1,14 +1,27 @@
 // Copyright 2026 Happy Technologies LLC
 // SPDX-License-Identifier: Apache-2.0
 
+/**
+ * Connector Registry & Installation Routes. Authentication is enforced
+ * centrally: server.ts mounts `authMiddleware.authenticate()` on every
+ * /api/v1 route before this router. Registry browsing and installed/
+ * outdated listing (GET) stay open to any authenticated role. Installing,
+ * updating, uninstalling a connector, and refreshing the registry cache are
+ * gated to the 'admin' role given their infrastructure/supply-chain risk;
+ * verifying an already-installed connector only requires the 'write'
+ * permission.
+ */
+
 import { Router } from 'express';
 import Joi from 'joi';
 import { ConnectorController } from '../controllers/connector.controller';
 import { validateRequest, validateOptional } from '../middleware/validation.middleware';
 import { auditMiddleware } from '../../middleware/audit.middleware';
+import { getAuthMiddleware } from '../../auth/auth-bootstrap';
 
 export const connectorRoutes = Router();
 const controller = new ConnectorController();
+const authMiddleware = getAuthMiddleware();
 
 // Apply audit middleware to all routes
 connectorRoutes.use(auditMiddleware);
@@ -88,6 +101,7 @@ connectorRoutes.get(
 // Install connector from registry
 connectorRoutes.post(
   '/install',
+  authMiddleware.requireRole('admin'),
   validateRequest(installConnectorSchema, 'body'),
   controller.installConnector.bind(controller)
 );
@@ -95,6 +109,7 @@ connectorRoutes.post(
 // Update connector to specific version
 connectorRoutes.put(
   '/:type/update',
+  authMiddleware.requireRole('admin'),
   validateRequest(updateConnectorSchema, 'body'),
   controller.updateConnector.bind(controller)
 );
@@ -102,18 +117,21 @@ connectorRoutes.put(
 // Uninstall connector
 connectorRoutes.delete(
   '/:type',
+  authMiddleware.requireRole('admin'),
   controller.uninstallConnector.bind(controller)
 );
 
 // Verify connector installation
 connectorRoutes.post(
   '/:type/verify',
+  authMiddleware.requirePermission('write'),
   controller.verifyConnector.bind(controller)
 );
 
 // Refresh registry cache
 connectorRoutes.post(
   '/cache/refresh',
+  authMiddleware.requireRole('admin'),
   controller.refreshRegistryCache.bind(controller)
 );
 

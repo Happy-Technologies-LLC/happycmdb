@@ -19,6 +19,10 @@ export interface User {
   _createdAt: Date;
   _updatedAt: Date;
   lastLoginAt?: Date;
+  /** Display name shown in the profile UI; falls back to username when unset. */
+  _name?: string;
+  /** Data-URL or hosted URL for the profile avatar image. */
+  _avatar?: string;
 }
 
 export type ApiKeyTier = 'standard' | 'premium' | 'enterprise';

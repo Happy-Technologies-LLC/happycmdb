@@ -32,6 +32,17 @@ vi.mock('react-router-dom', async () => {
   };
 });
 
+// Builds a syntactically valid JWT-shaped string with a future `exp` claim, since
+// AuthContext.initializeAuth now rejects locally-detectable-expired/malformed tokens
+// before ever calling getCurrentUser().
+const createUnexpiredToken = (): string => {
+  const header = btoa(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
+  const payload = btoa(
+    JSON.stringify({ id: 'user-1', email: 'admin@happycmdb.com', roles: ['admin'], exp: Math.floor(Date.now() / 1000) + 3600 })
+  );
+  return `${header}.${payload}.mock-signature`;
+};
+
 describe('Login Page', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -134,11 +145,6 @@ describe('Login Page', () => {
   it('displays error message with invalid credentials', async () => {
     const user = userEvent.setup();
 
-    // Mock failed login - the AuthContext.login() sets isLoading: true then back to false,
-    // causing LoginForm to remount. The error is caught and re-thrown, but the LoginForm
-    // catches it and sets local error state. However, because AuthContext flips isLoading,
-    // the LoginForm may remount losing local state.
-    // We verify the API is called and the user stays on the login page.
     vi.mocked(api.api.login).mockRejectedValue({
       response: {
         data: {
@@ -175,13 +181,15 @@ describe('Login Page', () => {
       });
     });
 
-    // Verify token is NOT stored
-    expect(localStorage.getItem('auth_token')).toBeNull();
-
-    // After the failed login, the form should be visible again (isLoading returns to false)
+    // The Alert with the server-provided error message renders, and the login
+    // form remains mounted alongside it.
     await waitFor(() => {
+      expect(screen.getByText('Invalid username or password')).toBeInTheDocument();
       expect(screen.getByLabelText(/username/i)).toBeInTheDocument();
     });
+
+    // Verify token is NOT stored
+    expect(localStorage.getItem('auth_token')).toBeNull();
 
     // Verify user is not navigated to home
     expect(mockNavigate).not.toHaveBeenCalledWith('/');
@@ -224,7 +232,7 @@ describe('Login Page', () => {
 
   it('redirects authenticated users to home page', async () => {
     // Set up authenticated state
-    localStorage.setItem('auth_token', 'existing-token');
+    localStorage.setItem('auth_token', createUnexpiredToken());
     localStorage.setItem('user', JSON.stringify(mockApiHandlers.getCurrentUser.success));
 
     vi.mocked(api.api.getCurrentUser).mockResolvedValue(mockApiHandlers.getCurrentUser.success);
@@ -309,9 +317,8 @@ describe('Login Page', () => {
     // Click submit
     await user.click(submitButton);
 
-    // AuthContext.login sets isLoading: true, which makes Login show "Loading..." state
     await waitFor(() => {
-      expect(screen.getByText('Loading...')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /signing in/i })).toBeDisabled();
     });
 
     // Resolve the promise to clean up

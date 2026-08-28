@@ -5,10 +5,12 @@ import { Router } from 'express';
 import Joi from 'joi';
 import { RelationshipController } from '../controllers/relationship.controller';
 import { validateRequest, validateOptional } from '../middleware/validation.middleware';
+import { getAuthMiddleware } from '../../auth/auth-bootstrap';
 import { relationshipSchema, schemas } from '@cmdb/common';
 
 export const relationshipRoutes = Router();
 const controller = new RelationshipController();
+const authMiddleware = getAuthMiddleware();
 
 // Validation schemas
 const listRelationshipsQuerySchema = Joi.object({
@@ -30,6 +32,7 @@ relationshipRoutes.get(
 // POST /relationships - Create relationship
 relationshipRoutes.post(
   '/',
+  authMiddleware.requirePermission('write'),
   validateRequest(relationshipSchema, 'body'),
   controller.createRelationship.bind(controller)
 );
@@ -37,6 +40,7 @@ relationshipRoutes.post(
 // DELETE /relationships/:id - Delete relationship (supports query params too)
 relationshipRoutes.delete(
   '/:id?',
+  authMiddleware.requirePermission('write'),
   controller.deleteRelationship.bind(controller)
 );
 

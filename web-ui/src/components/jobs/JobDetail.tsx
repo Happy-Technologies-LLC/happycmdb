@@ -182,7 +182,7 @@ export const JobDetail: React.FC<JobDetailProps> = ({
             </Card>
           </div>
 
-          {job.returnvalue && (
+          {Boolean(job.returnvalue) && (
             <div>
               <h3 className="text-sm font-semibold mb-2">Return Value</h3>
               <Card>

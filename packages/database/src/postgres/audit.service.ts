@@ -1,7 +1,7 @@
 // Copyright 2026 Happy Technologies LLC
 // SPDX-License-Identifier: Apache-2.0
 
-import { Pool } from 'pg';
+import { Pool, PoolClient } from 'pg';
 import { randomUUID } from 'crypto';
 import { AuditLogEntry, AuditChange, AuditLogQuery, AuditLogResponse } from '@cmdb/common';
 import { logger } from '@cmdb/common';
@@ -98,8 +98,9 @@ export class AuditService {
    * IS NULL) row when verified.
    */
   async logAudit(entry: Omit<AuditLogEntry, 'id' | 'timestamp'>): Promise<void> {
-    const client = await this.pool.connect();
+    let client: PoolClient | undefined;
     try {
+      client = await this.pool.connect();
       await client.query('BEGIN');
       try {
         await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [AUDIT_CHAIN_PARTITION]);
@@ -169,7 +170,7 @@ export class AuditService {
       logger.error('Failed to log audit entry', { error, entry });
       // Don't throw - audit logging shouldn't break the main operation
     } finally {
-      client.release();
+      client?.release();
     }
   }
 

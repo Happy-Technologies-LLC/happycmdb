@@ -3,7 +3,7 @@
 
 /**
  * DiscoveryStats Component
- * Discovery job statistics with success/failure metrics
+ * Discovery coverage statistics grouped by provider.
  */
 
 import React from 'react';
@@ -68,21 +68,25 @@ export const DiscoveryStats: React.FC<DiscoveryStatsProps> = ({ dateRange }) => 
     );
   }
 
-  const chartData = [
-    { name: 'Successful', value: data.successfulJobs, color: brand.success },
-    { name: 'Failed', value: data.failedJobs, color: brand.danger },
-  ];
+  const chartData = data.by_provider.map((provider, index) => ({
+    name: provider.discovery_provider,
+    value: provider.count,
+    color: [brand.sky, brand.success, brand.warning, brand.danger][index % 4],
+  }));
 
-  const CustomTooltip = ({ active, payload }: any) => {
-    if (active && payload && payload.length) {
-      const percentage = ((payload[0].value / data.totalJobs) * 100).toFixed(1);
+  const CustomTooltip = ({
+    active,
+    payload,
+  }: {
+    active?: boolean;
+    payload?: Array<{ name?: string; value?: number }>;
+  }) => {
+    if (active && payload?.length) {
       return (
         <div className="rounded-lg border bg-card p-3 shadow-md">
-          <p className="text-sm font-semibold">
-            {payload[0].name}
-          </p>
+          <p className="text-sm font-semibold">{payload[0].name}</p>
           <p className="text-xs text-muted-foreground">
-            {payload[0].value} jobs ({percentage}%)
+            {payload[0].value} discoveries
           </p>
         </div>
       );
@@ -97,48 +101,32 @@ export const DiscoveryStats: React.FC<DiscoveryStatsProps> = ({ dateRange }) => 
       </CardHeader>
 
       <CardContent>
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 mb-5">
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 mb-5">
           <MetricCard
-            title="Total Jobs"
-            value={data.totalJobs}
-            subtitle="All configuration items"
+            title="Discovered CIs"
+            value={data.summary.total_cis}
+            subtitle="Current configuration items"
             color={brand.sky}
             loading={!data}
           />
           <MetricCard
-            title="Success Rate"
-            value={`${(data.successRate * 100).toFixed(1)}%`}
-            color={brand.success}
-            trend={{
-              value: data.successRate * 100,
-              direction: 'up',
-              isPositive: data.successRate >= 0.9,
-            }}
-            loading={!data}
-          />
-          <MetricCard
-            title="Avg Duration"
-            value={`${data.avgDuration.toFixed(0)}s`}
-            subtitle="Per job"
-            color={brand.warning}
-            loading={!data}
-          />
-          <MetricCard
-            title="Successful Jobs"
-            value={data.successfulJobs}
+            title="CI Types"
+            value={data.summary.unique_types}
+            subtitle="Unique discovered types"
             color={brand.success}
             loading={!data}
           />
-          <MetricCard
-            title="Failed Jobs"
-            value={data.failedJobs}
-            color={brand.danger}
-            loading={!data}
-          />
-          {data.lastRunTime && (
+          {data.summary.first_discovery && (
             <MetricCard
-              title="Last Run"
-              value={new Date(data.lastRunTime).toLocaleString()}
+              title="First Discovery"
+              value={new Date(data.summary.first_discovery).toLocaleString()}
+              color={brand.warning}
+            />
+          )}
+          {data.summary.last_discovery && (
+            <MetricCard
+              title="Last Discovery"
+              value={new Date(data.summary.last_discovery).toLocaleString()}
               color={brand.inkSoft}
             />
           )}
@@ -146,7 +134,7 @@ export const DiscoveryStats: React.FC<DiscoveryStatsProps> = ({ dateRange }) => 
 
         <div className="mt-5">
           <h3 className="text-base font-semibold mb-3">
-            Success vs Failure
+            Discoveries by Provider
           </h3>
           <ResponsiveContainer width="100%" height={250}>
             <PieChart>

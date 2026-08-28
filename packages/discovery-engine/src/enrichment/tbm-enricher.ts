@@ -316,7 +316,6 @@ export class TBMEnricher {
    */
   async clearAllCostCache(): Promise<void> {
     logger.info('Clearing all cost caches');
-    // This would be implemented by the cost lookup service
-    // For now, just log
+    await this.costLookupService.clearAllCostCache();
   }
 }

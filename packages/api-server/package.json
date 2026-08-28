@@ -23,6 +23,7 @@
     "@cmdb/tbm-cost-engine": "*",
     "@cmdb/bsm-impact-engine": "*",
     "@cmdb/ai-ml-engine": "*",
+    "@cmdb/ai-discovery": "*",
     "@cmdb/framework-integration": "*",
     "@cmdb/event-streaming": "*",
     "axios": "^1.6.2",

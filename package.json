@@ -15,7 +15,7 @@
     "dev": "npm run dev --workspaces --parallel",
     "dev:api": "npm run dev --workspace=@cmdb/api",
     "dev:web": "npm run dev --workspace=web-ui",
-    "test": "npm run test --workspaces",
+    "test": "npm run test:unit -- --runInBand --forceExit",
     "test:unit": "jest --config jest.config.unit.js",
     "test:integration": "jest --config jest.config.integration.js",
     "test:e2e": "jest --config jest.config.e2e.js",

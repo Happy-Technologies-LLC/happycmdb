@@ -6,16 +6,68 @@
 import { GraphQLError } from 'graphql';
 import { logger } from '@cmdb/common';
 import { getPostgresClient } from '@cmdb/database';
+import { getIntegrationManager } from '@cmdb/integration-framework';
+import { GraphQLContext } from './index';
+import { checkGraphQLPermission as requirePermission } from '../../middleware/auth.middleware';
+import { ConnectorLifecycleService } from '../../services/connector-lifecycle.service';
 
-/**
- * GraphQL Context type
- */
-export interface GraphQLContext {
-  _neo4jClient: any;
-  _loaders: any;
-  _user?: {
-    id: string;
-    username: string;
+/** Maps an `installed_connectors` row (snake_case DB columns) to the GraphQL InstalledConnector shape. */
+function mapInstalledConnectorRow(row: any): any {
+  return {
+    id: row.id,
+    connectorType: row.connector_type,
+    category: row.category.toUpperCase(),
+    name: row.name,
+    description: row.description,
+    installedVersion: row.installed_version,
+    latestAvailableVersion: row.latest_available_version,
+    installedAt: row.installed_at,
+    updatedAt: row.updated_at,
+    enabled: row.enabled,
+    verified: row.verified,
+    installPath: row.install_path,
+    metadata: row.metadata || {},
+    capabilities: row.capabilities || { extraction: false, relationships: false, incremental: false, bidirectional: false },
+    resources: row.resources || [],
+    configurationSchema: row.configuration_schema || {},
+    totalRuns: row.total_runs,
+    successfulRuns: row.successful_runs,
+    failedRuns: row.failed_runs,
+    lastRunAt: row.last_run_at,
+    lastRunStatus: row.last_run_status,
+    tags: row.tags || [],
+  };
+}
+
+/** Maps a `connector_run_history` row (snake_case DB columns) to the GraphQL ConnectorRun shape. */
+function mapConnectorRunRow(row: any): any {
+  return {
+    id: row.id,
+    configId: row.config_id,
+    connectorType: row.connector_type,
+    configName: row.config_name,
+    resourceId: row.resource_id,
+    startedAt: row.started_at,
+    completedAt: row.completed_at,
+    status: row.status.toUpperCase(),
+    recordsExtracted: row.records_extracted,
+    recordsTransformed: row.records_transformed,
+    recordsLoaded: row.records_loaded,
+    recordsFailed: row.records_failed,
+    durationMs: row.duration_ms,
+    errors: row.errors || [],
+    errorMessage: row.error_message,
+    triggeredBy: row.triggered_by,
+    triggeredByUser: row.triggered_by_user,
+    jobId: row.job_id,
+  };
+}
+
+/** Maps a catalog version JSON entry, tolerating the legacy `releaseDate` key seeded at startup. */
+function mapConnectorVersion(version: any): any {
+  return {
+    ...version,
+    releasedAt: version.releasedAt ?? version.releaseDate ?? null,
   };
 }
 
@@ -94,7 +146,7 @@ const ConnectorQueryResolvers = {
         description: row.description,
         verified: row.verified,
         latestVersion: row.latest_version,
-        versions: row.versions || [],
+        versions: (row.versions || []).map(mapConnectorVersion),
         author: row.author,
         homepage: row.homepage,
         repository: row.repository,
@@ -160,7 +212,7 @@ const ConnectorQueryResolvers = {
         description: row.description,
         verified: row.verified,
         latestVersion: row.latest_version,
-        versions: row.versions || [],
+        versions: (row.versions || []).map(mapConnectorVersion),
         author: row.author,
         homepage: row.homepage,
         repository: row.repository,
@@ -778,46 +830,104 @@ const ConnectorQueryResolvers = {
 };
 
 /**
- * Connector Mutation Resolvers (placeholders - will be implemented with service layer)
+ * Connector Mutation Resolvers
  */
 const ConnectorMutationResolvers = {
   /**
-   * Install connector from registry
+   * Install connector from registry (admin only)
    */
   installConnector: async (
     _parent: any,
-    _args: { connectorType: string; version?: string }
+    args: { connectorType: string; version?: string },
+    context: GraphQLContext
   ): Promise<any> => {
-    // TODO: Implement with ConnectorInstaller service
-    throw new GraphQLError('Not implemented yet', {
-      extensions: { code: 'NOT_IMPLEMENTED' },
-    });
+    requirePermission(context, 'admin');
+    try {
+      const lifecycleService = new ConnectorLifecycleService();
+      const outcome = await lifecycleService.installConnector(args.connectorType, args.version);
+      return {
+        success: outcome.success,
+        connector: outcome.connector ? mapInstalledConnectorRow(outcome.connector) : null,
+        message: outcome.message,
+        errors: outcome.errors,
+      };
+    } catch (error: any) {
+      if (error instanceof GraphQLError) {
+        throw error;
+      }
+      logger.error('GraphQL: Error installing connector', error);
+      throw new GraphQLError('Failed to install connector', {
+        extensions: {
+          code: 'INTERNAL_SERVER_ERROR',
+          originalError: error.message,
+        },
+      });
+    }
   },
 
   /**
-   * Update connector
+   * Update connector to a newer version (admin only)
    */
   updateConnector: async (
     _parent: any,
-    _args: { connectorType: string; version?: string }
+    args: { connectorType: string; version?: string },
+    context: GraphQLContext
   ): Promise<any> => {
-    // TODO: Implement with ConnectorInstaller service
-    throw new GraphQLError('Not implemented yet', {
-      extensions: { code: 'NOT_IMPLEMENTED' },
-    });
+    requirePermission(context, 'admin');
+    try {
+      const lifecycleService = new ConnectorLifecycleService();
+      const outcome = await lifecycleService.updateConnector(args.connectorType, args.version);
+      return {
+        success: outcome.success,
+        connector: outcome.connector ? mapInstalledConnectorRow(outcome.connector) : null,
+        previousVersion: outcome.previousVersion,
+        newVersion: outcome.newVersion,
+        message: outcome.message,
+        errors: outcome.errors,
+      };
+    } catch (error: any) {
+      if (error instanceof GraphQLError) {
+        throw error;
+      }
+      logger.error('GraphQL: Error updating connector', error);
+      throw new GraphQLError('Failed to update connector', {
+        extensions: {
+          code: 'INTERNAL_SERVER_ERROR',
+          originalError: error.message,
+        },
+      });
+    }
   },
 
   /**
-   * Uninstall connector
+   * Uninstall connector (admin only)
    */
   uninstallConnector: async (
     _parent: any,
-    _args: { connectorType: string }
+    args: { connectorType: string },
+    context: GraphQLContext
   ): Promise<any> => {
-    // TODO: Implement with ConnectorInstaller service
-    throw new GraphQLError('Not implemented yet', {
-      extensions: { code: 'NOT_IMPLEMENTED' },
-    });
+    requirePermission(context, 'admin');
+    try {
+      const lifecycleService = new ConnectorLifecycleService();
+      const outcome = await lifecycleService.uninstallConnector(args.connectorType);
+      return {
+        success: outcome.success,
+        message: outcome.message,
+        errors: outcome.errors,
+      };
+    } catch (error: any) {
+      if (error instanceof GraphQLError) {
+        throw error;
+      }
+      logger.error('GraphQL: Error uninstalling connector', error);
+      throw new GraphQLError('Failed to uninstall connector', {
+        extensions: {
+          code: 'INTERNAL_SERVER_ERROR',
+          originalError: error.message,
+        },
+      });
+    }
   },
 
   /**
@@ -828,6 +938,7 @@ const ConnectorMutationResolvers = {
     args: { input: any },
     context: GraphQLContext
   ): Promise<any> => {
+    const user = requirePermission(context, 'write');
     try {
       const pgClient = getPostgresClient();
 
@@ -873,7 +984,7 @@ const ConnectorMutationResolvers = {
         args.input.notificationChannels || [],
         args.input.notificationOnSuccess ?? false,
         args.input.notificationOnFailure ?? true,
-        context._user?.username || 'system',
+        user._username,
       ];
 
       const result = await pgClient.query(query, values);
@@ -902,6 +1013,9 @@ const ConnectorMutationResolvers = {
         createdBy: row.created_by,
       };
     } catch (error: any) {
+      if (error instanceof GraphQLError) {
+        throw error;
+      }
       logger.error('GraphQL: Error creating connector configuration', error);
       throw new GraphQLError('Failed to create connector configuration', {
         extensions: {
@@ -920,6 +1034,7 @@ const ConnectorMutationResolvers = {
     args: { id: string; input: any },
     context: GraphQLContext
   ): Promise<any> => {
+    const user = requirePermission(context, 'write');
     try {
       const pgClient = getPostgresClient();
 
@@ -1004,7 +1119,7 @@ const ConnectorMutationResolvers = {
 
       updates.push(`updated_at = NOW()`);
       updates.push(`updated_by = $${paramIndex++}`);
-      values.push(context._user?.username || 'system');
+      values.push(user._username);
 
       values.push(args.id);
 
@@ -1066,8 +1181,10 @@ const ConnectorMutationResolvers = {
    */
   deleteConnectorConfiguration: async (
     _parent: any,
-    args: { id: string }
+    args: { id: string },
+    context: GraphQLContext
   ): Promise<any> => {
+    requirePermission(context, 'write');
     try {
       const pgClient = getPostgresClient();
 
@@ -1104,42 +1221,79 @@ const ConnectorMutationResolvers = {
   },
 
   /**
-   * Test connector connection
-   */
-  testConnectorConnection: async (
-    _parent: any,
-    _args: { id: string }
-  ): Promise<any> => {
-    // TODO: Implement with ConnectorExecutor service
-    throw new GraphQLError('Not implemented yet', {
-      extensions: { code: 'NOT_IMPLEMENTED' },
-    });
-  },
-
-  /**
-   * Run connector
+   * Run connector manually. Registers the connector with the
+   * IntegrationManager on demand if it wasn't already loaded at startup,
+   * runs it, and returns the resulting run-history record regardless of
+   * whether the run itself succeeded or failed.
    */
   runConnector: async (
     _parent: any,
-    _args: { id: string }
+    args: { id: string },
+    context: GraphQLContext
   ): Promise<any> => {
-    // TODO: Implement with ConnectorExecutor service
-    throw new GraphQLError('Not implemented yet', {
-      extensions: { code: 'NOT_IMPLEMENTED' },
-    });
-  },
+    const user = requirePermission(context, 'write');
+    try {
+      const pgClient = getPostgresClient();
+      const configResult = await pgClient.query(
+        'SELECT * FROM connector_configurations WHERE id = $1',
+        [args.id]
+      );
 
-  /**
-   * Cancel connector run
-   */
-  cancelConnectorRun: async (
-    _parent: any,
-    _args: { id: string }
-  ): Promise<any> => {
-    // TODO: Implement with BullMQ job cancellation
-    throw new GraphQLError('Not implemented yet', {
-      extensions: { code: 'NOT_IMPLEMENTED' },
-    });
+      if (configResult.rows.length === 0) {
+        throw new GraphQLError('Configuration not found', {
+          extensions: { code: 'NOT_FOUND' },
+        });
+      }
+
+      const configRow = configResult.rows[0];
+
+      if (!configRow.enabled) {
+        throw new GraphQLError('Configuration is disabled', {
+          extensions: { code: 'BAD_USER_INPUT' },
+        });
+      }
+
+      const integrationManager = getIntegrationManager();
+      if (!integrationManager.getConnector(configRow.name)) {
+        await integrationManager.registerConnector(integrationManager.mapRowToConfig(configRow));
+      }
+
+      try {
+        await integrationManager.runConnector(configRow.name, 'manual', user._username);
+      } catch (runError) {
+        // The failure is already recorded in connector_run_history by
+        // IntegrationManager; surface the resulting run record below
+        // instead of throwing here.
+        logger.warn('GraphQL: connector run failed', {
+          configId: args.id,
+          error: (runError as Error).message,
+        });
+      }
+
+      const runResult = await pgClient.query(
+        `SELECT * FROM connector_run_history WHERE config_id = $1 ORDER BY started_at DESC LIMIT 1`,
+        [args.id]
+      );
+
+      if (runResult.rows.length === 0) {
+        throw new GraphQLError('Connector run did not produce a history record', {
+          extensions: { code: 'INTERNAL_SERVER_ERROR' },
+        });
+      }
+
+      return mapConnectorRunRow(runResult.rows[0]);
+    } catch (error: any) {
+      if (error instanceof GraphQLError) {
+        throw error;
+      }
+      logger.error('GraphQL: Error running connector', error);
+      throw new GraphQLError('Failed to run connector', {
+        extensions: {
+          code: 'INTERNAL_SERVER_ERROR',
+          originalError: error.message,
+        },
+      });
+    }
   },
 
   /**
@@ -1147,8 +1301,10 @@ const ConnectorMutationResolvers = {
    */
   enableConnectorConfiguration: async (
     _parent: any,
-    args: { id: string }
+    args: { id: string },
+    context: GraphQLContext
   ): Promise<any> => {
+    requirePermission(context, 'write');
     try {
       const pgClient = getPostgresClient();
 
@@ -1210,8 +1366,10 @@ const ConnectorMutationResolvers = {
    */
   disableConnectorConfiguration: async (
     _parent: any,
-    args: { id: string }
+    args: { id: string },
+    context: GraphQLContext
   ): Promise<any> => {
+    requirePermission(context, 'write');
     try {
       const pgClient = getPostgresClient();
 

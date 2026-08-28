@@ -5,6 +5,14 @@
  * Discovery Definition Routes
  *
  * REST API routes for managing discovery definitions - reusable discovery configurations.
+ *
+ * Authentication is enforced centrally: server.ts mounts
+ * `authMiddleware.authenticate()` on every /api/v1 route before this
+ * router. Create/update/delete/run and enabling or disabling a schedule
+ * all mutate definition state, so they additionally require the 'write'
+ * permission (`authMiddleware.requirePermission('write')`, satisfied by
+ * operator, agent, and admin roles). Listing and reading a single
+ * definition are read-only and stay authenticated-only with no extra gate.
  */
 
 import { Router } from 'express';
@@ -12,9 +20,11 @@ import Joi from 'joi';
 import { DiscoveryDefinitionController } from '../controllers/discovery-definition.controller';
 import { validateRequest, validateOptional } from '../middleware/validation.middleware';
 import { schemas } from '@cmdb/common';
+import { getAuthMiddleware } from '../../auth/auth-bootstrap';
 
 export const discoveryDefinitionRoutes = Router();
 const controller = new DiscoveryDefinitionController();
+const authMiddleware = getAuthMiddleware();
 
 // Validation schemas
 const createDefinitionSchema = Joi.object({
@@ -57,9 +67,10 @@ const listDefinitionsQuerySchema = Joi.object({
   created_by: Joi.string().optional(),
 });
 
-// POST /api/v1/discovery/definitions - Create new definition
+// POST /api/v1/discovery/definitions - Create new definition (write)
 discoveryDefinitionRoutes.post(
   '/',
+  authMiddleware.requirePermission('write'),
   validateRequest(createDefinitionSchema, 'body'),
   controller.createDefinition.bind(controller)
 );
@@ -77,33 +88,38 @@ discoveryDefinitionRoutes.get(
   controller.getDefinition.bind(controller)
 );
 
-// PUT /api/v1/discovery/definitions/:id - Update definition
+// PUT /api/v1/discovery/definitions/:id - Update definition (write)
 discoveryDefinitionRoutes.put(
   '/:id',
+  authMiddleware.requirePermission('write'),
   validateRequest(updateDefinitionSchema, 'body'),
   controller.updateDefinition.bind(controller)
 );
 
-// DELETE /api/v1/discovery/definitions/:id - Delete definition
+// DELETE /api/v1/discovery/definitions/:id - Delete definition (write)
 discoveryDefinitionRoutes.delete(
   '/:id',
+  authMiddleware.requirePermission('write'),
   controller.deleteDefinition.bind(controller)
 );
 
-// POST /api/v1/discovery/definitions/:id/run - Run definition (trigger discovery job)
+// POST /api/v1/discovery/definitions/:id/run - Run definition (trigger discovery job) (write)
 discoveryDefinitionRoutes.post(
   '/:id/run',
+  authMiddleware.requirePermission('write'),
   controller.runDefinition.bind(controller)
 );
 
-// POST /api/v1/discovery/definitions/:id/schedule/enable - Enable scheduled runs
+// POST /api/v1/discovery/definitions/:id/schedule/enable - Enable scheduled runs (write)
 discoveryDefinitionRoutes.post(
   '/:id/schedule/enable',
+  authMiddleware.requirePermission('write'),
   controller.enableSchedule.bind(controller)
 );
 
-// POST /api/v1/discovery/definitions/:id/schedule/disable - Disable scheduled runs
+// POST /api/v1/discovery/definitions/:id/schedule/disable - Disable scheduled runs (write)
 discoveryDefinitionRoutes.post(
   '/:id/schedule/disable',
+  authMiddleware.requirePermission('write'),
   controller.disableSchedule.bind(controller)
 );

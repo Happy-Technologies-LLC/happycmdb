@@ -278,22 +278,24 @@ export class ArchitectureOptimizationEngine {
         `MATCH path = (start:CI)-[:DEPENDS_ON|USES*2..10]->(start)
          WHERE start.id IN $ciIds
          WITH DISTINCT [node IN nodes(path) | node.id] as cycle
-         RETURN cycle, LENGTH(cycle) as length
+         RETURN cycle, size(cycle) as length
          LIMIT 50`,
         { ciIds }
       );
 
       for (const record of result.records) {
         const cycle = record.get('cycle');
-        const length = record.get('length');
+        const rawLength = record.get('length');
+        const chainLength =
+          typeof rawLength?.toNumber === 'function' ? rawLength.toNumber() : Number(rawLength);
 
         chains.push({
           cis: cycle,
-          chain_length: length,
+          chain_length: chainLength,
           severity:
-            length <= 3
+            chainLength <= 3
               ? ArchitectureSeverity.CRITICAL
-              : length <= 5
+              : chainLength <= 5
               ? ArchitectureSeverity.HIGH
               : ArchitectureSeverity.MEDIUM,
         });

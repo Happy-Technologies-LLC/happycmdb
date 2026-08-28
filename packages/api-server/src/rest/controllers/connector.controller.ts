@@ -5,6 +5,21 @@ import { Request, Response } from 'express';
 import { getPostgresClient } from '@cmdb/database';
 import { logger, validateConnectorSortField, validateSortDirection } from '@cmdb/common';
 import axios from 'axios';
+import {
+  ConnectorLifecycleService,
+  LifecycleFailureCode,
+} from '../../services/connector-lifecycle.service';
+
+const LIFECYCLE_FAILURE_STATUS: Record<LifecycleFailureCode, number> = {
+  NOT_FOUND_IN_REGISTRY: 404,
+  ALREADY_INSTALLED: 409,
+  NOT_INSTALLED: 404,
+  HAS_DEPENDENT_CONFIGURATIONS: 400,
+  NO_VERSION_AVAILABLE: 400,
+  INSTALL_FAILED: 500,
+  UPDATE_FAILED: 500,
+  UNINSTALL_FAILED: 500,
+};
 
 /**
  * ConnectorController - Manages connector registry and installation
@@ -20,6 +35,7 @@ import axios from 'axios';
 export class ConnectorController {
   private postgresClient = getPostgresClient();
   private registryUrl = process.env['CONNECTOR_REGISTRY_URL'] || 'https://raw.githubusercontent.com/happycmdb/connectors/main/catalog.json';
+  private lifecycleService = new ConnectorLifecycleService();
 
   /**
    * GET /api/v1/connectors/registry
@@ -279,94 +295,23 @@ export class ConnectorController {
     try {
       const { connector_type, version, force = false } = req.body;
 
-      const pool = this.postgresClient['pool'];
+      const outcome = await this.lifecycleService.installConnector(connector_type, version, force);
 
-      // Check if already installed
-      const existingResult = await pool.query(
-        'SELECT * FROM installed_connectors WHERE connector_type = $1',
-        [connector_type]
-      );
-
-      if (existingResult.rows.length > 0 && !force) {
-        res.status(409).json({
+      if (!outcome.success) {
+        const status = outcome.code ? LIFECYCLE_FAILURE_STATUS[outcome.code] : 500;
+        res.status(status).json({
           success: false,
-          error: 'Conflict',
-          message: `Connector '${connector_type}' is already installed. Use force=true to reinstall.`
+          error: outcome.code || 'Failed to install connector',
+          message: outcome.message,
+          errors: outcome.errors,
         });
         return;
       }
-
-      // Get connector from registry cache
-      const registryResult = await pool.query(
-        'SELECT * FROM connector_registry_cache WHERE connector_type = $1',
-        [connector_type]
-      );
-
-      if (registryResult.rows.length === 0) {
-        res.status(404).json({
-          success: false,
-          error: 'Not Found',
-          message: `Connector '${connector_type}' not found in registry`
-        });
-        return;
-      }
-
-      const catalogEntry = registryResult.rows[0];
-      const targetVersion = version || catalogEntry.latest_version;
-
-      // TODO: Actual installation logic would go here
-      // 1. Download connector package from GitHub releases
-      // 2. Verify checksum
-      // 3. Extract to install path
-      // 4. Install npm dependencies
-      // 5. Validate connector.json
-      // 6. Load metadata and resources
-
-      // For now, create stub installation record
-      const installPath = `/opt/happycmdb/connectors/${connector_type}`;
-
-      const insertQuery = `
-        INSERT INTO installed_connectors (
-          connector_type, category, name, description,
-          installed_version, latest_available_version,
-          installed_at, updated_at, enabled, verified,
-          install_path, metadata, capabilities, resources,
-          configuration_schema, tags
-        ) VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW(), true, $7, $8, $9, $10, $11, $12, $13)
-        ON CONFLICT (connector_type) DO UPDATE SET
-          installed_version = EXCLUDED.installed_version,
-          latest_available_version = EXCLUDED.latest_available_version,
-          updated_at = NOW(),
-          install_path = EXCLUDED.install_path,
-          metadata = EXCLUDED.metadata
-        RETURNING *
-      `;
-
-      const result = await pool.query(insertQuery, [
-        connector_type,
-        catalogEntry.category,
-        catalogEntry.name,
-        catalogEntry.description,
-        targetVersion,
-        catalogEntry.latest_version,
-        catalogEntry.verified,
-        installPath,
-        catalogEntry.metadata || {},
-        catalogEntry.capabilities || { extraction: false, relationships: false, incremental: false, bidirectional: false },
-        catalogEntry.resources || [],
-        catalogEntry.configuration_schema || {},
-        catalogEntry.tags || []
-      ]);
-
-      logger.info(`Connector '${connector_type}' installed successfully`, {
-        version: targetVersion,
-        path: installPath
-      });
 
       res.status(201).json({
         success: true,
-        data: result.rows[0],
-        message: `Connector '${connector_type}' version ${targetVersion} installed successfully`
+        data: outcome.connector,
+        message: outcome.message,
       });
     } catch (error) {
       logger.error('Error installing connector', error);
@@ -387,81 +332,26 @@ export class ConnectorController {
       const { type } = req.params;
       const { version, force = false } = req.body;
 
-      const pool = this.postgresClient['pool'];
+      const outcome = await this.lifecycleService.updateConnector(type, version, force);
 
-      // Check if connector is installed
-      const installedResult = await pool.query(
-        'SELECT * FROM installed_connectors WHERE connector_type = $1',
-        [type]
-      );
-
-      if (installedResult.rows.length === 0) {
-        res.status(404).json({
+      if (!outcome.success) {
+        const status = outcome.code ? LIFECYCLE_FAILURE_STATUS[outcome.code] : 500;
+        res.status(status).json({
           success: false,
-          error: 'Not Found',
-          message: `Connector '${type}' is not installed`
+          error: outcome.code || 'Failed to update connector',
+          message: outcome.message,
+          errors: outcome.errors,
         });
         return;
       }
-
-      const installed = installedResult.rows[0];
-      const previousVersion = installed.installed_version;
-
-      // Get latest version from registry
-      const registryResult = await pool.query(
-        'SELECT * FROM connector_registry_cache WHERE connector_type = $1',
-        [type]
-      );
-
-      const targetVersion = version || registryResult.rows[0]?.latest_version;
-
-      if (!targetVersion) {
-        res.status(400).json({
-          success: false,
-          error: 'Bad Request',
-          message: 'No version specified and latest version not found in registry'
-        });
-        return;
-      }
-
-      if (previousVersion === targetVersion && !force) {
-        res.json({
-          success: true,
-          data: installed,
-          message: `Connector '${type}' is already at version ${targetVersion}`,
-          up_to_date: true
-        });
-        return;
-      }
-
-      // TODO: Actual update logic
-      // 1. Download new version
-      // 2. Backup current installation
-      // 3. Extract new version
-      // 4. Run migration scripts if needed
-      // 5. Update database record
-
-      const result = await pool.query(
-        `UPDATE installed_connectors
-         SET installed_version = $1,
-             latest_available_version = $2,
-             updated_at = NOW()
-         WHERE connector_type = $3
-         RETURNING *`,
-        [targetVersion, targetVersion, type]
-      );
-
-      logger.info(`Connector '${type}' updated successfully`, {
-        previous_version: previousVersion,
-        new_version: targetVersion
-      });
 
       res.json({
         success: true,
-        data: result.rows[0],
-        message: `Connector '${type}' updated from ${previousVersion} to ${targetVersion}`,
-        previous_version: previousVersion,
-        new_version: targetVersion
+        data: outcome.connector,
+        message: outcome.message,
+        previous_version: outcome.previousVersion,
+        new_version: outcome.newVersion,
+        up_to_date: outcome.previousVersion === outcome.newVersion,
       });
     } catch (error) {
       logger.error('Error updating connector', error);
@@ -481,54 +371,22 @@ export class ConnectorController {
     try {
       const { type } = req.params;
 
-      const pool = this.postgresClient['pool'];
+      const outcome = await this.lifecycleService.uninstallConnector(type);
 
-      // Check if connector is installed
-      const installedResult = await pool.query(
-        'SELECT * FROM installed_connectors WHERE connector_type = $1',
-        [type]
-      );
-
-      if (installedResult.rows.length === 0) {
-        res.status(404).json({
+      if (!outcome.success) {
+        const status = outcome.code ? LIFECYCLE_FAILURE_STATUS[outcome.code] : 500;
+        res.status(status).json({
           success: false,
-          error: 'Not Found',
-          message: `Connector '${type}' is not installed`
+          error: outcome.code || 'Failed to uninstall connector',
+          message: outcome.message,
+          errors: outcome.errors,
         });
         return;
       }
-
-      // Check if any configurations exist
-      const configsResult = await pool.query(
-        'SELECT COUNT(*) FROM connector_configurations WHERE connector_type = $1',
-        [type]
-      );
-
-      const configCount = parseInt(configsResult.rows[0].count);
-      if (configCount > 0) {
-        res.status(400).json({
-          success: false,
-          error: 'Bad Request',
-          message: `Cannot uninstall connector '${type}': ${configCount} configuration(s) exist. Delete configurations first.`
-        });
-        return;
-      }
-
-      // TODO: Actual uninstallation logic
-      // 1. Remove installation files
-      // 2. Clean up dependencies
-      // 3. Delete database records
-
-      await pool.query(
-        'DELETE FROM installed_connectors WHERE connector_type = $1',
-        [type]
-      );
-
-      logger.info(`Connector '${type}' uninstalled successfully`);
 
       res.json({
         success: true,
-        message: `Connector '${type}' uninstalled successfully`
+        message: outcome.message,
       });
     } catch (error) {
       logger.error('Error uninstalling connector', error);
@@ -655,7 +513,17 @@ export class ConnectorController {
         updated_at: new Date().toISOString()
       });
     } catch (error) {
-      logger.error('Error refreshing registry cache', error);
+      const errorSummary = error instanceof Error
+        ? {
+            message: error.message,
+            name: error.name,
+            stack: error.stack,
+            ...(axios.isAxiosError(error)
+              ? { code: error.code, status: error.response?.status }
+              : {}),
+          }
+        : { message: String(error) };
+      logger.error('Error refreshing registry cache', errorSummary);
       res.status(500).json({
         success: false,
         error: 'Failed to refresh registry cache',

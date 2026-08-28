@@ -42,21 +42,21 @@ export class V3ETLScheduler {
     const connection = redisClient.getConnection();
 
     // Create BullMQ queues for v3 ETL jobs
-    this.cisQueue = new Queue<SyncCIsJobData>('etl:cis', {
+    this.cisQueue = new Queue<SyncCIsJobData>('etl-cis', {
       connection,
       defaultJobOptions: {
         ...syncCIsJobConfig.defaultOptions,
       },
     });
 
-    this.costsQueue = new Queue<SyncCostsJobData>('etl:costs', {
+    this.costsQueue = new Queue<SyncCostsJobData>('etl-costs', {
       connection,
       defaultJobOptions: {
         ...syncCostsJobConfig.defaultOptions,
       },
     });
 
-    this.incidentsQueue = new Queue<SyncIncidentsJobData>('etl:incidents', {
+    this.incidentsQueue = new Queue<SyncIncidentsJobData>('etl-incidents', {
       connection,
       defaultJobOptions: {
         ...syncIncidentsJobConfig.defaultOptions,
@@ -97,7 +97,7 @@ export class V3ETLScheduler {
 
     logger.info('[V3ETLScheduler] Scheduled CI sync job', {
       schedule: syncCIsJobConfig.cronSchedule,
-      queue: 'etl:cis',
+      queue: 'etl-cis',
     });
 
     // Schedule cost validation job (daily at 4:00 AM)
@@ -117,7 +117,7 @@ export class V3ETLScheduler {
 
     logger.info('[V3ETLScheduler] Scheduled cost validation job', {
       schedule: syncCostsJobConfig.cronSchedule,
-      queue: 'etl:costs',
+      queue: 'etl-costs',
     });
 
     // Schedule incident sync job (every 15 minutes for real-time ITSM)
@@ -137,7 +137,7 @@ export class V3ETLScheduler {
 
     logger.info('[V3ETLScheduler] Scheduled incident sync job', {
       schedule: syncIncidentsJobConfig.cronSchedule,
-      queue: 'etl:incidents',
+      queue: 'etl-incidents',
     });
 
     this.isStarted = true;
@@ -151,9 +151,9 @@ export class V3ETLScheduler {
     logger.info('[V3ETLScheduler] Cleaning up existing repeatable jobs...');
 
     const queues = [
-      { queue: this.cisQueue, name: 'etl:cis' },
-      { queue: this.costsQueue, name: 'etl:costs' },
-      { queue: this.incidentsQueue, name: 'etl:incidents' },
+      { queue: this.cisQueue, name: 'etl-cis' },
+      { queue: this.costsQueue, name: 'etl-costs' },
+      { queue: this.incidentsQueue, name: 'etl-incidents' },
     ];
 
     for (const { queue, name } of queues) {

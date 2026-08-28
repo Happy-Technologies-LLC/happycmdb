@@ -16,6 +16,7 @@ import {
 } from '../services/jobs.service';
 
 interface UseJobsOptions {
+  queueName: string;
   filters?: JobFilters;
   autoRefresh?: boolean;
   refreshInterval?: number; // milliseconds
@@ -32,23 +33,33 @@ interface UseJobsReturn {
   hasMore: boolean;
 }
 
-export function useJobs(options: UseJobsOptions = {}): UseJobsReturn {
+export function useJobs(options: UseJobsOptions): UseJobsReturn {
   const {
+    queueName,
     filters = {},
     autoRefresh = false,
     refreshInterval = 5000,
   } = options;
-
+  const { status: filterStatus, limit: filterLimit, offset: filterOffset } = filters;
   const [jobs, setJobs] = useState<Job[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
 
+  // Depend on the individual filter scalars, not the `filters` object
+  // itself: callers (Jobs.tsx, JobMonitor.tsx) construct a fresh filters
+  // object literal on every render, so depending on its identity would
+  // recreate fetchJobs - and re-trigger the effect below - every render,
+  // even when status/limit/offset never actually changed.
   const fetchJobs = useCallback(async () => {
     try {
       setLoading(true);
       setError(null);
-      const response: JobListResponse = await jobsService.getJobs(filters);
+      const response: JobListResponse = await jobsService.getJobs(queueName, {
+        status: filterStatus,
+        limit: filterLimit,
+        offset: filterOffset,
+      });
       setJobs(response.jobs);
       setTotal(response.total);
     } catch (err) {
@@ -56,25 +67,25 @@ export function useJobs(options: UseJobsOptions = {}): UseJobsReturn {
     } finally {
       setLoading(false);
     }
-  }, [filters]);
+  }, [queueName, filterStatus, filterLimit, filterOffset]);
 
   const retryJob = useCallback(async (jobId: string) => {
     try {
-      await jobsService.retryJob(jobId);
+      await jobsService.retryJob(queueName, jobId);
       await fetchJobs(); // Refresh the list
     } catch (err) {
       throw err instanceof Error ? err : new Error('Failed to retry job');
     }
-  }, [fetchJobs]);
+  }, [queueName, fetchJobs]);
 
   const cancelJob = useCallback(async (jobId: string) => {
     try {
-      await jobsService.cancelJob(jobId);
+      await jobsService.cancelJob(queueName, jobId);
       await fetchJobs(); // Refresh the list
     } catch (err) {
       throw err instanceof Error ? err : new Error('Failed to cancel job');
     }
-  }, [fetchJobs]);
+  }, [queueName, fetchJobs]);
 
   useEffect(() => {
     fetchJobs();
@@ -105,6 +116,7 @@ export function useJobs(options: UseJobsOptions = {}): UseJobsReturn {
 }
 
 interface UseJobDetailOptions {
+  queueName: string;
   jobId: string;
   autoRefresh?: boolean;
   refreshInterval?: number;
@@ -118,7 +130,7 @@ interface UseJobDetailReturn {
 }
 
 export function useJobDetail(options: UseJobDetailOptions): UseJobDetailReturn {
-  const { jobId, autoRefresh = false, refreshInterval = 5000 } = options;
+  const { queueName, jobId, autoRefresh = false, refreshInterval = 5000 } = options;
 
   const [job, setJob] = useState<Job | null>(null);
   const [loading, setLoading] = useState(true);
@@ -128,14 +140,14 @@ export function useJobDetail(options: UseJobDetailOptions): UseJobDetailReturn {
     try {
       setLoading(true);
       setError(null);
-      const jobData = await jobsService.getJobById(jobId);
+      const jobData = await jobsService.getJobById(queueName, jobId);
       setJob(jobData);
     } catch (err) {
       setError(err instanceof Error ? err : new Error('Failed to fetch job'));
     } finally {
       setLoading(false);
     }
-  }, [jobId]);
+  }, [queueName, jobId]);
 
   useEffect(() => {
     fetchJob();

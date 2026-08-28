@@ -3,6 +3,20 @@
 
 import { apiClient as api } from '../lib/api-client';
 
+/** Standard {success, data} envelope every AI pattern endpoint responds with. */
+interface ApiResponse<T> {
+  success: boolean;
+  data: T;
+  error?: string;
+  message?: string;
+}
+
+/** Result shape shared by every pattern workflow transition. */
+interface WorkflowResult {
+  success: boolean;
+  error?: string;
+}
+
 export interface AIPattern {
   patternId: string;
   name: string;
@@ -10,28 +24,37 @@ export interface AIPattern {
   description?: string;
   detectionCode: string;
   discoveryCode: string;
+  author: string;
   confidenceScore: number;
   status: 'draft' | 'review' | 'approved' | 'active' | 'deprecated';
   isActive: boolean;
   createdAt: string;
   updatedAt: string;
-  createdBy?: string;
   approvedBy?: string;
   approvedAt?: string;
-  activatedAt?: string;
   usageCount: number;
   successCount: number;
-  avgExecutionTimeMs: number;
+  failureCount: number;
+  avgExecutionTimeMs?: number;
   learnedFromSessions?: string[];
   testCases?: PatternTestCase[];
-  tags?: string[];
 }
 
 export interface PatternTestCase {
   name: string;
-  input: any;
+  input: unknown;
   expectedMatch: boolean;
   expectedConfidence?: number;
+}
+
+export interface ToolCall {
+  toolName: string;
+  input: unknown;
+  output: unknown;
+  success: boolean;
+  executionTime: number;
+  timestamp: string;
+  error?: string;
 }
 
 export interface AIDiscoverySession {
@@ -40,27 +63,20 @@ export interface AIDiscoverySession {
   targetPort: number;
   status: 'running' | 'completed' | 'failed';
   toolCalls: ToolCall[];
-  discoveredCIs: any[];
-  confidenceScore: number;
-  estimatedCost: number;
-  totalTokens: number;
-  promptTokens: number;
-  completionTokens: number;
+  discoveredCIs: unknown[];
+  confidenceScore?: number;
+  estimatedCost?: number;
+  totalTokens?: number;
+  promptTokens?: number;
+  completionTokens?: number;
   aiReasoning?: string;
   startedAt: string;
   completedAt?: string;
   durationMs?: number;
-  provider: string;
-  model: string;
-}
-
-export interface ToolCall {
-  toolName: string;
-  toolInput: any;
-  toolOutput: any;
-  success: boolean;
-  executionTimeMs: number;
-  timestamp: string;
+  aiModel: string;
+  patternMatched?: string;
+  errorMessage?: string;
+  retryCount: number;
 }
 
 export interface PatternUsageMetrics {
@@ -68,6 +84,8 @@ export interface PatternUsageMetrics {
   timestamp: string;
   executionTimeMs: number;
   success: boolean;
+  confidenceScore?: number;
+  errorMessage?: string;
   matchedHost?: string;
   matchedPort?: number;
 }
@@ -78,18 +96,20 @@ export interface PatternAnalysisResult {
     signatureHash: string;
     toolSequence: string[];
     serviceIndicators: string[];
+    confidenceScore: number;
     sessionCount: number;
+    sessions: string[];
   } | null;
   candidate: {
     suggestedName: string;
     suggestedCategory: string;
-    confidenceScore: number;
     commonElements: {
       ports: number[];
-      httpHeaders: string[];
-      httpEndpoints: string[];
+      headers: string[];
+      endpoints: string[];
       serviceNames: string[];
     };
+    readyForCompilation: boolean;
   } | null;
 }
 
@@ -108,8 +128,8 @@ export interface CostAnalytics {
   totalCost: number;
   totalSessions: number;
   avgCostPerSession: number;
-  costByProvider: Array<{
-    provider: string;
+  costByModel: Array<{
+    aiModel: string;
     cost: number;
     sessions: number;
   }>;
@@ -126,6 +146,13 @@ export interface CostAnalytics {
   };
 }
 
+export interface PatternHistoryEntry {
+  action: 'submit' | 'approve' | 'reject' | 'activate' | 'deactivate';
+  performedBy: string;
+  timestamp: string;
+  comment?: string;
+}
+
 export interface PatternFilters {
   status?: string[];
   category?: string;
@@ -137,7 +164,7 @@ export interface PatternFilters {
 
 export interface SessionFilters {
   status?: string[];
-  provider?: string;
+  aiModel?: string;
   dateFrom?: string;
   dateTo?: string;
   minCost?: number;
@@ -145,82 +172,136 @@ export interface SessionFilters {
   search?: string;
 }
 
+/**
+ * Every workflow-transition endpoint (submit/approve/reject/activate/
+ * deactivate) answers invalid transitions with a 404/409 HTTP status rather
+ * than a 200, so axios rejects the promise. The controller still nests the
+ * full WorkflowResult under the error envelope's `data` field, so recover it
+ * here and hand callers back the same resolved {success, error} shape they'd
+ * have gotten on a 200 - existing call sites branch on `.success`, not on
+ * whether the promise rejected.
+ */
+function isAxiosErrorWithResponse(err: unknown): err is { response?: { data?: unknown } } {
+  return typeof err === 'object' && err !== null && 'response' in err;
+}
+
+function unwrapWorkflowError<T extends WorkflowResult>(err: unknown, fallback: string): T {
+  const rawData = isAxiosErrorWithResponse(err) ? err.response?.data : undefined;
+  // axios types response bodies as `any`; assert our own known
+  // {success,data,message} envelope contract rather than leaving it untyped.
+  const envelope = rawData as Partial<ApiResponse<T>> | undefined;
+  const workflowResult = envelope?.data;
+  if (workflowResult && typeof workflowResult === 'object' && 'success' in workflowResult) {
+    return workflowResult as T;
+  }
+  return { success: false, error: envelope?.message || fallback } as T;
+}
+
 class AIPatternService {
   // Pattern Management
   async listPatterns(filters?: PatternFilters): Promise<AIPattern[]> {
-    return api.get<AIPattern[]>('/ai/patterns', { params: filters });
+    const response = await api.get<ApiResponse<AIPattern[]>>('/ai/patterns', { params: filters });
+    return response.data;
   }
 
   async getPattern(patternId: string): Promise<AIPattern> {
-    return api.get<AIPattern>(`/ai/patterns/${patternId}`);
-  }
-
-  async createPattern(pattern: Partial<AIPattern>): Promise<AIPattern> {
-    return api.post<AIPattern>('/ai/patterns', pattern);
-  }
-
-  async updatePattern(patternId: string, updates: Partial<AIPattern>): Promise<AIPattern> {
-    return api.put<AIPattern>(`/ai/patterns/${patternId}`, updates);
+    const response = await api.get<ApiResponse<AIPattern>>(`/ai/patterns/${patternId}`);
+    return response.data;
   }
 
   async deletePattern(patternId: string): Promise<void> {
-    return api.delete(`/ai/patterns/${patternId}`);
+    await api.delete(`/ai/patterns/${patternId}`);
   }
 
-  // Pattern Workflow
-  async submitForReview(patternId: string, submittedBy: string, notes?: string): Promise<{
-    success: boolean;
-    validation: PatternValidationResult;
-    error?: string;
-  }> {
-    return api.post(`/ai/patterns/${patternId}/submit`, { submittedBy, notes });
+  // Pattern Workflow (actors are derived server-side from the authenticated
+  // user - never accepted from the client)
+  async submitForReview(patternId: string, notes?: string): Promise<
+    WorkflowResult & { validation?: PatternValidationResult }
+  > {
+    try {
+      const response = await api.post<
+        ApiResponse<WorkflowResult & { validation?: PatternValidationResult }>
+      >(`/ai/patterns/${patternId}/submit`, { notes });
+      return response.data;
+    } catch (err) {
+      return unwrapWorkflowError(err, 'Failed to submit pattern for review');
+    }
   }
 
-  async approvePattern(patternId: string, approvedBy: string, notes?: string): Promise<{
-    success: boolean;
-    error?: string;
-  }> {
-    return api.post(`/ai/patterns/${patternId}/approve`, { approvedBy, notes });
+  async approvePattern(patternId: string, notes?: string): Promise<WorkflowResult> {
+    try {
+      const response = await api.post<ApiResponse<WorkflowResult>>(
+        `/ai/patterns/${patternId}/approve`,
+        { notes }
+      );
+      return response.data;
+    } catch (err) {
+      return unwrapWorkflowError(err, 'Failed to approve pattern');
+    }
   }
 
-  async rejectPattern(patternId: string, rejectedBy: string, reason: string): Promise<{
-    success: boolean;
-    error?: string;
-  }> {
-    return api.post(`/ai/patterns/${patternId}/reject`, { rejectedBy, reason });
+  async rejectPattern(patternId: string, reason: string): Promise<WorkflowResult> {
+    try {
+      const response = await api.post<ApiResponse<WorkflowResult>>(
+        `/ai/patterns/${patternId}/reject`,
+        { reason }
+      );
+      return response.data;
+    } catch (err) {
+      return unwrapWorkflowError(err, 'Failed to reject pattern');
+    }
   }
 
-  async activatePattern(patternId: string, activatedBy: string): Promise<{
-    success: boolean;
-    error?: string;
-  }> {
-    return api.post(`/ai/patterns/${patternId}/activate`, { activatedBy });
+  async activatePattern(patternId: string): Promise<WorkflowResult> {
+    try {
+      const response = await api.post<ApiResponse<WorkflowResult>>(
+        `/ai/patterns/${patternId}/activate`
+      );
+      return response.data;
+    } catch (err) {
+      return unwrapWorkflowError(err, 'Failed to activate pattern');
+    }
   }
 
-  async deactivatePattern(patternId: string, deactivatedBy: string, reason?: string): Promise<{
-    success: boolean;
-    error?: string;
-  }> {
-    return api.post(`/ai/patterns/${patternId}/deactivate`, { deactivatedBy, reason });
+  async deactivatePattern(patternId: string, reason?: string): Promise<WorkflowResult> {
+    try {
+      const response = await api.post<ApiResponse<WorkflowResult>>(
+        `/ai/patterns/${patternId}/deactivate`,
+        { reason }
+      );
+      return response.data;
+    } catch (err) {
+      return unwrapWorkflowError(err, 'Failed to deactivate pattern');
+    }
   }
 
   // Pattern Validation
   async validatePattern(patternId: string): Promise<PatternValidationResult> {
-    return api.post<PatternValidationResult>(`/ai/patterns/${patternId}/validate`);
+    const response = await api.post<ApiResponse<PatternValidationResult>>(
+      `/ai/patterns/${patternId}/validate`
+    );
+    return response.data;
   }
 
   // Discovery Sessions
   async listSessions(filters?: SessionFilters): Promise<AIDiscoverySession[]> {
-    return api.get<AIDiscoverySession[]>('/ai/sessions', { params: filters });
+    const response = await api.get<ApiResponse<AIDiscoverySession[]>>('/ai/sessions', {
+      params: filters,
+    });
+    return response.data;
   }
 
   async getSession(sessionId: string): Promise<AIDiscoverySession> {
-    return api.get<AIDiscoverySession>(`/ai/sessions/${sessionId}`);
+    const response = await api.get<ApiResponse<AIDiscoverySession>>(`/ai/sessions/${sessionId}`);
+    return response.data;
   }
 
   // Pattern Analysis
   async analyzeSession(sessionId: string): Promise<PatternAnalysisResult> {
-    return api.post<PatternAnalysisResult>(`/ai/sessions/${sessionId}/analyze`);
+    const response = await api.post<ApiResponse<PatternAnalysisResult>>(
+      `/ai/sessions/${sessionId}/analyze`
+    );
+    return response.data;
   }
 
   async compileAndSubmitPatterns(): Promise<{
@@ -228,30 +309,27 @@ class AIPatternService {
     submitted: number;
     errors: string[];
   }> {
-    return api.post('/ai/patterns/compile');
+    const response = await api.post<
+      ApiResponse<{ compiled: number; submitted: number; errors: string[] }>
+    >('/ai/patterns/compile');
+    return response.data;
   }
 
   // Pattern Usage Metrics
   async getPatternUsage(patternId: string, days?: number): Promise<PatternUsageMetrics[]> {
-    return api.get<PatternUsageMetrics[]>(`/ai/patterns/${patternId}/usage`, {
-      params: { days }
-    });
+    const response = await api.get<ApiResponse<PatternUsageMetrics[]>>(
+      `/ai/patterns/${patternId}/usage`,
+      { params: { days } }
+    );
+    return response.data;
   }
 
   // Cost Analytics
   async getCostAnalytics(dateFrom?: string, dateTo?: string): Promise<CostAnalytics> {
-    return api.get<CostAnalytics>('/ai/analytics/cost', {
-      params: { dateFrom, dateTo }
+    const response = await api.get<ApiResponse<CostAnalytics>>('/ai/analytics/cost', {
+      params: { dateFrom, dateTo },
     });
-  }
-
-  async getSessionCostTrend(days: number = 30): Promise<Array<{
-    date: string;
-    cost: number;
-    sessions: number;
-    avgCost: number;
-  }>> {
-    return api.get('/ai/analytics/cost/trend', { params: { days } });
+    return response.data;
   }
 
   // Pattern Learning Statistics
@@ -264,24 +342,26 @@ class AIPatternService {
     totalSessions: number;
     avgConfidence: number;
   }> {
-    return api.get('/ai/analytics/learning');
-  }
-
-  // Pattern Categories
-  async getCategories(): Promise<string[]> {
-    return api.get<string[]>('/ai/patterns/categories');
+    const response = await api.get<
+      ApiResponse<{
+        totalPatterns: number;
+        activePatterns: number;
+        pendingReview: number;
+        autoApproved: number;
+        manualApproved: number;
+        totalSessions: number;
+        avgConfidence: number;
+      }>
+    >('/ai/analytics/learning');
+    return response.data;
   }
 
   // Pattern History
-  async getPatternHistory(patternId: string): Promise<Array<{
-    timestamp: string;
-    action: string;
-    performedBy: string;
-    notes?: string;
-    oldStatus?: string;
-    newStatus?: string;
-  }>> {
-    return api.get(`/ai/patterns/${patternId}/history`);
+  async getPatternHistory(patternId: string): Promise<PatternHistoryEntry[]> {
+    const response = await api.get<ApiResponse<PatternHistoryEntry[]>>(
+      `/ai/patterns/${patternId}/history`
+    );
+    return response.data;
   }
 }
 

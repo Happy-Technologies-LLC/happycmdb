@@ -42,23 +42,23 @@ export class CostSyncScheduler {
     const connection = redisClient.getConnection();
 
     // Initialize BullMQ queues for each cloud provider
-    this.awsQueue = new Queue<AWSCostSyncJobData>('cost-sync:aws', {
+    this.awsQueue = new Queue<AWSCostSyncJobData>('cost-sync-aws', {
       connection,
       defaultJobOptions: awsCostSyncJobConfig.defaultOptions,
     });
 
-    this.azureQueue = new Queue<AzureCostSyncJobData>('cost-sync:azure', {
+    this.azureQueue = new Queue<AzureCostSyncJobData>('cost-sync-azure', {
       connection,
       defaultJobOptions: azureCostSyncJobConfig.defaultOptions,
     });
 
-    this.gcpQueue = new Queue<GCPCostSyncJobData>('cost-sync:gcp', {
+    this.gcpQueue = new Queue<GCPCostSyncJobData>('cost-sync-gcp', {
       connection,
       defaultJobOptions: gcpCostSyncJobConfig.defaultOptions,
     });
 
     logger.info('[CostSyncScheduler] Initialized cost sync queues', {
-      queues: ['cost-sync:aws', 'cost-sync:azure', 'cost-sync:gcp'],
+      queues: ['cost-sync-aws', 'cost-sync-azure', 'cost-sync-gcp'],
     });
   }
 
@@ -253,17 +253,17 @@ export class CostSyncScheduler {
       aws: {
         repeatableJobs: awsRepeatableJobs,
         jobCounts: awsJobCounts,
-        queueName: 'cost-sync:aws',
+        queueName: 'cost-sync-aws',
       },
       azure: {
         repeatableJobs: azureRepeatableJobs,
         jobCounts: azureJobCounts,
-        queueName: 'cost-sync:azure',
+        queueName: 'cost-sync-azure',
       },
       gcp: {
         repeatableJobs: gcpRepeatableJobs,
         jobCounts: gcpJobCounts,
-        queueName: 'cost-sync:gcp',
+        queueName: 'cost-sync-gcp',
       },
     };
   }

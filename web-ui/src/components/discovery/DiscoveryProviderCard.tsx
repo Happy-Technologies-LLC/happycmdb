@@ -21,7 +21,8 @@ const PROVIDER_CONFIG: Record<
   snmp: { name: 'SNMP Discovery', color: brand.danger, icon: 'pulse' },
 };
 
-const formatDuration = (ms: number): string => {
+const formatDuration = (ms?: number): string => {
+  if (ms === undefined) return 'Unavailable';
   if (ms < 1000) return `${ms}ms`;
   const seconds = Math.floor(ms / 1000);
   if (seconds < 60) return `${seconds}s`;
@@ -58,8 +59,11 @@ export const DiscoveryProviderCard: React.FC<DiscoveryProviderCardProps> = ({
   }
 
 
+  const scheduleLabel = stats.enabled === undefined ? 'Unknown' : stats.enabled ? 'Enabled' : 'Disabled';
+  const scheduleVariant = stats.enabled === undefined ? 'outline' : stats.enabled ? 'secondary' : 'outline';
+
   return (
-    <LiquidGlass size="sm" rounded="xl" className={`h-full flex flex-col ${stats.enabled ? '' : 'opacity-70'}`}>
+    <LiquidGlass size="sm" rounded="xl" className={`h-full flex flex-col ${stats.enabled === false ? 'opacity-70' : ''}`}>
       {/* Header */}
       <div className="mb-4">
         <div className="flex justify-between items-start mb-4">
@@ -76,8 +80,8 @@ export const DiscoveryProviderCard: React.FC<DiscoveryProviderCardProps> = ({
               </p>
             </div>
           </div>
-          <Badge variant={stats.enabled ? 'secondary' : 'outline'}>
-            {stats.enabled ? 'Enabled' : 'Disabled'}
+          <Badge variant={scheduleVariant}>
+            {scheduleLabel}
           </Badge>
         </div>
       </div>

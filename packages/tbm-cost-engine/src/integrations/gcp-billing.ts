@@ -86,7 +86,7 @@ export class GCPBilling {
         return await this.bigQueryClient.query(options);
       });
 
-      const totalCost = rows[0]?.total_cost || 0;
+      const totalCost = parseFloat(rows[0]?.total_cost) || 0;
 
       this.logger.info('Successfully fetched costs by project', {
         projectId,
@@ -299,7 +299,7 @@ export class GCPBilling {
         return await this.bigQueryClient.query(options);
       });
 
-      const totalCost = rows[0]?.total_cost || 0;
+      const totalCost = parseFloat(rows[0]?.total_cost) || 0;
 
       this.logger.info('Successfully fetched costs by location', {
         location,
@@ -357,7 +357,7 @@ export class GCPBilling {
         return await this.bigQueryClient.query(options);
       });
 
-      const totalCost = rows[0]?.total_cost || 0;
+      const totalCost = parseFloat(rows[0]?.total_cost) || 0;
 
       this.logger.info('Successfully fetched costs by label', {
         labelKey,

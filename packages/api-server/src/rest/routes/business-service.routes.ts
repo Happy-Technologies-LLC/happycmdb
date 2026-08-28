@@ -11,9 +11,11 @@ import Joi from 'joi';
 import { BusinessServiceController } from '../controllers/business-service.controller';
 import { validateRequest, validateOptional } from '../middleware/validation.middleware';
 import { auditMiddleware } from '../../middleware/audit.middleware';
+import { getAuthMiddleware } from '../../auth/auth-bootstrap';
 
 export const businessServiceRoutes = Router();
 const controller = new BusinessServiceController();
+const authMiddleware = getAuthMiddleware();
 
 // Apply audit middleware to all routes
 businessServiceRoutes.use(auditMiddleware);
@@ -30,7 +32,7 @@ const createBusinessServiceSchema = Joi.object({
     .valid('compute', 'storage', 'network', 'data', 'application', 'security', 'end_user', 'iot', 'blockchain', 'quantum', 'other_it')
     .required(),
   business_criticality: Joi.string()
-    .valid('tier_0', 'tier_1', 'tier_2', 'tier_3', 'tier_4')
+    .valid('critical', 'high', 'medium', 'low')
     .required(),
   operational_status: Joi.string()
     .valid('active', 'inactive', 'planned', 'retired')
@@ -57,7 +59,7 @@ const updateBusinessServiceSchema = Joi.object({
     .valid('compute', 'storage', 'network', 'data', 'application', 'security', 'end_user', 'iot', 'blockchain', 'quantum', 'other_it')
     .optional(),
   business_criticality: Joi.string()
-    .valid('tier_0', 'tier_1', 'tier_2', 'tier_3', 'tier_4')
+    .valid('critical', 'high', 'medium', 'low')
     .optional(),
   operational_status: Joi.string()
     .valid('active', 'inactive', 'planned', 'retired')
@@ -128,6 +130,7 @@ businessServiceRoutes.get(
  */
 businessServiceRoutes.post(
   '/',
+  authMiddleware.requirePermission('write'),
   validateRequest(createBusinessServiceSchema, 'body'),
   controller.createBusinessService.bind(controller)
 );
@@ -139,6 +142,7 @@ businessServiceRoutes.post(
  */
 businessServiceRoutes.patch(
   '/:service_id',
+  authMiddleware.requirePermission('write'),
   validateRequest(updateBusinessServiceSchema, 'body'),
   controller.updateBusinessService.bind(controller)
 );
@@ -150,6 +154,7 @@ businessServiceRoutes.patch(
  */
 businessServiceRoutes.delete(
   '/:service_id',
+  authMiddleware.requirePermission('write'),
   controller.deleteBusinessService.bind(controller)
 );
 
@@ -170,6 +175,7 @@ businessServiceRoutes.get(
  */
 businessServiceRoutes.post(
   '/:service_id/cis',
+  authMiddleware.requirePermission('write'),
   validateRequest(mapCIsSchema, 'body'),
   controller.mapCIsToService.bind(controller)
 );
@@ -181,6 +187,7 @@ businessServiceRoutes.post(
  */
 businessServiceRoutes.delete(
   '/:service_id/cis/:ci_id',
+  authMiddleware.requirePermission('write'),
   controller.unmapCIFromService.bind(controller)
 );
 
@@ -201,6 +208,7 @@ businessServiceRoutes.get(
  */
 businessServiceRoutes.post(
   '/:service_id/dependencies',
+  authMiddleware.requirePermission('write'),
   validateRequest(createDependencySchema, 'body'),
   controller.createServiceDependency.bind(controller)
 );
@@ -212,6 +220,7 @@ businessServiceRoutes.post(
  */
 businessServiceRoutes.delete(
   '/:service_id/dependencies/:depends_on_service_id',
+  authMiddleware.requirePermission('write'),
   controller.deleteServiceDependency.bind(controller)
 );
 

@@ -11,6 +11,7 @@ import { getIdentityReconciliationEngine } from '@cmdb/identity-resolution';
 import { getPostgresClient } from '@cmdb/database';
 import { TransformedCI, IdentificationAttributes } from '@cmdb/integration-framework';
 import { GraphQLContext } from './index';
+import { checkGraphQLPermission } from '../../middleware/auth.middleware';
 
 const reconciliationEngine = getIdentityReconciliationEngine();
 const postgresClient = getPostgresClient();
@@ -290,8 +291,10 @@ const ReconciliationMutation = {
       _confidenceScore?: number;
       _environment?: string;
       _status?: string;
-    }
+    },
+    _context: GraphQLContext
   ) => {
+    checkGraphQLPermission(_context, 'write');
     try {
       // Transform GraphQL input to TransformedCI
       const discoveredCI: TransformedCI = {
@@ -344,8 +347,10 @@ const ReconciliationMutation = {
       _id: string;
       _resolution: string;
       _mergedData?: any;
-    }
+    },
+    _context: GraphQLContext
   ) => {
+    checkGraphQLPermission(_context, 'write');
     try {
       const resolution = _args._resolution.toLowerCase();
 
@@ -415,8 +420,10 @@ const ReconciliationMutation = {
         _mergeStrategies?: any[];
         _enabled?: boolean;
       };
-    }
+    },
+    _context: GraphQLContext
   ) => {
+    checkGraphQLPermission(_context, 'write');
     try {
       const { _name, _identificationRules, _mergeStrategies, _enabled } = _args._input;
 
@@ -486,8 +493,10 @@ const ReconciliationMutation = {
         _authorityScore: number;
         _description?: string;
       };
-    }
+    },
+    _context: GraphQLContext
   ) => {
+    checkGraphQLPermission(_context, 'write');
     try {
       const { _sourceName, _authorityScore, _description } = _args._input;
 

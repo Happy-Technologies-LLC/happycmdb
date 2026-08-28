@@ -12,7 +12,7 @@
 
 import { getQueueManager, QUEUE_NAMES, logger } from '@cmdb/common';
 import type { DiscoveryJobData, DiscoveryProvider, DiscoveryDefinition } from '@cmdb/common';
-import { getPostgresClient } from '@cmdb/database';
+import { getPostgresClient, getScheduleConfigStore } from '@cmdb/database';
 import { v4 as uuidv4 } from 'uuid';
 
 /**
@@ -62,6 +62,12 @@ const DEFAULT_SCHEDULES: DiscoverySchedule[] = [
 ];
 
 /**
+ * Redis "kind" discriminator this scheduler's persisted schedule configs are stored under.
+ * Paired with the provider as the persisted key's id: cmdb:schedule-config:v1:discovery:<provider>.
+ */
+const SCHEDULE_KIND = 'discovery';
+
+/**
  * Discovery Scheduler
  */
 export class DiscoveryScheduler {
@@ -97,6 +103,11 @@ export class DiscoveryScheduler {
 
     logger.info('Starting discovery scheduler...');
 
+    // Hydrate provider-level schedules (ssh/nmap) from the shared Redis-backed config before
+    // deciding what to create or remove, so this process agrees with whatever the last process
+    // to mutate a schedule (API server or worker) actually persisted.
+    await this.loadPersistedSchedules();
+
     if (this.useDatabaseDefinitions) {
       try {
         // Load and schedule all active definitions from PostgreSQL
@@ -125,6 +136,7 @@ export class DiscoveryScheduler {
     for (const [provider, schedule] of this.schedules.entries()) {
       if (!schedule._enabled) {
         logger.info(`Skipping disabled schedule for ${provider}`);
+        await this.removeSchedule(provider as DiscoveryProvider);
         continue;
       }
 
@@ -236,36 +248,54 @@ export class DiscoveryScheduler {
     provider: DiscoveryProvider,
     cronPattern: string
   ): Promise<void> {
-    const schedule = this.schedules.get(provider);
-    if (!schedule) {
+    if (!this.schedules.has(provider)) {
       throw new Error(`No schedule found for provider: ${provider}`);
     }
 
-    // Remove old schedule
-    await this.removeSchedule(provider);
+    // Seed the store first so an unseeded schedule's first cron-only edit keeps its known
+    // enabled/config defaults instead of the store's update() falling back to enabled=false.
+    await this.refreshScheduleFromStore(provider);
 
-    // Update and add new schedule
-    schedule._cronPattern = cronPattern;
-    await this.scheduleDiscoveryJob(schedule);
+    const persisted = await getScheduleConfigStore().update(SCHEDULE_KIND, provider, {
+      cronExpression: cronPattern,
+    });
+    const schedule = this.schedules.get(provider)!;
+    schedule._cronPattern = persisted.cronExpression;
+    schedule._enabled = persisted.enabled;
+    schedule._config = persisted.config;
 
-    logger.info(`Updated schedule for ${provider}`, { cronPattern });
+    // A disabled schedule stores the new cron but stays real: no repeatable job is created
+    // until the schedule is explicitly enabled. An enabled schedule gets its repeatable
+    // replaced immediately so the live cadence matches the newly stored cron.
+    if (schedule._enabled) {
+      await this.removeSchedule(provider);
+      await this.scheduleDiscoveryJob(schedule);
+    }
+
+    logger.info(`Updated schedule for ${provider}`, { cronPattern, enabled: schedule._enabled });
   }
 
   /**
    * Enable schedule for a provider
    */
   async enableSchedule(provider: DiscoveryProvider): Promise<void> {
-    const schedule = this.schedules.get(provider);
-    if (!schedule) {
+    if (!this.schedules.has(provider)) {
       throw new Error(`No schedule found for provider: ${provider}`);
     }
 
+    const schedule = await this.refreshScheduleFromStore(provider);
     if (schedule._enabled) {
       logger.warn(`Schedule for ${provider} already enabled`);
       return;
     }
 
-    schedule._enabled = true;
+    const persisted = await getScheduleConfigStore().update(SCHEDULE_KIND, provider, {
+      enabled: true,
+    });
+    schedule._cronPattern = persisted.cronExpression;
+    schedule._enabled = persisted.enabled;
+    schedule._config = persisted.config;
+
     await this.scheduleDiscoveryJob(schedule);
 
     logger.info(`Enabled schedule for ${provider}`);
@@ -275,17 +305,23 @@ export class DiscoveryScheduler {
    * Disable schedule for a provider
    */
   async disableSchedule(provider: DiscoveryProvider): Promise<void> {
-    const schedule = this.schedules.get(provider);
-    if (!schedule) {
+    if (!this.schedules.has(provider)) {
       throw new Error(`No schedule found for provider: ${provider}`);
     }
 
+    const schedule = await this.refreshScheduleFromStore(provider);
     if (!schedule._enabled) {
       logger.warn(`Schedule for ${provider} already disabled`);
       return;
     }
 
-    schedule._enabled = false;
+    const persisted = await getScheduleConfigStore().update(SCHEDULE_KIND, provider, {
+      enabled: false,
+    });
+    schedule._cronPattern = persisted.cronExpression;
+    schedule._enabled = persisted.enabled;
+    schedule._config = persisted.config;
+
     await this.removeSchedule(provider);
 
     logger.info(`Disabled schedule for ${provider}`);
@@ -323,6 +359,79 @@ export class DiscoveryScheduler {
    */
   getSchedule(provider: DiscoveryProvider): DiscoverySchedule | undefined {
     return this.schedules.get(provider);
+  }
+
+  /**
+   * Load the persisted schedule config for a provider from the shared Redis store, seeding it
+   * with this instance's current in-memory schedule as the default the first time any process
+   * asks for it. Mutates and returns the in-memory schedule so every caller in this class stays
+   * on the shared truth instead of stale constructor defaults.
+   */
+  private async refreshScheduleFromStore(provider: DiscoveryProvider): Promise<DiscoverySchedule> {
+    const schedule = this.schedules.get(provider);
+    if (!schedule) {
+      throw new Error(`No schedule found for provider: ${provider}`);
+    }
+
+    const persisted = await getScheduleConfigStore().seedIfAbsent(SCHEDULE_KIND, provider, {
+      cronExpression: schedule._cronPattern,
+      enabled: schedule._enabled,
+      config: schedule._config,
+    });
+
+    schedule._cronPattern = persisted.cronExpression;
+    schedule._enabled = persisted.enabled;
+    schedule._config = persisted.config;
+
+    return schedule;
+  }
+
+  /**
+   * Hydrate every provider-level schedule from the shared Redis store. Called by start() before
+   * it decides what to create or remove.
+   */
+  private async loadPersistedSchedules(): Promise<void> {
+    for (const provider of this.schedules.keys()) {
+      await this.refreshScheduleFromStore(provider as DiscoveryProvider);
+    }
+  }
+
+  /**
+   * Whether a BullMQ repeatable job actually exists for a queue/job name pair, independent of
+   * any cached "enabled" flag.
+   */
+  private async hasRepeatableJob(queueName: string, jobName: string): Promise<boolean> {
+    const queue = this.queueManager.getQueue(queueName);
+    const repeatableJobs = await queue.getRepeatableJobs();
+    return repeatableJobs.some((job) => job.name === jobName);
+  }
+
+  /**
+   * Get the schedule for a provider resolved against the shared Redis-backed config and the
+   * actual BullMQ repeatable job state. This is the source of truth for the schedules REST API:
+   * unlike getSchedule(), it is never limited to whatever this process's in-memory map last held.
+   */
+  async getScheduleView(provider: DiscoveryProvider): Promise<DiscoverySchedule | undefined> {
+    if (!this.schedules.has(provider)) {
+      return undefined;
+    }
+
+    const schedule = await this.refreshScheduleFromStore(provider);
+    schedule._enabled = await this.hasRepeatableJob(schedule._queueName, `discovery-${provider}`);
+    return schedule;
+  }
+
+  /**
+   * Get every provider-level schedule resolved against the shared Redis-backed config and
+   * actual BullMQ repeatable job state.
+   */
+  async getSchedulesView(): Promise<DiscoverySchedule[]> {
+    const views = await Promise.all(
+      Array.from(this.schedules.keys()).map((provider) =>
+        this.getScheduleView(provider as DiscoveryProvider)
+      )
+    );
+    return views.filter((schedule): schedule is DiscoverySchedule => schedule !== undefined);
   }
 
   /**

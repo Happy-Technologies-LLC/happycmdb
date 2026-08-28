@@ -343,9 +343,8 @@ describe('CIList Component', () => {
 
     renderWithQueryClient(<CIList />);
 
-    // Should show "1-10 of 50"
     await waitFor(() => {
-      expect(screen.getByText(/1-10 of 50/i)).toBeInTheDocument();
+      expect(screen.getByText('Page 1 of 5')).toBeInTheDocument();
     });
   });
 });

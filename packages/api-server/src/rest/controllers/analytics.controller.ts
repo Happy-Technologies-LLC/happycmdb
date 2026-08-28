@@ -19,7 +19,7 @@ export class AnalyticsController {
         SELECT
           ci_type,
           COUNT(*) as count
-        FROM dim_ci
+        FROM cmdb.dim_ci
         WHERE is_current = true
         GROUP BY ci_type
         ORDER BY count DESC
@@ -49,7 +49,7 @@ export class AnalyticsController {
         SELECT
           ci_status as status,
           COUNT(*) as count
-        FROM dim_ci
+        FROM cmdb.dim_ci
         WHERE is_current = true
         GROUP BY ci_status
         ORDER BY count DESC
@@ -79,7 +79,7 @@ export class AnalyticsController {
         SELECT
           environment,
           COUNT(*) as count
-        FROM dim_ci
+        FROM cmdb.dim_ci
         WHERE is_current = true AND environment IS NOT NULL
         GROUP BY environment
         ORDER BY count DESC
@@ -137,27 +137,28 @@ export class AnalyticsController {
       const { start_date, end_date } = req.query;
 
       let dateFilter = '';
-      const params: any[] = [];
+      const params: unknown[] = [];
 
       if (start_date) {
         params.push(start_date);
-        dateFilter += ` AND discovered_at >= $${params.length}`;
+        dateFilter += ` AND f.discovered_at >= $${params.length}`;
       }
 
       if (end_date) {
         params.push(end_date);
-        dateFilter += ` AND discovered_at <= $${params.length}`;
+        dateFilter += ` AND f.discovered_at <= $${params.length}`;
       }
 
       const result = await this.postgresClient.query(
         `
         SELECT
-          COUNT(*) as total_cis,
-          COUNT(DISTINCT ci_type) as unique_types,
-          MIN(discovered_at) as first_discovery,
-          MAX(discovered_at) as last_discovery
-        FROM dim_ci
-        WHERE is_current = true ${dateFilter}
+          COUNT(DISTINCT f.ci_key) as total_cis,
+          COUNT(DISTINCT c.ci_type) as unique_types,
+          MIN(f.discovered_at) as first_discovery,
+          MAX(f.discovered_at) as last_discovery
+        FROM cmdb.fact_discovery f
+        INNER JOIN cmdb.dim_ci c ON f.ci_key = c.ci_key
+        WHERE c.is_current = true ${dateFilter}
         `,
         params
       );
@@ -165,11 +166,12 @@ export class AnalyticsController {
       const providerStats = await this.postgresClient.query(
         `
         SELECT
-          discovery_provider,
+          f.discovery_provider,
           COUNT(*) as count
-        FROM dim_ci
-        WHERE is_current = true AND discovery_provider IS NOT NULL ${dateFilter}
-        GROUP BY discovery_provider
+        FROM cmdb.fact_discovery f
+        INNER JOIN cmdb.dim_ci c ON f.ci_key = c.ci_key
+        WHERE c.is_current = true AND f.discovery_provider IS NOT NULL ${dateFilter}
+        GROUP BY f.discovery_provider
         ORDER BY count DESC
         `,
         params
@@ -220,11 +222,12 @@ export class AnalyticsController {
       const result = await this.postgresClient.query(
         `
         SELECT
-          date_trunc($1, discovered_at) as period,
+          date_trunc($1, f.discovered_at) as period,
           COUNT(*) as count,
-          COUNT(DISTINCT ci_type) as unique_types
-        FROM dim_ci
-        WHERE is_current = true
+          COUNT(DISTINCT c.ci_type) as unique_types
+        FROM cmdb.fact_discovery f
+        INNER JOIN cmdb.dim_ci c ON f.ci_key = c.ci_key
+        WHERE c.is_current = true
         GROUP BY period
         ORDER BY period DESC
         LIMIT $2
@@ -264,9 +267,9 @@ export class AnalyticsController {
             c.ci_id,
             c.ci_name,
             c.ci_type,
-            COUNT(r.relationship_id) as relationship_count
-          FROM dim_ci c
-          JOIN cmdb.fact_ci_relationships r ON c.ci_id = r.to_ci_id
+            COUNT(r.relationship_key) as relationship_count
+          FROM cmdb.dim_ci c
+          JOIN cmdb.fact_ci_relationships r ON c.ci_key = r.to_ci_key
           WHERE c.is_current = true
           GROUP BY c.ci_id, c.ci_name, c.ci_type
           ORDER BY relationship_count DESC
@@ -278,9 +281,9 @@ export class AnalyticsController {
             c.ci_id,
             c.ci_name,
             c.ci_type,
-            COUNT(r.relationship_id) as relationship_count
-          FROM dim_ci c
-          JOIN cmdb.fact_ci_relationships r ON c.ci_id = r.from_ci_id
+            COUNT(r.relationship_key) as relationship_count
+          FROM cmdb.dim_ci c
+          JOIN cmdb.fact_ci_relationships r ON c.ci_key = r.from_ci_key
           WHERE c.is_current = true
           GROUP BY c.ci_id, c.ci_name, c.ci_type
           ORDER BY relationship_count DESC
@@ -292,10 +295,10 @@ export class AnalyticsController {
             c.ci_id,
             c.ci_name,
             c.ci_type,
-            COUNT(DISTINCT r1.relationship_id) + COUNT(DISTINCT r2.relationship_id) as relationship_count
-          FROM dim_ci c
-          LEFT JOIN cmdb.fact_ci_relationships r1 ON c.ci_id = r1.from_ci_id
-          LEFT JOIN cmdb.fact_ci_relationships r2 ON c.ci_id = r2.to_ci_id
+            COUNT(DISTINCT r1.relationship_key) + COUNT(DISTINCT r2.relationship_key) as relationship_count
+          FROM cmdb.dim_ci c
+          LEFT JOIN cmdb.fact_ci_relationships r1 ON c.ci_key = r1.from_ci_key
+          LEFT JOIN cmdb.fact_ci_relationships r2 ON c.ci_key = r2.to_ci_key
           WHERE c.is_current = true
           GROUP BY c.ci_id, c.ci_name, c.ci_type
           ORDER BY relationship_count DESC
@@ -329,8 +332,8 @@ export class AnalyticsController {
       const result = await this.postgresClient.query(`
         WITH RECURSIVE dependency_depth AS (
           SELECT
-            from_ci_id as ci_id,
-            to_ci_id,
+            from_ci_key as ci_key,
+            to_ci_key as to_ci_key,
             1 as depth
           FROM cmdb.fact_ci_relationships
           WHERE relationship_type = 'DEPENDS_ON'
@@ -338,28 +341,37 @@ export class AnalyticsController {
           UNION ALL
 
           SELECT
-            dd.ci_id,
-            r.to_ci_id,
+            dd.ci_key,
+            r.to_ci_key,
             dd.depth + 1
           FROM dependency_depth dd
-          JOIN cmdb.fact_ci_relationships r ON dd.to_ci_id = r.from_ci_id
+          JOIN cmdb.fact_ci_relationships r ON dd.to_ci_key = r.from_ci_key
           WHERE r.relationship_type = 'DEPENDS_ON' AND dd.depth < 10
+        ),
+        depth_summary AS (
+          SELECT
+            ci_key,
+            MAX(depth) as max_depth,
+            COUNT(DISTINCT to_ci_key) as total_dependencies
+          FROM dependency_depth
+          GROUP BY ci_key
         )
         SELECT
-          ci_id,
-          MAX(depth) as max_depth,
-          COUNT(DISTINCT to_ci_id) as total_dependencies
-        FROM dependency_depth
-        GROUP BY ci_id
-        ORDER BY max_depth DESC
+          c.ci_id,
+          ds.max_depth,
+          ds.total_dependencies
+        FROM depth_summary ds
+        JOIN cmdb.dim_ci c ON c.ci_key = ds.ci_key
+        WHERE c.is_current = true
+        ORDER BY ds.max_depth DESC
         LIMIT 100
       `);
 
       const depthDistribution = await this.postgresClient.query(`
         WITH RECURSIVE dependency_depth AS (
           SELECT
-            from_ci_id as ci_id,
-            to_ci_id,
+            from_ci_key as ci_key,
+            to_ci_key as to_ci_key,
             1 as depth
           FROM cmdb.fact_ci_relationships
           WHERE relationship_type = 'DEPENDS_ON'
@@ -367,19 +379,19 @@ export class AnalyticsController {
           UNION ALL
 
           SELECT
-            dd.ci_id,
-            r.to_ci_id,
+            dd.ci_key,
+            r.to_ci_key,
             dd.depth + 1
           FROM dependency_depth dd
-          JOIN cmdb.fact_ci_relationships r ON dd.to_ci_id = r.from_ci_id
+          JOIN cmdb.fact_ci_relationships r ON dd.to_ci_key = r.from_ci_key
           WHERE r.relationship_type = 'DEPENDS_ON' AND dd.depth < 10
         ),
         max_depths AS (
           SELECT
-            ci_id,
+            ci_key,
             MAX(depth) as max_depth
           FROM dependency_depth
-          GROUP BY ci_id
+          GROUP BY ci_key
         )
         SELECT
           max_depth,
@@ -452,6 +464,179 @@ export class AnalyticsController {
       res.status(500).json({
         success: false,
         error: 'Failed to retrieve change history',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+
+  /**
+   * Resolve and bound a date range from optional query parameters.
+   * Defaults to the last `defaultDays` days when unspecified, and rejects
+   * ranges wider than `maxDays` or with start after end.
+   */
+  private resolveDateRange(
+    startDateParam: unknown,
+    endDateParam: unknown,
+    defaultDays: number,
+    maxDays: number
+  ): { startDate: Date; endDate: Date } | { error: string } {
+    const endDate = endDateParam ? new Date(String(endDateParam)) : new Date();
+    const startDate = startDateParam
+      ? new Date(String(startDateParam))
+      : new Date(endDate.getTime() - defaultDays * 24 * 60 * 60 * 1000);
+
+    if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
+      return { error: 'start_date and end_date must be valid dates' };
+    }
+
+    if (startDate.getTime() > endDate.getTime()) {
+      return { error: 'start_date must be before end_date' };
+    }
+
+    const maxRangeMs = maxDays * 24 * 60 * 60 * 1000;
+    if (endDate.getTime() - startDate.getTime() > maxRangeMs) {
+      return { error: `Date range must not exceed ${maxDays} days` };
+    }
+
+    return { startDate, endDate };
+  }
+
+  /**
+   * Get relationship type matrix (source CI type x target CI type x relationship type)
+   * GET /analytics/relationship-matrix
+   */
+  async getRelationshipMatrix(_req: Request, res: Response): Promise<void> {
+    try {
+      const result = await this.postgresClient.query(`
+        SELECT
+          sc.ci_type AS source_type,
+          tc.ci_type AS target_type,
+          r.relationship_type,
+          COUNT(*)::int as count
+        FROM cmdb.fact_ci_relationships r
+        JOIN cmdb.dim_ci sc ON r.from_ci_key = sc.ci_key
+        JOIN cmdb.dim_ci tc ON r.to_ci_key = tc.ci_key
+        WHERE sc.is_current = true AND tc.is_current = true AND r.is_active = true
+        GROUP BY sc.ci_type, tc.ci_type, r.relationship_type
+        ORDER BY count DESC
+      `);
+
+      res.json({
+        success: true,
+        data: result.rows,
+      });
+    } catch (error) {
+      logger.error('Error getting relationship matrix', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to retrieve relationship matrix',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+
+  /**
+   * Get global CI change timeline, bounded to a date range (default last 30 days, max 90 days)
+   * GET /analytics/change-timeline
+   */
+  async getChangeTimeline(req: Request, res: Response): Promise<void> {
+    try {
+      const { start_date, end_date } = req.query;
+
+      const range = this.resolveDateRange(start_date, end_date, 30, 90);
+      if ('error' in range) {
+        res.status(400).json({
+          success: false,
+          error: 'Bad Request',
+          message: range.error,
+        });
+        return;
+      }
+
+      const result = await this.postgresClient.query(
+        `
+        SELECT
+          date_trunc('day', changed_at)::date as date,
+          COUNT(*) FILTER (WHERE change_type = 'discovered')::int as created,
+          COUNT(*) FILTER (WHERE change_type = 'updated')::int as updated,
+          COUNT(*) FILTER (WHERE change_type = 'deleted')::int as deleted
+        FROM ci_change_history
+        WHERE changed_at >= $1 AND changed_at <= $2
+        GROUP BY date
+        ORDER BY date ASC
+        `,
+        [range.startDate.toISOString(), range.endDate.toISOString()]
+      );
+
+      res.json({
+        success: true,
+        data: result.rows,
+        filters: {
+          start_date: range.startDate.toISOString(),
+          end_date: range.endDate.toISOString(),
+        },
+      });
+    } catch (error) {
+      logger.error('Error getting change timeline', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to retrieve change timeline',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+
+  /**
+   * Get historical health signals for a specific CI, derived from its recorded anomalies
+   * (default last 7 days, max 90 days)
+   * GET /analytics/health-metrics/:ciId
+   */
+  async getHealthMetrics(req: Request, res: Response): Promise<void> {
+    try {
+      const { ciId } = req.params;
+      const { start_date, end_date } = req.query;
+
+      const range = this.resolveDateRange(start_date, end_date, 7, 90);
+      if ('error' in range) {
+        res.status(400).json({
+          success: false,
+          error: 'Bad Request',
+          message: range.error,
+        });
+        return;
+      }
+
+      const result = await this.postgresClient.query(
+        `
+        SELECT
+          detected_at as timestamp,
+          status,
+          (metrics->>'cpu_usage')::numeric as cpu_usage,
+          (metrics->>'memory_usage')::numeric as memory_usage,
+          (metrics->>'disk_usage')::numeric as disk_usage,
+          (metrics->>'network_latency')::numeric as network_latency
+        FROM anomalies
+        WHERE ci_id = $1 AND detected_at >= $2 AND detected_at <= $3
+        ORDER BY detected_at ASC
+        LIMIT 1000
+        `,
+        [ciId, range.startDate.toISOString(), range.endDate.toISOString()]
+      );
+
+      res.json({
+        success: true,
+        data: result.rows,
+        ci_id: ciId,
+        filters: {
+          start_date: range.startDate.toISOString(),
+          end_date: range.endDate.toISOString(),
+        },
+      });
+    } catch (error) {
+      logger.error('Error getting health metrics', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to retrieve health metrics',
         message: error instanceof Error ? error.message : 'Unknown error',
       });
     }

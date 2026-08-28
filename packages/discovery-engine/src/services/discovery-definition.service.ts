@@ -302,8 +302,8 @@ export class DiscoveryDefinitionService {
       const queueNameMap: Record<DiscoveryProvider, string> = {
         ssh: QUEUE_NAMES._DISCOVERY_SSH,
         nmap: QUEUE_NAMES._DISCOVERY_NMAP,
-        'active-directory': 'discovery:active-directory',
-        snmp: 'discovery:snmp',
+        'active-directory': 'discovery-active-directory',
+        snmp: 'discovery-snmp',
       };
 
       const queueName = queueNameMap[definition.provider];

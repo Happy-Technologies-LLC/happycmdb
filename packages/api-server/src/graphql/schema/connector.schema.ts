@@ -466,30 +466,6 @@ export const connectorTypeDefs = `
   }
 
   """
-  Test connection result
-  """
-  type TestConnectionResult {
-    """Success status"""
-    success: Boolean!
-    """Result message"""
-    message: String
-    """Additional details"""
-    details: JSON
-    """Error messages"""
-    errors: [String!]
-  }
-
-  """
-  Cancel run result
-  """
-  type CancelRunResult {
-    """Success status"""
-    success: Boolean!
-    """Result message"""
-    message: String
-  }
-
-  """
   Delete result
   """
   type DeleteResult {
@@ -585,14 +561,8 @@ export const connectorTypeDefs = `
     """Delete connector configuration"""
     deleteConnectorConfiguration(id: ID!): DeleteResult!
 
-    """Test connector connection"""
-    testConnectorConnection(id: ID!): TestConnectionResult!
-
     """Run connector manually"""
     runConnector(id: ID!): ConnectorRun!
-
-    """Cancel running connector job"""
-    cancelConnectorRun(id: ID!): CancelRunResult!
 
     """Enable connector configuration"""
     enableConnectorConfiguration(id: ID!): ConnectorConfiguration!

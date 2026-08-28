@@ -54,15 +54,16 @@ export const InventoryStats: React.FC = () => {
     );
   }
 
+  const activeCIs = dashboardStats?.by_status.active ?? 0;
+
   const calculateActiveCIPercentage = () => {
-    if (!dashboardStats) return 0;
-    if (dashboardStats.totalCIs === 0) return 0;
-    return (dashboardStats.activeCIs / dashboardStats.totalCIs) * 100;
+    const totalCIs = dashboardStats?.total_cis ?? 0;
+    if (totalCIs === 0) return 0;
+    return (activeCIs / totalCIs) * 100;
   };
 
   const calculateHealthTrend = () => {
-    if (!dashboardStats) return { value: 0, direction: 'up' as const };
-    const healthScore = dashboardStats.healthScore || 0;
+    const healthScore = dashboardStats?.health_score ?? 0;
     return {
       value: healthScore,
       direction: healthScore >= 80 ? ('up' as const) : ('down' as const),
@@ -84,14 +85,14 @@ export const InventoryStats: React.FC = () => {
       <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4 mb-6">
         <MetricCard
           title="Total CIs"
-          value={dashboardStats?.totalCIs || 0}
+          value={dashboardStats?.total_cis ?? 0}
           subtitle="All configuration items"
           color={brand.sky}
           loading={!dashboardStats}
         />
         <MetricCard
           title="Active CIs"
-          value={dashboardStats?.activeCIs || 0}
+          value={activeCIs}
           subtitle={`${calculateActiveCIPercentage().toFixed(1)}% of total`}
           color={brand.success}
           trend={{
@@ -102,24 +103,24 @@ export const InventoryStats: React.FC = () => {
           loading={!dashboardStats}
         />
         <MetricCard
-          title="Total Relationships"
-          value={dashboardStats?.totalRelationships || 0}
-          subtitle="CI connections"
+          title="Critical Relationships"
+          value={dashboardStats?.critical_relationships ?? 0}
+          subtitle="Relationships requiring attention"
           color={brand.navy}
           loading={!dashboardStats}
         />
         <MetricCard
           title="Health Score"
-          value={`${dashboardStats?.healthScore || 0}%`}
+          value={`${dashboardStats?.health_score ?? 0}%`}
           subtitle="Overall system health"
           color={brand.warning}
           trend={calculateHealthTrend()}
           loading={!dashboardStats}
         />
         <MetricCard
-          title="Discovery Jobs Today"
-          value={dashboardStats?.discoveryJobsToday || 0}
-          subtitle="Completed today"
+          title="Recent Discoveries"
+          value={dashboardStats?.recent_discoveries.length ?? 0}
+          subtitle="Recently discovered CIs"
           color={brand.coral}
           loading={!dashboardStats}
         />
@@ -128,15 +129,22 @@ export const InventoryStats: React.FC = () => {
       {discoveryStats && (
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 mb-6">
           <MetricCard
-            title="Discovery Success Rate"
-            value={`${(discoveryStats.successRate * 100).toFixed(1)}%`}
-            subtitle={`${discoveryStats.totalJobs} total jobs`}
+            title="Discovered CIs"
+            value={discoveryStats.summary.total_cis}
+            subtitle="Within the selected period"
             color={brand.success}
-            trend={{
-              value: discoveryStats.successRate * 100,
-              direction: discoveryStats.successRate >= 0.9 ? 'up' : 'down',
-              isPositive: discoveryStats.successRate >= 0.9,
-            }}
+          />
+          <MetricCard
+            title="Discovered CI Types"
+            value={discoveryStats.summary.unique_types}
+            subtitle="Unique configuration item types"
+            color={brand.sky}
+          />
+          <MetricCard
+            title="Discovery Providers"
+            value={discoveryStats.by_provider.length}
+            subtitle="Providers reporting discoveries"
+            color={brand.coral}
           />
         </div>
       )}
@@ -174,15 +182,15 @@ export const InventoryStats: React.FC = () => {
                   </p>
                 </div>
               )}
-              {dashboardStats && dashboardStats.totalCIs > 0 && (
+              {dashboardStats && dashboardStats.total_cis > 0 && (
                 <div className="text-center">
                   <h3 className="text-4xl text-primary font-bold">
                     {(
-                      dashboardStats.totalRelationships / dashboardStats.totalCIs
+                      dashboardStats.critical_relationships / dashboardStats.total_cis
                     ).toFixed(1)}
                   </h3>
                   <p className="text-xs text-muted-foreground">
-                    Avg Connections/CI
+                    Critical Relationships per CI
                   </p>
                 </div>
               )}

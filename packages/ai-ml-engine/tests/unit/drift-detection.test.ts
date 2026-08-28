@@ -203,6 +203,15 @@ describe('ConfigurationDriftDetector', () => {
       expect(result.drifted_fields).toHaveLength(0);
     });
 
+    it('should throw when no approved baseline exists for the CI', async () => {
+      mockPgClient.query.mockResolvedValueOnce({ rows: [] }); // getApprovedBaseline: none found
+
+      await expect(detector.detectDrift('ci-no-baseline')).rejects.toThrow(
+        'No approved baseline found'
+      );
+      expect(mockNeo4jClient.getSession).not.toHaveBeenCalled();
+    });
+
     it('should detect minor drift (non-critical fields)', async () => {
       mockPgClient.query
         .mockResolvedValueOnce({
@@ -388,6 +397,31 @@ describe('ConfigurationDriftDetector', () => {
         expect.stringContaining('UPDATE baseline_snapshots'),
         ['baseline-001', 'admin']
       );
+    });
+  });
+
+  describe('getBaselineById', () => {
+    it('should return the baseline snapshot for a known id', async () => {
+      mockPgClient.query.mockResolvedValueOnce({
+        rows: [mockBaselineSnapshots.configuration],
+      });
+
+      const result = await detector.getBaselineById('baseline-001');
+
+      expect(result).not.toBeNull();
+      expect(result?.id).toBe(mockBaselineSnapshots.configuration.id);
+      expect(mockPgClient.query).toHaveBeenCalledWith(
+        expect.stringContaining('SELECT * FROM baseline_snapshots'),
+        ['baseline-001']
+      );
+    });
+
+    it('should return null for an unknown baseline id', async () => {
+      mockPgClient.query.mockResolvedValueOnce({ rows: [] });
+
+      const result = await detector.getBaselineById('baseline-nonexistent');
+
+      expect(result).toBeNull();
     });
   });
 

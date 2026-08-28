@@ -161,6 +161,10 @@ export class CostAllocationService {
       allocationPercentage: a.usagePercentage
     }));
 
+    // Calculate allocated and unallocated costs
+    const totalAllocated = allocatedTo.reduce((sum, t) => sum + t.allocatedAmount, 0);
+    const unallocatedCost = Math.max(0, totalCost - totalAllocated);
+
     return {
       ciId,
       ciName,
@@ -170,7 +174,7 @@ export class CostAllocationService {
       monthlyCost: totalCost,
       allocationMethod: CostAllocationMethod.USAGE_BASED,
       allocatedTo,
-      unallocatedCost: 0,
+      unallocatedCost,
       timestamp: new Date()
     };
   }
@@ -225,6 +229,10 @@ export class CostAllocationService {
       allocationPercentage: a.percentage
     }));
 
+    // Calculate allocated and unallocated costs
+    const totalAllocated = allocatedTo.reduce((sum, t) => sum + t.allocatedAmount, 0);
+    const unallocatedCost = Math.max(0, totalCost - totalAllocated);
+
     return {
       ciId,
       ciName,
@@ -234,7 +242,7 @@ export class CostAllocationService {
       monthlyCost: totalCost,
       allocationMethod: CostAllocationMethod.EQUAL_SPLIT,
       allocatedTo,
-      unallocatedCost: 0,
+      unallocatedCost,
       timestamp: new Date()
     };
   }

@@ -76,9 +76,11 @@ export class WebSocketService {
    */
   private async subscribeToRedis(): Promise<void> {
     try {
-      // Create separate Redis client for pub/sub
+      // Create separate Redis client for pub/sub. The base client (packages/database/src/redis/client.ts)
+      // does not set lazyConnect, so duplicate() begins connecting immediately - do not call
+      // .connect() again here, it would throw "Redis is already connecting/connected". ioredis
+      // queues subsequent commands (e.g. subscribe below) until the connection is ready.
       const subscriber = this.redis.duplicate();
-      await subscriber.connect();
 
       // Subscribe to channel
       await subscriber.subscribe(this.PUBSUB_CHANNEL);

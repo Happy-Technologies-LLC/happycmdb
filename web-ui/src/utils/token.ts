@@ -14,7 +14,7 @@ interface DecodedToken {
   exp: number;
 }
 
-const TOKEN_KEY = 'cmdb_auth_token';
+const TOKEN_KEY = 'auth_token';
 
 /**
  * Retrieves the JWT token from localStorage

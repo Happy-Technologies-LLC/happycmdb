@@ -55,32 +55,32 @@ const ETL_JOB_OPTIONS: JobOptions = {
  */
 export const QUEUE_CONFIGS: Record<string, QueueConfig> = {
   // Discovery queues
-  'discovery:aws': {
-    name: 'discovery:aws',
+  'discovery-aws': {
+    name: 'discovery-aws',
     _defaultJobOptions: DISCOVERY_JOB_OPTIONS,
     limiter: {
       _max: 10, // Max 10 jobs per minute (AWS API rate limits)
       _duration: 60000,
     },
   },
-  'discovery:azure': {
-    name: 'discovery:azure',
+  'discovery-azure': {
+    name: 'discovery-azure',
     _defaultJobOptions: DISCOVERY_JOB_OPTIONS,
     limiter: {
       _max: 10, // Max 10 jobs per minute
       _duration: 60000,
     },
   },
-  'discovery:gcp': {
-    name: 'discovery:gcp',
+  'discovery-gcp': {
+    name: 'discovery-gcp',
     _defaultJobOptions: DISCOVERY_JOB_OPTIONS,
     limiter: {
       _max: 10, // Max 10 jobs per minute
       _duration: 60000,
     },
   },
-  'discovery:ssh': {
-    name: 'discovery:ssh',
+  'discovery-ssh': {
+    name: 'discovery-ssh',
     _defaultJobOptions: {
       ...DISCOVERY_JOB_OPTIONS,
       _timeout: 600000, // 10 minutes for SSH discovery
@@ -90,8 +90,8 @@ export const QUEUE_CONFIGS: Record<string, QueueConfig> = {
       _duration: 60000,
     },
   },
-  'discovery:nmap': {
-    name: 'discovery:nmap',
+  'discovery-nmap': {
+    name: 'discovery-nmap',
     _defaultJobOptions: {
       ...DISCOVERY_JOB_OPTIONS,
       _timeout: 1800000, // 30 minutes for network scans
@@ -103,16 +103,16 @@ export const QUEUE_CONFIGS: Record<string, QueueConfig> = {
   },
 
   // ETL queues
-  'etl:sync': {
-    name: 'etl:sync',
+  'etl-sync': {
+    name: 'etl-sync',
     _defaultJobOptions: ETL_JOB_OPTIONS,
     limiter: {
       _max: 20, // Max 20 sync jobs per minute
       _duration: 60000,
     },
   },
-  'etl:full-refresh': {
-    name: 'etl:full-refresh',
+  'etl-full-refresh': {
+    name: 'etl-full-refresh',
     _defaultJobOptions: {
       ...ETL_JOB_OPTIONS,
       _timeout: 3600000, // 1 hour for full refresh
@@ -123,16 +123,16 @@ export const QUEUE_CONFIGS: Record<string, QueueConfig> = {
       _duration: 3600000,
     },
   },
-  'etl:change-detection': {
-    name: 'etl:change-detection',
+  'etl-change-detection': {
+    name: 'etl-change-detection',
     _defaultJobOptions: ETL_JOB_OPTIONS,
     limiter: {
       _max: 30, // Max 30 change detection jobs per minute
       _duration: 60000,
     },
   },
-  'etl:reconciliation': {
-    name: 'etl:reconciliation',
+  'etl-reconciliation': {
+    name: 'etl-reconciliation',
     _defaultJobOptions: {
       ...ETL_JOB_OPTIONS,
       _timeout: 2400000, // 40 minutes for reconciliation
@@ -146,20 +146,24 @@ export const QUEUE_CONFIGS: Record<string, QueueConfig> = {
 
 /**
  * Queue names constants for easy reference
+ *
+ * NOTE: BullMQ v5's Queue/Worker constructor rejects names containing ':'
+ * ("Queue name cannot contain :"), so these use hyphens instead of colons,
+ * matching the convention already used in packages/database/src/bullmq/queue-manager.ts.
  */
 export const QUEUE_NAMES = {
   // Discovery queues
-  _DISCOVERY_AWS: 'discovery:aws',
-  _DISCOVERY_AZURE: 'discovery:azure',
-  _DISCOVERY_GCP: 'discovery:gcp',
-  _DISCOVERY_SSH: 'discovery:ssh',
-  _DISCOVERY_NMAP: 'discovery:nmap',
+  _DISCOVERY_AWS: 'discovery-aws',
+  _DISCOVERY_AZURE: 'discovery-azure',
+  _DISCOVERY_GCP: 'discovery-gcp',
+  _DISCOVERY_SSH: 'discovery-ssh',
+  _DISCOVERY_NMAP: 'discovery-nmap',
 
   // ETL queues
-  _ETL_SYNC: 'etl:sync',
-  _ETL_FULL_REFRESH: 'etl:full-refresh',
-  _ETL_CHANGE_DETECTION: 'etl:change-detection',
-  _ETL_RECONCILIATION: 'etl:reconciliation',
+  _ETL_SYNC: 'etl-sync',
+  _ETL_FULL_REFRESH: 'etl-full-refresh',
+  _ETL_CHANGE_DETECTION: 'etl-change-detection',
+  _ETL_RECONCILIATION: 'etl-reconciliation',
 } as const;
 
 /**
@@ -177,12 +181,12 @@ export function getQueueConfig(queueName: string): QueueConfig {
  * Get all discovery queue names
  */
 export function getDiscoveryQueueNames(): string[] {
-  return Object.values(QUEUE_NAMES).filter((name) => name.startsWith('discovery:'));
+  return Object.values(QUEUE_NAMES).filter((name) => name.startsWith('discovery-'));
 }
 
 /**
  * Get all ETL queue names
  */
 export function getETLQueueNames(): string[] {
-  return Object.values(QUEUE_NAMES).filter((name) => name.startsWith('etl:'));
+  return Object.values(QUEUE_NAMES).filter((name) => name.startsWith('etl-'));
 }

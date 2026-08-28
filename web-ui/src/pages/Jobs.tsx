@@ -40,20 +40,20 @@ import { DeadLetterQueue } from '../components/jobs/DeadLetterQueue';
 type TabValue = 'monitor' | 'completed' | 'failed' | 'schedules' | 'workers' | 'dead-letter';
 
 const QUEUE_NAMES = [
-  'discovery:aws',
-  'discovery:azure',
-  'discovery:gcp',
-  'discovery:ssh',
-  'discovery:nmap',
-  'etl:sync',
-  'etl:change-detection',
-  'etl:reconciliation',
-  'etl:full-refresh',
+  'discovery-aws',
+  'discovery-azure',
+  'discovery-gcp',
+  'discovery-ssh',
+  'discovery-nmap',
+  'etl-sync',
+  'etl-change-detection',
+  'etl-reconciliation',
+  'etl-full-refresh',
 ];
 
 export const Jobs: React.FC = () => {
   const [activeTab, setActiveTab] = useState<TabValue>('monitor');
-  const [queueFilter, setQueueFilter] = useState<string>('all');
+  const [queueFilter, setQueueFilter] = useState<string>(QUEUE_NAMES[0]);
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(25);
@@ -85,7 +85,6 @@ export const Jobs: React.FC = () => {
   // Fetch completed jobs
   const completedFilters: JobFilters = {
     status: 'completed',
-    queueName: queueFilter !== 'all' ? queueFilter : undefined,
     limit: rowsPerPage,
     offset: page * rowsPerPage,
   };
@@ -99,6 +98,7 @@ export const Jobs: React.FC = () => {
     retryJob: retryCompletedJob,
     cancelJob: cancelCompletedJob,
   } = useJobs({
+    queueName: queueFilter,
     filters: completedFilters,
     autoRefresh: activeTab === 'completed',
     refreshInterval: 30000,
@@ -107,7 +107,6 @@ export const Jobs: React.FC = () => {
   // Fetch failed jobs
   const failedFilters: JobFilters = {
     status: 'failed',
-    queueName: queueFilter !== 'all' ? queueFilter : undefined,
     limit: rowsPerPage,
     offset: page * rowsPerPage,
   };
@@ -121,6 +120,7 @@ export const Jobs: React.FC = () => {
     retryJob: retryFailedJob,
     cancelJob: cancelFailedJob,
   } = useJobs({
+    queueName: queueFilter,
     filters: failedFilters,
     autoRefresh: activeTab === 'failed',
     refreshInterval: 30000,
@@ -234,13 +234,12 @@ export const Jobs: React.FC = () => {
         <div className="flex gap-2 items-center">
           <Select value={queueFilter} onValueChange={setQueueFilter}>
             <SelectTrigger className="w-[200px]">
-              <SelectValue placeholder="Queue Filter" />
+              <SelectValue placeholder="Select queue" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">All Queues</SelectItem>
               <SelectGroup>
                 <SelectLabel>Discovery Queues</SelectLabel>
-                {QUEUE_NAMES.filter((q) => q.startsWith('discovery:')).map((queue) => (
+                {QUEUE_NAMES.filter((q) => q.startsWith('discovery-')).map((queue) => (
                   <SelectItem key={queue} value={queue}>
                     {queue}
                   </SelectItem>
@@ -248,7 +247,7 @@ export const Jobs: React.FC = () => {
               </SelectGroup>
               <SelectGroup>
                 <SelectLabel>ETL Queues</SelectLabel>
-                {QUEUE_NAMES.filter((q) => q.startsWith('etl:')).map((queue) => (
+                {QUEUE_NAMES.filter((q) => q.startsWith('etl-')).map((queue) => (
                   <SelectItem key={queue} value={queue}>
                     {queue}
                   </SelectItem>
@@ -374,7 +373,9 @@ export const Jobs: React.FC = () => {
             <ScheduleList
               schedules={schedules}
               loading={schedulesLoading}
-              onToggle={toggleSchedule}
+              onToggle={async (id, enabled) => {
+                await toggleSchedule(id, enabled);
+              }}
             />
           )}
         </TabsContent>
@@ -391,7 +392,7 @@ export const Jobs: React.FC = () => {
 
         <TabsContent value="dead-letter" className="mt-0">
           <DeadLetterQueue
-            queueName={queueFilter !== 'all' ? queueFilter : QUEUE_NAMES[0]}
+            queueName={queueFilter}
           />
         </TabsContent>
       </Tabs>

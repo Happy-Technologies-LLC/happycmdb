@@ -30,6 +30,7 @@ module.exports = {
   // Ignore patterns
   testPathIgnorePatterns: [
     '/node_modules/',
+    '<rootDir>/.regression/',
     '/dist/',
     '/build/',
     'integration',

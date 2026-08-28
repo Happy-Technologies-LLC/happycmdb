@@ -18,6 +18,11 @@ export { InternalAPIClient, getInternalAPIClient } from './api/internal-api-clie
 // Export ITIL enrichment module
 export { ITILEnricher, ITILClassifier, LifecycleDetector } from './enrichment';
 
+// Provider-keyed discovery job scheduler (cron schedules for ssh/nmap, backed by BullMQ
+// repeatable jobs). Exported under a distinct name because `getDiscoveryScheduler` below is
+// a long-standing alias for the orchestrator, not this class.
+export { DiscoveryScheduler, getDiscoveryScheduler as getDiscoveryJobScheduler } from './schedulers/discovery-scheduler';
+
 // Export singleton getters for orchestrator (alias as scheduler for compatibility)
 let orchestratorInstance: DiscoveryOrchestratorClass | null = null;
 

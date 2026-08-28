@@ -8,7 +8,7 @@
 
 import React, { useState } from 'react';
 import { useForm, Controller } from 'react-hook-form';
-import { apiClient } from '../../services/auth.service';
+import { apiClient } from '../../services/api';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Label } from '@/components/ui/label';
@@ -49,7 +49,7 @@ export const NotificationSettings: React.FC = () => {
     setErrorMessage(null);
 
     try {
-      await apiClient.put('/api/v1/settings/notifications', data);
+      await apiClient.put('/settings/notifications', data);
       setSuccessMessage('Notification settings saved successfully');
       setTimeout(() => setSuccessMessage(null), 3000);
     } catch (error: any) {

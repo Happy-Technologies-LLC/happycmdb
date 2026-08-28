@@ -17,16 +17,23 @@
  * Used to prevent SQL injection in dynamic table name operations
  */
 export const VALID_TABLE_NAMES = [
-  // Data mart tables
+  // Data mart tables (legacy unqualified names, retained for existing callers)
   'fact_ci_relationships',
   'fact_ci_changes',
-  'fact_ci_discovery',
   'fact_ci',
   'dim_ci',
   'dim_ci_type',
   'dim_environment',
   'dim_status',
-  'dim_date',
+
+  // Data mart tables (real schema-qualified names - see
+  // packages/database/src/postgres/migrations/001_complete_schema.sql. Note there is no
+  // `dim_date` or `fact_ci_discovery` table: the real names are cmdb.dim_time (unused by any
+  // validated caller today) and cmdb.fact_discovery.)
+  'cmdb.dim_ci',
+  'cmdb.fact_discovery',
+  'cmdb.fact_ci_relationships',
+  'cmdb.fact_ci_changes',
 
   // Operational tables
   'credentials',

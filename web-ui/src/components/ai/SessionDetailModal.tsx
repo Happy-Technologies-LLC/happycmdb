@@ -9,8 +9,26 @@ import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { AIDiscoverySession } from '@/services/ai-pattern.service';
 import { Icon } from '@happy-technologies/design-system';
-import { useAIPatterns } from '@/hooks/useAIPatterns';
-import { useToast } from '@/contexts/ToastContext';
+
+/**
+ * Discovered CIs are heterogeneous (their shape depends on the pattern/tool
+ * that found them - see AIDiscoveryResult.discoveredCIs in @cmdb/ai-discovery),
+ * so read the two display fields defensively instead of assuming a shape.
+ */
+function ciDisplayName(ci: unknown): string {
+  if (ci && typeof ci === 'object') {
+    if ('name' in ci && typeof ci.name === 'string') return ci.name;
+    if ('_type' in ci && typeof ci._type === 'string') return ci._type;
+  }
+  return 'Unknown CI';
+}
+
+function ciType(ci: unknown): string {
+  if (ci && typeof ci === 'object' && '_type' in ci && typeof ci._type === 'string') {
+    return ci._type;
+  }
+  return 'unknown';
+}
 
 interface SessionDetailModalProps {
   session: AIDiscoverySession;
@@ -20,7 +38,6 @@ interface SessionDetailModalProps {
 
 export const SessionDetailModal: React.FC<SessionDetailModalProps> = ({ session, open, onClose }) => {
   const [activeTab, setActiveTab] = useState('overview');
-  const { showToast } = useToast();
 
   return (
     <Dialog open={open} onOpenChange={onClose}>
@@ -68,9 +85,8 @@ export const SessionDetailModal: React.FC<SessionDetailModalProps> = ({ session,
                     </div>
                   </div>
                   <div>
-                    <p className="text-xs text-muted-foreground">Provider</p>
-                    <p className="font-semibold">{session.provider}</p>
-                    <p className="text-xs text-muted-foreground">{session.model}</p>
+                    <p className="text-xs text-muted-foreground">AI Model</p>
+                    <p className="font-semibold">{session.aiModel}</p>
                   </div>
                 </div>
 
@@ -78,7 +94,7 @@ export const SessionDetailModal: React.FC<SessionDetailModalProps> = ({ session,
                   <div>
                     <p className="text-xs text-muted-foreground">Confidence</p>
                     <p className="text-lg font-bold text-primary">
-                      {(session.confidenceScore * 100).toFixed(0)}%
+                      {((session.confidenceScore ?? 0) * 100).toFixed(0)}%
                     </p>
                   </div>
                   <div>
@@ -165,7 +181,7 @@ export const SessionDetailModal: React.FC<SessionDetailModalProps> = ({ session,
                             <div>
                               <p className="font-semibold text-sm">{toolCall.toolName}</p>
                               <p className="text-xs text-muted-foreground">
-                                {new Date(toolCall.timestamp).toLocaleTimeString()} • {toolCall.executionTimeMs}ms
+                                {new Date(toolCall.timestamp).toLocaleTimeString()} • {toolCall.executionTime}ms
                               </p>
                             </div>
                           </div>
@@ -175,14 +191,14 @@ export const SessionDetailModal: React.FC<SessionDetailModalProps> = ({ session,
                           <div>
                             <p className="text-xs font-semibold text-muted-foreground mb-1">Input</p>
                             <pre className="bg-muted/50 p-2 rounded text-xs overflow-x-auto">
-                              <code>{JSON.stringify(toolCall.toolInput, null, 2)}</code>
+                              <code>{JSON.stringify(toolCall.input, null, 2)}</code>
                             </pre>
                           </div>
 
                           <div>
                             <p className="text-xs font-semibold text-muted-foreground mb-1">Output</p>
                             <pre className="bg-muted/50 p-2 rounded text-xs overflow-x-auto max-h-48">
-                              <code>{JSON.stringify(toolCall.toolOutput, null, 2)}</code>
+                              <code>{JSON.stringify(toolCall.output, null, 2)}</code>
                             </pre>
                           </div>
                         </div>
@@ -210,8 +226,8 @@ export const SessionDetailModal: React.FC<SessionDetailModalProps> = ({ session,
                     {session.discoveredCIs.map((ci, index) => (
                       <div key={index} className="p-3 border rounded-lg">
                         <div className="flex items-center justify-between mb-2">
-                          <p className="font-semibold">{ci.name || ci._type}</p>
-                          <Badge variant="outline">{ci._type}</Badge>
+                          <p className="font-semibold">{ciDisplayName(ci)}</p>
+                          <Badge variant="outline">{ciType(ci)}</Badge>
                         </div>
                         <pre className="bg-muted/50 p-2 rounded text-xs overflow-x-auto">
                           <code>{JSON.stringify(ci, null, 2)}</code>

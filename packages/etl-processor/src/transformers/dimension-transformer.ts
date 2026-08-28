@@ -13,7 +13,6 @@
  */
 
 import { CI, CIType, CIStatus, Environment } from '@cmdb/common';
-import { format } from 'date-fns';
 
 /**
  * CI Dimension (Type 2 SCD)
@@ -175,10 +174,10 @@ export class DimensionTransformer {
     const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
                        'July', 'August', 'September', 'October', 'November', 'December'];
 
-    const year = date.getFullYear();
-    const month = date.getMonth() + 1;
-    const day = date.getDate();
-    const dayOfWeek = date.getDay();
+    const year = date.getUTCFullYear();
+    const month = date.getUTCMonth() + 1;
+    const day = date.getUTCDate();
+    const dayOfWeek = date.getUTCDay();
 
     // Calculate quarter
     const quarter = Math.ceil(month / 3);
@@ -187,7 +186,7 @@ export class DimensionTransformer {
     const weekNumber = this.getWeekNumber(date);
 
     return {
-      _date_key: parseInt(format(date, 'yyyyMMdd')),
+      _date_key: this.generateDateKey(date),
       _full_date: date,
       _year: year,
       _quarter: quarter,
@@ -263,7 +262,10 @@ export class DimensionTransformer {
    * Generate date key (YYYYMMDD format)
    */
   generateDateKey(date: Date): number {
-    return parseInt(format(date, 'yyyyMMdd'));
+    const year = date.getUTCFullYear();
+    const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+    const day = String(date.getUTCDate()).padStart(2, '0');
+    return parseInt(`${year}${month}${day}`, 10);
   }
 
   /**
@@ -274,7 +276,7 @@ export class DimensionTransformer {
     const year = parseInt(str.substring(0, 4));
     const month = parseInt(str.substring(4, 6)) - 1;
     const day = parseInt(str.substring(6, 8));
-    return new Date(year, month, day);
+    return new Date(Date.UTC(year, month, day));
   }
 
   /**
@@ -356,7 +358,7 @@ export class DimensionTransformer {
    * Get ISO week number
    */
   private getWeekNumber(date: Date): number {
-    const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+    const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
     const dayNum = d.getUTCDay() || 7;
     d.setUTCDate(d.getUTCDate() + 4 - dayNum);
     const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));

@@ -49,7 +49,7 @@ export const ConfigurationDriftTimeline: React.FC<ConfigurationDriftTimelineProp
   });
 
   const createBaselineMutation = useMutation({
-    mutationFn: () => driftApi.createBaseline(ciId, 'configuration', 'current_user'),
+    mutationFn: () => driftApi.createBaseline(ciId, 'configuration'),
     onSuccess: () => {
       toast.success('Baseline created successfully');
       queryClient.invalidateQueries({ queryKey: ['drift'] });
@@ -58,7 +58,7 @@ export const ConfigurationDriftTimeline: React.FC<ConfigurationDriftTimelineProp
   });
 
   const approveBaselineMutation = useMutation({
-    mutationFn: (baselineId: string) => driftApi.approveBaseline(baselineId, 'current_user'),
+    mutationFn: (baselineId: string) => driftApi.approveBaseline(baselineId),
     onSuccess: () => {
       toast.success('Baseline approved');
       queryClient.invalidateQueries({ queryKey: ['drift'] });

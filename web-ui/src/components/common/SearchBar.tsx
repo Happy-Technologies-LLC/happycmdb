@@ -5,7 +5,6 @@ import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { Icon } from '@happy-technologies/design-system';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Separator } from '@/components/ui/separator';
 import { cn } from '@/lib/utils';
 
@@ -55,6 +54,7 @@ const SearchBar: React.FC<SearchBarProps> = ({
   const [value, setValue] = useState(controlledValue || '');
   const [showResults, setShowResults] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
 
   // Sync with controlled value
   useEffect(() => {
@@ -62,6 +62,31 @@ const SearchBar: React.FC<SearchBarProps> = ({
       setValue(controlledValue);
     }
   }, [controlledValue]);
+
+  // Close the results dropdown on outside click or Escape so it behaves
+  // like the previous Popover-based dismissable layer, without stealing
+  // focus from the input while the user is typing.
+  useEffect(() => {
+    if (!showResults) return;
+
+    const handleClickOutside = (event: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
+        setShowResults(false);
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setShowResults(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [showResults]);
 
   // Debounced search
   const debouncedSearch = useCallback(
@@ -102,7 +127,7 @@ const SearchBar: React.FC<SearchBarProps> = ({
   };
 
   return (
-    <div className={cn('relative', fullWidth ? 'w-full' : 'w-auto')}>
+    <div ref={containerRef} className={cn('relative', fullWidth ? 'w-full' : 'w-auto')}>
       <div className={cn(
         'flex items-center gap-2 rounded-lg border bg-card px-3 py-2 shadow-sm',
         fullWidth ? 'w-full' : 'w-[400px]'
@@ -142,47 +167,44 @@ const SearchBar: React.FC<SearchBarProps> = ({
       </div>
 
       {showResults && (value.length > 0) && (
-        <Popover open={showResults} onOpenChange={setShowResults}>
-          <PopoverContent
-            align="start"
-            className={cn(
-              'mt-1 max-h-[400px] overflow-auto p-0',
-              fullWidth ? 'w-full' : 'w-[400px]'
-            )}
-          >
-            {loading ? (
-              <div className="p-4 text-center">
-                <p className="text-sm text-muted-foreground">Searching...</p>
-              </div>
-            ) : results.length === 0 ? (
-              <div className="p-4 text-center">
-                <p className="text-sm text-muted-foreground">No results found</p>
-              </div>
-            ) : (
-              <div className="divide-y">
-                {results.map((result) => (
-                  <button
-                    key={result.id}
-                    onClick={() => handleResultClick(result)}
-                    className="w-full px-4 py-3 text-left hover:bg-accent transition-colors"
-                  >
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-medium">{result.title}</span>
-                      {result.type && (
-                        <span className="inline-flex items-center rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
-                          {result.type}
-                        </span>
-                      )}
-                    </div>
-                    {result.subtitle && (
-                      <p className="mt-1 text-xs text-muted-foreground">{result.subtitle}</p>
+        <div
+          className={cn(
+            'absolute left-0 top-full z-50 mt-1 max-h-[400px] overflow-auto rounded-md border bg-popover p-0 text-popover-foreground shadow-md',
+            fullWidth ? 'w-full' : 'w-[400px]'
+          )}
+        >
+          {loading ? (
+            <div className="p-4 text-center">
+              <p className="text-sm text-muted-foreground">Searching...</p>
+            </div>
+          ) : results.length === 0 ? (
+            <div className="p-4 text-center">
+              <p className="text-sm text-muted-foreground">No results found</p>
+            </div>
+          ) : (
+            <div className="divide-y">
+              {results.map((result) => (
+                <button
+                  key={result.id}
+                  onClick={() => handleResultClick(result)}
+                  className="w-full px-4 py-3 text-left hover:bg-accent transition-colors"
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium">{result.title}</span>
+                    {result.type && (
+                      <span className="inline-flex items-center rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
+                        {result.type}
+                      </span>
                     )}
-                  </button>
-                ))}
-              </div>
-            )}
-          </PopoverContent>
-        </Popover>
+                  </div>
+                  {result.subtitle && (
+                    <p className="mt-1 text-xs text-muted-foreground">{result.subtitle}</p>
+                  )}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
       )}
     </div>
   );

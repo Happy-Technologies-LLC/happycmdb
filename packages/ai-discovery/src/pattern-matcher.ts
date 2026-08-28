@@ -169,6 +169,7 @@ export class PatternMatcher implements IPatternMatcher {
     context: AIDiscoveryContext
   ): Promise<any[]> {
     const startTime = Date.now();
+    const sessionId = `pattern-exec-${crypto.randomUUID()}`;
 
     try {
       const pattern = this.patterns.find(p => p.patternId === patternId);
@@ -186,12 +187,16 @@ export class PatternMatcher implements IPatternMatcher {
 
       const executionTime = Date.now() - startTime;
 
-      // Record successful usage
-      await this.patternStorage.recordUsage(
+      // Record successful usage. ai_pattern_usage.session_id has a NOT NULL
+      // foreign key into ai_discovery_sessions, so the backing session row
+      // must be created first or the usage insert violates the constraint.
+      await this.recordExecutionTelemetry(
+        sessionId,
         patternId,
-        `pattern-exec-${Date.now()}`,
+        context,
         true,
-        executionTime
+        executionTime,
+        result
       );
 
       logger.info('Pattern executed successfully', {
@@ -206,9 +211,10 @@ export class PatternMatcher implements IPatternMatcher {
       const errorMessage = error instanceof Error ? error.message : String(error);
 
       // Record failed usage
-      await this.patternStorage.recordUsage(
+      await this.recordExecutionTelemetry(
+        sessionId,
         patternId,
-        `pattern-exec-${Date.now()}`,
+        context,
         false,
         executionTime,
         undefined,
@@ -217,6 +223,51 @@ export class PatternMatcher implements IPatternMatcher {
 
       logger.error('Pattern execution failed', { patternId, error: errorMessage });
       throw error;
+    }
+  }
+
+  /**
+   * Persist the discovery session and usage row backing a pattern execution.
+   * Telemetry failures are logged (never silently dropped) but never mask
+   * or replace the actual discovery outcome being returned/thrown above.
+   */
+  private async recordExecutionTelemetry(
+    sessionId: string,
+    patternId: string,
+    context: AIDiscoveryContext,
+    success: boolean,
+    executionTimeMs: number,
+    discoveredCIs?: unknown[],
+    errorMessage?: string
+  ): Promise<void> {
+    try {
+      await this.patternStorage.createExecutionSession(
+        sessionId,
+        patternId,
+        context,
+        success ? 'completed' : 'failed',
+        executionTimeMs,
+        discoveredCIs,
+        errorMessage
+      );
+
+      await this.patternStorage.recordUsage(
+        patternId,
+        sessionId,
+        success,
+        executionTimeMs,
+        undefined,
+        errorMessage
+      );
+    } catch (telemetryError) {
+      logger.error('Failed to persist pattern execution telemetry', {
+        patternId,
+        sessionId,
+        error:
+          telemetryError instanceof Error
+            ? telemetryError.message
+            : String(telemetryError),
+      });
     }
   }
 

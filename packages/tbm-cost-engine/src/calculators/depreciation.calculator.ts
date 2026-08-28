@@ -46,6 +46,11 @@ export function calculateDepreciation(
     monthlyDepreciation = depreciableAmount / totalDepreciationMonths;
     accumulatedDepreciation = Math.min(monthlyDepreciation * monthsElapsed, depreciableAmount);
     currentBookValue = schedule.purchasePrice - accumulatedDepreciation;
+
+    // Once the asset's useful life is exhausted, no further depreciation accrues
+    if (monthsElapsed >= totalDepreciationMonths) {
+      monthlyDepreciation = 0;
+    }
   } else if (schedule.method === DepreciationMethod.DECLINING_BALANCE) {
     // Double-declining balance method
     const annualRate = 2 / schedule.depreciationYears;

@@ -6,12 +6,14 @@
  * Custom hook for discovery operations and state management
  */
 
-import { useState, useCallback, useEffect, useRef } from 'react';
+import type { AxiosError } from 'axios';
+import { useState, useCallback } from 'react';
 import {
   discoveryService,
   DiscoveryProvider,
   DiscoveryStats,
   DiscoverySchedule,
+  DiscoveryScheduleUpdate,
   TriggerDiscoveryJobRequest,
   DiscoveryJob,
   DiscoveryJobResult,
@@ -31,13 +33,13 @@ export interface UseDiscoveryReturn {
   triggerJob: (request: TriggerDiscoveryJobRequest) => Promise<DiscoveryJob | null>;
   updateSchedule: (
     provider: DiscoveryProvider,
-    schedule: Partial<DiscoverySchedule>
+    schedule: DiscoveryScheduleUpdate
   ) => Promise<void>;
   testCredentials: (
     provider: DiscoveryProvider,
     config: Record<string, any>
   ) => Promise<boolean>;
-  retryJob: (jobId: string) => Promise<void>;
+  retryJob: (jobId: string, provider: DiscoveryProvider) => Promise<void>;
   cancelJob: (jobId: string) => Promise<void>;
   getJobResult: (jobId: string) => Promise<DiscoveryJobResult | null>;
 }
@@ -118,7 +120,7 @@ export const useDiscovery = (): UseDiscoveryReturn => {
    * Update a provider's schedule
    */
   const updateSchedule = useCallback(
-    async (provider: DiscoveryProvider, schedule: Partial<DiscoverySchedule>) => {
+    async (provider: DiscoveryProvider, schedule: DiscoveryScheduleUpdate) => {
       setLoading(true);
       setError(null);
 
@@ -174,15 +176,16 @@ export const useDiscovery = (): UseDiscoveryReturn => {
    * Retry a failed job
    */
   const retryJob = useCallback(
-    async (jobId: string) => {
+    async (jobId: string, provider: DiscoveryProvider) => {
       setLoading(true);
       setError(null);
 
       try {
-        await discoveryService.retryJob(jobId);
+        await discoveryService.retryJob(jobId, provider);
         showToast('Job retried successfully', 'success');
-      } catch (err: any) {
-        const errorMsg = err.response?.data?.message || 'Failed to retry job';
+      } catch (err) {
+        const axiosErr = err as AxiosError<{ message?: string }>;
+        const errorMsg = axiosErr.response?.data?.message || 'Failed to retry job';
         setError(errorMsg);
         showToast(errorMsg, 'error');
       } finally {

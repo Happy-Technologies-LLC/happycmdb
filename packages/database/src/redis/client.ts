@@ -41,6 +41,16 @@ export class RedisClient {
     }
   }
 
+  /**
+   * Set key to value only if it does not already exist (SET key value NX). Returns true when
+   * this call created the key, false when it already existed. Used for exactly-once seeding of
+   * shared config that multiple independent processes may race to initialize.
+   */
+  async setNX(key: string, value: string): Promise<boolean> {
+    const result = await this.client.set(key, value, 'NX');
+    return result === 'OK';
+  }
+
   async getJSON<T>(key: string): Promise<T | null> {
     const value = await this.get(key);
     return value ? JSON.parse(value) : null;

@@ -82,6 +82,7 @@ export interface User {
   username: string;
   email: string;
   full_name: string;
+  avatar?: string;
   role: 'admin' | 'user' | 'viewer';
   created_at: string;
   last_login?: string;

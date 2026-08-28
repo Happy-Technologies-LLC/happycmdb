@@ -30,6 +30,8 @@ export { DataMartClient, getDataMartClient, resetDataMartClient } from './client
 
 // Redis exports
 export { RedisClient, getRedisClient } from './redis/client';
+export { ScheduleConfigStore, getScheduleConfigStore } from './redis/schedule-config-store';
+export type { PersistedScheduleConfig, ScheduleConfigDefaults } from './redis/schedule-config-store';
 
 // BullMQ exports
 export { QueueManager, queueManager, QUEUE_NAMES } from './bullmq/queue-manager';

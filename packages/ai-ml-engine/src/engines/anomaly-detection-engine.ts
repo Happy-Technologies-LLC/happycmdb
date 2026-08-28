@@ -100,12 +100,14 @@ export class AnomalyDetectionEngine {
       `SELECT
         cs.ci_id,
         COUNT(*) as change_count,
-        MAX(ch.ci_name) as ci_name
+        COALESCE(MAX(dc.ci_name), cs.ci_id) as ci_name
        FROM ci_change_statistics cs
        JOIN ci_change_history ch ON cs.ci_id = ch.ci_id
-       WHERE cs.last_change_at >= NOW() - INTERVAL '${lookbackDays} days'
+       LEFT JOIN cmdb.dim_ci dc ON dc.ci_id = cs.ci_id AND dc.is_current = true
+       WHERE ch.changed_at >= NOW() - ($1 * INTERVAL '1 day')
        GROUP BY cs.ci_id
-       HAVING COUNT(*) > 0`
+       HAVING COUNT(*) > 0`,
+      [lookbackDays]
     );
 
     if (result.rows.length < 3) {

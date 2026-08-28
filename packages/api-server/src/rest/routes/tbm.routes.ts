@@ -6,9 +6,11 @@ import Joi from 'joi';
 import { TBMController } from '../controllers/tbm.controller';
 import { validateRequest, validateOptional } from '../middleware/validation.middleware';
 import { auditMiddleware } from '../../middleware/audit.middleware';
+import { getAuthMiddleware } from '../../auth/auth-bootstrap';
 
 export const tbmRoutes = Router();
 const controller = new TBMController();
+const authMiddleware = getAuthMiddleware();
 
 // Apply audit middleware to all routes
 tbmRoutes.use(auditMiddleware);
@@ -90,6 +92,7 @@ tbmRoutes.get(
 
 tbmRoutes.post(
   '/costs/allocate',
+  authMiddleware.requirePermission('write'),
   validateRequest(allocateCostsSchema, 'body'),
   controller.allocateCosts.bind(controller)
 );
@@ -105,6 +108,7 @@ tbmRoutes.get(
 
 tbmRoutes.post(
   '/gl/import',
+  authMiddleware.requirePermission('write'),
   controller.importGLData.bind(controller)
 );
 

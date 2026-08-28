@@ -208,11 +208,19 @@ export class BlastRadiusService {
       }
 
       const record = result.records[0];
-      const bsNode = record.get('bs').properties;
+      const props = record.get('bs').properties;
 
-      // Convert Neo4j node to BusinessService object
-      // This is a simplified conversion - in production, use proper mapping
-      return bsNode as any;
+      // Convert Neo4j node to BusinessService object. itil_attributes,
+      // tbm_attributes, and bsm_attributes are stored as JSON strings on the
+      // node (see v3-sample-data.cypher / CIRepository.nodeToCI), so they
+      // must be parsed before being accessed as maps by the impact
+      // calculators (e.g. bsm_attributes.annual_revenue_supported).
+      return {
+        ...props,
+        itil_attributes: props.itil_attributes ? JSON.parse(props.itil_attributes) : {},
+        tbm_attributes: props.tbm_attributes ? JSON.parse(props.tbm_attributes) : {},
+        bsm_attributes: props.bsm_attributes ? JSON.parse(props.bsm_attributes) : {},
+      } as unknown as BusinessService; // Neo4j driver returns untyped node properties
     } finally {
       await session.close();
     }

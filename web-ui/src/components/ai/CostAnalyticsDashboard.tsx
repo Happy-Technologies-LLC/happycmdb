@@ -37,15 +37,15 @@ export const CostAnalyticsDashboard: React.FC = () => {
 
   // Prepare chart data
   const costTrendData = costAnalytics.costByDay?.map(day => ({
-    date: new Date(day.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+    date: new Date(`${day.date}T00:00:00`).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
     cost: parseFloat(day.cost.toFixed(4)),
     sessions: day.sessions,
   })) || [];
 
-  const providerData = costAnalytics.costByProvider?.map(provider => ({
-    name: provider.provider,
-    cost: parseFloat(provider.cost.toFixed(4)),
-    sessions: provider.sessions,
+  const modelData = costAnalytics.costByModel?.map(model => ({
+    name: model.aiModel,
+    cost: parseFloat(model.cost.toFixed(4)),
+    sessions: model.sessions,
   })) || [];
 
   const COLORS = chartSeries;
@@ -170,7 +170,7 @@ export const CostAnalyticsDashboard: React.FC = () => {
                       border: '1px solid ' + brand.line,
                       borderRadius: '8px'
                     }}
-                    formatter={(value: any) => [`$${value.toFixed(4)}`, 'Cost']}
+                    formatter={(value: number) => [`$${value.toFixed(4)}`, 'Cost']}
                   />
                   <Area
                     type="monotone"
@@ -223,17 +223,17 @@ export const CostAnalyticsDashboard: React.FC = () => {
 
       {/* Charts Row 2 */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Cost by Provider */}
+        {/* Cost by Model */}
         <LiquidGlass size="sm" rounded="xl" className="overflow-hidden">
           <Card className="border-0 bg-transparent">
             <CardHeader>
-              <CardTitle className="text-lg">Cost by Provider</CardTitle>
+              <CardTitle className="text-lg">Cost by Model</CardTitle>
             </CardHeader>
             <CardContent>
               <ResponsiveContainer width="100%" height={300}>
                 <PieChart>
                   <Pie
-                    data={providerData}
+                    data={modelData}
                     cx="50%"
                     cy="50%"
                     labelLine={false}
@@ -242,12 +242,12 @@ export const CostAnalyticsDashboard: React.FC = () => {
                     fill={brand.sky}
                     dataKey="cost"
                   >
-                    {providerData.map((entry, index) => (
+                    {modelData.map((_entry, index) => (
                       <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                     ))}
                   </Pie>
                   <Tooltip
-                    formatter={(value: any) => `$${value.toFixed(4)}`}
+                    formatter={(value: number) => `$${value.toFixed(4)}`}
                     contentStyle={{
                       backgroundColor: '#fff',
                       border: '1px solid ' + brand.line,
@@ -260,32 +260,32 @@ export const CostAnalyticsDashboard: React.FC = () => {
           </Card>
         </LiquidGlass>
 
-        {/* Provider Stats Table */}
+        {/* Model Stats Table */}
         <LiquidGlass size="sm" rounded="xl" className="overflow-hidden">
           <Card className="border-0 bg-transparent">
             <CardHeader>
-              <CardTitle className="text-lg">Provider Statistics</CardTitle>
+              <CardTitle className="text-lg">Model Statistics</CardTitle>
             </CardHeader>
             <CardContent>
               <div className="space-y-3">
-                {providerData.map((provider, index) => (
-                  <div key={provider.name} className="flex items-center justify-between p-3 border rounded-lg">
+                {modelData.map((model, index) => (
+                  <div key={model.name} className="flex items-center justify-between p-3 border rounded-lg">
                     <div className="flex items-center gap-3">
                       <div
                         className="w-3 h-3 rounded-full"
                         style={{ backgroundColor: COLORS[index % COLORS.length] }}
                       />
                       <div>
-                        <p className="font-semibold">{provider.name}</p>
+                        <p className="font-semibold">{model.name}</p>
                         <p className="text-xs text-muted-foreground">
-                          {provider.sessions} sessions
+                          {model.sessions} sessions
                         </p>
                       </div>
                     </div>
                     <div className="text-right">
-                      <p className="font-bold">${provider.cost.toFixed(4)}</p>
+                      <p className="font-bold">${model.cost.toFixed(4)}</p>
                       <p className="text-xs text-muted-foreground">
-                        ${(provider.cost / provider.sessions).toFixed(4)}/session
+                        ${(model.cost / model.sessions).toFixed(4)}/session
                       </p>
                     </div>
                   </div>

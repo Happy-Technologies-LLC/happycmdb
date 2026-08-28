@@ -13,6 +13,8 @@ import { connectorFieldResolvers } from './connector-fields.resolvers';
 import { reconciliationResolvers } from './reconciliation.resolvers';
 // TEMPORARILY DISABLED - V3.0
 // import { itilResolvers } from './itil.resolvers';
+import type { TokenPayload } from '../../auth/types';
+import { checkGraphQLPermission } from '../../middleware/auth.middleware';
 
 /**
  * GraphQL Context type containing database clients and dataloaders
@@ -24,6 +26,8 @@ export interface GraphQLContext {
     _relationshipLoader: any;
     _dependentLoader: any;
   };
+  /** Authenticated identity resolved from the request's bearer token or API key, when present. */
+  user?: TokenPayload;
 }
 
 /**
@@ -438,6 +442,7 @@ const Mutation = {
     _args: { input: any },
     _context: GraphQLContext
   ): Promise<CI> => {
+    checkGraphQLPermission(_context, 'write');
     try {
       validateCIInput(_args.input);
 
@@ -479,6 +484,7 @@ const Mutation = {
     _args: { id: string; input: any },
     _context: GraphQLContext
   ): Promise<CI> => {
+    checkGraphQLPermission(_context, 'write');
     try {
       const updates: Partial<CIInput> = {};
 
@@ -522,6 +528,7 @@ const Mutation = {
     _args: { id: string },
     _context: GraphQLContext
   ): Promise<boolean> => {
+    checkGraphQLPermission(_context, 'write');
     const session = _context._neo4jClient.getSession();
 
     try {
@@ -576,6 +583,7 @@ const Mutation = {
     },
     _context: GraphQLContext
   ): Promise<boolean> => {
+    checkGraphQLPermission(_context, 'write');
     try {
       await _context._neo4jClient.createRelationship(
         _args._input._fromId,
@@ -611,6 +619,7 @@ const Mutation = {
     },
     _context: GraphQLContext
   ): Promise<boolean> => {
+    checkGraphQLPermission(_context, 'write');
     const session = _context._neo4jClient.getSession();
 
     try {

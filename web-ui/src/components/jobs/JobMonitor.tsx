@@ -33,15 +33,15 @@ interface JobMonitorProps {
 }
 
 const QUEUE_NAMES = [
-  'discovery:aws',
-  'discovery:azure',
-  'discovery:gcp',
-  'discovery:ssh',
-  'discovery:nmap',
-  'etl:sync',
-  'etl:change-detection',
-  'etl:reconciliation',
-  'etl:full-refresh',
+  'discovery-aws',
+  'discovery-azure',
+  'discovery-gcp',
+  'discovery-ssh',
+  'discovery-nmap',
+  'etl-sync',
+  'etl-change-detection',
+  'etl-reconciliation',
+  'etl-full-refresh',
 ];
 
 export const JobMonitor: React.FC<JobMonitorProps> = ({
@@ -49,7 +49,7 @@ export const JobMonitor: React.FC<JobMonitorProps> = ({
   refreshInterval = 5000,
 }) => {
   const [statusTab, setStatusTab] = useState<'active' | 'waiting' | 'delayed'>('active');
-  const [queueFilter, setQueueFilter] = useState<string>('all');
+  const [queueFilter, setQueueFilter] = useState<string>(QUEUE_NAMES[0]);
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(25);
@@ -57,7 +57,6 @@ export const JobMonitor: React.FC<JobMonitorProps> = ({
   // Prepare filters based on current selections
   const filters: JobFilters = {
     status: statusTab,
-    queueName: queueFilter !== 'all' ? queueFilter : undefined,
     limit: rowsPerPage,
     offset: page * rowsPerPage,
   };
@@ -72,6 +71,7 @@ export const JobMonitor: React.FC<JobMonitorProps> = ({
     retryJob,
     cancelJob,
   } = useJobs({
+    queueName: queueFilter,
     filters,
     autoRefresh,
     refreshInterval,
@@ -139,7 +139,7 @@ export const JobMonitor: React.FC<JobMonitorProps> = ({
         <QueueStats
           stats={stats}
           loading={statsLoading}
-          queueFilter={queueFilter !== 'all' ? queueFilter : undefined}
+          queueFilter={queueFilter}
         />
       </div>
 
@@ -185,14 +185,13 @@ export const JobMonitor: React.FC<JobMonitorProps> = ({
                 setPage(0);
               }}>
                 <SelectTrigger id="queue-filter">
-                  <SelectValue placeholder="All Queues" />
+                  <SelectValue placeholder="Select queue" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="all">All Queues</SelectItem>
                   <SelectItem value="discovery-header" disabled>
                     <em>Discovery Queues</em>
                   </SelectItem>
-                  {QUEUE_NAMES.filter((q) => q.startsWith('discovery:')).map((queue) => (
+                  {QUEUE_NAMES.filter((q) => q.startsWith('discovery-')).map((queue) => (
                     <SelectItem key={queue} value={queue}>
                       {queue}
                     </SelectItem>
@@ -200,7 +199,7 @@ export const JobMonitor: React.FC<JobMonitorProps> = ({
                   <SelectItem value="etl-header" disabled>
                     <em>ETL Queues</em>
                   </SelectItem>
-                  {QUEUE_NAMES.filter((q) => q.startsWith('etl:')).map((queue) => (
+                  {QUEUE_NAMES.filter((q) => q.startsWith('etl-')).map((queue) => (
                     <SelectItem key={queue} value={queue}>
                       {queue}
                     </SelectItem>

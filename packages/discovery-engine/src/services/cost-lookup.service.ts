@@ -759,6 +759,20 @@ export class CostLookupService {
   }
 
   /**
+   * Resolve a (possibly wildcarded) key pattern to concrete keys and delete them.
+   * ioredis' DEL only accepts literal keys, not glob patterns, so wildcard
+   * patterns must be resolved via KEYS (or SCAN) first.
+   */
+  private async deleteKeysMatching(pattern: string): Promise<number> {
+    const matchedKeys = await this.redisClient.keys(pattern);
+    if (matchedKeys.length === 0) {
+      return 0;
+    }
+    await this.redisClient.del(...matchedKeys);
+    return matchedKeys.length;
+  }
+
+  /**
    * Clear cost cache for a specific CI
    */
   async clearCostCache(ciId: string): Promise<void> {
@@ -768,14 +782,27 @@ export class CostLookupService {
         `tbm:cost:onprem:${ciId}`,
       ];
 
+      let deletedCount = 0;
       for (const pattern of patterns) {
-        // Note: In production, use SCAN instead of KEYS for better performance
-        await this.redisClient.del(pattern);
+        deletedCount += await this.deleteKeysMatching(pattern);
       }
 
-      logger.info('Cost cache cleared', { ciId });
+      logger.info('Cost cache cleared', { ciId, deletedCount });
     } catch (error) {
       logger.error('Error clearing cost cache', { ciId, error });
+    }
+  }
+
+  /**
+   * Clear all cost cache entries (cloud and on-premise), across every CI.
+   * Useful when cost data is refreshed in bulk.
+   */
+  async clearAllCostCache(): Promise<void> {
+    try {
+      const deletedCount = await this.deleteKeysMatching('tbm:cost:*');
+      logger.info('All cost caches cleared', { deletedCount });
+    } catch (error) {
+      logger.error('Error clearing all cost caches', { error });
     }
   }
 }

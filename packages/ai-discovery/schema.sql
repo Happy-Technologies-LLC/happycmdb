@@ -1,17 +1,15 @@
 -- AI Discovery Schema
 -- Database tables for AI-powered discovery, patterns, and sessions
 
--- Drop existing tables (if any)
-DROP TABLE IF EXISTS ai_pattern_usage CASCADE;
-DROP TABLE IF EXISTS ai_discovery_sessions CASCADE;
-DROP TABLE IF EXISTS ai_discovery_patterns CASCADE;
+-- Legacy/dev bootstrap. This is intentionally non-destructive so it can be
+-- run after the canonical numbered migrations without erasing AI discovery data.
 
 -- ==================================================================
 -- AI Discovery Patterns
 -- Stores learned and manually created discovery patterns
 -- ==================================================================
 
-CREATE TABLE ai_discovery_patterns (
+CREATE TABLE IF NOT EXISTS ai_discovery_patterns (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   pattern_id VARCHAR(255) UNIQUE NOT NULL,
   name VARCHAR(255) NOT NULL,
@@ -67,19 +65,19 @@ CREATE TABLE ai_discovery_patterns (
 );
 
 -- Indexes for patterns
-CREATE INDEX idx_patterns_category ON ai_discovery_patterns(category);
-CREATE INDEX idx_patterns_status ON ai_discovery_patterns(status);
-CREATE INDEX idx_patterns_active ON ai_discovery_patterns(is_active) WHERE is_active = true;
-CREATE INDEX idx_patterns_usage ON ai_discovery_patterns(usage_count DESC);
-CREATE INDEX idx_patterns_confidence ON ai_discovery_patterns(confidence_score DESC);
-CREATE INDEX idx_patterns_created ON ai_discovery_patterns(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_patterns_category ON ai_discovery_patterns(category);
+CREATE INDEX IF NOT EXISTS idx_patterns_status ON ai_discovery_patterns(status);
+CREATE INDEX IF NOT EXISTS idx_patterns_active ON ai_discovery_patterns(is_active) WHERE is_active = true;
+CREATE INDEX IF NOT EXISTS idx_patterns_usage ON ai_discovery_patterns(usage_count DESC);
+CREATE INDEX IF NOT EXISTS idx_patterns_confidence ON ai_discovery_patterns(confidence_score DESC);
+CREATE INDEX IF NOT EXISTS idx_patterns_created ON ai_discovery_patterns(created_at DESC);
 
 -- ==================================================================
 -- AI Discovery Sessions
 -- Tracks individual AI discovery operations
 -- ==================================================================
 
-CREATE TABLE ai_discovery_sessions (
+CREATE TABLE IF NOT EXISTS ai_discovery_sessions (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   session_id VARCHAR(255) UNIQUE NOT NULL,
 
@@ -127,19 +125,19 @@ CREATE TABLE ai_discovery_sessions (
 );
 
 -- Indexes for sessions
-CREATE INDEX idx_sessions_status ON ai_discovery_sessions(status);
-CREATE INDEX idx_sessions_target ON ai_discovery_sessions(target_host, target_port);
-CREATE INDEX idx_sessions_started ON ai_discovery_sessions(started_at DESC);
-CREATE INDEX idx_sessions_model ON ai_discovery_sessions(ai_model);
-CREATE INDEX idx_sessions_pattern ON ai_discovery_sessions(pattern_matched);
-CREATE INDEX idx_sessions_confidence ON ai_discovery_sessions(confidence_score DESC) WHERE confidence_score IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_sessions_status ON ai_discovery_sessions(status);
+CREATE INDEX IF NOT EXISTS idx_sessions_target ON ai_discovery_sessions(target_host, target_port);
+CREATE INDEX IF NOT EXISTS idx_sessions_started ON ai_discovery_sessions(started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sessions_model ON ai_discovery_sessions(ai_model);
+CREATE INDEX IF NOT EXISTS idx_sessions_pattern ON ai_discovery_sessions(pattern_matched);
+CREATE INDEX IF NOT EXISTS idx_sessions_confidence ON ai_discovery_sessions(confidence_score DESC) WHERE confidence_score IS NOT NULL;
 
 -- ==================================================================
 -- AI Pattern Usage
 -- Tracks pattern execution and performance
 -- ==================================================================
 
-CREATE TABLE ai_pattern_usage (
+CREATE TABLE IF NOT EXISTS ai_pattern_usage (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   pattern_id VARCHAR(255) NOT NULL,
   session_id VARCHAR(255) NOT NULL,
@@ -164,10 +162,32 @@ CREATE TABLE ai_pattern_usage (
 );
 
 -- Indexes for usage
-CREATE INDEX idx_usage_pattern ON ai_pattern_usage(pattern_id);
-CREATE INDEX idx_usage_session ON ai_pattern_usage(session_id);
-CREATE INDEX idx_usage_timestamp ON ai_pattern_usage(timestamp DESC);
-CREATE INDEX idx_usage_success ON ai_pattern_usage(success);
+CREATE INDEX IF NOT EXISTS idx_usage_pattern ON ai_pattern_usage(pattern_id);
+CREATE INDEX IF NOT EXISTS idx_usage_session ON ai_pattern_usage(session_id);
+CREATE INDEX IF NOT EXISTS idx_usage_timestamp ON ai_pattern_usage(timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_usage_success ON ai_pattern_usage(success);
+
+-- ==================================================================
+-- AI Pattern Review History
+-- Persists workflow transition actors and comments/reasons
+-- ==================================================================
+
+CREATE TABLE IF NOT EXISTS ai_pattern_review_history (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  pattern_id VARCHAR(255) NOT NULL,
+  action VARCHAR(50) NOT NULL
+    CHECK (action IN ('submit', 'approve', 'reject', 'activate', 'deactivate')),
+  performed_by VARCHAR(255) NOT NULL,
+  comment TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_pattern_review_history_pattern
+    FOREIGN KEY (pattern_id)
+    REFERENCES ai_discovery_patterns(pattern_id)
+    ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_pattern_review_history_pattern
+  ON ai_pattern_review_history(pattern_id, created_at);
 
 -- ==================================================================
 -- Helper Functions
@@ -195,6 +215,7 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- Trigger to auto-update pattern stats
+DROP TRIGGER IF EXISTS trigger_update_pattern_stats ON ai_pattern_usage;
 CREATE TRIGGER trigger_update_pattern_stats
 AFTER INSERT ON ai_pattern_usage
 FOR EACH ROW
@@ -369,7 +390,7 @@ async function discover(context) {
   'active',
   true,
   0.95
-);
+) ON CONFLICT (pattern_id) DO NOTHING;
 
 -- Grant permissions (adjust as needed for your setup)
 -- GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO cmdb_user;

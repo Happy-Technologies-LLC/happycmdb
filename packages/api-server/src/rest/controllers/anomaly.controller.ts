@@ -92,11 +92,11 @@ export class AnomalyController {
       const result = await this.postgresClient.query(
         `UPDATE anomalies
          SET status = $1,
-             resolved_at = CASE WHEN $1 IN ('resolved', 'false_positive') THEN NOW() ELSE resolved_at END,
-             resolved_by = CASE WHEN $1 IN ('resolved', 'false_positive') THEN $2 ELSE resolved_by END
-         WHERE id = $3
+             resolved_at = CASE WHEN $2 IN ('resolved', 'false_positive') THEN NOW() ELSE resolved_at END,
+             resolved_by = CASE WHEN $2 IN ('resolved', 'false_positive') THEN $3 ELSE resolved_by END
+         WHERE id = $4
          RETURNING *`,
-        [status, resolved_by, id]
+        [status, status, resolved_by, id]
       );
 
       if (result.rows.length === 0) {

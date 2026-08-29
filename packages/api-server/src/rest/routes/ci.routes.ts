@@ -6,10 +6,12 @@ import Joi from 'joi';
 import { CIController } from '../controllers/ci.controller';
 import { validateRequest, validateOptional } from '../middleware/validation.middleware';
 import { auditMiddleware } from '../../middleware/audit.middleware';
+import { getAuthMiddleware } from '../../auth/auth-bootstrap';
 import { ciInputSchema, queryFiltersSchema, schemas } from '@cmdb/common';
 
 export const ciRoutes = Router();
 const controller = new CIController();
+const authMiddleware = getAuthMiddleware();
 
 // Apply audit middleware to all routes
 ciRoutes.use(auditMiddleware);
@@ -44,6 +46,8 @@ ciRoutes.get(
 );
 
 // Search CIs (must be before /:id to avoid route conflict)
+// Read-like: performs a lookup query and does not persist state, so it
+// stays authenticated-read like GET /:id rather than requiring 'write'.
 ciRoutes.post(
   '/search',
   validateRequest(searchCISchema, 'body'),
@@ -56,6 +60,7 @@ ciRoutes.get('/:id', controller.getCIById.bind(controller));
 // Create new CI
 ciRoutes.post(
   '/',
+  authMiddleware.requirePermission('write'),
   validateRequest(ciInputSchema, 'body'),
   controller.createCI.bind(controller)
 );
@@ -63,12 +68,13 @@ ciRoutes.post(
 // Update CI
 ciRoutes.put(
   '/:id',
+  authMiddleware.requirePermission('write'),
   validateRequest(updateCISchema, 'body'),
   controller.updateCI.bind(controller)
 );
 
 // Delete CI
-ciRoutes.delete('/:id', controller.deleteCI.bind(controller));
+ciRoutes.delete('/:id', authMiddleware.requirePermission('write'), controller.deleteCI.bind(controller));
 
 // Get CI relationships
 ciRoutes.get(

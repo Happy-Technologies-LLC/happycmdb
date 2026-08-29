@@ -163,7 +163,7 @@ export class SearchController {
       try {
         const result = await session.run(
           `
-          CALL db.index.fulltext.queryNodes('ci_fulltext_search', $query)
+          CALL db.index.fulltext.queryNodes('ci_fulltext_idx', $query)
           YIELD node, score
           RETURN node, score
           ORDER BY score DESC
@@ -204,12 +204,12 @@ export class SearchController {
       logger.error('Error performing full-text search', error);
 
       // Check if full-text index doesn't exist
-      if (error instanceof Error && error.message.includes('ci_fulltext_search')) {
+      if (error instanceof Error && error.message.includes('ci_fulltext_idx')) {
         res.status(500).json({
           success: false,
           error: 'Full-text index not configured',
           message:
-            'The full-text search index "ci_fulltext_search" does not exist. Please run the database initialization script.',
+            'The full-text search index "ci_fulltext_idx" does not exist. Please run the database initialization script.',
         });
         return;
       }

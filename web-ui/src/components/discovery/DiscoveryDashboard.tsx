@@ -40,8 +40,13 @@ export const DiscoveryDashboard: React.FC = () => {
     const successfulJobs = statsArray.reduce((sum, s) => sum + s.successfulJobs, 0);
     const failedJobs = statsArray.reduce((sum, s) => sum + s.failedJobs, 0);
     const totalCIs = statsArray.reduce((sum, s) => sum + s.totalDiscoveredCIs, 0);
+    const knownDurations = statsArray
+      .map((s) => s.averageDuration)
+      .filter((duration): duration is number => typeof duration === 'number');
     const avgDuration =
-      statsArray.reduce((sum, s) => sum + s.averageDuration, 0) / (statsArray.length || 1);
+      knownDurations.length > 0
+        ? knownDurations.reduce((sum, duration) => sum + duration, 0) / knownDurations.length
+        : undefined;
     const successRate = totalJobs > 0 ? (successfulJobs / totalJobs) * 100 : 0;
 
     return { totalJobs, successfulJobs, failedJobs, totalCIs, avgDuration, successRate };
@@ -49,7 +54,8 @@ export const DiscoveryDashboard: React.FC = () => {
 
   const overallStats = calculateOverallStats();
 
-  const formatDuration = (ms: number): string => {
+  const formatDuration = (ms?: number): string => {
+    if (ms === undefined) return 'Unavailable';
     if (ms < 1000) return `${ms}ms`;
     const seconds = Math.floor(ms / 1000);
     if (seconds < 60) return `${seconds}s`;

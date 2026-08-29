@@ -260,7 +260,7 @@ export class CIController {
       const ci = await this.neo4jClient.updateCI(id, req.body);
       res.json({
         success: true,
-        data: ci,
+        data: convertNeo4jTypes(ci),
         message: 'CI updated successfully'
       });
     } catch (error) {
@@ -580,7 +580,7 @@ export class CIController {
       try {
         const result = await session.run(
           `
-          CALL db.index.fulltext.queryNodes('ci_fulltext_search', $query)
+          CALL db.index.fulltext.queryNodes('ci_fulltext_idx', $query)
           YIELD node, score
           RETURN node, score
           ORDER BY score DESC

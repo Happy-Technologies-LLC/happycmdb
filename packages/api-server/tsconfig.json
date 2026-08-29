@@ -19,9 +19,7 @@
     "node_modules",
     "dist",
     "**/*.test.ts",
-    "src/rest/controllers/ai-pattern.controller.ts",
     "src/rest/controllers/unified.controller.ts",
-    "src/rest/routes/ai-pattern.routes.ts",
     "src/rest/routes/unified.routes.ts"
   ],
   "references": [
@@ -33,6 +31,7 @@
     { "path": "../itil-service-manager" },
     { "path": "../tbm-cost-engine" },
     { "path": "../framework-integration" },
-    { "path": "../ai-ml-engine" }
+    { "path": "../ai-ml-engine" },
+    { "path": "../ai-discovery" }
   ]
 }

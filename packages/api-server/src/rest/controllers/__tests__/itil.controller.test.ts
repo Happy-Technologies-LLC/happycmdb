@@ -10,6 +10,12 @@
  * should be added once the @cmdb/itil-service-manager package is implemented.
  */
 
+jest.mock('../../../auth/auth-bootstrap', () => ({
+  getAuthMiddleware: () => ({
+    requirePermission: () => (_req: unknown, _res: unknown, next: () => void) => next(),
+  }),
+}));
+
 import request from 'supertest';
 import express from 'express';
 import { itilRoutes } from '../../routes/itil.routes';

@@ -132,4 +132,8 @@ export interface ITILBusinessServiceAttributes {
   incident_count_30d: number;
   change_count_30d: number;
   availability_30d: number;
+  /** Last service-level audit performed, if one has been tracked (not currently persisted by seed/default data) */
+  last_audit_date?: Date | null;
+  /** Outcome of the most recent service-level audit, if tracked */
+  audit_status?: AuditStatus;
 }

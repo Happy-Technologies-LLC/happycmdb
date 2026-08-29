@@ -17,7 +17,24 @@
 import { Job } from 'bullmq';
 import { logger } from '@cmdb/common';
 import { getPostgresClient } from '@cmdb/database';
-import { format, subMonths } from 'date-fns';
+import { format } from 'date-fns';
+
+/**
+ * Valid `tbm_cost_pools.cost_pool_type` values, mirroring the
+ * `tbm_cost_pools_type_check` CHECK constraint in
+ * packages/database/src/postgres/migrations/001_complete_schema.sql. The table has no
+ * dedicated opex/capex flag, so category validity is judged against this real taxonomy.
+ */
+const VALID_COST_POOL_TYPES = [
+  'labor_internal',
+  'labor_external',
+  'hardware',
+  'software',
+  'cloud',
+  'outside_services',
+  'facilities',
+  'telecom',
+];
 
 export interface SyncCostsJobData {
   /** Fiscal period to process (YYYY-MM format), defaults to current month */
@@ -73,39 +90,60 @@ export async function processSyncCostsToDatamart(
     const monthsToProcess = job.data.monthsToProcess || 1;
     const validateAllocations = job.data.validateAllocations !== false;
 
-    // Generate list of fiscal periods to process
+    // Generate list of fiscal periods to process. fiscalPeriod is a plain 'YYYY-MM' string with
+    // no timezone information; build every period with UTC-only date arithmetic (Date.UTC +
+    // getUTC* accessors) so the requested first month is never shifted by the host's local
+    // timezone. Mixing a UTC-parsed `new Date(fiscalPeriod + '-01')` with local-time date-fns
+    // calls (subMonths/format) silently rolled the first period back a month in any
+    // negative-UTC-offset timezone - do not reintroduce that mix here.
+    const fiscalPeriodMatch = fiscalPeriod.match(/^(\d{4})-(\d{2})$/);
+    if (!fiscalPeriodMatch || !fiscalPeriodMatch[1] || !fiscalPeriodMatch[2]) {
+      throw new Error(`Invalid fiscalPeriod format, expected 'YYYY-MM': ${fiscalPeriod}`);
+    }
+    const fiscalYear = Number(fiscalPeriodMatch[1]);
+    const fiscalMonth = Number(fiscalPeriodMatch[2]);
     const periods: string[] = [];
     for (let i = 0; i < monthsToProcess; i++) {
-      const date = subMonths(new Date(fiscalPeriod + '-01'), i);
-      periods.push(format(date, 'yyyy-MM'));
+      const periodDate = new Date(Date.UTC(fiscalYear, fiscalMonth - 1 - i, 1));
+      periods.push(`${periodDate.getUTCFullYear()}-${String(periodDate.getUTCMonth() + 1).padStart(2, '0')}`);
     }
 
     logger.info('[SyncCostsToDatamart] Processing fiscal periods', { periods });
 
-    for (const period of periods) {
-      try {
-        const periodResult = await processFiscalPeriod(period, validateAllocations);
+    // tbm_cost_pools is not period-partitioned (no fiscal_period column exists on it - see the
+    // real-column note in processCostPools below), so every requested period would read and
+    // validate/enrich the exact same pool set. Query, validate, and enrich the pool definitions
+    // exactly once per job run, then reuse that single immutable result for every requested
+    // period instead of re-summing identical totals into the aggregate on each iteration of a
+    // multi-month backfill (monthsToProcess > 1) - that previously multiplied
+    // totalMonthlyCost/totalAnnualCost/costPoolsValidated/costPoolsEnriched by monthsToProcess.
+    try {
+      const poolResult = await processCostPools(validateAllocations);
 
-        result.costPoolsValidated += periodResult.validated;
-        result.costPoolsEnriched += periodResult.enriched;
-        result.totalMonthlyCost += periodResult.monthlyTotal;
-        result.totalAnnualCost += periodResult.annualTotal;
-        result.validationErrors.push(...periodResult.validationErrors);
-        result.enrichmentErrors.push(...periodResult.enrichmentErrors);
+      result.costPoolsValidated = poolResult.validated;
+      result.costPoolsEnriched = poolResult.enriched;
+      result.totalMonthlyCost = poolResult.monthlyTotal;
+      result.totalAnnualCost = poolResult.annualTotal;
+      result.validationErrors.push(...poolResult.validationErrors);
+      result.enrichmentErrors.push(...poolResult.enrichmentErrors);
+
+      for (const period of periods) {
         result.periodsProcessed++;
-
         logger.info('[SyncCostsToDatamart] Processed fiscal period', {
           period,
-          ...periodResult,
-        });
-      } catch (error) {
-        const errorMsg = error instanceof Error ? error.message : String(error);
-        result.validationErrors.push(`Period ${period}: ${errorMsg}`);
-        logger.error('[SyncCostsToDatamart] Failed to process fiscal period', {
-          period,
-          error: errorMsg,
+          validated: poolResult.validated,
+          enriched: poolResult.enriched,
+          monthlyTotal: poolResult.monthlyTotal,
+          annualTotal: poolResult.annualTotal,
         });
       }
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      result.validationErrors.push(`Fiscal periods ${periods.join(', ')}: ${errorMsg}`);
+      logger.error('[SyncCostsToDatamart] Failed to process cost pools', {
+        periods,
+        error: errorMsg,
+      });
     }
 
     result.success = result.validationErrors.length === 0;
@@ -136,10 +174,14 @@ export async function processSyncCostsToDatamart(
 }
 
 /**
- * Process and validate cost data for a specific fiscal period
+ * Query, validate, and enrich every TBM cost pool definition exactly once.
+ *
+ * tbm_cost_pools has no fiscal_period column - it is not period-partitioned, so there is no
+ * per-period variant of this data to query. Callers that need to report against multiple
+ * requested fiscal periods (backfill) must reuse this single result rather than invoking it
+ * once per period.
  */
-async function processFiscalPeriod(
-  fiscalPeriod: string,
+async function processCostPools(
   validateAllocations: boolean
 ): Promise<{
   validated: number;
@@ -168,27 +210,31 @@ async function processFiscalPeriod(
   const pgClient = getPostgresClient();
   const pool = pgClient.pool;
 
-  // Step 1: Get all cost pools for this fiscal period
+  // Step 1: Get all cost pools. tbm_cost_pools (see 001_complete_schema.sql) has no
+  // pool_name/cost_category/resource_tower/monthly_cost/annual_cost/allocation_method/
+  // source_system/metadata/fiscal_period columns - those are pre-v3.0 field names. The table
+  // also is not period-partitioned (no fiscal_period column exists at all), so there is only
+  // ever one current set of pool definitions to read. Real columns: name, cost_pool_type,
+  // cost_center (closest analog for a resource-tower grouping - there is no dedicated tower
+  // column on this table), monthly_budget, annual_budget, allocation_rules->>'allocation_method',
+  // and allocation_rules itself doubling as the free-form metadata blob (there is no separate
+  // metadata column).
   const costPoolsResult = await pool.query(
     `SELECT
       id,
-      pool_name,
-      cost_category,
-      resource_tower,
-      monthly_cost,
-      annual_cost,
-      allocation_method,
-      source_system,
-      metadata
+      name AS pool_name,
+      cost_pool_type AS cost_category,
+      cost_center AS resource_tower,
+      monthly_budget AS monthly_cost,
+      annual_budget AS annual_cost,
+      allocation_rules->>'allocation_method' AS allocation_method,
+      allocation_rules AS metadata
     FROM tbm_cost_pools
-    WHERE fiscal_period = $1
-    ORDER BY monthly_cost DESC`,
-    [fiscalPeriod]
+    ORDER BY monthly_budget DESC`
   );
 
   const costPools = costPoolsResult.rows;
-  logger.info('[SyncCostsToDatamart] Retrieved cost pools for period', {
-    fiscalPeriod,
+  logger.info('[SyncCostsToDatamart] Retrieved cost pools', {
     count: costPools.length,
   });
 
@@ -248,7 +294,7 @@ async function validateCostPool(pool: any): Promise<{
     errors.push('Missing pool_name');
   }
 
-  if (!pool.cost_category || !['opex', 'capex'].includes(pool.cost_category)) {
+  if (!pool.cost_category || !VALID_COST_POOL_TYPES.includes(pool.cost_category)) {
     errors.push(`Invalid cost_category: ${pool.cost_category}`);
   }
 
@@ -325,10 +371,12 @@ async function enrichCostPoolMetadata(pool: any): Promise<{
           metadata.ci_validated = true;
           metadata.ci_validated_at = new Date().toISOString();
 
-          // Update cost pool metadata
+          // Update cost pool metadata. tbm_cost_pools has no metadata column - the enriched
+          // blob is persisted back into allocation_rules, the table's only free-form JSONB
+          // store (see the SELECT in processFiscalPeriod above).
           await poolInstance.query(
             `UPDATE tbm_cost_pools
-             SET metadata = $1,
+             SET allocation_rules = $1,
                  updated_at = NOW()
              WHERE id = $2`,
             [JSON.stringify(metadata), pool.id]

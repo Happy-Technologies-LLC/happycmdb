@@ -8,9 +8,10 @@
 
 import React, { useState, useEffect } from 'react';
 import { Icon } from '@happy-technologies/design-system';
-import { apiClient } from '../../services/auth.service';
+import { apiClient } from '../../services/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 
 interface DatabaseStatus {
   name: string;
@@ -28,50 +29,23 @@ interface DatabaseStatus {
 export const DatabaseSettings: React.FC = () => {
   const [databases, setDatabases] = useState<DatabaseStatus[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   useEffect(() => {
     fetchDatabaseStatus();
   }, []);
 
   const fetchDatabaseStatus = async () => {
+    setErrorMessage(null);
     try {
-      const response = await apiClient.get<{ databases: DatabaseStatus[] }>('/api/v1/settings/database');
+      const response = await apiClient.get<{ databases: DatabaseStatus[] }>('/settings/database');
       setDatabases(response.data.databases);
-    } catch (error) {
+    } catch (error: any) {
       console.error('Failed to fetch database status:', error);
-      // Set mock data for demo purposes
-      setDatabases([
-        {
-          name: 'Neo4j',
-          type: 'neo4j',
-          status: 'connected',
-          details: {
-            uri: 'bolt://localhost:7687',
-            version: '5.13.0',
-          },
-        },
-        {
-          name: 'PostgreSQL',
-          type: 'postgresql',
-          status: 'connected',
-          details: {
-            host: 'localhost',
-            port: 5432,
-            database: 'cmdb_datamart',
-            version: '15.4',
-          },
-        },
-        {
-          name: 'Redis',
-          type: 'redis',
-          status: 'connected',
-          details: {
-            host: 'localhost',
-            port: 6379,
-            version: '7.2.0',
-          },
-        },
-      ]);
+      setDatabases([]);
+      setErrorMessage(
+        error.response?.data?.message || 'Failed to load database status'
+      );
     } finally {
       setIsLoading(false);
     }
@@ -118,6 +92,16 @@ export const DatabaseSettings: React.FC = () => {
           View database connection status and information (read-only)
         </p>
       </div>
+
+      {errorMessage && (
+        <Alert variant="destructive">
+          <AlertDescription>{errorMessage}</AlertDescription>
+        </Alert>
+      )}
+
+      {!errorMessage && databases.length === 0 && (
+        <p className="text-sm text-muted-foreground">No database status available.</p>
+      )}
 
       <div className="grid gap-4 md:grid-cols-2">
         {databases.map((db) => (

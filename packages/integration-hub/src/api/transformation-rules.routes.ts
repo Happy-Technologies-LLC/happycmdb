@@ -250,9 +250,9 @@ transformationRulesRouter.post('/:id/clone', async (req, res) => {
         existing.enabled,
         existing.version,
         existing.created_by,
-        existing.field_mappings,
-        existing.conditions,
-        existing.validations,
+        JSON.stringify(existing.field_mappings),
+        JSON.stringify(existing.conditions),
+        JSON.stringify(existing.validations),
       ]
     );
 

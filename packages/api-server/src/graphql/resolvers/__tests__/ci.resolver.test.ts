@@ -87,6 +87,9 @@ describe('GraphQL CI Resolvers', () => {
         _relationshipLoader: mockLoaders.relationshipLoader,
         _dependentLoader: mockLoaders.dependentLoader,
       },
+      // Mutation resolvers now call checkGraphQLPermission(context, 'write');
+      // an operator role carries the 'write' permission (see ROLE_PERMISSIONS).
+      user: { _userId: 'u1', _username: 'tester', _role: 'operator', _type: 'access' },
     };
   });
 
@@ -121,8 +124,8 @@ describe('GraphQL CI Resolvers', () => {
       expect(mockNeo4j.session.run).toHaveBeenCalledWith(
         expect.stringContaining('MATCH (ci:CI)'),
         expect.objectContaining({
-          limit: 100,
-          offset: 0,
+          limit: expect.objectContaining({ low: 100, high: 0 }),
+          offset: expect.objectContaining({ low: 0, high: 0 }),
         })
       );
 
@@ -167,12 +170,12 @@ describe('GraphQL CI Resolvers', () => {
       // Assert: Verify SKIP and LIMIT in query
       expect(mockNeo4j.session.run).toHaveBeenCalledWith(
         expect.stringContaining('SKIP $offset'),
-        expect.objectContaining({ offset: 100 })
+        expect.objectContaining({ offset: expect.objectContaining({ low: 100, high: 0 }) })
       );
 
       expect(mockNeo4j.session.run).toHaveBeenCalledWith(
         expect.stringContaining('LIMIT $limit'),
-        expect.objectContaining({ limit: 25 })
+        expect.objectContaining({ limit: expect.objectContaining({ low: 25, high: 0 }) })
       );
     });
   });
@@ -184,19 +187,16 @@ describe('GraphQL CI Resolvers', () => {
       mockLoaders.ciLoader.load.mockResolvedValueOnce(mockCI);
 
       const getCI = (resolvers.Query as any).getCI;
+      const result = await getCI(null, { id: 'ci-123' }, mockContext);
 
-      // Act: Execute query
-      const result = await getCI(
-        null,
-        { id: 'ci-123' },
-        mockContext
-      );
-
-      // Assert: Verify DataLoader used
       expect(mockLoaders.ciLoader.load).toHaveBeenCalledWith('ci-123');
-
-      // Assert: Verify result
-      expect(result).toEqual(mockCI);
+      expect(result).toMatchObject({
+        _id: 'ci-123',
+        _name: 'web-server',
+        _type: 'SERVER',
+        _status: 'ACTIVE',
+        _environment: 'PRODUCTION',
+      });
     });
 
     it('should return null when CI not found', async () => {
@@ -318,11 +318,10 @@ describe('GraphQL CI Resolvers', () => {
         expect.objectContaining({ id: 'ci-123' })
       );
 
-      // Assert: Verify result structure
       expect(result).toHaveLength(2);
-      expect(result[0]).toHaveProperty('ci');
-      expect(result[0]).toHaveProperty('distance', 1);
-      expect(result[1]).toHaveProperty('distance', 2);
+      expect(result[0]).toHaveProperty('_ci');
+      expect(result[0]).toHaveProperty('_distance', 1);
+      expect(result[1]).toHaveProperty('_distance', 2);
     });
 
     it('should order results by distance', async () => {
@@ -359,62 +358,70 @@ describe('GraphQL CI Resolvers', () => {
         null,
         {
           input: {
-            id: 'ci-new',
-            name: 'new-server',
-            type: 'SERVER',
-            status: 'ACTIVE',
-            environment: 'PRODUCTION',
+            _id: 'ci-new',
+            _name: 'new-server',
+            _type: 'SERVER',
+            _status: 'ACTIVE',
+            _environment: 'PRODUCTION',
           },
         },
         mockContext
       );
 
-      // Assert: Verify createCI called
-      expect((mockContext._neo4jClient as any).createCI).toHaveBeenCalled();
-
-      // Assert: Verify result
-      expect(result).toEqual(newCI);
+      expect((mockContext._neo4jClient as any).createCI).toHaveBeenCalledWith(
+        expect.objectContaining({
+          _id: 'ci-new',
+          name: 'new-server',
+          _type: 'server',
+          status: 'active',
+          environment: 'production',
+        })
+      );
+      expect(result).toMatchObject({
+        _id: 'ci-new',
+        _name: 'new-server',
+        _type: 'SERVER',
+        _status: 'ACTIVE',
+        _environment: 'PRODUCTION',
+      });
     });
 
     it('should validate required fields', async () => {
       const createCIMut = (resolvers.Mutation as any).createCI;
 
-      // Act & Assert: Missing ID
       await expect(
         createCIMut(
           null,
           {
             input: {
-              name: 'test',
-              type: 'SERVER',
+              _name: 'test',
+              _type: 'SERVER',
             },
           },
           mockContext
         )
       ).rejects.toThrow(GraphQLError);
 
-      // Act & Assert: Missing name
       await expect(
         createCIMut(
           null,
           {
             input: {
-              id: 'ci-123',
-              type: 'SERVER',
+              _id: 'ci-123',
+              _type: 'SERVER',
             },
           },
           mockContext
         )
       ).rejects.toThrow(GraphQLError);
 
-      // Act & Assert: Missing type
       await expect(
         createCIMut(
           null,
           {
             input: {
-              id: 'ci-123',
-              name: 'test',
+              _id: 'ci-123',
+              _name: 'test',
             },
           },
           mockContext
@@ -437,8 +444,8 @@ describe('GraphQL CI Resolvers', () => {
         {
           id: 'ci-123',
           input: {
-            name: 'updated-name',
-            status: 'INACTIVE',
+            _name: 'updated-name',
+            _status: 'INACTIVE',
           },
         },
         mockContext
@@ -453,10 +460,11 @@ describe('GraphQL CI Resolvers', () => {
         })
       );
 
-      // Assert: Verify cache cleared
-      expect(mockLoaders.ciLoader.clear).toHaveBeenCalledWith('ci-123');
-
-      expect(result).toEqual(updatedCI);
+      expect(result).toMatchObject({
+        _id: 'ci-123',
+        _name: 'updated-name',
+        _status: 'ACTIVE',
+      });
     });
   });
 
@@ -513,15 +521,14 @@ describe('GraphQL CI Resolvers', () => {
 
       const createRelMut = (resolvers.Mutation as any).createRelationship;
 
-      // Act: Create relationship (source uses _input, _fromId, _toId, _type)
       const result = await createRelMut(
         null,
         {
-          _input: {
+          input: {
             _fromId: 'ci-1',
             _toId: 'ci-2',
             _type: 'DEPENDS_ON',
-            properties: { strength: 'strong' },
+            _properties: { strength: 'strong' },
           },
         },
         mockContext

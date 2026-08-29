@@ -1,14 +1,28 @@
 // Copyright 2026 Happy Technologies LLC
 // SPDX-License-Identifier: Apache-2.0
 
+/**
+ * Connector Configuration Routes. Authentication is enforced centrally:
+ * server.ts mounts `authMiddleware.authenticate()` on every /api/v1 route
+ * before this router. Reads (list/get, resource listing, run history,
+ * metrics) stay open to any authenticated role, as does testing an
+ * existing configuration's connection (it inspects connectivity without
+ * mutating state). Every state-changing route -- create/update/delete a
+ * configuration, trigger a run, enable/disable, update enabled resources,
+ * and cancel a run -- additionally requires the 'write' permission via
+ * `authMiddleware.requirePermission('write')`.
+ */
+
 import { Router } from 'express';
 import Joi from 'joi';
 import { ConnectorConfigController } from '../controllers/connector-config.controller';
 import { validateRequest, validateOptional } from '../middleware/validation.middleware';
 import { auditMiddleware } from '../../middleware/audit.middleware';
+import { getAuthMiddleware } from '../../auth/auth-bootstrap';
 
 export const connectorConfigRoutes = Router();
 const controller = new ConnectorConfigController();
+const authMiddleware = getAuthMiddleware();
 
 // Apply audit middleware to all routes
 connectorConfigRoutes.use(auditMiddleware);
@@ -103,6 +117,7 @@ connectorConfigRoutes.get(
 // Create new configuration
 connectorConfigRoutes.post(
   '/',
+  authMiddleware.requirePermission('write'),
   validateRequest(createConfigSchema, 'body'),
   controller.createConfiguration.bind(controller)
 );
@@ -110,6 +125,7 @@ connectorConfigRoutes.post(
 // Update configuration
 connectorConfigRoutes.put(
   '/:id',
+  authMiddleware.requirePermission('write'),
   validateRequest(updateConfigSchema, 'body'),
   controller.updateConfiguration.bind(controller)
 );
@@ -117,6 +133,7 @@ connectorConfigRoutes.put(
 // Delete configuration
 connectorConfigRoutes.delete(
   '/:id',
+  authMiddleware.requirePermission('write'),
   controller.deleteConfiguration.bind(controller)
 );
 
@@ -133,6 +150,7 @@ connectorConfigRoutes.post(
 // Trigger manual run
 connectorConfigRoutes.post(
   '/:id/run',
+  authMiddleware.requirePermission('write'),
   validateOptional(runConfigSchema, 'body'),
   controller.runConnector.bind(controller)
 );
@@ -140,12 +158,14 @@ connectorConfigRoutes.post(
 // Enable configuration
 connectorConfigRoutes.post(
   '/:id/enable',
+  authMiddleware.requirePermission('write'),
   controller.enableConfiguration.bind(controller)
 );
 
 // Disable configuration
 connectorConfigRoutes.post(
   '/:id/disable',
+  authMiddleware.requirePermission('write'),
   controller.disableConfiguration.bind(controller)
 );
 
@@ -162,6 +182,7 @@ connectorConfigRoutes.get(
 // Update enabled resources
 connectorConfigRoutes.put(
   '/:id/resources',
+  authMiddleware.requirePermission('write'),
   validateRequest(updateResourcesSchema, 'body'),
   controller.updateEnabledResources.bind(controller)
 );
@@ -215,5 +236,6 @@ connectorConfigRoutes.get(
 // Cancel running job
 connectorConfigRoutes.post(
   '/runs/:runId/cancel',
+  authMiddleware.requirePermission('write'),
   controller.cancelRun.bind(controller)
 );

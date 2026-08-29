@@ -60,6 +60,18 @@ export class QueueManager {
 
 export const queueManager = new QueueManager();
 
+/**
+ * Quit the shared BullMQ Redis connection. Merely importing this module (or
+ * anything re-exported from `@cmdb/database`) opens this connection eagerly
+ * at module load, even for callers that never touch BullMQ. Production
+ * processes keep it open for their lifetime; integration test suites must
+ * call this in `afterAll` (after every other cleanup) so Jest can exit
+ * without a leaked socket.
+ */
+export async function closeQueueManagerConnection(): Promise<void> {
+  await connection.quit();
+}
+
 // Queue names (BullMQ v5.0.0 does not allow colons in queue names)
 export const QUEUE_NAMES = {
   _DISCOVERY_AWS: 'discovery-aws',

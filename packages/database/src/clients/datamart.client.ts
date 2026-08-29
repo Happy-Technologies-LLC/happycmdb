@@ -20,6 +20,7 @@
  *   await datamartClient.recordDiscovery({...});
  */
 
+import { isDeepStrictEqual } from 'node:util';
 import { getPostgresClient, PostgresClient } from '../postgres/client';
 import { logger } from '@cmdb/common';
 import type {
@@ -677,22 +678,30 @@ export class DataMartClient {
    * @returns True if attributes changed
    */
   private hasCIChanged(existing: any, incoming: CIDimensionInput): boolean {
+    // Treat SQL NULL (read back as JS null) and an omitted/undefined optional
+    // field as equivalent, so upsertCI does not spuriously re-version a CI
+    // just because a caller left an optional field unspecified.
+    const normalize = (v: unknown) => (v === null || v === undefined ? undefined : v);
+
     // Compare key attributes
-    if (existing.ciname !== incoming.ciname) return true;
-    if (existing.ci_type !== incoming.ci_type) return true;
-    if (existing.ci_status !== incoming.ci_status) return true;
-    if (existing.environment !== incoming.environment) return true;
-    if (existing.external_id !== incoming.external_id) return true;
+    if (normalize(existing.ci_name) !== normalize(incoming.ciname)) return true;
+    if (normalize(existing.ci_type) !== normalize(incoming.ci_type)) return true;
+    if (normalize(existing.ci_status) !== normalize(incoming.ci_status)) return true;
+    if (normalize(existing.environment) !== normalize(incoming.environment)) return true;
+    if (normalize(existing.external_id) !== normalize(incoming.external_id)) return true;
 
-    // Compare metadata (if provided)
-    if (incoming.metadata) {
-      const existingMetadata = existing.metadata || {};
-      const incomingMetadata = incoming.metadata;
-
-      // Simple JSON comparison (for production, consider deep comparison)
-      if (JSON.stringify(existingMetadata) !== JSON.stringify(incomingMetadata)) {
-        return true;
-      }
+    // Compare metadata (object/JSONB field) under the same normalization: a
+    // stored NULL and an omitted `metadata` are equal, but a transition
+    // between "has a value" and "has no value" in either direction is a
+    // real change, and two present values are compared by deep equality.
+    const existingMetadata = normalize(existing.metadata);
+    const incomingMetadata = normalize(incoming.metadata);
+    if (existingMetadata === undefined && incomingMetadata === undefined) {
+      // both absent -> unchanged
+    } else if (existingMetadata === undefined || incomingMetadata === undefined) {
+      return true;
+    } else if (!isDeepStrictEqual(existingMetadata, incomingMetadata)) {
+      return true;
     }
 
     return false;

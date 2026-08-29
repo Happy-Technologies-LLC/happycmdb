@@ -16,6 +16,7 @@
  */
 
 import { Job } from 'bullmq';
+import type { PoolClient } from 'pg';
 import { Neo4jClient, PostgresClient } from '@cmdb/database';
 import { logger, CI, validateTableNames } from '@cmdb/common';
 import { DimensionTransformer } from '../transformers/dimension-transformer';
@@ -104,7 +105,7 @@ export class FullRefreshJob {
         const progress = 25 + ((i / cis.length) * 40);
         await job.updateProgress(progress);
 
-        const batchResult = await this.loadCIDimensions(batch);
+        const batchResult = await this.loadCIDimensions(batch, job.id);
         result.dimensionsCreated += batchResult.created;
         result.cisProcessed += batch.length;
       }
@@ -144,31 +145,32 @@ export class FullRefreshJob {
 
   /**
    * Truncate all data mart tables
-   * Uses whitelist validation to prevent SQL injection
+   * Uses whitelist validation to prevent SQL injection.
+   *
+   * Table names are the real, schema-qualified cmdb.* tables from
+   * packages/database/src/postgres/migrations/001_complete_schema.sql. Failures propagate
+   * (no per-table swallow): a truncation failure means the refresh cannot safely proceed and
+   * must not be silently skipped while the job goes on to report success.
    */
   private async truncateTables(): Promise<void> {
     logger.info('Truncating data mart tables');
 
     const tables = [
-      'fact_ci_relationships',
-      'fact_ci_changes',
-      'fact_ci_discovery',
-      'dim_ci',
-      'dim_date'
+      'cmdb.fact_ci_relationships',
+      'cmdb.fact_ci_changes',
+      'cmdb.fact_discovery',
+      'cmdb.dim_ci'
     ];
 
     // Validate all table names against whitelist to prevent SQL injection
     const validatedTables = validateTableNames(tables);
 
-    await this.postgresClient.transaction(async (client: any) => {
+    await this.postgresClient.transaction(async (client: PoolClient) => {
       for (const table of validatedTables) {
-        try {
-          // Safe to use template literal here because table is validated against whitelist
-          await client.query(`TRUNCATE TABLE ${table} CASCADE`);
-          logger.debug(`Truncated table: ${table}`);
-        } catch (error) {
-          logger.warn(`Failed to truncate table ${table}`, { error });
-        }
+        // Safe to use template literal here because table is validated against whitelist.
+        // No per-table try/catch: a failed truncation must fail the job, not be skipped.
+        await client.query(`TRUNCATE TABLE ${table} CASCADE`);
+        logger.debug(`Truncated table: ${table}`);
       }
     });
   }
@@ -210,21 +212,30 @@ export class FullRefreshJob {
 
   /**
    * Load CI dimensions into PostgreSQL
+   *
+   * Uses the real v3.0 cmdb.dim_ci / cmdb.fact_discovery schema from
+   * packages/database/src/postgres/migrations/001_complete_schema.sql:
+   * dim_ci has ci_status (not status) and effective_from/effective_to (not
+   * effective_date/end_date); fact_discovery requires discovery_job_id,
+   * discovery_provider, and discovery_method (NOT NULL columns).
    */
-  private async loadCIDimensions(cis: CI[]): Promise<{ created: number }> {
+  private async loadCIDimensions(
+    cis: CI[],
+    jobId: string = 'full-refresh-etl'
+  ): Promise<{ created: number }> {
     let created = 0;
 
-    await this.postgresClient.transaction(async (client: any) => {
+    await this.postgresClient.transaction(async (client: PoolClient) => {
       for (const ci of cis) {
         try {
           const dimension = this.dimensionTransformer.toDimension(ci);
 
           // Insert new dimension (all as current since this is full refresh)
           const insertResult = await client.query(
-            `INSERT INTO dim_ci
-             (ci_id, ci_name, ci_type, environment, status, external_id,
-              effective_date, end_date, is_current, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, NULL, true, $8, $9)
+            `INSERT INTO cmdb.dim_ci
+             (ci_id, ci_name, ci_type, environment, ci_status, external_id,
+              effective_from, effective_to, is_current, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, '9999-12-31', true, $8, $9)
              RETURNING ci_key`,
             [
               dimension._ci_id,
@@ -245,16 +256,17 @@ export class FullRefreshJob {
           const discoveryFact = this.dimensionTransformer.toDiscoveryFact(ci, ciKey);
           if (discoveryFact._ci_key) {
             await client.query(
-              `INSERT INTO fact_ci_discovery
-               (ci_key, date_key, discovered_at, discovery_method, discovery_source)
-               VALUES ($1, $2, $3, $4, $5)
+              `INSERT INTO cmdb.fact_discovery
+               (ci_key, date_key, discovered_at, discovery_job_id, discovery_provider, discovery_method)
+               VALUES ($1, $2, $3, $4, $5, $6)
                ON CONFLICT DO NOTHING`,
               [
                 discoveryFact._ci_key,
                 discoveryFact._date_key,
                 discoveryFact._discovered_at,
-                discoveryFact._discovery_method,
-                discoveryFact._discovery_source
+                jobId,
+                discoveryFact._discovery_source,
+                discoveryFact._discovery_method
               ]
             );
           }
@@ -271,6 +283,11 @@ export class FullRefreshJob {
 
   /**
    * Load all relationships into fact table
+   *
+   * Resolves the current surrogate ci_key for each endpoint via
+   * cmdb.dim_ci (the natural Neo4j id is not a foreign key on
+   * cmdb.fact_ci_relationships), and inserts against the real
+   * unique_active_relationship constraint, which includes is_active.
    */
   private async loadRelationships(cis: CI[]): Promise<{ processed: number; created: number }> {
     let processed = 0;
@@ -282,12 +299,31 @@ export class FullRefreshJob {
 
         for (const rel of relationships) {
           try {
+            const fromCiKey = await this.postgresClient.getCurrentCIKey(ci._id);
+            const toCiKey = await this.postgresClient.getCurrentCIKey(rel._ci._id);
+
+            if (fromCiKey === null || toCiKey === null) {
+              logger.warn('Skipping relationship - CI dimension not found in cmdb.dim_ci', {
+                fromCiId: ci._id,
+                toCiId: rel._ci._id
+              });
+              continue;
+            }
+
+            const discoveredAt = new Date();
+
             await this.postgresClient.query(
-              `INSERT INTO fact_ci_relationships
-               (from_ci_id, to_ci_id, relationship_type, created_at)
-               VALUES ($1, $2, $3, $4)
-               ON CONFLICT (from_ci_id, to_ci_id, relationship_type) DO NOTHING`,
-              [ci._id, rel._ci._id, rel._type, new Date()]
+              `INSERT INTO cmdb.fact_ci_relationships
+               (from_ci_key, to_ci_key, date_key, relationship_type, discovered_at, is_active)
+               VALUES ($1, $2, $3, $4, $5, true)
+               ON CONFLICT (from_ci_key, to_ci_key, relationship_type, is_active) DO NOTHING`,
+              [
+                fromCiKey,
+                toCiKey,
+                this.dimensionTransformer.generateDateKey(discoveredAt),
+                rel._type,
+                discoveredAt
+              ]
             );
             created++;
           } catch (error) {
@@ -317,16 +353,16 @@ export class FullRefreshJob {
     logger.info('Rebuilding indexes and updating statistics');
 
     const tables = [
-      'dim_ci',
-      'fact_ci_relationships',
-      'fact_ci_changes',
-      'fact_ci_discovery'
+      'cmdb.dim_ci',
+      'cmdb.fact_ci_relationships',
+      'cmdb.fact_ci_changes',
+      'cmdb.fact_discovery'
     ];
 
     // Validate all table names against whitelist to prevent SQL injection
     const validatedTables = validateTableNames(tables);
 
-    await this.postgresClient.transaction(async (client: any) => {
+    await this.postgresClient.transaction(async (client: PoolClient) => {
       for (const table of validatedTables) {
         try {
           // Safe to use template literals here because table is validated against whitelist

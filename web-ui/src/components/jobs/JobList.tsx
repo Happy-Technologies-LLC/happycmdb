@@ -87,7 +87,7 @@ export const JobList: React.FC<JobListProps> = ({
   };
 
   const getQueueType = (queueName: string): 'discovery' | 'etl' => {
-    return queueName.startsWith('discovery:') ? 'discovery' : 'etl';
+    return queueName.startsWith('discovery-') ? 'discovery' : 'etl';
   };
 
   if (jobs.length === 0 && !loading) {

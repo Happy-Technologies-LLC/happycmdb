@@ -490,6 +490,46 @@ describe('ImpactPredictionEngine', () => {
     });
   });
 
+  describe('getImpactHistory', () => {
+    it('should retrieve impact analysis history for a CI', async () => {
+      const mockHistory = [
+        {
+          id: 'impact-001',
+          source_ci_id: mockCIs.database.id,
+          source_ci_name: mockCIs.database.name,
+          change_type: ChangeType.RESTART,
+          impact_score: 40,
+          affected_cis: [],
+          blast_radius: 2,
+          critical_path: [mockCIs.database.id],
+          risk_level: RiskLevel.LOW,
+          analyzed_at: new Date(),
+          estimated_downtime_minutes: 9,
+        },
+      ];
+
+      mockPgClient.query.mockResolvedValueOnce({ rows: mockHistory });
+
+      const result = await engine.getImpactHistory(mockCIs.database.id, 10);
+
+      expect(result).toHaveLength(1);
+      expect(result[0].source_ci_id).toBe(mockCIs.database.id);
+      expect(result[0].risk_level).toBe(RiskLevel.LOW);
+      expect(mockPgClient.query).toHaveBeenCalledWith(
+        expect.stringContaining('FROM impact_analyses'),
+        [mockCIs.database.id, 10]
+      );
+    });
+
+    it('should return an empty array when no history exists', async () => {
+      mockPgClient.query.mockResolvedValueOnce({ rows: [] });
+
+      const result = await engine.getImpactHistory('ci-no-history', 10);
+
+      expect(result).toEqual([]);
+    });
+  });
+
   describe('estimateDowntime', () => {
     it('should estimate downtime for RESTART', async () => {
       const affectedRecords = Array.from({ length: 10 }, (_, i) => ({

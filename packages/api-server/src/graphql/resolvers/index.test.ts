@@ -58,6 +58,9 @@ const mockContext: GraphQLContext = {
     _relationshipLoader: mockRelationshipLoader,
     _dependentLoader: mockDependentLoader,
   },
+  // Mutation resolvers now call checkGraphQLPermission(context, 'write');
+  // an operator role carries the 'write' permission (see ROLE_PERMISSIONS).
+  user: { _userId: 'u1', _username: 'tester', _role: 'operator', _type: 'access' },
 };
 
 // Sample test data

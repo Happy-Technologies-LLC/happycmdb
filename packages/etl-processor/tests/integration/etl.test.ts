@@ -12,10 +12,11 @@
  *
  * Infrastructure: connects to the shared global integration containers
  * (Neo4j + TimescaleDB/Postgres) started by the global setup, via the env
- * vars it exports. The ETL job issues UNQUALIFIED SQL (e.g. `dim_ci`) which
- * resolves to the `public` schema; the canonical data-mart lives in the
- * `cmdb` schema with a different column layout, so the public-schema data-mart
- * tables this job targets are created here in beforeAll.
+ * vars it exports. The ETL job issues schema-qualified SQL against the
+ * canonical v3.0 `cmdb` data-mart (cmdb.dim_ci / cmdb.fact_discovery /
+ * cmdb.fact_ci_relationships), which is already created by the canonical
+ * schema migrations the global setup loads — no suite-local schema is
+ * created here.
  */
 
 import neo4j, { Driver } from 'neo4j-driver';
@@ -26,7 +27,7 @@ import {
   Neo4jToPostgresJob,
   Neo4jToPostgresJobData,
 } from '../../src/jobs/neo4j-to-postgres.job';
-import { Neo4jClient, PostgresClient } from '@cmdb/database';
+import { Neo4jClient, PostgresClient, closeQueueManagerConnection } from '@cmdb/database';
 
 interface CISeed {
   _id: string;
@@ -60,11 +61,6 @@ describe('ETL Processor Integration Tests', () => {
     });
     postgresPool = postgresClient.pool;
 
-    // Create the public-schema data-mart tables the ETL job targets. These are
-    // NOT part of the canonical schema (which uses the `cmdb` schema with a
-    // different column layout), so they must be created for this suite.
-    await initializePostgresSchema(postgresPool);
-
     neo4jClient = new Neo4jClient(
       process.env.NEO4J_URI!,
       process.env.NEO4J_USERNAME!,
@@ -73,7 +69,10 @@ describe('ETL Processor Integration Tests', () => {
   }, 60000);
 
   afterEach(async () => {
-    // Clean the rows this suite creates in both databases.
+    // Clean the rows this suite creates in both databases. Truncating
+    // cmdb.dim_ci CASCADE also clears cmdb.fact_discovery, cmdb.fact_ci_changes
+    // and cmdb.fact_ci_relationships (all FK-reference dim_ci) without
+    // touching the pre-populated cmdb.dim_time table.
     const neo4jSession = neo4jDriver.session();
     try {
       await neo4jSession.run('MATCH (n) DETACH DELETE n');
@@ -83,9 +82,7 @@ describe('ETL Processor Integration Tests', () => {
 
     const pgClient = await postgresPool.connect();
     try {
-      await pgClient.query('TRUNCATE TABLE fact_ci_discovery CASCADE');
-      await pgClient.query('TRUNCATE TABLE fact_ci_relationships CASCADE');
-      await pgClient.query('TRUNCATE TABLE dim_ci CASCADE');
+      await pgClient.query('TRUNCATE TABLE cmdb.dim_ci CASCADE');
     } finally {
       pgClient.release();
     }
@@ -95,6 +92,7 @@ describe('ETL Processor Integration Tests', () => {
     await neo4jClient.close();
     await neo4jDriver.close();
     await postgresClient.close();
+    await closeQueueManagerConnection();
   }, 30000);
 
   describe('Basic ETL Flow', () => {
@@ -137,7 +135,7 @@ describe('ETL Processor Integration Tests', () => {
       const pgClient = await postgresPool.connect();
       try {
         const dimResult = await pgClient.query(
-          'SELECT * FROM dim_ci WHERE is_current = true ORDER BY ci_name'
+          'SELECT * FROM cmdb.dim_ci WHERE is_current = true ORDER BY ci_name'
         );
 
         expect(dimResult.rows).toHaveLength(2);
@@ -145,7 +143,7 @@ describe('ETL Processor Integration Tests', () => {
           ci_id: ciId2,
           ci_name: 'database-01',
           ci_type: 'database',
-          status: 'active',
+          ci_status: 'active',
           environment: 'production',
           is_current: true,
         });
@@ -154,7 +152,7 @@ describe('ETL Processor Integration Tests', () => {
           ci_id: ciId1,
           ci_name: 'web-server-01',
           ci_type: 'server',
-          status: 'active',
+          ci_status: 'active',
           environment: 'production',
           is_current: true,
         });
@@ -182,7 +180,7 @@ describe('ETL Processor Integration Tests', () => {
 
       const pgClient = await postgresPool.connect();
       try {
-        const dimResult = await pgClient.query('SELECT * FROM dim_ci WHERE ci_id = $1', [ciId]);
+        const dimResult = await pgClient.query('SELECT * FROM cmdb.dim_ci WHERE ci_id = $1', [ciId]);
         expect(dimResult.rows[0].environment).toBeNull();
       } finally {
         pgClient.release();
@@ -238,7 +236,7 @@ describe('ETL Processor Integration Tests', () => {
       try {
         // Should have 2 versions
         const allVersions = await pgClient.query(
-          'SELECT * FROM dim_ci WHERE ci_id = $1 ORDER BY effective_date, ci_key',
+          'SELECT * FROM cmdb.dim_ci WHERE ci_id = $1 ORDER BY effective_from, ci_key',
           [ciId]
         );
 
@@ -247,27 +245,30 @@ describe('ETL Processor Integration Tests', () => {
         // First version should be expired
         expect(allVersions.rows[0]).toMatchObject({
           ci_id: ciId,
-          status: 'active',
+          ci_status: 'active',
           is_current: false,
         });
-        expect(allVersions.rows[0].end_date).not.toBeNull();
+        expect(allVersions.rows[0].effective_to).not.toBeNull();
+        expect(new Date(allVersions.rows[0].effective_to).getUTCFullYear()).not.toBe(9999);
 
         // Second version should be current
         expect(allVersions.rows[1]).toMatchObject({
           ci_id: ciId,
-          status: 'maintenance',
+          ci_status: 'maintenance',
           is_current: true,
         });
-        expect(allVersions.rows[1].end_date).toBeNull();
+        // Open-ended versions carry the canonical sentinel effective_to
+        // ('9999-12-31'), not NULL.
+        expect(new Date(allVersions.rows[1].effective_to).getUTCFullYear()).toBe(9999);
 
         // Only current version should be returned with is_current filter
         const currentVersion = await pgClient.query(
-          'SELECT * FROM dim_ci WHERE ci_id = $1 AND is_current = true',
+          'SELECT * FROM cmdb.dim_ci WHERE ci_id = $1 AND is_current = true',
           [ciId]
         );
 
         expect(currentVersion.rows).toHaveLength(1);
-        expect(currentVersion.rows[0].status).toBe('maintenance');
+        expect(currentVersion.rows[0].ci_status).toBe('maintenance');
       } finally {
         pgClient.release();
       }
@@ -299,7 +300,7 @@ describe('ETL Processor Integration Tests', () => {
       // Verify only one version exists
       const pgClient = await postgresPool.connect();
       try {
-        const versions = await pgClient.query('SELECT * FROM dim_ci WHERE ci_id = $1', [ciId]);
+        const versions = await pgClient.query('SELECT * FROM cmdb.dim_ci WHERE ci_id = $1', [ciId]);
         expect(versions.rows).toHaveLength(1);
       } finally {
         pgClient.release();
@@ -338,7 +339,7 @@ describe('ETL Processor Integration Tests', () => {
       const pgClient = await postgresPool.connect();
       try {
         const history = await pgClient.query(
-          'SELECT * FROM dim_ci WHERE ci_id = $1 ORDER BY effective_date, ci_key',
+          'SELECT * FROM cmdb.dim_ci WHERE ci_id = $1 ORDER BY effective_from, ci_key',
           [ciId]
         );
 
@@ -346,28 +347,28 @@ describe('ETL Processor Integration Tests', () => {
 
         // Version 1: active, development
         expect(history.rows[0]).toMatchObject({
-          status: 'active',
+          ci_status: 'active',
           environment: 'development',
           is_current: false,
         });
 
         // Version 2: maintenance, development
         expect(history.rows[1]).toMatchObject({
-          status: 'maintenance',
+          ci_status: 'maintenance',
           environment: 'development',
           is_current: false,
         });
 
         // Version 3: maintenance, staging
         expect(history.rows[2]).toMatchObject({
-          status: 'maintenance',
+          ci_status: 'maintenance',
           environment: 'staging',
           is_current: false,
         });
 
         // Version 4: active, staging (current)
         expect(history.rows[3]).toMatchObject({
-          status: 'active',
+          ci_status: 'active',
           environment: 'staging',
           is_current: true,
         });
@@ -427,7 +428,7 @@ describe('ETL Processor Integration Tests', () => {
 
       const pgClient = await postgresPool.connect();
       try {
-        const dims = await pgClient.query('SELECT * FROM dim_ci WHERE is_current = true');
+        const dims = await pgClient.query('SELECT * FROM cmdb.dim_ci WHERE is_current = true');
         expect(dims.rows).toHaveLength(1);
         expect(dims.rows[0].ci_id).toBe(newCiId);
       } finally {
@@ -461,7 +462,7 @@ describe('ETL Processor Integration Tests', () => {
       // Verify all persisted
       const pgClient = await postgresPool.connect();
       try {
-        const count = await pgClient.query('SELECT COUNT(*) FROM dim_ci WHERE is_current = true');
+        const count = await pgClient.query('SELECT COUNT(*) FROM cmdb.dim_ci WHERE is_current = true');
         expect(parseInt(count.rows[0].count)).toBe(25);
       } finally {
         pgClient.release();
@@ -502,7 +503,7 @@ describe('ETL Processor Integration Tests', () => {
 
       const pgClient = await postgresPool.connect();
       try {
-        const dims = await pgClient.query('SELECT ci_type FROM dim_ci WHERE is_current = true');
+        const dims = await pgClient.query('SELECT ci_type FROM cmdb.dim_ci WHERE is_current = true');
         expect(dims.rows).toHaveLength(2);
         expect(dims.rows.map((r) => r.ci_type).sort()).toEqual(['database', 'server']);
       } finally {
@@ -556,7 +557,7 @@ describe('ETL Processor Integration Tests', () => {
 
       const pgClient = await postgresPool.connect();
       try {
-        const versions = await pgClient.query('SELECT * FROM dim_ci WHERE ci_id = $1', [ciId]);
+        const versions = await pgClient.query('SELECT * FROM cmdb.dim_ci WHERE ci_id = $1', [ciId]);
         expect(versions.rows).toHaveLength(2);
       } finally {
         pgClient.release();
@@ -566,71 +567,6 @@ describe('ETL Processor Integration Tests', () => {
 });
 
 // Helper Functions
-
-async function initializePostgresSchema(pool: Pool): Promise<void> {
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-
-    // Create dim_ci table (SCD Type 2) in the public schema, matching the
-    // column layout the ETL job's unqualified SQL expects.
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS dim_ci (
-        ci_key SERIAL PRIMARY KEY,
-        ci_id VARCHAR(255) NOT NULL,
-        ci_name VARCHAR(255) NOT NULL,
-        ci_type VARCHAR(50) NOT NULL,
-        environment VARCHAR(50),
-        status VARCHAR(50) NOT NULL,
-        external_id VARCHAR(255),
-        effective_date TIMESTAMPTZ NOT NULL,
-        end_date TIMESTAMPTZ,
-        is_current BOOLEAN DEFAULT TRUE,
-        created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_dim_ci_id ON dim_ci(ci_id)
-    `);
-    await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_dim_ci_current ON dim_ci(ci_id, is_current)
-    `);
-
-    // Create fact_ci_discovery table
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS fact_ci_discovery (
-        discovery_key SERIAL PRIMARY KEY,
-        ci_key INTEGER REFERENCES dim_ci(ci_key),
-        date_key INTEGER,
-        discovered_at TIMESTAMPTZ,
-        discovery_method VARCHAR(100),
-        discovery_source VARCHAR(100),
-        created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    // Create fact_ci_relationships table
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS fact_ci_relationships (
-        relationship_key SERIAL PRIMARY KEY,
-        from_ci_id VARCHAR(255) NOT NULL,
-        to_ci_id VARCHAR(255) NOT NULL,
-        relationship_type VARCHAR(50) NOT NULL,
-        created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(from_ci_id, to_ci_id, relationship_type)
-      )
-    `);
-
-    await client.query('COMMIT');
-  } catch (error) {
-    await client.query('ROLLBACK');
-    throw error;
-  } finally {
-    client.release();
-  }
-}
 
 async function createCIInNeo4j(driver: Driver, ci: CISeed): Promise<void> {
   const session = driver.session();

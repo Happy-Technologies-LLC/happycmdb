@@ -7,7 +7,7 @@
  */
 
 import { Request, Response, Router } from 'express';
-import { AuthService } from '../auth/auth.service';
+import { ApiKeyNotFoundError, AuthService } from '../auth/auth.service';
 import { ValidationMiddleware } from './middleware/validation.middleware';
 import { authSchemas } from '../validation/schemas';
 import { AuthMiddleware, AuthenticatedRequest } from '../middleware/auth.middleware';
@@ -107,6 +107,38 @@ export class AuthController {
       '/me',
       this.authMiddleware.authenticate(),
       this.getCurrentUser.bind(this)
+    );
+
+    /**
+     * PUT /api/auth/profile
+     * Update the authenticated user's profile (name/avatar)
+     */
+    this.router.put(
+      '/profile',
+      this.authMiddleware.authenticate(),
+      this.validator.validate(authSchemas._updateProfile),
+      this.updateProfile.bind(this)
+    );
+
+    /**
+     * PUT /api/auth/password
+     * Change the authenticated user's password
+     */
+    this.router.put(
+      '/password',
+      this.authMiddleware.authenticate(),
+      this.validator.validate(authSchemas._changePassword),
+      this.changePassword.bind(this)
+    );
+
+    /**
+     * DELETE /api/auth/account
+     * Permanently delete the authenticated user's account
+     */
+    this.router.delete(
+      '/account',
+      this.authMiddleware.authenticate(),
+      this.deleteAccount.bind(this)
     );
   }
 
@@ -251,27 +283,182 @@ export class AuthController {
         success: true,
         message: 'API key revoked successfully',
       });
-    } catch (error: any) {
+    } catch (error: unknown) {
+      if (error instanceof ApiKeyNotFoundError) {
+        res.status(404).json({
+          success: false,
+          error: 'Not Found',
+          message: 'API key not found',
+        });
+        return;
+      }
+
       res.status(500).json({
         success: false,
         error: 'API Key Revocation Failed',
-        message: error.message || 'Failed to revoke API key',
+        message: error instanceof Error ? error.message : 'Failed to revoke API key',
       });
     }
+  }
+
+  /**
+   * Shapes a sanitized user record into the RawUserPayload-compatible
+   * response body the frontend's ApiService.mapUser() expects (see
+   * web-ui/src/services/api.ts).
+   */
+  private toRawUserPayload(user: {
+    _id: string;
+    _username: string;
+    _email: string;
+    _role: string;
+    _createdAt?: Date;
+    lastLoginAt?: Date;
+    _name?: string;
+    _avatar?: string;
+  }): Record<string, unknown> {
+    return {
+      userId: user._id,
+      username: user._username,
+      email: user._email,
+      name: user._name || user._username,
+      avatar: user._avatar,
+      role: user._role,
+      createdAt: user._createdAt,
+      lastLoginAt: user.lastLoginAt,
+    };
   }
 
   /**
    * Get current user info endpoint
    */
   private async getCurrentUser(req: AuthenticatedRequest, res: Response): Promise<void> {
-    res.json({
-      success: true,
-      data: {
-        userId: req.user?._userId,
-        username: req.user?._username,
-        role: req.user?._role,
-      },
-    });
+    try {
+      if (!req.user?._userId) {
+        res.status(401).json({
+          success: false,
+          error: 'Unauthorized',
+          message: 'User not authenticated',
+        });
+        return;
+      }
+
+      const profile = await this.authService.getUserProfile(req.user._userId);
+      if (!profile) {
+        res.status(404).json({
+          success: false,
+          error: 'Not Found',
+          message: 'User not found',
+        });
+        return;
+      }
+
+      res.json({
+        success: true,
+        data: this.toRawUserPayload(profile),
+      });
+    } catch (error: any) {
+      res.status(500).json({
+        success: false,
+        error: 'Failed to Load User',
+        message: error.message || 'Failed to load current user',
+      });
+    }
+  }
+
+  /**
+   * Update profile endpoint
+   */
+  private async updateProfile(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      if (!req.user?._userId) {
+        res.status(401).json({
+          success: false,
+          error: 'Unauthorized',
+          message: 'User not authenticated',
+        });
+        return;
+      }
+
+      const { name, avatar } = req.body as { name?: string; avatar?: string };
+      const profile = await this.authService.updateProfile(req.user._userId, { name, avatar });
+
+      res.json({
+        success: true,
+        data: this.toRawUserPayload(profile),
+        message: 'Profile updated successfully',
+      });
+    } catch (error: any) {
+      const status = error.message === 'User not found' ? 404 : 400;
+      res.status(status).json({
+        success: false,
+        error: 'Profile Update Failed',
+        message: error.message || 'Failed to update profile',
+      });
+    }
+  }
+
+  /**
+   * Change password endpoint
+   */
+  private async changePassword(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      if (!req.user?._userId) {
+        res.status(401).json({
+          success: false,
+          error: 'Unauthorized',
+          message: 'User not authenticated',
+        });
+        return;
+      }
+
+      const { currentPassword, newPassword } = req.body as {
+        currentPassword: string;
+        newPassword: string;
+      };
+      await this.authService.changePassword(req.user._userId, currentPassword, newPassword);
+
+      res.json({
+        success: true,
+        message: 'Password changed successfully',
+      });
+    } catch (error: any) {
+      const status = error.message === 'User not found' ? 404 : 400;
+      res.status(status).json({
+        success: false,
+        error: 'Password Change Failed',
+        message: error.message || 'Failed to change password',
+      });
+    }
+  }
+
+  /**
+   * Delete account endpoint
+   */
+  private async deleteAccount(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      if (!req.user?._userId) {
+        res.status(401).json({
+          success: false,
+          error: 'Unauthorized',
+          message: 'User not authenticated',
+        });
+        return;
+      }
+
+      await this.authService.deleteAccount(req.user._userId);
+
+      res.json({
+        success: true,
+        message: 'Account deleted successfully',
+      });
+    } catch (error: any) {
+      const status = error.message === 'User not found' ? 404 : 500;
+      res.status(status).json({
+        success: false,
+        error: 'Account Deletion Failed',
+        message: error.message || 'Failed to delete account',
+      });
+    }
   }
 
   public getRouter(): Router {

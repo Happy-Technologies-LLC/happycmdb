@@ -449,6 +449,22 @@ export class ConfigurationDriftDetector {
   }
 
   /**
+   * Get a baseline snapshot by ID
+   */
+  async getBaselineById(baselineId: string): Promise<BaselineSnapshot | null> {
+    const result = await this.postgresClient.query(
+      'SELECT * FROM baseline_snapshots WHERE id = $1',
+      [baselineId]
+    );
+
+    if (result.rows.length === 0) {
+      return null;
+    }
+
+    return this.mapRowToBaseline(result.rows[0]);
+  }
+
+  /**
    * Store baseline snapshot
    */
   private async storeBaseline(baseline: BaselineSnapshot): Promise<void> {

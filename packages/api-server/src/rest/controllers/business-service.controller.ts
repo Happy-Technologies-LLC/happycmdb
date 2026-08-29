@@ -660,16 +660,32 @@ export class BusinessServiceController {
     try {
       const { service_id } = req.params;
 
-      // Get costs from mapped CIs
+      // Get costs from mapped CIs. CI-level TBM cost data lives on cmdb.dim_ci's
+      // tbm_attributes JSONB (resource_tower / monthly_cost), not on tbm_cost_pools
+      // (which has no ci_id/monthly_cost/resource_tower columns at all).
+      // Aggregates are computed per-CI/per-tower in CTEs first, since Postgres rejects
+      // an aggregate (SUM) nested directly inside another aggregate's (json_object_agg)
+      // argument list.
       const result = await this.pgClient.query(
-        `SELECT
-          COUNT(DISTINCT m.ci_id) as ci_count,
-          SUM(tcp.monthly_cost) as total_monthly_cost,
-          json_object_agg(tcp.resource_tower, SUM(tcp.monthly_cost)) FILTER (WHERE tcp.resource_tower IS NOT NULL) as cost_by_tower
-        FROM ci_business_service_mappings m
-        LEFT JOIN tbm_cost_pools tcp ON m.ci_id = tcp.ci_id
-        WHERE m.service_id = $1
-        GROUP BY m.service_id`,
+        `WITH ci_costs AS (
+          SELECT
+            m.ci_id,
+            dc.tbm_attributes->>'resource_tower' AS resource_tower,
+            (dc.tbm_attributes->>'monthly_cost')::numeric AS monthly_cost
+          FROM ci_business_service_mappings m
+          LEFT JOIN cmdb.dim_ci dc ON dc.ci_id = m.ci_id AND dc.is_current = TRUE
+          WHERE m.service_id = $1
+        ),
+        tower_costs AS (
+          SELECT resource_tower, SUM(monthly_cost) AS tower_cost
+          FROM ci_costs
+          WHERE resource_tower IS NOT NULL
+          GROUP BY resource_tower
+        )
+        SELECT
+          (SELECT COUNT(DISTINCT ci_id) FROM ci_costs) AS ci_count,
+          (SELECT SUM(monthly_cost) FROM ci_costs) AS total_monthly_cost,
+          (SELECT json_object_agg(resource_tower, tower_cost) FROM tower_costs) AS cost_by_tower`,
         [service_id]
       );
 

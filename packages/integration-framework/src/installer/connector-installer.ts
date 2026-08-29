@@ -9,8 +9,12 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
+import * as https from 'https';
+import * as net from 'net';
+import { URL } from 'url';
 import { promisify } from 'util';
 import { exec } from 'child_process';
+import type { IncomingMessage } from 'http';
 import { logger } from '@cmdb/common';
 import { getConnectorRegistry } from '../registry/connector-registry';
 import { ConnectorMetadata, InstalledConnector } from '../types/connector.types';
@@ -20,6 +24,15 @@ const mkdir = promisify(fs.mkdir);
 const rm = promisify(fs.rm);
 const readFile = promisify(fs.readFile);
 const access = promisify(fs.access);
+
+// Connector packages are only ever fetched over plain HTTPS from a small,
+// explicit allowlist of hosts: the configured connector registry and the
+// well-known GitHub release-asset hosts. This is the sole SSRF boundary for
+// download URLs sourced from the (potentially compromised) connector
+// catalog or from caller-supplied `DownloadOptions.url`.
+const TRUSTED_GITHUB_RELEASE_HOSTS = ['github.com', 'objects.githubusercontent.com'];
+const MAX_DOWNLOAD_REDIRECTS = 5;
+const DOWNLOAD_USER_AGENT = 'happycmdb-connector-installer/1.0';
 
 export interface DownloadOptions {
   url?: string;
@@ -72,18 +85,21 @@ export class ConnectorInstaller {
 
       const packagePath = path.join(tempDir, `${type}.tar.gz`);
 
-      // Download from URL or registry
+      // Download from URL or registry. Both branches funnel through the
+      // same allowlisted, shell-free HTTPS downloader below -- there is no
+      // path from a caller- or registry-supplied URL to a shell command.
+      const allowedHosts = this.getAllowedDownloadHosts();
+
       if (options?.url) {
-        // Use curl to download (cross-platform)
-        await execAsync(`curl -L -o "${packagePath}" "${options.url}"`);
+        await this.downloadFileOverHttps(options.url, packagePath, allowedHosts);
       } else {
-        // Download from connector registry (implement based on your registry)
+        // Download from connector registry
         const version = options?.version || 'latest';
         const registryUrl = process.env['CONNECTOR_REGISTRY_URL'] || 'https://registry.happycmdb.io';
         const downloadUrl = `${registryUrl}/connectors/${type}/${version}/package.tar.gz`;
 
         logger.info('Downloading from registry', { url: downloadUrl });
-        await execAsync(`curl -L -o "${packagePath}" "${downloadUrl}"`);
+        await this.downloadFileOverHttps(downloadUrl, packagePath, allowedHosts);
       }
 
       logger.info('Connector package downloaded', { path: packagePath });
@@ -93,6 +109,171 @@ export class ConnectorInstaller {
       logger.error('Failed to download connector', { type, error });
       throw new Error(`Failed to download connector ${type}: ${(error as Error).message}`);
     }
+  }
+
+  /**
+   * Build the set of hostnames a connector package is allowed to be
+   * downloaded from: the configured connector registry plus the
+   * well-known GitHub release-asset hosts. Anything else -- including a
+   * host supplied by a compromised catalog entry -- is rejected.
+   */
+  private getAllowedDownloadHosts(): Set<string> {
+    const hosts = new Set<string>(TRUSTED_GITHUB_RELEASE_HOSTS);
+
+    const registryUrl = process.env['CONNECTOR_REGISTRY_URL'] || 'https://registry.happycmdb.io';
+    try {
+      const registryHost = new URL(registryUrl).hostname.toLowerCase();
+      if (registryHost) {
+        hosts.add(registryHost);
+      }
+    } catch {
+      logger.warn('Ignoring malformed CONNECTOR_REGISTRY_URL when building download allowlist', {
+        registryUrl,
+      });
+    }
+
+    return hosts;
+  }
+
+  /**
+   * Detect hosts that must never be treated as a trusted download target
+   * even if they happened to appear in an allowlist: raw IP literals and
+   * well-known loopback / internal-only names.
+   *
+   * Note: the WHATWG `URL` parser already canonicalizes every obfuscated
+   * IPv4 encoding (octal, hex, decimal integer, shorthand octets) into
+   * standard dotted-decimal form before `hostname` is ever read here, so a
+   * plain `net.isIP()` check is sufficient -- no separate regex is needed
+   * to catch e.g. "2130706433" or "0x7f000001" (both normalize to
+   * "127.0.0.1" during `new URL(...)` itself).
+   */
+  private isDisallowedDownloadHost(hostname: string): boolean {
+    const bare = hostname.replace(/^\[|\]$/g, '');
+
+    if (net.isIP(bare)) {
+      return true;
+    }
+
+    if (
+      bare === 'localhost' ||
+      bare.endsWith('.localhost') ||
+      bare.endsWith('.local') ||
+      bare.endsWith('.internal')
+    ) {
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Validate a connector download URL before it is ever dispatched:
+   * https-only, no embedded credentials, no IP-literal/local host, and the
+   * hostname must appear in the caller-provided allowlist. Throws with a
+   * descriptive message on any violation.
+   */
+  private validateDownloadUrl(rawUrl: string, allowedHosts: ReadonlySet<string>): URL {
+    let parsed: URL;
+    try {
+      parsed = new URL(rawUrl);
+    } catch {
+      throw new Error(`Invalid connector download URL: ${rawUrl}`);
+    }
+
+    if (parsed.protocol !== 'https:') {
+      throw new Error(
+        `Rejected connector download URL with unsupported scheme "${parsed.protocol}" (only https is allowed): ${rawUrl}`
+      );
+    }
+
+    if (parsed.username || parsed.password) {
+      throw new Error(`Rejected connector download URL containing embedded credentials: ${rawUrl}`);
+    }
+
+    const hostname = parsed.hostname.toLowerCase();
+
+    if (this.isDisallowedDownloadHost(hostname)) {
+      throw new Error(`Rejected connector download URL with disallowed host "${hostname}": ${rawUrl}`);
+    }
+
+    if (!allowedHosts.has(hostname)) {
+      throw new Error(
+        `Rejected connector download URL: host "${hostname}" is not in the trusted connector download allowlist (${Array.from(allowedHosts).sort().join(', ')})`
+      );
+    }
+
+    return parsed;
+  }
+
+  /**
+   * Download a file over HTTPS with no shell involvement whatsoever: the
+   * URL is parsed and validated (never interpolated into a command string)
+   * and streamed directly to disk via Node's `https` client.
+   *
+   * Redirects are followed manually so that every hop -- not just the
+   * initial URL -- is re-validated against `allowedHosts`. This is the
+   * property a `curl -L` based approach cannot provide: curl has no way to
+   * restrict which hosts a redirect may point to, only which protocols
+   * (`--proto`). GitHub in particular redirects release-asset downloads
+   * from github.com to objects.githubusercontent.com, so both hosts are
+   * allowlisted and each hop is checked independently before any request
+   * is made to it.
+   */
+  private async downloadFileOverHttps(
+    initialUrl: string,
+    destinationPath: string,
+    allowedHosts: ReadonlySet<string>
+  ): Promise<void> {
+    let currentUrl = initialUrl;
+
+    for (let hop = 0; hop <= MAX_DOWNLOAD_REDIRECTS; hop++) {
+      const target = this.validateDownloadUrl(currentUrl, allowedHosts);
+
+      const response = await new Promise<IncomingMessage>((resolve, reject) => {
+        const request = https.get(
+          target,
+          { headers: { 'User-Agent': DOWNLOAD_USER_AGENT } },
+          resolve
+        );
+        request.on('error', reject);
+      });
+
+      const statusCode = response.statusCode ?? 0;
+
+      if (statusCode >= 300 && statusCode < 400) {
+        const location = response.headers.location;
+        response.resume();
+
+        if (!location) {
+          throw new Error(`Redirect response from ${currentUrl} did not include a Location header`);
+        }
+
+        // Location may be relative; resolve it against the current URL,
+        // then validate the resolved host on the next loop iteration
+        // before it is ever dispatched.
+        currentUrl = new URL(location, target).toString();
+        continue;
+      }
+
+      if (statusCode < 200 || statusCode >= 300) {
+        response.resume();
+        throw new Error(`Download failed with HTTP status ${statusCode} for ${currentUrl}`);
+      }
+
+      await new Promise<void>((resolve, reject) => {
+        const fileStream = fs.createWriteStream(destinationPath);
+        response.on('error', (err) => {
+          fileStream.destroy();
+          reject(err);
+        });
+        fileStream.on('error', reject);
+        fileStream.on('finish', resolve);
+        response.pipe(fileStream);
+      });
+      return;
+    }
+
+    throw new Error(`Exceeded maximum of ${MAX_DOWNLOAD_REDIRECTS} redirects while downloading ${initialUrl}`);
   }
 
   /**
@@ -250,7 +431,23 @@ export class ConnectorInstaller {
         });
       }
 
-      // Save to database
+      // Load and validate the connector class BEFORE persisting anything to
+      // the database. If the implementation is missing or doesn't export a
+      // usable class, we must fail without leaving a false "installed"
+      // record behind.
+      const indexPath = path.join(installPath, 'dist', 'index.js');
+      if (!fs.existsSync(indexPath)) {
+        throw new Error('Connector implementation not found (missing dist/index.js)');
+      }
+
+      const connectorModule = await import(indexPath);
+      const ConnectorClass = connectorModule.default || connectorModule[type];
+
+      if (!ConnectorClass) {
+        throw new Error('Connector class not found in package');
+      }
+
+      // Class loaded successfully; now it is safe to persist the record.
       const connector: InstalledConnector = {
         connector_type: type,
         version: metadata.version,
@@ -262,21 +459,8 @@ export class ConnectorInstaller {
 
       await this.registry.saveInstalledConnector(connector);
 
-      // Load connector class into registry
-      const indexPath = path.join(installPath, 'dist', 'index.js');
-      if (fs.existsSync(indexPath)) {
-        const connectorModule = await import(indexPath);
-        const ConnectorClass = connectorModule.default || connectorModule[type];
-
-        if (ConnectorClass) {
-          this.registry.registerConnector(metadata, ConnectorClass);
-          logger.info('Connector registered successfully', { type, version });
-        } else {
-          throw new Error('Connector class not found in package');
-        }
-      } else {
-        throw new Error('Connector implementation not found (missing dist/index.js)');
-      }
+      this.registry.registerConnector(metadata, ConnectorClass);
+      logger.info('Connector registered successfully', { type, version });
 
     } catch (error) {
       logger.error('Failed to register connector', { type, error });

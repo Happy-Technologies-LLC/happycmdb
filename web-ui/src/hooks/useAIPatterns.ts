@@ -2,9 +2,19 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { aiPatternService, AIPattern, PatternFilters, PatternAnalysisResult, PatternValidationResult } from '../services/ai-pattern.service';
+import { aiPatternService, AIPattern, PatternFilters, PatternValidationResult } from '../services/ai-pattern.service';
 import { useToast } from '../contexts/ToastContext';
 import { useWebSocket } from './useWebSocket';
+
+function isErrorWithResponseMessage(err: unknown): err is { response?: { data?: { message?: string } } } {
+  return typeof err === 'object' && err !== null && 'response' in err;
+}
+
+function extractErrorMessage(err: unknown, fallback: string): string {
+  const responseMessage = isErrorWithResponseMessage(err) ? err.response?.data?.message : undefined;
+  const genericMessage = err instanceof Error ? err.message : undefined;
+  return responseMessage || genericMessage || fallback;
+}
 
 export interface UseAIPatternsReturn {
   patterns: AIPattern[];
@@ -12,16 +22,13 @@ export interface UseAIPatternsReturn {
   error: string | null;
   loadPatterns: (filters?: PatternFilters) => Promise<void>;
   getPattern: (patternId: string) => Promise<AIPattern | null>;
-  createPattern: (pattern: Partial<AIPattern>) => Promise<AIPattern | null>;
-  updatePattern: (patternId: string, updates: Partial<AIPattern>) => Promise<AIPattern | null>;
   deletePattern: (patternId: string) => Promise<boolean>;
-  submitForReview: (patternId: string, submittedBy: string, notes?: string) => Promise<boolean>;
-  approvePattern: (patternId: string, approvedBy: string, notes?: string) => Promise<boolean>;
-  rejectPattern: (patternId: string, rejectedBy: string, reason: string) => Promise<boolean>;
-  activatePattern: (patternId: string, activatedBy: string) => Promise<boolean>;
-  deactivatePattern: (patternId: string, deactivatedBy: string, reason?: string) => Promise<boolean>;
+  submitForReview: (patternId: string, notes?: string) => Promise<boolean>;
+  approvePattern: (patternId: string, notes?: string) => Promise<boolean>;
+  rejectPattern: (patternId: string, reason: string) => Promise<boolean>;
+  activatePattern: (patternId: string) => Promise<boolean>;
+  deactivatePattern: (patternId: string, reason?: string) => Promise<boolean>;
   validatePattern: (patternId: string) => Promise<PatternValidationResult | null>;
-  getCategories: () => Promise<string[]>;
 }
 
 export const useAIPatterns = (): UseAIPatternsReturn => {
@@ -45,8 +52,8 @@ export const useAIPatterns = (): UseAIPatternsReturn => {
       if (mountedRef.current) {
         setPatterns(data);
       }
-    } catch (err: any) {
-      const errorMsg = err.response?.data?.message || err.message || 'Failed to load patterns';
+    } catch (err: unknown) {
+      const errorMsg = extractErrorMessage(err, 'Failed to load patterns');
       if (mountedRef.current) {
         setError(errorMsg);
       }
@@ -62,40 +69,12 @@ export const useAIPatterns = (): UseAIPatternsReturn => {
     try {
       const pattern = await aiPatternService.getPattern(patternId);
       return pattern;
-    } catch (err: any) {
-      const errorMsg = err.response?.data?.message || err.message || 'Failed to load pattern';
+    } catch (err: unknown) {
+      const errorMsg = extractErrorMessage(err, 'Failed to load pattern');
       showToast(errorMsg, 'error');
       return null;
     }
   }, [showToast]);
-
-  const createPattern = useCallback(async (pattern: Partial<AIPattern>): Promise<AIPattern | null> => {
-    try {
-      const newPattern = await aiPatternService.createPattern(pattern);
-      showToast('Pattern created successfully', 'success');
-      // Refresh list
-      await loadPatterns();
-      return newPattern;
-    } catch (err: any) {
-      const errorMsg = err.response?.data?.message || err.message || 'Failed to create pattern';
-      showToast(errorMsg, 'error');
-      return null;
-    }
-  }, [showToast, loadPatterns]);
-
-  const updatePattern = useCallback(async (patternId: string, updates: Partial<AIPattern>): Promise<AIPattern | null> => {
-    try {
-      const updated = await aiPatternService.updatePattern(patternId, updates);
-      showToast('Pattern updated successfully', 'success');
-      // Refresh list
-      await loadPatterns();
-      return updated;
-    } catch (err: any) {
-      const errorMsg = err.response?.data?.message || err.message || 'Failed to update pattern';
-      showToast(errorMsg, 'error');
-      return null;
-    }
-  }, [showToast, loadPatterns]);
 
   const deletePattern = useCallback(async (patternId: string): Promise<boolean> => {
     try {
@@ -104,16 +83,16 @@ export const useAIPatterns = (): UseAIPatternsReturn => {
       // Refresh list
       await loadPatterns();
       return true;
-    } catch (err: any) {
-      const errorMsg = err.response?.data?.message || err.message || 'Failed to delete pattern';
+    } catch (err: unknown) {
+      const errorMsg = extractErrorMessage(err, 'Failed to delete pattern');
       showToast(errorMsg, 'error');
       return false;
     }
   }, [showToast, loadPatterns]);
 
-  const submitForReview = useCallback(async (patternId: string, submittedBy: string, notes?: string): Promise<boolean> => {
+  const submitForReview = useCallback(async (patternId: string, notes?: string): Promise<boolean> => {
     try {
-      const result = await aiPatternService.submitForReview(patternId, submittedBy, notes);
+      const result = await aiPatternService.submitForReview(patternId, notes);
       if (result.success) {
         showToast('Pattern submitted for review', 'success');
         await loadPatterns();
@@ -122,16 +101,16 @@ export const useAIPatterns = (): UseAIPatternsReturn => {
         showToast(result.error || 'Failed to submit pattern', 'error');
         return false;
       }
-    } catch (err: any) {
-      const errorMsg = err.response?.data?.message || err.message || 'Failed to submit pattern';
+    } catch (err: unknown) {
+      const errorMsg = extractErrorMessage(err, 'Failed to submit pattern');
       showToast(errorMsg, 'error');
       return false;
     }
   }, [showToast, loadPatterns]);
 
-  const approvePattern = useCallback(async (patternId: string, approvedBy: string, notes?: string): Promise<boolean> => {
+  const approvePattern = useCallback(async (patternId: string, notes?: string): Promise<boolean> => {
     try {
-      const result = await aiPatternService.approvePattern(patternId, approvedBy, notes);
+      const result = await aiPatternService.approvePattern(patternId, notes);
       if (result.success) {
         showToast('Pattern approved', 'success');
         await loadPatterns();
@@ -140,16 +119,16 @@ export const useAIPatterns = (): UseAIPatternsReturn => {
         showToast(result.error || 'Failed to approve pattern', 'error');
         return false;
       }
-    } catch (err: any) {
-      const errorMsg = err.response?.data?.message || err.message || 'Failed to approve pattern';
+    } catch (err: unknown) {
+      const errorMsg = extractErrorMessage(err, 'Failed to approve pattern');
       showToast(errorMsg, 'error');
       return false;
     }
   }, [showToast, loadPatterns]);
 
-  const rejectPattern = useCallback(async (patternId: string, rejectedBy: string, reason: string): Promise<boolean> => {
+  const rejectPattern = useCallback(async (patternId: string, reason: string): Promise<boolean> => {
     try {
-      const result = await aiPatternService.rejectPattern(patternId, rejectedBy, reason);
+      const result = await aiPatternService.rejectPattern(patternId, reason);
       if (result.success) {
         showToast('Pattern rejected', 'success');
         await loadPatterns();
@@ -158,16 +137,16 @@ export const useAIPatterns = (): UseAIPatternsReturn => {
         showToast(result.error || 'Failed to reject pattern', 'error');
         return false;
       }
-    } catch (err: any) {
-      const errorMsg = err.response?.data?.message || err.message || 'Failed to reject pattern';
+    } catch (err: unknown) {
+      const errorMsg = extractErrorMessage(err, 'Failed to reject pattern');
       showToast(errorMsg, 'error');
       return false;
     }
   }, [showToast, loadPatterns]);
 
-  const activatePattern = useCallback(async (patternId: string, activatedBy: string): Promise<boolean> => {
+  const activatePattern = useCallback(async (patternId: string): Promise<boolean> => {
     try {
-      const result = await aiPatternService.activatePattern(patternId, activatedBy);
+      const result = await aiPatternService.activatePattern(patternId);
       if (result.success) {
         showToast('Pattern activated', 'success');
         await loadPatterns();
@@ -176,16 +155,16 @@ export const useAIPatterns = (): UseAIPatternsReturn => {
         showToast(result.error || 'Failed to activate pattern', 'error');
         return false;
       }
-    } catch (err: any) {
-      const errorMsg = err.response?.data?.message || err.message || 'Failed to activate pattern';
+    } catch (err: unknown) {
+      const errorMsg = extractErrorMessage(err, 'Failed to activate pattern');
       showToast(errorMsg, 'error');
       return false;
     }
   }, [showToast, loadPatterns]);
 
-  const deactivatePattern = useCallback(async (patternId: string, deactivatedBy: string, reason?: string): Promise<boolean> => {
+  const deactivatePattern = useCallback(async (patternId: string, reason?: string): Promise<boolean> => {
     try {
-      const result = await aiPatternService.deactivatePattern(patternId, deactivatedBy, reason);
+      const result = await aiPatternService.deactivatePattern(patternId, reason);
       if (result.success) {
         showToast('Pattern deactivated', 'success');
         await loadPatterns();
@@ -194,8 +173,8 @@ export const useAIPatterns = (): UseAIPatternsReturn => {
         showToast(result.error || 'Failed to deactivate pattern', 'error');
         return false;
       }
-    } catch (err: any) {
-      const errorMsg = err.response?.data?.message || err.message || 'Failed to deactivate pattern';
+    } catch (err: unknown) {
+      const errorMsg = extractErrorMessage(err, 'Failed to deactivate pattern');
       showToast(errorMsg, 'error');
       return false;
     }
@@ -210,19 +189,10 @@ export const useAIPatterns = (): UseAIPatternsReturn => {
         showToast(`Pattern validation failed: ${result.errors.join(', ')}`, 'error');
       }
       return result;
-    } catch (err: any) {
-      const errorMsg = err.response?.data?.message || err.message || 'Failed to validate pattern';
+    } catch (err: unknown) {
+      const errorMsg = extractErrorMessage(err, 'Failed to validate pattern');
       showToast(errorMsg, 'error');
       return null;
-    }
-  }, [showToast]);
-
-  const getCategories = useCallback(async (): Promise<string[]> => {
-    try {
-      return await aiPatternService.getCategories();
-    } catch (err: any) {
-      showToast('Failed to load categories', 'error');
-      return [];
     }
   }, [showToast]);
 
@@ -256,8 +226,6 @@ export const useAIPatterns = (): UseAIPatternsReturn => {
     error,
     loadPatterns,
     getPattern,
-    createPattern,
-    updatePattern,
     deletePattern,
     submitForReview,
     approvePattern,
@@ -265,6 +233,5 @@ export const useAIPatterns = (): UseAIPatternsReturn => {
     activatePattern,
     deactivatePattern,
     validatePattern,
-    getCategories,
   };
 };

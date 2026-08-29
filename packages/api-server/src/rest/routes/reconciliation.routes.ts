@@ -11,9 +11,11 @@ import Joi from 'joi';
 import { ReconciliationController } from '../controllers/reconciliation.controller';
 import { validateRequest, validateOptional } from '../middleware/validation.middleware';
 import { auditMiddleware } from '../../middleware/audit.middleware';
+import { getAuthMiddleware } from '../../auth/auth-bootstrap';
 
 export const reconciliationRoutes = Router();
 const controller = new ReconciliationController();
+const authMiddleware = getAuthMiddleware();
 
 // Apply audit middleware to all routes
 reconciliationRoutes.use(auditMiddleware);
@@ -96,7 +98,9 @@ const conflictsQuerySchema = Joi.object({
 
 /**
  * POST /api/v1/reconciliation/match
- * Find duplicate/matching CIs based on identification attributes
+ * Find duplicate/matching CIs based on identification attributes.
+ * Read-like: a lookup query that does not persist state, so it stays
+ * authenticated-read rather than requiring 'write'.
  */
 reconciliationRoutes.post(
   '/match',
@@ -110,6 +114,7 @@ reconciliationRoutes.post(
  */
 reconciliationRoutes.post(
   '/merge',
+  authMiddleware.requirePermission('write'),
   validateRequest(mergeRequestSchema, 'body'),
   controller.mergeCI.bind(controller)
 );
@@ -130,6 +135,7 @@ reconciliationRoutes.get(
  */
 reconciliationRoutes.post(
   '/conflicts/:id/resolve',
+  authMiddleware.requirePermission('write'),
   validateRequest(resolveConflictSchema, 'body'),
   controller.resolveConflict.bind(controller)
 );
@@ -149,6 +155,7 @@ reconciliationRoutes.get(
  */
 reconciliationRoutes.post(
   '/rules',
+  authMiddleware.requirePermission('write'),
   validateRequest(createRuleSchema, 'body'),
   controller.createRule.bind(controller)
 );
@@ -168,6 +175,7 @@ reconciliationRoutes.get(
  */
 reconciliationRoutes.put(
   '/source-authorities/:source',
+  authMiddleware.requirePermission('write'),
   validateRequest(updateSourceAuthoritySchema, 'body'),
   controller.updateSourceAuthority.bind(controller)
 );

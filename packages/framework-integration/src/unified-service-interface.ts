@@ -10,7 +10,7 @@ import { ITILServiceManager } from './services/itil-service-manager';
 import { TBMServiceManager } from './services/tbm-service-manager';
 import { BSMServiceManager } from './services/bsm-service-manager';
 import { BusinessServiceRepository } from '@cmdb/itil-service-manager';
-import { getPostgresClient, getRedisClient } from '@cmdb/database';
+import { getRedisClient } from '@cmdb/database';
 import {
   IncidentInput,
   ChangeRequest
@@ -34,6 +34,85 @@ import {
   ValueScoreDetails
 } from './types/kpi-types';
 
+
+/**
+ * Tag used to mark a non-JSON-native value (Map/Set/Date) inside a cached
+ * payload so it can be rehydrated to its original type on read.
+ */
+const CACHE_TYPE_TAG = '__cacheType';
+
+/**
+ * Recursively walks a value BEFORE it reaches `JSON.stringify`, converting
+ * every `Map`, `Set`, and `Date` instance into a tagged, JSON-safe plain
+ * object. This must run ahead of `JSON.stringify` (not via its `replacer`
+ * argument) because `Date` defines `toJSON()`, which `JSON.stringify`
+ * invokes before any replacer ever sees the value -- by then it is already
+ * an ISO string and indistinguishable from a real string field.
+ *
+ * Pairs with {@link reviveFromCache}. Used to make Redis-cached views
+ * (e.g. `CompleteServiceView`) round-trip with their original types intact
+ * instead of degrading `Map` fields to plain objects (losing `.entries()`
+ * etc.) and `Date` fields to strings.
+ */
+function prepareForCache(value: unknown): unknown {
+  if (value instanceof Date) {
+    return { [CACHE_TYPE_TAG]: 'Date', value: value.toISOString() };
+  }
+  if (value instanceof Map) {
+    return {
+      [CACHE_TYPE_TAG]: 'Map',
+      value: Array.from(value.entries()).map(([k, v]) => [prepareForCache(k), prepareForCache(v)])
+    };
+  }
+  if (value instanceof Set) {
+    return { [CACHE_TYPE_TAG]: 'Set', value: Array.from(value.values()).map(prepareForCache) };
+  }
+  if (Array.isArray(value)) {
+    return value.map(prepareForCache);
+  }
+  if (value !== null && typeof value === 'object') {
+    const result: Record<string, unknown> = {};
+    for (const [key, val] of Object.entries(value)) {
+      result[key] = prepareForCache(val);
+    }
+    return result;
+  }
+  return value;
+}
+
+/**
+ * Inverse of {@link prepareForCache}: walks a value just parsed from a
+ * cached JSON payload and rehydrates every tagged `Map`/`Set`/`Date`
+ * placeholder back into a real instance of that type.
+ */
+function reviveFromCache(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(reviveFromCache);
+  }
+  if (value !== null && typeof value === 'object') {
+    const tagged = value as Record<string, unknown>;
+    const tag = tagged[CACHE_TYPE_TAG];
+    const taggedValue = tagged['value'];
+    if (tag === 'Date' && typeof taggedValue === 'string') {
+      return new Date(taggedValue);
+    }
+    if (tag === 'Map' && Array.isArray(taggedValue)) {
+      return new Map(
+        (taggedValue as Array<[unknown, unknown]>).map(([k, v]) => [reviveFromCache(k), reviveFromCache(v)])
+      );
+    }
+    if (tag === 'Set' && Array.isArray(taggedValue)) {
+      return new Set((taggedValue as unknown[]).map(reviveFromCache));
+    }
+    const result: Record<string, unknown> = {};
+    for (const [key, val] of Object.entries(tagged)) {
+      result[key] = reviveFromCache(val);
+    }
+    return result;
+  }
+  return value;
+}
+
 /**
  * Unified Service Interface
  * Orchestrates all three frameworks to provide complete service views
@@ -49,7 +128,7 @@ export class UnifiedServiceInterface {
     this.itilManager = new ITILServiceManager();
     this.tbmManager = new TBMServiceManager();
     this.bsmManager = new BSMServiceManager();
-    this.businessServiceRepo = new BusinessServiceRepository(getPostgresClient());
+    this.businessServiceRepo = new BusinessServiceRepository();
     this.redis = getRedisClient();
   }
 
@@ -79,7 +158,7 @@ export class UnifiedServiceInterface {
       if (options.useCache) {
         const cached = await this.redis.get(cacheKey);
         if (cached) {
-          return JSON.parse(cached);
+          return reviveFromCache(JSON.parse(cached)) as CompleteServiceView;
         }
       }
 
@@ -112,7 +191,7 @@ export class UnifiedServiceInterface {
       };
 
       // Cache the result
-      await this.redis.setex(cacheKey, view.cacheTTL, JSON.stringify(view));
+      await this.redis.setex(cacheKey, view.cacheTTL, JSON.stringify(prepareForCache(view)));
 
       return view;
     } catch (error) {

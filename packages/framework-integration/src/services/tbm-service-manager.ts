@@ -16,7 +16,7 @@ import {
   CostTrendData
 } from '@cmdb/tbm-cost-engine';
 import { BusinessServiceRepository } from '@cmdb/itil-service-manager';
-import { getPostgresClient, getNeo4jClient } from '@cmdb/database';
+import { getNeo4jClient } from '@cmdb/database';
 import { TBMCosts } from '../types/kpi-types';
 import { CostEstimate } from '../types/unified-types';
 import { ChangeRequest } from '@cmdb/itil-service-manager';
@@ -32,12 +32,10 @@ export class TBMServiceManager {
   private businessServiceRepo: BusinessServiceRepository;
 
   constructor() {
-    const pgClient = getPostgresClient();
-
     this.costAllocationService = CostAllocationService.getInstance();
     this.poolAggregationService = PoolAggregationService.getInstance();
     this.towerMappingService = TowerMappingService.getInstance();
-    this.businessServiceRepo = new BusinessServiceRepository(pgClient);
+    this.businessServiceRepo = new BusinessServiceRepository();
   }
 
   /**
@@ -55,9 +53,8 @@ export class TBMServiceManager {
       }
 
       // Get cost aggregation
-      const costAggregation = await this.poolAggregationService.aggregateCostsByService(
-        serviceId,
-        'business_service'
+      const costAggregation = await this.poolAggregationService.aggregateBusinessServiceCosts(
+        serviceId
       );
 
       // Get cost trends
@@ -76,7 +73,7 @@ export class TBMServiceManager {
       });
 
       // Get budget info (from TBM attributes)
-      const budgetedCost = businessService.tbm_attributes.monthly_it_cost_allocated || 0;
+      const budgetedCost = businessService.tbm_attributes.total_monthly_cost || 0;
       const budgetVariance = budgetedCost - costAggregation.totalMonthlyCost;
 
       // Calculate allocation percentage
@@ -133,9 +130,9 @@ export class TBMServiceManager {
       try {
         const result = await session.run(
           `
-          MATCH (ci:CI {_id: $ciId})
+          MATCH (ci:CI {id: $ciId})
           MATCH (ci)-[:SUPPORTS*1..3]->(bs:BusinessService)
-          RETURN DISTINCT bs._id as serviceId, bs.name as serviceName
+          RETURN DISTINCT bs.id as serviceId, bs.name as serviceName
           `,
           { ciId }
         );

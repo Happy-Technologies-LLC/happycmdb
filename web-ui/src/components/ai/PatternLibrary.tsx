@@ -4,7 +4,7 @@
 import React, { useState } from 'react';
 import { LiquidGlass } from '@/components/ui/liquid-glass';
 import { Table, TableHeader, TableRow, TableHead, TableBody, TableCell } from '@/components/ui/table';
-import { Badge } from '@/components/ui/badge';
+import { Badge, type BadgeProps } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -12,14 +12,12 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Icon } from '@happy-technologies/design-system';
 import { useAIPatterns } from '@/hooks/useAIPatterns';
-import { useAuth } from '@/contexts/AuthContext';
 import { AIPattern } from '@/services/ai-pattern.service';
 import LoadingSpinner from '@/components/common/LoadingSpinner';
 import { PatternDetailModal } from './PatternDetailModal';
 
 export const PatternLibrary: React.FC = () => {
   const { patterns, loading, activatePattern, deactivatePattern, approvePattern, deletePattern } = useAIPatterns();
-  const { user } = useAuth();
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
@@ -60,7 +58,7 @@ export const PatternLibrary: React.FC = () => {
   }, [searchTerm, statusFilter, categoryFilter]);
 
   const getStatusBadge = (status: string) => {
-    const variants: Record<string, { variant: any; label: string; icon: any }> = {
+    const variants: Record<string, { variant: BadgeProps['variant']; label: string; icon: React.ReactNode }> = {
       active: { variant: 'default', label: 'Active', icon: <Icon name="check-circle" size={12} /> },
       approved: { variant: 'secondary', label: 'Approved', icon: <Icon name="check-circle" size={12} /> },
       review: { variant: 'outline', label: 'In Review', icon: <Icon name="clock" size={12} /> },
@@ -80,19 +78,19 @@ export const PatternLibrary: React.FC = () => {
 
   const handleActivate = async (pattern: AIPattern) => {
     if (pattern.status === 'approved') {
-      await activatePattern(pattern.patternId, user?.email || 'system');
+      await activatePattern(pattern.patternId);
     }
   };
 
   const handleDeactivate = async (pattern: AIPattern) => {
     if (pattern.isActive) {
-      await deactivatePattern(pattern.patternId, user?.email || 'system');
+      await deactivatePattern(pattern.patternId);
     }
   };
 
   const handleApprove = async (pattern: AIPattern) => {
     if (pattern.status === 'review') {
-      await approvePattern(pattern.patternId, user?.email || 'system');
+      await approvePattern(pattern.patternId);
     }
   };
 
@@ -207,7 +205,7 @@ export const PatternLibrary: React.FC = () => {
                       </span>
                     </TableCell>
                     <TableCell className="text-right">
-                      {pattern.avgExecutionTimeMs}ms
+                      {pattern.avgExecutionTimeMs ?? 0}ms
                     </TableCell>
                     <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
                       <div className="flex justify-end gap-1">

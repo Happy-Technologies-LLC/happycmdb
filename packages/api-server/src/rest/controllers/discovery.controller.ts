@@ -63,8 +63,8 @@ export class DiscoveryController {
       const queueNameMap: Record<DiscoveryProvider, string> = {
         nmap: QUEUE_NAMES._DISCOVERY_NMAP,
         ssh: QUEUE_NAMES._DISCOVERY_SSH,
-        'active-directory': 'discovery:active-directory',
-        snmp: 'discovery:snmp',
+        'active-directory': 'discovery-active-directory',
+        snmp: 'discovery-snmp',
       };
 
       const queueName = queueNameMap[provider as DiscoveryProvider];
@@ -151,8 +151,8 @@ export class DiscoveryController {
       const discoveryQueues = [
         QUEUE_NAMES._DISCOVERY_NMAP,
         QUEUE_NAMES._DISCOVERY_SSH,
-        'discovery:active-directory',
-        'discovery:snmp',
+        'discovery-active-directory',
+        'discovery-snmp',
       ];
 
       let foundJob = null;
@@ -196,6 +196,7 @@ export class DiscoveryController {
           result: returnValue,
           error: failedReason,
           queue: foundQueue,
+          timestamp: foundJob.timestamp,
           attemptsMade: foundJob.attemptsMade,
           processedOn: foundJob.processedOn,
           finishedOn: foundJob.finishedOn,
@@ -226,8 +227,8 @@ export class DiscoveryController {
       const discoveryQueues = [
         QUEUE_NAMES._DISCOVERY_NMAP,
         QUEUE_NAMES._DISCOVERY_SSH,
-        'discovery:active-directory',
-        'discovery:snmp',
+        'discovery-active-directory',
+        'discovery-snmp',
       ];
 
       const allJobs: any[] = [];
@@ -335,8 +336,8 @@ export class DiscoveryController {
       const discoveryQueues = [
         QUEUE_NAMES._DISCOVERY_NMAP,
         QUEUE_NAMES._DISCOVERY_SSH,
-        'discovery:active-directory',
-        'discovery:snmp',
+        'discovery-active-directory',
+        'discovery-snmp',
       ];
 
       let foundJob = null;

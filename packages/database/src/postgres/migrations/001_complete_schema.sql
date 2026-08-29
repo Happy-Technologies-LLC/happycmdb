@@ -2615,7 +2615,7 @@ CREATE INDEX IF NOT EXISTS idx_ci_service_mapping_service ON ci_business_service
 
 -- Fact table for business service incidents (aggregated from ITSM connectors)
 CREATE TABLE IF NOT EXISTS fact_business_service_incidents (
-    id SERIAL PRIMARY KEY,
+    id SERIAL,
     service_id VARCHAR(50) NOT NULL REFERENCES dim_business_services(service_id) ON DELETE CASCADE,
     incident_date DATE NOT NULL,
     incident_count INT DEFAULT 0,
@@ -2627,7 +2627,8 @@ CREATE TABLE IF NOT EXISTS fact_business_service_incidents (
     sla_breaches INT DEFAULT 0,
     total_downtime_minutes FLOAT DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(service_id, incident_date)
+    UNIQUE(service_id, incident_date),
+    PRIMARY KEY (id, incident_date)
 );
 
 -- Convert to TimescaleDB hypertable for time-series optimization
@@ -2637,7 +2638,7 @@ CREATE INDEX IF NOT EXISTS idx_bs_incidents_service ON fact_business_service_inc
 
 -- Fact table for business service changes (aggregated from ITSM connectors)
 CREATE TABLE IF NOT EXISTS fact_business_service_changes (
-    id SERIAL PRIMARY KEY,
+    id SERIAL,
     service_id VARCHAR(50) NOT NULL REFERENCES dim_business_services(service_id) ON DELETE CASCADE,
     change_date DATE NOT NULL,
     change_count INT DEFAULT 0,
@@ -2648,7 +2649,8 @@ CREATE TABLE IF NOT EXISTS fact_business_service_changes (
     failed_count INT DEFAULT 0,
     rolled_back_count INT DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(service_id, change_date)
+    UNIQUE(service_id, change_date),
+    PRIMARY KEY (id, change_date)
 );
 
 -- Convert to TimescaleDB hypertable

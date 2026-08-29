@@ -37,7 +37,7 @@ export class CostSyncService {
 
   constructor(logger: Logger) {
     this.logger = logger;
-    this.redisClient = getRedisClient();
+    this.redisClient = getRedisClient().getConnection();
     this.dbClient = getPostgresClient();
 
     // Initialize BullMQ queue for cost sync jobs
@@ -772,7 +772,7 @@ export class CostSyncService {
    */
   private async getCredentials(credentialId: string): Promise<any> {
     const result = await this.dbClient.query(
-      'SELECT * FROM credentials WHERE credential_id = $1',
+      'SELECT * FROM credentials WHERE id = $1',
       [credentialId]
     );
 
@@ -780,6 +780,10 @@ export class CostSyncService {
       throw new Error(`Credential ${credentialId} not found`);
     }
 
-    return result.rows[0];
+    // The `credentials` table stores provider-specific secret fields
+    // (access_key_id, client_secret, service_account_key, etc.) nested
+    // inside the JSONB `credentials` column, not as top-level columns.
+    const row = result.rows[0];
+    return { ...row, ...row.credentials };
   }
 }

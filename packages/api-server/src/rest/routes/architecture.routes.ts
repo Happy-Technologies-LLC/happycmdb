@@ -8,8 +8,10 @@
 import { Router, Request, Response } from 'express';
 import { getArchitectureOptimizationEngine } from '@cmdb/ai-ml-engine';
 import { logger } from '@cmdb/common';
+import { getAuthMiddleware } from '../../auth/auth-bootstrap';
 
 export const architectureRoutes = Router();
+const authMiddleware = getAuthMiddleware();
 
 /**
  * Analyze architecture for a business service
@@ -17,6 +19,7 @@ export const architectureRoutes = Router();
  */
 architectureRoutes.get(
   '/business-services/:serviceId/analysis',
+  authMiddleware.requirePermission('write'),
   async (req: Request, res: Response): Promise<void> => {
     try {
       const { serviceId } = req.params;
@@ -44,9 +47,12 @@ architectureRoutes.get(
  * Analyze architecture for a specific set of CIs
  * POST /api/v1/architecture/analyze
  * Body: { ci_ids: string[] }
+ * Persists analysis output and runs expensive computation, so callers
+ * require write permission.
  */
 architectureRoutes.post(
   '/analyze',
+  authMiddleware.requirePermission('write'),
   async (req: Request, res: Response): Promise<void> => {
     try {
       const { ci_ids } = req.body;

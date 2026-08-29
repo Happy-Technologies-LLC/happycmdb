@@ -1,52 +1,217 @@
 // Copyright 2026 Happy Technologies LLC
 // SPDX-License-Identifier: Apache-2.0
 
-import { Pool } from 'pg';
+import { Pool, PoolClient } from 'pg';
+import { randomUUID } from 'crypto';
 import { AuditLogEntry, AuditChange, AuditLogQuery, AuditLogResponse } from '@cmdb/common';
 import { logger } from '@cmdb/common';
+import {
+  createAuditChain,
+  type AuditChainFields,
+  type ChainKernel,
+  type ChainRow,
+  type ChainVerification,
+} from '@happy-technologies/audit';
+
+/**
+ * happycmdb's audit_log has no tenant_id column: it is a single
+ * append-only log for the whole instance, so every row shares one chain
+ * partition. This constant is both the `tenantId` passed into the shared
+ * kernel (AuditChainFields.tenantId) and the input to `hashtext()` for the
+ * per-partition Postgres advisory lock that serializes chained writes.
+ */
+export const AUDIT_CHAIN_PARTITION = 'global';
+
+/**
+ * Map a happycmdb audit_log row's content columns onto the shared kernel's
+ * AuditChainFields. This mapping MUST be used identically at write time
+ * (computeEntryHash) and at verify time (rebuilding ChainRow[] from stored
+ * rows) or the chain will not verify.
+ *
+ *   action        -> action
+ *   actor          -> actorId
+ *   entity_type    -> resourceType
+ *   entity_id      -> resourceId
+ *   metadata       -> metadata
+ *   ip_address     -> ipAddress
+ *   user_agent     -> userAgent
+ *   (constant)     -> tenantId ('global', single-partition log)
+ */
+function toChainFields(row: {
+  id: string;
+  action: string;
+  actor: string;
+  entity_type: string;
+  entity_id: string;
+  metadata?: Record<string, any> | null;
+  ip_address?: string | null;
+  user_agent?: string | null;
+}): AuditChainFields {
+  return {
+    id: row.id,
+    action: row.action,
+    actorId: row.actor,
+    tenantId: AUDIT_CHAIN_PARTITION,
+    resourceType: row.entity_type,
+    resourceId: row.entity_id,
+    metadata: row.metadata ?? {},
+    ipAddress: row.ip_address ?? null,
+    userAgent: row.user_agent ?? null,
+  };
+}
+
+/**
+ * Lazily-memoized keyed audit chain kernel, bound to the app-held secret in
+ * AUDIT_CHAIN_KEY. Read lazily (not at module load) so importing this module
+ * never throws when the key is unset; the error only surfaces when an audit
+ * chain operation is actually attempted.
+ */
+let auditChainKernel: ChainKernel | null = null;
+
+function getAuditChainKernel(): ChainKernel {
+  if (!auditChainKernel) {
+    const secret = process.env['AUDIT_CHAIN_KEY'];
+    if (!secret) {
+      throw new Error(
+        'AUDIT_CHAIN_KEY environment variable is not set; it is required to compute or verify the audit hash chain'
+      );
+    }
+    auditChainKernel = createAuditChain(secret);
+  }
+  return auditChainKernel;
+}
 
 export class AuditService {
   constructor(private pool: Pool) {}
 
   /**
-   * Log an audit entry for CI or relationship changes
+   * Log an audit entry for CI or relationship changes.
+   *
+   * Writes are hash-chained via the shared @happy-technologies/audit
+   * kernel: inside one transaction, a Postgres advisory lock on the chain
+   * partition (hashtext('global')) serializes concurrent writers, the
+   * partition's last entry_hash is read, computeEntryHash() derives this
+   * row's entry_hash from the mapped content fields plus that prev_hash,
+   * and the row (including prev_hash + entry_hash) is inserted atomically.
+   * Any DB trigger that inserts audit_log rows outside this path is NOT
+   * part of the app-side chain and will appear as an unhashed (entry_hash
+   * IS NULL) row when verified.
    */
   async logAudit(entry: Omit<AuditLogEntry, 'id' | 'timestamp'>): Promise<void> {
-    const client = await this.pool.connect();
+    let client: PoolClient | undefined;
     try {
-      await client.query(
-        `
-        INSERT INTO audit_log (
-          entity_type,
-          entity_id,
-          action,
-          actor,
-          actor_type,
-          changes,
-          metadata,
-          ip_address,
-          user_agent
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-        `,
-        [
-          entry['entity_type'],
-          entry['entity_id'],
-          entry['action'],
-          entry['actor'],
-          entry['actor_type'],
-          JSON.stringify(entry['changes']),
-          entry['metadata'] ? JSON.stringify(entry['metadata']) : null,
-          entry['ip_address'] || null,
-          entry['user_agent'] || null,
-        ]
-      );
+      client = await this.pool.connect();
+      await client.query('BEGIN');
+      try {
+        await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [AUDIT_CHAIN_PARTITION]);
+
+        const prevResult = await client.query<{ entry_hash: string | null }>(
+          `
+          SELECT entry_hash FROM audit_log
+          WHERE entry_hash IS NOT NULL
+          ORDER BY timestamp DESC, id DESC
+          LIMIT 1
+          `
+        );
+        const prevHash = prevResult.rows[0]?.entry_hash ?? null;
+
+        const id = randomUUID();
+        const chainFields = toChainFields({
+          id,
+          action: entry['action'],
+          actor: entry['actor'],
+          entity_type: entry['entity_type'],
+          entity_id: entry['entity_id'],
+          metadata: entry['metadata'] ?? null,
+          ip_address: entry['ip_address'] ?? null,
+          user_agent: entry['user_agent'] ?? null,
+        });
+        const entryHash = getAuditChainKernel().computeEntryHash(chainFields, prevHash);
+
+        await client.query(
+          `
+          INSERT INTO audit_log (
+            id,
+            entity_type,
+            entity_id,
+            action,
+            actor,
+            actor_type,
+            changes,
+            metadata,
+            ip_address,
+            user_agent,
+            prev_hash,
+            entry_hash
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+          `,
+          [
+            id,
+            entry['entity_type'],
+            entry['entity_id'],
+            entry['action'],
+            entry['actor'],
+            entry['actor_type'],
+            JSON.stringify(entry['changes']),
+            entry['metadata'] ? JSON.stringify(entry['metadata']) : null,
+            entry['ip_address'] || null,
+            entry['user_agent'] || null,
+            prevHash,
+            entryHash,
+          ]
+        );
+
+        await client.query('COMMIT');
+      } catch (txError) {
+        await client.query('ROLLBACK');
+        throw txError;
+      }
     } catch (error) {
       logger.error('Failed to log audit entry', { error, entry });
       // Don't throw - audit logging shouldn't break the main operation
     } finally {
-      client.release();
+      client?.release();
     }
   }
+
+  /**
+   * Verify the audit_log hash chain for the single ('global') partition.
+   * Reads rows ordered (timestamp ASC, id ASC) -- the order they were
+   * written in -- rebuilds each row's AuditChainFields using the same
+   * mapping as logAudit, and delegates to the shared kernel's
+   * verifyAuditChain. Rows with entry_hash IS NULL (pre-migration, or
+   * inserted by a path other than logAudit, e.g. a DB trigger) are treated
+   * as unhashed by the kernel and are skipped until the first hashed row.
+   */
+  async verifyAuditChain(): Promise<ChainVerification> {
+    const result = await this.pool.query<{
+      id: string;
+      entity_type: string;
+      entity_id: string;
+      action: string;
+      actor: string;
+      metadata: Record<string, any> | null;
+      ip_address: string | null;
+      user_agent: string | null;
+      prev_hash: string | null;
+      entry_hash: string | null;
+    }>(
+      `
+      SELECT id, entity_type, entity_id, action, actor, metadata, ip_address, user_agent, prev_hash, entry_hash
+      FROM audit_log
+      ORDER BY timestamp ASC, id ASC
+      `
+    );
+
+    const rows: ChainRow[] = result.rows.map((row) => ({
+      ...toChainFields(row),
+      prevHash: row.prev_hash ?? null,
+      entryHash: row.entry_hash ?? null,
+    }));
+
+    return getAuditChainKernel().verifyAuditChain(rows);
+  }
+
 
   /**
    * Log a CI create event

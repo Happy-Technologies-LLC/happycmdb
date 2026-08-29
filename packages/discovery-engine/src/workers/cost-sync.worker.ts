@@ -37,7 +37,7 @@ export class AWSCostSyncWorker {
     const connection = redisClient.getConnection();
 
     this.worker = new Worker<AWSCostSyncJobData, AWSCostSyncResult>(
-      'cost-sync:aws',
+      'cost-sync-aws',
       async (job: Job<AWSCostSyncJobData>) => {
         logger.info('[AWSCostSyncWorker] Processing AWS cost sync job', {
           jobId: job.id,
@@ -96,7 +96,7 @@ export class AzureCostSyncWorker {
     const connection = redisClient.getConnection();
 
     this.worker = new Worker<AzureCostSyncJobData, AzureCostSyncResult>(
-      'cost-sync:azure',
+      'cost-sync-azure',
       async (job: Job<AzureCostSyncJobData>) => {
         logger.info('[AzureCostSyncWorker] Processing Azure cost sync job', {
           jobId: job.id,
@@ -155,7 +155,7 @@ export class GCPCostSyncWorker {
     const connection = redisClient.getConnection();
 
     this.worker = new Worker<GCPCostSyncJobData, GCPCostSyncResult>(
-      'cost-sync:gcp',
+      'cost-sync-gcp',
       async (job: Job<GCPCostSyncJobData>) => {
         logger.info('[GCPCostSyncWorker] Processing GCP cost sync job', {
           jobId: job.id,

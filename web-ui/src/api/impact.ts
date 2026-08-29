@@ -8,33 +8,54 @@
 import { apiClient } from '../lib/api-client';
 import { ImpactAnalysis, DependencyGraph } from '../types';
 
+interface ApiResponse<T> {
+  success: boolean;
+  data: T;
+  error?: string;
+  message?: string;
+}
+
+interface CriticalityScore {
+  ci_id: string;
+  ci_name: string;
+  criticality_score: number;
+  factors: Record<string, any>;
+  calculated_at: string;
+}
+
 export const impactApi = {
   // Predict change impact
-  predict: (ciId: string, changeType: string) =>
-    apiClient.post<ImpactAnalysis>('/impact/predict', {
+  predict: async (ciId: string, changeType: string): Promise<ImpactAnalysis> => {
+    const response = await apiClient.post<ApiResponse<ImpactAnalysis>>('/impact/predict', {
       ci_id: ciId,
       change_type: changeType,
-    }),
+    });
+    return response.data;
+  },
 
   // Get dependency graph
-  getGraph: (rootCiId: string, maxDepth = 3) =>
-    apiClient.get<DependencyGraph>(`/impact/graph/${rootCiId}`, {
-      params: { max_depth: maxDepth },
-    }),
+  getGraph: async (rootCiId: string, maxDepth = 3): Promise<DependencyGraph> => {
+    const response = await apiClient.get<ApiResponse<DependencyGraph>>(
+      `/impact/graph/${rootCiId}`,
+      { params: { max_depth: maxDepth } }
+    );
+    return response.data;
+  },
 
   // Get CI criticality score
-  getCriticalityScore: (ciId: string) =>
-    apiClient.get<{
-      ci_id: string;
-      ci_name: string;
-      criticality_score: number;
-      factors: Record<string, any>;
-      calculated_at: string;
-    }>(`/impact/criticality/${ciId}`),
+  getCriticalityScore: async (ciId: string): Promise<CriticalityScore> => {
+    const response = await apiClient.get<ApiResponse<CriticalityScore>>(
+      `/impact/criticality/${ciId}`
+    );
+    return response.data;
+  },
 
   // Get impact analysis history
-  getHistory: (ciId: string, limit = 20) =>
-    apiClient.get<ImpactAnalysis[]>(`/impact/history/${ciId}`, {
-      params: { limit },
-    }),
+  getHistory: async (ciId: string, limit = 20): Promise<ImpactAnalysis[]> => {
+    const response = await apiClient.get<ApiResponse<ImpactAnalysis[]>>(
+      `/impact/history/${ciId}`,
+      { params: { limit } }
+    );
+    return response.data;
+  },
 };

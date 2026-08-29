@@ -411,7 +411,7 @@ export class ReconciliationController {
 
       const result = await this.postgresClient.query(
         `SELECT source_name, source_id, confidence_score,
-                first_seen_at, last_seen_at
+                discovered_at AS first_seen_at, last_seen_at
          FROM ci_source_lineage
          WHERE ci_id = $1
          ORDER BY last_seen_at DESC`,

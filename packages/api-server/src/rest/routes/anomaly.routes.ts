@@ -5,9 +5,11 @@ import { Router } from 'express';
 import Joi from 'joi';
 import { AnomalyController } from '../controllers/anomaly.controller';
 import { validateOptional } from '../middleware/validation.middleware';
+import { getAuthMiddleware } from '../../auth/auth-bootstrap';
 
 export const anomalyRoutes = Router();
 const controller = new AnomalyController();
+const authMiddleware = getAuthMiddleware();
 
 // Validation schemas
 const recentAnomaliesSchema = Joi.object({
@@ -50,10 +52,15 @@ anomalyRoutes.get('/stats', controller.getAnomalyStats.bind(controller));
 // PATCH /api/v1/anomalies/:id/status
 anomalyRoutes.patch(
   '/:id/status',
+  authMiddleware.requirePermission('write'),
   validateOptional(updateStatusSchema, 'body'),
   controller.updateAnomalyStatus.bind(controller)
 );
 
 // Run anomaly detection manually
 // POST /api/v1/anomalies/detect
-anomalyRoutes.post('/detect', controller.runAnomalyDetection.bind(controller));
+anomalyRoutes.post(
+  '/detect',
+  authMiddleware.requirePermission('write'),
+  controller.runAnomalyDetection.bind(controller)
+);

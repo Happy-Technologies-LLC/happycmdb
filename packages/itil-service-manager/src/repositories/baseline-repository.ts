@@ -148,12 +148,12 @@ export class BaselineRepository {
       UPDATE itil_baselines
       SET status = $1,
           approved_by = $2,
-          approved_at = CASE WHEN $1 = 'approved' THEN NOW() ELSE approved_at END,
+          approved_at = CASE WHEN $3 = 'approved' THEN NOW() ELSE approved_at END,
           updated_at = NOW()
-      WHERE id = $3
+      WHERE id = $4
       RETURNING *
       `,
-      [status, approvedBy, id]
+      [status, approvedBy, status, id]
     );
 
     return this.rowToBaseline(result.rows[0]);
@@ -184,7 +184,7 @@ export class BaselineRepository {
     const result = await postgres.query(
       `
       SELECT * FROM itil_baselines
-      WHERE scope->'ci_ids' ? $1
+      WHERE scope->'ciIds' ? $1
       ORDER BY created_at DESC
       `,
       [ciId]

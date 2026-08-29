@@ -95,7 +95,7 @@ export class Neo4jToPostgresJob {
         await job.updateProgress((i / cis.length) * 100);
 
         try {
-          const batchResult = await this.processBatch(batch, data.fullRefresh || false);
+          const batchResult = await this.processBatch(batch, data.fullRefresh || false, job.id);
           result.cisProcessed += batchResult.cisProcessed;
           result.recordsInserted += batchResult.recordsInserted;
           result.recordsUpdated += batchResult.recordsUpdated;
@@ -181,7 +181,8 @@ export class Neo4jToPostgresJob {
    */
   private async processBatch(
     cis: CI[],
-    fullRefresh: boolean
+    fullRefresh: boolean,
+    jobId: string = 'neo4j-to-postgres-etl'
   ): Promise<{ cisProcessed: number; recordsInserted: number; recordsUpdated: number }> {
     const batchStartTime = Date.now();
     const result = { cisProcessed: 0, recordsInserted: 0, recordsUpdated: 0 };
@@ -208,7 +209,7 @@ export class Neo4jToPostgresJob {
 
               // Check if CI dimension already exists
               const existingResult = await client.query(
-                'SELECT ci_key, ci_name, ci_type, status, environment FROM dim_ci WHERE ci_id = $1 AND is_current = true',
+                'SELECT ci_key, ci_name, ci_type, ci_status, environment FROM cmdb.dim_ci WHERE ci_id = $1 AND is_current = true',
                 [ci._id]
               );
 
@@ -219,7 +220,7 @@ export class Neo4jToPostgresJob {
                 const hasChanged =
                   existing.ci_name !== dimension._ci_name ||
                   existing.ci_type !== dimension._ci_type ||
-                  existing.status !== dimension._status ||
+                  existing.ci_status !== dimension._status ||
                   existing.environment !== dimension.environment;
 
                 if (hasChanged || fullRefresh) {
@@ -227,9 +228,9 @@ export class Neo4jToPostgresJob {
 
                   // Type 2 SCD: Expire old record
                   await client.query(
-                    `UPDATE dim_ci
+                    `UPDATE cmdb.dim_ci
                      SET is_current = false,
-                         end_date = $1,
+                         effective_to = $1,
                          updated_at = $1
                      WHERE ci_key = $2`,
                     [new Date(), ciKey]
@@ -237,10 +238,10 @@ export class Neo4jToPostgresJob {
 
                   // Insert new version with full attributes
                   const insertResult = await client.query(
-                    `INSERT INTO dim_ci
-                     (ci_id, ci_name, ci_type, environment, status, external_id,
-                      effective_date, end_date, is_current, created_at, updated_at)
-                     VALUES ($1, $2, $3, $4, $5, $6, $7, NULL, true, $8, $9)
+                    `INSERT INTO cmdb.dim_ci
+                     (ci_id, ci_name, ci_type, environment, ci_status, external_id,
+                      effective_from, effective_to, is_current, created_at, updated_at)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, '9999-12-31', true, $8, $9)
                      RETURNING ci_key`,
                     [
                       dimension._ci_id,
@@ -261,16 +262,17 @@ export class Neo4jToPostgresJob {
                   const discoveryFact = this.dimensionTransformer.toDiscoveryFact(ci, newCiKey);
                   if (discoveryFact._ci_key) {
                     await client.query(
-                      `INSERT INTO fact_ci_discovery
-                       (ci_key, date_key, discovered_at, discovery_method, discovery_source)
-                       VALUES ($1, $2, $3, $4, $5)
+                      `INSERT INTO cmdb.fact_discovery
+                       (ci_key, date_key, discovered_at, discovery_job_id, discovery_provider, discovery_method)
+                       VALUES ($1, $2, $3, $4, $5, $6)
                        ON CONFLICT DO NOTHING`,
                       [
                         discoveryFact._ci_key,
                         discoveryFact._date_key,
                         discoveryFact._discovered_at,
-                        discoveryFact._discovery_method,
-                        discoveryFact._discovery_source
+                        jobId,
+                        discoveryFact._discovery_source,
+                        discoveryFact._discovery_method
                       ]
                     );
                   }
@@ -289,10 +291,10 @@ export class Neo4jToPostgresJob {
               } else {
                 // Insert new dimension
                 const insertResult = await client.query(
-                  `INSERT INTO dim_ci
-                   (ci_id, ci_name, ci_type, environment, status, external_id,
-                    effective_date, end_date, is_current, created_at, updated_at)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, NULL, true, $8, $9)
+                  `INSERT INTO cmdb.dim_ci
+                   (ci_id, ci_name, ci_type, environment, ci_status, external_id,
+                    effective_from, effective_to, is_current, created_at, updated_at)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, '9999-12-31', true, $8, $9)
                    RETURNING ci_key`,
                   [
                     dimension._ci_id,
@@ -313,15 +315,16 @@ export class Neo4jToPostgresJob {
                 const discoveryFact = this.dimensionTransformer.toDiscoveryFact(ci, ciKey);
                 if (discoveryFact._ci_key) {
                   await client.query(
-                    `INSERT INTO fact_ci_discovery
-                     (ci_key, date_key, discovered_at, discovery_method, discovery_source)
-                     VALUES ($1, $2, $3, $4, $5)`,
+                    `INSERT INTO cmdb.fact_discovery
+                     (ci_key, date_key, discovered_at, discovery_job_id, discovery_provider, discovery_method)
+                     VALUES ($1, $2, $3, $4, $5, $6)`,
                     [
                       discoveryFact._ci_key,
                       discoveryFact._date_key,
                       discoveryFact._discovered_at,
-                      discoveryFact._discovery_method,
-                      discoveryFact._discovery_source
+                      jobId,
+                      discoveryFact._discovery_source,
+                      discoveryFact._discovery_method
                     ]
                   );
                 }
@@ -398,12 +401,31 @@ export class Neo4jToPostgresJob {
         const relationships = await this.neo4jClient.getRelationships(ci._id, 'out');
 
         for (const rel of relationships) {
+          const fromCiKey = await this.postgresClient.getCurrentCIKey(ci._id);
+          const toCiKey = await this.postgresClient.getCurrentCIKey(rel._ci._id);
+
+          if (fromCiKey === null || toCiKey === null) {
+            logger.warn('Skipping relationship - CI dimension not found in cmdb.dim_ci', {
+              fromCiId: ci._id,
+              toCiId: rel._ci._id
+            });
+            continue;
+          }
+
+          const discoveredAt = new Date();
+
           await this.postgresClient.query(
-            `INSERT INTO fact_ci_relationships
-             (from_ci_id, to_ci_id, relationship_type, created_at)
-             VALUES ($1, $2, $3, $4)
-             ON CONFLICT (from_ci_id, to_ci_id, relationship_type) DO NOTHING`,
-            [ci._id, rel._ci._id, rel._type, new Date()]
+            `INSERT INTO cmdb.fact_ci_relationships
+             (from_ci_key, to_ci_key, date_key, relationship_type, discovered_at, is_active)
+             VALUES ($1, $2, $3, $4, $5, true)
+             ON CONFLICT (from_ci_key, to_ci_key, relationship_type, is_active) DO NOTHING`,
+            [
+              fromCiKey,
+              toCiKey,
+              this.dimensionTransformer.generateDateKey(discoveredAt),
+              rel._type,
+              discoveredAt
+            ]
           );
 
           result.inserted++;

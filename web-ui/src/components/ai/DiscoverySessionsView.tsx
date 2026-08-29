@@ -4,7 +4,7 @@
 import React, { useState } from 'react';
 import { LiquidGlass } from '@/components/ui/liquid-glass';
 import { Table, TableHeader, TableRow, TableHead, TableBody, TableCell } from '@/components/ui/table';
-import { Badge } from '@/components/ui/badge';
+import { Badge, type BadgeProps } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -18,7 +18,7 @@ export const DiscoverySessionsView: React.FC = () => {
   const { sessions, loading } = useDiscoverySessions();
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
-  const [providerFilter, setProviderFilter] = useState<string>('all');
+  const [modelFilter, setModelFilter] = useState<string>('all');
   const [selectedSession, setSelectedSession] = useState<AIDiscoverySession | null>(null);
   const [detailModalOpen, setDetailModalOpen] = useState(false);
 
@@ -26,8 +26,8 @@ export const DiscoverySessionsView: React.FC = () => {
     return <LoadingSpinner />;
   }
 
-  // Get unique providers
-  const providers = Array.from(new Set(sessions.map(s => s.provider)));
+  // Get unique AI models actually seen on these sessions
+  const aiModels = Array.from(new Set(sessions.map(s => s.aiModel)));
 
   // Filter sessions
   const filteredSessions = sessions.filter(session => {
@@ -36,13 +36,13 @@ export const DiscoverySessionsView: React.FC = () => {
       session.sessionId.toLowerCase().includes(searchTerm.toLowerCase());
 
     const matchesStatus = statusFilter === 'all' || session.status === statusFilter;
-    const matchesProvider = providerFilter === 'all' || session.provider === providerFilter;
+    const matchesModel = modelFilter === 'all' || session.aiModel === modelFilter;
 
-    return matchesSearch && matchesStatus && matchesProvider;
+    return matchesSearch && matchesStatus && matchesModel;
   });
 
   const getStatusBadge = (status: string) => {
-    const variants: Record<string, { variant: any; label: string; icon: any }> = {
+    const variants: Record<string, { variant: BadgeProps['variant']; label: string; icon: React.ReactNode }> = {
       completed: { variant: 'default', label: 'Completed', icon: <Icon name="check-circle" size={12} /> },
       failed: { variant: 'destructive', label: 'Failed', icon: <Icon name="x-circle" size={12} /> },
       running: { variant: 'outline', label: 'Running', icon: <Icon name="clock" size={12} className="animate-spin" /> },
@@ -90,14 +90,14 @@ export const DiscoverySessionsView: React.FC = () => {
             </SelectContent>
           </Select>
 
-          <Select value={providerFilter} onValueChange={setProviderFilter}>
+          <Select value={modelFilter} onValueChange={setModelFilter}>
             <SelectTrigger className="w-full md:w-[180px]">
-              <SelectValue placeholder="Filter by provider" />
+              <SelectValue placeholder="Filter by model" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">All Providers</SelectItem>
-              {providers.map(provider => (
-                <SelectItem key={provider} value={provider}>{provider}</SelectItem>
+              <SelectItem value="all">All Models</SelectItem>
+              {aiModels.map(model => (
+                <SelectItem key={model} value={model}>{model}</SelectItem>
               ))}
             </SelectContent>
           </Select>
@@ -111,7 +111,7 @@ export const DiscoverySessionsView: React.FC = () => {
             <TableRow>
               <TableHead>Target</TableHead>
               <TableHead>Status</TableHead>
-              <TableHead>Provider</TableHead>
+              <TableHead>Model</TableHead>
               <TableHead className="text-right">Confidence</TableHead>
               <TableHead className="text-right">CIs Found</TableHead>
               <TableHead className="text-right">Cost</TableHead>
@@ -144,19 +144,19 @@ export const DiscoverySessionsView: React.FC = () => {
                   <TableCell>
                     <div className="flex items-center gap-2">
                       <Icon name="brain" size={16} className="text-navy" />
-                      <span className="text-sm">{session.provider}</span>
+                      <span className="text-sm">{session.aiModel}</span>
                     </div>
                   </TableCell>
                   <TableCell className="text-right">
-                    <Badge variant={session.confidenceScore >= 0.8 ? "default" : "secondary"}>
-                      {(session.confidenceScore * 100).toFixed(0)}%
+                    <Badge variant={(session.confidenceScore ?? 0) >= 0.8 ? "default" : "secondary"}>
+                      {((session.confidenceScore ?? 0) * 100).toFixed(0)}%
                     </Badge>
                   </TableCell>
                   <TableCell className="text-right">
                     {session.discoveredCIs?.length || 0}
                   </TableCell>
                   <TableCell className="text-right">
-                    <span className={session.estimatedCost > 0 ? 'text-warning' : 'text-success'}>
+                    <span className={(session.estimatedCost ?? 0) > 0 ? 'text-warning' : 'text-success'}>
                       ${session.estimatedCost?.toFixed(4) || '0.0000'}
                     </span>
                   </TableCell>

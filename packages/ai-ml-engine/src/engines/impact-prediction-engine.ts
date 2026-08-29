@@ -530,6 +530,33 @@ export class ImpactPredictionEngine {
       calculated_at: row.calculated_at,
     };
   }
+
+  /**
+   * Get impact analysis history for a CI
+   */
+  async getImpactHistory(ciId: string, limit: number = 20): Promise<ImpactAnalysis[]> {
+    const result = await this.postgresClient.query(
+      `SELECT * FROM impact_analyses
+       WHERE source_ci_id = $1
+       ORDER BY analyzed_at DESC
+       LIMIT $2`,
+      [ciId, limit]
+    );
+
+    return result.rows.map((row: any) => ({
+      id: row.id,
+      source_ci_id: row.source_ci_id,
+      source_ci_name: row.source_ci_name,
+      change_type: row.change_type,
+      impact_score: row.impact_score,
+      affected_cis: row.affected_cis,
+      blast_radius: row.blast_radius,
+      critical_path: row.critical_path,
+      risk_level: row.risk_level,
+      analyzed_at: row.analyzed_at,
+      estimated_downtime_minutes: row.estimated_downtime_minutes,
+    }));
+  }
 }
 
 export function getImpactPredictionEngine(): ImpactPredictionEngine {

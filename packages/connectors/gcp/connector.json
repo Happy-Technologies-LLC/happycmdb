@@ -196,6 +196,7 @@
       "enabled_by_default": true,
       "operations": ["extract", "transform", "load"],
       "configuration_schema": {
+        "required": ["billing_account_id", "bigquery_dataset", "bigquery_table"],
         "properties": {
           "billing_account_id": {
             "type": "string",

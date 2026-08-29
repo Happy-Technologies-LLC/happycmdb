@@ -7,6 +7,7 @@
  */
 
 import { Request, Response, NextFunction } from 'express';
+import { GraphQLError } from 'graphql';
 import type { ConfigSchema } from '@cmdb/common';
 import { AuthService } from '../auth/auth.service';
 import { TokenPayload, Permission, ROLE_PERMISSIONS } from '../auth/types';
@@ -164,12 +165,22 @@ export class AuthMiddleware {
 
 /**
  * GraphQL context authentication
+ *
+ * Resolves the bearer token or API key on a GraphQL request into an
+ * authenticated identity. This runs inside Apollo's context factory:
+ * throwing here fails context creation *before any resolver executes*,
+ * which Apollo Server surfaces as a top-level GraphQL error response
+ * (see `errorResponse` in @apollo/server). That makes authentication
+ * mandatory for every query and mutation with no per-resolver opt-in
+ * required -- unlike returning `{}` and leaving each resolver to check
+ * `context.user` itself, which silently permits anonymous access to any
+ * resolver that forgets the check.
  */
 export async function authenticateGraphQLContext(
   authService: AuthService,
   apiKeyHeader: string,
   req: Request
-): Promise<{ user?: TokenPayload }> {
+): Promise<{ user: TokenPayload }> {
   // Extract token
   const authHeader = req.headers.authorization;
   let token: string | null = null;
@@ -184,35 +195,54 @@ export async function authenticateGraphQLContext(
   // Extract API key
   const apiKey = (req.headers[apiKeyHeader.toLowerCase()] as string | undefined) || null;
 
-  try {
-    if (token) {
-      const payload = await authService.verifyToken(token);
-      return { user: payload };
-    } else if (apiKey) {
-      const payload = await authService.verifyApiKey(apiKey);
-      return { user: payload };
-    }
-  } catch (error) {
-    // Authentication failed, return empty context
+  if (!token && !apiKey) {
+    throw new GraphQLError('No authentication credentials provided', {
+      extensions: { code: 'UNAUTHENTICATED', http: { status: 401 } },
+    });
   }
 
-  return {};
+  try {
+    const payload = token
+      ? await authService.verifyToken(token)
+      : await authService.verifyApiKey(apiKey as string);
+    return { user: payload };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Authentication failed';
+    throw new GraphQLError(message, {
+      extensions: { code: 'UNAUTHENTICATED', http: { status: 401 } },
+    });
+  }
 }
 
 /**
  * GraphQL permission checker
+ *
+ * Throws GraphQL UNAUTHENTICATED when no identity is present on the
+ * context (defensive -- the context factory above already guarantees
+ * `context.user` is set for every request that reaches a resolver), or
+ * FORBIDDEN when the authenticated user's role does not grant
+ * `permission`. Returns the authenticated user so callers can use it
+ * (e.g. as an actor id) without a second lookup. Single source of truth
+ * for GraphQL role/permission gating -- resolvers MUST call this instead
+ * of re-deriving their own copy of `ROLE_PERMISSIONS`.
  */
 export function checkGraphQLPermission(
   context: { user?: TokenPayload },
   permission: Permission
-): void {
+): TokenPayload {
   if (!context.user) {
-    throw new Error('Authentication required');
+    throw new GraphQLError('Authentication required', {
+      extensions: { code: 'UNAUTHENTICATED', http: { status: 401 } },
+    });
   }
 
   const userPermissions = ROLE_PERMISSIONS[context.user._role];
 
   if (!userPermissions.includes(permission)) {
-    throw new Error(`Permission '${permission}' required`);
+    throw new GraphQLError(`Permission '${permission}' required`, {
+      extensions: { code: 'FORBIDDEN', http: { status: 403 } },
+    });
   }
+
+  return context.user;
 }

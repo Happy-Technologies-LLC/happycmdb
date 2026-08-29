@@ -21,15 +21,36 @@ import {
   TokenPayload,
 } from './types';
 
+export interface UserProfileUpdate {
+  name?: string;
+  avatar?: string;
+  passwordHash?: string;
+}
+
 export interface AuthRepository {
   findUserByUsername(username: string): Promise<User | null>;
   findUserById(id: string): Promise<User | null>;
   updateUserLastLogin(userId: string): Promise<void>;
+  /** Applies a partial profile/credential update and returns the updated user. */
+  updateUser(id: string, updates: UserProfileUpdate): Promise<User>;
+  /**
+   * Permanently deletes the user's account and every record owned solely
+   * by that account (API keys, application settings, discovery provider
+   * settings). Does not touch data the user merely authored elsewhere.
+   */
+  deleteUserAccount(id: string): Promise<void>;
   findApiKeyByKey(keyHash: string): Promise<ApiKey | null>;
   createApiKey(apiKey: Omit<ApiKey, 'id' | 'createdAt'>): Promise<ApiKey>;
   updateApiKeyLastUsed(keyId: string): Promise<void>;
-  deleteApiKey(keyId: string): Promise<void>;
+  deleteApiKey(userId: string, keyId: string): Promise<number>;
   listApiKeys(userId: string): Promise<Omit<ApiKey, '_key' | '_keyHash'>[]>;
+}
+
+export class ApiKeyNotFoundError extends Error {
+  constructor() {
+    super('API key not found');
+    this.name = 'ApiKeyNotFoundError';
+  }
 }
 
 export class AuthService {
@@ -157,7 +178,7 @@ export class AuthService {
    * Generate API key for a user
    */
   async generateApiKey(userId: string, request: ApiKeyRequest): Promise<ApiKeyResponse> {
-    const { _name, expiresInDays } = request;
+    const { name: _name, expiresInDays } = request;
 
     // Find user
     const user = await this.repository.findUserById(userId);
@@ -237,8 +258,11 @@ export class AuthService {
   /**
    * Revoke API key
    */
-  async revokeApiKey(_userId: string, keyId: string): Promise<void> {
-    await this.repository.deleteApiKey(keyId);
+  async revokeApiKey(userId: string, keyId: string): Promise<void> {
+    const affectedRows = await this.repository.deleteApiKey(userId, keyId);
+    if (affectedRows === 0) {
+      throw new ApiKeyNotFoundError();
+    }
   }
 
   /**
@@ -246,6 +270,71 @@ export class AuthService {
    */
   async listApiKeys(userId: string): Promise<Omit<ApiKey, '_key' | '_keyHash'>[]> {
     return await this.repository.listApiKeys(userId);
+  }
+
+  /**
+   * Get the authenticated user's sanitized profile (no password hash)
+   */
+  async getUserProfile(userId: string): Promise<Omit<User, '_passwordHash'> | null> {
+    const user = await this.repository.findUserById(userId);
+    if (!user) {
+      return null;
+    }
+    const { _passwordHash, ...profile } = user;
+    return profile;
+  }
+
+  /**
+   * Update the authenticated user's profile (name/avatar only)
+   */
+  async updateProfile(
+    userId: string,
+    updates: { name?: string; avatar?: string }
+  ): Promise<Omit<User, '_passwordHash'>> {
+    const user = await this.repository.findUserById(userId);
+    if (!user) {
+      throw new Error('User not found');
+    }
+
+    const updated = await this.repository.updateUser(userId, updates);
+    const { _passwordHash, ...profile } = updated;
+    return profile;
+  }
+
+  /**
+   * Change the authenticated user's password, verifying the current
+   * password against the stored hash before replacing it.
+   */
+  async changePassword(
+    userId: string,
+    currentPassword: string,
+    newPassword: string
+  ): Promise<void> {
+    const user = await this.repository.findUserById(userId);
+    if (!user) {
+      throw new Error('User not found');
+    }
+
+    const isValid = await this.passwordService.verify(currentPassword, user._passwordHash);
+    if (!isValid) {
+      throw new Error('Current password is incorrect');
+    }
+
+    const passwordHash = await this.passwordService.hash(newPassword);
+    await this.repository.updateUser(userId, { passwordHash });
+  }
+
+  /**
+   * Permanently delete the authenticated user's account and everything
+   * owned solely by it (API keys, application settings).
+   */
+  async deleteAccount(userId: string): Promise<void> {
+    const user = await this.repository.findUserById(userId);
+    if (!user) {
+      throw new Error('User not found');
+    }
+
+    await this.repository.deleteUserAccount(userId);
   }
 
   /**

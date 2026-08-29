@@ -31,6 +31,7 @@ interface DataTableProps<T> {
   onPageChange?: (page: number) => void;
   onRowsPerPageChange?: (rowsPerPage: number) => void;
   onSortChange?: (sort: SortOptions) => void;
+  onRowClick?: (row: T) => void;
   onView?: (row: T) => void;
   onEdit?: (row: T) => void;
   onDelete?: (row: T) => void;
@@ -53,6 +54,7 @@ function DataTable<T extends Record<string, any>>({
   onPageChange,
   onRowsPerPageChange,
   onSortChange,
+  onRowClick,
   onView,
   onEdit,
   onDelete,
@@ -156,7 +158,10 @@ function DataTable<T extends Record<string, any>>({
                   colSpan={columns.length + (selectable ? 1 : 0) + (hasActions ? 1 : 0)}
                   className="h-32 text-center"
                 >
-                  <p className="text-sm text-muted-foreground">Loading...</p>
+                  <div className="flex items-center justify-center gap-2">
+                    <Icon name="spinner-gap" size={20} className="animate-spin text-primary" />
+                    <p className="text-sm text-muted-foreground">Loading...</p>
+                  </div>
                 </TableCell>
               </TableRow>
             ) : data.length === 0 ? (
@@ -177,10 +182,11 @@ function DataTable<T extends Record<string, any>>({
                   <TableRow
                     key={rowId}
                     data-state={isItemSelected && 'selected'}
-                    className="hover:bg-muted/50"
+                    className={cn('hover:bg-muted/50', onRowClick && 'cursor-pointer')}
+                    onClick={onRowClick ? () => onRowClick(row) : undefined}
                   >
                     {selectable && (
-                      <TableCell>
+                      <TableCell onClick={(event) => event.stopPropagation()}>
                         <Checkbox
                           checked={isItemSelected}
                           onCheckedChange={() => handleSelectOne(rowId)}
@@ -196,13 +202,14 @@ function DataTable<T extends Record<string, any>>({
                       </TableCell>
                     ))}
                     {hasActions && (
-                      <TableCell className="text-right">
+                      <TableCell className="text-right" onClick={(event) => event.stopPropagation()}>
                         <div className="flex gap-1 justify-end">
                           {onView && (
                             <Button
                               variant="ghost"
                               size="icon"
                               className="h-8 w-8"
+                              title="View Details"
                               onClick={() => onView(row)}
                             >
                               <Icon name="eye" size={16} />
@@ -214,6 +221,7 @@ function DataTable<T extends Record<string, any>>({
                               variant="ghost"
                               size="icon"
                               className="h-8 w-8"
+                              title="Edit"
                               onClick={() => onEdit(row)}
                             >
                               <Icon name="pencil-simple" size={16} />
@@ -225,6 +233,7 @@ function DataTable<T extends Record<string, any>>({
                               variant="ghost"
                               size="icon"
                               className="h-8 w-8 text-destructive"
+                              title="Delete"
                               onClick={() => onDelete(row)}
                             >
                               <Icon name="trash" size={16} />

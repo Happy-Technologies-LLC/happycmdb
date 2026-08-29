@@ -31,6 +31,7 @@ export interface MigrationStatus {
   _appliedAt: Date | null;
 }
 
+
 /**
  * Run all pending migrations
  *
@@ -96,6 +97,7 @@ export async function runMigrations(
       executedCount++;
       logger.info(`Migration completed: ${migrationName}`);
     }
+
 
     if (executedCount === 0) {
       logger.info('All migrations already applied - database is up to date');

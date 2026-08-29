@@ -5,6 +5,7 @@
 
 import { GraphQLError } from 'graphql';
 import { GraphQLScalarType, Kind } from 'graphql';
+import neo4j from 'neo4j-driver';
 import { Neo4jClient } from '@cmdb/database';
 import { CI, CIInput, CIType, CIStatus, Environment, RelationshipType } from '@cmdb/common';
 import { analyticsResolvers } from './analytics.resolver';
@@ -13,6 +14,8 @@ import { connectorFieldResolvers } from './connector-fields.resolvers';
 import { reconciliationResolvers } from './reconciliation.resolvers';
 // TEMPORARILY DISABLED - V3.0
 // import { itilResolvers } from './itil.resolvers';
+import type { TokenPayload } from '../../auth/types';
+import { checkGraphQLPermission } from '../../middleware/auth.middleware';
 
 /**
  * GraphQL Context type containing database clients and dataloaders
@@ -24,6 +27,8 @@ export interface GraphQLContext {
     _relationshipLoader: any;
     _dependentLoader: any;
   };
+  /** Authenticated identity resolved from the request's bearer token or API key, when present. */
+  user?: TokenPayload;
 }
 
 /**
@@ -86,24 +91,103 @@ function convertEnumToDbFormat(value: string): string {
 /**
  * Validate CI input data
  */
-function validateCIInput(input: any): void {
-  if (!input.id || typeof input.id !== 'string') {
+interface GraphQLCI {
+  _id: string;
+  _externalId?: string;
+  _name: string;
+  _type: string;
+  _status: string;
+  _environment?: string;
+  _metadata: Record<string, unknown>;
+  _createdAt: string;
+  _updatedAt: string;
+  _discoveredAt: string;
+}
+
+type CIValue = Partial<CI> & {
+  id?: string;
+  type?: CIType;
+  status?: CIStatus;
+  metadata?: unknown;
+  created_at?: string;
+  updated_at?: string;
+  discovered_at?: string;
+  _externalId?: string;
+  _name?: string;
+  _environment?: Environment;
+  _createdAt?: string;
+  _updatedAt?: string;
+  _discoveredAt?: string;
+};
+
+function validateCIInput(input: { _id?: unknown; _name?: unknown; _type?: unknown }): void {
+  if (!input._id || typeof input._id !== 'string') {
     throw new GraphQLError('CI ID is required and must be a string', {
       extensions: { code: 'BAD_USER_INPUT' },
     });
   }
 
-  if (!input.name || typeof input.name !== 'string') {
+  if (!input._name || typeof input._name !== 'string') {
     throw new GraphQLError('CI name is required and must be a string', {
       extensions: { code: 'BAD_USER_INPUT' },
     });
   }
 
-  if (!input.type) {
+  if (!input._type) {
     throw new GraphQLError('CI type is required', {
       extensions: { code: 'BAD_USER_INPUT' },
     });
   }
+}
+
+function normalizePagination(value: number | undefined, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return fallback;
+  }
+  return Math.max(0, Math.floor(value));
+}
+
+function convertDbEnumToGraphQL(value: string): string {
+  return value.toUpperCase().replace(/-/g, '_');
+}
+
+function parseMetadata(metadata: unknown): Record<string, unknown> {
+  if (typeof metadata === 'string') {
+    return JSON.parse(metadata) as Record<string, unknown>;
+  }
+  return metadata && typeof metadata === 'object' ? metadata as Record<string, unknown> : {};
+}
+
+function toGraphQLCI(ci: CIValue): GraphQLCI {
+  return {
+    _id: ci._id ?? ci.id ?? '',
+    _externalId: ci.external_id ?? ci._externalId,
+    _name: ci.name ?? ci._name ?? '',
+    _type: convertDbEnumToGraphQL(ci._type ?? ci.type ?? 'server'),
+    _status: convertDbEnumToGraphQL(ci._status ?? ci.status ?? 'active'),
+    _environment: ci.environment ?? ci._environment
+      ? convertDbEnumToGraphQL(ci.environment ?? ci._environment ?? 'development')
+      : undefined,
+    _metadata: parseMetadata(ci._metadata ?? ci.metadata),
+    _createdAt: ci._created_at ?? ci._createdAt ?? ci.created_at ?? '',
+    _updatedAt: ci._updated_at ?? ci._updatedAt ?? ci.updated_at ?? '',
+    _discoveredAt: ci._discovered_at ?? ci._discoveredAt ?? ci.discovered_at ?? '',
+  };
+}
+
+function toGraphQLRelatedCI(relationship: {
+  _type?: string;
+  type?: string;
+  _ci?: CIValue;
+  ci?: CIValue;
+  _properties?: unknown;
+  properties?: unknown;
+}): { _type: string; _ci: GraphQLCI; _properties: unknown } {
+  return {
+    _type: relationship._type ?? relationship.type ?? '',
+    _ci: toGraphQLCI(relationship._ci ?? relationship.ci ?? {}),
+    _properties: relationship._properties ?? relationship.properties ?? {},
+  };
 }
 
 /**
@@ -117,45 +201,49 @@ const Query = {
     __parent: any,
     _args: {
       filter?: {
-        type?: CIType;
-        status?: CIStatus;
-        environment?: Environment;
-        name?: string;
+        _type?: CIType;
+        _status?: CIStatus;
+        _environment?: Environment;
+        _name?: string;
       };
       limit?: number;
       offset?: number;
     },
     _context: GraphQLContext
-  ): Promise<CI[]> => {
+  ): Promise<GraphQLCI[]> => {
     const session = _context._neo4jClient.getSession();
 
     try {
-      const { filter, limit = 100, offset = 0 } = _args;
+      const { filter } = _args;
+      const limit = normalizePagination(_args.limit, 100);
+      const offset = normalizePagination(_args.offset, 0);
       const conditions: string[] = [];
-      const params: any = { limit, offset };
+      const params: Record<string, unknown> = {
+        limit: neo4j.int(limit),
+        offset: neo4j.int(offset),
+      };
 
-      if (filter?.type) {
+      if (filter?._type) {
         conditions.push('ci.type = $type');
-        params.type = convertEnumToDbFormat(filter.type);
+        params.type = convertEnumToDbFormat(filter._type);
       }
 
-      if (filter?.status) {
+      if (filter?._status) {
         conditions.push('ci.status = $status');
-        params.status = convertEnumToDbFormat(filter.status);
+        params.status = convertEnumToDbFormat(filter._status);
       }
 
-      if (filter?.environment) {
+      if (filter?._environment) {
         conditions.push('ci.environment = $environment');
-        params.environment = convertEnumToDbFormat(filter.environment);
+        params.environment = convertEnumToDbFormat(filter._environment);
       }
 
-      if (filter?.name) {
+      if (filter?._name) {
         conditions.push('ci.name CONTAINS $name');
-        params.name = filter.name;
+        params.name = filter._name;
       }
 
       const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-
       const result = await session.run(
         `
         MATCH (ci:CI)
@@ -168,21 +256,7 @@ const Query = {
         params
       );
 
-      return result.records.map((record: any) => {
-        const props = record.get('ci').properties;
-        return {
-          _id: props.id,
-          external_id: props.external_id,
-          name: props.name,
-          _type: props.type,
-          _status: props.status,
-          environment: props.environment,
-          _created_at: props.created_at,
-          _updated_at: props.updated_at,
-          _discovered_at: props.discovered_at,
-          _metadata: props.metadata ? JSON.parse(props.metadata) : {},
-        };
-      });
+      return result.records.map((record: any) => toGraphQLCI(record.get('ci').properties));
     } catch (error: any) {
       throw new GraphQLError('Failed to fetch CIs', {
         extensions: {
@@ -202,10 +276,10 @@ const Query = {
     __parent: any,
     _args: { id: string },
     _context: GraphQLContext
-  ): Promise<CI | null> => {
+  ): Promise<GraphQLCI | null> => {
     try {
-      // Use DataLoader for caching and batching
-      return await _context._loaders._ciLoader.load(_args.id);
+      const ci = await _context._loaders._ciLoader.load(_args.id);
+      return ci ? toGraphQLCI(ci) : null;
     } catch (error: any) {
       throw new GraphQLError('Failed to fetch CI', {
         extensions: {
@@ -222,36 +296,45 @@ const Query = {
   searchCIs: async (
     __parent: any,
     _args: {
-      _query: string;
+      query: string;
       filter?: {
-        type?: CIType;
-        status?: CIStatus;
-        environment?: Environment;
+        _type?: CIType;
+        _status?: CIStatus;
+        _environment?: Environment;
+        _name?: string;
       };
       limit?: number;
     },
     _context: GraphQLContext
-  ): Promise<CI[]> => {
+  ): Promise<GraphQLCI[]> => {
     const session = _context._neo4jClient.getSession();
 
     try {
-      const { _query, filter, limit = 50 } = _args;
-      const conditions: string[] = ['ci.name CONTAINS $query OR ci.external_id CONTAINS $query'];
-      const params: any = { query: _query, limit };
+      const { query, filter } = _args;
+      const conditions: string[] = ['(ci.name CONTAINS $query OR ci.external_id CONTAINS $query)'];
+      const params: Record<string, unknown> = {
+        query,
+        limit: neo4j.int(normalizePagination(_args.limit, 50)),
+      };
 
-      if (filter?.type) {
+      if (filter?._type) {
         conditions.push('ci.type = $type');
-        params.type = convertEnumToDbFormat(filter.type);
+        params.type = convertEnumToDbFormat(filter._type);
       }
 
-      if (filter?.status) {
+      if (filter?._status) {
         conditions.push('ci.status = $status');
-        params.status = convertEnumToDbFormat(filter.status);
+        params.status = convertEnumToDbFormat(filter._status);
       }
 
-      if (filter?.environment) {
+      if (filter?._environment) {
         conditions.push('ci.environment = $environment');
-        params.environment = convertEnumToDbFormat(filter.environment);
+        params.environment = convertEnumToDbFormat(filter._environment);
+      }
+
+      if (filter?._name) {
+        conditions.push('ci.name CONTAINS $name');
+        params.name = filter._name;
       }
 
       const result = await session.run(
@@ -265,21 +348,7 @@ const Query = {
         params
       );
 
-      return result.records.map((record: any) => {
-        const props = record.get('ci').properties;
-        return {
-          _id: props.id,
-          external_id: props.external_id,
-          name: props.name,
-          _type: props.type,
-          _status: props.status,
-          environment: props.environment,
-          _created_at: props.created_at,
-          _updated_at: props.updated_at,
-          _discovered_at: props.discovered_at,
-          _metadata: props.metadata ? JSON.parse(props.metadata) : {},
-        };
-      });
+      return result.records.map((record: any) => toGraphQLCI(record.get('ci').properties));
     } catch (error: any) {
       throw new GraphQLError('Failed to search CIs', {
         extensions: {
@@ -332,7 +401,7 @@ const Query = {
     __parent: any,
     _args: { id: string; depth?: number },
     _context: GraphQLContext
-  ): Promise<CI[]> => {
+  ): Promise<GraphQLCI[]> => {
     const session = _context._neo4jClient.getSession();
 
     try {
@@ -346,21 +415,7 @@ const Query = {
         { id: _args.id }
       );
 
-      return result.records.map((record: any) => {
-        const props = record.get('dep').properties;
-        return {
-          _id: props.id,
-          external_id: props.external_id,
-          name: props.name,
-          _type: props.type,
-          _status: props.status,
-          environment: props.environment,
-          _created_at: props.created_at,
-          _updated_at: props.updated_at,
-          _discovered_at: props.discovered_at,
-          _metadata: props.metadata ? JSON.parse(props.metadata) : {},
-        };
-      });
+      return result.records.map((record: any) => toGraphQLCI(record.get('dep').properties));
     } catch (error: any) {
       throw new GraphQLError('Failed to fetch CI dependencies', {
         extensions: {
@@ -380,12 +435,11 @@ const Query = {
     __parent: any,
     _args: { id: string; depth?: number },
     _context: GraphQLContext
-  ): Promise<Array<{ ci: CI; distance: number }>> => {
+  ): Promise<Array<{ _ci: GraphQLCI; _distance: number }>> => {
     const session = _context._neo4jClient.getSession();
 
     try {
       const depth = _args.depth || 5;
-
       const result = await session.run(
         `
         MATCH path = (ci:CI {id: $id})<-[:DEPENDS_ON*1..${depth}]-(impacted:CI)
@@ -395,24 +449,10 @@ const Query = {
         { id: _args.id }
       );
 
-      return result.records.map((record: any) => {
-        const props = record.get('impacted').properties;
-        return {
-          ci: {
-            _id: props.id,
-            external_id: props.external_id,
-            name: props.name,
-            _type: props.type,
-            _status: props.status,
-            environment: props.environment,
-            _created_at: props.created_at,
-            _updated_at: props.updated_at,
-            _discovered_at: props.discovered_at,
-            _metadata: props.metadata ? JSON.parse(props.metadata) : {},
-          },
-          distance: record.get('distance').toNumber(),
-        };
-      });
+      return result.records.map((record: any) => ({
+        _ci: toGraphQLCI(record.get('impacted').properties),
+        _distance: record.get('distance').toNumber(),
+      }));
     } catch (error: any) {
       throw new GraphQLError('Failed to perform impact analysis', {
         extensions: {
@@ -435,29 +475,40 @@ const Mutation = {
    */
   createCI: async (
     __parent: any,
-    _args: { input: any },
+    _args: {
+      input: {
+        _id: string;
+        _externalId?: string;
+        _name: string;
+        _type: string;
+        _status?: string;
+        _environment?: string;
+        _discoveredAt?: string;
+        _metadata?: Record<string, unknown>;
+      };
+    },
     _context: GraphQLContext
-  ): Promise<CI> => {
+  ): Promise<GraphQLCI> => {
+    checkGraphQLPermission(_context, 'write');
     try {
       validateCIInput(_args.input);
-
       const ciInput: CIInput = {
-        _id: _args.input.id,
-        external_id: _args.input.externalId,
-        name: _args.input.name,
-        _type: convertEnumToDbFormat(_args.input.type) as CIType,
-        status: _args.input.status ? convertEnumToDbFormat(_args.input.status) as CIStatus : 'active',
-        environment: _args.input.environment ? convertEnumToDbFormat(_args.input.environment) as Environment : undefined,
-        discovered_at: _args.input.discoveredAt || new Date().toISOString(),
-        metadata: _args.input.metadata || {},
+        _id: _args.input._id,
+        external_id: _args.input._externalId,
+        name: _args.input._name,
+        _type: convertEnumToDbFormat(_args.input._type) as CIType,
+        status: _args.input._status
+          ? convertEnumToDbFormat(_args.input._status) as CIStatus
+          : 'active',
+        environment: _args.input._environment
+          ? convertEnumToDbFormat(_args.input._environment) as Environment
+          : undefined,
+        discovered_at: _args.input._discoveredAt ?? new Date().toISOString(),
+        metadata: _args.input._metadata ?? {},
       };
-
       const ci = await _context._neo4jClient.createCI(ciInput);
-
-      // Clear cache
       _context._loaders._ciLoader.clear(ci._id);
-
-      return ci;
+      return toGraphQLCI(ci);
     } catch (error: any) {
       if (error instanceof GraphQLError) {
         throw error;
@@ -476,34 +527,37 @@ const Mutation = {
    */
   updateCI: async (
     __parent: any,
-    _args: { id: string; input: any },
+    _args: {
+      id: string;
+      input: {
+        _name?: string;
+        _status?: string;
+        _environment?: string;
+        _metadata?: Record<string, unknown>;
+      };
+    },
     _context: GraphQLContext
-  ): Promise<CI> => {
+  ): Promise<GraphQLCI> => {
+    checkGraphQLPermission(_context, 'write');
     try {
       const updates: Partial<CIInput> = {};
 
-      if (_args.input.name) {
-        updates.name = _args.input.name;
+      if (_args.input._name !== undefined) {
+        updates.name = _args.input._name;
       }
-
-      if (_args.input.status) {
-        updates.status = convertEnumToDbFormat(_args.input.status) as CIStatus;
+      if (_args.input._status !== undefined) {
+        updates.status = convertEnumToDbFormat(_args.input._status) as CIStatus;
       }
-
-      if (_args.input.environment) {
-        updates.environment = convertEnumToDbFormat(_args.input.environment) as Environment;
+      if (_args.input._environment !== undefined) {
+        updates.environment = convertEnumToDbFormat(_args.input._environment) as Environment;
       }
-
-      if (_args.input.metadata) {
-        updates.metadata = _args.input.metadata;
+      if (_args.input._metadata !== undefined) {
+        updates.metadata = _args.input._metadata;
       }
 
       const ci = await _context._neo4jClient.updateCI(_args.id, updates);
-
-      // Clear cache
       _context._loaders._ciLoader.clear(_args.id);
-
-      return ci;
+      return toGraphQLCI(ci);
     } catch (error: any) {
       throw new GraphQLError('Failed to update CI', {
         extensions: {
@@ -522,6 +576,7 @@ const Mutation = {
     _args: { id: string },
     _context: GraphQLContext
   ): Promise<boolean> => {
+    checkGraphQLPermission(_context, 'write');
     const session = _context._neo4jClient.getSession();
 
     try {
@@ -567,27 +622,21 @@ const Mutation = {
   createRelationship: async (
     __parent: any,
     _args: {
-      _input: {
+      input: {
         _fromId: string;
         _toId: string;
         _type: RelationshipType;
-        properties?: Record<string, any>;
+        _properties?: Record<string, unknown>;
       };
     },
     _context: GraphQLContext
   ): Promise<boolean> => {
+    checkGraphQLPermission(_context, 'write');
     try {
-      await _context._neo4jClient.createRelationship(
-        _args._input._fromId,
-        _args._input._toId,
-        _args._input._type,
-        _args._input.properties || {}
-      );
-
-      // Clear caches for both CIs
-      _context._loaders._relationshipLoader.clear(_args._input._fromId);
-      _context._loaders._dependentLoader.clear(_args._input._toId);
-
+      const { _fromId, _toId, _type, _properties = {} } = _args.input;
+      await _context._neo4jClient.createRelationship(_fromId, _toId, _type, _properties);
+      _context._loaders._relationshipLoader.clear(_fromId);
+      _context._loaders._dependentLoader.clear(_toId);
       return true;
     } catch (error: any) {
       throw new GraphQLError('Failed to create relationship', {
@@ -604,37 +653,29 @@ const Mutation = {
    */
   deleteRelationship: async (
     __parent: any,
-    _args: {
-      _fromId: string;
-      _toId: string;
-      _type: RelationshipType;
-    },
+    _args: { fromId: string; toId: string; type: RelationshipType },
     _context: GraphQLContext
   ): Promise<boolean> => {
+    checkGraphQLPermission(_context, 'write');
     const session = _context._neo4jClient.getSession();
 
     try {
       const result = await session.run(
         `
-        MATCH (from:CI {id: $fromId})-[r:${_args._type}]->(to:CI {id: $toId})
+        MATCH (from:CI {id: $fromId})-[r:${_args.type}]->(to:CI {id: $toId})
         DELETE r
         RETURN count(r) as deleted
         `,
-        { fromId: _args._fromId, toId: _args._toId }
+        { fromId: _args.fromId, toId: _args.toId }
       );
-
       const deleted = result.records[0]?.get('deleted').toNumber() || 0;
-
       if (deleted === 0) {
         throw new GraphQLError('Relationship not found', {
           extensions: { code: 'NOT_FOUND' },
         });
       }
-
-      // Clear caches
-      _context._loaders._relationshipLoader.clear(_args._fromId);
-      _context._loaders._dependentLoader.clear(_args._toId);
-
+      _context._loaders._relationshipLoader.clear(_args.fromId);
+      _context._loaders._dependentLoader.clear(_args.toId);
       return true;
     } catch (error: any) {
       if (error instanceof GraphQLError) {
@@ -659,21 +700,23 @@ const CIResolvers = {
   /**
    * Resolve outgoing relationships
    */
-  _relationships: async (parent: CI, _args: any, _context: GraphQLContext) => {
-    return await _context._loaders._relationshipLoader.load(parent._id);
+  _relationships: async (parent: CIValue, _args: any, _context: GraphQLContext) => {
+    const relationships = await _context._loaders._relationshipLoader.load(parent._id);
+    return relationships.map(toGraphQLRelatedCI);
   },
 
   /**
    * Resolve incoming relationships (dependents)
    */
-  _dependents: async (parent: CI, _args: any, _context: GraphQLContext) => {
-    return await _context._loaders._dependentLoader.load(parent._id);
+  _dependents: async (parent: CIValue, _args: any, _context: GraphQLContext) => {
+    const dependents = await _context._loaders._dependentLoader.load(parent._id);
+    return dependents.map(toGraphQLRelatedCI);
   },
 
   /**
    * Resolve all dependencies recursively
    */
-  _dependencies: async (parent: CI, _args: any, _context: GraphQLContext) => {
+  _dependencies: async (parent: CIValue, _args: any, _context: GraphQLContext) => {
     const session = _context._neo4jClient.getSession();
 
     try {
@@ -684,34 +727,18 @@ const CIResolvers = {
         `,
         { id: parent._id }
       );
-
-      return result.records.map((record: any) => {
-        const props = record.get('dep').properties;
-        return {
-          _id: props.id,
-          external_id: props.external_id,
-          name: props.name,
-          _type: props.type,
-          _status: props.status,
-          environment: props.environment,
-          _created_at: props.created_at,
-          _updated_at: props.updated_at,
-          _discovered_at: props.discovered_at,
-          _metadata: props.metadata ? JSON.parse(props.metadata) : {},
-        };
-      });
+      return result.records.map((record: any) => toGraphQLCI(record.get('dep').properties));
     } finally {
       await session.close();
     }
   },
 
-  /**
-   * Convert field names to match GraphQL schema
-   */
-  _externalId: (parent: CI) => parent.external_id,
-  _createdAt: (parent: CI) => parent._created_at,
-  _updatedAt: (parent: CI) => parent._updated_at,
-  _discoveredAt: (parent: CI) => parent._discovered_at,
+  _externalId: (parent: CIValue) => parent.external_id ?? parent._externalId,
+  _name: (parent: CIValue) => parent.name ?? parent._name,
+  _environment: (parent: CIValue) => parent.environment ?? parent._environment,
+  _createdAt: (parent: CIValue) => parent._created_at ?? parent._createdAt,
+  _updatedAt: (parent: CIValue) => parent._updated_at ?? parent._updatedAt,
+  _discoveredAt: (parent: CIValue) => parent._discovered_at ?? parent._discoveredAt,
 };
 
 /**

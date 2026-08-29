@@ -8,7 +8,7 @@
 
 import React, { useState } from 'react';
 import { Icon } from '@happy-technologies/design-system';
-import { apiClient } from '../../services/auth.service';
+import { apiClient } from '../../services/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -70,7 +70,7 @@ export const DiscoverySettings: React.FC = () => {
     }));
 
     try {
-      await apiClient.post(`/api/v1/discovery/test-connection`, {
+      await apiClient.post(`/discovery/test-connection`, {
         provider,
         credentials: credentials[provider as keyof ProviderCredentials],
       });
@@ -97,7 +97,7 @@ export const DiscoverySettings: React.FC = () => {
 
   const saveCredentials = async (provider: string) => {
     try {
-      await apiClient.put(`/api/v1/settings/discovery/${provider}`, {
+      await apiClient.put(`/settings/discovery/${provider}`, {
         credentials: credentials[provider as keyof ProviderCredentials],
       });
 

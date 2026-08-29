@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import React, { useState } from 'react';
-import { DiscoveryJob, JobStatus } from '../../services/discovery.service';
+import { DiscoveryJob, DiscoveryProvider, JobStatus } from '../../services/discovery.service';
 import { Card, CardContent } from '../ui/card';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
@@ -14,7 +14,7 @@ import { Icon } from '@happy-technologies/design-system';
 
 interface DiscoveryJobStatusProps {
   job: DiscoveryJob;
-  onRetry?: (jobId: string) => void;
+  onRetry?: (jobId: string, provider: DiscoveryProvider) => void;
   onCancel?: (jobId: string) => void;
 }
 
@@ -161,7 +161,7 @@ export const DiscoveryJobStatus: React.FC<DiscoveryJobStatusProps> = ({
           {job.status === 'failed' && onRetry && (
             <Button
               size="sm"
-              onClick={() => onRetry(job.id)}
+              onClick={() => onRetry(job.id, job.provider)}
             >
               <Icon name="arrows-clockwise" size={16} className="mr-2" />
               Retry

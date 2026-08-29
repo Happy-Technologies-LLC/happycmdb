@@ -9,7 +9,7 @@
  * the `test-containers` helper — no suite starts its own containers.
  */
 
-import { readdirSync, readFileSync } from 'fs';
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'fs';
 import { resolve } from 'path';
 import { GenericContainer, StartedTestContainer, Wait } from 'testcontainers';
 import neo4j from 'neo4j-driver';
@@ -27,6 +27,10 @@ const POSTGRES_PASSWORD = 'testpassword';
 const POSTGRES_DB = 'cmdb_test';
 const NEO4J_PASSWORD = 'testpassword';
 
+const RUNTIME_ENV_PATH = resolve(
+  process.cwd(),
+  'test-results/integration/runtime-env.json'
+);
 const MIGRATIONS_DIR = resolve(process.cwd(), 'packages/database/src/postgres/migrations');
 
 export default async function globalSetup(): Promise<void> {
@@ -98,6 +102,23 @@ export default async function globalSetup(): Promise<void> {
     process.env.REDIS_PORT = String(redisPort);
     containerStore.__REDIS_CONTAINER__ = redisContainer;
     console.log(`Redis started on localhost:${redisPort}`);
+    mkdirSync(resolve(process.cwd(), 'test-results/integration'), { recursive: true });
+    writeFileSync(
+      RUNTIME_ENV_PATH,
+      JSON.stringify({
+        NEO4J_URI: process.env.NEO4J_URI,
+        NEO4J_USERNAME: process.env.NEO4J_USERNAME,
+        NEO4J_PASSWORD: process.env.NEO4J_PASSWORD,
+        POSTGRES_HOST: process.env.POSTGRES_HOST,
+        POSTGRES_PORT: process.env.POSTGRES_PORT,
+        POSTGRES_DB: process.env.POSTGRES_DB,
+        POSTGRES_USER: process.env.POSTGRES_USER,
+        POSTGRES_PASSWORD: process.env.POSTGRES_PASSWORD,
+        REDIS_HOST: process.env.REDIS_HOST,
+        REDIS_PORT: process.env.REDIS_PORT,
+      }),
+      'utf-8'
+    );
 
     console.log('All integration test containers started successfully');
   } catch (error) {
@@ -124,7 +145,7 @@ async function initializeNeo4jSchema(uri: string, password: string): Promise<voi
     );
     await session.run('CREATE INDEX ci_name_idx IF NOT EXISTS FOR (ci:CI) ON (ci.name)');
     await session.run(
-      `CREATE FULLTEXT INDEX ci_search IF NOT EXISTS
+      `CREATE FULLTEXT INDEX ci_fulltext_idx IF NOT EXISTS
        FOR (ci:CI) ON EACH [ci.name, ci.type, ci.external_id]`
     );
   } finally {

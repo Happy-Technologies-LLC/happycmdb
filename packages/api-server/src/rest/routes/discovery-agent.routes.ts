@@ -4,16 +4,29 @@
 /**
  * Discovery Agent Routes
  *
- * REST API routes for managing discovery agents
+ * REST API routes for managing discovery agents.
+ *
+ * Authentication is enforced centrally: server.ts mounts
+ * `authMiddleware.authenticate()` on every /api/v1 route before this
+ * router. Registering, heartbeating, and deleting an agent mutate agent
+ * state, so they additionally require the 'write' permission
+ * (`authMiddleware.requirePermission('write')`); the 'agent' role has
+ * 'write' (see ROLE_PERMISSIONS), so discovery agents can register and
+ * heartbeat themselves alongside operator/admin. Finding the best agent
+ * for a job and listing/reading agents are read-like -- they don't
+ * change agent state -- so they stay authenticated-only with no extra
+ * gate.
  */
 import { Router } from 'express';
 import Joi from 'joi';
 import { DiscoveryAgentController } from '../controllers/discovery-agent.controller';
 import { validateRequest } from '../middleware/validation.middleware';
 import { schemas } from '@cmdb/common';
+import { getAuthMiddleware } from '../../auth/auth-bootstrap';
 
 export const discoveryAgentRoutes = Router();
 const controller = new DiscoveryAgentController();
+const authMiddleware = getAuthMiddleware();
 
 // Validation schemas
 const registerAgentSchema = Joi.object({
@@ -52,16 +65,18 @@ const findBestAgentSchema = Joi.object({
   provider: schemas.discoveryProvider.required(),
 });
 
-// POST /api/v1/agents/register - Register or update agent
+// POST /api/v1/agents/register - Register or update agent (write)
 discoveryAgentRoutes.post(
   '/register',
+  authMiddleware.requirePermission('write'),
   validateRequest(registerAgentSchema, 'body'),
   controller.registerAgent.bind(controller)
 );
 
-// POST /api/v1/agents/heartbeat - Update agent heartbeat
+// POST /api/v1/agents/heartbeat - Update agent heartbeat (write)
 discoveryAgentRoutes.post(
   '/heartbeat',
+  authMiddleware.requirePermission('write'),
   validateRequest(heartbeatSchema, 'body'),
   controller.updateHeartbeat.bind(controller)
 );
@@ -79,5 +94,9 @@ discoveryAgentRoutes.get('/', controller.listAgents.bind(controller));
 // GET /api/v1/agents/:agentId - Get agent by ID
 discoveryAgentRoutes.get('/:agentId', controller.getAgent.bind(controller));
 
-// DELETE /api/v1/agents/:agentId - Delete agent
-discoveryAgentRoutes.delete('/:agentId', controller.deleteAgent.bind(controller));
+// DELETE /api/v1/agents/:agentId - Delete agent (write)
+discoveryAgentRoutes.delete(
+  '/:agentId',
+  authMiddleware.requirePermission('write'),
+  controller.deleteAgent.bind(controller)
+);

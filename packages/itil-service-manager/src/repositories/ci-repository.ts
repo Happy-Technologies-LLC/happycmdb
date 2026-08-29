@@ -141,7 +141,7 @@ export class CIRepository {
     );
 
     return result.rows.map((row) => ({
-      id: row.fact_change_key.toString(),
+      id: row.change_key.toString(),
       ciId: ciId,
       ciName: '', // Would need to join with dim_ci to get name
       eventType: this.mapChangeType(row.change_type),

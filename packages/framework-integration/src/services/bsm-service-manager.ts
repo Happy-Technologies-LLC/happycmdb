@@ -16,7 +16,7 @@
  */
 
 import { BusinessServiceRepository } from '@cmdb/itil-service-manager';
-import { getPostgresClient, getNeo4jClient } from '@cmdb/database';
+import { getNeo4jClient } from '@cmdb/database';
 import { BusinessCriticality, RiskRating } from '@cmdb/unified-model';
 import { BSMImpact } from '../types/kpi-types';
 import { ImpactAnalysis, BlastRadiusAnalysis } from '../types/unified-types';
@@ -32,8 +32,7 @@ export class BSMServiceManager {
   private businessServiceRepo: BusinessServiceRepository;
 
   constructor() {
-    const pgClient = getPostgresClient();
-    this.businessServiceRepo = new BusinessServiceRepository(pgClient);
+    this.businessServiceRepo = new BusinessServiceRepository();
   }
 
   /**
@@ -98,10 +97,10 @@ export class BSMServiceManager {
       try {
         const result = await session.run(
           `
-          MATCH (ci:CI {_id: $ciId})
+          MATCH (ci:CI {id: $ciId})
           MATCH (ci)-[:SUPPORTS|HOSTS*1..3]->(bs:BusinessService)
-          RETURN DISTINCT bs._id as serviceId
-          ORDER BY bs.business_criticality
+          RETURN DISTINCT bs.id as serviceId, bs.business_criticality as criticality
+          ORDER BY criticality
           LIMIT 1
           `,
           { ciId }
@@ -125,9 +124,9 @@ export class BSMServiceManager {
         // Get dependent services
         const dependentResult = await session.run(
           `
-          MATCH (bs:BusinessService {_id: $serviceId})
+          MATCH (bs:BusinessService {id: $serviceId})
           MATCH (bs)-[:DEPENDS_ON]->(dep:BusinessService)
-          RETURN dep._id as depServiceId, dep.name as depServiceName,
+          RETURN dep.id as depServiceId, dep.name as depServiceName,
                  dep.business_criticality as depCriticality
           LIMIT 10
           `,
@@ -186,11 +185,11 @@ export class BSMServiceManager {
         // Find all downstream dependencies
         const result = await session.run(
           `
-          MATCH (source {_id: $ciId})
+          MATCH (source {id: $ciId})
           MATCH path = (source)-[*1..5]->(dependent)
           WHERE dependent:CI OR dependent:BusinessService
           RETURN DISTINCT
-            dependent._id as id,
+            dependent.id as id,
             dependent.name as name,
             labels(dependent)[0] as type,
             length(path) as depth
@@ -250,8 +249,8 @@ export class BSMServiceManager {
         // Get source details
         const sourceResult = await session.run(
           `
-          MATCH (source {_id: $ciId})
-          RETURN source._id as id, source.name as name
+          MATCH (source {id: $ciId})
+          RETURN source.id as id, source.name as name
           `,
           { ciId }
         );
@@ -260,10 +259,10 @@ export class BSMServiceManager {
         const sourceName = sourceResult.records[0].get('name');
 
         // Build visualization data
-        const nodes = [
-          { id: sourceId, name: sourceName, type: 'ci' as const, criticality: 'tier_2' as BusinessCriticality }
+        const nodes: BlastRadiusAnalysis['visualizationData']['nodes'] = [
+          { id: sourceId, name: sourceName, type: 'ci', criticality: 'tier_2' as BusinessCriticality }
         ];
-        const edges = [];
+        const edges: BlastRadiusAnalysis['visualizationData']['edges'] = [];
 
         for (const service of impactedServices) {
           nodes.push({

@@ -112,7 +112,7 @@ export const ScheduleList: React.FC<ScheduleListProps> = ({
   };
 
   const getQueueType = (queueName: string): 'discovery' | 'etl' => {
-    return queueName.startsWith('discovery:') ? 'discovery' : 'etl';
+    return queueName.startsWith('discovery-') ? 'discovery' : 'etl';
   };
 
   if (loading) {
@@ -190,9 +190,15 @@ export const ScheduleList: React.FC<ScheduleListProps> = ({
                 </div>
               </TableCell>
               <TableCell>
-                <div className="text-sm">
-                  {formatTimestamp(schedule.nextRun)}
-                </div>
+                {schedule.nextRun ? (
+                  <div className="text-sm">
+                    {formatTimestamp(schedule.nextRun)}
+                  </div>
+                ) : (
+                  <div className="text-sm text-muted-foreground">
+                    Not available
+                  </div>
+                )}
               </TableCell>
               <TableCell>
                 {schedule.lastRun ? (

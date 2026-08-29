@@ -53,18 +53,18 @@ connectorsRouter.get('/', async (_req, res) => {
   try {
     const result = await postgresClient.query(
       `SELECT
-        id, name, type, enabled, schedule,
+        id, name, connector_type, enabled, schedule,
         created_at, updated_at,
-        (SELECT status FROM connector_runs
-         WHERE connector_name = connector_configurations.name
+        (SELECT status FROM connector_run_history
+         WHERE config_name = connector_configurations.name
          ORDER BY started_at DESC LIMIT 1) as status,
-        (SELECT started_at FROM connector_runs
-         WHERE connector_name = connector_configurations.name
+        (SELECT started_at FROM connector_run_history
+         WHERE config_name = connector_configurations.name
          ORDER BY started_at DESC LIMIT 1) as last_run,
-        (SELECT COUNT(*) FROM connector_runs
-         WHERE connector_name = connector_configurations.name) as total_runs,
-        (SELECT COUNT(*) FROM connector_runs
-         WHERE connector_name = connector_configurations.name
+        (SELECT COUNT(*) FROM connector_run_history
+         WHERE config_name = connector_configurations.name) as total_runs,
+        (SELECT COUNT(*) FROM connector_run_history
+         WHERE config_name = connector_configurations.name
          AND status = 'completed') as successful_runs
        FROM connector_configurations
        ORDER BY name`
@@ -125,7 +125,7 @@ connectorsRouter.post('/', async (req, res) => {
     // Insert into database
     const result = await postgresClient.query(
       `INSERT INTO connector_configurations
-       (name, type, enabled, schedule, connection, options)
+       (name, connector_type, enabled, schedule, connection, options)
        VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING *`,
       [name, type, enabled, schedule, JSON.stringify(connection), JSON.stringify(options || {})]
@@ -137,7 +137,7 @@ connectorsRouter.post('/', async (req, res) => {
     await integrationManager.registerConnector({
       id: connector.id,
       name: connector.name,
-      type: connector.type,
+      type: connector.connector_type,
       enabled: connector.enabled,
       schedule: connector.schedule,
       connection: connector.connection,
@@ -242,8 +242,8 @@ connectorsRouter.get('/:name/runs', async (req, res) => {
     const offset = parseInt(req.query['offset'] as string) || 0;
 
     const result = await postgresClient.query(
-      `SELECT * FROM connector_runs
-       WHERE connector_name = $1
+      `SELECT * FROM connector_run_history
+       WHERE config_name = $1
        ORDER BY started_at DESC
        LIMIT $2 OFFSET $3`,
       [req.params.name, limit, offset]
@@ -261,14 +261,25 @@ connectorsRouter.get('/:name/runs', async (req, res) => {
  */
 connectorsRouter.get('/:name/runs/:runId/logs', async (req, res) => {
   try {
-    const result = await postgresClient.query(
-      `SELECT * FROM connector_run_logs
+    const runResult = await postgresClient.query(
+      'SELECT id FROM connector_run_history WHERE id = $1 AND config_name = $2',
+      [req.params.runId, req.params.name]
+    );
+
+    if (runResult.rows.length === 0) {
+      res.status(404).json({ error: 'Run not found' });
+      return;
+    }
+
+    const logsResult = await postgresClient.query(
+      `SELECT id, "timestamp", level, message
+       FROM connector_run_log_entries
        WHERE run_id = $1
-       ORDER BY timestamp ASC`,
+       ORDER BY "timestamp" ASC, sequence ASC`,
       [req.params.runId]
     );
 
-    res.json({ logs: result.rows });
+    res.json({ logs: logsResult.rows });
   } catch (error) {
     logger.error('Failed to get connector run logs', { error });
     res.status(500).json({ error: (error as Error).message });

@@ -65,6 +65,7 @@ const menuCategories: MenuCategory[] = [
       { text: 'Inventory', icon: 'list', path: '/inventory' },
       { text: 'Health Monitoring', icon: 'heartbeat', path: '/cmdb-health' },
       { text: 'Anomaly Detection', icon: 'warning', path: '/anomalies' },
+      { text: 'Job Queue', icon: 'stack', path: '/jobs' },
     ],
   },
   {
@@ -85,6 +86,7 @@ const menuCategories: MenuCategory[] = [
     title: 'AI & Analytics',
     items: [
       { text: 'Pattern Learning', icon: 'sparkle', path: '/ai/patterns' },
+      { text: 'Analytics & Reporting', icon: 'chart-bar', path: '/analytics' },
     ],
   },
   {

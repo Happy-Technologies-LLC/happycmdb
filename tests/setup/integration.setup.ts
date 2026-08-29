@@ -4,7 +4,18 @@
  * Setup for integration tests with real database connections.
  */
 
+import { existsSync, readFileSync } from 'fs';
+import { resolve } from 'path';
 import { jest } from '@jest/globals';
+const runtimeEnvPath = resolve(
+  process.cwd(),
+  'test-results/integration/runtime-env.json'
+);
+if (existsSync(runtimeEnvPath)) {
+  const runtimeEnv = JSON.parse(readFileSync(runtimeEnvPath, 'utf-8')) as Record<string, string>;
+  Object.assign(process.env, runtimeEnv);
+}
+
 
 // Global test configuration
 beforeEach(() => {

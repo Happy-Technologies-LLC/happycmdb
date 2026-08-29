@@ -7,6 +7,7 @@
  */
 
 import { IdentityReconciliationEngine } from '../../src/engine/identity-reconciliation-engine';
+import { closeQueueManagerConnection } from '@cmdb/database';
 import { TransformedCI } from '@cmdb/integration-framework';
 import {
   physicalServerDuplicates,
@@ -61,7 +62,7 @@ describe('ReconciliationWorkflow - Integration Tests', () => {
   });
 
   afterAll(async () => {
-    // Close database connections
+    await closeQueueManagerConnection();
   });
 
   describe('Scenario 1: Physical Server Multi-Source Discovery', () => {

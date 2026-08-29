@@ -18,6 +18,8 @@ import { analyticsTypeDefs } from './schema/analytics.schema';
 import { connectorTypeDefs } from './schema/connector.schema';
 import { reconciliationTypeDefs } from './schema/reconciliation.schema';
 import { itilTypeDefs } from './schema/itil.schema';
+import { getAuthMiddleware } from '../auth/auth-bootstrap';
+import type { AuthenticatedRequest } from '../auth/types';
 import { resolvers } from './resolvers';
 import { createCILoader, createRelationshipLoader, createDependentLoader } from './dataloaders/ci-loader';
 import { GraphQLContext } from './resolvers';
@@ -32,6 +34,8 @@ export async function createGraphQLServer(app: express.Application) {
 
   // Get Neo4j client singleton
   const neo4jClient = getNeo4jClient();
+
+  const authMiddleware = getAuthMiddleware();
 
   // Create Apollo Server with schema and resolvers
   const server = new ApolloServer<GraphQLContext>({
@@ -84,8 +88,9 @@ export async function createGraphQLServer(app: express.Application) {
     '/graphql',
     cors<cors.CorsRequest>(),
     json(),
+    authMiddleware.authenticate(),
     expressMiddleware(server, {
-      context: async (): Promise<GraphQLContext> => {
+      context: async ({ req }): Promise<GraphQLContext> => {
         // Create fresh DataLoaders for each request (prevents caching across requests)
         const loaders = {
           _ciLoader: createCILoader(neo4jClient),
@@ -93,9 +98,12 @@ export async function createGraphQLServer(app: express.Application) {
           _dependentLoader: createDependentLoader(neo4jClient),
         };
 
+        const user = (req as AuthenticatedRequest).user!;
+
         return {
           _neo4jClient: neo4jClient,
           _loaders: loaders,
+          user,
         };
       },
     })

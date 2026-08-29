@@ -61,7 +61,7 @@ export const DriftTrackingPanel: React.FC<DriftTrackingPanelProps> = ({
   });
 
   const createBaselineMutation = useMutation({
-    mutationFn: () => driftApi.createBaseline(ciId, 'configuration', 'current_user'),
+    mutationFn: () => driftApi.createBaseline(ciId, 'configuration'),
     onSuccess: () => {
       toast.success('Baseline created successfully');
       queryClient.invalidateQueries({ queryKey: ['drift'] });

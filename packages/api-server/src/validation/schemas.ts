@@ -8,6 +8,81 @@
 
 import Joi from 'joi';
 
+const CANONICAL_GCP_TOKEN_URI = 'https://oauth2.googleapis.com/token';
+
+// STS uses the commercial and GovCloud AWS partitions served by amazonaws.com.
+// Keeping this explicit prevents untrusted host fragments from reaching URL construction.
+const AWS_STS_REGIONS = [
+  'af-south-1',
+  'ap-east-1',
+  'ap-east-2',
+  'ap-northeast-1',
+  'ap-northeast-2',
+  'ap-northeast-3',
+  'ap-south-1',
+  'ap-south-2',
+  'ap-southeast-1',
+  'ap-southeast-2',
+  'ap-southeast-3',
+  'ap-southeast-4',
+  'ap-southeast-5',
+  'ap-southeast-6',
+  'ap-southeast-7',
+  'ca-central-1',
+  'ca-west-1',
+  'eu-central-1',
+  'eu-central-2',
+  'eu-north-1',
+  'eu-south-1',
+  'eu-south-2',
+  'eu-west-1',
+  'eu-west-2',
+  'eu-west-3',
+  'il-central-1',
+  'me-central-1',
+  'me-south-1',
+  'mx-central-1',
+  'sa-east-1',
+  'us-east-1',
+  'us-east-2',
+  'us-gov-east-1',
+  'us-gov-west-1',
+  'us-west-1',
+  'us-west-2',
+] as const;
+
+const awsConnectionCredentialsSchema = Joi.object({
+  region: Joi.string().valid(...AWS_STS_REGIONS).optional(),
+}).unknown(true);
+
+const gcpConnectionCredentialsSchema = Joi.object()
+  .unknown(true)
+  .custom((credentials: Record<string, unknown>, helpers: Joi.CustomHelpers) => {
+    const rawServiceAccount = credentials.credentials;
+    let serviceAccount: unknown = rawServiceAccount;
+    if (typeof rawServiceAccount === 'string') {
+      try {
+        serviceAccount = JSON.parse(rawServiceAccount);
+      } catch {
+        return credentials;
+      }
+    }
+
+    if (!serviceAccount || typeof serviceAccount !== 'object') {
+      return credentials;
+    }
+
+    const tokenUri = (serviceAccount as Record<string, unknown>).token_uri;
+    if (tokenUri !== undefined && tokenUri !== CANONICAL_GCP_TOKEN_URI) {
+      return helpers.error('any.invalid');
+    }
+
+    return credentials;
+  })
+  .messages({
+    'any.invalid': `GCP token_uri must be ${CANONICAL_GCP_TOKEN_URI}`,
+  });
+
 /**
  * Authentication Schemas
  */
@@ -24,6 +99,62 @@ export const authSchemas = {
   _generateApiKey: Joi.object({
     name: Joi.string().min(3).max(100).required(),
     expiresInDays: Joi.number().integer().min(1).max(365).optional(),
+  }),
+
+  _updateProfile: Joi.object({
+    name: Joi.string().min(1).max(255).optional(),
+    // Avatar is a data-URL image; server body-parser limit is 10mb
+    // (rest/server.ts), so this stays comfortably under that.
+    avatar: Joi.string().max(8_000_000).allow('').optional(),
+  }).min(1),
+
+  _changePassword: Joi.object({
+    currentPassword: Joi.string().min(1).required(),
+    newPassword: Joi.string().min(8).required(),
+  }),
+};
+
+/**
+ * Settings Schemas
+ * GeneralSettings/NotificationSettings/DiscoverySettings PUT payloads
+ * (web-ui/src/components/settings/*). Kept permissive on unknown keys so
+ * the frontend's evolving preference field sets don't need a schema
+ * change alongside every UI tweak; still typed and bounded on the fields
+ * that exist today.
+ */
+export const settingsSchemas = {
+  general: Joi.object({
+    language: Joi.string().max(10).optional(),
+    timezone: Joi.string().max(64).optional(),
+    dateFormat: Joi.string().max(32).optional(),
+    defaultPage: Joi.string().max(255).optional(),
+  }).unknown(true).min(1),
+
+  notifications: Joi.object({
+    emailOnJobFailure: Joi.boolean().optional(),
+    emailOnJobSuccess: Joi.boolean().optional(),
+    emailOnDiscoveryCompletion: Joi.boolean().optional(),
+    inAppNotifications: Joi.boolean().optional(),
+    emailDigestFrequency: Joi.string().valid('never', 'daily', 'weekly', 'monthly').optional(),
+  }).unknown(true).min(1),
+
+  discoveryProvider: Joi.object({
+    credentials: Joi.object().required(),
+  }),
+
+  testConnection: Joi.object({
+    provider: Joi.string().valid('aws', 'azure', 'gcp', 'ssh').required(),
+    credentials: Joi.alternatives()
+      .conditional('provider', {
+        is: 'aws',
+        then: awsConnectionCredentialsSchema,
+        otherwise: Joi.alternatives().conditional('provider', {
+          is: 'gcp',
+          then: gcpConnectionCredentialsSchema,
+          otherwise: Joi.object().unknown(true),
+        }),
+      })
+      .required(),
   }),
 };
 

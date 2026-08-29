@@ -247,7 +247,7 @@ export class RelationshipController {
         } else if (from_id && to_id && type) {
           // Delete by from_id, to_id, and type
           // Validate relationship type against the allowed enum to prevent Cypher injection
-          const allowedTypes = Object.values(RelationshipType) as string[];
+          const allowedTypes: string[] = ['DEPENDS_ON', 'HOSTS', 'CONNECTS_TO', 'USES', 'OWNED_BY', 'PART_OF', 'DEPLOYED_ON', 'BACKED_UP_BY'];
           if (!allowedTypes.includes(type as string)) {
             res.status(400).json({
               success: false,

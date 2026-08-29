@@ -291,7 +291,7 @@ describe('Neo4jToPostgresJob', () => {
 
       // Assert: Contract with PostgreSQL - dimension insert was called
       expect(mockPostgres.client.query).toHaveBeenCalledWith(
-        expect.stringContaining('INSERT INTO dim_ci'),
+        expect.stringContaining('INSERT INTO cmdb.dim_ci'),
         expect.any(Array)
       );
     });

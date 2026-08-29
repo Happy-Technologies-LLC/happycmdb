@@ -129,20 +129,22 @@ const Query = {
     }
   },
 
-  configurationAccuracy: async () => {
-    const pool = getPostgresClient().pool;
+  configurationAccuracy: async (_parent: any, _args: any, context: GraphQLContext) => {
+    const session = context._neo4jClient.getSession();
     try {
-      const result = await pool.query(`
-        SELECT
-          COUNT(*) FILTER (WHERE itil_audit_status = 'COMPLIANT') as compliant_count,
-          COUNT(*) as total_audited
-        FROM ci_snapshot
-        WHERE itil_audit_status IS NOT NULL
+      // Read from Neo4j CI nodes - completeAudit writes itil_audit_status there
+      const result = await session.run(`
+        MATCH (ci:CI)
+        WHERE ci.itil_audit_status IS NOT NULL
+        RETURN
+          count(CASE WHEN ci.itil_audit_status = 'COMPLIANT' THEN 1 ELSE null END) as compliantCount,
+          count(ci) as totalAudited
       `);
 
-      const compliantCount = parseInt(result.rows[0]?.compliant_count || '0');
-      const totalAudited = parseInt(result.rows[0]?.total_audited || '1');
-      const accuracy = (compliantCount / totalAudited) * 100;
+      const row = result.records[0];
+      const compliantCount = row ? row.get('compliantCount').toNumber() : 0;
+      const totalAudited = row ? row.get('totalAudited').toNumber() : 0;
+      const accuracy = totalAudited > 0 ? (compliantCount / totalAudited) * 100 : 0;
 
       return {
         accuracy: parseFloat(accuracy.toFixed(2)),
@@ -155,6 +157,8 @@ const Query = {
       throw new GraphQLError('Failed to calculate configuration accuracy', {
         extensions: { code: 'INTERNAL_SERVER_ERROR', originalError: error.message },
       });
+    } finally {
+      await session.close();
     }
   },
 

@@ -2,20 +2,34 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import axios, { AxiosError, AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios';
-import type {
-  ApiResponse,
-  PaginatedResponse,
-  ConfigurationItem,
-  CIRelationship,
-  DiscoveryJob,
-  DiscoverySchedule,
-  User,
-  AuthToken,
-  LoginCredentials,
-  FilterOptions,
-  SortOptions,
-  PaginationOptions,
-} from '../types';
+import type { AuthToken, LoginCredentials, User } from '../types';
+
+export interface UpdateProfileData {
+  name?: string;
+  avatar?: string;
+}
+
+export interface ChangePasswordData {
+  currentPassword: string;
+  newPassword: string;
+}
+
+interface RawUserPayload {
+  userId?: string;
+  _userId?: string;
+  username?: string;
+  _username?: string;
+  email?: string;
+  name?: string;
+  avatar?: string;
+  _avatar?: string;
+  role?: string;
+  _role?: string;
+  createdAt?: string;
+  _createdAt?: string;
+  lastLoginAt?: string;
+  _lastLoginAt?: string;
+}
 
 // Create axios instance
 const apiClient: AxiosInstance = axios.create({
@@ -44,7 +58,8 @@ apiClient.interceptors.request.use(
 apiClient.interceptors.response.use(
   (response: AxiosResponse) => response,
   async (error: AxiosError) => {
-    if (error.response?.status === 401) {
+    const isLoginRequest = error.config?.url?.includes('/auth/login');
+    if (error.response?.status === 401 && !isLoginRequest) {
       // Token expired or invalid
       localStorage.removeItem('auth_token');
       localStorage.removeItem('user');
@@ -59,8 +74,8 @@ class ApiService {
   // Authentication
   async login(credentials: LoginCredentials): Promise<AuthToken> {
     const response = await apiClient.post<{success: boolean; data: any}>('/auth/login', {
-      _username: credentials.username,
-      _password: credentials.password,
+      username: credentials.username,
+      password: credentials.password,
     });
     return {
       access_token: response.data.data._accessToken,
@@ -74,161 +89,35 @@ class ApiService {
     await apiClient.post('/auth/logout');
   }
 
-  async getCurrentUser(): Promise<User> {
-    const response = await apiClient.get<{success: boolean; data: any}>('/auth/me');
-    const userData = response.data.data;
+  private mapUser(userData: RawUserPayload): User {
     return {
-      user_id: userData.userId || userData._userId,
-      username: userData.username || userData._username,
-      email: userData.email || userData.username || userData._username,
-      full_name: userData.name || userData.username || userData._username,
-      role: userData.role || userData._role || 'viewer',
+      user_id: userData.userId || userData._userId || '',
+      username: userData.username || userData._username || '',
+      email: userData.email || userData.username || userData._username || '',
+      full_name: userData.name || userData.username || userData._username || '',
+      avatar: userData.avatar || userData._avatar,
+      role: (userData.role || userData._role || 'viewer') as User['role'],
       created_at: userData.createdAt || userData._createdAt || new Date().toISOString(),
       last_login: userData.lastLoginAt || userData._lastLoginAt,
     };
   }
 
-  // Configuration Items
-  async getCIs(
-    filters?: FilterOptions,
-    sort?: SortOptions,
-    pagination?: PaginationOptions
-  ): Promise<PaginatedResponse<ConfigurationItem>> {
-    const params = {
-      ...filters,
-      sort_by: sort?.field,
-      sort_order: sort?.order,
-      page: pagination?.page,
-      limit: pagination?.limit,
-    };
-    const response = await apiClient.get<PaginatedResponse<ConfigurationItem>>('/cis', { params });
-    return response.data;
+  async getCurrentUser(): Promise<User> {
+    const response = await apiClient.get<{ success: boolean; data: RawUserPayload }>('/auth/me');
+    return this.mapUser(response.data.data);
   }
 
-  async getCIById(ciId: string): Promise<ConfigurationItem> {
-    const response = await apiClient.get<ConfigurationItem>(`/cis/${ciId}`);
-    return response.data;
+  async updateProfile(data: UpdateProfileData): Promise<User> {
+    const response = await apiClient.put<{ success: boolean; data: RawUserPayload }>('/auth/profile', data);
+    return this.mapUser(response.data.data);
   }
 
-  async createCI(ci: Partial<ConfigurationItem>): Promise<ConfigurationItem> {
-    const response = await apiClient.post<ConfigurationItem>('/cis', ci);
-    return response.data;
+  async changePassword(data: ChangePasswordData): Promise<void> {
+    await apiClient.put('/auth/password', data);
   }
 
-  async updateCI(ciId: string, updates: Partial<ConfigurationItem>): Promise<ConfigurationItem> {
-    const response = await apiClient.patch<ConfigurationItem>(`/cis/${ciId}`, updates);
-    return response.data;
-  }
-
-  async deleteCI(ciId: string): Promise<void> {
-    await apiClient.delete(`/cis/${ciId}`);
-  }
-
-  async searchCIs(query: string): Promise<ConfigurationItem[]> {
-    const response = await apiClient.get<ConfigurationItem[]>('/cis/search', {
-      params: { q: query },
-    });
-    return response.data;
-  }
-
-  // Relationships
-  async getCIRelationships(ciId: string): Promise<CIRelationship[]> {
-    const response = await apiClient.get<CIRelationship[]>(`/cis/${ciId}/relationships`);
-    return response.data;
-  }
-
-  async createRelationship(relationship: Partial<CIRelationship>): Promise<CIRelationship> {
-    const response = await apiClient.post<CIRelationship>('/relationships', relationship);
-    return response.data;
-  }
-
-  async deleteRelationship(relationshipId: string): Promise<void> {
-    await apiClient.delete(`/relationships/${relationshipId}`);
-  }
-
-  // Discovery Jobs
-  async getDiscoveryJobs(
-    pagination?: PaginationOptions
-  ): Promise<PaginatedResponse<DiscoveryJob>> {
-    const params = {
-      page: pagination?.page,
-      limit: pagination?.limit,
-    };
-    const response = await apiClient.get<PaginatedResponse<DiscoveryJob>>('/discovery/jobs', {
-      params,
-    });
-    return response.data;
-  }
-
-  async getDiscoveryJobById(jobId: string): Promise<DiscoveryJob> {
-    const response = await apiClient.get<DiscoveryJob>(`/discovery/jobs/${jobId}`);
-    return response.data;
-  }
-
-  async triggerDiscovery(provider: string, config?: Record<string, unknown>): Promise<DiscoveryJob> {
-    const response = await apiClient.post<DiscoveryJob>('/discovery/trigger', {
-      provider,
-      config,
-    });
-    return response.data;
-  }
-
-  // Discovery Schedules
-  async getDiscoverySchedules(): Promise<DiscoverySchedule[]> {
-    const response = await apiClient.get<DiscoverySchedule[]>('/discovery/schedules');
-    return response.data;
-  }
-
-  async createDiscoverySchedule(
-    schedule: Partial<DiscoverySchedule>
-  ): Promise<DiscoverySchedule> {
-    const response = await apiClient.post<DiscoverySchedule>('/discovery/schedules', schedule);
-    return response.data;
-  }
-
-  async updateDiscoverySchedule(
-    scheduleId: string,
-    updates: Partial<DiscoverySchedule>
-  ): Promise<DiscoverySchedule> {
-    const response = await apiClient.patch<DiscoverySchedule>(
-      `/discovery/schedules/${scheduleId}`,
-      updates
-    );
-    return response.data;
-  }
-
-  async deleteDiscoverySchedule(scheduleId: string): Promise<void> {
-    await apiClient.delete(`/discovery/schedules/${scheduleId}`);
-  }
-
-  // Dashboard
-  async getDashboardStats(): Promise<any> {
-    const response = await apiClient.get('/dashboard/stats');
-    return response.data;
-  }
-
-  // Users (Admin)
-  async getUsers(pagination?: PaginationOptions): Promise<PaginatedResponse<User>> {
-    const params = {
-      page: pagination?.page,
-      limit: pagination?.limit,
-    };
-    const response = await apiClient.get<PaginatedResponse<User>>('/users', { params });
-    return response.data;
-  }
-
-  async createUser(user: Partial<User>): Promise<User> {
-    const response = await apiClient.post<User>('/users', user);
-    return response.data;
-  }
-
-  async updateUser(userId: string, updates: Partial<User>): Promise<User> {
-    const response = await apiClient.patch<User>(`/users/${userId}`, updates);
-    return response.data;
-  }
-
-  async deleteUser(userId: string): Promise<void> {
-    await apiClient.delete(`/users/${userId}`);
+  async deleteAccount(): Promise<void> {
+    await apiClient.delete('/auth/account');
   }
 }
 

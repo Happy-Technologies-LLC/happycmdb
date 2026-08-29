@@ -968,7 +968,7 @@ export class DashboardService {
       const result = await session.run(
         `
         MATCH path = (ci:CI {id: $serviceId})-[r*0..3]-(related:CI)
-        WITH ci, related, r
+        WITH ci, related, r, path
         RETURN
           collect(DISTINCT {
             id: related.id,

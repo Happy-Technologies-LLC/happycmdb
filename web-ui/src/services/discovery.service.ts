@@ -6,6 +6,7 @@
  * Handles all discovery-related API calls
  */
 
+import type { AxiosError } from 'axios';
 import { apiClient as api } from './api';
 
 /**
@@ -60,6 +61,42 @@ export interface DiscoveredCIResult {
   confidenceScore: number;
 }
 
+/**
+ * Raw response shape from the legacy `/discovery/jobs/:id` endpoint, shared
+ * by getJob() and getJobResult(). `status` carries the raw BullMQ state
+ * (waiting/active/completed/failed/delayed), not our JobStatus type.
+ */
+interface RawLegacyDiscoveryJob {
+  id: string;
+  provider: DiscoveryProvider;
+  status: string;
+  progress?: number;
+  result?: { discovered?: number; method?: string; confidence?: number; cost?: number };
+  error?: string;
+  config?: Record<string, unknown>;
+  timestamp?: number;
+  processedOn?: number;
+  finishedOn?: number;
+  definitionId?: string;
+  definitionName?: string;
+  definition_id?: string;
+  definition_name?: string;
+}
+
+/** Raw per-provider stat entry returned by GET /jobs/discovery/stats */
+interface RawDiscoveryStat {
+  provider: DiscoveryProvider;
+  waiting?: number;
+  active?: number;
+  completed?: number;
+  failed?: number;
+  totalDiscoveredCIs?: number;
+  /** Average completed-job duration in ms; null/absent when no sample was available. */
+  averageDurationMs?: number | null;
+  /** Real schedule-enabled state; absent when the provider has no registered schedule. */
+  enabled?: boolean;
+}
+
 export interface DiscoverySchedule {
   provider: DiscoveryProvider;
   enabled: boolean;
@@ -69,16 +106,33 @@ export interface DiscoverySchedule {
   nextRun?: string;
 }
 
-export interface DiscoveryStats {
+export type DiscoveryScheduleUpdate = Pick<
+  Partial<DiscoverySchedule>,
+  'cronExpression' | 'enabled'
+>;
+
+interface RawDiscoverySchedule {
   provider: DiscoveryProvider;
   enabled: boolean;
+  cronExpression?: string;
+  cronPattern?: string;
+  config?: Record<string, unknown>;
+  lastRun?: string;
+  nextRun?: string;
+}
+
+export interface DiscoveryStats {
+  provider: DiscoveryProvider;
+  /** Undefined when the provider has no registered schedule; never fabricated. */
+  enabled?: boolean;
   totalJobs: number;
   successfulJobs: number;
   failedJobs: number;
   successRate: number; // 0-100
   lastRun?: string;
   nextScheduledRun?: string;
-  averageDuration: number; // milliseconds
+  /** Milliseconds; undefined when no completed job in the sample had timing data. */
+  averageDuration?: number;
   totalDiscoveredCIs: number;
 }
 
@@ -270,42 +324,81 @@ class DiscoveryService {
   }
 
   /**
-   * Get a specific job by ID
+   * Map the legacy `/discovery/jobs/:id` response into a DiscoveryJob.
+   */
+  private mapLegacyJob(raw: RawLegacyDiscoveryJob): DiscoveryJob {
+    return {
+      id: raw.id,
+      provider: raw.provider,
+      status: this.mapJobStatus(raw.status),
+      progress: typeof raw.progress === 'number' ? raw.progress : 0,
+      discoveredCIs: raw.result?.discovered ?? 0,
+      createdAt: new Date(raw.timestamp ?? Date.now()).toISOString(),
+      startedAt: raw.processedOn ? new Date(raw.processedOn).toISOString() : undefined,
+      completedAt: raw.finishedOn ? new Date(raw.finishedOn).toISOString() : undefined,
+      error: raw.error,
+      config: raw.config ?? {},
+      definitionId: raw.definitionId ?? raw.definition_id,
+      definitionName: raw.definitionName ?? raw.definition_name,
+    };
+  }
+
+  /**
+   * Get a specific job by ID. Uses the dedicated legacy discovery API, which
+   * searches across every discovery queue so callers never need a queue name.
    */
   async getJob(jobId: string): Promise<DiscoveryJob> {
-    const { data } = await api.get(`/jobs/${jobId}`);
-    return data;
+    const { data } = await api.get(`/discovery/jobs/${jobId}`);
+    return this.mapLegacyJob(data.data);
   }
 
   /**
-   * Get job results with discovered CIs
+   * Get job results. BullMQ only stores an aggregate discovered-CI count on
+   * the job's returnvalue (no per-CI records survive on the job itself), so
+   * discoveredCIs is intentionally empty - totalCount reflects the real count.
    */
   async getJobResult(jobId: string): Promise<DiscoveryJobResult> {
-    const { data } = await api.get(`/jobs/${jobId}/result`);
-    return data;
+    const { data } = await api.get(`/discovery/jobs/${jobId}`);
+    const raw: RawLegacyDiscoveryJob = data.data;
+    const status = this.mapJobStatus(raw.status);
+    const discovered = raw.result?.discovered ?? 0;
+
+    return {
+      jobId: raw.id,
+      provider: raw.provider,
+      status,
+      discoveredCIs: [],
+      totalCount: discovered,
+      successCount: status === 'completed' ? discovered : 0,
+      failureCount: status === 'failed' ? discovered : 0,
+      duration: raw.processedOn && raw.finishedOn ? raw.finishedOn - raw.processedOn : 0,
+    };
   }
 
   /**
-   * Retry a failed job
+   * Retry a failed job via the canonical generic queue route. Discovery jobs
+   * live in a per-provider queue (discovery-<provider>); the legacy discovery
+   * API has no retry endpoint, so the queue name must be derived from the
+   * job's own provider rather than the job ID.
    */
-  async retryJob(jobId: string): Promise<DiscoveryJob> {
-    const { data } = await api.put(`/jobs/${jobId}/retry`);
-    return data;
+  async retryJob(jobId: string, provider: DiscoveryProvider): Promise<void> {
+    await api.post(`/jobs/discovery-${provider}/${jobId}/retry`);
   }
 
   /**
-   * Cancel a running job
+   * Cancel a running job via the dedicated legacy discovery API, which
+   * searches across every discovery queue so callers never need a queue name.
    */
   async cancelJob(jobId: string): Promise<void> {
-    await api.delete(`/jobs/${jobId}`);
+    await api.delete(`/discovery/jobs/${jobId}`);
   }
 
   /**
    * Get all discovery schedules
    */
   async getSchedules(): Promise<DiscoverySchedule[]> {
-    const { data } = await api.get('/jobs/schedules/discovery');
-    return data.data || [];
+    const { data } = await api.get<{ data?: RawDiscoverySchedule[] }>('/jobs/schedules/discovery');
+    return (data.data ?? []).map((schedule) => this.mapDiscoverySchedule(schedule));
   }
 
   /**
@@ -313,10 +406,21 @@ class DiscoveryService {
    */
   async updateSchedule(
     provider: DiscoveryProvider,
-    schedule: Partial<DiscoverySchedule>
+    schedule: DiscoveryScheduleUpdate
   ): Promise<DiscoverySchedule> {
-    const { data } = await api.put(`/jobs/schedules/discovery/${provider}`, schedule);
-    return data;
+    const payload: DiscoveryScheduleUpdate = {};
+    if (schedule.cronExpression !== undefined) {
+      payload.cronExpression = schedule.cronExpression;
+    }
+    if (schedule.enabled !== undefined) {
+      payload.enabled = schedule.enabled;
+    }
+
+    const { data } = await api.put<{ data: RawDiscoverySchedule }>(
+      `/jobs/schedules/discovery/${provider}`,
+      payload
+    );
+    return this.mapDiscoverySchedule(data.data);
   }
 
   /**
@@ -324,44 +428,76 @@ class DiscoveryService {
    */
   async getStats(): Promise<DiscoveryStats[]> {
     const { data } = await api.get('/jobs/discovery/stats');
+    return ((data.data ?? []) as RawDiscoveryStat[]).map((stat) => this.mapDiscoveryStat(stat));
+  }
 
-    // Transform queue stats to DiscoveryStats format
-    return (data.data || []).map((stat: any) => {
-      const totalJobs = (stat.waiting || 0) + (stat.active || 0) + (stat.completed || 0) + (stat.failed || 0);
-      const successfulJobs = stat.completed || 0;
-      const failedJobs = stat.failed || 0;
-      const successRate = totalJobs > 0 ? (successfulJobs / totalJobs) * 100 : 0;
+  private mapDiscoverySchedule(schedule: RawDiscoverySchedule): DiscoverySchedule {
+    const cronExpression = schedule.cronExpression ?? schedule.cronPattern;
+    if (!cronExpression) {
+      throw new Error(`Invalid discovery schedule response for ${schedule.provider}`);
+    }
 
-      return {
-        provider: stat.provider,
-        enabled: true,
-        totalJobs,
-        successfulJobs,
-        failedJobs,
-        successRate,
-        averageDuration: 0, // Not available from queue stats
-        totalDiscoveredCIs: stat.totalDiscoveredCIs || 0, // Now using value from API
-      };
-    });
+    return {
+      provider: schedule.provider,
+      enabled: schedule.enabled,
+      cronExpression,
+      config: schedule.config ?? {},
+      lastRun: schedule.lastRun,
+      nextRun: schedule.nextRun,
+    };
+  }
+
+  private mapDiscoveryStat(stat: RawDiscoveryStat): DiscoveryStats {
+    const totalJobs = (stat.waiting || 0) + (stat.active || 0) + (stat.completed || 0) + (stat.failed || 0);
+    const successfulJobs = stat.completed || 0;
+    const failedJobs = stat.failed || 0;
+    const successRate = totalJobs > 0 ? (successfulJobs / totalJobs) * 100 : 0;
+
+    return {
+      provider: stat.provider,
+      enabled: stat.enabled,
+      totalJobs,
+      successfulJobs,
+      failedJobs,
+      successRate,
+      averageDuration: stat.averageDurationMs ?? undefined,
+      totalDiscoveredCIs: stat.totalDiscoveredCIs || 0,
+    };
   }
 
   /**
-   * Get statistics for a specific provider
+   * Get statistics for a specific provider, using server-side provider
+   * filtering on the canonical discovery stats endpoint. Throws when the
+   * provider has no stats entry rather than fabricating a zeroed/enabled
+   * placeholder - callers must handle a missing provider explicitly.
    */
   async getProviderStats(provider: DiscoveryProvider): Promise<DiscoveryStats> {
-    const { data } = await api.get(`/jobs/discovery/stats/${provider}`);
-    return data;
+    const { data } = await api.get(`/jobs/discovery/stats?provider=${provider}`);
+    const stat: RawDiscoveryStat | undefined = (data.data ?? [])[0];
+    if (!stat) {
+      throw new Error(`No discovery stats found for provider: ${provider}`);
+    }
+    return this.mapDiscoveryStat(stat);
   }
 
   /**
-   * Test provider credentials without running full discovery
+   * Test provider credentials against the Settings-owned test-connection
+   * contract used by DiscoverySettings.tsx.
    */
   async testCredentials(
     provider: DiscoveryProvider,
-    config: Record<string, any>
+    config: Record<string, unknown>
   ): Promise<{ valid: boolean; message: string }> {
-    const { data } = await api.post(`/jobs/discovery/${provider}/test`, { config });
-    return data;
+    try {
+      await api.post('/discovery/test-connection', { provider, credentials: config });
+      return { valid: true, message: 'Connection successful' };
+    } catch (err) {
+      const axiosError = err as AxiosError<{ message?: string }>;
+      return {
+        valid: false,
+        message: axiosError.response?.data?.message || 'Connection failed',
+      };
+    }
   }
 
   /**

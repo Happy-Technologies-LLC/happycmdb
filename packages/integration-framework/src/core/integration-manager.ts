@@ -15,6 +15,23 @@ import { ConnectorConfiguration, ConnectorRunResult } from '../types/connector.t
 import { getEventProducer } from '@cmdb/event-processor';
 import { EventType } from '@cmdb/event-processor';
 
+/**
+ * Shape of a `connector_configurations` row as returned by the pg driver;
+ * the fields `mapRowToConfig` reads to build a `ConnectorConfiguration`.
+ */
+export interface ConnectorConfigurationRow {
+  id: string;
+  name: string;
+  connector_type: string;
+  credential_id: string | null | undefined;
+  enabled: boolean;
+  schedule: string | null;
+  connection: Record<string, unknown>;
+  options: Record<string, unknown>;
+  created_at: Date;
+  updated_at: Date;
+}
+
 export class IntegrationManager {
   private static instance: IntegrationManager;
   private connectors: Map<string, BaseIntegrationConnector> = new Map();
@@ -100,7 +117,7 @@ export class IntegrationManager {
     // Create scheduled task
     const task = cron.schedule(schedule, async () => {
       logger.info('Scheduled connector run starting', { connector: connectorName });
-      await this.runConnector(connectorName);
+      await this.runConnector(connectorName, 'schedule');
     });
 
     this.schedules.set(connectorName, task);
@@ -151,7 +168,11 @@ export class IntegrationManager {
   /**
    * Run connector manually
    */
-  async runConnector(connectorName: string): Promise<ConnectorRunResult> {
+  async runConnector(
+    connectorName: string,
+    triggeredBy: string = 'manual',
+    triggeredByUser?: string
+  ): Promise<ConnectorRunResult> {
     const registered = this.connectors.get(connectorName);
 
     if (registered === undefined) {
@@ -171,6 +192,8 @@ export class IntegrationManager {
         ? await this.resolveConnectorForRun(config)
         : registered;
 
+    let historyId: string | null = null;
+
     try {
       logger.info('Running connector', { connector: connectorName, run_id: runId });
 
@@ -186,16 +209,27 @@ export class IntegrationManager {
         } as any
       );
 
-      // Save run record
-      await this.saveConnectorRun({
-        run_id: runId,
-        connector_name: connectorName,
-        started_at: startedAt,
-        status: 'running',
-        records_extracted: 0,
-        records_transformed: 0,
-        records_loaded: 0,
-      });
+      // Save run record; capture the connector_run_history UUID (not the
+      // local job_id string) so per-line log entries below can satisfy the
+      // FK on connector_run_log_entries.run_id.
+      historyId = await this.saveConnectorRun(
+        {
+          run_id: runId,
+          connector_name: connectorName,
+          started_at: startedAt,
+          status: 'running',
+          records_extracted: 0,
+          records_transformed: 0,
+          records_loaded: 0,
+        },
+        config,
+        triggeredBy,
+        triggeredByUser
+      );
+
+      if (historyId !== null) {
+        await this.appendRunLog(historyId, 'info', `Connector run started (run_id=${runId})`);
+      }
 
       // Run connector
       await connector.run();
@@ -216,6 +250,14 @@ export class IntegrationManager {
       };
 
       await this.updateConnectorRun(result);
+
+      if (historyId !== null) {
+        await this.appendRunLog(
+          historyId,
+          'info',
+          `Connector run completed in ${durationMs}ms (extracted=${result.records_extracted}, transformed=${result.records_transformed}, loaded=${result.records_loaded})`
+        );
+      }
 
       // Emit connector run completed event
       await this.eventProducer.emit(
@@ -258,6 +300,14 @@ export class IntegrationManager {
       };
 
       await this.updateConnectorRun(result);
+
+      if (historyId !== null) {
+        await this.appendRunLog(
+          historyId,
+          'error',
+          `Connector run failed: ${(error as Error).message}`
+        );
+      }
 
       // Emit connector run failed event
       await this.eventProducer.emit(
@@ -336,18 +386,38 @@ export class IntegrationManager {
   }
 
   /**
-   * Save connector run to database
+   * Save connector run to database.
+   *
+   * Returns the connector_run_history.id UUID (not the local job_id
+   * string) so callers can key connector_run_log_entries.run_id off a
+   * value that actually satisfies the FK. Returns null when no run
+   * history row was written (unknown connector configuration).
    */
-  private async saveConnectorRun(result: ConnectorRunResult): Promise<void> {
-    await this.postgresClient.query(
+  private async saveConnectorRun(
+    result: ConnectorRunResult,
+    config: ConnectorConfiguration | null,
+    triggeredBy: string,
+    triggeredByUser?: string
+  ): Promise<string | null> {
+    if (config?.id === undefined) {
+      logger.warn('Skipping run history record: connector configuration not found', {
+        connector: result.connector_name,
+      });
+      return null;
+    }
+
+    const insertResult = await this.postgresClient.query(
       `
-      INSERT INTO connector_runs
-      (run_id, connector_name, started_at, status, records_extracted,
-       records_transformed, records_loaded, errors)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      INSERT INTO connector_run_history
+      (config_id, connector_type, config_name, started_at, status,
+       records_extracted, records_transformed, records_loaded, errors, job_id,
+       triggered_by, triggered_by_user)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+      RETURNING id
       `,
       [
-        result.run_id,
+        config.id,
+        config.type,
         result.connector_name,
         result.started_at,
         result.status,
@@ -355,36 +425,71 @@ export class IntegrationManager {
         result.records_transformed,
         result.records_loaded,
         result.errors ? JSON.stringify(result.errors) : null,
+        result.run_id,
+        triggeredBy,
+        triggeredByUser ?? null,
       ]
     );
+
+    return insertResult.rows[0]?.id ?? null;
   }
 
   /**
    * Update connector run
    */
   private async updateConnectorRun(result: ConnectorRunResult): Promise<void> {
+    const durationMs = result.completed_at
+      ? result.completed_at.getTime() - result.started_at.getTime()
+      : null;
+
     await this.postgresClient.query(
       `
-      UPDATE connector_runs
-      SET completed_at = $3,
-          status = $4,
-          records_extracted = $5,
-          records_transformed = $6,
-          records_loaded = $7,
-          errors = $8
-      WHERE run_id = $1 AND connector_name = $2
+      UPDATE connector_run_history
+      SET completed_at = $2,
+          status = $3,
+          records_extracted = $4,
+          records_transformed = $5,
+          records_loaded = $6,
+          errors = $7,
+          error_message = $8,
+          duration_ms = $9
+      WHERE job_id = $1
       `,
       [
         result.run_id,
-        result.connector_name,
         result.completed_at,
         result.status,
         result.records_extracted,
         result.records_transformed,
         result.records_loaded,
         result.errors ? JSON.stringify(result.errors) : null,
+        result.errors && result.errors.length > 0 ? result.errors[0] : null,
+        durationMs,
       ]
     );
+  }
+
+  /**
+   * Append a timestamp-ordered log entry for a connector run.
+   *
+   * Keyed on the connector_run_history UUID (connector_run_log_entries.run_id
+   * is a FK to connector_run_history.id) rather than the local job_id string
+   * generated by generateRunId(). A logging failure must not fail the
+   * connector run itself, so errors here are caught and logged, not thrown.
+   */
+  private async appendRunLog(
+    historyId: string,
+    level: 'debug' | 'info' | 'warn' | 'error',
+    message: string
+  ): Promise<void> {
+    try {
+      await this.postgresClient.query(
+        `INSERT INTO connector_run_log_entries (run_id, level, message) VALUES ($1, $2, $3)`,
+        [historyId, level, message]
+      );
+    } catch (error) {
+      logger.error('Failed to append connector run log entry', { historyId, error });
+    }
   }
 
   /**
@@ -448,14 +553,15 @@ export class IntegrationManager {
   /**
    * Map database row to configuration
    */
-  private mapRowToConfig(row: any): ConnectorConfiguration {
+
+  mapRowToConfig(row: ConnectorConfigurationRow): ConnectorConfiguration {
     return {
       id: row.id,
       name: row.name,
-      type: row.type,
+      type: row.connector_type,
       credential_id: row.credential_id ?? undefined,
       enabled: row.enabled,
-      schedule: row.schedule,
+      schedule: row.schedule ?? undefined,
       connection: row.connection,
       options: row.options,
       created_at: row.created_at,

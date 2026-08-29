@@ -90,7 +90,7 @@ export const PatternDetailModal: React.FC<PatternDetailModalProps> = ({ pattern,
                   </div>
                   <div>
                     <p className="text-xs text-muted-foreground">Avg Execution Time</p>
-                    <p className="text-sm font-semibold">{pattern.avgExecutionTimeMs}ms</p>
+                    <p className="text-sm font-semibold">{pattern.avgExecutionTimeMs ?? 0}ms</p>
                   </div>
                 </div>
 
@@ -103,28 +103,13 @@ export const PatternDetailModal: React.FC<PatternDetailModalProps> = ({ pattern,
                   </div>
                 )}
 
-                {pattern.tags && pattern.tags.length > 0 && (
-                  <div>
-                    <p className="text-xs text-muted-foreground mb-2">Tags</p>
-                    <div className="flex flex-wrap gap-2">
-                      {pattern.tags.map(tag => (
-                        <Badge key={tag} variant="outline" className="text-xs">
-                          {tag}
-                        </Badge>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
                 <div className="grid grid-cols-2 gap-4 pt-3 border-t">
                   <div>
                     <p className="text-xs text-muted-foreground">Created</p>
                     <p className="text-sm">
                       {new Date(pattern.createdAt).toLocaleDateString()}
                     </p>
-                    {pattern.createdBy && (
-                      <p className="text-xs text-muted-foreground">{pattern.createdBy}</p>
-                    )}
+                    <p className="text-xs text-muted-foreground">{pattern.author}</p>
                   </div>
                   {pattern.approvedAt && (
                     <div>

@@ -4,7 +4,7 @@
 import { Router } from 'express';
 import Joi from 'joi';
 import { AnalyticsController } from '../controllers/analytics.controller';
-import { validateOptional } from '../middleware/validation.middleware';
+import { validateOptional, validateRequest } from '../middleware/validation.middleware';
 import { schemas } from '@cmdb/common';
 
 export const analyticsRoutes = Router();
@@ -29,6 +29,10 @@ const topConnectedSchema = Joi.object({
 const changeHistorySchema = Joi.object({
   ci_id: Joi.string().required(),
   limit: Joi.number().integer().min(1).max(1000).default(50),
+});
+
+const ciIdParamSchema = Joi.object({
+  ciId: Joi.string().min(1).required(),
 });
 
 // Dashboard summary statistics
@@ -75,4 +79,22 @@ analyticsRoutes.get(
   '/change-history',
   validateOptional(changeHistorySchema, 'query'),
   controller.getChangeHistory.bind(controller)
+);
+
+// Relationship type matrix (source type x target type x relationship type)
+analyticsRoutes.get('/relationship-matrix', controller.getRelationshipMatrix.bind(controller));
+
+// Global change timeline (bounded date range)
+analyticsRoutes.get(
+  '/change-timeline',
+  validateOptional(dateRangeSchema, 'query'),
+  controller.getChangeTimeline.bind(controller)
+);
+
+// CI health metrics derived from anomaly detections
+analyticsRoutes.get(
+  '/health-metrics/:ciId',
+  validateRequest(ciIdParamSchema, 'params'),
+  validateOptional(dateRangeSchema, 'query'),
+  controller.getHealthMetrics.bind(controller)
 );

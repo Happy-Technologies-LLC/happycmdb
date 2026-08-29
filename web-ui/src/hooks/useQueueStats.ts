@@ -211,8 +211,8 @@ interface UseSchedulesReturn {
   loading: boolean;
   error: Error | null;
   refetch: () => Promise<void>;
-  updateSchedule: (id: string, updates: Partial<JobSchedule>) => Promise<void>;
-  toggleSchedule: (id: string, enabled: boolean) => Promise<void>;
+  updateSchedule: (id: string, updates: Partial<JobSchedule>) => Promise<JobSchedule>;
+  toggleSchedule: (id: string, enabled: boolean) => Promise<JobSchedule>;
 }
 
 export function useSchedules(options: UseSchedulesOptions = {}): UseSchedulesReturn {
@@ -222,31 +222,35 @@ export function useSchedules(options: UseSchedulesOptions = {}): UseSchedulesRet
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
 
-  const fetchSchedules = useCallback(async () => {
+  const fetchSchedules = useCallback(async (): Promise<JobSchedule[]> => {
     try {
       setLoading(true);
       setError(null);
       const schedulesData = await jobsService.getSchedules();
       setSchedules(schedulesData);
+      return schedulesData;
     } catch (err) {
       setError(err instanceof Error ? err : new Error('Failed to fetch schedules'));
+      throw err;
     } finally {
       setLoading(false);
     }
   }, []);
 
-  const updateSchedule = useCallback(async (id: string, updates: Partial<JobSchedule>) => {
+  const updateSchedule = useCallback(async (id: string, updates: Partial<JobSchedule>): Promise<JobSchedule> => {
     try {
-      await jobsService.updateSchedule(id, updates);
-      await fetchSchedules();
+      const updated = await jobsService.updateSchedule(id, updates);
+      const schedulesData = await fetchSchedules();
+      return schedulesData.find((schedule) => schedule.id === id) ?? updated;
     } catch (err) {
       throw err instanceof Error ? err : new Error('Failed to update schedule');
     }
   }, [fetchSchedules]);
 
-  const toggleSchedule = useCallback(async (id: string, enabled: boolean) => {
-    await updateSchedule(id, { enabled });
-  }, [updateSchedule]);
+  const toggleSchedule = useCallback(
+    (id: string, enabled: boolean): Promise<JobSchedule> => updateSchedule(id, { enabled }),
+    [updateSchedule]
+  );
 
   useEffect(() => {
     fetchSchedules();
@@ -266,7 +270,9 @@ export function useSchedules(options: UseSchedulesOptions = {}): UseSchedulesRet
     schedules,
     loading,
     error,
-    refetch: fetchSchedules,
+    refetch: async () => {
+      await fetchSchedules();
+    },
     updateSchedule,
     toggleSchedule,
   };

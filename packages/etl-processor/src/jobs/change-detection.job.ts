@@ -17,6 +17,7 @@ import { Job } from 'bullmq';
 import { Neo4jClient, PostgresClient } from '@cmdb/database';
 import { logger, CI } from '@cmdb/common';
 import { subHours } from 'date-fns';
+import { DimensionTransformer } from '../transformers/dimension-transformer';
 
 export interface ChangeDetectionJobData {
   /** Start date for change detection (ISO 8601 format) */
@@ -78,10 +79,12 @@ export type ChangeType =
 export class ChangeDetectionJob {
   private neo4jClient: Neo4jClient;
   private postgresClient: PostgresClient;
+  private dimensionTransformer: DimensionTransformer;
 
   constructor(neo4jClient: Neo4jClient, postgresClient: PostgresClient) {
     this.neo4jClient = neo4jClient;
     this.postgresClient = postgresClient;
+    this.dimensionTransformer = new DimensionTransformer();
   }
 
   /**
@@ -280,10 +283,10 @@ export class ChangeDetectionJob {
    */
   private async getHistoricalCI(ciId: string, beforeDate: string): Promise<CI | null> {
     const result = await this.postgresClient.query(
-      `SELECT * FROM dim_ci
+      `SELECT * FROM cmdb.dim_ci
        WHERE ci_id = $1
-       AND effective_date < $2
-       ORDER BY effective_date DESC
+       AND effective_from < $2
+       ORDER BY effective_from DESC
        LIMIT 1`,
       [ciId, beforeDate]
     );
@@ -298,7 +301,7 @@ export class ChangeDetectionJob {
       external_id: row.external_id,
       name: row.ci_name,
       _type: row.ci_type,
-      _status: row.status,
+      _status: row.ci_status,
       environment: row.environment,
       _created_at: row.created_at,
       _updated_at: row.updated_at,
@@ -364,23 +367,45 @@ export class ChangeDetectionJob {
     }
 
     await this.postgresClient.transaction(async (client: any) => {
+      let savepointIndex = 0;
+
       for (const change of changes) {
+        const savepointName = `sp_change_${savepointIndex++}`;
+
         try {
+          await client.query(`SAVEPOINT ${savepointName}`);
+
+          const ciKeyResult = await client.query(
+            'SELECT ci_key FROM cmdb.dim_ci WHERE ci_id = $1 AND is_current = true',
+            [change.ciId]
+          );
+
+          if (ciKeyResult.rows.length === 0) {
+            throw new Error(`No current cmdb.dim_ci record found for CI id ${change.ciId}`);
+          }
+
+          const ciKey = ciKeyResult.rows[0].ci_key;
+          const changedAt = new Date(change.changedAt);
+
           await client.query(
-            `INSERT INTO fact_ci_changes
-             (ci_id, change_type, field_name, old_value, new_value, changed_at, changed_by)
-             VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+            `INSERT INTO cmdb.fact_ci_changes
+             (ci_key, date_key, changed_at, change_type, field_name, old_value, new_value, changed_by)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
             [
-              change.ciId,
+              ciKey,
+              this.dimensionTransformer.generateDateKey(changedAt),
+              changedAt,
               change.changeType,
               change.fieldName,
               JSON.stringify(change.oldValue),
               JSON.stringify(change.newValue),
-              change.changedAt,
               change.changedBy || 'system'
             ]
           );
+
+          await client.query(`RELEASE SAVEPOINT ${savepointName}`);
         } catch (error) {
+          await client.query(`ROLLBACK TO SAVEPOINT ${savepointName}`);
           logger.error('Error recording change', { change, error });
         }
       }

@@ -34,7 +34,7 @@ export { ScheduleConfigStore, getScheduleConfigStore } from './redis/schedule-co
 export type { PersistedScheduleConfig, ScheduleConfigDefaults } from './redis/schedule-config-store';
 
 // BullMQ exports
-export { QueueManager, queueManager, QUEUE_NAMES } from './bullmq/queue-manager';
+export { QueueManager, queueManager, QUEUE_NAMES, closeQueueManagerConnection } from './bullmq/queue-manager';
 
 // OAuth substrate exports (connector-core bindings)
 export {

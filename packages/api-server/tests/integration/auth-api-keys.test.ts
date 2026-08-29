@@ -82,8 +82,8 @@ describe('API Key Authentication Integration Tests', () => {
       const response = await request(app)
         .post('/api/v1/auth/login')
         .send({
-          _username: testUsername,
-          _password: testPassword,
+          username: testUsername,
+          password: testPassword,
         })
         .expect(200);
 
@@ -105,7 +105,7 @@ describe('API Key Authentication Integration Tests', () => {
         .post('/api/v1/auth/api-key')
         .set('Authorization', `Bearer ${authToken}`)
         .send({
-          _name: 'Test API Key',
+          name: 'Test API Key',
           expiresInDays: 30,
         })
         .expect(200);
@@ -127,7 +127,7 @@ describe('API Key Authentication Integration Tests', () => {
       await request(app)
         .post('/api/v1/auth/api-key')
         .send({
-          _name: 'Unauthorized Key',
+          name: 'Unauthorized Key',
         })
         .expect(401);
     });
@@ -222,7 +222,7 @@ describe('API Key Authentication Integration Tests', () => {
         .post('/api/v1/auth/api-key')
         .set('Authorization', `Bearer ${authToken}`)
         .send({
-          _name: 'Key to Revoke',
+          name: 'Key to Revoke',
         })
         .expect(200);
 
@@ -275,7 +275,7 @@ describe('API Key Authentication Integration Tests', () => {
         .post('/api/v1/auth/api-key')
         .set('Authorization', `Bearer ${authToken}`)
         .send({
-          _name: 'Expired Key',
+          name: 'Expired Key',
           expiresInDays: 1,
         })
         .expect(200);
@@ -306,7 +306,7 @@ describe('API Key Authentication Integration Tests', () => {
         .post('/api/v1/auth/api-key')
         .set('Authorization', `Bearer ${authToken}`)
         .send({
-          _name: 'Security Test Key',
+          name: 'Security Test Key',
         })
         .expect(200);
 

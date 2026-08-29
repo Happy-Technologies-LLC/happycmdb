@@ -5,6 +5,8 @@
  * the entire integration suite completes.
  */
 
+import { rmSync } from 'fs';
+import { resolve } from 'path';
 import type { StartedTestContainer } from 'testcontainers';
 
 interface ContainerStore {
@@ -34,6 +36,9 @@ export default async function globalTeardown(): Promise<void> {
       console.log('Redis container stopped');
     }
 
+    rmSync(resolve(process.cwd(), 'test-results/integration/runtime-env.json'), {
+      force: true,
+    });
     console.log('All integration test containers stopped successfully');
   } catch (error) {
     console.error('Error stopping integration test containers:', error);

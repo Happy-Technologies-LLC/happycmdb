@@ -11,6 +11,7 @@ import {
   getPostgresClient,
   getUnifiedCredentialService,
   migratePlaintextCredentials,
+  closeQueueManagerConnection,
 } from '@cmdb/database';
 import { getEncryptionService } from '@cmdb/common';
 
@@ -71,6 +72,7 @@ describe('connector-core OAuth substrate CMDB bindings', () => {
 
   afterAll(async () => {
     await pool.end();
+    await closeQueueManagerConnection();
   });
 
   it('reads a legacy plaintext credential, then migrates it into an encrypted envelope', async () => {

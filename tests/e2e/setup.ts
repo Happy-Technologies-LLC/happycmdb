@@ -95,8 +95,10 @@ export default async function globalSetup(): Promise<void> {
       process.env.CREDENTIAL_ENCRYPTION_KEY ||
       'test-encryption-key-minimum-32-chars-required-for-security';
     process.env.JWT_SECRET =
-      process.env.JWT_SECRET || 'test-jwt-secret-for-e2e-tests';
-
+      process.env.JWT_SECRET ||
+      'test-jwt-secret-for-e2e-tests-minimum-32-characters-long';
+    process.env.KAFKA_CLIENT_ID = process.env.KAFKA_CLIENT_ID || 'happycmdb-e2e';
+    process.env.KAFKA_GROUP_ID = process.env.KAFKA_GROUP_ID || 'happycmdb-e2e-tests';
     console.log('All E2E test containers started successfully');
   } catch (error) {
     console.error('Failed to start E2E test containers:', error);
@@ -119,9 +121,8 @@ async function initializeNeo4jSchema(uri: string, password: string): Promise<voi
     await session.run(
       'CREATE INDEX ci_environment_idx IF NOT EXISTS FOR (ci:CI) ON (ci.environment)'
     );
-    await session.run('CREATE INDEX ci_name_idx IF NOT EXISTS FOR (ci:CI) ON (ci.name)');
     await session.run(
-      `CREATE FULLTEXT INDEX ci_search IF NOT EXISTS
+      `CREATE FULLTEXT INDEX ci_fulltext_idx IF NOT EXISTS
        FOR (ci:CI) ON EACH [ci.name, ci.type, ci.external_id]`
     );
   } finally {

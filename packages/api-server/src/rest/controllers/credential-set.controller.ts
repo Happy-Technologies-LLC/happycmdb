@@ -10,6 +10,7 @@ import {
   CredentialSetStrategy,
   logger,
 } from '@cmdb/common';
+import type { AuthenticatedRequest } from '../../auth/types';
 
 /**
  * Credential Set Controller
@@ -29,7 +30,7 @@ export class CredentialSetController {
   async create(req: Request, res: Response): Promise<void> {
     try {
       const input: CredentialSetInput = req.body;
-      const createdBy = (req as any).user?.id || 'system'; // Get from auth middleware
+      const createdBy = (req as AuthenticatedRequest).user?._userId || 'system';
 
       const credentialSet = await this.credentialSetService.create(input, createdBy);
 

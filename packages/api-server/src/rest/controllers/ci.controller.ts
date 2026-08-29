@@ -260,7 +260,7 @@ export class CIController {
       const ci = await this.neo4jClient.updateCI(id, req.body);
       res.json({
         success: true,
-        data: ci,
+        data: convertNeo4jTypes(ci),
         message: 'CI updated successfully'
       });
     } catch (error) {

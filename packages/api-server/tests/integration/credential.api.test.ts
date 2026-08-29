@@ -6,8 +6,9 @@
  *
  * Tests the full CRUD lifecycle of the unified (protocol-based) credential
  * management endpoints. Verifies encryption, redaction, and validation against
- * the real running API (underscore-prefixed response envelope, non-underscore
- * request bodies / entity fields).
+ * the real running API. Every route response uses the plain `{success,data}`
+ * envelope from the controller, except Joi validation failures, which the
+ * shared validation middleware reports as `{_success,_error,...}`.
  */
 
 import request from 'supertest';
@@ -17,6 +18,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { unifiedCredentialRoutes } from '../../src/rest/routes/unified-credential.routes';
 import { getPostgresClient } from '@cmdb/database';
 import { getEncryptionService } from '@cmdb/common';
+import type { TokenPayload } from '../../src/auth/types';
 
 interface EncryptedData {
   iv: string;
@@ -28,9 +30,19 @@ interface EncryptedData {
 const app = express();
 app.use(json());
 
-// Mock user middleware
+// The real router only enforces `authMiddleware.requirePermission('write')`
+// on mutating routes; `authMiddleware.authenticate()` (JWT/API-key
+// verification) is mounted centrally in server.ts before this router, not
+// inside it. Mirror that here by attaching a real operator TokenPayload
+// directly (skipping JWT verification, not the permission check itself) so
+// `requirePermission('write')` runs for real against an authenticated role.
 app.use((req: express.Request, _res, next) => {
-  (req as express.Request & { user?: { id: string } }).user = { id: 'test-user-123' };
+  (req as express.Request & { user?: TokenPayload }).user = {
+    _userId: 'test-user-123',
+    _username: 'test-operator',
+    _role: 'operator',
+    _type: 'access',
+  };
   next();
 });
 
@@ -42,7 +54,7 @@ describe('Credential API Integration Tests', () => {
   let credentialId: string;
 
   afterAll(async () => {
-    // Cleanup: remove any credentials created by this suite.
+    // Cleanup credentials created through the authenticated operator fixture.
     try {
       const pool = getPostgresClient().pool;
       await pool.query(`DELETE FROM credentials WHERE created_by = $1`, ['test-user-123']);
@@ -69,16 +81,17 @@ describe('Credential API Integration Tests', () => {
         });
 
       expect(response.status).toBe(201);
-      expect(response.body._success).toBe(true);
-      expect(response.body._data).toHaveProperty('id');
-      expect(response.body._data.name).toBe('Test AWS Credential');
-      expect(response.body._data.protocol).toBe('aws_iam');
-      expect(response.body._data.scope).toBe('cloud_provider');
+      expect(response.body.success).toBe(true);
+      expect(response.body.data).toHaveProperty('id');
+      expect(response.body.data.name).toBe('Test AWS Credential');
+      expect(response.body.data.protocol).toBe('aws_iam');
+      expect(response.body.data.scope).toBe('cloud_provider');
+      expect(response.body.data.created_by).toBe('test-user-123');
 
       // The entire credentials payload is redacted before returning.
-      expect(response.body._data.credentials).toBe('***REDACTED***');
+      expect(response.body.data.credentials).toBe('***REDACTED***');
 
-      credentialId = response.body._data.id;
+      credentialId = response.body.data.id;
     });
 
     it('should create an SSH credential', async () => {
@@ -95,12 +108,12 @@ describe('Credential API Integration Tests', () => {
         });
 
       expect(response.status).toBe(201);
-      expect(response.body._success).toBe(true);
-      expect(response.body._data.protocol).toBe('ssh_password');
-      expect(response.body._data.credentials).toBe('***REDACTED***');
+      expect(response.body.success).toBe(true);
+      expect(response.body.data.protocol).toBe('ssh_password');
+      expect(response.body.data.credentials).toBe('***REDACTED***');
 
       // Cleanup
-      await request(app).delete(`/api/v1/credentials/${response.body._data.id}`);
+      await request(app).delete(`/api/v1/credentials/${response.body.data.id}`);
     });
 
     it('should reject invalid protocol', async () => {
@@ -137,20 +150,20 @@ describe('Credential API Integration Tests', () => {
       const response = await request(app).get(`/api/v1/credentials/${credentialId}`);
 
       expect(response.status).toBe(200);
-      expect(response.body._success).toBe(true);
-      expect(response.body._data.id).toBe(credentialId);
-      expect(response.body._data.name).toBe('Test AWS Credential');
+      expect(response.body.success).toBe(true);
+      expect(response.body.data.id).toBe(credentialId);
+      expect(response.body.data.name).toBe('Test AWS Credential');
 
       // Credentials are redacted.
-      expect(response.body._data.credentials).toBe('***REDACTED***');
+      expect(response.body.data.credentials).toBe('***REDACTED***');
     });
 
     it('should return 404 for non-existent credential', async () => {
       const response = await request(app).get(`/api/v1/credentials/${uuidv4()}`);
 
       expect(response.status).toBe(404);
-      expect(response.body._success).toBe(false);
-      expect(response.body._error).toBe('Not Found');
+      expect(response.body.success).toBe(false);
+      expect(response.body.error).toBe('Not Found');
     });
   });
 
@@ -159,13 +172,13 @@ describe('Credential API Integration Tests', () => {
       const response = await request(app).get('/api/v1/credentials');
 
       expect(response.status).toBe(200);
-      expect(response.body._success).toBe(true);
-      expect(Array.isArray(response.body._data)).toBe(true);
-      expect(typeof response.body._count).toBe('number');
-      expect(response.body._count).toBe(response.body._data.length);
+      expect(response.body.success).toBe(true);
+      expect(Array.isArray(response.body.data)).toBe(true);
+      expect(typeof response.body.count).toBe('number');
+      expect(response.body.count).toBe(response.body.data.length);
 
       // Summaries never include the credentials payload.
-      response.body._data.forEach((cred: Record<string, unknown>) => {
+      response.body.data.forEach((cred: Record<string, unknown>) => {
         expect(cred).not.toHaveProperty('credentials');
         expect(cred).toHaveProperty('id');
         expect(cred).toHaveProperty('name');
@@ -177,7 +190,7 @@ describe('Credential API Integration Tests', () => {
       const response = await request(app).get('/api/v1/credentials');
 
       expect(response.status).toBe(200);
-      const found = response.body._data.find(
+      const found = response.body.data.find(
         (c: { id: string }) => c.id === credentialId
       );
       expect(found).toBeDefined();
@@ -194,8 +207,8 @@ describe('Credential API Integration Tests', () => {
         });
 
       expect(response.status).toBe(200);
-      expect(response.body._success).toBe(true);
-      expect(response.body._data.name).toBe('Updated AWS Credential');
+      expect(response.body.success).toBe(true);
+      expect(response.body.data.name).toBe('Updated AWS Credential');
     });
 
     it('should update credential tags', async () => {
@@ -206,8 +219,8 @@ describe('Credential API Integration Tests', () => {
         });
 
       expect(response.status).toBe(200);
-      expect(response.body._success).toBe(true);
-      expect(response.body._data.tags).toEqual(['updated', 'test']);
+      expect(response.body.success).toBe(true);
+      expect(response.body.data.tags).toEqual(['updated', 'test']);
     });
 
     it('should update credentials and re-encrypt', async () => {
@@ -222,10 +235,10 @@ describe('Credential API Integration Tests', () => {
         });
 
       expect(response.status).toBe(200);
-      expect(response.body._success).toBe(true);
+      expect(response.body.success).toBe(true);
 
       // Updated credentials are still redacted in the response.
-      expect(response.body._data.credentials).toBe('***REDACTED***');
+      expect(response.body.data.credentials).toBe('***REDACTED***');
     });
 
     it('should return 404 for non-existent credential', async () => {
@@ -234,8 +247,8 @@ describe('Credential API Integration Tests', () => {
         .send({ name: 'Test' });
 
       expect(response.status).toBe(404);
-      expect(response.body._success).toBe(false);
-      expect(response.body._error).toBe('Not Found');
+      expect(response.body.success).toBe(false);
+      expect(response.body.error).toBe('Not Found');
     });
   });
 
@@ -245,8 +258,8 @@ describe('Credential API Integration Tests', () => {
         .post(`/api/v1/credentials/${credentialId}/validate`);
 
       expect(response.status).toBe(200);
-      expect(response.body._success).toBe(true);
-      expect(response.body._data.valid).toBe(true);
+      expect(response.body.success).toBe(true);
+      expect(response.body.data.valid).toBe(true);
     });
 
     it('should detect an invalid credential structure', async () => {
@@ -263,15 +276,15 @@ describe('Credential API Integration Tests', () => {
         });
 
       const validateResponse = await request(app)
-        .post(`/api/v1/credentials/${createResponse.body._data.id}/validate`);
+        .post(`/api/v1/credentials/${createResponse.body.data.id}/validate`);
 
       expect(validateResponse.status).toBe(200);
-      expect(validateResponse.body._success).toBe(true);
-      expect(validateResponse.body._data.valid).toBe(false);
-      expect(validateResponse.body._data.message).toContain('Missing AWS');
+      expect(validateResponse.body.success).toBe(true);
+      expect(validateResponse.body.data.valid).toBe(false);
+      expect(validateResponse.body.data.message).toContain('Missing AWS');
 
       // Cleanup
-      await request(app).delete(`/api/v1/credentials/${createResponse.body._data.id}`);
+      await request(app).delete(`/api/v1/credentials/${createResponse.body.data.id}`);
     });
   });
 
@@ -292,8 +305,8 @@ describe('Credential API Integration Tests', () => {
       const response = await request(app).delete(`/api/v1/credentials/${uuidv4()}`);
 
       expect(response.status).toBe(404);
-      expect(response.body._success).toBe(false);
-      expect(response.body._error).toBe('Not Found');
+      expect(response.body.success).toBe(false);
+      expect(response.body.error).toBe('Not Found');
     });
   });
 
@@ -312,7 +325,7 @@ describe('Credential API Integration Tests', () => {
           },
         });
 
-      const credId = createResponse.body._data.id;
+      const credId = createResponse.body.data.id;
 
       // Get credential
       const getResponse = await request(app).get(`/api/v1/credentials/${credId}`);
@@ -326,12 +339,12 @@ describe('Credential API Integration Tests', () => {
         .send({ name: 'Updated Security Test' });
 
       // Every single-item response redacts the credentials payload entirely.
-      expect(createResponse.body._data.credentials).toBe('***REDACTED***');
-      expect(getResponse.body._data.credentials).toBe('***REDACTED***');
-      expect(updateResponse.body._data.credentials).toBe('***REDACTED***');
+      expect(createResponse.body.data.credentials).toBe('***REDACTED***');
+      expect(getResponse.body.data.credentials).toBe('***REDACTED***');
+      expect(updateResponse.body.data.credentials).toBe('***REDACTED***');
 
       // List summaries do not include credentials at all.
-      const listedCred = listResponse.body._data.find(
+      const listedCred = listResponse.body.data.find(
         (c: { id: string }) => c.id === credId
       );
       expect(listedCred).toBeDefined();
@@ -354,7 +367,7 @@ describe('Credential API Integration Tests', () => {
           },
         });
 
-      const credId = response.body._data.id;
+      const credId = response.body.data.id;
 
       // Directly query the database to verify encryption at rest.
       const pool = getPostgresClient().pool;

@@ -17,6 +17,7 @@ import {
   CredentialScope,
   logger,
 } from '@cmdb/common';
+import type { AuthenticatedRequest } from '../../auth/types';
 
 /**
  * Unified Credential Controller
@@ -38,7 +39,7 @@ export class UnifiedCredentialController {
   async create(req: Request, res: Response): Promise<void> {
     try {
       const input: UnifiedCredentialInput = req.body;
-      const createdBy = (req as any).user?.id || 'system'; // Get from auth middleware
+      const createdBy = (req as AuthenticatedRequest).user?._userId || 'system';
 
       const credential = await this.credentialService.create(input, createdBy);
 

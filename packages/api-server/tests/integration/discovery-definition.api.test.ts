@@ -15,6 +15,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { startTestContainers, stopTestContainers, getTestContext } from '../helpers/test-containers';
 import { discoveryDefinitionRoutes } from '../../src/rest/routes/discovery-definition.routes';
 import { DiscoveryDefinitionInput } from '@cmdb/common';
+import type { TokenPayload } from '../../src/auth/types';
 
 describe('Discovery Definition REST API Integration Tests', () => {
   let app: Application;
@@ -27,11 +28,19 @@ describe('Discovery Definition REST API Integration Tests', () => {
     app = express();
     app.use(express.json());
 
-    // Mock user middleware for created_by field
+    // The real router enforces `authMiddleware.requirePermission('write')` on
+    // mutating routes (create/update/delete/run/schedule); `authenticate()`
+    // (JWT/API-key verification) is mounted centrally in server.ts before
+    // this router, not inside it. Mirror that here by attaching a real
+    // operator TokenPayload directly (skipping JWT verification, not the
+    // permission check itself) so `requirePermission('write')` runs for real
+    // against an authenticated role instead of throwing on a malformed user.
     app.use((req: express.Request, _res, next) => {
-      (req as express.Request & { user?: { id: string; username: string } }).user = {
-        id: 'test-user-123',
-        username: 'testuser',
+      (req as express.Request & { user?: TokenPayload }).user = {
+        _userId: 'test-user-123',
+        _username: 'testuser',
+        _role: 'operator',
+        _type: 'access',
       };
       next();
     });

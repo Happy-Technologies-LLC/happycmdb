@@ -13,6 +13,7 @@ import express, { Application } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { startTestContainers, stopTestContainers, cleanDatabases, getTestContext } from '../helpers/test-containers';
 import { ciRoutes } from '../../src/rest/routes/ci.routes';
+import type { TokenPayload } from '../../src/auth/types';
 
 // Request body for creating a CI (non-underscore field names per ciInputSchema).
 interface CICreateBody {
@@ -43,8 +44,8 @@ interface RelationshipItem {
 
 // Shape of a search result item (raw Neo4j node properties + score).
 interface SearchResultItem {
-  _ci: { id: string; name: string; type: string; external_id?: string };
-  _score: number;
+  ci: { id: string; name: string; type: string; external_id?: string };
+  score: number;
 }
 
 describe('CI REST API Integration Tests', () => {
@@ -57,6 +58,22 @@ describe('CI REST API Integration Tests', () => {
     // Create Express app with CI routes
     app = express();
     app.use(express.json());
+    // The real router only enforces `authMiddleware.requirePermission('write')`
+    // on mutating routes; `authMiddleware.authenticate()` (JWT/API-key
+    // verification) is mounted centrally in server.ts before this router, not
+    // inside it. Mirror that here by attaching a real operator TokenPayload
+    // directly (skipping JWT verification, not the permission check itself)
+    // so `requirePermission('write')` runs for real against an authenticated
+    // role.
+    app.use((req: express.Request, _res, next) => {
+      (req as express.Request & { user?: TokenPayload }).user = {
+        _userId: 'test-user-123',
+        _username: 'test-operator',
+        _role: 'operator',
+        _type: 'access',
+      };
+      next();
+    });
     app.use('/api/v1/cis', ciRoutes);
   }, 120000); // 2 minute timeout for container startup
 
@@ -91,17 +108,17 @@ describe('CI REST API Integration Tests', () => {
         .expect('Content-Type', /json/)
         .expect(201);
 
-      expect(response.body).toHaveProperty('_success', true);
-      expect(response.body).toHaveProperty('_data');
-      expect(response.body._data).toMatchObject({
-        _id: ciData.id,
+      expect(response.body).toHaveProperty('success', true);
+      expect(response.body).toHaveProperty('data');
+      expect(response.body.data).toMatchObject({
+        id: ciData.id,
         name: ciData.name,
-        _type: ciData.type,
-        _status: ciData.status,
+        type: ciData.type,
+        status: ciData.status,
         environment: ciData.environment,
       });
-      expect(response.body._data).toHaveProperty('_created_at');
-      expect(response.body._data).toHaveProperty('_updated_at');
+      expect(response.body.data).toHaveProperty('created_at');
+      expect(response.body.data).toHaveProperty('updated_at');
     });
 
     it('should reject CI with missing required fields', async () => {
@@ -135,8 +152,8 @@ describe('CI REST API Integration Tests', () => {
         .send(ciData)
         .expect(409);
 
-      expect(response.body).toHaveProperty('_success', false);
-      expect(response.body._error).toBe('Conflict');
+      expect(response.body).toHaveProperty('success', false);
+      expect(response.body.error).toBe('Conflict');
     });
 
     it('should create CI with default status when not provided', async () => {
@@ -152,7 +169,7 @@ describe('CI REST API Integration Tests', () => {
         .send(ciData)
         .expect(201);
 
-      expect(response.body._data._status).toBe('active');
+      expect(response.body.data.status).toBe('active');
     });
   });
 
@@ -174,8 +191,8 @@ describe('CI REST API Integration Tests', () => {
         .get(`/api/v1/cis/${ciData.id}`)
         .expect(200);
 
-      expect(response.body).toHaveProperty('_success', true);
-      expect(response.body._data).toMatchObject({
+      expect(response.body).toHaveProperty('success', true);
+      expect(response.body.data).toMatchObject({
         id: ciData.id,
         name: ciData.name,
         type: ciData.type,
@@ -189,8 +206,8 @@ describe('CI REST API Integration Tests', () => {
         .get(`/api/v1/cis/${nonExistentId}`)
         .expect(404);
 
-      expect(response.body).toHaveProperty('_success', false);
-      expect(response.body._error).toBe('Not Found');
+      expect(response.body).toHaveProperty('success', false);
+      expect(response.body.error).toBe('Not Found');
     });
   });
 
@@ -243,10 +260,10 @@ describe('CI REST API Integration Tests', () => {
     it('should retrieve all CIs without filters', async () => {
       const response = await request(app).get('/api/v1/cis').expect(200);
 
-      expect(response.body).toHaveProperty('_success', true);
-      expect(response.body._data).toHaveLength(5);
-      expect(response.body).toHaveProperty('_pagination');
-      expect(response.body._pagination.total).toBe(5);
+      expect(response.body).toHaveProperty('success', true);
+      expect(response.body.data).toHaveLength(5);
+      expect(response.body).toHaveProperty('pagination');
+      expect(response.body.pagination.total).toBe(5);
     });
 
     it('should filter CIs by type', async () => {
@@ -255,8 +272,8 @@ describe('CI REST API Integration Tests', () => {
         .query({ type: 'server' })
         .expect(200);
 
-      expect(response.body._data).toHaveLength(3);
-      expect(response.body._data.every((ci: CIResponseItem) => ci.type === 'server')).toBe(true);
+      expect(response.body.data).toHaveLength(3);
+      expect(response.body.data.every((ci: CIResponseItem) => ci.type === 'server')).toBe(true);
     });
 
     it('should filter CIs by environment', async () => {
@@ -265,8 +282,8 @@ describe('CI REST API Integration Tests', () => {
         .query({ environment: 'staging' })
         .expect(200);
 
-      expect(response.body._data).toHaveLength(1);
-      expect(response.body._data[0].environment).toBe('staging');
+      expect(response.body.data).toHaveLength(1);
+      expect(response.body.data[0].environment).toBe('staging');
     });
 
     it('should filter CIs by status', async () => {
@@ -275,8 +292,8 @@ describe('CI REST API Integration Tests', () => {
         .query({ status: 'decommissioned' })
         .expect(200);
 
-      expect(response.body._data).toHaveLength(1);
-      expect(response.body._data[0].status).toBe('decommissioned');
+      expect(response.body.data).toHaveLength(1);
+      expect(response.body.data[0].status).toBe('decommissioned');
     });
 
     it('should support pagination with limit and offset', async () => {
@@ -285,9 +302,9 @@ describe('CI REST API Integration Tests', () => {
         .query({ limit: 2, offset: 0 })
         .expect(200);
 
-      expect(response.body._data).toHaveLength(2);
-      expect(response.body._pagination._limit).toBe(2);
-      expect(response.body._pagination._offset).toBe(0);
+      expect(response.body.data).toHaveLength(2);
+      expect(response.body.pagination.limit).toBe(2);
+      expect(response.body.pagination.offset).toBe(0);
     });
 
     it('should support multiple filters', async () => {
@@ -296,9 +313,9 @@ describe('CI REST API Integration Tests', () => {
         .query({ type: 'server', status: 'active', environment: 'production' })
         .expect(200);
 
-      expect(response.body._data).toHaveLength(2);
+      expect(response.body.data).toHaveLength(2);
       expect(
-        response.body._data.every(
+        response.body.data.every(
           (ci: CIResponseItem) =>
             ci.type === 'server' &&
             ci.status === 'active' &&
@@ -333,9 +350,9 @@ describe('CI REST API Integration Tests', () => {
         .send(updateData)
         .expect(200);
 
-      expect(response.body).toHaveProperty('_success', true);
-      expect(response.body._data._status).toBe('maintenance');
-      expect(response.body._data._metadata.maintenance_window).toBe('2025-10-01T00:00:00Z');
+      expect(response.body).toHaveProperty('success', true);
+      expect(response.body.data.status).toBe('maintenance');
+      expect(response.body.data.metadata.maintenance_window).toBe('2025-10-01T00:00:00Z');
     });
 
     it('should return 404 when updating non-existent CI', async () => {
@@ -346,8 +363,8 @@ describe('CI REST API Integration Tests', () => {
         .send({ status: 'inactive' })
         .expect(404);
 
-      expect(response.body).toHaveProperty('_success', false);
-      expect(response.body._error).toBe('Not Found');
+      expect(response.body).toHaveProperty('success', false);
+      expect(response.body.error).toBe('Not Found');
     });
   });
 
@@ -376,7 +393,7 @@ describe('CI REST API Integration Tests', () => {
         .delete(`/api/v1/cis/${nonExistentId}`)
         .expect(404);
 
-      expect(response.body).toHaveProperty('_success', false);
+      expect(response.body).toHaveProperty('success', false);
     });
   });
 
@@ -445,9 +462,9 @@ describe('CI REST API Integration Tests', () => {
         .get(`/api/v1/cis/${serverId}/relationships`)
         .expect(200);
 
-      expect(response.body).toHaveProperty('_success', true);
-      expect(response.body._data).toBeInstanceOf(Array);
-      expect(response.body._data.length).toBeGreaterThan(0);
+      expect(response.body).toHaveProperty('success', true);
+      expect(response.body.data).toBeInstanceOf(Array);
+      expect(response.body.data.length).toBeGreaterThan(0);
     });
 
     it('should retrieve outbound relationships only', async () => {
@@ -456,9 +473,9 @@ describe('CI REST API Integration Tests', () => {
         .query({ direction: 'out' })
         .expect(200);
 
-      expect(response.body._data).toBeInstanceOf(Array);
+      expect(response.body.data).toBeInstanceOf(Array);
       // Server has outbound HOSTS relationship to app
-      expect(response.body._data.some((rel: RelationshipItem) => rel.type === 'HOSTS')).toBe(true);
+      expect(response.body.data.some((rel: RelationshipItem) => rel.type === 'HOSTS')).toBe(true);
     });
 
     it('should retrieve CI dependencies', async () => {
@@ -466,8 +483,8 @@ describe('CI REST API Integration Tests', () => {
         .get(`/api/v1/cis/${appId}/dependencies`)
         .expect(200);
 
-      expect(response.body).toHaveProperty('_success', true);
-      expect(response.body._data).toBeInstanceOf(Array);
+      expect(response.body).toHaveProperty('success', true);
+      expect(response.body.data).toBeInstanceOf(Array);
     });
 
     it('should perform impact analysis', async () => {
@@ -477,12 +494,12 @@ describe('CI REST API Integration Tests', () => {
         .query({ depth: 3 })
         .expect(200);
 
-      expect(response.body).toHaveProperty('_success', true);
+      expect(response.body).toHaveProperty('success', true);
       // Impact analysis returns an object (not an array) with upstream/downstream arrays.
-      expect(response.body._data).toHaveProperty('downstream');
-      expect(response.body._data).toHaveProperty('upstream');
-      expect(Array.isArray(response.body._data.downstream)).toBe(true);
-      expect(Array.isArray(response.body._data.upstream)).toBe(true);
+      expect(response.body.data).toHaveProperty('downstream');
+      expect(response.body.data).toHaveProperty('upstream');
+      expect(Array.isArray(response.body.data.downstream)).toBe(true);
+      expect(Array.isArray(response.body.data.upstream)).toBe(true);
     });
   });
 
@@ -517,10 +534,10 @@ describe('CI REST API Integration Tests', () => {
         .send({ query: 'production' })
         .expect(200);
 
-      expect(response.body).toHaveProperty('_success', true);
-      expect(response.body._data).toBeInstanceOf(Array);
-      expect(response.body._data.length).toBeGreaterThanOrEqual(2);
-      expect(response.body._data[0]).toHaveProperty('_score');
+      expect(response.body).toHaveProperty('success', true);
+      expect(response.body.data).toBeInstanceOf(Array);
+      expect(response.body.data.length).toBeGreaterThanOrEqual(2);
+      expect(response.body.data[0]).toHaveProperty('score');
     });
 
     it('should search CIs by type', async () => {
@@ -529,8 +546,8 @@ describe('CI REST API Integration Tests', () => {
         .send({ query: 'database' })
         .expect(200);
 
-      expect(response.body._data.length).toBeGreaterThanOrEqual(1);
-      expect(response.body._data.some((item: SearchResultItem) => item._ci.type === 'database')).toBe(true);
+      expect(response.body.data.length).toBeGreaterThanOrEqual(1);
+      expect(response.body.data.some((item: SearchResultItem) => item.ci.type === 'database')).toBe(true);
     });
 
     it('should search CIs by external_id', async () => {
@@ -539,9 +556,9 @@ describe('CI REST API Integration Tests', () => {
         .send({ query: 'i-1234567890abcdef0' })
         .expect(200);
 
-      expect(response.body._data.length).toBeGreaterThanOrEqual(1);
+      expect(response.body.data.length).toBeGreaterThanOrEqual(1);
       expect(
-        response.body._data.some((item: SearchResultItem) => item._ci.external_id === 'i-1234567890abcdef0')
+        response.body.data.some((item: SearchResultItem) => item.ci.external_id === 'i-1234567890abcdef0')
       ).toBe(true);
     });
   });
@@ -563,12 +580,12 @@ describe('CI REST API Integration Tests', () => {
         })
         .expect(201);
 
-      expect(createResponse.body._success).toBe(true);
+      expect(createResponse.body.success).toBe(true);
 
       // 2. Read CI
       const readResponse = await request(app).get(`/api/v1/cis/${ciId}`).expect(200);
 
-      expect(readResponse.body._data.name).toBe('lifecycle-test-server');
+      expect(readResponse.body.data.name).toBe('lifecycle-test-server');
 
       // 3. Update CI (non-underscore keys per updateCISchema)
       const updateResponse = await request(app)
@@ -579,13 +596,13 @@ describe('CI REST API Integration Tests', () => {
         })
         .expect(200);
 
-      expect(updateResponse.body._data._status).toBe('maintenance');
-      expect(updateResponse.body._data._metadata.version).toBe('1.1');
+      expect(updateResponse.body.data.status).toBe('maintenance');
+      expect(updateResponse.body.data.metadata.version).toBe('1.1');
 
       // 4. Verify update persisted (GET uses non-underscore keys)
       const verifyResponse = await request(app).get(`/api/v1/cis/${ciId}`).expect(200);
 
-      expect(verifyResponse.body._data.status).toBe('maintenance');
+      expect(verifyResponse.body.data.status).toBe('maintenance');
 
       // 5. Delete CI
       await request(app).delete(`/api/v1/cis/${ciId}`).expect(204);

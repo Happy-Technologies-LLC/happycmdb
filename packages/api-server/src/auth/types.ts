@@ -5,6 +5,8 @@
  * Authentication & Authorization Types
  */
 
+import type { Request } from 'express';
+
 export type UserRole = 'admin' | 'operator' | 'viewer' | 'agent';
 
 export type Permission = 'read' | 'write' | 'discover' | 'admin';

@@ -23,11 +23,11 @@ import type { CIDimensionInput } from '@cmdb/common';
 const RUN_ID = `fix8-null-norm-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
 const pgClient = new PostgresClient({
-  _host: 'localhost',
-  _port: 15432,
-  _database: 'cmdb_test',
-  _user: 'test',
-  _password: 'testpassword',
+  _host: process.env.POSTGRES_HOST || 'localhost',
+  _port: Number(process.env.POSTGRES_PORT) || 5432,
+  _database: process.env.POSTGRES_DB || 'cmdb_test',
+  _user: process.env.POSTGRES_USER || 'test',
+  _password: process.env.POSTGRES_PASSWORD || 'testpassword',
 });
 const datamart = new DataMartClient(pgClient);
 

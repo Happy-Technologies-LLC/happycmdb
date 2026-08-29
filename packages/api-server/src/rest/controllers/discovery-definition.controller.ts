@@ -11,6 +11,7 @@
 import { Request, Response } from 'express';
 import { logger } from '@cmdb/common';
 import { DiscoveryDefinitionService } from '../../services/discovery-definition.service';
+import type { AuthenticatedRequest } from '../../auth/types';
 
 export class DiscoveryDefinitionController {
   private service = new DiscoveryDefinitionService();
@@ -22,7 +23,7 @@ export class DiscoveryDefinitionController {
   async createDefinition(req: Request, res: Response): Promise<void> {
     try {
       // Get user from auth context (assuming auth middleware sets req.user)
-      const created_by = (req as any).user?.id || 'system';
+      const created_by = (req as AuthenticatedRequest).user?._userId || 'system';
 
       const definition = await this.service.createDefinition(req.body, created_by);
 
@@ -247,7 +248,7 @@ export class DiscoveryDefinitionController {
       }
 
       // Get user from auth context (assuming auth middleware sets req.user)
-      const triggeredBy = (req as any).user?.id || 'system';
+      const triggeredBy = (req as AuthenticatedRequest).user?._userId || 'system';
 
       const jobId = await this.service.runDefinition(id, triggeredBy);
 

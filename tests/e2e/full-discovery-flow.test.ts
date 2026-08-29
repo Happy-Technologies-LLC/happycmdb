@@ -17,6 +17,7 @@ import type { AddressInfo } from 'net';
 import { createApiClient, ApiClient } from './utils/api-client';
 import { createDatabaseHelpers, Neo4jTestHelper } from './utils/database-helpers';
 import { generateCIHierarchy, wait } from './utils/test-data-generator';
+import type { AuthenticatedRequest } from '../../packages/api-server/src/auth/types';
 
 // Routes are imported AFTER globalSetup has set the env vars (module-load
 // happens in the worker process which inherits them).
@@ -39,6 +40,16 @@ describe('Full CMDB E2E Test', () => {
     // Trivial health endpoint for the api-client health check
     app.get('/health', (_req, res) => {
       res.json({ status: 'ok' });
+    });
+
+    app.use('/api/v1', (req, _res, next) => {
+      (req as AuthenticatedRequest).user = {
+        _userId: 'e2e-operator',
+        _username: 'e2e-operator',
+        _role: 'operator',
+        _type: 'access',
+      };
+      next();
     });
 
     app.use('/api/v1/cis', ciRoutes);
@@ -94,9 +105,8 @@ describe('Full CMDB E2E Test', () => {
         metadata: { test: true },
       };
 
-      // Create — response is raw recordToCI shape (_id, _type, _status …)
       const createdCI = await apiClient.createCI(ciInput);
-      expect(createdCI._id).toBe(ciInput.id);
+      expect(createdCI.id).toBe(ciInput.id);
       expect(createdCI.name).toBe(ciInput.name);
 
       // Retrieve — response is convertNeo4jTypes shape (id, type, status …)
@@ -104,11 +114,11 @@ describe('Full CMDB E2E Test', () => {
       expect(retrievedCI.id).toBe(ciInput.id);
       expect(retrievedCI.name).toBe(ciInput.name);
 
-      // Update — send non-underscore body; response is recordToCI shape
+      // Update — send non-underscore body; response is canonical CI shape.
       const updatedCI = await apiClient.updateCI(ciInput.id, {
         status: 'maintenance',
       });
-      expect(updatedCI._status).toBe('maintenance');
+      expect(updatedCI.status).toBe('maintenance');
 
       // Verify persisted state via direct Neo4j query
       const neo4jCI = await neo4jHelper.getCIById(ciInput.id);

@@ -12,7 +12,7 @@
  * service is stubbed to a no-op.
  */
 
-import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
+import { getNeo4jClient, getPostgresClient, closeQueueManagerConnection } from '@cmdb/database';
 import { ConfigurationManagementService } from '../../src/services/configuration-management.service';
 import { IncidentPriorityService } from '../../src/services/incident-priority.service';
 import { ChangeRiskService } from '../../src/services/change-risk.service';
@@ -215,6 +215,7 @@ describe('ITIL Service Manager Integration Tests', () => {
 
   afterAll(async () => {
     await cleanup();
+    await closeQueueManagerConnection();
   });
 
   describe('Configuration Management Service', () => {

@@ -18,6 +18,7 @@ import express, { Application } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { getNeo4jClient } from '@cmdb/database';
 import { ciRoutes } from '../../src/rest/routes/ci.routes';
+import type { TokenPayload } from '../../src/auth/types';
 
 // Request body for creating a CI (non-underscore field names per ciInputSchema).
 interface CICreateBody {
@@ -41,8 +42,8 @@ interface CIResponseItem {
 
 // Shape of a search result item (raw Neo4j node properties + score).
 interface SearchResultItem {
-  _ci: { id: string; name: string; type: string; external_id?: string };
-  _score: number;
+  ci: { id: string; name: string; type: string; external_id?: string };
+  score: number;
 }
 
 // Shape of a validation error detail entry.
@@ -70,6 +71,22 @@ describe('CI REST API - Enhanced Integration Tests', () => {
   beforeAll(async () => {
     app = express();
     app.use(express.json());
+    // The real router only enforces `authMiddleware.requirePermission('write')`
+    // on mutating routes; `authMiddleware.authenticate()` (JWT/API-key
+    // verification) is mounted centrally in server.ts before this router, not
+    // inside it. Mirror that here by attaching a real operator TokenPayload
+    // directly (skipping JWT verification, not the permission check itself)
+    // so `requirePermission('write')` runs for real against an authenticated
+    // role.
+    app.use((req: express.Request, _res, next) => {
+      (req as express.Request & { user?: TokenPayload }).user = {
+        _userId: 'test-user-123',
+        _username: 'test-operator',
+        _role: 'operator',
+        _type: 'access',
+      };
+      next();
+    });
     app.use('/api/v1/cis', ciRoutes);
   });
 
@@ -102,8 +119,8 @@ describe('CI REST API - Enhanced Integration Tests', () => {
       const results = await Promise.all(ciPromises);
 
       results.forEach(response => {
-        expect(response.body._success).toBe(true);
-        expect(response.body._data).toHaveProperty('_id');
+        expect(response.body.success).toBe(true);
+        expect(response.body.data).toHaveProperty('id');
       });
     });
 
@@ -125,8 +142,8 @@ describe('CI REST API - Enhanced Integration Tests', () => {
       const results = await Promise.all(readPromises);
 
       results.forEach(response => {
-        expect(response.body._data.id).toBe(ciId);
-        expect(response.body._data.name).toBe('read-test-server');
+        expect(response.body.data.id).toBe(ciId);
+        expect(response.body.data.name).toBe('read-test-server');
       });
     });
 
@@ -163,7 +180,7 @@ describe('CI REST API - Enhanced Integration Tests', () => {
         .get(`/api/v1/cis/${ciId}`)
         .expect(200);
 
-      expect(finalState.body._data.metadata).toHaveProperty('counter');
+      expect(finalState.body.data.metadata).toHaveProperty('counter');
     });
   });
 
@@ -188,8 +205,8 @@ describe('CI REST API - Enhanced Integration Tests', () => {
         .query({ limit: 100, offset: 0 })
         .expect(200);
 
-      expect(response.body._data.length).toBeLessThanOrEqual(100);
-      expect(response.body._pagination._limit).toBe(100);
+      expect(response.body.data.length).toBeLessThanOrEqual(100);
+      expect(response.body.pagination.limit).toBe(100);
     });
 
     it('should handle offset beyond total results', async () => {
@@ -198,9 +215,9 @@ describe('CI REST API - Enhanced Integration Tests', () => {
         .query({ limit: 10, offset: 1000 })
         .expect(200);
 
-      expect(response.body._data).toHaveLength(0);
-      expect(response.body._pagination._offset).toBe(1000);
-      expect(response.body._pagination.total).toBeGreaterThan(0);
+      expect(response.body.data).toHaveLength(0);
+      expect(response.body.pagination.offset).toBe(1000);
+      expect(response.body.pagination.total).toBeGreaterThan(0);
     });
 
     it('should maintain consistent ordering across pages', async () => {
@@ -214,8 +231,8 @@ describe('CI REST API - Enhanced Integration Tests', () => {
         .query({ limit: 10, offset: 10 })
         .expect(200);
 
-      const page1Ids = new Set(page1.body._data.map((ci: CIResponseItem) => ci.id));
-      const page2Ids = new Set(page2.body._data.map((ci: CIResponseItem) => ci.id));
+      const page1Ids = new Set(page1.body.data.map((ci: CIResponseItem) => ci.id));
+      const page2Ids = new Set(page2.body.data.map((ci: CIResponseItem) => ci.id));
 
       // No overlap between pages
       page1Ids.forEach(id => {
@@ -292,10 +309,10 @@ describe('CI REST API - Enhanced Integration Tests', () => {
         .send({ query: 'server-with-dashes' })
         .expect(200);
 
-      expect(response.body._data.length).toBeGreaterThanOrEqual(1);
+      expect(response.body.data.length).toBeGreaterThanOrEqual(1);
       expect(
-        response.body._data.some((item: SearchResultItem) =>
-          item._ci.name.includes('server-with-dashes')
+        response.body.data.some((item: SearchResultItem) =>
+          item.ci.name.includes('server-with-dashes')
         )
       ).toBe(true);
     });
@@ -306,7 +323,7 @@ describe('CI REST API - Enhanced Integration Tests', () => {
         .send({ query: 'server.with.dots' })
         .expect(200);
 
-      expect(response.body._data.length).toBeGreaterThanOrEqual(1);
+      expect(response.body.data.length).toBeGreaterThanOrEqual(1);
     });
 
     it('should handle Unicode characters in search', async () => {
@@ -318,7 +335,7 @@ describe('CI REST API - Enhanced Integration Tests', () => {
           .send({ query })
           .expect(200);
 
-        expect(response.body._data.length).toBeGreaterThanOrEqual(0);
+        expect(response.body.data.length).toBeGreaterThanOrEqual(0);
       }
     });
 
@@ -340,8 +357,8 @@ describe('CI REST API - Enhanced Integration Tests', () => {
         // a crash; otherwise they return results (200) or are rejected (400).
         // Either way the response is a well-formed envelope, never a raw crash.
         expect([200, 400, 500]).toContain(response.status);
-        expect(response.body).toHaveProperty('_success');
-        expect(typeof response.body._success).toBe('boolean');
+        expect(response.body).toHaveProperty('success');
+        expect(typeof response.body.success).toBe('boolean');
       }
     });
   });
@@ -408,8 +425,8 @@ describe('CI REST API - Enhanced Integration Tests', () => {
         })
         .expect(200);
 
-      expect(response.body._data.length).toBe(2);
-      response.body._data.forEach((ci: CIResponseItem) => {
+      expect(response.body.data.length).toBe(2);
+      response.body.data.forEach((ci: CIResponseItem) => {
         expect(ci.type).toBe('server');
         expect(ci.status).toBe('active');
         expect(ci.environment).toBe('production');
@@ -426,8 +443,8 @@ describe('CI REST API - Enhanced Integration Tests', () => {
         })
         .expect(200);
 
-      expect(response.body._data).toHaveLength(0);
-      expect(response.body._pagination.total).toBe(0);
+      expect(response.body.data).toHaveLength(0);
+      expect(response.body.pagination.total).toBe(0);
     });
 
     it('should ignore invalid filter parameters', async () => {
@@ -439,7 +456,7 @@ describe('CI REST API - Enhanced Integration Tests', () => {
         })
         .expect(200);
 
-      expect(response.body._data.length).toBeGreaterThan(0);
+      expect(response.body.data.length).toBeGreaterThan(0);
     });
   });
 
@@ -574,7 +591,7 @@ describe('CI REST API - Enhanced Integration Tests', () => {
         .get(`/api/v1/cis/${server1Id}/relationships`)
         .expect(200);
 
-      expect(response.body._data).toEqual([]);
+      expect(response.body.data).toEqual([]);
     });
 
     it('should handle relationship direction filtering', async () => {
@@ -586,8 +603,8 @@ describe('CI REST API - Enhanced Integration Tests', () => {
           .query({ direction })
           .expect(200);
 
-        expect(response.body._success).toBe(true);
-        expect(Array.isArray(response.body._data)).toBe(true);
+        expect(response.body.success).toBe(true);
+        expect(Array.isArray(response.body.data)).toBe(true);
       }
     });
 
@@ -600,7 +617,7 @@ describe('CI REST API - Enhanced Integration Tests', () => {
           .query({ depth })
           .expect(200);
 
-        expect(response.body._success).toBe(true);
+        expect(response.body.success).toBe(true);
       }
     });
 
@@ -644,7 +661,7 @@ describe('CI REST API - Enhanced Integration Tests', () => {
       const duration = Date.now() - startTime;
 
       expect(duration).toBeLessThan(5000); // Should complete in < 5 seconds
-      expect(response.body._data.length).toBeLessThanOrEqual(1000);
+      expect(response.body.data.length).toBeLessThanOrEqual(1000);
     });
   });
 
@@ -665,8 +682,8 @@ describe('CI REST API - Enhanced Integration Tests', () => {
         .get(`/api/v1/cis/${ciId}/audit`)
         .expect(200);
 
-      expect(auditResponse.body._success).toBe(true);
-      expect(Array.isArray(auditResponse.body._data)).toBe(true);
+      expect(auditResponse.body.success).toBe(true);
+      expect(Array.isArray(auditResponse.body.data)).toBe(true);
     });
 
     it('should record audit trail for update operations', async () => {
@@ -688,8 +705,8 @@ describe('CI REST API - Enhanced Integration Tests', () => {
         .expect(200);
 
       // The audit endpoint returns a well-formed envelope with an array payload.
-      expect(auditResponse.body._success).toBe(true);
-      expect(Array.isArray(auditResponse.body._data)).toBe(true);
+      expect(auditResponse.body.success).toBe(true);
+      expect(Array.isArray(auditResponse.body.data)).toBe(true);
     });
   });
 });

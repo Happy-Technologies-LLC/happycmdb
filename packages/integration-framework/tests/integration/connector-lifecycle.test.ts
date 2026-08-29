@@ -17,7 +17,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { execSync } from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
-import { getPostgresClient } from '@cmdb/database';
+import { getPostgresClient, closeQueueManagerConnection } from '@cmdb/database';
 import { ConnectorRegistry } from '../../src/registry/connector-registry';
 import { ConnectorInstaller } from '../../src/installer/connector-installer';
 import { ConnectorExecutor } from '../../src/executor/connector-executor';
@@ -173,6 +173,7 @@ describe('Connector Lifecycle Integration Tests', () => {
     await neo4jDriver.close();
     fs.rmSync(connectorsDir, { recursive: true, force: true });
     fs.rmSync(buildRoot, { recursive: true, force: true });
+    await closeQueueManagerConnection();
   });
 
   describe('Connector Installation', () => {

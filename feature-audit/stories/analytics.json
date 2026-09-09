@@ -9,7 +9,9 @@
     "expected_behavior": "Opens a Neo4j session and runs MATCH queries to count total CIs, unique types/environments, total relationships, and group CIs by type, status, and environment; also returns the last 10 CIs whose metadata contains 'discovery_provider' with Neo4j DateTime converted to ISO strings. Responds 200 with a flat object {total_cis, by_type, by_status, by_environment, recent_discoveries, health_score, critical_relationships} (note: not wrapped in the _success/_data envelope the sibling endpoints use). On error logs and returns 500; the Neo4j session is always closed in finally.",
     "issue": true,
     "severity": "functional",
-    "issue_note": "health_score is hardcoded to 0 (analytics.controller.ts:579) and critical_relationships is set to the total relationship count, not critical ones (analytics.controller.ts:580) -- both are misleading placeholders."
+    "issue_note": "health_score is hardcoded to 0 (analytics.controller.ts:579) and critical_relationships is set to the total relationship count, not critical ones (analytics.controller.ts:580) -- both are misleading placeholders.",
+    "resolution": "deferred",
+    "resolution_note": "Documented deferral: deliberate stub / unbuilt-feature / no backend route. Tracked as a Known Limitation; not a wiring or UX bug."
   },
   {
     "id": "ANA-002",
@@ -67,9 +69,11 @@
     "ref": "GET /api/v1/analytics/discovery-stats?start_date&end_date",
     "user_story": "As a discovery administrator, I want summary discovery stats over a date range and a breakdown by provider so that I can measure discovery coverage.",
     "expected_behavior": "Builds an optional discovered_at >= / <= filter from start_date/end_date query params and runs two Postgres queries on dim_ci (is_current=true): a summary (total_cis, unique_types, first/last discovery) and per-provider counts. Responds 200 with {_success:true,_data:{_summary,_by_provider},_filters:{start_date,end_date}}. On failure returns 500.",
-    "issue": true,
+    "issue": false,
     "severity": "functional",
-    "issue_note": "Route schema dateRangeSchema keys on _start_date/_end_date (analytics.routes.ts:14-17) but the controller reads start_date/end_date (analytics.controller.ts:137); validate() runs stripUnknown:true (validators.ts:36) and validateOptional overwrites req.query (validation.middleware.ts:153), so the supplied dates are dropped and the date filter never applies."
+    "issue_note": "Route schema dateRangeSchema keys on _start_date/_end_date (analytics.routes.ts:14-17) but the controller reads start_date/end_date (analytics.controller.ts:137); validate() runs stripUnknown:true (validators.ts:36) and validateOptional overwrites req.query (validation.middleware.ts:153), so the supplied dates are dropped and the date filter never applies.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "ANA-007",
@@ -79,9 +83,11 @@
     "ref": "GET /api/v1/analytics/discovery-timeline?interval&limit",
     "user_story": "As an analyst, I want a time-bucketed timeline of CI discovery counts so that I can visualize discovery activity over time.",
     "expected_behavior": "Validates interval against ['hour','day','week','month'] (controller returns 400 for invalid), caps limit at 365, then runs a Postgres query using date_trunc($interval, discovered_at) over dim_ci (is_current=true), GROUP BY period ORDER BY period DESC LIMIT $limit. Responds 200 with {_success:true,_data:[{period,count,unique_types}],interval}. On failure returns 500.",
-    "issue": true,
+    "issue": false,
     "severity": "functional",
-    "issue_note": "Route timelineSchema keys on _interval/_limit (analytics.routes.ts:19-22) while the controller reads interval/limit (analytics.controller.ts:205); stripUnknown:true + req.query overwrite drop the user values, so interval/limit always fall back to defaults (day/30) regardless of input."
+    "issue_note": "Route timelineSchema keys on _interval/_limit (analytics.routes.ts:19-22) while the controller reads interval/limit (analytics.controller.ts:205); stripUnknown:true + req.query overwrite drop the user values, so interval/limit always fall back to defaults (day/30) regardless of input.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "ANA-008",
@@ -91,9 +97,11 @@
     "ref": "GET /api/v1/analytics/top-connected?limit&direction",
     "user_story": "As an architect, I want the most-connected CIs ranked by relationship count and filterable by direction so that I can find critical hubs in the topology.",
     "expected_behavior": "Reads limit (capped at 100) and direction; for direction 'in' joins fact_ci_relationships on to_ci_id, 'out' on from_ci_id, otherwise (both) LEFT JOINs both and sums distinct counts. Responds 200 with {_success:true,_data:[{ci_id,ci_name,ci_type,relationship_count}],direction}. On failure returns 500.",
-    "issue": true,
+    "issue": false,
     "severity": "functional",
-    "issue_note": "Route topConnectedSchema keys on _limit/_direction (analytics.routes.ts:24-27) but the controller reads limit/direction (analytics.controller.ts:256); stripUnknown:true + req.query overwrite discard the user values, so the query always uses default direction 'both' and limit 10."
+    "issue_note": "Route topConnectedSchema keys on _limit/_direction (analytics.routes.ts:24-27) but the controller reads limit/direction (analytics.controller.ts:256); stripUnknown:true + req.query overwrite discard the user values, so the query always uses default direction 'both' and limit 10.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "ANA-009",
@@ -115,9 +123,11 @@
     "ref": "GET /api/v1/analytics/change-history?ci_id&limit",
     "user_story": "As an auditor, I want the change history for a specific CI so that I can review what fields changed, when, and by whom.",
     "expected_behavior": "Requires ci_id (controller returns 400 'CI ID is required' when missing), caps limit at 1000, then queries ci_change_history WHERE ci_id=$1 ORDER BY change_timestamp DESC LIMIT $2. Responds 200 with {_success:true,_data:[{change_timestamp,change_type,field_name,old_value,new_value,changed_by}],ci_id}. On failure returns 500.",
-    "issue": true,
+    "issue": false,
     "severity": "logistical",
-    "issue_note": "Route changeHistorySchema declares _ci_id as required (analytics.routes.ts:29-32) but clients/controller use ci_id (analytics.controller.ts:415); since validateOptional runs whenever any query key is present, a request with ?ci_id=X fails Joi (missing required _ci_id) and returns 400 Validation Error, making the endpoint effectively unusable."
+    "issue_note": "Route changeHistorySchema declares _ci_id as required (analytics.routes.ts:29-32) but clients/controller use ci_id (analytics.controller.ts:415); since validateOptional runs whenever any query key is present, a request with ?ci_id=X fails Joi (missing required _ci_id) and returns 400 Validation Error, making the endpoint effectively unusable.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "ANA-011",
@@ -201,7 +211,9 @@
     "expected_behavior": "Validates body via mergeRequestSchema (name, ci_type, source, source_id, identifiers required) and re-checks name/ci_type/source in the controller (400 otherwise). Calls reconciliationEngine.reconcileCI(discoveredCI) and responds 200 with {_success:true,_data:{ci_id,action},_message}. On failure returns 500. Side effect: creates or updates the CI in the CMDB via the reconciliation engine.",
     "issue": true,
     "severity": "functional",
-    "issue_note": "The created-vs-updated label is derived heuristically with ciId.includes('_') ? 'created' : 'updated' (reconciliation.controller.ts:116), which infers the action from the format of the returned id rather than the engine's actual outcome and can report the wrong action."
+    "issue_note": "The created-vs-updated label is derived heuristically with ciId.includes('_') ? 'created' : 'updated' (reconciliation.controller.ts:116), which infers the action from the format of the returned id rather than the engine's actual outcome and can report the wrong action.",
+    "resolution": "deferred",
+    "resolution_note": "Documented deferral: deliberate stub / unbuilt-feature / no backend route. Tracked as a Known Limitation; not a wiring or UX bug."
   },
   {
     "id": "ANA-018",

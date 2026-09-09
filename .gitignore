@@ -13,6 +13,7 @@ coverage/
 test-results/
 .nyc_output
 *.lcov
+.regression/
 
 # Environment variables
 .env
@@ -130,3 +131,7 @@ docker-build.log
 screenshots/
 .playwright-mcp/
 test-results/
+
+# Design input assets, not repo content
+HappyHive platform redesign/
+HappyHive platform redesign.zip

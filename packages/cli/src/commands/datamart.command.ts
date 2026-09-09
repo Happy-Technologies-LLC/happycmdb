@@ -413,7 +413,7 @@ export class DataMartCommand {
     const spinner = ora('Fetching job status...').start();
 
     try {
-      const response = await axios.get(`${this.apiUrl}/jobs/${jobId}`, {
+      const response = await axios.get(`${this.apiUrl}/jobs/etl/${jobId}`, {
         headers: this.getHeaders(),
       });
 
@@ -482,7 +482,7 @@ export class DataMartCommand {
         params.status = options.status;
       }
 
-      const response = await axios.get(`${this.apiUrl}/jobs`, {
+      const response = await axios.get(`${this.apiUrl}/jobs/etl`, {
         params,
         headers: this.getHeaders(),
       });
@@ -536,7 +536,7 @@ export class DataMartCommand {
         await this.sleep(5000);
         attempts++;
 
-        const response = await axios.get(`${this.apiUrl}/jobs/${jobId}`, {
+        const response = await axios.get(`${this.apiUrl}/jobs/etl/${jobId}`, {
           headers: this.getHeaders(),
         });
 

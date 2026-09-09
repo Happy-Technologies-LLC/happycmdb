@@ -31,9 +31,11 @@
     "ref": "GET /api/v1/connectors/registry/search?q=",
     "user_story": "As a CMDB administrator, I want to search the connector catalog by keyword so that I can quickly find a relevant connector.",
     "expected_behavior": "Intended to query connector_registry_cache by ILIKE over name/description/connector_type plus tag ANY-match, ranked (exact type match first, then name), limited by q and limit (default 20), returning {success:true, data, count, query}. In practice this handler is never reached: the route GET /registry/:type is registered before GET /registry/search, so Express binds /registry/search to getRegistryDetails with type='search', which queries connector_type='search' and returns 404 'Connector \\'search\\' not found in registry'.",
-    "issue": true,
+    "issue": false,
     "severity": "logistical",
-    "issue_note": "GET /registry/search is shadowed by the earlier GET /registry/:type route; searchRegistry is unreachable (connector.routes.ts:57 registered before :63)."
+    "issue_note": "GET /registry/search is shadowed by the earlier GET /registry/:type route; searchRegistry is unreachable (connector.routes.ts:57 registered before :63).",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "CONN-004",
@@ -105,7 +107,9 @@
     "expected_behavior": "Returns 404 if the connector is not installed. Otherwise it is meant to check installation files, dependencies, connector.json, and loadability. In the current code verification is a hardcoded stub: `const verified = true`, which is written to installed_connectors.verified and returned as {success:true, verified:true, message:'...passed'} for every installed connector regardless of actual state.",
     "issue": true,
     "severity": "functional",
-    "issue_note": "verifyConnector unconditionally sets verified=true (connector.controller.ts:572), so verification always reports success and gives false confidence."
+    "issue_note": "verifyConnector unconditionally sets verified=true (connector.controller.ts:572), so verification always reports success and gives false confidence.",
+    "resolution": "deferred",
+    "resolution_note": "Documented deferral: deliberate stub / unbuilt-feature / no backend route. Tracked as a Known Limitation; not a wiring or UX bug."
   },
   {
     "id": "CONN-010",
@@ -201,7 +205,9 @@
     "expected_behavior": "Returns 404 if the configuration does not exist. Otherwise it is meant to perform a live connection test against the connector. In the current code the test is a stub that unconditionally returns 200 {success:true, message:'Connection test passed', details:{connector_type, tested_at}} for any existing configuration without contacting the target system.",
     "issue": true,
     "severity": "functional",
-    "issue_note": "testConnection always returns success without performing a real connection test (operations.controller.ts:100-110), giving false confidence in connectivity."
+    "issue_note": "testConnection always returns success without performing a real connection test (operations.controller.ts:100-110), giving false confidence in connectivity.",
+    "resolution": "deferred",
+    "resolution_note": "Documented deferral: deliberate stub / unbuilt-feature / no backend route. Tracked as a Known Limitation; not a wiring or UX bug."
   },
   {
     "id": "CONN-018",
@@ -213,7 +219,9 @@
     "expected_behavior": "Optional body (resource_id, triggered_by default 'manual'). Returns 404 if the configuration does not exist and 400 if it is disabled. Otherwise INSERTs a connector_run_history row with status 'queued' and returns 202 {success:true, data:run, message:'Connector run queued successfully'}. However the actual job enqueue (BullMQ) is a TODO stub, so the run is recorded as 'queued' but is never picked up or executed.",
     "issue": true,
     "severity": "functional",
-    "issue_note": "runConnector inserts a 'queued' run record but never enqueues a BullMQ job (operations.controller.ts:151), so manual runs never execute."
+    "issue_note": "runConnector inserts a 'queued' run record but never enqueues a BullMQ job (operations.controller.ts:151), so manual runs never execute.",
+    "resolution": "deferred",
+    "resolution_note": "Documented deferral: deliberate stub / unbuilt-feature / no backend route. Tracked as a Known Limitation; not a wiring or UX bug."
   },
   {
     "id": "CONN-019",

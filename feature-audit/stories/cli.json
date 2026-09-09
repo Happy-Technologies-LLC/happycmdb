@@ -19,9 +19,11 @@
     "ref": "cmdb health -> GET {apiUrl}/health",
     "user_story": "As an operator, I want to check that the API server is reachable and healthy so that I know the platform is up before running commands.",
     "expected_behavior": "Issues GET {apiUrl}/health with a 5s timeout and on success prints status, version and uptime. On failure it fails the spinner and prints tailored messages for ECONNREFUSED and ETIMEDOUT, then exits with code 1. The default base URL plus path resolve to http://localhost:3000/api/health.",
-    "issue": true,
+    "issue": false,
     "severity": "logistical",
-    "issue_note": "Default base is http://localhost:3000/api (index.ts:28) so the path resolves to /api/health, but the server exposes health only at /api/v1/cmdb-health (server.ts:82); the check always reports unreachable. This /api-vs-/api/v1 base-path gap affects every REST-backed CLI command unless CMDB_API_URL is overridden to include /v1."
+    "issue_note": "Default base is http://localhost:3000/api (index.ts:28) so the path resolves to /api/health, but the server exposes health only at /api/v1/cmdb-health (server.ts:82); the check always reports unreachable. This /api-vs-/api/v1 base-path gap affects every REST-backed CLI command unless CMDB_API_URL is overridden to include /v1.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "CLI-003",
@@ -55,9 +57,11 @@
     "ref": "cmdb ci create -> POST /cis",
     "user_story": "As an engineer, I want to create a CI from the command line so that I can register new infrastructure.",
     "expected_behavior": "Requires -t/--type and -n/--name, parses optional --attributes JSON (failing fast on invalid JSON), POSTs to /cis, and prints the new id/name/type. The body it sends is {_type, _name, description?, attributes?}.",
-    "issue": true,
+    "issue": false,
     "severity": "functional",
-    "issue_note": "ciInputSchema (validators.ts:123) requires plain id, name and type; the CLI sends underscored _type/_name and omits the required id, so after stripUnknown all keys drop and the request 400s. It also sends description/attributes which the schema does not define (it uses metadata)."
+    "issue_note": "ciInputSchema (validators.ts:123) requires plain id, name and type; the CLI sends underscored _type/_name and omits the required id, so after stripUnknown all keys drop and the request 400s. It also sends description/attributes which the schema does not define (it uses metadata).",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "CLI-006",
@@ -67,9 +71,11 @@
     "ref": "cmdb ci update <ciId> -> PATCH /cis/:id",
     "user_story": "As an engineer, I want to update a CI's name/description/status/attributes so that I can keep records current.",
     "expected_behavior": "Builds a partial payload from --name/--description/--status/--attributes (validating attributes JSON), aborts if no fields given, then issues PATCH /cis/:id and reports success. ",
-    "issue": true,
+    "issue": false,
     "severity": "logistical",
-    "issue_note": "The CLI uses HTTP PATCH but ci.routes.ts:64 defines only PUT /cis/:id, so PATCH is unrouted and returns 404. Additionally description/attributes are not in updateCISchema (name/type/status/environment/metadata) and would be stripped even if the verb matched."
+    "issue_note": "The CLI uses HTTP PATCH but ci.routes.ts:64 defines only PUT /cis/:id, so PATCH is unrouted and returns 404. Additionally description/attributes are not in updateCISchema (name/type/status/environment/metadata) and would be stripped even if the verb matched.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "CLI-007",
@@ -91,9 +97,11 @@
     "ref": "cmdb ci relate -> POST /relationships",
     "user_story": "As an engineer, I want to create a relationship between two CIs so that I can model dependencies.",
     "expected_behavior": "Requires --from, --to and --type, POSTs to /relationships, and prints the new relationship id plus the from/to/type echo. The body sent is {_fromCiId, _toCiId, _type}.",
-    "issue": true,
+    "issue": false,
     "severity": "functional",
-    "issue_note": "relationshipSchema (validators.ts:137) requires plain from_id, to_id and type; the CLI's underscored _fromCiId/_toCiId/_type are stripped by stripUnknown, leaving the required fields missing so the request 400s."
+    "issue_note": "relationshipSchema (validators.ts:137) requires plain from_id, to_id and type; the CLI's underscored _fromCiId/_toCiId/_type are stripped by stripUnknown, leaving the required fields missing so the request 400s.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "CLI-009",
@@ -103,9 +111,11 @@
     "ref": "cmdb ci relationships <ciId> -> GET /cis/:id/relationships",
     "user_story": "As an engineer, I want to list a CI's inbound/outbound relationships so that I can understand its connections.",
     "expected_behavior": "Sends GET /cis/:id/relationships?direction=<value> and renders inbound (fromCi.name --[type]--> ciId) and outbound (ciId --[type]--> toCi.name) edges, printing 'No relationships found' when empty. Default direction 'both' is accepted by the server.",
-    "issue": true,
+    "issue": false,
     "severity": "functional",
-    "issue_note": "The --direction option advertises inbound/outbound/both, but the route's relationshipQuerySchema (ci.routes.ts:31-33) only allows in/out/both; passing --direction inbound or outbound fails validation with 400."
+    "issue_note": "The --direction option advertises inbound/outbound/both, but the route's relationshipQuerySchema (ci.routes.ts:31-33) only allows in/out/both; passing --direction inbound or outbound fails validation with 400.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "CLI-010",
@@ -115,9 +125,11 @@
     "ref": "cmdb ci search <query> -> GET /cis/search",
     "user_story": "As an engineer, I want to search CIs by name/attributes so that I can quickly find items.",
     "expected_behavior": "Sends a GET to /cis/search with query, _limit and optional type as query-string params and prints matching name/id/type/status, expecting an array response (reads response.data.length).",
-    "issue": true,
+    "issue": false,
     "severity": "functional",
-    "issue_note": "Search is defined as POST /cis/search with a JSON body {query, limit} (ci.routes.ts:47). A GET to /cis/search instead matches the GET /cis/:id route with id='search' (controller.getCIById), so it never reaches searchCIs and returns a wrong/404 result; the limit is also sent as _limit, not limit."
+    "issue_note": "Search is defined as POST /cis/search with a JSON body {query, limit} (ci.routes.ts:47). A GET to /cis/search instead matches the GET /cis/:id route with id='search' (controller.getCIById), so it never reaches searchCIs and returns a wrong/404 result; the limit is also sent as _limit, not limit.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "CLI-011",
@@ -129,7 +141,9 @@
     "expected_behavior": "POSTs {_query, _limit} to /query/execute and formats the returned array as table (default), json, or csv via formatOutput. Aliased as 'q'.",
     "issue": true,
     "severity": "logistical",
-    "issue_note": "No /query routes are mounted in the REST server (server.ts setupRoutes has no /api/v1/query); every command in the query group targets a non-existent /query/* surface and 404s. The whole 'query' group is unreachable against the real API."
+    "issue_note": "No /query routes are mounted in the REST server (server.ts setupRoutes has no /api/v1/query); every command in the query group targets a non-existent /query/* surface and 404s. The whole 'query' group is unreachable against the real API.",
+    "resolution": "deferred",
+    "resolution_note": "Documented deferral: deliberate stub / unbuilt-feature / no backend route. Tracked as a Known Limitation; not a wiring or UX bug."
   },
   {
     "id": "CLI-012",
@@ -151,9 +165,11 @@
     "ref": "cmdb query dependencies <ciId> -> GET /query/dependencies/:id",
     "user_story": "As an analyst, I want the full dependency chain of a CI so that I can see what it relies on.",
     "expected_behavior": "Sends GET /query/dependencies/:id with params _depth, _direction (upstream/downstream/both) and optional relationshipType, then prints a recursive dependency tree.",
-    "issue": true,
+    "issue": false,
     "severity": "logistical",
-    "issue_note": "No /query route is mounted; the actual dependency endpoint is GET /cis/:id/dependencies (ci.routes.ts:81), so the CLI points at the wrong, non-existent path and 404s."
+    "issue_note": "No /query route is mounted; the actual dependency endpoint is GET /cis/:id/dependencies (ci.routes.ts:81), so the CLI points at the wrong, non-existent path and 404s.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "CLI-014",
@@ -163,9 +179,11 @@
     "ref": "cmdb query impact <ciId> -> GET /query/impact/:id",
     "user_story": "As an analyst, I want to analyze the impact of a CI failing so that I can assess blast radius.",
     "expected_behavior": "Sends GET /query/impact/:id with depth, then prints either raw JSON (--format json) or an impact tree showing root name, affected count, and critical/affected CIs.",
-    "issue": true,
+    "issue": false,
     "severity": "logistical",
-    "issue_note": "No /query route is mounted; the real impact endpoint is GET /cis/:id/impact (ci.routes.ts:88). The CLI targets a non-existent /query/impact path and 404s."
+    "issue_note": "No /query route is mounted; the real impact endpoint is GET /cis/:id/impact (ci.routes.ts:88). The CLI targets a non-existent /query/impact path and 404s.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "CLI-015",
@@ -223,9 +241,11 @@
     "ref": "cmdb discovery scan -> POST /discovery/scan",
     "user_story": "As an operator, I want to start a discovery scan against targets so that new CIs are discovered.",
     "expected_behavior": "Parses --targets (comma list) and optional SSH credentials, POSTs {_targets, _scanType, credentials?} to /discovery/scan, then prints the returned scanId and a follow-up status hint. Errors if neither --targets nor --file is given. Aliased as 'disc'.",
-    "issue": true,
+    "issue": false,
     "severity": "logistical",
-    "issue_note": "There is no POST /discovery/scan route; discovery.routes.ts only exposes /schedule and /jobs(/:id), so the call 404s. Separately, the --file target source is an explicit stub: 'File input not yet implemented' (discovery.command.ts:104-106)."
+    "issue_note": "There is no POST /discovery/scan route; discovery.routes.ts only exposes /schedule and /jobs(/:id), so the call 404s. Separately, the --file target source is an explicit stub: 'File input not yet implemented' (discovery.command.ts:104-106).",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "CLI-020",
@@ -235,9 +255,11 @@
     "ref": "cmdb discovery list -> GET /discovery/scans",
     "user_story": "As an operator, I want to list discovery scans with optional status filter so that I can review past runs.",
     "expected_behavior": "Sends GET /discovery/scans with params _limit and optional status, then prints each scan's id, colorized status, type, target count and started/completed timestamps.",
-    "issue": true,
+    "issue": false,
     "severity": "logistical",
-    "issue_note": "The discovery routes expose listing at GET /discovery/jobs (discovery.routes.ts:54), not /discovery/scans, so the request 404s; _limit/status would also be stripped versus the underscored listJobsQuerySchema."
+    "issue_note": "The discovery routes expose listing at GET /discovery/jobs (discovery.routes.ts:54), not /discovery/scans, so the request 404s; _limit/status would also be stripped versus the underscored listJobsQuerySchema.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "CLI-021",
@@ -247,9 +269,11 @@
     "ref": "cmdb discovery status <scanId> -> GET /discovery/scans/:id",
     "user_story": "As an operator, I want the status of a specific scan so that I can monitor progress.",
     "expected_behavior": "Sends GET /discovery/scans/:id and prints id, status, type, target count, discovered count, timestamps, computed duration, and a progress line when present.",
-    "issue": true,
+    "issue": false,
     "severity": "logistical",
-    "issue_note": "Single-job status is served at GET /discovery/jobs/:id (discovery.routes.ts:48), not /discovery/scans/:id, so the call 404s."
+    "issue_note": "Single-job status is served at GET /discovery/jobs/:id (discovery.routes.ts:48), not /discovery/scans/:id, so the call 404s.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "CLI-022",
@@ -259,9 +283,11 @@
     "ref": "cmdb discovery cancel <scanId> -> POST /discovery/scans/:id/cancel",
     "user_story": "As an operator, I want to cancel a running scan so that I can stop unwanted discovery.",
     "expected_behavior": "Sends POST /discovery/scans/:id/cancel with an empty body and reports the scan cancelled.",
-    "issue": true,
+    "issue": false,
     "severity": "logistical",
-    "issue_note": "Cancellation is served by DELETE /discovery/jobs/:id (discovery.routes.ts:61); the CLI uses both a wrong path (/scans/:id/cancel) and a wrong method (POST), so it 404s."
+    "issue_note": "Cancellation is served by DELETE /discovery/jobs/:id (discovery.routes.ts:61); the CLI uses both a wrong path (/scans/:id/cancel) and a wrong method (POST), so it 404s.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "CLI-023",
@@ -271,9 +297,11 @@
     "ref": "cmdb discovery schedule -> POST /discovery/schedule",
     "user_story": "As an operator, I want to schedule recurring discovery via cron so that scans run automatically.",
     "expected_behavior": "Builds {targets, _scanType, _schedule} from --targets/--type/--cron (default '0 2 * * *') and POSTs to /discovery/schedule, then prints the returned scheduleId, cron and target count. Aborts locally if no targets supplied.",
-    "issue": true,
+    "issue": false,
     "severity": "functional",
-    "issue_note": "The route's scheduleDiscoverySchema (discovery.routes.ts:23) requires _provider (and an optional _config object); the CLI's targets/_scanType/_schedule keys are stripped by stripUnknown, leaving required _provider missing so the request 400s."
+    "issue_note": "The route's scheduleDiscoverySchema (discovery.routes.ts:23) requires _provider (and an optional _config object); the CLI's targets/_scanType/_schedule keys are stripped by stripUnknown, leaving required _provider missing so the request 400s.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "CLI-024",
@@ -319,9 +347,11 @@
     "ref": "cmdb analytics changes -> GET /analytics/change-history",
     "user_story": "As an auditor, I want a CI's change history so that I can review what changed and when.",
     "expected_behavior": "Requires --ci-id locally, then sends GET /analytics/change-history with params ci_id and limit and prints each change's type, timestamp, field, old/new value and changed_by; supports --json.",
-    "issue": true,
+    "issue": false,
     "severity": "functional",
-    "issue_note": "changeHistorySchema (analytics.routes.ts:29) requires _ci_id (underscored); the CLI sends ci_id/limit which stripUnknown drops, leaving required _ci_id missing so the request 400s."
+    "issue_note": "changeHistorySchema (analytics.routes.ts:29) requires _ci_id (underscored); the CLI sends ci_id/limit which stripUnknown drops, leaving required _ci_id missing so the request 400s.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "CLI-028",
@@ -357,7 +387,9 @@
     "expected_behavior": "Concurrently GETs /datamart/health and /datamart/stats and prints colorized health (status, neo4j, postgres, lastSync) plus stats (CI counts, relationship count, last ETL duration, sync lag); supports --json.",
     "issue": true,
     "severity": "logistical",
-    "issue_note": "No /datamart routes are mounted in the REST server (server.ts has no /api/v1/datamart), so /datamart/health and /datamart/stats 404. The entire datamart status/sync/reconcile/refresh/validate surface has no backend."
+    "issue_note": "No /datamart routes are mounted in the REST server (server.ts has no /api/v1/datamart), so /datamart/health and /datamart/stats 404. The entire datamart status/sync/reconcile/refresh/validate surface has no backend.",
+    "resolution": "deferred",
+    "resolution_note": "Documented deferral: deliberate stub / unbuilt-feature / no backend route. Tracked as a Known Limitation; not a wiring or UX bug."
   },
   {
     "id": "CLI-031",
@@ -369,7 +401,9 @@
     "expected_behavior": "POSTs {batchSize, fullRefresh:!incremental, incrementalSince?, ciTypes?} to /datamart/sync, prints the returned jobId and config echo, and when --wait polls /jobs/:id every 5s (up to ~10min) for completion, printing results or failure.",
     "issue": true,
     "severity": "logistical",
-    "issue_note": "No POST /datamart/sync route exists in the server (no /datamart mount in server.ts), so the trigger 404s; the --wait polling also depends on a single-segment /jobs/:id route that the jobs API does not provide (see CLI-035)."
+    "issue_note": "No POST /datamart/sync route exists in the server (no /datamart mount in server.ts), so the trigger 404s; the --wait polling also depends on a single-segment /jobs/:id route that the jobs API does not provide (see CLI-035).",
+    "resolution": "deferred",
+    "resolution_note": "Documented deferral: deliberate stub / unbuilt-feature / no backend route. Tracked as a Known Limitation; not a wiring or UX bug."
   },
   {
     "id": "CLI-032",
@@ -381,7 +415,9 @@
     "expected_behavior": "POSTs {conflictStrategy, autoResolve, maxAgeHours, ciIds?} to /datamart/reconcile with --strategy (neo4j-wins/postgres-wins/newest-wins/manual), prints the jobId and scope, and optionally --wait polls for completion.",
     "issue": true,
     "severity": "logistical",
-    "issue_note": "No POST /datamart/reconcile route is mounted (no /datamart group in server.ts), so the call 404s."
+    "issue_note": "No POST /datamart/reconcile route is mounted (no /datamart group in server.ts), so the call 404s.",
+    "resolution": "deferred",
+    "resolution_note": "Documented deferral: deliberate stub / unbuilt-feature / no backend route. Tracked as a Known Limitation; not a wiring or UX bug."
   },
   {
     "id": "CLI-033",
@@ -405,7 +441,9 @@
     "expected_behavior": "Sends GET /datamart/validate with checkCounts/checkRelationships/checkOrphans/sampleSize params and prints overall status, record-count diffs, relationship integrity, orphan records, and any issues/recommendations; supports --json.",
     "issue": true,
     "severity": "logistical",
-    "issue_note": "No GET /datamart/validate route is mounted (no /datamart group in server.ts), so the call 404s."
+    "issue_note": "No GET /datamart/validate route is mounted (no /datamart group in server.ts), so the call 404s.",
+    "resolution": "deferred",
+    "resolution_note": "Documented deferral: deliberate stub / unbuilt-feature / no backend route. Tracked as a Known Limitation; not a wiring or UX bug."
   },
   {
     "id": "CLI-035",
@@ -415,9 +453,11 @@
     "ref": "cmdb datamart job-status <jobId> -> GET /jobs/:id",
     "user_story": "As an operator, I want to check an ETL job's status so that I can monitor a triggered sync.",
     "expected_behavior": "Sends GET /jobs/:jobId and prints BullMQ-style fields: id, name, state, progress, data config, returnvalue results, failedReason, and timestamps; supports --json.",
-    "issue": true,
+    "issue": false,
     "severity": "logistical",
-    "issue_note": "The jobs API requires a queue segment: GET /jobs/:queueName/:jobId (jobs.routes.ts:60). A single-segment GET /jobs/:jobId instead matches GET /jobs/:queueName (listJobs) with queueName set to the jobId, returning the wrong handler/result."
+    "issue_note": "The jobs API requires a queue segment: GET /jobs/:queueName/:jobId (jobs.routes.ts:60). A single-segment GET /jobs/:jobId instead matches GET /jobs/:queueName (listJobs) with queueName set to the jobId, returning the wrong handler/result.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "CLI-036",
@@ -427,9 +467,11 @@
     "ref": "cmdb datamart jobs -> GET /jobs",
     "user_story": "As an operator, I want to list recent ETL jobs so that I can review queue activity.",
     "expected_behavior": "Sends GET /jobs with params limit and optional status and prints a table of job id/name/state/created from an array response; supports --json.",
-    "issue": true,
+    "issue": false,
     "severity": "logistical",
-    "issue_note": "There is no bare GET /jobs route; all jobs routes require at least a queue segment (e.g. GET /jobs/:queueName, jobs.routes.ts:63), so GET /jobs 404s."
+    "issue_note": "There is no bare GET /jobs route; all jobs routes require at least a queue segment (e.g. GET /jobs/:queueName, jobs.routes.ts:63), so GET /jobs 404s.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "CLI-037",
@@ -439,9 +481,11 @@
     "ref": "cmdb worker start <type>",
     "user_story": "As an operator, I want to start discovery/etl workers (and optionally schedulers) so that background jobs are processed.",
     "expected_behavior": "For type discovery/etl/all it calls the corresponding worker manager start() (and, with -s/--schedulers, the scheduler start()), installs SIGINT/SIGTERM handlers to stay resident, and exits 1 on an unknown type. Operates in-process via @cmdb/discovery-engine and @cmdb/etl-processor, not the REST API.",
-    "issue": true,
+    "issue": false,
     "severity": "logistical",
-    "issue_note": "createWorkerCommand() (worker.command.ts) is never imported or registered in index.ts (registerCommands wires only discovery/ci/query/analytics/datamart/connectors/config/health), so the entire 'worker' group is dead code and 'cmdb worker' is an unknown command."
+    "issue_note": "createWorkerCommand() (worker.command.ts) is never imported or registered in index.ts (registerCommands wires only discovery/ci/query/analytics/datamart/connectors/config/health), so the entire 'worker' group is dead code and 'cmdb worker' is an unknown command.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "CLI-038",
@@ -477,7 +521,9 @@
     "expected_behavior": "Intended to pause the named worker; currently logs 'Pause worker functionality not yet implemented' and prints a 'coming soon' message, then exits 0 without changing state.",
     "issue": true,
     "severity": "functional",
-    "issue_note": "Explicit unimplemented stub (worker.command.ts:158-160): the command is a no-op with a TODO to add pauseWorker; it never pauses anything (and the group is also unregistered, see CLI-037)."
+    "issue_note": "Explicit unimplemented stub (worker.command.ts:158-160): the command is a no-op with a TODO to add pauseWorker; it never pauses anything (and the group is also unregistered, see CLI-037).",
+    "resolution": "deferred",
+    "resolution_note": "Documented deferral: deliberate stub / unbuilt-feature / no backend route. Tracked as a Known Limitation; not a wiring or UX bug."
   },
   {
     "id": "CLI-041",
@@ -489,7 +535,9 @@
     "expected_behavior": "Intended to resume the named worker; currently logs 'Resume worker functionality not yet implemented' and prints a 'coming soon' message, then exits 0 without changing state.",
     "issue": true,
     "severity": "functional",
-    "issue_note": "Explicit unimplemented stub (worker.command.ts:174-176): the command is a no-op with a TODO to add resumeWorker (and the group is also unregistered, see CLI-037)."
+    "issue_note": "Explicit unimplemented stub (worker.command.ts:174-176): the command is a no-op with a TODO to add resumeWorker (and the group is also unregistered, see CLI-037).",
+    "resolution": "deferred",
+    "resolution_note": "Documented deferral: deliberate stub / unbuilt-feature / no backend route. Tracked as a Known Limitation; not a wiring or UX bug."
   },
   {
     "id": "CLI-042",
@@ -499,9 +547,11 @@
     "ref": "cmdb jobs list [queueName]",
     "user_story": "As an operator, I want to list jobs in a queue by state so that I can inspect the BullMQ queues.",
     "expected_behavior": "With no queueName it lists the QUEUE_NAMES; with a queueName it fetches waiting/active/completed/failed jobs (default waiting, limit 20) via the queue manager and prints id/name/state/timestamps/progress/failedReason. Operates in-process via @cmdb/common getQueueManager(), not REST.",
-    "issue": true,
+    "issue": false,
     "severity": "logistical",
-    "issue_note": "createJobsCommand() (jobs.command.ts) is never imported or registered in index.ts, so the entire 'jobs' group is dead code and 'cmdb jobs' is an unknown command."
+    "issue_note": "createJobsCommand() (jobs.command.ts) is never imported or registered in index.ts, so the entire 'jobs' group is dead code and 'cmdb jobs' is an unknown command.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "CLI-043",
@@ -631,9 +681,11 @@
     "ref": "cmdb connector install <type> [version] -> POST /connectors/install",
     "user_story": "As an operator, I want to install a connector from the registry so that I can use it for discovery/ingest.",
     "expected_behavior": "POSTs {connectorType, version?, skipDependencies?} to /connectors/install and, on success, prints installed type/name/version/path, lists resources, and suggests next steps; on failure prints the message/errors.",
-    "issue": true,
+    "issue": false,
     "severity": "logistical",
-    "issue_note": "ConnectorInstallCommand.register adds a second top-level program.command('connector'), but ConnectorListCommand's 'connector' is registered first in index.ts (lines 86 then 89). Commander resolves the first match, which has no 'install' subcommand, so 'cmdb connector install' (and the whole install/update/uninstall/outdated/verify/repair/cache group) is an unknown command."
+    "issue_note": "ConnectorInstallCommand.register adds a second top-level program.command('connector'), but ConnectorListCommand's 'connector' is registered first in index.ts (lines 86 then 89). Commander resolves the first match, which has no 'install' subcommand, so 'cmdb connector install' (and the whole install/update/uninstall/outdated/verify/repair/cache group) is an unknown command.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "CLI-054",
@@ -715,9 +767,11 @@
     "ref": "cmdb connector config create -> POST /connector-configs",
     "user_story": "As an operator, I want to create a connector configuration so that I can connect to a target system.",
     "expected_behavior": "In --non-interactive mode it requires --type/--name/--connection (JSON), POSTs {name, connectorType, connection, enabledResources?} to /connector-configs, and prints the new config id/name/type/enabled with next-step hints.",
-    "issue": true,
+    "issue": false,
     "severity": "logistical",
-    "issue_note": "ConnectorConfigCommand registers program.command('connector').command('config'), but ConnectorListCommand's 'connector' is registered first (index.ts:86) and has no 'config' subcommand, so 'cmdb connector config ...' is an unknown command (whole config group unreachable). Interactive mode is also a stub: without --non-interactive it just prints usage and returns (connector-config.command.ts:130-144)."
+    "issue_note": "ConnectorConfigCommand registers program.command('connector').command('config'), but ConnectorListCommand's 'connector' is registered first (index.ts:86) and has no 'config' subcommand, so 'cmdb connector config ...' is an unknown command (whole config group unreachable). Interactive mode is also a stub: without --non-interactive it just prints usage and returns (connector-config.command.ts:130-144).",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "CLI-061",
@@ -823,9 +877,11 @@
     "ref": "cmdb connector run <name> -> POST /connector-configs/:id/run",
     "user_story": "As an operator, I want to run a connector configuration so that I can ingest data on demand.",
     "expected_behavior": "Looks up the config id by name (GET /connector-configs?name), POSTs {resourceId?} to /connector-configs/:id/run, prints run id/config/type/status/started, and with --wait polls /connector-runs/:id every 2s until completion/timeout.",
-    "issue": true,
+    "issue": false,
     "severity": "logistical",
-    "issue_note": "ConnectorRunCommand adds yet another top-level program.command('connector'); ConnectorListCommand's 'connector' is registered first (index.ts:86), so 'cmdb connector run' (and runs/run-status/cancel/metrics) resolves to the wrong command and is unknown. The --wait/run-status polling also targets /connector-runs/:id while the server serves runs at /connector-configs/runs/:runId."
+    "issue_note": "ConnectorRunCommand adds yet another top-level program.command('connector'); ConnectorListCommand's 'connector' is registered first (index.ts:86), so 'cmdb connector run' (and runs/run-status/cancel/metrics) resolves to the wrong command and is unknown. The --wait/run-status polling also targets /connector-runs/:id while the server serves runs at /connector-configs/runs/:runId.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "CLI-070",

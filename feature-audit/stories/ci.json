@@ -78,10 +78,12 @@
     "feature": "Get a CI's relationships (direction/depth)",
     "ref": "GET /api/v1/cis/:id/relationships (CIController.getCIRelationships)",
     "user_story": "As a CMDB user, I want to see a CI's incoming/outgoing relationships so that I understand how it connects to other CIs.",
-    "expected_behavior": "Reads direction (default 'both') and depth (default 1) from query. Validates direction is in/out/both (400) and depth 1-10 (400), confirms the CI exists (404), then calls neo4jClient.getRelationships(id, direction, depth) and maps each result into {id, type, source_ci_id, target_ci_id, source_ci, target_ci, properties, created_at} based on the Neo4j start node. Returns 200 {_success, _data, _count, _depth}. However the route only validates relationshipQuerySchema {direction} so the depth query param is stripped and never reaches the handler — multi-hop traversal is impossible via the API.",
-    "issue": true,
+    "expected_behavior": "Reads direction (default 'both') and depth (default 1) from query. Validates direction is in/out/both (400) and depth 1-10 (400), confirms the CI exists (404), then calls neo4jClient.getRelationships(id, direction, depth) and maps each result into {id, type, source_ci_id, target_ci_id, source_ci, target_ci, properties, created_at} based on the Neo4j start node. Returns 200 {_success, _data, _count, _depth}. However the route only validates relationshipQuerySchema {direction} so the depth query param is stripped and never reaches the handler \u2014 multi-hop traversal is impossible via the API.",
+    "issue": false,
     "severity": "functional",
-    "issue_note": "ci.routes.ts:31-33 relationshipQuerySchema omits 'depth'; validate() uses stripUnknown:true (validators.ts:36) so ?depth=N is dropped before getCIRelationships (ci.controller.ts:320) reads it, leaving depth permanently defaulted to 1."
+    "issue_note": "ci.routes.ts:31-33 relationshipQuerySchema omits 'depth'; validate() uses stripUnknown:true (validators.ts:36) so ?depth=N is dropped before getCIRelationships (ci.controller.ts:320) reads it, leaving depth permanently defaulted to 1.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "CI-008",
@@ -127,9 +129,11 @@
     "ref": "GET /api/v1/relationships (RelationshipController.listRelationships)",
     "user_story": "As a CMDB user, I want to list relationships filtered by type/from/to/CI so that I can audit how CIs are connected.",
     "expected_behavior": "Intended: filter by type, from_id, to_id, ci_id with limit/offset pagination, returning {_success, _data:[{_from_id,_from_name,...,_type,_properties}], _pagination}. In practice the route's listRelationshipsQuerySchema defines underscore-prefixed keys (_type, _from_id, _to_id, _ci_id, _limit, _offset) while the controller reads the non-prefixed names (type, from_id, to_id, ci_id, limit, offset). Because validate() strips unknown keys and replaces req.query, every client filter param is dropped and the handler sees undefined; the endpoint always returns the unfiltered first 100 relationships and ignores limit/offset.",
-    "issue": true,
+    "issue": false,
     "severity": "functional",
-    "issue_note": "relationship.routes.ts:14-21 uses _-prefixed keys; relationship.controller.ts:17-24 reads non-prefixed keys; with stripUnknown:true (validators.ts:36) all filter and pagination params are silently discarded, so filtering and pagination are non-functional."
+    "issue_note": "relationship.routes.ts:14-21 uses _-prefixed keys; relationship.controller.ts:17-24 reads non-prefixed keys; with stripUnknown:true (validators.ts:36) all filter and pagination params are silently discarded, so filtering and pagination are non-functional.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "CI-012",
@@ -139,9 +143,11 @@
     "ref": "POST /api/v1/relationships (RelationshipController.createRelationship)",
     "user_story": "As a CMDB administrator, I want to create a typed relationship between two CIs so that dependencies are recorded.",
     "expected_behavior": "Body validated by relationshipSchema {from_id, to_id, type (one of the 8 RelationshipTypes) required, properties optional}; handler keys match. Re-checks required fields (400), validates type against the allowed list (400), confirms both source and target CIs exist (404 each), rejects self-relationships (400), then persists via neo4jClient.createRelationship and returns 201 {_success, _data, _message}; 409 if the error indicates it already exists. Defect: the success response sets _from_type/_to_type from fromCI._type/toCI._type, but getCI returns properties keyed 'type' (not '_type'), so those fields are always undefined/omitted.",
-    "issue": true,
+    "issue": false,
     "severity": "functional",
-    "issue_note": "relationship.controller.ts:192,195 read fromCI._type/toCI._type, but getCI returns raw node properties with key 'type', so _from_type/_to_type in the 201 payload are always undefined."
+    "issue_note": "relationship.controller.ts:192,195 read fromCI._type/toCI._type, but getCI returns raw node properties with key 'type', so _from_type/_to_type in the 201 payload are always undefined.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "CI-013",
@@ -150,10 +156,12 @@
     "feature": "Delete relationship (by from/to/type)",
     "ref": "DELETE /api/v1/relationships/:id? (RelationshipController.deleteRelationship)",
     "user_story": "As a CMDB administrator, I want to delete a relationship so that obsolete connections are removed.",
-    "expected_behavior": "Route has an optional :id. If a path id is supplied the handler always returns 400 ('Deletion by relationship ID not supported. Use from_id, to_id, and type query parameters.') — so the documented DELETE /relationships/:id form is a dead path. Deletion only works via DELETE /relationships?from_id=X&to_id=Y&type=Z: it MATCHes the relationship, returns 404 if absent, deletes it, and returns 200 {_success, _message, _data}; missing params -> 400. There is no validation middleware on this route, so type is interpolated directly into the Cypher pattern [r:${type}] without being checked against the allowed RelationshipType list.",
-    "issue": true,
+    "expected_behavior": "Route has an optional :id. If a path id is supplied the handler always returns 400 ('Deletion by relationship ID not supported. Use from_id, to_id, and type query parameters.') \u2014 so the documented DELETE /relationships/:id form is a dead path. Deletion only works via DELETE /relationships?from_id=X&to_id=Y&type=Z: it MATCHes the relationship, returns 404 if absent, deletes it, and returns 200 {_success, _message, _data}; missing params -> 400. There is no validation middleware on this route, so type is interpolated directly into the Cypher pattern [r:${type}] without being checked against the allowed RelationshipType list.",
+    "issue": false,
     "severity": "functional",
-    "issue_note": "relationship.controller.ts:238-245 makes the :id form unconditionally 400 (dead route form); lines 250 & 267 interpolate the unvalidated query 'type' into Cypher ([r:${type}]) with no allow-list check (unlike createRelationship), enabling Cypher injection."
+    "issue_note": "relationship.controller.ts:238-245 makes the :id form unconditionally 400 (dead route form); lines 250 & 267 interpolate the unvalidated query 'type' into Cypher ([r:${type}]) with no allow-list check (unlike createRelationship), enabling Cypher injection.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "CI-014",
@@ -175,9 +183,11 @@
     "ref": "POST /api/v1/search/advanced (SearchController.advancedSearch)",
     "user_story": "As a CMDB user, I want to search CIs by query plus type/status/environment/metadata filters so that I can run targeted lookups.",
     "expected_behavior": "Intended: accept query (required) plus optional type/status/environment/metadata_filters and limit/offset, build a dynamic Cypher WHERE, and return matching CIs with pagination. In reality the endpoint cannot succeed: advancedSearchSchema requires _query (underscore-prefixed) while the controller reads req.body.query. Sending {query:...} -> validate strips it and fails _query 'required' (400 Validation Error). Sending {_query:...} -> passes validation but the handler sees query undefined and returns 400 'Search query is required'. Additionally the Cypher param object binds _query/_limit/_offset while the query uses $query/$limit/$offset, so even past validation the bindings would be wrong.",
-    "issue": true,
+    "issue": false,
     "severity": "functional",
-    "issue_note": "search.routes.ts:14-22 requires _-prefixed keys; search.controller.ts:17-25 reads non-prefixed keys; with stripUnknown:true no request body satisfies both validation and the handler, making the endpoint unreachable for success. Param object (lines 42-46) also uses _query/_limit/_offset vs $query/$limit/$offset in the Cypher."
+    "issue_note": "search.routes.ts:14-22 requires _-prefixed keys; search.controller.ts:17-25 reads non-prefixed keys; with stripUnknown:true no request body satisfies both validation and the handler, making the endpoint unreachable for success. Param object (lines 42-46) also uses _query/_limit/_offset vs $query/$limit/$offset in the Cypher.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "CI-016",
@@ -187,9 +197,11 @@
     "ref": "POST /api/v1/search/fulltext (SearchController.fulltextSearch)",
     "user_story": "As a CMDB user, I want a full-text search over CIs so that I can find items ranked by relevance.",
     "expected_behavior": "Intended: run db.index.fulltext.queryNodes('ci_search', $query) ordered by score DESC, limited, returning {_success, _data:[{_ci, _score}], _count, _query}; if the index is missing it returns a 500 with a configuration message. In reality the endpoint is unreachable for success: fulltextSearchSchema requires _query while the controller reads req.body.query. Sending {query} -> stripped, _query 'required' fails (400); sending {_query} -> passes but handler sees query undefined -> 400 'Search query is required'.",
-    "issue": true,
+    "issue": false,
     "severity": "functional",
-    "issue_note": "search.routes.ts:24-27 requires _query; search.controller.ts:146 reads req.body.query; stripUnknown:true means no body satisfies both layers, so the endpoint always returns 400."
+    "issue_note": "search.routes.ts:24-27 requires _query; search.controller.ts:146 reads req.body.query; stripUnknown:true means no body satisfies both layers, so the endpoint always returns 400.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "CI-017",
@@ -199,9 +211,11 @@
     "ref": "POST /api/v1/search/relationships (SearchController.searchByRelationship)",
     "user_story": "As a CMDB user, I want to find CIs of one type related to CIs of another type via a relationship so that I can answer pattern questions (e.g. apps hosted on servers).",
     "expected_behavior": "Intended: given ci_type, relationship_type, related_ci_type (+ limit), MATCH (ci:CI {type:$ci_type})-[:relationship_type]->(related:CI {type:$related_ci_type}) and return distinct ci. In reality unreachable for success: relationshipSearchSchema requires _ci_type/_relationship_type/_related_ci_type while the controller reads ci_type/relationship_type/related_ci_type. Sending non-prefixed -> stripped, required _-fields fail (400); sending _-prefixed -> passes but handler sees them undefined -> 400 'Missing required fields'. Also the param object binds _limit vs the $limit used in Cypher.",
-    "issue": true,
+    "issue": false,
     "severity": "functional",
-    "issue_note": "search.routes.ts:29-34 requires _-prefixed keys; search.controller.ts:228 reads non-prefixed keys; stripUnknown:true makes the endpoint always 400. relationship_type is also interpolated into Cypher (line 245) but is unreachable due to the 400."
+    "issue_note": "search.routes.ts:29-34 requires _-prefixed keys; search.controller.ts:228 reads non-prefixed keys; stripUnknown:true makes the endpoint always 400. relationship_type is also interpolated into Cypher (line 245) but is unreachable due to the 400.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "CI-018",
@@ -210,9 +224,11 @@
     "feature": "List orphaned CIs (no relationships)",
     "ref": "GET /api/v1/search/orphaned (SearchController.getOrphanedCIs)",
     "user_story": "As a CMDB data steward, I want to list CIs that have no relationships so that I can find disconnected or incomplete records.",
-    "expected_behavior": "Runs Cypher MATCH (ci:CI) WHERE NOT (ci)-[]-() to count and page orphaned CIs ordered by created_at DESC, returning 200 {_success, _data:[{_id,_name,_type,...,_metadata}], _pagination}. With no query params it works using defaults (limit 100, offset 0). However orphanedQuerySchema defines _limit/_offset while the handler reads limit/offset, so when a client supplies ?limit/?offset those keys are stripped by validate() and the handler falls back to defaults — pagination params are silently ignored.",
-    "issue": true,
+    "expected_behavior": "Runs Cypher MATCH (ci:CI) WHERE NOT (ci)-[]-() to count and page orphaned CIs ordered by created_at DESC, returning 200 {_success, _data:[{_id,_name,_type,...,_metadata}], _pagination}. With no query params it works using defaults (limit 100, offset 0). However orphanedQuerySchema defines _limit/_offset while the handler reads limit/offset, so when a client supplies ?limit/?offset those keys are stripped by validate() and the handler falls back to defaults \u2014 pagination params are silently ignored.",
+    "issue": false,
     "severity": "functional",
-    "issue_note": "search.routes.ts:36-39 uses _limit/_offset; search.controller.ts:302 reads limit/offset; with stripUnknown:true client-supplied pagination is discarded and defaults (100/0) always apply."
+    "issue_note": "search.routes.ts:36-39 uses _limit/_offset; search.controller.ts:302 reads limit/offset; with stripUnknown:true client-supplied pagination is discarded and defaults (100/0) always apply.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   }
 ]

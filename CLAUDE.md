@@ -728,3 +728,11 @@ All user-facing documentation lives in exactly ONE place: `/doc-site/docs/`
 - "Should this be in `/doc-site/docs/` instead?"
 - "Does similar content already exist that I should update?"
 - "Did the user explicitly request this documentation?"
+
+## Shared audit package (@happy-technologies/audit) (2026-07-10)
+
+`packages/database` consumes `@happy-technologies/audit` ^0.2.0 (keyed HMAC-SHA256 tamper-proof chain). `audit.service.ts` `logAudit` is hash-chained via a lazily-memoized `createAuditChain(process.env.AUDIT_CHAIN_KEY)` kernel; additive nullable `prev_hash`/`entry_hash` columns land in migration `003_audit_hash_chain`. Single GLOBAL chain partition (this `audit_log` has no `tenant_id`; advisory lock keyed on the constant `AUDIT_CHAIN_PARTITION`).
+
+REQUIRED env: `AUDIT_CHAIN_KEY` (32-byte / 64-hex, `openssl rand -hex 32`; stable, per-app, never commit). IMPORTANT: `logAudit` is non-fatal (swallows errors), so a MISSING key fails SILENTLY (no audit row written / chain gap) rather than throwing. `package-lock.json` must stay in sync (`npm ci` in CI).
+
+Adopted via PR #15 (open as of 2026-07-10; blocked by the CLA-signature gate + pre-existing flaky Neo4j `ci_fulltext_search` CI, not by this change).

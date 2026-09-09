@@ -224,7 +224,7 @@ export class CICommand {
           return;
         }
       }
-      if (options.description) metadata.description = options.description;
+      if (options['description']) metadata['description'] = options['description'];
       if (Object.keys(metadata).length > 0) data.metadata = metadata;
 
       const response = await axios.post(`${this.apiUrl}/cis`, data, {
@@ -339,8 +339,16 @@ export class CICommand {
     const spinner = ora('Fetching relationships...').start();
 
     try {
+      // Map user-facing direction values to server-accepted values (in/out/both)
+      const directionMap: Record<string, string> = {
+        inbound: 'in',
+        outbound: 'out',
+        both: 'both',
+      };
+      const serverDirection = directionMap[options.direction] ?? options.direction;
+
       const response = await axios.get(`${this.apiUrl}/cis/${ciId}/relationships`, {
-        params: { direction: options.direction },
+        params: { direction: serverDirection },
         headers: this.getHeaders(),
       });
 

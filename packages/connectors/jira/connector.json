@@ -41,5 +41,48 @@
         "default": "project = IT AND type = Asset"
       }
     }
-  }
+  },
+  "resources": [
+    {
+      "id": "assets",
+      "name": "Assets",
+      "description": "Hardware and software assets from Jira Assets (Insight)",
+      "type": "asset",
+      "data_type": "infrastructure",
+      "ci_type": "server",
+      "target_storage": "neo4j",
+      "enabled_by_default": false,
+      "operations": ["extract", "transform", "load"],
+      "configuration_schema": {
+        "properties": {
+          "asset_schema_id": {
+            "type": "string",
+            "description": "Jira Assets schema ID to sync"
+          },
+          "jql_filter": {
+            "type": "string",
+            "description": "JQL filter for asset issues",
+            "default": "project = IT AND type = Asset"
+          }
+        }
+      },
+      "extraction": {
+        "incremental": false,
+        "batch_size": 100,
+        "rate_limit": 5
+      },
+      "field_mappings": {
+        "name": "attributes.Name",
+        "asset_tag": "attributes.AssetTag",
+        "serial_number": "attributes.SerialNumber",
+        "manufacturer": "attributes.Manufacturer",
+        "model": "attributes.Model",
+        "status": "attributes.Status",
+        "location": "attributes.Location",
+        "owner": "attributes.Owner",
+        "created": "created",
+        "updated": "updated"
+      }
+    }
+  ]
 }

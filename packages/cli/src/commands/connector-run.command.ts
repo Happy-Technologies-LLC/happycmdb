@@ -91,7 +91,7 @@ export class ConnectorRunCommand {
 
       if (findResponse.data.length === 0) {
         spinner.fail(chalk.red(`Configuration "${name}" not found`));
-        return;
+        process.exit(1);
       }
 
       const configId = findResponse.data[0].id;
@@ -159,7 +159,7 @@ export class ConnectorRunCommand {
       if (options?.status) params.status = options.status.toUpperCase();
       if (options?.type) params.connectorType = options.type;
 
-      const response = await axios.get(`${this.apiUrl}/connector-runs`, {
+      const response = await axios.get(`${this.apiUrl}/connector-configs/runs/all`, {
         params,
         headers: this.getHeaders(),
       });
@@ -207,7 +207,7 @@ export class ConnectorRunCommand {
     const spinner = ora('Fetching run status...').start();
 
     try {
-      const response = await axios.get(`${this.apiUrl}/connector-runs/${runId}`, {
+      const response = await axios.get(`${this.apiUrl}/connector-configs/runs/${runId}`, {
         headers: this.getHeaders(),
       });
 
@@ -286,7 +286,7 @@ export class ConnectorRunCommand {
 
     const intervalId = setInterval(async () => {
       try {
-        const response = await axios.get(`${this.apiUrl}/connector-runs/${runId}`, {
+        const response = await axios.get(`${this.apiUrl}/connector-configs/runs/${runId}`, {
           headers: this.getHeaders(),
         });
 
@@ -335,7 +335,7 @@ export class ConnectorRunCommand {
 
     const checkInterval = setInterval(async () => {
       try {
-        const response = await axios.get(`${this.apiUrl}/connector-runs/${runId}`, {
+        const response = await axios.get(`${this.apiUrl}/connector-configs/runs/${runId}`, {
           headers: this.getHeaders(),
         });
 
@@ -385,7 +385,7 @@ export class ConnectorRunCommand {
     const spinner = ora('Cancelling run...').start();
 
     try {
-      await axios.post(`${this.apiUrl}/connector-runs/${runId}/cancel`, {}, { headers: this.getHeaders() });
+      await axios.post(`${this.apiUrl}/connector-configs/runs/${runId}/cancel`, {}, { headers: this.getHeaders() });
 
       spinner.succeed(chalk.green('Run cancelled successfully'));
     } catch (error: any) {
@@ -409,7 +409,7 @@ export class ConnectorRunCommand {
 
       if (findResponse.data.length === 0) {
         spinner.fail(chalk.red(`Configuration "${name}" not found`));
-        return;
+        process.exit(1);
       }
 
       const configId = findResponse.data[0].id;
@@ -510,5 +510,6 @@ export class ConnectorRunCommand {
     } else {
       console.error(chalk.red(`  Error: ${error.message}`));
     }
+    process.exit(1);
   }
 }

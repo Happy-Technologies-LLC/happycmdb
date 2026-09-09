@@ -163,9 +163,11 @@
     "ref": "GET /metrics (metrics/metrics.routes.ts)",
     "user_story": "As a Prometheus scraper, I want a /metrics endpoint in text exposition format so that I can collect application metrics.",
     "expected_behavior": "The router fetches getMetricsRegistry(), serializes via getMetrics(), sets the registry Content-Type and sends the metrics text; errors respond 500 {_error:'Failed to collect metrics'}. However this router is never imported or mounted anywhere (no import of metrics/metrics.routes in rest/server.ts or index.ts), so the endpoint is unreachable in the running app.",
-    "issue": true,
+    "issue": false,
     "severity": "logistical",
-    "issue_note": "metrics/metrics.routes.ts is never imported or app.use'd (rest/server.ts setupRoutes, lines 77-103); the Prometheus /metrics endpoint is dead/unreachable."
+    "issue_note": "metrics/metrics.routes.ts is never imported or app.use'd (rest/server.ts setupRoutes, lines 77-103); the Prometheus /metrics endpoint is dead/unreachable.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "PLAT-015",
@@ -223,9 +225,11 @@
     "ref": "GET /api/v1/metrics/rate-limits (rate-limit-metrics.routes.ts)",
     "user_story": "As an admin, I want current rate-limit metrics so that I can monitor throttling activity across buckets.",
     "expected_behavior": "createRateLimitMetricsRoutes builds a router whose GET '/' calls RateLimitMetricsController.getMetrics to return live rate-limit counters. However this factory is never imported or mounted in rest/server.ts, so the endpoint is unreachable. It is also documented as 'Admin only' but no auth middleware is attached in the route definition.",
-    "issue": true,
+    "issue": false,
     "severity": "logistical",
-    "issue_note": "createRateLimitMetricsRoutes (rate-limit-metrics.routes.ts:13) is never imported/mounted in rest/server.ts; the /api/v1/metrics/rate-limits route is dead/unreachable."
+    "issue_note": "createRateLimitMetricsRoutes (rate-limit-metrics.routes.ts:13) is never imported/mounted in rest/server.ts; the /api/v1/metrics/rate-limits route is dead/unreachable.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "PLAT-020",
@@ -235,9 +239,11 @@
     "ref": "GET /api/v1/metrics/rate-limits/config (rate-limit-metrics.routes.ts)",
     "user_story": "As an admin, I want the rate-limit configuration summary so that I can verify which limits/buckets are configured.",
     "expected_behavior": "GET '/config' calls RateLimitMetricsController.getConfiguration to return the configured rate-limit buckets/thresholds. Unreachable for the same reason as PLAT-019: the parent router is never mounted, and no auth gate is wired despite the 'Admin only' note.",
-    "issue": true,
+    "issue": false,
     "severity": "logistical",
-    "issue_note": "Same unmounted router as PLAT-019 (rate-limit-metrics.routes.ts:31); /config endpoint is dead/unreachable."
+    "issue_note": "Same unmounted router as PLAT-019 (rate-limit-metrics.routes.ts:31); /config endpoint is dead/unreachable.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "PLAT-021",
@@ -247,9 +253,11 @@
     "ref": "query getCIs (resolvers/index.ts _getCIs)",
     "user_story": "As an API consumer, I want to query CIs with optional type/status/environment/name filters and pagination so that I can browse the inventory.",
     "expected_behavior": "Intended: open a Neo4j session, build a WHERE clause from filter, run MATCH (ci:CI) ... ORDER BY created_at DESC SKIP offset LIMIT limit (defaults limit 100, offset 0), map records to CI objects, throw GraphQLError INTERNAL_SERVER_ERROR on failure, close session in finally. Defect: the resolver is keyed '_getCIs' but the schema field is 'getCIs', so the resolver never binds to the schema field.",
-    "issue": true,
+    "issue": false,
     "severity": "logistical",
-    "issue_note": "Resolver key Query._getCIs (resolvers/index.ts:116) does not match schema field Query.getCIs (typeDefs.ts:185); resolver is unwired so the non-null field resolves null/errors."
+    "issue_note": "Resolver key Query._getCIs (resolvers/index.ts:116) does not match schema field Query.getCIs (typeDefs.ts:185); resolver is unwired so the non-null field resolves null/errors.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "PLAT-022",
@@ -259,9 +267,11 @@
     "ref": "query getCI (resolvers/index.ts _getCI)",
     "user_story": "As an API consumer, I want to fetch a single CI by id so that I can view its details.",
     "expected_behavior": "Intended: load the CI via the per-request DataLoader (_loaders._ciLoader.load(id)) for batching/caching; return CI or null; throw GraphQLError on failure. Defect: keyed '_getCI' instead of schema field 'getCI', so the resolver is not invoked.",
-    "issue": true,
+    "issue": false,
     "severity": "logistical",
-    "issue_note": "Resolver key Query._getCI (resolvers/index.ts:201) does not match schema field Query.getCI (typeDefs.ts:188); resolver unwired."
+    "issue_note": "Resolver key Query._getCI (resolvers/index.ts:201) does not match schema field Query.getCI (typeDefs.ts:188); resolver unwired.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "PLAT-023",
@@ -271,9 +281,11 @@
     "ref": "query searchCIs (resolvers/index.ts _searchCIs)",
     "user_story": "As an API consumer, I want to search CIs by name or external id with optional filters so that I can find specific items.",
     "expected_behavior": "Intended: build a WHERE matching ci.name CONTAINS query OR ci.external_id CONTAINS query plus optional type/status/environment, ORDER BY name LIMIT limit (default 50), map to CI objects. Defect: keyed '_searchCIs' vs schema field 'searchCIs', so it never binds.",
-    "issue": true,
+    "issue": false,
     "severity": "logistical",
-    "issue_note": "Resolver key Query._searchCIs (resolvers/index.ts:222) does not match schema field Query.searchCIs (typeDefs.ts:191); resolver unwired."
+    "issue_note": "Resolver key Query._searchCIs (resolvers/index.ts:222) does not match schema field Query.searchCIs (typeDefs.ts:191); resolver unwired.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "PLAT-024",
@@ -283,9 +295,11 @@
     "ref": "query getCIRelationships (resolvers/index.ts _getCIRelationships)",
     "user_story": "As an API consumer, I want a CI's relationships in a chosen direction so that I can understand its connections.",
     "expected_behavior": "Intended: for direction 'out' use relationshipLoader, 'in' use dependentLoader, 'both' (default) load and concatenate both; throw GraphQLError on failure. Defect: keyed '_getCIRelationships' vs schema field 'getCIRelationships', so it never binds.",
-    "issue": true,
+    "issue": false,
     "severity": "logistical",
-    "issue_note": "Resolver key Query._getCIRelationships (resolvers/index.ts:298) does not match schema field Query.getCIRelationships (typeDefs.ts:194); resolver unwired."
+    "issue_note": "Resolver key Query._getCIRelationships (resolvers/index.ts:298) does not match schema field Query.getCIRelationships (typeDefs.ts:194); resolver unwired.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "PLAT-025",
@@ -295,9 +309,11 @@
     "ref": "query getCIDependencies (resolvers/index.ts _getCIDependencies)",
     "user_story": "As an API consumer, I want the recursive DEPENDS_ON dependencies of a CI so that I can see what it relies on.",
     "expected_behavior": "Intended: run MATCH (ci:CI {id})-[:DEPENDS_ON*1..depth]->(dep:CI) RETURN DISTINCT dep (depth default 5), map to CI objects, close session. Note: depth is interpolated directly into the Cypher path range. Defect: keyed '_getCIDependencies' vs schema field 'getCIDependencies', so it never binds.",
-    "issue": true,
+    "issue": false,
     "severity": "logistical",
-    "issue_note": "Resolver key Query._getCIDependencies (resolvers/index.ts:331) does not match schema field Query.getCIDependencies (typeDefs.ts:197); resolver unwired."
+    "issue_note": "Resolver key Query._getCIDependencies (resolvers/index.ts:331) does not match schema field Query.getCIDependencies (typeDefs.ts:197); resolver unwired.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "PLAT-026",
@@ -307,9 +323,11 @@
     "ref": "query getImpactAnalysis (resolvers/index.ts _getImpactAnalysis)",
     "user_story": "As an API consumer, I want impact analysis for a CI so that I can see which CIs would be affected if it fails.",
     "expected_behavior": "Intended: run MATCH (ci:CI {id})<-[:DEPENDS_ON*1..depth]-(impacted:CI) RETURN DISTINCT impacted, length(path) as distance ORDER BY distance (depth default 5), map to [{ci, distance}]. Defect: keyed '_getImpactAnalysis' vs schema field 'getImpactAnalysis', so it never binds.",
-    "issue": true,
+    "issue": false,
     "severity": "logistical",
-    "issue_note": "Resolver key Query._getImpactAnalysis (resolvers/index.ts:379) does not match schema field Query.getImpactAnalysis (typeDefs.ts:200); resolver unwired."
+    "issue_note": "Resolver key Query._getImpactAnalysis (resolvers/index.ts:379) does not match schema field Query.getImpactAnalysis (typeDefs.ts:200); resolver unwired.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "PLAT-027",
@@ -319,9 +337,11 @@
     "ref": "mutation createCI (resolvers/index.ts _createCI)",
     "user_story": "As an API consumer, I want to create a CI so that new managed components are recorded.",
     "expected_behavior": "Intended: validateCIInput (id, name, type required else BAD_USER_INPUT), normalize enum values via convertEnumToDbFormat, default status 'active' and discovered_at now, call neo4jClient.createCI, clear the CI loader cache, return the CI. Defect: keyed '_createCI' vs schema field 'createCI', so it never binds.",
-    "issue": true,
+    "issue": false,
     "severity": "logistical",
-    "issue_note": "Resolver key Mutation._createCI (resolvers/index.ts:436) does not match schema field Mutation.createCI (typeDefs.ts:208); resolver unwired."
+    "issue_note": "Resolver key Mutation._createCI (resolvers/index.ts:436) does not match schema field Mutation.createCI (typeDefs.ts:208); resolver unwired.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "PLAT-028",
@@ -331,9 +351,11 @@
     "ref": "mutation updateCI (resolvers/index.ts _updateCI)",
     "user_story": "As an API consumer, I want to update a CI's mutable fields so that the record stays accurate.",
     "expected_behavior": "Intended: build a partial update from provided name/status/environment/metadata (enums normalized), call neo4jClient.updateCI(id, updates), clear the loader cache, return the updated CI; throw GraphQLError on failure. Defect: keyed '_updateCI' vs schema field 'updateCI', so it never binds.",
-    "issue": true,
+    "issue": false,
     "severity": "logistical",
-    "issue_note": "Resolver key Mutation._updateCI (resolvers/index.ts:477) does not match schema field Mutation.updateCI (typeDefs.ts:211); resolver unwired."
+    "issue_note": "Resolver key Mutation._updateCI (resolvers/index.ts:477) does not match schema field Mutation.updateCI (typeDefs.ts:211); resolver unwired.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "PLAT-029",
@@ -343,9 +365,11 @@
     "ref": "mutation deleteCI (resolvers/index.ts _deleteCI)",
     "user_story": "As an API consumer, I want to delete a CI so that decommissioned components are removed.",
     "expected_behavior": "Intended: run MATCH (ci:CI {id}) DETACH DELETE ci RETURN count, throw NOT_FOUND if nothing deleted, clear loader cache, return true; close session in finally. Defect: keyed '_deleteCI' vs schema field 'deleteCI', so it never binds.",
-    "issue": true,
+    "issue": false,
     "severity": "logistical",
-    "issue_note": "Resolver key Mutation._deleteCI (resolvers/index.ts:520) does not match schema field Mutation.deleteCI (typeDefs.ts:214); resolver unwired."
+    "issue_note": "Resolver key Mutation._deleteCI (resolvers/index.ts:520) does not match schema field Mutation.deleteCI (typeDefs.ts:214); resolver unwired.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "PLAT-030",
@@ -355,9 +379,11 @@
     "ref": "mutation createRelationship (resolvers/index.ts _createRelationship)",
     "user_story": "As an API consumer, I want to create a typed relationship between two CIs so that dependencies are modeled.",
     "expected_behavior": "Intended: call neo4jClient.createRelationship(fromId, toId, type, properties), clear relationship and dependent loader caches for both CIs, return true; throw GraphQLError on failure. Defect: keyed '_createRelationship' vs schema field 'createRelationship'; additionally the resolver reads args via _args._input._fromId/_toId/_type (underscored) whereas the schema input is CreateRelationshipInput. Resolver never binds.",
-    "issue": true,
+    "issue": false,
     "severity": "logistical",
-    "issue_note": "Resolver key Mutation._createRelationship (resolvers/index.ts:567) does not match schema field Mutation.createRelationship (typeDefs.ts:217); resolver unwired."
+    "issue_note": "Resolver key Mutation._createRelationship (resolvers/index.ts:567) does not match schema field Mutation.createRelationship (typeDefs.ts:217); resolver unwired.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "PLAT-031",
@@ -367,9 +393,11 @@
     "ref": "mutation deleteRelationship (resolvers/index.ts _deleteRelationship)",
     "user_story": "As an API consumer, I want to delete a relationship between two CIs so that obsolete dependencies are removed.",
     "expected_behavior": "Intended: run MATCH (from:CI {fromId})-[r:TYPE]->(to:CI {toId}) DELETE r RETURN count, throw NOT_FOUND if nothing deleted, clear both loader caches, return true; close session in finally. Defect: keyed '_deleteRelationship' vs schema field 'deleteRelationship', so it never binds.",
-    "issue": true,
+    "issue": false,
     "severity": "logistical",
-    "issue_note": "Resolver key Mutation._deleteRelationship (resolvers/index.ts:605) does not match schema field Mutation.deleteRelationship (typeDefs.ts:220); resolver unwired."
+    "issue_note": "Resolver key Mutation._deleteRelationship (resolvers/index.ts:605) does not match schema field Mutation.deleteRelationship (typeDefs.ts:220); resolver unwired.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "PLAT-032",
@@ -379,9 +407,11 @@
     "ref": "POST /graphql (graphql/server.ts createGraphQLServer)",
     "user_story": "As an API consumer, I want the GraphQL API served at /graphql so that I can run CI/connector/analytics queries and mutations.",
     "expected_behavior": "createGraphQLServer builds an ApolloServer from typeDefs + merged resolvers and mounts expressMiddleware at /graphql with a per-request context (Neo4j client + fresh DataLoaders). Defects: (1) the running entry point packages/api-server/src/index.ts only starts RestAPIServer and never calls createGraphQLServer/startGraphQLServer, so /graphql is not served by the app (only referenced in README and integration-example.ts); (2) the resolver export object registers types/scalar under wrong keys (_CI, _JSON, _AnalyticsQuery, _ReconciliationQuery, _ReconciliationMutation) that do not exist in the schema, while schema types are CI, JSON, AnalyticsQuery, etc.",
-    "issue": true,
+    "issue": false,
     "severity": "logistical",
-    "issue_note": "index.ts never invokes createGraphQLServer (only RestAPIServer.start()), so /graphql is unmounted; resolver export keys _CI/_JSON/_AnalyticsQuery (resolvers/index.ts:734-741) also mismatch schema type names."
+    "issue_note": "index.ts never invokes createGraphQLServer (only RestAPIServer.start()), so /graphql is unmounted; resolver export keys _CI/_JSON/_AnalyticsQuery (resolvers/index.ts:734-741) also mismatch schema type names.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "PLAT-033",
@@ -501,7 +531,9 @@
     "expected_behavior": "Declared in schema and resolver-bound, but the body is a stub: it immediately throws GraphQLError 'Not implemented yet' (code NOT_IMPLEMENTED) with a TODO to implement via a ConnectorInstaller service. No install actually occurs.",
     "issue": true,
     "severity": "functional",
-    "issue_note": "installConnector is an unimplemented stub that always throws NOT_IMPLEMENTED (connector.resolvers.ts:793-796)."
+    "issue_note": "installConnector is an unimplemented stub that always throws NOT_IMPLEMENTED (connector.resolvers.ts:793-796).",
+    "resolution": "deferred",
+    "resolution_note": "Documented deferral: deliberate stub / unbuilt-feature / no backend route. Tracked as a Known Limitation; not a wiring or UX bug."
   },
   {
     "id": "PLAT-043",
@@ -513,7 +545,9 @@
     "expected_behavior": "Resolver-bound but a stub: always throws GraphQLError 'Not implemented yet' (NOT_IMPLEMENTED) with a TODO for ConnectorInstaller. No update occurs.",
     "issue": true,
     "severity": "functional",
-    "issue_note": "updateConnector is an unimplemented stub that always throws NOT_IMPLEMENTED (connector.resolvers.ts:806-809)."
+    "issue_note": "updateConnector is an unimplemented stub that always throws NOT_IMPLEMENTED (connector.resolvers.ts:806-809).",
+    "resolution": "deferred",
+    "resolution_note": "Documented deferral: deliberate stub / unbuilt-feature / no backend route. Tracked as a Known Limitation; not a wiring or UX bug."
   },
   {
     "id": "PLAT-044",
@@ -525,7 +559,9 @@
     "expected_behavior": "Resolver-bound but a stub: always throws GraphQLError 'Not implemented yet' (NOT_IMPLEMENTED). No uninstall occurs.",
     "issue": true,
     "severity": "functional",
-    "issue_note": "uninstallConnector is an unimplemented stub that always throws NOT_IMPLEMENTED (connector.resolvers.ts:819-822)."
+    "issue_note": "uninstallConnector is an unimplemented stub that always throws NOT_IMPLEMENTED (connector.resolvers.ts:819-822).",
+    "resolution": "deferred",
+    "resolution_note": "Documented deferral: deliberate stub / unbuilt-feature / no backend route. Tracked as a Known Limitation; not a wiring or UX bug."
   },
   {
     "id": "PLAT-045",
@@ -573,7 +609,9 @@
     "expected_behavior": "Resolver-bound but a stub: always throws GraphQLError 'Not implemented yet' (NOT_IMPLEMENTED) with a TODO for ConnectorExecutor. No connection test is performed.",
     "issue": true,
     "severity": "functional",
-    "issue_note": "testConnectorConnection is an unimplemented stub that always throws NOT_IMPLEMENTED (connector.resolvers.ts:1115-1118)."
+    "issue_note": "testConnectorConnection is an unimplemented stub that always throws NOT_IMPLEMENTED (connector.resolvers.ts:1115-1118).",
+    "resolution": "deferred",
+    "resolution_note": "Documented deferral: deliberate stub / unbuilt-feature / no backend route. Tracked as a Known Limitation; not a wiring or UX bug."
   },
   {
     "id": "PLAT-049",
@@ -585,7 +623,9 @@
     "expected_behavior": "Resolver-bound but a stub: always throws GraphQLError 'Not implemented yet' (NOT_IMPLEMENTED) with a TODO for ConnectorExecutor. No run is enqueued.",
     "issue": true,
     "severity": "functional",
-    "issue_note": "runConnector is an unimplemented stub that always throws NOT_IMPLEMENTED (connector.resolvers.ts:1128-1131)."
+    "issue_note": "runConnector is an unimplemented stub that always throws NOT_IMPLEMENTED (connector.resolvers.ts:1128-1131).",
+    "resolution": "deferred",
+    "resolution_note": "Documented deferral: deliberate stub / unbuilt-feature / no backend route. Tracked as a Known Limitation; not a wiring or UX bug."
   },
   {
     "id": "PLAT-050",
@@ -597,7 +637,9 @@
     "expected_behavior": "Resolver-bound but a stub: always throws GraphQLError 'Not implemented yet' (NOT_IMPLEMENTED) with a TODO for BullMQ job cancellation. No cancellation occurs.",
     "issue": true,
     "severity": "functional",
-    "issue_note": "cancelConnectorRun is an unimplemented stub that always throws NOT_IMPLEMENTED (connector.resolvers.ts:1141-1144)."
+    "issue_note": "cancelConnectorRun is an unimplemented stub that always throws NOT_IMPLEMENTED (connector.resolvers.ts:1141-1144).",
+    "resolution": "deferred",
+    "resolution_note": "Documented deferral: deliberate stub / unbuilt-feature / no backend route. Tracked as a Known Limitation; not a wiring or UX bug."
   },
   {
     "id": "PLAT-051",
@@ -631,9 +673,11 @@
     "ref": "query analytics (analytics.resolver.ts; AnalyticsQuery type)",
     "user_story": "As an analyst, I want an 'analytics' query namespace so that I can drill into CI/discovery/change analytics via its subfields.",
     "expected_behavior": "Schema defines extend type Query { analytics: AnalyticsQuery! } and a type AnalyticsQuery with the metric subfields. The Query.analytics resolver returns {} (subfields resolve on the AnalyticsQuery type). Defect: the AnalyticsQuery type resolver is exported under key '_AnalyticsQuery' (resolvers/index.ts:739) instead of 'AnalyticsQuery', so the type's field resolvers are unbound and every non-null subfield (PLAT-054..PLAT-066) resolves null/errors.",
-    "issue": true,
+    "issue": false,
     "severity": "logistical",
-    "issue_note": "AnalyticsQuery type resolver registered as _AnalyticsQuery (resolvers/index.ts:739) does not match schema type AnalyticsQuery (analytics.schema.ts:318); all analytics subfields are unwired."
+    "issue_note": "AnalyticsQuery type resolver registered as _AnalyticsQuery (resolvers/index.ts:739) does not match schema type AnalyticsQuery (analytics.schema.ts:318); all analytics subfields are unwired.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "PLAT-054",

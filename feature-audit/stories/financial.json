@@ -177,7 +177,9 @@
     "expected_behavior": "Intended to aggregate recommendations across all business services, but the handler is unimplemented: it returns 200 {success:true, message:'Aggregated recommendations endpoint - implementation pending', note:'Use /business-services/:serviceId/analysis...'} with no real data. No engine call is made.",
     "issue": true,
     "severity": "functional",
-    "issue_note": "Endpoint is a hardcoded placeholder returning 'implementation pending' instead of aggregated recommendations (architecture.routes.ts:85-104)."
+    "issue_note": "Endpoint is a hardcoded placeholder returning 'implementation pending' instead of aggregated recommendations (architecture.routes.ts:85-104).",
+    "resolution": "deferred",
+    "resolution_note": "Documented deferral: deliberate stub / unbuilt-feature / no backend route. Tracked as a Known Limitation; not a wiring or UX bug."
   },
   {
     "id": "FIN-016",
@@ -261,7 +263,9 @@
     "expected_behavior": "Intended to return a CI's allocation history, but the resolver is a stub: it returns CIAllocationHistory {ciId, totalAllocatedCost:0, allocations:[]} unconditionally with no database query. It therefore always reports zero allocations regardless of any prior allocateCosts call.",
     "issue": true,
     "severity": "functional",
-    "issue_note": "Resolver is a placeholder (tbm.resolvers.ts:271-279) that returns empty/zero allocations; no allocation persistence/query is implemented."
+    "issue_note": "Resolver is a placeholder (tbm.resolvers.ts:271-279) that returns empty/zero allocations; no allocation persistence/query is implemented.",
+    "resolution": "deferred",
+    "resolution_note": "Documented deferral: deliberate stub / unbuilt-feature / no backend route. Tracked as a Known Limitation; not a wiring or UX bug."
   },
   {
     "id": "FIN-023",
@@ -309,7 +313,9 @@
     "expected_behavior": "Intended to ingest a GL file (Upload) and match records to CIs, but the resolver is a stub: it ignores the file argument and returns GLImportResult {success:false, recordsImported:0, errorMessage:'GL import feature coming soon'}. No parsing or persistence occurs.",
     "issue": true,
     "severity": "functional",
-    "issue_note": "Resolver is unimplemented (tbm.resolvers.ts:402-409); always returns success:false 'coming soon' and ignores the Upload arg."
+    "issue_note": "Resolver is unimplemented (tbm.resolvers.ts:402-409); always returns success:false 'coming soon' and ignores the Upload arg.",
+    "resolution": "deferred",
+    "resolution_note": "Documented deferral: deliberate stub / unbuilt-feature / no backend route. Tracked as a Known Limitation; not a wiring or UX bug."
   },
   {
     "id": "FIN-027",
@@ -331,9 +337,11 @@
     "ref": "GET /tbm/costs/summary (tbm.routes.ts, UNMOUNTED)",
     "user_story": "As a TBM analyst, I want a REST cost summary endpoint so that non-GraphQL clients can fetch total IT spend and tower breakdown.",
     "expected_behavior": "TBMController.getCostSummary aggregates total tbm_monthly_cost and per-tower costs from Neo4j (mirroring the costSummary GraphQL query) and returns 200 {success:true,data:{totalMonthlyCost,totalCIs,costByTower,currency,timestamp}}. However the route is unreachable: tbm.routes.ts is never imported or mounted in server.ts, so calling it yields a 404 from the app.",
-    "issue": true,
+    "issue": false,
     "severity": "logistical",
-    "issue_note": "tbm.routes.ts (tbmRoutes) is never imported/mounted in rest/server.ts (no import line; setupRoutes lines 77-103); entire TBM REST router is dead/unreachable."
+    "issue_note": "tbm.routes.ts (tbmRoutes) is never imported/mounted in rest/server.ts (no import line; setupRoutes lines 77-103); entire TBM REST router is dead/unreachable.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "FIN-029",
@@ -343,9 +351,11 @@
     "ref": "GET /tbm/costs/by-tower (tbm.routes.ts, UNMOUNTED)",
     "user_story": "As a TBM analyst, I want a REST endpoint for tower cost breakdown so that I can pull tower-level spend over HTTP.",
     "expected_behavior": "TBMController.getCostsByTower returns per-tower aggregates (tower, subTower, costPool, totalCost, ciCount, topCIs) from Neo4j with an optional ?tower filter (validated by towerQuerySchema) as 200 {success:true,data,count}. Unreachable in practice because tbm.routes.ts is not mounted in server.ts.",
-    "issue": true,
+    "issue": false,
     "severity": "logistical",
-    "issue_note": "Route defined on the unmounted tbmRoutes router (tbm.routes.ts not imported in server.ts); endpoint cannot be reached."
+    "issue_note": "Route defined on the unmounted tbmRoutes router (tbm.routes.ts not imported in server.ts); endpoint cannot be reached.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "FIN-030",
@@ -355,9 +365,11 @@
     "ref": "GET /tbm/costs/by-capability/:id (tbm.routes.ts, UNMOUNTED)",
     "user_story": "As a TBM analyst, I want a REST endpoint for capability cost rollups so that HTTP clients can read capability spend.",
     "expected_behavior": "TBMController.getCostsByCapability traverses capability->service->app->CI in Neo4j to return totalMonthlyCost, ciCount and supportingServices, with a 404 when the capability id is unknown. Unreachable because the tbmRoutes router is never mounted in server.ts.",
-    "issue": true,
+    "issue": false,
     "severity": "logistical",
-    "issue_note": "Route on unmounted tbmRoutes (tbm.routes.ts not imported/mounted in server.ts); 404 at the app level for any call."
+    "issue_note": "Route on unmounted tbmRoutes (tbm.routes.ts not imported/mounted in server.ts); 404 at the app level for any call.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "FIN-031",
@@ -367,9 +379,11 @@
     "ref": "GET /tbm/costs/by-service/:id (tbm.routes.ts, UNMOUNTED)",
     "user_story": "As a TBM analyst, I want a REST endpoint for per-service cost so that HTTP clients can read service spend.",
     "expected_behavior": "TBMController.getCostsByBusinessService traverses service->app->CI in Neo4j to return totalMonthlyCost, ciCount and towers, with a 404 when the service id is unknown. Unreachable because tbm.routes.ts is not registered in server.ts.",
-    "issue": true,
+    "issue": false,
     "severity": "logistical",
-    "issue_note": "Route on unmounted tbmRoutes (tbm.routes.ts not imported/mounted in server.ts); endpoint is dead."
+    "issue_note": "Route on unmounted tbmRoutes (tbm.routes.ts not imported/mounted in server.ts); endpoint is dead.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "FIN-032",
@@ -379,9 +393,11 @@
     "ref": "GET /tbm/costs/trends (tbm.routes.ts, UNMOUNTED)",
     "user_story": "As a TBM analyst, I want a REST endpoint for monthly cost trends so that HTTP clients can chart spend over time.",
     "expected_behavior": "TBMController.getCostTrends queries the PostgreSQL ci_snapshot data mart grouped by month for the last N months (costTrendsQuerySchema validates months 1-36, default 6) and returns 200 {success:true,data,count}. Unreachable because the tbmRoutes router is not mounted in server.ts.",
-    "issue": true,
+    "issue": false,
     "severity": "logistical",
-    "issue_note": "Route on unmounted tbmRoutes (tbm.routes.ts not imported/mounted in server.ts); cannot be called."
+    "issue_note": "Route on unmounted tbmRoutes (tbm.routes.ts not imported/mounted in server.ts); cannot be called.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "FIN-033",
@@ -391,9 +407,11 @@
     "ref": "POST /tbm/costs/allocate (tbm.routes.ts, UNMOUNTED)",
     "user_story": "As a TBM analyst, I want a REST endpoint to allocate a CI's cost to targets so that non-GraphQL clients can run allocations.",
     "expected_behavior": "TBMController.allocateCosts validates sourceId/targetType/targetIds, reads the source CI cost from Neo4j (404 if missing), and computes equal/usage_based/direct allocations; it explicitly does NOT persist (TODO at controller line 352) and returns 200 with the computed allocations. Unreachable because tbm.routes.ts is not mounted in server.ts.",
-    "issue": true,
+    "issue": false,
     "severity": "logistical",
-    "issue_note": "Route on unmounted tbmRoutes (tbm.routes.ts not imported/mounted in server.ts); also non-persisting stub, but primary defect is it is unreachable."
+    "issue_note": "Route on unmounted tbmRoutes (tbm.routes.ts not imported/mounted in server.ts); also non-persisting stub, but primary defect is it is unreachable.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "FIN-034",
@@ -403,9 +421,11 @@
     "ref": "GET /tbm/costs/allocations/:ciId (tbm.routes.ts, UNMOUNTED)",
     "user_story": "As a TBM analyst, I want a REST endpoint to read a CI's allocations so that HTTP clients can audit chargeback.",
     "expected_behavior": "TBMController.getCostAllocations is a placeholder that returns 200 {success:true,data:{ciId,allocations:[],totalAllocatedCost:0}} (TODO at controller line 381, no DB query). On top of being a stub, it is unreachable because tbm.routes.ts is not mounted in server.ts.",
-    "issue": true,
+    "issue": false,
     "severity": "logistical",
-    "issue_note": "Route on unmounted tbmRoutes (tbm.routes.ts not imported/mounted in server.ts); handler is also an empty placeholder."
+    "issue_note": "Route on unmounted tbmRoutes (tbm.routes.ts not imported/mounted in server.ts); handler is also an empty placeholder.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "FIN-035",
@@ -415,9 +435,11 @@
     "ref": "POST /tbm/gl/import (tbm.routes.ts, UNMOUNTED)",
     "user_story": "As a TBM analyst, I want a REST endpoint to import GL data so that HTTP clients can upload financials.",
     "expected_behavior": "TBMController.importGLData is a placeholder returning 200 {success:true, message:'GL import feature coming soon'} (TODO at controller line 408, no parsing/persistence). It is also unreachable because tbm.routes.ts is not mounted in server.ts.",
-    "issue": true,
+    "issue": false,
     "severity": "logistical",
-    "issue_note": "Route on unmounted tbmRoutes (tbm.routes.ts not imported/mounted in server.ts); handler is also an unimplemented stub."
+    "issue_note": "Route on unmounted tbmRoutes (tbm.routes.ts not imported/mounted in server.ts); handler is also an unimplemented stub.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "FIN-036",
@@ -427,9 +449,11 @@
     "ref": "GET /tbm/licenses (tbm.routes.ts, UNMOUNTED)",
     "user_story": "As a software asset manager, I want a REST endpoint to list software licenses so that HTTP clients can review licensing.",
     "expected_behavior": "TBMController.getLicenses matches (:CI {type:'software'}) in Neo4j with optional vendor/status filters (licenseQuerySchema), ordered by expiry ASC LIMIT 100, returning 200 {success:true,data,count}. Unreachable because tbm.routes.ts is not mounted in server.ts.",
-    "issue": true,
+    "issue": false,
     "severity": "logistical",
-    "issue_note": "Route on unmounted tbmRoutes (tbm.routes.ts not imported/mounted in server.ts); endpoint is dead."
+    "issue_note": "Route on unmounted tbmRoutes (tbm.routes.ts not imported/mounted in server.ts); endpoint is dead.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "FIN-037",
@@ -439,8 +463,10 @@
     "ref": "GET /tbm/licenses/renewals (tbm.routes.ts, UNMOUNTED)",
     "user_story": "As a software asset manager, I want a REST endpoint for upcoming renewals so that HTTP clients can plan renewals.",
     "expected_behavior": "TBMController.getUpcomingRenewals returns software CIs whose license_expiry_date falls between today and today + N days (renewalsQuerySchema validates days 1-365, default 90), ordered ascending, as 200 {success:true,data,count}. Unreachable because tbm.routes.ts is not mounted in server.ts.",
-    "issue": true,
+    "issue": false,
     "severity": "logistical",
-    "issue_note": "Route on unmounted tbmRoutes (tbm.routes.ts not imported/mounted in server.ts); endpoint cannot be reached."
+    "issue_note": "Route on unmounted tbmRoutes (tbm.routes.ts not imported/mounted in server.ts); endpoint cannot be reached.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   }
 ]

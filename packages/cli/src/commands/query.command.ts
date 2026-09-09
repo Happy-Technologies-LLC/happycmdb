@@ -191,19 +191,10 @@ export class QueryCommand {
     const spinner = ora('Analyzing dependencies...').start();
 
     try {
-      const params: any = {
-        _depth: options.depth,
-        _direction: options.direction,
-      };
-
-      if (options.type) {
-        params.relationshipType = options.type;
-      }
-
       const response = await axios.get(
-        `${this.apiUrl}/query/dependencies/${ciId}`,
+        `${this.apiUrl}/cis/${ciId}/dependencies`,
         {
-          params,
+          params: { depth: options.depth },
           headers: this.getHeaders(),
         }
       );
@@ -225,7 +216,7 @@ export class QueryCommand {
 
     try {
       const response = await axios.get(
-        `${this.apiUrl}/query/impact/${ciId}`,
+        `${this.apiUrl}/cis/${ciId}/impact`,
         {
           params: { depth: options.depth },
           headers: this.getHeaders(),

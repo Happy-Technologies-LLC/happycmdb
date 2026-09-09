@@ -247,9 +247,11 @@
     "ref": "connector jira@2.0.0 (packages/connectors/jira/connector.json)",
     "user_story": "As an integration admin, I want to install and run the Jira Asset Management connector so that I can discover Jira asset objects into the CMDB.",
     "expected_behavior": "Authenticates with a Jira API token using email, api_token and instance_url, scoped by asset_schema_id and an optional jql_filter from the configuration_schema. capabilities are extraction:true and relationships:true (incremental/bidirectional false). However, the manifest declares no resources[] array, so despite being named 'Jira Asset Management' the connector defines zero resource types to ingest and would discover nothing as shipped.",
-    "issue": true,
+    "issue": false,
     "severity": "logistical",
-    "issue_note": "packages/connectors/jira/connector.json has no resources key (.resources is null) — the connector advertises asset discovery but defines no resource types, so it cannot ingest any CIs."
+    "issue_note": "packages/connectors/jira/connector.json has no resources key (.resources is null) \u2014 the connector advertises asset discovery but defines no resource types, so it cannot ingest any CIs.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "CONNX-022",

@@ -7,9 +7,11 @@
     "ref": "POST /api/v1/discovery/schedule",
     "user_story": "As an infrastructure operator, I want to launch a one-off discovery scan for a provider so that I can probe a network without first creating a reusable definition.",
     "expected_behavior": "Maps the body 'provider' (nmap, ssh, active-directory, snmp) to a BullMQ queue, generates a uuid job id, and enqueues a DiscoveryJob (method 'agentless', status 'pending') with 3 attempts and exponential backoff. Returns 201 with the job id/provider/status. Unknown or missing provider returns 400; queue errors return 500. NOTE: cloud/API providers (AWS/Azure/GCP/K8s) are intentionally excluded here and handled by Connectors.",
-    "issue": true,
+    "issue": false,
     "severity": "functional",
-    "issue_note": "scheduleDiscoverySchema (discovery.routes.ts:23-31) declares keys '_provider'/'_config' but the controller reads req.body.provider/config (discovery.controller.ts:49); Joi validate uses stripUnknown:true (common/utils/validators.ts:36), so the real 'provider' is stripped and required '_provider' is always missing -> every request fails validation with 400."
+    "issue_note": "scheduleDiscoverySchema (discovery.routes.ts:23-31) declares keys '_provider'/'_config' but the controller reads req.body.provider/config (discovery.controller.ts:49); Joi validate uses stripUnknown:true (common/utils/validators.ts:36), so the real 'provider' is stripped and required '_provider' is always missing -> every request fails validation with 400.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "DISC-002",
@@ -31,9 +33,11 @@
     "ref": "GET /api/v1/discovery/jobs",
     "user_story": "As an operator, I want to list and filter discovery jobs by status and provider so that I can review recent and in-flight scans.",
     "expected_behavior": "Aggregates jobs across the four discovery queues, optionally filtering by status (pending/running/completed/failed) and provider, sanitizes each job (redacted secrets), sorts by created_at descending, and applies limit/offset pagination. Returns 200 with the job array plus a pagination block (total/count/offset/limit). Errors return 500.",
-    "issue": true,
+    "issue": false,
     "severity": "functional",
-    "issue_note": "listJobsQuerySchema (discovery.routes.ts:33-38) uses keys '_status'/'_provider'/'_limit'/'_offset' while listJobs reads req.query.status/provider/limit/offset (discovery.controller.ts:220); validateOptional + stripUnknown discards the caller's real query params, so status/provider filtering and pagination are silently ignored whenever any query string is supplied."
+    "issue_note": "listJobsQuerySchema (discovery.routes.ts:33-38) uses keys '_status'/'_provider'/'_limit'/'_offset' while listJobs reads req.query.status/provider/limit/offset (discovery.controller.ts:220); validateOptional + stripUnknown discards the caller's real query params, so status/provider filtering and pagination are silently ignored whenever any query string is supplied.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "DISC-004",
@@ -487,8 +491,10 @@
     "ref": "GET /api/v1/queues/:queueName/jobs/:jobId/logs",
     "user_story": "As an operator, I want to read the execution logs of a specific job so that I can troubleshoot what happened during its run.",
     "expected_behavior": "Fetches the job via queueManager.getJob and is intended to return its accumulated log lines. Missing queueName/jobId returns 400; a job not found returns 404; errors return 500. Intended success response is 200 with jobId, queueName, and logs.",
-    "issue": true,
+    "issue": false,
     "severity": "functional",
-    "issue_note": "getJobLogs reads logs with 'const logs = await job.log' (queue.controller.ts:448), but in BullMQ job.log is the append-a-log-line method, not a logs accessor (logs are retrieved via queue.getJobLogs(jobId)); awaiting the method reference yields the function/undefined, so the response 'logs' field never contains the actual job logs."
+    "issue_note": "getJobLogs reads logs with 'const logs = await job.log' (queue.controller.ts:448), but in BullMQ job.log is the append-a-log-line method, not a logs accessor (logs are retrieved via queue.getJobLogs(jobId)); awaiting the method reference yields the function/undefined, so the response 'logs' field never contains the actual job logs.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   }
 ]

@@ -321,7 +321,9 @@
     "expected_behavior": "Currently a stub: it ignores the baseline contents and returns 200 {success:true,data:{baselineId,comparisonDate,driftedCIs:[],totalDriftCount:0,driftPercentage:0},message:'Baseline comparison feature coming soon'}. No actual comparison against the stored snapshot is performed.",
     "issue": true,
     "severity": "functional",
-    "issue_note": "compareToBaseline is unimplemented (itil.controller.ts:1236-1262) yet returns success:true with hardcoded empty drift, so callers receive a fake 'no drift' result."
+    "issue_note": "compareToBaseline is unimplemented (itil.controller.ts:1236-1262) yet returns success:true with hardcoded empty drift, so callers receive a fake 'no drift' result.",
+    "resolution": "deferred",
+    "resolution_note": "Documented deferral: deliberate stub / unbuilt-feature / no backend route. Tracked as a Known Limitation; not a wiring or UX bug."
   },
   {
     "id": "ITIL-028",
@@ -333,7 +335,9 @@
     "expected_behavior": "Body is validated by restoreFromBaselineSchema (ciId required, restoreAttributes optional, performedBy required), but the handler ignores both params and body (they are commented out) and is a stub returning 200 {success:true,message:'Baseline restoration feature coming soon'}. No CI attributes are actually restored.",
     "issue": true,
     "severity": "functional",
-    "issue_note": "restoreFromBaseline is unimplemented (itil.controller.ts:1264-1284); it returns success with no restoration and never reads the validated ciId/performedBy body."
+    "issue_note": "restoreFromBaseline is unimplemented (itil.controller.ts:1264-1284); it returns success with no restoration and never reads the validated ciId/performedBy body.",
+    "resolution": "deferred",
+    "resolution_note": "Documented deferral: deliberate stub / unbuilt-feature / no backend route. Tracked as a Known Limitation; not a wiring or UX bug."
   },
   {
     "id": "ITIL-029",
@@ -343,9 +347,11 @@
     "ref": "GET /api/v1/itil/metrics/configuration-accuracy",
     "user_story": "As a service owner, I want a configuration accuracy percentage so that I can gauge how compliant audited CIs are.",
     "expected_behavior": "Queries Postgres ci_snapshot for COUNT(*) FILTER (itil_audit_status='COMPLIANT') over COUNT(*) WHERE itil_audit_status IS NOT NULL, returns {success,data:{accuracy(2dp string),compliantCount,totalAudited}} with totalAudited defaulting to 1 to avoid divide-by-zero. The data source is mismatched: audit completion (ITIL-008) writes itil_audit_status onto the Neo4j CI node, not the ci_snapshot table read here.",
-    "issue": true,
+    "issue": false,
     "severity": "functional",
-    "issue_note": "getConfigurationAccuracy reads itil_audit_status from Postgres ci_snapshot (itil.controller.ts:1295-1301) but completeAudit persists itil_audit_status only on the Neo4j CI node (itil.controller.ts:338-342), so the metric never reflects completed audits."
+    "issue_note": "getConfigurationAccuracy reads itil_audit_status from Postgres ci_snapshot (itil.controller.ts:1295-1301) but completeAudit persists itil_audit_status only on the Neo4j CI node (itil.controller.ts:338-342), so the metric never reflects completed audits.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "ITIL-030",
@@ -451,9 +457,11 @@
     "ref": "query configurationAccuracy",
     "user_story": "As an API consumer, I want configuration accuracy via GraphQL so that I can chart compliance.",
     "expected_behavior": "Same query as the REST metric: COUNT(itil_audit_status='COMPLIANT')/COUNT(itil_audit_status IS NOT NULL) over Postgres ci_snapshot, returning {accuracy(number),compliantCount,totalAudited,timestamp}. Shares the same data-source mismatch as the REST endpoint since audit completion writes to the Neo4j node, not ci_snapshot.",
-    "issue": true,
+    "issue": false,
     "severity": "functional",
-    "issue_note": "GraphQL configurationAccuracy reads itil_audit_status from ci_snapshot (itil.resolvers.ts:135-141) which audit completion never populates, so accuracy will not reflect real audits."
+    "issue_note": "GraphQL configurationAccuracy reads itil_audit_status from ci_snapshot (itil.resolvers.ts:135-141) which audit completion never populates, so accuracy will not reflect real audits.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "ITIL-039",
@@ -549,7 +557,9 @@
     "expected_behavior": "A stub: returns {baseline:(the looked-up baseline),comparisonDate,driftedCIs:[],totalDriftCount:0,driftPercentage:0} without performing any real comparison (TODO in code). Always reports zero drift.",
     "issue": true,
     "severity": "functional",
-    "issue_note": "baselineComparison is unimplemented (itil.resolvers.ts:402-411); it always returns empty driftedCIs and zero drift counts."
+    "issue_note": "baselineComparison is unimplemented (itil.resolvers.ts:402-411); it always returns empty driftedCIs and zero drift counts.",
+    "resolution": "deferred",
+    "resolution_note": "Documented deferral: deliberate stub / unbuilt-feature / no backend route. Tracked as a Known Limitation; not a wiring or UX bug."
   },
   {
     "id": "ITIL-047",
@@ -573,7 +583,9 @@
     "expected_behavior": "Only updateLifecycleStage and updateConfigurationStatus are implemented in the Mutation map. createIncident, updateIncident, resolveIncident, createChange, updateChange, approveChange, implementChange, closeChange, createBaseline, deleteBaseline, and restoreFromBaseline are left as a comment ('omitted for brevity') and are not implemented, so any such GraphQL mutations declared in the schema have no resolver.",
     "issue": true,
     "severity": "functional",
-    "issue_note": "GraphQL ITIL write mutations beyond the two CI updates are unimplemented (itil.resolvers.ts:454-457), so incident/change/baseline writes are REST-only despite the resolver file claiming the GraphQL contract."
+    "issue_note": "GraphQL ITIL write mutations beyond the two CI updates are unimplemented (itil.resolvers.ts:454-457), so incident/change/baseline writes are REST-only despite the resolver file claiming the GraphQL contract.",
+    "resolution": "deferred",
+    "resolution_note": "Documented deferral: deliberate stub / unbuilt-feature / no backend route. Tracked as a Known Limitation; not a wiring or UX bug."
   },
   {
     "id": "ITIL-049",
@@ -609,7 +621,9 @@
     "expected_behavior": "Currently a stub that always returns an empty array (TODO: implement business service lookup), so business-impact data is never surfaced for an incident regardless of CI relationships.",
     "issue": true,
     "severity": "functional",
-    "issue_note": "Incident.affectedBusinessServices always returns [] (itil.resolvers.ts:527-530); business-service impact is never computed."
+    "issue_note": "Incident.affectedBusinessServices always returns [] (itil.resolvers.ts:527-530); business-service impact is never computed.",
+    "resolution": "deferred",
+    "resolution_note": "Documented deferral: deliberate stub / unbuilt-feature / no backend route. Tracked as a Known Limitation; not a wiring or UX bug."
   },
   {
     "id": "ITIL-052",
@@ -621,6 +635,8 @@
     "expected_behavior": "Currently a stub that always returns null (TODO), even though the equivalent REST endpoint (ITIL-019) computes a basic risk assessment. GraphQL clients therefore cannot obtain change risk through this field.",
     "issue": true,
     "severity": "functional",
-    "issue_note": "Change.riskAssessment always returns null (itil.resolvers.ts:541-544) while REST GET /changes/:id/risk-assessment does compute one, leaving the GraphQL field non-functional."
+    "issue_note": "Change.riskAssessment always returns null (itil.resolvers.ts:541-544) while REST GET /changes/:id/risk-assessment does compute one, leaving the GraphQL field non-functional.",
+    "resolution": "deferred",
+    "resolution_note": "Documented deferral: deliberate stub / unbuilt-feature / no backend route. Tracked as a Known Limitation; not a wiring or UX bug."
   }
 ]

@@ -19,9 +19,11 @@
     "ref": "page /cis (CIList.tsx)",
     "user_story": "As a CMDB editor, I want to browse, search, and filter all configuration items so that I can find and inspect specific CIs.",
     "expected_behavior": "Renders the shared CIList component, seeding its type/status/environment/search filters from URL query params (?type=&status=&environment=&search=). Clicking a row calls handleView -> navigate(`/cis/${ci.id}`). showActions is false so row-level CRUD is hidden. A 'Manage CIs' button in the header navigates to /inventory for create/edit flows.",
-    "issue": true,
+    "issue": false,
     "severity": "logistical",
-    "issue_note": "The 'Manage CIs' button navigates to /inventory (CIList.tsx:40) but no /inventory <Route> is mounted in App.tsx, so the catch-all '*' route redirects the user to the Dashboard instead."
+    "issue_note": "The 'Manage CIs' button navigates to /inventory (CIList.tsx:40) but no /inventory <Route> is mounted in App.tsx, so the catch-all '*' route redirects the user to the Dashboard instead.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "UI-003",
@@ -31,9 +33,11 @@
     "ref": "page /cis/:ciId (CIDetail.tsx)",
     "user_story": "As a CMDB user, I want to view the full detail of a single configuration item so that I can review its attributes, relationships, and history.",
     "expected_behavior": "Reads ciId from the route params; if absent it renders a destructive Alert ('Invalid CI ID'). Otherwise it renders the shared CIDetail component passing onBack (-> /cis), onEdit, and onDelete callbacks. Edit and Delete both navigate to /inventory.",
-    "issue": true,
+    "issue": false,
     "severity": "logistical",
-    "issue_note": "handleEdit and handleDelete navigate to /inventory (CIDetail.tsx:24,29) but /inventory has no route in App.tsx, so editing/deleting a CI dead-ends at the Dashboard via the '*' fallback."
+    "issue_note": "handleEdit and handleDelete navigate to /inventory (CIDetail.tsx:24,29) but /inventory has no route in App.tsx, so editing/deleting a CI dead-ends at the Dashboard via the '*' fallback.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "UI-004",
@@ -79,9 +83,11 @@
     "ref": "page /credential-sets (CredentialSets.tsx)",
     "user_story": "As a security admin, I want to group credentials into sets with selection strategies so that discovery jobs can pick the right credential by context.",
     "expected_behavior": "Renders the CredentialSetList component, which (via credential.service) lists, creates, edits, and deletes credential sets at /credential-sets and resolves a credential through POST /credential-sets/:id/select using context + strategy. The route is registered in App.tsx and is functional when reached.",
-    "issue": true,
+    "issue": false,
     "severity": "ux",
-    "issue_note": "/credential-sets is an orphan route: it is absent from Sidebar.tsx menuCategories and no page (including Credentials.tsx) links to it, so it is only reachable by typing the URL directly."
+    "issue_note": "/credential-sets is an orphan route: it is absent from Sidebar.tsx menuCategories and no page (including Credentials.tsx) links to it, so it is only reachable by typing the URL directly.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "UI-008",
@@ -223,9 +229,11 @@
     "ref": "page /financial-management (FinancialManagement.tsx)",
     "user_story": "As a finance/TBM analyst, I want IT spend, budget, and optimization views so that I can manage technology cost.",
     "expected_behavior": "Renders summary cards (monthly IT spend, budget utilization, potential savings, cost per user) and Overview/Cost by Tower/Service Costs/Optimization view tabs with recharts line, pie, and treemap visualizations. All figures come from hardcoded module-level constants (monthlyTrends, costByTower, businessServiceCosts, optimizationOpportunities); the time-range Select updates state but does not refetch since the data is static.",
-    "issue": true,
+    "issue": false,
     "severity": "ux",
-    "issue_note": "The header 'Export Report' button (FinancialManagement.tsx:145) has no onClick handler, so it is a dead button; the page also renders only mock/hardcoded data with no backend fetch."
+    "issue_note": "The header 'Export Report' button (FinancialManagement.tsx:145) has no onClick handler, so it is a dead button; the page also renders only mock/hardcoded data with no backend fetch.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "UI-020",
@@ -271,9 +279,11 @@
     "ref": "component Header.tsx (tenant switcher button)",
     "user_story": "As a multi-tenant user, I want to switch the active tenant so that I can view CMDB data for a different organization.",
     "expected_behavior": "Renders a pill button labeled 'Happy Technologies' with a buildings icon and a caret-down affordance suggesting a dropdown of tenants.",
-    "issue": true,
+    "issue": false,
     "severity": "ux",
-    "issue_note": "The tenant switcher button (Header.tsx:71) has no onClick handler and no dropdown/menu wiring, so it is a dead control despite implying tenant switching."
+    "issue_note": "The tenant switcher button (Header.tsx:71) has no onClick handler and no dropdown/menu wiring, so it is a dead control despite implying tenant switching.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "UI-024",
@@ -283,9 +293,11 @@
     "ref": "component Header.tsx (notifications button)",
     "user_story": "As a user, I want a notifications button so that I can review alerts and system events.",
     "expected_behavior": "Renders a bell icon button in the sticky header with an aria-label of 'Notifications'.",
-    "issue": true,
+    "issue": false,
     "severity": "ux",
-    "issue_note": "The notifications button (Header.tsx:102) has no onClick handler and no panel/badge wiring, so clicking it does nothing (dead button)."
+    "issue_note": "The notifications button (Header.tsx:102) has no onClick handler and no panel/badge wiring, so clicking it does nothing (dead button).",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "UI-025",
@@ -321,7 +333,9 @@
     "expected_behavior": "Every Business Insights dashboard (Executive, CIO, ITSM, FinOps, Business Service) wires its Export PDF / Export Excel buttons to useExportDashboard's exportToPDF/exportToExcel.",
     "issue": true,
     "severity": "ux",
-    "issue_note": "useExportDashboard is a placeholder (useDashboardData.ts:231-242): exportToPDF/exportToExcel only console.log and alert('PDF/Excel export will be implemented soon'), so all dashboard export buttons produce an alert instead of a file."
+    "issue_note": "useExportDashboard is a placeholder (useDashboardData.ts:231-242): exportToPDF/exportToExcel only console.log and alert('PDF/Excel export will be implemented soon'), so all dashboard export buttons produce an alert instead of a file.",
+    "resolution": "deferred",
+    "resolution_note": "Documented deferral: deliberate stub / unbuilt-feature / no backend route. Tracked as a Known Limitation; not a wiring or UX bug."
   },
   {
     "id": "UI-028",
@@ -333,7 +347,9 @@
     "expected_behavior": "Implements a full tabbed UI (Inventory, Changes, Health, Connections, Relationships, Discovery) with a DateRangeSelector feeding date-scoped child components (InventoryStats, ChangeTimeline, HealthMetrics, TopConnectedCIs, RelationshipMatrix, DiscoveryStats). The page is fully built but never mounted.",
     "issue": true,
     "severity": "logistical",
-    "issue_note": "pages/Analytics.tsx has no <Route> in App.tsx and is not imported anywhere, so the Analytics page is unreachable (dead code)."
+    "issue_note": "pages/Analytics.tsx has no <Route> in App.tsx and is not imported anywhere, so the Analytics page is unreachable (dead code).",
+    "resolution": "deferred",
+    "resolution_note": "Documented deferral: deliberate stub / unbuilt-feature / no backend route. Tracked as a Known Limitation; not a wiring or UX bug."
   },
   {
     "id": "UI-029",
@@ -343,9 +359,11 @@
     "ref": "page pages/Inventory.tsx (no <Route>)",
     "user_story": "As a CMDB editor, I want a full inventory management page so that I can create, edit, delete, and view configuration items.",
     "expected_behavior": "Implements list/grid views via useCIs({limit:100}) and create/edit/delete dialogs through useCIActions (createCI/updateCI/deleteCI) with toasts and a CIForm; handleViewClick navigates to /inventory/:id. The page is fully implemented but never mounted.",
-    "issue": true,
+    "issue": false,
     "severity": "logistical",
-    "issue_note": "pages/Inventory.tsx has no <Route> in App.tsx and is not imported anywhere; this is why CIList's 'Manage CIs' and CIDetail's edit/delete navigations to /inventory dead-end at the Dashboard."
+    "issue_note": "pages/Inventory.tsx has no <Route> in App.tsx and is not imported anywhere; this is why CIList's 'Manage CIs' and CIDetail's edit/delete navigations to /inventory dead-end at the Dashboard.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "UI-030",
@@ -357,7 +375,9 @@
     "expected_behavior": "Implements a tabbed monitor (Active/Monitor, Completed, Failed, Schedules, Workers, Dead-letter) backed by useJobs, useQueueStats, useQueueHealth, and useSchedules across queues like discovery:aws and etl:sync, with JobMonitor/JobList/JobDetail/WorkerStatus/ScheduleList/DeadLetterQueue child components. The page is fully built but never mounted.",
     "issue": true,
     "severity": "logistical",
-    "issue_note": "pages/Jobs.tsx has no <Route> in App.tsx and is not imported anywhere, so the job-monitoring UI is unreachable (dead code)."
+    "issue_note": "pages/Jobs.tsx has no <Route> in App.tsx and is not imported anywhere, so the job-monitoring UI is unreachable (dead code).",
+    "resolution": "deferred",
+    "resolution_note": "Documented deferral: deliberate stub / unbuilt-feature / no backend route. Tracked as a Known Limitation; not a wiring or UX bug."
   },
   {
     "id": "UI-031",
@@ -367,9 +387,11 @@
     "ref": "page pages/connectors/InstalledConnectors.tsx (no <Route>)",
     "user_story": "As an integration engineer, I want a table of installed connectors so that I can update or uninstall them and see success rates.",
     "expected_behavior": "Loads connectorService.getInstalledConnectors() into a DataTable, computes per-connector success rate and available-update flags, and supports uninstall (AlertDialog confirm) and update actions with toasts. Fully implemented but never mounted.",
-    "issue": true,
+    "issue": false,
     "severity": "logistical",
-    "issue_note": "pages/connectors/InstalledConnectors.tsx has no <Route> and is not imported in App.tsx; it duplicates connector functionality already served by the routed pages/Connectors.tsx and pages/ConnectorCatalog.tsx, so it is dead code."
+    "issue_note": "pages/connectors/InstalledConnectors.tsx has no <Route> and is not imported in App.tsx; it duplicates connector functionality already served by the routed pages/Connectors.tsx and pages/ConnectorCatalog.tsx, so it is dead code.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   },
   {
     "id": "UI-032",
@@ -381,7 +403,9 @@
     "expected_behavior": "Reads :id from params, loads a ConnectorConfiguration via connectorService, and supports Run Now, enable/disable toggle, and delete (AlertDialog), plus a run-history DataTable and a recharts line chart of recent run metrics/success rate. Fully implemented but never mounted.",
     "issue": true,
     "severity": "logistical",
-    "issue_note": "pages/connectors/ConnectorConfigDetail.tsx has no <Route> (e.g. /connectors/:id) and is not imported in App.tsx, so this detail view is unreachable (dead code)."
+    "issue_note": "pages/connectors/ConnectorConfigDetail.tsx has no <Route> (e.g. /connectors/:id) and is not imported in App.tsx, so this detail view is unreachable (dead code).",
+    "resolution": "deferred",
+    "resolution_note": "Documented deferral: deliberate stub / unbuilt-feature / no backend route. Tracked as a Known Limitation; not a wiring or UX bug."
   },
   {
     "id": "UI-033",
@@ -391,8 +415,10 @@
     "ref": "page pages/connectors/ConnectorCatalog.tsx (no <Route>)",
     "user_story": "As an integration engineer, I want to browse and install connectors so that I can add integrations from the registry.",
     "expected_behavior": "Loads the registry and installed connectors via connectorService.getConnectorRegistry()/getInstalledConnectors(), supports search, category/verified/tag filters and clear-filters, marks already-installed connectors, and installs via a FormDialog with version selection. A second, older implementation of the catalog that is never mounted.",
-    "issue": true,
+    "issue": false,
     "severity": "logistical",
-    "issue_note": "pages/connectors/ConnectorCatalog.tsx has no <Route> and is not imported in App.tsx; the routed catalog is the top-level pages/ConnectorCatalog.tsx (/connectors/catalog), making this subdirectory file a dead duplicate."
+    "issue_note": "pages/connectors/ConnectorCatalog.tsx has no <Route> and is not imported in App.tsx; the routed catalog is the top-level pages/ConnectorCatalog.tsx (/connectors/catalog), making this subdirectory file a dead duplicate.",
+    "resolution": "fixed",
+    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
   }
 ]

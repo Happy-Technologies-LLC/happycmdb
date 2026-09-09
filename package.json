@@ -10,7 +10,7 @@
   ],
   "scripts": {
     "build": "npm run build --workspaces",
-    "build:packages": "npm run build --workspace=packages/*",
+    "build:packages": "npm run build --workspace=packages",
     "build:web": "npm run build --workspace=web-ui",
     "dev": "npm run dev --workspaces --parallel",
     "dev:api": "npm run dev --workspace=@cmdb/api",

@@ -179,3 +179,46 @@ jobs:
         with:
           lcov-file: ./coverage/lcov.info
           github-token: ${{ secrets.GITHUB_TOKEN }}
+
+  ci-rollup:
+    needs: [unit-tests, integration-tests, e2e-tests]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      statuses: write
+    steps:
+      - name: Publish ci-rollup/test commit status
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.event_name == 'push' && github.sha || '' }} # Push events have no pull_request object, so use github.sha only for pushes.
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          UNIT_TESTS_RESULT: ${{ needs.unit-tests.result }}
+          INTEGRATION_TESTS_RESULT: ${{ needs.integration-tests.result }}
+          E2E_TESTS_RESULT: ${{ needs.e2e-tests.result }}
+        run: |
+          set -euo pipefail
+          if [ -z "$HEAD_SHA" ]; then
+            echo "No commit SHA available; skipping ci-rollup/test status."
+            exit 0
+          fi
+          if [ "$UNIT_TESTS_RESULT" = "success" ] &&
+             [ "$INTEGRATION_TESTS_RESULT" = "success" ] &&
+             [ "$E2E_TESTS_RESULT" = "success" ]; then
+            state=success
+            description="all 3 gates passed"
+          else
+            state=failure
+            failures=()
+            [ "$UNIT_TESTS_RESULT" = "success" ] || failures+=("unit-tests=$UNIT_TESTS_RESULT")
+            [ "$INTEGRATION_TESTS_RESULT" = "success" ] || failures+=("integration-tests=$INTEGRATION_TESTS_RESULT")
+            [ "$E2E_TESTS_RESULT" = "success" ] || failures+=("e2e-tests=$E2E_TESTS_RESULT")
+            description="test gates failed: ${failures[*]}"
+            if [ "${#description}" -gt 140 ]; then
+              description="${description:0:137}..."
+            fi
+          fi
+          gh api "repos/${{ github.repository }}/statuses/${HEAD_SHA}" \
+            -f state="$state" \
+            -f context="ci-rollup/test" \
+            -f description="$description" \
+            -f target_url="$RUN_URL"

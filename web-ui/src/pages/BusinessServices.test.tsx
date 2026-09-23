@@ -18,6 +18,7 @@ if (!Element.prototype.scrollIntoView) {
 }
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent, { type UserEvent } from '@testing-library/user-event';
+import { Toaster } from 'sonner';
 import { render } from '@/tests/utils/test-utils';
 
 const { apiClient } = vi.hoisted(() => ({
@@ -220,7 +221,14 @@ describe('BusinessServices page', () => {
       },
     });
 
-    render(<BusinessServices />);
+    // test-utils provides ToastProvider but not the Toaster that App.tsx mounts,
+    // so mount it here to observe the error toast the user actually sees.
+    render(
+      <>
+        <BusinessServices />
+        <Toaster />
+      </>
+    );
     const [editButton] = within(await rowFor('Customer Portal')).getAllByRole('button');
     await user.click(editButton);
 

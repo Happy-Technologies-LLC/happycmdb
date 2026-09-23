@@ -1,8 +1,18 @@
 # HAP-174 validation evidence (PR #20)
 
 Evidence index (this file is the durable record; PR body copies may truncate):
+- Section 9 (appended 2026-09-23T20:12Z, head `3578bb56d841c8e213185682e8a3fc4aaa4f777b`): FRESH COMPLETE, unfiltered capture of the
+  dependency prerequisites (raw `npm pack --json` stdout/stderr/exit, hashes, full archive listing, extraction, registry metadata,
+  raw root `npm ci` stdout/stderr/exit, post-install `git status`). This is the authoritative prerequisite proof.
+- Sections 1 and 2 are PARTIAL historical excerpts, not full captures: section 1's original `npm pack` output was piped through `jq`
+  and the listing through `grep`; section 2 shows only the tail of the `npm ci` log. The unfiltered bytes of those original runs are lost
+  (scratch dir scrubbed) and were NOT recovered or reconstructed; section 9 replaces them as evidence.
 - Harness history: the very first mounted attempt failed on `target.hasPointerCapture is not a function` (driver lacked the jsdom Radix
-  polyfills that `BusinessServices.test.tsx` already carries); its log was overwritten by the re-run and is not reproduced. Sections 7.1/7.2 are complete.
+  polyfills that `BusinessServices.test.tsx` already carries); its log was overwritten by the re-run and is LOST, not reproduced or recovered.
+  Sections 5, 6, 7.1, 7.2 and 8 are complete raw captures of their runs (including failure output).
+- Scope caveat: omitting a blank `owned_by` fixes acceptance of a blank optional owner on create/edit. It does NOT implement owner
+  clearing: an edit that blanks the owner omits `owned_by` from the PATCH, so the stored owner is retained. Owner clearing is a separate
+  feature outside HAP-174.
 - Committed path: `docs/archive/HAP-174-validation.md` on branch `agent/hap-174-canonical-service-criticality`.
 - Base of this session: `9e0ceefbe622b036c8c529baff5aa3d28eaab647`. Pre-fix page: `c5a4e6fa521774043697d999672bb74ea01c6598`.
 
@@ -12,7 +22,7 @@ The previous run's `/home/coder/jobs/2dd434d5-db07-499e-b2b0-f3c6c47c89d2/valida
 (job directory scrubbed; `ls ..` showed only `agent/ home/ repo/ session/ tmp/`). Its output is not reproduced here.
 All evidence below was re-exercised in this session (2026-09-23).
 
-## 1. Dependency provisioning (genuine public artifact)
+## 1. Dependency provisioning (genuine public artifact) — PARTIAL historical excerpt (filtered via jq/grep; see section 9)
 
 ```
 $ cd ../scratch && npm pack @happy-technologies/design-system@0.7.1 --ignore-scripts --registry=https://registry.npmjs.org/ --json | jq -c '.[0]|{filename,shasum,integrity}'
@@ -22,7 +32,7 @@ $ sha1sum happy-technologies-design-system-0.7.1.tgz
 60d6c25cd69620c1301622bb64a81d01ce34e78b  happy-technologies-design-system-0.7.1.tgz
 $ openssl dgst -sha512 -binary happy-technologies-design-system-0.7.1.tgz | base64 -w0
 sHn6pU9VHbV/Xc0HvhXb1p2WO1pZecPXvY/iUWHs0lhPE6k3oIjLEUwKKPpeiJWaKIn6uxSPYWG5oCqlBXZAew==
-$ tar tzf happy-technologies-design-system-0.7.1.tgz | grep -v '^package/' | wc -l     # no path escapes
+$ tar tzf happy-technologies-design-system-0.7.1.tgz | grep -v '^package/' | wc -l     # prefix check only; does NOT by itself exclude `..` segments (see section 9)
 0
 $ tar tzf ... | grep -E 'package/(package.json|src/index.ts|src/theme.css)$'
 package/src/theme.css
@@ -43,7 +53,7 @@ $ grep -n -A3 '^    "../happy-technologies-design-system": {' package-lock.json
 Note: the tarball's own `package.json` carries `gitHead: null`; the registry manifest records gitHead
 `acb0c9481837131360e822f58ced7196a27f7ab2` for the identical integrity. No sibling source modified, no DS build/test.
 
-## 2. Root install
+## 2. Root install — PARTIAL historical excerpt (log tail only; see section 9)
 
 ```
 $ npm ci --ignore-scripts --no-audit --no-fund      # tail of ../scratch/npm-ci.log
@@ -52,10 +62,11 @@ EXIT=0
 ```
 `git status --short` afterwards showed only the new `docs/` dir: tracked manifests/lock unchanged.
 
-## 3. Summary of results (details and full raw output below)
+## 3. Summary of results (full raw output in sections 5-9; sections 1-2 are partial excerpts)
 
 | Check | Result |
 |---|---|
+| Dependency prerequisites (fresh, complete capture) | DS 0.7.1 pack exit 0, SHA1/SHA512 match, 21 regular files all under `package/`, no `..`/absolute paths; root `npm ci` exit 0, tracked files unchanged (section 9) |
 | Focused `BusinessServices.test.tsx`, final page | 6/6 pass, exit 0 (section 5) |
 | Same, page swapped to pre-fix `c5a4e6f` | 6/6 fail, exit 1; page restored via `git checkout` (section 6) |
 | Mounted UI → real route/Joi/controller → PGlite, first run | canonical labels/filter PASS; create + edit FAILED with real Joi 400 `"owned_by" is not allowed to be empty` (section 7.1) |
@@ -3413,3 +3424,266 @@ describe.sequential('HAP-174 mounted', () => {
   });
 });
 ~~~~~~
+
+## 9. FRESH COMPLETE prerequisite capture (2026-09-23, supersedes partial sections 1-2)
+
+Earlier sections 1-2 are partial (jq/grep-filtered pack output; npm ci tail only) and the first pointer-capture harness log is lost;
+none of those bytes were recovered or reconstructed. Everything below is a new run, every byte of each captured stream included verbatim
+(files in `/home/coder/jobs/2dd434d5-db07-499e-b2b0-f3c6c47c89d2/scratch2/`, outside git). Streams captured separately; exit = real `$?` of the command.
+
+### 9.0 Run identity
+
+~~~~~~
+2026-09-23T20:12:37Z
+cwd=/home/coder/jobs/2dd434d5-db07-499e-b2b0-f3c6c47c89d2/scratch2
+repo=/home/coder/jobs/2dd434d5-db07-499e-b2b0-f3c6c47c89d2/repo HEAD=3578bb56d841c8e213185682e8a3fc4aaa4f777b
+job=2dd434d5-db07-499e-b2b0-f3c6c47c89d2
+node=v22.23.2 npm=10.9.8
+~~~~~~
+
+### 9.1 npm pack (cwd `/home/coder/jobs/2dd434d5-db07-499e-b2b0-f3c6c47c89d2/scratch2`)
+
+~~~~~~
+$ npm pack @happy-technologies/design-system@0.7.1 --ignore-scripts --registry=https://registry.npmjs.org/ --json > pack.stdout 2> pack.stderr; echo $? > pack.exit
+--- pack.stdout (2597 bytes) ---
+[
+  {
+    "id": "@happy-technologies/design-system@0.7.1",
+    "name": "@happy-technologies/design-system",
+    "version": "0.7.1",
+    "size": 224803,
+    "unpackedSize": 543140,
+    "shasum": "60d6c25cd69620c1301622bb64a81d01ce34e78b",
+    "integrity": "sha512-sHn6pU9VHbV/Xc0HvhXb1p2WO1pZecPXvY/iUWHs0lhPE6k3oIjLEUwKKPpeiJWaKIn6uxSPYWG5oCqlBXZAew==",
+    "filename": "happy-technologies-design-system-0.7.1.tgz",
+    "files": [
+      {
+        "path": "MIGRATION.md",
+        "size": 16522,
+        "mode": 420
+      },
+      {
+        "path": "adherence.oxlintrc.json",
+        "size": 4541,
+        "mode": 420
+      },
+      {
+        "path": "package.json",
+        "size": 2360,
+        "mode": 420
+      },
+      {
+        "path": "src/assets/phosphor-duotone.css",
+        "size": 231626,
+        "mode": 420
+      },
+      {
+        "path": "src/assets/Phosphor-Duotone.woff2",
+        "size": 164420,
+        "mode": 420
+      },
+      {
+        "path": "src/connectors/ConnectorCard.tsx",
+        "size": 2538,
+        "mode": 420
+      },
+      {
+        "path": "src/connectors/ConnectorCatalog.tsx",
+        "size": 1895,
+        "mode": 420
+      },
+      {
+        "path": "src/connectors/ConnectorConfigForm.tsx",
+        "size": 4854,
+        "mode": 420
+      },
+      {
+        "path": "src/connectors/ConnectorInstallWizard.tsx",
+        "size": 5272,
+        "mode": 420
+      },
+      {
+        "path": "src/connectors/index.ts",
+        "size": 473,
+        "mode": 420
+      },
+      {
+        "path": "src/connectors/types.ts",
+        "size": 1493,
+        "mode": 420
+      },
+      {
+        "path": "src/controls.tsx",
+        "size": 7772,
+        "mode": 420
+      },
+      {
+        "path": "src/feedback.tsx",
+        "size": 7483,
+        "mode": 420
+      },
+      {
+        "path": "src/globals.d.ts",
+        "size": 174,
+        "mode": 420
+      },
+      {
+        "path": "src/HappyTheme.tsx",
+        "size": 852,
+        "mode": 420
+      },
+      {
+        "path": "src/index.ts",
+        "size": 556,
+        "mode": 420
+      },
+      {
+        "path": "src/overlays.tsx",
+        "size": 6712,
+        "mode": 420
+      },
+      {
+        "path": "src/shell.tsx",
+        "size": 12499,
+        "mode": 420
+      },
+      {
+        "path": "src/theme.css",
+        "size": 6229,
+        "mode": 420
+      },
+      {
+        "path": "src/ui.tsx",
+        "size": 61897,
+        "mode": 420
+      },
+      {
+        "path": "tailwind.preset.cjs",
+        "size": 2972,
+        "mode": 420
+      }
+    ],
+    "entryCount": 21,
+    "bundled": []
+  }
+]
+--- pack.stderr (0 bytes) ---
+--- pack.exit ---
+0
+~~~~~~
+
+### 9.2 Archive hashes (expected SHA1 60d6c25cd69620c1301622bb64a81d01ce34e78b, SHA512 sHn6pU9V...BXZAew==)
+
+~~~~~~
+$ sha1sum happy-technologies-design-system-0.7.1.tgz
+60d6c25cd69620c1301622bb64a81d01ce34e78b  happy-technologies-design-system-0.7.1.tgz
+EXIT=0
+$ openssl dgst -sha512 -binary happy-technologies-design-system-0.7.1.tgz | base64 -w0
+sHn6pU9VHbV/Xc0HvhXb1p2WO1pZecPXvY/iUWHs0lhPE6k3oIjLEUwKKPpeiJWaKIn6uxSPYWG5oCqlBXZAew==
+EXIT=0
+~~~~~~
+Capture defect, disclosed: the second `EXIT=0` above is the status of an intervening bare `echo` (newline), NOT of the openssl|base64
+pipeline. Re-run with the real per-stage pipeline status (`hash2.log`, verbatim):
+~~~~~~
+$ openssl dgst -sha512 -binary happy-technologies-design-system-0.7.1.tgz | base64 -w0
+sHn6pU9VHbV/Xc0HvhXb1p2WO1pZecPXvY/iUWHs0lhPE6k3oIjLEUwKKPpeiJWaKIn6uxSPYWG5oCqlBXZAew== PIPESTATUS=0 0
+~~~~~~
+Both digests equal the expected values and the registry `dist.shasum`/`dist.integrity` in 9.4.
+
+### 9.3 Full archive listing and path safety
+
+~~~~~~
+$ tar tvzf happy-technologies-design-system-0.7.1.tgz > list.stdout 2> list.stderr; echo $? > list.exit
+--- list.stdout (21 entries) ---
+-rw-r--r-- 0/0            2972 1985-10-26 08:15 package/tailwind.preset.cjs
+-rw-r--r-- 0/0          231626 1985-10-26 08:15 package/src/assets/phosphor-duotone.css
+-rw-r--r-- 0/0            6229 1985-10-26 08:15 package/src/theme.css
+-rw-r--r-- 0/0            4541 1985-10-26 08:15 package/adherence.oxlintrc.json
+-rw-r--r-- 0/0            2360 1985-10-26 08:15 package/package.json
+-rw-r--r-- 0/0           16522 1985-10-26 08:15 package/MIGRATION.md
+-rw-r--r-- 0/0             174 1985-10-26 08:15 package/src/globals.d.ts
+-rw-r--r-- 0/0             473 1985-10-26 08:15 package/src/connectors/index.ts
+-rw-r--r-- 0/0             556 1985-10-26 08:15 package/src/index.ts
+-rw-r--r-- 0/0            1493 1985-10-26 08:15 package/src/connectors/types.ts
+-rw-r--r-- 0/0            2538 1985-10-26 08:15 package/src/connectors/ConnectorCard.tsx
+-rw-r--r-- 0/0            1895 1985-10-26 08:15 package/src/connectors/ConnectorCatalog.tsx
+-rw-r--r-- 0/0            4854 1985-10-26 08:15 package/src/connectors/ConnectorConfigForm.tsx
+-rw-r--r-- 0/0            5272 1985-10-26 08:15 package/src/connectors/ConnectorInstallWizard.tsx
+-rw-r--r-- 0/0            7772 1985-10-26 08:15 package/src/controls.tsx
+-rw-r--r-- 0/0            7483 1985-10-26 08:15 package/src/feedback.tsx
+-rw-r--r-- 0/0             852 1985-10-26 08:15 package/src/HappyTheme.tsx
+-rw-r--r-- 0/0            6712 1985-10-26 08:15 package/src/overlays.tsx
+-rw-r--r-- 0/0           12499 1985-10-26 08:15 package/src/shell.tsx
+-rw-r--r-- 0/0           61897 1985-10-26 08:15 package/src/ui.tsx
+-rw-r--r-- 0/0          164420 1985-10-26 08:15 package/src/assets/Phosphor-Duotone.woff2
+--- list.stderr (0 bytes) ---
+--- list.exit ---
+0
+$ tar tzf happy-technologies-design-system-0.7.1.tgz | awk '!/^package\// || /(^|\/)\.\.(\/|$)/ || /^\//' > unsafe.txt   # entries outside package/, containing a `..` segment, or absolute
+unsafe_exit=0 unsafe_count=0
+$ tar tvzf happy-technologies-design-system-0.7.1.tgz | awk '$1 !~ /^-/' > nonregular.txt   # symlinks/hardlinks/devices/dirs
+nonregular_count=0
+~~~~~~
+Path safety rests on the full listing above plus both checks: every entry is a regular file (`-rw-r--r--`), under `package/`, with no `..` segment and no absolute path.
+
+### 9.4 Extraction (sibling outside git) and registry metadata
+
+~~~~~~
+$ mkdir -p /home/coder/jobs/2dd434d5-db07-499e-b2b0-f3c6c47c89d2/happy-technologies-design-system && tar xzf happy-technologies-design-system-0.7.1.tgz -C /home/coder/jobs/2dd434d5-db07-499e-b2b0-f3c6c47c89d2/happy-technologies-design-system --strip-components=1 > extract.log 2>&1; echo "EXIT=$?" >> extract.log
+--- extract.log ---
+EXIT=0
+$ npm view @happy-technologies/design-system@0.7.1 name version gitHead dist.shasum dist.integrity --registry=https://registry.npmjs.org/ > view.log 2>&1; echo "EXIT=$?" >> view.log
+--- view.log ---
+name = '@happy-technologies/design-system'
+version = '0.7.1'
+gitHead = 'acb0c9481837131360e822f58ced7196a27f7ab2'
+dist.shasum = '60d6c25cd69620c1301622bb64a81d01ce34e78b'
+dist.integrity = 'sha512-sHn6pU9VHbV/Xc0HvhXb1p2WO1pZecPXvY/iUWHs0lhPE6k3oIjLEUwKKPpeiJWaKIn6uxSPYWG5oCqlBXZAew=='
+EXIT=0
+$ git -C /home/coder/jobs/2dd434d5-db07-499e-b2b0-f3c6c47c89d2/happy-technologies-design-system rev-parse
+fatal: not a git repository (or any parent up to mount point /home/coder)
+~~~~~~
+Registry gitHead `acb0c9481837131360e822f58ced7196a27f7ab2` and integrity match the requested artifact; the extracted sibling is not a git checkout and was not modified, built or tested.
+
+### 9.5 Root npm ci (cwd `/home/coder/jobs/2dd434d5-db07-499e-b2b0-f3c6c47c89d2/repo`)
+
+~~~~~~
+$ npm ci --ignore-scripts --no-audit --no-fund > ../scratch2/ci.stdout 2> ../scratch2/ci.stderr; echo $? > ../scratch2/ci.exit
+--- ci.stdout (28 bytes) ---
+
+added 1591 packages in 18s
+--- ci.stderr (4557 bytes) ---
+npm warn deprecated supertest@6.3.4: Please upgrade to supertest v7.1.3+, see release notes at https://github.com/forwardemail/supertest/releases/tag/v7.1.3 - maintenance is supported by Forward Email @ https://forwardemail.net
+npm warn deprecated superagent@8.1.2: Please upgrade to superagent v10.2.2+, see release notes at https://github.com/forwardemail/superagent/releases/tag/v10.2.2 - maintenance is supported by Forward Email @ https://forwardemail.net
+npm warn deprecated rimraf@3.0.2: Rimraf versions prior to v4 are no longer supported
+npm warn deprecated npmlog@5.0.1: This package is no longer supported.
+npm warn deprecated node-domexception@1.0.0: Use your platform's native DOMException instead
+npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory. Do not use it. Check out lru-cache if you want a good and tested way to coalesce async requests by a key value, which is much more comprehensive and powerful.
+npm warn deprecated glob@7.2.3: Glob versions prior to v9 are no longer supported
+npm warn deprecated ldapjs@3.0.7: This package has been decomissioned. See https://github.com/ldapjs/node-ldapjs/blob/8ffd0bc9c149088a10ec4c1ec6a18450f76ad05d/README.md
+npm warn deprecated gauge@3.0.2: This package is no longer supported.
+npm warn deprecated are-we-there-yet@2.0.0: This package is no longer supported.
+npm warn deprecated @ldapjs/attribute@1.0.0: This package has been decomissioned. See https://github.com/ldapjs/node-ldapjs/blob/8ffd0bc9c149088a10ec4c1ec6a18450f76ad05d/README.md
+npm warn deprecated @ldapjs/protocol@1.2.1: This package has been decomissioned. See https://github.com/ldapjs/node-ldapjs/blob/8ffd0bc9c149088a10ec4c1ec6a18450f76ad05d/README.md
+npm warn deprecated @ldapjs/asn1@2.0.0: This package has been decomissioned. See https://github.com/ldapjs/node-ldapjs/blob/8ffd0bc9c149088a10ec4c1ec6a18450f76ad05d/README.md
+npm warn deprecated @ldapjs/controls@2.1.0: This package has been decomissioned. See https://github.com/ldapjs/node-ldapjs/blob/8ffd0bc9c149088a10ec4c1ec6a18450f76ad05d/README.md
+npm warn deprecated @ldapjs/dn@1.1.0: This package has been decomissioned. See https://github.com/ldapjs/node-ldapjs/blob/8ffd0bc9c149088a10ec4c1ec6a18450f76ad05d/README.md
+npm warn deprecated @ldapjs/change@1.0.0: This package has been decomissioned. See https://github.com/ldapjs/node-ldapjs/blob/8ffd0bc9c149088a10ec4c1ec6a18450f76ad05d/README.md
+npm warn deprecated @ldapjs/filter@2.1.1: This package has been decomissioned. See https://github.com/ldapjs/node-ldapjs/blob/8ffd0bc9c149088a10ec4c1ec6a18450f76ad05d/README.md
+npm warn deprecated @ldapjs/messages@1.3.0: This package has been decomissioned. See https://github.com/ldapjs/node-ldapjs/blob/8ffd0bc9c149088a10ec4c1ec6a18450f76ad05d/README.md
+npm warn deprecated @humanwhocodes/object-schema@2.0.3: Use @eslint/object-schema instead
+npm warn deprecated @humanwhocodes/config-array@0.13.0: Use @eslint/config-array instead
+npm warn deprecated @babel/plugin-proposal-export-namespace-from@7.18.9: This proposal has been merged to the ECMAScript standard and thus this plugin is no longer maintained. Please use @babel/plugin-transform-export-namespace-from instead.
+npm warn deprecated glob@8.1.0: Glob versions prior to v9 are no longer supported
+npm warn deprecated @apollo/server-gateway-interface@1.1.1: @apollo/server-gateway-interface v1 is part of Apollo Server v4, which is deprecated and will transition to end-of-life on January 26, 2026. As long as you are already using a non-EOL version of Node.js, upgrading to v2 should take only a few minutes. See https://www.apollographql.com/docs/apollo-server/previous-versions for details.
+npm warn deprecated eslint@8.57.1: This version is no longer supported. Please see https://eslint.org/version-support for other options.
+npm warn deprecated @ldapjs/asn1@1.2.0: This package has been decomissioned. See https://github.com/ldapjs/node-ldapjs/blob/8ffd0bc9c149088a10ec4c1ec6a18450f76ad05d/README.md
+npm warn deprecated glob@10.5.0: Old versions of glob are not supported, and contain widely publicized security vulnerabilities, which have been fixed in the current version. Please update. Support for old versions may be purchased (at exorbitant rates) by contacting i@izs.me
+npm warn deprecated @apollo/server@4.13.0: Apollo Server v4 is end-of-life since January 26, 2026. As long as you are already using a non-EOL version of Node.js, upgrading to v5 should take only a few minutes. See https://www.apollographql.com/docs/apollo-server/previous-versions for details.
+--- ci.exit ---
+0
+$ git status --short > ../scratch2/status.after 2>&1; echo "EXIT=$?" >> ../scratch2/status.after
+--- status.after ---
+EXIT=0
+~~~~~~
+Empty `git status --short` (before this doc edit): no tracked manifest/lock change from the install. No source, test, manifest or lock file changed in this correction; only this document.

@@ -125,7 +125,8 @@ const mapUIToAPI = (
     tbm_tower: 'application',
     business_criticality: uiService.criticality,
     operational_status: uiService.status || 'active',
-    owned_by: uiService.owner,
+    // Joi owned_by is optional but rejects ''; omit a blank owner.
+    owned_by: uiService.owner || undefined,
     metadata: {
       revenue_impact: uiService.revenueImpact || 0,
       user_count: uiService.userCount || 0,

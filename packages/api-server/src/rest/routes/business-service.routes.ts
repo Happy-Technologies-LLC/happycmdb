@@ -160,7 +160,9 @@ businessServiceRoutes.delete(
 
 /**
  * @route   GET /api/v1/business-services/:service_id/cis
- * @desc    Get all CIs mapped to a business service
+ * @desc    Get all CIs mapped to a business service. 200 {success, data: []}
+ *          when the service exists with no mappings; 404
+ *          {success: false, error: 'Business service not found'} when it does not.
  * @access  Private
  */
 businessServiceRoutes.get(
@@ -193,7 +195,9 @@ businessServiceRoutes.delete(
 
 /**
  * @route   GET /api/v1/business-services/:service_id/dependencies
- * @desc    Get service dependencies
+ * @desc    Get service dependencies. 200 {success, data: []} when the service
+ *          exists with no dependencies; 404
+ *          {success: false, error: 'Business service not found'} when it does not.
  * @access  Private
  */
 businessServiceRoutes.get(

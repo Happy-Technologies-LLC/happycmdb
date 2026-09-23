@@ -368,21 +368,33 @@ export class BusinessServiceController {
     try {
       const { service_id } = req.params;
 
+      // One statement rooted at the parent: zero rows => unknown service (404);
+      // a single null-extended row (ci_id is NOT NULL in the schema) => known
+      // service with no mappings; otherwise the rows are the mappings.
       const result = await this.pgClient.query(
         `SELECT
           m.ci_id,
           m.mapping_type,
           m.confidence_score,
           m.created_at
-        FROM ci_business_service_mappings m
-        WHERE m.service_id = $1
+        FROM dim_business_services s
+        LEFT JOIN ci_business_service_mappings m ON m.service_id = s.service_id
+        WHERE s.service_id = $1
         ORDER BY m.created_at DESC`,
         [service_id]
       );
 
+      if (result.rows.length === 0) {
+        res.status(404).json({
+          success: false,
+          error: 'Business service not found'
+        });
+        return;
+      }
+
       res.json({
         success: true,
-        data: result.rows
+        data: result.rows[0].ci_id === null ? [] : result.rows
       });
     } catch (error: any) {
       logger.error('Error getting mapped CIs', { error, service_id: req.params.service_id });
@@ -489,6 +501,9 @@ export class BusinessServiceController {
     try {
       const { service_id } = req.params;
 
+      // One statement rooted at the parent: zero rows => unknown service (404);
+      // a single null-extended row (depends_on_service_id is NOT NULL in the
+      // schema) => known service with no dependencies.
       const result = await this.pgClient.query(
         `SELECT
           d.depends_on_service_id,
@@ -497,16 +512,27 @@ export class BusinessServiceController {
           s.business_criticality,
           d.dependency_type,
           d.created_at
-        FROM business_service_dependencies d
-        JOIN dim_business_services s ON d.depends_on_service_id = s.service_id
-        WHERE d.service_id = $1
+        FROM dim_business_services p
+        LEFT JOIN (
+          business_service_dependencies d
+          JOIN dim_business_services s ON d.depends_on_service_id = s.service_id
+        ) ON d.service_id = p.service_id
+        WHERE p.service_id = $1
         ORDER BY d.created_at DESC`,
         [service_id]
       );
 
+      if (result.rows.length === 0) {
+        res.status(404).json({
+          success: false,
+          error: 'Business service not found'
+        });
+        return;
+      }
+
       res.json({
         success: true,
-        data: result.rows
+        data: result.rows[0].depends_on_service_id === null ? [] : result.rows
       });
     } catch (error: any) {
       logger.error('Error getting service dependencies', { error, service_id: req.params.service_id });

@@ -7,17 +7,24 @@
  * the real AuthMiddleware/AuthService (JWT verification) mounted at the
  * production path.
  *
- * Substitutions (no live Neo4j/PostgreSQL in this suite):
- * - Neo4jAuthRepository -> in-memory user store (one enabled viewer user).
- * - getPostgresClient -> in-memory tables evaluating the controller's SQL
- *   shapes with real LEFT/INNER JOIN semantics and $1 binding. Unknown SQL
- *   throws, so an unrecognised query cannot silently produce rows.
+ * SQL is executed by PGlite (PostgreSQL compiled to WASM) hosted in a forked
+ * child process (fixtures/pglite-host.cjs). Its
+ * schema is the three CREATE TABLE statements read verbatim from
+ * packages/database/src/postgres/migrations/001_complete_schema.sql
+ * (dim_business_services, business_service_dependencies,
+ * ci_business_service_mappings); no other tables, indexes or extensions.
+ *
+ * Substitutions: Neo4jAuthRepository -> in-memory user store (one enabled
+ * viewer user); getPostgresClient -> IPC client to that PGlite process.
  */
 
+import { fork } from 'child_process';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import express from 'express';
 import request from 'supertest';
 
-// Placeholder config so loadConfig() validates; no client connects (DB access is substituted).
+// Placeholder config so loadConfig() validates; no Neo4j/Redis/PostgreSQL server is contacted.
 Object.assign(process.env, {
   JWT_SECRET: 'test-only-jwt-secret-at-least-32-characters-long',
   NEO4J_URI: 'bolt://127.0.0.1:1', NEO4J_USERNAME: 'unused', NEO4J_PASSWORD: 'unused',
@@ -25,71 +32,30 @@ Object.assign(process.env, {
   REDIS_HOST: '127.0.0.1', KAFKA_CLIENT_ID: 'unused', KAFKA_GROUP_ID: 'unused',
 });
 
-type Row = Record<string, unknown>;
-const tables = {
-  dim_business_services: [] as Row[],
-  ci_business_service_mappings: [] as Row[],
-  business_service_dependencies: [] as Row[],
-};
-const queryLog: string[] = [];
-const paramLog: unknown[][] = [];
-let failNextQuery = false;
-
-const norm = (sql: string) => sql.replace(/\s+/g, ' ').trim();
-const byCreatedDesc = (a: Row, b: Row) =>
-  (b.created_at as Date).getTime() - (a.created_at as Date).getTime();
-
-function evaluate(sql: string, params: unknown[]): Row[] {
-  const s = norm(sql);
-  const id = params[0];
-  const parent = tables.dim_business_services.filter(p => p.service_id === id);
-  const mappings = () =>
-    tables.ci_business_service_mappings
-      .filter(m => m.service_id === id)
-      .sort(byCreatedDesc)
-      .map(m => ({ ci_id: m.ci_id, mapping_type: m.mapping_type, confidence_score: m.confidence_score, created_at: m.created_at }));
-  const deps = () =>
-    tables.business_service_dependencies
-      .filter(d => d.service_id === id)
-      .flatMap(d => {
-        const t = tables.dim_business_services.find(x => x.service_id === d.depends_on_service_id);
-        return t ? [{ d, t }] : [];
-      })
-      .sort((a, b) => byCreatedDesc(a.d, b.d))
-      .map(({ d, t }) => ({
-        depends_on_service_id: d.depends_on_service_id,
-        depends_on_name: t.name,
-        service_classification: t.service_classification,
-        business_criticality: t.business_criticality,
-        dependency_type: d.dependency_type,
-        created_at: d.created_at,
-      }));
-  const leftJoin = (rows: Row[], nullRow: Row) =>
-    parent.length === 0 ? [] : rows.length ? rows : [nullRow];
-
-  if (s.includes('FROM ci_business_service_mappings m WHERE m.service_id = $1')) return mappings();
-  if (s.includes('FROM dim_business_services s LEFT JOIN ci_business_service_mappings m ON m.service_id = s.service_id WHERE s.service_id = $1'))
-    return leftJoin(mappings(), { ci_id: null, mapping_type: null, confidence_score: null, created_at: null });
-  if (s.includes('FROM business_service_dependencies d JOIN dim_business_services s ON d.depends_on_service_id = s.service_id WHERE d.service_id = $1'))
-    return deps();
-  if (s.includes('FROM dim_business_services p LEFT JOIN ( business_service_dependencies d JOIN dim_business_services s ON d.depends_on_service_id = s.service_id ) ON d.service_id = p.service_id WHERE p.service_id = $1'))
-    return leftJoin(deps(), {
-      depends_on_service_id: null, depends_on_name: null, service_classification: null,
-      business_criticality: null, dependency_type: null, created_at: null,
-    });
-  throw new Error(`unsupported SQL in substrate: ${s}`);
+const host = fork(join(__dirname, 'fixtures/pglite-host.cjs'), [], { serialization: 'advanced' });
+let nextId = 0;
+const pending = new Map<number, { resolve: (rows: unknown[]) => void; reject: (e: Error) => void }>();
+host.on('message', ({ id, rows, error }: { id: number; rows: unknown[]; error?: string }) => {
+  const p = pending.get(id)!;
+  pending.delete(id);
+  if (error === undefined) p.resolve(rows);
+  else p.reject(new Error(error));
+});
+function send(op: 'exec' | 'query', sql: string, params: unknown[] = []): Promise<unknown[]> {
+  const id = nextId++;
+  return new Promise((resolve, reject) => {
+    pending.set(id, { resolve, reject });
+    host.send({ id, op, sql, params });
+  });
 }
+const db = { exec: (sql: string) => send('exec', sql) };
 
+let queryCount = 0;
 const pgClient = {
   // Plain function (not jest.fn): the unit config resets mock implementations.
   query: async (sql: string, params: unknown[] = []) => {
-    queryLog.push(norm(sql));
-    paramLog.push(params);
-    if (failNextQuery) {
-      failNextQuery = false;
-      throw new Error('connection terminated unexpectedly');
-    }
-    return { rows: evaluate(sql, params) };
+    queryCount++;
+    return { rows: await send('query', sql, params) };
   },
 };
 
@@ -119,8 +85,58 @@ import { JWTService } from '../../../auth/jwt.service';
 import { getAuthMiddleware } from '../../../auth/auth-bootstrap';
 import { businessServiceRoutes } from '../business-service.routes';
 
+const MIGRATION = join(__dirname, '../../../../../database/src/postgres/migrations/001_complete_schema.sql');
+const DDL_TABLES = ['dim_business_services', 'business_service_dependencies', 'ci_business_service_mappings'];
 const NOT_FOUND = { success: false, error: 'Business service not found' };
-const t = (iso: string) => new Date(iso);
+
+function productionDdl(): string {
+  const sql = readFileSync(MIGRATION, 'utf8');
+  return DDL_TABLES.map(table => {
+    const match = sql.match(new RegExp(`CREATE TABLE IF NOT EXISTS ${table} \\([\\s\\S]*?\\n\\);`));
+    if (!match) throw new Error(`DDL for ${table} not found in ${MIGRATION}`);
+    return match[0];
+  }).join('\n');
+}
+
+const SEED = `
+INSERT INTO dim_business_services (service_id, name, service_classification, tbm_tower, business_criticality, operational_status) VALUES
+  ('bs-empty', 'Empty', 'compute', 'compute', 'low', 'active'),
+  ('bs-app', 'App', 'application', 'application', 'high', 'active'),
+  ('bs-db', 'Database Tier', 'data', 'data', 'critical', 'active'),
+  ('bs-net', 'Network', 'network', 'network', 'medium', 'active'),
+  ('bs-other', 'Other', 'security', 'security', 'low', 'active');
+INSERT INTO ci_business_service_mappings (ci_id, service_id, mapping_type, confidence_score, created_at) VALUES
+  ('ci-old', 'bs-app', 'hosts', 0.5, '2026-01-01 00:00:00'),
+  ('ci-new', 'bs-app', 'supports', 1, '2026-02-01 00:00:00'),
+  ('ci-foreign', 'bs-other', 'hosts', 1, '2026-03-01 00:00:00');
+INSERT INTO business_service_dependencies (service_id, depends_on_service_id, dependency_type, created_at) VALUES
+  ('bs-app', 'bs-net', 'infrastructure', '2026-01-01 00:00:00'),
+  ('bs-app', 'bs-db', 'platform', '2026-02-01 00:00:00'),
+  ('bs-other', 'bs-db', 'application', '2026-03-01 00:00:00');
+`;
+
+const CHILD_TABLE: Record<string, string> = {
+  cis: 'ci_business_service_mappings',
+  dependencies: 'business_service_dependencies',
+};
+
+// PGlite parses TIMESTAMP (without time zone) as UTC; the expectations below
+// are the JSON serialisation of those Date values.
+const APP_CIS = [
+  { ci_id: 'ci-new', mapping_type: 'supports', confidence_score: 1, created_at: '2026-02-01T00:00:00.000Z' },
+  { ci_id: 'ci-old', mapping_type: 'hosts', confidence_score: 0.5, created_at: '2026-01-01T00:00:00.000Z' },
+];
+const APP_DEPENDENCIES = [
+  {
+    depends_on_service_id: 'bs-db', depends_on_name: 'Database Tier', service_classification: 'data',
+    business_criticality: 'critical', dependency_type: 'platform', created_at: '2026-02-01T00:00:00.000Z',
+  },
+  {
+    depends_on_service_id: 'bs-net', depends_on_name: 'Network', service_classification: 'network',
+    business_criticality: 'medium', dependency_type: 'infrastructure', created_at: '2026-01-01T00:00:00.000Z',
+  },
+];
+const APP_CHILDREN: Record<string, unknown[]> = { cis: APP_CIS, dependencies: APP_DEPENDENCIES };
 
 function buildApp() {
   // Mirrors server.ts: authenticate once on /api/v1, then the router.
@@ -131,32 +147,22 @@ function buildApp() {
   return app;
 }
 
-describe('business-service child reads: missing-parent semantics', () => {
+describe('business-service child reads: missing-parent semantics (PGlite)', () => {
   const app = buildApp();
   const token = new JWTService(loadConfig().auth.jwt).generateAccessToken(VIEWER_ID, 'viewer', 'viewer');
   const auth = { Authorization: `Bearer ${token}` };
 
-  beforeEach(() => {
-    queryLog.length = 0;
-    paramLog.length = 0;
-    failNextQuery = false;
-    tables.dim_business_services = [
-      { service_id: 'bs-empty', name: 'Empty', service_classification: 'compute', business_criticality: 'low' },
-      { service_id: 'bs-app', name: 'App', service_classification: 'application', business_criticality: 'high' },
-      { service_id: 'bs-db', name: 'Database Tier', service_classification: 'data', business_criticality: 'critical' },
-      { service_id: 'bs-net', name: 'Network', service_classification: 'network', business_criticality: 'medium' },
-      { service_id: 'bs-other', name: 'Other', service_classification: 'security', business_criticality: 'low' },
-    ];
-    tables.ci_business_service_mappings = [
-      { ci_id: 'ci-old', service_id: 'bs-app', mapping_type: 'hosts', confidence_score: 0.5, created_at: t('2026-01-01T00:00:00Z') },
-      { ci_id: 'ci-new', service_id: 'bs-app', mapping_type: 'supports', confidence_score: 1, created_at: t('2026-02-01T00:00:00Z') },
-      { ci_id: 'ci-foreign', service_id: 'bs-other', mapping_type: 'hosts', confidence_score: 1, created_at: t('2026-03-01T00:00:00Z') },
-    ];
-    tables.business_service_dependencies = [
-      { service_id: 'bs-app', depends_on_service_id: 'bs-net', dependency_type: 'infrastructure', created_at: t('2026-01-01T00:00:00Z') },
-      { service_id: 'bs-app', depends_on_service_id: 'bs-db', dependency_type: 'platform', created_at: t('2026-02-01T00:00:00Z') },
-      { service_id: 'bs-other', depends_on_service_id: 'bs-db', dependency_type: 'application', created_at: t('2026-03-01T00:00:00Z') },
-    ];
+  beforeAll(async () => {
+    await db.exec(productionDdl());
+  });
+
+  beforeEach(async () => {
+    await db.exec(`TRUNCATE ${DDL_TABLES.join(', ')} RESTART IDENTITY CASCADE;${SEED}`);
+    queryCount = 0;
+  });
+
+  afterAll(() => {
+    host.kill();
   });
 
   describe.each(['cis', 'dependencies'])('GET /api/v1/business-services/:service_id/%s', child => {
@@ -172,71 +178,40 @@ describe('business-service child reads: missing-parent semantics', () => {
       expect(res.body).toEqual({ success: true, data: [] });
     });
 
+    it('returns only the service\'s own children with the pre-change projection, newest first', async () => {
+      const res = await request(app).get(`/api/v1/business-services/bs-app/${child}`).set(auth);
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ success: true, data: APP_CHILDREN[child] });
+    });
+
     it('rejects anonymous requests with 401 before any data access', async () => {
       const res = await request(app).get(`/api/v1/business-services/bs-app/${child}`);
       expect(res.status).toBe(401);
-      expect(queryLog).toEqual([]);
+      expect(queryCount).toBe(0);
     });
 
-    it('surfaces a database failure as 500, not an empty 200', async () => {
-      failNextQuery = true;
+    it('surfaces an engine failure as 500, not an empty 200', async () => {
+      await db.exec(`ALTER TABLE ${CHILD_TABLE[child]} RENAME TO ${CHILD_TABLE[child]}_offline`);
+      try {
+        const res = await request(app).get(`/api/v1/business-services/bs-app/${child}`).set(auth);
+        expect(res.status).toBe(500);
+        expect(res.body.success).toBe(false);
+        expect(res.body.message).toMatch(/does not exist/);
+      } finally {
+        await db.exec(`ALTER TABLE ${CHILD_TABLE[child]}_offline RENAME TO ${CHILD_TABLE[child]}`);
+      }
+    });
+
+    it('treats injection-shaped ids as unknown services and leaves data intact', async () => {
+      for (const hostile of ["bs-app' OR '1'='1", `bs-app'; DROP TABLE ${CHILD_TABLE[child]}; --`]) {
+        const res = await request(app)
+          .get(`/api/v1/business-services/${encodeURIComponent(hostile)}/${child}`)
+          .set(auth);
+        expect(res.status).toBe(404);
+        expect(res.body).toEqual(NOT_FOUND);
+      }
       const res = await request(app).get(`/api/v1/business-services/bs-app/${child}`).set(auth);
-      expect(res.status).toBe(500);
-      expect(res.body.success).toBe(false);
-      expect(res.body.message).toBe('connection terminated unexpectedly');
+      expect(res.body).toEqual({ success: true, data: APP_CHILDREN[child] });
     });
-
-    it('binds an injection-shaped service_id as a parameter and treats it as unknown', async () => {
-      const hostile = "bs-app' OR '1'='1";
-      const res = await request(app)
-        .get(`/api/v1/business-services/${encodeURIComponent(hostile)}/${child}`)
-        .set(auth);
-      expect(res.status).toBe(404);
-      expect(res.body).toEqual(NOT_FOUND);
-      expect(paramLog).toEqual([[hostile]]);
-      expect(queryLog).toHaveLength(1);
-      expect(queryLog[0]).not.toContain(hostile);
-    });
-  });
-
-  it('returns only the service\'s own mappings, newest first, with the pre-change projection', async () => {
-    const res = await request(app).get('/api/v1/business-services/bs-app/cis').set(auth);
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({
-      success: true,
-      data: [
-        { ci_id: 'ci-new', mapping_type: 'supports', confidence_score: 1, created_at: '2026-02-01T00:00:00.000Z' },
-        { ci_id: 'ci-old', mapping_type: 'hosts', confidence_score: 0.5, created_at: '2026-01-01T00:00:00.000Z' },
-      ],
-    });
-    expect(queryLog).toHaveLength(1);
-  });
-
-  it('returns only the service\'s own dependencies with target metadata, newest first', async () => {
-    const res = await request(app).get('/api/v1/business-services/bs-app/dependencies').set(auth);
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({
-      success: true,
-      data: [
-        {
-          depends_on_service_id: 'bs-db', depends_on_name: 'Database Tier', service_classification: 'data',
-          business_criticality: 'critical', dependency_type: 'platform', created_at: '2026-02-01T00:00:00.000Z',
-        },
-        {
-          depends_on_service_id: 'bs-net', depends_on_name: 'Network', service_classification: 'network',
-          business_criticality: 'medium', dependency_type: 'infrastructure', created_at: '2026-01-01T00:00:00.000Z',
-        },
-      ],
-    });
-    expect(queryLog).toHaveLength(1);
-  });
-
-  it('does not leak the null-extended discriminator row as a child entry', async () => {
-    const [cis, deps] = await Promise.all([
-      request(app).get('/api/v1/business-services/bs-net/cis').set(auth),
-      request(app).get('/api/v1/business-services/bs-net/dependencies').set(auth),
-    ]);
-    expect(cis.body).toEqual({ success: true, data: [] });
-    expect(deps.body).toEqual({ success: true, data: [] });
   });
 });

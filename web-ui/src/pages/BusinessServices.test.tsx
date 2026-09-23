@@ -2,8 +2,23 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+// jsdom implements neither the Pointer Events capture API nor scrollIntoView,
+// both of which Radix UI's Select uses internally.
+if (!Element.prototype.hasPointerCapture) {
+  Element.prototype.hasPointerCapture = () => false;
+}
+if (!Element.prototype.setPointerCapture) {
+  Element.prototype.setPointerCapture = () => {};
+}
+if (!Element.prototype.releasePointerCapture) {
+  Element.prototype.releasePointerCapture = () => {};
+}
+if (!Element.prototype.scrollIntoView) {
+  Element.prototype.scrollIntoView = () => {};
+}
 import { screen, waitFor, within } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
+import userEvent, { type UserEvent } from '@testing-library/user-event';
+import { Toaster } from 'sonner';
 import { render } from '@/tests/utils/test-utils';
 
 const { apiClient } = vi.hoisted(() => ({
@@ -19,17 +34,16 @@ vi.mock('../lib/api-client', () => ({ apiClient }));
 
 import BusinessServices from './BusinessServices';
 
-// Backend rows always use the real REST envelope: {success, data, pagination}
-// for list reads and {success, data} for single-record writes. These tests
-// guard against api-client's Axios-only unwrap leaking the raw envelope into
-// mapAPIToUI, which previously produced undefined-field crashes.
+// Backend rows use the real REST envelope ({success, data, pagination} for
+// lists, {success, data} for writes) and the canonical business_criticality
+// enum accepted by business-service.routes.ts: critical|high|medium|low.
 const apiService = {
   service_id: 'bs-portal',
   name: 'Customer Portal',
   description: 'Public customer portal',
   service_classification: 'application',
   tbm_tower: 'application',
-  business_criticality: 'tier_1',
+  business_criticality: 'critical',
   operational_status: 'active',
   owned_by: 'Platform Team',
   metadata: {
@@ -40,39 +54,75 @@ const apiService = {
   },
 };
 
+const row = (overrides: Record<string, unknown>) => ({ ...apiService, ...overrides });
+
+const listOf = (data: unknown[]) => ({
+  success: true,
+  data,
+  pagination: { page: 1, limit: 50, total: data.length, totalPages: 1 },
+});
+
+const rowFor = async (name: string) => {
+  const tr = (await screen.findByText(name)).closest('tr');
+  expect(tr).not.toBeNull();
+  return tr as HTMLElement;
+};
+
+const choose = async (user: UserEvent, trigger: HTMLElement, label: string) => {
+  await user.click(trigger);
+  await user.click(await screen.findByRole('option', { name: label }));
+};
+
 describe('BusinessServices page', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it('unwraps the {success,data,pagination} list envelope when loading services', async () => {
-    apiClient.get.mockResolvedValue({
-      success: true,
-      data: [apiService],
-      pagination: { page: 1, limit: 50, total: 1, totalPages: 1 },
-    });
+  it('renders each canonical criticality distinctly and non-canonical values as Unknown', async () => {
+    apiClient.get.mockResolvedValue(
+      listOf([
+        row({ service_id: 'bs-c', name: 'Svc Critical', business_criticality: 'critical' }),
+        row({ service_id: 'bs-h', name: 'Svc High', business_criticality: 'high' }),
+        row({ service_id: 'bs-m', name: 'Svc Medium', business_criticality: 'medium' }),
+        row({ service_id: 'bs-l', name: 'Svc Low', business_criticality: 'low' }),
+        row({ service_id: 'bs-x', name: 'Svc Legacy', business_criticality: 'tier_1' }),
+      ])
+    );
 
     render(<BusinessServices />);
-    const row = (await screen.findByText('Customer Portal')).closest('tr');
-    expect(row).not.toBeNull();
-    expect(within(row as HTMLElement).getByText('Tier 1')).toBeInTheDocument();
-    expect(within(row as HTMLElement).getByText('$500,000')).toBeInTheDocument();
-    expect(within(row as HTMLElement).getByText('12,000')).toBeInTheDocument();
-    expect(apiClient.get).toHaveBeenCalledWith('/business-services');
-    expect(screen.queryByText('No services found')).not.toBeInTheDocument();
+
+    expect(within(await rowFor('Svc Critical')).getByText('Critical')).toBeInTheDocument();
+    expect(within(await rowFor('Svc High')).getByText('High')).toBeInTheDocument();
+    expect(within(await rowFor('Svc Medium')).getByText('Medium')).toBeInTheDocument();
+    expect(within(await rowFor('Svc Low')).getByText('Low')).toBeInTheDocument();
+    expect(within(await rowFor('Svc Legacy')).getByText('Unknown')).toBeInTheDocument();
+    expect(within(await rowFor('Svc Critical')).getByText('$500,000')).toBeInTheDocument();
   });
 
-  it('unwraps the {success,data} envelope when creating a service', async () => {
+  it('filters rows by canonical criticality', async () => {
     const user = userEvent.setup();
-    apiClient.get.mockResolvedValue({ success: true, data: [], pagination: { page: 1, limit: 50, total: 0, totalPages: 0 } });
+    apiClient.get.mockResolvedValue(
+      listOf([
+        row({ service_id: 'bs-c', name: 'Svc Critical', business_criticality: 'critical' }),
+        row({ service_id: 'bs-l', name: 'Svc Low', business_criticality: 'low' }),
+      ])
+    );
+
+    render(<BusinessServices />);
+    await rowFor('Svc Low');
+
+    await choose(user, screen.getByRole('combobox', { name: /filter by criticality/i }), 'Critical');
+
+    expect(screen.getByText('Svc Critical')).toBeInTheDocument();
+    expect(screen.queryByText('Svc Low')).not.toBeInTheDocument();
+  });
+
+  it('requires an explicit criticality on create and sends the canonical value', async () => {
+    const user = userEvent.setup();
+    apiClient.get.mockResolvedValue(listOf([]));
     apiClient.post.mockResolvedValue({
       success: true,
-      data: {
-        ...apiService,
-        service_id: 'bs-new-service',
-        name: 'New Service',
-        business_criticality: 'tier_2',
-      },
+      data: row({ service_id: 'bs-new-service', name: 'New Service', business_criticality: 'high' }),
     });
 
     render(<BusinessServices />);
@@ -81,57 +131,117 @@ describe('BusinessServices page', () => {
     await user.click(screen.getByRole('button', { name: /create service/i }));
     const dialog = await screen.findByRole('dialog');
     await user.type(within(dialog).getByLabelText(/service name/i), 'New Service');
-    await user.click(within(dialog).getByRole('button', { name: /create service/i }));
 
-    await waitFor(() => expect(apiClient.post).toHaveBeenCalledWith('/business-services', expect.any(Object)));
+    const submit = within(dialog).getByRole('button', { name: /create service/i });
+    expect(submit).toBeDisabled();
 
-    // Rendered row must reflect the server's response envelope (tier 2 from
-    // the mocked response), not just the locally-typed form data.
-    expect(await screen.findByText('New Service')).toBeInTheDocument();
-    expect(screen.getByText('Tier 2')).toBeInTheDocument();
-    expect(screen.queryByText('No services found')).not.toBeInTheDocument();
+    await choose(user, within(dialog).getByRole('combobox', { name: /^criticality$/i }), 'High');
+    await user.click(submit);
+
+    await waitFor(() =>
+      expect(apiClient.post).toHaveBeenCalledWith(
+        '/business-services',
+        expect.objectContaining({ name: 'New Service', business_criticality: 'high' })
+      )
+    );
+    const created = await rowFor('New Service');
+    expect(within(created).getByText('High')).toBeInTheDocument();
   });
 
-  it('unwraps the {success,data} envelope when editing a service', async () => {
+  it('starts editing at the stored criticality and sends the changed canonical value', async () => {
     const user = userEvent.setup();
-    apiClient.get.mockResolvedValue({
-      success: true,
-      data: [apiService],
-      pagination: { page: 1, limit: 50, total: 1, totalPages: 1 },
-    });
+    apiClient.get.mockResolvedValue(listOf([apiService]));
     apiClient.patch.mockResolvedValue({
       success: true,
-      data: {
-        ...apiService,
-        name: 'Customer Portal V2',
-        business_criticality: 'tier_3',
-        operational_status: 'inactive',
-      },
+      data: row({ name: 'Customer Portal V2', business_criticality: 'low', operational_status: 'inactive' }),
     });
 
     render(<BusinessServices />);
-    const row = (await screen.findByText('Customer Portal')).closest('tr');
-    expect(row).not.toBeNull();
+    const [editButton] = within(await rowFor('Customer Portal')).getAllByRole('button');
+    await user.click(editButton);
 
-    const [editButton] = within(row as HTMLElement).getAllByRole('button');
+    const dialog = await screen.findByRole('dialog');
+    const trigger = within(dialog).getByRole('combobox', { name: /^criticality$/i });
+    expect(trigger).toHaveTextContent('Critical');
+
+    const nameInput = within(dialog).getByLabelText(/service name/i);
+    await user.clear(nameInput);
+    await user.type(nameInput, 'Customer Portal V2');
+    await choose(user, trigger, 'Low');
+    await user.click(within(dialog).getByRole('button', { name: /update service/i }));
+
+    await waitFor(() =>
+      expect(apiClient.patch).toHaveBeenCalledWith(
+        '/business-services/bs-portal',
+        expect.objectContaining({ business_criticality: 'low' })
+      )
+    );
+    const updated = await rowFor('Customer Portal V2');
+    expect(within(updated).getByText('Low')).toBeInTheDocument();
+    expect(within(updated).getByText('inactive')).toBeInTheDocument();
+  });
+
+  it('requires an explicit selection before saving a row with unknown criticality', async () => {
+    const user = userEvent.setup();
+    apiClient.get.mockResolvedValue(listOf([row({ business_criticality: 'tier_3' })]));
+
+    render(<BusinessServices />);
+    const [editButton] = within(await rowFor('Customer Portal')).getAllByRole('button');
+    await user.click(editButton);
+
+    const dialog = await screen.findByRole('dialog');
+    const submit = within(dialog).getByRole('button', { name: /update service/i });
+    expect(submit).toBeDisabled();
+
+    await choose(user, within(dialog).getByRole('combobox', { name: /^criticality$/i }), 'Medium');
+    expect(submit).toBeEnabled();
+  });
+
+  it('keeps the form and current row when the server rejects the write', async () => {
+    const user = userEvent.setup();
+    apiClient.get.mockResolvedValue(listOf([apiService]));
+    // Exact 400 body emitted by validateRequest (validation.middleware.ts) when
+    // updateBusinessServiceSchema rejects name.min(3). The page reads only
+    // `error`, so it shows its generic fallback for this underscored envelope.
+    apiClient.patch.mockRejectedValue({
+      response: {
+        status: 400,
+        data: {
+          _success: false,
+          _error: 'Validation Error',
+          _message: '"name" length must be at least 3 characters long',
+          _details: [
+            {
+              _field: 'name',
+              _message: '"name" length must be at least 3 characters long',
+              _type: 'string.min',
+            },
+          ],
+        },
+      },
+    });
+
+    // test-utils provides ToastProvider but not the Toaster that App.tsx mounts,
+    // so mount it here to observe the error toast the user actually sees.
+    render(
+      <>
+        <BusinessServices />
+        <Toaster />
+      </>
+    );
+    const [editButton] = within(await rowFor('Customer Portal')).getAllByRole('button');
     await user.click(editButton);
 
     const dialog = await screen.findByRole('dialog');
     const nameInput = within(dialog).getByLabelText(/service name/i);
-    expect(nameInput).toHaveValue('Customer Portal');
-
     await user.clear(nameInput);
-    await user.type(nameInput, 'Customer Portal V2');
+    await user.type(nameInput, 'No');
     await user.click(within(dialog).getByRole('button', { name: /update service/i }));
 
-    await waitFor(() =>
-      expect(apiClient.patch).toHaveBeenCalledWith('/business-services/bs-portal', expect.any(Object))
-    );
-
-    // The updated row must reflect the server response (tier 3, inactive),
-    // proving mapAPIToUI ran against updatedService.data, not the raw envelope.
-    expect(await screen.findByText('Customer Portal V2')).toBeInTheDocument();
-    expect(screen.getByText('Tier 3')).toBeInTheDocument();
-    expect(screen.getByText('inactive')).toBeInTheDocument();
+    expect(await screen.findByText('Failed to save business service')).toBeInTheDocument();
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(within(screen.getByRole('dialog')).getByLabelText(/service name/i)).toHaveValue('No');
+    expect(screen.queryByText('Business service updated successfully')).not.toBeInTheDocument();
+    expect(within(await rowFor('Customer Portal')).getByText('Critical')).toBeInTheDocument();
   });
 });

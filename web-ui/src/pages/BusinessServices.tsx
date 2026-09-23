@@ -28,12 +28,25 @@ import {
 import { apiClient } from '../lib/api-client';
 import { useToast } from '../contexts/ToastContext';
 
+/** Canonical business criticality accepted by /api/v1/business-services. */
+type Criticality = 'critical' | 'high' | 'medium' | 'low';
+
+const CRITICALITY_OPTIONS: { value: Criticality; label: string }[] = [
+  { value: 'critical', label: 'Critical' },
+  { value: 'high', label: 'High' },
+  { value: 'medium', label: 'Medium' },
+  { value: 'low', label: 'Low' },
+];
+
+const isCriticality = (value: unknown): value is Criticality =>
+  CRITICALITY_OPTIONS.some((option) => option.value === value);
+
 interface BusinessService {
   id: string;
   name: string;
   description?: string;
-  tier: number;
-  criticality: 'TIER_0' | 'TIER_1' | 'TIER_2' | 'TIER_3';
+  /** Canonical API value; null when the stored value is missing or not canonical. */
+  criticality: Criticality | null;
   revenueImpact: number;
   userCount: number;
   owner?: string;
@@ -85,15 +98,11 @@ interface PaginatedResponse<T> {
 
 // Mapper functions to convert between UI and API formats
 const mapAPIToUI = (apiService: BusinessServiceAPI): BusinessService => {
-  const tierMatch = apiService.business_criticality.match(/tier_(\d)/);
-  const tier = tierMatch ? parseInt(tierMatch[1]) : 3;
-
   return {
     id: apiService.service_id,
     name: apiService.name,
     description: apiService.description,
-    tier,
-    criticality: `TIER_${tier}` as BusinessService['criticality'],
+    criticality: isCriticality(apiService.business_criticality) ? apiService.business_criticality : null,
     revenueImpact: apiService.metadata?.revenue_impact || 0,
     userCount: apiService.metadata?.user_count || 0,
     owner: apiService.owned_by,
@@ -103,8 +112,9 @@ const mapAPIToUI = (apiService: BusinessServiceAPI): BusinessService => {
   };
 };
 
-const mapUIToAPI = (uiService: Partial<BusinessService> & { name: string }): Partial<BusinessServiceAPI> => {
-  const tier = uiService.tier !== undefined ? uiService.tier : 3;
+const mapUIToAPI = (
+  uiService: Partial<BusinessService> & { name: string; criticality: Criticality }
+): Partial<BusinessServiceAPI> => {
   const serviceId = uiService.id || `bs-${uiService.name.toLowerCase().replace(/\s+/g, '-')}-${Date.now()}`;
 
   return {
@@ -113,9 +123,10 @@ const mapUIToAPI = (uiService: Partial<BusinessService> & { name: string }): Par
     description: uiService.description,
     service_classification: 'application',
     tbm_tower: 'application',
-    business_criticality: `tier_${tier}`,
+    business_criticality: uiService.criticality,
     operational_status: uiService.status || 'active',
-    owned_by: uiService.owner,
+    // Joi owned_by is optional but rejects ''; omit a blank owner.
+    owned_by: uiService.owner || undefined,
     metadata: {
       revenue_impact: uiService.revenueImpact || 0,
       user_count: uiService.userCount || 0,
@@ -125,12 +136,14 @@ const mapUIToAPI = (uiService: Partial<BusinessService> & { name: string }): Par
   };
 };
 
-const CRITICALITY_COLORS = {
-  TIER_0: 'bg-danger-soft text-danger',
-  TIER_1: 'bg-warning-soft text-warning-text',
-  TIER_2: 'bg-warning-soft text-warning-text',
-  TIER_3: 'bg-sky-soft text-sky-text',
+const CRITICALITY_COLORS: Record<Criticality, string> = {
+  critical: 'bg-danger-soft text-danger',
+  high: 'bg-warning-soft text-warning-text',
+  medium: 'bg-warning-soft text-warning-text',
+  low: 'bg-sky-soft text-sky-text',
 };
+
+const UNKNOWN_CRITICALITY_COLOR = 'bg-warm-alt text-ink-soft';
 
 const STATUS_COLORS = {
   active: 'bg-success-soft text-success',
@@ -143,7 +156,7 @@ export const BusinessServices: React.FC = () => {
   const [services, setServices] = useState<BusinessService[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
-  const [filterTier, setFilterTier] = useState<string>('all');
+  const [filterCriticality, setFilterCriticality] = useState<string>('all');
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
   const [editingService, setEditingService] = useState<BusinessService | null>(null);
   const [saving, setSaving] = useState(false);
@@ -151,7 +164,7 @@ export const BusinessServices: React.FC = () => {
   const [formData, setFormData] = useState({
     name: '',
     description: '',
-    tier: '0',
+    criticality: '' as Criticality | '',
     revenueImpact: '',
     userCount: '',
     owner: '',
@@ -181,19 +194,20 @@ export const BusinessServices: React.FC = () => {
   const filteredServices = services.filter((service) => {
     const matchesSearch = service.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
       service.description?.toLowerCase().includes(searchQuery.toLowerCase());
-    const matchesTier = filterTier === 'all' || service.tier.toString() === filterTier;
-    return matchesSearch && matchesTier;
+    const matchesCriticality = filterCriticality === 'all' || service.criticality === filterCriticality;
+    return matchesSearch && matchesCriticality;
   });
 
   const handleCreateService = async () => {
+    // Criticality must be an explicit canonical selection; never inferred.
+    if (!formData.criticality) return;
     try {
       setSaving(true);
 
-      const uiService: Partial<BusinessService> & { name: string } = {
+      const uiService: Partial<BusinessService> & { name: string; criticality: Criticality } = {
         name: formData.name,
         description: formData.description,
-        tier: parseInt(formData.tier),
-        criticality: `TIER_${formData.tier}` as BusinessService['criticality'],
+        criticality: formData.criticality,
         revenueImpact: parseFloat(formData.revenueImpact) || 0,
         userCount: parseInt(formData.userCount) || 0,
         owner: formData.owner,
@@ -222,7 +236,7 @@ export const BusinessServices: React.FC = () => {
       setFormData({
         name: '',
         description: '',
-        tier: '0',
+        criticality: '',
         revenueImpact: '',
         userCount: '',
         owner: '',
@@ -242,7 +256,7 @@ export const BusinessServices: React.FC = () => {
     setFormData({
       name: service.name,
       description: service.description || '',
-      tier: service.tier.toString(),
+      criticality: service.criticality ?? '',
       revenueImpact: service.revenueImpact.toString(),
       userCount: service.userCount.toString(),
       owner: service.owner || '',
@@ -298,7 +312,7 @@ export const BusinessServices: React.FC = () => {
               setFormData({
                 name: '',
                 description: '',
-                tier: '0',
+                criticality: '',
                 revenueImpact: '',
                 userCount: '',
                 owner: '',
@@ -339,19 +353,20 @@ export const BusinessServices: React.FC = () => {
 
               <div className="grid grid-cols-2 gap-4">
                 <div className="grid gap-2">
-                  <Label htmlFor="tier">Criticality Tier</Label>
+                  <Label htmlFor="criticality">Criticality</Label>
                   <Select
-                    value={formData.tier}
-                    onValueChange={(value) => setFormData({ ...formData, tier: value })}
+                    value={formData.criticality}
+                    onValueChange={(value) => setFormData({ ...formData, criticality: value as Criticality })}
                   >
-                    <SelectTrigger>
-                      <SelectValue />
+                    <SelectTrigger id="criticality" aria-label="Criticality">
+                      <SelectValue placeholder="Select criticality" />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="0">Tier 0 - Mission Critical</SelectItem>
-                      <SelectItem value="1">Tier 1 - Business Critical</SelectItem>
-                      <SelectItem value="2">Tier 2 - Important</SelectItem>
-                      <SelectItem value="3">Tier 3 - Standard</SelectItem>
+                      {CRITICALITY_OPTIONS.map((option) => (
+                        <SelectItem key={option.value} value={option.value}>
+                          {option.label}
+                        </SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
                 </div>
@@ -396,7 +411,7 @@ export const BusinessServices: React.FC = () => {
               <Button variant="outline" onClick={() => setIsCreateDialogOpen(false)} disabled={saving}>
                 Cancel
               </Button>
-              <Button onClick={handleCreateService} disabled={!formData.name || saving}>
+              <Button onClick={handleCreateService} disabled={!formData.name || !formData.criticality || saving}>
                 {saving ? 'Saving...' : editingService ? 'Update Service' : 'Create Service'}
               </Button>
             </DialogFooter>
@@ -475,16 +490,17 @@ export const BusinessServices: React.FC = () => {
               </div>
             </div>
 
-            <Select value={filterTier} onValueChange={setFilterTier}>
-              <SelectTrigger className="w-[200px]">
-                <SelectValue placeholder="Filter by tier" />
+            <Select value={filterCriticality} onValueChange={setFilterCriticality}>
+              <SelectTrigger className="w-[200px]" aria-label="Filter by criticality">
+                <SelectValue placeholder="Filter by criticality" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">All Tiers</SelectItem>
-                <SelectItem value="0">Tier 0 - Mission Critical</SelectItem>
-                <SelectItem value="1">Tier 1 - Business Critical</SelectItem>
-                <SelectItem value="2">Tier 2 - Important</SelectItem>
-                <SelectItem value="3">Tier 3 - Standard</SelectItem>
+                <SelectItem value="all">All criticalities</SelectItem>
+                {CRITICALITY_OPTIONS.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
               </SelectContent>
             </Select>
           </div>
@@ -498,7 +514,7 @@ export const BusinessServices: React.FC = () => {
             <thead>
               <tr className="border-b border-border">
                 <th className="text-left py-3 px-4 text-sm font-semibold">Service Name</th>
-                <th className="text-left py-3 px-4 text-sm font-semibold">Tier</th>
+                <th className="text-left py-3 px-4 text-sm font-semibold">Criticality</th>
                 <th className="text-left py-3 px-4 text-sm font-semibold">Status</th>
                 <th className="text-left py-3 px-4 text-sm font-semibold">Revenue Impact</th>
                 <th className="text-left py-3 px-4 text-sm font-semibold">Users</th>
@@ -535,8 +551,10 @@ export const BusinessServices: React.FC = () => {
                       </div>
                     </td>
                     <td className="py-3 px-4">
-                      <Badge className={CRITICALITY_COLORS[service.criticality]}>
-                        Tier {service.tier}
+                      <Badge
+                        className={service.criticality ? CRITICALITY_COLORS[service.criticality] : UNKNOWN_CRITICALITY_COLOR}
+                      >
+                        {CRITICALITY_OPTIONS.find((option) => option.value === service.criticality)?.label ?? 'Unknown'}
                       </Badge>
                     </td>
                     <td className="py-3 px-4">

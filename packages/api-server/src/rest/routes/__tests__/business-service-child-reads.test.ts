@@ -2,20 +2,25 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Missing-parent semantics for GET /api/v1/business-services/:service_id/cis
- * and /dependencies, exercised through the real businessServiceRoutes behind
- * the real AuthMiddleware/AuthService (JWT verification) mounted at the
- * production path.
+ * Missing-parent semantics for GET /api/v1/business-services/:service_id/cis,
+ * /dependencies, /health and /costs, exercised through the real
+ * businessServiceRoutes behind the real AuthMiddleware/AuthService (JWT
+ * verification) mounted at the production path.
  *
  * SQL is executed by PGlite (PostgreSQL compiled to WASM) hosted in a forked
  * child process (fixtures/pglite-host.cjs). Its
- * schema is the three CREATE TABLE statements read verbatim from
+ * schema is `CREATE SCHEMA IF NOT EXISTS cmdb;` plus the CREATE TABLE
+ * statements read verbatim from
  * packages/database/src/postgres/migrations/001_complete_schema.sql
  * (dim_business_services, business_service_dependencies,
- * ci_business_service_mappings); no other tables, indexes or extensions.
+ * ci_business_service_mappings, fact_business_service_incidents,
+ * fact_business_service_changes, cmdb.dim_ci); no other tables, indexes or
+ * extensions. PGlite has no TimescaleDB, so only the CREATE TABLE blocks are
+ * extracted (not create_hypertable) and the two fact tables are plain tables.
  *
  * Substitutions: Neo4jAuthRepository -> in-memory user store (one enabled
- * viewer user); getPostgresClient -> IPC client to that PGlite process.
+ * viewer user); getPostgresClient -> IPC client to that PGlite process;
+ * TimescaleDB hypertables -> plain PostgreSQL tables.
  */
 
 import { fork } from 'child_process';
@@ -86,13 +91,21 @@ import { getAuthMiddleware } from '../../../auth/auth-bootstrap';
 import { businessServiceRoutes } from '../business-service.routes';
 
 const MIGRATION = join(__dirname, '../../../../../database/src/postgres/migrations/001_complete_schema.sql');
-const DDL_TABLES = ['dim_business_services', 'business_service_dependencies', 'ci_business_service_mappings'];
+const DDL_TABLES = [
+  'dim_business_services',
+  'business_service_dependencies',
+  'ci_business_service_mappings',
+  'fact_business_service_incidents',
+  'fact_business_service_changes',
+  'cmdb.dim_ci',
+];
 const NOT_FOUND = { success: false, error: 'Business service not found' };
 
 function productionDdl(): string {
   const sql = readFileSync(MIGRATION, 'utf8');
-  return DDL_TABLES.map(table => {
-    const match = sql.match(new RegExp(`CREATE TABLE IF NOT EXISTS ${table} \\([\\s\\S]*?\\n\\);`));
+  return 'CREATE SCHEMA IF NOT EXISTS cmdb;\n' + DDL_TABLES.map(table => {
+    const name = table.replace('.', '\\.');
+    const match = sql.match(new RegExp(`CREATE TABLE IF NOT EXISTS ${name} \\([\\s\\S]*?\\n\\);`));
     if (!match) throw new Error(`DDL for ${table} not found in ${MIGRATION}`);
     return match[0];
   }).join('\n');
@@ -113,6 +126,21 @@ INSERT INTO business_service_dependencies (service_id, depends_on_service_id, de
   ('bs-app', 'bs-net', 'infrastructure', '2026-01-01 00:00:00'),
   ('bs-app', 'bs-db', 'platform', '2026-02-01 00:00:00'),
   ('bs-other', 'bs-db', 'application', '2026-03-01 00:00:00');
+INSERT INTO fact_business_service_incidents (service_id, incident_date, mttr_minutes, sla_breaches) VALUES
+  ('bs-app', CURRENT_DATE - 1, 30, 1),
+  ('bs-app', CURRENT_DATE - 10, 90, 2),
+  ('bs-app', CURRENT_DATE - 60, 500, 9),
+  ('bs-other', CURRENT_DATE - 3, 1000, 40);
+INSERT INTO fact_business_service_changes (service_id, change_date, change_count, successful_count) VALUES
+  ('bs-app', CURRENT_DATE - 2, 4, 3),
+  ('bs-app', CURRENT_DATE - 20, 6, 6),
+  ('bs-app', CURRENT_DATE - 90, 10, 1),
+  ('bs-other', CURRENT_DATE - 3, 8, 0);
+INSERT INTO cmdb.dim_ci (ci_id, ci_name, ci_type, ci_status, tbm_attributes, is_current) VALUES
+  ('ci-new', 'New', 'server', 'active', '{"resource_tower": "compute", "monthly_cost": 100}', TRUE),
+  ('ci-new', 'New (historical)', 'server', 'active', '{"resource_tower": "compute", "monthly_cost": 999}', FALSE),
+  ('ci-old', 'Old', 'storage', 'active', '{"resource_tower": "storage", "monthly_cost": 50.5}', TRUE),
+  ('ci-foreign', 'Foreign', 'server', 'active', '{"resource_tower": "compute", "monthly_cost": 7}', TRUE);
 `;
 
 const CHILD_TABLE: Record<string, string> = {
@@ -147,22 +175,24 @@ function buildApp() {
   return app;
 }
 
+// File-scope lifecycle: both describe blocks share one PGlite process, so the
+// schema is created once and the host is killed only after the last block.
+beforeAll(async () => {
+  await db.exec(productionDdl());
+});
+
+afterAll(() => {
+  host.kill();
+});
+
 describe('business-service child reads: missing-parent semantics (PGlite)', () => {
   const app = buildApp();
   const token = new JWTService(loadConfig().auth.jwt).generateAccessToken(VIEWER_ID, 'viewer', 'viewer');
   const auth = { Authorization: `Bearer ${token}` };
 
-  beforeAll(async () => {
-    await db.exec(productionDdl());
-  });
-
   beforeEach(async () => {
     await db.exec(`TRUNCATE ${DDL_TABLES.join(', ')} RESTART IDENTITY CASCADE;${SEED}`);
     queryCount = 0;
-  });
-
-  afterAll(() => {
-    host.kill();
   });
 
   describe.each(['cis', 'dependencies'])('GET /api/v1/business-services/:service_id/%s', child => {
@@ -212,6 +242,93 @@ describe('business-service child reads: missing-parent semantics (PGlite)', () =
       }
       const res = await request(app).get(`/api/v1/business-services/bs-app/${child}`).set(auth);
       expect(res.body).toEqual({ success: true, data: APP_CHILDREN[child] });
+    });
+  });
+});
+
+// Driver serialisation [INFERENCE, UNRUN]: PGlite parses int8 (COUNT/SUM of
+// INT) to a JS number when it is a safe integer, returns NUMERIC as a string
+// ('150.5'), and parses json into an object. If the validation run shows the
+// driver differs, adjust these expectations only, never the controller.
+const EMPTY_METRICS: Record<string, unknown> = {
+  health: {
+    incidents: { incidents_7d: 0, incidents_30d: 0, avg_mttr_30d: null, sla_breaches_30d: null },
+    changes: { changes_7d: 0, changes_30d: 0, success_rate_30d: null },
+  },
+  costs: { ci_count: 0, total_monthly_cost: null, cost_by_tower: null },
+};
+const APP_METRICS: Record<string, unknown> = {
+  // COUNT(*) counts daily fact rows and success_rate_30d is an all-time ratio
+  // (no date filter): pre-existing semantics, preserved here on purpose.
+  health: {
+    incidents: { incidents_7d: 1, incidents_30d: 2, avg_mttr_30d: 60, sla_breaches_30d: 3 },
+    changes: { changes_7d: 1, changes_30d: 2, success_rate_30d: 50 },
+  },
+  // The non-current ci-new row (999) and bs-other's ci-foreign are excluded.
+  costs: { ci_count: 2, total_monthly_cost: '150.5', cost_by_tower: { compute: 100, storage: 50.5 } },
+};
+const METRIC_TABLE: Record<string, string> = {
+  health: 'fact_business_service_incidents',
+  costs: 'ci_business_service_mappings',
+};
+
+describe('business-service metric reads: missing-parent semantics (PGlite)', () => {
+  const app = buildApp();
+  const token = new JWTService(loadConfig().auth.jwt).generateAccessToken(VIEWER_ID, 'viewer', 'viewer');
+  const auth = { Authorization: `Bearer ${token}` };
+
+  beforeEach(async () => {
+    await db.exec(`TRUNCATE ${DDL_TABLES.join(', ')} RESTART IDENTITY CASCADE;${SEED}`);
+    queryCount = 0;
+  });
+
+  describe.each(['health', 'costs'])('GET /api/v1/business-services/:service_id/%s', metric => {
+    it('returns 404 with the parent envelope for an unknown service', async () => {
+      const res = await request(app).get(`/api/v1/business-services/bs-missing/${metric}`).set(auth);
+      expect(res.status).toBe(404);
+      expect(res.body).toEqual(NOT_FOUND);
+    });
+
+    it('returns 200 with zero/null metrics for an existing service without data', async () => {
+      const res = await request(app).get(`/api/v1/business-services/bs-empty/${metric}`).set(auth);
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ success: true, data: EMPTY_METRICS[metric] });
+    });
+
+    it('returns only the service\'s own metrics with the pre-change expressions', async () => {
+      const res = await request(app).get(`/api/v1/business-services/bs-app/${metric}`).set(auth);
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ success: true, data: APP_METRICS[metric] });
+    });
+
+    it('rejects anonymous requests with 401 before any data access', async () => {
+      const res = await request(app).get(`/api/v1/business-services/bs-app/${metric}`);
+      expect(res.status).toBe(401);
+      expect(queryCount).toBe(0);
+    });
+
+    it('surfaces an engine failure as 500, not an empty 200', async () => {
+      await db.exec(`ALTER TABLE ${METRIC_TABLE[metric]} RENAME TO ${METRIC_TABLE[metric]}_offline`);
+      try {
+        const res = await request(app).get(`/api/v1/business-services/bs-app/${metric}`).set(auth);
+        expect(res.status).toBe(500);
+        expect(res.body.success).toBe(false);
+        expect(res.body.message).toMatch(/does not exist/);
+      } finally {
+        await db.exec(`ALTER TABLE ${METRIC_TABLE[metric]}_offline RENAME TO ${METRIC_TABLE[metric]}`);
+      }
+    });
+
+    it('treats injection-shaped ids as unknown services and leaves data intact', async () => {
+      for (const hostile of ["bs-app' OR '1'='1", `bs-app'; DROP TABLE ${METRIC_TABLE[metric]}; --`]) {
+        const res = await request(app)
+          .get(`/api/v1/business-services/${encodeURIComponent(hostile)}/${metric}`)
+          .set(auth);
+        expect(res.status).toBe(404);
+        expect(res.body).toEqual(NOT_FOUND);
+      }
+      const res = await request(app).get(`/api/v1/business-services/bs-app/${metric}`).set(auth);
+      expect(res.body).toEqual({ success: true, data: APP_METRICS[metric] });
     });
   });
 });

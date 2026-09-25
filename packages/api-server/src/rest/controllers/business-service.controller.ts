@@ -638,34 +638,58 @@ export class BusinessServiceController {
     try {
       const { service_id } = req.params;
 
-      // Get incident metrics
-      const incidentMetrics = await this.pgClient.query(
-        `SELECT
-          COUNT(*) FILTER (WHERE incident_date >= CURRENT_DATE - INTERVAL '7 days') as incidents_7d,
-          COUNT(*) FILTER (WHERE incident_date >= CURRENT_DATE - INTERVAL '30 days') as incidents_30d,
-          AVG(mttr_minutes) FILTER (WHERE incident_date >= CURRENT_DATE - INTERVAL '30 days') as avg_mttr_30d,
-          SUM(sla_breaches) FILTER (WHERE incident_date >= CURRENT_DATE - INTERVAL '30 days') as sla_breaches_30d
-        FROM fact_business_service_incidents
-        WHERE service_id = $1`,
+      // One statement rooted at the parent: zero rows => unknown service (404).
+      // Each LATERAL is an ungrouped aggregate, so a known service always yields
+      // exactly one row (zero counts / NULL averages when it has no facts), and
+      // existence and metrics are read from the same snapshot.
+      const result = await this.pgClient.query(
+        `SELECT i.incidents_7d, i.incidents_30d, i.avg_mttr_30d, i.sla_breaches_30d,
+          c.changes_7d, c.changes_30d, c.success_rate_30d
+        FROM dim_business_services s
+        CROSS JOIN LATERAL (
+          SELECT
+            COUNT(*) FILTER (WHERE incident_date >= CURRENT_DATE - INTERVAL '7 days') as incidents_7d,
+            COUNT(*) FILTER (WHERE incident_date >= CURRENT_DATE - INTERVAL '30 days') as incidents_30d,
+            AVG(mttr_minutes) FILTER (WHERE incident_date >= CURRENT_DATE - INTERVAL '30 days') as avg_mttr_30d,
+            SUM(sla_breaches) FILTER (WHERE incident_date >= CURRENT_DATE - INTERVAL '30 days') as sla_breaches_30d
+          FROM fact_business_service_incidents
+          WHERE service_id = s.service_id
+        ) i
+        CROSS JOIN LATERAL (
+          SELECT
+            COUNT(*) FILTER (WHERE change_date >= CURRENT_DATE - INTERVAL '7 days') as changes_7d,
+            COUNT(*) FILTER (WHERE change_date >= CURRENT_DATE - INTERVAL '30 days') as changes_30d,
+            SUM(successful_count)::float / NULLIF(SUM(change_count), 0) * 100 as success_rate_30d
+          FROM fact_business_service_changes
+          WHERE service_id = s.service_id
+        ) c
+        WHERE s.service_id = $1`,
         [service_id]
       );
 
-      // Get change metrics
-      const changeMetrics = await this.pgClient.query(
-        `SELECT
-          COUNT(*) FILTER (WHERE change_date >= CURRENT_DATE - INTERVAL '7 days') as changes_7d,
-          COUNT(*) FILTER (WHERE change_date >= CURRENT_DATE - INTERVAL '30 days') as changes_30d,
-          SUM(successful_count)::float / NULLIF(SUM(change_count), 0) * 100 as success_rate_30d
-        FROM fact_business_service_changes
-        WHERE service_id = $1`,
-        [service_id]
-      );
+      if (result.rows.length === 0) {
+        res.status(404).json({
+          success: false,
+          error: 'Business service not found'
+        });
+        return;
+      }
 
+      const row = result.rows[0];
       res.json({
         success: true,
         data: {
-          incidents: incidentMetrics.rows[0],
-          changes: changeMetrics.rows[0]
+          incidents: {
+            incidents_7d: row.incidents_7d,
+            incidents_30d: row.incidents_30d,
+            avg_mttr_30d: row.avg_mttr_30d,
+            sla_breaches_30d: row.sla_breaches_30d
+          },
+          changes: {
+            changes_7d: row.changes_7d,
+            changes_30d: row.changes_30d,
+            success_rate_30d: row.success_rate_30d
+          }
         }
       });
     } catch (error: any) {
@@ -686,21 +710,29 @@ export class BusinessServiceController {
     try {
       const { service_id } = req.params;
 
-      // Get costs from mapped CIs. CI-level TBM cost data lives on cmdb.dim_ci's
-      // tbm_attributes JSONB (resource_tower / monthly_cost), not on tbm_cost_pools
-      // (which has no ci_id/monthly_cost/resource_tower columns at all).
+      // One statement rooted at the parent: the `parent` CTE is empty for an
+      // unknown service, and the final SELECT reads FROM parent, so zero rows =>
+      // unknown service (404). A known service always yields exactly one row
+      // (ci_count 0 / NULL totals when it has no mappings), and existence and
+      // costs are read from the same snapshot.
+      // CI-level TBM cost data lives on cmdb.dim_ci's tbm_attributes JSONB
+      // (resource_tower / monthly_cost), not on tbm_cost_pools (which has no
+      // ci_id/monthly_cost/resource_tower columns at all).
       // Aggregates are computed per-CI/per-tower in CTEs first, since Postgres rejects
       // an aggregate (SUM) nested directly inside another aggregate's (json_object_agg)
       // argument list.
       const result = await this.pgClient.query(
-        `WITH ci_costs AS (
+        `WITH parent AS (
+          SELECT service_id FROM dim_business_services WHERE service_id = $1
+        ),
+        ci_costs AS (
           SELECT
             m.ci_id,
             dc.tbm_attributes->>'resource_tower' AS resource_tower,
             (dc.tbm_attributes->>'monthly_cost')::numeric AS monthly_cost
-          FROM ci_business_service_mappings m
+          FROM parent p
+          JOIN ci_business_service_mappings m ON m.service_id = p.service_id
           LEFT JOIN cmdb.dim_ci dc ON dc.ci_id = m.ci_id AND dc.is_current = TRUE
-          WHERE m.service_id = $1
         ),
         tower_costs AS (
           SELECT resource_tower, SUM(monthly_cost) AS tower_cost
@@ -711,13 +743,22 @@ export class BusinessServiceController {
         SELECT
           (SELECT COUNT(DISTINCT ci_id) FROM ci_costs) AS ci_count,
           (SELECT SUM(monthly_cost) FROM ci_costs) AS total_monthly_cost,
-          (SELECT json_object_agg(resource_tower, tower_cost) FROM tower_costs) AS cost_by_tower`,
+          (SELECT json_object_agg(resource_tower, tower_cost) FROM tower_costs) AS cost_by_tower
+        FROM parent`,
         [service_id]
       );
 
+      if (result.rows.length === 0) {
+        res.status(404).json({
+          success: false,
+          error: 'Business service not found'
+        });
+        return;
+      }
+
       res.json({
         success: true,
-        data: result.rows[0] || { ci_count: 0, total_monthly_cost: 0, cost_by_tower: {} }
+        data: result.rows[0]
       });
     } catch (error: any) {
       logger.error('Error getting service costs', { error, service_id: req.params.service_id });

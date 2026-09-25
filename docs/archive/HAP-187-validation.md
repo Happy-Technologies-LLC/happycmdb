@@ -6,9 +6,11 @@ Commands in §0–§3 ran 2026-09-25 between 17:39:40Z (`date -u` at orientation
 run by dispatch job `f4da386d-8a34-4943-baae-bcb3c2b38b87`, a resume of job `bf709f12-abc1-4d31-a48b-e7b6a023be1a` that reused
 the bf709f12 worktree path (`/home/coder/jobs/bf709f12-abc1-4d31-a48b-e7b6a023be1a/repo`), which is why the scratch and sibling
 paths below contain `bf709f12`. The original bf709f12 implementation session ran nothing (its file said "NO COMMAND HAS BEEN RUN").
-§5 was produced by a later correction dispatch that again resumed in the same bf709f12 worktree path; its own dispatch job id is
-not exposed in its environment (`HOME`, `TMPDIR`, `PWD` all point at the bf709f12 path), so it is identified here only as the
-HAP-187 PR21 evidence-accuracy correction dispatch run at head `51576bc33680673ad2b0d48a317f76d273578cdf`.
+§5 was produced by a later correction dispatch that again resumed in the same bf709f12 worktree path: the HAP-187 PR21
+evidence-accuracy correction dispatch, job `afb53ace-fe8b-45da-a0f8-9c95484336d3` (id supplied by the parent architect; it was
+not exposed in that dispatch's environment), run at head `51576bc33680673ad2b0d48a317f76d273578cdf`.
+§6 records a further resume in the same bf709f12 worktree path at head `29ce18a911442cbec447ee648d35a6fadd3234a9`: the
+doc-only wording correction (no commands re-run; source/test blobs unchanged).
 
 - Linear: HAP-187 (parent HAP-94, "Now — Minimum service-context contract"). Draft PR21, branch `agent/hap-187-service-metric-not-found`.
 - Base: `ade7f70bee55d496f0e02b4d33188b8ff7d62329` (main).
@@ -74,7 +76,7 @@ OpenAPI: `packages/api-server/src/openapi/` has no business-services `/health` o
 
 ### Consumers (read-only grep of `web-ui/src`, `packages/`)
 
-None found. No caller of `business-services/:id/health` or `business-services/:id/costs` exists outside the API server itself.
+No in-repo caller of `business-services/:id/health` or `business-services/:id/costs` was found outside the API server itself.
 `web-ui/src/pages/BusinessServices.tsx` only calls list/create/patch/delete. The only references are:
 - `packages/api-server/src/rest/routes/business-service.routes.ts:236-252` (route wiring, unchanged).
 - `packages/api-server/src/rest/routes/__tests__/business-service.routes.test.ts:105-106`: an auth/route matrix using
@@ -82,7 +84,9 @@ None found. No caller of `business-services/:id/health` or `business-services/:i
   should not affect it [INFERENCE from reading lines 148-173; that file was not run in this validation].
 - `packages/cli/src/commands/datamart.command.ts:118` calls `/datamart/health`, which is a different endpoint and is unaffected.
 
-No consumer would observe the new 404.
+No in-repo caller of these endpoints was found (read-only grep of web-ui/src and packages/). External HTTP clients that request a
+nonexistent service now receive the intended 404 `{success:false, error:'Business service not found'}` instead of a 200
+zero/null body; that is the contract change.
 
 ## 0. Dependency prerequisites (node_modules was missing)
 
@@ -974,3 +978,28 @@ diffstat_exit=0
 
 Only two paths differ from 51576bc: this doc and the test file, whose 4 insertions / 4 deletions are exactly the comment lines
 shown in the raw diff above. Controller and routes are absent from the stat. Nothing was committed or merged.
+
+## 6. Doc-only wording correction
+
+Head `29ce18a911442cbec447ee648d35a6fadd3234a9`. Only this file was edited (header job id for §5, §6 dispatch line, and the
+Consumers wording). No test, build, or HTTP command was re-run; the only commands were the two below.
+
+~~~~~~
+$ git hash-object packages/api-server/src/rest/controllers/business-service.controller.ts packages/api-server/src/rest/routes/business-service.routes.ts packages/api-server/src/rest/routes/__tests__/business-service-child-reads.test.ts && git diff --stat
+9ec3acd23eef5117c806c38e3c9ce31e6e760d7f
+9998baf66e03b39ced0f6e1e4a940bb1cefe2559
+7a53fe13fa148c8784a3d92de8e3944913b40dcf
+~~~~~~
+
+Controller `9ec3acd…`, routes `9998baf…`, and test `7a53fe1…` equal the required values. `git diff --stat` printed nothing: it
+was run before this file was edited, so the working tree matched `29ce18a` at that point.
+
+`git diff --stat` re-run after the edits above (before this paragraph and block were added, so the final line count is higher):
+
+~~~~~~
+$ git diff --stat
+ docs/archive/HAP-187-validation.md | 29 ++++++++++++++++++++++++-----
+ 1 file changed, 24 insertions(+), 5 deletions(-)
+~~~~~~
+
+Only this doc differs from `29ce18a`. Nothing was committed or merged.

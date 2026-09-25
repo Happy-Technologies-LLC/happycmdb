@@ -246,10 +246,10 @@ describe('business-service child reads: missing-parent semantics (PGlite)', () =
   });
 });
 
-// Driver serialisation [INFERENCE, UNRUN]: PGlite parses int8 (COUNT/SUM of
-// INT) to a JS number when it is a safe integer, returns NUMERIC as a string
-// ('150.5'), and parses json into an object. If the validation run shows the
-// driver differs, adjust these expectations only, never the controller.
+// Driver serialisation, observed in HAP-187 validation (docs/archive/HAP-187-validation.md):
+// through PGlite, int8 COUNT/SUM arrive as JS numbers, AVG/ratio values as
+// numbers, NUMERIC total_monthly_cost as the string '150.5', and json
+// cost_by_tower as a parsed object.
 const EMPTY_METRICS: Record<string, unknown> = {
   health: {
     incidents: { incidents_7d: 0, incidents_30d: 0, avg_mttr_30d: null, sla_breaches_30d: null },

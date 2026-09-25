@@ -1,25 +1,32 @@
 # HAP-187 validation evidence
 
-STATUS: VALIDATION EXECUTED 2026-09-25T17:41Z by job bf709f12-abc1-4d31-a48b-e7b6a023be1a
+STATUS: VALIDATION EXECUTED 2026-09-25T17:41Z by dispatch job `f4da386d-8a34-4943-baae-bcb3c2b38b87`; comment-only correction re-run 2026-09-25T17:52Z (§5)
 
-Commands ran 2026-09-25 between 17:39:40Z (`date -u` at orientation) and 17:41:24Z (iat of the last JWT). This validation
-session is a resumed session in the worktree of job `bf709f12-abc1-4d31-a48b-e7b6a023be1a`; the earlier implementation
-session of job bf709f12 ran nothing (its file said "NO COMMAND HAS BEEN RUN"). All output below is from this session.
+Commands in §0–§3 ran 2026-09-25 between 17:39:40Z (`date -u` at orientation) and 17:41:24Z (iat of the last JWT). They were
+run by dispatch job `f4da386d-8a34-4943-baae-bcb3c2b38b87`, a resume of job `bf709f12-abc1-4d31-a48b-e7b6a023be1a` that reused
+the bf709f12 worktree path (`/home/coder/jobs/bf709f12-abc1-4d31-a48b-e7b6a023be1a/repo`), which is why the scratch and sibling
+paths below contain `bf709f12`. The original bf709f12 implementation session ran nothing (its file said "NO COMMAND HAS BEEN RUN").
+§5 was produced by a later correction dispatch that again resumed in the same bf709f12 worktree path; its own dispatch job id is
+not exposed in its environment (`HOME`, `TMPDIR`, `PWD` all point at the bf709f12 path), so it is identified here only as the
+HAP-187 PR21 evidence-accuracy correction dispatch run at head `51576bc33680673ad2b0d48a317f76d273578cdf`.
 
 - Linear: HAP-187 (parent HAP-94, "Now — Minimum service-context contract"). Draft PR21, branch `agent/hap-187-service-metric-not-found`.
 - Base: `ade7f70bee55d496f0e02b4d33188b8ff7d62329` (main).
   - Base blob of `business-service.controller.ts` = `1d19f63c0eeb77edae4dbbbac6171083b1f1ff24`; base blob of `business-service.routes.ts` = `c5d1d0e3251cd6dc82f81f8db1e8e19372c43d45`.
 - Head before validation: `195cb232062f053a467bb077d0ae94af008a9289`. Head after validation: `195cb232062f053a467bb077d0ae94af008a9289`
-  (this session made no commit; the only tracked change it made is this file).
+  (the validation session made no commit; the only tracked change it made is this file). The §5 correction started from head
+  `51576bc33680673ad2b0d48a317f76d273578cdf` and changed only the test comment above `EMPTY_METRICS` and this file.
 - Toolchain: node `v22.23.2`, npm `10.9.8`.
-- Final blob SHAs (`git rev-parse HEAD:<path>` equals `git hash-object <path>` for each, i.e. unchanged by validation):
-  - `packages/api-server/src/rest/controllers/business-service.controller.ts` = `9ec3acd23eef5117c806c38e3c9ce31e6e760d7f`
-  - `packages/api-server/src/rest/routes/business-service.routes.ts` = `9998baf66e03b39ced0f6e1e4a940bb1cefe2559`
-  - `packages/api-server/src/rest/routes/__tests__/business-service-child-reads.test.ts` = `41839ebf16f1fafcaf9d0f91d3e3b67f534e2482`
+- Final blob SHAs (`git hash-object <path>`, after the §5 correction):
+  - `packages/api-server/src/rest/controllers/business-service.controller.ts` = `9ec3acd23eef5117c806c38e3c9ce31e6e760d7f` (unchanged)
+  - `packages/api-server/src/rest/routes/business-service.routes.ts` = `9998baf66e03b39ced0f6e1e4a940bb1cefe2559` (unchanged)
+  - `packages/api-server/src/rest/routes/__tests__/business-service-child-reads.test.ts` = `7a53fe13fa148c8784a3d92de8e3944913b40dcf`
+    (was `41839ebf16f1fafcaf9d0f91d3e3b67f534e2482` during §0–§3; only the 4-line driver-serialisation comment changed, see §5)
   - `docs/archive/HAP-187-validation.md`: a file cannot contain its own blob SHA; it is recorded in
     `/home/coder/jobs/bf709f12-abc1-4d31-a48b-e7b6a023be1a/validation.md` and in the job's final report.
 
-No controller, route or test source was changed by validation: no contract defect surfaced and no driver-serialization expectation was wrong.
+No controller or route source was changed by validation: no contract defect surfaced and no driver-serialization expectation was
+wrong. The test file changed afterwards only in the comment above `EMPTY_METRICS` (§5).
 
 ## Result summary
 
@@ -29,6 +36,7 @@ No controller, route or test source was changed by validation: no contract defec
 | Step 1: committed suite, fixed controller | 24/24 pass, exit 0 (cis/dependencies × 6, health/costs × 6 cases a–f) |
 | Step 2: controller swapped to ade7f70 | exit 1; 4 failed, 20 passed: health (a),(f) and costs (a),(f) fail `Expected: 404 / Received: 200`; all others pass. Restore verified: `git diff --stat` and `git status --short` empty |
 | Step 3: real listener + curl over loopback + PGlite | bs-app 200 populated; bs-empty 200 zero/null; bs-missing 404 exact envelope; no token 401 with 0 adapter queries; tables offline 500 `relation ... does not exist`; restored 200; baseline controller bs-missing 200 (health and costs). Harness deleted; `git diff --stat` and `git status --short` empty |
+| §5: comment-only re-run of the focused suite (at 51576bc + working-tree change) | 24/24 pass, exit 0; controller/routes blobs unchanged |
 
 Note on case counts: the task brief said "cis/dependencies × 5"; the suite actually has six cases per endpoint (including the
 injection case), so the observed total is 24 = 4 endpoints × 6.
@@ -811,3 +819,158 @@ The JWTs printed above are test-only tokens signed with the public test secret a
 - JWT: a test-only secret (`JWT_SECRET` set in the test/harness). Tokens are real `JWTService` tokens verified by the real `authenticate()`.
 - HTTP: Step 1/2 use supertest against an ephemeral loopback server; Step 3 uses a real `app.listen(0, '127.0.0.1')` listener driven by curl.
 - No production PostgreSQL/TimescaleDB, no Neo4j/Redis, and no deployment was exercised. `business-service.routes.test.ts` and the rest of the suite were not run.
+
+## 5. Re-run after comment-only test change
+
+Run 2026-09-25 ~17:52Z by the correction dispatch (see header) at head `51576bc33680673ad2b0d48a317f76d273578cdf` plus the
+working-tree change below. The only change to the test file is the comment above `EMPTY_METRICS`, replacing the stale
+"[INFERENCE, UNRUN]" note with the serialization observed in §1 ("Driver serialization (observed …)").
+
+### 5.0 Prerequisites (node_modules was missing again)
+
+At orientation, `ls node_modules 2>&1 | wc -l` printed `1` (the error line), and `ls -d node_modules ../happy-technologies-design-system ../scratch`
+printed `ls: cannot access '<path>': No such file or directory` for all three. The exact §0 command block (HAP-174 §9 procedure,
+`J=/home/coder/jobs/bf709f12-abc1-4d31-a48b-e7b6a023be1a`)
+was re-run, followed by root `npm ci`. Observed:
+
+~~~~~~
+--- realpath $J/repo/../happy-technologies-design-system ---
+/home/coder/jobs/bf709f12-abc1-4d31-a48b-e7b6a023be1a/happy-technologies-design-system
+--- pack.exit ---
+0
+--- sha1.txt ---
+60d6c25cd69620c1301622bb64a81d01ce34e78b  happy-technologies-design-system-0.7.1.tgz
+--- sha512.txt ---
+sHn6pU9VHbV/Xc0HvhXb1p2WO1pZecPXvY/iUWHs0lhPE6k3oIjLEUwKKPpeiJWaKIn6uxSPYWG5oCqlBXZAew==
+--- list.exit ---
+0
+--- unsafe.txt ---
+0
+--- nonreg.txt ---
+0
+--- extract.log ---
+EXIT=0
+--- wc -c pack.stdout pack.stderr list.stderr; wc -l < list.stdout ---
+2597 pack.stdout
+   0 pack.stderr
+   0 list.stderr
+2597 total
+21
+$ npm ci --ignore-scripts --no-audit --no-fund > ../scratch/ci.stdout 2> ../scratch/ci.stderr; echo "ci_exit=$?"; cat ../scratch/ci.stdout; wc -c < ../scratch/ci.stderr; git status --short
+ci_exit=0
+
+added 1591 packages in 18s
+4557
+ M packages/api-server/src/rest/routes/__tests__/business-service-child-reads.test.ts
+~~~~~~
+
+SHA1 and SHA512 equal the HAP-174 §9.4 registry values (same as §0.2). The ci.stderr byte count (4557) equals §0.5; its
+content was not re-printed. `git status --short` shows only the comment change (made before `npm ci`).
+
+### 5.1 Focused suite
+
+Exact command (cwd repo; the redirect/echo wrapper only captures output and exit code):
+
+~~~~~~
+$ npx jest -c jest.config.unit.js packages/api-server/src/rest/routes/__tests__/business-service-child-reads.test.ts > ../scratch/r5.out 2> ../scratch/r5.err; echo $? > ../scratch/r5.exit
+--- exit ---
+0
+--- stdout (729 bytes) ---
+2026-09-25 17:52:08 [undefined] error: Error getting mapped CIs {"metadata":{"service":"cmdb","error":{},"service_id":"bs-app","timestamp":"2026-09-25T17:52:08.093Z"}}
+2026-09-25 17:52:08 [undefined] error: Error getting service dependencies {"metadata":{"service":"cmdb","error":{},"service_id":"bs-app","timestamp":"2026-09-25T17:52:08.186Z"}}
+2026-09-25 17:52:08 [undefined] error: Error getting service health {"metadata":{"service":"cmdb","error":{},"service_id":"bs-app","timestamp":"2026-09-25T17:52:08.278Z"}}
+2026-09-25 17:52:08 [undefined] error: Error getting service costs {"metadata":{"service":"cmdb","error":{},"service_id":"bs-app","timestamp":"2026-09-25T17:52:08.367Z"}}
+--- stderr (2657 bytes) ---
+PASS UNIT packages/api-server/src/rest/routes/__tests__/business-service-child-reads.test.ts
+  business-service child reads: missing-parent semantics (PGlite)
+    GET /api/v1/business-services/:service_id/cis
+      ✓ returns 404 with the parent envelope for an unknown service (36 ms)
+      ✓ returns 200 with data [] for an existing service without children (15 ms)
+      ✓ returns only the service's own children with the pre-change projection, newest first (14 ms)
+      ✓ rejects anonymous requests with 401 before any data access (11 ms)
+      ✓ surfaces an engine failure as 500, not an empty 200 (17 ms)
+      ✓ treats injection-shaped ids as unknown services and leaves data intact (20 ms)
+    GET /api/v1/business-services/:service_id/dependencies
+      ✓ returns 404 with the parent envelope for an unknown service (17 ms)
+      ✓ returns 200 with data [] for an existing service without children (15 ms)
+      ✓ returns only the service's own children with the pre-change projection, newest first (13 ms)
+      ✓ rejects anonymous requests with 401 before any data access (11 ms)
+      ✓ surfaces an engine failure as 500, not an empty 200 (14 ms)
+      ✓ treats injection-shaped ids as unknown services and leaves data intact (18 ms)
+  business-service metric reads: missing-parent semantics (PGlite)
+    GET /api/v1/business-services/:service_id/health
+      ✓ returns 404 with the parent envelope for an unknown service (16 ms)
+      ✓ returns 200 with zero/null metrics for an existing service without data (15 ms)
+      ✓ returns only the service's own metrics with the pre-change expressions (14 ms)
+      ✓ rejects anonymous requests with 401 before any data access (13 ms)
+      ✓ surfaces an engine failure as 500, not an empty 200 (16 ms)
+      ✓ treats injection-shaped ids as unknown services and leaves data intact (19 ms)
+    GET /api/v1/business-services/:service_id/costs
+      ✓ returns 404 with the parent envelope for an unknown service (14 ms)
+      ✓ returns 200 with zero/null metrics for an existing service without data (14 ms)
+      ✓ returns only the service's own metrics with the pre-change expressions (14 ms)
+      ✓ rejects anonymous requests with 401 before any data access (13 ms)
+      ✓ surfaces an engine failure as 500, not an empty 200 (14 ms)
+      ✓ treats injection-shaped ids as unknown services and leaves data intact (19 ms)
+
+Test Suites: 1 passed, 1 total
+Tests:       24 passed, 24 total
+Snapshots:   0 total
+Time:        2.763 s
+Ran all test suites matching /packages\/api-server\/src\/rest\/routes\/__tests__\/business-service-child-reads.test.ts/i.
+~~~~~~
+
+Exit code 0; 24/24 pass. The four stdout `error:` lines are the expected logs of the four "engine failure → 500" cases.
+
+### 5.2 Blobs
+
+~~~~~~
+$ git hash-object packages/api-server/src/rest/controllers/business-service.controller.ts packages/api-server/src/rest/routes/business-service.routes.ts packages/api-server/src/rest/routes/__tests__/business-service-child-reads.test.ts
+9ec3acd23eef5117c806c38e3c9ce31e6e760d7f
+9998baf66e03b39ced0f6e1e4a940bb1cefe2559
+7a53fe13fa148c8784a3d92de8e3944913b40dcf
+~~~~~~
+
+Controller `9ec3acd…` and routes `9998baf…` equal the required values (unchanged). New test blob: `7a53fe13fa148c8784a3d92de8e3944913b40dcf`.
+
+### 5.3 Diff against 51576bc
+
+Test file (raw `git --no-pager diff --no-color 51576bc -- <test>`, exit 0):
+
+~~~~~~
+diff --git a/packages/api-server/src/rest/routes/__tests__/business-service-child-reads.test.ts b/packages/api-server/src/rest/routes/__tests__/business-service-child-reads.test.ts
+index 41839eb..7a53fe1 100644
+--- a/packages/api-server/src/rest/routes/__tests__/business-service-child-reads.test.ts
++++ b/packages/api-server/src/rest/routes/__tests__/business-service-child-reads.test.ts
+@@ -246,10 +246,10 @@ describe('business-service child reads: missing-parent semantics (PGlite)', () =
+   });
+ });
+ 
+-// Driver serialisation [INFERENCE, UNRUN]: PGlite parses int8 (COUNT/SUM of
+-// INT) to a JS number when it is a safe integer, returns NUMERIC as a string
+-// ('150.5'), and parses json into an object. If the validation run shows the
+-// driver differs, adjust these expectations only, never the controller.
++// Driver serialisation, observed in HAP-187 validation (docs/archive/HAP-187-validation.md):
++// through PGlite, int8 COUNT/SUM arrive as JS numbers, AVG/ratio values as
++// numbers, NUMERIC total_monthly_cost as the string '150.5', and json
++// cost_by_tower as a parsed object.
+ const EMPTY_METRICS: Record<string, unknown> = {
+   health: {
+     incidents: { incidents_7d: 0, incidents_30d: 0, avg_mttr_30d: null, sla_breaches_30d: null },
+~~~~~~
+
+`git diff --stat 51576bc` (captured after everything in this section above this block was written; this block and the
+sentence introducing it add further lines to the doc, so the doc's final count is in the external validation.md):
+
+~~~~~~
+$ git --no-pager diff --no-color --stat 51576bc; echo "diffstat_exit=$?"; git status --short
+ docs/archive/HAP-187-validation.md                 | 171 +++++++++++++++++++--
+ .../__tests__/business-service-child-reads.test.ts |   8 +-
+ 2 files changed, 165 insertions(+), 14 deletions(-)
+diffstat_exit=0
+ M docs/archive/HAP-187-validation.md
+ M packages/api-server/src/rest/routes/__tests__/business-service-child-reads.test.ts
+~~~~~~
+
+Only two paths differ from 51576bc: this doc and the test file, whose 4 insertions / 4 deletions are exactly the comment lines
+shown in the raw diff above. Controller and routes are absent from the stat. Nothing was committed or merged.

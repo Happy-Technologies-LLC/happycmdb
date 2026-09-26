@@ -230,7 +230,10 @@ businessServiceRoutes.delete(
 
 /**
  * @route   GET /api/v1/business-services/:service_id/health
- * @desc    Get service health metrics
+ * @desc    Get service health metrics. 200 {success, data: {incidents, changes}}
+ *          when the service exists (empty metrics are 0 counts / null
+ *          averages and ratios); 404
+ *          {success: false, error: 'Business service not found'} when it does not.
  * @access  Private
  */
 businessServiceRoutes.get(
@@ -240,7 +243,10 @@ businessServiceRoutes.get(
 
 /**
  * @route   GET /api/v1/business-services/:service_id/costs
- * @desc    Get service cost summary
+ * @desc    Get service cost summary. 200 {success, data: {ci_count,
+ *          total_monthly_cost, cost_by_tower}} when the service exists (no
+ *          mappings => ci_count 0, null totals); 404
+ *          {success: false, error: 'Business service not found'} when it does not.
  * @access  Private
  */
 businessServiceRoutes.get(

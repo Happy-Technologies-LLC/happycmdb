@@ -574,7 +574,7 @@ import { AddressInfo } from 'net';
 import express from 'express';
 
 Object.assign(process.env, {
-  JWT_SECRET: 'test-only-jwt-secret-at-least-32-characters-long',
+  JWT_SECRET: '<redacted>',
   NEO4J_URI: 'bolt://127.0.0.1:1', NEO4J_USERNAME: 'unused', NEO4J_PASSWORD: 'unused',
   POSTGRES_HOST: '127.0.0.1', POSTGRES_DB: 'unused', POSTGRES_USER: 'unused', POSTGRES_PASSWORD: 'unused',
   REDIS_HOST: '127.0.0.1', KAFKA_CLIENT_ID: 'unused', KAFKA_GROUP_ID: 'unused',
@@ -705,29 +705,29 @@ $ HAP187_MODE=fixed npx jest -c jest.config.unit.js packages/api-server/src/rest
 --- s3fixed.out (stdout) ---
 MODE=fixed listening on 127.0.0.1:46631
 --- 1/2. bs-app populated ---
-$ curl -sS -w "\nHTTP_STATUS:%{http_code}\n" -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJfdXNlcklkIjoidmlld2VyLXVzZXItMSIsIl91c2VybmFtZSI6InZpZXdlciIsIl9yb2xlIjoidmlld2VyIiwiX3R5cGUiOiJhY2Nlc3MiLCJpYXQiOjE3OTAzNTgwNzYsImV4cCI6MTc5MDM1ODk3NiwiYXVkIjoiY21kYi1hcGkiLCJpc3MiOiJoYXBweWNtZGIifQ.DQv1GledaV3JqtbgVn3hkWl-XkL9tf1KBMpX-Ihisx8" http://127.0.0.1:46631/api/v1/business-services/bs-app/health
+$ curl -sS -w "\nHTTP_STATUS:%{http_code}\n" -H "Authorization: Bearer <redacted>" http://127.0.0.1:46631/api/v1/business-services/bs-app/health
 {"success":true,"data":{"incidents":{"incidents_7d":1,"incidents_30d":2,"avg_mttr_30d":60,"sla_breaches_30d":3},"changes":{"changes_7d":1,"changes_30d":2,"success_rate_30d":50}}}
 HTTP_STATUS:200
 [curl exit] 0
-$ curl -sS -w "\nHTTP_STATUS:%{http_code}\n" -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJfdXNlcklkIjoidmlld2VyLXVzZXItMSIsIl91c2VybmFtZSI6InZpZXdlciIsIl9yb2xlIjoidmlld2VyIiwiX3R5cGUiOiJhY2Nlc3MiLCJpYXQiOjE3OTAzNTgwNzYsImV4cCI6MTc5MDM1ODk3NiwiYXVkIjoiY21kYi1hcGkiLCJpc3MiOiJoYXBweWNtZGIifQ.DQv1GledaV3JqtbgVn3hkWl-XkL9tf1KBMpX-Ihisx8" http://127.0.0.1:46631/api/v1/business-services/bs-app/costs
+$ curl -sS -w "\nHTTP_STATUS:%{http_code}\n" -H "Authorization: Bearer <redacted>" http://127.0.0.1:46631/api/v1/business-services/bs-app/costs
 {"success":true,"data":{"ci_count":2,"total_monthly_cost":"150.5","cost_by_tower":{"compute":100,"storage":50.5}}}
 HTTP_STATUS:200
 [curl exit] 0
 --- 3. bs-empty ---
-$ curl -sS -w "\nHTTP_STATUS:%{http_code}\n" -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJfdXNlcklkIjoidmlld2VyLXVzZXItMSIsIl91c2VybmFtZSI6InZpZXdlciIsIl9yb2xlIjoidmlld2VyIiwiX3R5cGUiOiJhY2Nlc3MiLCJpYXQiOjE3OTAzNTgwNzYsImV4cCI6MTc5MDM1ODk3NiwiYXVkIjoiY21kYi1hcGkiLCJpc3MiOiJoYXBweWNtZGIifQ.DQv1GledaV3JqtbgVn3hkWl-XkL9tf1KBMpX-Ihisx8" http://127.0.0.1:46631/api/v1/business-services/bs-empty/health
+$ curl -sS -w "\nHTTP_STATUS:%{http_code}\n" -H "Authorization: Bearer <redacted>" http://127.0.0.1:46631/api/v1/business-services/bs-empty/health
 {"success":true,"data":{"incidents":{"incidents_7d":0,"incidents_30d":0,"avg_mttr_30d":null,"sla_breaches_30d":null},"changes":{"changes_7d":0,"changes_30d":0,"success_rate_30d":null}}}
 HTTP_STATUS:200
 [curl exit] 0
-$ curl -sS -w "\nHTTP_STATUS:%{http_code}\n" -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJfdXNlcklkIjoidmlld2VyLXVzZXItMSIsIl91c2VybmFtZSI6InZpZXdlciIsIl9yb2xlIjoidmlld2VyIiwiX3R5cGUiOiJhY2Nlc3MiLCJpYXQiOjE3OTAzNTgwNzYsImV4cCI6MTc5MDM1ODk3NiwiYXVkIjoiY21kYi1hcGkiLCJpc3MiOiJoYXBweWNtZGIifQ.DQv1GledaV3JqtbgVn3hkWl-XkL9tf1KBMpX-Ihisx8" http://127.0.0.1:46631/api/v1/business-services/bs-empty/costs
+$ curl -sS -w "\nHTTP_STATUS:%{http_code}\n" -H "Authorization: Bearer <redacted>" http://127.0.0.1:46631/api/v1/business-services/bs-empty/costs
 {"success":true,"data":{"ci_count":0,"total_monthly_cost":null,"cost_by_tower":null}}
 HTTP_STATUS:200
 [curl exit] 0
 --- 4. bs-missing ---
-$ curl -sS -w "\nHTTP_STATUS:%{http_code}\n" -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJfdXNlcklkIjoidmlld2VyLXVzZXItMSIsIl91c2VybmFtZSI6InZpZXdlciIsIl9yb2xlIjoidmlld2VyIiwiX3R5cGUiOiJhY2Nlc3MiLCJpYXQiOjE3OTAzNTgwNzYsImV4cCI6MTc5MDM1ODk3NiwiYXVkIjoiY21kYi1hcGkiLCJpc3MiOiJoYXBweWNtZGIifQ.DQv1GledaV3JqtbgVn3hkWl-XkL9tf1KBMpX-Ihisx8" http://127.0.0.1:46631/api/v1/business-services/bs-missing/health
+$ curl -sS -w "\nHTTP_STATUS:%{http_code}\n" -H "Authorization: Bearer <redacted>" http://127.0.0.1:46631/api/v1/business-services/bs-missing/health
 {"success":false,"error":"Business service not found"}
 HTTP_STATUS:404
 [curl exit] 0
-$ curl -sS -w "\nHTTP_STATUS:%{http_code}\n" -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJfdXNlcklkIjoidmlld2VyLXVzZXItMSIsIl91c2VybmFtZSI6InZpZXdlciIsIl9yb2xlIjoidmlld2VyIiwiX3R5cGUiOiJhY2Nlc3MiLCJpYXQiOjE3OTAzNTgwNzYsImV4cCI6MTc5MDM1ODk3NiwiYXVkIjoiY21kYi1hcGkiLCJpc3MiOiJoYXBweWNtZGIifQ.DQv1GledaV3JqtbgVn3hkWl-XkL9tf1KBMpX-Ihisx8" http://127.0.0.1:46631/api/v1/business-services/bs-missing/costs
+$ curl -sS -w "\nHTTP_STATUS:%{http_code}\n" -H "Authorization: Bearer <redacted>" http://127.0.0.1:46631/api/v1/business-services/bs-missing/costs
 {"success":false,"error":"Business service not found"}
 HTTP_STATUS:404
 [curl exit] 0
@@ -744,21 +744,21 @@ adapter queryCount during unauthenticated requests: 0
 --- 6. tables offline ---
 renamed fact_business_service_incidents, ci_business_service_mappings -> *_offline
 2026-09-25 17:41:16 [undefined] [31merror[39m: Error getting service health {"metadata":{"service":"cmdb","error":{},"service_id":"bs-app","timestamp":"2026-09-25T17:41:16.408Z"}}
-$ curl -sS -w "\nHTTP_STATUS:%{http_code}\n" -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJfdXNlcklkIjoidmlld2VyLXVzZXItMSIsIl91c2VybmFtZSI6InZpZXdlciIsIl9yb2xlIjoidmlld2VyIiwiX3R5cGUiOiJhY2Nlc3MiLCJpYXQiOjE3OTAzNTgwNzYsImV4cCI6MTc5MDM1ODk3NiwiYXVkIjoiY21kYi1hcGkiLCJpc3MiOiJoYXBweWNtZGIifQ.DQv1GledaV3JqtbgVn3hkWl-XkL9tf1KBMpX-Ihisx8" http://127.0.0.1:46631/api/v1/business-services/bs-app/health
+$ curl -sS -w "\nHTTP_STATUS:%{http_code}\n" -H "Authorization: Bearer <redacted>" http://127.0.0.1:46631/api/v1/business-services/bs-app/health
 {"success":false,"error":"Failed to get service health metrics","message":"relation \"fact_business_service_incidents\" does not exist"}
 HTTP_STATUS:500
 [curl exit] 0
 2026-09-25 17:41:16 [undefined] [31merror[39m: Error getting service costs {"metadata":{"service":"cmdb","error":{},"service_id":"bs-app","timestamp":"2026-09-25T17:41:16.421Z"}}
-$ curl -sS -w "\nHTTP_STATUS:%{http_code}\n" -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJfdXNlcklkIjoidmlld2VyLXVzZXItMSIsIl91c2VybmFtZSI6InZpZXdlciIsIl9yb2xlIjoidmlld2VyIiwiX3R5cGUiOiJhY2Nlc3MiLCJpYXQiOjE3OTAzNTgwNzYsImV4cCI6MTc5MDM1ODk3NiwiYXVkIjoiY21kYi1hcGkiLCJpc3MiOiJoYXBweWNtZGIifQ.DQv1GledaV3JqtbgVn3hkWl-XkL9tf1KBMpX-Ihisx8" http://127.0.0.1:46631/api/v1/business-services/bs-app/costs
+$ curl -sS -w "\nHTTP_STATUS:%{http_code}\n" -H "Authorization: Bearer <redacted>" http://127.0.0.1:46631/api/v1/business-services/bs-app/costs
 {"success":false,"error":"Failed to get service costs","message":"relation \"ci_business_service_mappings\" does not exist"}
 HTTP_STATUS:500
 [curl exit] 0
 restored tables; re-check:
-$ curl -sS -w "\nHTTP_STATUS:%{http_code}\n" -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJfdXNlcklkIjoidmlld2VyLXVzZXItMSIsIl91c2VybmFtZSI6InZpZXdlciIsIl9yb2xlIjoidmlld2VyIiwiX3R5cGUiOiJhY2Nlc3MiLCJpYXQiOjE3OTAzNTgwNzYsImV4cCI6MTc5MDM1ODk3NiwiYXVkIjoiY21kYi1hcGkiLCJpc3MiOiJoYXBweWNtZGIifQ.DQv1GledaV3JqtbgVn3hkWl-XkL9tf1KBMpX-Ihisx8" http://127.0.0.1:46631/api/v1/business-services/bs-app/health
+$ curl -sS -w "\nHTTP_STATUS:%{http_code}\n" -H "Authorization: Bearer <redacted>" http://127.0.0.1:46631/api/v1/business-services/bs-app/health
 {"success":true,"data":{"incidents":{"incidents_7d":1,"incidents_30d":2,"avg_mttr_30d":60,"sla_breaches_30d":3},"changes":{"changes_7d":1,"changes_30d":2,"success_rate_30d":50}}}
 HTTP_STATUS:200
 [curl exit] 0
-$ curl -sS -w "\nHTTP_STATUS:%{http_code}\n" -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJfdXNlcklkIjoidmlld2VyLXVzZXItMSIsIl91c2VybmFtZSI6InZpZXdlciIsIl9yb2xlIjoidmlld2VyIiwiX3R5cGUiOiJhY2Nlc3MiLCJpYXQiOjE3OTAzNTgwNzYsImV4cCI6MTc5MDM1ODk3NiwiYXVkIjoiY21kYi1hcGkiLCJpc3MiOiJoYXBweWNtZGIifQ.DQv1GledaV3JqtbgVn3hkWl-XkL9tf1KBMpX-Ihisx8" http://127.0.0.1:46631/api/v1/business-services/bs-app/costs
+$ curl -sS -w "\nHTTP_STATUS:%{http_code}\n" -H "Authorization: Bearer <redacted>" http://127.0.0.1:46631/api/v1/business-services/bs-app/costs
 {"success":true,"data":{"ci_count":2,"total_monthly_cost":"150.5","cost_by_tower":{"compute":100,"storage":50.5}}}
 HTTP_STATUS:200
 [curl exit] 0
@@ -787,11 +787,11 @@ $ git status --short > $S/s3.status 2>&1; echo "status_exit=$?" >> $S/s3.status
 --- s3base.out (stdout) ---
 MODE=baseline listening on 127.0.0.1:35859
 --- 7. baseline controller: missing service ---
-$ curl -sS -w "\nHTTP_STATUS:%{http_code}\n" -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJfdXNlcklkIjoidmlld2VyLXVzZXItMSIsIl91c2VybmFtZSI6InZpZXdlciIsIl9yb2xlIjoidmlld2VyIiwiX3R5cGUiOiJhY2Nlc3MiLCJpYXQiOjE3OTAzNTgwODQsImV4cCI6MTc5MDM1ODk4NCwiYXVkIjoiY21kYi1hcGkiLCJpc3MiOiJoYXBweWNtZGIifQ.xHdi1pAKmN8upVQ2LYTFlOwJT_3jY72rtGp6oktUxms" http://127.0.0.1:35859/api/v1/business-services/bs-missing/health
+$ curl -sS -w "\nHTTP_STATUS:%{http_code}\n" -H "Authorization: Bearer <redacted>" http://127.0.0.1:35859/api/v1/business-services/bs-missing/health
 {"success":true,"data":{"incidents":{"incidents_7d":0,"incidents_30d":0,"avg_mttr_30d":null,"sla_breaches_30d":null},"changes":{"changes_7d":0,"changes_30d":0,"success_rate_30d":null}}}
 HTTP_STATUS:200
 [curl exit] 0
-$ curl -sS -w "\nHTTP_STATUS:%{http_code}\n" -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJfdXNlcklkIjoidmlld2VyLXVzZXItMSIsIl91c2VybmFtZSI6InZpZXdlciIsIl9yb2xlIjoidmlld2VyIiwiX3R5cGUiOiJhY2Nlc3MiLCJpYXQiOjE3OTAzNTgwODQsImV4cCI6MTc5MDM1ODk4NCwiYXVkIjoiY21kYi1hcGkiLCJpc3MiOiJoYXBweWNtZGIifQ.xHdi1pAKmN8upVQ2LYTFlOwJT_3jY72rtGp6oktUxms" http://127.0.0.1:35859/api/v1/business-services/bs-missing/costs
+$ curl -sS -w "\nHTTP_STATUS:%{http_code}\n" -H "Authorization: Bearer <redacted>" http://127.0.0.1:35859/api/v1/business-services/bs-missing/costs
 {"success":true,"data":{"ci_count":0,"total_monthly_cost":null,"cost_by_tower":null}}
 HTTP_STATUS:200
 [curl exit] 0

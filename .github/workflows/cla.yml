@@ -25,8 +25,13 @@ jobs:
         with:
           path-to-signatures: 'signatures/version1/cla.json'
           path-to-document: 'https://github.com/${{ github.repository }}/blob/main/CLA.md'
-          branch: 'main'
-          allowlist: 'bot*,dependabot*'
+          # Signatures live on a dedicated unprotected branch: the action writes
+          # the file directly, and protected `main` rejected it ("Changes must be
+          # made through a pull request") on PR #21.
+          branch: 'cla-signatures'
+          # ht-cto-agent is Happy Technologies' own coding agent (commits as
+          # coding-worker@happy-tech.biz), covered like dependabot.
+          allowlist: 'bot*,dependabot*,ht-cto-agent'
           custom-notsigned-prcomment: >
             Thank you for your contribution! Before we can merge this PR, you need
             to sign our Contributor License Agreement (CLA). Please read the

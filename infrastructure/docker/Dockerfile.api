@@ -84,10 +84,10 @@ RUN npm run build
 WORKDIR /app/packages/data-mapper
 RUN npm run build
 
-WORKDIR /app/packages/identity-resolution
+WORKDIR /app/packages/integration-framework
 RUN npm run build
 
-WORKDIR /app/packages/integration-framework
+WORKDIR /app/packages/identity-resolution
 RUN npm run build
 
 WORKDIR /app/packages/integration-hub

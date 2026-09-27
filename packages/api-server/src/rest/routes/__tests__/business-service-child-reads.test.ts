@@ -24,14 +24,16 @@
  */
 
 import { fork } from 'child_process';
+import { randomBytes } from 'crypto';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import express from 'express';
 import request from 'supertest';
 
 // Placeholder config so loadConfig() validates; no Neo4j/Redis/PostgreSQL server is contacted.
+// The signing secret is generated per run in memory; no literal credential.
 Object.assign(process.env, {
-  JWT_SECRET: 'test-only-jwt-secret-at-least-32-characters-long',
+  JWT_SECRET: randomBytes(32).toString('hex'),
   NEO4J_URI: 'bolt://127.0.0.1:1', NEO4J_USERNAME: 'unused', NEO4J_PASSWORD: 'unused',
   POSTGRES_HOST: '127.0.0.1', POSTGRES_DB: 'unused', POSTGRES_USER: 'unused', POSTGRES_PASSWORD: 'unused',
   REDIS_HOST: '127.0.0.1', KAFKA_CLIENT_ID: 'unused', KAFKA_GROUP_ID: 'unused',
@@ -126,11 +128,13 @@ INSERT INTO business_service_dependencies (service_id, depends_on_service_id, de
   ('bs-app', 'bs-net', 'infrastructure', '2026-01-01 00:00:00'),
   ('bs-app', 'bs-db', 'platform', '2026-02-01 00:00:00'),
   ('bs-other', 'bs-db', 'application', '2026-03-01 00:00:00');
-INSERT INTO fact_business_service_incidents (service_id, incident_date, mttr_minutes, sla_breaches) VALUES
-  ('bs-app', CURRENT_DATE - 1, 30, 1),
-  ('bs-app', CURRENT_DATE - 10, 90, 2),
-  ('bs-app', CURRENT_DATE - 60, 500, 9),
-  ('bs-other', CURRENT_DATE - 3, 1000, 40);
+-- incident_count / change_count: additive per-day event counters;
+-- successful_count: the successful subset of the same row change_count.
+INSERT INTO fact_business_service_incidents (service_id, incident_date, incident_count, mttr_minutes, sla_breaches) VALUES
+  ('bs-app', CURRENT_DATE - 1, 3, 30, 1),
+  ('bs-app', CURRENT_DATE - 10, 7, 90, 2),
+  ('bs-app', CURRENT_DATE - 60, 200, 500, 9),
+  ('bs-other', CURRENT_DATE - 3, 900, 1000, 40);
 INSERT INTO fact_business_service_changes (service_id, change_date, change_count, successful_count) VALUES
   ('bs-app', CURRENT_DATE - 2, 4, 3),
   ('bs-app', CURRENT_DATE - 20, 6, 6),
@@ -258,11 +262,12 @@ const EMPTY_METRICS: Record<string, unknown> = {
   costs: { ci_count: 0, total_monthly_cost: null, cost_by_tower: null },
 };
 const APP_METRICS: Record<string, unknown> = {
-  // COUNT(*) counts daily fact rows and success_rate_30d is an all-time ratio
-  // (no date filter): pre-existing semantics, preserved here on purpose.
+  // Daily-counter contract: incidents/changes sum the per-day counters in the
+  // window; success_rate_30d = in-window successful / in-window changes
+  // (9/10). An all-time numerator (10/10) or denominator (9/20) would differ.
   health: {
-    incidents: { incidents_7d: 1, incidents_30d: 2, avg_mttr_30d: 60, sla_breaches_30d: 3 },
-    changes: { changes_7d: 1, changes_30d: 2, success_rate_30d: 50 },
+    incidents: { incidents_7d: 3, incidents_30d: 10, avg_mttr_30d: 60, sla_breaches_30d: 3 },
+    changes: { changes_7d: 4, changes_30d: 10, success_rate_30d: 90 },
   },
   // The non-current ci-new row (999) and bs-other's ci-foreign are excluded.
   costs: { ci_count: 2, total_monthly_cost: '150.5', cost_by_tower: { compute: 100, storage: 50.5 } },
@@ -329,6 +334,49 @@ describe('business-service metric reads: missing-parent semantics (PGlite)', () 
       }
       const res = await request(app).get(`/api/v1/business-services/bs-app/${metric}`).set(auth);
       expect(res.body).toEqual({ success: true, data: APP_METRICS[metric] });
+    });
+  });
+});
+
+describe('business-service health: daily-counter windows (PGlite)', () => {
+  const app = buildApp();
+  const token = new JWTService(loadConfig().auth.jwt).generateAccessToken(VIEWER_ID, 'viewer', 'viewer');
+  const auth = { Authorization: `Bearer ${token}` };
+  const health = async (serviceId: string) => {
+    const res = await request(app).get(`/api/v1/business-services/${serviceId}/health`).set(auth);
+    expect(res.status).toBe(200);
+    return res.body.data;
+  };
+
+  beforeEach(async () => {
+    await db.exec(`TRUNCATE ${DDL_TABLES.join(', ')} RESTART IDENTITY CASCADE;${SEED}`);
+  });
+
+  // The schema is UNIQUE (service_id, date): one counter row per service/day.
+  it('sums multi-event day counters, including day -7/-30 and excluding day -8/-31', async () => {
+    await db.exec(`
+      INSERT INTO fact_business_service_incidents (service_id, incident_date, incident_count) VALUES
+        ('bs-db', CURRENT_DATE, 3),
+        ('bs-db', CURRENT_DATE - 7, 5), ('bs-db', CURRENT_DATE - 8, 11),
+        ('bs-db', CURRENT_DATE - 30, 13), ('bs-db', CURRENT_DATE - 31, 17);
+      INSERT INTO fact_business_service_changes (service_id, change_date, change_count, successful_count) VALUES
+        ('bs-db', CURRENT_DATE - 7, 5, 4), ('bs-db', CURRENT_DATE - 8, 11, 11),
+        ('bs-db', CURRENT_DATE - 30, 13, 0), ('bs-db', CURRENT_DATE - 31, 17, 17);`);
+    const data = await health('bs-db');
+    expect(data.incidents).toMatchObject({ incidents_7d: 8, incidents_30d: 32 });
+    expect(data.changes).toMatchObject({ changes_7d: 5, changes_30d: 29 });
+    expect(data.changes.success_rate_30d).toBeCloseTo((15 / 29) * 100, 10);
+  });
+
+  it('returns a null rate when the 30-day window has no changes, despite older facts', async () => {
+    await db.exec(`
+      INSERT INTO fact_business_service_incidents (service_id, incident_date, incident_count, mttr_minutes, sla_breaches) VALUES
+        ('bs-net', CURRENT_DATE - 31, 50, 10, 1);
+      INSERT INTO fact_business_service_changes (service_id, change_date, change_count, successful_count) VALUES
+        ('bs-net', CURRENT_DATE - 1, 0, 0), ('bs-net', CURRENT_DATE - 31, 100, 100);`);
+    expect(await health('bs-net')).toEqual({
+      incidents: { incidents_7d: 0, incidents_30d: 0, avg_mttr_30d: null, sla_breaches_30d: null },
+      changes: { changes_7d: 0, changes_30d: 0, success_rate_30d: null },
     });
   });
 });

@@ -632,7 +632,14 @@ export class BusinessServiceController {
 
   /**
    * GET /api/v1/business-services/:service_id/health
-   * Get service health metrics
+   * Get service health metrics.
+   *
+   * Input contract: fact_business_service_incidents / fact_business_service_changes
+   * hold daily service/date event counters. incident_count and change_count are
+   * additive per-day totals; successful_count is the successful subset of the
+   * same row's change_count. Windowed counts sum those counters; the 30-day
+   * success rate filters numerator and denominator identically and is NULL
+   * when the window has no changes.
    */
   async getServiceHealth(req: Request, res: Response): Promise<void> {
     try {
@@ -648,8 +655,8 @@ export class BusinessServiceController {
         FROM dim_business_services s
         CROSS JOIN LATERAL (
           SELECT
-            COUNT(*) FILTER (WHERE incident_date >= CURRENT_DATE - INTERVAL '7 days') as incidents_7d,
-            COUNT(*) FILTER (WHERE incident_date >= CURRENT_DATE - INTERVAL '30 days') as incidents_30d,
+            COALESCE(SUM(incident_count) FILTER (WHERE incident_date >= CURRENT_DATE - INTERVAL '7 days'), 0) as incidents_7d,
+            COALESCE(SUM(incident_count) FILTER (WHERE incident_date >= CURRENT_DATE - INTERVAL '30 days'), 0) as incidents_30d,
             AVG(mttr_minutes) FILTER (WHERE incident_date >= CURRENT_DATE - INTERVAL '30 days') as avg_mttr_30d,
             SUM(sla_breaches) FILTER (WHERE incident_date >= CURRENT_DATE - INTERVAL '30 days') as sla_breaches_30d
           FROM fact_business_service_incidents
@@ -657,9 +664,10 @@ export class BusinessServiceController {
         ) i
         CROSS JOIN LATERAL (
           SELECT
-            COUNT(*) FILTER (WHERE change_date >= CURRENT_DATE - INTERVAL '7 days') as changes_7d,
-            COUNT(*) FILTER (WHERE change_date >= CURRENT_DATE - INTERVAL '30 days') as changes_30d,
-            SUM(successful_count)::float / NULLIF(SUM(change_count), 0) * 100 as success_rate_30d
+            COALESCE(SUM(change_count) FILTER (WHERE change_date >= CURRENT_DATE - INTERVAL '7 days'), 0) as changes_7d,
+            COALESCE(SUM(change_count) FILTER (WHERE change_date >= CURRENT_DATE - INTERVAL '30 days'), 0) as changes_30d,
+            (SUM(successful_count) FILTER (WHERE change_date >= CURRENT_DATE - INTERVAL '30 days'))::float
+              / NULLIF(SUM(change_count) FILTER (WHERE change_date >= CURRENT_DATE - INTERVAL '30 days'), 0) * 100 as success_rate_30d
           FROM fact_business_service_changes
           WHERE service_id = s.service_id
         ) c

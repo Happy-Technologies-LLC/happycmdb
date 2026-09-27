@@ -17,6 +17,11 @@ COPY --from=design-system . /happy-technologies-design-system
 # Install ALL dependencies (including devDependencies)
 RUN npm install
 
+# The design system ships TypeScript source and imports react etc. from its own
+# location; resolve those from the workspace's node_modules, as a sibling
+# checkout with installed dependencies would locally.
+RUN ln -s /app/node_modules /happy-technologies-design-system/node_modules
+
 # Copy tsconfig files
 COPY tsconfig.base.json ./
 

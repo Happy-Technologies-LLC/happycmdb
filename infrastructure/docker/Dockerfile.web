@@ -7,6 +7,13 @@ WORKDIR /app
 COPY package*.json ./
 COPY web-ui/package.json ./web-ui/
 
+# web-ui depends on `file:../../happy-technologies-design-system`, a sibling repo
+# outside this build context, supplied as the `design-system` build context
+# (compose build.additional_contexts, or
+# `--build-context design-system=../happy-technologies-design-system`).
+# From /app/web-ui, ../../ resolves to /happy-technologies-design-system.
+COPY --from=design-system . /happy-technologies-design-system
+
 # Install ALL dependencies (including devDependencies)
 RUN npm install
 

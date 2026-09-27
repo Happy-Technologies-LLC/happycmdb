@@ -107,6 +107,8 @@ services:
     build:
       context: ..
       dockerfile: infrastructure/docker/Dockerfile.web
+      additional_contexts:
+        design-system: ../../happy-technologies-design-system
     depends_on:
       api-server:
         condition: service_healthy

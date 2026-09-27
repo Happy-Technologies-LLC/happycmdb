@@ -234,6 +234,12 @@ businessServiceRoutes.delete(
  *          when the service exists (empty metrics are 0 counts / null
  *          averages and ratios); 404
  *          {success: false, error: 'Business service not found'} when it does not.
+ *          Input contract: the fact tables hold daily service/date event
+ *          counters. incidents_7d/30d and changes_7d/30d sum incident_count /
+ *          change_count over rows with date >= CURRENT_DATE - 7/30 days;
+ *          success_rate_30d = SUM(successful_count) / SUM(change_count) * 100
+ *          over that same 30-day window, null when the window has no changes.
+ *          Producer mapping, timezone and replay guarantees are not asserted here.
  * @access  Private
  */
 businessServiceRoutes.get(

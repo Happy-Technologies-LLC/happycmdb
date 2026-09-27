@@ -30,7 +30,7 @@ services:
       PGDATA: /var/lib/postgresql/data/pgdata
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ../../infrastructure/scripts/init-postgres.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ../infrastructure/scripts/init-postgres.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U cmdb_user -d cmdb"]
       interval: 10s

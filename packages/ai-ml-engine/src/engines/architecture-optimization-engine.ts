@@ -59,33 +59,34 @@ export class ArchitectureOptimizationEngine {
   async analyzeBusinessService(serviceId: string, organizationId: string): Promise<ArchitectureAnalysis | null> {
     logger.info('Starting architecture analysis for business service', { service_id: serviceId });
 
-    // Get business service details
-    const serviceResult = await this.postgresClient.query(
-      'SELECT service_id, name FROM dim_business_services WHERE service_id = $1 AND organization_id = $2',
+    // One statement rooted at the org-filtered parent: zero rows => unknown
+    // (or another organization's) service; a single null-extended row => no
+    // mappings. Reading the mappings in the same snapshot means a concurrent
+    // delete + recreate of this (globally unique) service_id by another
+    // organization cannot leak that organization's CIs into this analysis.
+    const result = await this.postgresClient.query(
+      `SELECT s.name, m.ci_id
+       FROM dim_business_services s
+       LEFT JOIN ci_business_service_mappings m ON m.service_id = s.service_id
+       WHERE s.service_id = $1 AND s.organization_id = $2`,
       [serviceId, organizationId]
     );
+    const rows: Array<{ name: string; ci_id: string | null }> = result.rows;
 
-    if (serviceResult.rows.length === 0) {
+    if (rows.length === 0) {
       return null;
     }
 
-    const service = serviceResult.rows[0];
-
-    // Get all CIs mapped to this business service (its parent row is org-checked above)
-    const ciMappings = await this.postgresClient.query(
-      'SELECT ci_id FROM ci_business_service_mappings WHERE service_id = $1',
-      [serviceId]
-    );
-
-    const ciIds = ciMappings.rows.map((r: any) => r.ci_id);
+    const serviceName = rows[0]!.name;
+    const ciIds = rows.flatMap((r) => (r.ci_id === null ? [] : [r.ci_id]));
 
     if (ciIds.length === 0) {
       logger.warn('No CIs mapped to business service', { service_id: serviceId });
-      return this.createEmptyAnalysis(serviceId, service.name);
+      return this.createEmptyAnalysis(serviceId, serviceName);
     }
 
     // Analyze architecture
-    return await this.analyzeArchitecture(ciIds, serviceId, service.name);
+    return await this.analyzeArchitecture(ciIds, serviceId, serviceName);
   }
 
   /**

@@ -58,11 +58,21 @@ const db = {
 };
 
 let queryCount = 0;
+// One-shot hook run right after the next statement that reads
+// dim_business_services returns: simulates another transaction committing
+// between two statements of the same request.
+let afterParentRead: (() => Promise<unknown>) | null = null;
 const pgClient = {
   // Plain function (not jest.fn): the unit config resets mock implementations.
   query: async (sql: string, params: unknown[] = []) => {
     queryCount++;
-    return { rows: await send('query', sql, params) };
+    const rows = await send('query', sql, params);
+    if (afterParentRead !== null && sql.includes('dim_business_services')) {
+      const interleave = afterParentRead;
+      afterParentRead = null;
+      await interleave();
+    }
+    return { rows };
   },
 };
 
@@ -84,6 +94,7 @@ const USERS: Record<string, { _id: string; _username: string; _role: string; _en
   'user-a': { _id: 'user-a', _username: 'alice', _role: 'operator', _enabled: true, _organizationId: INTERNAL_ORG },
   'user-b': { _id: 'user-b', _username: 'bob', _role: 'operator', _enabled: true, _organizationId: ORG_B },
   'user-none': { _id: 'user-none', _username: 'nora', _role: 'admin', _enabled: true },
+  'user-bad': { _id: 'user-bad', _username: 'bart', _role: 'admin', _enabled: true, _organizationId: 'not-a-uuid' },
 };
 const API_KEY_B = randomBytes(32).toString('hex');
 const API_KEY_NONE = randomBytes(32).toString('hex');
@@ -102,7 +113,9 @@ jest.mock('../../../auth/neo4j-auth.repository', () => ({
 }));
 
 // Imported after mocks are registered (jest hoists jest.mock).
-import { loadConfig } from '@cmdb/common';
+import { loadConfig, logger } from '@cmdb/common';
+import { getMigrationStatus } from '../../../../../database/src/postgres/migrator';
+import type { PostgresClient } from '../../../../../database/src/postgres/client';
 import { JWTService } from '../../../auth/jwt.service';
 import { getAuthMiddleware } from '../../../auth/auth-bootstrap';
 import { businessServiceRoutes } from '../business-service.routes';
@@ -204,9 +217,18 @@ afterAll(() => {
 beforeEach(async () => {
   await db.exec(`TRUNCATE ${DDL_TABLES.join(', ')} RESTART IDENTITY CASCADE;${SEED}`);
   queryCount = 0;
+  afterParentRead = null;
 });
 
 describe('migration 008_business_service_organization_scope', () => {
+  // getMigrationStatus only calls query(). Like node-postgres, a query without
+  // parameters uses the simple protocol, which accepts several statements
+  // (ensureMigrationsTable sends three).
+  const migratorClient = {
+    query: async (sql: string, params?: unknown[]) =>
+      params?.length ? pgClient.query(sql, params) : { rows: await send('exec', sql) },
+  } as unknown as PostgresClient;
+
   it('backfills every pre-existing service to the internal organization', () => {
     expect(backfilled).toEqual([
       { service_id: 'bs-legacy-1', organization_id: INTERNAL_ORG },
@@ -237,11 +259,41 @@ describe('migration 008_business_service_organization_scope', () => {
     expect(await orgOf('bs-b-app')).toBe(ORG_B);
     expect(await orgOf('bs-a-app')).toBe(INTERNAL_ORG);
   });
+
+  it('ships a rollback the migrator never discovers', async () => {
+    // Real migrator discovery over the real directory (creates cmdb.schema_migrations in PGlite).
+    const names = (await getMigrationStatus(migratorClient, MIGRATIONS)).map(m => m._name);
+    expect(names).toContain('008_business_service_organization_scope.sql');
+    expect(names.filter(name => /down|rollback/.test(name))).toEqual([]);
+  });
+
+  it('rolls back cleanly with the manual down script, and 008 re-applies afterwards', async () => {
+    const up = readFileSync(join(MIGRATIONS, '008_business_service_organization_scope.sql'), 'utf8');
+    const down = readFileSync(join(MIGRATIONS, 'rollback/008_business_service_organization_scope.down.sql'), 'utf8');
+    await getMigrationStatus(migratorClient, MIGRATIONS); // ensures cmdb.schema_migrations
+    await db.exec(`INSERT INTO cmdb.schema_migrations (migration_name, checksum)
+      VALUES ('008_business_service_organization_scope.sql', 'x') ON CONFLICT DO NOTHING`);
+    try {
+      await db.exec(down);
+
+      expect(await db.rows(`SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'dim_business_services' AND column_name = 'organization_id'`)).toEqual([]);
+      expect(await db.rows(`SELECT 1 FROM pg_indexes WHERE indexname = 'idx_dim_business_services_organization'`)).toEqual([]);
+      expect(await db.rows(`SELECT 1 FROM cmdb.schema_migrations
+        WHERE migration_name = '008_business_service_organization_scope.sql'`)).toEqual([]);
+      // A pre-008 API's org-less insert works again.
+      await db.exec(`INSERT INTO dim_business_services (service_id, name, service_classification, tbm_tower,
+        business_criticality, operational_status) VALUES ('bs-pre-008', 'Pre', 'compute', 'compute', 'low', 'active')`);
+    } finally {
+      await db.exec(up);
+    }
+    expect(await orgOf('bs-pre-008')).toBe(INTERNAL_ORG);
+  });
 });
 
 describe('fail closed without an organization claim', () => {
   const noClaim = bearer('user-none');
-  const malformedClaim = bearer('user-none', 'not-a-uuid');
+  const malformedClaim = bearer('user-bad');
   // Fixed arity: a shorter row would make jest pass `done` as the body.
   const ROUTES: Array<[string, string, object | null]> = [
     ['get', '/api/v1/business-services', null],
@@ -429,5 +481,89 @@ describe('writes take the organization from the token only', () => {
     expect(await orgOf('bs-b-app')).toBe(ORG_B);
     const a = await request(app).get('/api/v1/business-services/bs-b-app').set(AS_A);
     expect(a.status).toBe(404);
+  });
+});
+
+describe('the tenant is re-read from the user record on every request', () => {
+  const userA = USERS['user-a']!;
+
+  it("moves an already-issued token with its user's organization", async () => {
+    try {
+      userA._organizationId = ORG_B;
+      const own = await request(app).get('/api/v1/business-services/bs-a-app').set(AS_A);
+      expect([own.status, own.body]).toEqual([404, NOT_FOUND]);
+      const list = await request(app).get('/api/v1/business-services').set(AS_A);
+      expect(list.body.data.map((s: { service_id: string }) => s.service_id)).toEqual(['bs-b-app', 'bs-b-db']);
+
+      delete userA._organizationId;
+      const removed = await request(app).get('/api/v1/business-services').set(AS_A);
+      expect(removed.status).toBe(403);
+    } finally {
+      userA._organizationId = INTERNAL_ORG;
+    }
+  });
+
+  it('rejects a refresh token presented as a bearer token', async () => {
+    const refresh = jwt.generateRefreshToken('user-a', 'alice', 'operator');
+    const res = await request(app).get('/api/v1/business-services/bs-a-app').set({ Authorization: `Bearer ${refresh}` });
+    expect(res.status).toBe(401);
+    expect(queryCount).toBe(0);
+  });
+});
+
+describe('parent and children are read in one org-filtered snapshot', () => {
+  // Right after the request reads bs-a-empty (org A, no children), org B
+  // deletes it and recreates the same global service_id with its own children.
+  const recreateAsOrgB = () => db.exec(`
+    DELETE FROM dim_business_services WHERE service_id = 'bs-a-empty';
+    INSERT INTO dim_business_services (service_id, name, service_classification, tbm_tower, business_criticality,
+      operational_status, organization_id) VALUES ('bs-a-empty', 'B Takeover', 'data', 'data', 'critical', 'active', '${ORG_B}');
+    INSERT INTO ci_business_service_mappings (ci_id, service_id, mapping_type) VALUES ('ci-b-secret', 'bs-a-empty', 'hosts');
+    INSERT INTO business_service_dependencies (service_id, depends_on_service_id, dependency_type)
+      VALUES ('bs-a-empty', 'bs-b-db', 'data');`);
+
+  it("GET /:id never counts another organization's children", async () => {
+    afterParentRead = recreateAsOrgB;
+    const res = await request(app).get('/api/v1/business-services/bs-a-empty').set(AS_A);
+    expect(afterParentRead).toBeNull(); // the interleave ran
+    expect(await orgOf('bs-a-empty')).toBe(ORG_B);
+    expect(res.status).toBe(200);
+    expect(res.body.data).toMatchObject({
+      name: 'A Empty', organization_id: INTERNAL_ORG, mapped_cis_count: 0, dependencies_count: 0,
+    });
+  });
+
+  it("the architecture analysis never analyzes another organization's CIs", async () => {
+    afterParentRead = recreateAsOrgB;
+    const res = await request(app).get('/api/v1/architecture/business-services/bs-a-empty/analysis').set(AS_A);
+    expect(afterParentRead).toBeNull();
+    expect(res.status).toBe(200);
+    expect(res.body.analysis).toMatchObject({
+      business_service_name: 'A Empty', dependency_graph_summary: { total_cis: 0 },
+    });
+  });
+});
+
+describe('failures: generic 500 body, diagnostics in the server log', () => {
+  it('logs name/message/code/stack but returns no driver text', async () => {
+    const logged = jest.spyOn(logger, 'error').mockImplementation(() => logger);
+    await db.exec('ALTER TABLE ci_business_service_mappings RENAME TO ci_business_service_mappings_offline');
+    try {
+      const res = await request(app).get('/api/v1/business-services/bs-a-app/cis').set(AS_A);
+      expect(res.status).toBe(500);
+      expect(res.body).toEqual({ success: false, error: 'Failed to get mapped CIs' });
+
+      expect(logged).toHaveBeenCalledWith('Error getting mapped CIs', {
+        service_id: 'bs-a-app',
+        error: {
+          name: 'Error',
+          message: expect.stringMatching(/ci_business_service_mappings.*does not exist/),
+          code: '42P01',
+          stack: expect.stringContaining('does not exist'),
+        },
+      });
+    } finally {
+      await db.exec('ALTER TABLE ci_business_service_mappings_offline RENAME TO ci_business_service_mappings');
+    }
   });
 });

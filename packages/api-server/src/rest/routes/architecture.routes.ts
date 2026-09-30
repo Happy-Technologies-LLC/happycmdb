@@ -10,6 +10,7 @@ import { getArchitectureOptimizationEngine } from '@cmdb/ai-ml-engine';
 import { logger } from '@cmdb/common';
 import { getAuthMiddleware } from '../../auth/auth-bootstrap';
 import { requestOrganizationId } from '../../middleware/auth.middleware';
+import { errorLogFields } from '../../utils/log-error';
 
 export const architectureRoutes = Router();
 const authMiddleware = getAuthMiddleware();
@@ -45,7 +46,7 @@ architectureRoutes.get(
         analysis,
       });
     } catch (error) {
-      logger.error('Architecture analysis failed', { error, service_id: req.params.serviceId });
+      logger.error('Architecture analysis failed', { error: errorLogFields(error), service_id: req.params.serviceId });
       res.status(500).json({
         success: false,
         error: 'Failed to analyze architecture',
@@ -85,11 +86,11 @@ architectureRoutes.post(
         success: true,
         analysis,
       });
-    } catch (error: any) {
-      logger.error('Architecture analysis failed', { error: error.message });
+    } catch (error) {
+      logger.error('Architecture analysis failed', { error: errorLogFields(error) });
       res.status(500).json({
         success: false,
-        error: error.message || 'Failed to analyze architecture',
+        error: 'Failed to analyze architecture',
       });
     }
   }
@@ -110,11 +111,11 @@ architectureRoutes.get(
         message: 'Aggregated recommendations endpoint - implementation pending',
         note: 'Use /business-services/:serviceId/analysis for specific service recommendations',
       });
-    } catch (error: any) {
-      logger.error('Failed to get recommendations', { error: error.message });
+    } catch (error) {
+      logger.error('Failed to get recommendations', { error: errorLogFields(error) });
       res.status(500).json({
         success: false,
-        error: error.message || 'Failed to get recommendations',
+        error: 'Failed to get recommendations',
       });
     }
   }

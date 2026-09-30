@@ -151,28 +151,45 @@ Your backend should generate JWT tokens with this payload:
 
 ## Tenant Scoping (Organization Claim)
 
-Business services are tenant-scoped. Every access token and API key carries the
-owning user's organization as the `_organizationId` claim (a UUID), taken from
-the Neo4j `User` node property `_organizationId` (or `organizationId`) at login,
-refresh, and API-key verification. Request bodies can never set it.
+Business services are tenant-scoped. The tenant of a request is the `_organizationId`
+(a UUID) of the authenticated user, read from the Neo4j `User` node property
+`_organizationId` (or `organizationId`) on **every request**, for both bearer tokens and API keys.
+Access tokens also carry it as a claim minted at login and refresh. That claim is
+informational only: it is replaced by the user's current organization, so moving or
+removing a user's organization takes effect immediately. Request bodies can never set it.
+Refresh tokens are accepted only by the refresh endpoint; as a bearer token they get **401**.
 
 - `/api/v1/business-services/**` and `/api/v1/architecture/business-services/:serviceId/analysis`
   return **403** `{"_error":"Forbidden","_message":"Organization claim required"}` when the
-  claim is missing or not a UUID. The check runs before any data access.
+  user has no organization or it is not a UUID. The check runs before any data access.
 - Reads and writes only see rows whose `dim_business_services.organization_id`
-  equals the claim. Another organization's service returns the same **404**
+  equals the tenant. Another organization's service returns the same **404**
   as a service that does not exist.
 - `organization_id` in a create or update body is rejected with **400**.
 - Migration `008_business_service_organization_scope.sql` backfills existing
   services to the internal organization `00000000-0000-0000-0000-000000000000`.
-  Users need `organizationId` set to that value (the seeded admin has it) and
-  must log in again so their tokens carry the claim.
+  Users need `organizationId` set (the seeded admin has the internal organization).
 
 ```cypher
 // Assign an existing user to the internal organization
 MATCH (u:User) WHERE u._username = 'svc-happyhive' OR u.username = 'svc-happyhive'
 SET u.organizationId = '00000000-0000-0000-0000-000000000000';
 ```
+
+### Rolling back migration 008
+
+API images built before 008 insert business services without `organization_id`, so
+every create fails with `23502` while the column exists. Before deploying such an
+image, run the manual rollback (no migration runner executes it):
+
+```bash
+psql -v ON_ERROR_STOP=1 -f packages/database/src/postgres/migrations/rollback/008_business_service_organization_scope.down.sql
+```
+
+It drops the index and the column, which discards every organization assignment,
+and deletes the `cmdb.schema_migrations` row so 008 applies again later. Re-applying
+008 puts all services back in the internal organization. Until the old image is
+running, the 008-aware API returns 500 on business-service routes.
 
 ## Backend JWT Middleware
 

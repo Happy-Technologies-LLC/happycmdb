@@ -10,6 +10,7 @@ import { Request, Response } from 'express';
 import { getPostgresClient } from '@cmdb/database';
 import { logger } from '@cmdb/common';
 import { requestOrganizationId } from '../../middleware/auth.middleware';
+import { errorLogFields } from '../../utils/log-error';
 
 /*
  * Tenant scoping: every handler reads the caller's organization from the
@@ -21,14 +22,6 @@ import { requestOrganizationId } from '../../middleware/auth.middleware';
  * 500 responses carry a generic message only; driver errors (which name
  * tables/columns) are logged server-side, never returned.
  */
-
-/** SQLSTATE of a pg driver error (e.g. '23505'), if the value carries one. */
-function pgErrorCode(error: unknown): string | undefined {
-  if (error && typeof error === 'object' && 'code' in error && typeof error.code === 'string') {
-    return error.code;
-  }
-  return undefined;
-}
 
 export class BusinessServiceController {
   private pgClient = getPostgresClient();
@@ -153,7 +146,7 @@ export class BusinessServiceController {
         }
       });
     } catch (error) {
-      logger.error('Error listing business services', { error });
+      logger.error('Error listing business services', { error: errorLogFields(error) });
       res.status(500).json({
         success: false,
         error: 'Failed to list business services'
@@ -169,8 +162,16 @@ export class BusinessServiceController {
     try {
       const { service_id } = req.params;
 
+      // One statement: the child counts are read in the same snapshot as the
+      // org-filtered parent row, so a concurrent delete + recreate of this
+      // (globally unique) service_id by another organization cannot leak that
+      // organization's children into the counts.
       const result = await this.pgClient.query(
-        'SELECT * FROM dim_business_services WHERE service_id = $1 AND organization_id = $2',
+        `SELECT s.*,
+          (SELECT COUNT(*) FROM ci_business_service_mappings m WHERE m.service_id = s.service_id)::int AS mapped_cis_count,
+          (SELECT COUNT(*) FROM business_service_dependencies d WHERE d.service_id = s.service_id)::int AS dependencies_count
+        FROM dim_business_services s
+        WHERE s.service_id = $1 AND s.organization_id = $2`,
         [service_id, requestOrganizationId(req)]
       );
 
@@ -182,30 +183,12 @@ export class BusinessServiceController {
         return;
       }
 
-      // Get mapped CIs count
-      const ciCountResult = await this.pgClient.query(
-        'SELECT COUNT(*) FROM ci_business_service_mappings WHERE service_id = $1',
-        [service_id]
-      );
-
-      // Get dependencies count
-      const depsCountResult = await this.pgClient.query(
-        'SELECT COUNT(*) FROM business_service_dependencies WHERE service_id = $1',
-        [service_id]
-      );
-
-      const service = {
-        ...result.rows[0],
-        mapped_cis_count: parseInt(ciCountResult.rows[0].count),
-        dependencies_count: parseInt(depsCountResult.rows[0].count)
-      };
-
       res.json({
         success: true,
-        data: service
+        data: result.rows[0]
       });
     } catch (error) {
-      logger.error('Error getting business service', { error, service_id: req.params.service_id });
+      logger.error('Error getting business service', { error: errorLogFields(error), service_id: req.params.service_id });
       res.status(500).json({
         success: false,
         error: 'Failed to get business service'
@@ -266,11 +249,11 @@ export class BusinessServiceController {
         data: result.rows[0]
       });
     } catch (error) {
-      logger.error('Error creating business service', { error, body: req.body });
+      logger.error('Error creating business service', { error: errorLogFields(error), service_id: req.body?.service_id });
 
       // service_id is globally unique across organizations, so a conflict
       // may name another tenant's id; the body stays generic either way.
-      if (pgErrorCode(error) === '23505') { // Unique violation
+      if (errorLogFields(error).code === '23505') { // Unique violation (SQLSTATE)
         res.status(409).json({
           success: false,
           error: 'Business service with this ID already exists'
@@ -336,7 +319,7 @@ export class BusinessServiceController {
         data: result.rows[0]
       });
     } catch (error) {
-      logger.error('Error updating business service', { error, service_id: req.params.service_id });
+      logger.error('Error updating business service', { error: errorLogFields(error), service_id: req.params.service_id });
       res.status(500).json({
         success: false,
         error: 'Failed to update business service'
@@ -373,7 +356,7 @@ export class BusinessServiceController {
         data: result.rows[0]
       });
     } catch (error) {
-      logger.error('Error deleting business service', { error, service_id: req.params.service_id });
+      logger.error('Error deleting business service', { error: errorLogFields(error), service_id: req.params.service_id });
       res.status(500).json({
         success: false,
         error: 'Failed to delete business service'
@@ -419,7 +402,7 @@ export class BusinessServiceController {
         data: result.rows[0].ci_id === null ? [] : result.rows
       });
     } catch (error) {
-      logger.error('Error getting mapped CIs', { error, service_id: req.params.service_id });
+      logger.error('Error getting mapped CIs', { error: errorLogFields(error), service_id: req.params.service_id });
       res.status(500).json({
         success: false,
         error: 'Failed to get mapped CIs'
@@ -466,7 +449,7 @@ export class BusinessServiceController {
         data: result.rows
       });
     } catch (error) {
-      logger.error('Error mapping CIs to service', { error, service_id: req.params.service_id });
+      logger.error('Error mapping CIs to service', { error: errorLogFields(error), service_id: req.params.service_id });
       res.status(500).json({
         success: false,
         error: 'Failed to map CIs to service'
@@ -506,7 +489,9 @@ export class BusinessServiceController {
         message: 'CI unmapped successfully'
       });
     } catch (error) {
-      logger.error('Error unmapping CI from service', { error, service_id: req.params.service_id, ci_id: req.params.ci_id });
+      logger.error('Error unmapping CI from service', {
+        error: errorLogFields(error), service_id: req.params.service_id, ci_id: req.params.ci_id
+      });
       res.status(500).json({
         success: false,
         error: 'Failed to unmap CI from service'
@@ -558,7 +543,7 @@ export class BusinessServiceController {
         data: result.rows[0].depends_on_service_id === null ? [] : result.rows
       });
     } catch (error) {
-      logger.error('Error getting service dependencies', { error, service_id: req.params.service_id });
+      logger.error('Error getting service dependencies', { error: errorLogFields(error), service_id: req.params.service_id });
       res.status(500).json({
         success: false,
         error: 'Failed to get service dependencies'
@@ -603,9 +588,9 @@ export class BusinessServiceController {
         data: result.rows[0]
       });
     } catch (error) {
-      logger.error('Error creating service dependency', { error, service_id: req.params.service_id });
+      logger.error('Error creating service dependency', { error: errorLogFields(error), service_id: req.params.service_id });
 
-      const code = pgErrorCode(error);
+      const { code } = errorLogFields(error); // SQLSTATE
       if (code === '23505') { // Unique violation
         res.status(409).json({
           success: false,
@@ -661,7 +646,7 @@ export class BusinessServiceController {
         message: 'Dependency deleted successfully'
       });
     } catch (error) {
-      logger.error('Error deleting service dependency', { error, service_id: req.params.service_id });
+      logger.error('Error deleting service dependency', { error: errorLogFields(error), service_id: req.params.service_id });
       res.status(500).json({
         success: false,
         error: 'Failed to delete service dependency'
@@ -746,7 +731,7 @@ export class BusinessServiceController {
         }
       });
     } catch (error) {
-      logger.error('Error getting service health', { error, service_id: req.params.service_id });
+      logger.error('Error getting service health', { error: errorLogFields(error), service_id: req.params.service_id });
       res.status(500).json({
         success: false,
         error: 'Failed to get service health metrics'
@@ -820,7 +805,7 @@ export class BusinessServiceController {
         data: result.rows[0]
       });
     } catch (error) {
-      logger.error('Error getting service costs', { error, service_id: req.params.service_id });
+      logger.error('Error getting service costs', { error: errorLogFields(error), service_id: req.params.service_id });
       res.status(500).json({
         success: false,
         error: 'Failed to get service costs'

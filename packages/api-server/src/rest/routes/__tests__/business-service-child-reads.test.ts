@@ -84,7 +84,7 @@ jest.mock('../../../auth/neo4j-auth.repository', () => ({
   Neo4jAuthRepository: jest.fn(() => ({
     findUserById: async (userId: string) =>
       userId === VIEWER_ID
-        ? { _id: VIEWER_ID, _username: 'viewer', _role: 'viewer', _enabled: true }
+        ? { _id: VIEWER_ID, _username: 'viewer', _role: 'viewer', _enabled: true, _organizationId: ORG }
         : null,
   })),
 }));

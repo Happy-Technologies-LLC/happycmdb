@@ -11,7 +11,8 @@ const db = new PGlite();
 
 process.on('message', async ({ id, op, sql, params }) => {
   try {
-    const rows = op === 'exec' ? (await db.exec(sql), []) : (await db.query(sql, params)).rows;
+    // exec: simple protocol (several statements allowed); rows of the last statement.
+    const rows = op === 'exec' ? ((await db.exec(sql)).at(-1)?.rows ?? []) : (await db.query(sql, params)).rows;
     process.send({ id, rows });
   } catch (error) {
     // code: the SQLSTATE (e.g. '23505'), which handlers map to 409/400 like the pg driver's.

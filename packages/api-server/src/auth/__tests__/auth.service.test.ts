@@ -13,6 +13,7 @@ import { describe, it, expect, beforeEach } from '@jest/globals';
 import { ApiKeyNotFoundError, AuthService, AuthRepository, UserProfileUpdate } from '../auth.service';
 import { User, ApiKey } from '../types';
 import { PasswordService } from '../password.service';
+import { JWTService } from '../jwt.service';
 
 const authConfig = {
   jwt: {
@@ -196,31 +197,45 @@ describe('AuthService profile/password/account lifecycle', () => {
 
   describe('tenant claim', () => {
     const ORG = '11111111-1111-4111-8111-111111111111';
+    const OTHER_ORG = '22222222-2222-4222-8222-222222222222';
+    const jwtService = new JWTService(authConfig.jwt);
     const setOrg = (organizationId: string | undefined) =>
       repository.users.set('user-1', { ...repository.users.get('user-1')!, _organizationId: organizationId });
     const login = () => service.login({ username: 'alice', password: 'correct-horse-battery-staple' });
 
-    it("mints the user's organization into access and refresh tokens", async () => {
+    it("mints the user's organization into the access token only", async () => {
       setOrg(ORG);
       const tokens = await login();
 
-      expect((await service.verifyToken(tokens._accessToken))._organizationId).toBe(ORG);
-      expect((await service.verifyToken(tokens._refreshToken))._organizationId).toBe(ORG);
+      expect(jwtService.decodeToken(tokens._accessToken)?._organizationId).toBe(ORG);
+      expect(jwtService.decodeToken(tokens._refreshToken)).not.toHaveProperty('_organizationId');
     });
 
-    it('mints no claim for a user without an organization', async () => {
-      const tokens = await login();
+    it("resolves the claim from the user's current organization, not the token", async () => {
+      setOrg(ORG);
+      const { _accessToken } = await login();
 
-      expect(await service.verifyToken(tokens._accessToken)).not.toHaveProperty('_organizationId');
+      setOrg(OTHER_ORG);
+      expect((await service.verifyToken(_accessToken))._organizationId).toBe(OTHER_ORG);
+
+      setOrg(undefined);
+      expect((await service.verifyToken(_accessToken))._organizationId).toBeUndefined();
     });
 
-    it('re-reads the organization from the user record on refresh', async () => {
+    it('rejects a refresh token presented as a bearer token', async () => {
+      setOrg(ORG);
+      const { _refreshToken } = await login();
+
+      await expect(service.verifyToken(_refreshToken)).rejects.toThrow(/Invalid token type/);
+    });
+
+    it('mints the current organization on refresh', async () => {
       const tokens = await login();
       setOrg(ORG);
 
       const refreshed = await service.refreshToken({ refreshToken: tokens._refreshToken });
 
-      expect((await service.verifyToken(refreshed._accessToken))._organizationId).toBe(ORG);
+      expect(jwtService.decodeToken(refreshed._accessToken)?._organizationId).toBe(ORG);
     });
   });
 });

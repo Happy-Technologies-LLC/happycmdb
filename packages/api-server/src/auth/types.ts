@@ -26,9 +26,9 @@ export interface User {
   /** Data-URL or hosted URL for the profile avatar image. */
   _avatar?: string;
   /**
-   * Organization (tenant) the user belongs to; minted into every token as
-   * `_organizationId`. Unset => tokens carry no org claim and org-scoped
-   * routes (business services) reject them with 403.
+   * Organization (tenant) the user belongs to. It is the tenant of every
+   * request the user makes (re-read per request by AuthService.verifyToken /
+   * verifyApiKey). Unset => org-scoped routes (business services) return 403.
    */
   _organizationId?: string;
 }
@@ -55,7 +55,11 @@ export interface TokenPayload {
   _role: UserRole;
   _type: 'access' | 'refresh';
   _tier?: ApiKeyTier;
-  /** Tenant claim; org-scoped routes require it (see AuthMiddleware.requireOrganization). */
+  /**
+   * Tenant; org-scoped routes require it (AuthMiddleware.requireOrganization).
+   * On authenticated requests it is the user's current organization, not the
+   * value minted into the token.
+   */
   _organizationId?: string;
   iat?: number;
   exp?: number;

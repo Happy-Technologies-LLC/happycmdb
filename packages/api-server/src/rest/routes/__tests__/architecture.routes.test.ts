@@ -158,6 +158,19 @@ describe('architecture routes', () => {
     expect(response.body).toEqual({ success: false, error: 'Business service not found' });
   });
 
+  it.each(writeRoutes)('%s %s returns a generic 500 without the engine error text', async (method, path, body) => {
+    const failure = async () => {
+      throw new Error('relation "architecture_analyses" does not exist');
+    };
+    mockAnalyzeBusinessService.mockImplementation(failure);
+    mockAnalyzeArchitecture.mockImplementation(failure);
+
+    const response = await invoke(testApp(), method, path, body, 'Bearer operator-token');
+
+    expect(response.status).toBe(500);
+    expect(response.body).toEqual({ success: false, error: 'Failed to analyze architecture' });
+  });
+
   it('rejects an invalid/unrecognized bearer token with 401', async () => {
     const response = await invoke(
       testApp(),

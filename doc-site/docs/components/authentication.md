@@ -195,6 +195,37 @@ and deletes the `cmdb.schema_migrations` row so 008 applies again later. Re-appl
 008 puts all services back in the internal organization. Until the old image is
 running, the 008-aware API returns 500 on business-service routes.
 
+### Tenant fixture seed (acceptance testing)
+
+`packages/api-server/src/scripts/seed-tenant-fixture.ts` prepares a scratch CMDB
+for tenant-scoping acceptance tests (the CO-1 runner). It uses the api-server's own
+`POSTGRES_*` and `NEO4J_*` variables, with no defaults, and:
+
+1. runs the PostgreSQL migrations;
+2. upserts an active and an inactive business service owned by `--organization-id`,
+   and an active one owned by `--other-organization-id`;
+3. upserts two enabled `viewer` users: `--service-user` with that organization,
+   and `--no-org-user` with none.
+
+Passwords come only from `CMDB_SEED_SERVICE_USER_PASSWORD` and
+`CMDB_SEED_NO_ORG_USER_PASSWORD` (at least 8 characters). They are stored as bcrypt
+hashes and never printed. Tokens come from `POST /api/v1/auth/login`. Usernames must
+pass the login schema (alphanumeric, 3–30 characters).
+
+```bash
+npm run build --workspace=packages/api-server
+CMDB_SEED_SERVICE_USER_PASSWORD=... CMDB_SEED_NO_ORG_USER_PASSWORD=... \
+node packages/api-server/dist/scripts/seed-tenant-fixture.js \
+  --organization-id 00000000-0000-0000-0000-000000000000 --service-id bs-fulfillment \
+  --inactive-service-id bs-retired --other-organization-id <uuid> --other-service-id bs-foreign \
+  --service-user hiveservice --no-org-user noorguser
+```
+
+Re-running converges to the same state and re-hashes the passwords. The seed refuses
+to move an existing service or user to a different organization. It prints one JSON
+line naming what it seeded. Migration 001 needs the `timescaledb` and `uuid-ossp`
+extensions, so the target PostgreSQL must provide them.
+
 ## Backend JWT Middleware
 
 ### Express Middleware

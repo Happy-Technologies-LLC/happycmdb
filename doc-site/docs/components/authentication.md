@@ -173,6 +173,12 @@ Refresh tokens are accepted only by the refresh endpoint; as a bearer token they
 - Migration `008_business_service_organization_scope.sql` backfills existing
   services to the internal organization `00000000-0000-0000-0000-000000000000`.
   Users need `organizationId` set (the seeded admin has the internal organization).
+- Migration `009_business_service_views_org_scope.sql` adds `organization_id` to the
+  SQL views `v_business_service_health` and `v_tbm_tower_summary` (tower counts are
+  per organization). The views have no row-level security and are `GRANT SELECT TO
+  PUBLIC`: any reader must filter `WHERE organization_id = <token _organizationId>`.
+  `avg_mttr_minutes` is weighted by `incident_count` over days with a recorded MTTR
+  (NULL when there are none), matching `GET /api/v1/business-services/:id/health`.
 
 ```cypher
 // Assign an existing user to the internal organization
@@ -180,7 +186,15 @@ MATCH (u:User) WHERE u._username = 'svc-happyhive' OR u.username = 'svc-happyhiv
 SET u.organizationId = '00000000-0000-0000-0000-000000000000';
 ```
 
-### Rolling back migration 008
+### Rolling back migrations 009 and 008
+
+Roll back 009 first: its views depend on `organization_id`, so 008's rollback fails
+(and changes nothing) while they exist. The 009 rollback restores the 001 view
+definitions and deletes its `cmdb.schema_migrations` row:
+
+```bash
+psql -v ON_ERROR_STOP=1 -f packages/database/src/postgres/migrations/rollback/009_business_service_views_org_scope.down.sql
+```
 
 API images built before 008 insert business services without `organization_id`, so
 every create fails with `23502` while the column exists. Before deploying such an

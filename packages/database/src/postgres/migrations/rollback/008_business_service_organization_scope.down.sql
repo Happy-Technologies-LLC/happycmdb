@@ -13,6 +13,11 @@
 -- Loses data: every service's organization assignment is dropped. Re-applying
 -- 008 later puts ALL services back in the internal organization.
 --
+-- Order: if 009_business_service_views_org_scope.sql is applied, run
+-- rollback/009_business_service_views_org_scope.down.sql first. Its views
+-- depend on organization_id, so the DROP COLUMN below fails and this whole
+-- transaction aborts until they are restored.
+--
 -- Run: psql -v ON_ERROR_STOP=1 -f 008_business_service_organization_scope.down.sql
 
 BEGIN;

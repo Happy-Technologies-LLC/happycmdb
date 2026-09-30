@@ -124,14 +124,21 @@ function users(names: string[]) {
   );
 }
 
-/** Every non-system table in `database`, e.g. to prove a refused run wrote nothing. */
+/**
+ * Every user relation in `database` (not extension-owned: the TimescaleDB
+ * template gives each new database the extension's catalog), e.g. to prove a
+ * refused run wrote nothing.
+ */
 async function scratchTables(database: string): Promise<string[]> {
   const pg = admin(database);
   await pg.connect();
   try {
     const { rows } = await pg.query(
-      `SELECT table_schema || '.' || table_name AS name FROM information_schema.tables
-       WHERE table_schema NOT IN ('pg_catalog', 'information_schema') ORDER BY 1`
+      `SELECT n.nspname || '.' || c.relname AS name FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+       WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f') AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+         AND NOT EXISTS (SELECT 1 FROM pg_depend d
+           WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.deptype = 'e')
+       ORDER BY 1`
     );
     return rows.map(r => r.name as string);
   } finally {

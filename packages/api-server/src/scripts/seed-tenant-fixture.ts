@@ -261,14 +261,22 @@ export function parseTarget(env: NodeJS.ProcessEnv): TenantFixtureTarget {
 }
 
 /**
- * 'fixture' (marker present), 'empty' (no tables at all) or 'foreign'
- * (tables but no marker: not a scratch database this seed may write to).
+ * 'fixture' (marker present), 'empty' (no user relations) or 'foreign'
+ * (user relations but no marker: not a scratch database this seed may write
+ * to). Relations owned by an extension do not count: a fresh database created
+ * from a TimescaleDB template already holds the extension's catalog tables.
  */
 export async function inspectPostgres(pg: SqlClient): Promise<'fixture' | 'empty' | 'foreign'> {
   const { rows } = await pg.query(
     `SELECT to_regclass('cmdb.tenant_fixture_marker') IS NOT NULL AS marked,
-       (SELECT count(*)::int FROM information_schema.tables
-         WHERE table_schema NOT IN ('pg_catalog', 'information_schema')) AS tables`
+       (SELECT count(*)::int FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f')
+           AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+           AND n.nspname NOT LIKE 'pg\\_toast%'
+           AND NOT EXISTS (
+             SELECT 1 FROM pg_depend d
+             WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.deptype = 'e'
+           )) AS tables`
   );
   if (rows[0]!['marked'] === true) {
     return 'fixture';

@@ -639,7 +639,11 @@ export class BusinessServiceController {
    * additive per-day totals; successful_count is the successful subset of the
    * same row's change_count. Windowed counts sum those counters; the 30-day
    * success rate filters numerator and denominator identically and is NULL
-   * when the window has no changes.
+   * when the window has no changes. mttr_minutes is the mean over that row's
+   * incidents, so avg_mttr_30d weights each row by incident_count (rows with
+   * NULL mttr_minutes are excluded from both sides) and is NULL when no
+   * in-window incident has an MTTR. sla_breaches_30d is 0 when the window is
+   * empty.
    */
   async getServiceHealth(req: Request, res: Response): Promise<void> {
     try {
@@ -657,8 +661,9 @@ export class BusinessServiceController {
           SELECT
             COALESCE(SUM(incident_count) FILTER (WHERE incident_date >= CURRENT_DATE - INTERVAL '7 days'), 0) as incidents_7d,
             COALESCE(SUM(incident_count) FILTER (WHERE incident_date >= CURRENT_DATE - INTERVAL '30 days'), 0) as incidents_30d,
-            AVG(mttr_minutes) FILTER (WHERE incident_date >= CURRENT_DATE - INTERVAL '30 days') as avg_mttr_30d,
-            SUM(sla_breaches) FILTER (WHERE incident_date >= CURRENT_DATE - INTERVAL '30 days') as sla_breaches_30d
+            SUM(mttr_minutes * incident_count) FILTER (WHERE incident_date >= CURRENT_DATE - INTERVAL '30 days')
+              / NULLIF(SUM(incident_count) FILTER (WHERE incident_date >= CURRENT_DATE - INTERVAL '30 days' AND mttr_minutes IS NOT NULL), 0) as avg_mttr_30d,
+            COALESCE(SUM(sla_breaches) FILTER (WHERE incident_date >= CURRENT_DATE - INTERVAL '30 days'), 0) as sla_breaches_30d
           FROM fact_business_service_incidents
           WHERE service_id = s.service_id
         ) i
@@ -729,18 +734,25 @@ export class BusinessServiceController {
       // Aggregates are computed per-CI/per-tower in CTEs first, since Postgres rejects
       // an aggregate (SUM) nested directly inside another aggregate's (json_object_agg)
       // argument list.
+      // UNIQUE(ci_id, service_id, mapping_type) lets one CI map to the service
+      // under several relationship types; mapped_cis collapses those to one row
+      // per CI so its cost is summed once.
       const result = await this.pgClient.query(
         `WITH parent AS (
           SELECT service_id FROM dim_business_services WHERE service_id = $1
         ),
-        ci_costs AS (
-          SELECT
-            m.ci_id,
-            dc.tbm_attributes->>'resource_tower' AS resource_tower,
-            (dc.tbm_attributes->>'monthly_cost')::numeric AS monthly_cost
+        mapped_cis AS (
+          SELECT DISTINCT m.ci_id
           FROM parent p
           JOIN ci_business_service_mappings m ON m.service_id = p.service_id
-          LEFT JOIN cmdb.dim_ci dc ON dc.ci_id = m.ci_id AND dc.is_current = TRUE
+        ),
+        ci_costs AS (
+          SELECT
+            mc.ci_id,
+            dc.tbm_attributes->>'resource_tower' AS resource_tower,
+            (dc.tbm_attributes->>'monthly_cost')::numeric AS monthly_cost
+          FROM mapped_cis mc
+          LEFT JOIN cmdb.dim_ci dc ON dc.ci_id = mc.ci_id AND dc.is_current = TRUE
         ),
         tower_costs AS (
           SELECT resource_tower, SUM(monthly_cost) AS tower_cost

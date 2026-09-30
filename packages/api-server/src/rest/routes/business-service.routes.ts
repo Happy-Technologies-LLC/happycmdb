@@ -239,6 +239,9 @@ businessServiceRoutes.delete(
  *          change_count over rows with date >= CURRENT_DATE - 7/30 days;
  *          success_rate_30d = SUM(successful_count) / SUM(change_count) * 100
  *          over that same 30-day window, null when the window has no changes.
+ *          avg_mttr_30d = SUM(mttr_minutes * incident_count) / SUM(incident_count)
+ *          over in-window rows with a non-null mttr_minutes, null when there
+ *          are none; sla_breaches_30d is 0 when the window has no incidents.
  *          Producer mapping, timezone and replay guarantees are not asserted here.
  * @access  Private
  */
@@ -253,6 +256,7 @@ businessServiceRoutes.get(
  *          total_monthly_cost, cost_by_tower}} when the service exists (no
  *          mappings => ci_count 0, null totals); 404
  *          {success: false, error: 'Business service not found'} when it does not.
+ *          A CI mapped under several mapping types is counted and costed once.
  * @access  Private
  */
 businessServiceRoutes.get(

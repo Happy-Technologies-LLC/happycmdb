@@ -256,7 +256,7 @@ describe('business-service child reads: missing-parent semantics (PGlite)', () =
 // cost_by_tower as a parsed object.
 const EMPTY_METRICS: Record<string, unknown> = {
   health: {
-    incidents: { incidents_7d: 0, incidents_30d: 0, avg_mttr_30d: null, sla_breaches_30d: null },
+    incidents: { incidents_7d: 0, incidents_30d: 0, avg_mttr_30d: null, sla_breaches_30d: 0 },
     changes: { changes_7d: 0, changes_30d: 0, success_rate_30d: null },
   },
   costs: { ci_count: 0, total_monthly_cost: null, cost_by_tower: null },
@@ -265,8 +265,10 @@ const APP_METRICS: Record<string, unknown> = {
   // Daily-counter contract: incidents/changes sum the per-day counters in the
   // window; success_rate_30d = in-window successful / in-window changes
   // (9/10). An all-time numerator (10/10) or denominator (9/20) would differ.
+  // avg_mttr_30d is incident-weighted: (3*30 + 7*90) / 10 = 72, not the
+  // row average (30 + 90) / 2 = 60.
   health: {
-    incidents: { incidents_7d: 3, incidents_30d: 10, avg_mttr_30d: 60, sla_breaches_30d: 3 },
+    incidents: { incidents_7d: 3, incidents_30d: 10, avg_mttr_30d: 72, sla_breaches_30d: 3 },
     changes: { changes_7d: 4, changes_30d: 10, success_rate_30d: 90 },
   },
   // The non-current ci-new row (999) and bs-other's ci-foreign are excluded.
@@ -368,15 +370,53 @@ describe('business-service health: daily-counter windows (PGlite)', () => {
     expect(data.changes.success_rate_30d).toBeCloseTo((15 / 29) * 100, 10);
   });
 
-  it('returns a null rate when the 30-day window has no changes, despite older facts', async () => {
+  it('returns zero breaches and null MTTR/rate when the 30-day window is empty, despite older facts', async () => {
     await db.exec(`
       INSERT INTO fact_business_service_incidents (service_id, incident_date, incident_count, mttr_minutes, sla_breaches) VALUES
         ('bs-net', CURRENT_DATE - 31, 50, 10, 1);
       INSERT INTO fact_business_service_changes (service_id, change_date, change_count, successful_count) VALUES
         ('bs-net', CURRENT_DATE - 1, 0, 0), ('bs-net', CURRENT_DATE - 31, 100, 100);`);
     expect(await health('bs-net')).toEqual({
-      incidents: { incidents_7d: 0, incidents_30d: 0, avg_mttr_30d: null, sla_breaches_30d: null },
+      incidents: { incidents_7d: 0, incidents_30d: 0, avg_mttr_30d: null, sla_breaches_30d: 0 },
       changes: { changes_7d: 0, changes_30d: 0, success_rate_30d: null },
+    });
+  });
+
+  it('weights MTTR by incident_count and skips days without a recorded MTTR', async () => {
+    // Row average (10 + 100) / 2 = 55; weighted (1*10 + 9*100) / (1 + 9) = 91.
+    // The NULL-MTTR day counts as incidents but must not drag the mean to
+    // 910 / 15; the out-of-window day must not contribute at all.
+    await db.exec(`
+      INSERT INTO fact_business_service_incidents (service_id, incident_date, incident_count, mttr_minutes, sla_breaches) VALUES
+        ('bs-db', CURRENT_DATE - 2, 1, 10, 0),
+        ('bs-db', CURRENT_DATE - 12, 9, 100, 1),
+        ('bs-db', CURRENT_DATE - 14, 5, NULL, 0),
+        ('bs-db', CURRENT_DATE - 45, 100, 1000, 4);`);
+    expect((await health('bs-db')).incidents).toEqual({
+      incidents_7d: 1, incidents_30d: 15, avg_mttr_30d: 91, sla_breaches_30d: 1,
+    });
+  });
+});
+
+describe('business-service costs: one CI mapped under several relationship types (PGlite)', () => {
+  const app = buildApp();
+  const token = new JWTService(loadConfig().auth.jwt).generateAccessToken(VIEWER_ID, 'viewer', 'viewer');
+  const auth = { Authorization: `Bearer ${token}` };
+
+  beforeEach(async () => {
+    await db.exec(`TRUNCATE ${DDL_TABLES.join(', ')} RESTART IDENTITY CASCADE;${SEED}`);
+  });
+
+  it('counts the CI once in ci_count, total_monthly_cost and cost_by_tower', async () => {
+    // UNIQUE(ci_id, service_id, mapping_type) permits the same CI twice per service.
+    await db.exec(`
+      INSERT INTO ci_business_service_mappings (ci_id, service_id, mapping_type) VALUES
+        ('ci-new', 'bs-db', 'hosts'), ('ci-new', 'bs-db', 'supports');`);
+    const res = await request(app).get('/api/v1/business-services/bs-db/costs').set(auth);
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      success: true,
+      data: { ci_count: 1, total_monthly_cost: '100', cost_by_tower: { compute: 100 } },
     });
   });
 });

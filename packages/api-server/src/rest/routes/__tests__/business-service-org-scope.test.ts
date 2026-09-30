@@ -372,6 +372,44 @@ describe('two-organization isolation', () => {
     expect(costs.body.data).toMatchObject({ ci_count: 1, total_monthly_cost: '100' });
   });
 
+  it("serves #26's weighted MTTR, zero-default SLA and deduplicated costs per organization", async () => {
+    // ci-shared is mapped into both organizations, twice (two mapping types) under org A.
+    await db.exec(`
+      INSERT INTO fact_business_service_incidents (service_id, incident_date, incident_count, mttr_minutes, sla_breaches) VALUES
+        ('bs-a-app', CURRENT_DATE - 10, 7, 90, 2),
+        ('bs-b-app', CURRENT_DATE - 5, 100, 10, 5);
+      INSERT INTO ci_business_service_mappings (ci_id, service_id, mapping_type) VALUES
+        ('ci-shared', 'bs-a-app', 'supports'), ('ci-shared', 'bs-a-app', 'enables'), ('ci-shared', 'bs-b-app', 'hosts');
+      INSERT INTO cmdb.dim_ci (ci_id, ci_name, ci_type, ci_status, tbm_attributes, is_current) VALUES
+        ('ci-shared', 'Shared', 'server', 'active', '{"resource_tower": "compute", "monthly_cost": 50}', TRUE);`);
+    const get = async (headers: object, path: string) => {
+      const res = await request(app).get(`/api/v1/business-services/${path}`).set(headers);
+      return [res.status, res.body.data ?? res.body];
+    };
+
+    // Weighted by incident_count: A (3*30 + 7*90) / 10 = 72; B (900*1000 + 100*10) / 1000 = 901.
+    expect(await get(AS_A, 'bs-a-app/health')).toEqual([200, expect.objectContaining({
+      incidents: { incidents_7d: 3, incidents_30d: 10, avg_mttr_30d: 72, sla_breaches_30d: 3 },
+    })]);
+    expect(await get(AS_B, 'bs-b-app/health')).toEqual([200, expect.objectContaining({
+      incidents: { incidents_7d: 1000, incidents_30d: 1000, avg_mttr_30d: 901, sla_breaches_30d: 45 },
+    })]);
+    // Empty window: 0 breaches for A even though B's services have breaches.
+    expect(await get(AS_A, 'bs-a-empty/health')).toEqual([200, expect.objectContaining({
+      incidents: { incidents_7d: 0, incidents_30d: 0, avg_mttr_30d: null, sla_breaches_30d: 0 },
+    })]);
+
+    // ci-shared costs once per organization, and only the owner's CIs count.
+    expect(await get(AS_A, 'bs-a-app/costs'))
+      .toEqual([200, { ci_count: 2, total_monthly_cost: '150', cost_by_tower: { compute: 150 } }]);
+    expect(await get(AS_B, 'bs-b-app/costs'))
+      .toEqual([200, { ci_count: 2, total_monthly_cost: '57', cost_by_tower: { compute: 57 } }]);
+
+    for (const metric of ['health', 'costs']) {
+      expect(await get(AS_B, `bs-a-app/${metric}`)).toEqual([404, NOT_FOUND]);
+    }
+  });
+
   it('never joins a dependency target from another organization', async () => {
     // A cross-org edge can only exist from before scoping; the read must not surface it.
     await db.exec(`INSERT INTO business_service_dependencies (service_id, depends_on_service_id, dependency_type)

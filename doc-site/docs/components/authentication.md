@@ -166,6 +166,10 @@ Refresh tokens are accepted only by the refresh endpoint; as a bearer token they
   equals the tenant. Another organization's service returns the same **404**
   as a service that does not exist.
 - `organization_id` in a create or update body is rejected with **400**.
+- **Accepted limitation (founder-approved, 2026-09-30):** `service_id` is unique across
+  all organizations. Creating a service with an id another organization already uses
+  returns **409** and leaves that row untouched, but the 409 reveals that the id exists.
+  No key change is planned.
 - Migration `008_business_service_organization_scope.sql` backfills existing
   services to the internal organization `00000000-0000-0000-0000-000000000000`.
   Users need `organizationId` set (the seeded admin has the internal organization).

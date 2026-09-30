@@ -411,7 +411,7 @@ describe('business-service health: daily-counter windows (PGlite)', () => {
 
 describe('business-service costs: one CI mapped under several relationship types (PGlite)', () => {
   const app = buildApp();
-  const token = new JWTService(loadConfig().auth.jwt).generateAccessToken(VIEWER_ID, 'viewer', 'viewer');
+  const token = new JWTService(loadConfig().auth.jwt).generateAccessToken(VIEWER_ID, 'viewer', 'viewer', ORG);
   const auth = { Authorization: `Bearer ${token}` };
 
   beforeEach(async () => {

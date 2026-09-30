@@ -131,12 +131,15 @@ ON EACH [ci.name, ci.metadata];
 
 // Create admin user
 // Password: Admin123! (bcrypt hash)
+// organizationId: the internal organization; business-service routes reject
+// tokens without an org claim (see migration 008_business_service_organization_scope.sql).
 MERGE (u:User {email: 'admin@happycmdb.local'})
 SET u.id = 'user-admin-001',
     u.username = 'admin',
     u.passwordHash = '$2b$10$rKZLwXqF6kE7H4N5gHx.pOzF9bXZC.qvJKE7Bz7YLqGxHWqP6H8Jy',
     u.role = 'admin',
     u.enabled = true,
+    u.organizationId = '00000000-0000-0000-0000-000000000000',
     u.createdAt = datetime(),
     u.updatedAt = datetime();
 

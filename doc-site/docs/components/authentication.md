@@ -149,6 +149,31 @@ Your backend should generate JWT tokens with this payload:
 }
 ```
 
+## Tenant Scoping (Organization Claim)
+
+Business services are tenant-scoped. Every access token and API key carries the
+owning user's organization as the `_organizationId` claim (a UUID), taken from
+the Neo4j `User` node property `_organizationId` (or `organizationId`) at login,
+refresh, and API-key verification. Request bodies can never set it.
+
+- `/api/v1/business-services/**` and `/api/v1/architecture/business-services/:serviceId/analysis`
+  return **403** `{"_error":"Forbidden","_message":"Organization claim required"}` when the
+  claim is missing or not a UUID. The check runs before any data access.
+- Reads and writes only see rows whose `dim_business_services.organization_id`
+  equals the claim. Another organization's service returns the same **404**
+  as a service that does not exist.
+- `organization_id` in a create or update body is rejected with **400**.
+- Migration `008_business_service_organization_scope.sql` backfills existing
+  services to the internal organization `00000000-0000-0000-0000-000000000000`.
+  Users need `organizationId` set to that value (the seeded admin has it) and
+  must log in again so their tokens carry the claim.
+
+```cypher
+// Assign an existing user to the internal organization
+MATCH (u:User) WHERE u._username = 'svc-happyhive' OR u.username = 'svc-happyhive'
+SET u.organizationId = '00000000-0000-0000-0000-000000000000';
+```
+
 ## Backend JWT Middleware
 
 ### Express Middleware

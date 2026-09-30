@@ -17,6 +17,12 @@ import { join } from 'path';
 import { getPostgresClient } from '../src/postgres/client';
 import { logger } from '@cmdb/common';
 
+/**
+ * Seed templates belong to the internal organization, the same id migration
+ * 008_business_service_organization_scope.sql backfills existing rows to.
+ */
+const INTERNAL_ORGANIZATION_ID = '00000000-0000-0000-0000-000000000000';
+
 interface BusinessService {
   id: string;
   name: string;
@@ -118,9 +124,10 @@ async function loadBusinessServices(): Promise<void> {
               related_ci_types,
               cost_allocation,
               metadata,
+              organization_id,
               created_at,
               updated_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NOW(), NOW())`,
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, NOW(), NOW())`,
             [
               service.id,
               service.name,
@@ -139,6 +146,7 @@ async function loadBusinessServices(): Promise<void> {
               service.related_ci_types,
               JSON.stringify(service.cost_allocation),
               '{}', // Empty metadata for seed data
+              INTERNAL_ORGANIZATION_ID,
             ]
           );
 

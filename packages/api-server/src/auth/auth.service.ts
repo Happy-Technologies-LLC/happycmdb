@@ -93,9 +93,9 @@ export class AuthService {
     // Update last login
     await this.repository.updateUserLastLogin(user._id);
 
-    // Generate tokens
-    const accessToken = this.jwtService.generateAccessToken(user._id, user._username, user._role);
-    const refreshToken = this.jwtService.generateRefreshToken(user._id, user._username, user._role);
+    // Generate tokens (tenant claim comes from the user record, never the request)
+    const accessToken = this.jwtService.generateAccessToken(user._id, user._username, user._role, user._organizationId);
+    const refreshToken = this.jwtService.generateRefreshToken(user._id, user._username, user._role, user._organizationId);
 
     return {
       _accessToken: accessToken,
@@ -139,9 +139,9 @@ export class AuthService {
       throw new Error('User account is disabled');
     }
 
-    // Generate new tokens
-    const accessToken = this.jwtService.generateAccessToken(user._id, user._username, user._role);
-    const newRefreshToken = this.jwtService.generateRefreshToken(user._id, user._username, user._role);
+    // Generate new tokens from the current user record (org re-read, not copied from the old token)
+    const accessToken = this.jwtService.generateAccessToken(user._id, user._username, user._role, user._organizationId);
+    const newRefreshToken = this.jwtService.generateRefreshToken(user._id, user._username, user._role, user._organizationId);
 
     return {
       _accessToken: accessToken,
@@ -246,12 +246,13 @@ export class AuthService {
     // Update last used timestamp
     await this.repository.updateApiKeyLastUsed(apiKeyRecord._id);
 
-    // Return token payload format
+    // Return token payload format; the tenant claim is the owning user's org
     return {
       _userId: user._id,
       _username: user._username,
       _role: apiKeyRecord._role,
       _type: 'access', // API keys act like access tokens
+      _organizationId: user._organizationId,
     };
   }
 

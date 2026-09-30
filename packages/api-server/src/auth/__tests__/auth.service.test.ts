@@ -193,4 +193,34 @@ describe('AuthService profile/password/account lifecycle', () => {
         .rejects.toBeInstanceOf(ApiKeyNotFoundError);
     });
   });
+
+  describe('tenant claim', () => {
+    const ORG = '11111111-1111-4111-8111-111111111111';
+    const setOrg = (organizationId: string | undefined) =>
+      repository.users.set('user-1', { ...repository.users.get('user-1')!, _organizationId: organizationId });
+    const login = () => service.login({ username: 'alice', password: 'correct-horse-battery-staple' });
+
+    it("mints the user's organization into access and refresh tokens", async () => {
+      setOrg(ORG);
+      const tokens = await login();
+
+      expect((await service.verifyToken(tokens._accessToken))._organizationId).toBe(ORG);
+      expect((await service.verifyToken(tokens._refreshToken))._organizationId).toBe(ORG);
+    });
+
+    it('mints no claim for a user without an organization', async () => {
+      const tokens = await login();
+
+      expect(await service.verifyToken(tokens._accessToken)).not.toHaveProperty('_organizationId');
+    });
+
+    it('re-reads the organization from the user record on refresh', async () => {
+      const tokens = await login();
+      setOrg(ORG);
+
+      const refreshed = await service.refreshToken({ refreshToken: tokens._refreshToken });
+
+      expect((await service.verifyToken(refreshed._accessToken))._organizationId).toBe(ORG);
+    });
+  });
 });

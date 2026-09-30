@@ -52,24 +52,26 @@ export class ArchitectureOptimizationEngine {
   }
 
   /**
-   * Analyze architecture for a business service
+   * Analyze architecture for a business service of one organization.
+   * Resolves null when the service does not exist in that organization (an
+   * other tenant's service is indistinguishable from a missing one).
    */
-  async analyzeBusinessService(serviceId: string): Promise<ArchitectureAnalysis> {
+  async analyzeBusinessService(serviceId: string, organizationId: string): Promise<ArchitectureAnalysis | null> {
     logger.info('Starting architecture analysis for business service', { service_id: serviceId });
 
     // Get business service details
     const serviceResult = await this.postgresClient.query(
-      'SELECT service_id, name FROM dim_business_services WHERE service_id = $1',
-      [serviceId]
+      'SELECT service_id, name FROM dim_business_services WHERE service_id = $1 AND organization_id = $2',
+      [serviceId, organizationId]
     );
 
     if (serviceResult.rows.length === 0) {
-      throw new Error(`Business service not found: ${serviceId}`);
+      return null;
     }
 
     const service = serviceResult.rows[0];
 
-    // Get all CIs mapped to this business service
+    // Get all CIs mapped to this business service (its parent row is org-checked above)
     const ciMappings = await this.postgresClient.query(
       'SELECT ci_id FROM ci_business_service_mappings WHERE service_id = $1',
       [serviceId]

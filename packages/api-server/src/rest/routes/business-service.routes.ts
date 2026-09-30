@@ -20,6 +20,14 @@ const authMiddleware = getAuthMiddleware();
 // Apply audit middleware to all routes
 businessServiceRoutes.use(auditMiddleware);
 
+// Tenant scoping: every route below reads/writes only the caller's
+// organization; a token without an org claim is rejected with 403.
+businessServiceRoutes.use(authMiddleware.requireOrganization());
+
+// The tenant always comes from the token. A body naming organization_id is
+// rejected (400) rather than silently stripped, so callers learn it is not settable.
+const organizationIdForbidden = Joi.any().forbidden();
+
 // Validation schemas
 const createBusinessServiceSchema = Joi.object({
   service_id: Joi.string().required().pattern(/^bs-[a-z0-9-]+$/),
@@ -46,7 +54,8 @@ const createBusinessServiceSchema = Joi.object({
   tags: Joi.array().items(Joi.string()).optional(),
   related_ci_types: Joi.array().items(Joi.string()).optional(),
   cost_allocation: Joi.object().optional(),
-  metadata: Joi.object().optional()
+  metadata: Joi.object().optional(),
+  organization_id: organizationIdForbidden
 });
 
 const updateBusinessServiceSchema = Joi.object({
@@ -73,7 +82,8 @@ const updateBusinessServiceSchema = Joi.object({
   tags: Joi.array().items(Joi.string()).optional(),
   related_ci_types: Joi.array().items(Joi.string()).optional(),
   cost_allocation: Joi.object().optional(),
-  metadata: Joi.object().optional()
+  metadata: Joi.object().optional(),
+  organization_id: organizationIdForbidden
 });
 
 const querySchema = Joi.object({

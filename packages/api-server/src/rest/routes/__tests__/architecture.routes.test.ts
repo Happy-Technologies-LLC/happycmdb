@@ -15,7 +15,9 @@ import request from 'supertest';
 import { jest, describe, it, expect, beforeEach } from '@jest/globals';
 import { ROLE_PERMISSIONS, type Permission, type UserRole } from '../../../auth/types';
 
-type ReqWithUser = Request & { user?: { _userId?: string; _role?: UserRole } };
+type ReqWithUser = Request & { user?: { _userId?: string; _role?: UserRole; _organizationId?: string } };
+
+const ORG = '11111111-1111-4111-8111-111111111111';
 
 const TOKEN_ROLES: Record<string, UserRole> = {
   'Bearer admin-token': 'admin',
@@ -29,7 +31,7 @@ const mockAuthenticate = jest.fn(() => (req: Request, res: Response, next: () =>
     res.status(401).json({ error: 'Unauthorized' });
     return;
   }
-  (req as ReqWithUser).user = { _userId: 'route-user', _role: role };
+  (req as ReqWithUser).user = { _userId: 'route-user', _role: role, _organizationId: ORG };
   next();
 });
 
@@ -52,6 +54,8 @@ jest.mock('../../../auth/auth-bootstrap', () => ({
   getAuthMiddleware: jest.fn(() => ({
     authenticate: mockAuthenticate,
     requirePermission: mockRequirePermission,
+    // The real org guard is exercised in business-service-org-scope.test.ts.
+    requireOrganization: () => (_req: Request, _res: Response, next: () => void) => next(),
   })),
 }));
 
@@ -139,10 +143,19 @@ describe('architecture routes', () => {
     const response = await invoke(testApp(), method, path, body, 'Bearer operator-token');
     expect(response.status).toBe(200);
     if (method === 'GET') {
-      expect(mockAnalyzeBusinessService).toHaveBeenCalledWith('bs-1');
+      expect(mockAnalyzeBusinessService).toHaveBeenCalledWith('bs-1', ORG);
     } else {
       expect(mockAnalyzeArchitecture).toHaveBeenCalledWith(['ci-1', 'ci-2']);
     }
+  });
+
+  it('returns a generic 404 when the service is not in the caller organization', async () => {
+    mockAnalyzeBusinessService.mockImplementation(async () => null);
+    const response = await invoke(
+      testApp(), 'GET', '/architecture/business-services/bs-1/analysis', undefined, 'Bearer operator-token'
+    );
+    expect(response.status).toBe(404);
+    expect(response.body).toEqual({ success: false, error: 'Business service not found' });
   });
 
   it('rejects an invalid/unrecognized bearer token with 401', async () => {

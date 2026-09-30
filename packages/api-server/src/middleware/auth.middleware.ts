@@ -16,6 +16,26 @@ export interface AuthenticatedRequest extends Request {
   user?: TokenPayload;
 }
 
+/** Any RFC 4122-shaped UUID (the nil internal-org UUID included). */
+const ORGANIZATION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function organizationClaim(user: TokenPayload | undefined): string | null {
+  const organizationId = user?._organizationId;
+  return typeof organizationId === 'string' && ORGANIZATION_ID_RE.test(organizationId) ? organizationId : null;
+}
+
+/**
+ * Tenant of an authenticated request. Only valid after requireOrganization()
+ * has run on the route; throws otherwise so a missing guard fails closed.
+ */
+export function requestOrganizationId(req: Request): string {
+  const organizationId = organizationClaim((req as AuthenticatedRequest).user);
+  if (organizationId === null) {
+    throw new Error('Organization-scoped handler reached without requireOrganization()');
+  }
+  return organizationId;
+}
+
 export class AuthMiddleware {
   private authService: AuthService;
   private apiKeyHeader: string;
@@ -103,6 +123,33 @@ export class AuthMiddleware {
         res.status(403).json({
           _error: 'Forbidden',
           _message: `Permission '${permission}' required`,
+        });
+        return;
+      }
+
+      next();
+    };
+  }
+
+  /**
+   * Middleware to require a tenant claim. Fails closed: an authenticated
+   * token without a well-formed `_organizationId` claim gets 403 before any
+   * data access.
+   */
+  requireOrganization() {
+    return (req: AuthenticatedRequest, res: Response, next: NextFunction): void => {
+      if (req.user === undefined) {
+        res.status(401).json({
+          _error: 'Unauthorized',
+          _message: 'Authentication required',
+        });
+        return;
+      }
+
+      if (organizationClaim(req.user) === null) {
+        res.status(403).json({
+          _error: 'Forbidden',
+          _message: 'Organization claim required',
         });
         return;
       }

@@ -25,6 +25,12 @@ export interface User {
   _name?: string;
   /** Data-URL or hosted URL for the profile avatar image. */
   _avatar?: string;
+  /**
+   * Organization (tenant) the user belongs to; minted into every token as
+   * `_organizationId`. Unset => tokens carry no org claim and org-scoped
+   * routes (business services) reject them with 403.
+   */
+  _organizationId?: string;
 }
 
 export type ApiKeyTier = 'standard' | 'premium' | 'enterprise';
@@ -49,6 +55,8 @@ export interface TokenPayload {
   _role: UserRole;
   _type: 'access' | 'refresh';
   _tier?: ApiKeyTier;
+  /** Tenant claim; org-scoped routes require it (see AuthMiddleware.requireOrganization). */
+  _organizationId?: string;
   iat?: number;
   exp?: number;
   iss?: string;

@@ -57,6 +57,9 @@ jest.mock('../../../auth/auth-bootstrap', () => ({
   getAuthMiddleware: jest.fn(() => ({
     authenticate: mockAuthenticate,
     requirePermission: mockRequirePermission,
+    // Tenant scoping is exercised against the real middleware in
+    // business-service-org-scope.test.ts; this suite covers role wiring only.
+    requireOrganization: () => (_req: Request, _res: Response, next: () => void) => next(),
   })),
 }));
 

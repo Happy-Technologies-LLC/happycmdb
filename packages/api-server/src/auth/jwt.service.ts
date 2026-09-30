@@ -26,14 +26,16 @@ export class JWTService {
   }
 
   /**
-   * Generate access token
+   * Generate access token. `organizationId` becomes the `_organizationId`
+   * tenant claim; omitted => no claim (org-scoped routes then return 403).
    */
-  generateAccessToken(userId: string, username: string, role: UserRole): string {
+  generateAccessToken(userId: string, username: string, role: UserRole, organizationId?: string): string {
     const payload: Omit<TokenPayload, 'iat' | 'exp' | 'iss' | 'aud'> = {
       _userId: userId,
       _username: username,
       _role: role,
       _type: 'access',
+      _organizationId: organizationId,
     };
 
     return jwt.sign(payload, this.secret, {
@@ -44,14 +46,15 @@ export class JWTService {
   }
 
   /**
-   * Generate refresh token
+   * Generate refresh token (carries the same tenant claim as the access token).
    */
-  generateRefreshToken(userId: string, username: string, role: UserRole): string {
+  generateRefreshToken(userId: string, username: string, role: UserRole, organizationId?: string): string {
     const payload: Omit<TokenPayload, 'iat' | 'exp' | 'iss' | 'aud'> = {
       _userId: userId,
       _username: username,
       _role: role,
       _type: 'refresh',
+      _organizationId: organizationId,
     };
 
     return jwt.sign(payload, this.secret, {

@@ -169,11 +169,12 @@ describe('seed-tenant-fixture against the integration harness', () => {
     expect(applied.rows.map(r => r.migration_name)).toEqual(migrationFiles);
 
     const seededUsers = await users([SERVICE_USER, NO_ORG_USER]);
+    // ORDER BY username: seedhive… < seednoorg….
     expect(seededUsers).toEqual([
-      { username: NO_ORG_USER, hash: expect.stringMatching(/^\$2b\$12\$/), role: 'viewer', enabled: true, org: null, legacyOrg: null },
       { username: SERVICE_USER, hash: expect.stringMatching(/^\$2b\$12\$/), role: 'viewer', enabled: true, org: ORG_A, legacyOrg: null },
+      { username: NO_ORG_USER, hash: expect.stringMatching(/^\$2b\$12\$/), role: 'viewer', enabled: true, org: null, legacyOrg: null },
     ]);
-    expect(await bcrypt.compare(PASSWORD_1, seededUsers[1]!.hash as string)).toBe(true);
+    expect(await bcrypt.compare(PASSWORD_1, seededUsers[0]!.hash as string)).toBe(true);
   });
 
   it('is idempotent: a second run converges to the same state and rotates the password', async () => {
@@ -188,10 +189,11 @@ describe('seed-tenant-fixture against the integration harness', () => {
       'SELECT service_id, organization_id, operational_status FROM dim_business_services WHERE service_id = ANY($1) ORDER BY service_id',
       [[SERVICE, INACTIVE, FOREIGN]]
     );
+    // ORDER BY service_id: …-active < …-foreign < …-inactive.
     expect(services.rows).toEqual([
       { service_id: SERVICE, organization_id: ORG_A, operational_status: 'active' },
-      { service_id: INACTIVE, organization_id: ORG_A, operational_status: 'inactive' },
       { service_id: FOREIGN, organization_id: ORG_B, operational_status: 'active' },
+      { service_id: INACTIVE, organization_id: ORG_A, operational_status: 'inactive' },
     ]);
     expect(await users([SERVICE_USER, NO_ORG_USER])).toHaveLength(2);
 

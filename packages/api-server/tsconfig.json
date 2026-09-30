@@ -20,7 +20,8 @@
     "dist",
     "**/*.test.ts",
     "src/rest/controllers/unified.controller.ts",
-    "src/rest/routes/unified.routes.ts"
+    "src/rest/routes/unified.routes.ts",
+    "src/scripts/**/*"
   ],
   "references": [
     { "path": "../common" },

@@ -6,14 +6,18 @@
  * PostgreSQL/TimescaleDB containers.
  *
  * The seed runs in a fresh scratch database, so the real migrator applies
- * every migration from scratch (the shared harness database was loaded with
- * psql and has no schema_migrations rows). The api-server's own auth and
- * business-service routes then serve that database, and the seeded users log
- * in through POST /api/v1/auth/login.
+ * every migration from scratch. The harness Neo4j is shared with other suites
+ * (it has nodes), so the seed first refuses it; the suite then marks it as a
+ * tenant-fixture graph, standing in for the empty graph the CO-1 runner
+ * provisions. The seed is configured only through CMDB_SEED_* variables. The
+ * api-server's own auth and business-service routes then serve the scratch
+ * database, and the seeded users log in through POST /api/v1/auth/login.
  */
 
+import { spawn } from 'child_process';
 import { randomBytes } from 'crypto';
 import { readdirSync } from 'fs';
+import { join } from 'path';
 import * as bcrypt from 'bcrypt';
 import express from 'express';
 import type { Express } from 'express';
@@ -24,67 +28,114 @@ import { main, MIGRATIONS_DIR } from '../../src/scripts/seed-tenant-fixture';
 
 const suffix = randomBytes(4).toString('hex');
 const SCRATCH_DB = `cmdb_seed_${suffix}`;
-const ORG_A = '00000000-0000-0000-0000-000000000000';
+const ORG_A = '11111111-1111-4111-8111-111111111111';
 const ORG_B = '33333333-3333-4333-8333-333333333333';
 const SERVICE = `bs-seed-${suffix}-active`;
 const INACTIVE = `bs-seed-${suffix}-inactive`;
 const FOREIGN = `bs-seed-${suffix}-foreign`;
 const SERVICE_USER = `seedhive${suffix}`;
 const NO_ORG_USER = `seednoorg${suffix}`;
-const CLASH_USER = `seedclash${suffix}`;
+const ADMIN_USER = `seedadmin${suffix}`;
 // Random per run; never literals.
 const PASSWORD_1 = randomBytes(12).toString('hex');
 const PASSWORD_2 = randomBytes(12).toString('hex');
 const NO_ORG_PASSWORD = randomBytes(12).toString('hex');
 const NOT_FOUND = { success: false, error: 'Business service not found' };
+const SCRIPT = join(__dirname, '../../src/scripts/seed-tenant-fixture.ts');
+const REGISTER = join(__dirname, '../../src/scripts/__tests__/fixtures/ts-source-register.cjs');
 
 const ARGS = [
+  '--target', 'scratch',
   '--organization-id', ORG_A, '--service-id', SERVICE, '--inactive-service-id', INACTIVE,
   '--other-organization-id', ORG_B, '--other-service-id', FOREIGN,
   '--service-user', SERVICE_USER, '--no-org-user', NO_ORG_USER,
 ];
 
 const harnessDb = process.env.POSTGRES_DB!;
-const admin = () => new Client({
+const admin = (database = harnessDb) => new Client({
   host: process.env.POSTGRES_HOST,
   port: Number(process.env.POSTGRES_PORT),
   user: process.env.POSTGRES_USER,
   password: process.env.POSTGRES_PASSWORD,
-  database: harnessDb,
+  database,
 });
 
-async function seed(argv: string[], serviceUserPassword: string) {
-  const stdout: string[] = [];
-  const stderr: string[] = [];
-  const code = await main(
-    argv,
-    {
-      ...process.env,
-      POSTGRES_DB: SCRATCH_DB,
-      CMDB_SEED_SERVICE_USER_PASSWORD: serviceUserPassword,
-      CMDB_SEED_NO_ORG_USER_PASSWORD: NO_ORG_PASSWORD,
-    },
-    { stdout: l => stdout.push(l), stderr: l => stderr.push(l) }
-  );
-  const output = [...stdout, ...stderr].join('\n');
+/** The seed's whole environment: dedicated CMDB_SEED_* names only. */
+function seedEnv(serviceUserPassword: string, database = SCRATCH_DB): Record<string, string> {
+  return {
+    NODE_ENV: 'test',
+    CMDB_SEED_POSTGRES_HOST: process.env.POSTGRES_HOST!,
+    CMDB_SEED_POSTGRES_PORT: process.env.POSTGRES_PORT!,
+    CMDB_SEED_POSTGRES_DB: database,
+    CMDB_SEED_POSTGRES_USER: process.env.POSTGRES_USER!,
+    CMDB_SEED_POSTGRES_PASSWORD: process.env.POSTGRES_PASSWORD!,
+    CMDB_SEED_NEO4J_URI: process.env.NEO4J_URI!,
+    CMDB_SEED_NEO4J_USERNAME: process.env.NEO4J_USERNAME!,
+    CMDB_SEED_NEO4J_PASSWORD: process.env.NEO4J_PASSWORD!,
+    CMDB_SEED_SERVICE_USER_PASSWORD: serviceUserPassword,
+    CMDB_SEED_NO_ORG_USER_PASSWORD: NO_ORG_PASSWORD,
+  };
+}
+
+function expectNoSecrets(output: string): void {
   for (const secret of [PASSWORD_1, PASSWORD_2, NO_ORG_PASSWORD, process.env.POSTGRES_PASSWORD!, process.env.NEO4J_PASSWORD!]) {
     expect(output).not.toContain(secret);
   }
+}
+
+async function seed(argv: string[], env: Record<string, string>) {
+  const stdout: string[] = [];
+  const stderr: string[] = [];
+  const code = await main(argv, env, { stdout: l => stdout.push(l), stderr: l => stderr.push(l) });
+  expectNoSecrets([...stdout, ...stderr].join('\n'));
   return { code, stdout, stderr };
 }
 
-async function users(names: string[]) {
+/** The CLI as a real process: real stdout/stderr, TypeScript sources via the test register. */
+function seedProcess(env: Record<string, string>): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  const { promise, resolve } = Promise.withResolvers<{ code: number | null; stdout: string; stderr: string }>();
+  const child = spawn(process.execPath, ['-r', REGISTER, SCRIPT, ...ARGS], {
+    env: { PATH: process.env.PATH ?? '', ...env },
+  });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', chunk => { stdout += chunk; });
+  child.stderr.on('data', chunk => { stderr += chunk; });
+  child.on('close', code => resolve({ code, stdout, stderr }));
+  return promise;
+}
+
+async function graph<T>(query: string, params: Record<string, unknown> = {}): Promise<T[]> {
   const session = getNeo4jClient().getSession();
   try {
-    const result = await session.run(
-      `MATCH (u:User) WHERE u._username IN $names OR u.username IN $names
-       RETURN u._username AS username, u._passwordHash AS hash, u._role AS role, u._enabled AS enabled,
-              u._organizationId AS org, u.organizationId AS legacyOrg ORDER BY username`,
-      { names }
-    );
-    return result.records.map(r => r.toObject() as Record<string, unknown>);
+    const result = await session.run(query, params);
+    return result.records.map(r => r.toObject() as T);
   } finally {
     await session.close();
+  }
+}
+
+function users(names: string[]) {
+  return graph<Record<string, unknown>>(
+    `MATCH (u:User) WHERE u._username IN $names OR u.username IN $names
+     RETURN u._username AS username, u._passwordHash AS hash, u._role AS role, u._enabled AS enabled,
+            u._organizationId AS org, u._tenantFixture AS fixture ORDER BY username`,
+    { names }
+  );
+}
+
+/** Every non-system table in `database`, e.g. to prove a refused run wrote nothing. */
+async function scratchTables(database: string): Promise<string[]> {
+  const pg = admin(database);
+  await pg.connect();
+  try {
+    const { rows } = await pg.query(
+      `SELECT table_schema || '.' || table_name AS name FROM information_schema.tables
+       WHERE table_schema NOT IN ('pg_catalog', 'information_schema') ORDER BY 1`
+    );
+    return rows.map(r => r.name as string);
+  } finally {
+    await pg.end();
   }
 }
 
@@ -98,6 +149,9 @@ beforeAll(async () => {
   } finally {
     await client.end();
   }
+  await graph('MATCH (m:TenantFixtureMarker) DETACH DELETE m');
+  // Other suites may have cleaned up after themselves: guarantee the shared graph is non-empty.
+  await graph('CREATE (:SeedTestSentinel {id: $id})', { id: suffix });
 
   // Dynamic imports on purpose: the route modules create their Postgres
   // clients at load (BusinessServiceController, Neo4jAuthRepository), so
@@ -115,14 +169,11 @@ beforeAll(async () => {
 }, 120000);
 
 afterAll(async () => {
-  const session = getNeo4jClient().getSession();
-  try {
-    await session.run('MATCH (u:User) WHERE u._username IN $names OR u.username IN $names DETACH DELETE u', {
-      names: [SERVICE_USER, NO_ORG_USER, CLASH_USER],
-    });
-  } finally {
-    await session.close();
-  }
+  await graph('MATCH (u:User) WHERE u._username IN $names OR u.username IN $names DETACH DELETE u', {
+    names: [SERVICE_USER, NO_ORG_USER, ADMIN_USER],
+  });
+  await graph('MATCH (m:TenantFixtureMarker) DETACH DELETE m');
+  await graph('MATCH (s:SeedTestSentinel {id: $id}) DETACH DELETE s', { id: suffix });
   await getPostgresClient().close();
   await getNeo4jClient().close();
   process.env.POSTGRES_DB = harnessDb;
@@ -144,13 +195,43 @@ async function login(username: string, password: string): Promise<request.Respon
 describe('seed-tenant-fixture against the integration harness', () => {
   let firstSummary: unknown;
 
-  it('runs every migration from scratch and seeds services and users', async () => {
-    const { code, stdout, stderr } = await seed(ARGS, PASSWORD_1);
-    expect(stderr).toEqual([]);
+  it('refuses a non-scratch PostgreSQL database (tables, no marker) and writes nothing', async () => {
+    const before = await scratchTables(harnessDb);
+    const { code, stdout, stderr } = await seed(ARGS, seedEnv(PASSWORD_1, harnessDb));
+
+    expect(code).toBe(1);
+    expect(stdout).toEqual([]);
+    expect(stderr).toEqual([
+      'seed-tenant-fixture: the PostgreSQL database has tables but no tenant fixture marker; refusing to write to a non-scratch database',
+    ]);
+    expect(await scratchTables(harnessDb)).toEqual(before);
+  });
+
+  it('refuses a non-scratch Neo4j graph (nodes, no marker) before writing to either store', async () => {
+    const { code, stdout, stderr } = await seed(ARGS, seedEnv(PASSWORD_1));
+
+    expect(code).toBe(1);
+    expect(stdout).toEqual([]);
+    expect(stderr).toEqual([
+      'seed-tenant-fixture: the Neo4j graph has nodes but no tenant fixture marker; refusing to write to a non-scratch graph',
+    ]);
+    expect(await scratchTables(SCRATCH_DB)).toEqual([]);
+    expect(await graph('MATCH (m:TenantFixtureMarker) RETURN m')).toEqual([]);
+    expect(await users([SERVICE_USER, NO_ORG_USER])).toEqual([]);
+  });
+
+  it('as a real process: migrates from scratch, seeds, and prints exactly one JSON document on stdout', async () => {
+    // Stands in for the empty graph the runner provisions (the harness graph is shared).
+    await graph("MERGE (:TenantFixtureMarker {id: 'cmdb-tenant-fixture'})");
+
+    const { code, stdout, stderr } = await seedProcess(seedEnv(PASSWORD_1));
+    expectNoSecrets(stdout + stderr);
     expect(code).toBe(0);
+    expect(stdout.endsWith('\n')).toBe(true);
+    expect(stdout.trimEnd().split('\n')).toHaveLength(1);
 
     const migrationFiles = readdirSync(MIGRATIONS_DIR).filter(f => f.endsWith('.sql')).sort();
-    firstSummary = JSON.parse(stdout[0]!);
+    firstSummary = JSON.parse(stdout);
     expect(firstSummary).toEqual({
       migrations_applied: migrationFiles.length,
       services: [
@@ -167,21 +248,22 @@ describe('seed-tenant-fixture against the integration harness', () => {
     const pg = getPostgresClient();
     const applied = await pg.query('SELECT migration_name FROM cmdb.schema_migrations ORDER BY migration_name');
     expect(applied.rows.map(r => r.migration_name)).toEqual(migrationFiles);
+    expect(await scratchTables(SCRATCH_DB)).toContain('cmdb.tenant_fixture_marker');
 
     const seededUsers = await users([SERVICE_USER, NO_ORG_USER]);
     // ORDER BY username: seedhive… < seednoorg….
     expect(seededUsers).toEqual([
-      { username: SERVICE_USER, hash: expect.stringMatching(/^\$2b\$12\$/), role: 'viewer', enabled: true, org: ORG_A, legacyOrg: null },
-      { username: NO_ORG_USER, hash: expect.stringMatching(/^\$2b\$12\$/), role: 'viewer', enabled: true, org: null, legacyOrg: null },
+      { username: SERVICE_USER, hash: expect.stringMatching(/^\$2b\$12\$/), role: 'viewer', enabled: true, org: ORG_A, fixture: true },
+      { username: NO_ORG_USER, hash: expect.stringMatching(/^\$2b\$12\$/), role: 'viewer', enabled: true, org: null, fixture: true },
     ]);
     expect(await bcrypt.compare(PASSWORD_1, seededUsers[0]!.hash as string)).toBe(true);
-  });
+  }, 120000);
 
   it('is idempotent: a second run converges to the same state and rotates the password', async () => {
     const pg = getPostgresClient();
     await pg.query(`UPDATE dim_business_services SET operational_status = 'active' WHERE service_id = $1`, [INACTIVE]);
 
-    const { code, stdout } = await seed(ARGS, PASSWORD_2);
+    const { code, stdout } = await seed(ARGS, seedEnv(PASSWORD_2));
     expect(code).toBe(0);
     expect(JSON.parse(stdout[0]!)).toEqual(firstSummary);
 
@@ -224,28 +306,24 @@ describe('seed-tenant-fixture against the integration harness', () => {
     expect(forbidden.body).toEqual({ _error: 'Forbidden', _message: 'Organization claim required' });
   });
 
-  it('refuses to move an existing user to another organization and leaves it untouched', async () => {
-    const session = getNeo4jClient().getSession();
-    try {
-      await session.run(
-        `CREATE (u:User {_id: $id, _username: $username, _passwordHash: 'x', _role: 'viewer', _enabled: true, _organizationId: $org})`,
-        { id: `clash-${suffix}`, username: CLASH_USER, org: ORG_B }
-      );
-    } finally {
-      await session.close();
-    }
+  it('refuses to take over an existing same-organization user it did not create, leaving it untouched', async () => {
+    await graph(
+      `CREATE (:User {_id: $id, _username: $username, _passwordHash: 'real-admin-hash', _role: 'admin',
+        _enabled: false, _organizationId: $org})`,
+      { id: `admin-${suffix}`, username: ADMIN_USER, org: ORG_A }
+    );
 
     const argv = [...ARGS];
-    argv[argv.indexOf('--service-user') + 1] = CLASH_USER;
-    const { code, stdout, stderr } = await seed(argv, PASSWORD_2);
+    argv[argv.indexOf('--service-user') + 1] = ADMIN_USER;
+    const { code, stdout, stderr } = await seed(argv, seedEnv(PASSWORD_2));
 
     expect(code).toBe(1);
     expect(stdout).toEqual([]);
     expect(stderr).toEqual([
-      `seed-tenant-fixture: user ${CLASH_USER} already exists in a different organization; refusing to move it`,
+      `seed-tenant-fixture: user ${ADMIN_USER} already exists and was not created by this seed; refusing to modify it`,
     ]);
-    expect(await users([CLASH_USER])).toEqual([
-      { username: CLASH_USER, hash: 'x', role: 'viewer', enabled: true, org: ORG_B, legacyOrg: null },
+    expect(await users([ADMIN_USER])).toEqual([
+      { username: ADMIN_USER, hash: 'real-admin-hash', role: 'admin', enabled: false, org: ORG_A, fixture: null },
     ]);
   });
 });

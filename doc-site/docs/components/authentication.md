@@ -195,17 +195,34 @@ and deletes the `cmdb.schema_migrations` row so 008 applies again later. Re-appl
 008 puts all services back in the internal organization. Until the old image is
 running, the 008-aware API returns 500 on business-service routes.
 
-### Tenant fixture seed (acceptance testing)
+### Tenant fixture seed (acceptance testing, scratch databases only)
 
-`packages/api-server/src/scripts/seed-tenant-fixture.ts` prepares a scratch CMDB
-for tenant-scoping acceptance tests (the CO-1 runner). It uses the api-server's own
-`POSTGRES_*` and `NEO4J_*` variables, with no defaults, and:
+`packages/api-server/src/scripts/seed-tenant-fixture.ts` prepares a **scratch** CMDB
+for tenant-scoping acceptance tests (the CO-1 runner). It is not part of the api-server
+image build (`tsconfig.json` excludes `src/scripts`) and has its own build. It:
 
-1. runs the PostgreSQL migrations;
-2. upserts an active and an inactive business service owned by `--organization-id`,
+1. claims the PostgreSQL database (`cmdb.tenant_fixture_marker` table) and the Neo4j
+   graph (`(:TenantFixtureMarker)` node) as tenant-fixture scratch stores;
+2. runs the PostgreSQL migrations;
+3. upserts an active and an inactive business service owned by `--organization-id`,
    and an active one owned by `--other-organization-id`;
-3. upserts two enabled `viewer` users: `--service-user` with that organization,
+4. upserts two enabled `viewer` users: `--service-user` with that organization,
    and `--no-org-user` with none.
+
+It fails closed before connecting to anything:
+
+- `--target scratch` is required.
+- `NODE_ENV=production` is refused.
+- Connections come only from the dedicated variables `CMDB_SEED_POSTGRES_HOST/PORT/DB/USER/PASSWORD`
+  and `CMDB_SEED_NEO4J_URI/USERNAME/PASSWORD`, never from the api-server's `POSTGRES_*` or `NEO4J_*`.
+  Both hosts must be loopback (`127.0.0.1`, `::1`, `localhost`).
+- It opens no Redis connection.
+
+Before writing, it refuses a PostgreSQL database that has tables but no marker, and a graph
+that has nodes but no marker. It only ever modifies services (`metadata.tenant_fixture`) and
+users (`_tenantFixture`) that it created itself, in the same organization. Any other existing
+service id or username is refused and left untouched. The internal organization
+`00000000-0000-0000-0000-000000000000` is refused for both organizations.
 
 Passwords come only from `CMDB_SEED_SERVICE_USER_PASSWORD` and
 `CMDB_SEED_NO_ORG_USER_PASSWORD` (at least 8 characters). They are stored as bcrypt
@@ -213,18 +230,21 @@ hashes and never printed. Tokens come from `POST /api/v1/auth/login`. Usernames 
 pass the login schema (alphanumeric, 3–30 characters).
 
 ```bash
-npm run build --workspace=packages/api-server
+npm run build:tenant-fixture --workspace=packages/api-server
+CMDB_SEED_POSTGRES_HOST=127.0.0.1 CMDB_SEED_POSTGRES_PORT=5432 CMDB_SEED_POSTGRES_DB=cmdb_scratch \
+CMDB_SEED_POSTGRES_USER=... CMDB_SEED_POSTGRES_PASSWORD=... \
+CMDB_SEED_NEO4J_URI=bolt://127.0.0.1:7687 CMDB_SEED_NEO4J_USERNAME=neo4j CMDB_SEED_NEO4J_PASSWORD=... \
 CMDB_SEED_SERVICE_USER_PASSWORD=... CMDB_SEED_NO_ORG_USER_PASSWORD=... \
-node packages/api-server/dist/scripts/seed-tenant-fixture.js \
-  --organization-id 00000000-0000-0000-0000-000000000000 --service-id bs-fulfillment \
-  --inactive-service-id bs-retired --other-organization-id <uuid> --other-service-id bs-foreign \
-  --service-user hiveservice --no-org-user noorguser
+node packages/api-server/dist/tenant-fixture/api-server/src/scripts/seed-tenant-fixture.js --target scratch \
+  --organization-id 6f1c2a9e-4b7d-4e2a-9c31-8d5e0f7a2b64 --service-id bs-fulfillment \
+  --inactive-service-id bs-retired --other-organization-id 0d9b4e17-3c62-4f88-a5d1-72e9c4b6f305 \
+  --other-service-id bs-foreign --service-user hiveservice --no-org-user noorguser
 ```
 
-Re-running converges to the same state and re-hashes the passwords. The seed refuses
-to move an existing service or user to a different organization. It prints one JSON
-line naming what it seeded. Migration 001 needs the `timescaledb` and `uuid-ossp`
-extensions, so the target PostgreSQL must provide them.
+Re-running converges to the same state and re-hashes the passwords. stdout carries
+exactly one JSON line naming what was seeded, and every log line goes to stderr.
+Migration 001 needs the `timescaledb` and `uuid-ossp` extensions, so the target
+PostgreSQL must provide them.
 
 ## Backend JWT Middleware
 

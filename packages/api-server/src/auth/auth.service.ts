@@ -93,8 +93,8 @@ export class AuthService {
     // Update last login
     await this.repository.updateUserLastLogin(user._id);
 
-    // Generate tokens
-    const accessToken = this.jwtService.generateAccessToken(user._id, user._username, user._role);
+    // Generate tokens (tenant claim comes from the user record, never the request)
+    const accessToken = this.jwtService.generateAccessToken(user._id, user._username, user._role, user._organizationId);
     const refreshToken = this.jwtService.generateRefreshToken(user._id, user._username, user._role);
 
     return {
@@ -139,8 +139,8 @@ export class AuthService {
       throw new Error('User account is disabled');
     }
 
-    // Generate new tokens
-    const accessToken = this.jwtService.generateAccessToken(user._id, user._username, user._role);
+    // Generate new tokens from the current user record (org re-read, not copied from the old token)
+    const accessToken = this.jwtService.generateAccessToken(user._id, user._username, user._role, user._organizationId);
     const newRefreshToken = this.jwtService.generateRefreshToken(user._id, user._username, user._role);
 
     return {
@@ -156,11 +156,19 @@ export class AuthService {
   }
 
   /**
-   * Verify JWT token and return payload
+   * Verify a bearer (access) JWT and return its payload with the tenant
+   * claim taken from the freshly loaded user record, never from the token:
+   * moving or removing a user's organization takes effect on the next
+   * request. Refresh tokens are rejected here; they are only accepted by
+   * refreshToken().
    */
   async verifyToken(token: string): Promise<TokenPayload> {
     try {
       const payload = this.jwtService.verifyToken(token);
+
+      if (payload._type !== 'access') {
+        throw new Error('Invalid token type');
+      }
 
       // Verify user still exists and is enabled
       const user = await this.repository.findUserById(payload._userId);
@@ -168,7 +176,7 @@ export class AuthService {
         throw new Error('User not found or disabled');
       }
 
-      return payload;
+      return { ...payload, _organizationId: user._organizationId };
     } catch (error) {
       throw new Error(`Token verification failed: ${error}`);
     }
@@ -246,12 +254,13 @@ export class AuthService {
     // Update last used timestamp
     await this.repository.updateApiKeyLastUsed(apiKeyRecord._id);
 
-    // Return token payload format
+    // Return token payload format; the tenant claim is the owning user's org
     return {
       _userId: user._id,
       _username: user._username,
       _role: apiKeyRecord._role,
       _type: 'access', // API keys act like access tokens
+      _organizationId: user._organizationId,
     };
   }
 

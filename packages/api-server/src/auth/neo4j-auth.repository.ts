@@ -42,6 +42,7 @@ export class Neo4jAuthRepository implements AuthRepository {
       lastLoginAt: props._lastLoginAt || props.lastLoginAt,
       _name: props._name || props.name,
       _avatar: props._avatar || props.avatar,
+      _organizationId: props._organizationId ?? props.organizationId,
     } as User;
   }
 

@@ -25,6 +25,12 @@ export interface User {
   _name?: string;
   /** Data-URL or hosted URL for the profile avatar image. */
   _avatar?: string;
+  /**
+   * Organization (tenant) the user belongs to. It is the tenant of every
+   * request the user makes (re-read per request by AuthService.verifyToken /
+   * verifyApiKey). Unset => org-scoped routes (business services) return 403.
+   */
+  _organizationId?: string;
 }
 
 export type ApiKeyTier = 'standard' | 'premium' | 'enterprise';
@@ -49,6 +55,12 @@ export interface TokenPayload {
   _role: UserRole;
   _type: 'access' | 'refresh';
   _tier?: ApiKeyTier;
+  /**
+   * Tenant; org-scoped routes require it (AuthMiddleware.requireOrganization).
+   * On authenticated requests it is the user's current organization, not the
+   * value minted into the token.
+   */
+  _organizationId?: string;
   iat?: number;
   exp?: number;
   iss?: string;

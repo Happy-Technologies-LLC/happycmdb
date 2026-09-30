@@ -9,17 +9,21 @@ import { Router, Request, Response } from 'express';
 import { getArchitectureOptimizationEngine } from '@cmdb/ai-ml-engine';
 import { logger } from '@cmdb/common';
 import { getAuthMiddleware } from '../../auth/auth-bootstrap';
+import { requestOrganizationId } from '../../middleware/auth.middleware';
+import { errorLogFields } from '../../utils/log-error';
 
 export const architectureRoutes = Router();
 const authMiddleware = getAuthMiddleware();
 
 /**
- * Analyze architecture for a business service
+ * Analyze architecture for a business service of the caller's organization
  * GET /api/v1/architecture/business-services/:serviceId/analysis
+ * 403 without an org claim; 404 for an unknown or another organization's service.
  */
 architectureRoutes.get(
   '/business-services/:serviceId/analysis',
   authMiddleware.requirePermission('write'),
+  authMiddleware.requireOrganization(),
   async (req: Request, res: Response): Promise<void> => {
     try {
       const { serviceId } = req.params;
@@ -27,17 +31,25 @@ architectureRoutes.get(
       logger.info('Architecture analysis requested', { service_id: serviceId });
 
       const engine = getArchitectureOptimizationEngine();
-      const analysis = await engine.analyzeBusinessService(serviceId);
+      const analysis = await engine.analyzeBusinessService(serviceId, requestOrganizationId(req));
+
+      if (analysis === null) {
+        res.status(404).json({
+          success: false,
+          error: 'Business service not found',
+        });
+        return;
+      }
 
       res.json({
         success: true,
         analysis,
       });
-    } catch (error: any) {
-      logger.error('Architecture analysis failed', { error: error.message });
+    } catch (error) {
+      logger.error('Architecture analysis failed', { error: errorLogFields(error), service_id: req.params.serviceId });
       res.status(500).json({
         success: false,
-        error: error.message || 'Failed to analyze architecture',
+        error: 'Failed to analyze architecture',
       });
     }
   }
@@ -74,11 +86,11 @@ architectureRoutes.post(
         success: true,
         analysis,
       });
-    } catch (error: any) {
-      logger.error('Architecture analysis failed', { error: error.message });
+    } catch (error) {
+      logger.error('Architecture analysis failed', { error: errorLogFields(error) });
       res.status(500).json({
         success: false,
-        error: error.message || 'Failed to analyze architecture',
+        error: 'Failed to analyze architecture',
       });
     }
   }
@@ -99,11 +111,11 @@ architectureRoutes.get(
         message: 'Aggregated recommendations endpoint - implementation pending',
         note: 'Use /business-services/:serviceId/analysis for specific service recommendations',
       });
-    } catch (error: any) {
-      logger.error('Failed to get recommendations', { error: error.message });
+    } catch (error) {
+      logger.error('Failed to get recommendations', { error: errorLogFields(error) });
       res.status(500).json({
         success: false,
-        error: error.message || 'Failed to get recommendations',
+        error: 'Failed to get recommendations',
       });
     }
   }

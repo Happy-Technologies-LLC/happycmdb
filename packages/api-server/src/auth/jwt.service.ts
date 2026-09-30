@@ -26,14 +26,17 @@ export class JWTService {
   }
 
   /**
-   * Generate access token
+   * Generate access token. `organizationId` becomes the `_organizationId`
+   * tenant claim (omitted => no claim). AuthService.verifyToken replaces it
+   * with the user's current organization on every request.
    */
-  generateAccessToken(userId: string, username: string, role: UserRole): string {
+  generateAccessToken(userId: string, username: string, role: UserRole, organizationId?: string): string {
     const payload: Omit<TokenPayload, 'iat' | 'exp' | 'iss' | 'aud'> = {
       _userId: userId,
       _username: username,
       _role: role,
       _type: 'access',
+      _organizationId: organizationId,
     };
 
     return jwt.sign(payload, this.secret, {
@@ -44,7 +47,8 @@ export class JWTService {
   }
 
   /**
-   * Generate refresh token
+   * Generate refresh token. It carries no tenant claim: refreshToken()
+   * re-reads the organization from the user record.
    */
   generateRefreshToken(userId: string, username: string, role: UserRole): string {
     const payload: Omit<TokenPayload, 'iat' | 'exp' | 'iss' | 'aud'> = {

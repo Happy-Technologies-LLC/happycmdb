@@ -14,9 +14,12 @@
  * packages/database/src/postgres/migrations/001_complete_schema.sql
  * (dim_business_services, business_service_dependencies,
  * ci_business_service_mappings, fact_business_service_incidents,
- * fact_business_service_changes, cmdb.dim_ci); no other tables, indexes or
- * extensions. PGlite has no TimescaleDB, so only the CREATE TABLE blocks are
- * extracted (not create_hypertable) and the two fact tables are plain tables.
+ * fact_business_service_changes, cmdb.dim_ci), followed by
+ * 008_business_service_organization_scope.sql verbatim; no other tables,
+ * indexes or extensions. PGlite has no TimescaleDB, so only the CREATE TABLE
+ * blocks are extracted (not create_hypertable) and the two fact tables are
+ * plain tables. All rows belong to one organization; cross-organization
+ * behavior is covered by business-service-org-scope.test.ts.
  *
  * Substitutions: Neo4jAuthRepository -> in-memory user store (one enabled
  * viewer user); getPostgresClient -> IPC client to that PGlite process;
@@ -81,7 +84,7 @@ jest.mock('../../../auth/neo4j-auth.repository', () => ({
   Neo4jAuthRepository: jest.fn(() => ({
     findUserById: async (userId: string) =>
       userId === VIEWER_ID
-        ? { _id: VIEWER_ID, _username: 'viewer', _role: 'viewer', _enabled: true }
+        ? { _id: VIEWER_ID, _username: 'viewer', _role: 'viewer', _enabled: true, _organizationId: ORG }
         : null,
   })),
 }));
@@ -93,6 +96,12 @@ import { getAuthMiddleware } from '../../../auth/auth-bootstrap';
 import { businessServiceRoutes } from '../business-service.routes';
 
 const MIGRATION = join(__dirname, '../../../../../database/src/postgres/migrations/001_complete_schema.sql');
+// Tenant scoping (organization_id) is applied verbatim on top of 001.
+const ORG_MIGRATION = join(
+  __dirname,
+  '../../../../../database/src/postgres/migrations/008_business_service_organization_scope.sql'
+);
+const ORG = '00000000-0000-0000-0000-000000000000';
 const DDL_TABLES = [
   'dim_business_services',
   'business_service_dependencies',
@@ -110,16 +119,16 @@ function productionDdl(): string {
     const match = sql.match(new RegExp(`CREATE TABLE IF NOT EXISTS ${name} \\([\\s\\S]*?\\n\\);`));
     if (!match) throw new Error(`DDL for ${table} not found in ${MIGRATION}`);
     return match[0];
-  }).join('\n');
+  }).join('\n') + '\n' + readFileSync(ORG_MIGRATION, 'utf8');
 }
 
 const SEED = `
-INSERT INTO dim_business_services (service_id, name, service_classification, tbm_tower, business_criticality, operational_status) VALUES
-  ('bs-empty', 'Empty', 'compute', 'compute', 'low', 'active'),
-  ('bs-app', 'App', 'application', 'application', 'high', 'active'),
-  ('bs-db', 'Database Tier', 'data', 'data', 'critical', 'active'),
-  ('bs-net', 'Network', 'network', 'network', 'medium', 'active'),
-  ('bs-other', 'Other', 'security', 'security', 'low', 'active');
+INSERT INTO dim_business_services (service_id, name, service_classification, tbm_tower, business_criticality, operational_status, organization_id) VALUES
+  ('bs-empty', 'Empty', 'compute', 'compute', 'low', 'active', '${ORG}'),
+  ('bs-app', 'App', 'application', 'application', 'high', 'active', '${ORG}'),
+  ('bs-db', 'Database Tier', 'data', 'data', 'critical', 'active', '${ORG}'),
+  ('bs-net', 'Network', 'network', 'network', 'medium', 'active', '${ORG}'),
+  ('bs-other', 'Other', 'security', 'security', 'low', 'active', '${ORG}');
 INSERT INTO ci_business_service_mappings (ci_id, service_id, mapping_type, confidence_score, created_at) VALUES
   ('ci-old', 'bs-app', 'hosts', 0.5, '2026-01-01 00:00:00'),
   ('ci-new', 'bs-app', 'supports', 1, '2026-02-01 00:00:00'),
@@ -191,7 +200,7 @@ afterAll(() => {
 
 describe('business-service child reads: missing-parent semantics (PGlite)', () => {
   const app = buildApp();
-  const token = new JWTService(loadConfig().auth.jwt).generateAccessToken(VIEWER_ID, 'viewer', 'viewer');
+  const token = new JWTService(loadConfig().auth.jwt).generateAccessToken(VIEWER_ID, 'viewer', 'viewer', ORG);
   const auth = { Authorization: `Bearer ${token}` };
 
   beforeEach(async () => {
@@ -224,13 +233,14 @@ describe('business-service child reads: missing-parent semantics (PGlite)', () =
       expect(queryCount).toBe(0);
     });
 
-    it('surfaces an engine failure as 500, not an empty 200', async () => {
+    it('surfaces an engine failure as a generic 500, not an empty 200', async () => {
       await db.exec(`ALTER TABLE ${CHILD_TABLE[child]} RENAME TO ${CHILD_TABLE[child]}_offline`);
       try {
         const res = await request(app).get(`/api/v1/business-services/bs-app/${child}`).set(auth);
         expect(res.status).toBe(500);
-        expect(res.body.success).toBe(false);
-        expect(res.body.message).toMatch(/does not exist/);
+        // Driver errors name tables; the body must not.
+        expect(res.body).toEqual({ success: false, error: expect.any(String) });
+        expect(JSON.stringify(res.body)).not.toMatch(/does not exist|_offline|business_service/);
       } finally {
         await db.exec(`ALTER TABLE ${CHILD_TABLE[child]}_offline RENAME TO ${CHILD_TABLE[child]}`);
       }
@@ -281,7 +291,7 @@ const METRIC_TABLE: Record<string, string> = {
 
 describe('business-service metric reads: missing-parent semantics (PGlite)', () => {
   const app = buildApp();
-  const token = new JWTService(loadConfig().auth.jwt).generateAccessToken(VIEWER_ID, 'viewer', 'viewer');
+  const token = new JWTService(loadConfig().auth.jwt).generateAccessToken(VIEWER_ID, 'viewer', 'viewer', ORG);
   const auth = { Authorization: `Bearer ${token}` };
 
   beforeEach(async () => {
@@ -314,13 +324,14 @@ describe('business-service metric reads: missing-parent semantics (PGlite)', () 
       expect(queryCount).toBe(0);
     });
 
-    it('surfaces an engine failure as 500, not an empty 200', async () => {
+    it('surfaces an engine failure as a generic 500, not an empty 200', async () => {
       await db.exec(`ALTER TABLE ${METRIC_TABLE[metric]} RENAME TO ${METRIC_TABLE[metric]}_offline`);
       try {
         const res = await request(app).get(`/api/v1/business-services/bs-app/${metric}`).set(auth);
         expect(res.status).toBe(500);
-        expect(res.body.success).toBe(false);
-        expect(res.body.message).toMatch(/does not exist/);
+        // Driver errors name tables; the body must not.
+        expect(res.body).toEqual({ success: false, error: expect.any(String) });
+        expect(JSON.stringify(res.body)).not.toMatch(/does not exist|_offline|business_service/);
       } finally {
         await db.exec(`ALTER TABLE ${METRIC_TABLE[metric]}_offline RENAME TO ${METRIC_TABLE[metric]}`);
       }
@@ -342,7 +353,7 @@ describe('business-service metric reads: missing-parent semantics (PGlite)', () 
 
 describe('business-service health: daily-counter windows (PGlite)', () => {
   const app = buildApp();
-  const token = new JWTService(loadConfig().auth.jwt).generateAccessToken(VIEWER_ID, 'viewer', 'viewer');
+  const token = new JWTService(loadConfig().auth.jwt).generateAccessToken(VIEWER_ID, 'viewer', 'viewer', ORG);
   const auth = { Authorization: `Bearer ${token}` };
   const health = async (serviceId: string) => {
     const res = await request(app).get(`/api/v1/business-services/${serviceId}/health`).set(auth);
@@ -400,7 +411,7 @@ describe('business-service health: daily-counter windows (PGlite)', () => {
 
 describe('business-service costs: one CI mapped under several relationship types (PGlite)', () => {
   const app = buildApp();
-  const token = new JWTService(loadConfig().auth.jwt).generateAccessToken(VIEWER_ID, 'viewer', 'viewer');
+  const token = new JWTService(loadConfig().auth.jwt).generateAccessToken(VIEWER_ID, 'viewer', 'viewer', ORG);
   const auth = { Authorization: `Bearer ${token}` };
 
   beforeEach(async () => {

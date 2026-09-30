@@ -137,6 +137,7 @@ async function createAdminUser(session: Session): Promise<void> {
         u._passwordHash = $passwordHash,
         u._role = $role,
         u._enabled = true,
+        u._organizationId = $organizationId,
         u._createdAt = datetime(),
         u._updatedAt = datetime()
     RETURN u
@@ -148,6 +149,9 @@ async function createAdminUser(session: Session): Promise<void> {
     username: TEST_USER.username,
     passwordHash: TEST_USER.passwordHash,
     role: TEST_USER.role,
+    // Internal organization (migration 008_business_service_organization_scope.sql);
+    // business-service routes reject tokens without an org claim.
+    organizationId: '00000000-0000-0000-0000-000000000000',
   });
 
   console.log(`Admin user created: ${TEST_USER.email} / ${TEST_USER.password}`);

@@ -9,6 +9,19 @@
 import { Request, Response } from 'express';
 import { getPostgresClient } from '@cmdb/database';
 import { logger } from '@cmdb/common';
+import { requestOrganizationId } from '../../middleware/auth.middleware';
+import { errorLogFields } from '../../utils/log-error';
+
+/*
+ * Tenant scoping: every handler reads the caller's organization from the
+ * token (requestOrganizationId; the router applies requireOrganization()) and
+ * filters dim_business_services by it. Child rows (mappings, dependencies,
+ * facts) are only reached through an org-filtered parent row, so another
+ * organization's service is indistinguishable from a missing one (404).
+ *
+ * 500 responses carry a generic message only; driver errors (which name
+ * tables/columns) are logged server-side, never returned.
+ */
 
 export class BusinessServiceController {
   private pgClient = getPostgresClient();
@@ -19,6 +32,7 @@ export class BusinessServiceController {
    */
   async listBusinessServices(req: Request, res: Response): Promise<void> {
     try {
+      const organizationId = requestOrganizationId(req);
       const {
         search,
         service_classification,
@@ -32,9 +46,9 @@ export class BusinessServiceController {
 
       const offset = (Number(page) - 1) * Number(limit);
 
-      let query = 'SELECT * FROM dim_business_services WHERE 1=1';
-      const params: any[] = [];
-      let paramIndex = 1;
+      let query = 'SELECT * FROM dim_business_services WHERE organization_id = $1';
+      const params: unknown[] = [organizationId];
+      let paramIndex = 2;
 
       if (search) {
         query += ` AND (name ILIKE $${paramIndex} OR description ILIKE $${paramIndex})`;
@@ -78,9 +92,9 @@ export class BusinessServiceController {
       const result = await this.pgClient.query(query, params);
 
       // Get total count for pagination
-      let countQuery = 'SELECT COUNT(*) FROM dim_business_services WHERE 1=1';
-      const countParams: any[] = [];
-      let countParamIndex = 1;
+      let countQuery = 'SELECT COUNT(*) FROM dim_business_services WHERE organization_id = $1';
+      const countParams: unknown[] = [organizationId];
+      let countParamIndex = 2;
 
       if (search) {
         countQuery += ` AND (name ILIKE $${countParamIndex} OR description ILIKE $${countParamIndex})`;
@@ -131,12 +145,11 @@ export class BusinessServiceController {
           totalPages: Math.ceil(total / Number(limit))
         }
       });
-    } catch (error: any) {
-      logger.error('Error listing business services', { error });
+    } catch (error) {
+      logger.error('Error listing business services', { error: errorLogFields(error) });
       res.status(500).json({
         success: false,
-        error: 'Failed to list business services',
-        message: error.message
+        error: 'Failed to list business services'
       });
     }
   }
@@ -149,9 +162,17 @@ export class BusinessServiceController {
     try {
       const { service_id } = req.params;
 
+      // One statement: the child counts are read in the same snapshot as the
+      // org-filtered parent row, so a concurrent delete + recreate of this
+      // (globally unique) service_id by another organization cannot leak that
+      // organization's children into the counts.
       const result = await this.pgClient.query(
-        'SELECT * FROM dim_business_services WHERE service_id = $1',
-        [service_id]
+        `SELECT s.*,
+          (SELECT COUNT(*) FROM ci_business_service_mappings m WHERE m.service_id = s.service_id)::int AS mapped_cis_count,
+          (SELECT COUNT(*) FROM business_service_dependencies d WHERE d.service_id = s.service_id)::int AS dependencies_count
+        FROM dim_business_services s
+        WHERE s.service_id = $1 AND s.organization_id = $2`,
+        [service_id, requestOrganizationId(req)]
       );
 
       if (result.rows.length === 0) {
@@ -162,34 +183,15 @@ export class BusinessServiceController {
         return;
       }
 
-      // Get mapped CIs count
-      const ciCountResult = await this.pgClient.query(
-        'SELECT COUNT(*) FROM ci_business_service_mappings WHERE service_id = $1',
-        [service_id]
-      );
-
-      // Get dependencies count
-      const depsCountResult = await this.pgClient.query(
-        'SELECT COUNT(*) FROM business_service_dependencies WHERE service_id = $1',
-        [service_id]
-      );
-
-      const service = {
-        ...result.rows[0],
-        mapped_cis_count: parseInt(ciCountResult.rows[0].count),
-        dependencies_count: parseInt(depsCountResult.rows[0].count)
-      };
-
       res.json({
         success: true,
-        data: service
+        data: result.rows[0]
       });
-    } catch (error: any) {
-      logger.error('Error getting business service', { error, service_id: req.params.service_id });
+    } catch (error) {
+      logger.error('Error getting business service', { error: errorLogFields(error), service_id: req.params.service_id });
       res.status(500).json({
         success: false,
-        error: 'Failed to get business service',
-        message: error.message
+        error: 'Failed to get business service'
       });
     }
   }
@@ -220,20 +222,23 @@ export class BusinessServiceController {
         metadata
       } = req.body;
 
+      // organization_id always comes from the token (the route's Joi schema
+      // rejects it in the body).
       const result = await this.pgClient.query(
         `INSERT INTO dim_business_services (
           service_id, name, description, service_classification, tbm_tower,
           business_criticality, operational_status, service_type, owned_by,
           managed_by, support_group, service_level_requirement, category,
-          tags, related_ci_types, cost_allocation, metadata
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+          tags, related_ci_types, cost_allocation, metadata, organization_id
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
         RETURNING *`,
         [
           service_id, name, description, service_classification, tbm_tower,
           business_criticality, operational_status, service_type, owned_by,
           managed_by, support_group, service_level_requirement, category,
           tags, related_ci_types, cost_allocation ? JSON.stringify(cost_allocation) : null,
-          metadata ? JSON.stringify(metadata) : null
+          metadata ? JSON.stringify(metadata) : null,
+          requestOrganizationId(req)
         ]
       );
 
@@ -243,10 +248,12 @@ export class BusinessServiceController {
         success: true,
         data: result.rows[0]
       });
-    } catch (error: any) {
-      logger.error('Error creating business service', { error, body: req.body });
+    } catch (error) {
+      logger.error('Error creating business service', { error: errorLogFields(error), service_id: req.body?.service_id });
 
-      if (error.code === '23505') { // Unique violation
+      // service_id is globally unique across organizations, so a conflict
+      // may name another tenant's id; the body stays generic either way.
+      if (errorLogFields(error).code === '23505') { // Unique violation (SQLSTATE)
         res.status(409).json({
           success: false,
           error: 'Business service with this ID already exists'
@@ -256,8 +263,7 @@ export class BusinessServiceController {
 
       res.status(500).json({
         success: false,
-        error: 'Failed to create business service',
-        message: error.message
+        error: 'Failed to create business service'
       });
     }
   }
@@ -281,8 +287,8 @@ export class BusinessServiceController {
         return;
       }
 
-      const setClause = fields.map((field, index) => `${field} = $${index + 2}`).join(', ');
-      const values = [service_id, ...fields.map(field => {
+      const setClause = fields.map((field, index) => `${field} = $${index + 3}`).join(', ');
+      const values = [service_id, requestOrganizationId(req), ...fields.map(field => {
         // Stringify JSON fields
         if (['cost_allocation', 'metadata'].includes(field) && typeof updates[field] === 'object') {
           return JSON.stringify(updates[field]);
@@ -293,7 +299,7 @@ export class BusinessServiceController {
       const result = await this.pgClient.query(
         `UPDATE dim_business_services
          SET ${setClause}, updated_at = NOW()
-         WHERE service_id = $1
+         WHERE service_id = $1 AND organization_id = $2
          RETURNING *`,
         values
       );
@@ -312,12 +318,11 @@ export class BusinessServiceController {
         success: true,
         data: result.rows[0]
       });
-    } catch (error: any) {
-      logger.error('Error updating business service', { error, service_id: req.params.service_id });
+    } catch (error) {
+      logger.error('Error updating business service', { error: errorLogFields(error), service_id: req.params.service_id });
       res.status(500).json({
         success: false,
-        error: 'Failed to update business service',
-        message: error.message
+        error: 'Failed to update business service'
       });
     }
   }
@@ -331,8 +336,8 @@ export class BusinessServiceController {
       const { service_id } = req.params;
 
       const result = await this.pgClient.query(
-        'DELETE FROM dim_business_services WHERE service_id = $1 RETURNING service_id, name',
-        [service_id]
+        'DELETE FROM dim_business_services WHERE service_id = $1 AND organization_id = $2 RETURNING service_id, name',
+        [service_id, requestOrganizationId(req)]
       );
 
       if (result.rows.length === 0) {
@@ -350,12 +355,11 @@ export class BusinessServiceController {
         message: 'Business service deleted successfully',
         data: result.rows[0]
       });
-    } catch (error: any) {
-      logger.error('Error deleting business service', { error, service_id: req.params.service_id });
+    } catch (error) {
+      logger.error('Error deleting business service', { error: errorLogFields(error), service_id: req.params.service_id });
       res.status(500).json({
         success: false,
-        error: 'Failed to delete business service',
-        message: error.message
+        error: 'Failed to delete business service'
       });
     }
   }
@@ -368,9 +372,10 @@ export class BusinessServiceController {
     try {
       const { service_id } = req.params;
 
-      // One statement rooted at the parent: zero rows => unknown service (404);
-      // a single null-extended row (ci_id is NOT NULL in the schema) => known
-      // service with no mappings; otherwise the rows are the mappings.
+      // One statement rooted at the org-filtered parent: zero rows => unknown
+      // (or another organization's) service (404); a single null-extended row
+      // (ci_id is NOT NULL in the schema) => known service with no mappings;
+      // otherwise the rows are the mappings.
       const result = await this.pgClient.query(
         `SELECT
           m.ci_id,
@@ -379,9 +384,9 @@ export class BusinessServiceController {
           m.created_at
         FROM dim_business_services s
         LEFT JOIN ci_business_service_mappings m ON m.service_id = s.service_id
-        WHERE s.service_id = $1
+        WHERE s.service_id = $1 AND s.organization_id = $2
         ORDER BY m.created_at DESC`,
-        [service_id]
+        [service_id, requestOrganizationId(req)]
       );
 
       if (result.rows.length === 0) {
@@ -396,12 +401,11 @@ export class BusinessServiceController {
         success: true,
         data: result.rows[0].ci_id === null ? [] : result.rows
       });
-    } catch (error: any) {
-      logger.error('Error getting mapped CIs', { error, service_id: req.params.service_id });
+    } catch (error) {
+      logger.error('Error getting mapped CIs', { error: errorLogFields(error), service_id: req.params.service_id });
       res.status(500).json({
         success: false,
-        error: 'Failed to get mapped CIs',
-        message: error.message
+        error: 'Failed to get mapped CIs'
       });
     }
   }
@@ -415,29 +419,27 @@ export class BusinessServiceController {
       const { service_id } = req.params;
       const { ci_ids, mapping_type = 'supports', confidence_score = 1.0 } = req.body;
 
-      const mappings = ci_ids.map((ci_id: string) => ({
-        ci_id,
-        service_id,
-        mapping_type,
-        confidence_score
-      }));
-
-      // Bulk insert
-      const values = mappings.map((m, i) => {
-        const base = i * 4;
-        return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4})`;
-      }).join(', ');
-
-      const params = mappings.flatMap(m => [m.ci_id, m.service_id, m.mapping_type, m.confidence_score]);
-
+      // Bulk upsert rooted at the org-filtered parent: zero rows (ci_ids is
+      // non-empty per the route schema) => unknown or foreign service (404).
       const result = await this.pgClient.query(
         `INSERT INTO ci_business_service_mappings (ci_id, service_id, mapping_type, confidence_score)
-         VALUES ${values}
+         SELECT c.ci_id, p.service_id, $3::varchar, $4::float8
+         FROM dim_business_services p
+         CROSS JOIN unnest($5::varchar[]) AS c(ci_id)
+         WHERE p.service_id = $1 AND p.organization_id = $2
          ON CONFLICT (ci_id, service_id, mapping_type) DO UPDATE
          SET confidence_score = EXCLUDED.confidence_score, updated_at = NOW()
          RETURNING *`,
-        params
+        [service_id, requestOrganizationId(req), mapping_type, confidence_score, ci_ids]
       );
+
+      if (result.rows.length === 0) {
+        res.status(404).json({
+          success: false,
+          error: 'Business service not found'
+        });
+        return;
+      }
 
       logger.info('CIs mapped to business service', { service_id, count: ci_ids.length });
 
@@ -446,12 +448,11 @@ export class BusinessServiceController {
         message: `${ci_ids.length} CIs mapped successfully`,
         data: result.rows
       });
-    } catch (error: any) {
-      logger.error('Error mapping CIs to service', { error, service_id: req.params.service_id });
+    } catch (error) {
+      logger.error('Error mapping CIs to service', { error: errorLogFields(error), service_id: req.params.service_id });
       res.status(500).json({
         success: false,
-        error: 'Failed to map CIs to service',
-        message: error.message
+        error: 'Failed to map CIs to service'
       });
     }
   }
@@ -465,8 +466,12 @@ export class BusinessServiceController {
       const { service_id, ci_id } = req.params;
 
       const result = await this.pgClient.query(
-        'DELETE FROM ci_business_service_mappings WHERE service_id = $1 AND ci_id = $2 RETURNING *',
-        [service_id, ci_id]
+        `DELETE FROM ci_business_service_mappings m
+         USING dim_business_services p
+         WHERE m.service_id = p.service_id
+           AND p.service_id = $1 AND p.organization_id = $2 AND m.ci_id = $3
+         RETURNING m.*`,
+        [service_id, requestOrganizationId(req), ci_id]
       );
 
       if (result.rows.length === 0) {
@@ -483,12 +488,13 @@ export class BusinessServiceController {
         success: true,
         message: 'CI unmapped successfully'
       });
-    } catch (error: any) {
-      logger.error('Error unmapping CI from service', { error, service_id: req.params.service_id, ci_id: req.params.ci_id });
+    } catch (error) {
+      logger.error('Error unmapping CI from service', {
+        error: errorLogFields(error), service_id: req.params.service_id, ci_id: req.params.ci_id
+      });
       res.status(500).json({
         success: false,
-        error: 'Failed to unmap CI from service',
-        message: error.message
+        error: 'Failed to unmap CI from service'
       });
     }
   }
@@ -501,9 +507,11 @@ export class BusinessServiceController {
     try {
       const { service_id } = req.params;
 
-      // One statement rooted at the parent: zero rows => unknown service (404);
-      // a single null-extended row (depends_on_service_id is NOT NULL in the
-      // schema) => known service with no dependencies.
+      // One statement rooted at the org-filtered parent: zero rows => unknown
+      // (or another organization's) service (404); a single null-extended row
+      // (depends_on_service_id is NOT NULL in the schema) => known service with
+      // no dependencies. Targets outside the parent's organization are never
+      // joined, so no other tenant's service name can surface.
       const result = await this.pgClient.query(
         `SELECT
           d.depends_on_service_id,
@@ -516,10 +524,10 @@ export class BusinessServiceController {
         LEFT JOIN (
           business_service_dependencies d
           JOIN dim_business_services s ON d.depends_on_service_id = s.service_id
-        ) ON d.service_id = p.service_id
-        WHERE p.service_id = $1
+        ) ON d.service_id = p.service_id AND s.organization_id = p.organization_id
+        WHERE p.service_id = $1 AND p.organization_id = $2
         ORDER BY d.created_at DESC`,
-        [service_id]
+        [service_id, requestOrganizationId(req)]
       );
 
       if (result.rows.length === 0) {
@@ -534,12 +542,11 @@ export class BusinessServiceController {
         success: true,
         data: result.rows[0].depends_on_service_id === null ? [] : result.rows
       });
-    } catch (error: any) {
-      logger.error('Error getting service dependencies', { error, service_id: req.params.service_id });
+    } catch (error) {
+      logger.error('Error getting service dependencies', { error: errorLogFields(error), service_id: req.params.service_id });
       res.status(500).json({
         success: false,
-        error: 'Failed to get service dependencies',
-        message: error.message
+        error: 'Failed to get service dependencies'
       });
     }
   }
@@ -553,12 +560,26 @@ export class BusinessServiceController {
       const { service_id } = req.params;
       const { depends_on_service_id, dependency_type = 'technical' } = req.body;
 
+      // Both ends must be services of the caller's organization; zero rows =>
+      // either is unknown or foreign (404). Self-dependency still reaches the
+      // no_self_dependency CHECK (23514).
       const result = await this.pgClient.query(
         `INSERT INTO business_service_dependencies (service_id, depends_on_service_id, dependency_type)
-         VALUES ($1, $2, $3)
+         SELECT p.service_id, t.service_id, $4::varchar
+         FROM dim_business_services p
+         JOIN dim_business_services t ON t.organization_id = p.organization_id
+         WHERE p.service_id = $1 AND t.service_id = $2 AND p.organization_id = $3
          RETURNING *`,
-        [service_id, depends_on_service_id, dependency_type]
+        [service_id, depends_on_service_id, requestOrganizationId(req), dependency_type]
       );
+
+      if (result.rows.length === 0) {
+        res.status(404).json({
+          success: false,
+          error: 'Business service not found'
+        });
+        return;
+      }
 
       logger.info('Service dependency created', { service_id, depends_on_service_id });
 
@@ -566,10 +587,11 @@ export class BusinessServiceController {
         success: true,
         data: result.rows[0]
       });
-    } catch (error: any) {
-      logger.error('Error creating service dependency', { error, service_id: req.params.service_id });
+    } catch (error) {
+      logger.error('Error creating service dependency', { error: errorLogFields(error), service_id: req.params.service_id });
 
-      if (error.code === '23505') { // Unique violation
+      const { code } = errorLogFields(error); // SQLSTATE
+      if (code === '23505') { // Unique violation
         res.status(409).json({
           success: false,
           error: 'This dependency already exists'
@@ -577,7 +599,7 @@ export class BusinessServiceController {
         return;
       }
 
-      if (error.code === '23514') { // Check constraint violation (circular dependency)
+      if (code === '23514') { // Check constraint violation (circular dependency)
         res.status(400).json({
           success: false,
           error: 'Cannot create circular dependency (service cannot depend on itself)'
@@ -587,8 +609,7 @@ export class BusinessServiceController {
 
       res.status(500).json({
         success: false,
-        error: 'Failed to create service dependency',
-        message: error.message
+        error: 'Failed to create service dependency'
       });
     }
   }
@@ -602,8 +623,12 @@ export class BusinessServiceController {
       const { service_id, depends_on_service_id } = req.params;
 
       const result = await this.pgClient.query(
-        'DELETE FROM business_service_dependencies WHERE service_id = $1 AND depends_on_service_id = $2 RETURNING *',
-        [service_id, depends_on_service_id]
+        `DELETE FROM business_service_dependencies d
+         USING dim_business_services p
+         WHERE d.service_id = p.service_id
+           AND p.service_id = $1 AND p.organization_id = $2 AND d.depends_on_service_id = $3
+         RETURNING d.*`,
+        [service_id, requestOrganizationId(req), depends_on_service_id]
       );
 
       if (result.rows.length === 0) {
@@ -620,12 +645,11 @@ export class BusinessServiceController {
         success: true,
         message: 'Dependency deleted successfully'
       });
-    } catch (error: any) {
-      logger.error('Error deleting service dependency', { error, service_id: req.params.service_id });
+    } catch (error) {
+      logger.error('Error deleting service dependency', { error: errorLogFields(error), service_id: req.params.service_id });
       res.status(500).json({
         success: false,
-        error: 'Failed to delete service dependency',
-        message: error.message
+        error: 'Failed to delete service dependency'
       });
     }
   }
@@ -649,7 +673,8 @@ export class BusinessServiceController {
     try {
       const { service_id } = req.params;
 
-      // One statement rooted at the parent: zero rows => unknown service (404).
+      // One statement rooted at the org-filtered parent: zero rows => unknown
+      // (or another organization's) service (404).
       // Each LATERAL is an ungrouped aggregate, so a known service always yields
       // exactly one row (zero counts / NULL averages when it has no facts), and
       // existence and metrics are read from the same snapshot.
@@ -676,8 +701,8 @@ export class BusinessServiceController {
           FROM fact_business_service_changes
           WHERE service_id = s.service_id
         ) c
-        WHERE s.service_id = $1`,
-        [service_id]
+        WHERE s.service_id = $1 AND s.organization_id = $2`,
+        [service_id, requestOrganizationId(req)]
       );
 
       if (result.rows.length === 0) {
@@ -705,12 +730,11 @@ export class BusinessServiceController {
           }
         }
       });
-    } catch (error: any) {
-      logger.error('Error getting service health', { error, service_id: req.params.service_id });
+    } catch (error) {
+      logger.error('Error getting service health', { error: errorLogFields(error), service_id: req.params.service_id });
       res.status(500).json({
         success: false,
-        error: 'Failed to get service health metrics',
-        message: error.message
+        error: 'Failed to get service health metrics'
       });
     }
   }
@@ -723,11 +747,11 @@ export class BusinessServiceController {
     try {
       const { service_id } = req.params;
 
-      // One statement rooted at the parent: the `parent` CTE is empty for an
-      // unknown service, and the final SELECT reads FROM parent, so zero rows =>
-      // unknown service (404). A known service always yields exactly one row
-      // (ci_count 0 / NULL totals when it has no mappings), and existence and
-      // costs are read from the same snapshot.
+      // One statement rooted at the org-filtered parent: the `parent` CTE is
+      // empty for an unknown (or another organization's) service, and the
+      // final SELECT reads FROM parent, so zero rows => 404. A known service
+      // always yields exactly one row (ci_count 0 / NULL totals when it has no
+      // mappings), and existence and costs are read from the same snapshot.
       // CI-level TBM cost data lives on cmdb.dim_ci's tbm_attributes JSONB
       // (resource_tower / monthly_cost), not on tbm_cost_pools (which has no
       // ci_id/monthly_cost/resource_tower columns at all).
@@ -739,7 +763,7 @@ export class BusinessServiceController {
       // per CI so its cost is summed once.
       const result = await this.pgClient.query(
         `WITH parent AS (
-          SELECT service_id FROM dim_business_services WHERE service_id = $1
+          SELECT service_id FROM dim_business_services WHERE service_id = $1 AND organization_id = $2
         ),
         mapped_cis AS (
           SELECT DISTINCT m.ci_id
@@ -765,7 +789,7 @@ export class BusinessServiceController {
           (SELECT SUM(monthly_cost) FROM ci_costs) AS total_monthly_cost,
           (SELECT json_object_agg(resource_tower, tower_cost) FROM tower_costs) AS cost_by_tower
         FROM parent`,
-        [service_id]
+        [service_id, requestOrganizationId(req)]
       );
 
       if (result.rows.length === 0) {
@@ -780,12 +804,11 @@ export class BusinessServiceController {
         success: true,
         data: result.rows[0]
       });
-    } catch (error: any) {
-      logger.error('Error getting service costs', { error, service_id: req.params.service_id });
+    } catch (error) {
+      logger.error('Error getting service costs', { error: errorLogFields(error), service_id: req.params.service_id });
       res.status(500).json({
         success: false,
-        error: 'Failed to get service costs',
-        message: error.message
+        error: 'Failed to get service costs'
       });
     }
   }

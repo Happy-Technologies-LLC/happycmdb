@@ -112,9 +112,9 @@ describe('parseSpec', () => {
 
 describe('parseTarget', () => {
   it('reads only the dedicated CMDB_SEED_* settings, accepting loopback hosts', () => {
-    expect(parseTarget({ ...TARGET_ENV, CMDB_SEED_NEO4J_URI: 'neo4j://[::1]:7687', POSTGRES_HOST: '10.0.0.9' })).toEqual({
+    expect(parseTarget({ ...TARGET_ENV, CMDB_SEED_NEO4J_URI: 'bolt://[::1]:7687', POSTGRES_HOST: '10.0.0.9' })).toEqual({
       postgres: { host: '127.0.0.1', port: 5432, database: 'scratch', user: 'seed', password: 'pg-secret-value' },
-      neo4j: { uri: 'neo4j://[::1]:7687', username: 'neo4j', password: 'neo4j-secret-value' },
+      neo4j: { uri: 'bolt://[::1]:7687', username: 'neo4j', password: 'neo4j-secret-value' },
     });
   });
 
@@ -125,8 +125,14 @@ describe('parseTarget', () => {
     ['a non-loopback Neo4j host', { ...TARGET_ENV, CMDB_SEED_NEO4J_URI: 'bolt://10.1.2.3:7687' },
       /CMDB_SEED_NEO4J_URI host must be loopback .* got "10.1.2.3"/],
     ['a loopback-looking Neo4j host with userinfo', { ...TARGET_ENV, CMDB_SEED_NEO4J_URI: 'bolt://localhost@neo4j.prod:7687' },
-      /CMDB_SEED_NEO4J_URI host must be loopback .* got "neo4j.prod"/],
-    ['a non-bolt Neo4j URI', { ...TARGET_ENV, CMDB_SEED_NEO4J_URI: 'http://localhost:7474' }, /bolt:\/\/ or neo4j:\/\//],
+      /must be exactly bolt:\/\/<host>\[:port\], with no credentials/],
+    ['a Neo4j URI with a routing-context query', { ...TARGET_ENV, CMDB_SEED_NEO4J_URI: 'bolt://localhost:7687?policy=eu' },
+      /must be exactly bolt:\/\/<host>\[:port\]/],
+    ['a Neo4j URI with a path', { ...TARGET_ENV, CMDB_SEED_NEO4J_URI: 'bolt://localhost:7687/other' },
+      /must be exactly bolt:\/\/<host>\[:port\]/],
+    ...['neo4j://localhost:7687', 'neo4j+s://localhost:7687', 'neo4j+ssc://localhost:7687', 'bolt+routing://localhost:7687',
+      'bolt+s://localhost:7687', 'http://localhost:7474'].map(uri =>
+      [`the non-direct Neo4j URI ${uri}`, { ...TARGET_ENV, CMDB_SEED_NEO4J_URI: uri }, /must be a direct bolt:\/\/ URI/] as const),
     ['a bad port', { ...TARGET_ENV, CMDB_SEED_POSTGRES_PORT: '54x' }, /CMDB_SEED_POSTGRES_PORT must be a port number/],
     ['only the api-server settings', { POSTGRES_HOST: '127.0.0.1', NEO4J_URI: 'bolt://127.0.0.1:7687' },
       /CMDB_SEED_POSTGRES_HOST must be set/],
@@ -303,6 +309,19 @@ describe('CLI process', () => {
     expect(code).toBe(1);
     expect(stdout).toBe('');
     expect(stderr).toContain('seed-tenant-fixture: CMDB_SEED_NEO4J_URI host must be loopback');
+    expect(stderr).not.toContain('PostgreSQL client initialized');
+    expect(connections).toBe(0);
+  }, 30000);
+
+  it('refuses a loopback neo4j:// routing URI before any client or driver exists', async () => {
+    // Both endpoints point at the recorder: any client or routing driver would register a connection.
+    const { code, stdout, stderr } = await run({
+      ...TARGET_ENV, CMDB_SEED_POSTGRES_PORT: String(port), CMDB_SEED_NEO4J_URI: `neo4j://localhost:${port}`,
+    });
+
+    expect(code).toBe(1);
+    expect(stdout).toBe('');
+    expect(stderr).toContain('seed-tenant-fixture: CMDB_SEED_NEO4J_URI must be a direct bolt:// URI');
     expect(stderr).not.toContain('PostgreSQL client initialized');
     expect(connections).toBe(0);
   }, 30000);

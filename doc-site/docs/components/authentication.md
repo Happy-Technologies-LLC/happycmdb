@@ -198,8 +198,10 @@ running, the 008-aware API returns 500 on business-service routes.
 ### Tenant fixture seed (acceptance testing, scratch databases only)
 
 `packages/api-server/src/scripts/seed-tenant-fixture.ts` prepares a **scratch** CMDB
-for tenant-scoping acceptance tests (the CO-1 runner). It is not part of the api-server
-image build (`tsconfig.json` excludes `src/scripts`) and has its own build. It:
+for tenant-scoping acceptance tests (the CO-1 runner). The api-server image build does not
+compile it (`tsconfig.json` excludes `src/scripts`), and it has its own build. The runtime
+image still ships the `.ts` source and a TypeScript toolchain, so the guards below, not
+packaging, are what keep it away from real databases. It:
 
 1. claims the PostgreSQL database (`cmdb.tenant_fixture_marker` table) and the Neo4j
    graph (`(:TenantFixtureMarker)` node) as tenant-fixture scratch stores;
@@ -215,7 +217,10 @@ It fails closed before connecting to anything:
 - `NODE_ENV=production` is refused.
 - Connections come only from the dedicated variables `CMDB_SEED_POSTGRES_HOST/PORT/DB/USER/PASSWORD`
   and `CMDB_SEED_NEO4J_URI/USERNAME/PASSWORD`, never from the api-server's `POSTGRES_*` or `NEO4J_*`.
-  Both hosts must be loopback (`127.0.0.1`, `::1`, `localhost`).
+  Both hosts must be loopback (`127.0.0.1`, `::1`, `localhost`). Neo4j must be a direct
+  `bolt://host[:port]` URI: routing schemes (`neo4j://`, `neo4j+s://`, `bolt+routing://`)
+  are refused, because a routing driver connects to server-advertised addresses the
+  loopback check never sees.
 - It opens no Redis connection.
 
 Before writing, it refuses a PostgreSQL database that has tables but no marker, and a graph

@@ -15,7 +15,9 @@
  *
  * Fail-closed target guard, checked before anything is written:
  *   - `--target scratch` is required, and NODE_ENV=production is refused;
- *   - both hosts must be loopback (127.0.0.1, ::1, localhost);
+ *   - both hosts must be loopback (127.0.0.1, ::1, localhost), and Neo4j must
+ *     be a direct bolt:// URI (a routing neo4j:// driver follows server-advertised
+ *     addresses the loopback check cannot see);
  *   - each store must be empty or already carry this seed's marker: a
  *     PostgreSQL database with tables but no cmdb.tenant_fixture_marker, or a
  *     Neo4j graph with nodes but no :TenantFixtureMarker, is refused.
@@ -30,7 +32,9 @@
  * can see), stored only as bcrypt hashes, and never printed. stdout carries
  * exactly one JSON line; every log line goes to stderr.
  *
- * Not part of the api-server image build: tsconfig.json excludes src/scripts.
+ * The api-server image build does not compile it (tsconfig.json excludes
+ * src/scripts), but the runtime image still carries this source and a
+ * TypeScript toolchain, so the guards above are what protect a real database.
  * Build it with `npm run build:tenant-fixture --workspace=packages/api-server`
  * (tsconfig.scripts.json), then:
  *   CMDB_SEED_POSTGRES_HOST=127.0.0.1 CMDB_SEED_POSTGRES_PORT=... CMDB_SEED_POSTGRES_DB=... \
@@ -230,15 +234,25 @@ export function parseTarget(env: NodeJS.ProcessEnv): TenantFixtureTarget {
     throw new Error('CMDB_SEED_POSTGRES_PORT must be a port number');
   }
 
+  // Direct bolt:// only. A routing scheme (neo4j://, neo4j+s://, ...) makes the
+  // driver connect to whatever reader/writer addresses the server advertises,
+  // which this loopback check never sees. Encrypted variants are pointless on
+  // loopback. The URI must be exactly bolt://<loopback host>[:port].
   const uri = requireEnv(env, 'CMDB_SEED_NEO4J_URI');
   let neo4jUrl: URL;
   try {
     neo4jUrl = new URL(uri);
   } catch {
-    throw new Error('CMDB_SEED_NEO4J_URI must be a bolt:// or neo4j:// URI');
+    throw new Error('CMDB_SEED_NEO4J_URI must be a direct bolt:// URI');
   }
-  if (neo4jUrl.protocol !== 'bolt:' && neo4jUrl.protocol !== 'neo4j:') {
-    throw new Error('CMDB_SEED_NEO4J_URI must be a bolt:// or neo4j:// URI');
+  if (neo4jUrl.protocol !== 'bolt:') {
+    throw new Error(
+      `CMDB_SEED_NEO4J_URI must be a direct bolt:// URI (routing schemes such as neo4j:// can redirect to non-loopback servers), got ${JSON.stringify(neo4jUrl.protocol)}`
+    );
+  }
+  if (neo4jUrl.username !== '' || neo4jUrl.password !== '' || neo4jUrl.search !== '' || neo4jUrl.hash !== ''
+    || (neo4jUrl.pathname !== '' && neo4jUrl.pathname !== '/')) {
+    throw new Error('CMDB_SEED_NEO4J_URI must be exactly bolt://<host>[:port], with no credentials, path, query or fragment');
   }
   if (!LOOPBACK_HOSTS.has(neo4jUrl.hostname)) {
     throw new Error(`CMDB_SEED_NEO4J_URI host must be loopback (127.0.0.1, ::1, localhost), got ${JSON.stringify(neo4jUrl.hostname)}`);

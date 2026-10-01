@@ -9,18 +9,15 @@
  */
 import { execFileSync } from 'child_process';
 import { readFileSync } from 'fs';
-import { basename, resolve } from 'path';
+import { resolve } from 'path';
 
 const REPO_ROOT = resolve(__dirname, '../../..');
 const FULL_JWT = /eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/;
-// Generated npm lockfiles (base64 integrity hashes) are out of scope, matching
-// the exclusion in infrastructure/scripts/detect-secrets.sh.
-const LOCKFILE = 'package-lock.json';
 
 function trackedFiles(): string[] {
   return execFileSync('git', ['ls-files', '-z'], { cwd: REPO_ROOT, encoding: 'utf8' })
     .split('\0')
-    .filter((path) => path && basename(path) !== LOCKFILE);
+    .filter(Boolean);
 }
 
 function readText(path: string): string | undefined {

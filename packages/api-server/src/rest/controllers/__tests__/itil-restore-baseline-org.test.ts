@@ -66,9 +66,9 @@ describe('ITIL restoreFromBaseline and organization_id', () => {
 
   it('restoreFromBaseline does not change organization_id', async () => {
     for (const restoreAttributes of [undefined, ['organization_id', '_organization_id', 'name']]) {
-      const req = {
-    for (const restoreAttributes of [undefined, ['organization_id', '_organization_id', 'name']]) {
       node['name'] = 'current-name';
+      const req = {
+        params: { id: 'base-1' },
         body: { ciId: 'ci-1', restoreAttributes, performedBy: 'alice' },
       } as unknown as Request;
       const res = mockRes();

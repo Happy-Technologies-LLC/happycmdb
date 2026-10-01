@@ -19,7 +19,8 @@ export interface AuthenticatedRequest extends Request {
 /** Any RFC 4122-shaped UUID (the nil internal-org UUID included). */
 const ORGANIZATION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-function organizationClaim(user: TokenPayload | undefined): string | null {
+/** The well-formed (UUID) organization claim of an identity, or null. */
+export function organizationClaim(user: TokenPayload | undefined): string | null {
   const organizationId = user?._organizationId;
   return typeof organizationId === 'string' && ORGANIZATION_ID_RE.test(organizationId) ? organizationId : null;
 }

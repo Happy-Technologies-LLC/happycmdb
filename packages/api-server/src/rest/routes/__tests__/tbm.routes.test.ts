@@ -6,9 +6,11 @@
  * centrally by server.ts (`authMiddleware.authenticate()` mounted on every
  * /api/v1 route before any router), so this suite simulates that by
  * mounting the captured mock middleware ahead of `tbmRoutes`, mirroring
- * production. Reads only need to be authenticated; the cost allocate and
- * GL import mutations additionally require the 'write' permission
- * (`authMiddleware.requirePermission('write')`).
+ * production. Every route requires an organization claim
+ * (`authMiddleware.requireOrganization()`, router level). Business-service
+ * and capability costs are readable by any role; the global aggregates over
+ * every CI (FD-3 b), including the cost allocate and GL import mutations,
+ * additionally require the 'admin' permission.
  */
 
 import express, { type Request, type Response } from 'express';
@@ -16,25 +18,35 @@ import request from 'supertest';
 import { jest, describe, it, expect, beforeEach } from '@jest/globals';
 import { ROLE_PERMISSIONS, type Permission, type UserRole } from '../../../auth/types';
 
-type ReqWithUser = Request & { user?: { _userId?: string; _role?: UserRole } };
+type ReqWithUser = Request & { user?: { _userId?: string; _role?: UserRole; _organizationId?: string } };
 
 const mockRouteHandler = jest.fn((req: Request, res: Response) => {
   res.status(200).json({ actor: (req as ReqWithUser).user?._userId });
 });
 
-const TOKEN_ROLES: Record<string, UserRole> = {
-  'Bearer admin-token': 'admin',
-  'Bearer operator-token': 'operator',
-  'Bearer viewer-token': 'viewer',
+const ORG = '11111111-1111-4111-8111-111111111111';
+const TOKENS: Record<string, { role: UserRole; organizationId?: string }> = {
+  'Bearer admin-token': { role: 'admin', organizationId: ORG },
+  'Bearer operator-token': { role: 'operator', organizationId: ORG },
+  'Bearer viewer-token': { role: 'viewer', organizationId: ORG },
+  'Bearer no-org-admin-token': { role: 'admin' },
 };
 
 const mockAuthenticate = jest.fn(() => (req: Request, res: Response, next: () => void) => {
-  const role = TOKEN_ROLES[req.get('authorization') ?? ''];
-  if (!role) {
+  const token = TOKENS[req.get('authorization') ?? ''];
+  if (!token) {
     res.status(401).json({ error: 'Unauthorized' });
     return;
   }
-  (req as ReqWithUser).user = { _userId: 'route-user', _role: role };
+  (req as ReqWithUser).user = { _userId: 'route-user', _role: token.role, _organizationId: token.organizationId };
+  next();
+});
+
+const mockRequireOrganization = jest.fn(() => (req: Request, res: Response, next: () => void) => {
+  if ((req as ReqWithUser).user?._organizationId === undefined) {
+    res.status(403).json({ error: 'Forbidden' });
+    return;
+  }
   next();
 });
 
@@ -56,6 +68,7 @@ const mockRequirePermission = jest.fn(
 jest.mock('../../../auth/auth-bootstrap', () => ({
   getAuthMiddleware: jest.fn(() => ({
     authenticate: mockAuthenticate,
+    requireOrganization: mockRequireOrganization,
     requirePermission: mockRequirePermission,
   })),
 }));
@@ -94,18 +107,20 @@ function testApp(): express.Express {
 
 type RouteCase = [string, string, Record<string, unknown> | undefined];
 
-const readRoutes: RouteCase[] = [
-  ['GET', '/tbm/costs/summary', undefined],
-  ['GET', '/tbm/costs/by-tower', undefined],
+// Org-scoped: the controller filters to the caller organization's business services.
+const scopedRoutes: RouteCase[] = [
   ['GET', '/tbm/costs/by-capability/cap-1', undefined],
   ['GET', '/tbm/costs/by-service/bs-1', undefined],
+];
+
+// Global aggregates over every CI: admin-only (FD-3 b).
+const globalRoutes: RouteCase[] = [
+  ['GET', '/tbm/costs/summary', undefined],
+  ['GET', '/tbm/costs/by-tower', undefined],
   ['GET', '/tbm/costs/trends', undefined],
   ['GET', '/tbm/costs/allocations/ci-1', undefined],
   ['GET', '/tbm/licenses', undefined],
   ['GET', '/tbm/licenses/renewals', undefined],
-];
-
-const writeRoutes: RouteCase[] = [
   [
     'POST',
     '/tbm/costs/allocate',
@@ -131,7 +146,7 @@ describe('tbm routes', () => {
     });
   });
 
-  it.each([...readRoutes, ...writeRoutes])(
+  it.each([...scopedRoutes, ...globalRoutes])(
     'returns 401 before reaching %s %s without credentials',
     async (method, path, body) => {
       const response = await invoke(testApp(), method, path, body);
@@ -140,20 +155,35 @@ describe('tbm routes', () => {
     }
   );
 
-  it.each(readRoutes)('a viewer (read-only) can reach %s %s', async (method, path, body) => {
+  it.each([...scopedRoutes, ...globalRoutes])(
+    'an admin without an organization claim receives 403 on %s %s',
+    async (method, path, body) => {
+      const response = await invoke(testApp(), method, path, body, 'Bearer no-org-admin-token');
+      expect(response.status).toBe(403);
+      expect(mockRouteHandler).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each(scopedRoutes)('a viewer (read-only) with an organization can reach %s %s', async (method, path, body) => {
     const response = await invoke(testApp(), method, path, body, 'Bearer viewer-token');
     expect(response.status).toBe(200);
     expect(mockRouteHandler).toHaveBeenCalled();
   });
 
-  it.each(writeRoutes)('a viewer (read-only) receives 403 on %s %s', async (method, path, body) => {
+  it.each(globalRoutes)('a viewer receives 403 on global aggregate %s %s', async (method, path, body) => {
     const response = await invoke(testApp(), method, path, body, 'Bearer viewer-token');
     expect(response.status).toBe(403);
     expect(mockRouteHandler).not.toHaveBeenCalled();
   });
 
-  it.each(writeRoutes)('an operator (write) can reach %s %s', async (method, path, body) => {
+  it.each(globalRoutes)('an operator (write, not admin) receives 403 on global aggregate %s %s', async (method, path, body) => {
     const response = await invoke(testApp(), method, path, body, 'Bearer operator-token');
+    expect(response.status).toBe(403);
+    expect(mockRouteHandler).not.toHaveBeenCalled();
+  });
+
+  it.each(globalRoutes)('an admin with an organization can reach %s %s', async (method, path, body) => {
+    const response = await invoke(testApp(), method, path, body, 'Bearer admin-token');
     expect(response.status).toBe(200);
     expect(mockRouteHandler).toHaveBeenCalled();
   });

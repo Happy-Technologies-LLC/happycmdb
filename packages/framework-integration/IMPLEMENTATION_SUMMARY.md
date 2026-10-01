@@ -219,7 +219,7 @@ All framework data fetched in parallel using `Promise.all()`:
 ```typescript
 const [itilMetrics, tbmCosts, bsmImpact] = await Promise.all([
   this.itilManager.getServiceMetrics(serviceId),
-  this.tbmManager.getServiceCosts(serviceId),
+  this.tbmManager.getServiceCosts(serviceId, ownedServiceIds),
   this.bsmManager.getServiceImpact(serviceId)
 ]);
 ```

@@ -28,7 +28,7 @@ export interface User {
   /**
    * Organization (tenant) the user belongs to. It is the tenant of every
    * request the user makes (re-read per request by AuthService.verifyToken /
-   * verifyApiKey). Unset => org-scoped routes (business services) return 403.
+   * verifyApiKey). Unset => org-scoped routes (business services, TBM) return 403.
    */
   _organizationId?: string;
 }

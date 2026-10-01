@@ -746,7 +746,7 @@ Combine BSM impact with TBM cost data:
 
 ```typescript
 // Get complete service view with BSM + TBM
-const completeView = await unifiedService.getCompleteServiceView('bs-ecommerce-001');
+const completeView = await unifiedService.getCompleteServiceView('bs-ecommerce-001', ownedServiceIds);
 
 // BSM metrics
 console.log(`Business Criticality: ${completeView.bsm_metrics.criticality}`);

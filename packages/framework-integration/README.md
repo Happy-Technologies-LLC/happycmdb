@@ -62,8 +62,11 @@ import { UnifiedServiceInterface } from '@cmdb/framework-integration';
 
 const unifiedService = new UnifiedServiceInterface();
 
-// Get complete service view
-const view = await unifiedService.getCompleteServiceView('bs-customer-portal-001');
+// Get complete service view. ownedServiceIds: the business service ids the
+// caller's organization owns in Postgres (dim_business_services.organization_id);
+// any other id is refused before the cache is read.
+const ownedServiceIds = new Set(['bs-customer-portal-001']);
+const view = await unifiedService.getCompleteServiceView('bs-customer-portal-001', ownedServiceIds);
 
 console.log(`Service: ${view.serviceName}`);
 console.log(`Health Score: ${view.kpis.serviceHealth}/100`);
@@ -87,6 +90,7 @@ const unifiedService = new UnifiedServiceInterface();
 // Get complete service view with caching
 const view = await unifiedService.getCompleteServiceView(
   'bs-customer-portal-001',
+  ownedServiceIds,
   { useCache: true }
 );
 
@@ -242,7 +246,7 @@ import { UnifiedServiceInterface } from '@cmdb/framework-integration';
 
 const unifiedService = new UnifiedServiceInterface();
 
-const dashboard = await unifiedService.getServiceDashboard('bs-customer-portal-001');
+const dashboard = await unifiedService.getServiceDashboard('bs-customer-portal-001', ownedServiceIds);
 
 console.log('Service Dashboard:');
 console.log(`  Service: ${dashboard.service.serviceName}`);
@@ -473,7 +477,7 @@ All framework data is fetched in parallel using `Promise.all()` to minimize late
 ```typescript
 const [itilMetrics, tbmCosts, bsmImpact] = await Promise.all([
   this.itilManager.getServiceMetrics(serviceId),
-  this.tbmManager.getServiceCosts(serviceId),
+  this.tbmManager.getServiceCosts(serviceId, ownedServiceIds),
   this.bsmManager.getServiceImpact(serviceId)
 ]);
 ```

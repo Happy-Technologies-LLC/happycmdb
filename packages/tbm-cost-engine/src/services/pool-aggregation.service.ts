@@ -13,6 +13,9 @@ import {
   TBMCostPool
 } from '../types/tbm-types';
 
+/** Default owned set: a business service is refused unless the caller passes its organization's ids. */
+const NO_OWNED_SERVICES: ReadonlySet<string> = new Set();
+
 /**
  * Pool Aggregation Service
  * Singleton service for aggregating costs through the graph hierarchy
@@ -146,12 +149,24 @@ export class PoolAggregationService {
   /**
    * Aggregate costs for a Business Service
    *
+   * Neo4j :BusinessService nodes carry no organization; Postgres
+   * dim_business_services.organization_id is the tenant authority (FD-2).
+   * The caller passes the ids its organization owns there, and an id outside
+   * that set is refused before any Cypher runs.
+   *
    * @param businessServiceId - Business Service ID
+   * @param ownedServiceIds - Business service ids the caller's organization owns
    * @returns Cost aggregation result
+   * @throws Error('Business service not found') when the id is not owned
    */
   public async aggregateBusinessServiceCosts(
-    businessServiceId: string
+    businessServiceId: string,
+    ownedServiceIds: ReadonlySet<string>
   ): Promise<CostAggregationResult> {
+    if (!ownedServiceIds.has(businessServiceId)) {
+      throw new Error('Business service not found');
+    }
+
     const session = this.neo4jClient.getSession();
 
     try {
@@ -343,11 +358,13 @@ export class PoolAggregationService {
    *
    * @param entityId - Entity ID
    * @param entityType - Entity type
+   * @param ownedServiceIds - For 'business_service': ids the caller's organization owns (default none: refused)
    * @returns Cost breakdown by tower
    */
   public async getCostBreakdownByTower(
     entityId: string,
-    entityType: 'application_service' | 'business_service' | 'business_capability'
+    entityType: 'application_service' | 'business_service' | 'business_capability',
+    ownedServiceIds: ReadonlySet<string> = NO_OWNED_SERVICES
   ): Promise<Record<TBMResourceTower, number>> {
     let result: CostAggregationResult;
 
@@ -356,7 +373,7 @@ export class PoolAggregationService {
         result = await this.aggregateApplicationServiceCosts(entityId);
         break;
       case 'business_service':
-        result = await this.aggregateBusinessServiceCosts(entityId);
+        result = await this.aggregateBusinessServiceCosts(entityId, ownedServiceIds);
         break;
       case 'business_capability':
         result = await this.aggregateBusinessCapabilityCosts(entityId);
@@ -371,11 +388,13 @@ export class PoolAggregationService {
    *
    * @param entityId - Entity ID
    * @param entityType - Entity type
+   * @param ownedServiceIds - For 'business_service': ids the caller's organization owns (default none: refused)
    * @returns Cost breakdown by pool
    */
   public async getCostBreakdownByPool(
     entityId: string,
-    entityType: 'application_service' | 'business_service' | 'business_capability'
+    entityType: 'application_service' | 'business_service' | 'business_capability',
+    ownedServiceIds: ReadonlySet<string> = NO_OWNED_SERVICES
   ): Promise<Record<TBMCostPool, number>> {
     let result: CostAggregationResult;
 
@@ -384,7 +403,7 @@ export class PoolAggregationService {
         result = await this.aggregateApplicationServiceCosts(entityId);
         break;
       case 'business_service':
-        result = await this.aggregateBusinessServiceCosts(entityId);
+        result = await this.aggregateBusinessServiceCosts(entityId, ownedServiceIds);
         break;
       case 'business_capability':
         result = await this.aggregateBusinessCapabilityCosts(entityId);
@@ -400,12 +419,14 @@ export class PoolAggregationService {
    * @param entityId - Entity ID
    * @param entityType - Entity type
    * @param limit - Number of top contributors to return
+   * @param ownedServiceIds - For 'business_service': ids the caller's organization owns (default none: refused)
    * @returns Top cost contributors
    */
   public async getTopCostContributors(
     entityId: string,
     entityType: 'application_service' | 'business_service' | 'business_capability',
-    limit: number = 10
+    limit: number = 10,
+    ownedServiceIds: ReadonlySet<string> = NO_OWNED_SERVICES
   ): Promise<
     Array<{
       ciId: string;
@@ -421,7 +442,7 @@ export class PoolAggregationService {
         result = await this.aggregateApplicationServiceCosts(entityId);
         break;
       case 'business_service':
-        result = await this.aggregateBusinessServiceCosts(entityId);
+        result = await this.aggregateBusinessServiceCosts(entityId, ownedServiceIds);
         break;
       case 'business_capability':
         result = await this.aggregateBusinessCapabilityCosts(entityId);

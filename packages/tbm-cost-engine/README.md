@@ -163,8 +163,11 @@ console.log(appServiceCosts.totalMonthlyCost);
 console.log(appServiceCosts.costByTower);
 console.log(appServiceCosts.contributingCIs);
 
-// Aggregate costs for a Business Service
-const businessServiceCosts = await poolService.aggregateBusinessServiceCosts('bs-001');
+// Aggregate costs for a Business Service. Neo4j :BusinessService nodes carry no
+// organization: pass the ids the caller's organization owns in Postgres
+// (dim_business_services.organization_id); an id outside the set is refused.
+const ownedServiceIds = new Set(['bs-001']);
+const businessServiceCosts = await poolService.aggregateBusinessServiceCosts('bs-001', ownedServiceIds);
 console.log(businessServiceCosts.totalMonthlyCost);
 
 // Aggregate costs for a Business Capability
@@ -172,7 +175,7 @@ const capabilityCosts = await poolService.aggregateBusinessCapabilityCosts('bc-0
 console.log(capabilityCosts.totalMonthlyCost);
 
 // Get top cost contributors
-const topContributors = await poolService.getTopCostContributors('bs-001', 'business_service', 10);
+const topContributors = await poolService.getTopCostContributors('bs-001', 'business_service', 10, ownedServiceIds);
 topContributors.forEach(ci => {
   console.log(`${ci.ciName}: $${ci.cost} (${ci.percentage}%)`);
 });

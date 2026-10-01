@@ -29,9 +29,9 @@ graphql/
 - **getImpactAnalysis**: Analyze what depends on a CI
 
 ### Mutation Capabilities
-- **createCI**: Create new configuration items
-- **updateCI**: Update existing CIs
-- **deleteCI**: Remove CIs and their relationships
+- **createCI**, **updateCI**, **deleteCI**: currently return `FORBIDDEN` ("CI tenant
+  scoping for GraphQL is pending") until GraphQL CI tenant scoping lands; use the
+  organization-scoped REST `/api/v1/cis` endpoints meanwhile
 - **createRelationship**: Link two CIs
 - **deleteRelationship**: Remove relationships
 

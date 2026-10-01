@@ -447,15 +447,23 @@ const Query = {
 };
 
 /**
+ * Error for the GraphQL CI mutations that fail closed until GraphQL CI tenant
+ * scoping lands: /api/v1/cis is organization-scoped, and these must not offer
+ * an unscoped way around it.
+ */
+function ciTenantScopingPending(): GraphQLError {
+  return new GraphQLError('CI tenant scoping for GraphQL is pending', {
+    extensions: { code: 'FORBIDDEN' },
+  });
+}
+
+/**
  * Mutation resolvers
  */
 const Mutation = {
   /**
-   * Create a new CI.
-   *
-   * Neo4jClient.createCI requires the caller's organization and GraphQL CI
-   * tenant scoping is not in place yet, so this fails closed instead of
-   * creating an org-less CI.
+   * Create a new CI. Fails closed: Neo4jClient.createCI requires the caller's
+   * organization and GraphQL has no CI tenant scoping yet.
    */
   createCI: async (
     __parent: unknown,
@@ -463,16 +471,11 @@ const Mutation = {
     _context: GraphQLContext
   ): Promise<GraphQLCI> => {
     checkGraphQLPermission(_context, 'write');
-    throw new GraphQLError('CI tenant scoping for GraphQL is pending', {
-      extensions: { code: 'FORBIDDEN' },
-    });
+    throw ciTenantScopingPending();
   },
 
   /**
-   * Update an existing CI.
-   *
-   * Fails closed for the same reason as createCI: Neo4jClient.updateCI is
-   * organization-scoped and GraphQL has no tenant scoping yet.
+   * Update an existing CI. Fails closed for the same reason as createCI.
    */
   updateCI: async (
     __parent: unknown,
@@ -480,57 +483,20 @@ const Mutation = {
     _context: GraphQLContext
   ): Promise<GraphQLCI> => {
     checkGraphQLPermission(_context, 'write');
-    throw new GraphQLError('CI tenant scoping for GraphQL is pending', {
-      extensions: { code: 'FORBIDDEN' },
-    });
+    throw ciTenantScopingPending();
   },
 
   /**
-   * Delete a CI
+   * Delete a CI. Fails closed before opening a session: an unscoped
+   * DETACH DELETE would delete other organizations' CIs.
    */
   deleteCI: async (
-    __parent: any,
-    _args: { id: string },
+    __parent: unknown,
+    _args: unknown,
     _context: GraphQLContext
   ): Promise<boolean> => {
     checkGraphQLPermission(_context, 'write');
-    const session = _context._neo4jClient.getSession();
-
-    try {
-      const result = await session.run(
-        `
-        MATCH (ci:CI {id: $id})
-        DETACH DELETE ci
-        RETURN count(ci) as deleted
-        `,
-        { id: _args.id }
-      );
-
-      const deleted = result.records[0]?.get('deleted').toNumber() || 0;
-
-      if (deleted === 0) {
-        throw new GraphQLError('CI not found', {
-          extensions: { code: 'NOT_FOUND' },
-        });
-      }
-
-      // Clear cache
-      _context._loaders._ciLoader.clear(_args.id);
-
-      return true;
-    } catch (error: any) {
-      if (error instanceof GraphQLError) {
-        throw error;
-      }
-      throw new GraphQLError('Failed to delete CI', {
-        extensions: {
-          code: 'INTERNAL_SERVER_ERROR',
-          originalError: error.message,
-        },
-      });
-    } finally {
-      await session.close();
-    }
+    throw ciTenantScopingPending();
   },
 
   /**

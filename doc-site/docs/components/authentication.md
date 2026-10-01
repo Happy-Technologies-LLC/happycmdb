@@ -255,11 +255,34 @@ organization when a CI is created through `POST /api/v1/cis`.
 - CI ids (and `external_id`s) are unique across all organizations: creating a CI
   with an id another organization uses returns **409**, which reveals that the id exists.
 - CIs written by discovery, connectors, ETL and reconciliation carry no
-  `organization_id` and are invisible to every organization. Other routes that read
-  CIs (relationships, ITIL, drift/impact) and GraphQL CI queries are not
-  tenant-scoped yet; GraphQL `createCI`/`updateCI` return `FORBIDDEN` until they are.
-- Existing CIs are invisible until backfilled. The backfill is not run
-  automatically; it assigns every CI without `organization_id` to the internal
+  `organization_id` and are invisible to every organization through `/api/v1/cis`.
+- No writer copies `organization_id` from request or stored data onto a CI: the
+  reconciliation merge and create (`/api/v1/reconciliation/merge`, GraphQL
+  `_reconciliation { mergeCI }`) drop it from `attributes`/`identifiers`, and an ITIL
+  baseline restore skips it. A merge or restore never changes a CI's organization.
+- GraphQL `createCI`, `updateCI` and `deleteCI` return `FORBIDDEN` until GraphQL CI
+  tenant scoping lands.
+- **Not yet tenant-scoped.** Only `/api/v1/cis/**` is scoped. Until the GraphQL slice
+  (T3c) and the later slices land, every other route and GraphQL resolver that touches
+  CIs can still read other tenants' CIs, and some can modify or delete them:
+  - GraphQL CI queries (`getCI(s)`, `searchCIs`, relationships, dependencies, impact)
+    and GraphQL `createRelationship` / `deleteRelationship`;
+  - REST `/api/v1/relationships`;
+  - ITIL writes to CI properties by id: `/api/v1/itil/configuration-items/:id/lifecycle`,
+    `/:id/status`, `/:id/audit` and `/:id/audit/complete`, plus
+    `/api/v1/itil/baselines/:id/restore`;
+  - `/api/v1/reconciliation/match` and `/merge`, and GraphQL `_reconciliation { mergeCI }`:
+    matching runs across all organizations, and merge overwrites the matched CI's
+    attributes even when it belongs to another organization (but not its
+    `organization_id`);
+  - `/api/v1/search/*`;
+  - `/api/v1/drift` and `/api/v1/impact`, which look CIs up without an organization filter;
+  - `/api/v1/dashboards` (the ITSM dashboard lists individual CIs);
+  - analytics and TBM CI reads, which return individual CIs as well as aggregates.
+- The sample CIs seeded by `db-init` (`infrastructure/scripts/init-neo4j.cypher`) and by
+  `infrastructure/scripts/seed-data.ts` are in the internal organization, the seeded
+  admin's. Other existing CIs stay invisible until backfilled. The backfill is not run
+  automatically. It assigns every CI without `organization_id` to the internal
   organization `00000000-0000-0000-0000-000000000000` and is idempotent:
 
 ```bash

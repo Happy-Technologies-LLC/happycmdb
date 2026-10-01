@@ -150,10 +150,15 @@ SET u.id = 'user-admin-001',
 // ============================================
 // SAMPLE CI DATA - SERVERS
 // ============================================
+// Every sample CI sets organization_id to the internal organization (the seeded
+// admin's), because /api/v1/cis only returns CIs of the caller's organization.
+// Only these seeded CIs are assigned: other CIs without an organization are
+// left alone (see packages/database/src/neo4j/migrations/001_ci_organization_backfill.cypher).
 
 // Production Linux Servers
 MERGE (s1:CI:Server {id: 'srv-prod-web-01'})
 SET s1.name = 'web-prod-01.happycmdb.local',
+    s1.organization_id = '00000000-0000-0000-0000-000000000000',
     s1.type = 'server',
     s1.status = 'active',
     s1.environment = 'production',
@@ -179,6 +184,7 @@ SET s1.name = 'web-prod-01.happycmdb.local',
 
 MERGE (s2:CI:Server {id: 'srv-prod-web-02'})
 SET s2.name = 'web-prod-02.happycmdb.local',
+    s2.organization_id = '00000000-0000-0000-0000-000000000000',
     s2.type = 'server',
     s2.status = 'active',
     s2.environment = 'production',
@@ -204,6 +210,7 @@ SET s2.name = 'web-prod-02.happycmdb.local',
 
 MERGE (s3:CI:Server {id: 'srv-prod-api-01'})
 SET s3.name = 'api-prod-01.happycmdb.local',
+    s3.organization_id = '00000000-0000-0000-0000-000000000000',
     s3.type = 'server',
     s3.status = 'active',
     s3.environment = 'production',
@@ -229,6 +236,7 @@ SET s3.name = 'api-prod-01.happycmdb.local',
 
 MERGE (s4:CI:Server {id: 'srv-prod-db-01'})
 SET s4.name = 'db-prod-01.happycmdb.local',
+    s4.organization_id = '00000000-0000-0000-0000-000000000000',
     s4.type = 'server',
     s4.status = 'active',
     s4.environment = 'production',
@@ -254,6 +262,7 @@ SET s4.name = 'db-prod-01.happycmdb.local',
 // Windows Servers
 MERGE (s5:CI:Server {id: 'srv-prod-win-01'})
 SET s5.name = 'win-prod-01.happycmdb.local',
+    s5.organization_id = '00000000-0000-0000-0000-000000000000',
     s5.type = 'server',
     s5.status = 'active',
     s5.environment = 'production',
@@ -278,6 +287,7 @@ SET s5.name = 'win-prod-01.happycmdb.local',
 // Staging Servers
 MERGE (s6:CI:Server {id: 'srv-stg-web-01'})
 SET s6.name = 'web-stg-01.happycmdb.local',
+    s6.organization_id = '00000000-0000-0000-0000-000000000000',
     s6.type = 'server',
     s6.status = 'active',
     s6.environment = 'staging',
@@ -301,6 +311,7 @@ SET s6.name = 'web-stg-01.happycmdb.local',
 
 MERGE (s7:CI:Server {id: 'srv-stg-api-01'})
 SET s7.name = 'api-stg-01.happycmdb.local',
+    s7.organization_id = '00000000-0000-0000-0000-000000000000',
     s7.type = 'server',
     s7.status = 'active',
     s7.environment = 'staging',
@@ -325,6 +336,7 @@ SET s7.name = 'api-stg-01.happycmdb.local',
 // Development Servers
 MERGE (s8:CI:Server {id: 'srv-dev-web-01'})
 SET s8.name = 'web-dev-01.happycmdb.local',
+    s8.organization_id = '00000000-0000-0000-0000-000000000000',
     s8.type = 'server',
     s8.status = 'active',
     s8.environment = 'development',
@@ -348,6 +360,7 @@ SET s8.name = 'web-dev-01.happycmdb.local',
 
 MERGE (s9:CI:Server {id: 'srv-maint-01'})
 SET s9.name = 'backup-maint-01.happycmdb.local',
+    s9.organization_id = '00000000-0000-0000-0000-000000000000',
     s9.type = 'server',
     s9.status = 'maintenance',
     s9.environment = 'production',
@@ -371,6 +384,7 @@ SET s9.name = 'backup-maint-01.happycmdb.local',
 
 MERGE (s10:CI:Server {id: 'srv-decom-01'})
 SET s10.name = 'old-web-decom-01.happycmdb.local',
+    s10.organization_id = '00000000-0000-0000-0000-000000000000',
     s10.type = 'server',
     s10.status = 'decommissioned',
     s10.environment = 'production',
@@ -398,6 +412,7 @@ SET s10.name = 'old-web-decom-01.happycmdb.local',
 
 MERGE (a1:CI:Application {id: 'app-web-frontend'})
 SET a1.name = 'HappyCMDB Web Frontend',
+    a1.organization_id = '00000000-0000-0000-0000-000000000000',
     a1.type = 'application',
     a1.status = 'active',
     a1.environment = 'production',
@@ -418,6 +433,7 @@ SET a1.name = 'HappyCMDB Web Frontend',
 
 MERGE (a2:CI:Application {id: 'app-api-backend'})
 SET a2.name = 'HappyCMDB API Server',
+    a2.organization_id = '00000000-0000-0000-0000-000000000000',
     a2.type = 'application',
     a2.status = 'active',
     a2.environment = 'production',
@@ -438,6 +454,7 @@ SET a2.name = 'HappyCMDB API Server',
 
 MERGE (a3:CI:Application {id: 'app-discovery-engine'})
 SET a3.name = 'Discovery Engine',
+    a3.organization_id = '00000000-0000-0000-0000-000000000000',
     a3.type = 'application',
     a3.status = 'active',
     a3.environment = 'production',
@@ -456,6 +473,7 @@ SET a3.name = 'Discovery Engine',
 
 MERGE (a4:CI:Application {id: 'app-etl-processor'})
 SET a4.name = 'ETL Processor',
+    a4.organization_id = '00000000-0000-0000-0000-000000000000',
     a4.type = 'application',
     a4.status = 'active',
     a4.environment = 'production',
@@ -474,6 +492,7 @@ SET a4.name = 'ETL Processor',
 
 MERGE (a5:CI:Application {id: 'app-monitoring-agent'})
 SET a5.name = 'Monitoring Agent',
+    a5.organization_id = '00000000-0000-0000-0000-000000000000',
     a5.type = 'application',
     a5.status = 'active',
     a5.environment = 'production',
@@ -495,6 +514,7 @@ SET a5.name = 'Monitoring Agent',
 
 MERGE (db1:CI:Database {id: 'db-neo4j-prod'})
 SET db1.name = 'Neo4j CMDB Production',
+    db1.organization_id = '00000000-0000-0000-0000-000000000000',
     db1.type = 'database',
     db1.status = 'active',
     db1.environment = 'production',
@@ -516,6 +536,7 @@ SET db1.name = 'Neo4j CMDB Production',
 
 MERGE (db2:CI:Database {id: 'db-postgres-datamart'})
 SET db2.name = 'PostgreSQL Data Mart',
+    db2.organization_id = '00000000-0000-0000-0000-000000000000',
     db2.type = 'database',
     db2.status = 'active',
     db2.environment = 'production',
@@ -535,6 +556,7 @@ SET db2.name = 'PostgreSQL Data Mart',
 
 MERGE (db3:CI:Database {id: 'db-redis-cache'})
 SET db3.name = 'Redis Cache Cluster',
+    db3.organization_id = '00000000-0000-0000-0000-000000000000',
     db3.type = 'database',
     db3.status = 'active',
     db3.environment = 'production',
@@ -554,6 +576,7 @@ SET db3.name = 'Redis Cache Cluster',
 
 MERGE (db4:CI:Database {id: 'db-mongo-logs'})
 SET db4.name = 'MongoDB Logs Database',
+    db4.organization_id = '00000000-0000-0000-0000-000000000000',
     db4.type = 'database',
     db4.status = 'active',
     db4.environment = 'production',
@@ -573,6 +596,7 @@ SET db4.name = 'MongoDB Logs Database',
 
 MERGE (db5:CI:Database {id: 'db-mysql-legacy'})
 SET db5.name = 'MySQL Legacy Database',
+    db5.organization_id = '00000000-0000-0000-0000-000000000000',
     db5.type = 'database',
     db5.status = 'inactive',
     db5.environment = 'production',
@@ -595,6 +619,7 @@ SET db5.name = 'MySQL Legacy Database',
 
 MERGE (svc1:CI:Service {id: 'svc-api-gateway'})
 SET svc1.name = 'API Gateway Service',
+    svc1.organization_id = '00000000-0000-0000-0000-000000000000',
     svc1.type = 'service',
     svc1.status = 'active',
     svc1.environment = 'production',
@@ -614,6 +639,7 @@ SET svc1.name = 'API Gateway Service',
 
 MERGE (svc2:CI:Service {id: 'svc-auth-service'})
 SET svc2.name = 'Authentication Service',
+    svc2.organization_id = '00000000-0000-0000-0000-000000000000',
     svc2.type = 'service',
     svc2.status = 'active',
     svc2.environment = 'production',
@@ -631,6 +657,7 @@ SET svc2.name = 'Authentication Service',
 
 MERGE (svc3:CI:Service {id: 'svc-metrics-collector'})
 SET svc3.name = 'Metrics Collector Service',
+    svc3.organization_id = '00000000-0000-0000-0000-000000000000',
     svc3.type = 'service',
     svc3.status = 'active',
     svc3.environment = 'production',
@@ -649,6 +676,7 @@ SET svc3.name = 'Metrics Collector Service',
 
 MERGE (svc4:CI:Service {id: 'svc-log-aggregator'})
 SET svc4.name = 'Log Aggregation Service',
+    svc4.organization_id = '00000000-0000-0000-0000-000000000000',
     svc4.type = 'service',
     svc4.status = 'active',
     svc4.environment = 'production',
@@ -667,6 +695,7 @@ SET svc4.name = 'Log Aggregation Service',
 
 MERGE (svc5:CI:Service {id: 'svc-queue-manager'})
 SET svc5.name = 'Queue Management Service',
+    svc5.organization_id = '00000000-0000-0000-0000-000000000000',
     svc5.type = 'service',
     svc5.status = 'active',
     svc5.environment = 'production',
@@ -689,6 +718,7 @@ SET svc5.name = 'Queue Management Service',
 
 MERGE (net1:CI:NetworkDevice {id: 'net-lb-prod-01'})
 SET net1.name = 'Production Load Balancer',
+    net1.organization_id = '00000000-0000-0000-0000-000000000000',
     net1.type = 'load-balancer',
     net1.status = 'active',
     net1.environment = 'production',
@@ -709,6 +739,7 @@ SET net1.name = 'Production Load Balancer',
 
 MERGE (net2:CI:NetworkDevice {id: 'net-switch-core-01'})
 SET net2.name = 'Core Network Switch',
+    net2.organization_id = '00000000-0000-0000-0000-000000000000',
     net2.type = 'network-device',
     net2.status = 'active',
     net2.environment = 'production',
@@ -729,6 +760,7 @@ SET net2.name = 'Core Network Switch',
 
 MERGE (net3:CI:NetworkDevice {id: 'net-firewall-01'})
 SET net3.name = 'Production Firewall',
+    net3.organization_id = '00000000-0000-0000-0000-000000000000',
     net3.type = 'network-device',
     net3.status = 'active',
     net3.environment = 'production',
@@ -749,6 +781,7 @@ SET net3.name = 'Production Firewall',
 
 MERGE (net4:CI:NetworkDevice {id: 'net-router-edge-01'})
 SET net4.name = 'Edge Router',
+    net4.organization_id = '00000000-0000-0000-0000-000000000000',
     net4.type = 'network-device',
     net4.status = 'active',
     net4.environment = 'production',
@@ -769,6 +802,7 @@ SET net4.name = 'Edge Router',
 
 MERGE (net5:CI:NetworkDevice {id: 'net-vpn-gateway-01'})
 SET net5.name = 'VPN Gateway',
+    net5.organization_id = '00000000-0000-0000-0000-000000000000',
     net5.type = 'network-device',
     net5.status = 'active',
     net5.environment = 'production',
@@ -792,6 +826,7 @@ SET net5.name = 'VPN Gateway',
 
 MERGE (st1:CI:Storage {id: 'sto-s3-backups'})
 SET st1.name = 'S3 Backup Bucket',
+    st1.organization_id = '00000000-0000-0000-0000-000000000000',
     st1.type = 'storage',
     st1.status = 'active',
     st1.environment = 'production',
@@ -812,6 +847,7 @@ SET st1.name = 'S3 Backup Bucket',
 
 MERGE (st2:CI:Storage {id: 'sto-ebs-db'})
 SET st2.name = 'EBS Database Volume',
+    st2.organization_id = '00000000-0000-0000-0000-000000000000',
     st2.type = 'storage',
     st2.status = 'active',
     st2.environment = 'production',

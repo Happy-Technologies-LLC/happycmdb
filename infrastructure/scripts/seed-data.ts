@@ -38,6 +38,12 @@ const TEST_USER = {
   role: 'admin',
 };
 
+// Internal organization (migration 008_business_service_organization_scope.sql).
+// The seeded admin belongs to it, and so do the sample CIs: business-service
+// routes reject tokens without an org claim, and /api/v1/cis only returns CIs
+// of the caller's organization.
+const INTERNAL_ORGANIZATION_ID = '00000000-0000-0000-0000-000000000000';
+
 if (!TEST_USER.password || !TEST_USER.passwordHash) {
   console.error('ERROR: SEED_USER_PASSWORD and SEED_USER_PASSWORD_HASH environment variables are required');
   console.error('');
@@ -149,9 +155,7 @@ async function createAdminUser(session: Session): Promise<void> {
     username: TEST_USER.username,
     passwordHash: TEST_USER.passwordHash,
     role: TEST_USER.role,
-    // Internal organization (migration 008_business_service_organization_scope.sql);
-    // business-service routes reject tokens without an org claim.
-    organizationId: '00000000-0000-0000-0000-000000000000',
+    organizationId: INTERNAL_ORGANIZATION_ID,
   });
 
   console.log(`Admin user created: ${TEST_USER.email} / ${TEST_USER.password}`);
@@ -806,7 +810,8 @@ async function createTestCIs(session: Session): Promise<void> {
           n.created_at = datetime(),
           n.updated_at = datetime(),
           n.discovered_at = datetime(),
-          n.metadata = $metadata
+          n.metadata = $metadata,
+          n.organization_id = $organizationId
       RETURN n
     `;
 
@@ -818,6 +823,7 @@ async function createTestCIs(session: Session): Promise<void> {
       environment: ci.environment,
       external_id: ci.external_id,
       metadata: JSON.stringify(ci.metadata),
+      organizationId: INTERNAL_ORGANIZATION_ID,
     });
   }
 

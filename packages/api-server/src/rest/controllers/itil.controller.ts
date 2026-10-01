@@ -1368,7 +1368,9 @@ export class ITILController {
         const cleanKey = key.startsWith('_') ? key.substring(1) : key;
         // `id` is immutable, and `updated_at` is always stamped with the
         // current restore time below, so neither is settable from a snapshot.
-        if (cleanKey === 'id' || cleanKey === 'updated_at') continue;
+        // `organization_id` is written only from the token organization (or
+        // the backfill): a restore never changes which organization owns a CI.
+        if (cleanKey === 'id' || cleanKey === 'updated_at' || cleanKey === 'organization_id') continue;
 
         const value = this.sanitizeBaselineValue(snapshot[key]);
         if (value === undefined) continue;

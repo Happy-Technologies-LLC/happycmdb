@@ -345,10 +345,10 @@ describe('GraphQL CI Resolvers', () => {
     });
   });
 
-  // Neo4jClient.createCI/updateCI are organization-scoped and GraphQL has no
-  // CI tenant scoping yet: both mutations fail closed without touching Neo4j.
-  describe.each(['createCI', 'updateCI'])('Mutation.%s', mutation => {
-    it('fails closed with FORBIDDEN and never writes', async () => {
+  // /api/v1/cis is organization-scoped and GraphQL has no CI tenant scoping
+  // yet: the CI mutations fail closed without touching Neo4j at all.
+  describe.each(['createCI', 'updateCI', 'deleteCI'])('Mutation.%s', mutation => {
+    it('fails closed with FORBIDDEN and never touches Neo4j', async () => {
       const resolve = (resolvers.Mutation as any)[mutation];
 
       const error = await resolve(
@@ -362,53 +362,12 @@ describe('GraphQL CI Resolvers', () => {
         message: 'CI tenant scoping for GraphQL is pending',
         extensions: { code: 'FORBIDDEN' },
       });
-      expect((mockContext._neo4jClient as any)[mutation]).not.toHaveBeenCalled();
-    });
-  });
-
-  describe('Mutation.deleteCI', () => {
-    it('should delete CI and return true', async () => {
-      // Arrange: Mock successful delete
-      mockNeo4j.session.run.mockResolvedValueOnce({
-        records: [{ get: () => ({ toNumber: () => 1 }) }],
-      });
-
-      const deleteCIMut = (resolvers.Mutation as any).deleteCI;
-
-      // Act: Delete mutation
-      const result = await deleteCIMut(
-        null,
-        { id: 'ci-123' },
-        mockContext
-      );
-
-      // Assert: Verify Cypher DELETE query
-      expect(mockNeo4j.session.run).toHaveBeenCalledWith(
-        expect.stringContaining('DETACH DELETE ci'),
-        expect.objectContaining({ id: 'ci-123' })
-      );
-
-      // Assert: Verify cache cleared
-      expect(mockLoaders.ciLoader.clear).toHaveBeenCalledWith('ci-123');
-
-      // Assert: Verify result
-      expect(result).toBe(true);
-    });
-
-    it('should throw error when CI not found', async () => {
-      // Arrange: CI doesn't exist
-      mockNeo4j.session.run.mockResolvedValueOnce({
-        records: [{ get: () => ({ toNumber: () => 0 }) }],
-      });
-
-      const deleteCIMut = (resolvers.Mutation as any).deleteCI;
-
-      // Act & Assert: Expect NOT_FOUND error
-      await expect(
-        deleteCIMut(null, { id: 'non-existent' }, mockContext)
-      ).rejects.toMatchObject({
-        extensions: { code: 'NOT_FOUND' },
-      });
+      const client = mockContext._neo4jClient as any;
+      expect(client.getSession).not.toHaveBeenCalled();
+      expect(mockNeo4j.session.run).not.toHaveBeenCalled();
+      expect(client.createCI).not.toHaveBeenCalled();
+      expect(client.updateCI).not.toHaveBeenCalled();
+      expect(mockLoaders.ciLoader.clear).not.toHaveBeenCalled();
     });
   });
 

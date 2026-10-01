@@ -183,9 +183,9 @@ describe('GraphQL API Integration Tests', () => {
     expect(expectSuccess(paged).getCIs).toHaveLength(1);
   });
 
-  // Neo4jClient.createCI/updateCI are organization-scoped and GraphQL has no CI
-  // tenant scoping yet, so both mutations fail closed and write nothing.
-  it('refuses createCI and updateCI with FORBIDDEN until GraphQL CI tenant scoping lands', async () => {
+  // /api/v1/cis is organization-scoped and GraphQL has no CI tenant scoping
+  // yet, so the CI mutations fail closed and write nothing.
+  it('refuses createCI, updateCI and deleteCI with FORBIDDEN until GraphQL CI tenant scoping lands', async () => {
     const newId = uuidv4();
     const created = await execute(
       `mutation CreateCI($input: CreateCIInput!) {
@@ -207,17 +207,11 @@ describe('GraphQL API Integration Tests', () => {
     );
     expect(updated.body.errors?.[0]).toMatchObject({ extensions: { code: 'FORBIDDEN' } });
 
+    const deleted = await execute('mutation($id: ID!) { deleteCI(id: $id) }', { id: ciId });
+    expect(deleted.body.errors?.[0]).toMatchObject({ extensions: { code: 'FORBIDDEN' } });
+
     const persisted = await execute('{ getCIs { _id _name } }');
     expect(expectSuccess(persisted).getCIs).toEqual([{ _id: ciId, _name: 'old-name' }]);
-  });
-
-  it('deletes an existing CI and rejects a second deletion', async () => {
-    const ciId = await createCI();
-    const deleted = await execute('mutation($id: ID!) { deleteCI(id: $id) }', { id: ciId });
-    expect(expectSuccess(deleted).deleteCI).toBe(true);
-
-    const missing = await execute('mutation($id: ID!) { deleteCI(id: $id) }', { id: ciId });
-    expect(missing.body.errors?.[0]).toMatchObject({ extensions: { code: 'NOT_FOUND' } });
   });
 
   it('creates a relationship and returns it through the relationship query', async () => {

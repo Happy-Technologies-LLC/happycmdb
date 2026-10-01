@@ -464,3 +464,65 @@ describe('backfill 001_ci_organization_backfill.cypher', () => {
     expect(JSON.stringify([...graph.nodes])).toBe(after);
   });
 });
+
+describe('infrastructure/scripts/init-neo4j.cypher sample data (scripts/db-init.sh)', () => {
+  const INIT_SCRIPT = join(__dirname, '../../../../../../infrastructure/scripts/init-neo4j.cypher');
+
+  /** Statements as cypher-shell reads them: comment lines dropped, split on ';' outside '…' literals. */
+  function statements(): string[] {
+    const script = readFileSync(INIT_SCRIPT, 'utf8')
+      .split('\n').filter(line => !line.trim().startsWith('//')).join('\n');
+    const out: string[] = [];
+    let current = '';
+    let inString = false;
+    for (let i = 0; i < script.length; i++) {
+      const ch = script[i]!;
+      if (ch === "'" && script[i - 1] !== '\\') inString = !inString;
+      if (ch === ';' && !inString) {
+        out.push(current.trim());
+        current = '';
+      } else {
+        current += ch;
+      }
+    }
+    out.push(current.trim());
+    return out.filter(s => s.length > 0);
+  }
+
+  it("puts every seeded :CI in the seeded admin's (internal) organization and assigns no other CI", () => {
+    const all = statements();
+    const admin = all.find(s => s.startsWith("MERGE (u:User {email: 'admin@happycmdb.local'})"));
+    expect(admin).toContain(`u.organizationId = '${INTERNAL_ORG}'`);
+
+    // Any MERGE/CREATE of a node pattern whose labels include CI, wherever it sits in the statement.
+    const ciVariable = (s: string): string | null => {
+      for (const m of s.matchAll(/\b(?:MERGE|CREATE)\s*\((\w+)((?::\w+)+)/g)) {
+        if (m[2]!.split(':').includes('CI')) return m[1]!;
+      }
+      return null;
+    };
+    const seeded = all.flatMap(s => {
+      const variable = ciVariable(s);
+      return variable === null ? [] : [{ variable, statement: s }];
+    });
+    expect(seeded).toHaveLength(32);
+
+    // Each seed assigns the org exactly once, in its unconditional SET (not ON CREATE/ON MATCH,
+    // which would leave pre-tenancy sample CIs without an org on a re-run), and nothing else.
+    const badSeeds = seeded
+      .filter(({ variable, statement }) =>
+        /\bON (CREATE|MATCH)\b/.test(statement) ||
+        (statement.match(/organization_id/g) ?? []).length !== 1 ||
+        !new RegExp(`^\\s*${variable}\\.organization_id = '${INTERNAL_ORG}',?$`, 'm').test(statement))
+      .map(({ statement }) => statement.split('\n')[0]);
+    expect(badSeeds).toEqual([]);
+
+    // Apart from the index, no other statement touches organization_id: a re-run of
+    // db-init must not claim CIs written by discovery, connectors, ETL or the API.
+    const otherWriters = all
+      .filter(s => s.includes('organization_id') && !seeded.some(({ statement }) => statement === s))
+      .filter(s => !/^CREATE INDEX ci_organization_id_idx IF NOT EXISTS\s+FOR \(ci:CI\) ON \(ci\.organization_id\)$/.test(s))
+      .map(s => s.split('\n')[0]);
+    expect(otherWriters).toEqual([]);
+  });
+});

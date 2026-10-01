@@ -14,6 +14,12 @@ All API endpoints require authentication using a JWT bearer token:
 Authorization: Bearer YOUR_JWT_TOKEN
 ```
 
+### Tenancy and roles
+
+- Every `/api/v1/tbm/*` endpoint requires an organization claim on the token. A token without one gets `403 {"_error":"Forbidden","_message":"Organization claim required"}` before any data is read. The organization always comes from the token, never from request parameters or body.
+- `GET /costs/by-service/:id` and `GET /costs/by-capability/:id` only cover business services your organization owns (`dim_business_services.organization_id`). Another organization's service and a missing service return the same `404`.
+- Aggregates over all CIs (`/costs/summary`, `/costs/by-tower`, `/costs/trends`, `/costs/allocations/:ciId`, `POST /costs/allocate`, `POST /gl/import`, `/licenses`, `/licenses/renewals`) require the `admin` role until CI tenancy is available; other roles get `403`.
+
 ## Base URL
 
 ```

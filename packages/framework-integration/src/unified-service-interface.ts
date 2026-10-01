@@ -136,12 +136,14 @@ export class UnifiedServiceInterface {
    * Get complete service view combining all three frameworks
    *
    * @param serviceId - Business service ID
+   * @param ownedServiceIds - Business service ids the caller's organization owns (Postgres
+   *   dim_business_services.organization_id); an id outside the set is refused before the cache
    * @param options - Query options
    * @returns Complete service view with ITIL, TBM, BSM, and unified KPIs
    *
    * @example
    * ```typescript
-   * const view = await unifiedService.getCompleteServiceView('bs-001', { useCache: true });
+   * const view = await unifiedService.getCompleteServiceView('bs-001', ownedServiceIds, { useCache: true });
    * console.log(`Service: ${view.serviceName}`);
    * console.log(`Health Score: ${view.kpis.serviceHealth}/100`);
    * console.log(`Monthly Cost: $${view.tbm.monthlyCost}`);
@@ -150,9 +152,15 @@ export class UnifiedServiceInterface {
    */
   async getCompleteServiceView(
     serviceId: string,
+    ownedServiceIds: ReadonlySet<string>,
     options: { useCache?: boolean } = { useCache: true }
   ): Promise<CompleteServiceView> {
     try {
+      // The cache is keyed by service id alone, so ownership is checked first.
+      if (!ownedServiceIds.has(serviceId)) {
+        throw new Error(`Business service not found: ${serviceId}`);
+      }
+
       // Check cache first
       const cacheKey = `unified:service:${serviceId}`;
       if (options.useCache) {
@@ -166,7 +174,7 @@ export class UnifiedServiceInterface {
       const [businessService, itilMetrics, tbmCosts, bsmImpact] = await Promise.all([
         this.businessServiceRepo.getBusinessServiceById(serviceId),
         this.itilManager.getServiceMetrics(serviceId),
-        this.tbmManager.getServiceCosts(serviceId),
+        this.tbmManager.getServiceCosts(serviceId, ownedServiceIds),
         this.bsmManager.getServiceImpact(serviceId)
       ]);
 
@@ -362,12 +370,13 @@ export class UnifiedServiceInterface {
    * Get service dashboard data
    *
    * @param serviceId - Business service ID
+   * @param ownedServiceIds - Business service ids the caller's organization owns; see getCompleteServiceView
    * @returns Complete dashboard data including trends and alerts
    */
-  async getServiceDashboard(serviceId: string): Promise<ServiceDashboardData> {
+  async getServiceDashboard(serviceId: string, ownedServiceIds: ReadonlySet<string>): Promise<ServiceDashboardData> {
     try {
       // Get complete service view
-      const service = await this.getCompleteServiceView(serviceId);
+      const service = await this.getCompleteServiceView(serviceId, ownedServiceIds);
 
       // Get recent incidents
       const recentIncidents = await this.itilManager.getRecentIncidents(serviceId, 30);

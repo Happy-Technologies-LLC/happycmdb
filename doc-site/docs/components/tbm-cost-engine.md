@@ -313,8 +313,10 @@ import { getPoolAggregationService } from '@cmdb/tbm-cost-engine';
 
 const poolService = getPoolAggregationService();
 
-// Aggregate costs for business service
-const costs = await poolService.aggregateBusinessServiceCosts('bs-crm');
+// Aggregate costs for business service. The second argument is the set of
+// business service ids the caller's organization owns in Postgres
+// (dim_business_services.organization_id); any other id is refused.
+const costs = await poolService.aggregateBusinessServiceCosts('bs-crm', ownedServiceIds);
 
 console.log(costs);
 // {

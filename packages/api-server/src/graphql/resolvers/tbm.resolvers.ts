@@ -7,16 +7,31 @@ import { GraphQLError } from 'graphql';
 import { getPostgresClient } from '@cmdb/database';
 import { GraphQLContext } from './index';
 import { logger } from '@cmdb/common';
+import { checkGraphQLPermission } from '../../middleware/auth.middleware';
+import { requireGraphQLOrganization } from '../require-organization';
+import { ownedBusinessServiceIds, ownsBusinessService } from '../../services/business-service-ownership';
 
 /**
  * TBM GraphQL Resolvers
  *
- * Provides GraphQL queries and mutations for TBM cost management
+ * Provides GraphQL queries and mutations for TBM cost management.
+ *
+ * Tenancy mirrors /api/v1/tbm: every resolver requires an organization claim
+ * before any data access; business-service and capability costs only reach
+ * :BusinessService ids the caller's organization owns in Postgres (FD-2);
+ * aggregates over every CI are admin-only until CI tenancy lands (FD-3 b).
  */
+
+/** FD-3 b gate for the global (all-CI) aggregates. */
+function requireGlobalAggregateAccess(context: GraphQLContext): void {
+  requireGraphQLOrganization(context);
+  checkGraphQLPermission(context, 'admin');
+}
 
 const Query = {
   // Cost Summary
   costSummary: async (_parent: any, _args: any, context: GraphQLContext) => {
+    requireGlobalAggregateAccess(context);
     const session = context._neo4jClient.getSession();
     try {
       // Get total monthly cost across all CIs
@@ -67,6 +82,7 @@ const Query = {
   },
 
   costsByTower: async (_parent: any, args: { tower?: string }, context: GraphQLContext) => {
+    requireGlobalAggregateAccess(context);
     const session = context._neo4jClient.getSession();
     try {
       let query = `
@@ -114,12 +130,16 @@ const Query = {
   },
 
   costsByCapability: async (_parent: any, args: { id: string }, context: GraphQLContext) => {
+    const organizationId = requireGraphQLOrganization(context);
+    // Only the caller organization's services are traversed (FD-2).
+    const orgServiceIds = [...(await ownedBusinessServiceIds(organizationId))];
     const session = context._neo4jClient.getSession();
     try {
       const result = await session.run(
         `
         MATCH (cap:BusinessCapability {id: $capabilityId})
         OPTIONAL MATCH (cap)-[:REALIZES]->(service:BusinessService)
+        WHERE service.id IN $orgServiceIds
         OPTIONAL MATCH (service)-[:SUPPORTED_BY]->(app:ApplicationService)
         OPTIONAL MATCH (app)-[:DEPENDS_ON|RUNS_ON*1..2]->(ci:CI)
         WHERE ci.tbm_monthly_cost IS NOT NULL
@@ -131,7 +151,7 @@ const Query = {
           count(DISTINCT ci) as ciCount,
           collect(DISTINCT ci.tbm_resource_tower) as towers
         `,
-        { capabilityId: args.id }
+        { capabilityId: args.id, orgServiceIds }
       );
 
       if (result.records.length === 0) {
@@ -147,6 +167,7 @@ const Query = {
         `
         MATCH (cap:BusinessCapability {id: $capabilityId})
         OPTIONAL MATCH (cap)-[:REALIZES]->(service:BusinessService)
+        WHERE service.id IN $orgServiceIds
         OPTIONAL MATCH (service)-[:SUPPORTED_BY]->(app:ApplicationService)
         OPTIONAL MATCH (app)-[:DEPENDS_ON|RUNS_ON*1..2]->(ci:CI)
         WHERE ci.tbm_monthly_cost IS NOT NULL
@@ -157,7 +178,7 @@ const Query = {
           count(ci) as ciCount
         ORDER BY totalCost DESC
         `,
-        { capabilityId: args.id }
+        { capabilityId: args.id, orgServiceIds }
       );
 
       const costByTower = towerResult.records.map((r: any) => ({
@@ -186,6 +207,14 @@ const Query = {
   },
 
   costsByBusinessService: async (_parent: any, args: { id: string }, context: GraphQLContext) => {
+    const organizationId = requireGraphQLOrganization(context);
+    // Ownership is decided in Postgres before any Cypher runs (FD-2); a
+    // foreign, missing or Neo4j-only service gets the same NOT_FOUND.
+    if (!(await ownsBusinessService(organizationId, args.id))) {
+      throw new GraphQLError('Business service not found', {
+        extensions: { code: 'NOT_FOUND' },
+      });
+    }
     const session = context._neo4jClient.getSession();
     try {
       const result = await session.run(
@@ -235,7 +264,8 @@ const Query = {
     }
   },
 
-  costTrends: async (_parent: any, args: { months?: number }) => {
+  costTrends: async (_parent: any, args: { months?: number }, context: GraphQLContext) => {
+    requireGlobalAggregateAccess(context);
     const pool = getPostgresClient().pool;
     try {
       const months = args.months || 6;
@@ -268,7 +298,8 @@ const Query = {
   },
 
   // Cost Allocations
-  costAllocations: async (_parent: any, args: { ciId: string }) => {
+  costAllocations: async (_parent: any, args: { ciId: string }, context: GraphQLContext) => {
+    requireGlobalAggregateAccess(context);
     // TODO: Query cost allocations from database
     // For now, return placeholder
     return {
@@ -280,6 +311,7 @@ const Query = {
 
   // Licenses
   licenses: async (_parent: any, args: { vendor?: string; status?: string }, context: GraphQLContext) => {
+    requireGlobalAggregateAccess(context);
     const session = context._neo4jClient.getSession();
     try {
       let query = `MATCH (ci:CI {type: 'software'}) WHERE 1=1`;
@@ -310,6 +342,7 @@ const Query = {
   },
 
   upcomingRenewals: async (_parent: any, args: { days?: number }, context: GraphQLContext) => {
+    requireGlobalAggregateAccess(context);
     const session = context._neo4jClient.getSession();
     try {
       const days = args.days || 90;
@@ -340,6 +373,7 @@ const Query = {
 
 const Mutation = {
   allocateCosts: async (_parent: any, args: { input: any }, context: GraphQLContext) => {
+    requireGlobalAggregateAccess(context);
     const { sourceId, targetType, targetIds, allocationMethod, allocationRules } = args.input;
 
     // Validate input
@@ -399,7 +433,8 @@ const Mutation = {
     }
   },
 
-  importGLData: async () => {
+  importGLData: async (_parent: unknown, _args: unknown, context: GraphQLContext) => {
+    requireGlobalAggregateAccess(context);
     // TODO: Implement GL data import
     return {
       success: false,

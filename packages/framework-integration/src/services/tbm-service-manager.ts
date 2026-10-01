@@ -42,10 +42,18 @@ export class TBMServiceManager {
    * Get comprehensive TBM cost metrics for a service
    *
    * @param serviceId - Business service ID
+   * @param ownedServiceIds - Business service ids the caller's organization owns (Postgres
+   *   dim_business_services.organization_id); an id outside the set is refused
    * @returns TBM cost metrics including towers, pools, trends
    */
-  async getServiceCosts(serviceId: string): Promise<TBMCosts> {
+  async getServiceCosts(serviceId: string, ownedServiceIds: ReadonlySet<string>): Promise<TBMCosts> {
     try {
+      // Ownership first: a foreign id is refused before any read, with the
+      // same error as a missing one.
+      if (!ownedServiceIds.has(serviceId)) {
+        throw new Error(`Business service not found: ${serviceId}`);
+      }
+
       // Fetch business service
       const businessService = await this.businessServiceRepo.getBusinessServiceById(serviceId);
       if (!businessService) {
@@ -54,7 +62,8 @@ export class TBMServiceManager {
 
       // Get cost aggregation
       const costAggregation = await this.poolAggregationService.aggregateBusinessServiceCosts(
-        serviceId
+        serviceId,
+        ownedServiceIds
       );
 
       // Get cost trends

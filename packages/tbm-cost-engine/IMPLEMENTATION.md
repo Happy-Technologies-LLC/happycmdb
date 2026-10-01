@@ -228,9 +228,10 @@ const allocation = costService.allocateUsageBasedCosts(
   ]
 );
 
-// Aggregate to business service
+// Aggregate to business service (ids the caller's organization owns in Postgres;
+// any other id is refused)
 const poolService = getPoolAggregationService();
-const costs = await poolService.aggregateBusinessServiceCosts('bs-001');
+const costs = await poolService.aggregateBusinessServiceCosts('bs-001', new Set(['bs-001']));
 console.log(costs.totalMonthlyCost);
 console.log(costs.costByTower);
 ```

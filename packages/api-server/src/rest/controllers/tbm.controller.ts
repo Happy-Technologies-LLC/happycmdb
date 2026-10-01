@@ -4,6 +4,11 @@
 import { Request, Response } from 'express';
 import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
 import { logger } from '@cmdb/common';
+import { requestOrganizationId } from '../../middleware/auth.middleware';
+import { ownedBusinessServiceIds, ownsBusinessService } from '../../services/business-service-ownership';
+
+// One body for a foreign, missing, or Neo4j-only service so ownership is not observable.
+const BUSINESS_SERVICE_NOT_FOUND = { success: false, error: 'Not Found', message: 'Business service not found' };
 
 
 /**
@@ -157,6 +162,8 @@ export class TBMController {
   async getCostsByCapability(req: Request, res: Response): Promise<void> {
     try {
       const { id } = req.params;
+      // Only the caller organization's services are traversed (FD-2).
+      const orgServiceIds = [...(await ownedBusinessServiceIds(requestOrganizationId(req)))];
 
       const session = this.neo4jClient.getSession();
       try {
@@ -165,6 +172,7 @@ export class TBMController {
           `
           MATCH (cap:BusinessCapability {id: $capabilityId})
           OPTIONAL MATCH (cap)-[:REALIZES]->(service:BusinessService)
+          WHERE service.id IN $orgServiceIds
           OPTIONAL MATCH (service)-[:SUPPORTED_BY]->(app:ApplicationService)
           OPTIONAL MATCH (app)-[:DEPENDS_ON|RUNS_ON*1..2]->(ci:CI)
           WHERE ci.tbm_monthly_cost IS NOT NULL
@@ -175,7 +183,7 @@ export class TBMController {
             sum(DISTINCT ci.tbm_monthly_cost) as totalCost,
             count(DISTINCT ci) as ciCount
           `,
-          { capabilityId: id }
+          { capabilityId: id, orgServiceIds }
         );
 
         if (result.records.length === 0) {
@@ -216,6 +224,12 @@ export class TBMController {
     try {
       const { id } = req.params;
 
+      // Ownership is decided in Postgres before any Cypher runs (FD-2).
+      if (!(await ownsBusinessService(requestOrganizationId(req), id))) {
+        res.status(404).json(BUSINESS_SERVICE_NOT_FOUND);
+        return;
+      }
+
       const session = this.neo4jClient.getSession();
       try {
         const result = await session.run(
@@ -235,11 +249,7 @@ export class TBMController {
         );
 
         if (result.records.length === 0) {
-          res.status(404).json({
-            success: false,
-            error: 'Not Found',
-            message: `Business service with ID '${id}' not found`,
-          });
+          res.status(404).json(BUSINESS_SERVICE_NOT_FOUND);
           return;
         }
 

@@ -15,6 +15,14 @@ const authMiddleware = getAuthMiddleware();
 // Apply audit middleware to all routes
 tbmRoutes.use(auditMiddleware);
 
+// Tenant scoping: a token without an org claim is rejected with 403 before any
+// data access. Business-service and capability costs are filtered to the
+// services the caller's organization owns in Postgres (FD-2).
+tbmRoutes.use(authMiddleware.requireOrganization());
+
+// FD-3 b: aggregates over every CI (no tenancy on CIs yet) are admin-only.
+const globalAggregate = authMiddleware.requirePermission('admin');
+
 // Validation schemas
 const allocateCostsSchema = Joi.object({
   sourceId: Joi.string().required(),
@@ -61,11 +69,13 @@ const renewalsQuerySchema = Joi.object({
 
 tbmRoutes.get(
   '/costs/summary',
+  globalAggregate,
   controller.getCostSummary.bind(controller)
 );
 
 tbmRoutes.get(
   '/costs/by-tower',
+  globalAggregate,
   validateOptional(towerQuerySchema, 'query'),
   controller.getCostsByTower.bind(controller)
 );
@@ -82,6 +92,7 @@ tbmRoutes.get(
 
 tbmRoutes.get(
   '/costs/trends',
+  globalAggregate,
   validateOptional(costTrendsQuerySchema, 'query'),
   controller.getCostTrends.bind(controller)
 );
@@ -92,13 +103,14 @@ tbmRoutes.get(
 
 tbmRoutes.post(
   '/costs/allocate',
-  authMiddleware.requirePermission('write'),
+  globalAggregate,
   validateRequest(allocateCostsSchema, 'body'),
   controller.allocateCosts.bind(controller)
 );
 
 tbmRoutes.get(
   '/costs/allocations/:ciId',
+  globalAggregate,
   controller.getCostAllocations.bind(controller)
 );
 
@@ -108,18 +120,20 @@ tbmRoutes.get(
 
 tbmRoutes.post(
   '/gl/import',
-  authMiddleware.requirePermission('write'),
+  globalAggregate,
   controller.importGLData.bind(controller)
 );
 
 tbmRoutes.get(
   '/licenses',
+  globalAggregate,
   validateOptional(licenseQuerySchema, 'query'),
   controller.getLicenses.bind(controller)
 );
 
 tbmRoutes.get(
   '/licenses/renewals',
+  globalAggregate,
   validateOptional(renewalsQuerySchema, 'query'),
   controller.getUpcomingRenewals.bind(controller)
 );

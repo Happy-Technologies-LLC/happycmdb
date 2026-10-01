@@ -11,7 +11,10 @@
 --
 -- Order: run this BEFORE rollback/008_business_service_organization_scope.down.sql.
 -- While the 009 views exist, 008's DROP COLUMN organization_id fails on the
--- view dependency.
+-- view dependency. If 010_business_service_views_org_functions.sql is applied,
+-- run rollback/010_business_service_views_org_functions.down.sql first: its
+-- functions' RETURNS SETOF types depend on these views and the DROP VIEW below
+-- fails.
 --
 -- Run: psql -v ON_ERROR_STOP=1 -f 009_business_service_views_org_scope.down.sql
 

@@ -175,10 +175,30 @@ Refresh tokens are accepted only by the refresh endpoint; as a bearer token they
   Users need `organizationId` set (the seeded admin has the internal organization).
 - Migration `009_business_service_views_org_scope.sql` adds `organization_id` to the
   SQL views `v_business_service_health` and `v_tbm_tower_summary` (tower counts are
-  per organization). The views have no row-level security and are `GRANT SELECT TO
-  PUBLIC`: any reader must filter `WHERE organization_id = <token _organizationId>`.
-  `avg_mttr_minutes` is weighted by `incident_count` over days with a recorded MTTR
-  (NULL when there are none), matching `GET /api/v1/business-services/:id/health`.
+  per organization). `avg_mttr_minutes` is weighted by `incident_count` over days with
+  a recorded MTTR (NULL when there are none), matching
+  `GET /api/v1/business-services/:id/health`.
+- Migration `010_business_service_views_org_functions.sql` revokes PUBLIC `SELECT` on
+  both views and adds `cmdb.fn_business_service_health(p_org uuid)` and
+  `cmdb.fn_tbm_tower_summary(p_org uuid)`, which return one organization's rows and
+  raise on a NULL organization. Readers must call the functions with the token's
+  `_organizationId`. 010 also revokes `EXECUTE` on both functions from PUBLIC, and the
+  functions are `SECURITY INVOKER`, so a non-owner reader (for example a BI or
+  read-only role) needs `GRANT EXECUTE` on the function plus `GRANT SELECT` on its
+  view. That `SELECT` grant also lets the role read every organization from the view
+  directly; see the role model in the 010 header (lines 15-23). This is not a
+  tenant-isolation boundary for database roles:
+  - The views have no row-level security. The owning role (the migration/API role),
+    superusers, `pg_read_all_data` members and any role granted `SELECT` on a view
+    outside migrations (for example `metabase_readonly` via
+    `infrastructure/database/metabase-init.sql`) still read every organization.
+  - The base tables keep their PUBLIC grants from 001 (`SELECT` and `INSERT` on
+    `dim_business_services`, `ci_business_service_mappings` and both fact tables;
+    also `UPDATE`/`DELETE` on the first two), so any role can recompute both views
+    for every organization and write rows that feed them.
+
+  Check the view ACLs after deploying 010:
+  `SELECT relname, relacl FROM pg_class WHERE relname IN ('v_business_service_health', 'v_tbm_tower_summary');`
 
 ```cypher
 // Assign an existing user to the internal organization
@@ -186,11 +206,20 @@ MATCH (u:User) WHERE u._username = 'svc-happyhive' OR u.username = 'svc-happyhiv
 SET u.organizationId = '00000000-0000-0000-0000-000000000000';
 ```
 
-### Rolling back migrations 009 and 008
+### Rolling back migrations 010, 009 and 008
 
-Roll back 009 first: its views depend on `organization_id`, so 008's rollback fails
-(and changes nothing) while they exist. The 009 rollback restores the 001 view
-definitions and deletes its `cmdb.schema_migrations` row:
+Roll back in reverse order. 010's functions return the views' row types, so 009's
+rollback fails while they exist. The 010 rollback drops the functions, restores 009's
+view grants (including `SELECT` to PUBLIC) and comments, and deletes its
+`cmdb.schema_migrations` row:
+
+```bash
+psql -v ON_ERROR_STOP=1 -f packages/database/src/postgres/migrations/rollback/010_business_service_views_org_functions.down.sql
+```
+
+009's views depend on `organization_id`, so 008's rollback fails (and changes
+nothing) while they exist. The 009 rollback restores the 001 view definitions and
+deletes its `cmdb.schema_migrations` row:
 
 ```bash
 psql -v ON_ERROR_STOP=1 -f packages/database/src/postgres/migrations/rollback/009_business_service_views_org_scope.down.sql

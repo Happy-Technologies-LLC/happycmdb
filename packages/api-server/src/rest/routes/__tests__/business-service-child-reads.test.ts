@@ -361,6 +361,11 @@ describe('business-service health: daily-counter windows (PGlite)', () => {
     return res.body.data;
   };
 
+  // FD-8: the window is [utc_today - N, utc_today], utc_today =
+  // (now() AT TIME ZONE 'UTC')::date. Window rows are dated against UTC, not
+  // the session's CURRENT_DATE (PGlite's default TimeZone follows the host TZ).
+  const UTC_TODAY = `(now() AT TIME ZONE 'UTC')::date`;
+
   beforeEach(async () => {
     await db.exec(`TRUNCATE ${DDL_TABLES.join(', ')} RESTART IDENTITY CASCADE;${SEED}`);
   });
@@ -369,12 +374,12 @@ describe('business-service health: daily-counter windows (PGlite)', () => {
   it('sums multi-event day counters, including day -7/-30 and excluding day -8/-31', async () => {
     await db.exec(`
       INSERT INTO fact_business_service_incidents (service_id, incident_date, incident_count) VALUES
-        ('bs-db', CURRENT_DATE, 3),
-        ('bs-db', CURRENT_DATE - 7, 5), ('bs-db', CURRENT_DATE - 8, 11),
-        ('bs-db', CURRENT_DATE - 30, 13), ('bs-db', CURRENT_DATE - 31, 17);
+        ('bs-db', ${UTC_TODAY}, 3),
+        ('bs-db', ${UTC_TODAY} - 7, 5), ('bs-db', ${UTC_TODAY} - 8, 11),
+        ('bs-db', ${UTC_TODAY} - 30, 13), ('bs-db', ${UTC_TODAY} - 31, 17);
       INSERT INTO fact_business_service_changes (service_id, change_date, change_count, successful_count) VALUES
-        ('bs-db', CURRENT_DATE - 7, 5, 4), ('bs-db', CURRENT_DATE - 8, 11, 11),
-        ('bs-db', CURRENT_DATE - 30, 13, 0), ('bs-db', CURRENT_DATE - 31, 17, 17);`);
+        ('bs-db', ${UTC_TODAY} - 7, 5, 4), ('bs-db', ${UTC_TODAY} - 8, 11, 11),
+        ('bs-db', ${UTC_TODAY} - 30, 13, 0), ('bs-db', ${UTC_TODAY} - 31, 17, 17);`);
     const data = await health('bs-db');
     expect(data.incidents).toMatchObject({ incidents_7d: 8, incidents_30d: 32 });
     expect(data.changes).toMatchObject({ changes_7d: 5, changes_30d: 29 });
@@ -384,9 +389,9 @@ describe('business-service health: daily-counter windows (PGlite)', () => {
   it('returns zero breaches and null MTTR/rate when the 30-day window is empty, despite older facts', async () => {
     await db.exec(`
       INSERT INTO fact_business_service_incidents (service_id, incident_date, incident_count, mttr_minutes, sla_breaches) VALUES
-        ('bs-net', CURRENT_DATE - 31, 50, 10, 1);
+        ('bs-net', ${UTC_TODAY} - 31, 50, 10, 1);
       INSERT INTO fact_business_service_changes (service_id, change_date, change_count, successful_count) VALUES
-        ('bs-net', CURRENT_DATE - 1, 0, 0), ('bs-net', CURRENT_DATE - 31, 100, 100);`);
+        ('bs-net', ${UTC_TODAY} - 1, 0, 0), ('bs-net', ${UTC_TODAY} - 31, 100, 100);`);
     expect(await health('bs-net')).toEqual({
       incidents: { incidents_7d: 0, incidents_30d: 0, avg_mttr_30d: null, sla_breaches_30d: 0 },
       changes: { changes_7d: 0, changes_30d: 0, success_rate_30d: null },
@@ -399,12 +404,77 @@ describe('business-service health: daily-counter windows (PGlite)', () => {
     // 910 / 15; the out-of-window day must not contribute at all.
     await db.exec(`
       INSERT INTO fact_business_service_incidents (service_id, incident_date, incident_count, mttr_minutes, sla_breaches) VALUES
-        ('bs-db', CURRENT_DATE - 2, 1, 10, 0),
-        ('bs-db', CURRENT_DATE - 12, 9, 100, 1),
-        ('bs-db', CURRENT_DATE - 14, 5, NULL, 0),
-        ('bs-db', CURRENT_DATE - 45, 100, 1000, 4);`);
+        ('bs-db', ${UTC_TODAY} - 2, 1, 10, 0),
+        ('bs-db', ${UTC_TODAY} - 12, 9, 100, 1),
+        ('bs-db', ${UTC_TODAY} - 14, 5, NULL, 0),
+        ('bs-db', ${UTC_TODAY} - 45, 100, 1000, 4);`);
     expect((await health('bs-db')).incidents).toEqual({
       incidents_7d: 1, incidents_30d: 15, avg_mttr_30d: 91, sla_breaches_30d: 1,
+    });
+  });
+
+  it('a +1 day incident row is excluded from 7d and 30d totals', async () => {
+    await db.exec(`
+      INSERT INTO fact_business_service_incidents (service_id, incident_date, incident_count, mttr_minutes, sla_breaches) VALUES
+        ('bs-db', ${UTC_TODAY}, 3, 20, 1),
+        ('bs-db', ${UTC_TODAY} + 1, 50, 1000, 9);`);
+    expect((await health('bs-db')).incidents).toEqual({
+      incidents_7d: 3, incidents_30d: 3, avg_mttr_30d: 20, sla_breaches_30d: 1,
+    });
+  });
+
+  it('a +1 day change row is excluded from both 30d success-rate terms', async () => {
+    // In-window 3/4 = 75%. Counting the future row in both terms gives 9/10,
+    // in the numerator only 9/4, in the denominator only 3/10.
+    await db.exec(`
+      INSERT INTO fact_business_service_changes (service_id, change_date, change_count, successful_count) VALUES
+        ('bs-db', ${UTC_TODAY}, 4, 3),
+        ('bs-db', ${UTC_TODAY} + 1, 6, 6);`);
+    expect((await health('bs-db')).changes).toEqual({ changes_7d: 4, changes_30d: 4, success_rate_30d: 75 });
+  });
+
+  it('window boundaries do not move with the session TimeZone', async () => {
+    // Rows on both sides of each bound. A session-local CURRENT_DATE is
+    // utc_today + 1 in Kiritimati from 10:00 UTC and utc_today - 1 in
+    // Pago Pago before 11:00 UTC, so at any time of day at least one zone
+    // shifts a session-dated lower or upper bound across these rows.
+    await db.exec(`
+      INSERT INTO fact_business_service_incidents (service_id, incident_date, incident_count, mttr_minutes, sla_breaches) VALUES
+        ('bs-db', ${UTC_TODAY} + 1, 50, 1000, 9), ('bs-db', ${UTC_TODAY}, 3, 20, 1),
+        ('bs-db', ${UTC_TODAY} - 7, 5, 40, 0), ('bs-db', ${UTC_TODAY} - 8, 11, 100, 2),
+        ('bs-db', ${UTC_TODAY} - 30, 13, 10, 1), ('bs-db', ${UTC_TODAY} - 31, 17, 1000, 7);
+      INSERT INTO fact_business_service_changes (service_id, change_date, change_count, successful_count) VALUES
+        ('bs-db', ${UTC_TODAY} + 1, 6, 6), ('bs-db', ${UTC_TODAY}, 4, 3),
+        ('bs-db', ${UTC_TODAY} - 7, 5, 4), ('bs-db', ${UTC_TODAY} - 8, 11, 11),
+        ('bs-db', ${UTC_TODAY} - 30, 13, 0), ('bs-db', ${UTC_TODAY} - 31, 17, 17);`);
+    const byZone: Record<string, unknown> = {};
+    try {
+      for (const zone of ['UTC', 'Pacific/Kiritimati', 'Pacific/Pago_Pago']) {
+        await db.exec(`SET TIME ZONE '${zone}'`);
+        byZone[zone] = await health('bs-db');
+      }
+    } finally {
+      await db.exec('RESET TIME ZONE');
+    }
+    expect(byZone.UTC).toEqual({
+      incidents: {
+        incidents_7d: 8, incidents_30d: 32, avg_mttr_30d: (60 + 200 + 1100 + 130) / 32, sla_breaches_30d: 4,
+      },
+      changes: { changes_7d: 9, changes_30d: 33, success_rate_30d: expect.closeTo((18 / 33) * 100, 10) },
+    });
+    expect(byZone['Pacific/Kiritimati']).toEqual(byZone.UTC);
+    expect(byZone['Pacific/Pago_Pago']).toEqual(byZone.UTC);
+  });
+
+  it("today's UTC row is included", async () => {
+    await db.exec(`
+      INSERT INTO fact_business_service_incidents (service_id, incident_date, incident_count, mttr_minutes, sla_breaches) VALUES
+        ('bs-db', ${UTC_TODAY}, 2, 15, 1);
+      INSERT INTO fact_business_service_changes (service_id, change_date, change_count, successful_count) VALUES
+        ('bs-db', ${UTC_TODAY}, 5, 4);`);
+    expect(await health('bs-db')).toEqual({
+      incidents: { incidents_7d: 2, incidents_30d: 2, avg_mttr_30d: 15, sla_breaches_30d: 1 },
+      changes: { changes_7d: 5, changes_30d: 5, success_rate_30d: 80 },
     });
   });
 });

@@ -246,13 +246,16 @@ businessServiceRoutes.delete(
  *          {success: false, error: 'Business service not found'} when it does not.
  *          Input contract: the fact tables hold daily service/date event
  *          counters. incidents_7d/30d and changes_7d/30d sum incident_count /
- *          change_count over rows with date >= CURRENT_DATE - 7/30 days;
+ *          change_count over rows with utc_today - 7/30 days <= date <=
+ *          utc_today, utc_today = (now() AT TIME ZONE 'UTC')::date (independent
+ *          of the DB session TimeZone; future-dated rows are excluded);
  *          success_rate_30d = SUM(successful_count) / SUM(change_count) * 100
  *          over that same 30-day window, null when the window has no changes.
  *          avg_mttr_30d = SUM(mttr_minutes * incident_count) / SUM(incident_count)
  *          over in-window rows with a non-null mttr_minutes, null when there
  *          are none; sla_breaches_30d is 0 when the window has no incidents.
- *          Producer mapping, timezone and replay guarantees are not asserted here.
+ *          Producer mapping, the producer's date attribution and replay
+ *          guarantees are not asserted here.
  * @access  Private
  */
 businessServiceRoutes.get(

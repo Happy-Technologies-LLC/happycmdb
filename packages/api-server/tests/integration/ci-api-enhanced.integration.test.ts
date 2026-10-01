@@ -71,19 +71,19 @@ describe('CI REST API - Enhanced Integration Tests', () => {
   beforeAll(async () => {
     app = express();
     app.use(express.json());
-    // The real router only enforces `authMiddleware.requirePermission('write')`
-    // on mutating routes; `authMiddleware.authenticate()` (JWT/API-key
-    // verification) is mounted centrally in server.ts before this router, not
-    // inside it. Mirror that here by attaching a real operator TokenPayload
-    // directly (skipping JWT verification, not the permission check itself)
-    // so `requirePermission('write')` runs for real against an authenticated
-    // role.
+    // The real router enforces `authMiddleware.requireOrganization()` on every
+    // route and `authMiddleware.requirePermission('write')` on mutating routes;
+    // `authMiddleware.authenticate()` (JWT/API-key verification) is mounted
+    // centrally in server.ts before this router, not inside it. Mirror that
+    // here by attaching a real operator TokenPayload directly (skipping JWT
+    // verification, not the organization/permission checks themselves).
     app.use((req: express.Request, _res, next) => {
       (req as express.Request & { user?: TokenPayload }).user = {
         _userId: 'test-user-123',
         _username: 'test-operator',
         _role: 'operator',
         _type: 'access',
+        _organizationId: '11111111-1111-4111-8111-111111111111',
       };
       next();
     });

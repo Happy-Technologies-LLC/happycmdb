@@ -7,7 +7,7 @@ import { GraphQLError } from 'graphql';
 import { GraphQLScalarType, Kind } from 'graphql';
 import neo4j from 'neo4j-driver';
 import { Neo4jClient } from '@cmdb/database';
-import { CI, CIInput, CIType, CIStatus, Environment, RelationshipType } from '@cmdb/common';
+import { CI, CIType, CIStatus, Environment, RelationshipType } from '@cmdb/common';
 import { analyticsResolvers } from './analytics.resolver';
 import { connectorResolvers } from './connector.resolvers';
 import { connectorFieldResolvers } from './connector-fields.resolvers';
@@ -119,26 +119,6 @@ type CIValue = Partial<CI> & {
   _updatedAt?: string;
   _discoveredAt?: string;
 };
-
-function validateCIInput(input: { _id?: unknown; _name?: unknown; _type?: unknown }): void {
-  if (!input._id || typeof input._id !== 'string') {
-    throw new GraphQLError('CI ID is required and must be a string', {
-      extensions: { code: 'BAD_USER_INPUT' },
-    });
-  }
-
-  if (!input._name || typeof input._name !== 'string') {
-    throw new GraphQLError('CI name is required and must be a string', {
-      extensions: { code: 'BAD_USER_INPUT' },
-    });
-  }
-
-  if (!input._type) {
-    throw new GraphQLError('CI type is required', {
-      extensions: { code: 'BAD_USER_INPUT' },
-    });
-  }
-}
 
 function normalizePagination(value: number | undefined, fallback: number): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
@@ -471,101 +451,38 @@ const Query = {
  */
 const Mutation = {
   /**
-   * Create a new CI
+   * Create a new CI.
+   *
+   * Neo4jClient.createCI requires the caller's organization and GraphQL CI
+   * tenant scoping is not in place yet, so this fails closed instead of
+   * creating an org-less CI.
    */
   createCI: async (
-    __parent: any,
-    _args: {
-      input: {
-        _id: string;
-        _externalId?: string;
-        _name: string;
-        _type: string;
-        _status?: string;
-        _environment?: string;
-        _discoveredAt?: string;
-        _metadata?: Record<string, unknown>;
-      };
-    },
+    __parent: unknown,
+    _args: unknown,
     _context: GraphQLContext
   ): Promise<GraphQLCI> => {
     checkGraphQLPermission(_context, 'write');
-    try {
-      validateCIInput(_args.input);
-      const ciInput: CIInput = {
-        _id: _args.input._id,
-        external_id: _args.input._externalId,
-        name: _args.input._name,
-        _type: convertEnumToDbFormat(_args.input._type) as CIType,
-        status: _args.input._status
-          ? convertEnumToDbFormat(_args.input._status) as CIStatus
-          : 'active',
-        environment: _args.input._environment
-          ? convertEnumToDbFormat(_args.input._environment) as Environment
-          : undefined,
-        discovered_at: _args.input._discoveredAt ?? new Date().toISOString(),
-        metadata: _args.input._metadata ?? {},
-      };
-      const ci = await _context._neo4jClient.createCI(ciInput);
-      _context._loaders._ciLoader.clear(ci._id);
-      return toGraphQLCI(ci);
-    } catch (error: any) {
-      if (error instanceof GraphQLError) {
-        throw error;
-      }
-      throw new GraphQLError('Failed to create CI', {
-        extensions: {
-          code: 'INTERNAL_SERVER_ERROR',
-          originalError: error.message,
-        },
-      });
-    }
+    throw new GraphQLError('CI tenant scoping for GraphQL is pending', {
+      extensions: { code: 'FORBIDDEN' },
+    });
   },
 
   /**
-   * Update an existing CI
+   * Update an existing CI.
+   *
+   * Fails closed for the same reason as createCI: Neo4jClient.updateCI is
+   * organization-scoped and GraphQL has no tenant scoping yet.
    */
   updateCI: async (
-    __parent: any,
-    _args: {
-      id: string;
-      input: {
-        _name?: string;
-        _status?: string;
-        _environment?: string;
-        _metadata?: Record<string, unknown>;
-      };
-    },
+    __parent: unknown,
+    _args: unknown,
     _context: GraphQLContext
   ): Promise<GraphQLCI> => {
     checkGraphQLPermission(_context, 'write');
-    try {
-      const updates: Partial<CIInput> = {};
-
-      if (_args.input._name !== undefined) {
-        updates.name = _args.input._name;
-      }
-      if (_args.input._status !== undefined) {
-        updates.status = convertEnumToDbFormat(_args.input._status) as CIStatus;
-      }
-      if (_args.input._environment !== undefined) {
-        updates.environment = convertEnumToDbFormat(_args.input._environment) as Environment;
-      }
-      if (_args.input._metadata !== undefined) {
-        updates.metadata = _args.input._metadata;
-      }
-
-      const ci = await _context._neo4jClient.updateCI(_args.id, updates);
-      _context._loaders._ciLoader.clear(_args.id);
-      return toGraphQLCI(ci);
-    } catch (error: any) {
-      throw new GraphQLError('Failed to update CI', {
-        extensions: {
-          code: 'INTERNAL_SERVER_ERROR',
-          originalError: error.message,
-        },
-      });
-    }
+    throw new GraphQLError('CI tenant scoping for GraphQL is pending', {
+      extensions: { code: 'FORBIDDEN' },
+    });
   },
 
   /**

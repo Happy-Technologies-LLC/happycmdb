@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Request, Response } from 'express';
-import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
+// CI tenant scoping covers /api/v1/cis only so far; these routes read CIs unscoped, as before.
+import { getNeo4jClient, getPostgresClient, UNSCOPED_CI_ACCESS } from '@cmdb/database';
 import { logger } from '@cmdb/common';
 import { v4 as uuidv4 } from 'uuid';
 import neo4j from 'neo4j-driver';
@@ -119,7 +120,7 @@ export class ITILController {
     try {
       const { id } = req.params;
 
-      const ci = await this.neo4jClient.getCI(id);
+      const ci = await this.neo4jClient.getCI(id, UNSCOPED_CI_ACCESS);
 
       if (!ci) {
         res.status(404).json({
@@ -413,7 +414,7 @@ export class ITILController {
       const { affectedCIId, description, reportedBy, detectedAt } = req.body;
 
       // Verify CI exists
-      const ci = await this.neo4jClient.getCI(affectedCIId);
+      const ci = await this.neo4jClient.getCI(affectedCIId, UNSCOPED_CI_ACCESS);
       if (!ci) {
         res.status(404).json({
           success: false,
@@ -737,7 +738,7 @@ export class ITILController {
 
       // Verify all affected CIs exist
       for (const ciId of affectedCIIds) {
-        const ci = await this.neo4jClient.getCI(ciId);
+        const ci = await this.neo4jClient.getCI(ciId, UNSCOPED_CI_ACCESS);
         if (!ci) {
           res.status(404).json({
             success: false,
@@ -1153,7 +1154,7 @@ export class ITILController {
       // Verify all CIs exist and snapshot their current state for baseline_data
       const ciSnapshots: Record<string, any> = {};
       for (const ciId of ciIds) {
-        const ci = await this.neo4jClient.getCI(ciId);
+        const ci = await this.neo4jClient.getCI(ciId, UNSCOPED_CI_ACCESS);
         if (!ci) {
           res.status(404).json({
             success: false,

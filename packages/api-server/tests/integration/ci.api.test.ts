@@ -8,6 +8,8 @@
  * Uses testcontainers for Neo4j and PostgreSQL to ensure realistic testing.
  */
 
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import request from 'supertest';
 import express, { Application } from 'express';
 import { v4 as uuidv4 } from 'uuid';
@@ -48,8 +50,14 @@ interface SearchResultItem {
   score: number;
 }
 
+const ORG_A = '11111111-1111-4111-8111-111111111111';
+const ORG_B = '22222222-2222-4222-8222-222222222222';
+const INTERNAL_ORG = '00000000-0000-0000-0000-000000000000';
+
 describe('CI REST API Integration Tests', () => {
   let app: Application;
+  // Organization claim of the next request's token (every route requires one).
+  let callerOrganizationId = ORG_A;
 
   // Setup test containers before all tests
   beforeAll(async () => {
@@ -58,24 +66,28 @@ describe('CI REST API Integration Tests', () => {
     // Create Express app with CI routes
     app = express();
     app.use(express.json());
-    // The real router only enforces `authMiddleware.requirePermission('write')`
-    // on mutating routes; `authMiddleware.authenticate()` (JWT/API-key
-    // verification) is mounted centrally in server.ts before this router, not
-    // inside it. Mirror that here by attaching a real operator TokenPayload
-    // directly (skipping JWT verification, not the permission check itself)
-    // so `requirePermission('write')` runs for real against an authenticated
-    // role.
+    // The real router enforces `authMiddleware.requireOrganization()` on every
+    // route and `authMiddleware.requirePermission('write')` on mutating routes;
+    // `authMiddleware.authenticate()` (JWT/API-key verification) is mounted
+    // centrally in server.ts before this router, not inside it. Mirror that
+    // here by attaching a real operator TokenPayload directly (skipping JWT
+    // verification, not the organization/permission checks themselves).
     app.use((req: express.Request, _res, next) => {
       (req as express.Request & { user?: TokenPayload }).user = {
         _userId: 'test-user-123',
         _username: 'test-operator',
         _role: 'operator',
         _type: 'access',
+        _organizationId: callerOrganizationId,
       };
       next();
     });
     app.use('/api/v1/cis', ciRoutes);
   }, 120000); // 2 minute timeout for container startup
+
+  beforeEach(() => {
+    callerOrganizationId = ORG_A;
+  });
 
   // Clean databases between tests
   afterEach(async () => {
@@ -609,6 +621,108 @@ describe('CI REST API Integration Tests', () => {
 
       // 6. Verify deletion
       await request(app).get(`/api/v1/cis/${ciId}`).expect(404);
+    });
+  });
+
+  describe('Tenant isolation (organization_id)', () => {
+    const NOT_FOUND = { success: false, error: 'Not Found', message: 'CI not found' };
+
+    it('keeps two organizations\' CIs, traversals and searches apart', async () => {
+      const aApp = uuidv4();
+      const aDb = uuidv4();
+      const bApp = uuidv4();
+
+      callerOrganizationId = ORG_A;
+      await request(app).post('/api/v1/cis').send({ id: aApp, name: 'tenant-a-app', type: 'application' }).expect(201);
+      await request(app).post('/api/v1/cis').send({ id: aDb, name: 'tenant-a-db', type: 'database' }).expect(201);
+      // The body cannot choose the organization.
+      await request(app).post('/api/v1/cis')
+        .send({ id: uuidv4(), name: 'smuggled', type: 'server', organization_id: ORG_B }).expect(400);
+
+      callerOrganizationId = ORG_B;
+      await request(app).post('/api/v1/cis').send({ id: bApp, name: 'tenant-b-app', type: 'application' }).expect(201);
+
+      // a-app -> a-db, and a cross-tenant edge b-app -> a-db (as an unscoped writer could create).
+      const { neo4jDriver } = getTestContext();
+      const session = neo4jDriver.session();
+      try {
+        await session.run(
+          `MATCH (a:CI {id: $aApp}), (d:CI {id: $aDb}), (b:CI {id: $bApp})
+           CREATE (a)-[:DEPENDS_ON]->(d), (b)-[:DEPENDS_ON]->(d)`,
+          { aApp, aDb, bApp }
+        );
+        const stored = await session.run('MATCH (ci:CI) RETURN ci.id AS id, ci.organization_id AS org');
+        expect(Object.fromEntries(stored.records.map(r => [r.get('id'), r.get('org')]))).toEqual({
+          [aApp]: ORG_A, [aDb]: ORG_A, [bApp]: ORG_B,
+        });
+      } finally {
+        await session.close();
+      }
+
+      // Org B sees only its own CI, and A's CIs exactly like missing ones.
+      const listB = await request(app).get('/api/v1/cis').expect(200);
+      expect(listB.body.data.map((ci: CIResponseItem) => ci.id)).toEqual([bApp]);
+      const searchB = await request(app).post('/api/v1/cis/search').send({ query: 'tenant' }).expect(200);
+      expect(searchB.body.data.map((hit: SearchResultItem) => hit.ci.id)).toEqual([bApp]);
+      for (const suffix of ['', '/relationships', '/dependencies', '/impact']) {
+        const foreign = await request(app).get(`/api/v1/cis/${aDb}${suffix}`).expect(404);
+        const missing = await request(app).get(`/api/v1/cis/${uuidv4()}${suffix}`).expect(404);
+        expect(foreign.body).toEqual(NOT_FOUND);
+        expect(missing.body).toEqual(NOT_FOUND);
+      }
+      expect((await request(app).put(`/api/v1/cis/${aDb}`).send({ name: 'renamed-by-b' }).expect(404)).body).toEqual(NOT_FOUND);
+      expect((await request(app).delete(`/api/v1/cis/${aDb}`).expect(404)).body).toEqual(NOT_FOUND);
+
+      // Org A: its CI is intact, and impact analysis omits B's dependent.
+      callerOrganizationId = ORG_A;
+      const own = await request(app).get(`/api/v1/cis/${aDb}`).expect(200);
+      expect(own.body.data.name).toBe('tenant-a-db');
+      const impact = await request(app).get(`/api/v1/cis/${aDb}/impact`).expect(200);
+      expect(impact.body.data.downstream.map((ci: CIResponseItem) => ci.id)).toEqual([aApp]);
+      const dependencies = await request(app).get(`/api/v1/cis/${bApp}/dependencies`).expect(404);
+      expect(dependencies.body).toEqual(NOT_FOUND);
+    });
+  });
+
+  describe('Backfill 001_ci_organization_backfill.cypher', () => {
+    const BACKFILL = join(__dirname, '../../../database/src/neo4j/migrations/001_ci_organization_backfill.cypher');
+    // Statements as cypher-shell -f reads them: split on ';', comment lines dropped.
+    const statements = readFileSync(BACKFILL, 'utf8')
+      .split(';')
+      .map(s => s.split('\n').filter(line => !line.trim().startsWith('//')).join('\n').trim())
+      .filter(s => s.length > 0);
+
+    it('assigns only org-less CIs to the internal organization and is idempotent', async () => {
+      const { neo4jDriver } = getTestContext();
+      const session = neo4jDriver.session();
+      try {
+        await session.run(
+          `CREATE (:CI {id: 'legacy-1', name: 'legacy-1'}), (:CI {id: 'legacy-2', name: 'legacy-2'}),
+                  (:CI {id: 'owned-b', name: 'owned-b', organization_id: $orgB})`,
+          { orgB: ORG_B }
+        );
+        const runBackfill = async () => {
+          const counts: number[] = [];
+          for (const statement of statements) {
+            const result = await session.run(statement);
+            if (result.records.length > 0) counts.push(result.records[0]!.get('backfilled').toNumber());
+          }
+          return counts;
+        };
+        const orgs = async () => {
+          const rows = await session.run('MATCH (ci:CI) RETURN ci.id AS id, ci.organization_id AS org');
+          return Object.fromEntries(rows.records.map(r => [r.get('id'), r.get('org')]));
+        };
+
+        expect(await runBackfill()).toEqual([2]);
+        const after = await orgs();
+        expect(after).toEqual({ 'legacy-1': INTERNAL_ORG, 'legacy-2': INTERNAL_ORG, 'owned-b': ORG_B });
+
+        expect(await runBackfill()).toEqual([0]);
+        expect(await orgs()).toEqual(after);
+      } finally {
+        await session.close();
+      }
     });
   });
 });

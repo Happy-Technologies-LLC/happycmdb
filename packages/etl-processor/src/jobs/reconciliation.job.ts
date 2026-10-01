@@ -13,7 +13,7 @@
  */
 
 import { Job } from 'bullmq';
-import { Neo4jClient, PostgresClient } from '@cmdb/database';
+import { Neo4jClient, PostgresClient, UNSCOPED_CI_ACCESS } from '@cmdb/database';
 import { logger, CI, CIStatus } from '@cmdb/common';
 
 export interface ReconciliationJobData {
@@ -162,7 +162,7 @@ export class ReconciliationJob {
     const conflicts: Conflict[] = [];
 
     // Fetch CI from both sources
-    const neo4jCI = await this.neo4jClient.getCI(ciId);
+    const neo4jCI = await this.neo4jClient.getCI(ciId, UNSCOPED_CI_ACCESS);
     const postgresCI = await this.getPostgresCI(ciId);
 
     // Check if CI exists in both sources
@@ -378,7 +378,7 @@ export class ReconciliationJob {
    * Update CI status in Neo4j
    */
   private async updateNeo4jStatus(ciId: string, status: CIStatus): Promise<void> {
-    await this.neo4jClient.updateCI(ciId, { status });
+    await this.neo4jClient.updateCI(ciId, { status }, UNSCOPED_CI_ACCESS);
     logger.info('Updated Neo4j CI status', { ciId, status });
   }
 
@@ -386,7 +386,8 @@ export class ReconciliationJob {
    * Create CI in Neo4j from PostgreSQL data
    */
   private async resolveByCreatingInNeo4j(ci: CI): Promise<void> {
-    await this.neo4jClient.createCI(ci);
+    // System job: the CI is created without an organization (invisible to org-scoped reads).
+    await this.neo4jClient.createCI(ci, UNSCOPED_CI_ACCESS);
     logger.info('Created CI in Neo4j from PostgreSQL', { ciId: ci._id });
   }
 

@@ -6,9 +6,12 @@
  * by server.ts (`authMiddleware.authenticate()` mounted on every /api/v1
  * route before any router), so this suite simulates that by mounting the
  * captured mock middleware ahead of `ciRoutes`, mirroring production.
- * Reads (including the read-like POST /search lookup) only need to be
- * authenticated; POST/PUT/DELETE mutations additionally require the
- * 'write' permission (`authMiddleware.requirePermission('write')`).
+ * Every route requires an organization claim
+ * (`authMiddleware.requireOrganization()`, router-level). Reads (including
+ * the read-like POST /search lookup) only need that; POST/PUT/DELETE
+ * mutations additionally require the 'write' permission
+ * (`authMiddleware.requirePermission('write')`). Tenant filtering itself is
+ * covered by ci-org-scope.test.ts.
  */
 
 import express, { type Request, type Response } from 'express';
@@ -16,25 +19,35 @@ import request from 'supertest';
 import { jest, describe, it, expect, beforeEach } from '@jest/globals';
 import { ROLE_PERMISSIONS, type Permission, type UserRole } from '../../../auth/types';
 
-type ReqWithUser = Request & { user?: { _userId?: string; _role?: UserRole } };
+type ReqWithUser = Request & { user?: { _userId?: string; _role?: UserRole; _organizationId?: string } };
 
 const mockRouteHandler = jest.fn((req: Request, res: Response) => {
   res.status(200).json({ actor: (req as ReqWithUser).user?._userId });
 });
 
-const TOKEN_ROLES: Record<string, UserRole> = {
-  'Bearer admin-token': 'admin',
-  'Bearer operator-token': 'operator',
-  'Bearer viewer-token': 'viewer',
+const ORG = '11111111-1111-4111-8111-111111111111';
+const TOKENS: Record<string, { role: UserRole; organizationId?: string }> = {
+  'Bearer admin-token': { role: 'admin', organizationId: ORG },
+  'Bearer operator-token': { role: 'operator', organizationId: ORG },
+  'Bearer viewer-token': { role: 'viewer', organizationId: ORG },
+  'Bearer no-org-admin-token': { role: 'admin' },
 };
 
 const mockAuthenticate = jest.fn(() => (req: Request, res: Response, next: () => void) => {
-  const role = TOKEN_ROLES[req.get('authorization') ?? ''];
-  if (!role) {
+  const token = TOKENS[req.get('authorization') ?? ''];
+  if (!token) {
     res.status(401).json({ error: 'Unauthorized' });
     return;
   }
-  (req as ReqWithUser).user = { _userId: 'route-user', _role: role };
+  (req as ReqWithUser).user = { _userId: 'route-user', _role: token.role, _organizationId: token.organizationId };
+  next();
+});
+
+const mockRequireOrganization = jest.fn(() => (req: Request, res: Response, next: () => void) => {
+  if (!(req as ReqWithUser).user?._organizationId) {
+    res.status(403).json({ error: 'Forbidden' });
+    return;
+  }
   next();
 });
 
@@ -57,6 +70,7 @@ jest.mock('../../../auth/auth-bootstrap', () => ({
   getAuthMiddleware: jest.fn(() => ({
     authenticate: mockAuthenticate,
     requirePermission: mockRequirePermission,
+    requireOrganization: mockRequireOrganization,
   })),
 }));
 
@@ -157,6 +171,15 @@ describe('ci routes', () => {
     expect(response.status).toBe(200);
     expect(mockRouteHandler).toHaveBeenCalled();
   });
+
+  it.each([...readRoutes, ...writeRoutes])(
+    'an admin token without an organization claim receives 403 on %s %s',
+    async (method, path, body) => {
+      const response = await invoke(testApp(), method, path, body, 'Bearer no-org-admin-token');
+      expect(response.status).toBe(403);
+      expect(mockRouteHandler).not.toHaveBeenCalled();
+    }
+  );
 
   it('rejects an invalid/unrecognized bearer token with 401', async () => {
     const response = await invoke(testApp(), 'GET', '/cis', undefined, 'Bearer garbage-token');

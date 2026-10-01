@@ -5,6 +5,20 @@ import { Request, Response } from 'express';
 import { getNeo4jClient, getPostgresClient, getAuditService } from '@cmdb/database';
 import { logger, validateCISortField, validateSortDirection } from '@cmdb/common';
 import neo4j from 'neo4j-driver';
+import { requestOrganizationId } from '../../middleware/auth.middleware';
+
+/**
+ * The one 404 for a CI that is missing or belongs to another organization:
+ * a constant body (no echoed id), so a caller cannot tell the two apart and
+ * cannot probe other tenants' CI ids.
+ */
+function sendCINotFound(res: Response): void {
+  res.status(404).json({
+    success: false,
+    error: 'Not Found',
+    message: 'CI not found'
+  });
+}
 
 // Helper function to convert Neo4j types to JavaScript types and transform field names
 function convertNeo4jTypes(obj: any): any {
@@ -64,10 +78,11 @@ export class CIController {
         pageSize
       } = req.query;
 
+      const organizationId = requestOrganizationId(req);
       const session = this.neo4jClient.getSession();
       try {
-        let query = 'MATCH (ci:CI) WHERE 1=1';
-        const params: any = {};
+        let query = 'MATCH (ci:CI) WHERE ci.organization_id = $organizationId';
+        const params: Record<string, unknown> = { organizationId };
 
         // Apply filters
         if (type) {
@@ -169,14 +184,10 @@ export class CIController {
         return;
       }
 
-      const ci = await this.neo4jClient.getCI(id);
+      const ci = await this.neo4jClient.getCI(id, requestOrganizationId(req));
 
       if (!ci) {
-        res.status(404).json({
-          success: false,
-          error: 'Not Found',
-          message: `CI with ID '${id}' not found`
-        });
+        sendCINotFound(res);
         return;
       }
 
@@ -206,7 +217,8 @@ export class CIController {
         return;
       }
 
-      const ci = await this.neo4jClient.createCI(req.body);
+      // organization_id comes only from the token; the route rejects it in the body.
+      const ci = await this.neo4jClient.createCI(req.body, requestOrganizationId(req));
       res.status(201).json({
         success: true,
         data: convertNeo4jTypes(ci),
@@ -246,18 +258,16 @@ export class CIController {
         return;
       }
 
-      // Check if CI exists first
-      const existing = await this.neo4jClient.getCI(id);
+      const organizationId = requestOrganizationId(req);
+
+      // Check if CI exists in the caller's organization first
+      const existing = await this.neo4jClient.getCI(id, organizationId);
       if (!existing) {
-        res.status(404).json({
-          success: false,
-          error: 'Not Found',
-          message: `CI with ID '${id}' not found`
-        });
+        sendCINotFound(res);
         return;
       }
 
-      const ci = await this.neo4jClient.updateCI(id, req.body);
+      const ci = await this.neo4jClient.updateCI(id, req.body, organizationId);
       res.json({
         success: true,
         data: convertNeo4jTypes(ci),
@@ -286,24 +296,14 @@ export class CIController {
         return;
       }
 
-      // Check if CI exists first
-      const existing = await this.neo4jClient.getCI(id);
-      if (!existing) {
-        res.status(404).json({
-          success: false,
-          error: 'Not Found',
-          message: `CI with ID '${id}' not found`
-        });
+      // Deletes only a CI of the caller's organization; a foreign id deletes nothing.
+      const deleted = await this.neo4jClient.deleteCI(id, requestOrganizationId(req));
+      if (!deleted) {
+        sendCINotFound(res);
         return;
       }
 
-      const session = this.neo4jClient.getSession();
-      try {
-        await session.run('MATCH (ci:CI {id: $id}) DETACH DELETE ci', { id });
-        res.status(204).send();
-      } finally {
-        await session.close();
-      }
+      res.status(204).send();
     } catch (error) {
       logger.error('Error deleting CI', error);
       res.status(500).json({
@@ -349,19 +349,19 @@ export class CIController {
         return;
       }
 
-      // Check if CI exists
-      const ci = await this.neo4jClient.getCI(id);
+      const organizationId = requestOrganizationId(req);
+
+      // Check if CI exists in the caller's organization
+      const ci = await this.neo4jClient.getCI(id, organizationId);
       if (!ci) {
-        res.status(404).json({
-          success: false,
-          error: 'Not Found',
-          message: `CI with ID '${id}' not found`
-        });
+        sendCINotFound(res);
         return;
       }
 
+      // Paths through or to another organization's CI are excluded.
       const relationships = await this.neo4jClient.getRelationships(
         id,
+        organizationId,
         direction as 'in' | 'out' | 'both',
         depthNum
       );
@@ -426,18 +426,16 @@ export class CIController {
         return;
       }
 
-      // Check if CI exists
-      const ci = await this.neo4jClient.getCI(id);
+      const organizationId = requestOrganizationId(req);
+
+      // Check if CI exists in the caller's organization
+      const ci = await this.neo4jClient.getCI(id, organizationId);
       if (!ci) {
-        res.status(404).json({
-          success: false,
-          error: 'Not Found',
-          message: `CI with ID '${id}' not found`
-        });
+        sendCINotFound(res);
         return;
       }
 
-      const dependencies = await this.neo4jClient.getDependencies(id, depthNum);
+      const dependencies = await this.neo4jClient.getDependencies(id, organizationId, depthNum);
 
       res.json({
         success: true,
@@ -479,22 +477,21 @@ export class CIController {
         return;
       }
 
-      // Check if CI exists
-      const ci = await this.neo4jClient.getCI(id);
+      const organizationId = requestOrganizationId(req);
+
+      // Check if CI exists in the caller's organization
+      const ci = await this.neo4jClient.getCI(id, organizationId);
       if (!ci) {
-        res.status(404).json({
-          success: false,
-          error: 'Not Found',
-          message: `CI with ID '${id}' not found`
-        });
+        sendCINotFound(res);
         return;
       }
 
+      // Both traversals only follow paths whose every node is in the caller's organization.
       // Get downstream dependencies (CIs that depend on this CI)
-      const downstream = await this.neo4jClient.impactAnalysis(id, depthNum);
+      const downstream = await this.neo4jClient.impactAnalysis(id, organizationId, depthNum);
 
       // Get upstream dependencies (CIs that this CI depends on)
-      const upstream = await this.neo4jClient.getDependencies(id, depthNum);
+      const upstream = await this.neo4jClient.getDependencies(id, organizationId, depthNum);
 
       // Extract unique CIs from downstream
       const downstreamCIs = downstream.map((item: any) => convertNeo4jTypes(item._ci));
@@ -576,17 +573,20 @@ export class CIController {
         return;
       }
 
+      const organizationId = requestOrganizationId(req);
       const session = this.neo4jClient.getSession();
       try {
+        // The org filter runs before LIMIT so other tenants' hits never use up the page.
         const result = await session.run(
           `
           CALL db.index.fulltext.queryNodes('ci_fulltext_idx', $query)
           YIELD node, score
+          WHERE node.organization_id = $organizationId
           RETURN node, score
           ORDER BY score DESC
           LIMIT $limit
           `,
-          { query: query.trim(), limit: neo4j.int(limitNum) }
+          { query: query.trim(), limit: neo4j.int(limitNum), organizationId }
         );
 
         const cis = result.records.map((r: any) => ({
@@ -634,6 +634,14 @@ export class CIController {
           error: 'Bad Request',
           message: 'Limit must be between 1 and 1000'
         });
+        return;
+      }
+
+      // The audit log has no organization column: history is only served for
+      // a CI that currently exists in the caller's organization.
+      const ci = await this.neo4jClient.getCI(id, requestOrganizationId(req));
+      if (!ci) {
+        sendCINotFound(res);
         return;
       }
 

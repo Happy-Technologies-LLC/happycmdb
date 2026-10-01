@@ -53,17 +53,24 @@ import { CI, logger, validators } from '@cmdb/common';
 
 **Example Usage**:
 ```typescript
-import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
+import { getNeo4jClient, getPostgresClient, UNSCOPED_CI_ACCESS } from '@cmdb/database';
 
 const neo4jClient = getNeo4jClient();
 const session = neo4jClient.getSession();
 
+// CI methods take a required tenant scope: the caller's organization id
+// (stamped on create, filtered on every read/update/delete/traversal).
 const ci = await neo4jClient.createCI({
   id: 'vm-123',
   name: 'web-server-01',
   type: 'virtual-machine',
   status: 'active'
-});
+}, organizationId);
+
+// System jobs with no request organization pass UNSCOPED_CI_ACCESS: reads span
+// every organization, and created CIs carry no organization_id, so /api/v1/cis
+// does not return them until they are backfilled or reassigned.
+const existing = await neo4jClient.getCI('vm-123', UNSCOPED_CI_ACCESS);
 ```
 
 ### @cmdb/api-server

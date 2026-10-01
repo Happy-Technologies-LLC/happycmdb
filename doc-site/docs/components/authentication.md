@@ -238,6 +238,34 @@ and deletes the `cmdb.schema_migrations` row so 008 applies again later. Re-appl
 008 puts all services back in the internal organization. Until the old image is
 running, the 008-aware API returns 500 on business-service routes.
 
+### Configuration items (`/api/v1/cis`)
+
+Neo4j `:CI` nodes carry an `organization_id` property, set only from the token's
+organization when a CI is created through `POST /api/v1/cis`.
+
+- Every `/api/v1/cis/**` route returns **403** `{"_error":"Forbidden","_message":"Organization claim required"}`
+  without an organization claim, before any Neo4j query.
+- List, search, read, update, delete, relationships, dependencies, impact and audit
+  history only match CIs whose `organization_id` equals the tenant. Another
+  organization's CI returns the same **404** body as a missing one
+  (`{"success":false,"error":"Not Found","message":"CI not found"}`), and a foreign
+  `DELETE` deletes nothing. Relationship, dependency and impact traversals only
+  follow paths whose every node belongs to the tenant.
+- `organization_id` in a create or update body is rejected with **400**.
+- CI ids (and `external_id`s) are unique across all organizations: creating a CI
+  with an id another organization uses returns **409**, which reveals that the id exists.
+- CIs written by discovery, connectors, ETL and reconciliation carry no
+  `organization_id` and are invisible to every organization. Other routes that read
+  CIs (relationships, ITIL, drift/impact) and GraphQL CI queries are not
+  tenant-scoped yet; GraphQL `createCI`/`updateCI` return `FORBIDDEN` until they are.
+- Existing CIs are invisible until backfilled. The backfill is not run
+  automatically; it assigns every CI without `organization_id` to the internal
+  organization `00000000-0000-0000-0000-000000000000` and is idempotent:
+
+```bash
+cypher-shell -a bolt://<host>:7687 -u <user> -f packages/database/src/neo4j/migrations/001_ci_organization_backfill.cypher
+```
+
 ### Tenant fixture seed (acceptance testing, scratch databases only)
 
 `packages/api-server/src/scripts/seed-tenant-fixture.ts` prepares a **scratch** CMDB

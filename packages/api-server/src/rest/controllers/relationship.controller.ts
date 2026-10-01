@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Request, Response } from 'express';
-import { getNeo4jClient } from '@cmdb/database';
+// CI tenant scoping covers /api/v1/cis only so far; these routes read CIs unscoped, as before.
+import { getNeo4jClient, UNSCOPED_CI_ACCESS } from '@cmdb/database';
 import { logger, RelationshipType } from '@cmdb/common';
 import neo4j from 'neo4j-driver';
 
@@ -145,8 +146,8 @@ export class RelationshipController {
       }
 
       // Check if both CIs exist
-      const fromCI = await this.neo4jClient.getCI(from_id);
-      const toCI = await this.neo4jClient.getCI(to_id);
+      const fromCI = await this.neo4jClient.getCI(from_id, UNSCOPED_CI_ACCESS);
+      const toCI = await this.neo4jClient.getCI(to_id, UNSCOPED_CI_ACCESS);
 
       if (!fromCI) {
         res.status(404).json({

@@ -17,7 +17,7 @@
 
 import { Job } from 'bullmq';
 import type { PoolClient } from 'pg';
-import { Neo4jClient, PostgresClient } from '@cmdb/database';
+import { Neo4jClient, PostgresClient, UNSCOPED_CI_ACCESS } from '@cmdb/database';
 import { logger, CI, validateTableNames } from '@cmdb/common';
 import { DimensionTransformer } from '../transformers/dimension-transformer';
 
@@ -295,7 +295,7 @@ export class FullRefreshJob {
 
     for (const ci of cis) {
       try {
-        const relationships = await this.neo4jClient.getRelationships(ci._id, 'out');
+        const relationships = await this.neo4jClient.getRelationships(ci._id, UNSCOPED_CI_ACCESS, 'out');
 
         for (const rel of relationships) {
           try {

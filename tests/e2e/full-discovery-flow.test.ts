@@ -48,6 +48,8 @@ describe('Full CMDB E2E Test', () => {
         _username: 'e2e-operator',
         _role: 'operator',
         _type: 'access',
+        // /api/v1/cis requires an organization claim and scopes every CI to it.
+        _organizationId: '11111111-1111-4111-8111-111111111111',
       };
       next();
     });

@@ -15,7 +15,7 @@
  */
 
 import { Job } from 'bullmq';
-import { Neo4jClient, PostgresClient } from '@cmdb/database';
+import { Neo4jClient, PostgresClient, UNSCOPED_CI_ACCESS } from '@cmdb/database';
 import { logger, CI, CIType } from '@cmdb/common';
 import { DimensionTransformer } from '../transformers/dimension-transformer';
 
@@ -398,7 +398,7 @@ export class Neo4jToPostgresJob {
 
     for (const ci of cis) {
       try {
-        const relationships = await this.neo4jClient.getRelationships(ci._id, 'out');
+        const relationships = await this.neo4jClient.getRelationships(ci._id, UNSCOPED_CI_ACCESS, 'out');
 
         for (const rel of relationships) {
           const fromCiKey = await this.postgresClient.getCurrentCIKey(ci._id);

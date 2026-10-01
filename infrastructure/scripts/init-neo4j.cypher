@@ -99,6 +99,10 @@ FOR (ci:CI) ON (ci.updated_at);
 CREATE INDEX ci_discovered_at_index IF NOT EXISTS
 FOR (ci:CI) ON (ci.discovered_at);
 
+// Index on CI.organization_id - Every /api/v1/cis read filters on the tenant
+CREATE INDEX ci_organization_id_idx IF NOT EXISTS
+FOR (ci:CI) ON (ci.organization_id);
+
 // Index on User.username - Frequently used for authentication
 CREATE INDEX user_username_index IF NOT EXISTS
 FOR (u:User) ON (u.username);

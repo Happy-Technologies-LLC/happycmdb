@@ -345,126 +345,24 @@ describe('GraphQL CI Resolvers', () => {
     });
   });
 
-  describe('Mutation.createCI', () => {
-    it('should create new CI with valid input', async () => {
-      // Arrange: Mock create operation
-      const newCI = createCI({ id: 'ci-new', name: 'new-server' });
-      (mockContext._neo4jClient as any).createCI.mockResolvedValue(newCI);
+  // Neo4jClient.createCI/updateCI are organization-scoped and GraphQL has no
+  // CI tenant scoping yet: both mutations fail closed without touching Neo4j.
+  describe.each(['createCI', 'updateCI'])('Mutation.%s', mutation => {
+    it('fails closed with FORBIDDEN and never writes', async () => {
+      const resolve = (resolvers.Mutation as any)[mutation];
 
-      const createCIMut = (resolvers.Mutation as any).createCI;
-
-      // Act: Create mutation
-      const result = await createCIMut(
+      const error = await resolve(
         null,
-        {
-          input: {
-            _id: 'ci-new',
-            _name: 'new-server',
-            _type: 'SERVER',
-            _status: 'ACTIVE',
-            _environment: 'PRODUCTION',
-          },
-        },
+        { id: 'ci-123', input: { _id: 'ci-123', _name: 'new-server', _type: 'SERVER' } },
         mockContext
-      );
+      ).catch((e: unknown) => e);
 
-      expect((mockContext._neo4jClient as any).createCI).toHaveBeenCalledWith(
-        expect.objectContaining({
-          _id: 'ci-new',
-          name: 'new-server',
-          _type: 'server',
-          status: 'active',
-          environment: 'production',
-        })
-      );
-      expect(result).toMatchObject({
-        _id: 'ci-new',
-        _name: 'new-server',
-        _type: 'SERVER',
-        _status: 'ACTIVE',
-        _environment: 'PRODUCTION',
+      expect(error).toBeInstanceOf(GraphQLError);
+      expect(error).toMatchObject({
+        message: 'CI tenant scoping for GraphQL is pending',
+        extensions: { code: 'FORBIDDEN' },
       });
-    });
-
-    it('should validate required fields', async () => {
-      const createCIMut = (resolvers.Mutation as any).createCI;
-
-      await expect(
-        createCIMut(
-          null,
-          {
-            input: {
-              _name: 'test',
-              _type: 'SERVER',
-            },
-          },
-          mockContext
-        )
-      ).rejects.toThrow(GraphQLError);
-
-      await expect(
-        createCIMut(
-          null,
-          {
-            input: {
-              _id: 'ci-123',
-              _type: 'SERVER',
-            },
-          },
-          mockContext
-        )
-      ).rejects.toThrow(GraphQLError);
-
-      await expect(
-        createCIMut(
-          null,
-          {
-            input: {
-              _id: 'ci-123',
-              _name: 'test',
-            },
-          },
-          mockContext
-        )
-      ).rejects.toThrow(GraphQLError);
-    });
-  });
-
-  describe('Mutation.updateCI', () => {
-    it('should update CI with partial data', async () => {
-      // Arrange
-      const updatedCI = createCI({ id: 'ci-123', name: 'updated-name' });
-      (mockContext._neo4jClient as any).updateCI.mockResolvedValue(updatedCI);
-
-      const updateCIMut = (resolvers.Mutation as any).updateCI;
-
-      // Act: Update mutation
-      const result = await updateCIMut(
-        null,
-        {
-          id: 'ci-123',
-          input: {
-            _name: 'updated-name',
-            _status: 'INACTIVE',
-          },
-        },
-        mockContext
-      );
-
-      // Assert: Verify updateCI called
-      expect((mockContext._neo4jClient as any).updateCI).toHaveBeenCalledWith(
-        'ci-123',
-        expect.objectContaining({
-          name: 'updated-name',
-          status: 'inactive',
-        })
-      );
-
-      expect(result).toMatchObject({
-        _id: 'ci-123',
-        _name: 'updated-name',
-        _status: 'ACTIVE',
-      });
+      expect((mockContext._neo4jClient as any)[mutation]).not.toHaveBeenCalled();
     });
   });
 

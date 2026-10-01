@@ -661,7 +661,10 @@ export class BusinessServiceController {
    * Input contract: fact_business_service_incidents / fact_business_service_changes
    * hold daily service/date event counters. incident_count and change_count are
    * additive per-day totals; successful_count is the successful subset of the
-   * same row's change_count. Windowed counts sum those counters; the 30-day
+   * same row's change_count. Every window is [utc_today - N days, utc_today]
+   * inclusive, utc_today = (now() AT TIME ZONE 'UTC')::date (FD-8), so
+   * future-dated rows never count and the bounds do not depend on the DB
+   * session TimeZone. Windowed counts sum those counters; the 30-day
    * success rate filters numerator and denominator identically and is NULL
    * when the window has no changes. mttr_minutes is the mean over that row's
    * incidents, so avg_mttr_30d weights each row by incident_count (rows with
@@ -678,28 +681,34 @@ export class BusinessServiceController {
       // Each LATERAL is an ungrouped aggregate, so a known service always yields
       // exactly one row (zero counts / NULL averages when it has no facts), and
       // existence and metrics are read from the same snapshot.
+      // Each LATERAL's WHERE bounds every aggregate to the 30-day window
+      // [utc_today - 30, utc_today] (date arithmetic, no session TimeZone);
+      // the 7-day FILTERs raise the lower bound to utc_today - 7.
       const result = await this.pgClient.query(
         `SELECT i.incidents_7d, i.incidents_30d, i.avg_mttr_30d, i.sla_breaches_30d,
           c.changes_7d, c.changes_30d, c.success_rate_30d
         FROM dim_business_services s
+        CROSS JOIN (SELECT (now() AT TIME ZONE 'UTC')::date AS utc_today) d
         CROSS JOIN LATERAL (
           SELECT
-            COALESCE(SUM(incident_count) FILTER (WHERE incident_date >= CURRENT_DATE - INTERVAL '7 days'), 0) as incidents_7d,
-            COALESCE(SUM(incident_count) FILTER (WHERE incident_date >= CURRENT_DATE - INTERVAL '30 days'), 0) as incidents_30d,
-            SUM(mttr_minutes * incident_count) FILTER (WHERE incident_date >= CURRENT_DATE - INTERVAL '30 days')
-              / NULLIF(SUM(incident_count) FILTER (WHERE incident_date >= CURRENT_DATE - INTERVAL '30 days' AND mttr_minutes IS NOT NULL), 0) as avg_mttr_30d,
-            COALESCE(SUM(sla_breaches) FILTER (WHERE incident_date >= CURRENT_DATE - INTERVAL '30 days'), 0) as sla_breaches_30d
+            COALESCE(SUM(incident_count) FILTER (WHERE incident_date >= d.utc_today - 7), 0) as incidents_7d,
+            COALESCE(SUM(incident_count), 0) as incidents_30d,
+            SUM(mttr_minutes * incident_count)
+              / NULLIF(SUM(incident_count) FILTER (WHERE mttr_minutes IS NOT NULL), 0) as avg_mttr_30d,
+            COALESCE(SUM(sla_breaches), 0) as sla_breaches_30d
           FROM fact_business_service_incidents
           WHERE service_id = s.service_id
+            AND incident_date BETWEEN d.utc_today - 30 AND d.utc_today
         ) i
         CROSS JOIN LATERAL (
           SELECT
-            COALESCE(SUM(change_count) FILTER (WHERE change_date >= CURRENT_DATE - INTERVAL '7 days'), 0) as changes_7d,
-            COALESCE(SUM(change_count) FILTER (WHERE change_date >= CURRENT_DATE - INTERVAL '30 days'), 0) as changes_30d,
-            (SUM(successful_count) FILTER (WHERE change_date >= CURRENT_DATE - INTERVAL '30 days'))::float
-              / NULLIF(SUM(change_count) FILTER (WHERE change_date >= CURRENT_DATE - INTERVAL '30 days'), 0) * 100 as success_rate_30d
+            COALESCE(SUM(change_count) FILTER (WHERE change_date >= d.utc_today - 7), 0) as changes_7d,
+            COALESCE(SUM(change_count), 0) as changes_30d,
+            (SUM(successful_count))::float
+              / NULLIF(SUM(change_count), 0) * 100 as success_rate_30d
           FROM fact_business_service_changes
           WHERE service_id = s.service_id
+            AND change_date BETWEEN d.utc_today - 30 AND d.utc_today
         ) c
         WHERE s.service_id = $1 AND s.organization_id = $2`,
         [service_id, requestOrganizationId(req)]

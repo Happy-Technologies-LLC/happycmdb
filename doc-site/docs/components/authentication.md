@@ -182,7 +182,12 @@ Refresh tokens are accepted only by the refresh endpoint; as a bearer token they
   both views and adds `cmdb.fn_business_service_health(p_org uuid)` and
   `cmdb.fn_tbm_tower_summary(p_org uuid)`, which return one organization's rows and
   raise on a NULL organization. Readers must call the functions with the token's
-  `_organizationId`. This is not a tenant-isolation boundary for database roles:
+  `_organizationId`. 010 also revokes `EXECUTE` on both functions from PUBLIC, and the
+  functions are `SECURITY INVOKER`, so a non-owner reader (for example a BI or
+  read-only role) needs `GRANT EXECUTE` on the function plus `GRANT SELECT` on its
+  view. That `SELECT` grant also lets the role read every organization from the view
+  directly; see the role model in the 010 header (lines 15-23). This is not a
+  tenant-isolation boundary for database roles:
   - The views have no row-level security. The owning role (the migration/API role),
     superusers, `pg_read_all_data` members and any role granted `SELECT` on a view
     outside migrations (for example `metabase_readonly` via

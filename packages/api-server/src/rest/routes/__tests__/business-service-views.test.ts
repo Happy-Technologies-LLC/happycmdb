@@ -18,8 +18,10 @@
  * Queries run as the superuser that applied the migrations (the views'
  * owner) unless a test switches role.
  *
- * Readers query the views the way an org-scoped caller must:
- * WHERE organization_id = <token _organizationId>.
+ * The view helpers health()/towers() query the views as that owning superuser,
+ * filtering by organization_id, to check the 009 definitions. Org-scoped
+ * callers use cmdb.fn_business_service_health / cmdb.fn_tbm_tower_summary
+ * (fnHealth/fnTowers).
  */
 
 import { fork } from 'child_process';

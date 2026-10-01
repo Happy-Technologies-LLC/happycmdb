@@ -39,14 +39,26 @@ import { getRedisClient } from '@cmdb/database';
 import { loadConfig } from '@cmdb/common';
 import { getAuthMiddleware } from '../auth/auth-bootstrap';
 
+/**
+ * Listen target read from the environment, shared by index.ts and tests.
+ * PORT defaults to 3000. SERVER_HOST is read raw (not via loadConfig(), whose
+ * Joi default '0.0.0.0' would replace Node's no-host dual-stack bind).
+ */
+export function listenTargetFromEnv(env: NodeJS.ProcessEnv): { port: number; host?: string } {
+  return { port: parseInt(env['PORT'] || '3000', 10), host: env['SERVER_HOST'] };
+}
+
 export class RestAPIServer {
   private app: Express;
   private port: number;
+  private host: string | undefined;
   private httpServer: HTTPServer | null = null;
 
-  constructor(port: number = 3000) {
+  /** `host` empty or omitted: listen without a host argument (Node's default bind). */
+  constructor(port: number = 3000, host?: string) {
     this.app = express();
     this.port = port;
+    this.host = host || undefined;
     this.setupMiddleware();
     this.setupRoutes();
     // Note: setupErrorHandling() is invoked from index.ts AFTER GraphQL is mounted,
@@ -156,9 +168,14 @@ export class RestAPIServer {
   }
 
   start(): HTTPServer {
-    this.httpServer = this.app.listen(this.port, () => {
-      logger.info(`REST API Server listening on port ${this.port}`);
-    });
+    const host = this.host;
+    const onListening = () => {
+      logger.info(`REST API Server listening on ${host ?? 'all interfaces'} port ${this.port}`);
+    };
+    this.httpServer =
+      host === undefined
+        ? this.app.listen(this.port, onListening)
+        : this.app.listen(this.port, host, onListening);
     return this.httpServer;
   }
 

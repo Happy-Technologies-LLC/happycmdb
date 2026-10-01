@@ -12,7 +12,7 @@ export { CIController } from './rest/controllers/ci.controller';
 export { ReconciliationController } from './rest/controllers/reconciliation.controller';
 
 // Start server when executed as main module
-import { RestAPIServer } from './rest/server';
+import { RestAPIServer, listenTargetFromEnv } from './rest/server';
 import { logger } from '@cmdb/common';
 import { getDiscoveryOrchestrator } from '@cmdb/discovery-engine';
 import { getAnomalyDetectionEngine } from '@cmdb/ai-ml-engine';
@@ -20,18 +20,18 @@ import { loadConnectorsAtStartup } from './utils/connector-loader';
 import { getWebSocketService } from './services/websocket.service';
 import { createGraphQLServer } from './graphql/server';
 
-const PORT = parseInt(process.env['PORT'] || '3000', 10);
+const { port: PORT, host: HOST } = listenTargetFromEnv(process.env);
 
 async function startServer() {
   try {
-    logger.info('Starting HappyCMDB API Server', { port: PORT });
+    logger.info('Starting HappyCMDB API Server', { port: PORT, host: HOST });
 
     // Load built-in connectors into database
     logger.info('Loading built-in connectors...');
     await loadConnectorsAtStartup();
     logger.info('Built-in connectors loaded successfully');
 
-    const server = new RestAPIServer(PORT);
+    const server = new RestAPIServer(PORT, HOST);
 
     // Mount GraphQL onto the same Express app, before the catch-all error handler.
     try {

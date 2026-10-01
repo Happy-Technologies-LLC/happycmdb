@@ -6,11 +6,17 @@
  * and v_tbm_tower_summary expose organization_id and use incident-weighted
  * MTTR; its manual rollback restores the 001 definitions.
  *
+ * Migration 010_business_service_views_org_functions: org-parameterized
+ * cmdb.fn_business_service_health / cmdb.fn_tbm_tower_summary, and no PUBLIC
+ * SELECT on either view; its manual rollback restores 009's grants.
+ *
  * SQL is executed by PGlite hosted in a forked child process
- * (fixtures/pglite-host.cjs). Schema, in production order: the CREATE TABLE
- * blocks and the two views (with their GRANT / COMMENT) read verbatim from
- * 001_complete_schema.sql, then 008 and 009 applied verbatim. PGlite has no
- * TimescaleDB, so the fact tables are plain tables.
+ * (fixtures/pglite-host.cjs). Schema, in production order: the cmdb schema,
+ * the CREATE TABLE blocks and the two views (with their GRANT / COMMENT) read
+ * verbatim from 001_complete_schema.sql, then 008, 009 and 010 applied
+ * verbatim. PGlite has no TimescaleDB, so the fact tables are plain tables.
+ * Queries run as the superuser that applied the migrations (the views'
+ * owner) unless a test switches role.
  *
  * Readers query the views the way an org-scoped caller must:
  * WHERE organization_id = <token _organizationId>.
@@ -50,6 +56,9 @@ const UP_008 = read('008_business_service_organization_scope.sql');
 const DOWN_008 = read('rollback/008_business_service_organization_scope.down.sql');
 const UP_009 = '009_business_service_views_org_scope.sql';
 const DOWN_009 = 'rollback/009_business_service_views_org_scope.down.sql';
+const UP_010 = '010_business_service_views_org_functions.sql';
+const DOWN_010 = 'rollback/010_business_service_views_org_functions.down.sql';
+const FUNCTIONS = ['fn_business_service_health', 'fn_tbm_tower_summary'];
 
 const TABLES = [
   'dim_business_services',
@@ -60,8 +69,9 @@ const TABLES = [
 ];
 const VIEWS = ['v_business_service_health', 'v_tbm_tower_summary'];
 
-// The pre-009 state exactly as 001 creates it: tables, then the two views
-// with their GRANT and COMMENT statements.
+// The pre-009 state exactly as 001 creates it: the cmdb schema and its PUBLIC
+// USAGE grant, tables, then the two views with their GRANT and COMMENT
+// statements.
 function schema001(): string {
   const sql = read('001_complete_schema.sql');
   const block = (pattern: string, what: string) => {
@@ -70,6 +80,8 @@ function schema001(): string {
     return match[0];
   };
   return [
+    block('CREATE SCHEMA IF NOT EXISTS cmdb;', 'cmdb schema'),
+    block('GRANT USAGE ON SCHEMA cmdb TO PUBLIC;', 'cmdb schema grant'),
     ...TABLES.map(t => block(`CREATE TABLE IF NOT EXISTS ${t} \\([\\s\\S]*?\\n\\);`, `DDL for ${t}`)),
     ...VIEWS.flatMap(v => [
       block(`CREATE OR REPLACE VIEW ${v} AS[\\s\\S]*?;\\n`, `view ${v}`),
@@ -116,6 +128,12 @@ const health = (org: string) => db.rows<{ service_id: string }>(
 const towers = (org: string) => db.rows(
   'SELECT * FROM v_tbm_tower_summary WHERE organization_id = $1 ORDER BY tbm_tower', [org]
 );
+const fnHealth = (org: string | null) => db.rows<{ organization_id: string; service_id: string }>(
+  'SELECT * FROM cmdb.fn_business_service_health($1)', [org]
+);
+const fnTowers = (org: string | null) => db.rows<{ organization_id: string; tbm_tower: string }>(
+  'SELECT * FROM cmdb.fn_tbm_tower_summary($1)', [org]
+);
 
 interface ViewState { viewname: string; definition: string; comment: string | null; acl: string | null }
 const viewState = () => db.rows<ViewState>(
@@ -123,6 +141,19 @@ const viewState = () => db.rows<ViewState>(
      obj_description(c.oid, 'pg_class') AS comment, c.relacl::text AS acl
    FROM pg_class c WHERE c.relname = ANY($1) AND c.relkind = 'v' ORDER BY c.relname`, [VIEWS]
 );
+const functionNames = async () => (await db.rows<{ proname: string }>(
+  `SELECT p.proname FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+   WHERE n.nspname = 'cmdb' AND p.proname = ANY($1) ORDER BY p.proname`, [FUNCTIONS]
+)).map(r => r.proname);
+
+// Runs sql as `role` in a transaction that is always rolled back.
+async function asRole(role: string, sql: string): Promise<void> {
+  try {
+    await db.exec(`BEGIN; SET LOCAL ROLE ${role}; ${sql}`);
+  } finally {
+    await db.exec('ROLLBACK');
+  }
+}
 
 // getMigrationStatus only calls query(); unparameterised statements go over
 // the simple protocol, which accepts several statements like node-postgres.
@@ -133,12 +164,16 @@ const migratorClient = {
 } as unknown as PostgresClient;
 
 let preViews: ViewState[] = [];
+let views009: ViewState[] = [];
 
 beforeAll(async () => {
   await db.exec(schema001());
+  await getMigrationStatus(migratorClient, MIGRATIONS); // creates cmdb.schema_migrations, as the migrator does first
   await db.exec(`BEGIN;\n${UP_008}\nCOMMIT;`);
   preViews = await viewState();
   await db.exec(`BEGIN;\n${read(UP_009)}\nCOMMIT;`);
+  views009 = await viewState();
+  await db.exec(`BEGIN;\n${read(UP_010)}\nCOMMIT;`);
 });
 
 afterAll(() => {
@@ -215,9 +250,14 @@ describe('migration 009 lifecycle', () => {
     expect(names.filter(name => /down|rollback/.test(name))).toEqual([]);
   });
 
-  it('is safe to re-run', async () => {
-    await db.exec(`BEGIN;\n${read(UP_009)}\nCOMMIT;`);
-    expect((await health(ORG_B)).map(r => r.service_id)).toEqual(['bs-b-app', 'bs-b-db']);
+  it('is safe to re-run (after rollback/010, whose functions pin the views)', async () => {
+    await db.exec(read(DOWN_010));
+    try {
+      await db.exec(`BEGIN;\n${read(UP_009)}\nCOMMIT;`);
+      expect((await health(ORG_B)).map(r => r.service_id)).toEqual(['bs-b-app', 'bs-b-db']);
+    } finally {
+      await db.exec(`BEGIN;\n${read(UP_010)}\nCOMMIT;`);
+    }
   });
 
   it('rollback restores the 001 view definitions, grants and comments, and un-records 009', async () => {
@@ -225,12 +265,16 @@ describe('migration 009 lifecycle', () => {
     await db.exec(`INSERT INTO cmdb.schema_migrations (migration_name, checksum)
       VALUES ('${UP_009}', 'x') ON CONFLICT DO NOTHING`);
     try {
+      // 010's functions return the views' row types, so 010 must be rolled back first.
+      await expect(db.exec(read(DOWN_009))).rejects.toThrow(/depend/);
+      await db.exec('ROLLBACK');
+      await db.exec(read(DOWN_010));
       await db.exec(read(DOWN_009));
       expect(preViews).toHaveLength(2);
       expect(await viewState()).toEqual(preViews);
       expect(await db.rows(`SELECT 1 FROM cmdb.schema_migrations WHERE migration_name = $1`, [UP_009])).toEqual([]);
     } finally {
-      await db.exec(`BEGIN;\n${read(UP_009)}\nCOMMIT;`);
+      await db.exec(`BEGIN;\n${read(UP_009)}\n${read(UP_010)}\nCOMMIT;`);
     }
   });
 
@@ -240,12 +284,83 @@ describe('migration 009 lifecycle', () => {
     expect(await db.rows(`SELECT 1 FROM information_schema.columns
       WHERE table_name = 'dim_business_services' AND column_name = 'organization_id'`)).toHaveLength(1);
     try {
+      await db.exec(read(DOWN_010));
       await db.exec(read(DOWN_009));
       await db.exec(DOWN_008);
       expect(await db.rows(`SELECT 1 FROM information_schema.columns
         WHERE table_name = 'dim_business_services' AND column_name = 'organization_id'`)).toEqual([]);
     } finally {
-      await db.exec(`BEGIN;\n${UP_008}\n${read(UP_009)}\nCOMMIT;`);
+      await db.exec(`BEGIN;\n${UP_008}\n${read(UP_009)}\n${read(UP_010)}\nCOMMIT;`);
+    }
+  });
+});
+
+describe('org functions after 010', () => {
+  it('fn_business_service_health returns only the given org\'s rows', async () => {
+    const a = await fnHealth(INTERNAL_ORG);
+    expect(a.map(r => [r.organization_id, r.service_id])).toEqual([
+      [INTERNAL_ORG, 'bs-a-app'], [INTERNAL_ORG, 'bs-a-db'],
+    ]);
+    expect(a).toEqual(await health(INTERNAL_ORG));
+    const b = await fnHealth(ORG_B);
+    expect(b.map(r => [r.organization_id, r.service_id])).toEqual([[ORG_B, 'bs-b-app'], [ORG_B, 'bs-b-db']]);
+    expect(b).toEqual(await health(ORG_B));
+  });
+
+  it('fn_tbm_tower_summary returns only the given org\'s rows', async () => {
+    const a = await fnTowers(INTERNAL_ORG);
+    expect(a.map(r => [r.organization_id, r.tbm_tower])).toEqual([
+      [INTERNAL_ORG, 'application'], [INTERNAL_ORG, 'data'],
+    ]);
+    expect(a).toEqual(await towers(INTERNAL_ORG));
+    const b = await fnTowers(ORG_B);
+    expect(b.map(r => [r.organization_id, r.tbm_tower])).toEqual([[ORG_B, 'application'], [ORG_B, 'data']]);
+    expect(b).toEqual(await towers(ORG_B));
+  });
+
+  it('fn_* raises on a NULL org', async () => {
+    await expect(fnHealth(null)).rejects.toThrow(/fn_business_service_health: organization id must not be NULL/);
+    await expect(fnTowers(null)).rejects.toThrow(/fn_tbm_tower_summary: organization id must not be NULL/);
+  });
+
+  it('a role relying on PUBLIC cannot select v_business_service_health or v_tbm_tower_summary', async () => {
+    await db.exec('CREATE ROLE bs_views_public_reader NOLOGIN');
+    try {
+      for (const view of VIEWS) {
+        await expect(asRole('bs_views_public_reader', `SELECT * FROM ${view}`))
+          .rejects.toThrow(`permission denied for view ${view}`);
+      }
+      for (const fn of FUNCTIONS) {
+        await expect(asRole('bs_views_public_reader', `SELECT * FROM cmdb.${fn}('${ORG_B}')`))
+          .rejects.toThrow(`permission denied for function ${fn}`);
+      }
+    } finally {
+      await db.exec('DROP ROLE bs_views_public_reader');
+    }
+  });
+});
+
+describe('migration 010 lifecycle', () => {
+  it('migrator discovers 010 and not the rollback file', async () => {
+    const names = (await getMigrationStatus(migratorClient, MIGRATIONS)).map(m => m._name);
+    expect(names.indexOf(UP_010)).toBe(names.indexOf(UP_009) + 1);
+    expect(names.filter(name => /down|rollback/.test(name))).toEqual([]);
+  });
+
+  it('rollback/010 restores 009 grants and definitions', async () => {
+    await getMigrationStatus(migratorClient, MIGRATIONS); // ensures cmdb.schema_migrations
+    await db.exec(`INSERT INTO cmdb.schema_migrations (migration_name, checksum)
+      VALUES ('${UP_010}', 'x') ON CONFLICT DO NOTHING`);
+    expect(await functionNames()).toEqual(FUNCTIONS);
+    expect(views009).toHaveLength(2);
+    expect(await viewState()).not.toEqual(views009);
+    try {
+      await db.exec(read(DOWN_010));
+      expect(await viewState()).toEqual(views009);
+      expect(await functionNames()).toEqual([]);
+      expect(await db.rows(`SELECT 1 FROM cmdb.schema_migrations WHERE migration_name = $1`, [UP_010])).toEqual([]);
+    } finally {
+      await db.exec(`BEGIN;\n${read(UP_010)}\nCOMMIT;`);
     }
   });
 });

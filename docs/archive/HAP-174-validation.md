@@ -2056,7 +2056,7 @@ Failed to save business service: AxiosError: Request failed with status code 400
     headers: Object [AxiosHeaders] {
       Accept: 'application/json, text/plain, */*',
       'Content-Type': 'application/json',
-      Authorization: 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJfdXNlcklkIjoiaGFwMTc0LWFkbWluIiwiX3VzZXJuYW1lIjoiYWRtaW4iLCJfcm9sZSI6ImFkbWluIiwiX3R5cGUiOiJhY2Nlc3MiLCJpYXQiOjE3OTAxOTM5NDMsImV4cCI6MTc5MDE5NDg0MywiYXVkIjoiY21kYi1hcGkiLCJpc3MiOiJoYXBweWNtZGIifQ.YB1ekNIB__FyF4Rd5Tl-ZvBY3eKghVNEkFuM2SglSKo'
+      Authorization: 'Bearer <redacted fixture JWT>'
     },
     baseURL: 'http://127.0.0.1:39767/api/v1',
     method: 'post',
@@ -2142,7 +2142,7 @@ Failed to save business service: AxiosError: Request failed with status code 400
     headers: Object [AxiosHeaders] {
       Accept: 'application/json, text/plain, */*',
       'Content-Type': 'application/json',
-      Authorization: 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJfdXNlcklkIjoiaGFwMTc0LWFkbWluIiwiX3VzZXJuYW1lIjoiYWRtaW4iLCJfcm9sZSI6ImFkbWluIiwiX3R5cGUiOiJhY2Nlc3MiLCJpYXQiOjE3OTAxOTM5NDMsImV4cCI6MTc5MDE5NDg0MywiYXVkIjoiY21kYi1hcGkiLCJpc3MiOiJoYXBweWNtZGIifQ.YB1ekNIB__FyF4Rd5Tl-ZvBY3eKghVNEkFuM2SglSKo'
+      Authorization: 'Bearer <redacted fixture JWT>'
     },
     baseURL: 'http://127.0.0.1:39767/api/v1',
     method: 'patch',
@@ -2228,7 +2228,7 @@ Failed to save business service: AxiosError: Request failed with status code 400
     headers: Object [AxiosHeaders] {
       Accept: 'application/json, text/plain, */*',
       'Content-Type': 'application/json',
-      Authorization: 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJfdXNlcklkIjoiaGFwMTc0LWFkbWluIiwiX3VzZXJuYW1lIjoiYWRtaW4iLCJfcm9sZSI6ImFkbWluIiwiX3R5cGUiOiJhY2Nlc3MiLCJpYXQiOjE3OTAxOTM5NDMsImV4cCI6MTc5MDE5NDg0MywiYXVkIjoiY21kYi1hcGkiLCJpc3MiOiJoYXBweWNtZGIifQ.YB1ekNIB__FyF4Rd5Tl-ZvBY3eKghVNEkFuM2SglSKo'
+      Authorization: 'Bearer <redacted fixture JWT>'
     },
     baseURL: 'http://127.0.0.1:39767/api/v1',
     method: 'patch',
@@ -3143,7 +3143,7 @@ Failed to save business service: AxiosError: Request failed with status code 400
     headers: Object [AxiosHeaders] {
       Accept: 'application/json, text/plain, */*',
       'Content-Type': 'application/json',
-      Authorization: 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJfdXNlcklkIjoiaGFwMTc0LWFkbWluIiwiX3VzZXJuYW1lIjoiYWRtaW4iLCJfcm9sZSI6ImFkbWluIiwiX3R5cGUiOiJhY2Nlc3MiLCJpYXQiOjE3OTAxOTM5ODIsImV4cCI6MTc5MDE5NDg4MiwiYXVkIjoiY21kYi1hcGkiLCJpc3MiOiJoYXBweWNtZGIifQ.9mDtl-Bh9Zwo0hM4PJx82WDINUoBz6bW-f7tMiQ9t5I'
+      Authorization: 'Bearer <redacted fixture JWT>'
     },
     baseURL: 'http://127.0.0.1:34473/api/v1',
     method: 'patch',

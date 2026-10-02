@@ -29,15 +29,21 @@ graphql/
 - **getImpactAnalysis**: Analyze what depends on a CI
 
 ### Mutation Capabilities
-- **createCI**, **updateCI**, **deleteCI**: currently return `FORBIDDEN` ("CI tenant
-  scoping for GraphQL is pending") until GraphQL CI tenant scoping lands; use the
-  organization-scoped REST `/api/v1/cis` endpoints meanwhile
-- **createRelationship**: Link two CIs
+- **createCI**: Create a CI in the caller's organization
+- **updateCI**: Update a CI (its organization never changes)
+- **deleteCI**: Remove a CI and its relationships
+- **createRelationship**: Link two CIs of the caller's organization
 - **deleteRelationship**: Remove relationships
+
+### Tenant Scoping
+Every CI query, mutation and CI relationship field requires the token's organization
+claim (`FORBIDDEN` otherwise, before any Neo4j query) and only matches CIs of that
+organization. A foreign CI behaves like a missing one: `null`/empty results for
+queries, `NOT_FOUND` (`CI not found`) for mutations.
 
 ### Performance Optimizations
 - **DataLoader Integration**: Batches and caches database queries to prevent N+1 problems
-- **Request-scoped Caching**: Fresh cache per request, prevents stale data
+- **Request-scoped Caching**: Fresh cache per request, keyed by organization and CI id
 - **Batch Queries**: Efficient bulk operations for related CIs
 
 ## Getting Started

@@ -178,7 +178,7 @@ export class RelationshipController {
       }
 
       // Create the relationship
-      await this.neo4jClient.createRelationship(from_id, to_id, type, properties);
+      await this.neo4jClient.createRelationship(from_id, to_id, type, UNSCOPED_CI_ACCESS, properties);
 
       logger.info('Relationship created', {
         from_id,

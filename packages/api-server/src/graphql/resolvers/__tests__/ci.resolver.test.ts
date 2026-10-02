@@ -12,12 +12,16 @@
 
 import { describe, it, expect, jest, beforeEach, afterEach } from '@jest/globals';
 import { resolvers, GraphQLContext } from '../index';
+import { createCILoader } from '../../dataloaders/ci-loader';
 import { GraphQLError } from 'graphql';
 import {
   createMockNeo4jDriver,
   createMockNeo4jResult,
 } from '../../../../../../tests/utils/mock-database-clients';
 import { createCI, createCIs } from '../../../../../../tests/utils/mock-factories';
+
+const ORG_A = '11111111-1111-4111-8111-111111111111';
+const ORG_B = '22222222-2222-4222-8222-222222222222';
 
 // Mock dependencies
 jest.mock('@cmdb/common', () => ({
@@ -80,6 +84,8 @@ describe('GraphQL CI Resolvers', () => {
         getSession: jest.fn().mockReturnValue(mockNeo4j.session),
         createCI: jest.fn(),
         updateCI: jest.fn(),
+        getCI: jest.fn(),
+        deleteCI: jest.fn(),
         createRelationship: jest.fn(),
       } as any,
       _loaders: {
@@ -89,7 +95,8 @@ describe('GraphQL CI Resolvers', () => {
       },
       // Mutation resolvers now call checkGraphQLPermission(context, 'write');
       // an operator role carries the 'write' permission (see ROLE_PERMISSIONS).
-      user: { _userId: 'u1', _username: 'tester', _role: 'operator', _type: 'access' },
+      // Every CI resolver requires the organization claim.
+      user: { _userId: 'u1', _username: 'tester', _role: 'operator', _type: 'access', _organizationId: ORG_A },
     };
   });
 
@@ -189,7 +196,7 @@ describe('GraphQL CI Resolvers', () => {
       const getCI = (resolvers.Query as any).getCI;
       const result = await getCI(null, { id: 'ci-123' }, mockContext);
 
-      expect(mockLoaders.ciLoader.load).toHaveBeenCalledWith('ci-123');
+      expect(mockLoaders.ciLoader.load).toHaveBeenCalledWith({ id: 'ci-123', organizationId: ORG_A });
       expect(result).toMatchObject({
         _id: 'ci-123',
         _name: 'web-server',
@@ -345,36 +352,10 @@ describe('GraphQL CI Resolvers', () => {
     });
   });
 
-  // /api/v1/cis is organization-scoped and GraphQL has no CI tenant scoping
-  // yet: the CI mutations fail closed without touching Neo4j at all.
-  describe.each(['createCI', 'updateCI', 'deleteCI'])('Mutation.%s', mutation => {
-    it('fails closed with FORBIDDEN and never touches Neo4j', async () => {
-      const resolve = (resolvers.Mutation as any)[mutation];
-
-      const error = await resolve(
-        null,
-        { id: 'ci-123', input: { _id: 'ci-123', _name: 'new-server', _type: 'SERVER' } },
-        mockContext
-      ).catch((e: unknown) => e);
-
-      expect(error).toBeInstanceOf(GraphQLError);
-      expect(error).toMatchObject({
-        message: 'CI tenant scoping for GraphQL is pending',
-        extensions: { code: 'FORBIDDEN' },
-      });
-      const client = mockContext._neo4jClient as any;
-      expect(client.getSession).not.toHaveBeenCalled();
-      expect(mockNeo4j.session.run).not.toHaveBeenCalled();
-      expect(client.createCI).not.toHaveBeenCalled();
-      expect(client.updateCI).not.toHaveBeenCalled();
-      expect(mockLoaders.ciLoader.clear).not.toHaveBeenCalled();
-    });
-  });
-
   describe('Mutation.createRelationship', () => {
     it('should create relationship between CIs', async () => {
-      // Arrange
-      (mockContext._neo4jClient as any).createRelationship.mockResolvedValue(undefined);
+      // Arrange: the scoped client reports that both endpoints matched
+      (mockContext._neo4jClient as any).createRelationship.mockResolvedValue(true);
 
       const createRelMut = (resolvers.Mutation as any).createRelationship;
 
@@ -391,19 +372,185 @@ describe('GraphQL CI Resolvers', () => {
         mockContext
       );
 
-      // Assert: Verify relationship creation
+      // Assert: Verify relationship creation within the caller's organization
       expect((mockContext._neo4jClient as any).createRelationship).toHaveBeenCalledWith(
         'ci-1',
         'ci-2',
         'DEPENDS_ON',
+        ORG_A,
         { strength: 'strong' }
       );
 
       // Assert: Verify caches cleared for both CIs
-      expect(mockLoaders.relationshipLoader.clear).toHaveBeenCalledWith('ci-1');
-      expect(mockLoaders.dependentLoader.clear).toHaveBeenCalledWith('ci-2');
+      expect(mockLoaders.relationshipLoader.clear).toHaveBeenCalledWith({ id: 'ci-1', organizationId: ORG_A });
+      expect(mockLoaders.dependentLoader.clear).toHaveBeenCalledWith({ id: 'ci-2', organizationId: ORG_A });
 
       expect(result).toBe(true);
+    });
+  });
+
+  describe('Tenant scoping', () => {
+    const client = () => mockContext._neo4jClient as any;
+    const errorOf = (promise: Promise<unknown>) => promise.then(() => undefined, (e: unknown) => e);
+
+    it('getCIs/getCI/searchCIs pass the context org to the client', async () => {
+      mockNeo4j.session.run.mockResolvedValue(createMockNeo4jResult([]));
+      mockLoaders.ciLoader.load.mockResolvedValue(null);
+
+      await (resolvers.Query as any).getCIs(null, { filter: { _name: 'web' } }, mockContext);
+      await (resolvers.Query as any).searchCIs(null, { query: 'web' }, mockContext);
+      await (resolvers.Query as any).getCI(null, { id: 'ci-1' }, mockContext);
+
+      expect(mockNeo4j.session.run).toHaveBeenCalledTimes(2);
+      for (const [cypher, params] of mockNeo4j.session.run.mock.calls as Array<[string, Record<string, unknown>]>) {
+        expect(cypher).toContain('ci.organization_id = $organizationId');
+        expect(params.organizationId).toBe(ORG_A);
+      }
+      expect(mockLoaders.ciLoader.load).toHaveBeenCalledWith({ id: 'ci-1', organizationId: ORG_A });
+    });
+
+    it('createCI stamps the context org and ignores an input org', async () => {
+      client().createCI.mockResolvedValue(createCI({ id: 'ci-new', name: 'new-server' }));
+
+      await (resolvers.Mutation as any).createCI(
+        null,
+        {
+          input: {
+            _id: 'ci-new',
+            _name: 'new-server',
+            _type: 'SERVER',
+            _organizationId: ORG_B,
+            organization_id: ORG_B,
+          },
+        },
+        mockContext
+      );
+
+      expect(client().createCI).toHaveBeenCalledTimes(1);
+      const [ciInput, scope] = client().createCI.mock.calls[0];
+      expect(scope).toBe(ORG_A);
+      expect(Object.keys(ciInput).filter(key => /organization/i.test(key))).toEqual([]);
+      expect(JSON.stringify(ciInput)).not.toContain(ORG_B);
+    });
+
+    it('updateCI cannot change organization_id', async () => {
+      client().getCI.mockResolvedValue(createCI({ id: 'ci-1' }));
+      client().updateCI.mockResolvedValue(createCI({ id: 'ci-1', name: 'renamed' }));
+
+      await (resolvers.Mutation as any).updateCI(
+        null,
+        { id: 'ci-1', input: { _name: 'renamed', _organizationId: ORG_B, organization_id: ORG_B } },
+        mockContext
+      );
+
+      expect(client().getCI).toHaveBeenCalledWith('ci-1', ORG_A);
+      expect(client().updateCI).toHaveBeenCalledWith('ci-1', { name: 'renamed' }, ORG_A);
+    });
+
+    it('deleteCI on a foreign CI deletes nothing', async () => {
+      // The org-scoped delete matches no CI of the caller's organization.
+      client().deleteCI.mockResolvedValue(false);
+
+      const error = await errorOf((resolvers.Mutation as any).deleteCI(null, { id: 'ci-of-org-b' }, mockContext));
+
+      expect(client().deleteCI).toHaveBeenCalledWith('ci-of-org-b', ORG_A);
+      // No unscoped DETACH DELETE on a raw session, and the same error as a missing CI.
+      expect(client().getSession).not.toHaveBeenCalled();
+      expect(error).toBeInstanceOf(GraphQLError);
+      expect(error).toMatchObject({ message: 'CI not found', extensions: { code: 'NOT_FOUND' } });
+      expect(mockLoaders.ciLoader.clear).not.toHaveBeenCalled();
+    });
+
+    it('createRelationship across orgs is rejected', async () => {
+      // The org-scoped MERGE finds no pair of endpoints in the caller's organization.
+      client().createRelationship.mockResolvedValue(false);
+
+      const error = await errorOf(
+        (resolvers.Mutation as any).createRelationship(
+          null,
+          { input: { _fromId: 'ci-of-org-a', _toId: 'ci-of-org-b', _type: 'DEPENDS_ON' } },
+          mockContext
+        )
+      );
+
+      expect(client().createRelationship).toHaveBeenCalledWith('ci-of-org-a', 'ci-of-org-b', 'DEPENDS_ON', ORG_A, {});
+      expect(error).toBeInstanceOf(GraphQLError);
+      expect(error).toMatchObject({ message: 'CI not found', extensions: { code: 'NOT_FOUND' } });
+      expect(mockLoaders.relationshipLoader.clear).not.toHaveBeenCalled();
+      expect(mockLoaders.dependentLoader.clear).not.toHaveBeenCalled();
+    });
+
+    it('FORBIDDEN without an org claim, with zero session.run calls', async () => {
+      // A valid role but no (or a malformed) organization claim.
+      const calls: Array<[string, (context: GraphQLContext) => Promise<unknown>]> = [
+        ['getCIs', ctx => (resolvers.Query as any).getCIs(null, {}, ctx)],
+        ['getCI', ctx => (resolvers.Query as any).getCI(null, { id: 'ci-1' }, ctx)],
+        ['searchCIs', ctx => (resolvers.Query as any).searchCIs(null, { query: 'x' }, ctx)],
+        ['getCIRelationships', ctx => (resolvers.Query as any).getCIRelationships(null, { id: 'ci-1' }, ctx)],
+        ['getCIDependencies', ctx => (resolvers.Query as any).getCIDependencies(null, { id: 'ci-1' }, ctx)],
+        ['getImpactAnalysis', ctx => (resolvers.Query as any).getImpactAnalysis(null, { id: 'ci-1' }, ctx)],
+        ['createCI', ctx => (resolvers.Mutation as any).createCI(null, { input: { _id: 'ci-1', _name: 'n', _type: 'SERVER' } }, ctx)],
+        ['updateCI', ctx => (resolvers.Mutation as any).updateCI(null, { id: 'ci-1', input: { _name: 'n' } }, ctx)],
+        ['deleteCI', ctx => (resolvers.Mutation as any).deleteCI(null, { id: 'ci-1' }, ctx)],
+        ['createRelationship', ctx => (resolvers.Mutation as any).createRelationship(null, { input: { _fromId: 'a', _toId: 'b', _type: 'DEPENDS_ON' } }, ctx)],
+        ['deleteRelationship', ctx => (resolvers.Mutation as any).deleteRelationship(null, { fromId: 'a', toId: 'b', type: 'DEPENDS_ON' }, ctx)],
+        ['CI._relationships', ctx => (resolvers.CI as any)._relationships({ _id: 'ci-1' }, {}, ctx)],
+        ['CI._dependents', ctx => (resolvers.CI as any)._dependents({ _id: 'ci-1' }, {}, ctx)],
+        ['CI._dependencies', ctx => (resolvers.CI as any)._dependencies({ _id: 'ci-1' }, {}, ctx)],
+      ];
+
+      for (const organizationId of [undefined, 'not-a-uuid']) {
+        const context: GraphQLContext = {
+          ...mockContext,
+          user: { _userId: 'u1', _username: 'tester', _role: 'admin', _type: 'access', _organizationId: organizationId },
+        };
+        for (const [name, call] of calls) {
+          const error = await errorOf(call(context));
+          expect({ name, error }).toMatchObject({ name, error: { extensions: { code: 'FORBIDDEN' } } });
+        }
+      }
+
+      expect(client().getSession).not.toHaveBeenCalled();
+      expect(mockNeo4j.session.run).not.toHaveBeenCalled();
+      for (const method of ['createCI', 'updateCI', 'getCI', 'deleteCI', 'createRelationship']) {
+        expect(client()[method]).not.toHaveBeenCalled();
+      }
+      for (const loader of Object.values(mockLoaders) as Array<{ load: jest.Mock }>) {
+        expect(loader.load).not.toHaveBeenCalled();
+      }
+    });
+
+    it("dataloader does not serve another org's CI", async () => {
+      // One shared loader over a stored CI of ORG_A. The fake answers both the
+      // org-keyed batch query and a bare id batch, matching Cypher semantics.
+      const stored = { id: 'ci-shared', name: 'org-a-server', type: 'server', status: 'active', organization_id: ORG_A };
+      const queries: string[] = [];
+      const run = async (cypher: string, params: { keys?: Array<{ id: string; organizationId: string }>; ids?: string[] }) => {
+        queries.push(cypher);
+        const rows = params.keys
+          ? params.keys.map(key => ({
+              ciId: key.id,
+              organizationId: key.organizationId,
+              ci: key.id === stored.id && key.organizationId === stored.organization_id ? { properties: stored } : null,
+            }))
+          : (params.ids ?? []).map(id => ({ ciId: id, ci: id === stored.id ? { properties: stored } : null }));
+        return { records: rows.map(row => ({ get: (field: string) => (row as Record<string, unknown>)[field] })) };
+      };
+      const loader = createCILoader({ getSession: () => ({ run, close: async () => undefined }) } as any);
+      const contextFor = (organizationId: string): GraphQLContext => ({
+        ...mockContext,
+        _loaders: { ...mockContext._loaders, _ciLoader: loader },
+        user: { _userId: 'u1', _username: 'tester', _role: 'operator', _type: 'access', _organizationId: organizationId },
+      });
+
+      const asOrgA = await (resolvers.Query as any).getCI(null, { id: 'ci-shared' }, contextFor(ORG_A));
+      const asOrgB = await (resolvers.Query as any).getCI(null, { id: 'ci-shared' }, contextFor(ORG_B));
+
+      expect(asOrgA).toMatchObject({ _id: 'ci-shared', _name: 'org-a-server' });
+      expect(asOrgB).toBeNull();
+      // ORG_B's lookup went to Neo4j (no cache hit) with the org predicate.
+      expect(queries).toHaveLength(2);
+      expect(queries[1]).toContain('ci.organization_id = key.organizationId');
     });
   });
 

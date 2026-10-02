@@ -1678,10 +1678,13 @@ query GetImpactAnalysis($id: ID!, $depth: Int) {
 
 ### Mutations
 
-> **Note:** `createCI`, `updateCI` and `deleteCI` currently return a `FORBIDDEN`
-> error (`CI tenant scoping for GraphQL is pending`) for every caller, without
-> touching the database. They come back once GraphQL CI tenant scoping lands;
-> until then use the organization-scoped REST endpoints under `/cis`.
+> **Note:** every CI query and mutation is scoped to the caller's organization
+> (the token's organization claim). Without one they return `FORBIDDEN`
+> (`Organization claim required`) before touching the database. `createCI`
+> stamps the caller's organization; `updateCI` cannot change it. A CI of another
+> organization is indistinguishable from a missing one: queries return `null` or
+> an empty list, and `updateCI`, `deleteCI` and `createRelationship` return
+> `NOT_FOUND` (`CI not found`) without writing anything.
 
 #### createCI
 

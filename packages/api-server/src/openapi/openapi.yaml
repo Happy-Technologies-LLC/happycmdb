@@ -3019,10 +3019,11 @@ paths:
       tags: [Business Services]
       summary: Map CIs to a business service
       description: >-
-        Upserts one mapping per `ci_ids` entry with the given `mapping_type`;
-        an existing (ci_id, mapping_type) mapping has its `confidence_score`
-        and `updated_at` replaced. Unknown body fields are ignored. Requires
-        the `write` permission.
+        Creates or updates one mapping per distinct `ci_ids` entry (duplicate
+        ids are not allowed) with the given `mapping_type`; an existing
+        (ci_id, mapping_type) mapping has its `confidence_score` and
+        `updated_at` replaced. Unknown body fields are ignored. Requires the
+        `write` permission.
       operationId: mapBusinessServiceCIs
       requestBody:
         required: true
@@ -3035,9 +3036,11 @@ paths:
                 ci_ids:
                   type: array
                   minItems: 1
+                  uniqueItems: true
                   items:
                     type: string
                     minLength: 1
+                    maxLength: 100
                 mapping_type:
                   type: string
                   enum: [hosts, supports, enables, provides]
@@ -3603,12 +3606,9 @@ components:
 
     BusinessServiceServerError:
       description: >-
-        Unexpected failure. Errors raised by the operation return
-        `{success: false, error}` with a fixed per-operation message; internal
-        error details are not returned. A malformed JSON body or an
-        undecodable percent-encoded path parameter returns
-        `{_error: 'Internal Server Error', _message}` with the parse/decode
-        message.
+        Unexpected server failure. The body is either `{success: false,
+        error}` with a fixed per-operation message or the generic middleware
+        error body.
       content:
         application/json:
           schema:

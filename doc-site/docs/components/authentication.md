@@ -247,55 +247,53 @@ Postgres ownership check:
   node whose only row is newer stays without an organization and is listed in
   `needs_review`; nodes without a Postgres row stay without an organization (invisible);
   nodes that already have one are never changed. It is a dry run unless `--apply` is
-  passed, it lists every node it fills, a second run with the same cutover changes
-  nothing, and it connects only through `CMDB_BACKFILL_*` variables (see the script
-  header). It trusts `dim_business_services`: `created_at` and `organization_id` are not
+  passed. Save the complete one-line dry-run summary to a protected file; its `plan`
+  includes every Postgres owner and the Neo4j `elementId` of each proposed node.
+  Review `filled`, `needs_review`, `conflicting`, `unmatched`, the plan owners and
+  `plan_sha256` independently. Apply requires the saved summary via `--plan <file>`
+  and its independently recorded digest via `--sha256 <plan_sha256>` with the same
+  `--created-before` and `--writer-timezone`. The digest pins the plan contents, not
+  the operator's authorization: do not copy an unreviewed digest from a changed file.
+  Apply validates every locked Postgres owner against the plan inside a transaction
+  (`SELECT ... FOR SHARE`), and conditionally writes only the planned Neo4j
+  `elementId`/id when its organization is still null. Any missing, replaced, changed
+  or duplicated target aborts the Neo4j transaction. Postgres locks remain held
+  until graph work completes; an intervening ownership update waits or causes drift
+  abort. New unrelated rows after the lock query do not authorize any additional
+  graph writes. The databases **do not share an atomic commit**: a process/commit
+  failure after the Neo4j commit may leave graph writes even when apply exits with
+  an error. Inspect both stores and the saved summary before any retry.
+  It connects only through `CMDB_BACKFILL_*` variables (see the script header).
+  It trusts `dim_business_services`: `created_at` and `organization_id` are not
   writable through the API, but the PUBLIC grants above let any database role write
   them, so run it only after confirming no non-API role has written to that table.
-  Running it against a live database is an operator action (FD-7). Keep the `--apply`
-  run's stdout (one JSON line, for example `> backfill-apply-summary.json`): its `filled`
-  list is the only input the undo below accepts.
+  Running it against a live database is an operator action (FD-7); not an automatic
+  migration. Preserve both dry-run and apply output as audit evidence.
 
-#### Undoing a backfill `--apply`
+#### Reversing a mistaken backfill
 
-If an `--apply` ran with a wrong `--created-before` or `--writer-timezone`, revert exactly
-the nodes that run filled, so they are org-less again: invisible to every organization
-(TBM and dashboard reads return 404), as before the backfill. This is an operator action
-under the same authorization as the backfill (FD-7); never improvise a wider statement.
+**There is no automatic safe undo.** The apply summary's `filled` id/org pairs,
+even together with the dry-run `elementId`, cannot prove that a current property
+was written by that run: the node can be deleted/recreated, or its organization
+can be changed and restored to the same value. Neo4j `elementId` is not a durable
+provenance marker across deletion/recreation. Never run a bulk `REMOVE` selected
+by id/org or by the saved plan. A mistaken apply requires a separately authorized
+manual incident action under FD-7:
 
-1. Take the `filled` array from that run's summary, unchanged. Each entry is a
-   `{service_id, organization_id}` pair the backfill wrote. Do not use a dry-run summary,
-   a later run's summary, or a list rebuilt from Postgres.
-2. Check first, without writing. In `cypher-shell`, set the pairs and count the nodes that
-   still carry exactly the organization the backfill wrote:
-
-   ```cypher
-   :param filled => [{service_id: 'bs-example', organization_id: '11111111-1111-4111-8111-111111111111'}];
-   UNWIND $filled AS f
-   MATCH (bs:BusinessService {id: f.service_id})
-   WHERE bs.organization_id = f.organization_id
-   RETURN count(bs) AS revertible;
-   ```
-
-3. Revert. Each node is matched on both its id and its current `organization_id`, so a
-   node whose organization changed since the backfill (another run, a manual fix) is left
-   alone:
-
-   ```cypher
-   UNWIND $filled AS f
-   MATCH (bs:BusinessService {id: f.service_id})
-   WHERE bs.organization_id = f.organization_id
-   REMOVE bs.organization_id
-   RETURN count(bs) AS reverted;
-   ```
-
-   If `revertible` or `reverted` is lower than the number of pairs, some nodes changed in
-   the meantime: investigate those ids by hand rather than widening the match. Do not run
-   the backfill or a reseed concurrently with the undo.
-4. The reverted services now return 404 until the backfill runs again. Rerun it as a dry
-   run with the correct `--writer-timezone` (the API role's `SHOW timezone`, as a zone
-   file name such as `Etc/UTC`) and cutover, check its `filled` and `needs_review` lists,
-   and only then `--apply`.
+1. Freeze other business-service writers/backfills and preserve the dry-run plan,
+   apply output, current graph snapshot (including id, `elementId`, organization and
+   relationships) and current PostgreSQL owner rows. Compare every proposed reversal
+   with the pre-apply snapshot and audit history for deletion/recreation and
+   organization flips/restores. The apply output alone is insufficient evidence.
+2. Stop on a missing, duplicated or conflicting node, a changed owner, a different
+   node identity, or incomplete provenance; resolve each id manually. Only explicitly
+   confirmed unchanged nodes can be individually reverted, in a transaction with
+   identity, current-organization and snapshot predicates rechecked at write time.
+   Count each conditional write and abort/rollback on any mismatch; do not widen a
+   predicate to make it succeed. If provenance cannot be established, leave the
+   property in place and escalate rather than stripping another operator's value.
+3. Org-less nodes are invisible until a new reviewed dry-run and separately
+   authorized apply with corrected parameters. Never reuse the mistaken plan.
 
 ### Rolling back migrations 010, 009 and 008
 

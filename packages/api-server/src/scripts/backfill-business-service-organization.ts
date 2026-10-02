@@ -33,26 +33,23 @@
  * are refused too. The check runs before any graph statement.
  *
  * Guards:
- *   - dry run by default: nothing is written unless `--apply` is passed; the
- *     dry run lists exactly what `--apply` would write (`filled`);
- *   - only nodes whose organization_id is null are written; a node that
- *     already has an organization keeps it, even when Postgres disagrees
- *     (counted as `conflicting`, never changed);
- *   - a node with no Postgres row stays without an organization, so it stays
- *     invisible (fail closed; counted as `unmatched`), and so does a node
- *     whose row is not older than the cutover (`needs_review`);
- *   - every Postgres row is validated (non-empty service_id, UUID
- *     organization_id) before anything is written; one bad row aborts the run;
- *   - idempotent: a second run with the same cutover changes nothing;
- *   - connections come only from dedicated CMDB_BACKFILL_* variables, never
- *     the api-server's own POSTGRES_* / NEO4J_* settings; credentials are read
- *     from the environment (not argv) and never printed. stdout carries one
- *     JSON summary line; errors go to stderr without connection details.
+ *   - dry run emits a complete reviewed plan of Postgres owners and Neo4j
+ *     elementIds, plus its SHA-256; --apply requires --plan and the separately
+ *     reviewed --sha256, and refuses drift from that plan;
+ *   - apply locks Postgres owner rows with SELECT FOR SHARE until the Neo4j
+ *     transaction finishes; graph writes condition on id, elementId and null
+ *     organization, and abort/rollback on any missing or duplicated result;
+ *   - no cross-database atomic commit: if Neo4j commits but PostgreSQL commit
+ *     or the process fails, inspect both stores before any retry;
+ *   - nodes already owned are never changed; unmatched and post-cutover nodes
+ *     remain invisible and require manual review;
+ *   - every Postgres row is validated before writing; same-plan reruns with
+ *     previously filled nodes abort rather than silently reinterpreting drift;
+ *   - connections use CMDB_BACKFILL_* only; credentials never print.
  *
- * Keep the --apply summary: its `filled` id/organization pairs are the input of
- * the undo in doc-site/docs/components/authentication.md ("Undoing a backfill
- * --apply"), which removes organization_id only from those nodes that still
- * carry the organization the backfill wrote.
+ * There is no automatic safe undo by id/org: a deleted/recreated node or an
+ * organization flip/restore cannot be distinguished without durable provenance.
+ * See doc-site/docs/components/authentication.md for manual incident procedure.
  *
  * Not run automatically, not part of schema initialization or db-init. Build
  * with `npm run build:tenant-fixture --workspace=packages/api-server`
@@ -63,8 +60,12 @@
  *   CMDB_BACKFILL_NEO4J_URI=bolt://<host>:7687 CMDB_BACKFILL_NEO4J_USERNAME=... CMDB_BACKFILL_NEO4J_PASSWORD=... \
  *   [CMDB_BACKFILL_NEO4J_ENCRYPTED=true|false] \
  *   node packages/api-server/dist/tenant-fixture/api-server/src/scripts/backfill-business-service-organization.js \
- *     --created-before <ISO-8601 timestamp with zone> --writer-timezone <zone file name, e.g. Etc/UTC> [--apply]
+ *     --created-before <ISO-8601 timestamp with zone> --writer-timezone <zone file name, e.g. Etc/UTC> \
+ *     [--apply --plan <saved dry-run summary> --sha256 <independently reviewed plan_sha256>]
  */
+
+import { createHash } from 'crypto';
+import { readFileSync } from 'fs';
 
 // Deliberately not the @cmdb/database barrel: importing it opens a BullMQ Redis
 // connection at load time. These modules open nothing until a client is constructed.
@@ -99,20 +100,25 @@ SELECT service_id,
   FROM dim_business_services
  ORDER BY service_id`;
 
-/** Fills only org-less nodes, from the owner of the same id. */
-export const FILL_CYPHER = `
-UNWIND $owners AS owner
-MATCH (bs:BusinessService {id: owner.serviceId})
-WHERE bs.organization_id IS NULL
-SET bs.organization_id = owner.organizationId
-RETURN bs.id AS serviceId, owner.organizationId AS organizationId`;
+export const LOCKED_OWNERS_SQL = `${OWNERS_SQL} FOR SHARE`;
 
-/** The org-less nodes FILL_CYPHER would write for these owners; writes nothing. */
+/** Lock the reviewed node before rechecking its organization under that lock. */
+export const FILL_CYPHER = `
+UNWIND $targets AS target
+MATCH (bs:BusinessService {id: target.serviceId})
+WHERE elementId(bs) = target.elementId
+SET bs.organization_id = bs.organization_id
+WITH bs, target
+WHERE bs.organization_id IS NULL
+SET bs.organization_id = target.organizationId
+RETURN bs.id AS serviceId, elementId(bs) AS elementId, bs.organization_id AS organizationId`;
+
+/** Org-less nodes and immutable identities proposed for the reviewed plan. */
 export const FILLABLE_CYPHER = `
 UNWIND $owners AS owner
 MATCH (bs:BusinessService {id: owner.serviceId})
 WHERE bs.organization_id IS NULL
-RETURN bs.id AS serviceId, owner.organizationId AS organizationId`;
+RETURN bs.id AS serviceId, elementId(bs) AS elementId, owner.organizationId AS organizationId`;
 
 /** Org-less nodes with no Postgres row: left without an organization. */
 export const COUNT_UNMATCHED_CYPHER = `
@@ -130,11 +136,15 @@ RETURN count(bs) AS conflicting`;
 /** Minimal Postgres surface (PostgresClient satisfies it). */
 export interface SqlClient {
   query(text: string, params?: unknown[]): Promise<{ rows: Array<Record<string, unknown>> }>;
+  transaction<T>(callback: (client: Pick<SqlClient, 'query'>) => Promise<T>): Promise<T>;
 }
 
-/** Minimal Neo4j session surface (a driver session satisfies it). */
-export interface GraphSession {
+/** Minimal Neo4j session/transaction surface (driver session satisfies it). */
+export interface GraphQuery {
   run(query: string, params?: Record<string, unknown>): Promise<{ records: Array<{ get(key: string): unknown }> }>;
+}
+export interface GraphSession extends GraphQuery {
+  executeWrite<T>(callback: (tx: GraphQuery) => Promise<T>): Promise<T>;
 }
 
 export interface BackfillSummary {
@@ -145,8 +155,11 @@ export interface BackfillSummary {
   writer_timezone: string;
   /** dim_business_services rows read. */
   postgres_services: number;
-  /** Nodes given an organization (apply), or that would be (dry run). */
+  /** Only the actual writes on apply, or proposed writes on dry run. */
   filled: Array<{ service_id: string; organization_id: string }>;
+  /** Dry-run-only immutable review input; supply this entire summary via --plan on apply. */
+  plan?: BackfillPlan;
+  plan_sha256: string;
   /** Org-less nodes whose only row is not older than the cutover; left without an organization. */
   needs_review: Array<{ service_id: string; organization_id: string; created_at: string | null }>;
   /** Org-less nodes with no Postgres row; they stay invisible. */
@@ -156,16 +169,26 @@ export interface BackfillSummary {
 }
 
 interface Owner { serviceId: string; organizationId: string; createdAt: string | null; trusted: boolean }
+export interface BackfillPlan {
+  created_before: string;
+  writer_timezone: string;
+  owners: Owner[];
+  targets: Array<{ serviceId: string; organizationId: string; elementId: string }>;
+}
+
+export function planHash(plan: BackfillPlan): string {
+  return createHash('sha256').update(JSON.stringify(plan)).digest('hex');
+}
 
 /** Runs a single-count statement; Neo4j returns counts as Integer, fakes may return numbers. */
-async function count(session: GraphSession, cypher: string, params: Record<string, unknown>, key: string): Promise<number> {
+async function count(session: GraphQuery, cypher: string, params: Record<string, unknown>, key: string): Promise<number> {
   const result = await session.run(cypher, params);
   const value = result.records[0]?.get(key) as { toNumber(): number } | number | undefined;
   return typeof value === 'number' ? value : value?.toNumber() ?? 0;
 }
 
-/** (serviceId, organizationId) rows of FILL_CYPHER / FILLABLE_CYPHER for these owners. */
-async function matches(session: GraphSession, cypher: string, owners: Owner[]): Promise<Array<{ serviceId: string; organizationId: string }>> {
+/** Candidate rows include the Neo4j identity; a recreated node must never inherit a plan. */
+async function matches(session: GraphQuery, cypher: string, owners: Owner[]): Promise<BackfillPlan['targets']> {
   if (owners.length === 0) return [];
   const result = await session.run(cypher, {
     owners: owners.map(({ serviceId, organizationId }) => ({ serviceId, organizationId })),
@@ -173,24 +196,12 @@ async function matches(session: GraphSession, cypher: string, owners: Owner[]): 
   return result.records.map(record => ({
     serviceId: record.get('serviceId') as string,
     organizationId: record.get('organizationId') as string,
+    elementId: record.get('elementId') as string,
   }));
 }
 
-export async function backfillBusinessServiceOrganizations(
-  postgres: SqlClient,
-  session: GraphSession,
-  options: { apply: boolean; createdBefore: string; writerTimezone: string }
-): Promise<BackfillSummary> {
-  if (!CUTOVER_RE.test(options.createdBefore) || !Number.isFinite(Date.parse(options.createdBefore))) {
-    throw new Error('--created-before must be an ISO-8601 timestamp with a zone, e.g. 2026-10-01T12:00:00Z');
-  }
-  const zone = await postgres.query(WRITER_TIMEZONE_SQL, [options.writerTimezone]);
-  if (zone.rows[0]?.['known'] !== true) {
-    throw new Error(`--writer-timezone ${options.writerTimezone} is not a time zone file name in pg_timezone_names (or is also an abbreviation); use e.g. Etc/UTC; nothing was written`);
-  }
-
-  const { rows } = await postgres.query(OWNERS_SQL, [options.createdBefore, options.writerTimezone]);
-  const owners: Owner[] = rows.map(row => {
+function parseOwners(rows: Array<Record<string, unknown>>): Owner[] {
+  return rows.map(row => {
     const serviceId = row['service_id'];
     const organizationId = row['organization_id'];
     if (typeof serviceId !== 'string' || serviceId.length === 0) {
@@ -206,28 +217,98 @@ export async function backfillBusinessServiceOrganizations(
       trusted: row['trusted'] === true,
     };
   });
-  const all = { owners: owners.map(({ serviceId, organizationId }) => ({ serviceId, organizationId })) };
+}
 
-  const conflicting = await count(session, COUNT_CONFLICTING_CYPHER, all, 'conflicting');
-  const unmatched = await count(session, COUNT_UNMATCHED_CYPHER, { serviceIds: owners.map(o => o.serviceId) }, 'unmatched');
-  const untrusted = owners.filter(owner => !owner.trusted);
-  const review = await matches(session, FILLABLE_CYPHER, untrusted);
-  const filled = await matches(session, options.apply ? FILL_CYPHER : FILLABLE_CYPHER, owners.filter(owner => owner.trusted));
+export async function backfillBusinessServiceOrganizations(
+  postgres: SqlClient,
+  session: GraphSession,
+  options: { apply: boolean; createdBefore: string; writerTimezone: string; reviewed?: BackfillSummary; sha256?: string }
+): Promise<BackfillSummary> {
+  if (!CUTOVER_RE.test(options.createdBefore) || !Number.isFinite(Date.parse(options.createdBefore))) {
+    throw new Error('--created-before must be an ISO-8601 timestamp with a zone, e.g. 2026-10-01T12:00:00Z');
+  }
+  if (options.apply) {
+    const plan = options.reviewed?.plan;
+    if (options.reviewed?.mode !== 'dry-run' || !plan ||
+        !Array.isArray(plan.owners) || !Array.isArray(plan.targets) ||
+        !/^[0-9a-f]{64}$/.test(options.sha256 ?? '') ||
+        planHash(plan) !== options.sha256 || options.reviewed.plan_sha256 !== options.sha256 ||
+        options.reviewed.created_before !== options.createdBefore ||
+        options.reviewed.writer_timezone !== options.writerTimezone ||
+        plan.created_before !== options.createdBefore || plan.writer_timezone !== options.writerTimezone ||
+        !Array.isArray(options.reviewed.filled) ||
+        JSON.stringify(options.reviewed.filled) !== JSON.stringify(plan.targets.map(t => ({
+          service_id: t?.serviceId, organization_id: t?.organizationId,
+        }))) ||
+        plan.owners.some(o => !o || typeof o.serviceId !== 'string' || typeof o.organizationId !== 'string' ||
+          typeof o.trusted !== 'boolean' || (o.createdAt !== null && typeof o.createdAt !== 'string')) ||
+        plan.targets.some(t => !t || typeof t.serviceId !== 'string' || typeof t.elementId !== 'string' ||
+          !t.elementId || typeof t.organizationId !== 'string') ||
+        new Set(plan.targets.map(t => t.serviceId)).size !== plan.targets.length ||
+        plan.targets.some(t => !plan.owners.some(o => o.trusted && o.serviceId === t.serviceId && o.organizationId === t.organizationId))) {
+      throw new Error('apply requires an intact dry-run --plan and its independently reviewed --sha256; nothing was written');
+    }
+  }
+  const zone = await postgres.query(WRITER_TIMEZONE_SQL, [options.writerTimezone]);
+  if (zone.rows[0]?.['known'] !== true) {
+    throw new Error(`--writer-timezone ${options.writerTimezone} is not a time zone file name in pg_timezone_names (or is also an abbreviation); use e.g. Etc/UTC; nothing was written`);
+  }
 
-  return {
-    mode: options.apply ? 'apply' : 'dry-run',
-    created_before: options.createdBefore,
-    writer_timezone: options.writerTimezone,
-    postgres_services: owners.length,
-    filled: filled.map(m => ({ service_id: m.serviceId, organization_id: m.organizationId })),
-    needs_review: review.map(m => ({
-      service_id: m.serviceId,
-      organization_id: m.organizationId,
-      created_at: untrusted.find(owner => owner.serviceId === m.serviceId)?.createdAt ?? null,
-    })),
-    unmatched,
-    conflicting,
+  const run = async (sql: Pick<SqlClient, 'query'>): Promise<BackfillSummary> => {
+    const { rows } = await sql.query(options.apply ? LOCKED_OWNERS_SQL : OWNERS_SQL, [options.createdBefore, options.writerTimezone]);
+    const owners = parseOwners(rows);
+    if (options.apply && JSON.stringify(owners) !== JSON.stringify(options.reviewed!.plan!.owners)) {
+      throw new Error('Postgres ownership/cutover drift from reviewed plan; nothing was written');
+    }
+    const all = { owners: owners.map(({ serviceId, organizationId }) => ({ serviceId, organizationId })) };
+    const conflicting = await count(session, COUNT_CONFLICTING_CYPHER, all, 'conflicting');
+    const unmatched = await count(session, COUNT_UNMATCHED_CYPHER, { serviceIds: owners.map(o => o.serviceId) }, 'unmatched');
+    const untrusted = owners.filter(owner => !owner.trusted);
+    const review = await matches(session, FILLABLE_CYPHER, untrusted);
+    const targets = options.apply
+      ? options.reviewed!.plan!.targets
+      : await matches(session, FILLABLE_CYPHER, owners.filter(owner => owner.trusted));
+    if (!options.apply && (new Set(targets.map(t => t.serviceId)).size !== targets.length ||
+        targets.some(t => typeof t.elementId !== 'string' || !t.elementId))) {
+      throw new Error('duplicate business service id or missing graph identity; no plan emitted');
+    }
+    const plan: BackfillPlan = options.apply ? options.reviewed!.plan! : {
+      created_before: options.createdBefore, writer_timezone: options.writerTimezone, owners, targets,
+    };
+    const filled = options.apply ? await session.executeWrite(async tx => {
+      if (targets.length === 0) return [];
+      const result = await tx.run(FILL_CYPHER, { targets });
+      const written = result.records.map(record => ({
+        serviceId: record.get('serviceId') as string,
+        organizationId: record.get('organizationId') as string,
+        elementId: record.get('elementId') as string,
+      }));
+      if (written.length !== targets.length ||
+          written.some(w => !targets.some(t => t.serviceId === w.serviceId &&
+            t.elementId === w.elementId && t.organizationId === w.organizationId))) {
+        throw new Error('Neo4j identity/organization drift from reviewed plan; graph transaction rolled back');
+      }
+      return written;
+    }) : targets;
+
+    return {
+      mode: options.apply ? 'apply' : 'dry-run',
+      created_before: options.createdBefore,
+      writer_timezone: options.writerTimezone,
+      postgres_services: owners.length,
+      filled: filled.map(m => ({ service_id: m.serviceId, organization_id: m.organizationId })),
+      ...(!options.apply ? { plan } : {}),
+      plan_sha256: planHash(plan),
+      needs_review: review.map(m => ({
+        service_id: m.serviceId,
+        organization_id: m.organizationId,
+        created_at: untrusted.find(owner => owner.serviceId === m.serviceId)?.createdAt ?? null,
+      })),
+      unmatched,
+      conflicting,
+    };
   };
+  return options.apply ? postgres.transaction(run) : run(postgres);
 }
 
 function required(env: NodeJS.ProcessEnv, name: string): string {
@@ -238,31 +319,41 @@ function required(env: NodeJS.ProcessEnv, name: string): string {
   return value;
 }
 
-/** `--created-before <timestamp>` and `--writer-timezone <zone>` (both required) and `--apply`; anything else is refused. */
-export function parseArgs(argv: readonly string[]): { apply: boolean; createdBefore: string; writerTimezone: string } {
+/** Dry-run by default; --apply requires an independently reviewed plan and SHA-256. */
+export function parseArgs(argv: readonly string[]): {
+  apply: boolean; createdBefore: string; writerTimezone: string; planFile?: string; sha256?: string
+} {
   let apply = false;
   let createdBefore: string | undefined;
   let writerTimezone: string | undefined;
+  let planFile: string | undefined;
+  let sha256: string | undefined;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
-    if (arg === '--apply') {
+    if (arg === '--apply' && !apply) {
       apply = true;
     } else if (arg === '--created-before' && createdBefore === undefined && argv[i + 1] !== undefined) {
       createdBefore = argv[++i]!;
     } else if (arg === '--writer-timezone' && writerTimezone === undefined && argv[i + 1] !== undefined) {
       writerTimezone = argv[++i]!;
+    } else if (arg === '--plan' && planFile === undefined && argv[i + 1] !== undefined) {
+      planFile = argv[++i]!;
+    } else if (arg === '--sha256' && sha256 === undefined && argv[i + 1] !== undefined) {
+      sha256 = argv[++i]!;
     } else {
-      throw new Error(`unexpected argument ${arg}; usage: --created-before <ISO-8601 timestamp> --writer-timezone <zone file name> [--apply]`);
+      throw new Error(`unexpected argument ${arg}; usage: --created-before <ISO-8601 timestamp> --writer-timezone <zone file name> [--apply --plan <dry-run summary file> --sha256 <reviewed digest>]`);
     }
   }
-  // Both are checked against Postgres / the format by backfillBusinessServiceOrganizations before any graph statement.
   if (createdBefore === undefined) {
     throw new Error('--created-before <ISO-8601 timestamp with a zone> is required, e.g. 2026-10-01T12:00:00Z');
   }
   if (writerTimezone === undefined) {
     throw new Error('--writer-timezone <IANA time zone of the API sessions> is required, e.g. Etc/UTC');
   }
-  return { apply, createdBefore, writerTimezone };
+  if (apply !== (planFile !== undefined && sha256 !== undefined)) {
+    throw new Error('--apply requires --plan <dry-run summary file> and --sha256 <independently reviewed digest>');
+  }
+  return { apply, createdBefore, writerTimezone, planFile, sha256 };
 }
 
 /**
@@ -279,6 +370,7 @@ export async function main(
   let neo4j: Neo4jClient | undefined;
   try {
     const args = parseArgs(argv);
+    const reviewed = args.planFile === undefined ? undefined : JSON.parse(readFileSync(args.planFile, 'utf8')) as BackfillSummary;
     const port = Number(required(env, 'CMDB_BACKFILL_POSTGRES_PORT'));
     if (!Number.isInteger(port) || port <= 0 || port > 65535) {
       throw new Error('CMDB_BACKFILL_POSTGRES_PORT must be a TCP port');
@@ -312,7 +404,7 @@ export async function main(
 
     const session = neo4j.getSession();
     try {
-      const summary = await backfillBusinessServiceOrganizations(postgres, session, args);
+      const summary = await backfillBusinessServiceOrganizations(postgres, session, { ...args, reviewed });
       io.stdout(JSON.stringify(summary));
     } finally {
       await session.close();

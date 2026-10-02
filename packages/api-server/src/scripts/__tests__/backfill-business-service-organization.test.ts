@@ -16,7 +16,7 @@ import { fork } from 'child_process';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
-import { backfillBusinessServiceOrganizations, main, type GraphSession } from '../backfill-business-service-organization';
+import { backfillBusinessServiceOrganizations, main, type GraphSession, type SqlClient } from '../backfill-business-service-organization';
 
 const host = fork(join(__dirname, '../../rest/routes/__tests__/fixtures/pglite-host.cjs'), [], { serialization: 'advanced' });
 let nextId = 0;
@@ -34,7 +34,20 @@ function send(op: 'exec' | 'query', sql: string, params: unknown[] = []): Promis
   host.send({ id, op, sql, params });
   return promise as Promise<Array<Record<string, unknown>>>;
 }
-const pg = { query: async (sql: string, params: unknown[] = []) => ({ rows: await send('query', sql, params) }) };
+const pg: SqlClient = {
+  query: async (sql, params = []) => ({ rows: await send('query', sql, params) }),
+  transaction: async callback => {
+    await send('exec', 'BEGIN');
+    try {
+      const result = await callback(pg);
+      await send('exec', 'COMMIT');
+      return result;
+    } catch (error) {
+      await send('exec', 'ROLLBACK');
+      throw error;
+    }
+  },
+};
 
 const ORG_A = '11111111-1111-4111-8111-111111111111';
 const ORG_B = '22222222-2222-4222-8222-222222222222';
@@ -48,7 +61,7 @@ const WRITER_TIMEZONE = 'Etc/UTC';
 // In-memory :BusinessService nodes and a statement-parsing fake session
 // ---------------------------------------------------------------------------
 
-type Node = { id: string; organization_id?: string };
+type Node = { id: string; elementId: string; organization_id?: string };
 let nodes: Node[] = [];
 const writes: string[] = [];
 let graphRuns = 0;
@@ -63,6 +76,9 @@ function predicate(where: string): (node: Node, owner?: Owner, serviceIds?: stri
     if (clause === 'bs.organization_id <> owner.organizationId') {
       return (n: Node, o?: Owner) => n.organization_id !== undefined && n.organization_id !== o!.organizationId;
     }
+    if (clause === 'elementId(bs) = target.elementId') {
+      return (n: Node, o?: Owner) => n.elementId === (o as Owner & { elementId: string }).elementId;
+    }
     if (clause === 'NOT bs.id IN $serviceIds') return (n: Node, _o?: Owner, ids?: string[]) => !ids!.includes(n.id);
     throw new Error(`fake Neo4j: unmodelled predicate: ${clause}`);
   });
@@ -76,30 +92,41 @@ const session: GraphSession = {
     graphRuns++;
     const cypher = rawCypher.replace(/\s+/g, ' ').trim();
 
-    const perOwner = cypher.match(
-      /^UNWIND \$owners AS owner MATCH \(bs:BusinessService \{id: owner\.serviceId\}\)(?: WHERE (.+?))?( SET bs\.organization_id = owner\.organizationId)? RETURN (.+)$/
+    const fill = cypher.match(
+      /^UNWIND \$targets AS target MATCH \(bs:BusinessService \{id: target\.serviceId\}\) WHERE elementId\(bs\) = target\.elementId SET bs\.organization_id = bs\.organization_id WITH bs, target WHERE bs\.organization_id IS NULL SET bs\.organization_id = target\.organizationId RETURN bs\.id AS serviceId, elementId\(bs\) AS elementId, bs\.organization_id AS organizationId$/
     );
-    if (perOwner) {
-      const [, where, set, returns] = perOwner;
-      const keep = where === undefined ? () => true : predicate(where);
+    if (fill) {
       const rows: Array<Record<string, unknown>> = [];
-      for (const owner of params['owners'] as Owner[]) {
-        for (const node of nodes.filter(n => n.id === owner.serviceId && keep(n, owner))) {
-          if (set !== undefined) {
-            node.organization_id = owner.organizationId;
-            writes.push(node.id);
-          }
-          rows.push({ serviceId: node.id, organizationId: owner.organizationId });
+      for (const target of params['targets'] as Array<Owner & { elementId: string }>) {
+        for (const node of nodes.filter(n => n.id === target.serviceId &&
+          n.elementId === target.elementId && n.organization_id === undefined)) {
+          node.organization_id = target.organizationId;
+          writes.push(node.id);
+          rows.push({ serviceId: node.id, elementId: node.elementId, organizationId: node.organization_id });
         }
-      }
-      const countAlias = returns!.match(/^count\(bs\) AS (\w+)$/);
-      if (countAlias) return { records: [record({ [countAlias[1]!]: rows.length })] };
-      if (returns !== 'bs.id AS serviceId, owner.organizationId AS organizationId') {
-        throw new Error(`fake Neo4j: unmodelled RETURN: ${returns}`);
       }
       return { records: rows.map(record) };
     }
 
+    const perOwner = cypher.match(
+      /^UNWIND \$owners AS owner MATCH \(bs:BusinessService \{id: owner\.serviceId\}\)(?: WHERE (.+?))? RETURN (.+)$/
+    );
+    if (perOwner) {
+      const [, where, returns] = perOwner;
+      const keep = where === undefined ? () => true : predicate(where);
+      const rows: Array<Record<string, unknown>> = [];
+      for (const owner of params['owners'] as Owner[]) {
+        for (const node of nodes.filter(n => n.id === owner.serviceId && keep(n, owner))) {
+          rows.push({ serviceId: node.id, elementId: node.elementId, organizationId: owner.organizationId });
+        }
+      }
+      const countAlias = returns!.match(/^count\(bs\) AS (\w+)$/);
+      if (countAlias) return { records: [record({ [countAlias[1]!]: rows.length })] };
+      if (!returns!.includes('elementId(bs) AS elementId')) {
+        throw new Error(`fake Neo4j: unmodelled RETURN: ${returns}`);
+      }
+      return { records: rows.map(record) };
+    }
     const global = cypher.match(/^MATCH \(bs:BusinessService\)(?: WHERE (.+?))? RETURN count\(bs\) AS (\w+)$/);
     if (global) {
       const [, where, alias] = global;
@@ -108,6 +135,17 @@ const session: GraphSession = {
     }
 
     throw new Error(`fake Neo4j: unmodelled statement: ${cypher}`);
+  },
+  executeWrite: async callback => {
+    const original = nodes.map(n => ({ ...n }));
+    const priorWrites = writes.length;
+    try {
+      return await callback(session);
+    } catch (error) {
+      nodes = original;
+      writes.length = priorWrites;
+      throw error;
+    }
   },
 };
 
@@ -134,24 +172,28 @@ beforeEach(() => {
   writes.length = 0;
   graphRuns = 0;
   nodes = [
-    // No organization yet; trusted Postgres owner is org A / org B.
-    { id: 'bs-a-app' },
-    { id: 'bs-b-app' },
+    { id: 'bs-a-app', elementId: 'node-a' },
+    { id: 'bs-b-app', elementId: 'node-b' },
     // Already org B's although Postgres now says org A: never changed.
-    { id: 'bs-moved', organization_id: ORG_B },
+    { id: 'bs-moved', elementId: 'node-moved', organization_id: ORG_B },
     // Neo4j only: no Postgres row.
-    { id: 'bs-graph-only' },
+    { id: 'bs-graph-only', elementId: 'node-only' },
     // No organization; its only Postgres row was created after the cutover.
-    { id: 'bs-squat' },
+    { id: 'bs-squat', elementId: 'node-squat' },
   ];
 });
 
 const orgs = () => Object.fromEntries(nodes.map(n => [n.id, n.organization_id ?? null]));
 const APPLY = { apply: true, createdBefore: CUTOVER, writerTimezone: WRITER_TIMEZONE };
+const dryRun = () => backfillBusinessServiceOrganizations(pg, session, { ...APPLY, apply: false });
+const apply = async () => {
+  const reviewed = await dryRun();
+  return backfillBusinessServiceOrganizations(pg, session, { ...APPLY, reviewed, sha256: reviewed.plan_sha256 });
+};
 
 describe('backfillBusinessServiceOrganizations', () => {
   it('fills only null orgs from Postgres', async () => {
-    const summary = await backfillBusinessServiceOrganizations(pg, session, APPLY);
+    const summary = await apply();
 
     expect(orgs()).toEqual({
       'bs-a-app': ORG_A, 'bs-b-app': ORG_B, 'bs-moved': ORG_B, 'bs-graph-only': null, 'bs-squat': null,
@@ -166,11 +208,11 @@ describe('backfillBusinessServiceOrganizations', () => {
   });
 
   it('is idempotent', async () => {
-    await backfillBusinessServiceOrganizations(pg, session, APPLY);
+    await apply();
     const after = JSON.stringify(nodes);
     writes.length = 0;
 
-    const second = await backfillBusinessServiceOrganizations(pg, session, APPLY);
+    const second = await apply();
 
     expect(second.filled).toEqual([]);
     expect(writes).toEqual([]);
@@ -178,16 +220,16 @@ describe('backfillBusinessServiceOrganizations', () => {
   });
 
   it('leaves unmatched nodes null', async () => {
-    const summary = await backfillBusinessServiceOrganizations(pg, session, APPLY);
+    const summary = await apply();
 
-    expect(nodes.find(n => n.id === 'bs-graph-only')).toEqual({ id: 'bs-graph-only' });
+    expect(nodes.find(n => n.id === 'bs-graph-only')).toEqual({ id: 'bs-graph-only', elementId: 'node-only' });
     expect(summary.unmatched).toBe(1);
   });
 
   it('leaves a node claimed by a row created after the cutover null, for review', async () => {
-    const summary = await backfillBusinessServiceOrganizations(pg, session, APPLY);
+    const summary = await apply();
 
-    expect(nodes.find(n => n.id === 'bs-squat')).toEqual({ id: 'bs-squat' });
+    expect(nodes.find(n => n.id === 'bs-squat')).toEqual({ id: 'bs-squat', elementId: 'node-squat' });
     expect(summary.needs_review).toEqual([
       { service_id: 'bs-squat', organization_id: ORG_B, created_at: '2026-10-01 09:30:00' },
     ]);
@@ -198,9 +240,9 @@ describe('backfillBusinessServiceOrganizations', () => {
     // before the cutover, and hand the node to the post-cutover claimant.
     await send('exec', "SET TimeZone = 'Pacific/Kiritimati'");
     try {
-      const summary = await backfillBusinessServiceOrganizations(pg, session, APPLY);
+      const summary = await apply();
 
-      expect(nodes.find(n => n.id === 'bs-squat')).toEqual({ id: 'bs-squat' });
+      expect(nodes.find(n => n.id === 'bs-squat')).toEqual({ id: 'bs-squat', elementId: 'node-squat' });
       expect(summary.needs_review.map(r => r.service_id)).toEqual(['bs-squat']);
       expect(writes.sort()).toEqual(['bs-a-app', 'bs-b-app']);
     } finally {
@@ -210,7 +252,10 @@ describe('backfillBusinessServiceOrganizations', () => {
 
   it('uses the given writer time zone, not a fixed one', async () => {
     // Written by UTC+14 sessions, bs-squat's 09:30 wall time is 2026-09-30T19:30Z: before the cutover.
-    const summary = await backfillBusinessServiceOrganizations(pg, session, { ...APPLY, writerTimezone: 'Pacific/Kiritimati' });
+    const reviewed = await backfillBusinessServiceOrganizations(pg, session, { ...APPLY, apply: false, writerTimezone: 'Pacific/Kiritimati' });
+    const summary = await backfillBusinessServiceOrganizations(pg, session, {
+      ...APPLY, writerTimezone: 'Pacific/Kiritimati', reviewed, sha256: reviewed.plan_sha256,
+    });
 
     expect(summary.needs_review).toEqual([]);
     expect(summary.filled).toContainEqual({ service_id: 'bs-squat', organization_id: ORG_B });
@@ -222,7 +267,7 @@ describe('backfillBusinessServiceOrganizations', () => {
     'refuses writer time zone %s before any graph statement',
     async writerTimezone => {
       await expect(
-        backfillBusinessServiceOrganizations(pg, session, { ...APPLY, writerTimezone })
+        backfillBusinessServiceOrganizations(pg, session, { ...APPLY, apply: false, writerTimezone })
       ).rejects.toThrow(/not a time zone file name in pg_timezone_names/);
       expect(graphRuns).toBe(0);
       expect(writes).toEqual([]);
@@ -243,6 +288,62 @@ describe('backfillBusinessServiceOrganizations', () => {
       unmatched: 1,
       conflicting: 1,
     });
+    expect(summary.plan?.targets).toEqual([
+      { serviceId: 'bs-a-app', organizationId: ORG_A, elementId: 'node-a' },
+      { serviceId: 'bs-b-app', organizationId: ORG_B, elementId: 'node-b' },
+    ]);
+  });
+
+  it('rejects ownership drift after review against PostgreSQL before graph writes', async () => {
+    const reviewed = await dryRun();
+    await send('query', 'UPDATE dim_business_services SET organization_id = $1 WHERE service_id = $2', [ORG_B, 'bs-a-app']);
+    try {
+      await expect(backfillBusinessServiceOrganizations(pg, session, {
+        ...APPLY, reviewed, sha256: reviewed.plan_sha256,
+      })).rejects.toThrow(/Postgres ownership\/cutover drift/);
+      expect(writes).toEqual([]);
+      expect(orgs()['bs-a-app']).toBeNull();
+    } finally {
+      await send('query', 'UPDATE dim_business_services SET organization_id = $1 WHERE service_id = $2', [ORG_A, 'bs-a-app']);
+    }
+  });
+
+  it('rolls back both org writes if a reviewed node was deleted and recreated', async () => {
+    const reviewed = await dryRun();
+    nodes[1] = { id: 'bs-b-app', elementId: 'replacement-b' };
+    await expect(backfillBusinessServiceOrganizations(pg, session, {
+      ...APPLY, reviewed, sha256: reviewed.plan_sha256,
+    })).rejects.toThrow(/Neo4j identity\/organization drift/);
+    expect(writes).toEqual([]);
+    expect(orgs()['bs-a-app']).toBeNull();
+    expect(orgs()['bs-b-app']).toBeNull();
+  });
+
+  it('preserves a foreign organization if ownership flips after review', async () => {
+    const reviewed = await dryRun();
+    nodes[1]!.organization_id = ORG_A;
+    await expect(backfillBusinessServiceOrganizations(pg, session, {
+      ...APPLY, reviewed, sha256: reviewed.plan_sha256,
+    })).rejects.toThrow(/Neo4j identity\/organization drift/);
+    expect(writes).toEqual([]);
+    expect(orgs()['bs-a-app']).toBeNull();
+    expect(orgs()['bs-b-app']).toBe(ORG_A);
+  });
+
+  it('rejects changed plans and applies neither organization', async () => {
+    const reviewed = await dryRun();
+    reviewed.plan!.targets[0]!.organizationId = ORG_B;
+    await expect(backfillBusinessServiceOrganizations(pg, session, {
+      ...APPLY, reviewed, sha256: reviewed.plan_sha256,
+    })).rejects.toThrow(/intact dry-run/);
+    expect(writes).toEqual([]);
+    expect(orgs()['bs-a-app']).toBeNull();
+  });
+
+  it('refuses apply without a reviewed manifest', async () => {
+    await expect(backfillBusinessServiceOrganizations(pg, session, APPLY)).rejects.toThrow(/intact dry-run/);
+    expect(graphRuns).toBe(0);
+    expect(writes).toEqual([]);
   });
 });
 
@@ -258,8 +359,9 @@ describe('backfill CLI', () => {
     [['--created-before', CUTOVER, '--apply'], ENV, '--writer-timezone <IANA time zone of the API sessions> is required'],
     [['--created-before', CUTOVER, '--writer-timezone', WRITER_TIMEZONE, '--apply=false'], ENV, 'unexpected argument --apply=false'],
     [['--apply', '--created-before', CUTOVER, '--writer-timezone', WRITER_TIMEZONE, '--force'], ENV, 'unexpected argument --force'],
-    [['--created-before', '2026-10-01 00:00:00', '--writer-timezone', WRITER_TIMEZONE, '--apply'], ENV, '--created-before must be an ISO-8601 timestamp with a zone'],
-    [['--created-before', CUTOVER, '--writer-timezone', WRITER_TIMEZONE, '--apply'], { ...ENV, CMDB_BACKFILL_NEO4J_ENCRYPTED: 'yes' }, 'CMDB_BACKFILL_NEO4J_ENCRYPTED must be true or false'],
+    [['--created-before', '2026-10-01 00:00:00', '--writer-timezone', WRITER_TIMEZONE], ENV, '--created-before must be an ISO-8601 timestamp with a zone'],
+    [['--created-before', CUTOVER, '--writer-timezone', WRITER_TIMEZONE], { ...ENV, CMDB_BACKFILL_NEO4J_ENCRYPTED: 'yes' }, 'CMDB_BACKFILL_NEO4J_ENCRYPTED must be true or false'],
+    [['--created-before', CUTOVER, '--writer-timezone', WRITER_TIMEZONE, '--apply'], ENV, '--apply requires --plan'],
   ] as Array<[string[], Record<string, string>, string]>)('refuses %j before reading any store', async (argv, env, message) => {
     const out: string[] = [];
     const err: string[] = [];

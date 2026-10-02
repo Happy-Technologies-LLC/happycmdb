@@ -112,13 +112,26 @@ interface ValidatedCIInput {
   metadata: Record<string, unknown>;
 }
 
+/** GraphQL input field for each REST body key validated by validateAsRest. */
+const GRAPHQL_FIELD_BY_REST_KEY: Record<string, string> = {
+  id: '_id',
+  external_id: '_externalId',
+  name: '_name',
+  type: '_type',
+  status: '_status',
+  environment: '_environment',
+  discovered_at: '_discoveredAt',
+  metadata: '_metadata',
+};
+
 /**
  * Validates GraphQL CI input, mapped to the REST body shape, with the REST
  * schema itself (ciInputSchema / ciUpdateSchema from @cmdb/common) and the
  * REST validation middleware's options (`validate`: abortEarly false,
  * stripUnknown true). Returns Joi's converted value, e.g. discovered_at as an
  * ISO string, exactly as REST hands it to the controller. GraphQL null means
- * "not given", so null fields are dropped first. A Joi error is BAD_USER_INPUT.
+ * "not given", so null fields are dropped first. A Joi error is BAD_USER_INPUT,
+ * with each message naming the GraphQL input field.
  */
 function validateAsRest<T>(schema: Schema, fields: Record<string, unknown>): T {
   const data = Object.fromEntries(
@@ -126,7 +139,12 @@ function validateAsRest<T>(schema: Schema, fields: Record<string, unknown>): T {
   );
   const result = validate<T>(schema, data);
   if (!result.valid) {
-    throw new GraphQLError(result.error ?? 'Invalid CI input', {
+    const details: Array<{ message: string; path: Array<string | number> }> = result.details ?? [];
+    const messages = details.map(({ message, path }) => {
+      const key = String(path[0]);
+      return message.replace(`"${key}"`, `"${GRAPHQL_FIELD_BY_REST_KEY[key] ?? key}"`);
+    });
+    throw new GraphQLError(messages.length > 0 ? messages.join('. ') : 'Invalid CI input', {
       extensions: { code: 'BAD_USER_INPUT' },
     });
   }

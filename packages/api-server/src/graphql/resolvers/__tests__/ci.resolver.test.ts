@@ -596,6 +596,8 @@ describe('GraphQL CI Resolvers', () => {
       for (const input of [{ _name: 'x'.repeat(501) }, { _discoveredAt: 'not-a-date' }, { _externalId: '' }]) {
         const error = await errorOf(create(input));
         expect({ input, error }).toMatchObject({ input, error: { extensions: { code: 'BAD_USER_INPUT' } } });
+        // The message names the GraphQL input field, not the REST body key.
+        expect((error as Error).message).toContain(`"${Object.keys(input)[0]}"`);
       }
       expect(client().createCI).not.toHaveBeenCalled();
       expect(client().getSession).not.toHaveBeenCalled();

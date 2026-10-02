@@ -352,12 +352,16 @@ An upgrade whose verification exceeds 30 seconds is rejected with `401`;
 its underlying database lookup continues to occupy a verifier slot until it
 settles, rather than allowing unbounded concurrent lookups.
 
-
 A connection lasts no longer than its token: the server closes it with `4001`
 when the token expires and, on a re-check every two minutes, with `4001` when
 the user is disabled or `4003` when the user's organization changed. After
 `4001`, reconnect only with a new access token; after `4003`, reconnecting with
 the same token picks up the new organization.
+
+The re-check runs at most 8 user lookups at a time; a slot stays taken until
+its lookup settles. Any user a re-check has not resolved within 30 seconds,
+whether its lookup is still running or still waiting for a slot, is closed
+with `1011`; the client reconnects and is verified at upgrade.
 
 ## Cost Management
 

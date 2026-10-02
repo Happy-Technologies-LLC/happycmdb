@@ -317,6 +317,60 @@ describe('WebSocket /ws authentication and tenancy', () => {
     });
   });
 
+  it('holds re-check slots until stuck lookups settle and fails queued users closed', async () => {
+    await restartWithFakeClock();
+    const added: string[] = [];
+    const releases: Array<() => void> = [];
+    const inboxes: Inbox[] = [];
+    const lookups = (id: string) => LOOKUP_COUNTS.get(id) ?? 0;
+    try {
+      for (let i = 0; i < 9; i++) {
+        const id = `slow-${i}`;
+        added.push(id);
+        USERS[id] = { _id: id, _username: id, _role: 'operator', _enabled: true, _organizationId: ORG_A };
+        inboxes.push(await connected({ protocols: ['cmdb.v1', `bearer.${tokenFor(id)}`] }));
+        if (i < 8) {
+          DEFERRED_LOOKUPS.set(id, new Promise(resolve => releases.push(() => resolve(USERS[id]!))));
+        }
+      }
+      const ninth = added[8]!;
+
+      // t=120s: the re-check starts 8 lookups; the 9th user waits for a slot.
+      await jest.advanceTimersByTimeAsync(120_000);
+      expect(added.slice(0, 8).map(lookups)).toEqual(Array(8).fill(2));
+      expect(lookups(ninth)).toBe(1);
+
+      // t=151s: the deadline closes every unresolved user, the queued one included,
+      // while the 8 stuck lookups keep their slots: the 9th lookup never starts.
+      await jest.advanceTimersByTimeAsync(31_000);
+      fromRedis({ type: 'session_update', organizationId: ORG_A, data: { sessionId: 'after-deadline' } });
+      expect(await Promise.all(inboxes.map(firstOf))).toEqual(Array(9).fill({ closed: 1011 }));
+      expect(lookups(ninth)).toBe(1);
+
+      // Next tick while all slots are still held: a new connection is queued, never
+      // looked up, and fails closed at the deadline.
+      const probe = await connected({ protocols: ['cmdb.v1', `bearer.${tokenFor('user-a')}`] });
+      await jest.advanceTimersByTimeAsync(89_000 + 31_000);
+      expect(lookups('user-a')).toBe(1);
+      expect(await firstOf(probe)).toEqual({ closed: 1011 });
+
+      // Once the real lookups settle, the slots are free again: the next tick looks
+      // up user-b, keeps its socket, and it receives only its own org's messages.
+      releases.forEach(release => release());
+      await jest.advanceTimersByTimeAsync(0);
+      const b = await connected({ headers: { Authorization: `Bearer ${tokenFor('user-b')}` } });
+      await jest.advanceTimersByTimeAsync(89_000);
+      expect(lookups('user-b')).toBe(2);
+      fromRedis({ type: 'session_update', organizationId: ORG_A, data: { sessionId: 'a-only' } });
+      fromRedis({ type: 'session_update', organizationId: ORG_B, data: { sessionId: 'b-only' } });
+      expect(await firstOf(b)).toEqual({ message: expect.objectContaining({ organizationId: ORG_B }) });
+      expect(service.getStats().connectedClients).toBe(1);
+    } finally {
+      releases.forEach(release => release());
+      added.forEach(id => { delete USERS[id]; DEFERRED_LOOKUPS.delete(id); });
+    }
+  });
+
   it('cancels in-flight timeouts and queued re-checks when the service closes', async () => {
     await restartWithFakeClock();
     const added: string[] = [];

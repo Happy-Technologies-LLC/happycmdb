@@ -53,9 +53,9 @@ const CLOSE_REAUTHENTICATE = 4001;
 const CLOSE_ORGANIZATION_CHANGED = 4003;
 /** How often open connections are re-checked against the user store. */
 const REVERIFY_INTERVAL_MS = 2 * 60_000;
-/** A re-check lookup slower than this fails closed (the store has no query timeout). */
+/** Deadline of one re-check tick (queue wait included); users it has not resolved by then fail closed. */
 const REVERIFY_LOOKUP_TIMEOUT_MS = 30_000;
-/** Users looked up at once per re-check; the auth store's pool also serves REST authentication. */
+/** Re-check lookups in flight at once, across ticks; a slot is held until its lookup settles. */
 const REVERIFY_CONCURRENCY = 8;
 /** setTimeout's maximum delay; later expiries are caught by the periodic re-check. */
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
@@ -72,6 +72,12 @@ interface ClientIdentity {
   /** Token expiry (epoch ms); the connection is closed at that moment. */
   expiresAt: number | null;
   expiryTimer: NodeJS.Timeout | null;
+}
+
+/** One periodic re-check: the users it has not resolved yet, and its fail-closed deadline. */
+interface ReverifyTick {
+  pending: Map<string, Array<[WebSocket, ClientIdentity]>>;
+  deadline: NodeJS.Timeout;
 }
 
 /** Access token from `Authorization: Bearer` or the `bearer.` subprotocol entry, or null. */
@@ -111,8 +117,10 @@ export class WebSocketService {
   private httpServer: HTTPServer | null = null;
   private pingInterval: NodeJS.Timeout | null = null;
   private reverifyInterval: NodeJS.Timeout | null = null;
-  private reverifying = false;
-  private reverifyController: AbortController | null = null;
+  /** Re-check lookups started and not yet settled, across ticks; capped at REVERIFY_CONCURRENCY. */
+  private reverifyLookupsInFlight = 0;
+  private reverifyQueue: Array<{ tick: ReverifyTick; userId: string }> = [];
+  private reverifyTicks = new Set<ReverifyTick>();
   private authService: AuthService | null = null;
   private redis = getRedisClient();
   private clients = new Map<WebSocket, ClientIdentity>();
@@ -153,7 +161,7 @@ export class WebSocketService {
     // A connection's identity was verified once, at upgrade. Re-check it so a
     // user who is disabled or moved to another organization stops receiving
     // the old organization's messages.
-    this.reverifyInterval = setInterval(() => void this.reverifyClients(), REVERIFY_INTERVAL_MS);
+    this.reverifyInterval = setInterval(() => this.reverifyClients(), REVERIFY_INTERVAL_MS);
 
     // Subscribe to Redis pub/sub for cross-instance updates
     this.subscribeToRedis();
@@ -322,83 +330,82 @@ export class WebSocketService {
   /**
    * Re-check every connection against the user store, with the lookup
    * verifyToken uses: an expired token or a missing/disabled user closes with
-   * 4001, a changed organization with 4003. A lookup that fails or exceeds
-   * REVERIFY_LOOKUP_TIMEOUT_MS closes with 1011 (fail closed; the client
-   * reconnects and is verified again). One lookup per user, at most
-   * REVERIFY_CONCURRENCY at a time, so a tick never floods the auth store.
+   * 4001, a changed organization with 4003, a failed lookup with 1011.
+   *
+   * At most REVERIFY_CONCURRENCY lookups run at once across all ticks, and a
+   * slot is held until its lookup actually settles: the store cannot cancel a
+   * lookup, so freeing the slot at a timeout would let a stalled store pile up
+   * lookups against the pool REST authentication shares. Instead each tick
+   * has a REVERIFY_LOOKUP_TIMEOUT_MS deadline that closes every user it has
+   * not resolved by then with 1011, whether their lookup is running or still
+   * queued (fail closed); queued lookups of that tick are dropped.
    */
-  private async reverifyClients(): Promise<void> {
+  private reverifyClients(): void {
     const authService = this.authService;
-    if (authService === null || this.reverifying || this.wss === null) {
+    if (authService === null || this.wss === null) {
       return;
     }
-    this.reverifying = true;
-    const controller = new AbortController();
-    this.reverifyController = controller;
-    try {
-      const connectionsByUser = new Map<string, Array<[WebSocket, ClientIdentity]>>();
-      for (const [ws, identity] of this.clients) {
-        if (identity.expiresAt !== null && Date.now() >= identity.expiresAt) {
-          this.closeClient(ws, CLOSE_REAUTHENTICATE, 'token expired');
-          continue;
-        }
-        const connections = connectionsByUser.get(identity.userId) ?? [];
-        connections.push([ws, identity]);
-        connectionsByUser.set(identity.userId, connections);
+    const pending = new Map<string, Array<[WebSocket, ClientIdentity]>>();
+    for (const [ws, identity] of this.clients) {
+      if (identity.expiresAt !== null && Date.now() >= identity.expiresAt) {
+        this.closeClient(ws, CLOSE_REAUTHENTICATE, 'token expired');
+        continue;
       }
+      const connections = pending.get(identity.userId) ?? [];
+      connections.push([ws, identity]);
+      pending.set(identity.userId, connections);
+    }
+    if (pending.size === 0) {
+      return;
+    }
 
-      const users = [...connectionsByUser];
-      let nextUser = 0;
-      const worker = async (): Promise<void> => {
-        while (!controller.signal.aborted && nextUser < users.length) {
-          const [userId, connections] = users[nextUser++]!;
-          await this.reverifyUser(authService, userId, connections, controller.signal);
-        }
-      };
-      await Promise.all(Array.from({ length: Math.min(REVERIFY_CONCURRENCY, users.length) }, worker));
-    } finally {
-      if (this.reverifyController === controller) {
-        this.reverifyController = null;
-        this.reverifying = false;
+    const tick: ReverifyTick = {
+      pending,
+      deadline: setTimeout(() => this.expireReverifyTick(tick), REVERIFY_LOOKUP_TIMEOUT_MS),
+    };
+    this.reverifyTicks.add(tick);
+    for (const userId of pending.keys()) {
+      this.reverifyQueue.push({ tick, userId });
+    }
+    this.pumpReverifyQueue(authService);
+  }
+
+  private pumpReverifyQueue(authService: AuthService): void {
+    while (this.reverifyLookupsInFlight < REVERIFY_CONCURRENCY && this.reverifyQueue.length > 0) {
+      const { tick, userId } = this.reverifyQueue.shift()!;
+      if (!tick.pending.has(userId)) {
+        continue;
       }
+      this.reverifyLookupsInFlight++;
+      void authService
+        .findEnabledUser(userId)
+        .then(
+          user => this.applyReverifyResult(tick, userId, user === null ? null : { organizationId: user._organizationId }),
+          () => this.applyReverifyResult(tick, userId, 'failed')
+        )
+        .finally(() => {
+          this.reverifyLookupsInFlight--;
+          if (this.wss !== null) {
+            this.pumpReverifyQueue(authService);
+          }
+        });
     }
   }
 
-  private async reverifyUser(
-    authService: AuthService,
+  private applyReverifyResult(
+    tick: ReverifyTick,
     userId: string,
-    connections: Array<[WebSocket, ClientIdentity]>,
-    signal: AbortSignal
-  ): Promise<void> {
-    if (signal.aborted) return;
-    let timeout: NodeJS.Timeout | undefined;
-    let abort: (() => void) | undefined;
-    let organizationId: string | undefined | null;
-    try {
-      const stopped = new Promise<never>((_resolve, reject) => {
-        abort = () => reject(new Error('service closed'));
-        signal.addEventListener('abort', abort, { once: true });
-      });
-      const user = await Promise.race([
-        authService.findEnabledUser(userId),
-        stopped,
-        new Promise<never>((_resolve, reject) => {
-          timeout = setTimeout(() => reject(new Error('user lookup timed out')), REVERIFY_LOOKUP_TIMEOUT_MS);
-        }),
-      ]);
-      organizationId = user === null ? null : user._organizationId;
-    } catch {
-      if (!signal.aborted) {
-        for (const [ws, identity] of connections) {
-          if (this.clients.get(ws) === identity) {
-            this.closeClient(ws, 1011, 'identity re-check failed');
-          }
-        }
-      }
+    outcome: { organizationId: string | undefined } | null | 'failed'
+  ): void {
+    const connections = tick.pending.get(userId);
+    // Past the tick's deadline (already closed) or after the service closed.
+    if (connections === undefined || this.wss === null) {
       return;
-    } finally {
-      clearTimeout(timeout);
-      if (abort) signal.removeEventListener('abort', abort);
+    }
+    tick.pending.delete(userId);
+    if (tick.pending.size === 0) {
+      clearTimeout(tick.deadline);
+      this.reverifyTicks.delete(tick);
     }
 
     for (const [ws, identity] of connections) {
@@ -406,12 +413,28 @@ export class WebSocketService {
       if (this.clients.get(ws) !== identity) {
         continue;
       }
-      if (organizationId === null) {
+      if (outcome === 'failed') {
+        this.closeClient(ws, 1011, 'identity re-check failed');
+      } else if (outcome === null) {
         this.closeClient(ws, CLOSE_REAUTHENTICATE, 'user disabled');
-      } else if (organizationId !== identity.organizationId) {
+      } else if (outcome.organizationId !== identity.organizationId) {
         this.closeClient(ws, CLOSE_ORGANIZATION_CHANGED, 'organization changed');
       }
     }
+  }
+
+  /** Deadline of a tick: every user it has not resolved fails closed. */
+  private expireReverifyTick(tick: ReverifyTick): void {
+    this.reverifyTicks.delete(tick);
+    this.reverifyQueue = this.reverifyQueue.filter(task => task.tick !== tick);
+    for (const connections of tick.pending.values()) {
+      for (const [ws, identity] of connections) {
+        if (this.clients.get(ws) === identity) {
+          this.closeClient(ws, 1011, 'identity re-check timed out');
+        }
+      }
+    }
+    tick.pending.clear();
   }
 
   /**
@@ -611,9 +634,11 @@ export class WebSocketService {
         clearInterval(this.reverifyInterval);
         this.reverifyInterval = null;
       }
-      this.reverifyController?.abort();
-      this.reverifyController = null;
-      this.reverifying = false;
+      for (const tick of this.reverifyTicks) {
+        clearTimeout(tick.deadline);
+      }
+      this.reverifyTicks.clear();
+      this.reverifyQueue = [];
       for (const cancel of this.pendingUpgrades.values()) cancel();
       this.pendingUpgrades.clear();
       [...this.clients.keys()].forEach(client => {

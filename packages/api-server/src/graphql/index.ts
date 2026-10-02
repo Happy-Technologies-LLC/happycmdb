@@ -13,7 +13,6 @@
 // Server exports
 export {
   createGraphQLServer,
-  startGraphQLServer,
   shutdownGraphQLServer,
 } from './server';
 
@@ -28,14 +27,8 @@ export type { GraphQLContext } from './resolvers';
 export { createCILoader, createRelationshipLoader } from './dataloaders/ci-loader';
 
 /**
- * Usage example:
+ * Usage example (integrate with an existing Express app):
  *
- * import { startGraphQLServer } from '@cmdb/api-server/graphql';
- *
- * // Start standalone GraphQL server
- * const server = await startGraphQLServer(4000);
- *
- * // Or integrate with existing Express app:
  * import express from 'express';
  * import { createGraphQLServer } from '@cmdb/api-server/graphql';
  *

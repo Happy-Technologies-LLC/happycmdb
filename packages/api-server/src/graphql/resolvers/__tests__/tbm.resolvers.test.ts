@@ -91,9 +91,16 @@ const neo4jSession = {
   close: async () => undefined,
 };
 
+let neo4jSessionsOpened = 0;
+
 function contextAs(role: TokenPayload['_role'], organizationId?: string): GraphQLContext {
   return {
-    _neo4jClient: { getSession: () => neo4jSession } as unknown as GraphQLContext['_neo4jClient'],
+    _neo4jClient: {
+      getSession: () => {
+        neo4jSessionsOpened += 1;
+        return neo4jSession;
+      },
+    } as unknown as GraphQLContext['_neo4jClient'],
     _loaders: {} as GraphQLContext['_loaders'],
     user: { _userId: 'u-1', _username: 'tester', _role: role, _type: 'access', _organizationId: organizationId },
   };
@@ -110,6 +117,7 @@ const { Query, Mutation } = tbmResolvers;
 beforeEach(() => {
   pgCalls.length = 0;
   cypherRuns.length = 0;
+  neo4jSessionsOpened = 0;
 });
 
 describe('costsByBusinessService', () => {
@@ -138,6 +146,16 @@ describe('costsByBusinessService', () => {
 });
 
 describe('costsByCapability', () => {
+  it('costsByCapability throws FORBIDDEN without an org claim', async () => {
+    for (const context of [contextAs('admin'), contextAs('admin', 'not-a-uuid')]) {
+      const error = await graphQLErrorOf(Query.costsByCapability(null, { id: 'cap-1' }, context));
+      expect(error.extensions['code']).toBe('FORBIDDEN');
+    }
+    expect(pgCalls).toEqual([]);
+    expect(neo4jSessionsOpened).toBe(0);
+    expect(cypherRuns).toEqual([]);
+  });
+
   it('costsByCapability passes only owned ids', async () => {
     const result = await Query.costsByCapability(null, { id: 'cap-1' }, contextAs('viewer', ORG_A));
 

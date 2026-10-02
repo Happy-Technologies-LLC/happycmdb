@@ -342,9 +342,9 @@ console.log(costs);
 //   ]
 // }
 
-// Aggregate costs for business capability
-const capCosts = await poolService.aggregateBusinessCapabilityCosts('cap-customer-engagement');
-// Rolls up all business services in this capability
+// Aggregate costs for business capability. Only CI paths through business
+// services in ownedServiceIds are counted.
+const capCosts = await poolService.aggregateBusinessCapabilityCosts('cap-customer-engagement', ownedServiceIds);
 ```
 
 ---

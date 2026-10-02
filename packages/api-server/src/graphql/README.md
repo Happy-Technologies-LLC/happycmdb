@@ -52,18 +52,6 @@ npm install
 pnpm install
 ```
 
-### Starting the Server
-
-```typescript
-import { startGraphQLServer } from './graphql/server';
-
-// Start on default port (4000)
-const server = await startGraphQLServer();
-
-// Or specify custom port
-const server = await startGraphQLServer(8080);
-```
-
 ### Integration with Express
 
 ```typescript

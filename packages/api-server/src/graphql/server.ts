@@ -115,36 +115,6 @@ export async function createGraphQLServer(app: express.Application) {
 }
 
 /**
- * Initialize and start GraphQL server
- * @param port - Port number to listen on
- */
-export async function startGraphQLServer(port: number = 4000) {
-  const app = express();
-
-  // Apply middleware
-  app.use(cors());
-  app.use(json());
-
-  // Health check endpoint
-  app.get('/health', (_req, res) => {
-    res.json({ status: 'ok', service: 'cmdb-graphql-api' });
-  });
-
-  // Create GraphQL server
-  const { httpServer } = await createGraphQLServer(app);
-
-  // Start HTTP server
-  await new Promise<void>((resolve) => {
-    httpServer.listen({ port }, () => {
-      logger.info(`GraphQL Server ready at http://localhost:${port}/graphql`);
-      resolve();
-    });
-  });
-
-  return httpServer;
-}
-
-/**
  * Graceful shutdown handler
  */
 export async function shutdownGraphQLServer(httpServer: http.Server) {

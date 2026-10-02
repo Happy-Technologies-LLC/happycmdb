@@ -152,8 +152,12 @@ function run(rawCypher: string, params: Props): FakeRecord[] {
   if (attribute) {
     return ids(nodes.filter(props => props[attribute[1]!] === params['value'])).slice(0, 1);
   }
-  // Neo4jClient.getCI(id, scope)
-  if (cypher.startsWith('MATCH (ci:CI {id: $id})') && cypher.endsWith('RETURN ci')) {
+  // Neo4jClient.getCI(id, organizationId). Only the exact org-scoped statement is
+  // modelled: an unscoped or weakened lookup fails the test instead of being emulated.
+  if (cypher.startsWith('MATCH (ci:CI {id: $id})')) {
+    if (cypher !== 'MATCH (ci:CI {id: $id}) WHERE ci.organization_id = $organizationId RETURN ci') {
+      throw new Error(`fake Neo4j: unexpected CI lookup: ${cypher}`);
+    }
     return nodes.filter(props => props['id'] === params['id']).map(props => record({ ci: { labels: ['CI'], properties: props } }));
   }
   throw new Error(`fake Neo4j: unrecognised statement: ${cypher}`);
@@ -506,13 +510,21 @@ describe('ci_change_history readers fed by reconciliation CI_UPDATED events', ()
     return created.body.data.ci_id as string;
   }
 
-  it.each(readers)("%s: another org's CI history is a 404 identical to a missing CI, and is never read", async (_reader, path) => {
+  it.each(readers)("%s: another org's or an org-less CI's history is a 404 identical to a missing CI, and is never read", async (_reader, path) => {
     const ciB = await orgBHistory();
+    // An org-less CI (discovery/ETL writer) with recorded history.
+    graph.set('ci-orgless', { id: 'ci-orgless', name: 'legacy', ci_type: 'server' });
+    await rows(
+      `INSERT INTO ci_change_history (ci_id, change_type, change_source, changed_fields, new_values)
+       VALUES ('ci-orgless', 'updated', 'etl', ARRAY['os'], '{"os": "orgless-value"}')`
+    );
     historyReads = 0;
 
     const foreign = await request(app).get(path(ciB)).set(AS_A);
+    const orgless = await request(app).get(path('ci-orgless')).set(AS_A);
     const missing = await request(app).get(path(MISSING_ID)).set(AS_A);
     expect([foreign.status, foreign.body]).toEqual([404, CI_NOT_FOUND]);
+    expect([orgless.status, orgless.body]).toEqual([404, CI_NOT_FOUND]);
     expect([missing.status, missing.body]).toEqual([404, CI_NOT_FOUND]);
     expect(historyReads).toBe(0);
 

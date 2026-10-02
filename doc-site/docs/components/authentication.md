@@ -334,19 +334,23 @@ cypher-shell -a bolt://<host>:7687 -u <user> -f packages/database/src/neo4j/migr
   `organization_id` and report only what was written. They never include the request's
   `id` or `organization_id`, or fields that lost on source authority. The same holds for
   the `ci_change_history` rows the change processor records from them.
-- `ci_change_history` has no organization column. Its two REST readers serve history
-  only for a CI of the caller's organization:
+- `ci_change_history` has no organization column. Its two per-CI REST readers serve
+  history only for a CI that currently exists in the caller's organization:
   - `GET /api/v1/analytics/change-history?ci_id=` and
     `GET /api/v1/itil/configuration-items/:id/history` return **403**
     (`Organization claim required`) without an organization claim, before any query.
-  - Another organization's CI returns the same **404** body as a missing one
-    (`{"success":false,"error":"Not Found","message":"CI not found"}`), and its
-    history is never read.
-  - History of CIs with no organization (written by discovery, connectors or ETL) is
-    not served through these routes.
-  - Only these two routes are scoped. The rest of `/api/v1/analytics` and
-    `/api/v1/itil` is unchanged. GraphQL `getChangeHistory` selects columns this
-    table does not have, so it returns no rows.
+  - A CI of another organization, a CI with no organization (written by discovery,
+    connectors or ETL) and a missing CI all get the same **404**
+    (`{"success":false,"error":"Not Found","message":"CI not found"}`). Their history
+    is not read.
+  - **Limitation:** history rows are keyed only by CI id and are never deleted. If a CI
+    is deleted and another organization later creates a CI with the same
+    client-chosen id (`POST /api/v1/cis`), that organization sees the earlier rows.
+    This is the same gap as for the reconciliation tables above.
+  - Only these two routes are scoped. The rest of `/api/v1/analytics` (including the
+    all-organization counts of `/change-timeline`) and of `/api/v1/itil` is unchanged.
+    GraphQL `getChangeHistory` selects columns this table does not have, so it fails
+    with `INTERNAL_SERVER_ERROR` and returns no rows.
 
 ### Tenant fixture seed (acceptance testing, scratch databases only)
 

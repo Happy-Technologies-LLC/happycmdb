@@ -6,8 +6,9 @@
  * centrally by server.ts (`authMiddleware.authenticate()` mounted on every
  * /api/v1 route before any router), so this suite simulates that by
  * mounting the captured mock middleware ahead of `itilRoutes`, mirroring
- * production. Reads only need to be authenticated; POST/PUT/PATCH/DELETE
- * mutations additionally require the 'write' permission
+ * production. Reads only need to be authenticated, except the CI history read,
+ * which also requires an organization claim; POST/PUT/PATCH/DELETE mutations
+ * additionally require the 'write' permission
  * (`authMiddleware.requirePermission('write')`).
  */
 

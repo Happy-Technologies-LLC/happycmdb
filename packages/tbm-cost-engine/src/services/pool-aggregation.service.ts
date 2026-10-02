@@ -260,19 +260,29 @@ export class PoolAggregationService {
   /**
    * Aggregate costs for a Business Capability
    *
+   * Neo4j :BusinessCapability and :BusinessService nodes carry no organization;
+   * Postgres dim_business_services.organization_id is the tenant authority for
+   * :BusinessService ids (FD-2). Only CI paths that pass through at least one
+   * :BusinessService, every one of them in the owned set, are counted; a path
+   * through a foreign service, or through no service at all, is not.
+   *
    * @param businessCapabilityId - Business Capability ID
+   * @param ownedServiceIds - Business service ids the caller's organization owns
    * @returns Cost aggregation result
    */
   public async aggregateBusinessCapabilityCosts(
-    businessCapabilityId: string
+    businessCapabilityId: string,
+    ownedServiceIds: ReadonlySet<string>
   ): Promise<CostAggregationResult> {
     const session = this.neo4jClient.getSession();
 
     try {
-      // Query to find all CIs that roll up to this business capability
+      // Query to find all CIs that roll up to this business capability through owned services
       const query = `
         MATCH (bc:BusinessCapability {id: $capabilityId})
-        MATCH (ci:CI)-[:SUPPORTS|ENABLES*1..3]->(bc)
+        MATCH path = (ci:CI)-[:SUPPORTS|ENABLES*1..3]->(bc)
+        WHERE any(n IN nodes(path) WHERE n:BusinessService)
+          AND all(n IN nodes(path) WHERE NOT n:BusinessService OR n.id IN $ownedServiceIds)
         RETURN DISTINCT
           ci.id AS ciId,
           ci.name AS ciName,
@@ -282,7 +292,10 @@ export class PoolAggregationService {
           ci.tbm_monthly_cost AS monthlyCost
       `;
 
-      const result = await session.run(query, { capabilityId: businessCapabilityId });
+      const result = await session.run(query, {
+        capabilityId: businessCapabilityId,
+        ownedServiceIds: [...ownedServiceIds]
+      });
 
       const costByTower: Record<TBMResourceTower, number> = {} as Record<TBMResourceTower, number>;
       const costByPool: Record<TBMCostPool, number> = {} as Record<TBMCostPool, number>;
@@ -358,7 +371,7 @@ export class PoolAggregationService {
    *
    * @param entityId - Entity ID
    * @param entityType - Entity type
-   * @param ownedServiceIds - For 'business_service': ids the caller's organization owns (default none: refused)
+   * @param ownedServiceIds - For 'business_service' and 'business_capability': ids the caller's organization owns (default none)
    * @returns Cost breakdown by tower
    */
   public async getCostBreakdownByTower(
@@ -376,7 +389,7 @@ export class PoolAggregationService {
         result = await this.aggregateBusinessServiceCosts(entityId, ownedServiceIds);
         break;
       case 'business_capability':
-        result = await this.aggregateBusinessCapabilityCosts(entityId);
+        result = await this.aggregateBusinessCapabilityCosts(entityId, ownedServiceIds);
         break;
     }
 
@@ -388,7 +401,7 @@ export class PoolAggregationService {
    *
    * @param entityId - Entity ID
    * @param entityType - Entity type
-   * @param ownedServiceIds - For 'business_service': ids the caller's organization owns (default none: refused)
+   * @param ownedServiceIds - For 'business_service' and 'business_capability': ids the caller's organization owns (default none)
    * @returns Cost breakdown by pool
    */
   public async getCostBreakdownByPool(
@@ -406,7 +419,7 @@ export class PoolAggregationService {
         result = await this.aggregateBusinessServiceCosts(entityId, ownedServiceIds);
         break;
       case 'business_capability':
-        result = await this.aggregateBusinessCapabilityCosts(entityId);
+        result = await this.aggregateBusinessCapabilityCosts(entityId, ownedServiceIds);
         break;
     }
 
@@ -419,7 +432,7 @@ export class PoolAggregationService {
    * @param entityId - Entity ID
    * @param entityType - Entity type
    * @param limit - Number of top contributors to return
-   * @param ownedServiceIds - For 'business_service': ids the caller's organization owns (default none: refused)
+   * @param ownedServiceIds - For 'business_service' and 'business_capability': ids the caller's organization owns (default none)
    * @returns Top cost contributors
    */
   public async getTopCostContributors(
@@ -445,7 +458,7 @@ export class PoolAggregationService {
         result = await this.aggregateBusinessServiceCosts(entityId, ownedServiceIds);
         break;
       case 'business_capability':
-        result = await this.aggregateBusinessCapabilityCosts(entityId);
+        result = await this.aggregateBusinessCapabilityCosts(entityId, ownedServiceIds);
         break;
     }
 

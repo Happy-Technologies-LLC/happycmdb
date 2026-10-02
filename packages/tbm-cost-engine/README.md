@@ -170,8 +170,9 @@ const ownedServiceIds = new Set(['bs-001']);
 const businessServiceCosts = await poolService.aggregateBusinessServiceCosts('bs-001', ownedServiceIds);
 console.log(businessServiceCosts.totalMonthlyCost);
 
-// Aggregate costs for a Business Capability
-const capabilityCosts = await poolService.aggregateBusinessCapabilityCosts('bc-001');
+// Aggregate costs for a Business Capability: only CI paths through services in
+// the owned set are counted
+const capabilityCosts = await poolService.aggregateBusinessCapabilityCosts('bc-001', ownedServiceIds);
 console.log(capabilityCosts.totalMonthlyCost);
 
 // Get top cost contributors

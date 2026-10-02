@@ -584,8 +584,11 @@ sudo ufw status
 
 **Solution**:
 ```bash
-# Verify API_HOST and API_PORT in .env
-# Should be: API_HOST=0.0.0.0 (not 127.0.0.1)
+# Check SERVER_HOST (the api-server bind address) in the container env; the
+# compose api-server service sets no SERVER_HOST and has no env_file, so a
+# SERVER_HOST in .env does not reach it. Empty output means all interfaces.
+docker exec cmdb-api-server printenv SERVER_HOST
+# It must be empty/unset or 0.0.0.0 (not 127.0.0.1) to be reachable through the port mapping
 
 # Check Docker network
 docker network inspect happycmdb-network

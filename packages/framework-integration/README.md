@@ -64,8 +64,9 @@ const unifiedService = new UnifiedServiceInterface();
 
 // Get complete service view. scope: the caller's token organization and the
 // business service ids it owns in Postgres (dim_business_services.organization_id);
-// any other id is refused before the cache is read, and TBM costs only count
-// :BusinessService nodes whose organization_id is the caller's.
+// any other id is refused before the cache is read. The view is also refused
+// ("Business service not found") when the service's :BusinessService node is
+// missing or its organization_id is not the caller's.
 const scope = { organizationId: '11111111-1111-4111-8111-111111111111', ownedServiceIds: new Set(['bs-customer-portal-001']) };
 const view = await unifiedService.getCompleteServiceView('bs-customer-portal-001', scope);
 

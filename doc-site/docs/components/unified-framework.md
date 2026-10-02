@@ -1723,8 +1723,8 @@ import { UnifiedServiceInterface } from '@cmdb/framework-integration';
 const unifiedService = new UnifiedServiceInterface();
 
 // Get complete service view (scope: the caller's token organization and the
-// business service ids it owns in Postgres; any other id is refused, and TBM
-// costs only count :BusinessService nodes whose organization_id is the caller's)
+// business service ids it owns in Postgres). Any other id is refused, and so is
+// a service whose :BusinessService node is missing or not in the caller's organization.
 const scope = { organizationId, ownedServiceIds };
 const view = await unifiedService.getCompleteServiceView('bs-payment-001', scope);
 

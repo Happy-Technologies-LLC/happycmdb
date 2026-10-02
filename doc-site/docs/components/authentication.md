@@ -215,11 +215,13 @@ pool-aggregation Cypher that matches `:BusinessService` therefore also requires
 `organization_id` on the node to equal the token organization, in addition to the
 Postgres ownership check:
 
-- `GET /api/v1/tbm/costs/by-service/:id`, `GET /api/v1/dashboards/business-service/:serviceId`
-  (and `?serviceId=`) return the same **404** as a missing service when the node belongs
-  to another organization or has no `organization_id`; `GET /api/v1/tbm/costs/by-capability/:id`
-  leaves such services out. The TBM GraphQL resolvers (not registered in the server)
-  apply the same filter.
+- `GET /api/v1/tbm/costs/by-service/:id` returns the same **404** as a missing service when
+  the node belongs to another organization, has no `organization_id`, or does not exist.
+  `GET /api/v1/dashboards/business-service/:serviceId` (and `?serviceId=`) returns that
+  **404** when a node with the id exists but belongs to another organization or has no
+  `organization_id`; an owned service with no node keeps its CI-only dashboard.
+  `GET /api/v1/tbm/costs/by-capability/:id` leaves such services out. The TBM GraphQL
+  resolvers (not registered in the server) apply the same filter.
 - No API route writes `:BusinessService` nodes, and no property-map write
   (`SET bs += $map`) targets them, so `organization_id` cannot be set or changed through
   the API. The sample services in `packages/database/src/neo4j/v3-sample-data.cypher`
@@ -228,11 +230,15 @@ Postgres ownership check:
   return 404 for them.** The backfill
   `packages/api-server/src/scripts/backfill-business-service-organization.ts` sets
   `organization_id` only on nodes that have none, from the `dim_business_services` row
-  with the same `service_id`. Nodes without a Postgres row stay without an organization
-  (invisible); nodes that already have one are never changed. It is a dry run unless
-  `--apply` is passed, a second run changes nothing, and it connects only through
-  `CMDB_BACKFILL_*` variables (see the script header). Running it against a live
-  database is an operator action (FD-7).
+  with the same `service_id`, and only from rows created before the required
+  `--created-before` cutover (use the time migration 008 was applied: tenants choose
+  service ids, so a newer row could claim a node that was never theirs). An org-less
+  node whose only row is newer stays without an organization and is listed in
+  `needs_review`; nodes without a Postgres row stay without an organization (invisible);
+  nodes that already have one are never changed. It is a dry run unless `--apply` is
+  passed, it lists every node it fills, a second run with the same cutover changes
+  nothing, and it connects only through `CMDB_BACKFILL_*` variables (see the script
+  header). Running it against a live database is an operator action (FD-7).
 
 ### Rolling back migrations 010, 009 and 008
 

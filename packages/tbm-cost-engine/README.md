@@ -290,14 +290,16 @@ console.log(`Allocation percentage: ${validation.allocationPercentage}%`);
 The Pool Aggregation Service uses Neo4j graph queries to traverse the CI hierarchy:
 
 ```cypher
--- Example: Find all CIs supporting a Business Service
+-- Example: Find all CIs supporting a Business Service of the caller's organization
 MATCH (bs:BusinessService {id: $serviceId})
+WHERE bs.organization_id = $organizationId
 MATCH (ci:CI)-[:SUPPORTS*1..2]->(bs)
 RETURN ci.id, ci.tbm_monthly_cost, ci.tbm_resource_tower
 ```
 
 Ensure your Neo4j schema includes:
 - TBM attributes on CI nodes (`tbm_resource_tower`, `tbm_cost_pool`, `tbm_monthly_cost`)
+- `organization_id` on BusinessService nodes (the owning organization; a node without it is never counted)
 - Relationship types: `SUPPORTS`, `ENABLES`
 
 ## Performance

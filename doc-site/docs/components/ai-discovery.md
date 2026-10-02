@@ -345,6 +345,14 @@ organization with `403`. Each message carries an `organizationId` and is
 delivered only to connections of that organization; messages without one are
 dropped.
 
+Admission is bounded per API instance: at most 8 simultaneous token
+verifications, 64 active connections overall, 16 per organization, and 4
+per user. A saturated upgrade returns `503` without registering a connection.
+An upgrade whose verification exceeds 30 seconds is rejected with `401`;
+its underlying database lookup continues to occupy a verifier slot until it
+settles, rather than allowing unbounded concurrent lookups.
+
+
 A connection lasts no longer than its token: the server closes it with `4001`
 when the token expires and, on a re-check every two minutes, with `4001` when
 the user is disabled or `4003` when the user's organization changed. After

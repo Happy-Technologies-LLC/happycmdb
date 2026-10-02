@@ -59,6 +59,12 @@ const REVERIFY_LOOKUP_TIMEOUT_MS = 30_000;
 const REVERIFY_CONCURRENCY = 8;
 /** setTimeout's maximum delay; later expiries are caught by the periodic re-check. */
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
+/** Admission is local to an API instance; unauthenticated requests are never queued. */
+const MAX_VERIFYING = 8;
+const MAX_CONNECTIONS = 64;
+const MAX_ORG_CONNECTIONS = 16;
+const MAX_USER_CONNECTIONS = 4;
+const VERIFY_TIMEOUT_MS = 30_000;
 
 interface ClientIdentity {
   organizationId: string;
@@ -90,8 +96,9 @@ function extractToken(req: IncomingMessage): string | null {
 }
 
 /** Refuse the upgrade with a plain HTTP response, then close the socket. */
-function rejectUpgrade(socket: Duplex, status: 400 | 401 | 403): void {
-  const reason = { 400: 'Bad Request', 401: 'Unauthorized', 403: 'Forbidden' }[status];
+function rejectUpgrade(socket: Duplex, status: 400 | 401 | 403 | 503): void {
+  if (socket.destroyed) return;
+  const reason = { 400: 'Bad Request', 401: 'Unauthorized', 403: 'Forbidden', 503: 'Service Unavailable' }[status];
   socket.once('finish', () => socket.destroy());
   socket.end(
     `HTTP/1.1 ${status} ${reason}\r\nConnection: close\r\nContent-Type: text/plain\r\n` +
@@ -105,10 +112,15 @@ export class WebSocketService {
   private pingInterval: NodeJS.Timeout | null = null;
   private reverifyInterval: NodeJS.Timeout | null = null;
   private reverifying = false;
+  private reverifyController: AbortController | null = null;
   private authService: AuthService | null = null;
   private redis = getRedisClient();
   private clients = new Map<WebSocket, ClientIdentity>();
   private readonly PUBSUB_CHANNEL = 'ai:realtime';
+  /** Pending sockets are cancelled on peer close and service shutdown. */
+  private pendingUpgrades = new Map<Duplex, () => void>();
+  /** Includes lookups whose peer already left; freed only when the lookup settles. */
+  private verificationInFlight = 0;
 
   private readonly onUpgrade = (req: IncomingMessage, socket: Duplex, head: Buffer): void => {
     void this.handleUpgrade(req, socket, head);
@@ -177,9 +189,39 @@ export class WebSocketService {
       return;
     }
 
+    const wss = this.wss;
+    // No queue of unverified sockets: both live handshakes and underlying DB
+    // lookups (including disconnected peers' lookups) are capped. A DB lookup
+    // cannot be cancelled by this service, so its slot is held until it settles.
+    if (this.pendingUpgrades.size >= MAX_VERIFYING || this.verificationInFlight >= MAX_VERIFYING ||
+        this.clients.size + this.pendingUpgrades.size >= MAX_CONNECTIONS) {
+      rejectUpgrade(socket, 503);
+      return;
+    }
+
+    const controller = new AbortController();
+    const cancel = () => { controller.abort(); socket.destroy(); };
+    this.pendingUpgrades.set(socket, cancel);
+    socket.once('close', cancel);
+    let timeout: NodeJS.Timeout | undefined;
+    let onAbort: (() => void) | undefined;
     let identity: ClientIdentity;
     try {
-      const payload = await authService.verifyToken(token);
+      const stopped = new Promise<never>((_resolve, reject) => {
+        onAbort = () => reject(new Error('peer closed'));
+        controller.signal.addEventListener('abort', onAbort, { once: true });
+      });
+      const expired = new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => reject(new Error('verification timed out')), VERIFY_TIMEOUT_MS);
+      });
+      this.verificationInFlight++;
+      const verification = authService.verifyToken(token);
+      void verification.then(
+        () => { this.verificationInFlight--; },
+        () => { this.verificationInFlight--; }
+      );
+      const payload = await Promise.race([verification, stopped, expired]);
+      if (controller.signal.aborted || this.wss !== wss || socket.destroyed) return;
       const organizationId = organizationClaim(payload);
       if (organizationId === null) {
         logger.warn('WebSocket upgrade rejected', { status: 403, reason: 'organization claim required' });
@@ -193,18 +235,35 @@ export class WebSocketService {
         expiryTimer: null,
       };
     } catch {
-      // The verification error is not logged: it is not needed here and must never carry the token.
-      logger.warn('WebSocket upgrade rejected', { status: 401, reason: 'invalid token' });
-      rejectUpgrade(socket, 401);
+      if (!controller.signal.aborted && this.wss === wss) {
+        // Neither the verification error nor the access token is logged.
+        logger.warn('WebSocket upgrade rejected', { status: 401, reason: 'invalid or timed-out token' });
+        rejectUpgrade(socket, 401);
+      }
       return;
+    } finally {
+      clearTimeout(timeout);
+      if (onAbort) controller.signal.removeEventListener('abort', onAbort);
+      socket.off('close', cancel);
+      this.pendingUpgrades.delete(socket);
     }
 
-    if (this.wss === null || socket.destroyed) {
+    if (this.wss !== wss || socket.destroyed) {
       socket.destroy();
       return;
     }
-
-    this.wss.handleUpgrade(req, socket, head, ws => this.registerClient(ws, identity));
+    let userConnections = 0;
+    let orgConnections = 0;
+    for (const client of this.clients.values()) {
+      if (client.userId === identity.userId) userConnections++;
+      if (client.organizationId === identity.organizationId) orgConnections++;
+    }
+    if (this.clients.size >= MAX_CONNECTIONS || orgConnections >= MAX_ORG_CONNECTIONS ||
+        userConnections >= MAX_USER_CONNECTIONS) {
+      rejectUpgrade(socket, 503);
+      return;
+    }
+    wss.handleUpgrade(req, socket, head, ws => this.registerClient(ws, identity));
   }
 
   private registerClient(ws: WebSocket, identity: ClientIdentity): void {
@@ -270,10 +329,12 @@ export class WebSocketService {
    */
   private async reverifyClients(): Promise<void> {
     const authService = this.authService;
-    if (authService === null || this.reverifying) {
+    if (authService === null || this.reverifying || this.wss === null) {
       return;
     }
     this.reverifying = true;
+    const controller = new AbortController();
+    this.reverifyController = controller;
     try {
       const connectionsByUser = new Map<string, Array<[WebSocket, ClientIdentity]>>();
       for (const [ws, identity] of this.clients) {
@@ -289,41 +350,55 @@ export class WebSocketService {
       const users = [...connectionsByUser];
       let nextUser = 0;
       const worker = async (): Promise<void> => {
-        while (nextUser < users.length) {
+        while (!controller.signal.aborted && nextUser < users.length) {
           const [userId, connections] = users[nextUser++]!;
-          await this.reverifyUser(authService, userId, connections);
+          await this.reverifyUser(authService, userId, connections, controller.signal);
         }
       };
       await Promise.all(Array.from({ length: Math.min(REVERIFY_CONCURRENCY, users.length) }, worker));
     } finally {
-      this.reverifying = false;
+      if (this.reverifyController === controller) {
+        this.reverifyController = null;
+        this.reverifying = false;
+      }
     }
   }
 
   private async reverifyUser(
     authService: AuthService,
     userId: string,
-    connections: Array<[WebSocket, ClientIdentity]>
+    connections: Array<[WebSocket, ClientIdentity]>,
+    signal: AbortSignal
   ): Promise<void> {
+    if (signal.aborted) return;
     let timeout: NodeJS.Timeout | undefined;
+    let abort: (() => void) | undefined;
     let organizationId: string | undefined | null;
     try {
+      const stopped = new Promise<never>((_resolve, reject) => {
+        abort = () => reject(new Error('service closed'));
+        signal.addEventListener('abort', abort, { once: true });
+      });
       const user = await Promise.race([
         authService.findEnabledUser(userId),
+        stopped,
         new Promise<never>((_resolve, reject) => {
           timeout = setTimeout(() => reject(new Error('user lookup timed out')), REVERIFY_LOOKUP_TIMEOUT_MS);
         }),
       ]);
       organizationId = user === null ? null : user._organizationId;
     } catch {
-      for (const [ws, identity] of connections) {
-        if (this.clients.get(ws) === identity) {
-          this.closeClient(ws, 1011, 'identity re-check failed');
+      if (!signal.aborted) {
+        for (const [ws, identity] of connections) {
+          if (this.clients.get(ws) === identity) {
+            this.closeClient(ws, 1011, 'identity re-check failed');
+          }
         }
       }
       return;
     } finally {
       clearTimeout(timeout);
+      if (abort) signal.removeEventListener('abort', abort);
     }
 
     for (const [ws, identity] of connections) {
@@ -536,6 +611,11 @@ export class WebSocketService {
         clearInterval(this.reverifyInterval);
         this.reverifyInterval = null;
       }
+      this.reverifyController?.abort();
+      this.reverifyController = null;
+      this.reverifying = false;
+      for (const cancel of this.pendingUpgrades.values()) cancel();
+      this.pendingUpgrades.clear();
       [...this.clients.keys()].forEach(client => {
         this.forgetClient(client);
         client.close();

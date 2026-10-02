@@ -63,11 +63,28 @@ const USERS: Record<string, { _id: string; _username: string; _role: string; _en
 // before each test, and the AuthService is first built inside one.
 // Users whose lookup never settles (a stalled store).
 const HUNG_LOOKUPS = new Set<string>();
+const DEFERRED_LOOKUPS = new Map<string, Promise<(typeof USERS)[string] | null>>();
+const LOOKUP_COUNTS = new Map<string, number>();
+const LOOKUP_WAITERS: Array<{ count: number; resolve: () => void }> = [];
+
+function lookupStarted(count: number): Promise<void> {
+  if ([...LOOKUP_COUNTS.values()].reduce((sum, n) => sum + n, 0) >= count) return Promise.resolve();
+  return new Promise(resolve => LOOKUP_WAITERS.push({ count, resolve }));
+}
+
+
 
 jest.mock('../../auth/neo4j-auth.repository', () => ({
   Neo4jAuthRepository: class {
-    findUserById = (userId: string) =>
-      HUNG_LOOKUPS.has(userId) ? new Promise(() => {}) : Promise.resolve(USERS[userId] ?? null);
+    findUserById = (userId: string) => {
+      LOOKUP_COUNTS.set(userId, (LOOKUP_COUNTS.get(userId) ?? 0) + 1);
+      const total = [...LOOKUP_COUNTS.values()].reduce((sum, n) => sum + n, 0);
+      for (const waiter of LOOKUP_WAITERS) {
+        if (total >= waiter.count) waiter.resolve();
+      }
+      return DEFERRED_LOOKUPS.get(userId) ??
+        (HUNG_LOOKUPS.has(userId) ? new Promise<never>(() => {}) : Promise.resolve(USERS[userId] ?? null));
+    };
   },
 }));
 
@@ -156,6 +173,9 @@ async function restartWithFakeClock(): Promise<void> {
 }
 
 beforeEach(async () => {
+  DEFERRED_LOOKUPS.clear();
+  LOOKUP_COUNTS.clear();
+  LOOKUP_WAITERS.length = 0;
   redisHandlers.length = 0;
   server = createServer((_req, res) => {
     res.statusCode = 404;
@@ -295,5 +315,140 @@ describe('WebSocket /ws authentication and tenancy', () => {
         HUNG_LOOKUPS.delete('user-a');
       }
     });
+  });
+
+  it('cancels in-flight timeouts and queued re-checks when the service closes', async () => {
+    await restartWithFakeClock();
+    const added: string[] = [];
+    const releases: Array<() => void> = [];
+    try {
+      for (let i = 0; i < 9; i++) {
+        const id = `recheck-${i}`;
+        added.push(id);
+        USERS[id] = { _id: id, _username: id, _role: 'operator', _enabled: true, _organizationId: ORG_A };
+        await connected({ protocols: ['cmdb.v1', `bearer.${tokenFor(id)}`] });
+        if (i < 8) {
+          DEFERRED_LOOKUPS.set(id, new Promise(resolve => {
+            releases.push(() => resolve(USERS[id]!));
+          }));
+        }
+      }
+      await jest.advanceTimersByTimeAsync(2 * 60_000);
+      expect(added.slice(0, 8).map(id => LOOKUP_COUNTS.get(id))).toEqual(Array(8).fill(2));
+      expect(LOOKUP_COUNTS.get(added[8]!)).toBe(1);
+      service.close();
+      await new Promise(resolve => setImmediate(resolve));
+      await jest.advanceTimersByTimeAsync(31_000); // ws close handshakes have their own 30s timers
+      expect(jest.getTimerCount()).toBe(0);
+      await jest.advanceTimersByTimeAsync(5 * 60_000);
+      expect(LOOKUP_COUNTS.get(added[8]!)).toBe(1);
+      releases.forEach(release => release());
+      await new Promise(resolve => setImmediate(resolve));
+      expect(LOOKUP_COUNTS.get(added[8]!)).toBe(1);
+    } finally {
+      releases.forEach(release => release());
+      added.forEach(id => { delete USERS[id]; DEFERRED_LOOKUPS.delete(id); });
+    }
+  });
+
+  it('bounds concurrent upgrade verification and releases admission after a peer closes', async () => {
+    const ids = Array.from({ length: 10 }, (_, i) => `upgrade-${i}`);
+    const releases: Array<() => void> = [];
+    try {
+      ids.forEach(id => {
+        USERS[id] = { _id: id, _username: id, _role: 'operator', _enabled: true, _organizationId: ORG_A };
+        DEFERRED_LOOKUPS.set(id, new Promise(resolve => {
+          releases.push(() => resolve(USERS[id]!));
+        }));
+      });
+      ids.slice(0, 8).forEach(id => {
+        void connect({ protocols: ['cmdb.v1', `bearer.${tokenFor(id)}`] }).catch(() => {});
+      });
+      await lookupStarted(8);
+      const ninthUpgrade = new Promise<void>(resolve => server.once('upgrade', () => resolve()));
+      const ninth = connect({ protocols: ['cmdb.v1', `bearer.${tokenFor(ids[8]!)}`] });
+      await ninthUpgrade;
+      expect(LOOKUP_COUNTS.get(ids[8]!)).toBeUndefined();
+      expect((await ninth).status).toBe(503);
+
+      sockets[0]!.terminate();
+      await new Promise(resolve => setImmediate(resolve));
+      expect((await connect({ protocols: ['cmdb.v1', `bearer.${tokenFor(ids[9]!)}`] })).status).toBe(503);
+      releases[0]!();
+      DEFERRED_LOOKUPS.delete(ids[9]!);
+      expect((await connect({ protocols: ['cmdb.v1', `bearer.${tokenFor(ids[9]!)}`] })).status).toBe(101);
+    } finally {
+      releases.forEach(release => release());
+      ids.forEach(id => { delete USERS[id]; DEFERRED_LOOKUPS.delete(id); });
+    }
+  });
+
+
+  it('cancels pending upgrade timers on shutdown and ignores late verification', async () => {
+    await restartWithFakeClock();
+    let resolveLookup: (user: (typeof USERS)[string]) => void = () => {};
+    DEFERRED_LOOKUPS.set('user-a', new Promise(resolve => { resolveLookup = resolve; }));
+    const pending = connect({ protocols: ['cmdb.v1', `bearer.${tokenFor('user-a')}`] });
+    void pending.catch(() => {});
+    await lookupStarted(1);
+    service.close();
+    await new Promise(resolve => setImmediate(resolve));
+    expect(jest.getTimerCount()).toBe(0);
+    resolveLookup(USERS['user-a']!);
+    await new Promise(resolve => setImmediate(resolve));
+    expect(service.getStats().connectedClients).toBe(0);
+
+    DEFERRED_LOOKUPS.delete('user-a');
+    service = new WebSocketService();
+    service.initialize(server);
+    expect((await connect({ protocols: ['cmdb.v1', `bearer.${tokenFor('user-a')}`] })).status).toBe(101);
+  });
+
+  it('releases a full user quota when its access tokens expire', async () => {
+    await restartWithFakeClock();
+    const options = { protocols: ['cmdb.v1', `bearer.${tokenFor('user-a')}`] };
+    const clients = await Promise.all(Array.from({ length: 4 }, () => connected(options)));
+    expect((await connect(options)).status).toBe(503);
+    const exp = jwt.decodeToken(options.protocols[1]!.slice('bearer.'.length))!.exp!;
+    await jest.advanceTimersByTimeAsync(exp * 1000 - Date.now() + 1000);
+    expect(await Promise.all(clients.map(client => client.closed))).toEqual([4001, 4001, 4001, 4001]);
+    expect(service.getStats().connectedClients).toBe(0);
+    expect((await connect({ protocols: ['cmdb.v1', `bearer.${tokenFor('user-a')}`] })).status).toBe(101);
+  });
+  it('limits active sockets by user, organization and globally, releasing user slots on close', async () => {
+    const added: string[] = [];
+    try {
+      const options = { protocols: ['cmdb.v1', `bearer.${tokenFor('user-a')}`] };
+      const userSockets = await Promise.all(Array.from({ length: 4 }, () => connected(options)));
+      expect((await connect(options)).status).toBe(503);
+      userSockets[0]!.ws.close();
+      await userSockets[0]!.closed;
+      expect((await connect(options)).status).toBe(101);
+
+      service.close();
+      service = new WebSocketService();
+      service.initialize(server);
+      for (let i = 0; i < 65; i++) {
+        const id = `quota-${i}`;
+        const org = `${(i + 1).toString(16).padStart(8, '0')}-1111-4111-8111-111111111111`;
+        added.push(id);
+        USERS[id] = { _id: id, _username: id, _role: 'operator', _enabled: true, _organizationId: org };
+      }
+      for (let i = 0; i < 64; i++) {
+        expect((await connect({ protocols: ['cmdb.v1', `bearer.${tokenFor(added[i]!)}`] })).status).toBe(101);
+      }
+      expect((await connect({ protocols: ['cmdb.v1', `bearer.${tokenFor(added[64]!)}`] })).status).toBe(503);
+
+      service.close();
+      service = new WebSocketService();
+      service.initialize(server);
+      for (let i = 0; i < 17; i++) USERS[added[i]!]!._organizationId = ORG_B;
+      for (let i = 0; i < 16; i++) {
+        expect((await connect({ protocols: ['cmdb.v1', `bearer.${tokenFor(added[i]!)}`] })).status).toBe(101);
+      }
+      expect((await connect({ protocols: ['cmdb.v1', `bearer.${tokenFor(added[16]!)}`] })).status).toBe(503);
+    } finally {
+      added.forEach(id => { delete USERS[id]; });
+    }
   });
 });

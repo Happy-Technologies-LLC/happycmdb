@@ -15,8 +15,8 @@
 // carry the caller's organization. A reseed never takes over a node another
 // organization owns: each service statement only creates the node or updates
 // one that is already internal or has no organization (WITH ... WHERE
-// coalesce(...)), and every relationship below only attaches to a service in
-// the internal organization. Other services without an organization are
+// coalesce(...)), and every relationship below only attaches to a service, and
+// to a CI, in the internal organization. Other services without an organization are
 // filled from Postgres by the manual backfill
 // (packages/api-server/src/scripts/backfill-business-service-organization.ts).
 
@@ -552,36 +552,45 @@ MATCH (vs:ValueStream {id: 'vs-customer-support'})
 MATCH (bc:BusinessCapability {id: 'bc-customer-engagement'})
 MERGE (vs)-[:REQUIRES {created_at: datetime(), requirement_type: 'mandatory'}]->(bc);
 
-// ApplicationService -> CI (RUNS_ON) - linking to existing v2.0 CIs
+// ApplicationService -> CI (RUNS_ON) - linking to existing v2.0 CIs, only when the
+// CI is the internal organization's sample (init-neo4j.cypher), never another org's CI
 MATCH (as:ApplicationService {id: 'as-web-frontend'})
 MATCH (ci:CI:Server {id: 'srv-prod-web-01'})
+WHERE ci.organization_id = '00000000-0000-0000-0000-000000000000'
 MERGE (as)-[:RUNS_ON {created_at: datetime(), deployment_type: 'containerized'}]->(ci);
 
 MATCH (as:ApplicationService {id: 'as-api-backend'})
 MATCH (ci:CI:Server {id: 'srv-prod-api-01'})
+WHERE ci.organization_id = '00000000-0000-0000-0000-000000000000'
 MERGE (as)-[:RUNS_ON {created_at: datetime(), deployment_type: 'containerized'}]->(ci);
 
 MATCH (as:ApplicationService {id: 'as-warehouse-management'})
 MATCH (ci:CI:Server {id: 'srv-prod-api-01'})
+WHERE ci.organization_id = '00000000-0000-0000-0000-000000000000'
 MERGE (as)-[:RUNS_ON {created_at: datetime(), deployment_type: 'containerized'}]->(ci);
 
-// CI -> BusinessService (SUPPORTS) - direct infrastructure support
+// CI -> BusinessService (SUPPORTS) - direct infrastructure support; both ends must be
+// the internal organization's samples
 MATCH (ci:CI:Database {id: 'db-neo4j-prod'})
+WHERE ci.organization_id = '00000000-0000-0000-0000-000000000000'
 MATCH (bs:BusinessService {id: 'bs-ecommerce-platform'})
 WHERE bs.organization_id = '00000000-0000-0000-0000-000000000000'
 MERGE (ci)-[:SUPPORTS {created_at: datetime(), support_type: 'data-storage', criticality: 'critical'}]->(bs);
 
 MATCH (ci:CI:Database {id: 'db-postgres-datamart'})
+WHERE ci.organization_id = '00000000-0000-0000-0000-000000000000'
 MATCH (bs:BusinessService {id: 'bs-analytics-reporting'})
 WHERE bs.organization_id = '00000000-0000-0000-0000-000000000000'
 MERGE (ci)-[:SUPPORTS {created_at: datetime(), support_type: 'data-storage', criticality: 'critical'}]->(bs);
 
 MATCH (ci:CI:Database {id: 'db-redis-cache'})
+WHERE ci.organization_id = '00000000-0000-0000-0000-000000000000'
 MATCH (bs:BusinessService {id: 'bs-ecommerce-platform'})
 WHERE bs.organization_id = '00000000-0000-0000-0000-000000000000'
 MERGE (ci)-[:SUPPORTS {created_at: datetime(), support_type: 'caching', criticality: 'high'}]->(bs);
 
 MATCH (ci:CI:NetworkDevice {id: 'net-lb-prod-01'})
+WHERE ci.organization_id = '00000000-0000-0000-0000-000000000000'
 MATCH (bs:BusinessService {id: 'bs-ecommerce-platform'})
 WHERE bs.organization_id = '00000000-0000-0000-0000-000000000000'
 MERGE (ci)-[:SUPPORTS {created_at: datetime(), support_type: 'load-balancing', criticality: 'critical'}]->(bs);

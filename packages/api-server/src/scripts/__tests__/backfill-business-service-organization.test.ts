@@ -42,7 +42,7 @@ const MIGRATIONS = join(__dirname, '../../../../database/src/postgres/migrations
 // Rows created before this are trusted; bs-squat's row is newer (09:30 UTC, written by
 // API sessions whose TimeZone is UTC).
 const CUTOVER = '2026-10-01T00:00:00Z';
-const WRITER_TIMEZONE = 'UTC';
+const WRITER_TIMEZONE = 'Etc/UTC';
 
 // ---------------------------------------------------------------------------
 // In-memory :BusinessService nodes and a statement-parsing fake session
@@ -208,13 +208,18 @@ describe('backfillBusinessServiceOrganizations', () => {
     }
   });
 
-  it('refuses an unknown writer time zone before any graph statement', async () => {
-    await expect(
-      backfillBusinessServiceOrganizations(pg, session, { ...APPLY, writerTimezone: 'Mars/Olympus_Mons' })
-    ).rejects.toThrow();
-    expect(graphRuns).toBe(0);
-    expect(writes).toEqual([]);
-  });
+  // POSIX offsets and abbreviation-only names are not zone files; names that are also
+  // abbreviations (EST, UTC) would be read from the session's timezone_abbreviations set.
+  it.each(['+05', 'UTC+5', 'PST', 'EST', 'UTC'])(
+    'refuses writer time zone %s before any graph statement',
+    async writerTimezone => {
+      await expect(
+        backfillBusinessServiceOrganizations(pg, session, { ...APPLY, writerTimezone })
+      ).rejects.toThrow(/not a time zone file name in pg_timezone_names/);
+      expect(graphRuns).toBe(0);
+      expect(writes).toEqual([]);
+    }
+  );
 
   it('writes nothing without apply and lists what apply would fill', async () => {
     const before = JSON.stringify(nodes);

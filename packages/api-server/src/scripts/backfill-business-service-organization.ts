@@ -25,9 +25,12 @@
  * of the API session that wrote the row. `--writer-timezone <IANA name>` is
  * required and created_at is read in that zone (`created_at AT TIME ZONE`),
  * never in this backfill session's TimeZone, which may differ. Use the API
- * role's setting (`SHOW timezone` on an API connection; normally `UTC`). The
- * name must be in pg_timezone_names (POSIX offsets such as '+05' are refused);
- * it is checked before any graph statement runs.
+ * role's setting (`SHOW timezone` on an API connection), spelled as a zone
+ * file name: `Etc/UTC` for UTC. The name must be in pg_timezone_names and must
+ * not also be a time zone abbreviation (pg_timezone_abbrevs): AT TIME ZONE
+ * reads abbreviations such as `EST` or `UTC` from the session's
+ * timezone_abbreviations set, not the zone file. POSIX offsets such as '+05'
+ * are refused too. The check runs before any graph statement.
  *
  * Guards:
  *   - dry run by default: nothing is written unless `--apply` is passed; the
@@ -55,7 +58,7 @@
  *   CMDB_BACKFILL_NEO4J_URI=bolt://<host>:7687 CMDB_BACKFILL_NEO4J_USERNAME=... CMDB_BACKFILL_NEO4J_PASSWORD=... \
  *   [CMDB_BACKFILL_NEO4J_ENCRYPTED=true|false] \
  *   node packages/api-server/dist/tenant-fixture/api-server/src/scripts/backfill-business-service-organization.js \
- *     --created-before <ISO-8601 timestamp with zone> --writer-timezone <IANA name> [--apply]
+ *     --created-before <ISO-8601 timestamp with zone> --writer-timezone <zone file name, e.g. Etc/UTC> [--apply]
  */
 
 // Deliberately not the @cmdb/database barrel: importing it opens a BullMQ Redis
@@ -68,8 +71,14 @@ const ORGANIZATION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-
 /** ISO-8601 timestamp with an explicit zone, so the cutover is never read in a local time zone. */
 const CUTOVER_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/;
 
-/** The writer time zone must be a named zone Postgres knows; checked before any graph statement. */
-export const WRITER_TIMEZONE_SQL = 'SELECT EXISTS (SELECT 1 FROM pg_timezone_names WHERE name = $1) AS known';
+/**
+ * The writer time zone must be a zone file name Postgres knows and not also an
+ * abbreviation, which AT TIME ZONE would resolve through the session's
+ * timezone_abbreviations set instead; checked before any graph statement.
+ */
+export const WRITER_TIMEZONE_SQL = `
+SELECT EXISTS (SELECT 1 FROM pg_timezone_names WHERE name = $1)
+   AND NOT EXISTS (SELECT 1 FROM pg_timezone_abbrevs WHERE lower(abbrev) = lower($1)) AS known`;
 
 /**
  * Owner of every business service id (service_id is the primary key;
@@ -172,7 +181,7 @@ export async function backfillBusinessServiceOrganizations(
   }
   const zone = await postgres.query(WRITER_TIMEZONE_SQL, [options.writerTimezone]);
   if (zone.rows[0]?.['known'] !== true) {
-    throw new Error(`--writer-timezone ${options.writerTimezone} is not a named time zone in pg_timezone_names; nothing was written`);
+    throw new Error(`--writer-timezone ${options.writerTimezone} is not a time zone file name in pg_timezone_names (or is also an abbreviation); use e.g. Etc/UTC; nothing was written`);
   }
 
   const { rows } = await postgres.query(OWNERS_SQL, [options.createdBefore, options.writerTimezone]);
@@ -238,7 +247,7 @@ export function parseArgs(argv: readonly string[]): { apply: boolean; createdBef
     } else if (arg === '--writer-timezone' && writerTimezone === undefined && argv[i + 1] !== undefined) {
       writerTimezone = argv[++i]!;
     } else {
-      throw new Error(`unexpected argument ${arg}; usage: --created-before <ISO-8601 timestamp> --writer-timezone <IANA name> [--apply]`);
+      throw new Error(`unexpected argument ${arg}; usage: --created-before <ISO-8601 timestamp> --writer-timezone <zone file name> [--apply]`);
     }
   }
   // Both are checked against Postgres / the format by backfillBusinessServiceOrganizations before any graph statement.
@@ -246,7 +255,7 @@ export function parseArgs(argv: readonly string[]): { apply: boolean; createdBef
     throw new Error('--created-before <ISO-8601 timestamp with a zone> is required, e.g. 2026-10-01T12:00:00Z');
   }
   if (writerTimezone === undefined) {
-    throw new Error('--writer-timezone <IANA time zone of the API sessions> is required, e.g. UTC');
+    throw new Error('--writer-timezone <IANA time zone of the API sessions> is required, e.g. Etc/UTC');
   }
   return { apply, createdBefore, writerTimezone };
 }

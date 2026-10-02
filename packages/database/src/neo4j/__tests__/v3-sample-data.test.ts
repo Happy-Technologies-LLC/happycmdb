@@ -46,7 +46,11 @@ function statements(): string[] {
 }
 
 type Props = Record<string, string>;
-interface Graph { services: Map<string, Props>; edges: Set<string> }
+/**
+ * services: :BusinessService nodes. cis: :CI nodes that differ from the
+ * init-neo4j.cypher seed, which puts every sample CI in the internal org.
+ */
+interface Graph { services: Map<string, Props>; cis: Map<string, Props>; edges: Set<string> }
 
 const SEED_RE =
   /^MERGE \((\w+):BusinessService \{id: '([^']+)'\}\)\s+(?:WITH (\w+) WHERE coalesce\((\w+)\.organization_id, '([^']+)'\) = '([^']+)'\s+)?SET ([\s\S]+)$/;
@@ -54,7 +58,7 @@ const ASSIGNMENT_RE = /^(\w+)\.(\w+) = ('[^']*'|datetime\(\))$/;
 const MATCH_RE = /MATCH \((\w+):([\w:]+) \{id: '([^']+)'\}\)(?: WHERE (\w+)\.organization_id = '([^']+)')?/g;
 const EDGE_RE = /MERGE \((\w+)\)-\[:(\w+) \{[^}]*\}\]->\((\w+)\)$/;
 
-/** Applies one :BusinessService statement of the script to the graph. */
+/** Applies one :BusinessService or sample-CI statement of the script to the graph. */
 function apply(graph: Graph, statement: string): void {
   const seed = statement.match(SEED_RE);
   if (seed) {
@@ -91,6 +95,9 @@ function apply(graph: Graph, statement: string): void {
         const node = graph.services.get(id!);
         if (node === undefined) return;
         if (whereVariable !== undefined && (whereVariable !== variable || node['organization_id'] !== organizationId)) return;
+      } else if (labels!.split(':').includes('CI')) {
+        const node = graph.cis.get(id!) ?? { id: id!, organization_id: INTERNAL_ORG };
+        if (whereVariable !== undefined && (whereVariable !== variable || node['organization_id'] !== organizationId)) return;
       } else if (whereVariable !== undefined) {
         throw new Error(`unmodelled WHERE: ${statement}`);
       }
@@ -100,13 +107,13 @@ function apply(graph: Graph, statement: string): void {
     return;
   }
 
-  throw new Error(`unmodelled :BusinessService statement: ${statement.split('\n')[0]}`);
+  throw new Error(`unmodelled statement: ${statement.split('\n')[0]}`);
 }
 
-/** Runs every :BusinessService statement of the script (the trailing read-only count excepted). */
+/** Runs every :BusinessService and :CI statement of the script (the trailing read-only count excepted). */
 function seed(graph: Graph): void {
   for (const statement of statements()) {
-    if (!statement.includes('BusinessService') || statement.startsWith('MATCH (bs:BusinessService) WITH count(bs)')) continue;
+    if (!/BusinessService|:CI\b/.test(statement) || statement.startsWith('MATCH (bs:BusinessService) WITH count(bs)')) continue;
     apply(graph, statement);
   }
 }
@@ -116,7 +123,9 @@ const snapshot = (graph: Graph) => JSON.stringify({ services: [...graph.services
 describe('packages/database/src/neo4j/v3-sample-data.cypher', () => {
   it('every seeded :BusinessService gets the internal org', () => {
     // bs-payment-processing exists from a pre-tenancy seed, without an organization.
-    const graph: Graph = { services: new Map([['bs-payment-processing', { id: 'bs-payment-processing' }]]), edges: new Set() };
+    const graph: Graph = {
+      services: new Map([['bs-payment-processing', { id: 'bs-payment-processing' }]]), cis: new Map(), edges: new Set(),
+    };
 
     seed(graph);
 
@@ -124,13 +133,14 @@ describe('packages/database/src/neo4j/v3-sample-data.cypher', () => {
     for (const id of SAMPLE_IDS) {
       expect([id, graph.services.get(id)!['organization_id']]).toEqual([id, INTERNAL_ORG]);
     }
-    expect(graph.edges.size).toBe(15);
+    // 6 ENABLES, 5 DELIVERS, 3 RUNS_ON, 4 SUPPORTS.
+    expect(graph.edges.size).toBe(18);
   });
 
   it("reseeding keeps another organization's node with a sample id, and is idempotent", () => {
     // Org A already owns a node whose id is a sample id (for example after the backfill).
     const tenantNode = { id: 'bs-ecommerce-platform', organization_id: ORG_A, name: 'A Storefront' };
-    const graph: Graph = { services: new Map([['bs-ecommerce-platform', { ...tenantNode }]]), edges: new Set() };
+    const graph: Graph = { services: new Map([['bs-ecommerce-platform', { ...tenantNode }]]), cis: new Map(), edges: new Set() };
 
     seed(graph);
     const first = snapshot(graph);
@@ -145,5 +155,22 @@ describe('packages/database/src/neo4j/v3-sample-data.cypher', () => {
       expect([id, graph.services.get(id)!['organization_id']]).toEqual([id, INTERNAL_ORG]);
     }
     expect(graph.edges).toContain('as-payment-gateway -ENABLES-> bs-payment-processing');
+  });
+
+  it("reseeding attaches no sample edge to another organization's CI with a sample id", () => {
+    // Org A owns CIs whose ids are sample CI ids (the sample CIs were never seeded or were deleted).
+    const tenantCIs = ['srv-prod-api-01', 'db-postgres-datamart'];
+    const graph: Graph = {
+      services: new Map(),
+      cis: new Map(tenantCIs.map(id => [id, { id, organization_id: ORG_A }])),
+      edges: new Set(),
+    };
+
+    seed(graph);
+
+    expect([...graph.edges].filter(edge => tenantCIs.some(id => edge.includes(id)))).toEqual([]);
+    // Internal sample CIs are still linked.
+    expect(graph.edges).toContain('as-web-frontend -RUNS_ON-> srv-prod-web-01');
+    expect(graph.edges).toContain('db-neo4j-prod -SUPPORTS-> bs-ecommerce-platform');
   });
 });

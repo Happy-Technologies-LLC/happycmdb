@@ -226,8 +226,9 @@ Postgres ownership check:
   (`SET bs += $map`) targets them, so `organization_id` cannot be set or changed through
   the API. The sample services in `packages/database/src/neo4j/v3-sample-data.cypher`
   are in the internal organization; a reseed only creates them or updates nodes that are
-  internal or have no organization, so it never takes over (or attaches sample
-  relationships to) a node another organization owns.
+  internal or have no organization, and attaches sample relationships only where both the
+  service and the CI are internal, so it never takes over, or links samples to, a node
+  (service or CI) another organization owns.
 - **Existing nodes have no `organization_id` until the backfill runs, so the reads above
   return 404 for them.** The backfill
   `packages/api-server/src/scripts/backfill-business-service-organization.ts` sets
@@ -235,9 +236,11 @@ Postgres ownership check:
   with the same `service_id`, and only from rows created before the required
   `--created-before` cutover (use the time migration 008 was applied: tenants choose
   service ids, so a newer row could claim a node that was never theirs). `created_at` has
-  no zone, so the required `--writer-timezone` (the API sessions' TimeZone, normally
-  `UTC`) says how to read it; the backfill session's own TimeZone plays no part, and an
-  unknown zone stops the run before any graph statement. An org-less
+  no zone, so the required `--writer-timezone` (the API sessions' TimeZone, as a zone
+  file name such as `Etc/UTC`) says how to read it; the backfill session's own TimeZone
+  plays no part. A name missing from `pg_timezone_names`, a POSIX offset such as `+05`,
+  or a name that is also an abbreviation (`UTC`, `EST`, read from the session's
+  `timezone_abbreviations`) stops the run before any graph statement. An org-less
   node whose only row is newer stays without an organization and is listed in
   `needs_review`; nodes without a Postgres row stay without an organization (invisible);
   nodes that already have one are never changed. It is a dry run unless `--apply` is

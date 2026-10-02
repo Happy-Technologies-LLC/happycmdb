@@ -13,6 +13,8 @@
 jest.mock('../../../auth/auth-bootstrap', () => ({
   getAuthMiddleware: () => ({
     requirePermission: () => (_req: unknown, _res: unknown, next: () => void) => next(),
+    // Only the change-history route uses it; this suite does not exercise that route.
+    requireOrganization: () => (_req: unknown, _res: unknown, next: () => void) => next(),
   }),
 }));
 

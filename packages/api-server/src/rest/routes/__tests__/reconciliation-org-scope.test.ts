@@ -24,6 +24,7 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import express from 'express';
 import request from 'supertest';
+import { Neo4jClient } from '../../../../../database/src/neo4j/client';
 
 // Placeholder config so loadConfig() validates; no Neo4j/Redis/PostgreSQL server is contacted.
 // The signing secret is generated per run in memory; no literal credential.
@@ -76,11 +77,17 @@ function send(op: 'exec' | 'query', sql: string, params: unknown[] = []): Promis
 const rows = <T>(sql: string, params: unknown[] = []) => send('query', sql, params) as Promise<T[]>;
 
 let sqlCount = 0;
+let historyReads = 0;
 const pgClient = {
   // Plain function (not jest.fn): the unit config resets mock implementations.
-  query: async (sql: string, params: unknown[] = []) => {
+  query: async (sql: string, params: unknown[] = []): Promise<{ rows: unknown[] }> => {
     sqlCount++;
+    if (/FROM ci_change_history/.test(sql)) historyReads++;
     return { rows: await send('query', sql, params) };
+  },
+  // ITILController queries through the pg Pool.
+  pool: {
+    query: (sql: string, params: unknown[] = []): Promise<{ rows: unknown[] }> => pgClient.query(sql, params),
   },
 };
 
@@ -145,18 +152,31 @@ function run(rawCypher: string, params: Props): FakeRecord[] {
   if (attribute) {
     return ids(nodes.filter(props => props[attribute[1]!] === params['value'])).slice(0, 1);
   }
+  // Neo4jClient.getCI(id, scope)
+  if (cypher.startsWith('MATCH (ci:CI {id: $id})') && cypher.endsWith('RETURN ci')) {
+    return nodes.filter(props => props['id'] === params['id']).map(props => record({ ci: { labels: ['CI'], properties: props } }));
+  }
   throw new Error(`fake Neo4j: unrecognised statement: ${cypher}`);
 }
 
-const neo4jClient = {
-  getSession: () => ({
+const fakeDriver = {
+  session: () => ({
     run: async (cypher: string, params: Props = {}) => {
       cypherCount++;
       return { records: run(cypher, params) };
     },
     close: async () => undefined,
   }),
+  close: async () => undefined,
 };
+
+// Real Neo4jClient (its CI methods issue their own Cypher), driver swapped for
+// the fake; constructing a driver opens no connection.
+const neo4jClient = new Neo4jClient('bolt://127.0.0.1:1', 'unused', 'unused');
+// `driver` is private: this unchecked view of the instance is the test seam that swaps it.
+const driverSeam = neo4jClient as unknown as { driver: { close(): Promise<void> } };
+void driverSeam.driver.close();
+driverSeam.driver = fakeDriver;
 
 jest.mock('@cmdb/database', () => ({
   getNeo4jClient: () => neo4jClient,
@@ -201,6 +221,8 @@ import { loadConfig } from '@cmdb/common';
 import { JWTService } from '../../../auth/jwt.service';
 import { getAuthMiddleware } from '../../../auth/auth-bootstrap';
 import { reconciliationRoutes } from '../reconciliation.routes';
+import { analyticsRoutes } from '../analytics.routes';
+import { itilRoutes } from '../itil.routes';
 import { ChangeEventProcessor, EventType } from '@cmdb/event-processor';
 
 const MIGRATIONS = join(__dirname, '../../../../../database/src/postgres/migrations');
@@ -234,6 +256,9 @@ const app = express();
 app.use(express.json());
 app.use('/api/v1', getAuthMiddleware().authenticate());
 app.use('/api/v1/reconciliation', reconciliationRoutes);
+// The two readers of ci_change_history, which CI_UPDATED events from merges feed.
+app.use('/api/v1/analytics', analyticsRoutes);
+app.use('/api/v1/itil', itilRoutes);
 
 const snapshot = () => JSON.stringify([...graph.entries()]);
 const lineageOf = (ciId: string) =>
@@ -452,5 +477,60 @@ describe('/api/v1/reconciliation tenant scoping', () => {
     const fields = await request(app).get(`/api/v1/reconciliation/field-sources/${CI_A}`).set(AS_A);
     expect(fields.status).toBe(200);
     expect(fields.body.data.fields.map((f: { field_value: string }) => f.field_value)).toEqual(['team-a']);
+  });
+});
+
+describe('ci_change_history readers fed by reconciliation CI_UPDATED events', () => {
+  const changeHistory = (ciId: string) => `/api/v1/analytics/change-history?ci_id=${ciId}`;
+  const itilHistory = (ciId: string) => `/api/v1/itil/configuration-items/${ciId}/history`;
+  const readers: Array<[string, (ciId: string) => string]> = [['analytics', changeHistory], ['itil', itilHistory]];
+
+  /** Org B merges a CI twice; the change processor records both events, as in production. */
+  async function orgBHistory(): Promise<string> {
+    const body = {
+      name: 'b-history', ci_type: 'server', source: 'nmap', source_id: 'scan-b', confidence_score: 90,
+      identifiers: { serial_number: 'SN-B-HISTORY' }, attributes: { os: 'linux' },
+    };
+    const created = await request(app).post('/api/v1/reconciliation/merge').set(AS_B).send(body);
+    await request(app).post('/api/v1/reconciliation/merge').set(AS_B)
+      .send({ ...body, attributes: { b_secret: 'b-only-value' } });
+
+    const processor = new ChangeEventProcessor() as unknown as {
+      handleCIDiscovered(event: unknown): Promise<void>;
+      handleCIUpdated(event: unknown): Promise<void>;
+    };
+    for (const event of emittedEvents) {
+      if (event['event_type'] === EventType.CI_DISCOVERED) await processor.handleCIDiscovered(event);
+      else await processor.handleCIUpdated(event);
+    }
+    return created.body.data.ci_id as string;
+  }
+
+  it.each(readers)("%s: another org's CI history is a 404 identical to a missing CI, and is never read", async (_reader, path) => {
+    const ciB = await orgBHistory();
+    historyReads = 0;
+
+    const foreign = await request(app).get(path(ciB)).set(AS_A);
+    const missing = await request(app).get(path(MISSING_ID)).set(AS_A);
+    expect([foreign.status, foreign.body]).toEqual([404, CI_NOT_FOUND]);
+    expect([missing.status, missing.body]).toEqual([404, CI_NOT_FOUND]);
+    expect(historyReads).toBe(0);
+
+    // The owner still reads its CI_UPDATED values.
+    const own = await request(app).get(path(ciB)).set(AS_B);
+    expect(own.status).toBe(200);
+    expect(own.body.data.map((h: { change_type: string }) => h.change_type).sort()).toEqual(['discovered', 'updated']);
+    expect(JSON.stringify(own.body.data)).toContain('b-only-value');
+  });
+
+  it.each(readers)('%s: 403 with zero queries without an org claim', async (_reader, path) => {
+    const ciB = await orgBHistory();
+    sqlCount = 0;
+    cypherCount = 0;
+
+    const res = await request(app).get(path(ciB)).set(NO_ORG);
+    expect([res.status, res.body]).toEqual([403, { _error: 'Forbidden', _message: 'Organization claim required' }]);
+    expect(sqlCount).toBe(0);
+    expect(cypherCount).toBe(0);
   });
 });

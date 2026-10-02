@@ -4,6 +4,7 @@
 import { Request, Response } from 'express';
 import { getPostgresClient, getNeo4jClient } from '@cmdb/database';
 import { logger } from '@cmdb/common';
+import { requestOrganizationId } from '../../middleware/auth.middleware';
 
 export class AnalyticsController {
   private postgresClient = getPostgresClient();
@@ -436,6 +437,14 @@ export class AnalyticsController {
       }
 
       const limitNum = Math.min(parseInt(String(limit)), 1000);
+
+      // ci_change_history has no organization column: history is only served for a
+      // CI that exists in the caller's organization. A foreign CI gets the same
+      // 404 as a missing one, and its history is never read.
+      if (!(await this.neo4jClient.getCI(String(ci_id), requestOrganizationId(req)))) {
+        res.status(404).json({ success: false, error: 'Not Found', message: 'CI not found' });
+        return;
+      }
 
       const result = await this.postgresClient.query(
         `

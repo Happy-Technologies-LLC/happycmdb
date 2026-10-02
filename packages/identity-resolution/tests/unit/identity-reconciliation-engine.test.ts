@@ -60,6 +60,9 @@ jest.mock('@cmdb/event-processor', () => ({
 import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
 import { getEventProducer } from '@cmdb/event-processor';
 
+// Organization of every reconciliation in this suite.
+const ORG = '11111111-1111-4111-8111-111111111111';
+
 describe('IdentityReconciliationEngine - Unit Tests', () => {
   let engine: IdentityReconciliationEngine;
 
@@ -137,8 +140,10 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
       mockPostgresClient.query.mockResolvedValueOnce({
         rows: [{ ci_id: 'ci_12345' }],
       });
+      // The lineage CI is in ORG.
+      mockSession.run.mockResolvedValueOnce({ records: [{ get: () => 'ci_12345' }] });
 
-      const result = await engine.findExistingCI(identifiers, ci);
+      const result = await engine.findExistingCI(identifiers, ci, ORG);
 
       expect(result).toEqual({
         ci_id: 'ci_12345',
@@ -162,7 +167,7 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
       // No match expected
       mockSession.run.mockResolvedValue({ records: [] });
 
-      const result = await engine.findExistingCI(identifiers, ci);
+      const result = await engine.findExistingCI(identifiers, ci, ORG);
 
       // Should try other strategies
       expect(mockPostgresClient.query).not.toHaveBeenCalled();
@@ -189,7 +194,7 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
         ],
       });
 
-      const result = await engine.findExistingCI(identifiers, ci);
+      const result = await engine.findExistingCI(identifiers, ci, ORG);
 
       expect(result).toEqual({
         ci_id: 'ci_67890',
@@ -198,8 +203,8 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
         matched_attributes: ['serial_number'],
       });
       expect(mockSession.run).toHaveBeenCalledWith(
-        expect.stringContaining('WHERE ci.serial_number = $value'),
-        { value: identifiers.serial_number }
+        expect.stringContaining('WHERE ci.organization_id = $organizationId AND ci.serial_number = $value'),
+        { value: identifiers.serial_number, organizationId: ORG }
       );
     });
   });
@@ -224,7 +229,7 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
         ],
       });
 
-      const result = await engine.findExistingCI(identifiers, ci);
+      const result = await engine.findExistingCI(identifiers, ci, ORG);
 
       expect(result).toEqual({
         ci_id: 'ci_uuid_match',
@@ -258,7 +263,7 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
         ],
       });
 
-      const result = await engine.findExistingCI(identifiers, ci);
+      const result = await engine.findExistingCI(identifiers, ci, ORG);
 
       expect(result).toEqual({
         ci_id: 'ci_mac_match',
@@ -268,7 +273,7 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
       });
       expect(mockSession.run).toHaveBeenCalledWith(
         expect.stringContaining('ANY(mac IN ci.mac_addresses WHERE mac IN $macs)'),
-        { macs: identifiers.mac_address }
+        { macs: identifiers.mac_address, organizationId: ORG }
       );
     });
 
@@ -286,12 +291,12 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
         ],
       });
 
-      const result = await engine.findExistingCI(identifiers, ci);
+      const result = await engine.findExistingCI(identifiers, ci, ORG);
 
       expect(result?.ci_id).toBe('ci_multi_mac');
       expect(mockSession.run).toHaveBeenCalledWith(
         expect.any(String),
-        { macs: identifiers.mac_address }
+        { macs: identifiers.mac_address, organizationId: ORG }
       );
     });
   });
@@ -318,7 +323,7 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
         ],
       });
 
-      const result = await engine.findExistingCI(identifiers, ci);
+      const result = await engine.findExistingCI(identifiers, ci, ORG);
 
       expect(result).toEqual({
         ci_id: 'ci_fqdn_match',
@@ -357,7 +362,7 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
         ],
       });
 
-      const result = await engine.findExistingCI(identifiers, ci);
+      const result = await engine.findExistingCI(identifiers, ci, ORG);
 
       expect(result).toBeTruthy();
       expect(result?.ci_id).toBe('ci_fuzzy_match');
@@ -387,7 +392,7 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
         ],
       });
 
-      const result = await engine.findExistingCI(identifiers, ci);
+      const result = await engine.findExistingCI(identifiers, ci, ORG);
 
       expect(result).toBeTruthy();
       expect(result?.ci_id).toBe('ci_case_insensitive');
@@ -414,7 +419,7 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
         ],
       });
 
-      const result = await engine.findExistingCI(identifiers, ci);
+      const result = await engine.findExistingCI(identifiers, ci, ORG);
 
       expect(result).toBeNull();
     });
@@ -445,7 +450,7 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
         });
       mockPostgresClient.query.mockResolvedValue({ rows: [] }); // Source lineage
 
-      const ciId = await engine.reconcileCI(ci);
+      const ciId = await engine.reconcileCI(ci, ORG);
 
       expect(ciId).toBeTruthy();
       expect(ciId).toMatch(/^ci_/);
@@ -482,7 +487,7 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
         });
       mockPostgresClient.query.mockResolvedValue({ rows: [] });
 
-      await engine.reconcileCI(ci);
+      await engine.reconcileCI(ci, ORG);
 
       expect(mockPostgresClient.query).toHaveBeenCalledWith(
         expect.stringContaining('INSERT INTO ci_source_lineage'),
@@ -495,11 +500,11 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
       );
     });
 
-    it('createNewCI ignores attributes.organization_id', async () => {
+    it('createNewCI stamps the caller org and ignores organization_id and id in the discovered data', async () => {
       const base = physicalServerDuplicates[0];
       const ci = {
         ...base,
-        attributes: { ...base.attributes, organization_id: 'attacker-org' },
+        attributes: { ...base.attributes, organization_id: 'attacker-org', id: 'ci_victim' },
         identifiers: { ...base.identifiers, organization_id: 'attacker-org' } as typeof base.identifiers,
       };
       let created: Record<string, unknown> | undefined;
@@ -513,11 +518,13 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
       });
       mockPostgresClient.query.mockResolvedValue({ rows: [] });
 
-      await engine.reconcileCI(ci);
+      const ciId = await engine.reconcileCI(ci, ORG);
 
       expect(created).toBeDefined();
       expect(created!['name']).toBe(base.name);
-      expect(created).not.toHaveProperty('organization_id');
+      expect(created!['organization_id']).toBe(ORG);
+      expect(created!['id']).toMatch(/^ci_\d+_/);
+      expect(ciId).toBe(created!['id']);
     });
   });
 
@@ -562,10 +569,12 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
       // Mock field source recording and lineage
       mockPostgresClient.query.mockResolvedValue({ rows: [] });
 
-      // Mock Neo4j update
-      mockSession.run.mockResolvedValueOnce({ records: [] });
+      // The lineage CI is in ORG, then the scoped Neo4j update matches it
+      mockSession.run
+        .mockResolvedValueOnce({ records: [{ get: () => 'ci_existing_123' }] })
+        .mockResolvedValueOnce({ records: [{ get: () => 'ci_existing_123' }] });
 
-      const ciId = await engine.reconcileCI(ci);
+      const ciId = await engine.reconcileCI(ci, ORG);
 
       expect(ciId).toBe('ci_existing_123');
       expect(mockSession.run).toHaveBeenCalledWith(
@@ -598,9 +607,9 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
         });
 
       mockPostgresClient.query.mockResolvedValue({ rows: [] });
-      mockSession.run.mockResolvedValue({ records: [] });
+      mockSession.run.mockResolvedValue({ records: [{ get: () => 'ci_db_conflict' }] }); // scoped update matches
 
-      await engine.reconcileCI(newCI);
+      await engine.reconcileCI(newCI, ORG);
 
       // Should update with new values from higher authority source
       expect(mockPostgresClient.query).toHaveBeenCalledWith(
@@ -634,9 +643,9 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
         });
 
       mockPostgresClient.query.mockResolvedValue({ rows: [] });
-      mockSession.run.mockResolvedValue({ records: [] });
+      mockSession.run.mockResolvedValue({ records: [{ get: () => 'ci_authority_test' }] }); // scoped update matches
 
-      await engine.reconcileCI(lowAuthorityCI);
+      await engine.reconcileCI(lowAuthorityCI, ORG);
 
       // Should NOT overwrite field from higher authority
       const fieldSourceCalls = mockPostgresClient.query.mock.calls.filter(
@@ -658,25 +667,122 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
     it('reconciliation merge cannot set or change organization_id', async () => {
       const base = physicalServerDuplicates[1]; // has external_id
       const ci = { ...base, attributes: { ...base.attributes, organization_id: 'attacker-org' } };
-      const node: Record<string, unknown> = { id: 'ci_existing_org', organization_id: 'owner-org' };
+      const node: Record<string, unknown> = { id: 'ci_existing_org', organization_id: ORG };
 
       mockPostgresClient.query
         .mockResolvedValueOnce({ rows: [{ ci_id: 'ci_existing_org' }] }) // external_id match
         // An earlier source already recorded organization_id as a field.
-        .mockResolvedValueOnce({ rows: [{ field_name: 'organization_id', field_value: 'owner-org', source_name: 'nmap' }] });
+        .mockResolvedValueOnce({ rows: [{ field_name: 'organization_id', field_value: ORG, source_name: 'nmap' }] });
       mockPostgresClient.query.mockResolvedValue({ rows: [] });
       mockSession.run.mockImplementation(async (cypher: string, params: { properties?: Record<string, unknown> }) => {
         if (cypher.includes('SET ci += $properties')) Object.assign(node, params.properties);
-        return { records: [] };
+        // The lineage CI is in ORG, and the scoped update matches it.
+        return { records: [{ get: () => node['id'] }] };
       });
 
-      await engine.reconcileCI(ci);
+      await engine.reconcileCI(ci, ORG);
 
-      expect(node['organization_id']).toBe('owner-org');
+      expect(node['organization_id']).toBe(ORG);
       const recordedFields = mockPostgresClient.query.mock.calls
         .filter(call => String(call[0]).includes('INSERT INTO ci_field_sources'))
         .map(call => (call[1] as unknown[])[1]);
       expect(recordedFields).not.toContain('organization_id');
+    });
+  });
+
+  describe('Organization scope', () => {
+    const ORG_B = '22222222-2222-4222-8222-222222222222';
+
+    beforeEach(async () => {
+      mockPostgresClient.query.mockResolvedValueOnce({ rows: [] }); // default config
+      await engine.loadConfiguration();
+      mockPostgresClient.query.mockReset();
+    });
+
+    it('match Cypher carries organization_id = $org', async () => {
+      const identifiers: IdentificationAttributes = {
+        external_id: 'i-shared',
+        serial_number: 'SN-SHARED',
+        uuid: 'uuid-shared',
+        mac_address: ['00:11:22:33:44:55'],
+        fqdn: 'shared.example.com',
+        hostname: 'shared',
+        ip_address: ['10.0.0.1'],
+      };
+      const ci = { ...cloudVMWithVariations[0], identifiers };
+      // ci_source_lineage names a CI for the external id; Neo4j has nothing in ORG.
+      mockPostgresClient.query.mockResolvedValue({ rows: [{ ci_id: 'ci_other_org' }] });
+      mockSession.run.mockResolvedValue({ records: [] });
+
+      const result = await engine.findExistingCI(identifiers, ci, ORG);
+
+      expect(result).toBeNull();
+      // Lineage CI ownership, serial_number, uuid, mac_address, fqdn, composite.
+      expect(mockSession.run).toHaveBeenCalledTimes(6);
+      for (const [cypher, params] of mockSession.run.mock.calls) {
+        expect(cypher).toMatch(/WHERE ci\.organization_id = \$organizationId\s+AND/);
+        expect(params).toMatchObject({ organizationId: ORG });
+      }
+    });
+
+    it('merge refuses a CI of another org', async () => {
+      type Node = Record<string, unknown>;
+      interface Params { organizationId?: string; ciId?: string; ciIds?: string[]; value?: unknown; properties?: Node }
+
+      // ORG_B's CI carries the serial number, and ci_source_lineage maps the
+      // external id to it, exactly as the ORG discovery below identifies itself.
+      const foreign: Node = { id: 'ci_org_b', organization_id: ORG_B, name: 'b-server', serial_number: 'SN-SHARED', owner: 'org-b' };
+      const before = { ...foreign };
+      const nodes: Node[] = [foreign];
+      const record = (ciId: unknown) => ({ get: () => ciId });
+
+      // Neo4j over `nodes`, honouring the organization predicate only when the statement has it.
+      mockSession.run.mockImplementation(async (cypher: string, params: Params) => {
+        const inScope = (n: Node) =>
+          !cypher.includes('ci.organization_id = $organizationId') || n['organization_id'] === params.organizationId;
+        if (cypher.includes('SET ci = $properties')) {
+          nodes.push({ ...params.properties });
+          return { records: [record(params.properties!['id'])] };
+        }
+        if (cypher.includes('SET ci += $properties')) {
+          const target = nodes.find(n => n['id'] === params.ciId && inScope(n));
+          if (target) Object.assign(target, params.properties);
+          return { records: target ? [record(target['id'])] : [] };
+        }
+        if (cypher.includes('ci.id IN $ciIds')) {
+          return { records: nodes.filter(n => inScope(n) && params.ciIds!.includes(n['id'] as string)).map(n => record(n['id'])) };
+        }
+        const attribute = /ci\.(\w+) = \$value/.exec(cypher);
+        if (attribute) {
+          return { records: nodes.filter(n => inScope(n) && n[attribute[1]!] === params.value).map(n => record(n['id'])) };
+        }
+        return { records: [] };
+      });
+      mockPostgresClient.query.mockImplementation(async (sql: string) =>
+        sql.includes('FROM ci_source_lineage') ? { rows: [{ ci_id: 'ci_org_b' }] } : { rows: [] });
+
+      const discovered: TransformedCI = {
+        name: 'a-server',
+        ci_type: 'server',
+        source: 'aws',
+        source_id: 'i-shared',
+        identifiers: { external_id: 'i-shared', serial_number: 'SN-SHARED' },
+        attributes: { owner: 'org-a' },
+        relationships: [],
+        confidence_score: 100,
+        status: 'active',
+      };
+      const ciId = await engine.reconcileCI(discovered, ORG);
+
+      // ORG_B's CI is untouched; the discovery became a new CI of ORG.
+      expect(foreign).toEqual(before);
+      expect(ciId).not.toBe('ci_org_b');
+      expect(nodes.find(n => n['id'] === ciId)).toMatchObject({ organization_id: ORG, serial_number: 'SN-SHARED', owner: 'org-a' });
+      // No field source or lineage row is written for ORG_B's CI.
+      const foreignWrites = mockPostgresClient.query.mock.calls.filter(
+        ([sql, params]) => /INSERT INTO ci_(field_sources|source_lineage)/.test(sql) && (params as unknown[])[0] === 'ci_org_b'
+      );
+      expect(foreignWrites).toEqual([]);
     });
   });
 
@@ -731,7 +837,7 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
         ],
       });
 
-      const result = await engine.findExistingCI(identifiers, ci);
+      const result = await engine.findExistingCI(identifiers, ci, ORG);
 
       // Even with perfect match, composite should be capped
       expect(result?.confidence).toBeLessThanOrEqual(95);
@@ -750,7 +856,7 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
 
       mockSession.run.mockRejectedValueOnce(new Error('Connection failed'));
 
-      await expect(engine.findExistingCI(ci.identifiers, ci)).rejects.toThrow(
+      await expect(engine.findExistingCI(ci.identifiers, ci, ORG)).rejects.toThrow(
         'Connection failed'
       );
       expect(mockSession.close).toHaveBeenCalled();
@@ -762,7 +868,7 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
       mockSession.run.mockRejectedValueOnce(new Error('Query error'));
 
       try {
-        await engine.findExistingCI(ci.identifiers, ci);
+        await engine.findExistingCI(ci.identifiers, ci, ORG);
       } catch (error) {
         // Expected error
       }
@@ -794,7 +900,7 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
       const identifiers: IdentificationAttributes = {};
       const ci = { ...physicalServerDuplicates[0], identifiers };
 
-      const result = await engine.findExistingCI(identifiers, ci);
+      const result = await engine.findExistingCI(identifiers, ci, ORG);
 
       expect(result).toBeNull();
     });
@@ -807,7 +913,7 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
 
       mockSession.run.mockResolvedValueOnce({ records: [] });
 
-      const result = await engine.findExistingCI(identifiers, ci);
+      const result = await engine.findExistingCI(identifiers, ci, ORG);
 
       expect(result).toBeNull();
     });
@@ -823,7 +929,7 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
 
       mockSession.run.mockResolvedValueOnce({ records: [] });
 
-      const result = await engine.findExistingCI(identifiers, ci);
+      const result = await engine.findExistingCI(identifiers, ci, ORG);
 
       // Should not crash, just return null or try remaining strategies
       expect(result).toBeDefined();

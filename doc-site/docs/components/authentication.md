@@ -254,16 +254,18 @@ organization when a CI is created through `POST /api/v1/cis`.
 - `organization_id` in a create or update body is rejected with **400**.
 - CI ids (and `external_id`s) are unique across all organizations: creating a CI
   with an id another organization uses returns **409**, which reveals that the id exists.
-- CIs written by discovery, connectors, ETL and reconciliation carry no
-  `organization_id` and are invisible to every organization through `/api/v1/cis` and
-  `/api/v1/dashboards`.
+- CIs written by discovery, connectors and ETL carry no `organization_id` and are
+  invisible to every organization through `/api/v1/cis` and `/api/v1/dashboards`.
+  CIs created by `/api/v1/reconciliation/merge` carry the caller's organization (see
+  below).
 - No writer copies `organization_id` from request or stored data onto a CI: the
-  reconciliation merge and create (`/api/v1/reconciliation/merge`, GraphQL
-  `_reconciliation { mergeCI }`) drop it from `attributes`/`identifiers`, and an ITIL
-  baseline restore skips it. A merge or restore never changes a CI's organization.
+  reconciliation merge and create drop it (and `id`) from `attributes`/`identifiers`,
+  and an ITIL baseline restore skips it. A merge or restore never changes a CI's
+  organization.
 - GraphQL `createCI`, `updateCI` and `deleteCI` return `FORBIDDEN` until GraphQL CI
   tenant scoping lands.
-- **Not yet tenant-scoped.** Only `/api/v1/cis/**` and `/api/v1/dashboards/**` are scoped. Until the GraphQL slice
+- **Not yet tenant-scoped.** Only `/api/v1/cis/**`, `/api/v1/dashboards/**` and
+  `/api/v1/reconciliation/**` (below) are scoped. Until the GraphQL slice
   (T3c) and the later slices land, every other route and GraphQL resolver that touches
   CIs can still read other tenants' CIs, and some can modify or delete them:
   - GraphQL CI queries (`getCI(s)`, `searchCIs`, relationships, dependencies, impact)
@@ -272,10 +274,6 @@ organization when a CI is created through `POST /api/v1/cis`.
   - ITIL writes to CI properties by id: `/api/v1/itil/configuration-items/:id/lifecycle`,
     `/:id/status`, `/:id/audit` and `/:id/audit/complete`, plus
     `/api/v1/itil/baselines/:id/restore`;
-  - `/api/v1/reconciliation/match` and `/merge`, and GraphQL `_reconciliation { mergeCI }`:
-    matching runs across all organizations, and merge overwrites the matched CI's
-    attributes even when it belongs to another organization (but not its
-    `organization_id`);
   - `/api/v1/search/*`;
   - `/api/v1/drift` and `/api/v1/impact`, which look CIs up without an organization filter;
   - analytics and TBM CI reads, which return individual CIs as well as aggregates.
@@ -288,6 +286,35 @@ organization when a CI is created through `POST /api/v1/cis`.
 ```bash
 cypher-shell -a bolt://<host>:7687 -u <user> -f packages/database/src/neo4j/migrations/001_ci_organization_backfill.cypher
 ```
+
+### Identity reconciliation (`/api/v1/reconciliation`)
+
+- Every `/api/v1/reconciliation/**` route returns **403**
+  `{"_error":"Forbidden","_message":"Organization claim required"}` without an
+  organization claim, before any PostgreSQL or Neo4j query. The organization always
+  comes from the token, never from the body.
+- `/match` and `/merge` only consider CIs of the caller's organization for every
+  match strategy (`external_id` via `ci_source_lineage`, serial number, UUID, MAC,
+  FQDN, hostname + IP). Another organization's CI is never returned or written, even
+  with identical identifiers: the merge then creates a new CI in the caller's
+  organization, stamped with its `organization_id`.
+- `reconciliation_conflicts`, `ci_source_lineage` and `ci_field_sources` have no
+  organization column; a row belongs to the organization of the CI its `ci_id` names.
+  `/conflicts` lists only conflicts of the caller's CIs, and a conflict of another
+  organization's CI, a missing or a malformed id returns the same **404**
+  (`{"success":false,"error":"Not Found","message":"Conflict not found"}`).
+  `/lineage/:ci_id` and `/field-sources/:ci_id` return the CI **404** body
+  (`"message":"CI not found"`) for another organization's or a missing CI. Rows
+  whose `ci_id` names no CI of any organization (including org-less CIs) are not
+  served to anyone.
+- Rules and source authorities (`/rules`, `/source-authorities`) are global engine
+  configuration with no organization model: reading and changing them requires the
+  `admin` permission.
+- GraphQL `_reconciliation { mergeCI }` returns `FORBIDDEN`; the other
+  `_reconciliation` operations require an organization claim (`FORBIDDEN` without)
+  and follow the same rules.
+- The engine has no unscoped mode: every match and merge takes the caller's
+  organization, and no internal job (discovery, ETL) calls it.
 
 ### Tenant fixture seed (acceptance testing, scratch databases only)
 

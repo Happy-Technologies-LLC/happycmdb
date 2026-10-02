@@ -11,6 +11,33 @@ import { logger } from '@cmdb/common';
 import { getIdentityReconciliationEngine } from '@cmdb/identity-resolution';
 import { getPostgresClient } from '@cmdb/database';
 import { TransformedCI, IdentificationAttributes } from '@cmdb/integration-framework';
+import { requestOrganizationId } from '../../middleware/auth.middleware';
+import {
+  ciInOrganization,
+  findOrganizationConflict,
+  listOrganizationConflicts,
+} from '../../services/reconciliation-scope';
+
+/**
+ * The one 404 for a CI that is missing or belongs to another organization
+ * (same body as /api/v1/cis), so a caller cannot probe other tenants' CI ids.
+ */
+function sendCINotFound(res: Response): void {
+  res.status(404).json({
+    success: false,
+    error: 'Not Found',
+    message: 'CI not found'
+  });
+}
+
+/** The one 404 for a conflict that is missing, malformed or of another organization's CI. */
+function sendConflictNotFound(res: Response): void {
+  res.status(404).json({
+    success: false,
+    error: 'Not Found',
+    message: 'Conflict not found'
+  });
+}
 
 export class ReconciliationController {
   private reconciliationEngine = getIdentityReconciliationEngine();
@@ -58,7 +85,12 @@ export class ReconciliationController {
         status: 'active'
       };
 
-      const match = await this.reconciliationEngine.findExistingCI(idAttributes, discoveredCI);
+      // Only CIs of the caller's organization are candidates.
+      const match = await this.reconciliationEngine.findExistingCI(
+        idAttributes,
+        discoveredCI,
+        requestOrganizationId(req)
+      );
 
       if (!match) {
         res.json({
@@ -106,8 +138,8 @@ export class ReconciliationController {
         return;
       }
 
-      // Perform reconciliation
-      const ciId = await this.reconciliationEngine.reconcileCI(discoveredCI);
+      // Matches and updates only a CI of the caller's organization; a new CI is created in it.
+      const ciId = await this.reconciliationEngine.reconcileCI(discoveredCI, requestOrganizationId(req));
 
       res.json({
         success: true,
@@ -138,24 +170,17 @@ export class ReconciliationController {
       const limitNum = Math.min(parseInt(limit as string) || 100, 1000);
       const offsetNum = parseInt(offset as string) || 0;
 
-      const result = await this.postgresClient.query(
-        `SELECT id, ci_id, conflict_type, source_data, target_data,
-                conflicting_fields, status, created_at
-         FROM reconciliation_conflicts
-         WHERE status = $1
-         ORDER BY created_at DESC
-         LIMIT $2 OFFSET $3`,
-        [status, limitNum, offsetNum]
-      );
-
-      const total = await this.postgresClient.query(
-        'SELECT COUNT(*) as count FROM reconciliation_conflicts WHERE status = $1',
-        [status]
+      // Only conflicts whose CI is in the caller's organization.
+      const { rows, total } = await listOrganizationConflicts(
+        requestOrganizationId(req),
+        status as string,
+        limitNum,
+        offsetNum
       );
 
       res.json({
         success: true,
-        data: result.rows.map(row => ({
+        data: rows.map(row => ({
           id: row.id,
           ci_id: row.ci_id,
           conflict_type: row.conflict_type,
@@ -166,8 +191,8 @@ export class ReconciliationController {
           created_at: row.created_at
         })),
         pagination: {
-          total: parseInt(total.rows[0].count),
-          count: result.rows.length,
+          total,
+          count: rows.length,
           offset: offsetNum,
           limit: limitNum
         }
@@ -200,18 +225,10 @@ export class ReconciliationController {
         return;
       }
 
-      // Get conflict details
-      const conflictResult = await this.postgresClient.query(
-        'SELECT * FROM reconciliation_conflicts WHERE id = $1',
-        [id]
-      );
-
-      if (conflictResult.rows.length === 0) {
-        res.status(404).json({
-          success: false,
-          error: 'Not Found',
-          message: `Conflict with ID '${id}' not found`
-        });
+      // A conflict of another organization's CI gets the same 404 as a missing one.
+      const conflict = await findOrganizationConflict(requestOrganizationId(req), id!);
+      if (conflict === null) {
+        sendConflictNotFound(res);
         return;
       }
 
@@ -409,6 +426,12 @@ export class ReconciliationController {
     try {
       const { ci_id } = req.params;
 
+      // ci_source_lineage has no organization column: served only for a CI of the caller's organization.
+      if (!(await ciInOrganization(requestOrganizationId(req), ci_id!))) {
+        sendCINotFound(res);
+        return;
+      }
+
       const result = await this.postgresClient.query(
         `SELECT source_name, source_id, confidence_score,
                 discovered_at AS first_seen_at, last_seen_at
@@ -448,6 +471,12 @@ export class ReconciliationController {
   async getCIFieldSources(req: Request, res: Response): Promise<void> {
     try {
       const { ci_id } = req.params;
+
+      // ci_field_sources has no organization column: served only for a CI of the caller's organization.
+      if (!(await ciInOrganization(requestOrganizationId(req), ci_id!))) {
+        sendCINotFound(res);
+        return;
+      }
 
       const result = await this.postgresClient.query(
         `SELECT field_name, field_value, source_name, updated_at

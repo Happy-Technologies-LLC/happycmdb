@@ -59,6 +59,9 @@ jest.mock('@cmdb/event-processor', () => ({
 import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
 import { getEventProducer } from '@cmdb/event-processor';
 
+// Organization of every reconciliation in this suite.
+const ORG = '11111111-1111-4111-8111-111111111111';
+
 describe('Matching Strategies - Detailed Tests', () => {
   let engine: IdentityReconciliationEngine;
 
@@ -89,11 +92,13 @@ describe('Matching Strategies - Detailed Tests', () => {
       mockPostgresClient.query.mockResolvedValueOnce({
         rows: [{ ci_id: 'ci_aws_instance' }],
       });
+      // The lineage CI is in ORG.
+      mockSession.run.mockResolvedValueOnce({ records: [{ get: () => 'ci_aws_instance' }] });
 
       const ci = createServerWithStrongIdentifiers('web-server-01', 'aws');
       ci.identifiers = identifiers;
 
-      const result = await engine.findExistingCI(identifiers, ci);
+      const result = await engine.findExistingCI(identifiers, ci, ORG);
 
       expect(result).toBeTruthy();
       expect(result?.match_strategy).toBe('external_id');
@@ -110,11 +115,12 @@ describe('Matching Strategies - Detailed Tests', () => {
       mockPostgresClient.query.mockResolvedValueOnce({
         rows: [{ ci_id: 'ci_azure_vm' }],
       });
+      mockSession.run.mockResolvedValueOnce({ records: [{ get: () => 'ci_azure_vm' }] });
 
       const ci = createServerWithStrongIdentifiers('azure-vm-01', 'azure');
       ci.identifiers = identifiers;
 
-      const result = await engine.findExistingCI(identifiers, ci);
+      const result = await engine.findExistingCI(identifiers, ci, ORG);
 
       expect(result?.match_strategy).toBe('external_id');
       expect(result?.confidence).toBe(100);
@@ -129,11 +135,12 @@ describe('Matching Strategies - Detailed Tests', () => {
       mockPostgresClient.query.mockResolvedValueOnce({
         rows: [{ ci_id: 'ci_gcp_instance' }],
       });
+      mockSession.run.mockResolvedValueOnce({ records: [{ get: () => 'ci_gcp_instance' }] });
 
       const ci = createServerWithStrongIdentifiers('gcp-instance-01', 'gcp');
       ci.identifiers = identifiers;
 
-      const result = await engine.findExistingCI(identifiers, ci);
+      const result = await engine.findExistingCI(identifiers, ci, ORG);
 
       expect(result?.match_strategy).toBe('external_id');
     });
@@ -153,7 +160,7 @@ describe('Matching Strategies - Detailed Tests', () => {
       const ci = createServerWithStrongIdentifiers('server', 'azure');
       ci.identifiers = identifiers;
 
-      const result = await engine.findExistingCI(identifiers, ci);
+      const result = await engine.findExistingCI(identifiers, ci, ORG);
 
       expect(result).toBeNull();
     });
@@ -176,7 +183,7 @@ describe('Matching Strategies - Detailed Tests', () => {
       const ci = createServerWithStrongIdentifiers('vmware-vm', 'vmware');
       ci.identifiers = identifiers;
 
-      const result = await engine.findExistingCI(identifiers, ci);
+      const result = await engine.findExistingCI(identifiers, ci, ORG);
 
       expect(result?.match_strategy).toBe('serial_number');
       expect(result?.confidence).toBe(95);
@@ -198,7 +205,7 @@ describe('Matching Strategies - Detailed Tests', () => {
       const ci = createServerWithStrongIdentifiers('dell-server', 'ssh');
       ci.identifiers = identifiers;
 
-      const result = await engine.findExistingCI(identifiers, ci);
+      const result = await engine.findExistingCI(identifiers, ci, ORG);
 
       expect(result?.match_strategy).toBe('serial_number');
     });
@@ -219,7 +226,7 @@ describe('Matching Strategies - Detailed Tests', () => {
       const ci = createServerWithStrongIdentifiers('hp-server', 'ssh');
       ci.identifiers = identifiers;
 
-      const result = await engine.findExistingCI(identifiers, ci);
+      const result = await engine.findExistingCI(identifiers, ci, ORG);
 
       expect(result?.match_strategy).toBe('serial_number');
     });
@@ -242,7 +249,7 @@ describe('Matching Strategies - Detailed Tests', () => {
       const ci = createServerWithStrongIdentifiers('server', 'vmware');
       ci.identifiers = identifiers;
 
-      const result = await engine.findExistingCI(identifiers, ci);
+      const result = await engine.findExistingCI(identifiers, ci, ORG);
 
       expect(result?.match_strategy).toBe('uuid');
       expect(result?.confidence).toBe(95);
@@ -264,7 +271,7 @@ describe('Matching Strategies - Detailed Tests', () => {
       const ci = createServerWithStrongIdentifiers('server', 'ssh');
       ci.identifiers = identifiers;
 
-      const result = await engine.findExistingCI(identifiers, ci);
+      const result = await engine.findExistingCI(identifiers, ci, ORG);
 
       expect(result?.match_strategy).toBe('uuid');
     });
@@ -287,7 +294,7 @@ describe('Matching Strategies - Detailed Tests', () => {
       const ci = createServerWithStrongIdentifiers('server', 'nmap');
       ci.identifiers = identifiers;
 
-      const result = await engine.findExistingCI(identifiers, ci);
+      const result = await engine.findExistingCI(identifiers, ci, ORG);
 
       expect(result?.match_strategy).toBe('mac_address');
       expect(result?.confidence).toBe(85);
@@ -313,7 +320,7 @@ describe('Matching Strategies - Detailed Tests', () => {
       const ci = createServerWithStrongIdentifiers('server', 'ssh');
       ci.identifiers = identifiers;
 
-      const result = await engine.findExistingCI(identifiers, ci);
+      const result = await engine.findExistingCI(identifiers, ci, ORG);
 
       expect(result?.match_strategy).toBe('mac_address');
     });
@@ -354,7 +361,7 @@ describe('Matching Strategies - Detailed Tests', () => {
       const ci = createServerWithStrongIdentifiers('prod-db-01', 'ssh');
       ci.identifiers = identifiers;
 
-      const result = await engine.findExistingCI(identifiers, ci);
+      const result = await engine.findExistingCI(identifiers, ci, ORG);
 
       expect(result?.match_strategy).toBe('fqdn');
       expect(result?.confidence).toBe(80);
@@ -377,7 +384,7 @@ describe('Matching Strategies - Detailed Tests', () => {
       ci.identifiers = identifiers;
 
       // The implementation should handle case-insensitivity
-      const result = await engine.findExistingCI(identifiers, ci);
+      const result = await engine.findExistingCI(identifiers, ci, ORG);
 
       expect(result?.match_strategy).toBe('fqdn');
     });
@@ -406,7 +413,7 @@ describe('Matching Strategies - Detailed Tests', () => {
       const ci = createServerWithStrongIdentifiers('prod-app-01', 'ssh');
       ci.identifiers = identifiers;
 
-      const result = await engine.findExistingCI(identifiers, ci);
+      const result = await engine.findExistingCI(identifiers, ci, ORG);
 
       expect(result?.match_strategy).toBe('composite_fuzzy');
       expect(result?.confidence).toBeGreaterThan(90);
@@ -434,7 +441,7 @@ describe('Matching Strategies - Detailed Tests', () => {
       const ci = createServerWithStrongIdentifiers('prod-app-server-01', 'nmap');
       ci.identifiers = identifiers;
 
-      const result = await engine.findExistingCI(identifiers, ci);
+      const result = await engine.findExistingCI(identifiers, ci, ORG);
 
       // Should match but with lower confidence
       if (result) {
@@ -466,7 +473,7 @@ describe('Matching Strategies - Detailed Tests', () => {
       const ci = createServerWithStrongIdentifiers('web-frontend-prod', 'nmap');
       ci.identifiers = identifiers;
 
-      const result = await engine.findExistingCI(identifiers, ci);
+      const result = await engine.findExistingCI(identifiers, ci, ORG);
 
       // Should not match (score below threshold)
       expect(result).toBeNull();
@@ -513,7 +520,7 @@ describe('Matching Strategies - Detailed Tests', () => {
       const ci = createServerWithStrongIdentifiers('prod-server', 'ssh');
       ci.identifiers = identifiers;
 
-      const result = await engine.findExistingCI(identifiers, ci);
+      const result = await engine.findExistingCI(identifiers, ci, ORG);
 
       // Should select candidate 2 (best match)
       expect(result?.ci_id).toBe('ci_candidate_2');
@@ -535,15 +542,20 @@ describe('Matching Strategies - Detailed Tests', () => {
       mockPostgresClient.query.mockResolvedValueOnce({
         rows: [{ ci_id: 'ci_external_id' }],
       });
+      mockSession.run.mockResolvedValueOnce({ records: [{ get: () => 'ci_external_id' }] });
 
       const ci = createServerWithStrongIdentifiers('server', 'aws');
       ci.identifiers = identifiers;
 
-      const result = await engine.findExistingCI(identifiers, ci);
+      const result = await engine.findExistingCI(identifiers, ci, ORG);
 
       expect(result?.match_strategy).toBe('external_id');
-      // Should not check other strategies
-      expect(mockSession.run).not.toHaveBeenCalled();
+      // Only the lineage CI's organization is checked; no other strategy runs.
+      expect(mockSession.run).toHaveBeenCalledTimes(1);
+      expect(mockSession.run).toHaveBeenCalledWith(
+        expect.stringContaining('ci.organization_id = $organizationId AND ci.id IN $ciIds'),
+        { organizationId: ORG, ciIds: ['ci_external_id'] }
+      );
     });
 
     it('should try serial_number if external_id not found', async () => {
@@ -567,7 +579,7 @@ describe('Matching Strategies - Detailed Tests', () => {
       const ci = createServerWithStrongIdentifiers('server', 'ssh');
       ci.identifiers = identifiers;
 
-      const result = await engine.findExistingCI(identifiers, ci);
+      const result = await engine.findExistingCI(identifiers, ci, ORG);
 
       expect(result?.match_strategy).toBe('serial_number');
     });
@@ -595,7 +607,7 @@ describe('Matching Strategies - Detailed Tests', () => {
       const ci = createServerWithWeakIdentifiers('server', 'nmap');
       ci.identifiers = identifiers;
 
-      const result = await engine.findExistingCI(identifiers, ci);
+      const result = await engine.findExistingCI(identifiers, ci, ORG);
 
       expect(result?.match_strategy).toBe('composite_fuzzy');
     });

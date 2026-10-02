@@ -6,10 +6,11 @@
  * applied centrally by server.ts (`authMiddleware.authenticate()` mounted
  * on every /api/v1 route before any router), so this suite simulates that
  * by mounting the captured mock middleware ahead of `reconciliationRoutes`,
- * mirroring production. Reads (including the read-like POST /match lookup)
- * only need to be authenticated; merge/resolve/rules/source-authority
- * mutations additionally require the 'write' permission
- * (`authMiddleware.requirePermission('write')`).
+ * mirroring production. Every route requires an organization claim
+ * (`authMiddleware.requireOrganization()`, router-level). Reads (including the
+ * read-like POST /match lookup) then only need to be authenticated; merge and
+ * conflict resolution require the 'write' permission; rules and source
+ * authorities (global configuration) require 'admin'.
  */
 
 import express, { type Request, type Response } from 'express';
@@ -17,25 +18,34 @@ import request from 'supertest';
 import { jest, describe, it, expect, beforeEach } from '@jest/globals';
 import { ROLE_PERMISSIONS, type Permission, type UserRole } from '../../../auth/types';
 
-type ReqWithUser = Request & { user?: { _userId?: string; _role?: UserRole } };
+type ReqWithUser = Request & { user?: { _userId?: string; _role?: UserRole; _organizationId?: string } };
 
 const mockRouteHandler = jest.fn((req: Request, res: Response) => {
   res.status(200).json({ actor: (req as ReqWithUser).user?._userId });
 });
 
-const TOKEN_ROLES: Record<string, UserRole> = {
-  'Bearer admin-token': 'admin',
-  'Bearer operator-token': 'operator',
-  'Bearer viewer-token': 'viewer',
+const ORG = '11111111-1111-4111-8111-111111111111';
+const TOKENS: Record<string, { role: UserRole; organizationId?: string }> = {
+  'Bearer admin-token': { role: 'admin', organizationId: ORG },
+  'Bearer operator-token': { role: 'operator', organizationId: ORG },
+  'Bearer viewer-token': { role: 'viewer', organizationId: ORG },
 };
 
 const mockAuthenticate = jest.fn(() => (req: Request, res: Response, next: () => void) => {
-  const role = TOKEN_ROLES[req.get('authorization') ?? ''];
-  if (!role) {
+  const token = TOKENS[req.get('authorization') ?? ''];
+  if (!token) {
     res.status(401).json({ error: 'Unauthorized' });
     return;
   }
-  (req as ReqWithUser).user = { _userId: 'route-user', _role: role };
+  (req as ReqWithUser).user = { _userId: 'route-user', _role: token.role, _organizationId: token.organizationId };
+  next();
+});
+
+const mockRequireOrganization = jest.fn(() => (req: Request, res: Response, next: () => void) => {
+  if (!(req as ReqWithUser).user?._organizationId) {
+    res.status(403).json({ error: 'Forbidden' });
+    return;
+  }
   next();
 });
 
@@ -58,6 +68,7 @@ jest.mock('../../../auth/auth-bootstrap', () => ({
   getAuthMiddleware: jest.fn(() => ({
     authenticate: mockAuthenticate,
     requirePermission: mockRequirePermission,
+    requireOrganization: mockRequireOrganization,
   })),
 }));
 
@@ -97,8 +108,6 @@ type RouteCase = [string, string, Record<string, unknown> | undefined];
 
 const readRoutes: RouteCase[] = [
   ['GET', '/reconciliation/conflicts', undefined],
-  ['GET', '/reconciliation/rules', undefined],
-  ['GET', '/reconciliation/source-authorities', undefined],
   ['GET', '/reconciliation/lineage/ci-1', undefined],
   ['GET', '/reconciliation/field-sources/ci-1', undefined],
   // Read-like: a lookup query that does not persist state.
@@ -118,6 +127,12 @@ const writeRoutes: RouteCase[] = [
     },
   ],
   ['POST', '/reconciliation/conflicts/conflict-1/resolve', { resolution: 'accept_source' }],
+];
+
+// Global configuration with no organization model: admin only.
+const adminRoutes: RouteCase[] = [
+  ['GET', '/reconciliation/rules', undefined],
+  ['GET', '/reconciliation/source-authorities', undefined],
   [
     'POST',
     '/reconciliation/rules',
@@ -149,7 +164,7 @@ describe('reconciliation routes', () => {
     });
   });
 
-  it.each([...readRoutes, ...writeRoutes])(
+  it.each([...readRoutes, ...writeRoutes, ...adminRoutes])(
     'returns 401 before reaching %s %s without credentials',
     async (method, path, body) => {
       const response = await invoke(testApp(), method, path, body);
@@ -172,6 +187,18 @@ describe('reconciliation routes', () => {
 
   it.each(writeRoutes)('an operator (write) can reach %s %s', async (method, path, body) => {
     const response = await invoke(testApp(), method, path, body, 'Bearer operator-token');
+    expect(response.status).toBe(200);
+    expect(mockRouteHandler).toHaveBeenCalled();
+  });
+
+  it.each(adminRoutes)('an operator receives 403 on admin-only %s %s', async (method, path, body) => {
+    const response = await invoke(testApp(), method, path, body, 'Bearer operator-token');
+    expect(response.status).toBe(403);
+    expect(mockRouteHandler).not.toHaveBeenCalled();
+  });
+
+  it.each(adminRoutes)('an admin can reach %s %s', async (method, path, body) => {
+    const response = await invoke(testApp(), method, path, body, 'Bearer admin-token');
     expect(response.status).toBe(200);
     expect(mockRouteHandler).toHaveBeenCalled();
   });

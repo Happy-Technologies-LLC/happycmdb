@@ -34,6 +34,9 @@ jest.mock('@cmdb/event-processor', () => {
   };
 });
 
+// Organization of every reconciliation in this suite.
+const ORG = '11111111-1111-4111-8111-111111111111';
+
 describe('ReconciliationWorkflow - Integration Tests', () => {
   let engine: IdentityReconciliationEngine;
   let neo4jClient: any;
@@ -72,7 +75,7 @@ describe('ReconciliationWorkflow - Integration Tests', () => {
 
       // Discover server via multiple sources sequentially
       for (const discovery of discoveries) {
-        const ciId = await engine.reconcileCI(discovery);
+        const ciId = await engine.reconcileCI(discovery, ORG);
         ciIds.push(ciId);
       }
 
@@ -111,7 +114,7 @@ describe('ReconciliationWorkflow - Integration Tests', () => {
 
       const ciIds: string[] = [];
       for (const discovery of discoveries) {
-        const ciId = await engine.reconcileCI(discovery);
+        const ciId = await engine.reconcileCI(discovery, ORG);
         ciIds.push(ciId);
       }
 
@@ -133,7 +136,7 @@ describe('ReconciliationWorkflow - Integration Tests', () => {
       const ciIds: string[] = [];
 
       for (const discovery of discoveries) {
-        const ciId = await engine.reconcileCI(discovery);
+        const ciId = await engine.reconcileCI(discovery, ORG);
         ciIds.push(ciId);
       }
 
@@ -149,10 +152,10 @@ describe('ReconciliationWorkflow - Integration Tests', () => {
       const [awsDiscovery, sshDiscovery] = cloudVMWithVariations;
 
       // Discover via SSH first (no external_id, only hostname)
-      const ciId1 = await engine.reconcileCI(sshDiscovery);
+      const ciId1 = await engine.reconcileCI(sshDiscovery, ORG);
 
       // Then discover via AWS (has external_id)
-      const ciId2 = await engine.reconcileCI(awsDiscovery);
+      const ciId2 = await engine.reconcileCI(awsDiscovery, ORG);
 
       // Should be same CI
       expect(ciId1).toBe(ciId2);
@@ -170,7 +173,7 @@ describe('ReconciliationWorkflow - Integration Tests', () => {
       const ciIds: string[] = [];
 
       for (const discovery of discoveries) {
-        const ciId = await engine.reconcileCI(discovery);
+        const ciId = await engine.reconcileCI(discovery, ORG);
         ciIds.push(ciId);
       }
 
@@ -193,12 +196,12 @@ describe('ReconciliationWorkflow - Integration Tests', () => {
       const [datadogDiscovery, sshDiscovery] = databaseWithConflicts;
 
       // Discover via SSH first (lower authority)
-      const ciId1 = await engine.reconcileCI(sshDiscovery);
+      const ciId1 = await engine.reconcileCI(sshDiscovery, ORG);
       let ci = await getCIFromNeo4j(ciId1);
       expect(ci.version).toBe('14.7'); // SSH version
 
       // Then discover via Datadog (higher authority)
-      const ciId2 = await engine.reconcileCI(datadogDiscovery);
+      const ciId2 = await engine.reconcileCI(datadogDiscovery, ORG);
       expect(ciId1).toBe(ciId2);
 
       ci = await getCIFromNeo4j(ciId2);
@@ -215,7 +218,7 @@ describe('ReconciliationWorkflow - Integration Tests', () => {
 
       // Discover via Datadog first. createNewCI spreads attributes onto the
       // node but does NOT seed ci_field_sources, so there is no lineage yet.
-      const ciId1 = await engine.reconcileCI(datadogDiscovery);
+      const ciId1 = await engine.reconcileCI(datadogDiscovery, ORG);
       let ci = await getCIFromNeo4j(ciId1);
       expect(ci.version).toBe('14.8');
 
@@ -223,7 +226,7 @@ describe('ReconciliationWorkflow - Integration Tests', () => {
       // attribute is treated as new and written, so the SSH value wins.
       // (The default source_authority map has no 'datadog' entry, so it would
       // resolve to the fallback authority anyway.)
-      const ciId2 = await engine.reconcileCI(sshDiscovery);
+      const ciId2 = await engine.reconcileCI(sshDiscovery, ORG);
       expect(ciId1).toBe(ciId2);
 
       ci = await getCIFromNeo4j(ciId2);
@@ -240,7 +243,7 @@ describe('ReconciliationWorkflow - Integration Tests', () => {
       const ciIds: string[] = [];
 
       for (const discovery of discoveries) {
-        const ciId = await engine.reconcileCI(discovery);
+        const ciId = await engine.reconcileCI(discovery, ORG);
         ciIds.push(ciId);
       }
 
@@ -271,7 +274,7 @@ describe('ReconciliationWorkflow - Integration Tests', () => {
       const ciIds: string[] = [];
 
       for (const discovery of discoveries) {
-        const ciId = await engine.reconcileCI(discovery);
+        const ciId = await engine.reconcileCI(discovery, ORG);
         ciIds.push(ciId);
       }
 
@@ -307,8 +310,8 @@ describe('ReconciliationWorkflow - Integration Tests', () => {
         confidence_score: 80,
       };
 
-      const ciId1 = await engine.reconcileCI(app1);
-      const ciId2 = await engine.reconcileCI(unrelatedApp);
+      const ciId1 = await engine.reconcileCI(app1, ORG);
+      const ciId2 = await engine.reconcileCI(unrelatedApp, ORG);
 
       // Should be different CIs
       expect(ciId1).not.toBe(ciId2);
@@ -327,7 +330,7 @@ describe('ReconciliationWorkflow - Integration Tests', () => {
       const startTime = Date.now();
 
       const results = await Promise.all(
-        bulkDiscoveries.map(discovery => engine.reconcileCI(discovery))
+        bulkDiscoveries.map(discovery => engine.reconcileCI(discovery, ORG))
       );
 
       const duration = Date.now() - startTime;
@@ -341,7 +344,7 @@ describe('ReconciliationWorkflow - Integration Tests', () => {
 
       // Simulate concurrent discoveries of same CI
       const promises = Array(10).fill(null).map(() =>
-        engine.reconcileCI({ ...ci })
+        engine.reconcileCI({ ...ci }, ORG)
       );
 
       const ciIds = await Promise.all(promises);
@@ -354,8 +357,34 @@ describe('ReconciliationWorkflow - Integration Tests', () => {
       // discoveries of the same CI can race and create more than one node. A
       // subsequent (non-concurrent) discovery deduplicates against a CI that is
       // already persisted (matched here by its uuid identifier).
-      const followUp = await engine.reconcileCI({ ...ci });
+      const followUp = await engine.reconcileCI({ ...ci }, ORG);
       expect(new Set(ciIds).has(followUp)).toBe(true);
+    });
+  });
+
+  describe('Organization scope', () => {
+    const ORG_B = '22222222-2222-4222-8222-222222222222';
+
+    it("never matches or merges into another organization's CI with identical identifiers", async () => {
+      // external_id (via ci_source_lineage), MAC, FQDN and hostname + IP all shared.
+      const discovery = toStorableDiscovery(physicalServerDuplicates[1]!);
+
+      const ciA = await engine.reconcileCI(discovery, ORG);
+      const before = await getCIFromNeo4j(ciA);
+      expect(before.organization_id).toBe(ORG);
+
+      const ciB = await engine.reconcileCI(
+        { ...discovery, attributes: { ...discovery.attributes, os_version: 'written-by-org-b' } },
+        ORG_B
+      );
+
+      expect(ciB).not.toBe(ciA);
+      expect(await getCIFromNeo4j(ciA)).toEqual(before);
+      expect((await getCIFromNeo4j(ciB)).organization_id).toBe(ORG_B);
+
+      // Each organization's lookup finds only its own CI.
+      expect(await engine.findExistingCI(discovery.identifiers, discovery, ORG)).toMatchObject({ ci_id: ciA });
+      expect(await engine.findExistingCI(discovery.identifiers, discovery, ORG_B)).toMatchObject({ ci_id: ciB });
     });
   });
 
@@ -375,7 +404,7 @@ describe('ReconciliationWorkflow - Integration Tests', () => {
         confidence_score: 50,
       };
 
-      const ciId = await engine.reconcileCI(minimalCI);
+      const ciId = await engine.reconcileCI(minimalCI, ORG);
       expect(ciId).toBeTruthy();
 
       const ci = await getCIFromNeo4j(ciId);
@@ -386,10 +415,10 @@ describe('ReconciliationWorkflow - Integration Tests', () => {
       const ci = physicalServerDuplicates[0];
 
       // Initial discovery
-      const ciId1 = await engine.reconcileCI(ci);
+      const ciId1 = await engine.reconcileCI(ci, ORG);
 
       // Simulate time passing and rediscovery
-      const ciId2 = await engine.reconcileCI(ci);
+      const ciId2 = await engine.reconcileCI(ci, ORG);
 
       expect(ciId1).toBe(ciId2);
 

@@ -17,8 +17,17 @@ export const reconciliationRoutes = Router();
 const controller = new ReconciliationController();
 const authMiddleware = getAuthMiddleware();
 
+// Tenant scoping: matching, merging, conflicts, lineage and field sources act
+// only on CIs of the caller's organization (taken from the token, never the
+// body). A token without an org claim gets 403 here, before any database access.
+reconciliationRoutes.use(authMiddleware.requireOrganization());
+
 // Apply audit middleware to all routes
 reconciliationRoutes.use(auditMiddleware);
+
+// Rules and source authorities are global engine configuration with no
+// organization model: reading or changing them is admin-only.
+const requireAdmin = authMiddleware.requirePermission('admin');
 
 // Validation schemas
 const matchRequestSchema = Joi.object({
@@ -142,40 +151,42 @@ reconciliationRoutes.post(
 
 /**
  * GET /api/v1/reconciliation/rules
- * List reconciliation rules and configuration
+ * List reconciliation rules and configuration (global; admin only)
  */
 reconciliationRoutes.get(
   '/rules',
+  requireAdmin,
   controller.listRules.bind(controller)
 );
 
 /**
  * POST /api/v1/reconciliation/rules
- * Create a new reconciliation rule
+ * Create a new reconciliation rule (global; admin only)
  */
 reconciliationRoutes.post(
   '/rules',
-  authMiddleware.requirePermission('write'),
+  requireAdmin,
   validateRequest(createRuleSchema, 'body'),
   controller.createRule.bind(controller)
 );
 
 /**
  * GET /api/v1/reconciliation/source-authorities
- * List source authority scores
+ * List source authority scores (global; admin only)
  */
 reconciliationRoutes.get(
   '/source-authorities',
+  requireAdmin,
   controller.listSourceAuthorities.bind(controller)
 );
 
 /**
  * PUT /api/v1/reconciliation/source-authorities/:source
- * Update source authority score
+ * Update source authority score (global; admin only)
  */
 reconciliationRoutes.put(
   '/source-authorities/:source',
-  authMiddleware.requirePermission('write'),
+  requireAdmin,
   validateRequest(updateSourceAuthoritySchema, 'body'),
   controller.updateSourceAuthority.bind(controller)
 );

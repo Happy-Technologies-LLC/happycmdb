@@ -2119,7 +2119,9 @@ paths:
     post:
       tags: [Reconciliation]
       summary: Find matching CIs
-      description: Find duplicate/matching CIs based on identifiers
+      description: >-
+        Find a CI matching the identifiers. Only CIs of the caller's organization
+        are candidates; another organization's CI is never returned.
       operationId: findMatches
       requestBody:
         required: true
@@ -2147,12 +2149,17 @@ paths:
                         type: string
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/ReconciliationForbidden'
 
   /reconciliation/merge:
     post:
       tags: [Reconciliation]
       summary: Merge CI
-      description: Reconcile discovered CI into CMDB
+      description: >-
+        Reconcile a discovered CI into the caller's organization: it updates a
+        matching CI of that organization or creates a new one stamped with it.
+        Another organization's CI is never matched or written.
       operationId: mergeCI
       requestBody:
         required: true
@@ -2179,12 +2186,14 @@ paths:
                       type: object
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/ReconciliationForbidden'
 
   /reconciliation/conflicts:
     get:
       tags: [Reconciliation]
       summary: List conflicts
-      description: Get pending reconciliation conflicts
+      description: Reconciliation conflicts whose CI is in the caller's organization
       operationId: listConflicts
       parameters:
         - name: status
@@ -2211,12 +2220,17 @@ paths:
                     type: integer
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/ReconciliationForbidden'
 
   /reconciliation/conflicts/{id}/resolve:
     post:
       tags: [Reconciliation]
       summary: Resolve conflict
-      description: Resolve a specific reconciliation conflict
+      description: >-
+        Resolve a conflict whose CI is in the caller's organization. Another
+        organization's, a missing or a malformed conflict id returns the same 404
+        (`{"success":false,"error":"Not Found","message":"Conflict not found"}`).
       operationId: resolveConflict
       parameters:
         - name: id
@@ -2243,6 +2257,8 @@ paths:
           description: Conflict resolved
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/ReconciliationForbidden'
         '404':
           $ref: '#/components/responses/NotFound'
 
@@ -2250,6 +2266,7 @@ paths:
     get:
       tags: [Reconciliation]
       summary: List reconciliation rules
+      description: Global engine configuration; requires the `admin` permission.
       operationId: listReconciliationRules
       responses:
         '200':
@@ -2262,10 +2279,13 @@ paths:
                   $ref: '#/components/schemas/ReconciliationRule'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/ReconciliationForbidden'
 
     post:
       tags: [Reconciliation]
       summary: Create reconciliation rule
+      description: Global engine configuration; requires the `admin` permission.
       operationId: createReconciliationRule
       requestBody:
         required: true
@@ -2284,12 +2304,17 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/ReconciliationForbidden'
 
   /reconciliation/lineage/{ci_id}:
     get:
       tags: [Reconciliation]
       summary: Get CI lineage
-      description: Get source lineage for a CI
+      description: >-
+        Source lineage for a CI of the caller's organization. Another
+        organization's or a missing CI returns the same 404
+        (`{"success":false,"error":"Not Found","message":"CI not found"}`).
       operationId: getCILineage
       parameters:
         - name: ci_id
@@ -2321,6 +2346,8 @@ paths:
                           type: integer
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/ReconciliationForbidden'
         '404':
           $ref: '#/components/responses/NotFound'
 
@@ -3509,6 +3536,20 @@ components:
         The authenticated user has no organization: every /cis endpoint is
         tenant-scoped and rejects the request before any data access. Mutations
         also return 403 without the `write` permission.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/MiddlewareError'
+          example:
+            _error: Forbidden
+            _message: Organization claim required
+
+    ReconciliationForbidden:
+      description: >-
+        The authenticated user has no organization: every /reconciliation
+        endpoint is tenant-scoped and rejects the request before any data
+        access. Merge and conflict resolution also return 403 without the
+        `write` permission; rules and source authorities without `admin`.
       content:
         application/json:
           schema:

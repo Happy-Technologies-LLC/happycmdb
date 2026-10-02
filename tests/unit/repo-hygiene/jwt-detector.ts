@@ -51,11 +51,13 @@ const SNIFF_BYTES = 8000;
 /**
  * `ey`/`ew` starts JSON at `{`. Leading JSON whitespace encodes as I, C or
  * D; limit the other prefixes to actual whitespace byte possibilities before
- * attempting to decode a header. `e` alone permits a split inside `ey`/`ew`.
+ * attempting to decode a header. A lone `e` is considered only when a JOIN
+ * immediately follows and the next piece begins `y`/`w`.
  */
-const TOKEN_START = /e[wy]|e(?=['"`])|(?:I[ACH]|C[ginQSX]|D[QSX])[A-Za-z0-9_-]{0,2}/g;
+const TOKEN_START = /e[wy]|e(?=['"`]|[ \t]*\\?\r?\n)|(?:I[ACH]|C[ginQSX]|D[QSX])[A-Za-z0-9_-]{0,2}/g;
 const ESCAPED_BOUNDARY = /(?:%[0-9A-Fa-f]{2}|\\[nrt]|\\u[0-9A-Fa-f]{4}|\\x[0-9A-Fa-f]{2})$/;
-const B64_PIECE = /(?<![A-Za-z0-9+/_-])[A-Za-z0-9+/_-]{20,}/g;
+/** A 16-column wrapped run still reaches MIN_B64_RUN after bounded splicing. */
+const B64_PIECE = /(?<![A-Za-z0-9+/_-])[A-Za-z0-9+/_-]{16,}/g;
 /**
  * Splices between two pieces of one value: a single line break with optional
  * indentation and comment/quote prefix (a blank line ends the value), a `\`
@@ -192,6 +194,11 @@ function scanText(text: string, depth: number, lines: Set<number>): void {
     if (isB64Url(text.charCodeAt(start - 1)) &&
         !ESCAPED_BOUNDARY.test(text.slice(Math.max(0, start - 6), start))) continue;
     if (m[0][0] !== 'e' && ![9, 10, 13, 32].includes(Buffer.from(m[0], 'base64url')[0])) continue;
+    if (m[0] === 'e') {
+      JOIN.lastIndex = start + 1;
+      const join = JOIN.exec(text);
+      if (!join || !/[yw]/.test(text[start + 1 + join[0].length] ?? '')) continue;
+    }
     // Validate the header before splicing the whole candidate, so a long
     // token-char run with many non-JOSE starts stays linear.
     const head = splice(text, start, isB64Url, MAX_HEADER + 1).text;

@@ -13,7 +13,7 @@ import express, { type Express } from 'express';
 import * as bcrypt from 'bcrypt';
 import { v4 as uuidv4 } from 'uuid';
 import { startTestContainers, stopTestContainers } from '../helpers/test-containers';
-import { getNeo4jClient } from '@cmdb/database';
+import { getNeo4jClient, UNSCOPED_CI_ACCESS } from '@cmdb/database';
 import { authRoutes } from '../../src/rest/routes/auth.routes';
 import { createGraphQLServer } from '../../src/graphql/server';
 import type { ApolloServer } from '@apollo/server';
@@ -59,6 +59,7 @@ describe('GraphQL API Integration Tests', () => {
     }> = {}
   ) => {
     const id = overrides._id ?? uuidv4();
+    // GraphQL CI reads are not tenant-scoped yet, so fixtures are written unscoped (no organization).
     await getNeo4jClient().createCI({
       _id: id,
       external_id: overrides._externalId,
@@ -67,7 +68,7 @@ describe('GraphQL API Integration Tests', () => {
       status: overrides._status ?? 'active',
       environment: overrides._environment ?? 'production',
       metadata: overrides._metadata ?? {},
-    });
+    }, UNSCOPED_CI_ACCESS);
     return id;
   };
 
@@ -182,81 +183,35 @@ describe('GraphQL API Integration Tests', () => {
     expect(expectSuccess(paged).getCIs).toHaveLength(1);
   });
 
-  it('creates a CI with metadata and persists canonical fields', async () => {
-    const ciId = uuidv4();
-    const metadata = { ipAddress: '10.0.1.100', tags: ['web', 'production'] };
-    const response = await execute(
+  // /api/v1/cis is organization-scoped and GraphQL has no CI tenant scoping
+  // yet, so the CI mutations fail closed and write nothing.
+  it('refuses createCI, updateCI and deleteCI with FORBIDDEN until GraphQL CI tenant scoping lands', async () => {
+    const newId = uuidv4();
+    const created = await execute(
       `mutation CreateCI($input: CreateCIInput!) {
-        createCI(input: $input) { _id _externalId _name _type _status _environment _metadata }
+        createCI(input: $input) { _id }
       }`,
-      {
-        input: {
-          _id: ciId,
-          _externalId: 'server-001',
-          _name: 'production-server',
-          _type: 'SERVER',
-          _status: 'ACTIVE',
-          _environment: 'PRODUCTION',
-          _metadata: metadata,
-        },
-      }
+      { input: { _id: newId, _name: 'production-server', _type: 'SERVER' } }
     );
-    expect(expectSuccess(response).createCI).toMatchObject({
-      _id: ciId,
-      _externalId: 'server-001',
-      _name: 'production-server',
-      _type: 'SERVER',
-      _status: 'ACTIVE',
-      _environment: 'PRODUCTION',
-      _metadata: metadata,
+    expect(created.body.errors?.[0]).toMatchObject({
+      message: 'CI tenant scoping for GraphQL is pending',
+      extensions: { code: 'FORBIDDEN' },
     });
 
-    const persisted = await execute('{ getCIs { _id _metadata } }');
-    expect(expectSuccess(persisted).getCIs).toEqual([
-      expect.objectContaining({ _id: ciId, _metadata: metadata }),
-    ]);
-  });
-
-  it('updates an existing CI and persists the update', async () => {
     const ciId = await createCI({ _name: 'old-name', _status: 'inactive' });
-    const response = await execute(
+    const updated = await execute(
       `mutation UpdateCI($id: ID!, $input: UpdateCIInput!) {
-        updateCI(id: $id, input: $input) { _id _name _status _environment _metadata }
+        updateCI(id: $id, input: $input) { _id }
       }`,
-      {
-        id: ciId,
-        input: {
-          _name: 'updated-server',
-          _status: 'ACTIVE',
-          _environment: 'STAGING',
-          _metadata: { version: '2.0' },
-        },
-      }
+      { id: ciId, input: { _name: 'updated-server' } }
     );
-    expect(expectSuccess(response).updateCI).toMatchObject({
-      _id: ciId,
-      _name: 'updated-server',
-      _status: 'ACTIVE',
-      _environment: 'STAGING',
-      _metadata: { version: '2.0' },
-    });
+    expect(updated.body.errors?.[0]).toMatchObject({ extensions: { code: 'FORBIDDEN' } });
 
-    const persisted = await execute('query($id: ID!) { getCI(id: $id) { _name _status _environment _metadata } }', { id: ciId });
-    expect(expectSuccess(persisted).getCI).toMatchObject({
-      _name: 'updated-server',
-      _status: 'ACTIVE',
-      _environment: 'STAGING',
-      _metadata: { version: '2.0' },
-    });
-  });
-
-  it('deletes an existing CI and rejects a second deletion', async () => {
-    const ciId = await createCI();
     const deleted = await execute('mutation($id: ID!) { deleteCI(id: $id) }', { id: ciId });
-    expect(expectSuccess(deleted).deleteCI).toBe(true);
+    expect(deleted.body.errors?.[0]).toMatchObject({ extensions: { code: 'FORBIDDEN' } });
 
-    const missing = await execute('mutation($id: ID!) { deleteCI(id: $id) }', { id: ciId });
-    expect(missing.body.errors?.[0]).toMatchObject({ extensions: { code: 'NOT_FOUND' } });
+    const persisted = await execute('{ getCIs { _id _name } }');
+    expect(expectSuccess(persisted).getCIs).toEqual([{ _id: ciId, _name: 'old-name' }]);
   });
 
   it('creates a relationship and returns it through the relationship query', async () => {
@@ -324,34 +279,14 @@ describe('GraphQL API Integration Tests', () => {
   });
 
   it('supports a complete authenticated CI workflow', async () => {
-    const serverId = uuidv4();
-    const appId = uuidv4();
-    const created = await execute(
-      `mutation Create($server: CreateCIInput!, $app: CreateCIInput!) {
-        server: createCI(input: $server) { _id }
-        app: createCI(input: $app) { _id }
-      }`,
-      {
-        server: { _id: serverId, _name: 'workflow-server', _type: 'SERVER' },
-        app: { _id: appId, _name: 'workflow-app', _type: 'APPLICATION' },
-      }
-    );
-    expect(expectSuccess(created)).toMatchObject({
-      server: { _id: serverId },
-      app: { _id: appId },
-    });
+    const serverId = await createCI({ _name: 'workflow-server' });
+    const appId = await createCI({ _name: 'workflow-app', _type: 'application' });
 
     const relationship = await execute(
       'mutation($input: CreateRelationshipInput!) { createRelationship(input: $input) }',
       { input: { _fromId: appId, _toId: serverId, _type: 'DEPENDS_ON' } }
     );
     expect(expectSuccess(relationship).createRelationship).toBe(true);
-
-    const updated = await execute(
-      'mutation($id: ID!, $input: UpdateCIInput!) { updateCI(id: $id, input: $input) { _status } }',
-      { id: serverId, input: { _status: 'MAINTENANCE' } }
-    );
-    expect(expectSuccess(updated).updateCI).toEqual({ _status: 'MAINTENANCE' });
 
     const dependencies = await execute(
       'query($id: ID!) { getCIDependencies(id: $id) { _id } }',

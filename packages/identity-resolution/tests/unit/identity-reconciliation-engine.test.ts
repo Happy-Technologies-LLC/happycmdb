@@ -494,6 +494,31 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
         ])
       );
     });
+
+    it('createNewCI ignores attributes.organization_id', async () => {
+      const base = physicalServerDuplicates[0];
+      const ci = {
+        ...base,
+        attributes: { ...base.attributes, organization_id: 'attacker-org' },
+        identifiers: { ...base.identifiers, organization_id: 'attacker-org' } as typeof base.identifiers,
+      };
+      let created: Record<string, unknown> | undefined;
+
+      mockSession.run.mockImplementation(async (cypher: string, params: { properties?: Record<string, unknown> }) => {
+        if (cypher.includes('SET ci = $properties')) {
+          created = { ...params.properties };
+          return { records: [{ get: () => created!['id'] }] };
+        }
+        return { records: [] }; // no match by any strategy
+      });
+      mockPostgresClient.query.mockResolvedValue({ rows: [] });
+
+      await engine.reconcileCI(ci);
+
+      expect(created).toBeDefined();
+      expect(created!['name']).toBe(base.name);
+      expect(created).not.toHaveProperty('organization_id');
+    });
   });
 
   describe('CI Update with Merge Strategies', () => {
@@ -625,6 +650,33 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
       if (versionUpdate) {
         expect(versionUpdate[1][3]).not.toBe('ssh');
       }
+    });
+
+    // FD-4: organization_id on a :CI is written only from the token organization
+    // (or the backfill). The stored node is modelled by applying the engine's
+    // `SET ci += $properties` to it.
+    it('reconciliation merge cannot set or change organization_id', async () => {
+      const base = physicalServerDuplicates[1]; // has external_id
+      const ci = { ...base, attributes: { ...base.attributes, organization_id: 'attacker-org' } };
+      const node: Record<string, unknown> = { id: 'ci_existing_org', organization_id: 'owner-org' };
+
+      mockPostgresClient.query
+        .mockResolvedValueOnce({ rows: [{ ci_id: 'ci_existing_org' }] }) // external_id match
+        // An earlier source already recorded organization_id as a field.
+        .mockResolvedValueOnce({ rows: [{ field_name: 'organization_id', field_value: 'owner-org', source_name: 'nmap' }] });
+      mockPostgresClient.query.mockResolvedValue({ rows: [] });
+      mockSession.run.mockImplementation(async (cypher: string, params: { properties?: Record<string, unknown> }) => {
+        if (cypher.includes('SET ci += $properties')) Object.assign(node, params.properties);
+        return { records: [] };
+      });
+
+      await engine.reconcileCI(ci);
+
+      expect(node['organization_id']).toBe('owner-org');
+      const recordedFields = mockPostgresClient.query.mock.calls
+        .filter(call => String(call[0]).includes('INSERT INTO ci_field_sources'))
+        .map(call => (call[1] as unknown[])[1]);
+      expect(recordedFields).not.toContain('organization_id');
     });
   });
 

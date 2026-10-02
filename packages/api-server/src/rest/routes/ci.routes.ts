@@ -13,16 +13,30 @@ export const ciRoutes = Router();
 const controller = new CIController();
 const authMiddleware = getAuthMiddleware();
 
+// Tenant scoping: every route below reads/writes only the caller's
+// organization; a token without an org claim is rejected with 403 before any
+// Neo4j access. It runs first so no later middleware can touch data for an org-less caller.
+ciRoutes.use(authMiddleware.requireOrganization());
+
 // Apply audit middleware to all routes
 ciRoutes.use(auditMiddleware);
 
+// The tenant always comes from the token. A body naming organization_id is
+// rejected (400) rather than silently stripped, so callers learn it is not settable.
+const organizationIdForbidden = Joi.any().forbidden();
+
 // Validation schemas
+const createCISchema = ciInputSchema.keys({
+  organization_id: organizationIdForbidden,
+});
+
 const updateCISchema = Joi.object({
   name: Joi.string().min(1).max(500).optional(),
   type: schemas.ciType.optional(),
   status: schemas.ciStatus.optional(),
   environment: schemas.environment.optional(),
   metadata: Joi.object().optional(),
+  organization_id: organizationIdForbidden,
 });
 
 const searchCISchema = Joi.object({
@@ -61,7 +75,7 @@ ciRoutes.get('/:id', controller.getCIById.bind(controller));
 ciRoutes.post(
   '/',
   authMiddleware.requirePermission('write'),
-  validateRequest(ciInputSchema, 'body'),
+  validateRequest(createCISchema, 'body'),
   controller.createCI.bind(controller)
 );
 

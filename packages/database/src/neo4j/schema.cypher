@@ -86,6 +86,11 @@ CREATE INDEX ci_updated_at_idx IF NOT EXISTS
 FOR (c:CI)
 ON (c.updated_at);
 
+// Index on CI.organization_id: every /api/v1/cis read filters on the tenant
+CREATE INDEX ci_organization_id_idx IF NOT EXISTS
+FOR (c:CI)
+ON (c.organization_id);
+
 // Composite index on (type, status) for common query patterns
 CREATE INDEX ci_type_status_idx IF NOT EXISTS
 FOR (c:CI)

@@ -446,6 +446,19 @@ GET /api/version
 
 ### CI Endpoints
 
+**Tenant scoping**: every `/cis` endpoint is scoped to the organization of the
+authenticated user (`_organizationId`). A CI belonging to another organization is
+reported exactly like a missing one (the same 404 body), and the organization is
+set from the token on create, never from the request body.
+
+**Error Response (403)**, on every `/cis` endpoint when the user has no organization (before any data access):
+```json
+{
+  "_error": "Forbidden",
+  "_message": "Organization claim required"
+}
+```
+
 #### Get All CIs
 
 Get a paginated list of configuration items with optional filtering.
@@ -544,7 +557,7 @@ GET /cis/ci-123e4567-e89b-12d3-a456-426614174000
 {
   "success": false,
   "error": "Not Found",
-  "message": "CI with ID 'ci-123' not found"
+  "message": "CI not found"
 }
 ```
 
@@ -597,12 +610,27 @@ Create a new configuration item.
 }
 ```
 
-**Validation Errors (400)**:
+**Validation Errors (400)**, e.g. a missing required field:
 ```json
 {
-  "success": false,
-  "error": "Bad Request",
-  "message": "Missing required fields: id, name, type"
+  "_success": false,
+  "_error": "Validation Error",
+  "_message": "\"id\" is required",
+  "_details": [
+    { "_field": "id", "_message": "\"id\" is required", "_type": "any.required" }
+  ]
+}
+```
+
+**Organization in the body (400)**, also returned by `PUT /cis/:id`:
+```json
+{
+  "_success": false,
+  "_error": "Validation Error",
+  "_message": "\"organization_id\" is not allowed",
+  "_details": [
+    { "_field": "organization_id", "_message": "\"organization_id\" is not allowed", "_type": "any.unknown" }
+  ]
 }
 ```
 
@@ -687,7 +715,7 @@ No content
 {
   "success": false,
   "error": "Not Found",
-  "message": "CI with ID 'ci-123' not found"
+  "message": "CI not found"
 }
 ```
 
@@ -1649,6 +1677,11 @@ query GetImpactAnalysis($id: ID!, $depth: Int) {
 ---
 
 ### Mutations
+
+> **Note:** `createCI`, `updateCI` and `deleteCI` currently return a `FORBIDDEN`
+> error (`CI tenant scoping for GraphQL is pending`) for every caller, without
+> touching the database. They come back once GraphQL CI tenant scoping lands;
+> until then use the organization-scoped REST endpoints under `/cis`.
 
 #### createCI
 

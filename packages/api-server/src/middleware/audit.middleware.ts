@@ -5,6 +5,7 @@ import { Request, Response, NextFunction } from 'express';
 import { getPostgresClient, getAuditService } from '@cmdb/database';
 import { logger } from '@cmdb/common';
 import { getNeo4jClient } from '@cmdb/database';
+import { optionalRequestOrganizationId } from './auth.middleware';
 
 /**
  * Audit middleware that captures CI changes and logs them to PostgreSQL
@@ -38,9 +39,12 @@ export function auditMiddleware(req: Request, res: Response, next: NextFunction)
   let beforeState: any = null;
 
   const captureBeforeState = async () => {
-    if ((req.method === 'PUT' || req.method === 'PATCH' || req.method === 'DELETE') && ciId) {
+    // Before-state is only read within the caller's organization; without an
+    // org claim nothing is read (and so nothing of another tenant is logged).
+    const organizationId = optionalRequestOrganizationId(req);
+    if ((req.method === 'PUT' || req.method === 'PATCH' || req.method === 'DELETE') && ciId && organizationId !== null) {
       try {
-        beforeState = await neo4jClient.getCI(ciId);
+        beforeState = await neo4jClient.getCI(ciId, organizationId);
       } catch (error) {
         logger.warn('Could not capture before-state for audit', { ciId, error });
       }

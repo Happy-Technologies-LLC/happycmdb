@@ -7,7 +7,7 @@ import { GraphQLError } from 'graphql';
 import { GraphQLScalarType, Kind } from 'graphql';
 import neo4j from 'neo4j-driver';
 import { Neo4jClient } from '@cmdb/database';
-import { CI, CIInput, CIType, CIStatus, Environment, RelationshipType } from '@cmdb/common';
+import { CI, CIType, CIStatus, Environment, RelationshipType } from '@cmdb/common';
 import { analyticsResolvers } from './analytics.resolver';
 import { connectorResolvers } from './connector.resolvers';
 import { connectorFieldResolvers } from './connector-fields.resolvers';
@@ -119,26 +119,6 @@ type CIValue = Partial<CI> & {
   _updatedAt?: string;
   _discoveredAt?: string;
 };
-
-function validateCIInput(input: { _id?: unknown; _name?: unknown; _type?: unknown }): void {
-  if (!input._id || typeof input._id !== 'string') {
-    throw new GraphQLError('CI ID is required and must be a string', {
-      extensions: { code: 'BAD_USER_INPUT' },
-    });
-  }
-
-  if (!input._name || typeof input._name !== 'string') {
-    throw new GraphQLError('CI name is required and must be a string', {
-      extensions: { code: 'BAD_USER_INPUT' },
-    });
-  }
-
-  if (!input._type) {
-    throw new GraphQLError('CI type is required', {
-      extensions: { code: 'BAD_USER_INPUT' },
-    });
-  }
-}
 
 function normalizePagination(value: number | undefined, fallback: number): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
@@ -467,153 +447,56 @@ const Query = {
 };
 
 /**
+ * Error for the GraphQL CI mutations that fail closed until GraphQL CI tenant
+ * scoping lands: /api/v1/cis is organization-scoped, and these must not offer
+ * an unscoped way around it.
+ */
+function ciTenantScopingPending(): GraphQLError {
+  return new GraphQLError('CI tenant scoping for GraphQL is pending', {
+    extensions: { code: 'FORBIDDEN' },
+  });
+}
+
+/**
  * Mutation resolvers
  */
 const Mutation = {
   /**
-   * Create a new CI
+   * Create a new CI. Fails closed: Neo4jClient.createCI requires the caller's
+   * organization and GraphQL has no CI tenant scoping yet.
    */
   createCI: async (
-    __parent: any,
-    _args: {
-      input: {
-        _id: string;
-        _externalId?: string;
-        _name: string;
-        _type: string;
-        _status?: string;
-        _environment?: string;
-        _discoveredAt?: string;
-        _metadata?: Record<string, unknown>;
-      };
-    },
+    __parent: unknown,
+    _args: unknown,
     _context: GraphQLContext
   ): Promise<GraphQLCI> => {
     checkGraphQLPermission(_context, 'write');
-    try {
-      validateCIInput(_args.input);
-      const ciInput: CIInput = {
-        _id: _args.input._id,
-        external_id: _args.input._externalId,
-        name: _args.input._name,
-        _type: convertEnumToDbFormat(_args.input._type) as CIType,
-        status: _args.input._status
-          ? convertEnumToDbFormat(_args.input._status) as CIStatus
-          : 'active',
-        environment: _args.input._environment
-          ? convertEnumToDbFormat(_args.input._environment) as Environment
-          : undefined,
-        discovered_at: _args.input._discoveredAt ?? new Date().toISOString(),
-        metadata: _args.input._metadata ?? {},
-      };
-      const ci = await _context._neo4jClient.createCI(ciInput);
-      _context._loaders._ciLoader.clear(ci._id);
-      return toGraphQLCI(ci);
-    } catch (error: any) {
-      if (error instanceof GraphQLError) {
-        throw error;
-      }
-      throw new GraphQLError('Failed to create CI', {
-        extensions: {
-          code: 'INTERNAL_SERVER_ERROR',
-          originalError: error.message,
-        },
-      });
-    }
+    throw ciTenantScopingPending();
   },
 
   /**
-   * Update an existing CI
+   * Update an existing CI. Fails closed for the same reason as createCI.
    */
   updateCI: async (
-    __parent: any,
-    _args: {
-      id: string;
-      input: {
-        _name?: string;
-        _status?: string;
-        _environment?: string;
-        _metadata?: Record<string, unknown>;
-      };
-    },
+    __parent: unknown,
+    _args: unknown,
     _context: GraphQLContext
   ): Promise<GraphQLCI> => {
     checkGraphQLPermission(_context, 'write');
-    try {
-      const updates: Partial<CIInput> = {};
-
-      if (_args.input._name !== undefined) {
-        updates.name = _args.input._name;
-      }
-      if (_args.input._status !== undefined) {
-        updates.status = convertEnumToDbFormat(_args.input._status) as CIStatus;
-      }
-      if (_args.input._environment !== undefined) {
-        updates.environment = convertEnumToDbFormat(_args.input._environment) as Environment;
-      }
-      if (_args.input._metadata !== undefined) {
-        updates.metadata = _args.input._metadata;
-      }
-
-      const ci = await _context._neo4jClient.updateCI(_args.id, updates);
-      _context._loaders._ciLoader.clear(_args.id);
-      return toGraphQLCI(ci);
-    } catch (error: any) {
-      throw new GraphQLError('Failed to update CI', {
-        extensions: {
-          code: 'INTERNAL_SERVER_ERROR',
-          originalError: error.message,
-        },
-      });
-    }
+    throw ciTenantScopingPending();
   },
 
   /**
-   * Delete a CI
+   * Delete a CI. Fails closed before opening a session: an unscoped
+   * DETACH DELETE would delete other organizations' CIs.
    */
   deleteCI: async (
-    __parent: any,
-    _args: { id: string },
+    __parent: unknown,
+    _args: unknown,
     _context: GraphQLContext
   ): Promise<boolean> => {
     checkGraphQLPermission(_context, 'write');
-    const session = _context._neo4jClient.getSession();
-
-    try {
-      const result = await session.run(
-        `
-        MATCH (ci:CI {id: $id})
-        DETACH DELETE ci
-        RETURN count(ci) as deleted
-        `,
-        { id: _args.id }
-      );
-
-      const deleted = result.records[0]?.get('deleted').toNumber() || 0;
-
-      if (deleted === 0) {
-        throw new GraphQLError('CI not found', {
-          extensions: { code: 'NOT_FOUND' },
-        });
-      }
-
-      // Clear cache
-      _context._loaders._ciLoader.clear(_args.id);
-
-      return true;
-    } catch (error: any) {
-      if (error instanceof GraphQLError) {
-        throw error;
-      }
-      throw new GraphQLError('Failed to delete CI', {
-        extensions: {
-          code: 'INTERNAL_SERVER_ERROR',
-          originalError: error.message,
-        },
-      });
-    } finally {
-      await session.close();
-    }
+    throw ciTenantScopingPending();
   },
 
   /**

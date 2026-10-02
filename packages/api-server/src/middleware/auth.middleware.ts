@@ -37,6 +37,15 @@ export function requestOrganizationId(req: Request): string {
   return organizationId;
 }
 
+/**
+ * Tenant of a request that may not have passed requireOrganization(): the
+ * organization claim, or null when the request has none. Callers must treat
+ * null as "no tenant" (fail closed), never as "all tenants".
+ */
+export function optionalRequestOrganizationId(req: Request): string | null {
+  return organizationClaim((req as AuthenticatedRequest).user);
+}
+
 export class AuthMiddleware {
   private authService: AuthService;
   private apiKeyHeader: string;

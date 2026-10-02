@@ -254,6 +254,8 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/CIForbidden'
 
     post:
       tags: [Configuration Items]
@@ -301,9 +303,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/CI'
         '400':
-          $ref: '#/components/responses/BadRequest'
+          $ref: '#/components/responses/CIBodyBadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/CIForbidden'
         '409':
           description: CI with this ID already exists
           content:
@@ -328,6 +332,8 @@ paths:
                 $ref: '#/components/schemas/CI'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/CIForbidden'
         '404':
           $ref: '#/components/responses/NotFound'
 
@@ -366,9 +372,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/CI'
         '400':
-          $ref: '#/components/responses/BadRequest'
+          $ref: '#/components/responses/CIBodyBadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/CIForbidden'
         '404':
           $ref: '#/components/responses/NotFound'
 
@@ -384,6 +392,8 @@ paths:
           description: CI deleted successfully
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/CIForbidden'
         '404':
           $ref: '#/components/responses/NotFound'
 
@@ -429,6 +439,8 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/CIForbidden'
 
   /cis/{id}/relationships:
     get:
@@ -463,6 +475,8 @@ paths:
                       $ref: '#/components/schemas/Relationship'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/CIForbidden'
         '404':
           $ref: '#/components/responses/NotFound'
 
@@ -507,6 +521,8 @@ paths:
                             type: string
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/CIForbidden'
         '404':
           $ref: '#/components/responses/NotFound'
 
@@ -545,6 +561,8 @@ paths:
                     enum: [low, medium, high, critical]
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/CIForbidden'
         '404':
           $ref: '#/components/responses/NotFound'
 
@@ -567,6 +585,8 @@ paths:
                   $ref: '#/components/schemas/AuditEntry'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/CIForbidden'
         '404':
           $ref: '#/components/responses/NotFound'
 
@@ -2828,7 +2848,37 @@ components:
             $ref: '#/components/schemas/Error'
           example:
             error: Not Found
-            message: CI with ID 'srv-prod-web-01' not found
+            message: CI not found
+
+    CIForbidden:
+      description: >-
+        The authenticated user has no organization: every /cis endpoint is
+        tenant-scoped and rejects the request before any data access. Mutations
+        also return 403 without the `write` permission.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/MiddlewareError'
+          example:
+            _error: Forbidden
+            _message: Organization claim required
+
+    CIBodyBadRequest:
+      description: >-
+        Invalid CI body. `organization_id` is never accepted in a body (the
+        organization always comes from the token) and is rejected with 400.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/MiddlewareError'
+          example:
+            _success: false
+            _error: Validation Error
+            _message: '"organization_id" is not allowed'
+            _details:
+              - _field: organization_id
+                _message: '"organization_id" is not allowed'
+                _type: any.unknown
 
     TooManyRequests:
       description: Rate limit exceeded
@@ -3699,4 +3749,32 @@ components:
               field:
                 type: string
               error:
+                type: string
+
+    MiddlewareError:
+      type: object
+      description: >-
+        Error body produced by the auth and request-validation middleware
+        (underscore-prefixed keys), e.g. the /cis 403 and body-validation 400.
+      required: [_error, _message]
+      properties:
+        _success:
+          type: boolean
+          example: false
+        _error:
+          type: string
+          example: Validation Error
+        _message:
+          type: string
+          example: '"organization_id" is not allowed'
+        _details:
+          type: array
+          items:
+            type: object
+            properties:
+              _field:
+                type: string
+              _message:
+                type: string
+              _type:
                 type: string

@@ -14,6 +14,16 @@ import * as fuzzball from 'fuzzball';
 import { getEventProducer } from '@cmdb/event-processor';
 import { EventType } from '@cmdb/event-processor';
 
+/**
+ * A CI's organization_id is written only from the caller's token organization
+ * (or the backfill), never from reconciled data. Drops that key from a property
+ * map that would otherwise be SET onto a :CI node.
+ */
+function withoutOrganizationId<T extends Record<string, unknown>>(properties: T): Omit<T, 'organization_id'> {
+  const { organization_id: _ignored, ...rest } = properties;
+  return rest;
+}
+
 export class IdentityReconciliationEngine {
   private static instance: IdentityReconciliationEngine;
   private neo4jClient = getNeo4jClient();
@@ -369,12 +379,13 @@ export class IdentityReconciliationEngine {
     try {
       const ciId = this.generateCIId();
 
+      // Reconciliation is an unscoped writer: a CI it creates has no organization.
       const result = await session.run(
         `CREATE (ci:CI:${sanitizeCITypeForLabel(ci.ci_type)})
          SET ci = $properties
          RETURN ci.id as ci_id`,
         {
-          properties: {
+          properties: withoutOrganizationId({
             id: ciId,
             name: ci.name,
             ci_type: ci.ci_type,
@@ -384,7 +395,7 @@ export class IdentityReconciliationEngine {
             ...ci.identifiers,
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString(),
-          }
+          }),
         }
       );
 
@@ -439,7 +450,8 @@ export class IdentityReconciliationEngine {
     const existingFields = await this.getFieldSources(ciId);
     const mergedData: any = {};
 
-    for (const [field, value] of Object.entries(newCI.attributes)) {
+    // A merge never sets or changes the CI's organization (SET ci += $properties).
+    for (const [field, value] of Object.entries(withoutOrganizationId(newCI.attributes))) {
       const existing = existingFields.get(field);
 
       if (!existing) {

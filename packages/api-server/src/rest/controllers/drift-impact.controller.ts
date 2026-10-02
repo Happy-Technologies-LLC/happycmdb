@@ -12,7 +12,8 @@
  */
 
 import { Response } from 'express';
-import { getNeo4jClient } from '@cmdb/database';
+// CI tenant scoping covers /api/v1/cis only so far; these routes read CIs unscoped, as before.
+import { getNeo4jClient, UNSCOPED_CI_ACCESS } from '@cmdb/database';
 import { logger } from '@cmdb/common';
 import {
   getConfigurationDriftDetector,
@@ -66,7 +67,7 @@ export class DriftImpactController {
         return;
       }
 
-      const ci = await this.neo4jClient.getCI(ciId);
+      const ci = await this.neo4jClient.getCI(ciId, UNSCOPED_CI_ACCESS);
       if (!ci) {
         res.status(404).json({
           success: false,
@@ -162,7 +163,7 @@ export class DriftImpactController {
         return;
       }
 
-      const ci = await this.neo4jClient.getCI(ci_id);
+      const ci = await this.neo4jClient.getCI(ci_id, UNSCOPED_CI_ACCESS);
       if (!ci) {
         res.status(404).json({
           success: false,
@@ -300,7 +301,7 @@ export class DriftImpactController {
         return;
       }
 
-      const ci = await this.neo4jClient.getCI(ci_id);
+      const ci = await this.neo4jClient.getCI(ci_id, UNSCOPED_CI_ACCESS);
       if (!ci) {
         res.status(404).json({
           success: false,
@@ -353,7 +354,7 @@ export class DriftImpactController {
         return;
       }
 
-      const ci = await this.neo4jClient.getCI(rootCiId);
+      const ci = await this.neo4jClient.getCI(rootCiId, UNSCOPED_CI_ACCESS);
       if (!ci) {
         res.status(404).json({
           success: false,
@@ -395,7 +396,7 @@ export class DriftImpactController {
         return;
       }
 
-      const ci = await this.neo4jClient.getCI(ciId);
+      const ci = await this.neo4jClient.getCI(ciId, UNSCOPED_CI_ACCESS);
       if (!ci) {
         res.status(404).json({
           success: false,

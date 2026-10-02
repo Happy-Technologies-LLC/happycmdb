@@ -8,6 +8,46 @@ import { logger, CI, CIInput, sanitizeCITypeForLabel, validateRelationshipType }
 import * as fs from 'fs';
 import * as path from 'path';
 
+/**
+ * Explicit opt-out of CI tenant scoping, for callers that have no request
+ * organization: system jobs (ETL, reconciliation) and API paths whose tenant
+ * scoping has not landed yet. Reads and traversals match CIs of every
+ * organization; createCI writes no organization_id, so org-scoped reads never
+ * return that CI.
+ */
+export const UNSCOPED_CI_ACCESS: unique symbol = Symbol('UNSCOPED_CI_ACCESS');
+
+/**
+ * Tenant scope of a CI operation: the caller's organization id, or
+ * UNSCOPED_CI_ACCESS. With an organization id, reads/updates/deletes only match
+ * :CI nodes whose organization_id equals it, traversals never hop through or
+ * return a node of another organization, and createCI stamps it.
+ */
+export type CIOrganizationScope = string | typeof UNSCOPED_CI_ACCESS;
+
+/** The $organizationId parameter for a scope; null only for UNSCOPED_CI_ACCESS. */
+function organizationIdParam(scope: CIOrganizationScope): string | null {
+  if (scope === UNSCOPED_CI_ACCESS) {
+    return null;
+  }
+  if (typeof scope !== 'string' || scope.length === 0) {
+    throw new Error('CI organization scope must be an organization id or UNSCOPED_CI_ACCESS');
+  }
+  return scope;
+}
+
+/** WHERE clause restricting `ci` to the scope's organization ('' when unscoped). */
+function nodeScopeClause(organizationId: string | null): string {
+  return organizationId === null ? '' : 'WHERE ci.organization_id = $organizationId';
+}
+
+/** WHERE clause keeping only paths whose every node is in the scope's organization. */
+function pathScopeClause(organizationId: string | null): string {
+  return organizationId === null
+    ? ''
+    : 'WHERE all(n IN nodes(path) WHERE n.organization_id = $organizationId)';
+}
+
 export class Neo4jClient {
   private driver: Driver;
 
@@ -157,7 +197,9 @@ export class Neo4jClient {
   }
 
   // CI Operations
-  async createCI(ci: CIInput): Promise<CI> {
+  async createCI(ci: CIInput, scope: CIOrganizationScope): Promise<CI> {
+    // The organization comes only from the scope, never from the CI input.
+    const organizationId = organizationIdParam(scope);
     const session = this.getSession();
     try {
       // Handle both API format (id, type) and internal format (_id, _type)
@@ -181,7 +223,8 @@ export class Neo4jClient {
           updated_at: datetime(),
           discovered_at: datetime($discovered_at),
           discovery_provider: $discovery_provider,
-          metadata: $metadata
+          metadata: $metadata,
+          organization_id: $organizationId
         })
         RETURN ci
         `,
@@ -195,6 +238,7 @@ export class Neo4jClient {
           discovered_at: ci.discovered_at || new Date().toISOString(),
           discovery_provider: (ci as any).discovery_provider || null,
           metadata: JSON.stringify(ci.metadata || {}),
+          organizationId,
         }
       );
       return this.recordToCI(result.records[0]!.get('ci'));
@@ -203,7 +247,8 @@ export class Neo4jClient {
     }
   }
 
-  async updateCI(id: string, updates: Partial<CIInput>): Promise<CI> {
+  async updateCI(id: string, updates: Partial<CIInput>, scope: CIOrganizationScope): Promise<CI> {
+    const organizationId = organizationIdParam(scope);
     const session = this.getSession();
     try {
       // Process updates to handle both underscore and non-underscore prefixes
@@ -240,14 +285,20 @@ export class Neo4jClient {
         }
       }
 
+      // The tenant is fixed at creation; an update must never move a CI between organizations.
+      if ('organization_id' in processedUpdates) {
+        throw new Error('organization_id cannot be updated');
+      }
+
       const result = await session.run(
         `
         MATCH (ci:CI {id: $id})
+        ${nodeScopeClause(organizationId)}
         SET ci += $updates,
             ci.updated_at = datetime()
         RETURN ci
         `,
-        { id, updates: processedUpdates }
+        { id, updates: processedUpdates, organizationId }
       );
 
       if (result.records.length === 0) {
@@ -260,12 +311,13 @@ export class Neo4jClient {
     }
   }
 
-  async getCI(id: string): Promise<CI | null> {
+  async getCI(id: string, scope: CIOrganizationScope): Promise<CI | null> {
+    const organizationId = organizationIdParam(scope);
     const session = this.getSession();
     try {
       const result = await session.run(
-        'MATCH (ci:CI {id: $id}) RETURN ci',
-        { id }
+        `MATCH (ci:CI {id: $id}) ${nodeScopeClause(organizationId)} RETURN ci`,
+        { id, organizationId }
       );
 
       if (result.records.length === 0) {
@@ -273,6 +325,30 @@ export class Neo4jClient {
       }
 
       return this.recordToCI(result.records[0]!.get('ci'));
+    } finally {
+      await session.close();
+    }
+  }
+
+  /**
+   * DETACH DELETE a CI in the scope. Returns false (and deletes nothing) when
+   * no CI with that id exists in the scope's organization.
+   */
+  async deleteCI(id: string, scope: CIOrganizationScope): Promise<boolean> {
+    const organizationId = organizationIdParam(scope);
+    const session = this.getSession();
+    try {
+      const result = await session.run(
+        `
+        MATCH (ci:CI {id: $id})
+        ${nodeScopeClause(organizationId)}
+        DETACH DELETE ci
+        RETURN count(*) AS deleted
+        `,
+        { id, organizationId }
+      );
+
+      return result.records[0]!.get('deleted').toNumber() > 0;
     } finally {
       await session.close();
     }
@@ -306,7 +382,13 @@ export class Neo4jClient {
     }
   }
 
-  async getRelationships(ciId: string, direction: 'in' | 'out' | 'both' = 'both', depth: number = 1) {
+  async getRelationships(
+    ciId: string,
+    scope: CIOrganizationScope,
+    direction: 'in' | 'out' | 'both' = 'both',
+    depth: number = 1
+  ) {
+    const organizationId = organizationIdParam(scope);
     const session = this.getSession();
     try {
       // For depth > 1, we need to handle paths
@@ -317,13 +399,14 @@ export class Neo4jClient {
         queries.push({
           query: `
             MATCH path = (ci:CI {id: $ciId})-[r*1..${depth}]->(related:CI)
+            ${pathScopeClause(organizationId)}
             WITH ci, related, relationships(path) as rels
             UNWIND rels as r
             RETURN DISTINCT type(r) as type, related, r as relationship,
                    startNode(r).id as startNodeId, endNode(r).id as endNodeId,
                    'outgoing' as queryDirection
           `,
-          params: { ciId }
+          params: { ciId, organizationId }
         });
       }
 
@@ -331,13 +414,14 @@ export class Neo4jClient {
         queries.push({
           query: `
             MATCH path = (ci:CI {id: $ciId})<-[r*1..${depth}]-(related:CI)
+            ${pathScopeClause(organizationId)}
             WITH ci, related, relationships(path) as rels
             UNWIND rels as r
             RETURN DISTINCT type(r) as type, related, r as relationship,
                    startNode(r).id as startNodeId, endNode(r).id as endNodeId,
                    'incoming' as queryDirection
           `,
-          params: { ciId }
+          params: { ciId, organizationId }
         });
       }
 
@@ -367,15 +451,17 @@ export class Neo4jClient {
     }
   }
 
-  async getDependencies(ciId: string, depth: number = 5) {
+  async getDependencies(ciId: string, scope: CIOrganizationScope, depth: number = 5) {
+    const organizationId = organizationIdParam(scope);
     const session = this.getSession();
     try {
       const result = await session.run(
         `
         MATCH path = (ci:CI {id: $ciId})-[:DEPENDS_ON*1..${depth}]->(dep:CI)
+        ${pathScopeClause(organizationId)}
         RETURN path
         `,
-        { ciId }
+        { ciId, organizationId }
       );
 
       return result.records.map(record => record.get('path'));
@@ -384,16 +470,18 @@ export class Neo4jClient {
     }
   }
 
-  async impactAnalysis(ciId: string, depth: number = 5) {
+  async impactAnalysis(ciId: string, scope: CIOrganizationScope, depth: number = 5) {
+    const organizationId = organizationIdParam(scope);
     const session = this.getSession();
     try {
       const result = await session.run(
         `
         MATCH path = (ci:CI {id: $ciId})<-[:DEPENDS_ON*1..${depth}]-(impacted:CI)
+        ${pathScopeClause(organizationId)}
         RETURN DISTINCT impacted, length(path) as distance
         ORDER BY distance
         `,
-        { ciId }
+        { ciId, organizationId }
       );
 
       return result.records.map(record => ({

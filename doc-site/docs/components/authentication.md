@@ -252,7 +252,50 @@ Postgres ownership check:
   header). It trusts `dim_business_services`: `created_at` and `organization_id` are not
   writable through the API, but the PUBLIC grants above let any database role write
   them, so run it only after confirming no non-API role has written to that table.
-  Running it against a live database is an operator action (FD-7).
+  Running it against a live database is an operator action (FD-7). Keep the `--apply`
+  run's stdout (one JSON line, for example `> backfill-apply-summary.json`): its `filled`
+  list is the only input the undo below accepts.
+
+#### Undoing a backfill `--apply`
+
+If an `--apply` ran with a wrong `--created-before` or `--writer-timezone`, revert exactly
+the nodes that run filled, so they are org-less again: invisible to every organization
+(TBM and dashboard reads return 404), as before the backfill. This is an operator action
+under the same authorization as the backfill (FD-7); never improvise a wider statement.
+
+1. Take the `filled` array from that run's summary, unchanged. Each entry is a
+   `{service_id, organization_id}` pair the backfill wrote. Do not use a dry-run summary,
+   a later run's summary, or a list rebuilt from Postgres.
+2. Check first, without writing. In `cypher-shell`, set the pairs and count the nodes that
+   still carry exactly the organization the backfill wrote:
+
+   ```cypher
+   :param filled => [{service_id: 'bs-example', organization_id: '11111111-1111-4111-8111-111111111111'}];
+   UNWIND $filled AS f
+   MATCH (bs:BusinessService {id: f.service_id})
+   WHERE bs.organization_id = f.organization_id
+   RETURN count(bs) AS revertible;
+   ```
+
+3. Revert. Each node is matched on both its id and its current `organization_id`, so a
+   node whose organization changed since the backfill (another run, a manual fix) is left
+   alone:
+
+   ```cypher
+   UNWIND $filled AS f
+   MATCH (bs:BusinessService {id: f.service_id})
+   WHERE bs.organization_id = f.organization_id
+   REMOVE bs.organization_id
+   RETURN count(bs) AS reverted;
+   ```
+
+   If `revertible` or `reverted` is lower than the number of pairs, some nodes changed in
+   the meantime: investigate those ids by hand rather than widening the match. Do not run
+   the backfill or a reseed concurrently with the undo.
+4. The reverted services now return 404 until the backfill runs again. Rerun it as a dry
+   run with the correct `--writer-timezone` (the API role's `SHOW timezone`, as a zone
+   file name such as `Etc/UTC`) and cutover, check its `filled` and `needs_review` lists,
+   and only then `--apply`.
 
 ### Rolling back migrations 010, 009 and 008
 

@@ -49,6 +49,11 @@
  *     from the environment (not argv) and never printed. stdout carries one
  *     JSON summary line; errors go to stderr without connection details.
  *
+ * Keep the --apply summary: its `filled` id/organization pairs are the input of
+ * the undo in doc-site/docs/components/authentication.md ("Undoing a backfill
+ * --apply"), which removes organization_id only from those nodes that still
+ * carry the organization the backfill wrote.
+ *
  * Not run automatically, not part of schema initialization or db-init. Build
  * with `npm run build:tenant-fixture --workspace=packages/api-server`
  * (tsconfig.scripts.json compiles src/scripts), then:

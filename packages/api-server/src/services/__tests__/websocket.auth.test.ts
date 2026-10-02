@@ -61,9 +61,13 @@ const USERS: Record<string, { _id: string; _username: string; _role: string; _en
 
 // A plain class (not jest.fn): the unit config resets mock implementations
 // before each test, and the AuthService is first built inside one.
+// Users whose lookup never settles (a stalled store).
+const HUNG_LOOKUPS = new Set<string>();
+
 jest.mock('../../auth/neo4j-auth.repository', () => ({
   Neo4jAuthRepository: class {
-    findUserById = async (userId: string) => USERS[userId] ?? null;
+    findUserById = (userId: string) =>
+      HUNG_LOOKUPS.has(userId) ? new Promise(() => {}) : Promise.resolve(USERS[userId] ?? null);
   },
 }));
 
@@ -77,7 +81,13 @@ const jwt = new JWTService(loadConfig().auth.jwt);
 const tokenFor = (userId: string) =>
   jwt.generateAccessToken(userId, USERS[userId]!._username, 'operator', USERS[userId]!._organizationId);
 
-type Inbox = { status: 101; ws: WebSocket; next: () => Promise<Record<string, unknown>> };
+type Inbox = {
+  status: 101;
+  ws: WebSocket;
+  next: () => Promise<Record<string, unknown>>;
+  /** Resolves with the close code once the server closes the connection. */
+  closed: Promise<number>;
+};
 type Outcome = { status: number } | Inbox;
 
 let server: Server;
@@ -104,13 +114,16 @@ function connect(options: { protocols?: string[]; headers?: Record<string, strin
       if (waiter) waiter(message);
       else queue.push(message);
     });
+    let onClose: (code: number) => void = () => {};
+    const closed = new Promise<number>(res => (onClose = res));
+    ws.on('close', code => onClose(code));
     ws.on('unexpected-response', (req, res) => {
       resolve({ status: res.statusCode ?? 0 });
       req.destroy();
     });
     ws.on('error', reject);
     // The server registers the connection before sending the welcome message.
-    ws.once('open', () => void next().then(() => resolve({ status: 101, ws, next })));
+    ws.once('open', () => void next().then(() => resolve({ status: 101, ws, next, closed })));
   });
 }
 
@@ -124,6 +137,22 @@ async function connected(options: Parameters<typeof connect>[0]): Promise<Inbox>
 function fromRedis(message: Record<string, unknown>): void {
   expect(redisHandlers).toHaveLength(1);
   redisHandlers[0]!('ai:realtime', JSON.stringify({ timestamp: new Date().toISOString(), ...message }));
+}
+
+/** Whichever comes first on a client: its next message or the server closing it. */
+function firstOf(inbox: Inbox): Promise<{ message: Record<string, unknown> } | { closed: number }> {
+  return Promise.race([inbox.closed.then(code => ({ closed: code })), inbox.next().then(message => ({ message }))]);
+}
+
+/** Replace the service with one whose timers (token expiry, re-check interval) run on Jest's fake clock. */
+async function restartWithFakeClock(): Promise<void> {
+  service.close();
+  // Only clock-driven APIs are faked; socket I/O callbacks stay real.
+  jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate', 'queueMicrotask'] });
+  redisHandlers.length = 0;
+  service = new WebSocketService();
+  service.initialize(server);
+  await new Promise(resolve => setImmediate(resolve));
 }
 
 beforeEach(async () => {
@@ -141,6 +170,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  jest.useRealTimers();
   sockets.splice(0).forEach(ws => ws.terminate());
   service.close();
   server.closeAllConnections();
@@ -205,5 +235,65 @@ describe('WebSocket /ws authentication and tenancy', () => {
     for (const token of [valid, forged, orgless]) {
       expect(lines.filter(line => line.includes(token))).toEqual([]);
     }
+  });
+
+  describe('connection lifetime', () => {
+    const AS_A = () => ({ protocols: ['cmdb.v1', `bearer.${tokenFor('user-a')}`] });
+    const ORG_A_MESSAGE = { type: 'session_update', organizationId: ORG_A, data: { sessionId: 'a-later' } };
+
+    it('closes the socket with 4001 when its token expires', async () => {
+      await restartWithFakeClock();
+      const options = AS_A();
+      const a = await connected(options);
+      const exp = jwt.decodeToken(options.protocols[1]!.slice('bearer.'.length))!.exp!;
+
+      await jest.advanceTimersByTimeAsync(exp * 1000 - Date.now() + 1000);
+      fromRedis(ORG_A_MESSAGE);
+
+      expect(await firstOf(a)).toEqual({ closed: 4001 });
+      expect(service.getStats().connectedClients).toBe(0);
+    });
+
+    it('closes the socket with 4001 once the re-check finds the user disabled', async () => {
+      await restartWithFakeClock();
+      const a = await connected(AS_A());
+      USERS['user-a']!._enabled = false;
+      try {
+        await jest.advanceTimersByTimeAsync(5 * 60_000);
+        fromRedis(ORG_A_MESSAGE);
+
+        expect(await firstOf(a)).toEqual({ closed: 4001 });
+      } finally {
+        USERS['user-a']!._enabled = true;
+      }
+    });
+
+    it('closes the socket with 4003 once the re-check finds the user in another organization', async () => {
+      await restartWithFakeClock();
+      const a = await connected(AS_A());
+      USERS['user-a']!._organizationId = ORG_B;
+      try {
+        await jest.advanceTimersByTimeAsync(5 * 60_000);
+        fromRedis(ORG_A_MESSAGE);
+
+        expect(await firstOf(a)).toEqual({ closed: 4003 });
+      } finally {
+        USERS['user-a']!._organizationId = ORG_A;
+      }
+    });
+
+    it('closes the socket with 1011 when the re-check lookup never settles', async () => {
+      await restartWithFakeClock();
+      const a = await connected(AS_A());
+      HUNG_LOOKUPS.add('user-a');
+      try {
+        await jest.advanceTimersByTimeAsync(5 * 60_000);
+        fromRedis(ORG_A_MESSAGE);
+
+        expect(await firstOf(a)).toEqual({ closed: 1011 });
+      } finally {
+        HUNG_LOOKUPS.delete('user-a');
+      }
+    });
   });
 });

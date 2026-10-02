@@ -10,7 +10,9 @@
  * subprotocol the server selects (browsers cannot set headers on a
  * WebSocket, and tokens are kept out of URLs). Without a session no socket is
  * opened; when the token changes the socket is replaced with one carrying the
- * new token. The server delivers only the caller's organization's messages.
+ * new token. A server close with 4001 (token expired, user disabled) is not
+ * retried with the same token; the next socket carries the next session token.
+ * The server delivers only the caller's organization's messages.
  */
 
 import { useContext, useEffect, useRef, useState, useCallback } from 'react';
@@ -19,6 +21,8 @@ import { logger } from '@/utils/logger';
 
 const WS_PROTOCOL = 'cmdb.v1';
 const MAX_RECONNECT_DELAY_MS = 60_000;
+/** Server close code: access with this token has ended (see websocket.service.ts). */
+const CLOSE_REAUTHENTICATE = 4001;
 
 export interface WebSocketMessage {
   type: 'pattern_update' | 'pattern_approved' | 'pattern_learned' | 'session_update' | 'cost_alert';
@@ -94,7 +98,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
         }
       };
 
-      ws.onclose = () => {
+      ws.onclose = (event) => {
         callbacksRef.current.onDisconnect?.();
         // Only the current socket reconnects. One closed by disconnect()
         // (unmount, token change, logout) never does: its reconnect would
@@ -105,6 +109,14 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
         logger.info('WebSocket disconnected');
         setIsConnected(false);
         wsRef.current = null;
+
+        // 4001: the server ended access with this token (expired, or the user
+        // was disabled). Retrying it would only be refused; the effect opens a
+        // new socket as soon as the session token changes.
+        if (event.code === CLOSE_REAUTHENTICATE) {
+          logger.info('WebSocket closed by server: waiting for a new session token');
+          return;
+        }
 
         // Attempt reconnection if enabled. A refused upgrade (401 expired
         // token, 403 no organization) looks like a network drop, so back off.

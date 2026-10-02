@@ -15,6 +15,10 @@
  * socket is closed before a connection is registered. Tokens are never read
  * from the query string and never logged.
  *
+ * Lifetime: a connection lasts no longer than its token (closed with 4001 at
+ * the token's `exp`), and its user is re-read every REVERIFY_INTERVAL_MS:
+ * missing or disabled => 4001, organization changed => 4003.
+ *
  * Tenancy: every message carries the organization it belongs to and is
  * delivered only to connections of that organization. A message without an
  * organization id is dropped (fail closed); no message type is global.
@@ -43,9 +47,25 @@ export interface WebSocketMessage {
   timestamp: string;
 }
 
+/** Close code: the client must re-authenticate (token expired, user disabled or removed). */
+const CLOSE_REAUTHENTICATE = 4001;
+/** Close code: the user's organization changed; a reconnect re-reads it. */
+const CLOSE_ORGANIZATION_CHANGED = 4003;
+/** How often open connections are re-checked against the user store. */
+const REVERIFY_INTERVAL_MS = 2 * 60_000;
+/** A re-check lookup slower than this fails closed (the store has no query timeout). */
+const REVERIFY_LOOKUP_TIMEOUT_MS = 30_000;
+/** Users looked up at once per re-check; the auth store's pool also serves REST authentication. */
+const REVERIFY_CONCURRENCY = 8;
+/** setTimeout's maximum delay; later expiries are caught by the periodic re-check. */
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
 interface ClientIdentity {
   organizationId: string;
   userId: string;
+  /** Token expiry (epoch ms); the connection is closed at that moment. */
+  expiresAt: number | null;
+  expiryTimer: NodeJS.Timeout | null;
 }
 
 /** Access token from `Authorization: Bearer` or the `bearer.` subprotocol entry, or null. */
@@ -83,6 +103,8 @@ export class WebSocketService {
   private wss: WebSocketServer | null = null;
   private httpServer: HTTPServer | null = null;
   private pingInterval: NodeJS.Timeout | null = null;
+  private reverifyInterval: NodeJS.Timeout | null = null;
+  private reverifying = false;
   private authService: AuthService | null = null;
   private redis = getRedisClient();
   private clients = new Map<WebSocket, ClientIdentity>();
@@ -115,6 +137,11 @@ export class WebSocketService {
         }
       });
     }, 30000);
+
+    // A connection's identity was verified once, at upgrade. Re-check it so a
+    // user who is disabled or moved to another organization stops receiving
+    // the old organization's messages.
+    this.reverifyInterval = setInterval(() => void this.reverifyClients(), REVERIFY_INTERVAL_MS);
 
     // Subscribe to Redis pub/sub for cross-instance updates
     this.subscribeToRedis();
@@ -159,7 +186,12 @@ export class WebSocketService {
         rejectUpgrade(socket, 403);
         return;
       }
-      identity = { organizationId, userId: payload._userId };
+      identity = {
+        organizationId,
+        userId: payload._userId,
+        expiresAt: payload.exp === undefined ? null : payload.exp * 1000,
+        expiryTimer: null,
+      };
     } catch {
       // The verification error is not logged: it is not needed here and must never carry the token.
       logger.warn('WebSocket upgrade rejected', { status: 401, reason: 'invalid token' });
@@ -176,8 +208,19 @@ export class WebSocketService {
   }
 
   private registerClient(ws: WebSocket, identity: ClientIdentity): void {
-    logger.info('WebSocket client connected', identity);
+    logger.info('WebSocket client connected', { organizationId: identity.organizationId, userId: identity.userId });
     this.clients.set(ws, identity);
+
+    // Access ends with the token: close at its expiry. The client reconnects with its current token.
+    if (identity.expiresAt !== null) {
+      const delay = identity.expiresAt - Date.now();
+      if (delay <= MAX_TIMER_DELAY_MS) {
+        identity.expiryTimer = setTimeout(
+          () => this.closeClient(ws, CLOSE_REAUTHENTICATE, 'token expired'),
+          Math.max(delay, 0)
+        );
+      }
+    }
 
     // Send welcome message
     this.sendToClient(ws, {
@@ -188,18 +231,112 @@ export class WebSocketService {
 
     ws.on('close', () => {
       logger.info('WebSocket client disconnected');
-      this.clients.delete(ws);
+      this.forgetClient(ws);
     });
 
     ws.on('error', (error) => {
       logger.error('WebSocket error', { error });
-      this.clients.delete(ws);
+      this.forgetClient(ws);
     });
 
     // Handle ping/pong for keepalive
     ws.on('pong', () => {
       // Client is alive
     });
+  }
+
+  private forgetClient(ws: WebSocket): void {
+    const identity = this.clients.get(ws);
+    if (identity?.expiryTimer) {
+      clearTimeout(identity.expiryTimer);
+    }
+    this.clients.delete(ws);
+  }
+
+  /** Stop delivering to a connection at once and close it with `code`. */
+  private closeClient(ws: WebSocket, code: number, reason: string): void {
+    this.forgetClient(ws);
+    logger.info('WebSocket client closed by server', { code, reason });
+    ws.close(code, reason);
+  }
+
+  /**
+   * Re-check every connection against the user store, with the lookup
+   * verifyToken uses: an expired token or a missing/disabled user closes with
+   * 4001, a changed organization with 4003. A lookup that fails or exceeds
+   * REVERIFY_LOOKUP_TIMEOUT_MS closes with 1011 (fail closed; the client
+   * reconnects and is verified again). One lookup per user, at most
+   * REVERIFY_CONCURRENCY at a time, so a tick never floods the auth store.
+   */
+  private async reverifyClients(): Promise<void> {
+    const authService = this.authService;
+    if (authService === null || this.reverifying) {
+      return;
+    }
+    this.reverifying = true;
+    try {
+      const connectionsByUser = new Map<string, Array<[WebSocket, ClientIdentity]>>();
+      for (const [ws, identity] of this.clients) {
+        if (identity.expiresAt !== null && Date.now() >= identity.expiresAt) {
+          this.closeClient(ws, CLOSE_REAUTHENTICATE, 'token expired');
+          continue;
+        }
+        const connections = connectionsByUser.get(identity.userId) ?? [];
+        connections.push([ws, identity]);
+        connectionsByUser.set(identity.userId, connections);
+      }
+
+      const users = [...connectionsByUser];
+      let nextUser = 0;
+      const worker = async (): Promise<void> => {
+        while (nextUser < users.length) {
+          const [userId, connections] = users[nextUser++]!;
+          await this.reverifyUser(authService, userId, connections);
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(REVERIFY_CONCURRENCY, users.length) }, worker));
+    } finally {
+      this.reverifying = false;
+    }
+  }
+
+  private async reverifyUser(
+    authService: AuthService,
+    userId: string,
+    connections: Array<[WebSocket, ClientIdentity]>
+  ): Promise<void> {
+    let timeout: NodeJS.Timeout | undefined;
+    let organizationId: string | undefined | null;
+    try {
+      const user = await Promise.race([
+        authService.findEnabledUser(userId),
+        new Promise<never>((_resolve, reject) => {
+          timeout = setTimeout(() => reject(new Error('user lookup timed out')), REVERIFY_LOOKUP_TIMEOUT_MS);
+        }),
+      ]);
+      organizationId = user === null ? null : user._organizationId;
+    } catch {
+      for (const [ws, identity] of connections) {
+        if (this.clients.get(ws) === identity) {
+          this.closeClient(ws, 1011, 'identity re-check failed');
+        }
+      }
+      return;
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    for (const [ws, identity] of connections) {
+      // The connection may have closed while the user was looked up.
+      if (this.clients.get(ws) !== identity) {
+        continue;
+      }
+      if (organizationId === null) {
+        this.closeClient(ws, CLOSE_REAUTHENTICATE, 'user disabled');
+      } else if (organizationId !== identity.organizationId) {
+        this.closeClient(ws, CLOSE_ORGANIZATION_CHANGED, 'organization changed');
+      }
+    }
   }
 
   /**
@@ -395,7 +532,12 @@ export class WebSocketService {
         clearInterval(this.pingInterval);
         this.pingInterval = null;
       }
-      this.clients.forEach((_identity, client) => {
+      if (this.reverifyInterval) {
+        clearInterval(this.reverifyInterval);
+        this.reverifyInterval = null;
+      }
+      [...this.clients.keys()].forEach(client => {
+        this.forgetClient(client);
         client.close();
       });
       this.wss.close();

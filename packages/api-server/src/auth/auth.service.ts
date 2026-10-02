@@ -170,9 +170,8 @@ export class AuthService {
         throw new Error('Invalid token type');
       }
 
-      // Verify user still exists and is enabled
-      const user = await this.repository.findUserById(payload._userId);
-      if (!user || !user._enabled) {
+      const user = await this.findEnabledUser(payload._userId);
+      if (!user) {
         throw new Error('User not found or disabled');
       }
 
@@ -180,6 +179,16 @@ export class AuthService {
     } catch (error) {
       throw new Error(`Token verification failed: ${error}`);
     }
+  }
+
+  /**
+   * The user record if it exists and is enabled, re-read from the store; the
+   * check verifyToken applies on every request. Long-lived connections
+   * (WebSocketService) call it to re-check identities verified earlier.
+   */
+  async findEnabledUser(userId: string): Promise<User | null> {
+    const user = await this.repository.findUserById(userId);
+    return user && user._enabled ? user : null;
   }
 
   /**

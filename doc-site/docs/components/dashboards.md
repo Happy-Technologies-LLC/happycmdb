@@ -1413,7 +1413,7 @@ The ITSM dashboard uses WebSocket for real-time updates:
 
 ```typescript
 // Client-side subscription
-const ws = new WebSocket('wss://happycmdb.example.com/ws');
+const ws = new WebSocket('wss://happycmdb.example.com/ws', ['cmdb.v1', `bearer.${accessToken}`]);
 
 ws.on('incident.created', (incident) => {
   // Add new incident to table

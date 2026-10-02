@@ -15,7 +15,7 @@ class FakeWebSocket {
   closed = false;
   onopen: (() => void) | null = null;
   onmessage: ((event: { data: string }) => void) | null = null;
-  onclose: (() => void) | null = null;
+  onclose: ((event: { code: number }) => void) | null = null;
   onerror: ((event: Event) => void) | null = null;
 
   constructor(readonly url: string, readonly protocols?: string | string[]) {
@@ -89,10 +89,26 @@ describe('useWebSocket', () => {
     const [old] = FakeWebSocket.instances;
 
     auth.setToken(null);
-    old!.onclose?.();
+    old!.onclose?.({ code: 1000 });
     vi.advanceTimersByTime(10 * 60_000);
 
     expect(FakeWebSocket.instances).toHaveLength(1);
     expect(old!.closed).toBe(true);
+  });
+
+  it('waits for a fresh token after a 4001 close instead of retrying the stale one', () => {
+    vi.useFakeTimers();
+    const auth = renderWithToken('access-1', { reconnect: true });
+    const [expired] = FakeWebSocket.instances;
+
+    expired!.onclose?.({ code: 4001 });
+    vi.advanceTimersByTime(10 * 60_000);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+
+    auth.setToken('access-2');
+    expect(FakeWebSocket.instances.map(s => s.protocols)).toEqual([
+      ['cmdb.v1', 'bearer.access-1'],
+      ['cmdb.v1', 'bearer.access-2'],
+    ]);
   });
 });

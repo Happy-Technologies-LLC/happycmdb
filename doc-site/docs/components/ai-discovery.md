@@ -345,6 +345,12 @@ organization with `403`. Each message carries an `organizationId` and is
 delivered only to connections of that organization; messages without one are
 dropped.
 
+A connection lasts no longer than its token: the server closes it with `4001`
+when the token expires and, on a re-check every two minutes, with `4001` when
+the user is disabled or `4003` when the user's organization changed. After
+`4001`, reconnect only with a new access token; after `4003`, reconnecting with
+the same token picks up the new organization.
+
 ## Cost Management
 
 ### Budget Controls

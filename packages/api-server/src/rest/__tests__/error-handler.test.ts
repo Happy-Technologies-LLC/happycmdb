@@ -109,6 +109,14 @@ describe('global error handler', () => {
     expect(JSON.stringify([...warn.mock.calls, ...error.mock.calls])).not.toContain(SECRET);
   });
 
+  it('a form body nested past the parser depth returns 400 as a malformed body', async () => {
+    // urlencoded({ extended: true }) allows 32 levels of nesting; this has 33.
+    const res = await request(app).post('/api/v1/business-services')
+      .set('Content-Type', 'application/x-www-form-urlencoded').send(`a${'[p]'.repeat(33)}=1`);
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ _error: 'Bad Request', _message: 'Malformed request body' });
+  });
+
   it('oversized body returns 413', async () => {
     // server.ts: json({ limit: '10mb' }).
     const res = await request(app).post('/api/v1/business-services').set(AUTH)

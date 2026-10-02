@@ -538,6 +538,14 @@ describe('POST /cis rejects ci_ids the mapping table cannot hold', () => {
     expect(res.body._details).toEqual([expect.objectContaining({ _field: 'ci_ids.1', _type: 'string.max' })]);
     expect(await count(`ci_business_service_mappings WHERE service_id = 'bs-b-app'`)).toBe(1);
   });
+
+  it('POST /cis with a NUL character in a ci_id is 400 and writes nothing', async () => {
+    const res = await request(app).post('/api/v1/business-services/bs-b-app/cis').set(AS_B)
+      .send({ ci_ids: ['ci-\u0000'] });
+    expect(res.status).toBe(400);
+    expect(res.body._details).toEqual([expect.objectContaining({ _field: 'ci_ids.0', _type: 'string.pattern.base' })]);
+    expect(await count(`ci_business_service_mappings WHERE service_id = 'bs-b-app'`)).toBe(1);
+  });
 });
 
 describe('the tenant is re-read from the user record on every request', () => {

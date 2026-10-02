@@ -56,7 +56,10 @@ type HttpError = { name?: unknown; message?: unknown; stack?: unknown; type?: un
  * the request body (JSON.parse) or the raw path parameter (Express decode).
  */
 function classifyClientError(err: HttpError): { status: number; message: string } | null {
-  if (err.type === 'entity.parse.failed') return { status: 400, message: 'Malformed request body' };
+  // querystring.parse.rangeError: a urlencoded body nested deeper than the parser allows.
+  if (err.type === 'entity.parse.failed' || err.type === 'querystring.parse.rangeError') {
+    return { status: 400, message: 'Malformed request body' };
+  }
   if (err.type === 'entity.too.large') return { status: 413, message: 'Request body too large' };
   if (err instanceof URIError) return { status: 400, message: 'Malformed URL encoding' };
   const status = err.status ?? err.statusCode;

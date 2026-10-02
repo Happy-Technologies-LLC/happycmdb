@@ -3056,6 +3056,8 @@ paths:
                     type: string
                     minLength: 1
                     maxLength: 100
+                    pattern: '^[^\u0000]+$'
+                    description: Must not contain NUL (U+0000) characters
                 mapping_type:
                   type: string
                   enum: [hosts, supports, enables, provides]

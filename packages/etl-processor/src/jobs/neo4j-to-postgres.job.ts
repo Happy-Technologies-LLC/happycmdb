@@ -88,6 +88,9 @@ export class Neo4jToPostgresJob {
     try {
       // Step 1: Extract CIs from Neo4j
       const cis = await this.extractCIs(data);
+      // Only committed, tenant-resolved dimensions can supply relationship keys.
+      const acceptedOrganizations = data.fullRefresh || !data.incrementalSince
+        ? new Map<string, string>() : undefined;
       logger.info(`Extracted ${cis.length} CIs from Neo4j`);
 
       // Step 2: Process CIs in batches
@@ -96,7 +99,7 @@ export class Neo4jToPostgresJob {
         await job.updateProgress((i / cis.length) * 100);
 
         try {
-          const batchResult = await this.processBatch(batch, data.fullRefresh || false, job.id);
+          const batchResult = await this.processBatch(batch, data.fullRefresh || false, job.id, acceptedOrganizations);
           result.cisProcessed += batchResult.cisProcessed;
           result.recordsInserted += batchResult.recordsInserted;
           result.recordsUpdated += batchResult.recordsUpdated;
@@ -109,8 +112,8 @@ export class Neo4jToPostgresJob {
       }
 
       // Step 3: Process relationships
-      if (data.fullRefresh || !data.incrementalSince) {
-        const relationshipsResult = await this.processRelationships(cis);
+      if (acceptedOrganizations) {
+        const relationshipsResult = await this.processRelationships(cis, acceptedOrganizations);
         result.relationshipsProcessed = relationshipsResult.processed;
         result.recordsInserted += relationshipsResult.inserted;
       }
@@ -199,7 +202,8 @@ export class Neo4jToPostgresJob {
   private async processBatch(
     cis: ExtractedCI[],
     fullRefresh: boolean,
-    jobId: string = 'neo4j-to-postgres-etl'
+    jobId: string = 'neo4j-to-postgres-etl',
+    acceptedOrganizations?: Map<string, string>
   ): Promise<{ cisProcessed: number; recordsInserted: number; recordsUpdated: number }> {
     const batchStartTime = Date.now();
     const result = { cisProcessed: 0, recordsInserted: 0, recordsUpdated: 0 };
@@ -217,6 +221,8 @@ export class Neo4jToPostgresJob {
     let lastError: Error | null = null;
 
     while (attempt < maxRetries) {
+      // Do not retain identities from a transaction that fails and is retried.
+      const acceptedInAttempt: Array<[string, string]> | null = acceptedOrganizations ? [] : null;
       try {
         await this.postgresClient.transaction(async (client: any) => {
           for (const ci of cis) {
@@ -230,6 +236,7 @@ export class Neo4jToPostgresJob {
                  FROM cmdb.dim_ci WHERE ci_id = $1 AND is_current = true`,
                 [ci._id]
               );
+              let resolvedOrganizationId = dimension.organization_id;
 
               if (existingResult.rows.length > 0) {
                 const existing = existingResult.rows[0];
@@ -245,6 +252,7 @@ export class Neo4jToPostgresJob {
                   logger.warn('CI node organization conflicts with its cmdb.dim_ci history; skipped', { ciId: ci._id });
                   continue;
                 }
+                resolvedOrganizationId = organizationId;
                 if (existing.org_backfilled === true) {
                   await client.query(
                     'UPDATE cmdb.dim_ci SET org_backfilled = FALSE WHERE ci_id = $1 AND org_backfilled',
@@ -373,6 +381,9 @@ export class Neo4jToPostgresJob {
               }
 
               result.cisProcessed++;
+              if (acceptedInAttempt) {
+                acceptedInAttempt.push([ci._id, resolvedOrganizationId]);
+              }
 
             } catch (error) {
               logger.error('Error processing CI in batch', {
@@ -384,6 +395,11 @@ export class Neo4jToPostgresJob {
             }
           }
         });
+        if (acceptedOrganizations && acceptedInAttempt) {
+          for (const [ciId, organizationId] of acceptedInAttempt) {
+            acceptedOrganizations.set(ciId, organizationId);
+          }
+        }
 
         // Success - exit retry loop
         const batchDuration = Date.now() - batchStartTime;
@@ -431,20 +447,37 @@ export class Neo4jToPostgresJob {
    * Process relationships between CIs
    */
   private async processRelationships(
-    cis: CI[]
+    cis: CI[],
+    acceptedOrganizations: Map<string, string>
   ): Promise<{ processed: number; inserted: number }> {
     const result = { processed: 0, inserted: 0 };
 
     for (const ci of cis) {
+      const fromOrganization = acceptedOrganizations.get(ci._id);
+      if (!fromOrganization) continue;
       try {
         const relationships = await this.neo4jClient.getRelationships(ci._id, UNSCOPED_CI_ACCESS, 'out');
 
         for (const rel of relationships) {
-          const fromCiKey = await this.postgresClient.getCurrentCIKey(ci._id);
-          const toCiKey = await this.postgresClient.getCurrentCIKey(rel._ci._id);
-
-          if (fromCiKey === null || toCiKey === null) {
-            logger.warn('Skipping relationship - CI dimension not found in cmdb.dim_ci', {
+          const toOrganization = acceptedOrganizations.get(rel._ci._id);
+          if (!toOrganization) {
+            logger.warn('Skipping relationship - endpoint has no accepted CI lineage', {
+              fromCiId: ci._id,
+              toCiId: rel._ci._id
+            });
+            continue;
+          }
+          // Both keys must still belong to the organizations resolved from
+          // committed node/dimension pairs; an id alone can name stale history.
+          const keys = await this.postgresClient.query(
+            `SELECT source.ci_key AS from_ci_key, target.ci_key AS to_ci_key
+             FROM cmdb.dim_ci source CROSS JOIN cmdb.dim_ci target
+             WHERE source.ci_id = $1 AND source.organization_id = $2 AND source.is_current = TRUE
+               AND target.ci_id = $3 AND target.organization_id = $4 AND target.is_current = TRUE`,
+            [ci._id, fromOrganization, rel._ci._id, toOrganization]
+          );
+          if (keys.rows.length === 0) {
+            logger.warn('Skipping relationship - current CI dimension does not match accepted lineage', {
               fromCiId: ci._id,
               toCiId: rel._ci._id
             });
@@ -459,8 +492,8 @@ export class Neo4jToPostgresJob {
              VALUES ($1, $2, $3, $4, $5, true)
              ON CONFLICT (from_ci_key, to_ci_key, relationship_type, is_active) DO NOTHING`,
             [
-              fromCiKey,
-              toCiKey,
+              keys.rows[0].from_ci_key,
+              keys.rows[0].to_ci_key,
               this.dimensionTransformer.generateDateKey(discoveredAt),
               rel._type,
               discoveredAt

@@ -376,12 +376,18 @@ organization of the `:CI` node it versions.
   reconciliation), as the Neo4j backfill does. An org-less node whose ID matches
   an existing customer CI is skipped and logged, not assigned that customer's
   organization: a reconciliation merge can recreate a deleted customer's ID
-  from another organization's supplied attributes. Without trusted restoration
-  provenance it cannot be distinguished from a legitimate org-less restore.
-  Its stored customer row stays unchanged; only a node naming that organization
-  may update it. The full-refresh job empties `cmdb.dim_ci` first, so every CI
-  is new to it. A node without an organization never puts a CI in a customer
-  organization.
+  from another organization's supplied attributes. The `postgres-wins`
+  reconciliation restore is distinct: it reads the surviving current
+  `cmdb.dim_ci` row and stamps that row's organization on the recreated Neo4j
+  node. The untrusted merge has no such provenance and stays org-less. A
+  conflicting node's stored customer row stays unchanged; only a node naming
+  that organization may update it. The full-refresh job empties `cmdb.dim_ci`
+  first, so every CI is new to it. A node without an organization never puts
+  a CI in a customer organization.
+- A complete neo4j-to-postgres sync writes relationship facts only when both
+  endpoints were successfully resolved from committed CI batches and their
+  current `cmdb.dim_ci` rows still match those organizations. A skipped
+  replacement cannot write a relationship using a former customer's `ci_key`.
 - **Rollout:** CIs created in a customer organization through `POST /api/v1/cis` and
   synced before 011 are backfilled to the internal organization. Right after applying
   011, run a complete neo4j-to-postgres sync (no `incrementalSince`, no `ciTypes`) so

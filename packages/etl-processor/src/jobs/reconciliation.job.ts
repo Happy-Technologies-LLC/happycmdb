@@ -277,7 +277,7 @@ export class ReconciliationJob {
   /**
    * Get CI from PostgreSQL data mart
    */
-  private async getPostgresCI(ciId: string): Promise<CI | null> {
+  private async getPostgresCI(ciId: string): Promise<(CI & { organization_id: string }) | null> {
     const result = await this.postgresClient.query(
       `SELECT * FROM cmdb.dim_ci WHERE ci_id = $1 AND is_current = true`,
       [ciId]
@@ -298,7 +298,8 @@ export class ReconciliationJob {
       _created_at: row.created_at,
       _updated_at: row.updated_at,
       _discovered_at: row.discovered_at,
-      _metadata: row.metadata || {}
+      _metadata: row.metadata || {},
+      organization_id: row.organization_id
     };
   }
 
@@ -386,9 +387,10 @@ export class ReconciliationJob {
   /**
    * Create CI in Neo4j from PostgreSQL data
    */
-  private async resolveByCreatingInNeo4j(ci: CI): Promise<void> {
-    // System job: the CI is created without an organization (invisible to org-scoped reads).
-    await this.neo4jClient.createCI(ci, UNSCOPED_CI_ACCESS);
+  private async resolveByCreatingInNeo4j(ci: CI & { organization_id: string }): Promise<void> {
+    // Only this Postgres-backed restore can stamp a tenant: the current
+    // cmdb.dim_ci row is trusted; reconciliation merge inputs are not.
+    await this.neo4jClient.createCI(ci, ci.organization_id);
     logger.info('Created CI in Neo4j from PostgreSQL', { ciId: ci._id });
   }
 

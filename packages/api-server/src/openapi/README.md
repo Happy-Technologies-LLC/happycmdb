@@ -143,7 +143,7 @@ http://localhost:3000/api-docs/openapi.yaml
 - `POST /jobs/{queueName}/{jobId}/retry` - Retry job
 
 ### Business Services (`/api/v1/business-services`)
-Organization-scoped: 403 without an organization claim; another organization's service returns the same 404 as a missing one.
+Service rows are organization-scoped: 403 without an organization claim; reads, updates and deletes return the same 404 for another organization's service as for a missing one. Create returns 409 for a `service_id` taken by any organization (ids are globally unique). Mapped CI ids are not validated, and the CI cost data `/costs` reads is not organization-scoped.
 - `GET /business-services` - List business services
 - `POST /business-services` - Create business service
 - `GET /business-services/{service_id}` - Get business service with mapped-CI and dependency counts

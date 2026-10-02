@@ -2711,17 +2711,21 @@ paths:
   # =============================================================================
   # BUSINESS SERVICES
   # =============================================================================
-  # Every operation is tenant-scoped: the organization comes from the token
-  # (401 without credentials, 403 without an organization claim), and another
-  # organization's service is indistinguishable from a missing one (404).
+  # Service rows are tenant-scoped: the organization comes from the token
+  # (401 without credentials, 403 without an organization claim). Reads,
+  # updates and deletes answer the same 404 for another organization's service
+  # as for a missing one; create answers 409 for a service_id taken by any
+  # organization (ids are globally unique). Mapped CI ids and the CI cost data
+  # /costs reads are not organization-scoped.
   /business-services:
     get:
       tags: [Business Services]
       summary: List business services
       description: >-
         Lists the caller's organization's business services, newest first.
-        Query parameters are validated only when at least one is present;
-        unknown parameters are rejected with 400.
+        Query parameters are validated only when at least one is present.
+        Unknown parameters are ignored (stripped before the handler runs);
+        empty strings and out-of-range `page`/`limit` are rejected with 400.
       operationId: listBusinessServices
       parameters:
         - name: search
@@ -2729,31 +2733,37 @@ paths:
           description: Case-insensitive substring match on name or description
           schema:
             type: string
+            minLength: 1
         - name: service_classification
           in: query
           description: Exact match
           schema:
             type: string
+            minLength: 1
         - name: tbm_tower
           in: query
           description: Exact match
           schema:
             type: string
+            minLength: 1
         - name: business_criticality
           in: query
           description: Exact match
           schema:
             type: string
+            minLength: 1
         - name: operational_status
           in: query
           description: Exact match
           schema:
             type: string
+            minLength: 1
         - name: owned_by
           in: query
           description: Exact match
           schema:
             type: string
+            minLength: 1
         - name: page
           in: query
           schema:
@@ -2912,7 +2922,7 @@ paths:
         '400':
           description: >-
             Body failed validation (middleware body), or the body has no
-            fields (`{success: false, error: 'No fields to update'}`).
+            known fields (`{success: false, error: 'No fields to update'}`).
           content:
             application/json:
               schema:
@@ -3010,7 +3020,10 @@ paths:
         Upserts one mapping per `ci_ids` entry with the given `mapping_type`;
         an existing (ci_id, mapping_type) mapping has its `confidence_score`
         and `updated_at` replaced. CI ids are not checked against the CI
-        store. Requires the `write` permission.
+        store or against the caller's organization, so any string can be
+        mapped. A `ci_ids` list containing the same id twice currently fails
+        with 500. Unknown body fields are ignored. Requires the `write`
+        permission.
       operationId: mapBusinessServiceCIs
       requestBody:
         required: true
@@ -3019,13 +3032,13 @@ paths:
             schema:
               type: object
               required: [ci_ids]
-              additionalProperties: false
               properties:
                 ci_ids:
                   type: array
                   minItems: 1
                   items:
                     type: string
+                    minLength: 1
                 mapping_type:
                   type: string
                   enum: [hosts, supports, enables, provides]
@@ -3162,10 +3175,10 @@ paths:
             schema:
               type: object
               required: [depends_on_service_id]
-              additionalProperties: false
               properties:
                 depends_on_service_id:
                   type: string
+                  minLength: 1
                 dependency_type:
                   type: string
                   enum: [technical, business, data, security]
@@ -3308,9 +3321,12 @@ paths:
       summary: Get business service cost summary
       description: >-
         Monthly cost of the CIs mapped to the service, read from the current
-        CI row's TBM attributes (`resource_tower`, `monthly_cost`). A CI mapped
-        under several mapping types is counted and costed once. A service
-        with no mappings returns `ci_count` 0 and null totals.
+        CI row's TBM attributes (`resource_tower`, `monthly_cost`). Those CI
+        rows are not organization-scoped: a mapped CI id (which is not
+        validated, see POST /business-services/{service_id}/cis) is costed
+        whichever organization the CI belongs to. A CI mapped under several
+        mapping types is counted and costed once. A service with no mappings
+        returns `ci_count` 0 and null totals.
       operationId: getBusinessServiceCosts
       responses:
         '200':
@@ -3522,9 +3538,11 @@ components:
 
     BusinessServiceValidationError:
       description: >-
-        Request failed validation (body, or query for the list). Unknown
-        fields and `organization_id` are rejected; the organization always
-        comes from the token.
+        Request failed validation (body, or query for the list). `_message`
+        and `_details` carry the Joi messages, e.g. an empty string or an
+        out-of-range value. Unknown fields are ignored, not rejected; only
+        `organization_id` on the create/update bodies is rejected, since the
+        organization always comes from the token.
       content:
         application/json:
           schema:
@@ -3532,11 +3550,11 @@ components:
           example:
             _success: false
             _error: Validation Error
-            _message: '"organization_id" is not allowed'
+            _message: '"limit" must be less than or equal to 100'
             _details:
-              - _field: organization_id
-                _message: '"organization_id" is not allowed'
-                _type: any.unknown
+              - _field: limit
+                _message: '"limit" must be less than or equal to 100'
+                _type: number.max
 
     BusinessServiceUnauthorized:
       description: No credentials, or the JWT / API key failed verification
@@ -3577,13 +3595,19 @@ components:
 
     BusinessServiceServerError:
       description: >-
-        Unexpected failure (e.g. a database error). The body carries a fixed,
-        per-operation message only; driver errors are logged server-side and
-        never returned.
+        Unexpected failure. From the handler (e.g. a database error) the body
+        is `{success: false, error}` with a fixed per-operation message;
+        driver errors are logged server-side and never returned. Requests
+        that fail before the handler, a malformed JSON body or an
+        undecodable percent-encoded path parameter, reach the app-level
+        error handler, which answers 500 `{_error: 'Internal Server Error',
+        _message}` with the parser/decoder message.
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/BusinessServiceError'
+            oneOf:
+              - $ref: '#/components/schemas/BusinessServiceError'
+              - $ref: '#/components/schemas/MiddlewareError'
           example:
             success: false
             error: Failed to get service costs
@@ -4627,7 +4651,9 @@ components:
 
     BusinessServiceInput:
       type: object
-      additionalProperties: false
+      description: >-
+        Unknown fields are ignored. `organization_id` is rejected with 400;
+        the organization always comes from the token.
       required: [service_id, name, service_classification, tbm_tower, business_criticality]
       properties:
         service_id:
@@ -4657,24 +4683,32 @@ components:
             500.
         service_type:
           type: string
+          minLength: 1
         owned_by:
           type: string
+          minLength: 1
         managed_by:
           type: string
+          minLength: 1
         support_group:
           type: string
+          minLength: 1
         service_level_requirement:
           type: string
+          minLength: 1
         category:
           type: string
+          minLength: 1
         tags:
           type: array
           items:
             type: string
+            minLength: 1
         related_ci_types:
           type: array
           items:
             type: string
+            minLength: 1
         cost_allocation:
           type: object
           additionalProperties: true
@@ -4684,8 +4718,10 @@ components:
 
     BusinessServiceUpdate:
       type: object
-      additionalProperties: false
-      description: At least one field is required (an empty body returns 400).
+      description: >-
+        At least one known field is required: unknown fields are ignored, so
+        a body with none of these fields returns 400 `No fields to update`.
+        `organization_id` is rejected with 400.
       properties:
         name:
           type: string
@@ -4707,24 +4743,32 @@ components:
             table's CHECK constraint and currently fail with 500.
         service_type:
           type: string
+          minLength: 1
         owned_by:
           type: string
+          minLength: 1
         managed_by:
           type: string
+          minLength: 1
         support_group:
           type: string
+          minLength: 1
         service_level_requirement:
           type: string
+          minLength: 1
         category:
           type: string
+          minLength: 1
         tags:
           type: array
           items:
             type: string
+            minLength: 1
         related_ci_types:
           type: array
           items:
             type: string
+            minLength: 1
         cost_allocation:
           type: object
           additionalProperties: true
@@ -4866,7 +4910,6 @@ components:
         total_monthly_cost:
           type: string
           nullable: true
-          pattern: '^-?[0-9]+(\.[0-9]+)?$'
           description: >-
             PostgreSQL NUMERIC sum of the mapped CIs' monthly cost, emitted as
             a decimal string (e.g. "150.5"); null when no mapped CI has a
@@ -4876,9 +4919,11 @@ components:
           nullable: true
           additionalProperties:
             type: number
+            nullable: true
           description: >-
-            Monthly cost per TBM resource tower (JSON numbers); null when no
-            mapped CI has a resource tower.
+            Monthly cost per TBM resource tower (JSON numbers; null for a
+            tower none of whose CIs has a `monthly_cost`); null when no mapped
+            CI has a resource tower.
       example:
         ci_count: '2'
         total_monthly_cost: '150.5'

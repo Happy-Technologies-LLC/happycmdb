@@ -4,10 +4,20 @@
 /**
  * WebSocket Hook
  * Provides real-time updates for AI patterns and discovery sessions
+ *
+ * The /ws upgrade is authenticated: the session's access token travels in a
+ * `bearer.<token>` Sec-WebSocket-Protocol entry next to WS_PROTOCOL, the only
+ * subprotocol the server selects (browsers cannot set headers on a
+ * WebSocket, and tokens are kept out of URLs). Without a session no socket is
+ * opened; when the token changes the socket is replaced with one carrying the
+ * new token. The server delivers only the caller's organization's messages.
  */
 
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useContext, useEffect, useRef, useState, useCallback } from 'react';
+import AuthContext from '@/contexts/AuthContext';
 import { logger } from '@/utils/logger';
+
+const WS_PROTOCOL = 'cmdb.v1';
 
 export interface WebSocketMessage {
   type: 'pattern_update' | 'pattern_approved' | 'pattern_learned' | 'session_update' | 'cost_alert';
@@ -34,6 +44,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
     onError,
   } = options;
 
+  const token = useContext(AuthContext)?.token ?? null;
   const [isConnected, setIsConnected] = useState(false);
   const [lastMessage, setLastMessage] = useState<WebSocketMessage | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -41,6 +52,10 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
   const shouldReconnectRef = useRef(true);
 
   const connect = useCallback(() => {
+    if (!token) {
+      return;
+    }
+
     try {
       // Determine WebSocket URL
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -49,7 +64,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
 
       logger.info('Connecting to WebSocket', { url: wsUrl });
 
-      const ws = new WebSocket(wsUrl);
+      const ws = new WebSocket(wsUrl, [WS_PROTOCOL, `bearer.${token}`]);
 
       ws.onopen = () => {
         logger.info('WebSocket connected');
@@ -69,6 +84,11 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
       };
 
       ws.onclose = () => {
+        // A socket superseded by a newer one (e.g. after a token change) must
+        // not clear the newer socket or schedule a reconnect of its own.
+        if (wsRef.current !== null && wsRef.current !== ws) {
+          return;
+        }
         logger.info('WebSocket disconnected');
         setIsConnected(false);
         wsRef.current = null;
@@ -92,7 +112,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
     } catch (error) {
       logger.error('Failed to create WebSocket connection', { error });
     }
-  }, [reconnect, reconnectInterval, onMessage, onConnect, onDisconnect, onError]);
+  }, [token, reconnect, reconnectInterval, onMessage, onConnect, onDisconnect, onError]);
 
   const disconnect = useCallback(() => {
     shouldReconnectRef.current = false;

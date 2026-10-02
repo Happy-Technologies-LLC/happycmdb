@@ -332,10 +332,18 @@ WebSocket-based notifications for:
 - Discovery session completion
 - Cost alerts
 
-**Connection:**
+**Connection:** the upgrade requires an access token whose user belongs to an
+organization. Browsers pass it as a `bearer.<token>` subprotocol next to
+`cmdb.v1` (the only subprotocol the server selects); other clients may send
+`Authorization: Bearer <token>` instead. Tokens are never accepted in the
+query string.
 ```javascript
-ws://localhost:3000/ws
+new WebSocket('ws://localhost:3000/ws', ['cmdb.v1', `bearer.${accessToken}`]);
 ```
+A missing or invalid token is refused with `401`, a user without an
+organization with `403`. Each message carries an `organizationId` and is
+delivered only to connections of that organization; messages without one are
+dropped.
 
 ## Cost Management
 
@@ -479,15 +487,17 @@ AI_DISCOVERY_MONTHLY_BUDGET=200.00
 
 ### WebSocket Not Connecting
 
-**Cause**: WebSocket service not initialized
+**Cause**: WebSocket service not initialized, or the upgrade was refused (`401`: missing/invalid token; `403`: user has no organization)
 
 **Solution:**
 ```bash
 # Check API server logs
 docker logs cmdb-api-server | grep WebSocket
 
-# Verify WebSocket endpoint
+# Verify WebSocket endpoint (expect 101 with a valid token, 401 without)
 curl -i -N -H "Connection: Upgrade" -H "Upgrade: websocket" \
+  -H "Sec-WebSocket-Version: 13" -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
   http://localhost:3000/ws
 ```
 

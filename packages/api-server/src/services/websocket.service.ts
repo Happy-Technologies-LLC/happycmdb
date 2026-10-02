@@ -99,6 +99,8 @@ export class WebSocketService {
     this.authService = authService;
     this.wss = new WebSocketServer({
       noServer: true,
+      // The channel is server-to-client only; no client message is ever read.
+      maxPayload: 1024,
       // Never select the bearer entry: that would echo the token in the response.
       handleProtocols: (protocols: Set<string>) => (protocols.has(WS_PROTOCOL) ? WS_PROTOCOL : false),
     });

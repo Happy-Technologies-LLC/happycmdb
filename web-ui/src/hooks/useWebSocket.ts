@@ -18,6 +18,7 @@ import AuthContext from '@/contexts/AuthContext';
 import { logger } from '@/utils/logger';
 
 const WS_PROTOCOL = 'cmdb.v1';
+const MAX_RECONNECT_DELAY_MS = 60_000;
 
 export interface WebSocketMessage {
   type: 'pattern_update' | 'pattern_approved' | 'pattern_learned' | 'session_update' | 'cost_alert';
@@ -50,6 +51,15 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const shouldReconnectRef = useRef(true);
+  // Closes since the last successful open; drives the reconnect backoff.
+  const failedAttemptsRef = useRef(0);
+
+  // Callbacks are read through a ref so callers passing inline functions do
+  // not replace (and re-authenticate) the socket on every render.
+  const callbacksRef = useRef({ onMessage, onConnect, onDisconnect, onError });
+  useEffect(() => {
+    callbacksRef.current = { onMessage, onConnect, onDisconnect, onError };
+  });
 
   const connect = useCallback(() => {
     if (!token) {
@@ -68,8 +78,9 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
 
       ws.onopen = () => {
         logger.info('WebSocket connected');
+        failedAttemptsRef.current = 0;
         setIsConnected(true);
-        onConnect?.();
+        callbacksRef.current.onConnect?.();
       };
 
       ws.onmessage = (event) => {
@@ -77,42 +88,46 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
           const message: WebSocketMessage = JSON.parse(event.data);
           logger.debug('WebSocket message received', { type: message.type });
           setLastMessage(message);
-          onMessage?.(message);
+          callbacksRef.current.onMessage?.(message);
         } catch (error) {
           logger.error('Failed to parse WebSocket message', { error });
         }
       };
 
       ws.onclose = () => {
-        // A socket superseded by a newer one (e.g. after a token change) must
-        // not clear the newer socket or schedule a reconnect of its own.
-        if (wsRef.current !== null && wsRef.current !== ws) {
+        callbacksRef.current.onDisconnect?.();
+        // Only the current socket reconnects. One closed by disconnect()
+        // (unmount, token change, logout) never does: its reconnect would
+        // reuse the token it was opened with.
+        if (wsRef.current !== ws) {
           return;
         }
         logger.info('WebSocket disconnected');
         setIsConnected(false);
         wsRef.current = null;
-        onDisconnect?.();
 
-        // Attempt reconnection if enabled
+        // Attempt reconnection if enabled. A refused upgrade (401 expired
+        // token, 403 no organization) looks like a network drop, so back off.
         if (reconnect && shouldReconnectRef.current) {
-          logger.info(`Reconnecting in ${reconnectInterval}ms...`);
+          const delay = Math.min(reconnectInterval * 2 ** failedAttemptsRef.current, MAX_RECONNECT_DELAY_MS);
+          failedAttemptsRef.current += 1;
+          logger.info(`Reconnecting in ${delay}ms...`);
           reconnectTimeoutRef.current = setTimeout(() => {
             connect();
-          }, reconnectInterval);
+          }, delay);
         }
       };
 
       ws.onerror = (error) => {
         logger.error('WebSocket error', { error });
-        onError?.(error);
+        callbacksRef.current.onError?.(error);
       };
 
       wsRef.current = ws;
     } catch (error) {
       logger.error('Failed to create WebSocket connection', { error });
     }
-  }, [token, reconnect, reconnectInterval, onMessage, onConnect, onDisconnect, onError]);
+  }, [token, reconnect, reconnectInterval]);
 
   const disconnect = useCallback(() => {
     shouldReconnectRef.current = false;

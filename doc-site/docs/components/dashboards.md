@@ -1756,8 +1756,8 @@ console.error(...);
 
 **Solution**:
 ```typescript
-// Check WebSocket connection in browser console
-const ws = new WebSocket('wss://happycmdb.example.com/ws');
+// Check WebSocket connection in browser console (the upgrade needs the session's access token)
+const ws = new WebSocket('wss://happycmdb.example.com/ws', ['cmdb.v1', `bearer.${localStorage.getItem('auth_token')}`]);
 ws.onopen = () => console.log('✅ WebSocket connected');
 ws.onerror = (err) => console.error('❌ WebSocket error:', err);
 

@@ -29,12 +29,13 @@ class FakeWebSocket {
 
 type Auth = React.ContextType<typeof AuthContext>;
 
-function renderWithToken(token: string | null) {
+function renderWithToken(token: string | null, options: { reconnect?: boolean } = { reconnect: false }) {
   let auth = { token } as Auth;
   const wrapper = ({ children }: { children: React.ReactNode }) => (
     <AuthContext.Provider value={auth}>{children}</AuthContext.Provider>
   );
-  const view = renderHook(() => useWebSocket({ reconnect: false }), { wrapper });
+  // A fresh inline callback on every render, as real consumers pass.
+  const view = renderHook(() => useWebSocket({ ...options, onMessage: () => {} }), { wrapper });
   return {
     setToken(next: string | null) {
       auth = { token: next } as Auth;
@@ -48,8 +49,10 @@ describe('useWebSocket', () => {
     FakeWebSocket.instances = [];
     vi.stubGlobal('WebSocket', FakeWebSocket);
   });
-
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
 
   it('sends the access token as a Sec-WebSocket-Protocol entry on connect', () => {
     renderWithToken('access-1');
@@ -69,5 +72,27 @@ describe('useWebSocket', () => {
       [['cmdb.v1', 'bearer.access-1'], true],
       [['cmdb.v1', 'bearer.access-2'], false],
     ]);
+  });
+
+  it('keeps one socket across re-renders that pass new inline callbacks', () => {
+    const auth = renderWithToken('access-1');
+
+    auth.setToken('access-1');
+    auth.setToken('access-1');
+
+    expect(FakeWebSocket.instances.map(s => s.closed)).toEqual([false]);
+  });
+
+  it('does not reconnect with the old token after the session token is cleared', () => {
+    vi.useFakeTimers();
+    const auth = renderWithToken('access-1', { reconnect: true });
+    const [old] = FakeWebSocket.instances;
+
+    auth.setToken(null);
+    old!.onclose?.();
+    vi.advanceTimersByTime(10 * 60_000);
+
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(old!.closed).toBe(true);
   });
 });

@@ -102,7 +102,10 @@ async function expectGraphQLErrorCode(promise: Promise<unknown>, code: string): 
 }
 
 const { mergeCI, resolveConflict, createRule, updateSourceAuthority } = reconciliationResolvers.ReconciliationMutation;
-const { findMatches } = reconciliationResolvers.ReconciliationQuery;
+const { findMatches, listConflicts, getCILineage, getCIFieldSources, getRules, getSourceAuthorities } =
+  reconciliationResolvers.ReconciliationQuery;
+
+const noOrgAdmin: TokenPayload = { ...adminUser, _userId: 'admin-2', _organizationId: undefined };
 
 beforeEach(() => {
   armClients();
@@ -158,6 +161,48 @@ describe('findMatches', () => {
   it('is FORBIDDEN without an organization claim, with zero engine calls', async () => {
     await expectGraphQLErrorCode(findMatches(null, args, contextWith(noOrgOperator)), 'FORBIDDEN');
     expect(mockFindExistingCI).not.toHaveBeenCalled();
+  });
+});
+
+describe('read resolvers', () => {
+  it.each([
+    ['getCILineage', getCILineage],
+    ['getCIFieldSources', getCIFieldSources],
+  ])("%s is NOT_FOUND for another org's CI, with zero SQL", async (_name, resolver) => {
+    mockOrganizationCIIds.mockResolvedValue([]);
+
+    await expectGraphQLErrorCode(resolver(null, { _ciId: 'ci-b' }, contextWith(operatorUser)), 'NOT_FOUND');
+    expect(mockOrganizationCIIds).toHaveBeenCalledWith(['ci-b'], ORG);
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  it("listConflicts pages only conflicts of the org's CIs", async () => {
+    const ownRow = {
+      id: CONFLICT_ID, ci_id: 'ci-a', conflict_type: 'field_mismatch', source_data: {}, target_data: {},
+      conflicting_fields: [], status: 'pending', created_at: new Date(),
+    };
+    mockQuery
+      .mockResolvedValueOnce({ rows: [{ ci_id: 'ci-a' }, { ci_id: 'ci-b' }] }) // conflict CIs of every org
+      .mockResolvedValueOnce({ rows: [ownRow] })
+      .mockResolvedValueOnce({ rows: [{ count: '1' }] });
+    mockOrganizationCIIds.mockResolvedValue(['ci-a']);
+
+    const result = await listConflicts(null, {}, contextWith(viewerUser));
+
+    expect(mockOrganizationCIIds).toHaveBeenCalledWith(['ci-a', 'ci-b'], ORG);
+    // The page and count queries are restricted to the owned CI ids.
+    expect(mockQuery.mock.calls[1]![1]).toEqual(['pending', ['ci-a'], 100, 0]);
+    expect(mockQuery.mock.calls[2]![1]).toEqual(['pending', ['ci-a']]);
+    expect(result.map(c => c._id)).toEqual([CONFLICT_ID]);
+  });
+
+  it.each([
+    ['getRules', getRules],
+    ['getSourceAuthorities', getSourceAuthorities],
+  ])('%s is FORBIDDEN for an operator and for an admin without an org claim', async (_name, resolver) => {
+    await expectGraphQLErrorCode(resolver(null, {}, contextWith(operatorUser)), 'FORBIDDEN');
+    await expectGraphQLErrorCode(resolver(null, {}, contextWith(noOrgAdmin)), 'FORBIDDEN');
+    expect(mockQuery).not.toHaveBeenCalled();
   });
 });
 

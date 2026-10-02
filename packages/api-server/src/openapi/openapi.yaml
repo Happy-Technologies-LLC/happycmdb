@@ -2192,7 +2192,9 @@ paths:
           description: >-
             The new CI would collide with an existing CI's globally unique
             identifier (the `ci_id_unique` / `ci_external_id_unique` constraints span
-            every organization). Nothing is written.
+            every organization). The existing CI may be another organization's or
+            have no organization (for example, reconciled before tenant scoping or
+            written by ETL). Nothing is written.
           content:
             application/json:
               example:

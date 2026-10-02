@@ -3,21 +3,29 @@
  *
  * A candidate counts only when it is structurally a signed JWS:
  *   - its first segment base64url-decodes to a JSON object with a string `alg`
- *     (`eyJ` = `{"`, `eyAi` = `{ "`, `ewog` = `{\n `, ...);
+ *     (`eyJ` = `{"`, `eyAi` = `{ "`, `ewog` = `{\n `, `IHsi` = ` {"`, ...);
  *   - its third segment has the exact length of a real signature (see
- *     SIGNATURE_LENGTHS). The payload may be any length, even `e30` (`{}`).
+ *     SIGNATURE_LENGTHS / the RSA range). The payload may be any length, even
+ *     `e30` (`{}`).
  * Placeholders such as `<header>.<payload>.signature` or `<header>...` fail the
  * signature-length gate.
  *
  * Before matching, the detector sees through:
  *   - pieces spliced by a line break (plus indentation and an optional `//`, `#`,
  *     `*` or `>` line prefix), a backslash line continuation, or string
- *     concatenation (`' + '`, `" +\n "`, adjacent literals);
- *   - percent-encoded or backslash-escaped separators right before the token
- *     (`Bearer%20eyJ...`, `\u0022eyJ...`, `\neyJ...`);
- *   - base64/base64url runs (possibly line-wrapped) whose decoded bytes hold a JWT;
+ *     concatenation (`' + '`, `" +\n "`, adjacent literals), even right after
+ *     the first character;
+ *   - any delimiter before the token (`Bearer%20eyJ...`, `_eyJ..._`,
+ *     `<!--eyJ...-->`) and up to MAX_TRAILING `-`/`_` after the signature;
+ *   - `%2E`-encoded separators;
+ *   - base64/base64url runs, wrapped at any width, whose decoded bytes hold a JWT;
  *   - UTF-16LE/BE content (BOM or NUL-interleaved); other NUL-bearing content is
  *     scanned as latin1 instead of being skipped as binary.
+ *
+ * Cost is bounded: every candidate start inside one JOIN-chained run shares a
+ * single splice of that run, and header decoding draws on a per-text budget.
+ * A crafted text that exhausts the budget fails closed: the line where it ran
+ * out is reported.
  *
  * Only line numbers leave this module; token values never do.
  */
@@ -34,37 +42,69 @@ const SIGNATURE_LENGTHS: readonly number[] = [
 /** RSA/PS signature size equals the key modulus size; accept 1024–8192 bits. */
 const MIN_RSA_BYTES = 128;
 const MAX_RSA_BYTES = 1024;
+/** Longest plausible signature in base64url characters (8192-bit RSA). */
+const MAX_SIGNATURE = Math.ceil((MAX_RSA_BYTES * 4) / 3);
+/** Formatting delimiters (`_`, `__`, `-->`) glued after a signature. */
+const MAX_TRAILING = 4;
 
 /** `{"alg":"none"}` already encodes to 19 chars. */
 const MIN_HEADER = 16;
 /** Headers carrying x5c certificate chains run to several KB. */
 const MAX_HEADER = 16384;
-/** Never splice a single candidate past this many characters. */
+/** Never splice a single run past this many characters. */
 const MAX_TOKEN = 65536;
 /** The smallest signed JWT is 68 chars; its base64 form is 92. */
 const MIN_B64_RUN = 88;
+/**
+ * A base64 run longer than MAX_TOKEN is re-spliced from this many characters
+ * (a multiple of 4, so alignment is kept) before the cut, so an encoded JWT up
+ * to ~12 KB that straddles the cut is still decoded whole.
+ */
+const B64_OVERLAP = 16384;
+/** Leading pieces a splice may glue in front of a wrapped value (`# token\n`). */
+const MAX_GLUED_PIECES = 3;
+/** Header characters decoded per input character before scanning fails closed. */
+const HEADER_BUDGET_PER_CHAR = 64;
 /** Re-scan decoded base64 at most this deep (base64 inside base64). */
 const MAX_DEPTH = 2;
 /** Same window git uses to sniff binary content. */
 const SNIFF_BYTES = 8000;
 
+/** A JOIN may start here (see JOIN); used in lookaheads. */
+const JOIN_AHEAD = `['"\`]|[ \\t]*\\\\?\\r?\\n`;
 /**
- * `ey`/`ew` starts JSON at `{`. Leading JSON whitespace encodes as I, C or
- * D; limit the other prefixes to actual whitespace byte possibilities before
- * attempting to decode a header. A lone `e` is considered only when a JOIN
- * immediately follows and the next piece begins `y`/`w`.
+ * First character of a base64url JSON object: `{` encodes as `e[wy]`; leading
+ * JSON whitespace as `I[ACH]`, `C[ginQSX]` or `D[QSX]`. A lone first character
+ * may also be JOINed to the rest. Each match consumes one character, so
+ * overlapping prefixes cannot hide a start; there is no left boundary, so any
+ * delimiter may precede the token.
  */
-const TOKEN_START = /e[wy]|e(?=['"`]|[ \t]*\\?\r?\n)|(?:I[ACH]|C[ginQSX]|D[QSX])[A-Za-z0-9_-]{0,2}/g;
-const ESCAPED_BOUNDARY = /(?:%[0-9A-Fa-f]{2}|\\[nrt]|\\u[0-9A-Fa-f]{4}|\\x[0-9A-Fa-f]{2})$/;
-/** A 16-column wrapped run still reaches MIN_B64_RUN after bounded splicing. */
-const B64_PIECE = /(?<![A-Za-z0-9+/_-])[A-Za-z0-9+/_-]{16,}/g;
+const TOKEN_START = new RegExp(
+  `e(?=[wy])|I(?=[ACH])|C(?=[ginQSX])|D(?=[QSX])|[eICD](?=${JOIN_AHEAD})`,
+  'g'
+);
+const JSON_PREFIX = /^(?:e[wy]|I[ACH]|C[ginQSX]|D[QSX])/;
+/** Decoded header lead: optional whitespace, `{`, whitespace, then `"` or `}`. */
+const JSON_OBJECT_LEAD = /^\s*(?:\{\s*(?:["}]|$)|$)/;
+/**
+ * A base64 run starts at a piece that is long enough to decode on its own, or
+ * at a piece of any length that a JOIN immediately continues (wrapped at any
+ * width, or a short first piece after a key). scanText re-checks the JOIN and
+ * only decodes runs of at least MIN_B64_RUN characters.
+ */
+const B64_PIECE = new RegExp(
+  '(?<![A-Za-z0-9+/_-])[A-Za-z0-9+/_-]+(?![A-Za-z0-9+/_-])' + // whole run, no backtracking
+    `(?:(?<=[A-Za-z0-9+/_-]{${MIN_B64_RUN}})|(?=${JOIN_AHEAD}))`,
+  'g'
+);
 /**
  * Splices between two pieces of one value: a single line break with optional
- * indentation and comment/quote prefix (a blank line ends the value), a `\`
+ * indentation and a comment/quote prefix followed by whitespace (a blank line
+ * ends the value; `//abc` stays data, since base64 lines may start `//`), a `\`
  * continuation, or a quote join. Each branch fails in linear time.
  */
 const JOIN =
-  /(?:[ \t]*\\?\r?\n(?![ \t]*\r?\n)[ \t]*(?:(?:\/\/|#+|\*|>+)[ \t]*)?|['"`]\s*(?:\+\s*)?['"`])+/y;
+  /(?:[ \t]*\\?\r?\n(?![ \t]*\r?\n)[ \t]*(?:(?:\/\/|#+|\*|>+)[ \t]+)?|['"`]\s*(?:\+\s*)?['"`])+/y;
 
 function isB64Url(c: number): boolean {
   return (
@@ -84,15 +124,19 @@ interface Spliced {
   text: string;
   /** Ascending offsets in `text` where a JOIN was removed. */
   breaks: number[];
-  /** Source offset of the piece that follows each entry of `breaks`. */
-  breakSources: number[];
+  /**
+   * Ascending offsets in `text` where the source stops being contiguous (start,
+   * every JOIN, every decoded `%2E`), and the source offset of each.
+   */
+  segments: number[];
+  segmentSources: number[];
   /** Source offset just past the last consumed character. */
   end: number;
 }
 
 /**
- * Collect characters accepted by `keep` from `start`, splicing across JOINs,
- * until `limit` characters are collected.
+ * Collect characters accepted by `keep` from `start`, splicing across JOINs
+ * (and decoding `%2E` to `.` when asked), until `limit` characters are collected.
  */
 function splice(
   src: string,
@@ -103,7 +147,8 @@ function splice(
 ): Spliced {
   const parts: string[] = [];
   const breaks: number[] = [];
-  const breakSources: number[] = [];
+  const segments = [0];
+  const segmentSources = [start];
   let len = 0;
   let i = start;
   for (;;) {
@@ -114,27 +159,48 @@ function splice(
     len += j - i;
     i = j;
     if (len >= limit || i >= src.length) break;
-    // A URL query may encode JWT separators as %2E. Only the token pass
-    // normalizes them; the header pass must stop before the first separator.
     if (decodeDots && src[i] === '%' && src.slice(i + 1, i + 3).toLowerCase() === '2e') {
       parts.push('.');
       len++;
       i += 3;
+      segments.push(len);
+      segmentSources.push(i);
       continue;
     }
-    JOIN.lastIndex = i;
-    const join = JOIN.exec(src);
-    if (!join) break;
-    const next = i + join[0].length;
-    if (next >= src.length || !keep(src.charCodeAt(next))) break;
+    const next = joinedPiece(src, i);
+    if (next < 0 || next >= src.length || !keep(src.charCodeAt(next))) break;
     breaks.push(len);
-    breakSources.push(next);
+    segments.push(len);
+    segmentSources.push(next);
     i = next;
   }
-  return { text: parts.join(''), breaks, breakSources, end: i };
+  return { text: parts.join(''), breaks, segments, segmentSources, end: i };
+}
+
+/** Source offset of the piece a JOIN at `at` leads to, or -1 if none does. */
+function joinedPiece(src: string, at: number): number {
+  JOIN.lastIndex = at;
+  const join = JOIN.exec(src);
+  return join ? at + join[0].length : -1;
+}
+
+/** Index of the first element of ascending `xs` that is >= `x` (xs.length if none). */
+function firstAtLeast(xs: readonly number[], x: number): number {
+  let lo = 0;
+  let hi = xs.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (xs[mid] < x) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
 }
 
 function joseAlgorithm(segment: string): string | undefined {
+  // Reject cheaply before decoding a long segment.
+  if (!JSON_OBJECT_LEAD.test(Buffer.from(segment.slice(0, 8), 'base64url').toString('latin1'))) {
+    return undefined;
+  }
   let header: unknown;
   try {
     header = JSON.parse(Buffer.from(segment, 'base64url').toString('utf8'));
@@ -152,33 +218,85 @@ function looksRandom(s: string): boolean {
   return /[A-Z]/.test(s) && /[a-z]/.test(s) && /[0-9_-]/.test(s);
 }
 
-/** Whether a candidate whose header passed joseAlgorithm carries a real signature. */
-function hasSignature({ text, breaks }: Spliced, alg: string): boolean {
-  const dot1 = text.indexOf('.');
-  if (dot1 < 0) return false;
-  const dot2 = text.indexOf('.', dot1 + 1);
-  if (dot2 < 0) return false;
-  const sigStart = dot2 + 1;
-  const dot3 = text.indexOf('.', sigStart);
-  const run = (dot3 < 0 ? text.length : dot3) - sigStart;
+/** One JOIN-chained token run, shared by every candidate start inside it. */
+interface Chain extends Spliced {
+  /** Ascending offsets of every `.` in `text`. */
+  dots: number[];
+}
+
+function tokenChain(src: string, start: number): Chain {
+  const spliced = splice(src, start, isTokenChar, MAX_TOKEN, true);
+  const dots: number[] = [];
+  for (let d = spliced.text.indexOf('.'); d !== -1; d = spliced.text.indexOf('.', d + 1)) dots.push(d);
+  return { ...spliced, dots };
+}
+
+/** Offset in `spliced.text` of source offset `at`, which the splice consumed. */
+function chainOffset({ segments, segmentSources }: Spliced, at: number): number {
+  const k = firstAtLeast(segmentSources, at + 1) - 1;
+  return segments[k] + (at - segmentSources[k]);
+}
+
+/** Source offset of offset `at` in `spliced.text`. */
+function sourceOffset({ segments, segmentSources }: Spliced, at: number): number {
+  const k = firstAtLeast(segments, at + 1) - 1;
+  return segmentSources[k] + (at - segments[k]);
+}
+
+/** Header characters still decodable for one text (see HEADER_BUDGET_PER_CHAR). */
+interface Budget {
+  left: number;
+}
+
+/**
+ * Whether `chain.text` holds a signed JWT starting at offset `from`;
+ * 'budget' when decoding its header would exhaust `budget`.
+ */
+function signedJwtAt(chain: Chain, from: number, budget: Budget): 'jwt' | 'none' | 'budget' {
+  const { text, dots, breaks } = chain;
+  const k = firstAtLeast(dots, from);
+  if (k + 1 >= dots.length) return 'none';
+  const headerEnd = dots[k];
+  if (headerEnd - from < MIN_HEADER || headerEnd - from > MAX_HEADER) return 'none';
+  budget.left -= headerEnd - from;
+  if (budget.left < 0) return 'budget';
+  const alg = joseAlgorithm(text.slice(from, headerEnd));
+  if (alg === undefined) return 'none';
+
+  const sigStart = dots[k + 1] + 1;
+  const sigEnd = k + 2 < dots.length ? dots[k + 2] : text.length;
   const plausible = (len: number): boolean => {
     if (SIGNATURE_LENGTHS.includes(len)) return true;
     if (!/^(?:RS|PS)(?:256|384|512)$/.test(alg)) return false;
-    const bytes = Math.floor(len * 3 / 4);
-    return bytes >= MIN_RSA_BYTES && bytes <= MAX_RSA_BYTES && len === Math.ceil(bytes * 4 / 3);
+    const bytes = Math.floor((len * 3) / 4);
+    return bytes >= MIN_RSA_BYTES && bytes <= MAX_RSA_BYTES && len === Math.ceil((bytes * 4) / 3);
   };
-  if (plausible(run)) return true;
-  return breaks.some((offset) =>
-    offset > sigStart && offset < sigStart + run &&
-    plausible(offset - sigStart) && looksRandom(text.slice(sigStart, offset))
-  );
+  // The signature ends at the run end or at a splice; either way it may carry
+  // trailing formatting delimiters. A splice cut must look random.
+  const ends = [sigEnd];
+  const limit = Math.min(sigEnd, sigStart + MAX_SIGNATURE + MAX_TRAILING + 1);
+  for (let b = firstAtLeast(breaks, sigStart + 1); b < breaks.length && breaks[b] < limit; b++) {
+    ends.push(breaks[b]);
+  }
+  for (const end of ends) {
+    for (let e = end; e > sigStart && end - e <= MAX_TRAILING; e--) {
+      if (e < end && text[e] !== '-' && text[e] !== '_') break;
+      if (e - sigStart > MAX_SIGNATURE || !plausible(e - sigStart)) continue;
+      if (end === sigEnd || looksRandom(text.slice(sigStart, e))) return 'jwt';
+    }
+  }
+  return 'none';
 }
 
-/** Maps ascending source offsets to 1-based line numbers. */
+/** Maps source offsets (ascending, with rare rewinds) to 1-based line numbers. */
 function lineCounter(text: string): (pos: number) => number {
   let at = 0;
   let line = 1;
   return (pos) => {
+    if (pos < at) {
+      at = 0;
+      line = 1;
+    }
     for (let nl = text.indexOf('\n', at); nl !== -1 && nl < pos; nl = text.indexOf('\n', at)) {
       line++;
       at = nl + 1;
@@ -189,23 +307,32 @@ function lineCounter(text: string): (pos: number) => number {
 
 function scanText(text: string, depth: number, lines: Set<number>): void {
   let lineOf = lineCounter(text);
+  let chain: Chain | undefined;
+  const budget: Budget = { left: HEADER_BUDGET_PER_CHAR * text.length + MAX_HEADER };
   for (const m of text.matchAll(TOKEN_START)) {
     const start = m.index;
-    if (isB64Url(text.charCodeAt(start - 1)) &&
-        !ESCAPED_BOUNDARY.test(text.slice(Math.max(0, start - 6), start))) continue;
-    if (m[0][0] !== 'e' && ![9, 10, 13, 32].includes(Buffer.from(m[0], 'base64url')[0])) continue;
-    if (m[0] === 'e') {
-      JOIN.lastIndex = start + 1;
-      const join = JOIN.exec(text);
-      if (!join || !/[yw]/.test(text[start + 1 + join[0].length] ?? '')) continue;
+    let prefix = text.slice(start, start + 4);
+    if (!JSON_PREFIX.test(prefix)) {
+      // A lone first character must be JOINed straight into a valid prefix.
+      const next = joinedPiece(text, start + 1);
+      if (next < 0) continue;
+      prefix = text[start] + text.slice(next, next + 3);
+      if (!JSON_PREFIX.test(prefix)) continue;
     }
-    // Validate the header before splicing the whole candidate, so a long
-    // token-char run with many non-JOSE starts stays linear.
-    const head = splice(text, start, isB64Url, MAX_HEADER + 1).text;
-    const alg = head.length >= MIN_HEADER && head.length <= MAX_HEADER
-      ? joseAlgorithm(head) : undefined;
-    if (alg === undefined) continue;
-    if (hasSignature(splice(text, start, isTokenChar, MAX_TOKEN, true), alg)) lines.add(lineOf(start));
+    if (prefix[0] !== 'e' && ![9, 10, 13, 32].includes(Buffer.from(prefix, 'base64url')[0])) continue;
+
+    let from = 0;
+    if (chain !== undefined && start < chain.end) from = chainOffset(chain, start);
+    // Restart near the end of a truncated chain so a late token is not cut.
+    if (chain === undefined || start >= chain.end ||
+        (chain.text.length >= MAX_TOKEN && from > MAX_TOKEN / 2)) {
+      chain = tokenChain(text, start);
+      from = 0;
+    }
+    const verdict = signedJwtAt(chain, from, budget);
+    if (verdict === 'none') continue;
+    lines.add(lineOf(start));
+    if (verdict === 'budget') break; // fail closed; the line is reported
   }
 
   if (depth >= MAX_DEPTH) return;
@@ -213,51 +340,77 @@ function scanText(text: string, depth: number, lines: Set<number>): void {
   let resume = 0;
   for (const m of text.matchAll(B64_PIECE)) {
     if (m.index < resume) continue;
-    const run = splice(text, m.index, isB64Char, MAX_TOKEN);
-    resume = run.end;
-    const hits: number[] = [];
-    const joinedHit = b64RunHit(run, m.index, depth);
-    if (joinedHit >= 0) hits.push(joinedHit);
-    // A newline can join two independently encoded values. Inspect each piece
-    // as well as the full run, or the second JWT is hidden by the first.
-    if (run.breaks.length > 0) {
-      let from = 0;
-      for (let piece = 0; piece <= run.breaks.length; piece++) {
-        const end = piece < run.breaks.length ? run.breaks[piece] : run.text.length;
-        if (end - from >= MIN_B64_RUN &&
-            scanBuffer(Buffer.from(run.text.slice(from, end), 'base64'), depth + 1).size > 0) {
-          hits.push(piece === 0 ? m.index : run.breakSources[piece - 1]);
-        }
-        from = end;
-      }
+    if (m[0].length < MIN_B64_RUN) {
+      // Too short to decode alone: only a start when a JOIN continues it.
+      const next = joinedPiece(text, m.index + m[0].length);
+      if (next < 0 || !isB64Char(text.charCodeAt(next))) continue;
     }
-    hits.sort((a, b) => a - b);
-    for (const at of hits) lines.add(lineOf(at));
+    for (let at = m.index; ;) {
+      const run = splice(text, at, isB64Char, MAX_TOKEN);
+      resume = run.end;
+      if (run.text.length >= MIN_B64_RUN) {
+        for (const hit of b64RunHits(run, depth)) lines.add(lineOf(hit));
+      }
+      if (run.text.length < MAX_TOKEN) break;
+      at = sourceOffset(run, MAX_TOKEN - B64_OVERLAP);
+    }
   }
 }
 
+/** Source offsets of the decoded values in one base64 run that hold a JWT. */
+function b64RunHits(run: Spliced, depth: number): number[] {
+  const hits: number[] = [];
+  const joinedHit = b64RunHit(run, depth);
+  if (joinedHit >= 0) hits.push(joinedHit);
+  // A newline can join two independently encoded values. Inspect each piece
+  // as well as the full run, or the second JWT is hidden by the first.
+  let from = 0;
+  for (let piece = 0; run.breaks.length > 0 && piece <= run.breaks.length; piece++) {
+    const end = piece < run.breaks.length ? run.breaks[piece] : run.text.length;
+    if (end - from >= MIN_B64_RUN &&
+        scanBuffer(Buffer.from(run.text.slice(from, end), 'base64'), depth + 1).size > 0) {
+      hits.push(sourceOffset(run, from));
+    }
+    from = end;
+  }
+  return hits.sort((a, b) => a - b);
+}
+
 /**
- * Decode a base64 run starting at source offset `start` and re-scan it;
- * return the source offset of the decoded value holding a JWT, or -1.
- * A splice may have glued a word from the previous or next line onto the
- * value, which misaligns or lengthens the decode, so also try the run without
- * its first and/or last piece.
+ * Decode a base64 run and re-scan it; return the source offset of the decoded
+ * value holding a JWT, or -1.
+ * A splice may glue up to MAX_GLUED_PIECES short lines (`# token`, a prose
+ * word) in front of a wrapped value, or a word from the next line after it,
+ * and formatting may glue `_`/`-` before it (`_<value>_`). Each misaligns or
+ * lengthens the decode, so also try the run without leading pieces (first,
+ * when the first piece is too short to be a value on its own, so the hit is
+ * reported on the value's line), without the leading `-`/`_` of whichever
+ * piece it starts at, and without its last piece. As a last resort, shift
+ * the whole run by 1-3 characters (a glued `auth-` style prefix).
  */
-function b64RunHit({ text, breaks, breakSources }: Spliced, start: number, depth: number): number {
-  const firstBreak = breaks.length > 0 ? breaks[0] : 0;
+function b64RunHit(run: Spliced, depth: number): number {
+  const { text, breaks } = run;
   const lastBreak = breaks.length > 0 ? breaks[breaks.length - 1] : text.length;
-  const second = breaks.length > 0 ? breakSources[0] : start;
-  const variants: [string, number][] = [
-    [text, start],
-    [text.slice(0, lastBreak), start],
-    [text.slice(firstBreak), second],
-    [text.slice(firstBreak, lastBreak), second],
-  ];
+  const dropped = breaks.slice(0, MAX_GLUED_PIECES);
+  const firstPiece = breaks.length > 0 ? breaks[0] : text.length;
+  const bases = firstPiece < MIN_B64_RUN ? [...dropped, 0] : [0, ...dropped];
+  const offsets: number[] = [];
+  for (const base of bases) {
+    offsets.push(base);
+    let lead = base;
+    while (text[lead] === '-' || text[lead] === '_') lead++;
+    if (lead > base) offsets.push(lead);
+  }
+  offsets.push(1, 2, 3);
   const tried = new Set<string>();
-  for (const [variant, at] of variants) {
-    if (variant.length < MIN_B64_RUN || tried.has(variant)) continue;
-    tried.add(variant);
-    if (scanBuffer(Buffer.from(variant, 'base64'), depth + 1).size > 0) return at;
+  for (const offset of offsets) {
+    for (const end of [text.length, lastBreak]) {
+      const variant = text.slice(offset, end);
+      if (variant.length < MIN_B64_RUN || tried.has(variant)) continue;
+      tried.add(variant);
+      // Report where the decoded value starts, not where the splice began.
+      if (scanBuffer(Buffer.from(variant, 'base64'), depth + 1).size > 0) return sourceOffset(run, offset);
+    }
   }
   return -1;
 }

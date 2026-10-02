@@ -35,6 +35,10 @@ function readTracked(path: string): Buffer | undefined {
 
 const b64url = (s: string): string => Buffer.from(s).toString('base64url');
 
+/** Hard-wrap `s` every `width` characters, as `base64 -w` or an editor would. */
+const wrap = (s: string, width: number): string =>
+  s.replace(new RegExp(`(.{${width}})(?=.)`, 'g'), '$1\n');
+
 function mintJwt(payload: object = { sub: `user-${randomBytes(4).toString('hex')}` }): string {
   return sign(payload, randomBytes(32), { algorithm: 'HS256' });
 }
@@ -96,20 +100,105 @@ describe('findJwtLines', () => {
     expect(findJwtLines(Buffer.from(text))).toEqual([1]);
   });
 
-  it('detects a base64url-encoded JWT wrapped at 16 columns', () => {
-    const encoded = Buffer.from(mintJwt()).toString('base64url');
-    const wrapped = encoded.replace(/(.{16})/g, '$1\n');
+  it('detects base64/base64url-encoded JWTs wrapped at narrow widths', () => {
+    const encodings: [BufferEncoding, number][] = [
+      ['base64url', 16],
+      ['base64url', 15],
+      ['base64url', 12],
+      ['base64url', 8],
+      ['base64url', 4],
+      ['base64', 15],
+    ];
+    const blocks = encodings.map(([enc, width]) => wrap(Buffer.from(mintJwt()).toString(enc), width));
+    const starts: number[] = [];
+    let line = 2;
+    for (const block of blocks) {
+      starts.push(line);
+      line += block.split('\n').length + 1;
+    }
 
-    expect(findJwtLines(Buffer.from(`# notes\n${wrapped}\n`))).toEqual([2]);
+    expect(findJwtLines(Buffer.from(`# notes\n${blocks.join('\n\n')}\n`))).toEqual(starts);
   });
 
-  it('ignores an incomplete split prefix and a wrapped encoded placeholder', () => {
-    const incomplete = 'Bearer e\n// yJ-not-a-header\n';
-    const header = b64url('{"alg":"HS256","typ":"JWT"}');
-    const placeholder = `${header}.${b64url('{}')}.signature`;
-    const wrapped = Buffer.from(placeholder).toString('base64url').replace(/(.{16})/g, '$1\n');
+  it('detects a base64-encoded JWT whose first wrapped piece is short', () => {
+    const yamlValue = Buffer.from(mintJwt()).toString('base64');
+    const quoted = Buffer.from(mintJwt()).toString('base64');
+    const text = [
+      'data:',
+      `  token: ${yamlValue.slice(0, 12)}`,
+      `    ${wrap(yamlValue.slice(12), 76).replace(/\n/g, '\n    ')}`,
+      '  kind: Secret',
+      `const t = "${quoted.slice(0, 12)}" + "${quoted.slice(12)}";`,
+    ].join('\n');
+    const quotedLine = text.split('\n').findIndex((l) => l.startsWith('const t')) + 1;
 
-    expect(findJwtLines(Buffer.from(`${incomplete}${wrapped}\n`))).toEqual([]);
+    expect(findJwtLines(Buffer.from(`${text}\n`))).toEqual([2, quotedLine]);
+  });
+
+  it('reports a wrapped base64 JWT on its own line after short glued lines', () => {
+    const indent = (s: string): string => `  ${s.replace(/\n/g, '\n  ')}`;
+    const yaml = `spec:\n  replicas: 1\n  # token\n${indent(wrap(Buffer.from(mintJwt()).toString('base64'), 76))}`;
+    const md = `## Response data\n${wrap(Buffer.from(mintJwt()).toString('base64'), 76)}`;
+    const flat = `## Response data\n${Buffer.from(mintJwt()).toString('base64')}`;
+    const yamlLines = yaml.split('\n').length;
+    const mdLines = md.split('\n').length;
+    const text = [yaml, md, flat].join('\n\n');
+
+    expect(findJwtLines(Buffer.from(`${text}\n`))).toEqual([
+      4,
+      yamlLines + 3,
+      yamlLines + mdLines + 4,
+    ]);
+  });
+
+  it('detects a whitespace-header JWT split after its first character', () => {
+    const token = mintWithHeader(' {"alg":"HS256","typ":"JWT"}'); // IHs...
+    // A blank line keeps the next sample from splicing onto the signature.
+    const text = `Bearer ${token.slice(0, 1)}\n  ${token.slice(1)}\n\nx = '${token.slice(0, 1)}' + '${token.slice(1)}'\n`;
+
+    expect(findJwtLines(Buffer.from(text))).toEqual([1, 4]);
+  });
+
+  it('ignores an incomplete split prefix and wrapped non-JWT or placeholder data', () => {
+    const incomplete = 'Bearer e\n// yJ-not-a-header\nI\nHave a question\n';
+    const header = b64url('{"alg":"HS256","typ":"JWT"}');
+    const placeholder = Buffer.from(`${header}.${b64url('{}')}.signature`).toString('base64url');
+    const noise = randomBytes(240).toString('base64');
+    const text = [incomplete, wrap(placeholder, 16), wrap(placeholder, 4), wrap(noise, 8)].join('\n\n');
+
+    expect(findJwtLines(Buffer.from(`${text}\n`))).toEqual([]);
+  });
+
+  it('detects JWTs wrapped in formatting delimiters', () => {
+    const wrappers: [string, string][] = [
+      ['_', '_'], ['__', '__'], ['<!--', '-->'], ['-', '-'], ['*', '*'], ['**', '**'],
+      ['`', '`'], ['~~', '~~'], ['(', ')'], ['[', ']'], ['|', '|'], ['<', '>'],
+    ];
+    const raw = wrappers.map(([open, close]) => `${open}${mintJwt()}${close}`);
+    const encoded = [['_', '_'], ['<!--', '-->']].map(
+      ([open, close]) => `${open}${Buffer.from(mintJwt()).toString('base64url')}${close}`
+    );
+    // Blank lines keep one sample's closing delimiter from splicing onto the next.
+    const text = [...raw, ...encoded].join('\n\n');
+
+    expect(findJwtLines(Buffer.from(`${text}\n`))).toEqual(
+      Array.from({ length: raw.length + encoded.length }, (_, i) => 2 * i + 1)
+    );
+  });
+
+  it('ignores placeholders and short dummy signatures in formatting delimiters', () => {
+    const header = b64url('{"alg":"HS256","typ":"JWT"}');
+    const payload = b64url('{"sub":"user"}');
+    const text = [
+      `_${header}.${payload}.signature_`,
+      `__${header}.token_here.signature__`,
+      `<!--${header}...-->`,
+      `<!--${header}.${payload}.signature-->`,
+      `_${header}.${payload}.${'x'.repeat(40)}__`,
+      '__init__ _eyes_ <!--eyebrow--> ew__',
+    ].join('\n');
+
+    expect(findJwtLines(Buffer.from(`${text}\n`))).toEqual([]);
   });
 
   it('detects a base64-encoded JWT', () => {

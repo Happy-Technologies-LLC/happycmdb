@@ -113,6 +113,19 @@ function validateCIInput(input: { _id?: unknown; _name?: unknown; _type?: unknow
 }
 
 /**
+ * The JSON-scalar `_metadata` input as a plain object. REST requires an object
+ * too; any other JSON value would be stored but fail to read back.
+ */
+function metadataInput(value: unknown): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new GraphQLError('CI metadata must be an object', {
+      extensions: { code: 'BAD_USER_INPUT' },
+    });
+  }
+  return value as Record<string, unknown>;
+}
+
+/**
  * The one error for a CI that is missing or belongs to another organization,
  * so a caller cannot tell the two apart (GraphQL counterpart of the REST 404).
  */
@@ -441,7 +454,8 @@ const Query = {
 
       const result = await session.run(
         `
-        MATCH path = (ci:CI {id: $id})-[:DEPENDS_ON*1..${depth}]->(dep:CI)
+        MATCH (ci:CI {id: $id}) WHERE ci.organization_id = $organizationId
+        MATCH path = (ci)-[:DEPENDS_ON*1..${depth}]->(dep:CI)
         WHERE ${PATH_IN_ORGANIZATION}
         RETURN DISTINCT dep
         `,
@@ -476,7 +490,8 @@ const Query = {
       const depth = _args.depth || 5;
       const result = await session.run(
         `
-        MATCH path = (ci:CI {id: $id})<-[:DEPENDS_ON*1..${depth}]-(impacted:CI)
+        MATCH (ci:CI {id: $id}) WHERE ci.organization_id = $organizationId
+        MATCH path = (ci)<-[:DEPENDS_ON*1..${depth}]-(impacted:CI)
         WHERE ${PATH_IN_ORGANIZATION}
         RETURN DISTINCT impacted, length(path) as distance
         ORDER BY distance
@@ -543,7 +558,7 @@ const Mutation = {
           ? convertEnumToDbFormat(_args.input._environment) as Environment
           : undefined,
         discovered_at: _args.input._discoveredAt ?? new Date().toISOString(),
-        metadata: _args.input._metadata ?? {},
+        metadata: _args.input._metadata == null ? {} : metadataInput(_args.input._metadata),
       };
       const ci = await _context._neo4jClient.createCI(ciInput, organizationId);
       _context._loaders._ciLoader.clear(ciKey(ci._id, organizationId));
@@ -595,14 +610,14 @@ const Mutation = {
       if (_args.input._name !== undefined) {
         updates.name = _args.input._name;
       }
-      if (_args.input._status !== undefined) {
+      if (_args.input._status != null) {
         updates.status = convertEnumToDbFormat(_args.input._status) as CIStatus;
       }
-      if (_args.input._environment !== undefined) {
+      if (_args.input._environment != null) {
         updates.environment = convertEnumToDbFormat(_args.input._environment) as Environment;
       }
-      if (_args.input._metadata !== undefined) {
-        updates.metadata = _args.input._metadata;
+      if (_args.input._metadata != null) {
+        updates.metadata = metadataInput(_args.input._metadata);
       }
 
       const ci = await _context._neo4jClient.updateCI(_args.id, updates, organizationId);
@@ -779,7 +794,8 @@ const CIResolvers = {
     try {
       const result = await session.run(
         `
-        MATCH path = (ci:CI {id: $id})-[:DEPENDS_ON*1..5]->(dep:CI)
+        MATCH (ci:CI {id: $id}) WHERE ci.organization_id = $organizationId
+        MATCH path = (ci)-[:DEPENDS_ON*1..5]->(dep:CI)
         WHERE ${PATH_IN_ORGANIZATION}
         RETURN DISTINCT dep
         `,

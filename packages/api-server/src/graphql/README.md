@@ -39,7 +39,8 @@ graphql/
 Every CI query, mutation and CI relationship field requires the token's organization
 claim (`FORBIDDEN` otherwise, before any Neo4j query) and only matches CIs of that
 organization. A foreign CI behaves like a missing one: `null`/empty results for
-queries, `NOT_FOUND` (`CI not found`) for mutations.
+queries; `NOT_FOUND` (`CI not found`) for `updateCI`, `deleteCI` and
+`createRelationship`; `NOT_FOUND` (`Relationship not found`) for `deleteRelationship`.
 
 ### Performance Optimizations
 - **DataLoader Integration**: Batches and caches database queries to prevent N+1 problems
@@ -302,7 +303,7 @@ DataLoaders prevent N+1 query problems by batching multiple requests:
 ```
 
 ### Available DataLoaders
-- **ciLoader**: Batch load CIs by ID
+- **ciLoader**: Batch load CIs by `{ id, organizationId }` (a foreign CI loads as `null`)
 - **relationshipLoader**: Batch load outgoing relationships
 - **dependentLoader**: Batch load incoming relationships
 
@@ -314,9 +315,9 @@ Each GraphQL request receives a context object:
 interface GraphQLContext {
   neo4jClient: Neo4jClient;
   loaders: {
-    ciLoader: DataLoader<string, CI | null>;
-    relationshipLoader: DataLoader<string, any[]>;
-    dependentLoader: DataLoader<string, any[]>;
+    ciLoader: DataLoader<CILoaderKey, CI | null, string>;
+    relationshipLoader: DataLoader<CILoaderKey, RelatedCIEntry[], string>;
+    dependentLoader: DataLoader<CILoaderKey, RelatedCIEntry[], string>;
   };
 }
 ```

@@ -308,7 +308,8 @@ cypher-shell -a bolt://<host>:7687 -u <user> -f packages/database/src/neo4j/migr
   (as `POST /api/v1/cis` does), and the first CI to store an `external_id` keeps it.
   A tenant cannot merge into an org-less CI until that CI is assigned to the tenant's
   organization. The backfill assigns org-less CIs only to the internal organization.
-  Other merge failures return a constant **500** without the driver message.
+  Other `/merge` and `/match` failures return a constant **500** without the driver
+  message.
 - Rows of a deleted CI stay in `ci_source_lineage`, `ci_field_sources` and
   `reconciliation_conflicts`. If another organization later creates a CI with the same
   client-chosen id (`POST /api/v1/cis`), it sees those rows.
@@ -329,6 +330,10 @@ cypher-shell -a bolt://<host>:7687 -u <user> -f packages/database/src/neo4j/migr
   and follow the same rules.
 - The engine has no unscoped mode: every match and merge takes the caller's
   organization, and no internal job (discovery, ETL) calls it.
+- The `ci.discovered` and `ci.updated` events emitted by a merge carry the caller's
+  `organization_id` and report only what was written. They never include the request's
+  `id` or `organization_id`, or fields that lost on source authority. The same holds for
+  the `ci_change_history` rows the change processor records from them.
 
 ### Tenant fixture seed (acceptance testing, scratch databases only)
 

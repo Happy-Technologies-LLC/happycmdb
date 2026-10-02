@@ -47,6 +47,8 @@ export interface CIDiscoveredEvent extends BaseEvent {
   source_system: string;
   confidence_score: number;
   identifiers: Record<string, any>;
+  /** Organization the CI belongs to, when the writer is organization-scoped. */
+  organization_id?: string;
 }
 
 export interface CIUpdatedEvent extends BaseEvent {
@@ -57,6 +59,8 @@ export interface CIUpdatedEvent extends BaseEvent {
   previous_values: Record<string, any>;
   new_values: Record<string, any>;
   source_system: string;
+  /** Organization the CI belongs to, when the writer is organization-scoped. */
+  organization_id?: string;
 }
 
 export interface CIDeletedEvent extends BaseEvent {

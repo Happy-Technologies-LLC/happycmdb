@@ -664,9 +664,9 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
     // FD-4: organization_id on a :CI is written only from the token organization
     // (or the backfill). The stored node is modelled by applying the engine's
     // `SET ci += $properties` to it.
-    it('reconciliation merge cannot set or change organization_id', async () => {
+    it('reconciliation merge cannot set or change organization_id or id', async () => {
       const base = physicalServerDuplicates[1]; // has external_id
-      const ci = { ...base, attributes: { ...base.attributes, organization_id: 'attacker-org' } };
+      const ci = { ...base, attributes: { ...base.attributes, organization_id: 'attacker-org', id: 'ci_victim' } };
       const node: Record<string, unknown> = { id: 'ci_existing_org', organization_id: ORG };
 
       mockPostgresClient.query
@@ -677,16 +677,38 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
       mockSession.run.mockImplementation(async (cypher: string, params: { properties?: Record<string, unknown> }) => {
         if (cypher.includes('SET ci += $properties')) Object.assign(node, params.properties);
         // The lineage CI is in ORG, and the scoped update matches it.
-        return { records: [{ get: () => node['id'] }] };
+        return { records: [{ get: () => 'ci_existing_org' }] };
       });
 
       await engine.reconcileCI(ci, ORG);
 
       expect(node['organization_id']).toBe(ORG);
+      expect(node['id']).toBe('ci_existing_org');
       const recordedFields = mockPostgresClient.query.mock.calls
         .filter(call => String(call[0]).includes('INSERT INTO ci_field_sources'))
         .map(call => (call[1] as unknown[])[1]);
+      expect(recordedFields).toContain('hostname');
       expect(recordedFields).not.toContain('organization_id');
+      expect(recordedFields).not.toContain('id');
+    });
+
+    it('a scoped update that matches nothing fails closed: no field source, lineage or event', async () => {
+      const ci = physicalServerDuplicates[2]; // matched by serial_number (no external_id)
+      mockSession.run
+        .mockResolvedValueOnce({ records: [{ get: () => 'ci_in_org' }] }) // serial_number match in ORG
+        .mockResolvedValueOnce({ records: [] }); // the org-scoped SET matches nothing
+      mockPostgresClient.query.mockResolvedValue({ rows: [] });
+
+      await expect(engine.reconcileCI(ci, ORG)).rejects.toThrow('Matched CI is not in the caller organization');
+
+      expect(mockSession.run).toHaveBeenLastCalledWith(
+        expect.stringContaining('WHERE ci.organization_id = $organizationId'),
+        expect.objectContaining({ ciId: 'ci_in_org', organizationId: ORG })
+      );
+      const writes = mockPostgresClient.query.mock.calls
+        .filter(call => /INSERT INTO ci_(field_sources|source_lineage)/.test(String(call[0])));
+      expect(writes).toEqual([]);
+      expect(mockEventProducer.emit).not.toHaveBeenCalled();
     });
   });
 

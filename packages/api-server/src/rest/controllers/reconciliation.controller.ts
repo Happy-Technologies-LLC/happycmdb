@@ -125,7 +125,7 @@ export class ReconciliationController {
       res.status(500).json({
         success: false,
         error: 'Failed to find matches',
-        message: error instanceof Error ? error.message : 'Unknown error'
+        message: 'CI match failed'
       });
     }
   }

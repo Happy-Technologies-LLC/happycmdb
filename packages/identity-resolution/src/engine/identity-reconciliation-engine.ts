@@ -13,6 +13,7 @@ import { MatchResult, ReconciliationConfig } from '../types/reconciliation.types
 import * as fuzzball from 'fuzzball';
 import { getEventProducer } from '@cmdb/event-processor';
 import { EventType } from '@cmdb/event-processor';
+import type { CIDiscoveredEvent, CIUpdatedEvent } from '@cmdb/event-processor';
 
 /**
  * Keys a reconciled property map never writes onto a :CI node. organization_id
@@ -389,20 +390,22 @@ export class IdentityReconciliationEngine {
         strategy: match.match_strategy
       });
 
-      await this.updateExistingCI(match.ci_id, discoveredCI, match, organizationId);
+      const written = await this.updateExistingCI(match.ci_id, discoveredCI, match, organizationId);
 
-      // Emit CI updated event
-      await this.eventProducer.emit(
+      // The event reports what was written: never the stripped id/organization_id
+      // or fields that lost on source authority.
+      await this.eventProducer.emit<CIUpdatedEvent>(
         EventType.CI_UPDATED,
         'identity-reconciliation-engine',
         {
           ci_id: match.ci_id,
           ci_name: discoveredCI.name,
-          changed_fields: Object.keys(discoveredCI.attributes),
+          changed_fields: Object.keys(written),
           previous_values: {},
-          new_values: discoveredCI.attributes,
+          new_values: written,
           source_system: discoveredCI.source,
-        } as any
+          organization_id: organizationId,
+        }
       );
 
       return match.ci_id;
@@ -412,79 +415,86 @@ export class IdentityReconciliationEngine {
         source: discoveredCI.source
       });
 
-      const ciId = await this.createNewCI(discoveredCI, organizationId);
+      const created = await this.createNewCI(discoveredCI, organizationId);
 
-      // Emit CI discovered event
-      await this.eventProducer.emit(
+      // Built from the persisted property map, like the CI_UPDATED event.
+      await this.eventProducer.emit<CIDiscoveredEvent>(
         EventType.CI_DISCOVERED,
         'identity-reconciliation-engine',
         {
-          ci_id: ciId,
-          ci_name: discoveredCI.name,
-          ci_type: discoveredCI.ci_type,
+          ci_id: created.ciId,
+          ci_name: created.properties['name'] as string,
+          ci_type: created.properties['ci_type'] as string,
           source_system: discoveredCI.source,
           confidence_score: discoveredCI.confidence_score,
-          identifiers: discoveredCI.identifiers,
-        } as any
+          identifiers: Object.fromEntries(
+            Object.keys(withoutReservedKeys({ ...discoveredCI.identifiers })).map(key => [key, created.properties[key]])
+          ),
+          organization_id: organizationId,
+        }
       );
 
-      return ciId;
+      return created.ciId;
     }
   }
 
   /**
-   * Create new CI of the organization in Neo4j
+   * Create new CI of the organization in Neo4j. Returns its id and the
+   * property map that was persisted.
    */
-  private async createNewCI(ci: TransformedCI, organizationId: string): Promise<string> {
+  private async createNewCI(
+    ci: TransformedCI,
+    organizationId: string
+  ): Promise<{ ciId: string; properties: Record<string, unknown> }> {
     const session = this.neo4jClient.getSession();
 
     try {
       const ciId = this.generateCIId();
 
       // id and organization_id come only from the engine and the caller's organization.
-      const result = await session.run(
+      const properties: Record<string, unknown> = {
+        ...withoutReservedKeys({
+          name: ci.name,
+          ci_type: ci.ci_type,
+          environment: ci.environment,
+          status: ci.status || 'active',
+          ...ci.attributes,
+          ...ci.identifiers,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        }),
+        id: ciId,
+        organization_id: organizationId,
+      };
+      await session.run(
         `CREATE (ci:CI:${sanitizeCITypeForLabel(ci.ci_type)})
          SET ci = $properties
          RETURN ci.id as ci_id`,
-        {
-          properties: {
-            ...withoutReservedKeys({
-              name: ci.name,
-              ci_type: ci.ci_type,
-              environment: ci.environment,
-              status: ci.status || 'active',
-              ...ci.attributes,
-              ...ci.identifiers,
-              created_at: new Date().toISOString(),
-              updated_at: new Date().toISOString(),
-            }),
-            id: ciId,
-            organization_id: organizationId,
-          },
-        }
+        { properties }
       );
 
       // Record source lineage
       await this.recordSourceLineage(ciId, ci.source, ci.source_id, ci.confidence_score);
 
       logger.info('New CI created', { ci_id: ciId, name: ci.name });
-      return result.records[0]?.get('ci_id') || ciId;
+      return { ciId, properties };
     } finally {
       await session.close();
     }
   }
 
   /**
-   * Update an existing CI of the organization with new data. The Neo4j write
-   * only matches a CI whose organization_id equals `organizationId`; when it
-   * matches nothing, no field source or lineage is recorded and the merge fails.
+   * Update an existing CI of the organization with new data and return the
+   * fields written. The Neo4j write only matches a CI whose organization_id
+   * equals `organizationId`; when it matches nothing, no field source or
+   * lineage is recorded and the merge fails.
    */
   private async updateExistingCI(
     ciId: string,
     ci: TransformedCI,
     match: MatchResult,
     organizationId: string
-  ): Promise<void> {
+  ): Promise<Record<string, unknown>> {
     // Get source authority
     const sourceAuthority = this.config?.source_authorities[ci.source] || 5;
 
@@ -521,6 +531,7 @@ export class IdentityReconciliationEngine {
     await this.recordSourceLineage(ciId, ci.source, ci.source_id, match.confidence);
 
     logger.info('CI updated', { ci_id: ciId, source: ci.source });
+    return mergedData;
   }
 
   /**

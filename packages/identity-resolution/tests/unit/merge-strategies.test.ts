@@ -354,12 +354,11 @@ describe('Merge Strategies and Conflict Resolution', () => {
       // composite fuzzy: session.run returns no candidates
       mockSession.run
         .mockResolvedValueOnce({ records: [] }) // composite fuzzy search - no match
-        .mockResolvedValueOnce({ // CREATE CI
-          records: [{ get: jest.fn().mockReturnValue('ci_merged_server') }],
-        });
+        .mockResolvedValueOnce({ records: [] }); // CREATE CI
 
+      // The engine returns the id it generated and persisted.
       const ciId1 = await engine.reconcileCI(nmapCI, ORG);
-      expect(ciId1).toBe('ci_merged_server');
+      expect(ciId1).toMatch(/^ci_\d+_/);
 
       // Reset mocks for second discovery
       mockPostgresClient.query.mockReset();
@@ -370,7 +369,7 @@ describe('Merge Strategies and Conflict Resolution', () => {
       mockSession.run.mockResolvedValueOnce({
         records: [{
           get: jest.fn((field: string) => {
-            if (field === 'ci_id') return 'ci_merged_server';
+            if (field === 'ci_id') return ciId1;
             if (field === 'hostname') return 'prod-server-01';
             if (field === 'ips') return ['10.0.1.50'];
             return null;
@@ -392,7 +391,7 @@ describe('Merge Strategies and Conflict Resolution', () => {
 
       // Third discovery (VMware) - UUID match found
       mockSession.run.mockResolvedValueOnce({
-        records: [{ get: jest.fn().mockReturnValue('ci_merged_server') }],
+        records: [{ get: jest.fn().mockReturnValue(ciId1) }],
       });
       // getFieldSources query
       mockPostgresClient.query.mockResolvedValueOnce({ rows: [] });

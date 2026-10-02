@@ -164,10 +164,17 @@ jest.mock('@cmdb/database', () => ({
   getAuditService: () => ({}),
 }));
 
-// Kafka is not reached: reconciliation events are a no-op here.
+// Events the engine emits, captured instead of published (Kafka is never contacted).
+const emittedEvents: Array<Record<string, unknown>> = [];
 jest.mock('@cmdb/event-processor', () => ({
-  getEventProducer: () => ({ emit: async () => undefined }),
-  EventType: { CI_UPDATED: 'ci_updated', CI_DISCOVERED: 'ci_discovered' },
+  ...jest.requireActual('@cmdb/event-processor'),
+  getEventProducer: () => ({
+    emit: async (eventType: string, source: string, payload: Record<string, unknown>) => {
+      // The envelope EventProducer.emit adds before publishing.
+      emittedEvents.push({ event_id: `event-${emittedEvents.length}`, event_type: eventType, timestamp: new Date(), source, ...payload });
+      return [];
+    },
+  }),
 }));
 
 // bcrypt's native binding is only used for password hashing/login, which the
@@ -194,9 +201,14 @@ import { loadConfig } from '@cmdb/common';
 import { JWTService } from '../../../auth/jwt.service';
 import { getAuthMiddleware } from '../../../auth/auth-bootstrap';
 import { reconciliationRoutes } from '../reconciliation.routes';
+import { ChangeEventProcessor, EventType } from '@cmdb/event-processor';
 
 const MIGRATIONS = join(__dirname, '../../../../../database/src/postgres/migrations');
-const DDL_TABLES = ['reconciliation_conflicts', 'ci_source_lineage', 'ci_field_sources'];
+const DDL_TABLES = [
+  'reconciliation_conflicts', 'ci_source_lineage', 'ci_field_sources',
+  // Written by ChangeEventProcessor from CI_DISCOVERED / CI_UPDATED events.
+  'ci_change_history', 'ci_change_statistics', 'ci_change_alerts',
+];
 const CI_NOT_FOUND = { success: false, error: 'Not Found', message: 'CI not found' };
 const CONFLICT_NOT_FOUND = { success: false, error: 'Not Found', message: 'Conflict not found' };
 
@@ -255,6 +267,7 @@ beforeEach(async () => {
       ('${CONFLICT_B}', '${CI_B}', 'field_mismatch', '{"secret": "b"}', 'pending');`);
   sqlCount = 0;
   cypherCount = 0;
+  emittedEvents.length = 0;
 });
 
 describe('/api/v1/reconciliation tenant scoping', () => {
@@ -335,6 +348,46 @@ describe('/api/v1/reconciliation tenant scoping', () => {
     // Nothing written in either org.
     expect(snapshot()).toBe(before);
     expect(await lineageOf(CI_B)).toEqual([{ source_name: 'aws', source_id: B_IDENTIFIERS.external_id }]);
+  });
+
+  it('merge events and change history report what was written, with the token org, never id or organization_id', async () => {
+    const body = {
+      name: 'a-evt', ci_type: 'server', source: 'nmap', source_id: 'scan-evt', confidence_score: 90,
+      identifiers: { serial_number: 'SN-EVT' },
+      attributes: { organization_id: ORG_B, id: 'x', os: 'linux' },
+    };
+
+    const created = await request(app).post('/api/v1/reconciliation/merge').set(AS_A).send(body);
+    const updated = await request(app).post('/api/v1/reconciliation/merge').set(AS_A)
+      .send({ ...body, attributes: { ...body.attributes, os: 'linux-2' } });
+    const ciId = created.body.data.ci_id as string;
+    expect(updated.body.data.ci_id).toBe(ciId);
+
+    const [discovered, changed] = emittedEvents;
+    expect(emittedEvents.map(e => e['event_type'])).toEqual([EventType.CI_DISCOVERED, EventType.CI_UPDATED]);
+    expect(discovered).toMatchObject({ ci_id: ciId, organization_id: ORG_A, identifiers: { serial_number: 'SN-EVT' } });
+    expect(changed).toMatchObject({
+      ci_id: ciId, organization_id: ORG_A, changed_fields: ['os'], new_values: { os: 'linux-2' },
+    });
+
+    // The change history ChangeEventProcessor writes from these events.
+    const processor = new ChangeEventProcessor() as unknown as {
+      handleCIDiscovered(event: unknown): Promise<void>;
+      handleCIUpdated(event: unknown): Promise<void>;
+    };
+    await processor.handleCIDiscovered(discovered);
+    await processor.handleCIUpdated(changed);
+    const history = await rows<{ change_type: string; changed_fields: string[]; new_values: unknown }>(
+      'SELECT change_type, changed_fields, new_values FROM ci_change_history WHERE ci_id = $1 ORDER BY change_type',
+      [ciId]
+    );
+    expect(history.map(h => h.change_type)).toEqual(['discovered', 'updated']);
+    expect(history[1]).toMatchObject({ changed_fields: ['os'], new_values: { os: 'linux-2' } });
+
+    // Neither the request's organization_id (org B) nor its id reaches an event or the history.
+    const recorded = JSON.stringify([emittedEvents, history]);
+    expect(recorded).not.toContain(ORG_B);
+    expect(recorded).not.toMatch(/"id":"x"/);
   });
 
   it('403 with zero queries without an org claim', async () => {

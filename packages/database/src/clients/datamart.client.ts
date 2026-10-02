@@ -83,6 +83,15 @@ export class DataMartClient {
           logger.debug('CI attributes changed, creating new version', { ci_id: ci.ci_id });
           return await this.pgClient.updateCIDimension(ci);
         } else {
+          // Every version of a CI carries the same organization (migration
+          // 011): an organization change alone relabels them, no new version.
+          // PostgreSQL returns a uuid in lower case.
+          if (currentRecord.organization_id !== ci.organization_id.toLowerCase()) {
+            await this.pgClient.query(
+              'UPDATE cmdb.dim_ci SET organization_id = $1 WHERE ci_id = $2',
+              [ci.organization_id, ci.ci_id]
+            );
+          }
           logger.debug('CI unchanged, returning existing key', { ci_id: ci.ci_id });
           return currentRecord.ci_key;
         }
@@ -689,9 +698,6 @@ export class DataMartClient {
     if (normalize(existing.ci_status) !== normalize(incoming.ci_status)) return true;
     if (normalize(existing.environment) !== normalize(incoming.environment)) return true;
     if (normalize(existing.external_id) !== normalize(incoming.external_id)) return true;
-    // A CI whose organization changed gets a new current version in that
-    // organization. PostgreSQL returns a uuid in lower case.
-    if (existing.organization_id !== incoming.organization_id.toLowerCase()) return true;
 
     // Compare metadata (object/JSONB field) under the same normalization: a
     // stored NULL and an omitted `metadata` are equal, but a transition

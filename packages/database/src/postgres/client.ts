@@ -159,6 +159,13 @@ export class PostgresClient {
         [now, ci.ci_id]
       );
 
+      // Every version of a CI carries the same organization (migration 011):
+      // earlier versions take the new record's organization.
+      await client.query(
+        'UPDATE cmdb.dim_ci SET organization_id = $1 WHERE ci_id = $2 AND organization_id <> $1',
+        [ci.organization_id, ci.ci_id]
+      );
+
       // Step 2: Insert new current record
       const result = await client.query(
         `

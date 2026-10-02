@@ -359,10 +359,17 @@ organization of the `:CI` node it versions.
   versions) to the internal organization `00000000-0000-0000-0000-000000000000` (FD-4).
 - The ETL writers (neo4j-to-postgres, full refresh, sync-cis-to-datamart,
   reconciliation, the ETL processor sync job) and `DataMartClient.upsertCI` write the
-  node's `organization_id`. Nodes without one (written by discovery, connectors, ETL or
-  reconciliation) go to the internal organization, as the Neo4j backfill does; they
-  never land in a customer organization. A changed organization creates a new current
-  version of the CI.
+  node's `organization_id`. A node without one (written by discovery, connectors, ETL
+  or reconciliation) keeps the CI's stored organization; a CI new to `cmdb.dim_ci` goes
+  to the internal organization, as the Neo4j backfill does (the full-refresh job empties
+  `cmdb.dim_ci` first, so every CI is new to it). Such a node never moves a CI into a
+  customer organization. All versions of a CI share one organization: when a node
+  names an organization other than the stored one, every version is relabelled (no
+  new version).
+- **Rollout:** CIs created in a customer organization through `POST /api/v1/cis` and
+  synced before 011 are backfilled to the internal organization. After applying 011,
+  run a neo4j-to-postgres sync without `incrementalSince` so every CI is visited and
+  relabelled to its node's organization (an incremental sync only visits updated nodes).
 - `POST /api/v1/business-services/:id/cis` maps only CIs with a current `cmdb.dim_ci`
   row in the service's organization. A CI of another organization, or one with no
   current row (for example not yet synced by the ETL), returns **404**
@@ -376,9 +383,12 @@ organization of the `:CI` node it versions.
   REST.
 - Not covered: `/api/v1/analytics` still reads `cmdb.dim_ci` across organizations.
 
-API or ETL images built before 011 insert `cmdb.dim_ci` rows without
-`organization_id`, so every insert fails with `23502` while the column exists. Before
-deploying such an image, run the manual rollback (no migration runner executes it):
+ETL (`etl-processor`) images built before 011, and any other `cmdb.dim_ci` writer
+(`DataMartClient`, `PostgresClient`) of that age, insert rows without `organization_id`,
+so every insert fails with `23502` while the column exists. Before deploying such an
+image, run the manual rollback (no migration runner executes it). The API does not
+write `cmdb.dim_ci`: an API image older than 011 runs against the 011 schema without
+the rollback (but without 011's CI tenancy checks).
 
 ```bash
 psql -v ON_ERROR_STOP=1 -f packages/database/src/postgres/migrations/rollback/011_ci_organization_scope.down.sql
@@ -386,8 +396,10 @@ psql -v ON_ERROR_STOP=1 -f packages/database/src/postgres/migrations/rollback/01
 
 It drops the index and the column, which discards every CI's organization, and deletes
 the `cmdb.schema_migrations` row so 011 applies again later (all rows back in the
-internal organization). Until the old image is running, the 011-aware API returns 500
-on CI mapping, service costs and cost trends.
+internal organization until a neo4j-to-postgres sync without `incrementalSince`
+relabels them). Until the old
+images are running, the 011-aware API returns 500 on CI mapping, service costs and cost
+trends, and the 011-aware ETL fails its `cmdb.dim_ci` reads and writes.
 
 ### Configuration items (`/api/v1/cis` and GraphQL CI operations)
 

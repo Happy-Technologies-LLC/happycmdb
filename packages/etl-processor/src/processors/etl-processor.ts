@@ -179,8 +179,7 @@ export class ETLJobProcessor {
             ON CONFLICT (ci_id) DO UPDATE SET
               ci_name = EXCLUDED.ci_name,
               ci_status = EXCLUDED.ci_status,
-              updated_at = EXCLUDED.updated_at,
-              organization_id = EXCLUDED.organization_id
+              updated_at = EXCLUDED.updated_at
             RETURNING (xmax = 0) AS inserted
             `,
             [

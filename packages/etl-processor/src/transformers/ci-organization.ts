@@ -16,18 +16,26 @@ export type ExtractedCI = CI & { organization_id?: unknown };
 /**
  * cmdb.dim_ci.organization_id for a :CI node's organization_id property.
  *
- * The node's organization when it has one. :CI nodes written by unscoped
- * system writers (discovery, connectors, ETL, reconciliation) have none; they
- * belong to the internal organization (FD-4), never to a customer
- * organization. The value comes only from the stored node, never from a
- * request. PostgreSQL returns a uuid in lower case, so the value is lower
- * cased for change detection against the stored row. A malformed value is
- * passed through, so PostgreSQL rejects the row (22P02) instead of it
- * landing in some organization.
+ * A CI's organization is fixed when the CI is created (POST /api/v1/cis
+ * stamps it; nothing updates it), and every cmdb.dim_ci version of a ci_id
+ * carries the same one. So:
+ *  - a node that names its organization is authoritative. A stored row that
+ *    differs was labelled by migration 011's internal-org backfill (FD-4)
+ *    before the ETL saw the node; writers relabel every version of the CI;
+ *  - a node without one (written by discovery, connectors, ETL or
+ *    reconciliation) keeps the organization already stored for the CI, and
+ *    a CI not yet in cmdb.dim_ci goes to the internal organization (FD-4).
+ *    It never lands in, or moves to, a customer organization.
+ *
+ * The value comes only from stored data, never from a request. PostgreSQL
+ * returns a uuid in lower case, so the node's value is lower cased for
+ * comparison with the stored row. A malformed value is passed through, so
+ * PostgreSQL rejects the row (22P02) instead of it landing in some
+ * organization.
  */
-export function dimCiOrganizationId(nodeOrganizationId: unknown): string {
+export function dimCiOrganizationId(nodeOrganizationId: unknown, storedOrganizationId?: string): string {
   if (nodeOrganizationId === null || nodeOrganizationId === undefined || nodeOrganizationId === '') {
-    return INTERNAL_ORGANIZATION_ID;
+    return storedOrganizationId ?? INTERNAL_ORGANIZATION_ID;
   }
   return String(nodeOrganizationId).toLowerCase();
 }

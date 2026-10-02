@@ -18,7 +18,7 @@ import { Job } from 'bullmq';
 import { Neo4jClient, PostgresClient, UNSCOPED_CI_ACCESS } from '@cmdb/database';
 import { logger, CI, CIType } from '@cmdb/common';
 import { DimensionTransformer } from '../transformers/dimension-transformer';
-import { ExtractedCI } from '../transformers/ci-organization';
+import { ExtractedCI, dimCiOrganizationId } from '../transformers/ci-organization';
 
 export interface Neo4jToPostgresJobData {
   /** Batch size for processing CIs */
@@ -218,15 +218,23 @@ export class Neo4jToPostgresJob {
               if (existingResult.rows.length > 0) {
                 const existing = existingResult.rows[0];
 
-                // Check if data has actually changed (avoid unnecessary updates).
-                // An organization change re-versions the CI so the current row
-                // carries the node's organization.
+                // Every version of a CI carries its one organization (see
+                // dimCiOrganizationId): relabel them all when the node names
+                // another one; an org-less node keeps the stored organization.
+                const organizationId = dimCiOrganizationId(ci.organization_id, existing.organization_id);
+                if (organizationId !== existing.organization_id) {
+                  await client.query(
+                    'UPDATE cmdb.dim_ci SET organization_id = $1 WHERE ci_id = $2',
+                    [organizationId, ci._id]
+                  );
+                }
+
+                // Check if data has actually changed (avoid unnecessary updates)
                 const hasChanged =
                   existing.ci_name !== dimension._ci_name ||
                   existing.ci_type !== dimension._ci_type ||
                   existing.ci_status !== dimension._status ||
-                  existing.environment !== dimension.environment ||
-                  existing.organization_id !== dimension.organization_id;
+                  existing.environment !== dimension.environment;
 
                 if (hasChanged || fullRefresh) {
                   const ciKey = existing.ci_key;
@@ -258,7 +266,7 @@ export class Neo4jToPostgresJob {
                       new Date(),
                       dimension.created_at || new Date(),
                       new Date(),
-                      dimension.organization_id
+                      organizationId
                     ]
                   );
 

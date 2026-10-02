@@ -10,11 +10,20 @@
 --     stale cross-organization ci_business_service_mappings row,
 --   - sum only the caller organization's CIs in TBM cost trends.
 --
--- Existing rows predate CI tenancy and all belong to the internal
--- organization 00000000-0000-0000-0000-000000000000 (founder decision FD-4),
--- the id 008_business_service_organization_scope.sql backfills business
--- services into and the Neo4j backfill assigns org-less :CI nodes to. Every
--- SCD version of a ci_id gets the same organization.
+-- Existing rows are backfilled to the internal organization
+-- 00000000-0000-0000-0000-000000000000 (founder decision FD-4), the id
+-- 008_business_service_organization_scope.sql backfills business services
+-- into and the Neo4j backfill assigns org-less :CI nodes to. Every SCD
+-- version of a ci_id carries the same organization.
+--
+-- A CI whose :CI node already names a customer organization (created through
+-- POST /api/v1/cis, which stamps it) and that the ETL synced before 011 is
+-- backfilled to the internal organization too; SQL cannot read Neo4j. The
+-- ETL corrects it: when a synced node names an organization other than the
+-- stored one, every version of that CI is relabelled to the node's
+-- organization. Run a neo4j-to-postgres sync without incrementalSince after
+-- applying 011 so every CI is visited (an incremental sync only visits
+-- updated nodes).
 --
 -- Backfill: ADD COLUMN ... NOT NULL DEFAULT <constant> fills existing rows
 -- from the catalog without rewriting the table (PostgreSQL 11+), so the SCD
@@ -22,8 +31,9 @@
 -- dropped in the same transaction: as in 008, there is no column DEFAULT
 -- afterwards, so an insert that does not name its organization fails on
 -- NOT NULL instead of silently landing in the internal organization. ETL
--- writers name it explicitly (a :CI node's organization_id, or the internal
--- organization for a node that has none, per FD-4).
+-- writers name it explicitly: the :CI node's organization_id; for a node
+-- without one, the CI's stored organization, or the internal organization
+-- for a CI new to cmdb.dim_ci (FD-4).
 --
 -- ci_business_service_mappings keeps no organization_id: a mapping is
 -- reached only through its org-filtered parent service, and its CI is

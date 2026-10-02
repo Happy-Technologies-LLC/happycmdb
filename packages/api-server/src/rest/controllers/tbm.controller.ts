@@ -11,6 +11,7 @@ import {
   ownsBusinessService,
 } from '../../services/business-service-ownership';
 import { ciCostTrends } from '../../services/ci-cost-trends';
+import { errorLogFields } from '../../utils/log-error';
 
 /**
  * A single GL account entry accepted by importGLData. Mirrors the fields the
@@ -297,11 +298,11 @@ export class TBMController {
         count: trends.length,
       });
     } catch (error) {
-      logger.error('Error getting cost trends', error);
+      // Driver errors name tables/columns: log them, return a generic body.
+      logger.error('Error getting cost trends', { error: errorLogFields(error) });
       res.status(500).json({
         success: false,
         error: 'Failed to retrieve cost trends',
-        message: error instanceof Error ? error.message : 'Unknown error',
       });
     }
   }

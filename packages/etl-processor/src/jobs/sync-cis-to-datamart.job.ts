@@ -203,7 +203,8 @@ async function extractCIsFromNeo4j(
       bsm_attributes: record.get('bsm_attributes'),
       created_at: record.get('created_at'),
       updated_at: record.get('updated_at'),
-      organization_id: dimCiOrganizationId(record.get('organization_id')),
+      // Raw node value; resolved per row in processCIBatch (dimCiOrganizationId).
+      organization_id: record.get('organization_id'),
     }));
   } finally {
     await session.close();
@@ -247,14 +248,23 @@ async function processCIBatch(
         if (existingResult.rows.length > 0) {
           const existing = existingResult.rows[0];
 
-          // Check if data has changed (an organization change re-versions
-          // the CI so the current row carries the node's organization)
+          // Every version of a CI carries its one organization (see
+          // dimCiOrganizationId): relabel them all when the node names
+          // another one; an org-less node keeps the stored organization.
+          const organizationId = dimCiOrganizationId(ci.organization_id, existing.organization_id);
+          if (organizationId !== existing.organization_id) {
+            await client.query(
+              'UPDATE cmdb.dim_ci SET organization_id = $1 WHERE ci_id = $2',
+              [organizationId, ci.ci_id]
+            );
+          }
+
+          // Check if data has changed
           const hasChanged =
             existing.ci_name !== ci.ci_name ||
             existing.ci_type !== ci.ci_type ||
             existing.ci_status !== ci.ci_status ||
             existing.environment !== ci.environment ||
-            existing.organization_id !== ci.organization_id ||
             JSON.stringify(existing.itil_attributes) !== JSON.stringify(ci.itil_attributes) ||
             JSON.stringify(existing.tbm_attributes) !== JSON.stringify(ci.tbm_attributes) ||
             JSON.stringify(existing.bsm_attributes) !== JSON.stringify(ci.bsm_attributes);
@@ -289,7 +299,7 @@ async function processCIBatch(
                 ci.tbm_attributes,
                 ci.bsm_attributes,
                 ci.created_at || new Date(),
-                ci.organization_id,
+                organizationId,
               ]
             );
 
@@ -324,7 +334,7 @@ async function processCIBatch(
               ci.tbm_attributes,
               ci.bsm_attributes,
               ci.created_at || new Date(),
-              ci.organization_id,
+              dimCiOrganizationId(ci.organization_id),
             ]
           );
 

@@ -3057,7 +3057,10 @@ paths:
                     minLength: 1
                     maxLength: 100
                     pattern: '^[^\u0000]+$'
-                    description: Must not contain NUL (U+0000) characters
+                    description: >-
+                      At most 100 Unicode characters (code points, not UTF-16
+                      units). Must not contain NUL (U+0000) or unpaired
+                      surrogate escapes (e.g. `\ud800` without its pair).
                 mapping_type:
                   type: string
                   enum: [hosts, supports, enables, provides]

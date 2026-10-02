@@ -546,6 +546,32 @@ describe('POST /cis rejects ci_ids the mapping table cannot hold', () => {
     expect(res.body._details).toEqual([expect.objectContaining({ _field: 'ci_ids.0', _type: 'string.pattern.base' })]);
     expect(await count(`ci_business_service_mappings WHERE service_id = 'bs-b-app'`)).toBe(1);
   });
+
+  it('POST /cis measures the 100 limit in characters, not UTF-16 units', async () => {
+    // U+1F600 is one character (one PostgreSQL VARCHAR position) but two UTF-16 units.
+    const longest = '\u{1F600}'.repeat(100);
+    const ok = await request(app).post('/api/v1/business-services/bs-b-app/cis').set(AS_B).send({ ci_ids: [longest] });
+    expect(ok.status).toBe(201);
+    expect(await db.rows(`SELECT ci_id FROM ci_business_service_mappings WHERE service_id = 'bs-b-app' AND ci_id <> 'ci-b'`))
+      .toEqual([{ ci_id: longest }]);
+
+    const over = await request(app).post('/api/v1/business-services/bs-b-app/cis').set(AS_B)
+      .send({ ci_ids: [`${longest}\u{1F600}`] });
+    expect(over.status).toBe(400);
+    expect(over.body._details).toEqual([expect.objectContaining({ _field: 'ci_ids.0', _type: 'string.max' })]);
+  });
+
+  it('POST /cis with distinct unpaired surrogates is 400 and writes nothing', async () => {
+    // Distinct in JS, but UTF-8 encoding turns both into U+FFFD: the same stored ci_id.
+    const res = await request(app).post('/api/v1/business-services/bs-b-app/cis').set(AS_B)
+      .send({ ci_ids: ['ci-\ud800', 'ci-\udbff'] });
+    expect(res.status).toBe(400);
+    expect(res.body._details).toEqual([
+      expect.objectContaining({ _field: 'ci_ids.0', _type: 'string.pattern.base' }),
+      expect.objectContaining({ _field: 'ci_ids.1', _type: 'string.pattern.base' }),
+    ]);
+    expect(await count(`ci_business_service_mappings WHERE service_id = 'bs-b-app'`)).toBe(1);
+  });
 });
 
 describe('the tenant is re-read from the user record on every request', () => {

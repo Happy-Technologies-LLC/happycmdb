@@ -98,7 +98,9 @@ const querySchema = Joi.object({
 });
 
 const mapCIsSchema = Joi.object({
-  ci_ids: Joi.array().items(Joi.string()).min(1).required(),
+  // ci_id is VARCHAR(100) and UNIQUE(ci_id, service_id, mapping_type): reject
+  // over-length and repeated ids here (400) instead of failing in the upsert (500).
+  ci_ids: Joi.array().items(Joi.string().max(100)).min(1).unique().required(),
   mapping_type: Joi.string()
     .valid('hosts', 'supports', 'enables', 'provides')
     .default('supports'),

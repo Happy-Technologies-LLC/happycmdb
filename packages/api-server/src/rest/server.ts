@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import express, { Express, Request, Response, NextFunction } from 'express';
-import { Server as HTTPServer } from 'http';
+import { Server as HTTPServer, STATUS_CODES } from 'http';
 import helmet from 'helmet';
 import cors from 'cors';
 import compression from 'compression';
@@ -46,6 +46,24 @@ import { getAuthMiddleware } from '../auth/auth-bootstrap';
  */
 export function listenTargetFromEnv(env: NodeJS.ProcessEnv): { port: number; host?: string } {
   return { port: parseInt(env['PORT'] || '3000', 10), host: env['SERVER_HOST'] };
+}
+
+type HttpError = { name?: unknown; message?: unknown; stack?: unknown; type?: unknown; status?: unknown; statusCode?: unknown };
+
+/**
+ * Status and fixed client-facing text for an error the caller caused, or null
+ * for a server fault (500). Never derived from err.message, which can quote
+ * the request body (JSON.parse) or the raw path parameter (Express decode).
+ */
+function classifyClientError(err: HttpError): { status: number; message: string } | null {
+  if (err.type === 'entity.parse.failed') return { status: 400, message: 'Malformed request body' };
+  if (err.type === 'entity.too.large') return { status: 413, message: 'Request body too large' };
+  if (err instanceof URIError) return { status: 400, message: 'Malformed URL encoding' };
+  const status = err.status ?? err.statusCode;
+  if (typeof status === 'number' && Number.isInteger(status) && status >= 400 && status <= 499) {
+    return { status, message: 'Request could not be processed' };
+  }
+  return null;
 }
 
 export class RestAPIServer {
@@ -158,11 +176,28 @@ export class RestAPIServer {
   }
 
   setupErrorHandling(): void {
-    this.app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
-      logger.error('API Error', { error: err.message, stack: err.stack });
+    this.app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
+      const e: HttpError = typeof err === 'object' && err !== null ? (err as HttpError) : { message: String(err) };
+      const clientError = classifyClientError(e);
+      if (clientError) {
+        // No message/stack: a JSON.parse message quotes the request body.
+        logger.warn('API client error', {
+          status: clientError.status,
+          type: e.type,
+          name: e.name,
+          _method: req.method,
+          _path: req.path,
+        });
+        res.status(clientError.status).json({
+          _error: STATUS_CODES[clientError.status] ?? 'Client Error',
+          _message: clientError.message,
+        });
+        return;
+      }
+      logger.error('API Error', { error: e.message, stack: e.stack });
       res.status(500).json({
         _error: 'Internal Server Error',
-        _message: err.message,
+        _message: 'An unexpected error occurred',
       });
     });
   }

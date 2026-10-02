@@ -522,6 +522,24 @@ describe('writes take the organization from the token only', () => {
   });
 });
 
+describe('POST /cis rejects ci_ids the mapping table cannot hold', () => {
+  it('POST /cis with duplicate ci_ids is 400 and writes nothing', async () => {
+    const res = await request(app).post('/api/v1/business-services/bs-b-app/cis').set(AS_B)
+      .send({ ci_ids: ['ci-b2', 'ci-b2'] });
+    expect(res.status).toBe(400);
+    expect(res.body._details).toEqual([expect.objectContaining({ _field: 'ci_ids.1', _type: 'array.unique' })]);
+    expect(await count(`ci_business_service_mappings WHERE service_id = 'bs-b-app'`)).toBe(1);
+  });
+
+  it('POST /cis with a 101-char ci_id is 400', async () => {
+    const res = await request(app).post('/api/v1/business-services/bs-b-app/cis').set(AS_B)
+      .send({ ci_ids: ['ci-b2', 'c'.repeat(101)] });
+    expect(res.status).toBe(400);
+    expect(res.body._details).toEqual([expect.objectContaining({ _field: 'ci_ids.1', _type: 'string.max' })]);
+    expect(await count(`ci_business_service_mappings WHERE service_id = 'bs-b-app'`)).toBe(1);
+  });
+});
+
 describe('the tenant is re-read from the user record on every request', () => {
   const userA = USERS['user-a']!;
 

@@ -1690,8 +1690,11 @@ query GetImpactAnalysis($id: ID!, $depth: Int) {
 
 #### createCI
 
-Create a new CI. As in `POST /cis`, `_name` must be 1-500 characters and a non-null
-`_discoveredAt` must be an ISO 8601 timestamp (`BAD_USER_INPUT` otherwise).
+Create a new CI. The input is validated with the same schema as `POST /cis`
+(`ciInputSchema`): for example `_name` must be 1-500 characters, `_externalId` must
+not be empty, and `_discoveredAt` must be an ISO date, which is stored normalised
+the same way REST stores it (e.g. `2024-02-30` becomes `2024-03-01T00:00:00.000Z`).
+Validation failures return `BAD_USER_INPUT`.
 
 **Mutation**:
 ```graphql
@@ -1729,9 +1732,9 @@ mutation CreateCI($input: CreateCIInput!) {
 
 #### updateCI
 
-Update an existing CI. A non-null `_name` must be a non-empty string of at most
-500 characters (`BAD_USER_INPUT` otherwise); a foreign or missing id returns
-`NOT_FOUND` first.
+Update an existing CI. The input is validated with the same schema as `PUT /cis/:id`
+(`ciUpdateSchema`; e.g. `_name` must be 1-500 characters), and failures return
+`BAD_USER_INPUT`. A foreign or missing id returns `NOT_FOUND` before validation.
 
 **Mutation**:
 ```graphql

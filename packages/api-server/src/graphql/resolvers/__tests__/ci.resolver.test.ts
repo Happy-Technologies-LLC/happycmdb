@@ -24,7 +24,9 @@ const ORG_A = '11111111-1111-4111-8111-111111111111';
 const ORG_B = '22222222-2222-4222-8222-222222222222';
 
 // Mock dependencies
+// The CI input validation is REST's own Joi schemas, so keep the real validators.
 jest.mock('@cmdb/common', () => ({
+  ...jest.requireActual('@cmdb/common/utils/validators'),
   logger: {
     info: jest.fn(),
     error: jest.fn(),
@@ -586,23 +588,48 @@ describe('GraphQL CI Resolvers', () => {
       expect(client().updateCI).not.toHaveBeenCalled();
     });
 
-    it("createCI rejects a 501-character name or a 'not-a-date' discovery timestamp without calling the client", async () => {
+    it("createCI rejects a 501-character name, a 'not-a-date' timestamp or an empty _externalId without calling the client", async () => {
       client().createCI.mockResolvedValue(createCI({ id: 'ci-new' }));
       const create = (input: Record<string, unknown>) =>
         (resolvers.Mutation as any).createCI(null, { input: { _id: 'ci-new', _name: 'n', _type: 'SERVER', ...input } }, mockContext);
 
-      for (const input of [{ _name: 'x'.repeat(501) }, { _discoveredAt: 'not-a-date' }]) {
+      for (const input of [{ _name: 'x'.repeat(501) }, { _discoveredAt: 'not-a-date' }, { _externalId: '' }]) {
         const error = await errorOf(create(input));
         expect({ input, error }).toMatchObject({ input, error: { extensions: { code: 'BAD_USER_INPUT' } } });
       }
       expect(client().createCI).not.toHaveBeenCalled();
       expect(client().getSession).not.toHaveBeenCalled();
 
-      await create({ _name: 'x'.repeat(500), _discoveredAt: '2026-10-01T12:00:00Z' });
-      expect(client().createCI).toHaveBeenCalledWith(
-        expect.objectContaining({ name: 'x'.repeat(500), discovered_at: '2026-10-01T12:00:00Z' }),
-        ORG_A
-      );
+      await create({ _name: 'x'.repeat(500) });
+      expect(client().createCI).toHaveBeenCalledWith(expect.objectContaining({ name: 'x'.repeat(500) }), ORG_A);
+    });
+
+    it('createCI normalises _discoveredAt exactly as REST POST /cis does', async () => {
+      const { validate, ciInputSchema } = jest.requireActual('@cmdb/common/utils/validators');
+      client().createCI.mockResolvedValue(createCI({ id: 'ci-new' }));
+
+      const cases = ['2024-02-30', '2024-01-01T24:00', '2024-01', '2024', '2024-01-15 10:30:00Z', '2026-10-01T12:00:00Z'];
+      for (const discoveredAt of cases) {
+        await (resolvers.Mutation as any).createCI(
+          null,
+          { input: { _id: 'ci-new', _name: 'n', _type: 'SERVER', _discoveredAt: discoveredAt } },
+          mockContext
+        );
+        // What the REST validation middleware hands the controller for the same body.
+        const rest = validate(ciInputSchema, { id: 'ci-new', name: 'n', type: 'server', discovered_at: discoveredAt });
+        expect(rest.valid).toBe(true);
+        const [ciInput] = client().createCI.mock.calls.at(-1);
+        expect({ discoveredAt, stored: ciInput.discovered_at }).toEqual({ discoveredAt, stored: rest.value.discovered_at });
+      }
+      // Values with a date only or an explicit zone do not depend on the host time zone.
+      expect(client().createCI.mock.calls.map(([ciInput]: [{ discovered_at: string }]) => ciInput.discovered_at)).toEqual([
+        '2024-03-01T00:00:00.000Z',
+        expect.any(String),
+        '2024-01-01T00:00:00.000Z',
+        '2024-01-01T00:00:00.000Z',
+        '2024-01-15T10:30:00.000Z',
+        '2026-10-01T12:00:00.000Z',
+      ]);
     });
 
     it('getCIDependencies/getImpactAnalysis reject depth 0, 11, -1 and a non-integer with BAD_USER_INPUT', async () => {

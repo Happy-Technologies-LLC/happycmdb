@@ -7,7 +7,18 @@ import { GraphQLError } from 'graphql';
 import { GraphQLScalarType, Kind } from 'graphql';
 import neo4j from 'neo4j-driver';
 import { Neo4jClient } from '@cmdb/database';
-import { CI, CIInput, CIType, CIStatus, Environment, RelationshipType } from '@cmdb/common';
+import type { Schema } from 'joi';
+import {
+  CI,
+  CIInput,
+  CIType,
+  CIStatus,
+  Environment,
+  RelationshipType,
+  ciInputSchema,
+  ciUpdateSchema,
+  validate,
+} from '@cmdb/common';
 import { analyticsResolvers } from './analytics.resolver';
 import { connectorResolvers } from './connector.resolvers';
 import { connectorFieldResolvers } from './connector-fields.resolvers';
@@ -89,60 +100,42 @@ function convertEnumToDbFormat(value: string): string {
   return value.toLowerCase().replace(/_/g, '-');
 }
 
-/** ISO 8601 date or date-time, as accepted by REST's `Joi.string().isoDate()`. */
-const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}(:?\d{2})?)?)?$/;
-
-/**
- * Validate CI input data with the REST create rules (ciInputSchema): name of
- * 1-500 characters and an optional ISO discovery timestamp.
- */
-function validateCIInput(input: {
-  _id?: unknown;
-  _name?: unknown;
-  _type?: unknown;
-  _discoveredAt?: unknown;
-}): void {
-  if (!input._id || typeof input._id !== 'string') {
-    throw new GraphQLError('CI ID is required and must be a string', {
-      extensions: { code: 'BAD_USER_INPUT' },
-    });
-  }
-
-  if (!input._name || typeof input._name !== 'string' || input._name.length > 500) {
-    throw new GraphQLError('CI name is required and must be a string of at most 500 characters', {
-      extensions: { code: 'BAD_USER_INPUT' },
-    });
-  }
-
-  if (!input._type) {
-    throw new GraphQLError('CI type is required', {
-      extensions: { code: 'BAD_USER_INPUT' },
-    });
-  }
-
-  const discoveredAt = input._discoveredAt;
-  if (
-    discoveredAt !== undefined &&
-    discoveredAt !== null &&
-    (typeof discoveredAt !== 'string' || !ISO_TIMESTAMP.test(discoveredAt) || Number.isNaN(Date.parse(discoveredAt)))
-  ) {
-    throw new GraphQLError('CI discovery timestamp must be an ISO 8601 date', {
-      extensions: { code: 'BAD_USER_INPUT' },
-    });
-  }
+/** A CI create body after REST's ciInputSchema (defaults applied, values converted). */
+interface ValidatedCIInput {
+  id: string;
+  external_id?: string;
+  name: string;
+  type: CIType;
+  status: CIStatus;
+  environment?: Environment;
+  discovered_at?: string;
+  metadata: Record<string, unknown>;
 }
 
 /**
- * The JSON-scalar `_metadata` input as a plain object. REST requires an object
- * too; any other JSON value would be stored but fail to read back.
+ * Validates GraphQL CI input, mapped to the REST body shape, with the REST
+ * schema itself (ciInputSchema / ciUpdateSchema from @cmdb/common) and the
+ * REST validation middleware's options (`validate`: abortEarly false,
+ * stripUnknown true). Returns Joi's converted value, e.g. discovered_at as an
+ * ISO string, exactly as REST hands it to the controller. GraphQL null means
+ * "not given", so null fields are dropped first. A Joi error is BAD_USER_INPUT.
  */
-function metadataInput(value: unknown): Record<string, unknown> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    throw new GraphQLError('CI metadata must be an object', {
+function validateAsRest<T>(schema: Schema, fields: Record<string, unknown>): T {
+  const data = Object.fromEntries(
+    Object.entries(fields).filter(([, value]) => value !== undefined && value !== null)
+  );
+  const result = validate<T>(schema, data);
+  if (!result.valid) {
+    throw new GraphQLError(result.error ?? 'Invalid CI input', {
       extensions: { code: 'BAD_USER_INPUT' },
     });
   }
-  return value as Record<string, unknown>;
+  return result.value as T;
+}
+
+/** GraphQL enum value (e.g. VIRTUAL_MACHINE) in the REST/database format, or undefined. */
+function enumInput(value: string | null | undefined): string | undefined {
+  return typeof value === 'string' ? convertEnumToDbFormat(value) : undefined;
 }
 
 /**
@@ -580,20 +573,25 @@ const Mutation = {
     const organizationId = requireGraphQLOrganization(_context);
     checkGraphQLPermission(_context, 'write');
     try {
-      validateCIInput(_args.input);
-      const ciInput: CIInput = {
-        _id: _args.input._id,
+      const input = validateAsRest<ValidatedCIInput>(ciInputSchema, {
+        id: _args.input._id,
         external_id: _args.input._externalId,
         name: _args.input._name,
-        _type: convertEnumToDbFormat(_args.input._type) as CIType,
-        status: _args.input._status
-          ? convertEnumToDbFormat(_args.input._status) as CIStatus
-          : 'active',
-        environment: _args.input._environment
-          ? convertEnumToDbFormat(_args.input._environment) as Environment
-          : undefined,
-        discovered_at: _args.input._discoveredAt ?? new Date().toISOString(),
-        metadata: _args.input._metadata == null ? {} : metadataInput(_args.input._metadata),
+        type: enumInput(_args.input._type),
+        status: enumInput(_args.input._status),
+        environment: enumInput(_args.input._environment),
+        discovered_at: _args.input._discoveredAt,
+        metadata: _args.input._metadata,
+      });
+      const ciInput: CIInput = {
+        _id: input.id,
+        external_id: input.external_id,
+        name: input.name,
+        _type: input.type,
+        status: input.status,
+        environment: input.environment,
+        discovered_at: input.discovered_at ?? new Date().toISOString(),
+        metadata: input.metadata,
       };
       const ci = await _context._neo4jClient.createCI(ciInput, organizationId);
       _context._loaders._ciLoader.clear(ciKey(ci._id, organizationId));
@@ -641,26 +639,13 @@ const Mutation = {
         throw ciNotFound();
       }
 
-      const updates: Partial<CIInput> = {};
       // Validated after the scoped lookup, so a foreign id still gets NOT_FOUND.
-      if (_args.input._name != null) {
-        const name: unknown = _args.input._name;
-        if (typeof name !== 'string' || name.length === 0 || name.length > 500) {
-          throw new GraphQLError('CI name must be a non-empty string of at most 500 characters', {
-            extensions: { code: 'BAD_USER_INPUT' },
-          });
-        }
-        updates.name = name;
-      }
-      if (_args.input._status != null) {
-        updates.status = convertEnumToDbFormat(_args.input._status) as CIStatus;
-      }
-      if (_args.input._environment != null) {
-        updates.environment = convertEnumToDbFormat(_args.input._environment) as Environment;
-      }
-      if (_args.input._metadata != null) {
-        updates.metadata = metadataInput(_args.input._metadata);
-      }
+      const updates = validateAsRest<Partial<CIInput>>(ciUpdateSchema, {
+        name: _args.input._name,
+        status: enumInput(_args.input._status),
+        environment: enumInput(_args.input._environment),
+        metadata: _args.input._metadata,
+      });
 
       const ci = await _context._neo4jClient.updateCI(_args.id, updates, organizationId);
       _context._loaders._ciLoader.clear(ciKey(_args.id, organizationId));

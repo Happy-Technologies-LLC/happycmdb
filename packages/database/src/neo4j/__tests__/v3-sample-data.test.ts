@@ -118,7 +118,11 @@ function seed(graph: Graph): void {
   }
 }
 
-const snapshot = (graph: Graph) => JSON.stringify({ services: [...graph.services].sort(), edges: [...graph.edges].sort() });
+// Edges are a set: MERGE with `created_at: datetime()` in the pattern adds a duplicate
+// relationship on every rerun in Neo4j (pre-existing seed behaviour), so only node
+// ownership and properties are compared across reruns.
+const servicesSnapshot = (graph: Graph) => JSON.stringify([...graph.services].sort());
+const SAMPLE_CI_IDS = ['srv-prod-web-01', 'srv-prod-api-01', 'db-neo4j-prod', 'db-postgres-datamart', 'db-redis-cache', 'net-lb-prod-01'];
 
 describe('packages/database/src/neo4j/v3-sample-data.cypher', () => {
   it('every seeded :BusinessService gets the internal org', () => {
@@ -137,40 +141,41 @@ describe('packages/database/src/neo4j/v3-sample-data.cypher', () => {
     expect(graph.edges.size).toBe(18);
   });
 
-  it("reseeding keeps another organization's node with a sample id, and is idempotent", () => {
-    // Org A already owns a node whose id is a sample id (for example after the backfill).
-    const tenantNode = { id: 'bs-ecommerce-platform', organization_id: ORG_A, name: 'A Storefront' };
-    const graph: Graph = { services: new Map([['bs-ecommerce-platform', { ...tenantNode }]]), cis: new Map(), edges: new Set() };
+  it("reseeding keeps every sample-id service another org owns, unchanged and unlinked", () => {
+    // Org A already owns nodes with every sample service id (for example after the backfill).
+    const tenantNodes = SAMPLE_IDS.map(id => ({ id, organization_id: ORG_A, name: `A ${id}` }));
+    const graph: Graph = {
+      services: new Map(tenantNodes.map(node => [node.id, { ...node }])), cis: new Map(), edges: new Set(),
+    };
 
     seed(graph);
-    const first = snapshot(graph);
+    const first = servicesSnapshot(graph);
     seed(graph);
 
-    expect(snapshot(graph)).toBe(first);
-    // Org A's node keeps its organization and properties, and no sample CI or app is attached to it.
-    expect(graph.services.get('bs-ecommerce-platform')).toEqual(tenantNode);
-    expect([...graph.edges].filter(edge => edge.includes('bs-ecommerce-platform'))).toEqual([]);
-    // The other samples are seeded into the internal org as usual.
-    for (const id of SAMPLE_IDS.filter(sample => sample !== 'bs-ecommerce-platform')) {
-      expect([id, graph.services.get(id)!['organization_id']]).toEqual([id, INTERNAL_ORG]);
+    expect(servicesSnapshot(graph)).toBe(first);
+    for (const node of tenantNodes) {
+      expect(graph.services.get(node.id)).toEqual(node);
     }
-    expect(graph.edges).toContain('as-payment-gateway -ENABLES-> bs-payment-processing');
+    // No ENABLES, DELIVERS or SUPPORTS edge reaches them; only the RUNS_ON sample edges remain.
+    expect([...graph.edges].sort()).toEqual([
+      'as-api-backend -RUNS_ON-> srv-prod-api-01',
+      'as-warehouse-management -RUNS_ON-> srv-prod-api-01',
+      'as-web-frontend -RUNS_ON-> srv-prod-web-01',
+    ]);
   });
 
   it("reseeding attaches no sample edge to another organization's CI with a sample id", () => {
-    // Org A owns CIs whose ids are sample CI ids (the sample CIs were never seeded or were deleted).
-    const tenantCIs = ['srv-prod-api-01', 'db-postgres-datamart'];
+    // Org A owns CIs with every sample CI id (the sample CIs were never seeded or were deleted).
     const graph: Graph = {
       services: new Map(),
-      cis: new Map(tenantCIs.map(id => [id, { id, organization_id: ORG_A }])),
+      cis: new Map(SAMPLE_CI_IDS.map(id => [id, { id, organization_id: ORG_A }])),
       edges: new Set(),
     };
 
     seed(graph);
 
-    expect([...graph.edges].filter(edge => tenantCIs.some(id => edge.includes(id)))).toEqual([]);
-    // Internal sample CIs are still linked.
-    expect(graph.edges).toContain('as-web-frontend -RUNS_ON-> srv-prod-web-01');
-    expect(graph.edges).toContain('db-neo4j-prod -SUPPORTS-> bs-ecommerce-platform');
+    // Only the service-side edges (6 ENABLES, 5 DELIVERS) remain; no RUNS_ON or SUPPORTS.
+    expect([...graph.edges].filter(edge => SAMPLE_CI_IDS.some(id => edge.includes(id)))).toEqual([]);
+    expect(graph.edges.size).toBe(11);
   });
 });

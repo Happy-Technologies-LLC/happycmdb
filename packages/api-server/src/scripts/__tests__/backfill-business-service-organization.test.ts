@@ -208,6 +208,14 @@ describe('backfillBusinessServiceOrganizations', () => {
     }
   });
 
+  it('uses the given writer time zone, not a fixed one', async () => {
+    // Written by UTC+14 sessions, bs-squat's 09:30 wall time is 2026-09-30T19:30Z: before the cutover.
+    const summary = await backfillBusinessServiceOrganizations(pg, session, { ...APPLY, writerTimezone: 'Pacific/Kiritimati' });
+
+    expect(summary.needs_review).toEqual([]);
+    expect(summary.filled).toContainEqual({ service_id: 'bs-squat', organization_id: ORG_B });
+  });
+
   // POSIX offsets and abbreviation-only names are not zone files; names that are also
   // abbreviations (EST, UTC) would be read from the session's timezone_abbreviations set.
   it.each(['+05', 'UTC+5', 'PST', 'EST', 'UTC'])(

@@ -227,8 +227,11 @@ Postgres ownership check:
   the API. The sample services in `packages/database/src/neo4j/v3-sample-data.cypher`
   are in the internal organization; a reseed only creates them or updates nodes that are
   internal or have no organization, and attaches sample relationships only where both the
-  service and the CI are internal, so it never takes over, or links samples to, a node
-  (service or CI) another organization owns.
+  service and the CI are internal, so on its own it never takes over, or links samples to,
+  a node (service or CI) another organization owns. Caveat: `scripts/db-init.sh` runs
+  `infrastructure/scripts/init-neo4j.cypher` first, and that script still sets the
+  internal organization on every sample-id CI unconditionally (T3a); a tenant CI that
+  reuses a deleted sample CI id is moved to the internal organization by a db-init rerun.
 - **Existing nodes have no `organization_id` until the backfill runs, so the reads above
   return 404 for them.** The backfill
   `packages/api-server/src/scripts/backfill-business-service-organization.ts` sets
@@ -246,7 +249,10 @@ Postgres ownership check:
   nodes that already have one are never changed. It is a dry run unless `--apply` is
   passed, it lists every node it fills, a second run with the same cutover changes
   nothing, and it connects only through `CMDB_BACKFILL_*` variables (see the script
-  header). Running it against a live database is an operator action (FD-7).
+  header). It trusts `dim_business_services`: `created_at` and `organization_id` are not
+  writable through the API, but the PUBLIC grants above let any database role write
+  them, so run it only after confirming no non-API role has written to that table.
+  Running it against a live database is an operator action (FD-7).
 
 ### Rolling back migrations 010, 009 and 008
 

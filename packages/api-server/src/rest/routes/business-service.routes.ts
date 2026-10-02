@@ -118,7 +118,12 @@ const mapCIsSchema = Joi.object({
             : value)
         .messages({ 'string.pattern.base': '{{#label}} must not contain NUL characters or unpaired surrogates' })
     )
-    .min(1).unique().required(),
+    .min(1).unique().required()
+    // Stop at the first failing item: validate() runs with abortEarly:false,
+    // which would still run .unique() over non-string items, and Joi
+    // compares those pairwise (quadratic). Only strings reach .unique() now,
+    // and Joi checks strings with a hash lookup.
+    .prefs({ abortEarly: true }),
   mapping_type: Joi.string()
     .valid('hosts', 'supports', 'enables', 'provides')
     .default('supports'),

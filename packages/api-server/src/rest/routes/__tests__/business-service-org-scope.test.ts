@@ -566,11 +566,17 @@ describe('POST /cis rejects ci_ids the mapping table cannot hold', () => {
     const res = await request(app).post('/api/v1/business-services/bs-b-app/cis').set(AS_B)
       .send({ ci_ids: ['ci-\ud800', 'ci-\udbff'] });
     expect(res.status).toBe(400);
-    expect(res.body._details).toEqual([
-      expect.objectContaining({ _field: 'ci_ids.0', _type: 'string.pattern.base' }),
-      expect.objectContaining({ _field: 'ci_ids.1', _type: 'string.pattern.base' }),
-    ]);
+    expect(res.body._details).toEqual([expect.objectContaining({ _field: 'ci_ids.0', _type: 'string.pattern.base' })]);
     expect(await count(`ci_business_service_mappings WHERE service_id = 'bs-b-app'`)).toBe(1);
+  });
+
+  it('POST /cis with thousands of non-string ci_ids stops at the first bad item', async () => {
+    // Validation must stop at ci_ids[0]: if it went on, Joi's .unique() would
+    // also run, comparing non-string items pairwise (quadratic in the count).
+    const ci_ids = Array.from({ length: 5000 }, (_, i) => [i]);
+    const res = await request(app).post('/api/v1/business-services/bs-b-app/cis').set(AS_B).send({ ci_ids });
+    expect(res.status).toBe(400);
+    expect(res.body._details).toEqual([expect.objectContaining({ _field: 'ci_ids.0', _type: 'string.base' })]);
   });
 });
 

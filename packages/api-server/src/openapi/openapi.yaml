@@ -2711,12 +2711,10 @@ paths:
   # =============================================================================
   # BUSINESS SERVICES
   # =============================================================================
-  # Service rows are tenant-scoped: the organization comes from the token
-  # (401 without credentials, 403 without an organization claim). Reads,
-  # updates and deletes answer the same 404 for another organization's service
-  # as for a missing one; create answers 409 for a service_id taken by any
-  # organization (ids are globally unique). Mapped CI ids and the CI cost data
-  # /costs reads are not organization-scoped.
+  # Business services are scoped to the caller's organization, which comes
+  # from the token (401 without credentials, 403 without an organization
+  # claim). A service outside the caller's organization answers 404 exactly
+  # like a missing one; create answers 409 for a service_id already in use.
   /business-services:
     get:
       tags: [Business Services]
@@ -2724,14 +2722,16 @@ paths:
       description: >-
         Lists the caller's organization's business services, newest first.
         Query parameters are validated only when at least one is present.
-        Unknown parameters are ignored (stripped before the handler runs);
-        values that fail the parameter schema (e.g. empty, non-integer or
-        out-of-range, repeated) are rejected with 400.
+        Unknown parameters are ignored; values that fail the parameter schema
+        (e.g. empty, non-integer or out-of-range, repeated) are rejected with
+        400.
       operationId: listBusinessServices
       parameters:
         - name: search
           in: query
-          description: Case-insensitive substring match on name or description
+          description: >-
+            Case-insensitive ILIKE match of `%<search>%` against name or
+            description; `%` and `_` in the value act as wildcards.
           schema:
             type: string
             minLength: 1
@@ -2868,7 +2868,7 @@ paths:
     get:
       tags: [Business Services]
       summary: Get a business service
-      description: The service row plus its mapped-CI and dependency counts.
+      description: The service plus its mapped-CI and dependency counts.
       operationId: getBusinessService
       responses:
         '200':
@@ -2943,8 +2943,9 @@ paths:
       tags: [Business Services]
       summary: Delete a business service
       description: >-
-        Deletes the service; its CI mappings, dependencies and fact rows are
-        removed by ON DELETE CASCADE. Requires the `write` permission.
+        Deletes the service together with its CI mappings, the dependencies
+        from and to it, and its health metrics. Requires the `write`
+        permission.
       operationId: deleteBusinessService
       responses:
         '200':
@@ -3020,10 +3021,7 @@ paths:
       description: >-
         Upserts one mapping per `ci_ids` entry with the given `mapping_type`;
         an existing (ci_id, mapping_type) mapping has its `confidence_score`
-        and `updated_at` replaced. CI ids are not looked up in the CI store
-        or checked against the caller's organization. Ids longer than 100
-        characters, or a `ci_ids` list containing the same id twice,
-        currently fail with 500. Unknown body fields are ignored. Requires
+        and `updated_at` replaced. Unknown body fields are ignored. Requires
         the `write` permission.
       operationId: mapBusinessServiceCIs
       requestBody:
@@ -3131,8 +3129,8 @@ paths:
       tags: [Business Services]
       summary: List the services a business service depends on
       description: >-
-        Dependencies newest first (`created_at` descending), joined to the
-        target service. Only targets in the caller's organization are
+        Dependencies newest first (`created_at` descending), with the target
+        service's details. Only targets in the caller's organization are
         returned. `data` is `[]` when the service exists and has no
         dependencies.
       operationId: getBusinessServiceDependencies
@@ -3286,10 +3284,9 @@ paths:
       description: >-
         Incident and change metrics over the windows
         [utc_today - 7 days, utc_today] and [utc_today - 30 days, utc_today]
-        (inclusive, utc_today = the current UTC date; future-dated rows are
-        excluded). The fact tables hold daily per-service counters, so counts
-        are sums of those counters. A service with no facts in a window
-        returns 0 counts and null averages/ratios.
+        (inclusive, utc_today = the current UTC date; future-dated events are
+        excluded). Counts are sums of daily per-service counters. A service
+        with no data in a window returns 0 counts and null averages/ratios.
       operationId: getBusinessServiceHealth
       responses:
         '200':
@@ -3321,13 +3318,10 @@ paths:
       tags: [Business Services]
       summary: Get business service cost summary
       description: >-
-        Monthly cost of the CIs mapped to the service, read from the current
-        CI row's TBM attributes (`resource_tower`, `monthly_cost`). Those CI
-        rows are not organization-scoped: a mapped CI id (which is not
-        validated, see POST /business-services/{service_id}/cis) is costed
-        whichever organization the CI belongs to. A CI mapped under several
-        mapping types is counted and costed once. A service with no mappings
-        returns `ci_count` 0 and null totals.
+        Monthly cost of the CIs mapped to the service, in total and per TBM
+        resource tower. A CI mapped under several mapping types is counted
+        and costed once. A service with no mappings returns `ci_count` 0 and
+        null totals.
       operationId: getBusinessServiceCosts
       responses:
         '200':
@@ -3540,10 +3534,10 @@ components:
     BusinessServiceValidationError:
       description: >-
         Request failed validation (body, or query for the list). `_message`
-        and `_details` carry the Joi messages, e.g. an empty string or an
-        out-of-range value. Unknown fields are ignored, not rejected; only
-        `organization_id` on the create/update bodies is rejected, since the
-        organization always comes from the token.
+        and `_details` carry the validation messages, e.g. for an empty
+        string or an out-of-range value. Unknown fields are ignored, not
+        rejected; only `organization_id` on the create/update bodies is
+        rejected, since the organization always comes from the token.
       content:
         application/json:
           schema:
@@ -3609,13 +3603,12 @@ components:
 
     BusinessServiceServerError:
       description: >-
-        Unexpected failure. From the handler (e.g. a database error) the body
-        is `{success: false, error}` with a fixed per-operation message;
-        driver errors are logged server-side and never returned. Requests
-        that fail before the handler, a malformed JSON body or an
-        undecodable percent-encoded path parameter, reach the app-level
-        error handler, which answers 500 `{_error: 'Internal Server Error',
-        _message}` with the parser/decoder message.
+        Unexpected failure. Errors raised by the operation return
+        `{success: false, error}` with a fixed per-operation message; internal
+        error details are not returned. A malformed JSON body or an
+        undecodable percent-encoded path parameter returns
+        `{_error: 'Internal Server Error', _message}` with the parse/decode
+        message.
       content:
         application/json:
           schema:
@@ -4558,12 +4551,10 @@ components:
       type: string
       enum: [critical, high, medium, low]
 
-    PgInt8:
+    CountValue:
       description: >-
-        A PostgreSQL bigint (SUM/COUNT result). The production driver
-        (node-postgres, default type parsers) returns int8 as a decimal
-        string, e.g. "10"; drivers that parse int8 (such as PGlite, used by
-        the unit tests) emit a JSON number.
+        Integer count, emitted as a decimal string (e.g. "10"). Clients
+        should also accept a JSON integer.
       oneOf:
         - type: string
           pattern: '^-?[0-9]+$'
@@ -4572,7 +4563,7 @@ components:
 
     BusinessService:
       type: object
-      description: A row of dim_business_services
+      description: A business service
       required:
         - service_id
         - name
@@ -4599,7 +4590,7 @@ components:
           $ref: '#/components/schemas/BusinessCriticality'
         operational_status:
           type: string
-          description: Values allowed by the table's CHECK constraint
+          description: Stored operational status
           enum: [active, inactive, maintenance, decommissioned]
         service_type:
           type: string
@@ -4658,7 +4649,7 @@ components:
           properties:
             mapped_cis_count:
               type: integer
-              description: Number of CI mapping rows (one per CI and mapping type)
+              description: Number of CI mappings (one per CI and mapping type)
             dependencies_count:
               type: integer
               description: Number of services this service depends on
@@ -4673,6 +4664,7 @@ components:
         service_id:
           type: string
           pattern: '^bs-[a-z0-9-]+$'
+          maxLength: 50
           description: Unique across all organizations
         name:
           type: string
@@ -4688,31 +4680,31 @@ components:
           $ref: '#/components/schemas/BusinessCriticality'
         operational_status:
           type: string
-          enum: [active, inactive, planned, retired]
+          enum: [active, inactive]
           default: active
-          description: >-
-            Request validation accepts these values, but the table's CHECK
-            constraint allows only active, inactive, maintenance and
-            decommissioned, so `planned` and `retired` currently fail with
-            500.
         service_type:
           type: string
           minLength: 1
+          maxLength: 50
         owned_by:
           type: string
           minLength: 1
+          maxLength: 255
         managed_by:
           type: string
           minLength: 1
+          maxLength: 255
         support_group:
           type: string
           minLength: 1
+          maxLength: 255
         service_level_requirement:
           type: string
           minLength: 1
         category:
           type: string
           minLength: 1
+          maxLength: 100
         tags:
           type: array
           items:
@@ -4751,28 +4743,30 @@ components:
           $ref: '#/components/schemas/BusinessCriticality'
         operational_status:
           type: string
-          enum: [active, inactive, planned, retired]
-          description: >-
-            `planned` and `retired` pass request validation but violate the
-            table's CHECK constraint and currently fail with 500.
+          enum: [active, inactive]
         service_type:
           type: string
           minLength: 1
+          maxLength: 50
         owned_by:
           type: string
           minLength: 1
+          maxLength: 255
         managed_by:
           type: string
           minLength: 1
+          maxLength: 255
         support_group:
           type: string
           minLength: 1
+          maxLength: 255
         service_level_requirement:
           type: string
           minLength: 1
         category:
           type: string
           minLength: 1
+          maxLength: 100
         tags:
           type: array
           items:
@@ -4810,7 +4804,7 @@ components:
           nullable: true
 
     BusinessServiceCIMappingRecord:
-      description: A full ci_business_service_mappings row
+      description: A CI mapping as stored
       allOf:
         - $ref: '#/components/schemas/BusinessServiceCIMapping'
         - type: object
@@ -4854,7 +4848,7 @@ components:
 
     BusinessServiceDependencyRecord:
       type: object
-      description: A full business_service_dependencies row
+      description: A service dependency as stored
       required: [id, service_id, depends_on_service_id, dependency_type, created_at]
       properties:
         id:
@@ -4879,9 +4873,9 @@ components:
           required: [incidents_7d, incidents_30d, avg_mttr_30d, sla_breaches_30d]
           properties:
             incidents_7d:
-              $ref: '#/components/schemas/PgInt8'
+              $ref: '#/components/schemas/CountValue'
             incidents_30d:
-              $ref: '#/components/schemas/PgInt8'
+              $ref: '#/components/schemas/CountValue'
             avg_mttr_30d:
               type: number
               nullable: true
@@ -4889,15 +4883,15 @@ components:
                 Incident-weighted mean time to resolve (minutes) over the
                 30-day window; null when no in-window incident has an MTTR.
             sla_breaches_30d:
-              $ref: '#/components/schemas/PgInt8'
+              $ref: '#/components/schemas/CountValue'
         changes:
           type: object
           required: [changes_7d, changes_30d, success_rate_30d]
           properties:
             changes_7d:
-              $ref: '#/components/schemas/PgInt8'
+              $ref: '#/components/schemas/CountValue'
             changes_30d:
-              $ref: '#/components/schemas/PgInt8'
+              $ref: '#/components/schemas/CountValue'
             success_rate_30d:
               type: number
               nullable: true
@@ -4920,14 +4914,13 @@ components:
       required: [ci_count, total_monthly_cost, cost_by_tower]
       properties:
         ci_count:
-          $ref: '#/components/schemas/PgInt8'
+          $ref: '#/components/schemas/CountValue'
         total_monthly_cost:
           type: string
           nullable: true
           description: >-
-            PostgreSQL NUMERIC sum of the mapped CIs' monthly cost, emitted as
-            a decimal string (e.g. "150.5"); null when no mapped CI has a
-            cost.
+            Sum of the mapped CIs' monthly cost as a decimal string (e.g.
+            "150.5"); null when no mapped CI has a cost.
         cost_by_tower:
           type: object
           nullable: true

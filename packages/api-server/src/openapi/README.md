@@ -143,7 +143,7 @@ http://localhost:3000/api-docs/openapi.yaml
 - `POST /jobs/{queueName}/{jobId}/retry` - Retry job
 
 ### Business Services (`/api/v1/business-services`)
-Service rows are organization-scoped: 403 without an organization claim; reads, updates and deletes return the same 404 for another organization's service as for a missing one. Create returns 409 for a `service_id` taken by any organization (ids are globally unique). Mapped CI ids are not validated, and the CI cost data `/costs` reads is not organization-scoped.
+Scoped to the caller's organization: 403 without an organization claim; a service outside the caller's organization returns the same 404 as a missing one. Create returns 409 for a `service_id` already in use.
 - `GET /business-services` - List business services
 - `POST /business-services` - Create business service
 - `GET /business-services/{service_id}` - Get business service with mapped-CI and dependency counts
@@ -264,11 +264,11 @@ The OpenAPI spec defines comprehensive schemas for:
 - `AuditEntry` - Audit trail entry
 
 ### Business Services
-- `BusinessService`, `BusinessServiceDetail` - Service row (detail adds counts)
+- `BusinessService`, `BusinessServiceDetail` - Service (detail adds counts)
 - `BusinessServiceInput`, `BusinessServiceUpdate` - Create / update bodies
-- `BusinessServiceCIMapping`, `BusinessServiceDependency` - Child read rows
+- `BusinessServiceCIMapping`, `BusinessServiceDependency` - Child read items
 - `BusinessServiceHealth`, `BusinessServiceCosts` - Metric bodies
-- `PgInt8` - PostgreSQL bigint: decimal string from node-postgres, number from drivers that parse int8
+- `CountValue` - Integer count, emitted as a decimal string
 
 ## Code Generation
 

@@ -34,6 +34,11 @@ graphql/
   organization-scoped REST `/api/v1/cis` endpoints meanwhile
 - **createRelationship**: Link two CIs
 - **deleteRelationship**: Remove relationships
+- **_reconciliation { mergeCI }**: returns `FORBIDDEN` ("Reconciliation tenant scoping
+  for GraphQL mergeCI is pending"); use the organization-scoped REST
+  `/api/v1/reconciliation/merge`. The other `_reconciliation` operations require an
+  organization claim and act only on the caller's organization's CIs; rules and
+  source authorities are global and admin-only
 
 ### Performance Optimizations
 - **DataLoader Integration**: Batches and caches database queries to prevent N+1 problems

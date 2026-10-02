@@ -241,7 +241,7 @@ it('should match by serial number', async () => {
   mockSession.run.mockResolvedValueOnce({ records: [/*...*/] });
 
   // Act
-  const result = await engine.findExistingCI(identifiers, ci);
+  const result = await engine.findExistingCI(identifiers, ci, ORG);
 
   // Assert
   expect(result?.match_strategy).toBe('serial_number');

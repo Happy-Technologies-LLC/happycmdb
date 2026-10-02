@@ -56,6 +56,9 @@ jest.mock('@cmdb/event-processor', () => ({
 import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
 import { getEventProducer } from '@cmdb/event-processor';
 
+// Organization of every reconciliation in this suite.
+const ORG = '11111111-1111-4111-8111-111111111111';
+
 describe('Merge Strategies and Conflict Resolution', () => {
   let engine: IdentityReconciliationEngine;
 
@@ -121,9 +124,9 @@ describe('Merge Strategies and Conflict Resolution', () => {
         });
 
       mockPostgresClient.query.mockResolvedValue({ rows: [] });
-      mockSession.run.mockResolvedValue({ records: [] });
+      mockSession.run.mockResolvedValue({ records: [{ get: () => 'ci_updated' }] }); // the org-scoped update matches
 
-      await engine.reconcileCI(ci);
+      await engine.reconcileCI(ci, ORG);
 
       // Should update field with higher authority value
       const fieldUpdateCalls = mockPostgresClient.query.mock.calls.filter(
@@ -161,9 +164,9 @@ describe('Merge Strategies and Conflict Resolution', () => {
         });
 
       mockPostgresClient.query.mockResolvedValue({ rows: [] });
-      mockSession.run.mockResolvedValue({ records: [] });
+      mockSession.run.mockResolvedValue({ records: [{ get: () => 'ci_updated' }] }); // the org-scoped update matches
 
-      await engine.reconcileCI(ci);
+      await engine.reconcileCI(ci, ORG);
 
       // Should NOT overwrite with lower authority
       const fieldUpdateCalls = mockPostgresClient.query.mock.calls.filter(
@@ -199,9 +202,9 @@ describe('Merge Strategies and Conflict Resolution', () => {
         });
 
       mockPostgresClient.query.mockResolvedValue({ rows: [] });
-      mockSession.run.mockResolvedValue({ records: [] });
+      mockSession.run.mockResolvedValue({ records: [{ get: () => 'ci_updated' }] }); // the org-scoped update matches
 
-      await engine.reconcileCI(ci);
+      await engine.reconcileCI(ci, ORG);
 
       // With equal authority, most recent (new) wins
       const fieldUpdateCalls = mockPostgresClient.query.mock.calls.filter(
@@ -236,9 +239,9 @@ describe('Merge Strategies and Conflict Resolution', () => {
         });
 
       mockPostgresClient.query.mockResolvedValue({ rows: [] });
-      mockSession.run.mockResolvedValue({ records: [] });
+      mockSession.run.mockResolvedValue({ records: [{ get: () => 'ci_updated' }] }); // the org-scoped update matches
 
-      await engine.reconcileCI(ci);
+      await engine.reconcileCI(ci, ORG);
 
       // All new fields should be added
       const fieldInserts = mockPostgresClient.query.mock.calls.filter(
@@ -270,9 +273,9 @@ describe('Merge Strategies and Conflict Resolution', () => {
         });
 
       mockPostgresClient.query.mockResolvedValue({ rows: [] });
-      mockSession.run.mockResolvedValue({ records: [] });
+      mockSession.run.mockResolvedValue({ records: [{ get: () => 'ci_updated' }] }); // the org-scoped update matches
 
-      await engine.reconcileCI(lowAuthCI);
+      await engine.reconcileCI(lowAuthCI, ORG);
 
       // New fields should be added even from low authority
       const fieldInserts = mockPostgresClient.query.mock.calls.filter(
@@ -351,12 +354,11 @@ describe('Merge Strategies and Conflict Resolution', () => {
       // composite fuzzy: session.run returns no candidates
       mockSession.run
         .mockResolvedValueOnce({ records: [] }) // composite fuzzy search - no match
-        .mockResolvedValueOnce({ // CREATE CI
-          records: [{ get: jest.fn().mockReturnValue('ci_merged_server') }],
-        });
+        .mockResolvedValueOnce({ records: [] }); // CREATE CI
 
-      const ciId1 = await engine.reconcileCI(nmapCI);
-      expect(ciId1).toBe('ci_merged_server');
+      // The engine returns the id it generated and persisted.
+      const ciId1 = await engine.reconcileCI(nmapCI, ORG);
+      expect(ciId1).toMatch(/^ci_\d+_/);
 
       // Reset mocks for second discovery
       mockPostgresClient.query.mockReset();
@@ -367,7 +369,7 @@ describe('Merge Strategies and Conflict Resolution', () => {
       mockSession.run.mockResolvedValueOnce({
         records: [{
           get: jest.fn((field: string) => {
-            if (field === 'ci_id') return 'ci_merged_server';
+            if (field === 'ci_id') return ciId1;
             if (field === 'hostname') return 'prod-server-01';
             if (field === 'ips') return ['10.0.1.50'];
             return null;
@@ -378,9 +380,9 @@ describe('Merge Strategies and Conflict Resolution', () => {
       mockPostgresClient.query.mockResolvedValueOnce({ rows: [] });
       // remaining queries (field sources, lineage, Neo4j update)
       mockPostgresClient.query.mockResolvedValue({ rows: [] });
-      mockSession.run.mockResolvedValue({ records: [] });
+      mockSession.run.mockResolvedValue({ records: [{ get: () => 'ci_updated' }] }); // the org-scoped update matches
 
-      const ciId2 = await engine.reconcileCI(sshCI);
+      const ciId2 = await engine.reconcileCI(sshCI, ORG);
 
       // Reset mocks for third discovery
       mockPostgresClient.query.mockReset();
@@ -389,14 +391,14 @@ describe('Merge Strategies and Conflict Resolution', () => {
 
       // Third discovery (VMware) - UUID match found
       mockSession.run.mockResolvedValueOnce({
-        records: [{ get: jest.fn().mockReturnValue('ci_merged_server') }],
+        records: [{ get: jest.fn().mockReturnValue(ciId1) }],
       });
       // getFieldSources query
       mockPostgresClient.query.mockResolvedValueOnce({ rows: [] });
       mockPostgresClient.query.mockResolvedValue({ rows: [] });
-      mockSession.run.mockResolvedValue({ records: [] });
+      mockSession.run.mockResolvedValue({ records: [{ get: () => 'ci_updated' }] }); // the org-scoped update matches
 
-      const ciId3 = await engine.reconcileCI(vmwareCI);
+      const ciId3 = await engine.reconcileCI(vmwareCI, ORG);
 
       // All should be same CI
       expect(ciId1).toBe(ciId2);
@@ -437,9 +439,9 @@ describe('Merge Strategies and Conflict Resolution', () => {
         });
 
       mockPostgresClient.query.mockResolvedValue({ rows: [] });
-      mockSession.run.mockResolvedValue({ records: [] });
+      mockSession.run.mockResolvedValue({ records: [{ get: () => 'ci_updated' }] }); // the org-scoped update matches
 
-      await engine.reconcileCI(datadog);
+      await engine.reconcileCI(datadog, ORG);
 
       // Conflict should be resolved based on authority
       // Higher authority (datadog) wins
@@ -482,9 +484,9 @@ describe('Merge Strategies and Conflict Resolution', () => {
         });
 
       mockPostgresClient.query.mockResolvedValue({ rows: [] });
-      mockSession.run.mockResolvedValue({ records: [] });
+      mockSession.run.mockResolvedValue({ records: [{ get: () => 'ci_updated' }] }); // the org-scoped update matches
 
-      await engine.reconcileCI(source2);
+      await engine.reconcileCI(source2, ORG);
 
       // SSH has lower authority, should not overwrite VMware value
       const cpuUpdate = mockPostgresClient.query.mock.calls.find(
@@ -512,7 +514,7 @@ describe('Merge Strategies and Conflict Resolution', () => {
 
       mockPostgresClient.query.mockResolvedValue({ rows: [] });
 
-      await engine.reconcileCI(ci);
+      await engine.reconcileCI(ci, ORG);
 
       // Check source lineage was recorded
       const lineageInsert = mockPostgresClient.query.mock.calls.find(
@@ -537,9 +539,9 @@ describe('Merge Strategies and Conflict Resolution', () => {
         .mockResolvedValueOnce({ rows: [] }); // Source lineage upsert
 
       mockPostgresClient.query.mockResolvedValue({ rows: [] });
-      mockSession.run.mockResolvedValue({ records: [] });
+      mockSession.run.mockResolvedValue({ records: [{ get: () => 'ci_updated' }] }); // the org-scoped update matches
 
-      await engine.reconcileCI(ci);
+      await engine.reconcileCI(ci, ORG);
 
       const lineageUpsert = mockPostgresClient.query.mock.calls.find(
         call => call[0].includes('ci_source_lineage')
@@ -587,9 +589,9 @@ describe('Merge Strategies and Conflict Resolution', () => {
         });
 
       mockPostgresClient.query.mockResolvedValue({ rows: [] });
-      mockSession.run.mockResolvedValue({ records: [] });
+      mockSession.run.mockResolvedValue({ records: [{ get: () => 'ci_updated' }] }); // the org-scoped update matches
 
-      await engine.reconcileCI(ci);
+      await engine.reconcileCI(ci, ORG);
 
       // Should handle gracefully
       expect(mockSession.run).toHaveBeenCalled();
@@ -622,9 +624,9 @@ describe('Merge Strategies and Conflict Resolution', () => {
         .mockResolvedValueOnce({ rows: [] }); // No existing field sources
 
       mockPostgresClient.query.mockResolvedValue({ rows: [] });
-      mockSession.run.mockResolvedValue({ records: [] });
+      mockSession.run.mockResolvedValue({ records: [{ get: () => 'ci_updated' }] }); // the org-scoped update matches
 
-      await engine.reconcileCI(ci);
+      await engine.reconcileCI(ci, ORG);
 
       // Should serialize array properly
       const fieldInserts = mockPostgresClient.query.mock.calls.filter(
@@ -664,9 +666,9 @@ describe('Merge Strategies and Conflict Resolution', () => {
         .mockResolvedValueOnce({ rows: [] }); // No existing field sources
 
       mockPostgresClient.query.mockResolvedValue({ rows: [] });
-      mockSession.run.mockResolvedValue({ records: [] });
+      mockSession.run.mockResolvedValue({ records: [{ get: () => 'ci_updated' }] }); // the org-scoped update matches
 
-      await engine.reconcileCI(ci);
+      await engine.reconcileCI(ci, ORG);
 
       // Should serialize object properly
       expect(mockSession.run).toHaveBeenCalled();

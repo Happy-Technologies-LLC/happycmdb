@@ -7,6 +7,7 @@ import { getNeo4jClient, getPostgresClient, UNSCOPED_CI_ACCESS } from '@cmdb/dat
 import { logger } from '@cmdb/common';
 import { v4 as uuidv4 } from 'uuid';
 import neo4j from 'neo4j-driver';
+import { requestOrganizationId } from '../../middleware/auth.middleware';
 
 /** Shape of a Neo4j Integer once it has round-tripped through JSON (JS numbers cannot hold a full 64-bit int, so the driver represents one as `{ low, high }`). */
 type Neo4jIntegerLike = { low: number; high: number };
@@ -241,6 +242,14 @@ export class ITILController {
     try {
       const { id } = _req.params;
       const { limit = 100 } = _req.query;
+
+      // ci_change_history has no organization column: history is only served for a
+      // CI that exists in the caller's organization. A foreign CI gets the same
+      // 404 as a missing one, and its history is never read.
+      if (!(await this.neo4jClient.getCI(id!, requestOrganizationId(_req)))) {
+        res.status(404).json({ success: false, error: 'Not Found', message: 'CI not found' });
+        return;
+      }
 
       const pool = this.postgresClient.pool;
       const result = await pool.query(

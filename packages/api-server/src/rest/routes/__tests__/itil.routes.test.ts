@@ -6,8 +6,9 @@
  * centrally by server.ts (`authMiddleware.authenticate()` mounted on every
  * /api/v1 route before any router), so this suite simulates that by
  * mounting the captured mock middleware ahead of `itilRoutes`, mirroring
- * production. Reads only need to be authenticated; POST/PUT/PATCH/DELETE
- * mutations additionally require the 'write' permission
+ * production. Reads only need to be authenticated, except the CI history read,
+ * which also requires an organization claim; POST/PUT/PATCH/DELETE mutations
+ * additionally require the 'write' permission
  * (`authMiddleware.requirePermission('write')`).
  */
 
@@ -16,7 +17,7 @@ import request from 'supertest';
 import { jest, describe, it, expect, beforeEach } from '@jest/globals';
 import { ROLE_PERMISSIONS, type Permission, type UserRole } from '../../../auth/types';
 
-type ReqWithUser = Request & { user?: { _userId?: string; _role?: UserRole } };
+type ReqWithUser = Request & { user?: { _userId?: string; _role?: UserRole; _organizationId?: string } };
 
 const mockRouteHandler = jest.fn((req: Request, res: Response) => {
   res.status(200).json({ actor: (req as ReqWithUser).user?._userId });
@@ -34,7 +35,17 @@ const mockAuthenticate = jest.fn(() => (req: Request, res: Response, next: () =>
     res.status(401).json({ error: 'Unauthorized' });
     return;
   }
-  (req as ReqWithUser).user = { _userId: 'route-user', _role: role };
+  (req as ReqWithUser).user = { _userId: 'route-user', _role: role, _organizationId: '11111111-1111-4111-8111-111111111111' };
+  next();
+});
+
+// The change-history route also requires an organization claim (route-level
+// `authMiddleware.requireOrganization()`); every mock token carries one.
+const mockRequireOrganization = jest.fn(() => (req: Request, res: Response, next: () => void) => {
+  if (!(req as ReqWithUser).user?._organizationId) {
+    res.status(403).json({ error: 'Forbidden' });
+    return;
+  }
   next();
 });
 
@@ -57,6 +68,7 @@ jest.mock('../../../auth/auth-bootstrap', () => ({
   getAuthMiddleware: jest.fn(() => ({
     authenticate: mockAuthenticate,
     requirePermission: mockRequirePermission,
+    requireOrganization: mockRequireOrganization,
   })),
 }));
 

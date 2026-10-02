@@ -17,7 +17,7 @@ import request from 'supertest';
 import { jest, describe, it, expect, beforeEach } from '@jest/globals';
 import type { UserRole } from '../../../auth/types';
 
-type ReqWithUser = Request & { user?: { _userId?: string; _role?: UserRole } };
+type ReqWithUser = Request & { user?: { _userId?: string; _role?: UserRole; _organizationId?: string } };
 
 const mockRouteHandler = jest.fn((req: Request, res: Response) => {
   res.status(200).json({ actor: (req as ReqWithUser).user?._userId });
@@ -34,12 +34,25 @@ const mockAuthenticate = jest.fn(() => (req: Request, res: Response, next: () =>
     res.status(401).json({ error: 'Unauthorized' });
     return;
   }
-  (req as ReqWithUser).user = { _userId: 'route-user', _role: role };
+  (req as ReqWithUser).user = { _userId: 'route-user', _role: role, _organizationId: '11111111-1111-4111-8111-111111111111' };
+  next();
+});
+
+// The change-history route also requires an organization claim (route-level
+// `authMiddleware.requireOrganization()`); every mock token carries one.
+const mockRequireOrganization = jest.fn(() => (req: Request, res: Response, next: () => void) => {
+  if (!(req as ReqWithUser).user?._organizationId) {
+    res.status(403).json({ error: 'Forbidden' });
+    return;
+  }
   next();
 });
 
 jest.mock('../../../auth/auth-bootstrap', () => ({
-  getAuthMiddleware: jest.fn(() => ({ authenticate: mockAuthenticate })),
+  getAuthMiddleware: jest.fn(() => ({
+    authenticate: mockAuthenticate,
+    requireOrganization: mockRequireOrganization,
+  })),
 }));
 
 jest.mock('../../controllers/analytics.controller', () => ({

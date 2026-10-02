@@ -13,15 +13,30 @@ import { MatchResult, ReconciliationConfig } from '../types/reconciliation.types
 import * as fuzzball from 'fuzzball';
 import { getEventProducer } from '@cmdb/event-processor';
 import { EventType } from '@cmdb/event-processor';
+import type { CIDiscoveredEvent, CIUpdatedEvent } from '@cmdb/event-processor';
 
 /**
- * A CI's organization_id is written only from the caller's token organization
- * (or the backfill), never from reconciled data. Drops that key from a property
- * map that would otherwise be SET onto a :CI node.
+ * Keys a reconciled property map never writes onto a :CI node. organization_id
+ * is written only from the caller's organization (or the backfill), never from
+ * reconciled data. id is assigned by the engine: it is the CI's identity in
+ * Neo4j and the key of the Postgres lineage/field-source rows, so reconciled
+ * data must not rename a CI onto another CI's id.
  */
-function withoutOrganizationId<T extends Record<string, unknown>>(properties: T): Omit<T, 'organization_id'> {
-  const { organization_id: _ignored, ...rest } = properties;
+function withoutReservedKeys<T extends Record<string, unknown>>(properties: T): Omit<T, 'organization_id' | 'id'> {
+  const { organization_id: _organizationId, id: _id, ...rest } = properties;
   return rest;
+}
+
+/**
+ * The caller's organization, required by every match, create and merge.
+ * Reconciliation has no unscoped mode: without an organization it neither
+ * matches nor writes any CI.
+ */
+function requireOrganizationId(organizationId: string): string {
+  if (typeof organizationId !== 'string' || organizationId.length === 0) {
+    throw new Error('Reconciliation requires the caller organization id');
+  }
+  return organizationId;
 }
 
 export class IdentityReconciliationEngine {
@@ -88,15 +103,21 @@ export class IdentityReconciliationEngine {
   }
 
   /**
-   * Find existing CI using cascading match strategies
+   * Find an existing CI of the organization using cascading match strategies.
+   * Every strategy only considers :CI nodes whose organization_id equals
+   * `organizationId`; a CI of another organization is never a match, even
+   * with identical identifiers.
    */
   async findExistingCI(
     identifiers: IdentificationAttributes,
-    discoveredCI: TransformedCI
+    discoveredCI: TransformedCI,
+    organizationId: string
   ): Promise<MatchResult | null> {
+    requireOrganizationId(organizationId);
+
     // Strategy 1: Exact external_id match (100% confidence)
     if (identifiers.external_id) {
-      const match = await this.findByExternalId(identifiers.external_id, discoveredCI.source);
+      const match = await this.findByExternalId(identifiers.external_id, discoveredCI.source, organizationId);
       if (match) {
         return {
           ci_id: match.ci_id,
@@ -109,7 +130,7 @@ export class IdentityReconciliationEngine {
 
     // Strategy 2: Serial number match (95% confidence)
     if (identifiers.serial_number) {
-      const match = await this.findByAttribute('serial_number', identifiers.serial_number);
+      const match = await this.findByAttribute('serial_number', identifiers.serial_number, organizationId);
       if (match) {
         return {
           ci_id: match,
@@ -122,7 +143,7 @@ export class IdentityReconciliationEngine {
 
     // Strategy 3: UUID match (95% confidence)
     if (identifiers.uuid) {
-      const match = await this.findByAttribute('uuid', identifiers.uuid);
+      const match = await this.findByAttribute('uuid', identifiers.uuid, organizationId);
       if (match) {
         return {
           ci_id: match,
@@ -135,7 +156,7 @@ export class IdentityReconciliationEngine {
 
     // Strategy 4: MAC address match (85% confidence)
     if (identifiers.mac_address && identifiers.mac_address.length > 0) {
-      const match = await this.findByMacAddress(identifiers.mac_address);
+      const match = await this.findByMacAddress(identifiers.mac_address, organizationId);
       if (match) {
         return {
           ci_id: match,
@@ -148,7 +169,7 @@ export class IdentityReconciliationEngine {
 
     // Strategy 5: FQDN match (80% confidence)
     if (identifiers.fqdn) {
-      const match = await this.findByAttribute('fqdn', identifiers.fqdn);
+      const match = await this.findByAttribute('fqdn', identifiers.fqdn, organizationId);
       if (match) {
         return {
           ci_id: match,
@@ -161,7 +182,7 @@ export class IdentityReconciliationEngine {
 
     // Strategy 6: Composite fuzzy match (65% confidence)
     if (identifiers.hostname && identifiers.ip_address) {
-      const match = await this.findByComposite(identifiers);
+      const match = await this.findByComposite(identifiers, organizationId);
       if (match) {
         return {
           ci_id: match.ci_id,
@@ -177,32 +198,65 @@ export class IdentityReconciliationEngine {
   }
 
   /**
-   * Find CI by external_id from specific source
+   * Find CI by external_id from specific source. ci_source_lineage has no
+   * organization column, so its candidates are kept only when the CI they name
+   * is in the organization (most recently seen first).
    */
-  private async findByExternalId(externalId: string, source: string): Promise<{ ci_id: string } | null> {
+  private async findByExternalId(
+    externalId: string,
+    source: string,
+    organizationId: string
+  ): Promise<{ ci_id: string } | null> {
     const result = await this.postgresClient.query(
       `SELECT ci_id FROM ci_source_lineage
        WHERE source_name = $1 AND source_id = $2
-       ORDER BY last_seen_at DESC LIMIT 1`,
+       ORDER BY last_seen_at DESC`,
       [source, externalId]
     );
 
-    return result.rows.length > 0 ? { ci_id: result.rows[0].ci_id } : null;
+    const candidates: string[] = result.rows.map((row: { ci_id: string }) => row.ci_id);
+    const owned = await this.organizationCIIds(candidates, organizationId);
+    return owned.length > 0 ? { ci_id: owned[0]! } : null;
   }
 
   /**
-   * Find CI by single attribute in Neo4j
+   * The ids, among `ciIds`, of :CI nodes in the organization, in `ciIds` order.
+   * Ids of another organization's CI, of an org-less CI and of no CI are dropped.
    */
-  private async findByAttribute(attributeName: string, value: any): Promise<string | null> {
+  async organizationCIIds(ciIds: string[], organizationId: string): Promise<string[]> {
+    requireOrganizationId(organizationId);
+    if (ciIds.length === 0) {
+      return [];
+    }
+
+    const session = this.neo4jClient.getSession();
+    try {
+      const result = await session.run(
+        `MATCH (ci:CI)
+         WHERE ci.organization_id = $organizationId AND ci.id IN $ciIds
+         RETURN ci.id AS ci_id`,
+        { organizationId, ciIds }
+      );
+      const owned = new Set(result.records.map(record => record.get('ci_id') as string));
+      return ciIds.filter(id => owned.has(id));
+    } finally {
+      await session.close();
+    }
+  }
+
+  /**
+   * Find CI of the organization by single attribute in Neo4j
+   */
+  private async findByAttribute(attributeName: string, value: any, organizationId: string): Promise<string | null> {
     const session = this.neo4jClient.getSession();
 
     try {
       const result = await session.run(
         `MATCH (ci:CI)
-         WHERE ci.${attributeName} = $value
+         WHERE ci.organization_id = $organizationId AND ci.${attributeName} = $value
          RETURN ci.id as ci_id
          LIMIT 1`,
-        { value }
+        { value, organizationId }
       );
 
       const firstRecord = result.records[0];
@@ -217,18 +271,19 @@ export class IdentityReconciliationEngine {
   }
 
   /**
-   * Find CI by MAC address array
+   * Find CI of the organization by MAC address array
    */
-  private async findByMacAddress(macAddresses: string[]): Promise<string | null> {
+  private async findByMacAddress(macAddresses: string[], organizationId: string): Promise<string | null> {
     const session = this.neo4jClient.getSession();
 
     try {
       const result = await session.run(
         `MATCH (ci:CI)
-         WHERE ANY(mac IN ci.mac_addresses WHERE mac IN $macs)
+         WHERE ci.organization_id = $organizationId
+           AND ANY(mac IN ci.mac_addresses WHERE mac IN $macs)
          RETURN ci.id as ci_id
          LIMIT 1`,
-        { macs: macAddresses }
+        { macs: macAddresses, organizationId }
       );
 
       const firstRecord = result.records[0];
@@ -243,22 +298,27 @@ export class IdentityReconciliationEngine {
   }
 
   /**
-   * Find CI by composite fuzzy matching
+   * Find CI of the organization by composite fuzzy matching
    */
-  private async findByComposite(identifiers: IdentificationAttributes): Promise<MatchResult | null> {
+  private async findByComposite(
+    identifiers: IdentificationAttributes,
+    organizationId: string
+  ): Promise<MatchResult | null> {
     const session = this.neo4jClient.getSession();
 
     try {
-      // Find candidates by IP address or hostname
+      // Find candidates of the organization by IP address or hostname
       const result = await session.run(
         `MATCH (ci:CI)
-         WHERE ci.hostname CONTAINS $hostname
-            OR ANY(ip IN ci.ip_addresses WHERE ip IN $ips)
+         WHERE ci.organization_id = $organizationId
+           AND (ci.hostname CONTAINS $hostname
+                OR ANY(ip IN ci.ip_addresses WHERE ip IN $ips))
          RETURN ci.id as ci_id, ci.hostname as hostname, ci.ip_addresses as ips
          LIMIT 10`,
         {
           hostname: identifiers.hostname?.toLowerCase() || '',
-          ips: identifiers.ip_address || []
+          ips: identifiers.ip_address || [],
+          organizationId
         }
       );
 
@@ -312,13 +372,16 @@ export class IdentityReconciliationEngine {
   }
 
   /**
-   * Create or update CI with reconciliation
+   * Create or update a CI of the organization with reconciliation. Matches
+   * only CIs of `organizationId`, merges only into a CI of `organizationId`,
+   * and stamps `organizationId` on a CI it creates.
    */
-  async reconcileCI(discoveredCI: TransformedCI): Promise<string> {
+  async reconcileCI(discoveredCI: TransformedCI, organizationId: string): Promise<string> {
+    requireOrganizationId(organizationId);
     const identifiers = discoveredCI.identifiers;
 
     // Find existing CI
-    const match = await this.findExistingCI(identifiers, discoveredCI);
+    const match = await this.findExistingCI(identifiers, discoveredCI, organizationId);
 
     if (match) {
       logger.info('Existing CI found, updating', {
@@ -327,20 +390,22 @@ export class IdentityReconciliationEngine {
         strategy: match.match_strategy
       });
 
-      await this.updateExistingCI(match.ci_id, discoveredCI, match);
+      const written = await this.updateExistingCI(match.ci_id, discoveredCI, match, organizationId);
 
-      // Emit CI updated event
-      await this.eventProducer.emit(
+      // The event reports what was written: never the stripped id/organization_id
+      // or fields that lost on source authority.
+      await this.eventProducer.emit<CIUpdatedEvent>(
         EventType.CI_UPDATED,
         'identity-reconciliation-engine',
         {
           ci_id: match.ci_id,
           ci_name: discoveredCI.name,
-          changed_fields: Object.keys(discoveredCI.attributes),
+          changed_fields: Object.keys(written),
           previous_values: {},
-          new_values: discoveredCI.attributes,
+          new_values: written,
           source_system: discoveredCI.source,
-        } as any
+          organization_id: organizationId,
+        }
       );
 
       return match.ci_id;
@@ -350,69 +415,86 @@ export class IdentityReconciliationEngine {
         source: discoveredCI.source
       });
 
-      const ciId = await this.createNewCI(discoveredCI);
+      const created = await this.createNewCI(discoveredCI, organizationId);
 
-      // Emit CI discovered event
-      await this.eventProducer.emit(
+      // Built from the persisted property map, like the CI_UPDATED event.
+      await this.eventProducer.emit<CIDiscoveredEvent>(
         EventType.CI_DISCOVERED,
         'identity-reconciliation-engine',
         {
-          ci_id: ciId,
-          ci_name: discoveredCI.name,
-          ci_type: discoveredCI.ci_type,
+          ci_id: created.ciId,
+          ci_name: created.properties['name'] as string,
+          ci_type: created.properties['ci_type'] as string,
           source_system: discoveredCI.source,
           confidence_score: discoveredCI.confidence_score,
-          identifiers: discoveredCI.identifiers,
-        } as any
+          identifiers: Object.fromEntries(
+            Object.keys(withoutReservedKeys({ ...discoveredCI.identifiers })).map(key => [key, created.properties[key]])
+          ),
+          organization_id: organizationId,
+        }
       );
 
-      return ciId;
+      return created.ciId;
     }
   }
 
   /**
-   * Create new CI in Neo4j
+   * Create new CI of the organization in Neo4j. Returns its id and the
+   * property map that was persisted.
    */
-  private async createNewCI(ci: TransformedCI): Promise<string> {
+  private async createNewCI(
+    ci: TransformedCI,
+    organizationId: string
+  ): Promise<{ ciId: string; properties: Record<string, unknown> }> {
     const session = this.neo4jClient.getSession();
 
     try {
       const ciId = this.generateCIId();
 
-      // Reconciliation is an unscoped writer: a CI it creates has no organization.
-      const result = await session.run(
+      // id and organization_id come only from the engine and the caller's organization.
+      const properties: Record<string, unknown> = {
+        ...withoutReservedKeys({
+          name: ci.name,
+          ci_type: ci.ci_type,
+          environment: ci.environment,
+          status: ci.status || 'active',
+          ...ci.attributes,
+          ...ci.identifiers,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        }),
+        id: ciId,
+        organization_id: organizationId,
+      };
+      await session.run(
         `CREATE (ci:CI:${sanitizeCITypeForLabel(ci.ci_type)})
          SET ci = $properties
          RETURN ci.id as ci_id`,
-        {
-          properties: withoutOrganizationId({
-            id: ciId,
-            name: ci.name,
-            ci_type: ci.ci_type,
-            environment: ci.environment,
-            status: ci.status || 'active',
-            ...ci.attributes,
-            ...ci.identifiers,
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-          }),
-        }
+        { properties }
       );
 
       // Record source lineage
       await this.recordSourceLineage(ciId, ci.source, ci.source_id, ci.confidence_score);
 
       logger.info('New CI created', { ci_id: ciId, name: ci.name });
-      return result.records[0]?.get('ci_id') || ciId;
+      return { ciId, properties };
     } finally {
       await session.close();
     }
   }
 
   /**
-   * Update existing CI with new data
+   * Update an existing CI of the organization with new data and return the
+   * fields written. The Neo4j write only matches a CI whose organization_id
+   * equals `organizationId`; when it matches nothing, no field source or
+   * lineage is recorded and the merge fails.
    */
-  private async updateExistingCI(ciId: string, ci: TransformedCI, match: MatchResult): Promise<void> {
+  private async updateExistingCI(
+    ciId: string,
+    ci: TransformedCI,
+    match: MatchResult,
+    organizationId: string
+  ): Promise<Record<string, unknown>> {
     // Get source authority
     const sourceAuthority = this.config?.source_authorities[ci.source] || 5;
 
@@ -423,41 +505,51 @@ export class IdentityReconciliationEngine {
     const session = this.neo4jClient.getSession();
 
     try {
-      await session.run(
+      const result = await session.run(
         `MATCH (ci:CI {id: $ciId})
+         WHERE ci.organization_id = $organizationId
          SET ci += $properties, ci.updated_at = datetime()
-         RETURN ci`,
+         RETURN ci.id AS ci_id`,
         {
           ciId,
+          organizationId,
           properties: mergedData
         }
       );
 
-      // Update source lineage
-      await this.recordSourceLineage(ciId, ci.source, ci.source_id, match.confidence);
-
-      logger.info('CI updated', { ci_id: ciId, source: ci.source });
+      if (result.records.length === 0) {
+        throw new Error('Matched CI is not in the caller organization');
+      }
     } finally {
       await session.close();
     }
+
+    // Record field sources and lineage only after the scoped write succeeded.
+    for (const field of Object.keys(mergedData)) {
+      await this.recordFieldSource(ciId, field, mergedData[field], ci.source);
+    }
+    await this.recordSourceLineage(ciId, ci.source, ci.source_id, match.confidence);
+
+    logger.info('CI updated', { ci_id: ciId, source: ci.source });
+    return mergedData;
   }
 
   /**
-   * Merge fields with conflict resolution
+   * Merge fields with conflict resolution. Returns the fields the new source
+   * wins; records nothing.
    */
-  private async mergeFields(ciId: string, newCI: TransformedCI, sourceAuthority: number): Promise<any> {
+  private async mergeFields(ciId: string, newCI: TransformedCI, sourceAuthority: number): Promise<Record<string, unknown>> {
     // Get existing field sources
     const existingFields = await this.getFieldSources(ciId);
-    const mergedData: any = {};
+    const mergedData: Record<string, unknown> = {};
 
-    // A merge never sets or changes the CI's organization (SET ci += $properties).
-    for (const [field, value] of Object.entries(withoutOrganizationId(newCI.attributes))) {
+    // A merge never sets or changes the CI's organization or id (SET ci += $properties).
+    for (const [field, value] of Object.entries(withoutReservedKeys(newCI.attributes))) {
       const existing = existingFields.get(field);
 
       if (!existing) {
         // New field, just add it
         mergedData[field] = value;
-        await this.recordFieldSource(ciId, field, value, newCI.source);
       } else {
         // Field exists, check authority
         const existingAuthority = this.config?.source_authorities[existing.source_name] || 5;
@@ -465,7 +557,6 @@ export class IdentityReconciliationEngine {
         if (sourceAuthority >= existingAuthority) {
           // New source has higher or equal authority
           mergedData[field] = value;
-          await this.recordFieldSource(ciId, field, value, newCI.source);
         }
         // Otherwise keep existing value
       }

@@ -12,16 +12,39 @@ import { getPostgresClient } from '@cmdb/database';
 import { TransformedCI, IdentificationAttributes } from '@cmdb/integration-framework';
 import { GraphQLContext } from './index';
 import { checkGraphQLPermission } from '../../middleware/auth.middleware';
+import { requireGraphQLOrganization } from '../require-organization';
+import {
+  ciInOrganization,
+  findOrganizationConflict,
+  listOrganizationConflicts,
+} from '../../services/reconciliation-scope';
 
 const reconciliationEngine = getIdentityReconciliationEngine();
 const postgresClient = getPostgresClient();
+
+/**
+ * mergeCI fails closed: GraphQL has no reconciliation tenant scoping, and the
+ * organization-scoped REST /api/v1/reconciliation/merge is the only merge path.
+ */
+function reconciliationMergePending(): GraphQLError {
+  return new GraphQLError('Reconciliation tenant scoping for GraphQL mergeCI is pending', {
+    extensions: { code: 'FORBIDDEN', http: { status: 403 } },
+  });
+}
+
+/** Same NOT_FOUND for a CI that is missing or belongs to another organization. */
+function ciNotFound(): GraphQLError {
+  return new GraphQLError('CI not found', {
+    extensions: { code: 'NOT_FOUND' },
+  });
+}
 
 /**
  * Reconciliation Query Resolvers
  */
 const ReconciliationQuery = {
   /**
-   * Find matching CIs based on identification attributes
+   * Find matching CIs of the caller's organization based on identification attributes
    */
   findMatches: async (
     _parent: any,
@@ -31,6 +54,7 @@ const ReconciliationQuery = {
     },
     _context: GraphQLContext
   ) => {
+    const organizationId = requireGraphQLOrganization(_context);
     try {
       const { _identifiers, _source } = _args;
 
@@ -58,7 +82,7 @@ const ReconciliationQuery = {
         status: 'active'
       };
 
-      const match = await reconciliationEngine.findExistingCI(idAttributes, discoveredCI);
+      const match = await reconciliationEngine.findExistingCI(idAttributes, discoveredCI, organizationId);
 
       if (!match) {
         return null;
@@ -82,7 +106,7 @@ const ReconciliationQuery = {
   },
 
   /**
-   * List reconciliation conflicts
+   * List reconciliation conflicts of the caller's organization's CIs
    */
   listConflicts: async (
     _parent: any,
@@ -90,24 +114,18 @@ const ReconciliationQuery = {
       _status?: string;
       _limit?: number;
       _offset?: number;
-    }
+    },
+    _context: GraphQLContext
   ) => {
+    const organizationId = requireGraphQLOrganization(_context);
     try {
       const status = _args._status || 'pending';
       const limit = Math.min(_args._limit || 100, 1000);
       const offset = _args._offset || 0;
 
-      const result = await postgresClient.query(
-        `SELECT id, ci_id, conflict_type, source_data, target_data,
-                conflicting_fields, status, created_at
-         FROM reconciliation_conflicts
-         WHERE status = $1
-         ORDER BY created_at DESC
-         LIMIT $2 OFFSET $3`,
-        [status, limit, offset]
-      );
+      const { rows } = await listOrganizationConflicts(organizationId, status, limit, offset);
 
-      return result.rows.map(row => ({
+      return rows.map(row => ({
         _id: row.id,
         _ciId: row.ci_id,
         _conflictType: row.conflict_type.toUpperCase(),
@@ -129,9 +147,11 @@ const ReconciliationQuery = {
   },
 
   /**
-   * Get reconciliation rules
+   * Get reconciliation rules (global configuration; admin only)
    */
-  getRules: async () => {
+  getRules: async (_parent: unknown, _args: unknown, _context: GraphQLContext) => {
+    checkGraphQLPermission(_context, 'admin');
+    requireGraphQLOrganization(_context);
     try {
       const result = await postgresClient.query(
         `SELECT id, name, identification_rules, merge_strategies,
@@ -171,9 +191,11 @@ const ReconciliationQuery = {
   },
 
   /**
-   * Get source authorities
+   * Get source authorities (global configuration; admin only)
    */
-  getSourceAuthorities: async () => {
+  getSourceAuthorities: async (_parent: unknown, _args: unknown, _context: GraphQLContext) => {
+    checkGraphQLPermission(_context, 'admin');
+    requireGraphQLOrganization(_context);
     try {
       const result = await postgresClient.query(
         `SELECT source_name, authority_score, description
@@ -202,9 +224,16 @@ const ReconciliationQuery = {
    */
   getCILineage: async (
     _parent: any,
-    _args: { _ciId: string }
+    _args: { _ciId: string },
+    _context: GraphQLContext
   ) => {
+    const organizationId = requireGraphQLOrganization(_context);
     try {
+      // ci_source_lineage has no organization column: served only for a CI of the caller's organization.
+      if (!(await ciInOrganization(organizationId, _args._ciId))) {
+        throw ciNotFound();
+      }
+
       const result = await postgresClient.query(
         `SELECT source_name, source_id, confidence_score,
                 first_seen_at, last_seen_at
@@ -225,6 +254,9 @@ const ReconciliationQuery = {
         }))
       };
     } catch (error: any) {
+      if (error instanceof GraphQLError) {
+        throw error;
+      }
       logger.error('GraphQL: Error getting CI lineage', error);
       throw new GraphQLError('Failed to get CI lineage', {
         extensions: {
@@ -240,9 +272,16 @@ const ReconciliationQuery = {
    */
   getCIFieldSources: async (
     _parent: any,
-    _args: { _ciId: string }
+    _args: { _ciId: string },
+    _context: GraphQLContext
   ) => {
+    const organizationId = requireGraphQLOrganization(_context);
     try {
+      // ci_field_sources has no organization column: served only for a CI of the caller's organization.
+      if (!(await ciInOrganization(organizationId, _args._ciId))) {
+        throw ciNotFound();
+      }
+
       const result = await postgresClient.query(
         `SELECT field_name, field_value, source_name, updated_at
          FROM ci_field_sources
@@ -261,6 +300,9 @@ const ReconciliationQuery = {
         }))
       };
     } catch (error: any) {
+      if (error instanceof GraphQLError) {
+        throw error;
+      }
       logger.error('GraphQL: Error getting CI field sources', error);
       throw new GraphQLError('Failed to get CI field sources', {
         extensions: {
@@ -277,65 +319,16 @@ const ReconciliationQuery = {
  */
 const ReconciliationMutation = {
   /**
-   * Merge/reconcile a discovered CI into CMDB
+   * Merge/reconcile a discovered CI into CMDB. Fails closed (FORBIDDEN) before
+   * any engine or database access; use REST /api/v1/reconciliation/merge.
    */
   mergeCI: async (
-    _parent: any,
-    _args: {
-      _name: string;
-      _ciType: string;
-      _source: string;
-      _sourceId: string;
-      _identifiers: any;
-      _attributes?: any;
-      _confidenceScore?: number;
-      _environment?: string;
-      _status?: string;
-    },
+    _parent: unknown,
+    _args: unknown,
     _context: GraphQLContext
-  ) => {
+  ): Promise<never> => {
     checkGraphQLPermission(_context, 'write');
-    try {
-      // Transform GraphQL input to TransformedCI
-      const discoveredCI: TransformedCI = {
-        name: _args._name,
-        ci_type: _args._ciType,
-        source: _args._source,
-        source_id: _args._sourceId,
-        identifiers: {
-          external_id: _args._identifiers._externalId,
-          serial_number: _args._identifiers._serialNumber,
-          uuid: _args._identifiers._uuid,
-          mac_address: _args._identifiers._macAddress,
-          fqdn: _args._identifiers._fqdn,
-          hostname: _args._identifiers._hostname,
-          ip_address: _args._identifiers._ipAddress
-        },
-        attributes: _args._attributes || {},
-        relationships: [],
-        confidence_score: _args._confidenceScore || 100,
-        environment: _args._environment,
-        status: _args._status || 'active'
-      };
-
-      const ciId = await reconciliationEngine.reconcileCI(discoveredCI);
-
-      return {
-        _success: true,
-        _ciId: ciId,
-        _action: ciId.includes('_') ? 'created' : 'updated',
-        _mergedFields: Object.keys(_args._attributes || {}),
-        _conflicts: []
-      };
-    } catch (error: any) {
-      logger.error('GraphQL: Error merging CI', error);
-      throw new GraphQLError('Failed to merge CI', {
-        extensions: {
-          code: 'INTERNAL_SERVER_ERROR',
-          originalError: error.message,
-        },
-      });
-    }
+    throw reconciliationMergePending();
   },
 
   /**
@@ -351,6 +344,7 @@ const ReconciliationMutation = {
     _context: GraphQLContext
   ) => {
     checkGraphQLPermission(_context, 'write');
+    const organizationId = requireGraphQLOrganization(_context);
     try {
       const resolution = _args._resolution.toLowerCase();
 
@@ -360,19 +354,13 @@ const ReconciliationMutation = {
         });
       }
 
-      // Get conflict details
-      const conflictResult = await postgresClient.query(
-        'SELECT * FROM reconciliation_conflicts WHERE id = $1',
-        [_args._id]
-      );
-
-      if (conflictResult.rows.length === 0) {
+      // A conflict of another organization's CI gets the same NOT_FOUND as a missing one.
+      const conflict = await findOrganizationConflict(organizationId, _args._id);
+      if (conflict === null) {
         throw new GraphQLError('Conflict not found', {
           extensions: { code: 'NOT_FOUND' }
         });
       }
-
-      const conflict = conflictResult.rows[0];
 
       // Update conflict status
       await postgresClient.query(
@@ -409,7 +397,7 @@ const ReconciliationMutation = {
   },
 
   /**
-   * Create a reconciliation rule
+   * Create a reconciliation rule (global configuration; admin only)
    */
   createRule: async (
     _parent: any,
@@ -423,7 +411,8 @@ const ReconciliationMutation = {
     },
     _context: GraphQLContext
   ) => {
-    checkGraphQLPermission(_context, 'write');
+    checkGraphQLPermission(_context, 'admin');
+    requireGraphQLOrganization(_context);
     try {
       const { _name, _identificationRules, _mergeStrategies, _enabled } = _args._input;
 
@@ -483,7 +472,7 @@ const ReconciliationMutation = {
   },
 
   /**
-   * Update source authority
+   * Update source authority (global configuration; admin only)
    */
   updateSourceAuthority: async (
     _parent: any,
@@ -496,7 +485,8 @@ const ReconciliationMutation = {
     },
     _context: GraphQLContext
   ) => {
-    checkGraphQLPermission(_context, 'write');
+    checkGraphQLPermission(_context, 'admin');
+    requireGraphQLOrganization(_context);
     try {
       const { _sourceName, _authorityScore, _description } = _args._input;
 

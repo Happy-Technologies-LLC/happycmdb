@@ -6,9 +6,11 @@ import Joi from 'joi';
 import { AnalyticsController } from '../controllers/analytics.controller';
 import { validateOptional, validateRequest } from '../middleware/validation.middleware';
 import { schemas } from '@cmdb/common';
+import { getAuthMiddleware } from '../../auth/auth-bootstrap';
 
 export const analyticsRoutes = Router();
 const controller = new AnalyticsController();
+const authMiddleware = getAuthMiddleware();
 
 // Validation schemas
 const dateRangeSchema = Joi.object({
@@ -74,9 +76,13 @@ analyticsRoutes.get(
 // Dependency depth statistics
 analyticsRoutes.get('/dependency-depth', controller.getDependencyDepthStats.bind(controller));
 
-// CI change history
+// CI change history. ci_change_history carries reconciliation CI_UPDATED values
+// and has no organization column: served only for a CI of the caller's
+// organization (403 without an org claim, before any query). Only this route
+// is tenant-scoped here; the rest of /analytics is not (FD-11).
 analyticsRoutes.get(
   '/change-history',
+  authMiddleware.requireOrganization(),
   validateOptional(changeHistorySchema, 'query'),
   controller.getChangeHistory.bind(controller)
 );

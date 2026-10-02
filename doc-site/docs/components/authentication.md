@@ -254,16 +254,18 @@ organization when a CI is created through `POST /api/v1/cis`.
 - `organization_id` in a create or update body is rejected with **400**.
 - CI ids (and `external_id`s) are unique across all organizations: creating a CI
   with an id another organization uses returns **409**, which reveals that the id exists.
-- CIs written by discovery, connectors, ETL and reconciliation carry no
-  `organization_id` and are invisible to every organization through `/api/v1/cis` and
-  `/api/v1/dashboards`.
+- CIs written by discovery, connectors and ETL carry no `organization_id` and are
+  invisible to every organization through `/api/v1/cis` and `/api/v1/dashboards`.
+  CIs created by `/api/v1/reconciliation/merge` carry the caller's organization (see
+  below).
 - No writer copies `organization_id` from request or stored data onto a CI: the
-  reconciliation merge and create (`/api/v1/reconciliation/merge`, GraphQL
-  `_reconciliation { mergeCI }`) drop it from `attributes`/`identifiers`, and an ITIL
-  baseline restore skips it. A merge or restore never changes a CI's organization.
+  reconciliation merge and create drop it (and `id`) from `attributes`/`identifiers`,
+  and an ITIL baseline restore skips it. A merge or restore never changes a CI's
+  organization.
 - GraphQL `createCI`, `updateCI` and `deleteCI` return `FORBIDDEN` until GraphQL CI
   tenant scoping lands.
-- **Not yet tenant-scoped.** Only `/api/v1/cis/**` and `/api/v1/dashboards/**` are scoped. Until the GraphQL slice
+- **Not yet tenant-scoped.** Only `/api/v1/cis/**`, `/api/v1/dashboards/**` and
+  `/api/v1/reconciliation/**` (below) are scoped. Until the GraphQL slice
   (T3c) and the later slices land, every other route and GraphQL resolver that touches
   CIs can still read other tenants' CIs, and some can modify or delete them:
   - GraphQL CI queries (`getCI(s)`, `searchCIs`, relationships, dependencies, impact)
@@ -272,10 +274,6 @@ organization when a CI is created through `POST /api/v1/cis`.
   - ITIL writes to CI properties by id: `/api/v1/itil/configuration-items/:id/lifecycle`,
     `/:id/status`, `/:id/audit` and `/:id/audit/complete`, plus
     `/api/v1/itil/baselines/:id/restore`;
-  - `/api/v1/reconciliation/match` and `/merge`, and GraphQL `_reconciliation { mergeCI }`:
-    matching runs across all organizations, and merge overwrites the matched CI's
-    attributes even when it belongs to another organization (but not its
-    `organization_id`);
   - `/api/v1/search/*`;
   - `/api/v1/drift` and `/api/v1/impact`, which look CIs up without an organization filter;
   - analytics and TBM CI reads, which return individual CIs as well as aggregates.
@@ -288,6 +286,71 @@ organization when a CI is created through `POST /api/v1/cis`.
 ```bash
 cypher-shell -a bolt://<host>:7687 -u <user> -f packages/database/src/neo4j/migrations/001_ci_organization_backfill.cypher
 ```
+
+### Identity reconciliation (`/api/v1/reconciliation`)
+
+- Every `/api/v1/reconciliation/**` route returns **403**
+  `{"_error":"Forbidden","_message":"Organization claim required"}` without an
+  organization claim, before any PostgreSQL or Neo4j query. The organization always
+  comes from the token, never from the body.
+- `/match` and `/merge` only consider CIs of the caller's organization for every
+  match strategy (`external_id` via `ci_source_lineage`, serial number, UUID, MAC,
+  FQDN, hostname + IP). Another organization's CI is never returned or written, even
+  with identical identifiers: the merge then creates a new CI in the caller's
+  organization, stamped with its `organization_id`.
+- **Limitation:** the Neo4j constraints `ci_id_unique` and `ci_external_id_unique` are
+  global, not per organization. When the new CI would carry an `external_id` that
+  another CI already stores, `/merge` returns **409**
+  `{"success":false,"error":"Conflict","message":"A CI with these identifiers already exists"}`
+  and writes nothing. That other CI may belong to another organization or have no
+  organization at all. Org-less CIs include those reconciled before this change and
+  CIs created by the ETL jobs. The 409 reveals that the `external_id` exists somewhere
+  (as `POST /api/v1/cis` does), and the first CI to store an `external_id` keeps it.
+  A tenant cannot merge into an org-less CI until that CI is assigned to the tenant's
+  organization. The backfill assigns org-less CIs only to the internal organization.
+  Other `/merge` and `/match` failures return a constant **500** without the driver
+  message.
+- Rows of a deleted CI stay in `ci_source_lineage`, `ci_field_sources` and
+  `reconciliation_conflicts`. If another organization later creates a CI with the same
+  client-chosen id (`POST /api/v1/cis`), it sees those rows.
+- `reconciliation_conflicts`, `ci_source_lineage` and `ci_field_sources` have no
+  organization column; a row belongs to the organization of the CI its `ci_id` names.
+  `/conflicts` lists only conflicts of the caller's CIs, and a conflict of another
+  organization's CI, a missing or a malformed id returns the same **404**
+  (`{"success":false,"error":"Not Found","message":"Conflict not found"}`).
+  `/lineage/:ci_id` and `/field-sources/:ci_id` return the CI **404** body
+  (`"message":"CI not found"`) for another organization's or a missing CI. Rows
+  whose `ci_id` names no CI of any organization (including org-less CIs) are not
+  served to anyone.
+- Rules and source authorities (`/rules`, `/source-authorities`) are global engine
+  configuration with no organization model: reading and changing them requires the
+  `admin` permission.
+- GraphQL `_reconciliation { mergeCI }` returns `FORBIDDEN`; the other
+  `_reconciliation` operations require an organization claim (`FORBIDDEN` without)
+  and follow the same rules.
+- The engine has no unscoped mode: every match and merge takes the caller's
+  organization, and no internal job (discovery, ETL) calls it.
+- The `ci.discovered` and `ci.updated` events emitted by a merge carry the caller's
+  `organization_id` and report only what was written. They never include the request's
+  `id` or `organization_id`, or fields that lost on source authority. The same holds for
+  the `ci_change_history` rows the change processor records from them.
+- `ci_change_history` has no organization column. Its two per-CI REST readers serve
+  history only for a CI that currently exists in the caller's organization:
+  - `GET /api/v1/analytics/change-history?ci_id=` and
+    `GET /api/v1/itil/configuration-items/:id/history` return **403**
+    (`Organization claim required`) without an organization claim, before any query.
+  - A CI of another organization, a CI with no organization (written by discovery,
+    connectors or ETL) and a missing CI all get the same **404**
+    (`{"success":false,"error":"Not Found","message":"CI not found"}`). Their history
+    is not read.
+  - **Limitation:** history rows are keyed only by CI id and are never deleted. If a CI
+    is deleted and another organization later creates a CI with the same
+    client-chosen id (`POST /api/v1/cis`), that organization sees the earlier rows.
+    This is the same gap as for the reconciliation tables above.
+  - Only these two routes are scoped. The rest of `/api/v1/analytics` (including the
+    all-organization counts of `/change-timeline`) and of `/api/v1/itil` is unchanged.
+    GraphQL `getChangeHistory` selects columns this table does not have, so it fails
+    with `INTERNAL_SERVER_ERROR` and returns no rows.
 
 ### Tenant fixture seed (acceptance testing, scratch databases only)
 

@@ -161,8 +161,13 @@ itilRoutes.patch(
   controller.updateConfigurationStatus.bind(controller)
 );
 
+// ci_change_history carries reconciliation CI_UPDATED values and has no
+// organization column: served only for a CI of the caller's organization (403
+// without an org claim, before any query). Only this ITIL route is tenant-scoped
+// here; the others are not (FD-11).
 itilRoutes.get(
   '/configuration-items/:id/history',
+  authMiddleware.requireOrganization(),
   controller.getCIHistory.bind(controller)
 );
 

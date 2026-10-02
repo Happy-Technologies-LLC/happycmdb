@@ -283,7 +283,7 @@ export const reconciliationTypeDefs = `
   Reconciliation query operations
   """
   type ReconciliationQuery {
-    """Find matching CIs based on identification attributes"""
+    """Find a matching CI of the caller's organization (FORBIDDEN without an organization claim)"""
     findMatches(
       """Identification attributes"""
       _identifiers: IdentificationAttributesInput!
@@ -291,7 +291,7 @@ export const reconciliationTypeDefs = `
       _source: String
     ): MatchResult
 
-    """List reconciliation conflicts"""
+    """List reconciliation conflicts whose CI is in the caller's organization"""
     listConflicts(
       """Filter by status"""
       _status: ConflictStatus
@@ -301,19 +301,19 @@ export const reconciliationTypeDefs = `
       _offset: Int
     ): [ReconciliationConflict!]!
 
-    """Get reconciliation rules"""
+    """Get reconciliation rules (global configuration; admin only)"""
     getRules: [ReconciliationRule!]!
 
-    """Get source authorities"""
+    """Get source authorities (global configuration; admin only)"""
     getSourceAuthorities: [SourceAuthority!]!
 
-    """Get CI source lineage"""
+    """Get source lineage of a CI of the caller's organization (NOT_FOUND otherwise)"""
     getCILineage(
       """CI ID"""
       _ciId: ID!
     ): CILineage
 
-    """Get CI field sources"""
+    """Get field sources of a CI of the caller's organization (NOT_FOUND otherwise)"""
     getCIFieldSources(
       """CI ID"""
       _ciId: ID!
@@ -324,7 +324,10 @@ export const reconciliationTypeDefs = `
   Reconciliation mutation operations
   """
   type ReconciliationMutation {
-    """Merge/reconcile a discovered CI into CMDB"""
+    """
+    Merge/reconcile a discovered CI into CMDB. Currently returns FORBIDDEN:
+    use the organization-scoped REST POST /api/v1/reconciliation/merge.
+    """
     mergeCI(
       """CI name"""
       _name: String!
@@ -346,7 +349,7 @@ export const reconciliationTypeDefs = `
       _status: String
     ): MergeResult!
 
-    """Resolve a reconciliation conflict"""
+    """Resolve a reconciliation conflict whose CI is in the caller's organization"""
     resolveConflict(
       """Conflict ID"""
       _id: ID!
@@ -356,13 +359,13 @@ export const reconciliationTypeDefs = `
       _mergedData: JSON
     ): ReconciliationConflict!
 
-    """Create a reconciliation rule"""
+    """Create a reconciliation rule (global configuration; admin only)"""
     createRule(
       """Rule configuration"""
       _input: CreateReconciliationRuleInput!
     ): ReconciliationRule!
 
-    """Update source authority"""
+    """Update source authority (global configuration; admin only)"""
     updateSourceAuthority(
       """Source authority configuration"""
       _input: UpdateSourceAuthorityInput!

@@ -14,8 +14,8 @@
 // Idempotent: only nodes whose organization_id is null are written, so a
 // second run changes nothing and a CI that already has an organization keeps it.
 // Note: CIs written later by unscoped system writers (discovery, connectors,
-// ETL, reconciliation) also have no organization_id, so a later re-run assigns
-// those to the internal organization as well.
+// ETL) also have no organization_id, so a later re-run assigns those to the
+// internal organization as well. Reconciliation stamps the caller's organization.
 //
 // Not run automatically and not part of schema initialization. Operator
 // action against a chosen database, for example:

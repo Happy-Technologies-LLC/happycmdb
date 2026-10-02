@@ -44,7 +44,8 @@ LOG_LEVEL=info
 
 # API Server
 API_PORT=3000
-API_HOST=0.0.0.0
+API_HOST=0.0.0.0     # Read by infrastructure/scripts only, not the api-server
+SERVER_HOST=         # api-server bind address (unset: all interfaces)
 ```
 
 #### Authentication & Security

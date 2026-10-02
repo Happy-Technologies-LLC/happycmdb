@@ -457,7 +457,8 @@ Since HappyCMDB is a new application with no prior production deployments:
 NODE_ENV=development
 LOG_LEVEL=info
 API_PORT=3000
-API_HOST=0.0.0.0
+API_HOST=0.0.0.0     # Read by infrastructure/scripts only, not the api-server
+SERVER_HOST=         # api-server bind address (unset: all interfaces)
 
 # Authentication & Security
 JWT_SECRET=your-super-secret-jwt-key-change-this-in-production-minimum-32-chars

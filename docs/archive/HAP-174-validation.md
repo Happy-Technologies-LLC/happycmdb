@@ -79,7 +79,7 @@ Scope gaps (disclosed, not exercised in the mounted run): "unknown criticality c
 (`requires an explicit selection before saving a row with unknown criticality`); the mounted run did not seed a non-canonical row
 (the DB table stores what Joi allows). No regression assertion was added to the focused test for the `owned_by` omission; the mounted run is its proof.
 
-Redaction note (post-capture, 2026-10): the `Authorization: Bearer` tokens in the captured request dumps in sections 7.1/7.2 are replaced with `<redacted fixture JWT>`, and the literal `JWT_SECRET` in the section 8 harness is replaced with a fresh per-run `randomBytes(32).toString('hex')`, because secret scanners flagged the signed tokens and the literal secret could mint equivalent ones; all other output is unedited.
+Redaction note (post-capture, 2026-10): the `Authorization: Bearer` tokens in the captured request dumps in sections 7.1/7.2 are replaced with `<redacted fixture JWT>`, and the literal `JWT_SECRET` in the section 8 harness is replaced with a fresh per-run `randomBytes(32).toString('hex')` (plus the `import { randomBytes } from 'crypto'` it needs), because secret scanners flagged the signed tokens and the literal secret could mint equivalent ones; all other output is unedited.
 
 ## 4. Substitutions and teardown (mounted harness)
 
@@ -92,7 +92,7 @@ Redaction note (post-capture, 2026-10): the `Authorization: Bearer` tokens in th
 - Server: `express.listen(0, '127.0.0.1')` ephemeral port; UI: `npx vitest run` in `web-ui` with `VITE_API_BASE_URL=http://127.0.0.1:<port>/api/v1`, token via `localStorage.auth_token`.
 - "Reload" = `cleanup()` unmount then fresh mount, which issues a new real GET.
 - Teardown: `finally { server.close(); host.kill(); }`. No production entrypoint, workers, Neo4j/Redis/Postgres started.
-- Both harness files were deleted after the proof (not committed); their exact source is in section 8.
+- Both harness files were deleted after the proof (not committed); their source is in section 8 (JWT_SECRET line and its crypto import changed post-capture; see the redaction note in section 3).
 
 Command (run from `packages/api-server`):
 ```

@@ -325,7 +325,6 @@ describe('GraphQL API Integration Tests', () => {
 
     // Mutations as ORG_B on ORG_A's CIs: the same NOT_FOUND as a missing id, nothing written.
     const notFound = { message: 'CI not found', extensions: expect.objectContaining({ code: 'NOT_FOUND' }) };
-    const missingId = uuidv4();
     const mutations: Array<[string, (id: string) => Record<string, unknown>]> = [
       ['mutation($id: ID!) { deleteCI(id: $id) }', id => ({ id })],
       [

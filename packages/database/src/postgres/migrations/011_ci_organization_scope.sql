@@ -19,11 +19,12 @@
 -- A CI whose :CI node already names a customer organization (created through
 -- POST /api/v1/cis, which stamps it) and that the ETL synced before 011 is
 -- backfilled to the internal organization too; SQL cannot read Neo4j. The
--- ETL corrects it: when a synced node names an organization other than the
--- stored one, every version of that CI is relabelled to the node's
--- organization. Run a neo4j-to-postgres sync without incrementalSince after
--- applying 011 so every CI is visited (an incremental sync only visits
--- updated nodes).
+-- ETL corrects it: when a synced node names an organization and the CI is
+-- stored in the internal organization, every version of that CI is
+-- relabelled to the node's organization (a CI stored in a customer
+-- organization never moves). Run a neo4j-to-postgres sync without
+-- incrementalSince right after applying 011 so every CI is visited (an
+-- incremental sync only visits updated nodes).
 --
 -- Backfill: ADD COLUMN ... NOT NULL DEFAULT <constant> fills existing rows
 -- from the catalog without rewriting the table (PostgreSQL 11+), so the SCD
@@ -31,9 +32,9 @@
 -- dropped in the same transaction: as in 008, there is no column DEFAULT
 -- afterwards, so an insert that does not name its organization fails on
 -- NOT NULL instead of silently landing in the internal organization. ETL
--- writers name it explicitly: the :CI node's organization_id; for a node
--- without one, the CI's stored organization, or the internal organization
--- for a CI new to cmdb.dim_ci (FD-4).
+-- writers name it explicitly: a CI's customer organization once stored is
+-- kept; otherwise the :CI node's organization_id, or the internal
+-- organization when the node has none (FD-4).
 --
 -- ci_business_service_mappings keeps no organization_id: a mapping is
 -- reached only through its org-filtered parent service, and its CI is

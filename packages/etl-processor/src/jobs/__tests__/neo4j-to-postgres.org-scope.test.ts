@@ -108,7 +108,7 @@ beforeEach(async () => {
   await send('exec', 'TRUNCATE cmdb.dim_ci, cmdb.fact_discovery RESTART IDENTITY');
 });
 
-it('relabels every version of a CI to the organization its node names, without a new version', async () => {
+it('relabels every version of an internal-org CI to the organization its node names, without a new version', async () => {
   // As 011 leaves a customer CI synced before it: every version in the internal org.
   await send('exec', `INSERT INTO cmdb.dim_ci (ci_id, ci_name, ci_type, ci_status, environment, is_current, organization_id) VALUES
     ('ci-b', 'ci-b', 'server', 'active', 'production', FALSE, '${INTERNAL_ORG}'),
@@ -123,14 +123,27 @@ it('relabels every version of a CI to the organization its node names, without a
   ]);
 });
 
-it('an org-less node keeps the stored organization; a new org-less CI goes to the internal organization', async () => {
+it('never moves a CI stored in a customer org; a new org-less CI goes to the internal organization', async () => {
   await send('exec', `INSERT INTO cmdb.dim_ci (ci_id, ci_name, ci_type, ci_status, environment, is_current, organization_id) VALUES
-    ('ci-kept', 'ci-kept', 'server', 'active', 'production', TRUE, '${ORG_B}');`);
-  nodes = [node('ci-kept'), node('ci-new'), node('ci-new-b', ORG_B)];
+    ('ci-orgless', 'ci-orgless', 'server', 'active', 'production', FALSE, '${ORG_B}'),
+    ('ci-orgless', 'ci-orgless', 'server', 'active', 'production', TRUE, '${ORG_B}'),
+    ('ci-renamed', 'ci-renamed', 'server', 'active', 'production', TRUE, '${ORG_B}');`);
+  nodes = [
+    // Recreated without an organization (reconciliation), then named the
+    // internal one by a Neo4j backfill re-run: neither moves the CI.
+    node('ci-orgless'),
+    node('ci-renamed', INTERNAL_ORG),
+    node('ci-new'),
+    node('ci-new-b', ORG_B),
+  ];
 
   await sync();
 
-  expect(await versions('ci-kept')).toEqual([{ is_current: true, organization_id: ORG_B }]);
+  expect(await versions('ci-orgless')).toEqual([
+    { is_current: false, organization_id: ORG_B },
+    { is_current: true, organization_id: ORG_B },
+  ]);
+  expect(await versions('ci-renamed')).toEqual([{ is_current: true, organization_id: ORG_B }]);
   expect(await versions('ci-new')).toEqual([{ is_current: true, organization_id: INTERNAL_ORG }]);
   expect(await versions('ci-new-b')).toEqual([{ is_current: true, organization_id: ORG_B }]);
 });

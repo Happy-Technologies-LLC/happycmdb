@@ -14,18 +14,23 @@ export const INTERNAL_ORGANIZATION_ID = '00000000-0000-0000-0000-000000000000';
 export type ExtractedCI = CI & { organization_id?: unknown };
 
 /**
- * cmdb.dim_ci.organization_id for a :CI node's organization_id property.
+ * cmdb.dim_ci.organization_id for a :CI node's organization_id property and
+ * the organization already stored for the CI (any version; all versions of a
+ * ci_id carry the same one).
  *
  * A CI's organization is fixed when the CI is created (POST /api/v1/cis
- * stamps it; nothing updates it), and every cmdb.dim_ci version of a ci_id
- * carries the same one. So:
- *  - a node that names its organization is authoritative. A stored row that
- *    differs was labelled by migration 011's internal-org backfill (FD-4)
- *    before the ETL saw the node; writers relabel every version of the CI;
- *  - a node without one (written by discovery, connectors, ETL or
- *    reconciliation) keeps the organization already stored for the CI, and
- *    a CI not yet in cmdb.dim_ci goes to the internal organization (FD-4).
- *    It never lands in, or moves to, a customer organization.
+ * stamps it; nothing updates it). So:
+ *  - a CI stored in a customer organization stays there, whatever the node
+ *    says. A node can lose its organization (reconciliation recreates
+ *    missing nodes without one) and a re-run of the Neo4j backfill then
+ *    names the internal organization; neither may move the CI;
+ *  - a CI stored in the internal organization takes the organization its
+ *    node names. That stored label came from migration 011's backfill (FD-4)
+ *    or from an org-less node; writers relabel every version of the CI;
+ *  - a CI new to cmdb.dim_ci takes its node's organization, or the internal
+ *    organization when the node has none (FD-4).
+ * A node without an organization therefore never puts a CI in, or moves it
+ * to, a customer organization.
  *
  * The value comes only from stored data, never from a request. PostgreSQL
  * returns a uuid in lower case, so the node's value is lower cased for
@@ -34,8 +39,11 @@ export type ExtractedCI = CI & { organization_id?: unknown };
  * organization.
  */
 export function dimCiOrganizationId(nodeOrganizationId: unknown, storedOrganizationId?: string): string {
+  if (storedOrganizationId !== undefined && storedOrganizationId !== INTERNAL_ORGANIZATION_ID) {
+    return storedOrganizationId;
+  }
   if (nodeOrganizationId === null || nodeOrganizationId === undefined || nodeOrganizationId === '') {
-    return storedOrganizationId ?? INTERNAL_ORGANIZATION_ID;
+    return INTERNAL_ORGANIZATION_ID;
   }
   return String(nodeOrganizationId).toLowerCase();
 }

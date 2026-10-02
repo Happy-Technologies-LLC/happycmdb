@@ -159,10 +159,13 @@ export class PostgresClient {
         [now, ci.ci_id]
       );
 
-      // Every version of a CI carries the same organization (migration 011):
-      // earlier versions take the new record's organization.
+      // Every version of a CI carries the same organization (migration 011),
+      // and only an internal-organization label (011's FD-4 backfill) ever
+      // moves: those rows take ci.organization_id. A CI already in a customer
+      // organization keeps it, and the new record takes it too.
       await client.query(
-        'UPDATE cmdb.dim_ci SET organization_id = $1 WHERE ci_id = $2 AND organization_id <> $1',
+        `UPDATE cmdb.dim_ci SET organization_id = $1
+         WHERE ci_id = $2 AND organization_id = '00000000-0000-0000-0000-000000000000'`,
         [ci.organization_id, ci.ci_id]
       );
 
@@ -173,7 +176,8 @@ export class PostgresClient {
           ci_id, ci_name, ci_type, ci_status, environment,
           external_id, metadata, effective_from, is_current, organization_id
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, TRUE, $9)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, TRUE,
+          COALESCE((SELECT organization_id FROM cmdb.dim_ci WHERE ci_id = $1 LIMIT 1), $9::uuid))
         RETURNING ci_key
         `,
         [

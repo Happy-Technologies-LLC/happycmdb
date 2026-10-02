@@ -359,17 +359,20 @@ organization of the `:CI` node it versions.
   versions) to the internal organization `00000000-0000-0000-0000-000000000000` (FD-4).
 - The ETL writers (neo4j-to-postgres, full refresh, sync-cis-to-datamart,
   reconciliation, the ETL processor sync job) and `DataMartClient.upsertCI` write the
-  node's `organization_id`. A node without one (written by discovery, connectors, ETL
-  or reconciliation) keeps the CI's stored organization; a CI new to `cmdb.dim_ci` goes
-  to the internal organization, as the Neo4j backfill does (the full-refresh job empties
-  `cmdb.dim_ci` first, so every CI is new to it). Such a node never moves a CI into a
-  customer organization. All versions of a CI share one organization: when a node
-  names an organization other than the stored one, every version is relabelled (no
-  new version).
+  organization explicitly. All versions of a CI share one organization, and a CI stored
+  in a customer organization never moves. A CI stored in the internal organization takes
+  the organization its node names, and every version is relabelled (no new version). A
+  CI new to `cmdb.dim_ci` takes its node's organization, or the internal organization
+  when the node has none (written by discovery, connectors, ETL or reconciliation), as
+  the Neo4j backfill does. The full-refresh job empties `cmdb.dim_ci` first, so every CI
+  is new to it. A node without an organization never puts a CI in, or moves it to, a
+  customer organization.
 - **Rollout:** CIs created in a customer organization through `POST /api/v1/cis` and
-  synced before 011 are backfilled to the internal organization. After applying 011,
-  run a neo4j-to-postgres sync without `incrementalSince` so every CI is visited and
-  relabelled to its node's organization (an incremental sync only visits updated nodes).
+  synced before 011 are backfilled to the internal organization. Right after applying
+  011, run a neo4j-to-postgres sync without `incrementalSince` so every CI is visited
+  and relabelled to its node's organization (an incremental sync only visits updated
+  nodes). Until it finishes, the internal organization can map those CIs; such mapping
+  rows stay listed by `GET /:id/cis` afterwards but add nothing to `/costs`.
 - `POST /api/v1/business-services/:id/cis` maps only CIs with a current `cmdb.dim_ci`
   row in the service's organization. A CI of another organization, or one with no
   current row (for example not yet synced by the ETL), returns **404**

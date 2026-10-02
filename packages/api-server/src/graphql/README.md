@@ -176,8 +176,6 @@ query ImpactAnalysis {
 mutation CreateServer {
   createCI(
     input: {
-      id: "server-001"
-      externalId: "i-1234567890"
       name: "Production Web Server"
       type: SERVER
       status: ACTIVE

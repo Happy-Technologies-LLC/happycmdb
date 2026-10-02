@@ -266,15 +266,17 @@ organization when a CI is created through `POST /api/v1/cis` or GraphQL `createC
   `createCI`, `updateCI`, `deleteCI`, `createRelationship` and `deleteRelationship`
   apply the same rules. Without an organization claim they return `FORBIDDEN`
   (`Organization claim required`) before any Neo4j query. A foreign CI reads as
-  `null` or an empty list, like a missing one. `updateCI`, `deleteCI` and
-  `createRelationship` on a foreign or missing CI return `NOT_FOUND` (`CI not found`)
-  and write nothing, so a relationship can only link two CIs of the caller's
-  organization; `deleteRelationship` across organizations returns `NOT_FOUND`
+  `null` from `getCI`, like a missing one. `getCIRelationships`, `getCIDependencies`,
+  `getImpactAnalysis`, `updateCI`, `deleteCI` and `createRelationship` on a foreign
+  or missing CI return `NOT_FOUND` (`CI not found`, like the REST 404) and write
+  nothing, so a relationship can only link two CIs of the caller's organization;
+  `deleteRelationship` across organizations returns `NOT_FOUND`
   (`Relationship not found`), like a missing relationship. `createCI` takes the
   organization only from the token (`CreateCIInput` has no organization field) and
-  `updateCI` cannot change it. A duplicate id returns `CONFLICT`, which, as with the
-  REST 409, reveals that the id exists. The per-request dataloaders key their
-  cache by organization and CI id.
+  `updateCI` cannot change it. Unlike REST, GraphQL `createCI` assigns the CI id
+  itself and accepts no `_id` or `_externalId`, so it cannot be used to test whether
+  another organization uses an id or external id. The per-request dataloaders key
+  their cache by organization and CI id.
 - **Not yet tenant-scoped.** Only `/api/v1/cis/**`, `/api/v1/dashboards/**` and the
   GraphQL CI operations above are scoped. Until the later slices land, every other
   route and GraphQL resolver that touches CIs can still read other tenants' CIs, and

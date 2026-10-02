@@ -1609,7 +1609,8 @@ query SearchCIs($query: String!, $filter: SearchCIFilter, $limit: Int) {
 
 #### getCIRelationships
 
-Get relationships for a specific CI.
+Get relationships for a specific CI. A missing CI or another organization's CI
+returns `NOT_FOUND` (`CI not found`), as `GET /cis/:id/relationships` returns 404.
 
 **Query**:
 ```graphql
@@ -1640,7 +1641,8 @@ query GetCIRelationships($id: ID!, $direction: String) {
 #### getCIDependencies
 
 Get all dependencies for a CI (recursive). `depth` defaults to 5 and must be an
-integer from 1 to 10 (`BAD_USER_INPUT` otherwise).
+integer from 1 to 10 (`BAD_USER_INPUT` otherwise). A missing or foreign CI returns
+`NOT_FOUND` (`CI not found`).
 
 **Query**:
 ```graphql
@@ -1659,7 +1661,8 @@ query GetCIDependencies($id: ID!, $depth: Int) {
 #### getImpactAnalysis
 
 Perform impact analysis for a CI. `depth` defaults to 5 and must be an integer
-from 1 to 10 (`BAD_USER_INPUT` otherwise).
+from 1 to 10 (`BAD_USER_INPUT` otherwise). A missing or foreign CI returns
+`NOT_FOUND` (`CI not found`).
 
 **Query**:
 ```graphql
@@ -1683,18 +1686,24 @@ query GetImpactAnalysis($id: ID!, $depth: Int) {
 > **Note:** every CI query and mutation is scoped to the caller's organization
 > (the token's organization claim). Without one they return `FORBIDDEN`
 > (`Organization claim required`) before touching the database. `createCI`
-> stamps the caller's organization; `updateCI` cannot change it. A CI of another
-> organization is indistinguishable from a missing one: queries return `null` or
-> an empty list, and `updateCI`, `deleteCI` and `createRelationship` return
+> stamps the caller's organization and assigns the CI id; `updateCI` cannot change
+> the organization. A CI of another organization is indistinguishable from a missing
+> one: `getCI` returns `null`, and `getCIRelationships`, `getCIDependencies`,
+> `getImpactAnalysis`, `updateCI`, `deleteCI` and `createRelationship` return
 > `NOT_FOUND` (`CI not found`) without writing anything.
 
 #### createCI
 
-Create a new CI. The input is validated with the same schema as `POST /cis`
-(`ciInputSchema`): for example `_name` must be 1-500 characters, `_externalId` must
-not be empty, and `_discoveredAt` must be an ISO date, which is stored normalised
-the same way REST stores it (e.g. `2024-02-30` becomes `2024-03-01T00:00:00.000Z`).
-Validation failures return `BAD_USER_INPUT`.
+Create a new CI in the caller's organization. The server assigns the CI id (a UUID,
+returned as `_id`); `CreateCIInput` has no `_id` or `_externalId`, because CI ids and
+external ids are unique across all organizations and a client-chosen value would
+reveal whether another organization uses it. Use REST `POST /cis` to set an
+`external_id`. The other fields are validated with the same schema as `POST /cis`
+(`ciInputSchema`): for example `_name` must be 1-500 characters and `_discoveredAt`
+must be an ISO date, stored normalised the same way REST stores it (e.g. `2024-02-30`
+becomes `2024-03-01T00:00:00.000Z`). Validation failures return `BAD_USER_INPUT`.
+Timestamps (`_createdAt`, `_updatedAt`, `_discoveredAt`) are returned as ISO strings
+in the same format as REST.
 
 **Mutation**:
 ```graphql
@@ -1715,7 +1724,6 @@ mutation CreateCI($input: CreateCIInput!) {
 ```json
 {
   "input": {
-    "id": "ci-new-001",
     "name": "web-server-03",
     "type": "SERVER",
     "status": "ACTIVE",

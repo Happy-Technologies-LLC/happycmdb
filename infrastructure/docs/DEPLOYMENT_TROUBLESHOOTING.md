@@ -584,8 +584,8 @@ sudo ufw status
 
 **Solution**:
 ```bash
-# Verify API_HOST and API_PORT in .env
-# Should be: API_HOST=0.0.0.0 (not 127.0.0.1)
+# Verify SERVER_HOST (the api-server bind address) in .env
+# Should be unset or 0.0.0.0 inside a container (not 127.0.0.1)
 
 # Check Docker network
 docker network inspect happycmdb-network

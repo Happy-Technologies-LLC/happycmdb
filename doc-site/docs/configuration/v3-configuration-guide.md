@@ -34,7 +34,8 @@ LOG_LEVEL=info                         # error | warn | info | debug | trace
 
 # API Server
 API_PORT=3000                          # Default: 3000
-API_HOST=0.0.0.0                       # Bind address (0.0.0.0 for all interfaces)
+API_HOST=0.0.0.0                       # Read by infrastructure/scripts only, not the api-server
+SERVER_HOST=                           # api-server bind address (unset: all interfaces)
 API_CORS_ORIGIN=*                      # CORS allowed origins (comma-separated)
 
 # Web UI Server

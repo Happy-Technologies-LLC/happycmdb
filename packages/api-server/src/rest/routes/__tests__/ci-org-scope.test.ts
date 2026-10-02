@@ -362,6 +362,22 @@ describe('/api/v1/cis tenant scoping', () => {
     expect(graph.nodes.get('ci-new')!['organization_id']).toBe(ORG_A);
   });
 
+  it('POST /cis rejects an id or external_id longer than cmdb.dim_ci stores (400) and creates nothing', async () => {
+    // cmdb.dim_ci.ci_id is VARCHAR(100) and external_id VARCHAR(200): a longer
+    // value would fail every ETL batch it lands in (migration 011).
+    const longId = 'x'.repeat(101);
+    const overlongId = await request(app).post('/api/v1/cis').set(AS_A).send({ id: longId, name: 'n', type: 'server' });
+    const overlongExternal = await request(app).post('/api/v1/cis').set(AS_A)
+      .send({ id: 'ci-long-ext', external_id: 'e'.repeat(201), name: 'n', type: 'server' });
+    expect([overlongId.status, overlongExternal.status]).toEqual([400, 400]);
+    expect(graph.nodes.has(longId)).toBe(false);
+    expect(graph.nodes.has('ci-long-ext')).toBe(false);
+
+    const atLimit = await request(app).post('/api/v1/cis').set(AS_A)
+      .send({ id: 'i'.repeat(100), external_id: 'e'.repeat(200), name: 'n', type: 'server' });
+    expect(atLimit.status).toBe(201);
+  });
+
   it('PUT and DELETE on a foreign CI are 404 and change nothing', async () => {
     const before = JSON.stringify([[...graph.nodes.entries()], graph.edges]);
 

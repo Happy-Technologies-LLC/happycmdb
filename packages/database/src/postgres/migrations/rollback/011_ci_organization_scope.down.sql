@@ -17,8 +17,8 @@
 --
 -- Loses data: every CI's organization assignment is dropped. Re-applying 011
 -- later puts ALL cmdb.dim_ci rows back in the internal organization, marked
--- org_backfilled, until a complete neo4j-to-postgres sync relabels the CIs
--- whose :CI node names another organization.
+-- org_backfilled; a complete neo4j-to-postgres sync then writes a new
+-- version in its node's organization for each CI whose :CI node names one.
 --
 -- Independent of the 008-010 rollbacks (no view or function depends on
 -- cmdb.dim_ci.organization_id).

@@ -3738,8 +3738,10 @@ components:
       properties:
         _id:
           type: string
+          maxLength: 100
         external_id:
           type: string
+          maxLength: 200
         name:
           type: string
         _type:

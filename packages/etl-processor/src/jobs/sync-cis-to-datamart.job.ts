@@ -249,9 +249,9 @@ async function processCIBatch(
         if (existingResult.rows.length > 0) {
           const existing = existingResult.rows[0];
 
-          // Every version of a CI carries its one organization; see
-          // storedCiOrganizationId for when it may move (only a 011 backfill
-          // label, once).
+          // See storedCiOrganizationId: no stored row changes organization;
+          // a 011 backfilled CI whose node names another organization gets a
+          // new version in it.
           const organizationId = storedCiOrganizationId(ci.organization_id, {
             organizationId: existing.organization_id,
             backfilled: existing.org_backfilled === true,
@@ -264,10 +264,9 @@ async function processCIBatch(
             continue;
           }
           if (existing.org_backfilled === true) {
-            // Relabel (or confirm) every backfilled version and clear the marker.
             await client.query(
-              'UPDATE cmdb.dim_ci SET organization_id = $1, org_backfilled = FALSE WHERE ci_id = $2 AND org_backfilled',
-              [organizationId, ci.ci_id]
+              'UPDATE cmdb.dim_ci SET org_backfilled = FALSE WHERE ci_id = $1 AND org_backfilled',
+              [ci.ci_id]
             );
           }
 
@@ -277,6 +276,7 @@ async function processCIBatch(
             existing.ci_type !== ci.ci_type ||
             existing.ci_status !== ci.ci_status ||
             existing.environment !== ci.environment ||
+            organizationId !== existing.organization_id ||
             JSON.stringify(existing.itil_attributes) !== JSON.stringify(ci.itil_attributes) ||
             JSON.stringify(existing.tbm_attributes) !== JSON.stringify(ci.tbm_attributes) ||
             JSON.stringify(existing.bsm_attributes) !== JSON.stringify(ci.bsm_attributes);

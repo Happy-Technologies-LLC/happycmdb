@@ -121,8 +121,10 @@ export const ciSchema = Joi.object({
  * CI Input validation schema
  */
 export const ciInputSchema = Joi.object({
-  id: Joi.string().required(),
-  external_id: Joi.string().optional(),
+  // cmdb.dim_ci.ci_id is VARCHAR(100) and external_id VARCHAR(200): a longer
+  // value could never be synced and would fail every ETL batch it lands in.
+  id: Joi.string().required().max(100),
+  external_id: Joi.string().optional().max(200),
   name: Joi.string().required().min(1).max(500),
   type: schemas.ciType.required(),
   status: schemas.ciStatus.optional().default('active'),

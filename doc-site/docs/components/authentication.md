@@ -361,27 +361,33 @@ organization of the `:CI` node it versions.
   marker; rows written after 011 are `FALSE`.
 - The ETL writers (neo4j-to-postgres, full refresh, sync-cis-to-datamart,
   reconciliation, the ETL processor sync job) and `DataMartClient.upsertCI` write the
-  organization explicitly. All versions of a CI share one organization. A CI whose rows
-  are 011 backfill labels takes the organization its node names, once: every version is
-  relabelled (no new version) and the marker is cleared. Rows labelled internal after
-  011 and customer organizations never move, and the decision uses no client-writable
-  data (a node's `created_at`, for example, is not consulted). A node that conflicts
-  with the stored history (another organization than the stored one, outside the
-  backfill case) is skipped and logged: nothing is written for it. A CI new to
-  `cmdb.dim_ci` takes its node's organization, or the internal organization when the
-  node has none (written by discovery, connectors, ETL or reconciliation), as the Neo4j
-  backfill does. The full-refresh job empties `cmdb.dim_ci` first, so every CI is new to
-  it. A node without an organization never puts a CI in, or moves it to, a customer
-  organization.
+  organization explicitly. **No stored row ever changes organization**: a pre-011
+  `ci_id` can carry more than one lineage (a CI deleted and its id reused). When a CI
+  whose current row is a 011 backfill label has a node naming an organization, the ETL
+  writes a **new current version** in that organization, built from the node alone; the
+  backfilled history (and its `tbm_attributes`) stays internal, so that organization's
+  mapping, `/costs` and cost trends read none of it. Rows labelled internal after 011
+  and customer organizations never get a version in another organization, and the
+  decision uses no client-writable data (a node's `created_at`, for example, is not
+  consulted). A node that conflicts with the stored history (another organization than
+  the stored one, outside the backfill case) is skipped and logged: nothing is written
+  for it. A CI new to `cmdb.dim_ci` takes its node's organization, or the internal
+  organization when the node has none (written by discovery, connectors, ETL or
+  reconciliation), as the Neo4j backfill does. The full-refresh job empties
+  `cmdb.dim_ci` first, so every CI is new to it. A node without an organization never
+  puts a CI in a customer organization.
 - **Rollout:** CIs created in a customer organization through `POST /api/v1/cis` and
   synced before 011 are backfilled to the internal organization. Right after applying
   011, run a complete neo4j-to-postgres sync (no `incrementalSince`, no `ciTypes`) so
-  every CI is visited and relabelled to its node's organization. When that run has no
-  failed batch it clears every remaining backfill marker, including those of CIs whose
-  node no longer exists, which closes the relabel window: a node created later with
-  such an id cannot claim the history. Until it finishes, the internal organization can
-  map those CIs; such mapping rows stay listed by `GET /:id/cis` afterwards but add
-  nothing to `/costs`.
+  every such CI gets its new version in its node's organization. That run clears the
+  backfill marker of every CI without a live node, even when some batches fail, so a
+  node created later with such an id cannot take the backfilled CI over. CIs whose batch
+  failed keep their marker until a later run processes them. Until the run finishes,
+  the internal organization can map those CIs; such mapping rows stay listed by
+  `GET /:id/cis` afterwards but add nothing to `/costs`.
+- `POST /api/v1/cis` rejects an `id` longer than 100 characters or an `external_id`
+  longer than 200 (the `cmdb.dim_ci` column widths) with **400**, so no CI that can never
+  be synced is created.
 - `POST /api/v1/itil/baselines/:id/restore` never writes a CI's `created_at` (nor its
   `organization_id`, `id` or `updated_at`) from a snapshot.
 - `POST /api/v1/business-services/:id/cis` maps only CIs with a current `cmdb.dim_ci`
@@ -408,10 +414,10 @@ the rollback (but without 011's CI tenancy checks).
 psql -v ON_ERROR_STOP=1 -f packages/database/src/postgres/migrations/rollback/011_ci_organization_scope.down.sql
 ```
 
-It drops the index and the column, which discards every CI's organization, and deletes
-the `cmdb.schema_migrations` row so 011 applies again later (all rows back in the
-internal organization until a neo4j-to-postgres sync without `incrementalSince`
-relabels them). Until the old
+It drops the indexes and the columns, which discards every CI's organization, and
+deletes the `cmdb.schema_migrations` row so 011 applies again later (all rows back in
+the internal organization, marked backfilled, until a complete neo4j-to-postgres sync
+writes new versions in their nodes' organizations). Until the old
 images are running, the 011-aware API returns 500 on CI mapping, service costs and cost
 trends, and the 011-aware ETL fails its `cmdb.dim_ci` reads and writes.
 

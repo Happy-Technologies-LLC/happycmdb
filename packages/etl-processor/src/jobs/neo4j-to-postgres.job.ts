@@ -115,14 +115,19 @@ export class Neo4jToPostgresJob {
         result.recordsInserted += relationshipsResult.inserted;
       }
 
-      // Every node was visited, so every 011 backfill label that could be
-      // corrected has been: close the window (see storedCiOrganizationId).
-      // Rows left marked belong to CIs without a node; a node created later
-      // with one of their ids must not claim them.
+      // Every live node was extracted. A CI without one keeps no 011 backfill
+      // marker, even when a batch failed (a failing batch must not hold the
+      // window open): a node created later with its id must not be taken for
+      // a backfilled CI (see storedCiOrganizationId). CIs whose batch failed
+      // keep theirs until a later run processes them.
       const visitedEveryNode =
         !(data.incrementalSince && !data.fullRefresh) && !(data.ciTypes && data.ciTypes.length > 0);
-      if (visitedEveryNode && result.errors === 0) {
-        await this.postgresClient.query('UPDATE cmdb.dim_ci SET org_backfilled = FALSE WHERE org_backfilled');
+      if (visitedEveryNode) {
+        const liveIds = cis.map(ci => ci._id).filter((id): id is string => typeof id === 'string');
+        await this.postgresClient.query(
+          'UPDATE cmdb.dim_ci SET org_backfilled = FALSE WHERE org_backfilled AND NOT (ci_id = ANY($1::varchar[]))',
+          [liveIds]
+        );
       }
 
       result.durationMs = Date.now() - startTime;
@@ -229,9 +234,9 @@ export class Neo4jToPostgresJob {
               if (existingResult.rows.length > 0) {
                 const existing = existingResult.rows[0];
 
-                // Every version of a CI carries its one organization; see
-                // storedCiOrganizationId for when it may move (only a 011
-                // backfill label, once).
+                // See storedCiOrganizationId: no stored row changes
+                // organization; a 011 backfilled CI whose node names another
+                // organization gets a new version in it.
                 const organizationId = storedCiOrganizationId(ci.organization_id, {
                   organizationId: existing.organization_id,
                   backfilled: existing.org_backfilled === true,
@@ -241,10 +246,9 @@ export class Neo4jToPostgresJob {
                   continue;
                 }
                 if (existing.org_backfilled === true) {
-                  // Relabel (or confirm) every backfilled version and clear the marker.
                   await client.query(
-                    'UPDATE cmdb.dim_ci SET organization_id = $1, org_backfilled = FALSE WHERE ci_id = $2 AND org_backfilled',
-                    [organizationId, ci._id]
+                    'UPDATE cmdb.dim_ci SET org_backfilled = FALSE WHERE ci_id = $1 AND org_backfilled',
+                    [ci._id]
                   );
                 }
 
@@ -253,7 +257,8 @@ export class Neo4jToPostgresJob {
                   existing.ci_name !== dimension._ci_name ||
                   existing.ci_type !== dimension._ci_type ||
                   existing.ci_status !== dimension._status ||
-                  existing.environment !== dimension.environment;
+                  existing.environment !== dimension.environment ||
+                  organizationId !== existing.organization_id;
 
                 if (hasChanged || fullRefresh) {
                   const ciKey = existing.ci_key;

@@ -36,29 +36,31 @@ export interface StoredCiOrganization {
   organizationId: string;
   /**
    * org_backfilled: the internal label came from migration 011's backfill.
-   * Rows written after 011 are FALSE, so a TRUE current row means every
-   * version of the CI is a backfilled row.
+   * Rows written after 011 are FALSE.
    */
   backfilled: boolean;
 }
 
 /**
- * The organization to write for a CI already in cmdb.dim_ci, or null when
- * its node conflicts with the stored history: the caller then writes nothing
- * for the CI (no version, no relabel). Decided only from data no client can
- * write: the stored row and its 011 backfill marker (a node's created_at, for
- * example, can be rewritten). So:
+ * The organization of the next current version of a CI already in
+ * cmdb.dim_ci, or null when its node conflicts with the stored history: the
+ * caller then writes nothing for the CI. No stored row ever changes
+ * organization: a pre-011 ci_id can carry several lineages (a CI deleted and
+ * its id reused), so its rows cannot be attributed to the current node. The
+ * decision uses only data no client can write (the stored row and its 011
+ * backfill marker; a node's created_at, for example, can be rewritten):
  *  - a node without an organization keeps the stored one (reconciliation
  *    recreates missing nodes without one);
  *  - a node naming the stored organization keeps it;
- *  - a node naming another organization for a CI whose rows are 011
- *    backfill labels takes it: that is a customer CI 011 backfilled to the
- *    internal organization (FD-4). Writers relabel every version and clear
- *    the marker; a complete neo4j-to-postgres sync clears every remaining
- *    marker, so this happens at most once per CI, before the first complete
- *    sync after 011;
+ *  - a node naming another organization for a CI whose current row is a 011
+ *    backfill label gets it for a NEW current version, built from the node
+ *    alone (FD-4: a customer CI 011 backfilled to the internal organization).
+ *    The backfilled history stays in the internal organization, so the
+ *    node's organization sees none of it (no earlier tbm_attributes or cost);
  *  - every other mismatch is a conflict: rows labelled internal after 011 and
- *    customer organizations never move.
+ *    customer organizations never get a version in another organization.
+ * Writers clear the marker of every version they visit; a complete
+ * neo4j-to-postgres sync clears the markers of every CI without a live node.
  */
 export function storedCiOrganizationId(nodeOrganizationId: unknown, stored: StoredCiOrganization): string | null {
   if (nodeOrganizationId === null || nodeOrganizationId === undefined || nodeOrganizationId === '') {

@@ -126,14 +126,15 @@ beforeEach(async () => {
   statements.length = 0;
 });
 
-it('relabels every version of a 011-backfilled CI to the organization its node names, once, without a new version', async () => {
+it('a 011-backfilled CI whose node names another org gets a new version there; no stored row changes org', async () => {
   await backfilled('ci-b');
   nodes = [node('ci-b', ORG_B)];
 
   await sync();
 
   expect(await versions('ci-b')).toEqual([
-    { is_current: false, organization_id: ORG_B, ci_name: 'ci-b', org_backfilled: false },
+    { is_current: false, organization_id: INTERNAL_ORG, ci_name: 'ci-b', org_backfilled: false },
+    { is_current: false, organization_id: INTERNAL_ORG, ci_name: 'ci-b', org_backfilled: false },
     { is_current: true, organization_id: ORG_B, ci_name: 'ci-b', org_backfilled: false },
   ]);
 });

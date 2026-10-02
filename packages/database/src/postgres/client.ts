@@ -149,12 +149,12 @@ export class PostgresClient {
     return await this.transaction(async (client) => {
       const now = new Date();
 
-      // Every version of a CI carries the same organization (migration 011).
-      // A different organization is refused and nothing is written (the
-      // transaction rolls back), unless the stored rows are 011 backfill
-      // labels (org_backfilled): those take ci.organization_id once and lose
-      // the marker. Rows labelled after 011 and customer organizations never
-      // move.
+      // No stored row ever changes organization (migration 011): a pre-011
+      // ci_id can carry several lineages. The new record may name another
+      // organization only when the current row is a 011 backfill label
+      // (org_backfilled); the earlier versions keep theirs. Otherwise a
+      // different organization is refused and nothing is written (the
+      // transaction rolls back).
       const current = await client.query(
         'SELECT organization_id, org_backfilled FROM cmdb.dim_ci WHERE ci_id = $1 AND is_current = TRUE',
         [ci.ci_id]
@@ -165,8 +165,8 @@ export class PostgresClient {
       }
       if (stored && stored.org_backfilled === true) {
         await client.query(
-          'UPDATE cmdb.dim_ci SET organization_id = $1, org_backfilled = FALSE WHERE ci_id = $2 AND org_backfilled',
-          [ci.organization_id, ci.ci_id]
+          'UPDATE cmdb.dim_ci SET org_backfilled = FALSE WHERE ci_id = $1 AND org_backfilled',
+          [ci.ci_id]
         );
       }
 

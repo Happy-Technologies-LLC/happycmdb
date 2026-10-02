@@ -13,21 +13,23 @@
 -- Existing rows are backfilled to the internal organization
 -- 00000000-0000-0000-0000-000000000000 (founder decision FD-4), the id
 -- 008_business_service_organization_scope.sql backfills business services
--- into and the Neo4j backfill assigns org-less :CI nodes to. Every SCD
--- version of a ci_id carries the same organization.
+-- into and the Neo4j backfill assigns org-less :CI nodes to.
 --
--- A CI whose :CI node already names a customer organization (created through
--- POST /api/v1/cis, which stamps it) and that the ETL synced before 011 is
--- backfilled to the internal organization too; SQL cannot read Neo4j. Those
--- rows, and only those, carry org_backfilled = TRUE. No writer sets it:
--- rows written after 011 get the column DEFAULT FALSE. The ETL corrects a
--- backfilled CI once: when its node names an organization, every version is
--- relabelled to it, and in every case the marker is cleared. A complete
--- neo4j-to-postgres sync (no incrementalSince, no ciTypes filter, no failed
--- batch) then clears every remaining marker, including those of CIs whose
--- node no longer exists, so a later node reusing a deleted CI's id cannot
--- claim its history. Rows labelled internal after 011, and every customer
--- organization, never move. Nothing a client can write (such as a node's
+-- No stored row ever changes organization afterwards. A pre-011 ci_id can
+-- carry more than one lineage (a CI deleted and its id reused), so its rows
+-- cannot be attributed to whichever node holds the id now. The backfilled
+-- rows, and only those, carry org_backfilled = TRUE; no writer sets it (rows
+-- written after 011 get the column DEFAULT FALSE). When the ETL syncs a CI
+-- whose current row is backfilled and whose :CI node names an organization
+-- (a customer CI created through POST /api/v1/cis before 011), it writes a
+-- NEW current version in that organization, built from the node alone; the
+-- backfilled history stays internal, so the node's organization reads none
+-- of it. Every visit clears the marker. A complete neo4j-to-postgres sync
+-- (no incrementalSince, no ciTypes filter) clears the markers of every CI
+-- without a live node, even when some batches failed, so a node created
+-- later with a deleted CI's id cannot take the backfilled CI over. Rows
+-- labelled internal after 011 and customer organizations never get a version
+-- in another organization. Nothing a client can write (such as a node's
 -- created_at) takes part in the decision. Run that complete sync right after
 -- applying 011.
 --
@@ -66,8 +68,8 @@ ALTER TABLE cmdb.dim_ci ALTER COLUMN org_backfilled SET DEFAULT FALSE;
 CREATE INDEX IF NOT EXISTS idx_dim_ci_organization
   ON cmdb.dim_ci(organization_id, effective_from);
 
--- Serves the per-CI statements over every version of a ci_id (relabel and
--- marker clearing, WHERE ci_id = $1); idx_dim_ci_id_current covers current
--- rows only.
+-- Serves the per-CI statements over every version of a ci_id (marker
+-- clearing, WHERE ci_id = $1); idx_dim_ci_id_current covers current rows
+-- only.
 CREATE INDEX IF NOT EXISTS idx_dim_ci_ci_id_effective_from
   ON cmdb.dim_ci(ci_id, effective_from);

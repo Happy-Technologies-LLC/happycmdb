@@ -18,7 +18,7 @@ import { Job } from 'bullmq';
 import { Neo4jClient, PostgresClient, UNSCOPED_CI_ACCESS } from '@cmdb/database';
 import { logger, CI, CIType } from '@cmdb/common';
 import { DimensionTransformer } from '../transformers/dimension-transformer';
-import { ExtractedCI, dimCiOrganizationId } from '../transformers/ci-organization';
+import { ExtractedCI, INTERNAL_ORGANIZATION_ID, storedCiOrganizationId } from '../transformers/ci-organization';
 
 export interface Neo4jToPostgresJobData {
   /** Batch size for processing CIs */
@@ -211,21 +211,30 @@ export class Neo4jToPostgresJob {
 
               // Check if CI dimension already exists
               const existingResult = await client.query(
-                'SELECT ci_key, ci_name, ci_type, ci_status, environment, organization_id FROM cmdb.dim_ci WHERE ci_id = $1 AND is_current = true',
+                `SELECT ci_key, ci_name, ci_type, ci_status, environment, organization_id,
+                   (SELECT MIN(effective_from) FROM cmdb.dim_ci h WHERE h.ci_id = $1) AS first_effective_from
+                 FROM cmdb.dim_ci WHERE ci_id = $1 AND is_current = true`,
                 [ci._id]
               );
 
               if (existingResult.rows.length > 0) {
                 const existing = existingResult.rows[0];
 
-                // Every version of a CI carries its one organization (see
-                // dimCiOrganizationId): relabel them all when the node names
-                // another one; an org-less node keeps the stored organization.
-                const organizationId = dimCiOrganizationId(ci.organization_id, existing.organization_id);
+                // Every version of a CI carries its one organization; see
+                // storedCiOrganizationId for when it may move (only an
+                // internal 011 backfill label, to an older node's org).
+                const organizationId = storedCiOrganizationId(ci.organization_id, ci._created_at, {
+                  organizationId: existing.organization_id,
+                  firstEffectiveFrom: new Date(existing.first_effective_from),
+                });
+                if (organizationId === null) {
+                  logger.warn('CI node organization conflicts with its cmdb.dim_ci history; skipped', { ciId: ci._id });
+                  continue;
+                }
                 if (organizationId !== existing.organization_id) {
                   await client.query(
-                    'UPDATE cmdb.dim_ci SET organization_id = $1 WHERE ci_id = $2',
-                    [organizationId, ci._id]
+                    'UPDATE cmdb.dim_ci SET organization_id = $1 WHERE ci_id = $2 AND organization_id = $3',
+                    [organizationId, ci._id, INTERNAL_ORGANIZATION_ID]
                   );
                 }
 

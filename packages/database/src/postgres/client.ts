@@ -149,6 +149,19 @@ export class PostgresClient {
     return await this.transaction(async (client) => {
       const now = new Date();
 
+      // Every version of a CI carries the same organization (migration 011).
+      // A customer organization is never changed: a different one is refused
+      // and nothing is written (the transaction rolls back). Only rows still
+      // labelled internal (011's FD-4 backfill) take ci.organization_id.
+      const customer = await client.query(
+        `SELECT organization_id FROM cmdb.dim_ci
+         WHERE ci_id = $1 AND organization_id <> '00000000-0000-0000-0000-000000000000' LIMIT 1`,
+        [ci.ci_id]
+      );
+      if (customer.rows.length > 0 && customer.rows[0].organization_id !== ci.organization_id.toLowerCase()) {
+        throw new Error(`CI ${ci.ci_id} belongs to another organization`);
+      }
+
       // Step 1: Expire the current record for this ci_id
       await client.query(
         `
@@ -159,10 +172,6 @@ export class PostgresClient {
         [now, ci.ci_id]
       );
 
-      // Every version of a CI carries the same organization (migration 011),
-      // and only an internal-organization label (011's FD-4 backfill) ever
-      // moves: those rows take ci.organization_id. A CI already in a customer
-      // organization keeps it, and the new record takes it too.
       await client.query(
         `UPDATE cmdb.dim_ci SET organization_id = $1
          WHERE ci_id = $2 AND organization_id = '00000000-0000-0000-0000-000000000000'`,
@@ -176,8 +185,7 @@ export class PostgresClient {
           ci_id, ci_name, ci_type, ci_status, environment,
           external_id, metadata, effective_from, is_current, organization_id
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, TRUE,
-          COALESCE((SELECT organization_id FROM cmdb.dim_ci WHERE ci_id = $1 LIMIT 1), $9::uuid))
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, TRUE, $9)
         RETURNING ci_key
         `,
         [

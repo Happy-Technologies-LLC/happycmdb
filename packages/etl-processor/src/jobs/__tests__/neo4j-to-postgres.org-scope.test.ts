@@ -45,6 +45,7 @@ jest.mock('@cmdb/database', () => ({ UNSCOPED_CI_ACCESS: Symbol('UNSCOPED_CI_ACC
 import { Neo4jToPostgresJob } from '../neo4j-to-postgres.job';
 
 const INTERNAL_ORG = '00000000-0000-0000-0000-000000000000';
+const ORG_A = '11111111-1111-4111-8111-111111111111';
 const ORG_B = '22222222-2222-4222-8222-222222222222';
 const MIGRATIONS = join(__dirname, '../../../../database/src/postgres/migrations');
 
@@ -73,11 +74,12 @@ const neo4jClient = {
 } as unknown as Neo4jClient;
 
 // Attributes equal to the stored rows below, so no CI is re-versioned for them.
-const node = (id: string, organizationId?: string) => ({
+const node = (id: string, organizationId?: string, overrides: Record<string, unknown> = {}) => ({
   id, name: id, type: 'server', status: 'active', environment: 'production',
   created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z', discovered_at: '2026-01-01T00:00:00Z',
   metadata: JSON.stringify({ discovery_source: 'test', discovery_method: 'manual' }),
   ...(organizationId === undefined ? {} : { organization_id: organizationId }),
+  ...overrides,
 });
 
 async function sync(): Promise<void> {
@@ -87,8 +89,8 @@ async function sync(): Promise<void> {
 }
 
 const versions = (ciId: string) => send(
-  'query', 'SELECT is_current, organization_id FROM cmdb.dim_ci WHERE ci_id = $1 ORDER BY ci_key', [ciId]
-);
+  'query', 'SELECT is_current, organization_id, ci_name FROM cmdb.dim_ci WHERE ci_id = $1 ORDER BY ci_key', [ciId]
+) as Promise<Array<{ is_current: boolean; organization_id: string; ci_name: string }>>;
 
 beforeAll(async () => {
   const schema = readFileSync(join(MIGRATIONS, '001_complete_schema.sql'), 'utf8');
@@ -108,8 +110,9 @@ beforeEach(async () => {
   await send('exec', 'TRUNCATE cmdb.dim_ci, cmdb.fact_discovery RESTART IDENTITY');
 });
 
-it('relabels every version of an internal-org CI to the organization its node names, without a new version', async () => {
-  // As 011 leaves a customer CI synced before it: every version in the internal org.
+it('relabels every version of an internal-org CI to the organization its older node names, without a new version', async () => {
+  // As 011 leaves a customer CI synced before it: every version in the internal
+  // org, all effective after the node (created 2026-01-01) existed.
   await send('exec', `INSERT INTO cmdb.dim_ci (ci_id, ci_name, ci_type, ci_status, environment, is_current, organization_id) VALUES
     ('ci-b', 'ci-b', 'server', 'active', 'production', FALSE, '${INTERNAL_ORG}'),
     ('ci-b', 'ci-b', 'server', 'active', 'production', TRUE, '${INTERNAL_ORG}');`);
@@ -118,9 +121,26 @@ it('relabels every version of an internal-org CI to the organization its node na
   await sync();
 
   expect(await versions('ci-b')).toEqual([
-    { is_current: false, organization_id: ORG_B },
-    { is_current: true, organization_id: ORG_B },
+    { is_current: false, organization_id: ORG_B, ci_name: 'ci-b' },
+    { is_current: true, organization_id: ORG_B, ci_name: 'ci-b' },
   ]);
+});
+
+it('a node reusing a deleted CI id neither claims nor writes into its history', async () => {
+  // History of deleted CIs: one internal (effective 2026-01-01), one in org B.
+  await send('exec', `INSERT INTO cmdb.dim_ci (ci_id, ci_name, ci_type, ci_status, environment, is_current, organization_id, effective_from) VALUES
+    ('ci-internal', 'ci-internal', 'server', 'active', 'production', TRUE, '${INTERNAL_ORG}', '2026-01-01T00:00:00Z'),
+    ('ci-of-b', 'ci-of-b', 'server', 'active', 'production', TRUE, '${ORG_B}', '2026-01-01T00:00:00Z');`);
+  nodes = [
+    // Recreated later by org A through POST /api/v1/cis with the same ids.
+    node('ci-internal', ORG_A, { created_at: '2026-06-01T00:00:00Z' }),
+    node('ci-of-b', ORG_A, { created_at: '2026-06-01T00:00:00Z', name: 'A takeover' }),
+  ];
+
+  await sync();
+
+  expect(await versions('ci-internal')).toEqual([{ is_current: true, organization_id: INTERNAL_ORG, ci_name: 'ci-internal' }]);
+  expect(await versions('ci-of-b')).toEqual([{ is_current: true, organization_id: ORG_B, ci_name: 'ci-of-b' }]);
 });
 
 it('never moves a CI stored in a customer org; a new org-less CI goes to the internal organization', async () => {
@@ -139,11 +159,8 @@ it('never moves a CI stored in a customer org; a new org-less CI goes to the int
 
   await sync();
 
-  expect(await versions('ci-orgless')).toEqual([
-    { is_current: false, organization_id: ORG_B },
-    { is_current: true, organization_id: ORG_B },
-  ]);
-  expect(await versions('ci-renamed')).toEqual([{ is_current: true, organization_id: ORG_B }]);
-  expect(await versions('ci-new')).toEqual([{ is_current: true, organization_id: INTERNAL_ORG }]);
-  expect(await versions('ci-new-b')).toEqual([{ is_current: true, organization_id: ORG_B }]);
+  expect((await versions('ci-orgless')).map(v => v.organization_id)).toEqual([ORG_B, ORG_B]);
+  expect(await versions('ci-renamed')).toEqual([{ is_current: true, organization_id: ORG_B, ci_name: 'ci-renamed' }]);
+  expect(await versions('ci-new')).toEqual([{ is_current: true, organization_id: INTERNAL_ORG, ci_name: 'ci-new' }]);
+  expect(await versions('ci-new-b')).toEqual([{ is_current: true, organization_id: ORG_B, ci_name: 'ci-new-b' }]);
 });

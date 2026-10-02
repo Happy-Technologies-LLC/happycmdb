@@ -78,17 +78,22 @@ export class DataMartClient {
       if (existing.rows.length > 0) {
         const currentRecord = existing.rows[0];
 
+        // Every version of a CI carries the same organization (migration
+        // 011). A customer organization is never changed: a different one is
+        // refused. Only an internal-organization label (011's FD-4 backfill)
+        // moves, without a new version. PostgreSQL returns a uuid in lower case.
+        const internal = '00000000-0000-0000-0000-000000000000';
+        const organizationId = ci.organization_id.toLowerCase();
+        if (currentRecord.organization_id !== internal && currentRecord.organization_id !== organizationId) {
+          throw new Error(`CI ${ci.ci_id} belongs to another organization`);
+        }
+
         // Check if data has changed
         if (this.hasCIChanged(currentRecord, ci)) {
           logger.debug('CI attributes changed, creating new version', { ci_id: ci.ci_id });
           return await this.pgClient.updateCIDimension(ci);
         } else {
-          // Every version of a CI carries the same organization (migration
-          // 011). Only an internal-organization label (011's FD-4 backfill)
-          // moves, without a new version; a customer organization never does.
-          // PostgreSQL returns a uuid in lower case.
-          const internal = '00000000-0000-0000-0000-000000000000';
-          if (currentRecord.organization_id === internal && ci.organization_id.toLowerCase() !== internal) {
+          if (currentRecord.organization_id !== organizationId) {
             await this.pgClient.query(
               'UPDATE cmdb.dim_ci SET organization_id = $1 WHERE ci_id = $2 AND organization_id = $3',
               [ci.organization_id, ci.ci_id, internal]

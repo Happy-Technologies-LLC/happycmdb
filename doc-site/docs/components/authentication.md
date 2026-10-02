@@ -361,7 +361,11 @@ organization of the `:CI` node it versions.
   reconciliation, the ETL processor sync job) and `DataMartClient.upsertCI` write the
   organization explicitly. All versions of a CI share one organization, and a CI stored
   in a customer organization never moves. A CI stored in the internal organization takes
-  the organization its node names, and every version is relabelled (no new version). A
+  the organization its node names only when the node is older than the CI's
+  `cmdb.dim_ci` history; every version is then relabelled (no new version). A node that
+  conflicts with the stored history (for example a newer node reusing a deleted CI's id,
+  or a node naming another organization than a stored customer one) is skipped and
+  logged: nothing is written for it. A
   CI new to `cmdb.dim_ci` takes its node's organization, or the internal organization
   when the node has none (written by discovery, connectors, ETL or reconciliation), as
   the Neo4j backfill does. The full-refresh job empties `cmdb.dim_ci` first, so every CI

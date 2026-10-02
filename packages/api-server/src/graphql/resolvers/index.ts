@@ -3,9 +3,11 @@
 
 // packages/api-server/src/graphql/resolvers/index.ts
 
+import { randomUUID } from 'crypto';
 import { GraphQLError } from 'graphql';
 import { GraphQLScalarType, Kind } from 'graphql';
 import neo4j from 'neo4j-driver';
+import type { Integer } from 'neo4j-driver';
 import { Neo4jClient } from '@cmdb/database';
 import type { Schema } from 'joi';
 import {
@@ -103,7 +105,6 @@ function convertEnumToDbFormat(value: string): string {
 /** A CI create body after REST's ciInputSchema (defaults applied, values converted). */
 interface ValidatedCIInput {
   id: string;
-  external_id?: string;
   name: string;
   type: CIType;
   status: CIStatus;
@@ -185,6 +186,26 @@ function ciKey(id: string, organizationId: string): CILoaderKey {
   return { id, organizationId };
 }
 
+/**
+ * Scoped lookup of the CI a traversal starts from, like the REST
+ * relationships/dependencies/impact routes: a missing CI and another
+ * organization's CI both throw the same NOT_FOUND, so an empty traversal result
+ * always means an existing CI of the caller's organization.
+ */
+async function requireCIInOrganization(context: GraphQLContext, id: string, organizationId: string): Promise<void> {
+  let ci: CI | null;
+  try {
+    ci = await context._loaders._ciLoader.load(ciKey(id, organizationId));
+  } catch (error: any) {
+    throw new GraphQLError('Failed to fetch CI', {
+      extensions: { code: 'INTERNAL_SERVER_ERROR', originalError: error.message },
+    });
+  }
+  if (!ci) {
+    throw ciNotFound();
+  }
+}
+
 /** Keeps only traversal paths whose every node is in the caller's organization. */
 const PATH_IN_ORGANIZATION = 'all(n IN nodes(path) WHERE n.organization_id = $organizationId)';
 
@@ -235,6 +256,23 @@ function parseMetadata(metadata: unknown): Record<string, unknown> {
   return metadata && typeof metadata === 'object' ? metadata as Record<string, unknown> : {};
 }
 
+/**
+ * A CI timestamp as the GraphQL `String` the schema declares. Neo4j returns
+ * `datetime()` properties as driver temporal objects, which GraphQL cannot
+ * serialize; they are formatted exactly as REST's convertNeo4jTypes formats
+ * them (`YYYY-MM-DDTHH:mm:ss.000Z`). Strings pass through unchanged.
+ */
+function timestampString(value: unknown): string | undefined {
+  if (neo4j.isDateTime(value) || neo4j.isLocalDateTime(value) || neo4j.isDate(value)) {
+    const time = value as { hour?: number | Integer; minute?: number | Integer; second?: number | Integer };
+    const pad = (part: number | Integer | undefined) =>
+      String(part === undefined ? 0 : neo4j.integer.toNumber(part)).padStart(2, '0');
+    const date = `${neo4j.integer.toNumber(value.year)}-${pad(value.month)}-${pad(value.day)}`;
+    return `${date}T${pad(time.hour)}:${pad(time.minute)}:${pad(time.second)}.000Z`;
+  }
+  return typeof value === 'string' ? value : undefined;
+}
+
 function toGraphQLCI(ci: CIValue): GraphQLCI {
   return {
     _id: ci._id ?? ci.id ?? '',
@@ -246,9 +284,9 @@ function toGraphQLCI(ci: CIValue): GraphQLCI {
       ? convertDbEnumToGraphQL(ci.environment ?? ci._environment ?? 'development')
       : undefined,
     _metadata: parseMetadata(ci._metadata ?? ci.metadata),
-    _createdAt: ci._created_at ?? ci._createdAt ?? ci.created_at ?? '',
-    _updatedAt: ci._updated_at ?? ci._updatedAt ?? ci.updated_at ?? '',
-    _discoveredAt: ci._discovered_at ?? ci._discoveredAt ?? ci.discovered_at ?? '',
+    _createdAt: timestampString(ci._created_at ?? ci._createdAt ?? ci.created_at) ?? '',
+    _updatedAt: timestampString(ci._updated_at ?? ci._updatedAt ?? ci.updated_at) ?? '',
+    _discoveredAt: timestampString(ci._discovered_at ?? ci._discoveredAt ?? ci.discovered_at) ?? '',
   };
 }
 
@@ -458,6 +496,7 @@ const Query = {
     _context: GraphQLContext
   ): Promise<any[]> => {
     const organizationId = requireGraphQLOrganization(_context);
+    await requireCIInOrganization(_context, _args.id, organizationId);
     try {
       const direction = _args.direction === 'in' ? 'in' : _args.direction === 'out' ? 'out' : 'both';
       // Both ends of every relationship must be in the caller's organization.
@@ -495,6 +534,7 @@ const Query = {
   ): Promise<GraphQLCI[]> => {
     const organizationId = requireGraphQLOrganization(_context);
     const depth = traversalDepth(_args.depth);
+    await requireCIInOrganization(_context, _args.id, organizationId);
     const session = _context._neo4jClient.getSession();
 
     try {
@@ -531,6 +571,7 @@ const Query = {
   ): Promise<Array<{ _ci: GraphQLCI; _distance: number }>> => {
     const organizationId = requireGraphQLOrganization(_context);
     const depth = traversalDepth(_args.depth);
+    await requireCIInOrganization(_context, _args.id, organizationId);
     const session = _context._neo4jClient.getSession();
 
     try {
@@ -571,13 +612,15 @@ const Mutation = {
   /**
    * Create a new CI in the caller's organization. The organization comes only
    * from the token: the input fields are whitelisted, so no input can set it.
+   * CI ids and external ids are unique across all organizations, so a client
+   * choosing either could probe another organization's CIs (free value:
+   * created; used value: rejected). The server therefore assigns the id, and
+   * neither `_id` nor `_externalId` is accepted.
    */
   createCI: async (
     __parent: unknown,
     _args: {
       input: {
-        _id: string;
-        _externalId?: string;
         _name: string;
         _type: string;
         _status?: string;
@@ -590,10 +633,17 @@ const Mutation = {
   ): Promise<GraphQLCI> => {
     const organizationId = requireGraphQLOrganization(_context);
     checkGraphQLPermission(_context, 'write');
+    // CreateCIInput has no such fields; this keeps a direct resolver call from
+    // reaching the database with a caller-chosen globally unique key. The
+    // answer is the same whatever the value.
+    if ('_id' in _args.input || '_externalId' in _args.input) {
+      throw new GraphQLError('CI _id and _externalId are assigned by the server and cannot be supplied', {
+        extensions: { code: 'BAD_USER_INPUT' },
+      });
+    }
     try {
       const input = validateAsRest<ValidatedCIInput>(ciInputSchema, {
-        id: _args.input._id,
-        external_id: _args.input._externalId,
+        id: randomUUID(),
         name: _args.input._name,
         type: enumInput(_args.input._type),
         status: enumInput(_args.input._status),
@@ -603,7 +653,6 @@ const Mutation = {
       });
       const ciInput: CIInput = {
         _id: input.id,
-        external_id: input.external_id,
         name: input.name,
         _type: input.type,
         status: input.status,
@@ -617,12 +666,6 @@ const Mutation = {
     } catch (error: any) {
       if (error instanceof GraphQLError) {
         throw error;
-      }
-      // CI ids are globally unique; same constant answer as the REST 409.
-      if (error instanceof Error && error.message.includes('already exists')) {
-        throw new GraphQLError('CI with this ID already exists', {
-          extensions: { code: 'CONFLICT' },
-        });
       }
       throw new GraphQLError('Failed to create CI', {
         extensions: {
@@ -855,9 +898,9 @@ const CIResolvers = {
   _externalId: (parent: CIValue) => parent.external_id ?? parent._externalId,
   _name: (parent: CIValue) => parent.name ?? parent._name,
   _environment: (parent: CIValue) => parent.environment ?? parent._environment,
-  _createdAt: (parent: CIValue) => parent._created_at ?? parent._createdAt,
-  _updatedAt: (parent: CIValue) => parent._updated_at ?? parent._updatedAt,
-  _discoveredAt: (parent: CIValue) => parent._discovered_at ?? parent._discoveredAt,
+  _createdAt: (parent: CIValue) => timestampString(parent._created_at ?? parent._createdAt),
+  _updatedAt: (parent: CIValue) => timestampString(parent._updated_at ?? parent._updatedAt),
+  _discoveredAt: (parent: CIValue) => timestampString(parent._discovered_at ?? parent._discoveredAt),
 };
 
 /**

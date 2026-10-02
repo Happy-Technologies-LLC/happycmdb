@@ -109,13 +109,10 @@ export const typeDefs = `
   }
 
   """
-  Input for creating a new CI
+  Input for creating a new CI. The server assigns the CI id (returned as _id);
+  ids and external ids are not client-supplied.
   """
   input CreateCIInput {
-    """Unique identifier"""
-    _id: ID!
-    """External identifier"""
-    _externalId: String
     """Name of the CI"""
     _name: String!
     """CI type"""

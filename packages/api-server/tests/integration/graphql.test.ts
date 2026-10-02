@@ -198,15 +198,24 @@ describe('GraphQL API Integration Tests', () => {
     expect(expectSuccess(paged).getCIs).toHaveLength(1);
   });
 
-  it('creates, updates and deletes a CI in the caller organization', async () => {
-    const ciId = uuidv4();
+  it('creates, updates and deletes a CI in the caller organization with a server-assigned id', async () => {
     const created = await execute(
       `mutation CreateCI($input: CreateCIInput!) {
-        createCI(input: $input) { _id _name _type }
+        createCI(input: $input) { _id _name _type _discoveredAt _createdAt _updatedAt }
       }`,
-      { input: { _id: ciId, _name: 'production-server', _type: 'SERVER' } }
+      { input: { _name: 'production-server', _type: 'SERVER', _discoveredAt: '2024-02-30' } }
     );
-    expect(expectSuccess(created).createCI).toEqual({ _id: ciId, _name: 'production-server', _type: 'SERVER' });
+    const createdCI = expectSuccess(created).createCI as Record<string, string>;
+    const ciId = createdCI._id!;
+    expect(ciId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    // Neo4j DateTime values come back as the same ISO strings REST returns.
+    expect(createdCI).toMatchObject({
+      _name: 'production-server',
+      _type: 'SERVER',
+      _discoveredAt: '2024-03-01T00:00:00.000Z',
+      _createdAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.000Z$/),
+      _updatedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.000Z$/),
+    });
 
     const session = getNeo4jClient().getSession();
     try {
@@ -218,15 +227,48 @@ describe('GraphQL API Integration Tests', () => {
 
     const updated = await execute(
       `mutation UpdateCI($id: ID!, $input: UpdateCIInput!) {
-        updateCI(id: $id, input: $input) { _id _name _status }
+        updateCI(id: $id, input: $input) { _id _name _status _updatedAt }
       }`,
       { id: ciId, input: { _name: 'updated-server', _status: 'MAINTENANCE' } }
     );
-    expect(expectSuccess(updated).updateCI).toEqual({ _id: ciId, _name: 'updated-server', _status: 'MAINTENANCE' });
+    expect(expectSuccess(updated).updateCI).toEqual({
+      _id: ciId,
+      _name: 'updated-server',
+      _status: 'MAINTENANCE',
+      _updatedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.000Z$/),
+    });
 
     const deleted = await execute('mutation($id: ID!) { deleteCI(id: $id) }', { id: ciId });
     expect(expectSuccess(deleted).deleteCI).toBe(true);
     expect(expectSuccess(await execute('{ getCIs { _id } }')).getCIs).toEqual([]);
+  });
+
+  it("createCI cannot probe another organization's ids or external ids", async () => {
+    const usedId = await createCI({ _name: 'org-a-server', _externalId: 'i-org-a-0001' });
+    const create = (input: Record<string, unknown>) =>
+      execute('mutation($i: CreateCIInput!) { createCI(input: $i) { _id } }', { i: { _name: 'probe', _type: 'SERVER', ...input } }, orgBToken);
+    const errorOf = (response: request.Response) => {
+      const [error] = response.body.errors ?? [];
+      // The message names the offending input field and repeats the value; compare without the value.
+      return { status: response.status, code: error?.extensions?.code, message: String(error?.message).split(';')[1] };
+    };
+
+    for (const [field, used, free] of [
+      ['_id', usedId, uuidv4()],
+      ['_externalId', 'i-org-a-0001', 'i-free-0001'],
+    ] as const) {
+      const [usedResult, freeResult] = [errorOf(await create({ [field]: used })), errorOf(await create({ [field]: free }))];
+      expect(usedResult.code).toBe('BAD_USER_INPUT');
+      expect(freeResult).toEqual(usedResult);
+    }
+
+    const session = getNeo4jClient().getSession();
+    try {
+      const count = await session.run('MATCH (ci:CI) RETURN count(ci) AS n');
+      expect(count.records[0]!.get('n').toNumber()).toBe(1);
+    } finally {
+      await session.close();
+    }
   });
 
   it("isolates two organizations: another organization's CIs read and mutate like missing ones", async () => {
@@ -250,16 +292,21 @@ describe('GraphQL API Integration Tests', () => {
     // Reads as ORG_B: only ORG_B's CI, and ORG_A's CIs look missing.
     expect(expectSuccess(await asB('{ getCIs { _id } }')).getCIs).toEqual([{ _id: serverB }]);
     expect(expectSuccess(await asB('{ searchCIs(query: "org-") { _id } }')).searchCIs).toEqual([{ _id: serverB }]);
-    const foreignReads = expectSuccess(await asB(
-      `query($a: ID!, $db: ID!) {
-        getCI(id: $a) { _id }
-        getCIRelationships(id: $a) { _type }
-        getCIDependencies(id: $a) { _id }
-        getImpactAnalysis(id: $db) { _distance }
-      }`,
-      { a: appA, db: dbA }
-    ));
-    expect(foreignReads).toEqual({ getCI: null, getCIRelationships: [], getCIDependencies: [], getImpactAnalysis: [] });
+    const foreignReads = await asB('query($a: ID!) { getCI(id: $a) { _id } }', { a: appA });
+    expect(expectSuccess(foreignReads)).toEqual({ getCI: null });
+    // Traversals from a foreign or missing CI give the same NOT_FOUND (as REST's 404).
+    const missingId = uuidv4();
+    for (const traversal of [
+      'query($id: ID!) { getCIRelationships(id: $id) { _type } }',
+      'query($id: ID!) { getCIDependencies(id: $id) { _id } }',
+      'query($id: ID!) { getImpactAnalysis(id: $id) { _distance } }',
+    ]) {
+      const [foreign, missing] = [await asB(traversal, { id: dbA }), await asB(traversal, { id: missingId })];
+      for (const response of [foreign, missing]) {
+        expect(response.body.data).toBeNull();
+        expect(response.body.errors?.[0]).toMatchObject({ message: 'CI not found', extensions: { code: 'NOT_FOUND' } });
+      }
+    }
     // ORG_B's own server has an incoming edge from ORG_A: not visible to ORG_B.
     expect(expectSuccess(await asB(
       'query($id: ID!) { getImpactAnalysis(id: $id) { _distance } getCIRelationships(id: $id) { _type } }',

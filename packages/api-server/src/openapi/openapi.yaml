@@ -2725,7 +2725,8 @@ paths:
         Lists the caller's organization's business services, newest first.
         Query parameters are validated only when at least one is present.
         Unknown parameters are ignored (stripped before the handler runs);
-        empty strings and out-of-range `page`/`limit` are rejected with 400.
+        values that fail the parameter schema (e.g. empty, non-integer or
+        out-of-range, repeated) are rejected with 400.
       operationId: listBusinessServices
       parameters:
         - name: search
@@ -3019,11 +3020,11 @@ paths:
       description: >-
         Upserts one mapping per `ci_ids` entry with the given `mapping_type`;
         an existing (ci_id, mapping_type) mapping has its `confidence_score`
-        and `updated_at` replaced. CI ids are not checked against the CI
-        store or against the caller's organization, so any string can be
-        mapped. A `ci_ids` list containing the same id twice currently fails
-        with 500. Unknown body fields are ignored. Requires the `write`
-        permission.
+        and `updated_at` replaced. CI ids are not looked up in the CI store
+        or checked against the caller's organization. Ids longer than 100
+        characters, or a `ci_ids` list containing the same id twice,
+        currently fail with 500. Unknown body fields are ignored. Requires
+        the `write` permission.
       operationId: mapBusinessServiceCIs
       requestBody:
         required: true
@@ -3547,14 +3548,27 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/MiddlewareError'
-          example:
-            _success: false
-            _error: Validation Error
-            _message: '"limit" must be less than or equal to 100'
-            _details:
-              - _field: limit
+          examples:
+            query:
+              summary: Invalid list query parameter
+              value:
+                _success: false
+                _error: Validation Error
                 _message: '"limit" must be less than or equal to 100'
-                _type: number.max
+                _details:
+                  - _field: limit
+                    _message: '"limit" must be less than or equal to 100'
+                    _type: number.max
+            body:
+              summary: Invalid body field
+              value:
+                _success: false
+                _error: Validation Error
+                _message: '"name" length must be at least 3 characters long'
+                _details:
+                  - _field: name
+                    _message: '"name" length must be at least 3 characters long'
+                    _type: string.min
 
     BusinessServiceUnauthorized:
       description: No credentials, or the JWT / API key failed verification

@@ -9,6 +9,8 @@
 import { Request, Response } from 'express';
 import { getDashboardService } from '../../services/dashboard.service';
 import { logger } from '@cmdb/common';
+import { requestOrganizationId } from '../../middleware/auth.middleware';
+import { BUSINESS_SERVICE_NOT_FOUND } from '../../services/business-service-ownership';
 
 export class DashboardController {
   private dashboardService = getDashboardService();
@@ -24,7 +26,7 @@ export class DashboardController {
 
       logger.info('Fetching executive dashboard', { timeRange });
 
-      const data = await this.dashboardService.getExecutiveSummary(timeRange);
+      const data = await this.dashboardService.getExecutiveSummary(requestOrganizationId(req), timeRange);
 
       res.json({
         success: true,
@@ -52,7 +54,7 @@ export class DashboardController {
 
       logger.info('Fetching CIO dashboard', { timeRange });
 
-      const data = await this.dashboardService.getCIOMetrics(timeRange);
+      const data = await this.dashboardService.getCIOMetrics(requestOrganizationId(req), timeRange);
 
       res.json({
         success: true,
@@ -77,7 +79,7 @@ export class DashboardController {
     try {
       logger.info('Fetching ITSM dashboard');
 
-      const data = await this.dashboardService.getITSMDashboard();
+      const data = await this.dashboardService.getITSMDashboard(requestOrganizationId(req));
 
       res.json({
         success: true,
@@ -104,7 +106,7 @@ export class DashboardController {
 
       logger.info('Fetching FinOps dashboard', { timeRange });
 
-      const data = await this.dashboardService.getFinOpsDashboard(timeRange);
+      const data = await this.dashboardService.getFinOpsDashboard(requestOrganizationId(req), timeRange);
 
       res.json({
         success: true,
@@ -131,7 +133,11 @@ export class DashboardController {
 
       logger.info('Fetching business service dashboard', { serviceId });
 
-      const data = await this.dashboardService.getBusinessServiceDashboard(serviceId);
+      const data = await this.dashboardService.getBusinessServiceDashboard(requestOrganizationId(req), serviceId);
+      if (data === null) {
+        res.status(404).json(BUSINESS_SERVICE_NOT_FOUND);
+        return;
+      }
 
       res.json({
         success: true,

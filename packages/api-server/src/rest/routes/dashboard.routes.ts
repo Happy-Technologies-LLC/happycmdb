@@ -8,9 +8,15 @@
 
 import { Router } from 'express';
 import { DashboardController } from '../controllers/dashboard.controller';
+import { getAuthMiddleware } from '../../auth/auth-bootstrap';
 
 const router = Router();
 const dashboardController = new DashboardController();
+
+// Tenant scoping: a token without an org claim is rejected with 403 before any
+// data access. Every dashboard is computed from the caller organization's CIs
+// and business services only.
+router.use(getAuthMiddleware().requireOrganization());
 
 /**
  * @route GET /api/v1/dashboards/executive

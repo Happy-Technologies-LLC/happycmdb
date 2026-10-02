@@ -5,10 +5,11 @@ import { Request, Response } from 'express';
 import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
 import { logger } from '@cmdb/common';
 import { requestOrganizationId } from '../../middleware/auth.middleware';
-import { ownedBusinessServiceIds, ownsBusinessService } from '../../services/business-service-ownership';
-
-// One body for a foreign, missing, or Neo4j-only service so ownership is not observable.
-const BUSINESS_SERVICE_NOT_FOUND = { success: false, error: 'Not Found', message: 'Business service not found' };
+import {
+  BUSINESS_SERVICE_NOT_FOUND,
+  ownedBusinessServiceIds,
+  ownsBusinessService,
+} from '../../services/business-service-ownership';
 
 
 /**

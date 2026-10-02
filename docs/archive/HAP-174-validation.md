@@ -3229,7 +3229,7 @@ import { join } from 'path';
 import express from 'express';
 
 Object.assign(process.env, {
-  JWT_SECRET: 'test-only-jwt-secret-at-least-32-characters-long',
+  JWT_SECRET: '<redacted fixture secret>',
   NEO4J_URI: 'bolt://127.0.0.1:1', NEO4J_USERNAME: 'unused', NEO4J_PASSWORD: 'unused',
   POSTGRES_HOST: '127.0.0.1', POSTGRES_DB: 'unused', POSTGRES_USER: 'unused', POSTGRES_PASSWORD: 'unused',
   REDIS_HOST: '127.0.0.1', KAFKA_CLIENT_ID: 'unused', KAFKA_GROUP_ID: 'unused',

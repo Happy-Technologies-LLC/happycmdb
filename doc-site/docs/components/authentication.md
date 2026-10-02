@@ -298,6 +298,16 @@ cypher-shell -a bolt://<host>:7687 -u <user> -f packages/database/src/neo4j/migr
   FQDN, hostname + IP). Another organization's CI is never returned or written, even
   with identical identifiers: the merge then creates a new CI in the caller's
   organization, stamped with its `organization_id`.
+- **Limitation:** the Neo4j constraints `ci_id_unique` and `ci_external_id_unique` are
+  global, not per organization. When the new CI would carry an `external_id` that
+  another organization's CI already stores, `/merge` returns **409**
+  `{"success":false,"error":"Conflict","message":"A CI with these identifiers already exists"}`
+  and writes nothing. That reveals that the `external_id` exists somewhere (as
+  `POST /api/v1/cis` does), and the first organization to store an `external_id`
+  keeps it. Other merge failures return a constant **500** without the driver message.
+- Rows of a deleted CI stay in `ci_source_lineage`, `ci_field_sources` and
+  `reconciliation_conflicts`. If another organization later creates a CI with the same
+  client-chosen id (`POST /api/v1/cis`), it sees those rows.
 - `reconciliation_conflicts`, `ci_source_lineage` and `ci_field_sources` have no
   organization column; a row belongs to the organization of the CI its `ci_id` names.
   `/conflicts` lists only conflicts of the caller's CIs, and a conflict of another

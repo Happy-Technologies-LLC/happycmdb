@@ -366,8 +366,10 @@ describe('ReconciliationWorkflow - Integration Tests', () => {
     const ORG_B = '22222222-2222-4222-8222-222222222222';
 
     it("never matches or merges into another organization's CI with identical identifiers", async () => {
-      // external_id (via ci_source_lineage), MAC, FQDN and hostname + IP all shared.
-      const discovery = toStorableDiscovery(physicalServerDuplicates[1]!);
+      // Serial number, MAC, FQDN and hostname + IP all shared. No external_id: the
+      // production ci_external_id_unique constraint is global, so a second org's
+      // create with the same external_id is refused (REST maps it to a constant 409).
+      const discovery = toStorableDiscovery(physicalServerDuplicates[2]!);
 
       const ciA = await engine.reconcileCI(discovery, ORG);
       const before = await getCIFromNeo4j(ciA);

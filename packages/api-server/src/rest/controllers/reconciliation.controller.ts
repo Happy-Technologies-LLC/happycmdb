@@ -39,6 +39,16 @@ function sendConflictNotFound(res: Response): void {
   });
 }
 
+/** Neo4j error code of a uniqueness-constraint violation. */
+const NEO4J_CONSTRAINT_VIOLATION = 'Neo.ClientError.Schema.ConstraintValidationFailed';
+
+/** The one 409 for a merge whose new CI collides with an existing CI's unique identifier. */
+const MERGE_CONFLICT = {
+  success: false,
+  error: 'Conflict',
+  message: 'A CI with these identifiers already exists'
+};
+
 export class ReconciliationController {
   private reconciliationEngine = getIdentityReconciliationEngine();
   private postgresClient = getPostgresClient();
@@ -151,10 +161,18 @@ export class ReconciliationController {
       });
     } catch (error) {
       logger.error('Error merging CI', error);
+      // Neo4j uniqueness constraints (CI id, external_id) are global, not per
+      // organization: a create can collide with another organization's CI. The
+      // response is constant and never carries the driver message, which names
+      // the property and value of the existing node.
+      if ((error as { code?: unknown } | null)?.code === NEO4J_CONSTRAINT_VIOLATION) {
+        res.status(409).json(MERGE_CONFLICT);
+        return;
+      }
       res.status(500).json({
         success: false,
         error: 'Failed to merge CI',
-        message: error instanceof Error ? error.message : 'Unknown error'
+        message: 'CI reconciliation failed'
       });
     }
   }

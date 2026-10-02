@@ -107,6 +107,16 @@ function run(rawCypher: string, params: Props): FakeRecord[] {
   if (cypher.startsWith('CREATE (ci:CI')) {
     const props = { ...(params['properties'] as Props) };
     for (const key of Object.keys(props)) if (props[key] === null || props[key] === undefined) delete props[key];
+    // ci_id_unique and ci_external_id_unique (schema.cypher) span every organization.
+    for (const key of ['id', 'external_id']) {
+      const clash = [...graph.values()].find(other => props[key] !== undefined && other[key] === props[key]);
+      if (clash !== undefined) {
+        throw Object.assign(
+          new Error(`Node(1) already exists with label \`CI\` and property \`${key}\` = '${String(props[key])}'`),
+          { code: 'Neo.ClientError.Schema.ConstraintValidationFailed' }
+        );
+      }
+    }
     graph.set(props['id'] as string, props);
     return [record({ ci_id: props['id'] })];
   }
@@ -306,6 +316,25 @@ describe('/api/v1/reconciliation tenant scoping', () => {
     const asB = await request(app).post('/api/v1/reconciliation/match').set(AS_B)
       .send({ identifiers: { serial_number: 'SN-NEW' } });
     expect(asB.body.data).toBeNull();
+  });
+
+  it("merge colliding with another org's globally unique external_id is a constant 409", async () => {
+    // Org B's CI stores the external_id as a node property (ci_external_id_unique is global).
+    graph.get(CI_B)!['external_id'] = 'i-only-b';
+    const before = snapshot();
+
+    const res = await request(app).post('/api/v1/reconciliation/merge').set(AS_A).send({
+      name: 'a-web', ci_type: 'server', source: 'gcp', source_id: 'i-only-b', confidence_score: 90,
+      identifiers: { external_id: 'i-only-b', serial_number: 'SN-A-ONLY' },
+      attributes: { owner: 'attacker' },
+    });
+
+    expect([res.status, res.body]).toEqual([
+      409, { success: false, error: 'Conflict', message: 'A CI with these identifiers already exists' },
+    ]);
+    // Nothing written in either org.
+    expect(snapshot()).toBe(before);
+    expect(await lineageOf(CI_B)).toEqual([{ source_name: 'aws', source_id: B_IDENTIFIERS.external_id }]);
   });
 
   it('403 with zero queries without an org claim', async () => {

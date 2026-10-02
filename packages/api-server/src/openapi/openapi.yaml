@@ -2188,6 +2188,17 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/ReconciliationForbidden'
+        '409':
+          description: >-
+            The new CI would collide with an existing CI's globally unique
+            identifier (the `ci_id_unique` / `ci_external_id_unique` constraints span
+            every organization). Nothing is written.
+          content:
+            application/json:
+              example:
+                success: false
+                error: Conflict
+                message: A CI with these identifiers already exists
 
   /reconciliation/conflicts:
     get:

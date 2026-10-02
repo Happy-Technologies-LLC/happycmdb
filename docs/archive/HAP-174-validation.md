@@ -79,6 +79,8 @@ Scope gaps (disclosed, not exercised in the mounted run): "unknown criticality c
 (`requires an explicit selection before saving a row with unknown criticality`); the mounted run did not seed a non-canonical row
 (the DB table stores what Joi allows). No regression assertion was added to the focused test for the `owned_by` omission; the mounted run is its proof.
 
+Redaction note (post-capture, 2026-10): the `Authorization: Bearer` tokens in the captured request dumps in sections 7.1/7.2 are replaced with `<redacted fixture JWT>`, and the literal `JWT_SECRET` in the section 8 harness is replaced with a fresh per-run `randomBytes(32).toString('hex')`, because secret scanners flagged the signed tokens and the literal secret could mint equivalent ones; all other output is unedited.
+
 ## 4. Substitutions and teardown (mounted harness)
 
 - DB: in-memory PGlite (forked `fixtures/pglite-host.cjs`), DDL extracted verbatim from `packages/database/src/postgres/migrations/001_complete_schema.sql`
@@ -3224,12 +3226,13 @@ EXIT=0
 // THROWAWAY HAP-174 harness: real business-service.routes.ts (auth + Joi + controller) on PGlite,
 // listening on 127.0.0.1; spawns the web-ui vitest page driver against it, then checks the DB.
 import { fork, spawnSync } from 'child_process';
+import { randomBytes } from 'crypto';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import express from 'express';
 
 Object.assign(process.env, {
-  JWT_SECRET: '<redacted fixture secret>',
+  JWT_SECRET: randomBytes(32).toString('hex'),
   NEO4J_URI: 'bolt://127.0.0.1:1', NEO4J_USERNAME: 'unused', NEO4J_PASSWORD: 'unused',
   POSTGRES_HOST: '127.0.0.1', POSTGRES_DB: 'unused', POSTGRES_USER: 'unused', POSTGRES_PASSWORD: 'unused',
   REDIS_HOST: '127.0.0.1', KAFKA_CLIENT_ID: 'unused', KAFKA_GROUP_ID: 'unused',

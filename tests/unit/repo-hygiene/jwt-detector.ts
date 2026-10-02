@@ -61,6 +61,8 @@ const MIN_B64_RUN = 88;
  * to ~12 KB that straddles the cut is still decoded whole.
  */
 const B64_OVERLAP = 16384;
+/** Trailing glued pieces shorter than this (words, not wrapped lines) may be dropped. */
+const MAX_GLUED_TRAILING_PIECE = 24;
 /** Leading pieces a splice may glue in front of a wrapped value (`# token\n`). */
 const MAX_GLUED_PIECES = 3;
 /** Header characters decoded per input character before scanning fails closed. */
@@ -380,17 +382,17 @@ function b64RunHits(run: Spliced, depth: number): number[] {
  * Decode a base64 run and re-scan it; return the source offset of the decoded
  * value holding a JWT, or -1.
  * A splice may glue up to MAX_GLUED_PIECES short lines (`# token`, a prose
- * word) in front of a wrapped value, or a word from the next line after it,
- * and formatting may glue `_`/`-` before it (`_<value>_`). Each misaligns or
+ * word) in front of a wrapped value or after it (`Thanks\nNick`), and
+ * formatting may glue `_`/`-` before it (`_<value>_`). Each misaligns or
  * lengthens the decode, so also try the run without leading pieces (first,
  * when the first piece is too short to be a value on its own, so the hit is
  * reported on the value's line), without the leading `-`/`_` of whichever
- * piece it starts at, and without its last piece. As a last resort, shift
- * the whole run by 1-3 characters (a glued `auth-` style prefix).
+ * piece it starts at, and without its last piece plus up to MAX_GLUED_PIECES
+ * further short trailing pieces. As a last resort, shift the whole run by 1-3
+ * characters (a glued `auth-` style prefix).
  */
 function b64RunHit(run: Spliced, depth: number): number {
   const { text, breaks } = run;
-  const lastBreak = breaks.length > 0 ? breaks[breaks.length - 1] : text.length;
   const dropped = breaks.slice(0, MAX_GLUED_PIECES);
   const firstPiece = breaks.length > 0 ? breaks[0] : text.length;
   const bases = firstPiece < MIN_B64_RUN ? [...dropped, 0] : [0, ...dropped];
@@ -402,14 +404,28 @@ function b64RunHit(run: Spliced, depth: number): number {
     if (lead > base) offsets.push(lead);
   }
   offsets.push(1, 2, 3);
-  const tried = new Set<string>();
+  // Ends: the whole run, without its last piece, then without up to
+  // MAX_GLUED_PIECES further trailing pieces only while each is short (a glued
+  // word, not a full-width wrapped line), so crafted wrapped data does not
+  // multiply work.
+  const ends = [text.length];
+  for (let b = breaks.length - 1; b >= 0 && ends.length <= MAX_GLUED_PIECES + 1; b--) {
+    const piece = ends[ends.length - 1] - breaks[b];
+    if (ends.length > 1 && piece >= MAX_GLUED_TRAILING_PIECE) break;
+    ends.push(breaks[b]);
+  }
+  const tried = new Set<number>();
   for (const offset of offsets) {
-    for (const end of [text.length, lastBreak]) {
-      const variant = text.slice(offset, end);
-      if (variant.length < MIN_B64_RUN || tried.has(variant)) continue;
-      tried.add(variant);
+    if (tried.has(offset) || offset >= text.length) continue;
+    tried.add(offset);
+    // A decoded prefix equals the decode of the prefix, so decode once per
+    // offset and re-scan prefixes for each end.
+    const decoded = Buffer.from(text.slice(offset), 'base64');
+    for (const end of ends) {
+      if (end - offset < MIN_B64_RUN) continue;
+      const bytes = decoded.subarray(0, Math.floor(((end - offset) * 3) / 4));
       // Report where the decoded value starts, not where the splice began.
-      if (scanBuffer(Buffer.from(variant, 'base64'), depth + 1).size > 0) return sourceOffset(run, offset);
+      if (scanBuffer(bytes, depth + 1).size > 0) return sourceOffset(run, offset);
     }
   }
   return -1;

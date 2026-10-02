@@ -50,6 +50,17 @@ function mintWithHeader(headerJson: string): string {
   return `${signingInput}.${sig}`;
 }
 
+/**
+ * HS256 JWT whose length is a multiple of 3, so its base64 form has no
+ * padding and bytes decoded from a glued next line extend the signature.
+ */
+function mintAlignedJwt(): string {
+  for (let pad = 0; ; pad++) {
+    const token = mintJwt({ sub: `user-${randomBytes(4).toString('hex')}`, p: 'x'.repeat(pad) });
+    if (token.length % 3 === 0) return token;
+  }
+}
+
 describe('repo hygiene', () => {
   it('has no full three-part JWT literal in any tracked file', () => {
     const hits: string[] = [];
@@ -151,6 +162,17 @@ describe('findJwtLines', () => {
     ]);
   });
 
+  it('detects a wrapped base64 JWT followed by glued word-only lines', () => {
+    const blocks = [
+      `${wrap(Buffer.from(mintAlignedJwt()).toString('base64'), 76)}\nThanks\nNick`,
+      // The last glued line plus MAX_GLUED_PIECES (3) more: the detector's bound.
+      `${wrap(Buffer.from(mintAlignedJwt()).toString('base64url'), 76)}\nThanks\nNick\nBye\nNow`,
+    ];
+    const second = 2 + blocks[0].split('\n').length + 1;
+
+    expect(findJwtLines(Buffer.from(`# captured\n${blocks.join('\n\n')}\n`))).toEqual([2, second]);
+  });
+
   it('detects a whitespace-header JWT split after its first character', () => {
     const token = mintWithHeader(' {"alg":"HS256","typ":"JWT"}'); // IHs...
     // A blank line keeps the next sample from splicing onto the signature.
@@ -164,7 +186,14 @@ describe('findJwtLines', () => {
     const header = b64url('{"alg":"HS256","typ":"JWT"}');
     const placeholder = Buffer.from(`${header}.${b64url('{}')}.signature`).toString('base64url');
     const noise = randomBytes(240).toString('base64');
-    const text = [incomplete, wrap(placeholder, 16), wrap(placeholder, 4), wrap(noise, 8)].join('\n\n');
+    const text = [
+      incomplete,
+      wrap(placeholder, 16),
+      wrap(placeholder, 4),
+      wrap(noise, 8),
+      `${wrap(placeholder, 76)}\nThanks\nNick\nBye`,
+      `${wrap(noise, 76)}\nThanks\nNick`,
+    ].join('\n\n');
 
     expect(findJwtLines(Buffer.from(`${text}\n`))).toEqual([]);
   });

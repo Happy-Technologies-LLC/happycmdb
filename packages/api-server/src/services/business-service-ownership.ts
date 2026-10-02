@@ -14,6 +14,9 @@
 
 import { getPostgresClient } from '@cmdb/database';
 
+/** One REST 404 body for a foreign, missing, or Neo4j-only service so ownership is not observable. */
+export const BUSINESS_SERVICE_NOT_FOUND = { success: false, error: 'Not Found', message: 'Business service not found' };
+
 /** Ids of every business service the organization owns. */
 export async function ownedBusinessServiceIds(organizationId: string): Promise<Set<string>> {
   const result = await getPostgresClient().query(

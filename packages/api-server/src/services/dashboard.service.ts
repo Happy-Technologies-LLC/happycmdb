@@ -8,6 +8,7 @@
 
 import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
 import { logger } from '@cmdb/common';
+import { ownsBusinessService } from './business-service-ownership';
 
 export interface TimeRange {
   days: number;
@@ -326,9 +327,11 @@ export class DashboardService {
   }
 
   /**
-   * Get Executive Dashboard data
+   * Get Executive Dashboard data. Every dashboard method takes the caller's
+   * organization id (from the token, never from request input) and only
+   * matches :CI nodes whose organization_id equals it.
    */
-  async getExecutiveSummary(timeRange: TimeRange): Promise<ExecutiveSummaryData> {
+  async getExecutiveSummary(organizationId: string, timeRange: TimeRange): Promise<ExecutiveSummaryData> {
     logger.info('Fetching executive summary data', { timeRange });
 
     try {
@@ -337,7 +340,7 @@ export class DashboardService {
 
       const result = await session.run(`
         MATCH (ci:CI)
-        WHERE ci.status = 'active'
+        WHERE ci.status = 'active' AND ci.organization_id = $organizationId
         RETURN
           count(ci) as totalCIs,
           collect({
@@ -347,7 +350,7 @@ export class DashboardService {
             tbm: ci.tbm_attributes,
             bsm: ci.bsm_attributes
           }) as cis
-      `);
+      `, { organizationId });
 
       await session.close();
 
@@ -396,16 +399,16 @@ export class DashboardService {
   /**
    * Get CIO Dashboard metrics
    */
-  async getCIOMetrics(timeRange: TimeRange): Promise<CIOMetricsData> {
+  async getCIOMetrics(organizationId: string, timeRange: TimeRange): Promise<CIOMetricsData> {
     logger.info('Fetching CIO metrics', { timeRange });
 
     try {
       const session = this.neo4j.getSession();
 
-      // Get all active CIs with ITIL attributes
+      // Get the organization's active CIs with ITIL attributes
       const result = await session.run(`
         MATCH (ci:CI)
-        WHERE ci.status = 'active'
+        WHERE ci.status = 'active' AND ci.organization_id = $organizationId
         RETURN
           count(ci) as totalCIs,
           collect({
@@ -416,7 +419,7 @@ export class DashboardService {
             tbm: ci.tbm_attributes,
             bsm: ci.bsm_attributes
           }) as cis
-      `);
+      `, { organizationId });
 
       await session.close();
 
@@ -479,19 +482,20 @@ export class DashboardService {
   /**
    * Get ITSM Dashboard data
    */
-  async getITSMDashboard(): Promise<ITSMDashboardData> {
+  async getITSMDashboard(organizationId: string): Promise<ITSMDashboardData> {
     logger.info('Fetching ITSM dashboard data');
 
     try {
       const session = this.neo4j.getSession();
 
-      // Get CIs with status breakdown
+      // Get the organization's CIs with status breakdown
       const statusResult = await session.run(`
         MATCH (ci:CI)
+        WHERE ci.organization_id = $organizationId
         WITH ci.status as status, count(ci) as count, collect(ci) as ciList
         RETURN status, count, ciList[0..5] as sampleCIs
         ORDER BY count DESC
-      `);
+      `, { organizationId });
 
       const ciStatus = statusResult.records.map(record => ({
         status: record.get('status'),
@@ -563,7 +567,7 @@ export class DashboardService {
   /**
    * Get FinOps Dashboard data
    */
-  async getFinOpsDashboard(timeRange: TimeRange): Promise<FinOpsDashboardData> {
+  async getFinOpsDashboard(organizationId: string, timeRange: TimeRange): Promise<FinOpsDashboardData> {
     logger.info('Fetching FinOps dashboard data', { timeRange });
 
     try {
@@ -571,7 +575,7 @@ export class DashboardService {
 
       const result = await session.run(`
         MATCH (ci:CI)
-        WHERE ci.status = 'active'
+        WHERE ci.status = 'active' AND ci.organization_id = $organizationId
         RETURN collect({
           id: ci.id,
           name: ci.name,
@@ -579,7 +583,7 @@ export class DashboardService {
           tbm: ci.tbm_attributes,
           provider: ci.discovery_provider
         }) as cis
-      `);
+      `, { organizationId });
 
       await session.close();
 
@@ -618,20 +622,29 @@ export class DashboardService {
   }
 
   /**
-   * Get Business Service Dashboard data
+   * Get Business Service Dashboard data. With a serviceId, returns null (and
+   * runs no Cypher) unless the organization owns the service in Postgres, so a
+   * foreign service is indistinguishable from a missing one.
    */
-  async getBusinessServiceDashboard(serviceId?: string): Promise<BusinessServiceDashboardData> {
+  async getBusinessServiceDashboard(
+    organizationId: string,
+    serviceId?: string
+  ): Promise<BusinessServiceDashboardData | null> {
     logger.info('Fetching business service dashboard data', { serviceId });
 
     try {
+      if (serviceId && !(await ownsBusinessService(organizationId, serviceId))) {
+        return null;
+      }
+
       const session = this.neo4j.getSession();
 
-      // Get CIs with BSM attributes
+      // Get the organization's CIs with BSM attributes
       const query = serviceId
-        ? `MATCH (ci:CI) WHERE ci.id = $serviceId RETURN collect(ci) as cis`
-        : `MATCH (ci:CI) WHERE ci.status = 'active' RETURN collect(ci) as cis`;
+        ? `MATCH (ci:CI) WHERE ci.id = $serviceId AND ci.organization_id = $organizationId RETURN collect(ci) as cis`
+        : `MATCH (ci:CI) WHERE ci.status = 'active' AND ci.organization_id = $organizationId RETURN collect(ci) as cis`;
 
-      const result = await session.run(query, { serviceId });
+      const result = await session.run(query, { serviceId, organizationId });
       await session.close();
 
       const cis = result.records[0]?.get('cis') || [];
@@ -677,7 +690,7 @@ export class DashboardService {
       };
 
       // Service dependencies
-      const serviceDependencies = await this.getServiceDependencies(serviceId);
+      const serviceDependencies = await this.getServiceDependencies(organizationId, serviceId);
 
       return {
         serviceHealth,
@@ -957,7 +970,7 @@ export class DashboardService {
     ];
   }
 
-  private async getServiceDependencies(serviceId?: string): Promise<any> {
+  private async getServiceDependencies(organizationId: string, serviceId?: string): Promise<any> {
     if (!serviceId) {
       return { nodes: [], edges: [] };
     }
@@ -965,9 +978,12 @@ export class DashboardService {
     const session = this.neo4j.getSession();
 
     try {
+      // Only paths whose every node is in the organization: no hop through, or
+      // result from, another organization's CI.
       const result = await session.run(
         `
         MATCH path = (ci:CI {id: $serviceId})-[r*0..3]-(related:CI)
+        WHERE all(n IN nodes(path) WHERE n.organization_id = $organizationId)
         WITH ci, related, r, path
         RETURN
           collect(DISTINCT {
@@ -986,7 +1002,7 @@ export class DashboardService {
             healthImpact: 75
           }) as edges
         `,
-        { serviceId }
+        { serviceId, organizationId }
       );
 
       const nodes = result.records[0]?.get('nodes') || [];

@@ -31,6 +31,12 @@ Authorization: Bearer <jwt_token>
 
 See [Authentication Guide](/api/authentication) for JWT token generation.
 
+### Tenancy
+
+- Every `/api/v1/dashboards/*` endpoint requires an organization claim on the token. A token without one gets `403 {"_error":"Forbidden","_message":"Organization claim required"}` before any data is read. The organization always comes from the token, never from request parameters.
+- Every dashboard is computed only from your organization's CIs (`:CI.organization_id`); dependency traversals never pass through or return another organization's CI.
+- `GET /business-service/:serviceId` (and `?serviceId=`) only covers business services your organization owns (`dim_business_services.organization_id`). Another organization's service and a missing service return the same `404 {"success":false,"error":"Not Found","message":"Business service not found"}`.
+
 ## Endpoints
 
 ### GET /executive
@@ -662,6 +668,8 @@ All endpoints return errors in this format:
 |------|---------|--------------|
 | 200 | Success | Data fetched successfully |
 | 401 | Unauthorized | Missing or invalid JWT token |
+| 403 | Forbidden | Token has no organization claim |
+| 404 | Not Found | `business-service/:serviceId` is not a service your organization owns |
 | 500 | Internal Server Error | Database connection failure, query error |
 
 ## Rate Limiting

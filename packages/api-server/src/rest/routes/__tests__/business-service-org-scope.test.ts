@@ -2,16 +2,18 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Tenant scoping for business services (migration 008 + org-filtered routes),
- * exercised through the real businessServiceRoutes and architectureRoutes
- * behind the real AuthMiddleware/AuthService (JWT and API-key verification)
- * mounted at the production paths.
+ * Tenant scoping for business services (migration 008 + org-filtered routes)
+ * and for the CIs they map and cost (migration 011), exercised through the
+ * real businessServiceRoutes and architectureRoutes behind the real
+ * AuthMiddleware/AuthService (JWT and API-key verification) mounted at the
+ * production paths.
  *
  * SQL is executed by PGlite hosted in a forked child process
  * (fixtures/pglite-host.cjs). Schema: the CREATE TABLE blocks read verbatim
  * from 001_complete_schema.sql (PGlite has no TimescaleDB, so the fact tables
- * are plain tables), then 008_business_service_organization_scope.sql applied
- * verbatim over pre-existing (legacy, org-less) rows.
+ * are plain tables), then 008_business_service_organization_scope.sql and
+ * 011_ci_organization_scope.sql applied verbatim over pre-existing (legacy,
+ * org-less) rows.
  *
  * Substitutions: Neo4jAuthRepository -> in-memory users/API keys;
  * getPostgresClient -> IPC client to that PGlite process; Neo4j -> {} (the
@@ -141,11 +143,14 @@ function baseDdl(): string {
   }).join('\n');
 }
 
-// Pre-migration rows: the column list has no organization_id because 001 has none.
+// Pre-migration rows: the column lists have no organization_id because 001 has none.
 const LEGACY_SEED = `
 INSERT INTO dim_business_services (service_id, name, service_classification, tbm_tower, business_criticality, operational_status) VALUES
   ('bs-legacy-1', 'Legacy One', 'compute', 'compute', 'low', 'active'),
-  ('bs-legacy-2', 'Legacy Two', 'data', 'data', 'high', 'inactive');`;
+  ('bs-legacy-2', 'Legacy Two', 'data', 'data', 'high', 'inactive');
+INSERT INTO cmdb.dim_ci (ci_id, ci_name, ci_type, ci_status, is_current) VALUES
+  ('ci-legacy', 'Legacy CI (v1)', 'server', 'active', FALSE),
+  ('ci-legacy', 'Legacy CI', 'server', 'active', TRUE);`;
 
 // Org A (internal) and org B each own services with children and facts.
 const SEED = `
@@ -167,9 +172,12 @@ INSERT INTO fact_business_service_incidents (service_id, incident_date, incident
 INSERT INTO fact_business_service_changes (service_id, change_date, change_count, successful_count) VALUES
   ('bs-a-app', CURRENT_DATE - 1, 4, 3),
   ('bs-b-app', CURRENT_DATE - 1, 8, 0);
-INSERT INTO cmdb.dim_ci (ci_id, ci_name, ci_type, ci_status, tbm_attributes, is_current) VALUES
-  ('ci-a', 'A', 'server', 'active', '{"resource_tower": "compute", "monthly_cost": 100}', TRUE),
-  ('ci-b', 'B', 'server', 'active', '{"resource_tower": "compute", "monthly_cost": 7}', TRUE);`;
+INSERT INTO cmdb.dim_ci (ci_id, ci_name, ci_type, ci_status, tbm_attributes, is_current, organization_id) VALUES
+  ('ci-a', 'A', 'server', 'active', '{"resource_tower": "compute", "monthly_cost": 100}', TRUE, '${INTERNAL_ORG}'),
+  ('ci-a2', 'A2', 'server', 'active', '{"resource_tower": "compute", "monthly_cost": 1}', TRUE, '${INTERNAL_ORG}'),
+  ('ci-b', 'B', 'server', 'active', '{"resource_tower": "compute", "monthly_cost": 7}', TRUE, '${ORG_B}'),
+  ('ci-b2', 'B2', 'server', 'active', '{"resource_tower": "compute", "monthly_cost": 2}', TRUE, '${ORG_B}'),
+  ('ci-b3', 'B3', 'server', 'active', '{"resource_tower": "compute", "monthly_cost": 3}', TRUE, '${ORG_B}');`;
 
 const jwt = new JWTService(loadConfig().auth.jwt);
 const bearer = (userId: string, organizationId?: string) => ({
@@ -200,14 +208,29 @@ async function count(sql: string, params: unknown[] = []): Promise<number> {
   return rows[0]!.n;
 }
 
-// Legacy rows exist before 008 runs; their post-migration state is captured
-// once, then every test reseeds both organizations.
+// Legacy rows exist before 008/011 run; their post-migration state is
+// captured once, then every test reseeds both organizations.
 let backfilled: Array<{ service_id: string; organization_id: string }> = [];
+let ciBackfilled: Array<{ ci_name: string; organization_id: string }> = [];
+
+// cmdb.dim_ci columns and indexes: [columns, indexes].
+type DimCiSchema = [unknown[], unknown[]];
+const dimCiSchema = (): Promise<DimCiSchema> => Promise.all([
+  db.rows(`SELECT column_name, data_type, is_nullable, column_default FROM information_schema.columns
+    WHERE table_schema = 'cmdb' AND table_name = 'dim_ci' ORDER BY ordinal_position`),
+  db.rows(`SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = 'cmdb' AND tablename = 'dim_ci' ORDER BY indexname`),
+]);
+// Before 011 (008-010 do not touch cmdb.dim_ci).
+let dimCiSchemaBefore011: DimCiSchema;
+const UP_011 = readFileSync(join(MIGRATIONS, '011_ci_organization_scope.sql'), 'utf8');
 
 beforeAll(async () => {
   await db.exec(baseDdl() + LEGACY_SEED);
   await db.exec(`BEGIN;\n${readFileSync(join(MIGRATIONS, '008_business_service_organization_scope.sql'), 'utf8')}\nCOMMIT;`);
   backfilled = await db.rows('SELECT service_id, organization_id FROM dim_business_services ORDER BY service_id');
+  dimCiSchemaBefore011 = await dimCiSchema();
+  await db.exec(`BEGIN;\n${UP_011}\nCOMMIT;`);
+  ciBackfilled = await db.rows('SELECT ci_name, organization_id FROM cmdb.dim_ci ORDER BY ci_key');
 });
 
 afterAll(() => {
@@ -220,15 +243,15 @@ beforeEach(async () => {
   afterParentRead = null;
 });
 
-describe('migration 008_business_service_organization_scope', () => {
-  // getMigrationStatus only calls query(). Like node-postgres, a query without
-  // parameters uses the simple protocol, which accepts several statements
-  // (ensureMigrationsTable sends three).
-  const migratorClient = {
-    query: async (sql: string, params?: unknown[]) =>
-      params?.length ? pgClient.query(sql, params) : { rows: await send('exec', sql) },
-  } as unknown as PostgresClient;
+// getMigrationStatus only calls query(). Like node-postgres, a query without
+// parameters uses the simple protocol, which accepts several statements
+// (ensureMigrationsTable sends three).
+const migratorClient = {
+  query: async (sql: string, params?: unknown[]) =>
+    params?.length ? pgClient.query(sql, params) : { rows: await send('exec', sql) },
+} as unknown as PostgresClient;
 
+describe('migration 008_business_service_organization_scope', () => {
   it('backfills every pre-existing service to the internal organization', () => {
     expect(backfilled).toEqual([
       { service_id: 'bs-legacy-1', organization_id: INTERNAL_ORG },
@@ -288,6 +311,53 @@ describe('migration 008_business_service_organization_scope', () => {
       await db.exec(up);
     }
     expect(await orgOf('bs-pre-008')).toBe(INTERNAL_ORG);
+  });
+});
+
+describe('migration 011_ci_organization_scope', () => {
+  it('migration 011 backfills existing dim_ci rows to the internal org', async () => {
+    // Every SCD version of a legacy CI, current or not.
+    expect(ciBackfilled).toEqual([
+      { ci_name: 'Legacy CI (v1)', organization_id: INTERNAL_ORG },
+      { ci_name: 'Legacy CI', organization_id: INTERNAL_ORG },
+    ]);
+    // NOT NULL with no default: a writer that names no organization fails.
+    const [column] = await db.rows<{ is_nullable: string; column_default: string | null; data_type: string }>(
+      `SELECT is_nullable, column_default, data_type FROM information_schema.columns
+       WHERE table_schema = 'cmdb' AND table_name = 'dim_ci' AND column_name = 'organization_id'`
+    );
+    expect(column).toEqual({ is_nullable: 'NO', column_default: null, data_type: 'uuid' });
+    await expect(db.exec(`INSERT INTO cmdb.dim_ci (ci_id, ci_name, ci_type, ci_status)
+      VALUES ('ci-orphan', 'Orphan', 'server', 'active')`)).rejects.toThrow(/organization_id/);
+  });
+
+  it('migrator discovers 011 and not the rollback file', async () => {
+    // Real migrator discovery over the real directory.
+    const names = (await getMigrationStatus(migratorClient, MIGRATIONS)).map(m => m._name);
+    expect(names.indexOf('011_ci_organization_scope.sql'))
+      .toBe(names.indexOf('010_business_service_views_org_functions.sql') + 1);
+    expect(names.filter(name => /down|rollback/.test(name))).toEqual([]);
+  });
+
+  it('rollback/011 restores 010 state', async () => {
+    const down = readFileSync(join(MIGRATIONS, 'rollback/011_ci_organization_scope.down.sql'), 'utf8');
+    await getMigrationStatus(migratorClient, MIGRATIONS); // ensures cmdb.schema_migrations
+    await db.exec(`INSERT INTO cmdb.schema_migrations (migration_name, checksum)
+      VALUES ('011_ci_organization_scope.sql', 'x') ON CONFLICT DO NOTHING`);
+    try {
+      await db.exec(down);
+
+      expect(await dimCiSchema()).toEqual(dimCiSchemaBefore011);
+      expect(await db.rows(`SELECT 1 FROM cmdb.schema_migrations
+        WHERE migration_name = '011_ci_organization_scope.sql'`)).toEqual([]);
+      // A pre-011 writer's org-less insert works again.
+      await db.exec(`INSERT INTO cmdb.dim_ci (ci_id, ci_name, ci_type, ci_status)
+        VALUES ('ci-pre-011', 'Pre', 'server', 'active')`);
+    } finally {
+      await db.exec(`BEGIN;\n${UP_011}\nCOMMIT;`);
+    }
+    // 011 re-applies over the rolled-back table, every row in the internal organization.
+    expect(await db.rows(`SELECT DISTINCT organization_id FROM cmdb.dim_ci`)).toEqual([{ organization_id: INTERNAL_ORG }]);
   });
 });
 
@@ -373,15 +443,15 @@ describe('two-organization isolation', () => {
   });
 
   it("serves #26's weighted MTTR, zero-default SLA and deduplicated costs per organization", async () => {
-    // ci-shared is mapped into both organizations, twice (two mapping types) under org A.
+    // ci-shared is mapped into org A twice (two mapping types).
     await db.exec(`
       INSERT INTO fact_business_service_incidents (service_id, incident_date, incident_count, mttr_minutes, sla_breaches) VALUES
         ('bs-a-app', CURRENT_DATE - 10, 7, 90, 2),
         ('bs-b-app', CURRENT_DATE - 5, 100, 10, 5);
       INSERT INTO ci_business_service_mappings (ci_id, service_id, mapping_type) VALUES
-        ('ci-shared', 'bs-a-app', 'supports'), ('ci-shared', 'bs-a-app', 'enables'), ('ci-shared', 'bs-b-app', 'hosts');
-      INSERT INTO cmdb.dim_ci (ci_id, ci_name, ci_type, ci_status, tbm_attributes, is_current) VALUES
-        ('ci-shared', 'Shared', 'server', 'active', '{"resource_tower": "compute", "monthly_cost": 50}', TRUE);`);
+        ('ci-shared', 'bs-a-app', 'supports'), ('ci-shared', 'bs-a-app', 'enables');
+      INSERT INTO cmdb.dim_ci (ci_id, ci_name, ci_type, ci_status, tbm_attributes, is_current, organization_id) VALUES
+        ('ci-shared', 'Shared', 'server', 'active', '{"resource_tower": "compute", "monthly_cost": 50}', TRUE, '${INTERNAL_ORG}');`);
     const get = async (headers: object, path: string) => {
       const res = await request(app).get(`/api/v1/business-services/${path}`).set(headers);
       return [res.status, res.body.data ?? res.body];
@@ -399,15 +469,49 @@ describe('two-organization isolation', () => {
       incidents: { incidents_7d: 0, incidents_30d: 0, avg_mttr_30d: null, sla_breaches_30d: 0 },
     })]);
 
-    // ci-shared costs once per organization, and only the owner's CIs count.
+    // ci-shared costs once, and each organization's costs count only its own CIs.
     expect(await get(AS_A, 'bs-a-app/costs'))
       .toEqual([200, { ci_count: 2, total_monthly_cost: '150', cost_by_tower: { compute: 150 } }]);
     expect(await get(AS_B, 'bs-b-app/costs'))
-      .toEqual([200, { ci_count: 2, total_monthly_cost: '57', cost_by_tower: { compute: 57 } }]);
+      .toEqual([200, { ci_count: 1, total_monthly_cost: '7', cost_by_tower: { compute: 7 } }]);
 
     for (const metric of ['health', 'costs']) {
       expect(await get(AS_B, `bs-a-app/${metric}`)).toEqual([404, NOT_FOUND]);
     }
+  });
+
+  it('mapping an org B CI into an org A service is 404 and writes nothing', async () => {
+    // A stale cross-org mapping row (from before CI scoping): re-posting it is
+    // an update through ON CONFLICT and must be refused the same way.
+    await db.exec(`INSERT INTO ci_business_service_mappings (ci_id, service_id, mapping_type, confidence_score)
+      VALUES ('ci-b', 'bs-a-app', 'hosts', 1)`);
+    const mappings = () => db.rows(
+      'SELECT ci_id, service_id, mapping_type, confidence_score, updated_at FROM ci_business_service_mappings ORDER BY id'
+    );
+    const before = await mappings();
+    const post = (body: object) => request(app).post('/api/v1/business-services/bs-a-app/cis').set(AS_A).send(body);
+
+    const CI_NOT_FOUND = { success: false, error: 'CI not found' };
+    for (const body of [
+      { ci_ids: ['ci-b'] },
+      // One foreign CI refuses the whole request, including the caller's own CI.
+      { ci_ids: ['ci-a2', 'ci-b'] },
+      { ci_ids: ['ci-b'], mapping_type: 'hosts', confidence_score: 0.1 },
+    ]) {
+      const res = await post(body);
+      expect([res.status, res.body]).toEqual([404, CI_NOT_FOUND]);
+    }
+    expect(await mappings()).toEqual(before);
+    // The same body as a CI that does not exist anywhere.
+    const missing = await post({ ci_ids: ['ci-missing'] });
+    expect([missing.status, missing.body]).toEqual([404, CI_NOT_FOUND]);
+  });
+
+  it('/costs excludes a CI owned by another org even if a stale mapping row exists', async () => {
+    await db.exec(`INSERT INTO ci_business_service_mappings (ci_id, service_id, mapping_type)
+      VALUES ('ci-b', 'bs-a-app', 'supports')`);
+    const res = await request(app).get('/api/v1/business-services/bs-a-app/costs').set(AS_A);
+    expect([res.status, res.body.data]).toEqual([200, { ci_count: 1, total_monthly_cost: '100', cost_by_tower: { compute: 100 } }]);
   });
 
   it('never joins a dependency target from another organization', async () => {

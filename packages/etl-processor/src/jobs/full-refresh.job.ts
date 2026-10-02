@@ -20,6 +20,7 @@ import type { PoolClient } from 'pg';
 import { Neo4jClient, PostgresClient, UNSCOPED_CI_ACCESS } from '@cmdb/database';
 import { logger, CI, validateTableNames } from '@cmdb/common';
 import { DimensionTransformer } from '../transformers/dimension-transformer';
+import { ExtractedCI } from '../transformers/ci-organization';
 
 export interface FullRefreshJobData {
   /** Whether to truncate tables before refresh */
@@ -178,7 +179,7 @@ export class FullRefreshJob {
   /**
    * Extract all CIs from Neo4j
    */
-  private async extractAllCIs(): Promise<CI[]> {
+  private async extractAllCIs(): Promise<ExtractedCI[]> {
     const session = this.neo4jClient.getSession();
 
     try {
@@ -201,8 +202,9 @@ export class FullRefreshJob {
           _created_at: props.created_at,
           _updated_at: props.updated_at,
           _discovered_at: props.discovered_at,
-          _metadata: props.metadata ? JSON.parse(props.metadata) : {}
-        } as CI;
+          _metadata: props.metadata ? JSON.parse(props.metadata) : {},
+          organization_id: props.organization_id
+        } as ExtractedCI;
       });
 
     } finally {
@@ -220,7 +222,7 @@ export class FullRefreshJob {
    * discovery_provider, and discovery_method (NOT NULL columns).
    */
   private async loadCIDimensions(
-    cis: CI[],
+    cis: ExtractedCI[],
     jobId: string = 'full-refresh-etl'
   ): Promise<{ created: number }> {
     let created = 0;
@@ -234,8 +236,8 @@ export class FullRefreshJob {
           const insertResult = await client.query(
             `INSERT INTO cmdb.dim_ci
              (ci_id, ci_name, ci_type, environment, ci_status, external_id,
-              effective_from, effective_to, is_current, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, '9999-12-31', true, $8, $9)
+              effective_from, effective_to, is_current, created_at, updated_at, organization_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, '9999-12-31', true, $8, $9, $10)
              RETURNING ci_key`,
             [
               dimension._ci_id,
@@ -246,7 +248,8 @@ export class FullRefreshJob {
               dimension.external_id,
               new Date(),
               dimension.created_at || new Date(),
-              new Date()
+              new Date(),
+              dimension.organization_id
             ]
           );
 

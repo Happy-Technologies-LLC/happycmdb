@@ -10,11 +10,12 @@
  * Exercised through the real tbmRoutes behind the real AuthMiddleware /
  * AuthService (JWT verification), mounted at the production path.
  *
- * Ownership SQL runs on PGlite hosted in a forked child process
+ * Ownership and cost-trend SQL runs on PGlite hosted in a forked child process
  * (../../routes/__tests__/fixtures/pglite-host.cjs) with the
- * dim_business_services DDL read verbatim from 001_complete_schema.sql plus
- * 008_business_service_organization_scope.sql. Neo4j is a recording session
- * over a small in-memory graph that applies each organization_id predicate a
+ * dim_business_services and cmdb.dim_ci DDL read verbatim from
+ * 001_complete_schema.sql plus 008_business_service_organization_scope.sql
+ * and 011_ci_organization_scope.sql. Neo4j is a recording session over a
+ * small in-memory graph that applies each organization_id predicate a
  * statement actually contains: without it, every :BusinessService node is
  * reachable by id, whoever owns it.
  */
@@ -187,7 +188,11 @@ INSERT INTO dim_business_services (service_id, name, service_classification, tbm
   ('bs-a-db', 'A Database', 'data', 'data', 'critical', 'active', '${ORG_A}'),
   ('bs-hijack', 'A Claims B Node', 'data', 'data', 'high', 'active', '${ORG_A}'),
   ('bs-orphan', 'A Claims Orphan Node', 'data', 'data', 'high', 'active', '${ORG_A}'),
-  ('bs-b-app', 'B Secret App', 'application', 'application', 'medium', 'active', '${ORG_B}');`;
+  ('bs-b-app', 'B Secret App', 'application', 'application', 'medium', 'active', '${ORG_B}');
+INSERT INTO cmdb.dim_ci (ci_id, ci_name, ci_type, ci_status, tbm_attributes, organization_id) VALUES
+  ('ci-a', 'A', 'server', 'active', '{"resource_tower": "compute", "monthly_cost": 100}', '${ORG_A}'),
+  ('ci-a2', 'A2', 'server', 'active', '{"resource_tower": "storage", "monthly_cost": 20}', '${ORG_A}'),
+  ('ci-b', 'B', 'server', 'active', '{"resource_tower": "compute", "monthly_cost": 7}', '${ORG_B}');`;
 // Every service id org A owns in Postgres, sorted.
 const A_OWNED_IDS = ['bs-a-app', 'bs-a-db', 'bs-hijack', 'bs-orphan'];
 
@@ -210,7 +215,9 @@ const queryCount = () => pgQueries + cypherRuns.length;
 
 beforeAll(async () => {
   await send('exec', baseDdl());
-  await send('exec', `BEGIN;\n${readFileSync(join(MIGRATIONS, '008_business_service_organization_scope.sql'), 'utf8')}\nCOMMIT;`);
+  for (const migration of ['008_business_service_organization_scope.sql', '011_ci_organization_scope.sql']) {
+    await send('exec', `BEGIN;\n${readFileSync(join(MIGRATIONS, migration), 'utf8')}\nCOMMIT;`);
+  }
   await send('exec', SEED);
 });
 
@@ -345,5 +352,12 @@ describe('global TBM aggregates (FD-3 b)', () => {
     const res = await request(app).get('/api/v1/tbm/costs/summary').set(AS_ADMIN_A);
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
+  });
+
+  it("cost trends sum only the caller org's CIs", async () => {
+    const res = await request(app).get('/api/v1/tbm/costs/trends').set(AS_ADMIN_A);
+    expect(res.status).toBe(200);
+    // All seeded CI versions are effective this month: org A's 100 + 20, never org B's 7.
+    expect(res.body).toMatchObject({ success: true, count: 1, data: [{ totalCost: 120, ciCount: 2 }] });
   });
 });

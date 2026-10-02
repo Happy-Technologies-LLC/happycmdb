@@ -4,12 +4,12 @@
 // packages/api-server/src/graphql/resolvers/tbm.resolvers.ts
 
 import { GraphQLError } from 'graphql';
-import { getPostgresClient } from '@cmdb/database';
 import { GraphQLContext } from './index';
 import { logger } from '@cmdb/common';
 import { checkGraphQLPermission } from '../../middleware/auth.middleware';
 import { requireGraphQLOrganization } from '../require-organization';
 import { ownedBusinessServiceIds, ownsBusinessService } from '../../services/business-service-ownership';
+import { ciCostTrends } from '../../services/ci-cost-trends';
 
 /**
  * TBM GraphQL Resolvers
@@ -271,29 +271,11 @@ const Query = {
 
   costTrends: async (_parent: any, args: { months?: number }, context: GraphQLContext) => {
     requireGlobalAggregateAccess(context);
-    const pool = getPostgresClient().pool;
     try {
-      const months = args.months || 6;
-
-      const result = await pool.query(
-        `
-        SELECT
-          date_trunc('month', snapshot_date) as month,
-          sum(tbm_monthly_cost) as total_cost,
-          count(*) as ci_count
-        FROM ci_snapshot
-        WHERE snapshot_date >= NOW() - INTERVAL '${months} months'
-          AND tbm_monthly_cost IS NOT NULL
-        GROUP BY date_trunc('month', snapshot_date)
-        ORDER BY month DESC
-        `
-      );
-
-      return result.rows.map((row) => ({
-        month: row.month,
-        totalCost: parseFloat(row.total_cost),
-        ciCount: parseInt(row.ci_count),
-      }));
+      // Only the caller organization's CIs (cmdb.dim_ci.organization_id).
+      const trends = await ciCostTrends(requireGraphQLOrganization(context), args.months ?? 6);
+      // MonthlyCostData.month is a String: the ISO timestamp REST returns.
+      return trends.map((point) => ({ ...point, month: point.month.toISOString() }));
     } catch (error: any) {
       logger.error('Error getting cost trends', error);
       throw new GraphQLError('Failed to retrieve cost trends', {

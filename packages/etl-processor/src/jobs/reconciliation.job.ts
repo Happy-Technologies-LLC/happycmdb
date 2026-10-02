@@ -15,6 +15,7 @@
 import { Job } from 'bullmq';
 import { Neo4jClient, PostgresClient, UNSCOPED_CI_ACCESS } from '@cmdb/database';
 import { logger, CI, CIStatus } from '@cmdb/common';
+import { dimCiOrganizationId } from '../transformers/ci-organization';
 
 export interface ReconciliationJobData {
   /** CIs to reconcile (if not specified, reconciles all) */
@@ -395,11 +396,24 @@ export class ReconciliationJob {
    * Create CI in PostgreSQL from Neo4j data
    */
   private async resolveByCreatingInPostgres(ci: CI): Promise<void> {
+    // getCI's CI shape carries no organization_id; read it from the node.
+    const session = this.neo4jClient.getSession();
+    let nodeOrganizationId: unknown;
+    try {
+      const result = await session.run(
+        'MATCH (ci:CI {id: $id}) RETURN ci.organization_id AS organization_id',
+        { id: ci._id }
+      );
+      nodeOrganizationId = result.records[0]?.get('organization_id');
+    } finally {
+      await session.close();
+    }
+
     await this.postgresClient.query(
       `INSERT INTO cmdb.dim_ci
-       (ci_id, ci_name, ci_type, environment, ci_status, effective_from, is_current)
-       VALUES ($1, $2, $3, $4, $5, NOW(), true)`,
-      [ci._id, ci.name, ci._type, ci.environment, ci._status]
+       (ci_id, ci_name, ci_type, environment, ci_status, effective_from, is_current, organization_id)
+       VALUES ($1, $2, $3, $4, $5, NOW(), true, $6)`,
+      [ci._id, ci.name, ci._type, ci.environment, ci._status, dimCiOrganizationId(nodeOrganizationId)]
     );
     logger.info('Created CI in PostgreSQL from Neo4j', { ciId: ci._id });
   }

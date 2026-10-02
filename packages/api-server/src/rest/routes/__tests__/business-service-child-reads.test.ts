@@ -15,8 +15,9 @@
  * (dim_business_services, business_service_dependencies,
  * ci_business_service_mappings, fact_business_service_incidents,
  * fact_business_service_changes, cmdb.dim_ci), followed by
- * 008_business_service_organization_scope.sql verbatim; no other tables,
- * indexes or extensions. PGlite has no TimescaleDB, so only the CREATE TABLE
+ * 008_business_service_organization_scope.sql and
+ * 011_ci_organization_scope.sql verbatim; no other tables, indexes (beyond
+ * those migrations') or extensions. PGlite has no TimescaleDB, so only the CREATE TABLE
  * blocks are extracted (not create_hypertable) and the two fact tables are
  * plain tables. All rows belong to one organization; cross-organization
  * behavior is covered by business-service-org-scope.test.ts.
@@ -97,10 +98,10 @@ import { businessServiceRoutes } from '../business-service.routes';
 
 const MIGRATION = join(__dirname, '../../../../../database/src/postgres/migrations/001_complete_schema.sql');
 // Tenant scoping (organization_id) is applied verbatim on top of 001.
-const ORG_MIGRATION = join(
-  __dirname,
-  '../../../../../database/src/postgres/migrations/008_business_service_organization_scope.sql'
-);
+const ORG_MIGRATIONS = [
+  '008_business_service_organization_scope.sql',
+  '011_ci_organization_scope.sql',
+].map(file => join(__dirname, '../../../../../database/src/postgres/migrations', file));
 const ORG = '00000000-0000-0000-0000-000000000000';
 const DDL_TABLES = [
   'dim_business_services',
@@ -119,7 +120,7 @@ function productionDdl(): string {
     const match = sql.match(new RegExp(`CREATE TABLE IF NOT EXISTS ${name} \\([\\s\\S]*?\\n\\);`));
     if (!match) throw new Error(`DDL for ${table} not found in ${MIGRATION}`);
     return match[0];
-  }).join('\n') + '\n' + readFileSync(ORG_MIGRATION, 'utf8');
+  }).join('\n') + '\n' + ORG_MIGRATIONS.map(file => readFileSync(file, 'utf8')).join('\n');
 }
 
 const SEED = `
@@ -149,11 +150,11 @@ INSERT INTO fact_business_service_changes (service_id, change_date, change_count
   ('bs-app', CURRENT_DATE - 20, 6, 6),
   ('bs-app', CURRENT_DATE - 90, 10, 1),
   ('bs-other', CURRENT_DATE - 3, 8, 0);
-INSERT INTO cmdb.dim_ci (ci_id, ci_name, ci_type, ci_status, tbm_attributes, is_current) VALUES
-  ('ci-new', 'New', 'server', 'active', '{"resource_tower": "compute", "monthly_cost": 100}', TRUE),
-  ('ci-new', 'New (historical)', 'server', 'active', '{"resource_tower": "compute", "monthly_cost": 999}', FALSE),
-  ('ci-old', 'Old', 'storage', 'active', '{"resource_tower": "storage", "monthly_cost": 50.5}', TRUE),
-  ('ci-foreign', 'Foreign', 'server', 'active', '{"resource_tower": "compute", "monthly_cost": 7}', TRUE);
+INSERT INTO cmdb.dim_ci (ci_id, ci_name, ci_type, ci_status, tbm_attributes, is_current, organization_id) VALUES
+  ('ci-new', 'New', 'server', 'active', '{"resource_tower": "compute", "monthly_cost": 100}', TRUE, '${ORG}'),
+  ('ci-new', 'New (historical)', 'server', 'active', '{"resource_tower": "compute", "monthly_cost": 999}', FALSE, '${ORG}'),
+  ('ci-old', 'Old', 'storage', 'active', '{"resource_tower": "storage", "monthly_cost": 50.5}', TRUE, '${ORG}'),
+  ('ci-foreign', 'Foreign', 'server', 'active', '{"resource_tower": "compute", "monthly_cost": 7}', TRUE, '${ORG}');
 `;
 
 const CHILD_TABLE: Record<string, string> = {

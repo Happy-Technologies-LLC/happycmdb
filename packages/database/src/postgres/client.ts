@@ -121,9 +121,9 @@ export class PostgresClient {
       `
       INSERT INTO cmdb.dim_ci (
         ci_id, ci_name, ci_type, ci_status, environment,
-        external_id, metadata, effective_from, is_current
+        external_id, metadata, effective_from, is_current, organization_id
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, TRUE)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, TRUE, $9)
       RETURNING ci_key
       `,
       [
@@ -135,6 +135,7 @@ export class PostgresClient {
         ci.external_id || null,
         ci.metadata ? JSON.stringify(ci.metadata) : null,
         ci.effective_from || new Date(),
+        ci.organization_id,
       ]
     );
     return result.rows[0].ci_key;
@@ -163,9 +164,9 @@ export class PostgresClient {
         `
         INSERT INTO cmdb.dim_ci (
           ci_id, ci_name, ci_type, ci_status, environment,
-          external_id, metadata, effective_from, is_current
+          external_id, metadata, effective_from, is_current, organization_id
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, TRUE)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, TRUE, $9)
         RETURNING ci_key
         `,
         [
@@ -177,6 +178,7 @@ export class PostgresClient {
           ci.external_id || null,
           ci.metadata ? JSON.stringify(ci.metadata) : null,
           now,
+          ci.organization_id,
         ]
       );
 

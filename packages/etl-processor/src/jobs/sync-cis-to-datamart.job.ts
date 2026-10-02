@@ -17,6 +17,7 @@
 import { Job } from 'bullmq';
 import { logger } from '@cmdb/common';
 import { getPostgresClient, getNeo4jClient } from '@cmdb/database';
+import { dimCiOrganizationId } from '../transformers/ci-organization';
 
 export interface SyncCIsJobData {
   /** Batch size for processing CIs (default: 100) */
@@ -182,7 +183,8 @@ async function extractCIsFromNeo4j(
         ci.tbm_attributes AS tbm_attributes,
         ci.bsm_attributes AS bsm_attributes,
         ci.created_at AS created_at,
-        ci.updated_at AS updated_at
+        ci.updated_at AS updated_at,
+        ci.organization_id AS organization_id
       ORDER BY ci.updated_at DESC
     `;
 
@@ -201,6 +203,7 @@ async function extractCIsFromNeo4j(
       bsm_attributes: record.get('bsm_attributes'),
       created_at: record.get('created_at'),
       updated_at: record.get('updated_at'),
+      organization_id: dimCiOrganizationId(record.get('organization_id')),
     }));
   } finally {
     await session.close();
@@ -234,7 +237,8 @@ async function processCIBatch(
             environment,
             itil_attributes,
             tbm_attributes,
-            bsm_attributes
+            bsm_attributes,
+            organization_id
           FROM cmdb.dim_ci
           WHERE ci_id = $1 AND is_current = true`,
           [ci.ci_id]
@@ -243,12 +247,14 @@ async function processCIBatch(
         if (existingResult.rows.length > 0) {
           const existing = existingResult.rows[0];
 
-          // Check if data has changed
+          // Check if data has changed (an organization change re-versions
+          // the CI so the current row carries the node's organization)
           const hasChanged =
             existing.ci_name !== ci.ci_name ||
             existing.ci_type !== ci.ci_type ||
             existing.ci_status !== ci.ci_status ||
             existing.environment !== ci.environment ||
+            existing.organization_id !== ci.organization_id ||
             JSON.stringify(existing.itil_attributes) !== JSON.stringify(ci.itil_attributes) ||
             JSON.stringify(existing.tbm_attributes) !== JSON.stringify(ci.tbm_attributes) ||
             JSON.stringify(existing.bsm_attributes) !== JSON.stringify(ci.bsm_attributes);
@@ -269,8 +275,8 @@ async function processCIBatch(
               `INSERT INTO cmdb.dim_ci (
                 ci_id, ci_name, ci_type, ci_status, environment, external_id,
                 metadata, itil_attributes, tbm_attributes, bsm_attributes,
-                effective_from, effective_to, is_current, created_at, updated_at
-              ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), '9999-12-31', true, $11, NOW())`,
+                effective_from, effective_to, is_current, created_at, updated_at, organization_id
+              ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), '9999-12-31', true, $11, NOW(), $12)`,
               [
                 ci.ci_id,
                 ci.ci_name,
@@ -283,6 +289,7 @@ async function processCIBatch(
                 ci.tbm_attributes,
                 ci.bsm_attributes,
                 ci.created_at || new Date(),
+                ci.organization_id,
               ]
             );
 
@@ -303,8 +310,8 @@ async function processCIBatch(
             `INSERT INTO cmdb.dim_ci (
               ci_id, ci_name, ci_type, ci_status, environment, external_id,
               metadata, itil_attributes, tbm_attributes, bsm_attributes,
-              effective_from, effective_to, is_current, created_at, updated_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), '9999-12-31', true, $11, NOW())`,
+              effective_from, effective_to, is_current, created_at, updated_at, organization_id
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), '9999-12-31', true, $11, NOW(), $12)`,
             [
               ci.ci_id,
               ci.ci_name,
@@ -317,6 +324,7 @@ async function processCIBatch(
               ci.tbm_attributes,
               ci.bsm_attributes,
               ci.created_at || new Date(),
+              ci.organization_id,
             ]
           );
 

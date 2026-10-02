@@ -13,6 +13,7 @@
  */
 
 import { CI, CIType, CIStatus, Environment } from '@cmdb/common';
+import { ExtractedCI, dimCiOrganizationId } from './ci-organization';
 
 /**
  * CI Dimension (Type 2 SCD)
@@ -25,6 +26,7 @@ export interface CIDimension {
   environment?: Environment;
   _status: CIStatus;
   external_id?: string;
+  organization_id: string;       // cmdb.dim_ci.organization_id (migration 011)
   _effective_date: Date;         // When this version became effective
   end_date?: Date;              // When this version expired (null = current)
   _is_current: boolean;          // Flag for current version
@@ -111,7 +113,7 @@ export class DimensionTransformer {
   /**
    * Transform CI to dimension record
    */
-  toDimension(ci: CI): CIDimension {
+  toDimension(ci: ExtractedCI): CIDimension {
     return {
       _ci_id: ci._id,
       _ci_name: ci.name,
@@ -119,6 +121,7 @@ export class DimensionTransformer {
       environment: ci.environment,
       _status: ci._status,
       external_id: ci.external_id,
+      organization_id: dimCiOrganizationId(ci.organization_id),
       _effective_date: new Date(),
       end_date: undefined,
       _is_current: true,

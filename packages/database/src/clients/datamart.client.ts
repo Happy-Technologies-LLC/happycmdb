@@ -68,7 +68,7 @@ export class DataMartClient {
       // Check if current record exists
       const existing = await this.pgClient.query(
         `
-        SELECT ci_key, ci_name, ci_type, ci_status, environment, external_id, metadata
+        SELECT ci_key, ci_name, ci_type, ci_status, environment, external_id, metadata, organization_id
         FROM cmdb.dim_ci
         WHERE ci_id = $1 AND is_current = TRUE
         `,
@@ -689,6 +689,9 @@ export class DataMartClient {
     if (normalize(existing.ci_status) !== normalize(incoming.ci_status)) return true;
     if (normalize(existing.environment) !== normalize(incoming.environment)) return true;
     if (normalize(existing.external_id) !== normalize(incoming.external_id)) return true;
+    // A CI whose organization changed gets a new current version in that
+    // organization. PostgreSQL returns a uuid in lower case.
+    if (existing.organization_id !== incoming.organization_id.toLowerCase()) return true;
 
     // Compare metadata (object/JSONB field) under the same normalization: a
     // stored NULL and an omitted `metadata` are equal, but a transition

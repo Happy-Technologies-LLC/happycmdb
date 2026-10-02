@@ -350,6 +350,45 @@ and deletes the `cmdb.schema_migrations` row so 008 applies again later. Re-appl
 008 puts all services back in the internal organization. Until the old image is
 running, the 008-aware API returns 500 on business-service routes.
 
+### CI dimension (`cmdb.dim_ci`, migration 011)
+
+Every `cmdb.dim_ci` row carries `organization_id` (UUID, `NOT NULL`, no default): the
+organization of the `:CI` node it versions.
+
+- Migration `011_ci_organization_scope.sql` backfills every existing row (all SCD
+  versions) to the internal organization `00000000-0000-0000-0000-000000000000` (FD-4).
+- The ETL writers (neo4j-to-postgres, full refresh, sync-cis-to-datamart,
+  reconciliation, the ETL processor sync job) and `DataMartClient.upsertCI` write the
+  node's `organization_id`. Nodes without one (written by discovery, connectors, ETL or
+  reconciliation) go to the internal organization, as the Neo4j backfill does; they
+  never land in a customer organization. A changed organization creates a new current
+  version of the CI.
+- `POST /api/v1/business-services/:id/cis` maps only CIs with a current `cmdb.dim_ci`
+  row in the service's organization. A CI of another organization, or one with no
+  current row (for example not yet synced by the ETL), returns **404**
+  `{"success":false,"error":"CI not found"}` and nothing is written, including the
+  other CIs in the request and an update of an existing mapping.
+- `GET /api/v1/business-services/:id/costs` counts only the caller organization's
+  current `cmdb.dim_ci` rows: a mapping row that names another organization's CI adds
+  nothing to `ci_count`, `total_monthly_cost` or `cost_by_tower`.
+- `GET /api/v1/tbm/costs/trends` and GraphQL `costTrends` (both admin-only) sum only
+  the caller organization's CIs. GraphQL `costTrends` now reads `cmdb.dim_ci`, like
+  REST.
+- Not covered: `/api/v1/analytics` still reads `cmdb.dim_ci` across organizations.
+
+API or ETL images built before 011 insert `cmdb.dim_ci` rows without
+`organization_id`, so every insert fails with `23502` while the column exists. Before
+deploying such an image, run the manual rollback (no migration runner executes it):
+
+```bash
+psql -v ON_ERROR_STOP=1 -f packages/database/src/postgres/migrations/rollback/011_ci_organization_scope.down.sql
+```
+
+It drops the index and the column, which discards every CI's organization, and deletes
+the `cmdb.schema_migrations` row so 011 applies again later (all rows back in the
+internal organization). Until the old image is running, the 011-aware API returns 500
+on CI mapping, service costs and cost trends.
+
 ### Configuration items (`/api/v1/cis` and GraphQL CI operations)
 
 Neo4j `:CI` nodes carry an `organization_id` property, set only from the token's

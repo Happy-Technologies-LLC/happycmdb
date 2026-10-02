@@ -18,6 +18,7 @@ import { Job } from 'bullmq';
 import { Neo4jClient, PostgresClient, UNSCOPED_CI_ACCESS } from '@cmdb/database';
 import { logger, CI, CIType } from '@cmdb/common';
 import { DimensionTransformer } from '../transformers/dimension-transformer';
+import { ExtractedCI } from '../transformers/ci-organization';
 
 export interface Neo4jToPostgresJobData {
   /** Batch size for processing CIs */
@@ -129,7 +130,7 @@ export class Neo4jToPostgresJob {
   /**
    * Extract CIs from Neo4j based on job parameters
    */
-  private async extractCIs(data: Neo4jToPostgresJobData): Promise<CI[]> {
+  private async extractCIs(data: Neo4jToPostgresJobData): Promise<ExtractedCI[]> {
     const session = this.neo4jClient.getSession();
 
     try {
@@ -166,7 +167,8 @@ export class Neo4jToPostgresJob {
           _created_at: props.created_at,
           _updated_at: props.updated_at,
           _discovered_at: props.discovered_at,
-          _metadata: props.metadata ? JSON.parse(props.metadata) : {}
+          _metadata: props.metadata ? JSON.parse(props.metadata) : {},
+          organization_id: props.organization_id
         };
       });
 
@@ -180,7 +182,7 @@ export class Neo4jToPostgresJob {
    * Implements Type 2 SCD with retry logic and detailed logging
    */
   private async processBatch(
-    cis: CI[],
+    cis: ExtractedCI[],
     fullRefresh: boolean,
     jobId: string = 'neo4j-to-postgres-etl'
   ): Promise<{ cisProcessed: number; recordsInserted: number; recordsUpdated: number }> {
@@ -209,19 +211,22 @@ export class Neo4jToPostgresJob {
 
               // Check if CI dimension already exists
               const existingResult = await client.query(
-                'SELECT ci_key, ci_name, ci_type, ci_status, environment FROM cmdb.dim_ci WHERE ci_id = $1 AND is_current = true',
+                'SELECT ci_key, ci_name, ci_type, ci_status, environment, organization_id FROM cmdb.dim_ci WHERE ci_id = $1 AND is_current = true',
                 [ci._id]
               );
 
               if (existingResult.rows.length > 0) {
                 const existing = existingResult.rows[0];
 
-                // Check if data has actually changed (avoid unnecessary updates)
+                // Check if data has actually changed (avoid unnecessary updates).
+                // An organization change re-versions the CI so the current row
+                // carries the node's organization.
                 const hasChanged =
                   existing.ci_name !== dimension._ci_name ||
                   existing.ci_type !== dimension._ci_type ||
                   existing.ci_status !== dimension._status ||
-                  existing.environment !== dimension.environment;
+                  existing.environment !== dimension.environment ||
+                  existing.organization_id !== dimension.organization_id;
 
                 if (hasChanged || fullRefresh) {
                   const ciKey = existing.ci_key;
@@ -240,8 +245,8 @@ export class Neo4jToPostgresJob {
                   const insertResult = await client.query(
                     `INSERT INTO cmdb.dim_ci
                      (ci_id, ci_name, ci_type, environment, ci_status, external_id,
-                      effective_from, effective_to, is_current, created_at, updated_at)
-                     VALUES ($1, $2, $3, $4, $5, $6, $7, '9999-12-31', true, $8, $9)
+                      effective_from, effective_to, is_current, created_at, updated_at, organization_id)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, '9999-12-31', true, $8, $9, $10)
                      RETURNING ci_key`,
                     [
                       dimension._ci_id,
@@ -252,7 +257,8 @@ export class Neo4jToPostgresJob {
                       dimension.external_id,
                       new Date(),
                       dimension.created_at || new Date(),
-                      new Date()
+                      new Date(),
+                      dimension.organization_id
                     ]
                   );
 
@@ -293,8 +299,8 @@ export class Neo4jToPostgresJob {
                 const insertResult = await client.query(
                   `INSERT INTO cmdb.dim_ci
                    (ci_id, ci_name, ci_type, environment, ci_status, external_id,
-                    effective_from, effective_to, is_current, created_at, updated_at)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, '9999-12-31', true, $8, $9)
+                    effective_from, effective_to, is_current, created_at, updated_at, organization_id)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, '9999-12-31', true, $8, $9, $10)
                    RETURNING ci_key`,
                   [
                     dimension._ci_id,
@@ -305,7 +311,8 @@ export class Neo4jToPostgresJob {
                     dimension.external_id,
                     new Date(),
                     dimension.created_at || new Date(),
-                    new Date()
+                    new Date(),
+                    dimension.organization_id
                   ]
                 );
 

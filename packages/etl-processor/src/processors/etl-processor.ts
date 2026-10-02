@@ -12,6 +12,7 @@ import { Job } from 'bullmq';
 import { logger, getQueueManager } from '@cmdb/common';
 import type { ETLJobData, JobResult, JobProgress } from '@cmdb/common';
 import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
+import { dimCiOrganizationId } from '../transformers/ci-organization';
 
 /**
  * ETL Job Processor
@@ -173,12 +174,13 @@ export class ETLJobProcessor {
             `
             INSERT INTO dim_ci (
               ci_key, ci_id, ci_name, ci_type, ci_status,
-              environment, external_id, created_at, updated_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+              environment, external_id, created_at, updated_at, organization_id
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
             ON CONFLICT (ci_id) DO UPDATE SET
               ci_name = EXCLUDED.ci_name,
               ci_status = EXCLUDED.ci_status,
-              updated_at = EXCLUDED.updated_at
+              updated_at = EXCLUDED.updated_at,
+              organization_id = EXCLUDED.organization_id
             RETURNING (xmax = 0) AS inserted
             `,
             [
@@ -191,6 +193,7 @@ export class ETLJobProcessor {
               ci.external_id,
               ci.created_at,
               ci.updated_at,
+              dimCiOrganizationId(ci.organization_id),
             ]
           );
 

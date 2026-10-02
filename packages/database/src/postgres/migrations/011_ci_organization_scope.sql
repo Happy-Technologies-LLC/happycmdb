@@ -18,14 +18,18 @@
 --
 -- A CI whose :CI node already names a customer organization (created through
 -- POST /api/v1/cis, which stamps it) and that the ETL synced before 011 is
--- backfilled to the internal organization too; SQL cannot read Neo4j. The
--- ETL corrects it: when a synced node names an organization, the CI is
--- stored in the internal organization and the node is older than the CI's
--- cmdb.dim_ci history, every version is relabelled to the node's
--- organization. A customer organization never moves, and a newer node that
--- reuses a deleted CI's id is skipped. Run a neo4j-to-postgres sync without
--- incrementalSince right after applying 011 so every CI is visited (an
--- incremental sync only visits updated nodes).
+-- backfilled to the internal organization too; SQL cannot read Neo4j. Those
+-- rows, and only those, carry org_backfilled = TRUE. No writer sets it:
+-- rows written after 011 get the column DEFAULT FALSE. The ETL corrects a
+-- backfilled CI once: when its node names an organization, every version is
+-- relabelled to it, and in every case the marker is cleared. A complete
+-- neo4j-to-postgres sync (no incrementalSince, no ciTypes filter, no failed
+-- batch) then clears every remaining marker, including those of CIs whose
+-- node no longer exists, so a later node reusing a deleted CI's id cannot
+-- claim its history. Rows labelled internal after 011, and every customer
+-- organization, never move. Nothing a client can write (such as a node's
+-- created_at) takes part in the decision. Run that complete sync right after
+-- applying 011.
 --
 -- Backfill: ADD COLUMN ... NOT NULL DEFAULT <constant> fills existing rows
 -- from the catalog without rewriting the table (PostgreSQL 11+), so the SCD
@@ -49,8 +53,21 @@ ALTER TABLE cmdb.dim_ci
 
 ALTER TABLE cmdb.dim_ci ALTER COLUMN organization_id DROP DEFAULT;
 
+-- TRUE for every existing row (filled from the catalog, no rewrite), FALSE
+-- for every row inserted afterwards.
+ALTER TABLE cmdb.dim_ci
+  ADD COLUMN IF NOT EXISTS org_backfilled BOOLEAN NOT NULL DEFAULT TRUE;
+
+ALTER TABLE cmdb.dim_ci ALTER COLUMN org_backfilled SET DEFAULT FALSE;
+
 -- Serves the org-scoped cost trends (WHERE organization_id = $1 AND
--- effective_from >= ...). ci_id lookups keep using idx_dim_ci_id_current,
--- with organization_id as a filter.
+-- effective_from >= ...). Current-row lookups keep using
+-- idx_dim_ci_id_current, with organization_id as a filter.
 CREATE INDEX IF NOT EXISTS idx_dim_ci_organization
   ON cmdb.dim_ci(organization_id, effective_from);
+
+-- Serves the per-CI statements over every version of a ci_id (relabel and
+-- marker clearing, WHERE ci_id = $1); idx_dim_ci_id_current covers current
+-- rows only.
+CREATE INDEX IF NOT EXISTS idx_dim_ci_ci_id_effective_from
+  ON cmdb.dim_ci(ci_id, effective_from);

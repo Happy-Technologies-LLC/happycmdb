@@ -31,37 +31,36 @@ export function dimCiOrganizationId(nodeOrganizationId: unknown): string {
   return String(nodeOrganizationId).toLowerCase();
 }
 
-/** The organization of a CI already in cmdb.dim_ci (all its versions carry the same one). */
+/** The organization of a CI already in cmdb.dim_ci, read from its current row. */
 export interface StoredCiOrganization {
   organizationId: string;
-  /** Earliest effective_from of any version of the ci_id. */
-  firstEffectiveFrom: Date;
+  /**
+   * org_backfilled: the internal label came from migration 011's backfill.
+   * Rows written after 011 are FALSE, so a TRUE current row means every
+   * version of the CI is a backfilled row.
+   */
+  backfilled: boolean;
 }
 
 /**
  * The organization to write for a CI already in cmdb.dim_ci, or null when
  * its node conflicts with the stored history: the caller then writes nothing
- * for the CI (no version, no relabel). A CI's organization is fixed when its
- * node is created (POST /api/v1/cis stamps it; nothing updates it), but a
- * ci_id can be reused once its node is deleted, while its cmdb.dim_ci
- * history stays. So:
+ * for the CI (no version, no relabel). Decided only from data no client can
+ * write: the stored row and its 011 backfill marker (a node's created_at, for
+ * example, can be rewritten). So:
  *  - a node without an organization keeps the stored one (reconciliation
  *    recreates missing nodes without one);
  *  - a node naming the stored organization keeps it;
- *  - a node naming another organization for a CI stored in the internal
- *    organization relabels every version to it only when the node is older
- *    than the history (its created_at <= the first effective_from): that is
- *    a customer CI migration 011 backfilled to the internal organization
- *    (FD-4). A newer node reuses the id of a deleted CI and must not claim
- *    its history;
- *  - every other mismatch (including a customer organization the node does
- *    not name) is a conflict. A customer organization is never changed.
+ *  - a node naming another organization for a CI whose rows are 011
+ *    backfill labels takes it: that is a customer CI 011 backfilled to the
+ *    internal organization (FD-4). Writers relabel every version and clear
+ *    the marker; a complete neo4j-to-postgres sync clears every remaining
+ *    marker, so this happens at most once per CI, before the first complete
+ *    sync after 011;
+ *  - every other mismatch is a conflict: rows labelled internal after 011 and
+ *    customer organizations never move.
  */
-export function storedCiOrganizationId(
-  nodeOrganizationId: unknown,
-  nodeCreatedAt: unknown,
-  stored: StoredCiOrganization
-): string | null {
+export function storedCiOrganizationId(nodeOrganizationId: unknown, stored: StoredCiOrganization): string | null {
   if (nodeOrganizationId === null || nodeOrganizationId === undefined || nodeOrganizationId === '') {
     return stored.organizationId;
   }
@@ -69,12 +68,7 @@ export function storedCiOrganizationId(
   if (nodeOrganization === stored.organizationId) {
     return stored.organizationId;
   }
-  const createdAt = new Date(String(nodeCreatedAt)).getTime();
-  if (
-    stored.organizationId === INTERNAL_ORGANIZATION_ID &&
-    !Number.isNaN(createdAt) &&
-    createdAt <= stored.firstEffectiveFrom.getTime()
-  ) {
+  if (stored.backfilled && stored.organizationId === INTERNAL_ORGANIZATION_ID) {
     return nodeOrganization;
   }
   return null;

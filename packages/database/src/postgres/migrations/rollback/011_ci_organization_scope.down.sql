@@ -16,8 +16,9 @@
 -- dim_ci reads and writes: it fails closed, it does not leak.
 --
 -- Loses data: every CI's organization assignment is dropped. Re-applying 011
--- later puts ALL cmdb.dim_ci rows back in the internal organization, until
--- an ETL sync relabels the CIs whose :CI node names another organization.
+-- later puts ALL cmdb.dim_ci rows back in the internal organization, marked
+-- org_backfilled, until a complete neo4j-to-postgres sync relabels the CIs
+-- whose :CI node names another organization.
 --
 -- Independent of the 008-010 rollbacks (no view or function depends on
 -- cmdb.dim_ci.organization_id).
@@ -26,8 +27,10 @@
 
 BEGIN;
 
+DROP INDEX IF EXISTS cmdb.idx_dim_ci_ci_id_effective_from;
 DROP INDEX IF EXISTS cmdb.idx_dim_ci_organization;
 
+ALTER TABLE cmdb.dim_ci DROP COLUMN IF EXISTS org_backfilled;
 ALTER TABLE cmdb.dim_ci DROP COLUMN IF EXISTS organization_id;
 
 -- Lets the migrator apply 011 again on the next run.

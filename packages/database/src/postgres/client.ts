@@ -150,16 +150,24 @@ export class PostgresClient {
       const now = new Date();
 
       // Every version of a CI carries the same organization (migration 011).
-      // A customer organization is never changed: a different one is refused
-      // and nothing is written (the transaction rolls back). Only rows still
-      // labelled internal (011's FD-4 backfill) take ci.organization_id.
-      const customer = await client.query(
-        `SELECT organization_id FROM cmdb.dim_ci
-         WHERE ci_id = $1 AND organization_id <> '00000000-0000-0000-0000-000000000000' LIMIT 1`,
+      // A different organization is refused and nothing is written (the
+      // transaction rolls back), unless the stored rows are 011 backfill
+      // labels (org_backfilled): those take ci.organization_id once and lose
+      // the marker. Rows labelled after 011 and customer organizations never
+      // move.
+      const current = await client.query(
+        'SELECT organization_id, org_backfilled FROM cmdb.dim_ci WHERE ci_id = $1 AND is_current = TRUE',
         [ci.ci_id]
       );
-      if (customer.rows.length > 0 && customer.rows[0].organization_id !== ci.organization_id.toLowerCase()) {
+      const stored = current.rows[0];
+      if (stored && stored.organization_id !== ci.organization_id.toLowerCase() && stored.org_backfilled !== true) {
         throw new Error(`CI ${ci.ci_id} belongs to another organization`);
+      }
+      if (stored && stored.org_backfilled === true) {
+        await client.query(
+          'UPDATE cmdb.dim_ci SET organization_id = $1, org_backfilled = FALSE WHERE ci_id = $2 AND org_backfilled',
+          [ci.organization_id, ci.ci_id]
+        );
       }
 
       // Step 1: Expire the current record for this ci_id
@@ -170,12 +178,6 @@ export class PostgresClient {
         WHERE ci_id = $2 AND is_current = TRUE
         `,
         [now, ci.ci_id]
-      );
-
-      await client.query(
-        `UPDATE cmdb.dim_ci SET organization_id = $1
-         WHERE ci_id = $2 AND organization_id = '00000000-0000-0000-0000-000000000000'`,
-        [ci.organization_id, ci.ci_id]
       );
 
       // Step 2: Insert new current record

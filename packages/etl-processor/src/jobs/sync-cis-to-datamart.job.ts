@@ -17,7 +17,7 @@
 import { Job } from 'bullmq';
 import { logger } from '@cmdb/common';
 import { getPostgresClient, getNeo4jClient } from '@cmdb/database';
-import { INTERNAL_ORGANIZATION_ID, dimCiOrganizationId, storedCiOrganizationId } from '../transformers/ci-organization';
+import { dimCiOrganizationId, storedCiOrganizationId } from '../transformers/ci-organization';
 
 export interface SyncCIsJobData {
   /** Batch size for processing CIs (default: 100) */
@@ -240,7 +240,7 @@ async function processCIBatch(
             tbm_attributes,
             bsm_attributes,
             organization_id,
-            (SELECT MIN(effective_from) FROM cmdb.dim_ci h WHERE h.ci_id = $1) AS first_effective_from
+            org_backfilled
           FROM cmdb.dim_ci
           WHERE ci_id = $1 AND is_current = true`,
           [ci.ci_id]
@@ -250,11 +250,11 @@ async function processCIBatch(
           const existing = existingResult.rows[0];
 
           // Every version of a CI carries its one organization; see
-          // storedCiOrganizationId for when it may move (only an internal
-          // 011 backfill label, to an older node's org).
-          const organizationId = storedCiOrganizationId(ci.organization_id, ci.created_at, {
+          // storedCiOrganizationId for when it may move (only a 011 backfill
+          // label, once).
+          const organizationId = storedCiOrganizationId(ci.organization_id, {
             organizationId: existing.organization_id,
-            firstEffectiveFrom: new Date(existing.first_effective_from),
+            backfilled: existing.org_backfilled === true,
           });
           if (organizationId === null) {
             result.skipped++;
@@ -263,10 +263,11 @@ async function processCIBatch(
             });
             continue;
           }
-          if (organizationId !== existing.organization_id) {
+          if (existing.org_backfilled === true) {
+            // Relabel (or confirm) every backfilled version and clear the marker.
             await client.query(
-              'UPDATE cmdb.dim_ci SET organization_id = $1 WHERE ci_id = $2 AND organization_id = $3',
-              [organizationId, ci.ci_id, INTERNAL_ORGANIZATION_ID]
+              'UPDATE cmdb.dim_ci SET organization_id = $1, org_backfilled = FALSE WHERE ci_id = $2 AND org_backfilled',
+              [organizationId, ci.ci_id]
             );
           }
 

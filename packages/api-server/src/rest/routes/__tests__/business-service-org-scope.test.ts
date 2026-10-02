@@ -211,7 +211,7 @@ async function count(sql: string, params: unknown[] = []): Promise<number> {
 // Legacy rows exist before 008/011 run; their post-migration state is
 // captured once, then every test reseeds both organizations.
 let backfilled: Array<{ service_id: string; organization_id: string }> = [];
-let ciBackfilled: Array<{ ci_name: string; organization_id: string }> = [];
+let ciBackfilled: Array<{ ci_name: string; organization_id: string; org_backfilled: boolean }> = [];
 
 // cmdb.dim_ci columns and indexes: [columns, indexes].
 type DimCiSchema = [unknown[], unknown[]];
@@ -230,7 +230,7 @@ beforeAll(async () => {
   backfilled = await db.rows('SELECT service_id, organization_id FROM dim_business_services ORDER BY service_id');
   dimCiSchemaBefore011 = await dimCiSchema();
   await db.exec(`BEGIN;\n${UP_011}\nCOMMIT;`);
-  ciBackfilled = await db.rows('SELECT ci_name, organization_id FROM cmdb.dim_ci ORDER BY ci_key');
+  ciBackfilled = await db.rows('SELECT ci_name, organization_id, org_backfilled FROM cmdb.dim_ci ORDER BY ci_key');
 });
 
 afterAll(() => {
@@ -316,10 +316,10 @@ describe('migration 008_business_service_organization_scope', () => {
 
 describe('migration 011_ci_organization_scope', () => {
   it('migration 011 backfills existing dim_ci rows to the internal org', async () => {
-    // Every SCD version of a legacy CI, current or not.
+    // Every SCD version of a legacy CI, current or not, marked as a backfill label.
     expect(ciBackfilled).toEqual([
-      { ci_name: 'Legacy CI (v1)', organization_id: INTERNAL_ORG },
-      { ci_name: 'Legacy CI', organization_id: INTERNAL_ORG },
+      { ci_name: 'Legacy CI (v1)', organization_id: INTERNAL_ORG, org_backfilled: true },
+      { ci_name: 'Legacy CI', organization_id: INTERNAL_ORG, org_backfilled: true },
     ]);
     // NOT NULL with no default: a writer that names no organization fails.
     const [column] = await db.rows<{ is_nullable: string; column_default: string | null; data_type: string }>(
@@ -329,6 +329,11 @@ describe('migration 011_ci_organization_scope', () => {
     expect(column).toEqual({ is_nullable: 'NO', column_default: null, data_type: 'uuid' });
     await expect(db.exec(`INSERT INTO cmdb.dim_ci (ci_id, ci_name, ci_type, ci_status)
       VALUES ('ci-orphan', 'Orphan', 'server', 'active')`)).rejects.toThrow(/organization_id/);
+    // Rows written after 011 are never marked as backfill labels.
+    await db.exec(`INSERT INTO cmdb.dim_ci (ci_id, ci_name, ci_type, ci_status, organization_id)
+      VALUES ('ci-post-011', 'Post', 'server', 'active', '${INTERNAL_ORG}')`);
+    expect(await db.rows(`SELECT org_backfilled FROM cmdb.dim_ci WHERE ci_id = 'ci-post-011'`))
+      .toEqual([{ org_backfilled: false }]);
   });
 
   it('migrator discovers 011 and not the rollback file', async () => {

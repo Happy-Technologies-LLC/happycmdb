@@ -356,27 +356,34 @@ Every `cmdb.dim_ci` row carries `organization_id` (UUID, `NOT NULL`, no default)
 organization of the `:CI` node it versions.
 
 - Migration `011_ci_organization_scope.sql` backfills every existing row (all SCD
-  versions) to the internal organization `00000000-0000-0000-0000-000000000000` (FD-4).
+  versions) to the internal organization `00000000-0000-0000-0000-000000000000` (FD-4)
+  and marks those rows, and only those, `org_backfilled = TRUE`. No writer sets the
+  marker; rows written after 011 are `FALSE`.
 - The ETL writers (neo4j-to-postgres, full refresh, sync-cis-to-datamart,
   reconciliation, the ETL processor sync job) and `DataMartClient.upsertCI` write the
-  organization explicitly. All versions of a CI share one organization, and a CI stored
-  in a customer organization never moves. A CI stored in the internal organization takes
-  the organization its node names only when the node is older than the CI's
-  `cmdb.dim_ci` history; every version is then relabelled (no new version). A node that
-  conflicts with the stored history (for example a newer node reusing a deleted CI's id,
-  or a node naming another organization than a stored customer one) is skipped and
-  logged: nothing is written for it. A
-  CI new to `cmdb.dim_ci` takes its node's organization, or the internal organization
-  when the node has none (written by discovery, connectors, ETL or reconciliation), as
-  the Neo4j backfill does. The full-refresh job empties `cmdb.dim_ci` first, so every CI
-  is new to it. A node without an organization never puts a CI in, or moves it to, a
-  customer organization.
+  organization explicitly. All versions of a CI share one organization. A CI whose rows
+  are 011 backfill labels takes the organization its node names, once: every version is
+  relabelled (no new version) and the marker is cleared. Rows labelled internal after
+  011 and customer organizations never move, and the decision uses no client-writable
+  data (a node's `created_at`, for example, is not consulted). A node that conflicts
+  with the stored history (another organization than the stored one, outside the
+  backfill case) is skipped and logged: nothing is written for it. A CI new to
+  `cmdb.dim_ci` takes its node's organization, or the internal organization when the
+  node has none (written by discovery, connectors, ETL or reconciliation), as the Neo4j
+  backfill does. The full-refresh job empties `cmdb.dim_ci` first, so every CI is new to
+  it. A node without an organization never puts a CI in, or moves it to, a customer
+  organization.
 - **Rollout:** CIs created in a customer organization through `POST /api/v1/cis` and
   synced before 011 are backfilled to the internal organization. Right after applying
-  011, run a neo4j-to-postgres sync without `incrementalSince` so every CI is visited
-  and relabelled to its node's organization (an incremental sync only visits updated
-  nodes). Until it finishes, the internal organization can map those CIs; such mapping
-  rows stay listed by `GET /:id/cis` afterwards but add nothing to `/costs`.
+  011, run a complete neo4j-to-postgres sync (no `incrementalSince`, no `ciTypes`) so
+  every CI is visited and relabelled to its node's organization. When that run has no
+  failed batch it clears every remaining backfill marker, including those of CIs whose
+  node no longer exists, which closes the relabel window: a node created later with
+  such an id cannot claim the history. Until it finishes, the internal organization can
+  map those CIs; such mapping rows stay listed by `GET /:id/cis` afterwards but add
+  nothing to `/costs`.
+- `POST /api/v1/itil/baselines/:id/restore` never writes a CI's `created_at` (nor its
+  `organization_id`, `id` or `updated_at`) from a snapshot.
 - `POST /api/v1/business-services/:id/cis` maps only CIs with a current `cmdb.dim_ci`
   row in the service's organization. A CI of another organization, or one with no
   current row (for example not yet synced by the ETL), returns **404**

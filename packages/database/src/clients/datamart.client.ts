@@ -68,7 +68,7 @@ export class DataMartClient {
       // Check if current record exists
       const existing = await this.pgClient.query(
         `
-        SELECT ci_key, ci_name, ci_type, ci_status, environment, external_id, metadata, organization_id
+        SELECT ci_key, ci_name, ci_type, ci_status, environment, external_id, metadata, organization_id, org_backfilled
         FROM cmdb.dim_ci
         WHERE ci_id = $1 AND is_current = TRUE
         `,
@@ -79,12 +79,12 @@ export class DataMartClient {
         const currentRecord = existing.rows[0];
 
         // Every version of a CI carries the same organization (migration
-        // 011). A customer organization is never changed: a different one is
-        // refused. Only an internal-organization label (011's FD-4 backfill)
-        // moves, without a new version. PostgreSQL returns a uuid in lower case.
-        const internal = '00000000-0000-0000-0000-000000000000';
+        // 011). A different one is refused unless the stored rows are 011
+        // backfill labels (org_backfilled), which take it once, without a new
+        // version. Rows labelled after 011 and customer organizations never
+        // move. PostgreSQL returns a uuid in lower case.
         const organizationId = ci.organization_id.toLowerCase();
-        if (currentRecord.organization_id !== internal && currentRecord.organization_id !== organizationId) {
+        if (currentRecord.organization_id !== organizationId && currentRecord.org_backfilled !== true) {
           throw new Error(`CI ${ci.ci_id} belongs to another organization`);
         }
 
@@ -93,10 +93,10 @@ export class DataMartClient {
           logger.debug('CI attributes changed, creating new version', { ci_id: ci.ci_id });
           return await this.pgClient.updateCIDimension(ci);
         } else {
-          if (currentRecord.organization_id !== organizationId) {
+          if (currentRecord.org_backfilled === true) {
             await this.pgClient.query(
-              'UPDATE cmdb.dim_ci SET organization_id = $1 WHERE ci_id = $2 AND organization_id = $3',
-              [ci.organization_id, ci.ci_id, internal]
+              'UPDATE cmdb.dim_ci SET organization_id = $1, org_backfilled = FALSE WHERE ci_id = $2 AND org_backfilled',
+              [ci.organization_id, ci.ci_id]
             );
           }
           logger.debug('CI unchanged, returning existing key', { ci_id: ci.ci_id });

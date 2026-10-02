@@ -10,14 +10,18 @@
 // ============================================
 // BUSINESS SERVICES
 // ============================================
-// Every sample :BusinessService sets organization_id to the internal
-// organization (the seeded admin's): TBM and dashboard reads only count
-// :BusinessService nodes that carry the caller's organization. Only these
-// seeded services are assigned; other services without an organization are
+// Every sample :BusinessService is in the internal organization (the seeded
+// admin's): TBM and dashboard reads only count :BusinessService nodes that
+// carry the caller's organization. A reseed never takes over a node another
+// organization owns: each service statement only creates the node or updates
+// one that is already internal or has no organization (WITH ... WHERE
+// coalesce(...)), and every relationship below only attaches to a service in
+// the internal organization. Other services without an organization are
 // filled from Postgres by the manual backfill
 // (packages/api-server/src/scripts/backfill-business-service-organization.ts).
 
 MERGE (bs1:BusinessService {id: 'bs-ecommerce-platform'})
+WITH bs1 WHERE coalesce(bs1.organization_id, '00000000-0000-0000-0000-000000000000') = '00000000-0000-0000-0000-000000000000'
 SET bs1.name = 'E-Commerce Platform',
     bs1.organization_id = '00000000-0000-0000-0000-000000000000',
     bs1.description = 'Complete online shopping and order management system',
@@ -47,6 +51,7 @@ SET bs1.name = 'E-Commerce Platform',
     bs1.updated_at = datetime();
 
 MERGE (bs2:BusinessService {id: 'bs-customer-support'})
+WITH bs2 WHERE coalesce(bs2.organization_id, '00000000-0000-0000-0000-000000000000') = '00000000-0000-0000-0000-000000000000'
 SET bs2.name = 'Customer Support Service',
     bs2.organization_id = '00000000-0000-0000-0000-000000000000',
     bs2.description = 'Multi-channel customer support and ticketing system',
@@ -76,6 +81,7 @@ SET bs2.name = 'Customer Support Service',
     bs2.updated_at = datetime();
 
 MERGE (bs3:BusinessService {id: 'bs-inventory-management'})
+WITH bs3 WHERE coalesce(bs3.organization_id, '00000000-0000-0000-0000-000000000000') = '00000000-0000-0000-0000-000000000000'
 SET bs3.name = 'Inventory Management Service',
     bs3.organization_id = '00000000-0000-0000-0000-000000000000',
     bs3.description = 'Real-time inventory tracking and warehouse management',
@@ -104,6 +110,7 @@ SET bs3.name = 'Inventory Management Service',
     bs3.updated_at = datetime();
 
 MERGE (bs4:BusinessService {id: 'bs-payment-processing'})
+WITH bs4 WHERE coalesce(bs4.organization_id, '00000000-0000-0000-0000-000000000000') = '00000000-0000-0000-0000-000000000000'
 SET bs4.name = 'Payment Processing Service',
     bs4.organization_id = '00000000-0000-0000-0000-000000000000',
     bs4.description = 'Secure payment gateway and fraud detection',
@@ -133,6 +140,7 @@ SET bs4.name = 'Payment Processing Service',
     bs4.updated_at = datetime();
 
 MERGE (bs5:BusinessService {id: 'bs-analytics-reporting'})
+WITH bs5 WHERE coalesce(bs5.organization_id, '00000000-0000-0000-0000-000000000000') = '00000000-0000-0000-0000-000000000000'
 SET bs5.name = 'Business Analytics & Reporting',
     bs5.organization_id = '00000000-0000-0000-0000-000000000000',
     bs5.description = 'Enterprise-wide analytics and business intelligence',
@@ -460,46 +468,57 @@ SET vs3.name = 'Product Discovery to Purchase',
 // ApplicationService -> BusinessService (ENABLES)
 MATCH (as:ApplicationService {id: 'as-web-frontend'})
 MATCH (bs:BusinessService {id: 'bs-ecommerce-platform'})
+WHERE bs.organization_id = '00000000-0000-0000-0000-000000000000'
 MERGE (as)-[:ENABLES {created_at: datetime(), criticality: 'critical', dependency_type: 'primary'}]->(bs);
 
 MATCH (as:ApplicationService {id: 'as-api-backend'})
 MATCH (bs:BusinessService {id: 'bs-ecommerce-platform'})
+WHERE bs.organization_id = '00000000-0000-0000-0000-000000000000'
 MERGE (as)-[:ENABLES {created_at: datetime(), criticality: 'critical', dependency_type: 'primary'}]->(bs);
 
 MATCH (as:ApplicationService {id: 'as-payment-gateway'})
 MATCH (bs:BusinessService {id: 'bs-payment-processing'})
+WHERE bs.organization_id = '00000000-0000-0000-0000-000000000000'
 MERGE (as)-[:ENABLES {created_at: datetime(), criticality: 'critical', dependency_type: 'primary'}]->(bs);
 
 MATCH (as:ApplicationService {id: 'as-crm-system'})
 MATCH (bs:BusinessService {id: 'bs-customer-support'})
+WHERE bs.organization_id = '00000000-0000-0000-0000-000000000000'
 MERGE (as)-[:ENABLES {created_at: datetime(), criticality: 'high', dependency_type: 'primary'}]->(bs);
 
 MATCH (as:ApplicationService {id: 'as-warehouse-management'})
 MATCH (bs:BusinessService {id: 'bs-inventory-management'})
+WHERE bs.organization_id = '00000000-0000-0000-0000-000000000000'
 MERGE (as)-[:ENABLES {created_at: datetime(), criticality: 'critical', dependency_type: 'primary'}]->(bs);
 
 MATCH (as:ApplicationService {id: 'as-analytics-platform'})
 MATCH (bs:BusinessService {id: 'bs-analytics-reporting'})
+WHERE bs.organization_id = '00000000-0000-0000-0000-000000000000'
 MERGE (as)-[:ENABLES {created_at: datetime(), criticality: 'medium', dependency_type: 'primary'}]->(bs);
 
 // BusinessService -> BusinessCapability (DELIVERS)
 MATCH (bs:BusinessService {id: 'bs-ecommerce-platform'})
+WHERE bs.organization_id = '00000000-0000-0000-0000-000000000000'
 MATCH (bc:BusinessCapability {id: 'bc-order-fulfillment'})
 MERGE (bs)-[:DELIVERS {created_at: datetime(), capability_level: 'full'}]->(bc);
 
 MATCH (bs:BusinessService {id: 'bs-payment-processing'})
+WHERE bs.organization_id = '00000000-0000-0000-0000-000000000000'
 MATCH (bc:BusinessCapability {id: 'bc-payment-collection'})
 MERGE (bs)-[:DELIVERS {created_at: datetime(), capability_level: 'full'}]->(bc);
 
 MATCH (bs:BusinessService {id: 'bs-customer-support'})
+WHERE bs.organization_id = '00000000-0000-0000-0000-000000000000'
 MATCH (bc:BusinessCapability {id: 'bc-customer-engagement'})
 MERGE (bs)-[:DELIVERS {created_at: datetime(), capability_level: 'full'}]->(bc);
 
 MATCH (bs:BusinessService {id: 'bs-inventory-management'})
+WHERE bs.organization_id = '00000000-0000-0000-0000-000000000000'
 MATCH (bc:BusinessCapability {id: 'bc-inventory-optimization'})
 MERGE (bs)-[:DELIVERS {created_at: datetime(), capability_level: 'full'}]->(bc);
 
 MATCH (bs:BusinessService {id: 'bs-analytics-reporting'})
+WHERE bs.organization_id = '00000000-0000-0000-0000-000000000000'
 MATCH (bc:BusinessCapability {id: 'bc-data-driven-insights'})
 MERGE (bs)-[:DELIVERS {created_at: datetime(), capability_level: 'full'}]->(bc);
 
@@ -549,18 +568,22 @@ MERGE (as)-[:RUNS_ON {created_at: datetime(), deployment_type: 'containerized'}]
 // CI -> BusinessService (SUPPORTS) - direct infrastructure support
 MATCH (ci:CI:Database {id: 'db-neo4j-prod'})
 MATCH (bs:BusinessService {id: 'bs-ecommerce-platform'})
+WHERE bs.organization_id = '00000000-0000-0000-0000-000000000000'
 MERGE (ci)-[:SUPPORTS {created_at: datetime(), support_type: 'data-storage', criticality: 'critical'}]->(bs);
 
 MATCH (ci:CI:Database {id: 'db-postgres-datamart'})
 MATCH (bs:BusinessService {id: 'bs-analytics-reporting'})
+WHERE bs.organization_id = '00000000-0000-0000-0000-000000000000'
 MERGE (ci)-[:SUPPORTS {created_at: datetime(), support_type: 'data-storage', criticality: 'critical'}]->(bs);
 
 MATCH (ci:CI:Database {id: 'db-redis-cache'})
 MATCH (bs:BusinessService {id: 'bs-ecommerce-platform'})
+WHERE bs.organization_id = '00000000-0000-0000-0000-000000000000'
 MERGE (ci)-[:SUPPORTS {created_at: datetime(), support_type: 'caching', criticality: 'high'}]->(bs);
 
 MATCH (ci:CI:NetworkDevice {id: 'net-lb-prod-01'})
 MATCH (bs:BusinessService {id: 'bs-ecommerce-platform'})
+WHERE bs.organization_id = '00000000-0000-0000-0000-000000000000'
 MERGE (ci)-[:SUPPORTS {created_at: datetime(), support_type: 'load-balancing', criticality: 'critical'}]->(bs);
 
 // ============================================

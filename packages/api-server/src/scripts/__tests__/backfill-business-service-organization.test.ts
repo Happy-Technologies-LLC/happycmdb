@@ -39,8 +39,10 @@ const pg = { query: async (sql: string, params: unknown[] = []) => ({ rows: awai
 const ORG_A = '11111111-1111-4111-8111-111111111111';
 const ORG_B = '22222222-2222-4222-8222-222222222222';
 const MIGRATIONS = join(__dirname, '../../../../database/src/postgres/migrations');
-// Rows created before this are trusted; bs-squat's row is newer.
+// Rows created before this are trusted; bs-squat's row is newer (09:30 UTC, written by
+// API sessions whose TimeZone is UTC).
 const CUTOVER = '2026-10-01T00:00:00Z';
+const WRITER_TIMEZONE = 'UTC';
 
 // ---------------------------------------------------------------------------
 // In-memory :BusinessService nodes and a statement-parsing fake session
@@ -49,6 +51,7 @@ const CUTOVER = '2026-10-01T00:00:00Z';
 type Node = { id: string; organization_id?: string };
 let nodes: Node[] = [];
 const writes: string[] = [];
+let graphRuns = 0;
 
 interface Owner { serviceId: string; organizationId: string }
 
@@ -70,6 +73,7 @@ const record = (row: Record<string, unknown>) => ({ get: (key: string) => row[ke
 
 const session: GraphSession = {
   run: async (rawCypher, params = {}) => {
+    graphRuns++;
     const cypher = rawCypher.replace(/\s+/g, ' ').trim();
 
     const perOwner = cypher.match(
@@ -119,7 +123,7 @@ INSERT INTO dim_business_services (service_id, name, service_classification, tbm
   ('bs-b-app', 'B App', 'application', 'application', 'high', 'active', '${ORG_B}', '2026-09-01 00:00:00'),
   ('bs-moved', 'Moved', 'application', 'application', 'high', 'active', '${ORG_A}', '2026-09-01 00:00:00'),
   ('bs-pg-only', 'Postgres Only', 'application', 'application', 'high', 'active', '${ORG_B}', '2026-09-01 00:00:00'),
-  ('bs-squat', 'Claimed After Cutover', 'application', 'application', 'high', 'active', '${ORG_B}', '2026-10-02 09:30:00');`);
+  ('bs-squat', 'Claimed After Cutover', 'application', 'application', 'high', 'active', '${ORG_B}', '2026-10-01 09:30:00');`);
 });
 
 afterAll(() => {
@@ -128,6 +132,7 @@ afterAll(() => {
 
 beforeEach(() => {
   writes.length = 0;
+  graphRuns = 0;
   nodes = [
     // No organization yet; trusted Postgres owner is org A / org B.
     { id: 'bs-a-app' },
@@ -142,7 +147,7 @@ beforeEach(() => {
 });
 
 const orgs = () => Object.fromEntries(nodes.map(n => [n.id, n.organization_id ?? null]));
-const APPLY = { apply: true, createdBefore: CUTOVER };
+const APPLY = { apply: true, createdBefore: CUTOVER, writerTimezone: WRITER_TIMEZONE };
 
 describe('backfillBusinessServiceOrganizations', () => {
   it('fills only null orgs from Postgres', async () => {
@@ -184,14 +189,37 @@ describe('backfillBusinessServiceOrganizations', () => {
 
     expect(nodes.find(n => n.id === 'bs-squat')).toEqual({ id: 'bs-squat' });
     expect(summary.needs_review).toEqual([
-      { service_id: 'bs-squat', organization_id: ORG_B, created_at: '2026-10-02 09:30:00' },
+      { service_id: 'bs-squat', organization_id: ORG_B, created_at: '2026-10-01 09:30:00' },
     ]);
+  });
+
+  it('reads created_at in the writer time zone, whatever the backfill session TimeZone', async () => {
+    // A backfill session at UTC+14 would read bs-squat's 09:30 wall time as 2026-09-30T19:30Z,
+    // before the cutover, and hand the node to the post-cutover claimant.
+    await send('exec', "SET TimeZone = 'Pacific/Kiritimati'");
+    try {
+      const summary = await backfillBusinessServiceOrganizations(pg, session, APPLY);
+
+      expect(nodes.find(n => n.id === 'bs-squat')).toEqual({ id: 'bs-squat' });
+      expect(summary.needs_review.map(r => r.service_id)).toEqual(['bs-squat']);
+      expect(writes.sort()).toEqual(['bs-a-app', 'bs-b-app']);
+    } finally {
+      await send('exec', 'RESET TimeZone');
+    }
+  });
+
+  it('refuses an unknown writer time zone before any graph statement', async () => {
+    await expect(
+      backfillBusinessServiceOrganizations(pg, session, { ...APPLY, writerTimezone: 'Mars/Olympus_Mons' })
+    ).rejects.toThrow();
+    expect(graphRuns).toBe(0);
+    expect(writes).toEqual([]);
   });
 
   it('writes nothing without apply and lists what apply would fill', async () => {
     const before = JSON.stringify(nodes);
 
-    const summary = await backfillBusinessServiceOrganizations(pg, session, { apply: false, createdBefore: CUTOVER });
+    const summary = await backfillBusinessServiceOrganizations(pg, session, { ...APPLY, apply: false });
 
     expect(writes).toEqual([]);
     expect(JSON.stringify(nodes)).toBe(before);
@@ -213,11 +241,12 @@ describe('backfill CLI', () => {
   };
 
   it.each([
-    [[], ENV, '--created-before <ISO-8601 timestamp with a zone> is required'],
-    [['--created-before', CUTOVER, '--apply=false'], ENV, 'unexpected argument --apply=false'],
-    [['--apply', '--created-before', CUTOVER, '--force'], ENV, 'unexpected argument --force'],
-    [['--created-before', '2026-10-01 00:00:00', '--apply'], ENV, '--created-before must be an ISO-8601 timestamp with a zone'],
-    [['--created-before', CUTOVER, '--apply'], { ...ENV, CMDB_BACKFILL_NEO4J_ENCRYPTED: 'yes' }, 'CMDB_BACKFILL_NEO4J_ENCRYPTED must be true or false'],
+    [['--writer-timezone', WRITER_TIMEZONE], ENV, '--created-before <ISO-8601 timestamp with a zone> is required'],
+    [['--created-before', CUTOVER, '--apply'], ENV, '--writer-timezone <IANA time zone of the API sessions> is required'],
+    [['--created-before', CUTOVER, '--writer-timezone', WRITER_TIMEZONE, '--apply=false'], ENV, 'unexpected argument --apply=false'],
+    [['--apply', '--created-before', CUTOVER, '--writer-timezone', WRITER_TIMEZONE, '--force'], ENV, 'unexpected argument --force'],
+    [['--created-before', '2026-10-01 00:00:00', '--writer-timezone', WRITER_TIMEZONE, '--apply'], ENV, '--created-before must be an ISO-8601 timestamp with a zone'],
+    [['--created-before', CUTOVER, '--writer-timezone', WRITER_TIMEZONE, '--apply'], { ...ENV, CMDB_BACKFILL_NEO4J_ENCRYPTED: 'yes' }, 'CMDB_BACKFILL_NEO4J_ENCRYPTED must be true or false'],
   ] as Array<[string[], Record<string, string>, string]>)('refuses %j before reading any store', async (argv, env, message) => {
     const out: string[] = [];
     const err: string[] = [];

@@ -19,10 +19,15 @@
  *   SELECT applied_at FROM cmdb.schema_migrations
  *    WHERE migration_name = '008_business_service_organization_scope.sql';
  * An org-less node whose only row is newer is left without an organization
- * and listed in `needs_review` for a manual decision. created_at is a
- * TIMESTAMP without zone written in the API sessions' TimeZone and compared in
- * this session's TimeZone (reported as `postgres_timezone`); run the backfill
- * as a role with the API role's TimeZone (`SHOW timezone` as the API user).
+ * and listed in `needs_review` for a manual decision.
+ *
+ * created_at is a TIMESTAMP without zone: the wall-clock time in the TimeZone
+ * of the API session that wrote the row. `--writer-timezone <IANA name>` is
+ * required and created_at is read in that zone (`created_at AT TIME ZONE`),
+ * never in this backfill session's TimeZone, which may differ. Use the API
+ * role's setting (`SHOW timezone` on an API connection; normally `UTC`). The
+ * name must be in pg_timezone_names (POSIX offsets such as '+05' are refused);
+ * it is checked before any graph statement runs.
  *
  * Guards:
  *   - dry run by default: nothing is written unless `--apply` is passed; the
@@ -50,7 +55,7 @@
  *   CMDB_BACKFILL_NEO4J_URI=bolt://<host>:7687 CMDB_BACKFILL_NEO4J_USERNAME=... CMDB_BACKFILL_NEO4J_PASSWORD=... \
  *   [CMDB_BACKFILL_NEO4J_ENCRYPTED=true|false] \
  *   node packages/api-server/dist/tenant-fixture/api-server/src/scripts/backfill-business-service-organization.js \
- *     --created-before <ISO-8601 timestamp with zone> [--apply]
+ *     --created-before <ISO-8601 timestamp with zone> --writer-timezone <IANA name> [--apply]
  */
 
 // Deliberately not the @cmdb/database barrel: importing it opens a BullMQ Redis
@@ -63,18 +68,20 @@ const ORGANIZATION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-
 /** ISO-8601 timestamp with an explicit zone, so the cutover is never read in a local time zone. */
 const CUTOVER_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/;
 
+/** The writer time zone must be a named zone Postgres knows; checked before any graph statement. */
+export const WRITER_TIMEZONE_SQL = 'SELECT EXISTS (SELECT 1 FROM pg_timezone_names WHERE name = $1) AS known';
+
 /**
  * Owner of every business service id (service_id is the primary key;
  * organization_id is NOT NULL since 008). `trusted`: created before the
- * cutover ($1). created_at is a server-set TIMESTAMP, read in the session time
- * zone, which the result reports as `timezone`.
+ * cutover ($1), with created_at read in the writer time zone ($2), so the
+ * session TimeZone plays no part.
  */
 export const OWNERS_SQL = `
 SELECT service_id,
        organization_id::text AS organization_id,
        created_at::text AS created_at,
-       (created_at IS NOT NULL AND created_at::timestamptz < $1::timestamptz) AS trusted,
-       current_setting('TimeZone') AS timezone
+       (created_at IS NOT NULL AND (created_at AT TIME ZONE $2::text) < $1::timestamptz) AS trusted
   FROM dim_business_services
  ORDER BY service_id`;
 
@@ -120,8 +127,8 @@ export interface BackfillSummary {
   mode: 'dry-run' | 'apply';
   /** Rows created before this are trusted. */
   created_before: string;
-  /** TimeZone of the backfill's Postgres session, in which created_at was compared (null with no rows). */
-  postgres_timezone: string | null;
+  /** Zone in which created_at (a TIMESTAMP without zone) was read. */
+  writer_timezone: string;
   /** dim_business_services rows read. */
   postgres_services: number;
   /** Nodes given an organization (apply), or that would be (dry run). */
@@ -158,13 +165,17 @@ async function matches(session: GraphSession, cypher: string, owners: Owner[]): 
 export async function backfillBusinessServiceOrganizations(
   postgres: SqlClient,
   session: GraphSession,
-  options: { apply: boolean; createdBefore: string }
+  options: { apply: boolean; createdBefore: string; writerTimezone: string }
 ): Promise<BackfillSummary> {
   if (!CUTOVER_RE.test(options.createdBefore) || !Number.isFinite(Date.parse(options.createdBefore))) {
     throw new Error('--created-before must be an ISO-8601 timestamp with a zone, e.g. 2026-10-01T12:00:00Z');
   }
+  const zone = await postgres.query(WRITER_TIMEZONE_SQL, [options.writerTimezone]);
+  if (zone.rows[0]?.['known'] !== true) {
+    throw new Error(`--writer-timezone ${options.writerTimezone} is not a named time zone in pg_timezone_names; nothing was written`);
+  }
 
-  const { rows } = await postgres.query(OWNERS_SQL, [options.createdBefore]);
+  const { rows } = await postgres.query(OWNERS_SQL, [options.createdBefore, options.writerTimezone]);
   const owners: Owner[] = rows.map(row => {
     const serviceId = row['service_id'];
     const organizationId = row['organization_id'];
@@ -192,7 +203,7 @@ export async function backfillBusinessServiceOrganizations(
   return {
     mode: options.apply ? 'apply' : 'dry-run',
     created_before: options.createdBefore,
-    postgres_timezone: typeof rows[0]?.['timezone'] === 'string' ? rows[0]['timezone'] : null,
+    writer_timezone: options.writerTimezone,
     postgres_services: owners.length,
     filled: filled.map(m => ({ service_id: m.serviceId, organization_id: m.organizationId })),
     needs_review: review.map(m => ({
@@ -213,25 +224,31 @@ function required(env: NodeJS.ProcessEnv, name: string): string {
   return value;
 }
 
-/** `--created-before <timestamp>` (required) and `--apply`; anything else is refused. */
-export function parseArgs(argv: readonly string[]): { apply: boolean; createdBefore: string } {
+/** `--created-before <timestamp>` and `--writer-timezone <zone>` (both required) and `--apply`; anything else is refused. */
+export function parseArgs(argv: readonly string[]): { apply: boolean; createdBefore: string; writerTimezone: string } {
   let apply = false;
   let createdBefore: string | undefined;
+  let writerTimezone: string | undefined;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
     if (arg === '--apply') {
       apply = true;
     } else if (arg === '--created-before' && createdBefore === undefined && argv[i + 1] !== undefined) {
       createdBefore = argv[++i]!;
+    } else if (arg === '--writer-timezone' && writerTimezone === undefined && argv[i + 1] !== undefined) {
+      writerTimezone = argv[++i]!;
     } else {
-      throw new Error(`unexpected argument ${arg}; usage: --created-before <ISO-8601 timestamp> [--apply]`);
+      throw new Error(`unexpected argument ${arg}; usage: --created-before <ISO-8601 timestamp> --writer-timezone <IANA name> [--apply]`);
     }
   }
-  // Its format is checked by backfillBusinessServiceOrganizations before any query.
+  // Both are checked against Postgres / the format by backfillBusinessServiceOrganizations before any graph statement.
   if (createdBefore === undefined) {
     throw new Error('--created-before <ISO-8601 timestamp with a zone> is required, e.g. 2026-10-01T12:00:00Z');
   }
-  return { apply, createdBefore };
+  if (writerTimezone === undefined) {
+    throw new Error('--writer-timezone <IANA time zone of the API sessions> is required, e.g. UTC');
+  }
+  return { apply, createdBefore, writerTimezone };
 }
 
 /**

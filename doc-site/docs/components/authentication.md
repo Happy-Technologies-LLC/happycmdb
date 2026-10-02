@@ -225,14 +225,19 @@ Postgres ownership check:
 - No API route writes `:BusinessService` nodes, and no property-map write
   (`SET bs += $map`) targets them, so `organization_id` cannot be set or changed through
   the API. The sample services in `packages/database/src/neo4j/v3-sample-data.cypher`
-  are in the internal organization.
+  are in the internal organization; a reseed only creates them or updates nodes that are
+  internal or have no organization, so it never takes over (or attaches sample
+  relationships to) a node another organization owns.
 - **Existing nodes have no `organization_id` until the backfill runs, so the reads above
   return 404 for them.** The backfill
   `packages/api-server/src/scripts/backfill-business-service-organization.ts` sets
   `organization_id` only on nodes that have none, from the `dim_business_services` row
   with the same `service_id`, and only from rows created before the required
   `--created-before` cutover (use the time migration 008 was applied: tenants choose
-  service ids, so a newer row could claim a node that was never theirs). An org-less
+  service ids, so a newer row could claim a node that was never theirs). `created_at` has
+  no zone, so the required `--writer-timezone` (the API sessions' TimeZone, normally
+  `UTC`) says how to read it; the backfill session's own TimeZone plays no part, and an
+  unknown zone stops the run before any graph statement. An org-less
   node whose only row is newer stays without an organization and is listed in
   `needs_review`; nodes without a Postgres row stay without an organization (invisible);
   nodes that already have one are never changed. It is a dry run unless `--apply` is

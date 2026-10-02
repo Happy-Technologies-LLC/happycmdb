@@ -204,12 +204,12 @@ Located at `packages/api-server/src/services/dashboard.service.ts`
 3. Calculate derived metrics (health scores, ROI, compliance percentages)
 4. Format data for frontend consumption
 
-**Key Methods:**
-- `getExecutiveSummary(timeRange)` - Executive metrics
-- `getCIOMetrics(timeRange)` - CIO operational metrics
-- `getITSMDashboard()` - ITSM incident/change data
-- `getFinOpsDashboard(timeRange)` - FinOps cost analysis
-- `getBusinessServiceDashboard(serviceId?)` - Business service health
+**Key Methods** (`organizationId` is the caller's token organization from `requestOrganizationId(req)`; every :CI match is limited to it):
+- `getExecutiveSummary(organizationId, timeRange)` - Executive metrics
+- `getCIOMetrics(organizationId, timeRange)` - CIO operational metrics
+- `getITSMDashboard(organizationId)` - ITSM incident/change data
+- `getFinOpsDashboard(organizationId, timeRange)` - FinOps cost analysis
+- `getBusinessServiceDashboard(organizationId, serviceId?)` - Business service health; `null` (REST 404) when the organization does not own `serviceId`
 
 ### Dashboard Controller
 

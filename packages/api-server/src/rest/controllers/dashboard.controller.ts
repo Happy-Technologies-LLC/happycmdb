@@ -129,7 +129,12 @@ export class DashboardController {
    */
   async getBusinessServiceDashboard(req: Request, res: Response): Promise<void> {
     try {
-      const serviceId = req.params.serviceId || req.query.serviceId as string;
+      const serviceId = req.params.serviceId || req.query.serviceId;
+      // A repeated (array) or nested (object) ?serviceId is never a service the caller owns.
+      if (typeof serviceId === 'object') {
+        res.status(404).json(BUSINESS_SERVICE_NOT_FOUND);
+        return;
+      }
 
       logger.info('Fetching business service dashboard', { serviceId });
 

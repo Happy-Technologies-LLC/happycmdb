@@ -212,11 +212,9 @@ const MIGRATIONS = join(__dirname, '../../../../../database/src/postgres/migrati
 
 function baseDdl(): string {
   const sql = readFileSync(join(MIGRATIONS, '001_complete_schema.sql'), 'utf8');
-  return ['dim_business_services', 'cmdb.dim_ci'].map(table => {
-    const match = sql.match(new RegExp(`CREATE TABLE IF NOT EXISTS ${table.replace('.', '\\.')} \\([\\s\\S]*?\\n\\);`));
-    if (!match) throw new Error(`DDL for ${table} not found in 001_complete_schema.sql`);
-    return match[0];
-  }).join('\n');
+  const match = sql.match(/CREATE TABLE IF NOT EXISTS dim_business_services \([\s\S]*?\n\);/);
+  if (!match) throw new Error('DDL for dim_business_services not found in 001_complete_schema.sql');
+  return match[0];
 }
 
 const SEED = `
@@ -256,7 +254,7 @@ function unscopedCIMatches(): string[] {
 }
 
 beforeAll(async () => {
-  await send('exec', `CREATE SCHEMA IF NOT EXISTS cmdb;\n${baseDdl()}`);
+  await send('exec', baseDdl());
   await send('exec', `BEGIN;\n${readFileSync(join(MIGRATIONS, '008_business_service_organization_scope.sql'), 'utf8')}\nCOMMIT;`);
   await send('exec', SEED);
 });
@@ -274,12 +272,13 @@ describe('GET /api/v1/dashboards/business-service/:serviceId', () => {
   it('business-service dashboard for a foreign service is 404 and runs no Cypher', async () => {
     const foreign = await request(app).get('/api/v1/dashboards/business-service/bs-b-app').set(AS_A);
     const foreignQuery = await request(app).get('/api/v1/dashboards/business-service?serviceId=bs-b-app').set(AS_A);
+    const repeated = await request(app).get('/api/v1/dashboards/business-service?serviceId=bs-a-app&serviceId=bs-b-app').set(AS_A);
     // A CI of org A that is not a business service it owns in Postgres.
     const graphOnly = await request(app).get('/api/v1/dashboards/business-service/a-web').set(AS_A);
     const missing = await request(app).get('/api/v1/dashboards/business-service/bs-missing').set(AS_A);
 
     expect(missing.status).toBe(404);
-    for (const res of [foreign, foreignQuery, graphOnly]) {
+    for (const res of [foreign, foreignQuery, repeated, graphOnly]) {
       expect(res.status).toBe(404);
       expect(res.text).toBe(missing.text);
     }

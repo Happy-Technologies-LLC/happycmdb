@@ -255,14 +255,15 @@ organization when a CI is created through `POST /api/v1/cis`.
 - CI ids (and `external_id`s) are unique across all organizations: creating a CI
   with an id another organization uses returns **409**, which reveals that the id exists.
 - CIs written by discovery, connectors, ETL and reconciliation carry no
-  `organization_id` and are invisible to every organization through `/api/v1/cis`.
+  `organization_id` and are invisible to every organization through `/api/v1/cis` and
+  `/api/v1/dashboards`.
 - No writer copies `organization_id` from request or stored data onto a CI: the
   reconciliation merge and create (`/api/v1/reconciliation/merge`, GraphQL
   `_reconciliation { mergeCI }`) drop it from `attributes`/`identifiers`, and an ITIL
   baseline restore skips it. A merge or restore never changes a CI's organization.
 - GraphQL `createCI`, `updateCI` and `deleteCI` return `FORBIDDEN` until GraphQL CI
   tenant scoping lands.
-- **Not yet tenant-scoped.** Only `/api/v1/cis/**` is scoped. Until the GraphQL slice
+- **Not yet tenant-scoped.** Only `/api/v1/cis/**` and `/api/v1/dashboards/**` are scoped. Until the GraphQL slice
   (T3c) and the later slices land, every other route and GraphQL resolver that touches
   CIs can still read other tenants' CIs, and some can modify or delete them:
   - GraphQL CI queries (`getCI(s)`, `searchCIs`, relationships, dependencies, impact)
@@ -277,7 +278,6 @@ organization when a CI is created through `POST /api/v1/cis`.
     `organization_id`);
   - `/api/v1/search/*`;
   - `/api/v1/drift` and `/api/v1/impact`, which look CIs up without an organization filter;
-  - `/api/v1/dashboards` (the ITSM dashboard lists individual CIs);
   - analytics and TBM CI reads, which return individual CIs as well as aggregates.
 - The sample CIs seeded by `db-init` (`infrastructure/scripts/init-neo4j.cypher`) and by
   `infrastructure/scripts/seed-data.ts` are in the internal organization, the seeded

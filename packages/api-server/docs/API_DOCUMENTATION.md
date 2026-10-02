@@ -1690,7 +1690,8 @@ query GetImpactAnalysis($id: ID!, $depth: Int) {
 
 #### createCI
 
-Create a new CI.
+Create a new CI. As in `POST /cis`, `_name` must be 1-500 characters and a non-null
+`_discoveredAt` must be an ISO 8601 timestamp (`BAD_USER_INPUT` otherwise).
 
 **Mutation**:
 ```graphql

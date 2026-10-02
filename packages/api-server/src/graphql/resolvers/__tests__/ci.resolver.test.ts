@@ -586,6 +586,25 @@ describe('GraphQL CI Resolvers', () => {
       expect(client().updateCI).not.toHaveBeenCalled();
     });
 
+    it("createCI rejects a 501-character name or a 'not-a-date' discovery timestamp without calling the client", async () => {
+      client().createCI.mockResolvedValue(createCI({ id: 'ci-new' }));
+      const create = (input: Record<string, unknown>) =>
+        (resolvers.Mutation as any).createCI(null, { input: { _id: 'ci-new', _name: 'n', _type: 'SERVER', ...input } }, mockContext);
+
+      for (const input of [{ _name: 'x'.repeat(501) }, { _discoveredAt: 'not-a-date' }]) {
+        const error = await errorOf(create(input));
+        expect({ input, error }).toMatchObject({ input, error: { extensions: { code: 'BAD_USER_INPUT' } } });
+      }
+      expect(client().createCI).not.toHaveBeenCalled();
+      expect(client().getSession).not.toHaveBeenCalled();
+
+      await create({ _name: 'x'.repeat(500), _discoveredAt: '2026-10-01T12:00:00Z' });
+      expect(client().createCI).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'x'.repeat(500), discovered_at: '2026-10-01T12:00:00Z' }),
+        ORG_A
+      );
+    });
+
     it('getCIDependencies/getImpactAnalysis reject depth 0, 11, -1 and a non-integer with BAD_USER_INPUT', async () => {
       for (const resolver of ['getCIDependencies', 'getImpactAnalysis']) {
         for (const depth of [0, 11, -1, 2.5]) {

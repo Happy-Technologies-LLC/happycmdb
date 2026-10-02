@@ -89,24 +89,44 @@ function convertEnumToDbFormat(value: string): string {
   return value.toLowerCase().replace(/_/g, '-');
 }
 
+/** ISO 8601 date or date-time, as accepted by REST's `Joi.string().isoDate()`. */
+const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}(:?\d{2})?)?)?$/;
+
 /**
- * Validate CI input data
+ * Validate CI input data with the REST create rules (ciInputSchema): name of
+ * 1-500 characters and an optional ISO discovery timestamp.
  */
-function validateCIInput(input: { _id?: unknown; _name?: unknown; _type?: unknown }): void {
+function validateCIInput(input: {
+  _id?: unknown;
+  _name?: unknown;
+  _type?: unknown;
+  _discoveredAt?: unknown;
+}): void {
   if (!input._id || typeof input._id !== 'string') {
     throw new GraphQLError('CI ID is required and must be a string', {
       extensions: { code: 'BAD_USER_INPUT' },
     });
   }
 
-  if (!input._name || typeof input._name !== 'string') {
-    throw new GraphQLError('CI name is required and must be a string', {
+  if (!input._name || typeof input._name !== 'string' || input._name.length > 500) {
+    throw new GraphQLError('CI name is required and must be a string of at most 500 characters', {
       extensions: { code: 'BAD_USER_INPUT' },
     });
   }
 
   if (!input._type) {
     throw new GraphQLError('CI type is required', {
+      extensions: { code: 'BAD_USER_INPUT' },
+    });
+  }
+
+  const discoveredAt = input._discoveredAt;
+  if (
+    discoveredAt !== undefined &&
+    discoveredAt !== null &&
+    (typeof discoveredAt !== 'string' || !ISO_TIMESTAMP.test(discoveredAt) || Number.isNaN(Date.parse(discoveredAt)))
+  ) {
+    throw new GraphQLError('CI discovery timestamp must be an ISO 8601 date', {
       extensions: { code: 'BAD_USER_INPUT' },
     });
   }

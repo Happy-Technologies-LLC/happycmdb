@@ -49,8 +49,10 @@ export interface StoredCiOrganization {
  * its id reused), so its rows cannot be attributed to the current node. The
  * decision uses only data no client can write (the stored row and its 011
  * backfill marker; a node's created_at, for example, can be rewritten):
- *  - a node without an organization keeps the stored one (reconciliation
- *    recreates missing nodes without one);
+ *  - a node without an organization can keep only an internal stored row;
+ *    a customer row requires a matching node organization. An org-less node
+ *    may reuse a deleted customer CI's id, so its stored row is not proof of
+ *    the replacement node's ownership;
  *  - a node naming the stored organization keeps it;
  *  - a node naming another organization for a CI whose current row is a 011
  *    backfill label gets it for a NEW current version, built from the node
@@ -64,7 +66,7 @@ export interface StoredCiOrganization {
  */
 export function storedCiOrganizationId(nodeOrganizationId: unknown, stored: StoredCiOrganization): string | null {
   if (nodeOrganizationId === null || nodeOrganizationId === undefined || nodeOrganizationId === '') {
-    return stored.organizationId;
+    return stored.organizationId === INTERNAL_ORGANIZATION_ID ? INTERNAL_ORGANIZATION_ID : null;
   }
   const nodeOrganization = String(nodeOrganizationId).toLowerCase();
   if (nodeOrganization === stored.organizationId) {

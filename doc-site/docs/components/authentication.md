@@ -373,9 +373,15 @@ organization of the `:CI` node it versions.
   the stored one, outside the backfill case) is skipped and logged: nothing is written
   for it. A CI new to `cmdb.dim_ci` takes its node's organization, or the internal
   organization when the node has none (written by discovery, connectors, ETL or
-  reconciliation), as the Neo4j backfill does. The full-refresh job empties
-  `cmdb.dim_ci` first, so every CI is new to it. A node without an organization never
-  puts a CI in a customer organization.
+  reconciliation), as the Neo4j backfill does. An org-less node whose ID matches
+  an existing customer CI is skipped and logged, not assigned that customer's
+  organization: a reconciliation merge can recreate a deleted customer's ID
+  from another organization's supplied attributes. Without trusted restoration
+  provenance it cannot be distinguished from a legitimate org-less restore.
+  Its stored customer row stays unchanged; only a node naming that organization
+  may update it. The full-refresh job empties `cmdb.dim_ci` first, so every CI
+  is new to it. A node without an organization never puts a CI in a customer
+  organization.
 - **Rollout:** CIs created in a customer organization through `POST /api/v1/cis` and
   synced before 011 are backfilled to the internal organization. Right after applying
   011, run a complete neo4j-to-postgres sync (no `incrementalSince`, no `ciTypes`) so

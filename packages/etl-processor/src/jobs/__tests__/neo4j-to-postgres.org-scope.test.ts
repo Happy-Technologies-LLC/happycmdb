@@ -194,6 +194,33 @@ it('a node reusing a customer CI id writes nothing into its history; customer or
   expect(await orgAndName('ci-new-b')).toEqual([[ORG_B, 'ci-new-b']]);
 });
 
+it('does not sync an org-less replacement of a deleted org-B CI into B from an org-A merge', async () => {
+  await send('exec', `INSERT INTO cmdb.dim_ci
+    (ci_id, ci_name, ci_type, ci_status, environment, is_current, organization_id, tbm_attributes) VALUES
+    ('deleted-b', 'B original', 'server', 'active', 'production', TRUE, '${ORG_B}',
+     '{"monthly_cost": 75, "resource_tower": "compute"}'),
+    ('ci-a', 'ci-a', 'server', 'active', 'production', TRUE, '${ORG_A}', '{}');`);
+  // createNewCI spreads user-supplied attributes after its generated id and
+  // strips organization_id. Org A can therefore replace a deleted B id.
+  nodes = [
+    node('generated-id', undefined, { id: 'deleted-b', name: 'A controlled replacement' }),
+    node('ci-a', ORG_A, { name: 'A legitimate update' }),
+  ];
+
+  await sync();
+
+  expect(await versions('deleted-b')).toEqual([
+    { is_current: true, organization_id: ORG_B, ci_name: 'B original', org_backfilled: false },
+  ]);
+  expect(await send('query',
+    'SELECT tbm_attributes FROM cmdb.dim_ci WHERE ci_id = $1 AND is_current = TRUE', ['deleted-b']
+  )).toEqual([{ tbm_attributes: { monthly_cost: 75, resource_tower: 'compute' } }]);
+  expect((await versions('ci-a')).map(v => [v.is_current, v.organization_id, v.ci_name])).toEqual([
+    [false, ORG_A, 'ci-a'],
+    [true, ORG_A, 'A legitimate update'],
+  ]);
+});
+
 it('issues no per-CI history aggregate and no relabel when no relabel is possible', async () => {
   await send('exec', `INSERT INTO cmdb.dim_ci (ci_id, ci_name, ci_type, ci_status, environment, is_current, organization_id) VALUES
     ('ci-b', 'ci-b', 'server', 'active', 'production', TRUE, '${ORG_B}');`);

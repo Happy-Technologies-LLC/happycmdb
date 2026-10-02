@@ -22,19 +22,18 @@
  * Only line numbers leave this module; token values never do.
  */
 
-/** base64url (unpadded) lengths of every registered JWS signature size. */
+/** base64url (unpadded) lengths of fixed-size JWS signatures. */
 const SIGNATURE_LENGTHS: readonly number[] = [
   43, // HS256
   64, // HS384
   86, // HS512, ES256, Ed25519
   128, // ES384
   152, // Ed448
-  171, // RS/PS 1024-bit
   176, // ES512
-  342, // RS/PS 2048-bit
-  512, // RS/PS 3072-bit
-  683, // RS/PS 4096-bit
 ];
+/** RSA/PS signature size equals the key modulus size; accept 1024–8192 bits. */
+const MIN_RSA_BYTES = 128;
+const MAX_RSA_BYTES = 1024;
 
 /** `{"alg":"none"}` already encodes to 19 chars. */
 const MIN_HEADER = 16;
@@ -50,12 +49,12 @@ const MAX_DEPTH = 2;
 const SNIFF_BYTES = 8000;
 
 /**
- * `e` + `y`/`w` is base64 for `{` + a printable/whitespace char: a JSON object.
- * The token must not continue a base64url run, unless the run ends in a percent
- * or backslash escape. The literal leads so V8 can scan for `e` quickly.
+ * `ey`/`ew` starts JSON at `{`. Leading JSON whitespace encodes as I, C or
+ * D; limit the other prefixes to actual whitespace byte possibilities before
+ * attempting to decode a header. `e` alone permits a split inside `ey`/`ew`.
  */
-const TOKEN_START =
-  /e[wy](?:(?<![A-Za-z0-9_-]..)|(?<=(?:%[0-9A-Fa-f]{2}|\\[nrt]|\\u[0-9A-Fa-f]{4}|\\x[0-9A-Fa-f]{2})..))/g;
+const TOKEN_START = /e[wy]|e(?=['"`])|(?:I[ACH]|C[ginQSX]|D[QSX])[A-Za-z0-9_-]{0,2}/g;
+const ESCAPED_BOUNDARY = /(?:%[0-9A-Fa-f]{2}|\\[nrt]|\\u[0-9A-Fa-f]{4}|\\x[0-9A-Fa-f]{2})$/;
 const B64_PIECE = /(?<![A-Za-z0-9+/_-])[A-Za-z0-9+/_-]{20,}/g;
 /**
  * Splices between two pieces of one value: a single line break with optional
@@ -93,7 +92,13 @@ interface Spliced {
  * Collect characters accepted by `keep` from `start`, splicing across JOINs,
  * until `limit` characters are collected.
  */
-function splice(src: string, start: number, keep: (c: number) => boolean, limit: number): Spliced {
+function splice(
+  src: string,
+  start: number,
+  keep: (c: number) => boolean,
+  limit: number,
+  decodeDots = false
+): Spliced {
   const parts: string[] = [];
   const breaks: number[] = [];
   const breakSources: number[] = [];
@@ -107,6 +112,14 @@ function splice(src: string, start: number, keep: (c: number) => boolean, limit:
     len += j - i;
     i = j;
     if (len >= limit || i >= src.length) break;
+    // A URL query may encode JWT separators as %2E. Only the token pass
+    // normalizes them; the header pass must stop before the first separator.
+    if (decodeDots && src[i] === '%' && src.slice(i + 1, i + 3).toLowerCase() === '2e') {
+      parts.push('.');
+      len++;
+      i += 3;
+      continue;
+    }
     JOIN.lastIndex = i;
     const join = JOIN.exec(src);
     if (!join) break;
@@ -119,19 +132,17 @@ function splice(src: string, start: number, keep: (c: number) => boolean, limit:
   return { text: parts.join(''), breaks, breakSources, end: i };
 }
 
-function isJoseHeader(segment: string): boolean {
+function joseAlgorithm(segment: string): string | undefined {
   let header: unknown;
   try {
     header = JSON.parse(Buffer.from(segment, 'base64url').toString('utf8'));
   } catch {
-    return false;
+    return undefined;
   }
-  return (
-    typeof header === 'object' &&
-    header !== null &&
-    'alg' in header &&
-    typeof header.alg === 'string'
-  );
+  if (typeof header === 'object' && header !== null && 'alg' in header && typeof header.alg === 'string') {
+    return header.alg;
+  }
+  return undefined;
 }
 
 /** A signature cut at a splice must look random, not like spliced prose. */
@@ -139,8 +150,8 @@ function looksRandom(s: string): boolean {
   return /[A-Z]/.test(s) && /[a-z]/.test(s) && /[0-9_-]/.test(s);
 }
 
-/** Whether a candidate whose header already passed isJoseHeader carries a real signature. */
-function hasSignature({ text, breaks }: Spliced): boolean {
+/** Whether a candidate whose header passed joseAlgorithm carries a real signature. */
+function hasSignature({ text, breaks }: Spliced, alg: string): boolean {
   const dot1 = text.indexOf('.');
   if (dot1 < 0) return false;
   const dot2 = text.indexOf('.', dot1 + 1);
@@ -148,12 +159,16 @@ function hasSignature({ text, breaks }: Spliced): boolean {
   const sigStart = dot2 + 1;
   const dot3 = text.indexOf('.', sigStart);
   const run = (dot3 < 0 ? text.length : dot3) - sigStart;
-  return SIGNATURE_LENGTHS.some(
-    (len) =>
-      len === run ||
-      (len < run &&
-        breaks.includes(sigStart + len) &&
-        looksRandom(text.slice(sigStart, sigStart + len)))
+  const plausible = (len: number): boolean => {
+    if (SIGNATURE_LENGTHS.includes(len)) return true;
+    if (!/^(?:RS|PS)(?:256|384|512)$/.test(alg)) return false;
+    const bytes = Math.floor(len * 3 / 4);
+    return bytes >= MIN_RSA_BYTES && bytes <= MAX_RSA_BYTES && len === Math.ceil(bytes * 4 / 3);
+  };
+  if (plausible(run)) return true;
+  return breaks.some((offset) =>
+    offset > sigStart && offset < sigStart + run &&
+    plausible(offset - sigStart) && looksRandom(text.slice(sigStart, offset))
   );
 }
 
@@ -173,11 +188,17 @@ function lineCounter(text: string): (pos: number) => number {
 function scanText(text: string, depth: number, lines: Set<number>): void {
   let lineOf = lineCounter(text);
   for (const m of text.matchAll(TOKEN_START)) {
+    const start = m.index;
+    if (isB64Url(text.charCodeAt(start - 1)) &&
+        !ESCAPED_BOUNDARY.test(text.slice(Math.max(0, start - 6), start))) continue;
+    if (m[0][0] !== 'e' && ![9, 10, 13, 32].includes(Buffer.from(m[0], 'base64url')[0])) continue;
     // Validate the header before splicing the whole candidate, so a long
     // token-char run with many non-JOSE starts stays linear.
-    const head = splice(text, m.index, isB64Url, MAX_HEADER + 1).text;
-    if (head.length < MIN_HEADER || head.length > MAX_HEADER || !isJoseHeader(head)) continue;
-    if (hasSignature(splice(text, m.index, isTokenChar, MAX_TOKEN))) lines.add(lineOf(m.index));
+    const head = splice(text, start, isB64Url, MAX_HEADER + 1).text;
+    const alg = head.length >= MIN_HEADER && head.length <= MAX_HEADER
+      ? joseAlgorithm(head) : undefined;
+    if (alg === undefined) continue;
+    if (hasSignature(splice(text, start, isTokenChar, MAX_TOKEN, true), alg)) lines.add(lineOf(start));
   }
 
   if (depth >= MAX_DEPTH) return;
@@ -187,8 +208,24 @@ function scanText(text: string, depth: number, lines: Set<number>): void {
     if (m.index < resume) continue;
     const run = splice(text, m.index, isB64Char, MAX_TOKEN);
     resume = run.end;
-    const at = b64RunHit(run, m.index, depth);
-    if (at >= 0) lines.add(lineOf(at));
+    const hits: number[] = [];
+    const joinedHit = b64RunHit(run, m.index, depth);
+    if (joinedHit >= 0) hits.push(joinedHit);
+    // A newline can join two independently encoded values. Inspect each piece
+    // as well as the full run, or the second JWT is hidden by the first.
+    if (run.breaks.length > 0) {
+      let from = 0;
+      for (let piece = 0; piece <= run.breaks.length; piece++) {
+        const end = piece < run.breaks.length ? run.breaks[piece] : run.text.length;
+        if (end - from >= MIN_B64_RUN &&
+            scanBuffer(Buffer.from(run.text.slice(from, end), 'base64'), depth + 1).size > 0) {
+          hits.push(piece === 0 ? m.index : run.breakSources[piece - 1]);
+        }
+        from = end;
+      }
+    }
+    hits.sort((a, b) => a - b);
+    for (const at of hits) lines.add(lineOf(at));
   }
 }
 

@@ -10,7 +10,7 @@
  * Detector fixtures are minted at runtime from random secrets; no token is
  * committed.
  */
-import { createHmac, randomBytes } from 'crypto';
+import { createHmac, generateKeyPairSync, randomBytes } from 'crypto';
 import { execFileSync } from 'child_process';
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
@@ -97,6 +97,40 @@ describe('findJwtLines', () => {
     expect(findJwtLines(Buffer.from(`a = "${spaced}"\nb = "${pretty}"\n`))).toEqual([1, 2]);
   });
 
+  it('detects a signed JWT with whitespace before the JSON header', () => {
+    const token = mintWithHeader(' \n{"alg":"HS256","typ":"JWT"}');
+
+    expect(findJwtLines(Buffer.from(`Authorization: Bearer ${token}\n`))).toEqual([1]);
+  });
+
+  it('detects a JWT split inside its initial ey prefix', () => {
+    const token = mintJwt();
+    const src = `const token = '${token.slice(0, 1)}' + '${token.slice(1)}';\n`;
+
+    expect(findJwtLines(Buffer.from(src))).toEqual([1]);
+  });
+
+  it('detects a JWT with percent-encoded dot separators in a URL', () => {
+    const token = mintJwt();
+    const url = `https://example.invalid/?access_token=${token.replace(/\./g, '%2E')}&mode=test\n`;
+
+    expect(findJwtLines(Buffer.from(url))).toEqual([1]);
+  });
+
+  it('detects an RS256 JWT signed with a 5120-bit key', () => {
+    const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 5120 });
+    const token = sign({}, privateKey, { algorithm: 'RS256', noTimestamp: true });
+
+    expect(findJwtLines(Buffer.from(`Bearer ${token}\n`))).toEqual([1]);
+  }, 30000);
+
+  it('reports both adjacent base64url-encoded JWTs', () => {
+    const first = Buffer.from(mintJwt()).toString('base64url');
+    const second = Buffer.from(mintJwt()).toString('base64url');
+
+    expect(findJwtLines(Buffer.from(`${first}\n${second}\n`))).toEqual([1, 2]);
+  });
+
   it('detects a JWT in a UTF-16LE file', () => {
     const utf16 = Buffer.from(`[auth]\r\ntoken=${mintJwt()}\r\n`, 'utf16le'); // no BOM
 
@@ -105,6 +139,7 @@ describe('findJwtLines', () => {
 
   it('ignores the eyJ...signature placeholder style', () => {
     const header = b64url('{"alg":"HS256","typ":"JWT"}');
+    const whitespaceHeader = b64url(' \n{"alg":"HS256","typ":"JWT"}');
     const payload = b64url(JSON.stringify({ userId: 'user-admin-001', iat: 1699556400 }));
     const docs = [
       `    "accessToken": "${header}.${payload}.signature",`,
@@ -112,6 +147,7 @@ describe('findJwtLines', () => {
       `  -H "Authorization: Bearer ${header}.token_here.signature"`,
       `export ACCESS_TOKEN="${header}..."`,
       `Use ${header}.${payload}.signature`,
+      `  -H "Authorization: Bearer ${whitespaceHeader}%2E${payload}%2Esignature"`,
       `as the bearer value.`,
     ].join('\n');
 

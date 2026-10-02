@@ -143,10 +143,10 @@ function run(rawQuery: string, params: Params): FakeRecord[] {
   const sameOrg = (props: Props) => props['organization_id'] === params['organizationId'];
 
   if (query.startsWith('OPTIONAL MATCH (bs:BusinessService {id: $serviceId})')) {
-    // `RETURN bs IS NULL OR bs.organization_id = $organizationId AS allowed`; without the
-    // node-org predicate, any existing node is allowed whoever owns it.
+    // `WITH collect(bs) AS nodes RETURN all(b IN nodes WHERE b.organization_id = $organizationId)`;
+    // without the node-org predicate, any existing node is allowed whoever owns it.
     const props = BUSINESS_SERVICE_NODES.find(p => p['id'] === params['serviceId']);
-    const checksOrg = query.includes('RETURN bs IS NULL OR bs.organization_id = $organizationId AS allowed');
+    const checksOrg = query.includes('RETURN all(b IN nodes WHERE b.organization_id = $organizationId) AS allowed');
     return [record({ allowed: props === undefined || !checksOrg || sameOrg(props) })];
   }
   if (query.startsWith('MATCH path = (ci:CI {id: $serviceId})-[r*0..3]-(related:CI)')) {

@@ -19,7 +19,10 @@
  *   SELECT applied_at FROM cmdb.schema_migrations
  *    WHERE migration_name = '008_business_service_organization_scope.sql';
  * An org-less node whose only row is newer is left without an organization
- * and listed in `needs_review` for a manual decision.
+ * and listed in `needs_review` for a manual decision. created_at is a
+ * TIMESTAMP without zone written in the API sessions' TimeZone and compared in
+ * this session's TimeZone (reported as `postgres_timezone`); run the backfill
+ * as a role with the API role's TimeZone (`SHOW timezone` as the API user).
  *
  * Guards:
  *   - dry run by default: nothing is written unless `--apply` is passed; the
@@ -63,13 +66,15 @@ const CUTOVER_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:
 /**
  * Owner of every business service id (service_id is the primary key;
  * organization_id is NOT NULL since 008). `trusted`: created before the
- * cutover ($1). created_at is a server-set TIMESTAMP, read in the session time zone.
+ * cutover ($1). created_at is a server-set TIMESTAMP, read in the session time
+ * zone, which the result reports as `timezone`.
  */
 export const OWNERS_SQL = `
 SELECT service_id,
        organization_id::text AS organization_id,
        created_at::text AS created_at,
-       (created_at IS NOT NULL AND created_at::timestamptz < $1::timestamptz) AS trusted
+       (created_at IS NOT NULL AND created_at::timestamptz < $1::timestamptz) AS trusted,
+       current_setting('TimeZone') AS timezone
   FROM dim_business_services
  ORDER BY service_id`;
 
@@ -115,6 +120,8 @@ export interface BackfillSummary {
   mode: 'dry-run' | 'apply';
   /** Rows created before this are trusted. */
   created_before: string;
+  /** TimeZone of the backfill's Postgres session, in which created_at was compared (null with no rows). */
+  postgres_timezone: string | null;
   /** dim_business_services rows read. */
   postgres_services: number;
   /** Nodes given an organization (apply), or that would be (dry run). */
@@ -185,6 +192,7 @@ export async function backfillBusinessServiceOrganizations(
   return {
     mode: options.apply ? 'apply' : 'dry-run',
     created_before: options.createdBefore,
+    postgres_timezone: typeof rows[0]?.['timezone'] === 'string' ? rows[0]['timezone'] : null,
     postgres_services: owners.length,
     filled: filled.map(m => ({ service_id: m.serviceId, organization_id: m.organizationId })),
     needs_review: review.map(m => ({

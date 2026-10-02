@@ -646,10 +646,12 @@ export class DashboardService {
         if (serviceId) {
           const gate = await session.run(
             `OPTIONAL MATCH (bs:BusinessService {id: $serviceId})
-             RETURN bs IS NULL OR bs.organization_id = $organizationId AS allowed`,
+             WITH collect(bs) AS nodes
+             RETURN all(b IN nodes WHERE b.organization_id = $organizationId) AS allowed`,
             { serviceId, organizationId }
           );
-          // null (node without organization_id) is refused like false.
+          // No node: all() over [] is true. A node without organization_id gives null,
+          // refused like false (another organization's node).
           if (gate.records[0]?.get('allowed') !== true) {
             return null;
           }

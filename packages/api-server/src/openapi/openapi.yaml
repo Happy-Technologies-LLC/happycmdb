@@ -74,6 +74,10 @@ tags:
     description: AI-powered anomaly detection
   - name: Jobs
     description: Job management and queue monitoring
+  - name: Business Services
+    description: >-
+      Organization-scoped business services, their CI mappings, service
+      dependencies, health and cost metrics
   - name: Health
     description: Health checks and system status
 
@@ -2705,6 +2709,647 @@ paths:
           $ref: '#/components/responses/NotFound'
 
   # =============================================================================
+  # BUSINESS SERVICES
+  # =============================================================================
+  # Business services are scoped to the caller's organization, which comes
+  # from the token (401 without credentials, 403 without an organization
+  # claim). A service outside the caller's organization answers 404 exactly
+  # like a missing one; create answers 409 for a service_id already in use.
+  /business-services:
+    get:
+      tags: [Business Services]
+      summary: List business services
+      description: >-
+        Lists the caller's organization's business services, newest first.
+        Query parameters are validated only when at least one is present.
+        Unknown parameters are ignored; values that fail the parameter schema
+        (e.g. empty, non-integer or out-of-range, repeated) are rejected with
+        400.
+      operationId: listBusinessServices
+      parameters:
+        - name: search
+          in: query
+          description: >-
+            Case-insensitive ILIKE match of `%<search>%` against name or
+            description; `%` and `_` in the value act as wildcards.
+          schema:
+            type: string
+            minLength: 1
+        - name: service_classification
+          in: query
+          description: Exact match
+          schema:
+            type: string
+            minLength: 1
+        - name: tbm_tower
+          in: query
+          description: Exact match
+          schema:
+            type: string
+            minLength: 1
+        - name: business_criticality
+          in: query
+          description: Exact match
+          schema:
+            type: string
+            minLength: 1
+        - name: operational_status
+          in: query
+          description: Exact match
+          schema:
+            type: string
+            minLength: 1
+        - name: owned_by
+          in: query
+          description: Exact match
+          schema:
+            type: string
+            minLength: 1
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        '200':
+          description: One page of business services
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data, pagination]
+                properties:
+                  success:
+                    type: boolean
+                    enum: [true]
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/BusinessService'
+                  pagination:
+                    type: object
+                    required: [page, limit, total, totalPages]
+                    properties:
+                      page:
+                        type: integer
+                      limit:
+                        type: integer
+                      total:
+                        type: integer
+                      totalPages:
+                        type: integer
+        '400':
+          $ref: '#/components/responses/BusinessServiceValidationError'
+        '401':
+          $ref: '#/components/responses/BusinessServiceUnauthorized'
+        '403':
+          $ref: '#/components/responses/BusinessServiceForbidden'
+        '500':
+          $ref: '#/components/responses/BusinessServiceServerError'
+
+    post:
+      tags: [Business Services]
+      summary: Create a business service
+      description: >-
+        Creates a business service in the caller's organization. Requires the
+        `write` permission.
+      operationId: createBusinessService
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BusinessServiceInput'
+      responses:
+        '201':
+          description: Business service created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success:
+                    type: boolean
+                    enum: [true]
+                  data:
+                    $ref: '#/components/schemas/BusinessService'
+        '400':
+          $ref: '#/components/responses/BusinessServiceValidationError'
+        '401':
+          $ref: '#/components/responses/BusinessServiceUnauthorized'
+        '403':
+          $ref: '#/components/responses/BusinessServiceForbidden'
+        '409':
+          description: >-
+            `service_id` is already taken. Service ids are unique across all
+            organizations, so the id may belong to another organization.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BusinessServiceError'
+              example:
+                success: false
+                error: Business service with this ID already exists
+        '500':
+          $ref: '#/components/responses/BusinessServiceServerError'
+
+  /business-services/{service_id}:
+    parameters:
+      - $ref: '#/components/parameters/BusinessServiceId'
+    get:
+      tags: [Business Services]
+      summary: Get a business service
+      description: The service plus its mapped-CI and dependency counts.
+      operationId: getBusinessService
+      responses:
+        '200':
+          description: Business service found
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success:
+                    type: boolean
+                    enum: [true]
+                  data:
+                    $ref: '#/components/schemas/BusinessServiceDetail'
+        '401':
+          $ref: '#/components/responses/BusinessServiceUnauthorized'
+        '403':
+          $ref: '#/components/responses/BusinessServiceForbidden'
+        '404':
+          $ref: '#/components/responses/BusinessServiceNotFound'
+        '500':
+          $ref: '#/components/responses/BusinessServiceServerError'
+
+    patch:
+      tags: [Business Services]
+      summary: Update a business service
+      description: >-
+        Updates the given fields and sets `updated_at`. Requires the `write`
+        permission.
+      operationId: updateBusinessService
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BusinessServiceUpdate'
+      responses:
+        '200':
+          description: Business service updated
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success:
+                    type: boolean
+                    enum: [true]
+                  data:
+                    $ref: '#/components/schemas/BusinessService'
+        '400':
+          description: >-
+            Body failed validation (middleware body), or the body has no
+            known fields (`{success: false, error: 'No fields to update'}`).
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/MiddlewareError'
+                  - $ref: '#/components/schemas/BusinessServiceError'
+        '401':
+          $ref: '#/components/responses/BusinessServiceUnauthorized'
+        '403':
+          $ref: '#/components/responses/BusinessServiceForbidden'
+        '404':
+          $ref: '#/components/responses/BusinessServiceNotFound'
+        '500':
+          $ref: '#/components/responses/BusinessServiceServerError'
+
+    delete:
+      tags: [Business Services]
+      summary: Delete a business service
+      description: >-
+        Deletes the service together with its CI mappings, the dependencies
+        from and to it, and its health metrics. Requires the `write`
+        permission.
+      operationId: deleteBusinessService
+      responses:
+        '200':
+          description: Business service deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, message, data]
+                properties:
+                  success:
+                    type: boolean
+                    enum: [true]
+                  message:
+                    type: string
+                    example: Business service deleted successfully
+                  data:
+                    type: object
+                    required: [service_id, name]
+                    properties:
+                      service_id:
+                        type: string
+                      name:
+                        type: string
+        '401':
+          $ref: '#/components/responses/BusinessServiceUnauthorized'
+        '403':
+          $ref: '#/components/responses/BusinessServiceForbidden'
+        '404':
+          $ref: '#/components/responses/BusinessServiceNotFound'
+        '500':
+          $ref: '#/components/responses/BusinessServiceServerError'
+
+  /business-services/{service_id}/cis:
+    parameters:
+      - $ref: '#/components/parameters/BusinessServiceId'
+    get:
+      tags: [Business Services]
+      summary: List CIs mapped to a business service
+      description: >-
+        Mappings newest first (`created_at` descending). A CI mapped under
+        several mapping types appears once per type. `data` is `[]` when the
+        service exists and has no mappings.
+      operationId: getBusinessServiceCIs
+      responses:
+        '200':
+          description: Mapped CIs (possibly empty)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success:
+                    type: boolean
+                    enum: [true]
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/BusinessServiceCIMapping'
+        '401':
+          $ref: '#/components/responses/BusinessServiceUnauthorized'
+        '403':
+          $ref: '#/components/responses/BusinessServiceForbidden'
+        '404':
+          $ref: '#/components/responses/BusinessServiceNotFound'
+        '500':
+          $ref: '#/components/responses/BusinessServiceServerError'
+
+    post:
+      tags: [Business Services]
+      summary: Map CIs to a business service
+      description: >-
+        Creates or updates one mapping per distinct `ci_ids` entry (duplicate
+        ids are not allowed) with the given `mapping_type`; an existing
+        (ci_id, mapping_type) mapping has its `confidence_score` and
+        `updated_at` replaced. Unknown body fields are ignored. Requires the
+        `write` permission.
+      operationId: mapBusinessServiceCIs
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ci_ids]
+              properties:
+                ci_ids:
+                  type: array
+                  minItems: 1
+                  uniqueItems: true
+                  items:
+                    type: string
+                    minLength: 1
+                    maxLength: 100
+                mapping_type:
+                  type: string
+                  enum: [hosts, supports, enables, provides]
+                  default: supports
+                confidence_score:
+                  type: number
+                  minimum: 0
+                  maximum: 1
+                  default: 1
+      responses:
+        '201':
+          description: Mappings created or updated
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, message, data]
+                properties:
+                  success:
+                    type: boolean
+                    enum: [true]
+                  message:
+                    type: string
+                    description: '`<ci_ids.length> CIs mapped successfully`'
+                    example: 2 CIs mapped successfully
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/BusinessServiceCIMappingRecord'
+        '400':
+          $ref: '#/components/responses/BusinessServiceValidationError'
+        '401':
+          $ref: '#/components/responses/BusinessServiceUnauthorized'
+        '403':
+          $ref: '#/components/responses/BusinessServiceForbidden'
+        '404':
+          $ref: '#/components/responses/BusinessServiceNotFound'
+        '500':
+          $ref: '#/components/responses/BusinessServiceServerError'
+
+  /business-services/{service_id}/cis/{ci_id}:
+    parameters:
+      - $ref: '#/components/parameters/BusinessServiceId'
+      - name: ci_id
+        in: path
+        required: true
+        description: Mapped CI identifier
+        schema:
+          type: string
+    delete:
+      tags: [Business Services]
+      summary: Unmap a CI from a business service
+      description: >-
+        Removes every mapping of the CI to the service (all mapping types).
+        Requires the `write` permission.
+      operationId: unmapBusinessServiceCI
+      responses:
+        '200':
+          description: CI unmapped
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BusinessServiceMessage'
+              example:
+                success: true
+                message: CI unmapped successfully
+        '401':
+          $ref: '#/components/responses/BusinessServiceUnauthorized'
+        '403':
+          $ref: '#/components/responses/BusinessServiceForbidden'
+        '404':
+          description: >-
+            The service is unknown or belongs to another organization, or the
+            CI is not mapped to it.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BusinessServiceError'
+              example:
+                success: false
+                error: CI mapping not found
+        '500':
+          $ref: '#/components/responses/BusinessServiceServerError'
+
+  /business-services/{service_id}/dependencies:
+    parameters:
+      - $ref: '#/components/parameters/BusinessServiceId'
+    get:
+      tags: [Business Services]
+      summary: List the services a business service depends on
+      description: >-
+        Dependencies newest first (`created_at` descending), with the target
+        service's details. Only targets in the caller's organization are
+        returned. `data` is `[]` when the service exists and has no
+        dependencies.
+      operationId: getBusinessServiceDependencies
+      responses:
+        '200':
+          description: Dependencies (possibly empty)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success:
+                    type: boolean
+                    enum: [true]
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/BusinessServiceDependency'
+        '401':
+          $ref: '#/components/responses/BusinessServiceUnauthorized'
+        '403':
+          $ref: '#/components/responses/BusinessServiceForbidden'
+        '404':
+          $ref: '#/components/responses/BusinessServiceNotFound'
+        '500':
+          $ref: '#/components/responses/BusinessServiceServerError'
+
+    post:
+      tags: [Business Services]
+      summary: Create a service dependency
+      description: >-
+        Records that `service_id` depends on `depends_on_service_id`. Both
+        services must belong to the caller's organization. Requires the
+        `write` permission.
+      operationId: createBusinessServiceDependency
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [depends_on_service_id]
+              properties:
+                depends_on_service_id:
+                  type: string
+                  minLength: 1
+                dependency_type:
+                  type: string
+                  enum: [technical, business, data, security]
+                  default: technical
+      responses:
+        '201':
+          description: Dependency created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success:
+                    type: boolean
+                    enum: [true]
+                  data:
+                    $ref: '#/components/schemas/BusinessServiceDependencyRecord'
+        '400':
+          description: >-
+            Body failed validation (middleware body), or the service would
+            depend on itself (`{success: false, error: 'Cannot create circular
+            dependency (service cannot depend on itself)'}`).
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/MiddlewareError'
+                  - $ref: '#/components/schemas/BusinessServiceError'
+        '401':
+          $ref: '#/components/responses/BusinessServiceUnauthorized'
+        '403':
+          $ref: '#/components/responses/BusinessServiceForbidden'
+        '404':
+          description: >-
+            Either service is unknown or belongs to another organization.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BusinessServiceError'
+              example:
+                success: false
+                error: Business service not found
+        '409':
+          description: The dependency already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BusinessServiceError'
+              example:
+                success: false
+                error: This dependency already exists
+        '500':
+          $ref: '#/components/responses/BusinessServiceServerError'
+
+  /business-services/{service_id}/dependencies/{depends_on_service_id}:
+    parameters:
+      - $ref: '#/components/parameters/BusinessServiceId'
+      - name: depends_on_service_id
+        in: path
+        required: true
+        description: Target service of the dependency
+        schema:
+          type: string
+    delete:
+      tags: [Business Services]
+      summary: Delete a service dependency
+      description: Requires the `write` permission.
+      operationId: deleteBusinessServiceDependency
+      responses:
+        '200':
+          description: Dependency deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BusinessServiceMessage'
+              example:
+                success: true
+                message: Dependency deleted successfully
+        '401':
+          $ref: '#/components/responses/BusinessServiceUnauthorized'
+        '403':
+          $ref: '#/components/responses/BusinessServiceForbidden'
+        '404':
+          description: >-
+            The service is unknown or belongs to another organization, or it
+            has no dependency on `depends_on_service_id`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BusinessServiceError'
+              example:
+                success: false
+                error: Dependency not found
+        '500':
+          $ref: '#/components/responses/BusinessServiceServerError'
+
+  /business-services/{service_id}/health:
+    parameters:
+      - $ref: '#/components/parameters/BusinessServiceId'
+    get:
+      tags: [Business Services]
+      summary: Get business service health metrics
+      description: >-
+        Incident and change metrics over the windows
+        [utc_today - 7 days, utc_today] and [utc_today - 30 days, utc_today]
+        (inclusive, utc_today = the current UTC date; future-dated events are
+        excluded). Counts are sums of daily per-service counters. A service
+        with no data in a window returns 0 counts and null averages/ratios.
+      operationId: getBusinessServiceHealth
+      responses:
+        '200':
+          description: Health metrics
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success:
+                    type: boolean
+                    enum: [true]
+                  data:
+                    $ref: '#/components/schemas/BusinessServiceHealth'
+        '401':
+          $ref: '#/components/responses/BusinessServiceUnauthorized'
+        '403':
+          $ref: '#/components/responses/BusinessServiceForbidden'
+        '404':
+          $ref: '#/components/responses/BusinessServiceNotFound'
+        '500':
+          $ref: '#/components/responses/BusinessServiceServerError'
+
+  /business-services/{service_id}/costs:
+    parameters:
+      - $ref: '#/components/parameters/BusinessServiceId'
+    get:
+      tags: [Business Services]
+      summary: Get business service cost summary
+      description: >-
+        Monthly cost of the CIs mapped to the service, in total and per TBM
+        resource tower. A CI mapped under several mapping types is counted
+        and costed once. A service with no mappings returns `ci_count` 0 and
+        null totals.
+      operationId: getBusinessServiceCosts
+      responses:
+        '200':
+          description: Cost summary
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success:
+                    type: boolean
+                    enum: [true]
+                  data:
+                    $ref: '#/components/schemas/BusinessServiceCosts'
+        '401':
+          $ref: '#/components/responses/BusinessServiceUnauthorized'
+        '403':
+          $ref: '#/components/responses/BusinessServiceForbidden'
+        '404':
+          $ref: '#/components/responses/BusinessServiceNotFound'
+        '500':
+          $ref: '#/components/responses/BusinessServiceServerError'
+
+  # =============================================================================
   # HEALTH
   # =============================================================================
   /cmdb-health:
@@ -2809,6 +3454,15 @@ components:
         minimum: 0
         default: 0
 
+    BusinessServiceId:
+      name: service_id
+      in: path
+      required: true
+      description: Business service identifier
+      schema:
+        type: string
+      example: bs-web
+
   responses:
     BadRequest:
       description: Invalid request parameters
@@ -2879,6 +3533,91 @@ components:
               - _field: organization_id
                 _message: '"organization_id" is not allowed'
                 _type: any.unknown
+
+    BusinessServiceValidationError:
+      description: >-
+        Request failed validation (body, or query for the list). `_message`
+        and `_details` carry the validation messages, e.g. for an empty
+        string or an out-of-range value. Unknown fields are ignored, not
+        rejected; only `organization_id` on the create/update bodies is
+        rejected, since the organization always comes from the token.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/MiddlewareError'
+          examples:
+            query:
+              summary: Invalid list query parameter
+              value:
+                _success: false
+                _error: Validation Error
+                _message: '"limit" must be less than or equal to 100'
+                _details:
+                  - _field: limit
+                    _message: '"limit" must be less than or equal to 100'
+                    _type: number.max
+            body:
+              summary: Invalid body field
+              value:
+                _success: false
+                _error: Validation Error
+                _message: '"name" length must be at least 3 characters long'
+                _details:
+                  - _field: name
+                    _message: '"name" length must be at least 3 characters long'
+                    _type: string.min
+
+    BusinessServiceUnauthorized:
+      description: No credentials, or the JWT / API key failed verification
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/MiddlewareError'
+          example:
+            _error: Unauthorized
+            _message: No authentication credentials provided
+
+    BusinessServiceForbidden:
+      description: >-
+        The authenticated user has no organization: every /business-services
+        endpoint is tenant-scoped and rejects the request before any data
+        access (`Organization claim required`). Mutations (POST, PATCH,
+        DELETE) also return 403 without the `write` permission
+        (`Permission 'write' required`).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/MiddlewareError'
+          example:
+            _error: Forbidden
+            _message: Organization claim required
+
+    BusinessServiceNotFound:
+      description: >-
+        No business service with this id in the caller's organization. A
+        service owned by another organization returns the identical body.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/BusinessServiceError'
+          example:
+            success: false
+            error: Business service not found
+
+    BusinessServiceServerError:
+      description: >-
+        Unexpected server failure. The body is either `{success: false,
+        error}` with a fixed per-operation message or the generic middleware
+        error body.
+      content:
+        application/json:
+          schema:
+            oneOf:
+              - $ref: '#/components/schemas/BusinessServiceError'
+              - $ref: '#/components/schemas/MiddlewareError'
+          example:
+            success: false
+            error: Failed to get service costs
 
     TooManyRequests:
       description: Rate limit exceeded
@@ -3778,3 +4517,423 @@ components:
                 type: string
               _type:
                 type: string
+
+    # =========================================================================
+    # BUSINESS SERVICES
+    # =========================================================================
+    BusinessServiceError:
+      type: object
+      description: Error body produced by the business-service handlers
+      required: [success, error]
+      properties:
+        success:
+          type: boolean
+          enum: [false]
+        error:
+          type: string
+          example: Business service not found
+
+    BusinessServiceMessage:
+      type: object
+      required: [success, message]
+      properties:
+        success:
+          type: boolean
+          enum: [true]
+        message:
+          type: string
+
+    BusinessServiceClassification:
+      type: string
+      enum: [compute, storage, network, data, application, security, end_user, iot, blockchain, quantum, other_it]
+
+    BusinessCriticality:
+      type: string
+      enum: [critical, high, medium, low]
+
+    CountValue:
+      description: >-
+        Integer count, emitted as a decimal string (e.g. "10"). Clients
+        should also accept a JSON integer.
+      oneOf:
+        - type: string
+          pattern: '^-?[0-9]+$'
+        - type: integer
+      example: '10'
+
+    BusinessService:
+      type: object
+      description: A business service
+      required:
+        - service_id
+        - name
+        - service_classification
+        - tbm_tower
+        - business_criticality
+        - operational_status
+        - organization_id
+      properties:
+        service_id:
+          type: string
+          example: bs-web
+        name:
+          type: string
+        description:
+          type: string
+          nullable: true
+        service_classification:
+          $ref: '#/components/schemas/BusinessServiceClassification'
+        tbm_tower:
+          type: string
+          description: TBM capability tower (validated against the classification values on write)
+        business_criticality:
+          $ref: '#/components/schemas/BusinessCriticality'
+        operational_status:
+          type: string
+          description: Stored operational status
+          enum: [active, inactive, maintenance, decommissioned]
+        service_type:
+          type: string
+          nullable: true
+        owned_by:
+          type: string
+          nullable: true
+        managed_by:
+          type: string
+          nullable: true
+        support_group:
+          type: string
+          nullable: true
+        service_level_requirement:
+          type: string
+          nullable: true
+        category:
+          type: string
+          nullable: true
+        tags:
+          type: array
+          nullable: true
+          items:
+            type: string
+        related_ci_types:
+          type: array
+          nullable: true
+          items:
+            type: string
+        cost_allocation:
+          type: object
+          nullable: true
+          additionalProperties: true
+        metadata:
+          type: object
+          nullable: true
+          additionalProperties: true
+        created_at:
+          type: string
+          format: date-time
+          nullable: true
+        updated_at:
+          type: string
+          format: date-time
+          nullable: true
+        organization_id:
+          type: string
+          format: uuid
+          description: Owning organization (always the caller's)
+
+    BusinessServiceDetail:
+      allOf:
+        - $ref: '#/components/schemas/BusinessService'
+        - type: object
+          required: [mapped_cis_count, dependencies_count]
+          properties:
+            mapped_cis_count:
+              type: integer
+              description: Number of CI mappings (one per CI and mapping type)
+            dependencies_count:
+              type: integer
+              description: Number of services this service depends on
+
+    BusinessServiceInput:
+      type: object
+      description: >-
+        Unknown fields are ignored. `organization_id` is rejected with 400;
+        the organization always comes from the token.
+      required: [service_id, name, service_classification, tbm_tower, business_criticality]
+      properties:
+        service_id:
+          type: string
+          pattern: '^bs-[a-z0-9-]+$'
+          maxLength: 50
+          description: Unique across all organizations
+        name:
+          type: string
+          minLength: 3
+          maxLength: 255
+        description:
+          type: string
+        service_classification:
+          $ref: '#/components/schemas/BusinessServiceClassification'
+        tbm_tower:
+          $ref: '#/components/schemas/BusinessServiceClassification'
+        business_criticality:
+          $ref: '#/components/schemas/BusinessCriticality'
+        operational_status:
+          type: string
+          enum: [active, inactive]
+          default: active
+        service_type:
+          type: string
+          minLength: 1
+          maxLength: 50
+        owned_by:
+          type: string
+          minLength: 1
+          maxLength: 255
+        managed_by:
+          type: string
+          minLength: 1
+          maxLength: 255
+        support_group:
+          type: string
+          minLength: 1
+          maxLength: 255
+        service_level_requirement:
+          type: string
+          minLength: 1
+        category:
+          type: string
+          minLength: 1
+          maxLength: 100
+        tags:
+          type: array
+          items:
+            type: string
+            minLength: 1
+        related_ci_types:
+          type: array
+          items:
+            type: string
+            minLength: 1
+        cost_allocation:
+          type: object
+          additionalProperties: true
+        metadata:
+          type: object
+          additionalProperties: true
+
+    BusinessServiceUpdate:
+      type: object
+      description: >-
+        At least one known field is required: unknown fields are ignored, so
+        a body with none of these fields returns 400 `No fields to update`.
+        `organization_id` is rejected with 400.
+      properties:
+        name:
+          type: string
+          minLength: 3
+          maxLength: 255
+        description:
+          type: string
+        service_classification:
+          $ref: '#/components/schemas/BusinessServiceClassification'
+        tbm_tower:
+          $ref: '#/components/schemas/BusinessServiceClassification'
+        business_criticality:
+          $ref: '#/components/schemas/BusinessCriticality'
+        operational_status:
+          type: string
+          enum: [active, inactive]
+        service_type:
+          type: string
+          minLength: 1
+          maxLength: 50
+        owned_by:
+          type: string
+          minLength: 1
+          maxLength: 255
+        managed_by:
+          type: string
+          minLength: 1
+          maxLength: 255
+        support_group:
+          type: string
+          minLength: 1
+          maxLength: 255
+        service_level_requirement:
+          type: string
+          minLength: 1
+        category:
+          type: string
+          minLength: 1
+          maxLength: 100
+        tags:
+          type: array
+          items:
+            type: string
+            minLength: 1
+        related_ci_types:
+          type: array
+          items:
+            type: string
+            minLength: 1
+        cost_allocation:
+          type: object
+          additionalProperties: true
+        metadata:
+          type: object
+          additionalProperties: true
+
+    BusinessServiceCIMapping:
+      type: object
+      required: [ci_id, mapping_type, confidence_score, created_at]
+      properties:
+        ci_id:
+          type: string
+        mapping_type:
+          type: string
+          example: supports
+        confidence_score:
+          type: number
+          nullable: true
+          minimum: 0
+          maximum: 1
+        created_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    BusinessServiceCIMappingRecord:
+      description: A CI mapping as stored
+      allOf:
+        - $ref: '#/components/schemas/BusinessServiceCIMapping'
+        - type: object
+          required: [id, service_id, updated_at]
+          properties:
+            id:
+              type: integer
+            service_id:
+              type: string
+            updated_at:
+              type: string
+              format: date-time
+              nullable: true
+
+    BusinessServiceDependency:
+      type: object
+      required:
+        - depends_on_service_id
+        - depends_on_name
+        - service_classification
+        - business_criticality
+        - dependency_type
+        - created_at
+      properties:
+        depends_on_service_id:
+          type: string
+        depends_on_name:
+          type: string
+          description: Name of the target service
+        service_classification:
+          $ref: '#/components/schemas/BusinessServiceClassification'
+        business_criticality:
+          $ref: '#/components/schemas/BusinessCriticality'
+        dependency_type:
+          type: string
+          example: technical
+        created_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    BusinessServiceDependencyRecord:
+      type: object
+      description: A service dependency as stored
+      required: [id, service_id, depends_on_service_id, dependency_type, created_at]
+      properties:
+        id:
+          type: integer
+        service_id:
+          type: string
+        depends_on_service_id:
+          type: string
+        dependency_type:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    BusinessServiceHealth:
+      type: object
+      required: [incidents, changes]
+      properties:
+        incidents:
+          type: object
+          required: [incidents_7d, incidents_30d, avg_mttr_30d, sla_breaches_30d]
+          properties:
+            incidents_7d:
+              $ref: '#/components/schemas/CountValue'
+            incidents_30d:
+              $ref: '#/components/schemas/CountValue'
+            avg_mttr_30d:
+              type: number
+              nullable: true
+              description: >-
+                Incident-weighted mean time to resolve (minutes) over the
+                30-day window; null when no in-window incident has an MTTR.
+            sla_breaches_30d:
+              $ref: '#/components/schemas/CountValue'
+        changes:
+          type: object
+          required: [changes_7d, changes_30d, success_rate_30d]
+          properties:
+            changes_7d:
+              $ref: '#/components/schemas/CountValue'
+            changes_30d:
+              $ref: '#/components/schemas/CountValue'
+            success_rate_30d:
+              type: number
+              nullable: true
+              description: >-
+                Successful changes / changes * 100 over the 30-day window;
+                null when the window has no changes.
+      example:
+        incidents:
+          incidents_7d: '3'
+          incidents_30d: '10'
+          avg_mttr_30d: 72
+          sla_breaches_30d: '3'
+        changes:
+          changes_7d: '4'
+          changes_30d: '10'
+          success_rate_30d: 90
+
+    BusinessServiceCosts:
+      type: object
+      required: [ci_count, total_monthly_cost, cost_by_tower]
+      properties:
+        ci_count:
+          $ref: '#/components/schemas/CountValue'
+        total_monthly_cost:
+          type: string
+          nullable: true
+          description: >-
+            Sum of the mapped CIs' monthly cost as a decimal string (e.g.
+            "150.5"); null when no mapped CI has a cost.
+        cost_by_tower:
+          type: object
+          nullable: true
+          additionalProperties:
+            type: number
+            nullable: true
+          description: >-
+            Monthly cost per TBM resource tower (JSON numbers; null for a
+            tower none of whose CIs has a `monthly_cost`); null when no mapped
+            CI has a resource tower.
+      example:
+        ci_count: '2'
+        total_monthly_cost: '150.5'
+        cost_by_tower:
+          compute: 100
+          storage: 50.5

@@ -142,6 +142,22 @@ http://localhost:3000/api-docs/openapi.yaml
 - `DELETE /jobs/{queueName}/{jobId}` - Cancel job
 - `POST /jobs/{queueName}/{jobId}/retry` - Retry job
 
+### Business Services (`/api/v1/business-services`)
+Scoped to the caller's organization: 403 without an organization claim; a service outside the caller's organization returns the same 404 as a missing one. Create returns 409 for a `service_id` already in use.
+- `GET /business-services` - List business services
+- `POST /business-services` - Create business service
+- `GET /business-services/{service_id}` - Get business service with mapped-CI and dependency counts
+- `PATCH /business-services/{service_id}` - Update business service
+- `DELETE /business-services/{service_id}` - Delete business service
+- `GET /business-services/{service_id}/cis` - Mapped CIs
+- `POST /business-services/{service_id}/cis` - Map CIs
+- `DELETE /business-services/{service_id}/cis/{ci_id}` - Unmap CI
+- `GET /business-services/{service_id}/dependencies` - Service dependencies
+- `POST /business-services/{service_id}/dependencies` - Create dependency
+- `DELETE /business-services/{service_id}/dependencies/{depends_on_service_id}` - Delete dependency
+- `GET /business-services/{service_id}/health` - Incident and change metrics (7/30-day UTC windows)
+- `GET /business-services/{service_id}/costs` - Monthly cost summary
+
 ### Health (`/api/v1/cmdb-health`)
 - `GET /cmdb-health` - System health check
 
@@ -246,6 +262,13 @@ The OpenAPI spec defines comprehensive schemas for:
 - `Anomaly` - Anomaly detection result
 - `Job` - Background job status
 - `AuditEntry` - Audit trail entry
+
+### Business Services
+- `BusinessService`, `BusinessServiceDetail` - Service (detail adds counts)
+- `BusinessServiceInput`, `BusinessServiceUpdate` - Create / update bodies
+- `BusinessServiceCIMapping`, `BusinessServiceDependency` - Child read items
+- `BusinessServiceHealth`, `BusinessServiceCosts` - Metric bodies
+- `CountValue` - Integer count, emitted as a decimal string
 
 ## Code Generation
 

@@ -228,10 +228,13 @@ const allocation = costService.allocateUsageBasedCosts(
   ]
 );
 
-// Aggregate to business service (ids the caller's organization owns in Postgres;
-// any other id is refused)
+// Aggregate to business service (scope: the caller's token organization and the
+// ids it owns in Postgres; other ids, and nodes of another organization, are refused)
 const poolService = getPoolAggregationService();
-const costs = await poolService.aggregateBusinessServiceCosts('bs-001', new Set(['bs-001']));
+const costs = await poolService.aggregateBusinessServiceCosts('bs-001', {
+  organizationId: '11111111-1111-4111-8111-111111111111',
+  ownedServiceIds: new Set(['bs-001']),
+});
 console.log(costs.totalMonthlyCost);
 console.log(costs.costByTower);
 ```

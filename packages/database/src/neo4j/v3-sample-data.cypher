@@ -10,9 +10,16 @@
 // ============================================
 // BUSINESS SERVICES
 // ============================================
+// Every sample :BusinessService sets organization_id to the internal
+// organization (the seeded admin's): TBM and dashboard reads only count
+// :BusinessService nodes that carry the caller's organization. Only these
+// seeded services are assigned; other services without an organization are
+// filled from Postgres by the manual backfill
+// (packages/api-server/src/scripts/backfill-business-service-organization.ts).
 
 MERGE (bs1:BusinessService {id: 'bs-ecommerce-platform'})
 SET bs1.name = 'E-Commerce Platform',
+    bs1.organization_id = '00000000-0000-0000-0000-000000000000',
     bs1.description = 'Complete online shopping and order management system',
     bs1.operational_status = 'active',
     bs1.itil_attributes = '{
@@ -41,6 +48,7 @@ SET bs1.name = 'E-Commerce Platform',
 
 MERGE (bs2:BusinessService {id: 'bs-customer-support'})
 SET bs2.name = 'Customer Support Service',
+    bs2.organization_id = '00000000-0000-0000-0000-000000000000',
     bs2.description = 'Multi-channel customer support and ticketing system',
     bs2.operational_status = 'active',
     bs2.itil_attributes = '{
@@ -69,6 +77,7 @@ SET bs2.name = 'Customer Support Service',
 
 MERGE (bs3:BusinessService {id: 'bs-inventory-management'})
 SET bs3.name = 'Inventory Management Service',
+    bs3.organization_id = '00000000-0000-0000-0000-000000000000',
     bs3.description = 'Real-time inventory tracking and warehouse management',
     bs3.operational_status = 'active',
     bs3.itil_attributes = '{
@@ -96,6 +105,7 @@ SET bs3.name = 'Inventory Management Service',
 
 MERGE (bs4:BusinessService {id: 'bs-payment-processing'})
 SET bs4.name = 'Payment Processing Service',
+    bs4.organization_id = '00000000-0000-0000-0000-000000000000',
     bs4.description = 'Secure payment gateway and fraud detection',
     bs4.operational_status = 'active',
     bs4.itil_attributes = '{
@@ -124,6 +134,7 @@ SET bs4.name = 'Payment Processing Service',
 
 MERGE (bs5:BusinessService {id: 'bs-analytics-reporting'})
 SET bs5.name = 'Business Analytics & Reporting',
+    bs5.organization_id = '00000000-0000-0000-0000-000000000000',
     bs5.description = 'Enterprise-wide analytics and business intelligence',
     bs5.operational_status = 'active',
     bs5.itil_attributes = '{

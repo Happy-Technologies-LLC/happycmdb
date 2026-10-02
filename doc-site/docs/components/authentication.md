@@ -206,6 +206,34 @@ MATCH (u:User) WHERE u._username = 'svc-happyhive' OR u.username = 'svc-happyhiv
 SET u.organizationId = '00000000-0000-0000-0000-000000000000';
 ```
 
+### Neo4j `:BusinessService.organization_id`
+
+Service ids are chosen by the client, so an organization can own (in Postgres) an id
+that names another organization's Neo4j `:BusinessService` node, for example a node
+left behind after its service row was deleted. Every TBM, dashboard and
+pool-aggregation Cypher that matches `:BusinessService` therefore also requires
+`organization_id` on the node to equal the token organization, in addition to the
+Postgres ownership check:
+
+- `GET /api/v1/tbm/costs/by-service/:id`, `GET /api/v1/dashboards/business-service/:serviceId`
+  (and `?serviceId=`) return the same **404** as a missing service when the node belongs
+  to another organization or has no `organization_id`; `GET /api/v1/tbm/costs/by-capability/:id`
+  leaves such services out. The TBM GraphQL resolvers (not registered in the server)
+  apply the same filter.
+- No API route writes `:BusinessService` nodes, and no property-map write
+  (`SET bs += $map`) targets them, so `organization_id` cannot be set or changed through
+  the API. The sample services in `packages/database/src/neo4j/v3-sample-data.cypher`
+  are in the internal organization.
+- **Existing nodes have no `organization_id` until the backfill runs, so the reads above
+  return 404 for them.** The backfill
+  `packages/api-server/src/scripts/backfill-business-service-organization.ts` sets
+  `organization_id` only on nodes that have none, from the `dim_business_services` row
+  with the same `service_id`. Nodes without a Postgres row stay without an organization
+  (invisible); nodes that already have one are never changed. It is a dry run unless
+  `--apply` is passed, a second run changes nothing, and it connects only through
+  `CMDB_BACKFILL_*` variables (see the script header). Running it against a live
+  database is an operator action (FD-7).
+
 ### Rolling back migrations 010, 009 and 008
 
 Roll back in reverse order. 010's functions return the views' row types, so 009's

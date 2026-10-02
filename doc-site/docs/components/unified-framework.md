@@ -1722,9 +1722,11 @@ import { UnifiedServiceInterface } from '@cmdb/framework-integration';
 
 const unifiedService = new UnifiedServiceInterface();
 
-// Get complete service view (ownedServiceIds: business service ids the caller's
-// organization owns in Postgres; any other id is refused)
-const view = await unifiedService.getCompleteServiceView('bs-payment-001', ownedServiceIds);
+// Get complete service view (scope: the caller's token organization and the
+// business service ids it owns in Postgres; any other id is refused, and TBM
+// costs only count :BusinessService nodes whose organization_id is the caller's)
+const scope = { organizationId, ownedServiceIds };
+const view = await unifiedService.getCompleteServiceView('bs-payment-001', scope);
 
 // Create enriched incident
 const incident = await unifiedService.createEnrichedIncident({
@@ -1886,10 +1888,10 @@ async function processChangeRequest(change) {
 
 ```typescript
 // Use cache for dashboards
-const view = await unifiedService.getCompleteServiceView('bs-001', ownedServiceIds, { useCache: true });
+const view = await unifiedService.getCompleteServiceView('bs-001', scope, { useCache: true });
 
 // Bypass cache for incident triage
-const view = await unifiedService.getCompleteServiceView('bs-001', ownedServiceIds, { useCache: false });
+const view = await unifiedService.getCompleteServiceView('bs-001', scope, { useCache: false });
 ```
 
 ---
@@ -1908,7 +1910,7 @@ Always wrap unified calls in try-catch:
 
 ```typescript
 try {
-  const view = await unifiedService.getCompleteServiceView(serviceId, ownedServiceIds);
+  const view = await unifiedService.getCompleteServiceView(serviceId, scope);
 } catch (error) {
   if (error.message.includes('not found')) {
     // Service doesn't exist

@@ -163,8 +163,10 @@ export class TBMController {
   async getCostsByCapability(req: Request, res: Response): Promise<void> {
     try {
       const { id } = req.params;
-      // Only the caller organization's services are traversed (FD-2).
-      const orgServiceIds = [...(await ownedBusinessServiceIds(requestOrganizationId(req)))];
+      const organizationId = requestOrganizationId(req);
+      // Only the caller organization's services are traversed: owned in Postgres
+      // (FD-2) and carrying the organization on the node (FD-16 c).
+      const orgServiceIds = [...(await ownedBusinessServiceIds(organizationId))];
 
       const session = this.neo4jClient.getSession();
       try {
@@ -173,7 +175,7 @@ export class TBMController {
           `
           MATCH (cap:BusinessCapability {id: $capabilityId})
           OPTIONAL MATCH (cap)-[:REALIZES]->(service:BusinessService)
-          WHERE service.id IN $orgServiceIds
+          WHERE service.id IN $orgServiceIds AND service.organization_id = $organizationId
           OPTIONAL MATCH (service)-[:SUPPORTED_BY]->(app:ApplicationService)
           OPTIONAL MATCH (app)-[:DEPENDS_ON|RUNS_ON*1..2]->(ci:CI)
           WHERE ci.tbm_monthly_cost IS NOT NULL
@@ -184,7 +186,7 @@ export class TBMController {
             sum(DISTINCT ci.tbm_monthly_cost) as totalCost,
             count(DISTINCT ci) as ciCount
           `,
-          { capabilityId: id, orgServiceIds }
+          { capabilityId: id, orgServiceIds, organizationId }
         );
 
         if (result.records.length === 0) {
@@ -224,18 +226,22 @@ export class TBMController {
   async getCostsByBusinessService(req: Request, res: Response): Promise<void> {
     try {
       const { id } = req.params;
+      const organizationId = requestOrganizationId(req);
 
       // Ownership is decided in Postgres before any Cypher runs (FD-2).
-      if (!(await ownsBusinessService(requestOrganizationId(req), id))) {
+      if (!(await ownsBusinessService(organizationId, id))) {
         res.status(404).json(BUSINESS_SERVICE_NOT_FOUND);
         return;
       }
 
       const session = this.neo4jClient.getSession();
       try {
+        // The node must also carry the caller's organization (FD-16 c): a node
+        // with another organization's id, or none, matches nothing (404).
         const result = await session.run(
           `
           MATCH (service:BusinessService {id: $serviceId})
+          WHERE service.organization_id = $organizationId
           OPTIONAL MATCH (service)-[:SUPPORTED_BY]->(app:ApplicationService)
           OPTIONAL MATCH (app)-[:DEPENDS_ON|RUNS_ON*1..2]->(ci:CI)
           WHERE ci.tbm_monthly_cost IS NOT NULL
@@ -246,7 +252,7 @@ export class TBMController {
             count(DISTINCT ci) as ciCount,
             collect(DISTINCT ci.tbm_resource_tower) as towers
           `,
-          { serviceId: id }
+          { serviceId: id, organizationId }
         );
 
         if (result.records.length === 0) {

@@ -623,8 +623,10 @@ export class DashboardService {
 
   /**
    * Get Business Service Dashboard data. With a serviceId, returns null (and
-   * runs no Cypher) unless the organization owns the service in Postgres, so a
-   * foreign service is indistinguishable from a missing one.
+   * runs no Cypher) unless the organization owns the service in Postgres, and
+   * returns null unless its :BusinessService node carries the organization
+   * (FD-16 c), so a foreign, org-less or missing node is indistinguishable
+   * from a missing service.
    */
   async getBusinessServiceDashboard(
     organizationId: string,
@@ -638,6 +640,17 @@ export class DashboardService {
       }
 
       const session = this.neo4j.getSession();
+
+      if (serviceId) {
+        const node = await session.run(
+          `MATCH (bs:BusinessService {id: $serviceId}) WHERE bs.organization_id = $organizationId RETURN bs.id AS id`,
+          { serviceId, organizationId }
+        );
+        if (node.records.length === 0) {
+          await session.close();
+          return null;
+        }
+      }
 
       // Get the organization's CIs with BSM attributes
       const query = serviceId

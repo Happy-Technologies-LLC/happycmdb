@@ -209,7 +209,7 @@ Located at `packages/api-server/src/services/dashboard.service.ts`
 - `getCIOMetrics(organizationId, timeRange)` - CIO operational metrics
 - `getITSMDashboard(organizationId)` - ITSM incident/change data
 - `getFinOpsDashboard(organizationId, timeRange)` - FinOps cost analysis
-- `getBusinessServiceDashboard(organizationId, serviceId?)` - Business service health; `null` (REST 404) when the organization does not own `serviceId`
+- `getBusinessServiceDashboard(organizationId, serviceId?)` - Business service health; `null` (REST 404) when the organization does not own `serviceId` or its `:BusinessService` node does not carry the organization
 
 ### Dashboard Controller
 

@@ -14,10 +14,13 @@
 // CREATING v3.0 ENTITIES
 // ============================================
 
-// Create a Business Service
+// Create a Business Service. organization_id is the owning organization (here
+// the internal one): TBM and dashboard reads ignore a :BusinessService node
+// that does not carry the caller's organization.
 CREATE (bs:BusinessService {
   id: 'bs-customer-onboarding',
   name: 'Customer Onboarding Service',
+  organization_id: '00000000-0000-0000-0000-000000000000',
   description: 'End-to-end customer onboarding process',
   operational_status: 'active',
   itil_attributes: '{

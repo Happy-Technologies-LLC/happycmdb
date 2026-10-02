@@ -9,7 +9,7 @@ Evidence index (this file is the durable record; PR body copies may truncate):
   (scratch dir scrubbed) and were NOT recovered or reconstructed; section 9 replaces them as evidence.
 - Harness history: the very first mounted attempt failed on `target.hasPointerCapture is not a function` (driver lacked the jsdom Radix
   polyfills that `BusinessServices.test.tsx` already carries); its log was overwritten by the re-run and is LOST, not reproduced or recovered.
-  Sections 5, 6, 7.1, 7.2 and 8 are complete raw captures of their runs (including failure output).
+  Sections 5, 6, 7.1, 7.2 and 8 are complete captures of their runs (including failure output); the 7.1/7.2 bearer tokens and the section 8 JWT_SECRET line were redacted post-capture, see the redaction note in section 3.
 - Scope caveat: omitting a blank `owned_by` fixes acceptance of a blank optional owner on create/edit. It does NOT implement owner
   clearing: an edit that blanks the owner omits `owned_by` from the PATCH, so the stored owner is retained. Owner clearing is a separate
   feature outside HAP-174.
@@ -62,7 +62,7 @@ EXIT=0
 ```
 `git status --short` afterwards showed only the new `docs/` dir: tracked manifests/lock unchanged.
 
-## 3. Summary of results (full raw output in sections 5-9; sections 1-2 are partial excerpts)
+## 3. Summary of results (full output in sections 5-9; sections 1-2 are partial excerpts)
 
 | Check | Result |
 |---|---|
@@ -79,7 +79,7 @@ Scope gaps (disclosed, not exercised in the mounted run): "unknown criticality c
 (`requires an explicit selection before saving a row with unknown criticality`); the mounted run did not seed a non-canonical row
 (the DB table stores what Joi allows). No regression assertion was added to the focused test for the `owned_by` omission; the mounted run is its proof.
 
-Redaction note (post-capture, 2026-10): the `Authorization: Bearer` tokens in the captured request dumps in sections 7.1/7.2 are replaced with `<redacted fixture JWT>`, and the literal `JWT_SECRET` in the section 8 harness is replaced with a fresh per-run `randomBytes(32).toString('hex')` (plus the `import { randomBytes } from 'crypto'` it needs), because secret scanners flagged the signed tokens and the literal secret could mint equivalent ones; all other output is unedited.
+Redaction note (post-capture, 2026-10): the `Authorization: Bearer` tokens in the captured request dumps in sections 7.1/7.2 are replaced with `<redacted fixture JWT>`, and the literal `JWT_SECRET` in the section 8 harness is replaced with a fresh per-run `require('crypto').randomBytes(32).toString('hex')` on the same line, because secret scanners flagged the signed tokens and the literal secret could mint equivalent ones; all other output is unedited.
 
 ## 4. Substitutions and teardown (mounted harness)
 
@@ -92,7 +92,7 @@ Redaction note (post-capture, 2026-10): the `Authorization: Bearer` tokens in th
 - Server: `express.listen(0, '127.0.0.1')` ephemeral port; UI: `npx vitest run` in `web-ui` with `VITE_API_BASE_URL=http://127.0.0.1:<port>/api/v1`, token via `localStorage.auth_token`.
 - "Reload" = `cleanup()` unmount then fresh mount, which issues a new real GET.
 - Teardown: `finally { server.close(); host.kill(); }`. No production entrypoint, workers, Neo4j/Redis/Postgres started.
-- Both harness files were deleted after the proof (not committed); their source is in section 8 (JWT_SECRET line and its crypto import changed post-capture; see the redaction note in section 3).
+- Both harness files were deleted after the proof (not committed); their source is in section 8 (JWT_SECRET line changed post-capture; see the redaction note in section 3).
 
 Command (run from `packages/api-server`):
 ```
@@ -3226,13 +3226,12 @@ EXIT=0
 // THROWAWAY HAP-174 harness: real business-service.routes.ts (auth + Joi + controller) on PGlite,
 // listening on 127.0.0.1; spawns the web-ui vitest page driver against it, then checks the DB.
 import { fork, spawnSync } from 'child_process';
-import { randomBytes } from 'crypto';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import express from 'express';
 
 Object.assign(process.env, {
-  JWT_SECRET: randomBytes(32).toString('hex'),
+  JWT_SECRET: require('crypto').randomBytes(32).toString('hex'),
   NEO4J_URI: 'bolt://127.0.0.1:1', NEO4J_USERNAME: 'unused', NEO4J_PASSWORD: 'unused',
   POSTGRES_HOST: '127.0.0.1', POSTGRES_DB: 'unused', POSTGRES_USER: 'unused', POSTGRES_PASSWORD: 'unused',
   REDIS_HOST: '127.0.0.1', KAFKA_CLIENT_ID: 'unused', KAFKA_GROUP_ID: 'unused',

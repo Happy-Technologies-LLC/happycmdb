@@ -126,6 +126,22 @@ function metadataInput(value: unknown): Record<string, unknown> {
 }
 
 /**
+ * Traversal depth spliced into `[:DEPENDS_ON*1..depth]`: defaults to 5 and must
+ * be an integer from 1 to 10, the same rule as the REST CI routes.
+ */
+function traversalDepth(depth: number | null | undefined): number {
+  if (depth === undefined || depth === null) {
+    return 5;
+  }
+  if (!Number.isInteger(depth) || depth < 1 || depth > 10) {
+    throw new GraphQLError('Depth must be an integer between 1 and 10', {
+      extensions: { code: 'BAD_USER_INPUT' },
+    });
+  }
+  return depth;
+}
+
+/**
  * The one error for a CI that is missing or belongs to another organization,
  * so a caller cannot tell the two apart (GraphQL counterpart of the REST 404).
  */
@@ -447,11 +463,10 @@ const Query = {
     _context: GraphQLContext
   ): Promise<GraphQLCI[]> => {
     const organizationId = requireGraphQLOrganization(_context);
+    const depth = traversalDepth(_args.depth);
     const session = _context._neo4jClient.getSession();
 
     try {
-      const depth = _args.depth || 5;
-
       const result = await session.run(
         `
         MATCH (ci:CI {id: $id}) WHERE ci.organization_id = $organizationId
@@ -484,10 +499,10 @@ const Query = {
     _context: GraphQLContext
   ): Promise<Array<{ _ci: GraphQLCI; _distance: number }>> => {
     const organizationId = requireGraphQLOrganization(_context);
+    const depth = traversalDepth(_args.depth);
     const session = _context._neo4jClient.getSession();
 
     try {
-      const depth = _args.depth || 5;
       const result = await session.run(
         `
         MATCH (ci:CI {id: $id}) WHERE ci.organization_id = $organizationId
@@ -607,8 +622,15 @@ const Mutation = {
       }
 
       const updates: Partial<CIInput> = {};
-      if (_args.input._name !== undefined) {
-        updates.name = _args.input._name;
+      // Validated after the scoped lookup, so a foreign id still gets NOT_FOUND.
+      if (_args.input._name != null) {
+        const name: unknown = _args.input._name;
+        if (typeof name !== 'string' || name.length === 0 || name.length > 500) {
+          throw new GraphQLError('CI name must be a non-empty string of at most 500 characters', {
+            extensions: { code: 'BAD_USER_INPUT' },
+          });
+        }
+        updates.name = name;
       }
       if (_args.input._status != null) {
         updates.status = convertEnumToDbFormat(_args.input._status) as CIStatus;

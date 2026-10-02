@@ -1639,7 +1639,8 @@ query GetCIRelationships($id: ID!, $direction: String) {
 
 #### getCIDependencies
 
-Get all dependencies for a CI (recursive).
+Get all dependencies for a CI (recursive). `depth` defaults to 5 and must be an
+integer from 1 to 10 (`BAD_USER_INPUT` otherwise).
 
 **Query**:
 ```graphql
@@ -1657,7 +1658,8 @@ query GetCIDependencies($id: ID!, $depth: Int) {
 
 #### getImpactAnalysis
 
-Perform impact analysis for a CI.
+Perform impact analysis for a CI. `depth` defaults to 5 and must be an integer
+from 1 to 10 (`BAD_USER_INPUT` otherwise).
 
 **Query**:
 ```graphql
@@ -1726,7 +1728,9 @@ mutation CreateCI($input: CreateCIInput!) {
 
 #### updateCI
 
-Update an existing CI.
+Update an existing CI. A non-null `_name` must be a non-empty string of at most
+500 characters (`BAD_USER_INPUT` otherwise); a foreign or missing id returns
+`NOT_FOUND` first.
 
 **Mutation**:
 ```graphql

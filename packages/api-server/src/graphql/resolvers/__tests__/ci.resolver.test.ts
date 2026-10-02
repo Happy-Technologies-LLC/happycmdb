@@ -554,6 +554,57 @@ describe('GraphQL CI Resolvers', () => {
     });
   });
 
+  describe('Input validation', () => {
+    const client = () => mockContext._neo4jClient as any;
+    const errorOf = (promise: Promise<unknown>) => promise.then(() => undefined, (e: unknown) => e);
+    const updateName = (id: string, name: string) =>
+      (resolvers.Mutation as any).updateCI(null, { id, input: { _name: name } }, mockContext);
+
+    it('updateCI rejects an empty or a 501-character name with BAD_USER_INPUT', async () => {
+      client().getCI.mockResolvedValue(createCI({ id: 'ci-1' }));
+      client().updateCI.mockResolvedValue(createCI({ id: 'ci-1' }));
+
+      for (const name of ['', 'x'.repeat(501)]) {
+        const error = await errorOf(updateName('ci-1', name));
+        expect(error).toBeInstanceOf(GraphQLError);
+        expect(error).toMatchObject({ extensions: { code: 'BAD_USER_INPUT' } });
+      }
+      expect(client().updateCI).not.toHaveBeenCalled();
+
+      await updateName('ci-1', 'x'.repeat(500));
+      expect(client().updateCI).toHaveBeenCalledWith('ci-1', { name: 'x'.repeat(500) }, ORG_A);
+    });
+
+    it('updateCI on a foreign id with a bad name still returns NOT_FOUND', async () => {
+      // The scoped lookup finds no CI of the caller's organization.
+      client().getCI.mockResolvedValue(null);
+
+      const error = await errorOf(updateName('ci-of-org-b', ''));
+
+      expect(client().getCI).toHaveBeenCalledWith('ci-of-org-b', ORG_A);
+      expect(error).toMatchObject({ message: 'CI not found', extensions: { code: 'NOT_FOUND' } });
+      expect(client().updateCI).not.toHaveBeenCalled();
+    });
+
+    it('getCIDependencies/getImpactAnalysis reject depth 0, 11, -1 and a non-integer with BAD_USER_INPUT', async () => {
+      for (const resolver of ['getCIDependencies', 'getImpactAnalysis']) {
+        for (const depth of [0, 11, -1, 2.5]) {
+          const error = await errorOf((resolvers.Query as any)[resolver](null, { id: 'ci-1', depth }, mockContext));
+          expect({ resolver, depth, error }).toMatchObject({
+            resolver,
+            depth,
+            error: { extensions: { code: 'BAD_USER_INPUT' } },
+          });
+        }
+      }
+      expect(client().getSession).not.toHaveBeenCalled();
+
+      mockNeo4j.session.run.mockResolvedValue(createMockNeo4jResult([]));
+      await (resolvers.Query as any).getCIDependencies(null, { id: 'ci-1', depth: 10 }, mockContext);
+      expect(mockNeo4j.session.run).toHaveBeenCalledWith(expect.stringContaining('DEPENDS_ON*1..10]'), expect.any(Object));
+    });
+  });
+
   describe('Contract Verification (London School)', () => {
     it('should always close Neo4j session after query', async () => {
       // Arrange

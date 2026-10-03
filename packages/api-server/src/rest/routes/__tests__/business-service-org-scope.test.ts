@@ -659,6 +659,9 @@ describe('POST /cis rejects ci_ids the mapping table cannot hold', () => {
   it('POST /cis measures the 100 limit in characters, not UTF-16 units', async () => {
     // U+1F600 is one character (one PostgreSQL VARCHAR position) but two UTF-16 units.
     const longest = '\u{1F600}'.repeat(100);
+    // Mapping requires a current cmdb.dim_ci row in the service's organization.
+    await db.rows(`INSERT INTO cmdb.dim_ci (ci_id, ci_name, ci_type, ci_status, is_current, organization_id)
+      VALUES ($1, 'Longest', 'server', 'active', TRUE, $2)`, [longest, ORG_B]);
     const ok = await request(app).post('/api/v1/business-services/bs-b-app/cis').set(AS_B).send({ ci_ids: [longest] });
     expect(ok.status).toBe(201);
     expect(await db.rows(`SELECT ci_id FROM ci_business_service_mappings WHERE service_id = 'bs-b-app' AND ci_id <> 'ci-b'`))

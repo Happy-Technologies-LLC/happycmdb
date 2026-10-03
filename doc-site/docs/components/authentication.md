@@ -350,6 +350,163 @@ and deletes the `cmdb.schema_migrations` row so 008 applies again later. Re-appl
 008 puts all services back in the internal organization. Until the old image is
 running, the 008-aware API returns 500 on business-service routes.
 
+### CI dimension (`cmdb.dim_ci`, migration 011)
+
+Every `cmdb.dim_ci` row carries `organization_id` (UUID, `NOT NULL`, no default): the
+organization of the `:CI` node it versions.
+
+- Migration `011_ci_organization_scope.sql` backfills every existing row (all SCD
+  versions) to the internal organization `00000000-0000-0000-0000-000000000000` (FD-4)
+  and marks those rows, and only those, `org_backfilled = TRUE`. No writer sets the
+  marker; rows written after 011 are `FALSE`.
+- The ETL writers (neo4j-to-postgres, full refresh, sync-cis-to-datamart,
+  reconciliation, the ETL processor sync job) and `DataMartClient.upsertCI` write the
+  organization explicitly. **No stored row ever changes organization**: a pre-011
+  `ci_id` can carry more than one lineage (a CI deleted and its id reused). When a CI
+  whose current row is a 011 backfill label has a node naming an organization, the ETL
+  writes a **new current version** in that organization, built from the node alone; the
+  backfilled history (and its `tbm_attributes`) stays internal, so that organization's
+  mapping, `/costs` and cost trends read none of it. Rows labelled internal after 011
+  and customer organizations never get a version in another organization, and the
+  decision uses no client-writable data (a node's `created_at`, for example, is not
+  consulted). A node that conflicts with the stored history (another organization than
+  the stored one, outside the backfill case) is skipped and logged: nothing is written
+  for it. A CI new to `cmdb.dim_ci` takes its node's organization, or the internal
+  organization when the node has none (written by discovery, connectors, ETL or
+  reconciliation), as the Neo4j backfill does. An org-less node whose ID matches
+  an existing customer CI is skipped and logged, not assigned that customer's
+  organization: a reconciliation merge can recreate a deleted customer's ID
+  from another organization's supplied attributes. The `postgres-wins`
+  reconciliation restore is distinct: it reads the surviving current
+  `cmdb.dim_ci` row and stamps that row's organization on the recreated Neo4j
+  node. The untrusted merge has no such provenance and stays org-less. A
+  conflicting node's stored customer row stays unchanged; only a node naming
+  that organization may update it. The full refresh applies the same
+  stored-organization rule to any current row it finds (none after its
+  truncate, unless another writer has written since; any with
+  `truncateTables: false`). A node without an organization never puts a CI in
+  a customer organization.
+  `neo4j-wins` reconciliation inserts attributes and organization from one
+  current-node match, not from separate generations of a reused ID. If that
+  node disappears before the match, the conflict remains unresolved and no
+  dimension is inserted; its stale attributes are not returned as current.
+  Reconciliation auto-resolves a status mismatch only when the node, read in
+  one match with its status, is in the current row's organization (an org-less
+  node counts as internal). Its PostgreSQL update and Neo4j update are both
+  restricted to that organization. A node of another organization reusing the
+  ID, including a node naming an organization for a 011-backfilled internal row,
+  leaves the conflict unresolved and neither side changes.
+- Complete neo4j-to-postgres syncs and full refreshes write relationship facts
+  only when both endpoints were resolved from committed CI batches. A
+  `ciTypes`-filtered complete sync does not extract the other endpoint of an
+  edge to a CI outside its filter. That endpoint is identified by the
+  organization the same graph match reads, and its existing current
+  `cmdb.dim_ci` row must be in that organization. An endpoint the sync did
+  extract always needs a committed identity. Full
+  refresh uses per-CI savepoints so a failed dimension does not enter that set.
+  One Neo4j match reads each edge and both *current* endpoint IDs and organizations;
+  both must match the accepted identities, and the current `cmdb.dim_ci` rows
+  must still match those organizations. A node replaced after its dimension
+  batch cannot supply an edge under the former customer's `ci_key`. Neo4j and
+  PostgreSQL do not share a transaction or global snapshot: an edge changed
+  after that graph match cannot become a new edge in its result. This assumes
+  untrusted writers cannot stamp another organization's node label; it does
+  not protect against a privileged writer deliberately forging that label.
+- Concurrent dimension writers recheck the current organization under a
+  per-`ci_id` PostgreSQL transaction advisory lock, held through SCD expiry
+  and insertion. Those writers are `DataMartClient` (first insert and
+  backfill claims), neo4j-to-postgres, sync-cis-to-datamart, the full refresh
+  and the `neo4j-wins` reconciliation insert. Each ETL batch takes all of its
+  locks before reading any current row, once per lock key and in ascending key
+  order. Batches that share a CI, or a lock key (two ids can share a
+  `hashtext` key), still wait for each other, but never in a cycle, so they
+  do not deadlock. Two writers that see different organizations for the same
+  CI cannot both replace its current version, nor both write its first one:
+  the second re-reads the first's version and refuses it as a conflict (the
+  reconciliation insert and `DataMartClient`'s first insert refuse any
+  current row). The old costs stay in the original version. Residual: the
+  reconciliation status update (an in-place update restricted to the row's
+  organization), the complete-sync marker clear and `DataMartClient`'s
+  unchanged-CI marker clear take no lock. These only clear a marker or change
+  a status within its organization, but `DataMartClient` can return the key of
+  a version a concurrent writer has just retired.
+- One CI node's client-writable values cannot fail the other CIs of its ETL
+  batch, which holds CIs of every organization. neo4j-to-postgres and
+  sync-cis-to-datamart, after taking the batch's locks, load each CI under its
+  own savepoint. A CI that fails to load is rolled back alone, skipped (never
+  truncated or partly written), logged with its id and reported in the job
+  result (`errors`), and the rest of the batch commits. Examples: a
+  `metadata.discovery_method` or `discovery_source` longer than its
+  `VARCHAR(50)` discovery-fact column, which any write role can set through
+  `POST`/`PUT /api/v1/cis`; or `metadata`, `itil_attributes`, `tbm_attributes`
+  or `bsm_attributes` that sync-cis-to-datamart cannot store as JSONB. The full
+  refresh already loads each CI under its own savepoint. A skipped CI keeps its
+  current row, if any, and still counts as live for the complete-sync marker
+  clear; a new skipped CI has no `cmdb.dim_ci` row (so it cannot be mapped)
+  until its node is repaired.
+- The dimension writers that read CIs from Neo4j (neo4j-to-postgres,
+  sync-cis-to-datamart, full refresh, reconciliation) identify a CI's
+  `cmdb.dim_ci` history only by its node's unique `id`, and only when that
+  `id` is stored and compared unchanged as a `ci_id`: a non-empty string of at
+  most 100 characters, without NUL or an unpaired surrogate. Other nodes, and
+  other `ciIds` given to a reconciliation job, are skipped and logged before
+  any lock or read; a reconciliation write also requires the node it reads to
+  carry exactly that `id`. A reconciliation merge can set a node's `id` to a
+  number such as `12345`, which Neo4j keeps apart from the string `'12345'`
+  but PostgreSQL would read as the same `ci_id`; `VARCHAR(100)` silently
+  drops trailing spaces past 100 characters; UTF-8 encoding turns an unpaired
+  surrogate into U+FFFD. sync-cis-to-datamart ignores any `ci_id` node
+  property: a merge can copy one onto a node of another organization, or of
+  none, and must not claim or end a backfilled CI's history through it.
+- **Rollout:** CIs created in a customer organization through `POST /api/v1/cis` and
+  synced before 011 are backfilled to the internal organization. Right after applying
+  011, run a complete neo4j-to-postgres sync (no `incrementalSince`, no `ciTypes`) so
+  every such CI gets its new version in its node's organization. That run clears the
+  backfill marker of every CI without a live node, even when some batches or CIs fail,
+  so a node created later with such an id cannot take the backfilled CI over. CIs that
+  failed keep their marker until a later run processes them. A node whose `metadata`
+  property is not JSON (a reconciliation merge can store one) is skipped and logged by
+  neo4j-to-postgres and the full refresh; it still counts as live, so its CI keeps its
+  marker until the node is readable. Until a run completes, the internal organization
+  can map those CIs; such mapping rows stay listed by `GET /:id/cis` afterwards but add
+  nothing to `/costs`.
+- `POST /api/v1/cis` rejects an `id` longer than 100 characters or an `external_id`
+  longer than 200 (the `cmdb.dim_ci` column widths) with **400**. Other values, such as
+  `metadata`, are not bounded; a CI whose values cannot be loaded is skipped by the ETL
+  without failing other CIs (see above).
+- `POST /api/v1/itil/baselines/:id/restore` never writes a CI's `created_at` (nor its
+  `organization_id`, `id` or `updated_at`) from a snapshot.
+- `POST /api/v1/business-services/:id/cis` maps only CIs with a current `cmdb.dim_ci`
+  row in the service's organization. A CI of another organization, or one with no
+  current row (for example not yet synced by the ETL), returns **404**
+  `{"success":false,"error":"CI not found"}` and nothing is written, including the
+  other CIs in the request and an update of an existing mapping.
+- `GET /api/v1/business-services/:id/costs` counts only the caller organization's
+  current `cmdb.dim_ci` rows: a mapping row that names another organization's CI adds
+  nothing to `ci_count`, `total_monthly_cost` or `cost_by_tower`.
+- `GET /api/v1/tbm/costs/trends` and GraphQL `costTrends` (both admin-only) sum only
+  the caller organization's CIs. GraphQL `costTrends` now reads `cmdb.dim_ci`, like
+  REST.
+- Not covered: `/api/v1/analytics` still reads `cmdb.dim_ci` across organizations.
+
+ETL (`etl-processor`) images built before 011, and any other `cmdb.dim_ci` writer
+(`DataMartClient`, `PostgresClient`) of that age, insert rows without `organization_id`,
+so every insert fails with `23502` while the column exists. Before deploying such an
+image, run the manual rollback (no migration runner executes it). The API does not
+write `cmdb.dim_ci`: an API image older than 011 runs against the 011 schema without
+the rollback (but without 011's CI tenancy checks).
+
+```bash
+psql -v ON_ERROR_STOP=1 -f packages/database/src/postgres/migrations/rollback/011_ci_organization_scope.down.sql
+```
+
+It drops the indexes and the columns, which discards every CI's organization, and
+deletes the `cmdb.schema_migrations` row so 011 applies again later (all rows back in
+the internal organization, marked backfilled, until a complete neo4j-to-postgres sync
+writes new versions in their nodes' organizations). Until the old
+images are running, the 011-aware API returns 500 on CI mapping, service costs and cost
+trends, and the 011-aware ETL fails its `cmdb.dim_ci` reads and writes.
+
 ### Configuration items (`/api/v1/cis` and GraphQL CI operations)
 
 Neo4j `:CI` nodes carry an `organization_id` property, set only from the token's

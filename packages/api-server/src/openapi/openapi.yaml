@@ -3037,8 +3037,10 @@ paths:
         Creates or updates one mapping per distinct `ci_ids` entry (duplicate
         ids are not allowed) with the given `mapping_type`; an existing
         (ci_id, mapping_type) mapping has its `confidence_score` and
-        `updated_at` replaced. Unknown body fields are ignored. Requires the
-        `write` permission.
+        `updated_at` replaced. Every CI must be a current `cmdb.dim_ci` CI of
+        the service's organization (migration 011); otherwise nothing is
+        written. Unknown body fields are ignored. Requires the `write`
+        permission.
       operationId: mapBusinessServiceCIs
       requestBody:
         required: true
@@ -3097,7 +3099,24 @@ paths:
         '403':
           $ref: '#/components/responses/BusinessServiceForbidden'
         '404':
-          $ref: '#/components/responses/BusinessServiceNotFound'
+          description: >-
+            The service is unknown or belongs to another organization
+            (`Business service not found`), or a requested CI has no current
+            `cmdb.dim_ci` row or belongs to another organization (`CI not
+            found`; the same body for both). Nothing is written.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BusinessServiceError'
+              examples:
+                service:
+                  value:
+                    success: false
+                    error: Business service not found
+                ci:
+                  value:
+                    success: false
+                    error: CI not found
         '500':
           $ref: '#/components/responses/BusinessServiceServerError'
 
@@ -3343,8 +3362,10 @@ paths:
       description: >-
         Monthly cost of the CIs mapped to the service, in total and per TBM
         resource tower. A CI mapped under several mapping types is counted
-        and costed once. A service with no mappings returns `ci_count` 0 and
-        null totals.
+        and costed once. Only mapped CIs with a current `cmdb.dim_ci` row in
+        the caller's organization count; a mapping that names another
+        organization's CI adds nothing. A service with no such CIs returns
+        `ci_count` 0 and null totals.
       operationId: getBusinessServiceCosts
       responses:
         '200':
@@ -3717,8 +3738,10 @@ components:
       properties:
         _id:
           type: string
+          maxLength: 100
         external_id:
           type: string
+          maxLength: 200
         name:
           type: string
         _type:

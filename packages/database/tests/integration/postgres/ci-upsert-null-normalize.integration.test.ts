@@ -21,6 +21,8 @@ import { DataMartClient } from '../../../src/clients/datamart.client';
 import type { CIDimensionInput } from '@cmdb/common';
 
 const RUN_ID = `fix8-null-norm-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+// cmdb.dim_ci.organization_id is NOT NULL from migration 011 on.
+const ORG = '00000000-0000-0000-0000-000000000000';
 
 const pgClient = new PostgresClient({
   _host: process.env.POSTGRES_HOST || 'localhost',
@@ -50,6 +52,7 @@ describe('F-229/E-089 hasCIChanged nullish normalization', () => {
       ciname: 'Fix8 CI No External Id',
       ci_type: 'server' as CIDimensionInput['ci_type'],
       ci_status: 'active' as CIDimensionInput['ci_status'],
+      organization_id: ORG,
     };
 
     const key1 = await datamart.upsertCI(input);
@@ -71,6 +74,7 @@ describe('F-229/E-089 hasCIChanged nullish normalization', () => {
       ci_type: 'server' as CIDimensionInput['ci_type'],
       ci_status: 'active' as CIDimensionInput['ci_status'],
       external_id: 'EXT-123',
+      organization_id: ORG,
     };
 
     const key1 = await datamart.upsertCI(withExternalId);
@@ -94,6 +98,7 @@ describe('F-229/E-089 hasCIChanged nullish normalization', () => {
       ciname: 'Fix8 CI Null To Real',
       ci_type: 'server' as CIDimensionInput['ci_type'],
       ci_status: 'active' as CIDimensionInput['ci_status'],
+      organization_id: ORG,
     };
 
     const key1 = await datamart.upsertCI(withoutExternalId);
@@ -115,6 +120,7 @@ describe('F-229/E-089 hasCIChanged nullish normalization', () => {
       ci_type: 'server' as CIDimensionInput['ci_type'],
       ci_status: 'active' as CIDimensionInput['ci_status'],
       environment: 'production' as CIDimensionInput['environment'],
+      organization_id: ORG,
     };
 
     const key1 = await datamart.upsertCI(input);
@@ -135,6 +141,7 @@ describe('F-229/E-089 hasCIChanged nullish normalization', () => {
       ciname: 'Fix8 CI Status Test',
       ci_type: 'server' as CIDimensionInput['ci_type'],
       ci_status: 'active' as CIDimensionInput['ci_status'],
+      organization_id: ORG,
     };
 
     const key1 = await datamart.upsertCI(input);
@@ -155,6 +162,7 @@ describe('F-229/E-089 hasCIChanged nullish normalization', () => {
       ciname: 'Fix8 CI Metadata Test',
       ci_type: 'server' as CIDimensionInput['ci_type'],
       ci_status: 'active' as CIDimensionInput['ci_status'],
+      organization_id: ORG,
     };
 
     const key1 = await datamart.upsertCI(input);

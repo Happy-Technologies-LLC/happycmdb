@@ -36,6 +36,12 @@ export interface CIDimensionInput {
   metadata?: Record<string, any>;
   /** Effective from timestamp (defaults to current time if not provided) */
   effective_from?: Date;
+  /**
+   * Owning organization (cmdb.dim_ci.organization_id, migration 011): the
+   * :CI node's organization, or the internal organization
+   * 00000000-0000-0000-0000-000000000000 for a CI that has none (FD-4).
+   */
+  organization_id: string;
 }
 
 /**

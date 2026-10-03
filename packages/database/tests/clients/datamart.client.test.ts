@@ -27,6 +27,7 @@ describe('DataMartClient.upsertCI', () => {
     environment: 'production',
     external_id: 'ext-1',
     metadata: { rack: 'r1' },
+    organization_id: '00000000-0000-0000-0000-000000000000',
   };
 
   // Row shape as actually returned by the driving SELECT in upsertCI, which
@@ -39,6 +40,7 @@ describe('DataMartClient.upsertCI', () => {
     environment: baseCI.environment,
     external_id: baseCI.external_id,
     metadata: baseCI.metadata,
+    organization_id: baseCI.organization_id,
   };
 
   beforeEach(() => {

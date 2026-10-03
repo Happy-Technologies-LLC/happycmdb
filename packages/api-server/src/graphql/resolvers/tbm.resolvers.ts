@@ -4,12 +4,13 @@
 // packages/api-server/src/graphql/resolvers/tbm.resolvers.ts
 
 import { GraphQLError } from 'graphql';
-import { getPostgresClient } from '@cmdb/database';
 import { GraphQLContext } from './index';
 import { logger } from '@cmdb/common';
 import { checkGraphQLPermission } from '../../middleware/auth.middleware';
 import { requireGraphQLOrganization } from '../require-organization';
 import { ownedBusinessServiceIds, ownsBusinessService } from '../../services/business-service-ownership';
+import { ciCostTrends } from '../../services/ci-cost-trends';
+import { errorLogFields } from '../../utils/log-error';
 
 /**
  * TBM GraphQL Resolvers
@@ -20,10 +21,12 @@ import { ownedBusinessServiceIds, ownsBusinessService } from '../../services/bus
  * before any data access; business-service and capability costs only reach
  * :BusinessService ids the caller's organization owns in Postgres (FD-2)
  * whose node also carries that organization_id (FD-16 c); aggregates over
- * every CI are admin-only until CI tenancy lands (FD-3 b).
+ * every CI are admin-only (FD-3 b). The Neo4j cost aggregates still read
+ * every organization's :CI nodes; costTrends reads only the caller
+ * organization's cmdb.dim_ci rows (migration 011) and stays admin-only.
  */
 
-/** FD-3 b gate for the global (all-CI) aggregates. */
+/** FD-3 b gate for the aggregates over every CI (and costTrends). */
 function requireGlobalAggregateAccess(context: GraphQLContext): void {
   requireGraphQLOrganization(context);
   checkGraphQLPermission(context, 'admin');
@@ -271,33 +274,16 @@ const Query = {
 
   costTrends: async (_parent: any, args: { months?: number }, context: GraphQLContext) => {
     requireGlobalAggregateAccess(context);
-    const pool = getPostgresClient().pool;
     try {
-      const months = args.months || 6;
-
-      const result = await pool.query(
-        `
-        SELECT
-          date_trunc('month', snapshot_date) as month,
-          sum(tbm_monthly_cost) as total_cost,
-          count(*) as ci_count
-        FROM ci_snapshot
-        WHERE snapshot_date >= NOW() - INTERVAL '${months} months'
-          AND tbm_monthly_cost IS NOT NULL
-        GROUP BY date_trunc('month', snapshot_date)
-        ORDER BY month DESC
-        `
-      );
-
-      return result.rows.map((row) => ({
-        month: row.month,
-        totalCost: parseFloat(row.total_cost),
-        ciCount: parseInt(row.ci_count),
-      }));
-    } catch (error: any) {
-      logger.error('Error getting cost trends', error);
+      // Only the caller organization's CIs (cmdb.dim_ci.organization_id).
+      const trends = await ciCostTrends(requireGraphQLOrganization(context), args.months ?? 6);
+      // MonthlyCostData.month is a String: the ISO timestamp REST returns.
+      return trends.map((point) => ({ ...point, month: point.month.toISOString() }));
+    } catch (error: unknown) {
+      // Driver errors name tables/columns: log them, return no driver text.
+      logger.error('Error getting cost trends', { error: errorLogFields(error) });
       throw new GraphQLError('Failed to retrieve cost trends', {
-        extensions: { code: 'INTERNAL_SERVER_ERROR', originalError: error.message },
+        extensions: { code: 'INTERNAL_SERVER_ERROR' },
       });
     }
   },

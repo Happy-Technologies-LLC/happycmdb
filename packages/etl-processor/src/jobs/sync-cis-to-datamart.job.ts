@@ -17,6 +17,9 @@
 import { Job } from 'bullmq';
 import { logger } from '@cmdb/common';
 import { getPostgresClient, getNeo4jClient } from '@cmdb/database';
+import {
+  dimCiOrganizationId, lockCIDimensions, storedCiOrganizationId, withDimCiIds,
+} from '../transformers/ci-organization';
 
 export interface SyncCIsJobData {
   /** Batch size for processing CIs (default: 100) */
@@ -72,7 +75,9 @@ export async function processSyncCIsToDatamart(
     const ciTypes = job.data.ciTypes;
 
     // Step 1: Extract CIs from Neo4j with v3 attributes
-    const cis = await extractCIsFromNeo4j(incrementalSince, fullRefresh, ciTypes);
+    const cis = withDimCiIds(
+      await extractCIsFromNeo4j(incrementalSince, fullRefresh, ciTypes), ci => ci.ci_id, 'sync-cis-to-datamart'
+    );
     logger.info('[SyncCIsToDatamart] Extracted CIs from Neo4j', {
       count: cis.length,
       incrementalSince,
@@ -97,6 +102,8 @@ export async function processSyncCIsToDatamart(
         result.cisInserted += batchResult.inserted;
         result.cisUpdated += batchResult.updated;
         result.cisSkipped += batchResult.skipped;
+        // A CI that failed to load is reported, not hidden: the job is not successful.
+        result.errors.push(...batchResult.failed.map(failure => `CI ${failure.ciId}: ${failure.error}`));
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
         result.errors.push(`Batch ${Math.floor(i / batchSize) + 1}: ${errorMsg}`);
@@ -169,9 +176,12 @@ async function extractCIsFromNeo4j(
       query += ' WHERE ' + conditions.join(' AND ');
     }
 
+    // The dimension identity is the node's unique id. Any other property, a
+    // ci_id one included, can be copied onto a node by a reconciliation merge,
+    // so it must not decide which cmdb.dim_ci history a node claims.
     query += `
       RETURN
-        ci.ci_id AS ci_id,
+        ci.id AS ci_id,
         ci.ci_name AS ci_name,
         ci.ci_type AS ci_type,
         ci.ci_status AS ci_status,
@@ -182,7 +192,8 @@ async function extractCIsFromNeo4j(
         ci.tbm_attributes AS tbm_attributes,
         ci.bsm_attributes AS bsm_attributes,
         ci.created_at AS created_at,
-        ci.updated_at AS updated_at
+        ci.updated_at AS updated_at,
+        ci.organization_id AS organization_id
       ORDER BY ci.updated_at DESC
     `;
 
@@ -201,6 +212,8 @@ async function extractCIsFromNeo4j(
       bsm_attributes: record.get('bsm_attributes'),
       created_at: record.get('created_at'),
       updated_at: record.get('updated_at'),
+      // Raw node value; resolved per row in processCIBatch (dimCiOrganizationId).
+      organization_id: record.get('organization_id'),
     }));
   } finally {
     await session.close();
@@ -213,18 +226,24 @@ async function extractCIsFromNeo4j(
 async function processCIBatch(
   cis: any[],
   fullRefresh: boolean
-): Promise<{ processed: number; inserted: number; updated: number; skipped: number }> {
-  const result = { processed: 0, inserted: 0, updated: 0, skipped: 0 };
+): Promise<{ processed: number; inserted: number; updated: number; skipped: number; failed: Array<{ ciId: string; error: string }> }> {
+  const result = { processed: 0, inserted: 0, updated: 0, skipped: 0, failed: [] as Array<{ ciId: string; error: string }> };
 
   const pgClient = getPostgresClient();
   const client = await pgClient.pool.connect();
 
   try {
     await client.query('BEGIN');
+    // Serialize writers of these CIs through COMMIT, before reading any current row.
+    await lockCIDimensions(client, cis.map(ci => ci.ci_id));
 
     for (const ci of cis) {
+      // Locks first, then one savepoint per CI: a CI whose client-writable
+      // values fail to load (metadata or attributes that are not JSON, say)
+      // is rolled back alone; the batch's other CIs, of any organization,
+      // still load.
+      await client.query('SAVEPOINT ci_dimension');
       try {
-        // Check if CI already exists in dim_ci (current record)
         const existingResult = await client.query(
           `SELECT
             ci_key,
@@ -234,7 +253,9 @@ async function processCIBatch(
             environment,
             itil_attributes,
             tbm_attributes,
-            bsm_attributes
+            bsm_attributes,
+            organization_id,
+            org_backfilled
           FROM cmdb.dim_ci
           WHERE ci_id = $1 AND is_current = true`,
           [ci.ci_id]
@@ -243,12 +264,35 @@ async function processCIBatch(
         if (existingResult.rows.length > 0) {
           const existing = existingResult.rows[0];
 
+          // See storedCiOrganizationId: no stored row changes organization;
+          // a 011 backfilled CI whose node names another organization gets a
+          // new version in it.
+          const organizationId = storedCiOrganizationId(ci.organization_id, {
+            organizationId: existing.organization_id,
+            backfilled: existing.org_backfilled === true,
+          });
+          if (organizationId === null) {
+            result.skipped++;
+            logger.warn('[SyncCIsToDatamart] CI node organization conflicts with its dim_ci history; skipped', {
+              ci_id: ci.ci_id,
+            });
+            await client.query('RELEASE SAVEPOINT ci_dimension');
+            continue;
+          }
+          if (existing.org_backfilled === true) {
+            await client.query(
+              'UPDATE cmdb.dim_ci SET org_backfilled = FALSE WHERE ci_id = $1 AND org_backfilled',
+              [ci.ci_id]
+            );
+          }
+
           // Check if data has changed
           const hasChanged =
             existing.ci_name !== ci.ci_name ||
             existing.ci_type !== ci.ci_type ||
             existing.ci_status !== ci.ci_status ||
             existing.environment !== ci.environment ||
+            organizationId !== existing.organization_id ||
             JSON.stringify(existing.itil_attributes) !== JSON.stringify(ci.itil_attributes) ||
             JSON.stringify(existing.tbm_attributes) !== JSON.stringify(ci.tbm_attributes) ||
             JSON.stringify(existing.bsm_attributes) !== JSON.stringify(ci.bsm_attributes);
@@ -269,8 +313,8 @@ async function processCIBatch(
               `INSERT INTO cmdb.dim_ci (
                 ci_id, ci_name, ci_type, ci_status, environment, external_id,
                 metadata, itil_attributes, tbm_attributes, bsm_attributes,
-                effective_from, effective_to, is_current, created_at, updated_at
-              ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), '9999-12-31', true, $11, NOW())`,
+                effective_from, effective_to, is_current, created_at, updated_at, organization_id
+              ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), '9999-12-31', true, $11, NOW(), $12)`,
               [
                 ci.ci_id,
                 ci.ci_name,
@@ -283,6 +327,7 @@ async function processCIBatch(
                 ci.tbm_attributes,
                 ci.bsm_attributes,
                 ci.created_at || new Date(),
+                organizationId,
               ]
             );
 
@@ -303,8 +348,8 @@ async function processCIBatch(
             `INSERT INTO cmdb.dim_ci (
               ci_id, ci_name, ci_type, ci_status, environment, external_id,
               metadata, itil_attributes, tbm_attributes, bsm_attributes,
-              effective_from, effective_to, is_current, created_at, updated_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), '9999-12-31', true, $11, NOW())`,
+              effective_from, effective_to, is_current, created_at, updated_at, organization_id
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), '9999-12-31', true, $11, NOW(), $12)`,
             [
               ci.ci_id,
               ci.ci_name,
@@ -317,6 +362,7 @@ async function processCIBatch(
               ci.tbm_attributes,
               ci.bsm_attributes,
               ci.created_at || new Date(),
+              dimCiOrganizationId(ci.organization_id),
             ]
           );
 
@@ -326,13 +372,18 @@ async function processCIBatch(
           });
         }
 
+        await client.query('RELEASE SAVEPOINT ci_dimension');
         result.processed++;
       } catch (error) {
-        logger.error('[SyncCIsToDatamart] Error processing CI', {
+        await client.query('ROLLBACK TO SAVEPOINT ci_dimension');
+        await client.query('RELEASE SAVEPOINT ci_dimension');
+        const message = error instanceof Error ? error.message : String(error);
+        // Fail closed: this CI gets no version, not a partial or coerced one.
+        result.failed.push({ ciId: ci.ci_id, error: message });
+        logger.error('[SyncCIsToDatamart] Skipping CI that failed to load; the rest of its batch continues', {
           ci_id: ci.ci_id,
-          error: error instanceof Error ? error.message : String(error),
+          error: message,
         });
-        throw error;
       }
     }
 

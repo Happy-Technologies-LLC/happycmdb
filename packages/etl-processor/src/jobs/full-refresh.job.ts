@@ -17,9 +17,13 @@
 
 import { Job } from 'bullmq';
 import type { PoolClient } from 'pg';
-import { Neo4jClient, PostgresClient, UNSCOPED_CI_ACCESS } from '@cmdb/database';
+import { Neo4jClient, PostgresClient } from '@cmdb/database';
 import { logger, CI, validateTableNames } from '@cmdb/common';
 import { DimensionTransformer } from '../transformers/dimension-transformer';
+import {
+  ExtractedCI, dimCiOrganizationId, isDimCiId, lockCIDimensions, parseNodeMetadata, storedCiOrganizationId,
+  UNREADABLE_METADATA, withDimCiIds,
+} from '../transformers/ci-organization';
 
 export interface FullRefreshJobData {
   /** Whether to truncate tables before refresh */
@@ -94,11 +98,12 @@ export class FullRefreshJob {
       }
 
       // Stage 2: Extract all CIs from Neo4j
-      const cis = await this.extractAllCIs();
+      const cis = withDimCiIds(await this.extractAllCIs(), ci => ci._id, 'full-refresh');
       await job.updateProgress(25);
       result.stagesCompleted.push('extract-cis');
       logger.info(`Extracted ${cis.length} CIs from Neo4j`);
 
+      const acceptedOrganizations = new Map<string, string>();
       // Stage 3: Load CI dimensions in batches
       for (let i = 0; i < cis.length; i += batchSize) {
         const batch = cis.slice(i, i + batchSize);
@@ -107,6 +112,9 @@ export class FullRefreshJob {
 
         const batchResult = await this.loadCIDimensions(batch, job.id);
         result.dimensionsCreated += batchResult.created;
+        for (const [ciId, organizationId] of batchResult.acceptedOrganizations) {
+          acceptedOrganizations.set(ciId, organizationId);
+        }
         result.cisProcessed += batch.length;
       }
 
@@ -115,7 +123,7 @@ export class FullRefreshJob {
 
       // Stage 4: Extract and load relationships
       await job.updateProgress(70);
-      const relationshipResult = await this.loadRelationships(cis);
+      const relationshipResult = await this.loadRelationships(cis, acceptedOrganizations);
       result.relationshipsProcessed = relationshipResult.processed;
       result.factsCreated = relationshipResult.created;
       result.stagesCompleted.push('load-relationships');
@@ -176,9 +184,10 @@ export class FullRefreshJob {
   }
 
   /**
-   * Extract all CIs from Neo4j
+   * Extract all CIs from Neo4j. A node whose metadata is not JSON is skipped
+   * and logged, so one such node cannot fail the refresh after its truncate.
    */
-  private async extractAllCIs(): Promise<CI[]> {
+  private async extractAllCIs(): Promise<ExtractedCI[]> {
     const session = this.neo4jClient.getSession();
 
     try {
@@ -188,10 +197,18 @@ export class FullRefreshJob {
         ORDER BY ci.created_at
       `);
 
-      return result.records.map((record: any) => {
-        const node = record.get('ci');
-        const props = node.properties;
-        return {
+      const cis: ExtractedCI[] = [];
+      for (const record of result.records as any[]) {
+        const props = record.get('ci').properties;
+        const metadata = parseNodeMetadata(props.metadata);
+        if (metadata === UNREADABLE_METADATA) {
+          // The id only when it is a valid ci_id: a node id is client-writable.
+          logger.warn('Skipping CI node whose metadata is not JSON', {
+            job: 'full-refresh', ciId: isDimCiId(props.id) ? props.id : '(invalid id)',
+          });
+          continue;
+        }
+        cis.push({
           _id: props.id,
           external_id: props.external_id,
           name: props.name,
@@ -201,9 +218,11 @@ export class FullRefreshJob {
           _created_at: props.created_at,
           _updated_at: props.updated_at,
           _discovered_at: props.discovered_at,
-          _metadata: props.metadata ? JSON.parse(props.metadata) : {}
-        } as CI;
-      });
+          _metadata: metadata as ExtractedCI['_metadata'],
+          organization_id: props.organization_id
+        } as ExtractedCI);
+      }
+      return cis;
 
     } finally {
       await session.close();
@@ -220,22 +239,61 @@ export class FullRefreshJob {
    * discovery_provider, and discovery_method (NOT NULL columns).
    */
   private async loadCIDimensions(
-    cis: CI[],
+    cis: ExtractedCI[],
     jobId: string = 'full-refresh-etl'
-  ): Promise<{ created: number }> {
+  ): Promise<{ created: number; acceptedOrganizations: Map<string, string> }> {
     let created = 0;
+    const acceptedOrganizations = new Map<string, string>();
 
     await this.postgresClient.transaction(async (client: PoolClient) => {
+      // Before any savepoint: a rollback to a savepoint would release locks
+      // taken after it. Serializes this batch with every other dim_ci writer.
+      await lockCIDimensions(client, cis.map(ci => ci._id));
       for (const ci of cis) {
+        await client.query('SAVEPOINT ci_dimension_load');
         try {
           const dimension = this.dimensionTransformer.toDimension(ci);
 
-          // Insert new dimension (all as current since this is full refresh)
+          // The table may not be empty: no truncate, or another writer since.
+          // Apply the stored-organization rule to any current row, as the
+          // other writers do, and version it by its ci_key.
+          const current = await client.query(
+            `SELECT ci_key, organization_id, org_backfilled
+             FROM cmdb.dim_ci WHERE ci_id = $1 AND is_current = true`,
+            [ci._id]
+          );
+          let organizationId = dimension.organization_id;
+          const stored = current.rows[0];
+          if (stored) {
+            const resolved = storedCiOrganizationId(ci.organization_id, {
+              organizationId: stored.organization_id,
+              backfilled: stored.org_backfilled === true,
+            });
+            if (resolved === null) {
+              logger.warn('CI node organization conflicts with its cmdb.dim_ci history; skipped', { ciId: ci._id });
+              await client.query('RELEASE SAVEPOINT ci_dimension_load');
+              continue;
+            }
+            organizationId = resolved;
+            if (stored.org_backfilled === true) {
+              await client.query(
+                'UPDATE cmdb.dim_ci SET org_backfilled = FALSE WHERE ci_id = $1 AND org_backfilled',
+                [ci._id]
+              );
+            }
+            await client.query(
+              `UPDATE cmdb.dim_ci SET is_current = false, effective_to = $1, updated_at = $1
+               WHERE ci_key = $2`,
+              [new Date(), stored.ci_key]
+            );
+          }
+
+          // Insert the new current version
           const insertResult = await client.query(
             `INSERT INTO cmdb.dim_ci
              (ci_id, ci_name, ci_type, environment, ci_status, external_id,
-              effective_from, effective_to, is_current, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, '9999-12-31', true, $8, $9)
+              effective_from, effective_to, is_current, created_at, updated_at, organization_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, '9999-12-31', true, $8, $9, $10)
              RETURNING ci_key`,
             [
               dimension._ci_id,
@@ -246,7 +304,8 @@ export class FullRefreshJob {
               dimension.external_id,
               new Date(),
               dimension.created_at || new Date(),
-              new Date()
+              new Date(),
+              organizationId
             ]
           );
 
@@ -271,67 +330,95 @@ export class FullRefreshJob {
             );
           }
 
+          await client.query('RELEASE SAVEPOINT ci_dimension_load');
+          acceptedOrganizations.set(ci._id, organizationId);
           created++;
         } catch (error) {
+          await client.query('ROLLBACK TO SAVEPOINT ci_dimension_load');
+          await client.query('RELEASE SAVEPOINT ci_dimension_load');
           logger.error('Error loading CI dimension', { ciId: ci._id, error });
         }
       }
     });
 
-    return { created };
+    return { created, acceptedOrganizations };
   }
 
   /**
    * Load all relationships into fact table
    *
-   * Resolves the current surrogate ci_key for each endpoint via
-   * cmdb.dim_ci (the natural Neo4j id is not a foreign key on
-   * cmdb.fact_ci_relationships), and inserts against the real
-   * unique_active_relationship constraint, which includes is_active.
+   * Resolves the current surrogate ci_key for both committed endpoint
+   * lineages, after matching the edge and both current node tenants in one
+   * graph query. The natural Neo4j id alone is not a tenant identity.
    */
-  private async loadRelationships(cis: CI[]): Promise<{ processed: number; created: number }> {
+  private async loadRelationships(
+    cis: CI[],
+    acceptedOrganizations: Map<string, string>
+  ): Promise<{ processed: number; created: number }> {
     let processed = 0;
     let created = 0;
 
     for (const ci of cis) {
+      const fromOrganization = acceptedOrganizations.get(ci._id);
+      if (!fromOrganization) continue;
+      const session = this.neo4jClient.getSession();
       try {
-        const relationships = await this.neo4jClient.getRelationships(ci._id, UNSCOPED_CI_ACCESS, 'out');
+        const graphResult = await session.run(
+          `MATCH (source:CI {id: $ciId})-[rel]->(target:CI)
+           RETURN source.id AS from_id, source.organization_id AS from_organization_id,
+                  target.id AS to_id, target.organization_id AS to_organization_id,
+                  type(rel) AS relationship_type`,
+          { ciId: ci._id }
+        );
 
-        for (const rel of relationships) {
+        for (const record of graphResult.records) {
+          const fromId = record.get('from_id');
+          const toId = record.get('to_id');
+          const toOrganization = acceptedOrganizations.get(toId);
+          if (fromId !== ci._id ||
+              dimCiOrganizationId(record.get('from_organization_id')) !== fromOrganization ||
+              !toOrganization ||
+              dimCiOrganizationId(record.get('to_organization_id')) !== toOrganization) {
+            logger.warn('Skipping relationship - graph endpoints conflict with committed CI lineage', {
+              fromCiId: ci._id, toCiId: toId
+            });
+            continue;
+          }
+
+          const relationshipType = record.get('relationship_type');
           try {
-            const fromCiKey = await this.postgresClient.getCurrentCIKey(ci._id);
-            const toCiKey = await this.postgresClient.getCurrentCIKey(rel._ci._id);
-
-            if (fromCiKey === null || toCiKey === null) {
-              logger.warn('Skipping relationship - CI dimension not found in cmdb.dim_ci', {
-                fromCiId: ci._id,
-                toCiId: rel._ci._id
+            const keys = await this.postgresClient.query(
+              `SELECT source.ci_key AS from_ci_key, target.ci_key AS to_ci_key
+               FROM cmdb.dim_ci source CROSS JOIN cmdb.dim_ci target
+               WHERE source.ci_id = $1 AND source.organization_id = $2 AND source.is_current = TRUE
+                 AND target.ci_id = $3 AND target.organization_id = $4 AND target.is_current = TRUE`,
+              [fromId, fromOrganization, toId, toOrganization]
+            );
+            if (keys.rows.length === 0) {
+              logger.warn('Skipping relationship - current CI dimensions do not match committed lineage', {
+                fromCiId: fromId, toCiId: toId
               });
               continue;
             }
 
             const discoveredAt = new Date();
-
             await this.postgresClient.query(
               `INSERT INTO cmdb.fact_ci_relationships
                (from_ci_key, to_ci_key, date_key, relationship_type, discovered_at, is_active)
                VALUES ($1, $2, $3, $4, $5, true)
                ON CONFLICT (from_ci_key, to_ci_key, relationship_type, is_active) DO NOTHING`,
               [
-                fromCiKey,
-                toCiKey,
+                keys.rows[0].from_ci_key,
+                keys.rows[0].to_ci_key,
                 this.dimensionTransformer.generateDateKey(discoveredAt),
-                rel._type,
+                relationshipType,
                 discoveredAt
               ]
             );
             created++;
           } catch (error) {
             logger.error('Error loading relationship', {
-              from: ci._id,
-              to: rel._ci._id,
-              type: rel._type,
-              error
+              from: fromId, to: toId, type: relationshipType, error
             });
           }
         }
@@ -339,6 +426,8 @@ export class FullRefreshJob {
         processed++;
       } catch (error) {
         logger.error('Error processing CI relationships', { ciId: ci._id, error });
+      } finally {
+        await session.close();
       }
     }
 

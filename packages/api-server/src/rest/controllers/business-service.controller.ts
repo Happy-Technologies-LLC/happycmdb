@@ -18,6 +18,10 @@ import { errorLogFields } from '../../utils/log-error';
  * filters dim_business_services by it. Child rows (mappings, dependencies,
  * facts) are only reached through an org-filtered parent row, so another
  * organization's service is indistinguishable from a missing one (404).
+ * The CIs a mapping names are matched against cmdb.dim_ci.organization_id
+ * (migration 011): only the caller organization's CIs can be mapped or
+ * costed, and another organization's CI is indistinguishable from a
+ * missing one (404).
  *
  * 500 responses carry a generic message only; driver errors (which name
  * tables/columns) are logged server-side, never returned.
@@ -419,24 +423,47 @@ export class BusinessServiceController {
       const { service_id } = req.params;
       const { ci_ids, mapping_type = 'supports', confidence_score = 1.0 } = req.body;
 
-      // Bulk upsert rooted at the org-filtered parent: zero rows (ci_ids is
-      // non-empty per the route schema) => unknown or foreign service (404).
+      // Bulk upsert rooted at the org-filtered parent. Every requested CI must
+      // be a current cmdb.dim_ci row of the parent's organization (migration
+      // 011); otherwise nothing is written, including the ON CONFLICT update
+      // of an existing mapping. Zero rows (ci_ids is non-empty per the route
+      // schema) => unknown or foreign service, or a CI that is missing or
+      // belongs to another organization (404).
       const result = await this.pgClient.query(
-        `INSERT INTO ci_business_service_mappings (ci_id, service_id, mapping_type, confidence_score)
-         SELECT c.ci_id, p.service_id, $3::varchar, $4::float8
-         FROM dim_business_services p
-         CROSS JOIN unnest($5::varchar[]) AS c(ci_id)
-         WHERE p.service_id = $1 AND p.organization_id = $2
-         ON CONFLICT (ci_id, service_id, mapping_type) DO UPDATE
-         SET confidence_score = EXCLUDED.confidence_score, updated_at = NOW()
-         RETURNING *`,
+        `WITH parent AS (
+          SELECT service_id FROM dim_business_services WHERE service_id = $1 AND organization_id = $2
+        ),
+        requested AS (
+          SELECT DISTINCT r.ci_id FROM unnest($5::varchar[]) AS r(ci_id)
+        ),
+        owned AS (
+          SELECT q.ci_id FROM requested q
+          WHERE EXISTS (
+            SELECT 1 FROM cmdb.dim_ci c
+            WHERE c.ci_id = q.ci_id AND c.is_current = TRUE AND c.organization_id = $2
+          )
+        )
+        INSERT INTO ci_business_service_mappings (ci_id, service_id, mapping_type, confidence_score)
+        SELECT o.ci_id, p.service_id, $3::varchar, $4::float8
+        FROM parent p
+        CROSS JOIN owned o
+        WHERE (SELECT COUNT(*) FROM owned) = (SELECT COUNT(*) FROM requested)
+        ON CONFLICT (ci_id, service_id, mapping_type) DO UPDATE
+        SET confidence_score = EXCLUDED.confidence_score, updated_at = NOW()
+        RETURNING *`,
         [service_id, requestOrganizationId(req), mapping_type, confidence_score, ci_ids]
       );
 
       if (result.rows.length === 0) {
+        // Only picks the 404 body; nothing was written either way. A CI of
+        // another organization gets the same body as a missing one.
+        const parent = await this.pgClient.query(
+          'SELECT 1 FROM dim_business_services WHERE service_id = $1 AND organization_id = $2',
+          [service_id, requestOrganizationId(req)]
+        );
         res.status(404).json({
           success: false,
-          error: 'Business service not found'
+          error: parent.rows.length === 0 ? 'Business service not found' : 'CI not found'
         });
         return;
       }
@@ -770,6 +797,9 @@ export class BusinessServiceController {
       // UNIQUE(ci_id, service_id, mapping_type) lets one CI map to the service
       // under several relationship types; mapped_cis collapses those to one row
       // per CI so its cost is summed once.
+      // Only current cmdb.dim_ci rows of the caller's organization count
+      // (migration 011): a mapping row naming another organization's CI (or a
+      // CI with no current row) adds nothing to ci_count, totals or towers.
       const result = await this.pgClient.query(
         `WITH parent AS (
           SELECT service_id FROM dim_business_services WHERE service_id = $1 AND organization_id = $2
@@ -785,7 +815,8 @@ export class BusinessServiceController {
             dc.tbm_attributes->>'resource_tower' AS resource_tower,
             (dc.tbm_attributes->>'monthly_cost')::numeric AS monthly_cost
           FROM mapped_cis mc
-          LEFT JOIN cmdb.dim_ci dc ON dc.ci_id = mc.ci_id AND dc.is_current = TRUE
+          JOIN cmdb.dim_ci dc
+            ON dc.ci_id = mc.ci_id AND dc.is_current = TRUE AND dc.organization_id = $2
         ),
         tower_costs AS (
           SELECT resource_tower, SUM(monthly_cost) AS tower_cost

@@ -44,6 +44,7 @@ const query = async (sql: string, params: unknown[] = []) => ({ rows: await send
 jest.mock('@cmdb/database', () => ({ UNSCOPED_CI_ACCESS: Symbol('UNSCOPED_CI_ACCESS') }));
 
 import { Neo4jToPostgresJob } from '../neo4j-to-postgres.job';
+import { FullRefreshJob } from '../full-refresh.job';
 import { ReconciliationJob } from '../reconciliation.job';
 
 const INTERNAL_ORG = '00000000-0000-0000-0000-000000000000';
@@ -57,7 +58,8 @@ const recordingQuery: typeof query = async (sql, params) => {
   statements.push(sql);
   return query(sql, params);
 };
-let afterCommit: (() => void) | undefined;
+let afterCommit: (() => void | Promise<void>) | undefined;
+let beforeReconciliationGraphRead: (() => void) | undefined;
 
 // One PGlite connection: BEGIN/COMMIT around the callback is a real transaction.
 const postgresClient = {
@@ -73,7 +75,7 @@ const postgresClient = {
     try {
       const result = await callback({ query: recordingQuery });
       await send('exec', 'COMMIT');
-      afterCommit?.();
+      await afterCommit?.();
       return result;
     } catch (error) {
       await send('exec', 'ROLLBACK');
@@ -88,7 +90,8 @@ const neo4jClient = {
   getCI: async (ciId: string, scope: string | symbol) => {
     const properties = nodes.find(ci => ci.id === ciId);
     return properties && (typeof scope === 'symbol' || properties.organization_id === scope)
-      ? { _id: ciId, name: properties.name, _status: properties.status } : null;
+      ? { _id: ciId, name: properties.name, _type: properties.type,
+          _status: properties.status, environment: properties.environment } : null;
   },
   createCI: async (ci: CI, scope: string | symbol) => {
     // The production Neo4jClient.createCI stamps only its scope, not CI input.
@@ -96,7 +99,14 @@ const neo4jClient = {
     return ci;
   },
   getSession: () => ({
-    run: async (cypher: string, params: { ciId?: string } = {}) => {
+    run: async (cypher: string, params: { ciId?: string; id?: string } = {}) => {
+      if (cypher.includes('MATCH (ci:CI {id: $id})')) {
+        beforeReconciliationGraphRead?.();
+        beforeReconciliationGraphRead = undefined;
+        const properties = nodes.find(ci => ci.id === params.id);
+        return { records: properties ? [{ get: (key: string) =>
+          key === 'ci' ? { properties } : properties[key] }] : [] };
+      }
       if (cypher.includes('MATCH (source:CI {id: $ciId})-[rel]->(target:CI)')) {
         // The edge and both node properties come from ONE graph match.
         const source = nodes.find(ci => ci.id === params.ciId);
@@ -164,6 +174,7 @@ beforeEach(async () => {
   await send('exec', 'TRUNCATE cmdb.dim_ci, cmdb.fact_discovery, cmdb.fact_ci_relationships RESTART IDENTITY');
   relationships = {};
   afterCommit = undefined;
+  beforeReconciliationGraphRead = undefined;
   statements.length = 0;
 });
 
@@ -342,6 +353,89 @@ it('rejects a B id replaced after its dimension batch commits but before relatio
     WHERE f.is_active = TRUE`)).toEqual([
     { from_id: 'a-source', from_org: ORG_A, to_id: 'a-target', to_org: ORG_A },
   ]);
+});
+
+it('full refresh rejects edges from a B node replaced after its dimension batch', async () => {
+  nodes = [node('deleted-b', ORG_B), node('a-source', ORG_A), node('a-target', ORG_A)];
+  afterCommit = async () => {
+    afterCommit = undefined;
+    await send('exec', `UPDATE cmdb.dim_ci SET tbm_attributes = '{"monthly_cost": 75}'
+      WHERE ci_id = 'deleted-b' AND is_current = TRUE`);
+    nodes = [
+      node('deleted-b', undefined, { name: 'A replacement' }),
+      node('a-source', ORG_A),
+      node('a-target', ORG_A),
+    ];
+    relationships = {
+      'deleted-b': [{ _ci: { _id: 'a-target' }, _type: 'DEPENDS_ON' }],
+      'a-source': [
+        { _ci: { _id: 'deleted-b' }, _type: 'RUNS_ON' },
+        { _ci: { _id: 'a-target' }, _type: 'DEPENDS_ON' },
+      ],
+    };
+  };
+
+  const job = {
+    id: 'full-refresh-race',
+    data: { truncateTables: false, rebuildIndexes: false },
+    updateProgress: async () => undefined,
+  };
+  await new FullRefreshJob(neo4jClient, postgresClient).execute(job as unknown as Job);
+
+  expect(await versions('deleted-b')).toEqual([
+    { is_current: true, organization_id: ORG_B, ci_name: 'deleted-b', org_backfilled: false },
+  ]);
+  expect(await send('query', `SELECT tbm_attributes FROM cmdb.dim_ci
+    WHERE ci_id = 'deleted-b' AND is_current = TRUE`)).toEqual([{ tbm_attributes: { monthly_cost: 75 } }]);
+  expect(await send('query', `SELECT source.ci_id AS from_id, source.organization_id AS from_org,
+      target.ci_id AS to_id, target.organization_id AS to_org
+    FROM cmdb.fact_ci_relationships f
+    JOIN cmdb.dim_ci source ON source.ci_key = f.from_ci_key
+    JOIN cmdb.dim_ci target ON target.ci_key = f.to_ci_key
+    WHERE f.is_active = TRUE`)).toEqual([
+    { from_id: 'a-source', from_org: ORG_A, to_id: 'a-target', to_org: ORG_A },
+  ]);
+});
+
+it('reconciles only the current A generation after replacing B, including a subsequent restore', async () => {
+  nodes = [node('reused', ORG_B, { name: 'B private', type: 'database' })];
+  beforeReconciliationGraphRead = () => {
+    nodes = [node('reused', ORG_A, { name: 'A own', type: 'server' })];
+  };
+  const job = {
+    id: 'reconcile-reused',
+    data: { ciIds: ['reused'], autoResolve: true, conflictStrategy: 'neo4j-wins' },
+    updateProgress: async () => undefined,
+  };
+
+  const reconciled = await new ReconciliationJob(neo4jClient, postgresClient).execute(job as unknown as Job);
+  expect(reconciled._conflictsResolved).toBe(1);
+  expect(await send('query', `SELECT ci_name, ci_type, organization_id
+    FROM cmdb.dim_ci WHERE ci_id = 'reused' AND is_current = TRUE`)).toEqual([
+    { ci_name: 'A own', ci_type: 'server', organization_id: ORG_A },
+  ]);
+
+  nodes = [];
+  const restored = await new ReconciliationJob(neo4jClient, postgresClient).execute({
+    ...job, data: { ...job.data, conflictStrategy: 'postgres-wins' },
+  } as unknown as Job);
+  expect(restored._conflictsResolved).toBe(1);
+  expect((await neo4jClient.getCI('reused', ORG_A))?.name).toBe('A own');
+  expect(await neo4jClient.getCI('reused', ORG_B)).toBeNull();
+});
+
+it('leaves a disappeared node unresolved instead of inserting its old attributes internally', async () => {
+  nodes = [node('vanished', ORG_B, { name: 'B private' })];
+  beforeReconciliationGraphRead = () => { nodes = []; };
+  const job = {
+    id: 'reconcile-vanished',
+    data: { ciIds: ['vanished'], autoResolve: true, conflictStrategy: 'neo4j-wins' },
+    updateProgress: async () => undefined,
+  };
+
+  const result = await new ReconciliationJob(neo4jClient, postgresClient).execute(job as unknown as Job);
+  expect(result._conflictsResolved).toBe(0);
+  expect(await versions('vanished')).toEqual([]);
 });
 
 it('postgres-wins restores a missing org-B node in B without changing its current cost or admitting A', async () => {

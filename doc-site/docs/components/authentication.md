@@ -381,13 +381,22 @@ organization of the `:CI` node it versions.
   `cmdb.dim_ci` row and stamps that row's organization on the recreated Neo4j
   node. The untrusted merge has no such provenance and stays org-less. A
   conflicting node's stored customer row stays unchanged; only a node naming
-  that organization may update it. The full-refresh job empties `cmdb.dim_ci`
-  first, so every CI is new to it. A node without an organization never puts
-  a CI in a customer organization.
+  that organization may update it. The scheduled full refresh empties
+  `cmdb.dim_ci` first, so every CI is new to it. An operator-enqueued full
+  refresh with `truncateTables: false` does not apply the stored-organization
+  rule (a known residual): it can add a node-organization current row beside an
+  existing one. A node without an organization never puts a CI in a customer
+  organization.
   `neo4j-wins` reconciliation inserts attributes and organization from one
   current-node match, not from separate generations of a reused ID. If that
   node disappears before the match, the conflict remains unresolved and no
   dimension is inserted; its stale attributes are not returned as current.
+  Reconciliation auto-resolves a status mismatch only when the node, read in
+  one match with its status, is in the current row's organization (an org-less
+  node counts as internal). Its PostgreSQL update and Neo4j update are both
+  restricted to that organization. A node of another organization reusing the
+  ID, including a node naming an organization for a 011-backfilled internal row,
+  leaves the conflict unresolved and neither side changes.
 - Complete neo4j-to-postgres syncs and full refreshes write relationship facts
   only when both endpoints were resolved from committed CI batches. Full
   refresh uses per-CI savepoints so a failed dimension does not enter that set.

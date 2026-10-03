@@ -45,12 +45,16 @@ function mockRes(): Response {
   return res as Response;
 }
 
+// requireOrganization() runs before every handler; the token org is the scope.
+const ORG = '11111111-1111-4111-8111-111111111111';
+const USER = { _userId: 'auth-user', _organizationId: ORG };
+
 describe('DriftImpactController', () => {
   let controller: DriftImpactController;
   // Mock typing follows this suite's established convention (see
   // itil-status-casing.test.ts's `jest.Mock<any, any[]>`): jest's default
   // Mock generics otherwise infer `never` for the resolved-value parameter.
-  let mockNeo4jClient: { getCI: jest.Mock<any, any> };
+  let mockNeo4jClient: { getCI: jest.Mock<any, any>; organizationCIIdsAmong: jest.Mock<any, any> };
   let mockDriftDetector: {
     getApprovedBaseline: jest.Mock<any, any>;
     detectDrift: jest.Mock<any, any>;
@@ -67,7 +71,7 @@ describe('DriftImpactController', () => {
   };
 
   beforeEach(() => {
-    mockNeo4jClient = { getCI: jest.fn() };
+    mockNeo4jClient = { getCI: jest.fn(), organizationCIIdsAmong: jest.fn(async () => new Set(['ci-001'])) };
     mockDriftDetector = {
       getApprovedBaseline: jest.fn(),
       detectDrift: jest.fn(),
@@ -94,7 +98,7 @@ describe('DriftImpactController', () => {
     it('returns 404 when the CI does not exist', async () => {
       mockNeo4jClient.getCI.mockResolvedValue(null);
 
-      const req = { params: { ciId: 'ci-missing' } } as unknown as AuthenticatedRequest;
+      const req = { params: { ciId: 'ci-missing' }, user: USER } as unknown as AuthenticatedRequest;
       const res = mockRes();
 
       await controller.detectDrift(req, res);
@@ -107,7 +111,7 @@ describe('DriftImpactController', () => {
       mockNeo4jClient.getCI.mockResolvedValue({ id: 'ci-001', name: 'web-01' });
       mockDriftDetector.getApprovedBaseline.mockResolvedValue(null);
 
-      const req = { params: { ciId: 'ci-001' } } as unknown as AuthenticatedRequest;
+      const req = { params: { ciId: 'ci-001' }, user: USER } as unknown as AuthenticatedRequest;
       const res = mockRes();
 
       await controller.detectDrift(req, res);
@@ -135,7 +139,7 @@ describe('DriftImpactController', () => {
         detected_at: '2026-01-01T00:00:00.000Z',
       });
 
-      const req = { params: { ciId: 'ci-001' } } as unknown as AuthenticatedRequest;
+      const req = { params: { ciId: 'ci-001' }, user: USER } as unknown as AuthenticatedRequest;
       const res = mockRes();
 
       await controller.detectDrift(req, res);
@@ -169,7 +173,7 @@ describe('DriftImpactController', () => {
         detected_at: '2026-01-01T00:00:00.000Z',
       });
 
-      const req = { params: { ciId: 'ci-001' } } as unknown as AuthenticatedRequest;
+      const req = { params: { ciId: 'ci-001' }, user: USER } as unknown as AuthenticatedRequest;
       const res = mockRes();
 
       await controller.detectDrift(req, res);
@@ -196,7 +200,7 @@ describe('DriftImpactController', () => {
           snapshot_type: 'configuration',
           created_by: 'spoofed-user',
         },
-        user: { _userId: 'auth-user' },
+        user: USER,
       } as unknown as AuthenticatedRequest;
       const res = mockRes();
 
@@ -205,7 +209,8 @@ describe('DriftImpactController', () => {
       expect(mockDriftDetector.createBaseline).toHaveBeenCalledWith(
         'ci-001',
         'configuration',
-        'auth-user'
+        'auth-user',
+        ORG
       );
     });
   });
@@ -214,7 +219,7 @@ describe('DriftImpactController', () => {
     it('returns 404 for an unknown baseline id', async () => {
       mockDriftDetector.getBaselineById.mockResolvedValue(null);
 
-      const req = { params: { baselineId: 'baseline-missing' } } as unknown as AuthenticatedRequest;
+      const req = { params: { baselineId: 'baseline-missing' }, user: USER } as unknown as AuthenticatedRequest;
       const res = mockRes();
 
       await controller.approveBaseline(req, res);
@@ -224,7 +229,8 @@ describe('DriftImpactController', () => {
     });
 
     it('derives the approver from req.user, never the request body', async () => {
-      mockDriftDetector.getBaselineById.mockResolvedValue({ id: 'baseline-1' });
+      mockDriftDetector.getBaselineById.mockResolvedValue({ id: 'baseline-1', ci_id: 'ci-001' });
+      mockNeo4jClient.getCI.mockResolvedValue({ id: 'ci-001', name: 'web-01' });
       mockDriftDetector.approveBaseline.mockResolvedValue({
         id: 'baseline-1',
         is_approved: true,
@@ -234,7 +240,7 @@ describe('DriftImpactController', () => {
       const req = {
         params: { baselineId: 'baseline-1' },
         body: { approved_by: 'spoofed-user' },
-        user: { _userId: 'auth-user' },
+        user: USER,
       } as unknown as AuthenticatedRequest;
       const res = mockRes();
 
@@ -250,6 +256,7 @@ describe('DriftImpactController', () => {
 
       const req = {
         body: { ci_id: 'ci-missing', change_type: 'RESTART' },
+        user: USER,
       } as unknown as AuthenticatedRequest;
       const res = mockRes();
 
@@ -289,12 +296,13 @@ describe('DriftImpactController', () => {
 
       const req = {
         body: { ci_id: 'ci-001', change_type: 'RESTART' },
+        user: USER,
       } as unknown as AuthenticatedRequest;
       const res = mockRes();
 
       await controller.predictImpact(req, res);
 
-      expect(mockImpactEngine.predictChangeImpact).toHaveBeenCalledWith('ci-001', 'restart');
+      expect(mockImpactEngine.predictChangeImpact).toHaveBeenCalledWith('ci-001', 'restart', ORG);
       expect(res.status).toHaveBeenCalledWith(201);
     });
   });
@@ -303,7 +311,7 @@ describe('DriftImpactController', () => {
     it('returns 404 for an unknown root CI', async () => {
       mockNeo4jClient.getCI.mockResolvedValue(null);
 
-      const req = { params: { rootCiId: 'ci-missing' }, query: {} } as unknown as AuthenticatedRequest;
+      const req = { params: { rootCiId: 'ci-missing' }, query: {}, user: USER } as unknown as AuthenticatedRequest;
       const res = mockRes();
 
       await controller.getDependencyGraph(req, res);
@@ -352,12 +360,13 @@ describe('DriftImpactController', () => {
       const req = {
         params: { rootCiId: 'ci-001' },
         query: { max_depth: '4' },
+        user: USER,
       } as unknown as AuthenticatedRequest;
       const res = mockRes();
 
       await controller.getDependencyGraph(req, res);
 
-      expect(mockImpactEngine.buildDependencyGraph).toHaveBeenCalledWith('ci-001', 4);
+      expect(mockImpactEngine.buildDependencyGraph).toHaveBeenCalledWith('ci-001', 4, ORG);
       expect(res.status).not.toHaveBeenCalledWith(400);
     });
   });

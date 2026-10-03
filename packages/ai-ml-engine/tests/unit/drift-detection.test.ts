@@ -19,7 +19,16 @@ import {
 } from '../fixtures/test-data';
 
 // Mock dependencies
-jest.mock('@cmdb/database');
+// Clients are mocked; the CI scope helpers are the real ones, so the scoped Cypher is built as in production.
+jest.mock('@cmdb/database', () => {
+  const client = jest.requireActual('../../../database/src/neo4j/client');
+  return {
+    getNeo4jClient: jest.fn(),
+    getPostgresClient: jest.fn(),
+    organizationIdParam: client.organizationIdParam,
+    neighbourScopePredicate: client.neighbourScopePredicate,
+  };
+});
 jest.mock('@cmdb/event-processor');
 jest.mock('uuid', () => ({ v4: () => 'drift-test-uuid' }));
 
@@ -27,6 +36,8 @@ import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
 import { getEventProducer } from '@cmdb/event-processor';
 
 import { ConfigurationDriftDetector } from '../../src/engines/configuration-drift-detector';
+
+const ORG = '11111111-1111-4111-8111-111111111111';
 
 describe('ConfigurationDriftDetector', () => {
   let detector: ConfigurationDriftDetector;
@@ -66,11 +77,7 @@ describe('ConfigurationDriftDetector', () => {
       mockNeo4jClient.getSession.mockReturnValue(mockSession);
       mockPgClient.query.mockResolvedValue({ rows: [] });
 
-      const baseline = await detector.createBaseline(
-        'ci-web-001',
-        'configuration',
-        'admin'
-      );
+      const baseline = await detector.createBaseline('ci-web-001', 'configuration', 'admin', ORG);
 
       expect(baseline).toBeDefined();
       expect(baseline.ci_id).toBe('ci-web-001');
@@ -102,11 +109,7 @@ describe('ConfigurationDriftDetector', () => {
         .mockResolvedValueOnce({ rows: mockTimeSeriesMetrics }) // capturePerformanceSnapshot
         .mockResolvedValueOnce({ rows: [] }); // storeBaseline INSERT
 
-      const baseline = await detector.createBaseline(
-        'ci-web-001',
-        'performance',
-        'system'
-      );
+      const baseline = await detector.createBaseline('ci-web-001', 'performance', 'system', ORG);
 
       expect(baseline.snapshot_type).toBe('performance');
       expect(baseline.snapshot_data).toHaveProperty('cpu_usage');
@@ -146,11 +149,7 @@ describe('ConfigurationDriftDetector', () => {
 
       mockPgClient.query.mockResolvedValue({ rows: [] });
 
-      const baseline = await detector.createBaseline(
-        'ci-web-001',
-        'relationships',
-        'system'
-      );
+      const baseline = await detector.createBaseline('ci-web-001', 'relationships', 'system', ORG);
 
       expect(baseline.snapshot_type).toBe('relationships');
       expect(baseline.snapshot_data).toHaveProperty('outgoing');
@@ -163,7 +162,7 @@ describe('ConfigurationDriftDetector', () => {
       mockNeo4jClient.getSession.mockReturnValue(mockSession);
 
       await expect(
-        detector.createBaseline('ci-nonexistent', 'configuration', 'admin')
+        detector.createBaseline('ci-nonexistent', 'configuration', 'admin', ORG)
       ).rejects.toThrow('CI not found');
     });
   });
@@ -196,7 +195,7 @@ describe('ConfigurationDriftDetector', () => {
 
       mockNeo4jClient.getSession.mockReturnValue(mockSession);
 
-      const result = await detector.detectDrift('ci-web-001');
+      const result = await detector.detectDrift('ci-web-001', ORG);
 
       expect(result.has_drift).toBe(false);
       expect(result.drift_score).toBe(0);
@@ -206,7 +205,7 @@ describe('ConfigurationDriftDetector', () => {
     it('should throw when no approved baseline exists for the CI', async () => {
       mockPgClient.query.mockResolvedValueOnce({ rows: [] }); // getApprovedBaseline: none found
 
-      await expect(detector.detectDrift('ci-no-baseline')).rejects.toThrow(
+      await expect(detector.detectDrift('ci-no-baseline', ORG)).rejects.toThrow(
         'No approved baseline found'
       );
       expect(mockNeo4jClient.getSession).not.toHaveBeenCalled();
@@ -227,7 +226,7 @@ describe('ConfigurationDriftDetector', () => {
 
       mockNeo4jClient.getSession.mockReturnValue(mockSession);
 
-      const result = await detector.detectDrift('ci-web-001');
+      const result = await detector.detectDrift('ci-web-001', ORG);
 
       expect(result.has_drift).toBe(true);
       expect(result.drift_score).toBeGreaterThan(0);
@@ -256,7 +255,7 @@ describe('ConfigurationDriftDetector', () => {
 
       mockNeo4jClient.getSession.mockReturnValue(mockSession);
 
-      const result = await detector.detectDrift('ci-web-001');
+      const result = await detector.detectDrift('ci-web-001', ORG);
 
       expect(result.has_drift).toBe(true);
       expect(result.drift_score).toBeGreaterThan(50);
@@ -283,7 +282,7 @@ describe('ConfigurationDriftDetector', () => {
 
       mockNeo4jClient.getSession.mockReturnValue(mockSession);
 
-      const result = await detector.detectDrift('ci-web-001');
+      const result = await detector.detectDrift('ci-web-001', ORG);
 
       expect(result.has_drift).toBe(true);
 
@@ -309,7 +308,7 @@ describe('ConfigurationDriftDetector', () => {
 
       mockNeo4jClient.getSession.mockReturnValue(mockSession);
 
-      const result = await detector.detectDrift('ci-web-001');
+      const result = await detector.detectDrift('ci-web-001', ORG);
 
       expect(result.has_drift).toBe(true);
 
@@ -334,7 +333,7 @@ describe('ConfigurationDriftDetector', () => {
 
       mockNeo4jClient.getSession.mockReturnValue(mockSession);
 
-      await detector.detectDrift('ci-web-001');
+      await detector.detectDrift('ci-web-001', ORG);
 
       expect(mockEventProducer.emit).toHaveBeenCalled();
     });
@@ -360,7 +359,7 @@ describe('ConfigurationDriftDetector', () => {
 
       mockNeo4jClient.getSession.mockReturnValue(mockSession);
 
-      await detector.detectDrift('ci-web-001');
+      await detector.detectDrift('ci-web-001', ORG);
 
       expect(mockEventProducer.emit).not.toHaveBeenCalled();
     });
@@ -368,7 +367,7 @@ describe('ConfigurationDriftDetector', () => {
     it('should throw error if no approved baseline exists', async () => {
       mockPgClient.query.mockResolvedValueOnce({ rows: [] });
 
-      await expect(detector.detectDrift('ci-web-001')).rejects.toThrow(
+      await expect(detector.detectDrift('ci-web-001', ORG)).rejects.toThrow(
         'No approved baseline found'
       );
     });
@@ -470,7 +469,7 @@ describe('ConfigurationDriftDetector', () => {
 
       mockNeo4jClient.getSession.mockReturnValue(mockSession);
 
-      const result = await detector.detectDrift('ci-web-001');
+      const result = await detector.detectDrift('ci-web-001', ORG);
 
       const ipDrift = result.drifted_fields.find(f => f.field_name === 'ip_address');
       expect(ipDrift?.severity).toBe(AnomalySeverity.CRITICAL);
@@ -504,7 +503,7 @@ describe('ConfigurationDriftDetector', () => {
 
       mockNeo4jClient.getSession.mockReturnValue(mockSession);
 
-      const result = await detector.detectDrift('ci-web-001');
+      const result = await detector.detectDrift('ci-web-001', ORG);
 
       const credDrift = result.drifted_fields.find(f => f.field_name === 'access_key');
       expect(credDrift?.severity).toBe(AnomalySeverity.HIGH);
@@ -538,7 +537,7 @@ describe('ConfigurationDriftDetector', () => {
 
       mockNeo4jClient.getSession.mockReturnValue(mockSession);
 
-      const result = await detector.detectDrift('ci-web-001');
+      const result = await detector.detectDrift('ci-web-001', ORG);
 
       const tagsDrift = result.drifted_fields.find(f => f.field_name === 'tags');
       expect(tagsDrift).toBeDefined();
@@ -571,7 +570,7 @@ describe('ConfigurationDriftDetector', () => {
 
       mockNeo4jClient.getSession.mockReturnValue(mockSession);
 
-      const result = await detector.detectDrift('ci-web-001');
+      const result = await detector.detectDrift('ci-web-001', ORG);
 
       const metadataDrift = result.drifted_fields.find(f => f.field_name === 'metadata');
       expect(metadataDrift).toBeDefined();
@@ -594,7 +593,7 @@ describe('ConfigurationDriftDetector', () => {
 
       mockNeo4jClient.getSession.mockReturnValue(mockSession);
 
-      const result = await detector.detectDrift('ci-web-001');
+      const result = await detector.detectDrift('ci-web-001', ORG);
 
       // Multiple HIGH/CRITICAL severity changes should result in high score
       expect(result.drift_score).toBeGreaterThan(70);
@@ -638,7 +637,7 @@ describe('ConfigurationDriftDetector', () => {
 
       mockNeo4jClient.getSession.mockReturnValue(mockSession);
 
-      const result = await detector.detectDrift('ci-web-001');
+      const result = await detector.detectDrift('ci-web-001', ORG);
 
       expect(result.drift_score).toBeLessThanOrEqual(100);
     });

@@ -12,6 +12,11 @@ export const relationshipRoutes = Router();
 const controller = new RelationshipController();
 const authMiddleware = getAuthMiddleware();
 
+// Tenant scoping: every route below only matches relationships whose two
+// endpoints are CIs of the caller's organization; a token without an org
+// claim is rejected with 403 before any Neo4j access.
+relationshipRoutes.use(authMiddleware.requireOrganization());
+
 // Validation schemas
 const listRelationshipsQuerySchema = Joi.object({
   type: schemas.relationshipType.optional(),

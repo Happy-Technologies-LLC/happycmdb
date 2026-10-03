@@ -40,12 +40,19 @@ function send(op: 'exec' | 'query', sql: string, params: unknown[] = []): Promis
 const query = async (sql: string, params: unknown[] = []) => ({ rows: await send('query', sql, params) });
 
 // The package index opens a Redis connection at import (bullmq queue-manager);
-// the job only needs the unscoped-access token from it.
-jest.mock('@cmdb/database', () => ({ UNSCOPED_CI_ACCESS: Symbol('UNSCOPED_CI_ACCESS') }));
+// the jobs only need the unscoped-access token and, for sync-cis-to-datamart,
+// the client singletons (resolved when the job runs).
+const mockClients: { graph?: unknown; pool?: unknown } = {};
+jest.mock('@cmdb/database', () => ({
+  UNSCOPED_CI_ACCESS: Symbol('UNSCOPED_CI_ACCESS'),
+  getNeo4jClient: () => mockClients.graph,
+  getPostgresClient: () => ({ pool: mockClients.pool }),
+}));
 
 import { Neo4jToPostgresJob } from '../neo4j-to-postgres.job';
 import { FullRefreshJob } from '../full-refresh.job';
 import { ReconciliationJob } from '../reconciliation.job';
+import { processSyncCIsToDatamart } from '../sync-cis-to-datamart.job';
 
 const INTERNAL_ORG = '00000000-0000-0000-0000-000000000000';
 const ORG_A = '11111111-1111-4111-8111-111111111111';
@@ -136,6 +143,12 @@ const neo4jClient = {
         }) : [];
         return { records };
       }
+      if (/\bAS ci_name\b/.test(cypher)) {
+        // sync-cis-to-datamart's projection: each alias reads the node property it names.
+        const columns = [...cypher.matchAll(/ci\.(\w+) AS (\w+)/g)];
+        return { records: nodes.map(properties => ({ get: (alias: string) =>
+          properties[columns.find(column => column[2] === alias)?.[1] ?? ''] })) };
+      }
       return { records: nodes.filter(properties => !params.ciTypes || params.ciTypes.includes(properties.type as string))
         .map(properties => ({ get: () => ({ properties }) })) };
     },
@@ -143,6 +156,16 @@ const neo4jClient = {
   }),
   getRelationships: async (ciId: string) => relationships[ciId] ?? [],
 } as unknown as Neo4jClient;
+
+mockClients.graph = neo4jClient;
+// sync-cis-to-datamart's pool: each connection is the one PGlite session.
+mockClients.pool = {
+  connect: async () => ({
+    query: async (sql: string, params: unknown[] = []) => /^(BEGIN|COMMIT|ROLLBACK)$/.test(sql.trim())
+      ? { rows: await send('exec', sql) } : query(sql, params),
+    release: () => undefined,
+  }),
+};
 
 // Attributes equal to the stored rows below, so no CI is re-versioned for them.
 const node = (id: string, organizationId?: string, overrides: Record<string, unknown> = {}) => ({
@@ -571,4 +594,40 @@ it('issues no per-CI history aggregate and no relabel when no relabel is possibl
   await sync();
 
   expect(statements.filter(sql => /MIN\s*\(\s*effective_from|SET organization_id/i.test(sql))).toEqual([]);
+});
+
+describe('sync-cis-to-datamart identifies a CI by its unique node id', () => {
+  const syncCIs = () => processSyncCIsToDatamart({
+    id: 'sync-cis', data: { incrementalSince: '2026-01-01T00:00:00Z' }, updateProgress: async () => undefined,
+  } as unknown as Job);
+  // The v3 job also reads ci_name/ci_type/ci_status node properties.
+  const v3 = (id: string, organizationId: string | undefined, overrides: Record<string, unknown>) =>
+    node(id, organizationId, { ci_type: 'server', ci_status: 'active', ...overrides });
+
+  it.each([['org A', ORG_A], ['no organization', undefined]])(
+    'a node of %s carrying ci_id = a backfilled B id claims nothing of it', async (_label, forgerOrganization) => {
+      await backfilled('ci-b');
+      nodes = [
+        // A reconciliation merge copies any attributes, ci_id included, onto
+        // the node it creates; only the node id is unique.
+        v3('forged', forgerOrganization, { ci_id: 'ci-b', ci_name: 'forged' }),
+        v3('ci-b', ORG_B, { ci_id: 'ci-b', ci_name: 'B real' }),
+      ];
+
+      expect((await syncCIs()).errors).toEqual([]);
+
+      expect(await versions('ci-b')).toEqual([
+        { is_current: false, organization_id: INTERNAL_ORG, ci_name: 'ci-b', org_backfilled: false },
+        { is_current: false, organization_id: INTERNAL_ORG, ci_name: 'ci-b', org_backfilled: false },
+        { is_current: true, organization_id: ORG_B, ci_name: 'B real', org_backfilled: false },
+      ]);
+      expect(await versions('forged')).toEqual([
+        { is_current: true, organization_id: forgerOrganization ?? INTERNAL_ORG, ci_name: 'forged', org_backfilled: false },
+      ]);
+      // B's own neo4j-to-postgres sync still versions B's CI in B.
+      await sync();
+      expect((await versions('ci-b')).filter(v => v.is_current)).toEqual([
+        { is_current: true, organization_id: ORG_B, ci_name: 'ci-b', org_backfilled: false },
+      ]);
+    });
 });

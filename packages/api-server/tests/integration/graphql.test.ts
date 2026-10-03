@@ -13,7 +13,7 @@ import express, { type Express } from 'express';
 import * as bcrypt from 'bcrypt';
 import { v4 as uuidv4 } from 'uuid';
 import { startTestContainers, stopTestContainers } from '../helpers/test-containers';
-import { getNeo4jClient, UNSCOPED_CI_ACCESS } from '@cmdb/database';
+import { getNeo4jClient } from '@cmdb/database';
 import { authRoutes } from '../../src/rest/routes/auth.routes';
 import { createGraphQLServer } from '../../src/graphql/server';
 import type { ApolloServer } from '@apollo/server';
@@ -23,12 +23,20 @@ interface GraphQLBody {
   errors?: Array<{ message: string; extensions?: { code?: string } }>;
 }
 
+const ORG_A = '11111111-1111-4111-8111-111111111111';
+const ORG_B = '22222222-2222-4222-8222-222222222222';
+
 describe('GraphQL API Integration Tests', () => {
   let app: Express;
   let server: ApolloServer<any>;
+  // authToken belongs to an ORG_A admin, orgBToken to an ORG_B admin.
   let authToken: string;
-  const userId = uuidv4();
-  const username = `gqladmin${uuidv4().replace(/-/g, '').slice(0, 20)}`;
+  let orgBToken: string;
+  const users = [ORG_A, ORG_B].map(organizationId => ({
+    organizationId,
+    id: uuidv4(),
+    username: `gqladmin${uuidv4().replace(/-/g, '').slice(0, 20)}`,
+  }));
   const password = 'GraphqlIntegrationPassword123!';
 
   const execute = async (
@@ -56,10 +64,10 @@ describe('GraphQL API Integration Tests', () => {
       _status: 'active' | 'inactive';
       _environment: 'production' | 'staging' | 'development';
       _metadata: Record<string, unknown>;
-    }> = {}
+    }> = {},
+    organizationId: string = ORG_A
   ) => {
     const id = overrides._id ?? uuidv4();
-    // GraphQL CI reads are not tenant-scoped yet, so fixtures are written unscoped (no organization).
     await getNeo4jClient().createCI({
       _id: id,
       external_id: overrides._externalId,
@@ -68,7 +76,7 @@ describe('GraphQL API Integration Tests', () => {
       status: overrides._status ?? 'active',
       environment: overrides._environment ?? 'production',
       metadata: overrides._metadata ?? {},
-    }, UNSCOPED_CI_ACCESS);
+    }, organizationId);
     return id;
   };
 
@@ -82,28 +90,35 @@ describe('GraphQL API Integration Tests', () => {
     const passwordHash = await bcrypt.hash(password, 10);
     const session = getNeo4jClient().getSession();
     try {
-      await session.run(
-        `CREATE (u:User {
-          _id: $id,
-          _username: $username,
-          _email: $email,
-          _passwordHash: $passwordHash,
-          _role: 'admin',
-          _enabled: true,
-          _createdAt: datetime(),
-          _updatedAt: datetime()
-        })`,
-        { id: userId, username, email: `${username}@example.com`, passwordHash }
-      );
+      for (const user of users) {
+        await session.run(
+          `CREATE (u:User {
+            _id: $id,
+            _username: $username,
+            _email: $email,
+            _passwordHash: $passwordHash,
+            _role: 'admin',
+            _enabled: true,
+            _organizationId: $organizationId,
+            _createdAt: datetime(),
+            _updatedAt: datetime()
+          })`,
+          { ...user, email: `${user.username}@example.com`, passwordHash }
+        );
+      }
     } finally {
       await session.close();
     }
 
-    const login = await request(app)
-      .post('/api/v1/auth/login')
-      .send({ username, password })
-      .expect(200);
-    authToken = login.body.data._accessToken;
+    const login = async (username: string): Promise<string> => {
+      const response = await request(app)
+        .post('/api/v1/auth/login')
+        .send({ username, password })
+        .expect(200);
+      return response.body.data._accessToken;
+    };
+    authToken = await login(users[0].username);
+    orgBToken = await login(users[1].username);
 
     ({ server } = await createGraphQLServer(app));
   }, 120000);
@@ -123,7 +138,7 @@ describe('GraphQL API Integration Tests', () => {
     }
     const session = getNeo4jClient().getSession();
     try {
-      await session.run('MATCH (u:User {_id: $id}) DETACH DELETE u', { id: userId });
+      await session.run('MATCH (u:User) WHERE u._id IN $ids DETACH DELETE u', { ids: users.map(user => user.id) });
     } finally {
       await session.close();
     }
@@ -183,35 +198,175 @@ describe('GraphQL API Integration Tests', () => {
     expect(expectSuccess(paged).getCIs).toHaveLength(1);
   });
 
-  // /api/v1/cis is organization-scoped and GraphQL has no CI tenant scoping
-  // yet, so the CI mutations fail closed and write nothing.
-  it('refuses createCI, updateCI and deleteCI with FORBIDDEN until GraphQL CI tenant scoping lands', async () => {
-    const newId = uuidv4();
+  it('creates, updates and deletes a CI in the caller organization with a server-assigned id', async () => {
     const created = await execute(
       `mutation CreateCI($input: CreateCIInput!) {
-        createCI(input: $input) { _id }
+        createCI(input: $input) { _id _name _type _discoveredAt _createdAt _updatedAt }
       }`,
-      { input: { _id: newId, _name: 'production-server', _type: 'SERVER' } }
+      { input: { _name: 'production-server', _type: 'SERVER', _discoveredAt: '2024-02-30' } }
     );
-    expect(created.body.errors?.[0]).toMatchObject({
-      message: 'CI tenant scoping for GraphQL is pending',
-      extensions: { code: 'FORBIDDEN' },
+    const createdCI = expectSuccess(created).createCI as Record<string, string>;
+    const ciId = createdCI._id!;
+    expect(ciId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    // Neo4j DateTime values come back as the same ISO strings REST returns.
+    expect(createdCI).toMatchObject({
+      _name: 'production-server',
+      _type: 'SERVER',
+      _discoveredAt: '2024-03-01T00:00:00.000Z',
+      _createdAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.000Z$/),
+      _updatedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.000Z$/),
     });
 
-    const ciId = await createCI({ _name: 'old-name', _status: 'inactive' });
+    const session = getNeo4jClient().getSession();
+    try {
+      const stored = await session.run('MATCH (ci:CI {id: $id}) RETURN ci.organization_id AS org', { id: ciId });
+      expect(stored.records.map(record => record.get('org'))).toEqual([ORG_A]);
+    } finally {
+      await session.close();
+    }
+
     const updated = await execute(
       `mutation UpdateCI($id: ID!, $input: UpdateCIInput!) {
-        updateCI(id: $id, input: $input) { _id }
+        updateCI(id: $id, input: $input) { _id _name _status _updatedAt }
       }`,
-      { id: ciId, input: { _name: 'updated-server' } }
+      { id: ciId, input: { _name: 'updated-server', _status: 'MAINTENANCE' } }
     );
-    expect(updated.body.errors?.[0]).toMatchObject({ extensions: { code: 'FORBIDDEN' } });
+    expect(expectSuccess(updated).updateCI).toEqual({
+      _id: ciId,
+      _name: 'updated-server',
+      _status: 'MAINTENANCE',
+      _updatedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.000Z$/),
+    });
 
     const deleted = await execute('mutation($id: ID!) { deleteCI(id: $id) }', { id: ciId });
-    expect(deleted.body.errors?.[0]).toMatchObject({ extensions: { code: 'FORBIDDEN' } });
+    expect(expectSuccess(deleted).deleteCI).toBe(true);
+    expect(expectSuccess(await execute('{ getCIs { _id } }')).getCIs).toEqual([]);
+  });
 
-    const persisted = await execute('{ getCIs { _id _name } }');
-    expect(expectSuccess(persisted).getCIs).toEqual([{ _id: ciId, _name: 'old-name' }]);
+  it("createCI cannot probe another organization's ids or external ids", async () => {
+    const usedId = await createCI({ _name: 'org-a-server', _externalId: 'i-org-a-0001' });
+    const create = (input: Record<string, unknown>) =>
+      execute('mutation($i: CreateCIInput!) { createCI(input: $i) { _id } }', { i: { _name: 'probe', _type: 'SERVER', ...input } }, orgBToken);
+    const errorOf = (response: request.Response) => {
+      const [error] = response.body.errors ?? [];
+      // The message names the offending input field and repeats the value; compare without the value.
+      return { status: response.status, code: error?.extensions?.code, message: String(error?.message).split(';')[1] };
+    };
+
+    for (const [field, used, free] of [
+      ['_id', usedId, uuidv4()],
+      ['_externalId', 'i-org-a-0001', 'i-free-0001'],
+    ] as const) {
+      const [usedResult, freeResult] = [errorOf(await create({ [field]: used })), errorOf(await create({ [field]: free }))];
+      expect(usedResult.code).toBe('BAD_USER_INPUT');
+      expect(freeResult).toEqual(usedResult);
+    }
+
+    const session = getNeo4jClient().getSession();
+    try {
+      const count = await session.run('MATCH (ci:CI) RETURN count(ci) AS n');
+      expect(count.records[0]!.get('n').toNumber()).toBe(1);
+    } finally {
+      await session.close();
+    }
+  });
+
+  it("isolates two organizations: another organization's CIs read and mutate like missing ones", async () => {
+    const appA = await createCI({ _name: 'org-a-app', _type: 'application' });
+    const dbA = await createCI({ _name: 'org-a-db', _type: 'database' });
+    const serverB = await createCI({ _name: 'org-b-server' }, ORG_B);
+    const session = getNeo4jClient().getSession();
+    try {
+      // appA -> dbA inside ORG_A, plus a cross-organization edge appA -> serverB that
+      // no ORG_A traversal may follow.
+      await session.run(
+        `MATCH (app:CI {id: $appA}), (db:CI {id: $dbA}), (server:CI {id: $serverB})
+         CREATE (app)-[:DEPENDS_ON]->(db), (app)-[:DEPENDS_ON]->(server)`,
+        { appA, dbA, serverB }
+      );
+    } finally {
+      await session.close();
+    }
+    const asB = (query: string, variables?: Record<string, unknown>) => execute(query, variables, orgBToken);
+
+    // Reads as ORG_B: only ORG_B's CI, and ORG_A's CIs look missing.
+    expect(expectSuccess(await asB('{ getCIs { _id } }')).getCIs).toEqual([{ _id: serverB }]);
+    expect(expectSuccess(await asB('{ searchCIs(query: "org-") { _id } }')).searchCIs).toEqual([{ _id: serverB }]);
+    const foreignReads = await asB('query($a: ID!) { getCI(id: $a) { _id } }', { a: appA });
+    expect(expectSuccess(foreignReads)).toEqual({ getCI: null });
+    // Traversals from a foreign or missing CI give the same NOT_FOUND (as REST's 404).
+    const missingId = uuidv4();
+    for (const traversal of [
+      'query($id: ID!) { getCIRelationships(id: $id) { _type } }',
+      'query($id: ID!) { getCIDependencies(id: $id) { _id } }',
+      'query($id: ID!) { getImpactAnalysis(id: $id) { _distance } }',
+    ]) {
+      const [foreign, missing] = [await asB(traversal, { id: dbA }), await asB(traversal, { id: missingId })];
+      for (const response of [foreign, missing]) {
+        expect(response.body.data).toBeNull();
+        expect(response.body.errors?.[0]).toMatchObject({ message: 'CI not found', extensions: { code: 'NOT_FOUND' } });
+      }
+    }
+    // ORG_B's own server has an incoming edge from ORG_A: not visible to ORG_B.
+    expect(expectSuccess(await asB(
+      'query($id: ID!) { getImpactAnalysis(id: $id) { _distance } getCIRelationships(id: $id) { _type } }',
+      { id: serverB }
+    ))).toEqual({ getImpactAnalysis: [], getCIRelationships: [] });
+
+    // Traversals as ORG_A never reach ORG_B's server.
+    const ownReads = expectSuccess(await execute(
+      'query($id: ID!) { getCIDependencies(id: $id) { _id } getCI(id: $id) { _relationships { _ci { _id } } } }',
+      { id: appA }
+    ));
+    expect(ownReads).toEqual({
+      getCIDependencies: [{ _id: dbA }],
+      getCI: { _relationships: [{ _ci: { _id: dbA } }] },
+    });
+
+    // Mutations as ORG_B on ORG_A's CIs: the same NOT_FOUND as a missing id, nothing written.
+    const notFound = { message: 'CI not found', extensions: expect.objectContaining({ code: 'NOT_FOUND' }) };
+    const mutations: Array<[string, (id: string) => Record<string, unknown>]> = [
+      ['mutation($id: ID!) { deleteCI(id: $id) }', id => ({ id })],
+      [
+        'mutation($id: ID!, $input: UpdateCIInput!) { updateCI(id: $id, input: $input) { _id } }',
+        id => ({ id, input: { _name: 'hijacked' } }),
+      ],
+      [
+        'mutation($input: CreateRelationshipInput!) { createRelationship(input: $input) }',
+        id => ({ input: { _fromId: serverB, _toId: id, _type: 'DEPENDS_ON' } }),
+      ],
+    ];
+    for (const [mutation, variables] of mutations) {
+      for (const id of [missingId, appA]) {
+        const response = await asB(mutation, variables(id));
+        expect(response.body.data ?? null).toBeNull();
+        expect(response.body.errors?.[0]).toMatchObject(notFound);
+      }
+    }
+    const foreignEdgeDelete = await asB(
+      'mutation($from: ID!, $to: ID!) { deleteRelationship(fromId: $from, toId: $to, type: DEPENDS_ON) }',
+      { from: appA, to: dbA }
+    );
+    expect(foreignEdgeDelete.body.errors?.[0]).toMatchObject({ extensions: { code: 'NOT_FOUND' } });
+
+    const check = getNeo4jClient().getSession();
+    try {
+      const state = await check.run(
+        `MATCH (app:CI {id: $appA})
+         RETURN app.name AS name, app.organization_id AS org,
+                COUNT { (app)-[:DEPENDS_ON]->(:CI {id: $dbA}) } AS internalEdges,
+                COUNT { (:CI {id: $serverB})-[:DEPENDS_ON]->(app) } AS reverseEdges`,
+        { appA, dbA, serverB }
+      );
+      expect(state.records).toHaveLength(1);
+      const record = state.records[0]!;
+      expect(record.get('name')).toBe('org-a-app');
+      expect(record.get('org')).toBe(ORG_A);
+      expect(record.get('internalEdges').toNumber()).toBe(1);
+      expect(record.get('reverseEdges').toNumber()).toBe(0);
+    } finally {
+      await check.close();
+    }
   });
 
   it('creates a relationship and returns it through the relationship query', async () => {
@@ -228,7 +383,7 @@ describe('GraphQL API Integration Tests', () => {
 
     const relationships = await execute(
       `query($id: ID!) {
-        getCIRelationships(id: $id, direction: "out") { _type _properties _ci { _id _name } }
+        getCIRelationships(id: $id, direction: "out") { _type _properties _ci { _id _name _type _status _createdAt } }
       }`,
       { id: appId }
     );
@@ -236,7 +391,13 @@ describe('GraphQL API Integration Tests', () => {
       expect.objectContaining({
         _type: 'DEPENDS_ON',
         _properties: expect.objectContaining({ critical: true }),
-        _ci: expect.objectContaining({ _id: serverId, _name: 'app-server' }),
+        _ci: {
+          _id: serverId,
+          _name: 'app-server',
+          _type: 'SERVER',
+          _status: 'ACTIVE',
+          _createdAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.000Z$/),
+        },
       }),
     ]);
   });

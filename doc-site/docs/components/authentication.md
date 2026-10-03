@@ -238,10 +238,10 @@ and deletes the `cmdb.schema_migrations` row so 008 applies again later. Re-appl
 008 puts all services back in the internal organization. Until the old image is
 running, the 008-aware API returns 500 on business-service routes.
 
-### Configuration items (`/api/v1/cis`)
+### Configuration items (`/api/v1/cis` and GraphQL CI operations)
 
 Neo4j `:CI` nodes carry an `organization_id` property, set only from the token's
-organization when a CI is created through `POST /api/v1/cis`.
+organization when a CI is created through `POST /api/v1/cis` or GraphQL `createCI`.
 
 - Every `/api/v1/cis/**` route returns **403** `{"_error":"Forbidden","_message":"Organization claim required"}`
   without an organization claim, before any Neo4j query.
@@ -255,19 +255,32 @@ organization when a CI is created through `POST /api/v1/cis`.
 - CI ids (and `external_id`s) are unique across all organizations: creating a CI
   with an id another organization uses returns **409**, which reveals that the id exists.
 - CIs written by discovery, connectors, ETL and reconciliation carry no
-  `organization_id` and are invisible to every organization through `/api/v1/cis` and
-  `/api/v1/dashboards`.
+  `organization_id` and are invisible to every organization through `/api/v1/cis`,
+  `/api/v1/dashboards` and the GraphQL CI operations.
 - No writer copies `organization_id` from request or stored data onto a CI: the
   reconciliation merge and create (`/api/v1/reconciliation/merge`, GraphQL
   `_reconciliation { mergeCI }`) drop it from `attributes`/`identifiers`, and an ITIL
   baseline restore skips it. A merge or restore never changes a CI's organization.
-- GraphQL `createCI`, `updateCI` and `deleteCI` return `FORBIDDEN` until GraphQL CI
-  tenant scoping lands.
-- **Not yet tenant-scoped.** Only `/api/v1/cis/**` and `/api/v1/dashboards/**` are scoped. Until the GraphQL slice
-  (T3c) and the later slices land, every other route and GraphQL resolver that touches
-  CIs can still read other tenants' CIs, and some can modify or delete them:
-  - GraphQL CI queries (`getCI(s)`, `searchCIs`, relationships, dependencies, impact)
-    and GraphQL `createRelationship` / `deleteRelationship`;
+- GraphQL `getCIs`, `getCI`, `searchCIs`, `getCIRelationships`, `getCIDependencies`,
+  `getImpactAnalysis`, the CI `_relationships`/`_dependents`/`_dependencies` fields,
+  `createCI`, `updateCI`, `deleteCI`, `createRelationship` and `deleteRelationship`
+  apply the same rules. Without an organization claim they return `FORBIDDEN`
+  (`Organization claim required`) before any Neo4j query. A foreign CI reads as
+  `null` from `getCI`, like a missing one. `getCIRelationships`, `getCIDependencies`,
+  `getImpactAnalysis`, `updateCI`, `deleteCI` and `createRelationship` on a foreign
+  or missing CI return `NOT_FOUND` (`CI not found`, like the REST 404) and write
+  nothing, so a relationship can only link two CIs of the caller's organization;
+  `deleteRelationship` across organizations returns `NOT_FOUND`
+  (`Relationship not found`), like a missing relationship. `createCI` takes the
+  organization only from the token (`CreateCIInput` has no organization field) and
+  `updateCI` cannot change it. Unlike REST, GraphQL `createCI` assigns the CI id
+  itself and accepts no `_id` or `_externalId`, so it cannot be used to test whether
+  another organization uses an id or external id. The per-request dataloaders key
+  their cache by organization and CI id.
+- **Not yet tenant-scoped.** Only `/api/v1/cis/**`, `/api/v1/dashboards/**` and the
+  GraphQL CI operations above are scoped. Until the later slices land, every other
+  route and GraphQL resolver that touches CIs can still read other tenants' CIs, and
+  some can modify or delete them:
   - REST `/api/v1/relationships`;
   - ITIL writes to CI properties by id: `/api/v1/itil/configuration-items/:id/lifecycle`,
     `/:id/status`, `/:id/audit` and `/:id/audit/complete`, plus

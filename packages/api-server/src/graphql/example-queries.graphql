@@ -177,16 +177,11 @@ query ComplexCIQuery {
 # ============================================
 # MUTATIONS
 # ============================================
-# NOTE: createCI, updateCI and deleteCI currently return FORBIDDEN
-# ("CI tenant scoping for GraphQL is pending") until GraphQL CI tenant scoping
-# lands; use the organization-scoped REST endpoints under /api/v1/cis meanwhile.
 
-# Create a new CI
+# Create a new CI (the server assigns the id; ids and external ids are not accepted)
 mutation CreateCI {
   createCI(
     input: {
-      id: "server-001"
-      externalId: "i-1234567890abcdef0"
       name: "Production Web Server 01"
       type: SERVER
       status: ACTIVE
@@ -348,7 +343,6 @@ mutation CreateCIWithVariables($input: CreateCIInput!) {
 # Variables JSON:
 # {
 #   "input": {
-#     "id": "server-002",
 #     "name": "Web Server 02",
 #     "type": "SERVER",
 #     "status": "ACTIVE",

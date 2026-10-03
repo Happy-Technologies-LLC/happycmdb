@@ -132,6 +132,17 @@ export const ciInputSchema = Joi.object({
 });
 
 /**
+ * CI update validation schema (REST PUT /cis/:id and GraphQL updateCI)
+ */
+export const ciUpdateSchema = Joi.object({
+  name: Joi.string().min(1).max(500).optional(),
+  type: schemas.ciType.optional(),
+  status: schemas.ciStatus.optional(),
+  environment: schemas.environment.optional(),
+  metadata: Joi.object().optional(),
+});
+
+/**
  * Relationship validation schema
  */
 export const relationshipSchema = Joi.object({

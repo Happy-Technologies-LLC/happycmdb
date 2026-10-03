@@ -3,11 +3,24 @@
 
 // packages/api-server/src/graphql/resolvers/index.ts
 
+import { randomUUID } from 'crypto';
 import { GraphQLError } from 'graphql';
 import { GraphQLScalarType, Kind } from 'graphql';
 import neo4j from 'neo4j-driver';
+import type { Integer } from 'neo4j-driver';
 import { Neo4jClient } from '@cmdb/database';
-import { CI, CIType, CIStatus, Environment, RelationshipType } from '@cmdb/common';
+import type { Schema } from 'joi';
+import {
+  CI,
+  CIInput,
+  CIType,
+  CIStatus,
+  Environment,
+  RelationshipType,
+  ciInputSchema,
+  ciUpdateSchema,
+  validate,
+} from '@cmdb/common';
 import { analyticsResolvers } from './analytics.resolver';
 import { connectorResolvers } from './connector.resolvers';
 import { connectorFieldResolvers } from './connector-fields.resolvers';
@@ -16,6 +29,8 @@ import { reconciliationResolvers } from './reconciliation.resolvers';
 // import { itilResolvers } from './itil.resolvers';
 import type { TokenPayload } from '../../auth/types';
 import { checkGraphQLPermission } from '../../middleware/auth.middleware';
+import { requireGraphQLOrganization } from '../require-organization';
+import type { CILoaderKey } from '../dataloaders/ci-loader';
 
 /**
  * GraphQL Context type containing database clients and dataloaders
@@ -87,10 +102,113 @@ function convertEnumToDbFormat(value: string): string {
   return value.toLowerCase().replace(/_/g, '-');
 }
 
+/** A CI create body after REST's ciInputSchema (defaults applied, values converted). */
+interface ValidatedCIInput {
+  id: string;
+  name: string;
+  type: CIType;
+  status: CIStatus;
+  environment?: Environment;
+  discovered_at?: string;
+  metadata: Record<string, unknown>;
+}
+
+/** GraphQL input field for each REST body key validated by validateAsRest. */
+const GRAPHQL_FIELD_BY_REST_KEY: Record<string, string> = {
+  id: '_id',
+  external_id: '_externalId',
+  name: '_name',
+  type: '_type',
+  status: '_status',
+  environment: '_environment',
+  discovered_at: '_discoveredAt',
+  metadata: '_metadata',
+};
 
 /**
- * Validate CI input data
+ * Validates GraphQL CI input, mapped to the REST body shape, with the REST
+ * schema itself (ciInputSchema / ciUpdateSchema from @cmdb/common) and the
+ * REST validation middleware's options (`validate`: abortEarly false,
+ * stripUnknown true). Returns Joi's converted value, e.g. discovered_at as an
+ * ISO string, exactly as REST hands it to the controller. GraphQL null means
+ * "not given", so null fields are dropped first. A Joi error is BAD_USER_INPUT,
+ * with each message naming the GraphQL input field.
  */
+function validateAsRest<T>(schema: Schema, fields: Record<string, unknown>): T {
+  const data = Object.fromEntries(
+    Object.entries(fields).filter(([, value]) => value !== undefined && value !== null)
+  );
+  const result = validate<T>(schema, data);
+  if (!result.valid) {
+    const details: Array<{ message: string; path: Array<string | number> }> = result.details ?? [];
+    const messages = details.map(({ message, path }) => {
+      const key = String(path[0]);
+      return message.replace(`"${key}"`, `"${GRAPHQL_FIELD_BY_REST_KEY[key] ?? key}"`);
+    });
+    throw new GraphQLError(messages.length > 0 ? messages.join('. ') : 'Invalid CI input', {
+      extensions: { code: 'BAD_USER_INPUT' },
+    });
+  }
+  return result.value as T;
+}
+
+/** GraphQL enum value (e.g. VIRTUAL_MACHINE) in the REST/database format, or undefined. */
+function enumInput(value: string | null | undefined): string | undefined {
+  return typeof value === 'string' ? convertEnumToDbFormat(value) : undefined;
+}
+
+/**
+ * Traversal depth spliced into `[:DEPENDS_ON*1..depth]`: defaults to 5 and must
+ * be an integer from 1 to 10, the same rule as the REST CI routes.
+ */
+function traversalDepth(depth: number | null | undefined): number {
+  if (depth === undefined || depth === null) {
+    return 5;
+  }
+  if (!Number.isInteger(depth) || depth < 1 || depth > 10) {
+    throw new GraphQLError('Depth must be an integer between 1 and 10', {
+      extensions: { code: 'BAD_USER_INPUT' },
+    });
+  }
+  return depth;
+}
+
+/**
+ * The one error for a CI that is missing or belongs to another organization,
+ * so a caller cannot tell the two apart (GraphQL counterpart of the REST 404).
+ */
+function ciNotFound(): GraphQLError {
+  return new GraphQLError('CI not found', { extensions: { code: 'NOT_FOUND' } });
+}
+
+/** Dataloader key of a CI in the caller's organization (the org is part of the cache key). */
+function ciKey(id: string, organizationId: string): CILoaderKey {
+  return { id, organizationId };
+}
+
+/**
+ * Scoped lookup of the CI a traversal starts from, like the REST
+ * relationships/dependencies/impact routes: a missing CI and another
+ * organization's CI both throw the same NOT_FOUND, so an empty traversal result
+ * always means an existing CI of the caller's organization.
+ */
+async function requireCIInOrganization(context: GraphQLContext, id: string, organizationId: string): Promise<void> {
+  let ci: CI | null;
+  try {
+    ci = await context._loaders._ciLoader.load(ciKey(id, organizationId));
+  } catch (error: any) {
+    throw new GraphQLError('Failed to fetch CI', {
+      extensions: { code: 'INTERNAL_SERVER_ERROR', originalError: error.message },
+    });
+  }
+  if (!ci) {
+    throw ciNotFound();
+  }
+}
+
+/** Keeps only traversal paths whose every node is in the caller's organization. */
+const PATH_IN_ORGANIZATION = 'all(n IN nodes(path) WHERE n.organization_id = $organizationId)';
+
 interface GraphQLCI {
   _id: string;
   _externalId?: string;
@@ -138,6 +256,23 @@ function parseMetadata(metadata: unknown): Record<string, unknown> {
   return metadata && typeof metadata === 'object' ? metadata as Record<string, unknown> : {};
 }
 
+/**
+ * A CI timestamp as the GraphQL `String` the schema declares. Neo4j returns
+ * `datetime()` properties as driver temporal objects, which GraphQL cannot
+ * serialize; they are formatted exactly as REST's convertNeo4jTypes formats
+ * them (`YYYY-MM-DDTHH:mm:ss.000Z`). Strings pass through unchanged.
+ */
+function timestampString(value: unknown): string | undefined {
+  if (neo4j.isDateTime(value) || neo4j.isLocalDateTime(value) || neo4j.isDate(value)) {
+    const time = value as { hour?: number | Integer; minute?: number | Integer; second?: number | Integer };
+    const pad = (part: number | Integer | undefined) =>
+      String(part === undefined ? 0 : neo4j.integer.toNumber(part)).padStart(2, '0');
+    const date = `${neo4j.integer.toNumber(value.year)}-${pad(value.month)}-${pad(value.day)}`;
+    return `${date}T${pad(time.hour)}:${pad(time.minute)}:${pad(time.second)}.000Z`;
+  }
+  return typeof value === 'string' ? value : undefined;
+}
+
 function toGraphQLCI(ci: CIValue): GraphQLCI {
   return {
     _id: ci._id ?? ci.id ?? '',
@@ -149,9 +284,9 @@ function toGraphQLCI(ci: CIValue): GraphQLCI {
       ? convertDbEnumToGraphQL(ci.environment ?? ci._environment ?? 'development')
       : undefined,
     _metadata: parseMetadata(ci._metadata ?? ci.metadata),
-    _createdAt: ci._created_at ?? ci._createdAt ?? ci.created_at ?? '',
-    _updatedAt: ci._updated_at ?? ci._updatedAt ?? ci.updated_at ?? '',
-    _discoveredAt: ci._discovered_at ?? ci._discoveredAt ?? ci.discovered_at ?? '',
+    _createdAt: timestampString(ci._created_at ?? ci._createdAt ?? ci.created_at) ?? '',
+    _updatedAt: timestampString(ci._updated_at ?? ci._updatedAt ?? ci.updated_at) ?? '',
+    _discoveredAt: timestampString(ci._discovered_at ?? ci._discoveredAt ?? ci.discovered_at) ?? '',
   };
 }
 
@@ -191,14 +326,17 @@ const Query = {
     },
     _context: GraphQLContext
   ): Promise<GraphQLCI[]> => {
+    const organizationId = requireGraphQLOrganization(_context);
     const session = _context._neo4jClient.getSession();
 
     try {
       const { filter } = _args;
       const limit = normalizePagination(_args.limit, 100);
       const offset = normalizePagination(_args.offset, 0);
-      const conditions: string[] = [];
+      // The org filter runs before SKIP/LIMIT, so other tenants' CIs never use up a page.
+      const conditions: string[] = ['ci.organization_id = $organizationId'];
       const params: Record<string, unknown> = {
+        organizationId,
         limit: neo4j.int(limit),
         offset: neo4j.int(offset),
       };
@@ -223,7 +361,7 @@ const Query = {
         params.name = filter._name;
       }
 
-      const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+      const whereClause = `WHERE ${conditions.join(' AND ')}`;
       const result = await session.run(
         `
         MATCH (ci:CI)
@@ -257,8 +395,10 @@ const Query = {
     _args: { id: string },
     _context: GraphQLContext
   ): Promise<GraphQLCI | null> => {
+    const organizationId = requireGraphQLOrganization(_context);
     try {
-      const ci = await _context._loaders._ciLoader.load(_args.id);
+      // A CI of another organization resolves to null, exactly like a missing one.
+      const ci = await _context._loaders._ciLoader.load(ciKey(_args.id, organizationId));
       return ci ? toGraphQLCI(ci) : null;
     } catch (error: any) {
       throw new GraphQLError('Failed to fetch CI', {
@@ -287,12 +427,18 @@ const Query = {
     },
     _context: GraphQLContext
   ): Promise<GraphQLCI[]> => {
+    const organizationId = requireGraphQLOrganization(_context);
     const session = _context._neo4jClient.getSession();
 
     try {
       const { query, filter } = _args;
-      const conditions: string[] = ['(ci.name CONTAINS $query OR ci.external_id CONTAINS $query)'];
+      // The org filter runs before LIMIT, so other tenants' hits never use up the page.
+      const conditions: string[] = [
+        'ci.organization_id = $organizationId',
+        '(ci.name CONTAINS $query OR ci.external_id CONTAINS $query)',
+      ];
       const params: Record<string, unknown> = {
+        organizationId,
         query,
         limit: neo4j.int(normalizePagination(_args.limit, 50)),
       };
@@ -348,21 +494,27 @@ const Query = {
     __parent: any,
     _args: { id: string; direction?: string },
     _context: GraphQLContext
-  ): Promise<any[]> => {
+  ): Promise<Array<{ _type: string; _ci: GraphQLCI; _properties: unknown }>> => {
+    const organizationId = requireGraphQLOrganization(_context);
+    await requireCIInOrganization(_context, _args.id, organizationId);
     try {
       const direction = _args.direction === 'in' ? 'in' : _args.direction === 'out' ? 'out' : 'both';
+      // Both ends of every relationship must be in the caller's organization.
+      const key = ciKey(_args.id, organizationId);
 
+      // Entries are mapped like CI._relationships/_dependents, so the related CI's
+      // enum and timestamp fields serialize.
       if (direction === 'out') {
-        return await _context._loaders._relationshipLoader.load(_args.id);
+        return (await _context._loaders._relationshipLoader.load(key)).map(toGraphQLRelatedCI);
       } else if (direction === 'in') {
-        return await _context._loaders._dependentLoader.load(_args.id);
+        return (await _context._loaders._dependentLoader.load(key)).map(toGraphQLRelatedCI);
       } else {
         // For 'both', get both directions
         const [outgoing, incoming] = await Promise.all([
-          _context._loaders._relationshipLoader.load(_args.id),
-          _context._loaders._dependentLoader.load(_args.id),
+          _context._loaders._relationshipLoader.load(key),
+          _context._loaders._dependentLoader.load(key),
         ]);
-        return [...outgoing, ...incoming];
+        return [...outgoing, ...incoming].map(toGraphQLRelatedCI);
       }
     } catch (error: any) {
       throw new GraphQLError('Failed to fetch CI relationships', {
@@ -382,17 +534,20 @@ const Query = {
     _args: { id: string; depth?: number },
     _context: GraphQLContext
   ): Promise<GraphQLCI[]> => {
+    const organizationId = requireGraphQLOrganization(_context);
+    const depth = traversalDepth(_args.depth);
+    await requireCIInOrganization(_context, _args.id, organizationId);
     const session = _context._neo4jClient.getSession();
 
     try {
-      const depth = _args.depth || 5;
-
       const result = await session.run(
         `
-        MATCH path = (ci:CI {id: $id})-[:DEPENDS_ON*1..${depth}]->(dep:CI)
+        MATCH (ci:CI {id: $id}) WHERE ci.organization_id = $organizationId
+        MATCH path = (ci)-[:DEPENDS_ON*1..${depth}]->(dep:CI)
+        WHERE ${PATH_IN_ORGANIZATION}
         RETURN DISTINCT dep
         `,
-        { id: _args.id }
+        { id: _args.id, organizationId }
       );
 
       return result.records.map((record: any) => toGraphQLCI(record.get('dep').properties));
@@ -416,17 +571,21 @@ const Query = {
     _args: { id: string; depth?: number },
     _context: GraphQLContext
   ): Promise<Array<{ _ci: GraphQLCI; _distance: number }>> => {
+    const organizationId = requireGraphQLOrganization(_context);
+    const depth = traversalDepth(_args.depth);
+    await requireCIInOrganization(_context, _args.id, organizationId);
     const session = _context._neo4jClient.getSession();
 
     try {
-      const depth = _args.depth || 5;
       const result = await session.run(
         `
-        MATCH path = (ci:CI {id: $id})<-[:DEPENDS_ON*1..${depth}]-(impacted:CI)
+        MATCH (ci:CI {id: $id}) WHERE ci.organization_id = $organizationId
+        MATCH path = (ci)<-[:DEPENDS_ON*1..${depth}]-(impacted:CI)
+        WHERE ${PATH_IN_ORGANIZATION}
         RETURN DISTINCT impacted, length(path) as distance
         ORDER BY distance
         `,
-        { id: _args.id }
+        { id: _args.id, organizationId }
       );
 
       return result.records.map((record: any) => ({
@@ -447,60 +606,166 @@ const Query = {
 };
 
 /**
- * Error for the GraphQL CI mutations that fail closed until GraphQL CI tenant
- * scoping lands: /api/v1/cis is organization-scoped, and these must not offer
- * an unscoped way around it.
- */
-function ciTenantScopingPending(): GraphQLError {
-  return new GraphQLError('CI tenant scoping for GraphQL is pending', {
-    extensions: { code: 'FORBIDDEN' },
-  });
-}
-
-/**
- * Mutation resolvers
+ * Mutation resolvers. Each resolves the caller's organization from the token
+ * before any data access; a CI of another organization behaves exactly like a
+ * missing one.
  */
 const Mutation = {
   /**
-   * Create a new CI. Fails closed: Neo4jClient.createCI requires the caller's
-   * organization and GraphQL has no CI tenant scoping yet.
+   * Create a new CI in the caller's organization. The organization comes only
+   * from the token: the input fields are whitelisted, so no input can set it.
+   * CI ids and external ids are unique across all organizations, so a client
+   * choosing either could probe another organization's CIs (free value:
+   * created; used value: rejected). The server therefore assigns the id, and
+   * neither `_id` nor `_externalId` is accepted.
    */
   createCI: async (
     __parent: unknown,
-    _args: unknown,
+    _args: {
+      input: {
+        _name: string;
+        _type: string;
+        _status?: string;
+        _environment?: string;
+        _discoveredAt?: string;
+        _metadata?: Record<string, unknown>;
+      };
+    },
     _context: GraphQLContext
   ): Promise<GraphQLCI> => {
+    const organizationId = requireGraphQLOrganization(_context);
     checkGraphQLPermission(_context, 'write');
-    throw ciTenantScopingPending();
+    // CreateCIInput has no such fields; this keeps a direct resolver call from
+    // reaching the database with a caller-chosen globally unique key. The
+    // answer is the same whatever the value.
+    if ('_id' in _args.input || '_externalId' in _args.input) {
+      throw new GraphQLError('CI _id and _externalId are assigned by the server and cannot be supplied', {
+        extensions: { code: 'BAD_USER_INPUT' },
+      });
+    }
+    try {
+      const input = validateAsRest<ValidatedCIInput>(ciInputSchema, {
+        id: randomUUID(),
+        name: _args.input._name,
+        type: enumInput(_args.input._type),
+        status: enumInput(_args.input._status),
+        environment: enumInput(_args.input._environment),
+        discovered_at: _args.input._discoveredAt,
+        metadata: _args.input._metadata,
+      });
+      const ciInput: CIInput = {
+        _id: input.id,
+        name: input.name,
+        _type: input.type,
+        status: input.status,
+        environment: input.environment,
+        discovered_at: input.discovered_at ?? new Date().toISOString(),
+        metadata: input.metadata,
+      };
+      const ci = await _context._neo4jClient.createCI(ciInput, organizationId);
+      _context._loaders._ciLoader.clear(ciKey(ci._id, organizationId));
+      return toGraphQLCI(ci);
+    } catch (error: any) {
+      if (error instanceof GraphQLError) {
+        throw error;
+      }
+      throw new GraphQLError('Failed to create CI', {
+        extensions: {
+          code: 'INTERNAL_SERVER_ERROR',
+          originalError: error.message,
+        },
+      });
+    }
   },
 
   /**
-   * Update an existing CI. Fails closed for the same reason as createCI.
+   * Update a CI of the caller's organization. Only name, status, environment
+   * and metadata can change; organization_id is never part of the update.
    */
   updateCI: async (
     __parent: unknown,
-    _args: unknown,
+    _args: {
+      id: string;
+      input: {
+        _name?: string;
+        _status?: string;
+        _environment?: string;
+        _metadata?: Record<string, unknown>;
+      };
+    },
     _context: GraphQLContext
   ): Promise<GraphQLCI> => {
+    const organizationId = requireGraphQLOrganization(_context);
     checkGraphQLPermission(_context, 'write');
-    throw ciTenantScopingPending();
+    try {
+      if (!(await _context._neo4jClient.getCI(_args.id, organizationId))) {
+        throw ciNotFound();
+      }
+
+      // Validated after the scoped lookup, so a foreign id still gets NOT_FOUND.
+      const updates = validateAsRest<Partial<CIInput>>(ciUpdateSchema, {
+        name: _args.input._name,
+        status: enumInput(_args.input._status),
+        environment: enumInput(_args.input._environment),
+        metadata: _args.input._metadata,
+      });
+
+      const ci = await _context._neo4jClient.updateCI(_args.id, updates, organizationId);
+      _context._loaders._ciLoader.clear(ciKey(_args.id, organizationId));
+      // Related CI snapshots can be cached under any neighboring CI's key.
+      _context._loaders._relationshipLoader.clearAll();
+      _context._loaders._dependentLoader.clearAll();
+      return toGraphQLCI(ci);
+    } catch (error: any) {
+      if (error instanceof GraphQLError) {
+        throw error;
+      }
+      throw new GraphQLError('Failed to update CI', {
+        extensions: {
+          code: 'INTERNAL_SERVER_ERROR',
+          originalError: error.message,
+        },
+      });
+    }
   },
 
   /**
-   * Delete a CI. Fails closed before opening a session: an unscoped
-   * DETACH DELETE would delete other organizations' CIs.
+   * Delete a CI of the caller's organization; a foreign id deletes nothing
+   * and gets the same NOT_FOUND as a missing one.
    */
   deleteCI: async (
     __parent: unknown,
-    _args: unknown,
+    _args: { id: string },
     _context: GraphQLContext
   ): Promise<boolean> => {
+    const organizationId = requireGraphQLOrganization(_context);
     checkGraphQLPermission(_context, 'write');
-    throw ciTenantScopingPending();
+    try {
+      if (!(await _context._neo4jClient.deleteCI(_args.id, organizationId))) {
+        throw ciNotFound();
+      }
+      const key = ciKey(_args.id, organizationId);
+      _context._loaders._ciLoader.clear(key);
+      // Deletion removes every incident edge, not just edges cached under this id.
+      _context._loaders._relationshipLoader.clearAll();
+      _context._loaders._dependentLoader.clearAll();
+      return true;
+    } catch (error: any) {
+      if (error instanceof GraphQLError) {
+        throw error;
+      }
+      throw new GraphQLError('Failed to delete CI', {
+        extensions: {
+          code: 'INTERNAL_SERVER_ERROR',
+          originalError: error.message,
+        },
+      });
+    }
   },
 
   /**
-   * Create a relationship between two CIs
+   * Create a relationship between two CIs of the caller's organization. A
+   * missing or foreign endpoint writes nothing and gets NOT_FOUND.
    */
   createRelationship: async (
     __parent: any,
@@ -514,14 +779,27 @@ const Mutation = {
     },
     _context: GraphQLContext
   ): Promise<boolean> => {
+    const organizationId = requireGraphQLOrganization(_context);
     checkGraphQLPermission(_context, 'write');
     try {
       const { _fromId, _toId, _type, _properties = {} } = _args.input;
-      await _context._neo4jClient.createRelationship(_fromId, _toId, _type, _properties);
-      _context._loaders._relationshipLoader.clear(_fromId);
-      _context._loaders._dependentLoader.clear(_toId);
+      const created = await _context._neo4jClient.createRelationship(
+        _fromId,
+        _toId,
+        _type,
+        organizationId,
+        _properties
+      );
+      if (!created) {
+        throw ciNotFound();
+      }
+      _context._loaders._relationshipLoader.clear(ciKey(_fromId, organizationId));
+      _context._loaders._dependentLoader.clear(ciKey(_toId, organizationId));
       return true;
     } catch (error: any) {
+      if (error instanceof GraphQLError) {
+        throw error;
+      }
       throw new GraphQLError('Failed to create relationship', {
         extensions: {
           code: 'INTERNAL_SERVER_ERROR',
@@ -532,13 +810,14 @@ const Mutation = {
   },
 
   /**
-   * Delete a relationship between two CIs
+   * Delete a relationship between two CIs of the caller's organization
    */
   deleteRelationship: async (
     __parent: any,
     _args: { fromId: string; toId: string; type: RelationshipType },
     _context: GraphQLContext
   ): Promise<boolean> => {
+    const organizationId = requireGraphQLOrganization(_context);
     checkGraphQLPermission(_context, 'write');
     const session = _context._neo4jClient.getSession();
 
@@ -546,10 +825,11 @@ const Mutation = {
       const result = await session.run(
         `
         MATCH (from:CI {id: $fromId})-[r:${_args.type}]->(to:CI {id: $toId})
+        WHERE from.organization_id = $organizationId AND to.organization_id = $organizationId
         DELETE r
         RETURN count(r) as deleted
         `,
-        { fromId: _args.fromId, toId: _args.toId }
+        { fromId: _args.fromId, toId: _args.toId, organizationId }
       );
       const deleted = result.records[0]?.get('deleted').toNumber() || 0;
       if (deleted === 0) {
@@ -557,8 +837,8 @@ const Mutation = {
           extensions: { code: 'NOT_FOUND' },
         });
       }
-      _context._loaders._relationshipLoader.clear(_args.fromId);
-      _context._loaders._dependentLoader.clear(_args.toId);
+      _context._loaders._relationshipLoader.clear(ciKey(_args.fromId, organizationId));
+      _context._loaders._dependentLoader.clear(ciKey(_args.toId, organizationId));
       return true;
     } catch (error: any) {
       if (error instanceof GraphQLError) {
@@ -583,32 +863,37 @@ const CIResolvers = {
   /**
    * Resolve outgoing relationships
    */
-  _relationships: async (parent: CIValue, _args: any, _context: GraphQLContext) => {
-    const relationships = await _context._loaders._relationshipLoader.load(parent._id);
+  _relationships: async (parent: CIValue, _args: unknown, _context: GraphQLContext) => {
+    const organizationId = requireGraphQLOrganization(_context);
+    const relationships = await _context._loaders._relationshipLoader.load(ciKey(parent._id, organizationId));
     return relationships.map(toGraphQLRelatedCI);
   },
 
   /**
    * Resolve incoming relationships (dependents)
    */
-  _dependents: async (parent: CIValue, _args: any, _context: GraphQLContext) => {
-    const dependents = await _context._loaders._dependentLoader.load(parent._id);
+  _dependents: async (parent: CIValue, _args: unknown, _context: GraphQLContext) => {
+    const organizationId = requireGraphQLOrganization(_context);
+    const dependents = await _context._loaders._dependentLoader.load(ciKey(parent._id, organizationId));
     return dependents.map(toGraphQLRelatedCI);
   },
 
   /**
-   * Resolve all dependencies recursively
+   * Resolve all dependencies recursively, within the caller's organization
    */
-  _dependencies: async (parent: CIValue, _args: any, _context: GraphQLContext) => {
+  _dependencies: async (parent: CIValue, _args: unknown, _context: GraphQLContext) => {
+    const organizationId = requireGraphQLOrganization(_context);
     const session = _context._neo4jClient.getSession();
 
     try {
       const result = await session.run(
         `
-        MATCH path = (ci:CI {id: $id})-[:DEPENDS_ON*1..5]->(dep:CI)
+        MATCH (ci:CI {id: $id}) WHERE ci.organization_id = $organizationId
+        MATCH path = (ci)-[:DEPENDS_ON*1..5]->(dep:CI)
+        WHERE ${PATH_IN_ORGANIZATION}
         RETURN DISTINCT dep
         `,
-        { id: parent._id }
+        { id: parent._id, organizationId }
       );
       return result.records.map((record: any) => toGraphQLCI(record.get('dep').properties));
     } finally {
@@ -619,9 +904,9 @@ const CIResolvers = {
   _externalId: (parent: CIValue) => parent.external_id ?? parent._externalId,
   _name: (parent: CIValue) => parent.name ?? parent._name,
   _environment: (parent: CIValue) => parent.environment ?? parent._environment,
-  _createdAt: (parent: CIValue) => parent._created_at ?? parent._createdAt,
-  _updatedAt: (parent: CIValue) => parent._updated_at ?? parent._updatedAt,
-  _discoveredAt: (parent: CIValue) => parent._discovered_at ?? parent._discoveredAt,
+  _createdAt: (parent: CIValue) => timestampString(parent._created_at ?? parent._createdAt),
+  _updatedAt: (parent: CIValue) => timestampString(parent._updated_at ?? parent._updatedAt),
+  _discoveredAt: (parent: CIValue) => timestampString(parent._discovered_at ?? parent._discoveredAt),
 };
 
 /**

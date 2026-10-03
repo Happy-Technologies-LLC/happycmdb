@@ -7,7 +7,7 @@ import { CIController } from '../controllers/ci.controller';
 import { validateRequest, validateOptional } from '../middleware/validation.middleware';
 import { auditMiddleware } from '../../middleware/audit.middleware';
 import { getAuthMiddleware } from '../../auth/auth-bootstrap';
-import { ciInputSchema, queryFiltersSchema, schemas } from '@cmdb/common';
+import { ciInputSchema, ciUpdateSchema, queryFiltersSchema } from '@cmdb/common';
 
 export const ciRoutes = Router();
 const controller = new CIController();
@@ -30,12 +30,7 @@ const createCISchema = ciInputSchema.keys({
   organization_id: organizationIdForbidden,
 });
 
-const updateCISchema = Joi.object({
-  name: Joi.string().min(1).max(500).optional(),
-  type: schemas.ciType.optional(),
-  status: schemas.ciStatus.optional(),
-  environment: schemas.environment.optional(),
-  metadata: Joi.object().optional(),
+const updateCISchema = ciUpdateSchema.keys({
   organization_id: organizationIdForbidden,
 });
 

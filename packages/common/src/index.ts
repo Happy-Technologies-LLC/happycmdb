@@ -23,6 +23,7 @@ export type { ValidationResult } from './utils/validators';
 export {
   ciSchema,
   ciInputSchema,
+  ciUpdateSchema,
   relationshipSchema,
   discoveryJobSchema,
   discoveredCISchema,

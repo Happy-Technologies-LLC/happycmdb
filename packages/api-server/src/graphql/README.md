@@ -29,15 +29,24 @@ graphql/
 - **getImpactAnalysis**: Analyze what depends on a CI
 
 ### Mutation Capabilities
-- **createCI**, **updateCI**, **deleteCI**: currently return `FORBIDDEN` ("CI tenant
-  scoping for GraphQL is pending") until GraphQL CI tenant scoping lands; use the
-  organization-scoped REST `/api/v1/cis` endpoints meanwhile
-- **createRelationship**: Link two CIs
+- **createCI**: Create a CI in the caller's organization; the server assigns the id (no `_id`/`_externalId` input)
+- **updateCI**: Update a CI (its organization never changes)
+- **deleteCI**: Remove a CI and its relationships
+- **createRelationship**: Link two CIs of the caller's organization
 - **deleteRelationship**: Remove relationships
+
+### Tenant Scoping
+Every CI query, mutation and CI relationship field requires the token's organization
+claim (`FORBIDDEN` otherwise, before any Neo4j query) and only matches CIs of that
+organization. A foreign CI behaves like a missing one: `null` from `getCI`;
+`NOT_FOUND` (`CI not found`) for `getCIRelationships`, `getCIDependencies`,
+`getImpactAnalysis`, `updateCI`, `deleteCI` and `createRelationship`; `NOT_FOUND`
+(`Relationship not found`) for `deleteRelationship`. `createCI` assigns the CI id
+and accepts no `_id` or `_externalId` (both are unique across organizations).
 
 ### Performance Optimizations
 - **DataLoader Integration**: Batches and caches database queries to prevent N+1 problems
-- **Request-scoped Caching**: Fresh cache per request, prevents stale data
+- **Request-scoped Caching**: Fresh cache per request, keyed by organization and CI id
 - **Batch Queries**: Efficient bulk operations for related CIs
 
 ## Getting Started
@@ -169,8 +178,6 @@ query ImpactAnalysis {
 mutation CreateServer {
   createCI(
     input: {
-      id: "server-001"
-      externalId: "i-1234567890"
       name: "Production Web Server"
       type: SERVER
       status: ACTIVE
@@ -296,7 +303,7 @@ DataLoaders prevent N+1 query problems by batching multiple requests:
 ```
 
 ### Available DataLoaders
-- **ciLoader**: Batch load CIs by ID
+- **ciLoader**: Batch load CIs by `{ id, organizationId }` (a foreign CI loads as `null`)
 - **relationshipLoader**: Batch load outgoing relationships
 - **dependentLoader**: Batch load incoming relationships
 
@@ -308,9 +315,9 @@ Each GraphQL request receives a context object:
 interface GraphQLContext {
   neo4jClient: Neo4jClient;
   loaders: {
-    ciLoader: DataLoader<string, CI | null>;
-    relationshipLoader: DataLoader<string, any[]>;
-    dependentLoader: DataLoader<string, any[]>;
+    ciLoader: DataLoader<CILoaderKey, CI | null, string>;
+    relationshipLoader: DataLoader<CILoaderKey, RelatedCIEntry[], string>;
+    dependentLoader: DataLoader<CILoaderKey, RelatedCIEntry[], string>;
   };
 }
 ```

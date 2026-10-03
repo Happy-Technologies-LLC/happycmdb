@@ -354,29 +354,43 @@ export class Neo4jClient {
     }
   }
 
+  /**
+   * MERGE a relationship between two CIs of the scope. Returns false (and
+   * writes nothing) when either endpoint does not exist in the scope's
+   * organization, so a cross-organization relationship can never be created.
+   */
   async createRelationship(
     fromId: string,
     toId: string,
     type: string,
+    scope: CIOrganizationScope,
     properties: Record<string, any> = {}
-  ): Promise<void> {
+  ): Promise<boolean> {
+    const organizationId = organizationIdParam(scope);
     const session = this.getSession();
     try {
       // Validate relationship type to prevent Cypher injection
       const validatedType = validateRelationshipType(type);
+      const endpointScope = organizationId === null
+        ? ''
+        : 'WHERE from.organization_id = $organizationId AND to.organization_id = $organizationId';
 
       // Safe to use template literal here because validatedType is validated against whitelist
-      await session.run(
+      const result = await session.run(
         `
         MATCH (from:CI {id: $fromId})
         MATCH (to:CI {id: $toId})
+        ${endpointScope}
         MERGE (from)-[r:${validatedType}]->(to)
         SET r += $properties,
             r.created_at = coalesce(r.created_at, datetime()),
             r.updated_at = datetime()
+        RETURN count(r) AS created
         `,
-        { fromId, toId, properties }
+        { fromId, toId, properties, organizationId }
       );
+
+      return result.records[0]!.get('created').toNumber() > 0;
     } finally {
       await session.close();
     }

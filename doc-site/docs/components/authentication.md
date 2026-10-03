@@ -246,54 +246,77 @@ Postgres ownership check:
   `timezone_abbreviations`) stops the run before any graph statement. An org-less
   node whose only row is newer stays without an organization and is listed in
   `needs_review`; nodes without a Postgres row stay without an organization (invisible);
-  nodes that already have one are never changed. It is a dry run unless `--apply` is
-  passed. Save the complete one-line dry-run summary to a protected file; its `plan`
-  includes every Postgres owner and the Neo4j `elementId` of each proposed node.
-  Review `filled`, `needs_review`, `conflicting`, `unmatched`, the plan owners and
-  `plan_sha256` independently. Apply requires the saved summary via `--plan <file>`
-  and its independently recorded digest via `--sha256 <plan_sha256>` with the same
-  `--created-before` and `--writer-timezone`. The digest pins the plan contents, not
-  the operator's authorization: do not copy an unreviewed digest from a changed file.
-  Apply validates every locked Postgres owner against the plan inside a transaction
-  (`SELECT ... FOR SHARE`), and conditionally writes only the planned Neo4j
-  `elementId`/id when its organization is still null. Any missing, replaced, changed
-  or duplicated target aborts the Neo4j transaction. Postgres locks remain held
-  until graph work completes; an intervening ownership update waits or causes drift
-  abort. New unrelated rows after the lock query do not authorize any additional
-  graph writes. The databases **do not share an atomic commit**: a process/commit
-  failure after the Neo4j commit may leave graph writes even when apply exits with
-  an error. Inspect both stores and the saved summary before any retry.
+  nodes that already have one are never changed. It runs in three separately invoked
+  steps, each an FD-7 operator action:
+  1. `--prepare` (needs only the `CMDB_BACKFILL_NEO4J_*` variables) creates the
+     uniqueness constraint on `:BusinessServiceBackfillIncarnation(uuid)` and, in one
+     Neo4j transaction, links every org-less `:BusinessService` that has no anchor to a
+     new anchor node with a random UUID (`HAS_BACKFILL_INCARNATION`). It writes no
+     organization and prints the `prepared` id/UUID pairs; rerunning it only anchors
+     nodes that have none. Anchors are an append-only record: never delete or relink
+     them, and do not run two `--prepare`s at once.
+  2. The dry run (the default) writes nothing. Save its complete one-line summary to
+     a protected file; its `plan` holds every Postgres owner and, per proposed node,
+     its id, `elementId` and anchor UUID. Trusted org-less nodes without an anchor are
+     listed in `needs_prepare` and are not planned (rerun `--prepare`, then a new dry
+     run); a node with more than one anchor stops the run. Review `filled`,
+     `needs_review`, `needs_prepare`, `conflicting`, `unmatched`, the plan owners and
+     `plan_sha256` independently.
+  3. `--apply --plan <file> --sha256 <plan_sha256>` with the same `--created-before`
+     and `--writer-timezone`. The digest pins the plan contents, not the operator's
+     authorization: do not copy an unreviewed digest from a changed file. Apply
+     re-reads every Postgres owner with `SELECT ... FOR SHARE` inside a transaction and
+     aborts on any drift from the plan. Then, in one Neo4j transaction, it write-locks
+     each planned node and its anchor, rechecks that the node is still linked to the
+     planned anchor (exactly one anchor edge on each side), has the planned
+     `elementId` and still has no organization, and only then writes the organization.
+     Any missing, replaced, changed or duplicated target rolls back the whole graph
+     transaction. Postgres locks are held until the graph work completes.
+
+  Why the anchor: Neo4j guarantees an `elementId` only within one transaction and may
+  reuse it after a deletion, so id + `elementId` cannot tell the reviewed node from a
+  same-id replacement. Deleting a node removes its anchor edge, and a replacement, even
+  with every property copied, is not linked to the reviewed anchor (a later
+  `--prepare` gives it a new one). This holds while only the application and this
+  script write `:BusinessService` nodes: a privileged user who manually relinks an
+  anchor to another node is outside what the check proves, so prevent that
+  operationally (or escalate) for the whole prepare → review → apply window.
+  The databases **do not share an atomic commit**: a process/commit failure after the
+  Neo4j commit may leave graph writes even when apply exits with an error. Inspect
+  both stores and the saved summary before any retry.
   It connects only through `CMDB_BACKFILL_*` variables (see the script header).
   It trusts `dim_business_services`: `created_at` and `organization_id` are not
   writable through the API, but the PUBLIC grants above let any database role write
   them, so run it only after confirming no non-API role has written to that table.
-  Running it against a live database is an operator action (FD-7); not an automatic
-  migration. Preserve both dry-run and apply output as audit evidence.
+  Running it against a live database is an operator action (FD-7), not an automatic
+  migration. Preserve the prepare, dry-run and apply output as audit evidence.
 
 #### Reversing a mistaken backfill
 
-**There is no automatic safe undo.** The apply summary's `filled` id/org pairs,
-even together with the dry-run `elementId`, cannot prove that a current property
-was written by that run: the node can be deleted/recreated, or its organization
-can be changed and restored to the same value. Neo4j `elementId` is not a durable
-provenance marker across deletion/recreation. Never run a bulk `REMOVE` selected
-by id/org or by the saved plan. A mistaken apply requires a separately authorized
+**There is no automatic safe undo.** The apply summary's `filled` entries (id,
+organization, anchor UUID) identify which node incarnation the run wrote, but not
+whether the organization it carries now is still the one that run wrote: it can be
+changed and restored to the same value. Never run a bulk `REMOVE` selected by
+id/org/anchor or by the saved plan. A mistaken apply requires a separately authorized
 manual incident action under FD-7:
 
-1. Freeze other business-service writers/backfills and preserve the dry-run plan,
-   apply output, current graph snapshot (including id, `elementId`, organization and
-   relationships) and current PostgreSQL owner rows. Compare every proposed reversal
-   with the pre-apply snapshot and audit history for deletion/recreation and
-   organization flips/restores. The apply output alone is insufficient evidence.
-2. Stop on a missing, duplicated or conflicting node, a changed owner, a different
-   node identity, or incomplete provenance; resolve each id manually. Only explicitly
-   confirmed unchanged nodes can be individually reverted, in a transaction with
-   identity, current-organization and snapshot predicates rechecked at write time.
-   Count each conditional write and abort/rollback on any mismatch; do not widen a
-   predicate to make it succeed. If provenance cannot be established, leave the
-   property in place and escalate rather than stripping another operator's value.
+1. Freeze other business-service writers/backfills and preserve the prepare output,
+   dry-run plan, apply output, current graph snapshot (including id, `elementId`,
+   anchor UUID, organization and relationships) and current PostgreSQL owner rows.
+   Compare every proposed reversal with the pre-apply snapshot and audit history for
+   deletion/recreation and organization flips/restores. The apply output alone is
+   insufficient evidence.
+2. Stop on a missing, duplicated or conflicting node, a changed owner, a node no longer
+   linked to the anchor UUID in the apply output, or incomplete provenance; resolve
+   each id manually. Only explicitly confirmed unchanged nodes can be individually
+   reverted, in a transaction with the anchor edge, current-organization and snapshot
+   predicates rechecked at write time. Count each conditional write and
+   abort/rollback on any mismatch; do not widen a predicate to make it succeed. If
+   provenance cannot be established, leave the property in place and escalate rather
+   than stripping another operator's value.
 3. Org-less nodes are invisible until a new reviewed dry-run and separately
-   authorized apply with corrected parameters. Never reuse the mistaken plan.
+   authorized apply with corrected parameters. Never reuse the mistaken plan. Leave
+   the anchors in place: they are the append-only incarnation record.
 
 ### Rolling back migrations 010, 009 and 008
 

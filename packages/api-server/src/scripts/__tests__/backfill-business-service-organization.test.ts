@@ -6,17 +6,23 @@
  *
  * The owner query runs on PGlite (the dim_business_services CREATE TABLE block
  * from 001_complete_schema.sql, then 008 verbatim). Neo4j is an in-memory set
- * of :BusinessService nodes behind a fake session that parses each statement's
- * MATCH / WHERE / SET / RETURN and applies exactly the predicates the statement
- * contains: a fill without `bs.organization_id IS NULL` would overwrite
- * organizations, as Neo4j would.
+ * of :BusinessService nodes and HAS_BACKFILL_INCARNATION edges (by node object
+ * identity, so a replacement node never inherits an edge) behind a fake
+ * session. The count statements are parsed and only the predicates they
+ * contain are applied; prepare / fillable / fill are matched to the exported
+ * statements and modelled with their documented semantics. The real
+ * statements run against Neo4j in
+ * tests/integration/database/business-service-backfill.integration.test.ts.
  */
 
 import { fork } from 'child_process';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
-import { backfillBusinessServiceOrganizations, main, type GraphSession, type SqlClient } from '../backfill-business-service-organization';
+import {
+  backfillBusinessServiceOrganizations, FILL_CYPHER, FILLABLE_CYPHER, INCARNATION_CONSTRAINT_CYPHER, main,
+  PREPARE_CYPHER, prepareBusinessServiceIncarnations, type GraphSession, type SqlClient,
+} from '../backfill-business-service-organization';
 
 const host = fork(join(__dirname, '../../rest/routes/__tests__/fixtures/pglite-host.cjs'), [], { serialization: 'advanced' });
 let nextId = 0;
@@ -63,8 +69,15 @@ const WRITER_TIMEZONE = 'Etc/UTC';
 
 type Node = { id: string; elementId: string; organization_id?: string };
 let nodes: Node[] = [];
+/** HAS_BACKFILL_INCARNATION edges; `node` is the node object itself. */
+let edges: Array<{ node: Node; uuid: string }> = [];
+let nextAnchor = 0;
 const writes: string[] = [];
 let graphRuns = 0;
+
+const normalize = (cypher: string) => cypher.replace(/\s+/g, ' ').trim();
+const outDegree = (n: Node) => edges.filter(e => e.node === n).length;
+const inDegree = (uuid: string) => edges.filter(e => e.uuid === uuid).length;
 
 interface Owner { serviceId: string; organizationId: string }
 
@@ -75,9 +88,6 @@ function predicate(where: string): (node: Node, owner?: Owner, serviceIds?: stri
     if (clause === 'bs.organization_id IS NOT NULL') return (n: Node) => n.organization_id !== undefined;
     if (clause === 'bs.organization_id <> owner.organizationId') {
       return (n: Node, o?: Owner) => n.organization_id !== undefined && n.organization_id !== o!.organizationId;
-    }
-    if (clause === 'elementId(bs) = target.elementId') {
-      return (n: Node, o?: Owner) => n.elementId === (o as Owner & { elementId: string }).elementId;
     }
     if (clause === 'NOT bs.id IN $serviceIds') return (n: Node, _o?: Owner, ids?: string[]) => !ids!.includes(n.id);
     throw new Error(`fake Neo4j: unmodelled predicate: ${clause}`);
@@ -90,19 +100,43 @@ const record = (row: Record<string, unknown>) => ({ get: (key: string) => row[ke
 const session: GraphSession = {
   run: async (rawCypher, params = {}) => {
     graphRuns++;
-    const cypher = rawCypher.replace(/\s+/g, ' ').trim();
+    const cypher = normalize(rawCypher);
 
-    const fill = cypher.match(
-      /^UNWIND \$targets AS target MATCH \(bs:BusinessService \{id: target\.serviceId\}\) WHERE elementId\(bs\) = target\.elementId SET bs\.organization_id = bs\.organization_id WITH bs, target WHERE bs\.organization_id IS NULL SET bs\.organization_id = target\.organizationId RETURN bs\.id AS serviceId, elementId\(bs\) AS elementId, bs\.organization_id AS organizationId$/
-    );
-    if (fill) {
+    if (cypher === normalize(INCARNATION_CONSTRAINT_CYPHER)) return { records: [] };
+    if (cypher === normalize(PREPARE_CYPHER)) {
+      const rows = nodes
+        .filter(n => n.organization_id === undefined && outDegree(n) === 0)
+        .map(n => {
+          const uuid = `00000000-0000-4000-8000-${String(++nextAnchor).padStart(12, '0')}`;
+          edges.push({ node: n, uuid });
+          return { serviceId: n.id, incarnation: uuid };
+        })
+        .sort((a, b) => a.serviceId.localeCompare(b.serviceId));
+      return { records: rows.map(record) };
+    }
+    if (cypher === normalize(FILLABLE_CYPHER)) {
       const rows: Array<Record<string, unknown>> = [];
-      for (const target of params['targets'] as Array<Owner & { elementId: string }>) {
-        for (const node of nodes.filter(n => n.id === target.serviceId &&
-          n.elementId === target.elementId && n.organization_id === undefined)) {
+      for (const owner of params['owners'] as Owner[]) {
+        for (const node of nodes.filter(n => n.id === owner.serviceId && n.organization_id === undefined)) {
+          rows.push({
+            serviceId: node.id, elementId: node.elementId, organizationId: owner.organizationId,
+            anchorEdges: outDegree(node),
+            incarnations: edges.filter(e => e.node === node && inDegree(e.uuid) === 1).map(e => e.uuid),
+          });
+        }
+      }
+      return { records: rows.map(record) };
+    }
+    if (cypher === normalize(FILL_CYPHER)) {
+      const rows: Array<Record<string, unknown>> = [];
+      for (const target of params['targets'] as Array<Owner & { elementId: string; incarnation: string }>) {
+        for (const edge of edges.filter(e => e.node.id === target.serviceId && e.uuid === target.incarnation)) {
+          const node = edge.node;
+          if (node.organization_id !== undefined || node.elementId !== target.elementId ||
+              outDegree(node) !== 1 || inDegree(edge.uuid) !== 1) continue;
           node.organization_id = target.organizationId;
           writes.push(node.id);
-          rows.push({ serviceId: node.id, elementId: node.elementId, organizationId: node.organization_id });
+          rows.push({ serviceId: node.id, elementId: node.elementId, incarnation: edge.uuid, organizationId: node.organization_id });
         }
       }
       return { records: rows.map(record) };
@@ -114,18 +148,13 @@ const session: GraphSession = {
     if (perOwner) {
       const [, where, returns] = perOwner;
       const keep = where === undefined ? () => true : predicate(where);
-      const rows: Array<Record<string, unknown>> = [];
+      const rows: Node[] = [];
       for (const owner of params['owners'] as Owner[]) {
-        for (const node of nodes.filter(n => n.id === owner.serviceId && keep(n, owner))) {
-          rows.push({ serviceId: node.id, elementId: node.elementId, organizationId: owner.organizationId });
-        }
+        rows.push(...nodes.filter(n => n.id === owner.serviceId && keep(n, owner)));
       }
       const countAlias = returns!.match(/^count\(bs\) AS (\w+)$/);
-      if (countAlias) return { records: [record({ [countAlias[1]!]: rows.length })] };
-      if (!returns!.includes('elementId(bs) AS elementId')) {
-        throw new Error(`fake Neo4j: unmodelled RETURN: ${returns}`);
-      }
-      return { records: rows.map(record) };
+      if (!countAlias) throw new Error(`fake Neo4j: unmodelled RETURN: ${returns}`);
+      return { records: [record({ [countAlias[1]!]: rows.length })] };
     }
     const global = cypher.match(/^MATCH \(bs:BusinessService\)(?: WHERE (.+?))? RETURN count\(bs\) AS (\w+)$/);
     if (global) {
@@ -137,12 +166,16 @@ const session: GraphSession = {
     throw new Error(`fake Neo4j: unmodelled statement: ${cypher}`);
   },
   executeWrite: async callback => {
-    const original = nodes.map(n => ({ ...n }));
+    const savedNodes = [...nodes];
+    const savedOrgs = nodes.map(n => n.organization_id);
+    const savedEdges = [...edges];
     const priorWrites = writes.length;
     try {
       return await callback(session);
     } catch (error) {
-      nodes = original;
+      nodes = savedNodes;
+      nodes.forEach((n, i) => { n.organization_id = savedOrgs[i]; });
+      edges = savedEdges;
       writes.length = priorWrites;
       throw error;
     }
@@ -168,9 +201,7 @@ afterAll(() => {
   host.kill();
 });
 
-beforeEach(() => {
-  writes.length = 0;
-  graphRuns = 0;
+beforeEach(async () => {
   nodes = [
     { id: 'bs-a-app', elementId: 'node-a' },
     { id: 'bs-b-app', elementId: 'node-b' },
@@ -181,7 +212,15 @@ beforeEach(() => {
     // No organization; its only Postgres row was created after the cutover.
     { id: 'bs-squat', elementId: 'node-squat' },
   ];
+  edges = [];
+  // Every test starts from a prepared graph (anchors on all org-less nodes).
+  await prepareBusinessServiceIncarnations(session);
+  writes.length = 0;
+  graphRuns = 0;
 });
+
+/** The anchor UUID the beforeEach prepare gave this node. */
+const anchorOf = (id: string) => edges.find(e => e.node.id === id)!.uuid;
 
 const orgs = () => Object.fromEntries(nodes.map(n => [n.id, n.organization_id ?? null]));
 const APPLY = { apply: true, createdBefore: CUTOVER, writerTimezone: WRITER_TIMEZONE };
@@ -258,7 +297,7 @@ describe('backfillBusinessServiceOrganizations', () => {
     });
 
     expect(summary.needs_review).toEqual([]);
-    expect(summary.filled).toContainEqual({ service_id: 'bs-squat', organization_id: ORG_B });
+    expect(summary.filled).toContainEqual({ service_id: 'bs-squat', organization_id: ORG_B, incarnation: anchorOf('bs-squat') });
   });
 
   // POSIX offsets and abbreviation-only names are not zone files; names that are also
@@ -289,9 +328,36 @@ describe('backfillBusinessServiceOrganizations', () => {
       conflicting: 1,
     });
     expect(summary.plan?.targets).toEqual([
-      { serviceId: 'bs-a-app', organizationId: ORG_A, elementId: 'node-a' },
-      { serviceId: 'bs-b-app', organizationId: ORG_B, elementId: 'node-b' },
+      { serviceId: 'bs-a-app', organizationId: ORG_A, elementId: 'node-a', incarnation: anchorOf('bs-a-app') },
+      { serviceId: 'bs-b-app', organizationId: ORG_B, elementId: 'node-b', incarnation: anchorOf('bs-b-app') },
     ]);
+    expect(summary.needs_prepare).toEqual([]);
+  });
+
+  it('prepare anchors each org-less node once and writes no organization', async () => {
+    expect(edges.map(e => e.node.id).sort()).toEqual(['bs-a-app', 'bs-b-app', 'bs-graph-only', 'bs-squat']);
+    expect(new Set(edges.map(e => e.uuid)).size).toBe(4);
+
+    const again = await prepareBusinessServiceIncarnations(session);
+
+    expect(again).toEqual({ mode: 'prepare', prepared: [] });
+    expect(edges).toHaveLength(4);
+    expect(orgs()['bs-a-app']).toBeNull();
+  });
+
+  it('plans no unanchored node and lists it in needs_prepare', async () => {
+    edges = edges.filter(e => e.node.id !== 'bs-b-app');
+
+    const summary = await dryRun();
+
+    expect(summary.needs_prepare).toEqual([{ service_id: 'bs-b-app', organization_id: ORG_B }]);
+    expect(summary.plan?.targets.map(t => t.serviceId)).toEqual(['bs-a-app']);
+  });
+
+  it('emits no plan when a node has more than one anchor', async () => {
+    edges.push({ node: nodes[1]!, uuid: '00000000-0000-4000-8000-999999999999' });
+
+    await expect(dryRun()).rejects.toThrow(/ambiguous incarnation anchor/);
   });
 
   it('rejects ownership drift after review against PostgreSQL before graph writes', async () => {
@@ -311,9 +377,28 @@ describe('backfillBusinessServiceOrganizations', () => {
   it('rolls back both org writes if a reviewed node was deleted and recreated', async () => {
     const reviewed = await dryRun();
     nodes[1] = { id: 'bs-b-app', elementId: 'replacement-b' };
+    edges = edges.filter(e => nodes.includes(e.node));
     await expect(backfillBusinessServiceOrganizations(pg, session, {
       ...APPLY, reviewed, sha256: reviewed.plan_sha256,
     })).rejects.toThrow(/Neo4j identity\/organization drift/);
+    expect(writes).toEqual([]);
+    expect(orgs()['bs-a-app']).toBeNull();
+    expect(orgs()['bs-b-app']).toBeNull();
+  });
+
+  it('gives no organization to a same-id node recreated with the same elementId and copied properties', async () => {
+    const reviewed = await dryRun();
+    // Neo4j may reuse an elementId after deletion; the replacement copies every property
+    // but, being a new node, not the reviewed node's anchor edge.
+    nodes[1] = { ...nodes[1]! };
+    edges = edges.filter(e => nodes.includes(e.node));
+    const applyReviewed = () => backfillBusinessServiceOrganizations(pg, session, {
+      ...APPLY, reviewed, sha256: reviewed.plan_sha256,
+    });
+    await expect(applyReviewed()).rejects.toThrow(/Neo4j identity\/organization drift/);
+    // Preparing the replacement gives it a new anchor, which is not the reviewed one.
+    await prepareBusinessServiceIncarnations(session);
+    await expect(applyReviewed()).rejects.toThrow(/Neo4j identity\/organization drift/);
     expect(writes).toEqual([]);
     expect(orgs()['bs-a-app']).toBeNull();
     expect(orgs()['bs-b-app']).toBeNull();
@@ -362,6 +447,9 @@ describe('backfill CLI', () => {
     [['--created-before', '2026-10-01 00:00:00', '--writer-timezone', WRITER_TIMEZONE], ENV, '--created-before must be an ISO-8601 timestamp with a zone'],
     [['--created-before', CUTOVER, '--writer-timezone', WRITER_TIMEZONE], { ...ENV, CMDB_BACKFILL_NEO4J_ENCRYPTED: 'yes' }, 'CMDB_BACKFILL_NEO4J_ENCRYPTED must be true or false'],
     [['--created-before', CUTOVER, '--writer-timezone', WRITER_TIMEZONE, '--apply'], ENV, '--apply requires --plan'],
+    [['--prepare', '--apply'], ENV, 'unexpected argument --prepare'],
+    [['--created-before', CUTOVER, '--writer-timezone', WRITER_TIMEZONE, '--prepare'], ENV, 'unexpected argument --prepare'],
+    [['--prepare'], { CMDB_BACKFILL_NEO4J_URI: 'bolt://127.0.0.1:1', CMDB_BACKFILL_NEO4J_USERNAME: 'unused' }, 'CMDB_BACKFILL_NEO4J_PASSWORD is required'],
   ] as Array<[string[], Record<string, string>, string]>)('refuses %j before reading any store', async (argv, env, message) => {
     const out: string[] = [];
     const err: string[] = [];

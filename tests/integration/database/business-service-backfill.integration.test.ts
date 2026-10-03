@@ -4,7 +4,8 @@
 import neo4j, { Driver, Session } from 'neo4j-driver';
 import { Pool } from 'pg';
 import {
-  backfillBusinessServiceOrganizations, type BackfillSummary, type GraphSession, type SqlClient,
+  backfillBusinessServiceOrganizations, planHash, prepareBusinessServiceIncarnations,
+  type BackfillSummary, type GraphSession, type SqlClient,
 } from '../../../packages/api-server/src/scripts/backfill-business-service-organization';
 
 const ORG_A = '11111111-1111-4111-8111-111111111111';
@@ -48,8 +49,13 @@ beforeAll(async () => {
            ($2, 'B', 'application', 'application', 'high', 'active', $4, '2026-09-01 00:00:00')`, [...ids, ORG_A, ORG_B]);
 });
 
+// Disposable CI database: --prepare anchors every org-less node, so the test removes all anchors it may have made.
+const CLEAN_GRAPH = `
+MATCH (n) WHERE (n:BusinessService AND n.id IN $ids) OR n:BusinessServiceBackfillIncarnation
+DETACH DELETE n`;
+
 afterAll(async () => {
-  await graph?.run('MATCH (bs:BusinessService) WHERE bs.id IN $ids DETACH DELETE bs', { ids });
+  await graph?.run(CLEAN_GRAPH, { ids });
   await pg?.query('DELETE FROM dim_business_services WHERE service_id = ANY($1::text[])', [ids]);
   await graph?.close();
   await driver?.close();
@@ -58,8 +64,10 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await pg.query('UPDATE dim_business_services SET organization_id = CASE WHEN service_id = $1 THEN $3::uuid ELSE $4::uuid END WHERE service_id = ANY($2::text[])', [ids[0], ids, ORG_A, ORG_B]);
-  await graph.run('MATCH (bs:BusinessService) WHERE bs.id IN $ids DETACH DELETE bs', { ids });
-  await graph.run('UNWIND $ids AS id CREATE (:BusinessService {id: id})', { ids });
+  await graph.run(CLEAN_GRAPH, { ids });
+  await graph.run('UNWIND $ids AS id CREATE (:BusinessService {id: id, name: id, operational_status: "active"})', { ids });
+  const prepared = await prepareBusinessServiceIncarnations(graph);
+  expect(prepared.prepared.filter(p => ids.includes(p.service_id))).toHaveLength(2);
 });
 
 async function review(): Promise<BackfillSummary> {
@@ -82,15 +90,27 @@ test('Postgres owner drift between review and apply cannot authorize either org 
   expect(await currentOwners()).toEqual(ids.map(id => ({ id, org: null })));
 });
 
-test('Neo4j replacement after review rolls back the other org write', async () => {
+test('a same-id replacement with copied properties, even at the reviewed elementId, gets no organization', async () => {
   const reviewed = await review();
+  const copied = await graph.run('MATCH (bs:BusinessService {id: $id}) RETURN properties(bs) AS props', { id: ids[1] });
   await graph.run('MATCH (bs:BusinessService {id: $id}) DETACH DELETE bs', { id: ids[1] });
-  await graph.run('CREATE (:BusinessService {id: $id})', { id: ids[1] });
-  const replacement = await graph.run('MATCH (bs:BusinessService {id: $id}) RETURN elementId(bs) AS elementId', { id: ids[1] });
-  expect(replacement.records[0]!.get('elementId')).not.toBe(reviewed.plan!.targets[1]!.elementId);
-  await expect(backfillBusinessServiceOrganizations(pg, graph, {
-    ...options, apply: true, reviewed, sha256: reviewed.plan_sha256,
-  })).rejects.toThrow(/Neo4j identity\/organization drift/);
+  const replacement = await graph.run('CREATE (bs:BusinessService) SET bs = $props RETURN elementId(bs) AS elementId', {
+    props: copied.records[0]!.get('props'),
+  });
+  // Neo4j may hand the replacement the deleted node's elementId; pin that case deterministically
+  // by re-issuing the reviewed plan with the replacement's elementId (and its digest).
+  const plan = structuredClone(reviewed.plan!);
+  plan.targets[1]!.elementId = replacement.records[0]!.get('elementId') as string;
+  const sameElementId = { ...reviewed, plan, plan_sha256: planHash(plan) };
+  const applyPlan = (summary: BackfillSummary) => backfillBusinessServiceOrganizations(pg, graph, {
+    ...options, apply: true, reviewed: summary, sha256: summary.plan_sha256,
+  });
+
+  await expect(applyPlan(sameElementId)).rejects.toThrow(/Neo4j identity\/organization drift/);
+  await expect(applyPlan(reviewed)).rejects.toThrow(/Neo4j identity\/organization drift/);
+  // A prepare run gives the replacement a new anchor, never the reviewed one.
+  await prepareBusinessServiceIncarnations(graph);
+  await expect(applyPlan(sameElementId)).rejects.toThrow(/Neo4j identity\/organization drift/);
   expect(await currentOwners()).toEqual(ids.map(id => ({ id, org: null })));
 });
 

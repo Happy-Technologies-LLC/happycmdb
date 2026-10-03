@@ -98,7 +98,32 @@ const querySchema = Joi.object({
 });
 
 const mapCIsSchema = Joi.object({
-  ci_ids: Joi.array().items(Joi.string()).min(1).required(),
+  // ci_id is VARCHAR(100) and UNIQUE(ci_id, service_id, mapping_type): reject
+  // ids the upsert would fail on (500) here (400):
+  // - NUL: PostgreSQL text cannot hold U+0000.
+  // - Unpaired surrogates: UTF-8 encoding replaces each with U+FFFD, so
+  //   distinct JS strings could collide in the database. With them rejected
+  //   the encoding is injective, and .unique() on the JS strings is
+  //   uniqueness of the stored values.
+  // - Length: VARCHAR(100) counts characters (code points), not the UTF-16
+  //   units Joi's .max() counts.
+  ci_ids: Joi.array()
+    .items(
+      Joi.string()
+        .pattern(/^[^\u0000\p{Cs}]+$/u)
+        // A code point is 1-2 UTF-16 units: only 101-200 units need counting.
+        .custom((value: string, helpers) =>
+          value.length > 100 && (value.length > 200 || [...value].length > 100)
+            ? helpers.error('string.max', { limit: 100 })
+            : value)
+        .messages({ 'string.pattern.base': '{{#label}} must not contain NUL characters or unpaired surrogates' })
+    )
+    .min(1).unique().required()
+    // Stop at the first failing item: validate() runs with abortEarly:false,
+    // which would still run .unique() over non-string items, and Joi
+    // compares those pairwise (quadratic). Only strings reach .unique() now,
+    // and Joi checks strings with a hash lookup.
+    .prefs({ abortEarly: true }),
   mapping_type: Joi.string()
     .valid('hosts', 'supports', 'enables', 'provides')
     .default('supports'),

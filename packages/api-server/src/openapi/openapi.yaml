@@ -31,6 +31,21 @@ info:
     - `X-RateLimit-Remaining`: Remaining requests
     - `X-RateLimit-Reset`: Unix timestamp when limit resets
 
+    ## Errors
+
+    Errors raised while reading the request (body parsing, path parameter
+    decoding), and unhandled server errors, get a `MiddlewareError` body
+    (`_error`, `_message`) with fixed text; the underlying error message is
+    not returned:
+    - **400** `Malformed request body`: the JSON or form body cannot be parsed
+      (checked before authentication)
+    - **413** `Request body too large`: the body exceeds 10 MB (checked before
+      authentication)
+    - **400** `Malformed URL encoding`: a path parameter has invalid
+      percent-encoding (on authenticated routes, checked after authentication)
+    - any other **4xx** error not answered by an endpoint: `Request could not be processed`
+    - **500** `An unexpected error occurred`: unhandled server failure
+
   contact:
     name: HappyCMDB Support
     url: http://localhost:8080
@@ -3041,6 +3056,11 @@ paths:
                     type: string
                     minLength: 1
                     maxLength: 100
+                    pattern: '^[^\u0000]+$'
+                    description: >-
+                      At most 100 Unicode characters (code points, not UTF-16
+                      units). Must not contain NUL (U+0000) or unpaired
+                      surrogate escapes (e.g. `\ud800` without its pair).
                 mapping_type:
                   type: string
                   enum: [hosts, supports, enables, provides]
@@ -3540,7 +3560,9 @@ components:
         and `_details` carry the validation messages, e.g. for an empty
         string or an out-of-range value. Unknown fields are ignored, not
         rejected; only `organization_id` on the create/update bodies is
-        rejected, since the organization always comes from the token.
+        rejected, since the organization always comes from the token. A body
+        that is not valid JSON gets `_error: Bad Request` with `_message:
+        Malformed request body` and no `_details`.
       content:
         application/json:
           schema:
@@ -3608,7 +3630,8 @@ components:
       description: >-
         Unexpected server failure. The body is either `{success: false,
         error}` with a fixed per-operation message or the generic middleware
-        error body.
+        error body (`_error: Internal Server Error`, `_message: An unexpected
+        error occurred`). Neither carries the underlying error text.
       content:
         application/json:
           schema:
@@ -4493,8 +4516,9 @@ components:
     MiddlewareError:
       type: object
       description: >-
-        Error body produced by the auth and request-validation middleware
-        (underscore-prefixed keys), e.g. the /cis 403 and body-validation 400.
+        Error body produced by the auth and request-validation middleware and
+        the global error handler (underscore-prefixed keys), e.g. the /cis
+        403, the body-validation 400 and the malformed-body 400.
       required: [_error, _message]
       properties:
         _success:

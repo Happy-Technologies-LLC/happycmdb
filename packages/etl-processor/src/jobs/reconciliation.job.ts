@@ -16,7 +16,7 @@ import { Job } from 'bullmq';
 import { Neo4jClient, PostgresClient, UNSCOPED_CI_ACCESS } from '@cmdb/database';
 import { logger, CI, CIStatus } from '@cmdb/common';
 import {
-  dimCiIds, dimCiOrganizationId, INTERNAL_ORGANIZATION_ID,
+  dimCiIds, dimCiOrganizationId, INTERNAL_ORGANIZATION_ID, lockCIDimensions,
 } from '../transformers/ci-organization';
 
 export interface ReconciliationJobData {
@@ -213,7 +213,7 @@ export class ReconciliationJob {
           conflict._autoResolved = true;
           conflict.resolution = 'Created CI in PostgreSQL from Neo4j';
         } else {
-          conflict._description = 'CI disappeared from Neo4j before PostgreSQL reconciliation';
+          conflict._description = 'CI changed in Neo4j or PostgreSQL before reconciliation; left for review';
         }
       }
 
@@ -478,15 +478,30 @@ export class ReconciliationJob {
     }
 
     const organizationId = dimCiOrganizationId(properties['organization_id']);
-    await this.postgresClient.query(
-      `INSERT INTO cmdb.dim_ci
-       (ci_id, ci_name, ci_type, environment, ci_status, effective_from, is_current, organization_id)
-       VALUES ($1, $2, $3, $4, $5, NOW(), true, $6)`,
-      [
-        properties['id'], properties['name'], properties['type'], properties['environment'], properties['status'],
-        organizationId
-      ]
-    );
+    // The "missing in PostgreSQL" read happened without a lock. Under the
+    // per-CI lock every dim_ci writer takes, insert only if there is still no
+    // current row; one written since belongs to that writer's organization.
+    const inserted = await this.postgresClient.transaction(async (client: any) => {
+      await lockCIDimensions(client, [ciId]);
+      const current = await client.query(
+        'SELECT 1 FROM cmdb.dim_ci WHERE ci_id = $1 AND is_current = true',
+        [ciId]
+      );
+      if (current.rows.length > 0) {
+        return false;
+      }
+      await client.query(
+        `INSERT INTO cmdb.dim_ci
+         (ci_id, ci_name, ci_type, environment, ci_status, effective_from, is_current, organization_id)
+         VALUES ($1, $2, $3, $4, $5, NOW(), true, $6)`,
+        [ciId, properties['name'], properties['type'], properties['environment'], properties['status'], organizationId]
+      );
+      return true;
+    });
+    if (!inserted) {
+      logger.warn('Skipping reconciliation - CI got a current PostgreSQL row before the insert', { ciId });
+      return null;
+    }
     logger.info('Created CI in PostgreSQL from Neo4j', { ciId });
     return {
       _id: properties['id'], name: properties['name'], _type: properties['type'],

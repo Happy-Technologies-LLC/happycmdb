@@ -113,32 +113,44 @@ export class PostgresClient {
   // ============================================
 
   /**
-   * Insert a new CI dimension record
-   * Implements SCD Type 2: Creates a new version of the CI
+   * Insert the first CI dimension record of a ci_id. Takes the same per-CI
+   * lock as updateCIDimension and every ETL dim_ci writer, then refuses when a
+   * current row exists: one written since the caller's unlocked read belongs
+   * to that writer and is versioned only through updateCIDimension's rules.
    */
   async insertCIDimension(ci: CIDimensionInput): Promise<number> {
-    const result = await this.query(
-      `
-      INSERT INTO cmdb.dim_ci (
-        ci_id, ci_name, ci_type, ci_status, environment,
-        external_id, metadata, effective_from, is_current, organization_id
-      )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, TRUE, $9)
-      RETURNING ci_key
-      `,
-      [
-        ci.ci_id,
-        ci.ciname,
-        ci.ci_type,
-        ci.ci_status,
-        ci.environment || null,
-        ci.external_id || null,
-        ci.metadata ? JSON.stringify(ci.metadata) : null,
-        ci.effective_from || new Date(),
-        ci.organization_id,
-      ]
-    );
-    return result.rows[0].ci_key;
+    return await this.transaction(async (client) => {
+      await client.query('SELECT pg_advisory_xact_lock(8271, hashtext($1))', [ci.ci_id]);
+      const current = await client.query(
+        'SELECT 1 FROM cmdb.dim_ci WHERE ci_id = $1 AND is_current = TRUE',
+        [ci.ci_id]
+      );
+      if (current.rows.length > 0) {
+        throw new Error(`CI ${ci.ci_id} already has a current dimension record`);
+      }
+      const result = await client.query(
+        `
+        INSERT INTO cmdb.dim_ci (
+          ci_id, ci_name, ci_type, ci_status, environment,
+          external_id, metadata, effective_from, is_current, organization_id
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, TRUE, $9)
+        RETURNING ci_key
+        `,
+        [
+          ci.ci_id,
+          ci.ciname,
+          ci.ci_type,
+          ci.ci_status,
+          ci.environment || null,
+          ci.external_id || null,
+          ci.metadata ? JSON.stringify(ci.metadata) : null,
+          ci.effective_from || new Date(),
+          ci.organization_id,
+        ]
+      );
+      return result.rows[0].ci_key;
+    });
   }
 
   /**
@@ -166,7 +178,7 @@ export class PostgresClient {
       // different organization is refused and nothing is written (the
       // transaction rolls back).
       const current = await client.query(
-        'SELECT organization_id, org_backfilled FROM cmdb.dim_ci WHERE ci_id = $1 AND is_current = TRUE',
+        'SELECT ci_key, organization_id, org_backfilled FROM cmdb.dim_ci WHERE ci_id = $1 AND is_current = TRUE',
         [ci.ci_id]
       );
       const stored = current.rows[0];
@@ -180,15 +192,17 @@ export class PostgresClient {
         );
       }
 
-      // Step 1: Expire the current record for this ci_id
-      await client.query(
-        `
-        UPDATE cmdb.dim_ci
-        SET effective_to = $1, is_current = FALSE
-        WHERE ci_id = $2 AND is_current = TRUE
-        `,
-        [now, ci.ci_id]
-      );
+      // Step 1: Expire the current record just read (by its key)
+      if (stored) {
+        await client.query(
+          `
+          UPDATE cmdb.dim_ci
+          SET effective_to = $1, is_current = FALSE
+          WHERE ci_key = $2
+          `,
+          [now, stored.ci_key]
+        );
+      }
 
       // Step 2: Insert new current record
       const result = await client.query(

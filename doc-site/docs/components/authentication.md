@@ -381,12 +381,11 @@ organization of the `:CI` node it versions.
   `cmdb.dim_ci` row and stamps that row's organization on the recreated Neo4j
   node. The untrusted merge has no such provenance and stays org-less. A
   conflicting node's stored customer row stays unchanged; only a node naming
-  that organization may update it. The scheduled full refresh empties
-  `cmdb.dim_ci` first, so every CI is new to it. An operator-enqueued full
-  refresh with `truncateTables: false` does not apply the stored-organization
-  rule (a known residual): it can add a node-organization current row beside an
-  existing one. A node without an organization never puts a CI in a customer
-  organization.
+  that organization may update it. The full refresh applies the same
+  stored-organization rule to any current row it finds (none after its
+  truncate, unless another writer has written since; any with
+  `truncateTables: false`). A node without an organization never puts a CI in
+  a customer organization.
   `neo4j-wins` reconciliation inserts attributes and organization from one
   current-node match, not from separate generations of a reused ID. If that
   node disappears before the match, the conflict remains unresolved and no
@@ -415,17 +414,19 @@ organization of the `:CI` node it versions.
   not protect against a privileged writer deliberately forging that label.
 - Concurrent dimension writers recheck the current organization under a
   per-`ci_id` PostgreSQL transaction advisory lock, held through SCD expiry
-  and insertion. Those writers are `DataMartClient` backfill claims,
-  neo4j-to-postgres and sync-cis-to-datamart. Each ETL batch takes all of its
+  and insertion. Those writers are `DataMartClient` (first insert and
+  backfill claims), neo4j-to-postgres, sync-cis-to-datamart, the full refresh
+  and the `neo4j-wins` reconciliation insert. Each ETL batch takes all of its
   locks before reading any current row, once per lock key and in ascending key
   order. Batches that share a CI, or a lock key (two ids can share a
   `hashtext` key), still wait for each other, but never in a cycle, so they
-  do not deadlock. Two runs that see different organizations for the same CI
-  cannot both replace its current version: the second re-reads the first's
-  version and refuses it as a conflict. The old costs stay in the original
-  version. Residual: `DataMartClient`'s first insert, the full refresh, the
-  `neo4j-wins` reconciliation insert and the reconciliation status update take
-  no lock, so they can race with these writers.
+  do not deadlock. Two writers that see different organizations for the same
+  CI cannot both replace its current version, nor both write its first one:
+  the second re-reads the first's version and refuses it as a conflict (the
+  reconciliation insert and `DataMartClient`'s first insert refuse any
+  current row). The old costs stay in the original version. Residual: the
+  reconciliation status update (an in-place update restricted to the row's
+  organization) and the complete-sync marker clear take no lock.
 - The dimension writers that read CIs from Neo4j (neo4j-to-postgres,
   sync-cis-to-datamart, full refresh, reconciliation) identify a CI's
   `cmdb.dim_ci` history only by its node's unique `id`, and only when that
@@ -446,11 +447,12 @@ organization of the `:CI` node it versions.
   every such CI gets its new version in its node's organization. That run clears the
   backfill marker of every CI without a live node, even when some batches fail, so a
   node created later with such an id cannot take the backfilled CI over. CIs whose batch
-  failed keep their marker until a later run processes them. The run does fail, and
-  clears no marker, when it cannot read the graph at all: for example, a node whose
-  `metadata` property is not JSON fails extraction (this predates migration 011).
-  Until a run completes, the internal organization can map those CIs; such mapping
-  rows stay listed by `GET /:id/cis` afterwards but add nothing to `/costs`.
+  failed keep their marker until a later run processes them. A node whose `metadata`
+  property is not JSON (a reconciliation merge can store one) is skipped and logged by
+  neo4j-to-postgres and the full refresh; it still counts as live, so its CI keeps its
+  marker until the node is readable. Until a run completes, the internal organization
+  can map those CIs; such mapping rows stay listed by `GET /:id/cis` afterwards but add
+  nothing to `/costs`.
 - `POST /api/v1/cis` rejects an `id` longer than 100 characters or an `external_id`
   longer than 200 (the `cmdb.dim_ci` column widths) with **400**, so no CI that can never
   be synced is created.

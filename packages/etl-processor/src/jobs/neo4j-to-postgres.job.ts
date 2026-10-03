@@ -19,7 +19,8 @@ import { Neo4jClient, PostgresClient } from '@cmdb/database';
 import { logger, CI, CIType } from '@cmdb/common';
 import { DimensionTransformer } from '../transformers/dimension-transformer';
 import {
-  ExtractedCI, dimCiOrganizationId, lockCIDimensions, storedCiOrganizationId, withDimCiIds,
+  ExtractedCI, dimCiIds, dimCiOrganizationId, isDimCiId, lockCIDimensions, parseNodeMetadata, storedCiOrganizationId,
+  UNREADABLE_METADATA, withDimCiIds,
 } from '../transformers/ci-organization';
 
 export interface Neo4jToPostgresJobData {
@@ -89,7 +90,8 @@ export class Neo4jToPostgresJob {
 
     try {
       // Step 1: Extract CIs from Neo4j
-      const cis = withDimCiIds(await this.extractCIs(data), ci => ci._id, 'neo4j-to-postgres');
+      const extracted = await this.extractCIs(data);
+      const cis = withDimCiIds(extracted.cis, ci => ci._id, 'neo4j-to-postgres');
       // Only committed, tenant-resolved dimensions can supply relationship keys.
       const acceptedOrganizations = data.fullRefresh || !data.incrementalSince
         ? new Map<string, string>() : undefined;
@@ -128,7 +130,11 @@ export class Neo4jToPostgresJob {
       const visitedEveryNode =
         !(data.incrementalSince && !data.fullRefresh) && !(data.ciTypes && data.ciTypes.length > 0);
       if (visitedEveryNode) {
-        const liveIds = cis.map(ci => ci._id).filter((id): id is string => typeof id === 'string');
+        // A node skipped for unreadable metadata is still live.
+        const liveIds = [
+          ...cis.map(ci => ci._id),
+          ...dimCiIds(extracted.unreadableIds, 'neo4j-to-postgres'),
+        ];
         await this.postgresClient.query(
           'UPDATE cmdb.dim_ci SET org_backfilled = FALSE WHERE org_backfilled AND NOT (ci_id = ANY($1::varchar[]))',
           [liveIds]
@@ -148,9 +154,12 @@ export class Neo4jToPostgresJob {
   }
 
   /**
-   * Extract CIs from Neo4j based on job parameters
+   * Extract CIs from Neo4j based on job parameters. A node whose metadata is
+   * not JSON is skipped and logged, and its id returned as unreadable.
    */
-  private async extractCIs(data: Neo4jToPostgresJobData): Promise<ExtractedCI[]> {
+  private async extractCIs(
+    data: Neo4jToPostgresJobData
+  ): Promise<{ cis: ExtractedCI[]; unreadableIds: unknown[] }> {
     const session = this.neo4jClient.getSession();
 
     try {
@@ -174,10 +183,17 @@ export class Neo4jToPostgresJob {
 
       const result = await session.run(query, params);
 
-      return result.records.map((record: any) => {
-        const node = record.get('ci');
-        const props = node.properties;
-        return {
+      const cis: ExtractedCI[] = [];
+      const unreadableIds: unknown[] = [];
+      for (const record of result.records as any[]) {
+        const props = record.get('ci').properties;
+        const metadata = parseNodeMetadata(props.metadata);
+        if (metadata === UNREADABLE_METADATA) {
+          logger.warn('Skipping CI node whose metadata is not JSON', { job: 'neo4j-to-postgres' });
+          unreadableIds.push(props.id);
+          continue;
+        }
+        cis.push({
           _id: props.id,
           external_id: props.external_id,
           name: props.name,
@@ -187,10 +203,11 @@ export class Neo4jToPostgresJob {
           _created_at: props.created_at,
           _updated_at: props.updated_at,
           _discovered_at: props.discovered_at,
-          _metadata: props.metadata ? JSON.parse(props.metadata) : {},
+          _metadata: metadata as ExtractedCI['_metadata'],
           organization_id: props.organization_id
-        };
-      });
+        });
+      }
+      return { cis, unreadableIds };
 
     } finally {
       await session.close();
@@ -485,7 +502,7 @@ export class Neo4jToPostgresJob {
           // Another target is identified by the organization this match reads.
           const toOrganization = acceptedOrganizations.get(toId)
             ?? (extractedIds.has(toId) ? undefined : toGraphOrganization);
-          if (fromId !== ci._id || typeof toId !== 'string' ||
+          if (fromId !== ci._id || !isDimCiId(toId) ||
               dimCiOrganizationId(record.get('from_organization_id')) !== fromOrganization ||
               !toOrganization ||
               toGraphOrganization !== toOrganization) {

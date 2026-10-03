@@ -20,7 +20,10 @@ import type { PoolClient } from 'pg';
 import { Neo4jClient, PostgresClient } from '@cmdb/database';
 import { logger, CI, validateTableNames } from '@cmdb/common';
 import { DimensionTransformer } from '../transformers/dimension-transformer';
-import { ExtractedCI, dimCiOrganizationId, withDimCiIds } from '../transformers/ci-organization';
+import {
+  ExtractedCI, dimCiOrganizationId, lockCIDimensions, parseNodeMetadata, storedCiOrganizationId,
+  UNREADABLE_METADATA, withDimCiIds,
+} from '../transformers/ci-organization';
 
 export interface FullRefreshJobData {
   /** Whether to truncate tables before refresh */
@@ -181,7 +184,8 @@ export class FullRefreshJob {
   }
 
   /**
-   * Extract all CIs from Neo4j
+   * Extract all CIs from Neo4j. A node whose metadata is not JSON is skipped
+   * and logged, so one such node cannot fail the refresh after its truncate.
    */
   private async extractAllCIs(): Promise<ExtractedCI[]> {
     const session = this.neo4jClient.getSession();
@@ -193,10 +197,15 @@ export class FullRefreshJob {
         ORDER BY ci.created_at
       `);
 
-      return result.records.map((record: any) => {
-        const node = record.get('ci');
-        const props = node.properties;
-        return {
+      const cis: ExtractedCI[] = [];
+      for (const record of result.records as any[]) {
+        const props = record.get('ci').properties;
+        const metadata = parseNodeMetadata(props.metadata);
+        if (metadata === UNREADABLE_METADATA) {
+          logger.warn('Skipping CI node whose metadata is not JSON', { job: 'full-refresh' });
+          continue;
+        }
+        cis.push({
           _id: props.id,
           external_id: props.external_id,
           name: props.name,
@@ -206,10 +215,11 @@ export class FullRefreshJob {
           _created_at: props.created_at,
           _updated_at: props.updated_at,
           _discovered_at: props.discovered_at,
-          _metadata: props.metadata ? JSON.parse(props.metadata) : {},
+          _metadata: metadata as ExtractedCI['_metadata'],
           organization_id: props.organization_id
-        } as ExtractedCI;
-      });
+        } as ExtractedCI);
+      }
+      return cis;
 
     } finally {
       await session.close();
@@ -233,12 +243,49 @@ export class FullRefreshJob {
     const acceptedOrganizations = new Map<string, string>();
 
     await this.postgresClient.transaction(async (client: PoolClient) => {
+      // Before any savepoint: a rollback to a savepoint would release locks
+      // taken after it. Serializes this batch with every other dim_ci writer.
+      await lockCIDimensions(client, cis.map(ci => ci._id));
       for (const ci of cis) {
         await client.query('SAVEPOINT ci_dimension_load');
         try {
           const dimension = this.dimensionTransformer.toDimension(ci);
 
-          // Insert new dimension (all as current since this is full refresh)
+          // The table may not be empty: no truncate, or another writer since.
+          // Apply the stored-organization rule to any current row, as the
+          // other writers do, and version it by its ci_key.
+          const current = await client.query(
+            `SELECT ci_key, organization_id, org_backfilled
+             FROM cmdb.dim_ci WHERE ci_id = $1 AND is_current = true`,
+            [ci._id]
+          );
+          let organizationId = dimension.organization_id;
+          const stored = current.rows[0];
+          if (stored) {
+            const resolved = storedCiOrganizationId(ci.organization_id, {
+              organizationId: stored.organization_id,
+              backfilled: stored.org_backfilled === true,
+            });
+            if (resolved === null) {
+              logger.warn('CI node organization conflicts with its cmdb.dim_ci history; skipped', { ciId: ci._id });
+              await client.query('RELEASE SAVEPOINT ci_dimension_load');
+              continue;
+            }
+            organizationId = resolved;
+            if (stored.org_backfilled === true) {
+              await client.query(
+                'UPDATE cmdb.dim_ci SET org_backfilled = FALSE WHERE ci_id = $1 AND org_backfilled',
+                [ci._id]
+              );
+            }
+            await client.query(
+              `UPDATE cmdb.dim_ci SET is_current = false, effective_to = $1, updated_at = $1
+               WHERE ci_key = $2`,
+              [new Date(), stored.ci_key]
+            );
+          }
+
+          // Insert the new current version
           const insertResult = await client.query(
             `INSERT INTO cmdb.dim_ci
              (ci_id, ci_name, ci_type, environment, ci_status, external_id,
@@ -255,7 +302,7 @@ export class FullRefreshJob {
               new Date(),
               dimension.created_at || new Date(),
               new Date(),
-              dimension.organization_id
+              organizationId
             ]
           );
 
@@ -281,7 +328,7 @@ export class FullRefreshJob {
           }
 
           await client.query('RELEASE SAVEPOINT ci_dimension_load');
-          acceptedOrganizations.set(ci._id, dimension.organization_id);
+          acceptedOrganizations.set(ci._id, organizationId);
           created++;
         } catch (error) {
           await client.query('ROLLBACK TO SAVEPOINT ci_dimension_load');

@@ -80,6 +80,25 @@ export function dimCiIds(ids: unknown[], job: string): string[] {
   return valid;
 }
 
+/** parseNodeMetadata's result for a metadata property that is not JSON. */
+export const UNREADABLE_METADATA: unique symbol = Symbol('UNREADABLE_METADATA');
+
+/**
+ * A :CI node's metadata property (a JSON string) parsed; {} when absent.
+ * Any writer, a reconciliation merge included, can store a string that is
+ * not JSON there; the ETL then skips that one node instead of failing the run.
+ */
+export function parseNodeMetadata(raw: unknown): unknown {
+  if (raw === null || raw === undefined || raw === '') {
+    return {};
+  }
+  try {
+    return JSON.parse(String(raw));
+  } catch {
+    return UNREADABLE_METADATA;
+  }
+}
+
 /**
  * Takes, inside the caller's transaction, the per-CI transaction-scoped
  * advisory locks of a batch: pg_advisory_xact_lock(8271, hashtext(ci_id)),

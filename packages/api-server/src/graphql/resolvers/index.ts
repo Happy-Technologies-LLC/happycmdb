@@ -494,7 +494,7 @@ const Query = {
     __parent: any,
     _args: { id: string; direction?: string },
     _context: GraphQLContext
-  ): Promise<any[]> => {
+  ): Promise<Array<{ _type: string; _ci: GraphQLCI; _properties: unknown }>> => {
     const organizationId = requireGraphQLOrganization(_context);
     await requireCIInOrganization(_context, _args.id, organizationId);
     try {
@@ -502,17 +502,19 @@ const Query = {
       // Both ends of every relationship must be in the caller's organization.
       const key = ciKey(_args.id, organizationId);
 
+      // Entries are mapped like CI._relationships/_dependents, so the related CI's
+      // enum and timestamp fields serialize.
       if (direction === 'out') {
-        return await _context._loaders._relationshipLoader.load(key);
+        return (await _context._loaders._relationshipLoader.load(key)).map(toGraphQLRelatedCI);
       } else if (direction === 'in') {
-        return await _context._loaders._dependentLoader.load(key);
+        return (await _context._loaders._dependentLoader.load(key)).map(toGraphQLRelatedCI);
       } else {
         // For 'both', get both directions
         const [outgoing, incoming] = await Promise.all([
           _context._loaders._relationshipLoader.load(key),
           _context._loaders._dependentLoader.load(key),
         ]);
-        return [...outgoing, ...incoming];
+        return [...outgoing, ...incoming].map(toGraphQLRelatedCI);
       }
     } catch (error: any) {
       throw new GraphQLError('Failed to fetch CI relationships', {

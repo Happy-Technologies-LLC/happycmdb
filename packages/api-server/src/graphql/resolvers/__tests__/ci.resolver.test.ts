@@ -16,6 +16,7 @@ import { createCILoader } from '../../dataloaders/ci-loader';
 import { GraphQLError } from 'graphql';
 import neo4j from 'neo4j-driver';
 import { ApolloServer } from '@apollo/server';
+import type { ApolloServerOptionsWithTypeDefs } from '@apollo/server';
 import { typeDefs } from '../../schema/typeDefs';
 import { analyticsTypeDefs } from '../../schema/analytics.schema';
 import { connectorTypeDefs } from '../../schema/connector.schema';
@@ -693,6 +694,44 @@ describe('GraphQL CI Resolvers', () => {
       expect(client().getSession).not.toHaveBeenCalled();
     });
 
+    it('rejects caller ids at the GraphQL boundary without an existence-dependent response', async () => {
+      const server = new ApolloServer<GraphQLContext>({
+        typeDefs: [typeDefs, analyticsTypeDefs, connectorTypeDefs, reconciliationTypeDefs, itilTypeDefs],
+        // The production resolver map includes custom scalar and merged schema resolvers.
+        resolvers: resolvers as unknown as ApolloServerOptionsWithTypeDefs<GraphQLContext>['resolvers'],
+      });
+      await server.start();
+      try {
+        for (const [field, used, free] of [
+          ['_id', 'ci-of-org-b', 'ci-free'],
+          ['_externalId', 'ext-of-org-b', 'ext-free'],
+        ]) {
+          const results = [];
+          for (const value of [used, free]) {
+            const response = await server.executeOperation(
+              {
+                query: 'mutation($i: CreateCIInput!) { createCI(input: $i) { _id } }',
+                variables: { i: { _name: 'n', _type: 'SERVER', [field]: value } },
+              },
+              { contextValue: mockContext }
+            );
+            if (response.body.kind !== 'single') throw new Error('Expected a single GraphQL result');
+            results.push({
+              code: response.body.singleResult.errors?.[0]?.extensions?.code,
+              // graphql-js echoes the submitted value; compare the error after removing that echo.
+              message: response.body.singleResult.errors?.[0]?.message.replace(value, '<submitted value>'),
+            });
+          }
+          expect(results[0]).toMatchObject({ code: 'BAD_USER_INPUT' });
+          expect(results[1]).toEqual(results[0]);
+        }
+        expect(client().createCI).not.toHaveBeenCalled();
+        expect(client().getSession).not.toHaveBeenCalled();
+      } finally {
+        await server.stop();
+      }
+    });
+
     it('createCI without an id creates distinct server-assigned ids in the caller org', async () => {
       client().createCI.mockImplementation(async (ci: { _id: string }) => createCI({ id: ci._id }));
       const create = () => (resolvers.Mutation as any).createCI(null, { input: { _name: 'n', _type: 'SERVER' } }, mockContext);
@@ -755,7 +794,7 @@ describe('GraphQL CI Resolvers', () => {
       expect(traversals).toHaveLength(1);
     });
 
-    it('createCI, updateCI and getCI return Neo4j DateTime timestamps as ISO strings over GraphQL', async () => {
+    it('createCI, updateCI, getCI and getCIRelationships serialize Neo4j DateTime timestamps and enums over GraphQL', async () => {
       const stored = {
         _id: 'ci-1',
         name: 'n',
@@ -770,6 +809,10 @@ describe('GraphQL CI Resolvers', () => {
       client().getCI.mockResolvedValue(stored);
       client().updateCI.mockResolvedValue(stored);
       mockLoaders.ciLoader.load.mockResolvedValue(stored);
+      // Relationship loader entries carry the related CI in database format (as nodeToCI builds it).
+      mockLoaders.relationshipLoader.load.mockResolvedValue([
+        { _type: 'DEPENDS_ON', _ci: { ...stored, environment: 'production' }, _properties: {} },
+      ]);
       const server = new ApolloServer<GraphQLContext>({
         typeDefs: [typeDefs, analyticsTypeDefs, connectorTypeDefs, reconciliationTypeDefs, itilTypeDefs],
         resolvers: resolvers as any,
@@ -790,6 +833,10 @@ describe('GraphQL CI Resolvers', () => {
           i: { _name: 'm' },
         }),
         await run(`query($id: ID!) { getCI(id: $id) { ${timestamps} } }`, { id: 'ci-1' }),
+        await run(
+          `query($id: ID!) { getCIRelationships(id: $id, direction: "out") { _type _ci { _type _status _environment ${timestamps} } } }`,
+          { id: 'ci-1' }
+        ),
       ];
       await server.stop();
 
@@ -802,8 +849,56 @@ describe('GraphQL CI Resolvers', () => {
         { data: { createCI: expected } },
         { data: { updateCI: expected } },
         { data: { getCI: expected } },
+        {
+          data: {
+            getCIRelationships: [
+              { _type: 'DEPENDS_ON', _ci: { _type: 'SERVER', _status: 'ACTIVE', _environment: 'PRODUCTION', ...expected } },
+            ],
+          },
+        },
       ]);
     });
+
+    it('rejects GraphQL CI reads, traversals and writes without an organization before any data access', async () => {
+      const server = new ApolloServer<GraphQLContext>({
+        typeDefs: [typeDefs, analyticsTypeDefs, connectorTypeDefs, reconciliationTypeDefs, itilTypeDefs],
+        // The production resolver map includes custom scalar and merged schema resolvers.
+        resolvers: resolvers as unknown as ApolloServerOptionsWithTypeDefs<GraphQLContext>['resolvers'],
+      });
+      await server.start();
+      const context: GraphQLContext = {
+        ...mockContext,
+        user: { _userId: 'u1', _username: 'tester', _role: 'admin', _type: 'access' },
+      };
+
+      try {
+        for (const query of [
+          '{ getCI(id: "ci-of-org-b") { _id } }',
+          '{ getCIRelationships(id: "ci-of-org-b") { _type } }',
+          '{ getCIDependencies(id: "ci-of-org-b") { _id } }',
+          '{ getImpactAnalysis(id: "ci-of-org-b") { _distance } }',
+          'mutation { createCI(input: { _name: "n", _type: SERVER }) { _id } }',
+          'mutation { updateCI(id: "ci-of-org-b", input: { _name: "n" }) { _id } }',
+        ]) {
+          const response = await server.executeOperation({ query }, { contextValue: context });
+          expect(response.body.kind).toBe('single');
+          if (response.body.kind !== 'single') throw new Error('Expected a single GraphQL result');
+          const data = response.body.singleResult.data;
+          expect(data === null || (data !== undefined && Object.values(data).every(value => value === null))).toBe(true);
+          expect(response.body.singleResult.errors?.[0]?.extensions?.code).toBe('FORBIDDEN');
+        }
+        expect(client().getSession).not.toHaveBeenCalled();
+        expect(client().getCI).not.toHaveBeenCalled();
+        expect(client().createCI).not.toHaveBeenCalled();
+        expect(client().updateCI).not.toHaveBeenCalled();
+        for (const loader of Object.values(mockLoaders) as Array<{ load: jest.Mock }>) {
+          expect(loader.load).not.toHaveBeenCalled();
+        }
+      } finally {
+        await server.stop();
+      }
+    });
+
   });
 
   describe('Contract Verification (London School)', () => {

@@ -383,7 +383,7 @@ describe('GraphQL API Integration Tests', () => {
 
     const relationships = await execute(
       `query($id: ID!) {
-        getCIRelationships(id: $id, direction: "out") { _type _properties _ci { _id _name } }
+        getCIRelationships(id: $id, direction: "out") { _type _properties _ci { _id _name _type _status _createdAt } }
       }`,
       { id: appId }
     );
@@ -391,7 +391,13 @@ describe('GraphQL API Integration Tests', () => {
       expect.objectContaining({
         _type: 'DEPENDS_ON',
         _properties: expect.objectContaining({ critical: true }),
-        _ci: expect.objectContaining({ _id: serverId, _name: 'app-server' }),
+        _ci: {
+          _id: serverId,
+          _name: 'app-server',
+          _type: 'SERVER',
+          _status: 'ACTIVE',
+          _createdAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.000Z$/),
+        },
       }),
     ]);
   });

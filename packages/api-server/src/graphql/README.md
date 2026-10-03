@@ -29,7 +29,7 @@ graphql/
 - **getImpactAnalysis**: Analyze what depends on a CI
 
 ### Mutation Capabilities
-- **createCI**: Create a CI in the caller's organization
+- **createCI**: Create a CI in the caller's organization; the server assigns the id (no `_id`/`_externalId` input)
 - **updateCI**: Update a CI (its organization never changes)
 - **deleteCI**: Remove a CI and its relationships
 - **createRelationship**: Link two CIs of the caller's organization
@@ -38,9 +38,11 @@ graphql/
 ### Tenant Scoping
 Every CI query, mutation and CI relationship field requires the token's organization
 claim (`FORBIDDEN` otherwise, before any Neo4j query) and only matches CIs of that
-organization. A foreign CI behaves like a missing one: `null`/empty results for
-queries; `NOT_FOUND` (`CI not found`) for `updateCI`, `deleteCI` and
-`createRelationship`; `NOT_FOUND` (`Relationship not found`) for `deleteRelationship`.
+organization. A foreign CI behaves like a missing one: `null` from `getCI`;
+`NOT_FOUND` (`CI not found`) for `getCIRelationships`, `getCIDependencies`,
+`getImpactAnalysis`, `updateCI`, `deleteCI` and `createRelationship`; `NOT_FOUND`
+(`Relationship not found`) for `deleteRelationship`. `createCI` assigns the CI id
+and accepts no `_id` or `_externalId` (both are unique across organizations).
 
 ### Performance Optimizations
 - **DataLoader Integration**: Batches and caches database queries to prevent N+1 problems

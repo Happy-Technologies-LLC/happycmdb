@@ -798,3 +798,46 @@ it.each([['org A', ORG_A], ['no organization', undefined]])(
     ]);
   });
 
+describe('one org\'s client-writable node values cannot fail another org\'s CIs in the same batch', () => {
+  // POST/PUT /api/v1/cis accepts any metadata object; a reconciliation merge any value.
+  it('neo4j-to-postgres syncs B\'s CI next to org-A nodes whose discovery_source or discovery_method overflows its column', async () => {
+    const long = 'x'.repeat(51);
+    nodes = [
+      node('ci-long-source', ORG_A, { metadata: JSON.stringify({ discovery_source: long, discovery_method: 'manual' }) }),
+      node('ci-long-method', ORG_A, { metadata: JSON.stringify({ discovery_source: 'test', discovery_method: long }) }),
+      node('ci-b', ORG_B),
+    ];
+
+    const result = await new Neo4jToPostgresJob(neo4jClient, postgresClient).execute({
+      id: 'job-1', data: { incrementalSince: '2026-01-01T00:00:00Z' }, updateProgress: async () => undefined,
+    } as unknown as Job);
+
+    expect((await versions('ci-b')).map(v => [v.is_current, v.organization_id])).toEqual([[true, ORG_B]]);
+    // Skipped, not truncated: neither overlong CI gets a dimension.
+    expect(await versions('ci-long-source')).toEqual([]);
+    expect(await versions('ci-long-method')).toEqual([]);
+    expect(result.errors).toBe(2);
+  });
+
+  it('sync-cis-to-datamart syncs B\'s CI next to org-A nodes whose metadata or tbm_attributes is not JSON, and reports them', async () => {
+    const v3 = (id: string, organizationId: string, overrides: Record<string, unknown> = {}) =>
+      node(id, organizationId, { ci_name: id, ci_type: 'server', ci_status: 'active', ...overrides });
+    nodes = [
+      v3('ci-bad-metadata', ORG_A, { metadata: '{not json' }),
+      v3('ci-bad-tbm', ORG_A, { tbm_attributes: '{not json' }),
+      v3('ci-b', ORG_B),
+    ];
+
+    const result = await processSyncCIsToDatamart({
+      id: 'sync-cis', data: { incrementalSince: '2026-01-01T00:00:00Z' }, updateProgress: async () => undefined,
+    } as unknown as Job);
+
+    expect((await versions('ci-b')).map(v => [v.is_current, v.organization_id])).toEqual([[true, ORG_B]]);
+    expect(await versions('ci-bad-metadata')).toEqual([]);
+    expect(await versions('ci-bad-tbm')).toEqual([]);
+    expect(result.errors).toEqual([
+      expect.stringContaining('ci-bad-metadata'), expect.stringContaining('ci-bad-tbm'),
+    ]);
+  });
+});
+

@@ -1,7 +1,7 @@
 // Copyright 2026 Happy Technologies LLC
 // SPDX-License-Identifier: Apache-2.0
 
-import type { CI } from '@cmdb/common';
+import { logger, type CI } from '@cmdb/common';
 
 /**
  * The internal organization. Founder decision FD-4: CI data that carries no
@@ -42,6 +42,25 @@ export interface StoredCiOrganization {
 }
 
 /**
+ * The extracted CIs whose node id can be a cmdb.dim_ci ci_id: a non-empty
+ * string. Neo4j's uniqueness constraint tells the number 12345 (which a
+ * reconciliation merge can set as an id) from the string '12345', but
+ * node-postgres sends both as the text '12345', so such a node would read,
+ * claim and write another CI's history. Other nodes are skipped and logged,
+ * before any lock or read.
+ */
+export function withStringIds<T>(cis: T[], id: (ci: T) => unknown, job: string): T[] {
+  const valid = cis.filter(ci => {
+    const value = id(ci);
+    return typeof value === 'string' && value.length > 0;
+  });
+  if (valid.length < cis.length) {
+    logger.warn('Skipping CI nodes whose id is not a non-empty string', { job, skipped: cis.length - valid.length });
+  }
+  return valid;
+}
+
+/**
  * Takes, inside the caller's transaction, the per-CI transaction-scoped
  * advisory locks of a batch: pg_advisory_xact_lock(8271, hashtext(ci_id)),
  * the key PostgresClient.updateCIDimension also takes. The cmdb.dim_ci SCD
@@ -52,16 +71,21 @@ export interface StoredCiOrganization {
  * current-row index is not unique).
  *
  * Keys are taken once each, in ascending key order: hashtext can give two ids
- * one key, so ordering by id could make two batches wait on each other.
+ * one key, and ordering by id could then form a wait cycle (deadlock) between
+ * two batches. Batches still wait for each other; they never wait in a cycle.
+ * Every id must be a string (see withStringIds): an id this cannot lock must
+ * not be processed.
  */
 export async function lockCIDimensions(
   client: { query: (sql: string, params: unknown[]) => Promise<{ rows: Array<Record<string, unknown>> }> },
   ciIds: unknown[]
 ): Promise<void> {
-  const ids = ciIds.filter((id): id is string => typeof id === 'string');
+  if (!ciIds.every(id => typeof id === 'string')) {
+    throw new Error('CI dimension lock requires string ci_ids');
+  }
   const keys = await client.query(
     'SELECT DISTINCT hashtext(id) AS key FROM unnest($1::text[]) AS id ORDER BY key',
-    [ids]
+    [ciIds]
   );
   for (const { key } of keys.rows) {
     await client.query('SELECT pg_advisory_xact_lock(8271, $1::int)', [key]);

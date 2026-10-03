@@ -418,17 +418,23 @@ organization of the `:CI` node it versions.
   and insertion. Those writers are `DataMartClient` backfill claims,
   neo4j-to-postgres and sync-cis-to-datamart. Each ETL batch takes all of its
   locks before reading any current row, once per lock key and in ascending key
-  order. Two ids can share a key (`hashtext`), so two batches still never wait
-  on each other's locks. Two runs that see different organizations for the
-  same CI cannot both replace its current version: the second re-reads the
-  first's version and refuses it as a conflict. The old costs stay in the
-  original version. Residual: `DataMartClient`'s first insert, the full
-  refresh and the `neo4j-wins` reconciliation insert take no lock, so they can
-  race with these writers on a CI without a current row.
-- The ETL writers identify a CI's `cmdb.dim_ci` history only by its node's
-  unique `id`. sync-cis-to-datamart ignores any `ci_id` node property: a
-  reconciliation merge can copy one onto a node of another organization, or of
-  none, and must not claim or end a backfilled CI's history through it.
+  order. Batches that share a CI, or a lock key (two ids can share a
+  `hashtext` key), still wait for each other, but never in a cycle, so they
+  do not deadlock. Two runs that see different organizations for the same CI
+  cannot both replace its current version: the second re-reads the first's
+  version and refuses it as a conflict. The old costs stay in the original
+  version. Residual: `DataMartClient`'s first insert, the full refresh, the
+  `neo4j-wins` reconciliation insert and the reconciliation status update take
+  no lock, so they can race with these writers.
+- The ETL writers (neo4j-to-postgres, sync-cis-to-datamart, full refresh)
+  identify a CI's `cmdb.dim_ci` history only by its node's unique `id`, and
+  only when that `id` is a non-empty string; other nodes are skipped and
+  logged before any lock or read. A reconciliation merge can set a node's
+  `id` to a number such as `12345`, which Neo4j keeps apart from the string
+  `'12345'` but PostgreSQL would read as the same `ci_id`. sync-cis-to-datamart
+  ignores any `ci_id` node property: a merge can copy one onto a node of
+  another organization, or of none, and must not claim or end a backfilled
+  CI's history through it.
 - **Rollout:** CIs created in a customer organization through `POST /api/v1/cis` and
   synced before 011 are backfilled to the internal organization. Right after applying
   011, run a complete neo4j-to-postgres sync (no `incrementalSince`, no `ciTypes`) so

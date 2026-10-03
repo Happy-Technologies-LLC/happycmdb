@@ -18,7 +18,7 @@ import { Job } from 'bullmq';
 import { logger } from '@cmdb/common';
 import { getPostgresClient, getNeo4jClient } from '@cmdb/database';
 import {
-  dimCiOrganizationId, lockCIDimensions, storedCiOrganizationId,
+  dimCiOrganizationId, lockCIDimensions, storedCiOrganizationId, withStringIds,
 } from '../transformers/ci-organization';
 
 export interface SyncCIsJobData {
@@ -75,7 +75,9 @@ export async function processSyncCIsToDatamart(
     const ciTypes = job.data.ciTypes;
 
     // Step 1: Extract CIs from Neo4j with v3 attributes
-    const cis = await extractCIsFromNeo4j(incrementalSince, fullRefresh, ciTypes);
+    const cis = withStringIds(
+      await extractCIsFromNeo4j(incrementalSince, fullRefresh, ciTypes), ci => ci.ci_id, 'sync-cis-to-datamart'
+    );
     logger.info('[SyncCIsToDatamart] Extracted CIs from Neo4j', {
       count: cis.length,
       incrementalSince,

@@ -21,7 +21,7 @@ import { Neo4jClient, PostgresClient } from '@cmdb/database';
 import { logger, CI, validateTableNames } from '@cmdb/common';
 import { DimensionTransformer } from '../transformers/dimension-transformer';
 import {
-  ExtractedCI, dimCiOrganizationId, lockCIDimensions, parseNodeMetadata, storedCiOrganizationId,
+  ExtractedCI, dimCiOrganizationId, isDimCiId, lockCIDimensions, parseNodeMetadata, storedCiOrganizationId,
   UNREADABLE_METADATA, withDimCiIds,
 } from '../transformers/ci-organization';
 
@@ -202,7 +202,10 @@ export class FullRefreshJob {
         const props = record.get('ci').properties;
         const metadata = parseNodeMetadata(props.metadata);
         if (metadata === UNREADABLE_METADATA) {
-          logger.warn('Skipping CI node whose metadata is not JSON', { job: 'full-refresh' });
+          // The id only when it is a valid ci_id: a node id is client-writable.
+          logger.warn('Skipping CI node whose metadata is not JSON', {
+            job: 'full-refresh', ciId: isDimCiId(props.id) ? props.id : '(invalid id)',
+          });
           continue;
         }
         cis.push({

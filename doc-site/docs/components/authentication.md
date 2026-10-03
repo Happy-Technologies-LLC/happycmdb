@@ -426,7 +426,18 @@ organization of the `:CI` node it versions.
   reconciliation insert and `DataMartClient`'s first insert refuse any
   current row). The old costs stay in the original version. Residual: the
   reconciliation status update (an in-place update restricted to the row's
-  organization) and the complete-sync marker clear take no lock.
+  organization), the complete-sync marker clear and `DataMartClient`'s
+  unchanged-CI marker clear take no lock. These only clear a marker or change
+  a status within its organization, but `DataMartClient` can return the key of
+  a version a concurrent writer has just retired.
+- Availability residual (no cross-organization write): one CI node's
+  client-writable values can still fail a whole ETL batch, which holds CIs of
+  every organization. sync-cis-to-datamart writes a node's `metadata` string to
+  a JSONB column unparsed, so non-JSON metadata fails its batch of up to 100
+  CIs on every run; neo4j-to-postgres writes `metadata.discovery_method` and
+  `discovery_source` to `VARCHAR(50)` discovery facts, so a longer value fails
+  its batch. Those CIs' dimensions, and with them mapping, `/costs` and trends,
+  stay stale until the node is repaired.
 - The dimension writers that read CIs from Neo4j (neo4j-to-postgres,
   sync-cis-to-datamart, full refresh, reconciliation) identify a CI's
   `cmdb.dim_ci` history only by its node's unique `id`, and only when that

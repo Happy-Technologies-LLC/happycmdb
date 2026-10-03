@@ -189,7 +189,10 @@ export class Neo4jToPostgresJob {
         const props = record.get('ci').properties;
         const metadata = parseNodeMetadata(props.metadata);
         if (metadata === UNREADABLE_METADATA) {
-          logger.warn('Skipping CI node whose metadata is not JSON', { job: 'neo4j-to-postgres' });
+          // The id only when it is a valid ci_id: a node id is client-writable.
+          logger.warn('Skipping CI node whose metadata is not JSON', {
+            job: 'neo4j-to-postgres', ciId: isDimCiId(props.id) ? props.id : '(invalid id)',
+          });
           unreadableIds.push(props.id);
           continue;
         }

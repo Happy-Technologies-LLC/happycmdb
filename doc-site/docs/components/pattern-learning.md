@@ -638,8 +638,8 @@ When technology changes:
 **Solutions:**
 1. Check WebSocket connection:
    ```javascript
-   // Browser console
-   ws://localhost:3000/ws
+   // Browser console (the upgrade needs the session's access token; 401 without it)
+   new WebSocket('ws://localhost:3000/ws', ['cmdb.v1', `bearer.${localStorage.getItem('auth_token')}`])
    ```
 
 2. Verify WebSocket service:

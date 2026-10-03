@@ -332,10 +332,36 @@ WebSocket-based notifications for:
 - Discovery session completion
 - Cost alerts
 
-**Connection:**
+**Connection:** the upgrade requires an access token whose user belongs to an
+organization. Browsers pass it as a `bearer.<token>` subprotocol next to
+`cmdb.v1` (the only subprotocol the server selects); other clients may send
+`Authorization: Bearer <token>` instead. Tokens are never accepted in the
+query string.
 ```javascript
-ws://localhost:3000/ws
+new WebSocket('ws://localhost:3000/ws', ['cmdb.v1', `bearer.${accessToken}`]);
 ```
+A missing or invalid token is refused with `401`, a user without an
+organization with `403`. Each message carries an `organizationId` and is
+delivered only to connections of that organization; messages without one are
+dropped.
+
+Admission is bounded per API instance: at most 8 simultaneous token
+verifications, 64 active connections overall, 16 per organization, and 4
+per user. A saturated upgrade returns `503` without registering a connection.
+An upgrade whose verification exceeds 30 seconds is rejected with `401`;
+its underlying database lookup continues to occupy a verifier slot until it
+settles, rather than allowing unbounded concurrent lookups.
+
+A connection lasts no longer than its token: the server closes it with `4001`
+when the token expires and, on a re-check every two minutes, with `4001` when
+the user is disabled or `4003` when the user's organization changed. After
+`4001`, reconnect only with a new access token; after `4003`, reconnecting with
+the same token picks up the new organization.
+
+The re-check runs at most 8 user lookups at a time; a slot stays taken until
+its lookup settles. Any user a re-check has not resolved within 30 seconds,
+whether its lookup is still running or still waiting for a slot, is closed
+with `1011`; the client reconnects and is verified at upgrade.
 
 ## Cost Management
 
@@ -479,15 +505,17 @@ AI_DISCOVERY_MONTHLY_BUDGET=200.00
 
 ### WebSocket Not Connecting
 
-**Cause**: WebSocket service not initialized
+**Cause**: WebSocket service not initialized, or the upgrade was refused (`401`: missing/invalid token; `403`: user has no organization)
 
 **Solution:**
 ```bash
 # Check API server logs
 docker logs cmdb-api-server | grep WebSocket
 
-# Verify WebSocket endpoint
+# Verify WebSocket endpoint (expect 101 with a valid token, 401 without)
 curl -i -N -H "Connection: Upgrade" -H "Upgrade: websocket" \
+  -H "Sec-WebSocket-Version: 13" -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
   http://localhost:3000/ws
 ```
 

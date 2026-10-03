@@ -350,7 +350,7 @@ and deletes the `cmdb.schema_migrations` row so 008 applies again later. Re-appl
 008 puts all services back in the internal organization. Until the old image is
 running, the 008-aware API returns 500 on business-service routes.
 
-### Configuration items (`/api/v1/cis` and GraphQL CI operations)
+### Configuration items (`/api/v1/cis`, graph/search/analytics/impact/drift routes and GraphQL CI operations)
 
 Neo4j `:CI` nodes carry an `organization_id` property, set only from the token's
 organization when a CI is created through `POST /api/v1/cis` or GraphQL `createCI`.
@@ -389,11 +389,48 @@ organization when a CI is created through `POST /api/v1/cis` or GraphQL `createC
   itself and accepts no `_id` or `_externalId`, so it cannot be used to test whether
   another organization uses an id or external id. The per-request dataloaders key
   their cache by organization and CI id.
-- **Not yet tenant-scoped.** Only `/api/v1/cis/**`, `/api/v1/dashboards/**` and the
-  GraphQL CI operations above are scoped. Until the later slices land, every other
-  route and GraphQL resolver that touches CIs can still read other tenants' CIs, and
-  some can modify or delete them:
-  - REST `/api/v1/relationships`;
+- `/api/v1/relationships/**`, `/api/v1/search/**`, `/api/v1/analytics/**`, `/api/v1/impact/**`
+  and `/api/v1/drift/**` return the same **403** without an organization claim, before
+  any Neo4j or PostgreSQL query, and only count, return or link CIs of the tenant:
+  - Relationships: list and by-type only return relationships whose two endpoints are
+    tenant CIs. `POST` needs both endpoints in the tenant (a foreign endpoint gets the
+    same **404** as a missing one and nothing is written); `DELETE` of a relationship
+    touching another organization is **404** (`Relationship not found`) and deletes nothing.
+  - Search: `/advanced`, `/fulltext`, `/relationships` (both ends of the pattern) and
+    `/orphaned` only match tenant CIs. A tenant CI whose only links go to other
+    organizations' nodes or to org-less CIs is listed as orphaned, so a foreign link is
+    neither revealed nor hides it; links to non-CI nodes without an organization still count.
+  - Analytics: the dashboard counts tenant CIs and relationships between two tenant CIs.
+    `cmdb.dim_ci`, `cmdb.fact_*`, `ci_change_history` and `anomalies` have no organization
+    column yet (T3d), so the PostgreSQL endpoints keep rows whose `ci_id` is one of the
+    tenant's Neo4j `:CI` ids; relationship facts need both endpoints in that set (including
+    every step of the dependency-depth recursion). Changes of CIs no longer in Neo4j
+    (for example deleted ones) are therefore not counted by `/change-timeline`.
+    `/change-history` and `/health-metrics/:ciId` return **404**
+    (`{"success":false,"error":"Not Found","message":"CI not found"}`) for a foreign or
+    missing CI and read no history.
+  - Impact and drift: every CI-keyed route (`/impact/predict`, `/graph/:id`,
+    `/criticality/:id`, `/history/:id`, `/drift/detect/:id`, `/history/:id`,
+    `/baseline`, `/baseline/:id`) returns the same **404** (`CI with ID '<id>' not found`)
+    for a foreign CI as for a missing one, before the engine or any history table is
+    read; approving another organization's baseline is the same **404** as a missing
+    baseline. Impact graphs, predictions, critical paths, criticality factors and
+    relationship baselines only follow paths whose every node is a tenant CI.
+  - Stored results computed before this scoping existed are filtered when served:
+    `/impact/history/:id` omits an analysis that names any node that is not a current CI
+    of the tenant (in its affected CIs, their dependency paths or the critical path; this
+    includes the tenant's own since-deleted CIs), since its scores, blast radius and
+    downtime estimate count those nodes, so a page can hold fewer rows than `limit`;
+    relationships baselines only list tenant CIs; a cached criticality score is only
+    reused when it was calculated for the same organization.
+  - History rows (`ci_change_history`, `anomalies`, `drift_detection_results`,
+    `impact_analyses`, `baseline_snapshots`) are keyed by CI id only. Access is gated
+    on the CI currently existing in the tenant; rows written for an earlier CI with the
+    same id are not separated by this (reused-id history, tracked separately).
+- **Not yet tenant-scoped.** Only `/api/v1/cis/**`, `/api/v1/dashboards/**`, the graph,
+  search, analytics, impact and drift routes above and the GraphQL CI operations are
+  scoped. Until the later slices land, every other route and GraphQL resolver that
+  touches CIs can still read other tenants' CIs, and some can modify or delete them:
   - ITIL writes to CI properties by id: `/api/v1/itil/configuration-items/:id/lifecycle`,
     `/:id/status`, `/:id/audit` and `/:id/audit/complete`, plus
     `/api/v1/itil/baselines/:id/restore`;
@@ -401,9 +438,8 @@ organization when a CI is created through `POST /api/v1/cis` or GraphQL `createC
     matching runs across all organizations, and merge overwrites the matched CI's
     attributes even when it belongs to another organization (but not its
     `organization_id`);
-  - `/api/v1/search/*`;
-  - `/api/v1/drift` and `/api/v1/impact`, which look CIs up without an organization filter;
-  - analytics and TBM CI reads, which return individual CIs as well as aggregates.
+  - GraphQL analytics resolvers, discovery and connector routes, and TBM CI reads, which
+    return individual CIs as well as aggregates.
 - The sample CIs seeded by `db-init` (`infrastructure/scripts/init-neo4j.cypher`) and by
   `infrastructure/scripts/seed-data.ts` are in the internal organization, the seeded
   admin's. Other existing CIs stay invisible until backfilled. The backfill is not run

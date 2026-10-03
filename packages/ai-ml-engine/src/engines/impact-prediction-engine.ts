@@ -6,7 +6,7 @@
  * Dependency graph analysis for change impact assessment
  */
 
-import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
+import { getNeo4jClient, getPostgresClient, type CIOrganizationScope } from '@cmdb/database';
 import { logger } from '@cmdb/common';
 import {
   ImpactAnalysis,
@@ -21,6 +21,7 @@ import {
   CriticalityFactors,
 } from '../types/impact.types';
 import { v4 as uuidv4 } from 'uuid';
+import { ciScopeCypher, type CIScopeCypher } from './ci-organization-scope';
 
 export class ImpactPredictionEngine {
   private static instance: ImpactPredictionEngine;
@@ -37,22 +38,27 @@ export class ImpactPredictionEngine {
   }
 
   /**
-   * Predict impact of a change on a CI
+   * Predict impact of a change on a CI. With an organization scope the CI, the
+   * affected CIs, the critical path and the criticality factors only involve
+   * that organization's CIs.
    */
   async predictChangeImpact(
     ciId: string,
-    changeType: ChangeType
+    changeType: ChangeType,
+    scope: CIOrganizationScope
   ): Promise<ImpactAnalysis> {
     logger.info('Predicting change impact', { ci_id: ciId, change_type: changeType });
 
+    const cypher = ciScopeCypher(scope);
     const session = this.neo4jClient.getSession();
 
     try {
       // Get source CI details
       const ciResult = await session.run(
         `MATCH (ci:CI {id: $ciId})
+         WHERE ${cypher.node('ci')}
          RETURN ci.id as id, ci.name as name, ci.ci_type as ci_type`,
-        { ciId }
+        { ciId, organizationId: cypher.organizationId }
       );
 
       if (ciResult.records.length === 0) {
@@ -65,10 +71,10 @@ export class ImpactPredictionEngine {
       }
 
       // Find all affected CIs (downstream dependencies)
-      const affectedCIs = await this.findAffectedCIs(ciId);
+      const affectedCIs = await this.findAffectedCIs(ciId, cypher);
 
       // Calculate impact score based on criticality and blast radius
-      const criticalityScore = await this.getCriticalityScore(ciId);
+      const criticalityScore = await this.getCriticalityScore(ciId, scope);
       const impactScore = this.calculateImpactScore(
         affectedCIs.length,
         criticalityScore.criticality_score,
@@ -76,7 +82,7 @@ export class ImpactPredictionEngine {
       );
 
       // Find critical path (longest dependency chain)
-      const criticalPath = await this.findCriticalPath(ciId);
+      const criticalPath = await this.findCriticalPath(ciId, cypher);
 
       // Determine risk level
       const riskLevel = this.determineRiskLevel(impactScore, affectedCIs.length);
@@ -113,7 +119,7 @@ export class ImpactPredictionEngine {
   /**
    * Find all CIs affected by a change to source CI
    */
-  private async findAffectedCIs(sourceCIId: string): Promise<AffectedCI[]> {
+  private async findAffectedCIs(sourceCIId: string, cypher: CIScopeCypher): Promise<AffectedCI[]> {
     const session = this.neo4jClient.getSession();
     const affectedCIs: AffectedCI[] = [];
 
@@ -122,6 +128,7 @@ export class ImpactPredictionEngine {
       const result = await session.run(
         `MATCH path = (source:CI {id: $ciId})<-[*1..5]-(dependent:CI)
          WHERE ALL(r IN relationships(path) WHERE type(r) IN ['DEPENDS_ON', 'USES', 'HOSTED_ON'])
+           AND ${cypher.path('path')}
          WITH dependent, path,
               length(path) as hop_count,
               [node IN nodes(path) | node.id] as path_ids
@@ -133,7 +140,7 @@ export class ImpactPredictionEngine {
            path_ids
          ORDER BY hop_count
          LIMIT 200`,
-        { ciId: sourceCIId }
+        { ciId: sourceCIId, organizationId: cypher.organizationId }
       );
 
       for (const record of result.records) {
@@ -161,18 +168,19 @@ export class ImpactPredictionEngine {
   /**
    * Find critical path (longest dependency chain)
    */
-  private async findCriticalPath(ciId: string): Promise<string[]> {
+  private async findCriticalPath(ciId: string, cypher: CIScopeCypher): Promise<string[]> {
     const session = this.neo4jClient.getSession();
 
     try {
       const result = await session.run(
         `MATCH path = (source:CI {id: $ciId})<-[*1..10]-(dependent:CI)
          WHERE ALL(r IN relationships(path) WHERE type(r) = 'DEPENDS_ON')
+           AND ${cypher.path('path')}
          WITH path, length(path) as path_length
          ORDER BY path_length DESC
          LIMIT 1
          RETURN [node IN nodes(path) | node.id] as critical_path`,
-        { ciId }
+        { ciId, organizationId: cypher.organizationId }
       );
 
       if (result.records.length > 0) {
@@ -189,15 +197,20 @@ export class ImpactPredictionEngine {
   }
 
   /**
-   * Get or calculate criticality score for a CI
+   * Get or calculate criticality score for a CI. A calculated score only counts
+   * dependents and dependencies the scope's organization can see. A cached
+   * score is only reused when it was calculated for the same scope (its
+   * factors record the organization), so scores calculated without tenant
+   * scoping, or for another organization's CI with the same id, are recalculated.
    */
-  async getCriticalityScore(ciId: string): Promise<CriticalityScore> {
+  async getCriticalityScore(ciId: string, scope: CIOrganizationScope): Promise<CriticalityScore> {
     // Check if cached
     const cached = await this.postgresClient.query(
       `SELECT * FROM ci_criticality_scores
        WHERE ci_id = $1
-       AND calculated_at >= NOW() - INTERVAL '7 days'`,
-      [ciId]
+       AND calculated_at >= NOW() - INTERVAL '7 days'
+       AND factors->>'organization_id' IS NOT DISTINCT FROM $2::text`,
+      [ciId, ciScopeCypher(scope).organizationId]
     );
 
     if (cached.rows.length > 0) {
@@ -205,21 +218,25 @@ export class ImpactPredictionEngine {
     }
 
     // Calculate new score
-    return await this.calculateCriticalityScore(ciId);
+    return await this.calculateCriticalityScore(ciId, scope);
   }
 
   /**
    * Calculate criticality score based on multiple factors
    */
-  private async calculateCriticalityScore(ciId: string): Promise<CriticalityScore> {
+  private async calculateCriticalityScore(ciId: string, scope: CIOrganizationScope): Promise<CriticalityScore> {
+    const cypher = ciScopeCypher(scope);
     const session = this.neo4jClient.getSession();
 
     try {
       // Get dependency counts and relationship weights
       const result = await session.run(
         `MATCH (ci:CI {id: $ciId})
+         WHERE ${cypher.node('ci')}
          OPTIONAL MATCH (ci)<-[incoming]-(dependent)
+         WHERE ${cypher.neighbour('dependent')}
          OPTIONAL MATCH (ci)-[outgoing]->(dependency)
+         WHERE ${cypher.neighbour('dependency')}
          WITH ci,
               COUNT(DISTINCT incoming) as dependent_count,
               COUNT(DISTINCT outgoing) as dependency_count,
@@ -229,7 +246,7 @@ export class ImpactPredictionEngine {
                 dependent_count,
                 dependency_count,
                 dependent_ids`,
-        { ciId }
+        { ciId, organizationId: cypher.organizationId }
       );
 
       if (result.records.length === 0) {
@@ -250,7 +267,7 @@ export class ImpactPredictionEngine {
       const dependentIds = record.get('dependent_ids');
 
       for (const depId of dependentIds) {
-        const depScore = await this.getCriticalityScore(depId);
+        const depScore = await this.getCriticalityScore(depId, scope);
         dependentWeight += depScore.criticality_score * 0.5; // Weighted contribution
       }
 
@@ -280,7 +297,7 @@ export class ImpactPredictionEngine {
       };
 
       // Store score
-      await this.storeCriticalityScore(score);
+      await this.storeCriticalityScore(score, cypher.organizationId);
 
       return score;
     } finally {
@@ -305,9 +322,16 @@ export class ImpactPredictionEngine {
   }
 
   /**
-   * Build dependency graph for visualization
+   * Build dependency graph for visualization. With an organization scope the
+   * graph only follows paths whose every node is in that organization, and the
+   * per-node counts ignore other organizations' neighbours.
    */
-  async buildDependencyGraph(rootCiId: string, maxDepth: number = 3): Promise<DependencyGraph> {
+  async buildDependencyGraph(
+    rootCiId: string,
+    maxDepth: number,
+    scope: CIOrganizationScope
+  ): Promise<DependencyGraph> {
+    const cypher = ciScopeCypher(scope);
     const session = this.neo4jClient.getSession();
     const nodes: GraphNode[] = [];
     const edges: GraphEdge[] = [];
@@ -317,17 +341,20 @@ export class ImpactPredictionEngine {
       // Get nodes and relationships
       const result = await session.run(
         `MATCH path = (root:CI {id: $rootCiId})-[*0..${maxDepth}]-(related:CI)
+         WHERE ${cypher.path('path')}
          WITH nodes(path) as path_nodes, relationships(path) as path_rels
          UNWIND path_nodes as node
          WITH DISTINCT node
-         OPTIONAL MATCH (node)-[outgoing]-()
-         OPTIONAL MATCH (node)<-[incoming]-()
+         OPTIONAL MATCH (node)-[outgoing]-(outgoing_node)
+         WHERE ${cypher.neighbour('outgoing_node')}
+         OPTIONAL MATCH (node)<-[incoming]-(incoming_node)
+         WHERE ${cypher.neighbour('incoming_node')}
          RETURN node.id as id,
                 node.name as name,
                 node.ci_type as ci_type,
                 COUNT(DISTINCT incoming) as dependents_count,
                 COUNT(DISTINCT outgoing) as dependencies_count`,
-        { rootCiId }
+        { rootCiId, organizationId: cypher.organizationId }
       );
 
       // Build nodes
@@ -337,7 +364,7 @@ export class ImpactPredictionEngine {
 
         nodeIds.add(nodeId);
 
-        const criticalityScore = await this.getCriticalityScore(nodeId);
+        const criticalityScore = await this.getCriticalityScore(nodeId, scope);
 
         nodes.push({
           id: nodeId,
@@ -353,13 +380,14 @@ export class ImpactPredictionEngine {
       // Get edges
       const edgeResult = await session.run(
         `MATCH path = (root:CI {id: $rootCiId})-[*0..${maxDepth}]-(related:CI)
+         WHERE ${cypher.path('path')}
          WITH relationships(path) as path_rels
          UNWIND path_rels as rel
          WITH DISTINCT rel, startNode(rel) as source, endNode(rel) as target
          RETURN source.id as source_id,
                 target.id as target_id,
                 type(rel) as rel_type`,
-        { rootCiId }
+        { rootCiId, organizationId: cypher.organizationId }
       );
 
       for (const record of edgeResult.records) {
@@ -497,14 +525,16 @@ export class ImpactPredictionEngine {
   }
 
   /**
-   * Store criticality score
+   * Store criticality score, recording the organization it was calculated for
+   * (null when unscoped) as the cache entry's scope.
    */
-  private async storeCriticalityScore(score: CriticalityScore): Promise<void> {
+  private async storeCriticalityScore(score: CriticalityScore, organizationId: string | null): Promise<void> {
     await this.postgresClient.query(
       `INSERT INTO ci_criticality_scores
        (ci_id, ci_name, criticality_score, factors, calculated_at)
        VALUES ($1, $2, $3, $4, $5)
        ON CONFLICT (ci_id) DO UPDATE SET
+         ci_name = $2,
          criticality_score = $3,
          factors = $4,
          calculated_at = $5`,
@@ -512,21 +542,28 @@ export class ImpactPredictionEngine {
         score.ci_id,
         score.ci_name,
         score.criticality_score,
-        JSON.stringify(score.factors),
+        JSON.stringify({ ...score.factors, organization_id: organizationId }),
         score.calculated_at,
       ]
     );
   }
 
   /**
-   * Map row to criticality score
+   * Map row to criticality score (the stored scope marker is not a factor)
    */
-  private mapRowToCriticalityScore(row: any): CriticalityScore {
+  private mapRowToCriticalityScore(row: {
+    ci_id: string;
+    ci_name: string;
+    criticality_score: number;
+    factors: CriticalityFactors & { organization_id?: string | null };
+    calculated_at: Date;
+  }): CriticalityScore {
+    const { organization_id: _scope, ...factors } = row.factors;
     return {
       ci_id: row.ci_id,
       ci_name: row.ci_name,
       criticality_score: row.criticality_score,
-      factors: row.factors,
+      factors,
       calculated_at: row.calculated_at,
     };
   }

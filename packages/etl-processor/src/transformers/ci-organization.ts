@@ -42,6 +42,27 @@ export interface StoredCiOrganization {
 }
 
 /**
+ * The per-CI transaction-scoped advisory lock the cmdb.dim_ci SCD writers
+ * (neo4j-to-postgres, sync-cis-to-datamart and
+ * PostgresClient.updateCIDimension, which uses the same key) take before
+ * reading a CI's current row. Held to COMMIT, so a concurrent writer re-reads
+ * the version just written instead of the row it replaced; without it both
+ * could expire one row and insert two current versions in different
+ * organizations (the current-row index is not unique). Writers lock a batch in
+ * ci_id order so two batches do not deadlock.
+ */
+export const CI_DIMENSION_LOCK_SQL = 'SELECT pg_advisory_xact_lock(8271, hashtext($1))';
+
+/** A batch in the order its per-CI locks must be taken (see CI_DIMENSION_LOCK_SQL). */
+export function inLockOrder<T>(cis: T[], ciId: (ci: T) => unknown): T[] {
+  return [...cis].sort((a, b) => {
+    const x = String(ciId(a));
+    const y = String(ciId(b));
+    return x < y ? -1 : x > y ? 1 : 0;
+  });
+}
+
+/**
  * The organization of the next current version of a CI already in
  * cmdb.dim_ci, or null when its node conflicts with the stored history: the
  * caller then writes nothing for the CI. No stored row ever changes

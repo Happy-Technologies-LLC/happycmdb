@@ -398,7 +398,12 @@ organization of the `:CI` node it versions.
   ID, including a node naming an organization for a 011-backfilled internal row,
   leaves the conflict unresolved and neither side changes.
 - Complete neo4j-to-postgres syncs and full refreshes write relationship facts
-  only when both endpoints were resolved from committed CI batches. Full
+  only when both endpoints were resolved from committed CI batches. A
+  `ciTypes`-filtered complete sync does not extract the other endpoint of an
+  edge to a CI outside its filter. That endpoint is identified by the
+  organization the same graph match reads, and its existing current
+  `cmdb.dim_ci` row must be in that organization. An endpoint the sync did
+  extract always needs a committed identity. Full
   refresh uses per-CI savepoints so a failed dimension does not enter that set.
   One Neo4j match reads each edge and both *current* endpoint IDs and organizations;
   both must match the accepted identities, and the current `cmdb.dim_ci` rows
@@ -408,11 +413,16 @@ organization of the `:CI` node it versions.
   after that graph match cannot become a new edge in its result. This assumes
   untrusted writers cannot stamp another organization's node label; it does
   not protect against a privileged writer deliberately forging that label.
-- Concurrent `DataMartClient` backfill claims recheck the current organization
-  under a per-`ci_id` PostgreSQL transaction advisory lock, held through SCD
-  expiry and insertion. Two different organizations cannot both replace the
-  same backfilled current version through that writer; its old costs stay in
-  the original version.
+- Concurrent dimension writers recheck the current organization under a
+  per-`ci_id` PostgreSQL transaction advisory lock, held through SCD expiry
+  and insertion. Those writers are `DataMartClient` backfill claims,
+  neo4j-to-postgres and sync-cis-to-datamart; the ETL jobs lock each batch in
+  `ci_id` order. Two runs that see different organizations for the same CI
+  cannot both replace its current version: the second re-reads the first's
+  version and refuses it as a conflict. The old costs stay in the original
+  version. Residual: `DataMartClient`'s first insert, the full refresh and the
+  `neo4j-wins` reconciliation insert take no lock, so they can race with these
+  writers on a CI without a current row.
 - **Rollout:** CIs created in a customer organization through `POST /api/v1/cis` and
   synced before 011 are backfilled to the internal organization. Right after applying
   011, run a complete neo4j-to-postgres sync (no `incrementalSince`, no `ciTypes`) so

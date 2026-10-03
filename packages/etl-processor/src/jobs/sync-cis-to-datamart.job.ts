@@ -17,7 +17,9 @@
 import { Job } from 'bullmq';
 import { logger } from '@cmdb/common';
 import { getPostgresClient, getNeo4jClient } from '@cmdb/database';
-import { dimCiOrganizationId, storedCiOrganizationId } from '../transformers/ci-organization';
+import {
+  CI_DIMENSION_LOCK_SQL, dimCiOrganizationId, inLockOrder, storedCiOrganizationId,
+} from '../transformers/ci-organization';
 
 export interface SyncCIsJobData {
   /** Batch size for processing CIs (default: 100) */
@@ -226,9 +228,10 @@ async function processCIBatch(
   try {
     await client.query('BEGIN');
 
-    for (const ci of cis) {
+    for (const ci of inLockOrder(cis, ci => ci.ci_id)) {
       try {
-        // Check if CI already exists in dim_ci (current record)
+        // Serialize writers of this CI through COMMIT, then read its current row.
+        await client.query(CI_DIMENSION_LOCK_SQL, [ci.ci_id]);
         const existingResult = await client.query(
           `SELECT
             ci_key,

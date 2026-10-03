@@ -18,7 +18,9 @@ import { Job } from 'bullmq';
 import { Neo4jClient, PostgresClient } from '@cmdb/database';
 import { logger, CI, CIType } from '@cmdb/common';
 import { DimensionTransformer } from '../transformers/dimension-transformer';
-import { ExtractedCI, dimCiOrganizationId, storedCiOrganizationId } from '../transformers/ci-organization';
+import {
+  CI_DIMENSION_LOCK_SQL, ExtractedCI, dimCiOrganizationId, inLockOrder, storedCiOrganizationId,
+} from '../transformers/ci-organization';
 
 export interface Neo4jToPostgresJobData {
   /** Batch size for processing CIs */
@@ -225,12 +227,13 @@ export class Neo4jToPostgresJob {
       const acceptedInAttempt: Array<[string, string]> | null = acceptedOrganizations ? [] : null;
       try {
         await this.postgresClient.transaction(async (client: any) => {
-          for (const ci of cis) {
+          for (const ci of inLockOrder(cis, ci => ci._id)) {
             try {
               // Transform CI to dimensional model
               const dimension = this.dimensionTransformer.toDimension(ci);
 
-              // Check if CI dimension already exists
+              // Serialize writers of this CI through COMMIT, then read its current row.
+              await client.query(CI_DIMENSION_LOCK_SQL, [ci._id]);
               const existingResult = await client.query(
                 `SELECT ci_key, ci_name, ci_type, ci_status, environment, organization_id, org_backfilled
                  FROM cmdb.dim_ci WHERE ci_id = $1 AND is_current = true`,
@@ -452,6 +455,10 @@ export class Neo4jToPostgresJob {
   ): Promise<{ processed: number; inserted: number }> {
     const result = { processed: 0, inserted: 0 };
 
+    // Ids this run extracted. A ciTypes-filtered run extracts only some CIs;
+    // an edge to a CI it did not extract may use that CI's committed current
+    // row, when that row is in the organization the same graph match reads.
+    const extractedIds = new Set(cis.map(ci => ci._id));
     for (const ci of cis) {
       const fromOrganization = acceptedOrganizations.get(ci._id);
       if (!fromOrganization) continue;
@@ -471,19 +478,25 @@ export class Neo4jToPostgresJob {
         for (const record of graphResult.records) {
           const fromId = record.get('from_id');
           const toId = record.get('to_id');
-          const toOrganization = acceptedOrganizations.get(toId);
+          const toGraphOrganization = dimCiOrganizationId(record.get('to_organization_id'));
+          // A target this run extracted needs an accepted identity (without one,
+          // its batch failed or its node conflicts with its stored history).
+          // Another target is identified by the organization this match reads.
+          const toOrganization = acceptedOrganizations.get(toId)
+            ?? (extractedIds.has(toId) ? undefined : toGraphOrganization);
           if (fromId !== ci._id ||
               dimCiOrganizationId(record.get('from_organization_id')) !== fromOrganization ||
               !toOrganization ||
-              dimCiOrganizationId(record.get('to_organization_id')) !== toOrganization) {
+              toGraphOrganization !== toOrganization) {
             logger.warn('Skipping relationship - current graph endpoints conflict with accepted CI lineage', {
               fromCiId: ci._id,
               toCiId: toId
             });
             continue;
           }
-          // Both keys must still belong to the organizations resolved from
-          // committed node/dimension pairs; an id alone can name stale history.
+          // Both keys must be current rows in those organizations: an accepted
+          // one resolved from a committed node/dimension pair, or a target's
+          // graph organization. An id alone can name stale history.
           const keys = await this.postgresClient.query(
             `SELECT source.ci_key AS from_ci_key, target.ci_key AS to_ci_key
              FROM cmdb.dim_ci source CROSS JOIN cmdb.dim_ci target

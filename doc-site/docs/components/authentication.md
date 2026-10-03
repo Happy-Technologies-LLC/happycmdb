@@ -385,9 +385,15 @@ organization of the `:CI` node it versions.
   first, so every CI is new to it. A node without an organization never puts
   a CI in a customer organization.
 - A complete neo4j-to-postgres sync writes relationship facts only when both
-  endpoints were successfully resolved from committed CI batches and their
-  current `cmdb.dim_ci` rows still match those organizations. A skipped
-  replacement cannot write a relationship using a former customer's `ci_key`.
+  endpoints were successfully resolved from committed CI batches. One Neo4j
+  match reads each edge and both *current* endpoint IDs and organizations;
+  both must match the accepted identities, and the current `cmdb.dim_ci` rows
+  must still match those organizations. A node replaced after its dimension
+  batch cannot supply an edge under the former customer's `ci_key`. Neo4j and
+  PostgreSQL do not share a transaction or global snapshot: an edge changed
+  after that graph match cannot become a new edge in its result. This assumes
+  untrusted writers cannot stamp another organization's node label; it does
+  not protect against a privileged writer deliberately forging that label.
 - **Rollout:** CIs created in a customer organization through `POST /api/v1/cis` and
   synced before 011 are backfilled to the internal organization. Right after applying
   011, run a complete neo4j-to-postgres sync (no `incrementalSince`, no `ciTypes`) so

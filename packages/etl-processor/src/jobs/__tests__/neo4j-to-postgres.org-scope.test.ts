@@ -57,6 +57,7 @@ const recordingQuery: typeof query = async (sql, params) => {
   statements.push(sql);
   return query(sql, params);
 };
+let afterCommit: (() => void) | undefined;
 
 // One PGlite connection: BEGIN/COMMIT around the callback is a real transaction.
 const postgresClient = {
@@ -72,6 +73,7 @@ const postgresClient = {
     try {
       const result = await callback({ query: recordingQuery });
       await send('exec', 'COMMIT');
+      afterCommit?.();
       return result;
     } catch (error) {
       await send('exec', 'ROLLBACK');
@@ -94,7 +96,24 @@ const neo4jClient = {
     return ci;
   },
   getSession: () => ({
-    run: async () => ({ records: nodes.map(properties => ({ get: () => ({ properties }) })) }),
+    run: async (cypher: string, params: { ciId?: string } = {}) => {
+      if (cypher.includes('MATCH (source:CI {id: $ciId})-[rel]->(target:CI)')) {
+        // The edge and both node properties come from ONE graph match.
+        const source = nodes.find(ci => ci.id === params.ciId);
+        const records = source ? (relationships[params.ciId!] ?? []).flatMap(rel => {
+          const target = nodes.find(ci => ci.id === rel._ci._id);
+          if (!target) return [];
+          const fields: Record<string, unknown> = {
+            from_id: source.id, from_organization_id: source.organization_id,
+            to_id: target.id, to_organization_id: target.organization_id,
+            relationship_type: rel._type,
+          };
+          return [{ get: (key: string) => fields[key] }];
+        }) : [];
+        return { records };
+      }
+      return { records: nodes.map(properties => ({ get: () => ({ properties }) })) };
+    },
     close: async () => undefined,
   }),
   getRelationships: async (ciId: string) => relationships[ciId] ?? [],
@@ -144,6 +163,7 @@ afterAll(() => {
 beforeEach(async () => {
   await send('exec', 'TRUNCATE cmdb.dim_ci, cmdb.fact_discovery, cmdb.fact_ci_relationships RESTART IDENTITY');
   relationships = {};
+  afterCommit = undefined;
   statements.length = 0;
 });
 
@@ -277,6 +297,50 @@ it('complete sync never attributes an org-less replacement relationship to the d
     JOIN cmdb.dim_ci target ON target.ci_key = f.to_ci_key
     WHERE f.is_active = TRUE ORDER BY from_id`)).toEqual([
     { relationship_type: 'DEPENDS_ON', from_id: 'a-source', from_org: ORG_A, to_id: 'a-target', to_org: ORG_A },
+  ]);
+});
+
+it('rejects a B id replaced after its dimension batch commits but before relationships are read', async () => {
+  await send('exec', `INSERT INTO cmdb.dim_ci
+    (ci_id, ci_name, ci_type, ci_status, environment, is_current, organization_id, tbm_attributes) VALUES
+    ('deleted-b', 'deleted-b', 'server', 'active', 'production', TRUE, '${ORG_B}',
+     '{"monthly_cost": 75, "resource_tower": "compute"}'),
+    ('a-source', 'a-source', 'server', 'active', 'production', TRUE, '${ORG_A}', '{}'),
+    ('a-target', 'a-target', 'server', 'active', 'production', TRUE, '${ORG_A}', '{}');`);
+  nodes = [node('deleted-b', ORG_B), node('a-source', ORG_A), node('a-target', ORG_A)];
+  // The dim_ci transaction accepts the original B node. Before the subsequent
+  // graph read, org A's merge replaces that node by id and adds both edges.
+  afterCommit = () => {
+    nodes = [
+      node('generated-id', undefined, { id: 'deleted-b', name: 'A replacement' }),
+      node('a-source', ORG_A),
+      node('a-target', ORG_A),
+    ];
+    relationships = {
+      'deleted-b': [{ _ci: { _id: 'a-target' }, _type: 'DEPENDS_ON' }],
+      'a-source': [
+        { _ci: { _id: 'deleted-b' }, _type: 'RUNS_ON' },
+        { _ci: { _id: 'a-target' }, _type: 'DEPENDS_ON' },
+      ],
+    };
+    afterCommit = undefined;
+  };
+
+  await sync(true);
+
+  expect(await versions('deleted-b')).toEqual([
+    { is_current: true, organization_id: ORG_B, ci_name: 'deleted-b', org_backfilled: false },
+  ]);
+  expect(await send('query',
+    'SELECT tbm_attributes FROM cmdb.dim_ci WHERE ci_id = $1 AND is_current = TRUE', ['deleted-b']
+  )).toEqual([{ tbm_attributes: { monthly_cost: 75, resource_tower: 'compute' } }]);
+  expect(await send('query', `SELECT source.ci_id AS from_id, source.organization_id AS from_org,
+      target.ci_id AS to_id, target.organization_id AS to_org
+    FROM cmdb.fact_ci_relationships f
+    JOIN cmdb.dim_ci source ON source.ci_key = f.from_ci_key
+    JOIN cmdb.dim_ci target ON target.ci_key = f.to_ci_key
+    WHERE f.is_active = TRUE`)).toEqual([
+    { from_id: 'a-source', from_org: ORG_A, to_id: 'a-target', to_org: ORG_A },
   ]);
 });
 

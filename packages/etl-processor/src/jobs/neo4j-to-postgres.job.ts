@@ -15,10 +15,10 @@
  */
 
 import { Job } from 'bullmq';
-import { Neo4jClient, PostgresClient, UNSCOPED_CI_ACCESS } from '@cmdb/database';
+import { Neo4jClient, PostgresClient } from '@cmdb/database';
 import { logger, CI, CIType } from '@cmdb/common';
 import { DimensionTransformer } from '../transformers/dimension-transformer';
-import { ExtractedCI, storedCiOrganizationId } from '../transformers/ci-organization';
+import { ExtractedCI, dimCiOrganizationId, storedCiOrganizationId } from '../transformers/ci-organization';
 
 export interface Neo4jToPostgresJobData {
   /** Batch size for processing CIs */
@@ -455,15 +455,30 @@ export class Neo4jToPostgresJob {
     for (const ci of cis) {
       const fromOrganization = acceptedOrganizations.get(ci._id);
       if (!fromOrganization) continue;
+      const session = this.neo4jClient.getSession();
       try {
-        const relationships = await this.neo4jClient.getRelationships(ci._id, UNSCOPED_CI_ACCESS, 'out');
+        // One graph match binds the edge and BOTH current endpoint tenants.
+        // A separate id-only read could observe a replacement after the CI
+        // batch, then attribute its new edge to the former tenant's dim_ci.
+        const graphResult = await session.run(
+          `MATCH (source:CI {id: $ciId})-[rel]->(target:CI)
+           RETURN source.id AS from_id, source.organization_id AS from_organization_id,
+                  target.id AS to_id, target.organization_id AS to_organization_id,
+                  type(rel) AS relationship_type`,
+          { ciId: ci._id }
+        );
 
-        for (const rel of relationships) {
-          const toOrganization = acceptedOrganizations.get(rel._ci._id);
-          if (!toOrganization) {
-            logger.warn('Skipping relationship - endpoint has no accepted CI lineage', {
+        for (const record of graphResult.records) {
+          const fromId = record.get('from_id');
+          const toId = record.get('to_id');
+          const toOrganization = acceptedOrganizations.get(toId);
+          if (fromId !== ci._id ||
+              dimCiOrganizationId(record.get('from_organization_id')) !== fromOrganization ||
+              !toOrganization ||
+              dimCiOrganizationId(record.get('to_organization_id')) !== toOrganization) {
+            logger.warn('Skipping relationship - current graph endpoints conflict with accepted CI lineage', {
               fromCiId: ci._id,
-              toCiId: rel._ci._id
+              toCiId: toId
             });
             continue;
           }
@@ -474,12 +489,12 @@ export class Neo4jToPostgresJob {
              FROM cmdb.dim_ci source CROSS JOIN cmdb.dim_ci target
              WHERE source.ci_id = $1 AND source.organization_id = $2 AND source.is_current = TRUE
                AND target.ci_id = $3 AND target.organization_id = $4 AND target.is_current = TRUE`,
-            [ci._id, fromOrganization, rel._ci._id, toOrganization]
+            [fromId, fromOrganization, toId, toOrganization]
           );
           if (keys.rows.length === 0) {
             logger.warn('Skipping relationship - current CI dimension does not match accepted lineage', {
               fromCiId: ci._id,
-              toCiId: rel._ci._id
+              toCiId: toId
             });
             continue;
           }
@@ -495,7 +510,7 @@ export class Neo4jToPostgresJob {
               keys.rows[0].from_ci_key,
               keys.rows[0].to_ci_key,
               this.dimensionTransformer.generateDateKey(discoveredAt),
-              rel._type,
+              record.get('relationship_type'),
               discoveredAt
             ]
           );
@@ -507,6 +522,8 @@ export class Neo4jToPostgresJob {
 
       } catch (error) {
         logger.error('Error processing relationships', { ciId: ci._id, error });
+      } finally {
+        await session.close();
       }
     }
 

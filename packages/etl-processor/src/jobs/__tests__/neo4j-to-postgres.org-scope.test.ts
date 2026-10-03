@@ -631,3 +631,45 @@ describe('sync-cis-to-datamart identifies a CI by its unique node id', () => {
       ]);
     });
 });
+
+describe('a node whose id is not a string never stands for a string ci_id', () => {
+  // A reconciliation merge can set id to the number 12345. Neo4j's uniqueness
+  // constraint tells it apart from B's string '12345'; node-postgres sends
+  // both as the text '12345'.
+  const alias = (organizationId: string | undefined) =>
+    node('alias', organizationId, { id: 12345, name: 'alias', ci_type: 'server', ci_status: 'active', ci_name: 'alias' });
+  const untouchedBackfill = [
+    { is_current: false, organization_id: INTERNAL_ORG, ci_name: '12345', org_backfilled: true },
+    { is_current: true, organization_id: INTERNAL_ORG, ci_name: '12345', org_backfilled: true },
+  ];
+
+  const runs: Record<string, () => Promise<unknown>> = {
+    'neo4j-to-postgres': () => sync(),
+    'sync-cis-to-datamart': () => processSyncCIsToDatamart({
+      id: 'sync-cis', data: { incrementalSince: '2026-01-01T00:00:00Z' }, updateProgress: async () => undefined,
+    } as unknown as Job),
+  };
+  it.each([
+    ['neo4j-to-postgres', 'org A', ORG_A], ['neo4j-to-postgres', 'no organization', undefined],
+    ['sync-cis-to-datamart', 'org A', ORG_A], ['sync-cis-to-datamart', 'no organization', undefined],
+  ])('%s leaves B\'s backfilled CI to a numeric id of %s', async (job, _label, organization) => {
+    await backfilled('12345');
+    nodes = [alias(organization)];
+
+    await runs[job]!();
+
+    expect(await versions('12345')).toEqual(untouchedBackfill);
+  });
+
+  it('full refresh writes one current row, B\'s, for a string id and its numeric alias', async () => {
+    nodes = [node('12345', ORG_B), alias(ORG_A)];
+
+    await new FullRefreshJob(neo4jClient, postgresClient).execute({
+      id: 'refresh-alias', data: { truncateTables: false, rebuildIndexes: false }, updateProgress: async () => undefined,
+    } as unknown as Job);
+
+    expect((await versions('12345')).filter(v => v.is_current)).toEqual([
+      { is_current: true, organization_id: ORG_B, ci_name: '12345', org_backfilled: false },
+    ]);
+  });
+});

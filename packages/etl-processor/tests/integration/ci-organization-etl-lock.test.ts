@@ -37,6 +37,7 @@ let mockSyncPool: { connect: () => Promise<PoolClient> } | undefined;
 
 // processSyncCIsToDatamart reads its clients from the package singletons.
 jest.mock('@cmdb/database', () => ({
+  UNSCOPED_CI_ACCESS: Symbol('UNSCOPED_CI_ACCESS'),
   getPostgresClient: () => ({ pool: mockSyncPool }),
   getNeo4jClient: () => ({
     getSession: () => ({
@@ -48,6 +49,9 @@ jest.mock('@cmdb/database', () => ({
 
 import { Neo4jToPostgresJob } from '../../src/jobs/neo4j-to-postgres.job';
 import { processSyncCIsToDatamart } from '../../src/jobs/sync-cis-to-datamart.job';
+import { FullRefreshJob } from '../../src/jobs/full-refresh.job';
+import { ReconciliationJob } from '../../src/jobs/reconciliation.job';
+import { DataMartClient } from '../../../database/src/clients/datamart.client';
 
 const rawQuery = mockPg.query.bind(mockPg);
 
@@ -259,3 +263,126 @@ test('sync-cis-to-datamart batches whose ids share a lock key do not deadlock', 
     await rawQuery('DELETE FROM cmdb.dim_ci WHERE ci_id = ANY($1::varchar[])', [ids]);
   }
 }, 30000);
+
+describe('every other dim_ci writer waits for, then refuses, a concurrent claim of a new CI', () => {
+  const CURRENT_ROW_READ = /^\s*SELECT[\s\S]*FROM cmdb\.dim_ci\s+WHERE ci_id = \$1 AND is_current = true/i;
+  const ciNode = (ciId: string, organizationId: string) => ({
+    id: ciId, name: `claimed ${organizationId}`, type: 'server', status: 'active', environment: 'production',
+    created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z', discovered_at: '2026-01-01T00:00:00Z',
+    organization_id: organizationId,
+  });
+  // One :CI node: every CI read returns it; it has no relationships.
+  const graphOf = (node: Record<string, unknown>) => ({
+    getSession: () => ({
+      run: async (cypher: string) => ({
+        records: cypher.includes('-[rel]->') ? [] : [{ get: () => ({ properties: node }) }],
+      }),
+      close: async () => undefined,
+    }),
+    getCI: async (id: string) => id === node.id
+      ? { _id: node.id, name: node.name, _type: node.type, _status: node.status, _updated_at: node.updated_at, _metadata: {} }
+      : null,
+  });
+
+  /**
+   * Runs neo4j-to-postgres for org B's node of a new ci_id and pauses it right
+   * after its locked current-row read (which sees no row). Then runs `second`.
+   * An unlocked writer inserts and commits before the pause ends; a locked one
+   * requests the per-CI lock and waits. Either way the pause then ends, so
+   * org B's version commits, and `second` (if locked) re-reads it.
+   */
+  async function raceBehindPausedClaim(ciId: string, second: () => Promise<unknown>): Promise<'done' | 'rejected'> {
+    let releaseFirst!: () => void;
+    const released = new Promise<void>(resolve => { releaseFirst = resolve; });
+    let markPaused!: () => void;
+    const paused = new Promise<void>(resolve => { markPaused = resolve; });
+    let pausedOnce = false;
+    const pool = mockPg.pool as Pool;
+    const getClient = jest.spyOn(mockPg, 'getClient').mockImplementation(async () => {
+      const client = await pool.connect();
+      const query = client.query.bind(client) as (sql: string, params?: unknown[]) => Promise<any>;
+      return new Proxy(client, {
+        get(target, property) {
+          if (property === 'query') return async (sql: string, params?: unknown[]) => {
+            const result = await query(sql, params ?? []);
+            if (!pausedOnce && CURRENT_ROW_READ.test(sql) && params?.[0] === ciId) {
+              pausedOnce = true;
+              markPaused();
+              await released;
+            }
+            return result;
+          };
+          const value = Reflect.get(target, property, target);
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      }) as PoolClient;
+    });
+    try {
+      const first = new Neo4jToPostgresJob(graphOf(ciNode(ciId, ORG_B)) as any, mockPg).execute({
+        id: 'claim-b', data: { incrementalSince: '2026-01-01T00:00:00Z' }, updateProgress: async () => undefined,
+      } as unknown as Job);
+      await paused;
+      let settled = false;
+      const outcome = second().then(() => 'done' as const, () => 'rejected' as const)
+        .finally(() => { settled = true; });
+      // PostgreSQL signals no event when a backend starts waiting for a lock, so
+      // pg_locks is polled until the second writer waits or has finished.
+      while (!settled) {
+        const { rows } = await rawQuery(`SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND NOT granted`);
+        if (rows.length > 0) break;
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
+      releaseFirst();
+      await first;
+      return await outcome;
+    } finally {
+      getClient.mockRestore();
+    }
+  }
+
+  const currentRows = async (ciId: string) => (await rawQuery(
+    'SELECT organization_id, ci_name FROM cmdb.dim_ci WHERE ci_id = $1 AND is_current', [ciId])).rows;
+  const cleanUp = async (ciId: string) => {
+    await rawQuery('DELETE FROM cmdb.fact_discovery WHERE ci_key IN (SELECT ci_key FROM cmdb.dim_ci WHERE ci_id = $1)', [ciId]);
+    await rawQuery('DELETE FROM cmdb.dim_ci WHERE ci_id = $1', [ciId]);
+  };
+  const uniqueId = (prefix: string) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+
+  test('full refresh', async () => {
+    const ciId = uniqueId('refresh-claim');
+    try {
+      await raceBehindPausedClaim(ciId, () => new FullRefreshJob(graphOf(ciNode(ciId, ORG_A)) as any, mockPg).execute({
+        id: 'refresh-a', data: { truncateTables: false, rebuildIndexes: false }, updateProgress: async () => undefined,
+      } as unknown as Job));
+      expect(await currentRows(ciId)).toEqual([{ organization_id: ORG_B, ci_name: `claimed ${ORG_B}` }]);
+    } finally {
+      await cleanUp(ciId);
+    }
+  }, 30000);
+
+  test('neo4j-wins reconciliation insert', async () => {
+    const ciId = uniqueId('reconcile-claim');
+    try {
+      await raceBehindPausedClaim(ciId, () => new ReconciliationJob(graphOf(ciNode(ciId, ORG_A)) as any, mockPg).execute({
+        id: 'reconcile-a', data: { ciIds: [ciId], autoResolve: true, conflictStrategy: 'neo4j-wins' },
+        updateProgress: async () => undefined,
+      } as unknown as Job));
+      expect(await currentRows(ciId)).toEqual([{ organization_id: ORG_B, ci_name: `claimed ${ORG_B}` }]);
+    } finally {
+      await cleanUp(ciId);
+    }
+  }, 30000);
+
+  test('DataMartClient first insert', async () => {
+    const ciId = uniqueId('datamart-claim');
+    try {
+      const outcome = await raceBehindPausedClaim(ciId, () => new DataMartClient(mockPg).upsertCI({
+        ci_id: ciId, ciname: `claimed ${ORG_A}`, ci_type: 'server', ci_status: 'active', organization_id: ORG_A,
+      }));
+      expect(outcome).toBe('rejected');
+      expect(await currentRows(ciId)).toEqual([{ organization_id: ORG_B, ci_name: `claimed ${ORG_B}` }]);
+    } finally {
+      await cleanUp(ciId);
+    }
+  }, 30000);
+});

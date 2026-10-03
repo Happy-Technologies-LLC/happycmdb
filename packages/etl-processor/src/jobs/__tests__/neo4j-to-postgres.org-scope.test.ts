@@ -729,4 +729,72 @@ describe('ETL writers accept only ids cmdb.dim_ci stores unchanged', () => {
     expect((await versions('deleted')).map(v => v.org_backfilled)).toEqual([false, false]);
     expect((await versions('ci-ok')).map(v => v.organization_id)).toEqual([ORG_A]);
   });
+
+  it('an edge to an unextracted target whose id holds NUL does not drop the source\'s other edges', async () => {
+    await send('exec', `INSERT INTO cmdb.dim_ci (ci_id, ci_name, ci_type, ci_status, environment, is_current, organization_id) VALUES
+      ('srv', 'srv', 'server', 'active', 'production', TRUE, '${ORG_A}'),
+      ('app', 'app', 'application', 'active', 'production', TRUE, '${ORG_A}');`);
+    nodes = [node('srv', ORG_A), node('app', ORG_A, { type: 'application' }), node('bad\u0000', ORG_A, { type: 'application' })];
+    relationships = {
+      srv: [{ _ci: { _id: 'bad\u0000' }, _type: 'RUNS_ON' }, { _ci: { _id: 'app' }, _type: 'RUNS_ON' }],
+    };
+
+    await new Neo4jToPostgresJob(neo4jClient, postgresClient).execute({
+      id: 'servers-only', data: { ciTypes: ['server'] }, updateProgress: async () => undefined,
+    } as unknown as Job);
+
+    expect(await send('query', `SELECT source.ci_id AS from_id, target.ci_id AS to_id
+      FROM cmdb.fact_ci_relationships f
+      JOIN cmdb.dim_ci source ON source.ci_key = f.from_ci_key
+      JOIN cmdb.dim_ci target ON target.ci_key = f.to_ci_key
+      WHERE f.is_active = TRUE`)).toEqual([{ from_id: 'srv', to_id: 'app' }]);
+  });
 });
+
+describe('a node whose metadata is not JSON', () => {
+  // A reconciliation merge can set any metadata string on a node.
+  const malformed = (id: string, organizationId: string) => node(id, organizationId, { metadata: '{not json' });
+
+  it('is skipped by a complete neo4j-to-postgres sync, which still syncs the others and keeps it live', async () => {
+    await backfilled('ci-malformed');
+    await backfilled('ci-deleted');
+    nodes = [malformed('ci-malformed', ORG_B), node('ci-ok', ORG_A)];
+
+    await sync(true);
+
+    expect((await versions('ci-ok')).map(v => v.organization_id)).toEqual([ORG_A]);
+    expect((await versions('ci-deleted')).map(v => v.org_backfilled)).toEqual([false, false]);
+    // Skipped, not missing: its backfill window stays open until its node is readable.
+    expect((await versions('ci-malformed')).map(v => [v.organization_id, v.org_backfilled])).toEqual([
+      [INTERNAL_ORG, true], [INTERNAL_ORG, true],
+    ]);
+  });
+
+  it('is skipped by a full refresh, which still loads the others', async () => {
+    nodes = [malformed('ci-malformed', ORG_B), node('ci-ok', ORG_A)];
+
+    await new FullRefreshJob(neo4jClient, postgresClient).execute({
+      id: 'refresh-malformed', data: { truncateTables: false, rebuildIndexes: false }, updateProgress: async () => undefined,
+    } as unknown as Job);
+
+    expect((await versions('ci-ok')).map(v => v.organization_id)).toEqual([ORG_A]);
+    expect(await versions('ci-malformed')).toEqual([]);
+  });
+});
+
+it.each([['org A', ORG_A], ['no organization', undefined]])(
+  'a full refresh over an existing B row never versions it from a node of %s', async (_label, organization) => {
+    await send('exec', `INSERT INTO cmdb.dim_ci
+      (ci_id, ci_name, ci_type, ci_status, environment, is_current, organization_id, tbm_attributes) VALUES
+      ('ci-b', 'B original', 'server', 'active', 'production', TRUE, '${ORG_B}', '{"monthly_cost": 75}');`);
+    nodes = [node('ci-b', organization, { name: 'claim' })];
+
+    await new FullRefreshJob(neo4jClient, postgresClient).execute({
+      id: 'refresh-claim', data: { truncateTables: false, rebuildIndexes: false }, updateProgress: async () => undefined,
+    } as unknown as Job);
+
+    expect(await versions('ci-b')).toEqual([
+      { is_current: true, organization_id: ORG_B, ci_name: 'B original', org_backfilled: false },
+    ]);
+  });
+

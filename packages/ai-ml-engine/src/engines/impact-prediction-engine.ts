@@ -204,6 +204,18 @@ export class ImpactPredictionEngine {
    * scoping, or for another organization's CI with the same id, are recalculated.
    */
   async getCriticalityScore(ciId: string, scope: CIOrganizationScope): Promise<CriticalityScore> {
+    return this.criticalityScore(ciId, scope, new Set());
+  }
+
+  /**
+   * getCriticalityScore within one recursion: `inProgress` holds the CIs whose
+   * scores are being calculated further up the chain of dependents.
+   */
+  private async criticalityScore(
+    ciId: string,
+    scope: CIOrganizationScope,
+    inProgress: Set<string>
+  ): Promise<CriticalityScore> {
     // Check if cached
     const cached = await this.postgresClient.query(
       `SELECT * FROM ci_criticality_scores
@@ -218,16 +230,25 @@ export class ImpactPredictionEngine {
     }
 
     // Calculate new score
-    return await this.calculateCriticalityScore(ciId, scope);
+    return await this.calculateCriticalityScore(ciId, scope, inProgress);
   }
 
   /**
-   * Calculate criticality score based on multiple factors
+   * Calculate criticality score based on multiple factors. A dependent whose
+   * score is still being calculated up the chain (`inProgress`) closes a cycle
+   * of incoming edges (of any type, e.g. HOSTS + DEPLOYED_ON): it has no score
+   * yet, so it adds no dependent weight and the recursion ends. Without cycles
+   * every dependent contributes, as before.
    */
-  private async calculateCriticalityScore(ciId: string, scope: CIOrganizationScope): Promise<CriticalityScore> {
+  private async calculateCriticalityScore(
+    ciId: string,
+    scope: CIOrganizationScope,
+    inProgress: Set<string>
+  ): Promise<CriticalityScore> {
     const cypher = ciScopeCypher(scope);
     const session = this.neo4jClient.getSession();
 
+    inProgress.add(ciId);
     try {
       // Get dependency counts and relationship weights
       const result = await session.run(
@@ -267,7 +288,8 @@ export class ImpactPredictionEngine {
       const dependentIds = record.get('dependent_ids');
 
       for (const depId of dependentIds) {
-        const depScore = await this.getCriticalityScore(depId, scope);
+        if (inProgress.has(depId)) continue;
+        const depScore = await this.criticalityScore(depId, scope, inProgress);
         dependentWeight += depScore.criticality_score * 0.5; // Weighted contribution
       }
 
@@ -301,6 +323,7 @@ export class ImpactPredictionEngine {
 
       return score;
     } finally {
+      inProgress.delete(ciId);
       await session.close();
     }
   }

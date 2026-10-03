@@ -49,7 +49,31 @@ function sendCINotFound(res: Response, ciId: string): void {
 
 // Impact analyses and relationship baselines are stored per CI id together with
 // the CI lists they found. Rows written before tenant scoping can name other
-// organizations' CIs (`own` is the caller organization's CI ids).
+// organizations' CIs. `own` is the subset of the CI ids a response would name
+// that are CIs of the caller's organization (organizationCIIdsAmong: one
+// bounded lookup of only those ids, none when there are none).
+
+/** Every CI id an impact analysis names. */
+function impactAnalysisCIIds(analysis: ImpactAnalysis): string[] {
+  return [
+    ...(analysis.critical_path ?? []),
+    ...(analysis.affected_cis ?? []).flatMap(ci => [ci.ci_id, ...(ci.dependency_path ?? [])]),
+  ];
+}
+
+/** The related-CI entries of a relationships baseline ([] for other snapshot types). */
+function relationshipEntries(baseline: BaselineSnapshot | null): Array<{ ci_id?: unknown }> {
+  if (baseline === null || baseline.snapshot_type !== 'relationships') return [];
+  return ['outgoing', 'incoming'].flatMap(key => {
+    const entries: unknown = baseline.snapshot_data[key];
+    return Array.isArray(entries) ? entries : [];
+  });
+}
+
+/** Every CI id a relationships baseline lists. */
+function baselineCIIds(baseline: BaselineSnapshot | null): string[] {
+  return relationshipEntries(baseline).flatMap(rel => (typeof rel?.ci_id === 'string' ? [rel.ci_id] : []));
+}
 
 /**
  * Whether every CI an impact analysis found is in `own`, as for every analysis
@@ -264,8 +288,9 @@ export class DriftImpactController {
         return;
       }
 
+      // Resolved before the approval write, so a lookup failure approves nothing.
+      const own = await this.neo4jClient.organizationCIIdsAmong(baselineCIIds(existing), organizationId);
       const approved = await this.driftDetector.approveBaseline(baselineId, this.getActor(req));
-      const own = new Set(await this.neo4jClient.listCIIds(organizationId));
 
       res.json({
         success: true,
@@ -315,7 +340,7 @@ export class DriftImpactController {
       }
 
       const baseline = await this.driftDetector.getApprovedBaseline(ciId, requestedType);
-      const own = new Set(await this.neo4jClient.listCIIds(organizationId));
+      const own = await this.neo4jClient.organizationCIIdsAmong(baselineCIIds(baseline), organizationId);
 
       res.json({
         success: true,
@@ -498,7 +523,7 @@ export class DriftImpactController {
       }
 
       const history = await this.impactEngine.getImpactHistory(ciId, limitNum);
-      const own = new Set(await this.neo4jClient.listCIIds(organizationId));
+      const own = await this.neo4jClient.organizationCIIdsAmong(history.flatMap(impactAnalysisCIIds), organizationId);
 
       res.json({
         success: true,

@@ -54,7 +54,7 @@ describe('DriftImpactController', () => {
   // Mock typing follows this suite's established convention (see
   // itil-status-casing.test.ts's `jest.Mock<any, any[]>`): jest's default
   // Mock generics otherwise infer `never` for the resolved-value parameter.
-  let mockNeo4jClient: { getCI: jest.Mock<any, any>; listCIIds: jest.Mock<any, any> };
+  let mockNeo4jClient: { getCI: jest.Mock<any, any>; organizationCIIdsAmong: jest.Mock<any, any> };
   let mockDriftDetector: {
     getApprovedBaseline: jest.Mock<any, any>;
     detectDrift: jest.Mock<any, any>;
@@ -71,7 +71,7 @@ describe('DriftImpactController', () => {
   };
 
   beforeEach(() => {
-    mockNeo4jClient = { getCI: jest.fn(), listCIIds: jest.fn(async () => ['ci-001']) };
+    mockNeo4jClient = { getCI: jest.fn(), organizationCIIdsAmong: jest.fn(async () => new Set(['ci-001'])) };
     mockDriftDetector = {
       getApprovedBaseline: jest.fn(),
       detectDrift: jest.fn(),

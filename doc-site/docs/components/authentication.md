@@ -403,9 +403,11 @@ organization when a CI is created through `POST /api/v1/cis` or GraphQL `createC
   - Analytics: the dashboard counts tenant CIs and relationships between two tenant CIs.
     `cmdb.dim_ci`, `cmdb.fact_*`, `ci_change_history` and `anomalies` have no organization
     column yet (T3d), so the PostgreSQL endpoints keep rows whose `ci_id` is one of the
-    tenant's Neo4j `:CI` ids; relationship facts need both endpoints in that set (including
-    every step of the dependency-depth recursion). Changes of CIs no longer in Neo4j
-    (for example deleted ones) are therefore not counted by `/change-timeline`.
+    tenant's current Neo4j `:CI` ids; relationship facts need both endpoints in that set
+    (including every step of the dependency-depth recursion). This is an interim filter:
+    once `cmdb.dim_ci.organization_id` exists (T3d) these reads must use the per-row
+    organization instead. Changes of CIs no longer in Neo4j (for example deleted ones) are
+    therefore not counted by `/change-timeline`.
     `/change-history` and `/health-metrics/:ciId` return **404**
     (`{"success":false,"error":"Not Found","message":"CI not found"}`) for a foreign or
     missing CI and read no history.
@@ -414,8 +416,12 @@ organization when a CI is created through `POST /api/v1/cis` or GraphQL `createC
     `/baseline`, `/baseline/:id`) returns the same **404** (`CI with ID '<id>' not found`)
     for a foreign CI as for a missing one, before the engine or any history table is
     read; approving another organization's baseline is the same **404** as a missing
-    baseline. Impact graphs, predictions, critical paths, criticality factors and
-    relationship baselines only follow paths whose every node is a tenant CI.
+    baseline. Impact graphs, predictions and critical paths only follow paths whose every
+    node belongs to the tenant, and relationship baselines only list tenant CIs. The
+    criticality and graph degree counts never count another organization's nodes or
+    org-less CIs; like `/search/orphaned` they do count non-CI nodes without an
+    organization. Criticality is cycle-safe: a dependent whose score is still being
+    calculated (a cycle of incoming edges of any type) adds no dependent weight.
   - Stored results computed before this scoping existed are filtered when served:
     `/impact/history/:id` omits an analysis that names any node that is not a current CI
     of the tenant (in its affected CIs, their dependency paths or the critical path; this
@@ -426,7 +432,13 @@ organization when a CI is created through `POST /api/v1/cis` or GraphQL `createC
   - History rows (`ci_change_history`, `anomalies`, `drift_detection_results`,
     `impact_analyses`, `baseline_snapshots`) are keyed by CI id only. Access is gated
     on the CI currently existing in the tenant; rows written for an earlier CI with the
-    same id are not separated by this (reused-id history, tracked separately).
+    same id are not separated by this (reused-id history, tracked separately). The same
+    holds for every store attributed by current CI id: `cmdb.dim_ci`/`cmdb.fact_*` (all
+    SCD versions) in analytics, `metrics_timeseries` in performance baselines and
+    `ci_change_history` in the criticality change frequency.
+  - Impact analyses stored before this scoping that name only tenant CIs are served,
+    but their stored `impact_score`/`risk_level` may still reflect criticality counted
+    from other organizations' edges (a count, no ids or names).
 - **Not yet tenant-scoped.** Only `/api/v1/cis/**`, `/api/v1/dashboards/**`, the graph,
   search, analytics, impact and drift routes above and the GraphQL CI operations are
   scoped. Until the later slices land, every other route and GraphQL resolver that
@@ -438,6 +450,8 @@ organization when a CI is created through `POST /api/v1/cis` or GraphQL `createC
     matching runs across all organizations, and merge overwrites the matched CI's
     attributes even when it belongs to another organization (but not its
     `organization_id`);
+  - `/api/v1/anomalies/**` (`/recent`, `/ci/:ciId`, `/stats`), which still return every
+    organization's `anomalies` rows;
   - GraphQL analytics resolvers, discovery and connector routes, and TBM CI reads, which
     return individual CIs as well as aggregates.
 - The sample CIs seeded by `db-init` (`infrastructure/scripts/init-neo4j.cypher`) and by

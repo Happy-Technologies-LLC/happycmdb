@@ -128,9 +128,11 @@ function run(rawCypher: string, params: Props): FakeRecord[] {
   const cis = () => [...graph.nodes.values()].filter(isCI);
   const page = <T>(rows: T[]) => rows.slice(num(params['offset'] ?? 0), num(params['offset'] ?? 0) + num(params['limit']));
 
-  // Neo4jClient.listCIIds
+  // Neo4jClient.listCIIds and organizationCIIdsAmong
   if (/^MATCH \(ci:CI\) WHERE .* RETURN ci\.id AS id$/.test(cypher)) {
-    return cis().filter(inOrg('ci')).map(n => record({ id: n.props['id'] }));
+    const among = has('ci.id IN $ids') ? (params['ids'] as string[]) : null;
+    return cis().filter(n => inOrg('ci')(n) && (among === null || among.includes(n.props['id'] as string)))
+      .map(n => record({ id: n.props['id'] }));
   }
 
   // GET /analytics/dashboard
@@ -622,6 +624,11 @@ describe('/api/v1/search tenant scoping', () => {
       .send({ ci_type: 'application', relationship_type: 'DEPENDS_ON', related_ci_type: 'database' });
     expect(res.status).toBe(200);
     expect(ids(res.body.data)).toEqual(['a-web']);
+
+    // a-lonely (org A server) DEPENDS_ON b-db (org B database): the far end must be in the org too.
+    const crossOrg = await request(app).post('/api/v1/search/relationships').set(AS_A)
+      .send({ ci_type: 'server', relationship_type: 'DEPENDS_ON', related_ci_type: 'database' });
+    expect([crossOrg.status, crossOrg.body.data]).toEqual([200, []]);
   });
 
   it('GET /search/orphaned ignores other orgs', async () => {
@@ -762,6 +769,32 @@ describe('/api/v1/impact and /api/v1/drift tenant scoping', () => {
     const criticality = await request(app).get('/api/v1/impact/criticality/a-lonely').set(AS_A);
     expect(criticality.status).toBe(200);
     expect(criticality.body.data.factors.dependent_count).toBe(0);
+  });
+
+  it('criticality is bounded and stable on a cycle of incoming edges, and unchanged without cycles', async () => {
+    // Acyclic: a-db's only org A dependent is a-web (score 45), weighted by 0.5.
+    const acyclic = await request(app).get('/api/v1/impact/criticality/a-db').set(AS_A);
+    expect(acyclic.status).toBe(200);
+    expect(acyclic.body.data).toMatchObject({ criticality_score: 62, factors: { dependent_count: 1, dependent_weight: 22.5 } });
+
+    // A two-edge cycle of different types inside org A: a-host HOSTS a-app, a-app DEPLOYED_ON a-host.
+    seedNode('a-host', ['CI'], ORG_A);
+    seedNode('a-app', ['CI'], ORG_A, { type: 'application' });
+    link('a-host', 'HOSTS', 'a-app');
+    link('a-app', 'DEPLOYED_ON', 'a-host');
+    cypherRuns.length = 0;
+
+    const first = await request(app).get('/api/v1/impact/criticality/a-host').set(AS_A);
+    expect(first.status).toBe(200);
+    // a-app is scored first; a-host, still being scored, adds no weight to it (55), then a-host gets 55 * 0.5.
+    expect(first.body.data).toMatchObject({ criticality_score: 63, factors: { dependent_count: 1, dependent_weight: 27.5 } });
+    // getCI gate + one factor query per CI of the cycle.
+    expect(cypherRuns).toHaveLength(3);
+
+    const again = await request(app).get('/api/v1/impact/criticality/a-host').set(AS_A);
+    expect(again.body.data.criticality_score).toBe(63);
+    const other = await request(app).get('/api/v1/impact/criticality/a-app').set(AS_A);
+    expect(other.body.data.criticality_score).toBe(55);
   });
 
   it("a relationships baseline only lists the caller org's CIs", async () => {

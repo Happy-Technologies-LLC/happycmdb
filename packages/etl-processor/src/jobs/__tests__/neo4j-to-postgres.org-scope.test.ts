@@ -105,7 +105,7 @@ const neo4jClient = {
     return properties;
   },
   getSession: () => ({
-    run: async (cypher: string, params: { ciId?: string; id?: string } = {}) => {
+    run: async (cypher: string, params: { ciId?: string; id?: string; ciTypes?: string[] } = {}) => {
       if (cypher.includes('SET ci.status = $status')) {
         const { id, organizationId, internalOrganizationId, status } = params as Record<string, string>;
         const properties = nodes.find(ci => ci.id === id && (
@@ -136,7 +136,8 @@ const neo4jClient = {
         }) : [];
         return { records };
       }
-      return { records: nodes.map(properties => ({ get: () => ({ properties }) })) };
+      return { records: nodes.filter(properties => !params.ciTypes || params.ciTypes.includes(properties.type as string))
+        .map(properties => ({ get: () => ({ properties }) })) };
     },
     close: async () => undefined,
   }),
@@ -484,6 +485,42 @@ it('postgres-wins restores a missing org-B node in B without changing its curren
     'SELECT tbm_attributes FROM cmdb.dim_ci WHERE ci_id = $1 AND is_current = TRUE', ['restore-b']
   )).toEqual([{ tbm_attributes: { monthly_cost: 75, resource_tower: 'compute' } }]);
   expect((await versions('ci-a')).map(v => v.organization_id)).toEqual([ORG_A]);
+});
+
+it('a ciTypes-filtered complete sync keeps same-org edges to already-synced CIs outside the filter', async () => {
+  await send('exec', `INSERT INTO cmdb.dim_ci (ci_id, ci_name, ci_type, ci_status, environment, is_current, organization_id) VALUES
+    ('srv', 'srv', 'server', 'active', 'production', TRUE, '${ORG_A}'),
+    ('app', 'app', 'application', 'active', 'production', TRUE, '${ORG_A}'),
+    ('reused-app', 'B app', 'application', 'active', 'production', TRUE, '${ORG_B}'),
+    ('orgless-app', 'B app', 'application', 'active', 'production', TRUE, '${ORG_B}');`);
+  nodes = [
+    // The server changes, so its dimension gets a new current version (ci_key).
+    node('srv', ORG_A, { name: 'srv v2' }),
+    node('app', ORG_A, { type: 'application' }),
+    // Not synced by this run: B's ids re-created by org A, or with no organization.
+    node('reused-app', ORG_A, { type: 'application' }),
+    node('orgless-app', undefined, { type: 'application' }),
+  ];
+  relationships = {
+    srv: [
+      { _ci: { _id: 'app' }, _type: 'RUNS_ON' },
+      { _ci: { _id: 'reused-app' }, _type: 'RUNS_ON' },
+      { _ci: { _id: 'orgless-app' }, _type: 'RUNS_ON' },
+    ],
+  };
+
+  await new Neo4jToPostgresJob(neo4jClient, postgresClient).execute({
+    id: 'servers-only', data: { ciTypes: ['server'] }, updateProgress: async () => undefined,
+  } as unknown as Job);
+
+  expect(await send('query', `SELECT source.ci_name AS from_name, source.organization_id AS from_org,
+      target.ci_id AS to_id, target.organization_id AS to_org
+    FROM cmdb.fact_ci_relationships f
+    JOIN cmdb.dim_ci source ON source.ci_key = f.from_ci_key AND source.is_current
+    JOIN cmdb.dim_ci target ON target.ci_key = f.to_ci_key AND target.is_current
+    WHERE f.is_active = TRUE`)).toEqual([
+    { from_name: 'srv v2', from_org: ORG_A, to_id: 'app', to_org: ORG_A },
+  ]);
 });
 
 describe('status-mismatch auto-resolve with an existing row and node', () => {

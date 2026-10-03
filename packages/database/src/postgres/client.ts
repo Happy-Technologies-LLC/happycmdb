@@ -148,6 +148,14 @@ export class PostgresClient {
   async updateCIDimension(ci: CIDimensionInput): Promise<number> {
     return await this.transaction(async (client) => {
       const now = new Date();
+      // A row lock on the backfilled current version is insufficient: once
+      // another transaction expires it, a waiting SELECT can see no row.
+      // Serialize this SCD update for the natural id through commit before
+      // rechecking its latest organization, even if the current row vanishes.
+      await client.query(
+        'SELECT pg_advisory_xact_lock(8271, hashtext($1))',
+        [ci.ci_id]
+      );
 
       // No stored row ever changes organization (migration 011): a pre-011
       // ci_id can carry several lineages. The new record may name another

@@ -384,9 +384,14 @@ organization of the `:CI` node it versions.
   that organization may update it. The full-refresh job empties `cmdb.dim_ci`
   first, so every CI is new to it. A node without an organization never puts
   a CI in a customer organization.
-- A complete neo4j-to-postgres sync writes relationship facts only when both
-  endpoints were successfully resolved from committed CI batches. One Neo4j
-  match reads each edge and both *current* endpoint IDs and organizations;
+  `neo4j-wins` reconciliation inserts attributes and organization from one
+  current-node match, not from separate generations of a reused ID. If that
+  node disappears before the match, the conflict remains unresolved and no
+  dimension is inserted; its stale attributes are not returned as current.
+- Complete neo4j-to-postgres syncs and full refreshes write relationship facts
+  only when both endpoints were resolved from committed CI batches. Full
+  refresh uses per-CI savepoints so a failed dimension does not enter that set.
+  One Neo4j match reads each edge and both *current* endpoint IDs and organizations;
   both must match the accepted identities, and the current `cmdb.dim_ci` rows
   must still match those organizations. A node replaced after its dimension
   batch cannot supply an edge under the former customer's `ci_key`. Neo4j and
@@ -394,6 +399,11 @@ organization of the `:CI` node it versions.
   after that graph match cannot become a new edge in its result. This assumes
   untrusted writers cannot stamp another organization's node label; it does
   not protect against a privileged writer deliberately forging that label.
+- Concurrent `DataMartClient` backfill claims recheck the current organization
+  under a per-`ci_id` PostgreSQL transaction advisory lock, held through SCD
+  expiry and insertion. Two different organizations cannot both replace the
+  same backfilled current version through that writer; its old costs stay in
+  the original version.
 - **Rollout:** CIs created in a customer organization through `POST /api/v1/cis` and
   synced before 011 are backfilled to the internal organization. Right after applying
   011, run a complete neo4j-to-postgres sync (no `incrementalSince`, no `ciTypes`) so

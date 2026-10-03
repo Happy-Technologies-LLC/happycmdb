@@ -410,6 +410,9 @@ it('reconciles only the current A generation after replacing B, including a subs
 
   const reconciled = await new ReconciliationJob(neo4jClient, postgresClient).execute(job as unknown as Job);
   expect(reconciled._conflictsResolved).toBe(1);
+  expect(reconciled._conflicts[0]._neo4jValue).toMatchObject({
+    _id: 'reused', name: 'A own', _type: 'server', organization_id: ORG_A,
+  });
   expect(await send('query', `SELECT ci_name, ci_type, organization_id
     FROM cmdb.dim_ci WHERE ci_id = 'reused' AND is_current = TRUE`)).toEqual([
     { ci_name: 'A own', ci_type: 'server', organization_id: ORG_A },
@@ -435,6 +438,8 @@ it('leaves a disappeared node unresolved instead of inserting its old attributes
 
   const result = await new ReconciliationJob(neo4jClient, postgresClient).execute(job as unknown as Job);
   expect(result._conflictsResolved).toBe(0);
+  expect(result._manualReviewRequired).toBe(1);
+  expect(result._conflicts[0]._neo4jValue).toBeNull();
   expect(await versions('vanished')).toEqual([]);
 });
 

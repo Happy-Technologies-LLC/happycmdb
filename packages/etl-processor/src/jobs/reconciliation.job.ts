@@ -197,9 +197,17 @@ export class ReconciliationJob {
       });
 
       if (data.autoResolve && data.conflictStrategy === 'neo4j-wins') {
-        await this.resolveByCreatingInPostgres(neo4jCI!);
-        conflicts[conflicts.length - 1]!._autoResolved = true;
-        conflicts[conflicts.length - 1]!.resolution = 'Created CI in PostgreSQL from Neo4j';
+        const inserted = await this.resolveByCreatingInPostgres(neo4jCI);
+        const conflict = conflicts[conflicts.length - 1]!;
+        // Never publish stale attributes from the earlier generation in the
+        // job result after the id has been replaced or deleted.
+        conflict._neo4jValue = inserted;
+        if (inserted) {
+          conflict._autoResolved = true;
+          conflict.resolution = 'Created CI in PostgreSQL from Neo4j';
+        } else {
+          conflict._description = 'CI disappeared from Neo4j before PostgreSQL reconciliation';
+        }
       }
 
       return conflicts;
@@ -397,27 +405,42 @@ export class ReconciliationJob {
   /**
    * Create CI in PostgreSQL from Neo4j data
    */
-  private async resolveByCreatingInPostgres(ci: CI): Promise<void> {
-    // getCI's CI shape carries no organization_id; read it from the node.
+  private async resolveByCreatingInPostgres(ci: CI): Promise<Record<string, unknown> | null> {
+    // getCI's CI shape carries no organization_id. Read the current node's
+    // attributes AND organization in one MATCH: the id may name a different
+    // generation since reconciliation's first getCI read.
     const session = this.neo4jClient.getSession();
-    let nodeOrganizationId: unknown;
+    let properties: Record<string, unknown> | null = null;
     try {
       const result = await session.run(
-        'MATCH (ci:CI {id: $id}) RETURN ci.organization_id AS organization_id',
+        'MATCH (ci:CI {id: $id}) RETURN ci',
         { id: ci._id }
       );
-      nodeOrganizationId = result.records[0]?.get('organization_id');
+      properties = result.records[0]?.get('ci')?.properties ?? null;
     } finally {
       await session.close();
     }
+    if (!properties) {
+      logger.warn('Skipping reconciliation - graph CI disappeared before Postgres insert', { ciId: ci._id });
+      return null;
+    }
 
+    const organizationId = dimCiOrganizationId(properties['organization_id']);
     await this.postgresClient.query(
       `INSERT INTO cmdb.dim_ci
        (ci_id, ci_name, ci_type, environment, ci_status, effective_from, is_current, organization_id)
        VALUES ($1, $2, $3, $4, $5, NOW(), true, $6)`,
-      [ci._id, ci.name, ci._type, ci.environment, ci._status, dimCiOrganizationId(nodeOrganizationId)]
+      [
+        properties['id'], properties['name'], properties['type'], properties['environment'], properties['status'],
+        organizationId
+      ]
     );
     logger.info('Created CI in PostgreSQL from Neo4j', { ciId: ci._id });
+    return {
+      _id: properties['id'], name: properties['name'], _type: properties['type'],
+      _status: properties['status'], environment: properties['environment'],
+      organization_id: organizationId
+    };
   }
 }
 

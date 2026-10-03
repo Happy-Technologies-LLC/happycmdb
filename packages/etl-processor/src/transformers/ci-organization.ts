@@ -42,20 +42,40 @@ export interface StoredCiOrganization {
 }
 
 /**
- * The extracted CIs whose node id can be a cmdb.dim_ci ci_id: a non-empty
- * string. Neo4j's uniqueness constraint tells the number 12345 (which a
- * reconciliation merge can set as an id) from the string '12345', but
- * node-postgres sends both as the text '12345', so such a node would read,
- * claim and write another CI's history. Other nodes are skipped and logged,
- * before any lock or read.
+ * Whether a :CI node id can be its cmdb.dim_ci ci_id, stored and compared
+ * exactly as Neo4j keeps it apart from every other id: a non-empty string of
+ * at most 100 characters (ci_id VARCHAR(100)), without NUL and without an
+ * unpaired surrogate. Otherwise two distinct node ids could name one ci_id
+ * and one node could read, claim or write another CI's history:
+ *  - Neo4j tells the number 12345 (a reconciliation merge can set one) from
+ *    the string '12345'; node-postgres sends both as the text '12345';
+ *  - VARCHAR(100) silently drops excess trailing spaces on insert, while the
+ *    lock key and the current-row read still see them;
+ *  - UTF-8 encoding turns any unpaired surrogate into U+FFFD.
+ * PostgreSQL rejects NUL in text, which would fail a whole batch.
  */
-export function withStringIds<T>(cis: T[], id: (ci: T) => unknown, job: string): T[] {
-  const valid = cis.filter(ci => {
-    const value = id(ci);
-    return typeof value === 'string' && value.length > 0;
-  });
+export function isDimCiId(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && Array.from(value).length <= 100 &&
+    !value.includes('\u0000') && !/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(value);
+}
+
+/**
+ * The extracted CIs whose node id passes isDimCiId. Other nodes are skipped
+ * and logged before any lock or read.
+ */
+export function withDimCiIds<T>(cis: T[], id: (ci: T) => unknown, job: string): T[] {
+  const valid = cis.filter(ci => isDimCiId(id(ci)));
   if (valid.length < cis.length) {
-    logger.warn('Skipping CI nodes whose id is not a non-empty string', { job, skipped: cis.length - valid.length });
+    logger.warn('Skipping CI nodes whose id cannot be a cmdb.dim_ci ci_id', { job, skipped: cis.length - valid.length });
+  }
+  return valid;
+}
+
+/** The ids that pass isDimCiId; the others are skipped and logged. */
+export function dimCiIds(ids: unknown[], job: string): string[] {
+  const valid = ids.filter(isDimCiId);
+  if (valid.length < ids.length) {
+    logger.warn('Skipping CI ids that cannot be a cmdb.dim_ci ci_id', { job, skipped: ids.length - valid.length });
   }
   return valid;
 }
@@ -73,15 +93,15 @@ export function withStringIds<T>(cis: T[], id: (ci: T) => unknown, job: string):
  * Keys are taken once each, in ascending key order: hashtext can give two ids
  * one key, and ordering by id could then form a wait cycle (deadlock) between
  * two batches. Batches still wait for each other; they never wait in a cycle.
- * Every id must be a string (see withStringIds): an id this cannot lock must
- * not be processed.
+ * Every id must pass isDimCiId (callers filter with withDimCiIds first): an
+ * id this cannot lock must not be processed.
  */
 export async function lockCIDimensions(
   client: { query: (sql: string, params: unknown[]) => Promise<{ rows: Array<Record<string, unknown>> }> },
   ciIds: unknown[]
 ): Promise<void> {
-  if (!ciIds.every(id => typeof id === 'string')) {
-    throw new Error('CI dimension lock requires string ci_ids');
+  if (!ciIds.every(isDimCiId)) {
+    throw new Error('CI dimension lock requires valid cmdb.dim_ci ci_ids');
   }
   const keys = await client.query(
     'SELECT DISTINCT hashtext(id) AS key FROM unnest($1::text[]) AS id ORDER BY key',

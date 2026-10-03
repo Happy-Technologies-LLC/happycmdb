@@ -19,7 +19,7 @@ import { Neo4jClient, PostgresClient } from '@cmdb/database';
 import { logger, CI, CIType } from '@cmdb/common';
 import { DimensionTransformer } from '../transformers/dimension-transformer';
 import {
-  ExtractedCI, dimCiOrganizationId, lockCIDimensions, storedCiOrganizationId, withStringIds,
+  ExtractedCI, dimCiOrganizationId, lockCIDimensions, storedCiOrganizationId, withDimCiIds,
 } from '../transformers/ci-organization';
 
 export interface Neo4jToPostgresJobData {
@@ -89,7 +89,7 @@ export class Neo4jToPostgresJob {
 
     try {
       // Step 1: Extract CIs from Neo4j
-      const cis = withStringIds(await this.extractCIs(data), ci => ci._id, 'neo4j-to-postgres');
+      const cis = withDimCiIds(await this.extractCIs(data), ci => ci._id, 'neo4j-to-postgres');
       // Only committed, tenant-resolved dimensions can supply relationship keys.
       const acceptedOrganizations = data.fullRefresh || !data.incrementalSince
         ? new Map<string, string>() : undefined;

@@ -15,7 +15,9 @@
 import { Job } from 'bullmq';
 import { Neo4jClient, PostgresClient, UNSCOPED_CI_ACCESS } from '@cmdb/database';
 import { logger, CI, CIStatus } from '@cmdb/common';
-import { dimCiOrganizationId, INTERNAL_ORGANIZATION_ID } from '../transformers/ci-organization';
+import {
+  dimCiIds, dimCiOrganizationId, INTERNAL_ORGANIZATION_ID,
+} from '../transformers/ci-organization';
 
 export interface ReconciliationJobData {
   /** CIs to reconcile (if not specified, reconciles all) */
@@ -116,7 +118,9 @@ export class ReconciliationJob {
 
     try {
       // Get CIs to reconcile
-      const ciIds = data.ciIds || await this.getAllCIIds();
+      // Job data and the graph scan can both carry ids that are not a valid
+      // cmdb.dim_ci ci_id (a merge can set the number 12345 as a node id).
+      const ciIds = dimCiIds(data.ciIds || await this.getAllCIIds(), 'reconciliation');
 
       logger.info(`Reconciling ${ciIds.length} CIs`);
 
@@ -200,7 +204,7 @@ export class ReconciliationJob {
       });
 
       if (data.autoResolve && data.conflictStrategy === 'neo4j-wins') {
-        const inserted = await this.resolveByCreatingInPostgres(neo4jCI);
+        const inserted = await this.resolveByCreatingInPostgres(ciId);
         const conflict = conflicts[conflicts.length - 1]!;
         // Never publish stale attributes from the earlier generation in the
         // job result after the id has been replaced or deleted.
@@ -317,9 +321,9 @@ export class ReconciliationJob {
   /**
    * Get all CI IDs from both sources
    */
-  private async getAllCIIds(): Promise<string[]> {
+  private async getAllCIIds(): Promise<unknown[]> {
     const session = this.neo4jClient.getSession();
-    const ciIds = new Set<string>();
+    const ciIds = new Set<unknown>();
 
     try {
       // Get from Neo4j
@@ -435,12 +439,16 @@ export class ReconciliationJob {
     return true;
   }
 
-  /** The current node's properties from one graph match, or null if it no longer exists. */
+  /**
+   * The current node's properties from one graph match, or null if it no
+   * longer exists. Only a node whose id is exactly ciId, a string, is this CI.
+   */
   private async readCurrentNode(ciId: string): Promise<Record<string, unknown> | null> {
     const session = this.neo4jClient.getSession();
     try {
       const result = await session.run('MATCH (ci:CI {id: $id}) RETURN ci', { id: ciId });
-      return result.records[0]?.get('ci')?.properties ?? null;
+      const properties: Record<string, unknown> | null = result.records[0]?.get('ci')?.properties ?? null;
+      return properties && properties['id'] === ciId ? properties : null;
     } finally {
       await session.close();
     }
@@ -459,13 +467,13 @@ export class ReconciliationJob {
   /**
    * Create CI in PostgreSQL from Neo4j data
    */
-  private async resolveByCreatingInPostgres(ci: CI): Promise<Record<string, unknown> | null> {
+  private async resolveByCreatingInPostgres(ciId: string): Promise<Record<string, unknown> | null> {
     // getCI's CI shape carries no organization_id. Read the current node's
     // attributes AND organization in one MATCH: the id may name a different
     // generation since reconciliation's first getCI read.
-    const properties = await this.readCurrentNode(ci._id);
+    const properties = await this.readCurrentNode(ciId);
     if (!properties) {
-      logger.warn('Skipping reconciliation - graph CI disappeared before Postgres insert', { ciId: ci._id });
+      logger.warn('Skipping reconciliation - graph CI disappeared before Postgres insert', { ciId });
       return null;
     }
 
@@ -479,7 +487,7 @@ export class ReconciliationJob {
         organizationId
       ]
     );
-    logger.info('Created CI in PostgreSQL from Neo4j', { ciId: ci._id });
+    logger.info('Created CI in PostgreSQL from Neo4j', { ciId });
     return {
       _id: properties['id'], name: properties['name'], _type: properties['type'],
       _status: properties['status'], environment: properties['environment'],

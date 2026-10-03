@@ -426,24 +426,31 @@ organization of the `:CI` node it versions.
   version. Residual: `DataMartClient`'s first insert, the full refresh, the
   `neo4j-wins` reconciliation insert and the reconciliation status update take
   no lock, so they can race with these writers.
-- The ETL writers (neo4j-to-postgres, sync-cis-to-datamart, full refresh)
-  identify a CI's `cmdb.dim_ci` history only by its node's unique `id`, and
-  only when that `id` is a non-empty string; other nodes are skipped and
-  logged before any lock or read. A reconciliation merge can set a node's
-  `id` to a number such as `12345`, which Neo4j keeps apart from the string
-  `'12345'` but PostgreSQL would read as the same `ci_id`. sync-cis-to-datamart
-  ignores any `ci_id` node property: a merge can copy one onto a node of
-  another organization, or of none, and must not claim or end a backfilled
-  CI's history through it.
+- The dimension writers that read CIs from Neo4j (neo4j-to-postgres,
+  sync-cis-to-datamart, full refresh, reconciliation) identify a CI's
+  `cmdb.dim_ci` history only by its node's unique `id`, and only when that
+  `id` is stored and compared unchanged as a `ci_id`: a non-empty string of at
+  most 100 characters, without NUL or an unpaired surrogate. Other nodes, and
+  other `ciIds` given to a reconciliation job, are skipped and logged before
+  any lock or read; a reconciliation write also requires the node it reads to
+  carry exactly that `id`. A reconciliation merge can set a node's `id` to a
+  number such as `12345`, which Neo4j keeps apart from the string `'12345'`
+  but PostgreSQL would read as the same `ci_id`; `VARCHAR(100)` silently
+  drops trailing spaces past 100 characters; UTF-8 encoding turns an unpaired
+  surrogate into U+FFFD. sync-cis-to-datamart ignores any `ci_id` node
+  property: a merge can copy one onto a node of another organization, or of
+  none, and must not claim or end a backfilled CI's history through it.
 - **Rollout:** CIs created in a customer organization through `POST /api/v1/cis` and
   synced before 011 are backfilled to the internal organization. Right after applying
   011, run a complete neo4j-to-postgres sync (no `incrementalSince`, no `ciTypes`) so
   every such CI gets its new version in its node's organization. That run clears the
   backfill marker of every CI without a live node, even when some batches fail, so a
   node created later with such an id cannot take the backfilled CI over. CIs whose batch
-  failed keep their marker until a later run processes them. Until the run finishes,
-  the internal organization can map those CIs; such mapping rows stay listed by
-  `GET /:id/cis` afterwards but add nothing to `/costs`.
+  failed keep their marker until a later run processes them. The run does fail, and
+  clears no marker, when it cannot read the graph at all: for example, a node whose
+  `metadata` property is not JSON fails extraction (this predates migration 011).
+  Until a run completes, the internal organization can map those CIs; such mapping
+  rows stay listed by `GET /:id/cis` afterwards but add nothing to `/costs`.
 - `POST /api/v1/cis` rejects an `id` longer than 100 characters or an `external_id`
   longer than 200 (the `cmdb.dim_ci` column widths) with **400**, so no CI that can never
   be synced is created.

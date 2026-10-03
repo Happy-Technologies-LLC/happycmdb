@@ -20,7 +20,7 @@ import type { PoolClient } from 'pg';
 import { Neo4jClient, PostgresClient } from '@cmdb/database';
 import { logger, CI, validateTableNames } from '@cmdb/common';
 import { DimensionTransformer } from '../transformers/dimension-transformer';
-import { ExtractedCI, dimCiOrganizationId, withStringIds } from '../transformers/ci-organization';
+import { ExtractedCI, dimCiOrganizationId, withDimCiIds } from '../transformers/ci-organization';
 
 export interface FullRefreshJobData {
   /** Whether to truncate tables before refresh */
@@ -95,7 +95,7 @@ export class FullRefreshJob {
       }
 
       // Stage 2: Extract all CIs from Neo4j
-      const cis = withStringIds(await this.extractAllCIs(), ci => ci._id, 'full-refresh');
+      const cis = withDimCiIds(await this.extractAllCIs(), ci => ci._id, 'full-refresh');
       await job.updateProgress(25);
       result.stagesCompleted.push('extract-cis');
       logger.info(`Extracted ${cis.length} CIs from Neo4j`);

@@ -12,7 +12,7 @@
 
 import { describe, it, expect, jest, beforeEach, afterEach } from '@jest/globals';
 import { resolvers, GraphQLContext } from '../index';
-import { createCILoader } from '../../dataloaders/ci-loader';
+import { createCILoader, createRelationshipLoader, createDependentLoader } from '../../dataloaders/ci-loader';
 import { GraphQLError } from 'graphql';
 import neo4j from 'neo4j-driver';
 import { ApolloServer } from '@apollo/server';
@@ -81,10 +81,12 @@ describe('GraphQL CI Resolvers', () => {
       relationshipLoader: {
         load: jest.fn(),
         clear: jest.fn(),
+        clearAll: jest.fn(),
       },
       dependentLoader: {
         load: jest.fn(),
         clear: jest.fn(),
+        clearAll: jest.fn(),
       },
     };
 
@@ -894,6 +896,138 @@ describe('GraphQL CI Resolvers', () => {
         for (const loader of Object.values(mockLoaders) as Array<{ load: jest.Mock }>) {
           expect(loader.load).not.toHaveBeenCalled();
         }
+      } finally {
+        await server.stop();
+      }
+    });
+
+    it.each(['update', 'delete'] as const)('serial %s of neighbor B refreshes A\'s cached neighbors in the same request, keeps unchanged C, never shows the other org', async change => {
+      type StoredCI = {
+        id: string;
+        name: string;
+        type: string;
+        status: string;
+        organization_id: string;
+        metadata: string;
+      };
+      const graph = new Map<string, StoredCI>();
+      const edges: Array<{ from: string; to: string }> = [];
+      // A↔B and A↔C in org A, plus a pre-existing (invalid) A↔foreign edge to org B.
+      const seed = () => {
+        graph.clear();
+        for (const [id, org] of [['a', ORG_A], ['b', ORG_A], ['c', ORG_A], ['foreign', ORG_B]] as const) {
+          graph.set(id, { id, name: id === 'foreign' ? 'F' : id.toUpperCase(), type: 'server', status: 'active', organization_id: org, metadata: '{}' });
+        }
+        edges.splice(0, edges.length, ...[['a', 'b'], ['b', 'a'], ['a', 'c'], ['c', 'a'], ['foreign', 'a'], ['a', 'foreign']]
+          .map(([from, to]) => ({ from: from!, to: to! })));
+      };
+      const neo4jClient = {
+        getSession: () => ({
+          run: async (cypher: string, params: { keys: readonly { id: string; organizationId: string }[] }) => {
+            const relationship = cypher.includes('type(r) AS relType');
+            const incoming = cypher.includes('<-[r]-');
+            const rows = params.keys.flatMap(key => {
+              const source = graph.get(key.id);
+              const owned = source?.organization_id === key.organizationId;
+              const related = relationship && owned
+                ? edges
+                  .filter(edge => (incoming ? edge.to : edge.from) === key.id)
+                  .map(edge => graph.get(incoming ? edge.from : edge.to))
+                  .filter((ci): ci is StoredCI => ci?.organization_id === key.organizationId)
+                : [];
+              const base = { ciId: key.id, organizationId: key.organizationId };
+              if (relationship && related.length > 0) {
+                return related.map(ci => ({
+                  ...base, related: { properties: ci }, relType: 'DEPENDS_ON', relationship: { properties: {} },
+                }));
+              }
+              return [{ ...base, ci: owned ? { properties: source } : null, related: null }];
+            });
+            return { records: rows.map(row => ({ get: (field: string) => (row as Record<string, unknown>)[field] })) };
+          },
+          close: async () => undefined,
+        }),
+        getCI: async (id: string, organizationId: string) => {
+          const ci = graph.get(id);
+          return ci?.organization_id === organizationId ? ci : null;
+        },
+        updateCI: async (id: string, updates: { name?: string }, organizationId: string) => {
+          const ci = graph.get(id);
+          if (!ci || ci.organization_id !== organizationId) throw new Error('Out-of-scope CI update');
+          const updated = { ...ci, ...updates };
+          graph.set(id, updated);
+          return updated;
+        },
+        deleteCI: async (id: string, organizationId: string) => {
+          const ci = graph.get(id);
+          if (!ci || ci.organization_id !== organizationId) return false;
+          graph.delete(id);
+          for (let i = edges.length - 1; i >= 0; i--) {
+            if (edges[i]?.from === id || edges[i]?.to === id) edges.splice(i, 1);
+          }
+          return true;
+        },
+      } as unknown as GraphQLContext['_neo4jClient'];
+      const contextFor = (organizationId: string): GraphQLContext => ({
+        _neo4jClient: neo4jClient,
+        _loaders: {
+          _ciLoader: createCILoader(neo4jClient),
+          _relationshipLoader: createRelationshipLoader(neo4jClient),
+          _dependentLoader: createDependentLoader(neo4jClient),
+        },
+        user: { _userId: 'u1', _username: 'tester', _role: 'admin', _type: 'access', _organizationId: organizationId },
+      });
+      const server = new ApolloServer<GraphQLContext>({
+        typeDefs: [typeDefs, analyticsTypeDefs, connectorTypeDefs, reconciliationTypeDefs, itilTypeDefs],
+        resolvers: resolvers as unknown as ApolloServerOptionsWithTypeDefs<GraphQLContext>['resolvers'],
+      });
+      await server.start();
+      const neighbors = '_relationships { _ci { _id _name } } _dependents { _ci { _id _name } }';
+      const both = (...cis: Array<{ _id: string; _name: string }>) => ({
+        _relationships: cis.map(ci => ({ _ci: ci })),
+        _dependents: cis.map(ci => ({ _ci: ci })),
+      });
+      const c = { _id: 'c', _name: 'C' };
+      const single = async (query: string, contextValue: GraphQLContext) => {
+        const response = await server.executeOperation({ query }, { contextValue });
+        if (response.body.kind !== 'single') throw new Error('Expected a single GraphQL result');
+        expect(response.body.singleResult.errors).toBeUndefined();
+        return response.body.singleResult.data as Record<string, any>;
+      };
+      try {
+        if (change === 'delete') {
+          // Same request context with no updateCI in between, so only deleteCI can refresh A's cached entries.
+          seed();
+          const context = contextFor(ORG_A);
+          const readA = `{ getCI(id: "a") { ${neighbors} } }`;
+          expect((await single(readA, context)).getCI).toEqual(both({ _id: 'b', _name: 'B' }, c));
+          expect(await single('mutation { deleteCI(id: "b") }', context)).toEqual({ deleteCI: true });
+          expect((await single(readA, context)).getCI).toEqual(both(c));
+        }
+
+        // One document: read A's neighbors, write B, then re-read A's neighbors via updateCI(A).
+        seed();
+        const data = await single(`mutation {
+          before: updateCI(id: "a", input: { _name: "A" }) { ${neighbors} }
+          change: ${change === 'update'
+            ? 'updateCI(id: "b", input: { _name: "B-renamed" }) { _dependents { _ci { _id _relationships { _ci { _id _name } } } } }'
+            : 'deleteCI(id: "b")'}
+          after: updateCI(id: "a", input: { _name: "A" }) { ${neighbors} }
+        }`, contextFor(ORG_A));
+        expect(data.before).toEqual(both({ _id: 'b', _name: 'B' }, c));
+        if (change === 'update') {
+          // A reached through B's own result: B's write must refresh entries cached under A's key.
+          expect(data.change).toEqual({ _dependents: [
+            { _ci: { _id: 'a', _relationships: [{ _ci: { _id: 'b', _name: 'B-renamed' } }, { _ci: c }] } },
+          ] });
+        }
+        expect(data.after).toEqual(change === 'update' ? both({ _id: 'b', _name: 'B-renamed' }, c) : both(c));
+
+        // Org B's request keys its loaders by its own org claim: no org-A CI or relationship.
+        expect(await single(
+          '{ getCI(id: "foreign") { _relationships { _ci { _id } } } other: getCI(id: "a") { _id } }',
+          contextFor(ORG_B)
+        )).toEqual({ getCI: { _relationships: [] }, other: null });
       } finally {
         await server.stop();
       }

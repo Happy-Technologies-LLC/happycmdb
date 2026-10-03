@@ -712,6 +712,9 @@ const Mutation = {
 
       const ci = await _context._neo4jClient.updateCI(_args.id, updates, organizationId);
       _context._loaders._ciLoader.clear(ciKey(_args.id, organizationId));
+      // Related CI snapshots can be cached under any neighboring CI's key.
+      _context._loaders._relationshipLoader.clearAll();
+      _context._loaders._dependentLoader.clearAll();
       return toGraphQLCI(ci);
     } catch (error: any) {
       if (error instanceof GraphQLError) {
@@ -743,8 +746,9 @@ const Mutation = {
       }
       const key = ciKey(_args.id, organizationId);
       _context._loaders._ciLoader.clear(key);
-      _context._loaders._relationshipLoader.clear(key);
-      _context._loaders._dependentLoader.clear(key);
+      // Deletion removes every incident edge, not just edges cached under this id.
+      _context._loaders._relationshipLoader.clearAll();
+      _context._loaders._dependentLoader.clearAll();
       return true;
     } catch (error: any) {
       if (error instanceof GraphQLError) {

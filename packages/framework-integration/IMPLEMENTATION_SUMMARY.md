@@ -219,14 +219,14 @@ All framework data fetched in parallel using `Promise.all()`:
 ```typescript
 const [itilMetrics, tbmCosts, bsmImpact] = await Promise.all([
   this.itilManager.getServiceMetrics(serviceId),
-  this.tbmManager.getServiceCosts(serviceId, ownedServiceIds),
+  this.tbmManager.getServiceCosts(serviceId, scope),
   this.bsmManager.getServiceImpact(serviceId)
 ]);
 ```
 
 ### Redis Caching
 - 5-minute TTL for complete service views
-- Cache key pattern: `unified:service:{serviceId}`
+- Cache key pattern: `unified:service:{organizationId}:{serviceId}`
 - Configurable per-request via `useCache` parameter
 - Reduces database load for frequently accessed services
 

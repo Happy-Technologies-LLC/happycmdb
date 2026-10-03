@@ -206,6 +206,118 @@ MATCH (u:User) WHERE u._username = 'svc-happyhive' OR u.username = 'svc-happyhiv
 SET u.organizationId = '00000000-0000-0000-0000-000000000000';
 ```
 
+### Neo4j `:BusinessService.organization_id`
+
+Service ids are chosen by the client, so an organization can own (in Postgres) an id
+that names another organization's Neo4j `:BusinessService` node, for example a node
+left behind after its service row was deleted. Every TBM, dashboard and
+pool-aggregation Cypher that matches `:BusinessService` therefore also requires
+`organization_id` on the node to equal the token organization, in addition to the
+Postgres ownership check:
+
+- `GET /api/v1/tbm/costs/by-service/:id` returns the same **404** as a missing service when
+  the node belongs to another organization, has no `organization_id`, or does not exist.
+  `GET /api/v1/dashboards/business-service/:serviceId` (and `?serviceId=`) returns that
+  **404** when a node with the id exists but belongs to another organization or has no
+  `organization_id`; an owned service with no node keeps its CI-only dashboard.
+  `GET /api/v1/tbm/costs/by-capability/:id` leaves such services out. The TBM GraphQL
+  resolvers (not registered in the server) apply the same filter.
+- No API route writes `:BusinessService` nodes, and no property-map write
+  (`SET bs += $map`) targets them, so `organization_id` cannot be set or changed through
+  the API. The sample services in `packages/database/src/neo4j/v3-sample-data.cypher`
+  are in the internal organization; a reseed only creates them or updates nodes that are
+  internal or have no organization, and attaches sample relationships only where both the
+  service and the CI are internal, so on its own it never takes over, or links samples to,
+  a node (service or CI) another organization owns. Caveat: `scripts/db-init.sh` runs
+  `infrastructure/scripts/init-neo4j.cypher` first, and that script still sets the
+  internal organization on every sample-id CI unconditionally (T3a); a tenant CI that
+  reuses a deleted sample CI id is moved to the internal organization by a db-init rerun.
+- **Existing nodes have no `organization_id` until the backfill runs, so the reads above
+  return 404 for them.** The backfill
+  `packages/api-server/src/scripts/backfill-business-service-organization.ts` sets
+  `organization_id` only on nodes that have none, from the `dim_business_services` row
+  with the same `service_id`, and only from rows created before the required
+  `--created-before` cutover (use the time migration 008 was applied: tenants choose
+  service ids, so a newer row could claim a node that was never theirs). `created_at` has
+  no zone, so the required `--writer-timezone` (the API sessions' TimeZone, as a zone
+  file name such as `Etc/UTC`) says how to read it; the backfill session's own TimeZone
+  plays no part. A name missing from `pg_timezone_names`, a POSIX offset such as `+05`,
+  or a name that is also an abbreviation (`UTC`, `EST`, read from the session's
+  `timezone_abbreviations`) stops the run before any graph statement. An org-less
+  node whose only row is newer stays without an organization and is listed in
+  `needs_review`; nodes without a Postgres row stay without an organization (invisible);
+  nodes that already have one are never changed. It runs in three separately invoked
+  steps, each an FD-7 operator action:
+  1. `--prepare` (needs only the `CMDB_BACKFILL_NEO4J_*` variables) creates the
+     uniqueness constraint on `:BusinessServiceBackfillIncarnation(uuid)` and, in one
+     Neo4j transaction, links every org-less `:BusinessService` that has no anchor to a
+     new anchor node with a random UUID (`HAS_BACKFILL_INCARNATION`). It writes no
+     organization and prints the `prepared` id/UUID pairs; rerunning it only anchors
+     nodes that have none. Anchors are an append-only record: never delete or relink
+     them, and do not run two `--prepare`s at once.
+  2. The dry run (the default) writes nothing. Save its complete one-line summary to
+     a protected file; its `plan` holds every Postgres owner and, per proposed node,
+     its id, `elementId` and anchor UUID. Trusted org-less nodes without an anchor are
+     listed in `needs_prepare` and are not planned (rerun `--prepare`, then a new dry
+     run); a node with more than one anchor stops the run. Review `filled`,
+     `needs_review`, `needs_prepare`, `conflicting`, `unmatched`, the plan owners and
+     `plan_sha256` independently.
+  3. `--apply --plan <file> --sha256 <plan_sha256>` with the same `--created-before`
+     and `--writer-timezone`. The digest pins the plan contents, not the operator's
+     authorization: do not copy an unreviewed digest from a changed file. Apply
+     re-reads every Postgres owner with `SELECT ... FOR SHARE` inside a transaction and
+     aborts on any drift from the plan. Then, in one Neo4j transaction, it write-locks
+     each planned node and its anchor, rechecks that the node is still linked to the
+     planned anchor (exactly one anchor edge on each side), has the planned
+     `elementId` and still has no organization, and only then writes the organization.
+     Any missing, replaced, changed or duplicated target rolls back the whole graph
+     transaction. Postgres locks are held until the graph work completes.
+
+  Why the anchor: Neo4j guarantees an `elementId` only within one transaction and may
+  reuse it after a deletion, so id + `elementId` cannot tell the reviewed node from a
+  same-id replacement. Deleting a node removes its anchor edge, and a replacement, even
+  with every property copied, is not linked to the reviewed anchor (a later
+  `--prepare` gives it a new one). This holds while only the application and this
+  script write `:BusinessService` nodes: a privileged user who manually relinks an
+  anchor to another node is outside what the check proves, so prevent that
+  operationally (or escalate) for the whole prepare → review → apply window.
+  The databases **do not share an atomic commit**: a process/commit failure after the
+  Neo4j commit may leave graph writes even when apply exits with an error. Inspect
+  both stores and the saved summary before any retry.
+  It connects only through `CMDB_BACKFILL_*` variables (see the script header).
+  It trusts `dim_business_services`: `created_at` and `organization_id` are not
+  writable through the API, but the PUBLIC grants above let any database role write
+  them, so run it only after confirming no non-API role has written to that table.
+  Running it against a live database is an operator action (FD-7), not an automatic
+  migration. Preserve the prepare, dry-run and apply output as audit evidence.
+
+#### Reversing a mistaken backfill
+
+**There is no automatic safe undo.** The apply summary's `filled` entries (id,
+organization, anchor UUID) identify which node incarnation the run wrote, but not
+whether the organization it carries now is still the one that run wrote: it can be
+changed and restored to the same value. Never run a bulk `REMOVE` selected by
+id/org/anchor or by the saved plan. A mistaken apply requires a separately authorized
+manual incident action under FD-7:
+
+1. Freeze other business-service writers/backfills and preserve the prepare output,
+   dry-run plan, apply output, current graph snapshot (including id, `elementId`,
+   anchor UUID, organization and relationships) and current PostgreSQL owner rows.
+   Compare every proposed reversal with the pre-apply snapshot and audit history for
+   deletion/recreation and organization flips/restores. The apply output alone is
+   insufficient evidence.
+2. Stop on a missing, duplicated or conflicting node, a changed owner, a node no longer
+   linked to the anchor UUID in the apply output, or incomplete provenance; resolve
+   each id manually. Only explicitly confirmed unchanged nodes can be individually
+   reverted, in a transaction with the anchor edge, current-organization and snapshot
+   predicates rechecked at write time. Count each conditional write and
+   abort/rollback on any mismatch; do not widen a predicate to make it succeed. If
+   provenance cannot be established, leave the property in place and escalate rather
+   than stripping another operator's value.
+3. Org-less nodes are invisible until a new reviewed dry-run and separately
+   authorized apply with corrected parameters. Never reuse the mistaken plan. Leave
+   the anchors in place: they are the append-only incarnation record.
+
 ### Rolling back migrations 010, 009 and 008
 
 Roll back in reverse order. 010's functions return the views' row types, so 009's

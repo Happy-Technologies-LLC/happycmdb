@@ -163,20 +163,22 @@ console.log(appServiceCosts.totalMonthlyCost);
 console.log(appServiceCosts.costByTower);
 console.log(appServiceCosts.contributingCIs);
 
-// Aggregate costs for a Business Service. Neo4j :BusinessService nodes carry no
-// organization: pass the ids the caller's organization owns in Postgres
-// (dim_business_services.organization_id); an id outside the set is refused.
-const ownedServiceIds = new Set(['bs-001']);
-const businessServiceCosts = await poolService.aggregateBusinessServiceCosts('bs-001', ownedServiceIds);
+// Aggregate costs for a Business Service. The scope is the caller's token
+// organization and the ids it owns in Postgres
+// (dim_business_services.organization_id): an id outside the set is refused,
+// and a :BusinessService node whose organization_id is not the caller's
+// (another organization's, or none) is treated as missing.
+const scope = { organizationId: '11111111-1111-4111-8111-111111111111', ownedServiceIds: new Set(['bs-001']) };
+const businessServiceCosts = await poolService.aggregateBusinessServiceCosts('bs-001', scope);
 console.log(businessServiceCosts.totalMonthlyCost);
 
-// Aggregate costs for a Business Capability: only CI paths through services in
-// the owned set are counted
-const capabilityCosts = await poolService.aggregateBusinessCapabilityCosts('bc-001', ownedServiceIds);
+// Aggregate costs for a Business Capability: only CI paths whose services are
+// all in the owned set and in the caller's organization are counted
+const capabilityCosts = await poolService.aggregateBusinessCapabilityCosts('bc-001', scope);
 console.log(capabilityCosts.totalMonthlyCost);
 
 // Get top cost contributors
-const topContributors = await poolService.getTopCostContributors('bs-001', 'business_service', 10, ownedServiceIds);
+const topContributors = await poolService.getTopCostContributors('bs-001', 'business_service', 10, scope);
 topContributors.forEach(ci => {
   console.log(`${ci.ciName}: $${ci.cost} (${ci.percentage}%)`);
 });
@@ -288,14 +290,16 @@ console.log(`Allocation percentage: ${validation.allocationPercentage}%`);
 The Pool Aggregation Service uses Neo4j graph queries to traverse the CI hierarchy:
 
 ```cypher
--- Example: Find all CIs supporting a Business Service
+-- Example: Find all CIs supporting a Business Service of the caller's organization
 MATCH (bs:BusinessService {id: $serviceId})
+WHERE bs.organization_id = $organizationId
 MATCH (ci:CI)-[:SUPPORTS*1..2]->(bs)
 RETURN ci.id, ci.tbm_monthly_cost, ci.tbm_resource_tower
 ```
 
 Ensure your Neo4j schema includes:
 - TBM attributes on CI nodes (`tbm_resource_tower`, `tbm_cost_pool`, `tbm_monthly_cost`)
+- `organization_id` on BusinessService nodes (the owning organization; a node without it is never counted)
 - Relationship types: `SUPPORTS`, `ENABLES`
 
 ## Performance

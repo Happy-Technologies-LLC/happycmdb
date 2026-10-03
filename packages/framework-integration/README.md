@@ -62,11 +62,13 @@ import { UnifiedServiceInterface } from '@cmdb/framework-integration';
 
 const unifiedService = new UnifiedServiceInterface();
 
-// Get complete service view. ownedServiceIds: the business service ids the
-// caller's organization owns in Postgres (dim_business_services.organization_id);
-// any other id is refused before the cache is read.
-const ownedServiceIds = new Set(['bs-customer-portal-001']);
-const view = await unifiedService.getCompleteServiceView('bs-customer-portal-001', ownedServiceIds);
+// Get complete service view. scope: the caller's token organization and the
+// business service ids it owns in Postgres (dim_business_services.organization_id);
+// any other id is refused before the cache is read. The view is also refused
+// ("Business service not found") when the service's :BusinessService node is
+// missing or its organization_id is not the caller's.
+const scope = { organizationId: '11111111-1111-4111-8111-111111111111', ownedServiceIds: new Set(['bs-customer-portal-001']) };
+const view = await unifiedService.getCompleteServiceView('bs-customer-portal-001', scope);
 
 console.log(`Service: ${view.serviceName}`);
 console.log(`Health Score: ${view.kpis.serviceHealth}/100`);
@@ -90,7 +92,7 @@ const unifiedService = new UnifiedServiceInterface();
 // Get complete service view with caching
 const view = await unifiedService.getCompleteServiceView(
   'bs-customer-portal-001',
-  ownedServiceIds,
+  scope,
   { useCache: true }
 );
 
@@ -246,7 +248,7 @@ import { UnifiedServiceInterface } from '@cmdb/framework-integration';
 
 const unifiedService = new UnifiedServiceInterface();
 
-const dashboard = await unifiedService.getServiceDashboard('bs-customer-portal-001', ownedServiceIds);
+const dashboard = await unifiedService.getServiceDashboard('bs-customer-portal-001', scope);
 
 console.log('Service Dashboard:');
 console.log(`  Service: ${dashboard.service.serviceName}`);
@@ -464,7 +466,7 @@ packages/framework-integration/
 ### Caching Strategy
 
 - Complete service views cached in Redis (5-minute TTL)
-- Cache key: `unified:service:{serviceId}`
+- Cache key: `unified:service:{organizationId}:{serviceId}`
 - Cache invalidation on service updates
 - Configurable cache usage via `useCache` parameter
 
@@ -477,7 +479,7 @@ All framework data is fetched in parallel using `Promise.all()` to minimize late
 ```typescript
 const [itilMetrics, tbmCosts, bsmImpact] = await Promise.all([
   this.itilManager.getServiceMetrics(serviceId),
-  this.tbmManager.getServiceCosts(serviceId, ownedServiceIds),
+  this.tbmManager.getServiceCosts(serviceId, scope),
   this.bsmManager.getServiceImpact(serviceId)
 ]);
 ```

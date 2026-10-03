@@ -3,11 +3,13 @@
 
 /**
  * Tenant scoping for the TBM GraphQL resolvers (FD-2: Postgres
- * dim_business_services.organization_id is the tenant authority for Neo4j
- * :BusinessService ids; FD-3 b: global aggregates are admin-only).
+ * dim_business_services.organization_id is the tenant authority for
+ * business-service ids; FD-16 c: the :BusinessService node must also carry
+ * the caller's organization_id; FD-3 b: global aggregates are admin-only).
  *
  * Postgres answers the ownership query from an in-memory table; Neo4j is a
- * recording session over a graph in which every :BusinessService node is
+ * recording session over a graph that applies each organization_id predicate
+ * a statement actually contains: without it, every :BusinessService node is
  * reachable by id, whoever owns it.
  */
 
@@ -21,6 +23,9 @@ const ORG_B = '22222222-2222-4222-8222-222222222222';
 const SERVICE_ORG: Record<string, string> = {
   'bs-a-app': ORG_A,
   'bs-a-db': ORG_A,
+  // Owned by org A in Postgres, but the node is org B's / has no organization.
+  'bs-hijack': ORG_A,
+  'bs-orphan': ORG_A,
   'bs-b-app': ORG_B,
 };
 
@@ -46,33 +51,43 @@ import type { GraphQLContext } from '../index';
 type Params = Record<string, unknown>;
 const cypherRuns: Array<{ query: string; params: Params }> = [];
 const record = (fields: Record<string, unknown>) => ({ get: (key: string) => fields[key] });
-const GRAPH_SERVICES: Record<string, { name: string; cost: number; tower: string }> = {
-  'bs-a-app': { name: 'A App', cost: 100, tower: 'compute' },
-  'bs-b-app': { name: 'B Secret App', cost: 7, tower: 'data' },
+const GRAPH_SERVICES: Record<string, { name: string; cost: number; tower: string; organizationId?: string }> = {
+  'bs-a-app': { name: 'A App', cost: 100, tower: 'compute', organizationId: ORG_A },
+  'bs-b-app': { name: 'B Secret App', cost: 7, tower: 'data', organizationId: ORG_B },
+  'bs-hijack': { name: 'B Hijacked Node', cost: 5000, tower: 'data', organizationId: ORG_B },
+  'bs-orphan': { name: 'Orphan Node', cost: 300, tower: 'network' },
 };
-// cap-1 is realized by both organizations' services.
-const CAPABILITY_SERVICES = ['bs-a-app', 'bs-b-app'];
-// The tenancy filter must bind to the REALIZES optional match itself.
+// cap-1 is realized by every service node.
+const CAPABILITY_SERVICES = ['bs-a-app', 'bs-b-app', 'bs-hijack', 'bs-orphan'];
+// The tenancy filters must bind to the REALIZES optional match itself.
 const REALIZES_OWNED_FILTER =
   /OPTIONAL MATCH \(cap\)-\[:REALIZES\]->\(service:BusinessService\)\s+WHERE service\.id IN \$orgServiceIds\s/;
+const REALIZES_NODE_ORG_FILTER =
+  /OPTIONAL MATCH \(cap\)-\[:REALIZES\]->\(service:BusinessService\)\s+WHERE service\.id IN \$orgServiceIds AND service\.organization_id = \$organizationId\s/;
+const SERVICE_NODE_ORG_FILTER = /MATCH \(service:BusinessService \{id: \$serviceId\}\)\s+WHERE service\.organization_id = \$organizationId\s/;
 const int = (n: number) => ({ toNumber: () => n });
 const neo4jSession = {
   run: async (query: string, params: Params = {}) => {
     cypherRuns.push({ query, params });
+    // A statement without the node-org predicate matches every organization's node, as Neo4j would.
+    const nodeInOrg = (id: string, filter: RegExp) =>
+      !filter.test(query) || GRAPH_SERVICES[id]?.organizationId === params['organizationId'];
     if (query.includes('BusinessService {id: $serviceId}')) {
-      const service = GRAPH_SERVICES[params['serviceId'] as string];
-      if (service === undefined) return { records: [] };
+      const serviceId = params['serviceId'] as string;
+      const service = GRAPH_SERVICES[serviceId];
+      if (service === undefined || !nodeInOrg(serviceId, SERVICE_NODE_ORG_FILTER)) return { records: [] };
       return {
         records: [record({
-          serviceId: params['serviceId'], serviceName: service.name, userCount: 0,
+          serviceId, serviceName: service.name, userCount: 0,
           totalCost: service.cost, ciCount: { toNumber: () => 1 }, towers: [],
         })],
       };
     }
     if (query.includes('BusinessCapability')) {
-      // Without the filter on the REALIZES match, every realizing service is traversed.
+      // Without the filters on the REALIZES match, every realizing service is traversed.
       const allowed = REALIZES_OWNED_FILTER.test(query) ? (params['orgServiceIds'] as string[] | undefined) ?? [] : null;
-      const services = CAPABILITY_SERVICES.filter(id => allowed === null || allowed.includes(id));
+      const services = CAPABILITY_SERVICES.filter(id =>
+        (allowed === null || allowed.includes(id)) && nodeInOrg(id, REALIZES_NODE_ORG_FILTER));
       if (query.includes('capabilityName')) {
         return {
           records: [record({
@@ -143,6 +158,22 @@ describe('costsByBusinessService', () => {
     const own = await Query.costsByBusinessService(null, { id: 'bs-a-app' }, asA);
     expect(own).toMatchObject({ serviceId: 'bs-a-app', totalMonthlyCost: 100 });
   });
+
+  it('costsByBusinessService is NOT_FOUND for a node of another org or with no org', async () => {
+    const asA = contextAs('viewer', ORG_A);
+    const hijack = await graphQLErrorOf(Query.costsByBusinessService(null, { id: 'bs-hijack' }, asA));
+    const orphan = await graphQLErrorOf(Query.costsByBusinessService(null, { id: 'bs-orphan' }, asA));
+    const missing = await graphQLErrorOf(Query.costsByBusinessService(null, { id: 'bs-missing' }, asA));
+
+    for (const error of [hijack, orphan]) {
+      expect([error.message, error.extensions]).toEqual([missing.message, missing.extensions]);
+    }
+    // Postgres ownership passed for both, so the Cypher ran, bound to the token org.
+    expect(cypherRuns.map(run => run.params)).toEqual([
+      { serviceId: 'bs-hijack', organizationId: ORG_A },
+      { serviceId: 'bs-orphan', organizationId: ORG_A },
+    ]);
+  });
 });
 
 describe('costsByCapability', () => {
@@ -169,8 +200,20 @@ describe('costsByCapability', () => {
     expect(pgCalls.map(call => call.params)).toEqual([[ORG_A]]);
     expect(cypherRuns.length).toBeGreaterThan(0);
     for (const run of cypherRuns) {
-      expect([...(run.params['orgServiceIds'] as string[])].sort()).toEqual(['bs-a-app', 'bs-a-db']);
+      expect([...(run.params['orgServiceIds'] as string[])].sort()).toEqual(['bs-a-app', 'bs-a-db', 'bs-hijack', 'bs-orphan']);
     }
+  });
+
+  it('costsByCapability excludes service nodes of other orgs', async () => {
+    // bs-hijack (B's node) and bs-orphan (no org) are owned by A in Postgres and realize cap-1.
+    const result = await Query.costsByCapability(null, { id: 'cap-1' }, contextAs('viewer', ORG_A));
+
+    expect(result).toMatchObject({
+      totalMonthlyCost: 100,
+      supportingServices: 1,
+      costByTower: [{ tower: 'compute', totalCost: 100, ciCount: 1 }],
+    });
+    expect(cypherRuns.map(run => run.params['organizationId'])).toEqual([ORG_A, ORG_A]);
   });
 });
 

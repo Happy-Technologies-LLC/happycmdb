@@ -3,8 +3,9 @@
 
 /**
  * Tenant scoping for /api/v1/tbm/* (FD-2: Postgres dim_business_services
- * .organization_id is the tenant authority; Neo4j :BusinessService carries no
- * org; FD-3 b: global TBM aggregates are admin-only until CI tenancy lands).
+ * .organization_id is the tenant authority for service ids; FD-16 c: the
+ * :BusinessService node must also carry the caller's organization_id; FD-3 b:
+ * global TBM aggregates are admin-only until CI tenancy lands).
  *
  * Exercised through the real tbmRoutes behind the real AuthMiddleware /
  * AuthService (JWT verification), mounted at the production path.
@@ -13,8 +14,9 @@
  * (../../routes/__tests__/fixtures/pglite-host.cjs) with the
  * dim_business_services DDL read verbatim from 001_complete_schema.sql plus
  * 008_business_service_organization_scope.sql. Neo4j is a recording session
- * over a small in-memory graph in which every :BusinessService node, whoever
- * owns it in Postgres, is reachable by id.
+ * over a small in-memory graph that applies each organization_id predicate a
+ * statement actually contains: without it, every :BusinessService node is
+ * reachable by id, whoever owns it.
  */
 
 import { fork } from 'child_process';
@@ -64,27 +66,47 @@ const cypherRuns: Array<{ query: string; params: Params }> = [];
 const int = (n: number) => ({ toNumber: () => n });
 const record = (fields: Record<string, unknown>) => ({ get: (key: string) => fields[key] });
 
-// The graph as seeded by cypher: no org on any node.
-const GRAPH_SERVICES: Record<string, { name: string; cost: number; tower: string }> = {
-  'bs-a-app': { name: 'A App', cost: 100, tower: 'compute' },
-  'bs-b-app': { name: 'B Secret App', cost: 7, tower: 'data' },
+const ORG_A = '11111111-1111-4111-8111-111111111111';
+const ORG_B = '22222222-2222-4222-8222-222222222222';
+
+// The graph: each :BusinessService node carries organization_id (FD-16 c) or,
+// when not yet backfilled, none.
+const GRAPH_SERVICES: Record<string, { name: string; cost: number; tower: string; organizationId?: string }> = {
+  'bs-a-app': { name: 'A App', cost: 100, tower: 'compute', organizationId: ORG_A },
+  'bs-b-app': { name: 'B Secret App', cost: 7, tower: 'data', organizationId: ORG_B },
   // Present in Neo4j with no owning Postgres row at all.
   'bs-graph-only': { name: 'Graph Only', cost: 13, tower: 'network' },
+  // Owned by org A in Postgres (a client-chosen id), but the node is org B's.
+  'bs-hijack': { name: 'B Hijacked Node', cost: 5000, tower: 'data', organizationId: ORG_B },
+  // Owned by org A in Postgres, but the node has no organization (not backfilled).
+  'bs-orphan': { name: 'Orphan Node', cost: 300, tower: 'network' },
 };
-const CAPABILITY = { id: 'cap-1', name: 'Shared Capability', realizedBy: ['bs-a-app', 'bs-b-app', 'bs-graph-only'] };
-// The tenancy filter must bind to the REALIZES optional match itself.
+const CAPABILITY = {
+  id: 'cap-1',
+  name: 'Shared Capability',
+  realizedBy: ['bs-a-app', 'bs-b-app', 'bs-graph-only', 'bs-hijack', 'bs-orphan'],
+};
+// The tenancy filters must bind to the REALIZES optional match itself.
 const REALIZES_OWNED_FILTER =
   /OPTIONAL MATCH \(cap\)-\[:REALIZES\]->\(service:BusinessService\)\s+WHERE service\.id IN \$orgServiceIds\s/;
+const REALIZES_NODE_ORG_FILTER =
+  /OPTIONAL MATCH \(cap\)-\[:REALIZES\]->\(service:BusinessService\)\s+WHERE service\.id IN \$orgServiceIds AND service\.organization_id = \$organizationId\s/;
+const SERVICE_NODE_ORG_FILTER = /MATCH \(service:BusinessService \{id: \$serviceId\}\)\s+WHERE service\.organization_id = \$organizationId\s/;
 
 const neo4jSession = {
   run: async (query: string, params: Params = {}) => {
     cypherRuns.push({ query, params });
+    // A statement without the node-org predicate matches every organization's node, as Neo4j would.
+    const nodeInOrg = (id: string, filter: RegExp) =>
+      !filter.test(query) || GRAPH_SERVICES[id]?.organizationId === params['organizationId'];
     if (query.includes('BusinessCapability')) {
       if (params['capabilityId'] !== CAPABILITY.id) return { records: [] };
-      // Emulates `OPTIONAL MATCH (cap)-[:REALIZES]->(service) WHERE service.id IN $orgServiceIds`;
-      // a query without that filter on the REALIZES match traverses every realizing service.
+      // Emulates `OPTIONAL MATCH (cap)-[:REALIZES]->(service) WHERE service.id IN $orgServiceIds
+      // [AND service.organization_id = $organizationId]`; a query without the id filter on the
+      // REALIZES match traverses every realizing service.
       const allowed = REALIZES_OWNED_FILTER.test(query) ? (params['orgServiceIds'] as string[] | undefined) ?? [] : null;
-      const services = CAPABILITY.realizedBy.filter(id => allowed === null || allowed.includes(id));
+      const services = CAPABILITY.realizedBy.filter(id =>
+        (allowed === null || allowed.includes(id)) && nodeInOrg(id, REALIZES_NODE_ORG_FILTER));
       return {
         records: [record({
           capabilityId: CAPABILITY.id,
@@ -96,11 +118,12 @@ const neo4jSession = {
       };
     }
     if (query.includes('BusinessService {id: $serviceId}')) {
-      const service = GRAPH_SERVICES[params['serviceId'] as string];
-      if (service === undefined) return { records: [] };
+      const serviceId = params['serviceId'] as string;
+      const service = GRAPH_SERVICES[serviceId];
+      if (service === undefined || !nodeInOrg(serviceId, SERVICE_NODE_ORG_FILTER)) return { records: [] };
       return {
         records: [record({
-          serviceId: params['serviceId'],
+          serviceId,
           serviceName: service.name,
           totalCost: service.cost,
           ciCount: int(1),
@@ -122,9 +145,6 @@ jest.mock('@cmdb/database', () => ({
 
 // bcrypt's native binding is only used for password hashing/login, never on token verification.
 jest.mock('bcrypt', () => ({}));
-
-const ORG_A = '11111111-1111-4111-8111-111111111111';
-const ORG_B = '22222222-2222-4222-8222-222222222222';
 
 // Users as the Neo4j store returns them; the org is a user attribute, never a request input.
 const USERS: Record<string, { _id: string; _username: string; _role: string; _enabled: boolean; _organizationId?: string }> = {
@@ -165,7 +185,11 @@ const SEED = `
 INSERT INTO dim_business_services (service_id, name, service_classification, tbm_tower, business_criticality, operational_status, organization_id) VALUES
   ('bs-a-app', 'A App', 'application', 'application', 'high', 'active', '${ORG_A}'),
   ('bs-a-db', 'A Database', 'data', 'data', 'critical', 'active', '${ORG_A}'),
+  ('bs-hijack', 'A Claims B Node', 'data', 'data', 'high', 'active', '${ORG_A}'),
+  ('bs-orphan', 'A Claims Orphan Node', 'data', 'data', 'high', 'active', '${ORG_A}'),
   ('bs-b-app', 'B Secret App', 'application', 'application', 'medium', 'active', '${ORG_B}');`;
+// Every service id org A owns in Postgres, sorted.
+const A_OWNED_IDS = ['bs-a-app', 'bs-a-db', 'bs-hijack', 'bs-orphan'];
 
 const jwt = new JWTService(loadConfig().auth.jwt);
 const bearer = (userId: string, organizationId?: string) => {
@@ -239,6 +263,26 @@ describe('GET /api/v1/tbm/costs/by-service/:id', () => {
     expect(own.status).toBe(200);
     expect(own.body.data).toMatchObject({ serviceId: 'bs-a-app', serviceName: 'A App', totalMonthlyCost: 100 });
   });
+
+  it('by-service is 404 when the Neo4j node belongs to another org even though Postgres ownership passes', async () => {
+    const hijack = await request(app).get('/api/v1/tbm/costs/by-service/bs-hijack').set(AS_A);
+    const missing = await request(app).get('/api/v1/tbm/costs/by-service/bs-missing').set(AS_A);
+
+    expect(hijack.status).toBe(404);
+    expect(hijack.text).toBe(missing.text);
+    expect(hijack.text).not.toContain('B Hijacked Node');
+    // Postgres ownership passed, so the Cypher ran, bound to the token org.
+    expect(cypherRuns.map(run => run.params)).toEqual([{ serviceId: 'bs-hijack', organizationId: ORG_A }]);
+  });
+
+  it('by-service is 404 for a Neo4j node with no organization_id', async () => {
+    const orphan = await request(app).get('/api/v1/tbm/costs/by-service/bs-orphan').set(AS_A);
+    const missing = await request(app).get('/api/v1/tbm/costs/by-service/bs-missing').set(AS_A);
+
+    expect(orphan.status).toBe(404);
+    expect(orphan.text).toBe(missing.text);
+    expect(orphan.text).not.toContain('Orphan Node');
+  });
 });
 
 describe('fail closed without an organization claim', () => {
@@ -263,7 +307,16 @@ describe('GET /api/v1/tbm/costs/by-capability/:id', () => {
     // Only bs-a-app (100) realizes cap-1 for org A; B's service and the graph-only node are not traversed.
     expect(res.body.data).toMatchObject({ capabilityId: 'cap-1', totalMonthlyCost: 100, supportingServices: 1 });
     expect(cypherRuns).toHaveLength(1);
-    expect([...(cypherRuns[0]!.params['orgServiceIds'] as string[])].sort()).toEqual(['bs-a-app', 'bs-a-db']);
+    expect([...(cypherRuns[0]!.params['orgServiceIds'] as string[])].sort()).toEqual(A_OWNED_IDS);
+  });
+
+  it('by-capability excludes nodes of other orgs', async () => {
+    // bs-hijack (B's node) and bs-orphan (no org) are owned by A in Postgres and realize cap-1.
+    const res = await request(app).get('/api/v1/tbm/costs/by-capability/cap-1').set(AS_A);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toMatchObject({ totalMonthlyCost: 100, supportingServices: 1 });
+    expect(cypherRuns.map(run => run.params['organizationId'])).toEqual([ORG_A]);
   });
 
   it("the Cypher receives the token org's ids, never a request-supplied org", async () => {
@@ -274,7 +327,7 @@ describe('GET /api/v1/tbm/costs/by-capability/:id', () => {
     expect(res.status).toBe(200);
     expect(res.body.data.totalMonthlyCost).toBe(100);
     for (const run of cypherRuns) {
-      expect([...(run.params['orgServiceIds'] as string[])].sort()).toEqual(['bs-a-app', 'bs-a-db']);
+      expect([...(run.params['orgServiceIds'] as string[])].sort()).toEqual(A_OWNED_IDS);
       expect(JSON.stringify(run.params)).not.toContain(ORG_B);
     }
     expect(cypherRuns.length).toBeGreaterThan(0);

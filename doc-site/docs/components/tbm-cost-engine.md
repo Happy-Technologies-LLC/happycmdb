@@ -313,10 +313,13 @@ import { getPoolAggregationService } from '@cmdb/tbm-cost-engine';
 
 const poolService = getPoolAggregationService();
 
-// Aggregate costs for business service. The second argument is the set of
-// business service ids the caller's organization owns in Postgres
-// (dim_business_services.organization_id); any other id is refused.
-const costs = await poolService.aggregateBusinessServiceCosts('bs-crm', ownedServiceIds);
+// Aggregate costs for business service. The second argument is the caller's
+// scope: its token organization and the business service ids it owns in
+// Postgres (dim_business_services.organization_id). Any other id is refused,
+// and a :BusinessService node whose organization_id is not the caller's
+// (another organization's, or none) is treated as missing.
+const scope = { organizationId, ownedServiceIds };
+const costs = await poolService.aggregateBusinessServiceCosts('bs-crm', scope);
 
 console.log(costs);
 // {
@@ -342,9 +345,9 @@ console.log(costs);
 //   ]
 // }
 
-// Aggregate costs for business capability. Only CI paths through business
-// services in ownedServiceIds are counted.
-const capCosts = await poolService.aggregateBusinessCapabilityCosts('cap-customer-engagement', ownedServiceIds);
+// Aggregate costs for business capability. Only CI paths whose business
+// services are all in ownedServiceIds and carry organizationId are counted.
+const capCosts = await poolService.aggregateBusinessCapabilityCosts('cap-customer-engagement', scope);
 ```
 
 ---

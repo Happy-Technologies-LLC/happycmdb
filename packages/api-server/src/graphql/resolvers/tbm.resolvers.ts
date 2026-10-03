@@ -18,8 +18,9 @@ import { ownedBusinessServiceIds, ownsBusinessService } from '../../services/bus
  *
  * Tenancy mirrors /api/v1/tbm: every resolver requires an organization claim
  * before any data access; business-service and capability costs only reach
- * :BusinessService ids the caller's organization owns in Postgres (FD-2);
- * aggregates over every CI are admin-only until CI tenancy lands (FD-3 b).
+ * :BusinessService ids the caller's organization owns in Postgres (FD-2)
+ * whose node also carries that organization_id (FD-16 c); aggregates over
+ * every CI are admin-only until CI tenancy lands (FD-3 b).
  */
 
 /** FD-3 b gate for the global (all-CI) aggregates. */
@@ -131,7 +132,8 @@ const Query = {
 
   costsByCapability: async (_parent: any, args: { id: string }, context: GraphQLContext) => {
     const organizationId = requireGraphQLOrganization(context);
-    // Only the caller organization's services are traversed (FD-2).
+    // Only the caller organization's services are traversed: owned in Postgres
+    // (FD-2) and carrying the organization on the node (FD-16 c).
     const orgServiceIds = [...(await ownedBusinessServiceIds(organizationId))];
     const session = context._neo4jClient.getSession();
     try {
@@ -139,7 +141,7 @@ const Query = {
         `
         MATCH (cap:BusinessCapability {id: $capabilityId})
         OPTIONAL MATCH (cap)-[:REALIZES]->(service:BusinessService)
-        WHERE service.id IN $orgServiceIds
+        WHERE service.id IN $orgServiceIds AND service.organization_id = $organizationId
         OPTIONAL MATCH (service)-[:SUPPORTED_BY]->(app:ApplicationService)
         OPTIONAL MATCH (app)-[:DEPENDS_ON|RUNS_ON*1..2]->(ci:CI)
         WHERE ci.tbm_monthly_cost IS NOT NULL
@@ -151,7 +153,7 @@ const Query = {
           count(DISTINCT ci) as ciCount,
           collect(DISTINCT ci.tbm_resource_tower) as towers
         `,
-        { capabilityId: args.id, orgServiceIds }
+        { capabilityId: args.id, orgServiceIds, organizationId }
       );
 
       if (result.records.length === 0) {
@@ -167,7 +169,7 @@ const Query = {
         `
         MATCH (cap:BusinessCapability {id: $capabilityId})
         OPTIONAL MATCH (cap)-[:REALIZES]->(service:BusinessService)
-        WHERE service.id IN $orgServiceIds
+        WHERE service.id IN $orgServiceIds AND service.organization_id = $organizationId
         OPTIONAL MATCH (service)-[:SUPPORTED_BY]->(app:ApplicationService)
         OPTIONAL MATCH (app)-[:DEPENDS_ON|RUNS_ON*1..2]->(ci:CI)
         WHERE ci.tbm_monthly_cost IS NOT NULL
@@ -178,7 +180,7 @@ const Query = {
           count(ci) as ciCount
         ORDER BY totalCost DESC
         `,
-        { capabilityId: args.id, orgServiceIds }
+        { capabilityId: args.id, orgServiceIds, organizationId }
       );
 
       const costByTower = towerResult.records.map((r: any) => ({
@@ -217,9 +219,12 @@ const Query = {
     }
     const session = context._neo4jClient.getSession();
     try {
+      // The node must also carry the caller's organization (FD-16 c): a node
+      // with another organization's id, or none, matches nothing (NOT_FOUND).
       const result = await session.run(
         `
         MATCH (service:BusinessService {id: $serviceId})
+        WHERE service.organization_id = $organizationId
         OPTIONAL MATCH (service)-[:SUPPORTED_BY]->(app:ApplicationService)
         OPTIONAL MATCH (app)-[:DEPENDS_ON|RUNS_ON*1..2]->(ci:CI)
         WHERE ci.tbm_monthly_cost IS NOT NULL
@@ -231,7 +236,7 @@ const Query = {
           count(DISTINCT ci) as ciCount,
           collect(DISTINCT ci.tbm_resource_tower) as towers
         `,
-        { serviceId: args.id }
+        { serviceId: args.id, organizationId }
       );
 
       if (result.records.length === 0) {

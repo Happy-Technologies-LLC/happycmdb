@@ -12,11 +12,13 @@
  * 008_business_service_organization_scope.sql.
  *
  * Neo4j is a recording session over an in-memory graph of :CI nodes from two
- * organizations plus one with no organization. It honours exactly the tenant
- * predicates the statement contains: a statement without
- * `ci.organization_id = $organizationId` (or the path-wide
+ * organizations plus one with no organization, and :BusinessService nodes
+ * (one of them owned by org A in Postgres but org B's in Neo4j, one with no
+ * organization). It honours exactly the tenant predicates the statement
+ * contains: a statement without `ci.organization_id = $organizationId` /
+ * `bs.organization_id = $organizationId` (or the path-wide
  * `all(n IN nodes(path) WHERE n.organization_id = $organizationId)`) matches
- * every organization's CIs, as Neo4j would.
+ * every organization's nodes, as Neo4j would.
  */
 
 import { fork } from 'child_process';
@@ -99,6 +101,15 @@ const EDGES: Array<{ from: string; to: string }> = [
 ];
 const A_ACTIVE = FAKE_CIS.filter(c => c.organizationId === ORG_A && c.status === 'active');
 const A_ACTIVE_COST = A_ACTIVE.reduce((sum, c) => sum + c.cost, 0);
+// :BusinessService nodes (FD-16 c). Org A owns bs-hijack, bs-orphan and bs-a-nodeless in
+// Postgres, but bs-hijack's node is org B's, bs-orphan's node has no organization and
+// bs-a-nodeless has no node at all.
+const BUSINESS_SERVICE_NODES: Props[] = [
+  { id: 'bs-a-app', organization_id: ORG_A },
+  { id: 'bs-b-app', organization_id: ORG_B },
+  { id: 'bs-hijack', organization_id: ORG_B },
+  { id: 'bs-orphan' },
+];
 
 type Params = Record<string, unknown>;
 interface FakeRecord { get(key: string): unknown }
@@ -131,6 +142,13 @@ function run(rawQuery: string, params: Params): FakeRecord[] {
   const query = rawQuery.replace(/\s+/g, ' ').trim();
   const sameOrg = (props: Props) => props['organization_id'] === params['organizationId'];
 
+  if (query.startsWith('OPTIONAL MATCH (bs:BusinessService {id: $serviceId})')) {
+    // `WITH collect(bs) AS nodes RETURN all(b IN nodes WHERE b.organization_id = $organizationId)`;
+    // without the node-org predicate, any existing node is allowed whoever owns it.
+    const props = BUSINESS_SERVICE_NODES.find(p => p['id'] === params['serviceId']);
+    const checksOrg = query.includes('RETURN all(b IN nodes WHERE b.organization_id = $organizationId) AS allowed');
+    return [record({ allowed: props === undefined || !checksOrg || sameOrg(props) })];
+  }
   if (query.startsWith('MATCH path = (ci:CI {id: $serviceId})-[r*0..3]-(related:CI)')) {
     const kept = paths(params['serviceId'] as string, 3)
       .filter(p => !query.includes(PATH_SCOPE) || p.every(id => sameOrg(byId(id)!)));
@@ -220,6 +238,9 @@ function baseDdl(): string {
 const SEED = `
 INSERT INTO dim_business_services (service_id, name, service_classification, tbm_tower, business_criticality, operational_status, organization_id) VALUES
   ('bs-a-app', 'A App', 'application', 'application', 'high', 'active', '${ORG_A}'),
+  ('bs-hijack', 'A Claims B Node', 'application', 'application', 'high', 'active', '${ORG_A}'),
+  ('bs-orphan', 'A Claims Orphan Node', 'application', 'application', 'high', 'active', '${ORG_A}'),
+  ('bs-a-nodeless', 'A Without Node', 'application', 'application', 'high', 'active', '${ORG_A}'),
   ('bs-b-app', 'B Secret App', 'application', 'application', 'medium', 'active', '${ORG_B}');`;
 
 const jwt = new JWTService(loadConfig().auth.jwt);
@@ -284,6 +305,29 @@ describe('GET /api/v1/dashboards/business-service/:serviceId', () => {
     }
     expect(foreign.text).not.toContain('bs-b-app');
     expect(cypherRuns).toEqual([]);
+  });
+
+  it('business-service dashboard is 404 for a foreign-org node', async () => {
+    // Postgres ownership passes for bs-hijack and bs-orphan; their nodes are not org A's.
+    const hijack = await request(app).get('/api/v1/dashboards/business-service/bs-hijack').set(AS_A);
+    const hijackQuery = await request(app).get('/api/v1/dashboards/business-service?serviceId=bs-hijack').set(AS_A);
+    const orphan = await request(app).get('/api/v1/dashboards/business-service/bs-orphan').set(AS_A);
+    const missing = await request(app).get('/api/v1/dashboards/business-service/bs-missing').set(AS_A);
+
+    for (const res of [hijack, hijackQuery, orphan]) {
+      expect(res.status).toBe(404);
+      expect(res.text).toBe(missing.text);
+    }
+    // Each owned id ran only the node gate, bound to the token org; no CI was read.
+    expect(cypherRuns.map(run => run.params)).toEqual([
+      { serviceId: 'bs-hijack', organizationId: ORG_A },
+      { serviceId: 'bs-hijack', organizationId: ORG_A },
+      { serviceId: 'bs-orphan', organizationId: ORG_A },
+    ]);
+
+    // An owned service with no :BusinessService node keeps its CI-only dashboard.
+    const nodeless = await request(app).get('/api/v1/dashboards/business-service/bs-a-nodeless').set(AS_A);
+    expect(nodeless.status).toBe(200);
   });
 
   it("business-service dashboard Cypher and dependency traversal stay inside the caller org", async () => {

@@ -3,10 +3,16 @@
 
 /**
  * Business-service ownership (FD-2). Postgres dim_business_services
- * .organization_id is the tenant authority; Neo4j :BusinessService nodes carry
- * no organization, so every Neo4j path keyed by a business-service id is gated
- * by these lookups. A service with no row owned by the organization (foreign,
- * missing, or present only in Neo4j) is not owned: callers fail closed.
+ * .organization_id is the tenant authority for business-service ids, so every
+ * Neo4j path keyed by a business-service id is gated by these lookups. A
+ * service with no row owned by the organization (foreign, missing, or present
+ * only in Neo4j) is not owned: callers fail closed.
+ *
+ * Ownership alone is not enough for Neo4j reads: service ids are chosen by the
+ * client, so an organization can own an id that names another organization's
+ * (or an org-less) :BusinessService node. Every Cypher match on
+ * :BusinessService therefore also requires `organization_id = $organizationId`
+ * on the node (FD-16 c).
  *
  * `organizationId` must come from the token (requestOrganizationId /
  * requireGraphQLOrganization), never from request params or body.

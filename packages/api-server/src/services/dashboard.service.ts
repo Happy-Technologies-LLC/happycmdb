@@ -623,8 +623,11 @@ export class DashboardService {
 
   /**
    * Get Business Service Dashboard data. With a serviceId, returns null (and
-   * runs no Cypher) unless the organization owns the service in Postgres, so a
-   * foreign service is indistinguishable from a missing one.
+   * runs no Cypher) unless the organization owns the service in Postgres, and
+   * returns null when a :BusinessService node with that id exists but does not
+   * carry the organization (another organization's, or none; FD-16 c), so such
+   * a node is indistinguishable from a missing service. An owned service with
+   * no :BusinessService node keeps its CI-only dashboard.
    */
   async getBusinessServiceDashboard(
     organizationId: string,
@@ -638,16 +641,32 @@ export class DashboardService {
       }
 
       const session = this.neo4j.getSession();
+      let cis: unknown[];
+      try {
+        if (serviceId) {
+          const gate = await session.run(
+            `OPTIONAL MATCH (bs:BusinessService {id: $serviceId})
+             WITH collect(bs) AS nodes
+             RETURN all(b IN nodes WHERE b.organization_id = $organizationId) AS allowed`,
+            { serviceId, organizationId }
+          );
+          // No node: all() over [] is true. A node without organization_id gives null,
+          // refused like false (another organization's node).
+          if (gate.records[0]?.get('allowed') !== true) {
+            return null;
+          }
+        }
 
-      // Get the organization's CIs with BSM attributes
-      const query = serviceId
-        ? `MATCH (ci:CI) WHERE ci.id = $serviceId AND ci.organization_id = $organizationId RETURN collect(ci) as cis`
-        : `MATCH (ci:CI) WHERE ci.status = 'active' AND ci.organization_id = $organizationId RETURN collect(ci) as cis`;
+        // Get the organization's CIs with BSM attributes
+        const query = serviceId
+          ? `MATCH (ci:CI) WHERE ci.id = $serviceId AND ci.organization_id = $organizationId RETURN collect(ci) as cis`
+          : `MATCH (ci:CI) WHERE ci.status = 'active' AND ci.organization_id = $organizationId RETURN collect(ci) as cis`;
 
-      const result = await session.run(query, { serviceId, organizationId });
-      await session.close();
-
-      const cis = result.records[0]?.get('cis') || [];
+        const result = await session.run(query, { serviceId, organizationId });
+        cis = result.records[0]?.get('cis') || [];
+      } finally {
+        await session.close();
+      }
 
       // Service health by business unit
       const serviceHealth = this.aggregateServiceHealth(cis);

@@ -98,8 +98,22 @@ const neo4jClient = {
     nodes.push(node(ci._id, typeof scope === 'string' ? scope : undefined, { name: ci.name }));
     return ci;
   },
+  updateCI: async (ciId: string, updates: Record<string, unknown>, scope: string | symbol) => {
+    // As the production update: unscoped matches every organization.
+    const properties = nodes.find(ci => ci.id === ciId && (typeof scope === 'symbol' || ci.organization_id === scope));
+    if (properties) Object.assign(properties, updates);
+    return properties;
+  },
   getSession: () => ({
     run: async (cypher: string, params: { ciId?: string; id?: string } = {}) => {
+      if (cypher.includes('SET ci.status = $status')) {
+        const { id, organizationId, internalOrganizationId, status } = params as Record<string, string>;
+        const properties = nodes.find(ci => ci.id === id && (
+          ci.organization_id === undefined || ci.organization_id === null || ci.organization_id === ''
+            ? internalOrganizationId : String(ci.organization_id).toLowerCase()) === organizationId);
+        if (properties) properties.status = status;
+        return { records: properties ? [{ get: () => id }] : [] };
+      }
       if (cypher.includes('MATCH (ci:CI {id: $id})')) {
         beforeReconciliationGraphRead?.();
         beforeReconciliationGraphRead = undefined;
@@ -470,6 +484,46 @@ it('postgres-wins restores a missing org-B node in B without changing its curren
     'SELECT tbm_attributes FROM cmdb.dim_ci WHERE ci_id = $1 AND is_current = TRUE', ['restore-b']
   )).toEqual([{ tbm_attributes: { monthly_cost: 75, resource_tower: 'compute' } }]);
   expect((await versions('ci-a')).map(v => v.organization_id)).toEqual([ORG_A]);
+});
+
+describe('status-mismatch auto-resolve with an existing row and node', () => {
+  const reconcile = (ciId: string, conflictStrategy: string) => new ReconciliationJob(neo4jClient, postgresClient).execute({
+    id: `status-${conflictStrategy}`,
+    data: { ciIds: [ciId], autoResolve: true, conflictStrategy },
+    updateProgress: async () => undefined,
+  } as unknown as Job);
+  const status = async (ciId: string) => send('query', `SELECT ci_status, organization_id
+    FROM cmdb.dim_ci WHERE ci_id = $1 ORDER BY ci_key`, [ciId]);
+
+  beforeEach(async () => {
+    // B deleted its node, keeping its current row; org A re-created the id.
+    await send('exec', `INSERT INTO cmdb.dim_ci (ci_id, ci_name, ci_type, ci_status, environment, is_current, organization_id) VALUES
+      ('reused-b', 'B private', 'server', 'active', 'production', TRUE, '${ORG_B}'),
+      ('own-b', 'own-b', 'server', 'active', 'production', TRUE, '${ORG_B}'),
+      ('own-internal', 'own-internal', 'server', 'active', 'production', TRUE, '${INTERNAL_ORG}');`);
+    nodes = [
+      node('reused-b', ORG_A, { status: 'maintenance' }),
+      node('own-b', ORG_B, { status: 'maintenance' }),
+      node('own-internal', undefined, { status: 'maintenance' }),
+    ];
+  });
+
+  it.each(['neo4j-wins', 'postgres-wins'])('%s writes neither an A node status into B nor B row status onto A', async strategy => {
+    const result = await reconcile('reused-b', strategy);
+
+    expect(await status('reused-b')).toEqual([{ ci_status: 'active', organization_id: ORG_B }]);
+    expect(nodes.find(ci => ci.id === 'reused-b')).toMatchObject({ organization_id: ORG_A, status: 'maintenance' });
+    expect(result._conflictsResolved).toBe(0);
+    expect(result._manualReviewRequired).toBe(1);
+  });
+
+  it('still resolves a row and node of the same organization, including internal org-less nodes', async () => {
+    expect((await reconcile('own-b', 'neo4j-wins'))._conflictsResolved).toBe(1);
+    expect(await status('own-b')).toEqual([{ ci_status: 'maintenance', organization_id: ORG_B }]);
+
+    expect((await reconcile('own-internal', 'postgres-wins'))._conflictsResolved).toBe(1);
+    expect(nodes.find(ci => ci.id === 'own-internal')?.status).toBe('active');
+  });
 });
 
 it('issues no per-CI history aggregate and no relabel when no relabel is possible', async () => {

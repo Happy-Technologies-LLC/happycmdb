@@ -81,6 +81,7 @@ jest.mock('@cmdb/database', () => ({
 jest.mock('bcrypt', () => ({}));
 
 const INTERNAL_ORG = '00000000-0000-0000-0000-000000000000';
+const ORG_A = '11111111-1111-4111-8111-111111111111';
 const ORG_B = '22222222-2222-4222-8222-222222222222';
 
 // Users as the Neo4j store returns them; the org is a user attribute, never a request input.
@@ -218,4 +219,25 @@ it("a failed sync batch does not keep a deleted CI's backfill window open for a 
   const trends = await trendsOfB();
   expect([trends.success, trends.data]).toEqual([true, []]);
   expect(JSON.stringify(await costsOfB())).not.toContain('999');
+}, 20000);
+
+it("org A's invalid discovery values or metadata in the same sync batch do not stop org B mapping its CI", async () => {
+  // Through POST/PUT /api/v1/cis an org-A write user can store any metadata.
+  const long = 'x'.repeat(51);
+  nodes = [
+    { ...node('a-long-method', ORG_A), metadata: JSON.stringify({ discovery_source: 'test', discovery_method: long }) },
+    { ...node('a-long-source', ORG_A), metadata: JSON.stringify({ discovery_source: long, discovery_method: 'manual' }) },
+    { ...node('a-bad-metadata', ORG_A), metadata: '{not json' },
+    node('ci-b-new', ORG_B),
+  ];
+  // One batch for every node.
+  const result = await new Neo4jToPostgresJob(neo4jClient, pgClient as unknown as PostgresClient).execute({
+    id: 'job-1', data: { batchSize: 100, incrementalSince: '2026-01-01T00:00:00Z' }, updateProgress: async () => undefined,
+  } as unknown as Job);
+
+  const mapped = await mapIntoB('ci-b-new');
+  expect(mapped.status).toBe(201);
+  // The two overlong CIs are skipped and counted; the unreadable one was skipped at extraction.
+  expect(result.errors).toBe(2);
+  expect(await send('query', `SELECT ci_id FROM cmdb.dim_ci WHERE ci_id LIKE 'a-%'`)).toEqual([]);
 }, 20000);

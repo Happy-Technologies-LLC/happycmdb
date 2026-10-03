@@ -29,10 +29,12 @@ const mockPg = new PostgresClient({
   _password: process.env.POSTGRES_PASSWORD || 'testpassword',
 });
 let mockSyncNodes: Array<Record<string, unknown>> = [];
+// The pool processSyncCIsToDatamart takes connections from; set per test.
+let mockSyncPool: { connect: () => Promise<PoolClient> } | undefined;
 
 // processSyncCIsToDatamart reads its clients from the package singletons.
 jest.mock('@cmdb/database', () => ({
-  getPostgresClient: () => mockPg,
+  getPostgresClient: () => ({ pool: mockSyncPool }),
   getNeo4jClient: () => ({
     getSession: () => ({
       run: async () => ({ records: [mockSyncNodes.shift()!].map(node => ({ get: (key: string) => node[key] })) }),
@@ -57,16 +59,16 @@ async function backfilled(ciId: string): Promise<void> {
 
 /**
  * Wraps each new connection so the first transaction pauses after its
- * current-row SELECT for ciId until the second transaction has sent its first
- * statement. An unlocked writer's first statement is that SELECT, which sees
- * the backfilled row; a locked writer blocks on the per-CI lock until the
- * first transaction commits, then reads its version.
+ * current-row SELECT for ciId while the second transaction runs. An unlocked
+ * writer's second transaction then reads the same backfilled row, writes its
+ * version and commits before the first resumes from its stale read. A locked
+ * writer's second transaction first requests the per-CI lock, which waits for
+ * the first transaction, so the first resumes as soon as that is sent.
  */
 function interleave(connect: () => Promise<PoolClient>, ciId: string): () => Promise<PoolClient> {
   let connections = 0;
-  let secondIssued = false;
   let releaseFirst!: () => void;
-  const secondStatement = new Promise<void>(resolve => { releaseFirst = resolve; });
+  const secondDoneOrWaiting = new Promise<void>(resolve => { releaseFirst = resolve; });
   return async () => {
     const client = await connect();
     const order = ++connections;
@@ -74,16 +76,18 @@ function interleave(connect: () => Promise<PoolClient>, ciId: string): () => Pro
     return new Proxy(client, {
       get(target, property) {
         if (property === 'query') return async (sql: string, params?: unknown[]) => {
-          if (order === 2 && sql !== 'BEGIN' && !secondIssued) {
-            secondIssued = true;
-            const pending = query(sql, params ?? []);
+          if (order === 2 && sql.includes('pg_advisory_xact_lock') && params?.[0] === ciId) {
+            const pending = query(sql, params);
             releaseFirst();
             return pending;
           }
           const result = await query(sql, params ?? []);
+          if (order === 2 && /^(COMMIT|ROLLBACK)$/.test(sql.trim())) {
+            releaseFirst();
+          }
           if (order === 1 && /^\s*SELECT[\s\S]*FROM cmdb\.dim_ci\s+WHERE ci_id = \$1 AND is_current = true/i.test(sql)
               && params?.[0] === ciId) {
-            await secondStatement;
+            await secondDoneOrWaiting;
           }
           return result;
         };
@@ -152,8 +156,8 @@ test('concurrent sync-cis-to-datamart runs for org A and org B write one current
   });
   mockSyncNodes = [node(ORG_A), node(ORG_B)];
   const pool = mockPg.pool as Pool;
-  const rawConnect = pool.connect.bind(pool) as () => Promise<PoolClient>;
-  const connect = jest.spyOn(pool, 'connect').mockImplementation(interleave(rawConnect, ciId) as any);
+  // Only the job's connections are interleaved; pool.query (used below) is not.
+  mockSyncPool = { connect: interleave(() => pool.connect(), ciId) };
   const run = (organizationId: string) => processSyncCIsToDatamart({
     id: `sync-${organizationId}`,
     data: { incrementalSince: '2026-01-01T00:00:00Z' },
@@ -165,7 +169,7 @@ test('concurrent sync-cis-to-datamart runs for org A and org B write one current
     expect(results.map(result => result.errors)).toEqual([[], []]);
     await expectOneOrganizationClaimed(ciId);
   } finally {
-    connect.mockRestore();
+    mockSyncPool = undefined;
     await rawQuery('DELETE FROM cmdb.dim_ci WHERE ci_id = $1', [ciId]);
   }
 }, 30000);

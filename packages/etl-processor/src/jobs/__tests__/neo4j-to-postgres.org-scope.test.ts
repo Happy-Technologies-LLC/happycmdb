@@ -143,6 +143,10 @@ const neo4jClient = {
         }) : [];
         return { records };
       }
+      if (cypher.includes('RETURN ci.id as id')) {
+        // reconciliation's id scan: the id exactly as stored, whatever its type.
+        return { records: nodes.map(properties => ({ get: () => properties.id })) };
+      }
       if (/\bAS ci_name\b/.test(cypher)) {
         // sync-cis-to-datamart's projection: each alias reads the node property it names.
         const columns = [...cypher.matchAll(/ci\.(\w+) AS (\w+)/g)];
@@ -671,5 +675,58 @@ describe('a node whose id is not a string never stands for a string ci_id', () =
     expect((await versions('12345')).filter(v => v.is_current)).toEqual([
       { is_current: true, organization_id: ORG_B, ci_name: '12345', org_backfilled: false },
     ]);
+  });
+
+  const reconcile = (data: Record<string, unknown>) => new ReconciliationJob(neo4jClient, postgresClient).execute({
+    id: 'reconcile-alias', data: { autoResolve: true, ...data }, updateProgress: async () => undefined,
+  } as unknown as Job);
+
+  it.each([['org A', ORG_A], ['no organization', undefined]])(
+    'neo4j-wins reconciliation inserts no ci_id for a numeric id of %s', async (_label, organization) => {
+      nodes = [alias(organization)];
+
+      await reconcile({ conflictStrategy: 'neo4j-wins' }); // ids from the graph
+      await reconcile({ conflictStrategy: 'neo4j-wins', ciIds: [12345] }); // ids from job data
+
+      expect(await versions('12345')).toEqual([]);
+    });
+
+  it('reconciliation leaves a backfilled internal row\'s status to an org-less numeric alias', async () => {
+    await backfilled('12345');
+    nodes = [{ ...alias(undefined), status: 'maintenance' }];
+
+    await reconcile({ conflictStrategy: 'neo4j-wins' });
+    await reconcile({ conflictStrategy: 'neo4j-wins', ciIds: [12345] });
+
+    expect(await send('query', `SELECT DISTINCT ci_status FROM cmdb.dim_ci WHERE ci_id = '12345'`))
+      .toEqual([{ ci_status: 'active' }]);
+  });
+});
+
+describe('ETL writers accept only ids cmdb.dim_ci stores unchanged', () => {
+  const victim = 'v'.repeat(100);
+  it.each([
+    // VARCHAR(100) silently drops excess trailing spaces on insert.
+    ['over 100 characters ending in a space', `${victim} `, victim],
+  ])('neo4j-to-postgres gives B\'s CI no second current row from an id with %s', async (_label, aliasId, victimId) => {
+    await send('query', `INSERT INTO cmdb.dim_ci (ci_id, ci_name, ci_type, ci_status, environment, is_current, organization_id)
+      VALUES ($1, 'B', 'server', 'active', 'production', TRUE, $2)`, [victimId, ORG_B]);
+    nodes = [node(aliasId, ORG_A, { name: 'alias' })];
+
+    await sync();
+
+    expect(await versions(victimId)).toEqual([
+      { is_current: true, organization_id: ORG_B, ci_name: 'B', org_backfilled: false },
+    ]);
+  });
+
+  it('a NUL in one node id neither fails a complete sync nor keeps a deleted CI\'s backfill marker', async () => {
+    await backfilled('deleted');
+    nodes = [node('ci-\u0000'), node('ci-ok', ORG_A)];
+
+    await sync(true);
+
+    expect((await versions('deleted')).map(v => v.org_backfilled)).toEqual([false, false]);
+    expect((await versions('ci-ok')).map(v => v.organization_id)).toEqual([ORG_A]);
   });
 });

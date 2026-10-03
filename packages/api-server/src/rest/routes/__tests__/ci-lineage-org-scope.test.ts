@@ -203,9 +203,9 @@ it("a reused pre-011 CI id gives org B none of the earlier lineage's cost (mappi
   expect(JSON.stringify([costs, trends])).not.toContain('999');
 });
 
-it("a failed sync batch does not keep a deleted CI's backfill window open for a later reuse of its id", async () => {
+it("a CI that keeps failing to load does not keep a deleted CI's backfill window open for a later reuse of its id", async () => {
   // ci-gone's node no longer exists. The complete sync right after 011 has a
-  // batch that keeps failing (an external_id longer than cmdb.dim_ci holds).
+  // CI that keeps failing to load (an external_id longer than cmdb.dim_ci holds).
   await backfilledHistory('ci-gone');
   nodes = [{ ...node('ci-failing', INTERNAL_ORG), external_id: 'x'.repeat(201) }];
   await sync(true);

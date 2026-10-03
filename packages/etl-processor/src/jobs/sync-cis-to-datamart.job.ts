@@ -102,6 +102,8 @@ export async function processSyncCIsToDatamart(
         result.cisInserted += batchResult.inserted;
         result.cisUpdated += batchResult.updated;
         result.cisSkipped += batchResult.skipped;
+        // A CI that failed to load is reported, not hidden: the job is not successful.
+        result.errors.push(...batchResult.failed.map(failure => `CI ${failure.ciId}: ${failure.error}`));
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
         result.errors.push(`Batch ${Math.floor(i / batchSize) + 1}: ${errorMsg}`);
@@ -224,8 +226,8 @@ async function extractCIsFromNeo4j(
 async function processCIBatch(
   cis: any[],
   fullRefresh: boolean
-): Promise<{ processed: number; inserted: number; updated: number; skipped: number }> {
-  const result = { processed: 0, inserted: 0, updated: 0, skipped: 0 };
+): Promise<{ processed: number; inserted: number; updated: number; skipped: number; failed: Array<{ ciId: string; error: string }> }> {
+  const result = { processed: 0, inserted: 0, updated: 0, skipped: 0, failed: [] as Array<{ ciId: string; error: string }> };
 
   const pgClient = getPostgresClient();
   const client = await pgClient.pool.connect();
@@ -236,6 +238,11 @@ async function processCIBatch(
     await lockCIDimensions(client, cis.map(ci => ci.ci_id));
 
     for (const ci of cis) {
+      // Locks first, then one savepoint per CI: a CI whose client-writable
+      // values fail to load (metadata or attributes that are not JSON, say)
+      // is rolled back alone; the batch's other CIs, of any organization,
+      // still load.
+      await client.query('SAVEPOINT ci_dimension');
       try {
         const existingResult = await client.query(
           `SELECT
@@ -269,6 +276,7 @@ async function processCIBatch(
             logger.warn('[SyncCIsToDatamart] CI node organization conflicts with its dim_ci history; skipped', {
               ci_id: ci.ci_id,
             });
+            await client.query('RELEASE SAVEPOINT ci_dimension');
             continue;
           }
           if (existing.org_backfilled === true) {
@@ -364,13 +372,18 @@ async function processCIBatch(
           });
         }
 
+        await client.query('RELEASE SAVEPOINT ci_dimension');
         result.processed++;
       } catch (error) {
-        logger.error('[SyncCIsToDatamart] Error processing CI', {
+        await client.query('ROLLBACK TO SAVEPOINT ci_dimension');
+        await client.query('RELEASE SAVEPOINT ci_dimension');
+        const message = error instanceof Error ? error.message : String(error);
+        // Fail closed: this CI gets no version, not a partial or coerced one.
+        result.failed.push({ ciId: ci.ci_id, error: message });
+        logger.error('[SyncCIsToDatamart] Skipping CI that failed to load; the rest of its batch continues', {
           ci_id: ci.ci_id,
-          error: error instanceof Error ? error.message : String(error),
+          error: message,
         });
-        throw error;
       }
     }
 

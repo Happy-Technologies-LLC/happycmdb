@@ -117,12 +117,16 @@ describe('Neo4jToPostgresJob', () => {
       // Mock PostgreSQL: CIs don't exist (new inserts)
       mockPostgres.client.query
         .mockResolvedValueOnce(createMockPostgresResult([])) // Batch lock keys (none to lock)
+        .mockResolvedValueOnce(createMockPostgresResult([])) // SAVEPOINT ci-1
         .mockResolvedValueOnce(createMockPostgresResult([])) // Check existence ci-1
         .mockResolvedValueOnce(createMockPostgresResult([{ ci_key: 1 }])) // Insert dim_ci ci-1
         .mockResolvedValueOnce(createMockPostgresResult([])) // Insert fact ci-1
+        .mockResolvedValueOnce(createMockPostgresResult([])) // RELEASE SAVEPOINT ci-1
+        .mockResolvedValueOnce(createMockPostgresResult([])) // SAVEPOINT ci-2
         .mockResolvedValueOnce(createMockPostgresResult([])) // Check existence ci-2
         .mockResolvedValueOnce(createMockPostgresResult([{ ci_key: 2 }])) // Insert dim_ci ci-2
-        .mockResolvedValueOnce(createMockPostgresResult([])); // Insert fact ci-2
+        .mockResolvedValueOnce(createMockPostgresResult([])) // Insert fact ci-2
+        .mockResolvedValueOnce(createMockPostgresResult([])); // RELEASE SAVEPOINT ci-2
 
       mockBullJob.data = { batchSize: 100 };
 
@@ -282,9 +286,11 @@ describe('Neo4jToPostgresJob', () => {
 
       mockPostgres.client.query
         .mockResolvedValueOnce(createMockPostgresResult([])) // Batch lock keys (none to lock)
+        .mockResolvedValueOnce(createMockPostgresResult([])) // SAVEPOINT
         .mockResolvedValueOnce(createMockPostgresResult([])) // Not found
         .mockResolvedValueOnce(createMockPostgresResult([{ ci_key: 1 }])) // Insert
-        .mockResolvedValueOnce(createMockPostgresResult([])); // Fact insert
+        .mockResolvedValueOnce(createMockPostgresResult([])) // Fact insert
+        .mockResolvedValueOnce(createMockPostgresResult([])); // RELEASE SAVEPOINT
 
       mockBullJob.data = { batchSize: 100 };
 

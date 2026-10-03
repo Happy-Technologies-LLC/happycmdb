@@ -430,14 +430,20 @@ organization of the `:CI` node it versions.
   unchanged-CI marker clear take no lock. These only clear a marker or change
   a status within its organization, but `DataMartClient` can return the key of
   a version a concurrent writer has just retired.
-- Availability residual (no cross-organization write): one CI node's
-  client-writable values can still fail a whole ETL batch, which holds CIs of
-  every organization. sync-cis-to-datamart writes a node's `metadata` string to
-  a JSONB column unparsed, so non-JSON metadata fails its batch of up to 100
-  CIs on every run; neo4j-to-postgres writes `metadata.discovery_method` and
-  `discovery_source` to `VARCHAR(50)` discovery facts, so a longer value fails
-  its batch. Those CIs' dimensions, and with them mapping, `/costs` and trends,
-  stay stale until the node is repaired.
+- One CI node's client-writable values cannot fail the other CIs of its ETL
+  batch, which holds CIs of every organization. neo4j-to-postgres and
+  sync-cis-to-datamart, after taking the batch's locks, load each CI under its
+  own savepoint. A CI that fails to load is rolled back alone, skipped (never
+  truncated or partly written), logged with its id and reported in the job
+  result (`errors`), and the rest of the batch commits. Examples: a
+  `metadata.discovery_method` or `discovery_source` longer than its
+  `VARCHAR(50)` discovery-fact column, which any write role can set through
+  `POST`/`PUT /api/v1/cis`; or `metadata`, `itil_attributes`, `tbm_attributes`
+  or `bsm_attributes` that sync-cis-to-datamart cannot store as JSONB. The full
+  refresh already loads each CI under its own savepoint. A skipped CI keeps its
+  current row, if any, and still counts as live for the complete-sync marker
+  clear; a new skipped CI has no `cmdb.dim_ci` row (so it cannot be mapped)
+  until its node is repaired.
 - The dimension writers that read CIs from Neo4j (neo4j-to-postgres,
   sync-cis-to-datamart, full refresh, reconciliation) identify a CI's
   `cmdb.dim_ci` history only by its node's unique `id`, and only when that
@@ -456,8 +462,8 @@ organization of the `:CI` node it versions.
   synced before 011 are backfilled to the internal organization. Right after applying
   011, run a complete neo4j-to-postgres sync (no `incrementalSince`, no `ciTypes`) so
   every such CI gets its new version in its node's organization. That run clears the
-  backfill marker of every CI without a live node, even when some batches fail, so a
-  node created later with such an id cannot take the backfilled CI over. CIs whose batch
+  backfill marker of every CI without a live node, even when some batches or CIs fail,
+  so a node created later with such an id cannot take the backfilled CI over. CIs that
   failed keep their marker until a later run processes them. A node whose `metadata`
   property is not JSON (a reconciliation merge can store one) is skipped and logged by
   neo4j-to-postgres and the full refresh; it still counts as live, so its CI keeps its
@@ -465,8 +471,9 @@ organization of the `:CI` node it versions.
   can map those CIs; such mapping rows stay listed by `GET /:id/cis` afterwards but add
   nothing to `/costs`.
 - `POST /api/v1/cis` rejects an `id` longer than 100 characters or an `external_id`
-  longer than 200 (the `cmdb.dim_ci` column widths) with **400**, so no CI that can never
-  be synced is created.
+  longer than 200 (the `cmdb.dim_ci` column widths) with **400**. Other values, such as
+  `metadata`, are not bounded; a CI whose values cannot be loaded is skipped by the ETL
+  without failing other CIs (see above).
 - `POST /api/v1/itil/baselines/:id/restore` never writes a CI's `created_at` (nor its
   `organization_id`, `id` or `updated_at`) from a snapshot.
 - `POST /api/v1/business-services/:id/cis` maps only CIs with a current `cmdb.dim_ci`

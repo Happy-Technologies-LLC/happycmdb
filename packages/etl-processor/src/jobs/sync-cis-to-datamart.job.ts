@@ -18,7 +18,7 @@ import { Job } from 'bullmq';
 import { logger } from '@cmdb/common';
 import { getPostgresClient, getNeo4jClient } from '@cmdb/database';
 import {
-  CI_DIMENSION_LOCK_SQL, dimCiOrganizationId, inLockOrder, storedCiOrganizationId,
+  dimCiOrganizationId, lockCIDimensions, storedCiOrganizationId,
 } from '../transformers/ci-organization';
 
 export interface SyncCIsJobData {
@@ -172,9 +172,12 @@ async function extractCIsFromNeo4j(
       query += ' WHERE ' + conditions.join(' AND ');
     }
 
+    // The dimension identity is the node's unique id. Any other property, a
+    // ci_id one included, can be copied onto a node by a reconciliation merge,
+    // so it must not decide which cmdb.dim_ci history a node claims.
     query += `
       RETURN
-        ci.ci_id AS ci_id,
+        ci.id AS ci_id,
         ci.ci_name AS ci_name,
         ci.ci_type AS ci_type,
         ci.ci_status AS ci_status,
@@ -227,11 +230,11 @@ async function processCIBatch(
 
   try {
     await client.query('BEGIN');
+    // Serialize writers of these CIs through COMMIT, before reading any current row.
+    await lockCIDimensions(client, cis.map(ci => ci.ci_id));
 
-    for (const ci of inLockOrder(cis, ci => ci.ci_id)) {
+    for (const ci of cis) {
       try {
-        // Serialize writers of this CI through COMMIT, then read its current row.
-        await client.query(CI_DIMENSION_LOCK_SQL, [ci.ci_id]);
         const existingResult = await client.query(
           `SELECT
             ci_key,

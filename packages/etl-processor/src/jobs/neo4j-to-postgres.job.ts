@@ -19,7 +19,7 @@ import { Neo4jClient, PostgresClient } from '@cmdb/database';
 import { logger, CI, CIType } from '@cmdb/common';
 import { DimensionTransformer } from '../transformers/dimension-transformer';
 import {
-  CI_DIMENSION_LOCK_SQL, ExtractedCI, dimCiOrganizationId, inLockOrder, storedCiOrganizationId,
+  ExtractedCI, dimCiOrganizationId, lockCIDimensions, storedCiOrganizationId,
 } from '../transformers/ci-organization';
 
 export interface Neo4jToPostgresJobData {
@@ -227,13 +227,14 @@ export class Neo4jToPostgresJob {
       const acceptedInAttempt: Array<[string, string]> | null = acceptedOrganizations ? [] : null;
       try {
         await this.postgresClient.transaction(async (client: any) => {
-          for (const ci of inLockOrder(cis, ci => ci._id)) {
+          // Serialize writers of these CIs through COMMIT, before reading any current row.
+          await lockCIDimensions(client, cis.map(ci => ci._id));
+          for (const ci of cis) {
             try {
               // Transform CI to dimensional model
               const dimension = this.dimensionTransformer.toDimension(ci);
 
-              // Serialize writers of this CI through COMMIT, then read its current row.
-              await client.query(CI_DIMENSION_LOCK_SQL, [ci._id]);
+              // Check if CI dimension already exists
               const existingResult = await client.query(
                 `SELECT ci_key, ci_name, ci_type, ci_status, environment, organization_id, org_backfilled
                  FROM cmdb.dim_ci WHERE ci_id = $1 AND is_current = true`,

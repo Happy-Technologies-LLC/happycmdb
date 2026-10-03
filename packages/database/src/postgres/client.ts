@@ -152,7 +152,7 @@ export class PostgresClient {
       // another transaction expires it, a waiting SELECT can see no row.
       // Serialize this SCD update for the natural id through commit before
       // rechecking its latest organization, even if the current row vanishes.
-      // The ETL dimension writers take this same key (CI_DIMENSION_LOCK_SQL in
+      // The ETL dimension writers take this same key (lockCIDimensions in
       // @cmdb/etl-processor's transformers/ci-organization.ts).
       await client.query(
         'SELECT pg_advisory_xact_lock(8271, hashtext($1))',

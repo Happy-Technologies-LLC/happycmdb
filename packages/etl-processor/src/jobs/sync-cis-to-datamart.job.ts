@@ -222,6 +222,19 @@ async function extractCIsFromNeo4j(
   }
 }
 
+/**
+ * Whether two attribute values differ. A stored value nested too deeply for
+ * JSON.stringify (RangeError) counts as changed, so the CI is re-versioned (or
+ * skipped for its own SQL error) instead of failing its whole batch.
+ */
+function jsonDiffers(stored: unknown, node: unknown): boolean {
+  try {
+    return JSON.stringify(stored) !== JSON.stringify(node);
+  } catch {
+    return true;
+  }
+}
+
 type CIBatchResult = {
   processed: number; inserted: number; updated: number; skipped: number; failed: Array<{ ciId: string; code: string }>;
 };
@@ -322,9 +335,9 @@ async function processCIBatch(
             existing.ci_status !== ci.ci_status ||
             existing.environment !== ci.environment ||
             organizationId !== existing.organization_id ||
-            JSON.stringify(existing.itil_attributes) !== JSON.stringify(ci.itil_attributes) ||
-            JSON.stringify(existing.tbm_attributes) !== JSON.stringify(ci.tbm_attributes) ||
-            JSON.stringify(existing.bsm_attributes) !== JSON.stringify(ci.bsm_attributes);
+            jsonDiffers(existing.itil_attributes, ci.itil_attributes) ||
+            jsonDiffers(existing.tbm_attributes, ci.tbm_attributes) ||
+            jsonDiffers(existing.bsm_attributes, ci.bsm_attributes);
 
           if (hasChanged || fullRefresh) {
             // Type 2 SCD: Expire old record

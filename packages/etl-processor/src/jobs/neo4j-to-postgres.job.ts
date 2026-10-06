@@ -17,7 +17,7 @@
 import { Job } from 'bullmq';
 import { Neo4jClient, PostgresClient } from '@cmdb/database';
 import { logger, CI, CIType } from '@cmdb/common';
-import { DimensionTransformer } from '../transformers/dimension-transformer';
+import { CIDimension, DimensionTransformer, DiscoveryFact } from '../transformers/dimension-transformer';
 import {
   ExtractedCI, dimCiIds, dimCiOrganizationId, isCiDataError, isDimCiId, lockCIDimensions, parseNodeMetadata,
   storedCiOrganizationId, UNREADABLE_METADATA, withDimCiIds,
@@ -255,14 +255,28 @@ export class Neo4jToPostgresJob {
           // Serialize writers of these CIs through COMMIT, before reading any current row.
           await lockCIDimensions(client, cis.map(ci => ci._id));
           for (const ci of cis) {
+            // Transform first, in JavaScript, from client-writable node values.
+            // Any exception here (no SQLSTATE: a TypeError from a crafted
+            // metadata object, say) is this CI's own failure: skip it alone.
+            let dimension: CIDimension;
+            let discovery: Partial<DiscoveryFact>;
+            try {
+              dimension = this.dimensionTransformer.toDimension(ci);
+              discovery = this.dimensionTransformer.toDiscoveryFact(ci);
+            } catch (error) {
+              failedInAttempt++;
+              logger.error('Skipping CI whose values cannot be transformed; the rest of its batch continues', {
+                _ciId: ci._id,
+                error,
+                _attempt: attempt + 1
+              });
+              continue;
+            }
             // Locks first, then one savepoint per CI: a CI whose own values fail
             // to load (an overlong discovery field, say) is rolled back alone;
             // the batch's other CIs, of any organization, still load.
             await client.query('SAVEPOINT ci_dimension');
             try {
-              // Transform CI to dimensional model
-              const dimension = this.dimensionTransformer.toDimension(ci);
-
               // Check if CI dimension already exists
               const existingResult = await client.query(
                 `SELECT ci_key, ci_name, ci_type, ci_status, environment, organization_id, org_backfilled
@@ -339,7 +353,7 @@ export class Neo4jToPostgresJob {
                   const newCiKey = insertResult.rows[0].ci_key;
 
                   // Insert discovery fact if available
-                  const discoveryFact = this.dimensionTransformer.toDiscoveryFact(ci, newCiKey);
+                  const discoveryFact = { ...discovery, _ci_key: newCiKey };
                   if (discoveryFact._ci_key) {
                     await client.query(
                       `INSERT INTO cmdb.fact_discovery
@@ -393,7 +407,7 @@ export class Neo4jToPostgresJob {
                 const ciKey = insertResult.rows[0].ci_key;
 
                 // Insert discovery fact
-                const discoveryFact = this.dimensionTransformer.toDiscoveryFact(ci, ciKey);
+                const discoveryFact = { ...discovery, _ci_key: ciKey };
                 if (discoveryFact._ci_key) {
                   await client.query(
                     `INSERT INTO cmdb.fact_discovery

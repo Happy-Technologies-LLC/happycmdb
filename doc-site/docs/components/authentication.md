@@ -433,11 +433,14 @@ organization of the `:CI` node it versions.
 - One CI node's client-writable values cannot fail the other CIs of its ETL
   batch, which holds CIs of every organization. neo4j-to-postgres and
   sync-cis-to-datamart, after taking the batch's locks, load each CI under its
-  own savepoint. A CI that fails to load because of its own values (a
-  PostgreSQL data exception or constraint violation, SQLSTATE class 22 or 23)
-  is rolled back alone, skipped (never truncated or partly written), logged
-  with its id and reported in the job result (`errors`; sync-cis-to-datamart
-  reports its id and SQLSTATE only), and the rest of the batch commits.
+  own savepoint. A CI that fails because of its own values is rolled back
+  alone, skipped (never truncated or partly written), logged with its id and
+  reported in the job result (`errors`; sync-cis-to-datamart reports its id and
+  SQLSTATE only), and the rest of the batch commits. "Its own values" means a
+  PostgreSQL data exception, constraint violation or program limit (SQLSTATE
+  class 22, 23 or 54, such as JSON nested too deeply) on its statements, or,
+  in neo4j-to-postgres, any exception while transforming its node before any
+  SQL (a crafted metadata object, say).
   Examples: a `metadata.discovery_method` or `discovery_source` longer than its
   `VARCHAR(50)` discovery-fact column, which any write role can set through
   `POST`/`PUT /api/v1/cis`; or `metadata`, `itil_attributes`, `tbm_attributes`

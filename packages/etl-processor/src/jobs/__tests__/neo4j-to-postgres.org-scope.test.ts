@@ -809,11 +809,13 @@ it.each([['org A', ORG_A], ['no organization', undefined]])(
 
 describe('one org\'s client-writable node values cannot fail another org\'s CIs in the same batch', () => {
   // POST/PUT /api/v1/cis accepts any metadata object; a reconciliation merge any value.
-  it('neo4j-to-postgres syncs B\'s CI next to org-A nodes whose discovery_source or discovery_method overflows its column', async () => {
+  it('neo4j-to-postgres syncs B\'s CI next to org-A nodes whose discovery values overflow their column or cannot be read', async () => {
     const long = 'x'.repeat(51);
     nodes = [
       node('ci-long-source', ORG_A, { metadata: JSON.stringify({ discovery_source: long, discovery_method: 'manual' }) }),
       node('ci-long-method', ORG_A, { metadata: JSON.stringify({ discovery_source: 'test', discovery_method: long }) }),
+      // Stringifying this value throws a TypeError, which carries no SQLSTATE.
+      node('ci-throws', ORG_A, { metadata: JSON.stringify({ aws_account_id: { toString: 1 } }) }),
       node('ci-b', ORG_B),
     ];
 
@@ -822,10 +824,11 @@ describe('one org\'s client-writable node values cannot fail another org\'s CIs 
     } as unknown as Job);
 
     expect((await versions('ci-b')).map(v => [v.is_current, v.organization_id])).toEqual([[true, ORG_B]]);
-    // Skipped, not truncated: neither overlong CI gets a dimension.
+    // Skipped, not truncated: none of org A's CIs gets a dimension.
     expect(await versions('ci-long-source')).toEqual([]);
     expect(await versions('ci-long-method')).toEqual([]);
-    expect(result.errors).toBe(2);
+    expect(await versions('ci-throws')).toEqual([]);
+    expect(result.errors).toBe(3);
   });
 
   it('sync-cis-to-datamart syncs B\'s CI next to org-A nodes whose metadata or tbm_attributes is not JSON, and reports them', async () => {

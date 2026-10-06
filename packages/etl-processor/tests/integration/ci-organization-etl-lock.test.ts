@@ -247,7 +247,9 @@ test('sync-cis-to-datamart batches whose ids share a lock key do not deadlock', 
   });
   mockSyncNodes = [[node(p), node(q)], [node(q), node(r)]];
   const pool = mockPg.pool as Pool;
-  mockSyncPool = { connect: interleaveLocks(() => pool.connect()) };
+  const connect = interleaveLocks(() => pool.connect());
+  let connections = 0;
+  mockSyncPool = { connect: () => { connections++; return connect(); } };
   const run = (name: string) => processSyncCIsToDatamart({
     id: name, data: { incrementalSince: '2026-01-01T00:00:00Z' }, updateProgress: async () => undefined,
   } as unknown as Job);
@@ -255,6 +257,9 @@ test('sync-cis-to-datamart batches whose ids share a lock key do not deadlock', 
   try {
     const results = await Promise.all([run('sync-pq'), run('sync-qr')]);
     expect(results.map(result => result.errors)).toEqual([[], []]);
+    // One connection per run: no batch was retried after a deadlock, which
+    // the transient-lock retry would otherwise hide.
+    expect(connections).toBe(2);
     expect((await rawQuery(`SELECT ci_id FROM cmdb.dim_ci
       WHERE ci_id = ANY($1::varchar[]) AND is_current ORDER BY ci_id`, [ids])).rows).toEqual(
       [{ ci_id: p }, { ci_id: q }, { ci_id: r }]);

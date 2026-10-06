@@ -108,14 +108,15 @@ function sqlState(error: unknown): string | undefined {
 /**
  * Whether a CI failed to load because of its own values: a PostgreSQL data
  * exception (SQLSTATE class 22: an overlong discovery field, metadata that is
- * not JSON, a malformed uuid) or integrity constraint violation (class 23).
- * Only such a CI is rolled back to its savepoint and skipped. Any other error
- * (a deadlock, a lock timeout, a lost connection, a bug) fails the batch, so
- * it is retried or reported, never taken for one bad CI.
+ * not JSON, a malformed uuid), integrity constraint violation (class 23) or
+ * program limit (class 54: a JSON value nested too deeply). Only such a CI is
+ * rolled back to its savepoint and skipped. Any other error (a deadlock, a
+ * lock timeout, a lost connection, a bug) fails the batch, so it is retried or
+ * reported, never taken for one bad CI.
  */
 export function isCiDataError(error: unknown): boolean {
   const code = sqlState(error);
-  return code !== undefined && (code.startsWith('22') || code.startsWith('23'));
+  return code !== undefined && (code.startsWith('22') || code.startsWith('23') || code.startsWith('54'));
 }
 
 /**

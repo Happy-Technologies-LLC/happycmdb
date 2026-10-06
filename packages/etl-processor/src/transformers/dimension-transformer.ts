@@ -319,7 +319,9 @@ export class DimensionTransformer {
     const metadata = ci._metadata || {};
 
     if (metadata['discovery_method']) {
-      return metadata['discovery_method'];
+      // A string here, so the conversion of a client-written value (which may
+      // throw) happens in the transform, never later as a query parameter.
+      return String(metadata['discovery_method']);
     }
 
     // Infer based on CI type and metadata
@@ -337,7 +339,7 @@ export class DimensionTransformer {
     const metadata = ci._metadata || {};
 
     if (metadata['discovery_source']) {
-      return metadata['discovery_source'];
+      return String(metadata['discovery_source']);
     }
 
     if (metadata['aws_account_id']) return `aws:${metadata['aws_account_id']}`;

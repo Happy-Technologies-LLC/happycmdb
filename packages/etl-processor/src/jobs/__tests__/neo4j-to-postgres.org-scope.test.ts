@@ -24,11 +24,12 @@ const host = fork(
 );
 let nextId = 0;
 const pending = new Map<number, { resolve: (rows: unknown[]) => void; reject: (e: Error) => void }>();
-host.on('message', ({ id, rows, error }: { id: number; rows: unknown[]; error?: string }) => {
+host.on('message', ({ id, rows, error, code }: { id: number; rows: unknown[]; error?: string; code?: string }) => {
   const p = pending.get(id)!;
   pending.delete(id);
   if (error === undefined) p.resolve(rows);
-  else p.reject(new Error(error));
+  // Keep the SQLSTATE, as the pg driver does.
+  else p.reject(Object.assign(new Error(error), { code }));
 });
 function send(op: 'exec' | 'query', sql: string, params: unknown[] = []): Promise<unknown[]> {
   const id = nextId++;
@@ -61,8 +62,15 @@ const MIGRATIONS = join(__dirname, '../../../../database/src/postgres/migrations
 
 // Every statement the job sends, for the query-shape assertion.
 const statements: string[] = [];
-const recordingQuery: typeof query = async (sql, params) => {
+// A real PostgreSQL error with the given SQLSTATE, raised `times` times in place
+// of the first statements for which `matches` holds (then the statement runs).
+let injectedError: { matches: (sql: string, params: unknown[]) => boolean; code: string; times: number } | undefined;
+const recordingQuery: typeof query = async (sql, params = []) => {
   statements.push(sql);
+  if (injectedError && injectedError.times > 0 && injectedError.matches(sql, params)) {
+    injectedError.times--;
+    return query(`DO $$ BEGIN RAISE EXCEPTION 'injected ${injectedError.code}' USING ERRCODE = '${injectedError.code}'; END $$`);
+  }
   return query(sql, params);
 };
 let afterCommit: (() => void | Promise<void>) | undefined;
@@ -166,7 +174,7 @@ mockClients.graph = neo4jClient;
 mockClients.pool = {
   connect: async () => ({
     query: async (sql: string, params: unknown[] = []) => /^(BEGIN|COMMIT|ROLLBACK)$/.test(sql.trim())
-      ? { rows: await send('exec', sql) } : query(sql, params),
+      ? { rows: await send('exec', sql) } : recordingQuery(sql, params),
     release: () => undefined,
   }),
 };
@@ -218,6 +226,7 @@ beforeEach(async () => {
   afterCommit = undefined;
   beforeReconciliationGraphRead = undefined;
   statements.length = 0;
+  injectedError = undefined;
 });
 
 it('a 011-backfilled CI whose node names another org gets a new version there; no stored row changes org', async () => {
@@ -838,6 +847,71 @@ describe('one org\'s client-writable node values cannot fail another org\'s CIs 
     expect(result.errors).toEqual([
       expect.stringContaining('ci-bad-metadata'), expect.stringContaining('ci-bad-tbm'),
     ]);
+  });
+});
+
+describe('a transient lock error (deadlock, lock timeout) is retried, not taken for a CI that cannot load', () => {
+  // The first INSERT of B's CI fails as a deadlock victim (40P01) or on lock_timeout (55P03).
+  const failBInsert = (code: string, times: number) => {
+    injectedError = {
+      matches: (sql, params) => /INSERT INTO cmdb\.dim_ci/.test(sql) && params[0] === 'ci-b',
+      code, times,
+    };
+  };
+
+  it.each(['40P01', '55P03'])(
+    'neo4j-to-postgres retries its batch after %s: B\'s CI and its edge sync, org A\'s overlong CI alone is skipped', async code => {
+      nodes = [
+        node('ci-long', ORG_A, { metadata: JSON.stringify({ discovery_source: 'x'.repeat(51), discovery_method: 'manual' }) }),
+        node('ci-b', ORG_B),
+        node('ci-b2', ORG_B),
+      ];
+      relationships = { 'ci-b': [{ _ci: { _id: 'ci-b2' }, _type: 'RUNS_ON' }] };
+      failBInsert(code, 1);
+      const job = new Neo4jToPostgresJob(neo4jClient, postgresClient);
+      Object.assign(job, { sleep: async () => undefined }); // no retry backoff in the test
+
+      const result = await job.execute({ id: 'job-1', data: {}, updateProgress: async () => undefined } as unknown as Job);
+
+      expect(injectedError!.times).toBe(0);
+      expect((await versions('ci-b')).map(v => [v.is_current, v.organization_id])).toEqual([[true, ORG_B]]);
+      expect(await send('query', `SELECT source.ci_id AS from_id, target.ci_id AS to_id
+        FROM cmdb.fact_ci_relationships f
+        JOIN cmdb.dim_ci source ON source.ci_key = f.from_ci_key
+        JOIN cmdb.dim_ci target ON target.ci_key = f.to_ci_key
+        WHERE f.is_active = TRUE`)).toEqual([{ from_id: 'ci-b', to_id: 'ci-b2' }]);
+      expect(await versions('ci-long')).toEqual([]);
+      expect(result.errors).toBe(1); // ci-long only
+    });
+
+  const v3 = (id: string, organizationId: string, overrides: Record<string, unknown> = {}) =>
+    node(id, organizationId, { ci_name: id, ci_type: 'server', ci_status: 'active', ...overrides });
+  const syncCIs = () => processSyncCIsToDatamart({
+    id: 'sync-cis', data: { incrementalSince: '2026-01-01T00:00:00Z' }, updateProgress: async () => undefined,
+  } as unknown as Job);
+
+  it.each(['40P01', '55P03'])(
+    'sync-cis-to-datamart retries its batch after %s: B\'s CI syncs, org A\'s non-JSON CI alone is reported', async code => {
+      nodes = [v3('ci-bad', ORG_A, { metadata: '{not json' }), v3('ci-b', ORG_B)];
+      failBInsert(code, 1);
+
+      const result = await syncCIs();
+
+      expect(injectedError!.times).toBe(0);
+      expect((await versions('ci-b')).map(v => [v.is_current, v.organization_id])).toEqual([[true, ORG_B]]);
+      expect(await versions('ci-bad')).toEqual([]);
+      expect(result.errors).toEqual([expect.stringContaining('CI ci-bad:')]);
+    });
+
+  it('sync-cis-to-datamart reports its batch failed when the transient error outlasts its retries', async () => {
+    nodes = [v3('ci-b', ORG_B)];
+    failBInsert('40P01', 100);
+
+    const result = await syncCIs();
+
+    expect(await versions('ci-b')).toEqual([]);
+    expect(result.success).toBe(false);
+    expect(result.errors).toEqual([expect.stringMatching(/^Batch 1: /)]);
   });
 });
 

@@ -18,7 +18,7 @@ import { Job } from 'bullmq';
 import { logger } from '@cmdb/common';
 import { getPostgresClient, getNeo4jClient } from '@cmdb/database';
 import {
-  dimCiOrganizationId, lockCIDimensions, storedCiOrganizationId, withDimCiIds,
+  dimCiOrganizationId, isCiDataError, isRetryableSqlError, lockCIDimensions, storedCiOrganizationId, withDimCiIds,
 } from '../transformers/ci-organization';
 
 export interface SyncCIsJobData {
@@ -96,19 +96,21 @@ export async function processSyncCIsToDatamart(
         progress: `${progress}%`,
       });
 
+      const batchNumber = Math.floor(i / batchSize) + 1;
       try {
-        const batchResult = await processCIBatch(batch, fullRefresh);
+        const batchResult = await processCIBatchWithRetry(batch, fullRefresh, batchNumber);
         result.cisProcessed += batchResult.processed;
         result.cisInserted += batchResult.inserted;
         result.cisUpdated += batchResult.updated;
         result.cisSkipped += batchResult.skipped;
-        // A CI that failed to load is reported, not hidden: the job is not successful.
-        result.errors.push(...batchResult.failed.map(failure => `CI ${failure.ciId}: ${failure.error}`));
+        // A CI that failed to load is reported, not hidden: the job is not
+        // successful. Only its SQLSTATE: a driver message can quote its values.
+        result.errors.push(...batchResult.failed.map(failure => `CI ${failure.ciId}: SQLSTATE ${failure.code}`));
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
-        result.errors.push(`Batch ${Math.floor(i / batchSize) + 1}: ${errorMsg}`);
+        result.errors.push(`Batch ${batchNumber}: ${errorMsg}`);
         logger.error('[SyncCIsToDatamart] Batch processing failed', {
-          batchNumber: Math.floor(i / batchSize) + 1,
+          batchNumber,
           error: errorMsg,
         });
       }
@@ -220,14 +222,42 @@ async function extractCIsFromNeo4j(
   }
 }
 
+type CIBatchResult = {
+  processed: number; inserted: number; updated: number; skipped: number; failed: Array<{ ciId: string; code: string }>;
+};
+
+/**
+ * processCIBatch, run again (up to three attempts in all, with backoff) when
+ * the batch fails on a transient lock conflict (deadlock, lock timeout,
+ * serialization failure). Each attempt is a fresh transaction. Any other
+ * failure, or the last attempt's, fails the batch.
+ */
+async function processCIBatchWithRetry(cis: any[], fullRefresh: boolean, batchNumber: number): Promise<CIBatchResult> {
+  const maxAttempts = 3;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await processCIBatch(cis, fullRefresh);
+    } catch (error) {
+      if (attempt >= maxAttempts || !isRetryableSqlError(error)) {
+        throw error;
+      }
+      const delayMs = 250 * 2 ** (attempt - 1);
+      logger.warn('[SyncCIsToDatamart] Batch hit a transient lock conflict, retrying', {
+        batchNumber, attempt, delayMs, error: error instanceof Error ? error.message : String(error),
+      });
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+    }
+  }
+}
+
 /**
  * Process a batch of CIs and upsert to PostgreSQL dim_ci table
  */
 async function processCIBatch(
   cis: any[],
   fullRefresh: boolean
-): Promise<{ processed: number; inserted: number; updated: number; skipped: number; failed: Array<{ ciId: string; error: string }> }> {
-  const result = { processed: 0, inserted: 0, updated: 0, skipped: 0, failed: [] as Array<{ ciId: string; error: string }> };
+): Promise<CIBatchResult> {
+  const result: CIBatchResult = { processed: 0, inserted: 0, updated: 0, skipped: 0, failed: [] };
 
   const pgClient = getPostgresClient();
   const client = await pgClient.pool.connect();
@@ -238,10 +268,9 @@ async function processCIBatch(
     await lockCIDimensions(client, cis.map(ci => ci.ci_id));
 
     for (const ci of cis) {
-      // Locks first, then one savepoint per CI: a CI whose client-writable
-      // values fail to load (metadata or attributes that are not JSON, say)
-      // is rolled back alone; the batch's other CIs, of any organization,
-      // still load.
+      // Locks first, then one savepoint per CI: a CI whose own values fail to
+      // load (metadata or attributes that are not JSON, say) is rolled back
+      // alone; the batch's other CIs, of any organization, still load.
       await client.query('SAVEPOINT ci_dimension');
       try {
         const existingResult = await client.query(
@@ -375,12 +404,17 @@ async function processCIBatch(
         await client.query('RELEASE SAVEPOINT ci_dimension');
         result.processed++;
       } catch (error) {
+        if (!isCiDataError(error)) {
+          // A deadlock, lock timeout or other non-data error is not this CI's
+          // fault: fail the batch so it is retried (or reported) as a whole.
+          throw error;
+        }
         await client.query('ROLLBACK TO SAVEPOINT ci_dimension');
         await client.query('RELEASE SAVEPOINT ci_dimension');
         const message = error instanceof Error ? error.message : String(error);
         // Fail closed: this CI gets no version, not a partial or coerced one.
-        result.failed.push({ ciId: ci.ci_id, error: message });
-        logger.error('[SyncCIsToDatamart] Skipping CI that failed to load; the rest of its batch continues', {
+        result.failed.push({ ciId: ci.ci_id, code: (error as { code: string }).code });
+        logger.error('[SyncCIsToDatamart] Skipping CI whose values cannot be loaded; the rest of its batch continues', {
           ci_id: ci.ci_id,
           error: message,
         });

@@ -99,6 +99,35 @@ export function parseNodeMetadata(raw: unknown): unknown {
   }
 }
 
+/** The SQLSTATE of a PostgreSQL error (pg sets `code`), or undefined. */
+function sqlState(error: unknown): string | undefined {
+  const code = error instanceof Error && 'code' in error ? error.code : undefined;
+  return typeof code === 'string' && /^[0-9A-Z]{5}$/.test(code) ? code : undefined;
+}
+
+/**
+ * Whether a CI failed to load because of its own values: a PostgreSQL data
+ * exception (SQLSTATE class 22: an overlong discovery field, metadata that is
+ * not JSON, a malformed uuid) or integrity constraint violation (class 23).
+ * Only such a CI is rolled back to its savepoint and skipped. Any other error
+ * (a deadlock, a lock timeout, a lost connection, a bug) fails the batch, so
+ * it is retried or reported, never taken for one bad CI.
+ */
+export function isCiDataError(error: unknown): boolean {
+  const code = sqlState(error);
+  return code !== undefined && (code.startsWith('22') || code.startsWith('23'));
+}
+
+/**
+ * Whether a batch failed on a transient lock conflict a retry can clear:
+ * serialization_failure (40001), deadlock_detected (40P01) or
+ * lock_not_available (55P03, lock_timeout).
+ */
+export function isRetryableSqlError(error: unknown): boolean {
+  const code = sqlState(error);
+  return code === '40001' || code === '40P01' || code === '55P03';
+}
+
 /**
  * Takes, inside the caller's transaction, the per-CI transaction-scoped
  * advisory locks of a batch: pg_advisory_xact_lock(8271, hashtext(ci_id)),

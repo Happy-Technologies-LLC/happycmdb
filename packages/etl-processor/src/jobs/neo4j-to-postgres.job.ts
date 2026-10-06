@@ -19,8 +19,8 @@ import { Neo4jClient, PostgresClient } from '@cmdb/database';
 import { logger, CI, CIType } from '@cmdb/common';
 import { DimensionTransformer } from '../transformers/dimension-transformer';
 import {
-  ExtractedCI, dimCiIds, dimCiOrganizationId, isDimCiId, lockCIDimensions, parseNodeMetadata, storedCiOrganizationId,
-  UNREADABLE_METADATA, withDimCiIds,
+  ExtractedCI, dimCiIds, dimCiOrganizationId, isCiDataError, isDimCiId, lockCIDimensions, parseNodeMetadata,
+  storedCiOrganizationId, UNREADABLE_METADATA, withDimCiIds,
 } from '../transformers/ci-organization';
 
 export interface Neo4jToPostgresJobData {
@@ -230,7 +230,7 @@ export class Neo4jToPostgresJob {
     acceptedOrganizations?: Map<string, string>
   ): Promise<{ cisProcessed: number; recordsInserted: number; recordsUpdated: number; cisFailed: number }> {
     const batchStartTime = Date.now();
-    const result = { cisProcessed: 0, recordsInserted: 0, recordsUpdated: 0, cisFailed: 0 };
+    let result = { cisProcessed: 0, recordsInserted: 0, recordsUpdated: 0, cisFailed: 0 };
 
     logger.info('Processing batch', {
       _batchSize: cis.length,
@@ -247,15 +247,17 @@ export class Neo4jToPostgresJob {
     while (attempt < maxRetries) {
       // Do not retain identities from a transaction that fails and is retried.
       const acceptedInAttempt: Array<[string, string]> | null = acceptedOrganizations ? [] : null;
+      // A retried attempt starts over: count only the attempt that commits.
+      result = { cisProcessed: 0, recordsInserted: 0, recordsUpdated: 0, cisFailed: 0 };
       let failedInAttempt = 0;
       try {
         await this.postgresClient.transaction(async (client: any) => {
           // Serialize writers of these CIs through COMMIT, before reading any current row.
           await lockCIDimensions(client, cis.map(ci => ci._id));
           for (const ci of cis) {
-            // Locks first, then one savepoint per CI: a CI whose client-writable
-            // values fail to load (an overlong discovery field, say) is rolled
-            // back alone; the batch's other CIs, of any organization, still load.
+            // Locks first, then one savepoint per CI: a CI whose own values fail
+            // to load (an overlong discovery field, say) is rolled back alone;
+            // the batch's other CIs, of any organization, still load.
             await client.query('SAVEPOINT ci_dimension');
             try {
               // Transform CI to dimensional model
@@ -419,12 +421,17 @@ export class Neo4jToPostgresJob {
               }
 
             } catch (error) {
+              if (!isCiDataError(error)) {
+                // A deadlock, lock timeout or other non-data error is not this
+                // CI's fault: fail the attempt so the whole batch is retried.
+                throw error;
+              }
               await client.query('ROLLBACK TO SAVEPOINT ci_dimension');
               await client.query('RELEASE SAVEPOINT ci_dimension');
               failedInAttempt++;
               // Fail closed: this CI gets no version (not truncated or
               // partially written) and no relationship identity this run.
-              logger.error('Skipping CI that failed to load; the rest of its batch continues', {
+              logger.error('Skipping CI whose values cannot be loaded; the rest of its batch continues', {
                 _ciId: ci._id,
                 error,
                 _attempt: attempt + 1

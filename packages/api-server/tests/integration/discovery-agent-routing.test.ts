@@ -586,7 +586,7 @@ describe('Discovery Agent Routing Integration Tests', () => {
       expect(agentBefore).not.toBeNull();
 
       // Delete agent
-      await agentService.deleteAgent(agentId);
+      expect(await agentService.deleteAgent(agentId, ORG)).toBe(true);
 
       // Verify agent is deleted
       const agentAfter = await agentService.getAgent(agentId, ORG);
@@ -599,12 +599,9 @@ describe('Discovery Agent Routing Integration Tests', () => {
       }
     }, 60000);
 
-    it('should throw error when deleting non-existent agent', async () => {
+    it('should return false when deleting a non-existent agent in the caller organization', async () => {
       const nonExistentId = `test-agent-${uuidv4()}`;
-
-      await expect(
-        agentService.deleteAgent(nonExistentId)
-      ).rejects.toThrow(`Agent ${nonExistentId} not found`);
+      expect(await agentService.deleteAgent(nonExistentId, ORG)).toBe(false);
     }, 60000);
   });
 });

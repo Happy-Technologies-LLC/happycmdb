@@ -121,12 +121,9 @@ export class ActiveDirectoryDiscoveryWorker {
     config: ActiveDirectoryDiscoveryConfig,
     resourceConfigs?: Record<string, any>
   ): Promise<DiscoveredCI[]> {
-    logger.info('Starting Active Directory discovery', {
-      jobId,
-      domain: this.domain,
-      baseDN: this.baseDN,
-      config,
-    });
+    // Preflight the effective credential URL before starting any resource query.
+    await this.checkedLDAPURL();
+    logger.info('Starting Active Directory discovery', { jobId });
 
     const results = await Promise.allSettled([
       this.discoverComputers(jobId, resourceConfigs?.computers),
@@ -134,6 +131,10 @@ export class ActiveDirectoryDiscoveryWorker {
       this.discoverGroups(jobId, resourceConfigs?.groups),
       this.discoverOrganizationalUnits(jobId, resourceConfigs?.organizational_units),
     ]);
+    if (results.some(result => result.status === 'rejected' &&
+      result.reason instanceof Error && result.reason.message === DISCOVERY_TARGET_REFUSED)) {
+      throw new Error(DISCOVERY_TARGET_REFUSED);
+    }
 
     const allCIs: DiscoveredCI[] = [];
     const resourceNames = ['computers', 'users', 'groups', 'organizational_units'];
@@ -735,10 +736,8 @@ export class ActiveDirectoryDiscoveryWorker {
     return relationships;
   }
 
-  /**
-   * Create LDAP client and bind
-   */
-  private async createLDAPClient(): Promise<ldap.Client> {
+  /** Check every DNS answer and pin the exact numeric address used by ldapjs. */
+  private async checkedLDAPURL(): Promise<{ url: string; servername: string }> {
     let destination: URL;
     let servername: string;
     try {
@@ -752,12 +751,17 @@ export class ActiveDirectoryDiscoveryWorker {
       servername = host;
       const address = await connectDiscoveryHost(host, await resolveDiscoveryHost(host));
       destination.hostname = address.includes(':') ? `[${address}]` : address;
+      return { url: destination.toString(), servername };
     } catch {
       throw new Error(DISCOVERY_TARGET_REFUSED);
     }
+  }
+
+  private async createLDAPClient(): Promise<ldap.Client> {
+    const { url, servername } = await this.checkedLDAPURL();
     return new Promise((resolve, reject) => {
       const client = ldap.createClient({
-        url: destination.toString(),
+        url,
         tlsOptions: {
           rejectUnauthorized: this.useSSL,
           servername,

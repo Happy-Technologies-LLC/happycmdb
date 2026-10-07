@@ -38,6 +38,26 @@ it('refuses secondary nmap script egress even for a public primary target', asyn
   expect(nmap.NmapScan).not.toHaveBeenCalled();
 });
 
+it('propagates a policy refusal after nmap batch preflight despite another successful scan', async () => {
+  mockedLookup.mockResolvedValue([{ address: '8.8.8.8', family: 4 }] as never);
+  const worker = new NmapDiscoveryWorker();
+  jest.spyOn(worker, 'scanNetwork').mockImplementation(async (_job, range) => {
+    if (range === 'public.example') throw new Error(DISCOVERY_TARGET_REFUSED);
+    return [];
+  });
+  await expect(worker.scanNetworks('job', [
+    { range: 'public.example' }, { range: '8.8.8.8' },
+  ])).rejects.toThrow(DISCOVERY_TARGET_REFUSED);
+});
+
+it('returns only a fixed refusal when all nmap scans reject after preflight', async () => {
+  mockedLookup.mockResolvedValue([{ address: '8.8.8.8', family: 4 }] as never);
+  const worker = new NmapDiscoveryWorker();
+  jest.spyOn(worker, 'scanNetwork').mockRejectedValue(new Error(DISCOVERY_TARGET_REFUSED));
+  await expect(worker.scanNetworks('job', [{ range: 'public.example' }]))
+    .rejects.toThrow(new Error(DISCOVERY_TARGET_REFUSED));
+});
+
 it('nmap hostname DNS rebind and SSH rebind never construct scan or socket clients', async () => {
   mockedLookup.mockResolvedValueOnce([{ address: '8.8.8.8', family: 4 }] as never)
     .mockResolvedValueOnce([{ address: '192.168.1.1', family: 4 }] as never);

@@ -7,9 +7,8 @@
  */
 
 import { DiscoveryPattern } from './types';
-import { PatternMatcher } from './pattern-matcher';
 import { logger } from '@cmdb/common';
-import * as vm from 'node:vm';
+import { detectWithPlan, parseDetectionPlan, parseDiscoveryPlan, UNSUPPORTED_PATTERN_PLAN } from './pattern-plan';
 
 export interface ValidationResult {
   isValid: boolean;
@@ -37,30 +36,15 @@ export class PatternValidator {
 
     logger.info('Validating pattern', { patternId: pattern.patternId });
 
-    // 1. Syntax validation
     const syntaxCheck = this.validateSyntax(pattern);
     errors.push(...syntaxCheck.errors);
-    warnings.push(...syntaxCheck.warnings);
-
-    // 2. Security validation
-    const securityCheck = this.validateSecurity(pattern);
-    errors.push(...securityCheck.errors);
-    warnings.push(...securityCheck.warnings);
-
-    // 3. Test case execution
-    if (pattern.testCases && pattern.testCases.length > 0) {
+    if (errors.length === 0 && pattern.testCases?.length) {
       const testCheck = await this.runTestCases(pattern);
       testResults.push(...testCheck.results);
       errors.push(...testCheck.errors);
-      warnings.push(...testCheck.warnings);
-    } else {
+    } else if (!pattern.testCases?.length) {
       warnings.push('No test cases defined for pattern');
     }
-
-    // 4. Performance validation
-    const perfCheck = await this.validatePerformance(pattern);
-    errors.push(...perfCheck.errors);
-    warnings.push(...perfCheck.warnings);
 
     const isValid = errors.length === 0;
 
@@ -79,118 +63,19 @@ export class PatternValidator {
     };
   }
 
-  /**
-   * Validate syntax of detection and discovery code
-   */
+  /** Validate the fixed plan schema, without evaluating pattern text. */
   private validateSyntax(pattern: DiscoveryPattern): {
     errors: string[];
     warnings: string[];
   } {
-    const errors: string[] = [];
-    const warnings: string[] = [];
-
-    // Check detection code
     try {
-      const detectionFn = new Function(
-        'scanResult',
-        `${pattern.detectionCode}\nreturn detect(scanResult);`
-      );
-
-      // Test with empty input
-      const result = detectionFn({});
-
-      if (typeof result !== 'object') {
-        errors.push('Detection function must return an object');
-      } else {
-        if (typeof result.matches !== 'boolean') {
-          errors.push('Detection result must have boolean "matches" field');
-        }
-        if (typeof result.confidence !== 'number') {
-          errors.push('Detection result must have number "confidence" field');
-        }
-        if (result.confidence < 0 || result.confidence > 1) {
-          errors.push('Confidence must be between 0 and 1');
-        }
-      }
-    } catch (error) {
-      errors.push(
-        `Detection code syntax error: ${error instanceof Error ? error.message : String(error)}`
-      );
+      parseDetectionPlan(pattern.detectionCode);
+      parseDiscoveryPlan(pattern.discoveryCode);
+      return { errors: [], warnings: [] };
+    } catch {
+      return { errors: [UNSUPPORTED_PATTERN_PLAN], warnings: [] };
     }
-
-    // Check discovery code
-    try {
-      // Check for async function signature
-      if (
-        !pattern.discoveryCode.includes('async function discover') &&
-        !pattern.discoveryCode.includes('async discover')
-      ) {
-        errors.push('Discovery function must be async');
-      }
-
-      // Check for return statement
-      if (!pattern.discoveryCode.includes('return')) {
-        errors.push('Discovery function must return CIs');
-      }
-    } catch (error) {
-      errors.push(
-        `Discovery code syntax error: ${error instanceof Error ? error.message : String(error)}`
-      );
-    }
-
-    return { errors, warnings };
   }
-
-  /**
-   * Validate security - check for dangerous code
-   */
-  private validateSecurity(pattern: DiscoveryPattern): {
-    errors: string[];
-    warnings: string[];
-  } {
-    const errors: string[] = [];
-    const warnings: string[] = [];
-
-    const allCode = pattern.detectionCode + '\n' + pattern.discoveryCode;
-
-    // Dangerous keywords that should never appear
-    const forbidden = [
-      'eval(',
-      'Function(',
-      'require(',
-      'import(',
-      'process.exit',
-      '__dirname',
-      '__filename',
-      'child_process',
-      'fs.writeFile',
-      'fs.unlink',
-      'fs.rmdir',
-    ];
-
-    for (const keyword of forbidden) {
-      if (allCode.includes(keyword)) {
-        errors.push(`Forbidden keyword detected: ${keyword}`);
-      }
-    }
-
-    // Suspicious patterns that warrant warnings
-    const suspicious = [
-      { pattern: /setTimeout|setInterval/g, message: 'Timers detected' },
-      { pattern: /fetch.*(?!http)/g, message: 'Non-HTTP fetch detected' },
-      { pattern: /process\./g, message: 'Process access detected' },
-      { pattern: /global\./g, message: 'Global object access detected' },
-    ];
-
-    for (const { pattern, message } of suspicious) {
-      if (pattern.test(allCode)) {
-        warnings.push(message);
-      }
-    }
-
-    return { errors, warnings };
-  }
-
   /**
    * Run test cases against pattern
    */
@@ -236,17 +121,7 @@ export class PatternValidator {
     const testName = testCase.name || 'Unnamed test';
 
     try {
-      // Test detection function
-      const sandbox = {
-        scanResult: testCase.input,
-      };
-      vm.createContext(sandbox);
-
-      const detectionResult = vm.runInContext(`
-        ${pattern.detectionCode}
-        detect(scanResult);
-      `, sandbox, { timeout: 1000 });
-
+      const detectionResult = detectWithPlan(parseDetectionPlan(pattern.detectionCode), testCase.input);
       // Check expectations
       const expected = testCase.expected;
       let passed = true;
@@ -291,51 +166,8 @@ export class PatternValidator {
     }
   }
 
-  /**
-   * Validate performance (execution time limits)
-   */
-  private async validatePerformance(pattern: DiscoveryPattern): Promise<{
-    errors: string[];
-    warnings: string[];
-  }> {
-    const errors: string[] = [];
-    const warnings: string[] = [];
 
-    // Test detection performance
-    try {
-      const start = Date.now();
-
-      const perfSandbox = {
-        scanResult: {
-          http: { headers: {} as Record<string, string>, endpoints: [] as unknown[] },
-          services: [] as unknown[],
-        },
-      };
-      vm.createContext(perfSandbox);
-
-      vm.runInContext(`
-        ${pattern.detectionCode}
-        detect(scanResult);
-      `, perfSandbox, { timeout: 1000 });
-
-      const duration = Date.now() - start;
-
-      if (duration > 500) {
-        warnings.push(`Detection function is slow: ${duration}ms (target: <500ms)`);
-      }
-      if (duration > 1000) {
-        errors.push(`Detection function exceeds time limit: ${duration}ms (max: 1000ms)`);
-      }
-    } catch (error) {
-      // Already caught in syntax validation
-    }
-
-    return { errors, warnings };
-  }
-
-  /**
-   * Quick validation (syntax and security only)
-   */
+  /** Quick plan validation without test-case execution. */
   async quickValidate(pattern: DiscoveryPattern): Promise<{
     isValid: boolean;
     errors: string[];
@@ -345,8 +177,6 @@ export class PatternValidator {
     const syntaxCheck = this.validateSyntax(pattern);
     errors.push(...syntaxCheck.errors);
 
-    const securityCheck = this.validateSecurity(pattern);
-    errors.push(...securityCheck.errors);
 
     return {
       isValid: errors.length === 0,

@@ -113,7 +113,7 @@ export interface DiscoveryPattern {
   version: string;
   category: string;
 
-  // Pattern code (as TypeScript/JavaScript strings)
+  // Strict JSON detection-v1/discovery-v1 plans in legacy column names; executable code is unsupported.
   detectionCode: string;
   discoveryCode: string;
 

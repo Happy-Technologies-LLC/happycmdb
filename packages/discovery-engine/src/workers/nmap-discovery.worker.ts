@@ -115,6 +115,12 @@ export class NmapDiscoveryWorker {
     const results = await Promise.allSettled(
       ranges.map(({ range, scanType }) => this.scanNetwork(jobId, range, scanType || 'quick'))
     );
+    // A DNS answer may change between batch preflight and the actual scan.
+    // Never report a policy refusal as partial success or interpolate its target.
+    if (results.some(result => result.status === 'rejected' &&
+      result.reason instanceof Error && result.reason.message === DISCOVERY_TARGET_REFUSED)) {
+      throw new Error(DISCOVERY_TARGET_REFUSED);
+    }
 
     const allCIs: DiscoveredCI[] = [];
     const failedScans: Array<{ range: string; error: any }> = [];

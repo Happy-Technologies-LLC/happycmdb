@@ -8,11 +8,11 @@
 
 import { DiscoveryPattern, PatternMatch, AIDiscoveryContext, IPatternMatcher } from './types';
 import { PatternStorageService } from './pattern-storage';
-import { logger } from '@cmdb/common';
-import * as vm from 'node:vm';
+import { DISCOVERY_TARGET_REFUSED, logger, resolveDiscoveryHost } from '@cmdb/common';
 import { getRedisClient } from '@cmdb/database';
 import * as crypto from 'crypto';
 import { safeDiscoveryHttp } from './tools/safe-http';
+import { detectWithPlan, parseDetectionPlan, parseDiscoveryPlan, UNSUPPORTED_PATTERN_PLAN } from './pattern-plan';
 
 export class PatternMatcher implements IPatternMatcher {
   private patternStorage: PatternStorageService;
@@ -73,28 +73,20 @@ export class PatternMatcher implements IPatternMatcher {
     });
 
     for (const pattern of this.patterns) {
-      try {
-        const result = this.executeDetection(pattern, scanResult);
-
-        if (result.matches && result.confidence > bestConfidence) {
-          bestConfidence = result.confidence;
-          bestMatch = {
-            patternId: pattern.patternId,
-            patternVersion: pattern.version,
-            confidence: result.confidence,
-            matchedIndicators: result.indicators || [],
-          };
-
-          logger.debug('Pattern matched', {
-            patternId: pattern.patternId,
-            confidence: result.confidence,
-            indicators: result.indicators,
-          });
-        }
-      } catch (error) {
-        logger.error('Pattern detection failed', {
+      // Legacy code fails explicitly; never cache it as a negative match.
+      const result = this.executeDetection(pattern, scanResult);
+      if (result.matches && result.confidence > bestConfidence) {
+        bestConfidence = result.confidence;
+        bestMatch = {
           patternId: pattern.patternId,
-          error: error instanceof Error ? error.message : String(error),
+          patternVersion: pattern.version,
+          confidence: result.confidence,
+          matchedIndicators: result.indicators || [],
+        };
+        logger.debug('Pattern matched', {
+          patternId: pattern.patternId,
+          confidence: result.confidence,
+          indicators: result.indicators,
         });
       }
     }
@@ -123,43 +115,12 @@ export class PatternMatcher implements IPatternMatcher {
     return bestMatch;
   }
 
-  /**
-   * Execute detection function from pattern
-   */
+  /** Detection is fixed interpreter logic over validated JSON data. */
   private executeDetection(
     pattern: DiscoveryPattern,
     scanResult: any
   ): { matches: boolean; confidence: number; indicators?: string[] } {
-    try {
-      // Create sandboxed context for pattern execution
-      const sandbox = {
-        scanResult,
-        console: {
-          log: (...args: any[]) => logger.debug('Pattern log', { pattern: pattern.patternId, args }),
-        },
-      };
-      vm.createContext(sandbox);
-
-      // Execute detection code
-      const code = `
-        ${pattern.detectionCode}
-        detect(scanResult);
-      `;
-
-      const result = vm.runInContext(code, sandbox, { timeout: 1000 });
-
-      return {
-        matches: !!result.matches,
-        confidence: result.confidence || 0,
-        indicators: result.indicators || [],
-      };
-    } catch (error) {
-      logger.error('Pattern execution error', {
-        patternId: pattern.patternId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      return { matches: false, confidence: 0 };
-    }
+    return detectWithPlan(parseDetectionPlan(pattern.detectionCode), scanResult);
   }
 
   /**
@@ -178,10 +139,7 @@ export class PatternMatcher implements IPatternMatcher {
         throw new Error(`Pattern not found: ${patternId}`);
       }
 
-      logger.info('Executing pattern', {
-        patternId,
-        target: `${context.targetHost}:${context.targetPort}`,
-      });
+      logger.info('Executing pattern', { patternId });
 
       // Execute discovery function
       const result = await this.executeDiscovery(pattern, context);
@@ -272,68 +230,45 @@ export class PatternMatcher implements IPatternMatcher {
     }
   }
 
-  /**
-   * Execute discovery function from pattern
-   */
+  /** No host-realm functions or objects are exposed to stored pattern text. */
   private async executeDiscovery(
     pattern: DiscoveryPattern,
     context: AIDiscoveryContext
   ): Promise<any[]> {
-    try {
-      // Create sandboxed context with more capabilities for discovery
-      const sandbox = {
-        context,
-        fetch: this.createSafeFetch(),
-        console: {
-          log: (...args: any[]) => logger.debug('Pattern discovery log', { pattern: pattern.patternId, args }),
-          error: (...args: any[]) => logger.error('Pattern discovery error', { pattern: pattern.patternId, args }),
-        },
-      };
-      vm.createContext(sandbox);
-
-      // Execute discovery code
-      const code = `
-        ${pattern.discoveryCode}
-        (async () => {
-          return await discover(context);
-        })();
-      `;
-
-      const result = await vm.runInContext(code, sandbox, { timeout: 10000 });
-
-      return Array.isArray(result) ? result : [result];
-    } catch (error) {
-      logger.error('Pattern discovery execution error', {
-        patternId: pattern.patternId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      throw error;
+    // Require both plans: a legacy detection body is not allowed to accompany a
+    // declarative discovery body (or vice versa).
+    parseDetectionPlan(pattern.detectionCode);
+    const plan = parseDiscoveryPlan(pattern.discoveryCode);
+    if (!Number.isInteger(context.targetPort) || context.targetPort < 1 || context.targetPort > 65535) {
+      throw new Error(UNSUPPORTED_PATTERN_PLAN);
     }
-  }
-
-  /**
-   * Create safe fetch function for pattern discovery
-   * (limits what patterns can access)
-   */
-  private createSafeFetch() {
-    return async (url: string, options?: { method?: string; headers?: Record<string, string> }) => {
-      const response = await safeDiscoveryHttp(url, {
-        method: options?.method || 'GET',
-        headers: options?.headers,
-        timeout: 5000,
-        validateStatus: () => true,
-      });
-
-      return {
-        ok: response.status >= 200 && response.status < 300,
-        status: response.status,
-        statusText: response.statusText,
-        headers: response.headers,
-        json: async () => response.data,
-        text: async () =>
-          typeof response.data === 'string' ? response.data : JSON.stringify(response.data),
-      };
+    await resolveDiscoveryHost(context.targetHost);
+    const ci: any = {
+      _type: plan.serviceType,
+      name: `${plan.name} on ${context.targetHost}:${context.targetPort}`,
+      hostname: context.targetHost,
+      port: context.targetPort,
+      metadata: { technology: plan.name, category: plan.category },
     };
+    const version = context.scanResult?.services?.[0]?.version;
+    if (version) ci.metadata.version = version;
+    const host = context.targetHost.includes(':') ? `[${context.targetHost}]` : context.targetHost;
+    const protocol = context.targetPort === 443 ? 'https' : 'http';
+    for (const endpoint of plan.endpoints) {
+      try {
+        const response = await safeDiscoveryHttp(
+          `${protocol}://${host}:${context.targetPort}${endpoint}`,
+          { method: 'GET', timeout: 5000, validateStatus: () => true }
+        );
+        if (response.status >= 200 && response.status < 300) {
+          ci.metadata[endpoint.slice(1)] = response.data;
+        }
+      } catch (error) {
+        if (error instanceof Error && error.message === DISCOVERY_TARGET_REFUSED) throw error;
+        // An unavailable public endpoint does not discard the discovered CI.
+      }
+    }
+    return [ci];
   }
 
   /**

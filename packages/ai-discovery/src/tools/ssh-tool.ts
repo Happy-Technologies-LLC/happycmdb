@@ -150,11 +150,15 @@ export const sshReadFileTool: DiscoveryTool = {
   },
   execute: async (params: any) => {
     const { host, filePath, maxLines = 100, ...sshParams } = params;
-
-    // Use SSH execute to read file
-    const command = maxLines
-      ? `head -n ${maxLines} "${filePath}"`
-      : `cat "${filePath}"`;
+    if (typeof filePath !== 'string' || !filePath || filePath.includes('\u0000') ||
+      typeof maxLines !== 'number' || !Number.isSafeInteger(maxLines) ||
+      maxLines < 1 || maxLines > 10000) {
+      throw new Error('Invalid file read request');
+    }
+    // POSIX single-quote each path; -- keeps filenames beginning with '-' from
+    // being interpreted as options by head/cat on the remote host.
+    const quotedPath = `'${filePath.replace(/'/g, `'\"'\"'`)}'`;
+    const command = `head -n ${maxLines} -- ${quotedPath}`;
 
     const result = await sshExecuteTool.execute({
       ...sshParams,

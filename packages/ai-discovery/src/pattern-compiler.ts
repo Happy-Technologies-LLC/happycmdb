@@ -3,12 +3,13 @@
 
 /**
  * Pattern Compiler
- * Generates TypeScript detection and discovery code from AI discovery patterns
+ * Generates data-only detection and discovery plans from discovery sessions.
  */
 
 import { AIDiscoverySession, DiscoveryPattern, IPatternCompiler } from './types';
 import { PatternAnalyzer, PatternCandidate } from './pattern-analyzer';
 import { logger } from '@cmdb/common';
+import { parseDetectionPlan, parseDiscoveryPlan, DetectionPlan, DiscoveryPlan } from './pattern-plan';
 
 export class PatternCompiler implements IPatternCompiler {
   private analyzer: PatternAnalyzer;
@@ -95,51 +96,12 @@ export class PatternCompiler implements IPatternCompiler {
     errors: string[];
   }> {
     const errors: string[] = [];
-
-    // Validate detection code
     try {
-      const detectionFn = new Function(
-        'scanResult',
-        `${pattern.detectionCode}\nreturn detect(scanResult);`
-      );
-
-      // Test with empty scan result
-      const testResult = detectionFn({});
-      if (
-        typeof testResult !== 'object' ||
-        typeof testResult.matches !== 'boolean' ||
-        typeof testResult.confidence !== 'number'
-      ) {
-        errors.push(
-          'Detection function must return { matches: boolean, confidence: number }'
-        );
-      }
-    } catch (error) {
-      errors.push(
-        `Detection code error: ${error instanceof Error ? error.message : String(error)}`
-      );
+      parseDetectionPlan(pattern.detectionCode);
+      parseDiscoveryPlan(pattern.discoveryCode);
+    } catch {
+      errors.push('UNSUPPORTED_PATTERN_PLAN');
     }
-
-    // Validate discovery code
-    try {
-      // Check for required function signature
-      if (!pattern.discoveryCode.includes('async function discover(context)')) {
-        errors.push('Discovery function must be: async function discover(context)');
-      }
-
-      // Check for dangerous code patterns
-      const dangerous = ['eval', 'exec', 'require', 'process.exit', '__dirname', '__filename'];
-      for (const keyword of dangerous) {
-        if (pattern.discoveryCode.includes(keyword)) {
-          errors.push(`Discovery code contains dangerous keyword: ${keyword}`);
-        }
-      }
-    } catch (error) {
-      errors.push(
-        `Discovery code error: ${error instanceof Error ? error.message : String(error)}`
-      );
-    }
-
     // Validate test cases
     if (!pattern.testCases || pattern.testCases.length === 0) {
       errors.push('Pattern must have at least one test case');
@@ -159,154 +121,30 @@ export class PatternCompiler implements IPatternCompiler {
     return { isValid, errors };
   }
 
-  /**
-   * Generate detection code from candidate
-   */
+  /** Serialize a fixed schema; no candidate data is interpolated into source code. */
   private generateDetectionCode(candidate: PatternCandidate): string {
-    const { commonElements } = candidate;
-
-    // Build detection logic based on common elements
-    const checks: string[] = [];
-
-    // Port checks
-    if (commonElements.ports.length > 0) {
-      checks.push(`
-  // Check ports
-  const services = scanResult.services || [];
-  const targetPorts = [${commonElements.ports.join(', ')}];
-  const hasPort = services.some(s => targetPorts.includes(s.port));
-  if (hasPort) {
-    confidence += 0.3;
-    indicators.push('standard-port');
-  }`);
-    }
-
-    // Header checks
-    if (commonElements.headers.length > 0) {
-      const headerChecks = commonElements.headers
-        .map(header => {
-          const headerKey = header.split(':')[0];
-          return `
-  if (headers['${headerKey}'] || headers['${headerKey.toLowerCase()}']) {
-    confidence += 0.4;
-    indicators.push('${headerKey}-header');
-  }`;
-        })
-        .join('');
-
-      checks.push(`
-  // Check HTTP headers
-  const headers = scanResult.http?.headers || {};${headerChecks}`);
-    }
-
-    // Endpoint checks
-    if (commonElements.endpoints.length > 0) {
-      const endpointList = commonElements.endpoints.map(e => `'${e}'`).join(', ');
-      checks.push(`
-  // Check endpoints
-  const endpoints = scanResult.http?.endpoints || [];
-  const expectedEndpoints = [${endpointList}];
-  const hasEndpoint = expectedEndpoints.some(ep => endpoints.includes(ep));
-  if (hasEndpoint) {
-    confidence += 0.5;
-    indicators.push('known-endpoint');
-  }`);
-    }
-
-    // Service name checks
-    if (commonElements.serviceNames.length > 0) {
-      const serviceChecks = commonElements.serviceNames
-        .map(name => `
-  if (serviceName.includes('${name}')) {
-    confidence += 0.3;
-    indicators.push('${name}-service');
-  }`)
-        .join('');
-
-      checks.push(`
-  // Check service names
-  const serviceName = (scanResult.services?.[0]?.service || '').toLowerCase();${serviceChecks}`);
-    }
-
-    return `function detect(scanResult) {
-  let confidence = 0;
-  const indicators = [];
-${checks.join('\n')}
-
-  return {
-    matches: confidence >= 0.5,
-    confidence: Math.min(confidence, 1.0),
-    indicators
-  };
-}`;
+    const plan: DetectionPlan = {
+      kind: 'detection-v1',
+      ports: candidate.commonElements.ports,
+      headers: candidate.commonElements.headers.map(header => header.split(':')[0]),
+      endpoints: candidate.commonElements.endpoints,
+      serviceNames: candidate.commonElements.serviceNames,
+    };
+    return JSON.stringify(plan);
   }
 
-  /**
-   * Generate discovery code from candidate and sessions
-   */
   private generateDiscoveryCode(
     candidate: PatternCandidate,
-    sessions: AIDiscoverySession[]
+    _sessions: AIDiscoverySession[]
   ): string {
-    const { commonElements } = candidate;
-
-    // Determine service type from category
-    const serviceType = this.mapCategoryToServiceType(candidate.suggestedCategory);
-
-    // Build discovery logic
-    const discoverySteps: string[] = [];
-
-    // Basic CI structure
-    discoverySteps.push(`
-  const ci = {
-    _type: '${serviceType}',
-    name: '${candidate.suggestedName} on ' + targetHost + ':' + targetPort,
-    hostname: targetHost,
-    port: targetPort,
-    metadata: {
-      technology: '${candidate.suggestedName}',
-      category: '${candidate.suggestedCategory}'
-    }
-  };`);
-
-    // Add HTTP probing if endpoints are common
-    if (commonElements.endpoints.length > 0) {
-      const endpoints = commonElements.endpoints.slice(0, 3); // Top 3
-      discoverySteps.push(`
-  // Try common endpoints
-  const protocol = targetPort === 443 ? 'https' : 'http';
-  const baseUrl = protocol + '://' + targetHost + ':' + targetPort;
-  const endpoints = ${JSON.stringify(endpoints)};
-
-  for (const endpoint of endpoints) {
-    try {
-      const resp = await fetch(baseUrl + endpoint);
-      if (resp.ok) {
-        const data = await resp.json();
-        ci.metadata[endpoint.replace('/', '')] = data;
-      }
-    } catch (e) {
-      // Endpoint not available
-    }
-  }`);
-    }
-
-    // Extract version if possible
-    discoverySteps.push(`
-  // Try to extract version
-  if (scanResult.services && scanResult.services.length > 0) {
-    const service = scanResult.services[0];
-    if (service.version) {
-      ci.metadata.version = service.version;
-    }
-  }`);
-
-    return `async function discover(context) {
-  const { targetHost, targetPort, scanResult } = context;
-${discoverySteps.join('\n')}
-
-  return [ci];
-}`;
+    const plan: DiscoveryPlan = {
+      kind: 'discovery-v1',
+      name: candidate.suggestedName,
+      category: candidate.suggestedCategory,
+      serviceType: this.mapCategoryToServiceType(candidate.suggestedCategory),
+      endpoints: candidate.commonElements.endpoints.slice(0, 3),
+    };
+    return JSON.stringify(plan);
   }
 
   /**

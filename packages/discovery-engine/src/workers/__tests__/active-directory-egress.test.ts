@@ -4,7 +4,7 @@
 import { lookup } from 'dns/promises';
 import * as ldap from 'ldapjs';
 import type { UnifiedCredential } from '@cmdb/common';
-import { DISCOVERY_TARGET_REFUSED } from '@cmdb/common';
+import { DISCOVERY_TARGET_REFUSED, logger } from '@cmdb/common';
 import { ActiveDirectoryDiscoveryWorker } from '../active-directory-discovery.worker';
 
 jest.mock('dns/promises', () => ({ lookup: jest.fn() }));
@@ -35,4 +35,33 @@ it('refuses DNS rebinding to metadata before constructing LDAP client', async ()
   const worker = new ActiveDirectoryDiscoveryWorker('public.example', 'DC=example,DC=com', credential);
   await expect(worker.discoverComputers('job')).rejects.toThrow(DISCOVERY_TARGET_REFUSED);
   expect(ldap.createClient).not.toHaveBeenCalled();
+});
+
+it('rejects aggregate LDAP discovery before dispatch when target is a platform service', async () => {
+  const internalCredential: UnifiedCredential = {
+    ...credential, credentials: { ...credential.credentials, domain: 'redis' },
+  };
+  const worker = new ActiveDirectoryDiscoveryWorker('redis', 'DC=example,DC=com', internalCredential);
+  const computers = jest.spyOn(worker, 'discoverComputers');
+  await expect(worker.discoverAll('job', {
+    domain: 'redis', base_dn: 'DC=example,DC=com',
+  })).rejects.toThrow(DISCOVERY_TARGET_REFUSED);
+  expect(computers).not.toHaveBeenCalled();
+  expect(ldap.createClient).not.toHaveBeenCalled();
+});
+
+it('propagates aggregate policy refusal and never logs credentials', async () => {
+  mockedLookup.mockResolvedValue([{ address: '8.8.8.8', family: 4 }] as never);
+  const worker = new ActiveDirectoryDiscoveryWorker('public.example', 'DC=example,DC=com', credential);
+  jest.spyOn(worker, 'discoverComputers').mockRejectedValue(new Error(DISCOVERY_TARGET_REFUSED));
+  jest.spyOn(worker, 'discoverUsers').mockResolvedValue([]);
+  jest.spyOn(worker, 'discoverGroups').mockResolvedValue([]);
+  jest.spyOn(worker, 'discoverOrganizationalUnits').mockResolvedValue([]);
+  const info = jest.spyOn(logger, 'info').mockImplementation(() => undefined);
+  const config = {
+    domain: 'public.example', base_dn: 'DC=example,DC=com',
+    credentials: { password: 'SENSITIVE-TEST-VALUE' },
+  };
+  await expect(worker.discoverAll('job', config)).rejects.toThrow(new Error(DISCOVERY_TARGET_REFUSED));
+  expect(JSON.stringify(info.mock.calls)).not.toContain('SENSITIVE-TEST-VALUE');
 });

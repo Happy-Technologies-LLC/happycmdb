@@ -9,7 +9,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { BaseLLMProvider } from './base-provider';
 import { AIDiscoveryContext, DiscoveryTool, AIToolCall } from '../types';
-import { logger } from '@cmdb/common';
+import { DISCOVERY_TARGET_REFUSED, logger } from '@cmdb/common';
 
 export class AnthropicProvider extends BaseLLMProvider {
   private client: Anthropic;
@@ -174,7 +174,8 @@ export class AnthropicProvider extends BaseLLMProvider {
         completionTokens: totalOutputTokens,
         cost,
       };
-    } catch {
+    } catch (error) {
+      if (error instanceof Error && error.message === DISCOVERY_TARGET_REFUSED) throw error;
       logger.error('Anthropic discovery error');
       throw new Error('AI provider request failed');
     }

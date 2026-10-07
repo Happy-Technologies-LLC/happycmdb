@@ -10,7 +10,7 @@
 import OpenAI from 'openai';
 import { BaseLLMProvider } from './base-provider';
 import { AIDiscoveryContext, DiscoveryTool, AIToolCall } from '../types';
-import { logger } from '@cmdb/common';
+import { DISCOVERY_TARGET_REFUSED, logger } from '@cmdb/common';
 
 export class CustomProvider extends BaseLLMProvider {
   private client: OpenAI;
@@ -190,7 +190,8 @@ export class CustomProvider extends BaseLLMProvider {
         completionTokens: totalCompletionTokens,
         cost,
       };
-    } catch {
+    } catch (error) {
+      if (error instanceof Error && error.message === DISCOVERY_TARGET_REFUSED) throw error;
       logger.error('Custom LLM discovery error');
       throw new Error('AI provider request failed');
     }

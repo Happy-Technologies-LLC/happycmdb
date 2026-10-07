@@ -128,9 +128,11 @@ Use available tools to gather information. Think step-by-step and explain your r
         executionTime: Date.now() - startTime,
       });
     } catch (error) {
-      toolCall.error = error instanceof Error && error.message === DISCOVERY_TARGET_REFUSED
-        ? DISCOVERY_TARGET_REFUSED
-        : 'Tool execution failed';
+      if (error instanceof Error && error.message === DISCOVERY_TARGET_REFUSED) {
+        logger.warn('Discovery tool target refused', { toolName: tool.name });
+        throw new Error(DISCOVERY_TARGET_REFUSED);
+      }
+      toolCall.error = 'Tool execution failed';
       toolCall.success = false;
       logger.error('Discovery tool execution failed', { toolName: tool.name });
     } finally {

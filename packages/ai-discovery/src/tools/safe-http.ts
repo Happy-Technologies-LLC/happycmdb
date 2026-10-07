@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import axios, { AxiosRequestConfig, AxiosResponse } from 'axios';
+import type { LookupAddress } from 'node:dns';
 import { Agent as HttpAgent } from 'node:http';
 import { Agent as HttpsAgent } from 'node:https';
 import { isIP } from 'node:net';
@@ -21,10 +22,17 @@ export async function safeDiscoveryHttp(url: string, options: AxiosRequestConfig
   const host = destination.hostname.replace(/^\[([^\]]+)\]$/, '$1');
   const pinned = await resolveDiscoveryHost(host);
   let refused = false;
-  const lookupAtConnect = (_hostname: string, _options: unknown,
-    callback: (error: NodeJS.ErrnoException | null, address: string, family: number) => void) => {
-    connectDiscoveryHost(host, pinned).then(address => callback(null, address, isIP(address)))
-      .catch(() => { refused = true; callback(new Error(DISCOVERY_TARGET_REFUSED), '', 0); });
+  const lookupAtConnect = (_hostname: string, options: { all?: boolean },
+    callback: (error: NodeJS.ErrnoException | null, address: string | LookupAddress[],
+      family?: number) => void) => {
+    connectDiscoveryHost(host, pinned).then(address => {
+      const family = isIP(address);
+      if (options.all) callback(null, [{ address, family }]);
+      else callback(null, address, family);
+    }).catch(() => {
+      refused = true;
+      callback(new Error(DISCOVERY_TARGET_REFUSED), options.all ? [] : '', 0);
+    });
   };
   const agent = destination.protocol === 'https:'
     ? new HttpsAgent({ lookup: lookupAtConnect }) : new HttpAgent({ lookup: lookupAtConnect });

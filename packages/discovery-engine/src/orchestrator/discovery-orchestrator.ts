@@ -19,6 +19,11 @@ import {
   PatternStorageService,
   getDefaultLLMConfig,
 } from '@cmdb/ai-discovery';
+// Fixed AI discovery failure codes; never publish model or remote error text to BullMQ.
+const TERMINAL_AI_DISCOVERY_ERRORS = new Set([
+  DISCOVERY_TARGET_REFUSED, 'UNSUPPORTED_PATTERN_PLAN',
+  'PATTERN_NOT_ACTIVE', 'PATTERN_STATE_UNAVAILABLE',
+]);
 
 export class DiscoveryOrchestrator {
   private apiClient = getInternalAPIClient();
@@ -551,6 +556,11 @@ export class DiscoveryOrchestrator {
 
             // Execute hybrid discovery (pattern matching + AI)
             const result = await this.hybridOrchestrator!.discover(context);
+            if (!result.success || result.error) {
+              const error = result.error && TERMINAL_AI_DISCOVERY_ERRORS.has(result.error)
+                ? result.error : 'AI discovery failed';
+              throw new Error(error);
+            }
 
             await job.updateProgress(75);
 
@@ -582,7 +592,7 @@ export class DiscoveryOrchestrator {
               sessionId: (result as any).session?.sessionId,
             };
           } catch (error) {
-            logger.error('AI discovery failed', { jobId, error });
+            logger.error('AI discovery failed', { jobId });
             if (definition_id) {
               await this.updateDefinitionRunStatus(definition_id, jobId, 'failed', 0, error);
             }

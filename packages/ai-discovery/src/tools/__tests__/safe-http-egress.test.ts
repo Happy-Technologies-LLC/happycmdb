@@ -37,7 +37,7 @@ it('pins a public hostname at actual socket lookup and refuses rebind without a 
     expect(config?.proxy).toBe(false);
     const agent = config?.httpAgent;
     const address = await new Promise<string>((resolve, reject) => {
-      agent.options.lookup('public.example', {}, (error: Error | null, ip: string) =>
+      agent.options.lookup('public.example', { all: true }, (error: Error | null, ip: string) =>
         error ? reject(error) : resolve(ip));
     });
     return { data: address } as never;
@@ -45,4 +45,25 @@ it('pins a public hostname at actual socket lookup and refuses rebind without a 
   await expect(safeDiscoveryHttp('http://public.example/test', { maxRedirects: 10 }))
     .rejects.toThrow(DISCOVERY_TARGET_REFUSED);
   expect(mockedLookup).toHaveBeenCalledTimes(2);
+});
+
+it('returns a pinned address in both Node 20 all-address and scalar lookup forms', async () => {
+  mockedLookup.mockResolvedValue([{ address: '8.8.8.8', family: 4 }] as never);
+  mockedAxios.mockImplementationOnce(async config => {
+    const lookupAtConnect = config?.httpAgent.options.lookup;
+    const lookupResult = (options: { all: boolean }) =>
+      new Promise<{ address: unknown; family: number | undefined }>((resolve, reject) =>
+        lookupAtConnect('public.example', options,
+          (error: Error | null, address: unknown, family?: number) =>
+            error ? reject(error) : resolve({ address, family })));
+
+    expect(await lookupResult({ all: true }))
+      .toEqual({ address: [{ address: '8.8.8.8', family: 4 }], family: undefined });
+    expect(await lookupResult({ all: false }))
+      .toEqual({ address: '8.8.8.8', family: 4 });
+    return { status: 200, data: 'ok' } as never;
+  });
+  await expect(safeDiscoveryHttp('http://public.example/health'))
+    .resolves.toMatchObject({ status: 200, data: 'ok' });
+  expect(mockedLookup).toHaveBeenCalledTimes(3);
 });

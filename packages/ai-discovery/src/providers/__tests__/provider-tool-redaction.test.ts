@@ -9,6 +9,7 @@ import { OpenAIProvider } from '../openai-provider';
 import { CustomProvider } from '../custom-provider';
 import { AnthropicProvider } from '../anthropic-provider';
 import { AIAgentCoordinator } from '../../ai-agent-coordinator';
+import { HybridDiscoveryOrchestrator } from '../../hybrid-discovery-orchestrator';
 import { nmapTool } from '../../tools/nmap-tool';
 import type { DiscoveryTool } from '../../types';
 
@@ -31,6 +32,8 @@ const context = { targetHost: '8.8.8.8', targetPort: 443 };
 
 beforeEach(() => {
   jest.clearAllMocks();
+  openaiCreate.mockReset();
+  anthropicCreate.mockReset();
   jest.mocked(OpenAI).mockImplementation(() => ({ chat: { completions: { create: openaiCreate } } }) as never);
   jest.mocked(Anthropic).mockImplementation(() => ({ messages: { create: anthropicCreate } }) as never);
   for (const level of ['debug', 'info', 'warn', 'error'] as const) {
@@ -137,17 +140,20 @@ it('does not return or log upstream request errors through coordinator', async (
     jest.mocked(logger.error).mock.calls])).not.toContain(secret);
 });
 
-it('retains the fixed egress refusal code without revealing the requested target', async () => {
-  const tool: DiscoveryTool = { name: 'http_probe', description: 'test tool',
-    inputSchema: { type: 'object', properties: { host: { type: 'string' } }, required: ['host'] },
-    execute: jest.fn().mockRejectedValue(new Error('Discovery target refused')),
-  };
-  setResponse('openai', tool.name, { host: `private-${secret}` });
-  const result = await providers.openai().discover(context, [tool], 'system', 'user');
-  expect(result.toolCalls[0]?.error).toBe('Discovery target refused');
-  expect(JSON.stringify([jest.mocked(logger.debug).mock.calls, jest.mocked(logger.info).mock.calls,
-    jest.mocked(logger.error).mock.calls])).not.toContain(secret);
-});
+it.each(['openai', 'custom', 'anthropic'] as const)(
+  '%s propagates the fixed egress refusal without logging the requested target', async (name) => {
+    const tool: DiscoveryTool = { name: 'http_probe', description: 'test tool',
+      inputSchema: { type: 'object', properties: { host: { type: 'string' } }, required: ['host'] },
+      execute: jest.fn().mockRejectedValue(new Error('Discovery target refused')),
+    };
+    setResponse(name, tool.name, { host: `private-${secret}` });
+    await expect(providers[name]().discover(context, [tool], 'system', 'user'))
+      .rejects.toThrow('Discovery target refused');
+    expect(tool.execute).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify([jest.mocked(logger.debug).mock.calls, jest.mocked(logger.info).mock.calls,
+      jest.mocked(logger.warn).mock.calls, jest.mocked(logger.error).mock.calls])).not.toContain(secret);
+  }
+);
 
 it('refuses model-controlled nmap scan types without logging or spawning', async () => {
   const exec = jest.mocked(execFile);
@@ -197,4 +203,29 @@ it('runs a whitelisted nmap version scan without logging remote stderr', async (
   expect(failed.toolCalls[0]?.error).toBe('Tool execution failed');
   expect(JSON.stringify([jest.mocked(logger.debug).mock.calls, jest.mocked(logger.info).mock.calls,
     jest.mocked(logger.warn).mock.calls, jest.mocked(logger.error).mock.calls])).not.toContain(secret);
+});
+
+it('fails coordinator and hybrid discovery when a public-target AI tool refuses a private destination', async () => {
+  const tool: DiscoveryTool = { name: 'http_probe', description: 'test tool',
+    inputSchema: { type: 'object', properties: { host: { type: 'string' } }, required: ['host'] },
+    execute: jest.fn().mockRejectedValue(new Error('Discovery target refused')),
+  };
+  const config = { provider: 'openai' as const, model: 'gpt-4', apiKey: 'unused' };
+  const coordinator = new AIAgentCoordinator(config, [tool]);
+  setResponse('openai', tool.name, { host: '10.0.0.1' });
+  const direct = await coordinator.discover(context);
+  expect(direct).toMatchObject({ success: false, error: 'Discovery target refused',
+    discoveredCIs: [], session: { status: 'failed', errorMessage: 'Discovery target refused' } });
+
+  const hybrid = new HybridDiscoveryOrchestrator({
+    aiEnabled: false, patternMatchingEnabled: false, monthlyBudget: 0,
+  });
+  hybrid.updateConfig({ aiEnabled: true });
+  (hybrid as any).aiCoordinator = coordinator;
+  openaiCreate.mockReset();
+  setResponse('openai', tool.name, { host: '10.0.0.1' });
+  const routed = await hybrid.discover(context);
+  expect(routed).toMatchObject({ success: false, error: 'Discovery target refused',
+    discoveredCIs: [], method: 'ai' });
+  expect(tool.execute).toHaveBeenCalledTimes(2);
 });

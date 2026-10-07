@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { getPostgresClient } from '@cmdb/database';
-import { logger } from '@cmdb/common';
+import { logger, assertDiscoveryRange, DISCOVERY_TARGET_REFUSED } from '@cmdb/common';
 import {
   DiscoveryAgent,
   DiscoveryAgentRegistration,
@@ -85,7 +85,7 @@ export class DiscoveryAgentService {
       return agent;
     } catch (error) {
       await client.query('ROLLBACK');
-      logger.error('Error registering agent', { input, error });
+      logger.error('Error registering agent');
       throw error;
     } finally {
       client.release();
@@ -231,8 +231,12 @@ export class DiscoveryAgentService {
     provider: DiscoveryProvider,
     organizationId: string
   ): Promise<string | null> {
+    if (!Array.isArray(targetNetworks) || targetNetworks.length === 0) {
+      throw new Error(DISCOVERY_TARGET_REFUSED);
+    }
+    targetNetworks.forEach(assertDiscoveryRange);
     try {
-      // Query for active agents that support the provider and can reach any of the target networks
+      // Select only an agent that covers every validated public target network.
       const result = await this.postgresClient.query(
         `SELECT
           agent_id,
@@ -246,11 +250,12 @@ export class DiscoveryAgentService {
           AND organization_id = $3
           AND $1 = ANY(provider_capabilities)
           AND (NOW() - last_heartbeat_at) < INTERVAL '5 minutes'
-          AND EXISTS (
-            SELECT 1
-            FROM unnest(reachable_networks) AS agent_network
-            WHERE $2::inet <<= agent_network
-               OR agent_network >>= $2::inet
+          AND NOT EXISTS (
+            SELECT 1 FROM unnest($2::cidr[]) AS target(target_network)
+            WHERE NOT EXISTS (
+              SELECT 1 FROM unnest(reachable_networks) AS coverage(agent_network)
+              WHERE target.target_network <<= coverage.agent_network
+            )
           )
         ORDER BY
           -- Prefer agents with better success rate
@@ -262,14 +267,11 @@ export class DiscoveryAgentService {
           -- Then prefer more recently active agents
           last_heartbeat_at DESC
         LIMIT 1`,
-        [provider, targetNetworks[0], organizationId]
+        [provider, targetNetworks, organizationId]
       );
 
       if (result.rows.length === 0) {
-        logger.warn('No suitable agent found for networks', {
-          targetNetworks,
-          provider,
-        });
+        logger.warn('No suitable agent found for networks', { provider });
         return null;
       }
 
@@ -283,7 +285,7 @@ export class DiscoveryAgentService {
 
       return agent.agent_id;
     } catch (error) {
-      logger.error('Error finding best agent', { targetNetworks, provider, error });
+      logger.error('Error finding best agent', { provider });
       throw error;
     }
   }

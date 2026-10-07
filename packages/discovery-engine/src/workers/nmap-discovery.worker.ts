@@ -81,9 +81,9 @@ export class NmapDiscoveryWorker {
             resolve(cis);
           });
 
-          scanner.on('error', (error: Error) => {
-            logger.error('Nmap scan failed', { jobId, range, scanType, error: error.message });
-            reject(error);
+          scanner.on('error', () => {
+            logger.error('Nmap scan failed', { jobId, scanType });
+            reject(new Error('Nmap scan failed'));
           });
 
           scanner.startScan();
@@ -123,16 +123,12 @@ export class NmapDiscoveryWorker {
     }
 
     const allCIs: DiscoveredCI[] = [];
-    const failedScans: Array<{ range: string; error: any }> = [];
 
-    results.forEach((result, index) => {
+    results.forEach(result => {
       if (result.status === 'fulfilled') {
         allCIs.push(...result.value);
       } else {
-        const rangeInfo = ranges[index];
-        const range = rangeInfo ? rangeInfo.range : 'unknown';
-        logger.error(`Nmap scan failed for range ${range}`, result.reason);
-        failedScans.push({ range, error: result.reason });
+        logger.error('Nmap scan failed for range', { jobId });
       }
     });
 
@@ -148,16 +144,12 @@ export class NmapDiscoveryWorker {
 
     // If ALL scans failed, throw an error
     if (failedCount === ranges.length) {
-      const errorDetails = failedScans.map(f => `${f.range}: ${f.error?.message || f.error}`).join('; ');
-      throw new Error(`All Nmap scans failed (${failedCount}/${ranges.length}): ${errorDetails}`);
+      throw new Error(`All Nmap scans failed (${failedCount}/${ranges.length})`);
     }
 
     // If SOME scans failed but others succeeded, log warning but continue
     if (failedCount > 0) {
-      logger.warn(`Partial Nmap scan failure: ${failedCount}/${ranges.length} ranges failed`, {
-        jobId,
-        failedRanges: failedScans.map(f => f.range),
-      });
+      logger.warn(`Partial Nmap scan failure: ${failedCount}/${ranges.length} ranges failed`, { jobId });
     }
 
     return allCIs;

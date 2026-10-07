@@ -209,7 +209,7 @@ describe('Discovery Agent Routing Integration Tests', () => {
 
   describe('Smart Agent Routing with CIDR Networks', () => {
     it('should route job to agent based on network reachability', async () => {
-      // Register agent for 10.0.0.0/8 network
+      // Register agent for the first public network.
       const agent1Id = `test-agent-${uuidv4()}`;
       createdAgentIds.push(agent1Id);
 
@@ -217,10 +217,10 @@ describe('Discovery Agent Routing Integration Tests', () => {
         agent_id: agent1Id,
         hostname: 'agent-10-net.local',
         provider_capabilities: ['nmap', 'ssh'],
-        reachable_networks: ['10.0.0.0/8'],
+        reachable_networks: ['8.8.8.0/24'],
       }, ORG);
 
-      // Register agent for 192.168.0.0/16 network
+      // Register agent for the second public network.
       const agent2Id = `test-agent-${uuidv4()}`;
       createdAgentIds.push(agent2Id);
 
@@ -228,16 +228,16 @@ describe('Discovery Agent Routing Integration Tests', () => {
         agent_id: agent2Id,
         hostname: 'agent-192-net.local',
         provider_capabilities: ['nmap', 'ssh'],
-        reachable_networks: ['192.168.0.0/16'],
+        reachable_networks: ['9.9.9.0/24'],
       }, ORG);
 
-      // Find best agent for 10.x.x.x network
-      const bestAgent10 = await agentService.findBestAgentForNetworks(['10.50.100.0/24'], 'nmap', ORG);
+      // Find the agent for the first public range.
+      const bestAgent10 = await agentService.findBestAgentForNetworks(['8.8.8.0/24'], 'nmap', ORG);
 
       expect(bestAgent10).toBe(agent1Id);
 
-      // Find best agent for 192.168.x.x network
-      const bestAgent192 = await agentService.findBestAgentForNetworks(['192.168.1.0/24'], 'ssh', ORG);
+      // Find the agent for the second public range.
+      const bestAgent192 = await agentService.findBestAgentForNetworks(['9.9.9.0/24'], 'ssh', ORG);
 
       expect(bestAgent192).toBe(agent2Id);
     }, 60000);
@@ -251,7 +251,7 @@ describe('Discovery Agent Routing Integration Tests', () => {
         agent_id: goodAgentId,
         hostname: 'good-agent.local',
         provider_capabilities: ['nmap'],
-        reachable_networks: ['10.0.0.0/8'],
+        reachable_networks: ['8.8.8.0/24'],
       }, ORG);
 
       // Simulate successful jobs
@@ -273,7 +273,7 @@ describe('Discovery Agent Routing Integration Tests', () => {
         agent_id: poorAgentId,
         hostname: 'poor-agent.local',
         provider_capabilities: ['nmap'],
-        reachable_networks: ['10.0.0.0/8'],
+        reachable_networks: ['8.8.8.0/24'],
       }, ORG);
 
       // Simulate failed jobs
@@ -287,15 +287,15 @@ describe('Discovery Agent Routing Integration Tests', () => {
         },
       }, ORG);
 
-      // Find best agent for 10.x.x.x network
-      const bestAgent = await agentService.findBestAgentForNetworks(['10.50.100.0/24'], 'nmap', ORG);
+      // Find best agent for the covered public network.
+      const bestAgent = await agentService.findBestAgentForNetworks(['8.8.8.0/24'], 'nmap', ORG);
 
       // Should prefer agent with better success rate (100/105 > 20/50)
       expect(bestAgent).toBe(goodAgentId);
     }, 60000);
 
     it('should return null if no suitable agent found', async () => {
-      // Register agent for 10.0.0.0/8 network
+      // Register agent for one public network.
       const agentId = `test-agent-${uuidv4()}`;
       createdAgentIds.push(agentId);
 
@@ -303,11 +303,11 @@ describe('Discovery Agent Routing Integration Tests', () => {
         agent_id: agentId,
         hostname: 'limited-agent.local',
         provider_capabilities: ['nmap'],
-        reachable_networks: ['10.0.0.0/8'],
+        reachable_networks: ['8.8.8.0/24'],
       }, ORG);
 
       // Try to find agent for completely different network
-      const bestAgent = await agentService.findBestAgentForNetworks(['172.16.0.0/12'], 'nmap', ORG);
+      const bestAgent = await agentService.findBestAgentForNetworks(['9.9.9.0/24'], 'nmap', ORG);
 
       expect(bestAgent).toBeNull();
     }, 60000);
@@ -321,11 +321,11 @@ describe('Discovery Agent Routing Integration Tests', () => {
         agent_id: agentId,
         hostname: 'nmap-only-agent.local',
         provider_capabilities: ['nmap'],
-        reachable_networks: ['10.0.0.0/8'],
+        reachable_networks: ['8.8.8.0/24'],
       }, ORG);
 
       // Try to find agent for SSH discovery
-      const bestAgent = await agentService.findBestAgentForNetworks(['10.50.100.0/24'], 'ssh', ORG);
+      const bestAgent = await agentService.findBestAgentForNetworks(['8.8.8.0/24'], 'ssh', ORG);
 
       expect(bestAgent).toBeNull();
     }, 60000);
@@ -371,7 +371,7 @@ describe('Discovery Agent Routing Integration Tests', () => {
         agent_id: activeAgentId,
         hostname: 'active-agent.local',
         provider_capabilities: ['nmap'],
-        reachable_networks: ['10.0.0.0/8'],
+        reachable_networks: ['8.8.8.0/24'],
       }, ORG);
 
       // Register offline agent
@@ -382,7 +382,7 @@ describe('Discovery Agent Routing Integration Tests', () => {
         agent_id: offlineAgentId,
         hostname: 'offline-agent.local',
         provider_capabilities: ['nmap'],
-        reachable_networks: ['10.0.0.0/8'],
+        reachable_networks: ['8.8.8.0/24'],
       }, ORG);
 
       // Mark second agent as offline
@@ -395,7 +395,7 @@ describe('Discovery Agent Routing Integration Tests', () => {
       );
 
       // Find best agent
-      const bestAgent = await agentService.findBestAgentForNetworks(['10.50.100.0/24'], 'nmap', ORG);
+      const bestAgent = await agentService.findBestAgentForNetworks(['8.8.8.0/24'], 'nmap', ORG);
 
       // Should route to active agent, not offline one
       expect(bestAgent).toBe(activeAgentId);
@@ -410,7 +410,7 @@ describe('Discovery Agent Routing Integration Tests', () => {
         agent_id: agentId,
         hostname: 'recovery-agent.local',
         provider_capabilities: ['nmap'],
-        reachable_networks: ['10.0.0.0/8'],
+        reachable_networks: ['8.8.8.0/24'],
       }, ORG);
 
       // Mark agent as offline
@@ -436,7 +436,7 @@ describe('Discovery Agent Routing Integration Tests', () => {
       expect(recoveredAgent?.status).toBe('active');
 
       // Verify agent can now be routed to
-      const bestAgent = await agentService.findBestAgentForNetworks(['10.50.100.0/24'], 'nmap', ORG);
+      const bestAgent = await agentService.findBestAgentForNetworks(['8.8.8.0/24'], 'nmap', ORG);
 
       expect(bestAgent).toBe(agentId);
     }, 60000);

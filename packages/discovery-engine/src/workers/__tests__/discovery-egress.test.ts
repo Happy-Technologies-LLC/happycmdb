@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { lookup } from 'dns/promises';
+import { EventEmitter } from 'events';
 import * as nmap from 'node-nmap';
 import { NodeSSH } from 'node-ssh';
 import { NmapDiscoveryWorker } from '../nmap-discovery.worker';
@@ -55,6 +56,37 @@ it('returns only a fixed refusal when all nmap scans reject after preflight', as
   jest.spyOn(worker, 'scanNetwork').mockRejectedValue(new Error(DISCOVERY_TARGET_REFUSED));
   await expect(worker.scanNetworks('job', [{ range: 'public.example' }]))
     .rejects.toThrow(new Error(DISCOVERY_TARGET_REFUSED));
+});
+
+it('keeps scanner rejection diagnostics out of logs and queued aggregate failure', async () => {
+  const sensitive = 'SENSITIVE-SCANNER-DIAGNOSTIC';
+  const log = jest.spyOn(logger, 'error').mockImplementation(() => undefined);
+  const worker = new NmapDiscoveryWorker();
+  jest.spyOn(worker, 'scanNetwork').mockRejectedValue(new Error(sensitive));
+  await expect(worker.scanNetworks('job', [{ range: '8.8.8.8' }]))
+    .rejects.not.toThrow(sensitive);
+  expect(JSON.stringify(log.mock.calls)).not.toContain(sensitive);
+  log.mockRestore();
+});
+
+it('does not expose an emitted nmap scanner error even after transient retries', async () => {
+  jest.useFakeTimers();
+  const sensitive = 'SENSITIVE-NMAP-EMITTER';
+  const log = jest.spyOn(logger, 'error').mockImplementation(() => undefined);
+  const scanner = new EventEmitter() as EventEmitter & { startScan: () => void };
+  scanner.startScan = () => scanner.emit('error', new Error(sensitive));
+  jest.mocked(nmap.QuickScan).mockImplementation(() => scanner as never);
+  try {
+    const result = new NmapDiscoveryWorker().scanNetwork('job', '8.8.8.8');
+    const rejection = expect(result).rejects.toThrow('Nmap scan failed');
+    await jest.runAllTimersAsync();
+    await rejection;
+    expect(nmap.QuickScan).toHaveBeenCalledTimes(3);
+    expect(JSON.stringify(log.mock.calls)).not.toContain(sensitive);
+  } finally {
+    log.mockRestore();
+    jest.useRealTimers();
+  }
 });
 
 it('nmap hostname DNS rebind and SSH rebind never construct scan or socket clients', async () => {

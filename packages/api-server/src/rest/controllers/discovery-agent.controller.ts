@@ -3,7 +3,7 @@
 
 import { Request, Response } from 'express';
 import { DiscoveryAgentService, AGENT_NOT_FOUND } from '../../services/discovery-agent.service';
-import { logger } from '@cmdb/common';
+import { logger, DISCOVERY_TARGET_REFUSED } from '@cmdb/common';
 import { requestOrganizationId } from '../../middleware/auth.middleware';
 
 /**
@@ -29,12 +29,11 @@ export class DiscoveryAgentController {
         success: true,
         data: agent,
       });
-    } catch (error: any) {
-      logger.error('Error in registerAgent controller', error);
+    } catch {
+      logger.error('Error in registerAgent controller');
       res.status(500).json({
         success: false,
         error: 'Failed to register agent',
-        message: error.message,
       });
     }
   }
@@ -217,13 +216,13 @@ export class DiscoveryAgentController {
         success: true,
         data: { agent_id: agentId },
       });
-    } catch (error: any) {
-      logger.error('Error in findBestAgent controller', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to find best agent',
-        message: error.message,
-      });
+    } catch (error) {
+      if (error instanceof Error && error.message === DISCOVERY_TARGET_REFUSED) {
+        res.status(400).json({ success: false, error: DISCOVERY_TARGET_REFUSED });
+        return;
+      }
+      logger.error('Error in findBestAgent controller');
+      res.status(500).json({ success: false, error: 'Failed to find best agent' });
     }
   }
 }

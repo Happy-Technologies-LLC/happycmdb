@@ -33,11 +33,13 @@ const executeQuery = async (sql: string, args: unknown[] = []) => {
     const existing = rows.get(id);
     if (existing && (!sql.includes('discovery_agents.organization_id = EXCLUDED.organization_id') || existing.organization_id === org)) {
       existing.hostname = args[1] as string;
+      existing.reachable_networks = args[3] as string[];
       return { rows: [existing], rowCount: 1 };
     }
     if (existing) return { rows: [], rowCount: 0 };
     const added = row(id, org);
     added.hostname = args[1] as string;
+    added.reachable_networks = args[3] as string[];
     rows.set(id, added);
     return { rows: [added], rowCount: 1 };
   }
@@ -74,6 +76,11 @@ const executeQuery = async (sql: string, args: unknown[] = []) => {
     if (sql.includes('organization_id =')) visible = visible.filter(candidate => candidate.organization_id ===
       (sql.includes('organization_id = $3') ? args[2] : sql.includes('organization_id = $2') ? args[1] : args[0]));
     if (sql.includes('WHERE agent_id =')) visible = visible.filter(candidate => candidate.agent_id === args[0]);
+    if (sql.includes('unnest(reachable_networks)')) {
+      const targets = Array.isArray(args[1]) ? args[1] as string[] : [args[1] as string];
+      visible = visible.filter(candidate =>
+        targets.every(target => candidate.reachable_networks.includes(target)));
+    }
     if (sql.includes("status = 'active'")) visible = visible.filter(candidate => candidate.status === 'active');
     return { rows: sql.includes('LIMIT 1') ? visible.slice(0, 1) : visible, rowCount: visible.length };
   }
@@ -96,6 +103,67 @@ it('isolates list/get/find-best across two orgs and excludes legacy NULL even fo
   expect(await service.getAgent('missing', A)).toBeNull();
   expect(await service.getAgent('legacy', A)).toBeNull();
   expect(await service.findBestAgentForNetworks(['8.8.8.0/24'], 'nmap', A)).toBe('alpha');
+});
+
+it('selects an org-scoped agent covering every public target, never one covering only the first', async () => {
+  await service.registerAgent({ ...registration('partial'), reachable_networks: ['8.8.8.0/24'] }, A);
+  await service.registerAgent({ ...registration('complete'),
+    reachable_networks: ['8.8.8.0/24', '9.9.9.0/24'] }, A);
+  await service.registerAgent({ ...registration('foreign'),
+    reachable_networks: ['8.8.8.0/24', '9.9.9.0/24'] }, B);
+  expect(await service.findBestAgentForNetworks(['8.8.8.0/24', '9.9.9.0/24'], 'nmap', A)).toBe('complete');
+  await expect(service.findBestAgentForNetworks(['8.8.8.0/24', '10.0.0.0/8'], 'nmap', A))
+    .rejects.toThrow('Discovery target refused');
+  expect(await service.findBestAgentForNetworks(['8.8.8.0/24', '1.1.1.0/24'], 'nmap', A)).toBeNull();
+});
+
+it('rejects a mixed public/private routing request at HTTP boundary without querying agents', async () => {
+  const app = express();
+  app.use(express.json());
+  app.use((req: Request, _res, next) => {
+    (req as AuthenticatedRequest).user = {
+      _userId: 'admin-a', _username: 'alice', _role: 'admin', _type: 'access', _organizationId: A,
+    };
+    next();
+  });
+  const controller = new DiscoveryAgentController();
+  app.post('/api/v1/agents/find-best', controller.findBestAgent.bind(controller));
+  const response = await request(app).post('/api/v1/agents/find-best')
+    .send({ targetNetworks: ['8.8.8.0/24', '10.0.0.0/8'], provider: 'nmap' });
+  expect([response.status, response.body]).toEqual([400, {
+    success: false, error: 'Discovery target refused',
+  }]);
+  expect(query).not.toHaveBeenCalled();
+});
+
+it('does not log registration URI or DB error text after a database failure', async () => {
+  const log = jest.spyOn(require('@cmdb/common').logger, 'error').mockImplementation(() => undefined);
+  const sensitive = 'SENSITIVE-REGISTRATION-URI';
+  query.mockImplementation(async (sql: string) => {
+    if (sql === 'ROLLBACK' || sql === 'BEGIN') return { rows: [], rowCount: 0 };
+    throw new Error(sensitive);
+  });
+  await expect(service.registerAgent({
+    ...registration('failure'), api_endpoint: `https://${sensitive}.example/path`,
+  }, A)).rejects.toThrow(sensitive);
+  const app = express();
+  app.use(express.json());
+  app.use((req: Request, _res, next) => {
+    (req as AuthenticatedRequest).user = {
+      _userId: 'admin-a', _username: 'alice', _role: 'admin', _type: 'access', _organizationId: A,
+    };
+    next();
+  });
+  const controller = new DiscoveryAgentController();
+  app.post('/api/v1/agents/register', controller.registerAgent.bind(controller));
+  const response = await request(app).post('/api/v1/agents/register')
+    .send({ ...registration('failure'), api_endpoint: `https://${sensitive}.example/path` });
+  expect([response.status, response.body]).toEqual([500, {
+    success: false, error: 'Failed to register agent',
+  }]);
+  expect(log).toHaveBeenCalled();
+  expect(JSON.stringify(log.mock.calls)).not.toContain(sensitive);
+  log.mockRestore();
 });
 
 it('denies ID reuse and foreign/NULL heartbeat and delete without modifying existing data', async () => {

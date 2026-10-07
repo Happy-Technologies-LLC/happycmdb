@@ -40,6 +40,7 @@ export {
 export type { RetryOptions } from './utils/retry';
 
 // Export queue management
+export { UnrecoverableError } from 'bullmq';
 export * from './queues';
 export { getQueueManager } from './queues/queue-manager';
 export { QUEUE_NAMES } from './queues/queue-config';

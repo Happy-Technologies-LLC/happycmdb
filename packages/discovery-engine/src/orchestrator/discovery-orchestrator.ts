@@ -4,7 +4,7 @@
 // packages/discovery-engine/src/orchestrator/discovery-orchestrator.ts
 
 import { queueManager, QUEUE_NAMES, getPostgresClient, getUnifiedCredentialService } from '@cmdb/database';
-import { logger, resolveDiscoveryHost, DISCOVERY_TARGET_REFUSED } from '@cmdb/common';
+import { logger, resolveDiscoveryHost, DISCOVERY_TARGET_REFUSED, UnrecoverableError } from '@cmdb/common';
 import { DiscoveredCI, DiscoveryJob } from '@cmdb/common';
 import { SSHDiscoveryWorker } from '../workers/ssh-discovery.worker';
 import { NmapDiscoveryWorker } from '../workers/nmap-discovery.worker';
@@ -24,6 +24,13 @@ const TERMINAL_AI_DISCOVERY_ERRORS = new Set([
   DISCOVERY_TARGET_REFUSED, 'UNSUPPORTED_PATTERN_PLAN',
   'PATTERN_NOT_ACTIVE', 'PATTERN_STATE_UNAVAILABLE',
 ]);
+
+function queueDiscoveryFailure(error: unknown): never {
+  if (error instanceof Error && TERMINAL_AI_DISCOVERY_ERRORS.has(error.message)) {
+    throw new UnrecoverableError(error.message);
+  }
+  throw error;
+}
 
 export class DiscoveryOrchestrator {
   private apiClient = getInternalAPIClient();
@@ -448,7 +455,7 @@ export class DiscoveryOrchestrator {
           if (definition_id) {
             await this.updateDefinitionRunStatus(definition_id, jobId, 'failed', 0, error);
           }
-          throw error;
+          queueDiscoveryFailure(error);
         }
       },
       { concurrency: 5 }
@@ -509,7 +516,7 @@ export class DiscoveryOrchestrator {
           if (definition_id) {
             await this.updateDefinitionRunStatus(definition_id, jobId, 'failed', 0, error);
           }
-          throw error;
+          queueDiscoveryFailure(error);
         }
       },
       { concurrency: 3 }
@@ -596,7 +603,7 @@ export class DiscoveryOrchestrator {
             if (definition_id) {
               await this.updateDefinitionRunStatus(definition_id, jobId, 'failed', 0, error);
             }
-            throw error;
+            queueDiscoveryFailure(error);
           }
         },
         { concurrency: 2 } // Lower concurrency for AI (API rate limits)

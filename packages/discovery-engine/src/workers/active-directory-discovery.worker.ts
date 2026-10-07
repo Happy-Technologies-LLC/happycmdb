@@ -147,10 +147,7 @@ export class ActiveDirectoryDiscoveryWorker {
           count: result.value.length,
         });
       } else {
-        logger.error(`Active Directory ${resourceNames[index]} discovery failed`, {
-          jobId,
-          error: result.reason,
-        });
+        logger.error(`Active Directory ${resourceNames[index]} discovery failed`, { jobId });
       }
     });
 
@@ -773,11 +770,11 @@ export class ActiveDirectoryDiscoveryWorker {
       // ldapjs clients emit 'error' for connection failures (e.g. ECONNREFUSED,
       // socket resets) outside of the bind callback. Without a listener, these
       // are uncaught EventEmitter errors that crash the process.
-      client.on('error', (err) => {
-        logger.error('LDAP client error', { error: err.message });
+      client.on('error', () => {
+        logger.error('LDAP client error');
         if (!settled) {
           settled = true;
-          reject(new Error(`LDAP client error: ${err.message}`));
+          reject(new Error('LDAP client error'));
         }
       });
 
@@ -787,8 +784,8 @@ export class ActiveDirectoryDiscoveryWorker {
         }
         settled = true;
         if (err) {
-          logger.error('LDAP bind failed', { error: err.message });
-          reject(new Error(`LDAP bind failed: ${err.message}`));
+          logger.error('LDAP bind failed');
+          reject(new Error('LDAP bind failed'));
         } else {
           resolve(client);
         }

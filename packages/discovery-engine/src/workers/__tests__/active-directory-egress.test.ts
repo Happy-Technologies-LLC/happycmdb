@@ -3,6 +3,7 @@
 
 import { lookup } from 'dns/promises';
 import * as ldap from 'ldapjs';
+import { EventEmitter } from 'events';
 import type { UnifiedCredential } from '@cmdb/common';
 import { DISCOVERY_TARGET_REFUSED, logger } from '@cmdb/common';
 import { ActiveDirectoryDiscoveryWorker } from '../active-directory-discovery.worker';
@@ -74,4 +75,27 @@ it('never retries denied LDAP DNS rebind after DNS becomes public again', async 
   await expect(worker.discoverComputers('job')).rejects.toThrow(DISCOVERY_TARGET_REFUSED);
   expect(mockedLookup).toHaveBeenCalledTimes(2);
   expect(ldap.createClient).not.toHaveBeenCalled();
+});
+
+it('keeps LDAP client failures and rejected resource reasons out of logs and errors', async () => {
+  mockedLookup.mockResolvedValue([{ address: '8.8.8.8', family: 4 }] as never);
+  const sensitive = 'SENSITIVE-LDAP-DIAGNOSTIC';
+  const log = jest.spyOn(logger, 'error').mockImplementation(() => undefined);
+  const client = new EventEmitter();
+  (client as any).bind = jest.fn(() => client.emit('error', new Error(sensitive)));
+  jest.mocked(ldap.createClient).mockReturnValue(client as never);
+  const worker = new ActiveDirectoryDiscoveryWorker('public.example', 'DC=example,DC=com', credential);
+  await expect((worker as any).createLDAPClient()).rejects.not.toThrow(sensitive);
+  const bindFailure = new EventEmitter();
+  (bindFailure as any).bind = jest.fn((_dn: string, _password: string, callback: (error: Error) => void) =>
+    callback(new Error(sensitive)));
+  jest.mocked(ldap.createClient).mockReturnValue(bindFailure as never);
+  await expect((worker as any).createLDAPClient()).rejects.not.toThrow(sensitive);
+  jest.spyOn(worker, 'discoverComputers').mockRejectedValue(new Error(sensitive));
+  jest.spyOn(worker, 'discoverUsers').mockResolvedValue([]);
+  jest.spyOn(worker, 'discoverGroups').mockResolvedValue([]);
+  jest.spyOn(worker, 'discoverOrganizationalUnits').mockResolvedValue([]);
+  await worker.discoverAll('job', { domain: 'public.example', base_dn: 'DC=example,DC=com' });
+  expect(JSON.stringify(log.mock.calls)).not.toContain(sensitive);
+  log.mockRestore();
 });

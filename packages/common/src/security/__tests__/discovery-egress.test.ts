@@ -25,6 +25,14 @@ it('refuses private, loopback, link-local, metadata, mapped IPv6 and platform na
   expect(mockedLookup).not.toHaveBeenCalled();
 });
 
+it('refuses absolute internal DNS names before resolving even when DNS could return a public IP', async () => {
+  for (const name of ['foo.internal.', 'foo.local.', 'foo.svc.', 'foo.cluster.local.']) {
+    await expect(resolveDiscoveryHost(name)).rejects.toThrow(DISCOVERY_TARGET_REFUSED);
+  }
+  expect(mockedLookup).not.toHaveBeenCalled();
+  expect(() => assertDiscoveryHostname('public.example.')).not.toThrow();
+});
+
 it('refuses CIDRs with prohibited overlap, host lists and injected nmap syntax', () => {
   for (const range of ['0.0.0.0/0', '8.0.0.0/6', '10.0.0.0/8', '169.254.0.0/16',
     '192.168.1.0/24', 'fc00::/7', '8.8.8.8;touch /tmp/x', '8.8.8.8,127.0.0.1']) {

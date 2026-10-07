@@ -2,21 +2,20 @@
 
 ## Overview
 
-Discovery Agents are lightweight processes that run in your network to perform local infrastructure scanning and discovery. Unlike agentless discovery (which runs from the HappyCMDB server), agents run closer to the targets, enabling discovery behind firewalls, in air-gapped networks, and across distributed locations.
+Discovery Agents register capabilities and public-network reachability for organization-scoped routing. Under Choice C, agent placement never grants access to private or internal targets.
 
 > **Current Choice C restriction:** discovery refuses private, loopback, link-local,
 > metadata, and platform targets for every caller, including agent-based discovery.
-> The network-proximity architecture below is historical; do not use it to scan
-> internal networks. See [the fail-closed cutover](../../../docs/discovery-egress-agent-registry-design.md)
+> Registration is not permission to scan internal networks. See
+> [the fail-closed cutover](../../../docs/discovery-egress-agent-registry-design.md)
 > for the current egress and organization-scope contract.
 
 ## Key Features
 
-- **Network Proximity** - Scan devices within local networks
-- **Firewall Traversal** - Discover infrastructure behind firewalls
-- **Distributed Discovery** - Deploy agents in multiple datacenters
-- **Smart Routing** - Automatic agent selection based on network reachability
-- **Load Balancing** - Distribute discovery jobs across multiple agents
+- **Public Network Reachability** - Match agents to validated public target ranges
+- **Distributed Discovery** - Deploy agents in multiple locations without relaxing egress policy
+- **Smart Routing** - Select only an agent covering every requested public network
+- **Load Balancing** - Distribute eligible jobs across agents
 - **Health Monitoring** - Track agent status with heartbeats
 - **Capability Negotiation** - Agents advertise their discovery capabilities
 
@@ -40,8 +39,8 @@ Discovery Agents are lightweight processes that run in your network to perform l
           │ (Datacenter East)           │    │ (Datacenter West)         │
           │                             │    │                           │
           │ Networks:                   │    │ Networks:                 │
-          │  - 10.0.0.0/8               │    │  - 192.168.0.0/16         │
-          │  - 172.16.0.0/12            │    │  - 10.10.0.0/16           │
+          │  - 8.8.8.0/24              │    │  - 9.9.9.0/24            │
+          │  - 1.1.1.0/24              │    │  - 8.8.4.0/24            │
           │                             │    │                           │
           │ Capabilities:               │    │ Capabilities:             │
           │  - nmap                     │    │  - nmap                   │
@@ -50,11 +49,11 @@ Discovery Agents are lightweight processes that run in your network to perform l
           └──────────────┬──────────────┘    └────────────┬──────────────┘
                          │                                 │
           ┌──────────────▼──────────────┐    ┌────────────▼──────────────┐
-          │   Local Network             │    │   Local Network           │
-          │   (Datacenter East)         │    │   (Datacenter West)       │
-          │   - Servers                 │    │   - Servers               │
-          │   - Network Devices         │    │   - Network Devices       │
-          │   - Applications            │    │   - IoT Devices           │
+          │   Public Targets            │    │   Public Targets         │
+          │   (Site East)               │    │   (Site West)            │
+          │   - Validated ranges        │    │   - Validated ranges     │
+          │   - Denied private targets  │    │   - Denied private hosts │
+          │   - Denied internal names   │    │   - Denied metadata      │
           └─────────────────────────────┘    └───────────────────────────┘
 ```
 
@@ -88,7 +87,7 @@ service queries rather than `active_discovery_agents` or `agent_network_coverage
   "agent_id": "dc1-scanner-a1b2c3d4e5f6",
   "hostname": "dc1-scanner-01",
   "provider_capabilities": ["nmap", "ssh"],
-  "reachable_networks": ["10.0.0.0/8", "172.16.0.0/12"],
+  "reachable_networks": ["8.8.8.0/24", "9.9.9.0/24"],
   "version": "1.0.0",
   "platform": "linux",
   "arch": "x64"
@@ -108,69 +107,12 @@ service queries rather than `active_discovery_agents` or `agent_network_coverage
 }
 ```
 
-### Auto-Detection Example
+### Reachable Network Configuration
 
-```typescript
-import * as os from 'os';
-
-class DiscoveryAgent {
-  async detectNetworks(): Promise<string[]> {
-    const networks: string[] = [];
-    const interfaces = os.networkInterfaces();
-
-    for (const [name, addrs] of Object.entries(interfaces)) {
-      if (!addrs) continue;
-
-      for (const addr of addrs) {
-        // Skip internal/loopback
-        if (addr.internal) continue;
-
-        if (addr.family === 'IPv4') {
-          // Convert IP to CIDR network (assuming /24 for simplicity)
-          const parts = addr.address.split('.');
-          const network = `${parts[0]}.${parts[1]}.${parts[2]}.0/24`;
-          networks.push(network);
-        }
-      }
-    }
-
-    return [...new Set(networks)]; // Deduplicate
-  }
-
-  async detectCapabilities(): Promise<string[]> {
-    const capabilities: string[] = [];
-
-    // Check for nmap
-    try {
-      await exec('which nmap');
-      capabilities.push('nmap');
-    } catch {}
-
-    // Check for ssh
-    try {
-      await exec('which ssh');
-      capabilities.push('ssh');
-    } catch {}
-
-
-    return capabilities;
-  }
-
-  async registerWithAPI() {
-    const registration = {
-      agent_id: this.config.agentId,
-      hostname: os.hostname(),
-      provider_capabilities: await this.detectCapabilities(),
-      reachable_networks: await this.detectNetworks(),
-      version: '1.0.0',
-      platform: os.platform(),
-      arch: os.arch(),
-    };
-
-    await axios.post(`${this.apiUrl}/api/v1/agents/register`, registration);
-  }
-}
-```
+Configure only explicitly approved public CIDR ranges. Interface auto-detection
+is not an authorization source: local interfaces often yield private networks.
+The find-best route validates every requested target against the same fail-closed
+public-egress policy and requires one organization-scoped agent covering them all.
 
 ## Heartbeat Monitoring
 
@@ -289,8 +231,8 @@ providers:
 
 # Network configuration (optional - auto-detected)
 networks:
-  - 10.0.0.0/8
-  - 172.16.0.0/12
+  - 8.8.8.0/24
+  - 9.9.9.0/24
 
 # Logging
 logging:
@@ -385,7 +327,7 @@ Agents poll the API for pending jobs assigned to them:
         "definition_id": "def-456-def",
         "provider": "nmap",
         "config": {
-          "targets": ["10.0.1.0/24"],
+          "targets": ["8.8.8.0/24"],
           "ports": [22, 80, 443, 3389]
         },
         "credentials": {
@@ -423,7 +365,7 @@ Agents poll the API for pending jobs assigned to them:
     {
       "name": "server-01",
       "type": "server",
-      "ip_address": "10.0.1.10",
+      "ip_address": "8.8.8.8",
       "mac_address": "00:1A:2B:3C:4D:5E",
       "os": "Ubuntu 22.04",
       "open_ports": [22, 80, 443],
@@ -477,7 +419,7 @@ cmdb agents list
 cmdb agents show dc1-scanner-01
 
 # Find best agent for network
-cmdb agents find-best --networks 10.0.0.0/16 --provider nmap
+cmdb agents find-best --networks 8.8.8.0/24 --provider nmap
 
 # Manually assign job to agent
 cmdb discovery run def-123 --agent dc1-scanner-01

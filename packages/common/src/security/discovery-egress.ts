@@ -47,12 +47,12 @@ export function assertDiscoveryAddress(address: string): void {
 }
 
 export function assertDiscoveryHostname(host: string): void {
+  const name = typeof host === 'string' ? host.toLowerCase().replace(/\.$/, '') : '';
   if (typeof host !== 'string' || host.length > 253 || !host ||
     /[^a-zA-Z0-9.\-:]/.test(host) || host.startsWith('-') ||
-    host.toLowerCase().split('.').some(label => platformNames[label] === true) ||
-    host.toLowerCase().endsWith('.internal') || host.toLowerCase().endsWith('.localhost') ||
-    host.toLowerCase().endsWith('.local') || host.toLowerCase().endsWith('.svc') ||
-    host.toLowerCase().endsWith('.cluster.local')) {
+    name.split('.').some(label => platformNames[label] === true) ||
+    name.endsWith('.internal') || name.endsWith('.localhost') ||
+    name.endsWith('.local') || name.endsWith('.svc')) {
     throw new Error(DISCOVERY_TARGET_REFUSED);
   }
   if (isIP(host)) assertDiscoveryAddress(host);

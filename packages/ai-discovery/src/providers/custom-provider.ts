@@ -116,8 +116,7 @@ export class CustomProvider extends BaseLLMProvider {
           totalCompletionTokens += response.usage.completion_tokens || 0;
         }
 
-        logger.debug('Custom LLM response', {
-          finishReason: choice.finish_reason,
+        logger.debug('Custom LLM response received', {
           hasToolCalls: !!choice.message.tool_calls,
         });
 
@@ -132,26 +131,24 @@ export class CustomProvider extends BaseLLMProvider {
             const functionArgs = JSON.parse(toolCallMsg.function.arguments);
             const toolId = toolCallMsg.id;
 
-            logger.info(`Custom LLM requested function: ${functionName}`, {
-              args: functionArgs,
-            });
 
             // Find tool
             const tool = tools.find(t => t.name === functionName);
             if (!tool) {
-              logger.error(`Tool not found: ${functionName}`);
+              logger.error('Unknown discovery tool requested');
               continue;
             }
 
             // Validate params
             const validation = this.validateToolParams(tool, functionArgs);
             if (!validation.valid) {
-              logger.error('Tool parameter validation failed', {
-                tool: functionName,
-                errors: validation.errors,
+              logger.error('Discovery tool parameter validation failed', {
+                toolName: tool.name,
+                errorCount: validation.errors.length,
               });
               continue;
             }
+            logger.info('Custom LLM requested discovery tool', { toolName: tool.name });
 
             // Execute tool
             const toolCall = await this.executeTool(tool, functionArgs);
@@ -193,9 +190,9 @@ export class CustomProvider extends BaseLLMProvider {
         completionTokens: totalCompletionTokens,
         cost,
       };
-    } catch (error) {
-      logger.error('Custom LLM discovery error', { error });
-      throw error;
+    } catch {
+      logger.error('Custom LLM discovery error');
+      throw new Error('AI provider request failed');
     }
   }
 
@@ -284,9 +281,9 @@ Please analyze the target and provide your reasoning about the service type, tec
         completionTokens: totalCompletionTokens,
         cost: 0.0,
       };
-    } catch (error) {
-      logger.error('Custom LLM discovery error (no tool calling)', { error });
-      throw error;
+    } catch {
+      logger.error('Custom LLM discovery error (no tool calling)');
+      throw new Error('AI provider request failed');
     }
   }
 
@@ -329,8 +326,8 @@ Please analyze the target and provide your reasoning about the service type, tec
       });
 
       return response.choices.length > 0;
-    } catch (error) {
-      logger.error('Custom LLM connection test failed', { error });
+    } catch {
+      logger.error('Custom LLM connection test failed');
       return false;
     }
   }

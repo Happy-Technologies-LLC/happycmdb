@@ -21,12 +21,7 @@ export * from './custom-provider';
  * Create LLM provider based on configuration
  */
 export function createLLMProvider(config: LLMConfig): ILLMProvider {
-  logger.info('Creating LLM provider', {
-    provider: config.provider,
-    model: config.model,
-    hasApiKey: !!config.apiKey,
-    baseURL: config.baseURL,
-  });
+  logger.info('Creating LLM provider', { hasApiKey: !!config.apiKey });
 
   switch (config.provider) {
     case LLMProvider.ANTHROPIC:
@@ -92,10 +87,7 @@ export async function testLLMConnection(config?: LLMConfig): Promise<boolean> {
     const llmConfig = config || getDefaultLLMConfig();
     const provider = createLLMProvider(llmConfig);
 
-    logger.info('Testing LLM connection', {
-      provider: llmConfig.provider,
-      model: llmConfig.model,
-    });
+    logger.info('Testing LLM connection');
 
     const result = await provider.testConnection();
 
@@ -106,8 +98,8 @@ export async function testLLMConnection(config?: LLMConfig): Promise<boolean> {
     }
 
     return result;
-  } catch (error) {
-    logger.error('LLM connection test error', { error });
+  } catch {
+    logger.error('LLM connection test error');
     return false;
   }
 }

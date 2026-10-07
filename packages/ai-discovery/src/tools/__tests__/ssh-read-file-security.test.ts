@@ -33,3 +33,12 @@ it('rejects shell metacharacters in maxLines before invoking SSH', async () => {
   }
   expect(execute).not.toHaveBeenCalled();
 });
+
+it('does not include the requested path or remote output in a read failure', async () => {
+  const secret = 'SENSITIVE-TEST-VALUE';
+  jest.spyOn(sshExecuteTool, 'execute').mockResolvedValue({
+    success: false, stdout: `stdout ${secret}`, stderr: `stderr ${secret}`, exitCode: 1,
+  });
+  await expect(sshReadFileTool.execute({ host: '8.8.8.8', username: 'u',
+    filePath: `/tmp/${secret}` })).rejects.toThrow('SSH file read failed');
+});

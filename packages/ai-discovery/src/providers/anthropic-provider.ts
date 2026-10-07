@@ -90,8 +90,7 @@ export class AnthropicProvider extends BaseLLMProvider {
         totalInputTokens += response.usage.input_tokens;
         totalOutputTokens += response.usage.output_tokens;
 
-        logger.debug('Claude response', {
-          stopReason: response.stop_reason,
+        logger.debug('Claude response received', {
           contentBlocks: response.content.length,
         });
 
@@ -100,31 +99,30 @@ export class AnthropicProvider extends BaseLLMProvider {
           if (block.type === 'text') {
             // Accumulate reasoning text
             reasoning += block.text + '\n';
-            logger.debug('Claude reasoning', { text: block.text.substring(0, 200) });
           } else if (block.type === 'tool_use') {
             // Execute tool
             const toolName = block.name;
             const toolInput = block.input as any;
             const toolId = block.id;
 
-            logger.info(`Claude requested tool: ${toolName}`, { input: toolInput });
 
             // Find tool
             const tool = tools.find(t => t.name === toolName);
             if (!tool) {
-              logger.error(`Tool not found: ${toolName}`);
+              logger.error('Unknown discovery tool requested');
               continue;
             }
 
             // Validate params
             const validation = this.validateToolParams(tool, toolInput);
             if (!validation.valid) {
-              logger.error('Tool parameter validation failed', {
-                tool: toolName,
-                errors: validation.errors,
+              logger.error('Discovery tool parameter validation failed', {
+                toolName: tool.name,
+                errorCount: validation.errors.length,
               });
               continue;
             }
+            logger.info('Claude requested discovery tool', { toolName: tool.name });
 
             // Execute tool
             const toolCall = await this.executeTool(tool, toolInput);
@@ -176,9 +174,9 @@ export class AnthropicProvider extends BaseLLMProvider {
         completionTokens: totalOutputTokens,
         cost,
       };
-    } catch (error) {
-      logger.error('Anthropic discovery error', { error });
-      throw error;
+    } catch {
+      logger.error('Anthropic discovery error');
+      throw new Error('AI provider request failed');
     }
   }
 
@@ -224,8 +222,8 @@ export class AnthropicProvider extends BaseLLMProvider {
       });
 
       return response.content.length > 0;
-    } catch (error) {
-      logger.error('Anthropic connection test failed', { error });
+    } catch {
+      logger.error('Anthropic connection test failed');
       return false;
     }
   }

@@ -35,6 +35,31 @@ it('does not propagate SSH errors that echo sensitive command text', async () =>
   expect(JSON.stringify(errorLog.mock.calls)).not.toContain(secret);
 });
 
+it('logs SSH exit code without reflecting an untrusted exit signal', async () => {
+  const info = jest.spyOn(logger, 'info').mockImplementation(() => undefined);
+  const conn = new EventEmitter() as EventEmitter & {
+    connect: () => EventEmitter;
+    exec: (command: string, callback: (error: null, stream: EventEmitter) => void) => void;
+    end: () => void;
+  };
+  conn.connect = () => {
+    queueMicrotask(() => conn.emit('ready'));
+    return conn;
+  };
+  conn.exec = (_command, callback) => {
+    const stream = new EventEmitter() as EventEmitter & { stderr: EventEmitter };
+    stream.stderr = new EventEmitter();
+    callback(null, stream);
+    queueMicrotask(() => stream.emit('close', 1, `SIG-${secret}`));
+  };
+  conn.end = jest.fn();
+  jest.mocked(Client).mockImplementation(() => conn as never);
+  const result = await sshExecuteTool.execute({ host: '8.8.8.8', username: 'operator',
+    command: `echo ${secret}` });
+  expect(result.exitCode).toBe(1);
+  expect(JSON.stringify(info.mock.calls)).not.toContain(secret);
+});
+
 it('does not log HTTP path/query credentials on successful probes', async () => {
   const info = jest.spyOn(logger, 'info').mockImplementation(() => undefined);
   jest.mocked(safeDiscoveryHttp).mockResolvedValueOnce({

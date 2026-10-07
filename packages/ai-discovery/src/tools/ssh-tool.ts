@@ -77,7 +77,7 @@ export const sshExecuteTool: DiscoveryTool = {
                 clearTimeout(timeout);
                 conn.end();
 
-                logger.info('SSH command completed', { code, signal });
+                logger.info('SSH command completed', { code });
 
                 resolve({
                   success: code === 0,
@@ -167,9 +167,8 @@ export const sshReadFileTool: DiscoveryTool = {
     });
 
     if (!result.success) {
-      throw new Error(
-        `Failed to read file ${filePath}: ${result.stderr || result.stdout}`
-      );
+      // The remote output and requested path may contain credentials.
+      throw new Error('SSH file read failed');
     }
 
     return {

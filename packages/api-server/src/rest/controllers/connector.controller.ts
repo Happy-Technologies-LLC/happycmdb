@@ -77,13 +77,9 @@ export class ConnectorController {
           offset: Number(offset),
         },
       });
-    } catch (error) {
-      logger.error('Error fetching connector registry', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to fetch connector registry',
-        message: error instanceof Error ? error.message : 'Unknown error'
-      });
+    } catch {
+      logger.error('Error fetching connector registry');
+      res.status(500).json({ success: false, error: 'Failed to fetch connector registry' });
     }
   }
 
@@ -114,13 +110,9 @@ export class ConnectorController {
         success: true,
         data: result.rows[0],
       });
-    } catch (error) {
-      logger.error('Error fetching connector details', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to fetch connector details',
-        message: error instanceof Error ? error.message : 'Unknown error'
-      });
+    } catch {
+      logger.error('Error fetching connector details');
+      res.status(500).json({ success: false, error: 'Failed to fetch connector details' });
     }
   }
 
@@ -156,13 +148,9 @@ export class ConnectorController {
         count: result.rows.length,
         query: q,
       });
-    } catch (error) {
-      logger.error('Error searching connector registry', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to search connector registry',
-        message: error instanceof Error ? error.message : 'Unknown error'
-      });
+    } catch {
+      logger.error('Error searching connector registry');
+      res.status(500).json({ success: false, error: 'Failed to search connector registry' });
     }
   }
 
@@ -290,13 +278,9 @@ export class ConnectorController {
           ? 'All connectors are up to date'
           : `${result.rows.length} connector(s) have updates available`
       });
-    } catch (error) {
-      logger.error('Error checking outdated connectors', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to check for updates',
-        message: error instanceof Error ? error.message : 'Unknown error'
-      });
+    } catch {
+      logger.error('Error checking outdated connectors');
+      res.status(500).json({ success: false, error: 'Failed to check for updates' });
     }
   }
 }

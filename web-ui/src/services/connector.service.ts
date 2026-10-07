@@ -486,50 +486,6 @@ export const CONNECTOR_STATS_QUERY = gql`
 // GraphQL Mutations
 // ============================================================================
 
-export const INSTALL_CONNECTOR_MUTATION = gql`
-  mutation InstallConnector($connectorType: String!, $version: String) {
-    installConnector(connectorType: $connectorType, version: $version) {
-      success
-      connector {
-        id
-        connectorType
-        name
-        installedVersion
-      }
-      message
-      errors
-    }
-  }
-`;
-
-export const UPDATE_CONNECTOR_MUTATION = gql`
-  mutation UpdateConnector($connectorType: String!, $version: String) {
-    updateConnector(connectorType: $connectorType, version: $version) {
-      success
-      connector {
-        id
-        connectorType
-        name
-        installedVersion
-      }
-      previousVersion
-      newVersion
-      message
-      errors
-    }
-  }
-`;
-
-export const UNINSTALL_CONNECTOR_MUTATION = gql`
-  mutation UninstallConnector($connectorType: String!) {
-    uninstallConnector(connectorType: $connectorType) {
-      success
-      message
-      errors
-    }
-  }
-`;
-
 export const CREATE_CONNECTOR_CONFIG_MUTATION = gql`
   mutation CreateConnectorConfiguration($input: CreateConnectorConfigInput!) {
     createConnectorConfiguration(input: $input) {
@@ -698,38 +654,6 @@ class ConnectorService {
       query: CONNECTOR_STATS_QUERY,
     });
     return data.connectorStats;
-  }
-
-  async installConnector(
-    connectorType: string,
-    version?: string
-  ): Promise<{ success: boolean; connector?: InstalledConnector; message?: string; errors?: string[] }> {
-    const { data } = await apolloClient.mutate({
-      mutation: INSTALL_CONNECTOR_MUTATION,
-      variables: { connectorType, version },
-    });
-    return data.installConnector;
-  }
-
-  async updateConnector(
-    connectorType: string,
-    version?: string
-  ): Promise<{ success: boolean; connector?: InstalledConnector; previousVersion: string; newVersion: string; message?: string; errors?: string[] }> {
-    const { data } = await apolloClient.mutate({
-      mutation: UPDATE_CONNECTOR_MUTATION,
-      variables: { connectorType, version },
-    });
-    return data.updateConnector;
-  }
-
-  async uninstallConnector(
-    connectorType: string
-  ): Promise<{ success: boolean; message?: string; errors?: string[] }> {
-    const { data } = await apolloClient.mutate({
-      mutation: UNINSTALL_CONNECTOR_MUTATION,
-      variables: { connectorType },
-    });
-    return data.uninstallConnector;
   }
 
   async createConnectorConfiguration(

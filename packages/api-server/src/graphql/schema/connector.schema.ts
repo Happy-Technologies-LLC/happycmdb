@@ -520,19 +520,19 @@ export const connectorTypeDefs = `
   # ============================================
 
   extend type Mutation {
-    """Install connector from registry"""
+    """Unavailable until the separate global connector lifecycle review; always refuses."""
     installConnector(
       connectorType: String!
       version: String
     ): InstallConnectorResult!
 
-    """Update connector to newer version"""
+    """Unavailable until the separate global connector lifecycle review; always refuses."""
     updateConnector(
       connectorType: String!
       version: String
     ): UpdateConnectorResult!
 
-    """Uninstall connector"""
+    """Unavailable until the separate global connector lifecycle review; always refuses."""
     uninstallConnector(
       connectorType: String!
     ): UninstallConnectorResult!

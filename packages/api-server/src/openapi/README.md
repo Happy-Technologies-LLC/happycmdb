@@ -106,12 +106,8 @@ http://localhost:3000/api-docs/openapi.yaml
 - `GET /connectors/registry/{type}` - Get connector details
 - `GET /connectors/installed` - List installed
 - `GET /connectors/installed/{type}` - Get installed details
-- `POST /connectors/install` - Install connector
-- `PUT /connectors/{type}/update` - Update connector
-- `DELETE /connectors/{type}` - Uninstall connector
-- `POST /connectors/{type}/verify` - Verify installation
-- `GET /connectors/outdated` - Check for updates
-- `POST /connectors/cache/refresh` - Refresh cache
+- `GET /connectors/outdated` - Check for available updates
+- `POST /connectors/install`, `PUT /connectors/{type}/update`, `DELETE /connectors/{type}`, `POST /connectors/{type}/verify`, `POST /connectors/cache/refresh` - Always return 503 `CONNECTOR_LIFECYCLE_UNAVAILABLE` after authentication. Connector code changes occur only through deployment packaging/file placement outside the application.
 
 ### Reconciliation (`/api/v1/reconciliation`)
 - `POST /reconciliation/match` - Find matching CIs

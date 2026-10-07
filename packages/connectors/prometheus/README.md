@@ -115,9 +115,10 @@ The connector automatically discovers relationships between resources:
 
 ## Configuration and execution
 
-Install the Prometheus connector at deployment time. Shared connector installation,
-update, verification, removal and registry refresh are unavailable through REST,
-GraphQL and the CLI until the separately reviewed platform authority cutover.
+Install Prometheus connector code through deployment packaging/file placement
+outside this application. The installer library and CLI installation tooling are
+removed. Shared lifecycle REST/GraphQL operations refuse every authenticated
+caller until a separately reviewed P-6 cutover.
 
 Create a configuration through authenticated `POST /api/v1/connector-configs`
 with `connector_type: "prometheus"`, a unique name in the verified user's

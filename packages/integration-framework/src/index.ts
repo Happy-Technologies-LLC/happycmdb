@@ -12,10 +12,6 @@ export { BaseIntegrationConnector } from './core/base-connector';
 // Registry
 export { ConnectorRegistry, getConnectorRegistry } from './registry/connector-registry';
 
-// Installer
-export { ConnectorInstaller, getConnectorInstaller } from './installer/connector-installer';
-export type { DownloadOptions } from './installer/connector-installer';
-
 // connector-core 0.2.0 descriptor bridge: map a CMDB connector.json
 // (ConnectorMetadata) onto the shared ConnectorDescriptor contract.
 export { mapConnectorMetadataToDescriptor } from './descriptor-mapper';

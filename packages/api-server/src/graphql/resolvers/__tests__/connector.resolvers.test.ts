@@ -135,8 +135,9 @@ describe('connector ownership and public GraphQL boundary', () => {
     expect(mockQuery).not.toHaveBeenCalled();
   });
 
-  it('refuses global lifecycle operations for tenant and platform principals before database access', async () => {
-    for (const user of [adminUser, operatorUser, { ...adminUser, _platformAdmin: true }]) {
+  it('refuses global lifecycle operations for tenant, platform, and orgless principals before database access', async () => {
+    for (const user of [adminUser, operatorUser, { ...adminUser, _platformAdmin: true },
+      { ...operatorUser, _organizationId: undefined }]) {
       for (const mutation of [
         connectorResolvers.Mutation.installConnector,
         connectorResolvers.Mutation.updateConnector,

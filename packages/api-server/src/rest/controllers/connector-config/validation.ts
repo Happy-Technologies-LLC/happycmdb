@@ -36,6 +36,8 @@ export function buildUpdateQuery(id: string, updates: Record<string, unknown>, s
 
   for (const field of allowedFields) {
     if (updates[field] === undefined) continue;
+    if (['connection', 'options'].includes(field) && updates[field] !== null &&
+      typeof updates[field] === 'object' && Object.keys(updates[field] as object).length === 0) continue;
     if (['connection', 'options', 'resource_configs'].includes(field)) {
       fields.push(`${field} = ${connectorJsonMerge(field, updates[field], values)}`);
     } else {

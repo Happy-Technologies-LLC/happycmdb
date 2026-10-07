@@ -188,6 +188,22 @@ it('refuses every shared connector lifecycle operation for tenant and verified p
     .toEqual([{ connector_type: 'test', verified: false }]);
 });
 
+it('keeps database exception text out of registry responses and logs', async () => {
+  const log = jest.spyOn(logger, 'error').mockImplementation(() => undefined);
+  const failing = jest.spyOn(pool, 'query').mockRejectedValue(new Error(SECRET));
+  try {
+    for (const path of ['/registry', '/registry/test', '/registry/search?q=test', '/outdated']) {
+      const result = await request(app).get(`/api/v1/connectors${path}`).set(bearer('a'));
+      expect(result.status).toBe(500);
+      expect(JSON.stringify(result.body)).not.toContain(SECRET);
+    }
+    expect(JSON.stringify(log.mock.calls)).not.toContain(SECRET);
+  } finally {
+    failing.mockRestore();
+    log.mockRestore();
+  }
+});
+
 it('scopes list/history and denies foreign/legacy runs while hiding nested secrets', async () => {
   const list = await request(app).get(url).set(bearer('a', ORG_B));
   expect(list.status).toBe(200);
@@ -274,6 +290,20 @@ it('rejects missing organization before any connector SQL and refuses mismatched
   expect(stored.rows).toEqual([{ organization_id: ORG_A }]);
 });
 
+it('does not log request-supplied resource IDs when queuing an owned run', async () => {
+  const log = jest.spyOn(logger, 'info').mockImplementation(() => undefined);
+  try {
+    const result = await request(app).post(`${url}/${A}/run`).set(bearer('a'))
+      .send({ resource_id: SECRET });
+    expect(result.status).toBe(202);
+    expect(JSON.stringify(log.mock.calls)).not.toContain(SECRET);
+    expect((await query('SELECT resource_id FROM connector_run_history WHERE id = $1', [result.body.data.id])).rows)
+      .toEqual([{ resource_id: SECRET }]);
+  } finally {
+    log.mockRestore();
+  }
+});
+
 it('authenticates standalone hub tenant routing, duplicate legacy names and redacted responses', async () => {
   const hub = '/api/v1/hub/connectors';
   await query(`UPDATE connector_configurations SET name = 'alpha' WHERE id = $1`, [LEGACY]);
@@ -314,6 +344,25 @@ it('authenticates standalone hub tenant routing, duplicate legacy names and reda
   expect((await request(app).get(`${hub}/alpha`).set(bearer('internal'))).status).toBe(404);
   expect((await request(app).get(`${hub}/alpha`).set(bearer('none', ORG_A))).status).toBe(403);
   expect((await request(app).put(`${hub}/alpha`).set(bearer('viewer')).send({ enabled: false })).status).toBe(403);
+});
+
+it('atomically merges hub write-only connection and options without erasing omitted secrets', async () => {
+  const hub = '/api/v1/hub/connectors/alpha';
+  await query('UPDATE connector_configurations SET connection = $1, options = $2 WHERE id = $3', [
+    JSON.stringify({ auth: { client_secret: SECRET, account: 'old' }, endpoint: 'original' }),
+    JSON.stringify({ nested: { token: SECRET, region: 'old' } }), A,
+  ]);
+  const first = await request(app).put(hub).set(bearer('a')).send({
+    connection: { auth: { account: 'new' } }, options: { nested: { region: 'new' } },
+  });
+  const second = await request(app).put(hub).set(bearer('a')).send({ connection: {}, options: {} });
+  expect([first.status, second.status]).toEqual([200, 200]);
+  expect(JSON.stringify([first.body, second.body])).not.toContain(SECRET);
+  expect((await query('SELECT connection, options FROM connector_configurations WHERE id = $1', [A])).rows)
+    .toEqual([{
+      connection: { auth: { client_secret: SECRET, account: 'new' }, endpoint: 'original' },
+      options: { nested: { token: SECRET, region: 'new' } },
+    }]);
 });
 
 it('refuses stored credential references before connector tests or run history creation', async () => {
@@ -359,6 +408,9 @@ it('atomically preserves nested write-only secrets on nonempty partial REST upda
     resource_configs: { items: { batch_size: 20 } },
   });
   expect(update.status).toBe(200);
+  const emptyEditor = await request(app).put(`${url}/${A}`).set(bearer('a'))
+    .send({ connection: {}, options: {} });
+  expect(emptyEditor.status).toBe(400);
   expect(JSON.stringify(update.body)).not.toContain(SECRET);
   const resources = await request(app).put(`${url}/${A}/resources`).set(bearer('a')).send({
     enabled_resources: ['items'], resource_configs: { items: { batch_size: 30 } },

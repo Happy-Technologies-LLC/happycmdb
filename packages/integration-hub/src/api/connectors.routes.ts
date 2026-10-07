@@ -3,7 +3,7 @@
 
 import { Router, Request, Response } from 'express';
 import type { NextFunction } from 'express';
-import { getConnectorRegistry } from '@cmdb/integration-framework';
+import { getConnectorRegistry, type ConnectorMetadata } from '@cmdb/integration-framework';
 import { getIntegrationManager } from '@cmdb/integration-framework/dist/core/integration-manager';
 import { getPostgresClient } from '@cmdb/database';
 import {
@@ -12,6 +12,8 @@ import {
 } from '@cmdb/api-server/auth/connector-scope';
 import type { TokenPayload } from '@cmdb/api-server/auth/types';
 import { ROLE_PERMISSIONS } from '@cmdb/api-server/auth/types';
+import { connectorJsonMerge } from '@cmdb/api-server/services/connector-json-merge';
+import { publicInstalledConnector } from '@cmdb/api-server/services/public-installed-connector';
 
 export const connectorsRouter = Router();
 const integrationManager = getIntegrationManager();
@@ -63,14 +65,25 @@ async function registerCurrentConfig(configId: string, organizationId: string): 
   }
 }
 
+function publicConnectorType(metadata: ConnectorMetadata): Record<string, unknown> {
+  const safe = publicInstalledConnector({
+    resources: metadata.resources, configuration_schema: metadata.configuration_schema,
+  });
+  return {
+    type: metadata.type, name: metadata.name, version: metadata.version,
+    description: metadata.description, author: metadata.author,
+    verified: metadata.verified, category: metadata.category,
+    resources: safe['resources'], configuration_schema: safe['configuration_schema'],
+  };
+}
 
 connectorsRouter.get('/types', (_req, res) => {
-  res.json({ types: connectorRegistry.getAllConnectorTypes() });
+  res.json({ types: connectorRegistry.getAllConnectorTypes().map(publicConnectorType) });
 });
 connectorsRouter.get('/types/:type', (req, res) => {
   const metadata = connectorRegistry.getConnectorMetadata(req.params.type);
   if (!metadata) return res.status(404).json({ error: 'Connector type not found' });
-  return res.json({ metadata });
+  return res.json({ metadata: publicConnectorType(metadata) });
 });
 
 connectorsRouter.get('/', async (req, res) => {
@@ -123,14 +136,19 @@ connectorsRouter.post('/', requireConnectorWrite, async (req, res) => {
 connectorsRouter.put('/:name', requireConnectorWrite, async (req, res) => {
   try {
     const { enabled, schedule, connection, options } = req.body;
+    const params: unknown[] = [req.params['name'], ...values(req), enabled, schedule];
+    const fields = [
+      'enabled = COALESCE($4, c.enabled)', 'schedule = COALESCE($5, c.schedule)',
+    ];
+    for (const [column, patch] of [['connection', connection], ['options', options]] as const) {
+      if (patch && typeof patch === 'object' && !Array.isArray(patch) && Object.keys(patch).length > 0) {
+        fields.push(`${column} = ${connectorJsonMerge(`c.${column}`, patch, params)}`);
+      }
+    }
     const result = await postgresClient.query(
-      `UPDATE connector_configurations c SET enabled = COALESCE($4, c.enabled),
-        schedule = COALESCE($5, c.schedule), connection = COALESCE($6, c.connection),
-        options = COALESCE($7, c.options), updated_at = NOW()
+      `UPDATE connector_configurations c SET ${fields.join(', ')}, updated_at = NOW()
        WHERE c.name = $1 AND ${connectorPredicate('c', 2)} RETURNING ${configColumns}`,
-      [req.params['name'], ...values(req), enabled, schedule,
-        connection === undefined ? null : JSON.stringify(connection),
-        options === undefined ? null : JSON.stringify(options)]
+      params
     );
     if (!result.rows.length) return res.status(404).json(CONFIG_NOT_FOUND);
     await integrationManager.unregisterConnector(result.rows[0].id);

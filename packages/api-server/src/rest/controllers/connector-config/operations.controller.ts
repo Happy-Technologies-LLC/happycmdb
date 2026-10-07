@@ -142,10 +142,9 @@ export class ConnectorConfigOperationsController {
         return;
       }
 
-      logger.info(`Connector run triggered`, {
+      logger.info('Connector run queued', {
         config_id: id,
         run_id: runResult.rows[0].id,
-        resource_id
       });
 
       res.status(202).json({

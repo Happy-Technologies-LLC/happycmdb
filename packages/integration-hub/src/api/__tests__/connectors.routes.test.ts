@@ -18,7 +18,11 @@ jest.mock('@cmdb/integration-framework/dist/core/integration-manager', () => ({
   })),
 }));
 jest.mock('@cmdb/integration-framework', () => ({
-  getConnectorRegistry: jest.fn(() => ({ hasConnectorType: () => true })),
+  getConnectorRegistry: jest.fn(() => ({
+    hasConnectorType: () => true,
+    getAllConnectorTypes: () => getAllConnectorTypes(),
+    getConnectorMetadata: (type: string) => getConnectorMetadata(type),
+  })),
 }));
 jest.mock('@cmdb/api-server/auth/auth-bootstrap', () => ({
   getAuthMiddleware: () => ({
@@ -51,6 +55,9 @@ const query = jest.fn();
 const runConnector = jest.fn();
 const unregisterConnector = jest.fn();
 
+const getAllConnectorTypes = jest.fn();
+const getConnectorMetadata = jest.fn();
+
 async function request(method: string, path: string, user?: { organizationId?: string; legacy?: boolean }, body?: object) {
   const app = express();
   app.use(express.json());
@@ -79,6 +86,31 @@ describe('standalone connector routes', () => {
     expect((await supertest(app).get('/api/v1/connectors/shared')).status).toBe(401);
     expect((await supertest(app).post('/api/v1/connectors').send({ name: 'shared' })).status).toBe(401);
     expect(query).not.toHaveBeenCalled();
+  });
+
+  it('never exposes custom descriptor defaults or extra metadata to authenticated tenants', async () => {
+    const metadata = {
+      type: 'test', name: 'Test', version: '1.0', description: 'Test descriptor',
+      author: 'operator', category: 'connector', verified: true,
+      configuration_schema: { properties: { client_secret: {
+        type: 'string', description: 'Credential field', default: marker,
+      } }, default: marker },
+      resources: [{ id: 'items', name: 'Items', description: 'Read items', ci_type: 'Device',
+        enabled_by_default: true, configuration_schema: { default: marker },
+        metadata: { token: marker } }],
+      metadata: { token: marker },
+    };
+    getAllConnectorTypes.mockReturnValue([metadata]);
+    getConnectorMetadata.mockReturnValue(metadata);
+    const user = { organizationId: orgA };
+    const list = await request('GET', '/api/v1/connectors/types', user);
+    const detail = await request('GET', '/api/v1/connectors/types/test', user);
+    expect(list.status).toBe(200);
+    expect(detail.status).toBe(200);
+    expect(JSON.parse(list.body).types).toEqual([JSON.parse(detail.body).metadata]);
+    expect(list.body + detail.body).not.toContain(marker);
+    expect(JSON.parse(detail.body).metadata.configuration_schema.properties.client_secret)
+      .toEqual({ type: 'string', description: 'Credential field', required: false });
   });
 
   it('makes a foreign name indistinguishable from a missing name for reads, updates and runs', async () => {

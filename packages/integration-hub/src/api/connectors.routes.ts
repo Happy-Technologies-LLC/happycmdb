@@ -52,7 +52,7 @@ async function ownedConfig(req: Request) {
 }
 async function registerCurrentConfig(configId: string, organizationId: string): Promise<void> {
   const current = await postgresClient.query(
-    `SELECT c.id, c.organization_id, c.credential_id, c.enabled, c.schedule
+    `SELECT c.id, c.organization_id, c.credential_id, c.enabled, c.schedule_enabled, c.schedule
      FROM connector_configurations c WHERE c.id = $1 AND c.organization_id = $2`,
     [configId, organizationId]
   );
@@ -60,7 +60,8 @@ async function registerCurrentConfig(configId: string, organizationId: string): 
     const row = current.rows[0];
     await integrationManager.registerConnector({
       id: row.id, organizationId: row.organization_id,
-      credential_id: row.credential_id, enabled: row.enabled, schedule: row.schedule,
+      credential_id: row.credential_id, enabled: row.enabled,
+      schedule_enabled: row.schedule_enabled, schedule: row.schedule,
     });
   }
 }

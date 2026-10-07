@@ -155,6 +155,9 @@ export class ConnectorConfigMetricsController {
         res.status(404).json(CONFIG_NOT_FOUND);
         return;
       }
+      // An explicit legacy config ID is visible to platform admins even when
+      // their default all-runs listing intentionally excludes legacy rows.
+      const [organizationId, legacy] = requestScopeValues(req, Boolean(config_id));
 
       const { query, params, countQuery, countParams } = buildRunsQuery({
         config_id: config_id as string,
@@ -165,8 +168,8 @@ export class ConnectorConfigMetricsController {
         offset: Number(offset),
         sort_by: sort_by as string,
         sort_order: sort_order as string,
-        organizationId: requestScopeValues(req, false)[0],
-        legacy: requestScopeValues(req, false)[1],
+        organizationId,
+        legacy,
       });
 
       const countResult = await this.pool.query(countQuery, countParams);

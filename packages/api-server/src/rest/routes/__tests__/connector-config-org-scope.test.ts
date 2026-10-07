@@ -166,6 +166,14 @@ it('returns the same 404 for foreign and missing config filters on the global ru
   expect(own.body.data.map((run: { id: string }) => run.id)).toEqual([RUN_A]);
 });
 
+it('returns explicitly selected legacy runs to a platform admin without widening the default list', async () => {
+  const selected = await request(app).get(`${url}/runs/all`).query({ config_id: LEGACY }).set(bearer('platformOwn'));
+  expect(selected.status).toBe(200);
+  expect(selected.body.data.map((run: { id: string }) => run.id)).toEqual([RUN_NULL]);
+  const defaultList = await request(app).get(`${url}/runs/all`).set(bearer('platformOwn'));
+  expect(defaultList.body.data.map((run: { id: string }) => run.id)).toEqual([RUN_A]);
+});
+
 it('refuses every shared connector lifecycle operation for tenant and verified platform identities', async () => {
   const shared = '/api/v1/connectors';
   for (const identity of ['internal', 'a', 'platform', 'platformOwn']) {
@@ -346,7 +354,7 @@ it('authenticates standalone hub tenant routing, duplicate legacy names and reda
   expect((await request(app).put(`${hub}/alpha`).set(bearer('viewer')).send({ enabled: false })).status).toBe(403);
 });
 
-it('atomically merges hub write-only connection and options without erasing omitted secrets', async () => {
+it('atomically merges hub write-only connection and options without erasing omitted or empty-nested secrets', async () => {
   const hub = '/api/v1/hub/connectors/alpha';
   await query('UPDATE connector_configurations SET connection = $1, options = $2 WHERE id = $3', [
     JSON.stringify({ auth: { client_secret: SECRET, account: 'old' }, endpoint: 'original' }),
@@ -356,8 +364,11 @@ it('atomically merges hub write-only connection and options without erasing omit
     connection: { auth: { account: 'new' } }, options: { nested: { region: 'new' } },
   });
   const second = await request(app).put(hub).set(bearer('a')).send({ connection: {}, options: {} });
-  expect([first.status, second.status]).toEqual([200, 200]);
-  expect(JSON.stringify([first.body, second.body])).not.toContain(SECRET);
+  const nestedEmpty = await request(app).put(hub).set(bearer('a')).send({
+    connection: { auth: {} }, options: { nested: {} },
+  });
+  expect([first.status, second.status, nestedEmpty.status]).toEqual([200, 200, 200]);
+  expect(JSON.stringify([first.body, second.body, nestedEmpty.body])).not.toContain(SECRET);
   expect((await query('SELECT connection, options FROM connector_configurations WHERE id = $1', [A])).rows)
     .toEqual([{
       connection: { auth: { client_secret: SECRET, account: 'new' }, endpoint: 'original' },
@@ -428,6 +439,29 @@ it('atomically preserves nested write-only secrets on nonempty partial REST upda
   expect(replaced.status).toBe(200);
   expect((await query('SELECT resource_configs FROM connector_configurations WHERE id = $1', [A])).rows)
     .toEqual([{ resource_configs: { items: { password: 'replacement', batch_size: 30 } } }]);
+});
+
+it('keeps stored secrets when REST and GraphQL send nested empty editors', async () => {
+  const rest = await request(app).put(`${url}/${A}`).set(bearer('a')).send({
+    connection: { auth: {} }, options: { nested: {} }, resource_configs: { items: {} },
+  });
+  expect(rest.status).toBe(200);
+  const resources = await request(app).put(`${url}/${A}/resources`).set(bearer('a')).send({
+    enabled_resources: ['items'], resource_configs: { items: {} },
+  });
+  expect(resources.status).toBe(200);
+  const context = { user: {
+    _userId: 'a', _username: 'alice', _role: 'operator', _type: 'access', _organizationId: ORG_A,
+  } } as any;
+  await connectorResolvers.Mutation.updateConnectorConfiguration(null, { id: A, input: {
+    connection: { auth: {} }, options: { nested: {} }, resourceConfigs: { items: {} },
+  } }, context);
+  expect((await query('SELECT connection, options, resource_configs FROM connector_configurations WHERE id = $1', [A])).rows)
+    .toEqual([{
+      connection: { auth: { token: SECRET } },
+      options: { nested: { secret: SECRET } },
+      resource_configs: { items: { password: SECRET } },
+    }]);
 });
 
 it('keeps nested secrets on a nonempty partial GraphQL configuration update', async () => {

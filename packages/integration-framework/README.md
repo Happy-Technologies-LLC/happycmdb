@@ -2,7 +2,7 @@
 
 Connector registration and execution are mediated by organization-scoped services. A verified user organization (or the separately verified platform-operator legacy path) is required for configuration access and execution. Stored `credential_id` references currently refuse connection tests, validation, and runs before credential lookup because credential ownership cannot yet be proven; inline connection secrets remain write-only.
 
-Schedules hold configuration IDs and organizations, never cached connector instances. The manager reloads the scoped configuration on each run. Shared connector installation, update, verification, uninstall and registry refresh are refused to every REST/GraphQL caller until the separate P-6 platform authority review. Connector code is packaged and placed by deployment operators **outside** this application; no internal installer or installer CLI remains.
+Schedules hold configuration IDs, organizations and cron expressions, never cached connector instances. The hub reconciles enabled, `schedule_enabled=true`, credential-free tenant schedules from the database every 30 seconds after startup, including cross-process API edits; a callback reloads the config and checks the exact schedule before execution. Shared connector installation, update, verification, uninstall and registry refresh are refused to every REST/GraphQL caller until the separate P-6 platform authority review. Connector code is packaged and placed by deployment operators **outside** this application; no internal installer or installer CLI remains.
 
 ## Breaking API removal
 

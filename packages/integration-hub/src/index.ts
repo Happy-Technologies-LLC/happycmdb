@@ -71,6 +71,7 @@ export class IntegrationHubServer {
 
     // Load connector configurations from database
     await integrationManager.loadConnectors();
+    integrationManager.startScheduleReconciliation();
 
     // Start HTTP server
     this.app.listen(this.port, () => {

@@ -23,7 +23,7 @@ const orgA = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const orgB = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
 const config = {
   id: 'config-1', organization_id: orgA, name: 'shared-name', connector_type: 'test',
-  credential_id: null, enabled: true, schedule: '* * * * *', connection: {}, options: {},
+  credential_id: null, enabled: true, schedule_enabled: true, schedule: '* * * * *', connection: {}, options: {},
 };
 
 describe('IntegrationManager ownership and secret boundary', () => {
@@ -57,10 +57,76 @@ describe('IntegrationManager ownership and secret boundary', () => {
     await manager.loadConnectors();
     expect(query.mock.calls[0][0]).toContain('organization_id IS NOT NULL');
     expect(query.mock.calls[0][0]).toContain('credential_id IS NULL');
+    expect(query.mock.calls[0][0]).toContain('schedule_enabled = true');
     await manager.registerConnector({ ...manager.mapRowToConfig(config), organizationId: null });
     await manager.registerConnector({ ...manager.mapRowToConfig(config), credential_id: 'credential-1' });
     expect(cron.schedule).toHaveBeenCalledTimes(1);
     expect((cron.schedule as jest.Mock).mock.results[0].value.stop).toHaveBeenCalledTimes(1);
+  });
+
+  it('never registers disabled schedules even when the connector itself is enabled', async () => {
+    query.mockResolvedValue({ rows: [{ ...config, schedule_enabled: false }] });
+    await manager.loadConnectors();
+    await manager.registerConnector(manager.mapRowToConfig({ ...config, schedule_enabled: false }));
+    expect(cron.schedule).not.toHaveBeenCalled();
+  });
+
+  it('reconciles cross-process creates, edits, disables, credentials and deletion', async () => {
+    let rows: typeof config[] = [];
+    query.mockImplementation(async () => ({ rows }));
+    await manager.loadConnectors();
+    expect(cron.schedule).not.toHaveBeenCalled();
+    rows = [config];
+    await manager.loadConnectors();
+    expect(cron.schedule).toHaveBeenCalledWith(config.schedule, expect.any(Function));
+    await manager.loadConnectors();
+    expect(cron.schedule).toHaveBeenCalledTimes(1);
+    rows = [{ ...config, schedule: '*/2 * * * *' }];
+    await manager.loadConnectors();
+    expect((cron.schedule as jest.Mock).mock.results[0].value.stop).toHaveBeenCalledTimes(1);
+    expect(cron.schedule).toHaveBeenCalledTimes(2);
+    rows = [{ ...config, schedule_enabled: false }];
+    await manager.loadConnectors();
+    expect((cron.schedule as jest.Mock).mock.results[1].value.stop).toHaveBeenCalledTimes(1);
+    rows = [{ ...config, credential_id: 'credential-1' }];
+    await manager.loadConnectors();
+    expect(cron.schedule).toHaveBeenCalledTimes(2);
+    rows = [config];
+    await manager.loadConnectors();
+    expect(cron.schedule).toHaveBeenCalledTimes(3);
+    rows = [];
+    await manager.loadConnectors();
+    expect((cron.schedule as jest.Mock).mock.results[2].value.stop).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a stale callback after schedule disable or expression change before creating a connector', async () => {
+    await manager.registerConnector(manager.mapRowToConfig(config));
+    query.mockResolvedValue({ rows: [{ ...config, schedule_enabled: false }] });
+    await cronFire();
+    expect(run).not.toHaveBeenCalled();
+    query.mockResolvedValue({ rows: [{ ...config, schedule: '*/2 * * * *' }] });
+    await cronFire();
+    expect(run).not.toHaveBeenCalled();
+    expect(getConnectorRegistry().createConnector).not.toHaveBeenCalled();
+  });
+
+  it('detects external writes during a running hub poll without a restart', async () => {
+    jest.useFakeTimers();
+    try {
+      let rows: typeof config[] = [];
+      query.mockImplementation(async () => ({ rows }));
+      await manager.loadConnectors();
+      manager.startScheduleReconciliation();
+      rows = [config];
+      await jest.advanceTimersByTimeAsync(30_000);
+      expect(cron.schedule).toHaveBeenCalledTimes(1);
+      rows = [{ ...config, enabled: false }];
+      await jest.advanceTimersByTimeAsync(30_000);
+      expect((cron.schedule as jest.Mock).mock.results[0].value.stop).toHaveBeenCalledTimes(1);
+    } finally {
+      jest.clearAllTimers();
+      jest.useRealTimers();
+    }
   });
 
   it('rejects foreign or deleted config before running or writing history', async () => {

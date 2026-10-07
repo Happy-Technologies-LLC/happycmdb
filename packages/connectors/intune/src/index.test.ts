@@ -10,6 +10,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import axios from 'axios';
 import IntuneConnector from './index';
 import { ConnectorConfiguration } from '@cmdb/integration-framework';
+import { logger } from '@cmdb/common';
 
 // Mock axios
 vi.mock('axios');
@@ -803,6 +804,74 @@ describe('IntuneConnector - Multi-Resource Tests', () => {
 
         const transformedCI = await connector.transformResource('applications', appData);
         expect(transformedCI.attributes.platform).toBe(testCase.expectedPlatform);
+      }
+    });
+  });
+
+  describe('Sensitive failure output', () => {
+    it('does not expose OAuth error payloads or request headers', async () => {
+      const secret = 'INTUNE_AUTH_SENTINEL';
+      const log = vi.spyOn(logger, 'error').mockImplementation(() => {});
+      mockAuthInstance.post.mockRejectedValueOnce({
+        message: secret,
+        response: { status: 401, data: { nested: { token: secret } } },
+        config: { headers: { Authorization: secret } },
+      });
+
+      try {
+        await expect(connector.initialize()).rejects.toMatchObject({
+          message: 'OAuth authentication failed',
+        });
+        expect(JSON.stringify(log.mock.calls)).not.toContain(secret);
+        expect(JSON.stringify(log.mock.calls)).toContain('Intune access token');
+      } finally {
+        log.mockRestore();
+      }
+    });
+
+    it('does not expose a configured secret, next-page URL or Axios extraction failure', async () => {
+      const secret = 'INTUNE_EXTRACT_SENTINEL';
+      const log = vi.spyOn(logger, 'error').mockImplementation(() => {});
+      const info = vi.spyOn(logger, 'info').mockImplementation(() => {});
+      mockGraphInstance.get.mockRejectedValueOnce({
+        message: secret,
+        response: { data: { nested: { token: secret } } },
+        config: { headers: { Authorization: secret }, url: `https://${secret}/page` },
+      });
+
+      try {
+        await expect(connector.extractResource('devices', { secret })).rejects.toMatchObject({
+          message: 'Connector extraction failed',
+        });
+        expect(JSON.stringify([log.mock.calls, info.mock.calls])).not.toContain(secret);
+        expect(JSON.stringify(log.mock.calls)).toContain('Intune resource extraction failed');
+      } finally {
+        log.mockRestore();
+        info.mockRestore();
+      }
+    });
+  });
+
+  describe('Sensitive relationship failures', () => {
+    it('keeps device identifiers and provider error bodies out of warnings', async () => {
+      const secret = 'INTUNE_RELATIONSHIP_SENTINEL';
+      const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+      mockGraphInstance.get
+        .mockResolvedValueOnce({ data: { value: [{ id: secret }] } })
+        .mockRejectedValueOnce({
+          message: secret,
+          response: { data: { token: secret } },
+          config: { headers: { Authorization: secret } },
+        })
+        .mockResolvedValueOnce({ data: { value: [] } })
+        .mockResolvedValueOnce({ data: { value: [] } });
+
+      try {
+        await connector.extractRelationships();
+        expect(JSON.stringify(warn.mock.calls)).toContain('Failed to get detected apps for device');
+        expect(JSON.stringify(warn.mock.calls)).not.toContain(secret);
+      } finally {
+        warn.mockRestore();
       }
     });
   });

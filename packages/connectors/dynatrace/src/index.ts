@@ -63,10 +63,7 @@ export default class DynatraceConnector extends BaseIntegrationConnector {
   }
 
   async initialize(): Promise<void> {
-    logger.info('Initializing Dynatrace connector', {
-      environment: this.environmentUrl,
-      enabled_resources: this.getEnabledResources(),
-    });
+    logger.info('Initializing Dynatrace connector');
     this.isInitialized = true;
   }
 
@@ -85,14 +82,7 @@ export default class DynatraceConnector extends BaseIntegrationConnector {
         },
       };
     } catch (error: any) {
-      return {
-        success: false,
-        message: `Connection failed: ${error.message}`,
-        details: {
-          environment: this.environmentUrl,
-          error: error.response?.data || error.message,
-        },
-      };
+      return { success: false, message: 'Connection failed' };
     }
   }
 
@@ -125,11 +115,7 @@ export default class DynatraceConnector extends BaseIntegrationConnector {
     const extractedData: ExtractedData[] = [];
     let nextPageKey: string | undefined = undefined;
 
-    logger.info('Starting Dynatrace resource extraction', {
-      resource: resourceId,
-      entity_type: entityTypeSelector,
-      page_size: pageSize
-    });
+    logger.info('Starting Dynatrace resource extraction');
 
     do {
       try {
@@ -172,12 +158,8 @@ export default class DynatraceConnector extends BaseIntegrationConnector {
         nextPageKey = response.data.nextPageKey;
 
       } catch (error) {
-        logger.error('Dynatrace resource extraction failed', {
-          resource: resourceId,
-          entity_type: entityTypeSelector,
-          error
-        });
-        throw error;
+        logger.error('Dynatrace resource extraction failed');
+        throw new Error('Connector extraction failed');
       }
     } while (nextPageKey);
 
@@ -227,7 +209,7 @@ export default class DynatraceConnector extends BaseIntegrationConnector {
       });
 
     } catch (error) {
-      logger.error('Dynatrace relationship extraction failed', { error });
+      logger.error('Dynatrace relationship extraction failed');
       // Don't throw - relationships are optional
     }
 

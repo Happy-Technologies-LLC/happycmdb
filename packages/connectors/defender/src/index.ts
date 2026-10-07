@@ -118,9 +118,7 @@ export default class DefenderConnector extends BaseIntegrationConnector {
   }
 
   async initialize(): Promise<void> {
-    logger.info('Initializing Microsoft Defender for Endpoint connector', {
-      enabled_resources: this.getEnabledResources(),
-    });
+    logger.info('Initializing Microsoft Defender for Endpoint connector');
 
     // Test authentication by getting a token
     await this.getAccessToken();
@@ -147,14 +145,12 @@ export default class DefenderConnector extends BaseIntegrationConnector {
         ? new Date(tokenResponse.expiresOnTimestamp)
         : new Date(Date.now() + 3600000); // Default 1 hour
 
-      logger.debug('Azure AD access token obtained', {
-        expires_at: this.tokenExpiry,
-      });
+      logger.debug('Azure AD access token obtained');
 
       return this.accessToken;
     } catch (error: any) {
-      logger.error('Failed to obtain Azure AD access token', { error });
-      throw new Error(`Azure AD authentication failed: ${error.message}`);
+      logger.error('Failed to obtain Azure AD access token');
+      throw new Error('Azure AD authentication failed');
     }
   }
 
@@ -175,14 +171,7 @@ export default class DefenderConnector extends BaseIntegrationConnector {
         },
       };
     } catch (error: any) {
-      return {
-        success: false,
-        message: `Connection failed: ${error.message}`,
-        details: {
-          error: error.response?.data || error.message,
-          status_code: error.response?.status,
-        },
-      };
+      return { success: false, message: 'Connection failed' };
     }
   }
 
@@ -198,10 +187,7 @@ export default class DefenderConnector extends BaseIntegrationConnector {
       throw new Error(`Unknown resource: ${resourceId}`);
     }
 
-    logger.info('Starting Defender resource extraction', {
-      resource: resourceId,
-      config: resourceConfig,
-    });
+    logger.info('Starting Defender resource extraction');
 
     switch (resourceId) {
       case 'machines':
@@ -283,8 +269,8 @@ export default class DefenderConnector extends BaseIntegrationConnector {
           total_extracted: extractedData.length,
         });
       } catch (error) {
-        logger.error('Defender machines extraction failed', { error });
-        throw error;
+        logger.error('Defender machines extraction failed');
+        throw new Error('Connector extraction failed');
       }
     } while (skipToken);
 
@@ -362,8 +348,8 @@ export default class DefenderConnector extends BaseIntegrationConnector {
           total_extracted: extractedData.length,
         });
       } catch (error) {
-        logger.error('Defender alerts extraction failed', { error });
-        throw error;
+        logger.error('Defender alerts extraction failed');
+        throw new Error('Connector extraction failed');
       }
     } while (skipToken);
 
@@ -435,8 +421,8 @@ export default class DefenderConnector extends BaseIntegrationConnector {
           total_extracted: extractedData.length,
         });
       } catch (error) {
-        logger.error('Defender vulnerabilities extraction failed', { error });
-        throw error;
+        logger.error('Defender vulnerabilities extraction failed');
+        throw new Error('Connector extraction failed');
       }
     } while (skipToken);
 
@@ -487,8 +473,8 @@ export default class DefenderConnector extends BaseIntegrationConnector {
           total_extracted: extractedData.length,
         });
       } catch (error) {
-        logger.error('Defender software extraction failed', { error });
-        throw error;
+        logger.error('Defender software extraction failed');
+        throw new Error('Connector extraction failed');
       }
     } while (skipToken);
 
@@ -547,10 +533,7 @@ export default class DefenderConnector extends BaseIntegrationConnector {
             });
           }
         } catch (error) {
-          logger.warn('Failed to get machines for vulnerability', {
-            vulnerability_id: vuln.id,
-            error,
-          });
+          logger.warn('Failed to get machines for vulnerability');
         }
       }
 
@@ -576,10 +559,7 @@ export default class DefenderConnector extends BaseIntegrationConnector {
             });
           }
         } catch (error) {
-          logger.warn('Failed to get machines for software', {
-            software_id: sw.id,
-            error,
-          });
+          logger.warn('Failed to get machines for software');
         }
       }
 
@@ -587,7 +567,7 @@ export default class DefenderConnector extends BaseIntegrationConnector {
         count: relationships.length,
       });
     } catch (error) {
-      logger.error('Defender relationship extraction failed', { error });
+      logger.error('Defender relationship extraction failed');
       // Don't throw - relationships are optional
     }
 

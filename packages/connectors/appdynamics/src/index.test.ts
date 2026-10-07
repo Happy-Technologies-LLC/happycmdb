@@ -127,8 +127,8 @@ describe('AppDynamicsConnector', () => {
 
       const result = await connector.testConnection();
 
-      expect(result.success).toBe(false);
-      expect(result.details?.error).toEqual({ error: 'Invalid credentials' });
+      expect(result.message).toBe('Connection failed');
+      expect(result.details).toBeUndefined();
     });
   });
 

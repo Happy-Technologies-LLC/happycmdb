@@ -29,11 +29,7 @@ export async function extractIssues(
                       config.connection['issues']?.status ||
                       ['OPEN', 'IN_PROGRESS'];
 
-  logger.info('Extracting Wiz security issues', {
-    severityFilter,
-    statusFilter,
-    maxResults,
-  });
+  logger.info('Extracting Wiz security issues');
 
   const query = `
     query GetIssues($first: Int!, $after: String, $filters: IssueFilters) {
@@ -94,12 +90,7 @@ export async function extractIssues(
         },
       });
 
-      if (response.data.errors) {
-        logger.error('Wiz GraphQL query failed', {
-          errors: response.data.errors,
-        });
-        break;
-      }
+      if (response.data.errors) { throw new Error('Wiz GraphQL query failed'); }
 
       const nodes = response.data.data?.issues?.nodes || [];
       const pageInfo = response.data.data?.issues?.pageInfo;
@@ -126,8 +117,8 @@ export async function extractIssues(
       }
 
     } catch (error) {
-      logger.error('Wiz security issue extraction failed', { error });
-      throw error;
+      logger.error('Wiz security issue extraction failed');
+      throw new Error('Connector extraction failed');
     }
   }
 

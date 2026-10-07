@@ -95,11 +95,7 @@ export default class InfobloxConnector extends BaseIntegrationConnector {
   }
 
   async initialize(): Promise<void> {
-    logger.info('Initializing Infoblox connector', {
-      grid_master: this.gridMasterUrl,
-      wapi_version: this.wapiVersion,
-      enabled_resources: this.getEnabledResources(),
-    });
+    logger.info('Initializing Infoblox connector');
     this.isInitialized = true;
   }
 
@@ -121,14 +117,7 @@ export default class InfobloxConnector extends BaseIntegrationConnector {
         },
       };
     } catch (error: any) {
-      return {
-        success: false,
-        message: `Connection failed: ${error.message}`,
-        details: {
-          grid_master: this.gridMasterUrl,
-          error: error.response?.data || error.message,
-        },
-      };
+      return { success: false, message: 'Connection failed' };
     }
   }
 
@@ -146,11 +135,7 @@ export default class InfobloxConnector extends BaseIntegrationConnector {
 
     const batchSize = resource.extraction?.batch_size || 1000;
 
-    logger.info('Starting Infoblox resource extraction', {
-      resource: resourceId,
-      batch_size: batchSize,
-      config: resourceConfig,
-    });
+    logger.info('Starting Infoblox resource extraction');
 
     try {
       switch (resourceId) {
@@ -166,11 +151,8 @@ export default class InfobloxConnector extends BaseIntegrationConnector {
           throw new Error(`Unsupported resource: ${resourceId}`);
       }
     } catch (error) {
-      logger.error('Infoblox resource extraction failed', {
-        resource: resourceId,
-        error,
-      });
-      throw error;
+      logger.error('Infoblox resource extraction failed');
+      throw new Error('Connector extraction failed');
     }
   }
 
@@ -203,10 +185,7 @@ export default class InfobloxConnector extends BaseIntegrationConnector {
       });
     }
 
-    logger.info('Extracted networks from Infoblox', {
-      count: extractedData.length,
-      network_view: networkView,
-    });
+    logger.info('Extracted networks from Infoblox');
 
     return extractedData;
   }
@@ -248,10 +227,7 @@ export default class InfobloxConnector extends BaseIntegrationConnector {
       });
     }
 
-    logger.info('Extracted host records from Infoblox', {
-      count: extractedData.length,
-      zone_filter: zoneFilter,
-    });
+    logger.info('Extracted host records from Infoblox');
 
     return extractedData;
   }
@@ -315,11 +291,7 @@ export default class InfobloxConnector extends BaseIntegrationConnector {
       }
     }
 
-    logger.info('Extracted DNS records from Infoblox', {
-      count: extractedData.length,
-      record_types: recordTypes,
-      zone_filter: zoneFilter,
-    });
+    logger.info('Extracted DNS records from Infoblox');
 
     return extractedData;
   }
@@ -352,10 +324,7 @@ export default class InfobloxConnector extends BaseIntegrationConnector {
       });
     }
 
-    logger.info('Extracted DHCP ranges from Infoblox', {
-      count: extractedData.length,
-      network_view: networkView,
-    });
+    logger.info('Extracted DHCP ranges from Infoblox');
 
     return extractedData;
   }
@@ -417,7 +386,7 @@ export default class InfobloxConnector extends BaseIntegrationConnector {
       });
 
     } catch (error) {
-      logger.error('Infoblox relationship extraction failed', { error });
+      logger.error('Infoblox relationship extraction failed');
       // Don't throw - relationships are optional
     }
 

@@ -171,10 +171,7 @@ export default class TenableConnector extends BaseIntegrationConnector {
   }
 
   async initialize(): Promise<void> {
-    logger.info('Initializing Tenable.io connector', {
-      api_url: this.apiUrl,
-      enabled_resources: this.getEnabledResources(),
-    });
+    logger.info('Initializing Tenable.io connector');
     this.isInitialized = true;
   }
 
@@ -194,14 +191,7 @@ export default class TenableConnector extends BaseIntegrationConnector {
         },
       };
     } catch (error: any) {
-      return {
-        success: false,
-        message: `Connection failed: ${error.message}`,
-        details: {
-          api_url: this.apiUrl,
-          error: error.response?.data || error.message,
-        },
-      };
+      return { success: false, message: 'Connection failed' };
     }
   }
 
@@ -217,10 +207,7 @@ export default class TenableConnector extends BaseIntegrationConnector {
       throw new Error(`Unknown resource: ${resourceId}`);
     }
 
-    logger.info('Starting Tenable resource extraction', {
-      resource: resourceId,
-      config: resourceConfig,
-    });
+    logger.info('Starting Tenable resource extraction');
 
     switch (resourceId) {
       case 'devices':
@@ -263,7 +250,7 @@ export default class TenableConnector extends BaseIntegrationConnector {
       filters['operating_system'] = osFilter;
     }
 
-    logger.info('Extracting Tenable devices', { filters, batchSize });
+    logger.info('Extracting Tenable devices');
 
     while (hasMore) {
       try {
@@ -295,8 +282,8 @@ export default class TenableConnector extends BaseIntegrationConnector {
         offset += batchSize;
 
       } catch (error) {
-        logger.error('Tenable device extraction failed', { offset, error });
-        throw error;
+        logger.error('Tenable device extraction failed');
+        throw new Error('Connector extraction failed');
       }
     }
 
@@ -332,13 +319,7 @@ export default class TenableConnector extends BaseIntegrationConnector {
 
     const severityValues = severityFilter.map((s: string) => severityMap[s]);
 
-    logger.info('Extracting Tenable vulnerabilities', {
-      severities: severityFilter,
-      states: stateFilter,
-      daysBack,
-      includeAcceptedRisk,
-      batchSize
-    });
+    logger.info('Extracting Tenable vulnerabilities');
 
     while (hasMore) {
       try {
@@ -386,8 +367,8 @@ export default class TenableConnector extends BaseIntegrationConnector {
         offset += batchSize;
 
       } catch (error) {
-        logger.error('Tenable vulnerability extraction failed', { offset, error });
-        throw error;
+        logger.error('Tenable vulnerability extraction failed');
+        throw new Error('Connector extraction failed');
       }
     }
 
@@ -410,7 +391,7 @@ export default class TenableConnector extends BaseIntegrationConnector {
     const tagFilter = resourceConfig?.['tag_filter'] || [];
     const exposureScoreMin = resourceConfig?.['exposure_score_min'] || 0;
 
-    logger.info('Extracting Tenable assets', { tagFilter, exposureScoreMin, batchSize });
+    logger.info('Extracting Tenable assets');
 
     while (hasMore) {
       try {
@@ -452,8 +433,8 @@ export default class TenableConnector extends BaseIntegrationConnector {
         offset += batchSize;
 
       } catch (error) {
-        logger.error('Tenable asset extraction failed', { offset, error });
-        throw error;
+        logger.error('Tenable asset extraction failed');
+        throw new Error('Connector extraction failed');
       }
     }
 
@@ -473,7 +454,7 @@ export default class TenableConnector extends BaseIntegrationConnector {
     const pluginFamilies = resourceConfig?.['plugin_families'] || [];
     const severityFilter = resourceConfig?.['severity_filter'] || ['critical', 'high', 'medium'];
 
-    logger.info('Extracting Tenable plugins', { pluginFamilies, severityFilter });
+    logger.info('Extracting Tenable plugins');
 
     try {
       // First, get list of plugin families if not specified
@@ -501,20 +482,16 @@ export default class TenableConnector extends BaseIntegrationConnector {
             });
           }
 
-          logger.info('Extracted plugins from family', {
-            family,
-            count: plugins.length,
-            total_extracted: extractedData.length,
-          });
+          logger.info('Extracted plugins from family');
 
         } catch (error) {
-          logger.warn('Failed to extract plugins from family', { family, error });
+          logger.warn('Failed to extract plugins from family');
         }
       }
 
     } catch (error) {
-      logger.error('Tenable plugin extraction failed', { error });
-      throw error;
+      logger.error('Tenable plugin extraction failed');
+      throw new Error('Connector extraction failed');
     }
 
     logger.info('Tenable plugin extraction completed', {
@@ -533,7 +510,7 @@ export default class TenableConnector extends BaseIntegrationConnector {
       const families = response.data?.families || [];
       return families.map((f: any) => f.name);
     } catch (error) {
-      logger.error('Failed to get plugin families', { error });
+      logger.error('Failed to get plugin families');
       return [];
     }
   }
@@ -550,7 +527,7 @@ export default class TenableConnector extends BaseIntegrationConnector {
       logger.info('Tenable relationships will be inferred during transformation');
 
     } catch (error) {
-      logger.error('Tenable relationship extraction failed', { error });
+      logger.error('Tenable relationship extraction failed');
     }
 
     return relationships;

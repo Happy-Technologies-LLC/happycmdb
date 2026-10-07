@@ -69,10 +69,7 @@ export default class WizConnector extends BaseIntegrationConnector {
   }
 
   async initialize(): Promise<void> {
-    logger.info('Initializing Wiz Cloud Security connector', {
-      api_url: this.apiUrl,
-      enabled_resources: this.getEnabledResources(),
-    });
+    logger.info('Initializing Wiz Cloud Security connector');
 
     await this.authManager.authenticate();
     this.isInitialized = true;
@@ -93,14 +90,7 @@ export default class WizConnector extends BaseIntegrationConnector {
       });
 
       if (response.data.errors) {
-        return {
-          success: false,
-          message: `Connection test failed: ${response.data.errors[0]?.message}`,
-          details: {
-            api_url: this.apiUrl,
-            errors: response.data.errors,
-          },
-        };
+        return { success: false, message: 'Connection test failed' };
       }
 
       return {
@@ -113,14 +103,7 @@ export default class WizConnector extends BaseIntegrationConnector {
         },
       };
     } catch (error: any) {
-      return {
-        success: false,
-        message: `Connection failed: ${error.message}`,
-        details: {
-          api_url: this.apiUrl,
-          error: error.response?.data || error.message,
-        },
-      };
+      return { success: false, message: 'Connection failed' };
     }
   }
 
@@ -133,10 +116,7 @@ export default class WizConnector extends BaseIntegrationConnector {
       throw new Error(`Unknown resource: ${resourceId}`);
     }
 
-    logger.info('Starting Wiz resource extraction', {
-      resource: resourceId,
-      config: resourceConfig,
-    });
+    logger.info('Starting Wiz resource extraction');
 
     switch (resourceId) {
       case 'cloud_resources':
@@ -158,7 +138,7 @@ export default class WizConnector extends BaseIntegrationConnector {
     try {
       logger.info('Wiz relationships will be inferred during transformation');
     } catch (error) {
-      logger.error('Wiz relationship extraction failed', { error });
+      logger.error('Wiz relationship extraction failed');
     }
 
     return relationships;

@@ -65,12 +65,7 @@ export default class SCCMConnector extends BaseIntegrationConnector {
   }
 
   async initialize(): Promise<void> {
-    logger.info('Initializing SCCM connector', {
-      server: this.connectionConfig.server,
-      database: this.connectionConfig.database,
-      site_code: this.siteCode,
-      enabled_resources: this.getEnabledResources(),
-    });
+    logger.info('Initializing SCCM connector');
 
     // Create connection pool
     this.connectionPool = new sql.ConnectionPool(this.connectionConfig);
@@ -105,15 +100,7 @@ export default class SCCMConnector extends BaseIntegrationConnector {
         },
       };
     } catch (error: any) {
-      return {
-        success: false,
-        message: `Connection failed: ${error.message}`,
-        details: {
-          server: this.connectionConfig.server,
-          database: this.connectionConfig.database,
-          error: error.message,
-        },
-      };
+      return { success: false, message: 'Connection failed' };
     }
   }
 
@@ -129,17 +116,14 @@ export default class SCCMConnector extends BaseIntegrationConnector {
       throw new Error(`Unknown resource: ${resourceId}`);
     }
 
-    const pool = await this.getConnectionPool();
     const batchSize = resource.extraction?.batch_size || 1000;
     const extractedData: ExtractedData[] = [];
 
-    logger.info('Starting SCCM resource extraction', {
-      resource: resourceId,
-      batch_size: batchSize,
-      config: resourceConfig,
-    });
+    logger.info('Starting SCCM resource extraction');
 
     try {
+      const pool = await this.getConnectionPool();
+
       // Route to appropriate extraction method
       switch (resourceId) {
         case 'devices':
@@ -154,11 +138,8 @@ export default class SCCMConnector extends BaseIntegrationConnector {
           throw new Error(`Unsupported resource: ${resourceId}`);
       }
     } catch (error) {
-      logger.error('SCCM resource extraction failed', {
-        resource: resourceId,
-        error,
-      });
-      throw error;
+      logger.error('SCCM resource extraction failed');
+      throw new Error('Connector extraction failed');
     }
   }
 
@@ -650,7 +631,7 @@ export default class SCCMConnector extends BaseIntegrationConnector {
       }
 
     } catch (error) {
-      logger.error('SCCM relationship extraction failed', { error });
+      logger.error('SCCM relationship extraction failed');
       // Don't throw - relationships are optional
     }
 

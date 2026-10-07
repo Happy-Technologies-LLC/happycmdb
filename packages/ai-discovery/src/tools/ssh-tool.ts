@@ -47,7 +47,7 @@ export const sshExecuteTool: DiscoveryTool = {
     // 2. Support multiple auth methods (password, private key, etc.)
     // 3. Have proper credential management
 
-    logger.info(`Executing SSH command`, { host, port, username, command });
+    logger.info('Executing SSH command');
 
     return new Promise((resolve, reject) => {
       const conn = new SSHClient();
@@ -68,7 +68,7 @@ export const sshExecuteTool: DiscoveryTool = {
             if (err) {
               clearTimeout(timeout);
               conn.end();
-              reject(new Error(`SSH exec error: ${err.message}`));
+              reject(new Error('SSH exec error'));
               return;
             }
 
@@ -95,10 +95,10 @@ export const sshExecuteTool: DiscoveryTool = {
               });
           });
         })
-        .on('error', (err: Error) => {
+        .on('error', () => {
           clearTimeout(timeout);
-          logger.error('SSH connection error', { host, error: err.message });
-          reject(new Error(`SSH connection failed: ${err.message}`));
+          logger.error('SSH connection error');
+          reject(new Error('SSH connection failed'));
         })
         .connect({
           host: destination,

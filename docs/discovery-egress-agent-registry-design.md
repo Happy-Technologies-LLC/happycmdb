@@ -16,6 +16,8 @@ Discovery protocol and AI-tool entrypoints (discovery-engine nmap/SSH/AD, ai-dis
 
 The shared retry utility treats `DISCOVERY_TARGET_REFUSED` as terminal: an unsafe DNS answer cannot be erased by a later public answer. Batch workers propagate that refusal instead of returning partial success. Empty SSH-target warnings include only job ID and count, never credential-bearing configuration.
 
+AI SSH-tool diagnostics never log command text or untrusted SSH error messages. HTTP-probe logs contain only a validated method label and status, not the requested URL/path/query or raw error text; returned failure messages likewise omit those values. Secret-bearing command/URL strings can still appear in tool inputs and HTTP probe results, so consumers must not log complete requests or results.
+
 ## Pattern operator cutover
 
 The compiler now stores strict `detection-v1` and `discovery-v1` JSON plans in the existing `detection_code` and `discovery_code` columns; no stored JavaScript is evaluated. Plans retain port/header/endpoint/service-name scoring and fixed metadata/HTTP endpoint discovery. Endpoint paths are restricted to safe relative paths and HTTP requests still use the pinned discovery transport. Previously stored JavaScript patterns are **not** converted automatically: validation rejects them, and both matching and direct execution surface `UNSUPPORTED_PATTERN_PLAN` without running them. Hybrid discovery returns this explicit error rather than silently falling back to AI. Operators must deactivate old executable patterns and recompile from reviewed sessions into declarative plans before reactivation. Legacy pattern availability is reduced until then; manual fallback is an explicitly authorized new discovery request, not an implicit bypass.

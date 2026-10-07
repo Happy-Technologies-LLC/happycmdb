@@ -51,6 +51,7 @@ export const httpProbeTool: DiscoveryTool = {
       path = '/',
       method = 'GET',
     } = params;
+    const methodLabel = ['GET', 'HEAD', 'POST', 'OPTIONS'].includes(method) ? method : 'OTHER';
 
     // Determine default port
     const defaultPort = protocol === 'https' ? 443 : 80;
@@ -58,7 +59,7 @@ export const httpProbeTool: DiscoveryTool = {
 
     const url = `${protocol}://${host}:${targetPort}${path}`;
 
-    logger.info('Probing HTTP endpoint', { method });
+    logger.info('Probing HTTP endpoint', { method: methodLabel });
 
     try {
       const response = await safeDiscoveryHttp(url, {
@@ -89,11 +90,7 @@ export const httpProbeTool: DiscoveryTool = {
         responseTime: (response.config as any)?.responseTime || null,
       };
 
-      logger.info(`HTTP probe successful`, {
-        url,
-        status: result.status,
-        contentType: result.contentType,
-      });
+      logger.info('HTTP probe successful', { method: methodLabel, status: result.status });
 
       return result;
     } catch (error) {
@@ -107,18 +104,16 @@ export const httpProbeTool: DiscoveryTool = {
           status: axiosError.response.status,
           statusText: axiosError.response.statusText,
           headers: axiosError.response.headers,
-          error: axiosError.message,
+          error: 'HTTP response error',
         };
       } else if (axiosError.request) {
         // Request made but no response
-        logger.warn('HTTP probe failed - no response', { url, error: axiosError.message });
-        throw new Error(`No response from ${url}: ${axiosError.message}`);
+        logger.warn('HTTP probe failed - no response', { method: methodLabel });
+        throw new Error('No HTTP response');
       } else {
-        // Request setup error
-        logger.error('HTTP probe failed', { url, error });
-        throw new Error(
-          `HTTP probe failed: ${error instanceof Error ? error.message : String(error)}`
-        );
+        // Setup errors may include the entire URL in their message.
+        logger.error('HTTP probe failed', { method: methodLabel });
+        throw new Error('HTTP probe failed');
       }
     }
   },

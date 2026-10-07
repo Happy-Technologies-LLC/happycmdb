@@ -50,6 +50,13 @@ export class PatternMatcher implements IPatternMatcher {
     if (this.patterns.length === 0) {
       await this.loadPatterns();
     }
+    // Validate both bodies before cached null/hit can bypass a refusal. Reuse
+    // parsed detection plans on a cache miss instead of parsing them twice.
+    const detectionPlans = this.patterns.map(pattern => {
+      const plan = parseDetectionPlan(pattern.detectionCode);
+      parseDiscoveryPlan(pattern.discoveryCode);
+      return plan;
+    });
 
     // Check cache first
     const cacheKey = this.createCacheKey(scanResult);
@@ -72,9 +79,9 @@ export class PatternMatcher implements IPatternMatcher {
       patternCount: this.patterns.length,
     });
 
-    for (const pattern of this.patterns) {
-      // Legacy code fails explicitly; never cache it as a negative match.
-      const result = this.executeDetection(pattern, scanResult);
+    for (let index = 0; index < this.patterns.length; index++) {
+      const pattern = this.patterns[index]!;
+      const result = detectWithPlan(detectionPlans[index]!, scanResult);
       if (result.matches && result.confidence > bestConfidence) {
         bestConfidence = result.confidence;
         bestMatch = {
@@ -115,13 +122,6 @@ export class PatternMatcher implements IPatternMatcher {
     return bestMatch;
   }
 
-  /** Detection is fixed interpreter logic over validated JSON data. */
-  private executeDetection(
-    pattern: DiscoveryPattern,
-    scanResult: any
-  ): { matches: boolean; confidence: number; indicators?: string[] } {
-    return detectWithPlan(parseDetectionPlan(pattern.detectionCode), scanResult);
-  }
 
   /**
    * Execute matched pattern for discovery

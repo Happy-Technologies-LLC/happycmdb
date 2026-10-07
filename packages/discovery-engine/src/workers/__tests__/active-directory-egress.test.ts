@@ -9,7 +9,6 @@ import { ActiveDirectoryDiscoveryWorker } from '../active-directory-discovery.wo
 
 jest.mock('dns/promises', () => ({ lookup: jest.fn() }));
 jest.mock('ldapjs', () => ({ createClient: jest.fn() }));
-jest.mock('@cmdb/common', () => ({ ...jest.requireActual('@cmdb/common'), withRetry: (operation: () => Promise<unknown>) => operation() }));
 const mockedLookup = jest.mocked(lookup);
 const credential: UnifiedCredential = {
   id: 'test', name: 'test', protocol: 'ldap', scope: 'network',
@@ -64,4 +63,15 @@ it('propagates aggregate policy refusal and never logs credentials', async () =>
   };
   await expect(worker.discoverAll('job', config)).rejects.toThrow(new Error(DISCOVERY_TARGET_REFUSED));
   expect(JSON.stringify(info.mock.calls)).not.toContain('SENSITIVE-TEST-VALUE');
+});
+
+it('never retries denied LDAP DNS rebind after DNS becomes public again', async () => {
+  const publicAnswer = [{ address: '8.8.8.8', family: 4 }] as never;
+  mockedLookup.mockResolvedValueOnce(publicAnswer)
+    .mockResolvedValueOnce([{ address: '10.0.0.1', family: 4 }] as never)
+    .mockResolvedValue(publicAnswer);
+  const worker = new ActiveDirectoryDiscoveryWorker('public.example', 'DC=example,DC=com', credential);
+  await expect(worker.discoverComputers('job')).rejects.toThrow(DISCOVERY_TARGET_REFUSED);
+  expect(mockedLookup).toHaveBeenCalledTimes(2);
+  expect(ldap.createClient).not.toHaveBeenCalled();
 });

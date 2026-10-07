@@ -241,7 +241,7 @@ export class SSHDiscoveryWorker {
     }
 
     if (!targets || targets.length === 0) {
-      logger.warn('No SSH targets provided in config', { config });
+      logger.warn('No SSH targets provided in config', { jobId, targetCount: 0 });
       return [];
     }
 

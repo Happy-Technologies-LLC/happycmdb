@@ -35,6 +35,7 @@ const context = { targetHost: 'public.example', targetPort: 443,
 beforeEach(() => {
   jest.clearAllMocks();
   (getRedisClient as jest.Mock).mockReturnValue(redis);
+  redis.get.mockReset().mockResolvedValue(null);
   (lookup as jest.Mock).mockResolvedValue([{ address: '8.8.8.8', family: 4 }]);
   (safeDiscoveryHttp as jest.Mock).mockResolvedValue({ status: 200, data: { healthy: true } });
 });
@@ -55,6 +56,31 @@ it('compiles data-only plans and interprets detection and HTTP discovery', async
     metadata: { version: '1.2', status: { healthy: true } } }]);
   expect(safeDiscoveryHttp).toHaveBeenCalledWith('https://public.example:443/status',
     expect.objectContaining({ method: 'GET' }));
+});
+
+it('compiles and executes safe dotted endpoint paths without changing their target', async () => {
+  const analyzer = { analyzeSession: jest.fn().mockResolvedValue({
+    candidate: { ...candidate, commonElements: { ...candidate.commonElements,
+      endpoints: ['/health.json', '/.well-known/status'] } },
+  }) };
+  const compiler = new PatternCompiler(analyzer as unknown as PatternAnalyzer);
+  const sourceSession = { ...session, scanResult: {
+    services: [{ port: 443 }], http: { endpoints: ['/health.json', '/.well-known/status'] },
+  } };
+  const pattern = await compiler.compilePattern([sourceSession]);
+  expect(await compiler.validatePattern(pattern)).toMatchObject({ isValid: true });
+  expect(await new PatternValidator().validate(pattern)).toMatchObject({ isValid: true });
+  storage.loadPatterns.mockResolvedValue([pattern]);
+  const matcher = new PatternMatcher(storage as unknown as PatternStorageService);
+  await matcher.loadPatterns();
+  const cis = await matcher.executePattern(pattern.patternId, context);
+  expect(cis).toMatchObject([{ metadata: {
+    'health.json': { healthy: true }, '.well-known/status': { healthy: true },
+  } }]);
+  for (const path of ['/health.json', '/.well-known/status']) {
+    expect(safeDiscoveryHttp).toHaveBeenCalledWith(`https://public.example:443${path}`,
+      expect.objectContaining({ method: 'GET' }));
+  }
 });
 
 it('rejects host-constructor escape payloads before execution, including legacy detection', async () => {
@@ -89,6 +115,33 @@ it('refuses legacy discovery even with a valid detection plan; hybrid exposes th
   const hybrid = new HybridDiscoveryOrchestrator({ aiEnabled: false });
   const result = await hybrid.discover(context);
   expect(result).toMatchObject({ success: false, error: UNSUPPORTED_PATTERN_PLAN });
+  expect(safeDiscoveryHttp).not.toHaveBeenCalled();
+});
+
+it('rejects legacy active plans before returning a stale cached negative match', async () => {
+  const analyzer = { analyzeSession: jest.fn().mockResolvedValue({ candidate }) };
+  const base = await new PatternCompiler(analyzer as unknown as PatternAnalyzer).compilePattern([session]);
+  storage.loadPatterns.mockResolvedValue([{ ...base, detectionCode: `function detect() {
+    return {matches:true,confidence:1}; }` }]);
+  redis.get.mockResolvedValueOnce('null');
+  const matcher = new PatternMatcher(storage as unknown as PatternStorageService);
+  await expect(matcher.match(context.scanResult)).rejects.toThrow(UNSUPPORTED_PATTERN_PLAN);
+});
+
+it('rejects active legacy discovery plans even when detection does not match', async () => {
+  const analyzer = { analyzeSession: jest.fn().mockResolvedValue({ candidate }) };
+  const base = await new PatternCompiler(analyzer as unknown as PatternAnalyzer).compilePattern([session]);
+  const malformed = { ...base,
+    discoveryCode: `async function discover() { fetch.constructor('return process')(); return []; }`,
+  };
+  storage.loadPatterns.mockResolvedValue([malformed]);
+  const unmatched = { services: [{ port: 80 }], http: { endpoints: [] } };
+  const matcher = new PatternMatcher(storage as unknown as PatternStorageService);
+  await expect(matcher.match(unmatched)).rejects.toThrow(UNSUPPORTED_PATTERN_PLAN);
+  jest.spyOn(PatternStorageService.prototype, 'loadPatterns').mockResolvedValue([malformed]);
+  const hybrid = new HybridDiscoveryOrchestrator({ aiEnabled: false });
+  expect(await hybrid.discover({ ...context, scanResult: unmatched }))
+    .toMatchObject({ success: false, error: UNSUPPORTED_PATTERN_PLAN });
   expect(safeDiscoveryHttp).not.toHaveBeenCalled();
 });
 

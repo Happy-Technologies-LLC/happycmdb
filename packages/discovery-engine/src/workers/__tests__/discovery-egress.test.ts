@@ -6,12 +6,11 @@ import * as nmap from 'node-nmap';
 import { NodeSSH } from 'node-ssh';
 import { NmapDiscoveryWorker } from '../nmap-discovery.worker';
 import { SSHDiscoveryWorker } from '../ssh-discovery.worker';
-import { DISCOVERY_TARGET_REFUSED } from '@cmdb/common';
+import { DISCOVERY_TARGET_REFUSED, logger } from '@cmdb/common';
 
 jest.mock('dns/promises', () => ({ lookup: jest.fn() }));
 jest.mock('node-nmap', () => ({ QuickScan: jest.fn(), NmapScan: jest.fn(), OsAndPortScan: jest.fn() }));
 jest.mock('node-ssh', () => ({ NodeSSH: jest.fn() }));
-jest.mock('@cmdb/common', () => ({ ...jest.requireActual('@cmdb/common'), withRetry: (operation: () => Promise<unknown>) => operation() }));
 const mockedLookup = jest.mocked(lookup);
 
 beforeEach(() => { mockedLookup.mockReset(); jest.mocked(nmap.QuickScan).mockClear(); jest.mocked(NodeSSH).mockClear(); });
@@ -68,4 +67,35 @@ it('nmap hostname DNS rebind and SSH rebind never construct scan or socket clien
     .rejects.toThrow(DISCOVERY_TARGET_REFUSED);
   expect(nmap.NmapScan).not.toHaveBeenCalled();
   expect(NodeSSH).not.toHaveBeenCalled();
+});
+
+it('never retries nmap or SSH after a refused DNS rebind, even if DNS becomes public again', async () => {
+  const publicAnswer = [{ address: '8.8.8.8', family: 4 }] as never;
+  const privateAnswer = [{ address: '169.254.169.254', family: 4 }] as never;
+  mockedLookup.mockResolvedValueOnce(publicAnswer).mockResolvedValueOnce(privateAnswer)
+    .mockResolvedValue(publicAnswer);
+  await expect(new NmapDiscoveryWorker().scanNetwork('job', 'public.example'))
+    .rejects.toThrow(DISCOVERY_TARGET_REFUSED);
+  expect(mockedLookup).toHaveBeenCalledTimes(2);
+  expect(nmap.QuickScan).not.toHaveBeenCalled();
+  mockedLookup.mockReset().mockResolvedValueOnce(publicAnswer).mockResolvedValueOnce(privateAnswer)
+    .mockResolvedValue(publicAnswer);
+  await expect(new SSHDiscoveryWorker().discoverHost('job', 'public.example', 'user', undefined, 'unused'))
+    .rejects.toThrow(DISCOVERY_TARGET_REFUSED);
+  expect(mockedLookup).toHaveBeenCalledTimes(2);
+  expect(NodeSSH).not.toHaveBeenCalled();
+});
+
+it('does not disclose credentials while reporting an empty SSH target list', async () => {
+  const warn = jest.spyOn(logger, 'warn').mockImplementation(() => undefined);
+  const config = { _jobId: 'job', _targets: [], password: 'SENSITIVE-TEST-VALUE',
+    privateKeyPath: 'SENSITIVE-TEST-VALUE' };
+  try {
+    expect(await new SSHDiscoveryWorker().discover(config)).toEqual([]);
+    expect(warn).toHaveBeenCalledWith('No SSH targets provided in config',
+      { jobId: 'job', targetCount: 0 });
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('SENSITIVE-TEST-VALUE');
+  } finally {
+    warn.mockRestore();
+  }
 });

@@ -26,8 +26,8 @@ const strings = (value: unknown): value is string[] =>
   Array.isArray(value) && value.length <= 64 && value.every(item =>
     typeof item === 'string' && item.length <= 256 && !/[\u0000-\u001f\u007f]/.test(item));
 const endpoints = (value: unknown): value is string[] =>
-  strings(value) && value.every(item => /^\/(?!\/)[a-zA-Z0-9/_-]*$/.test(item) &&
-    !item.split('/').some(segment => ['..', '__proto__', 'constructor', 'prototype'].includes(segment)));
+  strings(value) && value.every(item => /^\/(?!\/)[a-zA-Z0-9/_.-]*$/.test(item) &&
+    !item.split('/').some(segment => ['.', '..', '__proto__', 'constructor', 'prototype'].includes(segment)));
 const fields = (value: Record<string, unknown>, expected: string[]): boolean =>
   Object.keys(value).length === expected.length && expected.every(key => Object.hasOwn(value, key));
 

@@ -176,7 +176,7 @@ export class PatternCompiler implements IPatternCompiler {
           services: [{ port: candidate.commonElements.ports[0], service: 'http' }],
         },
         expected: {
-          matches: true,
+          matches: false,
           confidenceMin: 0.3,
         },
       });

@@ -87,7 +87,6 @@ service queries rather than `active_discovery_agents` or `agent_network_coverage
 {
   "agent_id": "dc1-scanner-a1b2c3d4e5f6",
   "hostname": "dc1-scanner-01",
-  "ip_address": "10.0.1.5",
   "provider_capabilities": ["nmap", "ssh"],
   "reachable_networks": ["10.0.0.0/8", "172.16.0.0/12"],
   "version": "1.0.0",
@@ -113,7 +112,6 @@ service queries rather than `active_discovery_agents` or `agent_network_coverage
 
 ```typescript
 import * as os from 'os';
-import * as net from 'net';
 
 class DiscoveryAgent {
   async detectNetworks(): Promise<string[]> {
@@ -154,11 +152,6 @@ class DiscoveryAgent {
       capabilities.push('ssh');
     } catch {}
 
-    // Check for snmpwalk
-    try {
-      await exec('which snmpwalk');
-      capabilities.push('snmp');
-    } catch {}
 
     return capabilities;
   }
@@ -167,7 +160,6 @@ class DiscoveryAgent {
     const registration = {
       agent_id: this.config.agentId,
       hostname: os.hostname(),
-      ip_address: await this.getLocalIP(),
       provider_capabilities: await this.detectCapabilities(),
       reachable_networks: await this.detectNetworks(),
       version: '1.0.0',
@@ -193,8 +185,11 @@ Agents send heartbeat every 60 seconds to indicate they're alive:
 {
   "agent_id": "dc1-scanner-a1b2c3d4e5f6",
   "status": "active",
-  "current_jobs": 2,
-  "available_capacity": 8
+  "stats": {
+    "jobs_completed": 2,
+    "jobs_failed": 0,
+    "cis_discovered": 8
+  }
 }
 ```
 
@@ -202,10 +197,7 @@ Agents send heartbeat every 60 seconds to indicate they're alive:
 ```json
 {
   "success": true,
-  "data": {
-    "acknowledged": true,
-    "pending_jobs": 1
-  }
+  "message": "Heartbeat updated"
 }
 ```
 

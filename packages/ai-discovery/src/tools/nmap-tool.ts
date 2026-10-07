@@ -31,15 +31,18 @@ export const nmapTool: DiscoveryTool = {
       },
       scanType: {
         type: 'string',
-        enum: ['quick', 'version', 'aggressive'],
-        description:
-          'Type of scan: quick (fast), version (detect versions), aggressive (OS detection + scripts)',
+        enum: ['quick', 'version'],
+        description: 'Type of scan: quick (fast) or version (detect versions)',
       },
     },
     required: ['host'],
   },
   execute: async (params: any) => {
     const { host, ports, scanType = 'quick' } = params;
+    if (scanType === 'aggressive') throw new Error(DISCOVERY_TARGET_REFUSED);
+    if (scanType !== 'quick' && scanType !== 'version') {
+      throw new Error('Invalid scan type');
+    }
 
     const destination = await connectDiscoveryHost(host, await resolveDiscoveryHost(host));
     if (ports !== undefined && (typeof ports !== 'string' ||
@@ -47,21 +50,11 @@ export const nmapTool: DiscoveryTool = {
       ports.split(/[,-]/).some((part: string) => Number(part) < 1 || Number(part) > 65535))) {
       throw new Error('Invalid port range');
     }
-    if (scanType === 'aggressive') throw new Error(DISCOVERY_TARGET_REFUSED);
-    logger.info('Executing NMAP scan', { scanType });
+    logger.info('Executing NMAP scan');
 
     try {
-      // Build nmap command
-      let nmapArgs = '-sV'; // Service version detection
-
-      switch (scanType) {
-        case 'quick':
-          nmapArgs = '-sT'; // TCP connect scan (no version detection)
-          break;
-        case 'version':
-          nmapArgs = '-sV'; // Version detection
-          break;
-      }
+      // Only the two validated modes can reach the subprocess.
+      const nmapArgs = scanType === 'quick' ? '-sT' : '-sV';
 
       const args = [nmapArgs, ...(ports === undefined ? ['--top-ports', '100'] : ['-p', ports]),
         destination, '-oX', '-'];
@@ -72,23 +65,20 @@ export const nmapTool: DiscoveryTool = {
       });
 
       if (stderr && !stderr.includes('Starting Nmap')) {
-        logger.warn('NMAP stderr output', { stderr });
+        logger.warn('NMAP stderr output');
       }
 
       // Parse nmap XML output (simplified parser)
       const result = parseNmapOutput(stdout);
 
-      logger.info(`NMAP scan completed`, {
-        host,
+      logger.info('NMAP scan completed', {
         openPorts: result.openPorts?.length || 0,
       });
 
       return result;
-    } catch (error) {
-      logger.error('NMAP scan failed', { host, error });
-      throw new Error(
-        `NMAP scan failed: ${error instanceof Error ? error.message : String(error)}`
-      );
+    } catch {
+      logger.error('NMAP scan failed');
+      throw new Error('NMAP scan failed');
     }
   },
 };
@@ -140,8 +130,8 @@ function parseNmapOutput(output: string): any {
     }
 
     return result;
-  } catch (error) {
-    logger.error('Failed to parse NMAP output', { error });
+  } catch {
+    logger.error('Failed to parse NMAP output');
     return {
       status: 'error',
       error: 'Failed to parse output',

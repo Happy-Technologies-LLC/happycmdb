@@ -3,15 +3,27 @@
 
 import OpenAI from 'openai';
 import Anthropic from '@anthropic-ai/sdk';
+import { execFile } from 'child_process';
 import { logger } from '@cmdb/common';
 import { OpenAIProvider } from '../openai-provider';
 import { CustomProvider } from '../custom-provider';
 import { AnthropicProvider } from '../anthropic-provider';
 import { AIAgentCoordinator } from '../../ai-agent-coordinator';
+import { nmapTool } from '../../tools/nmap-tool';
 import type { DiscoveryTool } from '../../types';
 
 jest.mock('openai', () => ({ __esModule: true, default: jest.fn() }));
 jest.mock('@anthropic-ai/sdk', () => ({ __esModule: true, default: jest.fn() }));
+jest.mock('child_process', () => {
+  const { promisify } = jest.requireActual('util');
+  const fakeExecFile = jest.fn();
+  // execFile's real promisify contract returns both stdout and stderr.
+  fakeExecFile[promisify.custom] = (...args: unknown[]) => new Promise((resolve, reject) => {
+    fakeExecFile(...args, (error: Error | null, stdout: string, stderr: string) =>
+      error ? reject(error) : resolve({ stdout, stderr }));
+  });
+  return { ...jest.requireActual('child_process'), execFile: fakeExecFile };
+});
 const secret = 'SENSITIVE-TEST-VALUE';
 const openaiCreate = jest.fn();
 const anthropicCreate = jest.fn();
@@ -135,4 +147,54 @@ it('retains the fixed egress refusal code without revealing the requested target
   expect(result.toolCalls[0]?.error).toBe('Discovery target refused');
   expect(JSON.stringify([jest.mocked(logger.debug).mock.calls, jest.mocked(logger.info).mock.calls,
     jest.mocked(logger.error).mock.calls])).not.toContain(secret);
+});
+
+it('refuses model-controlled nmap scan types without logging or spawning', async () => {
+  const exec = jest.mocked(execFile);
+  exec.mockImplementation((...callArgs: unknown[]) => {
+    const callback = callArgs[callArgs.length - 1] as
+      (error: Error | null, stdout: string, stderr: string) => void;
+    callback(null, 'Host is up', '');
+    return {} as never;
+  });
+  const args = { host: '8.8.8.8', scanType: `password=${secret}` };
+  setResponse('openai', nmapTool.name, args);
+  const result = await providers.openai().discover(context, [nmapTool], 'system', 'user');
+  expect(result.toolCalls[0]?.error).toBe('Tool execution failed');
+  expect(exec).not.toHaveBeenCalled();
+  expect(JSON.stringify([jest.mocked(logger.debug).mock.calls, jest.mocked(logger.info).mock.calls,
+    jest.mocked(logger.warn).mock.calls, jest.mocked(logger.error).mock.calls])).not.toContain(secret);
+});
+
+it('runs a whitelisted nmap version scan without logging remote stderr', async () => {
+  const exec = jest.mocked(execFile);
+  exec.mockImplementation((...callArgs: unknown[]) => {
+    const callback = callArgs[callArgs.length - 1] as
+      (error: Error | null, stdout: string, stderr: string) => void;
+    callback(null, 'Host is up', `scanner echoed ${secret}`);
+    return {} as never;
+  });
+  setResponse('openai', nmapTool.name, { host: '8.8.8.8', scanType: 'version' });
+  const result = await providers.openai().discover(context, [nmapTool], 'system', 'user');
+  expect(result.toolCalls[0]?.success).toBe(true);
+  expect(exec).toHaveBeenCalledWith('nmap',
+    ['-sV', '--top-ports', '100', '8.8.8.8', '-oX', '-'],
+    expect.objectContaining({ timeout: 30000 }), expect.any(Function));
+  expect(JSON.stringify([jest.mocked(logger.debug).mock.calls, jest.mocked(logger.info).mock.calls,
+    jest.mocked(logger.warn).mock.calls, jest.mocked(logger.error).mock.calls])).not.toContain(secret);
+
+  for (const level of ['debug', 'info', 'warn', 'error'] as const) {
+    jest.mocked(logger[level]).mockClear();
+  }
+  exec.mockImplementation((...callArgs: unknown[]) => {
+    const callback = callArgs[callArgs.length - 1] as
+      (error: Error | null, stdout: string, stderr: string) => void;
+    callback(new Error(`scanner echoed ${secret}`), '', '');
+    return {} as never;
+  });
+  setResponse('openai', nmapTool.name, { host: '8.8.8.8', scanType: 'version' });
+  const failed = await providers.openai().discover(context, [nmapTool], 'system', 'user');
+  expect(failed.toolCalls[0]?.error).toBe('Tool execution failed');
+  expect(JSON.stringify([jest.mocked(logger.debug).mock.calls, jest.mocked(logger.info).mock.calls,
+    jest.mocked(logger.warn).mock.calls, jest.mocked(logger.error).mock.calls])).not.toContain(secret);
 });

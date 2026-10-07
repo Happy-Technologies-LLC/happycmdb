@@ -74,7 +74,7 @@ export default class JiraConnector extends BaseIntegrationConnector {
     const maxResults = 100;
     let hasMore = true;
 
-    logger.info('Starting Jira asset extraction', { jql: this.jqlFilter });
+    logger.info('Starting Jira asset extraction');
 
     while (hasMore) {
       try {

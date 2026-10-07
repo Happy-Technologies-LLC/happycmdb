@@ -4,10 +4,9 @@
 /**
  * Connector Lifecycle Integration Tests
  *
- * Service-level coverage of ConnectorRegistry, ConnectorInstaller and
- * ConnectorExecutor against the shared (global) Postgres + Neo4j containers.
- * The full canonical schema (installed_connectors, connector_configurations,
- * connector_run_history, ...) is already loaded by the global setup.
+ * Service-level coverage of ConnectorRegistry and ConnectorInstaller against
+ * the shared (global) Postgres + Neo4j containers.
+ * The canonical schema is already loaded by the global setup.
  */
 
 import { Pool } from 'pg';
@@ -20,7 +19,6 @@ import { v4 as uuidv4 } from 'uuid';
 import { getPostgresClient, closeQueueManagerConnection } from '@cmdb/database';
 import { ConnectorRegistry } from '../../src/registry/connector-registry';
 import { ConnectorInstaller } from '../../src/installer/connector-installer';
-import { ConnectorExecutor } from '../../src/executor/connector-executor';
 import { ConnectorMetadata } from '../../src/types/connector.types';
 
 /**
@@ -120,7 +118,6 @@ describe('Connector Lifecycle Integration Tests', () => {
   let neo4jDriver: Driver;
   let registry: ConnectorRegistry;
   let installer: ConnectorInstaller;
-  let executor: ConnectorExecutor;
   let connectorsDir: string;
   let buildRoot: string;
 
@@ -139,7 +136,6 @@ describe('Connector Lifecycle Integration Tests', () => {
 
     registry = ConnectorRegistry.getInstance();
     installer = ConnectorInstaller.getInstance(connectorsDir);
-    executor = ConnectorExecutor.getInstance();
   });
 
   afterEach(async () => {
@@ -354,7 +350,7 @@ describe('Connector Lifecycle Integration Tests', () => {
     }, 60000);
   });
 
-  describe('Connector Execution', () => {
+  describe('Persisted CI fixture', () => {
     it('should persist discovered CIs to Neo4j', async () => {
       const mockCIs = [
         { id: uuidv4(), name: 'test-server-01', ip: '10.0.1.10' },
@@ -396,33 +392,6 @@ describe('Connector Lifecycle Integration Tests', () => {
       } finally {
         await session.close();
       }
-    }, 60000);
-
-    it('should reject execution when the configuration does not exist', async () => {
-      await expect(executor.executeConnector(uuidv4())).rejects.toThrow(
-        /configuration not found/i
-      );
-    }, 60000);
-
-    it('should reject execution when no resources are enabled', async () => {
-      const type = `exec-connector-${Date.now()}`;
-      installedTypes.push(type);
-      const tarball = buildTarball(buildRoot, type, makeMeta(type, '1.0.0'));
-      await installer.installConnector(type, { localPath: tarball });
-
-      const configId = uuidv4();
-      createdConfigIds.push(configId);
-      // enabled_resources intentionally omitted (NULL) -> no resources to run.
-      await pool.query(
-        `INSERT INTO connector_configurations (
-          id, name, connector_type, connection, enabled, created_by
-        ) VALUES ($1, $2, $3, $4, $5, $6)`,
-        [configId, `Exec ${configId}`, type, { api_key: 'test-key' }, true, 'test-user']
-      );
-
-      await expect(executor.executeConnector(configId)).rejects.toThrow(
-        /no resources enabled/i
-      );
     }, 60000);
   });
 

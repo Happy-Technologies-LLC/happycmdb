@@ -925,7 +925,7 @@ describe('WizConnector - Multi-Resource Tests', () => {
       ).rejects.toThrow('Unknown resource: invalid_resource');
     });
 
-    it('should handle GraphQL errors gracefully', async () => {
+    it('fails a GraphQL response with errors rather than reporting an empty successful extraction', async () => {
       await connector.initialize();
       mockAxiosInstance.post.mockResolvedValue({
         data: {
@@ -935,8 +935,7 @@ describe('WizConnector - Multi-Resource Tests', () => {
         },
       });
 
-      const extractedData = await connector.extractResource('cloud_resources');
-      expect(extractedData).toHaveLength(0);
+      await expect(connector.extractResource('cloud_resources')).rejects.toThrow('Connector extraction failed');
     });
   });
 

@@ -11,6 +11,8 @@ import { Pool } from 'pg';
 import { logger } from '@cmdb/common';
 import { validateConfiguration, buildUpdateQuery } from './validation';
 import { buildListQuery } from './queries';
+import { CONFIG_NOT_FOUND, PUBLIC_CONFIG } from '../../../auth/connector-scope';
+import { ownedConfig, requestScopeValues } from './ownership';
 
 export class ConnectorConfigCRUDController {
   constructor(private pool: Pool) {}
@@ -27,6 +29,7 @@ export class ConnectorConfigCRUDController {
         limit = 100,
         offset = 0
       } = req.query;
+      const [organizationId, legacy] = requestScopeValues(req, false);
 
       const { query, params, countQuery, countParams } = buildListQuery({
         connector_type: connector_type as string,
@@ -37,6 +40,8 @@ export class ConnectorConfigCRUDController {
         sort_order: sort_order as string,
         limit: Number(limit),
         offset: Number(offset),
+        organizationId,
+        legacy,
       });
 
       const countResult = await this.pool.query(countQuery, countParams);
@@ -54,13 +59,9 @@ export class ConnectorConfigCRUDController {
           offset: Number(offset),
         },
       });
-    } catch (error) {
-      logger.error('Error listing configurations', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to list configurations',
-        message: error instanceof Error ? error.message : 'Unknown error'
-      });
+    } catch {
+      logger.error('Error listing configurations');
+      res.status(500).json({ success: false, error: 'Failed to list configurations' });
     }
   }
 
@@ -68,17 +69,10 @@ export class ConnectorConfigCRUDController {
     try {
       const { id } = req.params;
 
-      const result = await this.pool.query(
-        'SELECT * FROM connector_configurations WHERE id = $1',
-        [id]
-      );
+      const result = await ownedConfig(this.pool, req, id);
 
       if (result.rows.length === 0) {
-        res.status(404).json({
-          success: false,
-          error: 'Not Found',
-          message: `Configuration with ID '${id}' not found`
-        });
+        res.status(404).json(CONFIG_NOT_FOUND);
         return;
       }
 
@@ -86,17 +80,18 @@ export class ConnectorConfigCRUDController {
         success: true,
         data: result.rows[0],
       });
-    } catch (error) {
-      logger.error('Error getting configuration', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to get configuration',
-        message: error instanceof Error ? error.message : 'Unknown error'
-      });
+    } catch {
+      logger.error('Error getting configuration');
+      res.status(500).json({ success: false, error: 'Failed to get configuration' });
     }
   }
 
   async createConfiguration(req: Request, res: Response): Promise<void> {
+    const [organizationId] = requestScopeValues(req);
+    if (organizationId === null) {
+      res.status(403).json({ error: 'Forbidden', message: 'Organization claim required' });
+      return;
+    }
     try {
       const validationError = validateConfiguration(req.body);
       if (validationError) {
@@ -144,8 +139,8 @@ export class ConnectorConfigCRUDController {
 
       // Check for duplicate name
       const existingResult = await this.pool.query(
-        'SELECT id FROM connector_configurations WHERE name = $1',
-        [name]
+        'SELECT id FROM connector_configurations WHERE name = $1 AND organization_id = $2',
+        [name, organizationId]
       );
 
       if (existingResult.rows.length > 0) {
@@ -163,9 +158,9 @@ export class ConnectorConfigCRUDController {
           connection, options, enabled_resources, resource_configs,
           max_retries, retry_delay_seconds, continue_on_error,
           notification_channels, notification_on_success, notification_on_failure,
-          created_at, updated_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, NOW(), NOW())
-        RETURNING *`,
+          organization_id, created_at, updated_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NOW(), NOW())
+        RETURNING ${PUBLIC_CONFIG}`,
         [
           name,
           description || null,
@@ -182,7 +177,8 @@ export class ConnectorConfigCRUDController {
           continue_on_error !== undefined ? continue_on_error : false,
           notification_channels || [],
           notification_on_success !== undefined ? notification_on_success : false,
-          notification_on_failure !== undefined ? notification_on_failure : true
+          notification_on_failure !== undefined ? notification_on_failure : true,
+          organizationId
         ]
       );
 
@@ -196,13 +192,9 @@ export class ConnectorConfigCRUDController {
         data: result.rows[0],
         message: `Configuration '${name}' created successfully`
       });
-    } catch (error) {
-      logger.error('Error creating configuration', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to create configuration',
-        message: error instanceof Error ? error.message : 'Unknown error'
-      });
+    } catch {
+      logger.error('Error creating configuration');
+      res.status(500).json({ success: false, error: 'Failed to create configuration' });
     }
   }
 
@@ -222,21 +214,14 @@ export class ConnectorConfigCRUDController {
       const updates = req.body;
 
       // Check if exists
-      const existingResult = await this.pool.query(
-        'SELECT * FROM connector_configurations WHERE id = $1',
-        [id]
-      );
+      const existingResult = await ownedConfig(this.pool, req, id);
 
       if (existingResult.rows.length === 0) {
-        res.status(404).json({
-          success: false,
-          error: 'Not Found',
-          message: `Configuration with ID '${id}' not found`
-        });
+        res.status(404).json(CONFIG_NOT_FOUND);
         return;
       }
 
-      const { query, values } = buildUpdateQuery(id, updates);
+      const { query, values } = buildUpdateQuery(id, updates, requestScopeValues(req));
 
       if (!query) {
         res.status(400).json({
@@ -248,6 +233,10 @@ export class ConnectorConfigCRUDController {
       }
 
       const result = await this.pool.query(query as string, values);
+      if (result.rows.length === 0) {
+        res.status(404).json(CONFIG_NOT_FOUND);
+        return;
+      }
 
       logger.info(`Configuration '${id}' updated successfully`);
 
@@ -256,13 +245,9 @@ export class ConnectorConfigCRUDController {
         data: result.rows[0],
         message: 'Configuration updated successfully'
       });
-    } catch (error) {
-      logger.error('Error updating configuration', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to update configuration',
-        message: error instanceof Error ? error.message : 'Unknown error'
-      });
+    } catch {
+      logger.error('Error updating configuration');
+      res.status(500).json({ success: false, error: 'Failed to update configuration' });
     }
   }
 
@@ -270,21 +255,21 @@ export class ConnectorConfigCRUDController {
     try {
       const { id } = req.params;
 
-      const existingResult = await this.pool.query(
-        'SELECT * FROM connector_configurations WHERE id = $1',
-        [id]
-      );
+      const existingResult = await ownedConfig(this.pool, req, id);
 
       if (existingResult.rows.length === 0) {
-        res.status(404).json({
-          success: false,
-          error: 'Not Found',
-          message: `Configuration with ID '${id}' not found`
-        });
+        res.status(404).json(CONFIG_NOT_FOUND);
         return;
       }
 
-      await this.pool.query('DELETE FROM connector_configurations WHERE id = $1', [id]);
+      const deleted = await this.pool.query(
+        'DELETE FROM connector_configurations WHERE id = $1 AND (organization_id = $2 OR (organization_id IS NULL AND $3::boolean)) RETURNING id',
+        [id, ...requestScopeValues(req)]
+      );
+      if (deleted.rows.length === 0) {
+        res.status(404).json(CONFIG_NOT_FOUND);
+        return;
+      }
 
       logger.info(`Configuration '${id}' deleted successfully`);
 
@@ -292,13 +277,9 @@ export class ConnectorConfigCRUDController {
         success: true,
         message: 'Configuration deleted successfully'
       });
-    } catch (error) {
-      logger.error('Error deleting configuration', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to delete configuration',
-        message: error instanceof Error ? error.message : 'Unknown error'
-      });
+    } catch {
+      logger.error('Error deleting configuration');
+      res.status(500).json({ success: false, error: 'Failed to delete configuration' });
     }
   }
 }

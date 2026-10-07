@@ -10,6 +10,8 @@ import { Request, Response } from 'express';
 import { Pool } from 'pg';
 import { logger } from '@cmdb/common';
 import { buildRunsQuery } from './queries';
+import { CONFIG_NOT_FOUND, RUN_NOT_FOUND } from '../../../auth/connector-scope';
+import { ownedConfig, ownedRun, requestScopeValues } from './ownership';
 
 export class ConnectorConfigMetricsController {
   constructor(private pool: Pool) {}
@@ -17,6 +19,10 @@ export class ConnectorConfigMetricsController {
   async getConfigurationMetrics(req: Request, res: Response): Promise<void> {
     try {
       const { id } = req.params;
+      if ((await ownedConfig(this.pool, req, id)).rows.length === 0) {
+        res.status(404).json(CONFIG_NOT_FOUND);
+        return;
+      }
 
       const statsResult = await this.pool.query(
         `SELECT
@@ -27,8 +33,8 @@ export class ConnectorConfigMetricsController {
           SUM(records_extracted) as total_records_extracted,
           SUM(records_loaded) as total_records_loaded
          FROM connector_run_history
-         WHERE config_id = $1`,
-        [id]
+         WHERE config_id = $1 AND (organization_id = $2 OR (organization_id IS NULL AND $3::boolean))`,
+        [id, ...requestScopeValues(req)]
       );
 
       const stats = statsResult.rows[0];
@@ -49,39 +55,38 @@ export class ConnectorConfigMetricsController {
           total_records_loaded: parseInt(stats.total_records_loaded || 0),
         },
       });
-    } catch (error) {
-      logger.error('Error getting configuration metrics', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to get configuration metrics',
-        message: error instanceof Error ? error.message : 'Unknown error'
-      });
+    } catch {
+      logger.error('Error getting configuration metrics');
+      res.status(500).json({ success: false, error: 'Failed to get configuration metrics' });
     }
   }
 
   async getResourceMetrics(req: Request, res: Response): Promise<void> {
     try {
       const { id, resourceId } = req.params;
+      if ((await ownedConfig(this.pool, req, id)).rows.length === 0) {
+        res.status(404).json(CONFIG_NOT_FOUND);
+        return;
+      }
 
       const result = await this.pool.query(
-        `SELECT * FROM connector_resource_metrics
-         WHERE config_id = $1 AND resource_id = $2
-         ORDER BY measured_at DESC
-         LIMIT 1`,
-        [id, resourceId]
+        `SELECT rm.id, rm.config_id, rm.connector_type, rm.resource_id, rm.measured_at,
+                rm.avg_extraction_time_ms, rm.avg_transformation_time_ms, rm.avg_load_time_ms,
+                rm.total_records_extracted, rm.total_records_loaded, rm.total_records_failed, rm.success_rate
+         FROM connector_resource_metrics rm JOIN connector_configurations cc ON cc.id = rm.config_id
+         WHERE rm.config_id = $1 AND rm.resource_id = $2
+           AND (cc.organization_id = $3 OR (cc.organization_id IS NULL AND $4::boolean))
+         ORDER BY rm.measured_at DESC LIMIT 1`,
+        [id, resourceId, ...requestScopeValues(req)]
       );
 
       res.json({
         success: true,
         data: result.rows[0] || null,
       });
-    } catch (error) {
-      logger.error('Error getting resource metrics', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to get resource metrics',
-        message: error instanceof Error ? error.message : 'Unknown error'
-      });
+    } catch {
+      logger.error('Error getting resource metrics');
+      res.status(500).json({ success: false, error: 'Failed to get resource metrics' });
     }
   }
 
@@ -96,6 +101,10 @@ export class ConnectorConfigMetricsController {
         sort_by = 'started_at',
         sort_order = 'desc'
       } = req.query;
+      if ((await ownedConfig(this.pool, req, id)).rows.length === 0) {
+        res.status(404).json(CONFIG_NOT_FOUND);
+        return;
+      }
 
       const { query, params, countQuery, countParams } = buildRunsQuery({
         config_id: id,
@@ -105,6 +114,8 @@ export class ConnectorConfigMetricsController {
         offset: Number(offset),
         sort_by: sort_by as string,
         sort_order: sort_order as string,
+        organizationId: requestScopeValues(req)[0],
+        legacy: requestScopeValues(req)[1],
       });
 
       const countResult = await this.pool.query(countQuery, countParams);
@@ -122,13 +133,9 @@ export class ConnectorConfigMetricsController {
           offset: Number(offset),
         },
       });
-    } catch (error) {
-      logger.error('Error getting configuration runs', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to get configuration runs',
-        message: error instanceof Error ? error.message : 'Unknown error'
-      });
+    } catch {
+      logger.error('Error getting configuration runs');
+      res.status(500).json({ success: false, error: 'Failed to get configuration runs' });
     }
   }
 
@@ -154,6 +161,8 @@ export class ConnectorConfigMetricsController {
         offset: Number(offset),
         sort_by: sort_by as string,
         sort_order: sort_order as string,
+        organizationId: requestScopeValues(req, false)[0],
+        legacy: requestScopeValues(req, false)[1],
       });
 
       const countResult = await this.pool.query(countQuery, countParams);
@@ -171,13 +180,9 @@ export class ConnectorConfigMetricsController {
           offset: Number(offset),
         },
       });
-    } catch (error) {
-      logger.error('Error getting all runs', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to get runs',
-        message: error instanceof Error ? error.message : 'Unknown error'
-      });
+    } catch {
+      logger.error('Error getting all runs');
+      res.status(500).json({ success: false, error: 'Failed to get runs' });
     }
   }
 
@@ -185,17 +190,10 @@ export class ConnectorConfigMetricsController {
     try {
       const { runId } = req.params;
 
-      const result = await this.pool.query(
-        'SELECT * FROM connector_run_history WHERE id = $1',
-        [runId]
-      );
+      const result = await ownedRun(this.pool, req, runId);
 
       if (result.rows.length === 0) {
-        res.status(404).json({
-          success: false,
-          error: 'Not Found',
-          message: `Run with ID '${runId}' not found`
-        });
+        res.status(404).json(RUN_NOT_FOUND);
         return;
       }
 
@@ -203,13 +201,9 @@ export class ConnectorConfigMetricsController {
         success: true,
         data: result.rows[0],
       });
-    } catch (error) {
-      logger.error('Error getting run details', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to get run details',
-        message: error instanceof Error ? error.message : 'Unknown error'
-      });
+    } catch {
+      logger.error('Error getting run details');
+      res.status(500).json({ success: false, error: 'Failed to get run details' });
     }
   }
 
@@ -217,17 +211,10 @@ export class ConnectorConfigMetricsController {
     try {
       const { runId } = req.params;
 
-      const runResult = await this.pool.query(
-        'SELECT * FROM connector_run_history WHERE id = $1',
-        [runId]
-      );
+      const runResult = await ownedRun(this.pool, req, runId);
 
       if (runResult.rows.length === 0) {
-        res.status(404).json({
-          success: false,
-          error: 'Not Found',
-          message: `Run with ID '${runId}' not found`
-        });
+        res.status(404).json(RUN_NOT_FOUND);
         return;
       }
 
@@ -242,10 +229,17 @@ export class ConnectorConfigMetricsController {
       }
 
       // TODO: Cancel BullMQ job
-      await this.pool.query(
-        'UPDATE connector_run_history SET status = $1, completed_at = NOW() WHERE id = $2',
-        ['cancelled', runId]
+      const cancelled = await this.pool.query(
+        `UPDATE connector_run_history SET status = $1, completed_at = NOW()
+         WHERE id = $2 AND status IN ('queued', 'running')
+         AND (organization_id = $3 OR (organization_id IS NULL AND $4::boolean))
+         RETURNING id`,
+        ['cancelled', runId, ...requestScopeValues(req)]
       );
+      if (cancelled.rows.length === 0) {
+        res.status(404).json(RUN_NOT_FOUND);
+        return;
+      }
 
       logger.info(`Run '${runId}' cancelled successfully`);
 
@@ -253,13 +247,9 @@ export class ConnectorConfigMetricsController {
         success: true,
         message: 'Run cancelled successfully'
       });
-    } catch (error) {
-      logger.error('Error cancelling run', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to cancel run',
-        message: error instanceof Error ? error.message : 'Unknown error'
-      });
+    } catch {
+      logger.error('Error cancelling run');
+      res.status(500).json({ success: false, error: 'Failed to cancel run' });
     }
   }
 }

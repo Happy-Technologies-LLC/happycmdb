@@ -4,6 +4,12 @@
 
 The HappyCMDB Connector Framework is a plugin-based architecture that enables dynamic integration with external systems for data discovery, synchronization, and management. Introduced in v2.0, it replaces the v1.0 ad-hoc discovery workers with a standardized, scalable integration platform.
 
+### R-CRED-2 organization and credential-reference boundary
+
+Connector configuration/run APIs require an authenticated, freshly verified organization; foreign identifiers return the same 404 as missing identifiers. The `connection`, `options` and resource configuration fields are write-only. An independent platform-admin marker permits explicit access to historical NULL-organization rows; ordinary tenant admins do not inherit that authority. The standalone integration hub defaults to the platform operator's own organization for name routes and requires `?legacy=true` to select a historical same-named row. Legacy rows never auto-run.
+
+**Approved compatibility restriction:** Every run, connection test and validation for a configuration with a stored `credential_id` is refused before any credential lookup or decrypt, even for platform admins. REST and hub return HTTP 409 with the fixed text `Connector credential reference unavailable`; GraphQL uses code `CONNECTOR_CREDENTIAL_UNAVAILABLE`. No run is created for a refused reference. Inline connection values still work within the owning organization. Re-enabling credential references awaits separately reviewed credential ownership after HP1; this migration does not modify the credentials table.
+
 ## Key Features
 
 - **Plugin Architecture** - Dynamic connector loading and lifecycle management
@@ -39,7 +45,7 @@ The HappyCMDB Connector Framework is a plugin-based architecture that enables dy
 │  │           Connector Management Layer                │   │
 │  │  - ConnectorRegistry (local installed)              │   │
 │  │  - ConnectorInstaller (download/install)            │   │
-│  │  - ConnectorExecutor (run ETL jobs)                 │   │
+│  │  - IntegrationManager (org-bound runs/schedules)    │   │
 │  │  - VersionManager (updates/migrations)              │   │
 │  └────────────────────┬────────────────────────────────┘   │
 │                       │                                     │

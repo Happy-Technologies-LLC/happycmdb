@@ -21,7 +21,7 @@ import request from 'supertest';
 import { jest, describe, it, expect, beforeEach } from '@jest/globals';
 import { ROLE_PERMISSIONS, type Permission, type UserRole } from '../../../auth/types';
 
-type ReqWithUser = Request & { user?: { _userId?: string; _role?: UserRole } };
+type ReqWithUser = Request & { user?: { _userId?: string; _role?: UserRole; _organizationId?: string } };
 
 const mockRouteHandler = jest.fn((req: Request, res: Response) => {
   res.status(200).json({ actor: (req as ReqWithUser).user?._userId });
@@ -31,7 +31,9 @@ const TOKEN_ROLES: Record<string, UserRole> = {
   'Bearer admin-token': 'admin',
   'Bearer operator-token': 'operator',
   'Bearer viewer-token': 'viewer',
+  'Bearer no-org-token': 'admin',
 };
+const ORG = '11111111-1111-4111-8111-111111111111';
 
 const mockAuthenticate = jest.fn(() => (req: Request, res: Response, next: () => void) => {
   const role = TOKEN_ROLES[req.get('authorization') ?? ''];
@@ -39,7 +41,7 @@ const mockAuthenticate = jest.fn(() => (req: Request, res: Response, next: () =>
     res.status(401).json({ error: 'Unauthorized' });
     return;
   }
-  (req as ReqWithUser).user = { _userId: 'route-user', _role: role };
+  (req as ReqWithUser).user = { _userId: 'route-user', _role: role, _organizationId: req.get('authorization') === 'Bearer no-org-token' ? undefined : ORG };
   next();
 });
 
@@ -186,6 +188,12 @@ describe('connector-config routes', () => {
       'Bearer garbage-token'
     );
     expect(response.status).toBe(401);
+    expect(mockRouteHandler).not.toHaveBeenCalled();
+  });
+
+  it.each([...readRoutes, ...writeRoutes])('rejects missing org before %s %s', async (method, path, body) => {
+    const response = await invoke(testApp(), method, path, body, 'Bearer no-org-token');
+    expect(response.status).toBe(403);
     expect(mockRouteHandler).not.toHaveBeenCalled();
   });
 });

@@ -229,7 +229,7 @@ const ConnectorQueryResolvers = {
     try {
       const pgClient = getPostgresClient();
       const conditions: string[] = [];
-      const params: unknown[] = scopeValues(context.user);
+      const params: unknown[] = scopeValues(context.user, false);
       let paramIndex = 3;
 
       if (args.category) {
@@ -307,7 +307,7 @@ const ConnectorQueryResolvers = {
           (SELECT status FROM connector_run_history crh WHERE crh.connector_type = ic.connector_type AND ${connectorPredicate('crh', 2)} ORDER BY started_at DESC LIMIT 1) AS last_run_status
         FROM installed_connectors ic WHERE ic.connector_type = $1
       `;
-      const result = await pgClient.query(query, [args.connectorType, ...scopeValues(context.user)]);
+      const result = await pgClient.query(query, [args.connectorType, ...scopeValues(context.user, false)]);
 
       if (result.rows.length === 0) {
         return null;
@@ -349,7 +349,7 @@ const ConnectorQueryResolvers = {
    */
   connectorConfigurations: async (_parent: unknown, args: { connectorType?: string; enabled?: boolean }, context: GraphQLContext) => {
     scopedUser(context);
-    const params: unknown[] = scopeValues(context.user);
+    const params: unknown[] = scopeValues(context.user, false);
     const conditions = [connectorPredicate('cc', 1)];
     if (args.connectorType) {
       params.push(args.connectorType);
@@ -393,7 +393,7 @@ const ConnectorQueryResolvers = {
    */
   connectorRuns: async (_parent: unknown, args: { configId?: string; connectorType?: string; status?: string; first?: number; offset?: number }, context: GraphQLContext) => {
     scopedUser(context);
-    const params: unknown[] = scopeValues(context.user);
+    const params: unknown[] = scopeValues(context.user, args.configId !== undefined);
     const conditions = [connectorPredicate('crh', 1)];
     if (args.configId) {
       params.push(args.configId);
@@ -451,7 +451,7 @@ const ConnectorQueryResolvers = {
    */
   connectorStats: async (_parent: unknown, _args: unknown, context: GraphQLContext) => {
     scopedUser(context);
-    const values = scopeValues(context.user);
+    const values = scopeValues(context.user, false);
     try {
       const pg = getPostgresClient();
       const overall = await pg.query(

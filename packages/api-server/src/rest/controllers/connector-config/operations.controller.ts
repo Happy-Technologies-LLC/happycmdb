@@ -9,6 +9,9 @@
 import { Request, Response } from 'express';
 import { Pool } from 'pg';
 import { logger } from '@cmdb/common';
+import { getIntegrationManager } from '@cmdb/integration-framework';
+import { CONFIG_NOT_FOUND, PUBLIC_CONFIG, PUBLIC_RUN } from '../../../auth/connector-scope';
+import { ownedConfig, requestScopeValues } from './ownership';
 
 export class ConnectorConfigOperationsController {
   constructor(private pool: Pool) {}
@@ -18,16 +21,14 @@ export class ConnectorConfigOperationsController {
       const { id } = req.params;
 
       const result = await this.pool.query(
-        'UPDATE connector_configurations SET enabled = true, updated_at = NOW() WHERE id = $1 RETURNING *',
-        [id]
+        `UPDATE connector_configurations SET enabled = true, updated_at = NOW()
+         WHERE id = $1 AND (organization_id = $2 OR (organization_id IS NULL AND $3::boolean))
+         RETURNING ${PUBLIC_CONFIG}`,
+        [id, ...requestScopeValues(req)]
       );
 
       if (result.rows.length === 0) {
-        res.status(404).json({
-          success: false,
-          error: 'Not Found',
-          message: `Configuration with ID '${id}' not found`
-        });
+        res.status(404).json(CONFIG_NOT_FOUND);
         return;
       }
 
@@ -36,13 +37,9 @@ export class ConnectorConfigOperationsController {
         data: result.rows[0],
         message: 'Configuration enabled successfully'
       });
-    } catch (error) {
-      logger.error('Error enabling configuration', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to enable configuration',
-        message: error instanceof Error ? error.message : 'Unknown error'
-      });
+    } catch {
+      logger.error('Error enabling configuration');
+      res.status(500).json({ success: false, error: 'Failed to enable configuration' });
     }
   }
 
@@ -51,16 +48,14 @@ export class ConnectorConfigOperationsController {
       const { id } = req.params;
 
       const result = await this.pool.query(
-        'UPDATE connector_configurations SET enabled = false, updated_at = NOW() WHERE id = $1 RETURNING *',
-        [id]
+        `UPDATE connector_configurations SET enabled = false, updated_at = NOW()
+         WHERE id = $1 AND (organization_id = $2 OR (organization_id IS NULL AND $3::boolean))
+         RETURNING ${PUBLIC_CONFIG}`,
+        [id, ...requestScopeValues(req)]
       );
 
       if (result.rows.length === 0) {
-        res.status(404).json({
-          success: false,
-          error: 'Not Found',
-          message: `Configuration with ID '${id}' not found`
-        });
+        res.status(404).json(CONFIG_NOT_FOUND);
         return;
       }
 
@@ -69,13 +64,9 @@ export class ConnectorConfigOperationsController {
         data: result.rows[0],
         message: 'Configuration disabled successfully'
       });
-    } catch (error) {
-      logger.error('Error disabling configuration', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to disable configuration',
-        message: error instanceof Error ? error.message : 'Unknown error'
-      });
+    } catch {
+      logger.error('Error disabling configuration');
+      res.status(500).json({ success: false, error: 'Failed to disable configuration' });
     }
   }
 
@@ -83,61 +74,46 @@ export class ConnectorConfigOperationsController {
     try {
       const { id } = req.params;
 
-      const result = await this.pool.query(
-        'SELECT * FROM connector_configurations WHERE id = $1',
-        [id]
-      );
+      const result = await ownedConfig(this.pool, req, id);
 
       if (result.rows.length === 0) {
-        res.status(404).json({
-          success: false,
-          error: 'Not Found',
-          message: `Configuration with ID '${id}' not found`
-        });
+        res.status(404).json(CONFIG_NOT_FOUND);
         return;
       }
 
-      // TODO: Actual connection test logic
-      const testResult = {
-        success: true,
-        message: 'Connection test passed',
-        details: {
-          connector_type: result.rows[0].connector_type,
-          tested_at: new Date().toISOString()
-        }
-      };
-
-      res.json(testResult);
+      const testResult = await getIntegrationManager().testConnector(id, result.rows[0].organization_id);
+      res.json({ success: testResult.success === true });
     } catch (error) {
-      logger.error('Error testing connection', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to test connection',
-        message: error instanceof Error ? error.message : 'Unknown error'
-      });
+      if (error instanceof Error && error.message === 'CONNECTOR_NOT_FOUND') {
+        res.status(404).json(CONFIG_NOT_FOUND);
+        return;
+      }
+      if (error instanceof Error && error.message === 'CONNECTOR_CREDENTIAL_UNAVAILABLE') {
+        res.status(409).json({ success: false, error: 'Connector credential reference unavailable' });
+        return;
+      }
+      logger.error('Error testing connection');
+      res.status(500).json({ success: false, error: 'Failed to test connection' });
     }
   }
 
   async runConnector(req: Request, res: Response): Promise<void> {
     try {
       const { id } = req.params;
-      const { resource_id, triggered_by = 'manual' } = req.body;
+      const { resource_id } = req.body;
 
-      const result = await this.pool.query(
-        'SELECT * FROM connector_configurations WHERE id = $1',
-        [id]
-      );
+      const result = await ownedConfig(this.pool, req, id, true);
 
       if (result.rows.length === 0) {
-        res.status(404).json({
-          success: false,
-          error: 'Not Found',
-          message: `Configuration with ID '${id}' not found`
-        });
+        res.status(404).json(CONFIG_NOT_FOUND);
         return;
       }
 
       const config = result.rows[0];
+      if (config.credential_id) {
+        res.status(409).json({ success: false, error: 'Connector credential reference unavailable' });
+        return;
+      }
 
       if (!config.enabled) {
         res.status(400).json({
@@ -152,11 +128,19 @@ export class ConnectorConfigOperationsController {
       const runResult = await this.pool.query(
         `INSERT INTO connector_run_history (
           config_id, connector_type, config_name, resource_id,
-          started_at, status, triggered_by
-        ) VALUES ($1, $2, $3, $4, NOW(), 'queued', $5)
-        RETURNING *`,
-        [id, config.connector_type, config.name, resource_id || null, triggered_by]
+          organization_id, started_at, status, triggered_by
+        )
+        SELECT id, connector_type, name, $4, organization_id, NOW(), 'queued', 'manual'
+        FROM connector_configurations
+        WHERE id = $1 AND enabled = true AND credential_id IS NULL
+          AND (organization_id = $2 OR (organization_id IS NULL AND $3::boolean))
+        RETURNING ${PUBLIC_RUN}`,
+        [id, ...requestScopeValues(req), resource_id || null]
       );
+      if (runResult.rows.length === 0) {
+        res.status(404).json(CONFIG_NOT_FOUND);
+        return;
+      }
 
       logger.info(`Connector run triggered`, {
         config_id: id,
@@ -169,13 +153,9 @@ export class ConnectorConfigOperationsController {
         data: runResult.rows[0],
         message: 'Connector run queued successfully'
       });
-    } catch (error) {
-      logger.error('Error running connector', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to run connector',
-        message: error instanceof Error ? error.message : 'Unknown error'
-      });
+    } catch {
+      logger.error('Error running connector');
+      res.status(500).json({ success: false, error: 'Failed to run connector' });
     }
   }
 }

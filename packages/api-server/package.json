@@ -26,6 +26,7 @@
     "@cmdb/ai-ml-engine": "*",
     "@cmdb/ai-discovery": "*",
     "@cmdb/framework-integration": "*",
+    "@cmdb/integration-framework": "*",
     "@cmdb/event-streaming": "*",
     "axios": "^1.6.2",
     "bcrypt": "^5.1.1",

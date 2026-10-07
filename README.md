@@ -123,6 +123,14 @@ Until the dedicated platform-admin flag (HP1-S6/P-6) is implemented, authenticat
 | `doc-site` | VitePress documentation site (80+ pages) |
 | `infrastructure` | Docker, Kubernetes, Terraform, monitoring configs |
 
+## Connector organization and secret handling
+
+Connector configurations and runs are scoped to the authenticated user's verified organization. REST `/api/v1/connector-configs`, GraphQL connector operations, and the standalone integration hub `/api/v1/connectors` do not accept a caller-supplied organization as authority. Configuration `connection`, `options`, and resource configuration values are write-only: responses do not return saved secrets. Keep the original secret in your own vault when editing.
+
+**Compatibility change (R-CRED-2):** Connector execution, connection tests, and validation refuse **every** configuration with a stored `credential_id`, including platform-admin and legacy configurations, before looking up or decrypting the referenced credential. The response is a fixed, non-identifying `Connector credential reference unavailable` error (`409` on REST/hub); such runs are not queued. Inline connection configurations still work within their owning organization. Legacy configurations without an organization never run automatically. This restriction remains until a separately reviewed credential-ownership change after HP1; the connector migration does not change the credentials table.
+
+Only a verified platform-admin marker grants access to historical NULL-organization connector configurations. The normal `admin` role does not. In the standalone hub, platform admins with their own organization use `?legacy=true` to select a same-named historical configuration; without it, name lookups select their own organization. See [connector API/security contract](docs/connector-org-security-design.md).
+
 ## Roadmap
 
 - **Connector SDK** — Standalone SDK for building custom connectors for any REST/GraphQL API

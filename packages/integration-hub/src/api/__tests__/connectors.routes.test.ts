@@ -22,7 +22,7 @@ jest.mock('@cmdb/api-server/auth/auth-bootstrap', () => ({
   getAuthMiddleware: () => ({
     authenticate: () => (req: express.Request, res: express.Response, next: express.NextFunction) => {
       if (req.headers.authorization !== 'Bearer verified') return res.status(401).json({ error: 'Unauthorized' });
-      Object.assign(req, { user: { organizationId: orgA } });
+      Object.assign(req, { user: { organizationId: orgA, _role: 'operator' } });
       return next();
     },
   }),
@@ -54,7 +54,7 @@ async function request(method: string, path: string, user?: { organizationId?: s
   app.use(express.json());
   app.use((req, res, next) => {
     if (!user) return res.status(401).json({ error: 'Unauthorized' });
-    Object.assign(req, { user });
+    Object.assign(req, { user: { _role: 'operator', ...user } });
     if (!user.organizationId && !user.legacy) return res.status(403).json({ error: 'Forbidden' });
     return next();
   });

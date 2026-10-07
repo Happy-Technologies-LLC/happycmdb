@@ -60,7 +60,8 @@ describe('IntegrationManager ownership and secret boundary', () => {
     await manager.registerConnector({ ...manager.mapRowToConfig(config), organizationId: null });
     await manager.registerConnector({ ...manager.mapRowToConfig(config), credential_id: 'credential-1' });
     expect(cron.schedule).toHaveBeenCalledTimes(1);
-    expect(manager.getConnectors().size).toBe(1);
+    expect(manager.getConnectors().size).toBe(0);
+    expect((cron.schedule as jest.Mock).mock.results[0].value.stop).toHaveBeenCalledTimes(1);
   });
 
   it('rejects foreign or deleted config before running or writing history', async () => {
@@ -86,6 +87,16 @@ describe('IntegrationManager ownership and secret boundary', () => {
     expect(getOAuthSubstrate).not.toHaveBeenCalled();
     expect(query).toHaveBeenCalledTimes(1);
     expect(run).not.toHaveBeenCalled();
+  });
+
+  it('refuses platform legacy credential tests before any credential lookup or connector construction', async () => {
+    query.mockResolvedValue({ rows: [{ ...config, organization_id: null, credential_id: 'credential-1' }] });
+    await expect(manager.testConnector(config.id, null)).rejects.toThrow('CONNECTOR_CREDENTIAL_UNAVAILABLE');
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('organization_id IS NOT DISTINCT FROM $2'), [config.id, null]);
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(getUnifiedCredentialService).not.toHaveBeenCalled();
+    expect(getOAuthSubstrate).not.toHaveBeenCalled();
+    expect(getConnectorRegistry().createConnector).not.toHaveBeenCalled();
   });
 
   it('runs an owned inline configuration without persisting thrown secret bytes', async () => {

@@ -32,6 +32,7 @@
     { "path": "../itil-service-manager" },
     { "path": "../tbm-cost-engine" },
     { "path": "../framework-integration" },
+    { "path": "../integration-framework" },
     { "path": "../ai-ml-engine" },
     { "path": "../ai-discovery" }
   ]

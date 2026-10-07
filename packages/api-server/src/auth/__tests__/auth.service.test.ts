@@ -32,6 +32,7 @@ class InMemoryAuthRepository implements AuthRepository {
   deletedUserIds: string[] = [];
   apiKeyDeleteRequests: Array<[string, string]> = [];
   apiKeyDeleteResult = 1;
+  apiKey: ApiKey | null = null;
 
   async findUserByUsername(username: string): Promise<User | null> {
     return [...this.users.values()].find((u) => u._username === username) || null;
@@ -65,7 +66,7 @@ class InMemoryAuthRepository implements AuthRepository {
   }
 
   async findApiKeyByKey(): Promise<ApiKey | null> {
-    return null;
+    return this.apiKey;
   }
 
   async createApiKey(apiKey: Omit<ApiKey, 'id' | 'createdAt'>): Promise<ApiKey> {
@@ -252,6 +253,28 @@ describe('AuthService profile/password/account lifecycle', () => {
 
       repository.users.set('user-1', { ...repository.users.get('user-1')!, _platformAdmin: false });
       expect((await service.verifyToken(_accessToken))._platformAdmin).toBe(false);
+    });
+
+    it('rechecks platform authority and organization for API keys', async () => {
+      repository.apiKey = {
+        _id: 'key-1', _key: '', _keyHash: '', _name: 'cli',
+        _userId: 'user-1', _role: 'admin', _tier: 'standard', _enabled: true, _createdAt: new Date(),
+      } as ApiKey;
+      repository.users.set('user-1', {
+        ...repository.users.get('user-1')!,
+        _organizationId: '00000000-0000-0000-0000-000000000000',
+      });
+      expect((await service.verifyApiKey('opaque'))._platformAdmin).toBe(false);
+      repository.users.set('user-1', {
+        ...repository.users.get('user-1')!,
+        _organizationId: '11111111-1111-4111-8111-111111111111',
+        _platformAdmin: true,
+      });
+      expect(await service.verifyApiKey('opaque')).toMatchObject({
+        _platformAdmin: true, _organizationId: '11111111-1111-4111-8111-111111111111',
+      });
+      repository.users.set('user-1', { ...repository.users.get('user-1')!, _platformAdmin: false });
+      expect((await service.verifyApiKey('opaque'))._platformAdmin).toBe(false);
     });
   });
 });

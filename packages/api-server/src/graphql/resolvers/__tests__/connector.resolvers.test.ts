@@ -157,15 +157,20 @@ describe('connector ownership and public GraphQL boundary', () => {
     await expectGraphQLErrorCode(connectorResolvers.Query.connectorConfiguration(null, { id: 'b' }, contextWith(operatorUser)), 'NOT_FOUND');
     await expectGraphQLErrorCode(connectorResolvers.Query.connectorRun(null, { id: 'rb' }, contextWith(operatorUser)), 'NOT_FOUND');
   });
-  it('allows NULL legacy rows only with dedicated platform authority, never tenant admin role', async () => {
+  it('excludes legacy from platform lists while allowing explicit legacy ID reads', async () => {
     installScopedDatabase();
     const tenantAdmin = await connectorResolvers.Query.connectorConfigurations(null, {}, contextWith(adminUser));
     expect(tenantAdmin.map((row: { id: string }) => row.id)).toEqual(['a']);
-    const platform = await connectorResolvers.Query.connectorConfigurations(
-      null, {}, contextWith({ ...adminUser, _platformAdmin: true })
+    const platformContext = contextWith({ ...adminUser, _platformAdmin: true });
+    const platform = await connectorResolvers.Query.connectorConfigurations(null, {}, platformContext);
+    expect(platform.map((row: { id: string }) => row.id)).toEqual(['a']);
+    const runs = await connectorResolvers.Query.connectorRuns(null, {}, platformContext);
+    expect(runs.map((row: { id: string }) => row.id)).toEqual(['ra']);
+    const legacy = await connectorResolvers.Query.connectorConfiguration(null, { id: 'legacy' }, platformContext);
+    expect(legacy.id).toBe('legacy');
+    await expectGraphQLErrorCode(
+      connectorResolvers.Query.connectorConfiguration(null, { id: 'legacy' }, contextWith(adminUser)), 'NOT_FOUND'
     );
-    expect(platform.map((row: { id: string }) => row.id)).toEqual(['a', 'legacy']);
-    expect(platform.map((row: { id: string }) => row.id)).not.toContain('b');
   });
 
   it('runs by owned id and returns only that run public projection', async () => {

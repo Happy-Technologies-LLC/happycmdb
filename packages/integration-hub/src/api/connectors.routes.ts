@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Router, Request, Response } from 'express';
+import type { NextFunction } from 'express';
 import { getIntegrationManager, getConnectorRegistry } from '@cmdb/integration-framework';
 import { getPostgresClient } from '@cmdb/database';
 import {
@@ -9,6 +10,7 @@ import {
   CONFIG_NOT_FOUND, RUN_NOT_FOUND,
 } from '@cmdb/api-server/auth/connector-scope';
 import type { TokenPayload } from '@cmdb/api-server/auth/types';
+import { ROLE_PERMISSIONS } from '@cmdb/api-server/auth/types';
 
 export const connectorsRouter = Router();
 const integrationManager = getIntegrationManager();
@@ -17,7 +19,22 @@ const postgresClient = getPostgresClient();
 
 type AuthenticatedRequest = Request & { user?: TokenPayload };
 const scope = (req: Request) => connectorScope((req as AuthenticatedRequest).user);
-const values = (req: Request) => scopeValues((req as AuthenticatedRequest).user);
+function values(req: Request): [string | null, boolean] {
+  const identity = (req as AuthenticatedRequest).user;
+  const current = scopeValues(identity);
+  // Names are tenant-local. Platform operators select legacy explicitly when
+  // their own tenant has a configuration with the same name.
+  if (req.query['legacy'] === 'true' && identity?._platformAdmin === true) return [null, true];
+  return current[0] === null ? current : [current[0], false];
+}
+function requireConnectorWrite(req: Request, res: Response, next: NextFunction): void {
+  const user = (req as AuthenticatedRequest).user;
+  if (user?._platformAdmin !== true && (!user || !ROLE_PERMISSIONS[user._role]?.includes('write'))) {
+    res.status(403).json({ error: 'Forbidden' });
+    return;
+  }
+  next();
+}
 const configColumns = PUBLIC_CONFIG.split(',').map((column: string) => `c.${column.trim()}`).join(', ');
 const runColumns = PUBLIC_RUN.split(',').map((column: string) => `r.${column.trim()}`).join(', ');
 const failed = (res: Response) => res.status(500).json({ error: 'Connector operation failed' });
@@ -76,14 +93,14 @@ connectorsRouter.get('/:name', async (req, res) => {
   try {
     const result = await postgresClient.query(
       `SELECT ${configColumns} FROM connector_configurations c WHERE c.name = $1 AND ${connectorPredicate('c', 2)}`,
-      [req.params.name, ...values(req)]
+      [req.params['name'], ...values(req)]
     );
     if (!result.rows.length) return res.status(404).json(CONFIG_NOT_FOUND);
     return res.json({ connector: result.rows[0] });
   } catch { return failed(res); }
 });
 
-connectorsRouter.post('/', async (req, res) => {
+connectorsRouter.post('/', requireConnectorWrite, async (req, res) => {
   try {
     const { name, type, enabled = true, schedule, connection, options } = req.body;
     if (!connectorRegistry.hasConnectorType(type)) return res.status(400).json({ error: 'Unknown connector type' });
@@ -99,7 +116,7 @@ connectorsRouter.post('/', async (req, res) => {
   } catch { return failed(res); }
 });
 
-connectorsRouter.put('/:name', async (req, res) => {
+connectorsRouter.put('/:name', requireConnectorWrite, async (req, res) => {
   try {
     const { enabled, schedule, connection, options } = req.body;
     const result = await postgresClient.query(
@@ -107,7 +124,7 @@ connectorsRouter.put('/:name', async (req, res) => {
         schedule = COALESCE($5, c.schedule), connection = COALESCE($6, c.connection),
         options = COALESCE($7, c.options), updated_at = NOW()
        WHERE c.name = $1 AND ${connectorPredicate('c', 2)} RETURNING ${configColumns}`,
-      [req.params.name, ...values(req), enabled, schedule,
+      [req.params['name'], ...values(req), enabled, schedule,
         connection === undefined ? null : JSON.stringify(connection),
         options === undefined ? null : JSON.stringify(options)]
     );
@@ -120,11 +137,11 @@ connectorsRouter.put('/:name', async (req, res) => {
   } catch { return failed(res); }
 });
 
-connectorsRouter.delete('/:name', async (req, res) => {
+connectorsRouter.delete('/:name', requireConnectorWrite, async (req, res) => {
   try {
     const result = await postgresClient.query(
       `DELETE FROM connector_configurations c WHERE c.name = $1 AND ${connectorPredicate('c', 2)} RETURNING c.id`,
-      [req.params.name, ...values(req)]
+      [req.params['name'], ...values(req)]
     );
     if (!result.rows.length) return res.status(404).json(CONFIG_NOT_FOUND);
     await integrationManager.unregisterConnector(result.rows[0].id);
@@ -140,11 +157,14 @@ connectorsRouter.post('/:name/test', async (req, res) => {
     return res.json({ result: { success: result.success === true } });
   } catch (error) {
     if (error instanceof Error && error.message === 'CONNECTOR_NOT_FOUND') return res.status(404).json(CONFIG_NOT_FOUND);
+    if (error instanceof Error && error.message === 'CONNECTOR_CREDENTIAL_UNAVAILABLE') {
+      return res.status(409).json({ error: 'Connector credential reference unavailable' });
+    }
     return failed(res);
   }
 });
 
-connectorsRouter.post('/:name/run', async (req, res) => {
+connectorsRouter.post('/:name/run', requireConnectorWrite, async (req, res) => {
   try {
     const config = await ownedConfig(req);
     if (!config) return res.status(404).json(CONFIG_NOT_FOUND);
@@ -158,6 +178,9 @@ connectorsRouter.post('/:name/run', async (req, res) => {
     return res.json({ result: run.rows[0] });
   } catch (error) {
     if (error instanceof Error && error.message === 'CONNECTOR_NOT_FOUND') return res.status(404).json(CONFIG_NOT_FOUND);
+    if (error instanceof Error && error.message === 'CONNECTOR_CREDENTIAL_UNAVAILABLE') {
+      return res.status(409).json({ error: 'Connector credential reference unavailable' });
+    }
     return failed(res);
   }
 });

@@ -37,9 +37,9 @@ export function connectorPredicate(alias: string, first: number): string {
   return `(${alias}.organization_id = $${first} OR (${alias}.organization_id IS NULL AND $${first + 1}::boolean))`;
 }
 
-export function scopeValues(user: TokenPayload | undefined): [string | null, boolean] {
+export function scopeValues(user: TokenPayload | undefined, includeLegacy = true): [string | null, boolean] {
   const scope = connectorScope(user);
-  return [scope.organizationId, scope.legacy];
+  return [scope.organizationId, scope.legacy && (scope.organizationId === null || includeLegacy)];
 }
 
 export const PUBLIC_CONFIG = `id, organization_id, name, description, connector_type, enabled,

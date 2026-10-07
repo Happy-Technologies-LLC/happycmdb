@@ -12,6 +12,7 @@
     "clean": "rm -rf dist tsconfig.tsbuildinfo"
   },
   "dependencies": {
+    "@cmdb/api-server": "file:../api-server",
     "@cmdb/common": "file:../common",
     "@cmdb/database": "file:../database",
     "@cmdb/integration-framework": "file:../integration-framework",

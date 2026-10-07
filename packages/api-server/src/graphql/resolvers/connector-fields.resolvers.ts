@@ -64,7 +64,7 @@ export const ConnectorConfigurationFieldResolvers = {
         WHERE connector_type = $1
       `;
 
-      const result = await pgClient.query(query, [parent.connectorType, ...scopeValues(context.user)]);
+      const result = await pgClient.query(query, [parent.connectorType, ...scopeValues(context.user, false)]);
 
       if (result.rows.length === 0) {
         throw new GraphQLError('Associated connector not found', {

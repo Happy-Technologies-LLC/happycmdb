@@ -55,10 +55,11 @@ export class IntegrationManager {
 
   async registerConnector(config: ConnectorConfiguration): Promise<void> {
     const owned = config as OwnedConfig;
-    if (!owned.id || !owned.organizationId || !config.enabled || config.credential_id) return;
+    if (!owned.id) return;
+    await this.unregisterConnector(owned.id);
+    if (!owned.organizationId || !config.enabled || config.credential_id) return;
     // Registration may hold a connector instance, but execution always reloads the current row.
     if (config.schedule && !cron.validate(config.schedule)) throw new Error('Invalid cron schedule');
-    await this.unregisterConnector(owned.id);
     const connector = getConnectorRegistry().createConnector(config);
     this.connectors.set(owned.id, connector);
     if (config.schedule) {

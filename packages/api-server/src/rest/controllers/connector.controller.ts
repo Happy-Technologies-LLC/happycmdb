@@ -206,7 +206,9 @@ export class ConnectorController {
 
       const pool = this.postgresClient['pool'];
 
-      let query = 'SELECT * FROM installed_connectors WHERE 1=1';
+      let query = `SELECT id, connector_type, category, name, description, installed_version,
+        latest_available_version, installed_at, updated_at, enabled, verified, capabilities,
+        resources, tags FROM installed_connectors WHERE 1=1`;
       const params: any[] = [];
       let paramIndex = 1;
 
@@ -240,13 +242,9 @@ export class ConnectorController {
         data: result.rows,
         count: result.rows.length,
       });
-    } catch (error) {
-      logger.error('Error fetching installed connectors', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to fetch installed connectors',
-        message: error instanceof Error ? error.message : 'Unknown error'
-      });
+    } catch {
+      logger.error('Error fetching installed connectors');
+      res.status(500).json({ success: false, error: 'Failed to fetch installed connectors' });
     }
   }
 
@@ -260,7 +258,9 @@ export class ConnectorController {
 
       const pool = this.postgresClient['pool'];
       const result = await pool.query(
-        'SELECT * FROM installed_connectors WHERE connector_type = $1',
+        `SELECT id, connector_type, category, name, description, installed_version,
+          latest_available_version, installed_at, updated_at, enabled, verified, capabilities,
+          resources, tags FROM installed_connectors WHERE connector_type = $1`,
         [type]
       );
 
@@ -277,13 +277,9 @@ export class ConnectorController {
         success: true,
         data: result.rows[0],
       });
-    } catch (error) {
-      logger.error('Error fetching installed connector details', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to fetch connector details',
-        message: error instanceof Error ? error.message : 'Unknown error'
-      });
+    } catch {
+      logger.error('Error fetching installed connector details');
+      res.status(500).json({ success: false, error: 'Failed to fetch connector details' });
     }
   }
 

@@ -9,6 +9,8 @@
 import { Request, Response } from 'express';
 import { Pool } from 'pg';
 import { logger } from '@cmdb/common';
+import { CONFIG_NOT_FOUND, PUBLIC_CONFIG } from '../../../auth/connector-scope';
+import { ownedConfig, requestScopeValues } from './ownership';
 
 export class ConnectorConfigResourcesController {
   constructor(private pool: Pool) {}
@@ -18,24 +20,22 @@ export class ConnectorConfigResourcesController {
       const { id } = req.params;
 
       const result = await this.pool.query(
-        `SELECT cc.*, ic.resources, ic.metadata
+        `SELECT cc.connector_type, cc.enabled_resources, ic.resources
          FROM connector_configurations cc
          JOIN installed_connectors ic ON cc.connector_type = ic.connector_type
-         WHERE cc.id = $1`,
-        [id]
+         WHERE cc.id = $1 AND (cc.organization_id = $2 OR (cc.organization_id IS NULL AND $3::boolean))`,
+        [id, ...requestScopeValues(req)]
       );
 
       if (result.rows.length === 0) {
-        res.status(404).json({
-          success: false,
-          error: 'Not Found',
-          message: `Configuration with ID '${id}' not found`
-        });
+        res.status(404).json(CONFIG_NOT_FOUND);
         return;
       }
 
       const config = result.rows[0];
-      const resources = config.resources || [];
+      const resources = Array.isArray(config.resources)
+        ? config.resources.filter((entry: unknown): entry is string => typeof entry === 'string')
+        : [];
 
       res.json({
         success: true,
@@ -46,13 +46,9 @@ export class ConnectorConfigResourcesController {
           enabled_resources: config.enabled_resources || [],
         },
       });
-    } catch (error) {
-      logger.error('Error getting available resources', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to get available resources',
-        message: error instanceof Error ? error.message : 'Unknown error'
-      });
+    } catch {
+      logger.error('Error getting available resources');
+      res.status(500).json({ success: false, error: 'Failed to get available resources' });
     }
   }
 
@@ -64,17 +60,13 @@ export class ConnectorConfigResourcesController {
       const result = await this.pool.query(
         `UPDATE connector_configurations
          SET enabled_resources = $1, resource_configs = $2, updated_at = NOW()
-         WHERE id = $3
-         RETURNING *`,
-        [enabled_resources, JSON.stringify(resource_configs || {}), id]
+         WHERE id = $3 AND (organization_id = $4 OR (organization_id IS NULL AND $5::boolean))
+         RETURNING ${PUBLIC_CONFIG}`,
+        [enabled_resources, JSON.stringify(resource_configs || {}), id, ...requestScopeValues(req)]
       );
 
       if (result.rows.length === 0) {
-        res.status(404).json({
-          success: false,
-          error: 'Not Found',
-          message: `Configuration with ID '${id}' not found`
-        });
+        res.status(404).json(CONFIG_NOT_FOUND);
         return;
       }
 
@@ -83,13 +75,9 @@ export class ConnectorConfigResourcesController {
         data: result.rows[0],
         message: 'Enabled resources updated successfully'
       });
-    } catch (error) {
-      logger.error('Error updating enabled resources', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to update enabled resources',
-        message: error instanceof Error ? error.message : 'Unknown error'
-      });
+    } catch {
+      logger.error('Error updating enabled resources');
+      res.status(500).json({ success: false, error: 'Failed to update enabled resources' });
     }
   }
 
@@ -97,38 +85,25 @@ export class ConnectorConfigResourcesController {
     try {
       const { id, resourceId } = req.params;
 
-      const result = await this.pool.query(
-        'SELECT resource_configs FROM connector_configurations WHERE id = $1',
-        [id]
-      );
+      const result = await ownedConfig(this.pool, req, id);
 
       if (result.rows.length === 0) {
-        res.status(404).json({
-          success: false,
-          error: 'Not Found',
-          message: `Configuration with ID '${id}' not found`
-        });
+        res.status(404).json(CONFIG_NOT_FOUND);
         return;
       }
 
-      const resourceConfigs = result.rows[0].resource_configs || {};
-      const resourceConfig = (resourceId && resourceConfigs[resourceId]) ? resourceConfigs[resourceId] : {};
+      // Resource configuration is write-only, including nested connector secrets.
 
       res.json({
         success: true,
         data: {
           config_id: id,
-          resource_id: resourceId,
-          config: resourceConfig
+          resource_id: resourceId
         },
       });
-    } catch (error) {
-      logger.error('Error getting resource config', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to get resource config',
-        message: error instanceof Error ? error.message : 'Unknown error'
-      });
+    } catch {
+      logger.error('Error getting resource config');
+      res.status(500).json({ success: false, error: 'Failed to get resource config' });
     }
   }
 }

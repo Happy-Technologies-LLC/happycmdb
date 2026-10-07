@@ -175,7 +175,7 @@ export class AuthService {
         throw new Error('User not found or disabled');
       }
 
-      return { ...payload, _organizationId: user._organizationId };
+      return { ...payload, _organizationId: user._organizationId, _platformAdmin: user._platformAdmin === true };
     } catch (error) {
       throw new Error(`Token verification failed: ${error}`);
     }
@@ -270,6 +270,7 @@ export class AuthService {
       _role: apiKeyRecord._role,
       _type: 'access', // API keys act like access tokens
       _organizationId: user._organizationId,
+      _platformAdmin: user._platformAdmin === true,
     };
   }
 

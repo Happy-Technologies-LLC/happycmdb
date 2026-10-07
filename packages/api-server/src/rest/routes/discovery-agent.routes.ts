@@ -28,6 +28,9 @@ export const discoveryAgentRoutes = Router();
 const controller = new DiscoveryAgentController();
 const authMiddleware = getAuthMiddleware();
 
+// Every lookup and mutation below is bound to the verified identity's org.
+discoveryAgentRoutes.use(authMiddleware.requireOrganization());
+
 // Validation schemas
 const registerAgentSchema = Joi.object({
   agent_id: Joi.string().required().min(1).max(255),

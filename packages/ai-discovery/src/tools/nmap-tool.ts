@@ -6,12 +6,12 @@
  * Allows AI to scan network ports and services
  */
 
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { DiscoveryTool } from '../types';
-import { logger } from '@cmdb/common';
+import { logger, resolveDiscoveryHost, connectDiscoveryHost, DISCOVERY_TARGET_REFUSED } from '@cmdb/common';
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 export const nmapTool: DiscoveryTool = {
   name: 'nmap_scan',
@@ -39,9 +39,16 @@ export const nmapTool: DiscoveryTool = {
     required: ['host'],
   },
   execute: async (params: any) => {
-    const { host, ports = '--top-ports 100', scanType = 'quick' } = params;
+    const { host, ports, scanType = 'quick' } = params;
 
-    logger.info(`Executing NMAP scan`, { host, ports, scanType });
+    const destination = await connectDiscoveryHost(host, await resolveDiscoveryHost(host));
+    if (ports !== undefined && (typeof ports !== 'string' ||
+      !/^\d{1,5}(?:-\d{1,5})?(?:,\d{1,5}(?:-\d{1,5})?)*$/.test(ports) ||
+      ports.split(/[,-]/).some((part: string) => Number(part) < 1 || Number(part) > 65535))) {
+      throw new Error('Invalid port range');
+    }
+    if (scanType === 'aggressive') throw new Error(DISCOVERY_TARGET_REFUSED);
+    logger.info('Executing NMAP scan', { scanType });
 
     try {
       // Build nmap command
@@ -54,21 +61,14 @@ export const nmapTool: DiscoveryTool = {
         case 'version':
           nmapArgs = '-sV'; // Version detection
           break;
-        case 'aggressive':
-          nmapArgs = '-A'; // Aggressive (OS detection, version, scripts, traceroute)
-          break;
       }
 
-      const portArg = ports.includes('-') || ports.includes(',')
-        ? `-p ${ports}`
-        : ports;
-
-      const command = `nmap ${nmapArgs} ${portArg} ${host} -oX - 2>&1`;
-
-      // Set timeout to 30 seconds
-      const { stdout, stderr } = await execAsync(command, {
+      const args = [nmapArgs, ...(ports === undefined ? ['--top-ports', '100'] : ['-p', ports]),
+        destination, '-oX', '-'];
+      // execFile never invokes a shell; the destination is a checked numeric IP.
+      const { stdout, stderr } = await execFileAsync('nmap', args, {
         timeout: 30000,
-        maxBuffer: 1024 * 1024, // 1MB
+        maxBuffer: 1024 * 1024,
       });
 
       if (stderr && !stderr.includes('Starting Nmap')) {

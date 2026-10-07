@@ -12,6 +12,7 @@ import { logger } from '@cmdb/common';
 import * as vm from 'node:vm';
 import { getRedisClient } from '@cmdb/database';
 import * as crypto from 'crypto';
+import { safeDiscoveryHttp } from './tools/safe-http';
 
 export class PatternMatcher implements IPatternMatcher {
   private patternStorage: PatternStorageService;
@@ -315,20 +316,11 @@ export class PatternMatcher implements IPatternMatcher {
    * (limits what patterns can access)
    */
   private createSafeFetch() {
-    return async (url: string, options?: any) => {
-      // Basic safety checks
-      if (!url.startsWith('http://') && !url.startsWith('https://')) {
-        throw new Error('Invalid URL protocol');
-      }
-
-      // Use native fetch or axios
-      const axios = require('axios');
-      const response = await axios({
-        url,
+    return async (url: string, options?: { method?: string; headers?: Record<string, string> }) => {
+      const response = await safeDiscoveryHttp(url, {
         method: options?.method || 'GET',
         headers: options?.headers,
         timeout: 5000,
-        maxRedirects: 0,
         validateStatus: () => true,
       });
 

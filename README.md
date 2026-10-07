@@ -31,6 +31,8 @@ HappyCMDB is an enterprise CMDB platform that discovers, maps, and tracks infras
 - **React Dashboard** — 5 executive dashboards (CIO, ITSM, FinOps, Business Service, Executive)
 - **REST + GraphQL APIs** — 20+ endpoints with JWT authentication
 
+**Discovery egress restriction:** Discovery workers and AI discovery tools refuse loopback, link-local, RFC1918/ULA, cloud metadata addresses, and platform service names for every caller, including administrators. Private/internal discovery is unavailable until a separately reviewed dedicated platform-admin (P-6) and per-organization CIDR allowlist change lands. Discovery agents are visible and mutable only within the caller's verified organization; legacy agents without an organization are inaccessible to everyone. See [the discovery egress and registry design](docs/discovery-egress-agent-registry-design.md).
+
 ## Architecture
 
 ```

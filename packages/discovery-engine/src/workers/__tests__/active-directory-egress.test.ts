@@ -1,0 +1,38 @@
+// Copyright 2026 Happy Technologies LLC
+// SPDX-License-Identifier: Apache-2.0
+
+import { lookup } from 'dns/promises';
+import * as ldap from 'ldapjs';
+import type { UnifiedCredential } from '@cmdb/common';
+import { DISCOVERY_TARGET_REFUSED } from '@cmdb/common';
+import { ActiveDirectoryDiscoveryWorker } from '../active-directory-discovery.worker';
+
+jest.mock('dns/promises', () => ({ lookup: jest.fn() }));
+jest.mock('ldapjs', () => ({ createClient: jest.fn() }));
+jest.mock('@cmdb/common', () => ({ ...jest.requireActual('@cmdb/common'), withRetry: (operation: () => Promise<unknown>) => operation() }));
+const mockedLookup = jest.mocked(lookup);
+const credential: UnifiedCredential = {
+  id: 'test', name: 'test', protocol: 'ldap', scope: 'network',
+  credentials: { domain: 'public.example', base_dn: 'DC=example,DC=com', username: 'tester', password: 'not-used' },
+  affinity: {}, tags: [], created_by: 'test', created_at: new Date(), updated_at: new Date(),
+};
+
+beforeEach(() => { mockedLookup.mockReset(); jest.mocked(ldap.createClient).mockClear(); });
+
+it('refuses internal LDAP target before constructing client', async () => {
+  const internalCredential: UnifiedCredential = {
+    ...credential, credentials: { ...credential.credentials, domain: 'redis' },
+  };
+  const worker = new ActiveDirectoryDiscoveryWorker('redis', 'DC=example,DC=com', internalCredential);
+  await expect(worker.discoverComputers('job')).rejects.toThrow(DISCOVERY_TARGET_REFUSED);
+  expect(ldap.createClient).not.toHaveBeenCalled();
+  expect(mockedLookup).not.toHaveBeenCalled();
+});
+
+it('refuses DNS rebinding to metadata before constructing LDAP client', async () => {
+  mockedLookup.mockResolvedValueOnce([{ address: '8.8.8.8', family: 4 }] as never)
+    .mockResolvedValueOnce([{ address: '169.254.169.254', family: 4 }] as never);
+  const worker = new ActiveDirectoryDiscoveryWorker('public.example', 'DC=example,DC=com', credential);
+  await expect(worker.discoverComputers('job')).rejects.toThrow(DISCOVERY_TARGET_REFUSED);
+  expect(ldap.createClient).not.toHaveBeenCalled();
+});

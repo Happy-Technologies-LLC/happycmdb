@@ -4,7 +4,7 @@
 // packages/discovery-engine/src/workers/nmap-discovery.worker.ts
 
 import * as nmap from 'node-nmap';
-import { logger, withRetry } from '@cmdb/common';
+import { logger, withRetry, assertDiscoveryRange, resolveDiscoveryHost, connectDiscoveryHost, DISCOVERY_TARGET_REFUSED } from '@cmdb/common';
 import { DiscoveredCI, CIStatus, Relationship } from '@cmdb/common';
 
 /**
@@ -34,7 +34,11 @@ export class NmapDiscoveryWorker {
   ): Promise<DiscoveredCI[]> {
     return withRetry(
       async () => {
-        logger.info('Starting Nmap scan', { jobId, range, scanType });
+        // Resolve hostnames ourselves and give nmap only numeric addresses.
+        // CIDRs are checked for *any* prohibited overlap before the subprocess starts.
+        const destination = range.includes('/') ? assertDiscoveryRange(range) :
+          await connectDiscoveryHost(range, await resolveDiscoveryHost(range));
+        logger.info('Starting Nmap scan', { jobId, scanType });
 
         return new Promise<DiscoveredCI[]>((resolve, reject) => {
           let scanner: any;
@@ -42,19 +46,19 @@ export class NmapDiscoveryWorker {
           // Select scanner type based on scanType
           switch (scanType) {
             case 'quick':
-              scanner = new nmap.QuickScan(range);
+              scanner = new nmap.QuickScan(destination);
               break;
             case 'port':
-              scanner = new (nmap as any).NmapScan(range, '-p 1-65535'); // Full port scan
+              scanner = new (nmap as any).NmapScan(destination, '-p 1-65535');
               break;
             case 'os':
-              scanner = new nmap.OsAndPortScan(range);
+              scanner = new nmap.OsAndPortScan(destination);
               break;
             case 'version':
-              scanner = new (nmap as any).NmapScan(range, '-sV'); // Version detection
+              scanner = new (nmap as any).NmapScan(destination, '-sV');
               break;
             default:
-              scanner = new nmap.QuickScan(range);
+              scanner = new nmap.QuickScan(destination);
           }
 
           scanner.on('complete', (data: any[]) => {
@@ -88,7 +92,7 @@ export class NmapDiscoveryWorker {
       {
         maxAttempts: 3,
         initialDelay: 2000,
-        operationName: `scanNetwork-${range}`,
+        operationName: 'scanNetwork',
       }
     );
   }
@@ -100,6 +104,9 @@ export class NmapDiscoveryWorker {
     jobId: string,
     ranges: Array<{ range: string; scanType?: 'quick' | 'port' | 'os' | 'version' }>
   ): Promise<DiscoveredCI[]> {
+    // Reject the entire batch before scanning any member if one is forbidden.
+    await Promise.all(ranges.map(({ range }) =>
+      range.includes('/') ? Promise.resolve(assertDiscoveryRange(range)) : resolveDiscoveryHost(range)));
     logger.info('Starting Nmap scan for multiple ranges', {
       jobId,
       _rangeCount: ranges.length,
@@ -165,12 +172,17 @@ export class NmapDiscoveryWorker {
   ): Promise<DiscoveredCI | null> {
     return withRetry(
       async () => {
-        logger.info('Starting Nmap host scan', { jobId, host, options });
+        const destination = await connectDiscoveryHost(host, await resolveDiscoveryHost(host));
+        logger.info('Starting Nmap host scan', { jobId, options });
 
         // Build nmap command flags
         const flags: string[] = [];
 
         if (options?.portRange) {
+          if (!/^\d{1,5}(?:-\d{1,5})?(?:,\d{1,5}(?:-\d{1,5})?)*$/.test(options.portRange) ||
+            options.portRange.split(/[,-]/).some(part => Number(part) < 1 || Number(part) > 65535)) {
+            throw new Error('Invalid port range');
+          }
           flags.push(`-p ${options.portRange}`);
         }
 
@@ -183,13 +195,14 @@ export class NmapDiscoveryWorker {
         }
 
         if (options?.scriptScan) {
-          flags.push('-sC'); // Default script scan
+          // NSE scripts can contact other destinations without consulting this guard.
+          throw new Error(DISCOVERY_TARGET_REFUSED);
         }
 
         const nmapFlags = flags.join(' ');
 
         return new Promise<DiscoveredCI | null>((resolve, reject) => {
-          const scanner = new (nmap as any).NmapScan(host, nmapFlags || undefined);
+          const scanner = new (nmap as any).NmapScan(destination, nmapFlags || undefined);
 
           scanner.on('complete', (data: any[]) => {
             if (data.length > 0) {
@@ -213,7 +226,7 @@ export class NmapDiscoveryWorker {
       {
         maxAttempts: 3,
         initialDelay: 2000,
-        operationName: `scanHost-${host}`,
+        operationName: 'scanHost',
       }
     );
   }

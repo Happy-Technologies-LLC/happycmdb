@@ -4,7 +4,7 @@
 // packages/discovery-engine/src/workers/active-directory-discovery.worker.ts
 
 import * as ldap from 'ldapjs';
-import { logger, withRetry } from '@cmdb/common';
+import { logger, withRetry, resolveDiscoveryHost, connectDiscoveryHost, DISCOVERY_TARGET_REFUSED } from '@cmdb/common';
 import {
   DiscoveredCI,
   DiscoveryConfig,
@@ -739,11 +739,28 @@ export class ActiveDirectoryDiscoveryWorker {
    * Create LDAP client and bind
    */
   private async createLDAPClient(): Promise<ldap.Client> {
+    let destination: URL;
+    let servername: string;
+    try {
+      destination = new URL(this.ldapUrl);
+      if (!['ldap:', 'ldaps:'].includes(destination.protocol) || destination.username ||
+        destination.password || (destination.pathname !== '' && destination.pathname !== '/') ||
+        destination.search || destination.hash) {
+        throw new Error(DISCOVERY_TARGET_REFUSED);
+      }
+      const host = destination.hostname.replace(/^\[([^\]]+)\]$/, '$1');
+      servername = host;
+      const address = await connectDiscoveryHost(host, await resolveDiscoveryHost(host));
+      destination.hostname = address.includes(':') ? `[${address}]` : address;
+    } catch {
+      throw new Error(DISCOVERY_TARGET_REFUSED);
+    }
     return new Promise((resolve, reject) => {
       const client = ldap.createClient({
-        url: this.ldapUrl,
+        url: destination.toString(),
         tlsOptions: {
           rejectUnauthorized: this.useSSL,
+          servername,
         },
       });
 

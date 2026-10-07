@@ -19,6 +19,8 @@ import {
 } from '@cmdb/common';
 import { v4 as uuidv4 } from 'uuid';
 
+const ORG = '11111111-1111-4111-8111-111111111111';
+
 describe('Discovery Agent Routing Integration Tests', () => {
   let pool: Pool;
   let agentService: DiscoveryAgentService;
@@ -65,7 +67,8 @@ describe('Discovery Agent Routing Integration Tests', () => {
         tags: ['datacenter-1', 'production'],
       };
 
-      const agent = await agentService.registerAgent(registration);
+      const agent = await agentService.registerAgent(registration, ORG);
+      if (!agent) throw new Error('Expected registration to succeed');
       createdAgentIds.push(agent.agent_id);
 
       expect(agent.agent_id).toBe(registration.agent_id);
@@ -94,7 +97,7 @@ describe('Discovery Agent Routing Integration Tests', () => {
         tags: ['test'],
       };
 
-      await agentService.registerAgent(initialRegistration);
+      await agentService.registerAgent(initialRegistration, ORG);
 
       // Re-register with updated capabilities
       const updatedRegistration: DiscoveryAgentRegistration = {
@@ -108,7 +111,8 @@ describe('Discovery Agent Routing Integration Tests', () => {
         tags: ['test', 'updated'],
       };
 
-      const updatedAgent = await agentService.registerAgent(updatedRegistration);
+      const updatedAgent = await agentService.registerAgent(updatedRegistration, ORG);
+      if (!updatedAgent) throw new Error('Expected same-org re-registration to succeed');
 
       expect(updatedAgent.agent_id).toBe(agentId);
       expect(updatedAgent.provider_capabilities).toEqual(['nmap', 'ssh', 'snmp']);
@@ -129,13 +133,13 @@ describe('Discovery Agent Routing Integration Tests', () => {
         hostname: 'heartbeat-test.local',
         provider_capabilities: ['nmap'],
         reachable_networks: ['10.0.0.0/8'],
-      });
+      }, ORG);
 
       // Wait a moment to ensure timestamp difference
       await new Promise(resolve => setTimeout(resolve, 1000));
 
       // Get initial heartbeat
-      const agentBefore = await agentService.getAgent(agentId);
+      const agentBefore = await agentService.getAgent(agentId, ORG);
       const initialHeartbeat = agentBefore?.last_heartbeat_at;
 
       // Send heartbeat
@@ -144,10 +148,10 @@ describe('Discovery Agent Routing Integration Tests', () => {
         status: 'active',
       };
 
-      await agentService.updateHeartbeat(heartbeat);
+      await agentService.updateHeartbeat(heartbeat, ORG);
 
       // Verify heartbeat was updated
-      const agentAfter = await agentService.getAgent(agentId);
+      const agentAfter = await agentService.getAgent(agentId, ORG);
       expect(agentAfter?.last_heartbeat_at).not.toBe(initialHeartbeat);
     }, 60000);
 
@@ -161,7 +165,7 @@ describe('Discovery Agent Routing Integration Tests', () => {
         hostname: 'stats-test.local',
         provider_capabilities: ['nmap', 'ssh'],
         reachable_networks: ['10.0.0.0/8'],
-      });
+      }, ORG);
 
       // Send heartbeat with stats
       const heartbeat: AgentHeartbeat = {
@@ -174,10 +178,10 @@ describe('Discovery Agent Routing Integration Tests', () => {
         },
       };
 
-      await agentService.updateHeartbeat(heartbeat);
+      await agentService.updateHeartbeat(heartbeat, ORG);
 
       // Verify stats were updated
-      const agent = await agentService.getAgent(agentId);
+      const agent = await agentService.getAgent(agentId, ORG);
       expect(agent?.total_jobs_completed).toBe(5);
       expect(agent?.total_jobs_failed).toBe(1);
       expect(agent?.total_cis_discovered).toBe(42);
@@ -193,10 +197,10 @@ describe('Discovery Agent Routing Integration Tests', () => {
         },
       };
 
-      await agentService.updateHeartbeat(heartbeat2);
+      await agentService.updateHeartbeat(heartbeat2, ORG);
 
       // Verify incremental stats
-      const agentAfter = await agentService.getAgent(agentId);
+      const agentAfter = await agentService.getAgent(agentId, ORG);
       expect(agentAfter?.total_jobs_completed).toBe(8); // 5 + 3
       expect(agentAfter?.total_jobs_failed).toBe(1); // 1 + 0
       expect(agentAfter?.total_cis_discovered).toBe(57); // 42 + 15
@@ -214,7 +218,7 @@ describe('Discovery Agent Routing Integration Tests', () => {
         hostname: 'agent-10-net.local',
         provider_capabilities: ['nmap', 'ssh'],
         reachable_networks: ['10.0.0.0/8'],
-      });
+      }, ORG);
 
       // Register agent for 192.168.0.0/16 network
       const agent2Id = `test-agent-${uuidv4()}`;
@@ -225,21 +229,15 @@ describe('Discovery Agent Routing Integration Tests', () => {
         hostname: 'agent-192-net.local',
         provider_capabilities: ['nmap', 'ssh'],
         reachable_networks: ['192.168.0.0/16'],
-      });
+      }, ORG);
 
       // Find best agent for 10.x.x.x network
-      const bestAgent10 = await agentService.findBestAgentForNetworks(
-        ['10.50.100.0/24'],
-        'nmap'
-      );
+      const bestAgent10 = await agentService.findBestAgentForNetworks(['10.50.100.0/24'], 'nmap', ORG);
 
       expect(bestAgent10).toBe(agent1Id);
 
       // Find best agent for 192.168.x.x network
-      const bestAgent192 = await agentService.findBestAgentForNetworks(
-        ['192.168.1.0/24'],
-        'ssh'
-      );
+      const bestAgent192 = await agentService.findBestAgentForNetworks(['192.168.1.0/24'], 'ssh', ORG);
 
       expect(bestAgent192).toBe(agent2Id);
     }, 60000);
@@ -254,7 +252,7 @@ describe('Discovery Agent Routing Integration Tests', () => {
         hostname: 'good-agent.local',
         provider_capabilities: ['nmap'],
         reachable_networks: ['10.0.0.0/8'],
-      });
+      }, ORG);
 
       // Simulate successful jobs
       await agentService.updateHeartbeat({
@@ -265,7 +263,7 @@ describe('Discovery Agent Routing Integration Tests', () => {
           jobs_failed: 5,
           cis_discovered: 500,
         },
-      });
+      }, ORG);
 
       // Register agent with lower success rate
       const poorAgentId = `test-agent-${uuidv4()}`;
@@ -276,7 +274,7 @@ describe('Discovery Agent Routing Integration Tests', () => {
         hostname: 'poor-agent.local',
         provider_capabilities: ['nmap'],
         reachable_networks: ['10.0.0.0/8'],
-      });
+      }, ORG);
 
       // Simulate failed jobs
       await agentService.updateHeartbeat({
@@ -287,13 +285,10 @@ describe('Discovery Agent Routing Integration Tests', () => {
           jobs_failed: 30,
           cis_discovered: 50,
         },
-      });
+      }, ORG);
 
       // Find best agent for 10.x.x.x network
-      const bestAgent = await agentService.findBestAgentForNetworks(
-        ['10.50.100.0/24'],
-        'nmap'
-      );
+      const bestAgent = await agentService.findBestAgentForNetworks(['10.50.100.0/24'], 'nmap', ORG);
 
       // Should prefer agent with better success rate (100/105 > 20/50)
       expect(bestAgent).toBe(goodAgentId);
@@ -309,13 +304,10 @@ describe('Discovery Agent Routing Integration Tests', () => {
         hostname: 'limited-agent.local',
         provider_capabilities: ['nmap'],
         reachable_networks: ['10.0.0.0/8'],
-      });
+      }, ORG);
 
       // Try to find agent for completely different network
-      const bestAgent = await agentService.findBestAgentForNetworks(
-        ['172.16.0.0/12'],
-        'nmap'
-      );
+      const bestAgent = await agentService.findBestAgentForNetworks(['172.16.0.0/12'], 'nmap', ORG);
 
       expect(bestAgent).toBeNull();
     }, 60000);
@@ -330,13 +322,10 @@ describe('Discovery Agent Routing Integration Tests', () => {
         hostname: 'nmap-only-agent.local',
         provider_capabilities: ['nmap'],
         reachable_networks: ['10.0.0.0/8'],
-      });
+      }, ORG);
 
       // Try to find agent for SSH discovery
-      const bestAgent = await agentService.findBestAgentForNetworks(
-        ['10.50.100.0/24'],
-        'ssh'
-      );
+      const bestAgent = await agentService.findBestAgentForNetworks(['10.50.100.0/24'], 'ssh', ORG);
 
       expect(bestAgent).toBeNull();
     }, 60000);
@@ -353,7 +342,7 @@ describe('Discovery Agent Routing Integration Tests', () => {
         hostname: 'stale-agent.local',
         provider_capabilities: ['nmap'],
         reachable_networks: ['10.0.0.0/8'],
-      });
+      }, ORG);
 
       // Manually set last_heartbeat_at to 10 minutes ago
       await pool.query(
@@ -369,7 +358,7 @@ describe('Discovery Agent Routing Integration Tests', () => {
       expect(count).toBeGreaterThan(0);
 
       // Verify agent is marked offline
-      const agent = await agentService.getAgent(agentId);
+      const agent = await agentService.getAgent(agentId, ORG);
       expect(agent?.status).toBe('offline');
     }, 60000);
 
@@ -383,7 +372,7 @@ describe('Discovery Agent Routing Integration Tests', () => {
         hostname: 'active-agent.local',
         provider_capabilities: ['nmap'],
         reachable_networks: ['10.0.0.0/8'],
-      });
+      }, ORG);
 
       // Register offline agent
       const offlineAgentId = `test-agent-${uuidv4()}`;
@@ -394,7 +383,7 @@ describe('Discovery Agent Routing Integration Tests', () => {
         hostname: 'offline-agent.local',
         provider_capabilities: ['nmap'],
         reachable_networks: ['10.0.0.0/8'],
-      });
+      }, ORG);
 
       // Mark second agent as offline
       await pool.query(
@@ -406,10 +395,7 @@ describe('Discovery Agent Routing Integration Tests', () => {
       );
 
       // Find best agent
-      const bestAgent = await agentService.findBestAgentForNetworks(
-        ['10.50.100.0/24'],
-        'nmap'
-      );
+      const bestAgent = await agentService.findBestAgentForNetworks(['10.50.100.0/24'], 'nmap', ORG);
 
       // Should route to active agent, not offline one
       expect(bestAgent).toBe(activeAgentId);
@@ -425,7 +411,7 @@ describe('Discovery Agent Routing Integration Tests', () => {
         hostname: 'recovery-agent.local',
         provider_capabilities: ['nmap'],
         reachable_networks: ['10.0.0.0/8'],
-      });
+      }, ORG);
 
       // Mark agent as offline
       await pool.query(
@@ -436,24 +422,21 @@ describe('Discovery Agent Routing Integration Tests', () => {
         [agentId]
       );
 
-      const offlineAgent = await agentService.getAgent(agentId);
+      const offlineAgent = await agentService.getAgent(agentId, ORG);
       expect(offlineAgent?.status).toBe('offline');
 
       // Send heartbeat to recover agent
       await agentService.updateHeartbeat({
         agent_id: agentId,
         status: 'active',
-      });
+      }, ORG);
 
       // Verify agent is back online
-      const recoveredAgent = await agentService.getAgent(agentId);
+      const recoveredAgent = await agentService.getAgent(agentId, ORG);
       expect(recoveredAgent?.status).toBe('active');
 
       // Verify agent can now be routed to
-      const bestAgent = await agentService.findBestAgentForNetworks(
-        ['10.50.100.0/24'],
-        'nmap'
-      );
+      const bestAgent = await agentService.findBestAgentForNetworks(['10.50.100.0/24'], 'nmap', ORG);
 
       expect(bestAgent).toBe(agentId);
     }, 60000);
@@ -470,7 +453,7 @@ describe('Discovery Agent Routing Integration Tests', () => {
         provider_capabilities: ['nmap'],
         reachable_networks: ['10.0.0.0/8'],
         tags: ['datacenter-1'],
-      });
+      }, ORG);
 
       const agent2Id = `test-agent-${uuidv4()}`;
       createdAgentIds.push(agent2Id);
@@ -480,10 +463,10 @@ describe('Discovery Agent Routing Integration Tests', () => {
         provider_capabilities: ['ssh'],
         reachable_networks: ['192.168.0.0/16'],
         tags: ['datacenter-2'],
-      });
+      }, ORG);
 
       // List all agents
-      const agents = await agentService.listAgents();
+      const agents = await agentService.listAgents(ORG);
 
       expect(agents.length).toBeGreaterThanOrEqual(2);
       expect(agents.map(a => a.agent_id)).toContain(agent1Id);
@@ -499,7 +482,7 @@ describe('Discovery Agent Routing Integration Tests', () => {
         hostname: 'active-filter.local',
         provider_capabilities: ['nmap'],
         reachable_networks: ['10.0.0.0/8'],
-      });
+      }, ORG);
 
       // Register and mark another agent offline
       const offlineAgentId = `test-agent-${uuidv4()}`;
@@ -509,7 +492,7 @@ describe('Discovery Agent Routing Integration Tests', () => {
         hostname: 'offline-filter.local',
         provider_capabilities: ['nmap'],
         reachable_networks: ['10.0.0.0/8'],
-      });
+      }, ORG);
 
       await pool.query(
         `UPDATE discovery_agents SET status = 'offline' WHERE agent_id = $1`,
@@ -517,12 +500,12 @@ describe('Discovery Agent Routing Integration Tests', () => {
       );
 
       // Filter by active status
-      const activeAgents = await agentService.listAgents({ status: 'active' });
+      const activeAgents = await agentService.listAgents(ORG, { status: 'active' });
       expect(activeAgents.map(a => a.agent_id)).toContain(activeAgentId);
       expect(activeAgents.map(a => a.agent_id)).not.toContain(offlineAgentId);
 
       // Filter by offline status
-      const offlineAgents = await agentService.listAgents({ status: 'offline' });
+      const offlineAgents = await agentService.listAgents(ORG, { status: 'offline' });
       expect(offlineAgents.map(a => a.agent_id)).toContain(offlineAgentId);
       expect(offlineAgents.map(a => a.agent_id)).not.toContain(activeAgentId);
     }, 60000);
@@ -536,7 +519,7 @@ describe('Discovery Agent Routing Integration Tests', () => {
         hostname: 'nmap-filter.local',
         provider_capabilities: ['nmap'],
         reachable_networks: ['10.0.0.0/8'],
-      });
+      }, ORG);
 
       // Register agent with SSH capability
       const sshAgentId = `test-agent-${uuidv4()}`;
@@ -546,14 +529,14 @@ describe('Discovery Agent Routing Integration Tests', () => {
         hostname: 'ssh-filter.local',
         provider_capabilities: ['ssh', 'snmp'],
         reachable_networks: ['10.0.0.0/8'],
-      });
+      }, ORG);
 
       // Filter by NMAP provider
-      const nmapAgents = await agentService.listAgents({ provider: 'nmap' });
+      const nmapAgents = await agentService.listAgents(ORG, { provider: 'nmap' });
       expect(nmapAgents.map(a => a.agent_id)).toContain(nmapAgentId);
 
       // Filter by SSH provider
-      const sshAgents = await agentService.listAgents({ provider: 'ssh' });
+      const sshAgents = await agentService.listAgents(ORG, { provider: 'ssh' });
       expect(sshAgents.map(a => a.agent_id)).toContain(sshAgentId);
     }, 60000);
 
@@ -567,7 +550,7 @@ describe('Discovery Agent Routing Integration Tests', () => {
         provider_capabilities: ['nmap'],
         reachable_networks: ['10.0.0.0/8'],
         tags: ['production', 'datacenter-1'],
-      });
+      }, ORG);
 
       const dev1Id = `test-agent-${uuidv4()}`;
       createdAgentIds.push(dev1Id);
@@ -577,10 +560,10 @@ describe('Discovery Agent Routing Integration Tests', () => {
         provider_capabilities: ['nmap'],
         reachable_networks: ['192.168.0.0/16'],
         tags: ['development'],
-      });
+      }, ORG);
 
       // Filter by production tag
-      const prodAgents = await agentService.listAgents({ tags: ['production'] });
+      const prodAgents = await agentService.listAgents(ORG, { tags: ['production'] });
       expect(prodAgents.map(a => a.agent_id)).toContain(prod1Id);
       expect(prodAgents.map(a => a.agent_id)).not.toContain(dev1Id);
     }, 60000);
@@ -596,17 +579,17 @@ describe('Discovery Agent Routing Integration Tests', () => {
         hostname: 'delete-test.local',
         provider_capabilities: ['nmap'],
         reachable_networks: ['10.0.0.0/8'],
-      });
+      }, ORG);
 
       // Verify agent exists
-      const agentBefore = await agentService.getAgent(agentId);
+      const agentBefore = await agentService.getAgent(agentId, ORG);
       expect(agentBefore).not.toBeNull();
 
       // Delete agent
       await agentService.deleteAgent(agentId);
 
       // Verify agent is deleted
-      const agentAfter = await agentService.getAgent(agentId);
+      const agentAfter = await agentService.getAgent(agentId, ORG);
       expect(agentAfter).toBeNull();
 
       // Remove from cleanup list

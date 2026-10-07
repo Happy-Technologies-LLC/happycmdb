@@ -9,6 +9,7 @@
 import { Client as SSHClient } from 'ssh2';
 import { DiscoveryTool } from '../types';
 import { logger } from '@cmdb/common';
+import { resolveDiscoveryHost, connectDiscoveryHost } from '@cmdb/common';
 
 export const sshExecuteTool: DiscoveryTool = {
   name: 'ssh_execute',
@@ -39,6 +40,7 @@ export const sshExecuteTool: DiscoveryTool = {
   },
   execute: async (params: any) => {
     const { host, port = 22, username, command } = params;
+    const destination = await connectDiscoveryHost(host, await resolveDiscoveryHost(host));
 
     // Note: In a real implementation, you would:
     // 1. Load credentials from the unified credential service
@@ -99,7 +101,7 @@ export const sshExecuteTool: DiscoveryTool = {
           reject(new Error(`SSH connection failed: ${err.message}`));
         })
         .connect({
-          host,
+          host: destination,
           port,
           username,
           // In production, load from credential service:

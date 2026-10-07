@@ -4,7 +4,7 @@
 // packages/discovery-engine/src/workers/ssh-discovery.worker.ts
 
 import { NodeSSH, SSHExecCommandResponse } from 'node-ssh';
-import { logger, withRetry } from '@cmdb/common';
+import { logger, withRetry, resolveDiscoveryHost, connectDiscoveryHost, DISCOVERY_TARGET_REFUSED } from '@cmdb/common';
 import { DiscoveredCI, DiscoveryConfig, Relationship } from '@cmdb/common';
 
 /**
@@ -34,12 +34,13 @@ export class SSHDiscoveryWorker {
   ): Promise<DiscoveredCI> {
     return withRetry(
       async () => {
+        const destination = await connectDiscoveryHost(host, await resolveDiscoveryHost(host));
         const ssh = new NodeSSH();
 
         try {
           // Connect to host
           const connectionConfig: any = {
-            host,
+            host: destination,
             username,
             readyTimeout: 10000,
             keepaliveInterval: 5000,
@@ -216,7 +217,7 @@ export class SSHDiscoveryWorker {
       {
         maxAttempts: 3,
         initialDelay: 2000,
-        operationName: `discoverHost-${host}`,
+        operationName: 'discoverHost',
       }
     );
   }
@@ -260,6 +261,7 @@ export class SSHDiscoveryWorker {
       password?: string;
     }>
   ): Promise<DiscoveredCI[]> {
+    await Promise.all(hosts.map(({ host }) => resolveDiscoveryHost(host)));
     logger.info('Starting SSH discovery for multiple hosts', {
       jobId,
       hostCount: hosts.length,
@@ -272,11 +274,14 @@ export class SSHDiscoveryWorker {
     );
 
     const cis: DiscoveredCI[] = [];
-    results.forEach((result, index) => {
+    results.forEach(result => {
       if (result.status === 'fulfilled') {
         cis.push(result.value);
       } else {
-        logger.error(`SSH discovery failed for host ${hosts[index].host}`, result.reason);
+        if (result.reason instanceof Error && result.reason.message === DISCOVERY_TARGET_REFUSED) {
+          throw result.reason;
+        }
+        logger.error('SSH discovery failed for host', { jobId, error: result.reason });
       }
     });
 

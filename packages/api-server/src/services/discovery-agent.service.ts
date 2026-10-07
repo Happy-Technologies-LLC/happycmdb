@@ -15,24 +15,26 @@ import {
  *
  * Manages discovery agent registration, heartbeats, and routing
  */
+export const AGENT_NOT_FOUND = 'Agent not found';
+
 export class DiscoveryAgentService {
   private postgresClient = getPostgresClient();
 
   /**
    * Register a new agent or update existing registration
    */
-  async registerAgent(input: DiscoveryAgentRegistration): Promise<DiscoveryAgent> {
+  async registerAgent(input: DiscoveryAgentRegistration, organizationId: string): Promise<DiscoveryAgent | null> {
     const client = await this.postgresClient.getClient();
 
     try {
       await client.query('BEGIN');
 
-      // Upsert agent (update if exists, insert if not)
+      // A global agent_id may only be re-registered by its existing organization.
       const result = await client.query(
         `INSERT INTO discovery_agents (
-          agent_id, hostname, provider_capabilities, reachable_networks,
+          agent_id, organization_id, hostname, provider_capabilities, reachable_networks,
           version, platform, arch, api_endpoint, tags, status, last_heartbeat_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'active', NOW())
+        ) VALUES ($1, $10, $2, $3, $4, $5, $6, $7, $8, $9, 'active', NOW())
         ON CONFLICT (agent_id) DO UPDATE SET
           hostname = EXCLUDED.hostname,
           provider_capabilities = EXCLUDED.provider_capabilities,
@@ -44,6 +46,7 @@ export class DiscoveryAgentService {
           tags = EXCLUDED.tags,
           status = 'active',
           last_heartbeat_at = NOW()
+        WHERE discovery_agents.organization_id = EXCLUDED.organization_id
         RETURNING
           id, agent_id, hostname, provider_capabilities, reachable_networks,
           version, platform, arch, api_endpoint, status,
@@ -60,8 +63,14 @@ export class DiscoveryAgentService {
           input.arch || null,
           input.api_endpoint || null,
           input.tags || [],
+          organizationId,
         ]
       );
+
+      if (result.rows.length === 0) {
+        await client.query('COMMIT');
+        return null;
+      }
 
       await client.query('COMMIT');
 
@@ -86,7 +95,7 @@ export class DiscoveryAgentService {
   /**
    * Update agent heartbeat
    */
-  async updateHeartbeat(heartbeat: AgentHeartbeat): Promise<void> {
+  async updateHeartbeat(heartbeat: AgentHeartbeat, organizationId: string): Promise<boolean> {
     const client = await this.postgresClient.getClient();
 
     try {
@@ -115,18 +124,18 @@ export class DiscoveryAgentService {
         updates.push(`total_cis_discovered = total_cis_discovered + $${params.length}`);
       }
 
-      params.push(heartbeat.agent_id);
+      params.push(heartbeat.agent_id, organizationId);
 
-      await client.query(
+      const result = await client.query(
         `UPDATE discovery_agents
          SET ${updates.join(', ')}
-         WHERE agent_id = $${params.length}`,
+         WHERE agent_id = $${params.length - 1} AND organization_id = $${params.length}`,
         params
       );
 
       await client.query('COMMIT');
 
-      logger.debug('Agent heartbeat updated', { agentId: heartbeat.agent_id });
+      return result.rowCount === 1;
     } catch (error) {
       await client.query('ROLLBACK');
       logger.error('Error updating heartbeat', { heartbeat, error });
@@ -139,7 +148,7 @@ export class DiscoveryAgentService {
   /**
    * Get agent by agent_id
    */
-  async getAgent(agentId: string): Promise<DiscoveryAgent | null> {
+  async getAgent(agentId: string, organizationId: string): Promise<DiscoveryAgent | null> {
     try {
       const result = await this.postgresClient.query(
         `SELECT
@@ -149,8 +158,8 @@ export class DiscoveryAgentService {
           total_jobs_failed, total_cis_discovered, tags,
           registered_at, updated_at
         FROM discovery_agents
-        WHERE agent_id = $1`,
-        [agentId]
+        WHERE agent_id = $1 AND organization_id = $2`,
+        [agentId, organizationId]
       );
 
       if (result.rows.length === 0) {
@@ -167,14 +176,14 @@ export class DiscoveryAgentService {
   /**
    * List all agents with optional filters
    */
-  async listAgents(filters?: {
+  async listAgents(organizationId: string, filters?: {
     status?: string;
     provider?: DiscoveryProvider;
     tags?: string[];
   }): Promise<DiscoveryAgent[]> {
     try {
-      const conditions: string[] = [];
-      const params: any[] = [];
+      const conditions: string[] = ['organization_id = $1'];
+      const params: unknown[] = [organizationId];
 
       if (filters?.status) {
         params.push(filters.status);
@@ -219,7 +228,8 @@ export class DiscoveryAgentService {
    */
   async findBestAgentForNetworks(
     targetNetworks: string[],
-    provider: DiscoveryProvider
+    provider: DiscoveryProvider,
+    organizationId: string
   ): Promise<string | null> {
     try {
       // Query for active agents that support the provider and can reach any of the target networks
@@ -233,6 +243,7 @@ export class DiscoveryAgentService {
           total_jobs_failed
         FROM discovery_agents
         WHERE status = 'active'
+          AND organization_id = $3
           AND $1 = ANY(provider_capabilities)
           AND (NOW() - last_heartbeat_at) < INTERVAL '5 minutes'
           AND EXISTS (
@@ -251,7 +262,7 @@ export class DiscoveryAgentService {
           -- Then prefer more recently active agents
           last_heartbeat_at DESC
         LIMIT 1`,
-        [provider, targetNetworks[0]] // Check first target network
+        [provider, targetNetworks[0], organizationId]
       );
 
       if (result.rows.length === 0) {
@@ -280,18 +291,16 @@ export class DiscoveryAgentService {
   /**
    * Delete an agent
    */
-  async deleteAgent(agentId: string): Promise<void> {
+  async deleteAgent(agentId: string, organizationId: string): Promise<boolean> {
     try {
       const result = await this.postgresClient.query(
-        'DELETE FROM discovery_agents WHERE agent_id = $1',
-        [agentId]
+        'DELETE FROM discovery_agents WHERE agent_id = $1 AND organization_id = $2',
+        [agentId, organizationId]
       );
 
-      if (result.rowCount === 0) {
-        throw new Error(`Agent ${agentId} not found`);
-      }
-
+      if (result.rowCount === 0) return false;
       logger.info('Agent deleted', { agentId });
+      return true;
     } catch (error) {
       logger.error('Error deleting agent', { agentId, error });
       throw error;

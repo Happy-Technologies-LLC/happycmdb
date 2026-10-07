@@ -6,9 +6,10 @@
  * Allows AI to probe HTTP/HTTPS endpoints
  */
 
-import axios, { AxiosError } from 'axios';
+import { AxiosError } from 'axios';
 import { DiscoveryTool } from '../types';
-import { logger } from '@cmdb/common';
+import { logger, DISCOVERY_TARGET_REFUSED } from '@cmdb/common';
+import { safeDiscoveryHttp } from './safe-http';
 
 export const httpProbeTool: DiscoveryTool = {
   name: 'http_probe',
@@ -57,18 +58,14 @@ export const httpProbeTool: DiscoveryTool = {
 
     const url = `${protocol}://${host}:${targetPort}${path}`;
 
-    logger.info(`Probing HTTP endpoint`, { url, method });
+    logger.info('Probing HTTP endpoint', { method });
 
     try {
-      const response = await axios({
+      const response = await safeDiscoveryHttp(url, {
         method,
-        url,
-        timeout: 10000, // 10 seconds
-        maxRedirects: 0, // Don't follow redirects
-        validateStatus: () => true, // Accept any status code
-        headers: {
-          'User-Agent': 'HappyCMDB-Discovery/2.0',
-        },
+        timeout: 10000,
+        validateStatus: () => true,
+        headers: { 'User-Agent': 'HappyCMDB-Discovery/2.0' },
       });
 
       const result = {
@@ -100,6 +97,7 @@ export const httpProbeTool: DiscoveryTool = {
 
       return result;
     } catch (error) {
+      if (error instanceof Error && error.message === DISCOVERY_TARGET_REFUSED) throw error;
       const axiosError = error as AxiosError;
 
       if (axiosError.response) {

@@ -4,7 +4,7 @@
 // packages/discovery-engine/src/orchestrator/discovery-orchestrator.ts
 
 import { queueManager, QUEUE_NAMES, getPostgresClient, getUnifiedCredentialService } from '@cmdb/database';
-import { logger } from '@cmdb/common';
+import { logger, resolveDiscoveryHost, DISCOVERY_TARGET_REFUSED } from '@cmdb/common';
 import { DiscoveredCI, DiscoveryJob } from '@cmdb/common';
 import { SSHDiscoveryWorker } from '../workers/ssh-discovery.worker';
 import { NmapDiscoveryWorker } from '../workers/nmap-discovery.worker';
@@ -396,6 +396,8 @@ export class DiscoveryOrchestrator {
           if (!Array.isArray(targets) || targets.length === 0) {
             throw new Error('SSH config must include "targets" or "hosts" array');
           }
+          // Refuse a mixed batch before making any discovery connection.
+          await Promise.all(targets.map(target => resolveDiscoveryHost(target.host)));
 
           const totalTargets = targets.length;
           let processedTargets = 0;
@@ -416,7 +418,8 @@ export class DiscoveryOrchestrator {
               const discoveryProgress = 25 + Math.floor((processedTargets / totalTargets) * 50);
               await job.updateProgress(discoveryProgress);
             } catch (error) {
-              logger.error('SSH discovery failed for target', { target, error });
+              if (error instanceof Error && error.message === DISCOVERY_TARGET_REFUSED) throw error;
+              logger.error('SSH discovery failed for target', { jobId, error });
             }
           }
 

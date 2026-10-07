@@ -82,8 +82,8 @@ export const ConnectorInstallWizard: React.FC<ConnectorInstallWizardProps> = ({
         toast.error(result.message || 'Installation failed');
       }
     },
-    onError: (error: any) => {
-      toast.error(error.message || 'Installation failed');
+    onError: () => {
+      toast.error('Installation failed');
     },
   });
 
@@ -97,10 +97,10 @@ export const ConnectorInstallWizard: React.FC<ConnectorInstallWizardProps> = ({
     onSuccess: (result) => {
       setTestResult(result);
     },
-    onError: (error: any) => {
+    onError: () => {
       setTestResult({
         success: false,
-        message: error.message || 'Connection test failed',
+        message: 'Connection test failed',
       });
     },
   });

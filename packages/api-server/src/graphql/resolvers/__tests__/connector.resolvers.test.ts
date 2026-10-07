@@ -1,7 +1,8 @@
 // Copyright 2026 Happy Technologies LLC
 // SPDX-License-Identifier: Apache-2.0
 
-import { GraphQLError } from 'graphql';
+import { GraphQLError, buildSchema, parse, validate } from 'graphql';
+import { connectorTypeDefs } from '../../schema/connector.schema';
 import type { TokenPayload } from '../../../auth/types';
 
 // jest.config.unit.js sets resetMocks/restoreMocks: true, which strips mock
@@ -16,50 +17,22 @@ jest.mock('@cmdb/database', () => ({
   getPostgresClient: (...args: unknown[]) => mockGetPostgresClient(...args),
 }));
 
-const mockGetConnector = jest.fn();
-const mockRegisterConnector = jest.fn();
-const mockRunConnector = jest.fn();
-const mockMapRowToConfig = jest.fn((row: any) => ({
-  id: row.id,
-  name: row.name,
-  type: row.connector_type,
-  enabled: row.enabled,
-  connection: row.connection,
-}));
 const mockGetIntegrationManager = jest.fn();
+const mockRunConnector = jest.fn();
 
 jest.mock('@cmdb/integration-framework', () => ({
   getIntegrationManager: (...args: unknown[]) => mockGetIntegrationManager(...args),
 }));
 
-const mockInstallConnector = jest.fn();
-const mockUpdateConnector = jest.fn();
-const mockUninstallConnector = jest.fn();
-const MockConnectorLifecycleService = jest.fn();
-
-jest.mock('../../../services/connector-lifecycle.service', () => ({
-  ConnectorLifecycleService: MockConnectorLifecycleService,
-}));
 
 // Imported after the mocks above so the module picks up the mocked singletons.
 import { connectorResolvers } from '../connector.resolvers';
+import { ConnectorConfigurationFieldResolvers } from '../connector-fields.resolvers';
 import type { GraphQLContext } from '../index';
 
 beforeEach(() => {
   mockGetPostgresClient.mockReturnValue(mockPgClient);
-  mockGetIntegrationManager.mockReturnValue({
-    getConnector: mockGetConnector,
-    registerConnector: mockRegisterConnector,
-    runConnector: mockRunConnector,
-    mapRowToConfig: mockMapRowToConfig,
-  });
-  MockConnectorLifecycleService.mockImplementation(function (this: unknown) {
-    Object.assign(this as object, {
-      installConnector: mockInstallConnector,
-      updateConnector: mockUpdateConnector,
-      uninstallConnector: mockUninstallConnector,
-    });
-  });
+  mockGetIntegrationManager.mockReturnValue({ runConnector: mockRunConnector });
 });
 
 const adminUser: TokenPayload = {
@@ -67,6 +40,7 @@ const adminUser: TokenPayload = {
   _username: 'admin-alice',
   _role: 'admin',
   _type: 'access',
+  _organizationId: 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa',
 };
 
 const operatorUser: TokenPayload = {
@@ -74,19 +48,14 @@ const operatorUser: TokenPayload = {
   _username: 'op-bob',
   _role: 'operator',
   _type: 'access',
+  _organizationId: 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa',
 };
 
-const viewerUser: TokenPayload = {
-  _userId: 'viewer-1',
-  _username: 'viewer-carol',
-  _role: 'viewer',
-  _type: 'access',
-};
 
 function contextWith(user?: TokenPayload): GraphQLContext {
   return {
-    _neo4jClient: {} as any,
-    _loaders: {} as any,
+    _neo4jClient: {} as GraphQLContext['_neo4jClient'],
+    _loaders: {} as GraphQLContext['_loaders'],
     user,
   };
 }
@@ -101,20 +70,52 @@ async function expectGraphQLErrorCode(promise: Promise<unknown>, code: string): 
   }
 }
 
-describe('connector mutation resolvers: authentication and authorization', () => {
-  it('has no NOT_IMPLEMENTED stub resolvers left', () => {
-    const mutationSource = Object.entries(connectorResolvers.Mutation)
-      .map(([name, fn]) => `${name}:${(fn as (...args: unknown[]) => unknown).toString()}`)
-      .join('\n');
-    expect(mutationSource).not.toMatch(/NOT_IMPLEMENTED/);
+const orgA = 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa';
+const orgB = 'bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb';
+const sentinel = 'SECRET-NESTED-DO-NOT-RETURN';
+const configs = [
+  { id: 'a', organization_id: orgA, name: 'shared', connector_type: 'acme-crm', enabled: true,
+    connection: { nested: { token: sentinel } }, options: { key: sentinel }, resource_configs: { x: sentinel },
+    notification_channels: [sentinel] },
+  { id: 'b', organization_id: orgB, name: 'shared', connector_type: 'acme-crm', enabled: true,
+    connection: { nested: { token: sentinel } } },
+  { id: 'legacy', organization_id: null, name: 'old', connector_type: 'acme-crm', enabled: true },
+];
+const runs = [
+  { id: 'ra', organization_id: orgA, config_id: 'a', connector_type: 'acme-crm', config_name: 'shared',
+    status: 'completed', errors: [sentinel], error_message: sentinel, job_id: sentinel },
+  { id: 'rb', organization_id: orgB, config_id: 'b', connector_type: 'acme-crm', config_name: 'shared',
+    status: 'failed', errors: [sentinel] },
+  { id: 'rl', organization_id: null, config_id: 'legacy', connector_type: 'acme-crm', config_name: 'old',
+    status: 'failed', error_message: sentinel },
+];
+
+function installScopedDatabase() {
+  const mutations: string[] = [];
+  mockQuery.mockImplementation(async (sql: string, params: unknown[] = []) => {
+    const match = sql.match(/organization_id = \$(\d+)/);
+    const visible = (row: { organization_id: string | null }) =>
+      !match || row.organization_id === params[Number(match[1]) - 1] ||
+      (row.organization_id === null && params[Number(match[1])] === true);
+    const table = sql.includes('connector_run_history') ? runs : configs;
+    const operation = sql.trim().split(/\s+/)[0];
+    let rows = table.filter(visible);
+    if (sql.includes('.id = $1')) rows = rows.filter(row => row.id === params[0]);
+    const configMatch = sql.match(/\.config_id = \$(\d+)/);
+    if (configMatch) rows = rows.filter(row => 'config_id' in row && row.config_id === params[Number(configMatch[1]) - 1]);
+    if (operation === 'UPDATE' || operation === 'DELETE') {
+      if (rows.length) mutations.push(sql);
+    }
+    if (operation === 'INSERT') {
+      mutations.push(sql);
+      rows = [configs[0]];
+    }
+    return { rows };
   });
+  return mutations;
+}
 
-  it('does not expose testConnectorConnection or cancelConnectorRun', () => {
-    expect(connectorResolvers.Mutation).not.toHaveProperty('testConnectorConnection');
-    expect(connectorResolvers.Mutation).not.toHaveProperty('cancelConnectorRun');
-  });
-
-
+describe('connector ownership and public GraphQL boundary', () => {
   it('createConnectorConfiguration rejects viewers with FORBIDDEN', async () => {
     await expectGraphQLErrorCode(
       connectorResolvers.Mutation.createConnectorConfiguration(
@@ -124,156 +125,99 @@ describe('connector mutation resolvers: authentication and authorization', () =>
       ),
       'FORBIDDEN'
     );
+  });
+
+  it('rejects missing identity or organization before DB access', async () => {
+    await expectGraphQLErrorCode(connectorResolvers.Query.connectorConfigurations(null, {}, contextWith()), 'FORBIDDEN');
+    await expectGraphQLErrorCode(
+      connectorResolvers.Mutation.updateConnectorConfiguration(null, { id: 'a', input: { enabled: false } },
+        contextWith({ ...operatorUser, _organizationId: undefined })), 'FORBIDDEN');
     expect(mockQuery).not.toHaveBeenCalled();
   });
 
-  it('createConnectorConfiguration succeeds for an operator and records the real actor as created_by', async () => {
-    mockQuery.mockResolvedValueOnce({
-      rows: [
-        {
-          id: 'cfg-1',
-          name: 'My Config',
-          description: null,
-          connector_type: 'acme-crm',
-          enabled: true,
-          schedule: null,
-          schedule_enabled: false,
-          connection: {},
-          options: {},
-          enabled_resources: [],
-          resource_configs: {},
-          max_retries: 3,
-          retry_delay_seconds: 300,
-          continue_on_error: false,
-          notification_channels: [],
-          notification_on_success: false,
-          notification_on_failure: true,
-          created_at: new Date(),
-          updated_at: new Date(),
-          created_by: operatorUser._username,
-        },
-      ],
-    });
-
-    const result = await connectorResolvers.Mutation.createConnectorConfiguration(
-      null,
-      { input: { name: 'My Config', connectorType: 'acme-crm', connection: {} } },
-      contextWith(operatorUser)
-    );
-
-    expect(result.createdBy).toBe('op-bob');
-    const [, values] = mockQuery.mock.calls[0];
-    expect(values).toContain('op-bob');
-  });
-});
-
-describe('runConnector mutation', () => {
-  it('rejects unauthenticated requests', async () => {
-    await expectGraphQLErrorCode(
-      connectorResolvers.Mutation.runConnector(null, { id: 'cfg-1' }, contextWith(undefined)),
-      'UNAUTHENTICATED'
-    );
-  });
-
-  it('registers the connector on demand, runs it, and returns the resulting run record on success', async () => {
-    mockQuery
-      .mockResolvedValueOnce({
-        rows: [{ id: 'cfg-1', name: 'my-connector', connector_type: 'acme-crm', enabled: true, connection: {} }],
-      })
-      .mockResolvedValueOnce({
-        rows: [
-          {
-            id: 'run-1',
-            config_id: 'cfg-1',
-            connector_type: 'acme-crm',
-            config_name: 'my-connector',
-            resource_id: null,
-            started_at: new Date(),
-            completed_at: new Date(),
-            status: 'completed',
-            records_extracted: 5,
-            records_transformed: 5,
-            records_loaded: 5,
-            records_failed: 0,
-            duration_ms: 120,
-            errors: [],
-            error_message: null,
-            triggered_by: 'manual',
-            triggered_by_user: 'op-bob',
-            job_id: 'run_123',
-          },
-        ],
-      });
-
-    mockGetConnector.mockReturnValue(undefined);
-    mockRunConnector.mockResolvedValue({ status: 'completed' });
-
-    const result = await connectorResolvers.Mutation.runConnector(
-      null,
-      { id: 'cfg-1' },
-      contextWith(operatorUser)
-    );
-
-    expect(mockRegisterConnector).toHaveBeenCalled();
-    expect(mockRunConnector).toHaveBeenCalledWith('my-connector', 'manual', 'op-bob');
-    expect(result.status).toBe('COMPLETED');
-    expect(result.triggeredByUser).toBe('op-bob');
-  });
-
-  it('still returns the recorded run when the connector run itself fails', async () => {
-    mockQuery
-      .mockResolvedValueOnce({
-        rows: [{ id: 'cfg-1', name: 'my-connector', connector_type: 'acme-crm', enabled: true, connection: {} }],
-      })
-      .mockResolvedValueOnce({
-        rows: [
-          {
-            id: 'run-2',
-            config_id: 'cfg-1',
-            connector_type: 'acme-crm',
-            config_name: 'my-connector',
-            resource_id: null,
-            started_at: new Date(),
-            completed_at: new Date(),
-            status: 'failed',
-            records_extracted: 0,
-            records_transformed: 0,
-            records_loaded: 0,
-            records_failed: 0,
-            duration_ms: 40,
-            errors: ['boom'],
-            error_message: 'boom',
-            triggered_by: 'manual',
-            triggered_by_user: 'op-bob',
-            job_id: 'run_124',
-          },
-        ],
-      });
-
-    mockGetConnector.mockReturnValue({});
-    mockRunConnector.mockRejectedValue(new Error('boom'));
-
-    const result = await connectorResolvers.Mutation.runConnector(
-      null,
-      { id: 'cfg-1' },
-      contextWith(operatorUser)
-    );
-
-    expect(mockRegisterConnector).not.toHaveBeenCalled();
-    expect(result.status).toBe('FAILED');
-    expect(result.errorMessage).toBe('boom');
-  });
-
-  it('rejects running a disabled configuration', async () => {
-    mockQuery.mockResolvedValueOnce({
-      rows: [{ id: 'cfg-1', name: 'my-connector', connector_type: 'acme-crm', enabled: false, connection: {} }],
-    });
-
-    await expectGraphQLErrorCode(
-      connectorResolvers.Mutation.runConnector(null, { id: 'cfg-1' }, contextWith(operatorUser)),
-      'BAD_USER_INPUT'
-    );
+  it('makes foreign and missing configuration IDs indistinguishable without mutating', async () => {
+    const mutations = installScopedDatabase();
+    for (const id of ['b', 'missing', 'legacy']) {
+      await expectGraphQLErrorCode(connectorResolvers.Mutation.deleteConnectorConfiguration(null, { id }, contextWith(operatorUser)), 'NOT_FOUND');
+      await expectGraphQLErrorCode(connectorResolvers.Mutation.updateConnectorConfiguration(
+        null, { id, input: { enabled: false } }, contextWith(operatorUser)), 'NOT_FOUND');
+      await expectGraphQLErrorCode(connectorResolvers.Mutation.runConnector(null, { id }, contextWith(operatorUser)), 'NOT_FOUND');
+    }
+    expect(mutations).toEqual([]);
     expect(mockRunConnector).not.toHaveBeenCalled();
+  });
+
+  it('returns only own public config/run fields, including nested run history', async () => {
+    installScopedDatabase();
+    const configsA = await connectorResolvers.Query.connectorConfigurations(null, {}, contextWith(operatorUser));
+    const runsA = await connectorResolvers.Query.connectorRuns(null, {}, contextWith(operatorUser));
+    expect(configsA.map((row: { id: string }) => row.id)).toEqual(['a']);
+    expect(runsA.map((row: { id: string }) => row.id)).toEqual(['ra']);
+    expect(JSON.stringify({ configsA, runsA })).not.toContain(sentinel);
+    await expectGraphQLErrorCode(connectorResolvers.Query.connectorConfiguration(null, { id: 'b' }, contextWith(operatorUser)), 'NOT_FOUND');
+    await expectGraphQLErrorCode(connectorResolvers.Query.connectorRun(null, { id: 'rb' }, contextWith(operatorUser)), 'NOT_FOUND');
+  });
+  it('allows NULL legacy rows only with dedicated platform authority, never tenant admin role', async () => {
+    installScopedDatabase();
+    const tenantAdmin = await connectorResolvers.Query.connectorConfigurations(null, {}, contextWith(adminUser));
+    expect(tenantAdmin.map((row: { id: string }) => row.id)).toEqual(['a']);
+    const platform = await connectorResolvers.Query.connectorConfigurations(
+      null, {}, contextWith({ ...adminUser, _platformAdmin: true })
+    );
+    expect(platform.map((row: { id: string }) => row.id)).toEqual(['a', 'legacy']);
+    expect(platform.map((row: { id: string }) => row.id)).not.toContain('b');
+  });
+
+  it('runs by owned id and returns only that run public projection', async () => {
+    installScopedDatabase();
+    mockRunConnector.mockResolvedValue({ run_id: sentinel });
+    const result = await connectorResolvers.Mutation.runConnector(null, { id: 'a' }, contextWith(operatorUser));
+    expect(mockRunConnector).toHaveBeenCalledWith('a', orgA, 'manual', 'op-bob');
+    const [historyQuery] = mockQuery.mock.calls[1] as [string, unknown[]];
+    expect(historyQuery).toContain('crh.job_id = $1');
+    expect(JSON.stringify(result)).not.toContain(sentinel);
+    expect(result.status).toBe('COMPLETED');
+  });
+
+  it('maps only the trusted credential refusal to a fixed GraphQL error', async () => {
+    installScopedDatabase();
+    mockRunConnector.mockRejectedValue(new Error('CONNECTOR_CREDENTIAL_UNAVAILABLE'));
+    await expectGraphQLErrorCode(
+      connectorResolvers.Mutation.runConnector(null, { id: 'a' }, contextWith(operatorUser)),
+      'CONNECTOR_CREDENTIAL_UNAVAILABLE'
+    );
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps saved secret values when updating a public field without write-only inputs', async () => {
+    installScopedDatabase();
+    const result = await connectorResolvers.Mutation.updateConnectorConfiguration(
+      null, { id: 'a', input: { description: 'new public description', connection: {}, options: {}, resourceConfigs: {} } }, contextWith(operatorUser)
+    );
+    const [sql, values] = mockQuery.mock.calls[0] as [string, unknown[]];
+    expect(sql).not.toContain('connection =');
+    expect(sql).not.toContain('options =');
+    expect(sql).not.toContain('resource_configs =');
+    expect(values).not.toContain('{}');
+    expect(JSON.stringify(result)).not.toContain(sentinel);
+  });
+
+  it('scopes nested run history and metrics even when a forged parent is supplied', async () => {
+    installScopedDatabase();
+    await expectGraphQLErrorCode(
+      ConnectorConfigurationFieldResolvers.runs({ id: 'b' }, {}, contextWith(operatorUser)), 'NOT_FOUND'
+    );
+    await expectGraphQLErrorCode(
+      ConnectorConfigurationFieldResolvers.metrics({ id: 'legacy' }, {}, contextWith(operatorUser)), 'NOT_FOUND'
+    );
+  });
+
+
+  it('prevents selecting saved secret fields while retaining write-only input', () => {
+    const schema = buildSchema(`scalar JSON\nscalar DateTime\ntype Query { ready: Boolean }\ntype Mutation { ready: Boolean }\n${connectorTypeDefs}`);
+    const selection = parse('{ connectorConfiguration(id: "a") { connection options resourceConfigs notificationChannels } }');
+    expect(validate(schema, selection)).toHaveLength(4);
+    expect(schema.getType('UpdateConnectorConfigInput')?.toString()).toBe('UpdateConnectorConfigInput');
   });
 });
 

@@ -94,14 +94,10 @@ export interface ConnectorConfiguration {
   enabled: boolean;
   schedule?: string;
   scheduleEnabled: boolean;
-  connection: any;
-  options: any;
   enabledResources?: string[];
-  resourceConfigs: any;
   maxRetries: number;
   retryDelaySeconds: number;
   continueOnError: boolean;
-  notificationChannels: string[];
   notificationOnSuccess: boolean;
   notificationOnFailure: boolean;
   createdAt: string;
@@ -126,11 +122,7 @@ export interface ConnectorRun {
   recordsLoaded: number;
   recordsFailed: number;
   durationMs?: number;
-  errors: any[];
-  errorMessage?: string;
   triggeredBy: string;
-  triggeredByUser?: string;
-  jobId?: string;
 }
 
 export interface ConnectorMetrics {
@@ -349,14 +341,10 @@ export const CONNECTOR_CONFIGURATIONS_QUERY = gql`
       enabled
       schedule
       scheduleEnabled
-      connection
-      options
       enabledResources
-      resourceConfigs
       maxRetries
       retryDelaySeconds
       continueOnError
-      notificationChannels
       notificationOnSuccess
       notificationOnFailure
       createdAt
@@ -376,14 +364,10 @@ export const CONNECTOR_CONFIGURATION_QUERY = gql`
       enabled
       schedule
       scheduleEnabled
-      connection
-      options
       enabledResources
-      resourceConfigs
       maxRetries
       retryDelaySeconds
       continueOnError
-      notificationChannels
       notificationOnSuccess
       notificationOnFailure
       createdAt
@@ -424,11 +408,7 @@ export const CONNECTOR_CONFIGURATION_QUERY = gql`
         recordsLoaded
         recordsFailed
         durationMs
-        errors
-        errorMessage
         triggeredBy
-        triggeredByUser
-        jobId
       }
       metrics {
         totalRuns
@@ -479,11 +459,7 @@ export const CONNECTOR_RUNS_QUERY = gql`
       recordsLoaded
       recordsFailed
       durationMs
-      errors
-      errorMessage
       triggeredBy
-      triggeredByUser
-      jobId
     }
   }
 `;
@@ -564,10 +540,7 @@ export const CREATE_CONNECTOR_CONFIG_MUTATION = gql`
       enabled
       schedule
       scheduleEnabled
-      connection
-      options
       enabledResources
-      resourceConfigs
       createdAt
       updatedAt
     }
@@ -587,10 +560,7 @@ export const UPDATE_CONNECTOR_CONFIG_MUTATION = gql`
       enabled
       schedule
       scheduleEnabled
-      connection
-      options
       enabledResources
-      resourceConfigs
       updatedAt
     }
   }

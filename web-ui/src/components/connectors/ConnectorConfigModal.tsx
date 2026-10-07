@@ -24,8 +24,6 @@ import {
 } from '@/components/ui/select';
 import { CronBuilder } from '@/components/ui/cron-builder';
 import { FieldMappingBuilder } from './FieldMappingBuilder';
-import { useCredentials } from '@/hooks/useCredentials';
-import { formatProtocol } from '@/lib/credential-display';
 import { apiClient } from '@/lib/api-client';
 
 interface ConnectorConfigModalProps {
@@ -45,7 +43,6 @@ export const ConnectorConfigModal: React.FC<ConnectorConfigModalProps> = ({
   onClose,
   onDeploy,
 }) => {
-  const { credentials, loading: credentialsLoading } = useCredentials();
   const [step, setStep] = useState(1);
   const [loadingTemplate, setLoadingTemplate] = useState(true);
   const [fullTemplate, setFullTemplate] = useState<any>(null);
@@ -53,7 +50,6 @@ export const ConnectorConfigModal: React.FC<ConnectorConfigModalProps> = ({
     name: '',
     type: template.type,
     enabled: true,
-    credential_id: 'none',
     connection: {},
     field_mappings: {},  // Changed to object keyed by resource_id
     enabled_resources: [],
@@ -104,8 +100,8 @@ export const ConnectorConfigModal: React.FC<ConnectorConfigModalProps> = ({
           field_mappings: initialMappings,
           enabled_resources: enabledResources,
         }));
-      } catch (error) {
-        console.error('Failed to load connector template:', error);
+      } catch {
+        // The template endpoint is untrusted; avoid echoing its error payload.
       } finally {
         setLoadingTemplate(false);
       }
@@ -247,38 +243,6 @@ export const ConnectorConfigModal: React.FC<ConnectorConfigModalProps> = ({
                 />
               </div>
 
-              <div className="space-y-2">
-                <Label htmlFor="credential">Credential (Optional)</Label>
-                <Select
-                  value={config.credential_id}
-                  onValueChange={(value) => setConfig({ ...config, credential_id: value })}
-                >
-                  <SelectTrigger id="credential">
-                    <SelectValue placeholder="Select a saved credential or configure manually" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="none">None (configure manually)</SelectItem>
-                    {credentialsLoading ? (
-                      <SelectItem value="loading" disabled>
-                        Loading credentials...
-                      </SelectItem>
-                    ) : credentials.length === 0 ? (
-                      <SelectItem value="no-creds" disabled>
-                        No saved credentials
-                      </SelectItem>
-                    ) : (
-                      credentials.map((cred) => (
-                        <SelectItem key={cred.id} value={cred.id}>
-                          {cred.name} ({formatProtocol(cred.protocol)})
-                        </SelectItem>
-                      ))
-                    )}
-                  </SelectContent>
-                </Select>
-                <p className="text-xs text-muted-foreground">
-                  Reuse saved credentials from the Credentials page, or configure manually in the next step
-                </p>
-              </div>
 
               <div className="space-y-4 border-t pt-4">
                 <div className="flex items-center justify-between">

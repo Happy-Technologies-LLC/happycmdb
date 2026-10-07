@@ -9,7 +9,7 @@
 
 import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { connectorsApi } from '../../api/connectors';
+import { connectorRunErrorMessage, connectorsApi } from '../../api/connectors';
 import { Connector } from '../../types';
 import { Icon } from '@happy-technologies/design-system';
 import { toast } from 'sonner';
@@ -126,12 +126,12 @@ export const ConnectorMarketplace: React.FC = () => {
   });
 
   const runMutation = useMutation({
-    mutationFn: (connectorName: string) => connectorsApi.run(connectorName),
+    mutationFn: (configId: string) => connectorsApi.run(configId),
     onSuccess: () => {
       toast.success('Connector started successfully');
       queryClient.invalidateQueries({ queryKey: ['connectors'] });
     },
-    onError: () => toast.error('Failed to start connector'),
+    onError: (error) => toast.error(connectorRunErrorMessage(error)),
   });
 
   const deleteMutation = useMutation({
@@ -250,7 +250,7 @@ export const ConnectorMarketplace: React.FC = () => {
 
                 <div className="flex gap-2">
                   <Button
-                    onClick={() => runMutation.mutate(connector.name)}
+                    onClick={() => runMutation.mutate(connector.id)}
                     disabled={runMutation.isPending}
                     className="flex-1"
                     size="sm"
@@ -313,11 +313,21 @@ export const ConnectorMarketplace: React.FC = () => {
         <ConnectorConfigModal
           template={configuring}
           onClose={() => setConfiguring(null)}
-          onDeploy={(config) => {
-            console.log('Deploying connector:', config);
-            toast.success(`${configuring.name} connector deployed!`);
-            setConfiguring(null);
-            queryClient.invalidateQueries({ queryKey: ['connectors'] });
+          onDeploy={async (config) => {
+            try {
+              await connectorsApi.create({
+                name: config.name,
+                connector_type: config.type,
+                connection: config.connection,
+                enabled_resources: config.enabled_resources,
+                resource_configs: config.field_mappings,
+              });
+              toast.success(`${configuring.name} connector deployed!`);
+              setConfiguring(null);
+              queryClient.invalidateQueries({ queryKey: ['connectors'] });
+            } catch {
+              toast.error('Failed to deploy connector');
+            }
           }}
         />
       )}

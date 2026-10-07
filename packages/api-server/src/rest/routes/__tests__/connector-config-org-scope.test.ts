@@ -82,6 +82,8 @@ import { connectorConfigRoutes } from '../connector-config.routes';
 import { connectorRoutes } from '../connector.routes';
 import { requireConnectorScope } from '../../../auth/connector-scope';
 import { connectorsRouter } from '../../../../../integration-hub/src/api/connectors.routes';
+import { connectorResolvers } from '../../../graphql/resolvers/connector.resolvers';
+import { ConnectorConfigurationFieldResolvers } from '../../../graphql/resolvers/connector-fields.resolvers';
 
 const jwt = new JWTService(loadConfig().auth.jwt);
 const bearer = (id: string, forgedOrg?: string) => ({
@@ -151,6 +153,30 @@ it('foreign config IDs and missing IDs return identical 404 without mutation acr
   expect(runs.rows).toEqual([{ count: 3 }]);
   const foreignRun = await query('SELECT status FROM connector_run_history WHERE id = $1', [RUN_B]);
   expect(foreignRun.rows).toEqual([{ status: 'running' }]);
+});
+
+it('returns the same 404 for foreign and missing config filters on the global run list', async () => {
+  const foreign = await request(app).get(`${url}/runs/all`).query({ config_id: B }).set(bearer('a'));
+  const missing = await request(app).get(`${url}/runs/all`)
+    .query({ config_id: 'ffffffff-ffff-4fff-8fff-ffffffffffff' }).set(bearer('a'));
+  expect([foreign.status, foreign.body]).toEqual([missing.status, missing.body]);
+  expect(foreign.status).toBe(404);
+  const own = await request(app).get(`${url}/runs/all`).query({ config_id: A }).set(bearer('a'));
+  expect(own.status).toBe(200);
+  expect(own.body.data.map((run: { id: string }) => run.id)).toEqual([RUN_A]);
+});
+
+it('reserves shared connector installation and registry mutations for verified platform operators', async () => {
+  const shared = '/api/v1/connectors';
+  const denied = [
+    await request(app).post(`${shared}/install`).set(bearer('internal')).send({ connector_type: 'test' }),
+    await request(app).put(`${shared}/test/update`).set(bearer('internal')).send({}),
+    await request(app).post(`${shared}/test/verify`).set(bearer('internal')).send({}),
+    await request(app).post(`${shared}/cache/refresh`).set(bearer('internal')).send({}),
+    await request(app).delete(`${shared}/test`).set(bearer('internal')),
+  ];
+  expect(denied.map(response => response.status)).toEqual([403, 403, 403, 403, 403]);
+  expect((await request(app).post(`${shared}/test/verify`).set(bearer('platform')).send({})).status).toBe(200);
 });
 
 it('scopes list/history and denies foreign/legacy runs while hiding nested secrets', async () => {
@@ -317,6 +343,52 @@ it('keeps saved resource secrets when changing only enabled resources', async ()
     .toEqual([{ resource_configs: {} }]);
 });
 
+it('atomically preserves nested write-only secrets on nonempty partial REST updates and replaces explicit keys', async () => {
+  const update = await request(app).put(`${url}/${A}`).set(bearer('a')).send({
+    connection: { auth: { account: 'new' } },
+    options: { nested: { retry: 3 } },
+    resource_configs: { items: { batch_size: 20 } },
+  });
+  expect(update.status).toBe(200);
+  expect(JSON.stringify(update.body)).not.toContain(SECRET);
+  const resources = await request(app).put(`${url}/${A}/resources`).set(bearer('a')).send({
+    enabled_resources: ['items'], resource_configs: { items: { batch_size: 30 } },
+  });
+  expect(resources.status).toBe(200);
+  const saved = await query('SELECT connection, options, resource_configs FROM connector_configurations WHERE id = $1', [A]);
+  expect(saved.rows).toEqual([{
+    connection: { auth: { token: SECRET, account: 'new' } },
+    options: { nested: { secret: SECRET, retry: 3 } },
+    resource_configs: { items: { password: SECRET, batch_size: 30 } },
+  }]);
+  const replaced = await request(app).put(`${url}/${A}/resources`).set(bearer('a')).send({
+    enabled_resources: ['items'], resource_configs: { items: { password: 'replacement' } },
+  });
+  expect(replaced.status).toBe(200);
+  expect((await query('SELECT resource_configs FROM connector_configurations WHERE id = $1', [A])).rows)
+    .toEqual([{ resource_configs: { items: { password: 'replacement', batch_size: 30 } } }]);
+});
+
+it('keeps nested secrets on a nonempty partial GraphQL configuration update', async () => {
+  const context = { user: {
+    _userId: 'a', _username: 'alice', _role: 'operator', _type: 'access', _organizationId: ORG_A,
+  } } as any;
+  const updated = await connectorResolvers.Mutation.updateConnectorConfiguration(
+    null, { id: A, input: {
+      connection: { auth: { account: 'graphql' } },
+      options: { nested: { retry: 2 } },
+      resourceConfigs: { items: { batch_size: 50 } },
+    } }, context
+  );
+  expect(JSON.stringify(updated)).not.toContain(SECRET);
+  expect((await query('SELECT connection, options, resource_configs FROM connector_configurations WHERE id = $1', [A])).rows)
+    .toEqual([{
+      connection: { auth: { token: SECRET, account: 'graphql' } },
+      options: { nested: { secret: SECRET, retry: 2 } },
+      resource_configs: { items: { password: SECRET, batch_size: 50 } },
+    }]);
+});
+
 it('returns safe installed resource descriptors instead of silently dropping them', async () => {
   await query('UPDATE installed_connectors SET resources = $1::jsonb WHERE connector_type = $2', [
     JSON.stringify([{
@@ -358,6 +430,21 @@ it('serves installed template fields and safe resource mappings for connector de
       id: 'hosts', name: 'Hosts', enabled_by_default: true,
       field_mappings: { name: 'hostname' },
     })]);
+    expect(JSON.stringify(template)).not.toContain(SECRET);
+  }
+  const context = { user: {
+    _userId: 'b', _username: 'bob', _role: 'operator', _type: 'access', _organizationId: ORG_B,
+  } } as any;
+  const graphqlList = await connectorResolvers.Query.installedConnectors(null, {}, context);
+  const graphqlDetail = await connectorResolvers.Query.installedConnector(null, { connectorType: 'test' }, context);
+  const ownContext = { user: {
+    _userId: 'a', _username: 'alice', _role: 'operator', _type: 'access', _organizationId: ORG_A,
+  } } as any;
+  const nested = await ConnectorConfigurationFieldResolvers.connector({ id: A, connectorType: 'test' }, {}, ownContext);
+  for (const template of [graphqlList[0], graphqlDetail, nested] as any[]) {
+    expect(template.configurationSchema.properties.password.format).toBe('password');
+    expect(template.configurationSchema.properties.password.required).toBe(true);
+    expect(template.resources[0].field_mappings).toEqual({ name: 'hostname' });
     expect(JSON.stringify(template)).not.toContain(SECRET);
   }
 });

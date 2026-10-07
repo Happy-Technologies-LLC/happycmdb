@@ -16,10 +16,6 @@ import { getPostgresClient, PostgresClient } from '@cmdb/database';
 import { getConnectorInstaller, ConnectorInstaller } from '@cmdb/integration-framework';
 import { logger } from '@cmdb/common';
 
-/** Normalizes a caught value (typed `unknown` at every catch site) into a display message. */
-function toErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
 
 export interface InstalledConnectorRow {
   id: string;
@@ -154,15 +150,14 @@ export class ConnectorLifecycleService {
         url: versionEntry?.downloadUrl || versionEntry?.download_url,
         version: targetVersion,
       });
-    } catch (error: unknown) {
-      const message = toErrorMessage(error);
-      logger.error('Connector installation failed', { connectorType, error: message });
+    } catch {
+      logger.error('Connector installation failed');
       return {
         success: false,
         code: 'INSTALL_FAILED',
         connector: null,
-        message: `Failed to install connector '${connectorType}': ${message}`,
-        errors: [message],
+        message: 'Connector installation failed',
+        errors: ['INSTALL_FAILED'],
       };
     }
 
@@ -234,15 +229,14 @@ export class ConnectorLifecycleService {
         url: versionEntry?.downloadUrl || versionEntry?.download_url,
         version: targetVersion,
       });
-    } catch (error: unknown) {
-      const message = toErrorMessage(error);
-      logger.error('Connector update failed', { connectorType, error: message });
+    } catch {
+      logger.error('Connector update failed');
       return {
         success: false,
         code: 'UPDATE_FAILED',
         connector: existing,
-        message: `Failed to update connector '${connectorType}': ${message}`,
-        errors: [message],
+        message: 'Connector update failed',
+        errors: ['UPDATE_FAILED'],
         previousVersion,
         newVersion: previousVersion,
       };
@@ -297,14 +291,13 @@ export class ConnectorLifecycleService {
 
     try {
       await this.installer.uninstallConnector(connectorType);
-    } catch (error: unknown) {
-      const message = toErrorMessage(error);
-      logger.error('Connector uninstall failed', { connectorType, error: message });
+    } catch {
+      logger.error('Connector uninstall failed');
       return {
         success: false,
         code: 'UNINSTALL_FAILED',
-        message: `Failed to uninstall connector '${connectorType}': ${message}`,
-        errors: [message],
+        message: 'Connector uninstall failed',
+        errors: ['UNINSTALL_FAILED'],
       };
     }
 

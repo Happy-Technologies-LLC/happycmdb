@@ -11,6 +11,7 @@ import { Pool } from 'pg';
 import { logger } from '@cmdb/common';
 import { CONFIG_NOT_FOUND, PUBLIC_CONFIG } from '../../../auth/connector-scope';
 import { ownedConfig, requestScopeValues } from './ownership';
+import { connectorJsonMerge } from '../../../services/connector-json-merge';
 
 export class ConnectorConfigResourcesController {
   constructor(private pool: Pool) {}
@@ -77,14 +78,19 @@ export class ConnectorConfigResourcesController {
       const { id } = req.params;
       const { enabled_resources, resource_configs } = req.body;
 
+      const values: unknown[] = [enabled_resources];
+      const configs = resource_configs === undefined
+        ? 'resource_configs'
+        : connectorJsonMerge('resource_configs', resource_configs, values);
+      const idParam = values.length + 1;
       const result = await this.pool.query(
         `UPDATE connector_configurations
          SET enabled_resources = $1,
-             resource_configs = COALESCE($2::jsonb, resource_configs), updated_at = NOW()
-         WHERE id = $3 AND (organization_id = $4 OR (organization_id IS NULL AND $5::boolean))
+             resource_configs = ${configs}, updated_at = NOW()
+         WHERE id = $${idParam} AND (organization_id = $${idParam + 1}
+           OR (organization_id IS NULL AND $${idParam + 2}::boolean))
          RETURNING ${PUBLIC_CONFIG}`,
-        [enabled_resources, resource_configs === undefined ? null : JSON.stringify(resource_configs),
-          id, ...requestScopeValues(req)]
+        [...values, id, ...requestScopeValues(req)]
       );
 
       if (result.rows.length === 0) {

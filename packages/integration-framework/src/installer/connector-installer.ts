@@ -69,13 +69,13 @@ export class ConnectorInstaller {
     type: string,
     options?: DownloadOptions
   ): Promise<string> {
-    logger.info('Downloading connector', { type, options });
+    logger.info('Downloading connector');
 
     try {
       // If local path provided, just return it
       if (options?.localPath) {
         await access(options.localPath);
-        logger.info('Using local connector package', { path: options.localPath });
+        logger.info('Using local connector package');
         return options.localPath;
       }
 
@@ -98,16 +98,16 @@ export class ConnectorInstaller {
         const registryUrl = process.env['CONNECTOR_REGISTRY_URL'] || 'https://registry.happycmdb.io';
         const downloadUrl = `${registryUrl}/connectors/${type}/${version}/package.tar.gz`;
 
-        logger.info('Downloading from registry', { url: downloadUrl });
+        logger.info('Downloading from registry');
         await this.downloadFileOverHttps(downloadUrl, packagePath, allowedHosts);
       }
 
-      logger.info('Connector package downloaded', { path: packagePath });
+      logger.info('Connector package downloaded');
       return packagePath;
 
-    } catch (error) {
-      logger.error('Failed to download connector', { type, error });
-      throw new Error(`Failed to download connector ${type}: ${(error as Error).message}`);
+    } catch {
+      logger.error('Failed to download connector');
+      throw new Error('Connector download failed');
     }
   }
 
@@ -127,9 +127,7 @@ export class ConnectorInstaller {
         hosts.add(registryHost);
       }
     } catch {
-      logger.warn('Ignoring malformed CONNECTOR_REGISTRY_URL when building download allowlist', {
-        registryUrl,
-      });
+      logger.warn('Ignoring malformed CONNECTOR_REGISTRY_URL when building download allowlist');
     }
 
     return hosts;
@@ -177,29 +175,25 @@ export class ConnectorInstaller {
     try {
       parsed = new URL(rawUrl);
     } catch {
-      throw new Error(`Invalid connector download URL: ${rawUrl}`);
+      throw new Error('Invalid connector download URL');
     }
 
     if (parsed.protocol !== 'https:') {
-      throw new Error(
-        `Rejected connector download URL with unsupported scheme "${parsed.protocol}" (only https is allowed): ${rawUrl}`
-      );
+      throw new Error('Connector download requires HTTPS');
     }
 
     if (parsed.username || parsed.password) {
-      throw new Error(`Rejected connector download URL containing embedded credentials: ${rawUrl}`);
+      throw new Error('Connector download URL must not include credentials');
     }
 
     const hostname = parsed.hostname.toLowerCase();
 
     if (this.isDisallowedDownloadHost(hostname)) {
-      throw new Error(`Rejected connector download URL with disallowed host "${hostname}": ${rawUrl}`);
+      throw new Error('Connector download host is not allowed');
     }
 
     if (!allowedHosts.has(hostname)) {
-      throw new Error(
-        `Rejected connector download URL: host "${hostname}" is not in the trusted connector download allowlist (${Array.from(allowedHosts).sort().join(', ')})`
-      );
+      throw new Error('Connector download host is not allowlisted');
     }
 
     return parsed;
@@ -245,7 +239,7 @@ export class ConnectorInstaller {
         response.resume();
 
         if (!location) {
-          throw new Error(`Redirect response from ${currentUrl} did not include a Location header`);
+          throw new Error('Connector download redirect missing location');
         }
 
         // Location may be relative; resolve it against the current URL,
@@ -257,7 +251,7 @@ export class ConnectorInstaller {
 
       if (statusCode < 200 || statusCode >= 300) {
         response.resume();
-        throw new Error(`Download failed with HTTP status ${statusCode} for ${currentUrl}`);
+        throw new Error(`Connector download failed with HTTP status ${statusCode}`);
       }
 
       await new Promise<void>((resolve, reject) => {
@@ -308,7 +302,7 @@ export class ConnectorInstaller {
       return matches;
 
     } catch (error) {
-      logger.error('Failed to verify checksum', { error });
+      logger.error('Failed to verify connector checksum');
       return false;
     }
   }
@@ -334,8 +328,8 @@ export class ConnectorInstaller {
       logger.info('Package extracted successfully', { target: targetDir });
 
     } catch (error) {
-      logger.error('Failed to extract package', { error });
-      throw new Error(`Failed to extract package: ${(error as Error).message}`);
+      logger.error('Failed to extract connector package');
+      throw new Error('Connector package extraction failed');
     }
   }
 
@@ -363,8 +357,8 @@ export class ConnectorInstaller {
       logger.info('Dependencies installed successfully');
 
     } catch (error) {
-      logger.error('Failed to install dependencies', { error });
-      throw new Error(`Failed to install dependencies: ${(error as Error).message}`);
+      logger.error('Failed to install connector dependencies');
+      throw new Error('Connector dependency installation failed');
     }
   }
 
@@ -391,8 +385,8 @@ export class ConnectorInstaller {
       logger.info('Connector built successfully');
 
     } catch (error) {
-      logger.error('Failed to build connector', { error });
-      throw new Error(`Failed to build connector: ${(error as Error).message}`);
+      logger.error('Failed to build connector');
+      throw new Error('Connector build failed');
     }
   }
 
@@ -463,8 +457,8 @@ export class ConnectorInstaller {
       logger.info('Connector registered successfully', { type, version });
 
     } catch (error) {
-      logger.error('Failed to register connector', { type, error });
-      throw error;
+      logger.error('Failed to register connector');
+      throw new Error('Connector registration failed');
     }
   }
 
@@ -480,7 +474,7 @@ export class ConnectorInstaller {
     const startTime = Date.now();
 
     try {
-      logger.info('Installing connector', { type, options });
+      logger.info('Installing connector');
 
       // Check if already installed
       const existing = await this.registry.getInstalledConnector(type);
@@ -537,8 +531,8 @@ export class ConnectorInstaller {
       });
 
     } catch (error) {
-      logger.error('Connector installation failed', { type, error });
-      throw error;
+      logger.error('Connector installation failed');
+      throw new Error('Connector installation failed');
     }
   }
 
@@ -569,8 +563,8 @@ export class ConnectorInstaller {
       logger.info('Connector uninstalled successfully', { type });
 
     } catch (error) {
-      logger.error('Failed to uninstall connector', { type, error });
-      throw error;
+      logger.error('Failed to uninstall connector');
+      throw new Error('Connector uninstall failed');
     }
   }
 
@@ -584,7 +578,7 @@ export class ConnectorInstaller {
     options?: DownloadOptions
   ): Promise<void> {
     try {
-      logger.info('Updating connector', { type, options });
+      logger.info('Updating connector');
 
       // Check if installed
       const existing = await this.registry.getInstalledConnector(type);
@@ -646,7 +640,7 @@ export class ConnectorInstaller {
 
       } catch (error) {
         // Restore from backup on failure
-        logger.error('Update failed, restoring from backup', { error });
+        logger.error('Update failed, restoring connector backup');
 
         if (fs.existsSync(backupPath)) {
           await rm(existing.install_path, { recursive: true, force: true });
@@ -658,8 +652,8 @@ export class ConnectorInstaller {
       }
 
     } catch (error) {
-      logger.error('Failed to update connector', { type, error });
-      throw error;
+      logger.error('Failed to update connector');
+      throw new Error('Connector update failed');
     }
   }
 
@@ -681,7 +675,7 @@ export class ConnectorInstaller {
       return installedConnectors;
 
     } catch (error) {
-      logger.error('Failed to list installed connectors', { error });
+      logger.error('Failed to list installed connectors');
       return [];
     }
   }

@@ -60,7 +60,6 @@ describe('IntegrationManager ownership and secret boundary', () => {
     await manager.registerConnector({ ...manager.mapRowToConfig(config), organizationId: null });
     await manager.registerConnector({ ...manager.mapRowToConfig(config), credential_id: 'credential-1' });
     expect(cron.schedule).toHaveBeenCalledTimes(1);
-    expect(manager.getConnectors().size).toBe(0);
     expect((cron.schedule as jest.Mock).mock.results[0].value.stop).toHaveBeenCalledTimes(1);
   });
 

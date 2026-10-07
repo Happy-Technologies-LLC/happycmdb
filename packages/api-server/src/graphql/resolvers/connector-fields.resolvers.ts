@@ -7,6 +7,7 @@ import { GraphQLError } from 'graphql';
 import { getPostgresClient } from '@cmdb/database';
 import type { GraphQLContext } from './index';
 import { connectorScope, connectorPredicate, scopeValues, PUBLIC_RUN } from '../../auth/connector-scope';
+import { publicInstalledConnectorGraphQL } from '../../services/public-installed-connector';
 
 function requireScope(context: GraphQLContext) {
   const scope = connectorScope(context.user);
@@ -74,30 +75,7 @@ export const ConnectorConfigurationFieldResolvers = {
 
       const row = result.rows[0];
 
-      return {
-        id: row.id,
-        connectorType: row.connector_type,
-        category: row.category.toUpperCase(),
-        name: row.name,
-        description: row.description,
-        installedVersion: row.installed_version,
-        latestAvailableVersion: row.latest_available_version,
-        installedAt: row.installed_at,
-        updatedAt: row.updated_at,
-        enabled: row.enabled,
-        verified: row.verified,
-        installPath: row.install_path,
-        metadata: row.metadata || {},
-        capabilities: row.capabilities || { extraction: false, relationships: false, incremental: false, bidirectional: false },
-        resources: row.resources || [],
-        configurationSchema: row.configuration_schema || {},
-        totalRuns: row.total_runs,
-        successfulRuns: row.successful_runs,
-        failedRuns: row.failed_runs,
-        lastRunAt: row.last_run_at,
-        lastRunStatus: row.last_run_status,
-        tags: row.tags || [],
-      };
+      return publicInstalledConnectorGraphQL(row);
     } catch (error) {
       if (error instanceof GraphQLError) throw error;
       throw new GraphQLError('Failed to resolve connector');

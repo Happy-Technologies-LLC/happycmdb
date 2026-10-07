@@ -49,13 +49,16 @@ async function ownedConfig(req: Request) {
 }
 async function registerCurrentConfig(configId: string, organizationId: string): Promise<void> {
   const current = await postgresClient.query(
-    `SELECT c.id, c.organization_id, c.name, c.connector_type, c.credential_id, c.enabled,
-      c.schedule, c.connection, c.options, c.created_at, c.updated_at
+    `SELECT c.id, c.organization_id, c.credential_id, c.enabled, c.schedule
      FROM connector_configurations c WHERE c.id = $1 AND c.organization_id = $2`,
     [configId, organizationId]
   );
   if (current.rows.length) {
-    await integrationManager.registerConnector(integrationManager.mapRowToConfig(current.rows[0]));
+    const row = current.rows[0];
+    await integrationManager.registerConnector({
+      id: row.id, organizationId: row.organization_id,
+      credential_id: row.credential_id, enabled: row.enabled, schedule: row.schedule,
+    });
   }
 }
 

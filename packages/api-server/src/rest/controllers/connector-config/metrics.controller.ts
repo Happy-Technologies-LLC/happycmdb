@@ -151,6 +151,10 @@ export class ConnectorConfigMetricsController {
         sort_by = 'started_at',
         sort_order = 'desc'
       } = req.query;
+      if (config_id && (await ownedConfig(this.pool, req, config_id as string)).rows.length === 0) {
+        res.status(404).json(CONFIG_NOT_FOUND);
+        return;
+      }
 
       const { query, params, countQuery, countParams } = buildRunsQuery({
         config_id: config_id as string,

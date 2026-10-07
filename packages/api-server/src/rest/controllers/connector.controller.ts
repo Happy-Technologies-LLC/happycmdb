@@ -9,6 +9,7 @@ import {
   ConnectorLifecycleService,
   LifecycleFailureCode,
 } from '../../services/connector-lifecycle.service';
+import { publicInstalledConnector } from '../../services/public-installed-connector';
 
 const LIFECYCLE_FAILURE_STATUS: Record<LifecycleFailureCode, number> = {
   NOT_FOUND_IN_REGISTRY: 404,
@@ -20,53 +21,6 @@ const LIFECYCLE_FAILURE_STATUS: Record<LifecycleFailureCode, number> = {
   UPDATE_FAILED: 500,
   UNINSTALL_FAILED: 500,
 };
-
-/** Installed templates are public; saved configuration values are not. */
-function publicInstalledConnector(row: Record<string, any>): Record<string, unknown> {
-  const schema = row.configuration_schema;
-  const properties: Record<string, unknown> = {};
-  if (schema && typeof schema === 'object' && schema.properties && typeof schema.properties === 'object') {
-    for (const [name, raw] of Object.entries(schema.properties)) {
-      if (!raw || typeof raw !== 'object') continue;
-      const field = raw as Record<string, unknown>;
-      properties[name] = {
-        type: field['type'], title: field['title'], description: field['description'],
-        format: field['format'], required: field['required'] === true ||
-          (Array.isArray(schema.required) && schema.required.includes(name)),
-        enum: Array.isArray(field['enum']) ? field['enum'] : undefined,
-        default: field['format'] === 'password' ? undefined : field['default'],
-      };
-    }
-  }
-  const resources: Record<string, unknown>[] = [];
-  if (Array.isArray(row.resources)) {
-    for (const raw of row.resources) {
-      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
-      const resource = raw as Record<string, unknown>;
-      if (typeof resource['id'] !== 'string' || typeof resource['name'] !== 'string') continue;
-      const fieldMappings: Record<string, string> = {};
-      const mappings = resource['field_mappings'];
-      if (mappings && typeof mappings === 'object' && !Array.isArray(mappings)) {
-        for (const [key, value] of Object.entries(mappings)) {
-          if (typeof value === 'string') fieldMappings[key] = value;
-        }
-      }
-      resources.push({
-        id: resource['id'], name: resource['name'],
-        description: typeof resource['description'] === 'string' ? resource['description'] : '',
-        ci_type: typeof resource['ci_type'] === 'string' ? resource['ci_type'] : null,
-        enabled_by_default: resource['enabled_by_default'] !== false,
-        field_mappings: fieldMappings,
-      });
-    }
-  }
-  return {
-    ...row,
-    resources,
-    metadata: { resources },
-    configuration_schema: { properties },
-  };
-}
 
 /**
  * ConnectorController - Manages connector registry and installation
@@ -353,15 +307,14 @@ export class ConnectorController {
 
       res.status(201).json({
         success: true,
-        data: outcome.connector,
+        data: publicInstalledConnector(outcome.connector as Record<string, any>),
         message: outcome.message,
       });
-    } catch (error) {
-      logger.error('Error installing connector', error);
+    } catch {
+      logger.error('Error installing connector');
       res.status(500).json({
         success: false,
         error: 'Failed to install connector',
-        message: error instanceof Error ? error.message : 'Unknown error'
       });
     }
   }
@@ -390,18 +343,17 @@ export class ConnectorController {
 
       res.json({
         success: true,
-        data: outcome.connector,
+        data: publicInstalledConnector(outcome.connector as Record<string, any>),
         message: outcome.message,
         previous_version: outcome.previousVersion,
         new_version: outcome.newVersion,
         up_to_date: outcome.previousVersion === outcome.newVersion,
       });
-    } catch (error) {
-      logger.error('Error updating connector', error);
+    } catch {
+      logger.error('Error updating connector');
       res.status(500).json({
         success: false,
         error: 'Failed to update connector',
-        message: error instanceof Error ? error.message : 'Unknown error'
       });
     }
   }
@@ -431,12 +383,11 @@ export class ConnectorController {
         success: true,
         message: outcome.message,
       });
-    } catch (error) {
-      logger.error('Error uninstalling connector', error);
+    } catch {
+      logger.error('Error uninstalling connector');
       res.status(500).json({
         success: false,
         error: 'Failed to uninstall connector',
-        message: error instanceof Error ? error.message : 'Unknown error'
       });
     }
   }
@@ -482,12 +433,11 @@ export class ConnectorController {
         verified,
         message: `Connector '${type}' verification ${verified ? 'passed' : 'failed'}`
       });
-    } catch (error) {
-      logger.error('Error verifying connector', error);
+    } catch {
+      logger.error('Error verifying connector');
       res.status(500).json({
         success: false,
         error: 'Failed to verify connector',
-        message: error instanceof Error ? error.message : 'Unknown error'
       });
     }
   }
@@ -498,7 +448,7 @@ export class ConnectorController {
    */
   async refreshRegistryCache(_req: Request, res: Response): Promise<void> {
     try {
-      logger.info('Refreshing connector registry cache', { url: this.registryUrl });
+      logger.info('Refreshing connector registry cache');
 
       // Fetch catalog from GitHub
       const response = await axios.get(this.registryUrl, {
@@ -555,22 +505,11 @@ export class ConnectorController {
         count: inserted,
         updated_at: new Date().toISOString()
       });
-    } catch (error) {
-      const errorSummary = error instanceof Error
-        ? {
-            message: error.message,
-            name: error.name,
-            stack: error.stack,
-            ...(axios.isAxiosError(error)
-              ? { code: error.code, status: error.response?.status }
-              : {}),
-          }
-        : { message: String(error) };
-      logger.error('Error refreshing registry cache', errorSummary);
+    } catch {
+      logger.error('Error refreshing registry cache');
       res.status(500).json({
         success: false,
         error: 'Failed to refresh registry cache',
-        message: error instanceof Error ? error.message : 'Unknown error'
       });
     }
   }

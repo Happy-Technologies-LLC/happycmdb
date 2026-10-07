@@ -120,11 +120,11 @@ describe('ConnectorLifecycleService.installConnector', () => {
     expect(installer.installConnector).not.toHaveBeenCalled();
   });
 
-  it('leaves no installed record when the real installer fails', async () => {
+  it('returns a fixed failure without exposing installer error content', async () => {
+    const secret = 'SIGNED_URL_SECRET';
     const installer = createMockInstaller({
-      installConnector: jest.fn().mockRejectedValue(new Error('download failed: 404')),
+      installConnector: jest.fn().mockRejectedValue(new Error(`download failed: https://registry.test/file?token=${secret}`)),
     });
-    // Not installed before, and still not installed after the failed attempt.
     const pgClient = createMockPgClient({
       registryRow: catalogEntry,
       installedRowsSequence: [null],
@@ -136,7 +136,8 @@ describe('ConnectorLifecycleService.installConnector', () => {
     expect(outcome.success).toBe(false);
     expect(outcome.code).toBe('INSTALL_FAILED');
     expect(outcome.connector).toBeNull();
-    expect(outcome.errors).toEqual(['download failed: 404']);
+    expect(outcome.errors).toEqual(['INSTALL_FAILED']);
+    expect(JSON.stringify(outcome)).not.toContain(secret);
     expect(installer.installConnector).toHaveBeenCalledWith(
       'acme-crm',
       expect.objectContaining({ version: '2.0.0' })
@@ -214,9 +215,10 @@ describe('ConnectorLifecycleService.updateConnector', () => {
     );
   });
 
-  it('reports failure without mutating state when the installer throws', async () => {
+  it('returns a fixed update failure without exposing installer error content', async () => {
+    const secret = 'SIGNED_URL_SECRET';
     const installer = createMockInstaller({
-      updateConnector: jest.fn().mockRejectedValue(new Error('extract failed')),
+      updateConnector: jest.fn().mockRejectedValue(new Error(`extract failed: ${secret}`)),
     });
     const pgClient = createMockPgClient({
       registryRow: catalogEntry,
@@ -228,7 +230,8 @@ describe('ConnectorLifecycleService.updateConnector', () => {
 
     expect(outcome.success).toBe(false);
     expect(outcome.code).toBe('UPDATE_FAILED');
-    expect(outcome.errors).toEqual(['extract failed']);
+    expect(outcome.errors).toEqual(['UPDATE_FAILED']);
+    expect(JSON.stringify(outcome)).not.toContain(secret);
   });
 });
 

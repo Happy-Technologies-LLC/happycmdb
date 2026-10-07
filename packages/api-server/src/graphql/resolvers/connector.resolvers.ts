@@ -10,6 +10,8 @@ import { GraphQLContext } from './index';
 import { checkGraphQLPermission as requirePermission } from '../../middleware/auth.middleware';
 import { ConnectorLifecycleService } from '../../services/connector-lifecycle.service';
 import { denyPlatformAdminGraphQL } from '../../middleware/platform-admin-unavailable';
+import { publicInstalledConnectorGraphQL } from '../../services/public-installed-connector';
+import { connectorJsonMerge } from '../../services/connector-json-merge';
 import { connectorScope, connectorPredicate, scopeValues, PUBLIC_CONFIG, PUBLIC_RUN } from '../../auth/connector-scope';
 
 function scopedUser(context: GraphQLContext) {
@@ -258,30 +260,7 @@ const ConnectorQueryResolvers = {
       `;
       const result = await pgClient.query(query, params);
 
-      return result.rows.map(row => ({
-        id: row.id,
-        connectorType: row.connector_type,
-        category: row.category.toUpperCase(),
-        name: row.name,
-        description: row.description,
-        installedVersion: row.installed_version,
-        latestAvailableVersion: row.latest_available_version,
-        installedAt: row.installed_at,
-        updatedAt: row.updated_at,
-        enabled: row.enabled,
-        verified: row.verified,
-        installPath: row.install_path,
-        metadata: row.metadata || {},
-        capabilities: row.capabilities || { extraction: false, relationships: false, incremental: false, bidirectional: false },
-        resources: row.resources || [],
-        configurationSchema: row.configuration_schema || {},
-        totalRuns: row.total_runs,
-        successfulRuns: row.successful_runs,
-        failedRuns: row.failed_runs,
-        lastRunAt: row.last_run_at,
-        lastRunStatus: row.last_run_status,
-        tags: row.tags || [],
-      }));
+      return result.rows.map(publicInstalledConnectorGraphQL);
     } catch {
       throw new GraphQLError('Failed to retrieve installed connectors');
     }
@@ -315,30 +294,7 @@ const ConnectorQueryResolvers = {
 
       const row = result.rows[0];
 
-      return {
-        id: row.id,
-        connectorType: row.connector_type,
-        category: row.category.toUpperCase(),
-        name: row.name,
-        description: row.description,
-        installedVersion: row.installed_version,
-        latestAvailableVersion: row.latest_available_version,
-        installedAt: row.installed_at,
-        updatedAt: row.updated_at,
-        enabled: row.enabled,
-        verified: row.verified,
-        installPath: row.install_path,
-        metadata: row.metadata || {},
-        capabilities: row.capabilities || { extraction: false, relationships: false, incremental: false, bidirectional: false },
-        resources: row.resources || [],
-        configurationSchema: row.configuration_schema || {},
-        totalRuns: row.total_runs,
-        successfulRuns: row.successful_runs,
-        failedRuns: row.failed_runs,
-        lastRunAt: row.last_run_at,
-        lastRunStatus: row.last_run_status,
-        tags: row.tags || [],
-      };
+      return publicInstalledConnectorGraphQL(row);
     } catch {
       throw new GraphQLError('Failed to retrieve installed connector');
     }
@@ -570,8 +526,12 @@ const ConnectorMutationResolvers = {
       const value = args.input[key];
       if (value === undefined || ((jsonColumns[key] || key === 'notificationChannels') &&
         value !== null && typeof value === 'object' && Object.keys(value).length === 0)) continue;
-      values.push(jsonColumns[key] ? JSON.stringify(value) : value);
-      updates.push(`${column} = $${values.length}`);
+      if (jsonColumns[key]) {
+        updates.push(`${column} = ${connectorJsonMerge(column, value, values)}`);
+      } else {
+        values.push(value);
+        updates.push(`${column} = $${values.length}`);
+      }
     }
     values.push(user._username);
     updates.push(`updated_at = NOW()`, `updated_by = $${values.length}`);

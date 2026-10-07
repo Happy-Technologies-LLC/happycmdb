@@ -25,10 +25,10 @@ export interface ConnectorConfigurationRow {
 }
 
 type OwnedConfig = ConnectorConfiguration & { id: string; organizationId: string | null };
+type ScheduleConfig = Pick<OwnedConfig, 'id' | 'organizationId' | 'enabled' | 'schedule' | 'credential_id'>;
 
 export class IntegrationManager {
   private static instance: IntegrationManager;
-  private connectors = new Map<string, BaseIntegrationConnector>();
   private schedules = new Map<string, cron.ScheduledTask>();
   private postgresClient = getPostgresClient();
   private eventProducer = getEventProducer();
@@ -42,29 +42,30 @@ export class IntegrationManager {
 
   async loadConnectors(): Promise<void> {
     const result = await this.postgresClient.query(
-      'SELECT * FROM connector_configurations WHERE enabled = true AND organization_id IS NOT NULL AND credential_id IS NULL'
+      'SELECT id, organization_id, credential_id, enabled, schedule FROM connector_configurations WHERE enabled = true AND organization_id IS NOT NULL AND credential_id IS NULL'
     );
     for (const row of result.rows) {
       try {
-        await this.registerConnector(this.mapRowToConfig(row));
+        await this.registerConnector({
+          id: row.id, organizationId: row.organization_id,
+          credential_id: row.credential_id, enabled: row.enabled, schedule: row.schedule,
+        });
       } catch {
         logger.error('Connector registration failed', { configId: row.id });
       }
     }
   }
 
-  async registerConnector(config: ConnectorConfiguration): Promise<void> {
-    const owned = config as OwnedConfig;
-    if (!owned.id) return;
-    await this.unregisterConnector(owned.id);
-    if (!owned.organizationId || !config.enabled || config.credential_id) return;
-    // Registration may hold a connector instance, but execution always reloads the current row.
+  async registerConnector(config: ScheduleConfig): Promise<void> {
+    if (!config.id) return;
+    await this.unregisterConnector(config.id);
+    if (!config.organizationId || !config.enabled || config.credential_id) return;
+    // A schedule retains only the configuration ID and owner. Secrets and connector
+    // instances are loaded only after the fresh ownership check at execution time.
     if (config.schedule && !cron.validate(config.schedule)) throw new Error('Invalid cron schedule');
-    const connector = getConnectorRegistry().createConnector(config);
-    this.connectors.set(owned.id, connector);
     if (config.schedule) {
-      const id = owned.id;
-      const organizationId = owned.organizationId;
+      const id = config.id;
+      const organizationId = config.organizationId;
       const task = cron.schedule(config.schedule, async () => {
         try {
           await this.runConnector(id, organizationId, 'schedule');
@@ -79,17 +80,6 @@ export class IntegrationManager {
   async unregisterConnector(configId: string): Promise<void> {
     this.schedules.get(configId)?.stop();
     this.schedules.delete(configId);
-    const connector = this.connectors.get(configId);
-    this.connectors.delete(configId);
-    if (connector) await connector.cleanup();
-  }
-
-  getConnectors(): Map<string, BaseIntegrationConnector> {
-    return this.connectors;
-  }
-
-  getConnector(configId: string): BaseIntegrationConnector | undefined {
-    return this.connectors.get(configId);
   }
 
   private async ownedConfig(configId: string, organizationId: string | null): Promise<OwnedConfig> {

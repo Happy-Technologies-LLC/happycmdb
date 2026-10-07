@@ -10,7 +10,8 @@ import cors from 'cors';
 import { logger } from '@cmdb/common';
 import { connectorsRouter } from './api/connectors.routes';
 import { transformationRulesRouter } from './api/transformation-rules.routes';
-import { getIntegrationManager, getConnectorRegistry } from '@cmdb/integration-framework';
+import { getConnectorRegistry } from '@cmdb/integration-framework';
+import { getIntegrationManager } from '@cmdb/integration-framework/dist/core/integration-manager';
 import { getAuthMiddleware } from '@cmdb/api-server/auth/auth-bootstrap';
 import { requireConnectorScope } from '@cmdb/api-server/auth/connector-scope';
 

@@ -22,16 +22,6 @@ export function requireConnectorScope(req: Request, res: Response, next: NextFun
   next();
 }
 
-/** Global connector uninstall cascades across tenant configurations. */
-export function requireConnectorPlatformAdmin(req: Request, res: Response, next: NextFunction): void {
-  const user = (req as Request & { user?: TokenPayload }).user;
-  if (user?._platformAdmin !== true) {
-    res.status(403).json({ error: 'Forbidden', message: 'Platform authority required' });
-    return;
-  }
-  next();
-}
-
 /** Tenants see only their organization. Platform authority adds only NULL legacy rows. */
 export function connectorPredicate(alias: string, first: number): string {
   return `(${alias}.organization_id = $${first} OR (${alias}.organization_id IS NULL AND $${first + 1}::boolean))`;

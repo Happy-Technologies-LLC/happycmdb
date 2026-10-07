@@ -9,7 +9,7 @@
 import { Request, Response } from 'express';
 import { Pool } from 'pg';
 import { logger } from '@cmdb/common';
-import { getIntegrationManager } from '@cmdb/integration-framework';
+import { getIntegrationManager } from '@cmdb/integration-framework/dist/core/integration-manager';
 import { CONFIG_NOT_FOUND, PUBLIC_CONFIG, PUBLIC_RUN } from '../../../auth/connector-scope';
 import { ownedConfig, requestScopeValues } from './ownership';
 

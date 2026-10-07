@@ -166,17 +166,26 @@ it('returns the same 404 for foreign and missing config filters on the global ru
   expect(own.body.data.map((run: { id: string }) => run.id)).toEqual([RUN_A]);
 });
 
-it('reserves shared connector installation and registry mutations for verified platform operators', async () => {
+it('refuses every shared connector lifecycle operation for tenant and verified platform identities', async () => {
   const shared = '/api/v1/connectors';
-  const denied = [
-    await request(app).post(`${shared}/install`).set(bearer('internal')).send({ connector_type: 'test' }),
-    await request(app).put(`${shared}/test/update`).set(bearer('internal')).send({}),
-    await request(app).post(`${shared}/test/verify`).set(bearer('internal')).send({}),
-    await request(app).post(`${shared}/cache/refresh`).set(bearer('internal')).send({}),
-    await request(app).delete(`${shared}/test`).set(bearer('internal')),
-  ];
-  expect(denied.map(response => response.status)).toEqual([403, 403, 403, 403, 403]);
-  expect((await request(app).post(`${shared}/test/verify`).set(bearer('platform')).send({})).status).toBe(200);
+  for (const identity of ['internal', 'a', 'platform', 'platformOwn']) {
+    const calls = [
+      request(app).post(`${shared}/install`).set(bearer(identity)).send({ connector_type: 'test', force: true }),
+      request(app).put(`${shared}/test/update`).set(bearer(identity)).send({ force: true }),
+      request(app).post(`${shared}/test/verify`).set(bearer(identity)).send({}),
+      request(app).post(`${shared}/cache/refresh`).set(bearer(identity)).send({}),
+      request(app).delete(`${shared}/test`).set(bearer(identity)),
+    ];
+    for (const call of calls) {
+      const result = await call;
+      expect([result.status, result.body]).toEqual([503, {
+        success: false, error: 'CONNECTOR_LIFECYCLE_UNAVAILABLE',
+      }]);
+    }
+  }
+  expect(dataQueries).toBe(0);
+  expect((await query('SELECT connector_type, verified FROM installed_connectors')).rows)
+    .toEqual([{ connector_type: 'test', verified: false }]);
 });
 
 it('scopes list/history and denies foreign/legacy runs while hiding nested secrets', async () => {

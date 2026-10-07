@@ -5,10 +5,9 @@
 
 import { GraphQLError } from 'graphql';
 import { getPostgresClient } from '@cmdb/database';
-import { getIntegrationManager } from '@cmdb/integration-framework';
+import { getIntegrationManager } from '@cmdb/integration-framework/dist/core/integration-manager';
 import { GraphQLContext } from './index';
 import { checkGraphQLPermission as requirePermission } from '../../middleware/auth.middleware';
-import { ConnectorLifecycleService } from '../../services/connector-lifecycle.service';
 import { denyPlatformAdminGraphQL } from '../../middleware/platform-admin-unavailable';
 import { publicInstalledConnectorGraphQL } from '../../services/public-installed-connector';
 import { connectorJsonMerge } from '../../services/connector-json-merge';

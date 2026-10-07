@@ -5,17 +5,19 @@ import supertest from 'supertest';
 import { connectorsRouter } from '../connectors.routes';
 import { IntegrationHubServer } from '../../index';
 import { getPostgresClient } from '@cmdb/database';
-import { getIntegrationManager, getConnectorRegistry } from '@cmdb/integration-framework';
+import { getConnectorRegistry } from '@cmdb/integration-framework';
+import { getIntegrationManager } from '@cmdb/integration-framework/dist/core/integration-manager';
 
 jest.mock('@cmdb/database', () => ({ getPostgresClient: jest.fn(() => ({ query: (...args: unknown[]) => query(...args) })) }));
-jest.mock('@cmdb/integration-framework', () => ({
+jest.mock('@cmdb/integration-framework/dist/core/integration-manager', () => ({
   getIntegrationManager: jest.fn(() => ({
     runConnector: (...args: unknown[]) => runConnector(...args),
     unregisterConnector: (...args: unknown[]) => unregisterConnector(...args),
-    mapRowToConfig: (value: object) => value,
     registerConnector: jest.fn(),
     testConnector: jest.fn(),
   })),
+}));
+jest.mock('@cmdb/integration-framework', () => ({
   getConnectorRegistry: jest.fn(() => ({ hasConnectorType: () => true })),
 }));
 jest.mock('@cmdb/api-server/auth/auth-bootstrap', () => ({

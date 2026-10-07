@@ -113,57 +113,22 @@ The connector automatically discovers relationships between resources:
   - Target: Target CI
   - Properties: `severity`, `alertname`
 
-## Example Usage
+## Configuration and execution
 
-### Via CLI
+Install the Prometheus connector at deployment time. Shared connector installation,
+update, verification, removal and registry refresh are unavailable through REST,
+GraphQL and the CLI until the separately reviewed platform authority cutover.
 
-```bash
-# Install connector
-cmdb connector install prometheus
-
-# Configure connector
-cmdb connector config prometheus \
-  --url "http://prometheus.example.com:9090" \
-  --username "admin" \
-  --password "secret" \
-  --enable-resources targets,services,alerts
-
-# Run discovery
-cmdb connector run prometheus
-```
-
-### Via API
-
-```typescript
-import { getIntegrationManager } from '@cmdb/integration-framework';
-
-const manager = getIntegrationManager();
-
-// Configure connector
-const config = {
-  name: 'Production Prometheus',
-  type: 'prometheus',
-  enabled: true,
-  connection: {
-    prometheus_url: 'http://prometheus.example.com:9090',
-    basic_auth_username: 'admin',
-    basic_auth_password: 'secret',
-  },
-  enabled_resources: ['targets', 'services', 'alerts'],
-  resource_configs: {
-    targets: {
-      active_only: true,
-      exclude_jobs: ['test-job'],
-    },
-  },
-};
-
-// Save configuration
-await manager.saveConnectorConfiguration(config);
-
-// Run discovery
-await manager.runConnector('prometheus');
-```
+Create a configuration through authenticated `POST /api/v1/connector-configs`
+with `connector_type: "prometheus"`, a unique name in the verified user's
+organization, and an inline `connection` containing `prometheus_url` and any
+required authentication. Connection secrets are write-only; saved values cannot
+be read back. Use the returned configuration ID for scoped read/update routes.
+`POST /api/v1/connector-configs/:id/run` currently records a queued run only:
+no repository worker consumes that queue. Authenticated integration-hub
+`POST /api/v1/connectors/:name/run` invokes organization-checked execution.
+Stored `credential_id` references cannot execute until credential ownership is
+available and reviewed.
 
 ## Environment Label Detection
 

@@ -8,8 +8,6 @@
 
 // Core classes
 export { BaseIntegrationConnector } from './core/base-connector';
-export { IntegrationManager, getIntegrationManager } from './core/integration-manager';
-export type { ConnectorConfigurationRow } from './core/integration-manager';
 
 // Registry
 export { ConnectorRegistry, getConnectorRegistry } from './registry/connector-registry';

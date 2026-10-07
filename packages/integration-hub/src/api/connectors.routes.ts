@@ -3,7 +3,8 @@
 
 import { Router, Request, Response } from 'express';
 import type { NextFunction } from 'express';
-import { getIntegrationManager, getConnectorRegistry } from '@cmdb/integration-framework';
+import { getConnectorRegistry } from '@cmdb/integration-framework';
+import { getIntegrationManager } from '@cmdb/integration-framework/dist/core/integration-manager';
 import { getPostgresClient } from '@cmdb/database';
 import {
   connectorScope, connectorPredicate, scopeValues, PUBLIC_CONFIG, PUBLIC_RUN,

@@ -20,7 +20,7 @@ jest.mock('@cmdb/database', () => ({
 const mockGetIntegrationManager = jest.fn();
 const mockRunConnector = jest.fn();
 
-jest.mock('@cmdb/integration-framework', () => ({
+jest.mock('@cmdb/integration-framework/dist/core/integration-manager', () => ({
   getIntegrationManager: (...args: unknown[]) => mockGetIntegrationManager(...args),
 }));
 
@@ -132,6 +132,22 @@ describe('connector ownership and public GraphQL boundary', () => {
     await expectGraphQLErrorCode(
       connectorResolvers.Mutation.updateConnectorConfiguration(null, { id: 'a', input: { enabled: false } },
         contextWith({ ...operatorUser, _organizationId: undefined })), 'FORBIDDEN');
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  it('refuses global lifecycle operations for tenant and platform principals before database access', async () => {
+    for (const user of [adminUser, operatorUser, { ...adminUser, _platformAdmin: true }]) {
+      for (const mutation of [
+        connectorResolvers.Mutation.installConnector,
+        connectorResolvers.Mutation.updateConnector,
+        connectorResolvers.Mutation.uninstallConnector,
+      ]) {
+        await expectGraphQLErrorCode(
+          mutation(null, { connectorType: 'acme-crm', force: true }, contextWith(user)),
+          'CONNECTOR_LIFECYCLE_UNAVAILABLE'
+        );
+      }
+    }
     expect(mockQuery).not.toHaveBeenCalled();
   });
 

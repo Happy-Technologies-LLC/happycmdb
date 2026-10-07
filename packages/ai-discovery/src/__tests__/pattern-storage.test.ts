@@ -30,6 +30,7 @@ jest.mock('../pattern-cache.service', () => ({
 import { getPostgresClient, type PostgresClient } from '@cmdb/database';
 import { PatternCacheService } from '../pattern-cache.service';
 import { PatternStorageService } from '../pattern-storage';
+import type { DiscoveryPattern } from '../types';
 
 /** Minimal shape of a pg QueryResult, as consumed by PatternStorageService. */
 interface MockQueryResult {
@@ -74,11 +75,13 @@ describe('PatternStorageService', () => {
   let storage: PatternStorageService;
   let mockClientQuery: jest.Mock<(text: string, params?: unknown[]) => Promise<MockQueryResult>>;
   let mockInvalidatePattern: jest.Mock<(patternId: string) => Promise<void>>;
+  let mockGetActivePatterns: jest.Mock<() => Promise<DiscoveryPattern[] | null>>;
 
   beforeEach(() => {
     mockClientQuery = jest.fn();
     const mockClient = { query: mockClientQuery, release: jest.fn() };
     mockInvalidatePattern = jest.fn();
+    mockGetActivePatterns = jest.fn(async () => null);
 
     jest.mocked(getPostgresClient).mockReturnValue({
       getClient: jest.fn(async () => mockClient),
@@ -90,11 +93,20 @@ describe('PatternStorageService', () => {
     // so mock the constructor as a plain factory function instead.
     (PatternCacheService as unknown as jest.Mock<() => PatternCacheService>).mockReturnValue({
       invalidatePattern: mockInvalidatePattern,
+      getActivePatterns: mockGetActivePatterns,
+      setActivePatterns: jest.fn(async () => undefined),
     } as unknown as PatternCacheService);
 
     storage = new PatternStorageService();
   });
 
+  it('reads the authoritative active set after a stale cache survives a transition', async () => {
+    mockGetActivePatterns.mockResolvedValue([{ patternId: 'old-active', isActive: true,
+      detectionCode: 'function detect() { return true; }', discoveryCode: 'return [];'
+    } as DiscoveryPattern]);
+    mockClientQuery.mockResolvedValue({ rows: [] });
+    expect(await storage.loadPatterns(true)).toEqual([]);
+  });
   describe('listPatterns', () => {
     it('queries every lifecycle status when no filters are given, bounded to the default page size', async () => {
       mockClientQuery.mockResolvedValue({ rows: [patternRow()] });

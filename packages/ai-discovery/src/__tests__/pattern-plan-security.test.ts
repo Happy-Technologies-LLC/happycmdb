@@ -36,6 +36,7 @@ beforeEach(() => {
   jest.clearAllMocks();
   (getRedisClient as jest.Mock).mockReturnValue(redis);
   redis.get.mockReset().mockResolvedValue(null);
+  redis.setex.mockReset().mockResolvedValue('OK');
   (lookup as jest.Mock).mockResolvedValue([{ address: '8.8.8.8', family: 4 }]);
   (safeDiscoveryHttp as jest.Mock).mockResolvedValue({ status: 200, data: { healthy: true } });
 });
@@ -72,8 +73,9 @@ it('compiles and executes safe dotted endpoint paths without changing their targ
   expect(await new PatternValidator().validate(pattern)).toMatchObject({ isValid: true });
   storage.loadPatterns.mockResolvedValue([pattern]);
   const matcher = new PatternMatcher(storage as unknown as PatternStorageService);
-  await matcher.loadPatterns();
-  const cis = await matcher.executePattern(pattern.patternId, context);
+  const match = await matcher.match(sourceSession.scanResult);
+  expect(match).toMatchObject({ patternId: pattern.patternId, confidence: 0.8 });
+  const cis = await matcher.executePattern(pattern.patternId, context, match!.activeSetHash);
   expect(cis).toMatchObject([{ metadata: {
     'health.json': { healthy: true }, '.well-known/status': { healthy: true },
   } }]);
@@ -142,6 +144,59 @@ it('rejects active legacy discovery plans even when detection does not match', a
   const hybrid = new HybridDiscoveryOrchestrator({ aiEnabled: false });
   expect(await hybrid.discover({ ...context, scanResult: unmatched }))
     .toMatchObject({ success: false, error: UNSUPPORTED_PATTERN_PLAN });
+  expect(safeDiscoveryHttp).not.toHaveBeenCalled();
+});
+
+it('refreshes active plans after a cached negative when storage changes to legacy code', async () => {
+  const analyzer = { analyzeSession: jest.fn().mockResolvedValue({ candidate }) };
+  const base = await new PatternCompiler(analyzer as unknown as PatternAnalyzer).compilePattern([session]);
+  let active: DiscoveryPattern[] = [base];
+  storage.loadPatterns.mockImplementation(async () => active);
+  const cached = new Map<string, string>();
+  redis.get.mockImplementation(async (key: string) => cached.get(key) || null);
+  redis.setex.mockImplementation(async (key: string, _ttl: number, value: string) => {
+    cached.set(key, value);
+    return 'OK';
+  });
+  const matcher = new PatternMatcher(storage as unknown as PatternStorageService);
+  expect(await matcher.match({ services: [{ port: 80 }], http: { endpoints: [] } })).toBeNull();
+  active = [{ ...base, discoveryCode: `async function discover() {
+    fetch.constructor('return process')(); return []; }` }];
+  await expect(matcher.match({ services: [{ port: 80 }], http: { endpoints: [] } }))
+    .rejects.toThrow(UNSUPPORTED_PATTERN_PLAN);
+  await expect(matcher.executePattern(base.patternId, context)).rejects.toThrow(UNSUPPORTED_PATTERN_PLAN);
+  expect(safeDiscoveryHttp).not.toHaveBeenCalled();
+});
+
+it('invalidates cached positives on plan edits and refuses a subsequently deactivated pattern', async () => {
+  const analyzer = { analyzeSession: jest.fn().mockResolvedValue({ candidate }) };
+  const base = await new PatternCompiler(analyzer as unknown as PatternAnalyzer).compilePattern([session]);
+  let active: DiscoveryPattern[] = [base];
+  storage.loadPatterns.mockImplementation(async () => active);
+  const cached = new Map<string, string>();
+  redis.get.mockImplementation(async (key: string) => cached.get(key) || null);
+  redis.setex.mockImplementation(async (key: string, _ttl: number, value: string) => {
+    cached.set(key, value);
+    return 'OK';
+  });
+  const matcher = new PatternMatcher(storage as unknown as PatternStorageService);
+  const originalMatch = await matcher.match(context.scanResult);
+  expect(originalMatch).toMatchObject({ patternId: base.patternId });
+  active = [{ ...base, detectionCode: JSON.stringify({ ...JSON.parse(base.detectionCode),
+    ports: [80], endpoints: [] }) }];
+  await expect(matcher.executePattern(base.patternId, context, originalMatch!.activeSetHash))
+    .rejects.toThrow('PATTERN_NOT_ACTIVE');
+  expect(await matcher.match(context.scanResult)).toBeNull();
+  active = [];
+  await expect(matcher.executePattern(base.patternId, context)).rejects.toThrow('PATTERN_NOT_ACTIVE');
+  expect(safeDiscoveryHttp).not.toHaveBeenCalled();
+});
+
+it('does not fall back to AI when the active plan list cannot be verified', async () => {
+  jest.spyOn(PatternStorageService.prototype, 'loadPatterns').mockRejectedValue(new Error('storage unavailable'));
+  const hybrid = new HybridDiscoveryOrchestrator({ aiEnabled: false });
+  expect(await hybrid.discover(context))
+    .toMatchObject({ success: false, error: 'PATTERN_STATE_UNAVAILABLE' });
   expect(safeDiscoveryHttp).not.toHaveBeenCalled();
 });
 

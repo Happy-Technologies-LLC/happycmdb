@@ -4,6 +4,12 @@
 
 Discovery Agents are lightweight processes that run in your network to perform local infrastructure scanning and discovery. Unlike agentless discovery (which runs from the HappyCMDB server), agents run closer to the targets, enabling discovery behind firewalls, in air-gapped networks, and across distributed locations.
 
+> **Current Choice C restriction:** discovery refuses private, loopback, link-local,
+> metadata, and platform targets for every caller, including agent-based discovery.
+> The network-proximity architecture below is historical; do not use it to scan
+> internal networks. See [the fail-closed cutover](../../../docs/discovery-egress-agent-registry-design.md)
+> for the current egress and organization-scope contract.
+
 ## Key Features
 
 - **Network Proximity** - Scan devices within local networks
@@ -54,68 +60,13 @@ Discovery Agents are lightweight processes that run in your network to perform l
 
 ## Database Schema
 
-```sql
-CREATE TABLE discovery_agents (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  agent_id VARCHAR(255) UNIQUE NOT NULL, -- Unique agent identifier
-  hostname VARCHAR(255) NOT NULL,
-  ip_address VARCHAR(45),
-
-  -- Capabilities
-  provider_capabilities TEXT[] NOT NULL, -- ['nmap', 'ssh', 'snmp']
-  reachable_networks TEXT[] NOT NULL,    -- ['10.0.0.0/8', '192.168.1.0/24']
-
-  -- Status
-  status VARCHAR(50) NOT NULL DEFAULT 'active',
-    CHECK (status IN ('active', 'inactive', 'offline', 'disabled')),
-
-  -- Heartbeat
-  last_heartbeat_at TIMESTAMP NOT NULL DEFAULT NOW(),
-
-  -- Job statistics
-  total_jobs_assigned INTEGER DEFAULT 0,
-  total_jobs_completed INTEGER DEFAULT 0,
-  total_jobs_failed INTEGER DEFAULT 0,
-
-  -- Agent metadata
-  version VARCHAR(50),
-  platform VARCHAR(50),   -- 'linux', 'windows', 'darwin'
-  arch VARCHAR(20),       -- 'x64', 'arm64'
-
-  -- Registration
-  registered_at TIMESTAMP NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMP NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX idx_agents_status ON discovery_agents(status);
-CREATE INDEX idx_agents_last_heartbeat ON discovery_agents(last_heartbeat_at);
-CREATE INDEX idx_agents_networks ON discovery_agents USING gin(reachable_networks);
-
--- View: Active agents with network coverage
-CREATE VIEW active_discovery_agents AS
-SELECT
-  id,
-  agent_id,
-  hostname,
-  provider_capabilities,
-  reachable_networks,
-  last_heartbeat_at,
-  total_jobs_completed,
-  total_jobs_failed
-FROM discovery_agents
-WHERE status = 'active'
-  AND last_heartbeat_at > NOW() - INTERVAL '5 minutes';
-
--- View: Agent network coverage
-CREATE VIEW agent_network_coverage AS
-SELECT
-  unnest(reachable_networks) AS network,
-  array_agg(agent_id) AS agents,
-  count(*) AS agent_count
-FROM discovery_agents
-WHERE status = 'active'
-GROUP BY network;
-```
+Migration `019_discovery_agents_organization_scope.sql` adds nullable
+`organization_id` to the table created by `001_complete_schema.sql` and indexes
+`(organization_id, last_heartbeat_at DESC)`. Existing rows remain NULL and are
+inaccessible to API callers; every new agent registration records the verified
+organization. Global `agent_id` uniqueness is preserved. PUBLIC grants on the
+base table and unscoped legacy views are revoked; use organization-filtered
+service queries rather than `active_discovery_agents` or `agent_network_coverage`.
 
 ## Agent Registration
 
@@ -260,17 +211,19 @@ Agents send heartbeat every 60 seconds to indicate they're alive:
 
 ### Stale Agent Detection
 
-Agents that haven't sent a heartbeat in 5 minutes are marked as `offline`:
+The service can mark agents that haven't sent a heartbeat in 5 minutes `offline`
+within a verified caller organization; no scheduler invokes this method yet.
+Legacy rows with NULL `organization_id` are never updated:
 
 ```typescript
-// Runs every 60 seconds
-async function markStaleAgentsOffline() {
+async function markStaleAgentsOffline(verifiedOrganizationId: string) {
   await db.query(`
     UPDATE discovery_agents
     SET status = 'offline'
-    WHERE status = 'active'
+    WHERE organization_id = $1
+      AND status = 'active'
       AND last_heartbeat_at < NOW() - INTERVAL '5 minutes'
-  `);
+  `, [verifiedOrganizationId]);
 }
 ```
 
@@ -278,59 +231,19 @@ async function markStaleAgentsOffline() {
 
 ### Network-Based Agent Selection
 
-When a discovery definition is run with `method: 'agent'` and no specific agent is assigned, the system automatically selects the best agent based on network reachability:
+Only verified organization-scoped service queries may select an agent. The
+service checks active status, recent heartbeat, provider capability, network
+reachability, and `organization_id`; legacy NULL rows are never candidates.
+The discovery target must also pass the global public-egress policy before any
+agent is dispatched. The old `active_discovery_agents` view and private
+datacenter-target examples are not valid routing paths under Choice C.
 
 ```typescript
-async function findBestAgentForNetworks(
-  targetNetworks: string[],
-  provider: string
-): Promise<string | null> {
-  // Query agents that:
-  // 1. Are active
-  // 2. Have required provider capability
-  // 3. Have at least one matching network
-
-  const result = await db.query(`
-    SELECT
-      agent_id,
-      reachable_networks,
-      total_jobs_completed,
-      total_jobs_failed
-    FROM active_discovery_agents
-    WHERE
-      $1 = ANY(provider_capabilities)  -- Has required capability
-      AND reachable_networks && $2     -- Has network overlap
-    ORDER BY
-      -- Prefer agents with better success rate
-      (total_jobs_completed::float / NULLIF(total_jobs_completed + total_jobs_failed, 0)) DESC NULLS LAST,
-      -- Then prefer agents with more matching networks
-      cardinality(reachable_networks & $2) DESC
-    LIMIT 1
-  `, [provider, targetNetworks]);
-
-  return result.rows[0]?.agent_id || null;
-}
-```
-
-### Usage Example
-
-```typescript
-// Discovery definition (no agent_id specified)
-const definition = {
-  name: "Datacenter East Network Scan",
-  provider: "nmap",
-  method: "agent",  // Use agent-based discovery
-  agent_id: null,   // Auto-select best agent
-  config: {
-    targets: ["10.0.0.0/16", "172.16.0.0/12"]
-  }
-};
-
-// When definition is run:
-// 1. System queries active_discovery_agents
-// 2. Finds agents with 'nmap' capability and matching networks
-// 3. Selects agent with best success rate
-// 4. Dispatches job to selected agent
+const agentId = await agentService.findBestAgentForNetworks(
+  approvedPublicNetworks,
+  provider,
+  verifiedOrganizationId
+);
 ```
 
 ## Agent Deployment

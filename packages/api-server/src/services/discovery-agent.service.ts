@@ -311,13 +311,15 @@ export class DiscoveryAgentService {
    * Mark stale agents as offline
    * (agents that haven't sent heartbeat in 5+ minutes)
    */
-  async markStaleAgentsOffline(): Promise<number> {
+  async markStaleAgentsOffline(organizationId: string): Promise<number> {
     try {
       const result = await this.postgresClient.query(
         `UPDATE discovery_agents
          SET status = 'offline'
-         WHERE status = 'active'
-           AND (NOW() - last_heartbeat_at) > INTERVAL '5 minutes'`
+         WHERE organization_id = $1
+           AND status = 'active'
+           AND (NOW() - last_heartbeat_at) > INTERVAL '5 minutes'`,
+        [organizationId]
       );
 
       const count = result.rowCount || 0;

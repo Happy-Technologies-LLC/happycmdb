@@ -4,6 +4,9 @@
 /** Stored plan JSON replaces executable pattern code. Legacy JavaScript is never evaluated. */
 export const UNSUPPORTED_PATTERN_PLAN = 'UNSUPPORTED_PATTERN_PLAN';
 
+export const PATTERN_NOT_ACTIVE = 'PATTERN_NOT_ACTIVE';
+export const PATTERN_STATE_UNAVAILABLE = 'PATTERN_STATE_UNAVAILABLE';
+
 export interface DetectionPlan {
   kind: 'detection-v1';
   ports: number[];

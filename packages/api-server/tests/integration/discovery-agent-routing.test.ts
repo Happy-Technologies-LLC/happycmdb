@@ -353,7 +353,7 @@ describe('Discovery Agent Routing Integration Tests', () => {
       );
 
       // Mark stale agents as offline
-      const count = await agentService.markStaleAgentsOffline();
+      const count = await agentService.markStaleAgentsOffline(ORG);
 
       expect(count).toBeGreaterThan(0);
 

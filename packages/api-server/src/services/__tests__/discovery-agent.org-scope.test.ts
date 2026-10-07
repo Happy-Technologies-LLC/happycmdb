@@ -50,6 +50,19 @@ const executeQuery = async (sql: string, args: unknown[] = []) => {
     candidate.total_jobs_completed += sql.includes('total_jobs_completed') ? args[0] as number : 0;
     return { rows: [], rowCount: 1 };
   }
+  if (sql.includes('UPDATE discovery_agents') && sql.includes("SET status = 'offline'")) {
+    let count = 0;
+    for (const candidate of rows.values()) {
+      if ((!sql.includes('organization_id = $1') ||
+        (candidate.organization_id !== null && candidate.organization_id === args[0])) &&
+        candidate.status === 'active' &&
+        Date.now() - candidate.last_heartbeat_at.getTime() > 5 * 60 * 1000) {
+        candidate.status = 'offline';
+        count++;
+      }
+    }
+    return { rows: [], rowCount: count };
+  }
   if (sql.includes('DELETE FROM discovery_agents')) {
     const candidate = rows.get(args[0] as string);
     if (!candidate || (sql.includes('AND organization_id') && candidate.organization_id !== args[1])) return { rows: [], rowCount: 0 };
@@ -98,6 +111,21 @@ it('denies ID reuse and foreign/NULL heartbeat and delete without modifying exis
   expect(rows.get('legacy')?.total_jobs_completed).toBe(0);
   expect(await service.getAgent('alpha', A)).not.toBeNull();
   expect(await service.deleteAgent('alpha', A)).toBe(true);
+});
+
+it('only marks stale agents in the verified organization and never touches legacy NULL rows', async () => {
+  await service.registerAgent(registration('alpha'), A);
+  await service.registerAgent(registration('beta'), B);
+  for (const id of ['alpha', 'beta', 'legacy']) {
+    rows.get(id)!.last_heartbeat_at = new Date(Date.now() - 10 * 60 * 1000);
+  }
+  expect(await service.markStaleAgentsOffline(A)).toBe(1);
+  expect(rows.get('alpha')?.status).toBe('offline');
+  expect(rows.get('beta')?.status).toBe('active');
+  expect(rows.get('legacy')?.status).toBe('active');
+  expect(await service.markStaleAgentsOffline(B)).toBe(1);
+  expect(rows.get('beta')?.status).toBe('offline');
+  expect(rows.get('legacy')?.status).toBe('active');
 });
 
 it('returns identical HTTP 404 for foreign, missing, and legacy NULL agents on reads and mutations', async () => {

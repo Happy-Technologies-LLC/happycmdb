@@ -12,54 +12,74 @@ import { DISCOVERY_TARGET_REFUSED, logger, resolveDiscoveryHost } from '@cmdb/co
 import { getRedisClient } from '@cmdb/database';
 import * as crypto from 'crypto';
 import { safeDiscoveryHttp } from './tools/safe-http';
-import { detectWithPlan, parseDetectionPlan, parseDiscoveryPlan, UNSUPPORTED_PATTERN_PLAN } from './pattern-plan';
+import { detectWithPlan, parseDetectionPlan, parseDiscoveryPlan, PATTERN_NOT_ACTIVE, PATTERN_STATE_UNAVAILABLE, UNSUPPORTED_PATTERN_PLAN } from './pattern-plan';
+
+/** Length framing makes concatenated IDs and plan bodies unambiguous to the hash. */
+function hashField(hash: crypto.Hash, value: string): void {
+  hash.update(String(value.length)).update(':').update(value);
+}
 
 export class PatternMatcher implements IPatternMatcher {
   private patternStorage: PatternStorageService;
   private patterns: DiscoveryPattern[] = [];
   private redis = getRedisClient();
-  private readonly MATCH_CACHE_PREFIX = 'ai:pattern:match:';
+  private readonly MATCH_CACHE_PREFIX = 'ai:pattern:match:v2:';
   private readonly MATCH_CACHE_TTL = 300; // 5 minutes
 
   constructor(patternStorage?: PatternStorageService) {
     this.patternStorage = patternStorage || new PatternStorageService();
   }
 
-  /**
-   * Load patterns from storage
-   */
-  async loadPatterns(): Promise<void> {
-    this.patterns = await this.patternStorage.loadPatterns();
-    logger.info(`Pattern matcher loaded ${this.patterns.length} patterns`);
+  /** A failed refresh never authorizes execution using a process-local snapshot. */
+  private async refreshActivePatterns(): Promise<DiscoveryPattern[]> {
+    try {
+      const patterns = await this.patternStorage.loadPatterns(true);
+      this.patterns = patterns;
+      return patterns;
+    } catch {
+      throw new Error(PATTERN_STATE_UNAVAILABLE);
+    }
   }
 
-  /**
-   * Create cache key from scan result
-   */
-  private createCacheKey(scanResult: any): string {
-    // Create deterministic hash of scan result
-    const data = JSON.stringify(scanResult);
-    const hash = crypto.createHash('sha256').update(data).digest('hex');
-    return `${this.MATCH_CACHE_PREFIX}${hash}`;
+  async loadPatterns(): Promise<void> {
+    await this.refreshActivePatterns();
+  }
+
+  /** Include the exact active plan set; a changed or revoked plan cannot reuse a cached match. */
+  private createActiveSetHash(patterns: DiscoveryPattern[]): string {
+    const hash = crypto.createHash('sha256');
+    for (const pattern of patterns) {
+      hashField(hash, pattern.patternId);
+      hashField(hash, pattern.version);
+      hashField(hash, pattern.detectionCode);
+      hashField(hash, pattern.discoveryCode);
+    }
+    return hash.digest('hex');
+  }
+
+  private createCacheKey(scanResult: any, activeSetHash: string): string {
+    const hash = crypto.createHash('sha256').update(JSON.stringify(scanResult)).digest('hex');
+    return `${this.MATCH_CACHE_PREFIX}${activeSetHash}:${hash}`;
   }
 
   /**
    * Match scan result against patterns with caching
    */
   async match(scanResult: any): Promise<PatternMatch | null> {
-    if (this.patterns.length === 0) {
-      await this.loadPatterns();
-    }
+    // Redis's active-list cache is invalidated on each committed mutation.
+    // Never trust a process-local snapshot at a new match boundary.
+    const patterns = await this.refreshActivePatterns();
     // Validate both bodies before cached null/hit can bypass a refusal. Reuse
     // parsed detection plans on a cache miss instead of parsing them twice.
-    const detectionPlans = this.patterns.map(pattern => {
+    const detectionPlans = patterns.map(pattern => {
       const plan = parseDetectionPlan(pattern.detectionCode);
       parseDiscoveryPlan(pattern.discoveryCode);
       return plan;
     });
 
     // Check cache first
-    const cacheKey = this.createCacheKey(scanResult);
+    const activeSetHash = this.createActiveSetHash(patterns);
+    const cacheKey = this.createCacheKey(scanResult, activeSetHash);
     try {
       const cached = await this.redis.get(cacheKey);
       if (cached) {
@@ -76,11 +96,11 @@ export class PatternMatcher implements IPatternMatcher {
     let bestConfidence = 0;
 
     logger.debug('Matching scan result against patterns', {
-      patternCount: this.patterns.length,
+      patternCount: patterns.length,
     });
 
-    for (let index = 0; index < this.patterns.length; index++) {
-      const pattern = this.patterns[index]!;
+    for (let index = 0; index < patterns.length; index++) {
+      const pattern = patterns[index]!;
       const result = detectWithPlan(detectionPlans[index]!, scanResult);
       if (result.matches && result.confidence > bestConfidence) {
         bestConfidence = result.confidence;
@@ -89,6 +109,7 @@ export class PatternMatcher implements IPatternMatcher {
           patternVersion: pattern.version,
           confidence: result.confidence,
           matchedIndicators: result.indicators || [],
+          activeSetHash,
         };
         logger.debug('Pattern matched', {
           patternId: pattern.patternId,
@@ -128,16 +149,20 @@ export class PatternMatcher implements IPatternMatcher {
    */
   async executePattern(
     patternId: string,
-    context: AIDiscoveryContext
+    context: AIDiscoveryContext,
+    expectedActiveSetHash?: string
   ): Promise<any[]> {
     const startTime = Date.now();
     const sessionId = `pattern-exec-${crypto.randomUUID()}`;
 
     try {
-      const pattern = this.patterns.find(p => p.patternId === patternId);
-      if (!pattern) {
-        throw new Error(`Pattern not found: ${patternId}`);
+      const patterns = await this.refreshActivePatterns();
+      if (expectedActiveSetHash !== undefined &&
+        expectedActiveSetHash !== this.createActiveSetHash(patterns)) {
+        throw new Error(PATTERN_NOT_ACTIVE);
       }
+      const pattern = patterns.find(p => p.patternId === patternId);
+      if (!pattern) throw new Error(PATTERN_NOT_ACTIVE);
 
       logger.info('Executing pattern', { patternId });
 

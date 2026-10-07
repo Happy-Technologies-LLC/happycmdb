@@ -65,20 +65,18 @@ export class PatternStorageService {
   }
 
   /**
-   * Load all active patterns from database
-   * Checks Redis cache first, then falls back to database
+   * Load active patterns. Matcher boundaries use an authoritative database
+   * read: cache invalidation is best-effort, so Redis cannot prove revocation.
    */
-  async loadPatterns(): Promise<DiscoveryPattern[]> {
-    // Check Redis cache first
-    const cached = await this.cache.getActivePatterns();
-    if (cached) {
-      // Update in-memory cache
-      this.patterns.clear();
-      for (const pattern of cached) {
-        this.patterns.set(pattern.patternId, pattern);
+  async loadPatterns(authoritative = false): Promise<DiscoveryPattern[]> {
+    if (!authoritative) {
+      const cached = await this.cache.getActivePatterns();
+      if (cached) {
+        this.patterns.clear();
+        for (const pattern of cached) this.patterns.set(pattern.patternId, pattern);
+        logger.debug('Loaded patterns from Redis cache', { count: cached.length });
+        return cached;
       }
-      logger.debug('Loaded patterns from Redis cache', { count: cached.length });
-      return cached;
     }
     const client = await this.postgresClient.getClient();
 

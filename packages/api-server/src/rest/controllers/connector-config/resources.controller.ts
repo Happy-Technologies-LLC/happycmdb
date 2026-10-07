@@ -33,9 +33,29 @@ export class ConnectorConfigResourcesController {
       }
 
       const config = result.rows[0];
-      const resources = Array.isArray(config.resources)
-        ? config.resources.filter((entry: unknown): entry is string => typeof entry === 'string')
-        : [];
+      const resources: unknown[] = [];
+      if (Array.isArray(config.resources)) {
+        for (const entry of config.resources) {
+          if (typeof entry === 'string') {
+            resources.push(entry);
+            continue;
+          }
+          if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+          const descriptor = entry as Record<string, unknown>;
+          if (typeof descriptor['id'] !== 'string' || typeof descriptor['name'] !== 'string') continue;
+          resources.push({
+            id: descriptor['id'],
+            name: descriptor['name'],
+            description: typeof descriptor['description'] === 'string' ? descriptor['description'] : '',
+            ci_type: typeof descriptor['ci_type'] === 'string' ? descriptor['ci_type'] : null,
+            operations: Array.isArray(descriptor['operations'])
+              ? descriptor['operations'].filter((operation: unknown) =>
+                ['extract', 'transform', 'load', 'sync_to_source', 'test_connection'].includes(operation as string))
+              : [],
+            enabled_by_default: descriptor['enabled_by_default'] === true,
+          });
+        }
+      }
 
       res.json({
         success: true,
@@ -59,10 +79,12 @@ export class ConnectorConfigResourcesController {
 
       const result = await this.pool.query(
         `UPDATE connector_configurations
-         SET enabled_resources = $1, resource_configs = $2, updated_at = NOW()
+         SET enabled_resources = $1,
+             resource_configs = COALESCE($2::jsonb, resource_configs), updated_at = NOW()
          WHERE id = $3 AND (organization_id = $4 OR (organization_id IS NULL AND $5::boolean))
          RETURNING ${PUBLIC_CONFIG}`,
-        [enabled_resources, JSON.stringify(resource_configs || {}), id, ...requestScopeValues(req)]
+        [enabled_resources, resource_configs === undefined ? null : JSON.stringify(resource_configs),
+          id, ...requestScopeValues(req)]
       );
 
       if (result.rows.length === 0) {

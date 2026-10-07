@@ -131,6 +131,8 @@ Connector configurations and runs are scoped to the authenticated user's verifie
 
 Only a verified platform-admin marker grants access to historical NULL-organization connector configurations. The normal `admin` role does not. In the standalone hub, platform admins with their own organization use `?legacy=true` to select a same-named historical configuration; without it, name lookups select their own organization. See [connector API/security contract](docs/connector-org-security-design.md).
 
+REST `POST /api/v1/connector-configs/:id/run` retains its existing queued-history behavior; this repository has no consumer that dispatches that row, so HTTP 202 does **not** prove execution. The integration hub and GraphQL run through `IntegrationManager` instead.
+
 ## Roadmap
 
 - **Connector SDK** — Standalone SDK for building custom connectors for any REST/GraphQL API

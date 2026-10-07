@@ -40,8 +40,11 @@ describe('connector REST client public DTO', () => {
   });
   it('displays only the fixed credential refusal and never arbitrary server errors', () => {
     expect(connectorRunErrorMessage({
-      response: { status: 409, data: { message: 'Connector credential reference unavailable' } },
+      response: { status: 409, data: { error: 'Connector credential reference unavailable' } },
     })).toBe('Connector credential reference unavailable');
+    expect(connectorRunErrorMessage({
+      response: { status: 409, data: { message: 'Connector credential reference unavailable' } },
+    })).toBe('Failed to start connector');
     expect(connectorRunErrorMessage({
       response: { status: 500, data: { message: sentinel } },
     })).toBe('Failed to start connector');

@@ -615,11 +615,16 @@ const ConnectorMutationResolvers = {
     try {
       const pg = getPostgresClient();
       const config = await pg.query(
-        `SELECT id, organization_id, enabled FROM connector_configurations cc
+        `SELECT id, organization_id, enabled, credential_id FROM connector_configurations cc
          WHERE cc.id = $1 AND ${connectorPredicate('cc', 2)}`,
         [args.id, ...scopeValues(context.user)]
       );
       if (!config.rows.length) throw configNotFound();
+      if (config.rows[0].credential_id) {
+        throw new GraphQLError('Connector credential reference unavailable', {
+          extensions: { code: 'CONNECTOR_CREDENTIAL_UNAVAILABLE' },
+        });
+      }
       if (!config.rows[0].enabled) throw new GraphQLError('Configuration is disabled', { extensions: { code: 'BAD_USER_INPUT' } });
       const run = await getIntegrationManager().runConnector(args.id, config.rows[0].organization_id, 'manual', user._username);
       const history = await pg.query(

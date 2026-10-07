@@ -194,6 +194,18 @@ describe('connector ownership and public GraphQL boundary', () => {
     expect(mockQuery).toHaveBeenCalledTimes(1);
   });
 
+  it('refuses disabled credential-backed runs before exposing enabled state or loading credentials', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{
+      id: 'a', organization_id: orgA, enabled: false, credential_id: 'opaque-reference',
+    }] });
+    await expectGraphQLErrorCode(
+      connectorResolvers.Mutation.runConnector(null, { id: 'a' }, contextWith(operatorUser)),
+      'CONNECTOR_CREDENTIAL_UNAVAILABLE'
+    );
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+    expect(mockRunConnector).not.toHaveBeenCalled();
+  });
+
   it('keeps saved secret values when updating a public field without write-only inputs', async () => {
     installScopedDatabase();
     const result = await connectorResolvers.Mutation.updateConnectorConfiguration(

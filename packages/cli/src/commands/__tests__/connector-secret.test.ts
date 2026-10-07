@@ -30,6 +30,7 @@ const config = {
   options: { opaque: sentinel }, resource_configs: { opaque: sentinel },
   notification_channels: [sentinel], enabled_resources: ['accounts'],
   schedule: null, schedule_enabled: false,
+  created_at: '2026-10-01T00:00:00Z', updated_at: '2026-10-07T00:00:00Z',
 };
 const run = {
   id: 'run-a', config_id: 'cfg-a', connector_type: 'acme-crm', config_name: 'own',
@@ -65,6 +66,8 @@ test('config show and run status ignore saved nested secret and untrusted raw ru
   const configText = await outputFor(['config', 'show', 'own'], command => new ConnectorConfigCommand('http://example.invalid').register(command));
   const runText = await outputFor(['run-status', 'run-a'], command => new ConnectorRunCommand('http://example.invalid').register(command));
   expect(configText).toContain('own');
+  expect(configText).toContain('Created: 2026-10-01T00:00:00Z');
+  expect(configText).toContain('Updated: 2026-10-07T00:00:00Z');
   expect(runText).toContain('FAILED');
   expect(configText + runText).not.toContain(sentinel);
 });
@@ -84,9 +87,11 @@ test('CLI never repeats raw error bodies', async () => {
 });
 test('CLI preserves only the approved credential refusal', async () => {
   isAxiosError.mockReturnValue(true);
-  post.mockRejectedValue({ response: { status: 409, data: { message: 'Connector credential reference unavailable' } } });
+  post.mockRejectedValue({ response: { status: 409, data: { error: 'Connector credential reference unavailable' } } });
   const known = await outputFor(['run', 'own'], command => new ConnectorRunCommand('http://example.invalid').register(command));
   expect(known).toContain('Connector credential reference unavailable');
+  const testText = await outputFor(['config', 'test', 'own'], command => new ConnectorConfigCommand('http://example.invalid').register(command));
+  expect(testText).toContain('Connector credential reference unavailable');
   post.mockRejectedValue({ response: { status: 500, data: { message: sentinel } } });
   const unknown = await outputFor(['run', 'own'], command => new ConnectorRunCommand('http://example.invalid').register(command));
   expect(unknown).toContain('Connector request failed');

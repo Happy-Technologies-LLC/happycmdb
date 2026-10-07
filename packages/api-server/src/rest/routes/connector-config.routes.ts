@@ -98,7 +98,7 @@ const runHistoryQuerySchema = Joi.object({
 
 const updateResourcesSchema = Joi.object({
   enabled_resources: Joi.array().items(Joi.string()).required(),
-  resource_configs: Joi.object().optional().default({}),
+  resource_configs: Joi.object().optional(),
 });
 
 // ============================================

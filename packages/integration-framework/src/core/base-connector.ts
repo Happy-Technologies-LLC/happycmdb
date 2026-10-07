@@ -332,29 +332,25 @@ export abstract class BaseIntegrationConnector extends EventEmitter {
                 connector: this.config.name,
                 resource: resourceId,
                 ci: transformedCI,
-                source_data: data,
               });
 
-            } catch (error) {
+            } catch {
               logger.error('Transformation failed', {
                 connector: this.config.name,
                 resource: resourceId,
-                external_id: data.external_id,
-                error
               });
             }
           }
 
-        } catch (error) {
+        } catch {
           logger.error('Resource extraction failed', {
             connector: this.config.name,
             resource: resourceId,
-            error
           });
           this.emitEvent('extraction_failed', {
             connector: this.config.name,
             resource: resourceId,
-            error: (error as Error).message
+            error: 'CONNECTOR_EXTRACTION_FAILED',
           });
         }
       }
@@ -374,11 +370,8 @@ export abstract class BaseIntegrationConnector extends EventEmitter {
               relationships,
             });
           }
-        } catch (error) {
-          logger.warn('Relationship extraction failed', {
-            connector: this.config.name,
-            error
-          });
+        } catch {
+          logger.warn('Relationship extraction failed', { connector: this.config.name });
         }
       }
 
@@ -391,12 +384,9 @@ export abstract class BaseIntegrationConnector extends EventEmitter {
         records_transformed: totalRecordsTransformed
       });
 
-    } catch (error) {
-      logger.error('Connector run failed', {
-        connector: this.config.name,
-        error
-      });
-      throw error;
+    } catch {
+      logger.error('Connector run failed', { connector: this.config.name });
+      throw new Error('CONNECTOR_RUN_FAILED');
     }
   }
 

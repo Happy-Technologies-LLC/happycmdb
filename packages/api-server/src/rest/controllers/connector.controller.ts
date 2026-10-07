@@ -21,6 +21,53 @@ const LIFECYCLE_FAILURE_STATUS: Record<LifecycleFailureCode, number> = {
   UNINSTALL_FAILED: 500,
 };
 
+/** Installed templates are public; saved configuration values are not. */
+function publicInstalledConnector(row: Record<string, any>): Record<string, unknown> {
+  const schema = row.configuration_schema;
+  const properties: Record<string, unknown> = {};
+  if (schema && typeof schema === 'object' && schema.properties && typeof schema.properties === 'object') {
+    for (const [name, raw] of Object.entries(schema.properties)) {
+      if (!raw || typeof raw !== 'object') continue;
+      const field = raw as Record<string, unknown>;
+      properties[name] = {
+        type: field['type'], title: field['title'], description: field['description'],
+        format: field['format'], required: field['required'] === true ||
+          (Array.isArray(schema.required) && schema.required.includes(name)),
+        enum: Array.isArray(field['enum']) ? field['enum'] : undefined,
+        default: field['format'] === 'password' ? undefined : field['default'],
+      };
+    }
+  }
+  const resources: Record<string, unknown>[] = [];
+  if (Array.isArray(row.resources)) {
+    for (const raw of row.resources) {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+      const resource = raw as Record<string, unknown>;
+      if (typeof resource['id'] !== 'string' || typeof resource['name'] !== 'string') continue;
+      const fieldMappings: Record<string, string> = {};
+      const mappings = resource['field_mappings'];
+      if (mappings && typeof mappings === 'object' && !Array.isArray(mappings)) {
+        for (const [key, value] of Object.entries(mappings)) {
+          if (typeof value === 'string') fieldMappings[key] = value;
+        }
+      }
+      resources.push({
+        id: resource['id'], name: resource['name'],
+        description: typeof resource['description'] === 'string' ? resource['description'] : '',
+        ci_type: typeof resource['ci_type'] === 'string' ? resource['ci_type'] : null,
+        enabled_by_default: resource['enabled_by_default'] !== false,
+        field_mappings: fieldMappings,
+      });
+    }
+  }
+  return {
+    ...row,
+    resources,
+    metadata: { resources },
+    configuration_schema: { properties },
+  };
+}
+
 /**
  * ConnectorController - Manages connector registry and installation
  *
@@ -208,7 +255,7 @@ export class ConnectorController {
 
       let query = `SELECT id, connector_type, category, name, description, installed_version,
         latest_available_version, installed_at, updated_at, enabled, verified, capabilities,
-        resources, tags FROM installed_connectors WHERE 1=1`;
+        resources, configuration_schema, tags FROM installed_connectors WHERE 1=1`;
       const params: any[] = [];
       let paramIndex = 1;
 
@@ -239,7 +286,7 @@ export class ConnectorController {
 
       res.json({
         success: true,
-        data: result.rows,
+        data: result.rows.map(publicInstalledConnector),
         count: result.rows.length,
       });
     } catch {
@@ -260,7 +307,7 @@ export class ConnectorController {
       const result = await pool.query(
         `SELECT id, connector_type, category, name, description, installed_version,
           latest_available_version, installed_at, updated_at, enabled, verified, capabilities,
-          resources, tags FROM installed_connectors WHERE connector_type = $1`,
+          resources, configuration_schema, tags FROM installed_connectors WHERE connector_type = $1`,
         [type]
       );
 
@@ -275,7 +322,7 @@ export class ConnectorController {
 
       res.json({
         success: true,
-        data: result.rows[0],
+        data: publicInstalledConnector(result.rows[0]),
       });
     } catch {
       logger.error('Error fetching installed connector details');

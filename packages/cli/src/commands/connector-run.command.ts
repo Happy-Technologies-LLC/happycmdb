@@ -403,7 +403,7 @@ export class ConnectorRunCommand {
    */
   private handleError(error: unknown): void {
     const status = axios.isAxiosError(error) ? error.response?.status : undefined;
-    const message = axios.isAxiosError(error) ? error.response?.data?.message : undefined;
+    const message = axios.isAxiosError(error) ? error.response?.data?.error : undefined;
     if (status === 409 && message === 'Connector credential reference unavailable') {
       console.error(chalk.red('  Connector credential reference unavailable'));
       return;

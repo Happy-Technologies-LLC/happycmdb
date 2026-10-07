@@ -94,10 +94,14 @@ export class IntegrationManager {
 
   private async ownedConfig(configId: string, organizationId: string | null): Promise<OwnedConfig> {
     const result = await this.postgresClient.query(
-      `SELECT * FROM connector_configurations WHERE id = $1 AND organization_id IS NOT DISTINCT FROM $2::uuid AND enabled = true`,
+      `SELECT * FROM connector_configurations WHERE id = $1 AND organization_id IS NOT DISTINCT FROM $2::uuid`,
       [configId, organizationId]
     );
     if (!result.rows.length) throw new Error('CONNECTOR_NOT_FOUND');
+    // Refuse stored references even for disabled configurations, before creating
+    // a connector or accessing any credential table.
+    if (result.rows[0].credential_id) throw new Error('CONNECTOR_CREDENTIAL_UNAVAILABLE');
+    if (!result.rows[0].enabled) throw new Error('CONNECTOR_NOT_FOUND');
     return this.mapRowToConfig(result.rows[0]);
   }
 

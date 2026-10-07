@@ -500,22 +500,28 @@ describe('BaseIntegrationConnector', () => {
       expect(connector.transformCalls.length).toBeGreaterThan(0);
     });
 
-    it('should emit extraction_failed on resource error', async () => {
+    it('does not emit or log raw extractor exceptions', async () => {
       const emitSpy = jest.spyOn(connector, 'emit');
-
-      // Override to throw error
-      connector.extractResource = async () => {
-        throw new Error('Extraction failed');
-      };
+      const { logger } = require('@cmdb/common');
+      const secret = 'nested-client-secret-marker';
+      connector.extractResource = async () => { throw new Error(`Authorization: ${secret}`); };
 
       await connector.run();
 
+      expect(JSON.stringify([emitSpy.mock.calls, logger.error.mock.calls])).not.toContain(secret);
       expect(emitSpy).toHaveBeenCalledWith(
         'extraction_failed',
-        expect.objectContaining({
-          error: 'Extraction failed',
-        })
+        expect.objectContaining({ error: 'CONNECTOR_EXTRACTION_FAILED' })
       );
+    });
+
+    it('returns a fixed failure instead of exposing initialization errors', async () => {
+      const { logger } = require('@cmdb/common');
+      const secret = 'nested-client-secret-marker';
+      connector.initialize = async () => { throw new Error(`Authorization: ${secret}`); };
+
+      await expect(connector.run()).rejects.toThrow('CONNECTOR_RUN_FAILED');
+      expect(JSON.stringify(logger.error.mock.calls)).not.toContain(secret);
     });
 
     it('should extract relationships if supported', async () => {

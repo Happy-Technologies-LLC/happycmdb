@@ -79,6 +79,7 @@ import { loadConfig, logger } from '@cmdb/common';
 import { JWTService } from '../../../auth/jwt.service';
 import { getAuthMiddleware } from '../../../auth/auth-bootstrap';
 import { connectorConfigRoutes } from '../connector-config.routes';
+import { connectorRoutes } from '../connector.routes';
 import { requireConnectorScope } from '../../../auth/connector-scope';
 import { connectorsRouter } from '../../../../../integration-hub/src/api/connectors.routes';
 
@@ -90,6 +91,7 @@ const app = express();
 app.use(express.json());
 app.use('/api/v1', getAuthMiddleware().authenticate());
 app.use('/api/v1/connector-configs', connectorConfigRoutes);
+app.use('/api/v1/connectors', connectorRoutes);
 app.use('/api/v1/hub/connectors', requireConnectorScope, connectorsRouter);
 const url = '/api/v1/connector-configs';
 const migrationDir = join(__dirname, '../../../../../database/src/postgres/migrations');
@@ -282,12 +284,12 @@ it('authenticates standalone hub tenant routing, duplicate legacy names and reda
 it('refuses stored credential references before connector tests or run history creation', async () => {
   const credential = '44444444-4444-4444-8444-444444444444';
   await query('INSERT INTO credentials(id) VALUES ($1)', [credential]);
-  await query('UPDATE connector_configurations SET credential_id = $1 WHERE id = $2', [credential, A]);
+  await query('UPDATE connector_configurations SET credential_id = $1, enabled = false WHERE id = $2', [credential, A]);
   const rest = await request(app).post(`${url}/${A}/run`).set(bearer('a')).send({});
   const test = await request(app).post(`${url}/${A}/test`).set(bearer('a')).send({});
   const hubRun = await request(app).post('/api/v1/hub/connectors/alpha/run').set(bearer('a')).send({});
   const hubTest = await request(app).post('/api/v1/hub/connectors/alpha/test').set(bearer('a')).send({});
-  await query('UPDATE connector_configurations SET credential_id = $1 WHERE id = $2', [credential, LEGACY]);
+  await query('UPDATE connector_configurations SET credential_id = $1, enabled = false WHERE id = $2', [credential, LEGACY]);
   const platformRest = await request(app).post(`${url}/${LEGACY}/test`).set(bearer('platform')).send({});
   const platformHub = await request(app).post('/api/v1/hub/connectors/legacy/run')
     .set(bearer('platformOwn')).query({ legacy: 'true' }).send({});
@@ -299,4 +301,63 @@ it('refuses stored credential references before connector tests or run history c
   expect(credentialLookups).toBe(0);
   const history = await query('SELECT COUNT(*)::int AS count FROM connector_run_history WHERE config_id = $1', [A]);
   expect(history.rows).toEqual([{ count: 1 }]);
+});
+
+it('keeps saved resource secrets when changing only enabled resources', async () => {
+  const response = await request(app).put(`${url}/${A}/resources`).set(bearer('a'))
+    .send({ enabled_resources: ['items'] });
+  expect(response.status).toBe(200);
+  expect(JSON.stringify(response.body)).not.toContain(SECRET);
+  const saved = await query('SELECT resource_configs FROM connector_configurations WHERE id = $1', [A]);
+  expect(saved.rows).toEqual([{ resource_configs: { items: { password: SECRET } } }]);
+  const cleared = await request(app).put(`${url}/${A}/resources`).set(bearer('a'))
+    .send({ enabled_resources: ['items'], resource_configs: {} });
+  expect(cleared.status).toBe(200);
+  expect((await query('SELECT resource_configs FROM connector_configurations WHERE id = $1', [A])).rows)
+    .toEqual([{ resource_configs: {} }]);
+});
+
+it('returns safe installed resource descriptors instead of silently dropping them', async () => {
+  await query('UPDATE installed_connectors SET resources = $1::jsonb WHERE connector_type = $2', [
+    JSON.stringify([{
+      id: 'hosts', name: 'Hosts', description: 'Server inventory', ci_type: 'server',
+      operations: ['extract', 'test_connection'], enabled_by_default: true,
+      configuration_schema: { nested: { token: SECRET } }, field_mappings: { authorization: SECRET },
+    }]), 'test',
+  ]);
+  const response = await request(app).get(`${url}/${A}/resources`).set(bearer('a'));
+  expect(response.status).toBe(200);
+  expect(response.body.data.available_resources).toEqual([{
+    id: 'hosts', name: 'Hosts', description: 'Server inventory', ci_type: 'server',
+    operations: ['extract', 'test_connection'], enabled_by_default: true,
+  }]);
+  expect(JSON.stringify(response.body)).not.toContain(SECRET);
+});
+
+it('serves installed template fields and safe resource mappings for connector deployment', async () => {
+  await query('UPDATE installed_connectors SET resources = $1::jsonb, configuration_schema = $2::jsonb WHERE connector_type = $3', [
+    JSON.stringify([{
+      id: 'hosts', name: 'Hosts', ci_type: 'server', enabled_by_default: true,
+      field_mappings: { name: 'hostname' },
+      configuration_schema: { properties: { password: { default: SECRET } } },
+    }]),
+    JSON.stringify({ required: ['instance_url', 'password'], properties: {
+      instance_url: { type: 'string', title: 'Instance URL' },
+      password: { type: 'string', format: 'password', default: SECRET },
+    } }),
+    'test',
+  ]);
+  const list = await request(app).get('/api/v1/connectors/installed').set(bearer('a'));
+  const detail = await request(app).get('/api/v1/connectors/installed/test').set(bearer('a'));
+  expect([list.status, detail.status]).toEqual([200, 200]);
+  for (const template of [list.body.data[0], detail.body.data]) {
+    expect(template.configuration_schema.properties.instance_url.type).toBe('string');
+    expect(template.configuration_schema.properties.password.format).toBe('password');
+    expect(template.configuration_schema.properties.password.required).toBe(true);
+    expect(template.metadata.resources).toEqual([expect.objectContaining({
+      id: 'hosts', name: 'Hosts', enabled_by_default: true,
+      field_mappings: { name: 'hostname' },
+    })]);
+    expect(JSON.stringify(template)).not.toContain(SECRET);
+  }
 });

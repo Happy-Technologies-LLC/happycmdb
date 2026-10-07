@@ -62,8 +62,8 @@ export function connectorRunErrorMessage(error: unknown): string {
     if (response && typeof response === 'object' && 'status' in response &&
         'data' in response && response.status === 409 &&
         response.data && typeof response.data === 'object' &&
-        'message' in response.data &&
-        response.data.message === 'Connector credential reference unavailable') {
+        'error' in response.data &&
+        response.data.error === 'Connector credential reference unavailable') {
       return 'Connector credential reference unavailable';
     }
   }

@@ -90,7 +90,7 @@ describe('IntegrationManager ownership and secret boundary', () => {
   });
 
   it('refuses platform legacy credential tests before any credential lookup or connector construction', async () => {
-    query.mockResolvedValue({ rows: [{ ...config, organization_id: null, credential_id: 'credential-1' }] });
+    query.mockResolvedValue({ rows: [{ ...config, organization_id: null, enabled: false, credential_id: 'credential-1' }] });
     await expect(manager.testConnector(config.id, null)).rejects.toThrow('CONNECTOR_CREDENTIAL_UNAVAILABLE');
     expect(query).toHaveBeenCalledWith(expect.stringContaining('organization_id IS NOT DISTINCT FROM $2'), [config.id, null]);
     expect(query).toHaveBeenCalledTimes(1);

@@ -7,6 +7,7 @@ import { TBMController } from '../controllers/tbm.controller';
 import { validateRequest, validateOptional } from '../middleware/validation.middleware';
 import { auditMiddleware } from '../../middleware/audit.middleware';
 import { getAuthMiddleware } from '../../auth/auth-bootstrap';
+import { denyPlatformAdminRest } from '../../middleware/platform-admin-unavailable';
 
 export const tbmRoutes = Router();
 const controller = new TBMController();
@@ -15,15 +16,10 @@ const authMiddleware = getAuthMiddleware();
 // Apply audit middleware to all routes
 tbmRoutes.use(auditMiddleware);
 
-// Tenant scoping: a token without an org claim is rejected with 403 before any
-// data access. Business-service and capability costs are filtered to the
-// services the caller's organization owns in Postgres (FD-2).
-tbmRoutes.use(authMiddleware.requireOrganization());
-
-// FD-3 b: aggregates over every CI are admin-only. The Neo4j cost aggregates
-// still read every organization's :CI nodes; /costs/trends reads only the
-// caller organization's cmdb.dim_ci rows (migration 011) and stays admin-only.
-const globalAggregate = authMiddleware.requirePermission('admin');
+// Only tenant-owned operations require an organization claim. Global operations
+// refuse every authenticated caller identically, including org-less admins.
+const tenantScope = authMiddleware.requireOrganization();
+const tenantTrendsAdmin = authMiddleware.requirePermission('admin');
 
 // Validation schemas
 const allocateCostsSchema = Joi.object({
@@ -71,30 +67,33 @@ const renewalsQuerySchema = Joi.object({
 
 tbmRoutes.get(
   '/costs/summary',
-  globalAggregate,
+  denyPlatformAdminRest,
   controller.getCostSummary.bind(controller)
 );
 
 tbmRoutes.get(
   '/costs/by-tower',
-  globalAggregate,
+  denyPlatformAdminRest,
   validateOptional(towerQuerySchema, 'query'),
   controller.getCostsByTower.bind(controller)
 );
 
 tbmRoutes.get(
   '/costs/by-capability/:id',
+  tenantScope,
   controller.getCostsByCapability.bind(controller)
 );
 
 tbmRoutes.get(
   '/costs/by-service/:id',
+  tenantScope,
   controller.getCostsByBusinessService.bind(controller)
 );
 
 tbmRoutes.get(
   '/costs/trends',
-  globalAggregate,
+  tenantScope,
+  tenantTrendsAdmin,
   validateOptional(costTrendsQuerySchema, 'query'),
   controller.getCostTrends.bind(controller)
 );
@@ -105,14 +104,14 @@ tbmRoutes.get(
 
 tbmRoutes.post(
   '/costs/allocate',
-  globalAggregate,
+  denyPlatformAdminRest,
   validateRequest(allocateCostsSchema, 'body'),
   controller.allocateCosts.bind(controller)
 );
 
 tbmRoutes.get(
   '/costs/allocations/:ciId',
-  globalAggregate,
+  denyPlatformAdminRest,
   controller.getCostAllocations.bind(controller)
 );
 
@@ -122,20 +121,20 @@ tbmRoutes.get(
 
 tbmRoutes.post(
   '/gl/import',
-  globalAggregate,
+  denyPlatformAdminRest,
   controller.importGLData.bind(controller)
 );
 
 tbmRoutes.get(
   '/licenses',
-  globalAggregate,
+  denyPlatformAdminRest,
   validateOptional(licenseQuerySchema, 'query'),
   controller.getLicenses.bind(controller)
 );
 
 tbmRoutes.get(
   '/licenses/renewals',
-  globalAggregate,
+  denyPlatformAdminRest,
   validateOptional(renewalsQuerySchema, 'query'),
   controller.getUpcomingRenewals.bind(controller)
 );

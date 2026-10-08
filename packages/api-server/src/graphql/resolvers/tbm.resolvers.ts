@@ -8,6 +8,7 @@ import { GraphQLContext } from './index';
 import { logger } from '@cmdb/common';
 import { checkGraphQLPermission } from '../../middleware/auth.middleware';
 import { requireGraphQLOrganization } from '../require-organization';
+import { denyPlatformAdminGraphQL } from '../../middleware/platform-admin-unavailable';
 import { ownedBusinessServiceIds, ownsBusinessService } from '../../services/business-service-ownership';
 import { ciCostTrends } from '../../services/ci-cost-trends';
 import { errorLogFields } from '../../utils/log-error';
@@ -17,19 +18,12 @@ import { errorLogFields } from '../../utils/log-error';
  *
  * Provides GraphQL queries and mutations for TBM cost management.
  *
- * Tenancy mirrors /api/v1/tbm: every resolver requires an organization claim
- * before any data access; business-service and capability costs only reach
- * :BusinessService ids the caller's organization owns in Postgres (FD-2)
- * whose node also carries that organization_id (FD-16 c); aggregates over
- * every CI are admin-only (FD-3 b). The Neo4j cost aggregates still read
- * every organization's :CI nodes; costTrends reads only the caller
- * organization's cmdb.dim_ci rows (migration 011) and stays admin-only.
+ * Global cost/installation controls refuse every caller until dedicated
+ * platform-admin authority exists. Tenant-owned service, capability and trend
+ * reads bind the verified organization; trends retain their admin permission.
  */
-
-/** FD-3 b gate for the aggregates over every CI (and costTrends). */
-function requireGlobalAggregateAccess(context: GraphQLContext): void {
-  requireGraphQLOrganization(context);
-  checkGraphQLPermission(context, 'admin');
+function requireGlobalAggregateAccess(_context: GraphQLContext): never {
+  return denyPlatformAdminGraphQL();
 }
 
 const Query = {
@@ -142,8 +136,7 @@ const Query = {
     try {
       const result = await session.run(
         `
-        MATCH (cap:BusinessCapability {id: $capabilityId})
-        OPTIONAL MATCH (cap)-[:REALIZES]->(service:BusinessService)
+        MATCH (cap:BusinessCapability {id: $capabilityId})-[:REALIZES]->(service:BusinessService)
         WHERE service.id IN $orgServiceIds AND service.organization_id = $organizationId
         OPTIONAL MATCH (service)-[:SUPPORTED_BY]->(app:ApplicationService)
         OPTIONAL MATCH (app)-[:DEPENDS_ON|RUNS_ON*1..2]->(ci:CI)
@@ -170,8 +163,7 @@ const Query = {
       // Get cost by tower for this capability
       const towerResult = await session.run(
         `
-        MATCH (cap:BusinessCapability {id: $capabilityId})
-        OPTIONAL MATCH (cap)-[:REALIZES]->(service:BusinessService)
+        MATCH (cap:BusinessCapability {id: $capabilityId})-[:REALIZES]->(service:BusinessService)
         WHERE service.id IN $orgServiceIds AND service.organization_id = $organizationId
         OPTIONAL MATCH (service)-[:SUPPORTED_BY]->(app:ApplicationService)
         OPTIONAL MATCH (app)-[:DEPENDS_ON|RUNS_ON*1..2]->(ci:CI)
@@ -273,7 +265,8 @@ const Query = {
   },
 
   costTrends: async (_parent: any, args: { months?: number }, context: GraphQLContext) => {
-    requireGlobalAggregateAccess(context);
+    requireGraphQLOrganization(context);
+    checkGraphQLPermission(context, 'admin');
     try {
       // Only the caller organization's CIs (cmdb.dim_ci.organization_id).
       const trends = await ciCostTrends(requireGraphQLOrganization(context), args.months ?? 6);

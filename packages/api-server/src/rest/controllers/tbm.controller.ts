@@ -171,11 +171,11 @@ export class TBMController {
 
       const session = this.neo4jClient.getSession();
       try {
-        // Get capability and its supporting services
+        // A capability exists for this tenant only when an owned, org-stamped
+        // service realizes it. A foreign-only capability must not reveal its name.
         const result = await session.run(
           `
-          MATCH (cap:BusinessCapability {id: $capabilityId})
-          OPTIONAL MATCH (cap)-[:REALIZES]->(service:BusinessService)
+          MATCH (cap:BusinessCapability {id: $capabilityId})-[:REALIZES]->(service:BusinessService)
           WHERE service.id IN $orgServiceIds AND service.organization_id = $organizationId
           OPTIONAL MATCH (service)-[:SUPPORTED_BY]->(app:ApplicationService)
           OPTIONAL MATCH (app)-[:DEPENDS_ON|RUNS_ON*1..2]->(ci:CI)
@@ -191,11 +191,7 @@ export class TBMController {
         );
 
         if (result.records.length === 0) {
-          res.status(404).json({
-            success: false,
-            error: 'Not Found',
-            message: `Business capability with ID '${id}' not found`,
-          });
+          res.status(404).json({ success: false, error: 'Business capability not found' });
           return;
         }
 

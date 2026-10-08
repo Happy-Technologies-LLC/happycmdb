@@ -103,7 +103,7 @@ describe('connector-core OAuth substrate CMDB bindings', () => {
     );
     expect(atRest.rows[0]?.credentials_text).not.toContain('legacy-secret');
 
-    const after = await service.getById(id);
+    const after = await service.getById(id, 'oauth-integration-test', TEST_ORG);
     expect(after?.credentials).toMatchObject({ username: 'legacy-user', password: 'legacy-secret' });
   });
 

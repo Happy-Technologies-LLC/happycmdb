@@ -1268,15 +1268,15 @@ export class ITILController {
 
       const pool = this.postgresClient.pool;
       const result = await pool.query(
-        'DELETE FROM itil_baselines WHERE id = $1 RETURNING id',
-        [id]
+        'DELETE FROM itil_baselines WHERE id = $1 AND organization_id = $2 RETURNING id',
+        [id, requestOrganizationId(req)]
       );
 
       if (result.rows.length === 0) {
         res.status(404).json({
           success: false,
           error: 'Not Found',
-          message: `Baseline with ID '${id}' not found`,
+          message: 'Baseline not found',
         });
         return;
       }

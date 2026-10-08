@@ -305,6 +305,7 @@ itilRoutes.get(
 
 itilRoutes.delete(
   '/baselines/:id',
+  authMiddleware.requireOrganization(),
   authMiddleware.requirePermission('write'),
   controller.deleteBaseline.bind(controller)
 );

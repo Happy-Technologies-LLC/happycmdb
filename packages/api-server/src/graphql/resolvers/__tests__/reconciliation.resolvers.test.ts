@@ -102,6 +102,14 @@ describe('mergeCI', () => {
     expect(mockReconcileCI).not.toHaveBeenCalled();
   });
 
+  it('rejects a writer without a verified organization before touching the engine', async () => {
+    await expectGraphQLErrorCode(mergeCI(null, args, contextWith({
+      ...operatorUser,
+      _organizationId: undefined,
+    })), 'FORBIDDEN');
+    expect(mockReconcileCI).not.toHaveBeenCalled();
+  });
+
   it('succeeds for an operator and delegates to the reconciliation engine', async () => {
     mockReconcileCI.mockResolvedValue('ci-created-1');
 

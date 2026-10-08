@@ -13,7 +13,7 @@ import express, { type Express } from 'express';
 import * as bcrypt from 'bcrypt';
 import { v4 as uuidv4 } from 'uuid';
 import { startTestContainers, stopTestContainers } from '../helpers/test-containers';
-import { getNeo4jClient } from '@cmdb/database';
+import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
 import { authRoutes } from '../../src/rest/routes/auth.routes';
 import { createGraphQLServer } from '../../src/graphql/server';
 import type { ApolloServer } from '@apollo/server';
@@ -366,6 +366,81 @@ describe('GraphQL API Integration Tests', () => {
       expect(record.get('reverseEdges').toNumber()).toBe(0);
     } finally {
       await check.close();
+    }
+  });
+
+  it('merges only caller-owned CIs through mounted GraphQL and hides foreign, missing and NULL-org targets', async () => {
+    const ids = [uuidv4(), uuidv4(), uuidv4(), uuidv4()];
+    const [ownId, otherId, foreignId, legacyId] = ids;
+    const sharedSerial = `shared-${uuidv4()}`;
+    const foreignSerial = `foreign-${uuidv4()}`;
+    const legacySerial = `legacy-${uuidv4()}`;
+    const missingSerial = `missing-${uuidv4()}`;
+    const session = getNeo4jClient().getSession();
+    try {
+      await session.run(
+        `CREATE (:CI {id: $ownId, organization_id: $orgA, serial_number: $sharedSerial}),
+                (:CI {id: $otherId, organization_id: $orgB, serial_number: $sharedSerial}),
+                (:CI {id: $foreignId, organization_id: $orgB, serial_number: $foreignSerial}),
+                (:CI {id: $legacyId, serial_number: $legacySerial})`,
+        { ownId, otherId, foreignId, legacyId, orgA: ORG_A, orgB: ORG_B, sharedSerial, foreignSerial, legacySerial }
+      );
+    } finally {
+      await session.close();
+    }
+
+    const mutation = `mutation($serial: String!, $attributes: JSON!) {
+      _reconciliation {
+        mergeCI(
+          _name: "discovery", _ciType: "server", _source: "lh1-graphql",
+          _sourceId: "fixture", _identifiers: { _serialNumber: $serial },
+          _attributes: $attributes
+        ) { _ciId _action }
+      }
+    }`;
+    const merge = (serial: string, marker: string, token: string) =>
+      execute(mutation, { serial, attributes: { merge_marker: marker } }, token);
+    const pg = getPostgresClient();
+    try {
+      const own = await merge(sharedSerial, 'org-a', authToken);
+      expect(expectSuccess(own)._reconciliation).toEqual({ mergeCI: { _ciId: ownId, _action: 'updated' } });
+
+      const missing = await merge(missingSerial, 'denied', authToken);
+      for (const serial of [foreignSerial, legacySerial]) {
+        const denied = await merge(serial, 'denied', authToken);
+        expect({ status: denied.status, body: denied.body }).toEqual({ status: missing.status, body: missing.body });
+      }
+      expect(missing.body.errors?.[0]).toMatchObject({ message: 'CI not found', extensions: { code: 'NOT_FOUND' } });
+
+      const other = await merge(sharedSerial, 'org-b', orgBToken);
+      expect(expectSuccess(other)._reconciliation).toEqual({ mergeCI: { _ciId: otherId, _action: 'updated' } });
+
+      const check = getNeo4jClient().getSession();
+      try {
+        const stored = await check.run(
+          `MATCH (ci:CI) WHERE ci.id IN $ids
+           RETURN ci.id AS id, ci.organization_id AS org, ci.merge_marker AS marker`,
+          { ids }
+        );
+        expect(Object.fromEntries(stored.records.map(record => [record.get('id'), {
+          org: record.get('org'), marker: record.get('marker'),
+        }]))).toEqual({
+          [ownId]: { org: ORG_A, marker: 'org-a' },
+          [otherId]: { org: ORG_B, marker: 'org-b' },
+          [foreignId]: { org: ORG_B, marker: null },
+          [legacyId]: { org: null, marker: null },
+        });
+      } finally {
+        await check.close();
+      }
+
+      for (const table of ['ci_field_sources', 'ci_source_lineage']) {
+        const result = await pg.query(`SELECT ci_id FROM ${table} WHERE ci_id = ANY($1::text[])`, [ids]);
+        expect(result.rows.map(row => row.ci_id).sort()).toEqual([ownId, otherId].sort());
+      }
+    } finally {
+      await pg.query('DELETE FROM ci_field_sources WHERE ci_id = ANY($1::text[])', [ids]);
+      await pg.query('DELETE FROM ci_source_lineage WHERE ci_id = ANY($1::text[])', [ids]);
     }
   });
 

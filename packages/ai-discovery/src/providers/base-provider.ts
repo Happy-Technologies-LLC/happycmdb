@@ -7,7 +7,7 @@
  */
 
 import { ILLMProvider, LLMConfig, AIDiscoveryContext, DiscoveryTool, AIToolCall } from '../types';
-import { logger } from '@cmdb/common';
+import { DISCOVERY_TARGET_REFUSED, logger } from '@cmdb/common';
 
 export abstract class BaseLLMProvider implements ILLMProvider {
   protected config: LLMConfig;
@@ -118,19 +118,23 @@ Use available tools to gather information. Think step-by-step and explain your r
     };
 
     try {
-      logger.debug(`Executing tool: ${tool.name}`, { params });
+      // Arguments and results are discovery data, not diagnostic metadata.
+      logger.debug('Executing discovery tool', { toolName: tool.name });
       const result = await tool.execute(params);
       toolCall.output = result;
       toolCall.success = true;
-      logger.debug(`Tool executed successfully: ${tool.name}`, {
+      logger.debug('Discovery tool executed successfully', {
+        toolName: tool.name,
         executionTime: Date.now() - startTime,
       });
     } catch (error) {
-      toolCall.error = error instanceof Error ? error.message : String(error);
+      if (error instanceof Error && error.message === DISCOVERY_TARGET_REFUSED) {
+        logger.warn('Discovery tool target refused', { toolName: tool.name });
+        throw new Error(DISCOVERY_TARGET_REFUSED);
+      }
+      toolCall.error = 'Tool execution failed';
       toolCall.success = false;
-      logger.error(`Tool execution failed: ${tool.name}`, {
-        error: toolCall.error,
-      });
+      logger.error('Discovery tool execution failed', { toolName: tool.name });
     } finally {
       toolCall.executionTime = Date.now() - startTime;
     }

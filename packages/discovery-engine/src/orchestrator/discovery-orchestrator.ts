@@ -4,7 +4,7 @@
 // packages/discovery-engine/src/orchestrator/discovery-orchestrator.ts
 
 import { queueManager, QUEUE_NAMES, getPostgresClient, getUnifiedCredentialService } from '@cmdb/database';
-import { logger } from '@cmdb/common';
+import { logger, resolveDiscoveryHost, DISCOVERY_TARGET_REFUSED, UnrecoverableError } from '@cmdb/common';
 import { DiscoveredCI, DiscoveryJob } from '@cmdb/common';
 import { SSHDiscoveryWorker } from '../workers/ssh-discovery.worker';
 import { NmapDiscoveryWorker } from '../workers/nmap-discovery.worker';
@@ -19,6 +19,18 @@ import {
   PatternStorageService,
   getDefaultLLMConfig,
 } from '@cmdb/ai-discovery';
+// Fixed AI discovery failure codes; never publish model or remote error text to BullMQ.
+const TERMINAL_AI_DISCOVERY_ERRORS = new Set([
+  DISCOVERY_TARGET_REFUSED, 'UNSUPPORTED_PATTERN_PLAN',
+  'PATTERN_NOT_ACTIVE', 'PATTERN_STATE_UNAVAILABLE',
+]);
+
+function queueDiscoveryFailure(error: unknown): never {
+  if (error instanceof Error && TERMINAL_AI_DISCOVERY_ERRORS.has(error.message)) {
+    throw new UnrecoverableError(error.message);
+  }
+  throw error;
+}
 
 export class DiscoveryOrchestrator {
   private apiClient = getInternalAPIClient();
@@ -396,6 +408,8 @@ export class DiscoveryOrchestrator {
           if (!Array.isArray(targets) || targets.length === 0) {
             throw new Error('SSH config must include "targets" or "hosts" array');
           }
+          // Refuse a mixed batch before making any discovery connection.
+          await Promise.all(targets.map(target => resolveDiscoveryHost(target.host)));
 
           const totalTargets = targets.length;
           let processedTargets = 0;
@@ -416,7 +430,8 @@ export class DiscoveryOrchestrator {
               const discoveryProgress = 25 + Math.floor((processedTargets / totalTargets) * 50);
               await job.updateProgress(discoveryProgress);
             } catch (error) {
-              logger.error('SSH discovery failed for target', { target, error });
+              if (error instanceof Error && error.message === DISCOVERY_TARGET_REFUSED) throw error;
+              logger.error('SSH discovery failed for target', { jobId, error });
             }
           }
 
@@ -440,7 +455,7 @@ export class DiscoveryOrchestrator {
           if (definition_id) {
             await this.updateDefinitionRunStatus(definition_id, jobId, 'failed', 0, error);
           }
-          throw error;
+          queueDiscoveryFailure(error);
         }
       },
       { concurrency: 5 }
@@ -501,7 +516,7 @@ export class DiscoveryOrchestrator {
           if (definition_id) {
             await this.updateDefinitionRunStatus(definition_id, jobId, 'failed', 0, error);
           }
-          throw error;
+          queueDiscoveryFailure(error);
         }
       },
       { concurrency: 3 }
@@ -548,6 +563,11 @@ export class DiscoveryOrchestrator {
 
             // Execute hybrid discovery (pattern matching + AI)
             const result = await this.hybridOrchestrator!.discover(context);
+            if (!result.success || result.error) {
+              const error = result.error && TERMINAL_AI_DISCOVERY_ERRORS.has(result.error)
+                ? result.error : 'AI discovery failed';
+              throw new Error(error);
+            }
 
             await job.updateProgress(75);
 
@@ -579,11 +599,11 @@ export class DiscoveryOrchestrator {
               sessionId: (result as any).session?.sessionId,
             };
           } catch (error) {
-            logger.error('AI discovery failed', { jobId, error });
+            logger.error('AI discovery failed', { jobId });
             if (definition_id) {
               await this.updateDefinitionRunStatus(definition_id, jobId, 'failed', 0, error);
             }
-            throw error;
+            queueDiscoveryFailure(error);
           }
         },
         { concurrency: 2 } // Lower concurrency for AI (API rate limits)

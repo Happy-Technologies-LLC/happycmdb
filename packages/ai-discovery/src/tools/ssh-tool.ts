@@ -9,6 +9,7 @@
 import { Client as SSHClient } from 'ssh2';
 import { DiscoveryTool } from '../types';
 import { logger } from '@cmdb/common';
+import { resolveDiscoveryHost, connectDiscoveryHost } from '@cmdb/common';
 
 export const sshExecuteTool: DiscoveryTool = {
   name: 'ssh_execute',
@@ -39,13 +40,14 @@ export const sshExecuteTool: DiscoveryTool = {
   },
   execute: async (params: any) => {
     const { host, port = 22, username, command } = params;
+    const destination = await connectDiscoveryHost(host, await resolveDiscoveryHost(host));
 
     // Note: In a real implementation, you would:
     // 1. Load credentials from the unified credential service
     // 2. Support multiple auth methods (password, private key, etc.)
     // 3. Have proper credential management
 
-    logger.info(`Executing SSH command`, { host, port, username, command });
+    logger.info('Executing SSH command');
 
     return new Promise((resolve, reject) => {
       const conn = new SSHClient();
@@ -66,7 +68,7 @@ export const sshExecuteTool: DiscoveryTool = {
             if (err) {
               clearTimeout(timeout);
               conn.end();
-              reject(new Error(`SSH exec error: ${err.message}`));
+              reject(new Error('SSH exec error'));
               return;
             }
 
@@ -75,7 +77,7 @@ export const sshExecuteTool: DiscoveryTool = {
                 clearTimeout(timeout);
                 conn.end();
 
-                logger.info('SSH command completed', { code, signal });
+                logger.info('SSH command completed', { code });
 
                 resolve({
                   success: code === 0,
@@ -93,13 +95,13 @@ export const sshExecuteTool: DiscoveryTool = {
               });
           });
         })
-        .on('error', (err: Error) => {
+        .on('error', () => {
           clearTimeout(timeout);
-          logger.error('SSH connection error', { host, error: err.message });
-          reject(new Error(`SSH connection failed: ${err.message}`));
+          logger.error('SSH connection error');
+          reject(new Error('SSH connection failed'));
         })
         .connect({
-          host,
+          host: destination,
           port,
           username,
           // In production, load from credential service:
@@ -148,11 +150,15 @@ export const sshReadFileTool: DiscoveryTool = {
   },
   execute: async (params: any) => {
     const { host, filePath, maxLines = 100, ...sshParams } = params;
-
-    // Use SSH execute to read file
-    const command = maxLines
-      ? `head -n ${maxLines} "${filePath}"`
-      : `cat "${filePath}"`;
+    if (typeof filePath !== 'string' || !filePath || filePath.includes('\u0000') ||
+      typeof maxLines !== 'number' || !Number.isSafeInteger(maxLines) ||
+      maxLines < 1 || maxLines > 10000) {
+      throw new Error('Invalid file read request');
+    }
+    // POSIX single-quote each path; -- keeps filenames beginning with '-' from
+    // being interpreted as options by head/cat on the remote host.
+    const quotedPath = `'${filePath.replace(/'/g, `'\"'\"'`)}'`;
+    const command = `head -n ${maxLines} -- ${quotedPath}`;
 
     const result = await sshExecuteTool.execute({
       ...sshParams,
@@ -161,9 +167,8 @@ export const sshReadFileTool: DiscoveryTool = {
     });
 
     if (!result.success) {
-      throw new Error(
-        `Failed to read file ${filePath}: ${result.stderr || result.stdout}`
-      );
+      // The remote output and requested path may contain credentials.
+      throw new Error('SSH file read failed');
     }
 
     return {

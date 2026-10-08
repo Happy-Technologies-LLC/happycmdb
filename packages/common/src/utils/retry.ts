@@ -9,6 +9,7 @@
  */
 
 import { logger } from './logger';
+import { DISCOVERY_TARGET_REFUSED } from '../security/discovery-egress';
 
 export interface RetryOptions {
   /** Maximum number of attempts (default: 3) */
@@ -57,6 +58,11 @@ export async function withRetry<T>(
       return result;
     } catch (error) {
       lastError = error as Error;
+      // A denied discovery destination is a terminal security decision, not a
+      // transient failure: later DNS answers must not erase this refusal.
+      if (lastError instanceof Error && lastError.message === DISCOVERY_TARGET_REFUSED) {
+        throw new Error(DISCOVERY_TARGET_REFUSED);
+      }
 
       if (attempt < maxAttempts) {
         // Calculate delay with exponential backoff

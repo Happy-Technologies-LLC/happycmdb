@@ -8,50 +8,78 @@
 
 import { DiscoveryPattern, PatternMatch, AIDiscoveryContext, IPatternMatcher } from './types';
 import { PatternStorageService } from './pattern-storage';
-import { logger } from '@cmdb/common';
-import * as vm from 'node:vm';
+import { DISCOVERY_TARGET_REFUSED, logger, resolveDiscoveryHost } from '@cmdb/common';
 import { getRedisClient } from '@cmdb/database';
 import * as crypto from 'crypto';
+import { safeDiscoveryHttp } from './tools/safe-http';
+import { detectWithPlan, parseDetectionPlan, parseDiscoveryPlan, PATTERN_NOT_ACTIVE, PATTERN_STATE_UNAVAILABLE, UNSUPPORTED_PATTERN_PLAN } from './pattern-plan';
+
+/** Length framing makes concatenated IDs and plan bodies unambiguous to the hash. */
+function hashField(hash: crypto.Hash, value: string): void {
+  hash.update(String(value.length)).update(':').update(value);
+}
 
 export class PatternMatcher implements IPatternMatcher {
   private patternStorage: PatternStorageService;
   private patterns: DiscoveryPattern[] = [];
   private redis = getRedisClient();
-  private readonly MATCH_CACHE_PREFIX = 'ai:pattern:match:';
+  private readonly MATCH_CACHE_PREFIX = 'ai:pattern:match:v2:';
   private readonly MATCH_CACHE_TTL = 300; // 5 minutes
 
   constructor(patternStorage?: PatternStorageService) {
     this.patternStorage = patternStorage || new PatternStorageService();
   }
 
-  /**
-   * Load patterns from storage
-   */
-  async loadPatterns(): Promise<void> {
-    this.patterns = await this.patternStorage.loadPatterns();
-    logger.info(`Pattern matcher loaded ${this.patterns.length} patterns`);
+  /** A failed refresh never authorizes execution using a process-local snapshot. */
+  private async refreshActivePatterns(): Promise<DiscoveryPattern[]> {
+    try {
+      const patterns = await this.patternStorage.loadPatterns(true);
+      this.patterns = patterns;
+      return patterns;
+    } catch {
+      throw new Error(PATTERN_STATE_UNAVAILABLE);
+    }
   }
 
-  /**
-   * Create cache key from scan result
-   */
-  private createCacheKey(scanResult: any): string {
-    // Create deterministic hash of scan result
-    const data = JSON.stringify(scanResult);
-    const hash = crypto.createHash('sha256').update(data).digest('hex');
-    return `${this.MATCH_CACHE_PREFIX}${hash}`;
+  async loadPatterns(): Promise<void> {
+    await this.refreshActivePatterns();
+  }
+
+  /** Include the exact active plan set; a changed or revoked plan cannot reuse a cached match. */
+  private createActiveSetHash(patterns: DiscoveryPattern[]): string {
+    const hash = crypto.createHash('sha256');
+    for (const pattern of patterns) {
+      hashField(hash, pattern.patternId);
+      hashField(hash, pattern.version);
+      hashField(hash, pattern.detectionCode);
+      hashField(hash, pattern.discoveryCode);
+    }
+    return hash.digest('hex');
+  }
+
+  private createCacheKey(scanResult: any, activeSetHash: string): string {
+    const hash = crypto.createHash('sha256').update(JSON.stringify(scanResult)).digest('hex');
+    return `${this.MATCH_CACHE_PREFIX}${activeSetHash}:${hash}`;
   }
 
   /**
    * Match scan result against patterns with caching
    */
   async match(scanResult: any): Promise<PatternMatch | null> {
-    if (this.patterns.length === 0) {
-      await this.loadPatterns();
-    }
+    // Redis's active-list cache is invalidated on each committed mutation.
+    // Never trust a process-local snapshot at a new match boundary.
+    const patterns = await this.refreshActivePatterns();
+    // Validate both bodies before cached null/hit can bypass a refusal. Reuse
+    // parsed detection plans on a cache miss instead of parsing them twice.
+    const detectionPlans = patterns.map(pattern => {
+      const plan = parseDetectionPlan(pattern.detectionCode);
+      parseDiscoveryPlan(pattern.discoveryCode);
+      return plan;
+    });
 
     // Check cache first
-    const cacheKey = this.createCacheKey(scanResult);
+    const activeSetHash = this.createActiveSetHash(patterns);
+    const cacheKey = this.createCacheKey(scanResult, activeSetHash);
     try {
       const cached = await this.redis.get(cacheKey);
       if (cached) {
@@ -68,32 +96,25 @@ export class PatternMatcher implements IPatternMatcher {
     let bestConfidence = 0;
 
     logger.debug('Matching scan result against patterns', {
-      patternCount: this.patterns.length,
+      patternCount: patterns.length,
     });
 
-    for (const pattern of this.patterns) {
-      try {
-        const result = this.executeDetection(pattern, scanResult);
-
-        if (result.matches && result.confidence > bestConfidence) {
-          bestConfidence = result.confidence;
-          bestMatch = {
-            patternId: pattern.patternId,
-            patternVersion: pattern.version,
-            confidence: result.confidence,
-            matchedIndicators: result.indicators || [],
-          };
-
-          logger.debug('Pattern matched', {
-            patternId: pattern.patternId,
-            confidence: result.confidence,
-            indicators: result.indicators,
-          });
-        }
-      } catch (error) {
-        logger.error('Pattern detection failed', {
+    for (let index = 0; index < patterns.length; index++) {
+      const pattern = patterns[index]!;
+      const result = detectWithPlan(detectionPlans[index]!, scanResult);
+      if (result.matches && result.confidence > bestConfidence) {
+        bestConfidence = result.confidence;
+        bestMatch = {
           patternId: pattern.patternId,
-          error: error instanceof Error ? error.message : String(error),
+          patternVersion: pattern.version,
+          confidence: result.confidence,
+          matchedIndicators: result.indicators || [],
+          activeSetHash,
+        };
+        logger.debug('Pattern matched', {
+          patternId: pattern.patternId,
+          confidence: result.confidence,
+          indicators: result.indicators,
         });
       }
     }
@@ -122,65 +143,28 @@ export class PatternMatcher implements IPatternMatcher {
     return bestMatch;
   }
 
-  /**
-   * Execute detection function from pattern
-   */
-  private executeDetection(
-    pattern: DiscoveryPattern,
-    scanResult: any
-  ): { matches: boolean; confidence: number; indicators?: string[] } {
-    try {
-      // Create sandboxed context for pattern execution
-      const sandbox = {
-        scanResult,
-        console: {
-          log: (...args: any[]) => logger.debug('Pattern log', { pattern: pattern.patternId, args }),
-        },
-      };
-      vm.createContext(sandbox);
-
-      // Execute detection code
-      const code = `
-        ${pattern.detectionCode}
-        detect(scanResult);
-      `;
-
-      const result = vm.runInContext(code, sandbox, { timeout: 1000 });
-
-      return {
-        matches: !!result.matches,
-        confidence: result.confidence || 0,
-        indicators: result.indicators || [],
-      };
-    } catch (error) {
-      logger.error('Pattern execution error', {
-        patternId: pattern.patternId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      return { matches: false, confidence: 0 };
-    }
-  }
 
   /**
    * Execute matched pattern for discovery
    */
   async executePattern(
     patternId: string,
-    context: AIDiscoveryContext
+    context: AIDiscoveryContext,
+    expectedActiveSetHash?: string
   ): Promise<any[]> {
     const startTime = Date.now();
     const sessionId = `pattern-exec-${crypto.randomUUID()}`;
 
     try {
-      const pattern = this.patterns.find(p => p.patternId === patternId);
-      if (!pattern) {
-        throw new Error(`Pattern not found: ${patternId}`);
+      const patterns = await this.refreshActivePatterns();
+      if (expectedActiveSetHash !== undefined &&
+        expectedActiveSetHash !== this.createActiveSetHash(patterns)) {
+        throw new Error(PATTERN_NOT_ACTIVE);
       }
+      const pattern = patterns.find(p => p.patternId === patternId);
+      if (!pattern) throw new Error(PATTERN_NOT_ACTIVE);
 
-      logger.info('Executing pattern', {
-        patternId,
-        target: `${context.targetHost}:${context.targetPort}`,
-      });
+      logger.info('Executing pattern', { patternId });
 
       // Execute discovery function
       const result = await this.executeDiscovery(pattern, context);
@@ -271,77 +255,45 @@ export class PatternMatcher implements IPatternMatcher {
     }
   }
 
-  /**
-   * Execute discovery function from pattern
-   */
+  /** No host-realm functions or objects are exposed to stored pattern text. */
   private async executeDiscovery(
     pattern: DiscoveryPattern,
     context: AIDiscoveryContext
   ): Promise<any[]> {
-    try {
-      // Create sandboxed context with more capabilities for discovery
-      const sandbox = {
-        context,
-        fetch: this.createSafeFetch(),
-        console: {
-          log: (...args: any[]) => logger.debug('Pattern discovery log', { pattern: pattern.patternId, args }),
-          error: (...args: any[]) => logger.error('Pattern discovery error', { pattern: pattern.patternId, args }),
-        },
-      };
-      vm.createContext(sandbox);
-
-      // Execute discovery code
-      const code = `
-        ${pattern.discoveryCode}
-        (async () => {
-          return await discover(context);
-        })();
-      `;
-
-      const result = await vm.runInContext(code, sandbox, { timeout: 10000 });
-
-      return Array.isArray(result) ? result : [result];
-    } catch (error) {
-      logger.error('Pattern discovery execution error', {
-        patternId: pattern.patternId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      throw error;
+    // Require both plans: a legacy detection body is not allowed to accompany a
+    // declarative discovery body (or vice versa).
+    parseDetectionPlan(pattern.detectionCode);
+    const plan = parseDiscoveryPlan(pattern.discoveryCode);
+    if (!Number.isInteger(context.targetPort) || context.targetPort < 1 || context.targetPort > 65535) {
+      throw new Error(UNSUPPORTED_PATTERN_PLAN);
     }
-  }
-
-  /**
-   * Create safe fetch function for pattern discovery
-   * (limits what patterns can access)
-   */
-  private createSafeFetch() {
-    return async (url: string, options?: any) => {
-      // Basic safety checks
-      if (!url.startsWith('http://') && !url.startsWith('https://')) {
-        throw new Error('Invalid URL protocol');
-      }
-
-      // Use native fetch or axios
-      const axios = require('axios');
-      const response = await axios({
-        url,
-        method: options?.method || 'GET',
-        headers: options?.headers,
-        timeout: 5000,
-        maxRedirects: 0,
-        validateStatus: () => true,
-      });
-
-      return {
-        ok: response.status >= 200 && response.status < 300,
-        status: response.status,
-        statusText: response.statusText,
-        headers: response.headers,
-        json: async () => response.data,
-        text: async () =>
-          typeof response.data === 'string' ? response.data : JSON.stringify(response.data),
-      };
+    await resolveDiscoveryHost(context.targetHost);
+    const ci: any = {
+      _type: plan.serviceType,
+      name: `${plan.name} on ${context.targetHost}:${context.targetPort}`,
+      hostname: context.targetHost,
+      port: context.targetPort,
+      metadata: { technology: plan.name, category: plan.category },
     };
+    const version = context.scanResult?.services?.[0]?.version;
+    if (version) ci.metadata.version = version;
+    const host = context.targetHost.includes(':') ? `[${context.targetHost}]` : context.targetHost;
+    const protocol = context.targetPort === 443 ? 'https' : 'http';
+    for (const endpoint of plan.endpoints) {
+      try {
+        const response = await safeDiscoveryHttp(
+          `${protocol}://${host}:${context.targetPort}${endpoint}`,
+          { method: 'GET', timeout: 5000, validateStatus: () => true }
+        );
+        if (response.status >= 200 && response.status < 300) {
+          ci.metadata[endpoint.slice(1)] = response.data;
+        }
+      } catch (error) {
+        if (error instanceof Error && error.message === DISCOVERY_TARGET_REFUSED) throw error;
+        // An unavailable public endpoint does not discard the discovered CI.
+      }
+    }
+    return [ci];
   }
 
   /**

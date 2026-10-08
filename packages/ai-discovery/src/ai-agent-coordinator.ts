@@ -16,7 +16,7 @@ import {
 } from './types';
 import { createLLMProvider } from './providers';
 import { getAllDiscoveryTools, getBasicDiscoveryTools } from './tools';
-import { logger } from '@cmdb/common';
+import { DISCOVERY_TARGET_REFUSED, logger } from '@cmdb/common';
 import { v4 as uuidv4 } from 'uuid';
 
 export class AIAgentCoordinator {
@@ -113,13 +113,12 @@ export class AIAgentCoordinator {
         cost: result.cost,
       };
     } catch (error) {
-      const errorMessage =
-        error instanceof Error ? error.message : String(error);
+      // Provider, model, and remote errors can echo credentials or tool output.
+      const errorMessage = error instanceof Error && error.message === DISCOVERY_TARGET_REFUSED
+        ? DISCOVERY_TARGET_REFUSED
+        : 'AI discovery failed';
 
-      logger.error('AI discovery failed', {
-        sessionId,
-        error: errorMessage,
-      });
+      logger.error('AI discovery failed', { sessionId });
 
       if (this.currentSession) {
         this.currentSession.status = 'failed';

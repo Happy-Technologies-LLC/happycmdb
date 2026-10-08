@@ -113,7 +113,7 @@ export interface DiscoveryPattern {
   version: string;
   category: string;
 
-  // Pattern code (as TypeScript/JavaScript strings)
+  // Strict JSON detection-v1/discovery-v1 plans in legacy column names; executable code is unsupported.
   detectionCode: string;
   discoveryCode: string;
 
@@ -159,6 +159,8 @@ export interface PatternMatch {
   patternVersion: string;
   confidence: number;
   matchedIndicators: string[];
+  /** Hash of the active plans used to produce this match; guards match-to-execution races. */
+  activeSetHash: string;
 }
 
 /**
@@ -225,7 +227,8 @@ export interface IPatternMatcher {
    */
   executePattern(
     patternId: string,
-    context: AIDiscoveryContext
+    context: AIDiscoveryContext,
+    expectedActiveSetHash?: string
   ): Promise<any[]>;
 
   /**

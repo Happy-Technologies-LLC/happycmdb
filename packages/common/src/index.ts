@@ -33,9 +33,14 @@ export {
 
 // Export retry utilities
 export { withRetry } from './utils/retry';
+export {
+  DISCOVERY_TARGET_REFUSED, assertDiscoveryAddress, assertDiscoveryHostname,
+  assertDiscoveryRange, resolveDiscoveryHost, connectDiscoveryHost,
+} from './security/discovery-egress';
 export type { RetryOptions } from './utils/retry';
 
 // Export queue management
+export { UnrecoverableError } from 'bullmq';
 export * from './queues';
 export { getQueueManager } from './queues/queue-manager';
 export { QUEUE_NAMES } from './queues/queue-config';

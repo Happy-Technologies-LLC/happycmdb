@@ -9,7 +9,7 @@
 import OpenAI from 'openai';
 import { BaseLLMProvider } from './base-provider';
 import { AIDiscoveryContext, DiscoveryTool, AIToolCall } from '../types';
-import { logger } from '@cmdb/common';
+import { DISCOVERY_TARGET_REFUSED, logger } from '@cmdb/common';
 
 export class OpenAIProvider extends BaseLLMProvider {
   private client: OpenAI;
@@ -98,8 +98,7 @@ export class OpenAIProvider extends BaseLLMProvider {
           totalCompletionTokens += response.usage.completion_tokens;
         }
 
-        logger.debug('OpenAI response', {
-          finishReason: choice.finish_reason,
+        logger.debug('OpenAI response received', {
           hasToolCalls: !!choice.message.tool_calls,
         });
 
@@ -114,26 +113,24 @@ export class OpenAIProvider extends BaseLLMProvider {
             const functionArgs = JSON.parse(toolCallMsg.function.arguments);
             const toolId = toolCallMsg.id;
 
-            logger.info(`OpenAI requested function: ${functionName}`, {
-              args: functionArgs,
-            });
 
             // Find tool
             const tool = tools.find(t => t.name === functionName);
             if (!tool) {
-              logger.error(`Tool not found: ${functionName}`);
+              logger.error('Unknown discovery tool requested');
               continue;
             }
 
             // Validate params
             const validation = this.validateToolParams(tool, functionArgs);
             if (!validation.valid) {
-              logger.error('Tool parameter validation failed', {
-                tool: functionName,
-                errors: validation.errors,
+              logger.error('Discovery tool parameter validation failed', {
+                toolName: tool.name,
+                errorCount: validation.errors.length,
               });
               continue;
             }
+            logger.info('OpenAI requested discovery tool', { toolName: tool.name });
 
             // Execute tool
             const toolCall = await this.executeTool(tool, functionArgs);
@@ -181,8 +178,9 @@ export class OpenAIProvider extends BaseLLMProvider {
         cost,
       };
     } catch (error) {
-      logger.error('OpenAI discovery error', { error });
-      throw error;
+      if (error instanceof Error && error.message === DISCOVERY_TARGET_REFUSED) throw error;
+      logger.error('OpenAI discovery error');
+      throw new Error('AI provider request failed');
     }
   }
 
@@ -233,8 +231,8 @@ export class OpenAIProvider extends BaseLLMProvider {
       });
 
       return response.choices.length > 0;
-    } catch (error) {
-      logger.error('OpenAI connection test failed', { error });
+    } catch {
+      logger.error('OpenAI connection test failed');
       return false;
     }
   }

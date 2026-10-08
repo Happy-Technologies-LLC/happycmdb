@@ -6,9 +6,10 @@
  * Allows AI to probe HTTP/HTTPS endpoints
  */
 
-import axios, { AxiosError } from 'axios';
+import { AxiosError } from 'axios';
 import { DiscoveryTool } from '../types';
-import { logger } from '@cmdb/common';
+import { logger, DISCOVERY_TARGET_REFUSED } from '@cmdb/common';
+import { safeDiscoveryHttp } from './safe-http';
 
 export const httpProbeTool: DiscoveryTool = {
   name: 'http_probe',
@@ -50,6 +51,7 @@ export const httpProbeTool: DiscoveryTool = {
       path = '/',
       method = 'GET',
     } = params;
+    const methodLabel = ['GET', 'HEAD', 'POST', 'OPTIONS'].includes(method) ? method : 'OTHER';
 
     // Determine default port
     const defaultPort = protocol === 'https' ? 443 : 80;
@@ -57,18 +59,14 @@ export const httpProbeTool: DiscoveryTool = {
 
     const url = `${protocol}://${host}:${targetPort}${path}`;
 
-    logger.info(`Probing HTTP endpoint`, { url, method });
+    logger.info('Probing HTTP endpoint', { method: methodLabel });
 
     try {
-      const response = await axios({
+      const response = await safeDiscoveryHttp(url, {
         method,
-        url,
-        timeout: 10000, // 10 seconds
-        maxRedirects: 0, // Don't follow redirects
-        validateStatus: () => true, // Accept any status code
-        headers: {
-          'User-Agent': 'HappyCMDB-Discovery/2.0',
-        },
+        timeout: 10000,
+        validateStatus: () => true,
+        headers: { 'User-Agent': 'HappyCMDB-Discovery/2.0' },
       });
 
       const result = {
@@ -92,14 +90,11 @@ export const httpProbeTool: DiscoveryTool = {
         responseTime: (response.config as any)?.responseTime || null,
       };
 
-      logger.info(`HTTP probe successful`, {
-        url,
-        status: result.status,
-        contentType: result.contentType,
-      });
+      logger.info('HTTP probe successful', { method: methodLabel, status: result.status });
 
       return result;
     } catch (error) {
+      if (error instanceof Error && error.message === DISCOVERY_TARGET_REFUSED) throw error;
       const axiosError = error as AxiosError;
 
       if (axiosError.response) {
@@ -109,18 +104,16 @@ export const httpProbeTool: DiscoveryTool = {
           status: axiosError.response.status,
           statusText: axiosError.response.statusText,
           headers: axiosError.response.headers,
-          error: axiosError.message,
+          error: 'HTTP response error',
         };
       } else if (axiosError.request) {
         // Request made but no response
-        logger.warn('HTTP probe failed - no response', { url, error: axiosError.message });
-        throw new Error(`No response from ${url}: ${axiosError.message}`);
+        logger.warn('HTTP probe failed - no response', { method: methodLabel });
+        throw new Error('No HTTP response');
       } else {
-        // Request setup error
-        logger.error('HTTP probe failed', { url, error });
-        throw new Error(
-          `HTTP probe failed: ${error instanceof Error ? error.message : String(error)}`
-        );
+        // Setup errors may include the entire URL in their message.
+        logger.error('HTTP probe failed', { method: methodLabel });
+        throw new Error('HTTP probe failed');
       }
     }
   },

@@ -15,8 +15,9 @@ import {
   LLMConfig,
   PatternMatch,
 } from './types';
-import { logger } from '@cmdb/common';
+import { DISCOVERY_TARGET_REFUSED, logger, resolveDiscoveryHost } from '@cmdb/common';
 import { getDefaultLLMConfig } from './providers';
+import { PATTERN_NOT_ACTIVE, PATTERN_STATE_UNAVAILABLE, UNSUPPORTED_PATTERN_PLAN } from './pattern-plan';
 
 export interface HybridDiscoveryConfig {
   // AI settings
@@ -101,11 +102,10 @@ export class HybridDiscoveryOrchestrator {
   async discover(context: AIDiscoveryContext): Promise<HybridDiscoveryResult> {
     const startTime = Date.now();
 
-    logger.info('Starting hybrid discovery', {
-      target: `${context.targetHost}:${context.targetPort}`,
-    });
+    logger.info('Starting hybrid discovery');
 
     try {
+      await resolveDiscoveryHost(context.targetHost);
       // TIER 1: Try Pattern Matching (Fast Path)
       if (this.config.patternMatchingEnabled && context.scanResult) {
         const patternResult = await this.tryPatternMatch(context);
@@ -198,7 +198,8 @@ export class HybridDiscoveryOrchestrator {
       // Execute pattern discovery
       const cis = await this.patternMatcher.executePattern(
         match.patternId,
-        context
+        context,
+        match.activeSetHash
       );
 
       const executionTime = Date.now() - startTime;
@@ -213,6 +214,11 @@ export class HybridDiscoveryOrchestrator {
         patternUsed: match.patternId,
       };
     } catch (error) {
+      if (error instanceof Error &&
+        [UNSUPPORTED_PATTERN_PLAN, PATTERN_NOT_ACTIVE, PATTERN_STATE_UNAVAILABLE, DISCOVERY_TARGET_REFUSED]
+          .includes(error.message)) {
+        throw error;
+      }
       logger.error('Pattern matching failed', { error });
       return null;
     }

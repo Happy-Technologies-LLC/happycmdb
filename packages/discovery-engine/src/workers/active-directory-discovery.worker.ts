@@ -4,7 +4,7 @@
 // packages/discovery-engine/src/workers/active-directory-discovery.worker.ts
 
 import * as ldap from 'ldapjs';
-import { logger, withRetry } from '@cmdb/common';
+import { logger, withRetry, resolveDiscoveryHost, connectDiscoveryHost, DISCOVERY_TARGET_REFUSED } from '@cmdb/common';
 import {
   DiscoveredCI,
   DiscoveryConfig,
@@ -121,12 +121,9 @@ export class ActiveDirectoryDiscoveryWorker {
     config: ActiveDirectoryDiscoveryConfig,
     resourceConfigs?: Record<string, any>
   ): Promise<DiscoveredCI[]> {
-    logger.info('Starting Active Directory discovery', {
-      jobId,
-      domain: this.domain,
-      baseDN: this.baseDN,
-      config,
-    });
+    // Preflight the effective credential URL before starting any resource query.
+    await this.checkedLDAPURL();
+    logger.info('Starting Active Directory discovery', { jobId });
 
     const results = await Promise.allSettled([
       this.discoverComputers(jobId, resourceConfigs?.computers),
@@ -134,6 +131,10 @@ export class ActiveDirectoryDiscoveryWorker {
       this.discoverGroups(jobId, resourceConfigs?.groups),
       this.discoverOrganizationalUnits(jobId, resourceConfigs?.organizational_units),
     ]);
+    if (results.some(result => result.status === 'rejected' &&
+      result.reason instanceof Error && result.reason.message === DISCOVERY_TARGET_REFUSED)) {
+      throw new Error(DISCOVERY_TARGET_REFUSED);
+    }
 
     const allCIs: DiscoveredCI[] = [];
     const resourceNames = ['computers', 'users', 'groups', 'organizational_units'];
@@ -146,10 +147,7 @@ export class ActiveDirectoryDiscoveryWorker {
           count: result.value.length,
         });
       } else {
-        logger.error(`Active Directory ${resourceNames[index]} discovery failed`, {
-          jobId,
-          error: result.reason,
-        });
+        logger.error(`Active Directory ${resourceNames[index]} discovery failed`, { jobId });
       }
     });
 
@@ -735,15 +733,35 @@ export class ActiveDirectoryDiscoveryWorker {
     return relationships;
   }
 
-  /**
-   * Create LDAP client and bind
-   */
+  /** Check every DNS answer and pin the exact numeric address used by ldapjs. */
+  private async checkedLDAPURL(): Promise<{ url: string; servername: string }> {
+    let destination: URL;
+    let servername: string;
+    try {
+      destination = new URL(this.ldapUrl);
+      if (!['ldap:', 'ldaps:'].includes(destination.protocol) || destination.username ||
+        destination.password || (destination.pathname !== '' && destination.pathname !== '/') ||
+        destination.search || destination.hash) {
+        throw new Error(DISCOVERY_TARGET_REFUSED);
+      }
+      const host = destination.hostname.replace(/^\[([^\]]+)\]$/, '$1');
+      servername = host;
+      const address = await connectDiscoveryHost(host, await resolveDiscoveryHost(host));
+      destination.hostname = address.includes(':') ? `[${address}]` : address;
+      return { url: destination.toString(), servername };
+    } catch {
+      throw new Error(DISCOVERY_TARGET_REFUSED);
+    }
+  }
+
   private async createLDAPClient(): Promise<ldap.Client> {
+    const { url, servername } = await this.checkedLDAPURL();
     return new Promise((resolve, reject) => {
       const client = ldap.createClient({
-        url: this.ldapUrl,
+        url,
         tlsOptions: {
           rejectUnauthorized: this.useSSL,
+          servername,
         },
       });
 
@@ -752,11 +770,11 @@ export class ActiveDirectoryDiscoveryWorker {
       // ldapjs clients emit 'error' for connection failures (e.g. ECONNREFUSED,
       // socket resets) outside of the bind callback. Without a listener, these
       // are uncaught EventEmitter errors that crash the process.
-      client.on('error', (err) => {
-        logger.error('LDAP client error', { error: err.message });
+      client.on('error', () => {
+        logger.error('LDAP client error');
         if (!settled) {
           settled = true;
-          reject(new Error(`LDAP client error: ${err.message}`));
+          reject(new Error('LDAP client error'));
         }
       });
 
@@ -766,8 +784,8 @@ export class ActiveDirectoryDiscoveryWorker {
         }
         settled = true;
         if (err) {
-          logger.error('LDAP bind failed', { error: err.message });
-          reject(new Error(`LDAP bind failed: ${err.message}`));
+          logger.error('LDAP bind failed');
+          reject(new Error('LDAP bind failed'));
         } else {
           resolve(client);
         }

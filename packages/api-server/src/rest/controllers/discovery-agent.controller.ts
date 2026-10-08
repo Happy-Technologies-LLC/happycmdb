@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Request, Response } from 'express';
-import { DiscoveryAgentService } from '../../services/discovery-agent.service';
-import { logger } from '@cmdb/common';
+import { DiscoveryAgentService, AGENT_NOT_FOUND } from '../../services/discovery-agent.service';
+import { logger, DISCOVERY_TARGET_REFUSED } from '@cmdb/common';
+import { requestOrganizationId } from '../../middleware/auth.middleware';
 
 /**
  * Discovery Agent Controller
@@ -18,18 +19,21 @@ export class DiscoveryAgentController {
    */
   async registerAgent(req: Request, res: Response): Promise<void> {
     try {
-      const agent = await this.service.registerAgent(req.body);
+      const agent = await this.service.registerAgent(req.body, requestOrganizationId(req));
+      if (!agent) {
+        res.status(404).json({ success: false, error: AGENT_NOT_FOUND });
+        return;
+      }
 
       res.status(200).json({
         success: true,
         data: agent,
       });
-    } catch (error: any) {
-      logger.error('Error in registerAgent controller', error);
+    } catch {
+      logger.error('Error in registerAgent controller');
       res.status(500).json({
         success: false,
         error: 'Failed to register agent',
-        message: error.message,
       });
     }
   }
@@ -40,7 +44,11 @@ export class DiscoveryAgentController {
    */
   async updateHeartbeat(req: Request, res: Response): Promise<void> {
     try {
-      await this.service.updateHeartbeat(req.body);
+      const updated = await this.service.updateHeartbeat(req.body, requestOrganizationId(req));
+      if (!updated) {
+        res.status(404).json({ success: false, error: AGENT_NOT_FOUND });
+        return;
+      }
 
       res.status(200).json({
         success: true,
@@ -78,7 +86,7 @@ export class DiscoveryAgentController {
           : [req.query['tags']];
       }
 
-      const agents = await this.service.listAgents(filters);
+      const agents = await this.service.listAgents(requestOrganizationId(req), filters);
 
       res.status(200).json({
         success: true,
@@ -110,12 +118,12 @@ export class DiscoveryAgentController {
         return;
       }
 
-      const agent = await this.service.getAgent(agentId);
+      const agent = await this.service.getAgent(agentId, requestOrganizationId(req));
 
       if (!agent) {
         res.status(404).json({
           success: false,
-          error: 'Agent not found',
+          error: AGENT_NOT_FOUND,
         });
         return;
       }
@@ -149,7 +157,11 @@ export class DiscoveryAgentController {
         return;
       }
 
-      await this.service.deleteAgent(agentId);
+      const deleted = await this.service.deleteAgent(agentId, requestOrganizationId(req));
+      if (!deleted) {
+        res.status(404).json({ success: false, error: AGENT_NOT_FOUND });
+        return;
+      }
 
       res.status(200).json({
         success: true,
@@ -189,7 +201,7 @@ export class DiscoveryAgentController {
         return;
       }
 
-      const agentId = await this.service.findBestAgentForNetworks(targetNetworks, provider);
+      const agentId = await this.service.findBestAgentForNetworks(targetNetworks, provider, requestOrganizationId(req));
 
       if (!agentId) {
         res.status(404).json({
@@ -204,13 +216,13 @@ export class DiscoveryAgentController {
         success: true,
         data: { agent_id: agentId },
       });
-    } catch (error: any) {
-      logger.error('Error in findBestAgent controller', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to find best agent',
-        message: error.message,
-      });
+    } catch (error) {
+      if (error instanceof Error && error.message === DISCOVERY_TARGET_REFUSED) {
+        res.status(400).json({ success: false, error: DISCOVERY_TARGET_REFUSED });
+        return;
+      }
+      logger.error('Error in findBestAgent controller');
+      res.status(500).json({ success: false, error: 'Failed to find best agent' });
     }
   }
 }

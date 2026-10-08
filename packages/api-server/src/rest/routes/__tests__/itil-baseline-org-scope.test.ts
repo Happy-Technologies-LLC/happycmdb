@@ -1,7 +1,7 @@
 // Copyright 2026 Happy Technologies LLC
 // SPDX-License-Identifier: Apache-2.0
 
-/** Mounted REST DELETE over the real baseline DDL/migration and in-memory PostgreSQL SQL. */
+/** Mounted REST baseline create/delete over the real DDL/migrations and in-memory PostgreSQL. */
 import { fork } from 'child_process';
 import { randomBytes } from 'crypto';
 import { readFileSync } from 'fs';
@@ -19,10 +19,10 @@ Object.assign(process.env, {
 const host = fork(join(__dirname, 'fixtures/pglite-host.cjs'), [], { serialization: 'advanced' });
 let nextId = 0;
 const pending = new Map<number, { resolve: (rows: unknown[]) => void; reject: (error: Error) => void }>();
-host.on('message', ({ id, rows, error }: { id: number; rows: unknown[]; error?: string }) => {
+host.on('message', ({ id, rows, error, code }: { id: number; rows: unknown[]; error?: string; code?: string }) => {
   const reply = pending.get(id)!;
   pending.delete(id);
-  if (error) reply.reject(new Error(error));
+  if (error) reply.reject(Object.assign(new Error(error), { code }));
   else reply.resolve(rows);
 });
 function send(op: 'exec' | 'query', sql: string, params: unknown[] = []): Promise<unknown[]> {
@@ -48,7 +48,11 @@ const pgClient = {
 
 jest.mock('@cmdb/database', () => ({
   getPostgresClient: () => pgClient,
-  getNeo4jClient: () => ({}),
+  getNeo4jClient: () => ({
+    getCI: async (id: string, organizationId: string) =>
+      id === 'ci-a' && organizationId === A ? { id, name: 'CI A' } :
+      id === 'ci-b' && organizationId === B ? { id, name: 'CI B' } : null,
+  }),
   getAuditService: () => ({}),
 }));
 jest.mock('bcrypt', () => ({}));
@@ -94,23 +98,54 @@ const migrations = join(__dirname, '../../../../../database/src/postgres/migrati
 const original = readFileSync(join(migrations, '001_complete_schema.sql'), 'utf8');
 const ddl = original.match(/CREATE TABLE IF NOT EXISTS itil_baselines \([\s\S]*?\n\);/);
 if (!ddl) throw new Error('itil_baselines schema missing');
+const uniqueName = original.match(/CREATE UNIQUE INDEX idx_itil_baselines_unique_name ON itil_baselines\(name\);/);
+if (!uniqueName) throw new Error('itil_baselines unique name index missing');
+const scopedUnique = readFileSync(join(migrations, '013_itil_baseline_org_name_unique.sql'), 'utf8');
+let preexistingDuplicateCode: string | undefined;
 
 beforeAll(async () => {
-  await db.exec(ddl[0]);
+  await db.exec(ddl[0] + '\n' + uniqueName[0]);
   await db.exec(`INSERT INTO itil_baselines (id, name, baseline_type, baseline_data, created_by)
     VALUES ('${ID_NULL}', 'legacy', 'configuration', '{}', 'legacy')`);
   await db.exec(readFileSync(join(migrations, '012_itil_baseline_organization_scope.sql'), 'utf8'));
+  // Model a damaged pre-cutover table with two rows sharing an org/name. The
+  // migration must reject it rather than silently drop the uniqueness guard.
+  await db.exec(`BEGIN;
+    DROP INDEX idx_itil_baselines_unique_name;
+    INSERT INTO itil_baselines (id, name, baseline_type, baseline_data, created_by, organization_id)
+    VALUES ('${ID_A}', 'duplicate', 'configuration', '{}', 'alice', '${A}'),
+           ('${ID_B}', 'duplicate', 'configuration', '{}', 'bob', '${A}');`);
+  try {
+    await db.exec(scopedUnique);
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && typeof error.code === 'string') {
+      preexistingDuplicateCode = error.code;
+    }
+  } finally {
+    await db.exec('ROLLBACK');
+  }
+  await db.exec(scopedUnique);
 });
 afterAll(() => { host.kill(); });
 beforeEach(async () => {
-  await db.exec(`DELETE FROM itil_baselines;
+  await db.exec(`DELETE FROM itil_baselines WHERE organization_id IS NOT NULL;
     INSERT INTO itil_baselines (id, name, baseline_type, baseline_data, created_by, organization_id) VALUES
-    ('${ID_A}', 'A', 'configuration', '{}', 'alice', '${A}'),
-    ('${ID_B}', 'B', 'configuration', '{}', 'bob', '${B}'),
-    ('${ID_NULL}', 'legacy', 'configuration', '{}', 'legacy', NULL);`);
+    ('${ID_A}', 'shared-a', 'configuration', '{}', 'alice', '${A}'),
+    ('${ID_B}', 'shared-b', 'configuration', '{}', 'bob', '${B}');`);
   writes = 0;
 });
 const remaining = async () => (await db.rows<{ id: string }>('SELECT id FROM itil_baselines ORDER BY id')).map(row => row.id);
+
+it('refuses a pre-existing same-org duplicate during the index cutover', () => {
+  expect(preexistingDuplicateCode).toBe('23505');
+});
+
+it('preserves historical NULL ownership while rejecting new old-writer NULL inserts', async () => {
+  await expect(db.exec(`INSERT INTO itil_baselines (id, name, baseline_type, baseline_data, created_by)
+    VALUES ('${ID_MISSING}', 'new-orphan', 'configuration', '{}', 'old-writer')`))
+    .rejects.toMatchObject({ code: '23514' });
+  expect(await remaining()).toEqual([ID_A, ID_B, ID_NULL]);
+});
 
 describe('mounted ITIL baseline DELETE tenant boundary', () => {
   it('deletes only own baseline; foreign, missing and NULL are indistinguishable and untouched', async () => {
@@ -140,6 +175,35 @@ describe('mounted ITIL baseline DELETE tenant boundary', () => {
     const orgless = await request(app).delete(endpoint(ID_A)).set(authorization('noorg'));
     expect(orgless.status).toBe(403);
     expect(writes).toBe(0);
+    expect(await remaining()).toEqual([ID_A, ID_B, ID_NULL]);
+  });
+});
+
+describe('mounted ITIL baseline create tenant names', () => {
+  const create = (user: string, name: string, ciId: string) =>
+    request(app).post('/api/v1/itil/baselines').set(authorization(user))
+      .send({ name, ciIds: [ciId], createdBy: user });
+
+  it('allows the caller to reuse a foreign or legacy name without exposing or changing those rows', async () => {
+    const foreignName = await create('a', 'shared-b', 'ci-a');
+    const legacyName = await create('a', 'legacy', 'ci-a');
+    expect(foreignName.status).toBe(201);
+    expect(legacyName.status).toBe(201);
+    expect(await db.rows<{ name: string; organization_id: string | null }>(
+      'SELECT name, organization_id FROM itil_baselines WHERE name IN ($1, $2) ORDER BY name, organization_id NULLS FIRST',
+      ['shared-b', 'legacy']
+    )).toEqual([
+      { name: 'legacy', organization_id: null },
+      { name: 'legacy', organization_id: A },
+      { name: 'shared-b', organization_id: A },
+      { name: 'shared-b', organization_id: B },
+    ]);
+  });
+
+  it('rejects a duplicate name inside the same organization without changing the existing baseline', async () => {
+    const duplicate = await create('a', 'shared-a', 'ci-a');
+    expect(duplicate.status).toBe(409);
+    expect(duplicate.body).toEqual({ success: false, error: 'Conflict', message: 'Baseline name already exists' });
     expect(await remaining()).toEqual([ID_A, ID_B, ID_NULL]);
   });
 });

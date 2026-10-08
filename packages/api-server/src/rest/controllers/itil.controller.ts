@@ -1197,6 +1197,14 @@ export class ITILController {
         message: 'Baseline created successfully',
       });
     } catch (error) {
+      if (error && typeof error === 'object' && 'code' in error && error.code === '23505') {
+        res.status(409).json({
+          success: false,
+          error: 'Conflict',
+          message: 'Baseline name already exists',
+        });
+        return;
+      }
       logger.error('Error creating baseline', error);
       res.status(500).json({
         success: false,

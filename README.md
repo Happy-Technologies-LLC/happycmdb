@@ -86,6 +86,8 @@ npm run dev:api
 
 Migration `012_itil_baseline_organization_scope.sql` adds the nullable baseline owner. New REST baselines are stamped from the authenticated organization claim; baseline list, detail, and restore expose only matching owners, restore updates only CIs in that organization, and DELETE removes only a matching owner's row. Older baselines have a NULL owner and cannot be read, restored, or deleted by any current role (including admin and the default organization). Do not infer ownership or backfill these rows from their snapshots; dedicated platform-admin authority is required before a legacy-access policy can be introduced.
 
+Migration `013_itil_baseline_org_name_unique.sql` replaces global baseline-name uniqueness with uniqueness within each non-NULL organization. A caller can reuse a name held by another organization or an inaccessible legacy row; a duplicate name within the caller's organization returns 409 without database error details. The migration keeps existing NULL-owner rows but rejects new org-less inserts from older API writers until those writers are upgraded.
+
 ## Repository Structure
 
 | Package | Description |

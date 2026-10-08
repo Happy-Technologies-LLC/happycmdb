@@ -297,7 +297,6 @@ const ReconciliationMutation = {
     _context: GraphQLContext
   ) => {
     checkGraphQLPermission(_context, 'write');
-    const organizationId = requireGraphQLOrganization(_context);
     try {
       // Transform GraphQL input to TransformedCI
       const discoveredCI: TransformedCI = {
@@ -321,20 +320,16 @@ const ReconciliationMutation = {
         status: _args._status || 'active'
       };
 
-      const ciId = await reconciliationEngine.reconcileCI(discoveredCI, organizationId, false);
-      if (ciId === null) {
-        throw new GraphQLError('CI not found', { extensions: { code: 'NOT_FOUND', http: { status: 404 } } });
-      }
+      const ciId = await reconciliationEngine.reconcileCI(discoveredCI);
 
       return {
         _success: true,
         _ciId: ciId,
-        _action: 'updated',
+        _action: ciId.includes('_') ? 'created' : 'updated',
         _mergedFields: Object.keys(_args._attributes || {}),
         _conflicts: []
       };
     } catch (error: any) {
-      if (error instanceof GraphQLError && error.extensions['code'] === 'NOT_FOUND') throw error;
       logger.error('GraphQL: Error merging CI', error);
       throw new GraphQLError('Failed to merge CI', {
         extensions: {

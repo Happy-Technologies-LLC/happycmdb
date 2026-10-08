@@ -82,6 +82,10 @@ npm run build
 npm run dev:api
 ```
 
+### ITIL baseline tenant ownership
+
+Migration `012_itil_baseline_organization_scope.sql` adds the nullable baseline owner. New REST baselines are stamped from the authenticated organization claim; baseline list, detail, and restore expose only matching owners, and restore updates only CIs in that organization. Older baselines have a NULL owner and cannot be read or restored by any current role (including admin and the default organization). Do not infer ownership or backfill these rows from their snapshots; dedicated platform-admin authority is required before a legacy-access policy can be introduced.
+
 ## Repository Structure
 
 | Package | Description |

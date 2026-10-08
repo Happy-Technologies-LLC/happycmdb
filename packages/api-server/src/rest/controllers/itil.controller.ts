@@ -7,6 +7,7 @@ import { getNeo4jClient, getPostgresClient, UNSCOPED_CI_ACCESS } from '@cmdb/dat
 import { logger } from '@cmdb/common';
 import { v4 as uuidv4 } from 'uuid';
 import neo4j from 'neo4j-driver';
+import { requestOrganizationId } from '../../middleware/auth.middleware';
 
 /** Shape of a Neo4j Integer once it has round-tripped through JSON (JS numbers cannot hold a full 64-bit int, so the driver represents one as `{ low, high }`). */
 type Neo4jIntegerLike = { low: number; high: number };
@@ -1150,11 +1151,12 @@ export class ITILController {
   async createBaseline(req: Request, res: Response): Promise<void> {
     try {
       const { name, ciIds, description, createdBy } = req.body;
+      const organizationId = requestOrganizationId(req);
 
       // Verify all CIs exist and snapshot their current state for baseline_data
       const ciSnapshots: Record<string, any> = {};
       for (const ciId of ciIds) {
-        const ci = await this.neo4jClient.getCI(ciId, UNSCOPED_CI_ACCESS);
+        const ci = await this.neo4jClient.getCI(ciId, organizationId);
         if (!ci) {
           res.status(404).json({
             success: false,
@@ -1172,9 +1174,9 @@ export class ITILController {
       const result = await pool.query(
         `
         INSERT INTO itil_baselines (
-          id, name, description, baseline_type, scope, baseline_data, created_by
+          id, name, description, baseline_type, scope, baseline_data, created_by, organization_id
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         RETURNING *
         `,
         [
@@ -1185,6 +1187,7 @@ export class ITILController {
           JSON.stringify({ ci_ids: ciIds, ci_types: [], environment: null }),
           JSON.stringify(ciSnapshots),
           createdBy,
+          organizationId,
         ]
       );
 
@@ -1203,11 +1206,12 @@ export class ITILController {
     }
   }
 
-  async getBaselines(_req: Request, res: Response): Promise<void> {
+  async getBaselines(req: Request, res: Response): Promise<void> {
     try {
       const pool = this.postgresClient.pool;
       const result = await pool.query(
-        'SELECT * FROM itil_baselines ORDER BY created_at DESC LIMIT 100'
+        'SELECT * FROM itil_baselines WHERE organization_id = $1 ORDER BY created_at DESC LIMIT 100',
+        [requestOrganizationId(req)]
       );
 
       res.json({
@@ -1231,15 +1235,15 @@ export class ITILController {
 
       const pool = this.postgresClient.pool;
       const result = await pool.query(
-        'SELECT * FROM itil_baselines WHERE id = $1',
-        [id]
+        'SELECT * FROM itil_baselines WHERE id = $1 AND organization_id = $2',
+        [id, requestOrganizationId(req)]
       );
 
       if (result.rows.length === 0) {
         res.status(404).json({
           success: false,
           error: 'Not Found',
-          message: `Baseline with ID '${id}' not found`,
+          message: 'Baseline not found',
         });
         return;
       }
@@ -1320,18 +1324,19 @@ export class ITILController {
     try {
       const { id } = req.params;
       const { ciId, restoreAttributes, performedBy } = req.body;
+      const organizationId = requestOrganizationId(req);
 
       const pool = this.postgresClient.pool;
       const baselineResult = await pool.query(
-        'SELECT * FROM itil_baselines WHERE id = $1',
-        [id]
+        'SELECT * FROM itil_baselines WHERE id = $1 AND organization_id = $2',
+        [id, organizationId]
       );
 
       if (baselineResult.rows.length === 0) {
         res.status(404).json({
           success: false,
           error: 'Not Found',
-          message: `Baseline with ID '${id}' not found`,
+          message: 'Baseline not found',
         });
         return;
       }
@@ -1391,19 +1396,20 @@ export class ITILController {
         const result = await session.run(
           `
           MATCH (ci:CI {id: $ciId})
+          WHERE ci.organization_id = $organizationId
           SET ci += $restoreProps
           SET ci.discovered_at = coalesce(datetime($discoveredAt), ci.discovered_at)
           SET ci.updated_at = datetime()
           RETURN ci
           `,
-          { ciId, restoreProps, discoveredAt: discoveredAtValue }
+          { ciId, organizationId, restoreProps, discoveredAt: discoveredAtValue }
         );
 
         if (result.records.length === 0) {
           res.status(404).json({
             success: false,
             error: 'Not Found',
-            message: `Configuration item with ID '${ciId}' not found`,
+            message: 'Configuration item not found',
           });
           return;
         }

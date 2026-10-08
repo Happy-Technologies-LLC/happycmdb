@@ -11,6 +11,12 @@ HappyCMDB's unified credential system provides protocol-based authentication wit
 
 The unified credential system eliminates credential proliferation by using standard authentication protocols instead of provider-specific credential types. It enables advanced features like credential affinity (matching credentials to targets), credential sets (try multiple credentials systematically), and unified management across all integrations.
 
+### Ownership and migration (LH-4 / HAP-473)
+
+The mounted `/api/v1/credentials` and `/api/v1/credential-sets` operations use the authenticated user's freshly resolved organization and user ID. Lists, match/rank, direct reads, updates, deletes, validation and set selection require **both** the stored `organization_id` and `created_by` to match. Admin role and API keys do not confer access to another owner's credentials; the agent role cannot use these management routes. All credential responses redact decrypted material; foreign and missing IDs on scoped CRUD/validation/set routes return the same not-found response. The OAuth exception below returns a uniform 403 instead.
+
+Migration `021_credential_organization_scope.sql` leaves pre-existing rows with `NULL organization_id` because `created_by` alone cannot prove organization provenance. These rows are inaccessible through scoped API operations until separately reviewed ownership recovery; no automatic backfill or global access is granted. Credential-backed background discovery and connector runs without verified owner/organization also fail closed. OAuth authorization and callback return the same static 403 to every authenticated caller, including the credential owner, without reading or writing OAuth state or token storage; restoring org-bound OAuth needs separate approval. This migration makes no live-data changes outside schema and does not rotate or reveal credentials.
+
 ### Key Features
 
 - **Protocol-Based** - 14 standard authentication protocols (aws_iam, ssh_key, oauth2, etc.)

@@ -518,7 +518,9 @@ export class IntegrationManager {
     const pool = this.postgresClient.pool;
     const credentialId = config.credential_id as string;
 
-    const credential = await getUnifiedCredentialService(pool).getById(credentialId);
+    // Connector configuration has no verified credential owner/organization.
+    // A platform-wide exception needs an explicit policy; fail closed here.
+    const credential = await getUnifiedCredentialService(pool).getById(credentialId, '', '');
     if (credential === null) {
       throw new Error('Credential not found: ' + credentialId);
     }

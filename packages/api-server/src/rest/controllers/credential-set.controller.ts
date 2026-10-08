@@ -11,6 +11,7 @@ import {
   logger,
 } from '@cmdb/common';
 import type { AuthenticatedRequest } from '../../auth/types';
+import { requestOrganizationId } from '../../middleware/auth.middleware';
 
 /**
  * Credential Set Controller
@@ -23,6 +24,11 @@ export class CredentialSetController {
     const pool = getPostgresClient().pool;
     this.credentialSetService = getCredentialSetService(pool);
   }
+  private owner(req: Request): [string, string] {
+    const userId = (req as AuthenticatedRequest).user?._userId;
+    if (!userId) throw new Error('Verified credential owner required');
+    return [userId, requestOrganizationId(req)];
+  }
 
   /**
    * POST /api/v1/credential-sets - Create credential set
@@ -30,9 +36,8 @@ export class CredentialSetController {
   async create(req: Request, res: Response): Promise<void> {
     try {
       const input: CredentialSetInput = req.body;
-      const createdBy = (req as AuthenticatedRequest).user?._userId || 'system';
-
-      const credentialSet = await this.credentialSetService.create(input, createdBy);
+      const [createdBy, organizationId] = this.owner(req);
+      const credentialSet = await this.credentialSetService.create(input, createdBy, organizationId);
 
       res.status(201).json({
         success: true,
@@ -73,9 +78,9 @@ export class CredentialSetController {
   /**
    * GET /api/v1/credential-sets - List all credential sets with expanded credentials
    */
-  async list(_req: Request, res: Response): Promise<void> {
+  async list(req: Request, res: Response): Promise<void> {
     try {
-      const credentialSets = await this.credentialSetService.list();
+      const credentialSets = await this.credentialSetService.list(...this.owner(req));
 
       res.status(200).json({
         success: true,
@@ -109,13 +114,13 @@ export class CredentialSetController {
       }
 
       // Get credential set with expanded credentials
-      const credentialSet = await this.credentialSetService.getWithCredentials(id);
+      const credentialSet = await this.credentialSetService.getWithCredentials(id, ...this.owner(req));
 
       if (!credentialSet) {
         res.status(404).json({
           success: false,
           error: 'Not Found',
-          message: `Credential set with ID '${id}' not found`,
+          message: 'Credential set not found',
         });
         return;
       }
@@ -152,7 +157,7 @@ export class CredentialSetController {
 
       const input: CredentialSetUpdateInput = req.body;
 
-      const credentialSet = await this.credentialSetService.update(id, input);
+      const credentialSet = await this.credentialSetService.update(id, input, ...this.owner(req));
 
       res.status(200).json({
         success: true,
@@ -167,7 +172,7 @@ export class CredentialSetController {
         res.status(404).json({
           success: false,
           error: 'Not Found',
-          message: error.message,
+          message: 'Credential set not found',
         });
         return;
       }
@@ -216,7 +221,7 @@ export class CredentialSetController {
         return;
       }
 
-      await this.credentialSetService.delete(id);
+      await this.credentialSetService.delete(id, ...this.owner(req));
 
       res.status(204).send();
     } catch (error) {
@@ -227,7 +232,7 @@ export class CredentialSetController {
         res.status(404).json({
           success: false,
           error: 'Not Found',
-          message: error.message,
+          message: 'Credential set not found',
         });
         return;
       }
@@ -273,7 +278,8 @@ export class CredentialSetController {
       const credentials = await this.credentialSetService.selectCredentials(
         id,
         context,
-        strategy
+        strategy,
+        ...this.owner(req)
       );
 
       // Redact sensitive credentials before returning
@@ -295,7 +301,7 @@ export class CredentialSetController {
         res.status(404).json({
           success: false,
           error: 'Not Found',
-          message: error.message,
+          message: 'Credential set not found',
         });
         return;
       }

@@ -166,8 +166,9 @@ export class DiscoveryOrchestrator {
         throw new Error(`Discovery definition ${definitionId} is not active`);
       }
 
-      // Load and decrypt credentials using unified credential service
-      const credential = await this.credentialService.getById(definition.credential_id);
+      // No verified organization is available to this background definition.
+      // The scoped lookup fails closed until an explicit policy provides it.
+      const credential = await this.credentialService.getById(definition.credential_id, '', '');
 
       if (!credential) {
         throw new Error(

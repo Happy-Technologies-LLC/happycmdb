@@ -2,13 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Request, Response } from 'express';
-import { Pool } from 'pg';
-import {
-  getUnifiedCredentialService,
-  getPostgresClient,
-  getOAuthSubstrate,
-  SERVICENOW_PROVIDER_ID,
-} from '@cmdb/database';
+import { getUnifiedCredentialService, getPostgresClient } from '@cmdb/database';
 import {
   UnifiedCredentialInput,
   UnifiedCredentialUpdateInput,
@@ -18,6 +12,7 @@ import {
   logger,
 } from '@cmdb/common';
 import type { AuthenticatedRequest } from '../../auth/types';
+import { requestOrganizationId } from '../../middleware/auth.middleware';
 
 /**
  * Unified Credential Controller
@@ -25,12 +20,14 @@ import type { AuthenticatedRequest } from '../../auth/types';
  */
 export class UnifiedCredentialController {
   private credentialService;
-  private oauthPool: Pool;
 
   constructor() {
-    const pool = getPostgresClient().pool;
-    this.oauthPool = pool;
-    this.credentialService = getUnifiedCredentialService(pool);
+    this.credentialService = getUnifiedCredentialService(getPostgresClient().pool);
+  }
+  private owner(req: Request): [string, string] {
+    const userId = (req as AuthenticatedRequest).user?._userId;
+    if (!userId) throw new Error('Verified credential owner required');
+    return [userId, requestOrganizationId(req)];
   }
 
   /**
@@ -39,9 +36,8 @@ export class UnifiedCredentialController {
   async create(req: Request, res: Response): Promise<void> {
     try {
       const input: UnifiedCredentialInput = req.body;
-      const createdBy = (req as AuthenticatedRequest).user?._userId || 'system';
-
-      const credential = await this.credentialService.create(input, createdBy);
+      const [createdBy, organizationId] = this.owner(req);
+      const credential = await this.credentialService.create(input, createdBy, organizationId);
 
       // Redact sensitive credentials before returning
       const safeCredential = {
@@ -89,7 +85,7 @@ export class UnifiedCredentialController {
         offset: req.query['offset'] ? parseInt(req.query['offset'] as string, 10) : undefined,
       };
 
-      const credentials = await this.credentialService.list(filters);
+      const credentials = await this.credentialService.list(...this.owner(req), filters);
 
       res.status(200).json({
         success: true,
@@ -108,7 +104,7 @@ export class UnifiedCredentialController {
 
   /**
    * GET /api/v1/credentials/:id - Get credential by ID
-   * WARNING: Returns decrypted credentials - should be restricted to admins
+   * Only the credential's verified owner and organization can read it.
    */
   async getById(req: Request, res: Response): Promise<void> {
     try {
@@ -123,19 +119,18 @@ export class UnifiedCredentialController {
         return;
       }
 
-      const credential = await this.credentialService.getById(id);
+      const credential = await this.credentialService.getById(id, ...this.owner(req));
 
       if (!credential) {
         res.status(404).json({
           success: false,
           error: 'Not Found',
-          message: `Credential with ID '${id}' not found`,
+          message: 'Credential not found',
         });
         return;
       }
 
-      // Redact sensitive credentials before returning
-      // In a real implementation, you might check user permissions first
+      // Never expose decrypted credential material on API reads.
       const safeCredential = {
         ...credential,
         credentials: '***REDACTED***',
@@ -173,7 +168,7 @@ export class UnifiedCredentialController {
 
       const input: UnifiedCredentialUpdateInput = req.body;
 
-      const credential = await this.credentialService.update(id, input);
+      const credential = await this.credentialService.update(id, input, ...this.owner(req));
 
       // Redact sensitive credentials before returning
       const safeCredential = {
@@ -194,7 +189,7 @@ export class UnifiedCredentialController {
         res.status(404).json({
           success: false,
           error: 'Not Found',
-          message: error.message,
+          message: 'Credential not found',
         });
         return;
       }
@@ -233,7 +228,7 @@ export class UnifiedCredentialController {
         return;
       }
 
-      await this.credentialService.delete(id);
+      await this.credentialService.delete(id, ...this.owner(req));
 
       res.status(204).send();
     } catch (error) {
@@ -244,7 +239,7 @@ export class UnifiedCredentialController {
         res.status(404).json({
           success: false,
           error: 'Not Found',
-          message: error.message,
+          message: 'Credential not found',
         });
         return;
       }
@@ -283,7 +278,11 @@ export class UnifiedCredentialController {
         return;
       }
 
-      const result = await this.credentialService.validate(id);
+      const result = await this.credentialService.validate(id, ...this.owner(req));
+      if (result === null) {
+        res.status(404).json({ success: false, error: 'Not Found', message: 'Credential not found' });
+        return;
+      }
 
       res.status(200).json({
         success: true,
@@ -306,7 +305,7 @@ export class UnifiedCredentialController {
     try {
       const context: CredentialMatchContext = req.body;
 
-      const result = await this.credentialService.findBestMatch(context);
+      const result = await this.credentialService.findBestMatch(context, ...this.owner(req));
 
       if (!result) {
         res.status(404).json({
@@ -347,7 +346,7 @@ export class UnifiedCredentialController {
     try {
       const context: CredentialMatchContext = req.body;
 
-      const results = await this.credentialService.rankCredentials(context);
+      const results = await this.credentialService.rankCredentials(context, ...this.owner(req));
 
       // Redact sensitive credentials before returning
       const safeResults = results.map((result) => ({
@@ -373,124 +372,4 @@ export class UnifiedCredentialController {
     }
   }
 
-  /**
-   * POST /api/v1/credentials/:id/oauth/authorize - Begin OAuth authorization for an oauth2 credential
-   */
-  async authorize(req: Request, res: Response): Promise<void> {
-    try {
-      const { id } = req.params;
-
-      const provider =
-        typeof req.body.provider === 'string' && req.body.provider !== ''
-          ? (req.body.provider as string)
-          : SERVICENOW_PROVIDER_ID;
-
-      const rawScopes = req.body.scopes ?? [];
-      if (!Array.isArray(rawScopes) || !rawScopes.every((s) => typeof s === 'string')) {
-        res.status(400).json({
-          success: false,
-          error: 'Bad Request',
-          message: 'scopes must be an array of strings',
-        });
-        return;
-      }
-      const scopes = rawScopes as string[];
-
-      const credential = await this.credentialService.getById(id);
-
-      if (credential === null) {
-        res.status(404).json({
-          success: false,
-          error: 'Not Found',
-          message: `Credential with ID '${id}' not found`,
-        });
-        return;
-      }
-
-      if (credential.protocol !== 'oauth2') {
-        res.status(400).json({
-          success: false,
-          error: 'Bad Request',
-          message: 'OAuth authorize is only valid for oauth2 credentials',
-        });
-        return;
-      }
-
-      const { url, state } = await getOAuthSubstrate(this.oauthPool).authorizationUrl({
-        sourceId: id,
-        providerId: provider,
-        scopes,
-      });
-
-      res.status(200).json({
-        success: true,
-        data: {
-          authorization_url: url,
-          state,
-        },
-      });
-    } catch (error) {
-      logger.error('Error starting OAuth authorization', { error, id: req.params['id'] });
-      res.status(500).json({
-        success: false,
-        error: 'Failed to start OAuth authorization',
-        message: error instanceof Error ? error.message : 'Unknown error',
-      });
-    }
-  }
-
-  /**
-   * GET /api/v1/credentials/oauth/callback - Handle OAuth provider redirect callback
-   */
-  async oauthCallback(req: Request, res: Response): Promise<void> {
-    try {
-      if (typeof req.query['error'] === 'string' && req.query['error'] !== '') {
-        res.status(400).json({
-          success: false,
-          error: 'Bad Request',
-          message: `OAuth authorization failed: ${req.query['error']}`,
-        });
-        return;
-      }
-
-      const state = req.query['state'];
-      const code = req.query['code'];
-
-      if (typeof state !== 'string' || state === '' || typeof code !== 'string' || code === '') {
-        res.status(400).json({
-          success: false,
-          error: 'Bad Request',
-          message: 'state and code query parameters are required',
-        });
-        return;
-      }
-
-      const result = await getOAuthSubstrate(this.oauthPool).handleCallback({ state, code });
-
-      res.status(200).json({
-        success: true,
-        data: {
-          source_id: result.sourceId,
-          connected: true,
-        },
-      });
-    } catch (error) {
-      logger.error('Error handling OAuth callback', { error });
-
-      if (error instanceof Error && error.message.includes('invalid or expired OAuth state')) {
-        res.status(400).json({
-          success: false,
-          error: 'Bad Request',
-          message: error.message,
-        });
-        return;
-      }
-
-      res.status(500).json({
-        success: false,
-        error: 'Failed to handle OAuth callback',
-        message: error instanceof Error ? error.message : 'Unknown error',
-      });
-    }
-  }
 }

@@ -416,7 +416,7 @@ describe('DiscoveryDefinitionService', () => {
   });
 
   describe('runDefinition', () => {
-    it('should trigger a discovery run successfully', async () => {
+    it('does not schedule credential-backed discovery without verified organization', async () => {
       const mockDefinition = {
         id: 'def-123',
         name: 'AWS Discovery',
@@ -434,12 +434,10 @@ describe('DiscoveryDefinitionService', () => {
       mockClient.query
         .mockResolvedValueOnce({ rows: [] }) // BEGIN
         .mockResolvedValueOnce({ rows: [mockDefinition] }) // Get definition
-        .mockResolvedValueOnce({ rows: [] }) // Insert discovery run
-        .mockResolvedValueOnce({ rows: [] }); // COMMIT
+        .mockResolvedValueOnce({ rows: [] }); // ROLLBACK
 
-      const jobId = await service.runDefinition('def-123', 'user-123');
-
-      expect(jobId).toMatch(/^aws-\d+$/);
+      await expect(service.runDefinition('def-123', 'user-123')).rejects.toBeInstanceOf(Error);
+      expect(queueManager.getQueue).not.toHaveBeenCalled();
     });
 
     it('should throw error if definition is inactive', async () => {

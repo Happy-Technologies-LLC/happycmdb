@@ -34,7 +34,8 @@ export class CredentialSetService {
    */
   async create(
     input: CredentialSetInput,
-    createdBy: string
+    createdBy: string,
+    organizationId: string
   ): Promise<CredentialSet> {
     const client = await this.pool.connect();
     try {
@@ -46,19 +47,13 @@ export class CredentialSetService {
       // Validate all credential IDs exist
       const credentialCheckResult = await client.query(
         `
-        SELECT id FROM credentials WHERE id = ANY($1::uuid[])
+        SELECT id FROM credentials WHERE id = ANY($1::uuid[]) AND created_by = $2 AND organization_id = $3
         `,
-        [input.credential_ids]
+        [input.credential_ids, createdBy, organizationId]
       );
 
       if (credentialCheckResult.rows.length !== input.credential_ids.length) {
-        const foundIds = credentialCheckResult.rows.map((row) => row.id);
-        const missingIds = input.credential_ids.filter(
-          (id) => !foundIds.includes(id)
-        );
-        throw new Error(
-          `The following credential IDs do not exist: ${missingIds.join(', ')}`
-        );
+        throw new Error('One or more credential IDs do not exist');
       }
 
       const id = uuidv4();
@@ -82,8 +77,9 @@ export class CredentialSetService {
           strategy,
           stop_on_success,
           tags,
-          created_by
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+          created_by,
+          organization_id
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         RETURNING *
         `,
         [
@@ -95,6 +91,7 @@ export class CredentialSetService {
           stopOnSuccess,
           input.tags || [],
           createdBy,
+          organizationId,
         ]
       );
 
@@ -135,14 +132,14 @@ export class CredentialSetService {
   /**
    * Get credential set by ID (basic info without expanded credentials)
    */
-  async getById(id: string): Promise<CredentialSet | null> {
+  async getById(id: string, createdBy: string, organizationId: string): Promise<CredentialSet | null> {
     const client = await this.pool.connect();
     try {
       const result = await client.query(
         `
-        SELECT * FROM credential_sets WHERE id = $1
+        SELECT * FROM credential_sets WHERE id = $1 AND created_by = $2 AND organization_id = $3
         `,
-        [id]
+        [id, createdBy, organizationId]
       );
 
       if (result.rows.length === 0) {
@@ -172,7 +169,7 @@ export class CredentialSetService {
    * Get credential set with expanded credential details
    * Uses the credential_set_summaries view which includes full credential info
    */
-  async getWithCredentials(id: string): Promise<CredentialSetSummary | null> {
+  async getWithCredentials(id: string, createdBy: string, organizationId: string): Promise<CredentialSetSummary | null> {
     const client = await this.pool.connect();
     try {
       const result = await client.query(
@@ -191,9 +188,9 @@ export class CredentialSetService {
           usage_count,
           credentials
         FROM credential_set_summaries
-        WHERE id = $1
+        WHERE id = $1 AND created_by = $2 AND organization_id = $3
         `,
-        [id]
+        [id, createdBy, organizationId]
       );
 
       if (result.rows.length === 0) {
@@ -225,7 +222,7 @@ export class CredentialSetService {
   /**
    * List all credential sets with expanded credentials
    */
-  async list(): Promise<CredentialSetSummary[]> {
+  async list(createdBy: string, organizationId: string): Promise<CredentialSetSummary[]> {
     const client = await this.pool.connect();
     try {
       const result = await client.query(
@@ -244,8 +241,10 @@ export class CredentialSetService {
           usage_count,
           credentials
         FROM credential_set_summaries
+        WHERE created_by = $1 AND organization_id = $2
         ORDER BY created_at DESC
-        `
+        `,
+        [createdBy, organizationId]
       );
 
       return result.rows.map((row) => {
@@ -274,27 +273,29 @@ export class CredentialSetService {
    */
   async update(
     id: string,
-    input: CredentialSetUpdateInput
+    input: CredentialSetUpdateInput,
+    createdBy: string,
+    organizationId: string
   ): Promise<CredentialSet> {
     const client = await this.pool.connect();
     try {
+      const owned = await client.query(
+        `SELECT id FROM credential_sets WHERE id = $1 AND created_by = $2 AND organization_id = $3`,
+        [id, createdBy, organizationId]
+      );
+      if (owned.rows.length === 0) throw new Error(`Credential set with ID ${id} not found`);
+
       // If credential_ids provided, validate they exist
       if (input.credential_ids && input.credential_ids.length > 0) {
         const credentialCheckResult = await client.query(
           `
-          SELECT id FROM credentials WHERE id = ANY($1::uuid[])
+          SELECT id FROM credentials WHERE id = ANY($1::uuid[]) AND created_by = $2 AND organization_id = $3
           `,
-          [input.credential_ids]
+          [input.credential_ids, createdBy, organizationId]
         );
 
         if (credentialCheckResult.rows.length !== input.credential_ids.length) {
-          const foundIds = credentialCheckResult.rows.map((row) => row.id);
-          const missingIds = input.credential_ids.filter(
-            (id) => !foundIds.includes(id)
-          );
-          throw new Error(
-            `The following credential IDs do not exist: ${missingIds.join(', ')}`
-          );
+          throw new Error('One or more credential IDs do not exist');
         }
       }
 
@@ -340,20 +341,20 @@ export class CredentialSetService {
       }
 
       if (updates.length === 0) {
-        const existing = await this.getById(id);
+        const existing = await this.getById(id, createdBy, organizationId);
         if (!existing) {
           throw new Error(`Credential set with ID ${id} not found`);
         }
         return existing;
       }
 
-      params.push(id);
+      params.push(id, createdBy, organizationId);
 
       const result = await client.query(
         `
         UPDATE credential_sets
         SET ${updates.join(', ')}
-        WHERE id = $${paramIndex}
+        WHERE id = $${paramIndex++} AND created_by = $${paramIndex++} AND organization_id = $${paramIndex}
         RETURNING *
         `,
         params
@@ -398,17 +399,23 @@ export class CredentialSetService {
    * Delete credential set
    * Only allowed if not in use by any discovery definitions
    */
-  async delete(id: string): Promise<void> {
+  async delete(id: string, createdBy: string, organizationId: string): Promise<void> {
     const client = await this.pool.connect();
     try {
+      const owned = await client.query(
+        `SELECT id FROM credential_sets WHERE id = $1 AND created_by = $2 AND organization_id = $3`,
+        [id, createdBy, organizationId]
+      );
+      if (owned.rows.length === 0) throw new Error(`Credential set with ID ${id} not found`);
       // Check if credential set is in use
       const usageResult = await client.query(
         `
         SELECT COUNT(*) as count
-        FROM discovery_definitions
-        WHERE credential_set_id = $1
+        FROM discovery_definitions dd
+        JOIN credential_sets cs ON cs.id = dd.credential_set_id
+        WHERE cs.id = $1 AND cs.created_by = $2 AND cs.organization_id = $3
         `,
-        [id]
+        [id, createdBy, organizationId]
       );
 
       const usageCount = parseInt(usageResult.rows[0].count, 10);
@@ -422,10 +429,10 @@ export class CredentialSetService {
       const result = await client.query(
         `
         DELETE FROM credential_sets
-        WHERE id = $1
+        WHERE id = $1 AND created_by = $2 AND organization_id = $3
         RETURNING id, name
         `,
-        [id]
+        [id, createdBy, organizationId]
       );
 
       if (result.rows.length === 0) {
@@ -455,12 +462,14 @@ export class CredentialSetService {
   async selectCredentials(
     setId: string,
     context: CredentialMatchContext,
-    strategy?: CredentialSetStrategy
+    strategy: CredentialSetStrategy | undefined,
+    createdBy: string,
+    organizationId: string
   ): Promise<UnifiedCredential[]> {
     const client = await this.pool.connect();
     try {
       // Fetch credential set
-      const set = await this.getById(setId);
+      const set = await this.getById(setId, createdBy, organizationId);
       if (!set) {
         throw new Error(`Credential set with ID ${setId} not found`);
       }
@@ -471,9 +480,9 @@ export class CredentialSetService {
       const credentialResults = await client.query(
         `
         SELECT * FROM credentials
-        WHERE id = ANY($1::uuid[])
+        WHERE id = ANY($1::uuid[]) AND created_by = $2 AND organization_id = $3
         `,
-        [set.credential_ids]
+        [set.credential_ids, createdBy, organizationId]
       );
 
       // Decrypt credentials and convert to UnifiedCredential objects

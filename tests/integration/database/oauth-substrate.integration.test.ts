@@ -17,6 +17,7 @@ import { getEncryptionService } from '@cmdb/common';
 
 const CREATED_IDS: string[] = [];
 const STATE_PREFIX = 'oauth-integration-state-';
+const TEST_ORG = '11111111-1111-4111-8111-111111111111';
 
 function encryptedCredentialPayload(payload: Record<string, unknown>): { iv: string; encryptedData: string; authTag: string } {
   return getEncryptionService().encrypt(JSON.stringify(payload));
@@ -30,8 +31,8 @@ async function insertCredential(
 ): Promise<string> {
   const credentials = encrypted ? encryptedCredentialPayload(payload) : payload;
   const result = await pool.query<{ id: string }>(
-    `INSERT INTO credentials (name, description, protocol, scope, credentials, affinity, tags, created_by)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    `INSERT INTO credentials (name, description, protocol, scope, credentials, affinity, tags, created_by, organization_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
      RETURNING id`,
     [
       `${protocol}-oauth-integration-${Date.now()}-${CREATED_IDS.length}`,
@@ -42,6 +43,7 @@ async function insertCredential(
       {},
       [],
       'oauth-integration-test',
+      TEST_ORG,
     ]
   );
   const id = result.rows[0]?.id;
@@ -84,7 +86,7 @@ describe('connector-core OAuth substrate CMDB bindings', () => {
     );
 
     const service = getUnifiedCredentialService(pool);
-    const before = await service.getById(id);
+    const before = await service.getById(id, 'oauth-integration-test', TEST_ORG);
 
     expect(before?.credentials).toMatchObject({ username: 'legacy-user', password: 'legacy-secret' });
 
@@ -101,7 +103,7 @@ describe('connector-core OAuth substrate CMDB bindings', () => {
     );
     expect(atRest.rows[0]?.credentials_text).not.toContain('legacy-secret');
 
-    const after = await service.getById(id);
+    const after = await service.getById(id, 'oauth-integration-test', TEST_ORG);
     expect(after?.credentials).toMatchObject({ username: 'legacy-user', password: 'legacy-secret' });
   });
 
@@ -220,7 +222,7 @@ describe('connector-core OAuth substrate CMDB bindings', () => {
       true
     );
 
-    const credential = await getUnifiedCredentialService(pool).getById(id);
+    const credential = await getUnifiedCredentialService(pool).getById(id, 'oauth-integration-test', TEST_ORG);
     const atRest = await pool.query<{ credentials_text: string }>(
       'SELECT credentials::text AS credentials_text FROM credentials WHERE id = $1',
       [id]

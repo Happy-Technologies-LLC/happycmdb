@@ -121,7 +121,7 @@ describe('connector ownership and public GraphQL boundary', () => {
       connectorResolvers.Mutation.createConnectorConfiguration(
         null,
         { input: { name: 'x', connectorType: 'acme-crm', connection: {} } },
-        contextWith(viewerUser)
+        contextWith({ ...operatorUser, _role: 'viewer' })
       ),
       'FORBIDDEN'
     );
@@ -144,8 +144,8 @@ describe('connector ownership and public GraphQL boundary', () => {
         connectorResolvers.Mutation.uninstallConnector,
       ]) {
         await expectGraphQLErrorCode(
-          mutation(null, { connectorType: 'acme-crm', force: true }, contextWith(user)),
-          'CONNECTOR_LIFECYCLE_UNAVAILABLE'
+          Promise.resolve().then(() => mutation(null, { connectorType: 'acme-crm', force: true }, contextWith(user))),
+          'FORBIDDEN'
         );
       }
     }

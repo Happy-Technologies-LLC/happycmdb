@@ -2,12 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 /** Real REST router and freshly verified identity against isolated in-memory Postgres. */
 import { fork } from 'child_process';
-import { randomBytes } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
 import { readFileSync } from 'fs';
 import { once } from 'events';
 import { join } from 'path';
 import express from 'express';
 import request from 'supertest';
+import type { ApolloServer } from '@apollo/server';
 
 Object.assign(process.env, {
   JWT_SECRET: randomBytes(32).toString('hex'),
@@ -72,8 +73,18 @@ const users: Record<string, TestUser> = {
   platform: { _id: 'platform', _username: 'operator', _role: 'viewer', _enabled: true, _platformAdmin: true },
   platformOwn: { _id: 'platformOwn', _username: 'platform-own', _role: 'viewer', _enabled: true, _organizationId: ORG_A, _platformAdmin: true },
 };
+const API_KEY_A = randomBytes(32).toString('hex');
+const apiKeys: Record<string, { _id: string; _userId: string; _role: string; _enabled: boolean }> = {
+  [createHash('sha256').update(API_KEY_A).digest('hex')]: {
+    _id: 'api-key-a', _userId: 'a', _role: 'operator', _enabled: true,
+  },
+};
 jest.mock('../../../auth/neo4j-auth.repository', () => ({
-  Neo4jAuthRepository: jest.fn(() => ({ findUserById: async (id: string) => users[id] ?? null })),
+  Neo4jAuthRepository: jest.fn(() => ({
+    findUserById: async (id: string) => users[id] ?? null,
+    findApiKeyByKey: async (hash: string) => apiKeys[hash] ?? null,
+    updateApiKeyLastUsed: async () => undefined,
+  })),
 }));
 import { loadConfig, logger } from '@cmdb/common';
 import { JWTService } from '../../../auth/jwt.service';
@@ -84,11 +95,16 @@ import { requireConnectorScope } from '../../../auth/connector-scope';
 import { connectorsRouter } from '../../../../../integration-hub/src/api/connectors.routes';
 import { connectorResolvers } from '../../../graphql/resolvers/connector.resolvers';
 import { ConnectorConfigurationFieldResolvers } from '../../../graphql/resolvers/connector-fields.resolvers';
+import { createGraphQLServer } from '../../../graphql/server';
+import type { GraphQLContext } from '../../../graphql/resolvers';
 
 const jwt = new JWTService(loadConfig().auth.jwt);
 const bearer = (id: string, forgedOrg?: string) => ({
   Authorization: `Bearer ${jwt.generateAccessToken(id, users[id]!._username, users[id]!._role, forgedOrg)}`,
 });
+const apiKey = () => ({ [loadConfig().auth.apiKeys.headerName]: API_KEY_A });
+const graphqlApp = express();
+let graphqlServer: ApolloServer<GraphQLContext>;
 const app = express();
 app.use(express.json());
 app.use('/api/v1', getAuthMiddleware().authenticate());
@@ -109,8 +125,10 @@ beforeAll(async () => {
   await exec(`CREATE TABLE credentials (id UUID PRIMARY KEY); ${ddl.join('\n')}
     CREATE UNIQUE INDEX idx_connector_configs_name ON connector_configurations(name);`);
   await exec(readFileSync(join(migrationDir, '018_connector_organization_scope.sql'), 'utf8'));
+  ({ server: graphqlServer } = await createGraphQLServer(graphqlApp));
 });
 afterAll(async () => {
+  await graphqlServer.stop();
   const exited = once(host, 'exit');
   host.kill();
   await exited;
@@ -186,8 +204,8 @@ it('refuses every shared connector lifecycle operation for tenant and verified p
     ];
     for (const call of calls) {
       const result = await call;
-      expect([result.status, result.body]).toEqual([503, {
-        success: false, error: 'CONNECTOR_LIFECYCLE_UNAVAILABLE',
+      expect([result.status, result.body]).toEqual([403, {
+        success: false, error: 'Platform administrator access unavailable',
       }]);
     }
   }
@@ -482,6 +500,51 @@ it('keeps nested secrets on a nonempty partial GraphQL configuration update', as
       options: { nested: { secret: SECRET, retry: 2 } },
       resource_configs: { items: { password: SECRET, batch_size: 50 } },
     }]);
+});
+
+it('mounted GraphQL list and detail exclude stored credentials for verified JWT and API-key callers', async () => {
+  const document = `query {
+    connectorConfigurations { id name }
+    connectorConfiguration(id: "${A}") { id name }
+    __type(name: "ConnectorConfiguration") { fields { name } }
+  }`;
+  for (const headers of [bearer('a'), apiKey()]) {
+    const response = await request(graphqlApp).post('/graphql').set(headers).send({ query: document });
+    expect(response.status).toBe(200);
+    expect(response.body.errors).toBeUndefined();
+    expect(response.body.data.connectorConfigurations.map((row: { id: string }) => row.id)).toEqual([A]);
+    expect(response.body.data.connectorConfiguration).toMatchObject({ id: A, name: 'alpha' });
+    const fields = response.body.data.__type.fields.map((field: { name: string }) => field.name);
+    expect(fields).not.toContain('connection');
+    expect(fields).not.toContain('options');
+    expect(fields).not.toContain('resourceConfigs');
+    expect(JSON.stringify(response.body)).not.toContain(SECRET);
+  }
+});
+
+it('mounted GraphQL denies foreign and NULL-org update/delete/run exactly like missing for JWT and API key', async () => {
+  const mutations = [
+    'mutation($id: ID!) { updateConnectorConfiguration(id: $id, input: { enabled: false }) { id } }',
+    'mutation($id: ID!) { deleteConnectorConfiguration(id: $id) { success } }',
+    'mutation($id: ID!) { runConnector(id: $id) { id } }',
+  ];
+  const invoke = (document: string, id: string, headers: Record<string, string>) =>
+    request(graphqlApp).post('/graphql').set(headers).send({ query: document, variables: { id } });
+  for (const headers of [bearer('a'), apiKey()]) {
+    for (const document of mutations) {
+      const missing = await invoke(document, 'ffffffff-ffff-4fff-8fff-ffffffffffff', headers);
+      expect(missing.status).toBe(200);
+      expect(missing.body.errors[0].extensions.code).toBe('NOT_FOUND');
+      for (const id of [B, LEGACY]) {
+        const denied = await invoke(document, id, headers);
+        expect(denied.status).toBe(200);
+        expect(denied.body).toEqual(missing.body);
+        expect(JSON.stringify(denied.body)).not.toContain(SECRET);
+      }
+    }
+  }
+  expect((await query('SELECT id, enabled FROM connector_configurations WHERE id IN ($1, $2) ORDER BY id', [B, LEGACY])).rows)
+    .toEqual([{ id: B, enabled: true }, { id: LEGACY, enabled: true }]);
 });
 
 it('returns safe installed resource descriptors instead of silently dropping them', async () => {

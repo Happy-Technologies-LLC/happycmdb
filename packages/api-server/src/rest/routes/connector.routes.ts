@@ -7,22 +7,18 @@
  * platform authority cutover; every API caller receives the same refusal.
  */
 
-import { Router, type Request, type Response } from 'express';
+import { Router } from 'express';
 import Joi from 'joi';
 import { ConnectorController } from '../controllers/connector.controller';
 import { validateRequest, validateOptional } from '../middleware/validation.middleware';
 import { auditMiddleware } from '../../middleware/audit.middleware';
-
+import { denyPlatformAdminRest } from '../../middleware/platform-admin-unavailable';
 
 export const connectorRoutes = Router();
 const controller = new ConnectorController();
 
 // Apply audit middleware to all routes
 connectorRoutes.use(auditMiddleware);
-
-const lifecycleUnavailable = (_req: Request, res: Response): void => {
-  res.status(503).json({ success: false, error: 'CONNECTOR_LIFECYCLE_UNAVAILABLE' });
-};
 
 // Validation schemas
 const registryQuerySchema = Joi.object({
@@ -86,11 +82,11 @@ connectorRoutes.get(
 );
 
 // No authenticated caller may mutate globally shared connector installations.
-connectorRoutes.post('/install', lifecycleUnavailable);
-connectorRoutes.put('/:type/update', lifecycleUnavailable);
-connectorRoutes.delete('/:type', lifecycleUnavailable);
-connectorRoutes.post('/:type/verify', lifecycleUnavailable);
-connectorRoutes.post('/cache/refresh', lifecycleUnavailable);
+connectorRoutes.post('/install', denyPlatformAdminRest);
+connectorRoutes.put('/:type/update', denyPlatformAdminRest);
+connectorRoutes.delete('/:type', denyPlatformAdminRest);
+connectorRoutes.post('/:type/verify', denyPlatformAdminRest);
+connectorRoutes.post('/cache/refresh', denyPlatformAdminRest);
 
 // Check for connector updates
 connectorRoutes.get(

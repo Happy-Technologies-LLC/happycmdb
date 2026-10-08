@@ -1973,8 +1973,8 @@ paths:
       responses:
         '401':
           $ref: '#/components/responses/Unauthorized'
-        '503':
-          description: 'CONNECTOR_LIFECYCLE_UNAVAILABLE for every authenticated caller'
+        '403':
+          description: 'Platform administrator access unavailable for every authenticated caller'
 
   /connectors/{type}/update:
     put:
@@ -1991,8 +1991,8 @@ paths:
       responses:
         '401':
           $ref: '#/components/responses/Unauthorized'
-        '503':
-          description: 'CONNECTOR_LIFECYCLE_UNAVAILABLE for every authenticated caller'
+        '403':
+          description: 'Platform administrator access unavailable for every authenticated caller'
 
   /connectors/{type}:
     delete:
@@ -2009,8 +2009,8 @@ paths:
       responses:
         '401':
           $ref: '#/components/responses/Unauthorized'
-        '503':
-          description: 'CONNECTOR_LIFECYCLE_UNAVAILABLE for every authenticated caller'
+        '403':
+          description: 'Platform administrator access unavailable for every authenticated caller'
 
   /connectors/{type}/verify:
     post:
@@ -2027,8 +2027,8 @@ paths:
       responses:
         '401':
           $ref: '#/components/responses/Unauthorized'
-        '503':
-          description: 'CONNECTOR_LIFECYCLE_UNAVAILABLE for every authenticated caller'
+        '403':
+          description: 'Platform administrator access unavailable for every authenticated caller'
 
   /connectors/outdated:
     get:
@@ -2064,8 +2064,8 @@ paths:
       responses:
         '401':
           $ref: '#/components/responses/Unauthorized'
-        '503':
-          description: 'CONNECTOR_LIFECYCLE_UNAVAILABLE for every authenticated caller'
+        '403':
+          description: 'Platform administrator access unavailable for every authenticated caller'
 
   # =============================================================================
   # RECONCILIATION

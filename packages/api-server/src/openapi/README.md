@@ -107,7 +107,7 @@ http://localhost:3000/api-docs/openapi.yaml
 - `GET /connectors/installed` - List installed
 - `GET /connectors/installed/{type}` - Get installed details
 - `GET /connectors/outdated` - Check for available updates
-- `POST /connectors/install`, `PUT /connectors/{type}/update`, `DELETE /connectors/{type}`, `POST /connectors/{type}/verify`, `POST /connectors/cache/refresh` - Always return 503 `CONNECTOR_LIFECYCLE_UNAVAILABLE` after authentication. Connector code changes occur only through deployment packaging/file placement outside the application.
+- `POST /connectors/install`, `PUT /connectors/{type}/update`, `DELETE /connectors/{type}`, `POST /connectors/{type}/verify`, `POST /connectors/cache/refresh` - Always return 403 `Platform administrator access unavailable` after authentication. Connector code changes occur only through deployment packaging/file placement outside the application.
 
 ### Reconciliation (`/api/v1/reconciliation`)
 - `POST /reconciliation/match` - Find matching CIs

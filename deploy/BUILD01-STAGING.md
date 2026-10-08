@@ -9,6 +9,7 @@ Standalone compose project staging-happycmdb. The deployer supplies IMAGE_TAG as
 | api-server | REST and GraphQL API | 127.0.0.1:${HAPPYCMDB_API_PORT:-19000} → 3000 |
 | web-ui | Nginx React UI, proxies API/GraphQL | 127.0.0.1:${HAPPYCMDB_WEB_PORT:-19080} → 80 |
 | postgres | TimescaleDB/PostgreSQL | internal only |
+| migrator (profile `migrate`) | One-shot schema migration using the api-server image; opt-in only | internal only |
 | neo4j | Graph database | internal only |
 | redis | Cache and BullMQ queue | internal only |
 
@@ -29,4 +30,4 @@ Optional names: REDIS_PASSWORD (only when Redis auth enabled), IMAGE_TAG (defaul
 
 ## Storage and startup
 
-Named volumes: neo4j_data, neo4j_logs, neo4j_plugins, postgres_data, redis_data. Do not use docker compose down -v unless deletion is intended. Postgres runs infrastructure/scripts/init-postgres.sql on a fresh volume; apply later migrations before directing users to staging. Health checks do not confirm migration completion. Confirm API at http://127.0.0.1:19000/api/v1/cmdb-health and UI at http://127.0.0.1:19080/.
+Named volumes: neo4j_data, neo4j_logs, neo4j_plugins, postgres_data, redis_data. Do not use docker compose down -v unless deletion is intended. A fresh Postgres volume no longer runs the staging initdb SQL: it needs the canonical SQL migrations before API traffic. The migrator is deliberately excluded from ordinary `docker compose up -d`; after building the api-server image, an operator explicitly runs `docker compose -f deploy/build01-staging.compose.yml run --rm migrator` (or enables `--profile migrate`). It uses `/app/packages/database/src/postgres/migrations` in that image, records checksums in `cmdb.schema_migrations`, and exits nonzero on migration failure. Health checks do not confirm migration completion. Existing staging volumes are unchanged by removing the initdb mount; volume backup/rebuild and host deploy changes are separate operator actions, not automatic effects of this compose change. Confirm API at http://127.0.0.1:19000/api/v1/cmdb-health and UI at http://127.0.0.1:19080/.

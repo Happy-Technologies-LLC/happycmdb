@@ -14,6 +14,40 @@ HappyCMDB supports two authentication methods:
 http://localhost:3000/api/auth
 ```
 
+## Default credentials, credential generation and operator rotation
+
+The seeded development admin (`admin` / `Admin123!`, used in the examples below) only works with
+`NODE_ENV=development`. In every other environment:
+
+- **Default passwords are refused.** A login with `Admin123!`, or with any string bcrypt treats as the
+  same key (for example `'Admin123!\0'` repeated to 72 bytes), gets the same `401 Invalid credentials`
+  as a wrong password. A login password containing U+0000 is also refused.
+- **Marked accounts.** If such a login matches the account's stored hash, the account is marked
+  (`defaultPasswordSuspect`). A marked account cannot log in, refresh, use API keys or keep a
+  WebSocket open, even with a different password. Login never clears the mark. The seeded admin
+  is marked when it is created.
+- **Recovery is operator-only.** An operator with direct database access runs
+  `packages/api-server/src/scripts/rotate-user-password.ts --user-id <id> --operator <name>` and
+  supplies the new password on stdin. The new password must be 12–72 UTF-8 bytes, contain no U+0000,
+  and not be a default.
+  - The rotation sets the new hash, clears the mark and increments the user's **credential
+    generation**.
+  - Every earlier access token, refresh token, API key and WebSocket of that user stops working.
+    Pre-rotation API keys are also revoked.
+  - Each run is audited in `auth_credential_events`: an intent row, then exactly one outcome.
+  - When the run cannot see its outcome (Neo4j unreachable), it reports `PENDING`. Resolve that with
+    `--reconcile` before rotating anyone else.
+
+**New passwords** (`PUT /api/auth/password`) are refused with `400 Password not allowed` in every
+environment when they are a default or a default-equivalent, contain U+0000, or exceed 72 UTF-8
+bytes. A password change or account deletion authorized before an operator rotation is refused with
+`401 Credentials changed`.
+
+**Platform administrators** are a dedicated flag, set only by the operator command
+`scripts/identity-window.ts grant-platform-admin`. Role `admin` and organization grant nothing. A
+seeded account (the init or seed-data admin, or any account with seed provenance or a default
+password) never qualifies. API keys never act as platform administrators.
+
 ---
 
 ## JWT Authentication

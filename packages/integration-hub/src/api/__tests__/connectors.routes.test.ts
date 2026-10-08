@@ -123,6 +123,27 @@ describe('standalone connector routes', () => {
     expect(query).not.toHaveBeenCalled();
   });
 
+  it('returns the same denial for preflight and malformed JSON before global middleware can respond', async () => {
+    const app = Reflect.get(new IntegrationHubServer(), 'app') as express.Application;
+    const denial = { error: 'TRANSFORMATION_RULES_UNAVAILABLE' };
+    for (const authorization of [undefined, 'Bearer verified', 'Bearer verified-b', 'Bearer platform']) {
+      const preflight = supertest(app).options('/api/v1/transformation-rules/lookups')
+        .set('Origin', 'https://tenant.invalid').set('Access-Control-Request-Method', 'POST');
+      const malformed = supertest(app).post('/api/v1/transformation-rules')
+        .set('Content-Type', 'application/json');
+      if (authorization) {
+        preflight.set('Authorization', authorization);
+        malformed.set('Authorization', authorization);
+      }
+      const [preflightResponse, malformedResponse] = await Promise.all([
+        preflight, malformed.send('{\"incomplete\":'),
+      ]);
+      expect([preflightResponse.status, preflightResponse.body]).toEqual([403, denial]);
+      expect([malformedResponse.status, malformedResponse.body]).toEqual([403, denial]);
+    }
+    expect(query).not.toHaveBeenCalled();
+  });
+
   it('never exposes custom descriptor defaults or extra metadata to authenticated tenants', async () => {
     const metadata = {
       type: 'test', name: 'Test', version: '1.0', description: 'Test descriptor',

@@ -27,6 +27,9 @@ export class IntegrationHubServer {
   }
 
   private setupMiddleware(): void {
+    // Global rules have no tenant owner. Deny before CORS preflight or body
+    // parsers can respond, including for malformed requests and all callers.
+    this.app.use('/api/v1/transformation-rules', transformationRulesRouter);
     this.app.use(cors());
     this.app.use(express.json());
     this.app.use(express.urlencoded({ extended: true }));
@@ -46,9 +49,6 @@ export class IntegrationHubServer {
 
     // API routes
     this.app.use('/api/v1/connectors', getAuthMiddleware().authenticate(), requireConnectorScope, connectorsRouter);
-    // The rules router attempts authentication then denies every principal
-    // until dedicated global platform-admin authority is available.
-    this.app.use('/api/v1/transformation-rules', transformationRulesRouter);
 
     // 404 handler
     this.app.use((_req, res) => {

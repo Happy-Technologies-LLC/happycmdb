@@ -90,6 +90,20 @@ jobs:
           name: integration-test-results
           path: test-results/integration/junit.xml
 
+  staging-migrations:
+    name: Staging Migration Contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+      - name: Prove opt-in profile and migrate disposable empty Postgres
+        run: bash deploy/test-staging-migrations.sh
+
   e2e-tests:
     name: E2E Tests
     runs-on: ubuntu-latest
@@ -181,7 +195,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
   ci-rollup:
-    needs: [unit-tests, integration-tests, e2e-tests]
+    needs: [unit-tests, integration-tests, e2e-tests, staging-migrations]
     if: always()
     runs-on: ubuntu-latest
     permissions:
@@ -194,6 +208,7 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           UNIT_TESTS_RESULT: ${{ needs.unit-tests.result }}
           INTEGRATION_TESTS_RESULT: ${{ needs.integration-tests.result }}
+          STAGING_MIGRATIONS_RESULT: ${{ needs.staging-migrations.result }}
           E2E_TESTS_RESULT: ${{ needs.e2e-tests.result }}
         run: |
           set -euo pipefail
@@ -203,15 +218,17 @@ jobs:
           fi
           if [ "$UNIT_TESTS_RESULT" = "success" ] &&
              [ "$INTEGRATION_TESTS_RESULT" = "success" ] &&
-             [ "$E2E_TESTS_RESULT" = "success" ]; then
+             [ "$E2E_TESTS_RESULT" = "success" ] &&
+             [ "$STAGING_MIGRATIONS_RESULT" = "success" ]; then
             state=success
-            description="all 3 gates passed"
+            description="all 4 gates passed"
           else
             state=failure
             failures=()
             [ "$UNIT_TESTS_RESULT" = "success" ] || failures+=("unit-tests=$UNIT_TESTS_RESULT")
             [ "$INTEGRATION_TESTS_RESULT" = "success" ] || failures+=("integration-tests=$INTEGRATION_TESTS_RESULT")
             [ "$E2E_TESTS_RESULT" = "success" ] || failures+=("e2e-tests=$E2E_TESTS_RESULT")
+            [ "$STAGING_MIGRATIONS_RESULT" = "success" ] || failures+=("staging-migrations=$STAGING_MIGRATIONS_RESULT")
             description="test gates failed: ${failures[*]}"
             if [ "${#description}" -gt 140 ]; then
               description="${description:0:137}..."

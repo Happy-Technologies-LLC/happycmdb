@@ -30,7 +30,6 @@ services:
       PGDATA: /var/lib/postgresql/data/pgdata
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ../infrastructure/scripts/init-postgres.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U cmdb_user -d cmdb"]
       interval: 10s
@@ -101,6 +100,23 @@ services:
       retries: 5
       start_period: 90s
     restart: unless-stopped
+
+  migrator:
+    profiles: ["migrate"]
+    image: staging-happycmdb/api-server:${IMAGE_TAG:-local}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: cmdb
+      POSTGRES_USER: cmdb_user
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_SSL_MODE: disable
+    command: ["node", "packages/database/dist/postgres/run-migrations.js", "/app/packages/database/src/postgres/migrations"]
+    restart: "no"
 
   web-ui:
     image: staging-happycmdb/web-ui:${IMAGE_TAG:-local}

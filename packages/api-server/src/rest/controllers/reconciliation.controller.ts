@@ -11,6 +11,7 @@ import { logger } from '@cmdb/common';
 import { getIdentityReconciliationEngine } from '@cmdb/identity-resolution';
 import { getPostgresClient } from '@cmdb/database';
 import { TransformedCI, IdentificationAttributes } from '@cmdb/integration-framework';
+import { requestOrganizationId } from '../../middleware/auth.middleware';
 
 export class ReconciliationController {
   private reconciliationEngine = getIdentityReconciliationEngine();
@@ -58,7 +59,7 @@ export class ReconciliationController {
         status: 'active'
       };
 
-      const match = await this.reconciliationEngine.findExistingCI(idAttributes, discoveredCI);
+      const match = await this.reconciliationEngine.findExistingCI(idAttributes, discoveredCI, requestOrganizationId(req));
 
       if (!match) {
         res.json({
@@ -107,13 +108,17 @@ export class ReconciliationController {
       }
 
       // Perform reconciliation
-      const ciId = await this.reconciliationEngine.reconcileCI(discoveredCI);
+      const ciId = await this.reconciliationEngine.reconcileCI(discoveredCI, requestOrganizationId(req), false);
+      if (ciId === null) {
+        res.status(404).json({ success: false, error: 'Not Found', message: 'CI not found' });
+        return;
+      }
 
       res.json({
         success: true,
         data: {
           ci_id: ciId,
-          action: ciId.includes('_') ? 'created' : 'updated'
+          action: 'updated'
         },
         message: 'CI reconciled successfully'
       });

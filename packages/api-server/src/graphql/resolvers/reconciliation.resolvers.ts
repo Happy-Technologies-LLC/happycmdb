@@ -12,6 +12,7 @@ import { getPostgresClient } from '@cmdb/database';
 import { TransformedCI, IdentificationAttributes } from '@cmdb/integration-framework';
 import { GraphQLContext } from './index';
 import { checkGraphQLPermission } from '../../middleware/auth.middleware';
+import { requireGraphQLOrganization } from '../require-organization';
 
 const reconciliationEngine = getIdentityReconciliationEngine();
 const postgresClient = getPostgresClient();
@@ -31,6 +32,7 @@ const ReconciliationQuery = {
     },
     _context: GraphQLContext
   ) => {
+    const organizationId = requireGraphQLOrganization(_context);
     try {
       const { _identifiers, _source } = _args;
 
@@ -58,7 +60,7 @@ const ReconciliationQuery = {
         status: 'active'
       };
 
-      const match = await reconciliationEngine.findExistingCI(idAttributes, discoveredCI);
+      const match = await reconciliationEngine.findExistingCI(idAttributes, discoveredCI, organizationId);
 
       if (!match) {
         return null;
@@ -295,6 +297,7 @@ const ReconciliationMutation = {
     _context: GraphQLContext
   ) => {
     checkGraphQLPermission(_context, 'write');
+    const organizationId = requireGraphQLOrganization(_context);
     try {
       // Transform GraphQL input to TransformedCI
       const discoveredCI: TransformedCI = {
@@ -318,16 +321,20 @@ const ReconciliationMutation = {
         status: _args._status || 'active'
       };
 
-      const ciId = await reconciliationEngine.reconcileCI(discoveredCI);
+      const ciId = await reconciliationEngine.reconcileCI(discoveredCI, organizationId, false);
+      if (ciId === null) {
+        throw new GraphQLError('CI not found', { extensions: { code: 'NOT_FOUND', http: { status: 404 } } });
+      }
 
       return {
         _success: true,
         _ciId: ciId,
-        _action: ciId.includes('_') ? 'created' : 'updated',
+        _action: 'updated',
         _mergedFields: Object.keys(_args._attributes || {}),
         _conflicts: []
       };
     } catch (error: any) {
+      if (error instanceof GraphQLError && error.extensions['code'] === 'NOT_FOUND') throw error;
       logger.error('GraphQL: Error merging CI', error);
       throw new GraphQLError('Failed to merge CI', {
         extensions: {

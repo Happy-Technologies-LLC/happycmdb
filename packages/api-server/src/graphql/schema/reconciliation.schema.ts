@@ -245,7 +245,7 @@ export const reconciliationTypeDefs = `
     _success: Boolean!
     """Resulting CI ID"""
     _ciId: ID!
-    """Action taken (created or updated)"""
+    """Action taken (updated existing CI)"""
     _action: String!
     """Merged field names"""
     _mergedFields: [String!]
@@ -324,7 +324,7 @@ export const reconciliationTypeDefs = `
   Reconciliation mutation operations
   """
   type ReconciliationMutation {
-    """Merge/reconcile a discovered CI into CMDB"""
+    """Merge an existing caller-owned CI; foreign, NULL-org and missing targets share NOT_FOUND"""
     mergeCI(
       """CI name"""
       _name: String!

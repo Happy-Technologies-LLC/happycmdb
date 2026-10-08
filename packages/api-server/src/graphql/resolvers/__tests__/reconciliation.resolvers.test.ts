@@ -53,6 +53,7 @@ const operatorUser: TokenPayload = {
   _username: 'op-bob',
   _role: 'operator',
   _type: 'access',
+  _organizationId: 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa',
 };
 
 const viewerUser: TokenPayload = {
@@ -98,6 +99,14 @@ describe('mergeCI', () => {
 
   it('rejects viewers with FORBIDDEN', async () => {
     await expectGraphQLErrorCode(mergeCI(null, args, contextWith(viewerUser)), 'FORBIDDEN');
+    expect(mockReconcileCI).not.toHaveBeenCalled();
+  });
+
+  it('rejects a writer without a verified organization before touching the engine', async () => {
+    await expectGraphQLErrorCode(mergeCI(null, args, contextWith({
+      ...operatorUser,
+      _organizationId: undefined,
+    })), 'FORBIDDEN');
     expect(mockReconcileCI).not.toHaveBeenCalled();
   });
 

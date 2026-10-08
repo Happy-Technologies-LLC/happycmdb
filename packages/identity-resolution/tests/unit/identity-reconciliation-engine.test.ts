@@ -137,8 +137,9 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
       mockPostgresClient.query.mockResolvedValueOnce({
         rows: [{ ci_id: 'ci_12345' }],
       });
+      mockSession.run.mockResolvedValueOnce({ records: [{ get: () => 'ci_12345' }] });
 
-      const result = await engine.findExistingCI(identifiers, ci);
+      const result = await engine.findExistingCI(identifiers, ci, 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa');
 
       expect(result).toEqual({
         ci_id: 'ci_12345',
@@ -149,6 +150,10 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
       expect(mockPostgresClient.query).toHaveBeenCalledWith(
         expect.stringContaining('ci_source_lineage'),
         [ci.source, identifiers.external_id]
+      );
+      expect(mockSession.run).toHaveBeenCalledWith(
+        expect.stringContaining('ci.organization_id = $organizationId'),
+        { ciIds: ['ci_12345'], organizationId: 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa' }
       );
     });
 
@@ -162,7 +167,7 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
       // No match expected
       mockSession.run.mockResolvedValue({ records: [] });
 
-      const result = await engine.findExistingCI(identifiers, ci);
+      const result = await engine.findExistingCI(identifiers, ci, 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa');
 
       // Should try other strategies
       expect(mockPostgresClient.query).not.toHaveBeenCalled();
@@ -189,7 +194,7 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
         ],
       });
 
-      const result = await engine.findExistingCI(identifiers, ci);
+      const result = await engine.findExistingCI(identifiers, ci, 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa');
 
       expect(result).toEqual({
         ci_id: 'ci_67890',
@@ -198,8 +203,8 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
         matched_attributes: ['serial_number'],
       });
       expect(mockSession.run).toHaveBeenCalledWith(
-        expect.stringContaining('WHERE ci.serial_number = $value'),
-        { value: identifiers.serial_number }
+        expect.stringContaining('ci.organization_id = $organizationId AND ci.serial_number = $value'),
+        { value: identifiers.serial_number, organizationId: 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa' }
       );
     });
   });
@@ -224,7 +229,7 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
         ],
       });
 
-      const result = await engine.findExistingCI(identifiers, ci);
+      const result = await engine.findExistingCI(identifiers, ci, 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa');
 
       expect(result).toEqual({
         ci_id: 'ci_uuid_match',
@@ -258,7 +263,7 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
         ],
       });
 
-      const result = await engine.findExistingCI(identifiers, ci);
+      const result = await engine.findExistingCI(identifiers, ci, 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa');
 
       expect(result).toEqual({
         ci_id: 'ci_mac_match',
@@ -268,7 +273,7 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
       });
       expect(mockSession.run).toHaveBeenCalledWith(
         expect.stringContaining('ANY(mac IN ci.mac_addresses WHERE mac IN $macs)'),
-        { macs: identifiers.mac_address }
+        { macs: identifiers.mac_address, organizationId: 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa' }
       );
     });
 
@@ -286,12 +291,12 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
         ],
       });
 
-      const result = await engine.findExistingCI(identifiers, ci);
+      const result = await engine.findExistingCI(identifiers, ci, 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa');
 
       expect(result?.ci_id).toBe('ci_multi_mac');
       expect(mockSession.run).toHaveBeenCalledWith(
         expect.any(String),
-        { macs: identifiers.mac_address }
+        { macs: identifiers.mac_address, organizationId: 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa' }
       );
     });
   });
@@ -318,7 +323,7 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
         ],
       });
 
-      const result = await engine.findExistingCI(identifiers, ci);
+      const result = await engine.findExistingCI(identifiers, ci, 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa');
 
       expect(result).toEqual({
         ci_id: 'ci_fqdn_match',
@@ -357,7 +362,7 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
         ],
       });
 
-      const result = await engine.findExistingCI(identifiers, ci);
+      const result = await engine.findExistingCI(identifiers, ci, 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa');
 
       expect(result).toBeTruthy();
       expect(result?.ci_id).toBe('ci_fuzzy_match');
@@ -387,7 +392,7 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
         ],
       });
 
-      const result = await engine.findExistingCI(identifiers, ci);
+      const result = await engine.findExistingCI(identifiers, ci, 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa');
 
       expect(result).toBeTruthy();
       expect(result?.ci_id).toBe('ci_case_insensitive');
@@ -414,7 +419,7 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
         ],
       });
 
-      const result = await engine.findExistingCI(identifiers, ci);
+      const result = await engine.findExistingCI(identifiers, ci, 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa');
 
       expect(result).toBeNull();
     });
@@ -445,7 +450,7 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
         });
       mockPostgresClient.query.mockResolvedValue({ rows: [] }); // Source lineage
 
-      const ciId = await engine.reconcileCI(ci);
+      const ciId = await engine.reconcileCI(ci, 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa');
 
       expect(ciId).toBeTruthy();
       expect(ciId).toMatch(/^ci_/);
@@ -482,7 +487,7 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
         });
       mockPostgresClient.query.mockResolvedValue({ rows: [] });
 
-      await engine.reconcileCI(ci);
+      await engine.reconcileCI(ci, 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa');
 
       expect(mockPostgresClient.query).toHaveBeenCalledWith(
         expect.stringContaining('INSERT INTO ci_source_lineage'),
@@ -495,7 +500,7 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
       );
     });
 
-    it('createNewCI ignores attributes.organization_id', async () => {
+    it('createNewCI uses caller organization instead of attributes.organization_id', async () => {
       const base = physicalServerDuplicates[0];
       const ci = {
         ...base,
@@ -513,11 +518,11 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
       });
       mockPostgresClient.query.mockResolvedValue({ rows: [] });
 
-      await engine.reconcileCI(ci);
+      await engine.reconcileCI(ci, 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa');
 
       expect(created).toBeDefined();
       expect(created!['name']).toBe(base.name);
-      expect(created).not.toHaveProperty('organization_id');
+      expect(created).toHaveProperty('organization_id', 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa');
     });
   });
 
@@ -556,16 +561,11 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
         rows: [{ ci_id: 'ci_existing_123' }],
       });
 
-      // Mock field sources (empty - first discovery)
-      mockPostgresClient.query.mockResolvedValueOnce({ rows: [] });
-
-      // Mock field source recording and lineage
+      // Mock field sources, final SET, and lineage
       mockPostgresClient.query.mockResolvedValue({ rows: [] });
+      mockSession.run.mockResolvedValue({ records: [{ get: () => 'ci_existing_123' }] });
 
-      // Mock Neo4j update
-      mockSession.run.mockResolvedValueOnce({ records: [] });
-
-      const ciId = await engine.reconcileCI(ci);
+      const ciId = await engine.reconcileCI(ci, 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa');
 
       expect(ciId).toBe('ci_existing_123');
       expect(mockSession.run).toHaveBeenCalledWith(
@@ -598,9 +598,9 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
         });
 
       mockPostgresClient.query.mockResolvedValue({ rows: [] });
-      mockSession.run.mockResolvedValue({ records: [] });
+      mockSession.run.mockResolvedValue({ records: [{ get: () => 'ci_db_conflict' }] });
 
-      await engine.reconcileCI(newCI);
+      await engine.reconcileCI(newCI, 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa');
 
       // Should update with new values from higher authority source
       expect(mockPostgresClient.query).toHaveBeenCalledWith(
@@ -636,7 +636,7 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
       mockPostgresClient.query.mockResolvedValue({ rows: [] });
       mockSession.run.mockResolvedValue({ records: [] });
 
-      await engine.reconcileCI(lowAuthorityCI);
+      await engine.reconcileCI(lowAuthorityCI, 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa');
 
       // Should NOT overwrite field from higher authority
       const fieldSourceCalls = mockPostgresClient.query.mock.calls.filter(
@@ -667,10 +667,10 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
       mockPostgresClient.query.mockResolvedValue({ rows: [] });
       mockSession.run.mockImplementation(async (cypher: string, params: { properties?: Record<string, unknown> }) => {
         if (cypher.includes('SET ci += $properties')) Object.assign(node, params.properties);
-        return { records: [] };
+        return { records: [{ get: () => 'ci_existing_org' }] };
       });
 
-      await engine.reconcileCI(ci);
+      await engine.reconcileCI(ci, 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa');
 
       expect(node['organization_id']).toBe('owner-org');
       const recordedFields = mockPostgresClient.query.mock.calls
@@ -731,7 +731,7 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
         ],
       });
 
-      const result = await engine.findExistingCI(identifiers, ci);
+      const result = await engine.findExistingCI(identifiers, ci, 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa');
 
       // Even with perfect match, composite should be capped
       expect(result?.confidence).toBeLessThanOrEqual(95);
@@ -750,7 +750,7 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
 
       mockSession.run.mockRejectedValueOnce(new Error('Connection failed'));
 
-      await expect(engine.findExistingCI(ci.identifiers, ci)).rejects.toThrow(
+      await expect(engine.findExistingCI(ci.identifiers, ci, 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa')).rejects.toThrow(
         'Connection failed'
       );
       expect(mockSession.close).toHaveBeenCalled();
@@ -762,7 +762,7 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
       mockSession.run.mockRejectedValueOnce(new Error('Query error'));
 
       try {
-        await engine.findExistingCI(ci.identifiers, ci);
+        await engine.findExistingCI(ci.identifiers, ci, 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa');
       } catch (error) {
         // Expected error
       }
@@ -794,7 +794,7 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
       const identifiers: IdentificationAttributes = {};
       const ci = { ...physicalServerDuplicates[0], identifiers };
 
-      const result = await engine.findExistingCI(identifiers, ci);
+      const result = await engine.findExistingCI(identifiers, ci, 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa');
 
       expect(result).toBeNull();
     });
@@ -807,7 +807,7 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
 
       mockSession.run.mockResolvedValueOnce({ records: [] });
 
-      const result = await engine.findExistingCI(identifiers, ci);
+      const result = await engine.findExistingCI(identifiers, ci, 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa');
 
       expect(result).toBeNull();
     });
@@ -823,7 +823,7 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
 
       mockSession.run.mockResolvedValueOnce({ records: [] });
 
-      const result = await engine.findExistingCI(identifiers, ci);
+      const result = await engine.findExistingCI(identifiers, ci, 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa');
 
       // Should not crash, just return null or try remaining strategies
       expect(result).toBeDefined();

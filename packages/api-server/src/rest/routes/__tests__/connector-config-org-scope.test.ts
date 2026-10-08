@@ -93,6 +93,8 @@ import { connectorConfigRoutes } from '../connector-config.routes';
 import { connectorRoutes } from '../connector.routes';
 import { requireConnectorScope } from '../../../auth/connector-scope';
 import { connectorsRouter } from '../../../../../integration-hub/src/api/connectors.routes';
+import { getConnectorRegistry } from '@cmdb/integration-framework';
+import { getIntegrationManager } from '@cmdb/integration-framework/dist/core/integration-manager';
 import { connectorResolvers } from '../../../graphql/resolvers/connector.resolvers';
 import { ConnectorConfigurationFieldResolvers } from '../../../graphql/resolvers/connector-fields.resolvers';
 import { createGraphQLServer } from '../../../graphql/server';
@@ -372,6 +374,45 @@ it('authenticates standalone hub tenant routing, duplicate legacy names and reda
   expect((await request(app).put(`${hub}/alpha`).set(bearer('viewer')).send({ enabled: false })).status).toBe(403);
 });
 
+it('persists scheduled hub creation for immediate registration, restart, and scoped schedule toggles', async () => {
+  const registry = getConnectorRegistry();
+  const knownType = jest.spyOn(registry, 'hasConnectorType').mockReturnValue(true);
+  const manager = getIntegrationManager();
+  const schedules = Reflect.get(manager, 'schedules') as Map<string, { organizationId: string; expression: string }>;
+  const hub = '/api/v1/hub/connectors/scheduled';
+  let configId: string | undefined;
+  try {
+    const created = await request(app).post('/api/v1/hub/connectors').set(bearer('a'))
+      .send({ name: 'scheduled', type: 'test', schedule: '* * * * *', connection: { token: SECRET } });
+    expect(created.status).toBe(201);
+    configId = created.body.connector.id;
+    expect(created.body.connector.schedule_enabled).toBe(true);
+    expect(JSON.stringify(created.body)).not.toContain(SECRET);
+    expect((await query('SELECT organization_id, schedule_enabled, schedule FROM connector_configurations WHERE id = $1', [configId])).rows)
+      .toEqual([{ organization_id: ORG_A, schedule_enabled: true, schedule: '* * * * *' }]);
+    expect(schedules.get(configId!)).toMatchObject({ organizationId: ORG_A, expression: '* * * * *' });
+
+    await manager.unregisterConnector(configId!);
+    expect(schedules.has(configId!)).toBe(false);
+    await manager.loadConnectors();
+    expect(schedules.get(configId!)).toMatchObject({ organizationId: ORG_A, expression: '* * * * *' });
+
+    const foreign = await request(app).put(hub).set(bearer('b')).send({ schedule_enabled: false });
+    expect(foreign.status).toBe(404);
+    const disabled = await request(app).put(hub).set(bearer('a')).send({ schedule_enabled: false });
+    expect(disabled.status).toBe(200);
+    expect(schedules.has(configId!)).toBe(false);
+    const enabled = await request(app).put(hub).set(bearer('a')).send({ schedule_enabled: true });
+    expect(enabled.status).toBe(200);
+    expect(schedules.get(configId!)).toMatchObject({ organizationId: ORG_A, expression: '* * * * *' });
+    expect((await query('SELECT schedule_enabled FROM connector_configurations WHERE id = $1', [configId])).rows)
+      .toEqual([{ schedule_enabled: true }]);
+  } finally {
+    if (configId) await manager.unregisterConnector(configId);
+    knownType.mockRestore();
+  }
+});
+
 it('atomically merges hub write-only connection and options without erasing omitted or empty-nested secrets', async () => {
   const hub = '/api/v1/hub/connectors/alpha';
   await query('UPDATE connector_configurations SET connection = $1, options = $2 WHERE id = $3', [
@@ -502,23 +543,37 @@ it('keeps nested secrets on a nonempty partial GraphQL configuration update', as
     }]);
 });
 
-it('mounted GraphQL list and detail exclude stored credentials for verified JWT and API-key callers', async () => {
-  const document = `query {
-    connectorConfigurations { id name }
-    connectorConfiguration(id: "${A}") { id name }
-    __type(name: "ConnectorConfiguration") { fields { name } }
-  }`;
-  for (const headers of [bearer('a'), apiKey()]) {
-    const response = await request(graphqlApp).post('/graphql').set(headers).send({ query: document });
-    expect(response.status).toBe(200);
-    expect(response.body.errors).toBeUndefined();
-    expect(response.body.data.connectorConfigurations.map((row: { id: string }) => row.id)).toEqual([A]);
-    expect(response.body.data.connectorConfiguration).toMatchObject({ id: A, name: 'alpha' });
-    const fields = response.body.data.__type.fields.map((field: { name: string }) => field.name);
-    expect(fields).not.toContain('connection');
-    expect(fields).not.toContain('options');
-    expect(fields).not.toContain('resourceConfigs');
-    expect(JSON.stringify(response.body)).not.toContain(SECRET);
+it('mounted production GraphQL list and detail exclude stored credentials for JWT and API-key callers', async () => {
+  const introspection = await request(graphqlApp).post('/graphql').set(bearer('a'))
+    .send({ query: '{ __type(name: "ConnectorConfiguration") { fields { name } } }' });
+  expect(introspection.body.errors).toBeUndefined();
+  const fields = introspection.body.data.__type.fields.map((field: { name: string }) => field.name);
+  expect(fields).not.toContain('connection');
+  expect(fields).not.toContain('options');
+  expect(fields).not.toContain('resourceConfigs');
+
+  const previousMode = process.env['NODE_ENV'];
+  process.env['NODE_ENV'] = 'production';
+  const productionApp = express();
+  let productionServer: ApolloServer<GraphQLContext> | undefined;
+  try {
+    ({ server: productionServer } = await createGraphQLServer(productionApp));
+    const document = `query {
+      connectorConfigurations { id name }
+      connectorConfiguration(id: "${A}") { id name }
+    }`;
+    for (const headers of [bearer('a'), apiKey()]) {
+      const response = await request(productionApp).post('/graphql').set(headers).send({ query: document });
+      expect(response.status).toBe(200);
+      expect(response.body.errors).toBeUndefined();
+      expect(response.body.data.connectorConfigurations.map((row: { id: string }) => row.id)).toEqual([A]);
+      expect(response.body.data.connectorConfiguration).toMatchObject({ id: A, name: 'alpha' });
+      expect(JSON.stringify(response.body)).not.toContain(SECRET);
+    }
+  } finally {
+    await productionServer?.stop();
+    if (previousMode === undefined) delete process.env['NODE_ENV'];
+    else process.env['NODE_ENV'] = previousMode;
   }
 });
 

@@ -7,6 +7,7 @@ import { IntegrationHubServer } from '../../index';
 import { getPostgresClient } from '@cmdb/database';
 import { getConnectorRegistry } from '@cmdb/integration-framework';
 import { getIntegrationManager } from '@cmdb/integration-framework/dist/core/integration-manager';
+const mockCredentialLookup = jest.fn();
 
 jest.mock('@cmdb/database', () => ({ getPostgresClient: jest.fn(() => ({ query: (...args: unknown[]) => query(...args) })) }));
 jest.mock('@cmdb/integration-framework/dist/core/integration-manager', () => ({
@@ -32,7 +33,9 @@ jest.mock('@cmdb/api-server/auth/auth-bootstrap', () => ({
       return next();
     },
     optionalAuthenticate: () => (req: express.Request, _res: express.Response, next: express.NextFunction) => {
-      if (['Bearer verified', 'Bearer verified-b', 'Bearer platform'].includes(req.headers.authorization ?? '')) {
+      if (req.headers.authorization || req.headers['x-api-key']) mockCredentialLookup();
+      if (['Bearer verified', 'Bearer verified-b', 'Bearer platform'].includes(req.headers.authorization ?? '') ||
+          req.headers['x-api-key'] === 'verified-test-key') {
         Object.assign(req, { user: {
           organizationId: req.headers.authorization === 'Bearer verified-b' ? orgB : orgA,
           _role: 'operator', _platformAdmin: req.headers.authorization === 'Bearer platform',
@@ -141,6 +144,22 @@ describe('standalone connector routes', () => {
       expect([preflightResponse.status, preflightResponse.body]).toEqual([403, denial]);
       expect([malformedResponse.status, malformedResponse.body]).toEqual([403, denial]);
     }
+    expect(query).not.toHaveBeenCalled();
+  });
+
+  it('refuses bearer and API-key traffic before a failing credential store can run', async () => {
+    const app = Reflect.get(new IntegrationHubServer(), 'app') as express.Application;
+    mockCredentialLookup.mockImplementation(() => { throw new Error('Credential store unavailable'); });
+    query.mockRejectedValue(new Error('Postgres unavailable'));
+    for (const headers of [
+      { Authorization: 'Bearer verified' },
+      { 'x-api-key': 'verified-test-key' },
+    ]) {
+      const response = await supertest(app).post('/api/v1/transformation-rules/lookups')
+        .set(headers).send({ name: 'lookup' });
+      expect([response.status, response.body]).toEqual([403, { error: 'TRANSFORMATION_RULES_UNAVAILABLE' }]);
+    }
+    expect(mockCredentialLookup).not.toHaveBeenCalled();
     expect(query).not.toHaveBeenCalled();
   });
 

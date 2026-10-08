@@ -120,14 +120,14 @@ connectorsRouter.get('/:name', async (req, res) => {
 
 connectorsRouter.post('/', requireConnectorWrite, async (req, res) => {
   try {
-    const { name, type, enabled = true, schedule, connection, options } = req.body;
+    const { name, type, enabled = true, schedule, schedule_enabled = Boolean(schedule), connection, options } = req.body;
     if (!connectorRegistry.hasConnectorType(type)) return res.status(400).json({ error: 'Unknown connector type' });
     const organizationId = scope(req).organizationId;
     if (!organizationId) return res.status(403).json({ error: 'Organization required for creation' });
     const result = await postgresClient.query(
-      `INSERT INTO connector_configurations (organization_id, name, connector_type, enabled, schedule, connection, options)
-       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING ${PUBLIC_CONFIG}`,
-      [organizationId, name, type, enabled, schedule, JSON.stringify(connection ?? {}), JSON.stringify(options ?? {})]
+      `INSERT INTO connector_configurations (organization_id, name, connector_type, enabled, schedule, schedule_enabled, connection, options)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING ${PUBLIC_CONFIG}`,
+      [organizationId, name, type, enabled, schedule, schedule_enabled, JSON.stringify(connection ?? {}), JSON.stringify(options ?? {})]
     );
     await registerCurrentConfig(result.rows[0].id, organizationId);
     return res.status(201).json({ connector: result.rows[0] });
@@ -136,10 +136,11 @@ connectorsRouter.post('/', requireConnectorWrite, async (req, res) => {
 
 connectorsRouter.put('/:name', requireConnectorWrite, async (req, res) => {
   try {
-    const { enabled, schedule, connection, options } = req.body;
-    const params: unknown[] = [req.params['name'], ...values(req), enabled, schedule];
+    const { enabled, schedule, schedule_enabled, connection, options } = req.body;
+    const params: unknown[] = [req.params['name'], ...values(req), enabled, schedule, schedule_enabled];
     const fields = [
       'enabled = COALESCE($4, c.enabled)', 'schedule = COALESCE($5, c.schedule)',
+      'schedule_enabled = COALESCE($6, c.schedule_enabled)',
     ];
     for (const [column, patch] of [['connection', connection], ['options', options]] as const) {
       if (patch && typeof patch === 'object' && !Array.isArray(patch) && Object.keys(patch).length > 0) {

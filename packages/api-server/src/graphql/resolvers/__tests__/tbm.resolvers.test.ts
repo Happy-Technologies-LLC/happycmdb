@@ -226,7 +226,7 @@ describe('costsByCapability', () => {
 });
 
 describe('global TBM resolvers', () => {
-  const GLOBAL: Array<[string, (context: GraphQLContext) => Promise<unknown>]> = [
+  const GLOBAL: Array<[string, (context: GraphQLContext) => unknown]> = [
     ['costSummary', c => Query.costSummary(null, {}, c)],
     ['costsByTower', c => Query.costsByTower(null, {}, c)],
     ['costAllocations', c => Query.costAllocations(null, { ciId: 'ci-1' }, c)],
@@ -240,7 +240,7 @@ describe('global TBM resolvers', () => {
 
   it.each(GLOBAL)('%s: every tenant principal gets the same static denial without data access', async (_name, resolve) => {
     for (const context of [contextAs('admin', ORG_A), contextAs('admin', ORG_B), contextAs('admin'), contextAs('viewer', ORG_A)]) {
-      const error = await graphQLErrorOf(resolve(context));
+      const error = await graphQLErrorOf(Promise.resolve().then(() => resolve(context)));
       expect(error.message).toBe('Platform administrator access unavailable');
       expect(error.extensions['code']).toBe('FORBIDDEN');
     }

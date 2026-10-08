@@ -5,10 +5,10 @@
  * Tenant scoping for /api/v1/tbm/* (FD-2: Postgres dim_business_services
  * .organization_id is the tenant authority for service ids; FD-16 c: the
  * :BusinessService node must also carry the caller's organization_id; FD-3 b:
- * global TBM aggregates are admin-only until CI tenancy lands).
+ * global TBM reads/control are unavailable until platform-admin authority exists.
  *
- * Exercised through the real tbmRoutes behind the real AuthMiddleware /
- * AuthService (JWT verification), mounted at the production path.
+ * Exercised through mounted REST and GraphQL with real JWT and API-key
+ * authentication; authorization uses the verified principal, not headers.
  *
  * Ownership and cost-trend SQL runs on PGlite hosted in a forked child process
  * (../../routes/__tests__/fixtures/pglite-host.cjs) with the
@@ -20,11 +20,13 @@
  * reachable by id, whoever owns it.
  */
 
+import { ApolloServer } from '@apollo/server';
+import { expressMiddleware } from '@apollo/server/express4';
 import { fork } from 'child_process';
-import { randomBytes } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
+import express from 'express';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import express from 'express';
 import request from 'supertest';
 
 // Placeholder config so loadConfig() validates; no Neo4j/Redis/PostgreSQL server is contacted.
@@ -87,11 +89,8 @@ const CAPABILITY = {
   name: 'Shared Capability',
   realizedBy: ['bs-a-app', 'bs-b-app', 'bs-graph-only', 'bs-hijack', 'bs-orphan'],
 };
-// The tenancy filters must bind to the REALIZES optional match itself.
-const REALIZES_OWNED_FILTER =
-  /OPTIONAL MATCH \(cap\)-\[:REALIZES\]->\(service:BusinessService\)\s+WHERE service\.id IN \$orgServiceIds\s/;
-const REALIZES_NODE_ORG_FILTER =
-  /OPTIONAL MATCH \(cap\)-\[:REALIZES\]->\(service:BusinessService\)\s+WHERE service\.id IN \$orgServiceIds AND service\.organization_id = \$organizationId\s/;
+const REALIZES_OWNED_FILTER = /WHERE service\.id IN \$orgServiceIds/;
+const REALIZES_NODE_ORG_FILTER = /WHERE service\.id IN \$orgServiceIds AND service\.organization_id = \$organizationId/;
 const SERVICE_NODE_ORG_FILTER = /MATCH \(service:BusinessService \{id: \$serviceId\}\)\s+WHERE service\.organization_id = \$organizationId\s/;
 
 const neo4jSession = {
@@ -101,17 +100,22 @@ const neo4jSession = {
     const nodeInOrg = (id: string, filter: RegExp) =>
       !filter.test(query) || GRAPH_SERVICES[id]?.organizationId === params['organizationId'];
     if (query.includes('BusinessCapability')) {
-      if (params['capabilityId'] !== CAPABILITY.id) return { records: [] };
-      // Emulates `OPTIONAL MATCH (cap)-[:REALIZES]->(service) WHERE service.id IN $orgServiceIds
-      // [AND service.organization_id = $organizationId]`; a query without the id filter on the
-      // REALIZES match traverses every realizing service.
+      const capability = params['capabilityId'] === 'cap-b'
+        ? { id: 'cap-b', name: 'B Only', realizedBy: ['bs-b-app'] }
+        : params['capabilityId'] === 'cap-a'
+          ? { id: 'cap-a', name: 'A Only', realizedBy: ['bs-a-app'] }
+        : params['capabilityId'] === CAPABILITY.id ? CAPABILITY : null;
+      if (!capability) return { records: [] };
       const allowed = REALIZES_OWNED_FILTER.test(query) ? (params['orgServiceIds'] as string[] | undefined) ?? [] : null;
-      const services = CAPABILITY.realizedBy.filter(id =>
+      const services = capability.realizedBy.filter(id =>
         (allowed === null || allowed.includes(id)) && nodeInOrg(id, REALIZES_NODE_ORG_FILTER));
+      if (services.length === 0 && query.includes('MATCH (cap:BusinessCapability {id: $capabilityId})-[:REALIZES]->')) {
+        return { records: [] };
+      }
       return {
         records: [record({
-          capabilityId: CAPABILITY.id,
-          capabilityName: CAPABILITY.name,
+          capabilityId: capability.id,
+          capabilityName: capability.name,
           serviceIds: services,
           totalCost: services.reduce((sum, id) => sum + GRAPH_SERVICES[id]!.cost, 0),
           ciCount: int(services.length),
@@ -151,14 +155,23 @@ jest.mock('bcrypt', () => ({}));
 const USERS: Record<string, { _id: string; _username: string; _role: string; _enabled: boolean; _organizationId?: string }> = {
   'user-a': { _id: 'user-a', _username: 'alice', _role: 'operator', _enabled: true, _organizationId: ORG_A },
   'admin-a': { _id: 'admin-a', _username: 'ada', _role: 'admin', _enabled: true, _organizationId: ORG_A },
+  'admin-b': { _id: 'admin-b', _username: 'bea', _role: 'admin', _enabled: true, _organizationId: ORG_B },
   'user-none': { _id: 'user-none', _username: 'nora', _role: 'admin', _enabled: true },
   'user-bad': { _id: 'user-bad', _username: 'bart', _role: 'admin', _enabled: true, _organizationId: 'not-a-uuid' },
+};
+const KEY_A = randomBytes(32).toString('hex');
+const KEY_B = randomBytes(32).toString('hex');
+const KEY_NONE = randomBytes(32).toString('hex');
+const API_KEYS: Record<string, { _id: string; _userId: string; _role: string; _enabled: boolean }> = {
+  [createHash('sha256').update(KEY_A).digest('hex')]: { _id: 'key-a', _userId: 'admin-a', _role: 'admin', _enabled: true },
+  [createHash('sha256').update(KEY_B).digest('hex')]: { _id: 'key-b', _userId: 'admin-b', _role: 'admin', _enabled: true },
+  [createHash('sha256').update(KEY_NONE).digest('hex')]: { _id: 'key-none', _userId: 'user-none', _role: 'admin', _enabled: true },
 };
 
 jest.mock('../../../auth/neo4j-auth.repository', () => ({
   Neo4jAuthRepository: jest.fn(() => ({
     findUserById: async (userId: string) => USERS[userId] ?? null,
-    findApiKeyByKey: async () => null,
+    findApiKeyByKey: async (hash: string) => API_KEYS[hash] ?? null,
     updateApiKeyLastUsed: async () => undefined,
   })),
 }));
@@ -167,8 +180,11 @@ jest.mock('../../../auth/neo4j-auth.repository', () => ({
 import { loadConfig } from '@cmdb/common';
 import { JWTService } from '../../../auth/jwt.service';
 import { getAuthMiddleware } from '../../../auth/auth-bootstrap';
-import type { UserRole } from '../../../auth/types';
+import type { TokenPayload, UserRole } from '../../../auth/types';
 import { tbmRoutes } from '../../routes/tbm.routes';
+import { connectorResolvers } from '../../../graphql/resolvers/connector.resolvers';
+import { tbmResolvers } from '../../../graphql/resolvers/tbm.resolvers';
+import { connectorRoutes } from '../../routes/connector.routes';
 
 const MIGRATIONS = join(__dirname, '../../../../../database/src/postgres/migrations');
 const DDL_TABLES = ['dim_business_services', 'cmdb.dim_ci'];
@@ -206,10 +222,14 @@ const bearer = (userId: string, organizationId?: string) => {
 const AS_A = bearer('user-a', ORG_A);
 const AS_ADMIN_A = bearer('admin-a', ORG_A);
 
+const PRINCIPALS = [AS_ADMIN_A, bearer('admin-b', ORG_B), { 'x-api-key': KEY_A }, { 'x-api-key': KEY_B }];
 const app = express();
 app.use(express.json());
 app.use('/api/v1', getAuthMiddleware().authenticate());
 app.use('/api/v1/tbm', tbmRoutes);
+app.use('/api/v1/connectors', connectorRoutes);
+const graphqlApp = express();
+let graphqlServer: ApolloServer;
 
 const queryCount = () => pgQueries + cypherRuns.length;
 
@@ -219,9 +239,58 @@ beforeAll(async () => {
     await send('exec', `BEGIN;\n${readFileSync(join(MIGRATIONS, migration), 'utf8')}\nCOMMIT;`);
   }
   await send('exec', SEED);
+  graphqlServer = new ApolloServer({
+    typeDefs: `type Query {
+      health: String
+      costsByCapability(id: ID!): CapabilityCost!
+      costsByBusinessService(id: ID!): BusinessServiceCost!
+      costTrends(months: Int = 6): [MonthlyCostData!]!
+      costSummary: String
+      costsByTower: String
+      costAllocations(ciId: String!): String
+      licenses: String
+      upcomingRenewals: String
+    }
+      type CapabilityCost { capabilityId: ID!, capabilityName: String!, totalMonthlyCost: Float!, supportingServices: Int! }
+      type BusinessServiceCost { serviceId: ID!, serviceName: String!, totalMonthlyCost: Float! }
+      type MonthlyCostData { month: String!, totalCost: Float!, ciCount: Int! }
+      type ConnectorMutationResult { success: Boolean, message: String }
+      type Mutation {
+        installConnector(connectorType: String!, version: String): ConnectorMutationResult
+        updateConnector(connectorType: String!, version: String): ConnectorMutationResult
+        uninstallConnector(connectorType: String!): ConnectorMutationResult
+        allocateCosts(input: CostAllocationInput!): String
+        importGLData: String
+      }
+      input CostAllocationInput { sourceId: String!, targetType: String!, targetIds: [String!]! }`,
+    resolvers: { Query: {
+      health: () => 'ok',
+      costsByCapability: tbmResolvers.Query.costsByCapability,
+      costsByBusinessService: tbmResolvers.Query.costsByBusinessService,
+      costTrends: tbmResolvers.Query.costTrends,
+      costSummary: tbmResolvers.Query.costSummary,
+      costsByTower: tbmResolvers.Query.costsByTower,
+      costAllocations: tbmResolvers.Query.costAllocations,
+      licenses: tbmResolvers.Query.licenses,
+      upcomingRenewals: tbmResolvers.Query.upcomingRenewals,
+    }, Mutation: {
+      installConnector: connectorResolvers.Mutation.installConnector,
+      updateConnector: connectorResolvers.Mutation.updateConnector,
+      uninstallConnector: connectorResolvers.Mutation.uninstallConnector,
+      allocateCosts: tbmResolvers.Mutation.allocateCosts,
+      importGLData: tbmResolvers.Mutation.importGLData,
+    } },
+  });
+  await graphqlServer.start();
+  graphqlApp.use('/graphql', express.json(), getAuthMiddleware().authenticate(),
+    expressMiddleware(graphqlServer, { context: async ({ req }) => ({
+      user: (req as typeof req & { user: TokenPayload }).user,
+      _neo4jClient: { getSession: () => neo4jSession }, _loaders: {},
+    }) }));
 });
 
-afterAll(() => {
+afterAll(async () => {
+  await graphqlServer.stop();
   host.kill();
 });
 
@@ -230,11 +299,9 @@ beforeEach(() => {
   cypherRuns.length = 0;
 });
 
-// Fixed arity: a shorter row would make jest pass `done` as the body.
-const GLOBAL_ROUTES: Array<[string, string, object | null]> = [
+const DENIED_ROUTES: Array<[string, string, object | null]> = [
   ['get', '/api/v1/tbm/costs/summary', null],
   ['get', '/api/v1/tbm/costs/by-tower', null],
-  ['get', '/api/v1/tbm/costs/trends', null],
   ['get', '/api/v1/tbm/costs/allocations/ci-1', null],
   ['post', '/api/v1/tbm/costs/allocate', { sourceId: 'ci-1', targetType: 'business_service', targetIds: ['bs-a-app'] }],
   ['post', '/api/v1/tbm/gl/import', { records: [{ accountNumber: '1', accountName: 'x', costPool: 'p' }] }],
@@ -244,6 +311,7 @@ const GLOBAL_ROUTES: Array<[string, string, object | null]> = [
 const SCOPED_ROUTES: Array<[string, string, object | null]> = [
   ['get', '/api/v1/tbm/costs/by-service/bs-a-app', null],
   ['get', '/api/v1/tbm/costs/by-capability/cap-1', null],
+  ['get', '/api/v1/tbm/costs/trends', null],
 ];
 
 function call(method: string, path: string, body: object | null, headers: object) {
@@ -290,13 +358,24 @@ describe('GET /api/v1/tbm/costs/by-service/:id', () => {
     expect(orphan.text).toBe(missing.text);
     expect(orphan.text).not.toContain('Orphan Node');
   });
+
+  it('API key service access is own-org only, with foreign and missing IDs indistinguishable', async () => {
+    const foreign = await request(app).get('/api/v1/tbm/costs/by-service/bs-b-app').set({ 'x-api-key': KEY_A });
+    const missing = await request(app).get('/api/v1/tbm/costs/by-service/bs-missing').set({ 'x-api-key': KEY_A });
+    expect(foreign.status).toBe(404);
+    expect(foreign.text).toBe(missing.text);
+    const own = await request(app).get('/api/v1/tbm/costs/by-service/bs-b-app').set({ 'x-api-key': KEY_B });
+    expect(own.status).toBe(200);
+    expect(own.body.data).toMatchObject({ serviceName: 'B Secret App', totalMonthlyCost: 7 });
+  });
+
 });
 
 describe('fail closed without an organization claim', () => {
-  it.each([...GLOBAL_ROUTES, ...SCOPED_ROUTES])(
+  it.each(SCOPED_ROUTES)(
     '%s %s -> 403 with zero queries when the token has no organization claim',
     async (method, path, body) => {
-      for (const headers of [bearer('user-none'), bearer('user-bad', 'not-a-uuid')]) {
+      for (const headers of [bearer('user-none'), bearer('user-bad', 'not-a-uuid'), { 'x-api-key': KEY_NONE }]) {
         const res = await call(method, path, body, headers);
         expect(res.status).toBe(403);
         expect(res.body).toEqual({ _error: 'Forbidden', _message: 'Organization claim required' });
@@ -339,25 +418,184 @@ describe('GET /api/v1/tbm/costs/by-capability/:id', () => {
     }
     expect(cypherRuns.length).toBeGreaterThan(0);
   });
+
+  it('foreign-only capability and missing capability share one not-found response; own capability remains available via API key', async () => {
+    const foreign = await request(app).get('/api/v1/tbm/costs/by-capability/cap-b').set({ 'x-api-key': KEY_A });
+    const missing = await request(app).get('/api/v1/tbm/costs/by-capability/cap-missing').set({ 'x-api-key': KEY_A });
+    expect(foreign.status).toBe(404);
+    expect(foreign.text).toBe(missing.text);
+    const own = await request(app).get('/api/v1/tbm/costs/by-capability/cap-b').set({ 'x-api-key': KEY_B });
+    expect(own.status).toBe(200);
+    expect(own.body.data).toMatchObject({ capabilityName: 'B Only', totalMonthlyCost: 7 });
+  });
 });
 
-describe('global TBM aggregates (FD-3 b)', () => {
-  it.each(GLOBAL_ROUTES)('%s %s: global aggregates are 403 for a non-admin org member', async (method, path, body) => {
-    const res = await call(method, path, body, AS_A);
-    expect(res.status).toBe(403);
+describe('global TBM reads and control', () => {
+  it.each(DENIED_ROUTES)('%s %s: every principal gets the same static denial without data access', async (method, path, body) => {
+    for (const headers of [...PRINCIPALS, bearer('user-none'), { 'x-api-key': KEY_NONE }]) {
+      const res = await call(method, path, body, { ...headers, 'x-organization-id': ORG_B });
+      expect(res.status).toBe(403);
+      expect(res.body).toEqual({ success: false, error: 'Platform administrator access unavailable' });
+    }
     expect(queryCount()).toBe(0);
   });
 
-  it('an admin with an organization claim still reaches the global summary', async () => {
-    const res = await request(app).get('/api/v1/tbm/costs/summary').set(AS_ADMIN_A);
-    expect(res.status).toBe(200);
-    expect(res.body.success).toBe(true);
+  it('cost trends remain scoped to verified caller organization for sessions and API keys', async () => {
+    for (const headers of [AS_ADMIN_A, { 'x-api-key': KEY_A }]) {
+      const res = await request(app).get('/api/v1/tbm/costs/trends').set({ ...headers, 'x-organization-id': ORG_B });
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ success: true, count: 1, data: [{ totalCost: 120, ciCount: 2 }] });
+    }
+    for (const headers of [bearer('admin-b', ORG_B), { 'x-api-key': KEY_B }]) {
+      const res = await request(app).get('/api/v1/tbm/costs/trends').set(headers);
+      expect(res.body).toMatchObject({ success: true, count: 1, data: [{ totalCost: 7, ciCount: 1 }] });
+    }
+  });
+});
+
+describe('mounted REST connector control', () => {
+  const controls: Array<[string, string, object | null]> = [
+    ['post', '/api/v1/connectors/install', { connector_type: 'test' }],
+    ['put', '/api/v1/connectors/test/update', {}],
+    ['delete', '/api/v1/connectors/test', null],
+    ['post', '/api/v1/connectors/test/verify', null],
+    ['post', '/api/v1/connectors/cache/refresh', null],
+  ];
+  it.each(controls)('%s %s uniformly refuses admin sessions and API keys before data access', async (method, path, body) => {
+    for (const headers of [...PRINCIPALS, bearer('user-none'), { 'x-api-key': KEY_NONE }]) {
+      const res = await call(method, path, body, { ...headers, 'x-organization-id': ORG_B });
+      expect(res.status).toBe(403);
+      expect(res.body).toEqual({ success: false, error: 'Platform administrator access unavailable' });
+    }
+    expect(queryCount()).toBe(0);
+  });
+});
+
+describe('mounted GraphQL connector lifecycle', () => {
+  it.each(['installConnector', 'updateConnector', 'uninstallConnector'])('%s denies both organizations and both principal types before side effects', async name => {
+    for (const headers of [...PRINCIPALS, bearer('user-none'), { 'x-api-key': KEY_NONE }]) {
+      const response = await request(graphqlApp).post('/graphql').set({ ...headers, 'x-organization-id': ORG_B })
+        .send({ query: `mutation { ${name}(connectorType: "test") { success message } }` });
+      expect(response.body.errors?.[0]).toMatchObject({
+        message: 'Platform administrator access unavailable',
+        extensions: { code: 'FORBIDDEN' },
+      });
+      expect(response.body.data?.[name]).toBeNull();
+    }
+    expect(queryCount()).toBe(0);
+  });
+});
+
+describe('mounted GraphQL global TBM operations', () => {
+  const operations = [
+    'query { costSummary }',
+    'query { costsByTower }',
+    'query { costAllocations(ciId: "ci-a") }',
+    'query { licenses }',
+    'query { upcomingRenewals }',
+    'mutation { allocateCosts(input: { sourceId: "ci-a", targetType: "BUSINESS_SERVICE", targetIds: ["bs-a-app"] }) }',
+    'mutation { importGLData }',
+  ];
+  it.each(operations)('%s refuses both orgs and API keys with no DB activity', async query => {
+    for (const headers of [...PRINCIPALS, { 'x-api-key': KEY_NONE }]) {
+      const response = await request(graphqlApp).post('/graphql').set(headers).send({ query });
+      expect(response.body.errors?.[0]).toMatchObject({
+        message: 'Platform administrator access unavailable',
+        extensions: { code: 'FORBIDDEN' },
+      });
+    }
+    expect(queryCount()).toBe(0);
+  });
+});
+
+const TENANT_QUERIES = {
+  service: (id: string) => `query { costsByBusinessService(id: "${id}") { serviceId serviceName totalMonthlyCost } }`,
+  capability: (id: string) => `query { costsByCapability(id: "${id}") { capabilityId capabilityName totalMonthlyCost supportingServices } }`,
+  trends: 'query { costTrends { totalCost ciCount } }',
+};
+function gql(query: string, headers: object) {
+  return request(graphqlApp).post('/graphql').set(headers).send({ query });
+}
+
+describe('mounted GraphQL tenant TBM reads', () => {
+  it.each([AS_ADMIN_A, { 'x-api-key': KEY_A }])('returns only owned services and capabilities for a verified org A principal', async headers => {
+    const ownService = await gql(TENANT_QUERIES.service('bs-a-app'), headers);
+    expect(ownService.body).toMatchObject({
+      data: { costsByBusinessService: { serviceId: 'bs-a-app', serviceName: 'A App', totalMonthlyCost: 100 } },
+    });
+    const ownCapability = await gql(TENANT_QUERIES.capability('cap-1'), headers);
+    expect(ownCapability.body).toMatchObject({
+      data: { costsByCapability: { capabilityId: 'cap-1', totalMonthlyCost: 100, supportingServices: 1 } },
+    });
+
+    for (const [kind, foreignId, missingId, message] of [
+      ['service', 'bs-b-app', 'bs-missing', 'Business service not found'],
+      ['capability', 'cap-b', 'cap-missing', 'Business capability not found'],
+    ] as const) {
+      const foreign = await gql(TENANT_QUERIES[kind](foreignId), headers);
+      const missing = await gql(TENANT_QUERIES[kind](missingId), headers);
+      expect(foreign.body.data).toBeNull();
+      expect(foreign.body.errors?.[0]).toMatchObject({ message, extensions: { code: 'NOT_FOUND' } });
+      expect(foreign.body).toEqual(missing.body);
+      expect(JSON.stringify(foreign.body)).not.toContain('B Secret App');
+    }
+    for (const id of ['bs-graph-only', 'bs-hijack', 'bs-orphan']) {
+      const res = await gql(TENANT_QUERIES.service(id), headers);
+      const missing = await gql(TENANT_QUERIES.service('bs-missing'), headers);
+      expect(res.body).toEqual(missing.body);
+    }
   });
 
-  it("cost trends sum only the caller org's CIs", async () => {
-    const res = await request(app).get('/api/v1/tbm/costs/trends').set(AS_ADMIN_A);
-    expect(res.status).toBe(200);
-    // All seeded CI versions are effective this month: org A's 100 + 20, never org B's 7.
-    expect(res.body).toMatchObject({ success: true, count: 1, data: [{ totalCost: 120, ciCount: 2 }] });
+  it.each([bearer('admin-b', ORG_B), { 'x-api-key': KEY_B }])('isolates org B with JWT and API key', async headers => {
+    const service = await gql(TENANT_QUERIES.service('bs-b-app'), headers);
+    expect(service.body.data?.costsByBusinessService).toMatchObject({ serviceName: 'B Secret App', totalMonthlyCost: 7 });
+    const capability = await gql(TENANT_QUERIES.capability('cap-b'), headers);
+    expect(capability.body.data?.costsByCapability).toMatchObject({ capabilityName: 'B Only', totalMonthlyCost: 7 });
+    const foreign = await gql(TENANT_QUERIES.service('bs-a-app'), headers);
+    const missing = await gql(TENANT_QUERIES.service('bs-missing'), headers);
+    expect(foreign.body.errors?.[0]).toMatchObject({ message: 'Business service not found', extensions: { code: 'NOT_FOUND' } });
+    expect(foreign.body).toEqual(missing.body);
+    const foreignCapability = await gql(TENANT_QUERIES.capability('cap-a'), headers);
+    const missingCapability = await gql(TENANT_QUERIES.capability('cap-missing'), headers);
+    expect(foreignCapability.body.errors?.[0]).toMatchObject({ message: 'Business capability not found', extensions: { code: 'NOT_FOUND' } });
+    expect(foreignCapability.body).toEqual(missingCapability.body);
+  });
+
+  it.each([bearer('user-none'), bearer('user-bad', 'not-a-uuid'), { 'x-api-key': KEY_NONE }])('fails closed without a valid organization before database access', async headers => {
+    for (const query of [TENANT_QUERIES.service('bs-a-app'), TENANT_QUERIES.capability('cap-1'), TENANT_QUERIES.trends]) {
+      const res = await gql(query, headers);
+      expect(res.body.errors?.[0]).toMatchObject({ extensions: { code: 'FORBIDDEN' } });
+    }
+    expect(queryCount()).toBe(0);
+  });
+
+  it('trends use only the verified principal organization for both authentication modes', async () => {
+    for (const headers of [AS_ADMIN_A, { 'x-api-key': KEY_A }]) {
+      const res = await gql(TENANT_QUERIES.trends, { ...headers, 'x-organization-id': ORG_B });
+      expect(res.body.data?.costTrends).toEqual([{ totalCost: 120, ciCount: 2 }]);
+    }
+    for (const headers of [bearer('admin-b', ORG_B), { 'x-api-key': KEY_B }]) {
+      const res = await gql(TENANT_QUERIES.trends, headers);
+      expect(res.body.data?.costTrends).toEqual([{ totalCost: 7, ciCount: 1 }]);
+    }
+    const denied = await gql(TENANT_QUERIES.trends, AS_A);
+    expect(denied.body.errors?.[0]).toMatchObject({ extensions: { code: 'FORBIDDEN' } });
+  });
+
+  it('prefers Authorization bearer identity over a conflicting X-API-Key for tenant reads and trends', async () => {
+    for (const [headers, ownId, ownCost, foreignId, capabilityId, trendCost] of [
+      [{ ...AS_ADMIN_A, 'x-api-key': KEY_B }, 'bs-a-app', 100, 'bs-b-app', 'cap-1', 120],
+      [{ ...bearer('admin-b', ORG_B), 'x-api-key': KEY_A }, 'bs-b-app', 7, 'bs-a-app', 'cap-b', 7],
+    ] as const) {
+      const own = await gql(TENANT_QUERIES.service(ownId), headers);
+      expect(own.body.data?.costsByBusinessService.totalMonthlyCost).toBe(ownCost);
+      const capability = await gql(TENANT_QUERIES.capability(capabilityId), headers);
+      expect(capability.body.data?.costsByCapability.totalMonthlyCost).toBe(ownCost);
+      const foreign = await gql(TENANT_QUERIES.service(foreignId), headers);
+      const missing = await gql(TENANT_QUERIES.service('bs-missing'), headers);
+      expect(foreign.body).toEqual(missing.body);
+      const trends = await gql(TENANT_QUERIES.trends, headers);
+      expect(trends.body.data?.costTrends).toEqual([{ totalCost: trendCost, ciCount: ownCost === 100 ? 2 : 1 }]);
+    }
   });
 });

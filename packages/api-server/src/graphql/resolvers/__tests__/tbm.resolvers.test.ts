@@ -5,7 +5,7 @@
  * Tenant scoping for the TBM GraphQL resolvers (FD-2: Postgres
  * dim_business_services.organization_id is the tenant authority for
  * business-service ids; FD-16 c: the :BusinessService node must also carry
- * the caller's organization_id; FD-3 b: global aggregates are admin-only).
+ * the caller's organization_id; global operations refuse every role).
  *
  * Postgres answers the ownership query from an in-memory table; Neo4j is a
  * recording session over a graph that applies each organization_id predicate
@@ -59,11 +59,8 @@ const GRAPH_SERVICES: Record<string, { name: string; cost: number; tower: string
 };
 // cap-1 is realized by every service node.
 const CAPABILITY_SERVICES = ['bs-a-app', 'bs-b-app', 'bs-hijack', 'bs-orphan'];
-// The tenancy filters must bind to the REALIZES optional match itself.
-const REALIZES_OWNED_FILTER =
-  /OPTIONAL MATCH \(cap\)-\[:REALIZES\]->\(service:BusinessService\)\s+WHERE service\.id IN \$orgServiceIds\s/;
-const REALIZES_NODE_ORG_FILTER =
-  /OPTIONAL MATCH \(cap\)-\[:REALIZES\]->\(service:BusinessService\)\s+WHERE service\.id IN \$orgServiceIds AND service\.organization_id = \$organizationId\s/;
+const REALIZES_OWNED_FILTER = /WHERE service\.id IN \$orgServiceIds/;
+const REALIZES_NODE_ORG_FILTER = /WHERE service\.id IN \$orgServiceIds AND service\.organization_id = \$organizationId/;
 const SERVICE_NODE_ORG_FILTER = /MATCH \(service:BusinessService \{id: \$serviceId\}\)\s+WHERE service\.organization_id = \$organizationId\s/;
 const int = (n: number) => ({ toNumber: () => n });
 const neo4jSession = {
@@ -84,10 +81,12 @@ const neo4jSession = {
       };
     }
     if (query.includes('BusinessCapability')) {
+      if (params['capabilityId'] !== 'cap-1' && params['capabilityId'] !== 'cap-b') return { records: [] };
       // Without the filters on the REALIZES match, every realizing service is traversed.
       const allowed = REALIZES_OWNED_FILTER.test(query) ? (params['orgServiceIds'] as string[] | undefined) ?? [] : null;
-      const services = CAPABILITY_SERVICES.filter(id =>
+      const services = (params['capabilityId'] === 'cap-b' ? ['bs-b-app'] : CAPABILITY_SERVICES).filter(id =>
         (allowed === null || allowed.includes(id)) && nodeInOrg(id, REALIZES_NODE_ORG_FILTER));
+      if (services.length === 0 && query.includes('MATCH (cap:BusinessCapability {id: $capabilityId})-[:REALIZES]->')) return { records: [] };
       if (query.includes('capabilityName')) {
         return {
           records: [record({
@@ -215,13 +214,21 @@ describe('costsByCapability', () => {
     });
     expect(cypherRuns.map(run => run.params['organizationId'])).toEqual([ORG_A, ORG_A]);
   });
+
+  it('foreign-only and missing capabilities share NOT_FOUND, while the owner can read', async () => {
+    const a = contextAs('viewer', ORG_A);
+    const foreign = await graphQLErrorOf(Query.costsByCapability(null, { id: 'cap-b' }, a));
+    const missing = await graphQLErrorOf(Query.costsByCapability(null, { id: 'cap-missing' }, a));
+    expect([foreign.message, foreign.extensions]).toEqual([missing.message, missing.extensions]);
+    const own = await Query.costsByCapability(null, { id: 'cap-b' }, contextAs('viewer', ORG_B));
+    expect(own).toMatchObject({ totalMonthlyCost: 7, supportingServices: 1 });
+  });
 });
 
-describe('global TBM resolvers (FD-3 b)', () => {
-  const GLOBAL: Array<[string, (context: GraphQLContext) => Promise<unknown>]> = [
+describe('global TBM resolvers', () => {
+  const GLOBAL: Array<[string, (context: GraphQLContext) => unknown]> = [
     ['costSummary', c => Query.costSummary(null, {}, c)],
     ['costsByTower', c => Query.costsByTower(null, {}, c)],
-    ['costTrends', c => Query.costTrends(null, {}, c)],
     ['costAllocations', c => Query.costAllocations(null, { ciId: 'ci-1' }, c)],
     ['licenses', c => Query.licenses(null, {}, c)],
     ['upcomingRenewals', c => Query.upcomingRenewals(null, {}, c)],
@@ -231,18 +238,14 @@ describe('global TBM resolvers (FD-3 b)', () => {
     ['importGLData', c => Mutation.importGLData(null, {}, c)],
   ];
 
-  it.each(GLOBAL)('%s: global resolvers reject non-admin', async (_name, resolve) => {
-    for (const role of ['operator', 'viewer'] as const) {
-      const error = await graphQLErrorOf(resolve(contextAs(role, ORG_A)));
+  it.each(GLOBAL)('%s: every tenant principal gets the same static denial without data access', async (_name, resolve) => {
+    for (const context of [contextAs('admin', ORG_A), contextAs('admin', ORG_B), contextAs('admin'), contextAs('viewer', ORG_A)]) {
+      const error = await graphQLErrorOf(Promise.resolve().then(() => resolve(context)));
+      expect(error.message).toBe('Platform administrator access unavailable');
       expect(error.extensions['code']).toBe('FORBIDDEN');
     }
-    const noOrgAdmin = await graphQLErrorOf(resolve(contextAs('admin')));
-    expect(noOrgAdmin.extensions['code']).toBe('FORBIDDEN');
     expect(pgCalls).toEqual([]);
     expect(cypherRuns).toEqual([]);
-  });
-
-  it('an admin with an organization claim still gets the cost summary', async () => {
-    await expect(Query.costSummary(null, {}, contextAs('admin', ORG_A))).resolves.toMatchObject({ totalCIs: 0 });
+    expect(neo4jSessionsOpened).toBe(0);
   });
 });

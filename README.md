@@ -90,6 +90,10 @@ Migration `012_itil_baseline_organization_scope.sql` adds the nullable baseline 
 
 Migration `013_itil_baseline_org_name_unique.sql` replaces global baseline-name uniqueness with uniqueness within each non-NULL organization. A caller can reuse a name held by another organization or an inaccessible legacy row; a duplicate name within the caller's organization returns 409 without database error details. Older unscoped service writers that still omit `organization_id` create NULL-owner rows, which remain inaccessible to REST callers; they cannot be attributed to a tenant without a verified organization claim.
 
+### Interim platform-administrator boundary
+
+Until the dedicated platform-admin flag (HP1-S6/P-6) is implemented, authenticated requests to global TBM summary, tower, allocation, GL import, and license routes receive HTTP 403 with the fixed error `Platform administrator access unavailable`; their GraphQL equivalents receive the same error with `FORBIDDEN`. Global REST connector install/update/uninstall/verify/cache-refresh controls and GraphQL `installConnector`, `updateConnector`, and `uninstallConnector` are refused the same way. Tenant admin roles, admin API keys, and organization headers do not grant access. TBM service/capability costs and organization-scoped trends remain available only for the verified caller organization (trends retain their admin permission); foreign and missing service/capability IDs are indistinguishable.
+
 ## Repository Structure
 
 | Package | Description |

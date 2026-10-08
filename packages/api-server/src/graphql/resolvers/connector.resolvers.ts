@@ -10,6 +10,7 @@ import { getIntegrationManager } from '@cmdb/integration-framework';
 import { GraphQLContext } from './index';
 import { checkGraphQLPermission as requirePermission } from '../../middleware/auth.middleware';
 import { ConnectorLifecycleService } from '../../services/connector-lifecycle.service';
+import { denyPlatformAdminGraphQL } from '../../middleware/platform-admin-unavailable';
 
 /** Maps an `installed_connectors` row (snake_case DB columns) to the GraphQL InstalledConnector shape. */
 function mapInstalledConnectorRow(row: any): any {
@@ -833,102 +834,11 @@ const ConnectorQueryResolvers = {
  * Connector Mutation Resolvers
  */
 const ConnectorMutationResolvers = {
-  /**
-   * Install connector from registry (admin only)
-   */
-  installConnector: async (
-    _parent: any,
-    args: { connectorType: string; version?: string },
-    context: GraphQLContext
-  ): Promise<any> => {
-    requirePermission(context, 'admin');
-    try {
-      const lifecycleService = new ConnectorLifecycleService();
-      const outcome = await lifecycleService.installConnector(args.connectorType, args.version);
-      return {
-        success: outcome.success,
-        connector: outcome.connector ? mapInstalledConnectorRow(outcome.connector) : null,
-        message: outcome.message,
-        errors: outcome.errors,
-      };
-    } catch (error: any) {
-      if (error instanceof GraphQLError) {
-        throw error;
-      }
-      logger.error('GraphQL: Error installing connector', error);
-      throw new GraphQLError('Failed to install connector', {
-        extensions: {
-          code: 'INTERNAL_SERVER_ERROR',
-          originalError: error.message,
-        },
-      });
-    }
-  },
-
-  /**
-   * Update connector to a newer version (admin only)
-   */
-  updateConnector: async (
-    _parent: any,
-    args: { connectorType: string; version?: string },
-    context: GraphQLContext
-  ): Promise<any> => {
-    requirePermission(context, 'admin');
-    try {
-      const lifecycleService = new ConnectorLifecycleService();
-      const outcome = await lifecycleService.updateConnector(args.connectorType, args.version);
-      return {
-        success: outcome.success,
-        connector: outcome.connector ? mapInstalledConnectorRow(outcome.connector) : null,
-        previousVersion: outcome.previousVersion,
-        newVersion: outcome.newVersion,
-        message: outcome.message,
-        errors: outcome.errors,
-      };
-    } catch (error: any) {
-      if (error instanceof GraphQLError) {
-        throw error;
-      }
-      logger.error('GraphQL: Error updating connector', error);
-      throw new GraphQLError('Failed to update connector', {
-        extensions: {
-          code: 'INTERNAL_SERVER_ERROR',
-          originalError: error.message,
-        },
-      });
-    }
-  },
-
-  /**
-   * Uninstall connector (admin only)
-   */
-  uninstallConnector: async (
-    _parent: any,
-    args: { connectorType: string },
-    context: GraphQLContext
-  ): Promise<any> => {
-    requirePermission(context, 'admin');
-    try {
-      const lifecycleService = new ConnectorLifecycleService();
-      const outcome = await lifecycleService.uninstallConnector(args.connectorType);
-      return {
-        success: outcome.success,
-        message: outcome.message,
-        errors: outcome.errors,
-      };
-    } catch (error: any) {
-      if (error instanceof GraphQLError) {
-        throw error;
-      }
-      logger.error('GraphQL: Error uninstalling connector', error);
-      throw new GraphQLError('Failed to uninstall connector', {
-        extensions: {
-          code: 'INTERNAL_SERVER_ERROR',
-          originalError: error.message,
-        },
-      });
-    }
-  },
+  // Connector installation and control are global. No tenant role/API key
+  // substitutes for the dedicated platform-admin flag (HP1-S6/P-6).
+  installConnector: denyPlatformAdminGraphQL,
+  updateConnector: denyPlatformAdminGraphQL,
+  uninstallConnector: denyPlatformAdminGraphQL,
 
   /**
    * Create connector configuration

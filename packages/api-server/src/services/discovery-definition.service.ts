@@ -1,7 +1,7 @@
 // Copyright 2026 Happy Technologies LLC
 // SPDX-License-Identifier: Apache-2.0
 
-import { getPostgresClient, queueManager, getUnifiedCredentialService } from '@cmdb/database';
+import { getPostgresClient, queueManager } from '@cmdb/database';
 import { logger } from '@cmdb/common';
 import {
   DiscoveryDefinition,
@@ -19,7 +19,6 @@ import {
  */
 export class DiscoveryDefinitionService {
   private postgresClient = getPostgresClient();
-  private credentialService = getUnifiedCredentialService(this.postgresClient.pool);
 
   /**
    * Create a new discovery definition
@@ -402,24 +401,13 @@ export class DiscoveryDefinitionService {
       // Generate job ID (removed "discovery-" prefix to match new format)
       const jobId = `${definition.provider}-${Date.now()}`;
 
-      // Fetch and decrypt credential if credential_id is provided
-      let credentials;
+      // Discovery definitions do not carry a verified organization. Do not
+      // launch a credential-bearing job until its ownership can be proven.
       if (definition.credential_id) {
-        const credential = await this.credentialService.getById(definition.credential_id);
-        logger.info('Fetched credential for discovery', {
-          credentialId: definition.credential_id,
-          hasCredential: !!credential,
-          credentialKeys: credential?.credentials ? Object.keys(credential.credentials) : []
-        });
-        if (credential) {
-          // Use credentials directly (they're already decrypted by getById)
-          credentials = credential.credentials;
-          logger.info('Using unified credentials', {
-            protocol: credential.protocol,
-            scope: credential.scope
-          });
-        }
+        throw new Error('Credential-backed discovery requires verified organization ownership');
       }
+
+      const credentials = undefined;
 
       // Merge credentials into config
       const jobConfig = {

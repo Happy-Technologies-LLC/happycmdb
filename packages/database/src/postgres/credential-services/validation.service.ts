@@ -16,17 +16,11 @@ import { logger } from '@cmdb/common';
 export class CredentialValidationService {
   constructor(private pool: Pool) {}
 
-  async validate(id: string, getById: (id: string) => Promise<UnifiedCredential | null>): Promise<CredentialValidationResult> {
+  async validate(id: string, createdBy: string, organizationId: string, getById: (id: string) => Promise<UnifiedCredential | null>): Promise<CredentialValidationResult | null> {
     const client = await this.pool.connect();
     try {
       const credential = await getById(id);
-      if (!credential) {
-        return {
-          valid: false,
-          message: 'Credential not found',
-          validated_at: new Date(),
-        };
-      }
+      if (!credential) return null;
 
       const validationResult = this.validateCredentialStructure(credential);
 
@@ -35,8 +29,8 @@ export class CredentialValidationService {
         `UPDATE credentials
         SET last_validated_at = NOW(),
             validation_status = $2
-        WHERE id = $1`,
-        [id, validationResult.valid ? 'valid' : 'invalid']
+        WHERE id = $1 AND created_by = $3 AND organization_id = $4`,
+        [id, validationResult.valid ? 'valid' : 'invalid', createdBy, organizationId]
       );
 
       logger.info('Credential validated', {
@@ -57,10 +51,10 @@ export class CredentialValidationService {
     }
   }
 
-  async testConnection(id: string, validateFunc: (id: string) => Promise<CredentialValidationResult>): Promise<boolean> {
+  async testConnection(id: string, validateFunc: (id: string) => Promise<CredentialValidationResult | null>): Promise<boolean> {
     try {
       const result = await validateFunc(id);
-      return result.valid;
+      return result?.valid ?? false;
     } catch (error) {
       logger.error('Connection test failed', { error, id });
       return false;

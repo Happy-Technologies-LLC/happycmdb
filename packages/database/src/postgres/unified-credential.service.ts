@@ -47,43 +47,52 @@ export class UnifiedCredentialService {
   // CRUD Operations
   async create(
     input: UnifiedCredentialInput,
-    createdBy: string
+    createdBy: string,
+    organizationId: string
   ): Promise<UnifiedCredential> {
-    return this.crudService.create(input, createdBy);
+    return this.crudService.create(input, createdBy, organizationId);
   }
 
-  async getById(id: string): Promise<UnifiedCredential | null> {
-    return this.crudService.getById(id);
+  async getById(id: string, createdBy: string, organizationId: string): Promise<UnifiedCredential | null> {
+    return this.crudService.getById(id, createdBy, organizationId);
   }
 
   async list(
+    createdBy: string,
+    organizationId: string,
     filters?: CredentialFilters
   ): Promise<UnifiedCredentialSummary[]> {
-    return this.crudService.list(filters);
+    return this.crudService.list(createdBy, organizationId, filters);
   }
 
   async update(
     id: string,
-    input: UnifiedCredentialUpdateInput
+    input: UnifiedCredentialUpdateInput,
+    createdBy: string,
+    organizationId: string
   ): Promise<UnifiedCredential> {
-    return this.crudService.update(id, input);
+    return this.crudService.update(id, input, createdBy, organizationId);
   }
 
-  async delete(id: string): Promise<void> {
-    return this.crudService.delete(id);
+  async delete(id: string, createdBy: string, organizationId: string): Promise<void> {
+    return this.crudService.delete(id, createdBy, organizationId);
   }
 
   // Affinity Matching
   async findBestMatch(
-    context: CredentialMatchContext
+    context: CredentialMatchContext,
+    createdBy: string,
+    organizationId: string
   ): Promise<CredentialMatchResult | null> {
-    return this.affinityService.findBestMatch(context);
+    return this.affinityService.findBestMatch(context, createdBy, organizationId);
   }
 
   async rankCredentials(
-    context: CredentialMatchContext
+    context: CredentialMatchContext,
+    createdBy: string,
+    organizationId: string
   ): Promise<CredentialMatchResult[]> {
-    return this.affinityService.rankCredentials(context);
+    return this.affinityService.rankCredentials(context, createdBy, organizationId);
   }
 
   calculateAffinityScore(
@@ -94,12 +103,12 @@ export class UnifiedCredentialService {
   }
 
   // Validation
-  async validate(id: string): Promise<CredentialValidationResult> {
-    return this.validationService.validate(id, (id) => this.getById(id));
+  async validate(id: string, createdBy: string, organizationId: string): Promise<CredentialValidationResult | null> {
+    return this.validationService.validate(id, createdBy, organizationId, (id) => this.getById(id, createdBy, organizationId));
   }
 
-  async testConnection(id: string): Promise<boolean> {
-    return this.validationService.testConnection(id, (id) => this.validate(id));
+  async testConnection(id: string, createdBy: string, organizationId: string): Promise<boolean> {
+    return this.validationService.testConnection(id, (id) => this.validate(id, createdBy, organizationId));
   }
 
   validateCredentialStructure(

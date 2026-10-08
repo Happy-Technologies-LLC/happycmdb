@@ -2,24 +2,21 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Unified Credential & Credential Set Routes. Authentication is enforced
- * centrally: server.ts mounts `authMiddleware.authenticate()` on every
- * /api/v1 route before this router. Reads (list/get credential(s)/
- * credential-set(s), the OAuth provider redirect callback) and the
- * read-like query endpoints -- match, rank, validate, and select, none of
- * which mutate stored credential state -- stay open to any authenticated
- * role. Creating, updating, or deleting a credential or credential set,
- * and beginning an OAuth authorization, additionally require the 'write'
- * permission via `authMiddleware.requirePermission('write')`.
+ * Unified Credential & Credential Set Routes. server.ts authenticates all
+ * /api/v1 requests before this router. This router requires the verified
+ * organization and owner for every path. Reads require authentication;
+ * writes additionally require the 'write' permission. OAuth authorization
+ * and callback are refused until their substrate enforces ownership.
  */
 
-import { Router } from 'express';
+import { Router, type Request, type Response, type NextFunction } from 'express';
 import Joi from 'joi';
 import { UnifiedCredentialController } from '../controllers/unified-credential.controller';
 import { CredentialSetController } from '../controllers/credential-set.controller';
 import { validateRequest, validateOptional } from '../middleware/validation.middleware';
 import { auditMiddleware } from '../../middleware/audit.middleware';
 import { getAuthMiddleware } from '../../auth/auth-bootstrap';
+import type { AuthenticatedRequest } from '../../auth/types';
 
 export const unifiedCredentialRoutes = Router();
 const credentialController = new UnifiedCredentialController();
@@ -28,6 +25,21 @@ const authMiddleware = getAuthMiddleware();
 
 // Apply audit middleware to all routes
 unifiedCredentialRoutes.use(auditMiddleware);
+// All credential and credential-set paths use the freshly resolved identity
+// organization; client-supplied filters/headers never establish tenancy.
+unifiedCredentialRoutes.use(authMiddleware.requireOrganization());
+unifiedCredentialRoutes.use((req: Request, res: Response, next: NextFunction) => {
+  const userId = (req as AuthenticatedRequest).user?._userId;
+  if (typeof userId !== 'string' || userId.length === 0) {
+    res.status(403).json({ success: false, error: 'Forbidden', message: 'Verified credential owner required' });
+    return;
+  }
+  if ((req as AuthenticatedRequest).user?._role === 'agent') {
+    res.status(403).json({ success: false, error: 'Forbidden', message: 'Credential management requires a human user' });
+    return;
+  }
+  next();
+});
 
 // =============================================================================
 // VALIDATION SCHEMAS

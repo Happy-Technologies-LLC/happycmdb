@@ -57,7 +57,8 @@ export class CredentialCRUDService {
 
   async create(
     input: UnifiedCredentialInput,
-    createdBy: string
+    createdBy: string,
+    organizationId: string
   ): Promise<UnifiedCredential> {
     const client = await this.pool.connect();
     try {
@@ -71,8 +72,8 @@ export class CredentialCRUDService {
       const result = await client.query(
         `INSERT INTO credentials (
           id, name, description, protocol, scope, credentials,
-          affinity, tags, created_by
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+          affinity, tags, created_by, organization_id
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         RETURNING *`,
         [
           id,
@@ -84,6 +85,7 @@ export class CredentialCRUDService {
           input.affinity || {},
           input.tags || [],
           createdBy,
+          organizationId,
         ]
       );
 
@@ -131,12 +133,12 @@ export class CredentialCRUDService {
     }
   }
 
-  async getById(id: string): Promise<UnifiedCredential | null> {
+  async getById(id: string, createdBy: string, organizationId: string): Promise<UnifiedCredential | null> {
     const client = await this.pool.connect();
     try {
       const result = await client.query(
-        `SELECT * FROM credentials WHERE id = $1`,
-        [id]
+        `SELECT * FROM credentials WHERE id = $1 AND created_by = $2 AND organization_id = $3`,
+        [id, createdBy, organizationId]
       );
 
       if (result.rows.length === 0) {
@@ -179,13 +181,15 @@ export class CredentialCRUDService {
   }
 
   async list(
+    createdBy: string,
+    organizationId: string,
     filters?: CredentialFilters
   ): Promise<UnifiedCredentialSummary[]> {
     const client = await this.pool.connect();
     try {
-      const conditions: string[] = [];
-      const params: any[] = [];
-      let paramIndex = 1;
+      const conditions: string[] = ['created_by = $1', 'organization_id = $2'];
+      const params: unknown[] = [createdBy, organizationId];
+      let paramIndex = 3;
 
       if (filters?.protocol) {
         conditions.push(`protocol = $${paramIndex++}`);
@@ -197,9 +201,8 @@ export class CredentialCRUDService {
         params.push(filters.scope);
       }
 
-      if (filters?.created_by) {
-        conditions.push(`created_by = $${paramIndex++}`);
-        params.push(filters.created_by);
+      if (filters?.created_by && filters.created_by !== createdBy) {
+        return [];
       }
 
       if (filters?.tags && filters.tags.length > 0) {
@@ -207,8 +210,7 @@ export class CredentialCRUDService {
         params.push(filters.tags);
       }
 
-      const whereClause =
-        conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+      const whereClause = `WHERE ${conditions.join(' AND ')}`;
 
       const limit = filters?.limit || 100;
       const offset = filters?.offset || 0;
@@ -247,7 +249,9 @@ export class CredentialCRUDService {
 
   async update(
     id: string,
-    input: UnifiedCredentialUpdateInput
+    input: UnifiedCredentialUpdateInput,
+    createdBy: string,
+    organizationId: string
   ): Promise<UnifiedCredential> {
     const client = await this.pool.connect();
     try {
@@ -284,19 +288,19 @@ export class CredentialCRUDService {
       }
 
       if (updates.length === 0) {
-        const existing = await this.getById(id);
+        const existing = await this.getById(id, createdBy, organizationId);
         if (!existing) {
           throw new Error(`Credential with id ${id} not found`);
         }
         return existing;
       }
 
-      params.push(id);
+      params.push(id, createdBy, organizationId);
 
       const result = await client.query(
         `UPDATE credentials
         SET ${updates.join(', ')}
-        WHERE id = $${paramIndex}
+        WHERE id = $${paramIndex++} AND created_by = $${paramIndex++} AND organization_id = $${paramIndex}
         RETURNING *`,
         params
       );
@@ -342,13 +346,24 @@ export class CredentialCRUDService {
     }
   }
 
-  async delete(id: string): Promise<void> {
+  async delete(id: string, createdBy: string, organizationId: string): Promise<void> {
     const client = await this.pool.connect();
     try {
+      // Check ownership before examining usage: foreign and missing IDs must
+      // take the same path, without disclosing whether a foreign row is in use.
+      const owned = await client.query(
+        `SELECT id FROM credentials WHERE id = $1 AND created_by = $2 AND organization_id = $3`,
+        [id, createdBy, organizationId]
+      );
+      if (owned.rows.length === 0) {
+        throw new Error(`Credential with id ${id} not found`);
+      }
       // Check usage
       const discoveryUsageResult = await client.query(
-        `SELECT COUNT(*) as count FROM discovery_definitions WHERE credential_id = $1`,
-        [id]
+        `SELECT COUNT(*) as count FROM discovery_definitions dd
+         JOIN credentials c ON c.id = dd.credential_id
+         WHERE c.id = $1 AND c.created_by = $2 AND c.organization_id = $3`,
+        [id, createdBy, organizationId]
       );
       const discoveryUsageCount = parseInt(
         discoveryUsageResult.rows[0].count,
@@ -356,8 +371,10 @@ export class CredentialCRUDService {
       );
 
       const connectorUsageResult = await client.query(
-        `SELECT COUNT(*) as count FROM connector_configurations WHERE credential_id = $1`,
-        [id]
+        `SELECT COUNT(*) as count FROM connector_configurations cc
+         JOIN credentials c ON c.id = cc.credential_id
+         WHERE c.id = $1 AND c.created_by = $2 AND c.organization_id = $3`,
+        [id, createdBy, organizationId]
       );
       const connectorUsageCount = parseInt(
         connectorUsageResult.rows[0].count,
@@ -383,8 +400,10 @@ export class CredentialCRUDService {
       }
 
       const setUsageResult = await client.query(
-        `SELECT COUNT(*) as count FROM credential_sets WHERE $1 = ANY(credential_ids)`,
-        [id]
+        `SELECT COUNT(*) as count FROM credential_sets cs
+         JOIN credentials c ON c.id = ANY(cs.credential_ids)
+         WHERE c.id = $1 AND c.created_by = $2 AND c.organization_id = $3`,
+        [id, createdBy, organizationId]
       );
       const setUsageCount = parseInt(setUsageResult.rows[0].count, 10);
 
@@ -395,8 +414,8 @@ export class CredentialCRUDService {
       }
 
       const result = await client.query(
-        `DELETE FROM credentials WHERE id = $1 RETURNING id, name`,
-        [id]
+        `DELETE FROM credentials WHERE id = $1 AND created_by = $2 AND organization_id = $3 RETURNING id, name`,
+        [id, createdBy, organizationId]
       );
 
       if (result.rows.length === 0) {

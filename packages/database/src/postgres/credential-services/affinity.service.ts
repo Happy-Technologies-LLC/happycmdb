@@ -22,20 +22,24 @@ export class CredentialAffinityService {
   constructor(private pool: Pool) {}
 
   async findBestMatch(
-    context: CredentialMatchContext
+    context: CredentialMatchContext,
+    createdBy: string,
+    organizationId: string
   ): Promise<CredentialMatchResult | null> {
-    const matches = await this.rankCredentials(context);
+    const matches = await this.rankCredentials(context, createdBy, organizationId);
     return matches.length > 0 ? matches[0] ?? null : null;
   }
 
   async rankCredentials(
-    context: CredentialMatchContext
+    context: CredentialMatchContext,
+    createdBy: string,
+    organizationId: string
   ): Promise<CredentialMatchResult[]> {
     const client = await this.pool.connect();
     try {
-      const conditions: string[] = [];
-      const params: any[] = [];
-      let paramIndex = 1;
+      const conditions: string[] = ['created_by = $1', 'organization_id = $2'];
+      const params: unknown[] = [createdBy, organizationId];
+      let paramIndex = 3;
 
       // Filter by required protocol
       if (context.required_protocol) {
@@ -49,8 +53,7 @@ export class CredentialAffinityService {
         params.push(context.required_scope);
       }
 
-      const whereClause =
-        conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+      const whereClause = `WHERE ${conditions.join(' AND ')}`;
 
       const result = await client.query(
         `SELECT * FROM credentials ${whereClause}`,

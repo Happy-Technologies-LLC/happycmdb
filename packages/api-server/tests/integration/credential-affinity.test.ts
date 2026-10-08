@@ -20,6 +20,7 @@ import {
 } from '@cmdb/common';
 import { v4 as uuidv4 } from 'uuid';
 import { getEncryptionService } from '@cmdb/common';
+const TEST_ORG = '11111111-1111-4111-8111-111111111111';
 
 describe('Credential Affinity Integration Tests', () => {
   let pool: Pool;
@@ -39,7 +40,7 @@ describe('Credential Affinity Integration Tests', () => {
     // Cleanup created resources
     for (const setId of createdSetIds) {
       try {
-        await credentialSetService.delete(setId);
+        await credentialSetService.delete(setId, 'test-user', TEST_ORG);
       } catch (error) {
         // Ignore cleanup errors
       }
@@ -84,14 +85,11 @@ describe('Credential Affinity Integration Tests', () => {
       createdCredentialIds.push(credentialId);
 
       // Create credential set
-      const set = await credentialSetService.create(
-        {
-          name: 'Test Credential Set',
-          credential_ids: [credentialId],
-          strategy: 'adaptive',
-        },
-        'test-user'
-      );
+      const set = await credentialSetService.create({
+        name: 'Test Credential Set',
+        credential_ids: [credentialId],
+        strategy: 'adaptive',
+      }, 'test-user', TEST_ORG);
       createdSetIds.push(set.id);
 
       // Select credentials with matching network context
@@ -102,10 +100,7 @@ describe('Credential Affinity Integration Tests', () => {
         required_scope: 'ssh',
       };
 
-      const credentials = await credentialSetService.selectCredentials(
-        set.id,
-        matchingContext
-      );
+      const credentials = await credentialSetService.selectCredentials(set.id, matchingContext, undefined, 'test-user', TEST_ORG);
 
       expect(credentials).toHaveLength(1);
       expect(credentials[0].id).toBe(credentialId);
@@ -131,14 +126,11 @@ describe('Credential Affinity Integration Tests', () => {
       });
       createdCredentialIds.push(credentialId);
 
-      const set = await credentialSetService.create(
-        {
-          name: 'Database Credential Set',
-          credential_ids: [credentialId],
-          strategy: 'adaptive',
-        },
-        'test-user'
-      );
+      const set = await credentialSetService.create({
+        name: 'Database Credential Set',
+        credential_ids: [credentialId],
+        strategy: 'adaptive',
+      }, 'test-user', TEST_ORG);
       createdSetIds.push(set.id);
 
       // Test with matching hostname
@@ -148,7 +140,7 @@ describe('Credential Affinity Integration Tests', () => {
         required_protocol: 'ssh_password',
       };
 
-      const credentials = await credentialSetService.selectCredentials(set.id, context);
+      const credentials = await credentialSetService.selectCredentials(set.id, context, undefined, 'test-user', TEST_ORG);
 
       expect(credentials).toHaveLength(1);
       expect(credentials[0].affinity.hostname_patterns).toContain('db-*');
@@ -174,14 +166,11 @@ describe('Credential Affinity Integration Tests', () => {
       });
       createdCredentialIds.push(credentialId);
 
-      const set = await credentialSetService.create(
-        {
-          name: 'AWS Credential Set',
-          credential_ids: [credentialId],
-          strategy: 'adaptive',
-        },
-        'test-user'
-      );
+      const set = await credentialSetService.create({
+        name: 'AWS Credential Set',
+        credential_ids: [credentialId],
+        strategy: 'adaptive',
+      }, 'test-user', TEST_ORG);
       createdSetIds.push(set.id);
 
       // Test with matching context
@@ -191,7 +180,7 @@ describe('Credential Affinity Integration Tests', () => {
         required_protocol: 'aws_iam',
       };
 
-      const credentials = await credentialSetService.selectCredentials(set.id, context);
+      const credentials = await credentialSetService.selectCredentials(set.id, context, undefined, 'test-user', TEST_ORG);
 
       expect(credentials).toHaveLength(1);
       expect(credentials[0].affinity.cloud_providers).toContain('aws');
@@ -233,15 +222,12 @@ describe('Credential Affinity Integration Tests', () => {
       createdCredentialIds.push(cred3);
 
       // Create credential set with sequential strategy
-      const set = await credentialSetService.create(
-        {
-          name: 'Sequential Test Set',
-          credential_ids: [cred1, cred2, cred3],
-          strategy: 'sequential',
-          stop_on_success: true,
-        },
-        'test-user'
-      );
+      const set = await credentialSetService.create({
+        name: 'Sequential Test Set',
+        credential_ids: [cred1, cred2, cred3],
+        strategy: 'sequential',
+        stop_on_success: true,
+      }, 'test-user', TEST_ORG);
       createdSetIds.push(set.id);
 
       const context: CredentialMatchContext = {
@@ -249,7 +235,7 @@ describe('Credential Affinity Integration Tests', () => {
         required_protocol: 'ssh_password',
       };
 
-      const credentials = await credentialSetService.selectCredentials(set.id, context);
+      const credentials = await credentialSetService.selectCredentials(set.id, context, undefined, 'test-user', TEST_ORG);
 
       // Should return credentials in set order
       expect(credentials).toHaveLength(3);
@@ -281,22 +267,19 @@ describe('Credential Affinity Integration Tests', () => {
       createdCredentialIds.push(cred2);
 
       // Create credential set with parallel strategy
-      const set = await credentialSetService.create(
-        {
-          name: 'Parallel Test Set',
-          credential_ids: [cred1, cred2],
-          strategy: 'parallel',
-          stop_on_success: false,
-        },
-        'test-user'
-      );
+      const set = await credentialSetService.create({
+        name: 'Parallel Test Set',
+        credential_ids: [cred1, cred2],
+        strategy: 'parallel',
+        stop_on_success: false,
+      }, 'test-user', TEST_ORG);
       createdSetIds.push(set.id);
 
       const context: CredentialMatchContext = {
         hostname: 'test-server',
       };
 
-      const credentials = await credentialSetService.selectCredentials(set.id, context);
+      const credentials = await credentialSetService.selectCredentials(set.id, context, undefined, 'test-user', TEST_ORG);
 
       // Should return all credentials
       expect(credentials).toHaveLength(2);
@@ -348,15 +331,12 @@ describe('Credential Affinity Integration Tests', () => {
       createdCredentialIds.push(cred3);
 
       // Create credential set with adaptive strategy
-      const set = await credentialSetService.create(
-        {
-          name: 'Adaptive Test Set',
-          credential_ids: [cred1, cred2, cred3],
-          strategy: 'adaptive',
-          stop_on_success: true,
-        },
-        'test-user'
-      );
+      const set = await credentialSetService.create({
+        name: 'Adaptive Test Set',
+        credential_ids: [cred1, cred2, cred3],
+        strategy: 'adaptive',
+        stop_on_success: true,
+      }, 'test-user', TEST_ORG);
       createdSetIds.push(set.id);
 
       // Context that matches cred2 best
@@ -367,7 +347,7 @@ describe('Credential Affinity Integration Tests', () => {
         required_protocol: 'ssh_password',
       };
 
-      const credentials = await credentialSetService.selectCredentials(set.id, context);
+      const credentials = await credentialSetService.selectCredentials(set.id, context, undefined, 'test-user', TEST_ORG);
 
       // Should rank cred2 highest due to best affinity match
       expect(credentials).toHaveLength(3);
@@ -405,14 +385,11 @@ describe('Credential Affinity Integration Tests', () => {
       createdCredentialIds.push(winrmCred);
 
       // Create set with both credentials
-      const set = await credentialSetService.create(
-        {
-          name: 'Multi-Protocol Set',
-          credential_ids: [sshCred, winrmCred],
-          strategy: 'adaptive',
-        },
-        'test-user'
-      );
+      const set = await credentialSetService.create({
+        name: 'Multi-Protocol Set',
+        credential_ids: [sshCred, winrmCred],
+        strategy: 'adaptive',
+      }, 'test-user', TEST_ORG);
       createdSetIds.push(set.id);
 
       // Test SSH context
@@ -421,7 +398,7 @@ describe('Credential Affinity Integration Tests', () => {
         required_protocol: 'ssh_password',
       };
 
-      const sshCredentials = await credentialSetService.selectCredentials(set.id, sshContext);
+      const sshCredentials = await credentialSetService.selectCredentials(set.id, sshContext, undefined, 'test-user', TEST_ORG);
 
       // Should prefer SSH credential
       expect(sshCredentials[0].protocol).toBe('ssh_password');
@@ -432,7 +409,7 @@ describe('Credential Affinity Integration Tests', () => {
         required_protocol: 'winrm',
       };
 
-      const winrmCredentials = await credentialSetService.selectCredentials(set.id, winrmContext);
+      const winrmCredentials = await credentialSetService.selectCredentials(set.id, winrmContext, undefined, 'test-user', TEST_ORG);
 
       // Should prefer WinRM credential
       expect(winrmCredentials[0].protocol).toBe('winrm');
@@ -466,14 +443,11 @@ describe('Credential Affinity Integration Tests', () => {
       });
       createdCredentialIds.push(cred2);
 
-      const set = await credentialSetService.create(
-        {
-          name: 'Overlapping Network Set',
-          credential_ids: [cred1, cred2],
-          strategy: 'adaptive',
-        },
-        'test-user'
-      );
+      const set = await credentialSetService.create({
+        name: 'Overlapping Network Set',
+        credential_ids: [cred1, cred2],
+        strategy: 'adaptive',
+      }, 'test-user', TEST_ORG);
       createdSetIds.push(set.id);
 
       const context: CredentialMatchContext = {
@@ -481,7 +455,7 @@ describe('Credential Affinity Integration Tests', () => {
         required_protocol: 'ssh_password',
       };
 
-      const credentials = await credentialSetService.selectCredentials(set.id, context);
+      const credentials = await credentialSetService.selectCredentials(set.id, context, undefined, 'test-user', TEST_ORG);
 
       // Both credentials should match, but order may vary based on affinity calculation
       expect(credentials).toHaveLength(2);
@@ -504,14 +478,11 @@ describe('Credential Affinity Integration Tests', () => {
 
       // Attempt to create set with empty credential_ids
       await expect(
-        credentialSetService.create(
-          {
-            name: 'Empty Set',
-            credential_ids: [],
-            strategy: 'sequential',
-          },
-          'test-user'
-        )
+        credentialSetService.create({
+          name: 'Empty Set',
+          credential_ids: [],
+          strategy: 'sequential',
+        }, 'test-user', TEST_ORG)
       ).rejects.toThrow('Credential set must contain at least one credential');
     }, 60000);
 
@@ -528,15 +499,13 @@ describe('Credential Affinity Integration Tests', () => {
 
       // Attempt to create set with invalid credential ID
       await expect(
-        credentialSetService.create(
-          {
-            name: 'Invalid Set',
-            credential_ids: [cred, uuidv4()],
-            strategy: 'sequential',
-          },
-          'test-user'
-        )
-      ).rejects.toThrow('The following credential IDs do not exist');
+        credentialSetService.create({
+          name: 'Invalid Set',
+          credential_ids: [cred, uuidv4()],
+          strategy: 'sequential',
+        }, 'test-user', TEST_ORG)
+      ).rejects.toBeInstanceOf(Error);
+      expect((await pool.query('SELECT id FROM credential_sets WHERE name = $1 AND created_by = $2', ['Invalid Set', 'test-user'])).rows).toEqual([]);
     }, 60000);
 
     it('should handle non-existent credential set', async () => {
@@ -545,7 +514,7 @@ describe('Credential Affinity Integration Tests', () => {
       };
 
       await expect(
-        credentialSetService.selectCredentials(uuidv4(), context)
+        credentialSetService.selectCredentials(uuidv4(), context, undefined, 'test-user', TEST_ORG)
       ).rejects.toThrow('Credential set with ID');
     }, 60000);
   });
@@ -568,8 +537,8 @@ async function createCredential(
 
   await pool.query(
     `INSERT INTO credentials (
-      id, name, description, protocol, scope, credentials, affinity, tags, created_by
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      id, name, description, protocol, scope, credentials, affinity, tags, created_by, organization_id
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
     [
       id,
       input.name,
@@ -580,6 +549,7 @@ async function createCredential(
       input.affinity || {},
       input.tags || [],
       'test-user',
+      TEST_ORG,
     ]
   );
 

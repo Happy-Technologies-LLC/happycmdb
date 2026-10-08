@@ -194,6 +194,37 @@ export class AuthMiddleware {
   }
 
   /**
+   * Middleware to require the dedicated platform administrator (P-6, HP1-S6).
+   * `req.user._platformAdmin` is set by AuthService.verifyToken from the
+   * freshly loaded user (flag set and not a seeded account) and is always
+   * false for API keys. Role and organization grant nothing here. Refuses
+   * before any data or queue access.
+   */
+  requirePlatformAdmin() {
+    return (req: AuthenticatedRequest, res: Response, next: NextFunction): void => {
+      if (!req.user) {
+        res.status(401).json({
+          success: false,
+          error: 'Unauthorized',
+          message: 'Authentication required',
+        });
+        return;
+      }
+
+      if (req.user._platformAdmin !== true) {
+        res.status(403).json({
+          success: false,
+          error: 'Forbidden',
+          message: 'Platform administrator required',
+        });
+        return;
+      }
+
+      next();
+    };
+  }
+
+  /**
    * Extract JWT token from request
    */
   private extractToken(req: Request): string | null {

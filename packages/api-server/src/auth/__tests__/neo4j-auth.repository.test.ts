@@ -15,6 +15,7 @@ jest.mock('@cmdb/database', () => ({
 }));
 
 import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
+import neo4j from 'neo4j-driver';
 import { Neo4jAuthRepository } from '../neo4j-auth.repository';
 
 type AnyMock = jest.Mock<(...args: any[]) => any>;
@@ -134,6 +135,47 @@ describe('Neo4jAuthRepository', () => {
       mockPostgresQuery.mockResolvedValue({ rowCount: 0 });
 
       await expect(repository.deleteApiKey('user-1', 'key-1')).resolves.toBe(0);
+    });
+  });
+
+  // HP1-S6 (v16 §1.1 mapped spelling contract, SEC15-04 / SEC16-03).
+  describe('user mapping', () => {
+    const load = async (properties: Record<string, unknown>) => {
+      mockSession.run.mockResolvedValue({ records: [{ get: () => ({ properties, elementId: '4:abc:1' }) }] });
+      return repository.findUserById('u');
+    };
+
+    it('either spelling of the default-password marker marks the user (fail-closed)', async () => {
+      expect((await load({ _id: 'u', defaultPasswordSuspect: true }))?._defaultPasswordSuspect).toBe(true);
+      expect((await load({ _id: 'u', defaultPasswordSuspect: false, _defaultPasswordSuspect: true }))?._defaultPasswordSuspect).toBe(true);
+      expect((await load({ _id: 'u', defaultPasswordSuspect: false }))?._defaultPasswordSuspect).toBe(false);
+    });
+
+    it('maps the credential generation: absent 0, Neo4j Integer, anything else (Float, string, unsafe) NaN', async () => {
+      expect((await load({ _id: 'u' }))?._credentialEpoch).toBe(0);
+      expect((await load({ _id: 'u', credentialEpoch: neo4j.int(3) }))?._credentialEpoch).toBe(3);
+      expect((await load({ _id: 'u', credentialEpoch: 1.0 }))?._credentialEpoch).toBeNaN();
+      expect((await load({ _id: 'u', credentialEpoch: '1' }))?._credentialEpoch).toBeNaN();
+      expect((await load({ _id: 'u', credentialEpoch: neo4j.int('9007199254740993') }))?._credentialEpoch).toBeNaN();
+    });
+
+    it('maps the platform flag, seed provenance and element id', async () => {
+      expect(await load({ _id: 'u', platformAdmin: true, seedProvenance: 'seed-data' })).toMatchObject({
+        _platformAdmin: true, _seedProvenance: 'seed-data', _elementId: '4:abc:1',
+      });
+      expect((await load({ _id: 'u', platformAdmin: 'true' }))?._platformAdmin).toBe(false);
+    });
+  });
+
+  describe('API keys carry the authorizing credential generation', () => {
+    it('refuses to create a key without one and stores the one given', async () => {
+      mockPostgresQuery.mockResolvedValue({ rows: [{ id: 'k', credential_epoch: 2 }] });
+      const key = { _userId: 'u', _keyHash: 'h', _name: 'n', _role: 'operator', _enabled: true } as never;
+
+      await expect(repository.createApiKey(key)).rejects.toThrow('authorizing credential generation required');
+      await expect(repository.createApiKey({ ...(key as object), _credentialEpoch: 2 } as never))
+        .resolves.toMatchObject({ _credentialEpoch: 2 });
+      expect(mockPostgresQuery.mock.calls[0]?.[1]).toEqual(['u', 'h', 'n', 'operator', true, null, 2]);
     });
   });
 });

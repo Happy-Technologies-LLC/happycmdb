@@ -52,7 +52,10 @@ const ORG_A = '11111111-1111-4111-8111-111111111111';
 const ORG_B = '22222222-2222-4222-8222-222222222222';
 
 // Users as the Neo4j store returns them; the org is a user attribute, never a request input.
-const USERS: Record<string, { _id: string; _username: string; _role: string; _enabled: boolean; _organizationId?: string }> = {
+const USERS: Record<string, {
+  _id: string; _username: string; _role: string; _enabled: boolean; _organizationId?: string;
+  _credentialEpoch?: number; _defaultPasswordSuspect?: boolean;
+}> = {
   'user-a': { _id: 'user-a', _username: 'alice', _role: 'operator', _enabled: true, _organizationId: ORG_A },
   'user-b': { _id: 'user-b', _username: 'bob', _role: 'operator', _enabled: true, _organizationId: ORG_B },
   'user-none': { _id: 'user-none', _username: 'nora', _role: 'admin', _enabled: true },
@@ -299,6 +302,37 @@ describe('WebSocket /ws authentication and tenancy', () => {
         expect(await firstOf(a)).toEqual({ closed: 4003 });
       } finally {
         USERS['user-a']!._organizationId = ORG_A;
+      }
+    });
+
+    // HP1-S6 (v16 §1.1 WebSocket): an operator rotation bumps the credential
+    // generation; a socket opened with a pre-rotation token must not keep
+    // receiving tenant events until that token expires.
+    it('closes the socket with 4001 once the re-check finds the credential generation rotated', async () => {
+      await restartWithFakeClock();
+      const a = await connected(AS_A());
+      USERS['user-a']!._credentialEpoch = 1;
+      try {
+        await jest.advanceTimersByTimeAsync(5 * 60_000);
+        fromRedis(ORG_A_MESSAGE);
+
+        expect(await firstOf(a)).toEqual({ closed: 4001 });
+      } finally {
+        delete USERS['user-a']!._credentialEpoch;
+      }
+    });
+
+    it('closes the socket with 4001 once the re-check finds the account marked default-password', async () => {
+      await restartWithFakeClock();
+      const a = await connected(AS_A());
+      USERS['user-a']!._defaultPasswordSuspect = true;
+      try {
+        await jest.advanceTimersByTimeAsync(5 * 60_000);
+        fromRedis(ORG_A_MESSAGE);
+
+        expect(await firstOf(a)).toEqual({ closed: 4001 });
+      } finally {
+        delete USERS['user-a']!._defaultPasswordSuspect;
       }
     });
 

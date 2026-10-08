@@ -11,6 +11,7 @@
 
 import { describe, it, expect, beforeEach } from '@jest/globals';
 import { ApiKeyNotFoundError, AuthService, AuthRepository, UserProfileUpdate } from '../auth.service';
+import type { GuardedPasswordWrite, GuardedUserWrite } from '../auth.service';
 import { User, ApiKey } from '../types';
 import { PasswordService } from '../password.service';
 import { JWTService } from '../jwt.service';
@@ -52,12 +53,30 @@ class InMemoryAuthRepository implements AuthRepository {
       ...existing,
       ...(updates.name !== undefined ? { _name: updates.name } : {}),
       ...(updates.avatar !== undefined ? { _avatar: updates.avatar } : {}),
-      ...(updates.passwordHash !== undefined ? { _passwordHash: updates.passwordHash } : {}),
       _updatedAt: new Date(),
     };
     this.users.set(id, updated);
     return updated;
   }
+
+  async updatePasswordHashGuarded(write: GuardedPasswordWrite): Promise<boolean> {
+    const existing = this.users.get(write.userId);
+    if (!existing || existing._passwordHash !== write.readHash) {
+      return false;
+    }
+    this.users.set(write.userId, { ...existing, _passwordHash: write.newHash });
+    return true;
+  }
+
+  async disableUserGuarded(write: GuardedUserWrite): Promise<boolean> {
+    return this.users.has(write.userId);
+  }
+
+  async markDefaultSuspect(): Promise<boolean> {
+    return false;
+  }
+
+  async recordCredentialEvent(): Promise<void> {}
 
   async deleteUserAccount(id: string): Promise<void> {
     this.users.delete(id);
@@ -135,14 +154,14 @@ describe('AuthService profile/password/account lifecycle', () => {
       const before = repository.users.get('user-1')?._passwordHash;
 
       await expect(
-        service.changePassword('user-1', 'wrong-password', 'new-password-123')
+        service.changePassword('user-1', 'wrong-password', 'new-password-123', 0)
       ).rejects.toThrow('Current password is incorrect');
 
       expect(repository.users.get('user-1')?._passwordHash).toBe(before);
     });
 
     it('accepts the correct current password and the new password verifies afterwards', async () => {
-      await service.changePassword('user-1', 'correct-horse-battery-staple', 'new-password-123');
+      await service.changePassword('user-1', 'correct-horse-battery-staple', 'new-password-123', 0);
 
       const updatedHash = repository.users.get('user-1')?._passwordHash as string;
       expect(await passwordService.verify('new-password-123', updatedHash)).toBe(true);
@@ -150,7 +169,7 @@ describe('AuthService profile/password/account lifecycle', () => {
     });
 
     it('throws for an unknown user id', async () => {
-      await expect(service.changePassword('ghost', 'a', 'b')).rejects.toThrow('User not found');
+      await expect(service.changePassword('ghost', 'a-new-password', 'b-new-password', 0)).rejects.toThrow('User not found');
     });
   });
 
@@ -167,7 +186,7 @@ describe('AuthService profile/password/account lifecycle', () => {
         _updatedAt: new Date(),
       } as User);
 
-      await service.deleteAccount('user-1');
+      await service.deleteAccount('user-1', 0);
 
       expect(repository.deletedUserIds).toEqual(['user-1']);
       expect(await service.getUserProfile('user-1')).toBeNull();
@@ -175,7 +194,7 @@ describe('AuthService profile/password/account lifecycle', () => {
     });
 
     it('throws for an unknown user id instead of silently succeeding', async () => {
-      await expect(service.deleteAccount('ghost')).rejects.toThrow('User not found');
+      await expect(service.deleteAccount('ghost', 0)).rejects.toThrow('User not found');
       expect(repository.deletedUserIds).toEqual([]);
     });
   });

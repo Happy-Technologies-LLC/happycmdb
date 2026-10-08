@@ -90,7 +90,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --skip-build      Skip building TypeScript packages"
             echo "  --clean           Clean all Docker volumes and rebuild from scratch"
             echo "  --preserve-data   Keep existing database data (only rebuild app containers)"
-            echo "  --seed            Seed database with test data after deployment"
+            echo "  --seed            Seed database with test data after deployment (NODE_ENV=development only)"
             echo "  --help, -h        Show this help message"
             echo ""
             echo "Examples:"
@@ -114,6 +114,12 @@ if [ -f ".env" ]; then
     set -a
     source .env
     set +a
+fi
+
+# Seeding writes a known admin credential: development only (HP1-S6).
+if [ "$SEED_DATA" = true ] && [ "${NODE_ENV:-}" != "development" ]; then
+    log_error "--seed requires NODE_ENV=development (seeded credentials are refused everywhere else)"
+    exit 1
 fi
 
 # Start deployment
@@ -359,10 +365,9 @@ if [ "$SEED_DATA" = true ]; then
     if [ $? -eq 0 ]; then
         log_success "Database seeded successfully"
         echo ""
-        echo "Test Credentials:"
-        echo "  Email:    admin@happycmdb.local"
-        echo "  Password: Admin123!"
-        echo "  Role:     admin"
+        echo "Development admin: admin@happycmdb.local (password from SEED_USER_PASSWORD)."
+        echo "Outside development the seeded admin cannot log in until an operator rotates it:"
+        echo "  npx ts-node packages/api-server/src/scripts/rotate-user-password.ts --user-id <id> --operator <name>"
     else
         log_warning "Database seeding failed - you can run it manually with: npx ts-node infrastructure/scripts/seed-data.ts"
     fi
@@ -426,7 +431,7 @@ echo "🔐 Default Credentials:"
 echo "  Neo4j:             neo4j / cmdb_password_dev"
 echo "  PostgreSQL:        postgres / cmdb_password_dev"
 if [ "$SEED_DATA" = true ]; then
-    echo "  Admin User:        admin@happycmdb.local / Admin123!"
+    echo "  Admin User:        admin@happycmdb.local (development seed; rotate before any other use)"
 fi
 echo ""
 echo "🚀 v2.0 Features Deployed:"

@@ -372,26 +372,4 @@ export class UnifiedCredentialController {
     }
   }
 
-  /**
-   * OAuth state/callback SQL lacks a verified owner and organization predicate.
-   * Until secured, roles and API keys cannot authorize these writes.
-   */
-  async authorize(req: Request, res: Response): Promise<void> {
-    const id = req.params['id']!;
-    try {
-      const credential = await this.credentialService.getById(id, ...this.owner(req));
-      if (!credential) {
-        res.status(404).json({ success: false, error: 'Not Found', message: 'Credential not found' });
-        return;
-      }
-      res.status(403).json({ success: false, error: 'Forbidden', message: 'Credential OAuth authorization unavailable' });
-    } catch (error) {
-      logger.error('Error checking OAuth credential ownership', { error, id });
-      res.status(500).json({ success: false, error: 'Failed to authorize credential' });
-    }
-  }
-
-  async oauthCallback(_req: Request, res: Response): Promise<void> {
-    res.status(403).json({ success: false, error: 'Forbidden', message: 'Credential OAuth callback unavailable' });
-  }
 }

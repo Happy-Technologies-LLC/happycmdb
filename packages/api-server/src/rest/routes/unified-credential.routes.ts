@@ -3,10 +3,9 @@
 
 /**
  * Unified Credential & Credential Set Routes. server.ts authenticates all
- * /api/v1 requests before this router. This router requires the verified
- * organization and owner for every path. Reads require authentication;
- * writes additionally require the 'write' permission. OAuth authorization
- * and callback are refused until their substrate enforces ownership.
+ * /api/v1 requests before this router. The OAuth endpoints refuse all
+ * authenticated callers before any credential or OAuth storage access.
+ * Other paths require the verified organization and owner.
  */
 
 import { Router, type Request, type Response, type NextFunction } from 'express';
@@ -25,6 +24,13 @@ const authMiddleware = getAuthMiddleware();
 
 // Apply audit middleware to all routes
 unifiedCredentialRoutes.use(auditMiddleware);
+// Refuse OAuth uniformly for every authenticated caller. The substrate's
+// state/token stores are not tenant-scoped; no ID lookup or state handling here.
+const refuseOAuth = (_req: Request, res: Response): void => {
+  res.status(403).json({ success: false, error: 'Forbidden', message: 'Credential OAuth is unavailable' });
+};
+unifiedCredentialRoutes.post('/credentials/:id/oauth/authorize', refuseOAuth);
+unifiedCredentialRoutes.get('/credentials/oauth/callback', refuseOAuth);
 // All credential and credential-set paths use the freshly resolved identity
 // organization; client-supplied filters/headers never establish tenancy.
 unifiedCredentialRoutes.use(authMiddleware.requireOrganization());
@@ -216,15 +222,6 @@ unifiedCredentialRoutes.post(
 );
 
 /**
- * GET /api/v1/credentials/oauth/callback - Handle OAuth provider redirect callback
- * Must be before /:id routes to avoid param capture
- */
-unifiedCredentialRoutes.get(
-  '/credentials/oauth/callback',
-  credentialController.oauthCallback.bind(credentialController)
-);
-
-/**
  * GET /api/v1/credentials/:id - Get credential by ID
  */
 unifiedCredentialRoutes.get(
@@ -257,15 +254,6 @@ unifiedCredentialRoutes.delete(
 unifiedCredentialRoutes.post(
   '/credentials/:id/validate',
   credentialController.validate.bind(credentialController)
-);
-
-/**
- * POST /api/v1/credentials/:id/oauth/authorize - Begin OAuth authorization for an oauth2 credential
- */
-unifiedCredentialRoutes.post(
-  '/credentials/:id/oauth/authorize',
-  authMiddleware.requirePermission('write'),
-  credentialController.authorize.bind(credentialController)
 );
 
 // =============================================================================

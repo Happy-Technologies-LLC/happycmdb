@@ -118,12 +118,19 @@ it('org A and same-org nonowner cannot enumerate or read B; B owner reads redact
   const legacy = await request(app).get(`/api/v1/credentials/${legacyId}`).set(as('a'));
   expect(legacy.status).toBe(404);
   expect(legacy.body).toEqual((await request(app).get(`/api/v1/credentials/${missing}`).set(as('a'))).body);
-  const foreignOAuth = await request(app).post(`/api/v1/credentials/${bId}/oauth/authorize`).set(as('a')).send({});
-  const missingOAuth = await request(app).post(`/api/v1/credentials/${missing}/oauth/authorize`).set(as('a')).send({});
-  expect(foreignOAuth.status).toBe(404);
-  expect(foreignOAuth.body).toEqual(missingOAuth.body);
-  expect((await request(app).post(`/api/v1/credentials/${bId}/oauth/authorize`).set(as('b')).send({})).status).toBe(403);
-  expect((await request(app).get('/api/v1/credentials/oauth/callback?state=fake&code=fake').set(as('b'))).status).toBe(403);
+  const beforeOAuthSql = serial;
+  const refused = { success: false, error: 'Forbidden', message: 'Credential OAuth is unavailable' };
+  for (const principal of ['a', 'b', 'none', 'agent']) {
+    for (const id of [aId, bId, missing]) {
+      const response = await request(app).post(`/api/v1/credentials/${id}/oauth/authorize`).set(as(principal)).send({});
+      expect(response.status).toBe(403);
+      expect(response.body).toEqual(refused);
+    }
+    const callback = await request(app).get('/api/v1/credentials/oauth/callback?state=fake&code=fake').set(as(principal));
+    expect(callback.status).toBe(403);
+    expect(callback.body).toEqual(refused);
+  }
+  expect(serial).toBe(beforeOAuthSql);
 });
 
 it('foreign and missing writes/deletes are indistinguishable with no mutation; owner succeeds', async () => {

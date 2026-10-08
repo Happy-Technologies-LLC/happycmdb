@@ -285,6 +285,7 @@ itilRoutes.post(
 
 itilRoutes.post(
   '/baselines',
+  authMiddleware.requireOrganization(),
   authMiddleware.requirePermission('write'),
   validateRequest(createBaselineSchema, 'body'),
   controller.createBaseline.bind(controller)
@@ -292,28 +293,33 @@ itilRoutes.post(
 
 itilRoutes.get(
   '/baselines',
+  authMiddleware.requireOrganization(),
   controller.getBaselines.bind(controller)
 );
 
 itilRoutes.get(
   '/baselines/:id',
+  authMiddleware.requireOrganization(),
   controller.getBaseline.bind(controller)
 );
 
 itilRoutes.delete(
   '/baselines/:id',
+  authMiddleware.requireOrganization(),
   authMiddleware.requirePermission('write'),
   controller.deleteBaseline.bind(controller)
 );
 
 itilRoutes.get(
   '/baselines/:id/comparison',
+  authMiddleware.requireOrganization(),
   controller.compareToBaseline.bind(controller)
 );
 
 itilRoutes.post(
   '/baselines/:id/restore',
   authMiddleware.requirePermission('write'),
+  authMiddleware.requireOrganization(),
   validateRequest(restoreFromBaselineSchema, 'body'),
   controller.restoreFromBaseline.bind(controller)
 );

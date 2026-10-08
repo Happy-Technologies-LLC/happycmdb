@@ -79,6 +79,7 @@ describe('ITIL restoreFromBaseline and organization_id', () => {
       node['name'] = 'current-name';
       const req = {
         params: { id: 'base-1' },
+        user: { _organizationId: ORG_A },
         body: { ciId: 'ci-1', restoreAttributes, performedBy: 'alice' },
       } as unknown as Request;
       const res = mockRes();
@@ -96,6 +97,7 @@ describe('ITIL restoreFromBaseline and organization_id', () => {
       node['name'] = 'current-name';
       const req = {
         params: { id: 'base-1' },
+        user: { _organizationId: ORG_A },
         body: { ciId: 'ci-1', restoreAttributes, performedBy: 'alice' },
       } as unknown as Request;
       const res = mockRes();

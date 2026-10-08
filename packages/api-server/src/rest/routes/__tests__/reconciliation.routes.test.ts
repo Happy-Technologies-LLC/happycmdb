@@ -54,10 +54,18 @@ const mockRequirePermission = jest.fn(
   }
 );
 
+const mockRequireOrganization = jest.fn(
+  () => (req: Request, res: Response, next: () => void) => {
+    if (!(req as ReqWithUser).user) return res.status(403).json({ error: 'Forbidden' });
+    next();
+  }
+);
+
 jest.mock('../../../auth/auth-bootstrap', () => ({
   getAuthMiddleware: jest.fn(() => ({
     authenticate: mockAuthenticate,
     requirePermission: mockRequirePermission,
+    requireOrganization: mockRequireOrganization,
   })),
 }));
 

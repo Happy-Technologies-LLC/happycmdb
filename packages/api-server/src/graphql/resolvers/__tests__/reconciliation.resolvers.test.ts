@@ -53,6 +53,7 @@ const operatorUser: TokenPayload = {
   _username: 'op-bob',
   _role: 'operator',
   _type: 'access',
+  _organizationId: 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa',
 };
 
 const viewerUser: TokenPayload = {

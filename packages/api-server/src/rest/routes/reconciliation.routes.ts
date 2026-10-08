@@ -104,6 +104,7 @@ const conflictsQuerySchema = Joi.object({
  */
 reconciliationRoutes.post(
   '/match',
+  authMiddleware.requireOrganization(),
   validateRequest(matchRequestSchema, 'body'),
   controller.findMatches.bind(controller)
 );
@@ -115,6 +116,7 @@ reconciliationRoutes.post(
 reconciliationRoutes.post(
   '/merge',
   authMiddleware.requirePermission('write'),
+  authMiddleware.requireOrganization(),
   validateRequest(mergeRequestSchema, 'body'),
   controller.mergeCI.bind(controller)
 );

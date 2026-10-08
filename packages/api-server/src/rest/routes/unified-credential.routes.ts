@@ -33,8 +33,8 @@ unifiedCredentialRoutes.post('/credentials/:id/oauth/authorize', refuseOAuth);
 unifiedCredentialRoutes.get('/credentials/oauth/callback', refuseOAuth);
 // All credential and credential-set paths use the freshly resolved identity
 // organization; client-supplied filters/headers never establish tenancy.
-unifiedCredentialRoutes.use(authMiddleware.requireOrganization());
-unifiedCredentialRoutes.use((req: Request, res: Response, next: NextFunction) => {
+unifiedCredentialRoutes.use(['/credentials', '/credential-sets'], authMiddleware.requireOrganization());
+unifiedCredentialRoutes.use(['/credentials', '/credential-sets'], (req: Request, res: Response, next: NextFunction) => {
   const userId = (req as AuthenticatedRequest).user?._userId;
   if (typeof userId !== 'string' || userId.length === 0) {
     res.status(403).json({ success: false, error: 'Forbidden', message: 'Verified credential owner required' });

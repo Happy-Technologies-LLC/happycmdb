@@ -16,12 +16,56 @@
  */
 
 import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
-import type { AuthRepository, UserProfileUpdate } from './auth.service';
+import neo4j from 'neo4j-driver';
+import type {
+  AuthRepository, CredentialEventInput, GuardedPasswordWrite, GuardedUserWrite, UserProfileUpdate,
+} from './auth.service';
 import type { ApiKey, User } from './types';
 
 /** Structural shape of a neo4j-driver Node sufficient for property reads here. */
 interface Neo4jUserNode {
   properties: Record<string, unknown>;
+  elementId?: string;
+}
+
+/** Either spelling of the default-password marker set means marked (fail-closed). */
+const MARKED = '(coalesce(u.defaultPasswordSuspect, false) OR coalesce(u._defaultPasswordSuspect, false))';
+
+/** HP1-S6 changePassword write: lands only on the node read, at the authorizing generation, unmarked, still holding the verified hash. */
+export const GUARDED_PASSWORD_CYPHER = `
+MATCH (u:User) WHERE elementId(u) = $elementId AND (u._id = $userId OR u.id = $userId)
+  AND coalesce(u.credentialEpoch, 0) = $credentialEpoch
+  AND NOT ${MARKED}
+  AND coalesce(u._passwordHash, u.passwordHash) = $readHash
+SET u._passwordHash = $newHash, u.passwordHash = $newHash, u._updatedAt = datetime(), u.updatedAt = datetime()
+RETURN count(u) AS n`;
+
+/** HP1-S6 deleteAccount first step: disables the account at the authorizing generation, unmarked. */
+export const GUARDED_DISABLE_CYPHER = `
+MATCH (u:User) WHERE elementId(u) = $elementId AND (u._id = $userId OR u.id = $userId)
+  AND coalesce(u.credentialEpoch, 0) = $credentialEpoch
+  AND NOT ${MARKED}
+SET u._enabled = false, u.enabled = false, u._updatedAt = datetime(), u.updatedAt = datetime()
+RETURN count(u) AS n`;
+
+/** Login marker setter: false → true only, so an already-marked account adds no audit row. */
+export const MARK_DEFAULT_SUSPECT_CYPHER = `
+MATCH (u:User) WHERE elementId(u) = $elementId AND (u._id = $userId OR u.id = $userId)
+  AND NOT ${MARKED}
+SET u.defaultPasswordSuspect = true
+RETURN count(u) AS n`;
+
+/** Stored credentialEpoch → number: absent 0, a safe Neo4j Integer, otherwise NaN (refuses every credential). */
+export function mapCredentialEpoch(value: unknown): number {
+  if (value === undefined || value === null) return 0;
+  if (neo4j.isInt(value)) {
+    return neo4j.integer.inSafeRange(value) ? neo4j.integer.toNumber(value) : Number.NaN;
+  }
+  return Number.NaN;
+}
+
+function toCount(value: unknown): number {
+  return neo4j.isInt(value) ? neo4j.integer.toNumber(value) : Number(value);
 }
 
 export class Neo4jAuthRepository implements AuthRepository {
@@ -43,6 +87,11 @@ export class Neo4jAuthRepository implements AuthRepository {
       _name: props._name || props.name,
       _avatar: props._avatar || props.avatar,
       _organizationId: props._organizationId ?? props.organizationId,
+      _elementId: node.elementId,
+      _platformAdmin: props._platformAdmin === true || props.platformAdmin === true,
+      _seedProvenance: props.seedProvenance ?? props._seedProvenance ?? undefined,
+      _defaultPasswordSuspect: props.defaultPasswordSuspect === true || props._defaultPasswordSuspect === true,
+      _credentialEpoch: mapCredentialEpoch(props.credentialEpoch),
     } as User;
   }
 
@@ -120,10 +169,6 @@ export class Neo4jAuthRepository implements AuthRepository {
       setClauses.push('u._avatar = $avatar', 'u.avatar = $avatar');
       params['avatar'] = updates.avatar;
     }
-    if (updates.passwordHash !== undefined) {
-      setClauses.push('u._passwordHash = $passwordHash', 'u.passwordHash = $passwordHash');
-      params['passwordHash'] = updates.passwordHash;
-    }
 
     const session = this.neo4jClient.getSession();
     try {
@@ -147,6 +192,41 @@ export class Neo4jAuthRepository implements AuthRepository {
     }
   }
 
+  async updatePasswordHashGuarded(write: GuardedPasswordWrite): Promise<boolean> {
+    return this.guardedWrite(GUARDED_PASSWORD_CYPHER, {
+      elementId: write.elementId ?? null, userId: write.userId, credentialEpoch: neo4j.int(write.credentialEpoch),
+      readHash: write.readHash, newHash: write.newHash,
+    });
+  }
+
+  async disableUserGuarded(write: GuardedUserWrite): Promise<boolean> {
+    return this.guardedWrite(GUARDED_DISABLE_CYPHER, {
+      elementId: write.elementId ?? null, userId: write.userId, credentialEpoch: neo4j.int(write.credentialEpoch),
+    });
+  }
+
+  async markDefaultSuspect(user: User): Promise<boolean> {
+    return this.guardedWrite(MARK_DEFAULT_SUSPECT_CYPHER, { elementId: user._elementId ?? null, userId: user._id });
+  }
+
+  async recordCredentialEvent(event: CredentialEventInput): Promise<void> {
+    await this.postgresClient.query(
+      'INSERT INTO auth_credential_events (user_id, event, actor) VALUES ($1, $2, $3)',
+      [event.userId, event.event, event.actor]
+    );
+  }
+
+  /** Runs one guarded statement returning `count(u) AS n`; true when exactly one node was written. */
+  private async guardedWrite(cypher: string, params: Record<string, unknown>): Promise<boolean> {
+    const session = this.neo4jClient.getSession();
+    try {
+      const result = await session.run(cypher, params);
+      return toCount(result.records[0]?.get('n')) === 1;
+    } finally {
+      await session.close();
+    }
+  }
+
   /**
    * Deletes every record owned solely by this account: the Postgres rows
    * (API keys, application settings, discovery provider settings) go
@@ -155,9 +235,10 @@ export class Neo4jAuthRepository implements AuthRepository {
    * its ability to log in -- is untouched. The Neo4j identity is only
    * removed once its dependent Postgres data is confirmed gone, so a
    * mid-flight failure never leaves orphaned secrets tied to a deleted
-   * user.
+   * user. With `elementId` (the node AuthService read and disabled), only
+   * that node is deleted, never another node sharing the id.
    */
-  async deleteUserAccount(id: string): Promise<void> {
+  async deleteUserAccount(id: string, elementId?: string): Promise<void> {
     const pgClient = await this.postgresClient.getClient();
     try {
       await pgClient.query('BEGIN');
@@ -174,7 +255,14 @@ export class Neo4jAuthRepository implements AuthRepository {
 
     const session = this.neo4jClient.getSession();
     try {
-      await session.run('MATCH (u:User) WHERE u._id = $id OR u.id = $id DETACH DELETE u', { id });
+      if (elementId === undefined) {
+        await session.run('MATCH (u:User) WHERE u._id = $id OR u.id = $id DETACH DELETE u', { id });
+      } else {
+        await session.run(
+          'MATCH (u:User) WHERE elementId(u) = $elementId AND (u._id = $id OR u.id = $id) DETACH DELETE u',
+          { id, elementId }
+        );
+      }
     } catch (error) {
       throw new Error(`Failed to delete user account: ${error instanceof Error ? error.message : 'Unknown error'}`);
     } finally {
@@ -185,7 +273,7 @@ export class Neo4jAuthRepository implements AuthRepository {
   async findApiKeyByKey(keyHash: string): Promise<ApiKey | null> {
     try {
       const result = await this.postgresClient.query(
-        `SELECT id, user_id, key_hash, name, role, enabled, created_at, expires_at, last_used_at, revoked_at
+        `SELECT id, user_id, key_hash, name, role, enabled, created_at, expires_at, last_used_at, revoked_at, credential_epoch
          FROM api_keys
          WHERE key_hash = $1 AND enabled = TRUE AND revoked_at IS NULL`,
         [keyHash]
@@ -206,6 +294,7 @@ export class Neo4jAuthRepository implements AuthRepository {
         _createdAt: row.created_at,
         expiresAt: row.expires_at,
         lastUsedAt: row.last_used_at,
+        _credentialEpoch: row.credential_epoch,
       } as ApiKey;
     } catch (error) {
       throw new Error(`Failed to find API key: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -213,11 +302,14 @@ export class Neo4jAuthRepository implements AuthRepository {
   }
 
   async createApiKey(apiKey: Omit<ApiKey, 'id' | 'createdAt'>): Promise<ApiKey> {
+    if (!Number.isSafeInteger(apiKey._credentialEpoch)) {
+      throw new Error('Failed to create API key: authorizing credential generation required');
+    }
     try {
       const result = await this.postgresClient.query(
-        `INSERT INTO api_keys (user_id, key_hash, name, role, enabled, expires_at)
-         VALUES ($1, $2, $3, $4, $5, $6)
-         RETURNING id, user_id, key_hash, name, role, enabled, created_at, expires_at, last_used_at`,
+        `INSERT INTO api_keys (user_id, key_hash, name, role, enabled, expires_at, credential_epoch)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         RETURNING id, user_id, key_hash, name, role, enabled, created_at, expires_at, last_used_at, credential_epoch`,
         [
           apiKey._userId,
           apiKey._keyHash,
@@ -225,6 +317,7 @@ export class Neo4jAuthRepository implements AuthRepository {
           apiKey._role,
           apiKey._enabled !== undefined ? apiKey._enabled : true,
           apiKey.expiresAt || null,
+          apiKey._credentialEpoch,
         ]
       );
 
@@ -239,6 +332,7 @@ export class Neo4jAuthRepository implements AuthRepository {
         _createdAt: row.created_at,
         expiresAt: row.expires_at,
         lastUsedAt: row.last_used_at,
+        _credentialEpoch: row.credential_epoch,
       } as ApiKey;
     } catch (error) {
       throw new Error(`Failed to create API key: ${error instanceof Error ? error.message : 'Unknown error'}`);

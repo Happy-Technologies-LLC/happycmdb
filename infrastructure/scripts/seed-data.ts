@@ -15,6 +15,13 @@
  */
 
 import neo4j, { Driver, Session } from 'neo4j-driver';
+import { isDefaultEquivalent } from '../../packages/api-server/src/auth/default-credentials';
+
+// Seeding writes a known admin credential: development only (HP1-S6, v16 §1.1).
+if (process.env['NODE_ENV'] !== 'development') {
+  console.error('ERROR: seed-data.ts only runs with NODE_ENV=development');
+  process.exit(1);
+}
 
 // Configuration
 const NEO4J_URI = process.env['NEO4J_URI'] || 'bolt://localhost:7687';
@@ -135,6 +142,9 @@ async function cleanData(session: Session): Promise<void> {
 async function createAdminUser(session: Session): Promise<void> {
   console.log('Creating admin user...');
 
+  // seedProvenance is immutable (coalesce) and excludes the account from
+  // platform administration forever; a default-equivalent seed password
+  // also sets the default-password marker (never cleared here).
   const query = `
     MERGE (u:User {_username: $username})
     SET u._id = $id,
@@ -145,7 +155,9 @@ async function createAdminUser(session: Session): Promise<void> {
         u._enabled = true,
         u._organizationId = $organizationId,
         u._createdAt = datetime(),
-        u._updatedAt = datetime()
+        u._updatedAt = datetime(),
+        u.seedProvenance = coalesce(u.seedProvenance, 'seed-data')
+    FOREACH (_ IN CASE WHEN $defaultPassword THEN [1] ELSE [] END | SET u.defaultPasswordSuspect = true)
     RETURN u
   `;
 
@@ -156,9 +168,10 @@ async function createAdminUser(session: Session): Promise<void> {
     passwordHash: TEST_USER.passwordHash,
     role: TEST_USER.role,
     organizationId: INTERNAL_ORGANIZATION_ID,
+    defaultPassword: isDefaultEquivalent(TEST_USER.password),
   });
 
-  console.log(`Admin user created: ${TEST_USER.email} / ${TEST_USER.password}`);
+  console.log(`Admin user created: ${TEST_USER.email}`);
 }
 
 /**

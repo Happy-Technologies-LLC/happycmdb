@@ -28,15 +28,20 @@ export class JWTService {
   /**
    * Generate access token. `organizationId` becomes the `_organizationId`
    * tenant claim (omitted => no claim). AuthService.verifyToken replaces it
-   * with the user's current organization on every request.
+   * with the user's current organization on every request. `credentialEpoch`
+   * becomes the `_cep` claim: the token is only accepted while it equals the
+   * user's current credential generation (HP1-S6).
    */
-  generateAccessToken(userId: string, username: string, role: UserRole, organizationId?: string): string {
+  generateAccessToken(
+    userId: string, username: string, role: UserRole, organizationId?: string, credentialEpoch = 0
+  ): string {
     const payload: Omit<TokenPayload, 'iat' | 'exp' | 'iss' | 'aud'> = {
       _userId: userId,
       _username: username,
       _role: role,
       _type: 'access',
       _organizationId: organizationId,
+      _cep: credentialEpoch,
     };
 
     return jwt.sign(payload, this.secret, {
@@ -48,14 +53,16 @@ export class JWTService {
 
   /**
    * Generate refresh token. It carries no tenant claim: refreshToken()
-   * re-reads the organization from the user record.
+   * re-reads the organization from the user record. It carries the
+   * credential generation like the access token.
    */
-  generateRefreshToken(userId: string, username: string, role: UserRole): string {
+  generateRefreshToken(userId: string, username: string, role: UserRole, credentialEpoch = 0): string {
     const payload: Omit<TokenPayload, 'iat' | 'exp' | 'iss' | 'aud'> = {
       _userId: userId,
       _username: username,
       _role: role,
       _type: 'refresh',
+      _cep: credentialEpoch,
     };
 
     return jwt.sign(payload, this.secret, {

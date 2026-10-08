@@ -17,6 +17,7 @@ import express from 'express';
 import request from 'supertest';
 import { AuthController } from '../auth.controller';
 import { AuthService, AuthRepository, UserProfileUpdate } from '../../auth/auth.service';
+import type { GuardedPasswordWrite, GuardedUserWrite } from '../../auth/auth.service';
 import { ValidationMiddleware } from '../middleware/validation.middleware';
 import { AuthMiddleware } from '../../middleware/auth.middleware';
 import { RateLimitMiddleware } from '../../middleware/rate-limit.middleware';
@@ -59,12 +60,30 @@ class InMemoryAuthRepository implements AuthRepository {
       ...existing,
       ...(updates.name !== undefined ? { _name: updates.name } : {}),
       ...(updates.avatar !== undefined ? { _avatar: updates.avatar } : {}),
-      ...(updates.passwordHash !== undefined ? { _passwordHash: updates.passwordHash } : {}),
       _updatedAt: new Date(),
     };
     this.users.set(id, updated);
     return updated;
   }
+
+  async updatePasswordHashGuarded(write: GuardedPasswordWrite): Promise<boolean> {
+    const existing = this.users.get(write.userId);
+    if (!existing || existing._passwordHash !== write.readHash) {
+      return false;
+    }
+    this.users.set(write.userId, { ...existing, _passwordHash: write.newHash });
+    return true;
+  }
+
+  async disableUserGuarded(write: GuardedUserWrite): Promise<boolean> {
+    return this.users.has(write.userId);
+  }
+
+  async markDefaultSuspect(): Promise<boolean> {
+    return false;
+  }
+
+  async recordCredentialEvent(): Promise<void> {}
 
   async deleteUserAccount(id: string): Promise<void> {
     this.users.delete(id);
@@ -228,6 +247,35 @@ describe('AuthController profile/password/account routes', () => {
         repository.users.get('user-1')?._passwordHash as string
       );
       expect(stillOldPassword).toBe(true);
+    });
+
+    // HP1-S6 (v16 §1.1): fixed wire contract for the new refusals.
+    it('refuses a default-equivalent new password with 400 Password not allowed', async () => {
+      const res = await request(app)
+        .put('/api/v1/auth/password')
+        .set('Authorization', `Bearer ${victimToken}`)
+        .send({ currentPassword: 'correct-horse-battery-staple', newPassword: 'Admin123!' });
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ success: false, error: 'Bad Request', message: 'Password not allowed' });
+    });
+
+    it('refuses a change whose guarded write loses to a rotation with 401 Credentials changed', async () => {
+      const rotateFirst = repository.updatePasswordHashGuarded.bind(repository);
+      repository.updatePasswordHashGuarded = async write => {
+        const user = repository.users.get(write.userId)!;
+        repository.users.set(write.userId, { ...user, _passwordHash: 'rotated-by-operator', _credentialEpoch: 1 });
+        return rotateFirst(write);
+      };
+
+      const res = await request(app)
+        .put('/api/v1/auth/password')
+        .set('Authorization', `Bearer ${victimToken}`)
+        .send({ currentPassword: 'correct-horse-battery-staple', newPassword: 'brand-new-password-1' });
+
+      expect(res.status).toBe(401);
+      expect(res.body).toEqual({ success: false, error: 'Unauthorized', message: 'Credentials changed' });
+      expect(repository.users.get('user-1')?._passwordHash).toBe('rotated-by-operator');
     });
 
     it('changes only the authenticated caller\'s password (account identity from the token)', async () => {

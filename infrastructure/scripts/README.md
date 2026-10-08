@@ -239,6 +239,12 @@ cat infrastructure/scripts/init-neo4j.cypher | docker exec -i neo4j cypher-shell
 - Password: `Admin123!`
 - Role: `admin`
 
+These credentials work only with `NODE_ENV=development`. The seeded admin carries seed provenance
+(it is never a platform administrator) and the default-password marker. Everywhere else it is
+refused until an operator rotates it with
+`packages/api-server/src/scripts/rotate-user-password.ts` (see `doc-site/docs/api/authentication.md`).
+`seed-data.ts` and `deploy.sh --seed` refuse to run unless `NODE_ENV=development`.
+
 **Sample Data Created**:
 - 10 servers across production, staging, development environments
 - Mix of active, inactive, maintenance, decommissioned statuses
@@ -304,7 +310,7 @@ HappyCMDB Seed Data Loader
 Cleaning existing test data...
 Cleanup complete
 Creating admin user...
-Admin user created: admin@happycmdb.local / Admin123!
+Admin user created: admin@happycmdb.local
 Creating test CIs...
 Created 32 test CIs
 Creating relationships...

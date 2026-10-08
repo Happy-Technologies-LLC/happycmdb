@@ -7,11 +7,29 @@
  */
 
 import { Request, Response, Router } from 'express';
-import { ApiKeyNotFoundError, AuthService } from '../auth/auth.service';
+import { ApiKeyNotFoundError, AuthService, CredentialsChangedError, PasswordNotAllowedError } from '../auth/auth.service';
 import { ValidationMiddleware } from './middleware/validation.middleware';
 import { authSchemas } from '../validation/schemas';
 import { AuthMiddleware, AuthenticatedRequest } from '../middleware/auth.middleware';
 import { RateLimitMiddleware } from '../middleware/rate-limit.middleware';
+
+/** Credential generation of the credential that authorized this request (HP1-S6); NaN when absent. */
+function authorizingEpoch(req: AuthenticatedRequest): number {
+  return req.user?._cep ?? Number.NaN;
+}
+
+/** Sends the fixed response for an S6 credential refusal; false when `error` is not one. */
+function credentialRefusal(res: Response, error: unknown): boolean {
+  if (error instanceof CredentialsChangedError) {
+    res.status(401).json({ success: false, error: 'Unauthorized', message: 'Credentials changed' });
+    return true;
+  }
+  if (error instanceof PasswordNotAllowedError) {
+    res.status(400).json({ success: false, error: 'Bad Request', message: 'Password not allowed' });
+    return true;
+  }
+  return false;
+}
 
 export class AuthController {
   private router: Router;
@@ -209,7 +227,7 @@ export class AuthController {
         return;
       }
 
-      const result = await this.authService.generateApiKey(req.user._userId, req.body);
+      const result = await this.authService.generateApiKey(req.user._userId, req.body, authorizingEpoch(req));
 
       res.json({
         success: true,
@@ -217,6 +235,7 @@ export class AuthController {
         message: 'API key generated. Save it securely - it will not be shown again.',
       });
     } catch (error: any) {
+      if (credentialRefusal(res, error)) return;
       res.status(500).json({
         success: false,
         error: 'API Key Generation Failed',
@@ -415,13 +434,14 @@ export class AuthController {
         currentPassword: string;
         newPassword: string;
       };
-      await this.authService.changePassword(req.user._userId, currentPassword, newPassword);
+      await this.authService.changePassword(req.user._userId, currentPassword, newPassword, authorizingEpoch(req));
 
       res.json({
         success: true,
         message: 'Password changed successfully',
       });
     } catch (error: any) {
+      if (credentialRefusal(res, error)) return;
       const status = error.message === 'User not found' ? 404 : 400;
       res.status(status).json({
         success: false,
@@ -445,13 +465,14 @@ export class AuthController {
         return;
       }
 
-      await this.authService.deleteAccount(req.user._userId);
+      await this.authService.deleteAccount(req.user._userId, authorizingEpoch(req));
 
       res.json({
         success: true,
         message: 'Account deleted successfully',
       });
     } catch (error: any) {
+      if (credentialRefusal(res, error)) return;
       const status = error.message === 'User not found' ? 404 : 500;
       res.status(status).json({
         success: false,

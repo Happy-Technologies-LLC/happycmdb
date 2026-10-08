@@ -30,6 +30,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { logger } from '@cmdb/common';
 import { getRedisClient } from '@cmdb/database';
 import { getAuthService } from '../auth/auth-bootstrap';
+import { defaultCredentialsRefused } from '../auth/default-credentials';
 import type { AuthService } from '../auth/auth.service';
 import { organizationClaim } from '../middleware/auth.middleware';
 
@@ -72,6 +73,16 @@ interface ClientIdentity {
   /** Token expiry (epoch ms); the connection is closed at that moment. */
   expiresAt: number | null;
   expiryTimer: NodeJS.Timeout | null;
+  /** Credential generation the connection was authenticated at (HP1-S6). */
+  credentialEpoch: number;
+}
+
+/** What a re-check learns about a still-enabled user. */
+interface ReverifiedUser {
+  organizationId: string | undefined;
+  credentialEpoch: number;
+  /** The default-password marker is set and enforced (outside development). */
+  marked: boolean;
 }
 
 /** One periodic re-check: the users it has not resolved yet, and its fail-closed deadline. */
@@ -241,6 +252,7 @@ export class WebSocketService {
         userId: payload._userId,
         expiresAt: payload.exp === undefined ? null : payload.exp * 1000,
         expiryTimer: null,
+        credentialEpoch: payload._cep ?? 0,
       };
     } catch {
       if (!controller.signal.aborted && this.wss === wss) {
@@ -329,8 +341,9 @@ export class WebSocketService {
 
   /**
    * Re-check every connection against the user store, with the lookup
-   * verifyToken uses: an expired token or a missing/disabled user closes with
-   * 4001, a changed organization with 4003, a failed lookup with 1011.
+   * verifyToken uses: an expired token, a missing/disabled user, a rotated
+   * credential generation or a default-password marker closes with 4001, a
+   * changed organization with 4003, a failed lookup with 1011.
    *
    * At most REVERIFY_CONCURRENCY lookups run at once across all ticks, and a
    * slot is held until its lookup actually settles: the store cannot cancel a
@@ -380,7 +393,11 @@ export class WebSocketService {
       void authService
         .findEnabledUser(userId)
         .then(
-          user => this.applyReverifyResult(tick, userId, user === null ? null : { organizationId: user._organizationId }),
+          user => this.applyReverifyResult(tick, userId, user === null ? null : {
+            organizationId: user._organizationId,
+            credentialEpoch: user._credentialEpoch ?? 0,
+            marked: defaultCredentialsRefused() && user._defaultPasswordSuspect === true,
+          }),
           () => this.applyReverifyResult(tick, userId, 'failed')
         )
         .finally(() => {
@@ -395,7 +412,7 @@ export class WebSocketService {
   private applyReverifyResult(
     tick: ReverifyTick,
     userId: string,
-    outcome: { organizationId: string | undefined } | null | 'failed'
+    outcome: ReverifiedUser | null | 'failed'
   ): void {
     const connections = tick.pending.get(userId);
     // Past the tick's deadline (already closed) or after the service closed.
@@ -417,6 +434,10 @@ export class WebSocketService {
         this.closeClient(ws, 1011, 'identity re-check failed');
       } else if (outcome === null) {
         this.closeClient(ws, CLOSE_REAUTHENTICATE, 'user disabled');
+      } else if (outcome.marked || !Number.isSafeInteger(outcome.credentialEpoch)
+        || outcome.credentialEpoch !== identity.credentialEpoch) {
+        // An operator rotation or a default-password marker invalidates every earlier credential.
+        this.closeClient(ws, CLOSE_REAUTHENTICATE, 'credentials rotated');
       } else if (outcome.organizationId !== identity.organizationId) {
         this.closeClient(ws, CLOSE_ORGANIZATION_CHANGED, 'organization changed');
       }

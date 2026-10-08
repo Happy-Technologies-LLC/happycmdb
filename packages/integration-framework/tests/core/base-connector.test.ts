@@ -500,6 +500,21 @@ describe('BaseIntegrationConnector', () => {
       expect(connector.transformCalls.length).toBeGreaterThan(0);
     });
 
+    it('does not log a tenant-controlled connector name containing a credential', async () => {
+      const { logger } = require('@cmdb/common');
+      const secret = 'client_secret=TENANT_MARKER_NEVER_LOG';
+      const namedConnector = new TestConnector({ ...config, name: secret }, metadata);
+      namedConnector.extractedData = connector.extractedData;
+      jest.clearAllMocks();
+
+      await namedConnector.run();
+
+      expect(namedConnector.transformCalls.length).toBeGreaterThan(0);
+      for (const method of ['info', 'warn', 'error'] as const) {
+        expect(JSON.stringify(logger[method].mock.calls)).not.toContain(secret);
+      }
+    });
+
     it('does not emit or log raw extractor exceptions', async () => {
       const emitSpy = jest.spyOn(connector, 'emit');
       const { logger } = require('@cmdb/common');

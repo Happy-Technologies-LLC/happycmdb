@@ -31,9 +31,17 @@ jest.mock('@cmdb/api-server/auth/auth-bootstrap', () => ({
       Object.assign(req, { user: { organizationId: orgA, _role: 'operator' } });
       return next();
     },
+    optionalAuthenticate: () => (req: express.Request, _res: express.Response, next: express.NextFunction) => {
+      if (['Bearer verified', 'Bearer verified-b', 'Bearer platform'].includes(req.headers.authorization ?? '')) {
+        Object.assign(req, { user: {
+          organizationId: req.headers.authorization === 'Bearer verified-b' ? orgB : orgA,
+          _role: 'operator', _platformAdmin: req.headers.authorization === 'Bearer platform',
+        } });
+      }
+      next();
+    },
   }),
 }), { virtual: true });
-jest.mock('../transformation-rules.routes', () => ({ transformationRulesRouter: express.Router() }));
 jest.mock('@cmdb/api-server/auth/connector-scope', () => ({
   requireConnectorScope: (req: express.Request, res: express.Response, next: express.NextFunction) => {
     if (!(req as express.Request & { user?: object }).user) return res.status(403).json({ error: 'Forbidden' });
@@ -49,6 +57,7 @@ jest.mock('@cmdb/api-server/auth/connector-scope', () => ({
 }), { virtual: true });
 
 const orgA = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+const orgB = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
 const marker = 'client_secret=NEVER_RETURN_ME';
 const row = { id: 'cfg-A', organization_id: orgA, name: 'shared', enabled: true };
 const query = jest.fn();
@@ -85,6 +94,32 @@ describe('standalone connector routes', () => {
     const app = Reflect.get(new IntegrationHubServer(), 'app') as express.Application;
     expect((await supertest(app).get('/api/v1/connectors/shared')).status).toBe(401);
     expect((await supertest(app).post('/api/v1/connectors').send({ name: 'shared' })).status).toBe(401);
+    expect(query).not.toHaveBeenCalled();
+  });
+
+  it('refuses every transformation and lookup endpoint identically for anonymous, tenant and platform callers', async () => {
+    const app = Reflect.get(new IntegrationHubServer(), 'app') as express.Application;
+    query.mockResolvedValue({ rows: [{ id: 'global-rule', field_mappings: { token: marker } }] });
+    const routes = [
+      ['get', '/api/v1/transformation-rules'],
+      ['get', '/api/v1/transformation-rules/global-rule'],
+      ['post', '/api/v1/transformation-rules'],
+      ['put', '/api/v1/transformation-rules/global-rule'],
+      ['delete', '/api/v1/transformation-rules/global-rule'],
+      ['post', '/api/v1/transformation-rules/global-rule/test'],
+      ['post', '/api/v1/transformation-rules/global-rule/clone'],
+      ['get', '/api/v1/transformation-rules/lookups'],
+      ['post', '/api/v1/transformation-rules/lookups'],
+    ] as const;
+    const denial = { error: 'TRANSFORMATION_RULES_UNAVAILABLE' };
+    for (const authorization of [undefined, 'Bearer verified', 'Bearer verified-b', 'Bearer platform']) {
+      for (const [method, path] of routes) {
+        const req = supertest(app)[method](path);
+        if (authorization) req.set('Authorization', authorization);
+        const response = await req.send({ name: 'rule', connector_type: 'test', sample_data: {} });
+        expect([response.status, response.body]).toEqual([403, denial]);
+      }
+    }
     expect(query).not.toHaveBeenCalled();
   });
 

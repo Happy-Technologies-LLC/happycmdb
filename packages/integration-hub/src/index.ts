@@ -46,6 +46,8 @@ export class IntegrationHubServer {
 
     // API routes
     this.app.use('/api/v1/connectors', getAuthMiddleware().authenticate(), requireConnectorScope, connectorsRouter);
+    // The rules router attempts authentication then denies every principal
+    // until dedicated global platform-admin authority is available.
     this.app.use('/api/v1/transformation-rules', transformationRulesRouter);
 
     // 404 handler

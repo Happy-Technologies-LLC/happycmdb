@@ -10,7 +10,8 @@ import {
   ownedBusinessServiceIds,
   ownsBusinessService,
 } from '../../services/business-service-ownership';
-
+import { ciCostTrends } from '../../services/ci-cost-trends';
+import { errorLogFields } from '../../utils/log-error';
 
 /**
  * A single GL account entry accepted by importGLData. Mirrors the fields the
@@ -288,34 +289,8 @@ export class TBMController {
   async getCostTrends(req: Request, res: Response): Promise<void> {
     try {
       const { months = 6 } = req.query;
-      const monthsBack = Math.min(Math.max(parseInt(months as string, 10) || 6, 1), 36);
-
-      const pool = this.postgresClient.pool;
-
-      // Query cost history from cmdb.dim_ci, the real SCD Type-2 dimension table that
-      // versions CI attributes (including TBM monthly_cost) over time; ci_snapshot does
-      // not exist in any migration. Each CI version is bucketed by the month it became
-      // effective, approximating a monthly cost trend from real dimensional history.
-      const result = await pool.query(
-        `
-        SELECT
-          date_trunc('month', effective_from) as month,
-          sum((tbm_attributes->>'monthly_cost')::numeric) as total_cost,
-          count(DISTINCT ci_id) as ci_count
-        FROM cmdb.dim_ci
-        WHERE effective_from >= NOW() - ($1 * INTERVAL '1 month')
-          AND tbm_attributes->>'monthly_cost' IS NOT NULL
-        GROUP BY date_trunc('month', effective_from)
-        ORDER BY month DESC
-        `,
-        [monthsBack]
-      );
-
-      const trends = result.rows.map((row) => ({
-        month: row.month,
-        totalCost: parseFloat(row.total_cost),
-        ciCount: parseInt(row.ci_count),
-      }));
+      // Only the caller organization's CIs (cmdb.dim_ci.organization_id).
+      const trends = await ciCostTrends(requestOrganizationId(req), parseInt(months as string, 10));
 
       res.json({
         success: true,
@@ -323,11 +298,11 @@ export class TBMController {
         count: trends.length,
       });
     } catch (error) {
-      logger.error('Error getting cost trends', error);
+      // Driver errors name tables/columns: log them, return a generic body.
+      logger.error('Error getting cost trends', { error: errorLogFields(error) });
       res.status(500).json({
         success: false,
         error: 'Failed to retrieve cost trends',
-        message: error instanceof Error ? error.message : 'Unknown error',
       });
     }
   }

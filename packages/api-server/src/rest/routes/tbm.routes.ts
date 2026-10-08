@@ -20,7 +20,9 @@ tbmRoutes.use(auditMiddleware);
 // services the caller's organization owns in Postgres (FD-2).
 tbmRoutes.use(authMiddleware.requireOrganization());
 
-// FD-3 b: aggregates over every CI (no tenancy on CIs yet) are admin-only.
+// FD-3 b: aggregates over every CI are admin-only. The Neo4j cost aggregates
+// still read every organization's :CI nodes; /costs/trends reads only the
+// caller organization's cmdb.dim_ci rows (migration 011) and stays admin-only.
 const globalAggregate = authMiddleware.requirePermission('admin');
 
 // Validation schemas

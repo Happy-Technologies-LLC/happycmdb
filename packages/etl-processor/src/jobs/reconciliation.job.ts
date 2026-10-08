@@ -15,6 +15,9 @@
 import { Job } from 'bullmq';
 import { Neo4jClient, PostgresClient, UNSCOPED_CI_ACCESS } from '@cmdb/database';
 import { logger, CI, CIStatus } from '@cmdb/common';
+import {
+  dimCiIds, dimCiOrganizationId, INTERNAL_ORGANIZATION_ID, lockCIDimensions,
+} from '../transformers/ci-organization';
 
 export interface ReconciliationJobData {
   /** CIs to reconcile (if not specified, reconciles all) */
@@ -76,6 +79,9 @@ export type ConflictType =
   | 'timestamp-mismatch'
   | 'relationship-mismatch';
 
+/** A CI's current cmdb.dim_ci row, with the organization that owns it. */
+type PostgresCI = CI & { organization_id: string };
+
 /**
  * Main reconciliation processor class
  */
@@ -112,7 +118,9 @@ export class ReconciliationJob {
 
     try {
       // Get CIs to reconcile
-      const ciIds = data.ciIds || await this.getAllCIIds();
+      // Job data and the graph scan can both carry ids that are not a valid
+      // cmdb.dim_ci ci_id (a merge can set the number 12345 as a node id).
+      const ciIds = dimCiIds(data.ciIds || await this.getAllCIIds(), 'reconciliation');
 
       logger.info(`Reconciling ${ciIds.length} CIs`);
 
@@ -196,9 +204,17 @@ export class ReconciliationJob {
       });
 
       if (data.autoResolve && data.conflictStrategy === 'neo4j-wins') {
-        await this.resolveByCreatingInPostgres(neo4jCI!);
-        conflicts[conflicts.length - 1]!._autoResolved = true;
-        conflicts[conflicts.length - 1]!.resolution = 'Created CI in PostgreSQL from Neo4j';
+        const inserted = await this.resolveByCreatingInPostgres(ciId);
+        const conflict = conflicts[conflicts.length - 1]!;
+        // Never publish stale attributes from the earlier generation in the
+        // job result after the id has been replaced or deleted.
+        conflict._neo4jValue = inserted;
+        if (inserted) {
+          conflict._autoResolved = true;
+          conflict.resolution = 'Created CI in PostgreSQL from Neo4j';
+        } else {
+          conflict._description = 'CI changed in Neo4j or PostgreSQL before reconciliation; left for review';
+        }
       }
 
       return conflicts;
@@ -276,7 +292,7 @@ export class ReconciliationJob {
   /**
    * Get CI from PostgreSQL data mart
    */
-  private async getPostgresCI(ciId: string): Promise<CI | null> {
+  private async getPostgresCI(ciId: string): Promise<PostgresCI | null> {
     const result = await this.postgresClient.query(
       `SELECT * FROM cmdb.dim_ci WHERE ci_id = $1 AND is_current = true`,
       [ciId]
@@ -297,16 +313,17 @@ export class ReconciliationJob {
       _created_at: row.created_at,
       _updated_at: row.updated_at,
       _discovered_at: row.discovered_at,
-      _metadata: row.metadata || {}
+      _metadata: row.metadata || {},
+      organization_id: row.organization_id
     };
   }
 
   /**
    * Get all CI IDs from both sources
    */
-  private async getAllCIIds(): Promise<string[]> {
+  private async getAllCIIds(): Promise<unknown[]> {
     const session = this.neo4jClient.getSession();
-    const ciIds = new Set<string>();
+    const ciIds = new Set<unknown>();
 
     try {
       // Get from Neo4j
@@ -332,7 +349,7 @@ export class ReconciliationJob {
   private async resolveStatusConflict(
     ciId: string,
     neo4jCI: CI,
-    postgresCI: CI,
+    postgresCI: PostgresCI,
     strategy: ConflictResolutionStrategy
   ): Promise<string | null> {
     let sourceOfTruth: 'neo4j' | 'postgres' | null = null;
@@ -353,55 +370,144 @@ export class ReconciliationJob {
         return null; // No resolution for manual or merge strategies
     }
 
-    if (sourceOfTruth === 'neo4j') {
-      await this.updatePostgresStatus(ciId, neo4jCI._status);
-      return `Updated PostgreSQL status to '${neo4jCI._status}' from Neo4j`;
-    } else {
-      await this.updateNeo4jStatus(ciId, postgresCI._status);
-      return `Updated Neo4j status to '${postgresCI._status}' from PostgreSQL`;
+    // A node and a current row sharing an id are one CI only when they are in the
+    // same organization: another organization may have re-created a deleted CI's
+    // id. Read the node's status and organization in one match, and scope each
+    // write to the row's organization, so neither tenant's status reaches the other.
+    const node = await this.readCurrentNode(ciId);
+    if (!node || dimCiOrganizationId(node['organization_id']) !== postgresCI.organization_id) {
+      logger.warn('Skipping status reconciliation - graph CI is not in the PostgreSQL row organization', { ciId });
+      return null;
     }
+
+    if (sourceOfTruth === 'neo4j') {
+      const status = node['status'] as CIStatus;
+      if (!(await this.updatePostgresStatus(ciId, postgresCI.organization_id, status))) {
+        return null;
+      }
+      return `Updated PostgreSQL status to '${status}' from Neo4j`;
+    }
+    if (!(await this.updateNeo4jStatus(ciId, postgresCI.organization_id, postgresCI._status))) {
+      return null;
+    }
+    return `Updated Neo4j status to '${postgresCI._status}' from PostgreSQL`;
   }
 
   /**
-   * Update CI status in PostgreSQL
+   * Update the current row's status in PostgreSQL, only in the given organization.
+   * Returns false when no such row remains.
    */
-  private async updatePostgresStatus(ciId: string, status: CIStatus): Promise<void> {
-    await this.postgresClient.query(
+  private async updatePostgresStatus(ciId: string, organizationId: string, status: CIStatus): Promise<boolean> {
+    const result = await this.postgresClient.query(
       `UPDATE cmdb.dim_ci SET ci_status = $1, updated_at = NOW()
-       WHERE ci_id = $2 AND is_current = true`,
-      [status, ciId]
+       WHERE ci_id = $2 AND is_current = true AND organization_id = $3
+       RETURNING ci_key`,
+      [status, ciId, organizationId]
     );
+    if (result.rows.length === 0) {
+      return false;
+    }
     logger.info('Updated PostgreSQL CI status', { ciId, status });
+    return true;
   }
 
   /**
-   * Update CI status in Neo4j
+   * Update the node's status in Neo4j, only when the node is in the given
+   * organization (an org-less node is internal). Neo4jClient.updateCI's scope
+   * cannot match an org-less internal node, so the write re-checks the
+   * organization itself. Returns false when no such node remains.
    */
-  private async updateNeo4jStatus(ciId: string, status: CIStatus): Promise<void> {
-    await this.neo4jClient.updateCI(ciId, { status }, UNSCOPED_CI_ACCESS);
+  private async updateNeo4jStatus(ciId: string, organizationId: string, status: CIStatus): Promise<boolean> {
+    const session = this.neo4jClient.getSession();
+    try {
+      const result = await session.run(
+        `MATCH (ci:CI {id: $id})
+         WHERE CASE WHEN ci.organization_id IS NULL OR ci.organization_id = ''
+                    THEN $internalOrganizationId
+                    ELSE toLower(toString(ci.organization_id)) END = $organizationId
+         SET ci.status = $status, ci.updated_at = datetime()
+         RETURN ci.id AS id`,
+        { id: ciId, organizationId, internalOrganizationId: INTERNAL_ORGANIZATION_ID, status }
+      );
+      if (result.records.length === 0) {
+        return false;
+      }
+    } finally {
+      await session.close();
+    }
     logger.info('Updated Neo4j CI status', { ciId, status });
+    return true;
+  }
+
+  /**
+   * The current node's properties from one graph match, or null if it no
+   * longer exists. Only a node whose id is exactly ciId, a string, is this CI.
+   */
+  private async readCurrentNode(ciId: string): Promise<Record<string, unknown> | null> {
+    const session = this.neo4jClient.getSession();
+    try {
+      const result = await session.run('MATCH (ci:CI {id: $id}) RETURN ci', { id: ciId });
+      const properties: Record<string, unknown> | null = result.records[0]?.get('ci')?.properties ?? null;
+      return properties && properties['id'] === ciId ? properties : null;
+    } finally {
+      await session.close();
+    }
   }
 
   /**
    * Create CI in Neo4j from PostgreSQL data
    */
-  private async resolveByCreatingInNeo4j(ci: CI): Promise<void> {
-    // System job: the CI is created without an organization (invisible to org-scoped reads).
-    await this.neo4jClient.createCI(ci, UNSCOPED_CI_ACCESS);
+  private async resolveByCreatingInNeo4j(ci: PostgresCI): Promise<void> {
+    // Only this Postgres-backed restore can stamp a tenant: the current
+    // cmdb.dim_ci row is trusted; reconciliation merge inputs are not.
+    await this.neo4jClient.createCI(ci, ci.organization_id);
     logger.info('Created CI in Neo4j from PostgreSQL', { ciId: ci._id });
   }
 
   /**
    * Create CI in PostgreSQL from Neo4j data
    */
-  private async resolveByCreatingInPostgres(ci: CI): Promise<void> {
-    await this.postgresClient.query(
-      `INSERT INTO cmdb.dim_ci
-       (ci_id, ci_name, ci_type, environment, ci_status, effective_from, is_current)
-       VALUES ($1, $2, $3, $4, $5, NOW(), true)`,
-      [ci._id, ci.name, ci._type, ci.environment, ci._status]
-    );
-    logger.info('Created CI in PostgreSQL from Neo4j', { ciId: ci._id });
+  private async resolveByCreatingInPostgres(ciId: string): Promise<Record<string, unknown> | null> {
+    // getCI's CI shape carries no organization_id. Read the current node's
+    // attributes AND organization in one MATCH: the id may name a different
+    // generation since reconciliation's first getCI read.
+    const properties = await this.readCurrentNode(ciId);
+    if (!properties) {
+      logger.warn('Skipping reconciliation - graph CI disappeared before Postgres insert', { ciId });
+      return null;
+    }
+
+    const organizationId = dimCiOrganizationId(properties['organization_id']);
+    // The "missing in PostgreSQL" read happened without a lock. Under the
+    // per-CI lock every dim_ci writer takes, insert only if there is still no
+    // current row; one written since belongs to that writer's organization.
+    const inserted = await this.postgresClient.transaction(async (client: any) => {
+      await lockCIDimensions(client, [ciId]);
+      const current = await client.query(
+        'SELECT 1 FROM cmdb.dim_ci WHERE ci_id = $1 AND is_current = true',
+        [ciId]
+      );
+      if (current.rows.length > 0) {
+        return false;
+      }
+      await client.query(
+        `INSERT INTO cmdb.dim_ci
+         (ci_id, ci_name, ci_type, environment, ci_status, effective_from, is_current, organization_id)
+         VALUES ($1, $2, $3, $4, $5, NOW(), true, $6)`,
+        [ciId, properties['name'], properties['type'], properties['environment'], properties['status'], organizationId]
+      );
+      return true;
+    });
+    if (!inserted) {
+      logger.warn('Skipping reconciliation - CI got a current PostgreSQL row before the insert', { ciId });
+      return null;
+    }
+    logger.info('Created CI in PostgreSQL from Neo4j', { ciId });
+    return {
+      _id: properties['id'], name: properties['name'], _type: properties['type'],
+      _status: properties['status'], environment: properties['environment'],
+      organization_id: organizationId
+    };
   }
 }
 

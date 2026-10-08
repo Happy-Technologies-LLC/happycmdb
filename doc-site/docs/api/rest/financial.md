@@ -18,7 +18,8 @@ Authorization: Bearer YOUR_JWT_TOKEN
 
 - Every `/api/v1/tbm/*` endpoint requires an organization claim on the token. A token without one gets `403 {"_error":"Forbidden","_message":"Organization claim required"}` before any data is read. The organization always comes from the token, never from request parameters or body.
 - `GET /costs/by-service/:id` and `GET /costs/by-capability/:id` only cover business services your organization owns (`dim_business_services.organization_id`) whose Neo4j `:BusinessService` node also carries your organization (`organization_id`). Another organization's service, a missing service, and an owned id whose node belongs to another organization or to none return the same `404`; by-capability leaves such services out.
-- Aggregates over all CIs (`/costs/summary`, `/costs/by-tower`, `/costs/trends`, `/costs/allocations/:ciId`, `POST /costs/allocate`, `POST /gl/import`, `/licenses`, `/licenses/renewals`) require the `admin` role until CI tenancy is available; other roles get `403`.
+- Aggregates over all CIs (`/costs/summary`, `/costs/by-tower`, `/costs/allocations/:ciId`, `POST /costs/allocate`, `POST /gl/import`, `/licenses`, `/licenses/renewals`) require the `admin` role until CI tenancy is available; other roles get `403`.
+- `/costs/trends` sums only your organization's CIs (`cmdb.dim_ci.organization_id`, migration 011) and also requires the `admin` role.
 
 ## Base URL
 

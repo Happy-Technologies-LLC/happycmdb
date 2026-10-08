@@ -68,7 +68,7 @@ export class DataMartClient {
       // Check if current record exists
       const existing = await this.pgClient.query(
         `
-        SELECT ci_key, ci_name, ci_type, ci_status, environment, external_id, metadata
+        SELECT ci_key, ci_name, ci_type, ci_status, environment, external_id, metadata, organization_id, org_backfilled
         FROM cmdb.dim_ci
         WHERE ci_id = $1 AND is_current = TRUE
         `,
@@ -78,11 +78,27 @@ export class DataMartClient {
       if (existing.rows.length > 0) {
         const currentRecord = existing.rows[0];
 
+        // No stored row ever changes organization (migration 011). Another
+        // organization is refused unless the current row is a 011 backfill
+        // label (org_backfilled); then it gets a new version in that
+        // organization and the earlier versions keep theirs. PostgreSQL
+        // returns a uuid in lower case.
+        const organizationId = ci.organization_id.toLowerCase();
+        if (currentRecord.organization_id !== organizationId && currentRecord.org_backfilled !== true) {
+          throw new Error(`CI ${ci.ci_id} belongs to another organization`);
+        }
+
         // Check if data has changed
-        if (this.hasCIChanged(currentRecord, ci)) {
+        if (this.hasCIChanged(currentRecord, ci) || currentRecord.organization_id !== organizationId) {
           logger.debug('CI attributes changed, creating new version', { ci_id: ci.ci_id });
           return await this.pgClient.updateCIDimension(ci);
         } else {
+          if (currentRecord.org_backfilled === true) {
+            await this.pgClient.query(
+              'UPDATE cmdb.dim_ci SET org_backfilled = FALSE WHERE ci_id = $1 AND org_backfilled',
+              [ci.ci_id]
+            );
+          }
           logger.debug('CI unchanged, returning existing key', { ci_id: ci.ci_id });
           return currentRecord.ci_key;
         }

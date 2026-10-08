@@ -15,9 +15,13 @@
  */
 
 import { Job } from 'bullmq';
-import { Neo4jClient, PostgresClient, UNSCOPED_CI_ACCESS } from '@cmdb/database';
+import { Neo4jClient, PostgresClient } from '@cmdb/database';
 import { logger, CI, CIType } from '@cmdb/common';
-import { DimensionTransformer } from '../transformers/dimension-transformer';
+import { CIDimension, DimensionTransformer, DiscoveryFact } from '../transformers/dimension-transformer';
+import {
+  ExtractedCI, dimCiIds, dimCiOrganizationId, isCiDataError, isDimCiId, lockCIDimensions, parseNodeMetadata,
+  storedCiOrganizationId, UNREADABLE_METADATA, withDimCiIds,
+} from '../transformers/ci-organization';
 
 export interface Neo4jToPostgresJobData {
   /** Batch size for processing CIs */
@@ -86,7 +90,11 @@ export class Neo4jToPostgresJob {
 
     try {
       // Step 1: Extract CIs from Neo4j
-      const cis = await this.extractCIs(data);
+      const extracted = await this.extractCIs(data);
+      const cis = withDimCiIds(extracted.cis, ci => ci._id, 'neo4j-to-postgres');
+      // Only committed, tenant-resolved dimensions can supply relationship keys.
+      const acceptedOrganizations = data.fullRefresh || !data.incrementalSince
+        ? new Map<string, string>() : undefined;
       logger.info(`Extracted ${cis.length} CIs from Neo4j`);
 
       // Step 2: Process CIs in batches
@@ -95,10 +103,12 @@ export class Neo4jToPostgresJob {
         await job.updateProgress((i / cis.length) * 100);
 
         try {
-          const batchResult = await this.processBatch(batch, data.fullRefresh || false, job.id);
+          const batchResult = await this.processBatch(batch, data.fullRefresh || false, job.id, acceptedOrganizations);
           result.cisProcessed += batchResult.cisProcessed;
           result.recordsInserted += batchResult.recordsInserted;
           result.recordsUpdated += batchResult.recordsUpdated;
+          // Each CI skipped for a load failure is an error the job reports.
+          result.errors += batchResult.cisFailed;
 
           logger.debug(`Processed batch ${i / batchSize + 1}`, batchResult);
         } catch (error) {
@@ -108,10 +118,29 @@ export class Neo4jToPostgresJob {
       }
 
       // Step 3: Process relationships
-      if (data.fullRefresh || !data.incrementalSince) {
-        const relationshipsResult = await this.processRelationships(cis);
+      if (acceptedOrganizations) {
+        const relationshipsResult = await this.processRelationships(cis, acceptedOrganizations);
         result.relationshipsProcessed = relationshipsResult.processed;
         result.recordsInserted += relationshipsResult.inserted;
+      }
+
+      // Every live node was extracted. A CI without one keeps no 011 backfill
+      // marker, even when a batch failed (a failing batch must not hold the
+      // window open): a node created later with its id must not be taken for
+      // a backfilled CI (see storedCiOrganizationId). CIs whose batch failed
+      // keep theirs until a later run processes them.
+      const visitedEveryNode =
+        !(data.incrementalSince && !data.fullRefresh) && !(data.ciTypes && data.ciTypes.length > 0);
+      if (visitedEveryNode) {
+        // A node skipped for unreadable metadata is still live.
+        const liveIds = [
+          ...cis.map(ci => ci._id),
+          ...dimCiIds(extracted.unreadableIds, 'neo4j-to-postgres'),
+        ];
+        await this.postgresClient.query(
+          'UPDATE cmdb.dim_ci SET org_backfilled = FALSE WHERE org_backfilled AND NOT (ci_id = ANY($1::varchar[]))',
+          [liveIds]
+        );
       }
 
       result.durationMs = Date.now() - startTime;
@@ -127,9 +156,12 @@ export class Neo4jToPostgresJob {
   }
 
   /**
-   * Extract CIs from Neo4j based on job parameters
+   * Extract CIs from Neo4j based on job parameters. A node whose metadata is
+   * not JSON is skipped and logged, and its id returned as unreadable.
    */
-  private async extractCIs(data: Neo4jToPostgresJobData): Promise<CI[]> {
+  private async extractCIs(
+    data: Neo4jToPostgresJobData
+  ): Promise<{ cis: ExtractedCI[]; unreadableIds: unknown[] }> {
     const session = this.neo4jClient.getSession();
 
     try {
@@ -153,10 +185,20 @@ export class Neo4jToPostgresJob {
 
       const result = await session.run(query, params);
 
-      return result.records.map((record: any) => {
-        const node = record.get('ci');
-        const props = node.properties;
-        return {
+      const cis: ExtractedCI[] = [];
+      const unreadableIds: unknown[] = [];
+      for (const record of result.records as any[]) {
+        const props = record.get('ci').properties;
+        const metadata = parseNodeMetadata(props.metadata);
+        if (metadata === UNREADABLE_METADATA) {
+          // The id only when it is a valid ci_id: a node id is client-writable.
+          logger.warn('Skipping CI node whose metadata is not JSON', {
+            job: 'neo4j-to-postgres', ciId: isDimCiId(props.id) ? props.id : '(invalid id)',
+          });
+          unreadableIds.push(props.id);
+          continue;
+        }
+        cis.push({
           _id: props.id,
           external_id: props.external_id,
           name: props.name,
@@ -166,9 +208,11 @@ export class Neo4jToPostgresJob {
           _created_at: props.created_at,
           _updated_at: props.updated_at,
           _discovered_at: props.discovered_at,
-          _metadata: props.metadata ? JSON.parse(props.metadata) : {}
-        };
-      });
+          _metadata: metadata as ExtractedCI['_metadata'],
+          organization_id: props.organization_id
+        });
+      }
+      return { cis, unreadableIds };
 
     } finally {
       await session.close();
@@ -180,12 +224,13 @@ export class Neo4jToPostgresJob {
    * Implements Type 2 SCD with retry logic and detailed logging
    */
   private async processBatch(
-    cis: CI[],
+    cis: ExtractedCI[],
     fullRefresh: boolean,
-    jobId: string = 'neo4j-to-postgres-etl'
-  ): Promise<{ cisProcessed: number; recordsInserted: number; recordsUpdated: number }> {
+    jobId: string = 'neo4j-to-postgres-etl',
+    acceptedOrganizations?: Map<string, string>
+  ): Promise<{ cisProcessed: number; recordsInserted: number; recordsUpdated: number; cisFailed: number }> {
     const batchStartTime = Date.now();
-    const result = { cisProcessed: 0, recordsInserted: 0, recordsUpdated: 0 };
+    let result = { cisProcessed: 0, recordsInserted: 0, recordsUpdated: 0, cisFailed: 0 };
 
     logger.info('Processing batch', {
       _batchSize: cis.length,
@@ -200,28 +245,76 @@ export class Neo4jToPostgresJob {
     let lastError: Error | null = null;
 
     while (attempt < maxRetries) {
+      // Do not retain identities from a transaction that fails and is retried.
+      const acceptedInAttempt: Array<[string, string]> | null = acceptedOrganizations ? [] : null;
+      // A retried attempt starts over: count only the attempt that commits.
+      result = { cisProcessed: 0, recordsInserted: 0, recordsUpdated: 0, cisFailed: 0 };
+      let failedInAttempt = 0;
       try {
         await this.postgresClient.transaction(async (client: any) => {
+          // Serialize writers of these CIs through COMMIT, before reading any current row.
+          await lockCIDimensions(client, cis.map(ci => ci._id));
           for (const ci of cis) {
+            // Transform first, in JavaScript, from client-writable node values.
+            // Any exception here (no SQLSTATE: a TypeError from a crafted
+            // metadata object, say) is this CI's own failure: skip it alone.
+            let dimension: CIDimension;
+            let discovery: Partial<DiscoveryFact>;
             try {
-              // Transform CI to dimensional model
-              const dimension = this.dimensionTransformer.toDimension(ci);
-
+              dimension = this.dimensionTransformer.toDimension(ci);
+              discovery = this.dimensionTransformer.toDiscoveryFact(ci);
+            } catch (error) {
+              failedInAttempt++;
+              logger.error('Skipping CI whose values cannot be transformed; the rest of its batch continues', {
+                _ciId: ci._id,
+                error,
+                _attempt: attempt + 1
+              });
+              continue;
+            }
+            // Locks first, then one savepoint per CI: a CI whose own values fail
+            // to load (an overlong discovery field, say) is rolled back alone;
+            // the batch's other CIs, of any organization, still load.
+            await client.query('SAVEPOINT ci_dimension');
+            try {
               // Check if CI dimension already exists
               const existingResult = await client.query(
-                'SELECT ci_key, ci_name, ci_type, ci_status, environment FROM cmdb.dim_ci WHERE ci_id = $1 AND is_current = true',
+                `SELECT ci_key, ci_name, ci_type, ci_status, environment, organization_id, org_backfilled
+                 FROM cmdb.dim_ci WHERE ci_id = $1 AND is_current = true`,
                 [ci._id]
               );
+              let resolvedOrganizationId = dimension.organization_id;
 
               if (existingResult.rows.length > 0) {
                 const existing = existingResult.rows[0];
+
+                // See storedCiOrganizationId: no stored row changes
+                // organization; a 011 backfilled CI whose node names another
+                // organization gets a new version in it.
+                const organizationId = storedCiOrganizationId(ci.organization_id, {
+                  organizationId: existing.organization_id,
+                  backfilled: existing.org_backfilled === true,
+                });
+                if (organizationId === null) {
+                  logger.warn('CI node organization conflicts with its cmdb.dim_ci history; skipped', { ciId: ci._id });
+                  await client.query('RELEASE SAVEPOINT ci_dimension');
+                  continue;
+                }
+                resolvedOrganizationId = organizationId;
+                if (existing.org_backfilled === true) {
+                  await client.query(
+                    'UPDATE cmdb.dim_ci SET org_backfilled = FALSE WHERE ci_id = $1 AND org_backfilled',
+                    [ci._id]
+                  );
+                }
 
                 // Check if data has actually changed (avoid unnecessary updates)
                 const hasChanged =
                   existing.ci_name !== dimension._ci_name ||
                   existing.ci_type !== dimension._ci_type ||
                   existing.ci_status !== dimension._status ||
-                  existing.environment !== dimension.environment;
+                  existing.environment !== dimension.environment ||
+                  organizationId !== existing.organization_id;
 
                 if (hasChanged || fullRefresh) {
                   const ciKey = existing.ci_key;
@@ -240,8 +333,8 @@ export class Neo4jToPostgresJob {
                   const insertResult = await client.query(
                     `INSERT INTO cmdb.dim_ci
                      (ci_id, ci_name, ci_type, environment, ci_status, external_id,
-                      effective_from, effective_to, is_current, created_at, updated_at)
-                     VALUES ($1, $2, $3, $4, $5, $6, $7, '9999-12-31', true, $8, $9)
+                      effective_from, effective_to, is_current, created_at, updated_at, organization_id)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, '9999-12-31', true, $8, $9, $10)
                      RETURNING ci_key`,
                     [
                       dimension._ci_id,
@@ -252,14 +345,15 @@ export class Neo4jToPostgresJob {
                       dimension.external_id,
                       new Date(),
                       dimension.created_at || new Date(),
-                      new Date()
+                      new Date(),
+                      organizationId
                     ]
                   );
 
                   const newCiKey = insertResult.rows[0].ci_key;
 
                   // Insert discovery fact if available
-                  const discoveryFact = this.dimensionTransformer.toDiscoveryFact(ci, newCiKey);
+                  const discoveryFact = { ...discovery, _ci_key: newCiKey };
                   if (discoveryFact._ci_key) {
                     await client.query(
                       `INSERT INTO cmdb.fact_discovery
@@ -293,8 +387,8 @@ export class Neo4jToPostgresJob {
                 const insertResult = await client.query(
                   `INSERT INTO cmdb.dim_ci
                    (ci_id, ci_name, ci_type, environment, ci_status, external_id,
-                    effective_from, effective_to, is_current, created_at, updated_at)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, '9999-12-31', true, $8, $9)
+                    effective_from, effective_to, is_current, created_at, updated_at, organization_id)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, '9999-12-31', true, $8, $9, $10)
                    RETURNING ci_key`,
                   [
                     dimension._ci_id,
@@ -305,14 +399,15 @@ export class Neo4jToPostgresJob {
                     dimension.external_id,
                     new Date(),
                     dimension.created_at || new Date(),
-                    new Date()
+                    new Date(),
+                    dimension.organization_id
                   ]
                 );
 
                 const ciKey = insertResult.rows[0].ci_key;
 
                 // Insert discovery fact
-                const discoveryFact = this.dimensionTransformer.toDiscoveryFact(ci, ciKey);
+                const discoveryFact = { ...discovery, _ci_key: ciKey };
                 if (discoveryFact._ci_key) {
                   await client.query(
                     `INSERT INTO cmdb.fact_discovery
@@ -333,18 +428,37 @@ export class Neo4jToPostgresJob {
                 logger.debug('Inserted new CI dimension', { ciId: ci._id, ciKey });
               }
 
+              await client.query('RELEASE SAVEPOINT ci_dimension');
               result.cisProcessed++;
+              if (acceptedInAttempt) {
+                acceptedInAttempt.push([ci._id, resolvedOrganizationId]);
+              }
 
             } catch (error) {
-              logger.error('Error processing CI in batch', {
+              if (!isCiDataError(error)) {
+                // A deadlock, lock timeout or other non-data error is not this
+                // CI's fault: fail the attempt so the whole batch is retried.
+                throw error;
+              }
+              await client.query('ROLLBACK TO SAVEPOINT ci_dimension');
+              await client.query('RELEASE SAVEPOINT ci_dimension');
+              failedInAttempt++;
+              // Fail closed: this CI gets no version (not truncated or
+              // partially written) and no relationship identity this run.
+              logger.error('Skipping CI whose values cannot be loaded; the rest of its batch continues', {
                 _ciId: ci._id,
                 error,
                 _attempt: attempt + 1
               });
-              throw error;
             }
           }
         });
+        result.cisFailed = failedInAttempt;
+        if (acceptedOrganizations && acceptedInAttempt) {
+          for (const [ciId, organizationId] of acceptedInAttempt) {
+            acceptedOrganizations.set(ciId, organizationId);
+          }
+        }
 
         // Success - exit retry loop
         const batchDuration = Date.now() - batchStartTime;
@@ -392,22 +506,64 @@ export class Neo4jToPostgresJob {
    * Process relationships between CIs
    */
   private async processRelationships(
-    cis: CI[]
+    cis: CI[],
+    acceptedOrganizations: Map<string, string>
   ): Promise<{ processed: number; inserted: number }> {
     const result = { processed: 0, inserted: 0 };
 
+    // Ids this run extracted. A ciTypes-filtered run extracts only some CIs;
+    // an edge to a CI it did not extract may use that CI's committed current
+    // row, when that row is in the organization the same graph match reads.
+    const extractedIds = new Set(cis.map(ci => ci._id));
     for (const ci of cis) {
+      const fromOrganization = acceptedOrganizations.get(ci._id);
+      if (!fromOrganization) continue;
+      const session = this.neo4jClient.getSession();
       try {
-        const relationships = await this.neo4jClient.getRelationships(ci._id, UNSCOPED_CI_ACCESS, 'out');
+        // One graph match binds the edge and BOTH current endpoint tenants.
+        // A separate id-only read could observe a replacement after the CI
+        // batch, then attribute its new edge to the former tenant's dim_ci.
+        const graphResult = await session.run(
+          `MATCH (source:CI {id: $ciId})-[rel]->(target:CI)
+           RETURN source.id AS from_id, source.organization_id AS from_organization_id,
+                  target.id AS to_id, target.organization_id AS to_organization_id,
+                  type(rel) AS relationship_type`,
+          { ciId: ci._id }
+        );
 
-        for (const rel of relationships) {
-          const fromCiKey = await this.postgresClient.getCurrentCIKey(ci._id);
-          const toCiKey = await this.postgresClient.getCurrentCIKey(rel._ci._id);
-
-          if (fromCiKey === null || toCiKey === null) {
-            logger.warn('Skipping relationship - CI dimension not found in cmdb.dim_ci', {
+        for (const record of graphResult.records) {
+          const fromId = record.get('from_id');
+          const toId = record.get('to_id');
+          const toGraphOrganization = dimCiOrganizationId(record.get('to_organization_id'));
+          // A target this run extracted needs an accepted identity (without one,
+          // its batch failed or its node conflicts with its stored history).
+          // Another target is identified by the organization this match reads.
+          const toOrganization = acceptedOrganizations.get(toId)
+            ?? (extractedIds.has(toId) ? undefined : toGraphOrganization);
+          if (fromId !== ci._id || !isDimCiId(toId) ||
+              dimCiOrganizationId(record.get('from_organization_id')) !== fromOrganization ||
+              !toOrganization ||
+              toGraphOrganization !== toOrganization) {
+            logger.warn('Skipping relationship - current graph endpoints conflict with accepted CI lineage', {
               fromCiId: ci._id,
-              toCiId: rel._ci._id
+              toCiId: toId
+            });
+            continue;
+          }
+          // Both keys must be current rows in those organizations: an accepted
+          // one resolved from a committed node/dimension pair, or a target's
+          // graph organization. An id alone can name stale history.
+          const keys = await this.postgresClient.query(
+            `SELECT source.ci_key AS from_ci_key, target.ci_key AS to_ci_key
+             FROM cmdb.dim_ci source CROSS JOIN cmdb.dim_ci target
+             WHERE source.ci_id = $1 AND source.organization_id = $2 AND source.is_current = TRUE
+               AND target.ci_id = $3 AND target.organization_id = $4 AND target.is_current = TRUE`,
+            [fromId, fromOrganization, toId, toOrganization]
+          );
+          if (keys.rows.length === 0) {
+            logger.warn('Skipping relationship - current CI dimension does not match accepted lineage', {
+              fromCiId: ci._id,
+              toCiId: toId
             });
             continue;
           }
@@ -420,10 +576,10 @@ export class Neo4jToPostgresJob {
              VALUES ($1, $2, $3, $4, $5, true)
              ON CONFLICT (from_ci_key, to_ci_key, relationship_type, is_active) DO NOTHING`,
             [
-              fromCiKey,
-              toCiKey,
+              keys.rows[0].from_ci_key,
+              keys.rows[0].to_ci_key,
               this.dimensionTransformer.generateDateKey(discoveredAt),
-              rel._type,
+              record.get('relationship_type'),
               discoveredAt
             ]
           );
@@ -435,6 +591,8 @@ export class Neo4jToPostgresJob {
 
       } catch (error) {
         logger.error('Error processing relationships', { ciId: ci._id, error });
+      } finally {
+        await session.close();
       }
     }
 

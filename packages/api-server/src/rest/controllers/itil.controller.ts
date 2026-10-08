@@ -1354,7 +1354,6 @@ export class ITILController {
           : Object.keys(snapshot);
 
       const restoreProps: Record<string, any> = {};
-      let createdAtValue: string | null = null;
       let discoveredAtValue: string | null = null;
       const restoredFieldNames: string[] = [];
 
@@ -1370,14 +1369,16 @@ export class ITILController {
         // current restore time below, so neither is settable from a snapshot.
         // `organization_id` is written only from the token organization (or
         // the backfill): a restore never changes which organization owns a CI.
-        if (cleanKey === 'id' || cleanKey === 'updated_at' || cleanKey === 'organization_id') continue;
+        // `created_at` is when the node was created: the ETL relies on it
+        // (migration 011), so a snapshot never rewrites it.
+        if (cleanKey === 'id' || cleanKey === 'updated_at' || cleanKey === 'organization_id' || cleanKey === 'created_at') {
+          continue;
+        }
 
         const value = this.sanitizeBaselineValue(snapshot[key]);
         if (value === undefined) continue;
 
-        if (cleanKey === 'created_at') {
-          createdAtValue = typeof value === 'string' ? value : String(value);
-        } else if (cleanKey === 'discovered_at') {
+        if (cleanKey === 'discovered_at') {
           discoveredAtValue = typeof value === 'string' ? value : String(value);
         } else {
           restoreProps[cleanKey] = value;
@@ -1391,12 +1392,11 @@ export class ITILController {
           `
           MATCH (ci:CI {id: $ciId})
           SET ci += $restoreProps
-          SET ci.created_at = coalesce(datetime($createdAt), ci.created_at)
           SET ci.discovered_at = coalesce(datetime($discoveredAt), ci.discovered_at)
           SET ci.updated_at = datetime()
           RETURN ci
           `,
-          { ciId, restoreProps, createdAt: createdAtValue, discoveredAt: discoveredAtValue }
+          { ciId, restoreProps, discoveredAt: discoveredAtValue }
         );
 
         if (result.records.length === 0) {

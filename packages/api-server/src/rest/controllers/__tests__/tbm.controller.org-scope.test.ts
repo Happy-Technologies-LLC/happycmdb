@@ -102,6 +102,8 @@ const neo4jSession = {
     if (query.includes('BusinessCapability')) {
       const capability = params['capabilityId'] === 'cap-b'
         ? { id: 'cap-b', name: 'B Only', realizedBy: ['bs-b-app'] }
+        : params['capabilityId'] === 'cap-a'
+          ? { id: 'cap-a', name: 'A Only', realizedBy: ['bs-a-app'] }
         : params['capabilityId'] === CAPABILITY.id ? CAPABILITY : null;
       if (!capability) return { records: [] };
       const allowed = REALIZES_OWNED_FILTER.test(query) ? (params['orgServiceIds'] as string[] | undefined) ?? [] : null;
@@ -240,12 +242,18 @@ beforeAll(async () => {
   graphqlServer = new ApolloServer({
     typeDefs: `type Query {
       health: String
+      costsByCapability(id: ID!): CapabilityCost!
+      costsByBusinessService(id: ID!): BusinessServiceCost!
+      costTrends(months: Int = 6): [MonthlyCostData!]!
       costSummary: String
       costsByTower: String
       costAllocations(ciId: String!): String
       licenses: String
       upcomingRenewals: String
     }
+      type CapabilityCost { capabilityId: ID!, capabilityName: String!, totalMonthlyCost: Float!, supportingServices: Int! }
+      type BusinessServiceCost { serviceId: ID!, serviceName: String!, totalMonthlyCost: Float! }
+      type MonthlyCostData { month: String!, totalCost: Float!, ciCount: Int! }
       type ConnectorMutationResult { success: Boolean, message: String }
       type Mutation {
         installConnector(connectorType: String!, version: String): ConnectorMutationResult
@@ -257,6 +265,9 @@ beforeAll(async () => {
       input CostAllocationInput { sourceId: String!, targetType: String!, targetIds: [String!]! }`,
     resolvers: { Query: {
       health: () => 'ok',
+      costsByCapability: tbmResolvers.Query.costsByCapability,
+      costsByBusinessService: tbmResolvers.Query.costsByBusinessService,
+      costTrends: tbmResolvers.Query.costTrends,
       costSummary: tbmResolvers.Query.costSummary,
       costsByTower: tbmResolvers.Query.costsByTower,
       costAllocations: tbmResolvers.Query.costAllocations,
@@ -274,7 +285,7 @@ beforeAll(async () => {
   graphqlApp.use('/graphql', express.json(), getAuthMiddleware().authenticate(),
     expressMiddleware(graphqlServer, { context: async ({ req }) => ({
       user: (req as typeof req & { user: TokenPayload }).user,
-      _neo4jClient: {}, _loaders: {},
+      _neo4jClient: { getSession: () => neo4jSession }, _loaders: {},
     }) }));
 });
 
@@ -494,5 +505,97 @@ describe('mounted GraphQL global TBM operations', () => {
       });
     }
     expect(queryCount()).toBe(0);
+  });
+});
+
+const TENANT_QUERIES = {
+  service: (id: string) => `query { costsByBusinessService(id: "${id}") { serviceId serviceName totalMonthlyCost } }`,
+  capability: (id: string) => `query { costsByCapability(id: "${id}") { capabilityId capabilityName totalMonthlyCost supportingServices } }`,
+  trends: 'query { costTrends { totalCost ciCount } }',
+};
+function gql(query: string, headers: object) {
+  return request(graphqlApp).post('/graphql').set(headers).send({ query });
+}
+
+describe('mounted GraphQL tenant TBM reads', () => {
+  it.each([AS_ADMIN_A, { 'x-api-key': KEY_A }])('returns only owned services and capabilities for a verified org A principal', async headers => {
+    const ownService = await gql(TENANT_QUERIES.service('bs-a-app'), headers);
+    expect(ownService.body).toMatchObject({
+      data: { costsByBusinessService: { serviceId: 'bs-a-app', serviceName: 'A App', totalMonthlyCost: 100 } },
+    });
+    const ownCapability = await gql(TENANT_QUERIES.capability('cap-1'), headers);
+    expect(ownCapability.body).toMatchObject({
+      data: { costsByCapability: { capabilityId: 'cap-1', totalMonthlyCost: 100, supportingServices: 1 } },
+    });
+
+    for (const [kind, foreignId, missingId, message] of [
+      ['service', 'bs-b-app', 'bs-missing', 'Business service not found'],
+      ['capability', 'cap-b', 'cap-missing', 'Business capability not found'],
+    ] as const) {
+      const foreign = await gql(TENANT_QUERIES[kind](foreignId), headers);
+      const missing = await gql(TENANT_QUERIES[kind](missingId), headers);
+      expect(foreign.body.data).toBeNull();
+      expect(foreign.body.errors?.[0]).toMatchObject({ message, extensions: { code: 'NOT_FOUND' } });
+      expect(foreign.body).toEqual(missing.body);
+      expect(JSON.stringify(foreign.body)).not.toContain('B Secret App');
+    }
+    for (const id of ['bs-graph-only', 'bs-hijack', 'bs-orphan']) {
+      const res = await gql(TENANT_QUERIES.service(id), headers);
+      const missing = await gql(TENANT_QUERIES.service('bs-missing'), headers);
+      expect(res.body).toEqual(missing.body);
+    }
+  });
+
+  it.each([bearer('admin-b', ORG_B), { 'x-api-key': KEY_B }])('isolates org B with JWT and API key', async headers => {
+    const service = await gql(TENANT_QUERIES.service('bs-b-app'), headers);
+    expect(service.body.data?.costsByBusinessService).toMatchObject({ serviceName: 'B Secret App', totalMonthlyCost: 7 });
+    const capability = await gql(TENANT_QUERIES.capability('cap-b'), headers);
+    expect(capability.body.data?.costsByCapability).toMatchObject({ capabilityName: 'B Only', totalMonthlyCost: 7 });
+    const foreign = await gql(TENANT_QUERIES.service('bs-a-app'), headers);
+    const missing = await gql(TENANT_QUERIES.service('bs-missing'), headers);
+    expect(foreign.body.errors?.[0]).toMatchObject({ message: 'Business service not found', extensions: { code: 'NOT_FOUND' } });
+    expect(foreign.body).toEqual(missing.body);
+    const foreignCapability = await gql(TENANT_QUERIES.capability('cap-a'), headers);
+    const missingCapability = await gql(TENANT_QUERIES.capability('cap-missing'), headers);
+    expect(foreignCapability.body.errors?.[0]).toMatchObject({ message: 'Business capability not found', extensions: { code: 'NOT_FOUND' } });
+    expect(foreignCapability.body).toEqual(missingCapability.body);
+  });
+
+  it.each([bearer('user-none'), bearer('user-bad', 'not-a-uuid'), { 'x-api-key': KEY_NONE }])('fails closed without a valid organization before database access', async headers => {
+    for (const query of [TENANT_QUERIES.service('bs-a-app'), TENANT_QUERIES.capability('cap-1'), TENANT_QUERIES.trends]) {
+      const res = await gql(query, headers);
+      expect(res.body.errors?.[0]).toMatchObject({ extensions: { code: 'FORBIDDEN' } });
+    }
+    expect(queryCount()).toBe(0);
+  });
+
+  it('trends use only the verified principal organization for both authentication modes', async () => {
+    for (const headers of [AS_ADMIN_A, { 'x-api-key': KEY_A }]) {
+      const res = await gql(TENANT_QUERIES.trends, { ...headers, 'x-organization-id': ORG_B });
+      expect(res.body.data?.costTrends).toEqual([{ totalCost: 120, ciCount: 2 }]);
+    }
+    for (const headers of [bearer('admin-b', ORG_B), { 'x-api-key': KEY_B }]) {
+      const res = await gql(TENANT_QUERIES.trends, headers);
+      expect(res.body.data?.costTrends).toEqual([{ totalCost: 7, ciCount: 1 }]);
+    }
+    const denied = await gql(TENANT_QUERIES.trends, AS_A);
+    expect(denied.body.errors?.[0]).toMatchObject({ extensions: { code: 'FORBIDDEN' } });
+  });
+
+  it('prefers Authorization bearer identity over a conflicting X-API-Key for tenant reads and trends', async () => {
+    for (const [headers, ownId, ownCost, foreignId, capabilityId, trendCost] of [
+      [{ ...AS_ADMIN_A, 'x-api-key': KEY_B }, 'bs-a-app', 100, 'bs-b-app', 'cap-1', 120],
+      [{ ...bearer('admin-b', ORG_B), 'x-api-key': KEY_A }, 'bs-b-app', 7, 'bs-a-app', 'cap-b', 7],
+    ] as const) {
+      const own = await gql(TENANT_QUERIES.service(ownId), headers);
+      expect(own.body.data?.costsByBusinessService.totalMonthlyCost).toBe(ownCost);
+      const capability = await gql(TENANT_QUERIES.capability(capabilityId), headers);
+      expect(capability.body.data?.costsByCapability.totalMonthlyCost).toBe(ownCost);
+      const foreign = await gql(TENANT_QUERIES.service(foreignId), headers);
+      const missing = await gql(TENANT_QUERIES.service('bs-missing'), headers);
+      expect(foreign.body).toEqual(missing.body);
+      const trends = await gql(TENANT_QUERIES.trends, headers);
+      expect(trends.body.data?.costTrends).toEqual([{ totalCost: trendCost, ciCount: ownCost === 100 ? 2 : 1 }]);
+    }
   });
 });

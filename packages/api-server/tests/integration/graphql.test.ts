@@ -14,6 +14,7 @@ import * as bcrypt from 'bcrypt';
 import { v4 as uuidv4 } from 'uuid';
 import { startTestContainers, stopTestContainers } from '../helpers/test-containers';
 import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
+import { getEventProducer } from '@cmdb/event-processor';
 import { authRoutes } from '../../src/rest/routes/auth.routes';
 import { createGraphQLServer } from '../../src/graphql/server';
 import type { ApolloServer } from '@apollo/server';
@@ -400,6 +401,7 @@ describe('GraphQL API Integration Tests', () => {
     }`;
     const merge = (serial: string, marker: string, token: string) =>
       execute(mutation, { serial, attributes: { merge_marker: marker } }, token);
+    const emit = jest.spyOn(getEventProducer(), 'emit').mockResolvedValue([]);
     const pg = getPostgresClient();
     try {
       const own = await merge(sharedSerial, 'org-a', authToken);
@@ -439,6 +441,7 @@ describe('GraphQL API Integration Tests', () => {
         expect(result.rows.map(row => row.ci_id).sort()).toEqual([ownId, otherId].sort());
       }
     } finally {
+      emit.mockRestore();
       await pg.query('DELETE FROM ci_field_sources WHERE ci_id = ANY($1::text[])', [ids]);
       await pg.query('DELETE FROM ci_source_lineage WHERE ci_id = ANY($1::text[])', [ids]);
     }

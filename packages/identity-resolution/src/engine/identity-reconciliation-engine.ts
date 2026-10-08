@@ -192,9 +192,12 @@ export class IdentityReconciliationEngine {
     const session = this.neo4jClient.getSession();
     try {
       const owned = await session.run(
-        `MATCH (ci:CI)
-         WHERE ci.id IN $ciIds AND ci.organization_id = $organizationId
-         RETURN ci.id as ci_id LIMIT 1`,
+        `UNWIND range(0, size($ciIds) - 1) AS rank
+         WITH rank, $ciIds[rank] AS ciId
+         MATCH (ci:CI {id: ciId})
+         WHERE ci.organization_id = $organizationId
+         RETURN ci.id as ci_id
+         ORDER BY rank LIMIT 1`,
         { ciIds: result.rows.map(row => row.ci_id), organizationId }
       );
       return owned.records[0] ? { ci_id: owned.records[0].get('ci_id') } : null;

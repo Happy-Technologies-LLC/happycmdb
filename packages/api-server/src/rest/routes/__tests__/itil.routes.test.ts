@@ -232,6 +232,7 @@ describe('itil routes', () => {
   it.each([
     ['GET', '/itil/baselines', undefined],
     ['GET', '/itil/baselines/base-1', undefined],
+    ['GET', '/itil/baselines/base-1/comparison', undefined],
     ['POST', '/itil/baselines', { name: 'baseline', ciIds: ['ci-1'], createdBy: 'alice' }],
     ['POST', '/itil/baselines/base-1/restore', { ciId: 'ci-1', performedBy: 'alice' }],
   ])('rejects org-less actor before %s %s reaches the controller', async (method, path, body) => {

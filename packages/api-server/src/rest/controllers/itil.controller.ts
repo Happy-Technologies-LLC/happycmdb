@@ -1300,13 +1300,24 @@ export class ITILController {
     }
   }
 
-  async compareToBaseline(_req: Request, res: Response): Promise<void> {
+  async compareToBaseline(req: Request, res: Response): Promise<void> {
     try {
-      const { id } = _req.params;
+      const { id } = req.params;
+      const baseline = await this.postgresClient.pool.query(
+        'SELECT id FROM itil_baselines WHERE id = $1 AND organization_id = $2',
+        [id, requestOrganizationId(req)]
+      );
+      if (baseline.rows.length === 0) {
+        res.status(404).json({
+          success: false,
+          error: 'Not Found',
+          message: 'Baseline not found',
+        });
+        return;
+      }
 
       // TODO: Implement baseline comparison logic
       // This would compare current CI state to baseline snapshot
-
       res.json({
         success: true,
         data: {

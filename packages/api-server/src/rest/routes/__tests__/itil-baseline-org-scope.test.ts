@@ -1,7 +1,7 @@
 // Copyright 2026 Happy Technologies LLC
 // SPDX-License-Identifier: Apache-2.0
 
-/** Mounted REST baseline create/delete over the real DDL/migrations and in-memory PostgreSQL. */
+/** Mounted REST baseline boundaries over the real DDL/migrations and in-memory PostgreSQL. */
 import { fork } from 'child_process';
 import { randomBytes } from 'crypto';
 import { readFileSync } from 'fs';
@@ -37,6 +37,8 @@ const db = {
   rows: <T>(sql: string, params: unknown[] = []) => send('query', sql, params) as Promise<T[]>,
 };
 let writes = 0;
+let graphWrites = 0;
+let ciNodes: Record<string, { id: string; name: string; organization_id: string }> = {};
 const pgClient = {
   pool: {
     query: async (sql: string, params: unknown[] = []) => {
@@ -49,9 +51,22 @@ const pgClient = {
 jest.mock('@cmdb/database', () => ({
   getPostgresClient: () => pgClient,
   getNeo4jClient: () => ({
-    getCI: async (id: string, organizationId: string) =>
-      id === 'ci-a' && organizationId === A ? { id, name: 'CI A' } :
-      id === 'ci-b' && organizationId === B ? { id, name: 'CI B' } : null,
+    getCI: async (id: string, organizationId: string) => {
+      const node = ciNodes[id];
+      return node?.organization_id === organizationId ? { ...node } : null;
+    },
+    getSession: () => ({
+      run: async (cypher: string, params: { ciId: string; organizationId: string; restoreProps: Record<string, unknown> }) => {
+        const node = ciNodes[params.ciId];
+        if (!node || !cypher.includes('WHERE ci.organization_id = $organizationId') || node.organization_id !== params.organizationId) {
+          return { records: [] };
+        }
+        graphWrites++;
+        Object.assign(node, params.restoreProps);
+        return { records: [{ get: () => ({ properties: { ...node } }) }] };
+      },
+      close: async () => undefined,
+    }),
   }),
   getAuditService: () => ({}),
 }));
@@ -130,15 +145,64 @@ afterAll(() => { host.kill(); });
 beforeEach(async () => {
   await db.exec(`DELETE FROM itil_baselines;
     INSERT INTO itil_baselines (id, name, baseline_type, baseline_data, created_by, organization_id) VALUES
-    ('${ID_A}', 'shared-a', 'configuration', '{}', 'alice', '${A}'),
-    ('${ID_B}', 'shared-b', 'configuration', '{}', 'bob', '${B}'),
-    ('${ID_NULL}', 'legacy', 'configuration', '{}', 'legacy', NULL);`);
+    ('${ID_A}', 'shared-a', 'configuration', '{"ci-a":{"name":"baseline-a"},"ci-b":{"name":"foreign-snapshot"}}', 'alice', '${A}'),
+    ('${ID_B}', 'shared-b', 'configuration', '{"ci-b":{"name":"baseline-b"}}', 'bob', '${B}'),
+    ('${ID_NULL}', 'legacy', 'configuration', '{"ci-a":{"name":"legacy-a"}}', 'legacy', NULL);`);
+  ciNodes = {
+    'ci-a': { id: 'ci-a', name: 'current-a', organization_id: A },
+    'ci-b': { id: 'ci-b', name: 'current-b', organization_id: B },
+  };
+  graphWrites = 0;
   writes = 0;
 });
 const remaining = async () => (await db.rows<{ id: string }>('SELECT id FROM itil_baselines ORDER BY id')).map(row => row.id);
 
 it('refuses a pre-existing same-org duplicate during the index cutover', () => {
   expect(preexistingDuplicateCode).toBe('23505');
+});
+
+it('lists only own rows and gives identical detail not-found for foreign, missing and NULL rows', async () => {
+  const list = (user: string) => request(app).get('/api/v1/itil/baselines').set(authorization(user));
+  expect((await list('a')).body.data.map((row: { id: string }) => row.id)).toEqual([ID_A]);
+  expect((await list('b')).body.data.map((row: { id: string }) => row.id)).toEqual([ID_B]);
+  expect((await list('admin')).body.data).toEqual([]);
+  expect((await list('noorg')).status).toBe(403);
+  const detail = (id: string, user: string) => request(app).get(endpoint(id)).set(authorization(user));
+  const foreign = await detail(ID_A, 'b');
+  const missing = await detail(ID_MISSING, 'b');
+  const legacy = await detail(ID_NULL, 'b');
+  expect(foreign.status).toBe(404);
+  expect(foreign.body).toEqual(missing.body);
+  expect(foreign.body).toEqual(legacy.body);
+  expect((await detail(ID_A, 'a')).body.data.organization_id).toBe(A);
+  expect((await detail(ID_B, 'b')).body.data.organization_id).toBe(B);
+  expect((await detail(ID_NULL, 'admin')).status).toBe(404);
+  expect((await detail(ID_A, 'noorg')).status).toBe(403);
+  expect(await remaining()).toEqual([ID_A, ID_B, ID_NULL]);
+});
+
+it('restores only owned baselines into owned CIs, leaving foreign and NULL state intact', async () => {
+  const restore = (id: string, user: string, ciId: string) =>
+    request(app).post(`${endpoint(id)}/restore`).set(authorization(user))
+      .send({ ciId, performedBy: user });
+  const foreign = await restore(ID_A, 'b', 'ci-b');
+  const missing = await restore(ID_MISSING, 'b', 'ci-b');
+  const legacy = await restore(ID_NULL, 'b', 'ci-b');
+  expect(foreign.status).toBe(404);
+  expect(foreign.body).toEqual(missing.body);
+  expect(foreign.body).toEqual(legacy.body);
+  expect((await restore(ID_NULL, 'admin', 'ci-a')).status).toBe(404);
+  expect((await restore(ID_A, 'noorg', 'ci-a')).status).toBe(403);
+  expect(graphWrites).toBe(0);
+  expect((await restore(ID_A, 'a', 'ci-b')).status).toBe(404);
+  expect(graphWrites).toBe(0);
+  expect(ciNodes['ci-b']?.name).toBe('current-b');
+  const own = await restore(ID_A, 'a', 'ci-a');
+  expect(own.status).toBe(200);
+  expect(graphWrites).toBe(1);
+  expect(ciNodes['ci-a']?.name).toBe('baseline-a');
+  expect(ciNodes['ci-b']?.name).toBe('current-b');
+  expect(await remaining()).toEqual([ID_A, ID_B, ID_NULL]);
 });
 
 it('keeps old-writer NULL rows inaccessible to tenant reads and deletes', async () => {
@@ -154,6 +218,25 @@ it('keeps old-writer NULL rows inaccessible to tenant reads and deletes', async 
   expect(await db.rows<{ organization_id: string | null }>(
     'SELECT organization_id FROM itil_baselines WHERE id = $1', [ID_MISSING]
   )).toEqual([{ organization_id: null }]);
+});
+
+it('compares only a caller-owned baseline and conceals foreign, missing, and NULL ids', async () => {
+  const comparison = (id: string, user: string) =>
+    request(app).get(`${endpoint(id)}/comparison`).set(authorization(user));
+  const foreign = await comparison(ID_A, 'b');
+  const missing = await comparison(ID_MISSING, 'b');
+  const legacy = await comparison(ID_NULL, 'b');
+  expect(foreign.status).toBe(404);
+  expect(missing.status).toBe(404);
+  expect(legacy.status).toBe(404);
+  expect(foreign.body).toEqual(missing.body);
+  expect(legacy.body).toEqual(missing.body);
+  const own = await comparison(ID_B, 'b');
+  expect(own.status).toBe(200);
+  expect(own.body.data.baselineId).toBe(ID_B);
+  expect((await comparison(ID_NULL, 'admin')).status).toBe(404);
+  expect((await comparison(ID_A, 'noorg')).status).toBe(403);
+  expect(await remaining()).toEqual([ID_A, ID_B, ID_NULL]);
 });
 
 describe('mounted ITIL baseline DELETE tenant boundary', () => {
@@ -214,5 +297,23 @@ describe('mounted ITIL baseline create tenant names', () => {
     expect(duplicate.status).toBe(409);
     expect(duplicate.body).toEqual({ success: false, error: 'Conflict', message: 'Baseline name already exists' });
     expect(await remaining()).toEqual([ID_A, ID_B, ID_NULL]);
+  });
+
+  it('rejects foreign and missing CI snapshots without writing any baseline', async () => {
+    const foreign = await create('a', 'foreign-ci', 'ci-b');
+    const missing = await create('a', 'missing-ci', 'ci-missing');
+    expect(foreign.status).toBe(404);
+    expect(missing.status).toBe(404);
+    const mixed = await request(app).post('/api/v1/itil/baselines').set(authorization('a'))
+      .send({ name: 'mixed-ci', ciIds: ['ci-a', 'ci-b'], createdBy: 'a' });
+    expect(mixed.status).toBe(404);
+    expect(foreign.body.error).toBe(missing.body.error);
+    expect(await remaining()).toEqual([ID_A, ID_B, ID_NULL]);
+    const own = await create('b', 'own-b', 'ci-b');
+    expect(own.status).toBe(201);
+    expect(own.body.data.organization_id).toBe(B);
+    expect((await db.rows<{ baseline_data: Record<string, { organization_id: string }> }>(
+      'SELECT baseline_data FROM itil_baselines WHERE id = $1', [own.body.data.id]
+    ))[0]?.baseline_data['ci-b']?.organization_id).toBe(B);
   });
 });

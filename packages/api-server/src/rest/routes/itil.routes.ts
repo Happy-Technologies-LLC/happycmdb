@@ -312,6 +312,7 @@ itilRoutes.delete(
 
 itilRoutes.get(
   '/baselines/:id/comparison',
+  authMiddleware.requireOrganization(),
   controller.compareToBaseline.bind(controller)
 );
 

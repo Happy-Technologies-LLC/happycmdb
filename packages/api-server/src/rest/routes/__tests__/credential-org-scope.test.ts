@@ -49,6 +49,7 @@ const identities: Record<string, { _id: string; _username: string; _role: 'opera
   a: { _id: 'a', _username: 'alice', _role: 'operator', _enabled: true, _organizationId: A },
   b: { _id: 'b', _username: 'bob', _role: 'operator', _enabled: true, _organizationId: B },
   c: { _id: 'c', _username: 'carol', _role: 'operator', _enabled: true, _organizationId: B },
+  d: { _id: 'd', _username: 'dana', _role: 'operator', _enabled: true, _organizationId: A },
   none: { _id: 'none', _username: 'nora', _role: 'admin', _enabled: true },
   viewer: { _id: 'viewer', _username: 'vicky', _role: 'viewer', _enabled: true, _organizationId: A },
   agent: { _id: 'agent', _username: 'worker', _role: 'agent', _enabled: true, _organizationId: A },
@@ -61,6 +62,7 @@ import { JWTService } from '../../../auth/jwt.service';
 import { getAuthMiddleware } from '../../../auth/auth-bootstrap';
 import { unifiedCredentialRoutes } from '../unified-credential.routes';
 import { UnifiedCredentialService } from '../../../../../database/src/postgres/unified-credential.service';
+import { CredentialSetService } from '../../../../../database/src/postgres/credential-set.service';
 const migrations = join(__dirname, '../../../../../database/src/postgres/migrations');
 const app = express();
 app.use(express.json());
@@ -152,17 +154,26 @@ it('foreign and missing writes/deletes are indistinguishable with no mutation; o
 
 it('rejects org-less identities before SQL and prevents match/rank/validate enumeration', async () => {
   expect((await request(app).get('/api/v1/credentials').set(as('none'))).status).toBe(403);
+  expect((await request(app).post('/api/v1/credentials/rank').set(as('none')).send({})).status).toBe(403);
+  expect((await request(app).post('/api/v1/credentials/match').set(as('none')).send({})).status).toBe(403);
+  expect((await request(app).post(`/api/v1/credentials/${aId}/validate`).set(as('none')).send({})).status).toBe(403);
+  expect((await request(app).post(`/api/v1/credentials/${aId}/oauth/authorize`).set(as('none')).send({})).status).toBe(403);
   const ranked = await request(app).post('/api/v1/credentials/rank').set(as('a')).send({});
   expect(ranked.body.data.map((result: { credential: { id: string } }) => result.credential.id)).toEqual([aId]);
+  expect((await request(app).post('/api/v1/credentials/rank').set(as('d')).send({})).body.data).toEqual([]);
   expect(ranked.body.data[0].credential.credentials).toBe('***REDACTED***');
   const matched = await request(app).post('/api/v1/credentials/match').set(as('a')).send({});
   expect(matched.body.data.credential.id).toBe(aId);
   expect(matched.body.data.credential.credentials).toBe('***REDACTED***');
   expect(JSON.stringify(matched.body)).not.toContain('only-A-private');
+  expect((await request(app).post('/api/v1/credentials/match').set(as('d')).send({})).status).toBe(404);
   const validation = await request(app).post(`/api/v1/credentials/${aId}/validate`).set(as('b')).send({});
   const absentValidation = await request(app).post(`/api/v1/credentials/${missing}/validate`).set(as('b')).send({});
   expect(validation.status).toBe(404);
   expect(validation.body).toEqual(absentValidation.body);
+  expect((await request(app).post(`/api/v1/credentials/${aId}/validate`).set(as('d')).send({})).body).toEqual(
+    (await request(app).post(`/api/v1/credentials/${missing}/validate`).set(as('d')).send({})).body
+  );
   expect((await sql('SELECT validation_status FROM credentials WHERE id = $1', [aId]))[0].validation_status).toBeNull();
   const ownedValidation = await request(app).post(`/api/v1/credentials/${aId}/validate`).set(as('a')).send({});
   expect(ownedValidation.body.data.valid).toBe(true);
@@ -184,15 +195,30 @@ it('scopes credential sets and their member IDs to the verified owner/org', asyn
   const denied = await request(app).post('/api/v1/credential-sets').set(as('a'))
     .send({ name: 'foreign-member', credential_ids: [foreignId] });
   expect(denied.status).toBe(400);
+  expect((await request(app).post('/api/v1/credential-sets').set(as('d'))
+    .send({ name: 'same-org-foreign-member', credential_ids: [aId] })).body).toEqual(denied.body);
   const owned = await request(app).post('/api/v1/credential-sets').set(as('a'))
     .send({ name: 'A-set', credential_ids: [aId] });
   expect(owned.status).toBe(201);
   const setId: string = owned.body.data.id;
+  expect((await request(app).get('/api/v1/credential-sets').set(as('d'))).body.data).toEqual([]);
+  expect((await request(app).get('/api/v1/credential-sets').set(as('none'))).status).toBe(403);
+  expect((await request(app).post('/api/v1/credential-sets').set(as('none'))
+    .send({ name: 'orgless', credential_ids: [aId] })).status).toBe(403);
   expect((await request(app).get('/api/v1/credential-sets').set(as('b'))).body.data).toEqual([]);
   const foreign = await request(app).get(`/api/v1/credential-sets/${setId}`).set(as('b'));
   const absent = await request(app).get(`/api/v1/credential-sets/${missing}`).set(as('b'));
   expect(foreign.status).toBe(404);
   expect(foreign.body).toEqual(absent.body);
+  const sameOrgNonowner = await request(app).get(`/api/v1/credential-sets/${setId}`).set(as('d'));
+  expect(sameOrgNonowner.body).toEqual(absent.body);
+  const foreignSelect = await request(app).post(`/api/v1/credential-sets/${setId}/select`).set(as('b')).send({});
+  const absentSelect = await request(app).post(`/api/v1/credential-sets/${missing}/select`).set(as('b')).send({});
+  expect(foreignSelect.status).toBe(404);
+  expect(foreignSelect.body).toEqual(absentSelect.body);
+  expect((await request(app).post(`/api/v1/credential-sets/${setId}/select`).set(as('d')).send({})).body)
+    .toEqual((await request(app).post(`/api/v1/credential-sets/${missing}/select`).set(as('d')).send({})).body);
+  expect((await request(app).post(`/api/v1/credential-sets/${setId}/select`).set(as('none')).send({})).status).toBe(403);
   expect((await request(app).put(`/api/v1/credential-sets/${setId}`).set(as('b')).send({ name: 'poison' })).status).toBe(404);
   const foreignMemberWrite = await request(app).put(`/api/v1/credential-sets/${setId}`).set(as('b'))
     .send({ credential_ids: [foreignId] });
@@ -217,6 +243,11 @@ it('enforces owner and organization in SQL even when the service is called direc
   expect(await service.list('b', B)).toEqual([]);
   await expect(service.update(aId, { credentials: { key: 'poison' } }, 'b', B)).rejects.toBeInstanceOf(Error);
   await expect(service.delete(aId, 'b', B)).rejects.toBeInstanceOf(Error);
+  expect(await service.getById(aId, null as unknown as string, A)).toBeNull();
+  expect(await service.getById(aId, 'a', null as unknown as string)).toBeNull();
+  expect(await service.list(null as unknown as string, A)).toEqual([]);
+  const sets = new CredentialSetService(pool as unknown as Pool);
+  expect(await sets.list(null as unknown as string, A)).toEqual([]);
   const owned = await service.getById(aId, 'a', A);
   expect(owned?.name).toBe('A-private');
   expect(owned?.credentials).toEqual({ key: 'only-A-private' });

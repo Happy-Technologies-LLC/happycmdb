@@ -90,9 +90,6 @@ RUN npm run build
 WORKDIR /app/packages/identity-resolution
 RUN npm run build
 
-WORKDIR /app/packages/integration-hub
-RUN npm run build
-
 WORKDIR /app/packages/framework-integration
 RUN npm run build || echo "Warning: framework-integration build failed (non-critical)"
 
@@ -103,6 +100,9 @@ WORKDIR /app/packages/tbm-cost-engine
 RUN npm run build || echo "Warning: tbm-cost-engine build failed (non-critical)"
 
 WORKDIR /app/packages/api-server
+RUN npm run build
+
+WORKDIR /app/packages/integration-hub
 RUN npm run build
 
 # Production stage

@@ -13,6 +13,7 @@
 jest.mock('../../../auth/auth-bootstrap', () => ({
   getAuthMiddleware: () => ({
     requirePermission: () => (_req: unknown, _res: unknown, next: () => void) => next(),
+    requireOrganization: () => (_req: unknown, _res: unknown, next: () => void) => next(),
   }),
 }));
 

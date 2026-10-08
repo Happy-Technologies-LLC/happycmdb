@@ -128,10 +128,11 @@ beforeAll(async () => {
 });
 afterAll(() => { host.kill(); });
 beforeEach(async () => {
-  await db.exec(`DELETE FROM itil_baselines WHERE organization_id IS NOT NULL;
+  await db.exec(`DELETE FROM itil_baselines;
     INSERT INTO itil_baselines (id, name, baseline_type, baseline_data, created_by, organization_id) VALUES
     ('${ID_A}', 'shared-a', 'configuration', '{}', 'alice', '${A}'),
-    ('${ID_B}', 'shared-b', 'configuration', '{}', 'bob', '${B}');`);
+    ('${ID_B}', 'shared-b', 'configuration', '{}', 'bob', '${B}'),
+    ('${ID_NULL}', 'legacy', 'configuration', '{}', 'legacy', NULL);`);
   writes = 0;
 });
 const remaining = async () => (await db.rows<{ id: string }>('SELECT id FROM itil_baselines ORDER BY id')).map(row => row.id);
@@ -140,11 +141,19 @@ it('refuses a pre-existing same-org duplicate during the index cutover', () => {
   expect(preexistingDuplicateCode).toBe('23505');
 });
 
-it('preserves historical NULL ownership while rejecting new old-writer NULL inserts', async () => {
-  await expect(db.exec(`INSERT INTO itil_baselines (id, name, baseline_type, baseline_data, created_by)
-    VALUES ('${ID_MISSING}', 'new-orphan', 'configuration', '{}', 'old-writer')`))
-    .rejects.toMatchObject({ code: '23514' });
-  expect(await remaining()).toEqual([ID_A, ID_B, ID_NULL]);
+it('keeps old-writer NULL rows inaccessible to tenant reads and deletes', async () => {
+  await db.exec(`INSERT INTO itil_baselines (id, name, baseline_type, baseline_data, created_by)
+    VALUES ('${ID_MISSING}', 'new-orphan', 'configuration', '{}', 'old-writer')`);
+  const listed = await request(app).get('/api/v1/itil/baselines').set(authorization('a'));
+  expect(listed.status).toBe(200);
+  expect(listed.body.data.map((row: { id: string }) => row.id)).toEqual([ID_A]);
+  const detail = await request(app).get(endpoint(ID_MISSING)).set(authorization('a'));
+  const removal = await request(app).delete(endpoint(ID_MISSING)).set(authorization('a'));
+  expect(detail.status).toBe(404);
+  expect(removal.status).toBe(404);
+  expect(await db.rows<{ organization_id: string | null }>(
+    'SELECT organization_id FROM itil_baselines WHERE id = $1', [ID_MISSING]
+  )).toEqual([{ organization_id: null }]);
 });
 
 describe('mounted ITIL baseline DELETE tenant boundary', () => {

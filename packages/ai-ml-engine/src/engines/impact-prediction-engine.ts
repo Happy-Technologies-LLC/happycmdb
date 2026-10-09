@@ -265,10 +265,14 @@ export class ImpactPredictionEngine {
       if (!await this.neo4jClient.getCI(ciId, organizationId, IMPACT_QUERY_TIMEOUT_MS)) {
         throw new Error(`CI not found: ${ciId}`);
       }
+      // A cached score is reused only when it was calculated for this organization
+      // (its factors record it), so scores from before tenant scoping, or for
+      // another organization's CI with the same id, are recalculated.
       const cached = await this.postgresClient.query(
         `SELECT s.* FROM ci_criticality_scores s
-         WHERE s.ci_id = $1 AND s.calculated_at >= NOW() - INTERVAL '7 days'`,
-        [ciId]
+         WHERE s.ci_id = $1 AND s.calculated_at >= NOW() - INTERVAL '7 days'
+           AND s.factors->>'organization_id' = $2::text`,
+        [ciId, organizationId]
       );
       if (cached.rows.length > 0) return this.mapRowToCriticalityScore(cached.rows[0]);
       const score = await this.calculateCriticalityScore(ciId, organizationId, walk, depth);
@@ -656,7 +660,8 @@ export class ImpactPredictionEngine {
   }
 
   /**
-   * Store criticality score
+   * Store criticality score, recording the organization it was calculated for
+   * as the cache entry's scope.
    */
   private async storeCriticalityScore(score: CriticalityScore, organizationId: string): Promise<void> {
     if (!await this.neo4jClient.getCI(score.ci_id, organizationId, IMPACT_QUERY_TIMEOUT_MS)) throw new Error('CI not found');
@@ -665,6 +670,7 @@ export class ImpactPredictionEngine {
        (ci_id, ci_name, criticality_score, factors, calculated_at)
        VALUES ($1::varchar, $2::varchar, $3::integer, $4::jsonb, $5::timestamptz)
        ON CONFLICT (ci_id) DO UPDATE SET
+         ci_name = $2,
          criticality_score = $3,
          factors = $4,
          calculated_at = $5 RETURNING ci_id`,
@@ -672,7 +678,7 @@ export class ImpactPredictionEngine {
         score.ci_id,
         score.ci_name,
         score.criticality_score,
-        JSON.stringify(score.factors),
+        JSON.stringify({ ...score.factors, organization_id: organizationId }),
         score.calculated_at,
       ]
     );
@@ -680,14 +686,21 @@ export class ImpactPredictionEngine {
   }
 
   /**
-   * Map row to criticality score
+   * Map row to criticality score (the stored scope marker is not a factor)
    */
-  private mapRowToCriticalityScore(row: any): CriticalityScore {
+  private mapRowToCriticalityScore(row: {
+    ci_id: string;
+    ci_name: string;
+    criticality_score: number;
+    factors: CriticalityFactors & { organization_id?: string | null };
+    calculated_at: Date;
+  }): CriticalityScore {
+    const { organization_id: _scope, ...factors } = row.factors;
     return {
       ci_id: row.ci_id,
       ci_name: row.ci_name,
       criticality_score: row.criticality_score,
-      factors: row.factors,
+      factors,
       calculated_at: row.calculated_at,
     };
   }

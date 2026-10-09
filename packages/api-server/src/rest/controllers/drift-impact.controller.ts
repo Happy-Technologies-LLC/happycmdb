@@ -19,6 +19,8 @@ import {
   getImpactPredictionEngine,
   ChangeType,
   ImpactCriticalityLimitError,
+  type BaselineSnapshot,
+  type ImpactAnalysis,
 } from '@cmdb/ai-ml-engine';
 import { AuthenticatedRequest, requestOrganizationId } from '../../middleware/auth.middleware';
 
@@ -33,6 +35,60 @@ function isSnapshotType(value: string): value is SnapshotType {
 
 function isChangeType(value: string): value is ChangeType {
   return (Object.values(ChangeType) as string[]).includes(value);
+}
+
+// Impact analyses and relationship baselines are stored per CI id together with
+// the CI lists they found. Rows written before tenant scoping can name other
+// organizations' CIs. `own` is the subset of the CI ids a response would name
+// that are CIs of the caller's organization (organizationCIIdsAmong: one
+// bounded lookup of only those ids, none when there are none).
+
+/** Every CI id an impact analysis names. */
+function impactAnalysisCIIds(analysis: ImpactAnalysis): string[] {
+  return [
+    ...(analysis.critical_path ?? []),
+    ...(analysis.affected_cis ?? []).flatMap(ci => [ci.ci_id, ...(ci.dependency_path ?? [])]),
+  ];
+}
+
+/** The related-CI entries of a relationships baseline ([] for other snapshot types). */
+function relationshipEntries(baseline: BaselineSnapshot | null): Array<{ ci_id?: unknown }> {
+  if (baseline === null || baseline.snapshot_type !== 'relationships') return [];
+  return ['outgoing', 'incoming'].flatMap(key => {
+    const entries: unknown = baseline.snapshot_data[key];
+    return Array.isArray(entries) ? entries : [];
+  });
+}
+
+/** Every CI id a relationships baseline lists. */
+function baselineCIIds(baseline: BaselineSnapshot | null): string[] {
+  return relationshipEntries(baseline).flatMap(rel => (typeof rel?.ci_id === 'string' ? [rel.ci_id] : []));
+}
+
+/**
+ * Whether every CI an impact analysis names is a current CI of the caller's
+ * organization (`own`), as for every analysis computed with tenant scoping.
+ * One that is not was computed across organizations (its scores, blast radius
+ * and downtime estimate count foreign CIs) and is not served at all. This also
+ * hides (fails closed on) analyses naming the organization's own since-deleted CIs.
+ */
+function isImpactAnalysisInOrganization(analysis: ImpactAnalysis, own: Set<string>): boolean {
+  return (analysis.critical_path ?? []).every(id => own.has(id)) &&
+    (analysis.affected_cis ?? []).every(ci => own.has(ci.ci_id) && (ci.dependency_path ?? []).every(id => own.has(id)));
+}
+
+/** A baseline whose relationships snapshot only lists CIs in `own` (it holds no derived counts). */
+function baselineInOrganization(baseline: BaselineSnapshot | null, own: Set<string>): BaselineSnapshot | null {
+  if (baseline === null || baseline.snapshot_type !== 'relationships') return baseline;
+  const keep = (related: unknown) => (Array.isArray(related) ? related.filter(rel => own.has(rel?.ci_id)) : related);
+  return {
+    ...baseline,
+    snapshot_data: {
+      ...baseline.snapshot_data,
+      outgoing: keep(baseline.snapshot_data['outgoing']),
+      incoming: keep(baseline.snapshot_data['incoming']),
+    },
+  };
 }
 
 export class DriftImpactController {
@@ -226,11 +282,13 @@ export class DriftImpactController {
         return;
       }
 
+      // Resolved before the approval write, so a lookup failure approves nothing.
+      const own = await this.neo4jClient.organizationCIIdsAmong(baselineCIIds(existing), requestOrganizationId(req));
       const approved = await this.driftDetector.approveBaseline(baselineId, this.getActor(req), requestOrganizationId(req));
 
       res.json({
         success: true,
-        data: approved,
+        data: baselineInOrganization(approved, own),
         message: 'Baseline approved successfully',
       });
     } catch (error) {
@@ -274,10 +332,11 @@ export class DriftImpactController {
         return;
       }
       const baseline = await this.driftDetector.getApprovedBaseline(ciId, requestedType, requestOrganizationId(req));
+      const own = await this.neo4jClient.organizationCIIdsAmong(baselineCIIds(baseline), requestOrganizationId(req));
 
       res.json({
         success: true,
-        data: baseline,
+        data: baselineInOrganization(baseline, own),
       });
     } catch (error) {
       logger.error('Error retrieving approved baseline', error);
@@ -476,10 +535,11 @@ export class DriftImpactController {
         return;
       }
       const history = await this.impactEngine.getImpactHistory(ciId, limitNum, requestOrganizationId(req));
+      const own = await this.neo4jClient.organizationCIIdsAmong(history.flatMap(impactAnalysisCIIds), requestOrganizationId(req));
 
       res.json({
         success: true,
-        data: history,
+        data: history.filter(analysis => isImpactAnalysisInOrganization(analysis, own)),
       });
     } catch (error) {
       logger.error('Error retrieving impact history', error);

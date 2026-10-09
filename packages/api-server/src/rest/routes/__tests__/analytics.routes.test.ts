@@ -17,7 +17,7 @@ import request from 'supertest';
 import { jest, describe, it, expect, beforeEach } from '@jest/globals';
 import type { UserRole } from '../../../auth/types';
 
-type ReqWithUser = Request & { user?: { _userId?: string; _role?: UserRole } };
+type ReqWithUser = Request & { user?: { _userId?: string; _role?: UserRole; _organizationId?: string } };
 
 const mockRouteHandler = jest.fn((req: Request, res: Response) => {
   res.status(200).json({ actor: (req as ReqWithUser).user?._userId });
@@ -34,12 +34,19 @@ const mockAuthenticate = jest.fn(() => (req: Request, res: Response, next: () =>
     res.status(401).json({ error: 'Unauthorized' });
     return;
   }
-  (req as ReqWithUser).user = { _userId: 'route-user', _role: role };
+  (req as ReqWithUser).user = { _userId: 'route-user', _role: role, _organizationId: '11111111-1111-4111-8111-111111111111' };
   next();
 });
 
 jest.mock('../../../auth/auth-bootstrap', () => ({
-  getAuthMiddleware: jest.fn(() => ({ authenticate: mockAuthenticate })),
+  getAuthMiddleware: jest.fn(() => ({
+    authenticate: mockAuthenticate,
+    // Router-level tenant guard (tenant filtering is covered by ci-graph-org-scope.test.ts).
+    requireOrganization: () => (req: Request, res: Response, next: () => void) => {
+      if ((req as ReqWithUser).user?._organizationId) next();
+      else res.status(403).json({ error: 'Forbidden' });
+    },
+  })),
 }));
 
 jest.mock('../../controllers/analytics.controller', () => ({

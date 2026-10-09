@@ -49,6 +49,10 @@ const graph = {
     const ci = nodes.get(id);
     return ci?.organization_id === org ? { ...ci } : null;
   },
+  organizationCIIdsAmong: async (ids: string[], org: string) => {
+    if (ids.length > 0) graphCount++;
+    return new Set(ids.filter(id => nodes.get(id)?.organization_id === org));
+  },
   getSession: () => ({
     run: async (statement: string, params: Record<string, unknown> = {}) => {
       graphCount++;

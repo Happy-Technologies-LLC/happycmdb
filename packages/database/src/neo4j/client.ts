@@ -331,6 +331,39 @@ export class Neo4jClient {
     }
   }
 
+  /** Ids of every :CI node of the organization (tenant set for stores without an org column). */
+  async listCIIds(organizationId: string): Promise<string[]> {
+    const scoped = organizationIdParam(organizationId);
+    const session = this.getSession();
+    try {
+      const result = await session.run(
+        'MATCH (ci:CI) WHERE ci.organization_id = $organizationId RETURN ci.id AS id',
+        { organizationId: scoped }
+      );
+      return result.records.map(record => record.get('id'));
+    } finally {
+      await session.close();
+    }
+  }
+
+  /** The subset of `ids` that are :CI nodes of the organization (no query when `ids` is empty). */
+  async organizationCIIdsAmong(ids: string[], organizationId: string): Promise<Set<string>> {
+    const scoped = organizationIdParam(organizationId);
+    if (ids.length === 0) {
+      return new Set();
+    }
+    const session = this.getSession();
+    try {
+      const result = await session.run(
+        'MATCH (ci:CI) WHERE ci.id IN $ids AND ci.organization_id = $organizationId RETURN ci.id AS id',
+        { ids: [...new Set(ids)], organizationId: scoped }
+      );
+      return new Set(result.records.map(record => record.get('id')));
+    } finally {
+      await session.close();
+    }
+  }
+
   /**
    * DETACH DELETE a CI in the scope. Returns false (and deletes nothing) when
    * no CI with that id exists in the scope's organization.

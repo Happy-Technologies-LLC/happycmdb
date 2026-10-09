@@ -6,9 +6,16 @@ import Joi from 'joi';
 import { AnalyticsController } from '../controllers/analytics.controller';
 import { validateOptional, validateRequest } from '../middleware/validation.middleware';
 import { schemas } from '@cmdb/common';
+import { getAuthMiddleware } from '../../auth/auth-bootstrap';
 
 export const analyticsRoutes = Router();
 const controller = new AnalyticsController();
+
+// Tenant scoping: every statistic below is computed only from CIs (and
+// relationships between CIs) of the caller's organization, and CI-keyed reads
+// 404 for another organization's CI. A token without an org claim is rejected
+// with 403 before any Neo4j or PostgreSQL access.
+analyticsRoutes.use(getAuthMiddleware().requireOrganization());
 
 // Validation schemas
 const dateRangeSchema = Joi.object({

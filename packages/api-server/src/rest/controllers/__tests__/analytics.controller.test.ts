@@ -37,13 +37,20 @@ function mockRes(): Response {
   return res as Response;
 }
 
+// requireOrganization() runs before every handler; the token org is the scope.
+const USER = { _userId: 'auth-user', _organizationId: '11111111-1111-4111-8111-111111111111' };
+
 describe('AnalyticsController - relationship matrix / change timeline / health metrics', () => {
   let controller: AnalyticsController;
   let query: jest.Mock<any, any[]>;
 
   beforeEach(() => {
     query = jest.fn();
-    (getNeo4jClient as jest.Mock).mockReturnValue({ getSession: jest.fn() });
+    (getNeo4jClient as jest.Mock).mockReturnValue({
+      getSession: jest.fn(),
+      listCIIds: jest.fn(async () => ['server-001']),
+      getCI: jest.fn(async () => ({ _id: 'server-001' })),
+    });
     (getPostgresClient as jest.Mock).mockReturnValue({ query });
     controller = new AnalyticsController();
   });
@@ -56,7 +63,7 @@ describe('AnalyticsController - relationship matrix / change timeline / health m
         ],
       });
 
-      const req = {} as Request;
+      const req = { user: USER } as unknown as Request;
       const res = mockRes();
 
       await controller.getRelationshipMatrix(req, res);
@@ -78,7 +85,7 @@ describe('AnalyticsController - relationship matrix / change timeline / health m
 
     it('returns 500 with an error envelope when the query fails', async () => {
       query.mockRejectedValueOnce(new Error('db down'));
-      const req = {} as Request;
+      const req = { user: USER } as unknown as Request;
       const res = mockRes();
 
       await controller.getRelationshipMatrix(req, res);
@@ -96,7 +103,7 @@ describe('AnalyticsController - relationship matrix / change timeline / health m
         rows: [{ date: '2026-01-01', created: 3, updated: 1, deleted: 0 }],
       });
 
-      const req = { query: {} } as unknown as Request;
+      const req = { query: {}, user: USER } as unknown as Request;
       const res = mockRes();
 
       await controller.getChangeTimeline(req, res);
@@ -124,6 +131,7 @@ describe('AnalyticsController - relationship matrix / change timeline / health m
       query.mockResolvedValueOnce({ rows: [] });
 
       const req = {
+        user: USER,
         query: { start_date: '2026-01-01T00:00:00.000Z', end_date: '2026-01-08T00:00:00.000Z' },
       } as unknown as Request;
       const res = mockRes();
@@ -178,7 +186,7 @@ describe('AnalyticsController - relationship matrix / change timeline / health m
         ],
       });
 
-      const req = { params: { ciId: 'server-001' }, query: {} } as unknown as Request;
+      const req = { params: { ciId: 'server-001' }, query: {}, user: USER } as unknown as Request;
       const res = mockRes();
 
       await controller.getHealthMetrics(req, res);

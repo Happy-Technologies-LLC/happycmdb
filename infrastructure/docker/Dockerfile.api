@@ -104,6 +104,7 @@ RUN npm run build
 
 WORKDIR /app/packages/integration-hub
 RUN npm run build
+RUN npm run test:compiled-entry
 
 # Production stage
 FROM node:20-alpine

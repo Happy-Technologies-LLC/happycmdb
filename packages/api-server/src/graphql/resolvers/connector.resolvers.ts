@@ -10,12 +10,12 @@ import { GraphQLContext } from './index';
 import { checkGraphQLPermission as requirePermission } from '../../middleware/auth.middleware';
 import { denyPlatformAdminGraphQL } from '../../middleware/platform-admin-unavailable';
 import { publicInstalledConnectorGraphQL } from '../../services/public-installed-connector';
-import { connectorJsonMerge } from '../../services/connector-json-merge';
+import { ConnectorJsonPatchBudget, ConnectorJsonPatchError, connectorJsonMerge } from '../../services/connector-json-merge';
 import { connectorScope, connectorPredicate, scopeValues, PUBLIC_CONFIG, PUBLIC_RUN } from '../../auth/connector-scope';
 
 function scopedUser(context: GraphQLContext) {
   const scope = connectorScope(context.user);
-  if (!scope.organizationId && !scope.legacy) {
+  if (!scope.organizationId) {
     throw new GraphQLError('Organization claim required', { extensions: { code: 'FORBIDDEN' } });
   }
   return scope;
@@ -230,7 +230,7 @@ const ConnectorQueryResolvers = {
     try {
       const pgClient = getPostgresClient();
       const conditions: string[] = [];
-      const params: unknown[] = scopeValues(context.user, false);
+      const params: unknown[] = scopeValues(context.user);
       let paramIndex = 3;
 
       if (args.category) {
@@ -285,7 +285,7 @@ const ConnectorQueryResolvers = {
           (SELECT status FROM connector_run_history crh WHERE crh.connector_type = ic.connector_type AND ${connectorPredicate('crh', 2)} ORDER BY started_at DESC LIMIT 1) AS last_run_status
         FROM installed_connectors ic WHERE ic.connector_type = $1
       `;
-      const result = await pgClient.query(query, [args.connectorType, ...scopeValues(context.user, false)]);
+      const result = await pgClient.query(query, [args.connectorType, ...scopeValues(context.user)]);
 
       if (result.rows.length === 0) {
         return null;
@@ -304,7 +304,7 @@ const ConnectorQueryResolvers = {
    */
   connectorConfigurations: async (_parent: unknown, args: { connectorType?: string; enabled?: boolean }, context: GraphQLContext) => {
     scopedUser(context);
-    const params: unknown[] = scopeValues(context.user, false);
+    const params: unknown[] = scopeValues(context.user);
     const conditions = [connectorPredicate('cc', 1)];
     if (args.connectorType) {
       params.push(args.connectorType);
@@ -348,7 +348,7 @@ const ConnectorQueryResolvers = {
    */
   connectorRuns: async (_parent: unknown, args: { configId?: string; connectorType?: string; status?: string; first?: number; offset?: number }, context: GraphQLContext) => {
     scopedUser(context);
-    const params: unknown[] = scopeValues(context.user, args.configId !== undefined);
+    const params: unknown[] = scopeValues(context.user);
     const conditions = [connectorPredicate('crh', 1)];
     if (args.configId) {
       params.push(args.configId);
@@ -406,7 +406,7 @@ const ConnectorQueryResolvers = {
    */
   connectorStats: async (_parent: unknown, _args: unknown, context: GraphQLContext) => {
     scopedUser(context);
-    const values = scopeValues(context.user, false);
+    const values = scopeValues(context.user);
     try {
       const pg = getPostgresClient();
       const overall = await pg.query(
@@ -477,10 +477,14 @@ const ConnectorMutationResolvers = {
   createConnectorConfiguration: async (_parent: unknown, args: { input: Record<string, unknown> }, context: GraphQLContext) => {
     const user = requirePermission(context, 'write');
     const scope = scopedUser(context);
-    // NULL ownership is reserved for an explicit platform-operator legacy path.
+    // NULL ownership has no caller authority until the dedicated platform flag is available.
     if (!scope.organizationId) throw new GraphQLError('Organization claim required', { extensions: { code: 'FORBIDDEN' } });
     const input = args.input;
+    const budget = new ConnectorJsonPatchBudget();
     try {
+      const connectionJson = budget.add(input.connection ?? {});
+      const optionsJson = budget.add(input.options ?? {});
+      const resourceConfigsJson = budget.add(input.resourceConfigs ?? {});
       const result = await getPostgresClient().query(
         `INSERT INTO connector_configurations (
            organization_id, name, description, connector_type, enabled, schedule, schedule_enabled,
@@ -491,14 +495,17 @@ const ConnectorMutationResolvers = {
          ) RETURNING ${PUBLIC_CONFIG}`,
         [scope.organizationId, input.name, input.description, input.connectorType,
          input.enabled ?? true, input.schedule, input.scheduleEnabled ?? false,
-         JSON.stringify(input.connection), JSON.stringify(input.options ?? {}),
-         input.enabledResources ?? [], JSON.stringify(input.resourceConfigs ?? {}),
+         connectionJson, optionsJson,
+         input.enabledResources ?? [], resourceConfigsJson,
          input.maxRetries ?? 3, input.retryDelaySeconds ?? 300, input.continueOnError ?? false,
          input.notificationChannels ?? [], input.notificationOnSuccess ?? false,
          input.notificationOnFailure ?? true, user._username]
       );
       return mapConfigRow(result.rows[0]);
-    } catch {
+    } catch (error) {
+      if (error instanceof ConnectorJsonPatchError) {
+        throw new GraphQLError(error.message, { extensions: { code: 'BAD_USER_INPUT' } });
+      }
       throw new GraphQLError('Failed to create connector configuration');
     }
   },
@@ -520,21 +527,22 @@ const ConnectorMutationResolvers = {
     const jsonColumns: Record<string, true> = { connection: true, options: true, resourceConfigs: true };
     const updates: string[] = [];
     const values: unknown[] = [args.id, ...scopeValues(context.user)];
-    for (const [key, column] of Object.entries(columns)) {
-      // Empty write-only editors do not replace saved secrets.
-      const value = args.input[key];
-      if (value === undefined || ((jsonColumns[key] || key === 'notificationChannels') &&
-        value !== null && typeof value === 'object' && Object.keys(value).length === 0)) continue;
-      if (jsonColumns[key]) {
-        updates.push(`${column} = ${connectorJsonMerge(column, value, values)}`);
-      } else {
-        values.push(value);
-        updates.push(`${column} = $${values.length}`);
-      }
-    }
-    values.push(user._username);
-    updates.push(`updated_at = NOW()`, `updated_by = $${values.length}`);
+    const budget = new ConnectorJsonPatchBudget();
     try {
+      for (const [key, column] of Object.entries(columns)) {
+        // Empty write-only editors do not replace saved secrets.
+        const value = args.input[key];
+        if (value === undefined || ((jsonColumns[key] || key === 'notificationChannels') &&
+          value !== null && typeof value === 'object' && Object.keys(value).length === 0)) continue;
+        if (jsonColumns[key]) {
+          updates.push(`${column} = ${connectorJsonMerge(column, value, values, budget)}`);
+        } else {
+          values.push(value);
+          updates.push(`${column} = $${values.length}`);
+        }
+      }
+      values.push(user._username);
+      updates.push(`updated_at = NOW()`, `updated_by = $${values.length}`);
       const result = await getPostgresClient().query(
         `UPDATE connector_configurations cc SET ${updates.join(', ')}
          WHERE cc.id = $1 AND ${connectorPredicate('cc', 2)} RETURNING ${PUBLIC_CONFIG}`,
@@ -543,6 +551,9 @@ const ConnectorMutationResolvers = {
       if (!result.rows.length) throw configNotFound();
       return mapConfigRow(result.rows[0]);
     } catch (error) {
+      if (error instanceof ConnectorJsonPatchError) {
+        throw new GraphQLError(error.message, { extensions: { code: 'BAD_USER_INPUT' } });
+      }
       if (error instanceof GraphQLError) throw error;
       throw new GraphQLError('Failed to update connector configuration');
     }

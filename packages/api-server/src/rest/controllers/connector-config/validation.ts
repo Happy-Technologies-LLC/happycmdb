@@ -5,7 +5,7 @@
  * Validation logic for connector configuration operations
  */
 import { PUBLIC_CONFIG } from '../../../auth/connector-scope';
-import { connectorJsonMerge } from '../../../services/connector-json-merge';
+import { ConnectorJsonPatchBudget, connectorJsonMerge } from '../../../services/connector-json-merge';
 
 export function validateConfiguration(config: any): string | null {
   if (!config.name) {
@@ -26,6 +26,7 @@ export function validateConfiguration(config: any): string | null {
 export function buildUpdateQuery(id: string, updates: Record<string, unknown>, scope: [string | null, boolean]): { query: string | null; values: unknown[] } {
   const fields: string[] = [];
   const values: unknown[] = [];
+  const budget = new ConnectorJsonPatchBudget();
 
   const allowedFields = [
     'name', 'description', 'enabled', 'schedule', 'schedule_enabled',
@@ -39,7 +40,7 @@ export function buildUpdateQuery(id: string, updates: Record<string, unknown>, s
     if (['connection', 'options'].includes(field) && updates[field] !== null &&
       typeof updates[field] === 'object' && Object.keys(updates[field] as object).length === 0) continue;
     if (['connection', 'options', 'resource_configs'].includes(field)) {
-      fields.push(`${field} = ${connectorJsonMerge(field, updates[field], values)}`);
+      fields.push(`${field} = ${connectorJsonMerge(field, updates[field], values, budget)}`);
     } else {
       values.push(updates[field]);
       fields.push(`${field} = $${values.length}`);

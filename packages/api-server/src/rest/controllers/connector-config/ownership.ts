@@ -25,6 +25,6 @@ export function ownedRun(pool: Pool, req: Request, id: string) {
   );
 }
 
-export function requestScopeValues(req: Request, includeLegacy = true): [string | null, boolean] {
-  return scopeValues(user(req), includeLegacy);
+export function requestScopeValues(req: Request): [string | null, boolean] {
+  return scopeValues(user(req));
 }

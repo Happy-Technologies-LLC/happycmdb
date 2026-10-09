@@ -11,7 +11,7 @@ import { Pool } from 'pg';
 import { logger } from '@cmdb/common';
 import { CONFIG_NOT_FOUND, PUBLIC_CONFIG } from '../../../auth/connector-scope';
 import { ownedConfig, requestScopeValues } from './ownership';
-import { connectorJsonMerge } from '../../../services/connector-json-merge';
+import { ConnectorJsonPatchBudget, ConnectorJsonPatchError, connectorJsonMerge } from '../../../services/connector-json-merge';
 
 export class ConnectorConfigResourcesController {
   constructor(private pool: Pool) {}
@@ -81,7 +81,7 @@ export class ConnectorConfigResourcesController {
       const values: unknown[] = [enabled_resources];
       const configs = resource_configs === undefined
         ? 'resource_configs'
-        : connectorJsonMerge('resource_configs', resource_configs, values);
+        : connectorJsonMerge('resource_configs', resource_configs, values, new ConnectorJsonPatchBudget());
       const idParam = values.length + 1;
       const result = await this.pool.query(
         `UPDATE connector_configurations
@@ -103,7 +103,11 @@ export class ConnectorConfigResourcesController {
         data: result.rows[0],
         message: 'Enabled resources updated successfully'
       });
-    } catch {
+    } catch (error) {
+      if (error instanceof ConnectorJsonPatchError) {
+        res.status(400).json({ success: false, error: 'Bad Request', message: error.message });
+        return;
+      }
       logger.error('Error updating enabled resources');
       res.status(500).json({ success: false, error: 'Failed to update enabled resources' });
     }

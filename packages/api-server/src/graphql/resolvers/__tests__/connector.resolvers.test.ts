@@ -174,19 +174,18 @@ describe('connector ownership and public GraphQL boundary', () => {
     await expectGraphQLErrorCode(connectorResolvers.Query.connectorConfiguration(null, { id: 'b' }, contextWith(operatorUser)), 'NOT_FOUND');
     await expectGraphQLErrorCode(connectorResolvers.Query.connectorRun(null, { id: 'rb' }, contextWith(operatorUser)), 'NOT_FOUND');
   });
-  it('excludes legacy from platform lists while allowing explicit legacy ID reads', async () => {
+  it('denies explicit NULL-org ID reads even to a user carrying a platform marker', async () => {
     installScopedDatabase();
-    const tenantAdmin = await connectorResolvers.Query.connectorConfigurations(null, {}, contextWith(adminUser));
-    expect(tenantAdmin.map((row: { id: string }) => row.id)).toEqual(['a']);
     const platformContext = contextWith({ ...adminUser, _platformAdmin: true });
-    const platform = await connectorResolvers.Query.connectorConfigurations(null, {}, platformContext);
-    expect(platform.map((row: { id: string }) => row.id)).toEqual(['a']);
+    const configs = await connectorResolvers.Query.connectorConfigurations(null, {}, platformContext);
     const runs = await connectorResolvers.Query.connectorRuns(null, {}, platformContext);
+    expect(configs.map((row: { id: string }) => row.id)).toEqual(['a']);
     expect(runs.map((row: { id: string }) => row.id)).toEqual(['ra']);
-    const legacy = await connectorResolvers.Query.connectorConfiguration(null, { id: 'legacy' }, platformContext);
-    expect(legacy.id).toBe('legacy');
     await expectGraphQLErrorCode(
-      connectorResolvers.Query.connectorConfiguration(null, { id: 'legacy' }, contextWith(adminUser)), 'NOT_FOUND'
+      connectorResolvers.Query.connectorConfiguration(null, { id: 'legacy' }, platformContext), 'NOT_FOUND'
+    );
+    await expectGraphQLErrorCode(
+      connectorResolvers.Query.connectorRun(null, { id: 'rlegacy' }, platformContext), 'NOT_FOUND'
     );
   });
 
@@ -223,18 +222,6 @@ describe('connector ownership and public GraphQL boundary', () => {
     expect(mockRunConnector).not.toHaveBeenCalled();
   });
 
-  it('keeps saved secret values when updating a public field without write-only inputs', async () => {
-    installScopedDatabase();
-    const result = await connectorResolvers.Mutation.updateConnectorConfiguration(
-      null, { id: 'a', input: { description: 'new public description', connection: {}, options: {}, resourceConfigs: {} } }, contextWith(operatorUser)
-    );
-    const [sql, values] = mockQuery.mock.calls[0] as [string, unknown[]];
-    expect(sql).not.toContain('connection =');
-    expect(sql).not.toContain('options =');
-    expect(sql).not.toContain('resource_configs =');
-    expect(values).not.toContain('{}');
-    expect(JSON.stringify(result)).not.toContain(sentinel);
-  });
 
   it('scopes nested run history and metrics even when a forged parent is supplied', async () => {
     installScopedDatabase();

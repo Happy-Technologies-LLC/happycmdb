@@ -12,7 +12,7 @@ import {
 } from '@cmdb/api-server/auth/connector-scope';
 import type { TokenPayload } from '@cmdb/api-server/auth/types';
 import { ROLE_PERMISSIONS } from '@cmdb/api-server/auth/types';
-import { connectorJsonMerge } from '@cmdb/api-server/services/connector-json-merge';
+import { ConnectorJsonPatchBudget, ConnectorJsonPatchError, connectorJsonMerge } from '@cmdb/api-server/services/connector-json-merge';
 import { publicInstalledConnector } from '@cmdb/api-server/services/public-installed-connector';
 
 export const connectorsRouter = Router();
@@ -23,16 +23,15 @@ const postgresClient = getPostgresClient();
 type AuthenticatedRequest = Request & { user?: TokenPayload };
 const scope = (req: Request) => connectorScope((req as AuthenticatedRequest).user);
 function values(req: Request): [string | null, boolean] {
-  const identity = (req as AuthenticatedRequest).user;
-  const current = scopeValues(identity);
-  // Names are tenant-local. Platform operators select legacy explicitly when
-  // their own tenant has a configuration with the same name.
-  if (req.query['legacy'] === 'true' && identity?._platformAdmin === true) return [null, true];
-  return current[0] === null ? current : [current[0], false];
+  return scopeValues((req as AuthenticatedRequest).user);
 }
+const invalidPatch = (res: Response, error: unknown) =>
+  error instanceof ConnectorJsonPatchError
+    ? res.status(400).json({ error: 'Bad Request', message: error.message })
+    : failed(res);
 function requireConnectorWrite(req: Request, res: Response, next: NextFunction): void {
   const user = (req as AuthenticatedRequest).user;
-  if (user?._platformAdmin !== true && (!user || !ROLE_PERMISSIONS[user._role]?.includes('write'))) {
+  if (!user || !ROLE_PERMISSIONS[user._role]?.includes('write')) {
     res.status(403).json({ error: 'Forbidden' });
     return;
   }
@@ -124,27 +123,31 @@ connectorsRouter.post('/', requireConnectorWrite, async (req, res) => {
     if (!connectorRegistry.hasConnectorType(type)) return res.status(400).json({ error: 'Unknown connector type' });
     const organizationId = scope(req).organizationId;
     if (!organizationId) return res.status(403).json({ error: 'Organization required for creation' });
+    const budget = new ConnectorJsonPatchBudget();
+    const connectionJson = budget.add(connection ?? {});
+    const optionsJson = budget.add(options ?? {});
     const result = await postgresClient.query(
       `INSERT INTO connector_configurations (organization_id, name, connector_type, enabled, schedule, schedule_enabled, connection, options)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING ${PUBLIC_CONFIG}`,
-      [organizationId, name, type, enabled, schedule, schedule_enabled, JSON.stringify(connection ?? {}), JSON.stringify(options ?? {})]
+      [organizationId, name, type, enabled, schedule, schedule_enabled, connectionJson, optionsJson]
     );
     await registerCurrentConfig(result.rows[0].id, organizationId);
     return res.status(201).json({ connector: result.rows[0] });
-  } catch { return failed(res); }
+  } catch (error) { return invalidPatch(res, error); }
 });
 
 connectorsRouter.put('/:name', requireConnectorWrite, async (req, res) => {
   try {
     const { enabled, schedule, schedule_enabled, connection, options } = req.body;
     const params: unknown[] = [req.params['name'], ...values(req), enabled, schedule, schedule_enabled];
+    const budget = new ConnectorJsonPatchBudget();
     const fields = [
       'enabled = COALESCE($4, c.enabled)', 'schedule = COALESCE($5, c.schedule)',
       'schedule_enabled = COALESCE($6, c.schedule_enabled)',
     ];
     for (const [column, patch] of [['connection', connection], ['options', options]] as const) {
       if (patch && typeof patch === 'object' && !Array.isArray(patch) && Object.keys(patch).length > 0) {
-        fields.push(`${column} = ${connectorJsonMerge(`c.${column}`, patch, params)}`);
+        fields.push(`${column} = ${connectorJsonMerge(`c.${column}`, patch, params, budget)}`);
       }
     }
     const result = await postgresClient.query(
@@ -158,7 +161,7 @@ connectorsRouter.put('/:name', requireConnectorWrite, async (req, res) => {
       await registerCurrentConfig(result.rows[0].id, result.rows[0].organization_id);
     }
     return res.json({ connector: result.rows[0] });
-  } catch { return failed(res); }
+  } catch (error) { return invalidPatch(res, error); }
 });
 
 connectorsRouter.delete('/:name', requireConnectorWrite, async (req, res) => {

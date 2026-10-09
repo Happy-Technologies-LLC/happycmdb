@@ -13,6 +13,7 @@ import { validateConfiguration, buildUpdateQuery } from './validation';
 import { buildListQuery } from './queries';
 import { CONFIG_NOT_FOUND, PUBLIC_CONFIG } from '../../../auth/connector-scope';
 import { ownedConfig, requestScopeValues } from './ownership';
+import { ConnectorJsonPatchBudget, ConnectorJsonPatchError } from '../../../services/connector-json-merge';
 
 export class ConnectorConfigCRUDController {
   constructor(private pool: Pool) {}
@@ -29,7 +30,7 @@ export class ConnectorConfigCRUDController {
         limit = 100,
         offset = 0
       } = req.query;
-      const [organizationId, legacy] = requestScopeValues(req, false);
+      const [organizationId, legacy] = requestScopeValues(req);
 
       const { query, params, countQuery, countParams } = buildListQuery({
         connector_type: connector_type as string,
@@ -121,6 +122,10 @@ export class ConnectorConfigCRUDController {
         notification_on_success,
         notification_on_failure
       } = req.body;
+      const budget = new ConnectorJsonPatchBudget();
+      const connectionJson = budget.add(connection);
+      const optionsJson = budget.add(options ?? {});
+      const resourceConfigsJson = budget.add(resource_configs ?? {});
 
       // Verify connector is installed
       const connectorResult = await this.pool.query(
@@ -168,10 +173,10 @@ export class ConnectorConfigCRUDController {
           enabled !== undefined ? enabled : true,
           schedule || null,
           schedule_enabled !== undefined ? schedule_enabled : false,
-          JSON.stringify(connection),
-          JSON.stringify(options || {}),
+          connectionJson,
+          optionsJson,
           enabled_resources || null,
-          JSON.stringify(resource_configs || {}),
+          resourceConfigsJson,
           max_retries !== undefined ? max_retries : 3,
           retry_delay_seconds !== undefined ? retry_delay_seconds : 300,
           continue_on_error !== undefined ? continue_on_error : false,
@@ -192,7 +197,11 @@ export class ConnectorConfigCRUDController {
         data: result.rows[0],
         message: `Configuration '${name}' created successfully`
       });
-    } catch {
+    } catch (error) {
+      if (error instanceof ConnectorJsonPatchError) {
+        res.status(400).json({ success: false, error: 'Bad Request', message: error.message });
+        return;
+      }
       logger.error('Error creating configuration');
       res.status(500).json({ success: false, error: 'Failed to create configuration' });
     }
@@ -245,7 +254,11 @@ export class ConnectorConfigCRUDController {
         data: result.rows[0],
         message: 'Configuration updated successfully'
       });
-    } catch {
+    } catch (error) {
+      if (error instanceof ConnectorJsonPatchError) {
+        res.status(400).json({ success: false, error: 'Bad Request', message: error.message });
+        return;
+      }
       logger.error('Error updating configuration');
       res.status(500).json({ success: false, error: 'Failed to update configuration' });
     }

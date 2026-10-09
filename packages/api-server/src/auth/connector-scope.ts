@@ -6,30 +6,30 @@ import type { TokenPayload } from './types';
 
 export interface ConnectorScope {
   organizationId: string | null;
-  legacy: boolean;
 }
 
 export function connectorScope(user: TokenPayload | undefined): ConnectorScope {
-  return { organizationId: organizationClaim(user), legacy: user?._platformAdmin === true };
+  return { organizationId: organizationClaim(user) };
 }
 
 export function requireConnectorScope(req: Request, res: Response, next: NextFunction): void {
   const scope = connectorScope((req as Request & { user?: TokenPayload }).user);
-  if (scope.organizationId === null && !scope.legacy) {
+  if (scope.organizationId === null) {
     res.status(403).json({ error: 'Forbidden', message: 'Organization claim required' });
     return;
   }
   next();
 }
 
-/** Tenants see only their organization. Platform authority adds only NULL legacy rows. */
+/** Connector records are visible only to their verified organization. */
 export function connectorPredicate(alias: string, first: number): string {
   return `(${alias}.organization_id = $${first} OR (${alias}.organization_id IS NULL AND $${first + 1}::boolean))`;
 }
 
-export function scopeValues(user: TokenPayload | undefined, includeLegacy = true): [string | null, boolean] {
-  const scope = connectorScope(user);
-  return [scope.organizationId, scope.legacy && (scope.organizationId === null || includeLegacy)];
+// Keep the second SQL parameter for the existing scoped queries; fail closed
+// until a dedicated, verified platform authority replaces the legacy path.
+export function scopeValues(user: TokenPayload | undefined): [string | null, boolean] {
+  return [connectorScope(user).organizationId, false];
 }
 
 export const PUBLIC_CONFIG = `id, organization_id, name, description, connector_type, enabled,

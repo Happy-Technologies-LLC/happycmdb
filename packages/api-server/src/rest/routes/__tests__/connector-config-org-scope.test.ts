@@ -9,6 +9,7 @@ import { join } from 'path';
 import express from 'express';
 import request from 'supertest';
 import type { ApolloServer } from '@apollo/server';
+import { buildUpdateQuery } from '../../controllers/connector-config/validation';
 
 Object.assign(process.env, {
   JWT_SECRET: randomBytes(32).toString('hex'),
@@ -72,6 +73,7 @@ const users: Record<string, TestUser> = {
   none: { _id: 'none', _username: 'none', _role: 'admin', _enabled: true },
   platform: { _id: 'platform', _username: 'operator', _role: 'viewer', _enabled: true, _platformAdmin: true },
   platformOwn: { _id: 'platformOwn', _username: 'platform-own', _role: 'viewer', _enabled: true, _organizationId: ORG_A, _platformAdmin: true },
+  markerWriter: { _id: 'markerWriter', _username: 'marker-writer', _role: 'operator', _enabled: true, _organizationId: ORG_A, _platformAdmin: true },
 };
 const API_KEY_A = randomBytes(32).toString('hex');
 const apiKeys: Record<string, { _id: string; _userId: string; _role: string; _enabled: boolean }> = {
@@ -127,6 +129,7 @@ beforeAll(async () => {
   await exec(`CREATE TABLE credentials (id UUID PRIMARY KEY); ${ddl.join('\n')}
     CREATE UNIQUE INDEX idx_connector_configs_name ON connector_configurations(name);`);
   await exec(readFileSync(join(migrationDir, '018_connector_organization_scope.sql'), 'utf8'));
+  await exec(readFileSync(join(migrationDir, '022_connector_jsonb_merge.sql'), 'utf8'));
   ({ server: graphqlServer } = await createGraphQLServer(graphqlApp));
 });
 afterAll(async () => {
@@ -186,10 +189,12 @@ it('returns the same 404 for foreign and missing config filters on the global ru
   expect(own.body.data.map((run: { id: string }) => run.id)).toEqual([RUN_A]);
 });
 
-it('returns explicitly selected legacy runs to a platform admin without widening the default list', async () => {
-  const selected = await request(app).get(`${url}/runs/all`).query({ config_id: LEGACY }).set(bearer('platformOwn'));
-  expect(selected.status).toBe(200);
-  expect(selected.body.data.map((run: { id: string }) => run.id)).toEqual([RUN_NULL]);
+it('denies explicitly selected NULL-org runs even when the identity carries a platform marker', async () => {
+  const missing = await request(app).get(`${url}/runs/all`).query({ config_id: 'ffffffff-ffff-4fff-8fff-ffffffffffff' })
+    .set(bearer('platformOwn'));
+  const legacy = await request(app).get(`${url}/runs/all`).query({ config_id: LEGACY }).set(bearer('platformOwn'));
+  expect([legacy.status, legacy.body]).toEqual([missing.status, missing.body]);
+  expect(legacy.status).toBe(404);
   const defaultList = await request(app).get(`${url}/runs/all`).set(bearer('platformOwn'));
   expect(defaultList.body.data.map((run: { id: string }) => run.id)).toEqual([RUN_A]);
 });
@@ -292,14 +297,67 @@ it('does not echo nested write-only values in validation responses or warning lo
   }
 });
 
-it('legacy config is platform-only; internal tenant admin does not inherit privilege', async () => {
-  const denied = await request(app).get(`${url}/${LEGACY}`).set(bearer('internal'));
-  const missing = await request(app).get(`${url}/ffffffff-ffff-4fff-8fff-ffffffffffff`).set(bearer('internal'));
-  expect([denied.status, denied.body]).toEqual([missing.status, missing.body]);
-  expect((await request(app).get(`${url}/${LEGACY}`).set(bearer('platform'))).status).toBe(200);
-  expect((await request(app).get(`${url}/runs/${RUN_NULL}`).set(bearer('platform'))).status).toBe(200);
-  const result = await request(app).get(`${url}/runs/${RUN_NULL}`).set(bearer('platform'));
-  expect(JSON.stringify(result.body)).not.toContain(SECRET);
+it('denies NULL-org configuration and run details with the same 404 as missing, regardless of marker', async () => {
+  for (const identity of ['internal', 'a', 'platformOwn']) {
+    for (const [route, id] of [[url, LEGACY], [`${url}/runs`, RUN_NULL]]) {
+      const denied = await request(app).get(`${route}/${id}`).set(bearer(identity));
+      const missing = await request(app).get(`${route}/ffffffff-ffff-4fff-8fff-ffffffffffff`).set(bearer(identity));
+      expect([denied.status, denied.body]).toEqual([missing.status, missing.body]);
+      expect(denied.status).toBe(404);
+      expect(JSON.stringify(denied.body)).not.toContain(SECRET);
+    }
+  }
+});
+
+it('treats NULL-org config mutations as missing across REST, hub and mounted GraphQL for marked writers', async () => {
+  const missingId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+  for (const method of ['put', 'delete'] as const) {
+    const body = { enabled: false };
+    const missing = await request(app)[method](`${url}/${missingId}`).set(bearer('markerWriter')).send(body);
+    const legacy = await request(app)[method](`${url}/${LEGACY}`).set(bearer('markerWriter')).send(body);
+    expect([legacy.status, legacy.body]).toEqual([missing.status, missing.body]);
+    expect(legacy.status).toBe(404);
+  }
+  for (const action of ['test', 'run'] as const) {
+    const missing = await request(app).post(`${url}/${missingId}/${action}`).set(bearer('markerWriter')).send({});
+    const legacy = await request(app).post(`${url}/${LEGACY}/${action}`).set(bearer('markerWriter')).send({});
+    expect([legacy.status, legacy.body]).toEqual([missing.status, missing.body]);
+    expect(legacy.status).toBe(404);
+  }
+  const hub = '/api/v1/hub/connectors';
+  for (const method of ['get', 'put', 'delete'] as const) {
+    const missing = await request(app)[method](`${hub}/absent?legacy=true`).set(bearer('markerWriter')).send({ enabled: false });
+    const legacy = await request(app)[method](`${hub}/legacy?legacy=true`).set(bearer('markerWriter')).send({ enabled: false });
+    expect([legacy.status, legacy.body]).toEqual([missing.status, missing.body]);
+    expect(legacy.status).toBe(404);
+  }
+  for (const action of ['test', 'run'] as const) {
+    const missing = await request(app).post(`${hub}/absent/${action}?legacy=true`).set(bearer('markerWriter')).send({});
+    const legacy = await request(app).post(`${hub}/legacy/${action}?legacy=true`).set(bearer('markerWriter')).send({});
+    expect([legacy.status, legacy.body]).toEqual([missing.status, missing.body]);
+    expect(legacy.status).toBe(404);
+  }
+  for (const document of [
+    'query($id: ID!) { connectorConfiguration(id: $id) { id } }',
+    'mutation($id: ID!) { updateConnectorConfiguration(id: $id, input: { enabled: false }) { id } }',
+    'mutation($id: ID!) { deleteConnectorConfiguration(id: $id) { success } }',
+    'mutation($id: ID!) { runConnector(id: $id) { id } }',
+  ]) {
+    const invoke = (id: string) => request(graphqlApp).post('/graphql').set(bearer('markerWriter'))
+      .send({ query: document, variables: { id } });
+    const missing = await invoke(missingId);
+    const legacy = await invoke(LEGACY);
+    expect(legacy.body).toEqual(missing.body);
+    expect(legacy.body.errors[0].extensions.code).toBe('NOT_FOUND');
+  }
+  expect((await query('SELECT enabled FROM connector_configurations WHERE id = $1', [LEGACY])).rows)
+    .toEqual([{ enabled: true }]);
+  const viewer = await request(app).put(`${hub}/alpha`).set(bearer('platformOwn')).send({ enabled: false });
+  expect(viewer.status).toBe(403);
+  const own = await request(app).put(`${hub}/alpha`).set(bearer('markerWriter')).send({ enabled: false });
+  expect(own.status).toBe(200);
+  expect((await query('SELECT enabled FROM connector_configurations WHERE id = $1', [A])).rows)
+    .toEqual([{ enabled: false }]);
 });
 
 it('rejects missing organization before any connector SQL and refuses mismatched run-parent org', async () => {
@@ -359,15 +417,15 @@ it('authenticates standalone hub tenant routing, duplicate legacy names and reda
   expect(unchanged.rows).toEqual([{ name: 'beta', connection: { client_secret: SECRET } }]);
 
   const platformDefault = await request(app).get(`${hub}/alpha`).set(bearer('platformOwn'));
-  const platformLegacy = await request(app).get(`${hub}/alpha?legacy=true`).set(bearer('platformOwn'));
+  const markerQuery = await request(app).get(`${hub}/alpha?legacy=true`).set(bearer('platformOwn'));
   expect(platformDefault.body.connector.id).toBe(A);
-  expect(platformLegacy.body.connector.id).toBe(LEGACY);
+  expect(markerQuery.body.connector.id).toBe(A);
   const platformRestList = await request(app).get(url).set(bearer('platformOwn'));
   expect(platformRestList.body.data.map((row: { id: string }) => row.id)).toEqual([A]);
   const platformHubList = await request(app).get(hub).set(bearer('platformOwn'));
-  const legacyHubList = await request(app).get(`${hub}?legacy=true`).set(bearer('platformOwn'));
+  const markerList = await request(app).get(`${hub}?legacy=true`).set(bearer('platformOwn'));
   expect(platformHubList.body.connectors.map((row: { id: string }) => row.id)).toEqual([A]);
-  expect(legacyHubList.body.connectors.map((row: { id: string }) => row.id)).toEqual([LEGACY]);
+  expect(markerList.body.connectors.map((row: { id: string }) => row.id)).toEqual([A]);
   expect((await request(app).get(`${hub}/alpha?legacy=true`).set(bearer('a'))).body.connector.id).toBe(A);
   expect((await request(app).get(`${hub}/alpha`).set(bearer('internal'))).status).toBe(404);
   expect((await request(app).get(`${hub}/alpha`).set(bearer('none', ORG_A))).status).toBe(403);
@@ -443,11 +501,7 @@ it('refuses stored credential references before connector tests or run history c
   const test = await request(app).post(`${url}/${A}/test`).set(bearer('a')).send({});
   const hubRun = await request(app).post('/api/v1/hub/connectors/alpha/run').set(bearer('a')).send({});
   const hubTest = await request(app).post('/api/v1/hub/connectors/alpha/test').set(bearer('a')).send({});
-  await query('UPDATE connector_configurations SET credential_id = $1, enabled = false WHERE id = $2', [credential, LEGACY]);
-  const platformRest = await request(app).post(`${url}/${LEGACY}/test`).set(bearer('platform')).send({});
-  const platformHub = await request(app).post('/api/v1/hub/connectors/legacy/run')
-    .set(bearer('platformOwn')).query({ legacy: 'true' }).send({});
-  for (const response of [rest, test, hubRun, hubTest, platformRest, platformHub]) {
+  for (const response of [rest, test, hubRun, hubTest]) {
     expect(response.status).toBe(409);
     expect(JSON.stringify(response.body)).not.toContain(SECRET);
     expect(JSON.stringify(response.body)).not.toContain(credential);
@@ -541,6 +595,56 @@ it('keeps nested secrets on a nonempty partial GraphQL configuration update', as
       options: { nested: { secret: SECRET, retry: 2 } },
       resource_configs: { items: { password: SECRET, batch_size: 50 } },
     }]);
+});
+
+it('atomically merges object patches over root and nested JSON null/scalars through each public write path', async () => {
+  await query(`UPDATE connector_configurations SET connection = 'null'::jsonb,
+    options = '{"nested":7}'::jsonb, resource_configs = '"scalar"'::jsonb WHERE id = $1`, [A]);
+  const rest = await request(app).put(`${url}/${A}`).set(bearer('a'))
+    .send({ connection: { auth: { token: 'rest' } }, options: { nested: { retry: 2 } } });
+  expect(rest.status).toBe(200);
+  const hub = await request(app).put('/api/v1/hub/connectors/alpha').set(bearer('a'))
+    .send({ connection: { auth: { region: 'hub' } } });
+  expect(hub.status).toBe(200);
+  const graphql = await request(graphqlApp).post('/graphql').set(bearer('a')).send({
+    query: 'mutation($id: ID!, $input: UpdateConnectorConfigInput!) { updateConnectorConfiguration(id: $id, input: $input) { id } }',
+    variables: { id: A, input: { resourceConfigs: { items: { batch_size: 4 } } } },
+  });
+  expect(graphql.body.errors).toBeUndefined();
+  expect((await query('SELECT connection, options, resource_configs FROM connector_configurations WHERE id = $1', [A])).rows)
+    .toEqual([{ connection: { auth: { token: 'rest', region: 'hub' } },
+      options: { nested: { retry: 2 } }, resource_configs: { items: { batch_size: 4 } } }]);
+});
+
+it('merges 48 sibling objects with bounded SQL and preserves unrelated stored keys', async () => {
+  const patch = Object.fromEntries(Array.from({ length: 48 }, (_, index) =>
+    [`item_${index}`, { value: index }]));
+  const { query: sql, values } = buildUpdateQuery(A, { connection: patch }, [ORG_A, false]);
+  expect(sql!.length).toBeLessThan(512);
+  expect(values).toHaveLength(4);
+  const updated = await request(app).put(`${url}/${A}`).set(bearer('a')).send({ connection: patch });
+  expect(updated.status).toBe(200);
+  const stored = (await query('SELECT connection FROM connector_configurations WHERE id = $1', [A])).rows[0] as
+    { connection: Record<string, unknown> };
+  expect(stored.connection).toMatchObject({ auth: { token: SECRET }, item_0: { value: 0 }, item_47: { value: 47 } });
+});
+
+it('rejects oversized, over-wide and over-deep JSON patches at REST, GraphQL and hub boundaries', async () => {
+  const tooManyKeys = Object.fromEntries(Array.from({ length: 257 }, (_, index) => [`key_${index}`, index]));
+  const rest = await request(app).put(`${url}/${A}`).set(bearer('a')).send({ connection: tooManyKeys });
+  expect(rest.status).toBe(400);
+  let tooDeep: unknown = { leaf: true };
+  for (let depth = 0; depth < 13; depth++) tooDeep = { child: tooDeep };
+  const graphql = await request(graphqlApp).post('/graphql').set(bearer('a')).send({
+    query: 'mutation($id: ID!, $input: UpdateConnectorConfigInput!) { updateConnectorConfiguration(id: $id, input: $input) { id } }',
+    variables: { id: A, input: { options: tooDeep } },
+  });
+  expect(graphql.body.errors[0].extensions.code).toBe('BAD_USER_INPUT');
+  const hub = await request(app).put('/api/v1/hub/connectors/alpha').set(bearer('a'))
+    .send({ connection: { oversized: 'x'.repeat(66_000) } });
+  expect(hub.status).toBe(400);
+  expect((await query('SELECT connection, options FROM connector_configurations WHERE id = $1', [A])).rows)
+    .toEqual([{ connection: { auth: { token: SECRET } }, options: { nested: { secret: SECRET } } }]);
 });
 
 it('mounted production GraphQL list and detail exclude stored credentials for JWT and API-key callers', async () => {

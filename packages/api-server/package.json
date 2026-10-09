@@ -5,6 +5,15 @@
   "description": "REST and GraphQL API server for CMDB platform",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+    "./graphql": { "types": "./dist/graphql/index.d.ts", "default": "./dist/graphql/index.js" },
+    "./auth/auth-bootstrap": { "types": "./dist/auth/auth-bootstrap.d.ts", "default": "./dist/auth/auth-bootstrap.js" },
+    "./auth/connector-scope": { "types": "./dist/auth/connector-scope.d.ts", "default": "./dist/auth/connector-scope.js" },
+    "./auth/types": { "types": "./dist/auth/types.d.ts", "default": "./dist/auth/types.js" },
+    "./services/connector-json-merge": { "types": "./dist/services/connector-json-merge.d.ts", "default": "./dist/services/connector-json-merge.js" },
+    "./services/public-installed-connector": { "types": "./dist/services/public-installed-connector.d.ts", "default": "./dist/services/public-installed-connector.js" }
+  },
   "scripts": {
     "build": "tsc",
     "build:tenant-fixture": "tsc -p tsconfig.scripts.json",

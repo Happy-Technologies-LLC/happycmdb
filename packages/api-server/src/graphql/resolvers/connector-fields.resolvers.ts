@@ -11,7 +11,7 @@ import { publicInstalledConnectorGraphQL } from '../../services/public-installed
 
 function requireScope(context: GraphQLContext) {
   const scope = connectorScope(context.user);
-  if (!scope.organizationId && !scope.legacy) {
+  if (!scope.organizationId) {
     throw new GraphQLError('Organization claim required', { extensions: { code: 'FORBIDDEN' } });
   }
 }
@@ -65,7 +65,7 @@ export const ConnectorConfigurationFieldResolvers = {
         WHERE connector_type = $1
       `;
 
-      const result = await pgClient.query(query, [parent.connectorType, ...scopeValues(context.user, false)]);
+      const result = await pgClient.query(query, [parent.connectorType, ...scopeValues(context.user)]);
 
       if (result.rows.length === 0) {
         throw new GraphQLError('Associated connector not found', {

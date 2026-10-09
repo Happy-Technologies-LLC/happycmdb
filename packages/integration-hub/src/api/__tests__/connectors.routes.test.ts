@@ -50,8 +50,8 @@ jest.mock('@cmdb/api-server/auth/connector-scope', () => ({
     if (!(req as express.Request & { user?: object }).user) return res.status(403).json({ error: 'Forbidden' });
     return next();
   },
-  connectorScope: (user: { organizationId?: string; legacy?: boolean }) => ({ organizationId: user.organizationId ?? null, legacy: user.legacy === true }),
-  scopeValues: (user: { organizationId?: string; legacy?: boolean }) => [user.organizationId ?? null, user.legacy === true],
+  connectorScope: (user: { organizationId?: string }) => ({ organizationId: user.organizationId ?? null }),
+  scopeValues: (user: { organizationId?: string }) => [user.organizationId ?? null, false],
   connectorPredicate: (alias: string, first: number) => `(${alias}.organization_id = $${first} OR (${alias}.organization_id IS NULL AND $${first + 1}::boolean))`,
   PUBLIC_CONFIG: 'id, organization_id, name, description, connector_type, enabled, schedule, schedule_enabled, enabled_resources, max_retries, retry_delay_seconds, continue_on_error, notification_on_success, notification_on_failure, created_at, updated_at, created_by, updated_by',
   PUBLIC_RUN: 'id, organization_id, config_id, connector_type, config_name, resource_id, started_at, completed_at, status, records_extracted, records_transformed, records_loaded, records_failed, duration_ms, triggered_by',
@@ -70,13 +70,13 @@ const unregisterConnector = jest.fn();
 const getAllConnectorTypes = jest.fn();
 const getConnectorMetadata = jest.fn();
 
-async function request(method: string, path: string, user?: { organizationId?: string; legacy?: boolean }, body?: object) {
+async function request(method: string, path: string, user?: { organizationId?: string }, body?: object) {
   const app = express();
   app.use(express.json());
   app.use((req, res, next) => {
     if (!user) return res.status(401).json({ error: 'Unauthorized' });
     Object.assign(req, { user: { _role: 'operator', ...user } });
-    if (!user.organizationId && !user.legacy) return res.status(403).json({ error: 'Forbidden' });
+    if (!user.organizationId) return res.status(403).json({ error: 'Forbidden' });
     return next();
   });
   app.use('/api/v1/connectors', connectorsRouter);

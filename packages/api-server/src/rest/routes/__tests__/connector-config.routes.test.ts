@@ -7,13 +7,11 @@
  * on every /api/v1 route before any router), so this suite simulates that
  * by mounting the captured mock middleware ahead of
  * `connectorConfigRoutes`, mirroring production. Reads (list/get,
- * resource listing, run history, metrics) and testing an existing
- * configuration's connection stay open to any authenticated role, since
- * testing only inspects connectivity without mutating stored state. Every
- * state-changing route -- create/update/delete a configuration, trigger a
- * run, enable/disable, update enabled resources, and cancel a run --
- * additionally requires the 'write' permission
- * (`authMiddleware.requirePermission('write')`).
+ * resource listing, run history, metrics) stay open to any authenticated
+ * role. Operational actions that can reach a provider or change state --
+ * test connection, create/update/delete a configuration, trigger a run,
+ * enable/disable, update enabled resources, and cancel a run -- require
+ * the 'write' permission (`authMiddleware.requirePermission('write')`).
  */
 
 import express, { type Request, type Response } from 'express';
@@ -112,7 +110,6 @@ type RouteCase = [string, string, Record<string, unknown> | undefined];
 const readRoutes: RouteCase[] = [
   ['GET', '/connector-configs', undefined],
   ['GET', '/connector-configs/cfg-1', undefined],
-  ['POST', '/connector-configs/cfg-1/test', undefined],
   ['GET', '/connector-configs/cfg-1/resources', undefined],
   ['GET', '/connector-configs/cfg-1/resources/res-1', undefined],
   ['GET', '/connector-configs/cfg-1/runs', undefined],

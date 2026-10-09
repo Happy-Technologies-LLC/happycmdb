@@ -43,6 +43,8 @@ Founder signed Choice A deletes the installer implementation, package-root `Conn
 
 The REST manual run endpoint currently inserts an organization-bound `queued` history row but has no in-repository worker consumer; its 202 means recorded, not executed. Hub/GraphQL manual runs invoke the organization-checking `IntegrationManager`. Do not treat REST queued status as an execution success signal.
 
+The REST `POST /api/v1/connector-configs/:id/test` operation invokes the integration manager and can reach a provider. It requires connector `write` permission before the existing organization-owned config check; read-only viewers cannot trigger a connection test.
+
 ## Rollback and verification
 
 Rollback is a code rollback only after stopping new writes and preserving org columns; dropping columns would destroy ownership and make new records legacy/ambiguous. Apply additive migrations `018` and `022` before serving the new API code; old code must not remain exposed during the transition. Isolated two-org PGlite regression checks identical NULL/foreign/missing not-found responses and no mutations for marked and ordinary users, own-org behavior, secret preservation, JSON merge boundaries and limits. Run compiled hub smoke, focused tests, exact-head CI, independent FULL native correctness and security reviews, an independent sensitive FULL operator pair, then obtain Nick's merge decision.

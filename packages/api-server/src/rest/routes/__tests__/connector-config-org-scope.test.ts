@@ -376,6 +376,31 @@ it('rejects missing organization before any connector SQL and refuses mismatched
   expect(stored.rows).toEqual([{ organization_id: ORG_A }]);
 });
 
+it('requires connector write permission to test a connection without weakening owner scope', async () => {
+  const registry = getConnectorRegistry();
+  let attempts = 0;
+  const create = jest.spyOn(registry, 'createConnector').mockImplementation(() => ({
+    testConnection: async () => { attempts++; return { success: true }; },
+    cleanup: async () => undefined,
+  } as ReturnType<typeof registry.createConnector>));
+  try {
+    const viewer = await request(app).post(`${url}/${A}/test`).set(bearer('viewer')).send({});
+    expect(viewer.status).toBe(403);
+    expect(attempts).toBe(0);
+
+    const writer = await request(app).post(`${url}/${A}/test`).set(bearer('a')).send({});
+    expect(writer.status).toBe(200);
+    expect(writer.body).toEqual({ success: true });
+    expect(attempts).toBe(1);
+
+    const foreign = await request(app).post(`${url}/${B}/test`).set(bearer('a')).send({});
+    expect(foreign.status).toBe(404);
+    expect(attempts).toBe(1);
+  } finally {
+    create.mockRestore();
+  }
+});
+
 it('does not log request-supplied resource IDs when queuing an owned run', async () => {
   const log = jest.spyOn(logger, 'info').mockImplementation(() => undefined);
   try {

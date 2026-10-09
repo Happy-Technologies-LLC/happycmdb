@@ -5,12 +5,11 @@
  * Connector Configuration Routes. Authentication is enforced centrally:
  * server.ts mounts `authMiddleware.authenticate()` on every /api/v1 route
  * before this router. Reads (list/get, resource listing, run history,
- * metrics) stay open to any authenticated role, as does testing an
- * existing configuration's connection (it inspects connectivity without
- * mutating state). Every state-changing route -- create/update/delete a
- * configuration, trigger a run, enable/disable, update enabled resources,
- * and cancel a run -- additionally requires the 'write' permission via
- * `authMiddleware.requirePermission('write')`.
+ * metrics) stay open to any authenticated role. Every operational action
+ * that can reach a provider or change state -- test connection,
+ * create/update/delete a configuration, trigger a run, enable/disable,
+ * update enabled resources, and cancel a run -- additionally requires
+ * the 'write' permission via `authMiddleware.requirePermission('write')`.
  */
 
 import { Router } from 'express';
@@ -148,6 +147,7 @@ connectorConfigRoutes.delete(
 // Test connection
 connectorConfigRoutes.post(
   '/:id/test',
+  authMiddleware.requirePermission('write'),
   controller.testConnection.bind(controller)
 );
 

@@ -21,6 +21,13 @@ export const impactRoutes = Router();
 const controller = new DriftImpactController();
 const authMiddleware = getAuthMiddleware();
 
+// Tenant scoping: every route below only reads, analyses or snapshots CIs of
+// the caller's organization (another organization's CI gets the same 404 as a
+// missing one); a token without an org claim is rejected with 403 before any
+// Neo4j or PostgreSQL access.
+driftRoutes.use(authMiddleware.requireOrganization());
+impactRoutes.use(authMiddleware.requireOrganization());
+
 // Shared validation schemas
 const snapshotTypeSchema = Joi.string().valid('configuration', 'performance', 'relationships');
 

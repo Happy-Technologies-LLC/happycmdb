@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Request, Response } from 'express';
-import { getNeo4jClient } from '@cmdb/database';
+import { getNeo4jClient, neighbourScopePredicate } from '@cmdb/database';
 import { logger } from '@cmdb/common';
 import neo4j from 'neo4j-driver';
+import { requestOrganizationId } from '../../middleware/auth.middleware';
 
 export class SearchController {
   private neo4jClient = getNeo4jClient();
@@ -36,13 +37,15 @@ export class SearchController {
 
       const session = this.neo4jClient.getSession();
       try {
-        // Build dynamic query
+        // Build dynamic query; only CIs of the caller's organization match.
         const conditions: string[] = [
+          'ci.organization_id = $organizationId',
           '(ci.name CONTAINS $query OR ci.external_id CONTAINS $query)',
         ];
         const limitNum = Math.min(parseInt(String(limit)), 1000);
         const offsetNum = parseInt(String(offset));
-        const params: any = {
+        const params: Record<string, unknown> = {
+          organizationId: requestOrganizationId(req),
           query: query.trim(),
           limit: neo4j.int(limitNum),
           offset: neo4j.int(offsetNum),
@@ -161,15 +164,17 @@ export class SearchController {
 
       const session = this.neo4jClient.getSession();
       try {
+        // The org filter runs before LIMIT so other tenants' hits never use up the page.
         const result = await session.run(
           `
           CALL db.index.fulltext.queryNodes('ci_fulltext_idx', $query)
           YIELD node, score
+          WHERE node.organization_id = $organizationId
           RETURN node, score
           ORDER BY score DESC
           LIMIT $limit
           `,
-          { query: query.trim(), limit: neo4j.int(limitNum) }
+          { query: query.trim(), limit: neo4j.int(limitNum), organizationId: requestOrganizationId(req) }
         );
 
         const cis = result.records.map((r) => {
@@ -243,9 +248,11 @@ export class SearchController {
 
       const session = this.neo4jClient.getSession();
       try {
+        // Both ends of the pattern must be CIs of the caller's organization.
         const result = await session.run(
           `
           MATCH (ci:CI {type: $ci_type})-[:${relationship_type}]->(related:CI {type: $related_ci_type})
+          WHERE ci.organization_id = $organizationId AND related.organization_id = $organizationId
           RETURN DISTINCT ci
           ORDER BY ci.name
           LIMIT $limit
@@ -253,6 +260,7 @@ export class SearchController {
           {
             ci_type,
             related_ci_type,
+            organizationId: requestOrganizationId(req),
             limit: neo4j.int(limitNum),
           }
         );
@@ -309,26 +317,29 @@ export class SearchController {
 
       const session = this.neo4jClient.getSession();
       try {
-        // Get total count
-        const countQuery = `
+        // A CI of the caller's organization is orphaned when it has no relationship
+        // the caller could see: links to another organization's nodes (or to
+        // org-less CIs) neither hide it nor reveal that such a link exists.
+        const orphaned = `
           MATCH (ci:CI)
-          WHERE NOT (ci)-[]-()
-          RETURN count(ci) as total
+          WHERE ci.organization_id = $organizationId
+            AND NOT EXISTS { MATCH (ci)--(other) WHERE ${neighbourScopePredicate('other')} }
         `;
-        const countResult = await session.run(countQuery);
+        const organizationId = requestOrganizationId(req);
+
+        // Get total count
+        const countResult = await session.run(`${orphaned} RETURN count(ci) as total`, { organizationId });
         const total = countResult.records[0]!.get('total').toNumber();
 
         // Get paginated results
         const result = await session.run(
-          `
-          MATCH (ci:CI)
-          WHERE NOT (ci)-[]-()
+          `${orphaned}
           RETURN ci
           ORDER BY ci.created_at DESC
           SKIP $offset
           LIMIT $limit
           `,
-          { offset: neo4j.int(offsetNum), limit: neo4j.int(limitNum) }
+          { organizationId, offset: neo4j.int(offsetNum), limit: neo4j.int(limitNum) }
         );
 
         const cis = result.records.map((r) => {

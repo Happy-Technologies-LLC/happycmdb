@@ -368,13 +368,14 @@ severity_weights = {
 HappyCMDB automatically creates baselines for newly discovered CIs:
 
 ```typescript
-// Triggered on ci.discovered event
+// Triggered on ci.discovered event (system job: no request organization)
 consumer.on('ci.discovered', async (event) => {
   // Create configuration baseline automatically
   await driftDetector.createBaseline(
     event.ci_id,
     'configuration',
-    'auto-baseline'
+    'auto-baseline',
+    UNSCOPED_CI_ACCESS
   );
 });
 ```
@@ -394,11 +395,15 @@ import { getConfigurationDriftDetector } from '@cmdb/ai-ml-engine';
 
 const driftDetector = getConfigurationDriftDetector();
 
-// Create configuration baseline
+// Create configuration baseline. The last argument is the CI tenant scope:
+// the caller's organization id (API routes) or UNSCOPED_CI_ACCESS (system jobs).
+// With an organization id the CI must belong to it, and a relationships
+// snapshot only lists that organization's CIs.
 const baseline = await driftDetector.createBaseline(
   'ci-12345',
   'configuration',
-  'admin@company.com'
+  'admin@company.com',
+  organizationId
 );
 
 console.log('Baseline created:', baseline.id);
@@ -435,7 +440,7 @@ console.log('Approved at:', approvedBaseline.approved_at);
 
 ```typescript
 // Detect drift against approved baseline
-const driftResult = await driftDetector.detectDrift('ci-12345');
+const driftResult = await driftDetector.detectDrift('ci-12345', organizationId);
 
 if (driftResult.has_drift) {
   console.log(`Drift Score: ${driftResult.drift_score}/100`);
@@ -615,10 +620,12 @@ import { getImpactPredictionEngine, ChangeType } from '@cmdb/ai-ml-engine';
 
 const impactEngine = getImpactPredictionEngine();
 
-// Predict impact of restarting a database server
+// Predict impact of restarting a database server. With an organization scope the
+// affected CIs, critical path and criticality only involve that organization's CIs.
 const impact = await impactEngine.predictChangeImpact(
   'db-prod-01',
-  ChangeType.RESTART
+  ChangeType.RESTART,
+  organizationId
 );
 
 console.log('Impact Analysis:');
@@ -691,8 +698,8 @@ impact.affected_cis.forEach(affected => {
 #### Get CI Criticality Score
 
 ```typescript
-// Get or calculate criticality score
-const criticality = await impactEngine.getCriticalityScore('db-prod-01');
+// Get or calculate criticality score (a cached score is reused only for the same scope)
+const criticality = await impactEngine.getCriticalityScore('db-prod-01', organizationId);
 
 console.log('Criticality Analysis:');
 console.log(`  Score: ${criticality.criticality_score}/100`);
@@ -705,8 +712,8 @@ console.log(`  Business Impact: ${criticality.factors.business_impact}`);
 #### Build Dependency Graph for Visualization
 
 ```typescript
-// Build dependency graph for visualization (max depth 3 hops)
-const graph = await impactEngine.buildDependencyGraph('db-prod-01', 3);
+// Build dependency graph for visualization (max depth 3 hops, tenant CIs only)
+const graph = await impactEngine.buildDependencyGraph('db-prod-01', 3, organizationId);
 
 console.log(`Graph: ${graph.nodes.length} nodes, ${graph.edges.length} edges`);
 
@@ -861,7 +868,8 @@ consumer.on('ci.discovered', async (event) => {
     await driftDetector.createBaseline(
       event.ci_id,
       'configuration',
-      'auto-baseline'
+      'auto-baseline',
+      UNSCOPED_CI_ACCESS
     );
   } catch (error) {
     logger.error('Failed to create baseline', { ci_id: event.ci_id, error });
@@ -876,7 +884,7 @@ When a CI is updated, drift is automatically checked:
 ```typescript
 consumer.on('ci.updated', async (event) => {
   try {
-    const driftResult = await driftDetector.detectDrift(event.ci_id);
+    const driftResult = await driftDetector.detectDrift(event.ci_id, UNSCOPED_CI_ACCESS);
 
     if (driftResult.has_drift && driftResult.drift_score > 50) {
       logger.warn('Significant drift detected', {
@@ -1041,7 +1049,8 @@ Always run impact analysis before HIGH/CRITICAL risk changes to production infra
 async function assessChangeRisk(changeRequest: ChangeRequest) {
   const impact = await impactEngine.predictChangeImpact(
     changeRequest.ci_id,
-    changeRequest.change_type
+    changeRequest.change_type,
+    organizationId
   );
 
   // Auto-reject HIGH/CRITICAL risk changes without CAB approval
@@ -1133,7 +1142,8 @@ GROUP BY is_approved;
 const baseline = await driftDetector.createBaseline(
   'ci-12345',
   'configuration',
-  'admin@company.com'
+  'admin@company.com',
+  organizationId
 );
 
 await driftDetector.approveBaseline(
@@ -1142,7 +1152,7 @@ await driftDetector.approveBaseline(
 );
 
 // Now drift detection will work
-const drift = await driftDetector.detectDrift('ci-12345');
+const drift = await driftDetector.detectDrift('ci-12345', organizationId);
 ```
 
 ### Issue 3: High Memory Usage During Impact Analysis
@@ -1163,13 +1173,15 @@ docker exec cmdb-neo4j cypher-shell "
 // Reduce max_depth for large graphs
 const graph = await impactEngine.buildDependencyGraph(
   'ci-12345',
-  2  // Reduce from 3 to 2 hops
+  2,  // Reduce from 3 to 2 hops
+  organizationId
 );
 
 // Or limit affected CIs in query
 const impact = await impactEngine.predictChangeImpact(
   'ci-12345',
-  ChangeType.RESTART
+  ChangeType.RESTART,
+  organizationId
 );
 // Internal query already limits to 200 CIs
 ```

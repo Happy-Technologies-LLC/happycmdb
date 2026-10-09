@@ -6,9 +6,15 @@ import Joi from 'joi';
 import { SearchController } from '../controllers/search.controller';
 import { validateRequest, validateOptional } from '../middleware/validation.middleware';
 import { schemas } from '@cmdb/common';
+import { getAuthMiddleware } from '../../auth/auth-bootstrap';
 
 export const searchRoutes = Router();
 const controller = new SearchController();
+
+// Tenant scoping: every search below only matches CIs of the caller's
+// organization; a token without an org claim is rejected with 403 before any
+// Neo4j access.
+searchRoutes.use(getAuthMiddleware().requireOrganization());
 
 // Validation schemas
 const advancedSearchSchema = Joi.object({

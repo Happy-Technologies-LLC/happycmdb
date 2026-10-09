@@ -14,6 +14,8 @@ export * from './engines/configuration-drift-detector';
 export * from './engines/architecture-optimization-engine';
 
 import { logger } from '@cmdb/common';
+// System job: discovery/update events carry no request organization.
+import { UNSCOPED_CI_ACCESS } from '@cmdb/database';
 import { createEventConsumer, KAFKA_TOPICS, CONSUMER_GROUPS } from '@cmdb/event-processor';
 import { getAnomalyDetectionEngine } from './engines/anomaly-detection-engine';
 import { getConfigurationDriftDetector } from './engines/configuration-drift-detector';
@@ -45,7 +47,7 @@ export async function startMLEngines(): Promise<void> {
   consumer.on('ci.discovered', async (event: any) => {
     try {
       logger.debug('Creating baseline for new CI', { ci_id: event.ci_id });
-      await driftDetector.createBaseline(event.ci_id, 'configuration', 'auto-baseline');
+      await driftDetector.createBaseline(event.ci_id, 'configuration', 'auto-baseline', UNSCOPED_CI_ACCESS);
     } catch (error) {
       logger.error('Failed to create baseline', { ci_id: event.ci_id, error });
     }
@@ -55,7 +57,7 @@ export async function startMLEngines(): Promise<void> {
   consumer.on('ci.updated', async (event: any) => {
     try {
       logger.debug('Checking for drift', { ci_id: event.ci_id });
-      const driftResult = await driftDetector.detectDrift(event.ci_id);
+      const driftResult = await driftDetector.detectDrift(event.ci_id, UNSCOPED_CI_ACCESS);
 
       if (driftResult.has_drift && driftResult.drift_score > 50) {
         logger.warn('Significant drift detected', {

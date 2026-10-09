@@ -656,6 +656,8 @@ paths:
                     type: integer
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/OrganizationRequired'
 
     post:
       tags: [Relationships]
@@ -694,6 +696,8 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/OrganizationRequired'
         '404':
           description: One or both CIs not found
 
@@ -715,6 +719,8 @@ paths:
           description: Relationship deleted
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/OrganizationRequired'
         '404':
           $ref: '#/components/responses/NotFound'
 
@@ -741,6 +747,8 @@ paths:
                   $ref: '#/components/schemas/Relationship'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/OrganizationRequired'
 
   # =============================================================================
   # SEARCH
@@ -802,6 +810,8 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/OrganizationRequired'
 
   /search/fulltext:
     post:
@@ -836,6 +846,8 @@ paths:
                   $ref: '#/components/schemas/CI'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/OrganizationRequired'
 
   /search/relationships:
     post:
@@ -873,6 +885,8 @@ paths:
                   $ref: '#/components/schemas/CI'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/OrganizationRequired'
 
   /search/orphaned:
     get:
@@ -894,6 +908,8 @@ paths:
                   $ref: '#/components/schemas/CI'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/OrganizationRequired'
 
   # =============================================================================
   # CREDENTIALS
@@ -2370,6 +2386,8 @@ paths:
                     type: integer
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/OrganizationRequired'
 
   /analytics/ci-counts:
     get:
@@ -2392,6 +2410,8 @@ paths:
                       type: integer
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/OrganizationRequired'
 
   /analytics/discovery-stats:
     get:
@@ -2428,6 +2448,8 @@ paths:
                     type: integer
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/OrganizationRequired'
 
   # =============================================================================
   # ANOMALIES
@@ -3538,6 +3560,21 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/Error'
+
+    OrganizationRequired:
+      description: >-
+        The authenticated user has no organization. /relationships, /search,
+        /analytics, /impact and /drift are tenant-scoped (they only count,
+        return or link CIs of the caller's organization) and reject the
+        request before any data access. Write routes also return 403
+        without the `write` permission.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/MiddlewareError'
+          example:
+            _error: Forbidden
+            _message: Organization claim required
 
     NotFound:
       description: Resource not found

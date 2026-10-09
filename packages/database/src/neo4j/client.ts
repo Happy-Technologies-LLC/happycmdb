@@ -26,7 +26,7 @@ export const UNSCOPED_CI_ACCESS: unique symbol = Symbol('UNSCOPED_CI_ACCESS');
 export type CIOrganizationScope = string | typeof UNSCOPED_CI_ACCESS;
 
 /** The $organizationId parameter for a scope; null only for UNSCOPED_CI_ACCESS. */
-function organizationIdParam(scope: CIOrganizationScope): string | null {
+export function organizationIdParam(scope: CIOrganizationScope): string | null {
   if (scope === UNSCOPED_CI_ACCESS) {
     return null;
   }
@@ -46,6 +46,17 @@ function pathScopeClause(organizationId: string | null): string {
   return organizationId === null
     ? ''
     : 'WHERE all(n IN nodes(path) WHERE n.organization_id = $organizationId)';
+}
+
+/**
+ * Cypher predicate: a node adjacent to an in-scope CI may be counted for the
+ * $organizationId tenant. A :CI neighbour must belong to the tenant; another
+ * node (e.g. a :BusinessService) must belong to the tenant or carry no
+ * organization at all. Org-less CIs and other organizations' nodes never count.
+ */
+export function neighbourScopePredicate(variable: string): string {
+  return `CASE WHEN ${variable}:CI THEN ${variable}.organization_id = $organizationId ` +
+    `ELSE coalesce(${variable}.organization_id, $organizationId) = $organizationId END`;
 }
 
 export class Neo4jClient {
@@ -325,6 +336,39 @@ export class Neo4jClient {
       }
 
       return this.recordToCI(result.records[0]!.get('ci'));
+    } finally {
+      await session.close();
+    }
+  }
+
+  /** Ids of every :CI node of the organization (tenant set for stores without an org column). */
+  async listCIIds(organizationId: string): Promise<string[]> {
+    const scoped = organizationIdParam(organizationId);
+    const session = this.getSession();
+    try {
+      const result = await session.run(
+        'MATCH (ci:CI) WHERE ci.organization_id = $organizationId RETURN ci.id AS id',
+        { organizationId: scoped }
+      );
+      return result.records.map(record => record.get('id'));
+    } finally {
+      await session.close();
+    }
+  }
+
+  /** The subset of `ids` that are :CI nodes of the organization (no query when `ids` is empty). */
+  async organizationCIIdsAmong(ids: string[], organizationId: string): Promise<Set<string>> {
+    const scoped = organizationIdParam(organizationId);
+    if (ids.length === 0) {
+      return new Set();
+    }
+    const session = this.getSession();
+    try {
+      const result = await session.run(
+        'MATCH (ci:CI) WHERE ci.id IN $ids AND ci.organization_id = $organizationId RETURN ci.id AS id',
+        { ids: [...new Set(ids)], organizationId: scoped }
+      );
+      return new Set(result.records.map(record => record.get('id')));
     } finally {
       await session.close();
     }

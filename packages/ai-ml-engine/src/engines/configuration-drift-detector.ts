@@ -6,7 +6,7 @@
  * Detects configuration drift by comparing current state against approved baselines
  */
 
-import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
+import { getNeo4jClient, getPostgresClient, type CIOrganizationScope } from '@cmdb/database';
 import { logger } from '@cmdb/common';
 import { getEventProducer, EventType } from '@cmdb/event-processor';
 import {
@@ -16,6 +16,7 @@ import {
   AnomalySeverity,
 } from '../types/anomaly.types';
 import { v4 as uuidv4 } from 'uuid';
+import { ciScopeCypher, type CIScopeCypher } from './ci-organization-scope';
 
 export class ConfigurationDriftDetector {
   private static instance: ConfigurationDriftDetector;
@@ -33,23 +34,27 @@ export class ConfigurationDriftDetector {
   }
 
   /**
-   * Create baseline snapshot for a CI
+   * Create baseline snapshot for a CI. With an organization scope the CI must
+   * belong to it and a relationships snapshot only lists its CIs.
    */
   async createBaseline(
     ciId: string,
     snapshotType: 'configuration' | 'performance' | 'relationships',
-    createdBy: string = 'system'
+    createdBy: string,
+    scope: CIOrganizationScope
   ): Promise<BaselineSnapshot> {
     logger.info('Creating baseline snapshot', { ci_id: ciId, snapshot_type: snapshotType });
 
+    const cypher = ciScopeCypher(scope);
     const session = this.neo4jClient.getSession();
 
     try {
       // Get current CI state
       const result = await session.run(
         `MATCH (ci:CI {id: $ciId})
+         WHERE ${cypher.node('ci')}
          RETURN ci`,
-        { ciId }
+        { ciId, organizationId: cypher.organizationId }
       );
 
       if (result.records.length === 0) {
@@ -72,7 +77,7 @@ export class ConfigurationDriftDetector {
           snapshotData = await this.capturePerformanceSnapshot(ciId);
           break;
         case 'relationships':
-          snapshotData = await this.captureRelationshipsSnapshot(ciId);
+          snapshotData = await this.captureRelationshipsSnapshot(ciId, cypher);
           break;
         default:
           throw new Error(`Unknown snapshot type: ${snapshotType}`);
@@ -152,18 +157,19 @@ export class ConfigurationDriftDetector {
   /**
    * Capture relationships snapshot
    */
-  private async captureRelationshipsSnapshot(ciId: string): Promise<Record<string, any>> {
+  private async captureRelationshipsSnapshot(ciId: string, cypher: CIScopeCypher): Promise<Record<string, unknown>> {
     const session = this.neo4jClient.getSession();
 
     try {
       const result = await session.run(
         `MATCH (ci:CI {id: $ciId})-[r]-(related:CI)
+         WHERE ${cypher.node('ci')} AND ${cypher.node('related')}
          RETURN type(r) as rel_type,
                 related.id as related_id,
                 related.name as related_name,
                 startNode(r).id = $ciId as is_outgoing
          ORDER BY rel_type, related_name`,
-        { ciId }
+        { ciId, organizationId: cypher.organizationId }
       );
 
       const relationships: Record<string, any[]> = {
@@ -194,9 +200,10 @@ export class ConfigurationDriftDetector {
   }
 
   /**
-   * Detect configuration drift for a CI
+   * Detect configuration drift for a CI (with an organization scope, only a CI
+   * of that organization)
    */
-  async detectDrift(ciId: string): Promise<DriftDetectionResult> {
+  async detectDrift(ciId: string, scope: CIOrganizationScope): Promise<DriftDetectionResult> {
     logger.info('Detecting configuration drift', { ci_id: ciId });
 
     // Get approved baseline
@@ -207,13 +214,15 @@ export class ConfigurationDriftDetector {
     }
 
     // Get current configuration
+    const cypher = ciScopeCypher(scope);
     const session = this.neo4jClient.getSession();
 
     try {
       const result = await session.run(
         `MATCH (ci:CI {id: $ciId})
+         WHERE ${cypher.node('ci')}
          RETURN ci`,
-        { ciId }
+        { ciId, organizationId: cypher.organizationId }
       );
 
       if (result.records.length === 0) {

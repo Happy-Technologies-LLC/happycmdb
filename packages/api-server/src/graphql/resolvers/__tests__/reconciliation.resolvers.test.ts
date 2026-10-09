@@ -148,7 +148,7 @@ describe('resolveConflict', () => {
           },
         ],
       })
-      .mockResolvedValueOnce({ rows: [] });
+      .mockResolvedValueOnce({ rows: [{ id: 'conflict-1' }] });
 
     const result = await resolveConflict(null, args, contextWith(operatorUser));
 

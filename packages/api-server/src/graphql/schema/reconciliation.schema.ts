@@ -291,7 +291,7 @@ export const reconciliationTypeDefs = `
       _source: String
     ): MatchResult
 
-    """List reconciliation conflicts"""
+    """List conflicts on caller-owned current CIs only; legacy org-less CIs are excluded"""
     listConflicts(
       """Filter by status"""
       _status: ConflictStatus
@@ -307,13 +307,13 @@ export const reconciliationTypeDefs = `
     """Get source authorities"""
     getSourceAuthorities: [SourceAuthority!]!
 
-    """Get CI source lineage"""
+    """Get source lineage of a caller-owned current CI; foreign/missing/legacy share NOT_FOUND"""
     getCILineage(
       """CI ID"""
       _ciId: ID!
     ): CILineage
 
-    """Get CI field sources"""
+    """Get field attribution of a caller-owned current CI; foreign/missing/legacy share NOT_FOUND"""
     getCIFieldSources(
       """CI ID"""
       _ciId: ID!
@@ -346,7 +346,7 @@ export const reconciliationTypeDefs = `
       _status: String
     ): MergeResult!
 
-    """Resolve a reconciliation conflict"""
+    """Resolve only a caller-owned conflict; both lookup and update enforce CI ownership"""
     resolveConflict(
       """Conflict ID"""
       _id: ID!

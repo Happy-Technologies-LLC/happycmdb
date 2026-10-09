@@ -127,6 +127,7 @@ reconciliationRoutes.post(
  */
 reconciliationRoutes.get(
   '/conflicts',
+  authMiddleware.requireOrganization(),
   validateOptional(conflictsQuerySchema, 'query'),
   controller.listConflicts.bind(controller)
 );
@@ -138,6 +139,7 @@ reconciliationRoutes.get(
 reconciliationRoutes.post(
   '/conflicts/:id/resolve',
   authMiddleware.requirePermission('write'),
+  authMiddleware.requireOrganization(),
   validateRequest(resolveConflictSchema, 'body'),
   controller.resolveConflict.bind(controller)
 );
@@ -188,6 +190,7 @@ reconciliationRoutes.put(
  */
 reconciliationRoutes.get(
   '/lineage/:ci_id',
+  authMiddleware.requireOrganization(),
   controller.getCILineage.bind(controller)
 );
 
@@ -197,5 +200,6 @@ reconciliationRoutes.get(
  */
 reconciliationRoutes.get(
   '/field-sources/:ci_id',
+  authMiddleware.requireOrganization(),
   controller.getCIFieldSources.bind(controller)
 );

@@ -498,6 +498,9 @@ export const ConnectorDefinitionList: React.FC = () => {
               await connectorsApi.create({
                 name: config.name,
                 connector_type: config.type,
+                enabled: config.enabled,
+                schedule: config.schedule.cron_expression,
+                schedule_enabled: config.schedule.enabled,
                 connection: config.connection,
                 enabled_resources: config.enabled_resources,
                 resource_configs: config.field_mappings,

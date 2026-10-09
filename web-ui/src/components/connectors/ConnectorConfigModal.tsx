@@ -6,7 +6,7 @@
  * Multi-step wizard for configuring integration connectors
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Icon } from '@happy-technologies/design-system';
 import { Button } from '@/components/ui/button';
 import { LiquidGlass } from '@/components/ui/liquid-glass';
@@ -146,6 +146,15 @@ export const ConnectorConfigModal: React.FC<ConnectorConfigModalProps> = ({
     });
   };
 
+  // CronBuilder invokes onChange in an effect; keep its callback stable to
+  // avoid retriggering that effect on every schedule-state render.
+  const updateScheduleExpression = useCallback((cron: string) => {
+    setConfig((previous: any) => previous.schedule.cron_expression === cron ? previous : {
+      ...previous,
+      schedule: { ...previous.schedule, cron_expression: cron },
+    });
+  }, []);
+
   const canProceed = () => {
     if (step === 1) {
       return config.name.trim().length > 0;
@@ -267,12 +276,7 @@ export const ConnectorConfigModal: React.FC<ConnectorConfigModalProps> = ({
                 {config.schedule.enabled && (
                   <CronBuilder
                     value={config.schedule.cron_expression}
-                    onChange={(cron) =>
-                      setConfig({
-                        ...config,
-                        schedule: { ...config.schedule, cron_expression: cron },
-                      })
-                    }
+                    onChange={updateScheduleExpression}
                   />
                 )}
               </div>

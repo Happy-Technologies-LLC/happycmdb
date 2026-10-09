@@ -471,6 +471,36 @@ it('persists scheduled hub creation for immediate registration, restart, and sco
   }
 });
 
+it('persists wizard-style REST POST schedules and reconciles only enabled tenant-owned connectors', async () => {
+  const manager = getIntegrationManager();
+  const schedules = Reflect.get(manager, 'schedules') as Map<string, { organizationId: string; expression: string }>;
+  const createdIds: string[] = [];
+  const cron = '15 10 * * *';
+  try {
+    for (const [name, enabled, scheduleEnabled] of [
+      ['scheduled', true, true], ['schedule-off', true, false], ['inactive', false, true],
+    ] as const) {
+      const created = await request(app).post(url).set(bearer('a')).send({
+        name, connector_type: 'test', connection: { token: SECRET },
+        enabled, schedule: cron, schedule_enabled: scheduleEnabled,
+      });
+      expect(created.status).toBe(201);
+      expect(JSON.stringify(created.body)).not.toContain(SECRET);
+      createdIds.push(created.body.data.id);
+      expect((await query('SELECT organization_id, enabled, schedule, schedule_enabled FROM connector_configurations WHERE id = $1',
+        [created.body.data.id])).rows).toEqual([{
+        organization_id: ORG_A, enabled, schedule: cron, schedule_enabled: scheduleEnabled,
+      }]);
+    }
+    await manager.loadConnectors();
+    expect(schedules.get(createdIds[0]!)).toMatchObject({ organizationId: ORG_A, expression: cron });
+    expect(schedules.has(createdIds[1]!)).toBe(false);
+    expect(schedules.has(createdIds[2]!)).toBe(false);
+  } finally {
+    for (const id of createdIds) await manager.unregisterConnector(id);
+  }
+});
+
 it('atomically merges hub write-only connection and options without erasing omitted or empty-nested secrets', async () => {
   const hub = '/api/v1/hub/connectors/alpha';
   await query('UPDATE connector_configurations SET connection = $1, options = $2 WHERE id = $3', [
@@ -645,6 +675,17 @@ it('rejects oversized, over-wide and over-deep JSON patches at REST, GraphQL and
   expect(hub.status).toBe(400);
   expect((await query('SELECT connection, options FROM connector_configurations WHERE id = $1', [A])).rows)
     .toEqual([{ connection: { auth: { token: SECRET } }, options: { nested: { secret: SECRET } } }]);
+});
+
+it('mounted GraphQL explicitly clears nonempty resource configs with a root empty object', async () => {
+  const update = await request(graphqlApp).post('/graphql').set(bearer('a')).send({
+    query: 'mutation($id: ID!, $input: UpdateConnectorConfigInput!) { updateConnectorConfiguration(id: $id, input: $input) { id } }',
+    variables: { id: A, input: { resourceConfigs: {} } },
+  });
+  expect(update.body.errors).toBeUndefined();
+  expect(update.body.data.updateConnectorConfiguration.id).toBe(A);
+  expect((await query('SELECT resource_configs FROM connector_configurations WHERE id = $1', [A])).rows)
+    .toEqual([{ resource_configs: {} }]);
 });
 
 it('mounted production GraphQL list and detail exclude stored credentials for JWT and API-key callers', async () => {

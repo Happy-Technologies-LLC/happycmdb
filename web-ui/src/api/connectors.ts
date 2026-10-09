@@ -33,6 +33,8 @@ interface ConfigInput {
   connector_type?: string;
   description?: string;
   enabled?: boolean;
+  schedule?: string;
+  schedule_enabled?: boolean;
   connection?: Record<string, unknown>;
   options?: Record<string, unknown>;
   resource_configs?: Record<string, unknown>;

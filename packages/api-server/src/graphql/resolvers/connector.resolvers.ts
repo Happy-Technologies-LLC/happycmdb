@@ -530,9 +530,11 @@ const ConnectorMutationResolvers = {
     const budget = new ConnectorJsonPatchBudget();
     try {
       for (const [key, column] of Object.entries(columns)) {
-        // Empty write-only editors do not replace saved secrets.
+        // An empty resourceConfigs object clears the root; only connection and
+        // options empty editors preserve saved secrets.
         const value = args.input[key];
         if (value === undefined || ((jsonColumns[key] || key === 'notificationChannels') &&
+          (key !== 'resourceConfigs' || Array.isArray(value)) &&
           value !== null && typeof value === 'object' && Object.keys(value).length === 0)) continue;
         if (jsonColumns[key]) {
           updates.push(`${column} = ${connectorJsonMerge(column, value, values, budget)}`);

@@ -12,6 +12,10 @@ import { getIdentityReconciliationEngine } from '@cmdb/identity-resolution';
 import { getPostgresClient } from '@cmdb/database';
 import { TransformedCI, IdentificationAttributes } from '@cmdb/integration-framework';
 import { requestOrganizationId } from '../../middleware/auth.middleware';
+import {
+  countOwnedConflicts, getOwnedConflict, getOwnedFieldSources, getOwnedLineage,
+  listOwnedConflicts, updateOwnedConflict
+} from '../../reconciliation/tenant-queries';
 
 export class ReconciliationController {
   private reconciliationEngine = getIdentityReconciliationEngine();
@@ -138,25 +142,14 @@ export class ReconciliationController {
    */
   async listConflicts(req: Request, res: Response): Promise<void> {
     try {
+      const organizationId = requestOrganizationId(req);
       const { status = 'pending', limit = 100, offset = 0 } = req.query;
 
       const limitNum = Math.min(parseInt(limit as string) || 100, 1000);
       const offsetNum = parseInt(offset as string) || 0;
 
-      const result = await this.postgresClient.query(
-        `SELECT id, ci_id, conflict_type, source_data, target_data,
-                conflicting_fields, status, created_at
-         FROM reconciliation_conflicts
-         WHERE status = $1
-         ORDER BY created_at DESC
-         LIMIT $2 OFFSET $3`,
-        [status, limitNum, offsetNum]
-      );
-
-      const total = await this.postgresClient.query(
-        'SELECT COUNT(*) as count FROM reconciliation_conflicts WHERE status = $1',
-        [status]
-      );
+      const result = await listOwnedConflicts(this.postgresClient, status as string, limitNum, offsetNum, organizationId);
+      const total = await countOwnedConflicts(this.postgresClient, status as string, organizationId);
 
       res.json({
         success: true,
@@ -193,9 +186,9 @@ export class ReconciliationController {
    */
   async resolveConflict(req: Request, res: Response): Promise<void> {
     try {
+      const organizationId = requestOrganizationId(req);
       const { id } = req.params;
       const { resolution, merged_data } = req.body;
-
       if (!resolution || !['accept_source', 'accept_target', 'merge'].includes(resolution)) {
         res.status(400).json({
           success: false,
@@ -205,30 +198,28 @@ export class ReconciliationController {
         return;
       }
 
-      // Get conflict details
-      const conflictResult = await this.postgresClient.query(
-        'SELECT * FROM reconciliation_conflicts WHERE id = $1',
-        [id]
-      );
-
+      // Both detail access and the write must be scoped; ownership can change between statements.
+      const conflictResult = await getOwnedConflict(this.postgresClient, id, organizationId);
       if (conflictResult.rows.length === 0) {
         res.status(404).json({
           success: false,
           error: 'Not Found',
-          message: `Conflict with ID '${id}' not found`
+          message: 'Conflict not found'
         });
         return;
       }
 
-      // Update conflict status
-      await this.postgresClient.query(
-        `UPDATE reconciliation_conflicts
-         SET status = 'resolved',
-             resolution_data = $2,
-             resolved_at = NOW()
-         WHERE id = $1`,
-        [id, JSON.stringify({ resolution, merged_data })]
+      const updated = await updateOwnedConflict(
+        this.postgresClient, id, organizationId, JSON.stringify({ resolution, merged_data })
       );
+      if (updated.rows.length === 0) {
+        res.status(404).json({
+          success: false,
+          error: 'Not Found',
+          message: 'Conflict not found'
+        });
+        return;
+      }
 
       res.json({
         success: true,
@@ -412,22 +403,19 @@ export class ReconciliationController {
    */
   async getCILineage(req: Request, res: Response): Promise<void> {
     try {
+      const organizationId = requestOrganizationId(req);
       const { ci_id } = req.params;
-
-      const result = await this.postgresClient.query(
-        `SELECT source_name, source_id, confidence_score,
-                discovered_at AS first_seen_at, last_seen_at
-         FROM ci_source_lineage
-         WHERE ci_id = $1
-         ORDER BY last_seen_at DESC`,
-        [ci_id]
-      );
+      const result = await getOwnedLineage(this.postgresClient, ci_id, organizationId);
+      if (result.rows.length === 0) {
+        res.status(404).json({ success: false, error: 'Not Found', message: 'CI not found' });
+        return;
+      }
 
       res.json({
         success: true,
         data: {
           ci_id: ci_id,
-          sources: result.rows.map(row => ({
+          sources: result.rows.filter(row => row.source_name !== null).map(row => ({
             source_name: row.source_name,
             source_id: row.source_id,
             confidence_score: row.confidence_score,
@@ -452,21 +440,18 @@ export class ReconciliationController {
    */
   async getCIFieldSources(req: Request, res: Response): Promise<void> {
     try {
+      const organizationId = requestOrganizationId(req);
       const { ci_id } = req.params;
-
-      const result = await this.postgresClient.query(
-        `SELECT field_name, field_value, source_name, updated_at
-         FROM ci_field_sources
-         WHERE ci_id = $1
-         ORDER BY field_name`,
-        [ci_id]
-      );
-
+      const result = await getOwnedFieldSources(this.postgresClient, ci_id, organizationId);
+      if (result.rows.length === 0) {
+        res.status(404).json({ success: false, error: 'Not Found', message: 'CI not found' });
+        return;
+      }
       res.json({
         success: true,
         data: {
           ci_id: ci_id,
-          fields: result.rows.map(row => ({
+          fields: result.rows.filter(row => row.field_name !== null).map(row => ({
             field_name: row.field_name,
             field_value: row.field_value,
             source_name: row.source_name,

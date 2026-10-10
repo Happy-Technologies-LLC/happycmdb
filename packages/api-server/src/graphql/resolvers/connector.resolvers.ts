@@ -10,7 +10,7 @@ import { GraphQLContext } from './index';
 import { checkGraphQLPermission as requirePermission } from '../../middleware/auth.middleware';
 import { denyPlatformAdminGraphQL } from '../../middleware/platform-admin-unavailable';
 import { publicInstalledConnectorGraphQL } from '../../services/public-installed-connector';
-import { ConnectorJsonPatchBudget, ConnectorJsonPatchError, connectorJsonMerge } from '../../services/connector-json-merge';
+import { ConnectorJsonPatchBudget, ConnectorJsonPatchError, connectorJsonMerge, isConnectorJsonResultLimit, CONNECTOR_JSON_LIMIT_MESSAGE } from '../../services/connector-json-merge';
 import { connectorScope, connectorPredicate, scopeValues, PUBLIC_CONFIG, PUBLIC_RUN } from '../../auth/connector-scope';
 
 function scopedUser(context: GraphQLContext) {
@@ -503,8 +503,8 @@ const ConnectorMutationResolvers = {
       );
       return mapConfigRow(result.rows[0]);
     } catch (error) {
-      if (error instanceof ConnectorJsonPatchError) {
-        throw new GraphQLError(error.message, { extensions: { code: 'BAD_USER_INPUT' } });
+      if (error instanceof ConnectorJsonPatchError || isConnectorJsonResultLimit(error)) {
+        throw new GraphQLError(CONNECTOR_JSON_LIMIT_MESSAGE, { extensions: { code: 'BAD_USER_INPUT' } });
       }
       throw new GraphQLError('Failed to create connector configuration');
     }
@@ -553,8 +553,8 @@ const ConnectorMutationResolvers = {
       if (!result.rows.length) throw configNotFound();
       return mapConfigRow(result.rows[0]);
     } catch (error) {
-      if (error instanceof ConnectorJsonPatchError) {
-        throw new GraphQLError(error.message, { extensions: { code: 'BAD_USER_INPUT' } });
+      if (error instanceof ConnectorJsonPatchError || isConnectorJsonResultLimit(error)) {
+        throw new GraphQLError(CONNECTOR_JSON_LIMIT_MESSAGE, { extensions: { code: 'BAD_USER_INPUT' } });
       }
       if (error instanceof GraphQLError) throw error;
       throw new GraphQLError('Failed to update connector configuration');

@@ -1,9 +1,17 @@
 // Copyright 2026 Happy Technologies LLC
 // SPDX-License-Identifier: Apache-2.0
 
-/** Limits apply to all write-only JSON fields in one connector mutation. */
+/** Mutation budget matches the stored-result constraint in migration 023. */
+export const CONNECTOR_JSON_LIMIT_MESSAGE = 'Connector JSON exceeds size, node, key or depth limit';
 export class ConnectorJsonPatchError extends Error {
-  constructor() { super('Connector JSON patch exceeds size, node, key or depth limit'); }
+  constructor() { super(CONNECTOR_JSON_LIMIT_MESSAGE); }
+}
+
+/** PostgreSQL reports the named stored-result CHECK constraint on every write path. */
+export function isConnectorJsonResultLimit(error: unknown): boolean {
+  return error !== null && typeof error === 'object' &&
+    'code' in error && error.code === '23514' &&
+    'constraint' in error && error.constraint === 'connector_config_json_budget';
 }
 
 export class ConnectorJsonPatchBudget {
@@ -13,11 +21,11 @@ export class ConnectorJsonPatchBudget {
 
   add(patch: unknown): string {
     const visit = (value: unknown, depth: number): void => {
-      if (++this.nodes > 256 || depth > 12) throw new ConnectorJsonPatchError();
+      if (++this.nodes > 4096 || depth > 12) throw new ConnectorJsonPatchError();
       if (value !== null && typeof value === 'object') {
         const entries = Object.entries(value);
         this.keys += entries.length;
-        if (this.keys > 256) throw new ConnectorJsonPatchError();
+        if (this.keys > 4096) throw new ConnectorJsonPatchError();
         for (const [, child] of entries) visit(child, depth + 1);
       }
     };

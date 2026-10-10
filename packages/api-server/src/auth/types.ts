@@ -31,8 +31,6 @@ export interface User {
    * verifyApiKey). Unset => org-scoped routes (business services, TBM) return 403.
    */
   _organizationId?: string;
-  /** Dedicated operator-provisioned authority, independent of tenant role/org. */
-  _platformAdmin?: boolean;
 }
 
 export type ApiKeyTier = 'standard' | 'premium' | 'enterprise';
@@ -63,8 +61,6 @@ export interface TokenPayload {
    * value minted into the token.
    */
   _organizationId?: string;
-  /** Resolved from the enabled user record at verification, never the token. */
-  _platformAdmin?: boolean;
   iat?: number;
   exp?: number;
   iss?: string;

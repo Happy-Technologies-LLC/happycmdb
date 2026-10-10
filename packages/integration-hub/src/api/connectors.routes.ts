@@ -12,7 +12,7 @@ import {
 } from '@cmdb/api-server/auth/connector-scope';
 import type { TokenPayload } from '@cmdb/api-server/auth/types';
 import { ROLE_PERMISSIONS } from '@cmdb/api-server/auth/types';
-import { ConnectorJsonPatchBudget, ConnectorJsonPatchError, connectorJsonMerge } from '@cmdb/api-server/services/connector-json-merge';
+import { ConnectorJsonPatchBudget, ConnectorJsonPatchError, connectorJsonMerge, isConnectorJsonResultLimit, CONNECTOR_JSON_LIMIT_MESSAGE } from '@cmdb/api-server/services/connector-json-merge';
 import { publicInstalledConnector } from '@cmdb/api-server/services/public-installed-connector';
 
 export const connectorsRouter = Router();
@@ -26,8 +26,8 @@ function values(req: Request): [string | null, boolean] {
   return scopeValues((req as AuthenticatedRequest).user);
 }
 const invalidPatch = (res: Response, error: unknown) =>
-  error instanceof ConnectorJsonPatchError
-    ? res.status(400).json({ error: 'Bad Request', message: error.message })
+  error instanceof ConnectorJsonPatchError || isConnectorJsonResultLimit(error)
+    ? res.status(400).json({ error: 'Bad Request', message: CONNECTOR_JSON_LIMIT_MESSAGE })
     : failed(res);
 function requireConnectorWrite(req: Request, res: Response, next: NextFunction): void {
   const user = (req as AuthenticatedRequest).user;

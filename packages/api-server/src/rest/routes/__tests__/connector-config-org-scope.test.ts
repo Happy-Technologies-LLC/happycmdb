@@ -21,12 +21,12 @@ Object.assign(process.env, {
 const host = fork(join(__dirname, 'fixtures/pglite-host.cjs'), [], { serialization: 'advanced' });
 let nextId = 0;
 const pending = new Map<number, { resolve: (rows: unknown[]) => void; reject: (error: Error) => void }>();
-host.on('message', (reply: { id: number; rows: unknown[]; error?: string; code?: string }) => {
+host.on('message', (reply: { id: number; rows: unknown[]; error?: string; code?: string; constraint?: string }) => {
   const operation = pending.get(reply.id);
   if (!operation) throw new Error('Unexpected database reply');
   pending.delete(reply.id);
   if (!reply.error) operation.resolve(reply.rows);
-  else operation.reject(Object.assign(new Error(reply.error), { code: reply.code }));
+  else operation.reject(Object.assign(new Error(reply.error), { code: reply.code, constraint: reply.constraint }));
 });
 function query(sql: string, params: unknown[] = []): Promise<{ rows: unknown[] }> {
   const id = nextId++;
@@ -130,6 +130,7 @@ beforeAll(async () => {
     CREATE UNIQUE INDEX idx_connector_configs_name ON connector_configurations(name);`);
   await exec(readFileSync(join(migrationDir, '018_connector_organization_scope.sql'), 'utf8'));
   await exec(readFileSync(join(migrationDir, '022_connector_jsonb_merge.sql'), 'utf8'));
+  await exec(readFileSync(join(migrationDir, '023_connector_json_result_budget.sql'), 'utf8'));
   ({ server: graphqlServer } = await createGraphQLServer(graphqlApp));
 });
 afterAll(async () => {
@@ -671,6 +672,89 @@ it('atomically merges object patches over root and nested JSON null/scalars thro
       options: { nested: { retry: 2 } }, resource_configs: { items: { batch_size: 4 } } }]);
 });
 
+it('deploys the largest bundled Azure wizard mappings through REST and GraphQL create and update', async () => {
+  const template = JSON.parse(readFileSync(join(__dirname, '../../../../../connectors/azure/connector.json'), 'utf8'));
+  const resources = template.resources as Array<{ id: string; field_mappings: Record<string, string> }>;
+  const mappings = Object.fromEntries(resources.map(resource => [resource.id,
+    Object.entries(resource.field_mappings).map(([target, source], index) => ({
+      id: `${resource.id}_mapping_${index}`, source_field: source, target_field: target,
+      transformation: { type: 'direct' }, required: false,
+    }))]));
+  await query(`INSERT INTO installed_connectors (connector_type, category, name, installed_version, install_path, metadata, resources)
+    VALUES ($1, 'connector', 'Azure', '2.0', '/unused', $2::jsonb, $3::jsonb)`,
+  [template.type, JSON.stringify(template), JSON.stringify(resources)]);
+  const body = {
+    connector_type: template.type, connection: { tenant_id: 'test-tenant' },
+    resource_configs: mappings, enabled_resources: resources.map(resource => resource.id),
+  };
+  const rest = await request(app).post(url).set(bearer('a')).send({ ...body, name: 'azure-rest' });
+  expect(rest.status).toBe(201);
+  expect((await request(app).put(`${url}/${rest.body.data.id}`).set(bearer('a'))
+    .send({ resource_configs: mappings })).status).toBe(200);
+
+  const create = await request(graphqlApp).post('/graphql').set(bearer('a')).send({
+    query: 'mutation($input: CreateConnectorConfigInput!) { createConnectorConfiguration(input: $input) { id } }',
+    variables: { input: { name: 'azure-graphql', connectorType: template.type,
+      connection: body.connection, resourceConfigs: mappings, enabledResources: body.enabled_resources } },
+  });
+  expect(create.body.errors).toBeUndefined();
+  const graphqlId = create.body.data.createConnectorConfiguration.id;
+  const update = await request(graphqlApp).post('/graphql').set(bearer('a')).send({
+    query: 'mutation($id: ID!, $input: UpdateConnectorConfigInput!) { updateConnectorConfiguration(id: $id, input: $input) { id } }',
+    variables: { id: graphqlId, input: { resourceConfigs: mappings } },
+  });
+  expect(update.body.errors).toBeUndefined();
+  expect((await query('SELECT organization_id, resource_configs FROM connector_configurations WHERE id = $1', [graphqlId])).rows)
+    .toEqual([{ organization_id: ORG_A, resource_configs: mappings }]);
+});
+
+it('refuses cumulative stored JSON growth across REST, GraphQL, and hub without losing saved secrets', async () => {
+  for (let index = 0; index < 7; index++) {
+    const result = await request(app).put(`${url}/${A}`).set(bearer('a'))
+      .send({ connection: { [`chunk_${index}`]: 'x'.repeat(9000) } });
+    expect(result.status).toBe(200);
+  }
+  const before = (await query('SELECT connection FROM connector_configurations WHERE id = $1', [A])).rows;
+  const rest = await request(app).put(`${url}/${A}`).set(bearer('a'))
+    .send({ connection: { next_rest: 'y'.repeat(9000) } });
+  expect(rest.status).toBe(400);
+  const resources = await request(app).put(`${url}/${A}/resources`).set(bearer('a'))
+    .send({ enabled_resources: ['items'], resource_configs: { items: { next_resources: 'y'.repeat(9000) } } });
+  expect(resources.status).toBe(400);
+  const graphql = await request(graphqlApp).post('/graphql').set(bearer('a')).send({
+    query: 'mutation($id: ID!, $input: UpdateConnectorConfigInput!) { updateConnectorConfiguration(id: $id, input: $input) { id } }',
+    variables: { id: A, input: { options: { next_graphql: 'y'.repeat(9000) } } },
+  });
+  expect(graphql.body.errors[0].extensions.code).toBe('BAD_USER_INPUT');
+  const hub = await request(app).put('/api/v1/hub/connectors/alpha').set(bearer('a'))
+    .send({ connection: { next_hub: 'y'.repeat(9000) } });
+  expect(hub.status).toBe(400);
+  expect((await query('SELECT connection FROM connector_configurations WHERE id = $1', [A])).rows).toEqual(before);
+  expect(JSON.stringify([rest.body, resources.body, graphql.body, hub.body])).not.toContain(SECRET);
+});
+
+it('counts array elements in the combined stored-document limit', async () => {
+  const points = Array(4075).fill(0);
+  await query('UPDATE connector_configurations SET resource_configs = $1::jsonb WHERE id = $2',
+    [JSON.stringify({ points }), A]);
+  const before = (await query('SELECT resource_configs FROM connector_configurations WHERE id = $1', [A])).rows;
+  const response = await request(app).put(`${url}/${A}`).set(bearer('a')).send({
+    options: { extras: Object.fromEntries(Array.from({ length: 24 }, (_, index) => [`item_${index}`, index])) },
+  });
+  expect(response.status).toBe(400);
+  expect((await query('SELECT resource_configs FROM connector_configurations WHERE id = $1', [A])).rows).toEqual(before);
+});
+
+it('bounds stored JSON even when optional columns are SQL NULL', async () => {
+  await query('UPDATE connector_configurations SET connection = $1::jsonb, options = NULL, resource_configs = NULL WHERE id = $2',
+    [JSON.stringify({ payload: 'x'.repeat(62_000) }), A]);
+  const result = await request(app).put(`${url}/${A}`).set(bearer('a'))
+    .send({ connection: { additional: 'y'.repeat(4_000) } });
+  expect(result.status).toBe(400);
+  expect((await query('SELECT options, resource_configs FROM connector_configurations WHERE id = $1', [A])).rows)
+    .toEqual([{ options: null, resource_configs: null }]);
+});
+
 it('merges 48 sibling objects with bounded SQL and preserves unrelated stored keys', async () => {
   const patch = Object.fromEntries(Array.from({ length: 48 }, (_, index) =>
     [`item_${index}`, { value: index }]));
@@ -685,7 +769,7 @@ it('merges 48 sibling objects with bounded SQL and preserves unrelated stored ke
 });
 
 it('rejects oversized, over-wide and over-deep JSON patches at REST, GraphQL and hub boundaries', async () => {
-  const tooManyKeys = Object.fromEntries(Array.from({ length: 257 }, (_, index) => [`key_${index}`, index]));
+  const tooManyKeys = Object.fromEntries(Array.from({ length: 4097 }, (_, index) => [`key_${index}`, index]));
   const rest = await request(app).put(`${url}/${A}`).set(bearer('a')).send({ connection: tooManyKeys });
   expect(rest.status).toBe(400);
   let tooDeep: unknown = { leaf: true };

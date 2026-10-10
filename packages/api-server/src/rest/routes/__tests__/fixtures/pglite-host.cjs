@@ -15,7 +15,7 @@ process.on('message', async ({ id, op, sql, params }) => {
     const rows = op === 'exec' ? ((await db.exec(sql)).at(-1)?.rows ?? []) : (await db.query(sql, params)).rows;
     process.send({ id, rows });
   } catch (error) {
-    // code: the SQLSTATE (e.g. '23505'), which handlers map to 409/400 like the pg driver's.
-    process.send({ id, error: error.message, code: error.code });
+    // Mirror pg's SQLSTATE and named CHECK constraint for response classification.
+    process.send({ id, error: error.message, code: error.code, constraint: error.constraint });
   }
 });

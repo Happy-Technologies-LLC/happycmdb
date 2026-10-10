@@ -239,42 +239,16 @@ describe('AuthService profile/password/account lifecycle', () => {
       expect(jwtService.decodeToken(refreshed._accessToken)?._organizationId).toBe(ORG);
     });
 
-    it('derives platform authority only from the current trusted user record', async () => {
-      repository.users.set('user-1', {
-        ...repository.users.get('user-1')!,
-        _role: 'admin',
-        _organizationId: '00000000-0000-0000-0000-000000000000',
-      });
+    it('does not propagate a raw platform marker through verified JWTs or API keys', async () => {
+      Object.assign(repository.users.get('user-1')!, { _platformAdmin: true });
       const { _accessToken } = await login();
-      expect((await service.verifyToken(_accessToken))._platformAdmin).toBe(false);
+      expect(await service.verifyToken(_accessToken)).not.toHaveProperty('_platformAdmin');
 
-      repository.users.set('user-1', { ...repository.users.get('user-1')!, _platformAdmin: true });
-      expect((await service.verifyToken(_accessToken))._platformAdmin).toBe(true);
-
-      repository.users.set('user-1', { ...repository.users.get('user-1')!, _platformAdmin: false });
-      expect((await service.verifyToken(_accessToken))._platformAdmin).toBe(false);
-    });
-
-    it('rechecks platform authority and organization for API keys', async () => {
       repository.apiKey = {
         _id: 'key-1', _key: '', _keyHash: '', _name: 'cli',
         _userId: 'user-1', _role: 'admin', _tier: 'standard', _enabled: true, _createdAt: new Date(),
       } as ApiKey;
-      repository.users.set('user-1', {
-        ...repository.users.get('user-1')!,
-        _organizationId: '00000000-0000-0000-0000-000000000000',
-      });
-      expect((await service.verifyApiKey('opaque'))._platformAdmin).toBe(false);
-      repository.users.set('user-1', {
-        ...repository.users.get('user-1')!,
-        _organizationId: '11111111-1111-4111-8111-111111111111',
-        _platformAdmin: true,
-      });
-      expect(await service.verifyApiKey('opaque')).toMatchObject({
-        _platformAdmin: true, _organizationId: '11111111-1111-4111-8111-111111111111',
-      });
-      repository.users.set('user-1', { ...repository.users.get('user-1')!, _platformAdmin: false });
-      expect((await service.verifyApiKey('opaque'))._platformAdmin).toBe(false);
+      expect(await service.verifyApiKey('opaque')).not.toHaveProperty('_platformAdmin');
     });
   });
 });

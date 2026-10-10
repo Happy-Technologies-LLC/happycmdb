@@ -11,7 +11,7 @@ import { Pool } from 'pg';
 import { logger } from '@cmdb/common';
 import { CONFIG_NOT_FOUND, PUBLIC_CONFIG } from '../../../auth/connector-scope';
 import { ownedConfig, requestScopeValues } from './ownership';
-import { ConnectorJsonPatchBudget, ConnectorJsonPatchError, connectorJsonMerge } from '../../../services/connector-json-merge';
+import { ConnectorJsonPatchBudget, ConnectorJsonPatchError, connectorJsonMerge, isConnectorJsonResultLimit, CONNECTOR_JSON_LIMIT_MESSAGE } from '../../../services/connector-json-merge';
 
 export class ConnectorConfigResourcesController {
   constructor(private pool: Pool) {}
@@ -104,8 +104,8 @@ export class ConnectorConfigResourcesController {
         message: 'Enabled resources updated successfully'
       });
     } catch (error) {
-      if (error instanceof ConnectorJsonPatchError) {
-        res.status(400).json({ success: false, error: 'Bad Request', message: error.message });
+      if (error instanceof ConnectorJsonPatchError || isConnectorJsonResultLimit(error)) {
+        res.status(400).json({ success: false, error: 'Bad Request', message: CONNECTOR_JSON_LIMIT_MESSAGE });
         return;
       }
       logger.error('Error updating enabled resources');

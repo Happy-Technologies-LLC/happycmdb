@@ -10,6 +10,7 @@ import express from 'express';
 import request from 'supertest';
 import type { ApolloServer } from '@apollo/server';
 import { buildUpdateQuery } from '../../controllers/connector-config/validation';
+import { PostgresClient } from '../../../../../database/src/postgres/client';
 
 Object.assign(process.env, {
   JWT_SECRET: randomBytes(32).toString('hex'),
@@ -21,12 +22,15 @@ Object.assign(process.env, {
 const host = fork(join(__dirname, 'fixtures/pglite-host.cjs'), [], { serialization: 'advanced' });
 let nextId = 0;
 const pending = new Map<number, { resolve: (rows: unknown[]) => void; reject: (error: Error) => void }>();
-host.on('message', (reply: { id: number; rows: unknown[]; error?: string; code?: string; constraint?: string }) => {
+host.on('message', (reply: { id: number; rows: unknown[]; error?: string; code?: string; constraint?: string;
+  table?: string; routine?: string; severity?: string; detail?: string; where?: string; parameters?: unknown[] }) => {
   const operation = pending.get(reply.id);
   if (!operation) throw new Error('Unexpected database reply');
   pending.delete(reply.id);
   if (!reply.error) operation.resolve(reply.rows);
-  else operation.reject(Object.assign(new Error(reply.error), { code: reply.code, constraint: reply.constraint }));
+  else operation.reject(Object.assign(new Error(reply.error), { code: reply.code, constraint: reply.constraint,
+    table: reply.table, routine: reply.routine, severity: reply.severity,
+    detail: reply.detail, where: reply.where, parameters: reply.parameters }));
 });
 function query(sql: string, params: unknown[] = []): Promise<{ rows: unknown[] }> {
   const id = nextId++;
@@ -44,13 +48,18 @@ function exec(sql: string): Promise<void> {
 }
 let dataQueries = 0;
 let credentialLookups = 0;
-const pool = { query: async (sql: string, params: unknown[] = []) => {
-  dataQueries++;
-  if (/\b(?:FROM|JOIN)\s+credentials\b/i.test(sql)) credentialLookups++;
-  return query(sql, params);
-} };
+const pool = {
+  query: async (sql: string, params: unknown[] = []) => {
+    dataQueries++;
+    if (/\b(?:FROM|JOIN)\s+credentials\b/i.test(sql)) credentialLookups++;
+    return query(sql, params);
+  },
+  connect: async () => ({ query, release: () => undefined }),
+};
+// Route SQL through the real shared PostgresClient logger; only the transport is PGlite.
+const realPostgres: PostgresClient = Object.assign(Object.create(PostgresClient.prototype), { pool });
 jest.mock('@cmdb/database', () => ({
-  getPostgresClient: () => ({ pool, query: pool.query }), getNeo4jClient: () => ({}),
+  getPostgresClient: () => realPostgres, getNeo4jClient: () => ({}),
 }));
 jest.mock('bcrypt', () => ({}));
 jest.mock('../../../middleware/audit.middleware', () => ({ auditMiddleware: (_req: unknown, _res: unknown, next: () => void) => next() }));
@@ -731,6 +740,46 @@ it('refuses cumulative stored JSON growth across REST, GraphQL, and hub without 
   expect(hub.status).toBe(400);
   expect((await query('SELECT connection FROM connector_configurations WHERE id = $1', [A])).rows).toEqual(before);
   expect(JSON.stringify([rest.body, resources.body, graphql.body, hub.body])).not.toContain(SECRET);
+});
+
+it('never logs stored secrets, SQL text or pg DETAIL when the result CHECK rejects a real client query', async () => {
+  await query('UPDATE connector_configurations SET connection = $1::jsonb WHERE id = $2',
+    [JSON.stringify({ token: SECRET, padding_key_long_name: 'x'.repeat(62_000) }), A]);
+  const sql = 'UPDATE connector_configurations SET connection = public.connector_jsonb_merge(connection, $1::jsonb) WHERE id = $2';
+  const params = [JSON.stringify({ more: 'y'.repeat(5_000) }), A];
+  const logged = jest.spyOn(logger, 'error').mockImplementation(() => undefined);
+  try {
+    await expect(realPostgres.query(sql, params)).rejects.toMatchObject({
+      code: '23514', constraint: 'connector_config_json_budget', detail: expect.stringContaining(SECRET),
+    });
+    await expect(realPostgres.transaction(async client => {
+      await client.query(sql, params);
+    })).rejects.toMatchObject({ code: '23514', constraint: 'connector_config_json_budget' });
+    const graphql = await request(graphqlApp).post('/graphql').set(bearer('a')).send({
+      query: 'mutation($id: ID!, $input: UpdateConnectorConfigInput!) { updateConnectorConfiguration(id: $id, input: $input) { id } }',
+      variables: { id: A, input: { options: { additional: 'z'.repeat(5_000) } } },
+    });
+    expect(graphql.body.errors[0].extensions.code).toBe('BAD_USER_INPUT');
+    const hub = await request(app).put('/api/v1/hub/connectors/alpha').set(bearer('a'))
+      .send({ connection: { additional: 'z'.repeat(5_000) } });
+    expect(hub.status).toBe(400);
+    const pgLogs = logged.mock.calls.filter(([message]) => message.startsWith('PostgreSQL '));
+    expect(pgLogs).toHaveLength(4);
+    for (const [, metadata] of pgLogs) {
+      expect(metadata).toEqual(expect.objectContaining({
+        code: '23514', constraint: 'connector_config_json_budget',
+        table: 'connector_configurations', severity: 'ERROR',
+      }));
+    }
+    const output = JSON.stringify(logged.mock.calls);
+    expect(output).not.toContain(SECRET);
+    expect(output).not.toContain('Failing row contains');
+    expect(output).not.toContain('UPDATE connector_configurations');
+    expect(logged.mock.calls.some(([, metadata]) => metadata &&
+      ['detail', 'where', 'parameters', 'text', 'error'].some(field => Object.prototype.hasOwnProperty.call(metadata, field)))).toBe(false);
+  } finally {
+    logged.mockRestore();
+  }
 });
 
 it('counts array elements in the combined stored-document limit', async () => {

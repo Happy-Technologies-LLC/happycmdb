@@ -15,7 +15,9 @@ process.on('message', async ({ id, op, sql, params }) => {
     const rows = op === 'exec' ? ((await db.exec(sql)).at(-1)?.rows ?? []) : (await db.query(sql, params)).rows;
     process.send({ id, rows });
   } catch (error) {
-    // Mirror pg's SQLSTATE and named CHECK constraint for response classification.
-    process.send({ id, error: error.message, code: error.code, constraint: error.constraint });
+    // Mirror pg's SQLSTATE and safe/unsafe diagnostic fields to exercise log boundaries.
+    process.send({ id, error: error.message, code: error.code, constraint: error.constraint,
+      table: error.table, routine: error.routine, severity: error.severity,
+      detail: error.detail, where: error.where, parameters: params });
   }
 });

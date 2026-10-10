@@ -18,6 +18,19 @@ import type {
   CIRelationshipRow,
 } from '@cmdb/common';
 
+const PG_DIAGNOSTIC_FIELDS = ['code', 'constraint', 'table', 'routine', 'severity'] as const;
+
+/** PostgreSQL messages/details and query text may contain stored credentials. */
+function safePgDiagnostics(error: unknown): Partial<Record<typeof PG_DIAGNOSTIC_FIELDS[number], string>> {
+  const diagnostics: Partial<Record<typeof PG_DIAGNOSTIC_FIELDS[number], string>> = {};
+  if (error === null || typeof error !== 'object') return diagnostics;
+  for (const field of PG_DIAGNOSTIC_FIELDS) {
+    const value: unknown = Reflect.get(error, field);
+    if (typeof value === 'string') diagnostics[field] = value;
+  }
+  return diagnostics;
+}
+
 export class PostgresClient {
   public pool: Pool; // Made public to allow access for services that need the Pool directly
 
@@ -67,8 +80,8 @@ export class PostgresClient {
       ssl: sslConfig,
     });
 
-    this.pool.on('error', (err) => {
-      logger.error('Unexpected error on idle PostgreSQL client', err);
+    this.pool.on('error', (error) => {
+      logger.error('Unexpected error on idle PostgreSQL client', safePgDiagnostics(error));
     });
   }
 
@@ -77,10 +90,10 @@ export class PostgresClient {
     try {
       const result = await this.pool.query(text, params);
       const duration = Date.now() - start;
-      logger.debug('Executed query', { text, duration, rows: result.rowCount });
+      logger.debug('Executed query', { duration, rows: result.rowCount });
       return result;
     } catch (error) {
-      logger.error('Query error', { text, error });
+      logger.error('PostgreSQL query failed', safePgDiagnostics(error));
       throw error;
     }
   }
@@ -97,6 +110,7 @@ export class PostgresClient {
       await client.query('COMMIT');
       return result;
     } catch (error) {
+      logger.error('PostgreSQL transaction failed', safePgDiagnostics(error));
       await client.query('ROLLBACK');
       throw error;
     } finally {

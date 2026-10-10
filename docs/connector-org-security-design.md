@@ -14,6 +14,8 @@ All configuration and run reads, updates, deletes, tests, resources, metrics, hi
 
 `connection` and nested secret-bearing configuration (`options`, `resource_configs`) are write-only. Public representations explicitly project non-secret fields, never return DB `*` or recursively redact arbitrary secret key spellings. Run `errors`, `error_message`, raw logs, job payloads and returnvalues are untrusted secret carriers: public responses use bounded safe status/count fields and coded errors; raw exception messages cannot cross HTTP/GraphQL or logger boundaries. Execution may read the scoped secret only inside the trusted executor. Legacy stored secrets get the same projection.
 
+The shared `PostgresClient` logs fixed failure messages and only SQLSTATE, constraint, table, routine and severity. It does not log SQL text, bound parameters, the raw error object, `DETAIL` or `WHERE`: a `connector_config_json_budget` CHECK failure can embed stored write-only credentials in its failing-row detail. The original exception is rethrown so REST, GraphQL and hub still return their fixed 400 / `BAD_USER_INPUT` responses.
+
 ## Deployable consumers and privilege risks
 
 * API server: REST configuration and run routes and GraphQL resolvers derive organization from the freshly reloaded `AuthService` user record; GraphQL secret fields are write-only. REST and GraphQL shared connector lifecycle mutations refuse **every** caller with a fixed error, including verified platform operators. The seeded default admin has no platform marker.

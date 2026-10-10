@@ -9,9 +9,11 @@
     "build": "tsc",
     "dev": "tsc --watch",
     "test": "jest",
+    "test:compiled-entry": "node --test tests/compiled-entry.test.cjs",
     "clean": "rm -rf dist tsconfig.tsbuildinfo"
   },
   "dependencies": {
+    "@cmdb/api-server": "file:../api-server",
     "@cmdb/common": "file:../common",
     "@cmdb/database": "file:../database",
     "@cmdb/integration-framework": "file:../integration-framework",

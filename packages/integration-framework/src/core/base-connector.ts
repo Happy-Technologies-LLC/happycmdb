@@ -233,7 +233,7 @@ export abstract class BaseIntegrationConnector extends EventEmitter {
 
       const resource = resourceMap.get(resourceId);
       if (!resource) {
-        logger.warn('Resource not found in metadata', { resourceId });
+        logger.warn('Resource not found in metadata');
         return;
       }
 
@@ -263,7 +263,7 @@ export abstract class BaseIntegrationConnector extends EventEmitter {
     const startTime = Date.now();
 
     try {
-      logger.info('Starting connector run', { connector: this.config.name });
+      logger.info('Starting connector run');
 
       // Ensure initialized
       if (!this.isInitialized) {
@@ -273,10 +273,7 @@ export abstract class BaseIntegrationConnector extends EventEmitter {
       }
 
       const enabledResources = this.getEnabledResources();
-      logger.info('Processing resources', {
-        connector: this.config.name,
-        resources: enabledResources
-      });
+      logger.info('Processing resources', { count: enabledResources.length });
 
       // Resolve dependencies and get execution order
       const orderedResources = this.resolveResourceDependencies(enabledResources);
@@ -288,16 +285,12 @@ export abstract class BaseIntegrationConnector extends EventEmitter {
       for (const resourceId of orderedResources) {
         const resource = this.metadata.resources.find(r => r.id === resourceId);
         if (!resource) {
-          logger.warn('Resource not found', { resourceId });
+          logger.warn('Resource not found');
           continue;
         }
 
         try {
-          logger.info('Extracting resource', {
-            connector: this.config.name,
-            resource: resourceId,
-            ci_type: resource.ci_type
-          });
+          logger.info('Extracting resource');
 
           this.emitEvent('extraction_started', {
             connector: this.config.name,
@@ -310,11 +303,7 @@ export abstract class BaseIntegrationConnector extends EventEmitter {
 
           totalRecordsExtracted += extractedData.length;
 
-          logger.info('Resource extracted', {
-            connector: this.config.name,
-            resource: resourceId,
-            records: extractedData.length
-          });
+          logger.info('Resource extracted', { records: extractedData.length });
 
           this.emitEvent('extraction_completed', {
             connector: this.config.name,
@@ -332,29 +321,19 @@ export abstract class BaseIntegrationConnector extends EventEmitter {
                 connector: this.config.name,
                 resource: resourceId,
                 ci: transformedCI,
-                source_data: data,
               });
 
-            } catch (error) {
-              logger.error('Transformation failed', {
-                connector: this.config.name,
-                resource: resourceId,
-                external_id: data.external_id,
-                error
-              });
+            } catch {
+              logger.error('Transformation failed');
             }
           }
 
-        } catch (error) {
-          logger.error('Resource extraction failed', {
-            connector: this.config.name,
-            resource: resourceId,
-            error
-          });
+        } catch {
+          logger.error('Resource extraction failed');
           this.emitEvent('extraction_failed', {
             connector: this.config.name,
             resource: resourceId,
-            error: (error as Error).message
+            error: 'CONNECTOR_EXTRACTION_FAILED',
           });
         }
       }
@@ -362,41 +341,31 @@ export abstract class BaseIntegrationConnector extends EventEmitter {
       // Extract relationships if supported
       if (this.metadata.capabilities.relationships) {
         try {
-          logger.info('Extracting relationships', { connector: this.config.name });
+          logger.info('Extracting relationships');
           const relationships = await this.extractRelationships();
           if (relationships.length > 0) {
-            logger.info('Relationships extracted', {
-              connector: this.config.name,
-              count: relationships.length
-            });
+            logger.info('Relationships extracted', { count: relationships.length });
             this.emitEvent('relationships_extracted', {
               connector: this.config.name,
               relationships,
             });
           }
-        } catch (error) {
-          logger.warn('Relationship extraction failed', {
-            connector: this.config.name,
-            error
-          });
+        } catch {
+          logger.warn('Relationship extraction failed');
         }
       }
 
       const duration = Date.now() - startTime;
       logger.info('Connector run completed', {
-        connector: this.config.name,
         duration_ms: duration,
         resources_processed: orderedResources.length,
         records_extracted: totalRecordsExtracted,
         records_transformed: totalRecordsTransformed
       });
 
-    } catch (error) {
-      logger.error('Connector run failed', {
-        connector: this.config.name,
-        error
-      });
-      throw error;
+    } catch {
+      logger.error('Connector run failed');
+      throw new Error('CONNECTOR_RUN_FAILED');
     }
   }
 

@@ -7,13 +7,11 @@
  * on every /api/v1 route before any router), so this suite simulates that
  * by mounting the captured mock middleware ahead of
  * `connectorConfigRoutes`, mirroring production. Reads (list/get,
- * resource listing, run history, metrics) and testing an existing
- * configuration's connection stay open to any authenticated role, since
- * testing only inspects connectivity without mutating stored state. Every
- * state-changing route -- create/update/delete a configuration, trigger a
- * run, enable/disable, update enabled resources, and cancel a run --
- * additionally requires the 'write' permission
- * (`authMiddleware.requirePermission('write')`).
+ * resource listing, run history, metrics) stay open to any authenticated
+ * role. Operational actions that can reach a provider or change state --
+ * test connection, create/update/delete a configuration, trigger a run,
+ * enable/disable, update enabled resources, and cancel a run -- require
+ * the 'write' permission (`authMiddleware.requirePermission('write')`).
  */
 
 import express, { type Request, type Response } from 'express';
@@ -21,7 +19,7 @@ import request from 'supertest';
 import { jest, describe, it, expect, beforeEach } from '@jest/globals';
 import { ROLE_PERMISSIONS, type Permission, type UserRole } from '../../../auth/types';
 
-type ReqWithUser = Request & { user?: { _userId?: string; _role?: UserRole } };
+type ReqWithUser = Request & { user?: { _userId?: string; _role?: UserRole; _organizationId?: string } };
 
 const mockRouteHandler = jest.fn((req: Request, res: Response) => {
   res.status(200).json({ actor: (req as ReqWithUser).user?._userId });
@@ -31,7 +29,9 @@ const TOKEN_ROLES: Record<string, UserRole> = {
   'Bearer admin-token': 'admin',
   'Bearer operator-token': 'operator',
   'Bearer viewer-token': 'viewer',
+  'Bearer no-org-token': 'admin',
 };
+const ORG = '11111111-1111-4111-8111-111111111111';
 
 const mockAuthenticate = jest.fn(() => (req: Request, res: Response, next: () => void) => {
   const role = TOKEN_ROLES[req.get('authorization') ?? ''];
@@ -39,7 +39,7 @@ const mockAuthenticate = jest.fn(() => (req: Request, res: Response, next: () =>
     res.status(401).json({ error: 'Unauthorized' });
     return;
   }
-  (req as ReqWithUser).user = { _userId: 'route-user', _role: role };
+  (req as ReqWithUser).user = { _userId: 'route-user', _role: role, _organizationId: req.get('authorization') === 'Bearer no-org-token' ? undefined : ORG };
   next();
 });
 
@@ -110,7 +110,6 @@ type RouteCase = [string, string, Record<string, unknown> | undefined];
 const readRoutes: RouteCase[] = [
   ['GET', '/connector-configs', undefined],
   ['GET', '/connector-configs/cfg-1', undefined],
-  ['POST', '/connector-configs/cfg-1/test', undefined],
   ['GET', '/connector-configs/cfg-1/resources', undefined],
   ['GET', '/connector-configs/cfg-1/resources/res-1', undefined],
   ['GET', '/connector-configs/cfg-1/runs', undefined],
@@ -186,6 +185,12 @@ describe('connector-config routes', () => {
       'Bearer garbage-token'
     );
     expect(response.status).toBe(401);
+    expect(mockRouteHandler).not.toHaveBeenCalled();
+  });
+
+  it.each([...readRoutes, ...writeRoutes])('rejects missing org before %s %s', async (method, path, body) => {
+    const response = await invoke(testApp(), method, path, body, 'Bearer no-org-token');
+    expect(response.status).toBe(403);
     expect(mockRouteHandler).not.toHaveBeenCalled();
   });
 });

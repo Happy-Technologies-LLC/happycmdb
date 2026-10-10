@@ -9,7 +9,6 @@ import { getConnectorIcon, getCategoryColor, getCategoryLabel } from '@/lib/conn
 
 interface ConnectorCardProps {
   connector: ConnectorRegistry;
-  onInstall: () => void;
   isInstalled?: boolean;
   installedVersion?: string;
 }
@@ -57,11 +56,9 @@ const inferCategoryFromType = (connectorType: string): string => {
 
 export function ConnectorCard({
   connector,
-  onInstall,
   isInstalled = false,
   installedVersion,
 }: ConnectorCardProps) {
-  const hasUpdate = installedVersion && installedVersion !== connector.latestVersion;
 
   // Extract category and icon from metadata if available
   const metadata = (connector as any).metadata;
@@ -164,28 +161,16 @@ export function ConnectorCard({
         </div>
       )}
 
-      {/* Actions */}
+      {/* Installation is managed by deployment packaging, not this application. */}
       <div className="flex items-center gap-2">
         {isInstalled ? (
-          <>
-            <Badge variant="success" className="flex-1 justify-center">
-              Installed {installedVersion && `(v${installedVersion})`}
-            </Badge>
-            {hasUpdate && (
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={onInstall}
-                className="flex-1"
-              >
-                Update Available
-              </Button>
-            )}
-          </>
+          <Badge variant="success" className="flex-1 justify-center">
+            Installed {installedVersion && `(v${installedVersion})`}
+          </Badge>
         ) : (
-          <Button onClick={onInstall} className="flex-1" size="sm">
-            Install
-          </Button>
+          <Badge variant="secondary" className="flex-1 justify-center">
+            Available for deployment
+          </Badge>
         )}
         {connector.homepage && (
           <Button

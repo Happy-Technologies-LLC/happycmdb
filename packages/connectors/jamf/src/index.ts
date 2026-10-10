@@ -49,11 +49,7 @@ export default class JAMFConnector extends BaseIntegrationConnector {
   }
 
   async initialize(): Promise<void> {
-    logger.info('Initializing JAMF connector', {
-      jamf_url: this.jamfUrl,
-      use_classic_api: this.useClassicAPI,
-      enabled_resources: this.getEnabledResources(),
-    });
+    logger.info('Initializing JAMF connector');
 
     // If using new API, get bearer token
     if (!this.useClassicAPI) {
@@ -76,8 +72,8 @@ export default class JAMFConnector extends BaseIntegrationConnector {
 
       logger.info('JAMF bearer token obtained successfully');
     } catch (error: any) {
-      logger.error('Failed to obtain JAMF bearer token', { error });
-      throw new Error(`Bearer token authentication failed: ${error.message}`);
+      logger.error('Failed to obtain JAMF bearer token');
+      throw new Error('Bearer token authentication failed');
     }
   }
 
@@ -100,14 +96,7 @@ export default class JAMFConnector extends BaseIntegrationConnector {
         },
       };
     } catch (error: any) {
-      return {
-        success: false,
-        message: `Connection failed: ${error.message}`,
-        details: {
-          jamf_url: this.jamfUrl,
-          error: error.response?.data || error.message,
-        },
-      };
+      return { success: false, message: 'Connection failed' };
     }
   }
 
@@ -123,10 +112,7 @@ export default class JAMFConnector extends BaseIntegrationConnector {
       throw new Error(`Unknown resource: ${resourceId}`);
     }
 
-    logger.info('Starting JAMF resource extraction', {
-      resource: resourceId,
-      api_mode: this.useClassicAPI ? 'Classic' : 'New',
-    });
+    logger.info('Starting JAMF resource extraction');
 
     switch (resourceId) {
       case 'computers':
@@ -193,10 +179,7 @@ export default class JAMFConnector extends BaseIntegrationConnector {
           }
 
         } catch (error) {
-          logger.error('Failed to extract computer detail', {
-            computer_id: this.useClassicAPI ? computer.id[0] : computer.id,
-            error
-          });
+          logger.error('Failed to extract computer detail');
           // Continue with next computer
         }
       }
@@ -207,8 +190,8 @@ export default class JAMFConnector extends BaseIntegrationConnector {
       });
 
     } catch (error) {
-      logger.error('JAMF computers extraction failed', { error });
-      throw error;
+      logger.error('JAMF computers extraction failed');
+      throw new Error('Connector extraction failed');
     }
 
     return extractedData;
@@ -251,10 +234,7 @@ export default class JAMFConnector extends BaseIntegrationConnector {
           }
 
         } catch (error) {
-          logger.error('Failed to extract mobile device detail', {
-            device_id: device.id[0],
-            error
-          });
+          logger.error('Failed to extract mobile device detail');
           // Continue with next device
         }
       }
@@ -265,8 +245,8 @@ export default class JAMFConnector extends BaseIntegrationConnector {
       });
 
     } catch (error) {
-      logger.error('JAMF mobile devices extraction failed', { error });
-      throw error;
+      logger.error('JAMF mobile devices extraction failed');
+      throw new Error('Connector extraction failed');
     }
 
     return extractedData;
@@ -362,8 +342,8 @@ export default class JAMFConnector extends BaseIntegrationConnector {
       });
 
     } catch (error) {
-      logger.error('JAMF applications extraction failed', { error });
-      throw error;
+      logger.error('JAMF applications extraction failed');
+      throw new Error('Connector extraction failed');
     }
 
     return extractedData;
@@ -406,10 +386,7 @@ export default class JAMFConnector extends BaseIntegrationConnector {
           }
 
         } catch (error) {
-          logger.error('Failed to extract policy detail', {
-            policy_id: policy.id[0],
-            error
-          });
+          logger.error('Failed to extract policy detail');
           // Continue with next policy
         }
       }
@@ -420,8 +397,8 @@ export default class JAMFConnector extends BaseIntegrationConnector {
       });
 
     } catch (error) {
-      logger.error('JAMF policies extraction failed', { error });
-      throw error;
+      logger.error('JAMF policies extraction failed');
+      throw new Error('Connector extraction failed');
     }
 
     return extractedData;
@@ -479,7 +456,7 @@ export default class JAMFConnector extends BaseIntegrationConnector {
       });
 
     } catch (error) {
-      logger.error('JAMF relationship extraction failed', { error });
+      logger.error('JAMF relationship extraction failed');
       // Don't throw - relationships are optional
     }
 
@@ -722,7 +699,7 @@ export default class JAMFConnector extends BaseIntegrationConnector {
         mergeAttrs: true,
       });
     } catch (error) {
-      logger.error('Failed to parse XML response', { error });
+      logger.error('Failed to parse XML response');
       throw new Error('XML parsing failed');
     }
   }

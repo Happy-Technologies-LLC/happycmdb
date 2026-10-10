@@ -1967,46 +1967,20 @@ paths:
   /connectors/install:
     post:
       tags: [Connectors]
-      summary: Install connector
-      description: Install a connector from the registry
+      summary: Installation unavailable
+      description: Connector code is installed only by deployment packaging outside this application.
       operationId: installConnector
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [connector_type]
-              properties:
-                connector_type:
-                  type: string
-                  example: aws
-                version:
-                  type: string
-                  pattern: '^\d+\.\d+\.\d+$'
-                  example: 1.0.0
-                force:
-                  type: boolean
-                  default: false
       responses:
-        '201':
-          description: Connector installed
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/InstalledConnector'
-        '400':
-          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
-        '409':
-          description: Connector already installed
+        '403':
+          description: 'Platform administrator access unavailable for every authenticated caller'
 
   /connectors/{type}/update:
     put:
       tags: [Connectors]
-      summary: Update connector
-      description: Update connector to specific version
+      summary: Update unavailable
+      description: Connector code is updated only by deployment packaging outside this application.
       operationId: updateConnector
       parameters:
         - name: type
@@ -2014,36 +1988,17 @@ paths:
           required: true
           schema:
             type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                version:
-                  type: string
-                  pattern: '^\d+\.\d+\.\d+$'
-                force:
-                  type: boolean
-                  default: false
       responses:
-        '200':
-          description: Connector updated
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/InstalledConnector'
         '401':
           $ref: '#/components/responses/Unauthorized'
-        '404':
-          description: Connector not installed
+        '403':
+          description: 'Platform administrator access unavailable for every authenticated caller'
 
   /connectors/{type}:
     delete:
       tags: [Connectors]
-      summary: Uninstall connector
-      description: Remove a connector from the system
+      summary: Removal unavailable
+      description: Connector code changes are deployment-time operator actions outside this application.
       operationId: uninstallConnector
       parameters:
         - name: type
@@ -2052,18 +2007,16 @@ paths:
           schema:
             type: string
       responses:
-        '204':
-          description: Connector uninstalled
         '401':
           $ref: '#/components/responses/Unauthorized'
-        '404':
-          description: Connector not installed
+        '403':
+          description: 'Platform administrator access unavailable for every authenticated caller'
 
   /connectors/{type}/verify:
     post:
       tags: [Connectors]
-      summary: Verify connector
-      description: Verify connector installation and integrity
+      summary: Verification mutation unavailable
+      description: Runtime installation verification is unavailable until separate P-6 approval.
       operationId: verifyConnector
       parameters:
         - name: type
@@ -2072,23 +2025,10 @@ paths:
           schema:
             type: string
       responses:
-        '200':
-          description: Verification result
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  valid:
-                    type: boolean
-                  errors:
-                    type: array
-                    items:
-                      type: string
         '401':
           $ref: '#/components/responses/Unauthorized'
-        '404':
-          description: Connector not installed
+        '403':
+          description: 'Platform administrator access unavailable for every authenticated caller'
 
   /connectors/outdated:
     get:
@@ -2118,14 +2058,14 @@ paths:
   /connectors/cache/refresh:
     post:
       tags: [Connectors]
-      summary: Refresh registry cache
-      description: Clear and refresh connector registry cache
+      summary: Registry refresh unavailable
+      description: Shared registry mutations are unavailable until separate P-6 approval.
       operationId: refreshRegistryCache
       responses:
-        '200':
-          description: Cache refreshed
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: 'Platform administrator access unavailable for every authenticated caller'
 
   # =============================================================================
   # RECONCILIATION

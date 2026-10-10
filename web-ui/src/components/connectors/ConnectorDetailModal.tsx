@@ -8,7 +8,7 @@
  * - Version history with changelog
  * - Dependencies and requirements
  * - Installation statistics
- * - Installation/Update/Uninstall actions
+ * - Deployment and version information (connector code changes are offline)
  */
 
 import React, { useState } from 'react';
@@ -34,16 +34,12 @@ interface ConnectorDetailModalProps {
   connector: ConnectorRegistry;
   installedVersion?: string;
   onClose: () => void;
-  onInstall: () => void;
-  onUninstall: (connectorType: string) => void;
 }
 
 export const ConnectorDetailModal: React.FC<ConnectorDetailModalProps> = ({
   connector,
   installedVersion,
   onClose,
-  onInstall,
-  onUninstall,
 }) => {
   const [selectedTab, setSelectedTab] = useState('overview');
   const IconComponent = getConnectorIcon(
@@ -391,30 +387,11 @@ export const ConnectorDetailModal: React.FC<ConnectorDetailModalProps> = ({
           </div>
         </Tabs>
 
-        {/* Footer Actions */}
+        {/* Connector code changes happen outside the application. */}
         <DialogFooter className="mt-4">
-          {isInstalled ? (
-            <>
-              {hasUpdate && (
-                <Button onClick={onInstall} variant="default">
-                  <Icon name="arrows-clockwise" size={16} className="mr-2" />
-                  Update to v{connector.latestVersion}
-                </Button>
-              )}
-              <Button
-                onClick={() => onUninstall(connector.connectorType)}
-                variant="destructive"
-              >
-                <Icon name="trash" size={16} className="mr-2" />
-                Uninstall
-              </Button>
-            </>
-          ) : (
-            <Button onClick={onInstall} variant="default">
-              <Icon name="download-simple" size={16} className="mr-2" />
-              Install Connector
-            </Button>
-          )}
+          <p className="mr-auto text-sm text-muted-foreground">
+            Install and update connector code through deployment packaging.
+          </p>
           <Button onClick={onClose} variant="outline">
             Close
           </Button>

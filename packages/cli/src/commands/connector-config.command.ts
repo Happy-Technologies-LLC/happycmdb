@@ -2,6 +2,57 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import ora from 'ora';
 import axios from 'axios';
+interface PublicConfig {
+  id: string;
+  name: string;
+  connector_type: string;
+  description: string | null;
+  enabled: boolean;
+  schedule: string | null;
+  schedule_enabled: boolean;
+  enabled_resources: string[] | null;
+  max_retries: number;
+  retry_delay_seconds: number;
+  continue_on_error: boolean;
+  notification_on_success: boolean;
+  notification_on_failure: boolean;
+  created_at: string;
+  updated_at: string;
+  created_by: string | null;
+}
+
+function configRow(payload: unknown): PublicConfig {
+  if (!payload || typeof payload !== 'object' || !('id' in payload) ||
+      !('name' in payload) || !('connector_type' in payload) ||
+      typeof payload.id !== 'string' || typeof payload.name !== 'string' ||
+      typeof payload.connector_type !== 'string') {
+    throw new Error('Unexpected connector response');
+  }
+  const row = payload as Record<string, unknown>;
+  return {
+    id: payload.id, name: payload.name, connector_type: payload.connector_type,
+    description: typeof row['description'] === 'string' ? row['description'] : null,
+    enabled: row['enabled'] === true,
+    schedule: typeof row['schedule'] === 'string' ? row['schedule'] : null,
+    schedule_enabled: row['schedule_enabled'] === true,
+    enabled_resources: Array.isArray(row['enabled_resources']) ? row['enabled_resources'].filter((v): v is string => typeof v === 'string') : null,
+    max_retries: typeof row['max_retries'] === 'number' ? row['max_retries'] : 0,
+    retry_delay_seconds: typeof row['retry_delay_seconds'] === 'number' ? row['retry_delay_seconds'] : 0,
+    continue_on_error: row['continue_on_error'] === true,
+    notification_on_success: row['notification_on_success'] === true,
+    notification_on_failure: row['notification_on_failure'] === true,
+    created_at: typeof row['created_at'] === 'string' ? row['created_at'] : '',
+    updated_at: typeof row['updated_at'] === 'string' ? row['updated_at'] : '',
+    created_by: typeof row['created_by'] === 'string' ? row['created_by'] : null,
+  };
+}
+
+function configRows(payload: unknown): PublicConfig[] {
+  if (!payload || typeof payload !== 'object' || !('data' in payload) || !Array.isArray(payload.data)) {
+    throw new Error('Unexpected connector response');
+  }
+  return payload.data.map(configRow);
+}
 
 /**
  * Connector Configuration Command
@@ -14,6 +65,20 @@ export class ConnectorConfigCommand {
   constructor(apiUrl: string, apiKey?: string) {
     this.apiUrl = apiUrl;
     this.apiKey = apiKey;
+  }
+
+  private async findConfig(name: string): Promise<PublicConfig | undefined> {
+    let offset = 0;
+    while (true) {
+      const response = await axios.get(`${this.apiUrl}/connector-configs`, {
+        params: { search: name, limit: 100, offset },
+        headers: this.getHeaders(),
+      });
+      const rows = configRows(response.data);
+      const match = rows.find(row => row.name === name);
+      if (match || rows.length < 100) return match;
+      offset += rows.length;
+    }
   }
 
   /**
@@ -135,7 +200,7 @@ export class ConnectorConfigCommand {
       console.log(chalk.gray('Example:'));
       console.log(
         chalk.gray(
-          '  happycmdb connector config create --non-interactive --type vmware-vsphere --name my-vcenter --connection \'{"host":"vcenter.local","username":"admin","password":"pass"}\''
+          '  happycmdb connector config create --non-interactive --type vmware-vsphere --name my-vcenter --connection <private-json>'
         )
       );
       return;
@@ -157,31 +222,31 @@ export class ConnectorConfigCommand {
         return;
       }
 
-      const data: any = {
+      const data: Record<string, unknown> = {
         name: options.name,
-        connectorType: options.type,
+        connector_type: options.type,
         connection: connectionData,
       };
 
       if (options.resources) {
-        data.enabledResources = options.resources.split(',').map((r: string) => r.trim());
+        data['enabled_resources'] = options.resources.split(',').map((r: string) => r.trim());
       }
 
       const response = await axios.post(`${this.apiUrl}/connector-configs`, data, {
         headers: this.getHeaders(),
       });
 
-      const config = response.data;
+      const config = configRow(response.data.data);
       spinner.succeed(chalk.green('Configuration created successfully!'));
 
       console.log(chalk.cyan('\nConfiguration Details:'));
       console.log(`  ID: ${chalk.bold(config.id)}`);
       console.log(`  Name: ${chalk.bold(config.name)}`);
-      console.log(`  Type: ${config.connectorType}`);
+      console.log(`  Type: ${config.connector_type}`);
       console.log(`  Enabled: ${config.enabled ? chalk.green('Yes') : chalk.gray('No')}`);
 
-      if (config.enabledResources && config.enabledResources.length > 0) {
-        console.log(`  Resources: ${config.enabledResources.length} enabled`);
+      if (config.enabled_resources && config.enabled_resources.length > 0) {
+        console.log(`  Resources: ${config.enabled_resources.length} enabled`);
       }
 
       console.log(chalk.cyan('\nNext steps:'));
@@ -201,7 +266,7 @@ export class ConnectorConfigCommand {
 
     try {
       const params: any = {};
-      if (options.type) params.connectorType = options.type;
+      if (options.type) params.connector_type = options.type;
       if (options.enabled !== undefined) params.enabled = true;
 
       const response = await axios.get(`${this.apiUrl}/connector-configs`, {
@@ -209,7 +274,7 @@ export class ConnectorConfigCommand {
         headers: this.getHeaders(),
       });
 
-      const configs = response.data;
+      const configs = configRows(response.data);
       spinner.succeed(chalk.green(`Found ${configs.length} configurations`));
 
       if (configs.length === 0) {
@@ -222,11 +287,11 @@ export class ConnectorConfigCommand {
       console.log(chalk.cyan('║') + chalk.bold('  Name                Type                  Enabled  Schedule     ') + chalk.cyan('║'));
       console.log(chalk.cyan('╠═══════════════════════════════════════════════════════════════════════╣'));
 
-      configs.forEach((config: any) => {
-        const name = (config.name || '').padEnd(19).substring(0, 19);
-        const type = (config.connectorType || '').padEnd(21).substring(0, 21);
+      configs.forEach(config => {
+        const name = config.name.padEnd(19).substring(0, 19);
+        const type = config.connector_type.padEnd(21).substring(0, 21);
         const enabled = config.enabled ? chalk.green('Yes') : chalk.gray('No ');
-        const schedule = config.scheduleEnabled
+        const schedule = config.schedule_enabled
           ? chalk.green('Enabled ')
           : config.schedule
           ? chalk.gray('Disabled')
@@ -251,86 +316,32 @@ export class ConnectorConfigCommand {
    */
   private async showConfig(name: string): Promise<void> {
     const spinner = ora('Fetching configuration...').start();
-
     try {
-      // Find config by name
-      const response = await axios.get(`${this.apiUrl}/connector-configs`, {
-        params: { name },
-        headers: this.getHeaders(),
-      });
-
-      const configs = response.data;
-      if (configs.length === 0) {
-        spinner.fail(chalk.red(`Configuration "${name}" not found`));
+      const config = await this.findConfig(name);
+      if (!config) {
+        spinner.fail(chalk.red('Configuration not found'));
         return;
       }
-
-      const config = configs[0];
       spinner.succeed(chalk.green('Configuration details retrieved'));
-
-      console.log(chalk.cyan('\n╔═══════════════════════════════════════╗'));
-      console.log(chalk.cyan('║') + chalk.bold('  Configuration Details              ') + chalk.cyan('║'));
-      console.log(chalk.cyan('╚═══════════════════════════════════════╝\n'));
-
-      console.log(chalk.cyan('Basic Information:'));
-      console.log(`  ID: ${chalk.bold(config.id)}`);
-      console.log(`  Name: ${chalk.bold(config.name)}`);
-      console.log(`  Type: ${config.connectorType}`);
-      console.log(`  Enabled: ${config.enabled ? chalk.green('Yes') : chalk.gray('No')}`);
-
-      if (config.description) {
-        console.log(`  Description: ${config.description}`);
-      }
-
-      console.log(chalk.cyan('\nScheduling:'));
-      if (config.schedule) {
-        console.log(`  Schedule: ${config.schedule}`);
-        console.log(`  Enabled: ${config.scheduleEnabled ? chalk.green('Yes') : chalk.gray('No')}`);
-      } else {
-        console.log(chalk.gray('  No schedule configured'));
-      }
-
-      console.log(chalk.cyan('\nConnection:'));
-      Object.entries(config.connection || {}).forEach(([key, value]) => {
-        // Mask sensitive values
-        const displayValue =
-          key.toLowerCase().includes('password') || key.toLowerCase().includes('secret')
-            ? chalk.gray('********')
-            : value;
-        console.log(`  ${key}: ${displayValue}`);
-      });
-
-      console.log(chalk.cyan('\nResources:'));
-      if (config.enabledResources && config.enabledResources.length > 0) {
-        console.log(chalk.green(`  ${config.enabledResources.length} resources enabled:`));
-        config.enabledResources.forEach((resource: string) => {
-          console.log(`    - ${resource}`);
-        });
-      } else {
-        console.log(chalk.gray('  Using default resources'));
-      }
-
-      console.log(chalk.cyan('\nError Handling:'));
-      console.log(`  Max Retries: ${config.maxRetries || 3}`);
-      console.log(`  Retry Delay: ${config.retryDelaySeconds || 300}s`);
-      console.log(`  Continue on Error: ${config.continueOnError ? chalk.yellow('Yes') : chalk.gray('No')}`);
-
-      console.log(chalk.cyan('\nNotifications:'));
-      if (config.notificationChannels && config.notificationChannels.length > 0) {
-        console.log(`  Channels: ${config.notificationChannels.join(', ')}`);
-        console.log(`  On Success: ${config.notificationOnSuccess ? chalk.green('Yes') : chalk.gray('No')}`);
-        console.log(`  On Failure: ${config.notificationOnFailure ? chalk.green('Yes') : chalk.gray('No')}`);
-      } else {
-        console.log(chalk.gray('  No notification channels configured'));
-      }
-
-      console.log(chalk.cyan('\nMetadata:'));
-      console.log(`  Created: ${new Date(config.createdAt).toLocaleString()}`);
-      console.log(`  Updated: ${new Date(config.updatedAt).toLocaleString()}`);
-      if (config.createdBy) {
-        console.log(`  Created By: ${config.createdBy}`);
-      }
-    } catch (error: any) {
+      console.log(chalk.cyan('\nConfiguration Details:'));
+      console.log(`  ID: ${config.id}`);
+      console.log(`  Name: ${config.name}`);
+      console.log(`  Type: ${config.connector_type}`);
+      console.log(`  Enabled: ${config.enabled ? 'Yes' : 'No'}`);
+      if (config.description) console.log(`  Description: ${config.description}`);
+      console.log(`  Schedule: ${config.schedule ?? 'None'}`);
+      console.log(`  Schedule Enabled: ${config.schedule_enabled ? 'Yes' : 'No'}`);
+      console.log(chalk.gray('  Connection settings: write-only'));
+      console.log(`  Resources: ${config.enabled_resources?.length ?? 0} enabled`);
+      console.log(`  Max Retries: ${config.max_retries}`);
+      console.log(`  Retry Delay: ${config.retry_delay_seconds}s`);
+      console.log(`  Continue on Error: ${config.continue_on_error ? 'Yes' : 'No'}`);
+      console.log(`  Notify on Success: ${config.notification_on_success ? 'Yes' : 'No'}`);
+      console.log(`  Notify on Failure: ${config.notification_on_failure ? 'Yes' : 'No'}`);
+      console.log(`  Created: ${config.created_at}`);
+      console.log(`  Updated: ${config.updated_at}`);
+      if (config.created_by) console.log(`  Created By: ${config.created_by}`);
+    } catch (error) {
       spinner.fail(chalk.red('Failed to fetch configuration'));
       this.handleError(error);
     }
@@ -343,35 +354,29 @@ export class ConnectorConfigCommand {
     const spinner = ora('Updating configuration...').start();
 
     try {
-      // Find config by name
-      const findResponse = await axios.get(`${this.apiUrl}/connector-configs`, {
-        params: { name },
-        headers: this.getHeaders(),
-      });
-
-      if (findResponse.data.length === 0) {
-        spinner.fail(chalk.red(`Configuration "${name}" not found`));
+      const config = await this.findConfig(name);
+      if (!config) {
+        spinner.fail(chalk.red('Configuration not found'));
         return;
       }
+      const configId = config.id;
+      const data: Record<string, unknown> = {};
 
-      const configId = findResponse.data[0].id;
-      const data: any = {};
-
-      if (options.name) data.name = options.name;
-      if (options.description) data.description = options.description;
+      if (options.name) data['name'] = options.name;
+      if (options.description) data['description'] = options.description;
       if (options.connection) {
         try {
-          data.connection = JSON.parse(options.connection);
+          data['connection'] = JSON.parse(options.connection);
         } catch {
           spinner.fail(chalk.red('Invalid JSON in --connection'));
           return;
         }
       }
-      if (options.enable) data.enabled = true;
-      if (options.disable) data.enabled = false;
-      if (options.schedule) data.schedule = options.schedule;
-      if (options.scheduleEnable) data.scheduleEnabled = true;
-      if (options.scheduleDisable) data.scheduleEnabled = false;
+      if (options.enable) data['enabled'] = true;
+      if (options.disable) data['enabled'] = false;
+      if (options.schedule) data['schedule'] = options.schedule;
+      if (options.scheduleEnable) data['schedule_enabled'] = true;
+      if (options.scheduleDisable) data['schedule_enabled'] = false;
 
       if (Object.keys(data).length === 0) {
         spinner.fail(chalk.red('No updates specified'));
@@ -402,18 +407,12 @@ export class ConnectorConfigCommand {
     const spinner = ora('Deleting configuration...').start();
 
     try {
-      // Find config by name
-      const findResponse = await axios.get(`${this.apiUrl}/connector-configs`, {
-        params: { name },
-        headers: this.getHeaders(),
-      });
-
-      if (findResponse.data.length === 0) {
-        spinner.fail(chalk.red(`Configuration "${name}" not found`));
+      const config = await this.findConfig(name);
+      if (!config) {
+        spinner.fail(chalk.red('Configuration not found'));
         return;
       }
-
-      const configId = findResponse.data[0].id;
+      const configId = config.id;
 
       await axios.delete(`${this.apiUrl}/connector-configs/${configId}`, {
         headers: this.getHeaders(),
@@ -433,18 +432,12 @@ export class ConnectorConfigCommand {
     const spinner = ora('Testing connection...').start();
 
     try {
-      // Find config by name
-      const findResponse = await axios.get(`${this.apiUrl}/connector-configs`, {
-        params: { name },
-        headers: this.getHeaders(),
-      });
-
-      if (findResponse.data.length === 0) {
-        spinner.fail(chalk.red(`Configuration "${name}" not found`));
+      const config = await this.findConfig(name);
+      if (!config) {
+        spinner.fail(chalk.red('Configuration not found'));
         return;
       }
-
-      const configId = findResponse.data[0].id;
+      const configId = config.id;
 
       const response = await axios.post(
         `${this.apiUrl}/connector-configs/${configId}/test`,
@@ -454,28 +447,10 @@ export class ConnectorConfigCommand {
 
       const result = response.data;
 
-      if (result.success) {
-        spinner.succeed(chalk.green('Connection test successful!'));
-        if (result.message) {
-          console.log(chalk.cyan(`  ${result.message}`));
-        }
-        if (result.details) {
-          console.log(chalk.cyan('\n  Connection Details:'));
-          Object.entries(result.details).forEach(([key, value]) => {
-            console.log(`    ${key}: ${value}`);
-          });
-        }
+      if (result.success === true) {
+        spinner.succeed(chalk.green('Connection test successful'));
       } else {
         spinner.fail(chalk.red('Connection test failed'));
-        if (result.message) {
-          console.error(chalk.red(`  ${result.message}`));
-        }
-        if (result.errors && result.errors.length > 0) {
-          console.error(chalk.red('\n  Errors:'));
-          result.errors.forEach((err: string) => {
-            console.error(chalk.red(`    - ${err}`));
-          });
-        }
       }
     } catch (error: any) {
       spinner.fail(chalk.red('Connection test failed'));
@@ -491,18 +466,12 @@ export class ConnectorConfigCommand {
     const spinner = ora(`${action} configuration...`).start();
 
     try {
-      // Find config by name
-      const findResponse = await axios.get(`${this.apiUrl}/connector-configs`, {
-        params: { name },
-        headers: this.getHeaders(),
-      });
-
-      if (findResponse.data.length === 0) {
-        spinner.fail(chalk.red(`Configuration "${name}" not found`));
+      const config = await this.findConfig(name);
+      if (!config) {
+        spinner.fail(chalk.red('Configuration not found'));
         return;
       }
-
-      const configId = findResponse.data[0].id;
+      const configId = config.id;
       const endpoint = enabled ? 'enable' : 'disable';
 
       await axios.post(`${this.apiUrl}/connector-configs/${configId}/${endpoint}`, {}, { headers: this.getHeaders() });
@@ -521,25 +490,18 @@ export class ConnectorConfigCommand {
     const spinner = ora('Managing resources...').start();
 
     try {
-      // Find config by name
-      const findResponse = await axios.get(`${this.apiUrl}/connector-configs`, {
-        params: { name },
-        headers: this.getHeaders(),
-      });
-
-      if (findResponse.data.length === 0) {
-        spinner.fail(chalk.red(`Configuration "${name}" not found`));
+      const config = await this.findConfig(name);
+      if (!config) {
+        spinner.fail(chalk.red('Configuration not found'));
         return;
       }
-
-      const config = findResponse.data[0];
       const configId = config.id;
 
       if (options.list) {
         spinner.succeed(chalk.green('Enabled resources retrieved'));
         console.log(chalk.cyan('\nEnabled Resources:'));
-        if (config.enabledResources && config.enabledResources.length > 0) {
-          config.enabledResources.forEach((resource: string) => {
+        if (config.enabled_resources && config.enabled_resources.length > 0) {
+          config.enabled_resources.forEach(resource => {
             console.log(`  - ${resource}`);
           });
         } else {
@@ -548,7 +510,7 @@ export class ConnectorConfigCommand {
         return;
       }
 
-      let updatedResources = [...(config.enabledResources || [])];
+      let updatedResources = [...(config.enabled_resources || [])];
 
       if (options.add) {
         const toAdd = options.add.split(',').map((r: string) => r.trim());
@@ -562,7 +524,7 @@ export class ConnectorConfigCommand {
 
       await axios.put(
         `${this.apiUrl}/connector-configs/${configId}/resources`,
-        { enabledResources: updatedResources },
+        { enabled_resources: updatedResources },
         { headers: this.getHeaders() }
       );
 
@@ -592,14 +554,13 @@ export class ConnectorConfigCommand {
   /**
    * Handle API errors
    */
-  private handleError(error: any): void {
-    if (error.response) {
-      console.error(chalk.red(`  Error: ${error.response.data.message || error.response.statusText}`));
-      console.error(chalk.red(`  Status: ${error.response.status}`));
-    } else if (error.request) {
-      console.error(chalk.red('  Error: No response from server'));
-    } else {
-      console.error(chalk.red(`  Error: ${error.message}`));
+  private handleError(error: unknown): void {
+    const status = axios.isAxiosError(error) ? error.response?.status : undefined;
+    const message = axios.isAxiosError(error) ? error.response?.data?.error : undefined;
+    if (status === 409 && message === 'Connector credential reference unavailable') {
+      console.error(chalk.red('  Connector credential reference unavailable'));
+      return;
     }
+    console.error(chalk.red(status === 404 ? '  Configuration not found' : '  Connector request failed'));
   }
 }

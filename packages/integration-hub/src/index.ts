@@ -10,7 +10,10 @@ import cors from 'cors';
 import { logger } from '@cmdb/common';
 import { connectorsRouter } from './api/connectors.routes';
 import { transformationRulesRouter } from './api/transformation-rules.routes';
-import { getIntegrationManager, getConnectorRegistry } from '@cmdb/integration-framework';
+import { getConnectorRegistry } from '@cmdb/integration-framework';
+import { getIntegrationManager } from '@cmdb/integration-framework/dist/core/integration-manager';
+import { getAuthMiddleware } from '@cmdb/api-server/auth/auth-bootstrap';
+import { requireConnectorScope } from '@cmdb/api-server/auth/connector-scope';
 
 export class IntegrationHubServer {
   private app: express.Application;
@@ -24,16 +27,16 @@ export class IntegrationHubServer {
   }
 
   private setupMiddleware(): void {
+    // Global rules have no tenant owner. Deny before CORS preflight or body
+    // parsers can respond, including for malformed requests and all callers.
+    this.app.use('/api/v1/transformation-rules', transformationRulesRouter);
     this.app.use(cors());
     this.app.use(express.json());
     this.app.use(express.urlencoded({ extended: true }));
 
-    // Request logging
+    // Paths and query strings are untrusted connector data; log only the method.
     this.app.use((req, _res, next) => {
-      logger.info('Integration Hub API request', {
-        method: req.method,
-        path: req.path,
-      });
+      logger.info('Integration Hub API request', { method: req.method });
       next();
     });
   }
@@ -45,8 +48,7 @@ export class IntegrationHubServer {
     });
 
     // API routes
-    this.app.use('/api/v1/connectors', connectorsRouter);
-    this.app.use('/api/v1/transformation-rules', transformationRulesRouter);
+    this.app.use('/api/v1/connectors', getAuthMiddleware().authenticate(), requireConnectorScope, connectorsRouter);
 
     // 404 handler
     this.app.use((_req, res) => {
@@ -54,9 +56,9 @@ export class IntegrationHubServer {
     });
 
     // Error handler
-    this.app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-      logger.error('Integration Hub API error', { error: err });
-      res.status(500).json({ error: err.message });
+    this.app.use((_err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+      logger.error('Integration Hub API error');
+      res.status(500).json({ error: 'Internal server error' });
     });
   }
 
@@ -71,6 +73,7 @@ export class IntegrationHubServer {
 
     // Load connector configurations from database
     await integrationManager.loadConnectors();
+    integrationManager.startScheduleReconciliation();
 
     // Start HTTP server
     this.app.listen(this.port, () => {
@@ -87,8 +90,8 @@ export * from './api/transformation-rules.routes';
 if (require.main === module) {
   const port = parseInt(process.env['INTEGRATION_HUB_PORT'] || '3001', 10);
   const server = new IntegrationHubServer(port);
-  server.start().catch(error => {
-    logger.error('Failed to start Integration Hub', { error });
+  server.start().catch(() => {
+    logger.error('Failed to start Integration Hub');
     process.exit(1);
   });
 }

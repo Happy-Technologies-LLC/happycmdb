@@ -37,6 +37,9 @@ jobs:
       - name: Run unit tests
         run: npm run test:unit -- --coverage
 
+      - name: Verify connector wizard schedule deployment
+        run: npm run test:run --workspace=@cmdb/web-ui -- --config vitest.connector-wizard.config.ts src/components/connectors/ConnectorDeploySchedule.test.tsx
+
       - name: Upload unit test coverage
         uses: codecov/codecov-action@v3
         with:

@@ -2,6 +2,44 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import ora from 'ora';
 import axios from 'axios';
+interface PublicRun {
+  id: string;
+  config_name: string;
+  connector_type: string;
+  status: string;
+  started_at: string;
+  completed_at: string | null;
+  resource_id: string | null;
+  duration_ms: number | null;
+  records_extracted: number;
+  records_transformed: number;
+  records_loaded: number;
+  records_failed: number;
+  triggered_by: string;
+}
+
+function runRow(payload: unknown): PublicRun {
+  if (!payload || typeof payload !== 'object' || !('id' in payload) ||
+      typeof payload.id !== 'string') throw new Error('Unexpected connector run response');
+  const row = payload as Record<string, unknown>;
+  const text = (key: string): string => typeof row[key] === 'string' ? row[key] as string : '';
+  const count = (key: string): number => typeof row[key] === 'number' ? row[key] as number : 0;
+  return {
+    id: payload.id, config_name: text('config_name'), connector_type: text('connector_type'),
+    status: text('status'), started_at: text('started_at'),
+    completed_at: text('completed_at') || null, resource_id: text('resource_id') || null,
+    duration_ms: count('duration_ms'), records_extracted: count('records_extracted'),
+    records_transformed: count('records_transformed'), records_loaded: count('records_loaded'),
+    records_failed: count('records_failed'), triggered_by: text('triggered_by'),
+  };
+}
+
+function runRows(payload: unknown): PublicRun[] {
+  if (!payload || typeof payload !== 'object' || !('data' in payload) || !Array.isArray(payload.data)) {
+    throw new Error('Unexpected connector run response');
+  }
+  return payload.data.map(runRow);
+}
 
 /**
  * Connector Run Command
@@ -14,6 +52,25 @@ export class ConnectorRunCommand {
   constructor(apiUrl: string, apiKey?: string) {
     this.apiUrl = apiUrl;
     this.apiKey = apiKey;
+  }
+
+  private async configIdByName(name: string): Promise<string | undefined> {
+    let offset = 0;
+    while (true) {
+      const response = await axios.get(`${this.apiUrl}/connector-configs`, {
+        params: { search: name, limit: 100, offset },
+        headers: this.getHeaders(),
+      });
+      const payload: unknown = response.data;
+      if (!payload || typeof payload !== 'object' || !('data' in payload) || !Array.isArray(payload.data)) {
+        throw new Error('Unexpected connector configuration response');
+      }
+      for (const row of payload.data) {
+        if (row && typeof row === 'object' && row.name === name && typeof row.id === 'string') return row.id;
+      }
+      if (payload.data.length < 100) return undefined;
+      offset += payload.data.length;
+    }
   }
 
   /**
@@ -74,60 +131,24 @@ export class ConnectorRunCommand {
   /**
    * Run connector
    */
-  private async runConnector(name: string, options: any): Promise<void> {
-    console.log(chalk.cyan(`\nTriggering connector run: ${chalk.bold(name)}`));
-    if (options.resource) {
-      console.log(chalk.gray(`Resource: ${options.resource}`));
-    }
-
+  private async runConnector(name: string, options: { resource?: string; wait?: boolean; timeout?: string }): Promise<void> {
     const spinner = ora('Starting connector run...').start();
-
     try {
-      // Find config by name
-      const findResponse = await axios.get(`${this.apiUrl}/connector-configs`, {
-        params: { name },
-        headers: this.getHeaders(),
-      });
-
-      if (findResponse.data.length === 0) {
-        spinner.fail(chalk.red(`Configuration "${name}" not found`));
-        process.exit(1);
+      const configId = await this.configIdByName(name);
+      if (!configId) {
+        spinner.fail(chalk.red('Configuration not found'));
+        return;
       }
-
-      const configId = findResponse.data[0].id;
-
-      const data: any = {};
-      if (options.resource) {
-        data.resourceId = options.resource;
-      }
-
-      const response = await axios.post(`${this.apiUrl}/connector-configs/${configId}/run`, data, {
-        headers: this.getHeaders(),
-      });
-
-      const run = response.data;
-      spinner.succeed(chalk.green('Connector run started!'));
-
-      console.log(chalk.cyan('\nRun Details:'));
-      console.log(`  Run ID: ${chalk.bold(run.id)}`);
-      console.log(`  Configuration: ${run.configName}`);
-      console.log(`  Connector Type: ${run.connectorType}`);
+      const response = await axios.post(`${this.apiUrl}/connector-configs/${configId}/run`,
+        options.resource ? { resource_id: options.resource } : {}, { headers: this.getHeaders() });
+      const run = runRow(response.data.data);
+      spinner.succeed(chalk.green('Connector run started'));
+      console.log(`  Run ID: ${run.id}`);
+      console.log(`  Configuration: ${run.config_name}`);
       console.log(`  Status: ${this.colorizeStatus(run.status)}`);
-      console.log(`  Started: ${new Date(run.startedAt).toLocaleString()}`);
-
-      if (run.jobId) {
-        console.log(`  Job ID: ${run.jobId}`);
-      }
-
-      console.log(chalk.cyan('\nMonitoring:'));
-      console.log(`  Check status: ${chalk.yellow(`happycmdb connector run-status ${run.id}`)}`);
-      console.log(`  Watch progress: ${chalk.yellow(`happycmdb connector run-status ${run.id} --watch`)}`);
-
-      // Wait for completion if requested
-      if (options.wait) {
-        await this.waitForCompletion(run.id, parseInt(options.timeout, 10));
-      }
-    } catch (error: any) {
+      console.log(`  Started: ${run.started_at}`);
+      if (options.wait) await this.waitForCompletion(run.id, Number(options.timeout ?? 300));
+    } catch (error) {
       spinner.fail(chalk.red('Failed to start connector run'));
       this.handleError(error);
     }
@@ -136,60 +157,27 @@ export class ConnectorRunCommand {
   /**
    * List connector runs
    */
-  private async listRuns(name?: string, options?: any): Promise<void> {
+  private async listRuns(name?: string, options?: { limit?: string; status?: string; type?: string }): Promise<void> {
     const spinner = ora('Fetching connector runs...').start();
-
     try {
-      const params: any = {
-        limit: options?.limit || 20,
-      };
-
+      const params: Record<string, unknown> = { limit: options?.limit ?? 20 };
       if (name) {
-        // Find config ID by name
-        const findResponse = await axios.get(`${this.apiUrl}/connector-configs`, {
-          params: { name },
-          headers: this.getHeaders(),
-        });
-
-        if (findResponse.data.length > 0) {
-          params.configId = findResponse.data[0].id;
+        const id = await this.configIdByName(name);
+        if (!id) {
+          spinner.fail(chalk.red('Configuration not found'));
+          return;
         }
+        params['config_id'] = id;
       }
-
-      if (options?.status) params.status = options.status.toUpperCase();
-      if (options?.type) params.connectorType = options.type;
-
-      const response = await axios.get(`${this.apiUrl}/connector-configs/runs/all`, {
-        params,
-        headers: this.getHeaders(),
-      });
-
-      const runs = response.data;
+      if (options?.status) params['status'] = options.status.toLowerCase();
+      if (options?.type) params['connector_type'] = options.type;
+      const response = await axios.get(`${this.apiUrl}/connector-configs/runs/all`, { params, headers: this.getHeaders() });
+      const runs = runRows(response.data);
       spinner.succeed(chalk.green(`Found ${runs.length} runs`));
-
-      if (runs.length === 0) {
-        console.log(chalk.yellow('\nNo connector runs found'));
-        return;
+      for (const run of runs) {
+        console.log(`${run.id}  ${run.config_name}  ${this.colorizeStatus(run.status)}  ${run.records_loaded} loaded`);
       }
-
-      console.log(chalk.cyan('\n╔═══════════════════════════════════════════════════════════════════════════════════╗'));
-      console.log(chalk.cyan('║') + chalk.bold(' Run ID                Config Name          Status      Records     Duration') + chalk.cyan('║'));
-      console.log(chalk.cyan('╠═══════════════════════════════════════════════════════════════════════════════════╣'));
-
-      runs.forEach((run: any) => {
-        const id = (run.id || '').substring(0, 21).padEnd(21);
-        const configName = (run.configName || '').padEnd(20).substring(0, 20);
-        const status = this.colorizeStatus(run.status).padEnd(11);
-        const records = (run.recordsLoaded || 0).toString().padStart(7);
-        const duration = run.durationMs ? `${Math.round(run.durationMs / 1000)}s`.padStart(8) : '        ';
-
-        console.log(chalk.cyan('║') + ` ${id} ${configName} ${status} ${records}    ${duration}` + chalk.cyan('║'));
-      });
-
-      console.log(chalk.cyan('╚═══════════════════════════════════════════════════════════════════════════════════╝'));
-      console.log(chalk.gray(`\nTotal: ${runs.length} runs`));
-      console.log(chalk.gray('Run "happycmdb connector run-status <runId>" for details'));
-    } catch (error: any) {
+    } catch (error) {
       spinner.fail(chalk.red('Failed to fetch runs'));
       this.handleError(error);
     }
@@ -198,78 +186,25 @@ export class ConnectorRunCommand {
   /**
    * Get run status
    */
-  private async getRunStatus(runId: string, options: any): Promise<void> {
-    if (options.watch) {
-      await this.watchRun(runId);
-      return;
-    }
-
+  private async getRunStatus(runId: string, options: { watch?: boolean }): Promise<void> {
+    if (options.watch) return this.watchRun(runId);
     const spinner = ora('Fetching run status...').start();
-
     try {
-      const response = await axios.get(`${this.apiUrl}/connector-configs/runs/${runId}`, {
-        headers: this.getHeaders(),
-      });
-
-      const run = response.data;
+      const response = await axios.get(`${this.apiUrl}/connector-configs/runs/${runId}`, { headers: this.getHeaders() });
+      const run = runRow(response.data.data);
       spinner.succeed(chalk.green('Run status retrieved'));
-
-      console.log(chalk.cyan('\n╔════════════════════════════════════════╗'));
-      console.log(chalk.cyan('║') + chalk.bold('  Connector Run Details               ') + chalk.cyan('║'));
-      console.log(chalk.cyan('╚════════════════════════════════════════╝\n'));
-
-      console.log(chalk.cyan('Basic Information:'));
-      console.log(`  Run ID: ${chalk.bold(run.id)}`);
-      console.log(`  Configuration: ${chalk.bold(run.configName)}`);
-      console.log(`  Connector Type: ${run.connectorType}`);
+      console.log(`  Run ID: ${run.id}`);
+      console.log(`  Configuration: ${run.config_name}`);
+      console.log(`  Connector Type: ${run.connector_type}`);
       console.log(`  Status: ${this.colorizeStatus(run.status)}`);
-
-      if (run.resourceId) {
-        console.log(`  Resource: ${run.resourceId}`);
-      }
-
-      console.log(chalk.cyan('\nTiming:'));
-      console.log(`  Started: ${new Date(run.startedAt).toLocaleString()}`);
-      if (run.completedAt) {
-        console.log(`  Completed: ${new Date(run.completedAt).toLocaleString()}`);
-        console.log(`  Duration: ${Math.round(run.durationMs / 1000)}s`);
-      } else {
-        const elapsed = Date.now() - new Date(run.startedAt).getTime();
-        console.log(`  Elapsed: ${Math.round(elapsed / 1000)}s`);
-      }
-
-      console.log(chalk.cyan('\nRecords:'));
-      console.log(`  Extracted: ${chalk.bold(run.recordsExtracted || 0)}`);
-      console.log(`  Transformed: ${chalk.bold(run.recordsTransformed || 0)}`);
-      console.log(`  Loaded: ${chalk.bold.green(run.recordsLoaded || 0)}`);
-      if (run.recordsFailed > 0) {
-        console.log(`  Failed: ${chalk.bold.red(run.recordsFailed)}`);
-      }
-
-      console.log(chalk.cyan('\nExecution:'));
-      console.log(`  Triggered By: ${run.triggeredBy}`);
-      if (run.triggeredByUser) {
-        console.log(`  User: ${run.triggeredByUser}`);
-      }
-      if (run.jobId) {
-        console.log(`  Job ID: ${run.jobId}`);
-      }
-
-      if (run.errorMessage) {
-        console.log(chalk.cyan('\nError:'));
-        console.log(chalk.red(`  ${run.errorMessage}`));
-      }
-
-      if (run.errors && run.errors.length > 0) {
-        console.log(chalk.cyan('\nErrors:'));
-        run.errors.slice(0, 5).forEach((error: any) => {
-          console.log(chalk.red(`  - ${typeof error === 'string' ? error : error.message}`));
-        });
-        if (run.errors.length > 5) {
-          console.log(chalk.gray(`  ... and ${run.errors.length - 5} more errors`));
-        }
-      }
-    } catch (error: any) {
+      console.log(`  Started: ${run.started_at}`);
+      if (run.completed_at) console.log(`  Completed: ${run.completed_at}`);
+      console.log(`  Extracted: ${run.records_extracted}`);
+      console.log(`  Transformed: ${run.records_transformed}`);
+      console.log(`  Loaded: ${run.records_loaded}`);
+      console.log(`  Failed: ${run.records_failed}`);
+      console.log(`  Triggered By: ${run.triggered_by}`);
+    } catch (error) {
       spinner.fail(chalk.red('Failed to fetch run status'));
       this.handleError(error);
     }
@@ -290,13 +225,13 @@ export class ConnectorRunCommand {
           headers: this.getHeaders(),
         });
 
-        const run = response.data;
+        const run = runRow(response.data.data);
 
         // Only update display if status changed
         if (run.status !== previousStatus) {
           const timestamp = new Date().toLocaleTimeString();
           console.log(
-            `[${timestamp}] Status: ${this.colorizeStatus(run.status)} | Records: ${run.recordsLoaded || 0} loaded`
+            `[${timestamp}] Status: ${this.colorizeStatus(run.status)} | Records: ${run.records_loaded} loaded`
           );
           previousStatus = run.status;
         }
@@ -308,13 +243,8 @@ export class ConnectorRunCommand {
           console.log(chalk.cyan('  Run finished'));
           console.log(chalk.cyan('════════════════════════════════════'));
           console.log(`  Status: ${this.colorizeStatus(run.status)}`);
-          console.log(`  Records Loaded: ${chalk.bold(run.recordsLoaded || 0)}`);
-          if (run.durationMs) {
-            console.log(`  Duration: ${Math.round(run.durationMs / 1000)}s`);
-          }
-          if (run.errorMessage) {
-            console.log(chalk.red(`  Error: ${run.errorMessage}`));
-          }
+          console.log(`  Records Loaded: ${chalk.bold(run.records_loaded)}`);
+          if (run.duration_ms) console.log(`  Duration: ${Math.round(run.duration_ms / 1000)}s`);
         }
       } catch (error: any) {
         clearInterval(intervalId);
@@ -339,10 +269,10 @@ export class ConnectorRunCommand {
           headers: this.getHeaders(),
         });
 
-        const run = response.data;
+        const run = runRow(response.data.data);
 
         // Update spinner text
-        spinner.text = `Running... (${run.recordsLoaded || 0} records loaded)`;
+        spinner.text = `Running... (${run.records_loaded} records loaded)`;
 
         // Check timeout
         const elapsed = (Date.now() - startTime) / 1000;
@@ -358,14 +288,12 @@ export class ConnectorRunCommand {
           clearInterval(checkInterval);
           spinner.succeed(chalk.green('Run completed successfully!'));
           console.log(chalk.cyan('\nResults:'));
-          console.log(`  Records Loaded: ${chalk.bold.green(run.recordsLoaded || 0)}`);
-          console.log(`  Duration: ${Math.round(run.durationMs / 1000)}s`);
+          console.log(`  Records Loaded: ${chalk.bold.green(run.records_loaded)}`);
+          console.log(`  Duration: ${Math.round((run.duration_ms ?? 0) / 1000)}s`);
         } else if (run.status === 'failed') {
           clearInterval(checkInterval);
           spinner.fail(chalk.red('Run failed'));
-          if (run.errorMessage) {
-            console.error(chalk.red(`  Error: ${run.errorMessage}`));
-          }
+          // Run failures expose status only; raw errors are not public data.
         } else if (run.status === 'cancelled') {
           clearInterval(checkInterval);
           spinner.warn(chalk.yellow('Run was cancelled'));
@@ -401,18 +329,11 @@ export class ConnectorRunCommand {
     const spinner = ora('Fetching metrics...').start();
 
     try {
-      // Find config by name
-      const findResponse = await axios.get(`${this.apiUrl}/connector-configs`, {
-        params: { name },
-        headers: this.getHeaders(),
-      });
-
-      if (findResponse.data.length === 0) {
-        spinner.fail(chalk.red(`Configuration "${name}" not found`));
-        process.exit(1);
+      const configId = await this.configIdByName(name);
+      if (!configId) {
+        spinner.fail(chalk.red('Configuration not found'));
+        return;
       }
-
-      const configId = findResponse.data[0].id;
 
       const endpoint = options.resource
         ? `${this.apiUrl}/connector-configs/${configId}/resources/${options.resource}/metrics`
@@ -422,39 +343,18 @@ export class ConnectorRunCommand {
         headers: this.getHeaders(),
       });
 
-      const metrics = response.data;
+      const payload: unknown = response.data.data;
+      if (!payload || typeof payload !== 'object') throw new Error('Unexpected metrics response');
+      const metrics = payload as Record<string, unknown>;
+      const number = (key: string) => typeof metrics[key] === 'number' ? metrics[key] as number : 0;
       spinner.succeed(chalk.green('Metrics retrieved'));
-
-      console.log(chalk.cyan('\n╔═══════════════════════════════════════╗'));
-      console.log(chalk.cyan('║') + chalk.bold('  Connector Metrics                  ') + chalk.cyan('║'));
-      console.log(chalk.cyan('╚═══════════════════════════════════════╝\n'));
-
-      console.log(chalk.cyan('Overall Statistics:'));
-      console.log(`  Total Runs: ${chalk.bold(metrics.totalRuns || 0)}`);
-      console.log(`  Successful: ${chalk.bold.green(metrics.successfulRuns || 0)}`);
-      console.log(`  Failed: ${chalk.bold.red(metrics.failedRuns || 0)}`);
-      console.log(`  Success Rate: ${chalk.bold((metrics.successRate || 0).toFixed(1))}%`);
-
-      if (metrics.avgDurationMs) {
-        console.log(`  Avg Duration: ${Math.round(metrics.avgDurationMs / 1000)}s`);
-      }
-
-      if (metrics.totalRecordsProcessed) {
-        console.log(`  Total Records: ${chalk.bold(metrics.totalRecordsProcessed)}`);
-      }
-
-      if (metrics.resourceMetrics && metrics.resourceMetrics.length > 0) {
-        console.log(chalk.cyan('\nResource Metrics:'));
-        metrics.resourceMetrics.forEach((resource: any) => {
-          console.log(`\n  ${chalk.bold(resource.resourceId)}:`);
-          console.log(`    Records Extracted: ${resource.totalRecordsExtracted || 0}`);
-          console.log(`    Records Loaded: ${resource.totalRecordsLoaded || 0}`);
-          console.log(`    Success Rate: ${(resource.successRate || 0).toFixed(1)}%`);
-          if (resource.avgExtractionTimeMs) {
-            console.log(`    Avg Extraction Time: ${Math.round(resource.avgExtractionTimeMs)}ms`);
-          }
-        });
-      }
+      console.log(`  Total Runs: ${number('total_runs')}`);
+      console.log(`  Successful: ${number('successful_runs')}`);
+      console.log(`  Failed: ${number('failed_runs')}`);
+      console.log(`  Success Rate: ${number('success_rate')}%`);
+      console.log(`  Avg Duration: ${Math.round(number('avg_duration_ms') / 1000)}s`);
+      console.log(`  Records Extracted: ${number('total_records_extracted')}`);
+      console.log(`  Records Loaded: ${number('total_records_loaded')}`);
     } catch (error: any) {
       spinner.fail(chalk.red('Failed to fetch metrics'));
       this.handleError(error);
@@ -479,7 +379,7 @@ export class ConnectorRunCommand {
       case 'cancelled':
         return chalk.gray('CANCELLED');
       default:
-        return status.toUpperCase();
+        return chalk.gray('UNKNOWN');
     }
   }
 
@@ -501,15 +401,13 @@ export class ConnectorRunCommand {
   /**
    * Handle API errors
    */
-  private handleError(error: any): void {
-    if (error.response) {
-      console.error(chalk.red(`  Error: ${error.response.data.message || error.response.statusText}`));
-      console.error(chalk.red(`  Status: ${error.response.status}`));
-    } else if (error.request) {
-      console.error(chalk.red('  Error: No response from server'));
-    } else {
-      console.error(chalk.red(`  Error: ${error.message}`));
+  private handleError(error: unknown): void {
+    const status = axios.isAxiosError(error) ? error.response?.status : undefined;
+    const message = axios.isAxiosError(error) ? error.response?.data?.error : undefined;
+    if (status === 409 && message === 'Connector credential reference unavailable') {
+      console.error(chalk.red('  Connector credential reference unavailable'));
+      return;
     }
-    process.exit(1);
+    console.error(chalk.red(status === 404 ? '  Not found' : '  Connector request failed'));
   }
 }

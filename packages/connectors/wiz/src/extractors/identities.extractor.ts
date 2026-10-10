@@ -30,11 +30,7 @@ export async function extractIdentities(
                        config.connection['identities']?.identity_types ||
                        ['USER', 'SERVICE_ACCOUNT', 'ROLE'];
 
-  logger.info('Extracting Wiz cloud identities', {
-    cloudProviders,
-    identityTypes,
-    maxResults,
-  });
+  logger.info('Extracting Wiz cloud identities');
 
   const query = `
     query GetIdentities($first: Int!, $after: String, $filters: IdentityFilters) {
@@ -79,12 +75,7 @@ export async function extractIdentities(
         },
       });
 
-      if (response.data.errors) {
-        logger.error('Wiz GraphQL query failed', {
-          errors: response.data.errors,
-        });
-        break;
-      }
+      if (response.data.errors) { throw new Error('Wiz GraphQL query failed'); }
 
       const nodes = response.data.data?.graphSearch?.nodes || [];
       const pageInfo = response.data.data?.graphSearch?.pageInfo;
@@ -115,8 +106,8 @@ export async function extractIdentities(
       }
 
     } catch (error) {
-      logger.error('Wiz cloud identity extraction failed', { error });
-      throw error;
+      logger.error('Wiz cloud identity extraction failed');
+      throw new Error('Connector extraction failed');
     }
   }
 

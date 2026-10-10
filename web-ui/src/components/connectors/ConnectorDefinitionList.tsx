@@ -3,7 +3,7 @@
 
 import React, { useState, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { connectorsApi } from '../../api/connectors';
+import { connectorRunErrorMessage, connectorsApi } from '../../api/connectors';
 import { Button } from '../ui/button';
 import { LiquidGlass } from '../ui/liquid-glass';
 import { Icon } from '@happy-technologies/design-system';
@@ -125,12 +125,12 @@ export const ConnectorDefinitionList: React.FC = () => {
   const isLoading = loadingInstalled || loadingConfigs;
 
   const runMutation = useMutation({
-    mutationFn: (connectorName: string) => connectorsApi.run(connectorName),
+    mutationFn: (configId: string) => connectorsApi.run(configId),
     onSuccess: () => {
       toast.success('Connector started successfully');
       queryClient.invalidateQueries({ queryKey: ['connectors'] });
     },
-    onError: () => toast.error('Failed to start connector'),
+    onError: (error) => toast.error(connectorRunErrorMessage(error)),
   });
 
   const deleteMutation = useMutation({
@@ -334,7 +334,7 @@ export const ConnectorDefinitionList: React.FC = () => {
                     <TableCell className="px-4 py-3 text-right">
                       <div className="flex justify-end gap-1">
                         <button
-                          onClick={() => runMutation.mutate(connector.name)}
+                          onClick={() => runMutation.mutate(connector.id)}
                           className="p-1.5 hover:bg-primary/10 rounded transition-colors"
                           title="Run Now"
                         >
@@ -493,11 +493,24 @@ export const ConnectorDefinitionList: React.FC = () => {
         <ConnectorConfigModal
           template={configuring}
           onClose={() => setConfiguring(null)}
-          onDeploy={(config) => {
-            console.log('Deploying connector:', config);
-            toast.success(`${configuring.name} connector deployed!`);
-            setConfiguring(null);
-            queryClient.invalidateQueries({ queryKey: ['connectors'] });
+          onDeploy={async (config) => {
+            try {
+              await connectorsApi.create({
+                name: config.name,
+                connector_type: config.type,
+                enabled: config.enabled,
+                schedule: config.schedule.cron_expression,
+                schedule_enabled: config.schedule.enabled,
+                connection: config.connection,
+                enabled_resources: config.enabled_resources,
+                resource_configs: config.field_mappings,
+              });
+              toast.success(`${configuring.name} connector deployed!`);
+              setConfiguring(null);
+              queryClient.invalidateQueries({ queryKey: ['connectors'] });
+            } catch {
+              toast.error('Failed to deploy connector');
+            }
           }}
         />
       )}

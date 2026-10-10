@@ -61,10 +61,7 @@ export default class ServiceNowConnector extends BaseIntegrationConnector {
   }
 
   async initialize(): Promise<void> {
-    logger.info('Initializing ServiceNow connector', {
-      instance: this.instanceUrl,
-      enabled_resources: this.getEnabledResources(),
-    });
+    logger.info('Initializing ServiceNow connector');
     this.isInitialized = true;
   }
 
@@ -85,14 +82,7 @@ export default class ServiceNowConnector extends BaseIntegrationConnector {
         },
       };
     } catch (error: any) {
-      return {
-        success: false,
-        message: `Connection failed: ${error.message}`,
-        details: {
-          instance: this.instanceUrl,
-          error: error.response?.data || error.message,
-        },
-      };
+      return { success: false, message: 'Connection failed' };
     }
   }
 
@@ -126,12 +116,7 @@ export default class ServiceNowConnector extends BaseIntegrationConnector {
     let offset = 0;
     let hasMore = true;
 
-    logger.info('Starting ServiceNow resource extraction', {
-      resource: resourceId,
-      table,
-      query,
-      batch_size: batchSize
-    });
+    logger.info('Starting ServiceNow resource extraction');
 
     while (hasMore) {
       try {
@@ -167,21 +152,12 @@ export default class ServiceNowConnector extends BaseIntegrationConnector {
         offset += batchSize;
 
       } catch (error) {
-        logger.error('ServiceNow resource extraction failed', {
-          resource: resourceId,
-          table,
-          offset,
-          error
-        });
-        throw error;
+        logger.error('ServiceNow resource extraction failed');
+        throw new Error('Connector extraction failed');
       }
     }
 
-    logger.info('ServiceNow resource extraction completed', {
-      resource: resourceId,
-      table,
-      total_records: extractedData.length,
-    });
+    logger.info('ServiceNow resource extraction completed');
 
     return extractedData;
   }
@@ -214,7 +190,7 @@ export default class ServiceNowConnector extends BaseIntegrationConnector {
       });
 
     } catch (error) {
-      logger.error('ServiceNow relationship extraction failed', { error });
+      logger.error('ServiceNow relationship extraction failed');
       // Don't throw - relationships are optional
     }
 

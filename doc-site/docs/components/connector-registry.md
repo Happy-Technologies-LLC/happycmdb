@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Connector Registry is a self-hosted catalog of available connectors that can be browsed, installed, and updated through the HappyCMDB platform. It provides a marketplace-like experience for discovering and managing integration connectors.
+The Connector Registry is a browsable catalog of connector templates. The application cannot install, update, verify or remove globally shared connector code. Deployment packaging/file placement outside the application is the only supported operator installation path until a separately reviewed P-6 change.
 
 ## Architecture
 
@@ -10,7 +10,7 @@ The registry consists of three components:
 
 1. **Remote Catalog** - GitHub repository hosting connector packages and metadata
 2. **Local Cache** - PostgreSQL cache of available connectors
-3. **Management API** - REST/GraphQL endpoints for browsing and installation
+3. **Management API** - Authenticated REST/GraphQL endpoints for browsing; shared lifecycle mutations return a fixed refusal.
 
 ## Remote Catalog Structure
 
@@ -154,7 +154,7 @@ CREATE INDEX idx_registry_cache_tags ON connector_registry_cache USING gin(tags)
 - Downloads count
 - Star rating
 - Tags
-- Install button
+- Installed/available-for-deployment status (no application install control)
 - "Verified" badge if applicable
 
 ### REST API
@@ -275,196 +275,24 @@ happycmdb connector list --category discovery
 happycmdb connector list --verified
 ```
 
-## Installing Connectors
+## Connector code lifecycle
 
-### Installation Flow
+Browse connector templates through the catalog, authenticated read APIs or
+`happycmdb connector list`. Deployment operators package and place connector
+code **outside** the running application. The repository no longer ships an
+installer library, CLI installation command, or web installation wizard.
+External callers previously importing `ConnectorInstaller`, `getConnectorInstaller`
+or `DownloadOptions` must stop using those removed exports and deep imports.
+No compatibility alias remains.
 
-1. **Browse Catalog** - User finds desired connector
-2. **Select Version** - Choose version to install (latest by default)
-3. **Download Package** - Fetch `.tgz` from GitHub releases
-4. **Verify Checksum** - Ensure package integrity
-5. **Extract Package** - Unpack to connectors directory
-6. **Install Dependencies** - Run `npm install` in connector directory
-7. **Validate Metadata** - Parse and validate `connector.json`
-8. **Register Connector** - Add to `installed_connectors` table
-9. **Load Capabilities** - Store resources and configuration schema
-
-### Web UI
-
-**Install Modal**:
-1. Select connector
-2. Choose version (dropdown with available versions)
-3. Review connector details (description, size, dependencies)
-4. Click "Install"
-5. Progress indicator during installation
-6. Success message with "Configure" button
-
-### REST API
-
-**Install Connector**
-
-```bash
-POST /api/v1/connectors/install
-
-Body:
-{
-  "connector_type": "servicenow",
-  "version": "2.0.0"  // Optional, defaults to latest
-}
-```
-
-**Response**:
-```json
-{
-  "success": true,
-  "data": {
-    "id": "uuid-123-abc",
-    "connector_type": "servicenow",
-    "installed_version": "2.0.0",
-    "installed_at": "2025-10-10T12:00:00Z",
-    "status": "installed"
-  }
-}
-```
-
-### CLI
-
-```bash
-# Install latest version
-happycmdb connector install servicenow
-
-# Install specific version
-happycmdb connector install servicenow@1.5.0
-
-# Force reinstall
-happycmdb connector install servicenow --force
-
-# Install from local file
-happycmdb connector install --file ./servicenow-2.0.0.tgz
-```
-
-## Updating Connectors
-
-### Check for Updates
-
-**Endpoint**: `GET /api/v1/connectors/updates`
-
-**Response**:
-```json
-{
-  "success": true,
-  "data": {
-    "updates_available": [
-      {
-        "connector_type": "servicenow",
-        "current_version": "1.5.0",
-        "latest_version": "2.0.0",
-        "breaking_changes": true,
-        "changelog": "Added support for custom CI types"
-      }
-    ],
-    "up_to_date": [
-      {
-        "connector_type": "aws-discovery",
-        "version": "3.1.0"
-      }
-    ]
-  }
-}
-```
-
-### Update Connector
-
-**Endpoint**: `PUT /api/v1/connectors/:type/update`
-
-**Request Body**:
-```json
-{
-  "version": "2.0.0"  // Optional, defaults to latest
-}
-```
-
-**Response**:
-```json
-{
-  "success": true,
-  "data": {
-    "connector_type": "servicenow",
-    "previous_version": "1.5.0",
-    "new_version": "2.0.0",
-    "updated_at": "2025-10-10T12:30:00Z",
-    "breaking_changes": true
-  }
-}
-```
-
-### CLI
-
-```bash
-# Check for updates
-happycmdb connector outdated
-
-# Update specific connector
-happycmdb connector update servicenow
-
-# Update all connectors
-happycmdb connector update --all
-
-# Update to specific version
-happycmdb connector update servicenow --version 2.0.0
-```
-
-## Uninstalling Connectors
-
-### Safety Checks
-
-Before uninstalling, the system checks:
-1. **Active configurations** - Are any connector configs using this?
-2. **Running jobs** - Are any jobs currently executing?
-3. **Dependencies** - Do other connectors depend on this?
-
-If any checks fail, uninstall is blocked with a detailed error message.
-
-### Uninstall Flow
-
-1. **Pre-check** - Verify no active configurations or jobs
-2. **Disable Configs** - Mark all configurations as disabled
-3. **Remove Files** - Delete connector directory
-4. **Update Database** - Remove from `installed_connectors`
-5. **Cleanup Dependencies** - Remove unused npm packages
-
-### REST API
-
-**Uninstall Connector**
-
-```bash
-DELETE /api/v1/connectors/:type
-
-Query Parameters:
-  - force: boolean (skip safety checks, dangerous!)
-```
-
-**Response**:
-```json
-{
-  "success": true,
-  "data": {
-    "connector_type": "servicenow",
-    "uninstalled": true,
-    "message": "Connector uninstalled successfully"
-  }
-}
-```
-
-### CLI
-
-```bash
-# Uninstall connector
-happycmdb connector uninstall servicenow
-
-# Force uninstall (skip checks)
-happycmdb connector uninstall servicenow --force
-```
+Authenticated REST `/connectors/install`, `PUT /connectors/:type/update`,
+`DELETE /connectors/:type`, `/connectors/:type/verify`, and
+`/connectors/cache/refresh` always return HTTP 503 with
+`CONNECTOR_LIFECYCLE_UNAVAILABLE`; GraphQL lifecycle mutations return the same
+fixed error code. No tenant, seeded internal admin or verified platform operator
+can perform runtime global connector changes. A separate P-6 review is required
+before any runtime installation support is restored. `GET /connectors/outdated`
+remains available for read-only version comparison.
 
 ## Connector Verification
 
@@ -487,26 +315,12 @@ Connectors can be marked as "verified" by the HappyCMDB team, indicating:
 6. **Approval** - Mark as verified in `catalog.json`
 7. **Publish** - Release to registry with verified badge
 
-## Cache Management
+## Cache management
 
-### Refresh Cache
-
-The registry cache is automatically refreshed every 24 hours. Manual refresh:
-
-```bash
-# API
-POST /api/v1/connectors/registry/refresh
-
-# CLI
-happycmdb connector cache refresh
-```
-
-### Clear Cache
-
-```bash
-# CLI
-happycmdb connector cache clear
-```
+Shared registry refresh is unavailable at runtime. Authenticated
+`POST /api/v1/connectors/cache/refresh` returns HTTP 503 with
+`CONNECTOR_LIFECYCLE_UNAVAILABLE`; deployment operations own any catalog
+refresh outside the application.
 
 ## Private Registries
 
@@ -558,27 +372,12 @@ LIMIT 10;
 
 ## Security Considerations
 
-### Checksum Verification
+### Package integrity
 
-All downloaded packages are verified against published checksums:
-
-```typescript
-async function installConnector(type: string, version: string) {
-  const metadata = await registry.getConnectorMetadata(type, version);
-  const packagePath = await downloader.download(metadata.download_url);
-
-  // Compute SHA256 checksum
-  const actualChecksum = await computeSHA256(packagePath);
-
-  // Verify against published checksum
-  if (actualChecksum !== metadata.checksum) {
-    throw new Error('Checksum mismatch - package may be compromised');
-  }
-
-  // Proceed with installation
-  await installer.install(packagePath);
-}
-```
+The application no longer downloads or verifies connector packages. Deployment
+operators must verify package integrity before placing code outside the running
+application; catalog entries and their published checksums are not an
+application installation capability.
 
 ### Code Signing (Future Enhancement)
 
@@ -589,35 +388,16 @@ Planned for future releases:
 
 ## Troubleshooting
 
-### Installation Fails with Checksum Error
+### Connector code is not available
 
-**Problem**: Connector download fails checksum verification
+Check deployment packaging and file placement outside the application, then
+verify the expected installed connector metadata is visible through the
+authenticated read APIs. The API, CLI and web UI cannot install or repair code.
 
-**Solutions**:
-1. Retry download (may be corrupted)
-2. Check network connectivity
-3. Verify catalog cache is up-to-date
-4. Report to HappyCMDB team if persistent
+### Catalog entry is missing
 
-### Connector Not Appearing in Catalog
-
-**Problem**: Recently published connector not visible
-
-**Solutions**:
-1. Refresh registry cache
-2. Wait for 24-hour cache expiration
-3. Check if connector is in `catalog.json` on GitHub
-4. Verify catalog URL in configuration
-
-### Update Fails with Dependency Error
-
-**Problem**: Connector update fails due to npm dependency conflict
-
-**Solutions**:
-1. Check compatibility requirements
-2. Update Node.js version if needed
-3. Clear npm cache: `npm cache clean --force`
-4. Retry installation
+Check the externally provided catalog and deployment cache. Runtime cache
+refresh is unavailable; no HTTP caller can force a shared registry mutation.
 
 ## Best Practices
 

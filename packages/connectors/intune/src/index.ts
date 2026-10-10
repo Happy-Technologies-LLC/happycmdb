@@ -75,10 +75,7 @@ export default class IntuneConnector extends BaseIntegrationConnector {
   }
 
   async initialize(): Promise<void> {
-    logger.info('Initializing Intune connector', {
-      tenant_id: this.tenantId,
-      enabled_resources: this.getEnabledResources(),
-    });
+    logger.info('Initializing Intune connector');
 
     // Get initial access token
     await this.getAccessToken();
@@ -115,16 +112,12 @@ export default class IntuneConnector extends BaseIntegrationConnector {
       // Set expiry to 5 minutes before actual expiry
       this.tokenExpiry = new Date(Date.now() + (response.data.expires_in - 300) * 1000);
 
-      logger.info('Intune access token obtained', {
-        expires_in: response.data.expires_in,
-      });
+      logger.info('Intune access token obtained');
 
       return this.accessToken;
     } catch (error: any) {
-      logger.error('Failed to obtain Intune access token', {
-        error: error.response?.data || error.message,
-      });
-      throw new Error(`OAuth authentication failed: ${error.message}`);
+      logger.error('Failed to obtain Intune access token');
+      throw new Error('OAuth authentication failed');
     }
   }
 
@@ -143,14 +136,7 @@ export default class IntuneConnector extends BaseIntegrationConnector {
         },
       };
     } catch (error: any) {
-      return {
-        success: false,
-        message: `Connection failed: ${error.message}`,
-        details: {
-          tenant_id: this.tenantId,
-          error: error.response?.data || error.message,
-        },
-      };
+      return { success: false, message: 'Connection failed' };
     }
   }
 
@@ -166,10 +152,7 @@ export default class IntuneConnector extends BaseIntegrationConnector {
       throw new Error(`Unknown resource: ${resourceId}`);
     }
 
-    logger.info('Starting Intune resource extraction', {
-      resource: resourceId,
-      config: resourceConfig,
-    });
+    logger.info('Starting Intune resource extraction');
 
     switch (resourceId) {
       case 'devices':
@@ -364,20 +347,11 @@ export default class IntuneConnector extends BaseIntegrationConnector {
           url = url.substring('https://graph.microsoft.com/v1.0'.length);
         }
 
-        logger.debug('Extracted batch from Intune', {
-          source_type: sourceType,
-          batch_size: records.length,
-          total_extracted: extractedData.length,
-          has_more: !!url,
-        });
+        logger.debug('Extracted batch from Intune');
 
       } catch (error: any) {
-        logger.error('Intune resource extraction failed', {
-          source_type: sourceType,
-          url,
-          error: error.response?.data || error.message,
-        });
-        throw error;
+        logger.error('Intune resource extraction failed');
+        throw new Error('Connector extraction failed');
       }
     }
   }
@@ -427,10 +401,7 @@ export default class IntuneConnector extends BaseIntegrationConnector {
             });
           }
         } catch (error: any) {
-          logger.warn('Failed to get detected apps for device', {
-            device_id: device.id,
-            error: error.message,
-          });
+          logger.warn('Failed to get detected apps for device');
         }
       }
 
@@ -482,9 +453,7 @@ export default class IntuneConnector extends BaseIntegrationConnector {
       });
 
     } catch (error: any) {
-      logger.error('Intune relationship extraction failed', {
-        error: error.response?.data || error.message
-      });
+      logger.error('Intune relationship extraction failed');
       // Don't throw - relationships are optional
     }
 

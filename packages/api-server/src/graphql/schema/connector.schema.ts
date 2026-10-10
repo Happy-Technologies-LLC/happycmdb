@@ -166,6 +166,8 @@ export const connectorTypeDefs = `
   type ConnectorConfiguration {
     """Configuration ID"""
     id: ID!
+    """Owning organization"""
+    organizationId: ID
     """Configuration name"""
     name: String!
     """Description"""
@@ -178,22 +180,14 @@ export const connectorTypeDefs = `
     schedule: String
     """Schedule enabled"""
     scheduleEnabled: Boolean!
-    """Connection credentials"""
-    connection: JSON!
-    """Global options"""
-    options: JSON!
     """Enabled resources"""
     enabledResources: [String!]
-    """Resource-specific configurations"""
-    resourceConfigs: JSON!
     """Max retry attempts"""
     maxRetries: Int!
     """Retry delay in seconds"""
     retryDelaySeconds: Int!
     """Continue on error"""
     continueOnError: Boolean!
-    """Notification channels"""
-    notificationChannels: [String!]!
     """Notify on success"""
     notificationOnSuccess: Boolean!
     """Notify on failure"""
@@ -204,6 +198,8 @@ export const connectorTypeDefs = `
     updatedAt: DateTime!
     """Created by user"""
     createdBy: String
+    """Updated by user"""
+    updatedBy: String
 
     # Relationships
     """Associated connector"""
@@ -220,6 +216,8 @@ export const connectorTypeDefs = `
   type ConnectorRun {
     """Run ID"""
     id: ID!
+    """Owning organization"""
+    organizationId: ID
     """Configuration ID"""
     configId: ID!
     """Connector type"""
@@ -244,16 +242,8 @@ export const connectorTypeDefs = `
     recordsFailed: Int!
     """Duration in milliseconds"""
     durationMs: Int
-    """Error details"""
-    errors: [JSON!]!
-    """Error message"""
-    errorMessage: String
     """Triggered by (manual/schedule/api/cli)"""
     triggeredBy: String!
-    """User who triggered"""
-    triggeredByUser: String
-    """BullMQ job ID"""
-    jobId: String
   }
 
   """
@@ -530,19 +520,19 @@ export const connectorTypeDefs = `
   # ============================================
 
   extend type Mutation {
-    """Install connector from registry"""
+    """Unavailable until the separate global connector lifecycle review; always refuses."""
     installConnector(
       connectorType: String!
       version: String
     ): InstallConnectorResult!
 
-    """Update connector to newer version"""
+    """Unavailable until the separate global connector lifecycle review; always refuses."""
     updateConnector(
       connectorType: String!
       version: String
     ): UpdateConnectorResult!
 
-    """Uninstall connector"""
+    """Unavailable until the separate global connector lifecycle review; always refuses."""
     uninstallConnector(
       connectorType: String!
     ): UninstallConnectorResult!

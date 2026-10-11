@@ -127,12 +127,16 @@ test('mounted definitions isolate two users and orgs, reject legacy and credenti
     }
   }
   const attached = await request(app).post(url).set(headers('a')).send({
-    name: 'owned-ssh', provider: 'ssh', method: 'agentless', credential_id: CRED_A,
+    name: 'owned-ssh', provider: 'ssh', method: 'agentless', credential_id: CRED_A, schedule: '0 * * * *',
   });
   expect(attached.status).toBe(201);
   const queueBefore = queue.add.mock.calls.length;
   const unavailable = await request(app).post(`${url}/${attached.body.data.id}/run`).set(headers('a'));
   expect(unavailable.status).toBe(409);
+  expect(queue.add).toHaveBeenCalledTimes(queueBefore);
+  const unavailableSchedule = await request(app).post(`${url}/${attached.body.data.id}/schedule/enable`).set(headers('a'));
+  expect(unavailableSchedule.status).toBe(409);
+  expect(unavailableSchedule.body).toEqual(unavailable.body);
   expect(queue.add).toHaveBeenCalledTimes(queueBefore);
   await query('UPDATE credentials SET organization_id = $1 WHERE id = $2', [ORG_B, CRED_A]);
   const staleAttachment = await request(app).put(`${url}/${attached.body.data.id}`).set(headers('a'))
@@ -140,9 +144,8 @@ test('mounted definitions isolate two users and orgs, reject legacy and credenti
   expect(staleAttachment.status).toBe(404);
   expect(staleAttachment.body).toEqual({ success: false, error: 'Not Found', message: 'Credential not found' });
   const reassigned = await request(app).post(`${url}/${attached.body.data.id}/run`).set(headers('a'));
-  expect({ status: reassigned.status, body: reassigned.body }).toEqual({
-    status: 404, body: { success: false, error: 'Not Found', message: 'Credential not found' },
-  });
+  expect(reassigned.status).toBe(409);
+  expect(reassigned.body).toEqual(unavailable.body);
   expect(queue.add).toHaveBeenCalledTimes(queueBefore);
   const run = await request(app).post(`${url}/${idA}/run`).set(headers('a'));
   expect(run.status).toBe(202);

@@ -389,28 +389,21 @@ export class DiscoveryDefinitionService {
       if (definitionResult.rows.length === 0) {
         throw new Error(`Discovery definition ${id} not found`);
       }
+      // Approved T1a fail-closed boundary: HP1-S5 owns credential-backed runs.
+      // Do not resolve credentials, enqueue, or change last-run state here.
+      if (definitionResult.rows[0].credential_id || definitionResult.rows[0].credential_set_id) {
+        throw new Error('Credential-backed discovery execution is unavailable');
+      }
 
       const definition = this.mapRowToDefinition(definitionResult.rows[0]);
 
       if (!definition.is_active) {
         throw new Error(`Discovery definition ${id} is not active`);
       }
-      if (definitionResult.rows[0].credential_set_id) {
-        throw new Error('Credential-backed discovery execution is unavailable');
-      }
 
       // Generate job ID (removed "discovery-" prefix to match new format)
       const jobId = `${definition.provider}-${Date.now()}`;
 
-      if (definition.credential_id) {
-        const credential = await client.query(
-          'SELECT id FROM credentials WHERE id = $1 AND organization_id = $2',
-          [definition.credential_id, organizationId]
-        );
-        if (!credential.rows.length) throw new Error('Credential not found');
-        // No worker-side secret retrieval contract exists; never put a secret in Redis.
-        throw new Error('Credential-backed discovery execution is unavailable');
-      }
       const config = definition.config as Record<string, unknown>;
       const targets = config['targets'];
       const jobConfig = Array.isArray(targets) && targets.every(target => typeof target === 'string')
@@ -506,6 +499,15 @@ export class DiscoveryDefinitionService {
       if (!definition) {
         throw new Error(`Discovery definition ${id} not found`);
       }
+      // Do not arm a schedule that background workers must refuse.
+      const boundSet = await this.postgresClient.query(
+        'SELECT credential_set_id FROM discovery_definitions WHERE id = $1 AND organization_id = $2',
+        [id, organizationId]
+      );
+      if (definition.credential_id || boundSet.rows[0]?.credential_set_id) {
+        throw new Error('Credential-backed discovery execution is unavailable');
+      }
+
 
       if (!definition.schedule) {
         throw new Error(

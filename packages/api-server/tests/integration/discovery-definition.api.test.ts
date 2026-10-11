@@ -39,6 +39,7 @@ describe('Discovery Definition REST API Integration Tests', () => {
       (req as express.Request & { user?: TokenPayload }).user = {
         _userId: 'test-user-123',
         _username: 'testuser',
+        _organizationId: '11111111-1111-4111-8111-111111111111',
         _role: 'operator',
         _type: 'access',
       };
@@ -113,10 +114,10 @@ describe('Discovery Definition REST API Integration Tests', () => {
       const response = await request(app)
         .post('/api/v1/discovery/definitions')
         .send(definitionData)
-        .expect(400);
+        .expect(404);
 
       expect(response.body).toHaveProperty('success', false);
-      expect(response.body.message).toContain('Credential');
+      expect(response.body.message).toBe('Credential not found');
     });
 
     it('should reject definition with missing required fields', async () => {
@@ -162,9 +163,7 @@ describe('Discovery Definition REST API Integration Tests', () => {
 
   describe('GET /api/v1/discovery/definitions - List Definitions', () => {
     it('should list all discovery definitions', async () => {
-      // Only `nmap` definitions can be created without a credential, and a
-      // credential-linked definition is rejected by the provider/protocol
-      // match, so both fixtures use `nmap`.
+      // Two nmap definitions in this tenant should both appear in its list.
       const def1: DiscoveryDefinitionInput = {
         name: 'NMAP Discovery One',
         provider: 'nmap',
@@ -386,7 +385,7 @@ describe('Discovery Definition REST API Integration Tests', () => {
           provider: 'nmap',
           method: 'agentless',
           config: {
-            networks: ['10.0.0.0/24'],
+            targets: ['192.0.2.1'],
           },
         })
         .expect(201);

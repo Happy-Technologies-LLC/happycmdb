@@ -96,9 +96,12 @@ Definitions require a verified organization claim. New definitions are owned by
 that organization; pre-existing NULL-owner definitions are inaccessible until an
 independently reviewed owner mapping exists. Foreign and missing IDs return the
 same 404. Credential IDs must belong to the same organization. Credential-backed
-execution currently returns 409: it cannot run until workers can retrieve owned
-credentials without placing them in BullMQ. Credential-free runs queue only scan
-targets and an organization stamp.
+manual runs and schedule enables return the same fixed 409 for every caller
+(including admins); they do not resolve credentials or queue jobs. Background
+definition triggers, schedules and workers also refuse credential-bound work.
+Credential-free runs queue only scan targets and an organization stamp.
+Credential-backed discovery is restored by HP1-S5 (v16 §10.2.4-10.2.6
+org-owned credential sets and run pipeline), tracked as HAP-444.
 
 
 ### Discovery Agents (`/api/v1/agents`)

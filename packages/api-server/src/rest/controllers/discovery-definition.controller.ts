@@ -302,6 +302,11 @@ export class DiscoveryDefinitionController {
     } catch (error) {
       logger.error('Error enabling schedule');
 
+      if (error instanceof Error && error.message === 'Credential-backed discovery execution is unavailable') {
+        res.status(409).json({ success: false, error: 'Credential-backed discovery execution unavailable' });
+        return;
+      }
+
       if (error instanceof Error) {
         if (error.message.includes('not found')) {
           res.status(404).json(DEFINITION_NOT_FOUND);

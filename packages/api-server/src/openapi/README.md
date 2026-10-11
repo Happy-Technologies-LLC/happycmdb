@@ -181,8 +181,14 @@ and ETL provider/type schedule updates return the same fixed 403 for every
 authenticated role until the global-operation policy exists. The web UI shows
 the global queue/schedule controls as unavailable without requesting them;
 organization-owned job lists continue to load.
-Legacy discovery job list queries at most 100 jobs per queue state per request;
-pagination beyond that bounded sample remains tracked under HAP-546.
+Legacy `GET /discovery/jobs` accepts `limit` 1–100 and non-negative `offset`;
+larger pages receive 400. Each discovery queue/state reads at most `limit`
+BullMQ jobs starting at that `offset`; this makes later windows reachable
+without scanning every preceding foreign job. Results are an owned, sorted
+sample, not a complete tenant-wide ranking. Pagination reports `count`,
+`offset`, `limit`, and `truncated: true`; it deliberately omits exact `total`.
+Under mixed states/queues or high foreign volume, pages can be incomplete or
+overlap. A tenant-exact pagination contract remains HAP-546.
 
 `cmdb jobs run:discovery nmap --config '{"targets":["192.0.2.1"]}'`
 calls the authenticated `POST /jobs/discovery/{provider}` endpoint rather than

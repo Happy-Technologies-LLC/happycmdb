@@ -54,8 +54,8 @@ const scheduleDiscoverySchema = Joi.object({
 const listJobsQuerySchema = Joi.object({
   status: schemas.jobStatus.optional(),
   provider: schemas.discoveryProvider.optional(),
-  limit: Joi.number().integer().min(1).max(1000).default(100),
-  offset: Joi.number().integer().min(0).default(0),
+  limit: Joi.number().integer().min(1).max(100).default(100),
+  offset: Joi.number().integer().min(0).max(Number.MAX_SAFE_INTEGER - 100).default(0),
 });
 
 // POST /discovery/schedule - Schedule discovery job (write: mutates discovery state)

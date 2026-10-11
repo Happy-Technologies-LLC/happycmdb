@@ -128,18 +128,17 @@ export class DiscoveryController {
       const { status, provider, limit = 100, offset = 0 } = req.query;
       const limitNum = Number(limit);
       const offsetNum = Number(offset);
-      // BullMQ returns job payloads for each state/queue. Bound every read by
-      // the requested page, even when the queue is mostly foreign-owned.
-      // Completeness beyond this bounded sample is tracked separately (HAP-546).
-      const lastIndex = Math.min(offsetNum + limitNum, 100) - 1;
+      // Each queue/state read covers only the requested window. Offset is a
+      // BullMQ queue-state position, not an exact tenant-wide rank.
+      const lastIndex = offsetNum + limitNum - 1;
       const allJobs: PublicDiscoveryJob[] = [];
       for (const queueName of discoveryQueues()) {
         const queue = queueManager.getQueue(queueName);
         const jobs = await Promise.all([
-          !status || status === 'pending' ? queue.getWaiting(0, lastIndex) : [],
-          !status || status === 'running' ? queue.getActive(0, lastIndex) : [],
-          !status || status === 'completed' ? queue.getCompleted(0, lastIndex) : [],
-          !status || status === 'failed' ? queue.getFailed(0, lastIndex) : [],
+          !status || status === 'pending' ? queue.getWaiting(offsetNum, lastIndex) : [],
+          !status || status === 'running' ? queue.getActive(offsetNum, lastIndex) : [],
+          !status || status === 'completed' ? queue.getCompleted(offsetNum, lastIndex) : [],
+          !status || status === 'failed' ? queue.getFailed(offsetNum, lastIndex) : [],
         ]);
         for (const job of jobs.flat()) {
           if (job.data?.organizationId !== organizationId || (provider && job.data.provider !== provider)) continue;
@@ -147,8 +146,9 @@ export class DiscoveryController {
         }
       }
       allJobs.sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0));
-      const page = allJobs.slice(offsetNum, offsetNum + limitNum);
-      res.json({ success: true, data: page, pagination: { total: allJobs.length, count: page.length, offset: offsetNum, limit: limitNum } });
+      const page = allJobs.slice(0, limitNum);
+      // Do not represent this bounded multi-queue sample as an exact total.
+      res.json({ success: true, data: page, pagination: { count: page.length, offset: offsetNum, limit: limitNum, truncated: true } });
     } catch (error) {
       logger.error('Error listing discovery jobs', error);
       res.status(500).json({ success: false, error: 'Failed to list discovery jobs' });

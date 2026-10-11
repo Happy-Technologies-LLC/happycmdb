@@ -22,7 +22,7 @@ const records = [
 const queue = { getJob: async (id: string) => records.find(j => j.id === id), getWaiting: async (start: number, end: number) => records.filter(j => !['failed-own', 'completed-own'].includes(j.id)).slice(start, end + 1), getActive: async () => [], getCompleted: async () => records.filter(j => j.id === 'completed-own'), getFailed: async () => records.filter(j => j.id === 'failed-own'), add };
 const emptyQueue = { ...queue, getJob: async () => undefined, getWaiting: async () => [], getCompleted: async () => [], getFailed: async () => [] };
 jest.mock('@cmdb/database', () => ({ queueManager: { getQueue: (name: string) => name === 'discovery-nmap' ? queue : emptyQueue }, QUEUE_NAMES: { _DISCOVERY_NMAP: 'discovery-nmap', _DISCOVERY_SSH: 'discovery-ssh' } }));
-jest.mock('@cmdb/common', () => ({ ...jest.requireActual('@cmdb/common'), logger: { info: jest.fn(), error: jest.fn() } }));
+jest.mock('@cmdb/common', () => ({ ...jest.requireActual('@cmdb/common'), logger: { info: jest.fn(), error: jest.fn(), warn: jest.fn() } }));
 jest.mock('../../controllers/settings.controller', () => ({ SettingsController: jest.fn(() => ({ testDiscoveryConnection: jest.fn() })) }));
 jest.mock('../../../auth/auth-bootstrap', () => {
   const { AuthMiddleware } = jest.requireActual<{ AuthMiddleware: typeof AuthMiddlewareClass }>('../../../middleware/auth.middleware');
@@ -91,6 +91,40 @@ test('small legacy list pages never load unbounded foreign jobs or call their st
     expect(JSON.stringify(response.body)).not.toContain(secret);
     expect(waiting).toHaveBeenCalledWith(0, 0);
     expect(foreignState).not.toHaveBeenCalled();
+  } finally {
+    waiting.mockRestore();
+  }
+});
+
+test('legacy bounded pages continue past 100 owned jobs without claiming an exact total', async () => {
+  const owned = Array.from({ length: 150 }, (_, index) => ({
+    ...records[0]!, id: `owned-${index}`, timestamp: index,
+  }));
+  const waiting = jest.spyOn(queue, 'getWaiting').mockImplementation(async (start, end) =>
+    owned.slice(start, end + 1));
+  try {
+    const first = await request(app).get('/api/v1/discovery/jobs?status=pending&limit=100')
+      .set('authorization', auth('viewer'));
+    expect(first.status).toBe(200);
+    expect(first.body.data).toHaveLength(100);
+    expect(waiting).toHaveBeenCalledWith(0, 99);
+
+    const second = await request(app).get('/api/v1/discovery/jobs?status=pending&offset=100&limit=50')
+      .set('authorization', auth('viewer'));
+    expect(second.status).toBe(200);
+    expect(waiting).toHaveBeenLastCalledWith(100, 149);
+    expect(second.body.data).toHaveLength(50);
+    expect(new Set(second.body.data.map((job: { id: string }) => job.id))).toEqual(
+      new Set(owned.slice(100).map((job) => job.id))
+    );
+    expect(first.body.pagination).toMatchObject({ offset: 0, limit: 100, truncated: true });
+    expect(first.body.pagination).not.toHaveProperty('total');
+    expect(second.body.pagination).toMatchObject({ offset: 100, limit: 50, truncated: true });
+    expect(second.body.pagination).not.toHaveProperty('total');
+
+    const oversized = await request(app).get('/api/v1/discovery/jobs?status=pending&limit=1000')
+      .set('authorization', auth('viewer'));
+    expect(oversized.status).toBe(400);
   } finally {
     waiting.mockRestore();
   }

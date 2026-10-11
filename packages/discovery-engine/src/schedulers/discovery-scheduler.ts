@@ -157,7 +157,7 @@ export class DiscoveryScheduler {
     const result = await pool.query(
       `SELECT id, organization_id FROM discovery_definitions
        WHERE is_active = true AND schedule IS NOT NULL AND organization_id IS NOT NULL
-         AND provider <> 'ssh'
+         AND provider = 'nmap'
          AND credential_id IS NULL AND credential_set_id IS NULL
        ORDER BY created_at ASC`
     );
@@ -165,7 +165,11 @@ export class DiscoveryScheduler {
     logger.info(`Loaded ${result.rows.length} active discovery definitions from database`);
 
     for (const row of result.rows) {
-      await this.scheduleDefinition(row.id, row.organization_id);
+      try {
+        await this.scheduleDefinition(row.id, row.organization_id);
+      } catch {
+        logger.error('Failed to schedule discovery definition', { definitionId: row.id });
+      }
     }
   }
 
@@ -464,7 +468,7 @@ export class DiscoveryScheduler {
     }
 
     const definition = this.mapRowToDefinition(result.rows[0]);
-    if (definition.provider === 'ssh') throw new Error('Credential-backed discovery execution is unavailable');
+    if (definition.provider !== 'nmap') throw new Error('Credential-backed discovery execution is unavailable');
 
     if (!definition.schedule) {
       throw new Error('Discovery definition has no schedule configured');
@@ -563,51 +567,61 @@ export class DiscoveryScheduler {
         `SELECT * FROM discovery_definitions
          WHERE is_active = true AND schedule IS NOT NULL AND organization_id IS NOT NULL
            AND credential_id IS NULL AND credential_set_id IS NULL
-           AND provider <> 'ssh'
+           AND provider = 'nmap'
          ORDER BY created_at ASC`
       );
 
-      const currentDefinitions = new Map<string, DiscoveryDefinition>();
+      const currentDefinitions = new Map<string, { definition: DiscoveryDefinition; organizationId: string }>();
       for (const row of result.rows) {
-        const definition = this.mapRowToDefinition(row);
-        currentDefinitions.set(definition.id, definition);
+        try {
+          const definition = this.mapRowToDefinition(row);
+          safeDiscoveryScanConfig(definition.config);
+          currentDefinitions.set(definition.id, { definition, organizationId: row.organization_id });
+        } catch {
+          logger.error('Skipping invalid discovery definition', { definitionId: row.id });
+        }
       }
 
-      // Find definitions to add (in DB but not scheduled)
-      const toAdd: string[] = [];
-      for (const [id, definition] of currentDefinitions.entries()) {
+      // A broken row must not prevent other organizations' schedules from reconciling.
+      const toAdd: Array<{ id: string; organizationId: string }> = [];
+      for (const [id, { definition, organizationId }] of currentDefinitions.entries()) {
         const mapping = this.definitionMappings.get(id);
         if (!mapping) {
-          toAdd.push(id);
+          toAdd.push({ id, organizationId });
         } else if (mapping.cronPattern !== definition.schedule) {
-          // Schedule changed, need to reschedule
-          await this.unscheduleDefinition(id);
-          toAdd.push(id);
+          try {
+            await this.unscheduleDefinition(id);
+            toAdd.push({ id, organizationId });
+          } catch {
+            logger.error('Failed to reschedule discovery definition', { definitionId: id });
+          }
         }
       }
 
-      // Find definitions to remove (scheduled but not in DB or inactive)
-      const toRemove: string[] = [];
+      let removed = 0;
       for (const id of this.definitionMappings.keys()) {
         if (!currentDefinitions.has(id)) {
-          toRemove.push(id);
+          try {
+            await this.unscheduleDefinition(id);
+            removed++;
+          } catch {
+            logger.error('Failed to remove discovery definition schedule', { definitionId: id });
+          }
         }
       }
 
-      // Apply changes
-      for (const id of toRemove) {
-        await this.unscheduleDefinition(id);
+      for (const { id, organizationId } of toAdd) {
+        try {
+          await this.scheduleDefinition(id, organizationId);
+        } catch {
+          logger.error('Failed to schedule discovery definition', { definitionId: id });
+        }
       }
 
-      for (const id of toAdd) {
-        const row = result.rows.find(candidate => candidate.id === id);
-        if (row) await this.scheduleDefinition(id, row.organization_id);
-      }
-
-      if (toAdd.length > 0 || toRemove.length > 0) {
+      if (toAdd.length > 0 || removed > 0) {
         logger.info('Schedules synced', {
           added: toAdd.length,
-          removed: toRemove.length,
+          removed,
           total: this.definitionMappings.size,
         });
       }

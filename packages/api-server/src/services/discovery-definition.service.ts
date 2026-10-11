@@ -19,6 +19,21 @@ function credentialMatchesProvider(provider: string, protocol: string): boolean 
   return PROVIDER_CREDENTIAL_PROTOCOLS[provider]?.includes(protocol) ?? false;
 }
 
+function validateScanConfiguration(config: unknown): void {
+  try {
+    safeDiscoveryScanConfig(config);
+  } catch {
+    throw new Error('Invalid discovery scan configuration');
+  }
+}
+
+function requireCredentialForProvider(provider: string, credentialId: string | null | undefined): void {
+  if ((provider === 'active-directory' || provider === 'snmp') &&
+      (credentialId === undefined || credentialId === null || credentialId === '')) {
+    throw new Error('Discovery provider requires credential');
+  }
+}
+
 /**
  * Discovery Definition Service
  *
@@ -41,6 +56,8 @@ export class DiscoveryDefinitionService {
 
     try {
       await client.query('BEGIN');
+      validateScanConfiguration(input.config);
+      requireCredentialForProvider(input.provider, input.credential_id);
 
       // Validate that credential exists and matches provider (skip for nmap)
       if (input.credential_id) {
@@ -216,6 +233,9 @@ export class DiscoveryDefinitionService {
       }
 
       const existing = existingResult.rows[0];
+      if (updates.config !== undefined) validateScanConfiguration(updates.config);
+      requireCredentialForProvider(updates.provider ?? existing.provider,
+        updates.credential_id ?? existing.credential_id);
 
       // Every explicit attachment must revalidate current ownership, even if
       // the credential ID matches an older association.
@@ -394,7 +414,7 @@ export class DiscoveryDefinitionService {
       if (definitionResult.rows[0].credential_id || definitionResult.rows[0].credential_set_id) {
         throw new Error('Credential-backed discovery execution is unavailable');
       }
-      if (definitionResult.rows[0].provider === 'ssh') {
+      if (definitionResult.rows[0].provider !== 'nmap') {
         throw new Error('Credential-backed discovery execution is unavailable');
       }
 
@@ -499,7 +519,7 @@ export class DiscoveryDefinitionService {
       if (!definition) {
         throw new Error(`Discovery definition ${id} not found`);
       }
-      if (definition.provider === 'ssh') {
+      if (definition.provider !== 'nmap') {
         throw new Error('Credential-backed discovery execution is unavailable');
       }
       // Do not arm a schedule that background workers must refuse.

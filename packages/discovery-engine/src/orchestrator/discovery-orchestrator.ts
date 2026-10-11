@@ -151,7 +151,7 @@ export class DiscoveryOrchestrator {
     );
     if (!result.rows.length) throw new Error('Discovery definition not found');
     const definition = result.rows[0];
-    if (definition.provider === 'ssh') throw new Error('Credential-backed discovery execution is unavailable');
+    if (definition.provider !== 'nmap') throw new Error('Credential-backed discovery execution is unavailable');
     const jobId = `${definition.provider}-${Date.now()}`;
     const queue = queueManager.getQueue(this.getQueueName(definition.provider));
     await queue.add('discover', {

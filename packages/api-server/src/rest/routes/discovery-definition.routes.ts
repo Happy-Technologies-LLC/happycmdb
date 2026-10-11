@@ -44,9 +44,9 @@ const createDefinitionSchema = Joi.object({
   provider: schemas.discoveryProvider.required(),
   method: schemas.discoveryMethod.required(),
   credential_id: Joi.string().uuid().when('provider', {
-    is: 'nmap',
-    then: Joi.optional(),
-    otherwise: Joi.required()
+    is: 'ssh',
+    then: Joi.required(),
+    otherwise: Joi.optional()
   }),
   agent_id: Joi.string().max(255).when('method', {
     is: 'agent',

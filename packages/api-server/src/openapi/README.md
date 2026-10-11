@@ -97,16 +97,24 @@ that organization; pre-existing NULL-owner definitions are inaccessible until an
 independently reviewed owner mapping exists. Foreign and missing IDs return the
 same 404. Credential IDs must belong to the same organization. Credential-backed
 manual runs and schedule enables return the same fixed 409 for every caller
-(including admins); they do not resolve credentials or queue jobs. SSH requires
-credentials and therefore its manual jobs, definition runs and schedule enables
-also return the fixed 409, even if an older definition has no credential binding.
+(including admins); they do not resolve credentials or queue jobs. SSH manual jobs,
+definition runs and schedule enables return the fixed 409, including legacy
+credentialless SSH definitions. Credentialless Active Directory/SNMP definitions
+cannot be created or changed to those providers; legacy credentialless definitions
+also return 409 on run/enable and are excluded from definition scheduling.
 Background SSH triggers, schedules and workers fail closed; disabling schedules
-remains available. Credential-free Nmap definition manual runs and repeatable
-schedules queue only scan targets, an organization stamp and boolean
-`scanOptions.aggressive`, `osDetection`, `serviceDetection`, `fullPortScan` and
-`portScan` switches. Opaque scan configuration and credentials are never queued.
-Credential-backed discovery is restored by HP1-S5 (v16 §10.2.4-10.2.6
-org-owned credential sets and run pipeline), tracked as HAP-444.
+remains available. Discovery definition writes reject malformed targets and
+nonboolean scan-mode flags with a fixed 400. Credential-free Nmap definition
+manual runs and repeatable definition jobs queue only scan targets, an organization
+stamp and boolean `scanOptions.aggressive`, `osDetection`, `serviceDetection`,
+`fullPortScan` and `portScan` switches. Opaque scan configuration and credentials
+are never queued by discovery definition producers; this is not a guarantee for
+other discovery producers. The legacy `POST /discovery/schedule` nmap/AD/SNMP
+path still queues raw configuration (potentially credentials) without an organization
+stamp; tracked separately as HAP-484. Production scheduler startup/registration
+is tracked separately as HAP-546; direct repeatable-job proof is not proof of
+production scheduling. Credential-backed discovery is restored by HP1-S5
+(v16 §10.2.4-10.2.6 org-owned credential sets and run pipeline), tracked as HAP-444.
 
 
 ### Discovery Agents (`/api/v1/agents`)

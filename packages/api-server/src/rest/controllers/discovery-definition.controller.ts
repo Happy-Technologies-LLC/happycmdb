@@ -39,6 +39,11 @@ export class DiscoveryDefinitionController {
     } catch (error) {
       logger.error('Error creating discovery definition');
 
+      if (error instanceof Error && (error.message === 'Invalid discovery scan configuration' ||
+        error.message === 'Discovery provider requires credential')) {
+        res.status(400).json({ success: false, error: 'Bad Request', message: error.message });
+        return;
+      }
       if (error instanceof Error && error.message.toLowerCase().includes('credential') &&
           error.message.toLowerCase().includes('not found')) {
         res.status(404).json(CREDENTIAL_NOT_FOUND);
@@ -163,6 +168,11 @@ export class DiscoveryDefinitionController {
 
       // Handle specific errors
       if (error instanceof Error) {
+        if (error.message === 'Invalid discovery scan configuration' ||
+          error.message === 'Discovery provider requires credential') {
+          res.status(400).json({ success: false, error: 'Bad Request', message: error.message });
+          return;
+        }
         if (error.message.toLowerCase().includes('credential') && error.message.toLowerCase().includes('not found')) {
           res.status(404).json(CREDENTIAL_NOT_FOUND);
           return;

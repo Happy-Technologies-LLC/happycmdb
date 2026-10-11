@@ -179,6 +179,79 @@ it('architecture denies any foreign, missing or NULL input before writing an ana
   expect(after.rows[0].total).toBe(before.rows[0].total);
 });
 
+it('architecture POST and business-service GET ignore cross-org cycles, database apps, fan-out and stale mappings', async () => {
+  const ciIds = ['t2-arch-db', 't2-arch-cycle', 't2-arch-owned-cycle', 't2-arch-fan'];
+  const post = () => request(app).post('/api/v1/architecture/analyze').set(auth('a')).send({ ci_ids: ciIds });
+  const service = () => request(app).get('/api/v1/architecture/business-services/t2-a/analysis').set(auth('a'));
+  const visible = (analysis: any) => ({
+    health: analysis.health_metrics,
+    summary: analysis.dependency_graph_summary,
+    issues: analysis.issues.map((issue: any) => ({
+      type: issue.issue_type,
+      description: issue.description,
+      affected: issue.affected_cis,
+      metrics: issue.metrics,
+    })).sort((left: any, right: any) => left.type.localeCompare(right.type)),
+  });
+  try {
+    await run(`
+      CREATE (db:CI {id:'t2-arch-db', name:'architecture database', ci_type:'database', organization_id:$a})
+      CREATE (app1:CI {id:'t2-arch-app1', ci_type:'application', organization_id:$a})
+      CREATE (app2:CI {id:'t2-arch-app2', ci_type:'application', organization_id:$a})
+      CREATE (app3:CI {id:'t2-arch-app3', ci_type:'application', organization_id:$a})
+      CREATE (app1)-[:USES]->(db) CREATE (app2)-[:USES]->(db) CREATE (app3)-[:USES]->(db)
+      CREATE (cycle:CI {id:'t2-arch-cycle', organization_id:$a})
+      CREATE (ownCycle:CI {id:'t2-arch-owned-cycle', organization_id:$a})
+      CREATE (ownNext:CI {id:'t2-arch-owned-next', organization_id:$a})
+      CREATE (ownCycle)-[:DEPENDS_ON]->(ownNext) CREATE (ownNext)-[:DEPENDS_ON]->(ownCycle)
+      CREATE (fan:CI {id:'t2-arch-fan', organization_id:$a})
+      CREATE (leaf:CI {id:'t2-arch-owned-leaf', organization_id:$a})
+      CREATE (fan)-[:DEPENDS_ON]->(leaf)
+    `, { a: A });
+    await sql.query(
+      `INSERT INTO ci_business_service_mappings (ci_id, service_id, mapping_type)
+       SELECT ci_id, 't2-a', 'supports' FROM unnest($1::text[]) AS ci_id`,
+      [ciIds]
+    );
+    const beforePost = await post();
+    const beforeGet = await service();
+    for (const result of [beforePost, beforeGet]) {
+      expect(result.status).toBe(200);
+      expect(result.body.analysis.issues.some((issue: { issue_type: string }) =>
+        issue.issue_type === 'circular_dependency')).toBe(true);
+      const shared = result.body.analysis.issues.find((issue: { issue_type: string }) =>
+        issue.issue_type === 'shared_database');
+      expect(shared).toMatchObject({
+        affected_cis: ['t2-arch-db', 't2-arch-app1', 't2-arch-app2', 't2-arch-app3'],
+        metrics: { shared_by_count: 3 },
+      });
+    }
+    await run(`
+      MATCH (db:CI {id:'t2-arch-db'}), (cycle:CI {id:'t2-arch-cycle'}), (fan:CI {id:'t2-arch-fan'})
+      CREATE (foreignApp:CI {id:'t2-arch-foreign-app', ci_type:'application', organization_id:$b})
+      CREATE (foreignCycle:CI {id:'t2-arch-foreign-cycle', organization_id:$b})
+      CREATE (foreignLeaf:CI {id:'t2-arch-foreign-leaf', organization_id:$b})
+      CREATE (foreignApp)-[:USES]->(db)
+      CREATE (cycle)-[:DEPENDS_ON]->(foreignCycle)
+      CREATE (foreignCycle)-[:DEPENDS_ON]->(cycle)
+      CREATE (fan)-[:DEPENDS_ON]->(foreignLeaf)
+    `, { b: B });
+    await sql.query(
+      `INSERT INTO ci_business_service_mappings (ci_id, service_id, mapping_type)
+       VALUES ('t2-arch-foreign-app', 't2-a', 'supports')`
+    );
+    for (const [route, baseline] of [[post, beforePost], [service, beforeGet]] as const) {
+      const result = await route();
+      expect(result.status).toBe(200);
+      expect(JSON.stringify(result.body.analysis)).not.toContain('t2-arch-foreign');
+      expect(visible(result.body.analysis)).toEqual(visible(baseline.body.analysis));
+    }
+  } finally {
+    await sql.query("DELETE FROM ci_business_service_mappings WHERE service_id = 't2-a' AND ci_id LIKE 't2-arch-%'");
+    await run("MATCH (ci:CI) WHERE ci.id STARTS WITH 't2-arch-' DETACH DELETE ci");
+  }
+});
+
 it('TBM sums two same-cost CIs once each despite multipath, excluding foreign and NULL costs', async () => {
   for (const path of ['by-service/t2-a', 'by-capability/t2-cap']) {
     const result = await request(app).get(`/api/v1/tbm/costs/${path}`).set(auth('a'));

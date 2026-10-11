@@ -39,6 +39,7 @@ const authConfig = {
 class InMemoryAuthRepository implements AuthRepository {
   users = new Map<string, User>();
   apiKeys = new Map<string, { userId: string; revoked: boolean }>();
+  issuedKeys = new Map<string, ApiKey>();
 
   async findUserByUsername(username: string): Promise<User | null> {
     return [...this.users.values()].find((u) => u._username === username) || null;
@@ -70,12 +71,14 @@ class InMemoryAuthRepository implements AuthRepository {
     this.users.delete(id);
   }
 
-  async findApiKeyByKey(): Promise<ApiKey | null> {
-    return null;
+  async findApiKeyByKey(hash: string): Promise<ApiKey | null> {
+    return this.issuedKeys.get(hash) || null;
   }
 
   async createApiKey(apiKey: Omit<ApiKey, 'id' | 'createdAt'>): Promise<ApiKey> {
-    return { ...apiKey, _id: 'key-1', _createdAt: new Date() } as ApiKey;
+    const created = { ...apiKey, _id: 'key-1', _createdAt: new Date() } as ApiKey;
+    this.issuedKeys.set(created._keyHash, created);
+    return created;
   }
 
   async updateApiKeyLastUsed(): Promise<void> {}
@@ -149,6 +152,62 @@ describe('AuthController profile/password/account routes', () => {
 
     repository.apiKeys.set('alice-key', { userId: 'user-1', revoked: false });
     repository.apiKeys.set('bob-key', { userId: 'user-2', revoked: false });
+  });
+
+  it('allows login sessions to issue keys but refuses key chaining after viewer promotion', async () => {
+    repository.users.get('user-1')!._role = 'viewer';
+    const viewerLogin = await request(app).post('/api/v1/auth/login')
+      .send({ username: 'alice', password: 'correct-horse-battery-staple' });
+    expect(viewerLogin.status).toBe(200);
+    const viewerSession = viewerLogin.body.data._accessToken as string;
+    const first = await request(app).post('/api/v1/auth/api-key')
+      .set('Authorization', `Bearer ${viewerSession}`).send({ name: 'Viewer key' });
+    expect(first.status).toBe(200);
+    const key = first.body.data._apiKey as string;
+    expect(repository.issuedKeys.size).toBe(1);
+    expect((await request(app).get('/api/v1/auth/me').set('X-API-Key', key)).status).toBe(200);
+
+    repository.users.get('user-1')!._role = 'operator';
+    const chained = await request(app).post('/api/v1/auth/api-key')
+      .set('X-API-Key', key).send({ name: 'Escalated key', expiresInDays: 365 });
+    expect([chained.status, chained.body]).toEqual([403, {
+      _error: 'Forbidden', _message: 'JWT user session required',
+    }]);
+    expect((await request(app).post('/api/v1/auth/api-key')
+      .set('Authorization', 'Bearer malformed').set('X-API-Key', key)
+      .send({ name: 'Escalated key' })).status).toBe(401);
+    expect(repository.issuedKeys.size).toBe(1);
+
+    const currentLogin = await request(app).post('/api/v1/auth/login')
+      .send({ username: 'alice', password: 'correct-horse-battery-staple' });
+    expect(currentLogin.status).toBe(200);
+    const currentSession = currentLogin.body.data._accessToken as string;
+    const issued = await request(app).post('/api/v1/auth/api-key')
+      .set('Authorization', `Bearer ${currentSession}`).set('X-API-Key', key)
+      .send({ name: 'Session key' });
+    expect(issued.status).toBe(200);
+    expect(repository.issuedKeys.size).toBe(2);
+
+    repository.users.get('user-1')!._role = 'admin';
+    const adminKey = await request(app).post('/api/v1/auth/api-key')
+      .set('Authorization', `Bearer ${currentSession}`).send({ name: 'Admin key' });
+    expect(adminKey.status).toBe(200);
+    const adminChained = await request(app).post('/api/v1/auth/api-key')
+      .set('X-API-Key', adminKey.body.data._apiKey as string).send({});
+    expect([adminChained.status, adminChained.body]).toEqual([403, chained.body]);
+    expect(repository.issuedKeys.size).toBe(3);
+
+    repository.users.get('user-1')!._enabled = false;
+    for (const headers of [{ Authorization: `Bearer ${currentSession}` }, { 'X-API-Key': key }]) {
+      expect((await request(app).post('/api/v1/auth/api-key')
+        .set(headers).send({ name: 'Disabled user' })).status).toBe(401);
+    }
+    repository.users.delete('user-1');
+    for (const headers of [{ Authorization: `Bearer ${currentSession}` }, { 'X-API-Key': key }]) {
+      expect((await request(app).post('/api/v1/auth/api-key')
+        .set(headers).send({ name: 'Missing user' })).status).toBe(401);
+    }
+    expect(repository.issuedKeys.size).toBe(3);
   });
 
   describe('PUT /profile', () => {

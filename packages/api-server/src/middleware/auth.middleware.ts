@@ -14,6 +14,8 @@ import { TokenPayload, Permission, ROLE_PERMISSIONS } from '../auth/types';
 
 export interface AuthenticatedRequest extends Request {
   user?: TokenPayload;
+  /** Set only after verifying the credential used for this request. */
+  credentialType?: 'jwt' | 'api-key';
 }
 
 /** Any RFC 4122-shaped UUID (the nil internal-org UUID included). */
@@ -68,11 +70,13 @@ export class AuthMiddleware {
           // Verify JWT token
           const payload = await this.authService.verifyToken(token);
           req.user = payload;
+          req.credentialType = 'jwt';
           next();
         } else if (apiKey) {
           // Verify API key
           const payload = await this.authService.verifyApiKey(apiKey);
           req.user = payload;
+          req.credentialType = 'api-key';
           next();
         } else {
           res.status(401).json({
@@ -101,9 +105,11 @@ export class AuthMiddleware {
         if (token) {
           const payload = await this.authService.verifyToken(token);
           req.user = payload;
+          req.credentialType = 'jwt';
         } else if (apiKey) {
           const payload = await this.authService.verifyApiKey(apiKey);
           req.user = payload;
+          req.credentialType = 'api-key';
         }
 
         next();
@@ -111,6 +117,21 @@ export class AuthMiddleware {
         // Ignore authentication errors for optional auth
         next();
       }
+    };
+  }
+
+  /** Key issuance requires a verified user session; a key cannot chain keys. */
+  requireJwtSession() {
+    return (req: AuthenticatedRequest, res: Response, next: NextFunction): void => {
+      if (req.user === undefined) {
+        res.status(401).json({ _error: 'Unauthorized', _message: 'Authentication required' });
+        return;
+      }
+      if (req.credentialType !== 'jwt') {
+        res.status(403).json({ _error: 'Forbidden', _message: 'JWT user session required' });
+        return;
+      }
+      next();
     };
   }
 

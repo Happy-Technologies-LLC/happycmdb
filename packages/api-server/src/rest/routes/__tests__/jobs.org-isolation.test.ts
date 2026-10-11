@@ -8,10 +8,10 @@ const jobs = [
   { id: 'foreign', name: 'discover', data: { organizationId: '22222222-2222-4222-8222-222222222222', credentials: { password: 'foreign-secret' } }, returnvalue: { token: 'foreign-secret' }, failedReason: 'foreign-secret', stacktrace: ['foreign-secret'], progress: 0, opts: { attempts: 1 }, timestamp: 2, attemptsMade: 0, getState: async () => 'failed' },
   { id: 'legacy', name: 'discover', data: { credentials: { password: 'legacy-secret' } }, progress: 0, opts: { attempts: 1 }, timestamp: 3, attemptsMade: 0, getState: async () => 'failed' },
 ];
-const queue = { getWaiting: async () => jobs, getFailed: async () => jobs, getJobLogs: async () => ({ logs: ['foreign-secret'], count: 1 }),
+const queue = { getWaiting: async (start: number, end: number) => jobs.slice(start, end + 1), getFailed: async (start: number, end: number) => jobs.slice(start, end + 1), getJobLogs: async () => ({ logs: ['foreign-secret'], count: 1 }),
   client: Promise.resolve({ zrange: async () => ['own', 'foreign', 'legacy'] }) };
 const manager = { getJob: async (_queue: string, id: string) => jobs.find(job => job.id === id), getQueue: () => queue,
-  getFailedJobs: async () => jobs, getQueueStats: async () => ({ waiting: 3, failed: 3 }),
+  getFailedJobs: async (_queueName: string, start: number, end: number) => jobs.slice(start, end + 1), getQueueStats: async () => ({ waiting: 3, failed: 3 }),
   removeJob: jest.fn(), retryJob: jest.fn() };
 jest.mock('@cmdb/common', () => ({ getQueueManager: () => manager, logger: { info: jest.fn(), error: jest.fn(), warn: jest.fn(), debug: jest.fn() } }));
 jest.mock('@cmdb/discovery-engine', () => ({ getDiscoveryScheduler: () => ({}), getDiscoveryJobScheduler: () => ({}) }));
@@ -68,4 +68,39 @@ test('mounted job reads isolate two organizations, hide sensitive data, and make
   expect(manager.removeJob).not.toHaveBeenCalled();
   expect(manager.retryJob).not.toHaveBeenCalled();
   expect((await request(app).get(`${root}/own`).set({ 'x-test-user': 'none' })).status).toBe(403);
+});
+
+test('queue and failed-job pages reject invalid ranges and bound BullMQ reads before tenant filtering', async () => {
+  const root = '/api/v1/jobs/discovery-nmap';
+  const waiting = jest.spyOn(queue, 'getWaiting');
+  const failed = jest.spyOn(manager, 'getFailedJobs');
+  for (const suffix of ['', '/failed']) {
+    for (const query of ['?start=-1', '?start=1.5', '?end=Infinity', '?limit=NaN']) {
+      const invalid = await request(app).get(`${root}${suffix}${query}`).set(a);
+      expect(invalid.status).toBe(400);
+      expect(invalid.body).toEqual({ success: false, error: 'Invalid job pagination' });
+    }
+  }
+  expect(waiting).not.toHaveBeenCalled();
+  expect(failed).not.toHaveBeenCalled();
+
+  const huge = await request(app).get(`${root}?start=0&end=999999999`).set(a);
+  expect(huge.status).toBe(200);
+  expect(waiting).toHaveBeenCalledWith(0, 99);
+  expect(huge.body.pagination.truncated).toBe(true);
+  expect(huge.body.data.jobs.map((job: { id: string }) => job.id)).toContain('own');
+
+  const foreign = Array.from({ length: 1500 }, (_, index) => ({
+    ...jobs[1]!, id: `foreign-${index}`,
+  }));
+  failed.mockImplementation(async (_queueName: string, start: number, end: number) =>
+    foreign.slice(start, end + 1));
+  const small = await request(app).get(`${root}/failed?start=0&end=999999999&limit=1`).set(a);
+  expect(small.status).toBe(200);
+  expect(failed).toHaveBeenLastCalledWith('discovery-nmap', 0, 0);
+  expect(small.body.data.failedJobs).toEqual([]);
+  expect(small.body.pagination.truncated).toBe(true);
+  expect(JSON.stringify(small.body)).not.toContain('foreign-secret');
+  waiting.mockRestore();
+  failed.mockRestore();
 });

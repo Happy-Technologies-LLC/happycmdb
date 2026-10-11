@@ -158,7 +158,7 @@ production scheduling. Credential-backed discovery is restored by HP1-S5
 - `POST /anomalies/detect` - Run detection
 
 ### Jobs (`/api/v1/jobs`)
-- `GET /jobs/stats` - Job statistics
+- `GET /jobs/stats` - Global job statistics (fixed 403)
 - `GET /jobs/discovery` - List discovery jobs
 - `POST /jobs/discovery/{provider}` - Trigger discovery
 - `GET /jobs/{queueName}/{jobId}` - Get job status
@@ -168,12 +168,19 @@ Job detail, queue lists, failed jobs, discovery lists, cancel/retry, and logs
 require a verified organization claim. Jobs without a matching organization
 stamp (including legacy jobs) are inaccessible; foreign and missing IDs return
 the same 404. Job data, results, failures, progress and free-form logs are not
-returned. Schedule responses omit stored configuration; queue-list pagination
-uses queue offsets and does not expose cross-tenant totals. Global queue clean,
+returned. Schedule responses omit stored configuration. Queue and failed-job
+lists accept non-negative integer `start`/`end` and optional `limit`, reject
+invalid ranges with fixed 400, and read at most 100 BullMQ jobs per request
+before filtering by organization. Pagination reports queue offsets, bounded
+`limit`, and `truncated: true` for every non-empty page: ownership filtering
+can make the bounded sample incomplete, and the flag does not reveal queue
+occupancy. It does not expose cross-tenant totals. Global queue clean,
 pause/resume, stats (including repeatable job metadata), worker status, queue
 health and metrics, discovery aggregates, schedule listings and both discovery
 and ETL provider/type schedule updates return the same fixed 403 for every
-authenticated role until the global-operation policy exists.
+authenticated role until the global-operation policy exists. The web UI shows
+the global queue/schedule controls as unavailable without requesting them;
+organization-owned job lists continue to load.
 Legacy discovery job list queries at most 100 jobs per queue state per request;
 pagination beyond that bounded sample remains tracked under HAP-546.
 

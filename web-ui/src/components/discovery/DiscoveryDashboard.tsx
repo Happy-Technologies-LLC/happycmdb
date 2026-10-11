@@ -1,12 +1,9 @@
-import React, { useEffect, useState } from 'react';
-import { useDiscovery } from '../../hooks/useDiscovery';
+import React from 'react';
 import { useDiscoveryJobs } from '../../hooks/useDiscoveryJobs';
-import DiscoveryProviderCard from './DiscoveryProviderCard';
-import { DiscoveryProvider, JobStatus } from '../../services/discovery.service';
+import { JobStatus } from '../../services/discovery.service';
 import { useNavigate } from 'react-router-dom';
 import { LiquidGlass } from '../ui/liquid-glass';
 import { Badge } from '../ui/badge';
-import { Icon } from '@happy-technologies/design-system';
 import {
   Table,
   TableBody,
@@ -26,44 +23,7 @@ const STATUS_CONFIG: Record<JobStatus, { variant: 'default' | 'secondary' | 'des
 
 export const DiscoveryDashboard: React.FC = () => {
   const navigate = useNavigate();
-  const { stats, loadStats, triggerJob } = useDiscovery();
   const { jobs } = useDiscoveryJobs({ limit: 5, sortBy: 'createdAt', sortOrder: 'desc' }, false);
-  useEffect(() => {
-    loadStats();
-  }, [loadStats]);
-
-  const calculateOverallStats = () => {
-    // Ensure stats is an array
-    const statsArray = Array.isArray(stats) ? stats : [];
-
-    const totalJobs = statsArray.reduce((sum, s) => sum + s.totalJobs, 0);
-    const successfulJobs = statsArray.reduce((sum, s) => sum + s.successfulJobs, 0);
-    const failedJobs = statsArray.reduce((sum, s) => sum + s.failedJobs, 0);
-    const totalCIs = statsArray.reduce((sum, s) => sum + s.totalDiscoveredCIs, 0);
-    const knownDurations = statsArray
-      .map((s) => s.averageDuration)
-      .filter((duration): duration is number => typeof duration === 'number');
-    const avgDuration =
-      knownDurations.length > 0
-        ? knownDurations.reduce((sum, duration) => sum + duration, 0) / knownDurations.length
-        : undefined;
-    const successRate = totalJobs > 0 ? (successfulJobs / totalJobs) * 100 : 0;
-
-    return { totalJobs, successfulJobs, failedJobs, totalCIs, avgDuration, successRate };
-  };
-
-  const overallStats = calculateOverallStats();
-
-  const formatDuration = (ms?: number): string => {
-    if (ms === undefined) return 'Unavailable';
-    if (ms < 1000) return `${ms}ms`;
-    const seconds = Math.floor(ms / 1000);
-    if (seconds < 60) return `${seconds}s`;
-    const minutes = Math.floor(seconds / 60);
-    if (minutes < 60) return `${minutes}m`;
-    const hours = Math.floor(minutes / 60);
-    return `${hours}h ${minutes % 60}m`;
-  };
 
   return (
     <div className="space-y-6">
@@ -74,64 +34,12 @@ export const DiscoveryDashboard: React.FC = () => {
         </p>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
-        <LiquidGlass size="sm" rounded="xl" className="p-[22px]">
-          <div className="flex items-center justify-between">
-            <span className="font-display text-[12.5px] font-semibold text-ink-soft">Total Jobs</span>
-            <span className="flex h-11 w-11 items-center justify-center rounded-md bg-sky-soft text-sky-text">
-              <Icon name="pulse" size={20} />
-            </span>
-          </div>
-          <div className="mt-3 font-display text-[2.3rem] font-extrabold leading-none tracking-[-0.02em] text-navy">
-            {overallStats.totalJobs}
-          </div>
-        </LiquidGlass>
-        <LiquidGlass size="sm" rounded="xl" className="p-[22px]">
-          <div className="flex items-center justify-between">
-            <span className="font-display text-[12.5px] font-semibold text-ink-soft">Success Rate</span>
-            <span className="flex h-11 w-11 items-center justify-center rounded-md bg-success-soft text-success">
-              <Icon name="check-circle" size={20} />
-            </span>
-          </div>
-          <div className="mt-3 font-display text-[2.3rem] font-extrabold leading-none tracking-[-0.02em] text-success">
-            {overallStats.successRate.toFixed(1)}%
-          </div>
-        </LiquidGlass>
-        <LiquidGlass size="sm" rounded="xl" className="p-[22px]">
-          <div className="flex items-center justify-between">
-            <span className="font-display text-[12.5px] font-semibold text-ink-soft">Avg Duration</span>
-            <span className="flex h-11 w-11 items-center justify-center rounded-md bg-sky-soft text-sky-text">
-              <Icon name="clock" size={20} />
-            </span>
-          </div>
-          <div className="mt-3 font-display text-[2.3rem] font-extrabold leading-none tracking-[-0.02em] text-navy">
-            {formatDuration(overallStats.avgDuration)}
-          </div>
-        </LiquidGlass>
-        <LiquidGlass size="sm" rounded="xl" className="p-[22px]">
-          <div className="flex items-center justify-between">
-            <span className="font-display text-[12.5px] font-semibold text-ink-soft">Discovered CIs</span>
-            <span className="flex h-11 w-11 items-center justify-center rounded-md bg-sky-soft text-sky-text">
-              <Icon name="stack" size={20} />
-            </span>
-          </div>
-          <div className="mt-3 font-display text-[2.3rem] font-extrabold leading-none tracking-[-0.02em] text-navy">
-            {overallStats.totalCIs.toLocaleString()}
-          </div>
-        </LiquidGlass>
-      </div>
-
-      <div>
-        <h3 className="text-lg font-semibold mb-4">Discovery Providers</h3>
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
-          {Array.isArray(stats) && stats.map((providerStats) => (
-            <DiscoveryProviderCard
-              key={providerStats.provider}
-              stats={providerStats}
-            />
-          ))}
-        </div>
-      </div>
+      <LiquidGlass size="sm" rounded="xl" className="p-6">
+        <h3 className="text-lg font-semibold">Discovery statistics unavailable</h3>
+        <p className="text-sm text-muted-foreground">
+          Global discovery statistics and provider totals are unavailable while tenant-safe reporting is being established.
+        </p>
+      </LiquidGlass>
 
       <div>
         <h3 className="text-lg font-semibold mb-4">Recent Jobs</h3>

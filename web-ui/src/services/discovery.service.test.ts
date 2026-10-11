@@ -125,67 +125,6 @@ describe('discoveryService', () => {
     expect(request.delete).toHaveBeenCalledWith('/discovery/jobs/job-1');
   });
 
-  it('fetches provider stats using server-side provider filtering on the canonical stats endpoint', async () => {
-    request.get.mockResolvedValue({
-      data: {
-        data: [
-          { provider: 'nmap', waiting: 1, active: 0, completed: 4, failed: 1, totalDiscoveredCIs: 12 },
-        ],
-      },
-    });
-
-    const stats = await discoveryService.getProviderStats('nmap');
-
-    expect(request.get).toHaveBeenCalledWith('/jobs/discovery/stats?provider=nmap');
-    expect(stats).toMatchObject({ provider: 'nmap', totalJobs: 6, totalDiscoveredCIs: 12 });
-  });
-
-  it('maps the real averageDurationMs and enabled fields from the stats endpoint, never fabricating them', async () => {
-    request.get.mockResolvedValue({
-      data: {
-        data: [
-          {
-            provider: 'nmap',
-            waiting: 1,
-            active: 0,
-            completed: 4,
-            failed: 1,
-            totalDiscoveredCIs: 12,
-            averageDurationMs: 4500,
-            enabled: false,
-          },
-        ],
-      },
-    });
-
-    const stats = await discoveryService.getProviderStats('nmap');
-
-    expect(stats.averageDuration).toBe(4500);
-    expect(stats.enabled).toBe(false);
-  });
-
-  it('leaves averageDuration and enabled undefined when the backend omits them, rather than defaulting to 0/true', async () => {
-    request.get.mockResolvedValue({
-      data: {
-        data: [
-          { provider: 'nmap', waiting: 0, active: 0, completed: 0, failed: 0, totalDiscoveredCIs: 0 },
-        ],
-      },
-    });
-
-    const stats = await discoveryService.getProviderStats('nmap');
-
-    expect(stats.averageDuration).toBeUndefined();
-    expect(stats.enabled).toBeUndefined();
-  });
-
-  it('throws for a provider absent from the stats response instead of returning a fabricated placeholder', async () => {
-    request.get.mockResolvedValue({ data: { data: [] } });
-
-    await expect(discoveryService.getProviderStats('nmap')).rejects.toThrow(
-      'No discovery stats found for provider: nmap'
-    );
-  });
 
   it('tests credentials against the Settings-owned /discovery/test-connection contract', async () => {
     request.post.mockResolvedValue({ data: {} });
@@ -207,34 +146,4 @@ describe('discoveryService', () => {
     expect(result).toEqual({ valid: false, message: 'bad creds' });
   });
 
-  it('maps the schedule envelope to the frontend contract and sends the canonical cronExpression field', async () => {
-    request.put.mockResolvedValue({
-      data: {
-        success: true,
-        data: {
-          provider: 'nmap',
-          queueName: 'discovery-nmap',
-          cronExpression: '*/15 * * * *',
-          enabled: false,
-          config: { targets: [] },
-        },
-      },
-    });
-
-    const schedule = await discoveryService.updateSchedule('nmap', {
-      cronExpression: '*/15 * * * *',
-      enabled: false,
-    });
-
-    expect(request.put).toHaveBeenCalledWith('/jobs/schedules/discovery/nmap', {
-      cronExpression: '*/15 * * * *',
-      enabled: false,
-    });
-    expect(schedule).toEqual({
-      provider: 'nmap',
-      cronExpression: '*/15 * * * *',
-      enabled: false,
-      config: { targets: [] },
-    });
-  });
 });

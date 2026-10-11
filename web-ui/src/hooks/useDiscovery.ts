@@ -11,9 +11,6 @@ import { useState, useCallback } from 'react';
 import {
   discoveryService,
   DiscoveryProvider,
-  DiscoveryStats,
-  DiscoverySchedule,
-  DiscoveryScheduleUpdate,
   TriggerDiscoveryJobRequest,
   DiscoveryJob,
   DiscoveryJobResult,
@@ -22,19 +19,11 @@ import { useToast } from '../contexts/ToastContext';
 
 export interface UseDiscoveryReturn {
   // State
-  stats: DiscoveryStats[];
-  schedules: DiscoverySchedule[];
   loading: boolean;
   error: string | null;
 
   // Actions
-  loadStats: () => Promise<void>;
-  loadSchedules: () => Promise<void>;
   triggerJob: (request: TriggerDiscoveryJobRequest) => Promise<DiscoveryJob | null>;
-  updateSchedule: (
-    provider: DiscoveryProvider,
-    schedule: DiscoveryScheduleUpdate
-  ) => Promise<void>;
   testCredentials: (
     provider: DiscoveryProvider,
     config: Record<string, any>
@@ -45,49 +34,9 @@ export interface UseDiscoveryReturn {
 }
 
 export const useDiscovery = (): UseDiscoveryReturn => {
-  const [stats, setStats] = useState<DiscoveryStats[]>([]);
-  const [schedules, setSchedules] = useState<DiscoverySchedule[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { showToast } = useToast();
-
-  /**
-   * Load discovery statistics for all providers
-   */
-  const loadStats = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-
-    try {
-      const data = await discoveryService.getStats();
-      setStats(data);
-    } catch (err: any) {
-      const errorMsg = err.response?.data?.message || 'Failed to load discovery statistics';
-      setError(errorMsg);
-      showToast(errorMsg, 'error');
-    } finally {
-      setLoading(false);
-    }
-  }, [showToast]);
-
-  /**
-   * Load discovery schedules for all providers
-   */
-  const loadSchedules = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-
-    try {
-      const data = await discoveryService.getSchedules();
-      setSchedules(data);
-    } catch (err: any) {
-      const errorMsg = err.response?.data?.message || 'Failed to load discovery schedules';
-      setError(errorMsg);
-      showToast(errorMsg, 'error');
-    } finally {
-      setLoading(false);
-    }
-  }, [showToast]);
 
   /**
    * Trigger a discovery job
@@ -116,33 +65,6 @@ export const useDiscovery = (): UseDiscoveryReturn => {
     [showToast]
   );
 
-  /**
-   * Update a provider's schedule
-   */
-  const updateSchedule = useCallback(
-    async (provider: DiscoveryProvider, schedule: DiscoveryScheduleUpdate) => {
-      setLoading(true);
-      setError(null);
-
-      try {
-        const updatedSchedule = await discoveryService.updateSchedule(provider, schedule);
-        setSchedules((prev) =>
-          prev.map((s) => (s.provider === provider ? updatedSchedule : s))
-        );
-        showToast(
-          `Schedule updated successfully for ${provider.toUpperCase()}`,
-          'success'
-        );
-      } catch (err: any) {
-        const errorMsg = err.response?.data?.message || 'Failed to update schedule';
-        setError(errorMsg);
-        showToast(errorMsg, 'error');
-      } finally {
-        setLoading(false);
-      }
-    },
-    [showToast]
-  );
 
   /**
    * Test provider credentials
@@ -241,14 +163,9 @@ export const useDiscovery = (): UseDiscoveryReturn => {
   );
 
   return {
-    stats,
-    schedules,
     loading,
     error,
-    loadStats,
-    loadSchedules,
     triggerJob,
-    updateSchedule,
     testCredentials,
     retryJob,
     cancelJob,

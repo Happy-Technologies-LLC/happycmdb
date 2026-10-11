@@ -21,10 +21,21 @@ import { DiscoveryDefinitionController } from '../controllers/discovery-definiti
 import { validateRequest, validateOptional } from '../middleware/validation.middleware';
 import { schemas } from '@cmdb/common';
 import { getAuthMiddleware } from '../../auth/auth-bootstrap';
+import { optionalRequestOrganizationId } from '../../middleware/auth.middleware';
+import type { Request, Response, NextFunction } from 'express';
+
+function requireDefinitionOrganization(req: Request, res: Response, next: NextFunction): void {
+  if (!optionalRequestOrganizationId(req)) {
+    res.status(403).json({ success: false, error: 'Organization claim required' });
+    return;
+  }
+  next();
+}
 
 export const discoveryDefinitionRoutes = Router();
 const controller = new DiscoveryDefinitionController();
 const authMiddleware = getAuthMiddleware();
+discoveryDefinitionRoutes.use(requireDefinitionOrganization);
 
 // Validation schemas
 const createDefinitionSchema = Joi.object({
@@ -33,9 +44,9 @@ const createDefinitionSchema = Joi.object({
   provider: schemas.discoveryProvider.required(),
   method: schemas.discoveryMethod.required(),
   credential_id: Joi.string().uuid().when('provider', {
-    is: 'nmap',
-    then: Joi.optional(),
-    otherwise: Joi.required()
+    is: 'ssh',
+    then: Joi.required(),
+    otherwise: Joi.optional()
   }),
   agent_id: Joi.string().max(255).when('method', {
     is: 'agent',

@@ -2,13 +2,37 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { getPostgresClient, queueManager } from '@cmdb/database';
-import { logger } from '@cmdb/common';
+import { logger, safeDiscoveryScanConfig } from '@cmdb/common';
 import {
   DiscoveryDefinition,
   DiscoveryDefinitionInput,
   DiscoveryProvider,
-  JobStatus,
 } from '@cmdb/common';
+
+const PROVIDER_CREDENTIAL_PROTOCOLS: Record<string, readonly string[]> = {
+  ssh: ['ssh_password', 'ssh_key'],
+  snmp: ['snmp_v2c', 'snmp_v3'],
+  'active-directory': ['kerberos', 'basic'],
+};
+
+function credentialMatchesProvider(provider: string, protocol: string): boolean {
+  return PROVIDER_CREDENTIAL_PROTOCOLS[provider]?.includes(protocol) ?? false;
+}
+
+function validateScanConfiguration(config: unknown): void {
+  try {
+    safeDiscoveryScanConfig(config);
+  } catch {
+    throw new Error('Invalid discovery scan configuration');
+  }
+}
+
+function requireCredentialForProvider(provider: string, credentialId: string | null | undefined): void {
+  if ((provider === 'active-directory' || provider === 'snmp') &&
+      (credentialId === undefined || credentialId === null || credentialId === '')) {
+    throw new Error('Discovery provider requires credential');
+  }
+}
 
 /**
  * Discovery Definition Service
@@ -25,20 +49,22 @@ export class DiscoveryDefinitionService {
    */
   async createDefinition(
     input: DiscoveryDefinitionInput,
-    userId: string
+    userId: string,
+    organizationId: string
   ): Promise<DiscoveryDefinition> {
     const client = await this.postgresClient.getClient();
 
     try {
       await client.query('BEGIN');
+      validateScanConfiguration(input.config);
+      requireCredentialForProvider(input.provider, input.credential_id);
 
       // Validate that credential exists and matches provider (skip for nmap)
       if (input.credential_id) {
         const credentialResult = await client.query(
-          `SELECT id AS credential_id, protocol AS provider, true AS is_active
-           FROM credentials
-           WHERE id = $1`,
-          [input.credential_id]
+          `SELECT id AS credential_id, protocol AS provider
+           FROM credentials WHERE id = $1 AND organization_id = $2`,
+          [input.credential_id, organizationId]
         );
 
         if (credentialResult.rows.length === 0) {
@@ -47,15 +73,8 @@ export class DiscoveryDefinitionService {
 
         const credential = credentialResult.rows[0];
 
-        if (!credential.is_active) {
-          throw new Error(`Credential ${input.credential_id} is not active`);
-        }
-
-        // Validate provider matches credential provider
-        if (credential.provider !== input.provider) {
-          throw new Error(
-            `Provider mismatch: Definition provider '${input.provider}' does not match credential provider '${credential.provider}'`
-          );
+        if (!credentialMatchesProvider(input.provider, credential.provider)) {
+          throw new Error('Provider mismatch');
         }
       }
 
@@ -68,8 +87,8 @@ export class DiscoveryDefinitionService {
       const result = await client.query(
         `INSERT INTO discovery_definitions (
           name, description, provider, method, credential_id, agent_id,
-          config, schedule, is_active, tags, created_by
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+          config, schedule, is_active, tags, created_by, organization_id
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
         RETURNING
           id,
           name, description, provider, method, credential_id, agent_id,
@@ -87,6 +106,7 @@ export class DiscoveryDefinitionService {
           input.is_active !== undefined ? input.is_active : true,
           input.tags || [],
           userId,
+          organizationId,
         ]
       );
 
@@ -102,7 +122,7 @@ export class DiscoveryDefinitionService {
       return definition;
     } catch (error) {
       await client.query('ROLLBACK');
-      logger.error('Error creating discovery definition', error);
+      logger.error('Error creating discovery definition');
       throw error;
     } finally {
       client.release();
@@ -112,7 +132,7 @@ export class DiscoveryDefinitionService {
   /**
    * Get a discovery definition by ID
    */
-  async getDefinition(id: string): Promise<DiscoveryDefinition | null> {
+  async getDefinition(id: string, organizationId: string): Promise<DiscoveryDefinition | null> {
     try {
       const result = await this.postgresClient.query(
         `SELECT
@@ -121,8 +141,8 @@ export class DiscoveryDefinitionService {
           config, schedule, is_active, tags, created_by,
           created_at, updated_at, last_run_at, last_run_status, last_job_id
         FROM discovery_definitions
-        WHERE id = $1`,
-        [id]
+        WHERE id = $1 AND organization_id = $2`,
+        [id, organizationId]
       );
 
       if (result.rows.length === 0) {
@@ -131,7 +151,7 @@ export class DiscoveryDefinitionService {
 
       return this.mapRowToDefinition(result.rows[0]);
     } catch (error) {
-      logger.error('Error getting discovery definition', { id, error });
+      logger.error('Error getting discovery definition');
       throw error;
     }
   }
@@ -139,15 +159,15 @@ export class DiscoveryDefinitionService {
   /**
    * List discovery definitions with optional filters
    */
-  async listDefinitions(filters?: {
+  async listDefinitions(filters: {
     provider?: DiscoveryProvider;
     active?: boolean;
     created_by?: string;
     tags?: string[];
-  }): Promise<DiscoveryDefinition[]> {
+  } | undefined, organizationId: string): Promise<DiscoveryDefinition[]> {
     try {
-      const conditions: string[] = [];
-      const params: any[] = [];
+      const conditions: string[] = ['organization_id = $1'];
+      const params: unknown[] = [organizationId];
 
       if (filters?.provider) {
         params.push(filters.provider);
@@ -184,7 +204,7 @@ export class DiscoveryDefinitionService {
 
       return result.rows.map(row => this.mapRowToDefinition(row));
     } catch (error) {
-      logger.error('Error listing discovery definitions', { filters, error });
+      logger.error('Error listing discovery definitions');
       throw error;
     }
   }
@@ -194,7 +214,8 @@ export class DiscoveryDefinitionService {
    */
   async updateDefinition(
     id: string,
-    updates: Partial<DiscoveryDefinitionInput>
+    updates: Partial<DiscoveryDefinitionInput>,
+    organizationId: string
   ): Promise<DiscoveryDefinition> {
     const client = await this.postgresClient.getClient();
 
@@ -203,8 +224,8 @@ export class DiscoveryDefinitionService {
 
       // Check if definition exists
       const existingResult = await client.query(
-        'SELECT id, credential_id, provider FROM discovery_definitions WHERE id = $1',
-        [id]
+        'SELECT id, credential_id, provider FROM discovery_definitions WHERE id = $1 AND organization_id = $2 FOR UPDATE',
+        [id, organizationId]
       );
 
       if (existingResult.rows.length === 0) {
@@ -212,12 +233,16 @@ export class DiscoveryDefinitionService {
       }
 
       const existing = existingResult.rows[0];
+      if (updates.config !== undefined) validateScanConfiguration(updates.config);
+      requireCredentialForProvider(updates.provider ?? existing.provider,
+        updates.credential_id ?? existing.credential_id);
 
-      // If updating credential_id, validate it
-      if (updates.credential_id && updates.credential_id !== existing.credential_id) {
+      // Every explicit attachment must revalidate current ownership, even if
+      // the credential ID matches an older association.
+      if (updates.credential_id) {
         const credentialResult = await client.query(
-          'SELECT id AS credential_id, protocol AS provider, true AS is_active FROM credentials WHERE id = $1',
-          [updates.credential_id]
+          'SELECT id AS credential_id, protocol AS provider FROM credentials WHERE id = $1 AND organization_id = $2',
+          [updates.credential_id, organizationId]
         );
 
         if (credentialResult.rows.length === 0) {
@@ -226,31 +251,24 @@ export class DiscoveryDefinitionService {
 
         const credential = credentialResult.rows[0];
 
-        if (!credential.is_active) {
-          throw new Error(`Credential ${updates.credential_id} is not active`);
-        }
-
-        // Validate provider matches (use new provider if being updated, otherwise existing)
         const targetProvider = updates.provider || existing.provider;
-        if (credential.provider !== targetProvider) {
-          throw new Error(
-            `Provider mismatch: Definition provider '${targetProvider}' does not match credential provider '${credential.provider}'`
-          );
+        if (!credentialMatchesProvider(targetProvider, credential.provider)) {
+          throw new Error('Provider mismatch');
         }
       }
 
       // If updating provider, validate against credential
-      if (updates.provider && updates.provider !== existing.provider) {
+      if (updates.provider && updates.provider !== existing.provider &&
+          (updates.credential_id || existing.credential_id)) {
         const credentialId = updates.credential_id || existing.credential_id;
         const credentialResult = await client.query(
-          'SELECT protocol AS provider FROM credentials WHERE id = $1',
-          [credentialId]
+          'SELECT protocol AS provider FROM credentials WHERE id = $1 AND organization_id = $2',
+          [credentialId, organizationId]
         );
 
-        if (credentialResult.rows[0].provider !== updates.provider) {
-          throw new Error(
-            `Provider mismatch: New provider '${updates.provider}' does not match credential provider '${credentialResult.rows[0].provider}'`
-          );
+        if (!credentialResult.rows.length) throw new Error('Credential not found');
+        if (!credentialMatchesProvider(updates.provider, credentialResult.rows[0].provider)) {
+          throw new Error('Provider mismatch');
         }
       }
 
@@ -313,12 +331,12 @@ export class DiscoveryDefinitionService {
       }
 
       // Add definition_id as last parameter
-      updateParams.push(id);
+      updateParams.push(id, organizationId);
 
       const result = await client.query(
         `UPDATE discovery_definitions
         SET ${updateFields.join(', ')}
-        WHERE id = $${updateParams.length}
+        WHERE id = $${updateParams.length - 1} AND organization_id = $${updateParams.length}
         RETURNING
           id,
           name, description, provider, method, credential_id,
@@ -338,7 +356,7 @@ export class DiscoveryDefinitionService {
       return definition;
     } catch (error) {
       await client.query('ROLLBACK');
-      logger.error('Error updating discovery definition', { id, error });
+      logger.error('Error updating discovery definition');
       throw error;
     } finally {
       client.release();
@@ -348,11 +366,11 @@ export class DiscoveryDefinitionService {
   /**
    * Delete a discovery definition
    */
-  async deleteDefinition(id: string): Promise<void> {
+  async deleteDefinition(id: string, organizationId: string): Promise<void> {
     try {
       const result = await this.postgresClient.query(
-        'DELETE FROM discovery_definitions WHERE id = $1',
-        [id]
+        'DELETE FROM discovery_definitions WHERE id = $1 AND organization_id = $2',
+        [id, organizationId]
       );
 
       if (result.rowCount === 0) {
@@ -361,7 +379,7 @@ export class DiscoveryDefinitionService {
 
       logger.info('Discovery definition deleted', { definitionId: id });
     } catch (error) {
-      logger.error('Error deleting discovery definition', { id, error });
+      logger.error('Error deleting discovery definition');
       throw error;
     }
   }
@@ -370,7 +388,7 @@ export class DiscoveryDefinitionService {
    * Trigger a discovery job from a definition
    * Returns the job ID of the triggered discovery
    */
-  async runDefinition(id: string, triggeredBy: string): Promise<string> {
+  async runDefinition(id: string, triggeredBy: string, organizationId: string): Promise<string> {
     const client = await this.postgresClient.getClient();
 
     try {
@@ -380,16 +398,24 @@ export class DiscoveryDefinitionService {
       const definitionResult = await client.query(
         `SELECT
           id,
-          name, description, provider, method, credential_id,
+          name, description, provider, method, credential_id, credential_set_id,
           config, schedule, is_active, tags, created_by,
           created_at, updated_at, last_run_at, last_run_status, last_job_id
         FROM discovery_definitions
-        WHERE id = $1`,
-        [id]
+        WHERE id = $1 AND organization_id = $2 FOR UPDATE`,
+        [id, organizationId]
       );
 
       if (definitionResult.rows.length === 0) {
         throw new Error(`Discovery definition ${id} not found`);
+      }
+      // Approved T1a fail-closed boundary: HP1-S5 owns credential-backed runs.
+      // Do not resolve credentials, enqueue, or change last-run state here.
+      if (definitionResult.rows[0].credential_id || definitionResult.rows[0].credential_set_id) {
+        throw new Error('Credential-backed discovery execution is unavailable');
+      }
+      if (definitionResult.rows[0].provider !== 'nmap') {
+        throw new Error('Credential-backed discovery execution is unavailable');
       }
 
       const definition = this.mapRowToDefinition(definitionResult.rows[0]);
@@ -401,19 +427,7 @@ export class DiscoveryDefinitionService {
       // Generate job ID (removed "discovery-" prefix to match new format)
       const jobId = `${definition.provider}-${Date.now()}`;
 
-      // Discovery definitions do not carry a verified organization. Do not
-      // launch a credential-bearing job until its ownership can be proven.
-      if (definition.credential_id) {
-        throw new Error('Credential-backed discovery requires verified organization ownership');
-      }
-
-      const credentials = undefined;
-
-      // Merge credentials into config
-      const jobConfig = {
-        ...definition.config,
-        credentials,
-      };
+      const jobConfig = safeDiscoveryScanConfig(definition.config);
 
       // Get the queue for this provider
       const queueName = `discovery-${definition.provider}`;
@@ -427,8 +441,8 @@ export class DiscoveryDefinitionService {
           provider: definition.provider,
           config: jobConfig,
           definition_id: definition.id,
-          definition_name: definition.name,
           triggered_by: triggeredBy,
+          organizationId,
         },
         {
           jobId, // Use our generated ID
@@ -446,8 +460,8 @@ export class DiscoveryDefinitionService {
         SET last_job_id = $1,
             last_run_at = CURRENT_TIMESTAMP,
             last_run_status = 'pending'
-        WHERE id = $2`,
-        [jobId, id]
+        WHERE id = $2 AND organization_id = $3`,
+        [jobId, id, organizationId]
       );
 
       await client.query('COMMIT');
@@ -462,83 +476,13 @@ export class DiscoveryDefinitionService {
       return jobId;
     } catch (error) {
       await client.query('ROLLBACK');
-      logger.error('Error running discovery definition', { id, error });
+      logger.error('Error running discovery definition');
       throw error;
     } finally {
       client.release();
     }
   }
 
-  /**
-   * Update last run information for a definition
-   */
-  async updateLastRun(
-    id: string,
-    jobId: string,
-    status: JobStatus,
-    cisDiscovered?: number
-  ): Promise<void> {
-    const client = await this.postgresClient.getClient();
-
-    try {
-      await client.query('BEGIN');
-
-      // Update definition last run info
-      await client.query(
-        `UPDATE discovery_definitions
-        SET last_run_at = CURRENT_TIMESTAMP,
-            last_run_status = $1,
-            last_job_id = $2
-        WHERE id = $3`,
-        [status, jobId, id]
-      );
-
-      await client.query('COMMIT');
-
-      logger.info('Discovery definition last run updated', {
-        definitionId: id,
-        jobId,
-        status,
-        cisDiscovered,
-      });
-    } catch (error) {
-      await client.query('ROLLBACK');
-      logger.error('Error updating last run', { id, jobId, error });
-      throw error;
-    } finally {
-      client.release();
-    }
-  }
-
-  /**
-   * Get discovery run history for a definition
-   * Note: Run history is tracked in BullMQ/Redis, not in PostgreSQL
-   * This method returns basic last run info from the definition itself
-   */
-  async getRunHistory(
-    definitionId: string,
-    _limit: number = 50
-  ): Promise<any[]> {
-    try {
-      // For now, return just the last run info from the definition
-      // In the future, this could query BullMQ for job history
-      const result = await this.postgresClient.query(
-        `SELECT
-          last_job_id as job_id,
-          last_run_at as started_at,
-          last_run_status as status
-        FROM discovery_definitions
-        WHERE id = $1
-        AND last_job_id IS NOT NULL`,
-        [definitionId]
-      );
-
-      return result.rows;
-    } catch (error) {
-      logger.error('Error getting run history', { definitionId, error });
-      throw error;
-    }
-  }
 
   /**
    * Map database row to DiscoveryDefinition object
@@ -567,14 +511,26 @@ export class DiscoveryDefinitionService {
   /**
    * Enable scheduled execution for a definition
    */
-  async enableSchedule(id: string): Promise<DiscoveryDefinition> {
+  async enableSchedule(id: string, organizationId: string): Promise<DiscoveryDefinition> {
     try {
       // Get the definition first to validate it has a schedule
-      const definition = await this.getDefinition(id);
+      const definition = await this.getDefinition(id, organizationId);
 
       if (!definition) {
         throw new Error(`Discovery definition ${id} not found`);
       }
+      if (definition.provider !== 'nmap') {
+        throw new Error('Credential-backed discovery execution is unavailable');
+      }
+      // Do not arm a schedule that background workers must refuse.
+      const boundSet = await this.postgresClient.query(
+        'SELECT credential_set_id FROM discovery_definitions WHERE id = $1 AND organization_id = $2',
+        [id, organizationId]
+      );
+      if (definition.credential_id || boundSet.rows[0]?.credential_set_id) {
+        throw new Error('Credential-backed discovery execution is unavailable');
+      }
+
 
       if (!definition.schedule) {
         throw new Error(
@@ -583,9 +539,9 @@ export class DiscoveryDefinitionService {
       }
 
       // Update is_active to true
-      return await this.updateDefinition(id, { is_active: true });
+      return await this.updateDefinition(id, { is_active: true }, organizationId);
     } catch (error) {
-      logger.error('Error enabling schedule', { id, error });
+      logger.error('Error enabling schedule');
       throw error;
     }
   }
@@ -593,19 +549,19 @@ export class DiscoveryDefinitionService {
   /**
    * Disable scheduled execution for a definition
    */
-  async disableSchedule(id: string): Promise<DiscoveryDefinition> {
+  async disableSchedule(id: string, organizationId: string): Promise<DiscoveryDefinition> {
     try {
       // Check if definition exists
-      const definition = await this.getDefinition(id);
+      const definition = await this.getDefinition(id, organizationId);
 
       if (!definition) {
         throw new Error(`Discovery definition ${id} not found`);
       }
 
       // Update is_active to false
-      return await this.updateDefinition(id, { is_active: false });
+      return await this.updateDefinition(id, { is_active: false }, organizationId);
     } catch (error) {
-      logger.error('Error disabling schedule', { id, error });
+      logger.error('Error disabling schedule');
       throw error;
     }
   }

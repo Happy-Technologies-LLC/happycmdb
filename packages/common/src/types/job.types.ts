@@ -16,6 +16,8 @@ import { DiscoveryProvider } from './discovery.types';
 export interface BaseJobData {
   /** Unique identifier for tracking */
   _jobId: string;
+  /** Verified tenant for API-triggered jobs. Jobs without it are inaccessible via tenant APIs. */
+  organizationId?: string;
   /** User or system that triggered the job */
   triggeredBy?: string;
   /** Timestamp when job was created */

@@ -163,6 +163,20 @@ describe('discovery routes', () => {
     expect(mockRouteHandler).toHaveBeenCalled();
   });
 
+  it('refuses both legacy SSH target shapes before validation or queue access for operators and admins', async () => {
+    for (const [token, config] of [
+      ['Bearer operator-token', { targets: [{ host: '192.0.2.1', password: 'synthetic-secret' }] }],
+      ['Bearer admin-token', { targets: ['192.0.2.1'], credentials: { password: 'synthetic-secret' } }],
+    ] as const) {
+      const response = await invoke(testApp(), 'POST', '/discovery/schedule',
+        { provider: 'ssh', config }, token);
+      expect(response.status).toBe(409);
+      expect(response.body).toEqual({ success: false, error: 'Credential-backed discovery execution unavailable' });
+      expect(JSON.stringify(response.body)).not.toContain('synthetic-secret');
+      expect(mockRouteHandler).not.toHaveBeenCalled();
+    }
+  });
+
   it('rejects an invalid/unrecognized bearer token with 401', async () => {
     const response = await invoke(testApp(), 'GET', '/discovery/jobs', undefined, 'Bearer garbage-token');
     expect(response.status).toBe(401);

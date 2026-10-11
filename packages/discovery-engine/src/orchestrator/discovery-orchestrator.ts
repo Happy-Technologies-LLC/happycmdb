@@ -3,10 +3,9 @@
 
 // packages/discovery-engine/src/orchestrator/discovery-orchestrator.ts
 
-import { queueManager, QUEUE_NAMES, getPostgresClient, getUnifiedCredentialService } from '@cmdb/database';
-import { logger, resolveDiscoveryHost, DISCOVERY_TARGET_REFUSED, UnrecoverableError } from '@cmdb/common';
-import { DiscoveredCI, DiscoveryJob } from '@cmdb/common';
-import { SSHDiscoveryWorker } from '../workers/ssh-discovery.worker';
+import { queueManager, QUEUE_NAMES, getPostgresClient } from '@cmdb/database';
+import { logger, DISCOVERY_TARGET_REFUSED, UnrecoverableError, safeDiscoveryScanConfig } from '@cmdb/common';
+import type { DiscoveredCI, DiscoveryJob, DiscoveryProvider } from '@cmdb/common';
 import { NmapDiscoveryWorker } from '../workers/nmap-discovery.worker';
 import { ActiveDirectoryDiscoveryWorker } from '../workers/active-directory-discovery.worker';
 import { getInternalAPIClient } from '../api/internal-api-client';
@@ -29,13 +28,15 @@ function queueDiscoveryFailure(error: unknown): never {
   if (error instanceof Error && TERMINAL_AI_DISCOVERY_ERRORS.has(error.message)) {
     throw new UnrecoverableError(error.message);
   }
-  throw error;
+  // BullMQ persists failure messages and stack traces in Redis. Remote errors
+  // may contain credentials; do not persist the original error object.
+  throw new Error('DISCOVERY_JOB_FAILED');
 }
+
 
 export class DiscoveryOrchestrator {
   private apiClient = getInternalAPIClient();
   private postgresClient = getPostgresClient();
-  private credentialService = getUnifiedCredentialService(getPostgresClient().pool);
   private itilEnricher = new ITILEnricher();
   private tbmEnricher = new TBMEnricher();
   private bsmEnricher = new BSMEnricher();
@@ -118,133 +119,53 @@ export class DiscoveryOrchestrator {
    */
   async triggerDiscovery(
     provider: string,
-    config: any,
-    _triggeredBy: string
+    config: unknown,
+    _triggeredBy: string,
+    organizationId: string
   ): Promise<string> {
+    if (!organizationId) throw new Error('Organization required for discovery job');
+    if (provider === 'ssh') throw new Error('Credential-backed discovery execution is unavailable');
     const jobId = `${provider}-${Date.now()}`;
     await this.scheduleDiscovery({
       id: jobId,
-      provider: provider as any,
-      method: 'agentless',
-      status: 'pending',
-      config,
-      created_at: new Date().toISOString(),
+      organizationId,
+      provider: provider as DiscoveryProvider,
+      method: 'agentless', status: 'pending',
+      config: safeDiscoveryScanConfig(config), created_at: new Date().toISOString(),
     });
     return jobId;
   }
 
-  /**
-   * Trigger discovery from a saved definition
-   * Loads the definition, decrypts credentials, and triggers discovery
-   */
+  /** Background callers must supply a verified tenant; never resolve a bare definition ID. */
   async triggerDiscoveryFromDefinition(
     definitionId: string,
-    triggeredBy: string
+    triggeredBy: string,
+    organizationId: string
   ): Promise<string> {
-    const client = await this.postgresClient.getClient();
-
-    try {
-      await client.query('BEGIN');
-
-      // Load the definition
-      const definitionResult = await client.query(
-        `SELECT
-          id,
-          name, provider, method, credential_id, config, is_active
-        FROM discovery_definitions
-        WHERE id = $1`,
-        [definitionId]
-      );
-
-      if (definitionResult.rows.length === 0) {
-        throw new Error(`Discovery definition ${definitionId} not found`);
-      }
-
-      const definition = definitionResult.rows[0];
-
-      if (!definition.is_active) {
-        throw new Error(`Discovery definition ${definitionId} is not active`);
-      }
-
-      // No verified organization is available to this background definition.
-      // The scoped lookup fails closed until an explicit policy provides it.
-      const credential = await this.credentialService.getById(definition.credential_id, '', '');
-
-      if (!credential) {
-        throw new Error(
-          `Credential ${definition.credential_id} not found or inactive`
-        );
-      }
-
-      logger.info('Loaded credential for discovery', {
-        credentialId: definition.credential_id,
-        protocol: credential.protocol,
-        scope: credential.scope,
-        hasCredentials: !!credential.credentials,
-        credentialKeys: credential.credentials ? Object.keys(credential.credentials) : []
-      });
-
-      // Merge definition config with credentials
-      const discoveryConfig = {
-        ...(typeof definition.config === 'string'
-          ? JSON.parse(definition.config)
-          : definition.config),
-        credentials: credential.credentials,
-      };
-
-      // Generate job ID
-      const jobId = `${definition.provider}-${Date.now()}`;
-
-      // Create discovery run record (commented out - table doesn't exist yet)
-      // await client.query(
-      //   `INSERT INTO cmdb.discovery_runs (
-      //     definition_id, job_id, status, triggered_by, trigger_type
-      //   ) VALUES ($1, $2, $3, $4, $5)`,
-      //   [definitionId, jobId, 'pending', triggeredBy, 'manual']
-      // );
-
-      // Update definition last run info
-      await client.query(
-        `UPDATE discovery_definitions
-        SET last_run_at = CURRENT_TIMESTAMP,
-            last_run_status = 'pending',
-            last_job_id = $1,
-            updated_at = CURRENT_TIMESTAMP
-        WHERE id = $2`,
-        [jobId, definitionId]
-      );
-
-      await client.query('COMMIT');
-
-      // Trigger the actual discovery job
-      await this.scheduleDiscovery({
-        id: jobId,
-        provider: definition.provider as any,
-        method: definition.method as any,
-        status: 'pending',
-        config: discoveryConfig,
-        created_at: new Date().toISOString(),
-      });
-
-      logger.info('Discovery triggered from definition', {
-        definitionId,
-        definitionName: definition.name,
-        jobId,
-        provider: definition.provider,
-        triggeredBy,
-      });
-
-      return jobId;
-    } catch (error) {
-      await client.query('ROLLBACK');
-      logger.error('Error triggering discovery from definition', {
-        definitionId,
-        error,
-      });
-      throw error;
-    } finally {
-      client.release();
-    }
+    if (!organizationId) throw new Error('Organization required for discovery definition');
+    const result = await this.postgresClient.query(
+      `SELECT id, provider, config FROM discovery_definitions
+       WHERE id = $1 AND organization_id = $2 AND is_active = true
+         AND credential_id IS NULL AND credential_set_id IS NULL`,
+      [definitionId, organizationId]
+    );
+    if (!result.rows.length) throw new Error('Discovery definition not found');
+    const definition = result.rows[0];
+    if (definition.provider !== 'nmap') throw new Error('Credential-backed discovery execution is unavailable');
+    const jobId = `${definition.provider}-${Date.now()}`;
+    const queue = queueManager.getQueue(this.getQueueName(definition.provider));
+    await queue.add('discover', {
+      jobId, provider: definition.provider,
+      config: safeDiscoveryScanConfig(definition.config),
+      definition_id: definitionId, triggered_by: triggeredBy, organizationId,
+    }, { jobId, attempts: 3 });
+    await this.postgresClient.query(
+      `UPDATE discovery_definitions SET last_run_at = CURRENT_TIMESTAMP,
+       last_run_status = 'pending', last_job_id = $1
+       WHERE id = $2 AND organization_id = $3`,
+      [jobId, definitionId, organizationId]
+    );
+    return jobId;
   }
 
   /**
@@ -294,6 +215,8 @@ export class DiscoveryOrchestrator {
   }
 
   async scheduleDiscovery(job: DiscoveryJob): Promise<void> {
+    if (!job.organizationId) throw new Error('Organization required for discovery job');
+    if (job.provider === 'ssh') throw new Error('Credential-backed discovery execution is unavailable');
     const queueName = this.getQueueName(job.provider);
     const queue = queueManager.getQueue(queueName);
 
@@ -302,7 +225,8 @@ export class DiscoveryOrchestrator {
       {
         jobId: job.id,
         provider: job.provider,
-        config: job.config,
+        config: safeDiscoveryScanConfig(job.config),
+        organizationId: job.organizationId,
       },
       {
         attempts: 3,
@@ -354,21 +278,15 @@ export class DiscoveryOrchestrator {
   }
 
   async scheduleRecurringDiscovery(
-    provider: string,
-    config: any,
-    cronPattern: string
+    provider: string, config: unknown, cronPattern: string, organizationId: string
   ): Promise<void> {
+    if (!organizationId) throw new Error('Organization required for recurring discovery');
+    if (provider === 'ssh') throw new Error('Credential-backed discovery execution is unavailable');
     const queueName = this.getQueueName(provider);
     const queue = queueManager.getQueue(queueName);
-
-    await queue.add(
-      'recurring-discovery',
-      { provider, config },
-      {
-        repeat: {
-          pattern: cronPattern,
-        },
-      }
+    await queue.add('recurring-discovery',
+      { provider, config: safeDiscoveryScanConfig(config), organizationId },
+      { repeat: { pattern: cronPattern } }
     );
 
     logger.info('Recurring discovery scheduled', {
@@ -382,82 +300,11 @@ export class DiscoveryOrchestrator {
     // These are now handled by the connector framework
     // Only infrastructure protocol workers (SSH, NMAP, Active Directory) remain
 
-    // SSH Discovery Worker
+    // Drain legacy SSH jobs with a terminal fixed refusal; credentials are not resolved.
     queueManager.registerWorker(
       QUEUE_NAMES._DISCOVERY_SSH,
-      async (job) => {
-        // Handle both old format (jobId, config) and new format (id, config)
-        const jobId = job.data.jobId || job.data.id;
-        const config = job.data.config || job.data._config;
-        const definition_id = job.data.definition_id;
-        const cis: DiscoveredCI[] = [];
-
-        try {
-          await job.updateProgress(0);
-
-          if (definition_id) {
-            await this.updateDefinitionRunStatus(definition_id, jobId, 'running');
-          }
-
-          await job.updateProgress(25);
-
-          const worker = new SSHDiscoveryWorker();
-
-          // Handle various config formats
-          const targets = config?.targets || config?.hosts || [];
-
-          if (!Array.isArray(targets) || targets.length === 0) {
-            throw new Error('SSH config must include "targets" or "hosts" array');
-          }
-          // Refuse a mixed batch before making any discovery connection.
-          await Promise.all(targets.map(target => resolveDiscoveryHost(target.host)));
-
-          const totalTargets = targets.length;
-          let processedTargets = 0;
-
-          for (const target of targets) {
-            try {
-              const ci = await worker.discoverHost(
-                jobId,
-                target.host,
-                target.username,
-                target.privateKeyPath,
-                target.password
-              );
-              cis.push(ci);
-              processedTargets++;
-
-              // Update progress during discovery: 25-75%
-              const discoveryProgress = 25 + Math.floor((processedTargets / totalTargets) * 50);
-              await job.updateProgress(discoveryProgress);
-            } catch (error) {
-              if (error instanceof Error && error.message === DISCOVERY_TARGET_REFUSED) throw error;
-              logger.error('SSH discovery failed for target', { jobId, error });
-            }
-          }
-
-          // Add discovery_provider field to each CI
-          cis.forEach(ci => {
-            ci.discovery_provider = 'ssh';
-          });
-
-          await job.updateProgress(75);
-
-          await this.persistCIs(cis);
-
-          await job.updateProgress(100);
-
-          if (definition_id) {
-            await this.updateDefinitionRunStatus(definition_id, jobId, 'completed', cis.length);
-          }
-
-          return { discovered: cis.length };
-        } catch (error) {
-          if (definition_id) {
-            await this.updateDefinitionRunStatus(definition_id, jobId, 'failed', 0, error);
-          }
-          queueDiscoveryFailure(error);
-        }
+      async () => {
+        throw new UnrecoverableError('Credential-backed discovery execution is unavailable');
       },
       { concurrency: 5 }
     );
@@ -466,13 +313,16 @@ export class DiscoveryOrchestrator {
     queueManager.registerWorker(
       QUEUE_NAMES._DISCOVERY_NMAP,
       async (job) => {
-        const { jobId, config, definition_id } = job.data;
+        const { config, definition_id } = job.data;
+        // A repeatable definition has one stored payload but a distinct BullMQ ID per run.
+        const jobId = job.data.jobId || job.id;
 
+        if (definition_id) await this.assertDefinitionOwner(definition_id, job.data.organizationId);
         try {
           await job.updateProgress(0);
 
           if (definition_id) {
-            await this.updateDefinitionRunStatus(definition_id, jobId, 'running');
+            await this.updateDefinitionRunStatus(definition_id, jobId, 'running', job.data.organizationId);
           }
 
           await job.updateProgress(25);
@@ -492,7 +342,7 @@ export class DiscoveryOrchestrator {
             cis = await worker.scanNetworks(jobId, ranges);
           } else if (config.range) {
             // Single range (legacy)
-            cis = await worker.scanNetwork(jobId, config.range);
+            cis = await worker.scanNetwork(jobId, config.range, this.mapScanOptions(config.scanOptions));
           } else {
             throw new Error('Nmap config must include either "targets" (array) or "range" (string)');
           }
@@ -509,13 +359,13 @@ export class DiscoveryOrchestrator {
           await job.updateProgress(100);
 
           if (definition_id) {
-            await this.updateDefinitionRunStatus(definition_id, jobId, 'completed', cis.length);
+            await this.updateDefinitionRunStatus(definition_id, jobId, 'completed', job.data.organizationId, cis.length);
           }
 
           return { discovered: cis.length };
         } catch (error) {
           if (definition_id) {
-            await this.updateDefinitionRunStatus(definition_id, jobId, 'failed', 0, error);
+            await this.updateDefinitionRunStatus(definition_id, jobId, 'failed', job.data.organizationId, 0);
           }
           queueDiscoveryFailure(error);
         }
@@ -533,11 +383,12 @@ export class DiscoveryOrchestrator {
           const definition_id = job.data.definition_id;
           const cis: DiscoveredCI[] = [];
 
+          if (definition_id) await this.assertDefinitionOwner(definition_id, job.data.organizationId);
           try {
             await job.updateProgress(0);
 
             if (definition_id) {
-              await this.updateDefinitionRunStatus(definition_id, jobId, 'running');
+              await this.updateDefinitionRunStatus(definition_id, jobId, 'running', job.data.organizationId);
             }
 
             logger.info('Starting AI discovery', { jobId, config: this.sanitizeConfig(config) });
@@ -589,7 +440,7 @@ export class DiscoveryOrchestrator {
             await job.updateProgress(100);
 
             if (definition_id) {
-              await this.updateDefinitionRunStatus(definition_id, jobId, 'completed', cis.length);
+              await this.updateDefinitionRunStatus(definition_id, jobId, 'completed', job.data.organizationId, cis.length);
             }
 
             return {
@@ -602,7 +453,7 @@ export class DiscoveryOrchestrator {
           } catch (error) {
             logger.error('AI discovery failed', { jobId });
             if (definition_id) {
-              await this.updateDefinitionRunStatus(definition_id, jobId, 'failed', 0, error);
+              await this.updateDefinitionRunStatus(definition_id, jobId, 'failed', job.data.organizationId, 0);
             }
             queueDiscoveryFailure(error);
           }
@@ -682,13 +533,7 @@ export class DiscoveryOrchestrator {
           logger.info('CI created via API', { id: ci._id, name: ci.name, type: ci._type });
         }
       } catch (error) {
-        logger.error('Failed to persist CI via API', {
-          ciId: ci._id,
-          ciName: ci.name,
-          ciType: ci._type,
-          error: error instanceof Error ? error.message : String(error),
-          stack: error instanceof Error ? error.stack : undefined
-        });
+        logger.error('Failed to persist CI via API');
         // Re-throw to fail the job if persistence fails
         throw error;
       }
@@ -723,12 +568,22 @@ export class DiscoveryOrchestrator {
    * Update discovery definition run status
    * Called by workers when processing jobs from definitions
    */
+  private async assertDefinitionOwner(definitionId: string, organizationId: unknown): Promise<void> {
+    if (typeof organizationId !== 'string' || !organizationId) throw new Error('Discovery definition not found');
+    const result = await this.postgresClient.query(
+      `SELECT id FROM discovery_definitions WHERE id = $1 AND organization_id = $2
+       AND is_active = true AND credential_id IS NULL AND credential_set_id IS NULL`,
+      [definitionId, organizationId]
+    );
+    if (!result.rows.length) throw new Error('Discovery definition not found');
+  }
+
   private async updateDefinitionRunStatus(
     definitionId: string,
     jobId: string,
     status: 'running' | 'completed' | 'failed',
-    cisDiscovered: number = 0,
-    error?: any
+    organizationId: string,
+    cisDiscovered: number = 0
   ): Promise<void> {
     const pool = this.postgresClient['pool'];
     const client = await pool.connect();
@@ -769,8 +624,8 @@ export class DiscoveryOrchestrator {
              last_run_status = $1,
              last_job_id = $2,
              updated_at = CURRENT_TIMESTAMP
-         WHERE id = $3`,
-        [status, jobId, definitionId]
+         WHERE id = $3 AND organization_id = $4`,
+        [status, jobId, definitionId, organizationId]
       );
 
       await client.query('COMMIT');
@@ -783,12 +638,7 @@ export class DiscoveryOrchestrator {
       });
     } catch (updateError) {
       await client.query('ROLLBACK');
-      logger.error('Failed to update definition run status', {
-        definitionId,
-        jobId,
-        status,
-        error: updateError,
-      });
+      logger.error('Failed to update definition run status', { definitionId, jobId, status });
       // Don't throw - we don't want to fail the discovery job if status update fails
     } finally {
       client.release();

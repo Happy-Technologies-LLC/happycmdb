@@ -19,6 +19,9 @@ import type { DiscoveryProvider, ETLJobType } from '@cmdb/common';
 import { getDiscoveryScheduler, getDiscoveryJobScheduler } from '@cmdb/discovery-engine';
 import { getNeo4jClient } from '@cmdb/database';
 import { getETLScheduler } from '@cmdb/etl-processor';
+import { optionalRequestOrganizationId } from '../../middleware/auth.middleware';
+import type { AuthenticatedRequest } from '../../middleware/auth.middleware';
+import { JOB_NOT_FOUND, ownsJob, publicJob } from './job-scope';
 
 interface ScheduleUpdate {
   cronExpression?: string;
@@ -58,17 +61,19 @@ export class JobsController {
   async triggerDiscovery(req: Request, res: Response): Promise<void> {
     try {
       const provider = req.params['provider'] as DiscoveryProvider;
-      const { config, triggeredBy } = req.body;
-
-      logger.info(`Triggering discovery job for ${provider}`, {
-        triggeredBy,
-      });
-
-      const jobId = await this.discoveryScheduler.triggerDiscovery(
-        provider,
-        config,
-        triggeredBy || req.headers['x-user-id'] || 'api'
-      );
+      const organizationId = optionalRequestOrganizationId(req);
+      if (!organizationId) {
+        res.status(403).json({ success: false, error: 'Organization claim required' });
+        return;
+      }
+      // SSH requires credentials; credential-backed execution belongs to HP1-S5.
+      if (provider === 'ssh') {
+        res.status(409).json({ success: false, error: 'Credential-backed discovery execution unavailable' });
+        return;
+      }
+      const { config } = req.body;
+      const triggeredBy = (req as AuthenticatedRequest).user?._userId || 'api';
+      const jobId = await this.discoveryScheduler.triggerDiscovery(provider, config, triggeredBy, organizationId);
 
       res.status(202).json({
         success: true,
@@ -79,12 +84,9 @@ export class JobsController {
           message: `Discovery job for ${provider} has been queued`,
         },
       });
-    } catch (err: any) {
-      logger.error('Error triggering discovery job', err);
-      res.status(500).json({
-        success: false,
-        error: err.message,
-      });
+    } catch {
+      logger.error('Error triggering discovery job');
+      res.status(500).json({ success: false, error: 'Failed to trigger discovery job' });
     }
   }
 
@@ -130,44 +132,14 @@ export class JobsController {
       }
 
       const job = await this.queueManager.getJob(queueName, jobId);
-
-      if (!job) {
-        res.status(404).json({
-          success: false,
-          error: `Job ${jobId} not found in queue ${queueName}`,
-        });
+      if (!job || !ownsJob(req, job)) {
+        res.status(404).json(JOB_NOT_FOUND);
         return;
       }
-
-      const state = await job.getState();
-      const progress = job.progress;
-      const failedReason = job.failedReason;
-      const maxAttempts = job.opts?.attempts ?? 1;
-
-      res.json({
-        success: true,
-        data: {
-          id: job.id,
-          name: job.name,
-          queueName,
-          state,
-          progress,
-          data: job.data,
-          returnvalue: job.returnvalue,
-          failedReason,
-          attemptsMade: job.attemptsMade,
-          maxAttempts,
-          processedOn: job.processedOn,
-          finishedOn: job.finishedOn,
-          timestamp: job.timestamp,
-        },
-      });
-    } catch (err: any) {
-      logger.error('Error getting job status', err);
-      res.status(500).json({
-        success: false,
-        error: err.message,
-      });
+      res.json({ success: true, data: await publicJob(job, queueName) });
+    } catch {
+      logger.error('Error getting job status');
+      res.status(500).json({ success: false, error: 'Failed to get job status' });
     }
   }
 
@@ -190,7 +162,6 @@ export class JobsController {
       const { state = 'waiting', start = 0, end = 99 } = req.query;
       const startNum = Number(start);
       const endNum = Number(end);
-      const JOB_STATE_FIELDS = ['waiting', 'active', 'completed', 'failed', 'delayed', 'paused'] as const;
 
       const queue = this.queueManager.getQueue(queueName);
 
@@ -216,55 +187,19 @@ export class JobsController {
       }
 
       const jobsData = await Promise.all(
-        jobs.map(async (job) => ({
-          id: job.id,
-          name: job.name,
-          queueName,
-          state: await job.getState(),
-          data: job.data,
-          progress: job.progress,
-          attemptsMade: job.attemptsMade,
-          maxAttempts: job.opts?.attempts ?? 1,
-          failedReason: job.failedReason,
-          returnvalue: job.returnvalue,
-          timestamp: job.timestamp,
-          processedOn: job.processedOn,
-          finishedOn: job.finishedOn,
-        }))
+        jobs.filter((job) => ownsJob(req, job)).map((job) => publicJob(job, queueName))
       );
 
-      // Real total for the requested state, from BullMQ's job counts
-      // (queue.getJobCounts under the hood) rather than an inferred/guessed
-      // slice-based value.
-      const counts = await this.queueManager.getQueueStats(queueName);
-      const stateKey = (typeof state === 'string' && (JOB_STATE_FIELDS as readonly string[]).includes(state)
-        ? state
-        : 'waiting') as (typeof JOB_STATE_FIELDS)[number];
-      const total = counts[stateKey] ?? 0;
-      const limit = endNum - startNum + 1;
-      const offset = startNum;
-
+      // BullMQ totals mix tenants. Pagination is over queue offsets, not
+      // tenant offsets; omit unknowable tenant totals/hasMore.
       res.json({
         success: true,
-        data: {
-          queueName,
-          state,
-          jobs: jobsData,
-          count: jobsData.length,
-        },
-        pagination: {
-          total,
-          limit,
-          offset,
-          hasMore: offset + jobsData.length < total,
-        },
+        data: { queueName, state, jobs: jobsData, count: jobsData.length },
+        pagination: { limit: endNum - startNum + 1, offset: startNum },
       });
-    } catch (err: any) {
-      logger.error('Error listing jobs', err);
-      res.status(500).json({
-        success: false,
-        error: err.message,
-      });
+    } catch {
+      logger.error('Error listing jobs');
+      res.status(500).json({ success: false, error: 'Failed to list jobs' });
     }
   }
 
@@ -284,6 +219,11 @@ export class JobsController {
         return;
       }
 
+      const job = await this.queueManager.getJob(queueName, jobId);
+      if (!job || !ownsJob(req, job)) {
+        res.status(404).json(JOB_NOT_FOUND);
+        return;
+      }
       await this.queueManager.removeJob(queueName, jobId);
 
       logger.info(`Job ${jobId} cancelled in queue ${queueName}`);
@@ -296,12 +236,9 @@ export class JobsController {
           message: 'Job cancelled successfully',
         },
       });
-    } catch (err: any) {
-      logger.error('Error cancelling job', err);
-      res.status(500).json({
-        success: false,
-        error: err.message,
-      });
+    } catch {
+      logger.error('Error cancelling job');
+      res.status(500).json({ success: false, error: 'Failed to cancel job' });
     }
   }
 
@@ -321,6 +258,11 @@ export class JobsController {
         return;
       }
 
+      const job = await this.queueManager.getJob(queueName, jobId);
+      if (!job || !ownsJob(req, job)) {
+        res.status(404).json(JOB_NOT_FOUND);
+        return;
+      }
       await this.queueManager.retryJob(queueName, jobId);
 
       logger.info(`Job ${jobId} retried in queue ${queueName}`);
@@ -333,12 +275,9 @@ export class JobsController {
           message: 'Job retried successfully',
         },
       });
-    } catch (err: any) {
-      logger.error('Error retrying job', err);
-      res.status(500).json({
-        success: false,
-        error: err.message,
-      });
+    } catch {
+      logger.error('Error retrying job');
+      res.status(500).json({ success: false, error: 'Failed to retry job' });
     }
   }
 
@@ -429,10 +368,10 @@ export class JobsController {
             if (status === 'completed' || !status) {
               try {
                 const completedIds = await redis.zrange(`bull:${queueName}:completed`, 0, 99);
-                logger.info(`Completed IDs for ${queueName}`, { count: completedIds.length, ids: completedIds });
+                logger.info(`Completed jobs sampled for ${queueName}`, { count: completedIds.length });
                 if (completedIds.length > 0) jobIdSets.push(completedIds);
               } catch (err: any) {
-                logger.warn(`Failed to fetch completed jobs for ${queueName}`, { error: err.message });
+                logger.warn(`Failed to fetch completed jobs for ${queueName}`);
               }
             }
 
@@ -441,7 +380,7 @@ export class JobsController {
                 const failedIds = await redis.zrange(`bull:${queueName}:failed`, 0, 99);
                 if (failedIds.length > 0) jobIdSets.push(failedIds);
               } catch (err: any) {
-                logger.warn(`Failed to fetch failed jobs for ${queueName}`, { error: err.message });
+                logger.warn(`Failed to fetch failed jobs for ${queueName}`);
               }
             }
 
@@ -450,7 +389,7 @@ export class JobsController {
                 const activeIds = await redis.zrange(`bull:${queueName}:active`, 0, 99);
                 if (activeIds.length > 0) jobIdSets.push(activeIds);
               } catch (err: any) {
-                logger.warn(`Failed to fetch active jobs for ${queueName}`, { error: err.message });
+                logger.warn(`Failed to fetch active jobs for ${queueName}`);
               }
             }
 
@@ -459,22 +398,22 @@ export class JobsController {
                 const waitingIds = await redis.zrange(`bull:${queueName}:waiting`, 0, 99);
                 if (waitingIds.length > 0) jobIdSets.push(waitingIds);
               } catch (err: any) {
-                logger.warn(`Failed to fetch waiting jobs for ${queueName}`, { error: err.message });
+                logger.warn(`Failed to fetch waiting jobs for ${queueName}`);
               }
 
               try {
                 const delayedIds = await redis.zrange(`bull:${queueName}:delayed`, 0, 99);
                 if (delayedIds.length > 0) jobIdSets.push(delayedIds);
               } catch (err: any) {
-                logger.warn(`Failed to fetch delayed jobs for ${queueName}`, { error: err.message });
+                logger.warn(`Failed to fetch delayed jobs for ${queueName}`);
               }
             }
 
             // Flatten job IDs
             const allJobIds = jobIdSets.flat();
-            logger.info(`Total job IDs for ${queueName}`, { count: allJobIds.length, ids: allJobIds });
+            logger.info(`Loaded discovery job IDs for ${queueName}`, { count: allJobIds.length });
 
-            // Load full job objects using Job.fromId (this properly loads all fields including returnvalue)
+            // Load jobs to verify their stamped organization before serialization.
             const jobs = await Promise.all(
               allJobIds.map(async (jobId) => {
                 try {
@@ -482,31 +421,19 @@ export class JobsController {
                   const job = await Job.fromId(queue, jobId);
 
                   if (!job) return null;
-
-                  // Log returnvalue for debugging
-                  logger.info(`Job.fromId loaded job ${jobId}`, {
-                    jobId: job.id,
-                    hasReturnvalue: !!job.returnvalue,
-                    returnvalueType: typeof job.returnvalue,
-                    returnvalue: job.returnvalue,
-                  });
-
+                  if (!ownsJob(req, job)) return null;
                   return {
                     id: job.id,
                     provider: providerName,
                     queueName,
                     status: await job.getState(),
-                    data: job.data,
-                    progress: job.progress,
-                    returnvalue: job.returnvalue, // Job.fromId properly loads this
                     createdAt: job.timestamp,
                     processedOn: job.processedOn,
                     finishedOn: job.finishedOn,
                     attemptsMade: job.attemptsMade,
-                    failedReason: job.failedReason,
                   };
                 } catch (err) {
-                  logger.debug(`Could not load job ${jobId} from ${queueName}`, err);
+                  logger.debug('Could not load discovery job');
                   return null;
                 }
               })
@@ -538,12 +465,9 @@ export class JobsController {
           totalPages: Math.ceil(total / limitNum),
         },
       });
-    } catch (err: any) {
-      logger.error('Error listing discovery jobs', err);
-      res.status(500).json({
-        success: false,
-        error: err.message,
-      });
+    } catch {
+      logger.error('Error listing discovery jobs');
+      res.status(500).json({ success: false, error: 'Failed to list discovery jobs' });
     }
   }
 
@@ -693,21 +617,7 @@ export class JobsController {
       );
 
       const jobsData = await Promise.all(
-        failedJobs.map(async (job) => ({
-          id: job.id,
-          name: job.name,
-          queueName,
-          status: 'failed' as const,
-          data: job.data,
-          failedReason: job.failedReason,
-          stacktrace: job.stacktrace,
-          progress: job.progress,
-          attemptsMade: job.attemptsMade,
-          maxAttempts: job.opts?.attempts ?? 1,
-          timestamp: job.timestamp,
-          processedOn: job.processedOn,
-          finishedOn: job.finishedOn,
-        }))
+        failedJobs.filter((job) => ownsJob(req, job)).map((job) => publicJob(job, queueName))
       );
 
       res.json({
@@ -718,12 +628,9 @@ export class JobsController {
           count: jobsData.length,
         },
       });
-    } catch (err: any) {
-      logger.error('Error getting failed jobs', err);
-      res.status(500).json({
-        success: false,
-        error: err.message,
-      });
+    } catch {
+      logger.error('Error getting failed jobs');
+      res.status(500).json({ success: false, error: 'Failed to get failed jobs' });
     }
   }
 
@@ -784,7 +691,6 @@ export class JobsController {
         queueName: schedule._queueName,
         cronExpression: schedule._cronPattern,
         enabled: schedule._enabled,
-        config: schedule._config,
       }));
 
       res.status(200).json({
@@ -811,7 +717,6 @@ export class JobsController {
         queueName: schedule._queueName,
         cronExpression: schedule._cronPattern,
         enabled: schedule._enabled,
-        config: schedule._config,
       }));
 
       res.status(200).json({
@@ -845,6 +750,10 @@ export class JobsController {
       }
 
       const { cronExpression, enabled } = update;
+      if (provider === 'ssh' && (enabled !== false || cronExpression !== undefined)) {
+        res.status(409).json({ success: false, error: 'Credential-backed discovery execution unavailable' });
+        return;
+      }
 
       const schedule = await this.discoveryJobScheduler.getScheduleView(provider);
       if (!schedule) {
@@ -879,7 +788,6 @@ export class JobsController {
           queueName: updated._queueName,
           cronExpression: updated._cronPattern,
           enabled: updated._enabled,
-          config: updated._config,
         },
         message: `Discovery schedule for ${provider} updated successfully`,
       });
@@ -944,7 +852,6 @@ export class JobsController {
           queueName: updated._queueName,
           cronExpression: updated._cronPattern,
           enabled: updated._enabled,
-          config: updated._config,
         },
         message: `ETL schedule for ${type} updated successfully`,
       });

@@ -92,6 +92,30 @@ http://localhost:3000/api-docs/openapi.yaml
 - `POST /discovery/definitions/{id}/run` - Run discovery
 - `POST /discovery/definitions/{id}/schedule/enable` - Enable schedule
 - `POST /discovery/definitions/{id}/schedule/disable` - Disable schedule
+Definitions require a verified organization claim. New definitions are owned by
+that organization; pre-existing NULL-owner definitions are inaccessible until an
+independently reviewed owner mapping exists. Foreign and missing IDs return the
+same 404. Credential IDs must belong to the same organization. Credential-backed
+manual runs and schedule enables return the same fixed 409 for every caller
+(including admins); they do not resolve credentials or queue jobs. SSH manual jobs,
+definition runs and schedule enables return the fixed 409, including legacy
+credentialless SSH definitions. Credentialless Active Directory/SNMP definitions
+cannot be created or changed to those providers; legacy credentialless definitions
+also return 409 on run/enable and are excluded from definition scheduling.
+Background SSH triggers, schedules and workers fail closed; disabling schedules
+remains available. Discovery definition writes reject malformed targets and
+nonboolean scan-mode flags with a fixed 400. Credential-free Nmap definition
+manual runs and repeatable definition jobs queue only scan targets, an organization
+stamp and boolean `scanOptions.aggressive`, `osDetection`, `serviceDetection`,
+`fullPortScan` and `portScan` switches. Opaque scan configuration and credentials
+are never queued by discovery definition producers; this is not a guarantee for
+other discovery producers. The legacy `POST /discovery/schedule` nmap/AD/SNMP
+path still queues raw configuration (potentially credentials) without an organization
+stamp; tracked separately as HAP-484. Production scheduler startup/registration
+is tracked separately as HAP-546; direct repeatable-job proof is not proof of
+production scheduling. Credential-backed discovery is restored by HP1-S5
+(v16 §10.2.4-10.2.6 org-owned credential sets and run pipeline), tracked as HAP-444.
+
 
 ### Discovery Agents (`/api/v1/agents`)
 - `GET /agents` - List agents
@@ -137,6 +161,26 @@ http://localhost:3000/api-docs/openapi.yaml
 - `GET /jobs/{queueName}/{jobId}` - Get job status
 - `DELETE /jobs/{queueName}/{jobId}` - Cancel job
 - `POST /jobs/{queueName}/{jobId}/retry` - Retry job
+Job detail, queue lists, failed jobs, discovery lists, cancel/retry, and logs
+require a verified organization claim. Jobs without a matching organization
+stamp (including legacy jobs) are inaccessible; foreign and missing IDs return
+the same 404. Job data, results, failures, progress and free-form logs are not
+returned. Schedule responses omit stored configuration; queue-list pagination
+uses queue offsets and does not expose cross-tenant totals. Generic queue
+statistics and global schedule controls remain separately governed.
+
+`cmdb jobs run:discovery nmap --config '{"targets":["192.0.2.1"]}'`
+calls the authenticated `POST /jobs/discovery/{provider}` endpoint rather than
+writing to BullMQ directly. Set `CMDB_API_URL` (or global `--url`) and supply
+`CMDB_API_KEY` (or global `--key`) via the configured `API_KEY_HEADER_NAME`
+(default `X-API-Key`), or a JWT via `CMDB_ACCESS_TOKEN` (or `--token`).
+The API derives the organization from the verified credential; missing,
+invalid, or tenantless credentials fail without queueing a job. Authenticated
+SSH requests to either `POST /jobs/discovery/ssh` or the legacy
+`POST /discovery/schedule` return the same fixed 409 regardless of target shape;
+SSH credential-backed execution is restored by HP1-S5.
+
+
 
 ### Business Services (`/api/v1/business-services`)
 Scoped to the caller's organization: 403 without an organization claim; a service outside the caller's organization returns the same 404 as a missing one. Create returns 409 for a `service_id` already in use.

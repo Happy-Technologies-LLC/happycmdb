@@ -12,6 +12,10 @@ import { Request, Response } from 'express';
 import { logger } from '@cmdb/common';
 import { DiscoveryDefinitionService } from '../../services/discovery-definition.service';
 import type { AuthenticatedRequest } from '../../auth/types';
+import { requestOrganizationId } from '../../middleware/auth.middleware';
+
+const DEFINITION_NOT_FOUND = { success: false, error: 'Not Found', message: 'Discovery definition not found' };
+const CREDENTIAL_NOT_FOUND = { success: false, error: 'Not Found', message: 'Credential not found' };
 
 export class DiscoveryDefinitionController {
   private service = new DiscoveryDefinitionService();
@@ -25,7 +29,7 @@ export class DiscoveryDefinitionController {
       // Get user from auth context (assuming auth middleware sets req.user)
       const created_by = (req as AuthenticatedRequest).user?._userId || 'system';
 
-      const definition = await this.service.createDefinition(req.body, created_by);
+      const definition = await this.service.createDefinition(req.body, created_by, requestOrganizationId(req));
 
       res.status(201).json({
         success: true,
@@ -33,22 +37,27 @@ export class DiscoveryDefinitionController {
         message: 'Discovery definition created successfully',
       });
     } catch (error) {
-      logger.error('Error creating discovery definition', error);
+      logger.error('Error creating discovery definition');
 
-      // Handle specific validation errors
-      if (error instanceof Error && error.message.includes('Credential')) {
-        res.status(400).json({
-          success: false,
-          error: 'Bad Request',
-          message: error.message,
-        });
+      if (error instanceof Error && (error.message === 'Invalid discovery scan configuration' ||
+        error.message === 'Discovery provider requires credential')) {
+        res.status(400).json({ success: false, error: 'Bad Request', message: error.message });
+        return;
+      }
+      if (error instanceof Error && error.message.toLowerCase().includes('credential') &&
+          error.message.toLowerCase().includes('not found')) {
+        res.status(404).json(CREDENTIAL_NOT_FOUND);
+        return;
+      }
+      if (error instanceof Error && error.message.includes('Provider mismatch')) {
+        res.status(400).json({ success: false, error: 'Bad Request', message: 'Provider mismatch' });
         return;
       }
 
       res.status(500).json({
         success: false,
         error: 'Failed to create discovery definition',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -70,14 +79,10 @@ export class DiscoveryDefinitionController {
         return;
       }
 
-      const definition = await this.service.getDefinition(id);
+      const definition = await this.service.getDefinition(id, requestOrganizationId(req));
 
       if (!definition) {
-        res.status(404).json({
-          success: false,
-          error: 'Not Found',
-          message: `Discovery definition with ID '${id}' not found`,
-        });
+        res.status(404).json(DEFINITION_NOT_FOUND);
         return;
       }
 
@@ -86,11 +91,11 @@ export class DiscoveryDefinitionController {
         data: definition,
       });
     } catch (error) {
-      logger.error('Error getting discovery definition', error);
+      logger.error('Error getting discovery definition');
       res.status(500).json({
         success: false,
         error: 'Failed to retrieve discovery definition',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -117,7 +122,7 @@ export class DiscoveryDefinitionController {
         filters.created_by = created_by;
       }
 
-      const definitions = await this.service.listDefinitions(filters);
+      const definitions = await this.service.listDefinitions(filters, requestOrganizationId(req));
 
       res.json({
         success: true,
@@ -125,11 +130,11 @@ export class DiscoveryDefinitionController {
         count: definitions.length,
       });
     } catch (error) {
-      logger.error('Error listing discovery definitions', error);
+      logger.error('Error listing discovery definitions');
       res.status(500).json({
         success: false,
         error: 'Failed to list discovery definitions',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -151,7 +156,7 @@ export class DiscoveryDefinitionController {
         return;
       }
 
-      const definition = await this.service.updateDefinition(id, req.body);
+      const definition = await this.service.updateDefinition(id, req.body, requestOrganizationId(req));
 
       res.json({
         success: true,
@@ -159,25 +164,25 @@ export class DiscoveryDefinitionController {
         message: 'Discovery definition updated successfully',
       });
     } catch (error) {
-      logger.error('Error updating discovery definition', error);
+      logger.error('Error updating discovery definition');
 
       // Handle specific errors
       if (error instanceof Error) {
-        if (error.message.includes('not found')) {
-          res.status(404).json({
-            success: false,
-            error: 'Not Found',
-            message: error.message,
-          });
+        if (error.message === 'Invalid discovery scan configuration' ||
+          error.message === 'Discovery provider requires credential') {
+          res.status(400).json({ success: false, error: 'Bad Request', message: error.message });
           return;
         }
-
-        if (error.message.includes('Credential')) {
-          res.status(400).json({
-            success: false,
-            error: 'Bad Request',
-            message: error.message,
-          });
+        if (error.message.toLowerCase().includes('credential') && error.message.toLowerCase().includes('not found')) {
+          res.status(404).json(CREDENTIAL_NOT_FOUND);
+          return;
+        }
+        if (error.message.includes('not found')) {
+          res.status(404).json(DEFINITION_NOT_FOUND);
+          return;
+        }
+        if (error.message.includes('Provider mismatch')) {
+          res.status(400).json({ success: false, error: 'Bad Request', message: 'Provider mismatch' });
           return;
         }
       }
@@ -185,7 +190,7 @@ export class DiscoveryDefinitionController {
       res.status(500).json({
         success: false,
         error: 'Failed to update discovery definition',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -207,25 +212,21 @@ export class DiscoveryDefinitionController {
         return;
       }
 
-      await this.service.deleteDefinition(id);
+      await this.service.deleteDefinition(id, requestOrganizationId(req));
 
       res.status(204).send();
     } catch (error) {
-      logger.error('Error deleting discovery definition', error);
+      logger.error('Error deleting discovery definition');
 
       if (error instanceof Error && error.message.includes('not found')) {
-        res.status(404).json({
-          success: false,
-          error: 'Not Found',
-          message: error.message,
-        });
+        res.status(404).json(DEFINITION_NOT_FOUND);
         return;
       }
 
       res.status(500).json({
         success: false,
         error: 'Failed to delete discovery definition',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -250,10 +251,9 @@ export class DiscoveryDefinitionController {
       // Get user from auth context (assuming auth middleware sets req.user)
       const triggeredBy = (req as AuthenticatedRequest).user?._userId || 'system';
 
-      const jobId = await this.service.runDefinition(id, triggeredBy);
-
-      // Get definition details for response
-      const definition = await this.service.getDefinition(id);
+      const organizationId = requestOrganizationId(req);
+      const jobId = await this.service.runDefinition(id, triggeredBy, organizationId);
+      const definition = await this.service.getDefinition(id, organizationId);
 
       res.status(202).json({
         success: true,
@@ -267,22 +267,21 @@ export class DiscoveryDefinitionController {
         message: 'Discovery definition executed successfully',
       });
     } catch (error) {
-      logger.error('Error running discovery definition', error);
+      logger.error('Error running discovery definition');
 
-      if (error instanceof Error && error.message.includes('not found')) {
-        res.status(404).json({
-          success: false,
-          error: 'Not Found',
-          message: error.message,
-        });
+      if (error instanceof Error && error.message === 'Credential not found') {
+        res.status(404).json(CREDENTIAL_NOT_FOUND);
         return;
       }
-
-      res.status(500).json({
-        success: false,
-        error: 'Failed to run discovery definition',
-        message: error instanceof Error ? error.message : 'Unknown error',
-      });
+      if (error instanceof Error && error.message.includes('not found')) {
+        res.status(404).json(DEFINITION_NOT_FOUND);
+        return;
+      }
+      if (error instanceof Error && error.message === 'Credential-backed discovery execution is unavailable') {
+        res.status(409).json({ success: false, error: 'Credential-backed discovery execution unavailable' });
+        return;
+      }
+      res.status(500).json({ success: false, error: 'Failed to run discovery definition' });
     }
   }
 
@@ -303,7 +302,7 @@ export class DiscoveryDefinitionController {
         return;
       }
 
-      const definition = await this.service.enableSchedule(id);
+      const definition = await this.service.enableSchedule(id, requestOrganizationId(req));
 
       res.json({
         success: true,
@@ -311,15 +310,16 @@ export class DiscoveryDefinitionController {
         message: 'Schedule enabled successfully',
       });
     } catch (error) {
-      logger.error('Error enabling schedule', error);
+      logger.error('Error enabling schedule');
+
+      if (error instanceof Error && error.message === 'Credential-backed discovery execution is unavailable') {
+        res.status(409).json({ success: false, error: 'Credential-backed discovery execution unavailable' });
+        return;
+      }
 
       if (error instanceof Error) {
         if (error.message.includes('not found')) {
-          res.status(404).json({
-            success: false,
-            error: 'Not Found',
-            message: error.message,
-          });
+          res.status(404).json(DEFINITION_NOT_FOUND);
           return;
         }
 
@@ -336,7 +336,7 @@ export class DiscoveryDefinitionController {
       res.status(500).json({
         success: false,
         error: 'Failed to enable schedule',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -358,7 +358,7 @@ export class DiscoveryDefinitionController {
         return;
       }
 
-      const definition = await this.service.disableSchedule(id);
+      const definition = await this.service.disableSchedule(id, requestOrganizationId(req));
 
       res.json({
         success: true,
@@ -366,21 +366,17 @@ export class DiscoveryDefinitionController {
         message: 'Schedule disabled successfully',
       });
     } catch (error) {
-      logger.error('Error disabling schedule', error);
+      logger.error('Error disabling schedule');
 
       if (error instanceof Error && error.message.includes('not found')) {
-        res.status(404).json({
-          success: false,
-          error: 'Not Found',
-          message: error.message,
-        });
+        res.status(404).json(DEFINITION_NOT_FOUND);
         return;
       }
 
       res.status(500).json({
         success: false,
         error: 'Failed to disable schedule',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }

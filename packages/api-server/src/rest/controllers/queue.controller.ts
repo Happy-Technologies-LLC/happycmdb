@@ -15,6 +15,7 @@ import { Request, Response } from 'express';
 import { getQueueManager, QUEUE_NAMES, logger } from '@cmdb/common';
 import { getDiscoveryWorkerManager } from '@cmdb/discovery-engine';
 import { getETLWorkerManager } from '@cmdb/etl-processor';
+import { JOB_NOT_FOUND, ownsJob } from './job-scope';
 
 /**
  * Queue Monitoring Controller
@@ -122,18 +123,11 @@ export class QueueController {
             pattern: job.pattern,
             _next: job.next,
           })),
-          recentCompleted: recentCompleted.map((job: any) => ({
-            id: job.id,
-            name: job.name,
-            timestamp: job.timestamp,
-            finishedOn: job.finishedOn,
+          recentCompleted: recentCompleted.filter(job => ownsJob(req, job)).map(job => ({
+            id: job.id, name: job.name, timestamp: job.timestamp, finishedOn: job.finishedOn,
           })),
-          recentFailed: recentFailed.map((job: any) => ({
-            id: job.id,
-            name: job.name,
-            failedReason: job.failedReason,
-            timestamp: job.timestamp,
-            finishedOn: job.finishedOn,
+          recentFailed: recentFailed.filter(job => ownsJob(req, job)).map(job => ({
+            id: job.id, name: job.name, timestamp: job.timestamp, finishedOn: job.finishedOn,
           })),
         },
       });
@@ -435,34 +429,15 @@ export class QueueController {
       }
 
       const job = await this.queueManager.getJob(queueName, jobId);
-
-      if (!job) {
-        res.status(404).json({
-          success: false,
-          error: `Job ${jobId} not found in queue ${queueName}`,
-        });
+      if (!job || !ownsJob(req, job)) {
+        res.status(404).json(JOB_NOT_FOUND);
         return;
       }
-
-      // Fetch job logs via the queue (BullMQ getJobLogs returns { logs, count })
-      const queue = this.queueManager.getQueue(queueName);
-      const { logs, count } = await queue.getJobLogs(jobId);
-
-      res.json({
-        success: true,
-        data: {
-          jobId,
-          queueName,
-          logs,
-          count,
-        },
-      });
-    } catch (err: any) {
-      logger.error('Error getting job logs', err);
-      res.status(500).json({
-        success: false,
-        error: err.message,
-      });
+      // BullMQ logs are free-form worker output and may contain credentials.
+      res.json({ success: true, data: { jobId, queueName, logs: [], count: 0 } });
+    } catch {
+      logger.error('Error getting job logs');
+      res.status(500).json({ success: false, error: 'Failed to get job logs' });
     }
   }
 }

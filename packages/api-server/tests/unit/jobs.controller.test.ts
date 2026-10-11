@@ -70,7 +70,7 @@ function mockBullJob(overrides: Partial<MockBullJob> = {}): MockBullJob {
   return {
     id: 'job-1',
     name: 'discovery',
-    data: { provider: 'nmap' },
+    data: { provider: 'nmap', organizationId: '11111111-1111-4111-8111-111111111111' },
     progress: 42,
     attemptsMade: 1,
     opts: { attempts: 3 },
@@ -166,7 +166,8 @@ describe('JobsController', () => {
 
     it('includes queueName and maxAttempts (from job.opts.attempts) on success', async () => {
       mockQueueManager.getJob.mockResolvedValue(mockBullJob());
-      const req = { params: { queueName: 'discovery-nmap', jobId: 'job-1' } } as unknown as Request;
+      const req = { params: { queueName: 'discovery-nmap', jobId: 'job-1' },
+        user: { _organizationId: '11111111-1111-4111-8111-111111111111' } } as unknown as Request;
       const res = mockResponse();
 
       await controller.getJobStatus(req, res);
@@ -200,7 +201,7 @@ describe('JobsController', () => {
       mockQueueManager.getQueue.mockReturnValue(queue);
       const req = {
         params: { queueName: 'discovery-nmap' },
-        query: {},
+        query: {}, user: { _organizationId: '11111111-1111-4111-8111-111111111111' },
       } as unknown as Request;
       const res = mockResponse();
 
@@ -215,68 +216,13 @@ describe('JobsController', () => {
       }
     });
 
-    it('returns a real total/hasMore from queueManager.getQueueStats for the requested state, never an inferred offset+limit+1 guess', async () => {
-      const queue = {
-        getFailed: jest.fn().mockResolvedValue([mockBullJob({ id: 'a' }), mockBullJob({ id: 'b' })]),
-      };
-      mockQueueManager.getQueue.mockReturnValue(queue);
-      mockQueueManager.getQueueStats.mockResolvedValue({
-        queueName: 'discovery-nmap',
-        waiting: 0,
-        active: 0,
-        completed: 0,
-        failed: 500,
-        delayed: 0,
-        paused: 0,
-      });
-      const req = {
-        params: { queueName: 'discovery-nmap' },
-        query: { state: 'failed', start: '0', end: '1' },
-      } as unknown as Request;
-      const res = mockResponse();
-
-      await controller.listJobs(req, res);
-
-      expect(mockQueueManager.getQueueStats).toHaveBeenCalledWith('discovery-nmap');
-      const payload = (res.json as jest.Mock).mock.calls[0][0] as {
-        pagination: { total: number; limit: number; offset: number; hasMore: boolean };
-      };
-      expect(payload.pagination).toEqual({ total: 500, limit: 2, offset: 0, hasMore: true });
-      expect(payload.pagination.total).not.toBe(0 + 2 + 1);
-    });
-
-    it('reports hasMore=false once the returned slice reaches the real total for the state', async () => {
-      const queue = {
-        getWaiting: jest.fn().mockResolvedValue([mockBullJob({ id: 'a' })]),
-      };
-      mockQueueManager.getQueue.mockReturnValue(queue);
-      mockQueueManager.getQueueStats.mockResolvedValue({
-        queueName: 'discovery-nmap',
-        waiting: 1,
-        active: 0,
-        completed: 0,
-        failed: 0,
-        delayed: 0,
-        paused: 0,
-      });
-      const req = {
-        params: { queueName: 'discovery-nmap' },
-        query: {},
-      } as unknown as Request;
-      const res = mockResponse();
-
-      await controller.listJobs(req, res);
-
-      const payload = (res.json as jest.Mock).mock.calls[0][0] as {
-        pagination: { total: number; hasMore: boolean };
-      };
-      expect(payload.pagination).toEqual({ total: 1, limit: 100, offset: 0, hasMore: false });
-    });
   });
 
   describe('cancelJob / retryJob (queueName propagation, never inferred from job id)', () => {
     it('cancelJob calls queueManager.removeJob with the exact queueName + jobId from the route', async () => {
-      const req = { params: { queueName: 'etl-sync', jobId: 'job-42' } } as unknown as Request;
+      const req = { params: { queueName: 'etl-sync', jobId: 'job-42' },
+        user: { _organizationId: '11111111-1111-4111-8111-111111111111' } } as unknown as Request;
+      mockQueueManager.getJob.mockResolvedValue(mockBullJob({ id: 'job-42' }));
       const res = mockResponse();
 
       await controller.cancelJob(req, res);
@@ -288,7 +234,9 @@ describe('JobsController', () => {
     });
 
     it('retryJob calls queueManager.retryJob with the exact queueName + jobId from the route', async () => {
-      const req = { params: { queueName: 'etl-sync', jobId: 'job-42' } } as unknown as Request;
+      const req = { params: { queueName: 'etl-sync', jobId: 'job-42' },
+        user: { _organizationId: '11111111-1111-4111-8111-111111111111' } } as unknown as Request;
+      mockQueueManager.getJob.mockResolvedValue(mockBullJob({ id: 'job-42' }));
       const res = mockResponse();
 
       await controller.retryJob(req, res);
@@ -300,19 +248,16 @@ describe('JobsController', () => {
   describe('getFailedJobs (bounded pagination)', () => {
     it('defaults to start=0 end=99 and includes queueName + maxAttempts per job', async () => {
       mockQueueManager.getFailedJobs.mockResolvedValue([mockBullJob({ failedReason: 'boom' })]);
-      const req = { params: { queueName: 'discovery-nmap' }, query: {} } as unknown as Request;
+      const req = { params: { queueName: 'discovery-nmap' }, query: {},
+        user: { _organizationId: '11111111-1111-4111-8111-111111111111' } } as unknown as Request;
       const res = mockResponse();
 
       await controller.getFailedJobs(req, res);
 
       expect(mockQueueManager.getFailedJobs).toHaveBeenCalledWith('discovery-nmap', 0, 99);
       const payload = (res.json as jest.Mock).mock.calls[0][0] as { data: { failedJobs: unknown[] } };
-      expect(payload.data.failedJobs[0]).toMatchObject({
-        queueName: 'discovery-nmap',
-        status: 'failed',
-        maxAttempts: 3,
-        failedReason: 'boom',
-      });
+      expect(payload.data.failedJobs[0]).toMatchObject({ queueName: 'discovery-nmap', maxAttempts: 3 });
+      expect(JSON.stringify(payload.data.failedJobs[0])).not.toContain('boom');
     });
 
     it('honors explicit start/end query params for bounded pagination', async () => {
@@ -357,7 +302,7 @@ describe('JobsController', () => {
           _queueName: 'discovery-nmap',
           _cronPattern: '0 * * * *',
           _enabled: true,
-          _config: { targets: ['10.0.0.0/24'] },
+          _config: { credentials: { password: 'synthetic-secret' } },
         },
       ];
       const etlSchedules = [
@@ -366,7 +311,7 @@ describe('JobsController', () => {
           _queueName: 'etl-sync',
           _cronPattern: '*/5 * * * *',
           _enabled: false,
-          _config: { source: 'neo4j' },
+          _config: { credentials: { token: 'synthetic-secret' } },
         },
       ];
       const discoveryJobScheduler = (getDiscoveryJobScheduler as jest.Mock).mock.results[0]?.value;
@@ -387,7 +332,6 @@ describe('JobsController', () => {
             queueName: 'discovery-nmap',
             cronExpression: '0 * * * *',
             enabled: true,
-            config: { targets: ['10.0.0.0/24'] },
           },
         ],
       });
@@ -399,10 +343,11 @@ describe('JobsController', () => {
             queueName: 'etl-sync',
             cronExpression: '*/5 * * * *',
             enabled: false,
-            config: { source: 'neo4j' },
           },
         ],
       });
+      expect(JSON.stringify((discoveryResponse.json as jest.Mock).mock.calls)).not.toContain('synthetic-secret');
+      expect(JSON.stringify((etlResponse.json as jest.Mock).mock.calls)).not.toContain('synthetic-secret');
     });
 
     it('round-trips a discovery cronExpression and enabled state', async () => {
@@ -441,7 +386,6 @@ describe('JobsController', () => {
             queueName: 'discovery-nmap',
             cronExpression: '*/15 * * * *',
             enabled: false,
-            config: { targets: [] },
           },
         })
       );

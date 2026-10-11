@@ -106,6 +106,7 @@ import { requireConnectorScope } from '../../../auth/connector-scope';
 import { connectorsRouter } from '../../../../../integration-hub/src/api/connectors.routes';
 import { getConnectorRegistry } from '@cmdb/integration-framework';
 import { getIntegrationManager } from '@cmdb/integration-framework/dist/core/integration-manager';
+import type { BaseIntegrationConnector } from '../../../../../integration-framework/src/core/base-connector';
 import { connectorResolvers } from '../../../graphql/resolvers/connector.resolvers';
 import { ConnectorConfigurationFieldResolvers } from '../../../graphql/resolvers/connector-fields.resolvers';
 import { createGraphQLServer } from '../../../graphql/server';
@@ -373,6 +374,19 @@ it('allows the same name in separate organizations without foreign conflict disc
   expect(b.rows).toEqual([{ name: 'beta', organization_id: ORG_B }]);
 });
 
+it('does not log a caller-supplied secret-bearing configuration name', async () => {
+  const logged = jest.spyOn(logger, 'info').mockImplementation(() => undefined);
+  try {
+    const created = await request(app).post(url).set(bearer('a')).send({
+      name: SECRET, connector_type: 'test', connection: { token: SECRET },
+    });
+    expect(created.status).toBe(201);
+    expect(JSON.stringify(logged.mock.calls)).not.toContain(SECRET);
+  } finally {
+    logged.mockRestore();
+  }
+});
+
 it('does not echo nested write-only values in validation responses or warning logs', async () => {
   const warn = jest.spyOn(logger, 'warn').mockImplementation(() => undefined);
   try {
@@ -487,6 +501,32 @@ it('requires connector write permission to test a connection without weakening o
 
     const foreign = await request(app).post(`${url}/${B}/test`).set(bearer('a')).send({});
     expect(foreign.status).toBe(404);
+    expect(attempts).toBe(1);
+  } finally {
+    create.mockRestore();
+  }
+});
+
+it('denies hub viewer tests before provider access and keeps foreign and NULL owners indistinguishable', async () => {
+  const registry = getConnectorRegistry();
+  let attempts = 0;
+  const create = jest.spyOn(registry, 'createConnector').mockImplementation(() => ({
+    testConnection: async () => { attempts++; return { success: true }; },
+    cleanup: async () => undefined,
+  } as BaseIntegrationConnector));
+  const hub = '/api/v1/hub/connectors';
+  try {
+    const viewer = await request(app).post(`${hub}/alpha/test`).set(bearer('viewer')).send({});
+    expect(viewer.status).toBe(403);
+    expect(attempts).toBe(0);
+    const missing = await request(app).post(`${hub}/absent/test`).set(bearer('a')).send({});
+    for (const name of ['beta', 'legacy']) {
+      const denied = await request(app).post(`${hub}/${name}/test`).set(bearer('a')).send({});
+      expect([denied.status, denied.body]).toEqual([missing.status, missing.body]);
+    }
+    expect(attempts).toBe(0);
+    const own = await request(app).post(`${hub}/alpha/test`).set(bearer('a')).send({});
+    expect(own.body).toEqual({ result: { success: true } });
     expect(attempts).toBe(1);
   } finally {
     create.mockRestore();

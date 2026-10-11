@@ -19,7 +19,7 @@ const records = [
   { id: 'failed-own', data: { organizationId: A, provider: 'nmap', config: { nested: { token: secret } } }, returnvalue: { password: secret }, failedReason: secret, timestamp: 2, attemptsMade: 1, getState: async () => 'failed', remove },
   { id: 'completed-own', data: { organizationId: A, provider: 'nmap', config: { nested: { token: secret } } }, returnvalue: { discovered: 7, nested: { credential: secret } }, timestamp: 3, attemptsMade: 1, getState: async () => 'completed', remove },
 ];
-const queue = { getJob: async (id: string) => records.find(j => j.id === id), getWaiting: async () => records.filter(j => !['failed-own', 'completed-own'].includes(j.id)), getActive: async () => [], getCompleted: async () => records.filter(j => j.id === 'completed-own'), getFailed: async () => records.filter(j => j.id === 'failed-own'), add };
+const queue = { getJob: async (id: string) => records.find(j => j.id === id), getWaiting: async (start: number, end: number) => records.filter(j => !['failed-own', 'completed-own'].includes(j.id)).slice(start, end + 1), getActive: async () => [], getCompleted: async () => records.filter(j => j.id === 'completed-own'), getFailed: async () => records.filter(j => j.id === 'failed-own'), add };
 const emptyQueue = { ...queue, getJob: async () => undefined, getWaiting: async () => [], getCompleted: async () => [], getFailed: async () => [] };
 jest.mock('@cmdb/database', () => ({ queueManager: { getQueue: (name: string) => name === 'discovery-nmap' ? queue : emptyQueue }, QUEUE_NAMES: { _DISCOVERY_NMAP: 'discovery-nmap', _DISCOVERY_SSH: 'discovery-ssh' } }));
 jest.mock('@cmdb/common', () => ({ ...jest.requireActual('@cmdb/common'), logger: { info: jest.fn(), error: jest.fn() } }));
@@ -72,6 +72,28 @@ test('legacy reads and cancel are org-owned, allowlisted and indistinguishable f
   expect((await request(app).delete('/api/v1/discovery/jobs/own').set('authorization', auth('operator'))).status).toBe(200);
   expect(remove).toHaveBeenCalledTimes(1);
   expect((await request(app).get('/api/v1/discovery/jobs/foreign').set('authorization', auth('viewer', B))).status).toBe(200);
+});
+
+test('small legacy list pages never load unbounded foreign jobs or call their state', async () => {
+  const foreignState = jest.fn(async () => 'waiting');
+  const foreign = Array.from({ length: 1500 }, (_, index) => ({
+    ...records[0]!, id: `foreign-${index}`,
+    data: { ...records[0]!.data, organizationId: B, config: { password: secret } },
+    getState: foreignState,
+  }));
+  const waiting = jest.spyOn(queue, 'getWaiting').mockImplementation(async (start, end) =>
+    foreign.slice(start, end + 1));
+  try {
+    const response = await request(app).get('/api/v1/discovery/jobs?status=pending&limit=1')
+      .set('authorization', auth('viewer'));
+    expect(response.status).toBe(200);
+    expect(response.body.data).toEqual([]);
+    expect(JSON.stringify(response.body)).not.toContain(secret);
+    expect(waiting).toHaveBeenCalledWith(0, 0);
+    expect(foreignState).not.toHaveBeenCalled();
+  } finally {
+    waiting.mockRestore();
+  }
 });
 
 test('legacy schedule stamps org and allowlists config; credential-backed providers refuse before enqueue', async () => {

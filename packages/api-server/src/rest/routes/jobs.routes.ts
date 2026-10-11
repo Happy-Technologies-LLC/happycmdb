@@ -48,14 +48,10 @@ router.get('/jobs/stats', refuseGlobalOperation);
 router.get('/jobs/schedules/discovery', refuseGlobalOperation);
 router.get('/jobs/schedules/etl', refuseGlobalOperation);
 router.put('/jobs/schedules/discovery/:provider', refuseGlobalOperation);
-router.put('/jobs/schedules/etl/:type', authMiddleware.requirePermission('write'), (req, res) =>
-  jobsController.updateETLSchedule(req, res)
-);
+router.put('/jobs/schedules/etl/:type', refuseGlobalOperation);
 
 // Discovery jobs (specific routes)
-router.get('/jobs/discovery/stats', (req, res) =>
-  jobsController.getDiscoveryStats(req, res)
-);
+router.get('/jobs/discovery/stats', refuseGlobalOperation);
 router.get('/jobs/discovery', requireJobOrganization, (req, res) =>
   jobsController.listDiscoveryJobs(req, res)
 );
@@ -89,13 +85,9 @@ router.post('/jobs/:queueName/:jobId/retry', authMiddleware.requirePermission('w
 // Queue Monitoring Routes
 router.get('/queues/stats', refuseGlobalOperation);
 router.get('/queues/:queueName/stats', refuseGlobalOperation);
-router.get('/queues/:queueName/metrics', (req, res) =>
-  queueController.getQueueMetrics(req, res)
-);
+router.get('/queues/:queueName/metrics', refuseGlobalOperation);
 router.get('/queues/workers/status', refuseGlobalOperation);
-router.get('/queues/health', (req, res) =>
-  queueController.getQueueHealth(req, res)
-);
+router.get('/queues/health', refuseGlobalOperation);
 
 // Queue control
 router.post('/queues/:queueName/pause', refuseGlobalOperation);

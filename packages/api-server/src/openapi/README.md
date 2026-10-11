@@ -170,10 +170,12 @@ stamp (including legacy jobs) are inaccessible; foreign and missing IDs return
 the same 404. Job data, results, failures, progress and free-form logs are not
 returned. Schedule responses omit stored configuration; queue-list pagination
 uses queue offsets and does not expose cross-tenant totals. Global queue clean,
-pause/resume, stats (including repeatable job metadata), worker status and
-schedule listings and discovery-provider schedule updates return the same fixed
-403 for every authenticated role until the global-operation policy exists.
-`GET /jobs/discovery/stats` and `/queues/{queueName}/metrics` remain T4 aggregate gaps.
+pause/resume, stats (including repeatable job metadata), worker status, queue
+health and metrics, discovery aggregates, schedule listings and both discovery
+and ETL provider/type schedule updates return the same fixed 403 for every
+authenticated role until the global-operation policy exists.
+Legacy discovery job list queries at most 100 jobs per queue state per request;
+pagination beyond that bounded sample remains tracked under HAP-546.
 
 `cmdb jobs run:discovery nmap --config '{"targets":["192.0.2.1"]}'`
 calls the authenticated `POST /jobs/discovery/{provider}` endpoint rather than

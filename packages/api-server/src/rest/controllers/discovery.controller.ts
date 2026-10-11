@@ -128,14 +128,18 @@ export class DiscoveryController {
       const { status, provider, limit = 100, offset = 0 } = req.query;
       const limitNum = Number(limit);
       const offsetNum = Number(offset);
+      // BullMQ returns job payloads for each state/queue. Bound every read by
+      // the requested page, even when the queue is mostly foreign-owned.
+      // Completeness beyond this bounded sample is tracked separately (HAP-546).
+      const lastIndex = Math.min(offsetNum + limitNum, 100) - 1;
       const allJobs: PublicDiscoveryJob[] = [];
       for (const queueName of discoveryQueues()) {
         const queue = queueManager.getQueue(queueName);
         const jobs = await Promise.all([
-          !status || status === 'pending' ? queue.getWaiting(0, 1000) : [],
-          !status || status === 'running' ? queue.getActive(0, 1000) : [],
-          !status || status === 'completed' ? queue.getCompleted(0, 1000) : [],
-          !status || status === 'failed' ? queue.getFailed(0, 1000) : [],
+          !status || status === 'pending' ? queue.getWaiting(0, lastIndex) : [],
+          !status || status === 'running' ? queue.getActive(0, lastIndex) : [],
+          !status || status === 'completed' ? queue.getCompleted(0, lastIndex) : [],
+          !status || status === 'failed' ? queue.getFailed(0, lastIndex) : [],
         ]);
         for (const job of jobs.flat()) {
           if (job.data?.organizationId !== organizationId || (provider && job.data.provider !== provider)) continue;

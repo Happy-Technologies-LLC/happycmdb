@@ -30,13 +30,19 @@ app.use(express.json());
 app.use('/api/v1', getAuthMiddleware().authenticate(), jobsRoutes);
 
 const paths = [
-  ['get', '/jobs/stats'], ['get', '/jobs/schedules/discovery'], ['get', '/jobs/schedules/etl'],
-  ['get', '/queues/stats'], ['get', '/queues/discovery-nmap/stats'], ['get', '/queues/workers/status'],
+  ['get', '/jobs/stats'], ['get', '/jobs/discovery/stats'],
+  ['get', '/jobs/schedules/discovery'], ['get', '/jobs/schedules/etl'],
+  ['get', '/queues/stats'], ['get', '/queues/discovery-nmap/stats'],
+  ['get', '/queues/discovery-nmap/metrics'], ['get', '/queues/health'],
+  ['get', '/queues/workers/status'],
   ['post', '/jobs/discovery-nmap/clean'], ['post', '/queues/discovery-nmap/pause'],
   ['post', '/queues/discovery-nmap/resume'], ['put', '/jobs/schedules/discovery/nmap'],
+  ['put', '/jobs/schedules/etl/sync'],
 ] as const;
 
 test('every authenticated role receives identical global refusal without touching queues or schedules', async () => {
+  touched.mockImplementation((_req: express.Request, res: express.Response) =>
+    res.status(200).json({ success: true, data: { queueName: 'foreign', counts: { failed: 42 } } }));
   const responses = [];
   for (const role of ['viewer', 'operator', 'admin']) {
     for (const [method, path] of paths) {

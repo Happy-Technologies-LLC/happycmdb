@@ -219,8 +219,8 @@ it('uses current enabled roles for signed JWTs and caps stored API keys across m
 });
 
 it('does not promote a lower-privilege key, follows a current role upgrade, and rejects disabled or missing identities', async () => {
-  const oldViewer = bearer('a');
   users.a!._role = 'viewer';
+  const oldViewer = bearer('a');
   savedKey._role = 'viewer';
   users.a!._role = 'operator';
   expect((await updateConfig(oldViewer, A)).status).toBe(200);

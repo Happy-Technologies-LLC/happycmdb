@@ -2,21 +2,18 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Connector Catalog Page
- * Browse, search, filter, and install connectors from the registry
+ * Browse, search and filter connector templates. Installation is deploy-time only.
  *
  * Features:
  * - Grid/List view toggle
  * - Search by name/description
  * - Filter by category, verified status
  * - Sort by name, popularity, version, rating
- * - Install/Update/Uninstall actions
  */
 
 import React, { useState, useMemo } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { Icon } from '@happy-technologies/design-system';
-import { toast } from 'sonner';
 import { LiquidGlass } from '@/components/ui/liquid-glass';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -39,7 +36,6 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { ConnectorCard } from '@/components/connectors/ConnectorCard';
 import { ConnectorDetailModal } from '@/components/connectors/ConnectorDetailModal';
-import { ConnectorInstallWizard } from '@/components/connectors/ConnectorInstallWizard';
 import connectorService, { ConnectorRegistry, InstalledConnector } from '@/services/connector.service';
 import LoadingSpinner from '@/components/common/LoadingSpinner';
 import { getCategoryLabel } from '@/lib/connector-icons';
@@ -65,14 +61,12 @@ const CATEGORIES = [
 ];
 
 export const ConnectorCatalog: React.FC = () => {
-  const queryClient = useQueryClient();
   const [viewMode, setViewMode] = useState<ViewMode>('grid');
   const [searchQuery, setSearchQuery] = useState('');
   const [sortBy, setSortBy] = useState<SortOption>('downloads');
   const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
   const [verifiedOnly, setVerifiedOnly] = useState(false);
   const [selectedConnector, setSelectedConnector] = useState<ConnectorRegistry | null>(null);
-  const [installingConnector, setInstallingConnector] = useState<ConnectorRegistry | null>(null);
   const [showFilters, setShowFilters] = useState(false);
 
   // Fetch connector registry
@@ -132,72 +126,12 @@ export const ConnectorCatalog: React.FC = () => {
     return filtered;
   }, [registryConnectors, searchQuery, sortBy]);
 
-  // Install connector mutation
-  const installMutation = useMutation({
-    mutationFn: (connectorType: string) => connectorService.installConnector(connectorType),
-    onSuccess: (result) => {
-      if (result.success) {
-        toast.success(result.message || 'Connector installed successfully');
-        queryClient.invalidateQueries({ queryKey: ['installedConnectors'] });
-        setInstallingConnector(null);
-      } else {
-        toast.error(result.message || 'Failed to install connector');
-      }
-    },
-    onError: (error: any) => {
-      toast.error(error.message || 'Failed to install connector');
-    },
-  });
-
-  // Update connector mutation
-  const updateMutation = useMutation({
-    mutationFn: (connectorType: string) => connectorService.updateConnector(connectorType),
-    onSuccess: (result) => {
-      if (result.success) {
-        toast.success(result.message || 'Connector updated successfully');
-        queryClient.invalidateQueries({ queryKey: ['installedConnectors'] });
-      } else {
-        toast.error(result.message || 'Failed to update connector');
-      }
-    },
-    onError: (error: any) => {
-      toast.error(error.message || 'Failed to update connector');
-    },
-  });
-
-  // Uninstall connector mutation
-  const uninstallMutation = useMutation({
-    mutationFn: (connectorType: string) => connectorService.uninstallConnector(connectorType),
-    onSuccess: (result) => {
-      if (result.success) {
-        toast.success(result.message || 'Connector uninstalled successfully');
-        queryClient.invalidateQueries({ queryKey: ['installedConnectors'] });
-      } else {
-        toast.error(result.message || 'Failed to uninstall connector');
-      }
-    },
-    onError: (error: any) => {
-      toast.error(error.message || 'Failed to uninstall connector');
-    },
-  });
-
   const handleCategoryToggle = (category: string) => {
     setSelectedCategories(prev =>
       prev.includes(category)
         ? prev.filter(c => c !== category)
         : [...prev, category]
     );
-  };
-
-  const handleInstallClick = (connector: ConnectorRegistry) => {
-    const installed = installedMap.get(connector.connectorType);
-    if (installed && installed.installedVersion !== connector.latestVersion) {
-      // Update available
-      updateMutation.mutate(connector.connectorType);
-    } else if (!installed) {
-      // New installation - open wizard
-      setInstallingConnector(connector);
-    }
   };
 
   const stats = useMemo(() => ({
@@ -220,7 +154,7 @@ export const ConnectorCatalog: React.FC = () => {
         <Eyebrow>Registry · Connectors</Eyebrow>
         <h1 className="mt-3 text-[1.9rem]">Connector Catalog</h1>
         <p className="mt-1.5 text-ink-soft">
-          Browse and install connectors from the HappyCMDB registry
+          Browse connector templates. Installation and updates are managed through deployment packaging.
         </p>
       </div>
 
@@ -436,7 +370,6 @@ export const ConnectorCatalog: React.FC = () => {
               >
                 <ConnectorCard
                   connector={connector}
-                  onInstall={() => handleInstallClick(connector)}
                   isInstalled={!!installed}
                   installedVersion={installed?.installedVersion}
                 />
@@ -452,23 +385,6 @@ export const ConnectorCatalog: React.FC = () => {
           connector={selectedConnector}
           installedVersion={installedMap.get(selectedConnector.connectorType)?.installedVersion}
           onClose={() => setSelectedConnector(null)}
-          onInstall={() => handleInstallClick(selectedConnector)}
-          onUninstall={(connectorType) => {
-            uninstallMutation.mutate(connectorType);
-            setSelectedConnector(null);
-          }}
-        />
-      )}
-
-      {/* Install Wizard */}
-      {installingConnector && (
-        <ConnectorInstallWizard
-          connector={installingConnector}
-          onClose={() => setInstallingConnector(null)}
-          onComplete={() => {
-            queryClient.invalidateQueries({ queryKey: ['installedConnectors'] });
-            setInstallingConnector(null);
-          }}
         />
       )}
     </div>

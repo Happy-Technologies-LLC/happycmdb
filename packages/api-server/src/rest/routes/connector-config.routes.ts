@@ -5,12 +5,11 @@
  * Connector Configuration Routes. Authentication is enforced centrally:
  * server.ts mounts `authMiddleware.authenticate()` on every /api/v1 route
  * before this router. Reads (list/get, resource listing, run history,
- * metrics) stay open to any authenticated role, as does testing an
- * existing configuration's connection (it inspects connectivity without
- * mutating state). Every state-changing route -- create/update/delete a
- * configuration, trigger a run, enable/disable, update enabled resources,
- * and cancel a run -- additionally requires the 'write' permission via
- * `authMiddleware.requirePermission('write')`.
+ * metrics) stay open to any authenticated role. Every operational action
+ * that can reach a provider or change state -- test connection,
+ * create/update/delete a configuration, trigger a run, enable/disable,
+ * update enabled resources, and cancel a run -- additionally requires
+ * the 'write' permission via `authMiddleware.requirePermission('write')`.
  */
 
 import { Router } from 'express';
@@ -19,6 +18,7 @@ import { ConnectorConfigController } from '../controllers/connector-config.contr
 import { validateRequest, validateOptional } from '../middleware/validation.middleware';
 import { auditMiddleware } from '../../middleware/audit.middleware';
 import { getAuthMiddleware } from '../../auth/auth-bootstrap';
+import { requireConnectorScope } from '../../auth/connector-scope';
 
 export const connectorConfigRoutes = Router();
 const controller = new ConnectorConfigController();
@@ -26,6 +26,7 @@ const authMiddleware = getAuthMiddleware();
 
 // Apply audit middleware to all routes
 connectorConfigRoutes.use(auditMiddleware);
+connectorConfigRoutes.use(requireConnectorScope);
 
 // Validation schemas
 const createConfigSchema = Joi.object({
@@ -45,6 +46,7 @@ const createConfigSchema = Joi.object({
   notification_channels: Joi.array().items(Joi.string()).optional().default([]),
   notification_on_success: Joi.boolean().optional().default(false),
   notification_on_failure: Joi.boolean().optional().default(true),
+  organization_id: Joi.any().forbidden(),
 });
 
 const updateConfigSchema = Joi.object({
@@ -63,6 +65,7 @@ const updateConfigSchema = Joi.object({
   notification_channels: Joi.array().items(Joi.string()).optional(),
   notification_on_success: Joi.boolean().optional(),
   notification_on_failure: Joi.boolean().optional(),
+  organization_id: Joi.any().forbidden(),
 });
 
 const listConfigsSchema = Joi.object({
@@ -78,7 +81,7 @@ const listConfigsSchema = Joi.object({
 
 const runConfigSchema = Joi.object({
   resource_id: Joi.string().optional(), // Run specific resource only
-  triggered_by: Joi.string().optional().default('manual'),
+  triggered_by: Joi.any().forbidden(),
 });
 
 const runHistoryQuerySchema = Joi.object({
@@ -94,7 +97,7 @@ const runHistoryQuerySchema = Joi.object({
 
 const updateResourcesSchema = Joi.object({
   enabled_resources: Joi.array().items(Joi.string()).required(),
-  resource_configs: Joi.object().optional().default({}),
+  resource_configs: Joi.object().optional(),
 });
 
 // ============================================
@@ -144,6 +147,7 @@ connectorConfigRoutes.delete(
 // Test connection
 connectorConfigRoutes.post(
   '/:id/test',
+  authMiddleware.requirePermission('write'),
   controller.testConnection.bind(controller)
 );
 

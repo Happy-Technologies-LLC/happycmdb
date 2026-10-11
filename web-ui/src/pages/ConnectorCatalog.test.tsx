@@ -1,9 +1,7 @@
 // Copyright 2026 Happy Technologies LLC
 // SPDX-License-Identifier: Apache-2.0
 //
-// Final cycle-10 live-component retest. F-015: /connectors/catalog
-// (registry+installed query, grid/list toggle, category/verified filters,
-// search, install/update dispatch, post-mutation query invalidation).
+// Connector catalog read-only discovery and deployment-only lifecycle presentation.
 
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
@@ -16,9 +14,6 @@ const { connectorService } = vi.hoisted(() => ({
   connectorService: {
     getConnectorRegistry: vi.fn(),
     getInstalledConnectors: vi.fn(),
-    installConnector: vi.fn(),
-    updateConnector: vi.fn(),
-    uninstallConnector: vi.fn(),
   },
 }));
 
@@ -69,17 +64,6 @@ describe('ConnectorCatalog page (F-015)', () => {
     connectorService.getInstalledConnectors.mockResolvedValue([]);
   });
 
-  it('queries the registry and installed connectors, renders the fetched connector', async () => {
-    renderCatalog();
-
-    await waitFor(() => {
-      expect(connectorService.getConnectorRegistry).toHaveBeenCalled();
-      expect(connectorService.getInstalledConnectors).toHaveBeenCalled();
-    });
-
-    expect(await screen.findByText('ServiceNow')).toBeInTheDocument();
-  });
-
   it('search filters the connector list by name', async () => {
     const user = userEvent.setup();
     renderCatalog();
@@ -93,32 +77,15 @@ describe('ConnectorCatalog page (F-015)', () => {
     });
   });
 
-  it('grid/list view toggle switches viewMode without crashing', async () => {
+  it('shows deployment-only availability without exposing application install controls', async () => {
     const user = userEvent.setup();
     renderCatalog();
     await screen.findByText('ServiceNow');
-
-    const buttons = screen.getAllByRole('button');
-    const listBtn = buttons.find((b) => b.querySelector('svg'));
-    // Click the second icon-only view-toggle button (list view).
-    const viewButtons = document.querySelectorAll('.flex.gap-1.border.rounded-lg.p-1 button');
-    expect(viewButtons.length).toBe(2);
-    await user.click(viewButtons[1] as HTMLElement);
-
-    // Still renders the connector after switching views -- no crash.
-    expect(screen.getByText('ServiceNow')).toBeInTheDocument();
-  });
-
-  it('a new (not-installed) connector click opens the install wizard, which calls installConnector on completion', async () => {
-    const user = userEvent.setup();
-    connectorService.installConnector.mockResolvedValue({ success: true, message: 'Installed' });
-    renderCatalog();
-    await screen.findByText('ServiceNow');
-
-    // ConnectorCard renders an Install action for a not-yet-installed
-    // registry entry; clicking it opens ConnectorInstallWizard per
-    // handleInstallClick's !installed branch.
-    const installButtons = screen.getAllByRole('button', { name: /install/i });
-    expect(installButtons.length).toBeGreaterThan(0);
+    expect(screen.getByText('Available for deployment')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^(install|update|uninstall)/i })).not.toBeInTheDocument();
+    await user.click(screen.getByText('ServiceNow'));
+    expect(screen.getByText(/Install and update connector code through deployment packaging/i))
+      .toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^(install|update|uninstall)/i })).not.toBeInTheDocument();
   });
 });

@@ -30,11 +30,7 @@ export async function extractCloudResources(
                        config.connection['cloud_resources']?.resource_types ||
                        [];
 
-  logger.info('Extracting Wiz cloud resources', {
-    cloudProviders,
-    resourceTypes,
-    maxResults,
-  });
+  logger.info('Extracting Wiz cloud resources');
 
   const query = `
     query GetCloudResources($first: Int!, $after: String, $filters: CloudResourceFilters) {
@@ -79,12 +75,7 @@ export async function extractCloudResources(
         },
       });
 
-      if (response.data.errors) {
-        logger.error('Wiz GraphQL query failed', {
-          errors: response.data.errors,
-        });
-        break;
-      }
+      if (response.data.errors) { throw new Error('Wiz GraphQL query failed'); }
 
       const nodes = response.data.data?.graphSearch?.nodes || [];
       const pageInfo = response.data.data?.graphSearch?.pageInfo;
@@ -115,8 +106,8 @@ export async function extractCloudResources(
       }
 
     } catch (error) {
-      logger.error('Wiz cloud resource extraction failed', { error });
-      throw error;
+      logger.error('Wiz cloud resource extraction failed');
+      throw new Error('Connector extraction failed');
     }
   }
 

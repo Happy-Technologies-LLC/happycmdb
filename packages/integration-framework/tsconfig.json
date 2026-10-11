@@ -9,6 +9,7 @@
   "include": ["src/**/*"],
   "references": [
     { "path": "../common" },
+    { "path": "../event-processor" },
     { "path": "../database" }
   ]
 }

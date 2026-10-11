@@ -33,12 +33,7 @@ export async function extractVulnerabilities(
                         config.connection['vulnerabilities']?.has_exploit ||
                         false;
 
-  logger.info('Extracting Wiz vulnerabilities', {
-    severityFilter,
-    statusFilter,
-    hasExploitOnly,
-    maxResults,
-  });
+  logger.info('Extracting Wiz vulnerabilities');
 
   const query = `
     query GetVulnerabilities($first: Int!, $after: String, $filters: VulnerabilityFilters) {
@@ -105,12 +100,7 @@ export async function extractVulnerabilities(
         },
       });
 
-      if (response.data.errors) {
-        logger.error('Wiz GraphQL query failed', {
-          errors: response.data.errors,
-        });
-        break;
-      }
+      if (response.data.errors) { throw new Error('Wiz GraphQL query failed'); }
 
       const nodes = response.data.data?.vulnerabilities?.nodes || [];
       const pageInfo = response.data.data?.vulnerabilities?.pageInfo;
@@ -137,8 +127,8 @@ export async function extractVulnerabilities(
       }
 
     } catch (error) {
-      logger.error('Wiz vulnerability extraction failed', { error });
-      throw error;
+      logger.error('Wiz vulnerability extraction failed');
+      throw new Error('Connector extraction failed');
     }
   }
 

@@ -192,24 +192,6 @@ export interface ConnectorRunResult {
 }
 
 /**
- * Resource Run Result (per-resource metrics)
- */
-export interface ResourceRunResult {
-  run_id: string;
-  config_id: string;
-  connector_type: string;
-  resource_id: string;
-  started_at: Date;
-  completed_at?: Date;
-  status: 'running' | 'completed' | 'failed';
-  records_extracted: number;
-  records_transformed: number;
-  records_loaded: number;
-  errors?: any[];
-  duration_ms?: number;
-}
-
-/**
  * Installed Connector Record
  */
 export interface InstalledConnector {

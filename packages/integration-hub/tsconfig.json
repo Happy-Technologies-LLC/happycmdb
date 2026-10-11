@@ -8,6 +8,7 @@
   },
   "include": ["src/**/*"],
   "references": [
+    { "path": "../api-server" },
     { "path": "../common" },
     { "path": "../database" },
     { "path": "../integration-framework" },

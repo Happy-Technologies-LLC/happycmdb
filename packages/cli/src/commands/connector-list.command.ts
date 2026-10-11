@@ -133,7 +133,7 @@ export class ConnectorListCommand {
 
       if (connectors.length === 0) {
         console.log(chalk.yellow('\nNo installed connectors found'));
-        console.log(chalk.gray('Install connectors with: happycmdb connector install <type>'));
+        console.log(chalk.gray('Connector code is installed through deployment packaging.'));
         return;
       }
 

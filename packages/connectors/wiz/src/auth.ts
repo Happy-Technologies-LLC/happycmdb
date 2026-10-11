@@ -41,14 +41,10 @@ export class WizAuthManager {
       this.accessToken = response.data.access_token;
       this.tokenExpiry = Date.now() + ((response.data.expires_in || 3600) * 1000);
 
-      logger.info('Wiz authentication successful', {
-        expires_in: response.data.expires_in || 3600,
-      });
+      logger.info('Wiz authentication successful');
     } catch (error: any) {
-      logger.error('Wiz authentication failed', {
-        error: error.response?.data || error.message,
-      });
-      throw new Error(`Wiz authentication failed: ${error.message}`);
+      logger.error('Wiz authentication failed');
+      throw new Error('Wiz authentication failed');
     }
   }
 

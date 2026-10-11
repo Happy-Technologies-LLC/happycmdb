@@ -2,10 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Connector Registry & Installation Routes. Authentication is enforced
- * centrally on /api/v1. Registry browsing remains available; global
- * installation and control refuse every caller until platform-admin authority
- * exists. Connector verification is global control, not tenant configuration.
+ * Connector catalog reads remain available to authenticated users.
+ * Shared connector lifecycle changes are deploy-time only until the P-6
+ * platform authority cutover; every API caller receives the same refusal.
  */
 
 import { Router } from 'express';
@@ -22,17 +21,6 @@ const controller = new ConnectorController();
 connectorRoutes.use(auditMiddleware);
 
 // Validation schemas
-const installConnectorSchema = Joi.object({
-  connector_type: Joi.string().required().min(1).max(100),
-  version: Joi.string().optional().pattern(/^\d+\.\d+\.\d+$/),
-  force: Joi.boolean().optional().default(false),
-});
-
-const updateConnectorSchema = Joi.object({
-  version: Joi.string().optional().pattern(/^\d+\.\d+\.\d+$/),
-  force: Joi.boolean().optional().default(false),
-});
-
 const registryQuerySchema = Joi.object({
   category: Joi.string().valid('discovery', 'connector').optional(),
   search: Joi.string().optional().min(1),
@@ -93,42 +81,12 @@ connectorRoutes.get(
   controller.getInstalledConnectorDetails.bind(controller)
 );
 
-// Install connector from registry
-connectorRoutes.post(
-  '/install',
-  denyPlatformAdminRest,
-  validateRequest(installConnectorSchema, 'body'),
-  controller.installConnector.bind(controller)
-);
-
-// Update connector to specific version
-connectorRoutes.put(
-  '/:type/update',
-  denyPlatformAdminRest,
-  validateRequest(updateConnectorSchema, 'body'),
-  controller.updateConnector.bind(controller)
-);
-
-// Uninstall connector
-connectorRoutes.delete(
-  '/:type',
-  denyPlatformAdminRest,
-  controller.uninstallConnector.bind(controller)
-);
-
-// Verify connector installation
-connectorRoutes.post(
-  '/:type/verify',
-  denyPlatformAdminRest,
-  controller.verifyConnector.bind(controller)
-);
-
-// Refresh registry cache
-connectorRoutes.post(
-  '/cache/refresh',
-  denyPlatformAdminRest,
-  controller.refreshRegistryCache.bind(controller)
-);
+// No authenticated caller may mutate globally shared connector installations.
+connectorRoutes.post('/install', denyPlatformAdminRest);
+connectorRoutes.put('/:type/update', denyPlatformAdminRest);
+connectorRoutes.delete('/:type', denyPlatformAdminRest);
+connectorRoutes.post('/:type/verify', denyPlatformAdminRest);
+connectorRoutes.post('/cache/refresh', denyPlatformAdminRest);
 
 // Check for connector updates
 connectorRoutes.get(

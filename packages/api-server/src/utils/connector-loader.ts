@@ -69,10 +69,10 @@ export class ConnectorLoader {
    */
   async loadAllConnectors(): Promise<void> {
     try {
-      logger.info('Starting connector loader', { path: this.connectorsPath });
+      logger.info('Starting connector loader');
 
       if (!fs.existsSync(this.connectorsPath)) {
-        logger.warn('Connectors directory not found', { path: this.connectorsPath });
+        logger.warn('Connectors directory not found');
         return;
       }
 
@@ -80,7 +80,7 @@ export class ConnectorLoader {
         .filter(dirent => dirent.isDirectory())
         .map(dirent => dirent.name);
 
-      logger.info('Found connector directories', { count: connectorDirs.length, connectors: connectorDirs });
+      logger.info('Found connector directories', { count: connectorDirs.length });
 
       let loaded = 0;
       let errors = 0;
@@ -89,8 +89,8 @@ export class ConnectorLoader {
         try {
           await this.loadConnector(connectorDir);
           loaded++;
-        } catch (error) {
-          logger.error(`Failed to load connector: ${connectorDir}`, error);
+        } catch {
+          logger.error('Failed to load connector');
           errors++;
         }
       }
@@ -102,7 +102,7 @@ export class ConnectorLoader {
       });
 
     } catch (error) {
-      logger.error('Failed to load connectors', error);
+      logger.error('Failed to load connectors');
       throw error;
     }
   }
@@ -115,17 +115,14 @@ export class ConnectorLoader {
     const metadataPath = path.join(connectorPath, 'connector.json');
 
     if (!fs.existsSync(metadataPath)) {
-      logger.warn(`No connector.json found for ${connectorDir}`, { path: metadataPath });
+      logger.warn('No connector.json found');
       return;
     }
 
     const metadataContent = fs.readFileSync(metadataPath, 'utf-8');
     const metadata: ConnectorMetadata = JSON.parse(metadataContent);
 
-    logger.info(`Loading connector: ${metadata.name}`, {
-      type: metadata.type,
-      version: metadata.version
-    });
+    logger.info('Loading connector');
 
     // Transform authentication.fields to config_schema if needed
     const transformedMetadata = this.transformAuthenticationFields(metadata);
@@ -257,13 +254,10 @@ export class ConnectorLoader {
         ]
       );
 
-      logger.info(`Registered connector: ${metadata.name}`, {
-        type: metadata.type,
-        resources: metadata.resources?.length || 0
-      });
+      logger.info('Registered connector', { resources: metadata.resources?.length || 0 });
 
     } catch (error) {
-      logger.error(`Failed to register connector ${metadata.type} in database`, error);
+      logger.error('Failed to register connector in database');
       throw error;
     }
   }

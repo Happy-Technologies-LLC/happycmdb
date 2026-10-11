@@ -71,7 +71,8 @@
     "expected_behavior": "Body validated by Joi (connector_type required, optional version, force). Returns 409 Conflict if already installed and force is not true; 404 if connector_type is absent from connector_registry_cache. Otherwise upserts a row into installed_connectors (ON CONFLICT(connector_type) DO UPDATE) copying category/name/description/capabilities/resources/configuration_schema/tags from the catalog entry, defaults version to catalog latest_version, and returns 201 {success:true, data:row, message}. Note: actual package download/extraction/dependency install is a documented TODO stub; install_path is set to /opt/happycmdb/connectors/<type> without verifying any files exist.",
     "issue": false,
     "severity": "",
-    "issue_note": ""
+    "issue_note": "Historical audit only: lifecycle install route now returns CONNECTOR_LIFECYCLE_UNAVAILABLE; no package installation is performed.",
+    "resolution": "removed"
   },
   {
     "id": "CONN-007",
@@ -83,7 +84,8 @@
     "expected_behavior": "Returns 404 if the connector is not installed; 400 if no version is supplied and the registry has no latest_version. If the target equals the current version and force is not set, returns 200 with up_to_date:true. Otherwise UPDATEs installed_connectors.installed_version/latest_available_version/updated_at and returns 200 {success:true, data:row, previous_version, new_version, message}. Actual download/backup/migration is a TODO stub; only the DB record is changed.",
     "issue": false,
     "severity": "",
-    "issue_note": ""
+    "issue_note": "Historical audit only: lifecycle update route now returns CONNECTOR_LIFECYCLE_UNAVAILABLE; no package update is performed.",
+    "resolution": "removed"
   },
   {
     "id": "CONN-008",
@@ -95,7 +97,8 @@
     "expected_behavior": "Returns 404 if the connector is not installed. Guards against orphaning configs: counts connector_configurations for the type and returns 400 if any exist ('Delete configurations first'). Otherwise DELETEs the installed_connectors row and returns 200 {success:true, message}. File/dependency cleanup is a TODO stub; only the DB record is removed.",
     "issue": false,
     "severity": "",
-    "issue_note": ""
+    "issue_note": "Historical audit only: lifecycle uninstall route now returns CONNECTOR_LIFECYCLE_UNAVAILABLE; no package removal is performed.",
+    "resolution": "removed"
   },
   {
     "id": "CONN-009",
@@ -108,8 +111,8 @@
     "issue": true,
     "severity": "functional",
     "issue_note": "verifyConnector unconditionally sets verified=true (connector.controller.ts:572), so verification always reports success and gives false confidence.",
-    "resolution": "deferred",
-    "resolution_note": "Documented deferral: deliberate stub / unbuilt-feature / no backend route. Tracked as a Known Limitation; not a wiring or UX bug."
+    "resolution": "removed",
+    "resolution_note": "Historical audit only: verification route now returns CONNECTOR_LIFECYCLE_UNAVAILABLE; no unconditional success response exists."
   },
   {
     "id": "CONN-010",
@@ -121,7 +124,8 @@
     "expected_behavior": "Fetches the remote catalog JSON from CONNECTOR_REGISTRY_URL (default the happycmdb GitHub catalog.json) with a 10s axios timeout. Throws/500s if the payload lacks a connectors array. On success DELETEs all connector_registry_cache rows then re-inserts each catalog connector (versions JSON-stringified, cache_expires_at = NOW()+24h) and returns 200 {success:true, count, updated_at}. Side effect: full cache replacement (not atomic/transactional).",
     "issue": false,
     "severity": "",
-    "issue_note": ""
+    "issue_note": "Historical audit only: cache refresh route now returns CONNECTOR_LIFECYCLE_UNAVAILABLE; the old lifecycle registry writer was removed.",
+    "resolution": "removed"
   },
   {
     "id": "CONN-011",

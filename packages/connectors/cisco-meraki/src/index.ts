@@ -171,17 +171,11 @@ export default class CiscoMerakiConnector extends BaseIntegrationConnector {
     const rateLimit = 5;
     this.rateLimiter = new RateLimiter(rateLimit);
 
-    logger.info('Cisco Meraki connector initialized', {
-      base_url: this.baseUrl,
-      rate_limit: rateLimit,
-    });
+    logger.info('Cisco Meraki connector initialized');
   }
 
   async initialize(): Promise<void> {
-    logger.info('Initializing Cisco Meraki connector', {
-      base_url: this.baseUrl,
-      enabled_resources: this.getEnabledResources(),
-    });
+    logger.info('Initializing Cisco Meraki connector');
     this.isInitialized = true;
   }
 
@@ -205,15 +199,7 @@ export default class CiscoMerakiConnector extends BaseIntegrationConnector {
         },
       };
     } catch (error: any) {
-      return {
-        success: false,
-        message: `Connection failed: ${error.message}`,
-        details: {
-          base_url: this.baseUrl,
-          error: error.response?.data || error.message,
-          status_code: error.response?.status,
-        },
-      };
+      return { success: false, message: 'Connection failed' };
     }
   }
 
@@ -229,10 +215,7 @@ export default class CiscoMerakiConnector extends BaseIntegrationConnector {
       throw new Error(`Unknown resource: ${resourceId}`);
     }
 
-    logger.info('Starting Meraki resource extraction', {
-      resource: resourceId,
-      config: resourceConfig,
-    });
+    logger.info('Starting Meraki resource extraction');
 
     switch (resourceId) {
       case 'organizations':
@@ -283,8 +266,8 @@ export default class CiscoMerakiConnector extends BaseIntegrationConnector {
       });
 
     } catch (error) {
-      logger.error('Organization extraction failed', { error });
-      throw error;
+      logger.error('Organization extraction failed');
+      throw new Error('Connector extraction failed');
     }
 
     return extractedData;
@@ -345,16 +328,10 @@ export default class CiscoMerakiConnector extends BaseIntegrationConnector {
             });
           }
 
-          logger.info('Networks extracted for organization', {
-            organization_id: orgId,
-            network_count: networks.length,
-          });
+          logger.info('Networks extracted for organization');
 
         } catch (error: any) {
-          logger.error('Network extraction failed for organization', {
-            organization_id: orgId,
-            error: error.message,
-          });
+          logger.error('Network extraction failed for organization');
           // Continue with next organization
         }
       }
@@ -364,8 +341,8 @@ export default class CiscoMerakiConnector extends BaseIntegrationConnector {
       });
 
     } catch (error) {
-      logger.error('Network extraction failed', { error });
-      throw error;
+      logger.error('Network extraction failed');
+      throw new Error('Connector extraction failed');
     }
 
     return extractedData;
@@ -424,18 +401,12 @@ export default class CiscoMerakiConnector extends BaseIntegrationConnector {
             });
           }
 
-          logger.info('Devices extracted for network', {
-            network_id: networkId,
-            device_count: devices.length,
-          });
+          logger.info('Devices extracted for network');
 
         } catch (error: any) {
           // 404 errors are normal for networks without devices
           if (error.response?.status !== 404) {
-            logger.error('Device extraction failed for network', {
-              network_id: networkId,
-              error: error.message,
-            });
+            logger.error('Device extraction failed for network');
           }
           // Continue with next network
         }
@@ -446,8 +417,8 @@ export default class CiscoMerakiConnector extends BaseIntegrationConnector {
       });
 
     } catch (error) {
-      logger.error('Device extraction failed', { error });
-      throw error;
+      logger.error('Device extraction failed');
+      throw new Error('Connector extraction failed');
     }
 
     return extractedData;
@@ -475,10 +446,7 @@ export default class CiscoMerakiConnector extends BaseIntegrationConnector {
         networkIds = networksData.map(data => data.external_id);
       }
 
-      logger.info('Extracting clients for networks', {
-        network_count: networkIds.length,
-        timespan: timespan,
-      });
+      logger.info('Extracting clients for networks');
 
       // Extract clients for each network
       for (const networkId of networkIds) {
@@ -503,18 +471,12 @@ export default class CiscoMerakiConnector extends BaseIntegrationConnector {
             });
           }
 
-          logger.info('Clients extracted for network', {
-            network_id: networkId,
-            client_count: clients.length,
-          });
+          logger.info('Clients extracted for network');
 
         } catch (error: any) {
           // 404 errors are normal for networks without clients
           if (error.response?.status !== 404) {
-            logger.error('Client extraction failed for network', {
-              network_id: networkId,
-              error: error.message,
-            });
+            logger.error('Client extraction failed for network');
           }
           // Continue with next network
         }
@@ -525,8 +487,8 @@ export default class CiscoMerakiConnector extends BaseIntegrationConnector {
       });
 
     } catch (error) {
-      logger.error('Client extraction failed', { error });
-      throw error;
+      logger.error('Client extraction failed');
+      throw new Error('Connector extraction failed');
     }
 
     return extractedData;
@@ -570,7 +532,7 @@ export default class CiscoMerakiConnector extends BaseIntegrationConnector {
       });
 
     } catch (error) {
-      logger.error('Meraki relationship extraction failed', { error });
+      logger.error('Meraki relationship extraction failed');
       // Don't throw - relationships are optional
     }
 

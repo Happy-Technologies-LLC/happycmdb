@@ -207,30 +207,12 @@ Single connector handles multiple resource types:
 
 #### 5. Connector Registry
 
-Self-hosted catalog with browse, install, update functionality:
-
-**Features**:
-- GitHub-based package hosting
-- Version management
-- Checksum verification
-- Verified badge system
-- CLI + Web UI + API management
-- Private registry support
-
-**Workflow**:
-```bash
-# Browse catalog
-happycmdb connector list
-
-# Install connector
-happycmdb connector install servicenow
-
-# Check for updates
-happycmdb connector outdated
-
-# Update connector
-happycmdb connector update servicenow
-```
+This release originally described a self-hosted connector catalog and application
+installation commands. The current R-CRED-2 cutover retains read-only catalog
+browsing (`happycmdb connector list`) but removes the application installer,
+CLI installation/update/uninstall commands and web installation controls.
+Deployment operators package and place connector code outside the application;
+runtime lifecycle mutations are refused for every authenticated caller.
 
 #### 6. Identity Resolution Engine
 

@@ -175,7 +175,18 @@ export class AuthService {
         throw new Error('User not found or disabled');
       }
 
-      return { ...payload, _organizationId: user._organizationId };
+      return {
+        _userId: payload._userId,
+        _username: payload._username,
+        _role: payload._role,
+        _type: payload._type,
+        _tier: payload._tier,
+        _organizationId: user._organizationId,
+        iat: payload.iat,
+        exp: payload.exp,
+        iss: payload.iss,
+        aud: payload.aud,
+      };
     } catch (error) {
       throw new Error(`Token verification failed: ${error}`);
     }

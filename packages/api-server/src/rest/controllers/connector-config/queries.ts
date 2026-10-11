@@ -6,6 +6,7 @@
  */
 
 import { validateConnectorConfigSortField, validateConnectorRunSortField, validateSortDirection } from '@cmdb/common';
+import { connectorPredicate, PUBLIC_CONFIG, PUBLIC_RUN } from '../../../auth/connector-scope';
 
 interface ListQueryParams {
   connector_type?: string;
@@ -16,6 +17,8 @@ interface ListQueryParams {
   sort_order: string;
   limit: number;
   offset: number;
+  organizationId: string | null;
+  legacy: boolean;
 }
 
 interface RunsQueryParams {
@@ -27,12 +30,14 @@ interface RunsQueryParams {
   offset: number;
   sort_by: string;
   sort_order: string;
+  organizationId: string | null;
+  legacy: boolean;
 }
 
 export function buildListQuery(params: ListQueryParams) {
-  let query = 'SELECT * FROM connector_configurations WHERE 1=1';
-  const queryParams: any[] = [];
-  let paramIndex = 1;
+  let query = `SELECT ${PUBLIC_CONFIG} FROM connector_configurations WHERE ${connectorPredicate('connector_configurations', 1)}`;
+  const queryParams: unknown[] = [params.organizationId, params.legacy];
+  let paramIndex = 3;
 
   if (params.connector_type) {
     query += ` AND connector_type = $${paramIndex++}`;
@@ -55,7 +60,7 @@ export function buildListQuery(params: ListQueryParams) {
     paramIndex++;
   }
 
-  const countQuery = query.replace('SELECT *', 'SELECT COUNT(*)');
+  const countQuery = query.replace(`SELECT ${PUBLIC_CONFIG}`, 'SELECT COUNT(*)');
   const countParams = [...queryParams];
 
   // Validate sort parameters to prevent SQL injection
@@ -75,9 +80,9 @@ export function buildListQuery(params: ListQueryParams) {
 }
 
 export function buildRunsQuery(params: RunsQueryParams) {
-  let query = 'SELECT * FROM connector_run_history WHERE 1=1';
-  const queryParams: any[] = [];
-  let paramIndex = 1;
+  let query = `SELECT ${PUBLIC_RUN} FROM connector_run_history WHERE ${connectorPredicate('connector_run_history', 1)}`;
+  const queryParams: unknown[] = [params.organizationId, params.legacy];
+  let paramIndex = 3;
 
   if (params.config_id) {
     query += ` AND config_id = $${paramIndex++}`;
@@ -99,7 +104,7 @@ export function buildRunsQuery(params: RunsQueryParams) {
     queryParams.push(params.status);
   }
 
-  const countQuery = query.replace('SELECT *', 'SELECT COUNT(*)');
+  const countQuery = query.replace(`SELECT ${PUBLIC_RUN}`, 'SELECT COUNT(*)');
   const countParams = [...queryParams];
 
   // Validate sort parameters to prevent SQL injection

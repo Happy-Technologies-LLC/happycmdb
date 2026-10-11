@@ -10,6 +10,7 @@ import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import axios from 'axios';
 import CrowdStrikeConnector from './index';
 import { ConnectorConfiguration } from '@cmdb/integration-framework';
+import { logger } from '@cmdb/common';
 
 // Mock axios
 vi.mock('axios');
@@ -741,6 +742,50 @@ describe('CrowdStrikeConnector - Multi-Resource Tests', () => {
           }),
         })
       );
+    });
+  });
+
+  describe('Sensitive failure output', () => {
+    it('keeps OAuth response bodies and Axios request headers out of logs and errors', async () => {
+      const secret = 'CROWDSTRIKE_AUTH_SENTINEL';
+      const log = vi.spyOn(logger, 'error').mockImplementation(() => {});
+      mockAuthPost.mockRejectedValueOnce({
+        message: secret,
+        response: { status: 401, data: { access_token: secret } },
+        config: { headers: { Authorization: secret } },
+      });
+
+      try {
+        await expect(connector.initialize()).rejects.toMatchObject({
+          message: 'CrowdStrike authentication failed',
+        });
+        expect(JSON.stringify(log.mock.calls)).not.toContain(secret);
+        expect(JSON.stringify(log.mock.calls)).toContain('CrowdStrike authentication failed');
+      } finally {
+        log.mockRestore();
+      }
+    });
+
+    it('keeps resource configuration and extraction errors out of logger metadata', async () => {
+      const secret = 'CROWDSTRIKE_EXTRACT_SENTINEL';
+      const log = vi.spyOn(logger, 'error').mockImplementation(() => {});
+      const info = vi.spyOn(logger, 'info').mockImplementation(() => {});
+      await connector.initialize();
+      mockAxiosInstance.get.mockRejectedValueOnce({
+        message: secret,
+        response: { data: { nested: { token: secret } } },
+        config: { headers: { Authorization: secret } },
+      });
+
+      try {
+        await expect(connector.extractResource('devices', { filter: secret })).rejects.toMatchObject({
+          message: 'Connector extraction failed',
+        });
+        expect(JSON.stringify([log.mock.calls, info.mock.calls])).not.toContain(secret);
+      } finally {
+        log.mockRestore();
+        info.mockRestore();
+      }
     });
   });
 });

@@ -45,10 +45,7 @@ export default class JiraConnector extends BaseIntegrationConnector {
   }
 
   async initialize(): Promise<void> {
-    logger.info('Initializing Jira connector', {
-      instance: this.instanceUrl,
-      filter: this.jqlFilter,
-    });
+    logger.info('Initializing Jira connector');
     this.isInitialized = true;
   }
 
@@ -67,14 +64,7 @@ export default class JiraConnector extends BaseIntegrationConnector {
         },
       };
     } catch (error: any) {
-      return {
-        success: false,
-        message: `Connection failed: ${error.message}`,
-        details: {
-          instance: this.instanceUrl,
-          error: error.response?.data || error.message,
-        },
-      };
+      return { success: false, message: 'Connection failed' };
     }
   }
 
@@ -84,7 +74,7 @@ export default class JiraConnector extends BaseIntegrationConnector {
     const maxResults = 100;
     let hasMore = true;
 
-    logger.info('Starting Jira asset extraction', { jql: this.jqlFilter });
+    logger.info('Starting Jira asset extraction');
 
     while (hasMore) {
       try {
@@ -117,8 +107,8 @@ export default class JiraConnector extends BaseIntegrationConnector {
         startAt += maxResults;
 
       } catch (error) {
-        logger.error('Jira extraction failed', { startAt, error });
-        throw error;
+        logger.error('Jira extraction failed');
+        throw new Error('Connector extraction failed');
       }
     }
 

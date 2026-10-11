@@ -81,10 +81,7 @@ export default class PrometheusConnector extends BaseIntegrationConnector {
   }
 
   async initialize(): Promise<void> {
-    logger.info('Initializing Prometheus connector', {
-      prometheus_url: this.prometheusUrl,
-      enabled_resources: this.getEnabledResources(),
-    });
+    logger.info('Initializing Prometheus connector');
 
     this.isInitialized = true;
   }
@@ -106,20 +103,9 @@ export default class PrometheusConnector extends BaseIntegrationConnector {
         };
       }
 
-      return {
-        success: false,
-        message: 'Prometheus API returned non-success status',
-        details: { response: response.data },
-      };
+      return { success: false, message: 'Prometheus API returned non-success status' };
     } catch (error: any) {
-      return {
-        success: false,
-        message: `Connection failed: ${error.message}`,
-        details: {
-          prometheus_url: this.prometheusUrl,
-          error: error.response?.data || error.message,
-        },
-      };
+      return { success: false, message: 'Connection failed' };
     }
   }
 
@@ -207,8 +193,8 @@ export default class PrometheusConnector extends BaseIntegrationConnector {
       });
 
     } catch (error) {
-      logger.error('Prometheus targets extraction failed', { error });
-      throw error;
+      logger.error('Prometheus targets extraction failed');
+      throw new Error('Connector extraction failed');
     }
 
     return extractedData;
@@ -272,8 +258,8 @@ export default class PrometheusConnector extends BaseIntegrationConnector {
       });
 
     } catch (error) {
-      logger.error('Prometheus services extraction failed', { error });
-      throw error;
+      logger.error('Prometheus services extraction failed');
+      throw new Error('Connector extraction failed');
     }
 
     return extractedData;
@@ -315,8 +301,8 @@ export default class PrometheusConnector extends BaseIntegrationConnector {
       });
 
     } catch (error) {
-      logger.error('Prometheus alerts extraction failed', { error });
-      throw error;
+      logger.error('Prometheus alerts extraction failed');
+      throw new Error('Connector extraction failed');
     }
 
     return extractedData;
@@ -355,7 +341,7 @@ export default class PrometheusConnector extends BaseIntegrationConnector {
         }
 
         if (processedCount >= limit) {
-          logger.info('Reached metric extraction limit', { limit });
+          logger.info('Reached metric extraction limit');
           break;
         }
 
@@ -374,8 +360,8 @@ export default class PrometheusConnector extends BaseIntegrationConnector {
       });
 
     } catch (error) {
-      logger.error('Prometheus metrics extraction failed', { error });
-      throw error;
+      logger.error('Prometheus metrics extraction failed');
+      throw new Error('Connector extraction failed');
     }
 
     return extractedData;
@@ -426,7 +412,7 @@ export default class PrometheusConnector extends BaseIntegrationConnector {
       });
 
     } catch (error) {
-      logger.error('Prometheus relationship extraction failed', { error });
+      logger.error('Prometheus relationship extraction failed');
       // Don't throw - relationships are optional
     }
 

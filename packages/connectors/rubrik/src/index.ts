@@ -146,11 +146,7 @@ export default class RubrikConnector extends BaseIntegrationConnector {
   }
 
   async initialize(): Promise<void> {
-    logger.info('Initializing Rubrik CDM connector', {
-      cluster_url: this.clusterUrl,
-      api_version: this.apiVersion,
-      enabled_resources: this.getEnabledResources(),
-    });
+    logger.info('Initializing Rubrik CDM connector');
     this.isInitialized = true;
   }
 
@@ -171,14 +167,7 @@ export default class RubrikConnector extends BaseIntegrationConnector {
         },
       };
     } catch (error: any) {
-      return {
-        success: false,
-        message: `Connection failed: ${error.message}`,
-        details: {
-          cluster_url: this.clusterUrl,
-          error: error.response?.data || error.message,
-        },
-      };
+      return { success: false, message: 'Connection failed' };
     }
   }
 
@@ -194,10 +183,7 @@ export default class RubrikConnector extends BaseIntegrationConnector {
       throw new Error(`Unknown resource: ${resourceId}`);
     }
 
-    logger.info('Starting Rubrik resource extraction', {
-      resource: resourceId,
-      config: resourceConfig,
-    });
+    logger.info('Starting Rubrik resource extraction');
 
     switch (resourceId) {
       case 'clusters':
@@ -238,8 +224,8 @@ export default class RubrikConnector extends BaseIntegrationConnector {
       });
 
     } catch (error) {
-      logger.error('Rubrik cluster extraction failed', { error });
-      throw error;
+      logger.error('Rubrik cluster extraction failed');
+      throw new Error('Connector extraction failed');
     }
 
     return extractedData;
@@ -271,7 +257,7 @@ export default class RubrikConnector extends BaseIntegrationConnector {
       params.is_relic = resourceConfig['is_relic'];
     }
 
-    logger.info('Extracting Rubrik protected VMs', { params, batchSize });
+    logger.info('Extracting Rubrik protected VMs');
 
     while (hasMore) {
       try {
@@ -302,8 +288,8 @@ export default class RubrikConnector extends BaseIntegrationConnector {
         offset += batchSize;
 
       } catch (error) {
-        logger.error('Rubrik VM extraction failed', { offset, error });
-        throw error;
+        logger.error('Rubrik VM extraction failed');
+        throw new Error('Connector extraction failed');
       }
     }
 
@@ -336,7 +322,7 @@ export default class RubrikConnector extends BaseIntegrationConnector {
       params.operating_system_type = resourceConfig['operating_system'];
     }
 
-    logger.info('Extracting Rubrik physical hosts', { params, batchSize });
+    logger.info('Extracting Rubrik physical hosts');
 
     while (hasMore) {
       try {
@@ -367,8 +353,8 @@ export default class RubrikConnector extends BaseIntegrationConnector {
         offset += batchSize;
 
       } catch (error) {
-        logger.error('Rubrik physical host extraction failed', { offset, error });
-        throw error;
+        logger.error('Rubrik physical host extraction failed');
+        throw new Error('Connector extraction failed');
       }
     }
 
@@ -397,7 +383,7 @@ export default class RubrikConnector extends BaseIntegrationConnector {
       params.primary_cluster_id = resourceConfig['primary_cluster_id'];
     }
 
-    logger.info('Extracting Rubrik SLA domains', { params, batchSize });
+    logger.info('Extracting Rubrik SLA domains');
 
     while (hasMore) {
       try {
@@ -428,8 +414,8 @@ export default class RubrikConnector extends BaseIntegrationConnector {
         offset += batchSize;
 
       } catch (error) {
-        logger.error('Rubrik SLA domain extraction failed', { offset, error });
-        throw error;
+        logger.error('Rubrik SLA domain extraction failed');
+        throw new Error('Connector extraction failed');
       }
     }
 
@@ -455,7 +441,7 @@ export default class RubrikConnector extends BaseIntegrationConnector {
       logger.info('Rubrik relationships will be inferred during transformation');
 
     } catch (error) {
-      logger.error('Rubrik relationship extraction failed', { error });
+      logger.error('Rubrik relationship extraction failed');
     }
 
     return relationships;

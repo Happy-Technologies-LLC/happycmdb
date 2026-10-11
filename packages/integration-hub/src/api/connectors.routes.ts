@@ -1,287 +1,246 @@
 // Copyright 2026 Happy Technologies LLC
 // SPDX-License-Identifier: Apache-2.0
 
-/**
- * Integration Hub - Connectors API Routes
- */
-
-import { Router } from 'express';
-import { getIntegrationManager } from '@cmdb/integration-framework';
-import { getConnectorRegistry } from '@cmdb/integration-framework';
+import { Router, Request, Response } from 'express';
+import type { NextFunction } from 'express';
+import { getConnectorRegistry, type ConnectorMetadata } from '@cmdb/integration-framework';
+import { getIntegrationManager } from '@cmdb/integration-framework/dist/core/integration-manager';
 import { getPostgresClient } from '@cmdb/database';
-import { logger } from '@cmdb/common';
+import {
+  connectorScope, connectorPredicate, scopeValues, PUBLIC_CONFIG, PUBLIC_RUN,
+  CONFIG_NOT_FOUND, RUN_NOT_FOUND,
+} from '@cmdb/api-server/auth/connector-scope';
+import type { TokenPayload } from '@cmdb/api-server/auth/types';
+import { ROLE_PERMISSIONS } from '@cmdb/api-server/auth/types';
+import { ConnectorJsonPatchBudget, ConnectorJsonPatchError, connectorJsonMerge, isConnectorJsonResultLimit, CONNECTOR_JSON_LIMIT_MESSAGE } from '@cmdb/api-server/services/connector-json-merge';
+import { publicInstalledConnector } from '@cmdb/api-server/services/public-installed-connector';
 
 export const connectorsRouter = Router();
 const integrationManager = getIntegrationManager();
 const connectorRegistry = getConnectorRegistry();
 const postgresClient = getPostgresClient();
 
-/**
- * List all connector types (from marketplace)
- */
-connectorsRouter.get('/types', async (_req, res) => {
-  try {
-    const types = connectorRegistry.getAllConnectorTypes();
-    res.json({ types });
-  } catch (error) {
-    logger.error('Failed to list connector types', { error });
-    res.status(500).json({ error: (error as Error).message });
+type AuthenticatedRequest = Request & { user?: TokenPayload };
+const scope = (req: Request) => connectorScope((req as AuthenticatedRequest).user);
+function values(req: Request): [string | null, boolean] {
+  return scopeValues((req as AuthenticatedRequest).user);
+}
+const invalidPatch = (res: Response, error: unknown) =>
+  error instanceof ConnectorJsonPatchError || isConnectorJsonResultLimit(error)
+    ? res.status(400).json({ error: 'Bad Request', message: CONNECTOR_JSON_LIMIT_MESSAGE })
+    : failed(res);
+function requireConnectorWrite(req: Request, res: Response, next: NextFunction): void {
+  const user = (req as AuthenticatedRequest).user;
+  if (!user || !ROLE_PERMISSIONS[user._role]?.includes('write')) {
+    res.status(403).json({ error: 'Forbidden' });
+    return;
   }
+  next();
+}
+const configColumns = PUBLIC_CONFIG.split(',').map((column: string) => `c.${column.trim()}`).join(', ');
+const runColumns = PUBLIC_RUN.split(',').map((column: string) => `r.${column.trim()}`).join(', ');
+const failed = (res: Response) => res.status(500).json({ error: 'Connector operation failed' });
+
+async function ownedConfig(req: Request) {
+  const result = await postgresClient.query(
+    `SELECT c.id, c.organization_id FROM connector_configurations c
+     WHERE c.name = $1 AND ${connectorPredicate('c', 2)}`,
+    [req.params['name'], ...values(req)]
+  );
+  return result.rows[0] as { id: string; organization_id: string | null } | undefined;
+}
+async function registerCurrentConfig(configId: string, organizationId: string): Promise<void> {
+  const current = await postgresClient.query(
+    `SELECT c.id, c.organization_id, c.credential_id, c.enabled, c.schedule_enabled, c.schedule
+     FROM connector_configurations c WHERE c.id = $1 AND c.organization_id = $2`,
+    [configId, organizationId]
+  );
+  if (current.rows.length) {
+    const row = current.rows[0];
+    await integrationManager.registerConnector({
+      id: row.id, organizationId: row.organization_id,
+      credential_id: row.credential_id, enabled: row.enabled,
+      schedule_enabled: row.schedule_enabled, schedule: row.schedule,
+    });
+  }
+}
+
+function publicConnectorType(metadata: ConnectorMetadata): Record<string, unknown> {
+  const safe = publicInstalledConnector({
+    resources: metadata.resources, configuration_schema: metadata.configuration_schema,
+  });
+  return {
+    type: metadata.type, name: metadata.name, version: metadata.version,
+    description: metadata.description, author: metadata.author,
+    verified: metadata.verified, category: metadata.category,
+    resources: safe['resources'], configuration_schema: safe['configuration_schema'],
+  };
+}
+
+connectorsRouter.get('/types', (_req, res) => {
+  res.json({ types: connectorRegistry.getAllConnectorTypes().map(publicConnectorType) });
+});
+connectorsRouter.get('/types/:type', (req, res) => {
+  const metadata = connectorRegistry.getConnectorMetadata(req.params.type);
+  if (!metadata) return res.status(404).json({ error: 'Connector type not found' });
+  return res.json({ metadata: publicConnectorType(metadata) });
 });
 
-/**
- * Get connector type metadata
- */
-connectorsRouter.get('/types/:type', async (req, res) => {
-  try {
-    const metadata = connectorRegistry.getConnectorMetadata(req.params.type);
-    if (!metadata) {
-      res.status(404).json({ error: 'Connector type not found' });
-      return;
-    }
-    res.json({ metadata });
-  } catch (error) {
-    logger.error('Failed to get connector type', { error });
-    res.status(500).json({ error: (error as Error).message });
-  }
-});
-
-/**
- * List all connector instances
- */
-connectorsRouter.get('/', async (_req, res) => {
+connectorsRouter.get('/', async (req, res) => {
   try {
     const result = await postgresClient.query(
-      `SELECT
-        id, name, connector_type, enabled, schedule,
-        created_at, updated_at,
-        (SELECT status FROM connector_run_history
-         WHERE config_name = connector_configurations.name
-         ORDER BY started_at DESC LIMIT 1) as status,
-        (SELECT started_at FROM connector_run_history
-         WHERE config_name = connector_configurations.name
-         ORDER BY started_at DESC LIMIT 1) as last_run,
-        (SELECT COUNT(*) FROM connector_run_history
-         WHERE config_name = connector_configurations.name) as total_runs,
-        (SELECT COUNT(*) FROM connector_run_history
-         WHERE config_name = connector_configurations.name
-         AND status = 'completed') as successful_runs
-       FROM connector_configurations
-       ORDER BY name`
+      `SELECT ${configColumns},
+        (SELECT r.status FROM connector_run_history r WHERE r.config_id = c.id AND r.organization_id IS NOT DISTINCT FROM c.organization_id ORDER BY r.started_at DESC LIMIT 1) AS status,
+        (SELECT r.started_at FROM connector_run_history r WHERE r.config_id = c.id AND r.organization_id IS NOT DISTINCT FROM c.organization_id ORDER BY r.started_at DESC LIMIT 1) AS last_run,
+        (SELECT COUNT(*) FROM connector_run_history r WHERE r.config_id = c.id AND r.organization_id IS NOT DISTINCT FROM c.organization_id) AS total_runs,
+        (SELECT COUNT(*) FROM connector_run_history r WHERE r.config_id = c.id AND r.organization_id IS NOT DISTINCT FROM c.organization_id AND r.status = 'completed') AS successful_runs
+       FROM connector_configurations c WHERE ${connectorPredicate('c', 1)} ORDER BY c.name`, values(req)
     );
-
-    const connectors = result.rows.map(row => ({
+    res.json({ connectors: result.rows.map(row => ({
       ...row,
       metrics: {
-        total_runs: parseInt(row.total_runs),
-        success_rate: row.total_runs > 0
-          ? (row.successful_runs / row.total_runs) * 100
-          : 0,
-      }
-    }));
-
-    res.json({ connectors });
-  } catch (error) {
-    logger.error('Failed to list connectors', { error });
-    res.status(500).json({ error: (error as Error).message });
-  }
+        total_runs: Number(row.total_runs),
+        success_rate: Number(row.total_runs) ? Number(row.successful_runs) / Number(row.total_runs) * 100 : 0,
+      },
+    })) });
+  } catch { failed(res); }
 });
 
-/**
- * Get connector instance by name
- */
 connectorsRouter.get('/:name', async (req, res) => {
   try {
     const result = await postgresClient.query(
-      'SELECT * FROM connector_configurations WHERE name = $1',
-      [req.params.name]
+      `SELECT ${configColumns} FROM connector_configurations c WHERE c.name = $1 AND ${connectorPredicate('c', 2)}`,
+      [req.params['name'], ...values(req)]
     );
-
-    if (result.rows.length === 0) {
-      res.status(404).json({ error: 'Connector not found' });
-      return;
-    }
-
-    res.json({ connector: result.rows[0] });
-  } catch (error) {
-    logger.error('Failed to get connector', { error });
-    res.status(500).json({ error: (error as Error).message });
-  }
+    if (!result.rows.length) return res.status(404).json(CONFIG_NOT_FOUND);
+    return res.json({ connector: result.rows[0] });
+  } catch { return failed(res); }
 });
 
-/**
- * Create new connector instance
- */
-connectorsRouter.post('/', async (req, res) => {
+connectorsRouter.post('/', requireConnectorWrite, async (req, res) => {
   try {
-    const { name, type, enabled = true, schedule, connection, options } = req.body;
-
-    // Validate connector type exists
-    if (!connectorRegistry.hasConnectorType(type)) {
-      res.status(400).json({ error: `Unknown connector type: ${type}` });
-      return;
-    }
-
-    // Insert into database
+    const { name, type, enabled = true, schedule, schedule_enabled = Boolean(schedule), connection, options } = req.body;
+    if (!connectorRegistry.hasConnectorType(type)) return res.status(400).json({ error: 'Unknown connector type' });
+    const organizationId = scope(req).organizationId;
+    if (!organizationId) return res.status(403).json({ error: 'Organization required for creation' });
+    const budget = new ConnectorJsonPatchBudget();
+    const connectionJson = budget.add(connection ?? {});
+    const optionsJson = budget.add(options ?? {});
     const result = await postgresClient.query(
-      `INSERT INTO connector_configurations
-       (name, connector_type, enabled, schedule, connection, options)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       RETURNING *`,
-      [name, type, enabled, schedule, JSON.stringify(connection), JSON.stringify(options || {})]
+      `INSERT INTO connector_configurations (organization_id, name, connector_type, enabled, schedule, schedule_enabled, connection, options)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING ${PUBLIC_CONFIG}`,
+      [organizationId, name, type, enabled, schedule, schedule_enabled, connectionJson, optionsJson]
     );
-
-    const connector = result.rows[0];
-
-    // Register with integration manager
-    await integrationManager.registerConnector({
-      id: connector.id,
-      name: connector.name,
-      type: connector.connector_type,
-      enabled: connector.enabled,
-      schedule: connector.schedule,
-      connection: connector.connection,
-      options: connector.options,
-    });
-
-    res.status(201).json({ connector });
-  } catch (error) {
-    logger.error('Failed to create connector', { error });
-    res.status(400).json({ error: (error as Error).message });
-  }
+    await registerCurrentConfig(result.rows[0].id, organizationId);
+    return res.status(201).json({ connector: result.rows[0] });
+  } catch (error) { return invalidPatch(res, error); }
 });
 
-/**
- * Update connector instance
- */
-connectorsRouter.put('/:name', async (req, res) => {
+connectorsRouter.put('/:name', requireConnectorWrite, async (req, res) => {
   try {
-    const { enabled, schedule, connection, options } = req.body;
-
-    const result = await postgresClient.query(
-      `UPDATE connector_configurations
-       SET enabled = COALESCE($2, enabled),
-           schedule = COALESCE($3, schedule),
-           connection = COALESCE($4, connection),
-           options = COALESCE($5, options),
-           updated_at = NOW()
-       WHERE name = $1
-       RETURNING *`,
-      [
-        req.params.name,
-        enabled,
-        schedule,
-        connection ? JSON.stringify(connection) : null,
-        options ? JSON.stringify(options) : null,
-      ]
-    );
-
-    if (result.rows.length === 0) {
-      res.status(404).json({ error: 'Connector not found' });
-      return;
+    const { enabled, schedule, schedule_enabled, connection, options } = req.body;
+    const params: unknown[] = [req.params['name'], ...values(req), enabled, schedule, schedule_enabled];
+    const budget = new ConnectorJsonPatchBudget();
+    const fields = [
+      'enabled = COALESCE($4, c.enabled)', 'schedule = COALESCE($5, c.schedule)',
+      'schedule_enabled = COALESCE($6, c.schedule_enabled)',
+    ];
+    for (const [column, patch] of [['connection', connection], ['options', options]] as const) {
+      if (patch && typeof patch === 'object' && !Array.isArray(patch) && Object.keys(patch).length > 0) {
+        fields.push(`${column} = ${connectorJsonMerge(`c.${column}`, patch, params, budget)}`);
+      }
     }
-
-    res.json({ connector: result.rows[0] });
-  } catch (error) {
-    logger.error('Failed to update connector', { error });
-    res.status(400).json({ error: (error as Error).message });
-  }
-});
-
-/**
- * Delete connector instance
- */
-connectorsRouter.delete('/:name', async (req, res) => {
-  try {
-    await integrationManager.unregisterConnector(req.params.name);
-
-    await postgresClient.query(
-      'DELETE FROM connector_configurations WHERE name = $1',
-      [req.params.name]
+    const result = await postgresClient.query(
+      `UPDATE connector_configurations c SET ${fields.join(', ')}, updated_at = NOW()
+       WHERE c.name = $1 AND ${connectorPredicate('c', 2)} RETURNING ${configColumns}`,
+      params
     );
-
-    res.status(204).send();
-  } catch (error) {
-    logger.error('Failed to delete connector', { error });
-    res.status(500).json({ error: (error as Error).message });
-  }
+    if (!result.rows.length) return res.status(404).json(CONFIG_NOT_FOUND);
+    await integrationManager.unregisterConnector(result.rows[0].id);
+    if (result.rows[0].organization_id) {
+      await registerCurrentConfig(result.rows[0].id, result.rows[0].organization_id);
+    }
+    return res.json({ connector: result.rows[0] });
+  } catch (error) { return invalidPatch(res, error); }
 });
 
-/**
- * Test connector connection
- */
+connectorsRouter.delete('/:name', requireConnectorWrite, async (req, res) => {
+  try {
+    const result = await postgresClient.query(
+      `DELETE FROM connector_configurations c WHERE c.name = $1 AND ${connectorPredicate('c', 2)} RETURNING c.id`,
+      [req.params['name'], ...values(req)]
+    );
+    if (!result.rows.length) return res.status(404).json(CONFIG_NOT_FOUND);
+    await integrationManager.unregisterConnector(result.rows[0].id);
+    return res.status(204).send();
+  } catch { return failed(res); }
+});
+
 connectorsRouter.post('/:name/test', async (req, res) => {
   try {
-    const result = await integrationManager.testConnector(req.params.name);
-    res.json({ result });
+    const config = await ownedConfig(req);
+    if (!config) return res.status(404).json(CONFIG_NOT_FOUND);
+    const result = await integrationManager.testConnector(config.id, config.organization_id);
+    return res.json({ result: { success: result.success === true } });
   } catch (error) {
-    logger.error('Failed to test connector', { error });
-    res.status(500).json({ error: (error as Error).message });
+    if (error instanceof Error && error.message === 'CONNECTOR_NOT_FOUND') return res.status(404).json(CONFIG_NOT_FOUND);
+    if (error instanceof Error && error.message === 'CONNECTOR_CREDENTIAL_UNAVAILABLE') {
+      return res.status(409).json({ error: 'Connector credential reference unavailable' });
+    }
+    return failed(res);
   }
 });
 
-/**
- * Run connector manually
- */
-connectorsRouter.post('/:name/run', async (req, res) => {
+connectorsRouter.post('/:name/run', requireConnectorWrite, async (req, res) => {
   try {
-    const runResult = await integrationManager.runConnector(req.params.name);
-    res.json({ result: runResult });
+    const config = await ownedConfig(req);
+    if (!config) return res.status(404).json(CONFIG_NOT_FOUND);
+    const result = await integrationManager.runConnector(config.id, config.organization_id);
+    const run = await postgresClient.query(
+      `SELECT ${runColumns} FROM connector_run_history r
+       WHERE r.config_id = $1 AND r.job_id = $2 AND ${connectorPredicate('r', 3)}`,
+      [config.id, result.run_id, ...values(req)]
+    );
+    if (!run.rows.length) return res.status(404).json(RUN_NOT_FOUND);
+    return res.json({ result: run.rows[0] });
   } catch (error) {
-    logger.error('Failed to run connector', { error });
-    res.status(500).json({ error: (error as Error).message });
+    if (error instanceof Error && error.message === 'CONNECTOR_NOT_FOUND') return res.status(404).json(CONFIG_NOT_FOUND);
+    if (error instanceof Error && error.message === 'CONNECTOR_CREDENTIAL_UNAVAILABLE') {
+      return res.status(409).json({ error: 'Connector credential reference unavailable' });
+    }
+    return failed(res);
   }
 });
 
-/**
- * Get connector run history
- */
 connectorsRouter.get('/:name/runs', async (req, res) => {
   try {
-    const limit = parseInt(req.query['limit'] as string) || 50;
-    const offset = parseInt(req.query['offset'] as string) || 0;
-
+    const config = await ownedConfig(req);
+    if (!config) return res.status(404).json(CONFIG_NOT_FOUND);
+    const limit = Math.min(100, Math.max(1, Number.parseInt(String(req.query['limit'] ?? '50'), 10) || 50));
+    const offset = Math.max(0, Number.parseInt(String(req.query['offset'] ?? '0'), 10) || 0);
     const result = await postgresClient.query(
-      `SELECT * FROM connector_run_history
-       WHERE config_name = $1
-       ORDER BY started_at DESC
-       LIMIT $2 OFFSET $3`,
-      [req.params.name, limit, offset]
+      `SELECT ${runColumns} FROM connector_run_history r
+       WHERE r.config_id = $1 AND ${connectorPredicate('r', 2)}
+       ORDER BY r.started_at DESC LIMIT $4 OFFSET $5`,
+      [config.id, ...values(req), limit, offset]
     );
-
-    res.json({ runs: result.rows });
-  } catch (error) {
-    logger.error('Failed to get connector runs', { error });
-    res.status(500).json({ error: (error as Error).message });
-  }
+    return res.json({ runs: result.rows });
+  } catch { return failed(res); }
 });
 
-/**
- * Get connector run logs
- */
 connectorsRouter.get('/:name/runs/:runId/logs', async (req, res) => {
   try {
-    const runResult = await postgresClient.query(
-      'SELECT id FROM connector_run_history WHERE id = $1 AND config_name = $2',
-      [req.params.runId, req.params.name]
+    const config = await ownedConfig(req);
+    if (!config) return res.status(404).json(CONFIG_NOT_FOUND);
+    const run = await postgresClient.query(
+      `SELECT r.id FROM connector_run_history r WHERE r.id = $1 AND r.config_id = $2 AND ${connectorPredicate('r', 3)}`,
+      [req.params.runId, config.id, ...values(req)]
     );
-
-    if (runResult.rows.length === 0) {
-      res.status(404).json({ error: 'Run not found' });
-      return;
-    }
-
-    const logsResult = await postgresClient.query(
-      `SELECT id, "timestamp", level, message
-       FROM connector_run_log_entries
-       WHERE run_id = $1
-       ORDER BY "timestamp" ASC, sequence ASC`,
+    if (!run.rows.length) return res.status(404).json(RUN_NOT_FOUND);
+    const logs = await postgresClient.query(
+      `SELECT id, "timestamp", level FROM connector_run_log_entries WHERE run_id = $1 ORDER BY "timestamp" ASC, sequence ASC`,
       [req.params.runId]
     );
-
-    res.json({ logs: logsResult.rows });
-  } catch (error) {
-    logger.error('Failed to get connector run logs', { error });
-    res.status(500).json({ error: (error as Error).message });
-  }
+    return res.json({ logs: logs.rows });
+  } catch { return failed(res); }
 });

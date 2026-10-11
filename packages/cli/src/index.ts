@@ -10,7 +10,6 @@ import { QueryCommand } from './commands/query.command';
 import { AnalyticsCommand } from './commands/analytics.command';
 import { DataMartCommand } from './commands/datamart.command';
 import { ConnectorListCommand } from './commands/connector-list.command';
-import { ConnectorInstallCommand } from './commands/connector-install.command';
 import { ConnectorConfigCommand } from './commands/connector-config.command';
 import { ConnectorRunCommand } from './commands/connector-run.command';
 import { createWorkerCommand } from './commands/worker.command';
@@ -86,7 +85,6 @@ class CMDBCli {
     // Connector commands (single shared parent command to avoid shadowing)
     const connectorCommand = new Command('connector').description('Manage connectors');
     new ConnectorListCommand(this.apiUrl, this.apiKey).register(connectorCommand);
-    new ConnectorInstallCommand(this.apiUrl, this.apiKey).register(connectorCommand);
     new ConnectorConfigCommand(this.apiUrl, this.apiKey).register(connectorCommand);
     new ConnectorRunCommand(this.apiUrl, this.apiKey).register(connectorCommand);
     this.program.addCommand(connectorCommand);

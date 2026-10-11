@@ -684,8 +684,8 @@
     "issue": false,
     "severity": "logistical",
     "issue_note": "ConnectorInstallCommand.register adds a second top-level program.command('connector'), but ConnectorListCommand's 'connector' is registered first in index.ts (lines 86 then 89). Commander resolves the first match, which has no 'install' subcommand, so 'cmdb connector install' (and the whole install/update/uninstall/outdated/verify/repair/cache group) is an unknown command.",
-    "resolution": "fixed",
-    "resolution_note": "Resolved + retested 2026-06-23 finish-line re-verification (build/typecheck/unit all green; api-server, cli, discovery-engine, integration-hub now build)."
+    "resolution": "removed",
+    "resolution_note": "Historical audit only: connector installer and verification CLI commands were removed in R-CRED-2; they are not available or supported."
   },
   {
     "id": "CLI-054",
@@ -697,7 +697,9 @@
     "expected_behavior": "With a type it PUTs /connectors/:type/update (optionally --version); with --all it fetches installed connectors and PUT-updates each that is outdated, printing an updated/skipped/failed summary. Errors locally if neither type nor --all is given.",
     "issue": false,
     "severity": "",
-    "issue_note": "Unreachable: shadowed by the first-registered connector 'connector' command (see CLI-053)."
+    "issue_note": "Unreachable: shadowed by the first-registered connector 'connector' command (see CLI-053).",
+    "resolution": "removed",
+    "resolution_note": "Historical audit only: connector installer and update commands were removed in R-CRED-2."
   },
   {
     "id": "CLI-055",
@@ -709,7 +711,9 @@
     "expected_behavior": "Without -f/--force it warns and returns; with --force it DELETEs /connectors/:type and reports success or the failure message.",
     "issue": false,
     "severity": "",
-    "issue_note": "Unreachable: shadowed by the first-registered connector 'connector' command (see CLI-053)."
+    "issue_note": "Unreachable: shadowed by the first-registered connector 'connector' command (see CLI-053).",
+    "resolution": "removed",
+    "resolution_note": "Historical audit only: connector uninstall CLI command was removed in R-CRED-2."
   },
   {
     "id": "CLI-056",
@@ -721,7 +725,9 @@
     "expected_behavior": "GETs /connectors/installed, filters entries where installed version differs from latest available, and prints a table of type/current/latest or 'All connectors are up to date'.",
     "issue": false,
     "severity": "",
-    "issue_note": "Unreachable: shadowed by the first-registered connector 'connector' command (see CLI-053)."
+    "issue_note": "Unreachable: shadowed by the first-registered connector 'connector' command (see CLI-053).",
+    "resolution": "removed",
+    "resolution_note": "Historical audit only: connector outdated CLI command was removed in R-CRED-2; read-only REST remains."
   },
   {
     "id": "CLI-057",
@@ -733,7 +739,9 @@
     "expected_behavior": "POSTs /connectors/:type/verify and reports success ('All checks passed') or lists the verification errors.",
     "issue": false,
     "severity": "",
-    "issue_note": "Unreachable: shadowed by the first-registered connector 'connector' command (see CLI-053)."
+    "issue_note": "Unreachable: shadowed by the first-registered connector 'connector' command (see CLI-053).",
+    "resolution": "removed",
+    "resolution_note": "Historical audit only: connector verify CLI command was removed in R-CRED-2; no verification success is claimed."
   },
   {
     "id": "CLI-058",
@@ -745,7 +753,9 @@
     "expected_behavior": "POSTs /connectors/:type/repair and reports success or the failure message.",
     "issue": false,
     "severity": "",
-    "issue_note": "Unreachable: shadowed by the first-registered connector 'connector' command (see CLI-053). Note the server defines POST /connectors/:type/verify but no /:type/repair route, so even if reachable repair would 404."
+    "issue_note": "Unreachable: shadowed by the first-registered connector 'connector' command (see CLI-053). Note the server defines POST /connectors/:type/verify but no /:type/repair route, so even if reachable repair would 404.",
+    "resolution": "removed",
+    "resolution_note": "Historical audit only: connector repair CLI command was removed in R-CRED-2."
   },
   {
     "id": "CLI-059",
@@ -757,7 +767,9 @@
     "expected_behavior": "With --refresh it POSTs /connectors/registry/refresh (printing cached count); with --clear it DELETEs /connectors/registry/cache; errors locally if neither flag is set.",
     "issue": false,
     "severity": "",
-    "issue_note": "Unreachable: shadowed by the first-registered connector 'connector' command (see CLI-053). Endpoints also mismatch: the server exposes POST /connectors/cache/refresh (not /registry/refresh) and has no DELETE /connectors/registry/cache."
+    "issue_note": "Unreachable: shadowed by the first-registered connector 'connector' command (see CLI-053). Endpoints also mismatch: the server exposes POST /connectors/cache/refresh (not /registry/refresh) and has no DELETE /connectors/registry/cache.",
+    "resolution": "removed",
+    "resolution_note": "Historical audit only: connector cache CLI command was removed in R-CRED-2."
   },
   {
     "id": "CLI-060",

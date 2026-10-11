@@ -45,10 +45,10 @@ export class ConnectorRegistry {
    * @param connectorsPath Path to connectors directory
    */
   async discoverConnectors(connectorsPath: string): Promise<void> {
-    logger.info('Discovering connectors', { path: connectorsPath });
+    logger.info('Discovering connectors');
 
     if (!fs.existsSync(connectorsPath)) {
-      logger.warn('Connectors directory not found', { path: connectorsPath });
+      logger.warn('Connectors directory not found');
       return;
     }
 
@@ -59,15 +59,12 @@ export class ConnectorRegistry {
     for (const dirName of connectorDirs) {
       try {
         await this.loadConnector(path.join(connectorsPath, dirName));
-      } catch (error) {
-        logger.error('Failed to load connector', { connector: dirName, error });
+      } catch {
+        logger.error('Failed to load connector');
       }
     }
 
-    logger.info('Connector discovery completed', {
-      count: this.connectorTypes.size,
-      types: Array.from(this.connectorTypes.keys())
-    });
+    logger.info('Connector discovery completed', { count: this.connectorTypes.size });
   }
 
   /**
@@ -77,7 +74,7 @@ export class ConnectorRegistry {
     // Load connector.json
     const metadataPath = path.join(connectorPath, 'connector.json');
     if (!fs.existsSync(metadataPath)) {
-      logger.warn('connector.json not found', { path: connectorPath });
+      logger.warn('connector.json not found');
       return;
     }
 
@@ -88,9 +85,7 @@ export class ConnectorRegistry {
     // Load connector implementation
     const indexPath = path.join(connectorPath, 'dist', 'index.js');
     if (!fs.existsSync(indexPath)) {
-      logger.warn('Connector implementation not found (did you build?)', {
-        path: indexPath
-      });
+      logger.warn('Connector implementation not found (did you build?)');
       return;
     }
 
@@ -111,11 +106,7 @@ export class ConnectorRegistry {
     this.connectorClasses.set(metadata.type, ConnectorClass);
     this.registerDescriptor(metadata);
 
-    logger.info('Connector loaded', {
-      type: metadata.type,
-      name: metadata.name,
-      version: metadata.version
-    });
+    logger.info('Connector loaded');
   }
 
   /**
@@ -128,7 +119,7 @@ export class ConnectorRegistry {
     this.connectorTypes.set(metadata.type, metadata);
     this.connectorClasses.set(metadata.type, connectorClass);
     this.registerDescriptor(metadata);
-    logger.info('Connector registered', { type: metadata.type });
+    logger.info('Connector registered');
   }
 
   /**
@@ -243,28 +234,19 @@ export class ConnectorRegistry {
               this.connectorTypes.set(metadata.type, metadata);
               this.connectorClasses.set(metadata.type, ConnectorClass);
               this.registerDescriptor(metadata);
-              logger.info('Installed connector loaded from database', {
-                type: metadata.type,
-                version: row.version,
-              });
+              logger.info('Installed connector loaded from database');
             }
           } else {
-            logger.warn('Connector implementation not found', {
-              type: metadata.type,
-              path: indexPath,
-            });
+            logger.warn('Connector implementation not found');
           }
-        } catch (error) {
-          logger.error('Failed to load installed connector', {
-            type: row.connector_type,
-            error,
-          });
+        } catch {
+          logger.error('Failed to load installed connector');
         }
       }
 
       logger.info('Installed connectors loaded', { count: this.connectorTypes.size });
-    } catch (error) {
-      logger.error('Failed to load installed connectors from database', { error });
+    } catch {
+      logger.error('Failed to load installed connectors from database');
     }
   }
 
@@ -290,8 +272,8 @@ export class ConnectorRegistry {
         metadata: row.metadata,
         install_path: row.install_path,
       };
-    } catch (error) {
-      logger.error('Failed to get installed connector', { type, error });
+    } catch {
+      logger.error('Failed to get installed connector');
       return null;
     }
   }
@@ -326,15 +308,9 @@ export class ConnectorRegistry {
         ]
       );
 
-      logger.info('Connector saved to database', {
-        type: connector.connector_type,
-        version: connector.version,
-      });
+      logger.info('Connector saved to database');
     } catch (error) {
-      logger.error('Failed to save installed connector', {
-        type: connector.connector_type,
-        error,
-      });
+      logger.error('Failed to save installed connector');
       throw error;
     }
   }
@@ -349,9 +325,9 @@ export class ConnectorRegistry {
         [type]
       );
 
-      logger.info('Connector removed from database', { type });
+      logger.info('Connector removed from database');
     } catch (error) {
-      logger.error('Failed to remove installed connector', { type, error });
+      logger.error('Failed to remove installed connector');
       throw error;
     }
   }
@@ -362,8 +338,8 @@ export class ConnectorRegistry {
    *
    * Intentionally non-fatal: a connector that fails mapping or validation still
    * registers under its legacy metadata, so runtime availability is never coupled
-   * to the new contract. The precise reason is logged so the connector.json drift
-   * can be fixed.
+   * to the new contract. Reasons are not logged because descriptor fields can
+   * contain stored connector secrets.
    */
   private registerDescriptor(metadata: ConnectorMetadata): void {
     try {
@@ -371,17 +347,11 @@ export class ConnectorRegistry {
         mapConnectorMetadataToDescriptor(metadata);
       this.connectorDescriptors.set(metadata.type, descriptor);
       if (unsupportedFields.length > 0) {
-        logger.warn('Connector descriptor has unsupported fields', {
-          type: metadata.type,
-          unsupportedFields,
-        });
+        logger.warn('Connector descriptor has unsupported fields');
       }
-    } catch (error) {
+    } catch {
       this.connectorDescriptors.delete(metadata.type);
-      logger.warn(
-        'connector.json does not satisfy the connector-core 0.2.0 descriptor contract',
-        { type: metadata.type, error }
-      );
+      logger.warn('connector.json does not satisfy the connector-core 0.2.0 descriptor contract');
     }
   }
 

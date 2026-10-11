@@ -32,6 +32,7 @@ class InMemoryAuthRepository implements AuthRepository {
   deletedUserIds: string[] = [];
   apiKeyDeleteRequests: Array<[string, string]> = [];
   apiKeyDeleteResult = 1;
+  apiKey: ApiKey | null = null;
 
   async findUserByUsername(username: string): Promise<User | null> {
     return [...this.users.values()].find((u) => u._username === username) || null;
@@ -65,7 +66,7 @@ class InMemoryAuthRepository implements AuthRepository {
   }
 
   async findApiKeyByKey(): Promise<ApiKey | null> {
-    return null;
+    return this.apiKey;
   }
 
   async createApiKey(apiKey: Omit<ApiKey, 'id' | 'createdAt'>): Promise<ApiKey> {
@@ -236,6 +237,18 @@ describe('AuthService profile/password/account lifecycle', () => {
       const refreshed = await service.refreshToken({ refreshToken: tokens._refreshToken });
 
       expect(jwtService.decodeToken(refreshed._accessToken)?._organizationId).toBe(ORG);
+    });
+
+    it('does not propagate a raw platform marker through verified JWTs or API keys', async () => {
+      Object.assign(repository.users.get('user-1')!, { _platformAdmin: true });
+      const { _accessToken } = await login();
+      expect(await service.verifyToken(_accessToken)).not.toHaveProperty('_platformAdmin');
+
+      repository.apiKey = {
+        _id: 'key-1', _key: '', _keyHash: '', _name: 'cli',
+        _userId: 'user-1', _role: 'admin', _tier: 'standard', _enabled: true, _createdAt: new Date(),
+      } as ApiKey;
+      expect(await service.verifyApiKey('opaque')).not.toHaveProperty('_platformAdmin');
     });
   });
 });

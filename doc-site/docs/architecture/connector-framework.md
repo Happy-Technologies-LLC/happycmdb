@@ -4,12 +4,18 @@
 
 The HappyCMDB Connector Framework is a plugin-based architecture that enables dynamic integration with external systems for data discovery, synchronization, and management. Introduced in v2.0, it replaces the v1.0 ad-hoc discovery workers with a standardized, scalable integration platform.
 
+### R-CRED-2 organization and credential-reference boundary
+
+Connector configuration/run APIs require an authenticated, freshly verified organization; foreign identifiers return the same 404 as missing identifiers. The `connection`, `options` and resource configuration fields are write-only. An independent platform-admin marker permits explicit access to historical NULL-organization rows; ordinary tenant admins do not inherit that authority. The standalone integration hub defaults to the platform operator's own organization for name routes and requires `?legacy=true` to select a historical same-named row. Legacy rows never auto-run.
+
+**Approved compatibility restriction:** Every run, connection test and validation for a configuration with a stored `credential_id` is refused before any credential lookup or decrypt, even for platform admins. REST and hub return HTTP 409 with the fixed text `Connector credential reference unavailable`; GraphQL uses code `CONNECTOR_CREDENTIAL_UNAVAILABLE`. No run is created for a refused reference. Inline connection values still work within the owning organization. Re-enabling credential references awaits separately reviewed credential ownership after HP1; this migration does not modify the credentials table.
+
 ## Key Features
 
 - **Plugin Architecture** - Dynamic connector loading and lifecycle management
 - **Multi-Resource Support** - Single connector can handle multiple resource types
 - **Unified Configuration** - Standardized connection and resource configuration
-- **Registry System** - Browse, install, and update connectors from a catalog
+- **Registry System** - Browse connector templates; deployment operators place code outside the application
 - **Event-Driven** - Emit events for downstream processing (identity resolution, relationships)
 - **Health Monitoring** - Built-in health checks and performance metrics
 
@@ -38,9 +44,7 @@ The HappyCMDB Connector Framework is a plugin-based architecture that enables dy
 │  ┌────────────────────┴────────────────────────────────┐   │
 │  │           Connector Management Layer                │   │
 │  │  - ConnectorRegistry (local installed)              │   │
-│  │  - ConnectorInstaller (download/install)            │   │
-│  │  - ConnectorExecutor (run ETL jobs)                 │   │
-│  │  - VersionManager (updates/migrations)              │   │
+│  │  - IntegrationManager (org-bound runs/schedules)    │   │
 │  └────────────────────┬────────────────────────────────┘   │
 │                       │                                     │
 │  ┌────────────────────┴────────────────────────────────┐   │
@@ -410,15 +414,14 @@ happycmdb-connectors/
 
 ## Connector Lifecycle
 
-### Installation Flow
+### Installation boundary
 
-1. **Browse Catalog** - User browses available connectors in UI/CLI
-2. **Select Connector** - Choose connector type and version
-3. **Download Package** - Fetch `.tgz` from GitHub releases
-4. **Verify Checksum** - Ensure package integrity
-5. **Install Dependencies** - `npm install` in connector directory
-6. **Register Connector** - Add to `installed_connectors` table
-7. **Load Metadata** - Parse `connector.json` and store capabilities
+Connector packages are placed by deployment operators outside the application.
+The runtime has no installer library, CLI installer or web installation wizard.
+REST and GraphQL global lifecycle mutations return a fixed refusal for every
+authenticated identity until a separately reviewed P-6 change. Runtime code
+loads only deployment-controlled connector paths; never load untrusted scripts
+or plugins into the API or hub process.
 
 ### Configuration Flow
 
@@ -696,45 +699,18 @@ async extract(): Promise<ExtractedData[]> {
 
 ### Credential Storage
 
-- Credentials encrypted at rest in PostgreSQL
-- Credentials loaded into memory only during connector execution
-- Credentials never logged or exposed in API responses
-- Use credential references instead of embedded credentials
+- Inline connection secrets are write-only and confined to organization-scoped execution.
+- Stored credential references currently fail closed before lookup or decryption.
+- Secrets and raw provider errors never appear in connector API responses or logs.
 
-### Connector Sandboxing
+### Connector trust boundary
 
-```typescript
-// Connectors run in isolated Node.js VM context
-const vm = require('vm');
-
-const sandbox = {
-  console: sandboxedConsole,
-  require: sandboxedRequire,
-  process: sandboxedProcess,
-};
-
-const context = vm.createContext(sandbox);
-const connectorCode = fs.readFileSync(connectorPath);
-vm.runInContext(connectorCode, context, { timeout: 300000 });
-```
-
-### Checksum Verification
-
-```typescript
-async installConnector(type: string, version: string) {
-  const metadata = await registry.getConnectorMetadata(type, version);
-  const packagePath = await downloader.download(metadata.download_url);
-
-  // Verify checksum
-  const actualChecksum = await computeSHA256(packagePath);
-  if (actualChecksum !== metadata.checksum) {
-    throw new Error('Checksum mismatch - package may be compromised');
-  }
-
-  // Install
-  await installer.install(packagePath);
-}
-```
+Connector code must be deployed from trusted packages by an operator. The API
+and integration hub do not sandbox arbitrary scripts: code loaded in those
+processes is trusted and can access process resources. Installer functionality
+and checksum handling are deliberately absent from the application; packaging,
+integrity verification and file placement belong to external deployment
+operations.
 
 ## Related Documentation
 

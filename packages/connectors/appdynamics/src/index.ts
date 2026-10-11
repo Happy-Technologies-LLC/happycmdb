@@ -102,11 +102,7 @@ export default class AppDynamicsConnector extends BaseIntegrationConnector {
   }
 
   async initialize(): Promise<void> {
-    logger.info('Initializing AppDynamics connector', {
-      controller: this.controllerUrl,
-      account: this.accountName,
-      enabled_resources: this.getEnabledResources(),
-    });
+    logger.info('Initializing AppDynamics connector');
     this.isInitialized = true;
   }
 
@@ -131,15 +127,7 @@ export default class AppDynamicsConnector extends BaseIntegrationConnector {
         },
       };
     } catch (error: any) {
-      return {
-        success: false,
-        message: `Connection failed: ${error.message}`,
-        details: {
-          controller: this.controllerUrl,
-          account: this.accountName,
-          error: error.response?.data || error.message,
-        },
-      };
+      return { success: false, message: 'Connection failed' };
     }
   }
 
@@ -155,10 +143,7 @@ export default class AppDynamicsConnector extends BaseIntegrationConnector {
       throw new Error(`Unknown resource: ${resourceId}`);
     }
 
-    logger.info('Starting AppDynamics resource extraction', {
-      resource: resourceId,
-      config: resourceConfig,
-    });
+    logger.info('Starting AppDynamics resource extraction');
 
     switch (resourceId) {
       case 'applications':
@@ -210,8 +195,8 @@ export default class AppDynamicsConnector extends BaseIntegrationConnector {
       });
 
     } catch (error) {
-      logger.error('Failed to extract AppDynamics applications', { error });
-      throw error;
+      logger.error('Failed to extract AppDynamics applications');
+      throw new Error('Connector extraction failed');
     }
 
     return extractedData;
@@ -265,10 +250,7 @@ export default class AppDynamicsConnector extends BaseIntegrationConnector {
           }
 
         } catch (error) {
-          logger.error('Failed to extract tiers for application', {
-            application: app.name,
-            error,
-          });
+          logger.error('Failed to extract tiers for application');
         }
       }
 
@@ -277,8 +259,8 @@ export default class AppDynamicsConnector extends BaseIntegrationConnector {
       });
 
     } catch (error) {
-      logger.error('Failed to extract AppDynamics tiers', { error });
-      throw error;
+      logger.error('Failed to extract AppDynamics tiers');
+      throw new Error('Connector extraction failed');
     }
 
     return extractedData;
@@ -333,10 +315,7 @@ export default class AppDynamicsConnector extends BaseIntegrationConnector {
           }
 
         } catch (error) {
-          logger.error('Failed to extract nodes for application', {
-            application: app.name,
-            error,
-          });
+          logger.error('Failed to extract nodes for application');
         }
       }
 
@@ -345,8 +324,8 @@ export default class AppDynamicsConnector extends BaseIntegrationConnector {
       });
 
     } catch (error) {
-      logger.error('Failed to extract AppDynamics nodes', { error });
-      throw error;
+      logger.error('Failed to extract AppDynamics nodes');
+      throw new Error('Connector extraction failed');
     }
 
     return extractedData;
@@ -397,10 +376,7 @@ export default class AppDynamicsConnector extends BaseIntegrationConnector {
           }
 
         } catch (error) {
-          logger.error('Failed to extract backends for application', {
-            application: app.name,
-            error,
-          });
+          logger.error('Failed to extract backends for application');
         }
       }
 
@@ -409,8 +385,8 @@ export default class AppDynamicsConnector extends BaseIntegrationConnector {
       });
 
     } catch (error) {
-      logger.error('Failed to extract AppDynamics backends', { error });
-      throw error;
+      logger.error('Failed to extract AppDynamics backends');
+      throw new Error('Connector extraction failed');
     }
 
     return extractedData;
@@ -463,7 +439,7 @@ export default class AppDynamicsConnector extends BaseIntegrationConnector {
       });
 
     } catch (error) {
-      logger.error('AppDynamics relationship extraction failed', { error });
+      logger.error('AppDynamics relationship extraction failed');
       // Don't throw - relationships are optional
     }
 

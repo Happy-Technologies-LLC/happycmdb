@@ -187,24 +187,16 @@ export default class VeeamConnector extends BaseIntegrationConnector {
       // Sessions typically expire in 15 minutes, set to 14 minutes to be safe
       this.sessionExpiry = new Date(Date.now() + 14 * 60 * 1000);
 
-      logger.info('Veeam session token acquired', {
-        expires_at: this.sessionExpiry,
-      });
+      logger.info('Veeam session token acquired');
 
     } catch (error: any) {
-      logger.error('Failed to acquire Veeam session token', {
-        error: error.message,
-        status: error.response?.status,
-      });
-      throw new Error(`Veeam authentication failed: ${error.message}`);
+      logger.error('Failed to acquire Veeam session token');
+      throw new Error('Veeam authentication failed');
     }
   }
 
   async initialize(): Promise<void> {
-    logger.info('Initializing Veeam connector', {
-      enterprise_manager: this.enterpriseManagerUrl,
-      enabled_resources: this.getEnabledResources(),
-    });
+    logger.info('Initializing Veeam connector');
 
     // Test authentication by acquiring session token
     await this.ensureSessionToken();
@@ -229,14 +221,7 @@ export default class VeeamConnector extends BaseIntegrationConnector {
         },
       };
     } catch (error: any) {
-      return {
-        success: false,
-        message: `Connection failed: ${error.message}`,
-        details: {
-          enterprise_manager: this.enterpriseManagerUrl,
-          error: error.response?.data || error.message,
-        },
-      };
+      return { success: false, message: 'Connection failed' };
     }
   }
 
@@ -252,10 +237,7 @@ export default class VeeamConnector extends BaseIntegrationConnector {
       throw new Error(`Unknown resource: ${resourceId}`);
     }
 
-    logger.info('Starting Veeam resource extraction', {
-      resource: resourceId,
-      config: resourceConfig,
-    });
+    logger.info('Starting Veeam resource extraction');
 
     // Route to appropriate extraction method
     switch (resourceId) {
@@ -297,8 +279,8 @@ export default class VeeamConnector extends BaseIntegrationConnector {
       });
 
     } catch (error) {
-      logger.error('Veeam backup server extraction failed', { error });
-      throw error;
+      logger.error('Veeam backup server extraction failed');
+      throw new Error('Connector extraction failed');
     }
 
     return extractedData;
@@ -337,8 +319,8 @@ export default class VeeamConnector extends BaseIntegrationConnector {
       });
 
     } catch (error) {
-      logger.error('Veeam protected VM extraction failed', { error });
-      throw error;
+      logger.error('Veeam protected VM extraction failed');
+      throw new Error('Connector extraction failed');
     }
 
     return extractedData;
@@ -369,8 +351,8 @@ export default class VeeamConnector extends BaseIntegrationConnector {
       });
 
     } catch (error) {
-      logger.error('Veeam backup job extraction failed', { error });
-      throw error;
+      logger.error('Veeam backup job extraction failed');
+      throw new Error('Connector extraction failed');
     }
 
     return extractedData;
@@ -401,8 +383,8 @@ export default class VeeamConnector extends BaseIntegrationConnector {
       });
 
     } catch (error) {
-      logger.error('Veeam repository extraction failed', { error });
-      throw error;
+      logger.error('Veeam repository extraction failed');
+      throw new Error('Connector extraction failed');
     }
 
     return extractedData;
@@ -462,7 +444,7 @@ export default class VeeamConnector extends BaseIntegrationConnector {
       });
 
     } catch (error) {
-      logger.error('Veeam relationship extraction failed', { error });
+      logger.error('Veeam relationship extraction failed');
       // Don't throw - relationships are optional
     }
 
@@ -665,7 +647,7 @@ export default class VeeamConnector extends BaseIntegrationConnector {
         await this.client.delete('/api/sessionMngr');
         logger.info('Veeam session closed');
       } catch (error) {
-        logger.warn('Failed to close Veeam session', { error });
+        logger.warn('Failed to close Veeam session');
       }
 
       this.sessionToken = null;

@@ -94,14 +94,10 @@ export interface ConnectorConfiguration {
   enabled: boolean;
   schedule?: string;
   scheduleEnabled: boolean;
-  connection: any;
-  options: any;
   enabledResources?: string[];
-  resourceConfigs: any;
   maxRetries: number;
   retryDelaySeconds: number;
   continueOnError: boolean;
-  notificationChannels: string[];
   notificationOnSuccess: boolean;
   notificationOnFailure: boolean;
   createdAt: string;
@@ -126,11 +122,7 @@ export interface ConnectorRun {
   recordsLoaded: number;
   recordsFailed: number;
   durationMs?: number;
-  errors: any[];
-  errorMessage?: string;
   triggeredBy: string;
-  triggeredByUser?: string;
-  jobId?: string;
 }
 
 export interface ConnectorMetrics {
@@ -349,14 +341,10 @@ export const CONNECTOR_CONFIGURATIONS_QUERY = gql`
       enabled
       schedule
       scheduleEnabled
-      connection
-      options
       enabledResources
-      resourceConfigs
       maxRetries
       retryDelaySeconds
       continueOnError
-      notificationChannels
       notificationOnSuccess
       notificationOnFailure
       createdAt
@@ -376,14 +364,10 @@ export const CONNECTOR_CONFIGURATION_QUERY = gql`
       enabled
       schedule
       scheduleEnabled
-      connection
-      options
       enabledResources
-      resourceConfigs
       maxRetries
       retryDelaySeconds
       continueOnError
-      notificationChannels
       notificationOnSuccess
       notificationOnFailure
       createdAt
@@ -424,11 +408,7 @@ export const CONNECTOR_CONFIGURATION_QUERY = gql`
         recordsLoaded
         recordsFailed
         durationMs
-        errors
-        errorMessage
         triggeredBy
-        triggeredByUser
-        jobId
       }
       metrics {
         totalRuns
@@ -479,11 +459,7 @@ export const CONNECTOR_RUNS_QUERY = gql`
       recordsLoaded
       recordsFailed
       durationMs
-      errors
-      errorMessage
       triggeredBy
-      triggeredByUser
-      jobId
     }
   }
 `;
@@ -510,50 +486,6 @@ export const CONNECTOR_STATS_QUERY = gql`
 // GraphQL Mutations
 // ============================================================================
 
-export const INSTALL_CONNECTOR_MUTATION = gql`
-  mutation InstallConnector($connectorType: String!, $version: String) {
-    installConnector(connectorType: $connectorType, version: $version) {
-      success
-      connector {
-        id
-        connectorType
-        name
-        installedVersion
-      }
-      message
-      errors
-    }
-  }
-`;
-
-export const UPDATE_CONNECTOR_MUTATION = gql`
-  mutation UpdateConnector($connectorType: String!, $version: String) {
-    updateConnector(connectorType: $connectorType, version: $version) {
-      success
-      connector {
-        id
-        connectorType
-        name
-        installedVersion
-      }
-      previousVersion
-      newVersion
-      message
-      errors
-    }
-  }
-`;
-
-export const UNINSTALL_CONNECTOR_MUTATION = gql`
-  mutation UninstallConnector($connectorType: String!) {
-    uninstallConnector(connectorType: $connectorType) {
-      success
-      message
-      errors
-    }
-  }
-`;
-
 export const CREATE_CONNECTOR_CONFIG_MUTATION = gql`
   mutation CreateConnectorConfiguration($input: CreateConnectorConfigInput!) {
     createConnectorConfiguration(input: $input) {
@@ -564,10 +496,7 @@ export const CREATE_CONNECTOR_CONFIG_MUTATION = gql`
       enabled
       schedule
       scheduleEnabled
-      connection
-      options
       enabledResources
-      resourceConfigs
       createdAt
       updatedAt
     }
@@ -587,10 +516,7 @@ export const UPDATE_CONNECTOR_CONFIG_MUTATION = gql`
       enabled
       schedule
       scheduleEnabled
-      connection
-      options
       enabledResources
-      resourceConfigs
       updatedAt
     }
   }
@@ -728,38 +654,6 @@ class ConnectorService {
       query: CONNECTOR_STATS_QUERY,
     });
     return data.connectorStats;
-  }
-
-  async installConnector(
-    connectorType: string,
-    version?: string
-  ): Promise<{ success: boolean; connector?: InstalledConnector; message?: string; errors?: string[] }> {
-    const { data } = await apolloClient.mutate({
-      mutation: INSTALL_CONNECTOR_MUTATION,
-      variables: { connectorType, version },
-    });
-    return data.installConnector;
-  }
-
-  async updateConnector(
-    connectorType: string,
-    version?: string
-  ): Promise<{ success: boolean; connector?: InstalledConnector; previousVersion: string; newVersion: string; message?: string; errors?: string[] }> {
-    const { data } = await apolloClient.mutate({
-      mutation: UPDATE_CONNECTOR_MUTATION,
-      variables: { connectorType, version },
-    });
-    return data.updateConnector;
-  }
-
-  async uninstallConnector(
-    connectorType: string
-  ): Promise<{ success: boolean; message?: string; errors?: string[] }> {
-    const { data } = await apolloClient.mutate({
-      mutation: UNINSTALL_CONNECTOR_MUTATION,
-      variables: { connectorType },
-    });
-    return data.uninstallConnector;
   }
 
   async createConnectorConfiguration(

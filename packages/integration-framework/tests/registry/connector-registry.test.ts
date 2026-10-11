@@ -15,6 +15,7 @@
 import { ConnectorRegistry } from '../../src/registry/connector-registry';
 import { BaseIntegrationConnector } from '../../src/core/base-connector';
 import { getPostgresClient } from '@cmdb/database';
+import { logger } from '@cmdb/common';
 import * as fs from 'fs';
 import * as path from 'path';
 import {
@@ -35,7 +36,6 @@ jest.mock('@cmdb/common', () => ({
   },
 }));
 jest.mock('fs');
-jest.mock('path');
 
 describe('ConnectorRegistry', () => {
   let registry: ConnectorRegistry;
@@ -233,13 +233,14 @@ describe('ConnectorRegistry', () => {
         { name: 'error-connector', isDirectory: () => true },
       ]);
       mockFsReadFileSync.mockImplementation(() => {
-        throw new Error('Failed to read file');
+        throw new Error('client_secret=DO_NOT_LEAK');
       });
 
       await registry.discoverConnectors('/opt/cmdb/connectors');
 
       // Should not throw and continue with other connectors
       expect(registry.hasConnectorType('error-connector')).toBe(false);
+      expect(JSON.stringify((logger.error as jest.Mock).mock.calls)).not.toContain('DO_NOT_LEAK');
     });
   });
 
@@ -539,13 +540,14 @@ describe('ConnectorRegistry', () => {
 
       it('should handle database query errors', async () => {
         mockPostgresClient.query.mockRejectedValue(
-          new Error('Database connection failed')
+          new Error('client_secret=DO_NOT_LEAK')
         );
 
         await registry.loadInstalledConnectors();
 
         // Should not throw and log error
         expect(registry.getAllConnectorTypes()).toEqual([]);
+        expect(JSON.stringify((logger.error as jest.Mock).mock.calls)).not.toContain('DO_NOT_LEAK');
       });
     });
 

@@ -60,6 +60,7 @@ module.exports = {
     '^@happy-technologies/connector-core$':
       '<rootDir>/node_modules/@happy-technologies/connector-core/src/index.ts',
     '^(\\.{1,2}/.*)\\.js$': '$1',
+    '^@cmdb/integration-framework/dist/(.*)$': '<rootDir>/packages/integration-framework/src/$1',
     '^@cmdb/([^/]+)/(.*)$': '<rootDir>/packages/$1/src/$2',
     '^@cmdb/([^/]+)$': '<rootDir>/packages/$1/src',
     '^@test/utils$': '<rootDir>/tests/utils',

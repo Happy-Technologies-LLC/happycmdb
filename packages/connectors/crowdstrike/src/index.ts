@@ -137,10 +137,7 @@ export default class CrowdStrikeConnector extends BaseIntegrationConnector {
   }
 
   async initialize(): Promise<void> {
-    logger.info('Initializing CrowdStrike Falcon connector', {
-      base_url: this.baseUrl,
-      enabled_resources: this.getEnabledResources(),
-    });
+    logger.info('Initializing CrowdStrike Falcon connector');
 
     // Authenticate on initialization
     await this.authenticate();
@@ -170,14 +167,10 @@ export default class CrowdStrikeConnector extends BaseIntegrationConnector {
       this.accessToken = response.data.access_token;
       this.tokenExpiry = Date.now() + (response.data.expires_in * 1000);
 
-      logger.info('CrowdStrike authentication successful', {
-        expires_in: response.data.expires_in,
-      });
+      logger.info('CrowdStrike authentication successful');
     } catch (error: any) {
-      logger.error('CrowdStrike authentication failed', {
-        error: error.response?.data || error.message,
-      });
-      throw new Error(`CrowdStrike authentication failed: ${error.message}`);
+      logger.error('CrowdStrike authentication failed');
+      throw new Error('CrowdStrike authentication failed');
     }
   }
 
@@ -210,14 +203,7 @@ export default class CrowdStrikeConnector extends BaseIntegrationConnector {
         },
       };
     } catch (error: any) {
-      return {
-        success: false,
-        message: `Connection failed: ${error.message}`,
-        details: {
-          base_url: this.baseUrl,
-          error: error.response?.data || error.message,
-        },
-      };
+      return { success: false, message: 'Connection failed' };
     }
   }
 
@@ -233,10 +219,7 @@ export default class CrowdStrikeConnector extends BaseIntegrationConnector {
       throw new Error(`Unknown resource: ${resourceId}`);
     }
 
-    logger.info('Starting CrowdStrike resource extraction', {
-      resource: resourceId,
-      config: resourceConfig,
-    });
+    logger.info('Starting CrowdStrike resource extraction');
 
     switch (resourceId) {
       case 'devices':
@@ -280,7 +263,7 @@ export default class CrowdStrikeConnector extends BaseIntegrationConnector {
 
     const filter = filterParts.join('+');
 
-    logger.info('Extracting CrowdStrike devices', { filter, batchSize });
+    logger.info('Extracting CrowdStrike devices');
 
     while (hasMore) {
       try {
@@ -323,8 +306,8 @@ export default class CrowdStrikeConnector extends BaseIntegrationConnector {
         offset += batchSize;
 
       } catch (error) {
-        logger.error('CrowdStrike device extraction failed', { offset, error });
-        throw error;
+        logger.error('CrowdStrike device extraction failed');
+        throw new Error('Connector extraction failed');
       }
     }
 
@@ -369,7 +352,7 @@ export default class CrowdStrikeConnector extends BaseIntegrationConnector {
 
     const filter = filterParts.join('+');
 
-    logger.info('Extracting CrowdStrike detections', { filter, batchSize, daysBack });
+    logger.info('Extracting CrowdStrike detections');
 
     while (hasMore) {
       try {
@@ -412,8 +395,8 @@ export default class CrowdStrikeConnector extends BaseIntegrationConnector {
         offset += batchSize;
 
       } catch (error) {
-        logger.error('CrowdStrike detection extraction failed', { offset, error });
-        throw error;
+        logger.error('CrowdStrike detection extraction failed');
+        throw new Error('Connector extraction failed');
       }
     }
 
@@ -445,7 +428,7 @@ export default class CrowdStrikeConnector extends BaseIntegrationConnector {
 
     const filter = filterParts.join('+');
 
-    logger.info('Extracting CrowdStrike vulnerabilities', { filter, batchSize });
+    logger.info('Extracting CrowdStrike vulnerabilities');
 
     while (hasMore) {
       try {
@@ -480,8 +463,8 @@ export default class CrowdStrikeConnector extends BaseIntegrationConnector {
         offset += batchSize;
 
       } catch (error) {
-        logger.error('CrowdStrike vulnerability extraction failed', { offset, error });
-        throw error;
+        logger.error('CrowdStrike vulnerability extraction failed');
+        throw new Error('Connector extraction failed');
       }
     }
 
@@ -521,7 +504,7 @@ export default class CrowdStrikeConnector extends BaseIntegrationConnector {
 
     const filter = filterParts.join('+');
 
-    logger.info('Extracting CrowdStrike incidents', { filter, batchSize, daysBack });
+    logger.info('Extracting CrowdStrike incidents');
 
     while (hasMore) {
       try {
@@ -564,8 +547,8 @@ export default class CrowdStrikeConnector extends BaseIntegrationConnector {
         offset += batchSize;
 
       } catch (error) {
-        logger.error('CrowdStrike incident extraction failed', { offset, error });
-        throw error;
+        logger.error('CrowdStrike incident extraction failed');
+        throw new Error('Connector extraction failed');
       }
     }
 
@@ -589,7 +572,7 @@ export default class CrowdStrikeConnector extends BaseIntegrationConnector {
       logger.info('CrowdStrike relationships will be inferred during transformation');
 
     } catch (error) {
-      logger.error('CrowdStrike relationship extraction failed', { error });
+      logger.error('CrowdStrike relationship extraction failed');
     }
 
     return relationships;

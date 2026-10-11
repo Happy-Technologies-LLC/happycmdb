@@ -43,10 +43,7 @@ export default class DatadogConnector extends BaseIntegrationConnector {
   }
 
   async initialize(): Promise<void> {
-    logger.info('Initializing Datadog connector', {
-      site: this.site,
-      enabled_resources: this.getEnabledResources(),
-    });
+    logger.info('Initializing Datadog connector');
     this.isInitialized = true;
   }
 
@@ -67,14 +64,7 @@ export default class DatadogConnector extends BaseIntegrationConnector {
         },
       };
     } catch (error: any) {
-      return {
-        success: false,
-        message: `Connection failed: ${error.message}`,
-        details: {
-          site: this.site,
-          error: error.response?.data || error.message,
-        },
-      };
+      return { success: false, message: 'Connection failed' };
     }
   }
 
@@ -90,10 +80,7 @@ export default class DatadogConnector extends BaseIntegrationConnector {
       throw new Error(`Unknown resource: ${resourceId}`);
     }
 
-    logger.info('Starting Datadog resource extraction', {
-      resource: resourceId,
-      config: resourceConfig
-    });
+    logger.info('Starting Datadog resource extraction');
 
     switch (resourceId) {
       case 'hosts':
@@ -140,14 +127,11 @@ export default class DatadogConnector extends BaseIntegrationConnector {
         });
       }
 
-      logger.info('Datadog hosts extracted', {
-        count: extractedData.length,
-        total_returned: response.data.total_returned,
-      });
+      logger.info('Datadog hosts extracted');
 
     } catch (error) {
-      logger.error('Datadog host extraction failed', { error });
-      throw error;
+      logger.error('Datadog host extraction failed');
+      throw new Error('Connector extraction failed');
     }
 
     return extractedData;
@@ -185,8 +169,8 @@ export default class DatadogConnector extends BaseIntegrationConnector {
       });
 
     } catch (error) {
-      logger.error('Datadog container extraction failed', { error });
-      throw error;
+      logger.error('Datadog container extraction failed');
+      throw new Error('Connector extraction failed');
     }
 
     return extractedData;
@@ -224,8 +208,8 @@ export default class DatadogConnector extends BaseIntegrationConnector {
       });
 
     } catch (error) {
-      logger.error('Datadog service extraction failed', { error });
-      throw error;
+      logger.error('Datadog service extraction failed');
+      throw new Error('Connector extraction failed');
     }
 
     return extractedData;
@@ -267,8 +251,8 @@ export default class DatadogConnector extends BaseIntegrationConnector {
       });
 
     } catch (error) {
-      logger.error('Datadog monitor extraction failed', { error });
-      throw error;
+      logger.error('Datadog monitor extraction failed');
+      throw new Error('Connector extraction failed');
     }
 
     return extractedData;

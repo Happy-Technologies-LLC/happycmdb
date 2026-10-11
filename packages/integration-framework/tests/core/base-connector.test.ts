@@ -500,22 +500,43 @@ describe('BaseIntegrationConnector', () => {
       expect(connector.transformCalls.length).toBeGreaterThan(0);
     });
 
-    it('should emit extraction_failed on resource error', async () => {
-      const emitSpy = jest.spyOn(connector, 'emit');
+    it('does not log a tenant-controlled connector name containing a credential', async () => {
+      const { logger } = require('@cmdb/common');
+      const secret = 'client_secret=TENANT_MARKER_NEVER_LOG';
+      const namedConnector = new TestConnector({ ...config, name: secret }, metadata);
+      namedConnector.extractedData = connector.extractedData;
+      jest.clearAllMocks();
 
-      // Override to throw error
-      connector.extractResource = async () => {
-        throw new Error('Extraction failed');
-      };
+      await namedConnector.run();
+
+      expect(namedConnector.transformCalls.length).toBeGreaterThan(0);
+      for (const method of ['info', 'warn', 'error'] as const) {
+        expect(JSON.stringify(logger[method].mock.calls)).not.toContain(secret);
+      }
+    });
+
+    it('does not emit or log raw extractor exceptions', async () => {
+      const emitSpy = jest.spyOn(connector, 'emit');
+      const { logger } = require('@cmdb/common');
+      const secret = 'nested-client-secret-marker';
+      connector.extractResource = async () => { throw new Error(`Authorization: ${secret}`); };
 
       await connector.run();
 
+      expect(JSON.stringify([emitSpy.mock.calls, logger.error.mock.calls])).not.toContain(secret);
       expect(emitSpy).toHaveBeenCalledWith(
         'extraction_failed',
-        expect.objectContaining({
-          error: 'Extraction failed',
-        })
+        expect.objectContaining({ error: 'CONNECTOR_EXTRACTION_FAILED' })
       );
+    });
+
+    it('returns a fixed failure instead of exposing initialization errors', async () => {
+      const { logger } = require('@cmdb/common');
+      const secret = 'nested-client-secret-marker';
+      connector.initialize = async () => { throw new Error(`Authorization: ${secret}`); };
+
+      await expect(connector.run()).rejects.toThrow('CONNECTOR_RUN_FAILED');
+      expect(JSON.stringify(logger.error.mock.calls)).not.toContain(secret);
     });
 
     it('should extract relationships if supported', async () => {

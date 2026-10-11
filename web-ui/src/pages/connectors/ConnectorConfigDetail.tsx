@@ -60,8 +60,8 @@ export default function ConnectorConfigDetail() {
       setLoading(true);
       const data = await connectorService.getConnectorConfiguration(id);
       setConfig(data);
-    } catch (error: any) {
-      showToast(error.message || 'Failed to load connector configuration', 'error');
+    } catch {
+      showToast('Failed to load connector configuration', 'error');
     } finally {
       setLoading(false);
     }
@@ -72,11 +72,11 @@ export default function ConnectorConfigDetail() {
 
     try {
       setRunning(true);
-      const run = await connectorService.runConnector(id);
+      await connectorService.runConnector(id);
       showToast(`${config?.name} is now running`, 'success');
       await loadConfig();
-    } catch (error: any) {
-      showToast(error.message || 'Failed to run connector', 'error');
+    } catch {
+      showToast('Failed to run connector', 'error');
     } finally {
       setRunning(false);
     }
@@ -94,8 +94,8 @@ export default function ConnectorConfigDetail() {
         showToast(`${config.name} has been enabled`, 'success');
       }
       await loadConfig();
-    } catch (error: any) {
-      showToast(error.message || 'Failed to update configuration', 'error');
+    } catch {
+      showToast('Failed to update configuration', 'error');
     }
   };
 
@@ -109,10 +109,10 @@ export default function ConnectorConfigDetail() {
         showToast('Connector configuration deleted successfully', 'success');
         navigate('/connectors/installed');
       } else {
-        showToast(result.message || 'Failed to delete configuration', 'error');
+        showToast('Failed to delete configuration', 'error');
       }
-    } catch (error: any) {
-      showToast(error.message || 'Failed to delete configuration', 'error');
+    } catch {
+      showToast('Failed to delete configuration', 'error');
     } finally {
       setDeleting(false);
       setShowDeleteDialog(false);
@@ -186,14 +186,7 @@ export default function ConnectorConfigDetail() {
       field: 'triggeredBy',
       headerName: 'Triggered By',
       flex: 1,
-      renderCell: (value: unknown, row: ConnectorRun) => (
-        <div className="text-sm">
-          <div className="capitalize">{value as React.ReactNode}</div>
-          {row.triggeredByUser && (
-            <div className="text-xs text-muted-foreground">{row.triggeredByUser}</div>
-          )}
-        </div>
-      ),
+      renderCell: (value: unknown) => <div className="capitalize">{value as React.ReactNode}</div>,
     },
   ];
 
@@ -378,16 +371,6 @@ export default function ConnectorConfigDetail() {
                   {config.notificationOnFailure ? 'Enabled' : 'Disabled'}
                 </Badge>
               </div>
-              {config.notificationChannels.length > 0 && (
-                <div className="flex items-center gap-2 pt-2">
-                  <span className="text-sm text-muted-foreground">Channels:</span>
-                  {config.notificationChannels.map((channel) => (
-                    <Badge key={channel} variant="outline">
-                      {channel}
-                    </Badge>
-                  ))}
-                </div>
-              )}
             </div>
           </Card>
         </TabsContent>

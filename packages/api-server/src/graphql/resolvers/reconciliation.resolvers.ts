@@ -13,6 +13,10 @@ import { TransformedCI, IdentificationAttributes } from '@cmdb/integration-frame
 import { GraphQLContext } from './index';
 import { checkGraphQLPermission } from '../../middleware/auth.middleware';
 import { requireGraphQLOrganization } from '../require-organization';
+import {
+  getOwnedConflict, getOwnedFieldSources, getOwnedLineage,
+  listOwnedConflicts, updateOwnedConflict
+} from '../../reconciliation/tenant-queries';
 
 const reconciliationEngine = getIdentityReconciliationEngine();
 const postgresClient = getPostgresClient();
@@ -92,22 +96,16 @@ const ReconciliationQuery = {
       _status?: string;
       _limit?: number;
       _offset?: number;
-    }
+    },
+    _context: GraphQLContext
   ) => {
+    const organizationId = requireGraphQLOrganization(_context);
     try {
-      const status = _args._status || 'pending';
+      const status = (_args._status || 'pending').toLowerCase();
       const limit = Math.min(_args._limit || 100, 1000);
       const offset = _args._offset || 0;
 
-      const result = await postgresClient.query(
-        `SELECT id, ci_id, conflict_type, source_data, target_data,
-                conflicting_fields, status, created_at
-         FROM reconciliation_conflicts
-         WHERE status = $1
-         ORDER BY created_at DESC
-         LIMIT $2 OFFSET $3`,
-        [status, limit, offset]
-      );
+      const result = await listOwnedConflicts(postgresClient, status, limit, offset, organizationId);
 
       return result.rows.map(row => ({
         _id: row.id,
@@ -204,21 +202,19 @@ const ReconciliationQuery = {
    */
   getCILineage: async (
     _parent: any,
-    _args: { _ciId: string }
+    _args: { _ciId: string },
+    _context: GraphQLContext
   ) => {
+    const organizationId = requireGraphQLOrganization(_context);
     try {
-      const result = await postgresClient.query(
-        `SELECT source_name, source_id, confidence_score,
-                first_seen_at, last_seen_at
-         FROM ci_source_lineage
-         WHERE ci_id = $1
-         ORDER BY last_seen_at DESC`,
-        [_args._ciId]
-      );
+      const result = await getOwnedLineage(postgresClient, _args._ciId, organizationId);
+      if (result.rows.length === 0) {
+        throw new GraphQLError('CI not found', { extensions: { code: 'NOT_FOUND' } });
+      }
 
       return {
         _ciId: _args._ciId,
-        _sources: result.rows.map(row => ({
+        _sources: result.rows.filter(row => row.source_name !== null).map(row => ({
           _sourceName: row.source_name,
           _sourceId: row.source_id,
           _confidenceScore: row.confidence_score,
@@ -227,6 +223,7 @@ const ReconciliationQuery = {
         }))
       };
     } catch (error: any) {
+      if (error instanceof GraphQLError && error.extensions['code'] === 'NOT_FOUND') throw error;
       logger.error('GraphQL: Error getting CI lineage', error);
       throw new GraphQLError('Failed to get CI lineage', {
         extensions: {
@@ -242,20 +239,19 @@ const ReconciliationQuery = {
    */
   getCIFieldSources: async (
     _parent: any,
-    _args: { _ciId: string }
+    _args: { _ciId: string },
+    _context: GraphQLContext
   ) => {
+    const organizationId = requireGraphQLOrganization(_context);
     try {
-      const result = await postgresClient.query(
-        `SELECT field_name, field_value, source_name, updated_at
-         FROM ci_field_sources
-         WHERE ci_id = $1
-         ORDER BY field_name`,
-        [_args._ciId]
-      );
+      const result = await getOwnedFieldSources(postgresClient, _args._ciId, organizationId);
+      if (result.rows.length === 0) {
+        throw new GraphQLError('CI not found', { extensions: { code: 'NOT_FOUND' } });
+      }
 
       return {
         _ciId: _args._ciId,
-        _fields: result.rows.map(row => ({
+        _fields: result.rows.filter(row => row.field_name !== null).map(row => ({
           _fieldName: row.field_name,
           _fieldValue: row.field_value,
           _sourceName: row.source_name,
@@ -263,6 +259,7 @@ const ReconciliationQuery = {
         }))
       };
     } catch (error: any) {
+      if (error instanceof GraphQLError && error.extensions['code'] === 'NOT_FOUND') throw error;
       logger.error('GraphQL: Error getting CI field sources', error);
       throw new GraphQLError('Failed to get CI field sources', {
         extensions: {
@@ -358,6 +355,7 @@ const ReconciliationMutation = {
     _context: GraphQLContext
   ) => {
     checkGraphQLPermission(_context, 'write');
+    const organizationId = requireGraphQLOrganization(_context);
     try {
       const resolution = _args._resolution.toLowerCase();
 
@@ -367,11 +365,7 @@ const ReconciliationMutation = {
         });
       }
 
-      // Get conflict details
-      const conflictResult = await postgresClient.query(
-        'SELECT * FROM reconciliation_conflicts WHERE id = $1',
-        [_args._id]
-      );
+      const conflictResult = await getOwnedConflict(postgresClient, _args._id, organizationId);
 
       if (conflictResult.rows.length === 0) {
         throw new GraphQLError('Conflict not found', {
@@ -381,15 +375,13 @@ const ReconciliationMutation = {
 
       const conflict = conflictResult.rows[0];
 
-      // Update conflict status
-      await postgresClient.query(
-        `UPDATE reconciliation_conflicts
-         SET status = 'resolved',
-             resolution_data = $2,
-             resolved_at = NOW()
-         WHERE id = $1`,
-        [_args._id, JSON.stringify({ resolution, merged_data: _args._mergedData })]
+      const updated = await updateOwnedConflict(
+        postgresClient, _args._id, organizationId,
+        JSON.stringify({ resolution, merged_data: _args._mergedData })
       );
+      if (updated.rows.length === 0) {
+        throw new GraphQLError('Conflict not found', { extensions: { code: 'NOT_FOUND' } });
+      }
 
       return {
         _id: _args._id,

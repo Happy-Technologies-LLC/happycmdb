@@ -95,7 +95,7 @@ architectureRoutes.post(
       logger.info('Architecture analysis requested for CIs', { ci_count: ci_ids.length });
 
       const engine = getArchitectureOptimizationEngine();
-      const analysis = await engine.analyzeArchitecture(ci_ids);
+      const analysis = await engine.analyzeArchitecture(ci_ids, organizationId);
 
       res.json({
         success: true,

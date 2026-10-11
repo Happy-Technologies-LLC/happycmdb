@@ -189,7 +189,7 @@ it('architecture POST and business-service GET ignore cross-org cycles, database
     issues: analysis.issues.map((issue: any) => ({
       type: issue.issue_type,
       description: issue.description,
-      affected: issue.affected_cis,
+      affected: [...issue.affected_cis].sort(),
       metrics: issue.metrics,
     })).sort((left: any, right: any) => left.type.localeCompare(right.type)),
   });
@@ -221,21 +221,23 @@ it('architecture POST and business-service GET ignore cross-org cycles, database
         issue.issue_type === 'circular_dependency')).toBe(true);
       const shared = result.body.analysis.issues.find((issue: { issue_type: string }) =>
         issue.issue_type === 'shared_database');
-      expect(shared).toMatchObject({
-        affected_cis: ['t2-arch-db', 't2-arch-app1', 't2-arch-app2', 't2-arch-app3'],
-        metrics: { shared_by_count: 3 },
-      });
+      expect(Number(shared.metrics.shared_by_count.low ?? shared.metrics.shared_by_count)).toBe(3);
+      expect([...shared.affected_cis].sort()).toEqual([
+        't2-arch-db', 't2-arch-app1', 't2-arch-app2', 't2-arch-app3',
+      ].sort());
     }
     await run(`
       MATCH (db:CI {id:'t2-arch-db'}), (cycle:CI {id:'t2-arch-cycle'}), (fan:CI {id:'t2-arch-fan'})
       CREATE (foreignApp:CI {id:'t2-arch-foreign-app', ci_type:'application', organization_id:$b})
       CREATE (foreignCycle:CI {id:'t2-arch-foreign-cycle', organization_id:$b})
       CREATE (foreignLeaf:CI {id:'t2-arch-foreign-leaf', organization_id:$b})
+      CREATE (through:CI {id:'t2-arch-owned-through', organization_id:$a})
       CREATE (foreignApp)-[:USES]->(db)
       CREATE (cycle)-[:DEPENDS_ON]->(foreignCycle)
       CREATE (foreignCycle)-[:DEPENDS_ON]->(cycle)
       CREATE (fan)-[:DEPENDS_ON]->(foreignLeaf)
-    `, { b: B });
+      CREATE (foreignLeaf)-[:DEPENDS_ON]->(through)
+    `, { a: A, b: B });
     await sql.query(
       `INSERT INTO ci_business_service_mappings (ci_id, service_id, mapping_type)
        VALUES ('t2-arch-foreign-app', 't2-a', 'supports')`

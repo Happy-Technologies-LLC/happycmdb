@@ -46,7 +46,10 @@ bytes. A password change or account deletion authorized before an operator rotat
 **Platform administrators** are a dedicated flag, set only by the operator command
 `scripts/identity-window.ts grant-platform-admin`. Role `admin` and organization grant nothing. A
 seeded account (the init or seed-data admin, or any account with seed provenance or a default
-password) never qualifies. API keys never act as platform administrators.
+password) never qualifies. API keys never act as platform administrators. The flag is checked on
+every request against the stored user record; tokens and verified request identities carry no
+platform-admin claim, so revoking the flag takes effect on the next request. No route accepts platform
+administrators yet: global TBM and connector controls still refuse every caller.
 
 ---
 

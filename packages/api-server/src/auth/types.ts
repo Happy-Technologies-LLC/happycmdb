@@ -87,11 +87,6 @@ export interface TokenPayload {
   _organizationId?: string;
   /** Credential generation the token was minted in (absent on pre-HP1 tokens = 0). */
   _cep?: number;
-  /**
-   * Effective platform-administrator status, set by AuthService.verifyToken
-   * from the freshly loaded user on every request; never minted into a JWT.
-   */
-  _platformAdmin?: boolean;
   iat?: number;
   exp?: number;
   iss?: string;

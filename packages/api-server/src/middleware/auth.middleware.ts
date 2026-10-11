@@ -10,6 +10,7 @@ import { Request, Response, NextFunction } from 'express';
 import { GraphQLError } from 'graphql';
 import { logger, type ConfigSchema } from '@cmdb/common';
 import { AuthFailureError, AuthService } from '../auth/auth.service';
+import { isPlatformAdmin } from '../auth/platform-admin';
 import { TokenPayload, Permission, ROLE_PERMISSIONS } from '../auth/types';
 
 const UNAUTHORIZED = { _error: 'Unauthorized', _message: 'Authentication failed' };
@@ -212,23 +213,29 @@ export class AuthMiddleware {
 
   /**
    * Middleware to require the dedicated platform administrator (P-6, HP1-S6).
-   * `req.user._platformAdmin` is set by AuthService.verifyToken from the
-   * freshly loaded user (flag set and not a seeded account) and is always
-   * false for API keys. Role and organization grant nothing here. Refuses
-   * before any data or queue access.
+   * Decided on every request from the freshly re-read user record
+   * (isPlatformAdmin: flag set and not a seeded account), never from any
+   * token or payload field; verified identities carry no platform marker.
+   * Only a JWT login session qualifies, never an API key. Role and
+   * organization grant nothing here. Refuses before any data or queue access.
    */
   requirePlatformAdmin() {
-    return (req: AuthenticatedRequest, res: Response, next: NextFunction): void => {
+    return async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
       if (!req.user) {
-        res.status(401).json({
-          success: false,
-          error: 'Unauthorized',
-          message: 'Authentication required',
-        });
+        res.status(401).json(UNAUTHORIZED);
         return;
       }
 
-      if (req.user._platformAdmin !== true) {
+      let allowed = false;
+      if (req.credentialType === 'jwt') {
+        try {
+          const user = await this.authService.findEnabledUser(req.user._userId);
+          allowed = user !== null && isPlatformAdmin(user);
+        } catch {
+          allowed = false;
+        }
+      }
+      if (!allowed) {
         res.status(403).json({
           success: false,
           error: 'Forbidden',

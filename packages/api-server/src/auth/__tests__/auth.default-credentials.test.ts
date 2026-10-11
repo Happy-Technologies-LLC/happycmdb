@@ -350,13 +350,42 @@ describe('N-21 SEC12-02: per-request paths never run bcrypt; a non-bcrypt hash i
 
 describe('N-21 P-6 dedicated platform-admin flag with seeded-account exclusion', () => {
   const access = (id: string) => jwt.generateAccessToken(id, id, 'admin', ORG_A);
+  type Outcome = { status: number; body: unknown; nextCalled: boolean };
+  const response = () => ({ statusCode: 200, body: undefined as unknown,
+    status(code: number) { this.statusCode = code; return this; }, json(body: unknown) { this.body = body; return this; } });
+
+  /** authenticate() then requirePlatformAdmin(), as a mounted platform route would run them. */
+  async function gate(headers: Record<string, string>): Promise<Outcome> {
+    const middleware = new AuthMiddleware(service, authConfig as never);
+    const req = { headers } as unknown as AuthenticatedRequest;
+    const res = response();
+    let authenticated = false;
+    await middleware.authenticate()(req, res as unknown as Response, () => { authenticated = true; });
+    if (!authenticated) {
+      return { status: res.statusCode, body: res.body, nextCalled: false };
+    }
+    let nextCalled = false;
+    await middleware.requirePlatformAdmin()(req, res as unknown as Response, () => { nextCalled = true; });
+    return { status: res.statusCode, body: res.body, nextCalled };
+  }
+  const bearer = (id: string) => ({ authorization: `Bearer ${access(id)}` });
+  const FORBIDDEN = { status: 403, nextCalled: false, body: { success: false, error: 'Forbidden', message: 'Platform administrator required' } };
 
   it('grants platform admin only from the flag, never from role or org', async () => {
-    repository.users.set('p', user('p', { _passwordHash: operatorHash, _platformAdmin: true }));
+    repository.users.set('p', user('p', { _passwordHash: operatorHash, _platformAdmin: true, _role: 'viewer' }));
     repository.users.set('r', user('r', { _passwordHash: operatorHash, _organizationId: '00000000-0000-0000-0000-000000000000' }));
 
-    await expect(service.verifyToken(access('p'))).resolves.toMatchObject({ _platformAdmin: true });
-    await expect(service.verifyToken(access('r'))).resolves.toMatchObject({ _platformAdmin: false });
+    expect(await gate(bearer('p'))).toMatchObject({ status: 200, nextCalled: true });
+    expect(await gate(bearer('r'))).toEqual(FORBIDDEN);
+  });
+
+  it('is decided from the store on each request: revoking the flag denies an already-issued token', async () => {
+    repository.users.set('p', user('p', { _passwordHash: operatorHash, _platformAdmin: true }));
+    const headers = bearer('p');
+    expect(await gate(headers)).toMatchObject({ nextCalled: true });
+
+    repository.users.set('p', { ...repository.users.get('p')!, _platformAdmin: false });
+    expect(await gate(headers)).toEqual(FORBIDDEN);
   });
 
   it.each([
@@ -368,30 +397,22 @@ describe('N-21 P-6 dedicated platform-admin flag with seeded-account exclusion',
     const id = overrides._id ?? 's';
     repository.users.set(id, user(id, { _passwordHash: operatorHash, _platformAdmin: true, ...overrides }));
 
-    await expect(service.verifyToken(access(id))).resolves.toMatchObject({ _platformAdmin: false });
+    expect(await gate(bearer(id))).toEqual(FORBIDDEN);
   });
 
-  it('API keys never carry platform admin', async () => {
+  it('API keys never carry platform admin, even for a flagged user', async () => {
     repository.users.set('p', user('p', { _passwordHash: operatorHash, _platformAdmin: true }));
 
-    await expect(service.verifyApiKey(await addKey('p', 0))).resolves.toMatchObject({ _platformAdmin: false });
+    expect(await gate({ 'x-api-key': await addKey('p', 0) })).toEqual(FORBIDDEN);
   });
 
-  it('requirePlatformAdmin(): 401 unauthenticated, 403 without the flag, next() with it', () => {
-    const middleware = new AuthMiddleware(service, authConfig as never).requirePlatformAdmin();
-    const run = (requestUser?: Partial<TokenPayload>) => {
-      const res = { statusCode: 200, body: undefined as unknown, status(code: number) { this.statusCode = code; return this; },
-        json(body: unknown) { this.body = body; return this; } };
-      let nextCalled = false;
-      middleware({ user: requestUser } as AuthenticatedRequest, res as unknown as Response, () => { nextCalled = true; });
-      return { status: res.statusCode, body: res.body, nextCalled };
-    };
-
-    expect(run()).toMatchObject({ status: 401, nextCalled: false });
-    expect(run({ _userId: 'r', _role: 'admin', _organizationId: '00000000-0000-0000-0000-000000000000' })).toEqual({
-      status: 403, nextCalled: false,
-      body: { success: false, error: 'Forbidden', message: 'Platform administrator required' },
-    });
-    expect(run({ _userId: 'p', _role: 'viewer', _platformAdmin: true })).toMatchObject({ nextCalled: true });
+  it('a request identity claiming the marker grants nothing', async () => {
+    repository.users.set('r', user('r', { _passwordHash: operatorHash }));
+    const req = { headers: {}, user: { _userId: 'r', _role: 'viewer', _platformAdmin: true } as unknown as TokenPayload,
+      credentialType: 'jwt' } as unknown as AuthenticatedRequest;
+    const res = response();
+    let nextCalled = false;
+    await new AuthMiddleware(service, authConfig as never).requirePlatformAdmin()(req, res as unknown as Response, () => { nextCalled = true; });
+    expect({ status: res.statusCode, body: res.body, nextCalled }).toEqual(FORBIDDEN);
   });
 });

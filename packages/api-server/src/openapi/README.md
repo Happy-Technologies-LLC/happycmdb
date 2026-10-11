@@ -99,7 +99,10 @@ same 404. Credential IDs must belong to the same organization. Credential-backed
 manual runs and schedule enables return the same fixed 409 for every caller
 (including admins); they do not resolve credentials or queue jobs. Background
 definition triggers, schedules and workers also refuse credential-bound work.
-Credential-free runs queue only scan targets and an organization stamp.
+Credential-free runs queue only scan targets, an organization stamp and Nmap's
+boolean `scanOptions.aggressive`, `osDetection`, `serviceDetection`,
+`fullPortScan` and `portScan` switches. Opaque scan configuration and credentials
+are never queued.
 Credential-backed discovery is restored by HP1-S5 (v16 §10.2.4-10.2.6
 org-owned credential sets and run pipeline), tracked as HAP-444.
 

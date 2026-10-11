@@ -39,9 +39,14 @@ function exec(sql: string): Promise<void> {
 }
 const db = { query, getClient: async () => ({ query, release: () => undefined }) };
 const queue = { add: jest.fn().mockResolvedValue({ id: 'queued' }) };
-jest.mock('@cmdb/database', () => ({ getPostgresClient: () => db, queueManager: { getQueue: () => queue } }));
+jest.mock('@cmdb/database', () => ({
+  getPostgresClient: () => db,
+  QUEUE_NAMES: { _DISCOVERY_SSH: 'discovery-ssh', _DISCOVERY_NMAP: 'discovery-nmap' },
+  queueManager: { getQueue: () => queue, registerWorker: jest.fn() },
+}));
 jest.mock('@cmdb/common', () => ({
   logger: { info: jest.fn(), error: jest.fn(), warn: jest.fn() },
+  safeDiscoveryScanConfig: require('../../../../../common/src/utils/discovery-scan-config').safeDiscoveryScanConfig,
   validate: (schema: Joi.Schema, value: unknown) => {
     const result = schema.validate(value);
     return { valid: !result.error, value: result.value, error: result.error?.message, details: result.error?.details };
@@ -55,6 +60,15 @@ jest.mock('../../../auth/auth-bootstrap', () => ({ getAuthMiddleware: () => ({
     next();
   },
 }) }));
+jest.mock('../../../../../discovery-engine/src/workers/nmap-discovery.worker', () => ({
+  NmapDiscoveryWorker: jest.fn(),
+}));
+jest.mock('@cmdb/ai-discovery', () => ({
+  HybridDiscoveryOrchestrator: jest.fn(), PatternStorageService: jest.fn(), getDefaultLLMConfig: jest.fn(),
+}));
+import { queueManager } from '@cmdb/database';
+import { DiscoveryOrchestrator } from '../../../../../discovery-engine/src/orchestrator/discovery-orchestrator';
+import { NmapDiscoveryWorker } from '../../../../../discovery-engine/src/workers/nmap-discovery.worker';
 import { discoveryDefinitionRoutes } from '../discovery-definition.routes';
 const app = express();
 app.use(express.json());
@@ -90,7 +104,10 @@ afterAll(async () => {
 
 test('mounted definitions isolate two users and orgs, reject legacy and credential attachment, and stamp queued jobs', async () => {
   const create = (name: string, user: string) => request(app).post(url).set(headers(user)).send({
-    name, provider: 'nmap', method: 'agentless', config: { targets: ['192.0.2.1'], password: 'synthetic-secret' }, schedule: '0 * * * *',
+    name, provider: 'nmap', method: 'agentless', config: {
+      targets: ['192.0.2.1'], scanOptions: { serviceDetection: true, password: 'synthetic-secret' },
+      credentials: { password: 'synthetic-secret' },
+    }, schedule: '0 * * * *',
   });
   const own = await create(`own-${randomBytes(4).toString('hex')}`, 'a');
   const other = await create(`other-${randomBytes(4).toString('hex')}`, 'b');
@@ -149,8 +166,42 @@ test('mounted definitions isolate two users and orgs, reject legacy and credenti
   expect(queue.add).toHaveBeenCalledTimes(queueBefore);
   const run = await request(app).post(`${url}/${idA}/run`).set(headers('a'));
   expect(run.status).toBe(202);
-  expect(queue.add).toHaveBeenCalledWith('discover', expect.objectContaining({ organizationId: ORG_A, definition_id: idA, config: { targets: ['192.0.2.1'] } }), expect.any(Object));
+  expect(queue.add).toHaveBeenCalledWith('discover', expect.objectContaining({
+    organizationId: ORG_A, definition_id: idA,
+    config: { targets: ['192.0.2.1'], scanOptions: { serviceDetection: true } },
+  }), expect.any(Object));
   expect(JSON.stringify(queue.add.mock.calls)).not.toContain('synthetic-secret');
+  const scanNetworks = jest.fn().mockResolvedValue([]);
+  jest.mocked(NmapDiscoveryWorker).mockImplementation(() => ({ scanNetworks }) as never);
+  const orchestrator = Object.create(DiscoveryOrchestrator.prototype) as DiscoveryOrchestrator;
+  Object.assign(orchestrator, {
+    postgresClient: db,
+    updateDefinitionRunStatus: jest.fn().mockResolvedValue(undefined),
+    persistCIs: jest.fn().mockResolvedValue(undefined),
+  });
+  orchestrator.registerWorkers();
+  const worker = jest.mocked(queueManager.registerWorker).mock.calls
+    .find(([name]) => name === 'discovery-nmap')?.[1] as (job: unknown) => Promise<unknown>;
+  expect(worker).toBeDefined();
+  for (const [option, scanType] of [
+    ['serviceDetection', 'version'], ['osDetection', 'os'], ['portScan', 'port'],
+  ] as const) {
+    if (option !== 'serviceDetection') {
+      const updated = await request(app).put(`${url}/${idA}`).set(headers('a')).send({
+        config: {
+          targets: ['192.0.2.1'], scanOptions: { [option]: true, password: 'synthetic-secret' },
+          credentials: { password: 'synthetic-secret' },
+        },
+      });
+      expect(updated.status).toBe(200);
+      expect((await request(app).post(`${url}/${idA}/run`).set(headers('a'))).status).toBe(202);
+    }
+    const queued = queue.add.mock.calls.at(-1)?.[1];
+    expect(queued.config.scanOptions).toEqual({ [option]: true });
+    expect(JSON.stringify(queued)).not.toContain('synthetic-secret');
+    await expect(worker({ data: queued, updateProgress: jest.fn() })).resolves.toEqual({ discovered: 0 });
+    expect(scanNetworks).toHaveBeenLastCalledWith(queued.jobId, [{ range: '192.0.2.1', scanType }]);
+  }
   expect((await request(app).get(url).set(headers('none'))).status).toBe(403);
   expect((await query('SELECT name FROM discovery_definitions WHERE id = $1', [idB])).rows).toEqual([{ name: other.body.data.name }]);
 });

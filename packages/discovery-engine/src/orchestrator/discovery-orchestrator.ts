@@ -4,7 +4,7 @@
 // packages/discovery-engine/src/orchestrator/discovery-orchestrator.ts
 
 import { queueManager, QUEUE_NAMES, getPostgresClient } from '@cmdb/database';
-import { logger, resolveDiscoveryHost, DISCOVERY_TARGET_REFUSED, UnrecoverableError } from '@cmdb/common';
+import { logger, resolveDiscoveryHost, DISCOVERY_TARGET_REFUSED, UnrecoverableError, safeDiscoveryScanConfig } from '@cmdb/common';
 import type { DiscoveredCI, DiscoveryJob, DiscoveryProvider } from '@cmdb/common';
 import { SSHDiscoveryWorker } from '../workers/ssh-discovery.worker';
 import { NmapDiscoveryWorker } from '../workers/nmap-discovery.worker';
@@ -32,18 +32,6 @@ function queueDiscoveryFailure(error: unknown): never {
   // BullMQ persists failure messages and stack traces in Redis. Remote errors
   // may contain credentials; do not persist the original error object.
   throw new Error('DISCOVERY_JOB_FAILED');
-}
-function scanTargets(config: unknown): { targets?: string[]; range?: string } {
-  if (!config || typeof config !== 'object') return {};
-  const input = config as Record<string, unknown>;
-  const targets = input['targets'];
-  if (targets !== undefined) {
-    if (!Array.isArray(targets) || !targets.every(target => typeof target === 'string')) {
-      throw new Error('Invalid discovery targets');
-    }
-    return { targets };
-  }
-  return typeof input['range'] === 'string' ? { range: input['range'] } : {};
 }
 
 
@@ -143,7 +131,7 @@ export class DiscoveryOrchestrator {
       organizationId,
       provider: provider as DiscoveryProvider,
       method: 'agentless', status: 'pending',
-      config: scanTargets(config), created_at: new Date().toISOString(),
+      config: safeDiscoveryScanConfig(config), created_at: new Date().toISOString(),
     });
     return jobId;
   }
@@ -163,13 +151,11 @@ export class DiscoveryOrchestrator {
     );
     if (!result.rows.length) throw new Error('Discovery definition not found');
     const definition = result.rows[0];
-    const config = definition.config as Record<string, unknown>;
-    const targets = config['targets'];
     const jobId = `${definition.provider}-${Date.now()}`;
     const queue = queueManager.getQueue(this.getQueueName(definition.provider));
     await queue.add('discover', {
       jobId, provider: definition.provider,
-      config: Array.isArray(targets) && targets.every(target => typeof target === 'string') ? { targets } : {},
+      config: safeDiscoveryScanConfig(definition.config),
       definition_id: definitionId, triggered_by: triggeredBy, organizationId,
     }, { jobId, attempts: 3 });
     await this.postgresClient.query(
@@ -237,7 +223,7 @@ export class DiscoveryOrchestrator {
       {
         jobId: job.id,
         provider: job.provider,
-        config: scanTargets(job.config),
+        config: safeDiscoveryScanConfig(job.config),
         organizationId: job.organizationId,
       },
       {
@@ -296,7 +282,7 @@ export class DiscoveryOrchestrator {
     const queueName = this.getQueueName(provider);
     const queue = queueManager.getQueue(queueName);
     await queue.add('recurring-discovery',
-      { provider, config: scanTargets(config), organizationId },
+      { provider, config: safeDiscoveryScanConfig(config), organizationId },
       { repeat: { pattern: cronPattern } }
     );
 

@@ -10,7 +10,7 @@
  * Now supports dynamic scheduling based on discovery definitions stored in PostgreSQL.
  */
 
-import { getQueueManager, QUEUE_NAMES, logger } from '@cmdb/common';
+import { getQueueManager, QUEUE_NAMES, logger, safeDiscoveryScanConfig } from '@cmdb/common';
 import type { DiscoveryJobData, DiscoveryProvider, DiscoveryDefinition } from '@cmdb/common';
 import { getPostgresClient, getScheduleConfigStore } from '@cmdb/database';
 import { v4 as uuidv4 } from 'uuid';
@@ -68,19 +68,6 @@ const DEFAULT_SCHEDULES: DiscoverySchedule[] = [
  * Paired with the provider as the persisted key's id: cmdb:schedule-config:v1:discovery:<provider>.
  */
 const SCHEDULE_KIND = 'discovery';
-/** Jobs carry only explicit non-secret scan targets. Never serialize caller JSON into Redis. */
-function publicScanConfig(input: unknown): { targets?: string[]; range?: string } {
-  if (!input || typeof input !== 'object' || Array.isArray(input)) return {};
-  const config = input as Record<string, unknown>;
-  const targets = config['targets'] ?? config['_targets'];
-  if (targets !== undefined) {
-    if (!Array.isArray(targets) || targets.some(target => typeof target !== 'string')) {
-      throw new Error('Invalid discovery targets');
-    }
-    return { targets };
-  }
-  return typeof config['range'] === 'string' ? { range: config['range'] } : {};
-}
 
 
 /**
@@ -194,7 +181,7 @@ export class DiscoveryScheduler {
       const jobData: DiscoveryJobData = {
         _jobId: uuidv4(),
         _provider: provider,
-        _config: publicScanConfig(config),
+        _config: safeDiscoveryScanConfig(config),
         _createdAt: new Date().toISOString(),
         triggeredBy: 'scheduler',
       };
@@ -237,7 +224,7 @@ export class DiscoveryScheduler {
     const jobData: DiscoveryJobData = {
       _jobId: uuidv4(),
       _provider: provider,
-      _config: publicScanConfig(config ?? schedule._config),
+      _config: safeDiscoveryScanConfig(config ?? schedule._config),
       _createdAt: new Date().toISOString(),
       organizationId,
       triggeredBy: triggeredBy || 'manual',
@@ -488,7 +475,7 @@ export class DiscoveryScheduler {
     const jobData: DiscoveryJobData = {
       _jobId: uuidv4(),
       _provider: definition.provider,
-      _config: publicScanConfig(definition.config),
+      _config: safeDiscoveryScanConfig(definition.config),
       _createdAt: new Date().toISOString(),
       organizationId,
       triggeredBy: 'scheduler',

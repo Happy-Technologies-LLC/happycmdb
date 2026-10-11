@@ -22,6 +22,7 @@ const originalHeader = process.env['API_KEY_HEADER_NAME'];
 
 jest.mock('@cmdb/common', () => ({
   logger: { info: jest.fn(), error: jest.fn(), warn: jest.fn(), debug: jest.fn() },
+  safeDiscoveryScanConfig: require('../../../../common/src/utils/discovery-scan-config').safeDiscoveryScanConfig,
   getQueueManager: () => queueManager,
   QUEUE_NAMES: { _DISCOVERY_SSH: 'discovery-ssh', _DISCOVERY_NMAP: 'discovery-nmap' },
 }));
@@ -94,7 +95,11 @@ beforeEach(() => queueManager.addJob.mockResolvedValue({ id: 'owned-job' }));
 
 test('CLI uses authenticated API identity for nmap jobs and refuses absent, invalid and tenantless credentials', async () => {
   const base = ['--url', `${apiUrl}/`, 'jobs', 'run:discovery', 'nmap'];
-  const config = JSON.stringify({ targets: ['192.0.2.1'], password: 'synthetic-secret' });
+  const config = JSON.stringify({
+    targets: ['192.0.2.1'],
+    scanOptions: { serviceDetection: true, password: 'synthetic-secret' },
+    password: 'synthetic-secret',
+  });
   expect(await invoke([...base, '--config', config])).toBe(1);
   expect(queueManager.addJob).not.toHaveBeenCalled();
   expect(logger.error).toHaveBeenCalledWith('Discovery API authentication required (--key or --token)');
@@ -106,7 +111,9 @@ test('CLI uses authenticated API identity for nmap jobs and refuses absent, inva
 
   expect(await invoke(['--key', 'valid-key', ...base, '--config', config])).toBe(0);
   expect(queueManager.addJob).toHaveBeenCalledWith('discovery-nmap', 'discovery-nmap-manual',
-    expect.objectContaining({ organizationId: ORG, _config: { targets: ['192.0.2.1'] } }), expect.any(Object));
+    expect.objectContaining({
+      organizationId: ORG, _config: { targets: ['192.0.2.1'], scanOptions: { serviceDetection: true } },
+    }), expect.any(Object));
   expect(JSON.stringify(queueManager.addJob.mock.calls)).not.toContain('synthetic-secret');
   expect(await invoke([...base, '--token', 'valid-jwt', '--config', config])).toBe(0);
   expect(queueManager.addJob).toHaveBeenCalledTimes(2);

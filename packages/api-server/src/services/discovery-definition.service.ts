@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { getPostgresClient, queueManager } from '@cmdb/database';
-import { logger } from '@cmdb/common';
+import { logger, safeDiscoveryScanConfig } from '@cmdb/common';
 import {
   DiscoveryDefinition,
   DiscoveryDefinitionInput,
@@ -404,10 +404,7 @@ export class DiscoveryDefinitionService {
       // Generate job ID (removed "discovery-" prefix to match new format)
       const jobId = `${definition.provider}-${Date.now()}`;
 
-      const config = definition.config as Record<string, unknown>;
-      const targets = config['targets'];
-      const jobConfig = Array.isArray(targets) && targets.every(target => typeof target === 'string')
-        ? { targets } : typeof config['range'] === 'string' ? { range: config['range'] } : {};
+      const jobConfig = safeDiscoveryScanConfig(definition.config);
 
       // Get the queue for this provider
       const queueName = `discovery-${definition.provider}`;

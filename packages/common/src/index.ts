@@ -33,6 +33,7 @@ export {
 
 // Export retry utilities
 export { withRetry } from './utils/retry';
+export { safeDiscoveryScanConfig, type SafeDiscoveryScanConfig } from './utils/discovery-scan-config';
 export {
   DISCOVERY_TARGET_REFUSED, assertDiscoveryAddress, assertDiscoveryHostname,
   assertDiscoveryRange, resolveDiscoveryHost, connectDiscoveryHost,

@@ -3,399 +3,172 @@
 
 import { Request, Response } from 'express';
 import { queueManager, QUEUE_NAMES } from '@cmdb/database';
-import { logger, DiscoveryJob, DiscoveryProvider } from '@cmdb/common';
+import { logger, safeDiscoveryScanConfig } from '@cmdb/common';
 import { v4 as uuidv4 } from 'uuid';
+import { requestOrganizationId } from '../../middleware/auth.middleware';
+
+function discoveryQueues(): string[] {
+  return [
+    QUEUE_NAMES._DISCOVERY_NMAP,
+    QUEUE_NAMES._DISCOVERY_SSH,
+    'discovery-active-directory',
+    'discovery-snmp',
+  ];
+}
+const NOT_FOUND = { success: false, error: 'Not Found', message: 'Discovery job not found' };
+const UNAVAILABLE = { success: false, error: 'Credential-backed discovery execution unavailable' };
+
+// Never spread BullMQ job.data, returnvalue, progress objects, or worker failure text.
+interface PublicJobSource {
+  id?: string;
+  data: { organizationId?: unknown; provider?: unknown };
+  returnvalue?: unknown;
+  timestamp: number;
+  processedOn?: number;
+  finishedOn?: number;
+  attemptsMade: number;
+  progress: unknown;
+}
+interface PublicDiscoveryJob {
+  id?: string;
+  status: string;
+  provider?: 'nmap' | 'ssh' | 'active-directory' | 'snmp';
+  timestamp: number;
+  processedOn?: number;
+  finishedOn?: number;
+  attemptsMade: number;
+  progress?: number | { completed?: number; total?: number; percentage?: number };
+  summary?: { discoveredCIs: number };
+  failureCode?: string;
+}
+function publicJob(job: PublicJobSource, status: string): PublicDiscoveryJob {
+  const progress = job.progress;
+  const counters = progress && typeof progress === 'object' && !Array.isArray(progress)
+    ? progress as Record<string, unknown> : null;
+  const result = job.returnvalue && typeof job.returnvalue === 'object' && !Array.isArray(job.returnvalue)
+    ? job.returnvalue as Record<string, unknown> : null;
+  const provider = job.data?.provider;
+  return {
+    id: job.id,
+    status,
+    provider: provider === 'nmap' || provider === 'ssh' || provider === 'active-directory' || provider === 'snmp'
+      ? provider : undefined,
+    timestamp: job.timestamp,
+    processedOn: job.processedOn,
+    finishedOn: job.finishedOn,
+    attemptsMade: job.attemptsMade,
+    progress: typeof progress === 'number' && Number.isFinite(progress) ? progress :
+      counters ? {
+        completed: typeof counters.completed === 'number' ? counters.completed : undefined,
+        total: typeof counters.total === 'number' ? counters.total : undefined,
+        percentage: typeof counters.percentage === 'number' ? counters.percentage : undefined,
+      } : undefined,
+    ...(status === 'completed' && typeof result?.discovered === 'number' &&
+      Number.isFinite(result.discovered) && result.discovered >= 0
+      ? { summary: { discoveredCIs: result.discovered } } : {}),
+    ...(status === 'failed' ? { failureCode: 'DISCOVERY_JOB_FAILED' } : {}),
+  };
+}
 
 export class DiscoveryController {
-  /**
-   * Sanitize job config by redacting sensitive fields
-   */
-  private sanitizeJobData(jobData: any): any {
-    if (!jobData) return jobData;
-
-    const sanitized = { ...jobData };
-
-    // Sanitize config object
-    if (sanitized.config) {
-      sanitized.config = { ...sanitized.config };
-
-      // Redact credentials object
-      if (sanitized.config.credentials) {
-        const credKeys = Object.keys(sanitized.config.credentials);
-        sanitized.config.credentials = credKeys.reduce((acc: any, key: string) => {
-          acc[key] = '***REDACTED***';
-          return acc;
-        }, {});
-      }
-
-      // Redact common secret fields
-      const secretFields = ['password', 'secret', 'secretKey', 'secretAccessKey', 'apiKey', 'token', 'privateKey'];
-      secretFields.forEach(field => {
-        if (sanitized.config[field]) {
-          sanitized.config[field] = '***REDACTED***';
-        }
-      });
+  private async findOwnedJob(id: string, organizationId: string) {
+    for (const queueName of discoveryQueues()) {
+      const job = await queueManager.getQueue(queueName).getJob(id);
+      if (job && job.data?.organizationId === organizationId) return job;
     }
-
-    return sanitized;
+    return null;
   }
 
-  /**
-   * Schedule a new discovery job
-   * POST /discovery/schedule
-   */
   async scheduleDiscovery(req: Request, res: Response): Promise<void> {
     try {
       const { provider, config } = req.body;
-
-      // Validate provider
-      if (!provider) {
-        res.status(400).json({
-          success: false,
-          error: 'Bad Request',
-          message: 'Provider is required'
-        });
+      if (provider === 'ssh' || provider === 'snmp' || provider === 'active-directory') {
+        res.status(409).json(UNAVAILABLE);
         return;
       }
-      if (provider === 'ssh') {
-        res.status(409).json({ success: false, error: 'Credential-backed discovery execution unavailable' });
+      if (provider !== 'nmap') {
+        res.status(400).json({ success: false, error: 'Bad Request', message: 'Unsupported provider' });
         return;
       }
-
-      // Map provider to queue name
-      // NOTE: Cloud/API providers (AWS, Azure, GCP, Kubernetes, etc.) are now handled by Connectors
-      const queueNameMap: Record<DiscoveryProvider, string> = {
-        nmap: QUEUE_NAMES._DISCOVERY_NMAP,
-        ssh: QUEUE_NAMES._DISCOVERY_SSH,
-        'active-directory': 'discovery-active-directory',
-        snmp: 'discovery-snmp',
-      };
-
-      const queueName = queueNameMap[provider as DiscoveryProvider];
-      if (!queueName) {
-        res.status(400).json({
-          success: false,
-          error: 'Bad Request',
-          message: `Unsupported provider: ${provider}`
-        });
+      let safeConfig;
+      try {
+        safeConfig = safeDiscoveryScanConfig(config);
+      } catch {
+        res.status(400).json({ success: false, error: 'Invalid discovery scan configuration' });
         return;
       }
-
-      // Create job ID
+      const organizationId = requestOrganizationId(req);
       const jobId = uuidv4();
-
-      // Create discovery job object
-      const discoveryJob: Partial<DiscoveryJob> = {
-        id: jobId,
-        provider: provider as DiscoveryProvider,
-        method: 'agentless',
-        config: config || {},
-        status: 'pending',
-        created_at: new Date().toISOString(),
-      };
-
-      // Get queue and add job
-      const queue = queueManager.getQueue(queueName);
-      await queue.add(
-        'discover',
-        discoveryJob,
-        {
-          jobId,
-          attempts: 3,
-          backoff: {
-            type: 'exponential',
-            delay: 2000,
-          },
-        }
-      );
-
-      logger.info(`Discovery job scheduled: ${jobId}`, {
-        provider,
-        queueName,
-      });
-
-      res.status(201).json({
-        success: true,
-        data: {
-          id: jobId,
-          provider,
-          status: 'pending',
-          created_at: discoveryJob.created_at,
-        },
-        message: 'Discovery job scheduled successfully',
-      });
+      const created_at = new Date().toISOString();
+      await queueManager.getQueue(QUEUE_NAMES._DISCOVERY_NMAP).add('discover', {
+        id: jobId, organizationId, provider: 'nmap', method: 'agentless',
+        config: safeConfig, status: 'pending', created_at,
+      }, { jobId, attempts: 3, backoff: { type: 'exponential', delay: 2000 } });
+      res.status(201).json({ success: true, data: { id: jobId, provider: 'nmap', status: 'pending', created_at }, message: 'Discovery job scheduled successfully' });
     } catch (error) {
       logger.error('Error scheduling discovery job', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to schedule discovery job',
-        message: error instanceof Error ? error.message : 'Unknown error'
-      });
+      res.status(500).json({ success: false, error: 'Failed to schedule discovery job' });
     }
   }
 
-  /**
-   * Get discovery job status
-   * GET /discovery/jobs/:id
-   */
   async getJobStatus(req: Request, res: Response): Promise<void> {
     try {
-      const { id } = req.params;
-
-      if (!id) {
-        res.status(400).json({
-          success: false,
-          error: 'Bad Request',
-          message: 'Job ID is required'
-        });
-        return;
-      }
-
-      // Search across all discovery queues
-      const discoveryQueues = [
-        QUEUE_NAMES._DISCOVERY_NMAP,
-        QUEUE_NAMES._DISCOVERY_SSH,
-        'discovery-active-directory',
-        'discovery-snmp',
-      ];
-
-      let foundJob = null;
-      let foundQueue = null;
-
-      for (const queueName of discoveryQueues) {
-        const queue = queueManager.getQueue(queueName);
-        const job = await queue.getJob(id);
-
-        if (job) {
-          foundJob = job;
-          foundQueue = queueName;
-          break;
-        }
-      }
-
-      if (!foundJob) {
-        res.status(404).json({
-          success: false,
-          error: 'Not Found',
-          message: `Discovery job with ID '${id}' not found`
-        });
-        return;
-      }
-
-      // Get job state
-      const state = await foundJob.getState();
-      const progress = foundJob.progress;
-      const returnValue = foundJob.returnvalue;
-      const failedReason = foundJob.failedReason;
-
-      const sanitizedData = this.sanitizeJobData(foundJob.data);
-
-      res.json({
-        success: true,
-        data: {
-          id: foundJob.id,
-          ...sanitizedData,
-          status: state,
-          progress,
-          result: returnValue,
-          error: failedReason,
-          queue: foundQueue,
-          timestamp: foundJob.timestamp,
-          attemptsMade: foundJob.attemptsMade,
-          processedOn: foundJob.processedOn,
-          finishedOn: foundJob.finishedOn,
-        },
-      });
+      const job = await this.findOwnedJob(req.params.id!, requestOrganizationId(req));
+      if (!job) { res.status(404).json(NOT_FOUND); return; }
+      res.json({ success: true, data: publicJob(job, await job.getState()) });
     } catch (error) {
-      logger.error('Error getting job status', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to retrieve job status',
-        message: error instanceof Error ? error.message : 'Unknown error'
-      });
+      logger.error('Error getting discovery job status', error);
+      res.status(500).json({ success: false, error: 'Failed to retrieve discovery job' });
     }
   }
 
-  /**
-   * List all discovery jobs with pagination
-   * GET /discovery/jobs
-   */
   async listJobs(req: Request, res: Response): Promise<void> {
     try {
+      const organizationId = requestOrganizationId(req);
       const { status, provider, limit = 100, offset = 0 } = req.query;
-
-      const limitNum = Math.min(parseInt(limit as string), 1000);
-      const offsetNum = parseInt(offset as string);
-
-      // Determine which queues to query
-      const discoveryQueues = [
-        QUEUE_NAMES._DISCOVERY_NMAP,
-        QUEUE_NAMES._DISCOVERY_SSH,
-        'discovery-active-directory',
-        'discovery-snmp',
-      ];
-
-      const allJobs: any[] = [];
-
-      // Collect jobs from all queues
-      for (const queueName of discoveryQueues) {
+      const limitNum = Number(limit);
+      const offsetNum = Number(offset);
+      // Each queue/state read covers only the requested window. Offset is a
+      // BullMQ queue-state position, not an exact tenant-wide rank.
+      const lastIndex = offsetNum + limitNum - 1;
+      const allJobs: PublicDiscoveryJob[] = [];
+      for (const queueName of discoveryQueues()) {
         const queue = queueManager.getQueue(queueName);
-
-        // Get jobs based on status filter
-        let jobs: any[] = [];
-
-        if (!status || status === 'pending') {
-          const waiting = await queue.getWaiting(0, limitNum);
-          jobs = [...jobs, ...waiting];
-        }
-        if (!status || status === 'running') {
-          const active = await queue.getActive(0, limitNum);
-          jobs = [...jobs, ...active];
-        }
-        if (!status || status === 'completed') {
-          const completed = await queue.getCompleted(0, limitNum);
-          jobs = [...jobs, ...completed];
-        }
-        if (!status || status === 'failed') {
-          const failed = await queue.getFailed(0, limitNum);
-          jobs = [...jobs, ...failed];
-        }
-
-        // Map jobs to response format
-        for (const job of jobs) {
-          const state = await job.getState();
-
-          // Filter by provider if specified
-          if (provider && job.data.provider !== provider) {
-            continue;
-          }
-
-          const sanitizedData = this.sanitizeJobData(job.data);
-
-          // Get return value for completed jobs
-          // BullMQ exposes returnvalue directly on the job object for completed jobs
-          const returnValue = (state === 'completed' && job.returnvalue) ? job.returnvalue : null;
-
-          allJobs.push({
-            id: job.id,
-            ...sanitizedData,
-            status: state,
-            queue: queueName,
-            attemptsMade: job.attemptsMade,
-            processedOn: job.processedOn,
-            finishedOn: job.finishedOn,
-            returnValue: returnValue,
-          });
+        const jobs = await Promise.all([
+          !status || status === 'pending' ? queue.getWaiting(offsetNum, lastIndex) : [],
+          !status || status === 'running' ? queue.getActive(offsetNum, lastIndex) : [],
+          !status || status === 'completed' ? queue.getCompleted(offsetNum, lastIndex) : [],
+          !status || status === 'failed' ? queue.getFailed(offsetNum, lastIndex) : [],
+        ]);
+        for (const job of jobs.flat()) {
+          if (job.data?.organizationId !== organizationId || (provider && job.data.provider !== provider)) continue;
+          allJobs.push(publicJob(job, await job.getState()));
         }
       }
-
-      // Sort by created_at descending
-      allJobs.sort((a, b) => {
-        const dateA = new Date(a.created_at || 0).getTime();
-        const dateB = new Date(b.created_at || 0).getTime();
-        return dateB - dateA;
-      });
-
-      // Apply pagination
-      const paginatedJobs = allJobs.slice(offsetNum, offsetNum + limitNum);
-
-      res.json({
-        success: true,
-        data: paginatedJobs,
-        pagination: {
-          total: allJobs.length,
-          count: paginatedJobs.length,
-          offset: offsetNum,
-          limit: limitNum,
-        },
-      });
+      allJobs.sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0));
+      // A limit applies to each queue/state window, not to the merged result:
+      // slicing here would permanently discard jobs from later states.
+      res.json({ success: true, data: allJobs, pagination: { count: allJobs.length, offset: offsetNum, limit: limitNum, truncated: true } });
     } catch (error) {
       logger.error('Error listing discovery jobs', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to list discovery jobs',
-        message: error instanceof Error ? error.message : 'Unknown error'
-      });
+      res.status(500).json({ success: false, error: 'Failed to list discovery jobs' });
     }
   }
 
-  /**
-   * Cancel a discovery job
-   * DELETE /discovery/jobs/:id
-   */
   async cancelJob(req: Request, res: Response): Promise<void> {
     try {
-      const { id } = req.params;
-
-      if (!id) {
-        res.status(400).json({
-          success: false,
-          error: 'Bad Request',
-          message: 'Job ID is required'
-        });
-        return;
-      }
-
-      // Search across all discovery queues
-      const discoveryQueues = [
-        QUEUE_NAMES._DISCOVERY_NMAP,
-        QUEUE_NAMES._DISCOVERY_SSH,
-        'discovery-active-directory',
-        'discovery-snmp',
-      ];
-
-      let foundJob = null;
-
-      for (const queueName of discoveryQueues) {
-        const queue = queueManager.getQueue(queueName);
-        const job = await queue.getJob(id);
-
-        if (job) {
-          foundJob = job;
-          break;
-        }
-      }
-
-      if (!foundJob) {
-        res.status(404).json({
-          success: false,
-          error: 'Not Found',
-          message: `Discovery job with ID '${id}' not found`
-        });
-        return;
-      }
-
-      // Check if job can be cancelled
-      const state = await foundJob.getState();
+      const job = await this.findOwnedJob(req.params.id!, requestOrganizationId(req));
+      if (!job) { res.status(404).json(NOT_FOUND); return; }
+      const state = await job.getState();
       if (state === 'completed' || state === 'failed') {
-        res.status(400).json({
-          success: false,
-          error: 'Bad Request',
-          message: `Cannot cancel job in '${state}' state`
-        });
+        res.status(400).json({ success: false, error: 'Cannot cancel finished discovery job' });
         return;
       }
-
-      // Remove the job
-      await foundJob.remove();
-
-      logger.info(`Discovery job cancelled: ${id}`, { state });
-
-      res.json({
-        success: true,
-        message: 'Discovery job cancelled successfully',
-        data: {
-          id,
-          previousState: state,
-        },
-      });
+      await job.remove();
+      res.json({ success: true, message: 'Discovery job cancelled successfully', data: { id: job.id, previousState: state } });
     } catch (error) {
       logger.error('Error cancelling discovery job', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to cancel discovery job',
-        message: error instanceof Error ? error.message : 'Unknown error'
-      });
+      res.status(500).json({ success: false, error: 'Failed to cancel discovery job' });
     }
   }
 }

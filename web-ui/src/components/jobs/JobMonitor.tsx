@@ -9,7 +9,7 @@
 
 import React, { useState } from 'react';
 import { Icon } from '@happy-technologies/design-system';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '../ui/tabs';
+import { Tabs, TabsList, TabsTrigger } from '../ui/tabs';
 import {
   Select,
   SelectContent,
@@ -18,12 +18,10 @@ import {
   SelectValue,
 } from '../ui/select';
 import { Label } from '../ui/label';
-import { Alert, AlertDescription, AlertTitle } from '../ui/alert';
+import { Alert, AlertDescription } from '../ui/alert';
 import { Card, CardContent } from '../ui/card';
 import { useJobs } from '../../hooks/useJobs';
-import { useQueueStats, useQueueHealth } from '../../hooks/useQueueStats';
 import { Job, JobFilters } from '../../services/jobs.service';
-import { QueueStats } from './QueueStats';
 import { JobList } from './JobList';
 import { JobDetail } from './JobDetail';
 
@@ -77,23 +75,7 @@ export const JobMonitor: React.FC<JobMonitorProps> = ({
     refreshInterval,
   });
 
-  const {
-    stats,
-    loading: statsLoading,
-    error: statsError,
-  } = useQueueStats({
-    autoRefresh,
-    refreshInterval: 30000, // 30 seconds for stats
-  });
-
-  const {
-    health,
-    loading: healthLoading,
-    error: healthError,
-  } = useQueueHealth({
-    autoRefresh,
-    refreshInterval: 30000, // 30 seconds for health
-  });
+  // Global queue metrics and health are refused for every tenant role.
 
   const handlePageChange = (newPage: number) => {
     setPage(newPage);
@@ -126,42 +108,14 @@ export const JobMonitor: React.FC<JobMonitorProps> = ({
     }
   };
 
-  // Count unhealthy queues
-  const unhealthyQueues = health.filter(
-    (h) => h.status === 'unhealthy' || h.status === 'degraded'
-  ).length;
 
   return (
     <div className="space-y-6">
-      {/* Queue Statistics */}
-      <div>
-        <h2 className="text-lg font-semibold mb-3">Queue Overview</h2>
-        <QueueStats
-          stats={stats}
-          loading={statsLoading}
-          queueFilter={queueFilter}
-        />
-      </div>
-
-      {/* Health Alerts */}
-      {unhealthyQueues > 0 && (
-        <Alert>
-          <AlertTitle>Queue Health Warning</AlertTitle>
-          <AlertDescription>
-            {unhealthyQueues} queue{unhealthyQueues !== 1 ? 's' : ''} {unhealthyQueues !== 1 ? 'are' : 'is'} experiencing
-            issues. Check the Worker Status tab for details.
-          </AlertDescription>
-        </Alert>
-      )}
-
-      {statsError && (
-        <Alert variant="destructive">
-          <AlertDescription>
-            Failed to load queue statistics: {statsError.message}
-          </AlertDescription>
-        </Alert>
-      )}
-
+      <Alert>
+        <AlertDescription>
+          Global queue and schedule controls are unavailable (platform operations only).
+        </AlertDescription>
+      </Alert>
       {/* Job Filters */}
       <Card>
         <CardContent className="p-4">

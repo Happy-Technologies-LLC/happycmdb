@@ -9,6 +9,7 @@ import { SettingsController } from '../controllers/settings.controller';
 import { validateRequest, validateOptional } from '../middleware/validation.middleware';
 import { settingsSchemas } from '../../validation/schemas';
 import { schemas } from '@cmdb/common';
+import { optionalRequestOrganizationId } from '../../middleware/auth.middleware';
 import { getAuthMiddleware } from '../../auth/auth-bootstrap';
 
 /**
@@ -17,15 +18,9 @@ import { getAuthMiddleware } from '../../auth/auth-bootstrap';
  * NOTE: For reusable discovery configurations with credentials and schedules,
  * use the new Discovery Definitions API at /api/v1/discovery/definitions
  *
- * These endpoints are maintained for backward compatibility and one-off
- * discoveries. Authentication is enforced centrally: server.ts mounts
- * `authMiddleware.authenticate()` on every /api/v1 route before this
- * router. Scheduling and cancelling a job mutate discovery state, so they
- * additionally require the 'write' permission
- * (`authMiddleware.requirePermission('write')`, satisfied by operator,
- * agent, and admin roles). Listing/reading jobs and validating provider
- * credentials (test-connection) are read-like -- they don't change
- * discovery state -- so they stay authenticated-only with no extra gate.
+ * The CLI consumes legacy schedule and job routes. Authentication is mounted
+ * centrally in server.ts; each legacy job route also requires a verified org.
+ * Cancellation and scheduling additionally require write permission.
  */
 
 export const discoveryRoutes = Router();
@@ -33,10 +28,18 @@ const controller = new DiscoveryController();
 const settingsController = new SettingsController();
 const authMiddleware = getAuthMiddleware();
 
-// Reject SSH before validating its payload so every credential shape receives the same refusal.
-function refuseUnavailableSSH(req: Request, res: Response, next: NextFunction): void {
-  if (req.body?.provider === 'ssh') {
+// Credential-backed providers cannot run until the org-owned worker pipeline exists.
+function refuseUnavailableProvider(req: Request, res: Response, next: NextFunction): void {
+  if (['ssh', 'snmp', 'active-directory'].includes(req.body?.provider)) {
     res.status(409).json({ success: false, error: 'Credential-backed discovery execution unavailable' });
+    return;
+  }
+  next();
+}
+
+function requireDiscoveryOrganization(req: Request, res: Response, next: NextFunction): void {
+  if (!optionalRequestOrganizationId(req)) {
+    res.status(403).json({ success: false, error: 'Organization claim required' });
     return;
   }
   next();
@@ -45,26 +48,22 @@ function refuseUnavailableSSH(req: Request, res: Response, next: NextFunction): 
 // Validation schemas
 const scheduleDiscoverySchema = Joi.object({
   provider: schemas.discoveryProvider.required(),
-  config: Joi.object({
-    credentials: Joi.any().optional(),
-    regions: Joi.array().items(Joi.string()).optional(),
-    filters: Joi.object().optional(),
-    targets: Joi.array().items(Joi.string()).optional(),
-  }).optional().default({}),
+  config: Joi.object().unknown(true).optional().default({}),
 });
 
 const listJobsQuerySchema = Joi.object({
   status: schemas.jobStatus.optional(),
   provider: schemas.discoveryProvider.optional(),
-  limit: Joi.number().integer().min(1).max(1000).default(100),
-  offset: Joi.number().integer().min(0).default(0),
+  limit: Joi.number().integer().min(1).max(100).default(100),
+  offset: Joi.number().integer().min(0).max(Number.MAX_SAFE_INTEGER - 100).default(0),
 });
 
 // POST /discovery/schedule - Schedule discovery job (write: mutates discovery state)
 discoveryRoutes.post(
   '/schedule',
   authMiddleware.requirePermission('write'),
-  refuseUnavailableSSH,
+  refuseUnavailableProvider,
+  requireDiscoveryOrganization,
   validateRequest(scheduleDiscoverySchema, 'body'),
   controller.scheduleDiscovery.bind(controller)
 );
@@ -72,12 +71,14 @@ discoveryRoutes.post(
 // GET /discovery/jobs/:id - Get job status
 discoveryRoutes.get(
   '/jobs/:id',
+  requireDiscoveryOrganization,
   controller.getJobStatus.bind(controller)
 );
 
 // GET /discovery/jobs - List all jobs with pagination
 discoveryRoutes.get(
   '/jobs',
+  requireDiscoveryOrganization,
   validateOptional(listJobsQuerySchema, 'query'),
   controller.listJobs.bind(controller)
 );
@@ -86,6 +87,7 @@ discoveryRoutes.get(
 discoveryRoutes.delete(
   '/jobs/:id',
   authMiddleware.requirePermission('write'),
+  requireDiscoveryOrganization,
   controller.cancelJob.bind(controller)
 );
 

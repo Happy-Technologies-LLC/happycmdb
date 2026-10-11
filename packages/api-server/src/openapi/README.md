@@ -107,11 +107,14 @@ remains available. Discovery definition writes reject malformed targets and
 nonboolean scan-mode flags with a fixed 400. Credential-free Nmap definition
 manual runs and repeatable definition jobs queue only scan targets, an organization
 stamp and boolean `scanOptions.aggressive`, `osDetection`, `serviceDetection`,
-`fullPortScan` and `portScan` switches. Opaque scan configuration and credentials
-are never queued by discovery definition producers; this is not a guarantee for
-other discovery producers. The legacy `POST /discovery/schedule` nmap/AD/SNMP
-path still queues raw configuration (potentially credentials) without an organization
-stamp; tracked separately as HAP-484. Production scheduler startup/registration
+`fullPortScan` and `portScan` switches. Opaque config and credentials are not
+queued by discovery definition producers. Legacy `POST /discovery/schedule`
+also queues only allowlisted Nmap targets and scan switches with a verified
+organization stamp; SSH/AD/SNMP return fixed 409. Legacy job list/detail/cancel
+require the session organization, hide orgless jobs and return only safe provider,
+timestamps, progress counters, numeric discovered-CI summary and fixed failure
+codes. Raw worker results, errors and configuration remain inaccessible.
+Production scheduler startup/registration
 is tracked separately as HAP-546; direct repeatable-job proof is not proof of
 production scheduling. Credential-backed discovery is restored by HP1-S5
 (v16 §10.2.4-10.2.6 org-owned credential sets and run pipeline), tracked as HAP-444.
@@ -155,7 +158,7 @@ production scheduling. Credential-backed discovery is restored by HP1-S5
 - `POST /anomalies/detect` - Run detection
 
 ### Jobs (`/api/v1/jobs`)
-- `GET /jobs/stats` - Job statistics
+- `GET /jobs/stats` - Global job statistics (fixed 403)
 - `GET /jobs/discovery` - List discovery jobs
 - `POST /jobs/discovery/{provider}` - Trigger discovery
 - `GET /jobs/{queueName}/{jobId}` - Get job status
@@ -165,9 +168,29 @@ Job detail, queue lists, failed jobs, discovery lists, cancel/retry, and logs
 require a verified organization claim. Jobs without a matching organization
 stamp (including legacy jobs) are inaccessible; foreign and missing IDs return
 the same 404. Job data, results, failures, progress and free-form logs are not
-returned. Schedule responses omit stored configuration; queue-list pagination
-uses queue offsets and does not expose cross-tenant totals. Generic queue
-statistics and global schedule controls remain separately governed.
+returned. Schedule responses omit stored configuration. Queue and failed-job
+lists accept non-negative integer `start`/`end` and optional `limit`, reject
+invalid ranges with fixed 400, and read at most 100 BullMQ jobs per request
+before filtering by organization. Pagination reports queue offsets, bounded
+`limit`, and `truncated: true` for every non-empty page: ownership filtering
+can make the bounded sample incomplete, and the flag does not reveal queue
+occupancy. It does not expose cross-tenant totals. Global queue clean,
+pause/resume, stats (including repeatable job metadata), worker status, queue
+health and metrics, discovery aggregates, schedule listings and both discovery
+and ETL provider/type schedule updates return the same fixed 403 for every
+authenticated role until the global-operation policy exists. The web UI shows
+the global queue/schedule controls as unavailable without requesting them;
+organization-owned job lists continue to load.
+Legacy `GET /discovery/jobs` accepts `limit` 1–100 and non-negative `offset`;
+larger limits receive 400. `limit` applies **per discovery queue/state**, not
+to the merged response: each queue/state reads at most `limit` BullMQ jobs
+starting at `offset`, and the response returns every owned job in those windows,
+sorted by timestamp (up to 16 × `limit` with four queues and four states).
+This reaches later windows without scanning preceding foreign jobs. Pagination
+reports `count` (returned jobs), `offset`, `limit` (per-source window), and
+`truncated: true`; it deliberately omits exact `total`. These windows are not
+a tenant-wide ranking: under mixed states/queues or high foreign volume, pages
+can be incomplete or overlap. A tenant-exact pagination contract remains HAP-546.
 
 `cmdb jobs run:discovery nmap --config '{"targets":["192.0.2.1"]}'`
 calls the authenticated `POST /jobs/discovery/{provider}` endpoint rather than

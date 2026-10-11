@@ -62,79 +62,21 @@ export interface DiscoveredCIResult {
 }
 
 /**
- * Raw response shape from the legacy `/discovery/jobs/:id` endpoint, shared
- * by getJob() and getJobResult(). `status` carries the raw BullMQ state
- * (waiting/active/completed/failed/delayed), not our JobStatus type.
+ * Org-scoped, allowlisted legacy job status; never a worker result/config.
  */
 interface RawLegacyDiscoveryJob {
   id: string;
-  provider: DiscoveryProvider;
+  provider?: DiscoveryProvider;
   status: string;
-  progress?: number;
-  result?: { discovered?: number; method?: string; confidence?: number; cost?: number };
-  error?: string;
-  config?: Record<string, unknown>;
+  progress?: number | { completed?: number; total?: number; percentage?: number };
+  summary?: { discoveredCIs: number };
+  failureCode?: string;
   timestamp?: number;
   processedOn?: number;
   finishedOn?: number;
-  definitionId?: string;
-  definitionName?: string;
-  definition_id?: string;
-  definition_name?: string;
 }
 
-/** Raw per-provider stat entry returned by GET /jobs/discovery/stats */
-interface RawDiscoveryStat {
-  provider: DiscoveryProvider;
-  waiting?: number;
-  active?: number;
-  completed?: number;
-  failed?: number;
-  totalDiscoveredCIs?: number;
-  /** Average completed-job duration in ms; null/absent when no sample was available. */
-  averageDurationMs?: number | null;
-  /** Real schedule-enabled state; absent when the provider has no registered schedule. */
-  enabled?: boolean;
-}
 
-export interface DiscoverySchedule {
-  provider: DiscoveryProvider;
-  enabled: boolean;
-  cronExpression: string;
-  config: Record<string, any>;
-  lastRun?: string;
-  nextRun?: string;
-}
-
-export type DiscoveryScheduleUpdate = Pick<
-  Partial<DiscoverySchedule>,
-  'cronExpression' | 'enabled'
->;
-
-interface RawDiscoverySchedule {
-  provider: DiscoveryProvider;
-  enabled: boolean;
-  cronExpression?: string;
-  cronPattern?: string;
-  config?: Record<string, unknown>;
-  lastRun?: string;
-  nextRun?: string;
-}
-
-export interface DiscoveryStats {
-  provider: DiscoveryProvider;
-  /** Undefined when the provider has no registered schedule; never fabricated. */
-  enabled?: boolean;
-  totalJobs: number;
-  successfulJobs: number;
-  failedJobs: number;
-  successRate: number; // 0-100
-  lastRun?: string;
-  nextScheduledRun?: string;
-  /** Milliseconds; undefined when no completed job in the sample had timing data. */
-  averageDuration?: number;
-  totalDiscoveredCIs: number;
-}
 
 export interface TriggerDiscoveryJobRequest {
   provider: DiscoveryProvider;
@@ -327,19 +269,18 @@ class DiscoveryService {
    * Map the legacy `/discovery/jobs/:id` response into a DiscoveryJob.
    */
   private mapLegacyJob(raw: RawLegacyDiscoveryJob): DiscoveryJob {
+    if (!raw.provider) throw new Error('Discovery job provider unavailable');
     return {
       id: raw.id,
       provider: raw.provider,
       status: this.mapJobStatus(raw.status),
-      progress: typeof raw.progress === 'number' ? raw.progress : 0,
-      discoveredCIs: raw.result?.discovered ?? 0,
+      progress: typeof raw.progress === 'number' ? raw.progress : raw.progress?.percentage ?? 0,
+      discoveredCIs: raw.summary?.discoveredCIs ?? 0,
       createdAt: new Date(raw.timestamp ?? Date.now()).toISOString(),
       startedAt: raw.processedOn ? new Date(raw.processedOn).toISOString() : undefined,
       completedAt: raw.finishedOn ? new Date(raw.finishedOn).toISOString() : undefined,
-      error: raw.error,
-      config: raw.config ?? {},
-      definitionId: raw.definitionId ?? raw.definition_id,
-      definitionName: raw.definitionName ?? raw.definition_name,
+      error: raw.failureCode,
+      config: {},
     };
   }
 
@@ -353,15 +294,17 @@ class DiscoveryService {
   }
 
   /**
-   * Get job results. BullMQ only stores an aggregate discovered-CI count on
-   * the job's returnvalue (no per-CI records survive on the job itself), so
-   * discoveredCIs is intentionally empty - totalCount reflects the real count.
+   * Legacy detail carries only a numeric safe summary, not raw worker results.
+   * A job without that summary cannot be represented as a result count.
    */
   async getJobResult(jobId: string): Promise<DiscoveryJobResult> {
     const { data } = await api.get(`/discovery/jobs/${jobId}`);
     const raw: RawLegacyDiscoveryJob = data.data;
+    if (!raw.provider || raw.summary?.discoveredCIs === undefined) {
+      throw new Error('Discovery job result summary unavailable');
+    }
     const status = this.mapJobStatus(raw.status);
-    const discovered = raw.result?.discovered ?? 0;
+    const discovered = raw.summary.discoveredCIs;
 
     return {
       jobId: raw.id,
@@ -393,92 +336,6 @@ class DiscoveryService {
     await api.delete(`/discovery/jobs/${jobId}`);
   }
 
-  /**
-   * Get all discovery schedules
-   */
-  async getSchedules(): Promise<DiscoverySchedule[]> {
-    const { data } = await api.get<{ data?: RawDiscoverySchedule[] }>('/jobs/schedules/discovery');
-    return (data.data ?? []).map((schedule) => this.mapDiscoverySchedule(schedule));
-  }
-
-  /**
-   * Update a provider's schedule
-   */
-  async updateSchedule(
-    provider: DiscoveryProvider,
-    schedule: DiscoveryScheduleUpdate
-  ): Promise<DiscoverySchedule> {
-    const payload: DiscoveryScheduleUpdate = {};
-    if (schedule.cronExpression !== undefined) {
-      payload.cronExpression = schedule.cronExpression;
-    }
-    if (schedule.enabled !== undefined) {
-      payload.enabled = schedule.enabled;
-    }
-
-    const { data } = await api.put<{ data: RawDiscoverySchedule }>(
-      `/jobs/schedules/discovery/${provider}`,
-      payload
-    );
-    return this.mapDiscoverySchedule(data.data);
-  }
-
-  /**
-   * Get discovery statistics for all providers
-   */
-  async getStats(): Promise<DiscoveryStats[]> {
-    const { data } = await api.get('/jobs/discovery/stats');
-    return ((data.data ?? []) as RawDiscoveryStat[]).map((stat) => this.mapDiscoveryStat(stat));
-  }
-
-  private mapDiscoverySchedule(schedule: RawDiscoverySchedule): DiscoverySchedule {
-    const cronExpression = schedule.cronExpression ?? schedule.cronPattern;
-    if (!cronExpression) {
-      throw new Error(`Invalid discovery schedule response for ${schedule.provider}`);
-    }
-
-    return {
-      provider: schedule.provider,
-      enabled: schedule.enabled,
-      cronExpression,
-      config: schedule.config ?? {},
-      lastRun: schedule.lastRun,
-      nextRun: schedule.nextRun,
-    };
-  }
-
-  private mapDiscoveryStat(stat: RawDiscoveryStat): DiscoveryStats {
-    const totalJobs = (stat.waiting || 0) + (stat.active || 0) + (stat.completed || 0) + (stat.failed || 0);
-    const successfulJobs = stat.completed || 0;
-    const failedJobs = stat.failed || 0;
-    const successRate = totalJobs > 0 ? (successfulJobs / totalJobs) * 100 : 0;
-
-    return {
-      provider: stat.provider,
-      enabled: stat.enabled,
-      totalJobs,
-      successfulJobs,
-      failedJobs,
-      successRate,
-      averageDuration: stat.averageDurationMs ?? undefined,
-      totalDiscoveredCIs: stat.totalDiscoveredCIs || 0,
-    };
-  }
-
-  /**
-   * Get statistics for a specific provider, using server-side provider
-   * filtering on the canonical discovery stats endpoint. Throws when the
-   * provider has no stats entry rather than fabricating a zeroed/enabled
-   * placeholder - callers must handle a missing provider explicitly.
-   */
-  async getProviderStats(provider: DiscoveryProvider): Promise<DiscoveryStats> {
-    const { data } = await api.get(`/jobs/discovery/stats?provider=${provider}`);
-    const stat: RawDiscoveryStat | undefined = (data.data ?? [])[0];
-    if (!stat) {
-      throw new Error(`No discovery stats found for provider: ${provider}`);
-    }
-    return this.mapDiscoveryStat(stat);
-  }
 
   /**
    * Test provider credentials against the Settings-owned test-connection

@@ -1067,22 +1067,18 @@ GET /relationships/type/DEPENDS_ON?limit=50
 
 #### Schedule Discovery Job
 
-Schedule a new discovery job for a cloud provider or infrastructure.
+Schedule an org-stamped credential-free Nmap discovery job. SSH, SNMP and
+Active Directory return the same fixed 409 until HP1-S5. Only target strings
+and supported boolean scan switches enter job data; credentials and other
+configuration are discarded.
 
 **Endpoint**: `POST /discovery/schedule`
 
 **Request Body**:
 ```json
 {
-  "provider": "aws",
-  "config": {
-    "regions": ["us-east-1", "us-west-2"],
-    "resource_types": ["ec2", "rds", "s3"],
-    "credentials": {
-      "access_key_id": "AKIAIOSFODNN7EXAMPLE",
-      "secret_access_key": "encrypted"
-    }
-  }
+  "provider": "nmap",
+  "config": { "targets": ["192.0.2.1"], "scanOptions": { "serviceDetection": true } }
 }
 ```
 
@@ -1092,7 +1088,7 @@ Schedule a new discovery job for a cloud provider or infrastructure.
   "success": true,
   "data": {
     "id": "job-123e4567-e89b-12d3-a456-426614174000",
-    "provider": "aws",
+    "provider": "nmap",
     "status": "pending",
     "created_at": "2025-01-15T10:30:00Z"
   },
@@ -1104,7 +1100,7 @@ Schedule a new discovery job for a cloud provider or infrastructure.
 
 #### Get Job Status
 
-Get the status of a discovery job.
+Get allowlisted status metadata for a job owned by the authenticated organization.
 
 **Endpoint**: `GET /discovery/jobs/:id`
 
@@ -1117,15 +1113,10 @@ Get the status of a discovery job.
   "success": true,
   "data": {
     "id": "job-123e4567-e89b-12d3-a456-426614174000",
-    "provider": "aws",
+    "provider": "nmap",
     "status": "completed",
     "progress": 100,
-    "result": {
-      "discovered_cis": 150,
-      "new_cis": 10,
-      "updated_cis": 140
-    },
-    "queue": "discovery:aws",
+    "summary": { "discoveredCIs": 7 },
     "attemptsMade": 1,
     "processedOn": 1705315800000,
     "finishedOn": 1705316100000
@@ -1143,7 +1134,9 @@ Get the status of a discovery job.
 
 #### List Discovery Jobs
 
-List all discovery jobs with filtering.
+List only jobs stamped with the authenticated organization's ID. Foreign,
+missing and NULL-owner jobs are invisible; nested results, configuration and
+worker errors are never returned. Failed jobs carry fixed `failureCode`.
 
 **Endpoint**: `GET /discovery/jobs`
 
@@ -1155,7 +1148,7 @@ List all discovery jobs with filtering.
 
 **Example Request**:
 ```bash
-GET /discovery/jobs?status=running&provider=aws&limit=20
+GET /discovery/jobs?status=running&provider=nmap&limit=20
 ```
 
 **Example Response**:
@@ -1165,10 +1158,9 @@ GET /discovery/jobs?status=running&provider=aws&limit=20
   "data": [
     {
       "id": "job-001",
-      "provider": "aws",
+      "provider": "nmap",
       "status": "running",
-      "created_at": "2025-01-15T10:30:00Z",
-      "queue": "discovery:aws"
+      "timestamp": 1736937000000
     }
   ],
   "pagination": {
@@ -1184,7 +1176,8 @@ GET /discovery/jobs?status=running&provider=aws&limit=20
 
 #### Cancel Discovery Job
 
-Cancel a pending or running discovery job.
+Cancel a pending or running job in the authenticated organization (write role).
+Foreign, missing and NULL-owner IDs receive identical 404 responses.
 
 **Endpoint**: `DELETE /discovery/jobs/:id`
 

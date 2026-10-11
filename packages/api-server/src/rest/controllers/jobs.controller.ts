@@ -33,6 +33,27 @@ const SCHEDULE_UPDATE_FIELDS: Record<string, true> = {
   enabled: true,
 };
 
+const MAX_JOB_PAGE_SIZE = 100;
+const INVALID_JOB_PAGINATION = { success: false, error: 'Invalid job pagination' };
+
+function nonNegativePageInteger(value: unknown, fallback: number): number | null {
+  if (value === undefined) return fallback;
+  if (typeof value !== 'string' || !/^\d+$/.test(value)) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+function jobPage(query: Request['query']): { start: number; end: number; limit: number } | null {
+  const start = nonNegativePageInteger(query.start, 0);
+  const requestedEnd = nonNegativePageInteger(query.end, 99);
+  const requestedLimit = nonNegativePageInteger(query.limit, MAX_JOB_PAGE_SIZE);
+  if (start === null || requestedEnd === null || requestedLimit === null ||
+      start > Number.MAX_SAFE_INTEGER - MAX_JOB_PAGE_SIZE || requestedEnd < start) return null;
+  const limit = Math.min(requestedEnd - start + 1, requestedLimit, MAX_JOB_PAGE_SIZE);
+  const end = start + limit - 1;
+  return { start, end, limit };
+}
+
 /**
  * True when a completed BullMQ job carries both timestamps needed to
  * compute its duration. Narrows the optional fields so callers never
@@ -159,43 +180,44 @@ export class JobsController {
         return;
       }
 
-      const { state = 'waiting', start = 0, end = 99 } = req.query;
-      const startNum = Number(start);
-      const endNum = Number(end);
+      const page = jobPage(req.query);
+      if (!page) { res.status(400).json(INVALID_JOB_PAGINATION); return; }
+      const { state = 'waiting' } = req.query;
+      const queue = page.limit > 0 ? this.queueManager.getQueue(queueName) : null;
 
-      const queue = this.queueManager.getQueue(queueName);
-
-      let jobs;
-      switch (state) {
-        case 'waiting':
-          jobs = await queue.getWaiting(startNum, endNum);
-          break;
-        case 'active':
-          jobs = await queue.getActive(startNum, endNum);
-          break;
-        case 'completed':
-          jobs = await queue.getCompleted(startNum, endNum);
-          break;
-        case 'failed':
-          jobs = await queue.getFailed(startNum, endNum);
-          break;
-        case 'delayed':
-          jobs = await queue.getDelayed(startNum, endNum);
-          break;
-        default:
-          jobs = await queue.getWaiting(startNum, endNum);
+      let jobs: Job[] = [];
+      if (queue) {
+        switch (state) {
+          case 'waiting':
+            jobs = await queue.getWaiting(page.start, page.end);
+            break;
+          case 'active':
+            jobs = await queue.getActive(page.start, page.end);
+            break;
+          case 'completed':
+            jobs = await queue.getCompleted(page.start, page.end);
+            break;
+          case 'failed':
+            jobs = await queue.getFailed(page.start, page.end);
+            break;
+          case 'delayed':
+            jobs = await queue.getDelayed(page.start, page.end);
+            break;
+          default:
+            jobs = await queue.getWaiting(page.start, page.end);
+        }
       }
 
       const jobsData = await Promise.all(
         jobs.filter((job) => ownsJob(req, job)).map((job) => publicJob(job, queueName))
       );
 
-      // BullMQ totals mix tenants. Pagination is over queue offsets, not
-      // tenant offsets; omit unknowable tenant totals/hasMore.
+      // Queue offsets may hide owned jobs behind foreign jobs. Mark every
+      // non-empty bounded read incomplete without revealing queue occupancy.
       res.json({
         success: true,
         data: { queueName, state, jobs: jobsData, count: jobsData.length },
-        pagination: { limit: endNum - startNum + 1, offset: startNum },
+        pagination: { limit: page.limit, offset: page.start, truncated: page.limit > 0 },
       });
     } catch {
       logger.error('Error listing jobs');
@@ -608,13 +630,11 @@ export class JobsController {
         return;
       }
 
-      const { start = 0, end = 99 } = req.query;
-
-      const failedJobs = await this.queueManager.getFailedJobs(
-        queueName,
-        Number(start),
-        Number(end)
-      );
+      const page = jobPage(req.query);
+      if (!page) { res.status(400).json(INVALID_JOB_PAGINATION); return; }
+      const failedJobs = page.limit > 0
+        ? await this.queueManager.getFailedJobs(queueName, page.start, page.end)
+        : [];
 
       const jobsData = await Promise.all(
         failedJobs.filter((job) => ownsJob(req, job)).map((job) => publicJob(job, queueName))
@@ -627,6 +647,7 @@ export class JobsController {
           failedJobs: jobsData,
           count: jobsData.length,
         },
+        pagination: { limit: page.limit, offset: page.start, truncated: page.limit > 0 },
       });
     } catch {
       logger.error('Error getting failed jobs');

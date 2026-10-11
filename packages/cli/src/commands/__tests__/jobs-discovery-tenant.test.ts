@@ -144,8 +144,8 @@ test('mounted manual SSH refuses object and string targets without queueing cred
   expect(queueManager.addJob).toHaveBeenCalledTimes(before);
   const schedule = await request(apiUrl).put('/jobs/schedules/discovery/ssh')
     .set('X-Workspace-Key', 'valid-key').send({ enabled: true });
-  expect(schedule.status).toBe(409);
-  expect(schedule.body).toEqual({ success: false, error: 'Credential-backed discovery execution unavailable' });
+  expect(schedule.status).toBe(403);
+  expect(schedule.body).toEqual({ success: false, error: 'Global queue operations unavailable' });
   await expect(scheduler.triggerDiscovery('ssh', payloads[1], 'operator', ORG))
     .rejects.toThrow('Credential-backed discovery execution is unavailable');
   expect(queueManager.addJob).toHaveBeenCalledTimes(before);

@@ -24,17 +24,10 @@ import {
   SelectLabel,
 } from '@/components/ui/select';
 import { useJobs } from '../hooks/useJobs';
-import {
-  useQueueStats,
-  useQueueHealth,
-  useSchedules,
-} from '../hooks/useQueueStats';
-import { Job, JobFilters, QueueMetrics } from '../services/jobs.service';
+import { Job, JobFilters } from '../services/jobs.service';
 import { JobMonitor } from '../components/jobs/JobMonitor';
 import { JobList } from '../components/jobs/JobList';
 import { JobDetail } from '../components/jobs/JobDetail';
-import { WorkerStatus } from '../components/jobs/WorkerStatus';
-import { ScheduleList } from '../components/jobs/ScheduleList';
 import { DeadLetterQueue } from '../components/jobs/DeadLetterQueue';
 
 type TabValue = 'monitor' | 'completed' | 'failed' | 'schedules' | 'workers' | 'dead-letter';
@@ -58,29 +51,6 @@ export const Jobs: React.FC = () => {
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(25);
 
-  // Fetch queue health
-  const {
-    health,
-    loading: healthLoading,
-    error: healthError,
-    pauseQueue,
-    resumeQueue,
-  } = useQueueHealth({
-    autoRefresh: true,
-    refreshInterval: 30000,
-  });
-
-  // Fetch schedules
-  const {
-    schedules,
-    loading: schedulesLoading,
-    error: schedulesError,
-    toggleSchedule,
-    refetch: refetchSchedules,
-  } = useSchedules({
-    autoRefresh: activeTab === 'schedules',
-    refreshInterval: 60000,
-  });
 
   // Fetch completed jobs
   const completedFilters: JobFilters = {
@@ -126,26 +96,6 @@ export const Jobs: React.FC = () => {
     refreshInterval: 30000,
   });
 
-  // Create queue metrics from health data for WorkerStatus
-  const queueMetrics: QueueMetrics[] = (health ?? []).map((h) => ({
-    queueName: h.queueName,
-    throughput: {
-      completed: 0,
-      failed: 0,
-      timeWindow: '1h',
-    },
-    latency: {
-      avg: h.avgProcessingTime,
-      p50: h.avgProcessingTime,
-      p95: h.avgProcessingTime * 1.5,
-      p99: h.avgProcessingTime * 2,
-    },
-    workers: {
-      active: h.workers,
-      total: h.workers,
-      concurrency: 5,
-    },
-  }));
 
   const handlePageChange = (newPage: number) => {
     setPage(newPage);
@@ -194,17 +144,9 @@ export const Jobs: React.FC = () => {
       case 'failed':
         refetchFailed();
         break;
-      case 'schedules':
-        refetchSchedules();
-        break;
     }
   };
 
-  const getTabBadge = (tab: TabValue): number | undefined => {
-    if (tab === 'failed') return failedTotal;
-    if (tab === 'schedules') return schedules.filter((s) => s.enabled).length;
-    return undefined;
-  };
 
   return (
     <div>
@@ -255,7 +197,7 @@ export const Jobs: React.FC = () => {
               </SelectGroup>
             </SelectContent>
           </Select>
-          {activeTab !== 'monitor' && activeTab !== 'workers' && (
+          {(activeTab === 'completed' || activeTab === 'failed') && (
             <Button variant="outline" onClick={handleRefresh}>
               <Icon name="arrows-clockwise" size={16} className="mr-2" />
               Refresh
@@ -264,14 +206,6 @@ export const Jobs: React.FC = () => {
         </div>
       </div>
 
-      {/* Error Alerts */}
-      {healthError && (
-        <Alert variant="destructive" className="mb-4">
-          <AlertDescription>
-            Failed to load queue health: {healthError.message}
-          </AlertDescription>
-        </Alert>
-      )}
 
       {/* Tabs */}
       <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as TabValue)} className="w-full">
@@ -294,9 +228,6 @@ export const Jobs: React.FC = () => {
             </TabsTrigger>
             <TabsTrigger value="schedules" className="gap-2">
               Schedules
-              {getTabBadge('schedules') !== undefined && getTabBadge('schedules')! > 0 && (
-                <Badge variant="info" className="ml-1">{getTabBadge('schedules')}</Badge>
-              )}
             </TabsTrigger>
             <TabsTrigger value="workers">Worker Status</TabsTrigger>
             <TabsTrigger value="dead-letter">Dead Letter</TabsTrigger>
@@ -363,31 +294,19 @@ export const Jobs: React.FC = () => {
         </TabsContent>
 
         <TabsContent value="schedules" className="mt-0">
-          {schedulesError ? (
-            <Alert variant="destructive">
-              <AlertDescription>
-                Failed to load schedules: {schedulesError.message}
-              </AlertDescription>
-            </Alert>
-          ) : (
-            <ScheduleList
-              schedules={schedules}
-              loading={schedulesLoading}
-              onToggle={async (id, enabled) => {
-                await toggleSchedule(id, enabled);
-              }}
-            />
-          )}
+          <Alert>
+            <AlertDescription>
+              Global queue and schedule controls are unavailable (platform operations only).
+            </AlertDescription>
+          </Alert>
         </TabsContent>
 
         <TabsContent value="workers" className="mt-0">
-          <WorkerStatus
-            metrics={queueMetrics}
-            health={health}
-            loading={healthLoading}
-            onPauseQueue={pauseQueue}
-            onResumeQueue={resumeQueue}
-          />
+          <Alert>
+            <AlertDescription>
+              Global queue and schedule controls are unavailable (platform operations only).
+            </AlertDescription>
+          </Alert>
         </TabsContent>
 
         <TabsContent value="dead-letter" className="mt-0">

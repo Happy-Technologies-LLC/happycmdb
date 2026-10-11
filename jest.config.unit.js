@@ -33,7 +33,7 @@ module.exports = {
     '<rootDir>/.regression/',
     '/dist/',
     '/build/',
-    'integration',
+    '/tests/integration/',
     'e2e',
   ],
 

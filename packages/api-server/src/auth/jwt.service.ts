@@ -10,6 +10,15 @@ import * as jwt from 'jsonwebtoken';
 import type { ConfigSchema } from '@cmdb/common';
 import { TokenPayload, UserRole } from './types';
 
+export class TokenVerificationError extends Error {
+  override readonly cause: unknown;
+
+  constructor(readonly reason: 'expired' | 'invalid', cause: unknown) {
+    super('Token verification failed');
+    this.cause = cause;
+  }
+}
+
 export class JWTService {
   private secret: string;
   private accessTokenExpiresIn: string;
@@ -78,9 +87,10 @@ export class JWTService {
       return decoded;
     } catch (error) {
       if (error instanceof jwt.TokenExpiredError) {
-        throw new Error('Token expired');
-      } else if (error instanceof jwt.JsonWebTokenError) {
-        throw new Error('Invalid token');
+        throw new TokenVerificationError('expired', error);
+      }
+      if (error instanceof jwt.JsonWebTokenError) {
+        throw new TokenVerificationError('invalid', error);
       }
       throw error;
     }

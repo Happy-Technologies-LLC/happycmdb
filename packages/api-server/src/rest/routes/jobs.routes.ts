@@ -32,6 +32,21 @@ function requireKnownQueue(req: Request, res: Response, next: NextFunction): voi
   next();
 }
 
+// AD, SNMP, and AI queue registration enables tenant reads only. Mutations
+// require an explicit authorization decision before those queues are enabled.
+const readOnlyQueues: readonly string[] = [
+  QUEUE_NAMES._DISCOVERY_ACTIVE_DIRECTORY,
+  QUEUE_NAMES._DISCOVERY_SNMP,
+  QUEUE_NAMES._DISCOVERY_AI,
+];
+function requireMutableQueue(req: Request, res: Response, next: NextFunction): void {
+  if (readOnlyQueues.includes(req.params.queueName ?? '')) {
+    res.status(403).json({ success: false, error: 'Queue mutation unavailable' });
+    return;
+  }
+  next();
+}
+
 function requireKnownProvider(req: Request, res: Response, next: NextFunction): void {
   if (!['nmap', 'ssh', 'active-directory', 'snmp'].includes(req.params.provider ?? '')) {
     res.status(400).json(INVALID_PROVIDER);
@@ -97,10 +112,10 @@ router.get('/jobs/:queueName/:jobId', requireJobOrganization, requireKnownQueue,
   jobsController.getJobStatus(req, res)
 );
 router.get('/jobs/:queueName', requireJobOrganization, requireKnownQueue, (req, res) => jobsController.listJobs(req, res));
-router.delete('/jobs/:queueName/:jobId', authMiddleware.requirePermission('write'), requireJobOrganization, requireKnownQueue, (req, res) =>
+router.delete('/jobs/:queueName/:jobId', authMiddleware.requirePermission('write'), requireJobOrganization, requireKnownQueue, requireMutableQueue, (req, res) =>
   jobsController.cancelJob(req, res)
 );
-router.post('/jobs/:queueName/:jobId/retry', authMiddleware.requirePermission('write'), requireJobOrganization, requireKnownQueue, (req, res) =>
+router.post('/jobs/:queueName/:jobId/retry', authMiddleware.requirePermission('write'), requireJobOrganization, requireKnownQueue, requireMutableQueue, (req, res) =>
   jobsController.retryJob(req, res)
 );
 

@@ -36,6 +36,7 @@ const SCHEDULE_UPDATE_FIELDS: Record<string, true> = {
 const MAX_JOB_PAGE_SIZE = 100;
 const MAX_JOB_START = 10_000;
 const INVALID_JOB_PAGINATION = { success: false, error: 'Invalid job pagination' };
+const DEEP_JOB_PAGES_UNAVAILABLE = { success: false, error: 'Deep job pages unavailable' };
 
 function nonNegativePageInteger(value: unknown, fallback: number): number | null {
   if (value === undefined) return fallback;
@@ -44,12 +45,13 @@ function nonNegativePageInteger(value: unknown, fallback: number): number | null
   return Number.isSafeInteger(parsed) ? parsed : null;
 }
 
-function jobPage(query: Request['query']): { start: number; end: number; limit: number } | null {
+function jobPage(query: Request['query']): { start: number; end: number; limit: number } | 'deep' | null {
   const start = nonNegativePageInteger(query.start, 0);
   const requestedEnd = nonNegativePageInteger(query.end, 99);
   const requestedLimit = nonNegativePageInteger(query.limit, MAX_JOB_PAGE_SIZE);
-  if (start === null || requestedEnd === null || requestedLimit === null ||
-      start > MAX_JOB_START || requestedEnd < start) return null;
+  if (start === null || requestedEnd === null || requestedLimit === null) return null;
+  if (start > MAX_JOB_START) return 'deep';
+  if (requestedEnd < start) return null;
   const limit = Math.min(requestedEnd - start + 1, requestedLimit, MAX_JOB_PAGE_SIZE);
   const end = start + limit - 1;
   return { start, end, limit };
@@ -183,6 +185,7 @@ export class JobsController {
 
       const page = jobPage(req.query);
       if (!page) { res.status(400).json(INVALID_JOB_PAGINATION); return; }
+      if (page === 'deep') { res.status(400).json(DEEP_JOB_PAGES_UNAVAILABLE); return; }
       const { state = 'waiting' } = req.query;
       const queue = page.limit > 0 ? this.queueManager.getQueue(queueName) : null;
 
@@ -365,8 +368,12 @@ export class JobsController {
       const limitNum = nonNegativePageInteger(limit, 10);
       const start = pageNum === null || limitNum === null ? NaN : (pageNum - 1) * limitNum;
       if (pageNum === null || pageNum < 1 || limitNum === null || limitNum < 1 ||
-          limitNum > MAX_JOB_PAGE_SIZE || !Number.isSafeInteger(start) || start > MAX_JOB_START) {
+          !Number.isSafeInteger(start)) {
         res.status(400).json(INVALID_JOB_PAGINATION);
+        return;
+      }
+      if (start > MAX_JOB_START) {
+        res.status(400).json(DEEP_JOB_PAGES_UNAVAILABLE);
         return;
       }
       if (provider && !['nmap', 'ssh', 'active-directory', 'snmp', 'aws', 'azure', 'gcp', 'ai'].includes(String(provider))) {
@@ -642,6 +649,7 @@ export class JobsController {
 
       const page = jobPage(req.query);
       if (!page) { res.status(400).json(INVALID_JOB_PAGINATION); return; }
+      if (page === 'deep') { res.status(400).json(DEEP_JOB_PAGES_UNAVAILABLE); return; }
       const failedJobs = page.limit > 0
         ? await this.queueManager.getFailedJobs(queueName, page.start, page.end)
         : [];

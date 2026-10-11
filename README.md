@@ -33,7 +33,7 @@ HappyCMDB is an enterprise CMDB platform that discovers, maps, and tracks infras
 
 **Discovery egress restriction:** Discovery workers and AI discovery tools refuse loopback, link-local, RFC1918/ULA, cloud metadata addresses, and platform service names for every caller, including administrators. Private/internal discovery is unavailable until a separately reviewed dedicated platform-admin (P-6) and per-organization CIDR allowlist change lands. Discovery agents are visible and mutable only within the caller's verified organization; legacy agents without an organization are inaccessible to everyone. See [the discovery egress and registry design](docs/discovery-egress-agent-registry-design.md).
 
-**Legacy job history limit:** Authenticated queue and discovery listing APIs reject start/offset positions above 10,000 with HTTP 400 before querying Redis. History beyond that position is not reachable through these listing APIs; positions are BullMQ queue/state offsets, not tenant-owned ranks. Pagination below the cap remains bounded and tenant-filtered. See the [OpenAPI listing contract](packages/api-server/src/openapi/openapi.yaml); per-organization index/cursor migration is deferred to HAP-551.
+**Legacy job history limit:** Authenticated queue and discovery listing APIs reject start/offset positions above 10,000 with HTTP 400 `Deep job pages unavailable` before querying Redis; malformed pagination returns `Invalid job pagination`. History beyond that position is not reachable through these listing APIs; positions are BullMQ queue/state offsets, not tenant-owned ranks. Pagination below the cap remains bounded and tenant-filtered, including larger requested limits on `/jobs/discovery`. Newly registered AD, SNMP, and AI discovery queues are readable within a tenant, but generic cancel/retry on those queues return `Queue mutation unavailable` until their mutation authorization is reviewed. See the [OpenAPI listing contract](packages/api-server/src/openapi/openapi.yaml); per-organization index/cursor migration is deferred to HAP-551.
 
 
 ## Architecture
@@ -96,6 +96,8 @@ Migration `013_itil_baseline_org_name_unique.sql` replaces global baseline-name 
 ### Authenticated role source of truth
 
 REST, GraphQL and integration-hub requests authorize JWTs using the enabled user's current role, not the role embedded in a previously issued access token. API keys use the less-privileged of their stored role and the enabled user's current role, compared by granted permissions; incompatible roles (for example, `agent` and `viewer`) are rejected rather than granting either role's exclusive permissions. Missing or disabled users are denied. The request organization remains the user's freshly loaded organization, not a token claim.
+
+`POST /api/v1/auth/login` and `/refresh` use the same fixed HTTP 401 `{ "success": false, "error": "Authentication failed" }` for credential, account, and store failures; bearer/API-key middleware returns one fixed unauthorized body and GraphQL returns `UNAUTHENTICATED`. Server-side diagnostics record only credential type and a bounded reason (invalid, expired, wrong type, disabled, revoked, or store error), never the credential or database error text.
 
 Issuing an API key through `POST /api/v1/auth/api-key` requires a verified JWT access token from a user login session. An API key cannot issue another key, even after its owner gains a higher role; API-key-authenticated requests to this endpoint receive HTTP 403. Missing or disabled users remain unauthenticated (HTTP 401).
 

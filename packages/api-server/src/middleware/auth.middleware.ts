@@ -9,10 +9,17 @@
 import { Request, Response, NextFunction } from 'express';
 import { GraphQLError } from 'graphql';
 import { logger, type ConfigSchema } from '@cmdb/common';
-import { AuthService } from '../auth/auth.service';
+import { AuthFailureError, AuthService } from '../auth/auth.service';
 import { TokenPayload, Permission, ROLE_PERMISSIONS } from '../auth/types';
 
 const UNAUTHORIZED = { _error: 'Unauthorized', _message: 'Authentication failed' };
+/** Keep the cause internally; never serialize or log untrusted error text. */
+export function logAuthFailure(credentialType: 'jwt' | 'api-key' | 'login' | 'refresh' | 'none', error: unknown): void {
+  logger.warn('Authentication failed', {
+    credentialType,
+    reason: error instanceof AuthFailureError ? error.reason : 'store_error',
+  });
+}
 
 export interface AuthenticatedRequest extends Request {
   user?: TokenPayload;
@@ -81,10 +88,11 @@ export class AuthMiddleware {
           req.credentialType = 'api-key';
           next();
         } else {
+          logAuthFailure('none', new AuthFailureError('invalid'));
           res.status(401).json(UNAUTHORIZED);
         }
-      } catch {
-        logger.warn('Authentication failed');
+      } catch (error) {
+        logAuthFailure(req.headers.authorization ? 'jwt' : 'api-key', error);
         res.status(401).json(UNAUTHORIZED);
       }
     };
@@ -111,7 +119,7 @@ export class AuthMiddleware {
 
         next();
       } catch (error) {
-        // Ignore authentication errors for optional auth
+        logAuthFailure(req.headers.authorization ? 'jwt' : 'api-key', error);
         next();
       }
     };
@@ -262,6 +270,7 @@ export async function authenticateGraphQLContext(
   const apiKey = (req.headers[apiKeyHeader.toLowerCase()] as string | undefined) || null;
 
   if (!token && !apiKey) {
+    logAuthFailure('none', new AuthFailureError('invalid'));
     throw new GraphQLError('Authentication failed', {
       extensions: { code: 'UNAUTHENTICATED', http: { status: 401 } },
     });
@@ -272,8 +281,8 @@ export async function authenticateGraphQLContext(
       ? await authService.verifyToken(token)
       : await authService.verifyApiKey(apiKey as string);
     return { user: payload };
-  } catch {
-    logger.warn('Authentication failed');
+  } catch (error) {
+    logAuthFailure(token ? 'jwt' : 'api-key', error);
     throw new GraphQLError('Authentication failed', {
       extensions: { code: 'UNAUTHENTICATED', http: { status: 401 } },
     });

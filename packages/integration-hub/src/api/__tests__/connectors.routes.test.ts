@@ -40,7 +40,7 @@ jest.mock('@cmdb/api-server/auth/auth-bootstrap', () => {
   }, { apiKeys: { headerName: 'X-API-Key' } }).authenticate();
   return { getAuthMiddleware: () => ({
     authenticate: () => (req: express.Request, res: express.Response, next: express.NextFunction) => {
-      if (req.headers.authorization?.startsWith('Bearer hub-') || req.headers['x-api-key']) {
+      if (req.headers.authorization?.startsWith('Bearer hub-') || req.headers['x-api-key'] || !req.headers.authorization) {
         return realAuthenticate(req, res, next);
       }
       const identity = req.headers.authorization;
@@ -130,6 +130,7 @@ describe('standalone connector routes', () => {
     getAllConnectorTypes.mockReturnValue([]);
     try {
       for (const headers of [
+        {},
         { Authorization: 'Bearer hub-driver-error' },
         { 'X-API-Key': 'hub-driver-error' },
       ]) {
@@ -138,7 +139,11 @@ describe('standalone connector routes', () => {
         expect(response.body).toEqual({ _error: 'Unauthorized', _message: 'Authentication failed' });
         expect(JSON.stringify(response.body)).not.toContain('internal-db:7687 synthetic-secret');
       }
-      expect(warn.mock.calls).toEqual([['Authentication failed'], ['Authentication failed']]);
+      expect(warn.mock.calls).toEqual([
+        ['Authentication failed', { credentialType: 'none', reason: 'invalid' }],
+        ['Authentication failed', { credentialType: 'jwt', reason: 'store_error' }],
+        ['Authentication failed', { credentialType: 'api-key', reason: 'store_error' }],
+      ]);
       for (const headers of [
         { Authorization: 'Bearer hub-valid' },
         { 'X-API-Key': 'hub-valid' },

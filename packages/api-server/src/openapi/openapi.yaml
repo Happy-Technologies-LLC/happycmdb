@@ -149,9 +149,54 @@ paths:
                   user:
                     $ref: '#/components/schemas/User'
         '401':
-          $ref: '#/components/responses/Unauthorized'
+          description: Fixed Authentication failed response for credential, account, or store failures
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, error]
+                properties:
+                  success:
+                    type: boolean
+                    enum: [false]
+                  error:
+                    type: string
+                    enum: [Authentication failed]
         '429':
           $ref: '#/components/responses/TooManyRequests'
+
+  /auth/refresh:
+    post:
+      tags: [Authentication]
+      summary: Refresh an access token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken:
+                  type: string
+      responses:
+        '200':
+          description: Refreshed access token
+        '401':
+          description: Same fixed Authentication failed response as /auth/login
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, error]
+                properties:
+                  success:
+                    type: boolean
+                    enum: [false]
+                  error:
+                    type: string
+                    enum: [Authentication failed]
 
   /auth/api-keys:
     post:
@@ -2650,9 +2695,12 @@ paths:
       summary: List discovery jobs
       description: |
         Lists a bounded sample of tenant-owned discovery jobs. `page` and `limit`
-        must produce a start position at most 10,000 (limit at most 100); deeper
-        history is unavailable through this legacy listing API. A deep page
-        returns a fixed 400 before any queue read. No cross-tenant total is exposed.
+        must produce a start position at most 10,000; a larger limit still
+        slices only the bounded sample of queue entries. History past the cap
+        is unavailable through this legacy listing API. A deep page returns
+        HTTP 400 with `Deep job pages unavailable` before any queue read;
+        malformed pagination returns `Invalid job pagination`. No cross-tenant
+        total is exposed.
       operationId: listDiscoveryJobs
       responses:
         '200':
@@ -2663,6 +2711,8 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/Job'
+        '400':
+          description: Invalid pagination, or Deep job pages unavailable above start 10000
         '401':
           $ref: '#/components/responses/Unauthorized'
 
@@ -2731,7 +2781,7 @@ paths:
         '200':
           description: Bounded tenant-owned job page
         '400':
-          description: Invalid queue name or pagination
+          description: Invalid queue/pagination, or Deep job pages unavailable above start 10000
 
   /jobs/{queueName}/failed:
     get:
@@ -2756,7 +2806,7 @@ paths:
         '200':
           description: Bounded tenant-owned failed-job page
         '400':
-          description: Invalid queue name or pagination
+          description: Invalid queue/pagination, or Deep job pages unavailable above start 10000
 
   /discovery/jobs:
     get:
@@ -2785,7 +2835,7 @@ paths:
         '200':
           description: Bounded tenant-owned legacy discovery jobs
         '400':
-          description: Invalid pagination
+          description: Invalid pagination, or Deep job pages unavailable above offset 10000
 
   /jobs/{queueName}/{jobId}:
     get:
@@ -2819,7 +2869,7 @@ paths:
     delete:
       tags: [Jobs]
       summary: Cancel job
-      description: Cancel a running or queued job
+      description: Cancel a running or queued job; AD, SNMP, and AI discovery queues return 403 Queue mutation unavailable
       operationId: cancelJob
       parameters:
         - name: queueName
@@ -2835,6 +2885,8 @@ paths:
       responses:
         '204':
           description: Job cancelled
+        '403':
+          description: Queue mutation unavailable for AD, SNMP, or AI discovery
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
@@ -2844,7 +2896,7 @@ paths:
     post:
       tags: [Jobs]
       summary: Retry failed job
-      description: Retry a failed job
+      description: Retry a failed job; AD, SNMP, and AI discovery queues return 403 Queue mutation unavailable
       operationId: retryJob
       parameters:
         - name: queueName
@@ -2860,6 +2912,8 @@ paths:
       responses:
         '202':
           description: Job requeued
+        '403':
+          description: Queue mutation unavailable for AD, SNMP, or AI discovery
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':

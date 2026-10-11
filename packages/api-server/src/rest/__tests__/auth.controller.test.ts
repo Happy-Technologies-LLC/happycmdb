@@ -10,7 +10,7 @@
  * requests act only on their verified subject, never a request-body userId.
  */
 
-import { describe, it, expect, beforeEach } from '@jest/globals';
+import { describe, it, expect, beforeEach, jest } from '@jest/globals';
 import express from 'express';
 import request from 'supertest';
 import { AuthController } from '../auth.controller';
@@ -21,6 +21,8 @@ import { RateLimitMiddleware } from '../../middleware/rate-limit.middleware';
 import { PasswordService } from '../../auth/password.service';
 import { JWTService } from '../../auth/jwt.service';
 import { User, ApiKey } from '../../auth/types';
+import { logger } from '@cmdb/common';
+import * as jwt from 'jsonwebtoken';
 
 const authConfig = {
   jwt: {
@@ -154,6 +156,95 @@ describe('AuthController profile/password/account routes', () => {
 
     repository.apiKeys.set('alice-key', { userId: 'user-1', revoked: false });
     repository.apiKeys.set('bob-key', { userId: 'user-2', revoked: false });
+  });
+
+  it('returns one fixed login failure for unknown, wrong, disabled, and store failures without logging driver text', async () => {
+    const warnings = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
+    const failed = { success: false, error: 'Authentication failed' };
+    try {
+      const login = (username: string, password: string) =>
+        request(app).post('/api/v1/auth/login').send({ username, password });
+      for (const [username, password, reason] of [
+        ['missing', 'wrong-password', 'invalid'],
+        ['alice', 'wrong-password', 'invalid'],
+      ]) {
+        const response = await login(username, password);
+        expect([response.status, response.body]).toEqual([401, failed]);
+        expect(warnings).toHaveBeenLastCalledWith('Authentication failed', { credentialType: 'login', reason });
+      }
+      repository.users.get('user-1')!._enabled = false;
+      const disabled = await login('alice', 'correct-horse-battery-staple');
+      expect([disabled.status, disabled.body]).toEqual([401, failed]);
+      expect(warnings).toHaveBeenLastCalledWith('Authentication failed', { credentialType: 'login', reason: 'disabled' });
+      repository.users.get('user-1')!._enabled = true;
+
+      const driverError = new Error('neo4j bolt://internal token=private-driver-detail');
+      for (const method of ['findUserByUsername', 'updateUserLastLogin'] as const) {
+        const spy = jest.spyOn(repository, method).mockRejectedValueOnce(driverError);
+        const response = await login('alice', 'correct-horse-battery-staple');
+        expect([response.status, response.body]).toEqual([401, failed]);
+        expect(warnings).toHaveBeenLastCalledWith('Authentication failed', { credentialType: 'login', reason: 'store_error' });
+        expect(JSON.stringify(warnings.mock.calls)).not.toContain('private-driver-detail');
+        spy.mockRestore();
+      }
+      const success = await login('alice', 'correct-horse-battery-staple');
+      expect(success.status).toBe(200);
+      expect(success.body.data._accessToken).toEqual(expect.any(String));
+    } finally {
+      warnings.mockRestore();
+    }
+  });
+
+  it('returns one fixed refresh failure for invalid, expired, wrong-type, revoked, disabled, and store failures', async () => {
+    const warnings = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
+    const failed = { success: false, error: 'Authentication failed' };
+    const valid = jwtService.generateRefreshToken('user-1', 'alice', 'operator');
+    const expired = jwt.sign(
+      { _userId: 'user-1', _username: 'alice', _role: 'operator', _type: 'refresh' },
+      authConfig.jwt.secret, { expiresIn: -1, issuer: authConfig.jwt.issuer, audience: authConfig.jwt.audience }
+    );
+    try {
+      for (const [token, reason] of [
+        ['invalid.token.payload', 'invalid'],
+        [expired, 'expired'],
+        [victimToken, 'wrong_type'],
+        [jwtService.generateRefreshToken('deleted-user', 'deleted', 'viewer'), 'revoked'],
+      ]) {
+        const response = await request(app).post('/api/v1/auth/refresh').send({ refreshToken: token });
+        expect([response.status, response.body]).toEqual([401, failed]);
+        expect(warnings).toHaveBeenLastCalledWith('Authentication failed', { credentialType: 'refresh', reason });
+      }
+      repository.users.get('user-1')!._enabled = false;
+      const disabled = await request(app).post('/api/v1/auth/refresh').send({ refreshToken: valid });
+      expect([disabled.status, disabled.body]).toEqual([401, failed]);
+      expect(warnings).toHaveBeenLastCalledWith('Authentication failed', { credentialType: 'refresh', reason: 'disabled' });
+      repository.users.get('user-1')!._enabled = true;
+      const lookup = jest.spyOn(repository, 'findUserById').mockRejectedValueOnce(new Error('private-driver-detail'));
+      const store = await request(app).post('/api/v1/auth/refresh').send({ refreshToken: valid });
+      expect([store.status, store.body]).toEqual([401, failed]);
+      expect(warnings).toHaveBeenLastCalledWith('Authentication failed', { credentialType: 'refresh', reason: 'store_error' });
+      expect(JSON.stringify(warnings.mock.calls)).not.toContain('private-driver-detail');
+      lookup.mockRestore();
+      const success = await request(app).post('/api/v1/auth/refresh').send({ refreshToken: valid });
+      expect(success.status).toBe(200);
+      expect(success.body.data._accessToken).toEqual(expect.any(String));
+    } finally {
+      warnings.mockRestore();
+    }
+  });
+
+  it('preserves the original store exception as an internal cause without exposing it', async () => {
+    // This fixture supplies the subset of auth config used by AuthService.
+    const service = new AuthService(authConfig as unknown as ConstructorParameters<typeof AuthService>[0], repository);
+    const original = new Error('private-driver-detail');
+    const spy = jest.spyOn(repository, 'findUserById').mockRejectedValueOnce(original);
+    try {
+      await expect(service.verifyToken(victimToken)).rejects.toMatchObject({
+        reason: 'store_error', cause: original,
+      });
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('allows login sessions to issue keys but refuses key chaining after viewer promotion', async () => {

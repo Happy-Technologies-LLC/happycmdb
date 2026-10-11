@@ -18,6 +18,9 @@ test('only registered queue names allocate BullMQ queues; unknown names never gr
   for (let index = 0; index < 200; index++) {
     expect(() => manager.getQueue(`attacker-${index}`)).toThrow('Unknown queue');
   }
+  for (const name of ['constructor', 'toString', '__proto__', 'hasOwnProperty']) {
+    expect(() => manager.getQueue(name)).toThrow('Unknown queue');
+  }
   expect(queueConstructor).toHaveBeenCalledTimes(initial);
   const cache: unknown = Reflect.get(manager, 'queues');
   expect(cache).toBeInstanceOf(Map);

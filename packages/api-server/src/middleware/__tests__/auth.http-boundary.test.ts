@@ -39,7 +39,12 @@ test('mounted JWT and API-key failures have one static 401 body and static diagn
       expect(response.body).toEqual({ _error: 'Unauthorized', _message: 'Authentication failed' });
       expect(JSON.stringify(response.body)).not.toContain(internalText);
     }
-    expect(warn.mock.calls).toEqual([['Authentication failed'], ['Authentication failed']]);
+    expect(warn.mock.calls).toEqual([
+      ['Authentication failed', { credentialType: 'none', reason: 'invalid' }],
+      ['Authentication failed', { credentialType: 'jwt', reason: 'store_error' }],
+      ['Authentication failed', { credentialType: 'api-key', reason: 'store_error' }],
+    ]);
+    expect(JSON.stringify(warn.mock.calls)).not.toContain(internalText);
     for (const headers of [{ authorization: 'Bearer valid' }, { 'x-api-key': 'valid' }]) {
       const response = await request(app).get('/protected').set(headers);
       expect(response.status).toBe(200);

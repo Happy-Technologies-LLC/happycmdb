@@ -27,6 +27,13 @@ function requireJobOrganization(req: Request, res: Response, next: NextFunction)
   next();
 }
 
+// Global queue and schedule operations have no tenant-scoped authorization policy yet.
+// Refuse before role checks so viewer, operator and admin receive the same response.
+function refuseGlobalOperation(_req: Request, res: Response): void {
+  res.status(403).json({ success: false, error: 'Global queue operations unavailable' });
+}
+
+
 const router = Router();
 const authMiddleware = getAuthMiddleware();
 
@@ -35,18 +42,12 @@ const authMiddleware = getAuthMiddleware();
 // to avoid route conflicts (e.g., /jobs/stats vs /jobs/:queueName)
 
 // Job statistics (specific routes first)
-router.get('/jobs/stats', (req, res) => jobsController.getJobStats(req, res));
+router.get('/jobs/stats', refuseGlobalOperation);
 
 // Schedule management (specific routes)
-router.get('/jobs/schedules/discovery', (req, res) =>
-  jobsController.getDiscoverySchedules(req, res)
-);
-router.get('/jobs/schedules/etl', (req, res) =>
-  jobsController.getETLSchedules(req, res)
-);
-router.put('/jobs/schedules/discovery/:provider', authMiddleware.requirePermission('write'), (req, res) =>
-  jobsController.updateDiscoverySchedule(req, res)
-);
+router.get('/jobs/schedules/discovery', refuseGlobalOperation);
+router.get('/jobs/schedules/etl', refuseGlobalOperation);
+router.put('/jobs/schedules/discovery/:provider', refuseGlobalOperation);
 router.put('/jobs/schedules/etl/:type', authMiddleware.requirePermission('write'), (req, res) =>
   jobsController.updateETLSchedule(req, res)
 );
@@ -71,9 +72,7 @@ router.post('/jobs/etl/:type', authMiddleware.requirePermission('write'), (req, 
 router.get('/jobs/:queueName/failed', requireJobOrganization, (req, res) =>
   jobsController.getFailedJobs(req, res)
 );
-router.post('/jobs/:queueName/clean', authMiddleware.requirePermission('write'), (req, res) =>
-  jobsController.cleanQueue(req, res)
-);
+router.post('/jobs/:queueName/clean', refuseGlobalOperation);
 
 // Generic job routes (MUST be last due to :queueName and :jobId parameters)
 router.get('/jobs/:queueName/:jobId', requireJobOrganization, (req, res) =>
@@ -88,29 +87,19 @@ router.post('/jobs/:queueName/:jobId/retry', authMiddleware.requirePermission('w
 );
 
 // Queue Monitoring Routes
-router.get('/queues/stats', (req, res) =>
-  queueController.getAllQueueStats(req, res)
-);
-router.get('/queues/:queueName/stats', (req, res) =>
-  queueController.getQueueStats(req, res)
-);
+router.get('/queues/stats', refuseGlobalOperation);
+router.get('/queues/:queueName/stats', refuseGlobalOperation);
 router.get('/queues/:queueName/metrics', (req, res) =>
   queueController.getQueueMetrics(req, res)
 );
-router.get('/queues/workers/status', (req, res) =>
-  queueController.getAllWorkerStatus(req, res)
-);
+router.get('/queues/workers/status', refuseGlobalOperation);
 router.get('/queues/health', (req, res) =>
   queueController.getQueueHealth(req, res)
 );
 
 // Queue control
-router.post('/queues/:queueName/pause', authMiddleware.requirePermission('write'), (req, res) =>
-  queueController.pauseQueue(req, res)
-);
-router.post('/queues/:queueName/resume', authMiddleware.requirePermission('write'), (req, res) =>
-  queueController.resumeQueue(req, res)
-);
+router.post('/queues/:queueName/pause', refuseGlobalOperation);
+router.post('/queues/:queueName/resume', refuseGlobalOperation);
 
 // Job logs
 router.get('/queues/:queueName/jobs/:jobId/logs', requireJobOrganization, (req, res) =>

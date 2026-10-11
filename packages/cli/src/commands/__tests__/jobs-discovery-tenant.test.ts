@@ -4,6 +4,7 @@ import { AddressInfo } from 'net';
 import { Server } from 'http';
 import express from 'express';
 import { Command } from 'commander';
+import request from 'supertest';
 import { logger } from '@cmdb/common';
 import { DiscoveryScheduler } from '../../../../discovery-engine/src/schedulers/discovery-scheduler';
 import { createJobsCommand } from '../jobs.command';
@@ -60,7 +61,10 @@ beforeAll(async () => {
   process.env['API_KEY_HEADER_NAME'] = 'X-Workspace-Key';
   scheduler = Object.create(DiscoveryScheduler.prototype) as DiscoveryScheduler;
   Object.assign(scheduler, {
-    schedules: new Map([['nmap', { _provider: 'nmap', _queueName: 'discovery-nmap', _config: { _targets: [] } }]]),
+    schedules: new Map([
+      ['nmap', { _provider: 'nmap', _queueName: 'discovery-nmap', _config: { _targets: [] } }],
+      ['ssh', { _provider: 'ssh', _queueName: 'discovery-ssh', _config: { _targets: [] } }],
+    ]),
     queueManager,
   });
   const app = express();
@@ -119,4 +123,33 @@ test('CLI uses authenticated API identity for nmap jobs and refuses absent, inva
   expect(queueManager.addJob).toHaveBeenCalledTimes(2);
   expect(JSON.stringify(jest.mocked(logger).error.mock.calls)).not.toMatch(/valid-key|invalid-key|tenantless-key|valid-jwt|synthetic-secret/);
   expect(JSON.stringify(jest.mocked(logger).info.mock.calls)).not.toMatch(/valid-key|valid-jwt|synthetic-secret/);
+});
+
+test('mounted manual SSH refuses object and string targets without queueing credentials', async () => {
+  const before = queueManager.addJob.mock.calls.length;
+  const payloads = [
+    { targets: [{ host: '192.0.2.1', username: 'operator', password: 'synthetic-secret' }] },
+    { targets: ['192.0.2.1'], host: '192.0.2.1', credentials: { password: 'synthetic-secret' } },
+  ];
+  const responses = [];
+  for (const config of payloads) {
+    responses.push(await request(apiUrl).post('/jobs/discovery/ssh')
+      .set('X-Workspace-Key', 'valid-key').send({ config }));
+  }
+  expect(responses.map(response => response.status)).toEqual([409, 409]);
+  for (const denied of responses) {
+    expect(denied.body).toEqual({ success: false, error: 'Credential-backed discovery execution unavailable' });
+    expect(JSON.stringify(denied.body)).not.toContain('synthetic-secret');
+  }
+  expect(queueManager.addJob).toHaveBeenCalledTimes(before);
+  const schedule = await request(apiUrl).put('/jobs/schedules/discovery/ssh')
+    .set('X-Workspace-Key', 'valid-key').send({ enabled: true });
+  expect(schedule.status).toBe(409);
+  expect(schedule.body).toEqual({ success: false, error: 'Credential-backed discovery execution unavailable' });
+  await expect(scheduler.triggerDiscovery('ssh', payloads[1], 'operator', ORG))
+    .rejects.toThrow('Credential-backed discovery execution is unavailable');
+  expect(queueManager.addJob).toHaveBeenCalledTimes(before);
+  const cli = ['--url', `${apiUrl}/`, '--key', 'valid-key', 'jobs', 'run:discovery', 'ssh'];
+  expect(await invoke([...cli, '--config', JSON.stringify(payloads[1])])).toBe(1);
+  expect(queueManager.addJob).toHaveBeenCalledTimes(before);
 });

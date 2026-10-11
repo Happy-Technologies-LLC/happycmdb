@@ -13,7 +13,6 @@ jest.mock('@cmdb/database', () => ({
 jest.mock('@cmdb/ai-discovery', () => ({
   HybridDiscoveryOrchestrator: jest.fn(), PatternStorageService: jest.fn(), getDefaultLLMConfig: jest.fn(),
 }));
-jest.mock('../../workers/ssh-discovery.worker', () => ({ SSHDiscoveryWorker: jest.fn() }));
 jest.mock('../../workers/nmap-discovery.worker', () => ({ NmapDiscoveryWorker: jest.fn() }));
 jest.mock('../../workers/active-directory-discovery.worker', () => ({ ActiveDirectoryDiscoveryWorker: jest.fn() }));
 jest.mock('../../api/internal-api-client', () => ({ getInternalAPIClient: jest.fn() }));
@@ -73,15 +72,12 @@ it.each([
   }
 );
 
-it.each([
-  { name: 'discovery:ssh', config: { targets: [{ host: 'redis' }] } },
-  { name: 'discovery:nmap', config: { range: '10.0.0.0/8' } },
-])('makes $name policy refusal terminal without persisting', async ({ name, config }) => {
-  if (name === 'discovery:nmap') {
-    jest.mocked(NmapDiscoveryWorker).mockImplementation(() => ({
-      scanNetwork: jest.fn().mockRejectedValue(new Error('Discovery target refused')),
-    }) as never);
-  }
+it('makes nmap policy refusal terminal without persisting', async () => {
+  const name = 'discovery:nmap';
+  const config = { range: '10.0.0.0/8' };
+  jest.mocked(NmapDiscoveryWorker).mockImplementation(() => ({
+    scanNetwork: jest.fn().mockRejectedValue(new Error('Discovery target refused')),
+  }) as never);
   const orchestrator = Object.create(DiscoveryOrchestrator.prototype) as DiscoveryOrchestrator;
   (orchestrator as any).postgresClient = { query: jest.fn().mockResolvedValue({ rows: [{ id: 'definition-2' }] }) };
   const persist = jest.spyOn(orchestrator as any, 'persistCIs').mockResolvedValue(undefined);
@@ -98,4 +94,26 @@ it.each([
     ['definition-2', 'job-2', 'running', '11111111-1111-4111-8111-111111111111'],
     ['definition-2', 'job-2', 'failed', '11111111-1111-4111-8111-111111111111', 0],
   ]);
+});
+
+it('terminally refuses queued legacy SSH without resolving credentials or scanning', async () => {
+  const orchestrator = Object.create(DiscoveryOrchestrator.prototype) as DiscoveryOrchestrator;
+  const query = jest.fn().mockResolvedValue({ rows: [{ id: 'definition-2' }] });
+  Object.assign(orchestrator, { postgresClient: { query } });
+  orchestrator.registerWorkers();
+  const worker = jest.mocked(queueManager.registerWorker).mock.calls
+    .find(([queue]) => queue === 'discovery:ssh')?.[1] as (job: any) => Promise<unknown>;
+  const job = { data: { jobId: 'job-2', definition_id: 'definition-2',
+    organizationId: '11111111-1111-4111-8111-111111111111',
+    config: { targets: [{ host: '192.0.2.1', password: 'synthetic-secret' }] } },
+    updateProgress: jest.fn() };
+  await worker(job).then(
+    () => { throw new Error('Expected terminal SSH refusal'); },
+    (error: Error) => {
+      expect(error).toBeInstanceOf(UnrecoverableError);
+      expect(error.message).toBe('Credential-backed discovery execution is unavailable');
+    }
+  );
+  expect(query).not.toHaveBeenCalled();
+  expect(job.updateProgress).not.toHaveBeenCalled();
 });

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Router } from 'express';
+import type { Request, Response, NextFunction } from 'express';
 import Joi from 'joi';
 import { DiscoveryController } from '../controllers/discovery.controller';
 import { SettingsController } from '../controllers/settings.controller';
@@ -32,6 +33,15 @@ const controller = new DiscoveryController();
 const settingsController = new SettingsController();
 const authMiddleware = getAuthMiddleware();
 
+// Reject SSH before validating its payload so every credential shape receives the same refusal.
+function refuseUnavailableSSH(req: Request, res: Response, next: NextFunction): void {
+  if (req.body?.provider === 'ssh') {
+    res.status(409).json({ success: false, error: 'Credential-backed discovery execution unavailable' });
+    return;
+  }
+  next();
+}
+
 // Validation schemas
 const scheduleDiscoverySchema = Joi.object({
   provider: schemas.discoveryProvider.required(),
@@ -54,6 +64,7 @@ const listJobsQuerySchema = Joi.object({
 discoveryRoutes.post(
   '/schedule',
   authMiddleware.requirePermission('write'),
+  refuseUnavailableSSH,
   validateRequest(scheduleDiscoverySchema, 'body'),
   controller.scheduleDiscovery.bind(controller)
 );

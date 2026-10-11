@@ -57,6 +57,10 @@ export class DiscoveryController {
         });
         return;
       }
+      if (provider === 'ssh') {
+        res.status(409).json({ success: false, error: 'Credential-backed discovery execution unavailable' });
+        return;
+      }
 
       // Map provider to queue name
       // NOTE: Cloud/API providers (AWS, Azure, GCP, Kubernetes, etc.) are now handled by Connectors

@@ -99,7 +99,7 @@ export function createJobsCommand(): Command {
   // Run discovery job command
   jobsCmd
     .command('run:discovery <provider>')
-    .description('Run discovery job immediately through the authenticated API (ssh, nmap)')
+    .description('Run Nmap discovery through the authenticated API (SSH execution unavailable until HP1-S5)')
     .option('-c, --config <config>', 'Job configuration (JSON string)')
     .option('--token <token>', 'JWT access token for API (or CMDB_ACCESS_TOKEN)')
     .action(async (provider: string, options: any) => {

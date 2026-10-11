@@ -97,12 +97,14 @@ that organization; pre-existing NULL-owner definitions are inaccessible until an
 independently reviewed owner mapping exists. Foreign and missing IDs return the
 same 404. Credential IDs must belong to the same organization. Credential-backed
 manual runs and schedule enables return the same fixed 409 for every caller
-(including admins); they do not resolve credentials or queue jobs. Background
-definition triggers, schedules and workers also refuse credential-bound work.
-Credential-free runs queue only scan targets, an organization stamp and Nmap's
-boolean `scanOptions.aggressive`, `osDetection`, `serviceDetection`,
-`fullPortScan` and `portScan` switches. Opaque scan configuration and credentials
-are never queued.
+(including admins); they do not resolve credentials or queue jobs. SSH requires
+credentials and therefore its manual jobs, definition runs and schedule enables
+also return the fixed 409, even if an older definition has no credential binding.
+Background SSH triggers, schedules and workers fail closed; disabling schedules
+remains available. Credential-free Nmap definition manual runs and repeatable
+schedules queue only scan targets, an organization stamp and boolean
+`scanOptions.aggressive`, `osDetection`, `serviceDetection`, `fullPortScan` and
+`portScan` switches. Opaque scan configuration and credentials are never queued.
 Credential-backed discovery is restored by HP1-S5 (v16 §10.2.4-10.2.6
 org-owned credential sets and run pipeline), tracked as HAP-444.
 
@@ -165,7 +167,10 @@ writing to BullMQ directly. Set `CMDB_API_URL` (or global `--url`) and supply
 `CMDB_API_KEY` (or global `--key`) via the configured `API_KEY_HEADER_NAME`
 (default `X-API-Key`), or a JWT via `CMDB_ACCESS_TOKEN` (or `--token`).
 The API derives the organization from the verified credential; missing,
-invalid, or tenantless credentials fail without queueing a job.
+invalid, or tenantless credentials fail without queueing a job. Authenticated
+SSH requests to either `POST /jobs/discovery/ssh` or the legacy
+`POST /discovery/schedule` return the same fixed 409 regardless of target shape;
+SSH credential-backed execution is restored by HP1-S5.
 
 
 

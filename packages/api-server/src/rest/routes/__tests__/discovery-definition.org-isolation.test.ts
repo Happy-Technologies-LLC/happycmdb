@@ -37,14 +37,18 @@ function exec(sql: string): Promise<void> {
   host.send({ id, op: 'exec', sql });
   return promise;
 }
-const db = { query, getClient: async () => ({ query, release: () => undefined }) };
-const queue = { add: jest.fn().mockResolvedValue({ id: 'queued' }) };
+const db = { query, pool: { query }, getClient: async () => ({ query, release: () => undefined }) };
+const queue = {
+  add: jest.fn().mockResolvedValue({ id: 'queued' }),
+  getRepeatableJobs: jest.fn(),
+};
 jest.mock('@cmdb/database', () => ({
   getPostgresClient: () => db,
   QUEUE_NAMES: { _DISCOVERY_SSH: 'discovery-ssh', _DISCOVERY_NMAP: 'discovery-nmap' },
-  queueManager: { getQueue: () => queue, registerWorker: jest.fn() },
+  queueManager: { getQueue: () => queue, registerWorker: jest.fn(), addRepeatableJob: jest.fn() },
 }));
 jest.mock('@cmdb/common', () => ({
+  QUEUE_NAMES: { _DISCOVERY_SSH: 'discovery-ssh', _DISCOVERY_NMAP: 'discovery-nmap' },
   logger: { info: jest.fn(), error: jest.fn(), warn: jest.fn() },
   safeDiscoveryScanConfig: require('../../../../../common/src/utils/discovery-scan-config').safeDiscoveryScanConfig,
   validate: (schema: Joi.Schema, value: unknown) => {
@@ -68,6 +72,7 @@ jest.mock('@cmdb/ai-discovery', () => ({
 }));
 import { queueManager } from '@cmdb/database';
 import { DiscoveryOrchestrator } from '../../../../../discovery-engine/src/orchestrator/discovery-orchestrator';
+import { DiscoveryScheduler } from '../../../../../discovery-engine/src/schedulers/discovery-scheduler';
 import { NmapDiscoveryWorker } from '../../../../../discovery-engine/src/workers/nmap-discovery.worker';
 import { discoveryDefinitionRoutes } from '../discovery-definition.routes';
 const app = express();
@@ -213,6 +218,43 @@ test('mounted definitions isolate two users and orgs, reject legacy and credenti
   expect(JSON.stringify(queuedRange)).not.toContain('synthetic-secret');
   await expect(worker({ data: queuedRange, updateProgress: jest.fn() })).resolves.toEqual({ discovered: 0 });
   expect(scanNetwork).toHaveBeenCalledWith(queuedRange.jobId, '192.0.2.1', 'version');
+  const scheduledConfig = await request(app).put(`${url}/${idA}`).set(headers('a')).send({
+    config: {
+      targets: ['192.0.2.1'], scanOptions: { serviceDetection: true, password: 'synthetic-secret' },
+      credentials: { password: 'synthetic-secret' },
+    },
+  });
+  expect(scheduledConfig.status).toBe(200);
+  queue.getRepeatableJobs.mockResolvedValue([{ name: `discovery-definition-${idA}`, key: 'repeat-key' }]);
+  const scheduler = Object.create(DiscoveryScheduler.prototype) as DiscoveryScheduler;
+  Object.assign(scheduler, { queueManager, definitionMappings: new Map() });
+  await scheduler.scheduleDefinition(idA, ORG_A);
+  const repeatable = jest.mocked(queueManager.addRepeatableJob).mock.calls.at(-1)?.[2];
+  expect(repeatable).toMatchObject({
+    provider: 'nmap', organizationId: ORG_A, definition_id: idA,
+    config: { targets: ['192.0.2.1'], scanOptions: { serviceDetection: true } },
+  });
+  expect(repeatable).not.toHaveProperty('jobId');
+  expect(JSON.stringify(repeatable)).not.toContain('synthetic-secret');
+  for (const jobId of ['repeat:nmap-first', 'repeat:nmap-second']) {
+    await expect(worker({ id: jobId, data: repeatable, updateProgress: jest.fn() }))
+      .resolves.toEqual({ discovered: 0 });
+    expect(scanNetworks).toHaveBeenLastCalledWith(jobId, [{ range: '192.0.2.1', scanType: 'version' }]);
+  }
+  const sshDefinition = await request(app).put(`${url}/${idA}`).set(headers('a')).send({
+    provider: 'ssh',
+    config: { targets: ['192.0.2.1'], credentials: { password: 'synthetic-secret' } },
+  });
+  expect(sshDefinition.status).toBe(200);
+  const sshId = idA;
+  const beforeSSH = queue.add.mock.calls.length;
+  const sshRun = await request(app).post(`${url}/${sshId}/run`).set(headers('a'));
+  const sshEnable = await request(app).post(`${url}/${sshId}/schedule/enable`).set(headers('a'));
+  expect([sshRun.status, sshEnable.status]).toEqual([409, 409]);
+  expect(sshRun.body).toEqual(unavailable.body);
+  expect(sshEnable.body).toEqual(unavailable.body);
+  expect(queue.add).toHaveBeenCalledTimes(beforeSSH);
+  expect(JSON.stringify([sshRun.body, sshEnable.body])).not.toContain('synthetic-secret');
   expect((await request(app).get(url).set(headers('none'))).status).toBe(403);
   expect((await query('SELECT name FROM discovery_definitions WHERE id = $1', [idB])).rows).toEqual([{ name: other.body.data.name }]);
 });

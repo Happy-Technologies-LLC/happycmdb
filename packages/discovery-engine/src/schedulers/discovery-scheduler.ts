@@ -137,8 +137,8 @@ export class DiscoveryScheduler {
    */
   private async startDefaultSchedules(): Promise<void> {
     for (const [provider, schedule] of this.schedules.entries()) {
-      if (!schedule._enabled) {
-        logger.info(`Skipping disabled schedule for ${provider}`);
+      if (!schedule._enabled || provider === 'ssh') {
+        logger.info(`Skipping unavailable or disabled schedule for ${provider}`);
         await this.removeSchedule(provider as DiscoveryProvider);
         continue;
       }
@@ -157,6 +157,7 @@ export class DiscoveryScheduler {
     const result = await pool.query(
       `SELECT id, organization_id FROM discovery_definitions
        WHERE is_active = true AND schedule IS NOT NULL AND organization_id IS NOT NULL
+         AND provider <> 'ssh'
          AND credential_id IS NULL AND credential_set_id IS NULL
        ORDER BY created_at ASC`
     );
@@ -172,6 +173,7 @@ export class DiscoveryScheduler {
    * Schedule a discovery job
    */
   private async scheduleDiscoveryJob(schedule: DiscoverySchedule): Promise<void> {
+    if (schedule._provider === 'ssh') throw new Error('Credential-backed discovery execution is unavailable');
     const provider = schedule._provider;
     const queueName = schedule._queueName;
     const cronPattern = schedule._cronPattern;
@@ -220,6 +222,7 @@ export class DiscoveryScheduler {
       throw new Error(`No schedule found for provider: ${provider}`);
     }
     if (!organizationId) throw new Error('Organization required for discovery jobs');
+    if (provider === 'ssh') throw new Error('Credential-backed discovery execution is unavailable');
 
     const jobData: DiscoveryJobData = {
       _jobId: uuidv4(),
@@ -257,6 +260,7 @@ export class DiscoveryScheduler {
     if (!this.schedules.has(provider)) {
       throw new Error(`No schedule found for provider: ${provider}`);
     }
+    if (provider === 'ssh') throw new Error('Credential-backed discovery execution is unavailable');
 
     // Seed the store first so an unseeded schedule's first cron-only edit keeps its known
     // enabled/config defaults instead of the store's update() falling back to enabled=false.
@@ -288,6 +292,7 @@ export class DiscoveryScheduler {
     if (!this.schedules.has(provider)) {
       throw new Error(`No schedule found for provider: ${provider}`);
     }
+    if (provider === 'ssh') throw new Error('Credential-backed discovery execution is unavailable');
 
     const schedule = await this.refreshScheduleFromStore(provider);
     if (schedule._enabled) {
@@ -459,6 +464,7 @@ export class DiscoveryScheduler {
     }
 
     const definition = this.mapRowToDefinition(result.rows[0]);
+    if (definition.provider === 'ssh') throw new Error('Credential-backed discovery execution is unavailable');
 
     if (!definition.schedule) {
       throw new Error('Discovery definition has no schedule configured');
@@ -472,13 +478,12 @@ export class DiscoveryScheduler {
     // Map provider to queue name
     const queueName = this.getQueueNameForProvider(definition.provider);
 
-    const jobData: DiscoveryJobData = {
-      _jobId: uuidv4(),
-      _provider: definition.provider,
-      _config: safeDiscoveryScanConfig(definition.config),
-      _createdAt: new Date().toISOString(),
+    // Match the Nmap worker's config shape; BullMQ supplies a new job ID on each run.
+    const jobData = {
+      provider: definition.provider,
+      config: safeDiscoveryScanConfig(definition.config),
       organizationId,
-      triggeredBy: 'scheduler',
+      triggered_by: 'scheduler',
       definition_id: definitionId,
     };
 
@@ -558,6 +563,7 @@ export class DiscoveryScheduler {
         `SELECT * FROM discovery_definitions
          WHERE is_active = true AND schedule IS NOT NULL AND organization_id IS NOT NULL
            AND credential_id IS NULL AND credential_set_id IS NULL
+           AND provider <> 'ssh'
          ORDER BY created_at ASC`
       );
 

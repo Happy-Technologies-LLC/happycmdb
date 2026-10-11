@@ -394,6 +394,9 @@ export class DiscoveryDefinitionService {
       if (definitionResult.rows[0].credential_id || definitionResult.rows[0].credential_set_id) {
         throw new Error('Credential-backed discovery execution is unavailable');
       }
+      if (definitionResult.rows[0].provider === 'ssh') {
+        throw new Error('Credential-backed discovery execution is unavailable');
+      }
 
       const definition = this.mapRowToDefinition(definitionResult.rows[0]);
 
@@ -495,6 +498,9 @@ export class DiscoveryDefinitionService {
 
       if (!definition) {
         throw new Error(`Discovery definition ${id} not found`);
+      }
+      if (definition.provider === 'ssh') {
+        throw new Error('Credential-backed discovery execution is unavailable');
       }
       // Do not arm a schedule that background workers must refuse.
       const boundSet = await this.postgresClient.query(

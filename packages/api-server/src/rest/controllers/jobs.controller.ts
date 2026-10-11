@@ -66,6 +66,11 @@ export class JobsController {
         res.status(403).json({ success: false, error: 'Organization claim required' });
         return;
       }
+      // SSH requires credentials; credential-backed execution belongs to HP1-S5.
+      if (provider === 'ssh') {
+        res.status(409).json({ success: false, error: 'Credential-backed discovery execution unavailable' });
+        return;
+      }
       const { config } = req.body;
       const triggeredBy = (req as AuthenticatedRequest).user?._userId || 'api';
       const jobId = await this.discoveryScheduler.triggerDiscovery(provider, config, triggeredBy, organizationId);
@@ -745,6 +750,10 @@ export class JobsController {
       }
 
       const { cronExpression, enabled } = update;
+      if (provider === 'ssh' && (enabled !== false || cronExpression !== undefined)) {
+        res.status(409).json({ success: false, error: 'Credential-backed discovery execution unavailable' });
+        return;
+      }
 
       const schedule = await this.discoveryJobScheduler.getScheduleView(provider);
       if (!schedule) {

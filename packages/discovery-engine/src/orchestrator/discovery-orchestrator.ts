@@ -4,9 +4,8 @@
 // packages/discovery-engine/src/orchestrator/discovery-orchestrator.ts
 
 import { queueManager, QUEUE_NAMES, getPostgresClient } from '@cmdb/database';
-import { logger, resolveDiscoveryHost, DISCOVERY_TARGET_REFUSED, UnrecoverableError, safeDiscoveryScanConfig } from '@cmdb/common';
+import { logger, DISCOVERY_TARGET_REFUSED, UnrecoverableError, safeDiscoveryScanConfig } from '@cmdb/common';
 import type { DiscoveredCI, DiscoveryJob, DiscoveryProvider } from '@cmdb/common';
-import { SSHDiscoveryWorker } from '../workers/ssh-discovery.worker';
 import { NmapDiscoveryWorker } from '../workers/nmap-discovery.worker';
 import { ActiveDirectoryDiscoveryWorker } from '../workers/active-directory-discovery.worker';
 import { getInternalAPIClient } from '../api/internal-api-client';
@@ -125,6 +124,7 @@ export class DiscoveryOrchestrator {
     organizationId: string
   ): Promise<string> {
     if (!organizationId) throw new Error('Organization required for discovery job');
+    if (provider === 'ssh') throw new Error('Credential-backed discovery execution is unavailable');
     const jobId = `${provider}-${Date.now()}`;
     await this.scheduleDiscovery({
       id: jobId,
@@ -151,6 +151,7 @@ export class DiscoveryOrchestrator {
     );
     if (!result.rows.length) throw new Error('Discovery definition not found');
     const definition = result.rows[0];
+    if (definition.provider === 'ssh') throw new Error('Credential-backed discovery execution is unavailable');
     const jobId = `${definition.provider}-${Date.now()}`;
     const queue = queueManager.getQueue(this.getQueueName(definition.provider));
     await queue.add('discover', {
@@ -214,9 +215,10 @@ export class DiscoveryOrchestrator {
   }
 
   async scheduleDiscovery(job: DiscoveryJob): Promise<void> {
+    if (!job.organizationId) throw new Error('Organization required for discovery job');
+    if (job.provider === 'ssh') throw new Error('Credential-backed discovery execution is unavailable');
     const queueName = this.getQueueName(job.provider);
     const queue = queueManager.getQueue(queueName);
-    if (!job.organizationId) throw new Error('Organization required for discovery job');
 
     await queue.add(
       'discovery',
@@ -279,6 +281,7 @@ export class DiscoveryOrchestrator {
     provider: string, config: unknown, cronPattern: string, organizationId: string
   ): Promise<void> {
     if (!organizationId) throw new Error('Organization required for recurring discovery');
+    if (provider === 'ssh') throw new Error('Credential-backed discovery execution is unavailable');
     const queueName = this.getQueueName(provider);
     const queue = queueManager.getQueue(queueName);
     await queue.add('recurring-discovery',
@@ -297,83 +300,11 @@ export class DiscoveryOrchestrator {
     // These are now handled by the connector framework
     // Only infrastructure protocol workers (SSH, NMAP, Active Directory) remain
 
-    // SSH Discovery Worker
+    // Drain legacy SSH jobs with a terminal fixed refusal; credentials are not resolved.
     queueManager.registerWorker(
       QUEUE_NAMES._DISCOVERY_SSH,
-      async (job) => {
-        // Handle both old format (jobId, config) and new format (id, config)
-        const jobId = job.data.jobId || job.data.id;
-        const config = job.data.config || job.data._config;
-        const definition_id = job.data.definition_id;
-        const cis: DiscoveredCI[] = [];
-
-        if (definition_id) await this.assertDefinitionOwner(definition_id, job.data.organizationId);
-        try {
-          await job.updateProgress(0);
-
-          if (definition_id) {
-            await this.updateDefinitionRunStatus(definition_id, jobId, 'running', job.data.organizationId);
-          }
-
-          await job.updateProgress(25);
-
-          const worker = new SSHDiscoveryWorker();
-
-          // Handle various config formats
-          const targets = config?.targets || config?.hosts || [];
-
-          if (!Array.isArray(targets) || targets.length === 0) {
-            throw new Error('SSH config must include "targets" or "hosts" array');
-          }
-          // Refuse a mixed batch before making any discovery connection.
-          await Promise.all(targets.map(target => resolveDiscoveryHost(target.host)));
-
-          const totalTargets = targets.length;
-          let processedTargets = 0;
-
-          for (const target of targets) {
-            try {
-              const ci = await worker.discoverHost(
-                jobId,
-                target.host,
-                target.username,
-                target.privateKeyPath,
-                target.password
-              );
-              cis.push(ci);
-              processedTargets++;
-
-              // Update progress during discovery: 25-75%
-              const discoveryProgress = 25 + Math.floor((processedTargets / totalTargets) * 50);
-              await job.updateProgress(discoveryProgress);
-            } catch (error) {
-              if (error instanceof Error && error.message === DISCOVERY_TARGET_REFUSED) throw error;
-              logger.error('SSH discovery failed for target', { jobId });
-            }
-          }
-
-          // Add discovery_provider field to each CI
-          cis.forEach(ci => {
-            ci.discovery_provider = 'ssh';
-          });
-
-          await job.updateProgress(75);
-
-          await this.persistCIs(cis);
-
-          await job.updateProgress(100);
-
-          if (definition_id) {
-            await this.updateDefinitionRunStatus(definition_id, jobId, 'completed', job.data.organizationId, cis.length);
-          }
-
-          return { discovered: cis.length };
-        } catch (error) {
-          if (definition_id) {
-            await this.updateDefinitionRunStatus(definition_id, jobId, 'failed', job.data.organizationId, 0);
-          }
-          queueDiscoveryFailure(error);
-        }
+      async () => {
+        throw new UnrecoverableError('Credential-backed discovery execution is unavailable');
       },
       { concurrency: 5 }
     );
@@ -382,7 +313,9 @@ export class DiscoveryOrchestrator {
     queueManager.registerWorker(
       QUEUE_NAMES._DISCOVERY_NMAP,
       async (job) => {
-        const { jobId, config, definition_id } = job.data;
+        const { config, definition_id } = job.data;
+        // A repeatable definition has one stored payload but a distinct BullMQ ID per run.
+        const jobId = job.data.jobId || job.id;
 
         if (definition_id) await this.assertDefinitionOwner(definition_id, job.data.organizationId);
         try {

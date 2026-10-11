@@ -245,7 +245,7 @@ describe('AuthController profile/password/account routes', () => {
       const bobHash = repository.users.get('user-2')!._passwordHash;
       const invalidBody = method === 'put' ? {} : body;
 
-      for (const role of ['viewer', 'operator', 'admin'] as const) {
+      for (const role of ['viewer', 'operator', 'admin', 'agent'] as const) {
         repository.users.get('user-1')!._role = role;
         const denied = await call(method, path, apiKey, invalidBody);
         expect([denied.status, denied.body]).toEqual([403, {

@@ -8,7 +8,7 @@
 
 import { randomBytes, createHash } from 'crypto';
 import type { ConfigSchema } from '@cmdb/common';
-import { JWTService } from './jwt.service';
+import { JWTService, TokenVerificationError } from './jwt.service';
 import { PasswordService } from './password.service';
 import {
   User,
@@ -54,6 +54,21 @@ export class ApiKeyNotFoundError extends Error {
   }
 }
 
+export type AuthFailureReason = 'invalid' | 'expired' | 'wrong_type' | 'disabled' | 'revoked' | 'store_error';
+
+export class AuthFailureError extends Error {
+  override readonly cause: unknown;
+
+  constructor(readonly reason: AuthFailureReason, cause?: unknown) {
+    super('Authentication failed');
+    this.cause = cause;
+  }
+}
+
+function tokenFailure(error: unknown): AuthFailureError {
+  return new AuthFailureError(error instanceof TokenVerificationError ? error.reason : 'store_error', error);
+}
+
 export class AuthService {
   private jwtService: JWTService;
   private passwordService: PasswordService;
@@ -73,41 +88,31 @@ export class AuthService {
    */
   async login(request: LoginRequest): Promise<LoginResponse> {
     const { username, password } = request;
+    try {
+      const user = await this.repository.findUserByUsername(username);
+      if (!user) throw new AuthFailureError('invalid');
+      if (!user._enabled) throw new AuthFailureError('disabled');
+      if (!await this.passwordService.verify(password, user._passwordHash)) {
+        throw new AuthFailureError('invalid');
+      }
 
-    // Find user
-    const user = await this.repository.findUserByUsername(username);
-    if (!user) {
-      throw new Error('Invalid credentials');
+      await this.repository.updateUserLastLogin(user._id);
+      const accessToken = this.jwtService.generateAccessToken(user._id, user._username, user._role, user._organizationId);
+      const refreshToken = this.jwtService.generateRefreshToken(user._id, user._username, user._role);
+      return {
+        _accessToken: accessToken,
+        _refreshToken: refreshToken,
+        _expiresIn: this.jwtService.getTokenExpiresIn('access'),
+        _user: {
+          _id: user._id,
+          _username: user._username,
+          _role: user._role,
+        },
+      };
+    } catch (error) {
+      if (error instanceof AuthFailureError) throw error;
+      throw new AuthFailureError('store_error', error);
     }
-
-    // Check if user is enabled
-    if (!user._enabled) {
-      throw new Error('User account is disabled');
-    }
-
-    // Verify password
-    const isValid = await this.passwordService.verify(password, user._passwordHash);
-    if (!isValid) {
-      throw new Error('Invalid credentials');
-    }
-
-    // Update last login
-    await this.repository.updateUserLastLogin(user._id);
-
-    // Generate tokens (tenant claim comes from the user record, never the request)
-    const accessToken = this.jwtService.generateAccessToken(user._id, user._username, user._role, user._organizationId);
-    const refreshToken = this.jwtService.generateRefreshToken(user._id, user._username, user._role);
-
-    return {
-      _accessToken: accessToken,
-      _refreshToken: refreshToken,
-      _expiresIn: this.jwtService.getTokenExpiresIn('access'),
-      _user: {
-        _id: user._id,
-        _username: user._username,
-        _role: user._role,
-      },
-    };
   }
 
   /**
@@ -115,45 +120,35 @@ export class AuthService {
    */
   async refreshToken(request: RefreshTokenRequest): Promise<LoginResponse> {
     const { refreshToken } = request;
-
-    // Verify refresh token
     let payload: TokenPayload;
     try {
       payload = this.jwtService.verifyToken(refreshToken);
     } catch (error) {
-      throw new Error('Invalid or expired refresh token');
+      throw tokenFailure(error);
     }
+    if (payload._type !== 'refresh') throw new AuthFailureError('wrong_type');
 
-    // Ensure it's a refresh token
-    if (payload._type !== 'refresh') {
-      throw new Error('Invalid token type');
+    try {
+      const user = await this.repository.findUserById(payload._userId);
+      if (!user) throw new AuthFailureError('revoked');
+      if (!user._enabled) throw new AuthFailureError('disabled');
+
+      const accessToken = this.jwtService.generateAccessToken(user._id, user._username, user._role, user._organizationId);
+      const newRefreshToken = this.jwtService.generateRefreshToken(user._id, user._username, user._role);
+      return {
+        _accessToken: accessToken,
+        _refreshToken: newRefreshToken,
+        _expiresIn: this.jwtService.getTokenExpiresIn('access'),
+        _user: {
+          _id: user._id,
+          _username: user._username,
+          _role: user._role,
+        },
+      };
+    } catch (error) {
+      if (error instanceof AuthFailureError) throw error;
+      throw new AuthFailureError('store_error', error);
     }
-
-    // Find user
-    const user = await this.repository.findUserById(payload._userId);
-    if (!user) {
-      throw new Error('User not found');
-    }
-
-    // Check if user is enabled
-    if (!user._enabled) {
-      throw new Error('User account is disabled');
-    }
-
-    // Generate new tokens from the current user record (org re-read, not copied from the old token)
-    const accessToken = this.jwtService.generateAccessToken(user._id, user._username, user._role, user._organizationId);
-    const newRefreshToken = this.jwtService.generateRefreshToken(user._id, user._username, user._role);
-
-    return {
-      _accessToken: accessToken,
-      _refreshToken: newRefreshToken,
-      _expiresIn: this.jwtService.getTokenExpiresIn('access'),
-      _user: {
-        _id: user._id,
-        _username: user._username,
-        _role: user._role,
-      },
-    };
   }
 
   /**
@@ -162,18 +157,17 @@ export class AuthService {
    * Refresh tokens are rejected here; they are only accepted by refreshToken().
    */
   async verifyToken(token: string): Promise<TokenPayload> {
+    let payload: TokenPayload;
     try {
-      const payload = this.jwtService.verifyToken(token);
-
-      if (payload._type !== 'access') {
-        throw new Error('Invalid token type');
-      }
-
-      const user = await this.findEnabledUser(payload._userId);
-      if (!user) {
-        throw new Error('User not found or disabled');
-      }
-
+      payload = this.jwtService.verifyToken(token);
+    } catch (error) {
+      throw tokenFailure(error);
+    }
+    if (payload._type !== 'access') throw new AuthFailureError('wrong_type');
+    try {
+      const user = await this.repository.findUserById(payload._userId);
+      if (!user) throw new AuthFailureError('revoked');
+      if (!user._enabled) throw new AuthFailureError('disabled');
       return {
         _userId: payload._userId,
         _username: payload._username,
@@ -187,7 +181,8 @@ export class AuthService {
         aud: payload.aud,
       };
     } catch (error) {
-      throw new Error(`Token verification failed: ${error}`);
+      if (error instanceof AuthFailureError) throw error;
+      throw new AuthFailureError('store_error', error);
     }
   }
 
@@ -246,58 +241,45 @@ export class AuthService {
    * Verify API key and return associated user info
    */
   async verifyApiKey(apiKey: string): Promise<TokenPayload> {
-    const keyHash = this.hashKey(apiKey);
+    try {
+      const keyHash = this.hashKey(apiKey);
+      const apiKeyRecord = await this.repository.findApiKeyByKey(keyHash);
+      if (!apiKeyRecord) throw new AuthFailureError('invalid');
+      if (!apiKeyRecord._enabled) throw new AuthFailureError('disabled');
+      if (apiKeyRecord.expiresAt && apiKeyRecord.expiresAt < new Date()) {
+        throw new AuthFailureError('expired');
+      }
 
-    // Find API key
-    const apiKeyRecord = await this.repository.findApiKeyByKey(keyHash);
-    if (!apiKeyRecord) {
-      throw new Error('Invalid API key');
+      const user = await this.repository.findUserById(apiKeyRecord._userId);
+      if (!user) throw new AuthFailureError('revoked');
+      if (!user._enabled) throw new AuthFailureError('disabled');
+
+      // Agent and viewer are incomparable: the key can grant only permissions
+      // held by both its stored role and the user's current role.
+      const keyPermissions = ROLE_PERMISSIONS[apiKeyRecord._role];
+      const userPermissions = ROLE_PERMISSIONS[user._role];
+      if (keyPermissions === undefined || userPermissions === undefined) {
+        throw new AuthFailureError('invalid');
+      }
+      const effectiveRole = keyPermissions.every(permission => userPermissions.includes(permission))
+        ? apiKeyRecord._role
+        : userPermissions.every(permission => keyPermissions.includes(permission))
+          ? user._role
+          : null;
+      if (effectiveRole === null) throw new AuthFailureError('invalid');
+
+      await this.repository.updateApiKeyLastUsed(apiKeyRecord._id);
+      return {
+        _userId: user._id,
+        _username: user._username,
+        _role: effectiveRole,
+        _type: 'access',
+        _organizationId: user._organizationId,
+      };
+    } catch (error) {
+      if (error instanceof AuthFailureError) throw error;
+      throw new AuthFailureError('store_error', error);
     }
-
-    // Check if enabled
-    if (!apiKeyRecord._enabled) {
-      throw new Error('API key is disabled');
-    }
-
-    // Check if expired
-    if (apiKeyRecord.expiresAt && apiKeyRecord.expiresAt < new Date()) {
-      throw new Error('API key expired');
-    }
-
-    // Find user
-    const user = await this.repository.findUserById(apiKeyRecord._userId);
-    if (!user || !user._enabled) {
-      throw new Error('Associated user not found or disabled');
-    }
-
-    // Roles are ordered by their actual permissions, not by a numeric rank:
-    // agent and viewer are incomparable. A key can never grant a permission
-    // absent from either the stored key role or the current user role.
-    const keyPermissions = ROLE_PERMISSIONS[apiKeyRecord._role];
-    const userPermissions = ROLE_PERMISSIONS[user._role];
-    if (keyPermissions === undefined || userPermissions === undefined) {
-      throw new Error('Invalid API key or user role');
-    }
-    const effectiveRole = keyPermissions.every(permission => userPermissions.includes(permission))
-      ? apiKeyRecord._role
-      : userPermissions.every(permission => keyPermissions.includes(permission))
-        ? user._role
-        : null;
-    if (effectiveRole === null) {
-      throw new Error('Incompatible API key and user roles');
-    }
-
-    // Update last used timestamp
-    await this.repository.updateApiKeyLastUsed(apiKeyRecord._id);
-
-    // Return token payload format; the tenant claim is the owning user's org
-    return {
-      _userId: user._id,
-      _username: user._username,
-      _role: effectiveRole,
-      _type: 'access', // API keys act like access tokens
-      _organizationId: user._organizationId,
-    };
   }
 
   /**

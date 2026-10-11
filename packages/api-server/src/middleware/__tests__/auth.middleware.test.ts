@@ -160,6 +160,21 @@ describe('authenticateGraphQLContext', () => {
       401
     );
   });
+  it('never echoes internal JWT/API-key repository errors through GraphQL authentication', async () => {
+    const internalText = 'Neo4j internal-db:7687 synthetic-secret';
+    const authService = fakeAuthService({
+      verifyToken: jest.fn().mockRejectedValue(new Error(internalText)) as unknown as AuthService['verifyToken'],
+      verifyApiKey: jest.fn().mockRejectedValue(new Error(internalText)) as unknown as AuthService['verifyApiKey'],
+    });
+    for (const headers of [
+      { authorization: 'Bearer bad-token' },
+      { 'x-api-key': 'bad-key' },
+    ]) {
+      await expect(authenticateGraphQLContext(authService, 'X-API-Key', fakeRequest(headers)))
+        .rejects.toMatchObject({ message: 'Authentication failed' });
+    }
+  });
+
 
   it('resolves { user } for a valid bearer token', async () => {
     const authService = fakeAuthService({

@@ -45,7 +45,7 @@ Founder signed Choice A deletes the installer implementation, package-root `Conn
 
 The REST manual run endpoint currently inserts an organization-bound `queued` history row but has no in-repository worker consumer; its 202 means recorded, not executed. Hub/GraphQL manual runs invoke the organization-checking `IntegrationManager`. Do not treat REST queued status as an execution success signal.
 
-The REST `POST /api/v1/connector-configs/:id/test` operation invokes the integration manager and can reach a provider. It requires connector `write` permission before the existing organization-owned config check; read-only viewers cannot trigger a connection test.
+The REST `POST /api/v1/connector-configs/:id/test` and standalone hub `POST /api/v1/connectors/:name/test` operations invoke the integration manager and can reach a provider. Both require connector `write` permission before any config lookup or provider access; read-only viewers cannot trigger a connection test.
 
 ## Rollback and verification
 

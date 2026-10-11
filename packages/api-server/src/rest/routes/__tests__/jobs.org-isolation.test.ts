@@ -13,7 +13,7 @@ const queue = { getWaiting: async (start: number, end: number) => jobs.slice(sta
 const manager = { getJob: async (_queue: string, id: string) => jobs.find(job => job.id === id), getQueue: () => queue,
   getFailedJobs: async (_queueName: string, start: number, end: number) => jobs.slice(start, end + 1), getQueueStats: async () => ({ waiting: 3, failed: 3 }),
   removeJob: jest.fn(), retryJob: jest.fn() };
-jest.mock('@cmdb/common', () => ({ getQueueManager: () => manager, logger: { info: jest.fn(), error: jest.fn(), warn: jest.fn(), debug: jest.fn() } }));
+jest.mock('@cmdb/common', () => ({ getQueueManager: () => manager, QUEUE_NAMES: { _DISCOVERY_NMAP: 'discovery-nmap', _DISCOVERY_SSH: 'discovery-ssh', _DISCOVERY_ACTIVE_DIRECTORY: 'discovery-active-directory', _DISCOVERY_SNMP: 'discovery-snmp', _DISCOVERY_AI: 'discovery-ai' }, logger: { info: jest.fn(), error: jest.fn(), warn: jest.fn(), debug: jest.fn() } }));
 jest.mock('@cmdb/discovery-engine', () => ({ getDiscoveryScheduler: () => ({}), getDiscoveryJobScheduler: () => ({}) }));
 jest.mock('@cmdb/database', () => ({ getNeo4jClient: () => ({}) }));
 jest.mock('@cmdb/etl-processor', () => ({ getETLScheduler: () => ({}) }));
@@ -102,5 +102,93 @@ test('queue and failed-job pages reject invalid ranges and bound BullMQ reads be
   expect(small.body.pagination.truncated).toBe(true);
   expect(JSON.stringify(small.body)).not.toContain('foreign-secret');
   waiting.mockRestore();
+  failed.mockRestore();
+});
+
+test('deep generic and failed ranges refuse before BullMQ while cap boundary remains readable', async () => {
+  const getQueue = jest.spyOn(manager, 'getQueue');
+  const failed = jest.spyOn(manager, 'getFailedJobs');
+  for (const suffix of ['', '/failed']) {
+    const response = await request(app).get(`/api/v1/jobs/discovery-nmap${suffix}?start=10001&end=10001`).set(a);
+    expect(response.status).toBe(400);
+    expect(response.body).toEqual({ success: false, error: 'Deep job pages unavailable' });
+  }
+  const invalid = await request(app).get('/api/v1/jobs/discovery-nmap?start=9999999999999999999999999&end=9999999999999999999999999').set(a);
+  expect(invalid.body).toEqual({ success: false, error: 'Invalid job pagination' });
+  expect(getQueue).not.toHaveBeenCalled();
+  expect(failed).not.toHaveBeenCalled();
+  expect((await request(app).get('/api/v1/jobs/discovery-nmap?start=10000&end=10000').set(a)).status).toBe(200);
+  expect((await request(app).get('/api/v1/jobs/discovery-nmap/failed?start=10000&end=10000').set(a)).status).toBe(200);
+  getQueue.mockRestore();
+  failed.mockRestore();
+});
+
+test('discovery list page arithmetic rejects deep/unsafe positions before Redis', async () => {
+  const getQueue = jest.spyOn(manager, 'getQueue');
+  for (const [query, error] of [
+    ['?page=102&limit=100', 'Deep job pages unavailable'],
+    ['?page=9999999999999999999&limit=100', 'Invalid job pagination'],
+    ['?page=0', 'Invalid job pagination'],
+  ]) {
+    const response = await request(app).get(`/api/v1/jobs/discovery${query}`).set(a);
+    expect(response.status).toBe(400);
+    expect(response.body).toEqual({ success: false, error });
+  }
+  expect(getQueue).not.toHaveBeenCalled();
+  getQueue.mockRestore();
+});
+
+test('below-cap discovery limit 200 still reads only a bounded sample', async () => {
+  const getQueue = jest.spyOn(manager, 'getQueue');
+  const response = await request(app).get('/api/v1/jobs/discovery?page=1&limit=200').set(a);
+  expect(response.status).toBe(200);
+  expect(response.body.data.every((job: { id: string }) => job.id === 'own')).toBe(true);
+  expect(getQueue).toHaveBeenCalled();
+  getQueue.mockRestore();
+});
+
+test('newly registered discovery queues allow reads but refuse cancellation and retry before job lookup', async () => {
+  const getJob = jest.spyOn(manager, 'getJob');
+  for (const queueName of ['discovery-active-directory', 'discovery-snmp', 'discovery-ai']) {
+    const read = await request(app).get(`/api/v1/jobs/${queueName}?start=0&end=0`).set(a);
+    expect(read.status).toBe(200);
+    for (const method of ['delete', 'post'] as const) {
+      const path = `/api/v1/jobs/${queueName}/own${method === 'post' ? '/retry' : ''}`;
+      const denied = await request(app)[method](path).set(a);
+      expect([denied.status, denied.body]).toEqual([403, { success: false, error: 'Queue mutation unavailable' }]);
+    }
+  }
+  expect(getJob).not.toHaveBeenCalled();
+  getJob.mockRestore();
+});
+
+test('unknown queues and providers refuse before queue lookup with fixed responses', async () => {
+  const getJob = jest.spyOn(manager, 'getJob');
+  const getQueue = jest.spyOn(manager, 'getQueue');
+  const failed = jest.spyOn(manager, 'getFailedJobs');
+  for (let index = 0; index < 120; index++) {
+    const name = `attacker-${index}`;
+    const paths = [
+      ['get', `/jobs/${name}`], ['get', `/jobs/${name}/failed`],
+      ['get', `/jobs/${name}/missing`], ['delete', `/jobs/${name}/missing`],
+      ['post', `/jobs/${name}/missing/retry`], ['get', `/queues/${name}/jobs/missing/logs`],
+    ] as const;
+    for (const [method, path] of paths) {
+      const response = await request(app)[method](`/api/v1${path}`).set(a);
+      expect(response.status).toBe(400);
+      expect(response.body).toEqual({ success: false, error: 'Invalid queue name' });
+    }
+    const provider = await request(app).get(`/api/v1/jobs/discovery?provider=${name}`).set(a);
+    expect(provider.status).toBe(400);
+    expect(provider.body).toEqual({ success: false, error: 'Invalid discovery provider' });
+    const trigger = await request(app).post(`/api/v1/jobs/discovery/${name}`).set(a).send({ config: {} });
+    expect(trigger.status).toBe(400);
+    expect(trigger.body).toEqual({ success: false, error: 'Invalid discovery provider' });
+  }
+  expect(getJob).not.toHaveBeenCalled();
+  expect(getQueue).not.toHaveBeenCalled();
+  expect(failed).not.toHaveBeenCalled();
+  getJob.mockRestore();
+  getQueue.mockRestore();
   failed.mockRestore();
 });

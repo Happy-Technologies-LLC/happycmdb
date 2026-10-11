@@ -18,6 +18,43 @@ import { queueController } from '../controllers/queue.controller';
 import { getAuthMiddleware } from '../../auth/auth-bootstrap';
 import { optionalRequestOrganizationId } from '../../middleware/auth.middleware';
 import type { Request, Response, NextFunction } from 'express';
+import { QUEUE_NAMES } from '@cmdb/common';
+
+const allowedQueues: readonly string[] = Object.values(QUEUE_NAMES);
+const INVALID_QUEUE = { success: false, error: 'Invalid queue name' };
+const INVALID_PROVIDER = { success: false, error: 'Invalid discovery provider' };
+
+function requireKnownQueue(req: Request, res: Response, next: NextFunction): void {
+  if (!allowedQueues.includes(req.params.queueName ?? '')) {
+    res.status(400).json(INVALID_QUEUE);
+    return;
+  }
+  next();
+}
+
+// AD, SNMP, and AI queue registration enables tenant reads only. Mutations
+// require an explicit authorization decision before those queues are enabled.
+const readOnlyQueues: readonly string[] = [
+  QUEUE_NAMES._DISCOVERY_ACTIVE_DIRECTORY,
+  QUEUE_NAMES._DISCOVERY_SNMP,
+  QUEUE_NAMES._DISCOVERY_AI,
+];
+function requireMutableQueue(req: Request, res: Response, next: NextFunction): void {
+  if (readOnlyQueues.includes(req.params.queueName ?? '')) {
+    res.status(403).json({ success: false, error: 'Queue mutation unavailable' });
+    return;
+  }
+  next();
+}
+
+function requireKnownProvider(req: Request, res: Response, next: NextFunction): void {
+  if (!['nmap', 'ssh', 'active-directory', 'snmp'].includes(req.params.provider ?? '')) {
+    res.status(400).json(INVALID_PROVIDER);
+    return;
+  }
+  next();
+}
+
 
 function requireJobOrganization(req: Request, res: Response, next: NextFunction): void {
   if (!optionalRequestOrganizationId(req)) {
@@ -55,7 +92,7 @@ router.get('/jobs/discovery/stats', refuseGlobalOperation);
 router.get('/jobs/discovery', requireJobOrganization, (req, res) =>
   jobsController.listDiscoveryJobs(req, res)
 );
-router.post('/jobs/discovery/:provider', authMiddleware.requirePermission('write'), requireJobOrganization, (req, res) =>
+router.post('/jobs/discovery/:provider', authMiddleware.requirePermission('write'), requireJobOrganization, requireKnownProvider, (req, res) =>
   jobsController.triggerDiscovery(req, res)
 );
 
@@ -65,20 +102,20 @@ router.post('/jobs/etl/:type', authMiddleware.requirePermission('write'), (req, 
 );
 
 // Queue-specific routes (must come after /jobs/discovery/stats to avoid conflicts)
-router.get('/jobs/:queueName/failed', requireJobOrganization, (req, res) =>
+router.get('/jobs/:queueName/failed', requireJobOrganization, requireKnownQueue, (req, res) =>
   jobsController.getFailedJobs(req, res)
 );
 router.post('/jobs/:queueName/clean', refuseGlobalOperation);
 
 // Generic job routes (MUST be last due to :queueName and :jobId parameters)
-router.get('/jobs/:queueName/:jobId', requireJobOrganization, (req, res) =>
+router.get('/jobs/:queueName/:jobId', requireJobOrganization, requireKnownQueue, (req, res) =>
   jobsController.getJobStatus(req, res)
 );
-router.get('/jobs/:queueName', requireJobOrganization, (req, res) => jobsController.listJobs(req, res));
-router.delete('/jobs/:queueName/:jobId', authMiddleware.requirePermission('write'), requireJobOrganization, (req, res) =>
+router.get('/jobs/:queueName', requireJobOrganization, requireKnownQueue, (req, res) => jobsController.listJobs(req, res));
+router.delete('/jobs/:queueName/:jobId', authMiddleware.requirePermission('write'), requireJobOrganization, requireKnownQueue, requireMutableQueue, (req, res) =>
   jobsController.cancelJob(req, res)
 );
-router.post('/jobs/:queueName/:jobId/retry', authMiddleware.requirePermission('write'), requireJobOrganization, (req, res) =>
+router.post('/jobs/:queueName/:jobId/retry', authMiddleware.requirePermission('write'), requireJobOrganization, requireKnownQueue, requireMutableQueue, (req, res) =>
   jobsController.retryJob(req, res)
 );
 
@@ -94,7 +131,7 @@ router.post('/queues/:queueName/pause', refuseGlobalOperation);
 router.post('/queues/:queueName/resume', refuseGlobalOperation);
 
 // Job logs
-router.get('/queues/:queueName/jobs/:jobId/logs', requireJobOrganization, (req, res) =>
+router.get('/queues/:queueName/jobs/:jobId/logs', requireJobOrganization, requireKnownQueue, (req, res) =>
   queueController.getJobLogs(req, res)
 );
 

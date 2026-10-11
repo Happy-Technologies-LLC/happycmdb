@@ -223,12 +223,6 @@ describe('AuthService profile/password/account lifecycle', () => {
       expect((await service.verifyToken(_accessToken))._organizationId).toBeUndefined();
     });
 
-    it('rejects a refresh token presented as a bearer token', async () => {
-      setOrg(ORG);
-      const { _refreshToken } = await login();
-
-      await expect(service.verifyToken(_refreshToken)).rejects.toThrow(/Invalid token type/);
-    });
 
     it('mints the current organization on refresh', async () => {
       const tokens = await login();

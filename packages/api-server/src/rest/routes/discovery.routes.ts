@@ -55,8 +55,24 @@ const listJobsQuerySchema = Joi.object({
   status: schemas.jobStatus.optional(),
   provider: schemas.discoveryProvider.optional(),
   limit: Joi.number().integer().min(1).max(100).default(100),
-  offset: Joi.number().integer().min(0).max(Number.MAX_SAFE_INTEGER - 100).default(0),
+  offset: Joi.number().integer().min(0).max(10_000).default(0),
 });
+
+function refuseDeepJobOffset(req: Request, res: Response, next: NextFunction): void {
+  const offset = req.query.offset;
+  if (offset !== undefined) {
+    if (typeof offset !== 'string' || !/^\d+$/.test(offset) || !Number.isSafeInteger(Number(offset))) {
+      res.status(400).json({ success: false, error: 'Invalid job pagination' });
+      return;
+    }
+    if (Number(offset) > 10_000) {
+      res.status(400).json({ success: false, error: 'Deep job pages unavailable' });
+      return;
+    }
+  }
+  next();
+}
+
 
 // POST /discovery/schedule - Schedule discovery job (write: mutates discovery state)
 discoveryRoutes.post(
@@ -79,6 +95,7 @@ discoveryRoutes.get(
 discoveryRoutes.get(
   '/jobs',
   requireDiscoveryOrganization,
+  refuseDeepJobOffset,
   validateOptional(listJobsQuerySchema, 'query'),
   controller.listJobs.bind(controller)
 );

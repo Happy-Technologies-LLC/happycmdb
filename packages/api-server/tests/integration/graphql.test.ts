@@ -152,7 +152,7 @@ describe('GraphQL API Integration Tests', () => {
     expect(response.status).toBe(401);
     expect(response.body).toMatchObject({
       _error: 'Unauthorized',
-      _message: 'No authentication credentials provided',
+      _message: 'Authentication failed',
     });
   });
 

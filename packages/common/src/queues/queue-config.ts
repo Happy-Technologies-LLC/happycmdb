@@ -101,6 +101,19 @@ export const QUEUE_CONFIGS: Record<string, QueueConfig> = {
       _duration: 60000,
     },
   },
+  'discovery-active-directory': {
+    name: 'discovery-active-directory',
+    _defaultJobOptions: DISCOVERY_JOB_OPTIONS,
+  },
+  'discovery-snmp': {
+    name: 'discovery-snmp',
+    _defaultJobOptions: DISCOVERY_JOB_OPTIONS,
+  },
+  'discovery-ai': {
+    name: 'discovery-ai',
+    _defaultJobOptions: DISCOVERY_JOB_OPTIONS,
+  },
+
 
   // ETL queues
   'etl-sync': {
@@ -158,6 +171,9 @@ export const QUEUE_NAMES = {
   _DISCOVERY_GCP: 'discovery-gcp',
   _DISCOVERY_SSH: 'discovery-ssh',
   _DISCOVERY_NMAP: 'discovery-nmap',
+  _DISCOVERY_ACTIVE_DIRECTORY: 'discovery-active-directory',
+  _DISCOVERY_SNMP: 'discovery-snmp',
+  _DISCOVERY_AI: 'discovery-ai',
 
   // ETL queues
   _ETL_SYNC: 'etl-sync',

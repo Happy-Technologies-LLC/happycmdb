@@ -10,8 +10,10 @@ import { Request, Response, Router } from 'express';
 import { ApiKeyNotFoundError, AuthService } from '../auth/auth.service';
 import { ValidationMiddleware } from './middleware/validation.middleware';
 import { authSchemas } from '../validation/schemas';
-import { AuthMiddleware, AuthenticatedRequest } from '../middleware/auth.middleware';
+import { AuthMiddleware, AuthenticatedRequest, logAuthFailure } from '../middleware/auth.middleware';
 import { RateLimitMiddleware } from '../middleware/rate-limit.middleware';
+
+const AUTHENTICATION_FAILURE = { success: false, error: 'Authentication failed' };
 
 export class AuthController {
   private router: Router;
@@ -159,12 +161,9 @@ export class AuthController {
         success: true,
         data: result,
       });
-    } catch (error: any) {
-      res.status(401).json({
-        success: false,
-        error: 'Authentication Failed',
-        message: error.message || 'Invalid credentials',
-      });
+    } catch (error) {
+      logAuthFailure('login', error);
+      res.status(401).json(AUTHENTICATION_FAILURE);
     }
   }
 
@@ -179,12 +178,9 @@ export class AuthController {
         success: true,
         data: result,
       });
-    } catch (error: any) {
-      res.status(401).json({
-        success: false,
-        error: 'Token Refresh Failed',
-        message: error.message || 'Invalid or expired refresh token',
-      });
+    } catch (error) {
+      logAuthFailure('refresh', error);
+      res.status(401).json(AUTHENTICATION_FAILURE);
     }
   }
 

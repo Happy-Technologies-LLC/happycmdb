@@ -8,9 +8,18 @@
 
 import { Request, Response, NextFunction } from 'express';
 import { GraphQLError } from 'graphql';
-import type { ConfigSchema } from '@cmdb/common';
-import { AuthService } from '../auth/auth.service';
+import { logger, type ConfigSchema } from '@cmdb/common';
+import { AuthFailureError, AuthService } from '../auth/auth.service';
 import { TokenPayload, Permission, ROLE_PERMISSIONS } from '../auth/types';
+
+const UNAUTHORIZED = { _error: 'Unauthorized', _message: 'Authentication failed' };
+/** Keep the cause internally; never serialize or log untrusted error text. */
+export function logAuthFailure(credentialType: 'jwt' | 'api-key' | 'login' | 'refresh' | 'none', error: unknown): void {
+  logger.warn('Authentication failed', {
+    credentialType,
+    reason: error instanceof AuthFailureError ? error.reason : 'store_error',
+  });
+}
 
 export interface AuthenticatedRequest extends Request {
   user?: TokenPayload;
@@ -79,16 +88,12 @@ export class AuthMiddleware {
           req.credentialType = 'api-key';
           next();
         } else {
-          res.status(401).json({
-            _error: 'Unauthorized',
-            _message: 'No authentication credentials provided',
-          });
+          logAuthFailure('none', new AuthFailureError('invalid'));
+          res.status(401).json(UNAUTHORIZED);
         }
-      } catch (error: any) {
-        res.status(401).json({
-          _error: 'Unauthorized',
-          _message: error.message || 'Authentication failed',
-        });
+      } catch (error) {
+        logAuthFailure(req.headers.authorization ? 'jwt' : 'api-key', error);
+        res.status(401).json(UNAUTHORIZED);
       }
     };
   }
@@ -114,7 +119,7 @@ export class AuthMiddleware {
 
         next();
       } catch (error) {
-        // Ignore authentication errors for optional auth
+        logAuthFailure(req.headers.authorization ? 'jwt' : 'api-key', error);
         next();
       }
     };
@@ -124,7 +129,7 @@ export class AuthMiddleware {
   requireJwtSession() {
     return (req: AuthenticatedRequest, res: Response, next: NextFunction): void => {
       if (req.user === undefined) {
-        res.status(401).json({ _error: 'Unauthorized', _message: 'Authentication required' });
+        res.status(401).json(UNAUTHORIZED);
         return;
       }
       if (req.credentialType !== 'jwt') {
@@ -141,10 +146,7 @@ export class AuthMiddleware {
   requirePermission(permission: Permission) {
     return (req: AuthenticatedRequest, res: Response, next: NextFunction): void => {
       if (!req.user) {
-        res.status(401).json({
-          _error: 'Unauthorized',
-          _message: 'Authentication required',
-        });
+        res.status(401).json(UNAUTHORIZED);
         return;
       }
 
@@ -170,10 +172,7 @@ export class AuthMiddleware {
   requireOrganization() {
     return (req: AuthenticatedRequest, res: Response, next: NextFunction): void => {
       if (req.user === undefined) {
-        res.status(401).json({
-          _error: 'Unauthorized',
-          _message: 'Authentication required',
-        });
+        res.status(401).json(UNAUTHORIZED);
         return;
       }
 
@@ -195,10 +194,7 @@ export class AuthMiddleware {
   requireRole(...roles: string[]) {
     return (req: AuthenticatedRequest, res: Response, next: NextFunction): void => {
       if (!req.user) {
-        res.status(401).json({
-          _error: 'Unauthorized',
-          _message: 'Authentication required',
-        });
+        res.status(401).json(UNAUTHORIZED);
         return;
       }
 
@@ -274,7 +270,8 @@ export async function authenticateGraphQLContext(
   const apiKey = (req.headers[apiKeyHeader.toLowerCase()] as string | undefined) || null;
 
   if (!token && !apiKey) {
-    throw new GraphQLError('No authentication credentials provided', {
+    logAuthFailure('none', new AuthFailureError('invalid'));
+    throw new GraphQLError('Authentication failed', {
       extensions: { code: 'UNAUTHENTICATED', http: { status: 401 } },
     });
   }
@@ -284,9 +281,9 @@ export async function authenticateGraphQLContext(
       ? await authService.verifyToken(token)
       : await authService.verifyApiKey(apiKey as string);
     return { user: payload };
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : 'Authentication failed';
-    throw new GraphQLError(message, {
+  } catch (error) {
+    logAuthFailure(token ? 'jwt' : 'api-key', error);
+    throw new GraphQLError('Authentication failed', {
       extensions: { code: 'UNAUTHENTICATED', http: { status: 401 } },
     });
   }

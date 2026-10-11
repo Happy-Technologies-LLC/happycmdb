@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import express from 'express';
 import supertest from 'supertest';
+import { logger } from '@cmdb/common';
 import { connectorsRouter } from '../connectors.routes';
 import { IntegrationHubServer } from '../../index';
 import { getPostgresClient } from '@cmdb/database';
@@ -25,9 +26,23 @@ jest.mock('@cmdb/integration-framework', () => ({
     getConnectorMetadata: (type: string) => getConnectorMetadata(type),
   })),
 }));
-jest.mock('@cmdb/api-server/auth/auth-bootstrap', () => ({
-  getAuthMiddleware: () => ({
+jest.mock('@cmdb/api-server/auth/auth-bootstrap', () => {
+  const { AuthMiddleware } = jest.requireActual('../../../../api-server/src/middleware/auth.middleware');
+  const realAuthenticate = new AuthMiddleware({
+    verifyToken: async (token: string) => {
+      if (token === 'hub-valid') return { _role: 'operator', organizationId: orgA, _organizationId: orgA };
+      throw new Error('Neo4j driver internal-db:7687 synthetic-secret');
+    },
+    verifyApiKey: async (key: string) => {
+      if (key === 'hub-valid') return { _role: 'operator', organizationId: orgA, _organizationId: orgA };
+      throw new Error('Neo4j driver internal-db:7687 synthetic-secret');
+    },
+  }, { apiKeys: { headerName: 'X-API-Key' } }).authenticate();
+  return { getAuthMiddleware: () => ({
     authenticate: () => (req: express.Request, res: express.Response, next: express.NextFunction) => {
+      if (req.headers.authorization?.startsWith('Bearer hub-') || req.headers['x-api-key'] || !req.headers.authorization) {
+        return realAuthenticate(req, res, next);
+      }
       const identity = req.headers.authorization;
       if (!['Bearer verified', 'Bearer verified-b', 'Bearer viewer', 'Bearer no-org'].includes(identity ?? '')) {
         return res.status(401).json({ error: 'Unauthorized' });
@@ -49,8 +64,8 @@ jest.mock('@cmdb/api-server/auth/auth-bootstrap', () => ({
       }
       next();
     },
-  }),
-}), { virtual: true });
+  }) };
+});
 jest.mock('@cmdb/api-server/auth/connector-scope', () => ({
   requireConnectorScope: (req: express.Request, res: express.Response, next: express.NextFunction) => {
     if (!(req as express.Request & { user?: { organizationId: string | null } }).user?.organizationId) {
@@ -107,6 +122,40 @@ describe('standalone connector routes', () => {
     expect((await supertest(app).get('/api/v1/connectors/shared')).status).toBe(401);
     expect((await supertest(app).post('/api/v1/connectors').send({ name: 'shared' })).status).toBe(401);
     expect(query).not.toHaveBeenCalled();
+  });
+
+  it('uses shared real authentication at the mounted hub for fixed JWT/API-key 401s and valid identities', async () => {
+    const app = Reflect.get(new IntegrationHubServer(), 'app') as express.Application;
+    const warn = jest.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    getAllConnectorTypes.mockReturnValue([]);
+    try {
+      for (const headers of [
+        {},
+        { Authorization: 'Bearer hub-driver-error' },
+        { 'X-API-Key': 'hub-driver-error' },
+      ]) {
+        const response = await supertest(app).get('/api/v1/connectors/types').set(headers);
+        expect(response.status).toBe(401);
+        expect(response.body).toEqual({ _error: 'Unauthorized', _message: 'Authentication failed' });
+        expect(JSON.stringify(response.body)).not.toContain('internal-db:7687 synthetic-secret');
+      }
+      expect(warn.mock.calls).toEqual([
+        ['Authentication failed', { credentialType: 'none', reason: 'invalid' }],
+        ['Authentication failed', { credentialType: 'jwt', reason: 'store_error' }],
+        ['Authentication failed', { credentialType: 'api-key', reason: 'store_error' }],
+      ]);
+      for (const headers of [
+        { Authorization: 'Bearer hub-valid' },
+        { 'X-API-Key': 'hub-valid' },
+      ]) {
+        const response = await supertest(app).get('/api/v1/connectors/types').set(headers);
+        expect(response.status).toBe(200);
+        expect(response.body).toEqual({ types: [] });
+      }
+      expect(query).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('authenticates every connector surface but keeps liveness and CORS preflight data-free', async () => {

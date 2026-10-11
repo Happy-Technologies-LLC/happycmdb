@@ -15,7 +15,7 @@ jest.mock('@cmdb/integration-framework/dist/core/integration-manager', () => ({
     runConnector: (...args: unknown[]) => runConnector(...args),
     unregisterConnector: (...args: unknown[]) => unregisterConnector(...args),
     registerConnector: jest.fn(),
-    testConnector: jest.fn(),
+    testConnector: (...args: unknown[]) => testConnector(...args),
   })),
 }));
 jest.mock('@cmdb/integration-framework', () => ({
@@ -28,8 +28,14 @@ jest.mock('@cmdb/integration-framework', () => ({
 jest.mock('@cmdb/api-server/auth/auth-bootstrap', () => ({
   getAuthMiddleware: () => ({
     authenticate: () => (req: express.Request, res: express.Response, next: express.NextFunction) => {
-      if (req.headers.authorization !== 'Bearer verified') return res.status(401).json({ error: 'Unauthorized' });
-      Object.assign(req, { user: { organizationId: orgA, _role: 'operator' } });
+      const identity = req.headers.authorization;
+      if (!['Bearer verified', 'Bearer verified-b', 'Bearer viewer', 'Bearer no-org'].includes(identity ?? '')) {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+      Object.assign(req, { user: {
+        organizationId: identity === 'Bearer verified-b' ? orgB : identity === 'Bearer no-org' ? null : orgA,
+        _role: identity === 'Bearer viewer' ? 'viewer' : 'operator',
+      } });
       return next();
     },
     optionalAuthenticate: () => (req: express.Request, _res: express.Response, next: express.NextFunction) => {
@@ -47,7 +53,9 @@ jest.mock('@cmdb/api-server/auth/auth-bootstrap', () => ({
 }), { virtual: true });
 jest.mock('@cmdb/api-server/auth/connector-scope', () => ({
   requireConnectorScope: (req: express.Request, res: express.Response, next: express.NextFunction) => {
-    if (!(req as express.Request & { user?: object }).user) return res.status(403).json({ error: 'Forbidden' });
+    if (!(req as express.Request & { user?: { organizationId: string | null } }).user?.organizationId) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
     return next();
   },
   connectorScope: (user: { organizationId?: string }) => ({ organizationId: user.organizationId ?? null }),
@@ -65,6 +73,7 @@ const marker = 'client_secret=NEVER_RETURN_ME';
 const row = { id: 'cfg-A', organization_id: orgA, name: 'shared', enabled: true };
 const query = jest.fn();
 const runConnector = jest.fn();
+const testConnector = jest.fn();
 const unregisterConnector = jest.fn();
 
 const getAllConnectorTypes = jest.fn();
@@ -98,6 +107,46 @@ describe('standalone connector routes', () => {
     expect((await supertest(app).get('/api/v1/connectors/shared')).status).toBe(401);
     expect((await supertest(app).post('/api/v1/connectors').send({ name: 'shared' })).status).toBe(401);
     expect(query).not.toHaveBeenCalled();
+  });
+
+  it('authenticates every connector surface but keeps liveness and CORS preflight data-free', async () => {
+    const app = Reflect.get(new IntegrationHubServer(), 'app') as express.Application;
+    const routes = [
+      ['get', '/api/v1/connectors'], ['get', '/api/v1/connectors/types'],
+      ['get', '/api/v1/connectors/types/test'], ['get', '/api/v1/connectors/shared'],
+      ['post', '/api/v1/connectors'], ['put', '/api/v1/connectors/shared'],
+      ['delete', '/api/v1/connectors/shared'], ['post', '/api/v1/connectors/shared/test'],
+      ['post', '/api/v1/connectors/shared/run'], ['get', '/api/v1/connectors/shared/runs'],
+      ['get', '/api/v1/connectors/shared/runs/run-A/logs'],
+    ] as const;
+    for (const [method, path] of routes) {
+      const anonymous = await supertest(app)[method](path).send({});
+      const unscoped = await supertest(app)[method](path).set('Authorization', 'Bearer no-org').send({});
+      expect(anonymous.status).toBe(401);
+      expect(unscoped.status).toBe(403);
+    }
+    const preflight = await supertest(app).options('/api/v1/connectors/types')
+      .set('Origin', 'https://tenant.invalid').set('Access-Control-Request-Method', 'GET');
+    expect(preflight.status).toBe(204);
+    expect(preflight.text).toBe('');
+    expect((await supertest(app).get('/health')).body).toEqual({ status: 'ok', service: 'integration-hub' });
+    expect(query).not.toHaveBeenCalled();
+    expect(getAllConnectorTypes).not.toHaveBeenCalled();
+  });
+
+  it('requires write permission before an owned connector test reaches the provider', async () => {
+    const app = Reflect.get(new IntegrationHubServer(), 'app') as express.Application;
+    query.mockResolvedValue({ rows: [row] });
+    testConnector.mockResolvedValue({ success: true });
+    const viewer = await supertest(app).post('/api/v1/connectors/shared/test')
+      .set('Authorization', 'Bearer viewer').send({});
+    expect(viewer.status).toBe(403);
+    expect(query).not.toHaveBeenCalled();
+    expect(testConnector).not.toHaveBeenCalled();
+    const writer = await supertest(app).post('/api/v1/connectors/shared/test')
+      .set('Authorization', 'Bearer verified').send({});
+    expect(writer.body).toEqual({ result: { success: true } });
+    expect(testConnector).toHaveBeenCalledWith('cfg-A', orgA);
   });
 
   it('refuses every transformation and lookup endpoint identically for anonymous, tenant and platform callers', async () => {

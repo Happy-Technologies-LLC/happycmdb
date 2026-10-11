@@ -176,7 +176,7 @@ connectorsRouter.delete('/:name', requireConnectorWrite, async (req, res) => {
   } catch { return failed(res); }
 });
 
-connectorsRouter.post('/:name/test', async (req, res) => {
+connectorsRouter.post('/:name/test', requireConnectorWrite, async (req, res) => {
   try {
     const config = await ownedConfig(req);
     if (!config) return res.status(404).json(CONFIG_NOT_FOUND);

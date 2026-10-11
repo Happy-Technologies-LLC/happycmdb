@@ -187,7 +187,7 @@ export class ConnectorConfigCRUDController {
         ]
       );
 
-      logger.info(`Configuration '${name}' created successfully`, {
+      logger.info('Configuration created successfully', {
         id: result.rows[0].id,
         connector_type
       });
@@ -195,7 +195,7 @@ export class ConnectorConfigCRUDController {
       res.status(201).json({
         success: true,
         data: result.rows[0],
-        message: `Configuration '${name}' created successfully`
+        message: 'Configuration created successfully'
       });
     } catch (error) {
       if (error instanceof ConnectorJsonPatchError || isConnectorJsonResultLimit(error)) {

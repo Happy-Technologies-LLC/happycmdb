@@ -1143,8 +1143,14 @@ worker errors are never returned. Failed jobs carry fixed `failureCode`.
 **Query Parameters**:
 - `status` (optional): Filter by status
 - `provider` (optional): Filter by provider
-- `limit` (optional): Max results (default: 100, max: 1000)
-- `offset` (optional): Results to skip (default: 0)
+- `limit` (optional): Number of positions read per queue/state window (default: 100, min: 1, max: 100)
+- `offset` (optional): Starting position in each queue/state window (default: 0); not an offset into the merged result
+
+Jobs from each queue/state window are filtered to the caller's organization and
+merged by timestamp. `limit` does not cap the merged result: without a status
+filter, `count` may reach 16 × `limit` (four queues × four states). Pagination
+does not report a total or guarantee a complete tenant-wide page;
+`truncated: true` indicates that the bounded windows may omit jobs.
 
 **Example Request**:
 ```bash
@@ -1164,10 +1170,10 @@ GET /discovery/jobs?status=running&provider=nmap&limit=20
     }
   ],
   "pagination": {
-    "total": 45,
-    "count": 20,
+    "count": 1,
     "offset": 0,
-    "limit": 20
+    "limit": 20,
+    "truncated": true
   }
 }
 ```

@@ -34,6 +34,7 @@ const SCHEDULE_UPDATE_FIELDS: Record<string, true> = {
 };
 
 const MAX_JOB_PAGE_SIZE = 100;
+const MAX_JOB_START = 10_000;
 const INVALID_JOB_PAGINATION = { success: false, error: 'Invalid job pagination' };
 
 function nonNegativePageInteger(value: unknown, fallback: number): number | null {
@@ -48,7 +49,7 @@ function jobPage(query: Request['query']): { start: number; end: number; limit: 
   const requestedEnd = nonNegativePageInteger(query.end, 99);
   const requestedLimit = nonNegativePageInteger(query.limit, MAX_JOB_PAGE_SIZE);
   if (start === null || requestedEnd === null || requestedLimit === null ||
-      start > Number.MAX_SAFE_INTEGER - MAX_JOB_PAGE_SIZE || requestedEnd < start) return null;
+      start > MAX_JOB_START || requestedEnd < start) return null;
   const limit = Math.min(requestedEnd - start + 1, requestedLimit, MAX_JOB_PAGE_SIZE);
   const end = start + limit - 1;
   return { start, end, limit };
@@ -359,10 +360,19 @@ export class JobsController {
    */
   async listDiscoveryJobs(req: Request, res: Response): Promise<void> {
     try {
-      const { page = 1, limit = 10, provider, status } = req.query;
-      const pageNum = parseInt(page as string);
-      const limitNum = parseInt(limit as string);
-      const start = (pageNum - 1) * limitNum;
+      const { page, limit, provider, status } = req.query;
+      const pageNum = nonNegativePageInteger(page, 1);
+      const limitNum = nonNegativePageInteger(limit, 10);
+      const start = pageNum === null || limitNum === null ? NaN : (pageNum - 1) * limitNum;
+      if (pageNum === null || pageNum < 1 || limitNum === null || limitNum < 1 ||
+          limitNum > MAX_JOB_PAGE_SIZE || !Number.isSafeInteger(start) || start > MAX_JOB_START) {
+        res.status(400).json(INVALID_JOB_PAGINATION);
+        return;
+      }
+      if (provider && !['nmap', 'ssh', 'active-directory', 'snmp', 'aws', 'azure', 'gcp', 'ai'].includes(String(provider))) {
+        res.status(400).json({ success: false, error: 'Invalid discovery provider' });
+        return;
+      }
       const end = start + limitNum - 1;
 
       const discoveryQueues = provider

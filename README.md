@@ -33,6 +33,9 @@ HappyCMDB is an enterprise CMDB platform that discovers, maps, and tracks infras
 
 **Discovery egress restriction:** Discovery workers and AI discovery tools refuse loopback, link-local, RFC1918/ULA, cloud metadata addresses, and platform service names for every caller, including administrators. Private/internal discovery is unavailable until a separately reviewed dedicated platform-admin (P-6) and per-organization CIDR allowlist change lands. Discovery agents are visible and mutable only within the caller's verified organization; legacy agents without an organization are inaccessible to everyone. See [the discovery egress and registry design](docs/discovery-egress-agent-registry-design.md).
 
+**Legacy job history limit:** Authenticated queue and discovery listing APIs reject start/offset positions above 10,000 with HTTP 400 before querying Redis. History beyond that position is not reachable through these listing APIs; positions are BullMQ queue/state offsets, not tenant-owned ranks. Pagination below the cap remains bounded and tenant-filtered. See the [OpenAPI listing contract](packages/api-server/src/openapi/openapi.yaml); per-organization index/cursor migration is deferred to HAP-551.
+
+
 ## Architecture
 
 ```

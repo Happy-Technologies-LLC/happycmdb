@@ -15,7 +15,7 @@
 import { Queue, Worker, Job, QueueEvents } from 'bullmq';
 import IORedis from 'ioredis';
 import { logger } from '../utils/logger';
-import { getQueueConfig } from './queue-config';
+import { getQueueConfig, QUEUE_CONFIGS } from './queue-config';
 import type { JobProgress, WorkerConfig } from '../types/job.types';
 
 /**
@@ -58,6 +58,9 @@ export class EnhancedQueueManager {
    * Get or create a queue
    */
   getQueue<T = any>(queueName: string): Queue<T> {
+    if (!Object.hasOwn(QUEUE_CONFIGS, queueName)) {
+      throw new Error('Unknown queue');
+    }
     if (!this.queues.has(queueName)) {
       const config = getQueueConfig(queueName);
       const queue = new Queue<T>(queueName, {

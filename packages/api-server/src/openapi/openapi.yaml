@@ -2648,7 +2648,11 @@ paths:
     get:
       tags: [Jobs]
       summary: List discovery jobs
-      description: Get all discovery jobs
+      description: |
+        Lists a bounded sample of tenant-owned discovery jobs. `page` and `limit`
+        must produce a start position at most 10,000 (limit at most 100); deeper
+        history is unavailable through this legacy listing API. A deep page
+        returns a fixed 400 before any queue read. No cross-tenant total is exposed.
       operationId: listDiscoveryJobs
       responses:
         '200':
@@ -2688,6 +2692,100 @@ paths:
                     type: string
         '401':
           $ref: '#/components/responses/Unauthorized'
+
+  /jobs/{queueName}:
+    get:
+      tags: [Jobs]
+      summary: List tenant-owned jobs in a registered queue
+      description: |
+        `start` is at most 10,000; `end` and `limit` bound each read to 100
+        queue positions. History beyond start 10,000 is unavailable through
+        this legacy listing API. Offsets refer to queue positions, not tenant
+        rank; a page may contain fewer owned jobs than the requested limit.
+        Unknown queue names and deep offsets return fixed 400 responses before
+        queue access. No foreign queue occupancy is disclosed.
+      parameters:
+        - name: queueName
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: start
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 10000
+        - name: end
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 100
+      responses:
+        '200':
+          description: Bounded tenant-owned job page
+        '400':
+          description: Invalid queue name or pagination
+
+  /jobs/{queueName}/failed:
+    get:
+      tags: [Jobs]
+      summary: List tenant-owned failed jobs
+      description: |
+        Same queue-position semantics and maximum start 10,000 as
+        `/jobs/{queueName}`. Deeper history is unavailable through this API.
+      parameters:
+        - name: queueName
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: start
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 10000
+      responses:
+        '200':
+          description: Bounded tenant-owned failed-job page
+        '400':
+          description: Invalid queue name or pagination
+
+  /discovery/jobs:
+    get:
+      tags: [Discovery]
+      summary: List legacy discovery jobs
+      description: |
+        `offset` is a BullMQ queue-state position, not tenant rank, and must be
+        at most 10,000; `limit` is 1–100 per state and queue. History deeper
+        than offset 10,000 is unavailable through this legacy listing API.
+        A deep offset returns a fixed 400 before queue access. Responses may
+        contain up to 16 state/queue windows; continue by advancing offset.
+      parameters:
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 10000
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+      responses:
+        '200':
+          description: Bounded tenant-owned legacy discovery jobs
+        '400':
+          description: Invalid pagination
 
   /jobs/{queueName}/{jobId}:
     get:
@@ -3567,10 +3665,10 @@ components:
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/Error'
+            $ref: '#/components/schemas/MiddlewareError'
           example:
-            error: Unauthorized
-            message: Invalid or expired JWT token
+            _error: Unauthorized
+            _message: Authentication failed
 
     Forbidden:
       description: Insufficient permissions
@@ -3662,7 +3760,7 @@ components:
             $ref: '#/components/schemas/MiddlewareError'
           example:
             _error: Unauthorized
-            _message: No authentication credentials provided
+            _message: Authentication failed
 
     BusinessServiceForbidden:
       description: >-

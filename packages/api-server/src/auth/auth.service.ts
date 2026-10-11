@@ -186,8 +186,8 @@ export class AuthService {
         iss: payload.iss,
         aud: payload.aud,
       };
-    } catch (error) {
-      throw new Error(`Token verification failed: ${error}`);
+    } catch {
+      throw new Error('Token verification failed');
     }
   }
 

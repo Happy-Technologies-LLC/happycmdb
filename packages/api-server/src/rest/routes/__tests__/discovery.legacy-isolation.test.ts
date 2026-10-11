@@ -187,3 +187,19 @@ test('legacy schedule stamps org and allowlists config; credential-backed provid
   expect(data.config).toEqual({ targets: ['192.0.2.1'] });
   expect(JSON.stringify(add.mock.calls)).not.toContain(secret);
 });
+
+test('legacy deep offsets reject before queue reads; the maximum offset still reads', async () => {
+  const waiting = jest.spyOn(queue, 'getWaiting');
+  for (const offset of ['10001', '9999999999999999999999999', '-1']) {
+    const response = await request(app).get(`/api/v1/discovery/jobs?offset=${offset}&limit=1`)
+      .set('authorization', auth('viewer'));
+    expect(response.status).toBe(400);
+    expect(response.body).toEqual({ success: false, error: 'Invalid job pagination' });
+  }
+  expect(waiting).not.toHaveBeenCalled();
+  const accepted = await request(app).get('/api/v1/discovery/jobs?offset=10000&limit=1')
+    .set('authorization', auth('viewer'));
+  expect(accepted.status).toBe(200);
+  expect(waiting).toHaveBeenCalledWith(10000, 10000);
+  waiting.mockRestore();
+});

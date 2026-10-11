@@ -8,9 +8,11 @@
 
 import { Request, Response, NextFunction } from 'express';
 import { GraphQLError } from 'graphql';
-import type { ConfigSchema } from '@cmdb/common';
+import { logger, type ConfigSchema } from '@cmdb/common';
 import { AuthService } from '../auth/auth.service';
 import { TokenPayload, Permission, ROLE_PERMISSIONS } from '../auth/types';
+
+const UNAUTHORIZED = { _error: 'Unauthorized', _message: 'Authentication failed' };
 
 export interface AuthenticatedRequest extends Request {
   user?: TokenPayload;
@@ -79,16 +81,11 @@ export class AuthMiddleware {
           req.credentialType = 'api-key';
           next();
         } else {
-          res.status(401).json({
-            _error: 'Unauthorized',
-            _message: 'No authentication credentials provided',
-          });
+          res.status(401).json(UNAUTHORIZED);
         }
-      } catch (error: any) {
-        res.status(401).json({
-          _error: 'Unauthorized',
-          _message: error.message || 'Authentication failed',
-        });
+      } catch {
+        logger.warn('Authentication failed');
+        res.status(401).json(UNAUTHORIZED);
       }
     };
   }
@@ -124,7 +121,7 @@ export class AuthMiddleware {
   requireJwtSession() {
     return (req: AuthenticatedRequest, res: Response, next: NextFunction): void => {
       if (req.user === undefined) {
-        res.status(401).json({ _error: 'Unauthorized', _message: 'Authentication required' });
+        res.status(401).json(UNAUTHORIZED);
         return;
       }
       if (req.credentialType !== 'jwt') {
@@ -141,10 +138,7 @@ export class AuthMiddleware {
   requirePermission(permission: Permission) {
     return (req: AuthenticatedRequest, res: Response, next: NextFunction): void => {
       if (!req.user) {
-        res.status(401).json({
-          _error: 'Unauthorized',
-          _message: 'Authentication required',
-        });
+        res.status(401).json(UNAUTHORIZED);
         return;
       }
 
@@ -170,10 +164,7 @@ export class AuthMiddleware {
   requireOrganization() {
     return (req: AuthenticatedRequest, res: Response, next: NextFunction): void => {
       if (req.user === undefined) {
-        res.status(401).json({
-          _error: 'Unauthorized',
-          _message: 'Authentication required',
-        });
+        res.status(401).json(UNAUTHORIZED);
         return;
       }
 
@@ -195,10 +186,7 @@ export class AuthMiddleware {
   requireRole(...roles: string[]) {
     return (req: AuthenticatedRequest, res: Response, next: NextFunction): void => {
       if (!req.user) {
-        res.status(401).json({
-          _error: 'Unauthorized',
-          _message: 'Authentication required',
-        });
+        res.status(401).json(UNAUTHORIZED);
         return;
       }
 
@@ -274,7 +262,7 @@ export async function authenticateGraphQLContext(
   const apiKey = (req.headers[apiKeyHeader.toLowerCase()] as string | undefined) || null;
 
   if (!token && !apiKey) {
-    throw new GraphQLError('No authentication credentials provided', {
+    throw new GraphQLError('Authentication failed', {
       extensions: { code: 'UNAUTHENTICATED', http: { status: 401 } },
     });
   }
@@ -284,9 +272,9 @@ export async function authenticateGraphQLContext(
       ? await authService.verifyToken(token)
       : await authService.verifyApiKey(apiKey as string);
     return { user: payload };
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : 'Authentication failed';
-    throw new GraphQLError(message, {
+  } catch {
+    logger.warn('Authentication failed');
+    throw new GraphQLError('Authentication failed', {
       extensions: { code: 'UNAUTHENTICATED', http: { status: 401 } },
     });
   }

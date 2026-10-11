@@ -7,9 +7,8 @@
  * This module defines all REST API routes for job management and queue
  * monitoring. Authentication is enforced centrally: server.ts mounts
  * `authMiddleware.authenticate()` on every /api/v1 route before this
- * router. Reads only need to be authenticated; every mutating route
- * (trigger discovery/ETL, schedule PUTs, queue clean/cancel/retry,
- * queue pause/resume) additionally requires the 'write' permission via
+ * router. Tenant-scoped job routes also require a verified organization claim.
+ * Mutating routes additionally require the 'write' permission via
  * `authMiddleware.requirePermission('write')`.
  */
 
@@ -17,6 +16,16 @@ import { Router } from 'express';
 import { jobsController } from '../controllers/jobs.controller';
 import { queueController } from '../controllers/queue.controller';
 import { getAuthMiddleware } from '../../auth/auth-bootstrap';
+import { optionalRequestOrganizationId } from '../../middleware/auth.middleware';
+import type { Request, Response, NextFunction } from 'express';
+
+function requireJobOrganization(req: Request, res: Response, next: NextFunction): void {
+  if (!optionalRequestOrganizationId(req)) {
+    res.status(403).json({ success: false, error: 'Organization claim required' });
+    return;
+  }
+  next();
+}
 
 const router = Router();
 const authMiddleware = getAuthMiddleware();
@@ -46,10 +55,10 @@ router.put('/jobs/schedules/etl/:type', authMiddleware.requirePermission('write'
 router.get('/jobs/discovery/stats', (req, res) =>
   jobsController.getDiscoveryStats(req, res)
 );
-router.get('/jobs/discovery', (req, res) =>
+router.get('/jobs/discovery', requireJobOrganization, (req, res) =>
   jobsController.listDiscoveryJobs(req, res)
 );
-router.post('/jobs/discovery/:provider', authMiddleware.requirePermission('write'), (req, res) =>
+router.post('/jobs/discovery/:provider', authMiddleware.requirePermission('write'), requireJobOrganization, (req, res) =>
   jobsController.triggerDiscovery(req, res)
 );
 
@@ -59,7 +68,7 @@ router.post('/jobs/etl/:type', authMiddleware.requirePermission('write'), (req, 
 );
 
 // Queue-specific routes (must come after /jobs/discovery/stats to avoid conflicts)
-router.get('/jobs/:queueName/failed', (req, res) =>
+router.get('/jobs/:queueName/failed', requireJobOrganization, (req, res) =>
   jobsController.getFailedJobs(req, res)
 );
 router.post('/jobs/:queueName/clean', authMiddleware.requirePermission('write'), (req, res) =>
@@ -67,14 +76,14 @@ router.post('/jobs/:queueName/clean', authMiddleware.requirePermission('write'),
 );
 
 // Generic job routes (MUST be last due to :queueName and :jobId parameters)
-router.get('/jobs/:queueName/:jobId', (req, res) =>
+router.get('/jobs/:queueName/:jobId', requireJobOrganization, (req, res) =>
   jobsController.getJobStatus(req, res)
 );
-router.get('/jobs/:queueName', (req, res) => jobsController.listJobs(req, res));
-router.delete('/jobs/:queueName/:jobId', authMiddleware.requirePermission('write'), (req, res) =>
+router.get('/jobs/:queueName', requireJobOrganization, (req, res) => jobsController.listJobs(req, res));
+router.delete('/jobs/:queueName/:jobId', authMiddleware.requirePermission('write'), requireJobOrganization, (req, res) =>
   jobsController.cancelJob(req, res)
 );
-router.post('/jobs/:queueName/:jobId/retry', authMiddleware.requirePermission('write'), (req, res) =>
+router.post('/jobs/:queueName/:jobId/retry', authMiddleware.requirePermission('write'), requireJobOrganization, (req, res) =>
   jobsController.retryJob(req, res)
 );
 
@@ -104,7 +113,7 @@ router.post('/queues/:queueName/resume', authMiddleware.requirePermission('write
 );
 
 // Job logs
-router.get('/queues/:queueName/jobs/:jobId/logs', (req, res) =>
+router.get('/queues/:queueName/jobs/:jobId/logs', requireJobOrganization, (req, res) =>
   queueController.getJobLogs(req, res)
 );
 

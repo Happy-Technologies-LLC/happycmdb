@@ -33,6 +33,8 @@ interface DefinitionJobMapping {
   definitionId: string;
   jobKey: string;
   cronPattern: string;
+  organizationId: string;
+  queueName: string;
 }
 
 /**
@@ -66,6 +68,20 @@ const DEFAULT_SCHEDULES: DiscoverySchedule[] = [
  * Paired with the provider as the persisted key's id: cmdb:schedule-config:v1:discovery:<provider>.
  */
 const SCHEDULE_KIND = 'discovery';
+/** Jobs carry only explicit non-secret scan targets. Never serialize caller JSON into Redis. */
+function publicScanConfig(input: unknown): { targets?: string[]; range?: string } {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return {};
+  const config = input as Record<string, unknown>;
+  const targets = config['targets'] ?? config['_targets'];
+  if (targets !== undefined) {
+    if (!Array.isArray(targets) || targets.some(target => typeof target !== 'string')) {
+      throw new Error('Invalid discovery targets');
+    }
+    return { targets };
+  }
+  return typeof config['range'] === 'string' ? { range: config['range'] } : {};
+}
+
 
 /**
  * Discovery Scheduler
@@ -113,7 +129,7 @@ export class DiscoveryScheduler {
         // Load and schedule all active definitions from PostgreSQL
         await this.loadAndScheduleDefinitions();
       } catch (error) {
-        logger.error('Failed to load definitions from database, falling back to default schedules', error);
+        logger.error('Failed to load definitions from database, falling back to default schedules');
         // Fall back to default schedules if database is unavailable
         await this.startDefaultSchedules();
       }
@@ -152,16 +168,16 @@ export class DiscoveryScheduler {
     const pool = postgresClient['pool'];
 
     const result = await pool.query(
-      `SELECT * FROM discovery_definitions
-       WHERE is_active = true AND schedule IS NOT NULL
+      `SELECT id, organization_id FROM discovery_definitions
+       WHERE is_active = true AND schedule IS NOT NULL AND organization_id IS NOT NULL
+         AND credential_id IS NULL AND credential_set_id IS NULL
        ORDER BY created_at ASC`
     );
 
     logger.info(`Loaded ${result.rows.length} active discovery definitions from database`);
 
     for (const row of result.rows) {
-      const definition = this.mapRowToDefinition(row);
-      await this.scheduleDefinition(definition.id);
+      await this.scheduleDefinition(row.id, row.organization_id);
     }
   }
 
@@ -178,7 +194,7 @@ export class DiscoveryScheduler {
       const jobData: DiscoveryJobData = {
         _jobId: uuidv4(),
         _provider: provider,
-        _config: config,
+        _config: publicScanConfig(config),
         _createdAt: new Date().toISOString(),
         triggeredBy: 'scheduler',
       };
@@ -198,7 +214,7 @@ export class DiscoveryScheduler {
         queueName,
       });
     } catch (err) {
-      logger.error(`Failed to schedule discovery job for ${provider}`, err);
+      logger.error(`Failed to schedule discovery job for ${provider}`);
       throw err;
     }
   }
@@ -208,19 +224,22 @@ export class DiscoveryScheduler {
    */
   async triggerDiscovery(
     provider: DiscoveryProvider,
-    config?: any,
-    triggeredBy?: string
+    config?: unknown,
+    triggeredBy?: string,
+    organizationId?: string
   ): Promise<string> {
     const schedule = this.schedules.get(provider);
     if (!schedule) {
       throw new Error(`No schedule found for provider: ${provider}`);
     }
+    if (!organizationId) throw new Error('Organization required for discovery jobs');
 
     const jobData: DiscoveryJobData = {
       _jobId: uuidv4(),
       _provider: provider,
-      _config: config || schedule._config,
+      _config: publicScanConfig(config ?? schedule._config),
       _createdAt: new Date().toISOString(),
+      organizationId,
       triggeredBy: triggeredBy || 'manual',
     };
 
@@ -438,13 +457,14 @@ export class DiscoveryScheduler {
    * Schedule a discovery definition by ID
    * Loads definition from database and creates repeatable job
    */
-  async scheduleDefinition(definitionId: string): Promise<void> {
+  async scheduleDefinition(definitionId: string, organizationId: string): Promise<void> {
+    if (!organizationId) throw new Error('Organization required for discovery definition');
     const postgresClient = getPostgresClient();
     const pool = postgresClient['pool'];
-
     const result = await pool.query(
-      'SELECT * FROM discovery_definitions WHERE id = $1',
-      [definitionId]
+      `SELECT * FROM discovery_definitions WHERE id = $1 AND organization_id = $2
+       AND credential_id IS NULL AND credential_set_id IS NULL`,
+      [definitionId, organizationId]
     );
 
     if (result.rows.length === 0) {
@@ -454,11 +474,11 @@ export class DiscoveryScheduler {
     const definition = this.mapRowToDefinition(result.rows[0]);
 
     if (!definition.schedule) {
-      throw new Error(`Discovery definition '${definition.name}' has no schedule configured`);
+      throw new Error('Discovery definition has no schedule configured');
     }
 
     if (!definition.is_active) {
-      logger.warn(`Skipping inactive definition: ${definition.name}`);
+      logger.warn('Skipping inactive discovery definition', { definitionId });
       return;
     }
 
@@ -468,10 +488,11 @@ export class DiscoveryScheduler {
     const jobData: DiscoveryJobData = {
       _jobId: uuidv4(),
       _provider: definition.provider,
-      _config: definition.config,
+      _config: publicScanConfig(definition.config),
       _createdAt: new Date().toISOString(),
+      organizationId,
       triggeredBy: 'scheduler',
-      definition_id: definitionId, // Include definition_id in job data
+      definition_id: definitionId,
     };
 
     await this.queueManager.addRepeatableJob(
@@ -500,14 +521,11 @@ export class DiscoveryScheduler {
       definitionId,
       jobKey,
       cronPattern: definition.schedule,
+      organizationId,
+      queueName,
     });
 
-    logger.info(`Scheduled discovery definition: ${definition.name}`, {
-      definitionId,
-      provider: definition.provider,
-      schedule: definition.schedule,
-      jobKey,
-    });
+    logger.info('Scheduled discovery definition', { definitionId, provider: definition.provider, schedule: definition.schedule });
   }
 
   /**
@@ -522,24 +540,9 @@ export class DiscoveryScheduler {
       return;
     }
 
-    // Get definition to determine queue
-    const postgresClient = getPostgresClient();
-    const pool = postgresClient['pool'];
-
-    const result = await pool.query(
-      'SELECT provider FROM discovery_definitions WHERE id = $1',
-      [definitionId]
-    );
-
-    if (result.rows.length === 0) {
-      logger.warn(`Definition ${definitionId} not found in database, removing mapping anyway`);
-      this.definitionMappings.delete(definitionId);
-      return;
-    }
-
-    const provider = result.rows[0].provider;
-    const queueName = this.getQueueNameForProvider(provider);
-    const queue = this.queueManager.getQueue(queueName);
+    // The row may have been deleted or reassigned. The captured queue name
+    // identifies only the repeatable job owned by this mapping.
+    const queue = this.queueManager.getQueue(mapping.queueName);
 
     await queue.removeRepeatableByKey(mapping.jobKey);
     this.definitionMappings.delete(definitionId);
@@ -566,7 +569,8 @@ export class DiscoveryScheduler {
       // Load all active definitions with schedules
       const result = await pool.query(
         `SELECT * FROM discovery_definitions
-         WHERE is_active = true AND schedule IS NOT NULL
+         WHERE is_active = true AND schedule IS NOT NULL AND organization_id IS NOT NULL
+           AND credential_id IS NULL AND credential_set_id IS NULL
          ORDER BY created_at ASC`
       );
 
@@ -603,7 +607,8 @@ export class DiscoveryScheduler {
       }
 
       for (const id of toAdd) {
-        await this.scheduleDefinition(id);
+        const row = result.rows.find(candidate => candidate.id === id);
+        if (row) await this.scheduleDefinition(id, row.organization_id);
       }
 
       if (toAdd.length > 0 || toRemove.length > 0) {
@@ -614,7 +619,7 @@ export class DiscoveryScheduler {
         });
       }
     } catch (error) {
-      logger.error('Failed to sync schedules', error);
+      logger.error('Failed to sync schedules');
       throw error;
     }
   }

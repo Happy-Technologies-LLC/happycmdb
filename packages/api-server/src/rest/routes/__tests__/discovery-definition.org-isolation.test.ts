@@ -1,0 +1,164 @@
+// Copyright 2026 Happy Technologies LLC
+// SPDX-License-Identifier: Apache-2.0
+import { fork } from 'child_process';
+import { randomBytes } from 'crypto';
+import { once } from 'events';
+import { readFileSync } from 'fs';
+import { join } from 'path';
+import express from 'express';
+import Joi from 'joi';
+import request from 'supertest';
+
+const ORG_A = '11111111-1111-4111-8111-111111111111';
+const ORG_B = '22222222-2222-4222-8222-222222222222';
+const LEGACY = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+const CRED_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+const CRED_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const host = fork(join(__dirname, 'fixtures/pglite-host.cjs'), [], { serialization: 'advanced' });
+let nextId = 0;
+const pending = new Map<number, { resolve: (rows: Record<string, unknown>[]) => void; reject: (error: Error) => void }>();
+host.on('message', (reply: { id: number; rows: Record<string, unknown>[]; error?: string }) => {
+  const operation = pending.get(reply.id);
+  if (!operation) throw new Error('Unexpected database reply');
+  pending.delete(reply.id);
+  if (reply.error) operation.reject(new Error(reply.error)); else operation.resolve(reply.rows);
+});
+function query(sql: string, params: unknown[] = []): Promise<{ rows: Record<string, unknown>[]; rowCount: number }> {
+  const id = nextId++;
+  const { promise, resolve, reject } = Promise.withResolvers<{ rows: Record<string, unknown>[]; rowCount: number }>();
+  pending.set(id, { resolve: rows => resolve({ rows, rowCount: rows.length }), reject });
+  host.send({ id, op: 'query', sql, params });
+  return promise;
+}
+function exec(sql: string): Promise<void> {
+  const id = nextId++;
+  const { promise, resolve, reject } = Promise.withResolvers<void>();
+  pending.set(id, { resolve: () => resolve(), reject });
+  host.send({ id, op: 'exec', sql });
+  return promise;
+}
+const db = { query, getClient: async () => ({ query, release: () => undefined }) };
+const queue = { add: jest.fn().mockResolvedValue({ id: 'queued' }) };
+jest.mock('@cmdb/database', () => ({ getPostgresClient: () => db, queueManager: { getQueue: () => queue } }));
+jest.mock('@cmdb/common', () => ({
+  logger: { info: jest.fn(), error: jest.fn(), warn: jest.fn() },
+  validate: (schema: Joi.Schema, value: unknown) => {
+    const result = schema.validate(value);
+    return { valid: !result.error, value: result.value, error: result.error?.message, details: result.error?.details };
+  },
+  schemas: { discoveryProvider: Joi.string().valid('ssh', 'nmap', 'snmp', 'active-directory'),
+    discoveryMethod: Joi.string().valid('agentless', 'agent') },
+}));
+jest.mock('../../../auth/auth-bootstrap', () => ({ getAuthMiddleware: () => ({
+  requirePermission: () => (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if ((req as express.Request & { user?: { _role: string } }).user?._role !== 'operator') return res.status(403).json({ error: 'Forbidden' });
+    next();
+  },
+}) }));
+import { discoveryDefinitionRoutes } from '../discovery-definition.routes';
+const app = express();
+app.use(express.json());
+app.use((req, _res, next) => {
+  const user = req.get('x-test-user');
+  (req as typeof req & { user: object }).user = {
+    _userId: user, _role: 'operator', _organizationId: user === 'a' ? ORG_A : user === 'b' ? ORG_B : undefined,
+  };
+  next();
+});
+app.use('/api/v1/discovery/definitions', discoveryDefinitionRoutes);
+const headers = (user: string) => ({ 'x-test-user': user });
+const url = '/api/v1/discovery/definitions';
+const migrationDir = join(__dirname, '../../../../../database/src/postgres/migrations');
+
+beforeAll(async () => {
+  const schema = readFileSync(join(migrationDir, '001_complete_schema.sql'), 'utf8');
+  const ddl = schema.match(/CREATE TABLE IF NOT EXISTS discovery_definitions \([\s\S]*?\n\);/);
+  if (!ddl) throw new Error('Missing discovery definitions schema');
+  await exec(`CREATE TABLE credentials (id UUID PRIMARY KEY, protocol TEXT NOT NULL, organization_id UUID);
+    ${ddl[0]}`);
+  await exec(readFileSync(join(migrationDir, '024_discovery_definition_organization_scope.sql'), 'utf8'));
+  await query(`INSERT INTO credentials (id, protocol, organization_id) VALUES ($1, 'ssh_password', $2), ($3, 'ssh_password', $4)`,
+    [CRED_B, ORG_B, CRED_A, ORG_A]);
+  await query(`INSERT INTO discovery_definitions (id, name, provider, method, created_by, organization_id)
+    VALUES ($1, 'legacy', 'nmap', 'agentless', 'legacy', NULL)`, [LEGACY]);
+});
+afterAll(async () => {
+  const exited = once(host, 'exit');
+  host.kill();
+  await exited;
+});
+
+test('mounted definitions isolate two users and orgs, reject legacy and credential attachment, and stamp queued jobs', async () => {
+  const create = (name: string, user: string) => request(app).post(url).set(headers(user)).send({
+    name, provider: 'nmap', method: 'agentless', config: { targets: ['192.0.2.1'], password: 'synthetic-secret' }, schedule: '0 * * * *',
+  });
+  const own = await create(`own-${randomBytes(4).toString('hex')}`, 'a');
+  const other = await create(`other-${randomBytes(4).toString('hex')}`, 'b');
+  expect([own.status, other.status]).toEqual([201, 201]);
+  const idA = own.body.data.id;
+  const idB = other.body.data.id;
+  expect((await query('SELECT organization_id FROM discovery_definitions WHERE id = $1', [idA])).rows).toEqual([{ organization_id: ORG_A }]);
+  const listA = await request(app).get(url).set(headers('a'));
+  const listB = await request(app).get(url).set(headers('b'));
+  expect(listA.body.data.map((row: { id: string }) => row.id)).toEqual([idA]);
+  expect(listB.body.data.map((row: { id: string }) => row.id)).toEqual([idB]);
+  for (const id of [idB, LEGACY, 'dddddddd-dddd-4ddd-8ddd-dddddddddddd']) {
+    const denied = await request(app).get(`${url}/${id}`).set(headers('a'));
+    expect({ status: denied.status, body: denied.body }).toEqual({ status: 404, body: { success: false, error: 'Not Found', message: 'Discovery definition not found' } });
+    for (const method of ['put', 'delete', 'post'] as const) {
+      const route = method === 'post' ? `${url}/${id}/run` : `${url}/${id}`;
+      const result = await request(app)[method](route).set(headers('a')).send({ name: 'changed' });
+      expect({ status: result.status, body: result.body }).toEqual({ status: 404, body: denied.body });
+    }
+    for (const action of ['enable', 'disable']) {
+      const schedule = await request(app).post(`${url}/${id}/schedule/${action}`).set(headers('a'));
+      expect({ status: schedule.status, body: schedule.body }).toEqual({ status: 404, body: denied.body });
+    }
+  }
+  for (const credentialId of [CRED_B, 'dddddddd-dddd-4ddd-8ddd-dddddddddddd']) {
+    for (const operation of [
+      request(app).post(url).set(headers('a')).send({ name: `credential-${credentialId}`, provider: 'ssh', method: 'agentless', credential_id: credentialId }),
+      request(app).put(`${url}/${idA}`).set(headers('a')).send({ credential_id: credentialId }),
+    ]) {
+      const result = await operation;
+      expect({ status: result.status, body: result.body }).toEqual({
+        status: 404, body: { success: false, error: 'Not Found', message: 'Credential not found' },
+      });
+    }
+  }
+  const attached = await request(app).post(url).set(headers('a')).send({
+    name: 'owned-ssh', provider: 'ssh', method: 'agentless', credential_id: CRED_A,
+  });
+  expect(attached.status).toBe(201);
+  const queueBefore = queue.add.mock.calls.length;
+  const unavailable = await request(app).post(`${url}/${attached.body.data.id}/run`).set(headers('a'));
+  expect(unavailable.status).toBe(409);
+  expect(queue.add).toHaveBeenCalledTimes(queueBefore);
+  await query('UPDATE credentials SET organization_id = $1 WHERE id = $2', [ORG_B, CRED_A]);
+  const staleAttachment = await request(app).put(`${url}/${attached.body.data.id}`).set(headers('a'))
+    .send({ credential_id: CRED_A });
+  expect(staleAttachment.status).toBe(404);
+  expect(staleAttachment.body).toEqual({ success: false, error: 'Not Found', message: 'Credential not found' });
+  const reassigned = await request(app).post(`${url}/${attached.body.data.id}/run`).set(headers('a'));
+  expect({ status: reassigned.status, body: reassigned.body }).toEqual({
+    status: 404, body: { success: false, error: 'Not Found', message: 'Credential not found' },
+  });
+  expect(queue.add).toHaveBeenCalledTimes(queueBefore);
+  const run = await request(app).post(`${url}/${idA}/run`).set(headers('a'));
+  expect(run.status).toBe(202);
+  expect(queue.add).toHaveBeenCalledWith('discover', expect.objectContaining({ organizationId: ORG_A, definition_id: idA, config: { targets: ['192.0.2.1'] } }), expect.any(Object));
+  expect(JSON.stringify(queue.add.mock.calls)).not.toContain('synthetic-secret');
+  expect((await request(app).get(url).set(headers('none'))).status).toBe(403);
+  expect((await query('SELECT name FROM discovery_definitions WHERE id = $1', [idB])).rows).toEqual([{ name: other.body.data.name }]);
+});
+
+test('migration rollback removes only the organization artifacts on disposable schema', async () => {
+  await exec(readFileSync(join(migrationDir, 'rollback/024_discovery_definition_organization_scope.sql'), 'utf8'));
+  const columns = await query(`SELECT column_name FROM information_schema.columns
+    WHERE table_name = 'discovery_definitions' AND column_name = 'organization_id'`);
+  expect(columns.rows).toEqual([]);
+  const indexes = await query(`SELECT indexname FROM pg_indexes
+    WHERE tablename = 'discovery_definitions' AND indexname = 'idx_discovery_definitions_organization_id_id'`);
+  expect(indexes.rows).toEqual([]);
+  await exec(readFileSync(join(migrationDir, '024_discovery_definition_organization_scope.sql'), 'utf8'));
+});

@@ -92,6 +92,14 @@ http://localhost:3000/api-docs/openapi.yaml
 - `POST /discovery/definitions/{id}/run` - Run discovery
 - `POST /discovery/definitions/{id}/schedule/enable` - Enable schedule
 - `POST /discovery/definitions/{id}/schedule/disable` - Disable schedule
+Definitions require a verified organization claim. New definitions are owned by
+that organization; pre-existing NULL-owner definitions are inaccessible until an
+independently reviewed owner mapping exists. Foreign and missing IDs return the
+same 404. Credential IDs must belong to the same organization. Credential-backed
+execution currently returns 409: it cannot run until workers can retrieve owned
+credentials without placing them in BullMQ. Credential-free runs queue only scan
+targets and an organization stamp.
+
 
 ### Discovery Agents (`/api/v1/agents`)
 - `GET /agents` - List agents
@@ -137,6 +145,14 @@ http://localhost:3000/api-docs/openapi.yaml
 - `GET /jobs/{queueName}/{jobId}` - Get job status
 - `DELETE /jobs/{queueName}/{jobId}` - Cancel job
 - `POST /jobs/{queueName}/{jobId}/retry` - Retry job
+Job detail, queue lists, failed jobs, discovery lists, cancel/retry, and logs
+require a verified organization claim. Jobs without a matching organization
+stamp (including legacy jobs) are inaccessible; foreign and missing IDs return
+the same 404. Job data, results, failures, progress and free-form logs are not
+returned. Schedule responses omit stored configuration; queue-list pagination
+uses queue offsets and does not expose cross-tenant totals. Generic queue
+statistics and global schedule controls remain separately governed.
+
 
 ### Business Services (`/api/v1/business-services`)
 Scoped to the caller's organization: 403 without an organization claim; a service outside the caller's organization returns the same 404 as a missing one. Create returns 409 for a `service_id` already in use.

@@ -17,6 +17,8 @@ import { CIInput } from './ci.types';
 export interface DiscoveryJob {
   /** Unique identifier for the discovery job */
   id: string;
+  /** Verified tenant of the queued discovery. */
+  organizationId?: string;
   /** Provider/platform being discovered */
   provider: DiscoveryProvider;
   /** Discovery method used */

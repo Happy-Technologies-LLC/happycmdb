@@ -22,6 +22,25 @@ jest.mock('../../enrichment/tbm-enricher', () => ({ TBMEnricher: jest.fn() }));
 jest.mock('../../enrichment/bsm-enricher', () => ({ BSMEnricher: jest.fn() }));
 
 beforeEach(() => jest.clearAllMocks());
+it('rejects a queued definition with no matching owner before invoking any discovery worker', async () => {
+  const orchestrator = Object.create(DiscoveryOrchestrator.prototype) as DiscoveryOrchestrator;
+  const query = jest.fn().mockResolvedValue({ rows: [] });
+  (orchestrator as any).postgresClient = { query };
+  const discover = jest.fn();
+  (orchestrator as any).hybridOrchestrator = { discover };
+  orchestrator.registerWorkers();
+  const worker = jest.mocked(queueManager.registerWorker).mock.calls
+    .find(([name]) => name === 'discovery-ai')?.[1] as (job: any) => Promise<unknown>;
+  const job = { data: { jobId: 'foreign-job', definition_id: 'foreign-definition',
+    organizationId: '11111111-1111-4111-8111-111111111111', config: { targetHost: '8.8.8.8' } },
+    updateProgress: jest.fn() };
+  await expect(worker(job)).rejects.toThrow('Discovery definition not found');
+  expect(query).toHaveBeenCalledWith(expect.stringContaining('organization_id = $2'),
+    ['foreign-definition', '11111111-1111-4111-8111-111111111111']);
+  expect(discover).not.toHaveBeenCalled();
+  expect(job.updateProgress).not.toHaveBeenCalled();
+});
+
 
 it.each([
   { error: 'Discovery target refused', success: false },
@@ -29,6 +48,7 @@ it.each([
 ])(
   'fails the queued AI job on $error before persisting or marking completion', async ({ error, success }) => {
     const orchestrator = Object.create(DiscoveryOrchestrator.prototype) as DiscoveryOrchestrator;
+    (orchestrator as any).postgresClient = { query: jest.fn().mockResolvedValue({ rows: [{ id: 'definition-1' }] }) };
     const discover = jest.fn().mockResolvedValue({ success, error, discoveredCIs: [],
       method: 'fallback', confidence: 0, cost: 0 });
     (orchestrator as any).hybridOrchestrator = { discover };
@@ -39,6 +59,7 @@ it.each([
       .find(([name]) => name === 'discovery-ai')?.[1] as (job: any) => Promise<unknown>;
     expect(worker).toBeDefined();
     const job = { data: { jobId: 'job-1', definition_id: 'definition-1',
+      organizationId: '11111111-1111-4111-8111-111111111111',
       config: { targetHost: '8.8.8.8', targetPort: 443 } },
       updateProgress: jest.fn().mockResolvedValue(undefined) };
     await expect(worker(job)).rejects.toBeInstanceOf(UnrecoverableError);
@@ -46,8 +67,8 @@ it.each([
     expect(persist).not.toHaveBeenCalled();
     expect(job.updateProgress).not.toHaveBeenCalledWith(100);
     expect(status.mock.calls).toEqual([
-      ['definition-1', 'job-1', 'running'],
-      ['definition-1', 'job-1', 'failed', 0, expect.objectContaining({ message: error })],
+      ['definition-1', 'job-1', 'running', '11111111-1111-4111-8111-111111111111'],
+      ['definition-1', 'job-1', 'failed', '11111111-1111-4111-8111-111111111111', 0],
     ]);
   }
 );
@@ -62,18 +83,19 @@ it.each([
     }) as never);
   }
   const orchestrator = Object.create(DiscoveryOrchestrator.prototype) as DiscoveryOrchestrator;
+  (orchestrator as any).postgresClient = { query: jest.fn().mockResolvedValue({ rows: [{ id: 'definition-2' }] }) };
   const persist = jest.spyOn(orchestrator as any, 'persistCIs').mockResolvedValue(undefined);
   const status = jest.spyOn(orchestrator as any, 'updateDefinitionRunStatus').mockResolvedValue(undefined);
   orchestrator.registerWorkers();
   const worker = jest.mocked(queueManager.registerWorker).mock.calls
     .find(([queue]) => queue === name)?.[1] as (job: any) => Promise<unknown>;
-  const job = { data: { jobId: 'job-2', definition_id: 'definition-2', config },
+  const job = { data: { jobId: 'job-2', definition_id: 'definition-2', organizationId: '11111111-1111-4111-8111-111111111111', config },
     updateProgress: jest.fn().mockResolvedValue(undefined) };
   await expect(worker(job)).rejects.toBeInstanceOf(UnrecoverableError);
   expect(persist).not.toHaveBeenCalled();
   expect(job.updateProgress).not.toHaveBeenCalledWith(100);
   expect(status.mock.calls).toEqual([
-    ['definition-2', 'job-2', 'running'],
-    ['definition-2', 'job-2', 'failed', 0, expect.objectContaining({ message: 'Discovery target refused' })],
+    ['definition-2', 'job-2', 'running', '11111111-1111-4111-8111-111111111111'],
+    ['definition-2', 'job-2', 'failed', '11111111-1111-4111-8111-111111111111', 0],
   ]);
 });

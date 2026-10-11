@@ -19,6 +19,7 @@ import {
   ApiKeyRequest,
   ApiKeyResponse,
   TokenPayload,
+  ROLE_PERMISSIONS,
 } from './types';
 
 export interface UserProfileUpdate {
@@ -156,11 +157,9 @@ export class AuthService {
   }
 
   /**
-   * Verify a bearer (access) JWT and return its payload with the tenant
-   * claim taken from the freshly loaded user record, never from the token:
-   * moving or removing a user's organization takes effect on the next
-   * request. Refresh tokens are rejected here; they are only accepted by
-   * refreshToken().
+   * Verify a bearer (access) JWT and return its payload with authorization
+   * role and tenant from the freshly loaded enabled user, never from the token.
+   * Refresh tokens are rejected here; they are only accepted by refreshToken().
    */
   async verifyToken(token: string): Promise<TokenPayload> {
     try {
@@ -178,7 +177,7 @@ export class AuthService {
       return {
         _userId: payload._userId,
         _username: payload._username,
-        _role: payload._role,
+        _role: user._role,
         _type: payload._type,
         _tier: payload._tier,
         _organizationId: user._organizationId,
@@ -271,6 +270,23 @@ export class AuthService {
       throw new Error('Associated user not found or disabled');
     }
 
+    // Roles are ordered by their actual permissions, not by a numeric rank:
+    // agent and viewer are incomparable. A key can never grant a permission
+    // absent from either the stored key role or the current user role.
+    const keyPermissions = ROLE_PERMISSIONS[apiKeyRecord._role];
+    const userPermissions = ROLE_PERMISSIONS[user._role];
+    if (keyPermissions === undefined || userPermissions === undefined) {
+      throw new Error('Invalid API key or user role');
+    }
+    const effectiveRole = keyPermissions.every(permission => userPermissions.includes(permission))
+      ? apiKeyRecord._role
+      : userPermissions.every(permission => keyPermissions.includes(permission))
+        ? user._role
+        : null;
+    if (effectiveRole === null) {
+      throw new Error('Incompatible API key and user roles');
+    }
+
     // Update last used timestamp
     await this.repository.updateApiKeyLastUsed(apiKeyRecord._id);
 
@@ -278,7 +294,7 @@ export class AuthService {
     return {
       _userId: user._id,
       _username: user._username,
-      _role: apiKeyRecord._role,
+      _role: effectiveRole,
       _type: 'access', // API keys act like access tokens
       _organizationId: user._organizationId,
     };

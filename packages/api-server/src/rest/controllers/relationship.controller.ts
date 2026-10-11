@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Request, Response } from 'express';
-// CI tenant scoping covers /api/v1/cis only so far; these routes read CIs unscoped, as before.
-import { getNeo4jClient, UNSCOPED_CI_ACCESS } from '@cmdb/database';
+import { getNeo4jClient } from '@cmdb/database';
+import { requestOrganizationId } from '../../middleware/auth.middleware';
 import { logger, RelationshipType } from '@cmdb/common';
 import neo4j from 'neo4j-driver';
 
@@ -25,10 +25,11 @@ export class RelationshipController {
         offset = 0,
       } = req.query;
 
+      const organizationId = requestOrganizationId(req);
       const session = this.neo4jClient.getSession();
       try {
-        let query = 'MATCH (from:CI)-[r]->(to:CI) WHERE 1=1';
-        const params: any = {};
+        let query = 'MATCH (from:CI)-[r]->(to:CI) WHERE from.organization_id = $organizationId AND to.organization_id = $organizationId';
+        const params: Record<string, unknown> = { organizationId };
 
         // Apply filters
         if (type) {
@@ -145,24 +146,15 @@ export class RelationshipController {
         return;
       }
 
-      // Check if both CIs exist
-      const fromCI = await this.neo4jClient.getCI(from_id, UNSCOPED_CI_ACCESS);
-      const toCI = await this.neo4jClient.getCI(to_id, UNSCOPED_CI_ACCESS);
+      const organizationId = requestOrganizationId(req);
+      const fromCI = await this.neo4jClient.getCI(from_id, organizationId);
+      const toCI = await this.neo4jClient.getCI(to_id, organizationId);
 
-      if (!fromCI) {
+      if (!fromCI || !toCI) {
         res.status(404).json({
           success: false,
           error: 'Not Found',
-          message: `Source CI with ID '${from_id}' not found`
-        });
-        return;
-      }
-
-      if (!toCI) {
-        res.status(404).json({
-          success: false,
-          error: 'Not Found',
-          message: `Target CI with ID '${to_id}' not found`
+          message: 'CI not found'
         });
         return;
       }
@@ -177,8 +169,12 @@ export class RelationshipController {
         return;
       }
 
-      // Create the relationship
-      await this.neo4jClient.createRelationship(from_id, to_id, type, UNSCOPED_CI_ACCESS, properties);
+      // Recheck both endpoints within the write query; a removed or moved endpoint
+      // cannot cause an edge to be created outside the caller's organization.
+      if (!(await this.neo4jClient.createRelationship(from_id, to_id, type, organizationId, properties))) {
+        res.status(404).json({ success: false, error: 'Not Found', message: 'CI not found' });
+        return;
+      }
 
       logger.info('Relationship created', {
         from_id,
@@ -231,11 +227,10 @@ export class RelationshipController {
       // Support both path parameter and query parameter deletion
       const { id } = req.params;
       const { from_id, to_id, type } = req.query;
+      const organizationId = requestOrganizationId(req);
 
       const session = this.neo4jClient.getSession();
       try {
-        let query: string;
-        let params: any;
 
         if (id) {
           // Delete by relationship ID (if Neo4j internal ID or custom ID)
@@ -257,15 +252,16 @@ export class RelationshipController {
             });
             return;
           }
-          // First check if relationship exists
-          const checkQuery = `
+          // Match and delete in one scoped query to avoid a check/write race.
+          const result = await session.run(`
             MATCH (from:CI {id: $from_id})-[r:${type}]->(to:CI {id: $to_id})
-            RETURN r
-          `;
+            WHERE from.organization_id = $organizationId AND to.organization_id = $organizationId
+            WITH r
+            DELETE r
+            RETURN count(r) AS deleted
+          `, { from_id, to_id, organizationId });
 
-          const checkResult = await session.run(checkQuery, { from_id, to_id });
-
-          if (checkResult.records.length === 0) {
+          if (result.records[0]!.get('deleted').toNumber() === 0) {
             res.status(404).json({
               success: false,
               error: 'Not Found',
@@ -273,15 +269,6 @@ export class RelationshipController {
             });
             return;
           }
-
-          // Delete the relationship
-          query = `
-            MATCH (from:CI {id: $from_id})-[r:${type}]->(to:CI {id: $to_id})
-            DELETE r
-          `;
-          params = { from_id, to_id };
-
-          await session.run(query, params);
 
           logger.info('Relationship deleted', {
             from_id,
@@ -326,6 +313,7 @@ export class RelationshipController {
     try {
       const { type } = req.params;
       const { limit = 100, offset = 0 } = req.query;
+      const organizationId = requestOrganizationId(req);
 
       if (!type) {
         res.status(400).json({
@@ -362,9 +350,10 @@ export class RelationshipController {
         // Get total count
         const countQuery = `
           MATCH (from:CI)-[r:${type}]->(to:CI)
+          WHERE from.organization_id = $organizationId AND to.organization_id = $organizationId
           RETURN count(r) as total
         `;
-        const countResult = await session.run(countQuery);
+        const countResult = await session.run(countQuery, { organizationId });
         const total = countResult.records[0]!.get('total').toNumber();
 
         // Get paginated results
@@ -373,6 +362,7 @@ export class RelationshipController {
 
         const query = `
           MATCH (from:CI)-[r:${type}]->(to:CI)
+          WHERE from.organization_id = $organizationId AND to.organization_id = $organizationId
           RETURN from, r, to
           ORDER BY from.name, to.name
           SKIP $offset
@@ -380,6 +370,7 @@ export class RelationshipController {
         `;
 
         const result = await session.run(query, {
+          organizationId,
           offset: neo4j.int(offsetNum),
           limit: neo4j.int(limitNum),
         });

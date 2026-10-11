@@ -44,15 +44,18 @@ const Query = {
         MATCH (cap:BusinessCapability {id: $capabilityId})-[:REALIZES]->(service:BusinessService)
         WHERE service.id IN $orgServiceIds AND service.organization_id = $organizationId
         OPTIONAL MATCH (service)-[:SUPPORTED_BY]->(app:ApplicationService)
-        OPTIONAL MATCH (app)-[:DEPENDS_ON|RUNS_ON*1..2]->(ci:CI)
-        WHERE ci.tbm_monthly_cost IS NOT NULL
+        OPTIONAL MATCH costPath = (app)-[:DEPENDS_ON|RUNS_ON*1..2]->(ci:CI)
+        WHERE all(node IN nodes(costPath) WHERE NOT node:CI OR node.organization_id = $organizationId)
+          AND ci.tbm_monthly_cost IS NOT NULL
+        WITH cap, collect(DISTINCT service.id) as serviceIds, collect(DISTINCT ci) as cis,
+             collect(DISTINCT ci.tbm_resource_tower) as towers
         RETURN
           cap.id as capabilityId,
           cap.name as capabilityName,
-          collect(DISTINCT service.id) as serviceIds,
-          sum(DISTINCT ci.tbm_monthly_cost) as totalCost,
-          count(DISTINCT ci) as ciCount,
-          collect(DISTINCT ci.tbm_resource_tower) as towers
+          serviceIds,
+          reduce(total = 0, node IN cis | total + node.tbm_monthly_cost) as totalCost,
+          size(cis) as ciCount,
+          towers
         `,
         { capabilityId: args.id, orgServiceIds, organizationId }
       );
@@ -71,13 +74,14 @@ const Query = {
         MATCH (cap:BusinessCapability {id: $capabilityId})-[:REALIZES]->(service:BusinessService)
         WHERE service.id IN $orgServiceIds AND service.organization_id = $organizationId
         OPTIONAL MATCH (service)-[:SUPPORTED_BY]->(app:ApplicationService)
-        OPTIONAL MATCH (app)-[:DEPENDS_ON|RUNS_ON*1..2]->(ci:CI)
-        WHERE ci.tbm_monthly_cost IS NOT NULL
-          AND ci.tbm_resource_tower IS NOT NULL
+        OPTIONAL MATCH costPath = (app)-[:DEPENDS_ON|RUNS_ON*1..2]->(ci:CI)
+        WHERE all(node IN nodes(costPath) WHERE NOT node:CI OR node.organization_id = $organizationId)
+          AND ci.tbm_monthly_cost IS NOT NULL AND ci.tbm_resource_tower IS NOT NULL
+        WITH ci.tbm_resource_tower as tower, collect(DISTINCT ci) as cis
         RETURN
-          ci.tbm_resource_tower as tower,
-          sum(ci.tbm_monthly_cost) as totalCost,
-          count(ci) as ciCount
+          tower,
+          reduce(total = 0, node IN cis | total + node.tbm_monthly_cost) as totalCost,
+          size(cis) as ciCount
         ORDER BY totalCost DESC
         `,
         { capabilityId: args.id, orgServiceIds, organizationId }
@@ -85,14 +89,14 @@ const Query = {
 
       const costByTower = towerResult.records.map((r: any) => ({
         tower: r.get('tower'),
-        totalCost: r.get('totalCost'),
+        totalCost: Number(r.get('totalCost') || 0),
         ciCount: r.get('ciCount').toNumber(),
       }));
 
       return {
         capabilityId: record.get('capabilityId'),
         capabilityName: record.get('capabilityName'),
-        totalMonthlyCost: record.get('totalCost') || 0,
+        totalMonthlyCost: Number(record.get('totalCost') || 0),
         ciCount: record.get('ciCount').toNumber(),
         supportingServices: record.get('serviceIds').length,
         costByTower,
@@ -126,15 +130,17 @@ const Query = {
         MATCH (service:BusinessService {id: $serviceId})
         WHERE service.organization_id = $organizationId
         OPTIONAL MATCH (service)-[:SUPPORTED_BY]->(app:ApplicationService)
-        OPTIONAL MATCH (app)-[:DEPENDS_ON|RUNS_ON*1..2]->(ci:CI)
-        WHERE ci.tbm_monthly_cost IS NOT NULL
+        OPTIONAL MATCH costPath = (app)-[:DEPENDS_ON|RUNS_ON*1..2]->(ci:CI)
+        WHERE all(node IN nodes(costPath) WHERE NOT node:CI OR node.organization_id = $organizationId)
+          AND ci.tbm_monthly_cost IS NOT NULL
+        WITH service, collect(DISTINCT ci) as cis, collect(DISTINCT ci.tbm_resource_tower) as towers
         RETURN
           service.id as serviceId,
           service.name as serviceName,
           service.user_count as userCount,
-          sum(ci.tbm_monthly_cost) as totalCost,
-          count(DISTINCT ci) as ciCount,
-          collect(DISTINCT ci.tbm_resource_tower) as towers
+          reduce(total = 0, node IN cis | total + node.tbm_monthly_cost) as totalCost,
+          size(cis) as ciCount,
+          towers
         `,
         { serviceId: args.id, organizationId }
       );
@@ -146,7 +152,7 @@ const Query = {
       }
 
       const record = result.records[0]!;
-      const totalCost = record.get('totalCost') || 0;
+      const totalCost = Number(record.get('totalCost') || 0);
       const userCount = record.get('userCount') || 0;
 
       return {

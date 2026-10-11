@@ -11,6 +11,7 @@ import { relationshipSchema, schemas } from '@cmdb/common';
 export const relationshipRoutes = Router();
 const controller = new RelationshipController();
 const authMiddleware = getAuthMiddleware();
+relationshipRoutes.use(authMiddleware.requireOrganization());
 
 // Validation schemas
 const listRelationshipsQuerySchema = Joi.object({

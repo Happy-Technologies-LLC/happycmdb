@@ -78,7 +78,7 @@ beforeAll(async () => {
     CREATE (bs:BusinessService {id:'t2-a', name:'A', organization_id:$a})
     CREATE (bsB:BusinessService {id:'t2-b', name:'B', organization_id:$b})
     CREATE (cap:BusinessCapability {id:'t2-cap', name:'cap'})
-    CREATE (bs)-[:SUPPORTED_BY]->(app:ApplicationService {id:'t2-app'})
+    CREATE (bs)-[:SUPPORTED_BY]->(app:ApplicationService {id:'t2-app', organization_id:$a})
     CREATE (cap)-[:REALIZES]->(bs) CREATE (cap)-[:REALIZES]->(bsB)
     CREATE (app)-[:DEPENDS_ON]->(c1:CI {id:'t2-cost1', organization_id:$a, tbm_monthly_cost:100, tbm_resource_tower:'compute'})
     CREATE (app)-[:DEPENDS_ON]->(c2:CI {id:'t2-cost2', organization_id:$a, tbm_monthly_cost:100, tbm_resource_tower:'compute'})
@@ -90,6 +90,14 @@ beforeAll(async () => {
     CREATE (foreignMid)-[:RUNS_ON]->(:CI {id:'t2-through-foreign', organization_id:$a, tbm_monthly_cost:700})
     CREATE (app)-[:RUNS_ON]->(nullMid:CI {id:'t2-null-mid'})
     CREATE (nullMid)-[:RUNS_ON]->(:CI {id:'t2-through-null', organization_id:$a, tbm_monthly_cost:700})`, { a: A, b: B });
+  await run(`MATCH (bs:BusinessService {id:'t2-a'}), (foreign:BusinessService {id:'t2-b'})
+    CREATE (own:CI {id:'t2-own-support', name:'owned support', organization_id:$a})
+    CREATE (own)-[:SUPPORTS]->(bs)
+    CREATE (foreignLink:CI {id:'t2-foreign-link', name:'foreign link', organization_id:$a, created_at:'2099-01-02'})
+    CREATE (foreignLink)-[:SUPPORTS]->(foreign)
+    CREATE (legacy:BusinessService {id:'t2-legacy-service'})
+    CREATE (nullLink:CI {id:'t2-null-link', name:'null link', organization_id:$a, created_at:'2099-01-01'})
+    CREATE (nullLink)-[:SUPPORTS]->(legacy)`, { a: A });
 });
 afterAll(async () => {
   await gql?.server.stop();
@@ -149,10 +157,17 @@ it('all search paths filter before count, ordering and LIMIT, including NULL leg
   const related = await search('a', 'relationships', { ci_type: 'server', relationship_type: 'DEPENDS_ON', related_ci_type: 'server' });
   expect(related.body.data.map((ci: { id: string }) => ci.id)).toEqual(['t2-a']);
   const orphans = await request(app).get('/api/v1/search/orphaned').set(auth('a'));
+  expect(orphans.status).toBe(200);
   expect(orphans.body.data.map((ci: { id: string }) => ci.id).sort()).toEqual([
-    't2-cost2', 't2-through-foreign', 't2-through-null',
+    't2-foreign-link', 't2-null-link', 't2-through-foreign', 't2-through-null',
   ]);
-  expect(orphans.body.pagination.total).toBe(3);
+  expect(orphans.body.pagination.total).toBe(4);
+  for (const [offset, id] of [[0, 't2-foreign-link'], [1, 't2-null-link']] as const) {
+    const page = await request(app).get(`/api/v1/search/orphaned?limit=1&offset=${offset}`).set(auth('a'));
+    expect(page.status).toBe(200);
+    expect(page.body.pagination).toMatchObject({ total: 4, count: 1, offset, limit: 1 });
+    expect(page.body.data.map((ci: { id: string }) => ci.id)).toEqual([id]);
+  }
 });
 
 it('REST and production GraphQL findMatches give foreign-only and NULL-only the same no-match response', async () => {

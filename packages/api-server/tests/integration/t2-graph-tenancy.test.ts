@@ -98,9 +98,23 @@ afterAll(async () => {
 });
 
 it('relationships fence both endpoints for lists, type counts, create and atomic delete', async () => {
-  for (const path of ['/api/v1/relationships', '/api/v1/relationships/type/DEPENDS_ON', '/api/v1/relationships?ci_id=t2-a']) {
+  for (const [path, type] of [
+    ['/api/v1/relationships', null],
+    ['/api/v1/relationships/type/DEPENDS_ON', 'DEPENDS_ON'],
+  ] as const) {
+    const expected = await run(`
+      MATCH (from:CI)-[r]->(to:CI)
+      WHERE from.organization_id = $organizationId AND to.organization_id = $organizationId
+        AND ($type IS NULL OR type(r) = $type)
+      RETURN count(r) AS total
+    `, { organizationId: A, type });
     const response = await request(app).get(path).set(auth('a'));
     expect(response.status).toBe(200);
+    expect(response.body.pagination.total).toBe(expected.records[0].get('total').toNumber());
+    expect(response.body.data.some((edge: { to_id: string }) => ['t2-b', 't2-null'].includes(edge.to_id))).toBe(false);
+  }
+  for (const filter of ['from_id=t2-a', 'ci_id=t2-a']) {
+    const response = await request(app).get(`/api/v1/relationships?${filter}`).set(auth('a'));
     expect(response.body.pagination.total).toBe(1);
     expect(response.body.data.map((edge: { to_id: string }) => edge.to_id)).toEqual(['t2-a2']);
   }

@@ -8,11 +8,13 @@
  * - Retry failed jobs
  */
 
+import axios from 'axios';
 import { Command } from 'commander';
 import { logger, getQueueManager, QUEUE_NAMES } from '@cmdb/common';
-import type { DiscoveryProvider, ETLJobType } from '@cmdb/common';
-import { getDiscoveryScheduler } from '@cmdb/discovery-engine';
+import type { ETLJobType } from '@cmdb/common';
 import { getETLScheduler } from '@cmdb/etl-processor';
+
+const MISSING_DISCOVERY_AUTH = 'Discovery API authentication required (--key or --token)';
 
 /**
  * Create jobs command
@@ -97,12 +99,21 @@ export function createJobsCommand(): Command {
   // Run discovery job command
   jobsCmd
     .command('run:discovery <provider>')
-    .description('Run discovery job immediately (aws, azure, gcp, ssh, nmap)')
+    .description('Run discovery job immediately through the authenticated API (ssh, nmap)')
     .option('-c, --config <config>', 'Job configuration (JSON string)')
+    .option('--token <token>', 'JWT access token for API (or CMDB_ACCESS_TOKEN)')
     .action(async (provider: string, options: any) => {
       try {
-        const discoveryScheduler = getDiscoveryScheduler();
-
+        // There is no verified CLI-local tenant. Only the authenticated API
+        // can derive an organization before a job is added to BullMQ.
+        const globals = jobsCmd.optsWithGlobals();
+        const apiKey = globals['key'] || process.env['CMDB_API_KEY'];
+        const token = options.token || process.env['CMDB_ACCESS_TOKEN'];
+        if (!token && !apiKey) throw new Error(MISSING_DISCOVERY_AUTH);
+        const apiUrl = globals['url'] || process.env['CMDB_API_URL'] || 'http://localhost:3000/api/v1';
+        const headers = token
+          ? { Authorization: `Bearer ${token}` }
+          : { [process.env['API_KEY_HEADER_NAME'] || 'X-API-Key']: apiKey };
         let config;
         if (options.config) {
           config = JSON.parse(options.config);
@@ -110,19 +121,24 @@ export function createJobsCommand(): Command {
 
         logger.info(`Triggering discovery job for ${provider}...`);
 
-        const jobId = await discoveryScheduler.triggerDiscovery(
-          provider as DiscoveryProvider,
-          config,
-          'cli'
+        const response = await axios.post(
+          `${String(apiUrl).replace(/\/+$/, '')}/jobs/discovery/${encodeURIComponent(provider)}`,
+          { config },
+          { headers }
         );
+        const jobId: string = response.data.data.jobId;
 
         logger.info(`Discovery job ${jobId} queued for ${provider}`);
         console.log(`\nJob ID: ${jobId}`);
         console.log(`Use 'cmdb jobs status ${jobId}' to check status\n`);
 
         process.exit(0);
-      } catch (err: any) {
-        logger.error('Error running discovery job', err);
+      } catch (error) {
+        logger.error(error instanceof Error && error.message === MISSING_DISCOVERY_AUTH
+          ? MISSING_DISCOVERY_AUTH
+          : axios.isAxiosError(error) && [401, 403].includes(error.response?.status ?? 0)
+            ? 'Discovery API authorization failed'
+            : 'Error running discovery job');
         process.exit(1);
       }
     });

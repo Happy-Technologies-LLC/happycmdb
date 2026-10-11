@@ -156,6 +156,15 @@ returned. Schedule responses omit stored configuration; queue-list pagination
 uses queue offsets and does not expose cross-tenant totals. Generic queue
 statistics and global schedule controls remain separately governed.
 
+`cmdb jobs run:discovery nmap --config '{"targets":["192.0.2.1"]}'`
+calls the authenticated `POST /jobs/discovery/{provider}` endpoint rather than
+writing to BullMQ directly. Set `CMDB_API_URL` (or global `--url`) and supply
+`CMDB_API_KEY` (or global `--key`) via the configured `API_KEY_HEADER_NAME`
+(default `X-API-Key`), or a JWT via `CMDB_ACCESS_TOKEN` (or `--token`).
+The API derives the organization from the verified credential; missing,
+invalid, or tenantless credentials fail without queueing a job.
+
+
 
 ### Business Services (`/api/v1/business-services`)
 Scoped to the caller's organization: 403 without an organization claim; a service outside the caller's organization returns the same 404 as a missing one. Create returns 409 for a `service_id` already in use.

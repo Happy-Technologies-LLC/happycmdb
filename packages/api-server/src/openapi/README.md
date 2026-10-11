@@ -182,13 +182,15 @@ authenticated role until the global-operation policy exists. The web UI shows
 the global queue/schedule controls as unavailable without requesting them;
 organization-owned job lists continue to load.
 Legacy `GET /discovery/jobs` accepts `limit` 1–100 and non-negative `offset`;
-larger pages receive 400. Each discovery queue/state reads at most `limit`
-BullMQ jobs starting at that `offset`; this makes later windows reachable
-without scanning every preceding foreign job. Results are an owned, sorted
-sample, not a complete tenant-wide ranking. Pagination reports `count`,
-`offset`, `limit`, and `truncated: true`; it deliberately omits exact `total`.
-Under mixed states/queues or high foreign volume, pages can be incomplete or
-overlap. A tenant-exact pagination contract remains HAP-546.
+larger limits receive 400. `limit` applies **per discovery queue/state**, not
+to the merged response: each queue/state reads at most `limit` BullMQ jobs
+starting at `offset`, and the response returns every owned job in those windows,
+sorted by timestamp (up to 16 × `limit` with four queues and four states).
+This reaches later windows without scanning preceding foreign jobs. Pagination
+reports `count` (returned jobs), `offset`, `limit` (per-source window), and
+`truncated: true`; it deliberately omits exact `total`. These windows are not
+a tenant-wide ranking: under mixed states/queues or high foreign volume, pages
+can be incomplete or overlap. A tenant-exact pagination contract remains HAP-546.
 
 `cmdb jobs run:discovery nmap --config '{"targets":["192.0.2.1"]}'`
 calls the authenticated `POST /jobs/discovery/{provider}` endpoint rather than

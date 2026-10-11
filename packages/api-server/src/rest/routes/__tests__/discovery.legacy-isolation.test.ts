@@ -19,7 +19,7 @@ const records = [
   { id: 'failed-own', data: { organizationId: A, provider: 'nmap', config: { nested: { token: secret } } }, returnvalue: { password: secret }, failedReason: secret, timestamp: 2, attemptsMade: 1, getState: async () => 'failed', remove },
   { id: 'completed-own', data: { organizationId: A, provider: 'nmap', config: { nested: { token: secret } } }, returnvalue: { discovered: 7, nested: { credential: secret } }, timestamp: 3, attemptsMade: 1, getState: async () => 'completed', remove },
 ];
-const queue = { getJob: async (id: string) => records.find(j => j.id === id), getWaiting: async (start: number, end: number) => records.filter(j => !['failed-own', 'completed-own'].includes(j.id)).slice(start, end + 1), getActive: async () => [], getCompleted: async () => records.filter(j => j.id === 'completed-own'), getFailed: async () => records.filter(j => j.id === 'failed-own'), add };
+const queue = { getJob: async (id: string) => records.find(j => j.id === id), getWaiting: async (start: number, end: number) => records.filter(j => !['failed-own', 'completed-own'].includes(j.id)).slice(start, end + 1), getActive: async () => [], getCompleted: async (start: number, end: number) => records.filter(j => j.id === 'completed-own').slice(start, end + 1), getFailed: async (start: number, end: number) => records.filter(j => j.id === 'failed-own').slice(start, end + 1), add };
 const emptyQueue = { ...queue, getJob: async () => undefined, getWaiting: async () => [], getCompleted: async () => [], getFailed: async () => [] };
 jest.mock('@cmdb/database', () => ({ queueManager: { getQueue: (name: string) => name === 'discovery-nmap' ? queue : emptyQueue }, QUEUE_NAMES: { _DISCOVERY_NMAP: 'discovery-nmap', _DISCOVERY_SSH: 'discovery-ssh' } }));
 jest.mock('@cmdb/common', () => ({ ...jest.requireActual('@cmdb/common'), logger: { info: jest.fn(), error: jest.fn(), warn: jest.fn() } }));
@@ -127,6 +127,42 @@ test('legacy bounded pages continue past 100 owned jobs without claiming an exac
     expect(oversized.status).toBe(400);
   } finally {
     waiting.mockRestore();
+  }
+});
+
+test('bounded per-state continuation returns every owned job exactly once across states', async () => {
+  const completed = Array.from({ length: 100 }, (_, index) => ({
+    ...records[0]!, id: `completed-${index}`, timestamp: 1000 + index, getState: async () => 'completed',
+  }));
+  const failed = Array.from({ length: 100 }, (_, index) => ({
+    ...records[0]!, id: `failed-${index}`, timestamp: index, getState: async () => 'failed',
+  }));
+  const waiting = jest.spyOn(queue, 'getWaiting').mockImplementation(async () => []);
+  const completedRead = jest.spyOn(queue, 'getCompleted').mockImplementation(async (start, end) =>
+    completed.slice(start, end + 1));
+  const failedRead = jest.spyOn(queue, 'getFailed').mockImplementation(async (start, end) =>
+    failed.slice(start, end + 1));
+  try {
+    const first = await request(app).get('/api/v1/discovery/jobs?limit=100')
+      .set('authorization', auth('viewer'));
+    const second = await request(app).get('/api/v1/discovery/jobs?offset=100&limit=100')
+      .set('authorization', auth('viewer'));
+    expect(completedRead).toHaveBeenNthCalledWith(1, 0, 99);
+    expect(failedRead).toHaveBeenNthCalledWith(1, 0, 99);
+    expect(completedRead).toHaveBeenNthCalledWith(2, 100, 199);
+    expect(failedRead).toHaveBeenNthCalledWith(2, 100, 199);
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    const ids = [...first.body.data, ...second.body.data].map((job: { id: string }) => job.id);
+    expect(ids).toHaveLength(200);
+    expect(new Set(ids)).toEqual(new Set([...completed, ...failed].map((job) => job.id)));
+    expect(first.body.pagination).toMatchObject({ offset: 0, limit: 100, count: 200, truncated: true });
+    expect(first.body.pagination).not.toHaveProperty('total');
+    expect(JSON.stringify(first.body)).not.toContain(secret);
+  } finally {
+    waiting.mockRestore();
+    completedRead.mockRestore();
+    failedRead.mockRestore();
   }
 });
 

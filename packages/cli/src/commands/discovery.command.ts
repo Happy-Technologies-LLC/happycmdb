@@ -41,7 +41,7 @@ export class DiscoveryCommand {
       .command('list')
       .description('List all discovery scans')
       .option('--status <status>', 'Filter by status: pending, running, completed, failed')
-      .option('--limit <limit>', 'Limit number of results', '20')
+      .option('--limit <limit>', 'Maximum jobs per queue/state (1-100; merged results may exceed this)', '20')
       .action(async (options) => {
         await this.listScans(options);
       });

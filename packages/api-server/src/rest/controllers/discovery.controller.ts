@@ -146,9 +146,9 @@ export class DiscoveryController {
         }
       }
       allJobs.sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0));
-      const page = allJobs.slice(0, limitNum);
-      // Do not represent this bounded multi-queue sample as an exact total.
-      res.json({ success: true, data: page, pagination: { count: page.length, offset: offsetNum, limit: limitNum, truncated: true } });
+      // A limit applies to each queue/state window, not to the merged result:
+      // slicing here would permanently discard jobs from later states.
+      res.json({ success: true, data: allJobs, pagination: { count: allJobs.length, offset: offsetNum, limit: limitNum, truncated: true } });
     } catch (error) {
       logger.error('Error listing discovery jobs', error);
       res.status(500).json({ success: false, error: 'Failed to list discovery jobs' });

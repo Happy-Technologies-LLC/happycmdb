@@ -409,7 +409,7 @@ export class DiscoveryOrchestrator {
             cis = await worker.scanNetworks(jobId, ranges);
           } else if (config.range) {
             // Single range (legacy)
-            cis = await worker.scanNetwork(jobId, config.range);
+            cis = await worker.scanNetwork(jobId, config.range, this.mapScanOptions(config.scanOptions));
           } else {
             throw new Error('Nmap config must include either "targets" (array) or "range" (string)');
           }

@@ -172,7 +172,8 @@ test('mounted definitions isolate two users and orgs, reject legacy and credenti
   }), expect.any(Object));
   expect(JSON.stringify(queue.add.mock.calls)).not.toContain('synthetic-secret');
   const scanNetworks = jest.fn().mockResolvedValue([]);
-  jest.mocked(NmapDiscoveryWorker).mockImplementation(() => ({ scanNetworks }) as never);
+  const scanNetwork = jest.fn().mockResolvedValue([]);
+  jest.mocked(NmapDiscoveryWorker).mockImplementation(() => ({ scanNetworks, scanNetwork }) as never);
   const orchestrator = Object.create(DiscoveryOrchestrator.prototype) as DiscoveryOrchestrator;
   Object.assign(orchestrator, {
     postgresClient: db,
@@ -202,6 +203,16 @@ test('mounted definitions isolate two users and orgs, reject legacy and credenti
     await expect(worker({ data: queued, updateProgress: jest.fn() })).resolves.toEqual({ discovered: 0 });
     expect(scanNetworks).toHaveBeenLastCalledWith(queued.jobId, [{ range: '192.0.2.1', scanType }]);
   }
+  const updatedRange = await request(app).put(`${url}/${idA}`).set(headers('a')).send({
+    config: { range: '192.0.2.1', scanOptions: { serviceDetection: true, password: 'synthetic-secret' } },
+  });
+  expect(updatedRange.status).toBe(200);
+  expect((await request(app).post(`${url}/${idA}/run`).set(headers('a'))).status).toBe(202);
+  const queuedRange = queue.add.mock.calls.at(-1)?.[1];
+  expect(queuedRange.config).toEqual({ range: '192.0.2.1', scanOptions: { serviceDetection: true } });
+  expect(JSON.stringify(queuedRange)).not.toContain('synthetic-secret');
+  await expect(worker({ data: queuedRange, updateProgress: jest.fn() })).resolves.toEqual({ discovered: 0 });
+  expect(scanNetwork).toHaveBeenCalledWith(queuedRange.jobId, '192.0.2.1', 'version');
   expect((await request(app).get(url).set(headers('none'))).status).toBe(403);
   expect((await query('SELECT name FROM discovery_definitions WHERE id = $1', [idB])).rows).toEqual([{ name: other.body.data.name }]);
 });

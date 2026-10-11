@@ -116,6 +116,16 @@ const bearer = (id: string, forgedOrg?: string) => ({
   Authorization: `Bearer ${jwt.generateAccessToken(id, users[id]!._username, users[id]!._role, forgedOrg)}`,
 });
 const apiKey = () => ({ [loadConfig().auth.apiKeys.headerName]: API_KEY_A });
+const savedKey = apiKeys[createHash('sha256').update(API_KEY_A).digest('hex')]!;
+const updateConfig = (headers: Record<string, string>, id: string) =>
+  request(app).put(`${url}/${id}`).set(headers).send({ enabled: false });
+const updateGraphQL = (headers: Record<string, string>, id: string) =>
+  request(graphqlApp).post('/graphql').set(headers).send({
+    query: 'mutation($id: ID!) { updateConnectorConfiguration(id: $id, input: { enabled: false }) { id } }',
+    variables: { id },
+  });
+const updateHub = (headers: Record<string, string>, name: string) =>
+  request(app).put(`/api/v1/hub/connectors/${name}`).set(headers).send({ enabled: false });
 const graphqlApp = express();
 let graphqlServer: ApolloServer<GraphQLContext>;
 const app = express();
@@ -162,6 +172,78 @@ beforeEach(async () => {
              ('${RUN_NULL}','${LEGACY}','test','legacy',NOW(),'running',NULL,'["${SECRET}"]','${SECRET}');`);
   dataQueries = 0;
   credentialLookups = 0;
+  users.a!._role = 'operator';
+  users.a!._enabled = true;
+  users.a!._organizationId = ORG_A;
+  users.b!._role = 'operator';
+  users.b!._enabled = true;
+  users.b!._organizationId = ORG_B;
+  savedKey._role = 'operator';
+  savedKey._enabled = true;
+  apiKeys[createHash('sha256').update(API_KEY_A).digest('hex')] = savedKey;
+});
+
+it('uses current enabled roles for signed JWTs and caps stored API keys across mounted REST, GraphQL and hub writes', async () => {
+  const oldA = bearer('a', ORG_B);
+  const currentB = bearer('b', ORG_A);
+  expect((await updateConfig(oldA, A)).status).toBe(200);
+  expect((await updateGraphQL(oldA, A)).body.errors).toBeUndefined();
+  expect((await updateHub(apiKey(), 'alpha')).status).toBe(200);
+
+  users.a!._role = 'viewer';
+  const queriesBefore = dataQueries;
+  expect((await updateConfig(oldA, A)).status).toBe(403);
+  const deniedGraphQL = await updateGraphQL(oldA, A);
+  expect(deniedGraphQL.body.errors[0].extensions.code).toBe('FORBIDDEN');
+  expect((await updateHub(oldA, 'alpha')).status).toBe(403);
+  expect((await updateConfig(apiKey(), A)).status).toBe(403);
+  expect((await updateGraphQL(apiKey(), A)).body.errors[0].extensions.code).toBe('FORBIDDEN');
+  expect((await updateHub(apiKey(), 'alpha')).status).toBe(403);
+  expect(dataQueries).toBe(queriesBefore);
+
+  const readA = await request(app).get(url).set(oldA);
+  expect(readA.status).toBe(200);
+  expect(readA.body.data.map((row: { id: string }) => row.id)).toEqual([A]);
+  expect((await request(app).get(url).set(apiKey())).body.data.map((row: { id: string }) => row.id)).toEqual([A]);
+  expect((await request(graphqlApp).post('/graphql').set(oldA)
+    .send({ query: 'query($id: ID!) { connectorConfiguration(id: $id) { id } }', variables: { id: A } }))
+    .body.data.connectorConfiguration.id).toBe(A);
+  users.a!._organizationId = ORG_B;
+  expect((await request(app).get(url).set(oldA)).body.data.map((row: { id: string }) => row.id)).toEqual([B]);
+  expect((await request(app).get(url).set(apiKey())).body.data.map((row: { id: string }) => row.id)).toEqual([B]);
+  users.a!._organizationId = ORG_A;
+  expect((await updateConfig(currentB, B)).status).toBe(200);
+  expect((await request(app).get(url).set(currentB)).body.data.map((row: { id: string }) => row.id)).toEqual([B]);
+  expect((await query('SELECT id, enabled FROM connector_configurations ORDER BY id')).rows)
+    .toEqual([{ id: A, enabled: false }, { id: B, enabled: false }, { id: LEGACY, enabled: true }]);
+});
+
+it('does not promote a lower-privilege key, follows a current role upgrade, and rejects disabled or missing identities', async () => {
+  users.a!._role = 'viewer';
+  const oldViewer = bearer('a');
+  savedKey._role = 'viewer';
+  users.a!._role = 'operator';
+  expect((await updateConfig(oldViewer, A)).status).toBe(200);
+  expect((await updateConfig({ ...oldViewer, ...apiKey() }, A)).status).toBe(200);
+  expect((await updateConfig(apiKey(), A)).status).toBe(403);
+  expect((await updateGraphQL(apiKey(), A)).body.errors[0].extensions.code).toBe('FORBIDDEN');
+  expect((await updateHub(apiKey(), 'alpha')).status).toBe(403);
+  expect((await request(app).get(url).set(apiKey())).status).toBe(200);
+  savedKey._role = 'agent';
+  users.a!._role = 'viewer';
+  expect((await request(app).get(url).set(apiKey())).status).toBe(401);
+  expect((await updateHub(apiKey(), 'alpha')).status).toBe(401);
+  savedKey._role = 'viewer';
+  users.a!._role = 'operator';
+  users.a!._enabled = false;
+  expect((await updateConfig(oldViewer, A)).status).toBe(401);
+  expect((await updateConfig(apiKey(), A)).status).toBe(401);
+  expect((await updateGraphQL(oldViewer, A)).status).toBe(401);
+  const removedUser = users.a!;
+  delete users.a;
+  expect((await updateHub(oldViewer, 'alpha')).status).toBe(401);
+  expect((await updateHub(apiKey(), 'alpha')).status).toBe(401);
+  users.a = removedUser;
 });
 
 it('foreign config IDs and missing IDs return identical 404 without mutation across every route', async () => {

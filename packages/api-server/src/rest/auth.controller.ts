@@ -75,6 +75,7 @@ export class AuthController {
     this.router.post(
       '/api-key',
       this.authMiddleware.authenticate(),
+      this.authMiddleware.requireJwtSession(),
       this.validator.validate(authSchemas._generateApiKey),
       this.generateApiKey.bind(this)
     );

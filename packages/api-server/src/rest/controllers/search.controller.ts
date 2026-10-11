@@ -320,7 +320,7 @@ export class SearchController {
           MATCH (ci:CI)
           WHERE ci.organization_id = $organizationId
             AND NOT EXISTS {
-              MATCH (ci)-[]-(related:CI)
+              MATCH (ci)-[]-(related)
               WHERE related.organization_id = $organizationId
             }
           RETURN count(ci) as total
@@ -334,7 +334,7 @@ export class SearchController {
           MATCH (ci:CI)
           WHERE ci.organization_id = $organizationId
             AND NOT EXISTS {
-              MATCH (ci)-[]-(related:CI)
+              MATCH (ci)-[]-(related)
               WHERE related.organization_id = $organizationId
             }
           RETURN ci

@@ -87,6 +87,7 @@ export class AuthController {
     this.router.get(
       '/api-keys',
       this.authMiddleware.authenticate(),
+      this.authMiddleware.requireJwtSession(),
       this.listApiKeys.bind(this)
     );
 
@@ -97,6 +98,7 @@ export class AuthController {
     this.router.delete(
       '/api-key/:keyId',
       this.authMiddleware.authenticate(),
+      this.authMiddleware.requireJwtSession(),
       this.revokeApiKey.bind(this)
     );
 
@@ -117,6 +119,7 @@ export class AuthController {
     this.router.put(
       '/profile',
       this.authMiddleware.authenticate(),
+      this.authMiddleware.requireJwtSession(),
       this.validator.validate(authSchemas._updateProfile),
       this.updateProfile.bind(this)
     );
@@ -128,6 +131,7 @@ export class AuthController {
     this.router.put(
       '/password',
       this.authMiddleware.authenticate(),
+      this.authMiddleware.requireJwtSession(),
       this.validator.validate(authSchemas._changePassword),
       this.changePassword.bind(this)
     );
@@ -139,6 +143,7 @@ export class AuthController {
     this.router.delete(
       '/account',
       this.authMiddleware.authenticate(),
+      this.authMiddleware.requireJwtSession(),
       this.deleteAccount.bind(this)
     );
   }

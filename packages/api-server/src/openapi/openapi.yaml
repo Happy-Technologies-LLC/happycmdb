@@ -19,6 +19,12 @@ info:
     All API endpoints (except `/api/v1/auth/login`) require authentication via:
     - **JWT Token**: Include `Authorization: Bearer <token>` header
     - **API Key**: Include `X-API-Key: <key>` header
+    Account operations (`PUT /auth/profile`, `PUT /auth/password`,
+    `DELETE /auth/account`, `GET /auth/api-keys`, `DELETE /auth/api-key/{keyId}`)
+    and API-key creation require a verified JWT user session. An authenticated
+    API key receives HTTP 403 with `_error: Forbidden` and
+    `_message: JWT user session required`, before route validation.
+    Missing or disabled users receive HTTP 401.
 
     ## Rate Limiting
 
@@ -198,6 +204,8 @@ paths:
       tags: [Authentication]
       summary: List API keys
       description: Get all API keys for the authenticated user
+      security:
+        - BearerAuth: []
       operationId: listApiKeys
       responses:
         '200':
@@ -210,6 +218,8 @@ paths:
                   $ref: '#/components/schemas/ApiKey'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: API keys cannot access account-level operations; JWT user session required
 
   /auth/api-keys/{keyId}:
     delete:
@@ -224,6 +234,96 @@ paths:
           description: API key revoked
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /auth/profile:
+    put:
+      tags: [Authentication]
+      summary: Update own name or avatar
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                avatar:
+                  type: string
+      responses:
+        '200':
+          description: Own profile updated
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: JWT user session required; API keys are refused before validation
+
+  /auth/password:
+    put:
+      tags: [Authentication]
+      summary: Change own password
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currentPassword, newPassword]
+              properties:
+                currentPassword:
+                  type: string
+                  format: password
+                newPassword:
+                  type: string
+                  format: password
+                  minLength: 8
+      responses:
+        '200':
+          description: Own password changed
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: JWT user session required; API keys are refused before validation
+
+  /auth/account:
+    delete:
+      tags: [Authentication]
+      summary: Delete own account
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Own account deleted
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: JWT user session required
+
+  /auth/api-key/{keyId}:
+    delete:
+      tags: [Authentication]
+      summary: Revoke own API key
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: keyId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Own API key revoked
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: JWT user session required
         '404':
           $ref: '#/components/responses/NotFound'
 

@@ -33,6 +33,10 @@ The CMDB (Configuration Management Database) API provides both REST and GraphQL 
 
 The CMDB API supports two authentication methods:
 
+### Account-level operations
+
+Only a verified login JWT access token may invoke `POST /auth/api-key`, `GET /auth/api-keys`, `DELETE /auth/api-key/:keyId`, `PUT /auth/profile`, `PUT /auth/password`, or `DELETE /auth/account` (relative to `/api/v1`). API-key-authenticated requests of every role receive HTTP 403 with `{ "_error": "Forbidden", "_message": "JWT user session required" }` before endpoint validation. Missing or disabled users receive HTTP 401. The mounted GraphQL schema has no account-level operations; REST has no key rotation, session reset, or MFA/security-profile route.
+
 ### 1. API Key Authentication (Recommended for Service-to-Service)
 
 Include an API key in the request header:

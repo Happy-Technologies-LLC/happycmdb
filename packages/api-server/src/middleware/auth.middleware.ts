@@ -120,7 +120,7 @@ export class AuthMiddleware {
     };
   }
 
-  /** Key issuance requires a verified user session; a key cannot chain keys. */
+  /** Account operations require a verified login session, never an API key. */
   requireJwtSession() {
     return (req: AuthenticatedRequest, res: Response, next: NextFunction): void => {
       if (req.user === undefined) {

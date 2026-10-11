@@ -6,10 +6,8 @@
  *
  * Builds a real AuthController (real AuthService/AuthMiddleware/JWT
  * signing) over an in-memory fake AuthRepository and drives it with
- * supertest, so these assert the actual wire contract: 401 without a
- * token, 400 on password mismatch, and that the account acted on is
- * always the token's subject -- a userId in the request body is never
- * honored.
+ * supertest. Account operations require a login session, and authenticated
+ * requests act only on their verified subject, never a request-body userId.
  */
 
 import { describe, it, expect, beforeEach } from '@jest/globals';
@@ -40,6 +38,7 @@ class InMemoryAuthRepository implements AuthRepository {
   users = new Map<string, User>();
   apiKeys = new Map<string, { userId: string; revoked: boolean }>();
   issuedKeys = new Map<string, ApiKey>();
+  listCalls = 0;
 
   async findUserByUsername(username: string): Promise<User | null> {
     return [...this.users.values()].find((u) => u._username === username) || null;
@@ -91,8 +90,11 @@ class InMemoryAuthRepository implements AuthRepository {
     key.revoked = true;
     return 1;
   }
-  async listApiKeys(): Promise<Omit<ApiKey, '_key' | '_keyHash'>[]> {
-    return [];
+  async listApiKeys(userId: string): Promise<Omit<ApiKey, '_key' | '_keyHash'>[]> {
+    this.listCalls++;
+    return [...this.issuedKeys.values()]
+      .filter(key => key._userId === userId)
+      .map(({ _key, _keyHash, ...key }) => key);
   }
 }
 
@@ -208,6 +210,89 @@ describe('AuthController profile/password/account routes', () => {
         .set(headers).send({ name: 'Missing user' })).status).toBe(401);
     }
     expect(repository.issuedKeys.size).toBe(3);
+  });
+
+  // The same mounted routes authenticate both credentials. Only login sessions
+  // may enter an account operation, including reads of key inventory.
+  describe('account operations require a user session', () => {
+    const operations = [
+      { method: 'get', path: '/api/v1/auth/api-keys', body: undefined },
+      { method: 'delete', path: '/api/v1/auth/api-key/alice-key', body: undefined },
+      { method: 'put', path: '/api/v1/auth/profile', body: { name: 'Changed', userId: 'user-2' } },
+      { method: 'put', path: '/api/v1/auth/password', body: {
+        currentPassword: 'correct-horse-battery-staple', newPassword: 'new-password-123', userId: 'user-2',
+      } },
+      { method: 'delete', path: '/api/v1/auth/account', body: undefined },
+    ] as const;
+
+    async function call(
+      method: 'get' | 'delete' | 'put', path: string, headers: Record<string, string>,
+      body?: object
+    ) {
+      const req = request(app)[method](path).set(headers);
+      return body === undefined ? req : req.send(body);
+    }
+
+    it.each(operations)('$method $path denies keys before validation or effects, allows login sessions, and isolates users', async ({ method, path, body }) => {
+      const login = await request(app).post('/api/v1/auth/login')
+        .send({ username: 'alice', password: 'correct-horse-battery-staple' });
+      expect(login.status).toBe(200);
+      const session = { Authorization: `Bearer ${login.body.data._accessToken as string}` };
+      const issue = await request(app).post('/api/v1/auth/api-key').set(session).send({ name: 'Account test key' });
+      expect(issue.status).toBe(200);
+      const apiKey = { 'X-API-Key': issue.body.data._apiKey as string };
+      const aliceHash = repository.users.get('user-1')!._passwordHash;
+      const bobHash = repository.users.get('user-2')!._passwordHash;
+      const invalidBody = method === 'put' ? {} : body;
+
+      for (const role of ['viewer', 'operator', 'admin'] as const) {
+        repository.users.get('user-1')!._role = role;
+        const denied = await call(method, path, apiKey, invalidBody);
+        expect([denied.status, denied.body]).toEqual([403, {
+          _error: 'Forbidden', _message: 'JWT user session required',
+        }]);
+      }
+      expect(repository.listCalls).toBe(0);
+      expect(repository.apiKeys.get('alice-key')?.revoked).toBe(false);
+      expect(repository.users.get('user-1')!._passwordHash).toBe(aliceHash);
+      expect(repository.users.get('user-1')!._name).toBeUndefined();
+      expect(repository.users.has('user-1')).toBe(true);
+      expect(repository.users.get('user-2')!._passwordHash).toBe(bobHash);
+
+      repository.users.get('user-1')!._role = 'operator';
+      const allowed = await call(method, path, session, body);
+      expect(allowed.status).toBe(200);
+      if (method === 'get') {
+        expect(repository.listCalls).toBe(1);
+        expect(allowed.body.data).toEqual(expect.arrayContaining([expect.objectContaining({ _id: 'key-1' })]));
+        expect(JSON.stringify(allowed.body.data)).not.toContain(issue.body.data._apiKey);
+      } else if (path.includes('api-key/')) {
+        expect(repository.apiKeys.get('alice-key')?.revoked).toBe(true);
+        expect(repository.apiKeys.get('bob-key')?.revoked).toBe(false);
+      } else if (path.endsWith('profile')) {
+        expect(repository.users.get('user-1')!._name).toBe('Changed');
+        expect(repository.users.get('user-2')!._name).toBeUndefined();
+      } else if (path.endsWith('password')) {
+        expect(await passwordService.verify('new-password-123', repository.users.get('user-1')!._passwordHash)).toBe(true);
+      } else {
+        expect(repository.users.has('user-1')).toBe(false);
+      }
+      expect(repository.users.has('user-2')).toBe(true);
+      expect(repository.users.get('user-2')!._passwordHash).toBe(bobHash);
+    });
+
+    it.each(operations)('$method $path refuses disabled and missing principals with both credential types', async ({ method, path, body }) => {
+      const issue = await request(app).post('/api/v1/auth/api-key')
+        .set('Authorization', `Bearer ${victimToken}`).send({ name: 'Account test key' });
+      const headers = [{ Authorization: `Bearer ${victimToken}` }, { 'X-API-Key': issue.body.data._apiKey as string }];
+      repository.users.get('user-1')!._enabled = false;
+      for (const auth of headers) expect((await call(method, path, auth, body)).status).toBe(401);
+      repository.users.delete('user-1');
+      for (const auth of headers) expect((await call(method, path, auth, body)).status).toBe(401);
+      expect(repository.listCalls).toBe(0);
+      expect(repository.apiKeys.get('alice-key')?.revoked).toBe(false);
+      expect(repository.users.has('user-2')).toBe(true);
+    });
   });
 
   describe('PUT /profile', () => {

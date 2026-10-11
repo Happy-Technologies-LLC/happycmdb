@@ -234,8 +234,10 @@ export class DiscoveryDefinitionService {
 
       const existing = existingResult.rows[0];
       if (updates.config !== undefined) validateScanConfiguration(updates.config);
-      requireCredentialForProvider(updates.provider ?? existing.provider,
-        updates.credential_id ?? existing.credential_id);
+      if (updates.provider !== undefined || updates.credential_id !== undefined) {
+        requireCredentialForProvider(updates.provider ?? existing.provider,
+          updates.credential_id ?? existing.credential_id);
+      }
 
       // Every explicit attachment must revalidate current ownership, even if
       // the credential ID matches an older association.

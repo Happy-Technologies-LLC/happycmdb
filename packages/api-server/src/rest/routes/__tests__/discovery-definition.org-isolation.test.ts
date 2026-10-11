@@ -334,6 +334,13 @@ test('poisoned org A schedule cannot block org B load or cron re-add', async () 
     expect([run.status, enable.status]).toEqual([409, 409]);
     expect(run.body).toEqual({ success: false, error: 'Credential-backed discovery execution unavailable' });
     expect(enable.body).toEqual(run.body);
+    const disable = await request(app).post(`${url}/${id}/schedule/disable`).set(headers('a'));
+    expect(disable.status).toBe(200);
+    expect(disable.body.data.is_active).toBe(false);
+    const rename = await request(app).put(`${url}/${id}`).set(headers('a')).send({ name: 'safe-legacy-edit' });
+    expect(rename.status).toBe(200);
+    const switchProvider = await request(app).put(`${url}/${id}`).set(headers('a')).send({ provider: 'snmp' });
+    expect(switchProvider.status).toBe(400);
   }
   const healthy = await request(app).post(url).set(headers('b')).send({
     name: 'healthy-org-b', provider: 'nmap', method: 'agentless',

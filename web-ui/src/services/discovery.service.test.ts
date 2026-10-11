@@ -48,11 +48,10 @@ describe('discoveryService', () => {
           provider: 'nmap',
           status: 'completed',
           progress: 100,
-          result: { discovered: 5 },
+          summary: { discoveredCIs: 5 },
           timestamp: 1000,
           processedOn: 1100,
           finishedOn: 1500,
-          config: {},
         },
       },
     });
@@ -68,7 +67,7 @@ describe('discoveryService', () => {
     });
   });
 
-  it('derives job results from the same legacy endpoint, backed by the stored returnvalue', async () => {
+  it('derives numeric result counts only from the allowlisted summary, never worker returnvalue', async () => {
     request.get.mockResolvedValue({
       data: {
         data: {
@@ -76,7 +75,7 @@ describe('discoveryService', () => {
           provider: 'nmap',
           status: 'completed',
           progress: 100,
-          result: { discovered: 7 },
+          summary: { discoveredCIs: 7 },
           timestamp: 1000,
           processedOn: 1100,
           finishedOn: 1500,
@@ -97,6 +96,17 @@ describe('discoveryService', () => {
       failureCount: 0,
       duration: 400,
     });
+  });
+
+  it('shows only fixed failure metadata and refuses to invent an unavailable result count', async () => {
+    request.get.mockResolvedValue({ data: { data: {
+      id: 'failed-job', provider: 'nmap', status: 'failed',
+      failureCode: 'DISCOVERY_JOB_FAILED', timestamp: 1000,
+    } } });
+    const job = await discoveryService.getJob('failed-job');
+    expect(job.error).toBe('DISCOVERY_JOB_FAILED');
+    await expect(discoveryService.getJobResult('failed-job'))
+      .rejects.toThrow('Discovery job result summary unavailable');
   });
 
   it('retries a job on the canonical per-provider queue route, never a route derived from the job id alone', async () => {

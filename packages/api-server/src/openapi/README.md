@@ -107,11 +107,14 @@ remains available. Discovery definition writes reject malformed targets and
 nonboolean scan-mode flags with a fixed 400. Credential-free Nmap definition
 manual runs and repeatable definition jobs queue only scan targets, an organization
 stamp and boolean `scanOptions.aggressive`, `osDetection`, `serviceDetection`,
-`fullPortScan` and `portScan` switches. Opaque scan configuration and credentials
-are never queued by discovery definition producers; this is not a guarantee for
-other discovery producers. The legacy `POST /discovery/schedule` nmap/AD/SNMP
-path still queues raw configuration (potentially credentials) without an organization
-stamp; tracked separately as HAP-484. Production scheduler startup/registration
+`fullPortScan` and `portScan` switches. Opaque config and credentials are not
+queued by discovery definition producers. Legacy `POST /discovery/schedule`
+also queues only allowlisted Nmap targets and scan switches with a verified
+organization stamp; SSH/AD/SNMP return fixed 409. Legacy job list/detail/cancel
+require the session organization, hide orgless jobs and return only safe provider,
+timestamps, progress counters, numeric discovered-CI summary and fixed failure
+codes. Raw worker results, errors and configuration remain inaccessible.
+Production scheduler startup/registration
 is tracked separately as HAP-546; direct repeatable-job proof is not proof of
 production scheduling. Credential-backed discovery is restored by HP1-S5
 (v16 §10.2.4-10.2.6 org-owned credential sets and run pipeline), tracked as HAP-444.
@@ -166,8 +169,11 @@ require a verified organization claim. Jobs without a matching organization
 stamp (including legacy jobs) are inaccessible; foreign and missing IDs return
 the same 404. Job data, results, failures, progress and free-form logs are not
 returned. Schedule responses omit stored configuration; queue-list pagination
-uses queue offsets and does not expose cross-tenant totals. Generic queue
-statistics and global schedule controls remain separately governed.
+uses queue offsets and does not expose cross-tenant totals. Global queue clean,
+pause/resume, stats (including repeatable job metadata), worker status and
+schedule listings and discovery-provider schedule updates return the same fixed
+403 for every authenticated role until the global-operation policy exists.
+`GET /jobs/discovery/stats` and `/queues/{queueName}/metrics` remain T4 aggregate gaps.
 
 `cmdb jobs run:discovery nmap --config '{"targets":["192.0.2.1"]}'`
 calls the authenticated `POST /jobs/discovery/{provider}` endpoint rather than

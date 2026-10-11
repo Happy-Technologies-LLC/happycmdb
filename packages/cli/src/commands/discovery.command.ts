@@ -4,18 +4,6 @@ import ora from 'ora';
 import axios from 'axios';
 
 /**
- * Discovery scan configuration
- */
-interface DiscoveryScanConfig {
-  targets: string[];
-  credentials?: {
-    username?: string;
-    password?: string;
-    sshKey?: string;
-  };
-}
-
-/**
  * Discovery command handlers
  */
 export class DiscoveryCommand {
@@ -44,9 +32,6 @@ export class DiscoveryCommand {
       .option('-t, --targets <targets>', 'Comma-separated list of IP addresses or ranges')
       .option('-f, --file <file>', 'File containing target list (one per line)')
       .option('--type <type>', 'Scan type: quick, full, custom', 'quick')
-      .option('-u, --username <username>', 'SSH username for authentication')
-      .option('-p, --password <password>', 'SSH password for authentication')
-      .option('-k, --key <key>', 'Path to SSH private key')
       .action(async (options) => {
         await this.startScan(options);
       });
@@ -110,17 +95,7 @@ export class DiscoveryCommand {
         return;
       }
 
-      const config: DiscoveryScanConfig = {
-        targets,
-      };
-
-      if (options.username || options.password || options.key) {
-        config.credentials = {
-          username: options.username,
-          password: options.password,
-          sshKey: options.key,
-        };
-      }
+      const config = { targets };
 
       const response = await axios.post(
         `${this.apiUrl}/discovery/schedule`,
@@ -163,24 +138,19 @@ export class DiscoveryCommand {
         headers: this.getHeaders(),
       });
 
-      spinner.succeed(chalk.green(`Found ${response.data.length} scans`));
+      const scans = response.data.data ?? [];
+      spinner.succeed(chalk.green(`Found ${scans.length} scans`));
 
-      if (response.data.length === 0) {
+      if (scans.length === 0) {
         console.log(chalk.yellow('\nNo discovery scans found'));
         return;
       }
 
       console.log(chalk.cyan('\nDiscovery Scans:'));
-      response.data.forEach((scan: any) => {
-        const status = this.colorizeStatus(scan.status);
+      scans.forEach((scan: { id: string; status: string; timestamp?: number }) => {
         console.log(`\n  ${chalk.bold(scan.id)}`);
-        console.log(`    Status: ${status}`);
-        console.log(`    Type: ${scan.type}`);
-        console.log(`    Targets: ${scan.targetCount}`);
-        console.log(`    Started: ${new Date(scan.startedAt).toLocaleString()}`);
-        if (scan.completedAt) {
-          console.log(`    Completed: ${new Date(scan.completedAt).toLocaleString()}`);
-        }
+        console.log(`    Status: ${this.colorizeStatus(scan.status)}`);
+        console.log(`    Started: ${new Date(scan.timestamp ?? 0).toLocaleString()}`);
       });
     } catch (error: any) {
       spinner.fail(chalk.red('Failed to fetch discovery scans'));
@@ -204,24 +174,13 @@ export class DiscoveryCommand {
 
       spinner.succeed(chalk.green('Scan status retrieved'));
 
-      const scan = response.data;
+      const scan = response.data.data;
       console.log(chalk.cyan('\nScan Details:'));
       console.log(`  ID: ${chalk.bold(scan.id)}`);
       console.log(`  Status: ${this.colorizeStatus(scan.status)}`);
-      console.log(`  Type: ${scan.type}`);
-      console.log(`  Targets: ${scan.targetCount}`);
-      console.log(`  Discovered: ${chalk.bold(scan.discoveredCount || 0)} CIs`);
-      console.log(`  Started: ${new Date(scan.startedAt).toLocaleString()}`);
-
-      if (scan.completedAt) {
-        console.log(`  Completed: ${new Date(scan.completedAt).toLocaleString()}`);
-        const duration = (new Date(scan.completedAt).getTime() - new Date(scan.startedAt).getTime()) / 1000;
-        console.log(`  Duration: ${duration}s`);
-      }
-
-      if (scan.progress) {
-        console.log(`\n  Progress: ${scan.progress.completed}/${scan.progress.total} (${scan.progress.percentage}%)`);
-      }
+      console.log(`  Started: ${new Date(scan.timestamp ?? 0).toLocaleString()}`);
+      if (scan.finishedOn) console.log(`  Completed: ${new Date(scan.finishedOn).toLocaleString()}`);
+      if (scan.progress) console.log(`  Progress: ${JSON.stringify(scan.progress)}`);
     } catch (error: any) {
       spinner.fail(chalk.red('Failed to fetch scan status'));
       this.handleError(error);

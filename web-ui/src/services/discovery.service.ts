@@ -62,25 +62,18 @@ export interface DiscoveredCIResult {
 }
 
 /**
- * Raw response shape from the legacy `/discovery/jobs/:id` endpoint, shared
- * by getJob() and getJobResult(). `status` carries the raw BullMQ state
- * (waiting/active/completed/failed/delayed), not our JobStatus type.
+ * Org-scoped, allowlisted legacy job status; never a worker result/config.
  */
 interface RawLegacyDiscoveryJob {
   id: string;
-  provider: DiscoveryProvider;
+  provider?: DiscoveryProvider;
   status: string;
-  progress?: number;
-  result?: { discovered?: number; method?: string; confidence?: number; cost?: number };
-  error?: string;
-  config?: Record<string, unknown>;
+  progress?: number | { completed?: number; total?: number; percentage?: number };
+  summary?: { discoveredCIs: number };
+  failureCode?: string;
   timestamp?: number;
   processedOn?: number;
   finishedOn?: number;
-  definitionId?: string;
-  definitionName?: string;
-  definition_id?: string;
-  definition_name?: string;
 }
 
 /** Raw per-provider stat entry returned by GET /jobs/discovery/stats */
@@ -327,19 +320,18 @@ class DiscoveryService {
    * Map the legacy `/discovery/jobs/:id` response into a DiscoveryJob.
    */
   private mapLegacyJob(raw: RawLegacyDiscoveryJob): DiscoveryJob {
+    if (!raw.provider) throw new Error('Discovery job provider unavailable');
     return {
       id: raw.id,
       provider: raw.provider,
       status: this.mapJobStatus(raw.status),
-      progress: typeof raw.progress === 'number' ? raw.progress : 0,
-      discoveredCIs: raw.result?.discovered ?? 0,
+      progress: typeof raw.progress === 'number' ? raw.progress : raw.progress?.percentage ?? 0,
+      discoveredCIs: raw.summary?.discoveredCIs ?? 0,
       createdAt: new Date(raw.timestamp ?? Date.now()).toISOString(),
       startedAt: raw.processedOn ? new Date(raw.processedOn).toISOString() : undefined,
       completedAt: raw.finishedOn ? new Date(raw.finishedOn).toISOString() : undefined,
-      error: raw.error,
-      config: raw.config ?? {},
-      definitionId: raw.definitionId ?? raw.definition_id,
-      definitionName: raw.definitionName ?? raw.definition_name,
+      error: raw.failureCode,
+      config: {},
     };
   }
 
@@ -353,15 +345,17 @@ class DiscoveryService {
   }
 
   /**
-   * Get job results. BullMQ only stores an aggregate discovered-CI count on
-   * the job's returnvalue (no per-CI records survive on the job itself), so
-   * discoveredCIs is intentionally empty - totalCount reflects the real count.
+   * Legacy detail carries only a numeric safe summary, not raw worker results.
+   * A job without that summary cannot be represented as a result count.
    */
   async getJobResult(jobId: string): Promise<DiscoveryJobResult> {
     const { data } = await api.get(`/discovery/jobs/${jobId}`);
     const raw: RawLegacyDiscoveryJob = data.data;
+    if (!raw.provider || raw.summary?.discoveredCIs === undefined) {
+      throw new Error('Discovery job result summary unavailable');
+    }
     const status = this.mapJobStatus(raw.status);
-    const discovered = raw.result?.discovered ?? 0;
+    const discovered = raw.summary.discoveredCIs;
 
     return {
       jobId: raw.id,

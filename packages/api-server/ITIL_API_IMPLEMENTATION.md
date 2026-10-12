@@ -1,5 +1,7 @@
 # ITIL v4 API Implementation Summary
 
+> **Interim tenant-safety mode (HAP-480/HAP-481):** The incident and change REST/GraphQL record APIs and incident/change metrics return a fixed `403` before record access for every role. The underlying record tables have no tenant owner; HP1-S2 must add ownership and backfill it before these APIs can be restored. Do not interpret the historical endpoint inventory below as currently available. CI ITIL reads and writes, configuration accuracy, drift, baseline snapshots, and impact analysis require an authenticated organization claim; foreign and missing CI IDs return the same `404`. Graph traversals and derived SQL reads/writes remain within that organization. Existing tenantless ITIL baseline endpoints remain unchanged; no ownership migration is applied by this interim patch.
+
 **Agent**: Agent 7 - API Developer
 **Task**: Implement ITIL REST and GraphQL endpoints
 **Status**: ✅ Complete

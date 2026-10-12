@@ -38,7 +38,8 @@ export class ConfigurationDriftDetector {
   async createBaseline(
     ciId: string,
     snapshotType: 'configuration' | 'performance' | 'relationships',
-    createdBy: string = 'system'
+    createdBy: string,
+    organizationId: string
   ): Promise<BaselineSnapshot> {
     logger.info('Creating baseline snapshot', { ci_id: ciId, snapshot_type: snapshotType });
 
@@ -48,8 +49,9 @@ export class ConfigurationDriftDetector {
       // Get current CI state
       const result = await session.run(
         `MATCH (ci:CI {id: $ciId})
+         WHERE ci.organization_id = $organizationId
          RETURN ci`,
-        { ciId }
+        { ciId, organizationId }
       );
 
       if (result.records.length === 0) {
@@ -69,10 +71,10 @@ export class ConfigurationDriftDetector {
           snapshotData = await this.captureConfigurationSnapshot(ciId, ciData);
           break;
         case 'performance':
-          snapshotData = await this.capturePerformanceSnapshot(ciId);
+          snapshotData = await this.capturePerformanceSnapshot(ciId, organizationId);
           break;
         case 'relationships':
-          snapshotData = await this.captureRelationshipsSnapshot(ciId);
+          snapshotData = await this.captureRelationshipsSnapshot(ciId, organizationId);
           break;
         default:
           throw new Error(`Unknown snapshot type: ${snapshotType}`);
@@ -89,7 +91,7 @@ export class ConfigurationDriftDetector {
       };
 
       // Store baseline
-      await this.storeBaseline(baseline);
+      await this.storeBaseline(baseline, organizationId);
 
       logger.info('Baseline snapshot created', {
         baseline_id: baseline.id,
@@ -126,15 +128,16 @@ export class ConfigurationDriftDetector {
   /**
    * Capture performance snapshot
    */
-  private async capturePerformanceSnapshot(ciId: string): Promise<Record<string, any>> {
+  private async capturePerformanceSnapshot(ciId: string, organizationId: string): Promise<Record<string, any>> {
     // Get recent performance metrics from time-series data
     const result = await this.postgresClient.query(
       `SELECT metric_name, AVG(value) as avg_value, MAX(value) as max_value
        FROM metrics_timeseries
        WHERE tags->>'ci_id' = $1
+       AND tags->>'organization_id' = $2
        AND timestamp >= NOW() - INTERVAL '24 hours'
        GROUP BY metric_name`,
-      [ciId]
+      [ciId, organizationId]
     );
 
     const metrics: Record<string, any> = {};
@@ -152,18 +155,19 @@ export class ConfigurationDriftDetector {
   /**
    * Capture relationships snapshot
    */
-  private async captureRelationshipsSnapshot(ciId: string): Promise<Record<string, any>> {
+  private async captureRelationshipsSnapshot(ciId: string, organizationId: string): Promise<Record<string, any>> {
     const session = this.neo4jClient.getSession();
 
     try {
       const result = await session.run(
         `MATCH (ci:CI {id: $ciId})-[r]-(related:CI)
+         WHERE ci.organization_id = $organizationId AND related.organization_id = $organizationId
          RETURN type(r) as rel_type,
                 related.id as related_id,
                 related.name as related_name,
                 startNode(r).id = $ciId as is_outgoing
          ORDER BY rel_type, related_name`,
-        { ciId }
+        { ciId, organizationId }
       );
 
       const relationships: Record<string, any[]> = {
@@ -196,11 +200,11 @@ export class ConfigurationDriftDetector {
   /**
    * Detect configuration drift for a CI
    */
-  async detectDrift(ciId: string): Promise<DriftDetectionResult> {
+  async detectDrift(ciId: string, organizationId: string): Promise<DriftDetectionResult> {
     logger.info('Detecting configuration drift', { ci_id: ciId });
 
     // Get approved baseline
-    const baseline = await this.getApprovedBaseline(ciId, 'configuration');
+    const baseline = await this.getApprovedBaseline(ciId, 'configuration', organizationId);
 
     if (!baseline) {
       throw new Error(`No approved baseline found for CI: ${ciId}`);
@@ -212,8 +216,9 @@ export class ConfigurationDriftDetector {
     try {
       const result = await session.run(
         `MATCH (ci:CI {id: $ciId})
+         WHERE ci.organization_id = $organizationId
          RETURN ci`,
-        { ciId }
+        { ciId, organizationId }
       );
 
       if (result.records.length === 0) {
@@ -246,7 +251,7 @@ export class ConfigurationDriftDetector {
       };
 
       // Store drift detection result
-      await this.storeDriftResult(driftResult);
+      await this.storeDriftResult(driftResult, organizationId);
 
       // Emit event for significant drift
       if (hasDrift && driftScore > 30) {
@@ -405,16 +410,20 @@ export class ConfigurationDriftDetector {
    */
   async getApprovedBaseline(
     ciId: string,
-    snapshotType: 'configuration' | 'performance' | 'relationships'
+    snapshotType: 'configuration' | 'performance' | 'relationships',
+    organizationId: string
   ): Promise<BaselineSnapshot | null> {
+    if (!await this.neo4jClient.getCI(ciId, organizationId)) return null;
     const result = await this.postgresClient.query(
-      `SELECT * FROM baseline_snapshots
-       WHERE ci_id = $1
-       AND snapshot_type = $2
-       AND is_approved = true
-       ORDER BY created_at DESC
+      `SELECT b.* FROM baseline_snapshots b
+       WHERE b.ci_id = $1
+       AND b.snapshot_type = $2
+       AND b.is_approved = true
+       AND EXISTS (SELECT 1 FROM cmdb.dim_ci ci WHERE ci.ci_id = b.ci_id
+         AND ci.is_current AND ci.organization_id = $3)
+       ORDER BY b.created_at DESC
        LIMIT 1`,
-      [ciId, snapshotType]
+      [ciId, snapshotType, organizationId]
     );
 
     if (result.rows.length === 0) {
@@ -429,49 +438,56 @@ export class ConfigurationDriftDetector {
    */
   async approveBaseline(
     baselineId: string,
-    approvedBy: string
+    approvedBy: string,
+    organizationId: string
   ): Promise<BaselineSnapshot> {
-    await this.postgresClient.query(
-      `UPDATE baseline_snapshots
-       SET is_approved = true,
-           approved_by = $2,
-           approved_at = NOW()
-       WHERE id = $1`,
-      [baselineId, approvedBy]
-    );
-
+    const existing = await this.getBaselineById(baselineId, organizationId);
+    if (!existing) throw new Error('Baseline snapshot not found');
     const result = await this.postgresClient.query(
-      'SELECT * FROM baseline_snapshots WHERE id = $1',
-      [baselineId]
+      `UPDATE baseline_snapshots b
+       SET is_approved = true, approved_by = $2, approved_at = NOW()
+       WHERE b.id = $1 AND b.ci_id = $3
+         AND EXISTS (SELECT 1 FROM cmdb.dim_ci ci WHERE ci.ci_id = b.ci_id
+           AND ci.is_current AND ci.organization_id = $4)
+       RETURNING b.*`,
+      [baselineId, approvedBy, existing.ci_id, organizationId]
     );
 
+    if (result.rows.length === 0) throw new Error('Baseline snapshot not found');
     return this.mapRowToBaseline(result.rows[0]);
   }
 
   /**
    * Get a baseline snapshot by ID
    */
-  async getBaselineById(baselineId: string): Promise<BaselineSnapshot | null> {
+  async getBaselineById(baselineId: string, organizationId: string): Promise<BaselineSnapshot | null> {
+    // The baseline ID is not an ownership credential: resolve it only when
+    // its linked CI is visible to this tenant.
     const result = await this.postgresClient.query(
-      'SELECT * FROM baseline_snapshots WHERE id = $1',
-      [baselineId]
+      `SELECT b.* FROM baseline_snapshots b WHERE b.id = $1
+       AND EXISTS (SELECT 1 FROM cmdb.dim_ci ci WHERE ci.ci_id = b.ci_id
+         AND ci.is_current AND ci.organization_id = $2)`,
+      [baselineId, organizationId]
     );
 
     if (result.rows.length === 0) {
       return null;
     }
 
+    if (!await this.neo4jClient.getCI(result.rows[0].ci_id, organizationId)) return null;
     return this.mapRowToBaseline(result.rows[0]);
   }
 
   /**
    * Store baseline snapshot
    */
-  private async storeBaseline(baseline: BaselineSnapshot): Promise<void> {
-    await this.postgresClient.query(
+  private async storeBaseline(baseline: BaselineSnapshot, organizationId: string): Promise<void> {
+    const inserted = await this.postgresClient.query(
       `INSERT INTO baseline_snapshots
        (id, ci_id, snapshot_type, snapshot_data, created_at, created_by, is_approved)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+       SELECT $1::uuid, $2::varchar, $3::varchar, $4::jsonb, $5::timestamptz, $6::varchar, $7::boolean
+       WHERE EXISTS (SELECT 1 FROM cmdb.dim_ci ci WHERE ci.ci_id = $2
+         AND ci.is_current AND ci.organization_id = $8) RETURNING id`,
       [
         baseline.id,
         baseline.ci_id,
@@ -480,19 +496,23 @@ export class ConfigurationDriftDetector {
         baseline.created_at,
         baseline.created_by,
         baseline.is_approved,
+        organizationId,
       ]
     );
+    if (inserted.rows.length === 0) throw new Error('CI not found');
   }
 
   /**
    * Store drift detection result
    */
-  private async storeDriftResult(result: DriftDetectionResult): Promise<void> {
-    await this.postgresClient.query(
+  private async storeDriftResult(result: DriftDetectionResult, organizationId: string): Promise<void> {
+    const inserted = await this.postgresClient.query(
       `INSERT INTO drift_detection_results
        (ci_id, ci_name, has_drift, drift_score, drifted_fields,
         baseline_snapshot_id, detected_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+       SELECT $1::varchar, $2::varchar, $3::boolean, $4::integer, $5::jsonb, $6::uuid, $7::timestamptz
+       WHERE EXISTS (SELECT 1 FROM cmdb.dim_ci ci WHERE ci.ci_id = $1
+         AND ci.is_current AND ci.organization_id = $8) RETURNING id`,
       [
         result.ci_id,
         result.ci_name,
@@ -501,8 +521,10 @@ export class ConfigurationDriftDetector {
         JSON.stringify(result.drifted_fields),
         result.baseline_snapshot_id,
         result.detected_at,
+        organizationId,
       ]
     );
+    if (inserted.rows.length === 0) throw new Error('CI not found');
   }
 
   /**
@@ -525,13 +547,16 @@ export class ConfigurationDriftDetector {
   /**
    * Get drift history for a CI
    */
-  async getDriftHistory(ciId: string, limit: number = 50): Promise<DriftDetectionResult[]> {
+  async getDriftHistory(ciId: string, limit: number, organizationId: string): Promise<DriftDetectionResult[]> {
+    if (!await this.neo4jClient.getCI(ciId, organizationId)) return [];
     const result = await this.postgresClient.query(
-      `SELECT * FROM drift_detection_results
-       WHERE ci_id = $1
-       ORDER BY detected_at DESC
+      `SELECT d.* FROM drift_detection_results d
+       WHERE d.ci_id = $1
+       AND EXISTS (SELECT 1 FROM cmdb.dim_ci ci WHERE ci.ci_id = d.ci_id
+         AND ci.is_current AND ci.organization_id = $3)
+       ORDER BY d.detected_at DESC
        LIMIT $2`,
-      [ciId, limit]
+      [ciId, limit, organizationId]
     );
 
     return result.rows.map((row: any) => ({

@@ -17,6 +17,14 @@ import { jest, describe, it, expect, beforeEach } from '@jest/globals';
 import { ROLE_PERMISSIONS, type Permission, type UserRole } from '../../../auth/types';
 import { AuthMiddleware } from '../../../middleware/auth.middleware';
 
+const sqlQuery = jest.fn();
+const graphRun = jest.fn();
+jest.mock('@cmdb/database', () => ({
+  getPostgresClient: () => ({ pool: { query: sqlQuery } }),
+  getNeo4jClient: () => ({ getSession: () => ({ run: graphRun }) }),
+  getAuditService: () => ({}),
+}));
+
 type ReqWithUser = Request & { user?: { _userId?: string; _role?: UserRole; _organizationId?: string } };
 
 const mockRouteHandler = jest.fn((req: Request, res: Response) => {
@@ -125,25 +133,22 @@ const readRoutes: RouteCase[] = [
   ['GET', '/itil/configuration-items/ci-1', undefined],
   ['GET', '/itil/configuration-items/ci-1/history', undefined],
   ['GET', '/itil/configuration-items/audit/due', undefined],
+  ['GET', '/itil/baselines', undefined],
+  ['GET', '/itil/baselines/base-1', undefined],
+  ['GET', '/itil/baselines/base-1/comparison', undefined],
+  ['GET', '/itil/metrics/configuration-accuracy', undefined],
+];
+const recordRoutes: RouteCase[] = [
   ['GET', '/itil/incidents', undefined],
   ['GET', '/itil/incidents/inc-1', undefined],
   ['GET', '/itil/incidents/inc-1/priority', undefined],
   ['GET', '/itil/changes', undefined],
   ['GET', '/itil/changes/chg-1', undefined],
   ['GET', '/itil/changes/chg-1/risk-assessment', undefined],
-  ['GET', '/itil/baselines', undefined],
-  ['GET', '/itil/baselines/base-1', undefined],
-  ['GET', '/itil/baselines/base-1/comparison', undefined],
-  ['GET', '/itil/metrics/configuration-accuracy', undefined],
   ['GET', '/itil/metrics/incident-summary', undefined],
   ['GET', '/itil/metrics/change-success-rate', undefined],
   ['GET', '/itil/metrics/mttr', undefined],
   ['GET', '/itil/metrics/mtbf', undefined],
-];
-
-const writeRoutes: RouteCase[] = [
-  ['PATCH', '/itil/configuration-items/ci-1/lifecycle', { stage: 'BUILD' }],
-  ['PATCH', '/itil/configuration-items/ci-1/status', { status: 'ACTIVE' }],
   [
     'POST',
     '/itil/incidents',
@@ -172,6 +177,11 @@ const writeRoutes: RouteCase[] = [
   ['POST', '/itil/changes/chg-1/approve', undefined],
   ['POST', '/itil/changes/chg-1/implement', undefined],
   ['POST', '/itil/changes/chg-1/close', { result: 'SUCCESS', closedBy: 'alice' }],
+];
+
+const writeRoutes: RouteCase[] = [
+  ['PATCH', '/itil/configuration-items/ci-1/lifecycle', { stage: 'BUILD' }],
+  ['PATCH', '/itil/configuration-items/ci-1/status', { status: 'ACTIVE' }],
   ['POST', '/itil/baselines', { name: 'pre-patch-baseline', ciIds: ['ci-1'], createdBy: 'alice' }],
   ['DELETE', '/itil/baselines/base-1', undefined],
   ['POST', '/itil/baselines/base-1/restore', { ciId: 'ci-1', performedBy: 'alice' }],
@@ -196,12 +206,24 @@ describe('itil routes', () => {
     });
   });
 
-  it.each([...readRoutes, ...writeRoutes])(
+  it.each([...readRoutes, ...writeRoutes, ...recordRoutes])(
     'returns 401 before reaching %s %s without credentials',
     async (method, path, body) => {
       const response = await invoke(testApp(), method, path, body);
       expect(response.status).toBe(401);
       expect(mockRouteHandler).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each(recordRoutes.flatMap(route => ['viewer', 'operator', 'admin'].map(role => [route, role] as const)))(
+    'refuses unscopeable ITIL records for %s as %s without reaching the controller',
+    async ([method, path, body], role) => {
+      const response = await invoke(testApp(), method, path, body, `Bearer ${role}-token`);
+      expect(response.status).toBe(403);
+      expect(response.body).toEqual({ success: false, error: 'ITIL records unavailable' });
+      expect(mockRouteHandler).not.toHaveBeenCalled();
+      expect(sqlQuery).not.toHaveBeenCalled();
+      expect(graphRun).not.toHaveBeenCalled();
     }
   );
 

@@ -42,6 +42,8 @@ const CYCLE = 'Admin123!\u0000'.repeat(8);
 /** Strings bcrypt treats as the same key as 'Admin123!' (key = utf8(p) ‖ 0x00, cycled to 72 bytes). */
 const EQUIVALENT = [CYCLE.slice(0, 59), CYCLE.slice(0, 72), CYCLE.slice(0, 80)];
 const OPERATOR_PASSWORD = 'operator-chosen-16';
+/** Every refused login is the same uniform failure (main #63), whatever the S6 cause. */
+const INVALID = { name: 'Error', message: 'Authentication failed', reason: 'invalid' };
 
 type Hook = () => void | Promise<void>;
 type Events = Array<{ userId: string; event: string; actor: string }>;
@@ -163,14 +165,14 @@ describe('N-21 (a) default and bcrypt-equivalent logins are refused outside deve
   it.each([DEFAULT, ...EQUIVALENT, 'Admin123!\u0000x'])('refuses %j for an unmarked default-hash user', async password => {
     repository.users.set('u', user('u'));
 
-    await expect(service.login({ username: 'u', password })).rejects.toThrow('Invalid credentials');
+    await expect(service.login({ username: 'u', password })).rejects.toMatchObject(INVALID);
   });
 
   it('marks the account on the first matching default login and audits only that transition', async () => {
     repository.users.set('u', user('u'));
 
     for (let i = 0; i < 10; i++) {
-      await expect(service.login({ username: 'u', password: DEFAULT })).rejects.toThrow('Invalid credentials');
+      await expect(service.login({ username: 'u', password: DEFAULT })).rejects.toMatchObject(INVALID);
     }
 
     expect(repository.users.get('u')!._defaultPasswordSuspect).toBe(true);
@@ -180,7 +182,7 @@ describe('N-21 (a) default and bcrypt-equivalent logins are refused outside deve
   it('never marks an account whose stored hash is not a default', async () => {
     repository.users.set('o', user('o', { _passwordHash: operatorHash }));
 
-    await expect(service.login({ username: 'o', password: DEFAULT })).rejects.toThrow('Invalid credentials');
+    await expect(service.login({ username: 'o', password: DEFAULT })).rejects.toMatchObject(INVALID);
 
     expect(repository.users.get('o')!._defaultPasswordSuspect).toBeUndefined();
     expect(repository.events).toEqual([]);
@@ -200,7 +202,7 @@ describe('N-21 (b) a marked account cannot log in or use any credential until op
   it('refuses a correct non-default password while marked (direct-DB rehash does not unlock)', async () => {
     repository.users.set('m', user('m', { _passwordHash: operatorHash, _defaultPasswordSuspect: true }));
 
-    await expect(service.login({ username: 'm', password: OPERATOR_PASSWORD })).rejects.toThrow('Invalid credentials');
+    await expect(service.login({ username: 'm', password: OPERATOR_PASSWORD })).rejects.toMatchObject(INVALID);
   });
 
   it('refuses access tokens, refresh tokens and API keys of a marked user', async () => {
@@ -217,7 +219,7 @@ describe('N-21 (b) a marked account cannot log in or use any credential until op
   it('honours the underscore spelling of the marker too (fail-closed mapping)', async () => {
     repository.users.set('m', user('m', { _passwordHash: operatorHash, _defaultPasswordSuspect: true }));
 
-    await expect(service.login({ username: 'm', password: OPERATOR_PASSWORD })).rejects.toThrow('Invalid credentials');
+    await expect(service.login({ username: 'm', password: OPERATOR_PASSWORD })).rejects.toMatchObject(INVALID);
   });
 });
 
@@ -255,7 +257,7 @@ describe('N-21 (c)/(d) the credential generation kills every pre-rotation creden
   it('a malformed stored generation refuses every credential', async () => {
     repository.users.set('u', user('u', { _passwordHash: operatorHash, _credentialEpoch: Number.NaN }));
 
-    await expect(service.login({ username: 'u', password: OPERATOR_PASSWORD })).rejects.toThrow('Invalid credentials');
+    await expect(service.login({ username: 'u', password: OPERATOR_PASSWORD })).rejects.toMatchObject(INVALID);
     await expect(service.verifyToken(jwt.generateAccessToken('u', 'u', 'admin', ORG_A))).rejects.toThrow();
   });
 });
@@ -268,7 +270,7 @@ describe('N-21 (i) login race: a rotation committing during login yields no usab
       repository.rotate('u', operatorHash);
     };
 
-    await expect(service.login({ username: 'u', password: OPERATOR_PASSWORD })).rejects.toThrow('Invalid credentials');
+    await expect(service.login({ username: 'u', password: OPERATOR_PASSWORD })).rejects.toMatchObject(INVALID);
   });
 });
 
@@ -343,7 +345,7 @@ describe('N-21 SEC12-02: per-request paths never run bcrypt; a non-bcrypt hash i
     'a %s stored hash gives the same 401 without throwing', async (_label, stored) => {
       repository.users.set('n', user('n', { _passwordHash: stored as string }));
 
-      await expect(service.login({ username: 'n', password: 'some-other-password' })).rejects.toThrow('Invalid credentials');
+      await expect(service.login({ username: 'n', password: 'some-other-password' })).rejects.toMatchObject(INVALID);
     }
   );
 });

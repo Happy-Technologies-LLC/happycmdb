@@ -87,9 +87,9 @@ beforeAll(async () => {
     CREATE (app)-[:RUNS_ON]->(mid:CI {id:'t2-mid', organization_id:$a})
     CREATE (mid)-[:RUNS_ON]->(c1)
     CREATE (app)-[:RUNS_ON]->(foreignMid:CI {id:'t2-foreign-mid', organization_id:$b})
-    CREATE (foreignMid)-[:RUNS_ON]->(:CI {id:'t2-through-foreign', organization_id:$a, tbm_monthly_cost:700})
+    CREATE (foreignMid)-[:RUNS_ON]->(:CI {id:'t2-through-foreign', organization_id:$a, tbm_monthly_cost:700, created_at:'2026'})
     CREATE (app)-[:RUNS_ON]->(nullMid:CI {id:'t2-null-mid'})
-    CREATE (nullMid)-[:RUNS_ON]->(:CI {id:'t2-through-null', organization_id:$a, tbm_monthly_cost:700})`, { a: A, b: B });
+    CREATE (nullMid)-[:RUNS_ON]->(:CI {id:'t2-through-null', organization_id:$a, tbm_monthly_cost:700, created_at:'2026'})`, { a: A, b: B });
   await run(`MATCH (bs:BusinessService {id:'t2-a'}), (foreign:BusinessService {id:'t2-b'})
     CREATE (own:CI {id:'t2-own-support', name:'owned support', organization_id:$a})
     CREATE (own)-[:SUPPORTS]->(bs)

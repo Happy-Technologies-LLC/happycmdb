@@ -3,9 +3,9 @@
 
 import { Request, Response } from 'express';
 import { getPostgresClient, getNeo4jClient } from '@cmdb/database';
-import { logger, ciIncarnationId } from '@cmdb/common';
+import { logger, ciIncarnationId, CIAnalyticsLimitError } from '@cmdb/common';
 import { requestOrganizationId } from '../../middleware/auth.middleware';
-
+import { executeBoundedAnalysis } from '../../middleware/analysis-admission';
 export class AnalyticsController {
   private postgresClient = getPostgresClient();
   private neo4jClient = getNeo4jClient();
@@ -554,23 +554,16 @@ export class AnalyticsController {
    * GET /analytics/change-timeline
    */
   async getChangeTimeline(req: Request, res: Response): Promise<void> {
-    try {
-      const { start_date, end_date } = req.query;
+    const range = this.resolveDateRange(req.query.start_date, req.query.end_date, 30, 90);
+    if ('error' in range) {
+      res.status(400).json({ success: false, error: 'Bad Request', message: range.error });
+      return;
+    }
 
-      const range = this.resolveDateRange(start_date, end_date, 30, 90);
-      if ('error' in range) {
-        res.status(400).json({
-          success: false,
-          error: 'Bad Request',
-          message: range.error,
-        });
-        return;
-      }
-
+    await executeBoundedAnalysis(req, res, async () => {
       const organizationId = requestOrganizationId(req);
       const incarnations = await this.neo4jClient.listCIIncarnations(organizationId);
       const current = JSON.stringify(incarnations);
-
       const result = await this.postgresClient.query(
         `
         SELECT
@@ -588,23 +581,26 @@ export class AnalyticsController {
         `,
         [range.startDate.toISOString(), range.endDate.toISOString(), current, organizationId]
       );
-
-      res.json({
-        success: true,
-        data: result.rows,
-        filters: {
-          start_date: range.startDate.toISOString(),
-          end_date: range.endDate.toISOString(),
+      return {
+        status: 200,
+        body: {
+          success: true,
+          data: result.rows,
+          filters: {
+            start_date: range.startDate.toISOString(),
+            end_date: range.endDate.toISOString(),
+          },
         },
-      });
-    } catch (error) {
-      logger.error('Error getting change timeline', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to retrieve change timeline',
-        message: error instanceof Error ? error.message : 'Unknown error',
-      });
-    }
+      };
+    }, {
+      scope: 'analytics',
+      timeoutMs: 10_000,
+      withDeadline: (_deadline, operation) => operation(),
+      deadlineError: () => new CIAnalyticsLimitError(),
+      failure: error => error instanceof CIAnalyticsLimitError
+        ? { status: 503, message: 'Analytics resource limit exceeded' } : null,
+      internalError: 'Failed to retrieve change timeline',
+    });
   }
 
   /**

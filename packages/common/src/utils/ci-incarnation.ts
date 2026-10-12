@@ -7,3 +7,13 @@ export function ciIncarnationId(ci: { _incarnation_id?: unknown; incarnation_id?
   return typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
     ? value : null;
 }
+
+/** Maximum graph nodes inspected for a tenant's incarnation-fenced analytics. */
+export const MAX_CI_ANALYTICS_NODES = 512;
+
+export class CIAnalyticsLimitError extends Error {
+  constructor() {
+    super('CI analytics resource limit exceeded');
+    this.name = 'CIAnalyticsLimitError';
+  }
+}

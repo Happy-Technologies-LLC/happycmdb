@@ -4,7 +4,7 @@
 // packages/database/src/neo4j/client.ts
 
 import neo4j, { Driver, Session, Node, Relationship, Path, PathSegment } from 'neo4j-driver';
-import { logger, CI, CIInput, ciIncarnationId, sanitizeCITypeForLabel, validateRelationshipType } from '@cmdb/common';
+import { logger, CI, CIInput, ciIncarnationId, CIAnalyticsLimitError, MAX_CI_ANALYTICS_NODES, sanitizeCITypeForLabel, validateRelationshipType } from '@cmdb/common';
 import * as fs from 'fs';
 import * as path from 'path';
 import { getPostgresClient } from '../postgres/client';
@@ -96,6 +96,7 @@ type TraversalNode = { node: Node; distance: number };
 
 export class Neo4jClient {
   private driver: Driver;
+  private activeCIAnalyticsReads = 0;
 
   constructor(uri: string, username: string, password: string, config?: {
     encrypted?: boolean;
@@ -294,31 +295,40 @@ export class Neo4jClient {
     }
   }
 
-  /** Graph-proven current CI incarnations for aggregate derived-row reads. */
+  /** Enumerate at most one bounded page; never serialize an entire tenant graph into SQL. */
   async listCIIncarnations(scope: CIOrganizationScope): Promise<Array<{
     ciId: string; incarnationId: string; organizationId: string; ciType: string | null
   }>> {
+    if (this.activeCIAnalyticsReads >= 8) throw new CIAnalyticsLimitError();
+    this.activeCIAnalyticsReads++;
     const organizationId = organizationIdParam(scope);
-    const session = this.getSession();
     try {
-      const result = await session.run(
-        `MATCH (ci:CI) WHERE ${organizationId === null ? 'ci.organization_id IS NOT NULL' : 'ci.organization_id = $organizationId'}
-         RETURN ci.id AS ciId, ci.incarnation_id AS incarnationId, ci.organization_id AS ownerId,
-                coalesce(ci.type, ci.ci_type) AS ciType`,
-        { organizationId }
-      );
-      const incarnations: Array<{ ciId: string; incarnationId: string; organizationId: string; ciType: string | null }> = [];
-      for (const record of result.records) {
-        const incarnationId = ciIncarnationId(record.get('incarnationId') as string | null);
-        const ownerId = record.get('ownerId');
-        if (incarnationId && typeof ownerId === 'string') {
-          incarnations.push({ ciId: record.get('ciId') as string, incarnationId,
-            organizationId: ownerId, ciType: record.get('ciType') as string | null });
+      const session = this.getSession();
+      try {
+        const result = await session.run(
+          `MATCH (ci:CI) WHERE ${organizationId === null ? 'ci.organization_id IS NOT NULL' : 'ci.organization_id = $organizationId'}
+           RETURN ci.id AS ciId, ci.incarnation_id AS incarnationId, ci.organization_id AS ownerId,
+                  coalesce(ci.type, ci.ci_type) AS ciType
+           LIMIT $rowLimit`,
+          { organizationId, rowLimit: neo4j.int(MAX_CI_ANALYTICS_NODES + 1) },
+          { timeout: 5000 }
+        );
+        if (result.records.length > MAX_CI_ANALYTICS_NODES) throw new CIAnalyticsLimitError();
+        const incarnations: Array<{ ciId: string; incarnationId: string; organizationId: string; ciType: string | null }> = [];
+        for (const record of result.records) {
+          const incarnationId = ciIncarnationId(record.get('incarnationId') as string | null);
+          const ownerId = record.get('ownerId');
+          if (incarnationId && typeof ownerId === 'string') {
+            incarnations.push({ ciId: record.get('ciId') as string, incarnationId,
+              organizationId: ownerId, ciType: record.get('ciType') as string | null });
+          }
         }
+        return incarnations;
+      } finally {
+        await session.close();
       }
-      return incarnations;
     } finally {
-      await session.close();
+      this.activeCIAnalyticsReads--;
     }
   }
 
@@ -429,9 +439,10 @@ export class Neo4jClient {
   }
 
   /**
-   * Delete in Neo4j, then purge all CI-keyed derived SQL rows as defense in
-   * depth. The stores cannot commit atomically; every derived read requires
-   * the current graph incarnation, so surviving rows remain unreadable.
+   * SQL cleanup is defense in depth. Capture the deleted graph incarnation
+   * in the deletion statement so a later owner reusing the ID retains its
+   * own derivatives. Remove legacy unmarked rows for the deleted ID too.
+   * Once graph deletion commits, SQL cleanup failure cannot change its result.
    */
   async deleteCI(id: string, scope: CIOrganizationScope): Promise<boolean> {
     const organizationId = organizationIdParam(scope);
@@ -441,21 +452,26 @@ export class Neo4jClient {
         `
         MATCH (ci:CI {id: $id})
         ${nodeScopeClause(organizationId)}
+        WITH ci, ci.incarnation_id AS deletedIncarnationId
         DETACH DELETE ci
-        RETURN count(*) AS deleted
+        RETURN deletedIncarnationId
         `,
         { id, organizationId }
       );
 
-      const deleted = result.records[0]!.get('deleted').toNumber() > 0;
-      if (!deleted) return false;
-      await getPostgresClient().transaction(async client => {
-        await client.query('DELETE FROM drift_detection_results WHERE ci_id = $1', [id]);
-        await client.query('DELETE FROM baseline_snapshots WHERE ci_id = $1', [id]);
-        await client.query('DELETE FROM impact_analyses WHERE source_ci_id = $1', [id]);
-        await client.query('DELETE FROM ci_criticality_scores WHERE ci_id = $1', [id]);
-        await client.query('DELETE FROM ci_change_history WHERE ci_id = $1', [id]);
-      });
+      if (result.records.length === 0) return false;
+      const deletedIncarnationId = result.records[0]!.get('deletedIncarnationId') as string | null;
+      try {
+        await getPostgresClient().transaction(async client => {
+          await client.query('DELETE FROM drift_detection_results WHERE ci_id = $1 AND (ci_incarnation_id = $2::uuid OR ci_incarnation_id IS NULL)', [id, deletedIncarnationId]);
+          await client.query('DELETE FROM baseline_snapshots WHERE ci_id = $1 AND (ci_incarnation_id = $2::uuid OR ci_incarnation_id IS NULL)', [id, deletedIncarnationId]);
+          await client.query('DELETE FROM impact_analyses WHERE source_ci_id = $1 AND (ci_incarnation_id = $2::uuid OR ci_incarnation_id IS NULL)', [id, deletedIncarnationId]);
+          await client.query('DELETE FROM ci_criticality_scores WHERE ci_id = $1 AND (ci_incarnation_id = $2::uuid OR ci_incarnation_id IS NULL)', [id, deletedIncarnationId]);
+          await client.query('DELETE FROM ci_change_history WHERE ci_id = $1 AND (ci_incarnation_id = $2::uuid OR ci_incarnation_id IS NULL)', [id, deletedIncarnationId]);
+        });
+      } catch {
+        logger.error('CI_DERIVED_PURGE_FAILED');
+      }
       return true;
     } finally {
       await session.close();

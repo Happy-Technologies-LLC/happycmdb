@@ -17,7 +17,7 @@
  * 001_ci_organization_backfill.cypher statement by statement over the graph.
  */
 
-import { randomBytes } from 'crypto';
+import { randomBytes, randomUUID } from 'crypto';
 import { fork } from 'child_process';
 import { readFileSync } from 'fs';
 import { join } from 'path';
@@ -98,6 +98,7 @@ function run(rawCypher: string, params: Props = {}): FakeRecord[] {
       discovered_at: params['discovered_at'], discovery_provider: params['discovery_provider'],
       metadata: params['metadata'],
       organization_id: cypher.includes('organization_id: $organizationId') ? params['organizationId'] : undefined,
+      incarnation_id: cypher.includes('incarnation_id: randomUUID()') ? randomUUID() : undefined,
     };
     // Neo4j does not store null-valued properties.
     for (const key of Object.keys(props)) if (props[key] === null || props[key] === undefined) delete props[key];
@@ -113,7 +114,7 @@ function run(rawCypher: string, params: Props = {}): FakeRecord[] {
       graph.nodes.delete(id);
       graph.edges = graph.edges.filter(e => e.from !== id && e.to !== id);
     }
-    return cypher.includes('RETURN count(*) AS deleted') ? [record({ deleted: neo4j.int(matched ? 1 : 0) })] : [];
+    return matched ? [record({ deletedIncarnationId: props?.['incarnation_id'] ?? null })] : [];
   }
 
   if (cypher.includes('SET ci += $updates')) {
@@ -164,6 +165,12 @@ function run(rawCypher: string, params: Props = {}): FakeRecord[] {
     return props !== undefined && ciInScope(props) ? [record({ ci: node(props) })] : [];
   }
 
+  if (cypher.startsWith('MATCH (ci:CI) WHERE') && cypher.includes('AS incarnationId')) {
+    return [...graph.nodes.values()].filter(ciInScope)
+      .slice(0, num(params['rowLimit']))
+      .map(props => record({ ciId: props['id'], incarnationId: props['incarnation_id'],
+        ownerId: props['organization_id'], ciType: props['type'] }));
+  }
   if (cypher.startsWith('MATCH (ci:CI) WHERE')) {
     const matches = [...graph.nodes.values()].filter(props =>
       ciInScope(props) &&
@@ -181,11 +188,13 @@ function run(rawCypher: string, params: Props = {}): FakeRecord[] {
   throw new Error(`fake Neo4j: unrecognised statement: ${cypher}`);
 }
 
+let holdIncarnationRead: (() => Promise<void>) | undefined;
 const fakeDriver = {
   session: () => ({
     // Plain functions (not jest.fn): the unit config resets mock implementations.
     run: async (cypher: string, params?: Props) => {
       queryCount++;
+      if (cypher.includes('AS incarnationId')) await holdIncarnationRead?.();
       return { records: run(cypher, params) };
     },
     close: async () => undefined,
@@ -286,6 +295,9 @@ beforeAll(async () => {
     if (!definition) throw new Error(`Missing production table ${table}`);
     await sql(definition[0]);
   }
+  for (const statement of readFileSync(
+    join(__dirname, '../../../../../database/src/postgres/migrations/025_ci_derived_incarnation.sql'), 'utf8'
+  ).split(';').map(part => part.trim()).filter(Boolean)) await sql(statement);
 });
 afterAll(() => { host.kill(); });
 
@@ -327,6 +339,35 @@ beforeEach(() => {
   dependsOn('ci-b-app', 'ci-b-db');
   queryCount = 0;
   auditHistoryReads = 0;
+  holdIncarnationRead = undefined;
+});
+
+it('caps graph incarnation enumeration before JSON/SQL analytics, including legacy unmarked nodes', async () => {
+  const incarnationId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  for (let i = 0; i < 510; i++) seedCI(`ci-analytics-${i}`, ORG_A, { incarnation_id: incarnationId });
+  const before = queryCount;
+  expect((await neo4jClient.listCIIncarnations(ORG_A)).length).toBe(510);
+  expect(queryCount).toBe(before + 1);
+  seedCI('ci-analytics-over', ORG_A);
+  await expect(neo4jClient.listCIIncarnations(ORG_A)).rejects.toMatchObject({ name: 'CIAnalyticsLimitError' });
+  expect(queryCount).toBe(before + 2);
+});
+
+it('bounds simultaneous incarnation reads independently of incoming request concurrency', async () => {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  holdIncarnationRead = () => promise;
+  try {
+    const reads = Array.from({ length: 8 }, () => neo4jClient.listCIIncarnations(ORG_A));
+    await expect(neo4jClient.listCIIncarnations(ORG_A)).rejects.toMatchObject({ name: 'CIAnalyticsLimitError' });
+    expect(queryCount).toBe(8);
+    resolve();
+    await Promise.all(reads);
+    await neo4jClient.listCIIncarnations(ORG_A);
+    expect(queryCount).toBe(9);
+  } finally {
+    resolve();
+    holdIncarnationRead = undefined;
+  }
 });
 
 it('deletes all five persisted CI-derived families on the owning REST deletion path', async () => {
@@ -354,6 +395,66 @@ it('deletes all five persisted CI-derived families on the owning REST deletion p
   for (const table of derivedTables) {
     const column = table === 'impact_analyses' ? 'source_ci_id' : 'ci_id';
     expect(await sql(`SELECT 1 FROM ${table} WHERE ${column} = $1`, [id])).toEqual([]);
+  }
+});
+
+it('preserves every fresh B derivative when B reuses an ID between A graph deletion and SQL purge', async () => {
+  const id = 'ci-delete-race';
+  const aInc = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const bInc = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  seedCI(id, ORG_A, { incarnation_id: aInc });
+  await sql(`INSERT INTO ci_change_history (ci_id, change_type, change_source, metadata, ci_incarnation_id)
+    VALUES ($1, 'A', 'test', '{}', $2)`, [id, aInc]);
+
+  const original = pg.transaction;
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  pg.transaction = async callback => {
+    expect(graph.nodes.has(id)).toBe(false);
+    entered.resolve();
+    await release.promise;
+    return original(callback);
+  };
+  try {
+    const deleting = request(app).delete(`/api/v1/cis/${id}`).set(AS_A).then(response => response);
+    await entered.promise;
+    seedCI(id, ORG_B, { incarnation_id: bInc });
+    await sql(`INSERT INTO baseline_snapshots
+      (id, ci_id, snapshot_type, snapshot_data, created_at, created_by, ci_incarnation_id)
+      VALUES ('11111111-1111-4111-8111-111111111111', $1, 'configuration', '{}', NOW(), 'b', $2)`, [id, bInc]);
+    await sql(`INSERT INTO drift_detection_results (ci_id, has_drift, detected_at, ci_incarnation_id)
+      VALUES ($1, false, NOW(), $2)`, [id, bInc]);
+    await sql(`INSERT INTO impact_analyses (id, source_ci_id, change_type, risk_level, analyzed_at, ci_incarnation_id)
+      VALUES ('22222222-2222-4222-8222-222222222222', $1, 'UPDATE', 'low', NOW(), $2)`, [id, bInc]);
+    await sql(`INSERT INTO ci_criticality_scores (ci_id, factors, calculated_at, ci_incarnation_id)
+      VALUES ($1, '{}', NOW(), $2)`, [id, bInc]);
+    await sql(`INSERT INTO ci_change_history (ci_id, change_type, change_source, metadata, ci_incarnation_id)
+      VALUES ($1, 'B', 'test', '{}', $2)`, [id, bInc]);
+    release.resolve();
+    expect((await deleting).status).toBe(204);
+    for (const table of derivedTables) {
+      const column = table === 'impact_analyses' ? 'source_ci_id' : 'ci_id';
+      expect(await sql(`SELECT ci_incarnation_id FROM ${table} WHERE ${column} = $1`, [id]))
+        .toEqual([{ ci_incarnation_id: bInc }]);
+    }
+    expect((await request(app).get(`/api/v1/cis/${id}`).set(AS_B)).status).toBe(200);
+  } finally {
+    release.resolve();
+    pg.transaction = original;
+  }
+});
+
+it('reports a committed graph deletion as successful if SQL defense-in-depth cleanup fails', async () => {
+  const id = 'ci-delete-sql-down';
+  seedCI(id, ORG_A, { incarnation_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' });
+  const original = pg.transaction;
+  pg.transaction = async () => { throw new Error('PostgreSQL unavailable'); };
+  try {
+    expect((await request(app).delete(`/api/v1/cis/${id}`).set(AS_A)).status).toBe(204);
+    expect((await request(app).delete(`/api/v1/cis/${id}`).set(AS_A)).status).toBe(404);
+    expect(graph.nodes.has(id)).toBe(false);
+  } finally {
+    pg.transaction = original;
   }
 });
 

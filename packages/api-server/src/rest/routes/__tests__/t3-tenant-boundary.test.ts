@@ -8,6 +8,7 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import express from 'express';
 import request from 'supertest';
+import { CIAnalyticsLimitError, MAX_CI_ANALYTICS_NODES } from '@cmdb/common';
 
 Object.assign(process.env, {
   JWT_SECRET: randomBytes(32).toString('hex'),
@@ -60,7 +61,9 @@ const graph = {
   },
   listCIIncarnations: async (org: string) => {
     graphCount++;
-    return [...nodes.values()].filter(ci => ci.organization_id === org && ci.incarnation_id)
+    const matches = [...nodes.values()].filter(ci => ci.organization_id === org);
+    if (matches.length > MAX_CI_ANALYTICS_NODES) throw new CIAnalyticsLimitError();
+    return matches.filter(ci => ci.incarnation_id)
       .map(ci => ({ ciId: ci.id, incarnationId: ci.incarnation_id!, organizationId: ci.organization_id, ciType: 'server' }));
   },
   getSession: () => ({
@@ -402,6 +405,36 @@ it('reads freshly written B derivatives when the graph clock is ahead of Postgre
   const result = await request(app).get(`/api/v1/drift/baseline/${id}`).set(auth('be'));
   expect(result.status).toBe(200);
   expect(result.body.data.snapshot_data).toEqual({ owner: 'B' });
+});
+
+it('rejects oversized tenant analytics without serializing all graph CIs into SQL, including GraphQL aliases', async () => {
+  const ids = Array.from({ length: 513 }, (_, i) => `ci-bulk-${i}`);
+  for (const id of ids) nodes.set(id, { id, name: id, organization_id: B, incarnation_id: B_INC });
+  try {
+    const beforeSQL = sqlCount;
+    const timeline = await request(app).get('/api/v1/analytics/change-timeline').set(auth('bb'));
+    expect(timeline.status).toBe(503);
+    expect(timeline.body.error).toBe('Analytics resource limit exceeded');
+    expect(sqlCount).toBe(beforeSQL);
+    const gqlApp = express();
+    const { server } = await createGraphQLServer(gqlApp);
+    try {
+      const single = await request(gqlApp).post('/graphql').set(auth('bc')).send({
+        query: '{ analytics { getChangeFrequencyByType { _changeCount } } }',
+      });
+      expect(single.body.errors?.[0].extensions.code).toBe('SERVICE_UNAVAILABLE');
+      expect(sqlCount).toBe(beforeSQL);
+      const aliases = await request(gqlApp).post('/graphql').set(auth('bc')).send({
+        query: '{ analytics { first:getChangeFrequencyByType { _changeCount } second:getChangeFrequencyByType { _changeCount } } }',
+      });
+      expect(aliases.body.errors?.[0].extensions.code).toBe('GRAPHQL_REQUEST_LIMIT_EXCEEDED');
+      expect(sqlCount).toBe(beforeSQL);
+    } finally {
+      await server.stop();
+    }
+  } finally {
+    for (const id of ids) nodes.delete(id);
+  }
 });
 
 it('refuses org-less calls before graph or SQL for both families', async () => {

@@ -15,6 +15,7 @@ export * from './types';
 
 // Export logger utilities
 export { createLogger, createChildLogger, logger, log } from './utils/logger';
+export { MAX_CI_ANALYTICS_NODES, CIAnalyticsLimitError } from './utils/ci-incarnation';
 export type { LoggerOptions, LogLevel } from './utils/logger';
 
 // Export validation utilities

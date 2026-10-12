@@ -627,6 +627,54 @@ it('returns only event-proven CI history before dimension sync and after cross-t
   expect((await graphql('b')).body.data?.ciHistory).toEqual([{ changeType: 'updated' }]);
 });
 
+it('retains B rows in all five SQL families when real graph deletion pauses before SQL purge', async () => {
+  const id = 't3-delete-race';
+  const a = await graph.createCI({ _id: id, name: 'former A', _type: 'server' }, A);
+  const aMarker = a._incarnation_id;
+  await sql.query(`INSERT INTO ci_change_history (ci_id, change_type, change_source, metadata, ci_incarnation_id)
+    VALUES ($1, 'FORMER_A', 'test', $2::jsonb, $3)`, [id, JSON.stringify({ organization_id: A }), aMarker]);
+  await sql.query(`INSERT INTO baseline_snapshots (id, ci_id, snapshot_type, snapshot_data, created_at, created_by)
+    VALUES ('55555555-5555-4555-8555-555555555555', $1, 'configuration', '{}', NOW(), 'legacy')`, [id]);
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const originalTransaction = sql.transaction.bind(sql);
+  const spy = jest.spyOn(sql, 'transaction').mockImplementation(async callback => {
+    expect(await graph.getCI(id, A)).toBeNull();
+    entered.resolve();
+    await release.promise;
+    return originalTransaction(callback);
+  });
+  try {
+    const deletion = graph.deleteCI(id, A);
+    await entered.promise;
+    const b = await graph.createCI({ _id: id, name: 'new B', _type: 'server' }, B);
+    const bMarker = b._incarnation_id;
+    expect(bMarker).not.toBe(aMarker);
+    await sql.query(`INSERT INTO baseline_snapshots (id, ci_id, snapshot_type, snapshot_data, created_at, created_by, ci_incarnation_id)
+      VALUES ('66666666-6666-4666-8666-666666666666', $1, 'configuration', '{"owner":"B"}', NOW(), 'b', $2)`, [id, bMarker]);
+    await sql.query(`INSERT INTO drift_detection_results (ci_id, has_drift, detected_at, ci_incarnation_id)
+      VALUES ($1, false, NOW(), $2)`, [id, bMarker]);
+    await sql.query(`INSERT INTO impact_analyses (id, source_ci_id, change_type, risk_level, analyzed_at, ci_incarnation_id)
+      VALUES ('77777777-7777-4777-8777-777777777777', $1, 'RESTART', 'low', NOW(), $2)`, [id, bMarker]);
+    await sql.query(`INSERT INTO ci_criticality_scores (ci_id, factors, calculated_at, ci_incarnation_id)
+      VALUES ($1, '{"owner":"B"}', NOW(), $2)`, [id, bMarker]);
+    await sql.query(`INSERT INTO ci_change_history (ci_id, change_type, change_source, metadata, ci_incarnation_id)
+      VALUES ($1, 'FRESH_B', 'test', $2::jsonb, $3)`, [id, JSON.stringify({ organization_id: B }), bMarker]);
+    release.resolve();
+    expect(await deletion).toBe(true);
+    for (const table of ['baseline_snapshots', 'drift_detection_results', 'impact_analyses',
+      'ci_criticality_scores', 'ci_change_history']) {
+      const column = table === 'impact_analyses' ? 'source_ci_id' : 'ci_id';
+      expect((await sql.query(`SELECT ci_incarnation_id FROM ${table} WHERE ${column}=$1`, [id])).rows)
+        .toEqual([{ ci_incarnation_id: bMarker }]);
+    }
+    expect((await graph.getCI(id, B))?._incarnation_id).toBe(bMarker);
+  } finally {
+    release.resolve();
+    spy.mockRestore();
+  }
+});
+
 it('fences future-dated A rows across real graph deletion and B ID collision, while reading B rows with clock skew', async () => {
   const issued = await graph.createCI({ _id: 't3-graph-marker', name: 'marker', _type: 'server' }, A);
   expect(issued._incarnation_id).toMatch(/^[0-9a-f-]{36}$/i);

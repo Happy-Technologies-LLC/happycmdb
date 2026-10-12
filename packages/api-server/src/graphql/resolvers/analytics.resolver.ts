@@ -5,7 +5,7 @@
 
 import { GraphQLError } from 'graphql';
 import { AnalyticsService } from '../../services/analytics.service';
-import { logger } from '@cmdb/common';
+import { logger, CIAnalyticsLimitError } from '@cmdb/common';
 import { requireGraphQLOrganization } from '../require-organization';
 import type { TokenPayload } from '../../auth/types';
 
@@ -361,11 +361,13 @@ const AnalyticsQueryResolvers = {
       }));
     } catch (error: any) {
       logger.error('GraphQL: Error getting change frequency by type', error);
+      if (error instanceof CIAnalyticsLimitError) {
+        throw new GraphQLError('Analytics resource limit exceeded', {
+          extensions: { code: 'SERVICE_UNAVAILABLE' },
+        });
+      }
       throw new GraphQLError('Failed to retrieve change frequency', {
-        extensions: {
-          code: 'INTERNAL_SERVER_ERROR',
-          originalError: error.message,
-        },
+        extensions: { code: 'INTERNAL_SERVER_ERROR' },
       });
     }
   },

@@ -564,9 +564,11 @@ paths:
       tags: [Configuration Items]
       summary: Delete CI
       description: >-
-        Delete the CI and its SQL-derived baseline, drift, impact, criticality
-        and change-history rows. Graph and SQL stores cannot commit atomically;
-        derived reads enforce the CI birth epoch if cleanup fails.
+        Delete the CI in the graph, then best-effort purge its five SQL-derived
+        families for the deleted incarnation and unmarked legacy rows. A new CI
+        reusing that ID retains its own derivatives. A committed graph deletion
+        returns 204 even if SQL cleanup fails; derived reads require the current
+        graph incarnation UUID and never expose those stale rows.
       parameters:
         - $ref: '#/components/parameters/CIId'
       responses:

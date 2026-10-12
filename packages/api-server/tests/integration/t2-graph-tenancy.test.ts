@@ -183,6 +183,74 @@ it('REST and production GraphQL findMatches give foreign-only and NULL-only the 
   expect((await match('b', 'foreign-only')).body.data.ci_id).toBe('t2-b');
 });
 
+it('architecture rejects over-cap POST roots before any ownership lookup or graph work', async () => {
+  const lookup = jest.spyOn(graph, 'getCI');
+  const session = jest.spyOn(graph, 'getSession');
+  try {
+    const response = await request(app).post('/api/v1/architecture/analyze').set(auth('a'))
+      .send({ ci_ids: Array.from({ length: 21 }, (_, index) => `t2-excess-${index}`) });
+    expect(response.status).toBe(400);
+    expect(response.body).toEqual({ success: false, error: 'Too many CI IDs (maximum 20)' });
+    expect(lookup).not.toHaveBeenCalled();
+    expect(session).not.toHaveBeenCalled();
+  } finally {
+    lookup.mockRestore();
+    session.mockRestore();
+  }
+});
+
+it('architecture bounds dense owned cycles on both entry points without exposing foreign nodes', async () => {
+  const ids = Array.from({ length: 7 }, (_, index) => `t2-load-${index}`);
+  try {
+    await run(`UNWIND $ids AS id CREATE (:CI {id:id, name:id, organization_id:$a})`, { ids, a: A });
+    await run(`MATCH (a:CI), (b:CI)
+      WHERE a.id IN $ids AND b.id IN $ids AND a.id <> b.id
+      CREATE (a)-[:DEPENDS_ON]->(b)`, { ids });
+    await run(`MATCH (a:CI {id:$id}), (b:CI {id:'t2-b'})
+      CREATE (a)-[:DEPENDS_ON]->(b)`, { id: ids[0] });
+    await sql.query(
+      `INSERT INTO ci_business_service_mappings (ci_id, service_id, mapping_type)
+       SELECT id, 't2-a', 'supports' FROM unnest($1::text[]) AS id`, [ids]
+    );
+    for (const response of [
+      await request(app).post('/api/v1/architecture/analyze').set(auth('a')).send({ ci_ids: [ids[0]] }),
+      await request(app).get('/api/v1/architecture/business-services/t2-a/analysis').set(auth('a')),
+    ]) {
+      expect(response.status).toBe(503);
+      expect(response.body).toEqual({ success: false, error: 'Architecture analysis resource limit exceeded' });
+      expect(JSON.stringify(response.body)).not.toContain('t2-b');
+    }
+  } finally {
+    await sql.query("DELETE FROM ci_business_service_mappings WHERE service_id = 't2-a' AND ci_id LIKE 't2-load-%'");
+    await run("MATCH (ci:CI) WHERE ci.id STARTS WITH 't2-load-' DETACH DELETE ci");
+  }
+});
+
+it('architecture rejects over-cap GET mappings before graph work and preserves foreign-service 404', async () => {
+  const ids = Array.from({ length: 21 }, (_, index) => `t2-mapped-${index}`);
+  try {
+    await sql.query(
+      `INSERT INTO ci_business_service_mappings (ci_id, service_id, mapping_type)
+       SELECT id, 't2-a', 'supports' FROM unnest($1::text[]) AS id`, [ids]
+    );
+    const session = jest.spyOn(graph, 'getSession');
+    try {
+      const response = await request(app).get('/api/v1/architecture/business-services/t2-a/analysis').set(auth('a'));
+      expect(response.status).toBe(503);
+      expect(response.body).toEqual({ success: false, error: 'Architecture analysis resource limit exceeded' });
+      expect(session).not.toHaveBeenCalled();
+    } finally {
+      session.mockRestore();
+    }
+    const foreign = await request(app).get('/api/v1/architecture/business-services/t2-b/analysis').set(auth('a'));
+    const missing = await request(app).get('/api/v1/architecture/business-services/t2-missing/analysis').set(auth('a'));
+    expect(foreign.status).toBe(404);
+    expect(foreign.body).toEqual(missing.body);
+  } finally {
+    await sql.query("DELETE FROM ci_business_service_mappings WHERE service_id = 't2-a' AND ci_id LIKE 't2-mapped-%'");
+  }
+});
+
 it('architecture denies any foreign, missing or NULL input before writing an analysis', async () => {
   const before = await sql.query('SELECT count(*)::integer AS total FROM architecture_analyses');
   for (const id of ['t2-b', 't2-null', 't2-missing']) {

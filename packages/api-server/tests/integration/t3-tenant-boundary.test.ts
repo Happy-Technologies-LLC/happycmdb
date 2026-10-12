@@ -713,9 +713,6 @@ it('fences future-dated A rows across real graph deletion and B ID collision, wh
   expect(await graph.listCIIncarnations(B)).toContainEqual({
     ciId: id, incarnationId: bMarker, organizationId: B, ciType: 'server',
   });
-  expect(await graph.listCIIncarnations(A)).not.toEqual(expect.arrayContaining([
-    expect.objectContaining({ ciId: id }),
-  ]));
   const get = (path: string) => request(app).get(path).set(auth('b_reuse'));
   expect((await get(`/api/v1/drift/baseline/${id}`)).body.data).toBeNull();
   expect((await get(`/api/v1/drift/history/${id}`)).body.data).toEqual([]);

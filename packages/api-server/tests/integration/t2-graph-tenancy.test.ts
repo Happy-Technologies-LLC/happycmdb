@@ -160,6 +160,40 @@ it('bounds mounted dashboard parallel-edge and fan-out graphs before path expans
   }
 });
 
+it('bounds no-service dashboard collection to 101 owned CIs with a Neo4j transaction deadline', async () => {
+  await run(`UNWIND range(1,101) AS ordinal
+    CREATE (:CI {id:'t2-budget-'+toString(ordinal), name:'budget', type:'server',
+      status:'active', organization_id:$organizationId})`, { organizationId: A });
+  const collection: Array<{ statement: string; timeout: number | undefined; rows: number }> = [];
+  const original = graph.getSession.bind(graph);
+  const spy = jest.spyOn(graph, 'getSession').mockImplementation(() => {
+    const session = original();
+    const originalRun = session.run.bind(session);
+    session.run = (async (...args: Parameters<typeof originalRun>) => {
+      const result = await originalRun(...args);
+      if (String(args[0]).includes('collect(ci) as cis')) {
+        collection.push({
+          statement: String(args[0]), timeout: args[2]?.timeout,
+          rows: (result.records[0]?.get('cis') as unknown[]).length,
+        });
+      }
+      return result;
+    }) as typeof session.run;
+    return session;
+  });
+  try {
+    const response = await request(app).get('/api/v1/dashboards/business-service').set(auth('a'));
+    expect(response.status).toBe(503);
+    expect(response.body).toEqual({ success: false, error: 'CI traversal resource limit exceeded' });
+    expect(collection).toHaveLength(1);
+    expect(collection[0]).toMatchObject({ timeout: 5000, rows: 101 });
+    expect(collection[0]!.statement).toMatch(/\bWITH ci LIMIT 101 RETURN collect\(ci\) as cis\b/);
+  } finally {
+    spy.mockRestore();
+    await run("MATCH (ci:CI) WHERE ci.id STARTS WITH 't2-budget-' DETACH DELETE ci");
+  }
+});
+
 it('relationships fence both endpoints for lists, type counts, create and atomic delete', async () => {
   for (const [path, type] of [
     ['/api/v1/relationships', null],

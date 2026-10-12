@@ -7,13 +7,16 @@ import { optionalRequestOrganizationId, requestOrganizationId, type Authenticate
 import { errorLogFields } from '../utils/log-error';
 
 const WINDOW_MS = 60_000;
+export const GRAPHQL_RESPONSE_WRITE_DEADLINE_MS = 30_000;
 const MAX_LIMITER_KEYS = 2048;
 const limits = new Map<string, { start: number; count: number; active: number }>();
 // GraphQL's cardinality must not fill the impact/architecture limiter table.
 const graphqlLimits = new Map<string, { start: number; count: number; active: number }>();
-const graphQLWork = new WeakMap<Request, {
+type GraphQLWork = {
   started: boolean; completed: boolean; closed: boolean; release: () => void;
-}>();
+  response: Response; writeDeadline?: ReturnType<typeof setTimeout>;
+};
+const graphQLWork = new WeakMap<Request, GraphQLWork>();
 
 type AnalysisResult = { status: number; body: unknown };
 type AnalysisPolicy = {
@@ -90,10 +93,13 @@ export function admitGraphQLRequest(req: Request, res: Response, next: NextFunct
     }] });
     return;
   }
-  const work = { started: false, completed: false, closed: false, release };
+  const work: GraphQLWork = {
+    started: false, completed: false, closed: false, release, response: res,
+  };
   graphQLWork.set(req, work);
   const onClosed = () => {
     work.closed = true;
+    clearTimeout(work.writeDeadline);
     // A pre-operation disconnect has no running resolver work to protect.
     // The Apollo start hook refuses any later attempt to execute on this socket.
     if (work.completed || !work.started) release();
@@ -111,12 +117,20 @@ export function graphQLWorkStarted(req: Request): boolean {
   return true;
 }
 
-/** Do not free a disconnected client's slot while its GraphQL resolvers still run. */
+/** Keep completed GraphQL work reserved until the HTTP response finishes or its write phase expires. */
 export function graphQLWorkCompleted(req: Request): void {
   const work = graphQLWork.get(req);
-  if (!work) return;
+  if (!work || work.completed) return;
   work.completed = true;
-  if (work.closed) work.release();
+  if (work.closed) {
+    work.release();
+    return;
+  }
+  work.writeDeadline = setTimeout(() => {
+    if (work.closed) return;
+    work.response.destroy();
+    work.release();
+  }, GRAPHQL_RESPONSE_WRITE_DEADLINE_MS);
 }
 
 /** Bound verified principal and tenant work before DB access; hold slots after a timed-out response. */

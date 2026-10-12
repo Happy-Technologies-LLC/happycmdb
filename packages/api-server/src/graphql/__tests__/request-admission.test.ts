@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import express from 'express';
+import { connect, type Socket } from 'net';
+import type { Server } from 'http';
+import type { AddressInfo } from 'net';
 import request from 'supertest';
 import { readFileSync } from 'fs';
 import { join } from 'path';
@@ -41,7 +44,18 @@ jest.mock('@cmdb/integration-framework', () => ({}));
 import { createGraphQLServer } from '../server';
 
 const app = express();
+const slowResponses: Array<{ response: express.Response; closed: Promise<void> }> = [];
+app.use('/graphql', (req, res, next) => {
+  if (req.headers['x-test-slow-response']) {
+    let close!: () => void;
+    const closed = new Promise<void>(resolve => { close = resolve; });
+    res.once('close', close);
+    slowResponses.push({ response: res, closed });
+  }
+  next();
+});
 let server: ApolloServer<any>;
+let httpServer: Server;
 const execute = (query: string, principal = 'a-owner') =>
   request(app).post('/graphql').set('authorization', `Bearer ${principal}`).send({ query });
 const requestLimit = { errors: [{
@@ -51,7 +65,7 @@ const concurrencyLimit = { errors: [{
   message: 'GraphQL concurrent request limit exceeded', extensions: { code: 'TOO_MANY_REQUESTS' },
 }] };
 
-beforeAll(async () => { ({ server } = await createGraphQLServer(app)); });
+beforeAll(async () => { ({ server, httpServer } = await createGraphQLServer(app)); });
 afterAll(async () => { await server.stop(); });
 beforeEach(() => {
   mockRun.mockImplementation(async () => ({ records: [] }));
@@ -261,6 +275,61 @@ it('admits four parallel principal reads and eight tenant reads, rejecting only 
   }
   expect((await execute('{ __typename }', 'a-first')).status).toBe(200);
 });
+
+it('releases GraphQL slots after 30 seconds of a non-reading large response and admits a healthy client', async () => {
+  const principal = 'a-nonreading';
+  const metadata = { payload: 'x'.repeat(256 * 1024) };
+  const records = Array.from({ length: 100 }, (_, index) => ({
+    get: () => ({ properties: { id: `large-${index}`, metadata } }),
+  }));
+  mockRun.mockImplementation(async () => ({ records: records as never[] }));
+  slowResponses.length = 0;
+  await new Promise<void>(resolve => httpServer.listen(0, '127.0.0.1', resolve));
+  const port = (httpServer.address() as AddressInfo).port;
+  const clients: Socket[] = [];
+  let deadlineTimer: NodeJS.Timeout | undefined;
+  try {
+    for (let index = 0; index < 4; index++) {
+      const client = connect(port, '127.0.0.1');
+      clients.push(client);
+      client.on('error', () => {}); // Destroying an undrained TCP response resets the peer.
+      client.pause();
+      await new Promise<void>((resolve, reject) => {
+        client.once('connect', resolve);
+        client.once('error', reject);
+      });
+      client.write(`GET /graphql?query=${encodeURIComponent('{ getCIs(limit:100) { _metadata } }')} HTTP/1.1\r\n`
+        + `Host: 127.0.0.1\r\nAuthorization: Bearer ${principal}\r\n`
+        + 'Apollo-Require-Preflight: true\r\nX-Test-Slow-Response: true\r\n\r\n');
+    }
+    const started = Date.now();
+    while (slowResponses.length !== 4 || slowResponses.some(({ response }) => !response.headersSent)) {
+      if (Date.now() - started > 5000) throw new Error('Large GraphQL responses did not begin writing');
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    expect(slowResponses.every(({ response }) => !response.writableFinished)).toBe(true);
+    expect((await execute('{ __typename }', principal)).status).toBe(429);
+    await Promise.race([
+      Promise.all(slowResponses.map(({ closed }) => closed)),
+      new Promise<never>((_resolve, reject) => {
+        deadlineTimer = setTimeout(() => reject(
+          new Error('Non-reading GraphQL responses outlived the 30s write deadline')
+        ), 33_000);
+      }),
+    ]);
+    const followUp = await execute('{ __typename }', principal);
+    expect(followUp.status).toBe(200);
+    expect(followUp.body).toEqual({ data: { __typename: 'Query' } });
+  } finally {
+    clearTimeout(deadlineTimer);
+    const clientClosed = clients.map(client => new Promise<void>(resolve => client.once('close', resolve)));
+    clients.forEach(client => client.destroy());
+    const closing = new Promise<void>((resolve, reject) =>
+      httpServer.close(error => error ? reject(error) : resolve()));
+    httpServer.closeAllConnections();
+    await Promise.all([...clientClosed, closing]);
+  }
+}, 40_000);
 
 it('leaves unauthenticated denial and ordinary owner-scoped reads unchanged', async () => {
   const unauthenticated = await request(app).post('/graphql').send({ query: '{ __typename }' });

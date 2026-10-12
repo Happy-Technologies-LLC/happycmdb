@@ -661,13 +661,15 @@ export class DashboardService {
           }
         }
 
-        // Get the organization's CIs with BSM attributes
+        // Bound collection before aggregation; the extra CI distinguishes a full page from overflow.
         const query = serviceId
           ? `MATCH (ci:CI) WHERE ci.id = $serviceId AND ci.organization_id = $organizationId RETURN collect(ci) as cis`
-          : `MATCH (ci:CI) WHERE ci.status = 'active' AND ci.organization_id = $organizationId RETURN collect(ci) as cis`;
+          : `MATCH (ci:CI) WHERE ci.status = 'active' AND ci.organization_id = $organizationId
+             WITH ci LIMIT ${MAX_CI_TRAVERSAL_NODES + 1} RETURN collect(ci) as cis`;
 
-        const result = await session.run(query, { serviceId, organizationId });
+        const result = await session.run(query, { serviceId, organizationId }, { timeout: 5000 });
         cis = result.records[0]?.get('cis') || [];
+        if (!serviceId && cis.length > MAX_CI_TRAVERSAL_NODES) throw new CITraversalLimitError();
       } finally {
         await session.close();
       }

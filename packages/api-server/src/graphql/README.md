@@ -378,7 +378,11 @@ identity without an organization claim uses an invalid-tenant bucket for
 concurrency accounting. Rejected concurrent requests return HTTP 429 with
 `GraphQL concurrent request limit exceeded` and `TOO_MANY_REQUESTS`. Once
 operation work starts, slots remain held until both the server's operation and
-HTTP response finish, even after client disconnect.
+HTTP response finish, even after client disconnect. The absolute write-phase
+deadline `GRAPHQL_RESPONSE_WRITE_DEADLINE_MS = 30_000` begins at Apollo
+`willSendResponse`, after resolver/DB work; a response still stalled after
+30 seconds has its socket destroyed and its slot released. Normal clients
+hold the slot through HTTP finish, not merely resolver completion.
 Disconnects before operation start release the slots without executing resolvers.
 Unauthenticated requests retain HTTP 401; a missing organization claim retains the
 resolver's `FORBIDDEN` response. Recursive CI traversals and one-hop relationship

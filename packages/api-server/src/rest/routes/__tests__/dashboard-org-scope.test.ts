@@ -108,7 +108,7 @@ const BUSINESS_SERVICE_NODES: Props[] = [
 
 type Params = Record<string, unknown>;
 interface FakeRecord { get(key: string): unknown }
-const cypherRuns: Array<{ query: string; params: Params }> = [];
+const cypherRuns: Array<{ query: string; params: Params; config?: { timeout: number } }> = [];
 const int = (n: number) => ({ toNumber: () => n });
 const record = (fields: Record<string, unknown>): FakeRecord => ({ get: (key: string) => fields[key] });
 const node = (props: Props) => ({ labels: ['CI'], properties: props });
@@ -162,7 +162,7 @@ function run(rawQuery: string, params: Params): FakeRecord[] {
     });
   }
   if (query.includes('collect(ci) as cis')) {
-    return [record({ cis: matched.map(node) })];
+    return [record({ cis: matched.slice(0, /\bLIMIT 101\b/.test(query) ? 101 : undefined).map(node) })];
   }
   // The projected collect({id, name, type, tbm, bsm, itil, provider}) shape.
   return [record({
@@ -176,8 +176,8 @@ function run(rawQuery: string, params: Params): FakeRecord[] {
 }
 
 const neo4jSession = {
-  run: async (query: string, params: Params = {}) => {
-    cypherRuns.push({ query, params });
+  run: async (query: string, params: Params = {}, config?: { timeout: number }) => {
+    cypherRuns.push({ query, params, config });
     return { records: run(query, params) };
   },
   close: async () => undefined,
@@ -336,6 +336,33 @@ describe('GET /api/v1/dashboards/business-service/:serviceId', () => {
     )).toEqual([{ from: 'bs-a-app', to: 'a-web' }]);
     expect(unscopedCIMatches()).toEqual([]);
   });
+  it('admits exactly 100 owned active CIs, but rejects a larger unscoped-service dashboard before collecting more than 101', async () => {
+    const baseline = CIS.length;
+    try {
+      CIS.push(...Array.from({ length: 97 }, (_, index) => ({
+        id: `budget-${index}`, name: `Budget ${index}`, status: 'active', organization_id: ORG_A,
+      })));
+      const withinBudget = await request(app).get('/api/v1/dashboards/business-service').set(AS_A);
+      expect(withinBudget.status).toBe(200);
+      CIS.push(...Array.from({ length: 24 }, (_, index) => ({
+        id: `overflow-${index}`, status: 'active', organization_id: ORG_A,
+      })));
+      const exceeded = await request(app).get('/api/v1/dashboards/business-service').set(AS_A);
+      expect(exceeded.status).toBe(503);
+      expect(exceeded.body).toEqual({ success: false, error: 'CI traversal resource limit exceeded' });
+      const collection = cypherRuns.filter(({ query }) => query.includes("ci.status = 'active'")
+        && query.includes('collect(ci) as cis'));
+      expect(collection).toHaveLength(2);
+      for (const statement of collection) {
+        expect(statement.query).toMatch(/\bLIMIT 101\b/);
+        expect(statement.config).toEqual({ timeout: 5000 });
+        expect(statement.params['organizationId']).toBe(ORG_A);
+      }
+    } finally {
+      CIS.length = baseline;
+    }
+  });
+
 });
 
 describe('global dashboards', () => {

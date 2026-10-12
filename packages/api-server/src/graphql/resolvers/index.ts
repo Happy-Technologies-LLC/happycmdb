@@ -23,6 +23,7 @@ import {
   ciInputSchema,
   ciUpdateSchema,
   validate,
+  ciCreationEpoch,
 } from '@cmdb/common';
 import { analyticsResolvers } from './analytics.resolver';
 import { connectorResolvers } from './connector.resolvers';
@@ -894,11 +895,13 @@ async function itilCI(context: GraphQLContext, id: string, organizationId: strin
 async function itilHistory(context: GraphQLContext, id: string, limit: number) {
   const organizationId = requireGraphQLOrganization(context);
   await requireCIInOrganization(context, id, organizationId);
+  const since = ciCreationEpoch(await context._loaders._ciLoader.load(ciKey(id, organizationId)));
+  if (!since) return [];
   const result = await getPostgresClient().pool.query(
     `SELECT h.* FROM ci_change_history h WHERE h.ci_id = $1
-     AND h.metadata->>'organization_id' = $3
+     AND h.metadata->>'organization_id' = $3 AND h.changed_at >= $4
      ORDER BY h.changed_at DESC LIMIT $2`,
-    [id, Math.min(Math.max(limit, 1), 500), organizationId]
+    [id, Math.min(Math.max(limit, 1), 500), organizationId, since]
   );
   return result.rows.map((row: {
     id: string; ci_id: string; changed_at: Date; changed_by: string;

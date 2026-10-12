@@ -3,7 +3,7 @@
 
 import { Request, Response } from 'express';
 import { getNeo4jClient, getPostgresClient, UNSCOPED_CI_ACCESS } from '@cmdb/database';
-import { logger } from '@cmdb/common';
+import { logger, ciCreationEpoch } from '@cmdb/common';
 import { v4 as uuidv4 } from 'uuid';
 import neo4j, { type Integer } from 'neo4j-driver';
 import { requestOrganizationId } from '../../middleware/auth.middleware';
@@ -247,6 +247,11 @@ export class ITILController {
         res.status(404).json({ success: false, error: 'Not Found', message: `Configuration item with ID '${id}' not found` });
         return;
       }
+      const since = ciCreationEpoch(ci);
+      if (!since) {
+        res.json({ success: true, data: [], count: 0 });
+        return;
+      }
       const { limit = 100 } = _req.query;
 
       const pool = this.postgresClient.pool;
@@ -255,10 +260,11 @@ export class ITILController {
         SELECT h.* FROM ci_change_history h
         WHERE h.ci_id = $1
           AND h.metadata->>'organization_id' = $3
+          AND h.changed_at >= $4
         ORDER BY h.changed_at DESC
         LIMIT $2
         `,
-        [id, parseInt(limit as string), requestOrganizationId(_req)]
+        [id, parseInt(limit as string), requestOrganizationId(_req), since]
       );
 
       res.json({

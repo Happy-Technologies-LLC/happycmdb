@@ -45,7 +45,6 @@ export class CICommand {
     // Create CI
     ci.command('create')
       .description('Create a new CI')
-      .requiredOption('-i, --id <id>', 'Unique CI identifier')
       .requiredOption('-t, --type <type>', 'CI type (server, database, application, etc.)')
       .requiredOption('-n, --name <name>', 'CI name')
       .option('-s, --status <status>', 'CI status (active, inactive, maintenance)')
@@ -207,7 +206,7 @@ export class CICommand {
 
     try {
       const data: any = {
-        id: options.id,
+        // REST create assigns the globally unique ID.
         name: options.name,
         type: options.type,
       };
@@ -233,9 +232,9 @@ export class CICommand {
 
       spinner.succeed(chalk.green('CI created successfully'));
       console.log(chalk.cyan('\nCI Details:'));
-      console.log(`  ID: ${chalk.bold(response.data.id)}`);
-      console.log(`  Name: ${response.data.name}`);
-      console.log(`  Type: ${response.data.type}`);
+      console.log(`  ID: ${chalk.bold(response.data.data.id)}`);
+      console.log(`  Name: ${response.data.data.name}`);
+      console.log(`  Type: ${response.data.data.type}`);
     } catch (error: any) {
       spinner.fail(chalk.red('Failed to create CI'));
       this.handleError(error);

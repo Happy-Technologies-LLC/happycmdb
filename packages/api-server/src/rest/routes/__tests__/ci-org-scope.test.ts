@@ -18,6 +18,7 @@
  */
 
 import { randomBytes } from 'crypto';
+import { fork } from 'child_process';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import express from 'express';
@@ -207,11 +208,42 @@ const driverSeam = neo4jClient as unknown as { driver: { close(): Promise<void> 
 void driverSeam.driver.close();
 driverSeam.driver = fakeDriver;
 
+const host = fork(join(__dirname, 'fixtures/pglite-host.cjs'), [], { serialization: 'advanced' });
+let sqlId = 0;
+const pending = new Map<number, { resolve: (rows: unknown[]) => void; reject: (error: Error) => void }>();
+host.on('message', ({ id, rows, error }: { id: number; rows: unknown[]; error?: string }) => {
+  const reply = pending.get(id)!;
+  pending.delete(id);
+  if (error) reply.reject(new Error(error));
+  else reply.resolve(rows);
+});
+function sql(statement: string, params: unknown[] = []): Promise<unknown[]> {
+  const id = sqlId++;
+  const { promise, resolve, reject } = Promise.withResolvers<unknown[]>();
+  pending.set(id, { resolve, reject });
+  host.send({ id, op: 'query', sql: statement, params });
+  return promise;
+}
+const pg = {
+  query: async (statement: string, params: unknown[] = []) => ({ rows: await sql(statement, params) }),
+  transaction: async <T>(callback: (client: { query: typeof pg.query }) => Promise<T>): Promise<T> => {
+    await sql('BEGIN');
+    try {
+      const result = await callback(pg);
+      await sql('COMMIT');
+      return result;
+    } catch (error) {
+      await sql('ROLLBACK');
+      throw error;
+    }
+  },
+};
+jest.mock('../../../../../database/src/postgres/client', () => ({ getPostgresClient: () => pg }));
 jest.mock('@cmdb/database', () => ({
   CITraversalLimitError,
   createCITraversalWork,
   getNeo4jClient: () => neo4jClient,
-  getPostgresClient: () => ({ pool: {} }),
+  getPostgresClient: () => ({ ...pg, pool: pg }),
   getAuditService: () => auditService,
 }));
 
@@ -239,9 +271,23 @@ import { loadConfig } from '@cmdb/common';
 import { JWTService } from '../../../auth/jwt.service';
 import { getAuthMiddleware } from '../../../auth/auth-bootstrap';
 import { ciRoutes } from '../ci.routes';
+import { createGraphQLServer } from '../../../graphql/server';
 
 const BACKFILL = join(__dirname, '../../../../../database/src/neo4j/migrations/001_ci_organization_backfill.cypher');
 const NOT_FOUND = { success: false, error: 'Not Found', message: 'CI not found' };
+const derivedTables = [
+  'baseline_snapshots', 'drift_detection_results', 'impact_analyses',
+  'ci_criticality_scores', 'ci_change_history',
+];
+beforeAll(async () => {
+  const ddl = readFileSync(join(__dirname, '../../../../../database/src/postgres/migrations/001_complete_schema.sql'), 'utf8');
+  for (const table of derivedTables) {
+    const definition = ddl.match(new RegExp(`CREATE TABLE IF NOT EXISTS ${table} \\([\\s\\S]*?\\n\\);`));
+    if (!definition) throw new Error(`Missing production table ${table}`);
+    await sql(definition[0]);
+  }
+});
+afterAll(() => { host.kill(); });
 
 const jwt = new JWTService(loadConfig().auth.jwt);
 const bearer = (userId: string, organizationId?: string) => ({
@@ -283,6 +329,57 @@ beforeEach(() => {
   auditHistoryReads = 0;
 });
 
+it('deletes all five persisted CI-derived families on the owning REST deletion path', async () => {
+  const id = 'ci-reused';
+  seedCI(id, ORG_A);
+  await sql(`INSERT INTO baseline_snapshots
+    (id, ci_id, snapshot_type, snapshot_data, created_at, created_by, is_approved)
+    VALUES ('11111111-1111-4111-8111-111111111111', $1, 'configuration', '{"owner":"A"}', NOW(), 'A', true)`, [id]);
+  await sql(`INSERT INTO drift_detection_results
+    (ci_id, has_drift, detected_at, baseline_snapshot_id)
+    VALUES ($1, true, NOW(), '11111111-1111-4111-8111-111111111111')`, [id]);
+  await sql(`INSERT INTO impact_analyses (id, source_ci_id, change_type, risk_level, analyzed_at)
+    VALUES ('22222222-2222-4222-8222-222222222222', $1, 'UPDATE', 'high', NOW())`, [id]);
+  await sql(`INSERT INTO ci_criticality_scores (ci_id, factors, calculated_at) VALUES ($1, '{"owner":"A"}', NOW())`, [id]);
+  await sql(`INSERT INTO ci_change_history (ci_id, change_type, change_source, metadata)
+    VALUES ($1, 'UPDATE', 'test', '{"organization_id":"${ORG_A}"}')`, [id]);
+  expect((await request(app).delete(`/api/v1/cis/${id}`).set(AS_B)).status).toBe(404);
+  for (const table of derivedTables) {
+    const column = table === 'impact_analyses' ? 'source_ci_id' : 'ci_id';
+    expect(await sql(`SELECT 1 FROM ${table} WHERE ${column} = $1`, [id])).toHaveLength(1);
+  }
+  expect((await request(app).delete(`/api/v1/cis/${id}`).set(AS_A)).status).toBe(204);
+  seedCI(id, ORG_B, { created_at: new Date().toISOString() });
+  expect((await request(app).get(`/api/v1/cis/${id}`).set(AS_B)).status).toBe(200);
+  for (const table of derivedTables) {
+    const column = table === 'impact_analyses' ? 'source_ci_id' : 'ci_id';
+    expect(await sql(`SELECT 1 FROM ${table} WHERE ${column} = $1`, [id])).toEqual([]);
+  }
+});
+
+it('GraphQL CI deletion shares cleanup and foreign/missing not-found behavior', async () => {
+  const id = 'ci-graphql-deleted';
+  seedCI(id, ORG_A);
+  await sql(`INSERT INTO ci_change_history (ci_id, change_type, change_source, metadata)
+    VALUES ($1, 'UPDATE', 'test', '{"organization_id":"${ORG_A}"}')`, [id]);
+  const gql = express();
+  const { server } = await createGraphQLServer(gql);
+  try {
+    const del = (who: typeof AS_A) => request(gql).post('/graphql').set(who)
+      .send({ query: `mutation { deleteCI(id: "${id}") }` });
+    const foreign = await del(AS_B);
+    const missing = await request(gql).post('/graphql').set(AS_B)
+      .send({ query: 'mutation { deleteCI(id: "ci-absent") }' });
+    expect(foreign.body.errors?.[0].extensions.code).toBe('NOT_FOUND');
+    expect(missing.body.errors?.[0].extensions.code).toBe('NOT_FOUND');
+    expect(await sql('SELECT 1 FROM ci_change_history WHERE ci_id = $1', [id])).toHaveLength(1);
+    expect((await del(AS_A)).body.data).toEqual({ deleteCI: true });
+    expect(await sql('SELECT 1 FROM ci_change_history WHERE ci_id = $1', [id])).toEqual([]);
+  } finally {
+    await server.stop();
+  }
+});
+
 describe('/api/v1/cis tenant scoping', () => {
   it("GET /cis lists only the caller org's CIs", async () => {
     const res = await request(app).get('/api/v1/cis').set(AS_A);
@@ -312,36 +409,30 @@ describe('/api/v1/cis tenant scoping', () => {
     expect(auditHistoryReads).toBe(0);
   });
 
-  it('POST /cis stores the token org and rejects organization_id in the body (400)', async () => {
-    const body = { id: 'ci-new', name: 'new-server', type: 'server' };
+  it('POST /cis assigns a tenant-scoped server ID and rejects chosen IDs and external IDs', async () => {
+    const body = { name: 'new-server', type: 'server' };
+    for (const id of ['ci-b-app', 'ci-nope']) {
+      const refused = await request(app).post('/api/v1/cis').set(AS_A).send({ ...body, id });
+      expect(refused.status).toBe(400);
+    }
+    for (const external_id of ['external-existing', 'external-missing']) {
+      const refused = await request(app).post('/api/v1/cis').set(AS_A).send({ ...body, external_id });
+      expect(refused.status).toBe(400);
+    }
     const created = await request(app).post('/api/v1/cis').set(AS_A).send(body);
-    expect(created.status).toBe(201);
-    expect(graph.nodes.get('ci-new')!['organization_id']).toBe(ORG_A);
-    expect((await request(app).get('/api/v1/cis/ci-new').set(AS_B)).status).toBe(404);
+    const other = await request(app).post('/api/v1/cis').set(AS_B).send(body);
+    expect([created.status, other.status]).toEqual([201, 201]);
+    const id = created.body.data.id;
+    expect(id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(other.body.data.id).not.toBe(id);
+    expect(graph.nodes.get(id)!['organization_id']).toBe(ORG_A);
+    expect((await request(app).get(`/api/v1/cis/${id}`).set(AS_B)).status).toBe(404);
 
-    const smuggled = await request(app).post('/api/v1/cis').set(AS_A).send({ ...body, id: 'ci-smuggled', organization_id: ORG_B });
+    const smuggled = await request(app).post('/api/v1/cis').set(AS_A).send({ ...body, organization_id: ORG_B });
     expect(smuggled.status).toBe(400);
-    expect(graph.nodes.has('ci-smuggled')).toBe(false);
-
-    const moved = await request(app).put('/api/v1/cis/ci-new').set(AS_A).send({ organization_id: ORG_B });
+    const moved = await request(app).put(`/api/v1/cis/${id}`).set(AS_A).send({ organization_id: ORG_B });
     expect(moved.status).toBe(400);
-    expect(graph.nodes.get('ci-new')!['organization_id']).toBe(ORG_A);
-  });
-
-  it('POST /cis rejects an id or external_id longer than cmdb.dim_ci stores (400) and creates nothing', async () => {
-    // cmdb.dim_ci.ci_id is VARCHAR(100) and external_id VARCHAR(200): a longer
-    // value would fail every ETL batch it lands in (migration 011).
-    const longId = 'x'.repeat(101);
-    const overlongId = await request(app).post('/api/v1/cis').set(AS_A).send({ id: longId, name: 'n', type: 'server' });
-    const overlongExternal = await request(app).post('/api/v1/cis').set(AS_A)
-      .send({ id: 'ci-long-ext', external_id: 'e'.repeat(201), name: 'n', type: 'server' });
-    expect([overlongId.status, overlongExternal.status]).toEqual([400, 400]);
-    expect(graph.nodes.has(longId)).toBe(false);
-    expect(graph.nodes.has('ci-long-ext')).toBe(false);
-
-    const atLimit = await request(app).post('/api/v1/cis').set(AS_A)
-      .send({ id: 'i'.repeat(100), external_id: 'e'.repeat(200), name: 'n', type: 'server' });
-    expect(atLimit.status).toBe(201);
+    expect(graph.nodes.get(id)!['organization_id']).toBe(ORG_A);
   });
 
   it('PUT and DELETE on a foreign CI are 404 and change nothing', async () => {

@@ -409,13 +409,13 @@ export class IdentityReconciliationEngine {
         {
           properties: {
             ...withoutOrganizationId({
-              id: ciId,
               name: ci.name,
               ci_type: ci.ci_type,
               environment: ci.environment,
               status: ci.status || 'active',
               ...ci.attributes,
               ...ci.identifiers,
+              id: ciId,
               created_at: new Date().toISOString(),
               updated_at: new Date().toISOString(),
             }),
@@ -483,8 +483,9 @@ export class IdentityReconciliationEngine {
     const existingFields = await this.getFieldSources(ciId);
     const mergedData: Record<string, unknown> = {};
 
-    // A merge never sets or changes the CI's organization (SET ci += $properties).
+    // Reconciliation may change attributes, never identity, tenant or birth epoch.
     for (const [field, value] of Object.entries(withoutOrganizationId(newCI.attributes))) {
+      if (field === 'id' || field === 'created_at') continue;
       const existing = existingFields.get(field);
 
       if (!existing) {

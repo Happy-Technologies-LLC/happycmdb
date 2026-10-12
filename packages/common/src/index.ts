@@ -33,6 +33,7 @@ export {
 
 // Export retry utilities
 export { withRetry } from './utils/retry';
+export { ciCreationEpoch } from './utils/ci-creation-epoch';
 export { safeDiscoveryScanConfig, type SafeDiscoveryScanConfig } from './utils/discovery-scan-config';
 export {
   DISCOVERY_TARGET_REFUSED, assertDiscoveryAddress, assertDiscoveryHostname,

@@ -1,5 +1,6 @@
 // Copyright 2026 Happy Technologies LLC
 // SPDX-License-Identifier: Apache-2.0
+import { randomUUID } from 'crypto';
 
 import { getPostgresClient } from '@cmdb/database';
 import { logger, assertDiscoveryRange, DISCOVERY_TARGET_REFUSED } from '@cmdb/common';
@@ -29,43 +30,41 @@ export class DiscoveryAgentService {
     try {
       await client.query('BEGIN');
 
-      // A global agent_id may only be re-registered by its existing organization.
-      const result = await client.query(
-        `INSERT INTO discovery_agents (
-          agent_id, organization_id, hostname, provider_capabilities, reachable_networks,
-          version, platform, arch, api_endpoint, tags, status, last_heartbeat_at
-        ) VALUES ($1, $10, $2, $3, $4, $5, $6, $7, $8, $9, 'active', NOW())
-        ON CONFLICT (agent_id) DO UPDATE SET
-          hostname = EXCLUDED.hostname,
-          provider_capabilities = EXCLUDED.provider_capabilities,
-          reachable_networks = EXCLUDED.reachable_networks,
-          version = EXCLUDED.version,
-          platform = EXCLUDED.platform,
-          arch = EXCLUDED.arch,
-          api_endpoint = EXCLUDED.api_endpoint,
-          tags = EXCLUDED.tags,
-          status = 'active',
-          last_heartbeat_at = NOW()
-        WHERE discovery_agents.organization_id = EXCLUDED.organization_id
-        RETURNING
-          id, agent_id, hostname, provider_capabilities, reachable_networks,
+      // Caller-supplied IDs are update-only: missing and foreign both produce
+      // the same 404. Fresh registrations get an unguessable server ID.
+      const columns = `id, agent_id, hostname, provider_capabilities, reachable_networks,
           version, platform, arch, api_endpoint, status,
           last_heartbeat_at, last_job_at, total_jobs_completed,
           total_jobs_failed, total_cis_discovered, tags,
-          registered_at, updated_at`,
-        [
-          input.agent_id,
-          input.hostname,
-          input.provider_capabilities,
-          input.reachable_networks,
-          input.version || null,
-          input.platform || null,
-          input.arch || null,
-          input.api_endpoint || null,
-          input.tags || [],
-          organizationId,
-        ]
-      );
+          registered_at, updated_at`;
+      const values = [
+        input.agent_id ?? `agent-${randomUUID()}`,
+        input.hostname,
+        input.provider_capabilities,
+        input.reachable_networks,
+        input.version || null,
+        input.platform || null,
+        input.arch || null,
+        input.api_endpoint || null,
+        input.tags || [],
+        organizationId,
+      ];
+      const result = input.agent_id
+        ? await client.query(
+          `UPDATE discovery_agents SET
+            hostname = $2, provider_capabilities = $3, reachable_networks = $4,
+            version = $5, platform = $6, arch = $7, api_endpoint = $8, tags = $9,
+            status = 'active', last_heartbeat_at = NOW()
+           WHERE agent_id = $1 AND organization_id = $10
+           RETURNING ${columns}`, values
+        )
+        : await client.query(
+          `INSERT INTO discovery_agents (
+            agent_id, organization_id, hostname, provider_capabilities, reachable_networks,
+            version, platform, arch, api_endpoint, tags, status, last_heartbeat_at
+          ) VALUES ($1, $10, $2, $3, $4, $5, $6, $7, $8, $9, 'active', NOW())
+          RETURNING ${columns}`, values
+        );
 
       if (result.rows.length === 0) {
         await client.query('COMMIT');

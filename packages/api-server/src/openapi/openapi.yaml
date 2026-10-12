@@ -424,7 +424,9 @@ paths:
     post:
       tags: [Configuration Items]
       summary: Create new CI
-      description: Create a new Configuration Item
+      description: >-
+        Create a CI with a server-assigned globally unique id. Rejects id,
+        external_id and organization_id in the request body with 400.
       operationId: createCI
       requestBody:
         required: true
@@ -436,10 +438,9 @@ paths:
               server:
                 summary: Create a server CI
                 value:
-                  _id: srv-prod-web-01
                   name: Production Web Server 01
-                  _type: server
-                  _status: active
+                  type: server
+                  status: active
                   environment: production
                   metadata:
                     hostname: web01.example.com
@@ -450,10 +451,9 @@ paths:
               application:
                 summary: Create an application CI
                 value:
-                  _id: app-ecommerce-api
                   name: E-Commerce API
-                  _type: application
-                  _status: active
+                  type: application
+                  status: active
                   environment: production
                   metadata:
                     version: 2.3.1
@@ -461,11 +461,27 @@ paths:
                     framework: Node.js
       responses:
         '201':
-          description: CI created successfully
+          description: CI created successfully; data.id is server-assigned
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/CI'
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    required: [id, name, type]
+                    properties:
+                      id:
+                        type: string
+                        format: uuid
+                        description: Globally unique server-assigned identity
+                      name:
+                        type: string
+                      type:
+                        $ref: '#/components/schemas/CIType'
+                    additionalProperties: true
         '400':
           $ref: '#/components/responses/CIBodyBadRequest'
         '401':
@@ -473,7 +489,7 @@ paths:
         '403':
           $ref: '#/components/responses/CIForbidden'
         '409':
-          description: CI with this ID already exists
+          description: Unlikely server-generated ID collision; no client-chosen ID accepted
           content:
             application/json:
               schema:
@@ -547,8 +563,10 @@ paths:
     delete:
       tags: [Configuration Items]
       summary: Delete CI
-      description: Delete a Configuration Item (soft delete)
-      operationId: deleteCI
+      description: >-
+        Delete the CI and its SQL-derived baseline, drift, impact, criticality
+        and change-history rows. Graph and SQL stores cannot commit atomically;
+        derived reads enforce the CI birth epoch if cleanup fails.
       parameters:
         - $ref: '#/components/parameters/CIId'
       responses:
@@ -1821,7 +1839,10 @@ paths:
     post:
       tags: [Discovery Agents]
       summary: Register agent
-      description: Register or update a discovery agent
+      description: >-
+        Omit agent_id to create an agent and receive its server-assigned ID.
+        Supply that issued ID to retry/update within the same organization;
+        foreign and missing IDs both return 404. Keep the ID for heartbeat.
       operationId: registerDiscoveryAgent
       requestBody:
         required: true
@@ -1830,7 +1851,6 @@ paths:
             schema:
               $ref: '#/components/schemas/RegisterAgentInput'
             example:
-              agent_id: agent-prod-datacenter-01
               hostname: discovery-agent-01.internal
               provider_capabilities: [nmap, ssh, snmp]
               reachable_networks: ["10.0.0.0/8", "192.168.0.0/16"]
@@ -1841,15 +1861,22 @@ paths:
               tags: [datacenter1, production]
       responses:
         '200':
-          description: Agent registered
+          description: Agent created or updated; data.agent_id is its issued identity
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/DiscoveryAgent'
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    $ref: '#/components/schemas/DiscoveryAgent'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
 
   /agents/heartbeat:
     post:
@@ -3013,7 +3040,8 @@ paths:
       tags: [Business Services]
       summary: Create a business service
       description: >-
-        Creates a business service in the caller's organization. Requires the
+        Creates a business service in the caller's organization, assigning
+        service_id on the server. Rejects a supplied service_id. Requires
         `write` permission.
       operationId: createBusinessService
       requestBody:
@@ -3042,17 +3070,6 @@ paths:
           $ref: '#/components/responses/BusinessServiceUnauthorized'
         '403':
           $ref: '#/components/responses/BusinessServiceForbidden'
-        '409':
-          description: >-
-            `service_id` is already taken. Service ids are unique across all
-            organizations, so the id may belong to another organization.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/BusinessServiceError'
-              example:
-                success: false
-                error: Business service with this ID already exists
         '500':
           $ref: '#/components/responses/BusinessServiceServerError'
 
@@ -3913,17 +3930,11 @@ components:
 
     CIInput:
       type: object
-      required: [_id, name, _type]
+      required: [name, type]
       properties:
-        _id:
-          type: string
-          maxLength: 100
-        external_id:
-          type: string
-          maxLength: 200
         name:
           type: string
-        _type:
+        type:
           $ref: '#/components/schemas/CIType'
         status:
           $ref: '#/components/schemas/CIStatus'
@@ -4404,10 +4415,11 @@ components:
 
     RegisterAgentInput:
       type: object
-      required: [agent_id, hostname, provider_capabilities, reachable_networks]
+      required: [hostname, provider_capabilities, reachable_networks]
       properties:
         agent_id:
           type: string
+          description: Omit to create; supply an issued ID only to update an owned agent
         hostname:
           type: string
         provider_capabilities:
@@ -4883,15 +4895,10 @@ components:
     BusinessServiceInput:
       type: object
       description: >-
-        Unknown fields are ignored. `organization_id` is rejected with 400;
-        the organization always comes from the token.
-      required: [service_id, name, service_classification, tbm_tower, business_criticality]
+        service_id and organization_id are rejected with 400. The server
+        assigns a globally unique service_id; the token supplies the tenant.
+      required: [name, service_classification, tbm_tower, business_criticality]
       properties:
-        service_id:
-          type: string
-          pattern: '^bs-[a-z0-9-]+$'
-          maxLength: 50
-          description: Unique across all organizations
         name:
           type: string
           minLength: 3

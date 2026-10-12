@@ -38,7 +38,7 @@ const db = {
 };
 const A = '11111111-1111-4111-8111-111111111111';
 const B = '22222222-2222-4222-8222-222222222222';
-const nodes = new Map<string, { id: string; name: string; organization_id: string; itil_audit_status?: string }>();
+const nodes = new Map<string, { id: string; name: string; organization_id: string; created_at?: string; itil_audit_status?: string }>();
 let sqlCount = 0;
 let graphCount = 0;
 const record = (fields: Record<string, unknown>) => ({ get: (key: string) => fields[key] });
@@ -47,7 +47,7 @@ const graph = {
   getCI: async (id: string, org: string) => {
     graphCount++;
     const ci = nodes.get(id);
-    return ci?.organization_id === org ? { ...ci } : null;
+    return ci?.organization_id === org ? { ...ci, _created_at: ci.created_at } : null;
   },
   getSession: () => ({
     run: async (statement: string, params: Record<string, unknown> = {}) => {
@@ -183,8 +183,8 @@ beforeAll(async () => {
   await db.exec(`INSERT INTO ci_change_history (ci_id, change_type, change_source, metadata) VALUES
     ('ci-a', 'UPDATE', 'test', '{"organization_id":"${A}"}'),
     ('ci-b', 'UPDATE', 'test', '{"organization_id":"${B}"}');`);
-  nodes.set('ci-a', { id: 'ci-a', name: 'A', organization_id: A, itil_audit_status: 'COMPLIANT' });
-  nodes.set('ci-b', { id: 'ci-b', name: 'B', organization_id: B, itil_audit_status: 'FAILED' });
+  nodes.set('ci-a', { id: 'ci-a', name: 'A', organization_id: A, created_at: '2020-01-01T00:00:00Z', itil_audit_status: 'COMPLIANT' });
+  nodes.set('ci-b', { id: 'ci-b', name: 'B', organization_id: B, created_at: '2020-01-01T00:00:00Z', itil_audit_status: 'FAILED' });
 });
 afterAll(() => { host.kill(); });
 beforeEach(() => { sqlCount = 0; graphCount = 0; });
@@ -221,7 +221,7 @@ it('scopes ITIL CI lists, audit metrics and CI detail/write paths across two ten
 });
 
 it('persists fresh graph-owned CI derivatives before the reporting dimension syncs', async () => {
-  nodes.set('ci-fresh', { id: 'ci-fresh', name: 'Fresh', organization_id: A });
+  nodes.set('ci-fresh', { id: 'ci-fresh', name: 'Fresh', organization_id: A, created_at: '2020-01-01T00:00:00Z' });
   const baseline = await request(app).post('/api/v1/drift/baseline')
     .set(auth('a')).send({ ci_id: 'ci-fresh', snapshot_type: 'configuration' });
   expect(baseline.status).toBe(201);
@@ -238,7 +238,7 @@ it('persists fresh graph-owned CI derivatives before the reporting dimension syn
 });
 
 it('shows only proven CI history for a fresh graph CI and denies prior-owner rows after ID reuse', async () => {
-  nodes.set('ci-fresh', { id: 'ci-fresh', name: 'Fresh', organization_id: A });
+  nodes.set('ci-fresh', { id: 'ci-fresh', name: 'Fresh', organization_id: A, created_at: '2020-01-01T00:00:00Z' });
   await db.rows(
     `INSERT INTO ci_change_history (ci_id, change_type, change_source, metadata) VALUES
       ('ci-fresh', 'A_EVENT', 'reconciliation', $1::jsonb),
@@ -269,6 +269,60 @@ it('shows only proven CI history for a fresh graph CI and denies prior-owner row
   } finally {
     await server.stop();
   }
+});
+
+it('fences legacy SQL derivatives across a deleted and re-created CI ID, but reads fresh B rows', async () => {
+  const id = 'ci-fresh';
+  const old = new Date(Date.now() - 48 * 60 * 60 * 1000);
+  const birth = new Date(Date.now() - 60 * 60 * 1000);
+  nodes.set(id, { id, name: 'Former A', organization_id: A, created_at: new Date(old.getTime() - 1000).toISOString() });
+  // A legacy graph writer may reuse an ID during the REST cutover. Model rows
+  // surviving an incomplete cross-store delete, not a fake atomic commit.
+  await db.rows(`INSERT INTO baseline_snapshots (id, ci_id, snapshot_type, snapshot_data, created_at, created_by, is_approved)
+    VALUES ('11111111-1111-4111-8111-111111111111', $1, 'configuration', '{"secret":"A"}', $2, 'a', true)`, [id, old]);
+  await db.rows(`INSERT INTO drift_detection_results (ci_id, has_drift, drift_score, detected_at)
+    VALUES ($1, true, 99, $2)`, [id, old]);
+  await db.rows(`INSERT INTO impact_analyses (id, source_ci_id, change_type, risk_level, analyzed_at)
+    VALUES ('22222222-2222-4222-8222-222222222222', $1, 'RESTART', 'high', $2)`, [id, old]);
+  await db.rows(`INSERT INTO ci_criticality_scores (ci_id, factors, calculated_at)
+    VALUES ($1, '{"secret":"A"}', $2)`, [id, old]);
+  await db.rows(`INSERT INTO ci_change_history (ci_id, change_type, change_source, metadata, changed_at)
+    VALUES ($1, 'FORMER', 'test', $2::jsonb, $3)`, [id, JSON.stringify({ organization_id: B }), old]);
+
+  nodes.delete(id);
+  nodes.set(id, { id, name: 'New B', organization_id: B, created_at: birth.toISOString() });
+  const get = (path: string) => request(app).get(path).set(auth('b'));
+  const oldApproval = await request(app).post('/api/v1/drift/baseline/11111111-1111-4111-8111-111111111111/approve').set(auth('b'));
+  const missingApproval = await request(app).post('/api/v1/drift/baseline/99999999-9999-4999-8999-999999999999/approve').set(auth('b'));
+  expect(oldApproval.status).toBe(404);
+  expect(missingApproval.status).toBe(404);
+  expect((await get(`/api/v1/drift/baseline/${id}`)).body.data).toBeNull();
+  expect((await get(`/api/v1/drift/history/${id}`)).body.data).toEqual([]);
+  expect((await get(`/api/v1/impact/history/${id}`)).body.data).toEqual([]);
+  expect((await get(`/api/v1/itil/configuration-items/${id}/history`)).body.data).toEqual([]);
+  const criticality = await get(`/api/v1/impact/criticality/${id}`);
+  expect(criticality.status).toBe(200);
+  expect(JSON.stringify(criticality.body)).not.toContain('secret');
+
+  // A legacy node without a birth timestamp cannot prove row ownership.
+  nodes.get(id)!.created_at = undefined;
+  expect((await get(`/api/v1/drift/baseline/${id}`)).body.data).toBeNull();
+  expect((await get(`/api/v1/impact/history/${id}`)).body.data).toEqual([]);
+  expect((await get(`/api/v1/itil/configuration-items/${id}/history`)).body.data).toEqual([]);
+  nodes.get(id)!.created_at = birth.toISOString();
+  await db.rows(`INSERT INTO baseline_snapshots (id, ci_id, snapshot_type, snapshot_data, created_at, created_by, is_approved)
+    VALUES ('33333333-3333-4333-8333-333333333333', $1, 'configuration', '{"owner":"B"}', NOW(), 'b', true)`, [id]);
+  await db.rows(`INSERT INTO drift_detection_results (ci_id, has_drift, drift_score, detected_at)
+    VALUES ($1, false, 0, NOW())`, [id]);
+  await db.rows(`INSERT INTO impact_analyses (id, source_ci_id, change_type, risk_level, analyzed_at)
+    VALUES ('44444444-4444-4444-8444-444444444444', $1, 'RESTART', 'low', NOW())`, [id]);
+  await db.rows(`INSERT INTO ci_change_history (ci_id, change_type, change_source, metadata, changed_at)
+    VALUES ($1, 'FRESH_B', 'test', $2::jsonb, NOW())`, [id, JSON.stringify({ organization_id: B })]);
+  expect((await get(`/api/v1/drift/baseline/${id}`)).body.data.snapshot_data).toEqual({ owner: 'B' });
+  expect((await get(`/api/v1/drift/history/${id}`)).body.data).toMatchObject([{ drift_score: 0 }]);
+  expect((await get(`/api/v1/impact/history/${id}`)).body.data).toMatchObject([{ risk_level: 'low' }]);
+  expect((await get(`/api/v1/itil/configuration-items/${id}/history`)).body.data)
+    .toMatchObject([{ change_type: 'FRESH_B' }]);
 });
 
 it('refuses org-less calls before graph or SQL for both families', async () => {

@@ -144,6 +144,7 @@ describe('BusinessServices page', () => {
         expect.objectContaining({ name: 'New Service', business_criticality: 'high' })
       )
     );
+    expect(apiClient.post.mock.calls[0]?.[1]).not.toHaveProperty('service_id');
     const created = await rowFor('New Service');
     expect(within(created).getByText('High')).toBeInTheDocument();
   });

@@ -7,7 +7,7 @@
  */
 
 import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
-import { logger } from '@cmdb/common';
+import { logger, ciCreationEpoch } from '@cmdb/common';
 import {
   ImpactAnalysis,
   ChangeType,
@@ -282,16 +282,16 @@ export class ImpactPredictionEngine {
     if (walk.sharedWork) walk.sharedWork.remaining--;
     walk.active.add(ciId);
     try {
-      if (!await this.neo4jClient.getCI(ciId, organizationId, architectureRemainingMs())) {
-        throw new Error(`CI not found: ${ciId}`);
-      }
+      const since = ciCreationEpoch(await this.neo4jClient.getCI(ciId, organizationId, architectureRemainingMs()));
+      if (!since) throw new Error(`CI not found: ${ciId}`);
       const cached = await this.queryWithDeadline(
         `SELECT s.* FROM ci_criticality_scores s
-         WHERE s.ci_id = $1 AND s.calculated_at >= NOW() - INTERVAL '7 days'`,
-        [ciId]
+         WHERE s.ci_id = $1 AND s.calculated_at >= NOW() - INTERVAL '7 days'
+           AND s.calculated_at >= $2`,
+        [ciId, since]
       );
       if (cached.rows.length > 0) return this.mapRowToCriticalityScore(cached.rows[0]);
-      const score = await this.calculateCriticalityScore(ciId, organizationId, walk, depth);
+      const score = await this.calculateCriticalityScore(ciId, organizationId, walk, depth, since);
       walk.computed.set(ciId, score);
       return score;
     } finally {
@@ -303,7 +303,7 @@ export class ImpactPredictionEngine {
    * Calculate criticality score based on multiple factors
    */
   private async calculateCriticalityScore(
-    ciId: string, organizationId: string, walk: CriticalityWalk, depth: number
+    ciId: string, organizationId: string, walk: CriticalityWalk, depth: number, since: Date
   ): Promise<CriticalityScore> {
     const session = this.neo4jClient.getSession();
 
@@ -355,7 +355,7 @@ export class ImpactPredictionEngine {
       if (dependentIds.length > MAX_CRITICALITY_NODES) throw new ImpactCriticalityLimitError();
 
       // Get change frequency
-      const changeFreq = await this.getChangeFrequency(ciId);
+      const changeFreq = await this.getChangeFrequency(ciId, since);
 
       // Calculate dependent weight (sum of dependent criticalities)
       let dependentWeight = 0;
@@ -406,11 +406,12 @@ export class ImpactPredictionEngine {
   /**
    * Get change frequency for a CI (changes per month)
    */
-  private async getChangeFrequency(ciId: string): Promise<number> {
+  private async getChangeFrequency(ciId: string, since: Date): Promise<number> {
     const result = await this.queryWithDeadline(
       `SELECT COUNT(*) as change_count FROM ci_change_history h
-       WHERE h.ci_id = $1 AND h.changed_at >= NOW() - INTERVAL '30 days'`,
-      [ciId]
+       WHERE h.ci_id = $1 AND h.changed_at >= NOW() - INTERVAL '30 days'
+         AND h.changed_at >= $2`,
+      [ciId, since]
     );
 
     const firstRow = result.rows[0];
@@ -725,13 +726,13 @@ export class ImpactPredictionEngine {
    * Get impact analysis history for a CI
    */
   async getImpactHistory(ciId: string, limit: number, organizationId: string): Promise<ImpactAnalysis[]> {
-    if (!await this.neo4jClient.getCI(ciId, organizationId, architectureRemainingMs())) return [];
+    const since = ciCreationEpoch(await this.neo4jClient.getCI(ciId, organizationId, architectureRemainingMs()));
+    if (!since) return [];
     const result = await this.queryWithDeadline(
       `SELECT h.* FROM impact_analyses h
-       WHERE h.source_ci_id = $1 ORDER BY h.analyzed_at DESC LIMIT $2`,
-      [ciId, limit]
+       WHERE h.source_ci_id = $1 AND h.analyzed_at >= $3 ORDER BY h.analyzed_at DESC LIMIT $2`,
+      [ciId, limit, since]
     );
-
     return result.rows.map((row: any) => ({
       id: row.id,
       source_ci_id: row.source_ci_id,

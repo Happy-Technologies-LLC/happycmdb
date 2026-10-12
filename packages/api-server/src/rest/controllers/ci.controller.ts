@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Request, Response } from 'express';
+import { randomUUID } from 'crypto';
 import {
   CITraversalLimitError, createCITraversalWork, getNeo4jClient, getPostgresClient, getAuditService,
 } from '@cmdb/database';
@@ -220,20 +221,22 @@ export class CIController {
     }
   }
 
+  /** REST CI IDs follow the GraphQL contract: globally unique and server assigned. */
   async createCI(req: Request, res: Response): Promise<void> {
     try {
-      // Validation is handled by middleware, but double-check required fields
-      if (!req.body.id || !req.body.name || !req.body.type) {
+      if (!req.body.name || !req.body.type) {
         res.status(400).json({
           success: false,
           error: 'Bad Request',
-          message: 'Missing required fields: id, name, type'
+          message: 'Missing required fields: name, type'
         });
         return;
       }
 
-      // organization_id comes only from the token; the route rejects it in the body.
-      const ci = await this.neo4jClient.createCI(req.body, requestOrganizationId(req));
+      // organization_id and both globally unique identifiers are not client-settable.
+      const ci = await this.neo4jClient.createCI(
+        { ...req.body, id: randomUUID() }, requestOrganizationId(req)
+      );
       res.status(201).json({
         success: true,
         data: convertNeo4jTypes(ci),

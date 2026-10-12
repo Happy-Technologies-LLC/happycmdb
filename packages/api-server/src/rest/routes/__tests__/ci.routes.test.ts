@@ -120,7 +120,7 @@ const readRoutes: RouteCase[] = [
 ];
 
 const writeRoutes: RouteCase[] = [
-  ['POST', '/cis', { id: 'ci-1', name: 'Test CI', type: 'server' }],
+  ['POST', '/cis', { name: 'Test CI', type: 'server' }],
   ['PUT', '/cis/ci-1', { name: 'Updated CI' }],
   ['DELETE', '/cis/ci-1', undefined],
 ];

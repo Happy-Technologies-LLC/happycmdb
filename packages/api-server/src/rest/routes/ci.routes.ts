@@ -27,6 +27,8 @@ const organizationIdForbidden = Joi.any().forbidden();
 
 // Validation schemas
 const createCISchema = ciInputSchema.keys({
+  id: Joi.any().forbidden(),
+  external_id: Joi.any().forbidden(),
   organization_id: organizationIdForbidden,
 });
 

@@ -13,7 +13,7 @@ const edges = new Map<string, string[]>();
 const run = jest.fn(async (_cypher: string, _params: { ciId: string; frontier?: string[]; nodeIds?: string[]; nodeLimit?: unknown; edgeLimit?: unknown }, _options?: { timeout: number }) => ({
   records: [] as Array<{ get: (key: string) => unknown }>,
 }));
-const getCI = jest.fn(async (id: string) => ({ id }));
+const getCI = jest.fn(async (id: string) => ({ id, _created_at: '2020-01-01T00:00:00Z' }));
 const query = jest.fn(async (_sql: string, _params?: unknown[]) => ({ rows: [] as Array<Record<string, unknown>> }));
 
 jest.mock('@cmdb/database', () => ({
@@ -67,7 +67,7 @@ beforeEach(() => {
       return null;
     } }] };
   });
-  getCI.mockImplementation(async (id) => ({ id }));
+  getCI.mockImplementation(async (id) => ({ id, _created_at: '2020-01-01T00:00:00Z' }));
   query.mockImplementation(async (sql) => {
     if (sql.includes('ci_criticality_scores s')) return { rows: [] };
     if (sql.includes('change_count')) return { rows: [{ change_count: '0' }] };

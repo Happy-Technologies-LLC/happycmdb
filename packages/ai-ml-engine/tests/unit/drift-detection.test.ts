@@ -42,7 +42,7 @@ describe('ConfigurationDriftDetector', () => {
 
     mockNeo4jClient = {
       getCI: jest.fn().mockImplementation(async (id: string) =>
-        id.includes('nonexistent') ? null : { id }
+        id.includes('nonexistent') ? null : { id, _created_at: '2020-01-01T00:00:00Z' }
       ),
       getSession: jest.fn(),
     };

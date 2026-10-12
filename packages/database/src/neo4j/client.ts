@@ -7,6 +7,7 @@ import neo4j, { Driver, Session, Node, Relationship, Path, PathSegment } from 'n
 import { logger, CI, CIInput, sanitizeCITypeForLabel, validateRelationshipType } from '@cmdb/common';
 import * as fs from 'fs';
 import * as path from 'path';
+import { getPostgresClient } from '../postgres/client';
 
 /**
  * Explicit opt-out of CI tenant scoping, for callers that have no request
@@ -330,9 +331,9 @@ export class Neo4jClient {
         }
       }
 
-      // The tenant is fixed at creation; an update must never move a CI between organizations.
-      if ('organization_id' in processedUpdates) {
-        throw new Error('organization_id cannot be updated');
+      // The tenant, globally unique ID and creation epoch cannot change in place.
+      if (['organization_id', 'id', 'created_at'].some(key => key in processedUpdates)) {
+        throw new Error('CI identity and created_at cannot be updated');
       }
 
       const result = await session.run(
@@ -377,8 +378,10 @@ export class Neo4jClient {
   }
 
   /**
-   * DETACH DELETE a CI in the scope. Returns false (and deletes nothing) when
-   * no CI with that id exists in the scope's organization.
+   * Delete in Neo4j, then purge all CI-keyed derived SQL rows as part of this
+   * operation. PostgreSQL and Neo4j have no distributed transaction: every
+   * derived read also enforces the graph creation epoch, including if SQL
+   * cleanup fails or a legacy writer reintroduces a stale row.
    */
   async deleteCI(id: string, scope: CIOrganizationScope): Promise<boolean> {
     const organizationId = organizationIdParam(scope);
@@ -394,7 +397,16 @@ export class Neo4jClient {
         { id, organizationId }
       );
 
-      return result.records[0]!.get('deleted').toNumber() > 0;
+      const deleted = result.records[0]!.get('deleted').toNumber() > 0;
+      if (!deleted) return false;
+      await getPostgresClient().transaction(async client => {
+        await client.query('DELETE FROM drift_detection_results WHERE ci_id = $1', [id]);
+        await client.query('DELETE FROM baseline_snapshots WHERE ci_id = $1', [id]);
+        await client.query('DELETE FROM impact_analyses WHERE source_ci_id = $1', [id]);
+        await client.query('DELETE FROM ci_criticality_scores WHERE ci_id = $1', [id]);
+        await client.query('DELETE FROM ci_change_history WHERE ci_id = $1', [id]);
+      });
+      return true;
     } finally {
       await session.close();
     }

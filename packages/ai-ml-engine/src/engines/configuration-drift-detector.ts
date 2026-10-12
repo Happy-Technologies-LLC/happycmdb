@@ -7,7 +7,7 @@
  */
 
 import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
-import { logger } from '@cmdb/common';
+import { logger, ciCreationEpoch } from '@cmdb/common';
 import { getEventProducer, EventType } from '@cmdb/event-processor';
 import {
   BaselineSnapshot,
@@ -413,13 +413,14 @@ export class ConfigurationDriftDetector {
     snapshotType: 'configuration' | 'performance' | 'relationships',
     organizationId: string
   ): Promise<BaselineSnapshot | null> {
-    // Neo4j owns CI tenancy; reporting dim_ci can lag graph CI creation.
-    if (!await this.neo4jClient.getCI(ciId, organizationId)) return null;
+    const since = ciCreationEpoch(await this.neo4jClient.getCI(ciId, organizationId));
+    if (!since) return null;
     const result = await this.postgresClient.query(
       `SELECT b.* FROM baseline_snapshots b
        WHERE b.ci_id = $1 AND b.snapshot_type = $2 AND b.is_approved = true
+         AND b.created_at >= $3
        ORDER BY b.created_at DESC LIMIT 1`,
-      [ciId, snapshotType]
+      [ciId, snapshotType, since]
     );
 
     if (result.rows.length === 0) {
@@ -465,7 +466,9 @@ export class ConfigurationDriftDetector {
       return null;
     }
 
-    if (!await this.neo4jClient.getCI(result.rows[0].ci_id, organizationId)) return null;
+    const since = ciCreationEpoch(await this.neo4jClient.getCI(result.rows[0].ci_id, organizationId));
+    const createdAt = new Date(result.rows[0].created_at).getTime();
+    if (!since || !Number.isFinite(createdAt) || createdAt < since.getTime()) return null;
     return this.mapRowToBaseline(result.rows[0]);
   }
 
@@ -538,11 +541,12 @@ export class ConfigurationDriftDetector {
    * Get drift history for a CI
    */
   async getDriftHistory(ciId: string, limit: number, organizationId: string): Promise<DriftDetectionResult[]> {
-    if (!await this.neo4jClient.getCI(ciId, organizationId)) return [];
+    const since = ciCreationEpoch(await this.neo4jClient.getCI(ciId, organizationId));
+    if (!since) return [];
     const result = await this.postgresClient.query(
       `SELECT d.* FROM drift_detection_results d
-       WHERE d.ci_id = $1 ORDER BY d.detected_at DESC LIMIT $2`,
-      [ciId, limit]
+       WHERE d.ci_id = $1 AND d.detected_at >= $3 ORDER BY d.detected_at DESC LIMIT $2`,
+      [ciId, limit, since]
     );
 
     return result.rows.map((row: any) => ({

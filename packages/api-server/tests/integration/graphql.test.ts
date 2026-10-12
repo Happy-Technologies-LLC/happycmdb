@@ -189,11 +189,12 @@ describe('GraphQL API Integration Tests', () => {
       extensions: { code: 'GRAPHQL_REQUEST_LIMIT_EXCEEDED' },
     }] });
 
-    const entered: Array<() => void> = [];
+    const started = Array.from({ length: 8 }, () => {
+      let resolve!: () => void;
+      const promise = new Promise<void>(done => { resolve = done; });
+      return { promise, resolve };
+    });
     const releases: Array<() => void> = [];
-    const firstStarted = new Promise<void>(resolve => { entered.push(resolve); });
-    const secondStarted = new Promise<void>(resolve => { entered.push(resolve); });
-    const thirdStarted = new Promise<void>(resolve => { entered.push(resolve); });
     const sessions = jest.spyOn(graph, 'getSession').mockImplementation(() => {
       const session = originalGetSession();
       const originalRun = session.run.bind(session);
@@ -203,7 +204,7 @@ describe('GraphQL API Integration Tests', () => {
           const index = releases.length;
           await new Promise<void>(resolve => {
             releases.push(resolve);
-            entered[index]();
+            started[index]?.resolve();
           });
         }
         return originalRun(...args);
@@ -211,39 +212,39 @@ describe('GraphQL API Integration Tests', () => {
       return session;
     });
     const query = '{ getCIs { _id } }';
-    const first = execute(query, undefined, authToken).then(response => response);
+    const active: Array<Promise<request.Response>> = [];
+    const concurrencyLimit = { errors: [{
+      message: 'GraphQL concurrent request limit exceeded', extensions: { code: 'TOO_MANY_REQUESTS' },
+    }] };
     try {
-      await firstStarted;
-      const sameRequest = execute(query, undefined, authToken).then(response => response);
-      await Promise.race([sameRequest, secondStarted]);
-      if (releases[1]) releases[1]();
-      const same = await sameRequest;
-      expect(same.status).toBe(429);
-      expect(same.body).toEqual({ errors: [{
-        message: 'GraphQL concurrent request limit exceeded', extensions: { code: 'TOO_MANY_REQUESTS' },
-      }] });
-
-      const second = execute(query, undefined, orgASecondToken).then(response => response);
-      try {
-        await secondStarted;
-        const overflowRequest = execute(query, undefined, orgAThirdToken).then(response => response);
-        await Promise.race([overflowRequest, thirdStarted]);
-        if (releases[2]) releases[2]();
-        const overflow = await overflowRequest;
-        expect(overflow.status).toBe(429);
-        expect(overflow.body).toEqual({ errors: [{
-          message: 'GraphQL concurrent request limit exceeded', extensions: { code: 'TOO_MANY_REQUESTS' },
-        }] });
-        expect(releases).toHaveLength(2);
-        expect(expectSuccess(await execute('{ __typename }', undefined, orgBToken)).__typename).toBe('Query');
-      } finally {
-        releases.forEach(release => release());
-        expect((await second).status).toBe(200);
+      for (let index = 0; index < 4; index++) {
+        active.push(execute(query, undefined, authToken));
+        await Promise.race([
+          started[index]!.promise,
+          active[index]!.then(response => { throw new Error(`Principal request ${index}: ${JSON.stringify(response.body)}`); }),
+        ]);
       }
+      const same = await execute(query, undefined, authToken);
+      expect(same.status).toBe(429);
+      expect(same.body).toEqual(concurrencyLimit);
+      for (let index = 4; index < 8; index++) {
+        active.push(execute(query, undefined, orgASecondToken));
+        await Promise.race([
+          started[index]!.promise,
+          active[index]!.then(response => { throw new Error(`Tenant request ${index}: ${JSON.stringify(response.body)}`); }),
+        ]);
+      }
+      const overflow = await execute(query, undefined, orgAThirdToken);
+      expect(overflow.status).toBe(429);
+      expect(overflow.body).toEqual(concurrencyLimit);
+      expect(releases).toHaveLength(8);
+      expect(expectSuccess(await execute('{ __typename }', undefined, orgBToken)).__typename).toBe('Query');
     } finally {
       releases.forEach(release => release());
       sessions.mockRestore();
-      expect((await first).status).toBe(200);
+      for (const pending of active.slice(0, releases.length)) {
+        expect((await pending).status).toBe(200);
+      }
     }
   });
 

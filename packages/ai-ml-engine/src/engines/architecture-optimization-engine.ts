@@ -23,7 +23,7 @@ import {
 
 /** Analysis bounds shared by POST roots and owned business-service mappings. */
 export const MAX_ARCHITECTURE_ROOTS = 20;
-export const MAX_ARCHITECTURE_DEPTH = 5;
+export const MAX_ARCHITECTURE_DEPTH = 10;
 export const MAX_ARCHITECTURE_EXPANSIONS = 1000;
 export const ARCHITECTURE_QUERY_TIMEOUT_MS = 5000;
 

@@ -19,7 +19,6 @@ import type { TokenPayload } from '../../src/auth/types';
 
 // Request body for creating a CI (non-underscore field names per ciInputSchema).
 interface CICreateBody {
-  id: string;
   name: string;
   type: string;
   status?: string;
@@ -102,7 +101,6 @@ describe('CI REST API Integration Tests', () => {
   describe('POST /api/v1/cis - Create CI', () => {
     it('should create a new CI with valid data', async () => {
       const ciData: CICreateBody = {
-        id: uuidv4(),
         name: 'web-server-01',
         type: 'server',
         status: 'active',
@@ -123,7 +121,7 @@ describe('CI REST API Integration Tests', () => {
       expect(response.body).toHaveProperty('success', true);
       expect(response.body).toHaveProperty('data');
       expect(response.body.data).toMatchObject({
-        id: ciData.id,
+        id: expect.any(String),
         name: ciData.name,
         type: ciData.type,
         status: ciData.status,
@@ -134,10 +132,7 @@ describe('CI REST API Integration Tests', () => {
     });
 
     it('should reject CI with missing required fields', async () => {
-      const invalidData = {
-        name: 'incomplete-server',
-        // Missing id and type
-      };
+      const invalidData = { name: 'incomplete-server' }; // Missing type
 
       const response = await request(app)
         .post('/api/v1/cis')
@@ -148,29 +143,19 @@ describe('CI REST API Integration Tests', () => {
       expect(response.body).toHaveProperty('_error');
     });
 
-    it('should reject CI with duplicate ID', async () => {
-      const ciData: CICreateBody = {
-        id: 'duplicate-id',
-        name: 'server-01',
-        type: 'server',
-      };
-
-      // Create first CI
-      await request(app).post('/api/v1/cis').send(ciData).expect(201);
-
-      // Attempt to create duplicate
-      const response = await request(app)
-        .post('/api/v1/cis')
-        .send(ciData)
-        .expect(409);
-
-      expect(response.body).toHaveProperty('success', false);
-      expect(response.body.error).toBe('Conflict');
+    it('should reject a chosen ID even when it collides with an existing CI', async () => {
+      const existing = await request(app).post('/api/v1/cis')
+        .send({ name: 'server-01', type: 'server' }).expect(201);
+      const issuedId = existing.body.data.id;
+      const response = await request(app).post('/api/v1/cis')
+        .send({ id: issuedId, name: 'server-02', type: 'server' }).expect(400);
+      expect(response.body._success).toBe(false);
+      expect((await request(app).get(`/api/v1/cis/${issuedId}`).expect(200)).body.data.name)
+        .toBe('server-01');
     });
 
     it('should create CI with default status when not provided', async () => {
       const ciData: CICreateBody = {
-        id: uuidv4(),
         name: 'test-server',
         type: 'virtual-machine',
         // status not provided, should default to 'active'
@@ -188,7 +173,6 @@ describe('CI REST API Integration Tests', () => {
   describe('GET /api/v1/cis/:id - Get CI by ID', () => {
     it('should retrieve existing CI by ID', async () => {
       const ciData: CICreateBody = {
-        id: uuidv4(),
         name: 'database-server',
         type: 'database',
         status: 'active',
@@ -196,16 +180,17 @@ describe('CI REST API Integration Tests', () => {
       };
 
       // Create CI first
-      await request(app).post('/api/v1/cis').send(ciData).expect(201);
+      const created = await request(app).post('/api/v1/cis').send(ciData).expect(201);
+      const issuedId = created.body.data.id;
 
       // Retrieve CI
       const response = await request(app)
-        .get(`/api/v1/cis/${ciData.id}`)
+        .get(`/api/v1/cis/${issuedId}`)
         .expect(200);
 
       expect(response.body).toHaveProperty('success', true);
       expect(response.body.data).toMatchObject({
-        id: ciData.id,
+        id: issuedId,
         name: ciData.name,
         type: ciData.type,
       });
@@ -228,35 +213,30 @@ describe('CI REST API Integration Tests', () => {
       // Create test data
       const testCIs: CICreateBody[] = [
         {
-          id: uuidv4(),
           name: 'web-server-01',
           type: 'server',
           status: 'active',
           environment: 'production',
         },
         {
-          id: uuidv4(),
           name: 'web-server-02',
           type: 'server',
           status: 'active',
           environment: 'production',
         },
         {
-          id: uuidv4(),
           name: 'db-server-01',
           type: 'database',
           status: 'active',
           environment: 'production',
         },
         {
-          id: uuidv4(),
           name: 'staging-app-01',
           type: 'application',
           status: 'active',
           environment: 'staging',
         },
         {
-          id: uuidv4(),
           name: 'old-server',
           type: 'server',
           status: 'decommissioned',
@@ -265,7 +245,7 @@ describe('CI REST API Integration Tests', () => {
       ];
 
       for (const ci of testCIs) {
-        await request(app).post('/api/v1/cis').send(ci);
+        await request(app).post('/api/v1/cis').send(ci).expect(201);
       }
     });
 
@@ -340,14 +320,13 @@ describe('CI REST API Integration Tests', () => {
   describe('PUT /api/v1/cis/:id - Update CI', () => {
     it('should update existing CI', async () => {
       const ciData: CICreateBody = {
-        id: uuidv4(),
         name: 'app-server',
         type: 'application',
         status: 'active',
       };
 
       // Create CI
-      await request(app).post('/api/v1/cis').send(ciData).expect(201);
+      const issuedId = (await request(app).post('/api/v1/cis').send(ciData).expect(201)).body.data.id;
 
       // Update CI (update body uses non-underscore keys per updateCISchema)
       const updateData = {
@@ -358,7 +337,7 @@ describe('CI REST API Integration Tests', () => {
       };
 
       const response = await request(app)
-        .put(`/api/v1/cis/${ciData.id}`)
+        .put(`/api/v1/cis/${issuedId}`)
         .send(updateData)
         .expect(200);
 
@@ -383,19 +362,18 @@ describe('CI REST API Integration Tests', () => {
   describe('DELETE /api/v1/cis/:id - Delete CI', () => {
     it('should delete existing CI', async () => {
       const ciData: CICreateBody = {
-        id: uuidv4(),
         name: 'temp-server',
         type: 'server',
       };
 
       // Create CI
-      await request(app).post('/api/v1/cis').send(ciData).expect(201);
+      const issuedId = (await request(app).post('/api/v1/cis').send(ciData).expect(201)).body.data.id;
 
       // Delete CI
-      await request(app).delete(`/api/v1/cis/${ciData.id}`).expect(204);
+      await request(app).delete(`/api/v1/cis/${issuedId}`).expect(204);
 
       // Verify CI is deleted
-      await request(app).get(`/api/v1/cis/${ciData.id}`).expect(404);
+      await request(app).get(`/api/v1/cis/${issuedId}`).expect(404);
     });
 
     it('should return 404 when deleting non-existent CI', async () => {
@@ -416,30 +394,12 @@ describe('CI REST API Integration Tests', () => {
 
     beforeEach(async () => {
       // Create test CIs
-      serverId = uuidv4();
-      appId = uuidv4();
-      dbId = uuidv4();
-
-      await request(app).post('/api/v1/cis').send({
-        id: serverId,
-        name: 'app-server',
-        type: 'server',
-        status: 'active',
-      });
-
-      await request(app).post('/api/v1/cis').send({
-        id: appId,
-        name: 'web-app',
-        type: 'application',
-        status: 'active',
-      });
-
-      await request(app).post('/api/v1/cis').send({
-        id: dbId,
-        name: 'postgres-db',
-        type: 'database',
-        status: 'active',
-      });
+      serverId = (await request(app).post('/api/v1/cis')
+        .send({ name: 'app-server', type: 'server', status: 'active' }).expect(201)).body.data.id;
+      appId = (await request(app).post('/api/v1/cis')
+        .send({ name: 'web-app', type: 'application', status: 'active' }).expect(201)).body.data.id;
+      dbId = (await request(app).post('/api/v1/cis')
+        .send({ name: 'postgres-db', type: 'database', status: 'active' }).expect(201)).body.data.id;
 
       // Create relationships using Neo4j client
       const { neo4jDriver } = getTestContext();
@@ -517,27 +477,26 @@ describe('CI REST API Integration Tests', () => {
 
   describe('POST /api/v1/cis/search - Search CIs', () => {
     beforeEach(async () => {
-      // Create searchable test data
-      await request(app).post('/api/v1/cis').send({
-        id: uuidv4(),
-        name: 'production-web-server',
-        type: 'server',
-        external_id: 'i-1234567890abcdef0',
+      const web = await request(app).post('/api/v1/cis').send({
+        name: 'production-web-server', type: 'server',
         metadata: { region: 'us-east-1' },
-      });
-
+      }).expect(201);
+      const db = await request(app).post('/api/v1/cis').send({
+        name: 'production-database', type: 'database',
+      }).expect(201);
       await request(app).post('/api/v1/cis').send({
-        id: uuidv4(),
-        name: 'production-database',
-        type: 'database',
-        external_id: 'db-abcdef123456',
-      });
+        name: 'staging-app', type: 'application',
+      }).expect(201);
 
-      await request(app).post('/api/v1/cis').send({
-        id: uuidv4(),
-        name: 'staging-app',
-        type: 'application',
-      });
+      // Model external identifiers provided by a discovery source, not REST.
+      const session = getTestContext().neo4jDriver.session();
+      try {
+        await session.run(`MATCH (web:CI {id:$webId}), (db:CI {id:$dbId})
+          SET web.external_id = 'i-1234567890abcdef0', db.external_id = 'db-abcdef123456'`,
+        { webId: web.body.data.id, dbId: db.body.data.id });
+      } finally {
+        await session.close();
+      }
     });
 
     it('should search CIs by name', async () => {
@@ -577,13 +536,12 @@ describe('CI REST API Integration Tests', () => {
 
   describe('Complete CRUD Flow', () => {
     it('should support full lifecycle of a CI', async () => {
-      const ciId = uuidv4();
+      // The REST create endpoint owns the ID for this lifecycle.
 
       // 1. Create CI
       const createResponse = await request(app)
         .post('/api/v1/cis')
         .send({
-          id: ciId,
           name: 'lifecycle-test-server',
           type: 'server',
           status: 'active',
@@ -593,6 +551,7 @@ describe('CI REST API Integration Tests', () => {
         .expect(201);
 
       expect(createResponse.body.success).toBe(true);
+      const ciId = createResponse.body.data.id;
 
       // 2. Read CI
       const readResponse = await request(app).get(`/api/v1/cis/${ciId}`).expect(200);
@@ -627,20 +586,19 @@ describe('CI REST API Integration Tests', () => {
   describe('Tenant isolation (organization_id)', () => {
     const NOT_FOUND = { success: false, error: 'Not Found', message: 'CI not found' };
 
-    it('keeps two organizations\' CIs, traversals and searches apart', async () => {
-      const aApp = uuidv4();
-      const aDb = uuidv4();
-      const bApp = uuidv4();
-
+    it("keeps two organizations' CIs, traversals and searches apart", async () => {
       callerOrganizationId = ORG_A;
-      await request(app).post('/api/v1/cis').send({ id: aApp, name: 'tenant-a-app', type: 'application' }).expect(201);
-      await request(app).post('/api/v1/cis').send({ id: aDb, name: 'tenant-a-db', type: 'database' }).expect(201);
+      const aApp = (await request(app).post('/api/v1/cis')
+        .send({ name: 'tenant-a-app', type: 'application' }).expect(201)).body.data.id;
+      const aDb = (await request(app).post('/api/v1/cis')
+        .send({ name: 'tenant-a-db', type: 'database' }).expect(201)).body.data.id;
       // The body cannot choose the organization.
       await request(app).post('/api/v1/cis')
-        .send({ id: uuidv4(), name: 'smuggled', type: 'server', organization_id: ORG_B }).expect(400);
+        .send({ name: 'smuggled', type: 'server', organization_id: ORG_B }).expect(400);
 
       callerOrganizationId = ORG_B;
-      await request(app).post('/api/v1/cis').send({ id: bApp, name: 'tenant-b-app', type: 'application' }).expect(201);
+      const bApp = (await request(app).post('/api/v1/cis')
+        .send({ name: 'tenant-b-app', type: 'application' }).expect(201)).body.data.id;
 
       // a-app -> a-db, and a cross-tenant edge b-app -> a-db (as an unscoped writer could create).
       const { neo4jDriver } = getTestContext();

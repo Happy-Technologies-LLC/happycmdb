@@ -92,6 +92,24 @@ describe('Full CMDB E2E Test', () => {
     await neo4jHelper.clearAllData();
   });
 
+  // Temporary hierarchy keys describe edges; REST-issued IDs own the graph.
+  async function createHierarchy() {
+    const { cis, relationships } = generateCIHierarchy();
+    const issued = new Map<string, string>();
+    for (const { id, external_id, ...body } of cis) {
+      const created = await apiClient.createCI(body);
+      issued.set(id, created.id as string);
+    }
+    for (const rel of relationships) {
+      await apiClient.createRelationship({
+        ...rel,
+        from_id: issued.get(rel.from_id),
+        to_id: issued.get(rel.to_id),
+      });
+    }
+    return cis.map(ci => issued.get(ci.id)!);
+  }
+
   // =========================================================================
   // CI Operations
   // =========================================================================
@@ -99,7 +117,6 @@ describe('Full CMDB E2E Test', () => {
   describe('CI Operations', () => {
     test('should create and manage CI lifecycle', async () => {
       const ciInput = {
-        id: 'test-ci-001',
         name: 'Test CI',
         type: 'application',
         status: 'active',
@@ -108,35 +125,35 @@ describe('Full CMDB E2E Test', () => {
       };
 
       const createdCI = await apiClient.createCI(ciInput);
-      expect(createdCI.id).toBe(ciInput.id);
+      const issuedId = createdCI.id as string;
+      expect(issuedId).toEqual(expect.any(String));
       expect(createdCI.name).toBe(ciInput.name);
 
       // Retrieve — response is convertNeo4jTypes shape (id, type, status …)
-      const retrievedCI = await apiClient.getCI(ciInput.id);
-      expect(retrievedCI.id).toBe(ciInput.id);
+      const retrievedCI = await apiClient.getCI(issuedId);
+      expect(retrievedCI.id).toBe(issuedId);
       expect(retrievedCI.name).toBe(ciInput.name);
 
       // Update — send non-underscore body; response is canonical CI shape.
-      const updatedCI = await apiClient.updateCI(ciInput.id, {
+      const updatedCI = await apiClient.updateCI(issuedId, {
         status: 'maintenance',
       });
       expect(updatedCI.status).toBe('maintenance');
 
       // Verify persisted state via direct Neo4j query
-      const neo4jCI = await neo4jHelper.getCIById(ciInput.id);
+      const neo4jCI = await neo4jHelper.getCIById(issuedId);
       expect(neo4jCI).toBeDefined();
       expect(neo4jCI!.status).toBe('maintenance');
 
       // Delete (204 No Content)
-      await apiClient.deleteCI(ciInput.id);
+      await apiClient.deleteCI(issuedId);
 
       // Verify deletion — GET returns 404, axios throws
-      await expect(apiClient.getCI(ciInput.id)).rejects.toThrow();
+      await expect(apiClient.getCI(issuedId)).rejects.toThrow();
     });
 
     test('should search CIs by query', async () => {
       await apiClient.createCI({
-        id: 'search-test-001',
         name: 'Production Web Server',
         type: 'server',
         status: 'active',
@@ -145,7 +162,6 @@ describe('Full CMDB E2E Test', () => {
       });
 
       await apiClient.createCI({
-        id: 'search-test-002',
         name: 'Production Database',
         type: 'database',
         status: 'active',
@@ -168,20 +184,10 @@ describe('Full CMDB E2E Test', () => {
 
   describe('Relationship Operations', () => {
     test('should create and query relationships', async () => {
-      const { cis, relationships } = generateCIHierarchy();
-
-      // Create all CIs
-      for (const ci of cis) {
-        await apiClient.createCI(ci);
-      }
-
-      // Create all relationships
-      for (const rel of relationships) {
-        await apiClient.createRelationship(rel);
-      }
+      const issuedIds = await createHierarchy();
 
       // Query relationships for the load balancer (first CI)
-      const loadBalancerId = cis[0].id;
+      const loadBalancerId = issuedIds[0]!;
       const ciRelationships = await apiClient.getRelationships(loadBalancerId);
       expect(ciRelationships.length).toBeGreaterThan(0);
 
@@ -200,22 +206,14 @@ describe('Full CMDB E2E Test', () => {
 
   describe('Impact Analysis', () => {
     test('should perform impact analysis on CI hierarchy', async () => {
-      const { cis, relationships } = generateCIHierarchy();
-
-      // Create the full 3-tier hierarchy
-      for (const ci of cis) {
-        await apiClient.createCI(ci);
-      }
-      for (const rel of relationships) {
-        await apiClient.createRelationship(rel);
-      }
+      const issuedIds = await createHierarchy();
 
       await wait(500);
 
       // ---- Impact analysis on database (bottom of hierarchy) ----
       // appServer1 and appServer2 both DEPENDS_ON database, so the database's
       // "downstream" (CIs impacted by a change here) includes both app servers.
-      const databaseId = cis[5].id; // last CI is database
+      const databaseId = issuedIds[5]!; // last CI is database
       const dbImpact = await apiClient.getImpactAnalysis(databaseId, 3);
 
       expect(dbImpact).toBeDefined();
@@ -225,7 +223,7 @@ describe('Full CMDB E2E Test', () => {
 
       // ---- Impact analysis on an app server (middle of hierarchy) ----
       // appServer1 DEPENDS_ON database → its "upstream" contains database.
-      const appServer1Id = cis[3].id;
+      const appServer1Id = issuedIds[3]!;
       const appImpact = await apiClient.getImpactAnalysis(appServer1Id, 3);
       expect(appImpact).toBeDefined();
       expect(appImpact.upstream).toBeDefined();

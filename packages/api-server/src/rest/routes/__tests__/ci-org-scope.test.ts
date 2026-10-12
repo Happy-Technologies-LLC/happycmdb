@@ -397,6 +397,31 @@ describe('/api/v1/cis tenant scoping', () => {
       `${r.source_ci_id}->${r.target_ci_id}`)).toEqual(['ci-a-app->ci-a-db']);
   });
 
+  it('reports actual owned endpoints and objects for each two-hop relationship', async () => {
+    seedCI('ci-a-cache', ORG_A);
+    seedCI('ci-a-child', ORG_A);
+    seedCI('ci-a-grandchild', ORG_A);
+    dependsOn('ci-a-db', 'ci-a-cache');
+    dependsOn('ci-a-child', 'ci-a-app');
+    dependsOn('ci-a-grandchild', 'ci-a-child');
+    dependsOn('ci-b-app', 'ci-a-cache');
+
+    for (const [direction, expected] of [
+      ['out', [['ci-a-app', 'ci-a-db'], ['ci-a-db', 'ci-a-cache']]],
+      ['in', [['ci-a-child', 'ci-a-app'], ['ci-a-grandchild', 'ci-a-child']]],
+    ] as const) {
+      const response = await request(app)
+        .get(`/api/v1/cis/ci-a-app/relationships?direction=${direction}&depth=2`).set(AS_A);
+      expect(response.status).toBe(200);
+      expect(response.body.data.map((edge: {
+        id: string; source_ci_id: string; target_ci_id: string;
+        source_ci: { id: string }; target_ci: { id: string };
+      }) => [edge.id, edge.source_ci_id, edge.target_ci_id, edge.source_ci.id, edge.target_ci.id]))
+        .toEqual(expected.map(([source, target]) =>
+          [`${source}-DEPENDS_ON-${target}`, source, target, source, target]));
+    }
+  });
+
   it('403 with zero queries without an org claim', async () => {
     const routes: Array<[string, string, object | null]> = [
       ['get', '/api/v1/cis', null],

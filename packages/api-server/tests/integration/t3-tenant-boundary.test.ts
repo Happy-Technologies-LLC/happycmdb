@@ -326,6 +326,47 @@ it('bounds every REST and GraphQL CI traversal on real parallel-edge fan-out', a
   expect((await sql.query("SELECT id FROM impact_analyses WHERE source_ci_id = 't3-h562-root'")).rows).toEqual([]);
 });
 
+it('reserves one request budget before parallel GraphQL alias queries hit Neo4j', async () => {
+  await run(`CREATE (root:CI {id:'t3-alias-root', name:'alias root', type:'server', organization_id:$org})
+    CREATE (leaf:CI {id:'t3-alias-leaf', name:'alias leaf', type:'server', organization_id:$org})
+    WITH root, leaf UNWIND range(1,300) AS ordinal
+    CREATE (root)-[:DEPENDS_ON {ordinal:ordinal}]->(leaf)`, { org: A });
+
+  let statements = 0;
+  let transferredRows = 0;
+  const original = graph.getSession.bind(graph);
+  const spy = jest.spyOn(graph, 'getSession').mockImplementation(() => {
+    const session = original();
+    const originalRun = session.run.bind(session);
+    session.run = (async (...args: Parameters<typeof originalRun>) => {
+      const traversal = String(args[0]).startsWith('UNWIND $frontier AS sourceId');
+      if (traversal) statements++;
+      const result = await originalRun(...args);
+      if (traversal) transferredRows += result.records.length;
+      return result;
+    }) as typeof session.run;
+    return session;
+  });
+  const started = Date.now();
+  try {
+    const query = `{ ${['a', 'b', 'c', 'd', 'e', 'f'].map(alias =>
+    `${alias}: getCIDependencies(id:"t3-alias-root", depth:1) { _id }`).join(' ')} }`;
+    const response = await request(app).post('/graphql').set(auth('a')).send({ query });
+    expect(response.status).toBe(200);
+    expect(response.body.errors).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        message: 'CI traversal resource limit exceeded',
+        extensions: expect.objectContaining({ code: 'SERVICE_UNAVAILABLE' }),
+      }),
+    ]));
+    expect(statements).toBeLessThanOrEqual(2);
+    expect(transferredRows).toBeLessThanOrEqual(401);
+  } finally {
+    spy.mockRestore();
+  }
+  expect(Date.now() - started).toBeLessThan(4000);
+});
+
 it('counts 300 owned inbound and outbound relationships without a Cartesian adjacency expansion', async () => {
   await run(`CREATE (root:CI {id:'t3-degree-root', name:'degree root', ci_type:'server', organization_id:$organizationId})
     CREATE (hub:CI {id:'t3-degree-hub', name:'degree hub', ci_type:'server', organization_id:$organizationId})

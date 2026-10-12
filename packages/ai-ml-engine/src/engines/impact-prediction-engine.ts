@@ -292,14 +292,19 @@ export class ImpactPredictionEngine {
       const result = await session.run(
         `MATCH (ci:CI {id: $ciId})
          WHERE ci.organization_id = $organizationId
-         OPTIONAL MATCH (ci)<-[incoming]-(dependent:CI)
-         WHERE dependent.organization_id = $organizationId
-         OPTIONAL MATCH (ci)-[outgoing]->(dependency:CI)
-         WHERE dependency.organization_id = $organizationId
-         WITH ci,
-              COUNT(DISTINCT incoming) as dependent_count,
-              COUNT(DISTINCT outgoing) as dependency_count,
-              COLLECT(DISTINCT dependent.id) as dependent_ids
+         CALL {
+           WITH ci
+           OPTIONAL MATCH (ci)<-[incoming]-(dependent:CI)
+           WHERE dependent.organization_id = $organizationId
+           RETURN COUNT(DISTINCT incoming) as dependent_count,
+                  COLLECT(DISTINCT dependent.id) as dependent_ids
+         }
+         CALL {
+           WITH ci
+           OPTIONAL MATCH (ci)-[outgoing]->(dependency:CI)
+           WHERE dependency.organization_id = $organizationId
+           RETURN COUNT(DISTINCT outgoing) as dependency_count
+         }
          RETURN ci.id as ci_id,
                 ci.name as ci_name,
                 dependent_count,
@@ -446,15 +451,23 @@ export class ImpactPredictionEngine {
          MATCH (node:CI {id: id, organization_id: $organizationId})
          WITH node
          LIMIT $nodeLimit
-         OPTIONAL MATCH (node)-[outgoing]-(out:CI)
-         WHERE out.organization_id = $organizationId
-         OPTIONAL MATCH (node)<-[incoming]-(inc:CI)
-         WHERE inc.organization_id = $organizationId
+         CALL {
+           WITH node
+           OPTIONAL MATCH (node)-[outgoing]-(out:CI)
+           WHERE out.organization_id = $organizationId
+           RETURN COUNT(DISTINCT outgoing) as dependencies_count
+         }
+         CALL {
+           WITH node
+           OPTIONAL MATCH (node)<-[incoming]-(inc:CI)
+           WHERE inc.organization_id = $organizationId
+           RETURN COUNT(DISTINCT incoming) as dependents_count
+         }
          RETURN node.id as id,
                 node.name as name,
                 node.ci_type as ci_type,
-                COUNT(DISTINCT incoming) as dependents_count,
-                COUNT(DISTINCT outgoing) as dependencies_count`,
+                dependents_count,
+                dependencies_count`,
         { nodeIds: [...nodeIds], organizationId, nodeLimit: neo4j.int(MAX_IMPACT_GRAPH_NODES + 1) },
         { timeout: IMPACT_QUERY_TIMEOUT_MS }
       );

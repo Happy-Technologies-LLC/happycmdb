@@ -118,6 +118,8 @@ Impact criticality analysis skips cycle/self-loop edges, caps recursion at 12 le
 
 Authenticated `GET /api/v1/impact/graph/:rootCiId` accepts `max_depth` 1–5 (default 3). One-hop frontier Cypher expands distinct owned nodes per level rather than variable-length paths; each edge query has integer `LIMIT 201`, and the bounded metadata query has integer `LIMIT 101`. At most 100 nodes and 200 unique edges may be returned, with a shared 400-unit request budget charging adjacency rows, metadata rows, every criticality visit and pending cache writes. Exceeding a cap returns fixed 503 without a truncated graph or partial cache write. Tests cover bounded graph and prediction traversals with real parallel-edge and fan-out-by-depth topology in disposable Neo4j (`packages/api-server/tests/integration/t3-tenant-boundary.test.ts`), plus mounted graph semantics (`packages/api-server/src/rest/routes/__tests__/impact-criticality.routes.test.ts`). The five-second Neo4j statement timeout is a backstop; staging load validation remains necessary.
 
+Impact criticality and graph-node metadata count caller-owned incoming and outgoing relationships in separate scoped Cypher subqueries. This preserves per-relationship counts (including parallel relationships) without multiplying high-degree inbound × outbound rows. The disposable Neo4j integration test profiles both statements on a 300-in/300-out owned hub and checks the small owned graph's counts.
+
 ## Repository Structure
 
 | Package | Description |

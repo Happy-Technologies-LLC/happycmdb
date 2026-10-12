@@ -107,6 +107,20 @@ describe('jobsService', () => {
     expect(job.status).toBe('completed');
   });
 
+  it('never passes raw worker result, progress, failures or job data to a consumer even if a response contains them', async () => {
+    const secret = 'synthetic-nested-secret';
+    request.get.mockResolvedValue({ data: { success: true, data: {
+      id: 'owned-job', name: 'scan', state: 'failed', timestamp: 1,
+      data: { config: { credentials: { password: secret } } },
+      returnvalue: { nested: { password: secret } },
+      progress: { nested: secret }, failedReason: secret, stacktrace: [secret],
+    } } });
+    const job = await jobsService.getJobById('discovery-nmap', 'owned-job');
+    expect(job.status).toBe('failed');
+    expect(job.failedReason).toBe('Job failed');
+    expect(JSON.stringify(job)).not.toContain(secret);
+  });
+
   it('propagates a rejected request (e.g. 404) rather than silently succeeding', async () => {
     request.get.mockRejectedValue(new Error('Request failed with status code 404'));
 
@@ -131,37 +145,5 @@ describe('jobsService', () => {
     expect(request.delete).toHaveBeenCalledWith('/jobs/etl-sync/job-42');
   });
 
-  it('fetches dead letter (failed) jobs via the canonical failed-jobs route with bounded pagination', async () => {
-    request.get.mockResolvedValue({
-      data: {
-        success: true,
-        data: {
-          queueName: 'discovery-nmap',
-          failedJobs: [
-            {
-              id: 'job-9',
-              name: 'discovery',
-              queueName: 'discovery-nmap',
-              status: 'failed',
-              data: {},
-              failedReason: 'boom',
-              attemptsMade: 3,
-              maxAttempts: 3,
-              timestamp: 1000,
-            },
-          ],
-          count: 1,
-        },
-      },
-    });
-
-    const jobs = await jobsService.getDeadLetterJobs('discovery-nmap', { start: 5, end: 24 });
-
-    expect(request.get).toHaveBeenCalledWith('/jobs/discovery-nmap/failed', {
-      params: { start: 5, end: 24 },
-    });
-    expect(jobs).toHaveLength(1);
-    expect(jobs[0]).toMatchObject({ id: 'job-9', status: 'failed', failedReason: 'boom' });
-  });
 
 });

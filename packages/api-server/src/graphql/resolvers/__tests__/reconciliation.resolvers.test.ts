@@ -2,12 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Auth coverage for reconciliation.resolvers.ts's ReconciliationMutation:
- * mergeCI, resolveConflict, createRule, and updateSourceAuthority now call
- * checkGraphQLPermission(context, 'write') before touching the reconciliation
- * engine or Postgres -- unauthenticated requests get UNAUTHENTICATED, viewers
- * (read-only role) get FORBIDDEN, and an operator (which carries 'write')
- * succeeds.
+ * Tenant reconciliation mutations remain available; global policy operations
+ * refuse every authenticated role before touching persistent state.
  */
 
 import { GraphQLError } from 'graphql';
@@ -82,6 +78,7 @@ async function expectGraphQLErrorCode(promise: Promise<unknown>, code: string): 
 }
 
 const { mergeCI, resolveConflict, createRule, updateSourceAuthority } = reconciliationResolvers.ReconciliationMutation;
+const { getRules, getSourceAuthorities } = reconciliationResolvers.ReconciliationQuery;
 
 describe('mergeCI', () => {
   const args = {
@@ -157,75 +154,39 @@ describe('resolveConflict', () => {
   });
 });
 
-describe('createRule', () => {
-  const args = {
-    _input: {
-      _name: 'hostname-match',
-      _identificationRules: [
-        {
-          _attribute: 'hostname',
-          _priority: 1,
-          _matchType: 'EXACT',
-          _matchConfidence: 100,
-          _fuzzyThreshold: undefined,
-        },
-      ],
-    },
-  };
+describe('global reconciliation policy', () => {
+  const rule = { _input: { _name: 'hostname-match', _identificationRules: [] } };
+  const authority = { _input: { _sourceName: 'aws', _authorityScore: 8 } };
+  const users = [
+    { ...operatorUser, _role: 'viewer' as const },
+    operatorUser,
+    { ...operatorUser, _role: 'admin' as const, _organizationId: 'bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb' },
+  ];
 
-  it('rejects unauthenticated requests with UNAUTHENTICATED', async () => {
-    await expectGraphQLErrorCode(createRule(null, args, contextWith(undefined)), 'UNAUTHENTICATED');
+  it('rejects anonymous policy queries and mutations without DB access', async () => {
+    for (const invoke of [
+      () => getRules(null, {}, contextWith()),
+      () => getSourceAuthorities(null, {}, contextWith()),
+      () => createRule(null, rule, contextWith()),
+      () => updateSourceAuthority(null, authority, contextWith()),
+    ]) await expectGraphQLErrorCode(invoke(), 'UNAUTHENTICATED');
     expect(mockQuery).not.toHaveBeenCalled();
   });
 
-  it('rejects viewers with FORBIDDEN', async () => {
-    await expectGraphQLErrorCode(createRule(null, args, contextWith(viewerUser)), 'FORBIDDEN');
+  it('refuses policy reads and mutations identically for both verified orgs and all roles', async () => {
+    for (const user of users) {
+      for (const invoke of [
+        () => getRules(null, {}, contextWith(user)),
+        () => getSourceAuthorities(null, {}, contextWith(user)),
+        () => createRule(null, rule, contextWith(user)),
+        () => updateSourceAuthority(null, authority, contextWith(user)),
+      ]) {
+        await expect(invoke()).rejects.toMatchObject({
+          message: 'Global reconciliation policy unavailable',
+          extensions: { code: 'FORBIDDEN' },
+        });
+      }
+    }
     expect(mockQuery).not.toHaveBeenCalled();
-  });
-
-  it('succeeds for an operator and inserts the rule', async () => {
-    mockQuery.mockResolvedValueOnce({
-      rows: [
-        {
-          id: 'rule-1',
-          name: 'hostname-match',
-          identification_rules: [
-            { attribute: 'hostname', priority: 1, match_type: 'exact', match_confidence: 100, fuzzy_threshold: undefined },
-          ],
-          merge_strategies: [],
-          enabled: true,
-          created_at: new Date(),
-          updated_at: new Date(),
-        },
-      ],
-    });
-
-    const result = await createRule(null, args, contextWith(operatorUser));
-
-    expect(mockQuery).toHaveBeenCalledTimes(1);
-    expect(result._id).toBe('rule-1');
-  });
-});
-
-describe('updateSourceAuthority', () => {
-  const args = { _input: { _sourceName: 'aws', _authorityScore: 8 } };
-
-  it('rejects unauthenticated requests with UNAUTHENTICATED', async () => {
-    await expectGraphQLErrorCode(updateSourceAuthority(null, args, contextWith(undefined)), 'UNAUTHENTICATED');
-    expect(mockQuery).not.toHaveBeenCalled();
-  });
-
-  it('rejects viewers with FORBIDDEN', async () => {
-    await expectGraphQLErrorCode(updateSourceAuthority(null, args, contextWith(viewerUser)), 'FORBIDDEN');
-    expect(mockQuery).not.toHaveBeenCalled();
-  });
-
-  it('succeeds for an operator and upserts the source authority row', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [] });
-
-    const result = await updateSourceAuthority(null, args, contextWith(operatorUser));
-
-    expect(mockQuery).toHaveBeenCalledTimes(1);
-    expect(result._authorityScore).toBe(8);
   });
 });

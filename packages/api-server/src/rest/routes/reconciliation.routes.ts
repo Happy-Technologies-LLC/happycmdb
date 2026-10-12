@@ -6,7 +6,7 @@
  * REST API routes for identity resolution and CI reconciliation
  */
 
-import { Router } from 'express';
+import { Router, type Request, type Response } from 'express';
 import Joi from 'joi';
 import { ReconciliationController } from '../controllers/reconciliation.controller';
 import { validateRequest, validateOptional } from '../middleware/validation.middleware';
@@ -16,6 +16,11 @@ import { getAuthMiddleware } from '../../auth/auth-bootstrap';
 export const reconciliationRoutes = Router();
 const controller = new ReconciliationController();
 const authMiddleware = getAuthMiddleware();
+// Policy tables are global. Until platform operations have their own boundary,
+// no authenticated role may inspect or change them.
+function refuseGlobalPolicy(_req: Request, res: Response): void {
+  res.status(403).json({ success: false, error: 'Global reconciliation policy unavailable' });
+}
 
 // Apply audit middleware to all routes
 reconciliationRoutes.use(auditMiddleware);
@@ -62,31 +67,6 @@ const resolveConflictSchema = Joi.object({
   merged_data: Joi.object().optional()
 });
 
-const createRuleSchema = Joi.object({
-  name: Joi.string().required(),
-  identification_rules: Joi.array().items(
-    Joi.object({
-      attribute: Joi.string().required(),
-      priority: Joi.number().integer().required(),
-      match_type: Joi.string().valid('exact', 'fuzzy', 'composite').required(),
-      match_confidence: Joi.number().min(0).max(100).required(),
-      fuzzy_threshold: Joi.number().min(0).max(100).optional()
-    })
-  ).required(),
-  merge_strategies: Joi.array().items(
-    Joi.object({
-      field_name: Joi.string().required(),
-      strategy: Joi.string().valid('highest_authority', 'most_recent', 'aggregate', 'manual_review').required(),
-      conflict_threshold: Joi.number().min(0).max(100).optional()
-    })
-  ).optional(),
-  enabled: Joi.boolean().optional()
-});
-
-const updateSourceAuthoritySchema = Joi.object({
-  authority_score: Joi.number().integer().min(1).max(10).required(),
-  description: Joi.string().optional()
-});
 
 const conflictsQuerySchema = Joi.object({
   status: Joi.string().valid('pending', 'resolved', 'dismissed').default('pending'),
@@ -148,41 +128,25 @@ reconciliationRoutes.post(
  * GET /api/v1/reconciliation/rules
  * List reconciliation rules and configuration
  */
-reconciliationRoutes.get(
-  '/rules',
-  controller.listRules.bind(controller)
-);
+reconciliationRoutes.get('/rules', refuseGlobalPolicy);
 
 /**
  * POST /api/v1/reconciliation/rules
  * Create a new reconciliation rule
  */
-reconciliationRoutes.post(
-  '/rules',
-  authMiddleware.requirePermission('write'),
-  validateRequest(createRuleSchema, 'body'),
-  controller.createRule.bind(controller)
-);
+reconciliationRoutes.post('/rules', refuseGlobalPolicy);
 
 /**
  * GET /api/v1/reconciliation/source-authorities
  * List source authority scores
  */
-reconciliationRoutes.get(
-  '/source-authorities',
-  controller.listSourceAuthorities.bind(controller)
-);
+reconciliationRoutes.get('/source-authorities', refuseGlobalPolicy);
 
 /**
  * PUT /api/v1/reconciliation/source-authorities/:source
  * Update source authority score
  */
-reconciliationRoutes.put(
-  '/source-authorities/:source',
-  authMiddleware.requirePermission('write'),
-  validateRequest(updateSourceAuthoritySchema, 'body'),
-  controller.updateSourceAuthority.bind(controller)
-);
+reconciliationRoutes.put('/source-authorities/:source', refuseGlobalPolicy);
 
 /**
  * GET /api/v1/reconciliation/lineage/:ci_id

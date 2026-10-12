@@ -141,9 +141,8 @@ production scheduling. Credential-backed discovery is restored by HP1-S5
 - `POST /reconciliation/merge` - Merge CI
 - `GET /reconciliation/conflicts` - List conflicts
 - `POST /reconciliation/conflicts/{id}/resolve` - Resolve conflict
-- `GET /reconciliation/rules` - List rules
-- `POST /reconciliation/rules` - Create rule
-- `GET /reconciliation/lineage/{ci_id}` - Get CI lineage
+- `GET /reconciliation/rules`, `POST /reconciliation/rules`, `GET /reconciliation/source-authorities`, `PUT /reconciliation/source-authorities/{source}` - Authenticated global policy reads and writes return the same fixed 403 for every role and organization until platform operations are available. GraphQL getRules/getSourceAuthorities/createRule/updateSourceAuthority have the same refusal.
+- `GET /reconciliation/lineage/{ci_id}` - Caller-owned CI lineage
 
 ### Analytics (`/api/v1/analytics`)
 - `GET /analytics/dashboard` - Dashboard statistics
@@ -222,11 +221,12 @@ Scoped to the caller's organization: 403 without an organization claim; a servic
 - `GET /business-services/{service_id}/costs` - Monthly cost summary
 
 ### Health (`/api/v1/cmdb-health`)
-- `GET /cmdb-health` - System health check
+- `GET /cmdb-health`, `/ready`, `/alive`, `/services` - Public service health and liveness.
+- `GET /cmdb-health/metrics`, `/timeseries` - Authentication required, then fixed 403 for every role; global counts and trends are not tenant-scoped. The Health dashboard shows service availability without polling refused aggregates.
 
 ## Authentication
 
-All API endpoints (except `/auth/login` and `/cmdb-health`) require authentication.
+All API endpoints except `/auth` public actions, `/cmdb-health` liveness/service probes, `/api-docs`, and public Prometheus `/metrics` require authentication. `/cmdb-health/metrics` and `/timeseries` authenticate before their fixed refusal.
 
 ### JWT Token Authentication
 

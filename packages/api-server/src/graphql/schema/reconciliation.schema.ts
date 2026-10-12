@@ -301,10 +301,10 @@ export const reconciliationTypeDefs = `
       _offset: Int
     ): [ReconciliationConflict!]!
 
-    """Get reconciliation rules"""
+    """Global policy read unavailable to all roles until platform operations are available"""
     getRules: [ReconciliationRule!]!
 
-    """Get source authorities"""
+    """Global source authority read unavailable to all roles until platform operations are available"""
     getSourceAuthorities: [SourceAuthority!]!
 
     """Get source lineage of a caller-owned current CI; foreign/missing/legacy share NOT_FOUND"""
@@ -356,13 +356,13 @@ export const reconciliationTypeDefs = `
       _mergedData: JSON
     ): ReconciliationConflict!
 
-    """Create a reconciliation rule"""
+    """Global policy mutation unavailable to all roles until platform operations are available"""
     createRule(
       """Rule configuration"""
       _input: CreateReconciliationRuleInput!
     ): ReconciliationRule!
 
-    """Update source authority"""
+    """Global source authority mutation unavailable to all roles until platform operations are available"""
     updateSourceAuthority(
       """Source authority configuration"""
       _input: UpdateSourceAuthorityInput!

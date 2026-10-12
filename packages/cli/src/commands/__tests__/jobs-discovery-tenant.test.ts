@@ -10,9 +10,14 @@ import { DiscoveryScheduler } from '../../../../discovery-engine/src/schedulers/
 import { createJobsCommand } from '../jobs.command';
 
 const ORG = '11111111-1111-4111-8111-111111111111';
+const OTHER_ORG = '22222222-2222-4222-8222-222222222222';
 const queueManager = {
   addJob: jest.fn().mockResolvedValue({ id: 'owned-job' }),
   getQueue: jest.fn(),
+  getJob: jest.fn(),
+  getQueueStats: jest.fn(),
+  retryJob: jest.fn(),
+  removeJob: jest.fn(),
 };
 let scheduler: DiscoveryScheduler;
 let server: Server;
@@ -31,7 +36,8 @@ jest.mock('@cmdb/database', () => ({ getPostgresClient: () => ({}), getNeo4jClie
 jest.mock('@cmdb/discovery-engine', () => ({
   getDiscoveryScheduler: () => scheduler, getDiscoveryJobScheduler: () => ({}),
 }));
-jest.mock('@cmdb/etl-processor', () => ({ getETLScheduler: () => ({}) }));
+const triggerETL = jest.fn();
+jest.mock('@cmdb/etl-processor', () => ({ getETLScheduler: () => ({ triggerETL }) }));
 jest.mock('../../../../api-server/src/auth/auth-bootstrap', () => ({ getAuthMiddleware: () => ({
   requirePermission: () => (req: express.Request, res: express.Response, next: express.NextFunction) => {
     if (!(req as express.Request & { user?: { _role: string } }).user?._role) return res.status(403).json({ error: 'Forbidden' });
@@ -39,10 +45,10 @@ jest.mock('../../../../api-server/src/auth/auth-bootstrap', () => ({ getAuthMidd
   },
 }) }));
 
-async function invoke(args: string[]): Promise<number> {
+async function invoke(args: string[], captured: string[] = []): Promise<number> {
   const exits: number[] = [];
   const exit = jest.spyOn(process, 'exit').mockImplementation((code?: number) => { exits.push(code ?? 0); return undefined as never; });
-  const output = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+  const output = jest.spyOn(console, 'log').mockImplementation((...parts: unknown[]) => { captured.push(parts.join(' ')); });
   try {
     const command = new Command('cmdb');
     command.option('-u, --url <url>').option('-k, --key <key>');
@@ -72,13 +78,13 @@ beforeAll(async () => {
   app.use((req, res, next) => {
     const key = req.get('X-Workspace-Key');
     const token = req.get('Authorization');
-    if (key !== 'valid-key' && key !== 'tenantless-key' && token !== 'Bearer valid-jwt') {
+    if (key !== 'valid-key' && key !== 'valid-key-b' && key !== 'tenantless-key' && token !== 'Bearer valid-jwt') {
       res.status(401).json({ error: 'Unauthorized' });
       return;
     }
     (req as typeof req & { user: object }).user = {
       _userId: 'operator', _role: 'operator',
-      _organizationId: key === 'tenantless-key' ? undefined : ORG,
+      _organizationId: key === 'tenantless-key' ? undefined : key === 'valid-key-b' ? OTHER_ORG : ORG,
     };
     next();
   });
@@ -106,12 +112,10 @@ test('CLI uses authenticated API identity for nmap jobs and refuses absent, inva
   });
   expect(await invoke([...base, '--config', config])).toBe(1);
   expect(queueManager.addJob).not.toHaveBeenCalled();
-  expect(logger.error).toHaveBeenCalledWith('Discovery API authentication required (--key or --token)');
 
   expect(await invoke(['--key', 'invalid-key', ...base])).toBe(1);
   expect(await invoke(['--key', 'tenantless-key', ...base])).toBe(1);
   expect(queueManager.addJob).not.toHaveBeenCalled();
-  expect(logger.error).toHaveBeenCalledWith('Discovery API authorization failed');
 
   expect(await invoke(['--key', 'valid-key', ...base, '--config', config])).toBe(0);
   expect(queueManager.addJob).toHaveBeenCalledWith('discovery-nmap', 'discovery-nmap-manual',
@@ -152,4 +156,66 @@ test('mounted manual SSH refuses object and string targets without queueing cred
   const cli = ['--url', `${apiUrl}/`, '--key', 'valid-key', 'jobs', 'run:discovery', 'ssh'];
   expect(await invoke([...cli, '--config', JSON.stringify(payloads[1])])).toBe(1);
   expect(queueManager.addJob).toHaveBeenCalledTimes(before);
+});
+
+test('CLI cannot bypass tenant-scoped job API or print worker secrets from direct BullMQ access', async () => {
+  const secret = 'synthetic-cross-org-secret';
+  const job = {
+    id: 'foreign', name: 'reconciliation', data: { organizationId: '22222222-2222-4222-8222-222222222222' },
+    progress: { nested: secret }, returnvalue: { token: secret }, failedReason: secret, stacktrace: [secret],
+    timestamp: 1, getState: async () => 'completed',
+  };
+  queueManager.getJob.mockResolvedValue(job);
+  queueManager.getQueue.mockReturnValue({ getWaiting: async () => [job] });
+  queueManager.getQueueStats.mockResolvedValue({ waiting: 2, active: 1, completed: 5, failed: 0, delayed: 0 });
+  for (const args of [
+      ['jobs', 'list', 'discovery-nmap'],
+      ['jobs', 'status', 'discovery-nmap', 'foreign'],
+      ['jobs', 'retry', 'discovery-nmap', 'foreign'],
+      ['jobs', 'cancel', 'discovery-nmap', 'foreign'],
+      ['jobs', 'stats'],
+      ['jobs', 'run:etl', 'reconciliation'],
+  ]) expect(await invoke(args)).toBe(1);
+  expect(logger.error).toHaveBeenCalledWith('Queue operations require the authenticated API; global operations unavailable');
+  expect(queueManager.getQueue).not.toHaveBeenCalled();
+  expect(queueManager.getJob).not.toHaveBeenCalled();
+  expect(queueManager.getQueueStats).not.toHaveBeenCalled();
+  expect(queueManager.retryJob).not.toHaveBeenCalled();
+  expect(queueManager.removeJob).not.toHaveBeenCalled();
+  expect(triggerETL).not.toHaveBeenCalled();
+});
+
+test('authenticated CLI keeps owned list/status/retry/cancel and hides foreign, missing and orgless jobs', async () => {
+  const secret = 'foreign-nested-secret';
+  const jobs = ['own', 'foreign', 'orgless'].map((id, index) => ({
+    id, name: 'scan', data: index === 2 ? {} : { organizationId: index === 0 ? ORG : OTHER_ORG },
+    returnvalue: { nested: { secret } }, progress: { password: secret },
+    failedReason: secret, stacktrace: [secret], timestamp: 1, attemptsMade: 0, opts: { attempts: 1 },
+    getState: async () => 'completed',
+  }));
+  queueManager.getQueue.mockReturnValue({ getWaiting: async () => jobs });
+  queueManager.getJob.mockImplementation(async (_queue: string, id: string) => jobs.find(job => job.id === id));
+  const printed: string[] = [];
+  const base = ['--url', apiUrl, '--key', 'valid-key', 'jobs'];
+  expect(await invoke([...base, 'list', 'discovery-nmap'], printed)).toBe(0);
+  expect(printed.join(' ')).toContain('own');
+  expect(printed.join(' ')).not.toMatch(/foreign|orgless|foreign-nested-secret/);
+  expect(await invoke([...base, 'status', 'discovery-nmap', 'own'], printed)).toBe(0);
+  expect(printed.join(' ')).not.toContain(secret);
+  const denied = [];
+  for (const id of ['foreign', 'missing', 'orgless']) {
+    for (const command of ['status', 'retry', 'cancel']) {
+      denied.push(await invoke([...base, command, 'discovery-nmap', id], printed));
+    }
+  }
+  expect(denied).toEqual(Array(9).fill(1));
+  expect(queueManager.removeJob).not.toHaveBeenCalled();
+  expect(queueManager.retryJob).not.toHaveBeenCalled();
+  expect(await invoke([...base, 'retry', 'discovery-nmap', 'own'], printed)).toBe(0);
+  expect(await invoke([...base, 'cancel', 'discovery-nmap', 'own'], printed)).toBe(0);
+  expect(queueManager.retryJob).toHaveBeenCalledWith('discovery-nmap', 'own');
+  expect(queueManager.removeJob).toHaveBeenCalledWith('discovery-nmap', 'own');
+  expect(await invoke(['--url', apiUrl, '--key', 'valid-key-b', 'jobs', 'status', 'discovery-nmap', 'foreign'], printed)).toBe(0);
+  expect(printed.join(' ')).not.toContain(secret);
+  expect(triggerETL).not.toHaveBeenCalled();
 });

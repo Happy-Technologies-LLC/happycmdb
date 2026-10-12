@@ -6,11 +6,16 @@
  * Express router configuration for health endpoints
  */
 
-import { Router } from 'express';
+import { Router, type Request, type Response } from 'express';
 import { HealthController } from './health.controller';
+import { getAuthMiddleware } from '../auth/auth-bootstrap';
 
 const router = Router();
 const healthController = new HealthController();
+// Aggregate health data is platform-wide; liveness probes remain public.
+function refuseGlobalMetrics(_req: Request, res: Response): void {
+  res.status(403).json({ success: false, error: 'Global health metrics unavailable' });
+}
 
 /**
  * GET / - Comprehensive health check
@@ -34,11 +39,10 @@ router.get('/ready', (req, res) => healthController.getReadiness(req, res));
 router.get('/alive', (req, res) => healthController.getLiveness(req, res));
 
 /**
- * GET /metrics - System metrics summary
- * Returns aggregated metrics for the health dashboard
- * Accessible at: /api/v1/health/metrics
+ * GET /api/v1/cmdb-health/metrics - global aggregates unavailable to tenants.
+ * Authenticate even though this router is mounted before the shared auth gate.
  */
-router.get('/metrics', (req, res) => healthController.getMetrics(req, res));
+router.get('/metrics', getAuthMiddleware().authenticate(), refuseGlobalMetrics);
 
 /**
  * GET /services - Service health status
@@ -48,10 +52,8 @@ router.get('/metrics', (req, res) => healthController.getMetrics(req, res));
 router.get('/services', (req, res) => healthController.getServices(req, res));
 
 /**
- * GET /timeseries - Time-series metrics data
- * Returns time-series data for charts (query param: hours)
- * Accessible at: /api/v1/health/timeseries
+ * GET /api/v1/cmdb-health/timeseries - same authenticated global refusal.
  */
-router.get('/timeseries', (req, res) => healthController.getTimeSeries(req, res));
+router.get('/timeseries', getAuthMiddleware().authenticate(), refuseGlobalMetrics);
 
 export default router;

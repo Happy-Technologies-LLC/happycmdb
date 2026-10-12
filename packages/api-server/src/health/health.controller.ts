@@ -2,8 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Health Check Controller
- * Express routes for health, readiness, liveness, and metrics endpoints
+ * Express handlers for service health, readiness, and liveness.
  */
 
 import { Request, Response } from 'express';
@@ -80,83 +79,6 @@ export class HealthController {
       });
     }
   }
-
-  /**
-   * GET /health/metrics - System metrics summary
-   */
-  async getMetrics(_req: Request, res: Response): Promise<void> {
-    try {
-      const neo4j = getNeo4jClient();
-      const session = neo4j.getSession();
-
-      try {
-        // Get total CIs and relationships
-        const ciResult = await session.run(`
-          MATCH (ci:CI)
-          RETURN count(ci) as totalCIs
-        `);
-
-        const relResult = await session.run(`
-          MATCH ()-[r]->()
-          RETURN count(r) as totalRelationships
-        `);
-
-        // Get anomalies count (from last 24 hours)
-        const anomalyResult = await session.run(`
-          MATCH (a:Anomaly)
-          WHERE a.detected_at > datetime() - duration({hours: 24})
-          RETURN count(a) as recentAnomalies
-        `);
-
-        // Get drift count
-        const driftResult = await session.run(`
-          MATCH (d:ConfigurationDrift)
-          WHERE d.detected_at > datetime() - duration({hours: 24})
-          RETURN count(d) as driftDetected
-        `);
-
-        // Get high risk changes
-        const highRiskResult = await session.run(`
-          MATCH (c:Change)
-          WHERE c.risk_level = 'high' AND c.created_at > datetime() - duration({hours: 24})
-          RETURN count(c) as highRiskChanges
-        `);
-
-        const totalCIs = ciResult.records[0]?.get('totalCIs').toNumber() || 0;
-        const totalRelationships = relResult.records[0]?.get('totalRelationships').toNumber() || 0;
-        const recentAnomalies = anomalyResult.records[0]?.get('recentAnomalies').toNumber() || 0;
-        const driftDetected = driftResult.records[0]?.get('driftDetected').toNumber() || 0;
-        const highRiskChanges = highRiskResult.records[0]?.get('highRiskChanges').toNumber() || 0;
-
-        // Mock connector data (would come from discovery service in real implementation)
-        const activeConnectors = 5;
-        const connectorSuccessRate = 94.5;
-
-        res.json({
-          total_cis: totalCIs,
-          total_relationships: totalRelationships,
-          active_connectors: activeConnectors,
-          recent_anomalies: recentAnomalies,
-          high_risk_changes: highRiskChanges,
-          drift_detected: driftDetected,
-          connector_success_rate: connectorSuccessRate,
-          last_updated: new Date().toISOString(),
-        });
-      } finally {
-        await session.close();
-      }
-    } catch (error: any) {
-      logger.error('Failed to fetch metrics', error, {
-        operation: 'getMetrics',
-        endpoint: '/health/metrics',
-      });
-      res.status(500).json({
-        error: 'Failed to fetch metrics',
-        message: error.message,
-      });
-    }
-  }
-
   /**
    * GET /health/services - Service health status
    */
@@ -239,103 +161,6 @@ export class HealthController {
       });
       res.status(500).json({
         error: 'Failed to fetch service health',
-        message: error.message,
-      });
-    }
-  }
-
-  /**
-   * GET /health/timeseries - Time-series metrics data
-   */
-  async getTimeSeries(req: Request, res: Response): Promise<void> {
-    try {
-      const hours = parseInt(req.query['hours'] as string) || 24;
-      const neo4j = getNeo4jClient();
-      const session = neo4j.getSession();
-
-      try {
-        // Determine interval and format based on time range
-        let interval: number; // in hours
-        let formatType: 'hour' | 'date' | 'month';
-
-        if (hours <= 24) {
-          // 24 hours: show hourly data with time format (HH:MM)
-          interval = 4;
-          formatType = 'hour';
-        } else if (hours <= 2160) {
-          // 90 days: show data every 3 days with date format (MM/DD)
-          interval = 24 * 3; // every 3 days (30 data points over 90 days)
-          formatType = 'date';
-        } else {
-          // 1 year: show monthly data with month format (MMM YYYY)
-          interval = 24 * 30; // monthly (approximate)
-          formatType = 'month';
-        }
-
-        const timeSeries = [];
-        const now = new Date();
-
-        for (let i = hours; i >= 0; i -= interval) {
-          const time = new Date(now.getTime() - i * 60 * 60 * 1000);
-
-          // Format time label based on range
-          let timeLabel: string;
-          if (formatType === 'hour') {
-            timeLabel = time.toLocaleTimeString('en-US', {
-              hour: '2-digit',
-              minute: '2-digit',
-              hour12: false
-            });
-          } else if (formatType === 'date') {
-            timeLabel = time.toLocaleDateString('en-US', {
-              month: '2-digit',
-              day: '2-digit'
-            });
-          } else {
-            timeLabel = time.toLocaleDateString('en-US', {
-              month: 'short',
-              year: 'numeric'
-            });
-          }
-
-          // Get CI count at this time (simplified - would use time-series table in production)
-          const ciResult = await session.run(`
-            MATCH (ci:CI)
-            WHERE ci.created_at <= datetime($time)
-            RETURN count(ci) as cis
-          `, { time: time.toISOString() });
-
-          // Get anomalies detected around this time
-          const windowSize = interval * 60 * 60 * 1000; // Convert interval to milliseconds
-          const anomalyResult = await session.run(`
-            MATCH (a:Anomaly)
-            WHERE a.detected_at >= datetime($startTime)
-              AND a.detected_at < datetime($endTime)
-            RETURN count(a) as anomalies
-          `, {
-            startTime: new Date(time.getTime() - windowSize).toISOString(),
-            endTime: time.toISOString(),
-          });
-
-          timeSeries.push({
-            time: timeLabel,
-            cis: ciResult.records[0]?.get('cis').toNumber() || 0,
-            anomalies: anomalyResult.records[0]?.get('anomalies').toNumber() || 0,
-          });
-        }
-
-        res.json(timeSeries);
-      } finally {
-        await session.close();
-      }
-    } catch (error: any) {
-      logger.error('Failed to fetch time-series data', error, {
-        operation: 'getTimeSeries',
-        endpoint: '/health/timeseries',
-        hours: parseInt((error as any).req?.query?.hours) || 'unknown',
-      });
-      res.status(500).json({
-        error: 'Failed to fetch time-series data',
         message: error.message,
       });
     }

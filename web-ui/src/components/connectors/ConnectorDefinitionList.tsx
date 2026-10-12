@@ -259,7 +259,7 @@ export const ConnectorDefinitionList: React.FC = () => {
                   Schedule
                 </TableHead>
                 <TableHead className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                  Last Run
+                  Updated
                 </TableHead>
                 <TableHead className="px-4 py-3 text-right text-xs font-medium text-muted-foreground uppercase tracking-wider">
                   Actions
@@ -328,7 +328,7 @@ export const ConnectorDefinitionList: React.FC = () => {
                     </TableCell>
                     <TableCell className="px-4 py-3">
                       <span className="text-sm text-muted-foreground">
-                        {formatDate(connector.last_run_at)}
+                        {formatDate(connector.updated_at)}
                       </span>
                     </TableCell>
                     <TableCell className="px-4 py-3 text-right">

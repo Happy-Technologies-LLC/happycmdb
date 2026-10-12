@@ -12,6 +12,7 @@ vi.mock('@happy-technologies/design-system', () => ({ Icon: () => null }));
 
 import { ConnectorDefinitionList } from './ConnectorDefinitionList';
 import { ConnectorMarketplace } from './ConnectorMarketplace';
+import { ConnectorDashboard } from './ConnectorDashboard';
 
 const template = {
   connector_type: 'servicenow', name: 'ServiceNow CMDB', category: 'connector',
@@ -76,3 +77,24 @@ for (const [name, Component] of [
     }
   });
 }
+
+it('shows configuration updates without claiming an unavailable last-run timestamp', async () => {
+  apiClient.get.mockImplementation(async (path: string) => {
+    if (path === '/connector-configs') return { data: [{
+      id: 'configured', name: 'My ServiceNow', connector_type: 'servicenow',
+      enabled: true, schedule_enabled: false, created_at: '2026-10-09T00:00:00Z',
+      updated_at: '2026-10-10T00:00:00Z',
+    }] };
+    if (path === '/connectors/installed') return { data: [template] };
+    throw new Error('Unexpected test endpoint');
+  });
+
+  for (const Component of [ConnectorDashboard, ConnectorDefinitionList, ConnectorMarketplace]) {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const view = render(<QueryClientProvider client={queryClient}><MemoryRouter><Component /></MemoryRouter></QueryClientProvider>);
+    await screen.findAllByText('My ServiceNow');
+    expect(screen.queryByText(/last run/i)).toBeNull();
+    expect(screen.getByText(/Updated/i)).toBeTruthy();
+    view.unmount();
+  }
+});

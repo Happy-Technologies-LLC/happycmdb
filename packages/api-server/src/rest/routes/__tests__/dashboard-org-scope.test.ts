@@ -462,8 +462,10 @@ describe('global dashboards', () => {
         discovery_provider: 'gcp',
       })));
       const paths = ['executive', 'cio', 'finops', 'itsm'];
-      const owned = await Promise.all(paths.map(path =>
-        request(app).get(`/api/v1/dashboards/${path}?organizationId=${ORG_B}`).set(AS_A)));
+      const owned = [];
+      for (const path of paths) {
+        owned.push(await request(app).get(`/api/v1/dashboards/${path}?organizationId=${ORG_B}`).set(AS_A));
+      }
       for (const response of owned) expect(response.status).toBe(200);
       expect(owned[0]!.body.data.totalITSpend).toBe(A_ACTIVE_COST + 260);
       expect(owned[0]!.body.data.costByCapability).toContainEqual({
@@ -482,8 +484,11 @@ describe('global dashboards', () => {
       expect(cypherRuns.every(({ config }) => config?.timeout === 5000)).toBe(true);
 
       const firstForeignRun = cypherRuns.length;
-      const foreign = await Promise.all(paths.map(path =>
-        request(app).get(`/api/v1/dashboards/${path}?organizationId=${ORG_A}`).set(bearer('user-b', ORG_B))));
+      const foreign = [];
+      for (const path of paths) {
+        foreign.push(await request(app).get(`/api/v1/dashboards/${path}?organizationId=${ORG_A}`)
+          .set(bearer('user-b', ORG_B)));
+      }
       for (const response of foreign) expect(response.status).toBe(200);
       expect(foreign[0]!.body.data.totalITSpend).toBe(16000 + 27000);
       expect(foreign[1]!.body.data.configurationAccuracy.totalCIs).toBe(11);
@@ -525,6 +530,116 @@ describe('global dashboards', () => {
       expect(res.body).toEqual({ success: false, error: 'Dashboard analysis timed out' });
     }
     expect(cypherRuns.every(({ config }) => config?.timeout === 5000)).toBe(true);
+  });
+
+  it('shares principal and tenant dashboard admission across all global routes and business service', async () => {
+    const hold = Promise.withResolvers<void>();
+    const entered = Promise.withResolvers<void>();
+    const secondEntered = Promise.withResolvers<void>();
+    let ownRuns = 0;
+    const original = neo4jSession.run.bind(neo4jSession);
+    const spy = jest.spyOn(neo4jSession, 'run').mockImplementation(async (query, params = {}, config) => {
+      if (params['organizationId'] === ORG_A
+        && ((ownRuns === 0 && query.includes('RETURN capability, sum(monthlyCost) AS totalCost'))
+          || (ownRuns === 1 && query.includes('AS awsCost,')))) {
+        if (++ownRuns === 1) entered.resolve();
+        else secondEntered.resolve();
+        await hold.promise;
+      }
+      return original(query, params, config);
+    });
+    const first = request(app).get('/api/v1/dashboards/executive').set(AS_A).then(response => response);
+    let second: Promise<request.Response> | undefined;
+    try {
+      await entered.promise;
+      const principal = await request(app).get('/api/v1/dashboards/cio').set(AS_A);
+      expect(principal.status).toBe(429);
+      expect(principal.body).toEqual({ success: false, error: 'Dashboard analysis rate limit exceeded' });
+      const businessService = await request(app).get('/api/v1/dashboards/business-service').set(AS_A);
+      expect(businessService.status).toBe(429);
+      expect(businessService.body).toEqual(principal.body);
+
+      second = request(app).get('/api/v1/dashboards/finops')
+        .set(bearer(`user-a-${++principalOrdinal}`, ORG_A)).then(response => response);
+      await secondEntered.promise;
+      const tenant = await request(app).get('/api/v1/dashboards/itsm')
+        .set(bearer(`user-a-${++principalOrdinal}`, ORG_A));
+      expect(tenant.status).toBe(429);
+      expect(tenant.body).toEqual(principal.body);
+      expect(ownRuns).toBe(2);
+      const foreign = await request(app).get('/api/v1/dashboards/itsm').set(bearer('user-b', ORG_B));
+      expect(foreign.status).toBe(200);
+    } finally {
+      hold.resolve();
+      await Promise.all([first, second].filter((pending): pending is Promise<request.Response> => !!pending));
+      spy.mockRestore();
+    }
+  });
+
+  it('returns fixed 504 when total dashboard work exceeds its 20-second deadline', async () => {
+    const started = Date.now();
+    const original = neo4jSession.run.bind(neo4jSession);
+    let clock: jest.SpyInstance | undefined;
+    const spy = jest.spyOn(neo4jSession, 'run').mockImplementation(async (...args) => {
+      const result = await original(...args);
+      clock ??= jest.spyOn(Date, 'now').mockReturnValue(started + 30_000);
+      return result;
+    });
+    try {
+      const response = await request(app).get('/api/v1/dashboards/executive').set(AS_A);
+      expect(response.status).toBe(504);
+      expect(response.body).toEqual({ success: false, error: 'Dashboard analysis timed out' });
+    } finally {
+      clock?.mockRestore();
+      spy.mockRestore();
+    }
+  });
+
+  it('keeps a stalled global graph request admitted only until work actually finishes after deadline 504', async () => {
+    const hold = Promise.withResolvers<void>();
+    const entered = Promise.withResolvers<void>();
+    const realSetTimeout = global.setTimeout;
+    const timer = jest.spyOn(global, 'setTimeout').mockImplementation(((handler, ms, ...args) =>
+      realSetTimeout(handler, ms === 20_000 ? 10 : ms, ...args)) as typeof setTimeout);
+    const original = neo4jSession.run.bind(neo4jSession);
+    const spy = jest.spyOn(neo4jSession, 'run').mockImplementation(async (...args) => {
+      entered.resolve();
+      await hold.promise;
+      return original(...args);
+    });
+    const finished = Promise.withResolvers<void>();
+    const close = jest.spyOn(neo4jSession, 'close').mockImplementation(async () => { finished.resolve(); });
+    const running = request(app).get('/api/v1/dashboards/executive').set(AS_A).then(response => response);
+    try {
+      await entered.promise;
+      const timedOut = await running;
+      expect(timedOut.status).toBe(504);
+      expect(timedOut.body).toEqual({ success: false, error: 'Dashboard analysis timed out' });
+      const stillWorking = await request(app).get('/api/v1/dashboards/business-service').set(AS_A);
+      expect(stillWorking.status).toBe(429);
+      expect(stillWorking.body).toEqual({ success: false, error: 'Dashboard analysis rate limit exceeded' });
+    } finally {
+      hold.resolve();
+      await finished.promise;
+      timer.mockRestore();
+      spy.mockRestore();
+      close.mockRestore();
+    }
+  });
+
+  it('does not expose unexpected graph diagnostics from any global dashboard', async () => {
+    neo4jErrorCode = 'Neo.ClientError.Statement.SyntaxError';
+    for (const [path, failure] of [
+      ['executive', 'Failed to fetch executive dashboard'],
+      ['cio', 'Failed to fetch CIO dashboard'],
+      ['finops', 'Failed to fetch FinOps dashboard'],
+      ['itsm', 'Failed to fetch ITSM dashboard'],
+    ]) {
+      const response = await request(app).get(`/api/v1/dashboards/${path}`).set(AS_A);
+      expect(response.status).toBe(500);
+      expect(response.body).toEqual({ success: false, error: failure });
+      expect(response.text).not.toContain('graph failure details');
+    }
   });
 
 });

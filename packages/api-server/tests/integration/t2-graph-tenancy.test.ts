@@ -220,8 +220,11 @@ it('aggregates four mounted dashboards across large tenant CIs without returning
   });
   try {
     const paths = ['executive', 'cio', 'finops', 'itsm'];
-    const owned = await Promise.all(paths.map(path =>
-      request(app).get(`/api/v1/dashboards/${path}?organizationId=${B}`).set(auth('a'))));
+    const ownedAuth = architectureAuth();
+    const owned = [];
+    for (const path of paths) {
+      owned.push(await request(app).get(`/api/v1/dashboards/${path}?organizationId=${B}`).set(ownedAuth));
+    }
     for (const response of owned) expect(response.status).toBe(200);
     expect(owned[0]!.body.data.totalITSpend).toBe(260);
     expect(owned[0]!.body.data.costByCapability).toContainEqual({
@@ -243,8 +246,10 @@ it('aggregates four mounted dashboards across large tenant CIs without returning
       && entry.rows <= 101 && entry.samples.every(size => size <= 5))).toBe(true);
 
     recorded.length = 0;
-    const foreign = await Promise.all(paths.map(path =>
-      request(app).get(`/api/v1/dashboards/${path}?organizationId=${A}`).set(auth('b'))));
+    const foreign = [];
+    for (const path of paths) {
+      foreign.push(await request(app).get(`/api/v1/dashboards/${path}?organizationId=${A}`).set(auth('b')));
+    }
     for (const response of foreign) expect(response.status).toBe(200);
     expect(foreign[0]!.body.data.totalITSpend).toBe(27000);
     expect(foreign[1]!.body.data.configurationAccuracy.totalCIs).toBe(10);
@@ -264,15 +269,16 @@ it('refuses over 100 distinct dashboard cost towers or statuses on real Neo4j', 
     CREATE (:CI {id:'t2-groups-'+toString(ordinal), name:'group', type:'server',
       status:'active', organization_id:$organizationId, tbm_monthly_cost:1,
       tbm_resource_tower:'tower-'+toString(ordinal)})`, { organizationId: A });
+  const groupAuth = architectureAuth();
   try {
     for (const path of ['executive', 'cio', 'finops']) {
-      const response = await request(app).get(`/api/v1/dashboards/${path}`).set(auth('a'));
+      const response = await request(app).get(`/api/v1/dashboards/${path}`).set(groupAuth);
       expect(response.status).toBe(503);
       expect(response.body).toEqual({ success: false, error: 'Dashboard aggregate resource limit exceeded' });
     }
     await run(`MATCH (ci:CI) WHERE ci.id STARTS WITH 't2-groups-'
       SET ci.status = 'status-' + ci.id`);
-    const itsm = await request(app).get('/api/v1/dashboards/itsm').set(auth('a'));
+    const itsm = await request(app).get('/api/v1/dashboards/itsm').set(groupAuth);
     expect(itsm.status).toBe(503);
     expect(itsm.body).toEqual({ success: false, error: 'Dashboard aggregate resource limit exceeded' });
   } finally {

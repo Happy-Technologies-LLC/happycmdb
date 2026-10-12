@@ -1,7 +1,7 @@
 // Copyright 2026 Happy Technologies LLC
 // SPDX-License-Identifier: Apache-2.0
 
-import { Router } from 'express';
+import { Router, type Request, type Response } from 'express';
 import Joi from 'joi';
 import { ITILController } from '../controllers/itil.controller';
 import { validateRequest, validateOptional } from '../middleware/validation.middleware';
@@ -12,8 +12,22 @@ export const itilRoutes = Router();
 const controller = new ITILController();
 const authMiddleware = getAuthMiddleware();
 
+itilRoutes.use('/configuration-items', authMiddleware.requireOrganization());
+itilRoutes.use('/metrics/configuration-accuracy', authMiddleware.requireOrganization());
 // Apply audit middleware to all routes
 itilRoutes.use(auditMiddleware);
+
+// Incident/change records have no tenant column until HP1-S2. Refuse every
+// authenticated caller before validation, role checks or database access.
+const recordsUnavailable = (_req: Request, res: Response): void => {
+  res.status(403).json({ success: false, error: 'ITIL records unavailable' });
+};
+itilRoutes.use('/incidents', recordsUnavailable);
+itilRoutes.use('/changes', recordsUnavailable);
+itilRoutes.use('/metrics/incident-summary', recordsUnavailable);
+itilRoutes.use('/metrics/change-success-rate', recordsUnavailable);
+itilRoutes.use('/metrics/mttr', recordsUnavailable);
+itilRoutes.use('/metrics/mtbf', recordsUnavailable);
 
 // Validation schemas
 const updateLifecycleSchema = Joi.object({

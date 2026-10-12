@@ -21,6 +21,9 @@ export const impactRoutes = Router();
 const controller = new DriftImpactController();
 const authMiddleware = getAuthMiddleware();
 
+driftRoutes.use(authMiddleware.requireOrganization());
+impactRoutes.use(authMiddleware.requireOrganization());
+
 // Shared validation schemas
 const snapshotTypeSchema = Joi.string().valid('configuration', 'performance', 'relationships');
 

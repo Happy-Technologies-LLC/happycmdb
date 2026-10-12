@@ -17,8 +17,9 @@ import express, { type Request, type Response } from 'express';
 import request from 'supertest';
 import { jest, describe, it, expect, beforeEach } from '@jest/globals';
 import { ROLE_PERMISSIONS, type Permission, type UserRole } from '../../../auth/types';
+import { AuthMiddleware } from '../../../middleware/auth.middleware';
 
-type ReqWithUser = Request & { user?: { _userId?: string; _role?: UserRole } };
+type ReqWithUser = Request & { user?: { _userId?: string; _role?: UserRole; _organizationId?: string } };
 
 const mockRouteHandler = jest.fn((req: Request, res: Response) => {
   res.status(200).json({ actor: (req as ReqWithUser).user?._userId });
@@ -36,7 +37,7 @@ const mockAuthenticate = jest.fn(() => (req: Request, res: Response, next: () =>
     res.status(401).json({ error: 'Unauthorized' });
     return;
   }
-  (req as ReqWithUser).user = { _userId: 'route-user', _role: role };
+  (req as ReqWithUser).user = { _userId: 'route-user', _role: role, _organizationId: '11111111-1111-4111-8111-111111111111' };
   next();
 });
 
@@ -76,6 +77,7 @@ jest.mock('../../../auth/auth-bootstrap', () => ({
     authenticate: mockAuthenticate,
     requirePermission: mockRequirePermission,
     requireRole: mockRequireRole,
+    requireOrganization: () => Object.create(AuthMiddleware.prototype).requireOrganization(),
   })),
 }));
 

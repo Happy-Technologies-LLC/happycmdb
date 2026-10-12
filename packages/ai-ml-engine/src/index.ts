@@ -42,20 +42,24 @@ export async function startMLEngines(): Promise<void> {
   ]);
 
   // Handle CI discovered events - create baseline
-  consumer.on('ci.discovered', async (event: any) => {
+  consumer.on('ci.discovered', async event => {
+    if (!('ci_id' in event) || typeof event.ci_id !== 'string' ||
+        !('organization_id' in event) || typeof event.organization_id !== 'string') return;
     try {
       logger.debug('Creating baseline for new CI', { ci_id: event.ci_id });
-      await driftDetector.createBaseline(event.ci_id, 'configuration', 'auto-baseline');
+      await driftDetector.createBaseline(event.ci_id, 'configuration', 'auto-baseline', event.organization_id);
     } catch (error) {
       logger.error('Failed to create baseline', { ci_id: event.ci_id, error });
     }
   });
 
   // Handle CI updated events - check for drift
-  consumer.on('ci.updated', async (event: any) => {
+  consumer.on('ci.updated', async event => {
+    if (!('ci_id' in event) || typeof event.ci_id !== 'string' ||
+        !('organization_id' in event) || typeof event.organization_id !== 'string') return;
     try {
       logger.debug('Checking for drift', { ci_id: event.ci_id });
-      const driftResult = await driftDetector.detectDrift(event.ci_id);
+      const driftResult = await driftDetector.detectDrift(event.ci_id, event.organization_id);
 
       if (driftResult.has_drift && driftResult.drift_score > 50) {
         logger.warn('Significant drift detected', {

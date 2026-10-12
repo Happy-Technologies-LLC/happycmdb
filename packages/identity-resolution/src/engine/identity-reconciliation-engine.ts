@@ -11,8 +11,7 @@ import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
 import { IdentificationAttributes, TransformedCI } from '@cmdb/integration-framework';
 import { MatchResult, ReconciliationConfig } from '../types/reconciliation.types';
 import * as fuzzball from 'fuzzball';
-import { getEventProducer } from '@cmdb/event-processor';
-import { EventType } from '@cmdb/event-processor';
+import { getEventProducer, EventType, type CIDiscoveredEvent, type CIUpdatedEvent } from '@cmdb/event-processor';
 
 /**
  * A CI's organization_id is written only from the caller's token organization
@@ -350,17 +349,18 @@ export class IdentityReconciliationEngine {
       if (!updated) return null;
 
       // Emit CI updated event
-      await this.eventProducer.emit(
+      await this.eventProducer.emit<CIUpdatedEvent>(
         EventType.CI_UPDATED,
         'identity-reconciliation-engine',
         {
           ci_id: match.ci_id,
+          organization_id: organizationId,
           ci_name: discoveredCI.name,
           changed_fields: Object.keys(discoveredCI.attributes),
           previous_values: {},
           new_values: discoveredCI.attributes,
           source_system: discoveredCI.source,
-        } as any
+        }
       );
 
       return match.ci_id;
@@ -375,17 +375,18 @@ export class IdentityReconciliationEngine {
       const ciId = await this.createNewCI(discoveredCI, organizationId);
 
       // Emit CI discovered event
-      await this.eventProducer.emit(
+      await this.eventProducer.emit<CIDiscoveredEvent>(
         EventType.CI_DISCOVERED,
         'identity-reconciliation-engine',
         {
           ci_id: ciId,
+          organization_id: organizationId,
           ci_name: discoveredCI.name,
           ci_type: discoveredCI.ci_type,
           source_system: discoveredCI.source,
           confidence_score: discoveredCI.confidence_score,
           identifiers: discoveredCI.identifiers,
-        } as any
+        }
       );
 
       return ciId;

@@ -8,7 +8,7 @@ import { GraphQLError } from 'graphql';
 import { GraphQLScalarType, Kind } from 'graphql';
 import neo4j from 'neo4j-driver';
 import type { Integer } from 'neo4j-driver';
-import { Neo4jClient } from '@cmdb/database';
+import { Neo4jClient, getPostgresClient } from '@cmdb/database';
 import type { Schema } from 'joi';
 import {
   CI,
@@ -25,8 +25,7 @@ import { analyticsResolvers } from './analytics.resolver';
 import { connectorResolvers } from './connector.resolvers';
 import { connectorFieldResolvers } from './connector-fields.resolvers';
 import { reconciliationResolvers } from './reconciliation.resolvers';
-// TEMPORARILY DISABLED - V3.0
-// import { itilResolvers } from './itil.resolvers';
+// ITIL record resolvers remain unavailable until HP1-S2 adds tenant ownership.
 import type { TokenPayload } from '../../auth/types';
 import { checkGraphQLPermission } from '../../middleware/auth.middleware';
 import { requireGraphQLOrganization } from '../require-organization';
@@ -909,6 +908,172 @@ const CIResolvers = {
   _discoveredAt: (parent: CIValue) => timestampString(parent._discovered_at ?? parent._discoveredAt),
 };
 
+/** The ITIL GraphQL CI fields share the same organization boundary as REST. */
+async function itilCI(context: GraphQLContext, id: string, organizationId: string): Promise<Record<string, unknown>> {
+  const session = context._neo4jClient.getSession();
+  try {
+    const result = await session.run(
+      'MATCH (ci:CI {id: $id}) WHERE ci.organization_id = $organizationId RETURN ci',
+      { id, organizationId }
+    );
+    if (result.records.length === 0) throw ciNotFound();
+    const properties = result.records[0]!.get('ci').properties as CIValue;
+    return { ...properties, ...toGraphQLCI(properties) };
+  } finally {
+    await session.close();
+  }
+}
+
+async function itilHistory(context: GraphQLContext, id: string, limit: number) {
+  const organizationId = requireGraphQLOrganization(context);
+  await requireCIInOrganization(context, id, organizationId);
+  const result = await getPostgresClient().pool.query(
+    `SELECT h.* FROM ci_change_history h WHERE h.ci_id = $1
+     AND h.metadata->>'organization_id' = $3
+     ORDER BY h.changed_at DESC LIMIT $2`,
+    [id, Math.min(Math.max(limit, 1), 500), organizationId]
+  );
+  return result.rows.map((row: {
+    id: string; ci_id: string; changed_at: Date; changed_by: string;
+    change_type: string; changed_fields: string[] | null;
+    previous_values: unknown; new_values: unknown;
+  }) => ({
+    id: row.id, ciId: row.ci_id, changedAt: row.changed_at,
+    changedBy: row.changed_by, changeType: row.change_type,
+    attributeName: row.changed_fields?.join(', ') ?? '',
+    oldValue: row.previous_values === null ? null : JSON.stringify(row.previous_values),
+    newValue: row.new_values === null ? null : JSON.stringify(row.new_values),
+  }));
+}
+
+const itilCIQueries = {
+  configurationItems: async (_parent: unknown, args: {
+    lifecycle?: string; status?: string; ciType?: string; page?: number; limit?: number;
+  }, context: GraphQLContext) => {
+    const organizationId = requireGraphQLOrganization(context);
+    const session = context._neo4jClient.getSession();
+    const conditions = ['ci.organization_id = $organizationId'];
+    const params: Record<string, unknown> = { organizationId };
+    if (args.lifecycle) { conditions.push('ci.itil_lifecycle = $lifecycle'); params.lifecycle = args.lifecycle; }
+    if (args.status) { conditions.push('ci.itil_config_status = $status'); params.status = args.status; }
+    if (args.ciType) { conditions.push('ci.type = $ciType'); params.ciType = convertEnumToDbFormat(args.ciType); }
+    const where = `WHERE ${conditions.join(' AND ')}`;
+    const page = Math.max(1, normalizePagination(args.page, 1));
+    const limit = Math.min(100, Math.max(1, normalizePagination(args.limit, 50)));
+    try {
+      const count = await session.run(`MATCH (ci:CI) ${where} RETURN count(ci) AS total`, params);
+      const total = count.records[0]!.get('total').toNumber() as number;
+      const result = await session.run(
+        `MATCH (ci:CI) ${where} RETURN ci ORDER BY ci.name SKIP $offset LIMIT $limit`,
+        { ...params, offset: neo4j.int((page - 1) * limit), limit: neo4j.int(limit) }
+      );
+      return {
+        items: result.records.map(record => {
+          const ci = record.get('ci').properties as CIValue;
+          return { ...ci, ...toGraphQLCI(ci) };
+        }),
+        total, page, limit, pages: Math.ceil(total / limit),
+      };
+    } finally {
+      await session.close();
+    }
+  },
+  configurationItem: (_parent: unknown, args: { id: string }, context: GraphQLContext) =>
+    itilCI(context, args.id, requireGraphQLOrganization(context)),
+  ciHistory: (_parent: unknown, args: { id: string; limit?: number }, context: GraphQLContext) =>
+    itilHistory(context, args.id, args.limit ?? 100),
+  cisDueForAudit: async (_parent: unknown, args: { limit?: number }, context: GraphQLContext) => {
+    const organizationId = requireGraphQLOrganization(context);
+    const session = context._neo4jClient.getSession();
+    try {
+      const result = await session.run(
+        `MATCH (ci:CI) WHERE ci.organization_id = $organizationId
+         AND (ci.itil_next_audit_date <= datetime() OR ci.itil_last_audited IS NULL)
+         RETURN ci ORDER BY ci.itil_next_audit_date LIMIT $limit`,
+        { organizationId, limit: neo4j.int(Math.min(100, Math.max(1, args.limit ?? 100))) }
+      );
+      return result.records.map(record => {
+        const ci = record.get('ci').properties as CIValue;
+        return { ...ci, ...toGraphQLCI(ci) };
+      });
+    } finally {
+      await session.close();
+    }
+  },
+  configurationAccuracy: async (_parent: unknown, _args: unknown, context: GraphQLContext) => {
+    const organizationId = requireGraphQLOrganization(context);
+    const session = context._neo4jClient.getSession();
+    try {
+      const result = await session.run(
+        `MATCH (ci:CI) WHERE ci.organization_id = $organizationId
+         AND ci.itil_audit_status IS NOT NULL
+         RETURN count(CASE WHEN ci.itil_audit_status = 'COMPLIANT' THEN 1 END) AS compliantCount,
+                count(ci) AS totalAudited`,
+        { organizationId }
+      );
+      const compliantCount = result.records[0]!.get('compliantCount').toNumber() as number;
+      const totalAudited = result.records[0]!.get('totalAudited').toNumber() as number;
+      return { accuracy: totalAudited ? compliantCount / totalAudited * 100 : 0,
+        compliantCount, totalAudited, timestamp: new Date().toISOString() };
+    } finally {
+      await session.close();
+    }
+  },
+};
+
+async function updateITILCI(context: GraphQLContext, id: string, updates: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const organizationId = requireGraphQLOrganization(context);
+  checkGraphQLPermission(context, 'write');
+  const session = context._neo4jClient.getSession();
+  try {
+    const result = await session.run(
+      `MATCH (ci:CI {id: $id}) WHERE ci.organization_id = $organizationId
+       SET ci += $updates, ci.updated_at = datetime() RETURN ci`,
+      { id, organizationId, updates }
+    );
+    if (result.records.length === 0) throw ciNotFound();
+    const ci = result.records[0]!.get('ci').properties as CIValue;
+    context._loaders._ciLoader.clear(ciKey(id, organizationId));
+    return { ...ci, ...toGraphQLCI(ci) };
+  } finally {
+    await session.close();
+  }
+}
+
+const itilCIMutations = {
+  updateLifecycleStage: (_parent: unknown, args: { id: string; stage: string }, context: GraphQLContext) =>
+    updateITILCI(context, args.id, { itil_lifecycle: args.stage }),
+  updateConfigurationStatus: (_parent: unknown, args: { id: string; status: string }, context: GraphQLContext) =>
+    updateITILCI(context, args.id, { itil_config_status: args.status }),
+  scheduleAudit: (_parent: unknown, args: { id: string; auditDate: string; auditor?: string; notes?: string }, context: GraphQLContext) =>
+    updateITILCI(context, args.id, { itil_next_audit_date: neo4j.types.DateTime.fromStandardDate(new Date(args.auditDate)),
+      itil_audit_scheduled_by: args.auditor ?? null, itil_audit_notes: args.notes ?? null }),
+  completeAudit: (_parent: unknown, args: { id: string; auditStatus: string; findings?: string; completedBy: string }, context: GraphQLContext) =>
+    updateITILCI(context, args.id, { itil_audit_status: args.auditStatus, itil_last_audited: neo4j.types.DateTime.fromStandardDate(new Date()),
+      itil_audit_findings: args.findings ?? null, itil_audit_completed_by: args.completedBy }),
+};
+const itilRecordsUnavailable = (): never => {
+  throw new GraphQLError('ITIL records unavailable', { extensions: { code: 'FORBIDDEN' } });
+};
+const itilRecordQueries = {
+  incidents: itilRecordsUnavailable,
+  incident: itilRecordsUnavailable,
+  incidentMetrics: itilRecordsUnavailable,
+  changes: itilRecordsUnavailable,
+  change: itilRecordsUnavailable,
+  changeMetrics: itilRecordsUnavailable,
+};
+const itilRecordMutations = {
+  createIncident: itilRecordsUnavailable,
+  updateIncident: itilRecordsUnavailable,
+  resolveIncident: itilRecordsUnavailable,
+  createChange: itilRecordsUnavailable,
+  updateChange: itilRecordsUnavailable,
+  approveChange: itilRecordsUnavailable,
+  implementChange: itilRecordsUnavailable,
+  closeChange: itilRecordsUnavailable,
+};
+
 /**
  * Export all resolvers
  */
@@ -918,24 +1083,36 @@ export const resolvers = {
     ...analyticsResolvers.Query,
     ...connectorResolvers.Query,
     ...reconciliationResolvers.Query,
-    // ...itilResolvers.Query,
+    ...itilCIQueries,
+    ...itilRecordQueries,
   },
   Mutation: {
     ...Mutation,
     ...connectorResolvers.Mutation,
     ...reconciliationResolvers.Mutation,
-    // ...itilResolvers.Mutation,
+    ...itilCIMutations,
+    ...itilRecordMutations,
   },
   CI: {
     ...CIResolvers,
-    // ...itilResolvers.CI,
+    itilAttributes: async (parent: { _id: string }, _args: unknown, context: GraphQLContext) => {
+      const ci = await itilCI(context, parent._id, requireGraphQLOrganization(context));
+      const field = (name: string): string | null => typeof ci[name] === 'string' ? ci[name] as string : null;
+      return {
+        ciClass: field('itil_class'), lifecycleStage: field('itil_lifecycle'),
+        configurationStatus: field('itil_config_status'), version: field('itil_version'),
+        baselineId: field('itil_baseline_id'), lastAudited: timestampString(ci['itil_last_audited']),
+        auditStatus: field('itil_audit_status'), nextAuditDate: timestampString(ci['itil_next_audit_date']),
+      };
+    },
+    history: (parent: { _id: string }, args: { limit?: number }, context: GraphQLContext) =>
+      itilHistory(context, parent._id, args.limit ?? 100),
+    incidents: itilRecordsUnavailable,
+    changes: itilRecordsUnavailable,
   },
   JSON: JSONScalar,
   AnalyticsQuery: analyticsResolvers.AnalyticsQuery,
   ReconciliationQuery: reconciliationResolvers.ReconciliationQuery,
   ReconciliationMutation: reconciliationResolvers.ReconciliationMutation,
-//   _Incident: itilResolvers.Incident,
-//   _Change: itilResolvers.Change,
-//   _ConfigurationBaseline: itilResolvers.ConfigurationBaseline,
   ...connectorFieldResolvers,
 };

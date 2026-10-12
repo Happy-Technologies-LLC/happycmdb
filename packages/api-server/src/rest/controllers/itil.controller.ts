@@ -2,11 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Request, Response } from 'express';
-// CI tenant scoping covers /api/v1/cis only so far; these routes read CIs unscoped, as before.
 import { getNeo4jClient, getPostgresClient, UNSCOPED_CI_ACCESS } from '@cmdb/database';
 import { logger } from '@cmdb/common';
 import { v4 as uuidv4 } from 'uuid';
-import neo4j from 'neo4j-driver';
+import neo4j, { type Integer } from 'neo4j-driver';
 import { requestOrganizationId } from '../../middleware/auth.middleware';
 
 /** Shape of a Neo4j Integer once it has round-tripped through JSON (JS numbers cannot hold a full 64-bit int, so the driver represents one as `{ low, high }`). */
@@ -61,19 +60,19 @@ export class ITILController {
 
       const session = this.neo4jClient.getSession();
       try {
-        let query = 'MATCH (ci:CI) WHERE 1=1';
-        const params: any = {};
+        let query = 'MATCH (ci:CI) WHERE ci.organization_id = $organizationId';
+        const params: Record<string, string | Integer> = { organizationId: requestOrganizationId(req) };
 
         // Apply filters
-        if (lifecycle) {
+        if (typeof lifecycle === 'string') {
           query += ' AND ci.itil_lifecycle = $lifecycle';
           params.lifecycle = lifecycle;
         }
-        if (status) {
+        if (typeof status === 'string') {
           query += ' AND ci.itil_config_status = $status';
           params.status = status;
         }
-        if (ciType) {
+        if (typeof ciType === 'string') {
           query += ' AND ci.type = $ciType';
           params.ciType = ciType;
         }
@@ -121,7 +120,7 @@ export class ITILController {
     try {
       const { id } = req.params;
 
-      const ci = await this.neo4jClient.getCI(id, UNSCOPED_CI_ACCESS);
+      const ci = await this.neo4jClient.getCI(id, requestOrganizationId(req));
 
       if (!ci) {
         res.status(404).json({
@@ -156,11 +155,12 @@ export class ITILController {
         const result = await session.run(
           `
           MATCH (ci:CI {id: $id})
+          WHERE ci.organization_id = $organizationId
           SET ci.itil_lifecycle = $stage,
               ci.updated_at = datetime()
           RETURN ci
           `,
-          { id, stage }
+          { id, stage, organizationId: requestOrganizationId(req) }
         );
 
         if (result.records.length === 0) {
@@ -202,11 +202,12 @@ export class ITILController {
         const result = await session.run(
           `
           MATCH (ci:CI {id: $id})
+          WHERE ci.organization_id = $organizationId
           SET ci.itil_config_status = $status,
               ci.updated_at = datetime()
           RETURN ci
           `,
-          { id, status }
+          { id, status, organizationId: requestOrganizationId(req) }
         );
 
         if (result.records.length === 0) {
@@ -241,17 +242,23 @@ export class ITILController {
   async getCIHistory(_req: Request, res: Response): Promise<void> {
     try {
       const { id } = _req.params;
+      const ci = await this.neo4jClient.getCI(id, requestOrganizationId(_req));
+      if (!ci) {
+        res.status(404).json({ success: false, error: 'Not Found', message: `Configuration item with ID '${id}' not found` });
+        return;
+      }
       const { limit = 100 } = _req.query;
 
       const pool = this.postgresClient.pool;
       const result = await pool.query(
         `
-        SELECT * FROM ci_change_history
-        WHERE ci_id = $1
-        ORDER BY changed_at DESC
+        SELECT h.* FROM ci_change_history h
+        WHERE h.ci_id = $1
+          AND h.metadata->>'organization_id' = $3
+        ORDER BY h.changed_at DESC
         LIMIT $2
         `,
-        [id, parseInt(limit as string)]
+        [id, parseInt(limit as string), requestOrganizationId(_req)]
       );
 
       res.json({
@@ -276,12 +283,14 @@ export class ITILController {
         const result = await session.run(
           `
           MATCH (ci:CI)
-          WHERE ci.itil_next_audit_date <= datetime()
-          OR ci.itil_last_audited IS NULL
+          WHERE ci.organization_id = $organizationId
+            AND (ci.itil_next_audit_date <= datetime()
+            OR ci.itil_last_audited IS NULL)
           RETURN ci
           ORDER BY ci.itil_next_audit_date
           LIMIT 100
-          `
+          `,
+          { organizationId: requestOrganizationId(req) }
         );
 
         const cis = result.records.map((r: any) => this.convertNeo4jCI(r.get('ci').properties));
@@ -314,6 +323,7 @@ export class ITILController {
         const result = await session.run(
           `
           MATCH (ci:CI {id: $id})
+          WHERE ci.organization_id = $organizationId
           SET ci.itil_next_audit_date = datetime($auditDate),
               ci.itil_audit_scheduled_by = $auditor,
               ci.itil_audit_notes = $notes,
@@ -322,6 +332,7 @@ export class ITILController {
           `,
           {
             id,
+            organizationId: requestOrganizationId(req),
             auditDate: new Date(auditDate).toISOString(),
             auditor: auditor ?? null,
             notes: notes ?? null,
@@ -367,6 +378,7 @@ export class ITILController {
         const result = await session.run(
           `
           MATCH (ci:CI {id: $id})
+          WHERE ci.organization_id = $organizationId
           SET ci.itil_audit_status = $auditStatus,
               ci.itil_last_audited = datetime(),
               ci.itil_audit_findings = $findings,
@@ -374,7 +386,7 @@ export class ITILController {
               ci.updated_at = datetime()
           RETURN ci
           `,
-          { id, auditStatus, findings: findings ?? null, completedBy }
+          { id, auditStatus, findings: findings ?? null, completedBy, organizationId: requestOrganizationId(req) }
         );
 
         if (result.records.length === 0) {
@@ -1464,17 +1476,17 @@ export class ITILController {
   // Metrics
   // ============================================================================
 
-  async getConfigurationAccuracy(_req: Request, res: Response): Promise<void> {
+  async getConfigurationAccuracy(req: Request, res: Response): Promise<void> {
     const session = this.neo4jClient.getSession();
     try {
       // Read from Neo4j CI nodes - completeAudit writes itil_audit_status there
       const result = await session.run(`
         MATCH (ci:CI)
-        WHERE ci.itil_audit_status IS NOT NULL
+        WHERE ci.organization_id = $organizationId AND ci.itil_audit_status IS NOT NULL
         RETURN
           count(CASE WHEN ci.itil_audit_status = 'COMPLIANT' THEN 1 ELSE null END) as compliantCount,
           count(ci) as totalAudited
-      `);
+      `, { organizationId: requestOrganizationId(req) });
 
       const row = result.records[0];
       const compliantCount = row ? row.get('compliantCount').toNumber() : 0;

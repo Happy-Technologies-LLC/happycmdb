@@ -6,7 +6,7 @@
  * Tracks CI changes and maintains change history
  */
 
-import { getPostgresClient } from '@cmdb/database';
+import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
 import { logger } from '@cmdb/common';
 import { EventConsumer, createEventConsumer } from '../kafka/event-consumer';
 import { KAFKA_TOPICS, CONSUMER_GROUPS } from '../kafka/topics';
@@ -21,9 +21,17 @@ import {
 export class ChangeEventProcessor {
   private consumer: EventConsumer;
   private postgresClient = getPostgresClient();
+  private neo4jClient = getNeo4jClient();
 
   constructor() {
     this.consumer = createEventConsumer(CONSUMER_GROUPS.CHANGE_PROCESSOR);
+  }
+
+  // Reconciliation supplies organization_id from its authorized graph write.
+  // A legacy or mismatched event cannot establish provenance for history.
+  private async hasProvenOwner(event: CIDiscoveredEvent | CIUpdatedEvent): Promise<boolean> {
+    return typeof event.organization_id === 'string' && event.organization_id.length > 0
+      && Boolean(await this.neo4jClient.getCI(event.ci_id, event.organization_id));
   }
 
   async start(): Promise<void> {
@@ -53,6 +61,7 @@ export class ChangeEventProcessor {
    */
   private async handleCIDiscovered(event: CMDBEvent): Promise<void> {
     const ciEvent = event as CIDiscoveredEvent;
+    if (!await this.hasProvenOwner(ciEvent)) return;
 
     try {
       // Record discovery in change history
@@ -74,6 +83,7 @@ export class ChangeEventProcessor {
           }),
           JSON.stringify({
             event_id: ciEvent.event_id,
+            organization_id: ciEvent.organization_id,
             timestamp: ciEvent.timestamp,
           }),
         ]
@@ -102,6 +112,7 @@ export class ChangeEventProcessor {
    */
   private async handleCIUpdated(event: CMDBEvent): Promise<void> {
     const updateEvent = event as CIUpdatedEvent;
+    if (!await this.hasProvenOwner(updateEvent)) return;
 
     try {
       // Record update in change history
@@ -120,6 +131,7 @@ export class ChangeEventProcessor {
           JSON.stringify({
             event_id: updateEvent.event_id,
             timestamp: updateEvent.timestamp,
+            organization_id: updateEvent.organization_id,
           }),
         ]
       );

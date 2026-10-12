@@ -45,6 +45,12 @@ function mockRes(): Response {
   return res as Response;
 }
 
+const ORG = '11111111-1111-4111-8111-111111111111';
+function scopedRequest(input: Record<string, unknown>): AuthenticatedRequest {
+  const user = input.user as Record<string, unknown> | undefined;
+  return { ...input, user: { ...user, _organizationId: ORG } } as unknown as AuthenticatedRequest;
+}
+
 describe('DriftImpactController', () => {
   let controller: DriftImpactController;
   // Mock typing follows this suite's established convention (see
@@ -94,7 +100,7 @@ describe('DriftImpactController', () => {
     it('returns 404 when the CI does not exist', async () => {
       mockNeo4jClient.getCI.mockResolvedValue(null);
 
-      const req = { params: { ciId: 'ci-missing' } } as unknown as AuthenticatedRequest;
+      const req = scopedRequest({ params: { ciId: 'ci-missing' } })
       const res = mockRes();
 
       await controller.detectDrift(req, res);
@@ -107,7 +113,7 @@ describe('DriftImpactController', () => {
       mockNeo4jClient.getCI.mockResolvedValue({ id: 'ci-001', name: 'web-01' });
       mockDriftDetector.getApprovedBaseline.mockResolvedValue(null);
 
-      const req = { params: { ciId: 'ci-001' } } as unknown as AuthenticatedRequest;
+      const req = scopedRequest({ params: { ciId: 'ci-001' } })
       const res = mockRes();
 
       await controller.detectDrift(req, res);
@@ -135,7 +141,7 @@ describe('DriftImpactController', () => {
         detected_at: '2026-01-01T00:00:00.000Z',
       });
 
-      const req = { params: { ciId: 'ci-001' } } as unknown as AuthenticatedRequest;
+      const req = scopedRequest({ params: { ciId: 'ci-001' } })
       const res = mockRes();
 
       await controller.detectDrift(req, res);
@@ -169,7 +175,7 @@ describe('DriftImpactController', () => {
         detected_at: '2026-01-01T00:00:00.000Z',
       });
 
-      const req = { params: { ciId: 'ci-001' } } as unknown as AuthenticatedRequest;
+      const req = scopedRequest({ params: { ciId: 'ci-001' } })
       const res = mockRes();
 
       await controller.detectDrift(req, res);
@@ -190,14 +196,14 @@ describe('DriftImpactController', () => {
       mockNeo4jClient.getCI.mockResolvedValue({ id: 'ci-001', name: 'web-01' });
       mockDriftDetector.createBaseline.mockResolvedValue({ id: 'baseline-1', created_by: 'auth-user' });
 
-      const req = {
+      const req = scopedRequest({
         body: {
           ci_id: 'ci-001',
           snapshot_type: 'configuration',
           created_by: 'spoofed-user',
         },
         user: { _userId: 'auth-user' },
-      } as unknown as AuthenticatedRequest;
+      })
       const res = mockRes();
 
       await controller.createBaseline(req, res);
@@ -205,7 +211,8 @@ describe('DriftImpactController', () => {
       expect(mockDriftDetector.createBaseline).toHaveBeenCalledWith(
         'ci-001',
         'configuration',
-        'auth-user'
+        'auth-user',
+        ORG
       );
     });
   });
@@ -214,7 +221,7 @@ describe('DriftImpactController', () => {
     it('returns 404 for an unknown baseline id', async () => {
       mockDriftDetector.getBaselineById.mockResolvedValue(null);
 
-      const req = { params: { baselineId: 'baseline-missing' } } as unknown as AuthenticatedRequest;
+      const req = scopedRequest({ params: { baselineId: 'baseline-missing' } })
       const res = mockRes();
 
       await controller.approveBaseline(req, res);
@@ -224,23 +231,24 @@ describe('DriftImpactController', () => {
     });
 
     it('derives the approver from req.user, never the request body', async () => {
-      mockDriftDetector.getBaselineById.mockResolvedValue({ id: 'baseline-1' });
+      const baselineId = '33333333-3333-4333-8333-333333333333';
+      mockDriftDetector.getBaselineById.mockResolvedValue({ id: baselineId });
       mockDriftDetector.approveBaseline.mockResolvedValue({
-        id: 'baseline-1',
+        id: baselineId,
         is_approved: true,
         approved_by: 'auth-user',
       });
 
-      const req = {
-        params: { baselineId: 'baseline-1' },
+      const req = scopedRequest({
+        params: { baselineId },
         body: { approved_by: 'spoofed-user' },
         user: { _userId: 'auth-user' },
-      } as unknown as AuthenticatedRequest;
+      })
       const res = mockRes();
 
       await controller.approveBaseline(req, res);
 
-      expect(mockDriftDetector.approveBaseline).toHaveBeenCalledWith('baseline-1', 'auth-user');
+      expect(mockDriftDetector.approveBaseline).toHaveBeenCalledWith(baselineId, 'auth-user', ORG);
     });
   });
 
@@ -248,9 +256,9 @@ describe('DriftImpactController', () => {
     it('returns 404 for an unknown CI', async () => {
       mockNeo4jClient.getCI.mockResolvedValue(null);
 
-      const req = {
+      const req = scopedRequest({
         body: { ci_id: 'ci-missing', change_type: 'RESTART' },
-      } as unknown as AuthenticatedRequest;
+      })
       const res = mockRes();
 
       await controller.predictImpact(req, res);
@@ -260,9 +268,9 @@ describe('DriftImpactController', () => {
     });
 
     it('rejects an invalid change_type before touching the engine', async () => {
-      const req = {
+      const req = scopedRequest({
         body: { ci_id: 'ci-001', change_type: 'NOT_A_REAL_CHANGE' },
-      } as unknown as AuthenticatedRequest;
+      })
       const res = mockRes();
 
       await controller.predictImpact(req, res);
@@ -287,14 +295,14 @@ describe('DriftImpactController', () => {
         analyzed_at: '2026-01-01T00:00:00.000Z',
       });
 
-      const req = {
+      const req = scopedRequest({
         body: { ci_id: 'ci-001', change_type: 'RESTART' },
-      } as unknown as AuthenticatedRequest;
+      })
       const res = mockRes();
 
       await controller.predictImpact(req, res);
 
-      expect(mockImpactEngine.predictChangeImpact).toHaveBeenCalledWith('ci-001', 'restart');
+      expect(mockImpactEngine.predictChangeImpact).toHaveBeenCalledWith('ci-001', 'restart', ORG);
       expect(res.status).toHaveBeenCalledWith(201);
     });
   });
@@ -303,7 +311,7 @@ describe('DriftImpactController', () => {
     it('returns 404 for an unknown root CI', async () => {
       mockNeo4jClient.getCI.mockResolvedValue(null);
 
-      const req = { params: { rootCiId: 'ci-missing' }, query: {} } as unknown as AuthenticatedRequest;
+      const req = scopedRequest({ params: { rootCiId: 'ci-missing' }, query: {} })
       const res = mockRes();
 
       await controller.getDependencyGraph(req, res);
@@ -315,10 +323,10 @@ describe('DriftImpactController', () => {
     it('rejects a max_depth above the bound without calling the engine', async () => {
       mockNeo4jClient.getCI.mockResolvedValue({ id: 'ci-001', name: 'db-01' });
 
-      const req = {
+      const req = scopedRequest({
         params: { rootCiId: 'ci-001' },
         query: { max_depth: '25' },
-      } as unknown as AuthenticatedRequest;
+      })
       const res = mockRes();
 
       await controller.getDependencyGraph(req, res);
@@ -328,10 +336,10 @@ describe('DriftImpactController', () => {
     });
 
     it('rejects a max_depth below the bound without calling the engine', async () => {
-      const req = {
+      const req = scopedRequest({
         params: { rootCiId: 'ci-001' },
         query: { max_depth: '0' },
-      } as unknown as AuthenticatedRequest;
+      })
       const res = mockRes();
 
       await controller.getDependencyGraph(req, res);
@@ -349,15 +357,15 @@ describe('DriftImpactController', () => {
         metadata: { total_nodes: 0, total_edges: 0, max_depth: 4, generated_at: '2026-01-01T00:00:00.000Z' },
       });
 
-      const req = {
+      const req = scopedRequest({
         params: { rootCiId: 'ci-001' },
         query: { max_depth: '4' },
-      } as unknown as AuthenticatedRequest;
+      })
       const res = mockRes();
 
       await controller.getDependencyGraph(req, res);
 
-      expect(mockImpactEngine.buildDependencyGraph).toHaveBeenCalledWith('ci-001', 4);
+      expect(mockImpactEngine.buildDependencyGraph).toHaveBeenCalledWith('ci-001', 4, ORG);
       expect(res.status).not.toHaveBeenCalledWith(400);
     });
   });

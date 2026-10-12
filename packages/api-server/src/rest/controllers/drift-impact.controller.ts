@@ -12,19 +12,19 @@
  */
 
 import { Response } from 'express';
-// CI tenant scoping covers /api/v1/cis only so far; these routes read CIs unscoped, as before.
-import { getNeo4jClient, UNSCOPED_CI_ACCESS } from '@cmdb/database';
+import { getNeo4jClient } from '@cmdb/database';
 import { logger } from '@cmdb/common';
 import {
   getConfigurationDriftDetector,
   getImpactPredictionEngine,
   ChangeType,
 } from '@cmdb/ai-ml-engine';
-import { AuthenticatedRequest } from '../../middleware/auth.middleware';
+import { AuthenticatedRequest, requestOrganizationId } from '../../middleware/auth.middleware';
 
 type SnapshotType = 'configuration' | 'performance' | 'relationships';
 
 const SNAPSHOT_TYPES: SnapshotType[] = ['configuration', 'performance', 'relationships'];
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function isSnapshotType(value: string): value is SnapshotType {
   return (SNAPSHOT_TYPES as string[]).includes(value);
@@ -67,7 +67,7 @@ export class DriftImpactController {
         return;
       }
 
-      const ci = await this.neo4jClient.getCI(ciId, UNSCOPED_CI_ACCESS);
+      const ci = await this.neo4jClient.getCI(ciId, requestOrganizationId(req));
       if (!ci) {
         res.status(404).json({
           success: false,
@@ -77,7 +77,7 @@ export class DriftImpactController {
         return;
       }
 
-      const baseline = await this.driftDetector.getApprovedBaseline(ciId, 'configuration');
+      const baseline = await this.driftDetector.getApprovedBaseline(ciId, 'configuration', requestOrganizationId(req));
       if (!baseline) {
         res.status(404).json({
           success: false,
@@ -87,7 +87,7 @@ export class DriftImpactController {
         return;
       }
 
-      const result = await this.driftDetector.detectDrift(ciId);
+      const result = await this.driftDetector.detectDrift(ciId, requestOrganizationId(req));
 
       res.json({
         success: true,
@@ -130,7 +130,11 @@ export class DriftImpactController {
         return;
       }
 
-      const history = await this.driftDetector.getDriftHistory(ciId, limitNum);
+      if (!await this.neo4jClient.getCI(ciId, requestOrganizationId(req))) {
+        res.status(404).json({ success: false, error: 'Not Found', message: `CI with ID '${ciId}' not found` });
+        return;
+      }
+      const history = await this.driftDetector.getDriftHistory(ciId, limitNum, requestOrganizationId(req));
 
       res.json({
         success: true,
@@ -163,7 +167,7 @@ export class DriftImpactController {
         return;
       }
 
-      const ci = await this.neo4jClient.getCI(ci_id, UNSCOPED_CI_ACCESS);
+      const ci = await this.neo4jClient.getCI(ci_id, requestOrganizationId(req));
       if (!ci) {
         res.status(404).json({
           success: false,
@@ -176,7 +180,8 @@ export class DriftImpactController {
       const baseline = await this.driftDetector.createBaseline(
         ci_id,
         snapshot_type,
-        this.getActor(req)
+        this.getActor(req),
+        requestOrganizationId(req)
       );
 
       res.status(201).json({
@@ -201,16 +206,16 @@ export class DriftImpactController {
   async approveBaseline(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
       const { baselineId } = req.params;
-      if (!baselineId) {
-        res.status(400).json({
+      if (!baselineId || !UUID_RE.test(baselineId)) {
+        res.status(404).json({
           success: false,
-          error: 'Bad Request',
-          message: 'Baseline ID is required',
+          error: 'Not Found',
+          message: `Baseline snapshot with ID '${baselineId}' not found`,
         });
         return;
       }
 
-      const existing = await this.driftDetector.getBaselineById(baselineId);
+      const existing = await this.driftDetector.getBaselineById(baselineId, requestOrganizationId(req));
       if (!existing) {
         res.status(404).json({
           success: false,
@@ -220,7 +225,7 @@ export class DriftImpactController {
         return;
       }
 
-      const approved = await this.driftDetector.approveBaseline(baselineId, this.getActor(req));
+      const approved = await this.driftDetector.approveBaseline(baselineId, this.getActor(req), requestOrganizationId(req));
 
       res.json({
         success: true,
@@ -263,7 +268,11 @@ export class DriftImpactController {
         return;
       }
 
-      const baseline = await this.driftDetector.getApprovedBaseline(ciId, requestedType);
+      if (!await this.neo4jClient.getCI(ciId, requestOrganizationId(req))) {
+        res.status(404).json({ success: false, error: 'Not Found', message: `CI with ID '${ciId}' not found` });
+        return;
+      }
+      const baseline = await this.driftDetector.getApprovedBaseline(ciId, requestedType, requestOrganizationId(req));
 
       res.json({
         success: true,
@@ -301,7 +310,7 @@ export class DriftImpactController {
         return;
       }
 
-      const ci = await this.neo4jClient.getCI(ci_id, UNSCOPED_CI_ACCESS);
+      const ci = await this.neo4jClient.getCI(ci_id, requestOrganizationId(req));
       if (!ci) {
         res.status(404).json({
           success: false,
@@ -311,7 +320,7 @@ export class DriftImpactController {
         return;
       }
 
-      const impact = await this.impactEngine.predictChangeImpact(ci_id, normalizedChangeType);
+      const impact = await this.impactEngine.predictChangeImpact(ci_id, normalizedChangeType, requestOrganizationId(req));
 
       res.status(201).json({
         success: true,
@@ -354,7 +363,7 @@ export class DriftImpactController {
         return;
       }
 
-      const ci = await this.neo4jClient.getCI(rootCiId, UNSCOPED_CI_ACCESS);
+      const ci = await this.neo4jClient.getCI(rootCiId, requestOrganizationId(req));
       if (!ci) {
         res.status(404).json({
           success: false,
@@ -364,7 +373,7 @@ export class DriftImpactController {
         return;
       }
 
-      const graph = await this.impactEngine.buildDependencyGraph(rootCiId, maxDepth);
+      const graph = await this.impactEngine.buildDependencyGraph(rootCiId, maxDepth, requestOrganizationId(req));
 
       res.json({
         success: true,
@@ -396,7 +405,7 @@ export class DriftImpactController {
         return;
       }
 
-      const ci = await this.neo4jClient.getCI(ciId, UNSCOPED_CI_ACCESS);
+      const ci = await this.neo4jClient.getCI(ciId, requestOrganizationId(req));
       if (!ci) {
         res.status(404).json({
           success: false,
@@ -406,7 +415,7 @@ export class DriftImpactController {
         return;
       }
 
-      const score = await this.impactEngine.getCriticalityScore(ciId);
+      const score = await this.impactEngine.getCriticalityScore(ciId, requestOrganizationId(req));
 
       res.json({
         success: true,
@@ -449,7 +458,11 @@ export class DriftImpactController {
         return;
       }
 
-      const history = await this.impactEngine.getImpactHistory(ciId, limitNum);
+      if (!await this.neo4jClient.getCI(ciId, requestOrganizationId(req))) {
+        res.status(404).json({ success: false, error: 'Not Found', message: `CI with ID '${ciId}' not found` });
+        return;
+      }
+      const history = await this.impactEngine.getImpactHistory(ciId, limitNum, requestOrganizationId(req));
 
       res.json({
         success: true,

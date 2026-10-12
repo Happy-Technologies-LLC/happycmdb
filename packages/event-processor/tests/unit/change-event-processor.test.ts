@@ -9,7 +9,10 @@ import { ChangeEventProcessor } from '../../src/processors/change-event-processo
 import { EventType, CIDiscoveredEvent, CIUpdatedEvent, CIDeletedEvent } from '../../src/types/events';
 
 // Mock dependencies
+const OWN = 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa';
+const getCI = jest.fn();
 jest.mock('@cmdb/database', () => ({
+  getNeo4jClient: () => ({ getCI }),
   getPostgresClient: jest.fn(() => ({
     query: jest.fn(),
   })),
@@ -45,6 +48,7 @@ describe('ChangeEventProcessor', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    getCI.mockImplementation(async (_ciId: string, org: string) => org === OWN ? { id: 'ci-123' } : null);
 
     mockPostgresClient = {
       query: jest.fn().mockResolvedValue({ rows: [] }),
@@ -61,6 +65,18 @@ describe('ChangeEventProcessor', () => {
     (createEventConsumer as jest.Mock).mockReturnValue(mockConsumer);
 
     processor = new ChangeEventProcessor();
+  });
+
+  it('refuses unproven and foreign CI event provenance before any history writes', async () => {
+    const event: CIDiscoveredEvent = {
+      event_id: 'event', event_type: EventType.CI_DISCOVERED, timestamp: new Date(),
+      source: 'identity-reconciliation-engine', ci_id: 'ci-123', organization_id: OWN,
+      ci_name: 'host', ci_type: 'server', source_system: 'test',
+      identifiers: {}, confidence_score: 1,
+    };
+    await (processor as any).handleCIDiscovered({ ...event, organization_id: undefined });
+    await (processor as any).handleCIDiscovered({ ...event, organization_id: 'bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb' });
+    expect(mockPostgresClient.query).not.toHaveBeenCalled();
   });
 
   describe('start', () => {
@@ -95,6 +111,7 @@ describe('ChangeEventProcessor', () => {
         event_type: EventType.CI_DISCOVERED,
         timestamp: new Date(),
         ci_id: 'ci-123',
+        organization_id: 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa',
         ci_name: 'Web Server 1',
         ci_type: 'server',
         source_system: 'aws-discovery',
@@ -113,6 +130,8 @@ describe('ChangeEventProcessor', () => {
           'aws-discovery',
         ])
       );
+      const historyCall = mockPostgresClient.query.mock.calls.find(([sql]: [string]) => sql.includes('INSERT INTO ci_change_history'));
+      expect(JSON.parse(historyCall[1][6])).toMatchObject({ organization_id: OWN, event_id: 'evt-1' });
 
       expect(logger.info).toHaveBeenCalledWith(
         'CI discovery tracked',
@@ -129,6 +148,7 @@ describe('ChangeEventProcessor', () => {
         event_type: EventType.CI_DISCOVERED,
         timestamp: new Date(),
         ci_id: 'ci-123',
+        organization_id: 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa',
         ci_name: 'Web Server 1',
         ci_type: 'server',
         source_system: 'aws-discovery',
@@ -158,6 +178,7 @@ describe('ChangeEventProcessor', () => {
         event_type: EventType.CI_UPDATED,
         timestamp: new Date(),
         ci_id: 'ci-123',
+        organization_id: 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa',
         ci_name: 'Web Server 1',
         source_system: 'aws-discovery',
         changed_fields: ['status', 'ip_address'],
@@ -177,6 +198,8 @@ describe('ChangeEventProcessor', () => {
           ['status', 'ip_address'],
         ])
       );
+      const historyCall = mockPostgresClient.query.mock.calls.find(([sql]: [string]) => sql.includes('INSERT INTO ci_change_history'));
+      expect(JSON.parse(historyCall[1][7])).toMatchObject({ organization_id: OWN, event_id: 'evt-2' });
 
       expect(logger.info).toHaveBeenCalledWith(
         'CI update tracked',
@@ -193,6 +216,7 @@ describe('ChangeEventProcessor', () => {
         event_type: EventType.CI_UPDATED,
         timestamp: new Date(),
         ci_id: 'ci-123',
+        organization_id: 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa',
         ci_name: 'Web Server 1',
         source_system: 'aws-discovery',
         changed_fields: ['status', 'tags'],
@@ -225,6 +249,7 @@ describe('ChangeEventProcessor', () => {
         event_type: EventType.CI_UPDATED,
         timestamp: new Date(),
         ci_id: 'ci-123',
+        organization_id: 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa',
         ci_name: 'Web Server 1',
         source_system: 'aws-discovery',
         changed_fields: ['tags', 'metadata'],
@@ -392,6 +417,7 @@ describe('ChangeEventProcessor', () => {
           event_type: EventType.CI_UPDATED,
           timestamp: new Date(),
           ci_id: 'ci-123',
+          organization_id: 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa',
           ci_name: 'Test CI',
           source_system: 'test',
           changed_fields: [field, 'other_field'],

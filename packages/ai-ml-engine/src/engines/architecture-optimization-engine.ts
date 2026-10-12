@@ -95,7 +95,7 @@ export class ArchitectureOptimizationEngine {
     // delete + recreate of this (globally unique) service_id by another
     // organization cannot leak that organization's CIs into this analysis.
     const result = await this.postgresClient.query(
-      `SELECT s.name, m.ci_id
+      `SELECT DISTINCT s.name, m.ci_id
        FROM dim_business_services s
        LEFT JOIN ci_business_service_mappings m ON m.service_id = s.service_id
        WHERE s.service_id = $1 AND s.organization_id = $2
@@ -345,7 +345,7 @@ export class ArchitectureOptimizationEngine {
              WHERE ci.organization_id = $organizationId
              OPTIONAL MATCH (ci)-[:DEPENDS_ON|USES]->(next:CI)
              WHERE next.organization_id = $organizationId
-             RETURN path, next.id AS nextId
+             RETURN DISTINCT path, next.id AS nextId
              LIMIT toInteger($limit)`,
             { frontier, organizationId, limit: remaining + 1 },
             { timeout: ARCHITECTURE_QUERY_TIMEOUT_MS }

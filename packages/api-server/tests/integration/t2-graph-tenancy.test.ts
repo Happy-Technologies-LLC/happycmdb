@@ -310,17 +310,28 @@ it('architecture passes a driver timeout on every statement and stops an 11-edge
       return session;
     });
     try {
-      for (const [response, expectedStatements] of [
-        [await request(app).post('/api/v1/architecture/analyze').set(auth('a')).send({ ci_ids: [ids[0]] }), 16],
-        [await request(app).get('/api/v1/architecture/business-services/t2-a/analysis').set(auth('a')), 17],
-      ] as const) {
+      for (const method of ['POST', 'GET']) {
+        const response = method === 'POST'
+          ? await request(app).post('/api/v1/architecture/analyze').set(auth('a')).send({ ci_ids: [ids[0]] })
+          : await request(app).get('/api/v1/architecture/business-services/t2-a/analysis').set(auth('a'));
         expect(response.status).toBe(200);
         expect(response.body.analysis.dependency_graph_summary.circular_dependencies).toBe(0);
-        expect(statements).toHaveLength(expectedStatements);
-        const walks = statements.filter(({ cypher }) => cypher.includes('UNWIND $frontier AS path'));
+        // POST ownership preflight uses the same client but is not an engine statement.
+        const engineStatements = statements.filter(({ cypher }) =>
+          !cypher.includes('MATCH (ci:CI {id: $id}) WHERE ci.organization_id'));
+        expect(engineStatements).toHaveLength(method === 'POST' ? 16 : 17);
+        const walks = engineStatements.filter(({ cypher }) => cypher.includes('UNWIND $frontier AS path'));
         expect(walks).toHaveLength(10);
         expect(walks.every(({ cypher }) => !/\*\d+\.\.\d+/.test(cypher))).toBe(true);
-        expect(statements.every(({ timeout }) => timeout === 5000)).toBe(true);
+        const sites = [
+          'RETURN DISTINCT ci.id AS id', 'as fan_in', 'as fan_out', 'ci.ci_type as ci_type',
+          'UNWIND $frontier AS path', 'as redundancy_count', 'as db_id', 'as app_id',
+        ];
+        expect(engineStatements.every(({ cypher, timeout }) =>
+          timeout === 5000 && sites.some((site) => cypher.includes(site)))).toBe(true);
+        if (method === 'GET') {
+          expect(sites.every((site) => engineStatements.some(({ cypher }) => cypher.includes(site)))).toBe(true);
+        }
         statements.length = 0;
       }
     } finally {

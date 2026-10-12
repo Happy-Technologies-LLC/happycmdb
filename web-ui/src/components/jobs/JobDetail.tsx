@@ -158,42 +158,6 @@ export const JobDetail: React.FC<JobDetailProps> = ({
             </div>
           )}
 
-          {job.stacktrace && job.stacktrace.length > 0 && (
-            <div>
-              <h3 className="text-sm font-semibold mb-2">Stack Trace</h3>
-              <Card>
-                <CardContent className="p-4 bg-muted max-h-48 overflow-auto">
-                  <pre className="text-xs font-mono whitespace-pre-wrap break-words">
-                    {job.stacktrace.join('\n')}
-                  </pre>
-                </CardContent>
-              </Card>
-            </div>
-          )}
-
-          <div>
-            <h3 className="text-sm font-semibold mb-2">Job Data</h3>
-            <Card>
-              <CardContent className="p-4 bg-muted max-h-72 overflow-auto">
-                <pre className="text-xs font-mono whitespace-pre-wrap break-words">
-                  {JSON.stringify(job.data, null, 2)}
-                </pre>
-              </CardContent>
-            </Card>
-          </div>
-
-          {Boolean(job.returnvalue) && (
-            <div>
-              <h3 className="text-sm font-semibold mb-2">Return Value</h3>
-              <Card>
-                <CardContent className="p-4 bg-muted max-h-48 overflow-auto">
-                  <pre className="text-xs font-mono whitespace-pre-wrap break-words">
-                    {JSON.stringify(job.returnvalue, null, 2)}
-                  </pre>
-                </CardContent>
-              </Card>
-            </div>
-          )}
         </div>
 
         <DialogFooter>

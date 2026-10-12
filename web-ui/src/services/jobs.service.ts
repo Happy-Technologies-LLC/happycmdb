@@ -14,7 +14,6 @@ export interface Job {
   id: string;
   name: string;
   queueName: string;
-  data: Record<string, unknown>;
   progress: number;
   attempts: number;
   maxAttempts: number;
@@ -23,8 +22,6 @@ export interface Job {
   processedOn?: number;
   finishedOn?: number;
   failedReason?: string;
-  stacktrace?: string[];
-  returnvalue?: unknown;
   delay?: number;
 }
 
@@ -71,8 +68,6 @@ interface RawJobPayload {
   id: string;
   name?: string;
   queueName?: string;
-  data?: Record<string, unknown>;
-  progress?: number;
   attemptsMade?: number;
   maxAttempts?: number;
   state?: string;
@@ -80,9 +75,6 @@ interface RawJobPayload {
   timestamp?: number;
   processedOn?: number;
   finishedOn?: number;
-  failedReason?: string;
-  stacktrace?: string[];
-  returnvalue?: unknown;
 }
 
 
@@ -98,17 +90,14 @@ class JobsService {
       id: raw.id,
       name: raw.name ?? raw.id,
       queueName: raw.queueName ?? fallbackQueueName,
-      data: raw.data ?? {},
-      progress: typeof raw.progress === 'number' ? raw.progress : 0,
+      progress: 0,
       attempts: raw.attemptsMade ?? 0,
       maxAttempts: raw.maxAttempts ?? 1,
       status: (raw.state ?? raw.status) as Job['status'],
       timestamp: raw.timestamp ?? 0,
       processedOn: raw.processedOn,
       finishedOn: raw.finishedOn,
-      failedReason: raw.failedReason,
-      stacktrace: raw.stacktrace,
-      returnvalue: raw.returnvalue,
+      failedReason: (raw.state ?? raw.status) === 'failed' ? 'Job failed' : undefined,
     };
   }
 

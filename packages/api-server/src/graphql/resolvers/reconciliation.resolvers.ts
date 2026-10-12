@@ -21,6 +21,10 @@ import {
 
 const reconciliationEngine = getIdentityReconciliationEngine();
 const postgresClient = getPostgresClient();
+function refuseGlobalPolicy(context: GraphQLContext): never {
+  if (!context.user) throw new GraphQLError('Authentication required', { extensions: { code: 'UNAUTHENTICATED' } });
+  throw new GraphQLError('Global reconciliation policy unavailable', { extensions: { code: 'FORBIDDEN' } });
+}
 
 /**
  * Reconciliation Query Resolvers
@@ -132,71 +136,12 @@ const ReconciliationQuery = {
   /**
    * Get reconciliation rules
    */
-  getRules: async () => {
-    try {
-      const result = await postgresClient.query(
-        `SELECT id, name, identification_rules, merge_strategies,
-                enabled, created_at, updated_at
-         FROM reconciliation_rules
-         ORDER BY created_at DESC`
-      );
-
-      return result.rows.map(row => ({
-        _id: row.id,
-        _name: row.name,
-        _identificationRules: row.identification_rules.map((rule: any) => ({
-          _attribute: rule.attribute,
-          _priority: rule.priority,
-          _matchType: rule.match_type.toUpperCase(),
-          _matchConfidence: rule.match_confidence,
-          _fuzzyThreshold: rule.fuzzy_threshold
-        })),
-        _mergeStrategies: row.merge_strategies.map((strategy: any) => ({
-          _fieldName: strategy.field_name,
-          _strategy: strategy.strategy.toUpperCase(),
-          _conflictThreshold: strategy.conflict_threshold
-        })),
-        _enabled: row.enabled,
-        _createdAt: row.created_at.toISOString(),
-        _updatedAt: row.updated_at.toISOString()
-      }));
-    } catch (error: any) {
-      logger.error('GraphQL: Error getting rules', error);
-      throw new GraphQLError('Failed to get rules', {
-        extensions: {
-          code: 'INTERNAL_SERVER_ERROR',
-          originalError: error.message,
-        },
-      });
-    }
-  },
+  getRules: async (_parent: unknown, _args: unknown, context: GraphQLContext) => refuseGlobalPolicy(context),
 
   /**
    * Get source authorities
    */
-  getSourceAuthorities: async () => {
-    try {
-      const result = await postgresClient.query(
-        `SELECT source_name, authority_score, description
-         FROM source_authority
-         ORDER BY authority_score DESC`
-      );
-
-      return result.rows.map(row => ({
-        _sourceName: row.source_name,
-        _authorityScore: row.authority_score,
-        _description: row.description
-      }));
-    } catch (error: any) {
-      logger.error('GraphQL: Error getting source authorities', error);
-      throw new GraphQLError('Failed to get source authorities', {
-        extensions: {
-          code: 'INTERNAL_SERVER_ERROR',
-          originalError: error.message,
-        },
-      });
-    }
-  },
+  getSourceAuthorities: async (_parent: unknown, _args: unknown, context: GraphQLContext) => refuseGlobalPolicy(context),
 
   /**
    * Get CI source lineage
@@ -411,127 +356,12 @@ const ReconciliationMutation = {
   /**
    * Create a reconciliation rule
    */
-  createRule: async (
-    _parent: any,
-    _args: {
-      _input: {
-        _name: string;
-        _identificationRules: any[];
-        _mergeStrategies?: any[];
-        _enabled?: boolean;
-      };
-    },
-    _context: GraphQLContext
-  ) => {
-    checkGraphQLPermission(_context, 'write');
-    try {
-      const { _name, _identificationRules, _mergeStrategies, _enabled } = _args._input;
-
-      // Transform GraphQL input to database format
-      const identificationRules = _identificationRules.map(rule => ({
-        attribute: rule._attribute,
-        priority: rule._priority,
-        match_type: rule._matchType.toLowerCase(),
-        match_confidence: rule._matchConfidence,
-        fuzzy_threshold: rule._fuzzyThreshold
-      }));
-
-      const mergeStrategies = (_mergeStrategies || []).map(strategy => ({
-        field_name: strategy._fieldName,
-        strategy: strategy._strategy.toLowerCase(),
-        conflict_threshold: strategy._conflictThreshold
-      }));
-
-      const result = await postgresClient.query(
-        `INSERT INTO reconciliation_rules
-         (name, identification_rules, merge_strategies, enabled, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, NOW(), NOW())
-         RETURNING *`,
-        [_name, JSON.stringify(identificationRules), JSON.stringify(mergeStrategies), _enabled !== false]
-      );
-
-      const row = result.rows[0];
-
-      return {
-        _id: row.id,
-        _name: row.name,
-        _identificationRules: row.identification_rules.map((rule: any) => ({
-          _attribute: rule.attribute,
-          _priority: rule.priority,
-          _matchType: rule.match_type.toUpperCase(),
-          _matchConfidence: rule.match_confidence,
-          _fuzzyThreshold: rule.fuzzy_threshold
-        })),
-        _mergeStrategies: row.merge_strategies.map((strategy: any) => ({
-          _fieldName: strategy.field_name,
-          _strategy: strategy.strategy.toUpperCase(),
-          _conflictThreshold: strategy.conflict_threshold
-        })),
-        _enabled: row.enabled,
-        _createdAt: row.created_at.toISOString(),
-        _updatedAt: row.updated_at.toISOString()
-      };
-    } catch (error: any) {
-      logger.error('GraphQL: Error creating rule', error);
-      throw new GraphQLError('Failed to create rule', {
-        extensions: {
-          code: 'INTERNAL_SERVER_ERROR',
-          originalError: error.message,
-        },
-      });
-    }
-  },
+  createRule: async (_parent: unknown, _args: unknown, context: GraphQLContext) => refuseGlobalPolicy(context),
 
   /**
    * Update source authority
    */
-  updateSourceAuthority: async (
-    _parent: any,
-    _args: {
-      _input: {
-        _sourceName: string;
-        _authorityScore: number;
-        _description?: string;
-      };
-    },
-    _context: GraphQLContext
-  ) => {
-    checkGraphQLPermission(_context, 'write');
-    try {
-      const { _sourceName, _authorityScore, _description } = _args._input;
-
-      if (_authorityScore < 1 || _authorityScore > 10) {
-        throw new GraphQLError('Authority score must be between 1 and 10', {
-          extensions: { code: 'BAD_USER_INPUT' }
-        });
-      }
-
-      await postgresClient.query(
-        `INSERT INTO source_authority (source_name, authority_score, description)
-         VALUES ($1, $2, $3)
-         ON CONFLICT (source_name)
-         DO UPDATE SET authority_score = $2, description = $3`,
-        [_sourceName, _authorityScore, _description || null]
-      );
-
-      return {
-        _sourceName: _sourceName,
-        _authorityScore: _authorityScore,
-        _description: _description
-      };
-    } catch (error: any) {
-      if (error instanceof GraphQLError) {
-        throw error;
-      }
-      logger.error('GraphQL: Error updating source authority', error);
-      throw new GraphQLError('Failed to update source authority', {
-        extensions: {
-          code: 'INTERNAL_SERVER_ERROR',
-          originalError: error.message,
-        },
-      });
-    }
-  }
+  updateSourceAuthority: async (_parent: unknown, _args: unknown, context: GraphQLContext) => refuseGlobalPolicy(context)
 };
 
 /**

@@ -10,89 +10,67 @@
 
 import axios from 'axios';
 import { Command } from 'commander';
-import { logger, getQueueManager, QUEUE_NAMES } from '@cmdb/common';
-import type { ETLJobType } from '@cmdb/common';
-import { getETLScheduler } from '@cmdb/etl-processor';
+import { logger, QUEUE_NAMES } from '@cmdb/common';
 
-const MISSING_DISCOVERY_AUTH = 'Discovery API authentication required (--key or --token)';
+const MISSING_DISCOVERY_AUTH = 'Jobs API authentication required (--key or --token)';
+const GLOBAL_CLI_REFUSAL = 'Queue operations require the authenticated API; global operations unavailable';
+type PublicJob = { id: string; name: string; state: string };
 
 /**
  * Create jobs command
  */
 export function createJobsCommand(): Command {
   const jobsCmd = new Command('jobs');
-  jobsCmd.description('Manage jobs');
+  jobsCmd.description('Manage caller-owned jobs via the authenticated API; global queue and ETL operations unavailable');
+  // A CLI process has no verified local tenant. Only the authenticated API
+  // can derive one before accessing a shared BullMQ queue.
+  function apiAccess(token?: string) {
+    const globals = jobsCmd.optsWithGlobals();
+    const apiKey = globals['key'] || process.env['CMDB_API_KEY'];
+    const accessToken = token || process.env['CMDB_ACCESS_TOKEN'];
+    if (!accessToken && !apiKey) throw new Error(MISSING_DISCOVERY_AUTH);
+    const url = String(globals['url'] || process.env['CMDB_API_URL'] || 'http://localhost:3000/api/v1').replace(/\/+$/, '');
+    const headers = accessToken
+      ? { Authorization: `Bearer ${accessToken}` }
+      : { [process.env['API_KEY_HEADER_NAME'] || 'X-API-Key']: apiKey };
+    return { url, headers };
+  }
 
-  // List jobs command
+  function reportApiFailure(error: unknown): void {
+    logger.error(error instanceof Error && error.message === MISSING_DISCOVERY_AUTH
+      ? MISSING_DISCOVERY_AUTH
+      : axios.isAxiosError(error) && [401, 403].includes(error.response?.status ?? 0)
+        ? 'Jobs API authorization failed'
+        : 'Jobs API request failed');
+    process.exit(1);
+  }
+
   jobsCmd
-    .command('list [queueName]')
-    .description('List jobs in a queue')
+    .command('list <queueName>')
+    .description('List caller-owned jobs in a queue through the authenticated API')
     .option('-s, --state <state>', 'Job state (waiting, active, completed, failed)', 'waiting')
-    .option('-l, --limit <limit>', 'Number of jobs to show', '20')
-    .action(async (queueName?: string, options?: any) => {
+    .option('-l, --limit <limit>', 'Maximum jobs to show (1-100)', '20')
+    .option('--token <token>', 'JWT access token (or CMDB_ACCESS_TOKEN)')
+    .action(async (queueName: string, options: { state: string; limit: string; token?: string }) => {
       try {
-        const queueManager = getQueueManager();
-
-        if (!queueName) {
-          // List all queues
-          console.log('\n=== Available Queues ===');
-          Object.values(QUEUE_NAMES).forEach((name) => {
-            console.log(`  - ${name}`);
-          });
-          console.log('');
-          process.exit(0);
+        const { url, headers } = apiAccess(options.token);
+        if (!Object.values(QUEUE_NAMES).includes(queueName as typeof QUEUE_NAMES[keyof typeof QUEUE_NAMES])) {
+          throw new Error('Known queue name required');
         }
-
-        const queue = queueManager.getQueue(queueName);
-        const state = options.state || 'waiting';
-        const limit = parseInt(options.limit || '20');
-
-        let jobs;
-        switch (state) {
-          case 'waiting':
-            jobs = await queue.getWaiting(0, limit - 1);
-            break;
-          case 'active':
-            jobs = await queue.getActive(0, limit - 1);
-            break;
-          case 'completed':
-            jobs = await queue.getCompleted(0, limit - 1);
-            break;
-          case 'failed':
-            jobs = await queue.getFailed(0, limit - 1);
-            break;
-          default:
-            jobs = await queue.getWaiting(0, limit - 1);
+        const limit = Number(options.limit);
+        if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100 || !['waiting', 'active', 'completed', 'failed'].includes(options.state)) {
+          throw new Error('Invalid job list filter');
         }
-
-        console.log(`\n=== ${queueName} - ${state} jobs ===`);
-        console.log(`Total: ${jobs.length}`);
-
-        for (const job of jobs) {
-          const jobState = await job.getState();
-          console.log(`\nJob ${job.id}:`);
-          console.log(`  Name: ${job.name}`);
-          console.log(`  State: ${jobState}`);
-          console.log(`  Created: ${new Date(job.timestamp).toISOString()}`);
-          if (job.processedOn) {
-            console.log(`  Processed: ${new Date(job.processedOn).toISOString()}`);
-          }
-          if (job.finishedOn) {
-            console.log(`  Finished: ${new Date(job.finishedOn).toISOString()}`);
-          }
-          if (job.progress) {
-            console.log(`  Progress: ${JSON.stringify(job.progress)}`);
-          }
-          if (job.failedReason) {
-            console.log(`  Failed Reason: ${job.failedReason}`);
-          }
+        const response = await axios.get<{ data: { jobs: PublicJob[] } }>(`${url}/jobs/${encodeURIComponent(queueName)}`, {
+          headers, params: { state: options.state, start: 0, end: limit - 1 },
+        });
+        console.log(`\n=== ${queueName} - ${options.state} caller-owned jobs ===`);
+        for (const job of response.data.data.jobs) {
+          console.log(`Job ${job.id}: ${job.name} (${job.state})`);
         }
-
-        console.log('');
         process.exit(0);
-      } catch (err: any) {
-        logger.error('Error listing jobs', err);
-        process.exit(1);
+      } catch (error) {
+        reportApiFailure(error);
       }
     });
 
@@ -106,14 +84,7 @@ export function createJobsCommand(): Command {
       try {
         // There is no verified CLI-local tenant. Only the authenticated API
         // can derive an organization before a job is added to BullMQ.
-        const globals = jobsCmd.optsWithGlobals();
-        const apiKey = globals['key'] || process.env['CMDB_API_KEY'];
-        const token = options.token || process.env['CMDB_ACCESS_TOKEN'];
-        if (!token && !apiKey) throw new Error(MISSING_DISCOVERY_AUTH);
-        const apiUrl = globals['url'] || process.env['CMDB_API_URL'] || 'http://localhost:3000/api/v1';
-        const headers = token
-          ? { Authorization: `Bearer ${token}` }
-          : { [process.env['API_KEY_HEADER_NAME'] || 'X-API-Key']: apiKey };
+        const { url: apiUrl, headers } = apiAccess(options.token);
         let config;
         if (options.config) {
           config = JSON.parse(options.config);
@@ -122,7 +93,7 @@ export function createJobsCommand(): Command {
         logger.info(`Triggering discovery job for ${provider}...`);
 
         const response = await axios.post(
-          `${String(apiUrl).replace(/\/+$/, '')}/jobs/discovery/${encodeURIComponent(provider)}`,
+          `${apiUrl}/jobs/discovery/${encodeURIComponent(provider)}`,
           { config },
           { headers }
         );
@@ -130,7 +101,7 @@ export function createJobsCommand(): Command {
 
         logger.info(`Discovery job ${jobId} queued for ${provider}`);
         console.log(`\nJob ID: ${jobId}`);
-        console.log(`Use 'cmdb jobs status ${jobId}' to check status\n`);
+        console.log(`Use 'cmdb jobs status <queueName> ${jobId} --token <token>' to check caller-owned status\n`);
 
         process.exit(0);
       } catch (error) {
@@ -143,173 +114,54 @@ export function createJobsCommand(): Command {
       }
     });
 
-  // Run ETL job command
   jobsCmd
     .command('run:etl <type>')
-    .description('Run ETL job immediately (sync, change-detection, reconciliation, full-refresh)')
-    .option('-c, --config <config>', 'Job configuration (JSON string)')
-    .action(async (type: string, options: any) => {
-      try {
-        const etlScheduler = getETLScheduler();
-
-        let config;
-        if (options.config) {
-          config = JSON.parse(options.config);
-        }
-
-        logger.info(`Triggering ETL job for ${type}...`);
-
-        const jobId = await etlScheduler.triggerETL(
-          type as ETLJobType,
-          config,
-          'cli'
-        );
-
-        logger.info(`ETL job ${jobId} queued for ${type}`);
-        console.log(`\nJob ID: ${jobId}`);
-        console.log(`Use 'cmdb jobs status ${jobId}' to check status\n`);
-
-        process.exit(0);
-      } catch (err: any) {
-        logger.error('Error running ETL job', err);
-        process.exit(1);
-      }
+    .description('Unavailable: global ETL execution requires a tenant-authorized API')
+    .action(() => {
+      logger.error(GLOBAL_CLI_REFUSAL);
+      process.exit(1);
     });
 
-  // Job status command
   jobsCmd
     .command('status <queueName> <jobId>')
-    .description('Get job status and progress')
-    .action(async (queueName: string, jobId: string) => {
+    .description('Read caller-owned job status through the authenticated API (no raw worker output)')
+    .option('--token <token>', 'JWT access token (or CMDB_ACCESS_TOKEN)')
+    .action(async (queueName: string, jobId: string, options: { token?: string }) => {
       try {
-        const queueManager = getQueueManager();
-        const job = await queueManager.getJob(queueName, jobId);
-
-        if (!job) {
-          logger.error(`Job ${jobId} not found in queue ${queueName}`);
-          process.exit(1);
-        }
-
-        const state = await job.getState();
-
-        console.log(`\n=== Job ${jobId} Status ===`);
-        console.log(`Queue: ${queueName}`);
-        console.log(`Name: ${job.name}`);
-        console.log(`State: ${state}`);
-        console.log(`Created: ${new Date(job.timestamp).toISOString()}`);
-
-        if (job.processedOn) {
-          console.log(`Processed: ${new Date(job.processedOn).toISOString()}`);
-        }
-
-        if (job.finishedOn) {
-          console.log(`Finished: ${new Date(job.finishedOn).toISOString()}`);
-          const duration = job.finishedOn - (job.processedOn || job.timestamp);
-          console.log(`Duration: ${duration}ms`);
-        }
-
-        if (job.progress) {
-          console.log(`\nProgress:`);
-          console.log(JSON.stringify(job.progress, null, 2));
-        }
-
-        if (job.returnvalue) {
-          console.log(`\nResult:`);
-          console.log(JSON.stringify(job.returnvalue, null, 2));
-        }
-
-        if (job.failedReason) {
-          console.log(`\nFailed Reason: ${job.failedReason}`);
-        }
-
-        if (job.stacktrace) {
-          console.log(`\nStack Trace:`);
-          console.log(job.stacktrace.join('\n'));
-        }
-
-        console.log('');
+        const { url, headers } = apiAccess(options.token);
+        const response = await axios.get<{ data: PublicJob }>(`${url}/jobs/${encodeURIComponent(queueName)}/${encodeURIComponent(jobId)}`, { headers });
+        const job = response.data.data;
+        console.log(`Job ${job.id}: ${job.name} (${job.state})`);
         process.exit(0);
-      } catch (err: any) {
-        logger.error('Error getting job status', err);
-        process.exit(1);
+      } catch (error) {
+        reportApiFailure(error);
       }
     });
 
-  // Retry job command
-  jobsCmd
-    .command('retry <queueName> <jobId>')
-    .description('Retry a failed job')
-    .action(async (queueName: string, jobId: string) => {
-      try {
-        const queueManager = getQueueManager();
-        await queueManager.retryJob(queueName, jobId);
-
-        logger.info(`Job ${jobId} retried in queue ${queueName}`);
-        process.exit(0);
-      } catch (err: any) {
-        logger.error('Error retrying job', err);
-        process.exit(1);
-      }
-    });
-
-  // Cancel job command
-  jobsCmd
-    .command('cancel <queueName> <jobId>')
-    .description('Cancel a job')
-    .action(async (queueName: string, jobId: string) => {
-      try {
-        const queueManager = getQueueManager();
-        await queueManager.removeJob(queueName, jobId);
-
-        logger.info(`Job ${jobId} cancelled in queue ${queueName}`);
-        process.exit(0);
-      } catch (err: any) {
-        logger.error('Error cancelling job', err);
-        process.exit(1);
-      }
-    });
-
-  // Queue stats command
-  jobsCmd
-    .command('stats [queueName]')
-    .description('Get queue statistics')
-    .action(async (queueName?: string) => {
-      try {
-        const queueManager = getQueueManager();
-
-        if (queueName) {
-          // Single queue stats
-          const stats = await queueManager.getQueueStats(queueName);
-          console.log(`\n=== ${queueName} Statistics ===`);
-          console.log(`Waiting: ${stats.waiting}`);
-          console.log(`Active: ${stats.active}`);
-          console.log(`Completed: ${stats.completed}`);
-          console.log(`Failed: ${stats.failed}`);
-          console.log(`Delayed: ${stats.delayed}`);
-        } else {
-          // All queues stats
-          console.log('\n=== Queue Statistics ===');
-          for (const name of Object.values(QUEUE_NAMES)) {
-            try {
-              const stats = await queueManager.getQueueStats(name);
-              console.log(`\n${name}:`);
-              console.log(`  Waiting: ${stats.waiting}`);
-              console.log(`  Active: ${stats.active}`);
-              console.log(`  Completed: ${stats.completed}`);
-              console.log(`  Failed: ${stats.failed}`);
-            } catch (err) {
-              console.log(`  Error: Failed to get stats`);
-            }
-          }
+  for (const [command, method] of [['retry', 'post'], ['cancel', 'delete']] as const) {
+    jobsCmd
+      .command(`${command} <queueName> <jobId>`)
+      .description(`${command} a caller-owned job through the authenticated API`)
+      .option('--token <token>', 'JWT access token (or CMDB_ACCESS_TOKEN)')
+      .action(async (queueName: string, jobId: string, options: { token?: string }) => {
+        try {
+          const { url, headers } = apiAccess(options.token);
+          const path = `${url}/jobs/${encodeURIComponent(queueName)}/${encodeURIComponent(jobId)}${command === 'retry' ? '/retry' : ''}`;
+          if (method === 'post') await axios.post(path, {}, { headers });
+          else await axios.delete(path, { headers });
+          console.log(`Job ${jobId} ${command === 'retry' ? 'retried' : 'cancelled'}`);
+          process.exit(0);
+        } catch (error) {
+          reportApiFailure(error);
         }
+      });
+  }
 
-        console.log('');
-        process.exit(0);
-      } catch (err: any) {
-        logger.error('Error getting stats', err);
-        process.exit(1);
-      }
+  jobsCmd.command('stats [queueName]')
+    .description('Unavailable: global queue stats require a tenant-authorized API')
+    .action(() => {
+      logger.error(GLOBAL_CLI_REFUSAL);
+      process.exit(1);
     });
-
   return jobsCmd;
 }

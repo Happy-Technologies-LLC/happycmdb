@@ -2353,41 +2353,24 @@ paths:
   /reconciliation/rules:
     get:
       tags: [Reconciliation]
-      summary: List reconciliation rules
+      summary: Global reconciliation policy read unavailable
+      description: Authentication is required; every role receives the same fixed 403 until platform operations are available.
       operationId: listReconciliationRules
       responses:
-        '200':
-          description: Reconciliation rules
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/ReconciliationRule'
         '401':
           $ref: '#/components/responses/Unauthorized'
-
+        '403':
+          description: Global reconciliation policy unavailable
     post:
       tags: [Reconciliation]
-      summary: Create reconciliation rule
+      summary: Global reconciliation policy mutation unavailable
+      description: Authentication is required; every role receives the same fixed 403 without mutating rules.
       operationId: createReconciliationRule
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/CreateReconciliationRuleInput'
       responses:
-        '201':
-          description: Rule created
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ReconciliationRule'
-        '400':
-          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Global reconciliation policy unavailable
 
   /reconciliation/lineage/{ci_id}:
     get:

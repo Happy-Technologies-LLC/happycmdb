@@ -222,19 +222,18 @@ class DiscoveryService {
     const { data } = await api.get(`/jobs/discovery?${params.toString()}`);
 
     // Transform API response to match expected format
-    const jobs = (data.data || []).map((job: any) => ({
-      id: job.data?.jobId || job.id,
-      provider: job.data?.provider || job.provider,
+    const jobs = (data.data || []).map((job: {
+      id: string; provider: string; status: string; createdAt: number;
+      processedOn?: number; finishedOn?: number;
+    }) => ({
+      id: job.id,
+      provider: job.provider,
       status: this.mapJobStatus(job.status),
-      progress: job.progress || 0,
-      discoveredCIs: job.returnvalue?.discovered || 0,
+      progress: 0,
+      discoveredCIs: 0,
       createdAt: new Date(job.createdAt).toISOString(),
       startedAt: job.processedOn ? new Date(job.processedOn).toISOString() : undefined,
       completedAt: job.finishedOn ? new Date(job.finishedOn).toISOString() : undefined,
-      error: job.failedReason,
-      config: job.data?.config || {},
-      definitionId: job.data?.definition_id,
-      definitionName: job.data?.definition_name,
     }));
 
     return {

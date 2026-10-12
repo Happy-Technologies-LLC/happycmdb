@@ -94,7 +94,7 @@ const migration = join(__dirname, '../../../../../database/src/postgres/migratio
 
 beforeAll(async () => {
   const schema = readFileSync(join(migration, '001_complete_schema.sql'), 'utf8');
-  const tables = ['cmdb.dim_ci', 'ci_source_lineage', 'ci_field_sources', 'reconciliation_conflicts'];
+  const tables = ['cmdb.dim_ci', 'ci_source_lineage', 'ci_field_sources', 'reconciliation_conflicts', 'reconciliation_rules', 'source_authority'];
   await sql('CREATE SCHEMA cmdb;\n' + tables.map(table => {
     const match = schema.match(new RegExp(`CREATE TABLE IF NOT EXISTS ${table.replace('.', '\\.')} \\([\\s\\S]*?\\n\\);`));
     if (!match) throw new Error(`Missing DDL ${table}`);
@@ -114,7 +114,7 @@ beforeAll(async () => {
 afterAll(async () => { await server?.stop(); host.kill(); });
 beforeEach(async () => {
   beforeUpdate = undefined;
-  await sql('TRUNCATE reconciliation_conflicts, ci_source_lineage, ci_field_sources, cmdb.dim_ci', [], 'exec');
+  await sql('TRUNCATE reconciliation_conflicts, ci_source_lineage, ci_field_sources, cmdb.dim_ci, reconciliation_rules, source_authority', [], 'exec');
   await sql(`INSERT INTO cmdb.dim_ci (ci_id, ci_name, ci_type, ci_status, organization_id) VALUES
     ('${CI_A}', 'A', 'server', 'active', '${A}'),
     ('${CI_B}', 'B', 'server', 'active', '${B}'),
@@ -126,6 +126,41 @@ beforeEach(async () => {
       VALUES ($1, $2, 'field_conflict', $3, $4, '["password"]')`, [cid(index), ci, JSON.stringify({ secret: `source-${index}` }), JSON.stringify({ secret: `target-${index}` })]);
   }
 });
+it('refuses global policy REST and GraphQL in both verified organizations without reading or mutating SQL tables', async () => {
+  await sql(`INSERT INTO reconciliation_rules (name, identification_rules, merge_strategies, enabled)
+    VALUES ('existing', '[]', '[]', true)`);
+  await sql(`INSERT INTO source_authority (source_name, authority_score) VALUES ('aws', 6)`);
+  const rest = [
+    (org: string) => api(org, 'rules'),
+    (org: string) => api(org, 'source-authorities'),
+    (org: string) => request(app).post('/api/v1/reconciliation/rules').set('authorization', bearer(org)).send({ name: 'injected', identification_rules: [] }),
+    (org: string) => request(app).put('/api/v1/reconciliation/source-authorities/aws').set('authorization', bearer(org)).send({ authority_score: 9 }),
+  ];
+  const queries = [
+    '{ _reconciliation { getRules { _name } } }',
+    '{ _reconciliation { getSourceAuthorities { _sourceName } } }',
+    'mutation { _reconciliation { createRule(_input: { _name: "injected", _identificationRules: [] }) { _id } } }',
+    'mutation { _reconciliation { updateSourceAuthority(_input: { _sourceName: "aws", _authorityScore: 9 }) { _sourceName } } }',
+  ];
+  for (const org of ['a', 'b']) {
+    for (const invoke of rest) {
+      const response = await invoke(org);
+      expect({ status: response.status, body: response.body }).toEqual({
+        status: 403, body: { success: false, error: 'Global reconciliation policy unavailable' },
+      });
+    }
+    for (const query of queries) {
+      const response = await gql(org, query);
+      expect(response.body.errors).toEqual([expect.objectContaining({
+        message: 'Global reconciliation policy unavailable',
+        extensions: expect.objectContaining({ code: 'FORBIDDEN' }),
+      })]);
+    }
+  }
+  expect((await sql('SELECT name FROM reconciliation_rules')).map(row => row.name)).toEqual(['existing']);
+  expect((await sql('SELECT source_name, authority_score FROM source_authority'))).toEqual([{ source_name: 'aws', authority_score: 6 }]);
+});
+
 
 it('lists only owned conflicts with matching total and no foreign/NULL metadata via REST and mounted GraphQL', async () => {
   const rest = await api('a', 'conflicts');

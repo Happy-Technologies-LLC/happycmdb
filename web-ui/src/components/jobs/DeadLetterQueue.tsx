@@ -133,29 +133,6 @@ export const DeadLetterQueue: React.FC<DeadLetterQueueProps> = ({ queueName }) =
                     </Card>
                   </div>
 
-                  {job.stacktrace && job.stacktrace.length > 0 && (
-                    <div>
-                      <h4 className="text-sm font-semibold mb-2">Stack Trace</h4>
-                      <Card className="bg-muted">
-                        <CardContent className="p-3 max-h-48 overflow-auto">
-                          <pre className="text-xs font-mono whitespace-pre-wrap break-words">
-                            {job.stacktrace.join('\n')}
-                          </pre>
-                        </CardContent>
-                      </Card>
-                    </div>
-                  )}
-
-                  <div>
-                    <h4 className="text-sm font-semibold mb-2">Job Data</h4>
-                    <Card className="bg-muted">
-                      <CardContent className="p-3 max-h-48 overflow-auto">
-                        <pre className="text-xs font-mono whitespace-pre-wrap break-words">
-                          {JSON.stringify(job.data, null, 2)}
-                        </pre>
-                      </CardContent>
-                    </Card>
-                  </div>
                 </CardContent>
               </CollapsibleContent>
             </Card>

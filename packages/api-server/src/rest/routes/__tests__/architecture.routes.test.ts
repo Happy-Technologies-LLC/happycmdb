@@ -31,6 +31,7 @@ jest.mock('../../../auth/auth-bootstrap', () => {
 });
 jest.mock('@cmdb/database', () => ({ getNeo4jClient: () => ({ getCI }) }));
 jest.mock('@cmdb/ai-ml-engine', () => ({
+  ...jest.requireActual('@cmdb/ai-ml-engine'),
   getArchitectureOptimizationEngine: () => ({ analyzeArchitecture, analyzeBusinessService }),
 }));
 
@@ -74,4 +75,19 @@ it('returns only a generic 500 when analysis fails after authorizing an operator
   expect(getCI).toHaveBeenCalledTimes(1);
   expect(analyzeBusinessService).toHaveBeenCalledTimes(1);
   expect(analyzeArchitecture).toHaveBeenCalledTimes(1);
+});
+
+it('returns fixed timeout bodies without Neo4j diagnostics on both mounted routes', async () => {
+  const timeout = Object.assign(new Error('driver internal secret'), {
+    code: 'Neo.ClientError.Transaction.TransactionTimedOut',
+  });
+  analyzeArchitecture.mockRejectedValue(timeout);
+  analyzeBusinessService.mockRejectedValue(timeout);
+  for (const response of [
+    await getAnalysis().set('authorization', 'Bearer operator'),
+    await postAnalysis().set('authorization', 'Bearer operator'),
+  ]) {
+    expect(response.status).toBe(504);
+    expect(response.body).toEqual({ success: false, error: 'Architecture analysis timed out' });
+  }
 });

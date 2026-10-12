@@ -21,6 +21,36 @@ import {
   ArchitectureOptimizationConfig,
 } from '../types/architecture.types';
 
+/** Analysis bounds shared by POST roots and owned business-service mappings. */
+export const MAX_ARCHITECTURE_ROOTS = 20;
+export const MAX_ARCHITECTURE_DEPTH = 5;
+export const MAX_ARCHITECTURE_EXPANSIONS = 1000;
+export const ARCHITECTURE_QUERY_TIMEOUT_MS = 5000;
+
+export class ArchitectureResourceLimitError extends Error {
+  constructor() {
+    super('Architecture analysis resource limit exceeded');
+  }
+}
+
+/** Neo4j reports server transaction deadlines and memory exhaustion by code. */
+export function architectureFailure(error: unknown): { status: number; message: string } | null {
+  if (error instanceof ArchitectureResourceLimitError) {
+    return { status: 503, message: 'Architecture analysis resource limit exceeded' };
+  }
+  if (!error || typeof error !== 'object' || !('code' in error)) return null;
+  const code = error.code;
+  if (typeof code !== 'string') return null;
+  if (code.includes('TransactionTimedOut') || code.includes('Transaction.Terminated')) {
+    return { status: 504, message: 'Architecture analysis timed out' };
+  }
+  if (code.includes('OutOfMemory') || code.includes('MemoryLimit') || code.includes('ResourceExhausted')) {
+    return { status: 503, message: 'Architecture analysis resource limit exceeded' };
+  }
+  return null;
+}
+
+
 export class ArchitectureOptimizationEngine {
   private static instance: ArchitectureOptimizationEngine;
   private neo4jClient = getNeo4jClient();
@@ -68,13 +98,17 @@ export class ArchitectureOptimizationEngine {
       `SELECT s.name, m.ci_id
        FROM dim_business_services s
        LEFT JOIN ci_business_service_mappings m ON m.service_id = s.service_id
-       WHERE s.service_id = $1 AND s.organization_id = $2`,
-      [serviceId, organizationId]
+       WHERE s.service_id = $1 AND s.organization_id = $2
+       LIMIT $3`,
+      [serviceId, organizationId, MAX_ARCHITECTURE_ROOTS + 1]
     );
     const rows: Array<{ name: string; ci_id: string | null }> = result.rows;
 
     if (rows.length === 0) {
       return null;
+    }
+    if (rows.length > MAX_ARCHITECTURE_ROOTS) {
+      throw new ArchitectureResourceLimitError();
     }
 
     const serviceName = rows[0]!.name;
@@ -89,7 +123,8 @@ export class ArchitectureOptimizationEngine {
           `MATCH (ci:CI)
            WHERE ci.id IN $mappedIds AND ci.organization_id = $organizationId
            RETURN DISTINCT ci.id AS id`,
-          { mappedIds, organizationId }
+          { mappedIds, organizationId },
+          { timeout: ARCHITECTURE_QUERY_TIMEOUT_MS }
         );
         ciIds = owned.records.map((record) => record.get('id') as string);
       } finally {
@@ -114,14 +149,16 @@ export class ArchitectureOptimizationEngine {
     businessServiceId?: string,
     businessServiceName?: string
   ): Promise<ArchitectureAnalysis> {
+    if (ciIds.length > MAX_ARCHITECTURE_ROOTS) {
+      throw new ArchitectureResourceLimitError();
+    }
     const issues: ArchitectureIssue[] = [];
     const recommendations: ArchitectureRecommendation[] = [];
 
-    // 1. Calculate dependency graph metrics
-    const graphMetrics = await this.calculateDependencyGraphMetrics(ciIds, organizationId);
-
-    // 2. Detect circular dependencies
-    const circularDeps = await this.detectCircularDependencies(ciIds, organizationId);
+    // Reject the whole analysis rather than returning partial metrics.
+    const traversal = await this.walkDependencies(ciIds, organizationId);
+    const graphMetrics = await this.calculateDependencyGraphMetrics(ciIds, organizationId, traversal.depths);
+    const circularDeps = this.config.detect_circular_dependencies ? traversal.cycles : [];
     if (circularDeps.length > 0) {
       issues.push(...this.createCircularDependencyIssues(circularDeps));
     }
@@ -221,7 +258,8 @@ export class ArchitectureOptimizationEngine {
    */
   private async calculateDependencyGraphMetrics(
     ciIds: string[],
-    organizationId: string
+    organizationId: string,
+    depths: Map<string, number>
   ): Promise<DependencyGraphMetrics[]> {
     const session = this.neo4jClient.getSession();
     const metrics: DependencyGraphMetrics[] = [];
@@ -234,7 +272,8 @@ export class ArchitectureOptimizationEngine {
            WHERE ci.organization_id = $organizationId
              AND dependent.organization_id = $organizationId
            RETURN COUNT(DISTINCT dependent) as fan_in`,
-          { ciId, organizationId }
+          { ciId, organizationId },
+          { timeout: ARCHITECTURE_QUERY_TIMEOUT_MS }
         );
         const fanIn = fanInResult.records[0]?.get('fan_in').toNumber() || 0;
 
@@ -244,30 +283,19 @@ export class ArchitectureOptimizationEngine {
            WHERE ci.organization_id = $organizationId
              AND dependency.organization_id = $organizationId
            RETURN COUNT(DISTINCT dependency) as fan_out`,
-          { ciId, organizationId }
+          { ciId, organizationId },
+          { timeout: ARCHITECTURE_QUERY_TIMEOUT_MS }
         );
         const fanOut = fanOutResult.records[0]?.get('fan_out').toNumber() || 0;
 
-        // A path terminates when its next node is outside the organization.
-        // A leaf with only foreign outgoing links is still a tenant-local leaf.
-        const depthResult = await session.run(
-          `MATCH path = (ci:CI {id: $ciId})-[:DEPENDS_ON|USES*0..10]->(leaf:CI)
-           WHERE all(node IN nodes(path) WHERE node:CI AND node.organization_id = $organizationId)
-             AND NOT EXISTS {
-               MATCH (leaf)-[:DEPENDS_ON|USES]->(next:CI)
-               WHERE next.organization_id = $organizationId
-             }
-           RETURN MAX(LENGTH(path)) as max_depth`,
-          { ciId, organizationId }
-        );
-        const depth = depthResult.records[0]?.get('max_depth')?.toNumber() || 0;
 
         // Get CI details
         const ciResult = await session.run(
           `MATCH (ci:CI {id: $ciId})
            WHERE ci.organization_id = $organizationId
            RETURN ci.name as name, ci.ci_type as ci_type`,
-          { ciId, organizationId }
+          { ciId, organizationId },
+          { timeout: ARCHITECTURE_QUERY_TIMEOUT_MS }
         );
 
         const ciRecord = ciResult.records[0];
@@ -279,7 +307,7 @@ export class ArchitectureOptimizationEngine {
           ci_type: ciRecord?.get('ci_type') || 'unknown',
           fan_in: fanIn,
           fan_out: fanOut,
-          depth,
+          depth: depths.get(ciId) ?? 0,
           in_critical_path: fanIn > 5 || fanOut > 5,
           is_bottleneck: fanIn > this.config.max_fan_in_threshold,
           coupling_coefficient: couplingCoefficient,
@@ -293,50 +321,68 @@ export class ArchitectureOptimizationEngine {
   }
 
   /**
-   * Detect circular dependencies
+   * Breadth-first, one-hop expansion: LIMIT applies to one frontier, never
+   * after a variable-length path enumeration. Every returned row spends the
+   * shared budget, including leaves; exceeding it fails without partial data.
    */
-  private async detectCircularDependencies(ciIds: string[], organizationId: string): Promise<CircularDependencyChain[]> {
-    if (!this.config.detect_circular_dependencies) {
-      return [];
-    }
-
+  private async walkDependencies(
+    ciIds: string[],
+    organizationId: string
+  ): Promise<{ depths: Map<string, number>; cycles: CircularDependencyChain[] }> {
     const session = this.neo4jClient.getSession();
-    const chains: CircularDependencyChain[] = [];
-
+    const depths = new Map<string, number>();
+    const cycles: CircularDependencyChain[] = [];
+    const seenCycles = new Set<string>();
+    let remaining = MAX_ARCHITECTURE_EXPANSIONS;
     try {
-      // Find circular dependency paths
-      const result = await session.run(
-        `MATCH path = (start:CI)-[:DEPENDS_ON|USES*2..10]->(start)
-         WHERE start.id IN $ciIds
-           AND all(node IN nodes(path) WHERE node:CI AND node.organization_id = $organizationId)
-         WITH DISTINCT [node IN nodes(path) | node.id] as cycle
-         RETURN cycle, size(cycle) as length
-         LIMIT 50`,
-        { ciIds, organizationId }
-      );
-
-      for (const record of result.records) {
-        const cycle = record.get('cycle');
-        const rawLength = record.get('length');
-        const chainLength =
-          typeof rawLength?.toNumber === 'function' ? rawLength.toNumber() : Number(rawLength);
-
-        chains.push({
-          cis: cycle,
-          chain_length: chainLength,
-          severity:
-            chainLength <= 3
-              ? ArchitectureSeverity.CRITICAL
-              : chainLength <= 5
-              ? ArchitectureSeverity.HIGH
-              : ArchitectureSeverity.MEDIUM,
-        });
+      for (const root of ciIds) {
+        let frontier: string[][] = [[root]];
+        let depth = 0;
+        for (let hop = 0; hop < MAX_ARCHITECTURE_DEPTH && frontier.length > 0; hop++) {
+          const result = await session.run(
+            `UNWIND $frontier AS path
+             MATCH (ci:CI {id: path[size(path)-1]})
+             WHERE ci.organization_id = $organizationId
+             OPTIONAL MATCH (ci)-[:DEPENDS_ON|USES]->(next:CI)
+             WHERE next.organization_id = $organizationId
+             RETURN path, next.id AS nextId
+             LIMIT $limit`,
+            { frontier, organizationId, limit: remaining + 1 },
+            { timeout: ARCHITECTURE_QUERY_TIMEOUT_MS }
+          );
+          if (result.records.length > remaining) throw new ArchitectureResourceLimitError();
+          remaining -= result.records.length;
+          const nextFrontier: string[][] = [];
+          for (const record of result.records) {
+            const path = record.get('path') as string[];
+            const nextId = record.get('nextId') as string | null;
+            if (nextId === null) {
+              depth = Math.max(depth, path.length - 1);
+            } else if (nextId === root && path.length >= 2) {
+              const cycle = [...path, root];
+              const key = JSON.stringify(cycle);
+              if (!seenCycles.has(key)) {
+                seenCycles.add(key);
+                cycles.push({
+                  cis: cycle,
+                  chain_length: cycle.length,
+                  severity: cycle.length <= 3 ? ArchitectureSeverity.CRITICAL
+                    : cycle.length <= 5 ? ArchitectureSeverity.HIGH : ArchitectureSeverity.MEDIUM,
+                });
+              }
+            } else if (!path.includes(nextId)) {
+              nextFrontier.push([...path, nextId]);
+            }
+          }
+          frontier = nextFrontier;
+        }
+        if (frontier.length > 0) depth = Math.max(depth, MAX_ARCHITECTURE_DEPTH);
+        depths.set(root, depth);
       }
+      return { depths, cycles };
     } finally {
       await session.close();
     }
-
-    return chains;
   }
 
   /**
@@ -507,7 +553,8 @@ export class ArchitectureOptimizationEngine {
              AND similar.id <> ci.id
              AND similar.status = 'active'
            RETURN COUNT(similar) as redundancy_count`,
-          { ciId: metric.ci_id, organizationId }
+          { ciId: metric.ci_id, organizationId },
+          { timeout: ARCHITECTURE_QUERY_TIMEOUT_MS }
         );
 
         const redundancyCount = redundancyResult.records[0]?.get('redundancy_count').toNumber() || 0;
@@ -580,7 +627,8 @@ export class ArchitectureOptimizationEngine {
          WITH db, COLLECT(DISTINCT app.id) as apps
          WHERE SIZE(apps) > 2
          RETURN db.id as db_id, db.name as db_name, apps, SIZE(apps) as app_count`,
-        { ciIds, organizationId }
+        { ciIds, organizationId },
+        { timeout: ARCHITECTURE_QUERY_TIMEOUT_MS }
       );
 
       for (const record of result.records) {
@@ -657,7 +705,8 @@ export class ArchitectureOptimizationEngine {
          WITH app, COLLECT(DISTINCT resource.ci_type) as resource_types
          WHERE SIZE(resource_types) > 3
          RETURN app.id as app_id, app.name as app_name, resource_types, SIZE(resource_types) as type_count`,
-        { ciIds, organizationId }
+        { ciIds, organizationId },
+        { timeout: ARCHITECTURE_QUERY_TIMEOUT_MS }
       );
 
       for (const record of result.records) {

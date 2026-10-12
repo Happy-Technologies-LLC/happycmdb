@@ -282,16 +282,24 @@ cmdb discovery scan --provider aws --region us-east-1
 cmdb discovery status --job-id abc123
 cmdb discovery schedule aws "0 */6 * * *"
 
-# Job management
-cmdb jobs list discovery:aws --status failed
-cmdb jobs retry abc123
-cmdb jobs stats
+# Job management (caller-owned jobs only; needs --token/CMDB_ACCESS_TOKEN or --key/CMDB_API_KEY)
+cmdb jobs list discovery-nmap -s failed --token "$CMDB_ACCESS_TOKEN"
+cmdb jobs retry discovery-nmap <job-id> --token "$CMDB_ACCESS_TOKEN"
+# cmdb jobs stats and cmdb jobs run:etl exit nonzero (global operations unavailable, HP1-S6/P-6)
 
 # ETL operations
 cmdb datamart sync --wait
 cmdb datamart validate
 cmdb analytics summary
 ```
+
+The jobs commands follow the
+[Jobs CLI tenant boundary](/quick-reference/cli-commands#job-management): `list`, `status`,
+`retry` and `cancel` act only on the caller organization's jobs through the authenticated
+`/api/v1/jobs` routes, take an actual queue name (for example `discovery-nmap` or
+`etl-sync`), offer no tokenless or `--all` listing and never print raw worker output;
+`cmdb jobs stats` and `cmdb jobs run:etl` exit nonzero with `Queue operations require the
+authenticated API; global operations unavailable` until HP1-S6/P-6.
 
 ## API Design Patterns
 

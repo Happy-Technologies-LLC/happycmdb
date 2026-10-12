@@ -145,5 +145,40 @@ describe('jobsService', () => {
     expect(request.delete).toHaveBeenCalledWith('/jobs/etl-sync/job-42');
   });
 
+  it('fetches dead letter (failed) jobs via the canonical failed-jobs route with bounded pagination and no raw failure payload', async () => {
+    const secret = 'synthetic-failure-secret';
+    request.get.mockResolvedValue({
+      data: {
+        success: true,
+        data: {
+          queueName: 'discovery-nmap',
+          failedJobs: [
+            {
+              id: 'job-9',
+              name: 'discovery',
+              queueName: 'discovery-nmap',
+              state: 'failed',
+              data: { config: { credentials: { password: secret } } },
+              failedReason: secret,
+              stacktrace: [secret],
+              returnvalue: { nested: secret },
+              attemptsMade: 3,
+              maxAttempts: 3,
+              timestamp: 1000,
+            },
+          ],
+          count: 1,
+        },
+      },
+    });
 
+    const jobs = await jobsService.getDeadLetterJobs('discovery-nmap', { start: 5, end: 24 });
+
+    expect(request.get).toHaveBeenCalledWith('/jobs/discovery-nmap/failed', {
+      params: { start: 5, end: 24 },
+    });
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]).toMatchObject({ id: 'job-9', status: 'failed', failedReason: 'Job failed', attempts: 3 });
+    expect(JSON.stringify(jobs)).not.toContain(secret);
+  });
 });

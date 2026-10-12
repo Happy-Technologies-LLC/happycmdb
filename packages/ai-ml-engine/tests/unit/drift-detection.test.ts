@@ -384,10 +384,6 @@ describe('ConfigurationDriftDetector', () => {
 
       expect(result.is_approved).toBe(true);
       expect(result.approved_by).toBe('admin');
-      expect(mockPgClient.query).toHaveBeenCalledWith(
-        expect.stringContaining('UPDATE baseline_snapshots'),
-        ['baseline-001', 'admin', 'ci-web-001', 'org-a']
-      );
     });
   });
 
@@ -401,10 +397,6 @@ describe('ConfigurationDriftDetector', () => {
 
       expect(result).not.toBeNull();
       expect(result?.id).toBe(mockBaselineSnapshots.configuration.id);
-      expect(mockPgClient.query).toHaveBeenCalledWith(
-        expect.stringContaining('FROM baseline_snapshots b'),
-        ['baseline-001', 'org-a']
-      );
     });
 
     it('should return null for an unknown baseline id', async () => {

@@ -506,10 +506,6 @@ describe('ImpactPredictionEngine', () => {
       expect(result).toHaveLength(1);
       expect(result[0].source_ci_id).toBe(mockCIs.database.id);
       expect(result[0].risk_level).toBe(RiskLevel.LOW);
-      expect(mockPgClient.query).toHaveBeenCalledWith(
-        expect.stringContaining('FROM impact_analyses'),
-        [mockCIs.database.id, 10, 'org-a']
-      );
     });
 
     it('should return an empty array when no history exists', async () => {

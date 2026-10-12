@@ -2,17 +2,36 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { IdentityReconciliationEngine } from '../../src/engine/identity-reconciliation-engine';
+import { startMLEngines } from '../../../ai-ml-engine/src/index';
 
 const query = jest.fn();
 const run = jest.fn();
 const close = jest.fn();
 const emit = jest.fn();
-jest.mock('@cmdb/common', () => ({ logger: { info: jest.fn(), warn: jest.fn() }, sanitizeCITypeForLabel: (s: string) => s }));
+const listeners = new Map<string, (event: Record<string, unknown>) => Promise<void>>();
+const createBaseline = jest.fn();
+const detectDrift = jest.fn();
+jest.mock('@cmdb/common', () => ({ logger: { info: jest.fn(), warn: jest.fn(), debug: jest.fn(), error: jest.fn() }, sanitizeCITypeForLabel: (s: string) => s }));
 jest.mock('@cmdb/database', () => ({
   getNeo4jClient: () => ({ getSession: () => ({ run, close }) }),
   getPostgresClient: () => ({ query }),
 }));
-jest.mock('@cmdb/event-processor', () => ({ getEventProducer: () => ({ emit }), EventType: { CI_UPDATED: 'updated' } }));
+jest.mock('@cmdb/event-processor', () => ({
+  getEventProducer: () => ({ emit }),
+  createEventConsumer: () => ({
+    connect: async () => undefined, subscribe: async () => undefined, run: async () => undefined,
+    on: (type: string, handler: (event: Record<string, unknown>) => Promise<void>) => listeners.set(type, handler),
+  }),
+  EventType: { CI_UPDATED: 'ci.updated', CI_DISCOVERED: 'ci.discovered' },
+  KAFKA_TOPICS: { CI_EVENTS: 'ci-events', CI_CHANGES: 'ci-changes' },
+  CONSUMER_GROUPS: { ANALYTICS_PROCESSOR: 'analytics' },
+}));
+jest.mock('../../../ai-ml-engine/src/engines/anomaly-detection-engine', () => ({
+  getAnomalyDetectionEngine: () => ({ loadConfiguration: async () => undefined }),
+}));
+jest.mock('../../../ai-ml-engine/src/engines/configuration-drift-detector', () => ({
+  getConfigurationDriftDetector: () => ({ createBaseline, detectDrift }),
+}));
 
 const OWN = 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa';
 const OTHER = 'bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb';
@@ -118,4 +137,61 @@ it('final SET refuses a target that changes owner after identification', async (
   expect(nodes[0].status).toBeUndefined();
   expect(query.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO ci_'))).toBe(false);
   expect(emit).not.toHaveBeenCalled();
+});
+
+it('publishes the reconciled organization for both updated and discovered CIs', async () => {
+  nodes = [{ id: 'target', organization_id: OWN, serial_number: 'same' }];
+  const engine = IdentityReconciliationEngine.getInstance();
+  await engine.reconcileCI(ci({ serial_number: 'same' }), OWN, false);
+  expect(emit).toHaveBeenCalledWith('ci.updated', 'identity-reconciliation-engine',
+    expect.objectContaining({ ci_id: 'target', organization_id: OWN }));
+
+  emit.mockClear();
+  nodes = [];
+  run.mockImplementation(async (cypher: string, params: Record<string, unknown>) => {
+    if (cypher.includes('CREATE (ci:CI:')) {
+      const properties = params.properties as { id: string; organization_id: string };
+      expect(properties.organization_id).toBe(OTHER);
+      return { records: [{ get: () => properties.id }] };
+    }
+    return { records: [] };
+  });
+  const createdId = await engine.reconcileCI(ci({ serial_number: 'new' }), OTHER);
+  expect(emit).toHaveBeenCalledWith('ci.discovered', 'identity-reconciliation-engine',
+    expect.objectContaining({ ci_id: createdId, organization_id: OTHER }));
+});
+
+it('delivers reconciled tenant provenance to the ML baseline and drift consumers', async () => {
+  const interval = jest.spyOn(global, 'setInterval').mockImplementation(() => ({}) as NodeJS.Timeout);
+  const sigterm = process.listeners('SIGTERM');
+  const sigint = process.listeners('SIGINT');
+  try {
+    await startMLEngines();
+    emit.mockImplementation(async (type: string, _source: string, payload: Record<string, unknown>) => {
+      await listeners.get(type)?.(payload);
+    });
+    createBaseline.mockResolvedValue({});
+    detectDrift.mockResolvedValue({ has_drift: false, drift_score: 0 });
+    nodes = [{ id: 'target', organization_id: OWN, serial_number: 'same' }];
+    const engine = IdentityReconciliationEngine.getInstance();
+    await engine.reconcileCI(ci({ serial_number: 'same' }), OWN, false);
+    expect(detectDrift).toHaveBeenCalledWith('target', OWN);
+    nodes = [];
+    run.mockImplementation(async (cypher: string, params: Record<string, unknown>) => {
+      if (cypher.includes('CREATE (ci:CI:')) {
+        const properties = params.properties as { id: string; organization_id: string };
+        return { records: [{ get: () => properties.id }] };
+      }
+      return { records: [] };
+    });
+    const id = await engine.reconcileCI(ci({ serial_number: 'new' }), OTHER);
+    expect(createBaseline).toHaveBeenCalledWith(id, 'configuration', 'auto-baseline', OTHER);
+    await listeners.get('ci.discovered')?.({ ci_id: 'legacy-without-tenant' });
+    expect(createBaseline).toHaveBeenCalledTimes(1);
+  } finally {
+    interval.mockRestore();
+    for (const listener of process.listeners('SIGTERM')) if (!sigterm.includes(listener)) process.removeListener('SIGTERM', listener);
+    for (const listener of process.listeners('SIGINT')) if (!sigint.includes(listener)) process.removeListener('SIGINT', listener);
+    listeners.clear();
+  }
 });

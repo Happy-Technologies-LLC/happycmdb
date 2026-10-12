@@ -200,10 +200,8 @@ export class ImpactPredictionEngine {
     // Check if cached
     const cached = await this.postgresClient.query(
       `SELECT s.* FROM ci_criticality_scores s
-       WHERE s.ci_id = $1 AND s.calculated_at >= NOW() - INTERVAL '7 days'
-       AND EXISTS (SELECT 1 FROM cmdb.dim_ci ci WHERE ci.ci_id = s.ci_id
-         AND ci.is_current AND ci.organization_id = $2)`,
-      [ciId, organizationId]
+       WHERE s.ci_id = $1 AND s.calculated_at >= NOW() - INTERVAL '7 days'`,
+      [ciId]
     );
 
     if (cached.rows.length > 0) {
@@ -252,7 +250,7 @@ export class ImpactPredictionEngine {
       const dependentCount = record.get('dependent_count').toNumber();
 
       // Get change frequency
-      const changeFreq = await this.getChangeFrequency(ciId, organizationId);
+      const changeFreq = await this.getChangeFrequency(ciId);
 
       // Calculate dependent weight (sum of dependent criticalities)
       let dependentWeight = 0;
@@ -300,15 +298,11 @@ export class ImpactPredictionEngine {
   /**
    * Get change frequency for a CI (changes per month)
    */
-  private async getChangeFrequency(ciId: string, organizationId: string): Promise<number> {
+  private async getChangeFrequency(ciId: string): Promise<number> {
     const result = await this.postgresClient.query(
-      `SELECT COUNT(*) as change_count
-       FROM ci_change_history h
-       WHERE h.ci_id = $1
-       AND h.changed_at >= NOW() - INTERVAL '30 days'
-       AND EXISTS (SELECT 1 FROM cmdb.dim_ci ci WHERE ci.ci_id = h.ci_id
-         AND ci.is_current AND ci.organization_id = $2)`,
-      [ciId, organizationId]
+      `SELECT COUNT(*) as change_count FROM ci_change_history h
+       WHERE h.ci_id = $1 AND h.changed_at >= NOW() - INTERVAL '30 days'`,
+      [ciId]
     );
 
     const firstRow = result.rows[0];
@@ -487,15 +481,15 @@ export class ImpactPredictionEngine {
    * Store impact analysis
    */
   private async storeImpactAnalysis(impact: ImpactAnalysis, organizationId: string): Promise<void> {
+    if (!await this.neo4jClient.getCI(impact.source_ci_id, organizationId)) throw new Error('CI not found');
     const inserted = await this.postgresClient.query(
       `INSERT INTO impact_analyses
        (id, source_ci_id, source_ci_name, change_type, impact_score,
         blast_radius, critical_path, risk_level, analyzed_at,
         estimated_downtime_minutes, affected_cis)
-       SELECT $1::uuid, $2::varchar, $3::varchar, $4::varchar, $5::integer,
-         $6::integer, $7::jsonb, $8::varchar, $9::timestamptz, $10::integer, $11::jsonb
-       WHERE EXISTS (SELECT 1 FROM cmdb.dim_ci ci WHERE ci.ci_id = $2
-         AND ci.is_current AND ci.organization_id = $12) RETURNING id`,
+       VALUES ($1::uuid, $2::varchar, $3::varchar, $4::varchar, $5::integer,
+         $6::integer, $7::jsonb, $8::varchar, $9::timestamptz, $10::integer, $11::jsonb)
+       RETURNING id`,
       [
         impact.id,
         impact.source_ci_id,
@@ -508,7 +502,6 @@ export class ImpactPredictionEngine {
         impact.analyzed_at,
         impact.estimated_downtime_minutes,
         JSON.stringify(impact.affected_cis),
-        organizationId,
       ]
     );
     if (inserted.rows.length === 0) throw new Error('CI not found');
@@ -518,12 +511,11 @@ export class ImpactPredictionEngine {
    * Store criticality score
    */
   private async storeCriticalityScore(score: CriticalityScore, organizationId: string): Promise<void> {
+    if (!await this.neo4jClient.getCI(score.ci_id, organizationId)) throw new Error('CI not found');
     const inserted = await this.postgresClient.query(
       `INSERT INTO ci_criticality_scores
        (ci_id, ci_name, criticality_score, factors, calculated_at)
-       SELECT $1::varchar, $2::varchar, $3::integer, $4::jsonb, $5::timestamptz
-       WHERE EXISTS (SELECT 1 FROM cmdb.dim_ci ci WHERE ci.ci_id = $1
-         AND ci.is_current AND ci.organization_id = $6)
+       VALUES ($1::varchar, $2::varchar, $3::integer, $4::jsonb, $5::timestamptz)
        ON CONFLICT (ci_id) DO UPDATE SET
          criticality_score = $3,
          factors = $4,
@@ -534,7 +526,6 @@ export class ImpactPredictionEngine {
         score.criticality_score,
         JSON.stringify(score.factors),
         score.calculated_at,
-        organizationId,
       ]
     );
     if (inserted.rows.length === 0) throw new Error('CI not found');
@@ -560,12 +551,8 @@ export class ImpactPredictionEngine {
     if (!await this.neo4jClient.getCI(ciId, organizationId)) return [];
     const result = await this.postgresClient.query(
       `SELECT h.* FROM impact_analyses h
-       WHERE h.source_ci_id = $1
-       AND EXISTS (SELECT 1 FROM cmdb.dim_ci ci WHERE ci.ci_id = h.source_ci_id
-         AND ci.is_current AND ci.organization_id = $3)
-       ORDER BY h.analyzed_at DESC
-       LIMIT $2`,
-      [ciId, limit, organizationId]
+       WHERE h.source_ci_id = $1 ORDER BY h.analyzed_at DESC LIMIT $2`,
+      [ciId, limit]
     );
 
     return result.rows.map((row: any) => ({

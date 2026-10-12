@@ -136,6 +136,31 @@ it('isolates derived drift and impact SQL plus graph traversal across own, forei
   }
 });
 
+it('persists a newly created graph CI before the reporting dimension is populated', async () => {
+  await run("CREATE (:CI {id:'t3-fresh', name:'fresh', ci_type:'server', status:'active', organization_id:$organizationId})", { organizationId: A });
+  expect((await sql.query("SELECT ci_id FROM cmdb.dim_ci WHERE ci_id = 't3-fresh'")).rows).toEqual([]);
+  const baseline = await request(app).post('/api/v1/drift/baseline').set(auth('a'))
+    .send({ ci_id: 't3-fresh', snapshot_type: 'configuration' });
+  expect(baseline.status).toBe(201);
+  const baselineId = baseline.body.data.id as string;
+  expect((await request(app).post(`/api/v1/drift/baseline/${baselineId}/approve`).set(auth('b'))).status).toBe(404);
+  expect((await request(app).post(`/api/v1/drift/baseline/${baselineId}/approve`).set(auth('a'))).status).toBe(200);
+  expect((await request(app).post('/api/v1/drift/detect/t3-fresh').set(auth('a'))).status).toBe(200);
+  const impact = await request(app).post('/api/v1/impact/predict').set(auth('a'))
+    .send({ ci_id: 't3-fresh', change_type: 'RESTART' });
+  expect(impact.status).toBe(201);
+  expect((await request(app).get('/api/v1/impact/history/t3-fresh').set(auth('a'))).body.data)
+    .toMatchObject([{ source_ci_id: 't3-fresh' }]);
+  expect((await request(app).get('/api/v1/impact/history/t3-fresh').set(auth('b'))).status).toBe(404);
+  for (const [table, column] of [
+    ['baseline_snapshots', 'ci_id'], ['drift_detection_results', 'ci_id'],
+    ['impact_analyses', 'source_ci_id'], ['ci_criticality_scores', 'ci_id'],
+  ] as const) {
+    expect((await sql.query(`SELECT ${column} FROM ${table} WHERE ${column} = 't3-fresh'`)).rows.length).toBeGreaterThan(0);
+  }
+  expect((await sql.query("SELECT ci_id FROM cmdb.dim_ci WHERE ci_id = 't3-fresh'")).rows).toEqual([]);
+});
+
 it('rejects an identity without an organization before graph and SQL access', async () => {
   const poolQuery = jest.spyOn(sql.pool, 'query');
   const session = jest.spyOn(graph, 'getSession');

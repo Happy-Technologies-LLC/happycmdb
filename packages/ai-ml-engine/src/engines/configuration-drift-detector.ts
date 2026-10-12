@@ -413,17 +413,13 @@ export class ConfigurationDriftDetector {
     snapshotType: 'configuration' | 'performance' | 'relationships',
     organizationId: string
   ): Promise<BaselineSnapshot | null> {
+    // Neo4j owns CI tenancy; reporting dim_ci can lag graph CI creation.
     if (!await this.neo4jClient.getCI(ciId, organizationId)) return null;
     const result = await this.postgresClient.query(
       `SELECT b.* FROM baseline_snapshots b
-       WHERE b.ci_id = $1
-       AND b.snapshot_type = $2
-       AND b.is_approved = true
-       AND EXISTS (SELECT 1 FROM cmdb.dim_ci ci WHERE ci.ci_id = b.ci_id
-         AND ci.is_current AND ci.organization_id = $3)
-       ORDER BY b.created_at DESC
-       LIMIT 1`,
-      [ciId, snapshotType, organizationId]
+       WHERE b.ci_id = $1 AND b.snapshot_type = $2 AND b.is_approved = true
+       ORDER BY b.created_at DESC LIMIT 1`,
+      [ciId, snapshotType]
     );
 
     if (result.rows.length === 0) {
@@ -446,11 +442,8 @@ export class ConfigurationDriftDetector {
     const result = await this.postgresClient.query(
       `UPDATE baseline_snapshots b
        SET is_approved = true, approved_by = $2, approved_at = NOW()
-       WHERE b.id = $1 AND b.ci_id = $3
-         AND EXISTS (SELECT 1 FROM cmdb.dim_ci ci WHERE ci.ci_id = b.ci_id
-           AND ci.is_current AND ci.organization_id = $4)
-       RETURNING b.*`,
-      [baselineId, approvedBy, existing.ci_id, organizationId]
+       WHERE b.id = $1 AND b.ci_id = $3 RETURNING b.*`,
+      [baselineId, approvedBy, existing.ci_id]
     );
 
     if (result.rows.length === 0) throw new Error('Baseline snapshot not found');
@@ -464,10 +457,8 @@ export class ConfigurationDriftDetector {
     // The baseline ID is not an ownership credential: resolve it only when
     // its linked CI is visible to this tenant.
     const result = await this.postgresClient.query(
-      `SELECT b.* FROM baseline_snapshots b WHERE b.id = $1
-       AND EXISTS (SELECT 1 FROM cmdb.dim_ci ci WHERE ci.ci_id = b.ci_id
-         AND ci.is_current AND ci.organization_id = $2)`,
-      [baselineId, organizationId]
+      'SELECT b.* FROM baseline_snapshots b WHERE b.id = $1',
+      [baselineId]
     );
 
     if (result.rows.length === 0) {
@@ -482,12 +473,13 @@ export class ConfigurationDriftDetector {
    * Store baseline snapshot
    */
   private async storeBaseline(baseline: BaselineSnapshot, organizationId: string): Promise<void> {
+    // Revalidate graph ownership at the persistence boundary, not via asynchronous dim_ci ETL.
+    if (!await this.neo4jClient.getCI(baseline.ci_id, organizationId)) throw new Error('CI not found');
     const inserted = await this.postgresClient.query(
       `INSERT INTO baseline_snapshots
        (id, ci_id, snapshot_type, snapshot_data, created_at, created_by, is_approved)
-       SELECT $1::uuid, $2::varchar, $3::varchar, $4::jsonb, $5::timestamptz, $6::varchar, $7::boolean
-       WHERE EXISTS (SELECT 1 FROM cmdb.dim_ci ci WHERE ci.ci_id = $2
-         AND ci.is_current AND ci.organization_id = $8) RETURNING id`,
+       VALUES ($1::uuid, $2::varchar, $3::varchar, $4::jsonb, $5::timestamptz, $6::varchar, $7::boolean)
+       RETURNING id`,
       [
         baseline.id,
         baseline.ci_id,
@@ -496,7 +488,6 @@ export class ConfigurationDriftDetector {
         baseline.created_at,
         baseline.created_by,
         baseline.is_approved,
-        organizationId,
       ]
     );
     if (inserted.rows.length === 0) throw new Error('CI not found');
@@ -506,13 +497,13 @@ export class ConfigurationDriftDetector {
    * Store drift detection result
    */
   private async storeDriftResult(result: DriftDetectionResult, organizationId: string): Promise<void> {
+    if (!await this.neo4jClient.getCI(result.ci_id, organizationId)) throw new Error('CI not found');
     const inserted = await this.postgresClient.query(
       `INSERT INTO drift_detection_results
        (ci_id, ci_name, has_drift, drift_score, drifted_fields,
         baseline_snapshot_id, detected_at)
-       SELECT $1::varchar, $2::varchar, $3::boolean, $4::integer, $5::jsonb, $6::uuid, $7::timestamptz
-       WHERE EXISTS (SELECT 1 FROM cmdb.dim_ci ci WHERE ci.ci_id = $1
-         AND ci.is_current AND ci.organization_id = $8) RETURNING id`,
+       VALUES ($1::varchar, $2::varchar, $3::boolean, $4::integer, $5::jsonb, $6::uuid, $7::timestamptz)
+       RETURNING id`,
       [
         result.ci_id,
         result.ci_name,
@@ -521,7 +512,6 @@ export class ConfigurationDriftDetector {
         JSON.stringify(result.drifted_fields),
         result.baseline_snapshot_id,
         result.detected_at,
-        organizationId,
       ]
     );
     if (inserted.rows.length === 0) throw new Error('CI not found');
@@ -551,12 +541,8 @@ export class ConfigurationDriftDetector {
     if (!await this.neo4jClient.getCI(ciId, organizationId)) return [];
     const result = await this.postgresClient.query(
       `SELECT d.* FROM drift_detection_results d
-       WHERE d.ci_id = $1
-       AND EXISTS (SELECT 1 FROM cmdb.dim_ci ci WHERE ci.ci_id = d.ci_id
-         AND ci.is_current AND ci.organization_id = $3)
-       ORDER BY d.detected_at DESC
-       LIMIT $2`,
-      [ciId, limit, organizationId]
+       WHERE d.ci_id = $1 ORDER BY d.detected_at DESC LIMIT $2`,
+      [ciId, limit]
     );
 
     return result.rows.map((row: any) => ({

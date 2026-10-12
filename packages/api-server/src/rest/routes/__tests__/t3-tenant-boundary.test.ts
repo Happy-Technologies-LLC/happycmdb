@@ -182,6 +182,13 @@ beforeAll(async () => {
 });
 afterAll(() => { host.kill(); });
 beforeEach(() => { sqlCount = 0; graphCount = 0; });
+afterEach(async () => {
+  nodes.delete('ci-fresh');
+  await db.rows("DELETE FROM drift_detection_results WHERE ci_id = 'ci-fresh'");
+  await db.rows("DELETE FROM baseline_snapshots WHERE ci_id = 'ci-fresh'");
+  await db.rows("DELETE FROM impact_analyses WHERE source_ci_id = 'ci-fresh'");
+  await db.rows("DELETE FROM ci_criticality_scores WHERE ci_id = 'ci-fresh'");
+});
 
 it('scopes ITIL CI lists, audit metrics and CI detail/write paths across two tenants', async () => {
   const list = await request(app).get('/api/v1/itil/configuration-items').set(auth('a'));
@@ -204,6 +211,23 @@ it('scopes ITIL CI lists, audit metrics and CI detail/write paths across two ten
   expect(nodes.get('ci-b')?.organization_id).toBe(B);
   expect((await request(app).get('/api/v1/itil/configuration-items/ci-a').set(auth('b'))).status).toBe(404);
   expect((await request(app).get('/api/v1/itil/configuration-items/ci-b').set(auth('b'))).status).toBe(200);
+});
+
+it('persists fresh graph-owned CI derivatives before the reporting dimension syncs', async () => {
+  nodes.set('ci-fresh', { id: 'ci-fresh', name: 'Fresh', organization_id: A });
+  const baseline = await request(app).post('/api/v1/drift/baseline')
+    .set(auth('a')).send({ ci_id: 'ci-fresh', snapshot_type: 'configuration' });
+  expect(baseline.status).toBe(201);
+  expect((await request(app).post(`/api/v1/drift/baseline/${baseline.body.data.id}/approve`).set(auth('b'))).status).toBe(404);
+  expect((await request(app).post(`/api/v1/drift/baseline/${baseline.body.data.id}/approve`).set(auth('a'))).status).toBe(200);
+  expect((await request(app).post('/api/v1/drift/detect/ci-fresh').set(auth('a'))).status).toBe(200);
+  const impact = await request(app).post('/api/v1/impact/predict')
+    .set(auth('a')).send({ ci_id: 'ci-fresh', change_type: 'RESTART' });
+  expect(impact.status).toBe(201);
+  expect((await request(app).get('/api/v1/impact/history/ci-fresh').set(auth('a'))).body.data)
+    .toMatchObject([{ source_ci_id: 'ci-fresh' }]);
+  expect((await request(app).get('/api/v1/impact/history/ci-fresh').set(auth('b'))).status).toBe(404);
+  expect(await db.rows('SELECT ci_id FROM cmdb.dim_ci WHERE ci_id = $1', ['ci-fresh'])).toEqual([]);
 });
 
 it('refuses org-less calls before graph or SQL for both families', async () => {

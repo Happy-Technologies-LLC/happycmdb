@@ -1,6 +1,8 @@
 # ITIL v4 API Implementation Summary
 
 > **Interim tenant-safety mode (HAP-480/HAP-481):** The incident and change REST/GraphQL record APIs and incident/change metrics return a fixed `403` before record access for every role. The underlying record tables have no tenant owner; HP1-S2 must add ownership and backfill it before these APIs can be restored. Do not interpret the historical endpoint inventory below as currently available. CI ITIL reads and writes, configuration accuracy, drift, baseline snapshots, and impact analysis require an authenticated organization claim; foreign and missing CI IDs return the same `404`. Graph traversals and derived SQL reads/writes remain within that organization. Existing tenantless ITIL baseline endpoints remain unchanged; no ownership migration is applied by this interim patch.
+> **Fresh CI behavior:** Neo4j is authoritative for CI ownership. Derived baseline, drift, criticality and impact SQL is only accessed after graph ownership checks; it does not require a `cmdb.dim_ci` reporting row, which may lag graph creation. Reconciliation publishes that trusted organization ID on CI discovered/updated events; legacy tenantless events do not trigger ML baseline or drift processing.
+
 
 **Agent**: Agent 7 - API Developer
 **Task**: Implement ITIL REST and GraphQL endpoints
@@ -141,7 +143,7 @@ Implemented comprehensive GraphQL schema with:
 
 ### 4. GraphQL Resolvers ✅
 
-**File**: `/packages/api-server/src/graphql/resolvers/itil.resolvers.ts`
+**File**: `/packages/api-server/src/graphql/resolvers/index.ts`
 
 Implemented resolvers for:
 
@@ -173,24 +175,9 @@ Implemented resolvers for:
 - ✅ ITIL resolvers merged with existing resolvers
 - ✅ Proper module exports
 
-### 6. Integration Tests ✅
+### 6. Boundary Tests
 
-**File**: `/packages/api-server/src/rest/controllers/__tests__/itil.controller.test.ts`
-
-Implemented tests for:
-
-- ✅ Configuration Items endpoints
-- ✅ Incidents endpoints
-- ✅ Changes endpoints
-- ✅ Baselines endpoints
-- ✅ Metrics endpoints
-- ✅ Input validation tests
-
-**Test Coverage**:
-- Route existence verification
-- HTTP method validation
-- Request/response format validation
-- Error handling validation
+`src/rest/routes/__tests__/t3-tenant-boundary.test.ts` exercises authenticated two-org REST/GraphQL CI, drift and impact paths against migrated PostgreSQL DDL and an instrumented graph. `tests/integration/t3-tenant-boundary.test.ts` exercises the same boundaries on disposable Neo4j and PostgreSQL, including a graph CI created before `dim_ci` synchronization. Record routes are tested for fixed refusal.
 
 ## API Endpoints Summary
 
@@ -415,11 +402,7 @@ The API endpoints are ready to receive ITIL-enriched CIs from the discovery engi
 - CI history tracking for configuration changes
 
 ### Testing
-Run the integration tests:
-```bash
-cd /home/user/happycmdb/packages/api-server
-npm test -- itil.controller.test.ts
-```
+From the repository root, run `npm run test:unit -- --runInBand --forceExit --runTestsByPath packages/api-server/src/rest/routes/__tests__/t3-tenant-boundary.test.ts`. The disposable-database integration suite runs in named CI.
 
 ### Build Verification
 Build the API server to verify compilation:
@@ -430,14 +413,15 @@ npm run build
 
 ## Files Created/Modified
 
-### Created Files (8)
-1. `/packages/api-server/src/rest/routes/itil.routes.ts` (305 lines)
-2. `/packages/api-server/src/rest/controllers/itil.controller.ts` (1,486 lines)
-3. `/packages/api-server/src/graphql/schema/itil.schema.graphql` (498 lines)
-4. `/packages/api-server/src/graphql/schema/itil.schema.ts` (498 lines)
-5. `/packages/api-server/src/graphql/resolvers/itil.resolvers.ts` (547 lines)
-6. `/packages/api-server/src/rest/controllers/__tests__/itil.controller.test.ts` (182 lines)
-7. `/packages/api-server/ITIL_API_IMPLEMENTATION.md` (this document)
+### Current files
+1. `/packages/api-server/src/rest/routes/itil.routes.ts`
+2. `/packages/api-server/src/rest/controllers/itil.controller.ts`
+3. `/packages/api-server/src/graphql/schema/itil.schema.graphql`
+4. `/packages/api-server/src/graphql/schema/itil.schema.ts`
+5. `/packages/api-server/src/graphql/resolvers/index.ts`
+6. `/packages/api-server/src/rest/routes/__tests__/t3-tenant-boundary.test.ts`
+7. `/packages/api-server/tests/integration/t3-tenant-boundary.test.ts`
+8. `/packages/api-server/ITIL_API_IMPLEMENTATION.md`
 
 ### Modified Files (4)
 1. `/packages/api-server/src/rest/server.ts` - Added ITIL routes

@@ -16,6 +16,7 @@ const MAX_FIELDS = 100;
 const MAX_COMPLEXITY = 500;
 const LIST_COST = 10;
 const MAX_EXPLICIT_LIST_LIMIT = 100;
+const isPageSize = (name: string): boolean => name === 'limit' || name === 'first' || name === '_limit';
 
 function limitExceeded(): never {
   throw new GraphQLError('GraphQL request limit exceeded', {
@@ -73,11 +74,21 @@ export function enforceGraphQLRequestLimits(
         if (isNonNullType(type)) type = type.ofType;
         let weight = isListType(type) ? LIST_COST : 1;
         if (isListType(type)) {
-          const pageLimit = field.arguments?.find(argument => argument.name.value === 'limit');
-          if (pageLimit) {
-            const value = valueFromASTUntyped(pageLimit.value, variables);
+          const page = field.arguments?.find(argument => isPageSize(argument.name.value));
+          if (page) {
+            let value = valueFromASTUntyped(page.value, variables);
+            if (value === undefined && page.value.kind === 'Variable') {
+              const variableName = page.value.name.value;
+              const variable = operation.variableDefinitions?.find(
+                definition => definition.variable.name.value === variableName
+              );
+              if (variable?.defaultValue) value = valueFromASTUntyped(variable.defaultValue, variables);
+            }
             if (typeof value === 'number' && value > MAX_EXPLICIT_LIST_LIMIT) limitExceeded();
             if (typeof value === 'number' && Number.isInteger(value) && value > weight) weight = value;
+          } else {
+            const declaredDefault = definition.args.find(argument => isPageSize(argument.name))?.defaultValue;
+            if (typeof declaredDefault === 'number' && declaredDefault > weight) weight = declaredDefault;
           }
         }
         const childType = getNamedType(definition.type);

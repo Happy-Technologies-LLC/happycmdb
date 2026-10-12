@@ -71,6 +71,8 @@ function reserveWorkSlots(
 
 /** Authenticate first; keep resolver-level FORBIDDEN parity for a missing tenant claim. */
 export function admitGraphQLRequest(req: Request, res: Response, next: NextFunction): void {
+  // Authentication may finish after the client has already closed the socket.
+  if (res.destroyed || res.writableEnded) return;
   // Apollo rejects a bodyless POST without invoking request hooks; GET queries use the URL.
   if (!req.body && req.method !== 'GET') {
     next();
@@ -91,18 +93,21 @@ export function admitGraphQLRequest(req: Request, res: Response, next: NextFunct
   graphQLWork.set(req, work);
   const onClosed = () => {
     work.closed = true;
-    // Apollo can reject an invalid HTTP body without starting a GraphQL operation.
-    if (work.completed || (!work.started && res.writableFinished)) release();
+    // A pre-operation disconnect has no running resolver work to protect.
+    // The Apollo start hook refuses any later attempt to execute on this socket.
+    if (work.completed || !work.started) release();
   };
   res.once('finish', onClosed);
   res.once('close', onClosed);
   next();
 }
 
-/** Mark requests that entered Apollo's operation lifecycle before resolver work. */
-export function graphQLWorkStarted(req: Request): void {
+/** Refuse operation work that starts after the client disconnected and freed its slot. */
+export function graphQLWorkStarted(req: Request): boolean {
   const work = graphQLWork.get(req);
-  if (work) work.started = true;
+  if (!work || work.closed) return false;
+  work.started = true;
+  return true;
 }
 
 /** Do not free a disconnected client's slot while its GraphQL resolvers still run. */

@@ -51,7 +51,7 @@ export async function createGraphQLServer(app: express.Application) {
       {
         async requestDidStart({ contextValue }) {
           const req = (contextValue as GraphQLContext & { [requestKey]?: express.Request })[requestKey];
-          if (req) graphQLWorkStarted(req);
+          if (req && !graphQLWorkStarted(req)) throw new Error('GraphQL request disconnected');
           return {
             async didResolveOperation({ operation, document, schema, request }) {
               if (operation && document) {
@@ -119,7 +119,8 @@ export async function createGraphQLServer(app: express.Application) {
     authMiddleware.authenticate(),
     admitGraphQLRequest,
     expressMiddleware(server, {
-      context: async ({ req }): Promise<GraphQLContext> => {
+      context: async ({ req, res }): Promise<GraphQLContext> => {
+        if (res.destroyed) throw new Error('GraphQL request disconnected');
         // Create fresh DataLoaders for each request (prevents caching across requests)
         const loaders = {
           _ciLoader: createCILoader(neo4jClient),

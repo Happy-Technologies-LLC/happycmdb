@@ -84,6 +84,24 @@ it('rejects oversized list limits passed through variables before resolver work'
   expect(mockRun).not.toHaveBeenCalled();
 });
 
+it('rejects oversized first and _limit pages before nested connector or reconciliation work', async () => {
+  const requests = [
+    { query: `{ ${Array.from({ length: 4 }, (_, index) =>
+      `c${index}: connectorConfigurations { runs(first: 1000) { id } }`).join(' ')} }` },
+    { query: 'query($first: Int!) { connectorConfigurations { runs(first: $first) { id } } }',
+      variables: { first: 1000 } },
+    { query: 'query($first: Int = 1000) { connectorConfigurations { runs(first: $first) { id } } }' },
+    { query: '{ _reconciliation { listConflicts(_limit: 1000) { _id } } }' },
+  ];
+  for (const body of requests) {
+    const response = await request(app).post('/graphql')
+      .set('authorization', 'Bearer a-pages').send(body);
+    expect(response.status).toBe(400);
+    expect(response.body).toEqual(requestLimit);
+  }
+  expect(mockRun).not.toHaveBeenCalled();
+});
+
 it('holds one verified-principal slot and two tenant slots until mounted GraphQL responses finish', async () => {
   const entered: Array<() => void> = [];
   const releases: Array<() => void> = [];

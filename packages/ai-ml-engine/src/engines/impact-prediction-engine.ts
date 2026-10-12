@@ -35,6 +35,7 @@ interface CriticalityWalk {
   active: Set<string>;
   computed: Map<string, CriticalityScore>;
   remaining: number;
+  cycleDetected: boolean;
 }
 
 
@@ -219,12 +220,16 @@ export class ImpactPredictionEngine {
       active: new Set<string>(),
       computed: new Map<string, CriticalityScore>(),
       remaining: MAX_CRITICALITY_NODES,
+      cycleDetected: false,
     };
     const score = await this.walkCriticality(ciId, organizationId, walk, 0);
-    // Nothing is persisted until the entire graph succeeds: a budget failure
-    // cannot leave a partial cache from the aborted request.
-    for (const computed of walk.computed.values()) {
-      await this.storeCriticalityScore(computed, organizationId);
+    // A back-edge makes descendants depend on the requested root. Return the
+    // bounded result, but never cache context-dependent scores from that walk.
+    // Budget failures still leave no partial cache; acyclic walks persist as before.
+    if (!walk.cycleDetected) {
+      for (const computed of walk.computed.values()) {
+        await this.storeCriticalityScore(computed, organizationId);
+      }
     }
     return score;
   }
@@ -305,7 +310,10 @@ export class ImpactPredictionEngine {
       for (const depId of dependentIds) {
         // A cycle edge contributes no score. The first visit still counts as a
         // dependent in the existing dependent_count factor.
-        if (walk.active.has(depId)) continue;
+        if (walk.active.has(depId)) {
+          walk.cycleDetected = true;
+          continue;
+        }
         const depScore = await this.walkCriticality(depId, organizationId, walk, depth + 1);
         dependentWeight += depScore.criticality_score * 0.5;
       }

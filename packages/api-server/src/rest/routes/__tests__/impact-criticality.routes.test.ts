@@ -13,7 +13,7 @@ const run = jest.fn(async (_cypher: string, _params: { ciId: string }, _options?
   records: [] as Array<{ get: (key: string) => unknown }>,
 }));
 const getCI = jest.fn(async (id: string) => ({ id }));
-const query = jest.fn(async (_sql: string) => ({ rows: [] as Array<Record<string, unknown>> }));
+const query = jest.fn(async (_sql: string, _params?: unknown[]) => ({ rows: [] as Array<Record<string, unknown>> }));
 
 jest.mock('@cmdb/database', () => ({
   getNeo4jClient: () => ({ getCI, getSession: () => ({ run, close: async () => undefined }) }),
@@ -71,6 +71,33 @@ it('terminates an A-to-B-to-A cycle without unbounded driver or SQL calls', asyn
   expect(run.mock.calls.every((call) => call[2]?.timeout === 5000)).toBe(true);
 });
 
+it('keeps cached cyclic scores independent of which root was requested first', async () => {
+  edges.set('A', ['B']); edges.set('B', ['A']);
+  for (const first of ['A', 'B']) {
+    const cache = new Map<string, Record<string, unknown>>();
+    query.mockImplementation(async (sql, params) => {
+      if (sql.includes('ci_criticality_scores s')) {
+        const stored = cache.get(params![0] as string);
+        return { rows: stored ? [stored] : [] };
+      }
+      if (sql.includes('change_count')) return { rows: [{ change_count: '0' }] };
+      if (sql.includes('INSERT INTO ci_criticality_scores')) {
+        const [id, name, value, factors, date] = params as [string, string, number, string, Date];
+        cache.set(id, {
+          ci_id: id, ci_name: name, criticality_score: value,
+          factors: JSON.parse(factors), calculated_at: date,
+        });
+        return { rows: [{ ci_id: id }] };
+      }
+      return { rows: [] };
+    });
+    const second = first === 'A' ? 'B' : 'A';
+    expect((await criticality(first)).body.data.criticality_score).toBe(63);
+    expect((await criticality(second)).body.data.criticality_score).toBe(63);
+    expect(cache.size).toBe(0);
+  }
+});
+
 it('terminates a self-loop deterministically', async () => {
   edges.set('A', ['A']);
   const response = await criticality('A');
@@ -104,4 +131,5 @@ it('keeps the acyclic dependent weighting unchanged', async () => {
   expect(response.status).toBe(200);
   expect(response.body.data.criticality_score).toBe(62);
   expect(response.body.data.factors.dependent_weight).toBe(22.5);
+  expect(query.mock.calls.filter(([sql]) => sql.includes('INSERT INTO ci_criticality_scores'))).toHaveLength(2);
 });

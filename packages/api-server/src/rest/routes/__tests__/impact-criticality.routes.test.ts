@@ -3,13 +3,14 @@
 
 import express from 'express';
 import request from 'supertest';
+import neo4j from 'neo4j-driver';
 import type { ConfigSchema } from '@cmdb/common';
 import type { AuthService } from '../../../auth/auth.service';
 import type { AuthMiddleware as AuthMiddlewareClass } from '../../../middleware/auth.middleware';
 
 const ORG = '11111111-1111-4111-8111-111111111111';
 const edges = new Map<string, string[]>();
-const run = jest.fn(async (_cypher: string, _params: { ciId: string }, _options?: { timeout: number }) => ({
+const run = jest.fn(async (_cypher: string, _params: { ciId: string; nodeLimit?: unknown; edgeLimit?: unknown }, _options?: { timeout: number }) => ({
   records: [] as Array<{ get: (key: string) => unknown }>,
 }));
 const getCI = jest.fn(async (id: string) => ({ id }));
@@ -236,8 +237,10 @@ it('preserves a small owned graph at depth boundaries and rejects depth outside 
     expect(response.body.data.metadata).toMatchObject({ total_nodes: 2, total_edges: 1, max_depth: depth });
   }
   expect(run.mock.calls.every(([cypher]) => cypher.includes('LIMIT'))).toBe(true);
-  expect(run.mock.calls[0][1]).toMatchObject({ nodeLimit: 101 });
-  expect(run.mock.calls[1][1]).toMatchObject({ edgeLimit: 201 });
+  expect(neo4j.isInt(run.mock.calls[0][1].nodeLimit)).toBe(true);
+  expect(run.mock.calls[0][1]).toMatchObject({ nodeLimit: neo4j.int(101) });
+  expect(neo4j.isInt(run.mock.calls[1][1].edgeLimit)).toBe(true);
+  expect(run.mock.calls[1][1]).toMatchObject({ edgeLimit: neo4j.int(201) });
   for (const depth of [0, 6]) expect((await graph(depth)).status).toBe(400);
   expect(run).toHaveBeenCalledTimes(4);
 });

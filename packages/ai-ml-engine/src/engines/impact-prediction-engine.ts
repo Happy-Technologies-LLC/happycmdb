@@ -21,6 +21,7 @@ import {
   CriticalityFactors,
 } from '../types/impact.types';
 import { v4 as uuidv4 } from 'uuid';
+import neo4j from 'neo4j-driver';
 const IMPACT_QUERY_TIMEOUT_MS = 5000;
 const MAX_CRITICALITY_DEPTH = 12;
 const MAX_CRITICALITY_NODES = 100;
@@ -402,7 +403,7 @@ export class ImpactPredictionEngine {
                 node.ci_type as ci_type,
                 COUNT(DISTINCT incoming) as dependents_count,
                 COUNT(DISTINCT outgoing) as dependencies_count`,
-        { rootCiId, organizationId, nodeLimit: MAX_IMPACT_GRAPH_NODES + 1 },
+        { rootCiId, organizationId, nodeLimit: neo4j.int(MAX_IMPACT_GRAPH_NODES + 1) },
         { timeout: IMPACT_QUERY_TIMEOUT_MS }
       );
 
@@ -426,7 +427,7 @@ export class ImpactPredictionEngine {
          RETURN source.id as source_id,
                 target.id as target_id,
                 type(rel) as rel_type`,
-        { rootCiId, organizationId, edgeLimit: MAX_IMPACT_GRAPH_EDGES + 1 },
+        { rootCiId, organizationId, edgeLimit: neo4j.int(MAX_IMPACT_GRAPH_EDGES + 1) },
         { timeout: IMPACT_QUERY_TIMEOUT_MS }
       );
       if (edgeResult.records.length > MAX_IMPACT_GRAPH_EDGES) throw new ImpactCriticalityLimitError();

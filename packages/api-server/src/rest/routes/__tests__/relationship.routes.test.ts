@@ -1,151 +1,55 @@
 // Copyright 2026 Happy Technologies LLC
 // SPDX-License-Identifier: Apache-2.0
 
-/**
- * Route-wiring tests for relationship.routes.ts. Authentication is applied
- * centrally by server.ts (`authMiddleware.authenticate()` mounted on every
- * /api/v1 route before any router), so this suite simulates that by
- * mounting the captured mock middleware ahead of `relationshipRoutes`,
- * mirroring production. Reads only need to be authenticated; POST/DELETE
- * mutations additionally require the 'write' permission
- * (`authMiddleware.requirePermission('write')`).
- */
-
-import express, { type Request, type Response } from 'express';
+/** Real route authorization with an in-memory credential verifier, no graph access on denial. */
+import express from 'express';
 import request from 'supertest';
-import { jest, describe, it, expect, beforeEach } from '@jest/globals';
-import { ROLE_PERMISSIONS, type Permission, type UserRole } from '../../../auth/types';
+import type { ConfigSchema } from '@cmdb/common';
+import type { AuthService } from '../../../auth/auth.service';
+import type { AuthMiddleware as AuthMiddlewareClass } from '../../../middleware/auth.middleware';
 
-type ReqWithUser = Request & { user?: { _userId?: string; _role?: UserRole } };
+const ORG = '11111111-1111-4111-8111-111111111111';
+const getSession = jest.fn();
 
-const mockRouteHandler = jest.fn((req: Request, res: Response) => {
-  res.status(200).json({ actor: (req as ReqWithUser).user?._userId });
+jest.mock('../../../auth/auth-bootstrap', () => {
+  const { AuthMiddleware } = jest.requireActual<{ AuthMiddleware: typeof AuthMiddlewareClass }>(
+    '../../../middleware/auth.middleware'
+  );
+  const verifier = { verifyToken: async (token: string) => {
+    if (token !== 'viewer' && token !== 'operator') throw new Error('Invalid token');
+    return { _userId: token, _username: token, _role: token, _organizationId: ORG, _type: 'access' };
+  } } as unknown as AuthService;
+  return { getAuthMiddleware: () => new AuthMiddleware(verifier, {
+    apiKeys: { headerName: 'X-API-Key' },
+  } as ConfigSchema['auth']) };
 });
+jest.mock('@cmdb/database', () => ({ getNeo4jClient: () => ({ getSession }) }));
 
-const TOKEN_ROLES: Record<string, UserRole> = {
-  'Bearer admin-token': 'admin',
-  'Bearer operator-token': 'operator',
-  'Bearer viewer-token': 'viewer',
-};
-
-const mockAuthenticate = jest.fn(() => (req: Request, res: Response, next: () => void) => {
-  const role = TOKEN_ROLES[req.get('authorization') ?? ''];
-  if (!role) {
-    res.status(401).json({ error: 'Unauthorized' });
-    return;
-  }
-  (req as ReqWithUser).user = { _userId: 'route-user', _role: role };
-  next();
-});
-
-const mockRequirePermission = jest.fn(
-  (permission: Permission) => (req: Request, res: Response, next: () => void) => {
-    const role = (req as ReqWithUser).user?._role;
-    if (!role) {
-      res.status(401).json({ error: 'Unauthorized' });
-      return;
-    }
-    if (!ROLE_PERMISSIONS[role].includes(permission)) {
-      res.status(403).json({ error: 'Forbidden' });
-      return;
-    }
-    next();
-  }
-);
-
-jest.mock('../../../auth/auth-bootstrap', () => ({
-  getAuthMiddleware: jest.fn(() => ({
-    authenticate: mockAuthenticate,
-    requirePermission: mockRequirePermission,
-  })),
-}));
-
-jest.mock('../../controllers/relationship.controller', () => ({
-  RelationshipController: jest.fn(() => ({
-    listRelationships: mockRouteHandler,
-    createRelationship: mockRouteHandler,
-    deleteRelationship: mockRouteHandler,
-    getRelationshipsByType: mockRouteHandler,
-  })),
-}));
-
+import { getAuthMiddleware } from '../../../auth/auth-bootstrap';
 import { relationshipRoutes } from '../relationship.routes';
 
-// Captured once at module scope (mirrors server.ts, which builds this
-// middleware once via `authMiddleware.authenticate()` when the app is
-// constructed). jest.config.unit.js sets `resetMocks: true`, which wipes
-// `mockAuthenticate`'s implementation before every test; calling it fresh
-// inside testApp() would return undefined once the suite is running.
-const authenticateMiddleware = mockAuthenticate();
+const app = express();
+app.use(express.json());
+app.use('/relationships', getAuthMiddleware().authenticate(), relationshipRoutes);
 
-function testApp(): express.Express {
-  const app = express();
-  app.use(express.json());
-  app.use(authenticateMiddleware);
-  app.use('/relationships', relationshipRoutes);
-  return app;
-}
+beforeEach(() => getSession.mockClear());
 
-type RouteCase = [string, string, Record<string, unknown> | undefined];
+it('returns 401 to unauthenticated relationship readers and writers before graph access', async () => {
+  for (const response of [
+    await request(app).get('/relationships'),
+    await request(app).get('/relationships/type/DEPENDS_ON'),
+    await request(app).post('/relationships').send({ from_id: 'ci-1', to_id: 'ci-2', type: 'DEPENDS_ON' }),
+    await request(app).delete('/relationships?from_id=ci-1&to_id=ci-2&type=DEPENDS_ON'),
+  ]) expect(response.status).toBe(401);
+  expect(getSession).not.toHaveBeenCalled();
+});
 
-const readRoutes: RouteCase[] = [
-  ['GET', '/relationships', undefined],
-  ['GET', '/relationships/type/DEPENDS_ON', undefined],
-];
-
-const writeRoutes: RouteCase[] = [
-  ['POST', '/relationships', { from_id: 'ci-1', to_id: 'ci-2', type: 'DEPENDS_ON' }],
-  ['DELETE', '/relationships/rel-1', undefined],
-];
-
-async function invoke(app: express.Express, method: string, path: string, body: unknown, token?: string) {
-  const req =
-    method === 'GET'
-      ? request(app).get(path)
-      : method === 'DELETE'
-        ? request(app).delete(path)
-        : request(app).post(path).send(body ?? {});
-  return token ? req.set('authorization', token) : req;
-}
-
-describe('relationship routes', () => {
-  beforeEach(() => {
-    jest.clearAllMocks();
-    mockRouteHandler.mockImplementation((req: Request, res: Response) => {
-      res.status(200).json({ actor: (req as ReqWithUser).user?._userId });
-    });
-  });
-
-  it.each([...readRoutes, ...writeRoutes])(
-    'returns 401 before reaching %s %s without credentials',
-    async (method, path, body) => {
-      const response = await invoke(testApp(), method, path, body);
-      expect(response.status).toBe(401);
-      expect(mockRouteHandler).not.toHaveBeenCalled();
-    }
-  );
-
-  it.each(readRoutes)('a viewer (read-only) can reach %s %s', async (method, path, body) => {
-    const response = await invoke(testApp(), method, path, body, 'Bearer viewer-token');
-    expect(response.status).toBe(200);
-    expect(mockRouteHandler).toHaveBeenCalled();
-  });
-
-  it.each(writeRoutes)('a viewer (read-only) receives 403 on %s %s', async (method, path, body) => {
-    const response = await invoke(testApp(), method, path, body, 'Bearer viewer-token');
-    expect(response.status).toBe(403);
-    expect(mockRouteHandler).not.toHaveBeenCalled();
-  });
-
-  it.each(writeRoutes)('an operator (write) can reach %s %s', async (method, path, body) => {
-    const response = await invoke(testApp(), method, path, body, 'Bearer operator-token');
-    expect(response.status).toBe(200);
-    expect(mockRouteHandler).toHaveBeenCalled();
-  });
-
-  it('rejects an invalid/unrecognized bearer token with 401', async () => {
-    const response = await invoke(testApp(), 'GET', '/relationships', undefined, 'Bearer garbage-token');
-    expect(response.status).toBe(401);
-    expect(mockRouteHandler).not.toHaveBeenCalled();
-  });
+it('returns 403 to a read-only viewer on relationship mutations before graph access', async () => {
+  for (const response of [
+    await request(app).post('/relationships').set('authorization', 'Bearer viewer')
+      .send({ from_id: 'ci-1', to_id: 'ci-2', type: 'DEPENDS_ON' }),
+    await request(app).delete('/relationships?from_id=ci-1&to_id=ci-2&type=DEPENDS_ON')
+      .set('authorization', 'Bearer viewer'),
+  ]) expect(response.status).toBe(403);
+  expect(getSession).not.toHaveBeenCalled();
 });

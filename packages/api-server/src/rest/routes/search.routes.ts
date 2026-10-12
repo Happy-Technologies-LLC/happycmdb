@@ -6,9 +6,11 @@ import Joi from 'joi';
 import { SearchController } from '../controllers/search.controller';
 import { validateRequest, validateOptional } from '../middleware/validation.middleware';
 import { schemas } from '@cmdb/common';
+import { getAuthMiddleware } from '../../auth/auth-bootstrap';
 
 export const searchRoutes = Router();
 const controller = new SearchController();
+searchRoutes.use(getAuthMiddleware().requireOrganization());
 
 // Validation schemas
 const advancedSearchSchema = Joi.object({

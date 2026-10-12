@@ -178,14 +178,16 @@ export class TBMController {
           MATCH (cap:BusinessCapability {id: $capabilityId})-[:REALIZES]->(service:BusinessService)
           WHERE service.id IN $orgServiceIds AND service.organization_id = $organizationId
           OPTIONAL MATCH (service)-[:SUPPORTED_BY]->(app:ApplicationService)
-          OPTIONAL MATCH (app)-[:DEPENDS_ON|RUNS_ON*1..2]->(ci:CI)
-          WHERE ci.tbm_monthly_cost IS NOT NULL
+          OPTIONAL MATCH costPath = (app)-[:DEPENDS_ON|RUNS_ON*1..2]->(ci:CI)
+          WHERE all(node IN nodes(costPath) WHERE NOT node:CI OR node.organization_id = $organizationId)
+            AND ci.tbm_monthly_cost IS NOT NULL
+          WITH cap, collect(DISTINCT service.id) as serviceIds, collect(DISTINCT ci) as cis
           RETURN
             cap.id as capabilityId,
             cap.name as capabilityName,
-            collect(DISTINCT service.id) as serviceIds,
-            sum(DISTINCT ci.tbm_monthly_cost) as totalCost,
-            count(DISTINCT ci) as ciCount
+            serviceIds,
+            reduce(total = 0, node IN cis | total + node.tbm_monthly_cost) as totalCost,
+            size(cis) as ciCount
           `,
           { capabilityId: id, orgServiceIds, organizationId }
         );
@@ -202,7 +204,7 @@ export class TBMController {
           data: {
             capabilityId: record.get('capabilityId'),
             capabilityName: record.get('capabilityName'),
-            totalMonthlyCost: record.get('totalCost') || 0,
+            totalMonthlyCost: Number(record.get('totalCost') || 0),
             ciCount: record.get('ciCount').toNumber(),
             supportingServices: record.get('serviceIds').length,
           },
@@ -240,14 +242,16 @@ export class TBMController {
           MATCH (service:BusinessService {id: $serviceId})
           WHERE service.organization_id = $organizationId
           OPTIONAL MATCH (service)-[:SUPPORTED_BY]->(app:ApplicationService)
-          OPTIONAL MATCH (app)-[:DEPENDS_ON|RUNS_ON*1..2]->(ci:CI)
-          WHERE ci.tbm_monthly_cost IS NOT NULL
+          OPTIONAL MATCH costPath = (app)-[:DEPENDS_ON|RUNS_ON*1..2]->(ci:CI)
+          WHERE all(node IN nodes(costPath) WHERE NOT node:CI OR node.organization_id = $organizationId)
+            AND ci.tbm_monthly_cost IS NOT NULL
+          WITH service, collect(DISTINCT ci) as cis, collect(DISTINCT ci.tbm_resource_tower) as towers
           RETURN
             service.id as serviceId,
             service.name as serviceName,
-            sum(ci.tbm_monthly_cost) as totalCost,
-            count(DISTINCT ci) as ciCount,
-            collect(DISTINCT ci.tbm_resource_tower) as towers
+            reduce(total = 0, node IN cis | total + node.tbm_monthly_cost) as totalCost,
+            size(cis) as ciCount,
+            towers
           `,
           { serviceId: id, organizationId }
         );
@@ -264,7 +268,7 @@ export class TBMController {
           data: {
             serviceId: record.get('serviceId'),
             serviceName: record.get('serviceName'),
-            totalMonthlyCost: record.get('totalCost') || 0,
+            totalMonthlyCost: Number(record.get('totalCost') || 0),
             ciCount: record.get('ciCount').toNumber(),
             towers: record.get('towers'),
           },

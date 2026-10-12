@@ -78,15 +78,31 @@ export class ArchitectureOptimizationEngine {
     }
 
     const serviceName = rows[0]!.name;
-    const ciIds = rows.flatMap((r) => (r.ci_id === null ? [] : [r.ci_id]));
+    const mappedIds = rows.flatMap((r) => (r.ci_id === null ? [] : [r.ci_id]));
+    // A stale mapping can point at a foreign or NULL-owned CI. Select owned
+    // roots in the graph before computing summary counts or traversing edges.
+    let ciIds: string[] = [];
+    if (mappedIds.length > 0) {
+      const session = this.neo4jClient.getSession();
+      try {
+        const owned = await session.run(
+          `MATCH (ci:CI)
+           WHERE ci.id IN $mappedIds AND ci.organization_id = $organizationId
+           RETURN DISTINCT ci.id AS id`,
+          { mappedIds, organizationId }
+        );
+        ciIds = owned.records.map((record) => record.get('id') as string);
+      } finally {
+        await session.close();
+      }
+    }
 
     if (ciIds.length === 0) {
-      logger.warn('No CIs mapped to business service', { service_id: serviceId });
+      logger.warn('No owned CIs mapped to business service', { service_id: serviceId });
       return this.createEmptyAnalysis(serviceId, serviceName);
     }
 
-    // Analyze architecture
-    return await this.analyzeArchitecture(ciIds, serviceId, serviceName);
+    return this.analyzeArchitecture(ciIds, organizationId, serviceId, serviceName);
   }
 
   /**
@@ -94,6 +110,7 @@ export class ArchitectureOptimizationEngine {
    */
   async analyzeArchitecture(
     ciIds: string[],
+    organizationId: string,
     businessServiceId?: string,
     businessServiceName?: string
   ): Promise<ArchitectureAnalysis> {
@@ -101,10 +118,10 @@ export class ArchitectureOptimizationEngine {
     const recommendations: ArchitectureRecommendation[] = [];
 
     // 1. Calculate dependency graph metrics
-    const graphMetrics = await this.calculateDependencyGraphMetrics(ciIds);
+    const graphMetrics = await this.calculateDependencyGraphMetrics(ciIds, organizationId);
 
     // 2. Detect circular dependencies
-    const circularDeps = await this.detectCircularDependencies(ciIds);
+    const circularDeps = await this.detectCircularDependencies(ciIds, organizationId);
     if (circularDeps.length > 0) {
       issues.push(...this.createCircularDependencyIssues(circularDeps));
     }
@@ -124,19 +141,19 @@ export class ArchitectureOptimizationEngine {
     }
 
     // 5. Detect single points of failure
-    const spofIssues = await this.detectSinglePointsOfFailure(graphMetrics);
+    const spofIssues = await this.detectSinglePointsOfFailure(graphMetrics, organizationId);
     if (spofIssues.length > 0) {
       issues.push(...spofIssues);
     }
 
     // 6. Detect shared database anti-pattern
-    const sharedDbIssues = await this.detectSharedDatabasePattern(ciIds);
+    const sharedDbIssues = await this.detectSharedDatabasePattern(ciIds, organizationId);
     if (sharedDbIssues.length > 0) {
       issues.push(...sharedDbIssues);
     }
 
     // 7. Detect poor separation of concerns
-    const separationIssues = await this.detectPoorSeparation(ciIds);
+    const separationIssues = await this.detectPoorSeparation(ciIds, organizationId);
     if (separationIssues.length > 0) {
       issues.push(...separationIssues);
     }
@@ -203,7 +220,8 @@ export class ArchitectureOptimizationEngine {
    * Calculate dependency graph metrics for CIs
    */
   private async calculateDependencyGraphMetrics(
-    ciIds: string[]
+    ciIds: string[],
+    organizationId: string
   ): Promise<DependencyGraphMetrics[]> {
     const session = this.neo4jClient.getSession();
     const metrics: DependencyGraphMetrics[] = [];
@@ -213,33 +231,43 @@ export class ArchitectureOptimizationEngine {
         // Calculate fan-in (CIs depending on this CI)
         const fanInResult = await session.run(
           `MATCH (ci:CI {id: $ciId})<-[r:DEPENDS_ON|USES|HOSTED_ON]-(dependent:CI)
+           WHERE ci.organization_id = $organizationId
+             AND dependent.organization_id = $organizationId
            RETURN COUNT(DISTINCT dependent) as fan_in`,
-          { ciId }
+          { ciId, organizationId }
         );
         const fanIn = fanInResult.records[0]?.get('fan_in').toNumber() || 0;
 
         // Calculate fan-out (CIs this CI depends on)
         const fanOutResult = await session.run(
           `MATCH (ci:CI {id: $ciId})-[r:DEPENDS_ON|USES|HOSTED_ON]->(dependency:CI)
+           WHERE ci.organization_id = $organizationId
+             AND dependency.organization_id = $organizationId
            RETURN COUNT(DISTINCT dependency) as fan_out`,
-          { ciId }
+          { ciId, organizationId }
         );
         const fanOut = fanOutResult.records[0]?.get('fan_out').toNumber() || 0;
 
-        // Calculate depth (distance from leaf nodes)
+        // A path terminates when its next node is outside the organization.
+        // A leaf with only foreign outgoing links is still a tenant-local leaf.
         const depthResult = await session.run(
           `MATCH path = (ci:CI {id: $ciId})-[:DEPENDS_ON|USES*0..10]->(leaf:CI)
-           WHERE NOT (leaf)-[:DEPENDS_ON|USES]->()
+           WHERE all(node IN nodes(path) WHERE node:CI AND node.organization_id = $organizationId)
+             AND NOT EXISTS {
+               MATCH (leaf)-[:DEPENDS_ON|USES]->(next:CI)
+               WHERE next.organization_id = $organizationId
+             }
            RETURN MAX(LENGTH(path)) as max_depth`,
-          { ciId }
+          { ciId, organizationId }
         );
         const depth = depthResult.records[0]?.get('max_depth')?.toNumber() || 0;
 
         // Get CI details
         const ciResult = await session.run(
           `MATCH (ci:CI {id: $ciId})
+           WHERE ci.organization_id = $organizationId
            RETURN ci.name as name, ci.ci_type as ci_type`,
-          { ciId }
+          { ciId, organizationId }
         );
 
         const ciRecord = ciResult.records[0];
@@ -267,7 +295,7 @@ export class ArchitectureOptimizationEngine {
   /**
    * Detect circular dependencies
    */
-  private async detectCircularDependencies(ciIds: string[]): Promise<CircularDependencyChain[]> {
+  private async detectCircularDependencies(ciIds: string[], organizationId: string): Promise<CircularDependencyChain[]> {
     if (!this.config.detect_circular_dependencies) {
       return [];
     }
@@ -280,10 +308,11 @@ export class ArchitectureOptimizationEngine {
       const result = await session.run(
         `MATCH path = (start:CI)-[:DEPENDS_ON|USES*2..10]->(start)
          WHERE start.id IN $ciIds
+           AND all(node IN nodes(path) WHERE node:CI AND node.organization_id = $organizationId)
          WITH DISTINCT [node IN nodes(path) | node.id] as cycle
          RETURN cycle, size(cycle) as length
          LIMIT 50`,
-        { ciIds }
+        { ciIds, organizationId }
       );
 
       for (const record of result.records) {
@@ -457,7 +486,8 @@ export class ArchitectureOptimizationEngine {
    * Detect single points of failure
    */
   private async detectSinglePointsOfFailure(
-    metrics: DependencyGraphMetrics[]
+    metrics: DependencyGraphMetrics[],
+    organizationId: string
   ): Promise<ArchitectureIssue[]> {
     const issues: ArchitectureIssue[] = [];
     const session = this.neo4jClient.getSession();
@@ -470,12 +500,14 @@ export class ArchitectureOptimizationEngine {
         const redundancyResult = await session.run(
           `MATCH (ci:CI {id: $ciId})
            MATCH (similar:CI)
-           WHERE similar.ci_type = ci.ci_type
+           WHERE ci.organization_id = $organizationId
+             AND similar.organization_id = $organizationId
+             AND similar.ci_type = ci.ci_type
              AND similar.environment = ci.environment
              AND similar.id <> ci.id
              AND similar.status = 'active'
            RETURN COUNT(similar) as redundancy_count`,
-          { ciId: metric.ci_id }
+          { ciId: metric.ci_id, organizationId }
         );
 
         const redundancyCount = redundancyResult.records[0]?.get('redundancy_count').toNumber() || 0;
@@ -531,7 +563,7 @@ export class ArchitectureOptimizationEngine {
   /**
    * Detect shared database anti-pattern
    */
-  private async detectSharedDatabasePattern(ciIds: string[]): Promise<ArchitectureIssue[]> {
+  private async detectSharedDatabasePattern(ciIds: string[], organizationId: string): Promise<ArchitectureIssue[]> {
     const issues: ArchitectureIssue[] = [];
     const session = this.neo4jClient.getSession();
 
@@ -541,19 +573,21 @@ export class ArchitectureOptimizationEngine {
         `MATCH (db:CI)
          WHERE db.ci_type IN ['database', 'postgresql', 'mysql', 'mongodb', 'redis']
            AND db.id IN $ciIds
+           AND db.organization_id = $organizationId
          MATCH (app:CI)-[:USES|DEPENDS_ON]->(db)
          WHERE app.ci_type IN ['application', 'service', 'api', 'web-app']
+           AND app.organization_id = $organizationId
          WITH db, COLLECT(DISTINCT app.id) as apps
          WHERE SIZE(apps) > 2
          RETURN db.id as db_id, db.name as db_name, apps, SIZE(apps) as app_count`,
-        { ciIds }
+        { ciIds, organizationId }
       );
 
       for (const record of result.records) {
         const dbId = record.get('db_id');
         const dbName = record.get('db_name');
         const apps = record.get('apps');
-        const appCount = record.get('app_count');
+        const appCount = record.get('app_count').toNumber();
 
         issues.push({
           id: uuidv4(),
@@ -607,7 +641,7 @@ export class ArchitectureOptimizationEngine {
   /**
    * Detect poor separation of concerns
    */
-  private async detectPoorSeparation(ciIds: string[]): Promise<ArchitectureIssue[]> {
+  private async detectPoorSeparation(ciIds: string[], organizationId: string): Promise<ArchitectureIssue[]> {
     const issues: ArchitectureIssue[] = [];
     const session = this.neo4jClient.getSession();
 
@@ -616,19 +650,21 @@ export class ArchitectureOptimizationEngine {
       const result = await session.run(
         `MATCH (app:CI)-[:USES|DEPENDS_ON]->(resource:CI)
          WHERE app.id IN $ciIds
+           AND app.organization_id = $organizationId
+           AND resource.organization_id = $organizationId
            AND app.ci_type IN ['application', 'service']
            AND resource.ci_type IN ['database', 'queue', 'cache', 'storage']
          WITH app, COLLECT(DISTINCT resource.ci_type) as resource_types
          WHERE SIZE(resource_types) > 3
          RETURN app.id as app_id, app.name as app_name, resource_types, SIZE(resource_types) as type_count`,
-        { ciIds }
+        { ciIds, organizationId }
       );
 
       for (const record of result.records) {
         const appId = record.get('app_id');
         const appName = record.get('app_name');
         const resourceTypes = record.get('resource_types');
-        const typeCount = record.get('type_count');
+        const typeCount = record.get('type_count').toNumber();
 
         issues.push({
           id: uuidv4(),

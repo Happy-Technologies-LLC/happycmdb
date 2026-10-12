@@ -7,6 +7,7 @@
 
 import { Router, Request, Response } from 'express';
 import { getArchitectureOptimizationEngine } from '@cmdb/ai-ml-engine';
+import { getNeo4jClient } from '@cmdb/database';
 import { logger } from '@cmdb/common';
 import { getAuthMiddleware } from '../../auth/auth-bootstrap';
 import { requestOrganizationId } from '../../middleware/auth.middleware';
@@ -65,6 +66,7 @@ architectureRoutes.get(
 architectureRoutes.post(
   '/analyze',
   authMiddleware.requirePermission('write'),
+  authMiddleware.requireOrganization(),
   async (req: Request, res: Response): Promise<void> => {
     try {
       const { ci_ids } = req.body;
@@ -76,11 +78,24 @@ architectureRoutes.post(
         });
         return;
       }
+      // Validate the complete set before the engine reads graph neighbors or
+      // persists any analysis. A legacy NULL-owner CI is not owned by anyone.
+      const organizationId = requestOrganizationId(req);
+      if (!ci_ids.every((id: unknown) => typeof id === 'string' && id.length > 0)) {
+        res.status(400).json({ success: false, error: 'ci_ids must contain CI IDs' });
+        return;
+      }
+      for (const id of ci_ids as string[]) {
+        if (!(await getNeo4jClient().getCI(id, organizationId))) {
+          res.status(404).json({ success: false, error: 'CI not found' });
+          return;
+        }
+      }
 
       logger.info('Architecture analysis requested for CIs', { ci_count: ci_ids.length });
 
       const engine = getArchitectureOptimizationEngine();
-      const analysis = await engine.analyzeArchitecture(ci_ids);
+      const analysis = await engine.analyzeArchitecture(ci_ids, organizationId);
 
       res.json({
         success: true,

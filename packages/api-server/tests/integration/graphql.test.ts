@@ -161,16 +161,34 @@ describe('GraphQL API Integration Tests', () => {
   });
 
   it('rejects one-request aliases and concurrent verified-principal and tenant GraphQL work', async () => {
-    const aliases = `{ ${Array.from({ length: 21 }, (_, index) => `a${index}: __typename`).join(' ')} }`;
-    const oversized = await execute(aliases);
+    const aliases = `{ ${Array.from({ length: 21 }, (_, index) =>
+    `a${index}: getCIs(limit: 1) { _id }`).join(' ')} }`;
+    const graph = getNeo4jClient();
+    const originalGetSession = graph.getSession.bind(graph);
+    let backendStatements = 0;
+    const aliasSessions = jest.spyOn(graph, 'getSession').mockImplementation(() => {
+      const session = originalGetSession();
+      const originalRun = session.run.bind(session);
+      session.run = ((...args: Parameters<typeof originalRun>) => {
+        if (String(args[0]).includes('MATCH (ci:CI)')
+          && String(args[0]).includes('ORDER BY ci.created_at DESC')) backendStatements++;
+        return originalRun(...args);
+      }) as typeof session.run;
+      return session;
+    });
+    let oversized: request.Response;
+    try {
+      oversized = await execute(aliases);
+    } finally {
+      aliasSessions.mockRestore();
+    }
+    expect(backendStatements).toBe(0);
     expect(oversized.status).toBe(400);
     expect(oversized.body).toEqual({ errors: [{
       message: 'GraphQL request limit exceeded',
       extensions: { code: 'GRAPHQL_REQUEST_LIMIT_EXCEEDED' },
     }] });
 
-    const graph = getNeo4jClient();
-    const originalGetSession = graph.getSession.bind(graph);
     const entered: Array<() => void> = [];
     const releases: Array<() => void> = [];
     const firstStarted = new Promise<void>(resolve => { entered.push(resolve); });

@@ -6,6 +6,7 @@
  * Analyzes deployment patterns and suggests architectural improvements
  */
 
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
 import { logger } from '@cmdb/common';
 import { v4 as uuidv4 } from 'uuid';
@@ -26,6 +27,28 @@ export const MAX_ARCHITECTURE_ROOTS = 20;
 export const MAX_ARCHITECTURE_DEPTH = 10;
 export const MAX_ARCHITECTURE_EXPANSIONS = 1000;
 export const ARCHITECTURE_QUERY_TIMEOUT_MS = 5000;
+export const ARCHITECTURE_REQUEST_TIMEOUT_MS = 20000;
+const analysisDeadline = new AsyncLocalStorage<number>();
+
+export class ArchitectureDeadlineError extends Error {
+  constructor() {
+    super('Architecture analysis timed out');
+  }
+}
+
+/** One deadline shared across preflight, engine statements, and persistence. */
+export function withArchitectureDeadline<T>(deadline: number, operation: () => Promise<T>): Promise<T> {
+  return analysisDeadline.run(deadline, operation);
+}
+
+export function architectureRemainingMs(): number {
+  const deadline = analysisDeadline.getStore();
+  if (deadline === undefined) return ARCHITECTURE_QUERY_TIMEOUT_MS;
+  const remaining = Math.min(ARCHITECTURE_QUERY_TIMEOUT_MS, deadline - Date.now());
+  if (remaining <= 0) throw new ArchitectureDeadlineError();
+  return remaining;
+}
+
 
 export class ArchitectureResourceLimitError extends Error {
   constructor() {
@@ -36,6 +59,16 @@ export class ArchitectureResourceLimitError extends Error {
 /** Neo4j reports server transaction deadlines and memory exhaustion by code. */
 export function architectureFailure(error: unknown): { status: number; message: string } | null {
   if (error instanceof ArchitectureResourceLimitError) {
+    return { status: 503, message: 'Architecture analysis resource limit exceeded' };
+  }
+  if (error instanceof ArchitectureDeadlineError) {
+    return { status: 504, message: 'Architecture analysis timed out' };
+  }
+  if (error && typeof error === 'object' && 'code' in error && error.code === '57014') {
+    return { status: 504, message: 'Architecture analysis timed out' };
+  }
+  if (error && typeof error === 'object' && 'code' in error &&
+      (error.code === '53200' || error.code === '53300' || error.code === '53400')) {
     return { status: 503, message: 'Architecture analysis resource limit exceeded' };
   }
   if (!error || typeof error !== 'object' || !('code' in error)) return null;
@@ -94,7 +127,7 @@ export class ArchitectureOptimizationEngine {
     // mappings. Reading the mappings in the same snapshot means a concurrent
     // delete + recreate of this (globally unique) service_id by another
     // organization cannot leak that organization's CIs into this analysis.
-    const result = await this.postgresClient.query(
+    const result = await this.queryWithDeadline(
       `SELECT DISTINCT s.name, m.ci_id
        FROM dim_business_services s
        LEFT JOIN ci_business_service_mappings m ON m.service_id = s.service_id
@@ -124,7 +157,7 @@ export class ArchitectureOptimizationEngine {
            WHERE ci.id IN $mappedIds AND ci.organization_id = $organizationId
            RETURN DISTINCT ci.id AS id`,
           { mappedIds, organizationId },
-          { timeout: ARCHITECTURE_QUERY_TIMEOUT_MS }
+          { timeout: architectureRemainingMs() }
         );
         ciIds = owned.records.map((record) => record.get('id') as string);
       } finally {
@@ -273,7 +306,7 @@ export class ArchitectureOptimizationEngine {
              AND dependent.organization_id = $organizationId
            RETURN COUNT(DISTINCT dependent) as fan_in`,
           { ciId, organizationId },
-          { timeout: ARCHITECTURE_QUERY_TIMEOUT_MS }
+          { timeout: architectureRemainingMs() }
         );
         const fanIn = fanInResult.records[0]?.get('fan_in').toNumber() || 0;
 
@@ -284,7 +317,7 @@ export class ArchitectureOptimizationEngine {
              AND dependency.organization_id = $organizationId
            RETURN COUNT(DISTINCT dependency) as fan_out`,
           { ciId, organizationId },
-          { timeout: ARCHITECTURE_QUERY_TIMEOUT_MS }
+          { timeout: architectureRemainingMs() }
         );
         const fanOut = fanOutResult.records[0]?.get('fan_out').toNumber() || 0;
 
@@ -295,7 +328,7 @@ export class ArchitectureOptimizationEngine {
            WHERE ci.organization_id = $organizationId
            RETURN ci.name as name, ci.ci_type as ci_type`,
           { ciId, organizationId },
-          { timeout: ARCHITECTURE_QUERY_TIMEOUT_MS }
+          { timeout: architectureRemainingMs() }
         );
 
         const ciRecord = ciResult.records[0];
@@ -348,7 +381,7 @@ export class ArchitectureOptimizationEngine {
              RETURN DISTINCT path, next.id AS nextId
              LIMIT toInteger($limit)`,
             { frontier, organizationId, limit: remaining + 1 },
-            { timeout: ARCHITECTURE_QUERY_TIMEOUT_MS }
+            { timeout: architectureRemainingMs() }
           );
           if (result.records.length > remaining) throw new ArchitectureResourceLimitError();
           remaining -= result.records.length;
@@ -554,7 +587,7 @@ export class ArchitectureOptimizationEngine {
              AND similar.status = 'active'
            RETURN COUNT(similar) as redundancy_count`,
           { ciId: metric.ci_id, organizationId },
-          { timeout: ARCHITECTURE_QUERY_TIMEOUT_MS }
+          { timeout: architectureRemainingMs() }
         );
 
         const redundancyCount = redundancyResult.records[0]?.get('redundancy_count').toNumber() || 0;
@@ -628,7 +661,7 @@ export class ArchitectureOptimizationEngine {
          WHERE SIZE(apps) > 2
          RETURN db.id as db_id, db.name as db_name, apps, SIZE(apps) as app_count`,
         { ciIds, organizationId },
-        { timeout: ARCHITECTURE_QUERY_TIMEOUT_MS }
+        { timeout: architectureRemainingMs() }
       );
 
       for (const record of result.records) {
@@ -706,7 +739,7 @@ export class ArchitectureOptimizationEngine {
          WHERE SIZE(resource_types) > 3
          RETURN app.id as app_id, app.name as app_name, resource_types, SIZE(resource_types) as type_count`,
         { ciIds, organizationId },
-        { timeout: ARCHITECTURE_QUERY_TIMEOUT_MS }
+        { timeout: architectureRemainingMs() }
       );
 
       for (const record of result.records) {
@@ -943,12 +976,38 @@ export class ArchitectureOptimizationEngine {
     );
   }
 
+  /** SET LOCAL is bound to the same connection/transaction as the actual SQL. */
+  private async queryWithDeadline(text: string, values: unknown[]) {
+    const deadline = analysisDeadline.getStore();
+    if (deadline === undefined) return this.postgresClient.query(text, values);
+    architectureRemainingMs();
+    const client = await this.postgresClient.getClient();
+    try {
+      await client.query('BEGIN');
+      const timeout = architectureRemainingMs();
+      await client.query(`SELECT set_config('statement_timeout', $1, true)`, [`${timeout}ms`]);
+      const result = await client.query(text, values);
+      await client.query('COMMIT');
+      architectureRemainingMs();
+      return result;
+    } catch (error) {
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        // Preserve the original timeout/resource SQLSTATE for the fixed response.
+      }
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   /**
    * Store analysis in database
    */
   private async storeAnalysis(analysis: ArchitectureAnalysis): Promise<void> {
     try {
-      await this.postgresClient.query(
+      await this.queryWithDeadline(
         `INSERT INTO architecture_analyses (
           id, business_service_id, analyzed_at, overall_score,
           architecture_pattern, health_metrics, issues, recommendations,
@@ -972,6 +1031,7 @@ export class ArchitectureOptimizationEngine {
         ]
       );
     } catch (error: any) {
+      if (architectureFailure(error)) throw error;
       // Table may not exist - log warning but don't fail
       logger.warn('Failed to store architecture analysis', { error: error.message });
     }

@@ -311,13 +311,14 @@ export class Neo4jClient {
     }
   }
 
-  async getCI(id: string, scope: CIOrganizationScope): Promise<CI | null> {
+  async getCI(id: string, scope: CIOrganizationScope, timeoutMs?: number): Promise<CI | null> {
     const organizationId = organizationIdParam(scope);
     const session = this.getSession();
     try {
       const result = await session.run(
         `MATCH (ci:CI {id: $id}) ${nodeScopeClause(organizationId)} RETURN ci`,
-        { id, organizationId }
+        { id, organizationId },
+        timeoutMs === undefined ? undefined : { timeout: timeoutMs }
       );
 
       if (result.records.length === 0) {

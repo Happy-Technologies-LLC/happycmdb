@@ -21,6 +21,22 @@ import {
   CriticalityFactors,
 } from '../types/impact.types';
 import { v4 as uuidv4 } from 'uuid';
+const IMPACT_QUERY_TIMEOUT_MS = 5000;
+const MAX_CRITICALITY_DEPTH = 12;
+const MAX_CRITICALITY_NODES = 100;
+
+export class ImpactCriticalityLimitError extends Error {
+  constructor() {
+    super('Impact criticality resource limit exceeded');
+  }
+}
+
+interface CriticalityWalk {
+  active: Set<string>;
+  computed: Map<string, CriticalityScore>;
+  remaining: number;
+}
+
 
 export class ImpactPredictionEngine {
   private static instance: ImpactPredictionEngine;
@@ -54,7 +70,8 @@ export class ImpactPredictionEngine {
         `MATCH (ci:CI {id: $ciId})
          WHERE ci.organization_id = $organizationId
          RETURN ci.id as id, ci.name as name, ci.ci_type as ci_type`,
-        { ciId, organizationId }
+        { ciId, organizationId },
+        { timeout: IMPACT_QUERY_TIMEOUT_MS }
       );
 
       if (ciResult.records.length === 0) {
@@ -136,7 +153,8 @@ export class ImpactPredictionEngine {
            path_ids
          ORDER BY hop_count
          LIMIT 200`,
-        { ciId: sourceCIId, organizationId }
+        { ciId: sourceCIId, organizationId },
+        { timeout: IMPACT_QUERY_TIMEOUT_MS }
       );
 
       for (const record of result.records) {
@@ -176,7 +194,8 @@ export class ImpactPredictionEngine {
          ORDER BY path_length DESC
          LIMIT 1
          RETURN [node IN nodes(path) | node.id] as critical_path`,
-        { ciId, organizationId }
+        { ciId, organizationId },
+        { timeout: IMPACT_QUERY_TIMEOUT_MS }
       );
 
       if (result.records.length > 0) {
@@ -196,26 +215,52 @@ export class ImpactPredictionEngine {
    * Get or calculate criticality score for a CI
    */
   async getCriticalityScore(ciId: string, organizationId: string): Promise<CriticalityScore> {
-    if (!await this.neo4jClient.getCI(ciId, organizationId)) throw new Error(`CI not found: ${ciId}`);
-    // Check if cached
-    const cached = await this.postgresClient.query(
-      `SELECT s.* FROM ci_criticality_scores s
-       WHERE s.ci_id = $1 AND s.calculated_at >= NOW() - INTERVAL '7 days'`,
-      [ciId]
-    );
-
-    if (cached.rows.length > 0) {
-      return this.mapRowToCriticalityScore(cached.rows[0]);
+    const walk: CriticalityWalk = {
+      active: new Set<string>(),
+      computed: new Map<string, CriticalityScore>(),
+      remaining: MAX_CRITICALITY_NODES,
+    };
+    const score = await this.walkCriticality(ciId, organizationId, walk, 0);
+    // Nothing is persisted until the entire graph succeeds: a budget failure
+    // cannot leave a partial cache from the aborted request.
+    for (const computed of walk.computed.values()) {
+      await this.storeCriticalityScore(computed, organizationId);
     }
+    return score;
+  }
 
-    // Calculate new score
-    return await this.calculateCriticalityScore(ciId, organizationId);
+  private async walkCriticality(
+    ciId: string, organizationId: string, walk: CriticalityWalk, depth: number
+  ): Promise<CriticalityScore> {
+    const computed = walk.computed.get(ciId);
+    if (computed) return computed;
+    if (depth >= MAX_CRITICALITY_DEPTH || walk.remaining === 0) throw new ImpactCriticalityLimitError();
+    walk.remaining--;
+    walk.active.add(ciId);
+    try {
+      if (!await this.neo4jClient.getCI(ciId, organizationId, IMPACT_QUERY_TIMEOUT_MS)) {
+        throw new Error(`CI not found: ${ciId}`);
+      }
+      const cached = await this.postgresClient.query(
+        `SELECT s.* FROM ci_criticality_scores s
+         WHERE s.ci_id = $1 AND s.calculated_at >= NOW() - INTERVAL '7 days'`,
+        [ciId]
+      );
+      if (cached.rows.length > 0) return this.mapRowToCriticalityScore(cached.rows[0]);
+      const score = await this.calculateCriticalityScore(ciId, organizationId, walk, depth);
+      walk.computed.set(ciId, score);
+      return score;
+    } finally {
+      walk.active.delete(ciId);
+    }
   }
 
   /**
    * Calculate criticality score based on multiple factors
    */
-  private async calculateCriticalityScore(ciId: string, organizationId: string): Promise<CriticalityScore> {
+  private async calculateCriticalityScore(
+    ciId: string, organizationId: string, walk: CriticalityWalk, depth: number
+  ): Promise<CriticalityScore> {
     const session = this.neo4jClient.getSession();
 
     try {
@@ -236,7 +281,8 @@ export class ImpactPredictionEngine {
                 dependent_count,
                 dependency_count,
                 dependent_ids`,
-        { ciId, organizationId }
+        { ciId, organizationId },
+        { timeout: IMPACT_QUERY_TIMEOUT_MS }
       );
 
       if (result.records.length === 0) {
@@ -257,8 +303,11 @@ export class ImpactPredictionEngine {
       const dependentIds = record.get('dependent_ids');
 
       for (const depId of dependentIds) {
-        const depScore = await this.getCriticalityScore(depId, organizationId);
-        dependentWeight += depScore.criticality_score * 0.5; // Weighted contribution
+        // A cycle edge contributes no score. The first visit still counts as a
+        // dependent in the existing dependent_count factor.
+        if (walk.active.has(depId)) continue;
+        const depScore = await this.walkCriticality(depId, organizationId, walk, depth + 1);
+        dependentWeight += depScore.criticality_score * 0.5;
       }
 
       const factors: CriticalityFactors = {
@@ -286,8 +335,6 @@ export class ImpactPredictionEngine {
         calculated_at: new Date(),
       };
 
-      // Store score
-      await this.storeCriticalityScore(score, organizationId);
 
       return score;
     } finally {
@@ -334,7 +381,8 @@ export class ImpactPredictionEngine {
                 node.ci_type as ci_type,
                 COUNT(DISTINCT incoming) as dependents_count,
                 COUNT(DISTINCT outgoing) as dependencies_count`,
-        { rootCiId, organizationId }
+        { rootCiId, organizationId },
+        { timeout: IMPACT_QUERY_TIMEOUT_MS }
       );
 
       // Build nodes
@@ -366,7 +414,8 @@ export class ImpactPredictionEngine {
          RETURN source.id as source_id,
                 target.id as target_id,
                 type(rel) as rel_type`,
-        { rootCiId, organizationId }
+        { rootCiId, organizationId },
+        { timeout: IMPACT_QUERY_TIMEOUT_MS }
       );
 
       for (const record of edgeResult.records) {
@@ -481,7 +530,7 @@ export class ImpactPredictionEngine {
    * Store impact analysis
    */
   private async storeImpactAnalysis(impact: ImpactAnalysis, organizationId: string): Promise<void> {
-    if (!await this.neo4jClient.getCI(impact.source_ci_id, organizationId)) throw new Error('CI not found');
+    if (!await this.neo4jClient.getCI(impact.source_ci_id, organizationId, IMPACT_QUERY_TIMEOUT_MS)) throw new Error('CI not found');
     const inserted = await this.postgresClient.query(
       `INSERT INTO impact_analyses
        (id, source_ci_id, source_ci_name, change_type, impact_score,
@@ -511,7 +560,7 @@ export class ImpactPredictionEngine {
    * Store criticality score
    */
   private async storeCriticalityScore(score: CriticalityScore, organizationId: string): Promise<void> {
-    if (!await this.neo4jClient.getCI(score.ci_id, organizationId)) throw new Error('CI not found');
+    if (!await this.neo4jClient.getCI(score.ci_id, organizationId, IMPACT_QUERY_TIMEOUT_MS)) throw new Error('CI not found');
     const inserted = await this.postgresClient.query(
       `INSERT INTO ci_criticality_scores
        (ci_id, ci_name, criticality_score, factors, calculated_at)
@@ -548,7 +597,7 @@ export class ImpactPredictionEngine {
    * Get impact analysis history for a CI
    */
   async getImpactHistory(ciId: string, limit: number, organizationId: string): Promise<ImpactAnalysis[]> {
-    if (!await this.neo4jClient.getCI(ciId, organizationId)) return [];
+    if (!await this.neo4jClient.getCI(ciId, organizationId, IMPACT_QUERY_TIMEOUT_MS)) return [];
     const result = await this.postgresClient.query(
       `SELECT h.* FROM impact_analyses h
        WHERE h.source_ci_id = $1 ORDER BY h.analyzed_at DESC LIMIT $2`,

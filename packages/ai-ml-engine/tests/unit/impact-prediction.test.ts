@@ -143,6 +143,16 @@ describe('ImpactPredictionEngine', () => {
       expect(impact.affected_cis).toHaveLength(2);
       expect(impact.risk_level).toBeDefined();
       expect(impact.impact_score).toBeGreaterThan(0);
+      // Both variable-length traversals are depth- and result-bounded. The
+      // driver timeout caps the work Neo4j performs before applying LIMIT.
+      const affectedQuery = mockNeo4jClient.getSession.mock.results[1].value.run.mock.calls[0];
+      const pathQuery = mockNeo4jClient.getSession.mock.results[2].value.run.mock.calls[0];
+      expect(affectedQuery[0]).toContain('*1..5');
+      expect(affectedQuery[0]).toContain('LIMIT 200');
+      expect(pathQuery[0]).toContain('*1..10');
+      expect(pathQuery[0]).toContain('LIMIT 1');
+      expect(affectedQuery[2]).toEqual({ timeout: 5000 });
+      expect(pathQuery[2]).toEqual({ timeout: 5000 });
     });
 
     it('should calculate CRITICAL risk for decommission with large blast radius', async () => {
@@ -476,7 +486,8 @@ describe('ImpactPredictionEngine', () => {
       // Query should use maxDepth in Cypher query
       expect(session.run).toHaveBeenCalledWith(
         expect.stringContaining('[*0..2]'),
-        expect.any(Object)
+        expect.any(Object),
+        { timeout: 5000 }
       );
     });
   });

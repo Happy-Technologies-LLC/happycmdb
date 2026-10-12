@@ -18,14 +18,24 @@ const query = jest.fn(async (_sql: string, _params?: unknown[]) => ({ rows: [] a
 
 jest.mock('@cmdb/database', () => ({
   getNeo4jClient: () => ({ getCI, getSession: () => ({ run, close: async () => undefined }) }),
-  getPostgresClient: () => ({ query }),
+  getPostgresClient: () => ({
+    query,
+    getClient: async () => ({
+      query: (sql: string, params?: unknown[]) =>
+        sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK' || sql.includes("set_config('statement_timeout'")
+          ? Promise.resolve({ rows: [] }) : query(sql, params),
+      release: () => undefined,
+    }),
+  }),
 }));
+let principalSequence = 0;
 jest.mock('../../../auth/auth-bootstrap', () => {
   const { AuthMiddleware } = jest.requireActual<{ AuthMiddleware: typeof AuthMiddlewareClass }>(
     '../../../middleware/auth.middleware'
   );
   const verifier = { verifyToken: async () => ({
-    _userId: 'viewer-1', _username: 'viewer', _role: 'viewer', _organizationId: ORG, _type: 'access',
+    _userId: `viewer-${principalSequence}`, _username: 'viewer', _role: 'viewer',
+    _organizationId: ORG, _type: 'access',
   }) } as unknown as AuthService;
   return { getAuthMiddleware: () => new AuthMiddleware(verifier, {
     apiKeys: { headerName: 'X-API-Key' },
@@ -43,6 +53,7 @@ const graph = (depth: number) => request(app).get(`/api/v1/impact/graph/A?max_de
 const graphRecord = (fields: Record<string, unknown>) => ({ get: (key: string) => fields[key] });
 
 beforeEach(() => {
+  principalSequence++;
   edges.clear();
   run.mockImplementation(async (_cypher, params) => {
     if (run.mock.calls.length > 120) throw new Error('Neo4j statement budget exhausted');
@@ -71,7 +82,7 @@ it('terminates an A-to-B-to-A cycle without unbounded driver or SQL calls', asyn
   expect(response.body.data.criticality_score).toBe(63);
   expect(run.mock.calls.length).toBeLessThanOrEqual(2);
   expect(query.mock.calls.length).toBeLessThanOrEqual(6);
-  expect(run.mock.calls.every((call) => call[2]?.timeout === 5000)).toBe(true);
+  expect(run.mock.calls.every(call => (call[2]?.timeout ?? 0) > 0 && (call[2]?.timeout ?? 0) <= 5000)).toBe(true);
 });
 
 it('keeps cached cyclic scores independent of which root was requested first', async () => {

@@ -46,6 +46,8 @@ jest.mock('@cmdb/common', () => ({
 // Mock other modules that may be imported transitively
 jest.mock('@cmdb/database', () => ({
   Neo4jClient: jest.fn(),
+  CITraversalLimitError: class extends Error {},
+  createCITraversalWork: () => ({ remaining: 400, nodes: new Set<string>() }),
   getNeo4jClient: jest.fn(),
   getPostgresClient: jest.fn().mockReturnValue({
     query: jest.fn(),
@@ -95,6 +97,8 @@ describe('GraphQL CI Resolvers', () => {
     mockContext = {
       _neo4jClient: {
         getSession: jest.fn().mockReturnValue(mockNeo4j.session),
+        getDependencies: jest.fn().mockResolvedValue([]),
+        impactAnalysis: jest.fn().mockResolvedValue([]),
         createCI: jest.fn(),
         updateCI: jest.fn(),
         getCI: jest.fn(),
@@ -249,121 +253,6 @@ describe('GraphQL CI Resolvers', () => {
     });
   });
 
-  describe('Query.getCIDependencies', () => {
-    it('should fetch recursive dependencies with specified depth', async () => {
-      // Arrange: Mock dependency graph with metadata as JSON string
-      const dependencies = createCIs(3, { type: 'database' }).map(ci => ({
-        ...ci,
-        metadata: JSON.stringify(ci.metadata || {}),
-      }));
-
-      mockNeo4j.session.run.mockResolvedValueOnce(
-        createMockNeo4jResult(
-          dependencies.map((ci) => ({ dep: { properties: ci } }))
-        )
-      );
-
-      const getCIDeps = (resolvers.Query as any).getCIDependencies;
-
-      // Act: Get dependencies with depth 3
-      const result = await getCIDeps(
-        null,
-        { id: 'ci-123', depth: 3 },
-        mockContext
-      );
-
-      // Assert: Verify Cypher query with depth
-      expect(mockNeo4j.session.run).toHaveBeenCalledWith(
-        expect.stringContaining('DEPENDS_ON*1..3'),
-        expect.objectContaining({ id: 'ci-123' })
-      );
-
-      expect(result).toHaveLength(3);
-    });
-
-    it('should use default depth of 5 when not specified', async () => {
-      // Arrange
-      mockNeo4j.session.run.mockResolvedValueOnce(createMockNeo4jResult([]));
-
-      const getCIDeps = (resolvers.Query as any).getCIDependencies;
-
-      // Act: Get dependencies without depth
-      await getCIDeps(
-        null,
-        { id: 'ci-123' },
-        mockContext
-      );
-
-      // Assert: Verify default depth
-      expect(mockNeo4j.session.run).toHaveBeenCalledWith(
-        expect.stringContaining('DEPENDS_ON*1..5'),
-        expect.any(Object)
-      );
-    });
-  });
-
-  describe('Query.getImpactAnalysis', () => {
-    it('should return impacted CIs with distance', async () => {
-      // Arrange: Mock impact analysis results (metadata must be JSON string)
-      const ci1 = createCI({ id: 'ci-1' });
-      const ci2 = createCI({ id: 'ci-2' });
-      ci1.metadata = JSON.stringify(ci1.metadata || {});
-      ci2.metadata = JSON.stringify(ci2.metadata || {});
-      const mockResults = [
-        { impacted: { properties: ci1 }, distance: 1 },
-        { impacted: { properties: ci2 }, distance: 2 },
-      ];
-
-      mockNeo4j.session.run.mockResolvedValueOnce({
-        records: mockResults.map((r) => ({
-          get: (key: string) => {
-            if (key === 'impacted') return r.impacted;
-            if (key === 'distance') return { toNumber: () => r.distance };
-          },
-        })),
-      });
-
-      const getImpact = (resolvers.Query as any).getImpactAnalysis;
-
-      // Act: Perform impact analysis
-      const result = await getImpact(
-        null,
-        { id: 'ci-123', depth: 3 },
-        mockContext
-      );
-
-      // Assert: Verify reverse dependency query (incoming edges)
-      expect(mockNeo4j.session.run).toHaveBeenCalledWith(
-        expect.stringContaining('<-[:DEPENDS_ON*1..3]'),
-        expect.objectContaining({ id: 'ci-123' })
-      );
-
-      expect(result).toHaveLength(2);
-      expect(result[0]).toHaveProperty('_ci');
-      expect(result[0]).toHaveProperty('_distance', 1);
-      expect(result[1]).toHaveProperty('_distance', 2);
-    });
-
-    it('should order results by distance', async () => {
-      // Arrange
-      mockNeo4j.session.run.mockResolvedValueOnce(createMockNeo4jResult([]));
-
-      const getImpact = (resolvers.Query as any).getImpactAnalysis;
-
-      // Act
-      await getImpact(
-        null,
-        { id: 'ci-123' },
-        mockContext
-      );
-
-      // Assert: Verify ORDER BY in query
-      expect(mockNeo4j.session.run).toHaveBeenCalledWith(
-        expect.stringContaining('ORDER BY distance'),
-        expect.any(Object)
-      );
-    });
-  });
 
   describe('Mutation.createRelationship', () => {
     it('should create relationship between CIs', async () => {
@@ -657,9 +546,6 @@ describe('GraphQL CI Resolvers', () => {
       }
       expect(client().getSession).not.toHaveBeenCalled();
 
-      mockNeo4j.session.run.mockResolvedValue(createMockNeo4jResult([]));
-      await (resolvers.Query as any).getCIDependencies(null, { id: 'ci-1', depth: 10 }, mockContext);
-      expect(mockNeo4j.session.run).toHaveBeenCalledWith(expect.stringContaining('DEPENDS_ON*1..10]'), expect.any(Object));
     });
   });
 
@@ -766,7 +652,11 @@ describe('GraphQL CI Resolvers', () => {
         });
         return { records: rows.map(row => ({ get: (field: string) => (row as Record<string, unknown>)[field] })) };
       };
-      const neo4jClient = { getSession: () => ({ run, close: async () => undefined }) } as any;
+      const neo4jClient = {
+        getSession: () => ({ run, close: async () => undefined }),
+        getDependencies: async () => { traversals.push('getDependencies'); return []; },
+        impactAnalysis: async () => { traversals.push('impactAnalysis'); return []; },
+      } as any;
       const leak = [{ _type: 'DEPENDS_ON', _ci: createCI({ id: 'leak' }), _properties: {} }];
       mockLoaders.relationshipLoader.load.mockResolvedValue(leak);
       mockLoaders.dependentLoader.load.mockResolvedValue(leak);

@@ -8,7 +8,10 @@ import { GraphQLError } from 'graphql';
 import { GraphQLScalarType, Kind } from 'graphql';
 import neo4j from 'neo4j-driver';
 import type { Integer } from 'neo4j-driver';
-import { Neo4jClient, getPostgresClient } from '@cmdb/database';
+import {
+  Neo4jClient, getPostgresClient, CITraversalLimitError, createCITraversalWork,
+  type CITraversalWork,
+} from '@cmdb/database';
 import type { Schema } from 'joi';
 import {
   CI,
@@ -43,6 +46,7 @@ export interface GraphQLContext {
   };
   /** Authenticated identity resolved from the request's bearer token or API key, when present. */
   user?: TokenPayload;
+  _ciTraversalWork?: CITraversalWork;
 }
 
 /**
@@ -156,10 +160,7 @@ function enumInput(value: string | null | undefined): string | undefined {
   return typeof value === 'string' ? convertEnumToDbFormat(value) : undefined;
 }
 
-/**
- * Traversal depth spliced into `[:DEPENDS_ON*1..depth]`: defaults to 5 and must
- * be an integer from 1 to 10, the same rule as the REST CI routes.
- */
+/** Default to five owned BFS hops; REST and GraphQL both permit at most ten. */
 function traversalDepth(depth: number | null | undefined): number {
   if (depth === undefined || depth === null) {
     return 5;
@@ -205,8 +206,18 @@ async function requireCIInOrganization(context: GraphQLContext, id: string, orga
   }
 }
 
-/** Keeps only traversal paths whose every node is in the caller's organization. */
-const PATH_IN_ORGANIZATION = 'all(n IN nodes(path) WHERE n.organization_id = $organizationId)';
+function traversalError(error: unknown, fallback: string): GraphQLError {
+  if (error instanceof CITraversalLimitError) {
+    return new GraphQLError('CI traversal resource limit exceeded', {
+      extensions: { code: 'SERVICE_UNAVAILABLE' },
+    });
+  }
+  const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
+  if (typeof code === 'string' && (code.includes('TransactionTimedOut') || code.includes('Transaction.Terminated'))) {
+    return new GraphQLError('CI traversal timed out', { extensions: { code: 'GATEWAY_TIMEOUT' } });
+  }
+  return new GraphQLError(fallback, { extensions: { code: 'INTERNAL_SERVER_ERROR' } });
+}
 
 interface GraphQLCI {
   _id: string;
@@ -536,29 +547,14 @@ const Query = {
     const organizationId = requireGraphQLOrganization(_context);
     const depth = traversalDepth(_args.depth);
     await requireCIInOrganization(_context, _args.id, organizationId);
-    const session = _context._neo4jClient.getSession();
-
     try {
-      const result = await session.run(
-        `
-        MATCH (ci:CI {id: $id}) WHERE ci.organization_id = $organizationId
-        MATCH path = (ci)-[:DEPENDS_ON*1..${depth}]->(dep:CI)
-        WHERE ${PATH_IN_ORGANIZATION}
-        RETURN DISTINCT dep
-        `,
-        { id: _args.id, organizationId }
+      const paths = await _context._neo4jClient.getDependencies(
+        _args.id, organizationId, depth,
+        _context._ciTraversalWork ??= createCITraversalWork()
       );
-
-      return result.records.map((record: any) => toGraphQLCI(record.get('dep').properties));
-    } catch (error: any) {
-      throw new GraphQLError('Failed to fetch CI dependencies', {
-        extensions: {
-          code: 'INTERNAL_SERVER_ERROR',
-          originalError: error.message,
-        },
-      });
-    } finally {
-      await session.close();
+      return paths.map(path => toGraphQLCI(path.end.properties));
+    } catch (error) {
+      throw traversalError(error, 'Failed to fetch CI dependencies');
     }
   },
 
@@ -573,33 +569,14 @@ const Query = {
     const organizationId = requireGraphQLOrganization(_context);
     const depth = traversalDepth(_args.depth);
     await requireCIInOrganization(_context, _args.id, organizationId);
-    const session = _context._neo4jClient.getSession();
-
     try {
-      const result = await session.run(
-        `
-        MATCH (ci:CI {id: $id}) WHERE ci.organization_id = $organizationId
-        MATCH path = (ci)<-[:DEPENDS_ON*1..${depth}]-(impacted:CI)
-        WHERE ${PATH_IN_ORGANIZATION}
-        RETURN DISTINCT impacted, length(path) as distance
-        ORDER BY distance
-        `,
-        { id: _args.id, organizationId }
+      const impacted = await _context._neo4jClient.impactAnalysis(
+        _args.id, organizationId, depth,
+        _context._ciTraversalWork ??= createCITraversalWork()
       );
-
-      return result.records.map((record: any) => ({
-        _ci: toGraphQLCI(record.get('impacted').properties),
-        _distance: record.get('distance').toNumber(),
-      }));
-    } catch (error: any) {
-      throw new GraphQLError('Failed to perform impact analysis', {
-        extensions: {
-          code: 'INTERNAL_SERVER_ERROR',
-          originalError: error.message,
-        },
-      });
-    } finally {
-      await session.close();
+      return impacted.map(item => ({ _ci: toGraphQLCI(item._ci), _distance: item._distance }));
+    } catch (error) {
+      throw traversalError(error, 'Failed to perform impact analysis');
     }
   },
 };
@@ -882,21 +859,14 @@ const CIResolvers = {
    */
   _dependencies: async (parent: CIValue, _args: unknown, _context: GraphQLContext) => {
     const organizationId = requireGraphQLOrganization(_context);
-    const session = _context._neo4jClient.getSession();
-
     try {
-      const result = await session.run(
-        `
-        MATCH (ci:CI {id: $id}) WHERE ci.organization_id = $organizationId
-        MATCH path = (ci)-[:DEPENDS_ON*1..5]->(dep:CI)
-        WHERE ${PATH_IN_ORGANIZATION}
-        RETURN DISTINCT dep
-        `,
-        { id: parent._id, organizationId }
+      const paths = await _context._neo4jClient.getDependencies(
+        parent._id, organizationId, 5,
+        _context._ciTraversalWork ??= createCITraversalWork()
       );
-      return result.records.map((record: any) => toGraphQLCI(record.get('dep').properties));
-    } finally {
-      await session.close();
+      return paths.map(path => toGraphQLCI(path.end.properties));
+    } catch (error) {
+      throw traversalError(error, 'Failed to fetch CI dependencies');
     }
   },
 

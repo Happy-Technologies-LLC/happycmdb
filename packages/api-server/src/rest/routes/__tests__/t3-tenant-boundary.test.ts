@@ -121,6 +121,14 @@ const pg = {
     sqlCount++;
     return { rows: await db.rows(sql, params) };
   },
+  getClient: async () => ({
+    query: async (sql: string, params: unknown[] = []) =>
+      sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK'
+        || sql.startsWith('SELECT set_config(')
+        ? { rows: [] }
+        : pg.query(sql, params),
+    release: () => undefined,
+  }),
 };
 jest.mock('@cmdb/database', () => ({
   getNeo4jClient: () => graph,

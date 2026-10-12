@@ -12,6 +12,9 @@ const A = 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa';
 const B = 'bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb';
 const users: Record<string, { _id: string; _username: string; _role: 'admin'; _enabled: boolean; _organizationId?: string }> = {
   a: { _id: 't3-a', _username: 'alice', _role: 'admin', _enabled: true, _organizationId: A },
+  a_degree: { _id: 't3-a-degree', _username: 'degree', _role: 'admin', _enabled: true, _organizationId: A },
+  a_fanin: { _id: 't3-a-fanin', _username: 'fanin', _role: 'admin', _enabled: true, _organizationId: A },
+  a_rate: { _id: 't3-a-rate', _username: 'rate', _role: 'admin', _enabled: true, _organizationId: A },
   b: { _id: 't3-b', _username: 'bob', _role: 'admin', _enabled: true, _organizationId: B },
   none: { _id: 't3-none', _username: 'nora', _role: 'admin', _enabled: true },
 };
@@ -355,13 +358,13 @@ it('counts 300 owned inbound and outbound relationships without a Cartesian adja
   let graphMs: number;
   try {
     const criticalityStart = Date.now();
-    const criticality = await request(app).get('/api/v1/impact/criticality/t3-degree-hub').set(auth('a'));
+    const criticality = await request(app).get('/api/v1/impact/criticality/t3-degree-hub').set(auth('a_degree'));
     criticalityMs = Date.now() - criticalityStart;
     expect(criticality.status).toBe(200);
     expect(criticality.body.data.factors.dependent_count).toBe(300);
 
     const graphStart = Date.now();
-    const dependencyGraph = await request(app).get('/api/v1/impact/graph/t3-degree-root?max_depth=1').set(auth('a'));
+    const dependencyGraph = await request(app).get('/api/v1/impact/graph/t3-degree-root?max_depth=1').set(auth('a_degree'));
     graphMs = Date.now() - graphStart;
     expect(dependencyGraph.status).toBe(200);
     expect(dependencyGraph.body.data.nodes.map((node: {
@@ -390,6 +393,63 @@ it('counts 300 owned inbound and outbound relationships without a Cartesian adja
     } finally {
       await session.close();
     }
+  }
+});
+
+it('bounds dependent IDs at the Neo4j producer while retaining exact fan-in and no partial cache writes', async () => {
+  await run(`CREATE (root:CI {id:'t3-fanin-root', name:'fan-in root', type:'server', organization_id:$org})
+    WITH root UNWIND range(1,130) AS ordinal
+    CREATE (dependent:CI {id:'t3-fanin-'+toString(ordinal),
+      name:'dependent', type:'server', organization_id:$org})
+    CREATE (dependent)-[:DEPENDS_ON]->(root)`, { org: A });
+  await run(`MATCH (root:CI {id:'t3-fanin-root'}), (dependent:CI {id:'t3-fanin-1'})
+    UNWIND range(1,20) AS ordinal CREATE (dependent)-[:USES {ordinal:ordinal}]->(root)`);
+  let observed: { count: number; ids: string[] } | undefined;
+  const original = graph.getSession.bind(graph);
+  const spy = jest.spyOn(graph, 'getSession').mockImplementation(() => {
+    const session = original();
+    const originalRun = session.run.bind(session);
+    session.run = (async (...args: Parameters<typeof originalRun>) => {
+      const result = await originalRun(...args);
+      if (String(args[0]).includes('RETURN ci.id as ci_id')
+          && (args[1] as Record<string, unknown>)?.ciId === 't3-fanin-root') {
+        observed = {
+          count: result.records[0].get('dependent_count').toNumber(),
+          ids: result.records[0].get('dependent_ids'),
+        };
+      }
+      return result;
+    }) as typeof session.run;
+    return session;
+  });
+  const started = Date.now();
+  try {
+    const response = await request(app).get('/api/v1/impact/criticality/t3-fanin-root').set(auth('a_fanin'));
+    expect(response.status).toBe(503);
+    expect(response.body).toEqual({ success: false, error: 'Impact criticality resource limit exceeded' });
+  } finally {
+    spy.mockRestore();
+  }
+  expect(Date.now() - started).toBeLessThan(4000);
+  expect(observed?.count).toBe(150);
+  expect(observed?.ids).toHaveLength(101);
+  expect((await sql.query("SELECT ci_id FROM ci_criticality_scores WHERE ci_id LIKE 't3-fanin-%'")).rows).toEqual([]);
+});
+
+it('limits authenticated impact history across requests before graph and SQL access', async () => {
+  const ciLookup = jest.spyOn(graph, 'getCI');
+  try {
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const response = await request(app).get('/api/v1/impact/history/t3-a?limit=1').set(auth('a_rate'));
+      expect(response.status).toBe(200);
+    }
+    const before = ciLookup.mock.calls.length;
+    const blocked = await request(app).get('/api/v1/impact/history/t3-a?limit=1').set(auth('a_rate'));
+    expect(blocked.status).toBe(429);
+    expect(blocked.body).toEqual({ success: false, error: 'Impact analysis rate limit exceeded' });
+    expect(ciLookup.mock.calls).toHaveLength(before);
+  } finally {
+    ciLookup.mockRestore();
   }
 });
 

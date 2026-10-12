@@ -248,65 +248,6 @@ describe('GraphQL Resolvers', () => {
       });
     });
 
-    describe('getCIDependencies', () => {
-      it('should return recursive dependencies', async () => {
-        const mockSession = {
-          _run: jest.fn().mockResolvedValue({
-            _records: [
-              {
-                _get: jest.fn().mockReturnValue({
-                  _properties: mockCI,
-                }),
-              },
-            ],
-          }),
-          _close: jest.fn(),
-        };
-
-        mockNeo4jClient.getSession = jest.fn().mockReturnValue(mockSession);
-
-        const result = await resolvers.Query.getCIDependencies(
-          null,
-          { id: 'server-001', depth: 5 },
-          mockContext
-        );
-
-        expect(Array.isArray(result)).toBe(true);
-        expect(mockSession.close).toHaveBeenCalled();
-      });
-    });
-
-    describe('getImpactAnalysis', () => {
-      it('should return impact analysis with distances', async () => {
-        const mockSession = {
-          _run: jest.fn().mockResolvedValue({
-            _records: [
-              {
-                _get: jest.fn((key: string) => {
-                  if (key === 'impacted') {
-                    return { properties: mockCI };
-                  }
-                  return { toNumber: () => 2 };
-                }),
-              },
-            ],
-          }),
-          _close: jest.fn(),
-        };
-
-        mockNeo4jClient.getSession = jest.fn().mockReturnValue(mockSession);
-
-        const result = await resolvers.Query.getImpactAnalysis(
-          null,
-          { id: 'database-001', depth: 5 },
-          mockContext
-        );
-
-        expect(Array.isArray(result)).toBe(true);
-        expect(result[0]).toHaveProperty('ci');
-        expect(result[0]).toHaveProperty('distance');
-      });
-    });
   });
 
   describe('Mutation Resolvers', () => {

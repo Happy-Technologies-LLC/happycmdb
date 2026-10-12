@@ -120,6 +120,10 @@ Authenticated `GET /api/v1/impact/graph/:rootCiId` accepts `max_depth` 1–5 (de
 
 Impact criticality and graph-node metadata count caller-owned incoming and outgoing relationships in separate scoped Cypher subqueries. This preserves per-relationship counts (including parallel relationships) without multiplying high-degree inbound × outbound rows. The disposable Neo4j integration test profiles both statements on a 300-in/300-out owned hub and checks the small owned graph's counts.
 
+REST `GET /api/v1/cis/:id/{relationships,dependencies,impact}` and GraphQL `getCIDependencies`, `getImpactAnalysis`, and nested CI `_dependencies` expand owned CIs through bounded one-hop frontiers (depth 1–10, default 5 except relationships default 1). Each traversal is limited to 100 distinct visited CIs and 400 adjacency rows, including parallel relationships; composite REST impact and fields in one GraphQL request share their respective work budgets. Statements use a five-second timeout and reject exhausted work with fixed REST 503 / GraphQL `SERVICE_UNAVAILABLE`, never truncated output. REST dependencies return one shortest path per reachable CI rather than every distinct path through a diamond; impact distances are shortest-hop distances. Small acyclic path/edge and tenant behavior is unchanged. Disposable real Neo4j tests cover parallel edges and 1→10→100 fan-out across REST and GraphQL.
+
+Impact GET/POST routes share the architecture verified-principal (10/min, one active) and tenant (40/min, two active) admission runner, with a 20-second end-to-end deadline for preflight, graph work and PostgreSQL statements; fixed 429/503/504 on rate, resource and timeout refusals. The rate/concurrency table is per API process. Criticality still counts every owned incoming relationship exactly, but transfers at most 101 distinct dependent IDs from Neo4j and refuses over-100 unique dependencies before cache writes. Real-Neo4j 130-distinct/150-relationship coverage and mounted concurrent/deadline regressions enforce this contract.
+
 ## Repository Structure
 
 | Package | Description |

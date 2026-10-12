@@ -24,6 +24,9 @@ import { v4 as uuidv4 } from 'uuid';
 const IMPACT_QUERY_TIMEOUT_MS = 5000;
 const MAX_CRITICALITY_DEPTH = 12;
 const MAX_CRITICALITY_NODES = 100;
+const MAX_IMPACT_GRAPH_NODES = 100;
+const MAX_IMPACT_GRAPH_EDGES = 200;
+const MAX_IMPACT_GRAPH_WORK = 400;
 
 export class ImpactCriticalityLimitError extends Error {
   constructor() {
@@ -36,6 +39,7 @@ interface CriticalityWalk {
   computed: Map<string, CriticalityScore>;
   remaining: number;
   cycleDetected: boolean;
+  sharedWork?: { remaining: number };
 }
 
 
@@ -239,8 +243,11 @@ export class ImpactPredictionEngine {
   ): Promise<CriticalityScore> {
     const computed = walk.computed.get(ciId);
     if (computed) return computed;
-    if (depth >= MAX_CRITICALITY_DEPTH || walk.remaining === 0) throw new ImpactCriticalityLimitError();
+    if (depth >= MAX_CRITICALITY_DEPTH || walk.remaining === 0 || walk.sharedWork?.remaining === 0) {
+      throw new ImpactCriticalityLimitError();
+    }
     walk.remaining--;
+    if (walk.sharedWork) walk.sharedWork.remaining--;
     walk.active.add(ciId);
     try {
       if (!await this.neo4jClient.getCI(ciId, organizationId, IMPACT_QUERY_TIMEOUT_MS)) {
@@ -368,10 +375,15 @@ export class ImpactPredictionEngine {
    * Build dependency graph for visualization
    */
   async buildDependencyGraph(rootCiId: string, maxDepth: number, organizationId: string): Promise<DependencyGraph> {
+    if (!Number.isInteger(maxDepth) || maxDepth < 1 || maxDepth > 5) throw new ImpactCriticalityLimitError();
     const session = this.neo4jClient.getSession();
     const nodes: GraphNode[] = [];
     const edges: GraphEdge[] = [];
     const nodeIds = new Set<string>();
+    const work = { remaining: MAX_IMPACT_GRAPH_WORK };
+    const reusableScores = new Map<string, CriticalityScore>();
+    const pendingScores = new Map<string, CriticalityScore>();
+    let cacheable = true;
 
     try {
       // Get nodes and relationships
@@ -380,6 +392,7 @@ export class ImpactPredictionEngine {
          WHERE ALL(n IN nodes(path) WHERE n.organization_id = $organizationId)
          UNWIND nodes(path) as node
          WITH DISTINCT node
+         LIMIT $nodeLimit
          OPTIONAL MATCH (node)-[outgoing]-(out:CI)
          WHERE out.organization_id = $organizationId
          OPTIONAL MATCH (node)<-[incoming]-(inc:CI)
@@ -389,42 +402,66 @@ export class ImpactPredictionEngine {
                 node.ci_type as ci_type,
                 COUNT(DISTINCT incoming) as dependents_count,
                 COUNT(DISTINCT outgoing) as dependencies_count`,
-        { rootCiId, organizationId },
+        { rootCiId, organizationId, nodeLimit: MAX_IMPACT_GRAPH_NODES + 1 },
         { timeout: IMPACT_QUERY_TIMEOUT_MS }
       );
 
-      // Build nodes
+      if (result.records.length > MAX_IMPACT_GRAPH_NODES) throw new ImpactCriticalityLimitError();
+      work.remaining -= result.records.length;
+      if (work.remaining < 0) throw new ImpactCriticalityLimitError();
+      const uniqueRecords: typeof result.records = [];
       for (const record of result.records) {
-        const nodeId = record.get('id');
-        if (nodeIds.has(nodeId)) continue;
-
-        nodeIds.add(nodeId);
-
-        const criticalityScore = await this.getCriticalityScore(nodeId, organizationId);
-
-        nodes.push({
-          id: nodeId,
-          ci_id: nodeId,
-          ci_name: record.get('name'),
-          ci_type: record.get('ci_type'),
-          criticality: criticalityScore.criticality_score,
-          dependencies_count: record.get('dependencies_count').toNumber(),
-          dependents_count: record.get('dependents_count').toNumber(),
-        });
+        const id = record.get('id');
+        if (nodeIds.has(id)) continue;
+        nodeIds.add(id);
+        uniqueRecords.push(record);
       }
-
       // Get edges
       const edgeResult = await session.run(
         `MATCH path = (root:CI {id: $rootCiId})-[*0..${maxDepth}]-(related:CI)
          WHERE ALL(n IN nodes(path) WHERE n.organization_id = $organizationId)
          UNWIND relationships(path) as rel
          WITH DISTINCT rel, startNode(rel) as source, endNode(rel) as target
+         LIMIT $edgeLimit
          RETURN source.id as source_id,
                 target.id as target_id,
                 type(rel) as rel_type`,
-        { rootCiId, organizationId },
+        { rootCiId, organizationId, edgeLimit: MAX_IMPACT_GRAPH_EDGES + 1 },
         { timeout: IMPACT_QUERY_TIMEOUT_MS }
       );
+      if (edgeResult.records.length > MAX_IMPACT_GRAPH_EDGES) throw new ImpactCriticalityLimitError();
+      work.remaining -= edgeResult.records.length;
+      if (work.remaining < 0) throw new ImpactCriticalityLimitError();
+
+      // Both graph streams are bounded before scoring any node or writing SQL.
+      // Reuse acyclic results, but recompute each root after a back-edge because
+      // cycle-dependent descendant scores cannot be shared between roots.
+      for (const record of uniqueRecords) {
+        const nodeId = record.get('id');
+        const walk: CriticalityWalk = {
+          active: new Set<string>(),
+          computed: cacheable ? reusableScores : new Map<string, CriticalityScore>(),
+          remaining: MAX_CRITICALITY_NODES,
+          cycleDetected: false,
+          sharedWork: work,
+        };
+        const score = await this.walkCriticality(nodeId, organizationId, walk, 0);
+        if (walk.cycleDetected) {
+          cacheable = false;
+          pendingScores.clear();
+        } else if (cacheable) {
+          for (const computed of walk.computed.values()) pendingScores.set(computed.ci_id, computed);
+        }
+        nodes.push({
+          id: nodeId,
+          ci_id: nodeId,
+          ci_name: record.get('name'),
+          ci_type: record.get('ci_type'),
+          criticality: score.criticality_score,
+          dependencies_count: record.get('dependencies_count').toNumber(),
+          dependents_count: record.get('dependents_count').toNumber(),
+        });
+      }
 
       for (const record of edgeResult.records) {
         const sourceId = record.get('source_id');
@@ -439,6 +476,13 @@ export class ImpactPredictionEngine {
             is_critical: record.get('rel_type') === 'DEPENDS_ON',
           });
         }
+      }
+      if (cacheable) {
+        // Reserve all pending writes before the first one; an exhausted
+        // request budget cannot leave only part of the graph's cache behind.
+        if (pendingScores.size > work.remaining) throw new ImpactCriticalityLimitError();
+        work.remaining -= pendingScores.size;
+        for (const score of pendingScores.values()) await this.storeCriticalityScore(score, organizationId);
       }
 
       return {

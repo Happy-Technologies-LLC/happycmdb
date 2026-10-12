@@ -392,6 +392,12 @@ describe('ImpactPredictionEngine', () => {
   });
 
   describe('buildDependencyGraph', () => {
+    it('rejects excessive depth from direct engine callers before graph work', async () => {
+      await expect(engine.buildDependencyGraph(mockCIs.database.id, 6, 'org-a'))
+        .rejects.toThrow('Impact criticality resource limit exceeded');
+      expect(mockNeo4jClient.getSession).not.toHaveBeenCalled();
+    });
+
     it('should build complete dependency graph', async () => {
       // buildDependencyGraph opens ONE session and calls run twice:
       // 1. Get nodes

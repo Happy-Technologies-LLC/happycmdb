@@ -116,6 +116,8 @@ Architecture analysis accepts at most 20 CI IDs in `POST /api/v1/architecture/an
 
 Impact criticality analysis skips cycle/self-loop edges, caps recursion at 12 levels and 100 visited nodes per request, and returns a fixed 503 without partial cache writes when either budget is exceeded. A walk that encounters a cycle returns its bounded root score but does not cache any scores from that walk: skipped back-edges make descendant scores depend on which CI was requested first. Acyclic walks still persist scores. All impact-engine Neo4j statements have a five-second transaction timeout. Affected-CI traversal remains limited to five hops and 200 results; critical-path traversal remains limited to ten hops and one result (covered in `packages/ai-ml-engine/tests/unit/impact-prediction.test.ts`).
 
+Authenticated `GET /api/v1/impact/graph/:rootCiId` accepts `max_depth` 1–5 (default 3). Its node and edge Cypher streams each stop after one over their respective limits of 100 nodes and 200 edges; an over-limit response is a fixed 503, never a truncated graph. A single 400-unit request budget charges returned graph rows, every criticality visit across all nodes and pending criticality cache writes; a budget failure does not return partial graph data or persist partial criticality cache entries. Neo4j statements retain five-second timeouts. The mounted bounds and unchanged small-graph output are covered in `packages/api-server/src/rest/routes/__tests__/impact-criticality.routes.test.ts`. A Neo4j statement timeout alone does not bound total graph request time; staging load validation is still required.
+
 ## Repository Structure
 
 | Package | Description |

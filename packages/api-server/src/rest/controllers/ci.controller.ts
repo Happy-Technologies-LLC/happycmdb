@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Request, Response } from 'express';
-import { getNeo4jClient, getPostgresClient, getAuditService } from '@cmdb/database';
+import {
+  CITraversalLimitError, createCITraversalWork, getNeo4jClient, getPostgresClient, getAuditService,
+} from '@cmdb/database';
 import { logger, validateCISortField, validateSortDirection } from '@cmdb/common';
 import neo4j from 'neo4j-driver';
 import { requestOrganizationId } from '../../middleware/auth.middleware';
@@ -18,6 +20,19 @@ function sendCINotFound(res: Response): void {
     error: 'Not Found',
     message: 'CI not found'
   });
+}
+
+function sendTraversalFailure(res: Response, error: unknown): boolean {
+  if (error instanceof CITraversalLimitError) {
+    res.status(503).json({ success: false, error: 'CI traversal resource limit exceeded' });
+    return true;
+  }
+  const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
+  if (typeof code === 'string' && (code.includes('TransactionTimedOut') || code.includes('Transaction.Terminated'))) {
+    res.status(504).json({ success: false, error: 'CI traversal timed out' });
+    return true;
+  }
+  return false;
 }
 
 // Helper function to convert Neo4j types to JavaScript types and transform field names
@@ -368,19 +383,15 @@ export class CIController {
 
       // Transform relationships to match frontend expectations
       const transformedRelationships = relationships.map((rel: any) => {
-        const relatedCI = convertNeo4jTypes(rel._ci);
-
-        // Determine actual direction from Neo4j relationship start/end nodes
-        // If current CI is the start node, it's an outgoing relationship
-        const isOutgoing = rel._startNodeId === id;
-
+        const sourceCI = convertNeo4jTypes(rel._startCI);
+        const targetCI = convertNeo4jTypes(rel._endCI);
         return {
-          id: `${id}-${rel._type}-${relatedCI.id}`,
+          id: `${rel._startNodeId}-${rel._type}-${rel._endNodeId}`,
           type: rel._type,
-          source_ci_id: isOutgoing ? id : relatedCI.id,
-          target_ci_id: isOutgoing ? relatedCI.id : id,
-          source_ci: isOutgoing ? convertNeo4jTypes(ci) : relatedCI,
-          target_ci: isOutgoing ? relatedCI : convertNeo4jTypes(ci),
+          source_ci_id: rel._startNodeId,
+          target_ci_id: rel._endNodeId,
+          source_ci: sourceCI,
+          target_ci: targetCI,
           properties: convertNeo4jTypes(rel._properties),
           created_at: rel._properties?.created_at ? convertNeo4jTypes(rel._properties.created_at) : new Date().toISOString()
         };
@@ -393,6 +404,7 @@ export class CIController {
         depth: depthNum
       });
     } catch (error) {
+      if (sendTraversalFailure(res, error)) return;
       logger.error('Error getting relationships', error);
       res.status(500).json({
         success: false,
@@ -444,6 +456,7 @@ export class CIController {
         depth: depthNum
       });
     } catch (error) {
+      if (sendTraversalFailure(res, error)) return;
       logger.error('Error getting dependencies', error);
       res.status(500).json({
         success: false,
@@ -486,12 +499,10 @@ export class CIController {
         return;
       }
 
-      // Both traversals only follow paths whose every node is in the caller's organization.
-      // Get downstream dependencies (CIs that depend on this CI)
-      const downstream = await this.neo4jClient.impactAnalysis(id, organizationId, depthNum);
-
-      // Get upstream dependencies (CIs that this CI depends on)
-      const upstream = await this.neo4jClient.getDependencies(id, organizationId, depthNum);
+      // Both owned traversals share one request work/node budget.
+      const work = createCITraversalWork();
+      const downstream = await this.neo4jClient.impactAnalysis(id, organizationId, depthNum, work);
+      const upstream = await this.neo4jClient.getDependencies(id, organizationId, depthNum, work);
 
       // Extract unique CIs from downstream
       const downstreamCIs = downstream.map((item: any) => convertNeo4jTypes(item._ci));
@@ -541,6 +552,7 @@ export class CIController {
         depth: depthNum
       });
     } catch (error) {
+      if (sendTraversalFailure(res, error)) return;
       logger.error('Error performing impact analysis', error);
       res.status(500).json({
         success: false,

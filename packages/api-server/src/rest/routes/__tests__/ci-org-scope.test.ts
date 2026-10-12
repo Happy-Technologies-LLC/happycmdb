@@ -23,7 +23,9 @@ import { join } from 'path';
 import express from 'express';
 import request from 'supertest';
 import neo4j from 'neo4j-driver';
-import { Neo4jClient } from '../../../../../database/src/neo4j/client';
+import {
+  Neo4jClient, CITraversalLimitError, createCITraversalWork,
+} from '../../../../../database/src/neo4j/client';
 
 // Placeholder config so loadConfig() validates; no Neo4j/Redis/PostgreSQL server is contacted.
 // The signing secret is generated per run in memory; no literal credential.
@@ -59,27 +61,6 @@ function tenantPredicate(cypher: string, params: Props, variable: string): (prop
     : () => true;
 }
 
-interface Path { nodes: string[]; edges: Edge[] }
-
-/** Variable-length expansion with relationship uniqueness, like Cypher's `-[*1..depth]->`. */
-function expand(startId: string, outgoing: boolean, type: string | null, depth: number): Path[] {
-  const paths: Path[] = [];
-  const walk = (current: Path) => {
-    if (current.edges.length >= depth) return;
-    const at = current.nodes[current.nodes.length - 1]!;
-    for (const edge of graph.edges) {
-      if (type !== null && edge.type !== type) continue;
-      if (current.edges.includes(edge)) continue;
-      const [from, to] = outgoing ? [edge.from, edge.to] : [edge.to, edge.from];
-      if (from !== at || !graph.nodes.has(to)) continue;
-      const next = { nodes: [...current.nodes, to], edges: [...current.edges, edge] };
-      paths.push(next);
-      walk(next);
-    }
-  };
-  if (graph.nodes.has(startId)) walk({ nodes: [startId], edges: [] });
-  return paths;
-}
 
 function run(rawCypher: string, params: Props = {}): FakeRecord[] {
   const cypher = rawCypher.replace(/\s+/g, ' ').trim();
@@ -150,48 +131,31 @@ function run(rawCypher: string, params: Props = {}): FakeRecord[] {
       .map(props => record({ node: node(props), score: 1 }));
   }
 
-  const traversal = cypher.match(/^MATCH path = \(ci:CI \{id: \$ciId\}\)(<?-)\[(?:r|:(\w+))\*1\.\.(\d+)\](->?)\((\w+):CI\)/);
-  if (traversal) {
-    const [, left, type, depth, , variable] = traversal;
-    const pathInScope = cypher.includes('all(n IN nodes(path) WHERE n.organization_id = $organizationId)')
-      ? (p: Path) => p.nodes.every(id => graph.nodes.get(id)!['organization_id'] === params['organizationId'])
-      : () => true;
-    const paths = expand(params['ciId'] as string, left === '-', type ?? null, Number(depth)).filter(pathInScope);
-    const end = (p: Path) => node(graph.nodes.get(p.nodes[p.nodes.length - 1]!)!);
-
-    if (variable === 'related') {
-      const seen = new Set<string>();
-      return paths.flatMap(p => p.edges.flatMap(edge => {
-        const key = `${edge.type}|${edge.from}|${edge.to}|${p.nodes[p.nodes.length - 1]}`;
-        if (seen.has(key)) return [];
-        seen.add(key);
-        return [record({
-          type: edge.type, related: end(p), relationship: { properties: edge.properties },
+  if (cypher.startsWith('UNWIND $frontier AS sourceId')) {
+    const sourceInScope = tenantPredicate(cypher, params, 'source');
+    const targetInScope = tenantPredicate(cypher, params, 'target');
+    const outgoing = cypher.includes('(source)-[relationship');
+    const dependencyOnly = cypher.includes('relationship:DEPENDS_ON');
+    const rows: FakeRecord[] = [];
+    for (const sourceId of params['frontier'] as string[]) {
+      const source = graph.nodes.get(sourceId);
+      if (!source || !sourceInScope(source)) continue;
+      for (const edge of graph.edges) {
+        if (dependencyOnly && edge.type !== 'DEPENDS_ON') continue;
+        const targetId = outgoing
+          ? edge.from === sourceId && edge.to
+          : edge.to === sourceId && edge.from;
+        if (!targetId) continue;
+        const target = graph.nodes.get(targetId);
+        if (!target || !targetInScope(target)) continue;
+        rows.push(record({
+          source: node(source), target: node(target),
+          relationship: { type: edge.type, properties: edge.properties },
           startNodeId: edge.from, endNodeId: edge.to,
-        })];
-      }));
+        }));
+      }
     }
-    if (variable === 'dep') {
-      return paths.map(p => record({
-        path: {
-          segments: p.edges.map((edge, i) => ({
-            start: node(graph.nodes.get(p.nodes[i]!)!),
-            relationship: { type: edge.type, properties: edge.properties },
-            end: node(graph.nodes.get(p.nodes[i + 1]!)!),
-          })),
-        },
-      }));
-    }
-    // impacted: RETURN DISTINCT impacted, length(path) AS distance ORDER BY distance
-    const seen = new Set<string>();
-    return paths
-      .sort((x, y) => x.edges.length - y.edges.length)
-      .flatMap(p => {
-        const key = `${p.nodes[p.nodes.length - 1]}|${p.edges.length}`;
-        if (seen.has(key)) return [];
-        seen.add(key);
-        return [record({ impacted: end(p), distance: neo4j.int(p.edges.length) })];
-      });
+    return rows.slice(0, num(params['rowLimit']));
   }
 
   if (cypher.startsWith('MATCH (ci:CI {id: $id})') && cypher.endsWith('RETURN ci')) {
@@ -244,6 +208,8 @@ void driverSeam.driver.close();
 driverSeam.driver = fakeDriver;
 
 jest.mock('@cmdb/database', () => ({
+  CITraversalLimitError,
+  createCITraversalWork,
   getNeo4jClient: () => neo4jClient,
   getPostgresClient: () => ({ pool: {} }),
   getAuditService: () => auditService,
@@ -425,10 +391,35 @@ describe('/api/v1/cis tenant scoping', () => {
     expect(rels.status).toBe(200);
     expect(rels.body.data.map((r: { target_ci_id: string }) => r.target_ci_id)).toEqual(['ci-a-db']);
 
-    // The route's query schema only accepts `direction` (depth falls back to 1),
-    // so the multi-hop case is checked on the client the controller calls.
-    const deep = await neo4jClient.getRelationships('ci-a-app', ORG_A, 'out', 3);
-    expect(deep.map(r => `${r._startNodeId}->${r._endNodeId}`)).toEqual(['ci-a-app->ci-a-db']);
+    const deep = await request(app).get('/api/v1/cis/ci-a-app/relationships?direction=out&depth=3').set(AS_A);
+    expect(deep.status).toBe(200);
+    expect(deep.body.data.map((r: { source_ci_id: string; target_ci_id: string }) =>
+      `${r.source_ci_id}->${r.target_ci_id}`)).toEqual(['ci-a-app->ci-a-db']);
+  });
+
+  it('reports actual owned endpoints and objects for each two-hop relationship', async () => {
+    seedCI('ci-a-cache', ORG_A);
+    seedCI('ci-a-child', ORG_A);
+    seedCI('ci-a-grandchild', ORG_A);
+    dependsOn('ci-a-db', 'ci-a-cache');
+    dependsOn('ci-a-child', 'ci-a-app');
+    dependsOn('ci-a-grandchild', 'ci-a-child');
+    dependsOn('ci-b-app', 'ci-a-cache');
+
+    for (const [direction, expected] of [
+      ['out', [['ci-a-app', 'ci-a-db'], ['ci-a-db', 'ci-a-cache']]],
+      ['in', [['ci-a-child', 'ci-a-app'], ['ci-a-grandchild', 'ci-a-child']]],
+    ] as const) {
+      const response = await request(app)
+        .get(`/api/v1/cis/ci-a-app/relationships?direction=${direction}&depth=2`).set(AS_A);
+      expect(response.status).toBe(200);
+      expect(response.body.data.map((edge: {
+        id: string; source_ci_id: string; target_ci_id: string;
+        source_ci: { id: string }; target_ci: { id: string };
+      }) => [edge.id, edge.source_ci_id, edge.target_ci_id, edge.source_ci.id, edge.target_ci.id]))
+        .toEqual(expected.map(([source, target]) =>
+          [`${source}-DEPENDS_ON-${target}`, source, target, source, target]));
+    }
   });
 
   it('403 with zero queries without an org claim', async () => {

@@ -22,7 +22,7 @@ import {
 } from '../types/impact.types';
 import { v4 as uuidv4 } from 'uuid';
 import neo4j from 'neo4j-driver';
-const IMPACT_QUERY_TIMEOUT_MS = 5000;
+import { architectureDeadlineAt, architectureRemainingMs } from './architecture-optimization-engine';
 const MAX_CRITICALITY_DEPTH = 12;
 const MAX_CRITICALITY_NODES = 100;
 const MAX_IMPACT_GRAPH_NODES = 100;
@@ -65,6 +65,26 @@ export class ImpactPredictionEngine {
     return ImpactPredictionEngine.instance;
   }
 
+  /** Use the route's one deadline for SQL as well as Neo4j; plain engine calls retain pool queries. */
+  private async queryWithDeadline(text: string, values: unknown[]) {
+    if (architectureDeadlineAt() === undefined) return this.postgresClient.query(text, values);
+    architectureRemainingMs();
+    const client = await this.postgresClient.getClient();
+    try {
+      await client.query('BEGIN');
+      await client.query("SELECT set_config('statement_timeout', $1, true)", [`${architectureRemainingMs()}ms`]);
+      const result = await client.query(text, values);
+      architectureRemainingMs();
+      await client.query('COMMIT');
+      return result;
+    } catch (error) {
+      try { await client.query('ROLLBACK'); } catch { /* original failure wins */ }
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   /**
    * Predict impact of a change on a CI
    */
@@ -84,7 +104,7 @@ export class ImpactPredictionEngine {
          WHERE ci.organization_id = $organizationId
          RETURN ci.id as id, ci.name as name, ci.ci_type as ci_type`,
         { ciId, organizationId },
-        { timeout: IMPACT_QUERY_TIMEOUT_MS }
+        { timeout: architectureRemainingMs() }
       );
 
       if (ciResult.records.length === 0) {
@@ -168,7 +188,7 @@ export class ImpactPredictionEngine {
            RETURN dependent.id as ci_id, dependent.name as ci_name,
                   dependent.ci_type as ci_type, parent_id`,
           { frontier, organizationId, types, frontierLimit: neo4j.int(MAX_CRITICALITY_NODES + 1) },
-          { timeout: IMPACT_QUERY_TIMEOUT_MS }
+          { timeout: architectureRemainingMs() }
         );
         if (result.records.length > MAX_CRITICALITY_NODES) throw new ImpactCriticalityLimitError();
         work.remaining -= result.records.length;
@@ -262,10 +282,10 @@ export class ImpactPredictionEngine {
     if (walk.sharedWork) walk.sharedWork.remaining--;
     walk.active.add(ciId);
     try {
-      if (!await this.neo4jClient.getCI(ciId, organizationId, IMPACT_QUERY_TIMEOUT_MS)) {
+      if (!await this.neo4jClient.getCI(ciId, organizationId, architectureRemainingMs())) {
         throw new Error(`CI not found: ${ciId}`);
       }
-      const cached = await this.postgresClient.query(
+      const cached = await this.queryWithDeadline(
         `SELECT s.* FROM ci_criticality_scores s
          WHERE s.ci_id = $1 AND s.calculated_at >= NOW() - INTERVAL '7 days'`,
         [ciId]
@@ -296,8 +316,14 @@ export class ImpactPredictionEngine {
            WITH ci
            OPTIONAL MATCH (ci)<-[incoming]-(dependent:CI)
            WHERE dependent.organization_id = $organizationId
-           RETURN COUNT(DISTINCT incoming) as dependent_count,
-                  COLLECT(DISTINCT dependent.id) as dependent_ids
+           RETURN COUNT(DISTINCT incoming) as dependent_count
+         }
+         CALL {
+           WITH ci
+           MATCH (ci)<--(dependent:CI)
+           WHERE dependent.organization_id = $organizationId
+           WITH DISTINCT dependent.id as dependent_id LIMIT $dependentLimit
+           RETURN COLLECT(dependent_id) as dependent_ids
          }
          CALL {
            WITH ci
@@ -310,8 +336,8 @@ export class ImpactPredictionEngine {
                 dependent_count,
                 dependency_count,
                 dependent_ids`,
-        { ciId, organizationId },
-        { timeout: IMPACT_QUERY_TIMEOUT_MS }
+        { ciId, organizationId, dependentLimit: neo4j.int(MAX_CRITICALITY_NODES + 1) },
+        { timeout: architectureRemainingMs() }
       );
 
       if (result.records.length === 0) {
@@ -323,13 +349,16 @@ export class ImpactPredictionEngine {
         throw new Error(`Failed to get dependency data for CI: ${ciId}`);
       }
       const dependentCount = record.get('dependent_count').toNumber();
+      // The producer stops at 101 distinct IDs: a full page proves this
+      // walk cannot fit the 100-node budget, before further SQL or cache work.
+      const dependentIds: string[] = record.get('dependent_ids');
+      if (dependentIds.length > MAX_CRITICALITY_NODES) throw new ImpactCriticalityLimitError();
 
       // Get change frequency
       const changeFreq = await this.getChangeFrequency(ciId);
 
       // Calculate dependent weight (sum of dependent criticalities)
       let dependentWeight = 0;
-      const dependentIds = record.get('dependent_ids');
 
       for (const depId of dependentIds) {
         // A cycle edge contributes no score. The first visit still counts as a
@@ -378,7 +407,7 @@ export class ImpactPredictionEngine {
    * Get change frequency for a CI (changes per month)
    */
   private async getChangeFrequency(ciId: string): Promise<number> {
-    const result = await this.postgresClient.query(
+    const result = await this.queryWithDeadline(
       `SELECT COUNT(*) as change_count FROM ci_change_history h
        WHERE h.ci_id = $1 AND h.changed_at >= NOW() - INTERVAL '30 days'`,
       [ciId]
@@ -421,7 +450,7 @@ export class ImpactPredictionEngine {
                   type(rel) as rel_type,
                   neighbor.id as neighbor_id`,
           { frontier, organizationId, edgeLimit: neo4j.int(MAX_IMPACT_GRAPH_EDGES + 1) },
-          { timeout: IMPACT_QUERY_TIMEOUT_MS }
+          { timeout: architectureRemainingMs() }
         );
         if (adjacent.records.length > MAX_IMPACT_GRAPH_EDGES) throw new ImpactCriticalityLimitError();
         work.remaining -= adjacent.records.length;
@@ -469,7 +498,7 @@ export class ImpactPredictionEngine {
                 dependents_count,
                 dependencies_count`,
         { nodeIds: [...nodeIds], organizationId, nodeLimit: neo4j.int(MAX_IMPACT_GRAPH_NODES + 1) },
-        { timeout: IMPACT_QUERY_TIMEOUT_MS }
+        { timeout: architectureRemainingMs() }
       );
       if (result.records.length > MAX_IMPACT_GRAPH_NODES) throw new ImpactCriticalityLimitError();
       work.remaining -= result.records.length;
@@ -629,8 +658,8 @@ export class ImpactPredictionEngine {
    * Store impact analysis
    */
   private async storeImpactAnalysis(impact: ImpactAnalysis, organizationId: string): Promise<void> {
-    if (!await this.neo4jClient.getCI(impact.source_ci_id, organizationId, IMPACT_QUERY_TIMEOUT_MS)) throw new Error('CI not found');
-    const inserted = await this.postgresClient.query(
+    if (!await this.neo4jClient.getCI(impact.source_ci_id, organizationId, architectureRemainingMs())) throw new Error('CI not found');
+    const inserted = await this.queryWithDeadline(
       `INSERT INTO impact_analyses
        (id, source_ci_id, source_ci_name, change_type, impact_score,
         blast_radius, critical_path, risk_level, analyzed_at,
@@ -659,8 +688,8 @@ export class ImpactPredictionEngine {
    * Store criticality score
    */
   private async storeCriticalityScore(score: CriticalityScore, organizationId: string): Promise<void> {
-    if (!await this.neo4jClient.getCI(score.ci_id, organizationId, IMPACT_QUERY_TIMEOUT_MS)) throw new Error('CI not found');
-    const inserted = await this.postgresClient.query(
+    if (!await this.neo4jClient.getCI(score.ci_id, organizationId, architectureRemainingMs())) throw new Error('CI not found');
+    const inserted = await this.queryWithDeadline(
       `INSERT INTO ci_criticality_scores
        (ci_id, ci_name, criticality_score, factors, calculated_at)
        VALUES ($1::varchar, $2::varchar, $3::integer, $4::jsonb, $5::timestamptz)
@@ -696,8 +725,8 @@ export class ImpactPredictionEngine {
    * Get impact analysis history for a CI
    */
   async getImpactHistory(ciId: string, limit: number, organizationId: string): Promise<ImpactAnalysis[]> {
-    if (!await this.neo4jClient.getCI(ciId, organizationId, IMPACT_QUERY_TIMEOUT_MS)) return [];
-    const result = await this.postgresClient.query(
+    if (!await this.neo4jClient.getCI(ciId, organizationId, architectureRemainingMs())) return [];
+    const result = await this.queryWithDeadline(
       `SELECT h.* FROM impact_analyses h
        WHERE h.source_ci_id = $1 ORDER BY h.analyzed_at DESC LIMIT $2`,
       [ciId, limit]

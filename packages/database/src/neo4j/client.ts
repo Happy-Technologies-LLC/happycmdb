@@ -3,7 +3,7 @@
 
 // packages/database/src/neo4j/client.ts
 
-import neo4j, { Driver, Session } from 'neo4j-driver';
+import neo4j, { Driver, Session, Node, Relationship, Path, PathSegment } from 'neo4j-driver';
 import { logger, CI, CIInput, sanitizeCITypeForLabel, validateRelationshipType } from '@cmdb/common';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -41,12 +41,36 @@ function nodeScopeClause(organizationId: string | null): string {
   return organizationId === null ? '' : 'WHERE ci.organization_id = $organizationId';
 }
 
-/** WHERE clause keeping only paths whose every node is in the scope's organization. */
-function pathScopeClause(organizationId: string | null): string {
-  return organizationId === null
-    ? ''
-    : 'WHERE all(n IN nodes(path) WHERE n.organization_id = $organizationId)';
+
+export const MAX_CI_TRAVERSAL_NODES = 100;
+export const MAX_CI_TRAVERSAL_WORK = 400;
+const CI_TRAVERSAL_QUERY_TIMEOUT_MS = 5000;
+
+export class CITraversalLimitError extends Error {
+  constructor() {
+    super('CI traversal resource limit exceeded');
+  }
 }
+
+export interface CITraversalWork {
+  remaining: number;
+  nodes: Set<string>;
+  pending: Promise<void>;
+}
+
+export function createCITraversalWork(): CITraversalWork {
+  return { remaining: MAX_CI_TRAVERSAL_WORK, nodes: new Set<string>(), pending: Promise.resolve() };
+}
+
+type TraversalEdge = {
+  source: Node;
+  target: Node;
+  relationship: Relationship;
+  startNodeId: string;
+  endNodeId: string;
+};
+
+type TraversalNode = { node: Node; distance: number };
 
 export class Neo4jClient {
   private driver: Driver;
@@ -397,115 +421,152 @@ export class Neo4jClient {
     }
   }
 
+  /**
+   * Expand owned CI nodes once per hop. Each statement caps adjacency rows
+   * before transfer; the shared budget also charges parallel relationships.
+   */
+  private async traverseCIs(
+    ciId: string, scope: CIOrganizationScope, depth: number,
+    direction: 'in' | 'out', dependencyOnly: boolean, work: CITraversalWork
+  ): Promise<{ nodes: TraversalNode[]; edges: TraversalEdge[]; paths: Path[] }> {
+    const organizationId = organizationIdParam(scope);
+    if (!Number.isInteger(depth) || depth < 1 || depth > 10) throw new CITraversalLimitError();
+    work.nodes.add(ciId);
+    if (work.nodes.size > MAX_CI_TRAVERSAL_NODES) throw new CITraversalLimitError();
+    const session = this.getSession();
+    const nodes: TraversalNode[] = [];
+    const edges: TraversalEdge[] = [];
+    const discovered = new Set<string>([ciId]);
+    const nodeById = new Map<string, Node>();
+    const parents = new Map<string, { sourceId: string; relationship: Relationship }>();
+    let frontier = [ciId];
+    const relation = dependencyOnly ? ':DEPENDS_ON' : '';
+    const pattern = direction === 'out'
+      ? `(source)-[relationship${relation}]->(target:CI)`
+      : `(source)<-[relationship${relation}]-(target:CI)`;
+    try {
+      for (let distance = 1; distance <= depth && frontier.length > 0; distance++) {
+        // GraphQL sibling aliases share this object. Queue each hop so the
+        // remaining allowance is reserved before any Neo4j statement begins.
+        const previous = work.pending;
+        let release!: () => void;
+        work.pending = new Promise<void>(resolve => { release = resolve; });
+        try {
+          await previous;
+          const reserved = work.remaining;
+          if (reserved === 0) throw new CITraversalLimitError();
+          work.remaining -= reserved;
+          const result = await session.run(
+            `UNWIND $frontier AS sourceId
+             MATCH (source:CI {id: sourceId})
+             ${organizationId === null ? '' : 'WHERE source.organization_id = $organizationId'}
+             MATCH ${pattern}
+             ${organizationId === null ? '' : 'WHERE target.organization_id = $organizationId'}
+             RETURN DISTINCT source, target, relationship,
+                    startNode(relationship).id AS startNodeId,
+                    endNode(relationship).id AS endNodeId
+             LIMIT $rowLimit`,
+            { frontier, organizationId, rowLimit: neo4j.int(reserved + 1) },
+            { timeout: CI_TRAVERSAL_QUERY_TIMEOUT_MS }
+          );
+          if (result.records.length > reserved) throw new CITraversalLimitError();
+          work.remaining += reserved - result.records.length;
+          const next: string[] = [];
+          for (const record of result.records) {
+            const source = record.get('source') as Node;
+            const target = record.get('target') as Node;
+            const relationship = record.get('relationship') as Relationship;
+            const sourceId = source.properties['id'] as string;
+            const targetId = target.properties['id'] as string;
+            nodeById.set(sourceId, source);
+            edges.push({
+              source, target, relationship,
+              startNodeId: record.get('startNodeId'),
+              endNodeId: record.get('endNodeId'),
+            });
+            if (discovered.has(targetId)) continue;
+            discovered.add(targetId);
+            work.nodes.add(targetId);
+            if (work.nodes.size > MAX_CI_TRAVERSAL_NODES) throw new CITraversalLimitError();
+            nodeById.set(targetId, target);
+            parents.set(targetId, { sourceId, relationship });
+            nodes.push({ node: target, distance });
+            next.push(targetId);
+          }
+          frontier = next;
+        } finally {
+          release();
+        }
+      }
+      const paths: Path[] = [];
+      for (const { node } of nodes) {
+        const segments: PathSegment[] = [];
+        let at = node.properties['id'] as string;
+        while (at !== ciId) {
+          const parent = parents.get(at)!;
+          segments.push(new neo4j.types.PathSegment(
+            nodeById.get(parent.sourceId)!, parent.relationship, nodeById.get(at)!
+          ));
+          at = parent.sourceId;
+        }
+        segments.reverse();
+        paths.push(new neo4j.types.Path(nodeById.get(ciId)!, node, segments));
+      }
+      return { nodes, edges, paths };
+    } finally {
+      await session.close();
+    }
+  }
+
   async getRelationships(
-    ciId: string,
-    scope: CIOrganizationScope,
-    direction: 'in' | 'out' | 'both' = 'both',
-    depth: number = 1
+    ciId: string, scope: CIOrganizationScope,
+    direction: 'in' | 'out' | 'both' = 'both', depth: number = 1,
+    work: CITraversalWork = createCITraversalWork()
   ) {
-    const organizationId = organizationIdParam(scope);
-    const session = this.getSession();
-    try {
-      // For depth > 1, we need to handle paths
-      // For now, we'll query outgoing and incoming separately to preserve direction
-      const queries = [];
-
-      if (direction === 'out' || direction === 'both') {
-        queries.push({
-          query: `
-            MATCH path = (ci:CI {id: $ciId})-[r*1..${depth}]->(related:CI)
-            ${pathScopeClause(organizationId)}
-            WITH ci, related, relationships(path) as rels
-            UNWIND rels as r
-            RETURN DISTINCT type(r) as type, related, r as relationship,
-                   startNode(r).id as startNodeId, endNode(r).id as endNodeId,
-                   'outgoing' as queryDirection
-          `,
-          params: { ciId, organizationId }
-        });
-      }
-
-      if (direction === 'in' || direction === 'both') {
-        queries.push({
-          query: `
-            MATCH path = (ci:CI {id: $ciId})<-[r*1..${depth}]-(related:CI)
-            ${pathScopeClause(organizationId)}
-            WITH ci, related, relationships(path) as rels
-            UNWIND rels as r
-            RETURN DISTINCT type(r) as type, related, r as relationship,
-                   startNode(r).id as startNodeId, endNode(r).id as endNodeId,
-                   'incoming' as queryDirection
-          `,
-          params: { ciId, organizationId }
-        });
-      }
-
-      const allRelationships = [];
-      for (const { query, params } of queries) {
-        const result = await session.run(query, params);
-        const rels = result.records.map(record => ({
-          _type: record.get('type'),
-          _ci: this.recordToCI(record.get('related')),
-          _properties: record.get('relationship').properties,
-          _startNodeId: record.get('startNodeId'),
-          _endNodeId: record.get('endNodeId'),
-        }));
-        allRelationships.push(...rels);
-      }
-
-      // Deduplicate based on relationship type, start node, and end node
-      const seen = new Set();
-      return allRelationships.filter(rel => {
-        const key = `${rel._type}-${rel._startNodeId}-${rel._endNodeId}`;
-        if (seen.has(key)) return false;
+    const seen = new Set<string>();
+    const relationships: Array<{
+      _type: string; _ci: CI; _startCI: CI; _endCI: CI; _properties: Record<string, unknown>;
+      _startNodeId: string; _endNodeId: string;
+    }> = [];
+    for (const orientation of (direction === 'both' ? ['out', 'in'] : [direction]) as Array<'out' | 'in'>) {
+      const traversal = await this.traverseCIs(ciId, scope, depth, orientation, false, work);
+      for (const edge of traversal.edges) {
+        const type = edge.relationship.type;
+        const key = JSON.stringify([type, edge.startNodeId, edge.endNodeId]);
+        if (seen.has(key)) continue;
         seen.add(key);
-        return true;
-      });
-    } finally {
-      await session.close();
+        const origin = this.recordToCI(edge.source);
+        const neighbor = this.recordToCI(edge.target);
+        const originIsStart = edge.startNodeId === origin._id;
+        relationships.push({
+          _type: type,
+          _ci: neighbor,
+          _startCI: originIsStart ? origin : neighbor,
+          _endCI: originIsStart ? neighbor : origin,
+          _properties: edge.relationship.properties,
+          _startNodeId: edge.startNodeId,
+          _endNodeId: edge.endNodeId,
+        });
+      }
     }
+    return relationships;
   }
 
-  async getDependencies(ciId: string, scope: CIOrganizationScope, depth: number = 5) {
-    const organizationId = organizationIdParam(scope);
-    const session = this.getSession();
-    try {
-      const result = await session.run(
-        `
-        MATCH path = (ci:CI {id: $ciId})-[:DEPENDS_ON*1..${depth}]->(dep:CI)
-        ${pathScopeClause(organizationId)}
-        RETURN path
-        `,
-        { ciId, organizationId }
-      );
-
-      return result.records.map(record => record.get('path'));
-    } finally {
-      await session.close();
-    }
+  /** One shortest owned path per reachable dependency; never enumerate paths. */
+  async getDependencies(
+    ciId: string, scope: CIOrganizationScope, depth: number = 5,
+    work: CITraversalWork = createCITraversalWork()
+  ): Promise<Path[]> {
+    return (await this.traverseCIs(ciId, scope, depth, 'out', true, work)).paths;
   }
 
-  async impactAnalysis(ciId: string, scope: CIOrganizationScope, depth: number = 5) {
-    const organizationId = organizationIdParam(scope);
-    const session = this.getSession();
-    try {
-      const result = await session.run(
-        `
-        MATCH path = (ci:CI {id: $ciId})<-[:DEPENDS_ON*1..${depth}]-(impacted:CI)
-        ${pathScopeClause(organizationId)}
-        RETURN DISTINCT impacted, length(path) as distance
-        ORDER BY distance
-        `,
-        { ciId, organizationId }
-      );
-
-      return result.records.map(record => ({
-        _ci: this.recordToCI(record.get('impacted')),
-        _distance: record.get('distance').toNumber(),
-      }));
-    } finally {
-      await session.close();
-    }
+  async impactAnalysis(
+    ciId: string, scope: CIOrganizationScope, depth: number = 5,
+    work: CITraversalWork = createCITraversalWork()
+  ) {
+    return (await this.traverseCIs(ciId, scope, depth, 'in', true, work)).nodes.map(({ node, distance }) => ({
+      _ci: this.recordToCI(node), _distance: distance,
+    }));
   }
 
   private recordToCI(node: any): CI {

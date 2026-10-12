@@ -14,74 +14,23 @@ import {
 import { getNeo4jClient } from '@cmdb/database';
 import { logger } from '@cmdb/common';
 import { getAuthMiddleware } from '../../auth/auth-bootstrap';
-import { requestOrganizationId, type AuthenticatedRequest } from '../../middleware/auth.middleware';
+import { requestOrganizationId } from '../../middleware/auth.middleware';
+import { executeBoundedAnalysis } from '../../middleware/analysis-admission';
 import { errorLogFields } from '../../utils/log-error';
 
 export const architectureRoutes = Router();
 const authMiddleware = getAuthMiddleware();
-const WINDOW_MS = 60_000;
-const MAX_LIMITER_KEYS = 2048;
-const limits = new Map<string, { start: number; count: number; active: number }>();
-const THROTTLED = { success: false, error: 'Architecture analysis rate limit exceeded' };
-
-/** Two independently enforced buckets: no principal can monopolize its tenant. */
-async function executeAnalysis(
+function executeAnalysis(
   req: Request, res: Response, operation: () => Promise<{ status: number; body: unknown }>
 ): Promise<void> {
-  const now = Date.now();
-  const org = requestOrganizationId(req);
-  const principal = (req as AuthenticatedRequest).user!._userId;
-  const keys = [JSON.stringify(['org', org]), JSON.stringify(['user', org, principal])];
-  const buckets: Array<{ start: number; count: number; active: number }> = [];
-  for (const [index, key] of keys.entries()) {
-    let entry = limits.get(key);
-    if (!entry) {
-      if (limits.size >= MAX_LIMITER_KEYS) {
-        for (const [oldKey, old] of limits) {
-          if (old.active === 0 && now - old.start >= WINDOW_MS) limits.delete(oldKey);
-        }
-      }
-      if (limits.size >= MAX_LIMITER_KEYS) {
-        res.status(429).json(THROTTLED);
-        return;
-      }
-      entry = { start: now, count: 0, active: 0 };
-      limits.set(key, entry);
-    }
-    if (now - entry.start >= WINDOW_MS) {
-      entry.start = now;
-      entry.count = 0;
-    }
-    buckets.push(entry);
-    if (entry.count >= (index === 0 ? 40 : 10) || entry.active >= (index === 0 ? 2 : 1)) {
-      res.status(429).json(THROTTLED);
-      return;
-    }
-  }
-  for (const bucket of buckets) {
-    bucket.count++;
-    bucket.active++;
-  }
-  const deadline = now + ARCHITECTURE_REQUEST_TIMEOUT_MS;
-  const work = withArchitectureDeadline(deadline, operation).finally(() => {
-    for (const bucket of buckets) bucket.active--;
+  return executeBoundedAnalysis(req, res, operation, {
+    scope: 'architecture',
+    timeoutMs: ARCHITECTURE_REQUEST_TIMEOUT_MS,
+    withDeadline: withArchitectureDeadline,
+    deadlineError: () => new ArchitectureDeadlineError(),
+    failure: architectureFailure,
+    internalError: 'Failed to analyze architecture',
   });
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    const timeout = new Promise<never>((_resolve, reject) => {
-      timer = setTimeout(() => reject(new ArchitectureDeadlineError()), ARCHITECTURE_REQUEST_TIMEOUT_MS);
-    });
-    const result = await Promise.race([work, timeout]);
-    if (Date.now() >= deadline) throw new ArchitectureDeadlineError();
-    res.status(result.status).json(result.body);
-  } catch (error) {
-    logger.error('Architecture analysis failed', { error: errorLogFields(error) });
-    const failure = architectureFailure(error);
-    if (failure) res.status(failure.status).json({ success: false, error: failure.message });
-    else res.status(500).json({ success: false, error: 'Failed to analyze architecture' });
-  } finally {
-    clearTimeout(timer);
-  }
 }
 
 

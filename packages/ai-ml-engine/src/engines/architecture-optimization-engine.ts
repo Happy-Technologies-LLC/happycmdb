@@ -41,6 +41,11 @@ export function withArchitectureDeadline<T>(deadline: number, operation: () => P
   return analysisDeadline.run(deadline, operation);
 }
 
+/** Impact and architecture share the request deadline; no deadline outside mounted analysis routes. */
+export function architectureDeadlineAt(): number | undefined {
+  return analysisDeadline.getStore();
+}
+
 export function architectureRemainingMs(): number {
   const deadline = analysisDeadline.getStore();
   if (deadline === undefined) return ARCHITECTURE_QUERY_TIMEOUT_MS;

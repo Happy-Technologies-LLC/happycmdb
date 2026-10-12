@@ -4,8 +4,11 @@
 // packages/database/src/index.ts
 
 // Neo4j exports
-export { Neo4jClient, getNeo4jClient, UNSCOPED_CI_ACCESS } from './neo4j/client';
-export type { CIOrganizationScope } from './neo4j/client';
+export {
+  Neo4jClient, getNeo4jClient, UNSCOPED_CI_ACCESS,
+  CITraversalLimitError, createCITraversalWork, MAX_CI_TRAVERSAL_NODES, MAX_CI_TRAVERSAL_WORK,
+} from './neo4j/client';
+export type { CIOrganizationScope, CITraversalWork } from './neo4j/client';
 export { initializeNeo4jSchema } from './neo4j/initializer';
 
 // PostgreSQL exports

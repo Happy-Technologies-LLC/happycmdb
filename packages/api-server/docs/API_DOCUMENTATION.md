@@ -1647,6 +1647,11 @@ Get all dependencies for a CI (recursive). `depth` defaults to 5 and must be an
 integer from 1 to 10 (`BAD_USER_INPUT` otherwise). A missing or foreign CI returns
 `NOT_FOUND` (`CI not found`).
 
+Bounded owned one-hop traversal visits at most 100 CIs and 400 adjacency rows
+per GraphQL request. Parallel edges are charged to the budget, and exhaustion
+returns `SERVICE_UNAVAILABLE` (`CI traversal resource limit exceeded`) rather
+than a partial result. Each Neo4j statement has a five-second timeout.
+
 **Query**:
 ```graphql
 query GetCIDependencies($id: ID!, $depth: Int) {
@@ -1666,6 +1671,10 @@ query GetCIDependencies($id: ID!, $depth: Int) {
 Perform impact analysis for a CI. `depth` defaults to 5 and must be an integer
 from 1 to 10 (`BAD_USER_INPUT` otherwise). A missing or foreign CI returns
 `NOT_FOUND` (`CI not found`).
+
+Each impacted CI appears once at its shortest-hop `distance`. The same
+per-request traversal budget and error mapping as `getCIDependencies` apply;
+the nested CI `_dependencies` field uses that budget as well.
 
 **Query**:
 ```graphql

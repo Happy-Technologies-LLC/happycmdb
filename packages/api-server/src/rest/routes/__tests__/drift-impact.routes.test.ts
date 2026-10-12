@@ -24,6 +24,9 @@ type ReqWithUser = Request & { user?: { _userId?: string; _role?: UserRole; _org
 const mockRouteHandler = jest.fn((req: Request, res: Response) => {
   res.status(200).json({ actor: (req as ReqWithUser).user?._userId });
 });
+const mockImpactResult = jest.fn(async (req: Request) => ({
+  status: 200, body: { actor: (req as ReqWithUser).user?._userId },
+}));
 
 const TOKEN_ROLES: Record<string, UserRole> = {
   'Bearer admin-token': 'admin',
@@ -88,10 +91,10 @@ jest.mock('../../controllers/drift-impact.controller', () => ({
     createBaseline: mockRouteHandler,
     approveBaseline: mockRouteHandler,
     getApprovedBaseline: mockRouteHandler,
-    predictImpact: mockRouteHandler,
-    getDependencyGraph: mockRouteHandler,
-    getCriticalityScore: mockRouteHandler,
-    getImpactHistory: mockRouteHandler,
+    predictImpactResult: mockImpactResult,
+    getDependencyGraphResult: mockImpactResult,
+    getCriticalityScoreResult: mockImpactResult,
+    getImpactHistoryResult: mockImpactResult,
   })),
 }));
 
@@ -144,6 +147,9 @@ describe('drift and impact routes', () => {
     mockRouteHandler.mockImplementation((req: Request, res: Response) => {
       res.status(200).json({ actor: (req as ReqWithUser).user?._userId });
     });
+    mockImpactResult.mockImplementation(async (req: Request) => ({
+      status: 200, body: { actor: (req as ReqWithUser).user?._userId },
+    }));
   });
 
   it.each([...readRoutes, ...writeRoutes, ...adminRoutes])(
@@ -152,31 +158,34 @@ describe('drift and impact routes', () => {
       const response = await invoke(testApp(), method, path, body);
       expect(response.status).toBe(401);
       expect(mockRouteHandler).not.toHaveBeenCalled();
+      expect(mockImpactResult).not.toHaveBeenCalled();
     }
   );
 
   it.each(readRoutes)('a viewer (read-only) can reach %s %s', async (method, path, body) => {
     const response = await invoke(testApp(), method, path, body, 'Bearer viewer-token');
     expect(response.status).toBe(200);
-    expect(mockRouteHandler).toHaveBeenCalled();
+    expect(response.body).toEqual({ actor: 'route-user' });
   });
 
   it.each(writeRoutes)('a viewer (read-only) receives 403 on %s %s', async (method, path, body) => {
     const response = await invoke(testApp(), method, path, body, 'Bearer viewer-token');
     expect(response.status).toBe(403);
     expect(mockRouteHandler).not.toHaveBeenCalled();
+    expect(mockImpactResult).not.toHaveBeenCalled();
   });
 
   it.each(adminRoutes)('a viewer (read-only) receives 403 on the admin-gated %s %s', async (method, path, body) => {
     const response = await invoke(testApp(), method, path, body, 'Bearer viewer-token');
     expect(response.status).toBe(403);
     expect(mockRouteHandler).not.toHaveBeenCalled();
+    expect(mockImpactResult).not.toHaveBeenCalled();
   });
 
   it.each(writeRoutes)('an operator (write) can reach %s %s', async (method, path, body) => {
     const response = await invoke(testApp(), method, path, body, 'Bearer operator-token');
     expect(response.status).toBe(200);
-    expect(mockRouteHandler).toHaveBeenCalled();
+    expect(response.body).toEqual({ actor: 'route-user' });
   });
 
   it.each(adminRoutes)(

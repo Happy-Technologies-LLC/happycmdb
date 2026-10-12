@@ -12,6 +12,9 @@ const A = 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa';
 const B = 'bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb';
 const users: Record<string, { _id: string; _username: string; _role: 'admin'; _enabled: boolean; _organizationId?: string }> = {
   a: { _id: 't3-a', _username: 'alice', _role: 'admin', _enabled: true, _organizationId: A },
+  a_degree: { _id: 't3-a-degree', _username: 'degree', _role: 'admin', _enabled: true, _organizationId: A },
+  a_fanin: { _id: 't3-a-fanin', _username: 'fanin', _role: 'admin', _enabled: true, _organizationId: A },
+  a_rate: { _id: 't3-a-rate', _username: 'rate', _role: 'admin', _enabled: true, _organizationId: A },
   b: { _id: 't3-b', _username: 'bob', _role: 'admin', _enabled: true, _organizationId: B },
   none: { _id: 't3-none', _username: 'nora', _role: 'admin', _enabled: true },
 };
@@ -27,6 +30,7 @@ import { JWTService } from '../../src/auth/jwt.service';
 import { getAuthMiddleware } from '../../src/auth/auth-bootstrap';
 import { itilRoutes } from '../../src/rest/routes/itil.routes';
 import { driftRoutes, impactRoutes } from '../../src/rest/routes/drift-impact.routes';
+import { ciRoutes } from '../../src/rest/routes/ci.routes';
 import { createGraphQLServer } from '../../src/graphql/server';
 
 const graph = getNeo4jClient();
@@ -36,6 +40,7 @@ const app = express();
 app.use(express.json());
 app.use('/api/v1', getAuthMiddleware().authenticate());
 app.use('/api/v1/itil', itilRoutes);
+app.use('/api/v1/cis', ciRoutes);
 app.use('/api/v1/drift', driftRoutes);
 app.use('/api/v1/impact', impactRoutes);
 const auth = (key: keyof typeof users) => {
@@ -228,6 +233,140 @@ it('bounds real parallel-edge and fan-out-by-depth impact traversals before path
   expect(criticalPath.ms).toBeLessThan(4000);
 });
 
+it('bounds every REST and GraphQL CI traversal on real parallel-edge fan-out', async () => {
+  const smallDependencies = await request(app).get('/api/v1/cis/t3-a2/dependencies?depth=2').set(auth('a'));
+  expect(smallDependencies.status).toBe(200);
+  expect(smallDependencies.body.data.map((path: { end: { properties: { id: string } } }) => path.end.properties.id))
+    .toEqual(['t3-a']);
+  const smallImpact = await request(app).get('/api/v1/cis/t3-a/impact?depth=2').set(auth('a'));
+  expect(smallImpact.status).toBe(200);
+  expect(smallImpact.body.data.downstream.map((ci: { id: string }) => ci.id)).toEqual(['t3-a2']);
+  expect(smallImpact.body.data.upstream).toEqual([]);
+  const smallRelationships = await request(app).get('/api/v1/cis/t3-a/relationships?direction=in&depth=2').set(auth('a'));
+  expect(smallRelationships.status).toBe(200);
+  expect(smallRelationships.body.data.map((relationship: { source_ci_id: string }) => relationship.source_ci_id))
+    .toEqual(['t3-a2']);
+  const smallGraphql = await request(app).post('/graphql').set(auth('a')).send({
+    query: `{ getCIDependencies(id:"t3-a2", depth:2) { _id }
+      getImpactAnalysis(id:"t3-a", depth:2) { _distance _ci { _id } } }`,
+  });
+  expect(smallGraphql.body.errors).toBeUndefined();
+  expect(smallGraphql.body.data).toEqual({
+    getCIDependencies: [{ _id: 't3-a' }],
+    getImpactAnalysis: [{ _distance: 1, _ci: { _id: 't3-a2' } }],
+  });
+
+  await run("CREATE (:CI {id:'t3-h562-root', name:'dense root', type:'server', organization_id:$org})", { org: A });
+  for (const direction of ['out', 'in'] as const) {
+    await run(`MATCH (root:CI {id:'t3-h562-root'})
+      UNWIND range(1,10) AS i
+      CREATE (first:CI {id:'t3-h562-${direction}-'+toString(i), name:'first', type:'server', organization_id:$org})
+      ${direction === 'out' ? 'CREATE (root)-[:DEPENDS_ON]->(first)' : 'CREATE (first)-[:DEPENDS_ON]->(root)'}
+      WITH first, i
+      UNWIND range(1,10) AS j
+      CREATE (leaf:CI {id:'t3-h562-${direction}-'+toString(i)+'-'+toString(j),
+        name:'leaf', type:'server', organization_id:$org})
+      ${direction === 'out' ? 'CREATE (first)-[:DEPENDS_ON]->(leaf)' : 'CREATE (leaf)-[:DEPENDS_ON]->(first)'}`,
+    { org: A });
+    await run(`MATCH (root:CI {id:'t3-h562-root'}), (first:CI {id:'t3-h562-${direction}-1'})
+      UNWIND range(1,20) AS ordinal
+      ${direction === 'out'
+    ? 'CREATE (root)-[:USES {ordinal:ordinal}]->(first)'
+    : 'CREATE (first)-[:USES {ordinal:ordinal}]->(root)'}`);
+  }
+
+  const checked = async (requestCall: () => Promise<request.Response>): Promise<request.Response> => {
+    let statements = 0;
+    const original = graph.getSession.bind(graph);
+    const spy = jest.spyOn(graph, 'getSession').mockImplementation(() => {
+      const session = original();
+      const originalRun = session.run.bind(session);
+      session.run = ((...args: Parameters<typeof originalRun>) => {
+        statements++;
+        return originalRun(...args);
+      }) as typeof session.run;
+      return session;
+    });
+    const started = Date.now();
+    try {
+      return await requestCall();
+    } finally {
+      spy.mockRestore();
+      expect(Date.now() - started).toBeLessThan(4000);
+      expect(statements).toBeLessThanOrEqual(5);
+    }
+  };
+  for (const route of [
+    '/api/v1/cis/t3-h562-root/dependencies?depth=2',
+    '/api/v1/cis/t3-h562-root/impact?depth=2',
+    '/api/v1/cis/t3-h562-root/relationships?direction=out&depth=2',
+    '/api/v1/cis/t3-h562-root/relationships?direction=in&depth=2',
+    '/api/v1/cis/t3-h562-root/relationships?depth=2',
+  ]) {
+    const response = await checked(() => request(app).get(route).set(auth('a')));
+    expect(response.status).toBe(503);
+    expect(response.body).toEqual({ success: false, error: 'CI traversal resource limit exceeded' });
+  }
+  for (const query of [
+    '{ getCIDependencies(id:"t3-h562-root", depth:2) { _id } }',
+    '{ getImpactAnalysis(id:"t3-h562-root", depth:2) { _ci { _id } } }',
+    '{ getCI(id:"t3-h562-root") { _dependencies { _id } } }',
+  ]) {
+    const response = await checked(() => request(app).post('/graphql').set(auth('a')).send({ query }));
+    expect(response.status).toBe(200);
+    expect(response.body.errors?.[0]).toMatchObject({
+      message: 'CI traversal resource limit exceeded', extensions: { code: 'SERVICE_UNAVAILABLE' },
+    });
+  }
+  const foreign = await request(app).get('/api/v1/cis/t3-h562-root/dependencies').set(auth('b'));
+  const missing = await request(app).get('/api/v1/cis/t3-h562-missing/dependencies').set(auth('b'));
+  expect(foreign.status).toBe(404);
+  expect(foreign.body).toEqual(missing.body);
+  expect((await sql.query("SELECT ci_id FROM ci_criticality_scores WHERE ci_id = 't3-h562-root'")).rows).toEqual([]);
+  expect((await sql.query("SELECT id FROM impact_analyses WHERE source_ci_id = 't3-h562-root'")).rows).toEqual([]);
+});
+
+it('reserves one request budget before parallel GraphQL alias queries hit Neo4j', async () => {
+  await run(`CREATE (root:CI {id:'t3-alias-root', name:'alias root', type:'server', organization_id:$org})
+    CREATE (leaf:CI {id:'t3-alias-leaf', name:'alias leaf', type:'server', organization_id:$org})
+    WITH root, leaf UNWIND range(1,300) AS ordinal
+    CREATE (root)-[:DEPENDS_ON {ordinal:ordinal}]->(leaf)`, { org: A });
+
+  let statements = 0;
+  let transferredRows = 0;
+  const original = graph.getSession.bind(graph);
+  const spy = jest.spyOn(graph, 'getSession').mockImplementation(() => {
+    const session = original();
+    const originalRun = session.run.bind(session);
+    session.run = (async (...args: Parameters<typeof originalRun>) => {
+      const traversal = String(args[0]).startsWith('UNWIND $frontier AS sourceId');
+      if (traversal) statements++;
+      const result = await originalRun(...args);
+      if (traversal) transferredRows += result.records.length;
+      return result;
+    }) as typeof session.run;
+    return session;
+  });
+  const started = Date.now();
+  try {
+    const query = `{ ${['a', 'b', 'c', 'd', 'e', 'f'].map(alias =>
+    `${alias}: getCIDependencies(id:"t3-alias-root", depth:1) { _id }`).join(' ')} }`;
+    const response = await request(app).post('/graphql').set(auth('a')).send({ query });
+    expect(response.status).toBe(200);
+    expect(response.body.errors).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        message: 'CI traversal resource limit exceeded',
+        extensions: expect.objectContaining({ code: 'SERVICE_UNAVAILABLE' }),
+      }),
+    ]));
+    expect(statements).toBeLessThanOrEqual(2);
+    expect(transferredRows).toBeLessThanOrEqual(401);
+  } finally {
+    spy.mockRestore();
+  }
+  expect(Date.now() - started).toBeLessThan(4000);
+});
+
 it('counts 300 owned inbound and outbound relationships without a Cartesian adjacency expansion', async () => {
   await run(`CREATE (root:CI {id:'t3-degree-root', name:'degree root', ci_type:'server', organization_id:$organizationId})
     CREATE (hub:CI {id:'t3-degree-hub', name:'degree hub', ci_type:'server', organization_id:$organizationId})
@@ -260,13 +399,13 @@ it('counts 300 owned inbound and outbound relationships without a Cartesian adja
   let graphMs: number;
   try {
     const criticalityStart = Date.now();
-    const criticality = await request(app).get('/api/v1/impact/criticality/t3-degree-hub').set(auth('a'));
+    const criticality = await request(app).get('/api/v1/impact/criticality/t3-degree-hub').set(auth('a_degree'));
     criticalityMs = Date.now() - criticalityStart;
     expect(criticality.status).toBe(200);
     expect(criticality.body.data.factors.dependent_count).toBe(300);
 
     const graphStart = Date.now();
-    const dependencyGraph = await request(app).get('/api/v1/impact/graph/t3-degree-root?max_depth=1').set(auth('a'));
+    const dependencyGraph = await request(app).get('/api/v1/impact/graph/t3-degree-root?max_depth=1').set(auth('a_degree'));
     graphMs = Date.now() - graphStart;
     expect(dependencyGraph.status).toBe(200);
     expect(dependencyGraph.body.data.nodes.map((node: {
@@ -295,6 +434,63 @@ it('counts 300 owned inbound and outbound relationships without a Cartesian adja
     } finally {
       await session.close();
     }
+  }
+});
+
+it('bounds dependent IDs at the Neo4j producer while retaining exact fan-in and no partial cache writes', async () => {
+  await run(`CREATE (root:CI {id:'t3-fanin-root', name:'fan-in root', type:'server', organization_id:$org})
+    WITH root UNWIND range(1,130) AS ordinal
+    CREATE (dependent:CI {id:'t3-fanin-'+toString(ordinal),
+      name:'dependent', type:'server', organization_id:$org})
+    CREATE (dependent)-[:DEPENDS_ON]->(root)`, { org: A });
+  await run(`MATCH (root:CI {id:'t3-fanin-root'}), (dependent:CI {id:'t3-fanin-1'})
+    UNWIND range(1,20) AS ordinal CREATE (dependent)-[:USES {ordinal:ordinal}]->(root)`);
+  let observed: { count: number; ids: string[] } | undefined;
+  const original = graph.getSession.bind(graph);
+  const spy = jest.spyOn(graph, 'getSession').mockImplementation(() => {
+    const session = original();
+    const originalRun = session.run.bind(session);
+    session.run = (async (...args: Parameters<typeof originalRun>) => {
+      const result = await originalRun(...args);
+      if (String(args[0]).includes('RETURN ci.id as ci_id')
+          && (args[1] as Record<string, unknown>)?.ciId === 't3-fanin-root') {
+        observed = {
+          count: result.records[0].get('dependent_count').toNumber(),
+          ids: result.records[0].get('dependent_ids'),
+        };
+      }
+      return result;
+    }) as typeof session.run;
+    return session;
+  });
+  const started = Date.now();
+  try {
+    const response = await request(app).get('/api/v1/impact/criticality/t3-fanin-root').set(auth('a_fanin'));
+    expect(response.status).toBe(503);
+    expect(response.body).toEqual({ success: false, error: 'Impact criticality resource limit exceeded' });
+  } finally {
+    spy.mockRestore();
+  }
+  expect(Date.now() - started).toBeLessThan(4000);
+  expect(observed?.count).toBe(150);
+  expect(observed?.ids).toHaveLength(101);
+  expect((await sql.query("SELECT ci_id FROM ci_criticality_scores WHERE ci_id LIKE 't3-fanin-%'")).rows).toEqual([]);
+});
+
+it('limits authenticated impact history across requests before graph and SQL access', async () => {
+  const ciLookup = jest.spyOn(graph, 'getCI');
+  try {
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const response = await request(app).get('/api/v1/impact/history/t3-a?limit=1').set(auth('a_rate'));
+      expect(response.status).toBe(200);
+    }
+    const before = ciLookup.mock.calls.length;
+    const blocked = await request(app).get('/api/v1/impact/history/t3-a?limit=1').set(auth('a_rate'));
+    expect(blocked.status).toBe(429);
+    expect(blocked.body).toEqual({ success: false, error: 'Impact analysis rate limit exceeded' });
+    expect(ciLookup.mock.calls).toHaveLength(before);
+  } finally {
+    ciLookup.mockRestore();
   }
 });
 

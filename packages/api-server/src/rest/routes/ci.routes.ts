@@ -41,6 +41,7 @@ const searchCISchema = Joi.object({
 
 const relationshipQuerySchema = Joi.object({
   direction: Joi.string().valid('in', 'out', 'both').default('both'),
+  depth: Joi.number().integer().min(1).max(10).default(1),
 });
 
 const depthQuerySchema = Joi.object({

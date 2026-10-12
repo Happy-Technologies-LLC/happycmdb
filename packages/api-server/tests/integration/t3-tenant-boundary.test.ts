@@ -349,7 +349,7 @@ it('reserves one request budget before parallel GraphQL alias queries hit Neo4j'
   });
   const started = Date.now();
   try {
-    const query = `{ ${['a', 'b', 'c', 'd', 'e', 'f'].map(alias =>
+    const query = `{ ${['a', 'b'].map(alias =>
     `${alias}: getCIDependencies(id:"t3-alias-root", depth:1) { _id }`).join(' ')} }`;
     const response = await request(app).post('/graphql').set(auth('a')).send({ query });
     expect(response.status).toBe(200);

@@ -362,19 +362,23 @@ describe('GraphQL Resolvers', () => {
 The mounted `/graphql` endpoint authenticates JWTs or API keys before admission for
 both POST and GET queries. Its request-scoped operation analysis expands selected
 fragments and rejects field nesting deeper than 8, more than 20 aliases, more
-than 100 selected fields, or estimated list-amplified complexity above 500
-(each list costs at least 10 times its nested selection; explicit list `limit`,
-`first`, or `_limit` values above 100 are refused, including variable defaults).
-A rejected operation returns HTTP 400 with only `GraphQL request limit exceeded` and
+than 100 selected fields, or estimated complexity above 500. Scalar projection
+fields have a fixed cost; declared composite resolvers incur work multiplied by
+the effective parent page size (including schema defaults, resolver fallbacks
+for omitted/null variables, and paginated `items` wrappers). Unpaged lists
+are conservatively charged for 100 elements. Explicit `limit`, `first`, or
+`_limit` values above 100 are refused, including variable defaults. A rejected
+operation returns HTTP 400 with only `GraphQL request limit exceeded` and
 `GRAPHQL_REQUEST_LIMIT_EXCEEDED`; no resolvers run.
 
-Verified identities may run one GraphQL request per principal and two per tenant at
-once, using the shared analysis admission rules but a separate capacity table so
-GraphQL traffic cannot exhaust impact admission slots. A verified identity without an
-organization claim uses an invalid-tenant bucket for concurrency accounting. Rejected
-concurrent requests return HTTP 429 with `GraphQL concurrent request limit exceeded`
-and `TOO_MANY_REQUESTS`. Once operation work starts, slots remain held until
-both the server's operation and HTTP response finish, even after client disconnect.
+Verified identities may run four GraphQL requests per principal and eight per
+tenant at once, using the shared analysis admission rules but a separate capacity
+table so GraphQL traffic cannot exhaust impact admission slots. A verified
+identity without an organization claim uses an invalid-tenant bucket for
+concurrency accounting. Rejected concurrent requests return HTTP 429 with
+`GraphQL concurrent request limit exceeded` and `TOO_MANY_REQUESTS`. Once
+operation work starts, slots remain held until both the server's operation and
+HTTP response finish, even after client disconnect.
 Disconnects before operation start release the slots without executing resolvers.
 Unauthenticated requests retain HTTP 401; a missing organization claim retains the
 resolver's `FORBIDDEN` response. Recursive CI traversals and one-hop relationship

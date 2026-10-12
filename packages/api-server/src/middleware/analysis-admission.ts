@@ -54,8 +54,9 @@ function reserveWorkSlots(
       entry.count = 0;
     }
     buckets.push(entry);
+    const maxActive = scope === 'graphql' ? (index === 0 ? 8 : 4) : (index === 0 ? 2 : 1);
     if ((rateLimited && entry.count >= (index === 0 ? 40 : 10))
-      || entry.active >= (index === 0 ? 2 : 1)) return null;
+      || entry.active >= maxActive) return null;
   }
   for (const bucket of buckets) {
     if (rateLimited) bucket.count++;

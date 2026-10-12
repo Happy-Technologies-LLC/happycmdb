@@ -55,7 +55,7 @@ export async function createGraphQLServer(app: express.Application) {
           return {
             async didResolveOperation({ operation, document, schema, request }) {
               if (operation && document) {
-                enforceGraphQLRequestLimits(operation, document, schema, request.variables);
+                enforceGraphQLRequestLimits(operation, document, schema, request.variables, resolvers);
               }
             },
             async willSendResponse({ contextValue }) {

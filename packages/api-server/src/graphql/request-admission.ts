@@ -10,12 +10,12 @@ import {
   type SelectionSetNode,
 } from 'graphql';
 
+import { defaultGraphQLPageSize, MAX_GRAPHQL_PAGE_SIZE } from './pagination';
+
 const MAX_DEPTH = 8;
 const MAX_ALIASES = 20;
 const MAX_FIELDS = 100;
 const MAX_COMPLEXITY = 500;
-const LIST_COST = 10;
-const MAX_EXPLICIT_LIST_LIMIT = 100;
 const isPageSize = (name: string): boolean => name === 'limit' || name === 'first' || name === '_limit';
 
 function limitExceeded(): never {
@@ -24,12 +24,13 @@ function limitExceeded(): never {
   });
 }
 
-/** Count expanded fragment selections and estimate nested list fan-out before resolvers run. */
+/** Count expanded fragment selections and estimate nested resolver fan-out before execution. */
 export function enforceGraphQLRequestLimits(
   operation: OperationDefinitionNode,
   document: DocumentNode,
   schema: GraphQLSchema,
-  variables: Record<string, unknown> | undefined
+  variables: Record<string, unknown> | undefined,
+  resolverFields: Record<string, unknown>
 ): void {
   const root = operation.operation === 'mutation' ? schema.getMutationType() : schema.getQueryType();
   if (!root) return;
@@ -41,8 +42,14 @@ export function enforceGraphQLRequestLimits(
   let fields = 0;
   let aliases = 0;
 
-  const costOf = (selectionSet: SelectionSetNode, parent: GraphQLCompositeType, depth: number): number => {
-    let total = 0;
+  // Projection fields are constant; only resolver-bearing composite work fans out.
+  // Keep both components so scalar leaves never become N+1 database statements.
+  const costOf = (
+    selectionSet: SelectionSetNode, parent: GraphQLCompositeType, depth: number,
+    wrapperPageSize?: number
+  ): { projection: number; work: number } => {
+    let projection = 0;
+    let work = 0;
     for (const selection of selectionSet.selections) {
       if (selection.kind === 'FragmentSpread') {
         const name = selection.name.value;
@@ -52,13 +59,17 @@ export function enforceGraphQLRequestLimits(
         const type = schema.getType(fragment.typeCondition.name.value);
         if (!type || !isCompositeType(type)) limitExceeded();
         visiting.add(name);
-        total += costOf(fragment.selectionSet, type, depth);
+        const cost = costOf(fragment.selectionSet, type, depth, wrapperPageSize);
         visiting.delete(name);
+        projection += cost.projection;
+        work += cost.work;
       } else if (selection.kind === 'InlineFragment') {
         const type = selection.typeCondition
           ? schema.getType(selection.typeCondition.name.value) : parent;
         if (!type || !isCompositeType(type)) limitExceeded();
-        total += costOf(selection.selectionSet, type, depth);
+        const cost = costOf(selection.selectionSet, type, depth, wrapperPageSize);
+        projection += cost.projection;
+        work += cost.work;
       } else {
         const field: FieldNode = selection;
         fields++;
@@ -72,33 +83,43 @@ export function enforceGraphQLRequestLimits(
         if (!definition) limitExceeded();
         let type = definition.type;
         if (isNonNullType(type)) type = type.ofType;
-        let weight = isListType(type) ? LIST_COST : 1;
-        if (isListType(type)) {
-          const page = field.arguments?.find(argument => isPageSize(argument.name.value));
-          if (page) {
-            let value = valueFromASTUntyped(page.value, variables);
-            if (value === undefined && page.value.kind === 'Variable') {
-              const variableName = page.value.name.value;
-              const variable = operation.variableDefinitions?.find(
-                definition => definition.variable.name.value === variableName
-              );
-              if (variable?.defaultValue) value = valueFromASTUntyped(variable.defaultValue, variables);
-            }
-            if (typeof value === 'number' && value > MAX_EXPLICIT_LIST_LIMIT) limitExceeded();
-            if (typeof value === 'number' && Number.isInteger(value) && value > weight) weight = value;
-          } else {
-            const declaredDefault = definition.args.find(argument => isPageSize(argument.name))?.defaultValue;
-            if (typeof declaredDefault === 'number' && declaredDefault > weight) weight = declaredDefault;
+        const list = isListType(type);
+        const pageDefinition = definition.args.find(argument => isPageSize(argument.name));
+        let pageSize = defaultGraphQLPageSize(name, pageDefinition?.defaultValue);
+        const page = field.arguments?.find(argument => isPageSize(argument.name.value));
+        if (page) {
+          let value = valueFromASTUntyped(page.value, variables);
+          if (value === undefined && page.value.kind === 'Variable') {
+            const variableName = page.value.name.value;
+            const variable = operation.variableDefinitions?.find(
+              definition => definition.variable.name.value === variableName
+            );
+            if (variable?.defaultValue) value = valueFromASTUntyped(variable.defaultValue, variables);
           }
+          if (typeof value === 'number' && value > MAX_GRAPHQL_PAGE_SIZE) limitExceeded();
+          if (typeof value === 'number' && Number.isInteger(value) && value > 0) pageSize = value;
         }
         const childType = getNamedType(definition.type);
         const children = field.selectionSet && isCompositeType(childType)
-          ? costOf(field.selectionSet, childType, depth + 1) : 0;
-        total += 1 + weight * children;
+          ? costOf(field.selectionSet, childType, depth + 1, !list && pageDefinition ? pageSize : undefined)
+          : undefined;
+        const pagedItems = list && name === 'items' && parent.name.endsWith('Page') && wrapperPageSize !== undefined;
+        const fanout = list ? (pagedItems ? wrapperPageSize : pageSize) : 1;
+        projection += 1 + (children?.projection ?? 0);
+        // Apollo's schema builder attaches a default resolve function to plain properties.
+        // Declared resolvers and introspection's built-in composite resolvers do work.
+        const declared = resolverFields[parent.name] as Record<string, unknown> | undefined;
+        const introspection = name === '__schema' || name === '__type' || parent.name.startsWith('__');
+        if (children && (typeof declared?.[name] === 'function' || introspection)) {
+          work += list ? fanout : 1;
+        } else if (pagedItems) {
+          work += fanout;
+        }
+        work += fanout * (children?.work ?? 0);
       }
-      if (total > MAX_COMPLEXITY) limitExceeded();
+      if (projection + work > MAX_COMPLEXITY) limitExceeded();
     }
-    return total;
+    return { projection, work };
   };
 
   costOf(operation.selectionSet, root, 0);

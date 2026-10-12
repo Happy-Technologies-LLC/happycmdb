@@ -195,10 +195,11 @@ curl -X POST http://localhost:3000/api/v1/cis \
   -H "Authorization: Bearer $TOKEN" \
   -d '{"id":"vm-001","name":"web-server-01","type":"virtual-machine","status":"active"}'
 
-# GraphQL query
+# GraphQL query (authenticated, using the current CI schema)
 curl -X POST http://localhost:3000/graphql \
   -H "Content-Type: application/json" \
-  -d '{"query":"{ getCIs(type: \"server\") { id name status } }"}'
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"query":"{ getCIs(filter: {_type: SERVER}, limit: 100) { _id _name _status } }"}'
 ```
 
 Full API reference: `doc-site/docs/api/`

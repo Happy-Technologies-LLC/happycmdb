@@ -346,7 +346,7 @@ export class ArchitectureOptimizationEngine {
              OPTIONAL MATCH (ci)-[:DEPENDS_ON|USES]->(next:CI)
              WHERE next.organization_id = $organizationId
              RETURN path, next.id AS nextId
-             LIMIT $limit`,
+             LIMIT toInteger($limit)`,
             { frontier, organizationId, limit: remaining + 1 },
             { timeout: ARCHITECTURE_QUERY_TIMEOUT_MS }
           );

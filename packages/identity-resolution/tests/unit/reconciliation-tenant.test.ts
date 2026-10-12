@@ -42,7 +42,7 @@ const ci = (identifiers: Record<string, unknown>) => ({
 
 // The fake database applies the ownership predicate before LIMIT and refuses
 // writes unless the stored node still belongs to the caller's organization.
-type Node = { id: string; organization_id: string | null; source_id?: string; last_seen_at?: string; serial_number?: string; uuid?: string; fqdn?: string; mac_addresses?: string[]; hostname?: string; ip_addresses?: string[]; status?: string };
+type Node = { id: string; organization_id: string | null; incarnation_id?: string; source_id?: string; last_seen_at?: string; serial_number?: string; uuid?: string; fqdn?: string; mac_addresses?: string[]; hostname?: string; ip_addresses?: string[]; status?: string };
 let nodes: Node[];
 beforeEach(() => {
   jest.clearAllMocks();
@@ -74,8 +74,13 @@ beforeEach(() => {
     else if (cypher.includes('ANY(mac IN ci.mac_addresses')) found = owned.filter(n => n.mac_addresses?.some(m => (params.macs as string[]).includes(m)));
     else if (cypher.includes('ci.hostname CONTAINS')) found = owned.filter(n => n.hostname?.includes(params.hostname as string) || n.ip_addresses?.some(ip => (params.ips as string[]).includes(ip)));
     else if (cypher.includes('id: $ciId')) found = owned.filter(n => n.id === params.ciId);
-    if (cypher.includes('SET ci += $properties')) found.forEach(n => Object.assign(n, params.properties));
-    return { records: found.map(n => ({ get: (key: string) => ({ ci_id: n.id, hostname: n.hostname, ips: n.ip_addresses, ci: n }[key as 'ci_id' | 'hostname' | 'ips' | 'ci']) })) };
+    if (cypher.includes('SET ci += $properties')) found.forEach(n => {
+      Object.assign(n, params.properties);
+      n.incarnation_id ??= 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    });
+    return { records: found.map(n => ({ get: (key: string) => ({
+      ci_id: n.id, incarnation_id: n.incarnation_id, hostname: n.hostname, ips: n.ip_addresses, ci: n,
+    }[key as 'ci_id' | 'incarnation_id' | 'hostname' | 'ips' | 'ci']) })) };
   });
 });
 

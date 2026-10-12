@@ -4,7 +4,7 @@
 // packages/database/src/neo4j/client.ts
 
 import neo4j, { Driver, Session, Node, Relationship, Path, PathSegment } from 'neo4j-driver';
-import { logger, CI, CIInput, sanitizeCITypeForLabel, validateRelationshipType } from '@cmdb/common';
+import { logger, CI, CIInput, ciIncarnationId, sanitizeCITypeForLabel, validateRelationshipType } from '@cmdb/common';
 import * as fs from 'fs';
 import * as path from 'path';
 import { getPostgresClient } from '../postgres/client';
@@ -266,6 +266,7 @@ export class Neo4jClient {
           status: $status,
           environment: $environment,
           created_at: datetime(),
+          incarnation_id: randomUUID(),
           updated_at: datetime(),
           discovered_at: datetime($discovered_at),
           discovery_provider: $discovery_provider,
@@ -288,6 +289,34 @@ export class Neo4jClient {
         }
       );
       return this.recordToCI(result.records[0]!.get('ci'));
+    } finally {
+      await session.close();
+    }
+  }
+
+  /** Graph-proven current CI incarnations for aggregate derived-row reads. */
+  async listCIIncarnations(scope: CIOrganizationScope): Promise<Array<{
+    ciId: string; incarnationId: string; organizationId: string; ciType: string | null
+  }>> {
+    const organizationId = organizationIdParam(scope);
+    const session = this.getSession();
+    try {
+      const result = await session.run(
+        `MATCH (ci:CI) WHERE ${organizationId === null ? 'ci.organization_id IS NOT NULL' : 'ci.organization_id = $organizationId'}
+         RETURN ci.id AS ciId, ci.incarnation_id AS incarnationId, ci.organization_id AS ownerId,
+                coalesce(ci.type, ci.ci_type) AS ciType`,
+        { organizationId }
+      );
+      const incarnations: Array<{ ciId: string; incarnationId: string; organizationId: string; ciType: string | null }> = [];
+      for (const record of result.records) {
+        const incarnationId = ciIncarnationId(record.get('incarnationId') as string | null);
+        const ownerId = record.get('ownerId');
+        if (incarnationId && typeof ownerId === 'string') {
+          incarnations.push({ ciId: record.get('ciId') as string, incarnationId,
+            organizationId: ownerId, ciType: record.get('ciType') as string | null });
+        }
+      }
+      return incarnations;
     } finally {
       await session.close();
     }
@@ -331,9 +360,9 @@ export class Neo4jClient {
         }
       }
 
-      // The tenant, globally unique ID and creation epoch cannot change in place.
-      if (['organization_id', 'id', 'created_at'].some(key => key in processedUpdates)) {
-        throw new Error('CI identity and created_at cannot be updated');
+      // Identity, tenant and the graph-issued incarnation cannot change in place.
+      if (['organization_id', 'id', 'created_at', 'incarnation_id'].some(key => key in processedUpdates)) {
+        throw new Error('CI identity and incarnation cannot be updated');
       }
 
       const result = await session.run(
@@ -378,10 +407,31 @@ export class Neo4jClient {
   }
 
   /**
-   * Delete in Neo4j, then purge all CI-keyed derived SQL rows as part of this
-   * operation. PostgreSQL and Neo4j have no distributed transaction: every
-   * derived read also enforces the graph creation epoch, including if SQL
-   * cleanup fails or a legacy writer reintroduces a stale row.
+   * Existing graph CIs predate incarnation IDs. Assign on the first owned
+   * derived write, atomically in Neo4j; racing writers receive the same ID.
+   * An absent/foreign CI returns null without exposing which case occurred.
+   */
+  async ensureCIIncarnation(id: string, scope: CIOrganizationScope): Promise<string | null> {
+    const organizationId = organizationIdParam(scope);
+    const session = this.getSession();
+    try {
+      const result = await session.run(
+        `MATCH (ci:CI {id: $id})
+         ${nodeScopeClause(organizationId)}
+         SET ci.incarnation_id = coalesce(ci.incarnation_id, randomUUID())
+         RETURN ci.incarnation_id AS incarnationId`,
+        { id, organizationId }
+      );
+      return result.records.length ? result.records[0]!.get('incarnationId') as string : null;
+    } finally {
+      await session.close();
+    }
+  }
+
+  /**
+   * Delete in Neo4j, then purge all CI-keyed derived SQL rows as defense in
+   * depth. The stores cannot commit atomically; every derived read requires
+   * the current graph incarnation, so surviving rows remain unreadable.
    */
   async deleteCI(id: string, scope: CIOrganizationScope): Promise<boolean> {
     const organizationId = organizationIdParam(scope);
@@ -600,6 +650,7 @@ export class Neo4jClient {
       _status: props.status,
       environment: props.environment,
       _created_at: props.created_at,
+      _incarnation_id: props.incarnation_id,
       _updated_at: props.updated_at,
       _discovered_at: props.discovered_at,
       _metadata: props.metadata ? JSON.parse(props.metadata) : {},

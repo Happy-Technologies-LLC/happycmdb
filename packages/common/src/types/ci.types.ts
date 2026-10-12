@@ -27,6 +27,8 @@ export interface CI {
   environment?: Environment;
   /** Timestamp when CI was created in CMDB */
   _created_at: string;
+  /** Graph-issued immutable incarnation for SQL-derived row provenance. */
+  _incarnation_id?: string;
   /** Timestamp when CI was last updated */
   _updated_at: string;
   /** Timestamp when CI was discovered */

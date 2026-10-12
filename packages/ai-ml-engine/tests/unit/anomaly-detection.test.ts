@@ -46,6 +46,7 @@ describe('AnomalyDetectionEngine', () => {
     // Setup mock clients
     mockNeo4jClient = {
       getSession: jest.fn().mockReturnValue(createMockNeo4jSession([])),
+      listCIIncarnations: jest.fn().mockResolvedValue([]),
     };
     mockPgClient = createMockPgClient([]);
     mockEventProducer = createMockEventProducer();

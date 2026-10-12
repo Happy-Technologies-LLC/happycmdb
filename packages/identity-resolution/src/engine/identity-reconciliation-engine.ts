@@ -345,8 +345,8 @@ export class IdentityReconciliationEngine {
         strategy: match.match_strategy
       });
 
-      const updated = await this.updateExistingCI(match.ci_id, discoveredCI, match, organizationId);
-      if (!updated) return null;
+      const incarnationId = await this.updateExistingCI(match.ci_id, discoveredCI, match, organizationId);
+      if (!incarnationId) return null;
 
       // Emit CI updated event
       await this.eventProducer.emit<CIUpdatedEvent>(
@@ -355,6 +355,7 @@ export class IdentityReconciliationEngine {
         {
           ci_id: match.ci_id,
           organization_id: organizationId,
+          ci_incarnation_id: incarnationId,
           ci_name: discoveredCI.name,
           changed_fields: Object.keys(discoveredCI.attributes),
           previous_values: {},
@@ -372,7 +373,7 @@ export class IdentityReconciliationEngine {
         source: discoveredCI.source
       });
 
-      const ciId = await this.createNewCI(discoveredCI, organizationId);
+      const { ciId, incarnationId } = await this.createNewCI(discoveredCI, organizationId);
 
       // Emit CI discovered event
       await this.eventProducer.emit<CIDiscoveredEvent>(
@@ -381,6 +382,7 @@ export class IdentityReconciliationEngine {
         {
           ci_id: ciId,
           organization_id: organizationId,
+          ci_incarnation_id: incarnationId,
           ci_name: discoveredCI.name,
           ci_type: discoveredCI.ci_type,
           source_system: discoveredCI.source,
@@ -396,7 +398,7 @@ export class IdentityReconciliationEngine {
   /**
    * Create new CI in Neo4j
    */
-  private async createNewCI(ci: TransformedCI, organizationId: string): Promise<string> {
+  private async createNewCI(ci: TransformedCI, organizationId: string): Promise<{ ciId: string; incarnationId: string }> {
     const session = this.neo4jClient.getSession();
 
     try {
@@ -404,8 +406,8 @@ export class IdentityReconciliationEngine {
 
       const result = await session.run(
         `CREATE (ci:CI:${sanitizeCITypeForLabel(ci.ci_type)})
-         SET ci = $properties
-         RETURN ci.id as ci_id`,
+         SET ci = $properties, ci.incarnation_id = randomUUID()
+         RETURN ci.id as ci_id, ci.incarnation_id AS incarnation_id`,
         {
           properties: {
             ...withoutOrganizationId({
@@ -428,7 +430,8 @@ export class IdentityReconciliationEngine {
       await this.recordSourceLineage(ciId, ci.source, ci.source_id, ci.confidence_score);
 
       logger.info('New CI created', { ci_id: ciId, name: ci.name });
-      return result.records[0]?.get('ci_id') || ciId;
+      return { ciId: result.records[0]!.get('ci_id') as string,
+        incarnationId: result.records[0]!.get('incarnation_id') as string };
     } finally {
       await session.close();
     }
@@ -437,7 +440,7 @@ export class IdentityReconciliationEngine {
   /**
    * Update existing CI with new data
    */
-  private async updateExistingCI(ciId: string, ci: TransformedCI, match: MatchResult, organizationId: string): Promise<boolean> {
+  private async updateExistingCI(ciId: string, ci: TransformedCI, match: MatchResult, organizationId: string): Promise<string | null> {
     // Get source authority
     const sourceAuthority = this.config?.source_authorities[ci.source] || 5;
 
@@ -452,15 +455,15 @@ export class IdentityReconciliationEngine {
       const result = await session.run(
         `MATCH (ci:CI {id: $ciId})
          WHERE ci.organization_id = $organizationId
-         SET ci += $properties, ci.updated_at = datetime()
-         RETURN ci`,
+         SET ci += $properties, ci.incarnation_id = coalesce(ci.incarnation_id, randomUUID()), ci.updated_at = datetime()
+         RETURN ci.incarnation_id AS incarnation_id`,
         {
           ciId,
           organizationId,
           properties: mergedData
         }
       );
-      if (result.records.length === 0) return false;
+      if (result.records.length === 0) return null;
       for (const [field, value] of Object.entries(mergedData)) {
         await this.recordFieldSource(ciId, field, value, ci.source);
       }
@@ -469,7 +472,7 @@ export class IdentityReconciliationEngine {
       await this.recordSourceLineage(ciId, ci.source, ci.source_id, match.confidence);
 
       logger.info('CI updated', { ci_id: ciId, source: ci.source });
-      return true;
+      return result.records[0]!.get('incarnation_id') as string;
     } finally {
       await session.close();
     }
@@ -483,9 +486,9 @@ export class IdentityReconciliationEngine {
     const existingFields = await this.getFieldSources(ciId);
     const mergedData: Record<string, unknown> = {};
 
-    // Reconciliation may change attributes, never identity, tenant or birth epoch.
+    // Reconciliation may change attributes, never identity, tenant or incarnation.
     for (const [field, value] of Object.entries(withoutOrganizationId(newCI.attributes))) {
-      if (field === 'id' || field === 'created_at') continue;
+      if (field === 'id' || field === 'created_at' || field === 'incarnation_id') continue;
       const existing = existingFields.get(field);
 
       if (!existing) {

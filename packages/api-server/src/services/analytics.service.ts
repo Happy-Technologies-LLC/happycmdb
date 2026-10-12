@@ -1,8 +1,8 @@
 // Copyright 2026 Happy Technologies LLC
 // SPDX-License-Identifier: Apache-2.0
 
-import { getPostgresClient } from '@cmdb/database';
-import { logger } from '@cmdb/common';
+import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
+import { logger, ciIncarnationId } from '@cmdb/common';
 
 /**
  * Analytics Service
@@ -12,7 +12,7 @@ import { logger } from '@cmdb/common';
  */
 export class AnalyticsService {
   private postgresClient = getPostgresClient();
-
+  private neo4jClient = getNeo4jClient();
   /**
    * Get CI count by type
    */
@@ -357,6 +357,7 @@ export class AnalyticsService {
    */
   async getChangeHistory(
     ciId: string,
+    organizationId: string,
     limit: number = 50
   ): Promise<
     Array<{
@@ -368,22 +369,26 @@ export class AnalyticsService {
       changed_by?: string;
     }>
   > {
+    const ci = await this.neo4jClient.getCI(ciId, organizationId);
+    const incarnationId = ciIncarnationId(ci);
+    if (!incarnationId) return [];
     try {
       const result = await this.postgresClient.query(
         `
         SELECT
-          change_timestamp,
+          changed_at AS change_timestamp,
           change_type,
-          field_name,
-          old_value,
-          new_value,
+          changed_fields::text AS field_name,
+          previous_values::text AS old_value,
+          new_values::text AS new_value,
           changed_by
         FROM ci_change_history
-        WHERE ci_id = $1
-        ORDER BY change_timestamp DESC
+        WHERE ci_id = $1 AND ci_incarnation_id = $3
+          AND metadata->>'organization_id' = $4
+        ORDER BY changed_at DESC
         LIMIT $2
         `,
-        [ciId, limit]
+        [ciId, limit, incarnationId, organizationId]
       );
 
       return result.rows;
@@ -398,6 +403,7 @@ export class AnalyticsService {
    * Uses TimescaleDB for efficient time-series aggregation
    */
   async getChangeFrequencyByType(
+    organizationId: string,
     startDate?: Date,
     endDate?: Date,
     interval: 'hour' | 'day' | 'week' | 'month' = 'day'
@@ -410,28 +416,32 @@ export class AnalyticsService {
   > {
     try {
       let dateFilter = '';
-      const params: any[] = [interval];
+      const incarnations = await this.neo4jClient.listCIIncarnations(organizationId);
+      const current = JSON.stringify(incarnations);
+      const params: any[] = [interval, current, organizationId];
 
       if (startDate) {
         params.push(startDate);
-        dateFilter += ` AND ch.change_timestamp >= $${params.length}`;
+        dateFilter += ` AND ch.changed_at >= $${params.length}`;
       }
 
       if (endDate) {
         params.push(endDate);
-        dateFilter += ` AND ch.change_timestamp <= $${params.length}`;
+        dateFilter += ` AND ch.changed_at <= $${params.length}`;
       }
 
       const result = await this.postgresClient.query(
         `
         SELECT
-          ci.ci_type,
-          date_trunc($1, ch.change_timestamp) as period,
+          current_ci."ciType" as ci_type,
+          date_trunc($1, ch.changed_at) as period,
           COUNT(*) as change_count
         FROM ci_change_history ch
-        JOIN dim_ci ci ON ch.ci_id = ci.ci_id
-        WHERE ci.is_active = true ${dateFilter}
-        GROUP BY ci.ci_type, period
+        JOIN jsonb_to_recordset($2::jsonb) AS current_ci("ciId" text, "incarnationId" uuid, "organizationId" text, "ciType" text)
+          ON ch.ci_id = current_ci."ciId" AND ch.ci_incarnation_id = current_ci."incarnationId"
+          AND current_ci."organizationId" = $3
+        WHERE ch.metadata->>'organization_id' = $3 ${dateFilter}
+        GROUP BY current_ci."ciType", period
         ORDER BY period DESC, change_count DESC
         `,
         params

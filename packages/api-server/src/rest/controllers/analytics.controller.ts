@@ -3,7 +3,8 @@
 
 import { Request, Response } from 'express';
 import { getPostgresClient, getNeo4jClient } from '@cmdb/database';
-import { logger } from '@cmdb/common';
+import { logger, ciIncarnationId } from '@cmdb/common';
+import { requestOrganizationId } from '../../middleware/auth.middleware';
 
 export class AnalyticsController {
   private postgresClient = getPostgresClient();
@@ -435,6 +436,18 @@ export class AnalyticsController {
         return;
       }
 
+      const organizationId = requestOrganizationId(req);
+      const ci = await this.neo4jClient.getCI(String(ci_id), organizationId);
+      if (!ci) {
+        res.status(404).json({ success: false, error: 'Not Found' });
+        return;
+      }
+      const incarnationId = ciIncarnationId(ci);
+      if (!incarnationId) {
+        res.json({ success: true, data: [], ci_id });
+        return;
+      }
+
       const limitNum = Math.min(parseInt(String(limit)), 1000);
 
       const result = await this.postgresClient.query(
@@ -447,11 +460,12 @@ export class AnalyticsController {
           new_values,
           changed_by
         FROM ci_change_history
-        WHERE ci_id = $1
+        WHERE ci_id = $1 AND ci_incarnation_id = $3
+          AND metadata->>'organization_id' = $4
         ORDER BY changed_at DESC
         LIMIT $2
         `,
-        [ci_id, limitNum]
+        [ci_id, limitNum, incarnationId, organizationId]
       );
 
       res.json({
@@ -536,7 +550,7 @@ export class AnalyticsController {
   }
 
   /**
-   * Get global CI change timeline, bounded to a date range (default last 30 days, max 90 days)
+   * Get caller-organization CI change timeline, bounded to a date range (default last 30 days, max 90 days)
    * GET /analytics/change-timeline
    */
   async getChangeTimeline(req: Request, res: Response): Promise<void> {
@@ -553,6 +567,10 @@ export class AnalyticsController {
         return;
       }
 
+      const organizationId = requestOrganizationId(req);
+      const incarnations = await this.neo4jClient.listCIIncarnations(organizationId);
+      const current = JSON.stringify(incarnations);
+
       const result = await this.postgresClient.query(
         `
         SELECT
@@ -560,12 +578,15 @@ export class AnalyticsController {
           COUNT(*) FILTER (WHERE change_type = 'discovered')::int as created,
           COUNT(*) FILTER (WHERE change_type = 'updated')::int as updated,
           COUNT(*) FILTER (WHERE change_type = 'deleted')::int as deleted
-        FROM ci_change_history
-        WHERE changed_at >= $1 AND changed_at <= $2
+        FROM ci_change_history h
+        JOIN jsonb_to_recordset($3::jsonb) AS current_ci("ciId" text, "incarnationId" uuid)
+          ON h.ci_id = current_ci."ciId" AND h.ci_incarnation_id = current_ci."incarnationId"
+        WHERE h.changed_at >= $1 AND h.changed_at <= $2
+          AND h.metadata->>'organization_id' = $4
         GROUP BY date
         ORDER BY date ASC
         `,
-        [range.startDate.toISOString(), range.endDate.toISOString()]
+        [range.startDate.toISOString(), range.endDate.toISOString(), current, organizationId]
       );
 
       res.json({

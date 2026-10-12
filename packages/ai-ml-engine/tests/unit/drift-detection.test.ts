@@ -27,6 +27,7 @@ import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
 import { getEventProducer } from '@cmdb/event-processor';
 
 import { ConfigurationDriftDetector } from '../../src/engines/configuration-drift-detector';
+const INC = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 
 describe('ConfigurationDriftDetector', () => {
   let detector: ConfigurationDriftDetector;
@@ -38,12 +39,14 @@ describe('ConfigurationDriftDetector', () => {
     jest.clearAllMocks();
 
     // Reset singleton so each test gets a fresh instance
+    Object.assign(mockBaselineSnapshots.configuration, { ci_incarnation_id: INC });
     (ConfigurationDriftDetector as any).instance = undefined;
 
     mockNeo4jClient = {
       getCI: jest.fn().mockImplementation(async (id: string) =>
-        id.includes('nonexistent') ? null : { id, _created_at: '2020-01-01T00:00:00Z' }
+        id.includes('nonexistent') ? null : { id, _incarnation_id: INC }
       ),
+      ensureCIIncarnation: jest.fn().mockResolvedValue(INC),
       getSession: jest.fn(),
     };
     mockPgClient = createMockPgClient([]);

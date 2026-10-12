@@ -6,6 +6,8 @@
 import { GraphQLError } from 'graphql';
 import { AnalyticsService } from '../../services/analytics.service';
 import { logger } from '@cmdb/common';
+import { requireGraphQLOrganization } from '../require-organization';
+import type { TokenPayload } from '../../auth/types';
 
 /**
  * GraphQL Context type (imported from main resolvers)
@@ -13,6 +15,7 @@ import { logger } from '@cmdb/common';
 export interface GraphQLContext {
   _neo4jClient: any;
   _loaders: any;
+  user?: TokenPayload;
 }
 
 /**
@@ -297,7 +300,8 @@ const AnalyticsQueryResolvers = {
    */
   getChangeHistory: async (
     _parent: any,
-    args: { ciId: string; limit?: number }
+    args: { ciId: string; limit?: number },
+    context: GraphQLContext
   ): Promise<any[]> => {
     try {
       if (!args.ciId) {
@@ -309,7 +313,7 @@ const AnalyticsQueryResolvers = {
       const service = new AnalyticsService();
       const limit = Math.min(args.limit || 50, 1000);
 
-      const results = await service.getChangeHistory(args.ciId, limit);
+      const results = await service.getChangeHistory(args.ciId, requireGraphQLOrganization(context), limit);
 
       return results.map(row => ({
         _changeTimestamp: row.change_timestamp.toISOString(),
@@ -338,15 +342,17 @@ const AnalyticsQueryResolvers = {
    */
   getChangeFrequencyByType: async (
     _parent: any,
-    args: { startDate?: string; endDate?: string; interval?: string }
+    args: { startDate?: string; endDate?: string; interval?: string },
+    context: GraphQLContext
   ): Promise<any[]> => {
+    const organizationId = requireGraphQLOrganization(context);
     try {
       const service = new AnalyticsService();
       const startDate = parseDate(args.startDate);
       const endDate = parseDate(args.endDate);
       const interval = convertTimeInterval(args.interval);
 
-      const results = await service.getChangeFrequencyByType(startDate, endDate, interval);
+      const results = await service.getChangeFrequencyByType(organizationId, startDate, endDate, interval);
 
       return results.map(row => ({
         _ciType: row.ci_type,

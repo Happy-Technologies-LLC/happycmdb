@@ -3,7 +3,7 @@
 
 import { Request, Response } from 'express';
 import { getNeo4jClient, getPostgresClient, UNSCOPED_CI_ACCESS } from '@cmdb/database';
-import { logger, ciCreationEpoch } from '@cmdb/common';
+import { logger, ciIncarnationId } from '@cmdb/common';
 import { v4 as uuidv4 } from 'uuid';
 import neo4j, { type Integer } from 'neo4j-driver';
 import { requestOrganizationId } from '../../middleware/auth.middleware';
@@ -247,8 +247,8 @@ export class ITILController {
         res.status(404).json({ success: false, error: 'Not Found', message: `Configuration item with ID '${id}' not found` });
         return;
       }
-      const since = ciCreationEpoch(ci);
-      if (!since) {
+      const incarnationId = ciIncarnationId(ci);
+      if (!incarnationId) {
         res.json({ success: true, data: [], count: 0 });
         return;
       }
@@ -260,11 +260,11 @@ export class ITILController {
         SELECT h.* FROM ci_change_history h
         WHERE h.ci_id = $1
           AND h.metadata->>'organization_id' = $3
-          AND h.changed_at >= $4
+          AND h.ci_incarnation_id = $4
         ORDER BY h.changed_at DESC
         LIMIT $2
         `,
-        [id, parseInt(limit as string), requestOrganizationId(_req), since]
+        [id, parseInt(limit as string), requestOrganizationId(_req), incarnationId]
       );
 
       res.json({
@@ -1413,7 +1413,8 @@ export class ITILController {
         // the backfill): a restore never changes which organization owns a CI.
         // `created_at` is when the node was created: the ETL relies on it
         // (migration 011), so a snapshot never rewrites it.
-        if (cleanKey === 'id' || cleanKey === 'updated_at' || cleanKey === 'organization_id' || cleanKey === 'created_at') {
+        if (cleanKey === 'id' || cleanKey === 'updated_at' || cleanKey === 'organization_id'
+          || cleanKey === 'created_at' || cleanKey === 'incarnation_id') {
           continue;
         }
 

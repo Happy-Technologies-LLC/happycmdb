@@ -57,6 +57,7 @@ function nodeToCI(node: Node): CI {
     _status: props.status,
     environment: props.environment,
     _created_at: props.created_at,
+    _incarnation_id: props.incarnation_id,
     _updated_at: props.updated_at,
     _discovered_at: props.discovered_at,
     _metadata: props.metadata ? JSON.parse(props.metadata) : {},

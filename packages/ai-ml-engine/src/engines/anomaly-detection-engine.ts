@@ -6,7 +6,7 @@
  * ML-based pattern recognition for CI behavior anomalies
  */
 
-import { getPostgresClient, getNeo4jClient } from '@cmdb/database';
+import { getPostgresClient, getNeo4jClient, UNSCOPED_CI_ACCESS } from '@cmdb/database';
 import { logger } from '@cmdb/common';
 import { getEventProducer, EventType } from '@cmdb/event-processor';
 import * as stats from 'simple-statistics';
@@ -96,6 +96,7 @@ export class AnomalyDetectionEngine {
     const lookbackDays = this.config.lookback_days;
 
     // Get CIs with their change counts
+    const incarnations = await this.neo4jClient.listCIIncarnations(UNSCOPED_CI_ACCESS);
     const result = await this.postgresClient.query(
       `SELECT
         cs.ci_id,
@@ -103,11 +104,14 @@ export class AnomalyDetectionEngine {
         COALESCE(MAX(dc.ci_name), cs.ci_id) as ci_name
        FROM ci_change_statistics cs
        JOIN ci_change_history ch ON cs.ci_id = ch.ci_id
+       JOIN jsonb_to_recordset($2::jsonb) AS current_ci("ciId" text, "incarnationId" uuid, "organizationId" text)
+         ON ch.ci_id = current_ci."ciId" AND ch.ci_incarnation_id = current_ci."incarnationId"
+         AND ch.metadata->>'organization_id' = current_ci."organizationId"
        LEFT JOIN cmdb.dim_ci dc ON dc.ci_id = cs.ci_id AND dc.is_current = true
        WHERE ch.changed_at >= NOW() - ($1 * INTERVAL '1 day')
        GROUP BY cs.ci_id
        HAVING COUNT(*) > 0`,
-      [lookbackDays]
+      [lookbackDays, JSON.stringify(incarnations)]
     );
 
     if (result.rows.length < 3) {

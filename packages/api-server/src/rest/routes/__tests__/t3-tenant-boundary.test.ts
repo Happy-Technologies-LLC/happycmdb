@@ -194,6 +194,9 @@ it('scopes ITIL CI lists, audit metrics and CI detail/write paths across two ten
   const foreignHistory = await request(app).get('/api/v1/itil/configuration-items/ci-b/history').set(auth('a'));
   expect(ownHistory.body.data).toMatchObject([{ ci_id: 'ci-a' }]);
   expect(foreignHistory.status).toBe(404);
+  const invalidLifecycle = await request(app).patch('/api/v1/itil/configuration-items/ci-a/lifecycle')
+    .set(auth('a')).send({ stage: 'INVALID_STAGE' });
+  expect(invalidLifecycle.status).toBe(400);
   const foreign = await request(app).patch('/api/v1/itil/configuration-items/ci-b/lifecycle').set(auth('a')).send({ stage: 'BUILD' });
   const missing = await request(app).patch('/api/v1/itil/configuration-items/missing/lifecycle').set(auth('a')).send({ stage: 'BUILD' });
   expect(foreign.status).toBe(404);

@@ -175,8 +175,9 @@ beforeAll(async () => {
   await db.exec(readFileSync(join(migrations, '011_ci_organization_scope.sql'), 'utf8'));
   await db.exec(`INSERT INTO cmdb.dim_ci (ci_id, ci_name, ci_type, ci_status, organization_id) VALUES
     ('ci-a', 'A', 'server', 'active', '${A}'), ('ci-b', 'B', 'server', 'active', '${B}');`);
-  await db.exec(`INSERT INTO ci_change_history (ci_id, change_type, change_source) VALUES
-    ('ci-a', 'UPDATE', 'test'), ('ci-b', 'UPDATE', 'test');`);
+  await db.exec(`INSERT INTO ci_change_history (ci_id, change_type, change_source, metadata) VALUES
+    ('ci-a', 'UPDATE', 'test', '{"organization_id":"${A}"}'),
+    ('ci-b', 'UPDATE', 'test', '{"organization_id":"${B}"}');`);
   nodes.set('ci-a', { id: 'ci-a', name: 'A', organization_id: A, itil_audit_status: 'COMPLIANT' });
   nodes.set('ci-b', { id: 'ci-b', name: 'B', organization_id: B, itil_audit_status: 'FAILED' });
 });
@@ -188,6 +189,7 @@ afterEach(async () => {
   await db.rows("DELETE FROM baseline_snapshots WHERE ci_id = 'ci-fresh'");
   await db.rows("DELETE FROM impact_analyses WHERE source_ci_id = 'ci-fresh'");
   await db.rows("DELETE FROM ci_criticality_scores WHERE ci_id = 'ci-fresh'");
+  await db.rows("DELETE FROM ci_change_history WHERE ci_id = 'ci-fresh'");
 });
 
 it('scopes ITIL CI lists, audit metrics and CI detail/write paths across two tenants', async () => {
@@ -228,6 +230,40 @@ it('persists fresh graph-owned CI derivatives before the reporting dimension syn
     .toMatchObject([{ source_ci_id: 'ci-fresh' }]);
   expect((await request(app).get('/api/v1/impact/history/ci-fresh').set(auth('b'))).status).toBe(404);
   expect(await db.rows('SELECT ci_id FROM cmdb.dim_ci WHERE ci_id = $1', ['ci-fresh'])).toEqual([]);
+});
+
+it('shows only proven CI history for a fresh graph CI and denies prior-owner rows after ID reuse', async () => {
+  nodes.set('ci-fresh', { id: 'ci-fresh', name: 'Fresh', organization_id: A });
+  await db.rows(
+    `INSERT INTO ci_change_history (ci_id, change_type, change_source, metadata) VALUES
+      ('ci-fresh', 'A_EVENT', 'reconciliation', $1::jsonb),
+      ('ci-fresh', 'LEGACY', 'unknown', NULL)`,
+    [JSON.stringify({ organization_id: A, event_id: 'a-1' })]
+  );
+  const gqlApp = express();
+  const { server } = await createGraphQLServer(gqlApp);
+  const rest = (user: string) => request(app).get('/api/v1/itil/configuration-items/ci-fresh/history').set(auth(user));
+  const gql = (user: string) => request(gqlApp).post('/graphql').set(auth(user))
+    .send({ query: '{ ciHistory(id: "ci-fresh") { changeType } }' });
+  try {
+    expect((await rest('a')).body.data.map((row: { change_type: string }) => row.change_type)).toEqual(['A_EVENT']);
+    expect((await gql('a')).body.data?.ciHistory).toEqual([{ changeType: 'A_EVENT' }]);
+    expect((await rest('b')).status).toBe(404);
+    expect((await gql('b')).body.errors?.[0].extensions.code).toBe('NOT_FOUND');
+
+    nodes.get('ci-fresh')!.organization_id = B;
+    await db.rows(
+      "INSERT INTO ci_change_history (ci_id, change_type, change_source, metadata) VALUES ('ci-fresh', 'B_EVENT', 'reconciliation', $1::jsonb)",
+      [JSON.stringify({ organization_id: B, event_id: 'b-1' })]
+    );
+    expect((await rest('a')).status).toBe(404);
+    expect((await gql('a')).body.errors?.[0].extensions.code).toBe('NOT_FOUND');
+    expect((await rest('b')).body.data.map((row: { change_type: string }) => row.change_type)).toEqual(['B_EVENT']);
+    expect((await gql('b')).body.data?.ciHistory).toEqual([{ changeType: 'B_EVENT' }]);
+    expect(await db.rows('SELECT ci_id FROM cmdb.dim_ci WHERE ci_id = $1', ['ci-fresh'])).toEqual([]);
+  } finally {
+    await server.stop();
+  }
 });
 
 it('refuses org-less calls before graph or SQL for both families', async () => {

@@ -929,8 +929,7 @@ async function itilHistory(context: GraphQLContext, id: string, limit: number) {
   await requireCIInOrganization(context, id, organizationId);
   const result = await getPostgresClient().pool.query(
     `SELECT h.* FROM ci_change_history h WHERE h.ci_id = $1
-     AND EXISTS (SELECT 1 FROM cmdb.dim_ci ci WHERE ci.ci_id = h.ci_id
-       AND ci.is_current AND ci.organization_id = $3)
+     AND h.metadata->>'organization_id' = $3
      ORDER BY h.changed_at DESC LIMIT $2`,
     [id, Math.min(Math.max(limit, 1), 500), organizationId]
   );

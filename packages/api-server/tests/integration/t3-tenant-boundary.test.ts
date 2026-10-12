@@ -6,6 +6,7 @@ import express from 'express';
 import request from 'supertest';
 import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
 import { loadConfig } from '@cmdb/common';
+import { ChangeEventProcessor, EventType, type CIDiscoveredEvent, type CIUpdatedEvent } from '@cmdb/event-processor';
 
 const A = 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa';
 const B = 'bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb';
@@ -67,6 +68,8 @@ afterAll(async () => {
   await sql.query("DELETE FROM metrics_timeseries WHERE tags->>'ci_id' = 't3-a' AND metric_name = 't3-cpu'");
   await sql.query("DELETE FROM drift_detection_results WHERE ci_id LIKE 't3-%'");
   await sql.query("DELETE FROM baseline_snapshots WHERE ci_id LIKE 't3-%'");
+  await sql.query("DELETE FROM ci_change_history WHERE ci_id = 't3-history'");
+  await sql.query("DELETE FROM ci_change_statistics WHERE ci_id = 't3-history'");
   await sql.query("DELETE FROM impact_analyses WHERE source_ci_id LIKE 't3-%'");
   await sql.query("DELETE FROM ci_criticality_scores WHERE ci_id LIKE 't3-%'");
   await sql.query("DELETE FROM cmdb.dim_ci WHERE ci_id LIKE 't3-%'");
@@ -159,6 +162,43 @@ it('persists a newly created graph CI before the reporting dimension is populate
     expect((await sql.query(`SELECT ${column} FROM ${table} WHERE ${column} = 't3-fresh'`)).rows.length).toBeGreaterThan(0);
   }
   expect((await sql.query("SELECT ci_id FROM cmdb.dim_ci WHERE ci_id = 't3-fresh'")).rows).toEqual([]);
+});
+
+it('returns only event-proven CI history before dimension sync and after cross-tenant ID reuse', async () => {
+  await run("CREATE (:CI {id:'t3-history', name:'history', ci_type:'server', organization_id:$organizationId})", { organizationId: A });
+  const processor = new ChangeEventProcessor() as unknown as {
+    handleCIDiscovered(event: CIDiscoveredEvent): Promise<void>;
+    handleCIUpdated(event: CIUpdatedEvent): Promise<void>;
+  };
+  await sql.query("INSERT INTO ci_change_history (ci_id, change_type, change_source) VALUES ('t3-history', 'LEGACY', 'unknown')");
+  await processor.handleCIDiscovered({
+    event_id: 't3-history-a', event_type: EventType.CI_DISCOVERED, timestamp: new Date(),
+    source: 'identity-reconciliation-engine', ci_id: 't3-history', organization_id: A,
+    ci_name: 'history', ci_type: 'server', source_system: 'test',
+    identifiers: {}, confidence_score: 1,
+  });
+  const rest = (user: keyof typeof users) =>
+    request(app).get('/api/v1/itil/configuration-items/t3-history/history').set(auth(user));
+  const graphql = (user: keyof typeof users) =>
+    request(app).post('/graphql').set(auth(user)).send({ query: '{ ciHistory(id: "t3-history") { changeType } }' });
+  expect((await sql.query("SELECT ci_id FROM cmdb.dim_ci WHERE ci_id = 't3-history'")).rows).toEqual([]);
+  expect((await rest('a')).body.data.map((row: { change_type: string }) => row.change_type)).toEqual(['discovered']);
+  expect((await graphql('a')).body.data?.ciHistory).toEqual([{ changeType: 'discovered' }]);
+  expect((await rest('b')).status).toBe(404);
+  expect((await graphql('b')).body.errors?.[0].extensions.code).toBe('NOT_FOUND');
+
+  await sql.query("INSERT INTO cmdb.dim_ci (ci_id, ci_name, ci_type, ci_status, organization_id) VALUES ('t3-history', 'stale', 'server', 'active', $1)", [A]);
+  await run("MATCH (ci:CI {id:'t3-history'}) SET ci.organization_id = $organizationId", { organizationId: B });
+  await processor.handleCIUpdated({
+    event_id: 't3-history-b', event_type: EventType.CI_UPDATED, timestamp: new Date(),
+    source: 'identity-reconciliation-engine', ci_id: 't3-history', organization_id: B,
+    ci_name: 'history', source_system: 'test', changed_fields: [],
+    previous_values: {}, new_values: {},
+  });
+  expect((await rest('a')).status).toBe(404);
+  expect((await graphql('a')).body.errors?.[0].extensions.code).toBe('NOT_FOUND');
+  expect((await rest('b')).body.data.map((row: { change_type: string }) => row.change_type)).toEqual(['updated']);
+  expect((await graphql('b')).body.data?.ciHistory).toEqual([{ changeType: 'updated' }]);
 });
 
 it('rejects an identity without an organization before graph and SQL access', async () => {

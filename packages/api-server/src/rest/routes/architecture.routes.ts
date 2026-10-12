@@ -6,7 +6,7 @@
  */
 
 import { Router, Request, Response } from 'express';
-import { getArchitectureOptimizationEngine } from '@cmdb/ai-ml-engine';
+import { architectureFailure, getArchitectureOptimizationEngine, MAX_ARCHITECTURE_ROOTS } from '@cmdb/ai-ml-engine';
 import { getNeo4jClient } from '@cmdb/database';
 import { logger } from '@cmdb/common';
 import { getAuthMiddleware } from '../../auth/auth-bootstrap';
@@ -48,6 +48,11 @@ architectureRoutes.get(
       });
     } catch (error) {
       logger.error('Architecture analysis failed', { error: errorLogFields(error), service_id: req.params.serviceId });
+      const failure = architectureFailure(error);
+      if (failure) {
+        res.status(failure.status).json({ success: false, error: failure.message });
+        return;
+      }
       res.status(500).json({
         success: false,
         error: 'Failed to analyze architecture',
@@ -78,6 +83,13 @@ architectureRoutes.post(
         });
         return;
       }
+      if (ci_ids.length > MAX_ARCHITECTURE_ROOTS) {
+        res.status(400).json({
+          success: false,
+          error: `Too many CI IDs (maximum ${MAX_ARCHITECTURE_ROOTS})`,
+        });
+        return;
+      }
       // Validate the complete set before the engine reads graph neighbors or
       // persists any analysis. A legacy NULL-owner CI is not owned by anyone.
       const organizationId = requestOrganizationId(req);
@@ -103,6 +115,11 @@ architectureRoutes.post(
       });
     } catch (error) {
       logger.error('Architecture analysis failed', { error: errorLogFields(error) });
+      const failure = architectureFailure(error);
+      if (failure) {
+        res.status(failure.status).json({ success: false, error: failure.message });
+        return;
+      }
       res.status(500).json({
         success: false,
         error: 'Failed to analyze architecture',

@@ -7,7 +7,7 @@
  */
 
 import { Request, Response } from 'express';
-import { getDashboardService } from '../../services/dashboard.service';
+import { DashboardAggregateLimitError, getDashboardService } from '../../services/dashboard.service';
 import { logger } from '@cmdb/common';
 import { requestOrganizationId } from '../../middleware/auth.middleware';
 import { BUSINESS_SERVICE_NOT_FOUND } from '../../services/business-service-ownership';
@@ -15,37 +15,53 @@ import { CITraversalLimitError } from '@cmdb/database';
 import { executeBoundedAnalysis } from '../../middleware/analysis-admission';
 
 const DASHBOARD_TIMEOUT_MS = 5000;
+const GLOBAL_DASHBOARD_TIMEOUT_MS = 20_000;
 class DashboardDeadlineError extends Error {}
+
+function dashboardTimedOut(error: unknown): boolean {
+  if (error instanceof DashboardDeadlineError) return true;
+  const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
+  return typeof code === 'string' && (code.includes('TransactionTimedOut') || code.includes('Transaction.Terminated'));
+}
 
 export class DashboardController {
   private dashboardService = getDashboardService();
+
+  private async executeGlobalDashboard(
+    req: Request, res: Response, operation: () => Promise<unknown>, internalError: string
+  ): Promise<void> {
+    await executeBoundedAnalysis(req, res, async () => ({
+      status: 200, body: await operation(),
+    }), {
+      scope: 'dashboard',
+      timeoutMs: GLOBAL_DASHBOARD_TIMEOUT_MS,
+      withDeadline: (_deadline, work) => work(),
+      deadlineError: () => new DashboardDeadlineError(),
+      failure: error => {
+        if (error instanceof DashboardAggregateLimitError) {
+          return { status: 503, message: 'Dashboard aggregate resource limit exceeded' };
+        }
+        if (dashboardTimedOut(error)) {
+          return { status: 504, message: 'Dashboard analysis timed out' };
+        }
+        return null;
+      },
+      internalError,
+    });
+  }
 
   /**
    * GET /api/v1/dashboards/executive
    * Get Executive Dashboard summary data
    */
   async getExecutiveDashboard(req: Request, res: Response): Promise<void> {
-    try {
+    await this.executeGlobalDashboard(req, res, async () => {
       const days = parseInt(req.query.days as string) || 30;
       const timeRange = this.dashboardService.parseTimeRange(days);
-
       logger.info('Fetching executive dashboard', { timeRange });
-
       const data = await this.dashboardService.getExecutiveSummary(requestOrganizationId(req), timeRange);
-
-      res.json({
-        success: true,
-        data,
-        timeRange,
-      });
-    } catch (error: any) {
-      logger.error('Error fetching executive dashboard', { error });
-      res.status(500).json({
-        success: false,
-        error: 'Failed to fetch executive dashboard',
-        message: error.message,
-      });
-    }
+      return { success: true, data, timeRange };
+    }, 'Failed to fetch executive dashboard');
   }
 
   /**
@@ -53,27 +69,13 @@ export class DashboardController {
    * Get CIO Dashboard metrics
    */
   async getCIODashboard(req: Request, res: Response): Promise<void> {
-    try {
+    await this.executeGlobalDashboard(req, res, async () => {
       const days = parseInt(req.query.days as string) || 30;
       const timeRange = this.dashboardService.parseTimeRange(days);
-
       logger.info('Fetching CIO dashboard', { timeRange });
-
       const data = await this.dashboardService.getCIOMetrics(requestOrganizationId(req), timeRange);
-
-      res.json({
-        success: true,
-        data,
-        timeRange,
-      });
-    } catch (error: any) {
-      logger.error('Error fetching CIO dashboard', { error });
-      res.status(500).json({
-        success: false,
-        error: 'Failed to fetch CIO dashboard',
-        message: error.message,
-      });
-    }
+      return { success: true, data, timeRange };
+    }, 'Failed to fetch CIO dashboard');
   }
 
   /**
@@ -81,23 +83,11 @@ export class DashboardController {
    * Get ITSM Dashboard data
    */
   async getITSMDashboard(req: Request, res: Response): Promise<void> {
-    try {
+    await this.executeGlobalDashboard(req, res, async () => {
       logger.info('Fetching ITSM dashboard');
-
       const data = await this.dashboardService.getITSMDashboard(requestOrganizationId(req));
-
-      res.json({
-        success: true,
-        data,
-      });
-    } catch (error: any) {
-      logger.error('Error fetching ITSM dashboard', { error });
-      res.status(500).json({
-        success: false,
-        error: 'Failed to fetch ITSM dashboard',
-        message: error.message,
-      });
-    }
+      return { success: true, data };
+    }, 'Failed to fetch ITSM dashboard');
   }
 
   /**
@@ -105,27 +95,13 @@ export class DashboardController {
    * Get FinOps Dashboard data
    */
   async getFinOpsDashboard(req: Request, res: Response): Promise<void> {
-    try {
+    await this.executeGlobalDashboard(req, res, async () => {
       const days = parseInt(req.query.days as string) || 30;
       const timeRange = this.dashboardService.parseTimeRange(days);
-
       logger.info('Fetching FinOps dashboard', { timeRange });
-
       const data = await this.dashboardService.getFinOpsDashboard(requestOrganizationId(req), timeRange);
-
-      res.json({
-        success: true,
-        data,
-        timeRange,
-      });
-    } catch (error: any) {
-      logger.error('Error fetching FinOps dashboard', { error });
-      res.status(500).json({
-        success: false,
-        error: 'Failed to fetch FinOps dashboard',
-        message: error.message,
-      });
-    }
+      return { success: true, data, timeRange };
+    }, 'Failed to fetch FinOps dashboard');
   }
 
   /**
@@ -155,11 +131,7 @@ export class DashboardController {
         if (error instanceof CITraversalLimitError) {
           return { status: 503, message: 'CI traversal resource limit exceeded' };
         }
-        if (error instanceof DashboardDeadlineError) {
-          return { status: 504, message: 'Dashboard analysis timed out' };
-        }
-        const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
-        if (typeof code === 'string' && (code.includes('TransactionTimedOut') || code.includes('Transaction.Terminated'))) {
+        if (dashboardTimedOut(error)) {
           return { status: 504, message: 'Dashboard analysis timed out' };
         }
         return null;

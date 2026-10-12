@@ -160,37 +160,129 @@ it('bounds mounted dashboard parallel-edge and fan-out graphs before path expans
   }
 });
 
-it('bounds no-service dashboard collection to 101 owned CIs with a Neo4j transaction deadline', async () => {
+it('default business-service dashboard reads no graph even with over 100 active owned CIs', async () => {
   await run(`UNWIND range(1,101) AS ordinal
     CREATE (:CI {id:'t2-budget-'+toString(ordinal), name:'budget', type:'server',
       status:'active', organization_id:$organizationId})`, { organizationId: A });
-  const collection: Array<{ statement: string; timeout: number | undefined; rows: number }> = [];
+  const original = graph.getSession.bind(graph);
+  const statements: string[] = [];
+  const spy = jest.spyOn(graph, 'getSession').mockImplementation(() => {
+    const session = original();
+    const originalRun = session.run.bind(session);
+    session.run = (async (...args: Parameters<typeof originalRun>) => {
+      statements.push(String(args[0]));
+      return originalRun(...args);
+    }) as typeof session.run;
+    return session;
+  });
+  try {
+    const own = await request(app).get('/api/v1/dashboards/business-service').set(auth('a'));
+    const foreign = await request(app).get('/api/v1/dashboards/business-service').set(auth('b'));
+    expect(own.status).toBe(200);
+    expect(foreign.status).toBe(200);
+    expect(own.body.data.serviceHealth.flatMap((unit: { businessServices: unknown[] }) => unit.businessServices)).toHaveLength(4);
+    expect(own.body.data.serviceHealth).toEqual(foreign.body.data.serviceHealth);
+    expect(Object.keys(own.body.data).sort()).toEqual(Object.keys(foreign.body.data).sort());
+    expect(statements).toEqual([]);
+  } finally {
+    spy.mockRestore();
+    await run("MATCH (ci:CI) WHERE ci.id STARTS WITH 't2-budget-' DETACH DELETE ci");
+  }
+});
+
+it('aggregates four mounted dashboards across large tenant CIs without returning an unbounded graph list', async () => {
+  await run(`UNWIND range(1,130) AS ordinal
+    CREATE (:CI {id:'t2-large-a-'+toString(ordinal), name:'owned', type:'server',
+      status:'active', organization_id:$organizationId, tbm_monthly_cost:2,
+      tbm_resource_tower:'compute', discovery_provider:'aws',
+      bsm_business_criticality:'tier_1', bsm_customer_facing:true})`, { organizationId: A });
+  await run(`UNWIND range(1,9) AS ordinal
+    CREATE (:CI {id:'t2-large-b-'+toString(ordinal), name:'foreign', type:'server',
+      status:'active', organization_id:$organizationId, tbm_monthly_cost:3000,
+      tbm_resource_tower:'foreign', discovery_provider:'gcp',
+      bsm_business_criticality:'tier_2', bsm_customer_facing:true})`, { organizationId: B });
+  const recorded: Array<{ organizationId: unknown; timeout: number | undefined; rows: number; samples: number[] }> = [];
   const original = graph.getSession.bind(graph);
   const spy = jest.spyOn(graph, 'getSession').mockImplementation(() => {
     const session = original();
     const originalRun = session.run.bind(session);
     session.run = (async (...args: Parameters<typeof originalRun>) => {
       const result = await originalRun(...args);
-      if (String(args[0]).includes('collect(ci) as cis')) {
-        collection.push({
-          statement: String(args[0]), timeout: args[2]?.timeout,
-          rows: (result.records[0]?.get('cis') as unknown[]).length,
-        });
-      }
+      recorded.push({
+        organizationId: args[1]?.organizationId, timeout: args[2]?.timeout,
+        rows: result.records.length,
+        samples: result.records.filter(row => row.keys.includes('sampleCIs'))
+          .map(row => (row.get('sampleCIs') as unknown[]).length),
+      });
       return result;
     }) as typeof session.run;
     return session;
   });
   try {
-    const response = await request(app).get('/api/v1/dashboards/business-service').set(auth('a'));
-    expect(response.status).toBe(503);
-    expect(response.body).toEqual({ success: false, error: 'CI traversal resource limit exceeded' });
-    expect(collection).toHaveLength(1);
-    expect(collection[0]).toMatchObject({ timeout: 5000, rows: 101 });
-    expect(collection[0]!.statement).toMatch(/\bWITH ci LIMIT 101 RETURN collect\(ci\) as cis\b/);
+    const paths = ['executive', 'cio', 'finops', 'itsm'];
+    const ownedAuth = architectureAuth();
+    const owned = [];
+    for (const path of paths) {
+      owned.push(await request(app).get(`/api/v1/dashboards/${path}?organizationId=${B}`).set(ownedAuth));
+    }
+    for (const response of owned) expect(response.status).toBe(200);
+    expect(owned[0]!.body.data.totalITSpend).toBe(260);
+    expect(owned[0]!.body.data.costByCapability).toContainEqual({
+      capability: 'compute', totalCost: 260, businessServices: [],
+    });
+    expect(owned[0]!.body.data.serviceHealthByTier[0].serviceCount).toBe(130);
+    expect(owned[0]!.body.data.topCostDrivers).toHaveLength(10);
+    expect(owned[0]!.body.data.topCostDrivers.every((ci: { serviceId: string }) =>
+      ci.serviceId.startsWith('t2-large-a-'))).toBe(true);
+    expect(owned[1]!.body.data.configurationAccuracy.totalCIs).toBe(132);
+    expect(owned[2]!.body.data.onPremVsCloud.totalCost).toBe(260);
+    expect(owned[2]!.body.data.costByTower).toContainEqual({ tower: 'compute', cost: 260, subTowers: [] });
+    expect(owned[3]!.body.data.ciStatus.find((status: { status: string }) =>
+      status.status === 'active').count).toBe(132);
+    expect(owned[3]!.body.data.ciStatus.find((status: { status: string }) =>
+      status.status === 'active').cis).toHaveLength(5);
+    expect(recorded.length).toBeGreaterThan(4);
+    expect(recorded.every(entry => entry.organizationId === A && entry.timeout === 5000
+      && entry.rows <= 101 && entry.samples.every(size => size <= 5))).toBe(true);
+
+    recorded.length = 0;
+    const foreign = [];
+    for (const path of paths) {
+      foreign.push(await request(app).get(`/api/v1/dashboards/${path}?organizationId=${A}`).set(auth('b')));
+    }
+    for (const response of foreign) expect(response.status).toBe(200);
+    expect(foreign[0]!.body.data.totalITSpend).toBe(27000);
+    expect(foreign[1]!.body.data.configurationAccuracy.totalCIs).toBe(10);
+    expect(foreign[2]!.body.data.onPremVsCloud.totalCost).toBe(27000);
+    expect(foreign[3]!.body.data.ciStatus.find((status: { status: string }) =>
+      status.status === 'active').count).toBe(10);
+    expect(recorded.every(entry => entry.organizationId === B && entry.timeout === 5000
+      && entry.rows <= 101 && entry.samples.every(size => size <= 5))).toBe(true);
   } finally {
     spy.mockRestore();
-    await run("MATCH (ci:CI) WHERE ci.id STARTS WITH 't2-budget-' DETACH DELETE ci");
+    await run("MATCH (ci:CI) WHERE ci.id STARTS WITH 't2-large-' DETACH DELETE ci");
+  }
+});
+
+it('refuses over 100 distinct dashboard cost towers or statuses on real Neo4j', async () => {
+  await run(`UNWIND range(1,101) AS ordinal
+    CREATE (:CI {id:'t2-groups-'+toString(ordinal), name:'group', type:'server',
+      status:'active', organization_id:$organizationId, tbm_monthly_cost:1,
+      tbm_resource_tower:'tower-'+toString(ordinal)})`, { organizationId: A });
+  const groupAuth = architectureAuth();
+  try {
+    for (const path of ['executive', 'cio', 'finops']) {
+      const response = await request(app).get(`/api/v1/dashboards/${path}`).set(groupAuth);
+      expect(response.status).toBe(503);
+      expect(response.body).toEqual({ success: false, error: 'Dashboard aggregate resource limit exceeded' });
+    }
+    await run(`MATCH (ci:CI) WHERE ci.id STARTS WITH 't2-groups-'
+      SET ci.status = 'status-' + ci.id`);
+    const itsm = await request(app).get('/api/v1/dashboards/itsm').set(groupAuth);
+    expect(itsm.status).toBe(503);
+    expect(itsm.body).toEqual({ success: false, error: 'Dashboard aggregate resource limit exceeded' });
+  } finally {
+    await run("MATCH (ci:CI) WHERE ci.id STARTS WITH 't2-groups-' DETACH DELETE ci");
   }
 });
 

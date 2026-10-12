@@ -3,6 +3,7 @@
 
 import express from 'express';
 import request from 'supertest';
+import { architectureRemainingMs } from '@cmdb/ai-ml-engine';
 import type { ConfigSchema } from '@cmdb/common';
 import type { AuthService } from '../../../auth/auth.service';
 import type { AuthMiddleware as AuthMiddlewareClass } from '../../../middleware/auth.middleware';
@@ -108,8 +109,9 @@ it('caps aggregate impact GET and POST requests by verified principal', async ()
 
 it('applies the same end-to-end deadline to preflight and engine work', async () => {
   const started = Date.now();
-  getCI.mockImplementationOnce(async () => {
-    jest.spyOn(Date, 'now').mockReturnValue(started + 20_001);
+  getCI.mockImplementation(async () => {
+    jest.spyOn(Date, 'now').mockReturnValue(started + 60_000);
+    expect(() => architectureRemainingMs()).toThrow('Architecture analysis timed out');
     return { id: 'ci-1' };
   });
   try {

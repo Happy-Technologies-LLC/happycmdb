@@ -14,7 +14,6 @@ import {
 import {
   mockCIs,
   mockDependencyGraph,
-  mockAffectedCIs,
   createMockNeo4jSession,
   createMockNeo4jRecord,
   createMockPgClient,
@@ -53,18 +52,7 @@ describe('ImpactPredictionEngine', () => {
     engine = ImpactPredictionEngine.getInstance();
   });
 
-  /**
-   * Helper to set up mocks for predictChangeImpact.
-   * The method opens sessions in this order:
-   * 1. predictChangeImpact: session for CI query
-   * 2. findAffectedCIs: new session for downstream deps
-   * 3. getCriticalityScore: postgres query (cached check)
-   *    - if not cached: calculateCriticalityScore opens neo4j session
-   *      then getChangeFrequency queries postgres
-   *      then storeCriticalityScore queries postgres
-   * 4. findCriticalPath: new session
-   * 5. storeImpactAnalysis: postgres query
-   */
+  /** Prediction owns a CI lookup session and two bounded-frontier sessions. */
   function setupPredictImpactMocks(opts: {
     ciData: Record<string, any>;
     affectedRecords: Record<string, any>[];
@@ -72,26 +60,30 @@ describe('ImpactPredictionEngine', () => {
     criticalityScore: number;
     ciId: string;
   }) {
-    // Session 1: predictChangeImpact CI lookup
     const ciSession = createMockNeo4jSession([opts.ciData]);
-
-    // Session 2: findAffectedCIs
-    const depSession = createMockNeo4jSession(opts.affectedRecords);
-
-    // Session 3: findCriticalPath
-    const pathSession = createMockNeo4jSession([
-      { critical_path: opts.criticalPath },
-    ]);
-
+    const depSession = createMockNeo4jSession([]);
+    depSession.run.mockImplementation(async (_query: string, params: { frontier: string[] }) => ({
+      records: opts.affectedRecords
+        .filter(row => params.frontier.includes(row.path_ids[row.path_ids.length - 2]))
+        .map(row => createMockNeo4jRecord({
+          ci_id: row.ci_id, ci_name: row.ci_name, ci_type: row.ci_type,
+          parent_id: row.path_ids[row.path_ids.length - 2],
+        })),
+    }));
+    const pathSession = createMockNeo4jSession([]);
+    pathSession.run.mockImplementation(async (_query: string, params: { frontier: string[] }) => ({
+      records: opts.criticalPath.slice(1)
+        .filter((id, index) => params.frontier.includes(opts.criticalPath[index]))
+        .map(id => createMockNeo4jRecord({
+          ci_id: id, ci_name: id, ci_type: 'server',
+          parent_id: opts.criticalPath[opts.criticalPath.indexOf(id) - 1],
+        })),
+    }));
     mockNeo4jClient.getSession
-      .mockReturnValueOnce(ciSession)   // predictChangeImpact
-      .mockReturnValueOnce(depSession)  // findAffectedCIs
-      .mockReturnValueOnce(pathSession) // findCriticalPath
-      .mockReturnValue(createMockNeo4jSession([])); // any subsequent
-
-    // Postgres calls:
-    // 1. getCriticalityScore cache check
-    // 2+ storeImpactAnalysis, etc.
+      .mockReturnValueOnce(ciSession)
+      .mockReturnValueOnce(depSession)
+      .mockReturnValueOnce(pathSession)
+      .mockReturnValue(createMockNeo4jSession([]));
     mockPgClient.query
       .mockResolvedValueOnce({
         rows: [{
@@ -143,16 +135,9 @@ describe('ImpactPredictionEngine', () => {
       expect(impact.affected_cis).toHaveLength(2);
       expect(impact.risk_level).toBeDefined();
       expect(impact.impact_score).toBeGreaterThan(0);
-      // Both variable-length traversals are depth- and result-bounded. The
-      // driver timeout caps the work Neo4j performs before applying LIMIT.
-      const affectedQuery = mockNeo4jClient.getSession.mock.results[1].value.run.mock.calls[0];
-      const pathQuery = mockNeo4jClient.getSession.mock.results[2].value.run.mock.calls[0];
-      expect(affectedQuery[0]).toContain('*1..5');
-      expect(affectedQuery[0]).toContain('LIMIT 200');
-      expect(pathQuery[0]).toContain('*1..10');
-      expect(pathQuery[0]).toContain('LIMIT 1');
-      expect(affectedQuery[2]).toEqual({ timeout: 5000 });
-      expect(pathQuery[2]).toEqual({ timeout: 5000 });
+      expect(impact.critical_path).toEqual([
+        mockCIs.database.id, mockCIs.webServer.id, mockCIs.loadBalancer.id,
+      ]);
     });
 
     it('should calculate CRITICAL risk for decommission with large blast radius', async () => {
@@ -398,36 +383,33 @@ describe('ImpactPredictionEngine', () => {
       expect(mockNeo4jClient.getSession).not.toHaveBeenCalled();
     });
 
-    it('should build complete dependency graph', async () => {
-      // buildDependencyGraph opens ONE session and calls run twice:
-      // 1. Get nodes
-      // 2. Get edges
-      // For each node, getCriticalityScore is called (postgres query)
-      const session = {
-        run: jest.fn()
-          .mockResolvedValueOnce({
-            records: mockDependencyGraph.nodes.map(node =>
-              createMockNeo4jRecord({
-                id: node.ci_id,
-                name: node.ci_name,
-                ci_type: node.ci_type,
-                dependents_count: node.dependents_count,
-                dependencies_count: node.dependencies_count,
-              })
-            ),
-          })
-          .mockResolvedValueOnce({
-            records: mockDependencyGraph.edges.map(edge =>
-              createMockNeo4jRecord({
-                source_id: edge.source_id,
-                target_id: edge.target_id,
-                rel_type: edge.relationship_type,
-              })
-            ),
-          }),
-        close: jest.fn().mockResolvedValue(undefined),
-      };
+    const graphSession = (
+      nodes = mockDependencyGraph.nodes,
+      graphEdges = mockDependencyGraph.edges
+    ) => {
+      const session = createMockNeo4jSession([]);
+      session.run.mockImplementation(async (cypher: string, params: { frontier?: string[]; nodeIds?: string[] }) => ({
+        records: cypher.includes('RETURN node.id as id')
+          ? nodes.filter(node => params.nodeIds?.includes(node.ci_id)).map(node => createMockNeo4jRecord({
+              id: node.ci_id, name: node.ci_name, ci_type: node.ci_type,
+              dependents_count: node.dependents_count, dependencies_count: node.dependencies_count,
+            }))
+          : graphEdges.flatMap((edge, i) => {
+              const fromSource = params.frontier?.includes(edge.source_id);
+              const fromTarget = params.frontier?.includes(edge.target_id);
+              return [fromSource && edge.target_id, fromTarget && edge.source_id]
+                .filter((id): id is string => typeof id === 'string')
+                .map(id => createMockNeo4jRecord({
+                  rel_id: `rel-${i}`, source_id: edge.source_id, target_id: edge.target_id,
+                  rel_type: edge.relationship_type, neighbor_id: id,
+                }));
+            }),
+      }));
+      return session;
+    };
 
+    it('should build complete dependency graph', async () => {
+      const session = graphSession();
       mockNeo4jClient.getSession.mockReturnValue(session);
 
       // Mock criticality scores for each node
@@ -450,31 +432,15 @@ describe('ImpactPredictionEngine', () => {
 
       const graph = await engine.buildDependencyGraph(mockCIs.database.id, 3, 'org-a');
 
-      expect(graph.nodes.length).toBeGreaterThan(0);
-      expect(graph.edges.length).toBeGreaterThan(0);
-      expect(graph.metadata.total_nodes).toBe(graph.nodes.length);
-      expect(graph.metadata.total_edges).toBe(graph.edges.length);
-      expect(graph.metadata.max_depth).toBe(3);
+      expect(graph.nodes.map(node => [node.ci_id, node.criticality]).sort()).toEqual([
+        ['ci-db-001', 95], ['ci-lb-001', 85], ['ci-web-001', 70],
+      ]);
+      expect(graph.edges).toEqual(mockDependencyGraph.edges.slice().reverse());
+      expect(graph.metadata).toMatchObject({ total_nodes: 3, total_edges: 2, max_depth: 3 });
     });
 
     it('should respect max depth parameter', async () => {
-      const session = {
-        run: jest.fn()
-          .mockResolvedValueOnce({
-            records: [
-              createMockNeo4jRecord({
-                id: mockCIs.database.id,
-                name: mockCIs.database.name,
-                ci_type: mockCIs.database.ci_type,
-                dependents_count: 0,
-                dependencies_count: 0,
-              }),
-            ],
-          })
-          .mockResolvedValueOnce({ records: [] }), // No edges
-        close: jest.fn().mockResolvedValue(undefined),
-      };
-
+      const session = graphSession();
       mockNeo4jClient.getSession.mockReturnValue(session);
       mockPgClient.query.mockResolvedValue({
         rows: [{
@@ -486,15 +452,12 @@ describe('ImpactPredictionEngine', () => {
         }],
       });
 
-      const graph = await engine.buildDependencyGraph(mockCIs.database.id, 2, 'org-a');
-
-      expect(graph.metadata.max_depth).toBe(2);
-      // Query should use maxDepth in Cypher query
-      expect(session.run).toHaveBeenCalledWith(
-        expect.stringContaining('[*0..2]'),
-        expect.any(Object),
-        { timeout: 5000 }
-      );
+      const first = await engine.buildDependencyGraph(mockCIs.database.id, 1, 'org-a');
+      const second = await engine.buildDependencyGraph(mockCIs.database.id, 2, 'org-a');
+      expect(first.nodes.map(node => node.ci_id).sort()).toEqual(['ci-db-001', 'ci-web-001']);
+      expect(second.nodes.map(node => node.ci_id).sort()).toEqual(['ci-db-001', 'ci-lb-001', 'ci-web-001']);
+      expect(first.metadata.max_depth).toBe(1);
+      expect(second.metadata.max_depth).toBe(2);
     });
   });
 

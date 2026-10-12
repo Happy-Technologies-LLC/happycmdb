@@ -60,7 +60,9 @@ const graph = {
         }) };
       }
       const org = params['organizationId'];
-      if (typeof org !== 'string' || !statement.includes('organization_id = $organizationId')) {
+      const scopedNodes = (statement.match(/organization_id: \$organizationId/g) ?? []).length >= 2;
+      if (typeof org !== 'string'
+        || (!statement.includes('organization_id = $organizationId') && !scopedNodes)) {
         throw new Error('Unscoped Neo4j statement');
       }
       const visible = [...nodes.values()].filter(ci => ci.organization_id === org);
@@ -82,22 +84,17 @@ const graph = {
           dependent_count: integer(scopedEndpoints ? 0 : 1), dependency_count: integer(0),
           dependent_ids: scopedEndpoints ? [] : ['ci-b'] })] : [] };
       }
-      if (statement.includes('MATCH path')) {
-        const scopedPath = statement.includes('ALL(n IN nodes(path) WHERE n.organization_id = $organizationId)');
-        const foreign = nodes.get('ci-b')!;
-        if (statement.includes('RETURN DISTINCT')) {
-          return { records: scopedPath ? [] : [record({ ci_id: foreign.id, ci_name: foreign.name,
-            ci_type: 'server', hop_count: integer(1), path_ids: ['ci-a', foreign.id] })] };
-        }
-        if (statement.includes('RETURN node.id as id')) {
-          const paths = ci ? [ci, ...(!scopedPath ? [foreign] : [])] : [];
-          return { records: paths.map(row => record({ id: row.id, name: row.name, ci_type: 'server',
-            dependents_count: integer(0), dependencies_count: integer(0) })) };
-        }
-        if (statement.includes('RETURN source.id as source_id')) {
-          return { records: scopedPath ? [] : [record({ source_id: 'ci-a', target_id: 'ci-b', rel_type: 'DEPENDS_ON' })] };
-        }
+      if (statement.includes('WITH dependent, min(parent.id) as parent_id')) {
         return { records: [] };
+      }
+      if (statement.includes('RETURN elementId(rel) as rel_id')) {
+        return { records: [] };
+      }
+      if (statement.includes('RETURN node.id as id')) {
+        const requested = params['nodeIds'] as string[];
+        return { records: visible.filter(row => requested.includes(row.id))
+          .map(row => record({ id: row.id, name: row.name, ci_type: 'server',
+            dependents_count: integer(0), dependencies_count: integer(0) })) };
       }
       if (statement.includes('SET ci += $updates') && ci) {
         Object.assign(ci, params['updates'] as Record<string, unknown>);

@@ -10,7 +10,7 @@ import type { AuthMiddleware as AuthMiddlewareClass } from '../../../middleware/
 
 const ORG = '11111111-1111-4111-8111-111111111111';
 const edges = new Map<string, string[]>();
-const run = jest.fn(async (_cypher: string, _params: { ciId: string; nodeLimit?: unknown; edgeLimit?: unknown }, _options?: { timeout: number }) => ({
+const run = jest.fn(async (_cypher: string, _params: { ciId: string; frontier?: string[]; nodeIds?: string[]; nodeLimit?: unknown; edgeLimit?: unknown }, _options?: { timeout: number }) => ({
   records: [] as Array<{ get: (key: string) => unknown }>,
 }));
 const getCI = jest.fn(async (id: string) => ({ id }));
@@ -137,14 +137,23 @@ it('keeps the acyclic dependent weighting unchanged', async () => {
   expect(query.mock.calls.filter(([sql]) => sql.includes('INSERT INTO ci_criticality_scores'))).toHaveLength(2);
 });
 
-it('refuses a dense fan-out graph beyond the node cap before criticality or cache writes', async () => {
-  run.mockImplementation(async (cypher) => ({
-    records: cypher.includes('RETURN node.id as id')
-      ? Array.from({ length: 101 }, (_, index) =>
-          graphRecord({ id: `N${index}`, name: `node ${index}`, ci_type: 'server',
-            dependents_count: { toNumber: () => 0 }, dependencies_count: { toNumber: () => 0 } }))
-      : [],
-  }));
+it('bounds a real fan-out-by-depth topology before any path enumeration or SQL work', async () => {
+  const firstLayer = Array.from({ length: 10 }, (_, i) => `L1-${i}`);
+  run.mockImplementation(async (cypher, params) => {
+    if (cypher.includes('MATCH path')) throw new Error('Unbounded path enumeration');
+    if (cypher.includes('RETURN elementId(rel) as rel_id')) {
+      const sources = params.frontier ?? [];
+      return { records: sources.flatMap(source => {
+        const targets = source === 'A' ? firstLayer
+          : source.startsWith('L1-') ? Array.from({ length: 10 }, (_, i) => `${source}-L2-${i}`) : [];
+        return targets.map((target, i) => graphRecord({
+          rel_id: `${source}-${i}`, source_id: source, target_id: target,
+          neighbor_id: target, rel_type: 'DEPENDS_ON',
+        }));
+      }) };
+    }
+    return { records: [] };
+  });
   const response = await graph(5);
   expect(response.status).toBe(503);
   expect(response.body).toEqual({ success: false, error: 'Impact criticality resource limit exceeded' });
@@ -163,7 +172,7 @@ it('refuses an over-edge graph before any per-node cache writes', async () => {
   const response = await graph(5);
   expect(response.status).toBe(503);
   expect(response.body).toEqual({ success: false, error: 'Impact criticality resource limit exceeded' });
-  expect(run).toHaveBeenCalledTimes(2);
+  expect(run).toHaveBeenCalledTimes(1);
   expect(query).not.toHaveBeenCalled();
 });
 
@@ -171,10 +180,14 @@ it('shares a finite graph work budget across per-node criticality traversals', a
   const roots = Array.from({ length: 6 }, (_, index) => `G${index}`);
   run.mockImplementation(async (cypher, params) => {
     if (cypher.includes('RETURN node.id as id')) {
-      return { records: roots.map((id) => graphRecord({ id, name: id, ci_type: 'server',
+      return { records: ['A', ...roots].map(id => graphRecord({ id, name: id, ci_type: 'server',
         dependents_count: { toNumber: () => 0 }, dependencies_count: { toNumber: () => 0 } })) };
     }
-    if (cypher.includes('RETURN source.id as source_id')) return { records: [] };
+    if (cypher.includes('RETURN elementId(rel) as rel_id')) {
+      return { records: (params.frontier?.includes('A') ? roots : params.frontier ?? [])
+        .map((id, i) => graphRecord({ rel_id: `r${i}`, source_id: 'A', target_id: id,
+          neighbor_id: params.frontier?.includes('A') ? id : 'A', rel_type: 'DEPENDS_ON' })) };
+    }
     if (run.mock.calls.length > 500) throw new Error('Driver work exceeded budget');
     const id = params.ciId;
     const dependents = roots.includes(id) ? Array.from({ length: 75 }, (_, index) => `${id}-D${index}`) : [];
@@ -195,13 +208,17 @@ it('shares a finite graph work budget across per-node criticality traversals', a
 it('reserves the whole graph cache-write budget before persisting a score', async () => {
   run.mockImplementation(async (cypher, params) => {
     if (cypher.includes('RETURN node.id as id')) {
-      return { records: Array.from({ length: 100 }, (_, index) =>
-        graphRecord({ id: `G${index}`, name: `G${index}`, ci_type: 'server',
+      return { records: ['A', ...Array.from({ length: 99 }, (_, index) => `G${index}`)]
+        .map(id => graphRecord({ id, name: id, ci_type: 'server',
           dependents_count: { toNumber: () => 0 }, dependencies_count: { toNumber: () => 0 } })) };
     }
-    if (cypher.includes('RETURN source.id as source_id')) {
-      return { records: Array.from({ length: 200 }, (_, index) =>
-        graphRecord({ source_id: 'G0', target_id: 'G1', rel_type: `EDGE_${index}` })) };
+    if (cypher.includes('RETURN elementId(rel) as rel_id')) {
+      const peers = params.frontier?.includes('A')
+        ? Array.from({ length: 99 }, (_, index) => `G${index}`) : params.frontier ?? [];
+      return { records: peers.map(id => graphRecord({
+        rel_id: id, source_id: 'A', target_id: id, rel_type: 'DEPENDS_ON',
+        neighbor_id: params.frontier?.includes('A') ? id : 'A',
+      })) };
     }
     return { records: [graphRecord({ ci_name: params.ciId, dependent_ids: [],
       dependent_count: { toNumber: () => 0 }, dependency_count: { toNumber: () => 0 } })] };
@@ -209,17 +226,18 @@ it('reserves the whole graph cache-write budget before persisting a score', asyn
   const response = await graph(5);
   expect(response.status).toBe(503);
   expect(response.body).toEqual({ success: false, error: 'Impact criticality resource limit exceeded' });
-  expect(run.mock.calls.length).toBeLessThanOrEqual(102);
+  expect(run.mock.calls.length).toBeLessThanOrEqual(103);
   expect(query.mock.calls.length).toBeLessThanOrEqual(200);
   expect(query.mock.calls.some(([sql]) => sql.includes('INSERT INTO ci_criticality_scores'))).toBe(false);
 });
 
 it('preserves a small owned graph at depth boundaries and rejects depth outside 1..5', async () => {
-  run.mockImplementation(async (cypher) => ({
+  run.mockImplementation(async (cypher, params) => ({
     records: cypher.includes('RETURN node.id as id')
-      ? ['A', 'B'].map((id) => graphRecord({ id, name: id, ci_type: 'server',
+      ? ['A', 'B'].map(id => graphRecord({ id, name: id, ci_type: 'server',
           dependents_count: { toNumber: () => 0 }, dependencies_count: { toNumber: () => 0 } }))
-      : [graphRecord({ source_id: 'A', target_id: 'B', rel_type: 'DEPENDS_ON' })],
+      : [graphRecord({ rel_id: 'a-b', source_id: 'A', target_id: 'B',
+          neighbor_id: params.frontier?.includes('A') ? 'B' : 'A', rel_type: 'DEPENDS_ON' })],
   }));
   query.mockImplementation(async (sql, params) =>
     sql.includes('ci_criticality_scores s')
@@ -237,12 +255,12 @@ it('preserves a small owned graph at depth boundaries and rejects depth outside 
     expect(response.body.data.metadata).toMatchObject({ total_nodes: 2, total_edges: 1, max_depth: depth });
   }
   expect(run.mock.calls.every(([cypher]) => cypher.includes('LIMIT'))).toBe(true);
-  expect(neo4j.isInt(run.mock.calls[0][1].nodeLimit)).toBe(true);
-  expect(run.mock.calls[0][1]).toMatchObject({ nodeLimit: neo4j.int(101) });
-  expect(neo4j.isInt(run.mock.calls[1][1].edgeLimit)).toBe(true);
-  expect(run.mock.calls[1][1]).toMatchObject({ edgeLimit: neo4j.int(201) });
+  expect(neo4j.isInt(run.mock.calls[0][1].edgeLimit)).toBe(true);
+  expect(run.mock.calls[0][1]).toMatchObject({ edgeLimit: neo4j.int(201) });
+  expect(neo4j.isInt(run.mock.calls[1][1].nodeLimit)).toBe(true);
+  expect(run.mock.calls[1][1]).toMatchObject({ nodeLimit: neo4j.int(101) });
   for (const depth of [0, 6]) expect((await graph(depth)).status).toBe(400);
-  expect(run).toHaveBeenCalledTimes(4);
+  expect(run).toHaveBeenCalledTimes(5);
 });
 
 it('keeps uncached small-graph scores while writing the completed graph cache', async () => {
@@ -252,8 +270,9 @@ it('keeps uncached small-graph scores while writing the completed graph cache', 
       return { records: ['A', 'B'].map((id) => graphRecord({ id, name: id, ci_type: 'server',
         dependents_count: { toNumber: () => 0 }, dependencies_count: { toNumber: () => 0 } })) };
     }
-    if (cypher.includes('RETURN source.id as source_id')) {
-      return { records: [graphRecord({ source_id: 'A', target_id: 'B', rel_type: 'DEPENDS_ON' })] };
+    if (cypher.includes('RETURN elementId(rel) as rel_id')) {
+      return { records: [graphRecord({ rel_id: 'a-b', source_id: 'A', target_id: 'B',
+        neighbor_id: 'B', rel_type: 'DEPENDS_ON' })] };
     }
     const dependents = edges.get(params.ciId) ?? [];
     return { records: [graphRecord({ ci_name: params.ciId, dependent_ids: dependents,

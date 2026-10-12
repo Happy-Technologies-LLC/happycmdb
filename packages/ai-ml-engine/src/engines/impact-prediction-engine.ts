@@ -43,6 +43,13 @@ interface CriticalityWalk {
   sharedWork?: { remaining: number };
 }
 
+interface DependentNode {
+  id: string;
+  name: string;
+  type: string;
+  path: string[];
+}
+
 
 export class ImpactPredictionEngine {
   private static instance: ImpactPredictionEngine;
@@ -89,19 +96,18 @@ export class ImpactPredictionEngine {
         throw new Error(`CI record not found: ${ciId}`);
       }
 
-      // Find all affected CIs (downstream dependencies)
-      const affectedCIs = await this.findAffectedCIs(ciId, organizationId);
+      // A single node budget covers both dependency traversals and criticality.
+      const traversalWork = { remaining: MAX_CRITICALITY_NODES };
+      const affectedCIs = await this.findAffectedCIs(ciId, organizationId, traversalWork);
 
-      // Calculate impact score based on criticality and blast radius
-      const criticalityScore = await this.getCriticalityScore(ciId, organizationId);
+      // Finish bounded graph work before any criticality cache write.
+      const criticalPath = await this.findCriticalPath(ciId, organizationId, traversalWork);
+      const criticalityScore = await this.getCriticalityScore(ciId, organizationId, traversalWork);
       const impactScore = this.calculateImpactScore(
         affectedCIs.length,
         criticalityScore.criticality_score,
         changeType
       );
-
-      // Find critical path (longest dependency chain)
-      const criticalPath = await this.findCriticalPath(ciId, organizationId);
 
       // Determine risk level
       const riskLevel = this.determineRiskLevel(impactScore, affectedCIs.length);
@@ -138,94 +144,99 @@ export class ImpactPredictionEngine {
   /**
    * Find all CIs affected by a change to source CI
    */
-  private async findAffectedCIs(sourceCIId: string, organizationId: string): Promise<AffectedCI[]> {
+  private async traverseDependents(
+    sourceCIId: string, organizationId: string, maxDepth: number, types: string[],
+    work: { remaining: number }
+  ): Promise<DependentNode[]> {
     const session = this.neo4jClient.getSession();
-    const affectedCIs: AffectedCI[] = [];
-
+    const seen = new Map<string, string[]>([[sourceCIId, [sourceCIId]]]);
+    const discovered: DependentNode[] = [];
+    let frontier = [sourceCIId];
     try {
-      // Find all downstream dependencies (CIs that depend on this CI)
-      const result = await session.run(
-        `MATCH path = (source:CI {id: $ciId})<-[*1..5]-(dependent:CI)
-         WHERE ALL(n IN nodes(path) WHERE n.organization_id = $organizationId)
-           AND ALL(r IN relationships(path) WHERE type(r) IN ['DEPENDS_ON', 'USES', 'HOSTED_ON'])
-         WITH dependent, path,
-              length(path) as hop_count,
-              [node IN nodes(path) | node.id] as path_ids
-         RETURN DISTINCT
-           dependent.id as ci_id,
-           dependent.name as ci_name,
-           dependent.ci_type as ci_type,
-           hop_count,
-           path_ids
-         ORDER BY hop_count
-         LIMIT 200`,
-        { ciId: sourceCIId, organizationId },
-        { timeout: IMPACT_QUERY_TIMEOUT_MS }
-      );
-
-      for (const record of result.records) {
-        const hopCount = record.get('hop_count').toNumber();
-        const impactProbability = this.calculateImpactProbability(hopCount);
-
-        affectedCIs.push({
-          ci_id: record.get('ci_id'),
-          ci_name: record.get('ci_name'),
-          ci_type: record.get('ci_type'),
-          impact_type: hopCount === 1 ? ImpactType.DIRECT : ImpactType.INDIRECT,
-          dependency_path: record.get('path_ids'),
-          hop_count: hopCount,
-          impact_probability: Math.round(impactProbability),
-          estimated_impact: this.estimateImpactDescription(hopCount),
-        });
+      for (let depth = 0; depth < maxDepth && frontier.length > 0; depth++) {
+        // DISTINCT nodes and LIMIT apply during expansion, before recovering
+        // a parent; parallel relationships cannot multiply the frontier.
+        const result = await session.run(
+          `UNWIND $frontier as id
+           MATCH (source:CI {id: id, organization_id: $organizationId})<-[rel]-(dependent:CI {organization_id: $organizationId})
+           WHERE type(rel) IN $types
+           WITH DISTINCT dependent
+           LIMIT $frontierLimit
+           MATCH (dependent)-[parentRel]->(parent:CI {organization_id: $organizationId})
+           WHERE parent.id IN $frontier AND type(parentRel) IN $types
+           WITH dependent, min(parent.id) as parent_id
+           RETURN dependent.id as ci_id, dependent.name as ci_name,
+                  dependent.ci_type as ci_type, parent_id`,
+          { frontier, organizationId, types, frontierLimit: neo4j.int(MAX_CRITICALITY_NODES + 1) },
+          { timeout: IMPACT_QUERY_TIMEOUT_MS }
+        );
+        if (result.records.length > MAX_CRITICALITY_NODES) throw new ImpactCriticalityLimitError();
+        work.remaining -= result.records.length;
+        if (work.remaining < 0) throw new ImpactCriticalityLimitError();
+        const next: string[] = [];
+        for (const record of result.records) {
+          const id = record.get('ci_id');
+          if (seen.has(id)) continue;
+          const parent = seen.get(record.get('parent_id'));
+          if (!parent) throw new ImpactCriticalityLimitError();
+          const path = [...parent, id];
+          seen.set(id, path);
+          if (seen.size > MAX_CRITICALITY_NODES) throw new ImpactCriticalityLimitError();
+          discovered.push({ id, name: record.get('ci_name'), type: record.get('ci_type'), path });
+          next.push(id);
+        }
+        frontier = next;
       }
+      return discovered;
     } finally {
       await session.close();
     }
+  }
 
-    return affectedCIs;
+  private async findAffectedCIs(
+    sourceCIId: string, organizationId: string, work: { remaining: number }
+  ): Promise<AffectedCI[]> {
+    const discovered = await this.traverseDependents(
+      sourceCIId, organizationId, 5, ['DEPENDS_ON', 'USES', 'HOSTED_ON'], work
+    );
+    return discovered.map(({ id, name, type, path }) => {
+      const hops = path.length - 1;
+      return {
+        ci_id: id,
+        ci_name: name,
+        ci_type: type,
+        impact_type: hops === 1 ? ImpactType.DIRECT : ImpactType.INDIRECT,
+        dependency_path: path,
+        hop_count: hops,
+        impact_probability: Math.round(this.calculateImpactProbability(hops)),
+        estimated_impact: this.estimateImpactDescription(hops),
+      };
+    });
   }
 
   /**
-   * Find critical path (longest dependency chain)
+   * Longest shortest DEPENDS_ON chain reached within ten bounded BFS hops.
+   * This does not enumerate longer simple paths to already visited nodes.
    */
-  private async findCriticalPath(ciId: string, organizationId: string): Promise<string[]> {
-    const session = this.neo4jClient.getSession();
-
-    try {
-      const result = await session.run(
-        `MATCH path = (source:CI {id: $ciId})<-[*1..10]-(dependent:CI)
-         WHERE ALL(n IN nodes(path) WHERE n.organization_id = $organizationId)
-           AND ALL(r IN relationships(path) WHERE type(r) = 'DEPENDS_ON')
-         WITH path, length(path) as path_length
-         ORDER BY path_length DESC
-         LIMIT 1
-         RETURN [node IN nodes(path) | node.id] as critical_path`,
-        { ciId, organizationId },
-        { timeout: IMPACT_QUERY_TIMEOUT_MS }
-      );
-
-      if (result.records.length > 0) {
-        const firstRecord = result.records[0];
-        if (firstRecord) {
-          return firstRecord.get('critical_path');
-        }
-      }
-
-      return [ciId];
-    } finally {
-      await session.close();
-    }
+  private async findCriticalPath(
+    ciId: string, organizationId: string, work: { remaining: number }
+  ): Promise<string[]> {
+    const discovered = await this.traverseDependents(ciId, organizationId, 10, ['DEPENDS_ON'], work);
+    return discovered[discovered.length - 1]?.path ?? [ciId];
   }
 
   /**
    * Get or calculate criticality score for a CI
    */
-  async getCriticalityScore(ciId: string, organizationId: string): Promise<CriticalityScore> {
+  async getCriticalityScore(
+    ciId: string, organizationId: string, sharedWork?: { remaining: number }
+  ): Promise<CriticalityScore> {
     const walk: CriticalityWalk = {
       active: new Set<string>(),
       computed: new Map<string, CriticalityScore>(),
       remaining: MAX_CRITICALITY_NODES,
       cycleDetected: false,
+      sharedWork,
     };
     const score = await this.walkCriticality(ciId, organizationId, walk, 0);
     // A back-edge makes descendants depend on the requested root. Return the
@@ -387,12 +398,53 @@ export class ImpactPredictionEngine {
     let cacheable = true;
 
     try {
-      // Get nodes and relationships
+      // Expand one hop at a time. LIMIT after a variable-length MATCH still
+      // enumerates exponentially many paths before returning its first row.
+      nodeIds.add(rootCiId);
+      const graphEdges = new Map<string, { sourceId: string; targetId: string; type: string }>();
+      let frontier = [rootCiId];
+      for (let depth = 0; depth < maxDepth && frontier.length > 0; depth++) {
+        const next: string[] = [];
+        const adjacent = await session.run(
+          `UNWIND $frontier as ciId
+           MATCH (node:CI {id: ciId, organization_id: $organizationId})-[rel]-(neighbor:CI {organization_id: $organizationId})
+           WITH DISTINCT rel, neighbor
+           LIMIT $edgeLimit
+           RETURN elementId(rel) as rel_id,
+                  startNode(rel).id as source_id,
+                  endNode(rel).id as target_id,
+                  type(rel) as rel_type,
+                  neighbor.id as neighbor_id`,
+          { frontier, organizationId, edgeLimit: neo4j.int(MAX_IMPACT_GRAPH_EDGES + 1) },
+          { timeout: IMPACT_QUERY_TIMEOUT_MS }
+        );
+        if (adjacent.records.length > MAX_IMPACT_GRAPH_EDGES) throw new ImpactCriticalityLimitError();
+        work.remaining -= adjacent.records.length;
+        if (work.remaining < 0) throw new ImpactCriticalityLimitError();
+        for (const record of adjacent.records) {
+          const id = record.get('rel_id');
+          if (!graphEdges.has(id)) {
+            graphEdges.set(id, {
+              sourceId: record.get('source_id'),
+              targetId: record.get('target_id'),
+              type: record.get('rel_type'),
+            });
+            if (graphEdges.size > MAX_IMPACT_GRAPH_EDGES) throw new ImpactCriticalityLimitError();
+          }
+          const neighborId = record.get('neighbor_id');
+          if (!nodeIds.has(neighborId)) {
+            nodeIds.add(neighborId);
+            if (nodeIds.size > MAX_IMPACT_GRAPH_NODES) throw new ImpactCriticalityLimitError();
+            next.push(neighborId);
+          }
+        }
+        frontier = next;
+      }
+
       const result = await session.run(
-        `MATCH path = (root:CI {id: $rootCiId})-[*0..${maxDepth}]-(related:CI)
-         WHERE ALL(n IN nodes(path) WHERE n.organization_id = $organizationId)
-         UNWIND nodes(path) as node
-         WITH DISTINCT node
+        `UNWIND $nodeIds as id
+         MATCH (node:CI {id: id, organization_id: $organizationId})
+         WITH node
          LIMIT $nodeLimit
          OPTIONAL MATCH (node)-[outgoing]-(out:CI)
          WHERE out.organization_id = $organizationId
@@ -403,36 +455,20 @@ export class ImpactPredictionEngine {
                 node.ci_type as ci_type,
                 COUNT(DISTINCT incoming) as dependents_count,
                 COUNT(DISTINCT outgoing) as dependencies_count`,
-        { rootCiId, organizationId, nodeLimit: neo4j.int(MAX_IMPACT_GRAPH_NODES + 1) },
+        { nodeIds: [...nodeIds], organizationId, nodeLimit: neo4j.int(MAX_IMPACT_GRAPH_NODES + 1) },
         { timeout: IMPACT_QUERY_TIMEOUT_MS }
       );
-
       if (result.records.length > MAX_IMPACT_GRAPH_NODES) throw new ImpactCriticalityLimitError();
       work.remaining -= result.records.length;
       if (work.remaining < 0) throw new ImpactCriticalityLimitError();
       const uniqueRecords: typeof result.records = [];
+      const scoredIds = new Set<string>();
       for (const record of result.records) {
         const id = record.get('id');
-        if (nodeIds.has(id)) continue;
-        nodeIds.add(id);
+        if (scoredIds.has(id)) continue;
+        scoredIds.add(id);
         uniqueRecords.push(record);
       }
-      // Get edges
-      const edgeResult = await session.run(
-        `MATCH path = (root:CI {id: $rootCiId})-[*0..${maxDepth}]-(related:CI)
-         WHERE ALL(n IN nodes(path) WHERE n.organization_id = $organizationId)
-         UNWIND relationships(path) as rel
-         WITH DISTINCT rel, startNode(rel) as source, endNode(rel) as target
-         LIMIT $edgeLimit
-         RETURN source.id as source_id,
-                target.id as target_id,
-                type(rel) as rel_type`,
-        { rootCiId, organizationId, edgeLimit: neo4j.int(MAX_IMPACT_GRAPH_EDGES + 1) },
-        { timeout: IMPACT_QUERY_TIMEOUT_MS }
-      );
-      if (edgeResult.records.length > MAX_IMPACT_GRAPH_EDGES) throw new ImpactCriticalityLimitError();
-      work.remaining -= edgeResult.records.length;
-      if (work.remaining < 0) throw new ImpactCriticalityLimitError();
 
       // Both graph streams are bounded before scoring any node or writing SQL.
       // Reuse acyclic results, but recompute each root after a back-edge because
@@ -464,17 +500,14 @@ export class ImpactPredictionEngine {
         });
       }
 
-      for (const record of edgeResult.records) {
-        const sourceId = record.get('source_id');
-        const targetId = record.get('target_id');
-
-        if (nodeIds.has(sourceId) && nodeIds.has(targetId)) {
+      for (const edge of graphEdges.values()) {
+        if (scoredIds.has(edge.sourceId) && scoredIds.has(edge.targetId)) {
           edges.push({
-            source_id: sourceId,
-            target_id: targetId,
-            relationship_type: record.get('rel_type'),
+            source_id: edge.sourceId,
+            target_id: edge.targetId,
+            relationship_type: edge.type,
             weight: 1.0,
-            is_critical: record.get('rel_type') === 'DEPENDS_ON',
+            is_critical: edge.type === 'DEPENDS_ON',
           });
         }
       }

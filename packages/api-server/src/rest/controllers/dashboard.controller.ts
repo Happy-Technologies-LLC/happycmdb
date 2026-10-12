@@ -7,7 +7,7 @@
  */
 
 import { Request, Response } from 'express';
-import { getDashboardService } from '../../services/dashboard.service';
+import { DashboardAggregateLimitError, getDashboardService } from '../../services/dashboard.service';
 import { logger } from '@cmdb/common';
 import { requestOrganizationId } from '../../middleware/auth.middleware';
 import { BUSINESS_SERVICE_NOT_FOUND } from '../../services/business-service-ownership';
@@ -16,6 +16,19 @@ import { executeBoundedAnalysis } from '../../middleware/analysis-admission';
 
 const DASHBOARD_TIMEOUT_MS = 5000;
 class DashboardDeadlineError extends Error {}
+
+function sendGlobalDashboardResourceFailure(res: Response, error: unknown): boolean {
+  if (error instanceof DashboardAggregateLimitError) {
+    res.status(503).json({ success: false, error: 'Dashboard aggregate resource limit exceeded' });
+    return true;
+  }
+  const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
+  if (typeof code === 'string' && (code.includes('TransactionTimedOut') || code.includes('Transaction.Terminated'))) {
+    res.status(504).json({ success: false, error: 'Dashboard analysis timed out' });
+    return true;
+  }
+  return false;
+}
 
 export class DashboardController {
   private dashboardService = getDashboardService();
@@ -40,6 +53,7 @@ export class DashboardController {
       });
     } catch (error: any) {
       logger.error('Error fetching executive dashboard', { error });
+      if (sendGlobalDashboardResourceFailure(res, error)) return;
       res.status(500).json({
         success: false,
         error: 'Failed to fetch executive dashboard',
@@ -68,6 +82,7 @@ export class DashboardController {
       });
     } catch (error: any) {
       logger.error('Error fetching CIO dashboard', { error });
+      if (sendGlobalDashboardResourceFailure(res, error)) return;
       res.status(500).json({
         success: false,
         error: 'Failed to fetch CIO dashboard',
@@ -92,6 +107,7 @@ export class DashboardController {
       });
     } catch (error: any) {
       logger.error('Error fetching ITSM dashboard', { error });
+      if (sendGlobalDashboardResourceFailure(res, error)) return;
       res.status(500).json({
         success: false,
         error: 'Failed to fetch ITSM dashboard',
@@ -120,6 +136,7 @@ export class DashboardController {
       });
     } catch (error: any) {
       logger.error('Error fetching FinOps dashboard', { error });
+      if (sendGlobalDashboardResourceFailure(res, error)) return;
       res.status(500).json({
         success: false,
         error: 'Failed to fetch FinOps dashboard',

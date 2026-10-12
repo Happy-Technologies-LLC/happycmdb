@@ -22,6 +22,7 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import express from 'express';
 import request from 'supertest';
+import neo4j from 'neo4j-driver';
 
 // Placeholder config so loadConfig() validates; no Neo4j/Redis/PostgreSQL server is contacted.
 // The signing secret is generated per run in memory; no literal credential.
@@ -83,9 +84,8 @@ const FAKE_CIS: FakeCI[] = [
 const CIS: Props[] = FAKE_CIS.map(c => ({
   id: c.id, name: `${c.id} name`, type: 'server', status: c.status, environment: 'production',
   discovery_provider: c.provider,
-  tbm_attributes: { monthly_cost: c.cost, capability_tower: 'compute' },
-  bsm_attributes: { business_criticality: 'tier_1', customer_facing: true },
-  itil_attributes: { lifecycle: 'operate' },
+  tbm_monthly_cost: c.cost, tbm_resource_tower: 'compute',
+  bsm_business_criticality: 'tier_1', bsm_customer_facing: true,
   ...(c.organizationId === undefined ? {} : { organization_id: c.organizationId }),
 }));
 // bs-a-app - a-web (same org); bs-a-app - b-secret - a-hidden (A, reachable only through B).
@@ -109,7 +109,8 @@ const BUSINESS_SERVICE_NODES: Props[] = [
 type Params = Record<string, unknown>;
 interface FakeRecord { get(key: string): unknown }
 const cypherRuns: Array<{ query: string; params: Params; config?: { timeout: number } }> = [];
-const int = (n: number) => ({ toNumber: () => n });
+const transferredCIs: number[] = [];
+const int = (n: number) => neo4j.int(n);
 const record = (fields: Record<string, unknown>): FakeRecord => ({ get: (key: string) => fields[key] });
 const node = (props: Props) => ({ labels: ['CI'], properties: props });
 const byId = (id: string) => CIS.find(c => c['id'] === id);
@@ -154,31 +155,78 @@ function run(rawQuery: string, params: Params): FakeRecord[] {
     (!query.includes('ci.id = $serviceId') || props['id'] === params['serviceId'])
   );
 
-  if (query.includes('WITH ci.status as status')) {
+  if (query.includes('WITH ci.status AS status, count(ci) AS count')) {
     const statuses = [...new Set(matched.map(props => props['status'] as string))];
     return statuses.map(status => {
       const group = matched.filter(props => props['status'] === status);
       return record({ status, count: int(group.length), sampleCIs: group.slice(0, 5).map(node) });
-    });
+    }).slice(0, 101);
   }
-  if (query.includes('collect(ci) as cis')) {
-    return [record({ cis: matched.slice(0, /\bLIMIT 101\b/.test(query) ? 101 : undefined).map(node) })];
+  if (query.includes('RETURN capability, sum(monthlyCost) AS totalCost')) {
+    const groups = new Map<string, number>();
+    for (const ci of matched) {
+      const tower = (ci['tbm_capability_tower'] || ci['tbm_resource_tower'] || 'Uncategorized') as string;
+      groups.set(tower, (groups.get(tower) || 0) + ((ci['tbm_monthly_cost'] as number) || 0));
+    }
+    return [...groups].sort(([a], [b]) => a.localeCompare(b)).slice(0, 101)
+      .map(([capability, cost]) => record({ capability, totalCost: int(cost) }));
   }
-  // The projected collect({id, name, type, tbm, bsm, itil, provider}) shape.
-  return [record({
-    totalCIs: int(matched.length),
-    cis: matched.map(props => ({
-      id: props['id'], name: props['name'], type: props['type'],
-      tbm: props['tbm_attributes'], bsm: props['bsm_attributes'], itil: props['itil_attributes'],
-      provider: props['discovery_provider'],
-    })),
-  })];
+  if (query.includes('RETURN count(ci) AS totalCIs')) {
+    return [record({ totalCIs: int(matched.length) })];
+  }
+  if (query.includes('AS tier_1,')) {
+    const counts = Object.fromEntries(['tier_1', 'tier_2', 'tier_3', 'tier_4'].map(tier =>
+      [tier, int(matched.filter(ci => ci['bsm_business_criticality'] === tier).length)]));
+    return [record(counts)];
+  }
+  if (query.includes('AS criticality')) {
+    return matched.filter(ci => ['tier_1', 'tier_2'].includes(ci['bsm_business_criticality'] as string))
+      .sort((a, b) => String(a['id']).localeCompare(String(b['id']))).slice(0, 10).map(ci => record({
+        id: ci['id'], name: ci['name'], type: ci['type'], criticality: ci['bsm_business_criticality'],
+      }));
+  }
+  if (query.includes('AS id, ci.name AS name, ci.tbm_monthly_cost AS monthlyCost')) {
+    return matched.filter(ci => (ci['tbm_monthly_cost'] as number) > 0)
+      .sort((a, b) => ((b['tbm_monthly_cost'] as number) - (a['tbm_monthly_cost'] as number))
+        || String(a['id']).localeCompare(String(b['id']))).slice(0, 10)
+      .map(ci => record({ id: ci['id'], name: ci['name'], monthlyCost: int(ci['tbm_monthly_cost'] as number) }));
+  }
+  if (query.includes('ci.bsm_customer_facing = true')) {
+    return matched.filter(ci => ci['bsm_customer_facing'] === true)
+      .sort((a, b) => String(a['id']).localeCompare(String(b['id']))).slice(0, 5)
+      .map(ci => record({ id: ci['id'], name: ci['name'], monthlyCost: int((ci['tbm_monthly_cost'] as number) || 0) }));
+  }
+  if (query.includes('AS awsCost,')) {
+    const sum = (rows: Props[]) => rows.reduce((total, ci) => total + ((ci['tbm_monthly_cost'] as number) || 0), 0);
+    return [record({
+      totalCost: int(sum(matched)),
+      awsCost: int(sum(matched.filter(ci => ci['discovery_provider'] === 'aws'))),
+      azureCost: int(sum(matched.filter(ci => ci['discovery_provider'] === 'azure'))),
+      gcpCost: int(sum(matched.filter(ci => ci['discovery_provider'] === 'gcp'))),
+    })];
+  }
+  if (query.includes('ci.tbm_monthly_cost > 100')) {
+    return matched.filter(ci => (ci['tbm_monthly_cost'] as number) > 100)
+      .sort((a, b) => String(a['id']).localeCompare(String(b['id']))).slice(0, 5)
+      .map(ci => record({ name: ci['name'], monthlyCost: int(ci['tbm_monthly_cost'] as number) }));
+  }
+  throw new Error(`fake Neo4j: unmodelled statement: ${query}`);
 }
+
+let neo4jErrorCode: string | null = null;
 
 const neo4jSession = {
   run: async (query: string, params: Params = {}, config?: { timeout: number }) => {
     cypherRuns.push({ query, params, config });
-    return { records: run(query, params) };
+    if (neo4jErrorCode) throw Object.assign(new Error('graph failure details are not public'), { code: neo4jErrorCode });
+    const records = run(query, params);
+    for (const row of records) {
+      for (const key of ['cis', 'sampleCIs']) {
+        const cis = row.get(key);
+        if (Array.isArray(cis)) transferredCIs.push(cis.length);
+      }
+    }
+    return { records };
   },
   close: async () => undefined,
 };
@@ -198,6 +246,7 @@ jest.mock('bcrypt', () => ({}));
 // Users as the Neo4j store returns them; the org is a user attribute, never a request input.
 const USERS: Record<string, { _id: string; _username: string; _role: string; _enabled: boolean; _organizationId?: string }> = {
   'user-a': { _id: 'user-a', _username: 'alice', _role: 'admin', _enabled: true, _organizationId: ORG_A },
+  'user-b': { _id: 'user-b', _username: 'bob', _role: 'admin', _enabled: true, _organizationId: ORG_B },
   'user-none': { _id: 'user-none', _username: 'nora', _role: 'admin', _enabled: true },
   'user-bad': { _id: 'user-bad', _username: 'bart', _role: 'admin', _enabled: true, _organizationId: 'not-a-uuid' },
 };
@@ -256,11 +305,11 @@ const SPOOF = `organization_id=${ORG_B}&organizationId=${ORG_B}`;
  * Every (x:CI) pattern of every recorded statement is bound to the token org.
  * Returns the offending (statement, variable) pairs.
  */
-function unscopedCIMatches(): string[] {
-  return cypherRuns.flatMap(({ query, params }) => {
+function unscopedCIMatches(expectedOrg = ORG_A, runs = cypherRuns): string[] {
+  return runs.flatMap(({ query, params }) => {
     const variables = [...query.matchAll(/\((\w+):CI\b/g)].map(m => m[1]!);
     const unscoped = variables.filter(v => !query.includes(`${v}.organization_id = $organizationId`));
-    if (variables.length > 0 && params['organizationId'] !== ORG_A) unscoped.push('$organizationId param');
+    if (variables.length > 0 && params['organizationId'] !== expectedOrg) unscoped.push('$organizationId param');
     return unscoped.map(v => `${v} in: ${query.replace(/\s+/g, ' ').trim()}`);
   });
 }
@@ -280,6 +329,8 @@ beforeEach(() => { AS_A = bearer(`user-a-${++principalOrdinal}`, ORG_A); });
 beforeEach(() => {
   pgQueries = 0;
   cypherRuns.length = 0;
+  transferredCIs.length = 0;
+  neo4jErrorCode = null;
 });
 
 describe('GET /api/v1/dashboards/business-service/:serviceId', () => {
@@ -336,28 +387,21 @@ describe('GET /api/v1/dashboards/business-service/:serviceId', () => {
     )).toEqual([{ from: 'bs-a-app', to: 'a-web' }]);
     expect(unscopedCIMatches()).toEqual([]);
   });
-  it('admits exactly 100 owned active CIs, but rejects a larger unscoped-service dashboard before collecting more than 101', async () => {
+  it('returns unchanged static service health for over 100 owned active CIs without querying Neo4j', async () => {
     const baseline = CIS.length;
     try {
-      CIS.push(...Array.from({ length: 97 }, (_, index) => ({
+      const small = await request(app).get('/api/v1/dashboards/business-service').set(AS_A);
+      expect(small.status).toBe(200);
+      expect(small.body.data.serviceHealth.flatMap((unit: { businessServices: unknown[] }) => unit.businessServices)).toHaveLength(4);
+      expect(cypherRuns).toEqual([]);
+      CIS.push(...Array.from({ length: 121 }, (_, index) => ({
         id: `budget-${index}`, name: `Budget ${index}`, status: 'active', organization_id: ORG_A,
       })));
-      const withinBudget = await request(app).get('/api/v1/dashboards/business-service').set(AS_A);
-      expect(withinBudget.status).toBe(200);
-      CIS.push(...Array.from({ length: 24 }, (_, index) => ({
-        id: `overflow-${index}`, status: 'active', organization_id: ORG_A,
-      })));
-      const exceeded = await request(app).get('/api/v1/dashboards/business-service').set(AS_A);
-      expect(exceeded.status).toBe(503);
-      expect(exceeded.body).toEqual({ success: false, error: 'CI traversal resource limit exceeded' });
-      const collection = cypherRuns.filter(({ query }) => query.includes("ci.status = 'active'")
-        && query.includes('collect(ci) as cis'));
-      expect(collection).toHaveLength(2);
-      for (const statement of collection) {
-        expect(statement.query).toMatch(/\bLIMIT 101\b/);
-        expect(statement.config).toEqual({ timeout: 5000 });
-        expect(statement.params['organizationId']).toBe(ORG_A);
-      }
+      const large = await request(app).get(`/api/v1/dashboards/business-service?organizationId=${ORG_B}`).set(AS_A);
+      expect(large.status).toBe(200);
+      expect(large.body.data.serviceHealth).toEqual(small.body.data.serviceHealth);
+      expect(Object.keys(large.body.data).sort()).toEqual(Object.keys(small.body.data).sort());
+      expect(cypherRuns).toEqual([]);
     } finally {
       CIS.length = baseline;
     }
@@ -396,13 +440,93 @@ describe('global dashboards', () => {
 
     expect(itsm.status).toBe(200);
     expect(cio.status).toBe(200);
-    expect(cypherRuns.length).toBe(2);
     expect(unscopedCIMatches()).toEqual([]);
 
     const statusCIs = itsm.body.data.ciStatus.flatMap((s: { cis: Array<{ ci_id: string }> }) => s.cis.map(c => c.ci_id));
     expect(statusCIs.sort()).toEqual(FAKE_CIS.filter(c => c.organizationId === ORG_A).map(c => c.id).sort());
     expect(cio.body.data.configurationAccuracy.totalCIs).toBe(A_ACTIVE.length);
   });
+  it('keeps large-tenant executive, CIO, FinOps and ITSM counts complete without materializing all CIs', async () => {
+    const baseline = CIS.length;
+    try {
+      CIS.push(...Array.from({ length: 130 }, (_, index) => ({
+        id: `large-a-${index}`, name: `Large A ${index}`, status: 'active', organization_id: ORG_A,
+        tbm_monthly_cost: 2, tbm_resource_tower: 'compute',
+        bsm_business_criticality: 'tier_1', bsm_customer_facing: true,
+        discovery_provider: 'aws',
+      })));
+      CIS.push(...Array.from({ length: 9 }, (_, index) => ({
+        id: `large-b-${index}`, name: `Large B ${index}`, status: 'active', organization_id: ORG_B,
+        tbm_monthly_cost: 3000, tbm_resource_tower: 'foreign',
+        bsm_business_criticality: 'tier_2', bsm_customer_facing: true,
+        discovery_provider: 'gcp',
+      })));
+      const paths = ['executive', 'cio', 'finops', 'itsm'];
+      const owned = await Promise.all(paths.map(path =>
+        request(app).get(`/api/v1/dashboards/${path}?organizationId=${ORG_B}`).set(AS_A)));
+      for (const response of owned) expect(response.status).toBe(200);
+      expect(owned[0]!.body.data.totalITSpend).toBe(A_ACTIVE_COST + 260);
+      expect(owned[0]!.body.data.costByCapability).toContainEqual({
+        capability: 'compute', totalCost: A_ACTIVE_COST + 260, businessServices: [],
+      });
+      expect(owned[0]!.body.data.serviceHealthByTier[0].serviceCount).toBe(A_ACTIVE.length + 130);
+      expect(owned[0]!.body.data.topCostDrivers).toHaveLength(10);
+      expect(owned[1]!.body.data.configurationAccuracy.totalCIs).toBe(A_ACTIVE.length + 130);
+      expect(owned[2]!.body.data.onPremVsCloud.totalCost).toBe(A_ACTIVE_COST + 260);
+      expect(owned[2]!.body.data.cloudCosts[0].gcp).toBe(0);
+      expect(owned[3]!.body.data.ciStatus.find((status: { status: string }) =>
+        status.status === 'active').count).toBe(A_ACTIVE.length + 130);
+      expect(owned[3]!.body.data.ciStatus.find((status: { status: string }) =>
+        status.status === 'active').cis).toHaveLength(5);
+      expect(Math.max(0, ...transferredCIs)).toBeLessThanOrEqual(5);
+      expect(cypherRuns.every(({ config }) => config?.timeout === 5000)).toBe(true);
+
+      const firstForeignRun = cypherRuns.length;
+      const foreign = await Promise.all(paths.map(path =>
+        request(app).get(`/api/v1/dashboards/${path}?organizationId=${ORG_A}`).set(bearer('user-b', ORG_B))));
+      for (const response of foreign) expect(response.status).toBe(200);
+      expect(foreign[0]!.body.data.totalITSpend).toBe(16000 + 27000);
+      expect(foreign[1]!.body.data.configurationAccuracy.totalCIs).toBe(11);
+      expect(foreign[2]!.body.data.onPremVsCloud.totalCost).toBe(16000 + 27000);
+      expect(foreign[3]!.body.data.ciStatus.find((status: { status: string }) =>
+        status.status === 'active').count).toBe(11);
+      expect(unscopedCIMatches(ORG_B, cypherRuns.slice(firstForeignRun))).toEqual([]);
+    } finally {
+      CIS.length = baseline;
+    }
+  });
+
+  it('refuses over 100 distinct tenant towers or statuses with one fixed aggregate error', async () => {
+    const baseline = CIS.length;
+    try {
+      CIS.push(...Array.from({ length: 101 }, (_, index) => ({
+        id: `group-${index}`, status: 'active', organization_id: ORG_A,
+        tbm_monthly_cost: 1, tbm_resource_tower: `tower-${index}`,
+      })));
+      for (const path of ['executive', 'cio', 'finops']) {
+        const res = await request(app).get(`/api/v1/dashboards/${path}`).set(AS_A);
+        expect(res.status).toBe(503);
+        expect(res.body).toEqual({ success: false, error: 'Dashboard aggregate resource limit exceeded' });
+      }
+      for (let index = 0; index < 101; index++) CIS[baseline + index]!['status'] = `status-${index}`;
+      const itsm = await request(app).get('/api/v1/dashboards/itsm').set(AS_A);
+      expect(itsm.status).toBe(503);
+      expect(itsm.body).toEqual({ success: false, error: 'Dashboard aggregate resource limit exceeded' });
+    } finally {
+      CIS.length = baseline;
+    }
+  });
+
+  it('returns a fixed timeout for graph transaction deadlines on each global dashboard', async () => {
+    neo4jErrorCode = 'Neo.TransientError.Transaction.TransactionTimedOut';
+    for (const path of ['executive', 'cio', 'finops', 'itsm']) {
+      const res = await request(app).get(`/api/v1/dashboards/${path}`).set(AS_A);
+      expect(res.status).toBe(504);
+      expect(res.body).toEqual({ success: false, error: 'Dashboard analysis timed out' });
+    }
+    expect(cypherRuns.every(({ config }) => config?.timeout === 5000)).toBe(true);
+  });
+
 });
 
 describe('fail closed without an organization claim', () => {

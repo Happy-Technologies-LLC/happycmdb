@@ -6,13 +6,25 @@
  * Provides aggregated data for Business Insights dashboards
  */
 
-import neo4j, { type Node } from 'neo4j-driver';
+import neo4j, { type Integer, type Node, type Session } from 'neo4j-driver';
 import {
   getNeo4jClient, getPostgresClient, CITraversalLimitError,
   MAX_CI_TRAVERSAL_NODES, MAX_CI_TRAVERSAL_WORK,
 } from '@cmdb/database';
 import { logger } from '@cmdb/common';
 import { ownsBusinessService } from './business-service-ownership';
+
+const DASHBOARD_QUERY_TIMEOUT_MS = 5000;
+const MAX_DASHBOARD_GROUPS = 100;
+
+export class DashboardAggregateLimitError extends Error {
+  constructor() {
+    super('Dashboard aggregate resource limit exceeded');
+  }
+}
+
+const graphNumber = (value: number | Integer | null | undefined): number =>
+  value == null ? 0 : neo4j.isInt(value) ? value.toNumber() : value;
 
 export interface TimeRange {
   days: number;
@@ -339,51 +351,80 @@ export class DashboardService {
     logger.info('Fetching executive summary data', { timeRange });
 
     try {
-      // Get CIs with TBM and BSM attributes
       const session = this.neo4j.getSession();
+      let costByCapability: ExecutiveSummaryData['costByCapability'];
+      let serviceHealthByTier: ExecutiveSummaryData['serviceHealthByTier'];
+      let riskMatrix: ExecutiveSummaryData['riskMatrix'];
+      let topCostDrivers: ExecutiveSummaryData['topCostDrivers'];
+      let valueScorecard: ExecutiveSummaryData['valueScorecard'];
+      try {
+        costByCapability = await this.aggregateCostByCapability(session, organizationId);
+        const tierResult = await session.run(`
+          MATCH (ci:CI)
+          WHERE ci.status = 'active' AND ci.organization_id = $organizationId
+          RETURN
+            count(CASE WHEN ci.bsm_business_criticality = 'tier_1' THEN 1 END) AS tier_1,
+            count(CASE WHEN ci.bsm_business_criticality = 'tier_2' THEN 1 END) AS tier_2,
+            count(CASE WHEN ci.bsm_business_criticality = 'tier_3' THEN 1 END) AS tier_3,
+            count(CASE WHEN ci.bsm_business_criticality = 'tier_4' THEN 1 END) AS tier_4
+        `, { organizationId }, { timeout: DASHBOARD_QUERY_TIMEOUT_MS });
+        serviceHealthByTier = this.aggregateHealthByTier(tierResult.records[0]);
 
-      const result = await session.run(`
-        MATCH (ci:CI)
-        WHERE ci.status = 'active' AND ci.organization_id = $organizationId
-        RETURN
-          count(ci) as totalCIs,
-          collect({
-            id: ci.id,
-            name: ci.name,
-            type: ci.type,
-            tbm: ci.tbm_attributes,
-            bsm: ci.bsm_attributes
-          }) as cis
-      `, { organizationId });
+        const riskResult = await session.run(`
+          MATCH (ci:CI)
+          WHERE ci.status = 'active' AND ci.organization_id = $organizationId
+            AND ci.bsm_business_criticality IN ['tier_1', 'tier_2']
+          WITH ci ORDER BY ci.id LIMIT 10
+          RETURN ci.id AS id, ci.name AS name, ci.type AS type,
+            ci.bsm_business_criticality AS criticality
+        `, { organizationId }, { timeout: DASHBOARD_QUERY_TIMEOUT_MS });
+        riskMatrix = { services: riskResult.records.map(row => {
+          const criticality = row.get('criticality') as string;
+          const type = row.get('type') as string;
+          return {
+            id: row.get('id'), name: row.get('name'), type, criticality,
+            riskLevel: criticality === 'tier_1' ? 'high' : 'medium',
+            description: `${type} in ${criticality}`,
+          };
+        }) };
 
-      await session.close();
+        const driversResult = await session.run(`
+          MATCH (ci:CI)
+          WHERE ci.status = 'active' AND ci.organization_id = $organizationId
+            AND ci.tbm_monthly_cost > 0
+          WITH ci ORDER BY ci.tbm_monthly_cost DESC, ci.id LIMIT 10
+          RETURN ci.id AS id, ci.name AS name, ci.tbm_monthly_cost AS monthlyCost
+        `, { organizationId }, { timeout: DASHBOARD_QUERY_TIMEOUT_MS });
+        topCostDrivers = driversResult.records.map(row => ({
+          serviceId: row.get('id'),
+          serviceName: row.get('name'),
+          monthlyCost: graphNumber(row.get('monthlyCost')),
+          trend: Math.random() > 0.5 ? 'up' : 'down',
+          changePercent: -5 + Math.random() * 15,
+        }));
 
-      const totalCIs = result.records[0]?.get('totalCIs').toNumber() || 0;
-      const cis = result.records[0]?.get('cis') || [];
+        const valueResult = await session.run(`
+          MATCH (ci:CI)
+          WHERE ci.status = 'active' AND ci.organization_id = $organizationId
+            AND ci.bsm_customer_facing = true
+          WITH ci ORDER BY ci.id LIMIT 5
+          RETURN ci.id AS id, ci.name AS name, ci.tbm_monthly_cost AS monthlyCost
+        `, { organizationId }, { timeout: DASHBOARD_QUERY_TIMEOUT_MS });
+        valueScorecard = valueResult.records.map(row => ({
+          serviceId: row.get('id'),
+          serviceName: row.get('name'),
+          annualRevenue: 1000000 + Math.random() * 5000000,
+          monthlyCost: graphNumber(row.get('monthlyCost')),
+          roi: 200 + Math.random() * 300,
+          customers: Math.floor(100 + Math.random() * 1000),
+        }));
+      } finally {
+        await session.close();
+      }
 
-      // Calculate cost aggregations from TBM data
-      const totalITSpend = cis.reduce((sum: number, ci: any) => {
-        const monthlyCost = ci.tbm?.monthly_cost || 0;
-        return sum + monthlyCost;
-      }, 0);
-
-      // Group by capability tower
-      const costByCapability = this.aggregateCostByCapability(cis);
-
-      // Generate mock trends for now (would come from time-series data)
+      const totalITSpend = costByCapability.reduce((sum, cap) => sum + cap.totalCost, 0);
+      // Time-series data has not yet been integrated.
       const costTrends = this.generateCostTrends(timeRange, totalITSpend);
-
-      // Aggregate service health by BSM tier
-      const serviceHealthByTier = this.aggregateHealthByTier(cis);
-
-      // Risk matrix from BSM criticality
-      const riskMatrix = this.buildRiskMatrix(cis);
-
-      // Top cost drivers
-      const topCostDrivers = this.getTopCostDrivers(cis);
-
-      // Value scorecard (mock data for now)
-      const valueScorecard = this.buildValueScorecard(cis);
 
       return {
         totalITSpend,
@@ -408,29 +449,22 @@ export class DashboardService {
 
     try {
       const session = this.neo4j.getSession();
+      let totalCIs: number;
+      let capabilities: ExecutiveSummaryData['costByCapability'];
+      try {
+        const result = await session.run(`
+          MATCH (ci:CI)
+          WHERE ci.status = 'active' AND ci.organization_id = $organizationId
+          RETURN count(ci) AS totalCIs
+        `, { organizationId }, { timeout: DASHBOARD_QUERY_TIMEOUT_MS });
+        totalCIs = result.records[0]?.get('totalCIs').toNumber() ?? 0;
+        capabilities = await this.aggregateCostByCapability(session, organizationId);
+      } finally {
+        await session.close();
+      }
 
-      // Get the organization's active CIs with ITIL attributes
-      const result = await session.run(`
-        MATCH (ci:CI)
-        WHERE ci.status = 'active' AND ci.organization_id = $organizationId
-        RETURN
-          count(ci) as totalCIs,
-          collect({
-            id: ci.id,
-            name: ci.name,
-            type: ci.type,
-            itil: ci.itil_attributes,
-            tbm: ci.tbm_attributes,
-            bsm: ci.bsm_attributes
-          }) as cis
-      `, { organizationId });
-
-      await session.close();
-
-      const cis = result.records[0]?.get('cis') || [];
-
-      // Service availability by tier
-      const serviceAvailability = this.calculateServiceAvailability(cis);
+      // Service availability remains a mock until ITIL records are integrated.
+      const serviceAvailability = this.calculateServiceAvailability();
 
       // Change success rates (mock for now - would come from ITIL change records)
       const changeSuccessRates = {
@@ -451,15 +485,15 @@ export class DashboardService {
 
       // Configuration accuracy
       const configurationAccuracy = {
-        totalCIs: cis.length,
-        accurateCIs: Math.floor(cis.length * 0.94),
+        totalCIs,
+        accurateCIs: Math.floor(totalCIs * 0.94),
         accuracyPercentage: 94.2,
-        driftDetected: Math.floor(cis.length * 0.06),
+        driftDetected: Math.floor(totalCIs * 0.06),
         lastAuditDate: new Date().toISOString(),
       };
 
       // Cost by capability
-      const costByCapability = this.aggregateCostByCapability(cis).map(cap => ({
+      const costByCapability = capabilities.map(cap => ({
         capability: cap.capability,
         cost: cap.totalCost,
         budgetAllocated: cap.totalCost * 1.1, // Mock: 10% over budget
@@ -491,30 +525,39 @@ export class DashboardService {
 
     try {
       const session = this.neo4j.getSession();
-
-      // Get the organization's CIs with status breakdown
-      const statusResult = await session.run(`
-        MATCH (ci:CI)
-        WHERE ci.organization_id = $organizationId
-        WITH ci.status as status, count(ci) as count, collect(ci) as ciList
-        RETURN status, count, ciList[0..5] as sampleCIs
-        ORDER BY count DESC
-      `, { organizationId });
-
-      const ciStatus = statusResult.records.map(record => ({
-        status: record.get('status'),
-        count: record.get('count').toNumber(),
-        cis: record.get('sampleCIs').map((ci: any) => ({
-          ci_id: ci.properties.id,
-          name: ci.properties.name,
-          type: ci.properties.type,
-          status: ci.properties.status,
-          environment: ci.properties.environment || 'unknown',
-          lastSeen: ci.properties.updated_at || ci.properties.created_at,
-        })),
-      }));
-
-      await session.close();
+      let ciStatus: ITSMDashboardData['ciStatus'];
+      try {
+        const statusResult = await session.run(`
+          MATCH (ci:CI)
+          WHERE ci.organization_id = $organizationId
+          WITH ci.status AS status, count(ci) AS count
+          ORDER BY count DESC, status LIMIT ${MAX_DASHBOARD_GROUPS + 1}
+          CALL {
+            WITH status
+            MATCH (sample:CI)
+            WHERE sample.organization_id = $organizationId
+              AND (sample.status = status OR (sample.status IS NULL AND status IS NULL))
+            WITH sample ORDER BY sample.id LIMIT 5
+            RETURN collect(sample) AS sampleCIs
+          }
+          RETURN status, count, sampleCIs
+        `, { organizationId }, { timeout: DASHBOARD_QUERY_TIMEOUT_MS });
+        if (statusResult.records.length > MAX_DASHBOARD_GROUPS) throw new DashboardAggregateLimitError();
+        ciStatus = statusResult.records.map(record => ({
+          status: record.get('status'),
+          count: record.get('count').toNumber(),
+          cis: (record.get('sampleCIs') as Node[]).map(ci => ({
+            ci_id: ci.properties['id'],
+            name: ci.properties['name'],
+            type: ci.properties['type'],
+            status: ci.properties['status'],
+            environment: ci.properties['environment'] || 'unknown',
+            lastSeen: ci.properties['updated_at'] || ci.properties['created_at'],
+          })),
+        }));
+      } finally {
+        await session.close();
+      }
 
       // Mock incident and change data (would come from ITIL tables)
       const openIncidents = [
@@ -576,40 +619,57 @@ export class DashboardService {
 
     try {
       const session = this.neo4j.getSession();
+      let providerCosts: { awsCost: number; azureCost: number; gcpCost: number; totalCost: number };
+      let capabilities: ExecutiveSummaryData['costByCapability'];
+      let optimizations: FinOpsDashboardData['costOptimization'];
+      try {
+        const costs = await session.run(`
+          MATCH (ci:CI)
+          WHERE ci.status = 'active' AND ci.organization_id = $organizationId
+          RETURN sum(coalesce(ci.tbm_monthly_cost, 0)) AS totalCost,
+            sum(CASE WHEN ci.discovery_provider = 'aws' THEN coalesce(ci.tbm_monthly_cost, 0) ELSE 0 END) AS awsCost,
+            sum(CASE WHEN ci.discovery_provider = 'azure' THEN coalesce(ci.tbm_monthly_cost, 0) ELSE 0 END) AS azureCost,
+            sum(CASE WHEN ci.discovery_provider = 'gcp' THEN coalesce(ci.tbm_monthly_cost, 0) ELSE 0 END) AS gcpCost
+        `, { organizationId }, { timeout: DASHBOARD_QUERY_TIMEOUT_MS });
+        const row = costs.records[0];
+        providerCosts = {
+          totalCost: graphNumber(row?.get('totalCost')), awsCost: graphNumber(row?.get('awsCost')),
+          azureCost: graphNumber(row?.get('azureCost')), gcpCost: graphNumber(row?.get('gcpCost')),
+        };
+        capabilities = await this.aggregateCostByCapability(session, organizationId);
+        const sample = await session.run(`
+          MATCH (ci:CI)
+          WHERE ci.status = 'active' AND ci.organization_id = $organizationId
+            AND ci.tbm_monthly_cost > 100
+          WITH ci ORDER BY ci.id LIMIT 5
+          RETURN ci.name AS name, ci.tbm_monthly_cost AS monthlyCost
+        `, { organizationId }, { timeout: DASHBOARD_QUERY_TIMEOUT_MS });
+        const recommendations = sample.records.map((item, idx) => {
+          const resource = item.get('name') as string;
+          const currentCost = graphNumber(item.get('monthlyCost'));
+          return {
+            id: `OPT-${idx + 1}`, type: 'Rightsizing', resource, currentCost,
+            potentialSavings: currentCost * 0.3,
+            description: `Downsize ${resource} based on utilization patterns`, priority: 'High',
+          };
+        });
+        optimizations = {
+          recommendations,
+          totalPotentialSavings: recommendations.reduce((sum, recommendation) => sum + recommendation.potentialSavings, 0),
+        };
+      } finally {
+        await session.close();
+      }
 
-      const result = await session.run(`
-        MATCH (ci:CI)
-        WHERE ci.status = 'active' AND ci.organization_id = $organizationId
-        RETURN collect({
-          id: ci.id,
-          name: ci.name,
-          type: ci.type,
-          tbm: ci.tbm_attributes,
-          provider: ci.discovery_provider
-        }) as cis
-      `, { organizationId });
-
-      await session.close();
-
-      const cis = result.records[0]?.get('cis') || [];
-
-      // Cloud costs by provider
-      const cloudCosts = this.aggregateCloudCosts(cis, timeRange);
-
-      // On-prem vs cloud comparison
-      const onPremVsCloud = this.calculateOnPremVsCloud(cis);
-
-      // Cost by tower
-      const costByTower = this.aggregateCostByTower(cis);
-
-      // Budget variance
-      const budgetVariance = this.calculateBudgetVariance(cis);
-
-      // Unit economics
-      const unitEconomics = this.calculateUnitEconomics(cis);
-
-      // Cost optimization recommendations
-      const costOptimization = this.generateCostOptimizations(cis);
+      const cloudCosts = this.aggregateCloudCosts(providerCosts, timeRange);
+      const cloudCost = providerCosts.awsCost + providerCosts.azureCost + providerCosts.gcpCost;
+      const onPremVsCloud = this.calculateOnPremVsCloud(providerCosts.totalCost - cloudCost, cloudCost);
+      const costByTower = capabilities.map(cap => ({
+        tower: cap.capability, cost: cap.totalCost, subTowers: [],
+      }));
+      const budgetVariance = this.calculateBudgetVariance(capabilities);
+      const unitEconomics = this.calculateUnitEconomics();
+      const costOptimization = optimizations;
 
       return {
         cloudCosts,
@@ -644,38 +704,26 @@ export class DashboardService {
         return null;
       }
 
-      const session = this.neo4j.getSession();
-      let cis: unknown[];
-      try {
-        if (serviceId) {
+      if (serviceId) {
+        const session = this.neo4j.getSession();
+        try {
           const gate = await session.run(
             `OPTIONAL MATCH (bs:BusinessService {id: $serviceId})
              WITH collect(bs) AS nodes
              RETURN all(b IN nodes WHERE b.organization_id = $organizationId) AS allowed`,
-            { serviceId, organizationId }
+            { serviceId, organizationId },
+            { timeout: 5000 }
           );
           // No node: all() over [] is true. A node without organization_id gives null,
           // refused like false (another organization's node).
-          if (gate.records[0]?.get('allowed') !== true) {
-            return null;
-          }
+          if (gate.records[0]?.get('allowed') !== true) return null;
+        } finally {
+          await session.close();
         }
-
-        // Bound collection before aggregation; the extra CI distinguishes a full page from overflow.
-        const query = serviceId
-          ? `MATCH (ci:CI) WHERE ci.id = $serviceId AND ci.organization_id = $organizationId RETURN collect(ci) as cis`
-          : `MATCH (ci:CI) WHERE ci.status = 'active' AND ci.organization_id = $organizationId
-             WITH ci LIMIT ${MAX_CI_TRAVERSAL_NODES + 1} RETURN collect(ci) as cis`;
-
-        const result = await session.run(query, { serviceId, organizationId }, { timeout: 5000 });
-        cis = result.records[0]?.get('cis') || [];
-        if (!serviceId && cis.length > MAX_CI_TRAVERSAL_NODES) throw new CITraversalLimitError();
-      } finally {
-        await session.close();
       }
 
-      // Service health by business unit
-      const serviceHealth = this.aggregateServiceHealth(cis);
+      // Health is currently static for both modes; the default route needs no graph read.
+      const serviceHealth = this.aggregateServiceHealth();
 
       // Revenue at risk
       const revenueAtRisk = {
@@ -733,19 +781,26 @@ export class DashboardService {
 
   // Helper methods
 
-  private aggregateCostByCapability(cis: any[]): any[] {
-    const capabilities = new Map<string, number>();
-
-    cis.forEach(ci => {
-      const tower = ci.tbm?.capability_tower || 'Uncategorized';
-      const cost = ci.tbm?.monthly_cost || 0;
-      capabilities.set(tower, (capabilities.get(tower) || 0) + cost);
-    });
-
-    return Array.from(capabilities.entries()).map(([capability, totalCost]) => ({
-      capability,
-      totalCost,
-      businessServices: [], // Would be populated from BSM relationships
+  private async aggregateCostByCapability(
+    session: Session, organizationId: string
+  ): Promise<ExecutiveSummaryData['costByCapability']> {
+    // Group server-side, then admit at most 100 distinct towers. Never transfer a tenant's CI list.
+    const result = await session.run(`
+      MATCH (ci:CI)
+      WHERE ci.status = 'active' AND ci.organization_id = $organizationId
+      WITH CASE
+        WHEN ci.tbm_capability_tower IS NOT NULL AND ci.tbm_capability_tower <> '' THEN ci.tbm_capability_tower
+        WHEN ci.tbm_resource_tower IS NOT NULL AND ci.tbm_resource_tower <> '' THEN ci.tbm_resource_tower
+        ELSE 'Uncategorized'
+      END AS capability, coalesce(ci.tbm_monthly_cost, 0) AS monthlyCost
+      RETURN capability, sum(monthlyCost) AS totalCost
+      ORDER BY capability LIMIT ${MAX_DASHBOARD_GROUPS + 1}
+    `, { organizationId }, { timeout: DASHBOARD_QUERY_TIMEOUT_MS });
+    if (result.records.length > MAX_DASHBOARD_GROUPS) throw new DashboardAggregateLimitError();
+    return result.records.map(row => ({
+      capability: row.get('capability'),
+      totalCost: graphNumber(row.get('totalCost')),
+      businessServices: [],
     }));
   }
 
@@ -774,66 +829,17 @@ export class DashboardService {
     return trends;
   }
 
-  private aggregateHealthByTier(cis: any[]): any[] {
+  private aggregateHealthByTier(record: { get(key: string): Integer } | undefined): any[] {
     const tiers = ['tier_1', 'tier_2', 'tier_3', 'tier_4'];
-
-    return tiers.map(tier => {
-      const tierCIs = cis.filter(ci => ci.bsm?.business_criticality === tier);
-      return {
-        tier,
-        averageHealthScore: 85 + Math.random() * 10,
-        serviceCount: tierCIs.length,
-        trend: Math.random() > 0.5 ? 'up' : 'stable',
-      };
-    });
+    return tiers.map(tier => ({
+      tier,
+      averageHealthScore: 85 + Math.random() * 10,
+      serviceCount: record?.get(tier).toNumber() ?? 0,
+      trend: Math.random() > 0.5 ? 'up' : 'stable',
+    }));
   }
 
-  private buildRiskMatrix(cis: any[]): any {
-    const riskyCIs = cis
-      .filter(ci => ci.bsm?.business_criticality === 'tier_1' || ci.bsm?.business_criticality === 'tier_2')
-      .slice(0, 10);
-
-    return {
-      services: riskyCIs.map(ci => ({
-        id: ci.id,
-        name: ci.name,
-        criticality: ci.bsm?.business_criticality || 'unknown',
-        riskLevel: ci.bsm?.business_criticality === 'tier_1' ? 'high' : 'medium',
-        type: ci.type,
-        description: `${ci.type} in ${ci.bsm?.business_criticality}`,
-      })),
-    };
-  }
-
-  private getTopCostDrivers(cis: any[]): any[] {
-    return cis
-      .filter(ci => ci.tbm?.monthly_cost > 0)
-      .sort((a, b) => (b.tbm?.monthly_cost || 0) - (a.tbm?.monthly_cost || 0))
-      .slice(0, 10)
-      .map(ci => ({
-        serviceId: ci.id,
-        serviceName: ci.name,
-        monthlyCost: ci.tbm?.monthly_cost || 0,
-        trend: Math.random() > 0.5 ? 'up' : 'down',
-        changePercent: -5 + Math.random() * 15,
-      }));
-  }
-
-  private buildValueScorecard(cis: any[]): any[] {
-    return cis
-      .filter(ci => ci.bsm?.customer_facing === true)
-      .slice(0, 5)
-      .map(ci => ({
-        serviceId: ci.id,
-        serviceName: ci.name,
-        annualRevenue: 1000000 + Math.random() * 5000000,
-        monthlyCost: ci.tbm?.monthly_cost || 0,
-        roi: 200 + Math.random() * 300,
-        customers: Math.floor(100 + Math.random() * 1000),
-      }));
-  }
-
-  private calculateServiceAvailability(cis: any[]): any[] {
+  private calculateServiceAvailability(): any[] {
     const tiers = ['tier_1', 'tier_2', 'tier_3', 'tier_4'];
 
     return tiers.map(tier => ({
@@ -864,17 +870,12 @@ export class DashboardService {
     return plan;
   }
 
-  private aggregateCloudCosts(cis: any[], timeRange: TimeRange): any[] {
+  private aggregateCloudCosts(
+    { awsCost, azureCost, gcpCost }: { awsCost: number; azureCost: number; gcpCost: number },
+    timeRange: TimeRange
+  ): any[] {
     const months = Math.ceil(timeRange.days / 30);
     const costs = [];
-
-    const awsCIs = cis.filter(ci => ci.provider === 'aws');
-    const azureCIs = cis.filter(ci => ci.provider === 'azure');
-    const gcpCIs = cis.filter(ci => ci.provider === 'gcp');
-
-    const awsCost = awsCIs.reduce((sum, ci) => sum + (ci.tbm?.monthly_cost || 0), 0);
-    const azureCost = azureCIs.reduce((sum, ci) => sum + (ci.tbm?.monthly_cost || 0), 0);
-    const gcpCost = gcpCIs.reduce((sum, ci) => sum + (ci.tbm?.monthly_cost || 0), 0);
 
     for (let i = 0; i < Math.min(months, 12); i++) {
       const monthDate = new Date();
@@ -894,13 +895,7 @@ export class DashboardService {
     return costs;
   }
 
-  private calculateOnPremVsCloud(cis: any[]): any {
-    const cloudProviders = ['aws', 'azure', 'gcp'];
-    const cloudCIs = cis.filter(ci => cloudProviders.includes(ci.provider));
-    const onPremCIs = cis.filter(ci => !cloudProviders.includes(ci.provider));
-
-    const cloudCost = cloudCIs.reduce((sum, ci) => sum + (ci.tbm?.monthly_cost || 0), 0);
-    const onPremCost = onPremCIs.reduce((sum, ci) => sum + (ci.tbm?.monthly_cost || 0), 0);
+  private calculateOnPremVsCloud(onPremCost: number, cloudCost: number): any {
 
     return {
       onPremCost,
@@ -915,25 +910,8 @@ export class DashboardService {
     };
   }
 
-  private aggregateCostByTower(cis: any[]): any[] {
-    const towers = new Map<string, number>();
 
-    cis.forEach(ci => {
-      const tower = ci.tbm?.capability_tower || 'Uncategorized';
-      const cost = ci.tbm?.monthly_cost || 0;
-      towers.set(tower, (towers.get(tower) || 0) + cost);
-    });
-
-    return Array.from(towers.entries()).map(([tower, cost]) => ({
-      tower,
-      cost,
-      subTowers: [], // Would be populated from detailed breakdown
-    }));
-  }
-
-  private calculateBudgetVariance(cis: any[]): any[] {
-    const capabilities = this.aggregateCostByCapability(cis);
-
+  private calculateBudgetVariance(capabilities: ExecutiveSummaryData['costByCapability']): any[] {
     return capabilities.map(cap => ({
       capability: cap.capability,
       budgetAllocated: cap.totalCost * 1.1,
@@ -943,9 +921,7 @@ export class DashboardService {
     }));
   }
 
-  private calculateUnitEconomics(cis: any[]): any[] {
-    const totalCost = cis.reduce((sum, ci) => sum + (ci.tbm?.monthly_cost || 0), 0);
-
+  private calculateUnitEconomics(): any[] {
     return [
       { metric: 'Cost per User', value: 25.50, unit: 'USD/user/month', trend: 'down', changePercent: -5.2 },
       { metric: 'Cost per Transaction', value: 0.15, unit: 'USD/transaction', trend: 'down', changePercent: -8.1 },
@@ -953,30 +929,7 @@ export class DashboardService {
     ];
   }
 
-  private generateCostOptimizations(cis: any[]): any {
-    const recommendations = cis
-      .filter(ci => ci.tbm?.monthly_cost > 100)
-      .slice(0, 5)
-      .map((ci, idx) => ({
-        id: `OPT-${idx + 1}`,
-        type: 'Rightsizing',
-        resource: ci.name,
-        currentCost: ci.tbm?.monthly_cost || 0,
-        potentialSavings: (ci.tbm?.monthly_cost || 0) * 0.3,
-        description: `Downsize ${ci.name} based on utilization patterns`,
-        priority: 'High',
-      }));
-
-    const totalPotentialSavings = recommendations.reduce((sum, rec) => sum + rec.potentialSavings, 0);
-
-    return {
-      recommendations,
-      totalPotentialSavings,
-    };
-  }
-
-  private aggregateServiceHealth(cis: any[]): any[] {
-    // Group by business service (from BSM attributes)
+  private aggregateServiceHealth(): any[] {
     return [
       {
         businessUnit: 'Customer Experience',

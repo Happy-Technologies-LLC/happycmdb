@@ -65,7 +65,7 @@ let queryCount = 0;
 // between two statements of the same request.
 let afterParentRead: (() => Promise<unknown>) | null = null;
 const pgClient = {
-  // Plain function (not jest.fn): the unit config resets mock implementations.
+  // Plain functions: the unit config resets mock implementations.
   query: async (sql: string, params: unknown[] = []) => {
     queryCount++;
     const rows = await send('query', sql, params);
@@ -76,6 +76,7 @@ const pgClient = {
     }
     return { rows };
   },
+  getClient: async () => ({ query: pgClient.query, release: () => undefined }),
 };
 
 jest.mock('@cmdb/database', () => ({

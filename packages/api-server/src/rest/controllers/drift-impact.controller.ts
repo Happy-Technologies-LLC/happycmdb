@@ -18,6 +18,7 @@ import {
   getConfigurationDriftDetector,
   getImpactPredictionEngine,
   ChangeType,
+  ImpactCriticalityLimitError,
 } from '@cmdb/ai-ml-engine';
 import { AuthenticatedRequest, requestOrganizationId } from '../../middleware/auth.middleware';
 
@@ -327,6 +328,10 @@ export class DriftImpactController {
         data: impact,
       });
     } catch (error) {
+      if (error instanceof ImpactCriticalityLimitError) {
+        res.status(503).json({ success: false, error: 'Impact criticality resource limit exceeded' });
+        return;
+      }
       logger.error('Error predicting change impact', error);
       res.status(500).json({
         success: false,
@@ -380,6 +385,10 @@ export class DriftImpactController {
         data: graph,
       });
     } catch (error) {
+      if (error instanceof ImpactCriticalityLimitError) {
+        res.status(503).json({ success: false, error: 'Impact criticality resource limit exceeded' });
+        return;
+      }
       logger.error('Error building dependency graph', error);
       res.status(500).json({
         success: false,
@@ -422,6 +431,10 @@ export class DriftImpactController {
         data: score,
       });
     } catch (error) {
+      if (error instanceof ImpactCriticalityLimitError) {
+        res.status(503).json({ success: false, error: 'Impact criticality resource limit exceeded' });
+        return;
+      }
       logger.error('Error retrieving criticality score', error);
       res.status(500).json({
         success: false,

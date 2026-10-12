@@ -127,7 +127,10 @@ it('isolates derived drift and impact SQL plus graph traversal across own, forei
   expect(impact.body.data.critical_path).not.toContain('t3-b');
   const dependencyGraph = await request(app).get('/api/v1/impact/graph/t3-a').set(auth('a'));
   expect(dependencyGraph.status).toBe(200);
-  expect(dependencyGraph.body.data.nodes.map((node: { ci_id: string }) => node.ci_id).sort()).toEqual(['t3-a', 't3-a2']);
+  expect(dependencyGraph.body.data.nodes.map((node: {
+    ci_id: string; dependents_count: number; dependencies_count: number
+  }) => [node.ci_id, node.dependents_count, node.dependencies_count]).sort())
+    .toEqual([['t3-a', 1, 1], ['t3-a2', 0, 1]]);
   expect(dependencyGraph.body.data.edges).toMatchObject([{ source_id: 't3-a2', target_id: 't3-a' }]);
   for (const [table, column] of [
     ['baseline_snapshots', 'ci_id'], ['drift_detection_results', 'ci_id'],
@@ -136,6 +139,162 @@ it('isolates derived drift and impact SQL plus graph traversal across own, forei
     const rows = await sql.query(`SELECT ${column} AS id FROM ${table} WHERE ${column} LIKE 't3-%'`);
     expect(rows.rows.every(row => row.id === 't3-a' || row.id === 't3-a2')).toBe(true);
     expect(rows.rows.length).toBeGreaterThan(0);
+  }
+});
+
+it('bounds real parallel-edge and fan-out-by-depth impact traversals before path enumeration', async () => {
+  await run(`CREATE (root:CI {id:'t3-parallel-root', name:'parallel root', ci_type:'server', organization_id:$organizationId})
+    CREATE (leaf:CI {id:'t3-parallel-leaf', name:'parallel leaf', ci_type:'server', organization_id:$organizationId})
+    WITH root, leaf UNWIND range(1,20) AS n CREATE (leaf)-[:DEPENDS_ON {ordinal:n}]->(root)`,
+    { organizationId: A });
+  await run(`CREATE (root:CI {id:'t3-dense-root', name:'dense root', ci_type:'server', organization_id:$organizationId})
+    WITH root UNWIND range(0,9) AS i
+    CREATE (child:CI {id:'t3-dense-l1-'+toString(i), name:'layer one', ci_type:'server', organization_id:$organizationId})
+    CREATE (child)-[:DEPENDS_ON]->(root)
+    WITH root, child, i UNWIND range(0,9) AS j
+    CREATE (grandchild:CI {id:'t3-dense-l2-'+toString(i)+'-'+toString(j),
+      name:'layer two', ci_type:'server', organization_id:$organizationId})
+    CREATE (grandchild)-[:DEPENDS_ON]->(child)`, { organizationId: A });
+  await run(`MATCH (root:CI {id:'t3-dense-root'}), (child:CI {id:'t3-dense-l1-0'})
+    UNWIND range(1,20) AS n CREATE (child)-[:DEPENDS_ON {ordinal:n}]->(root)`);
+  await run(`CREATE (root:CI {id:'t3-deep-root', name:'deep root', ci_type:'server', organization_id:$organizationId})
+    CREATE (d1:CI {id:'t3-deep-l1', name:'deep layer', ci_type:'server', organization_id:$organizationId})-[:DEPENDS_ON]->(root)
+    CREATE (d2:CI {id:'t3-deep-l2', name:'deep layer', ci_type:'server', organization_id:$organizationId})-[:DEPENDS_ON]->(d1)
+    CREATE (d3:CI {id:'t3-deep-l3', name:'deep layer', ci_type:'server', organization_id:$organizationId})-[:DEPENDS_ON]->(d2)
+    CREATE (d4:CI {id:'t3-deep-l4', name:'deep layer', ci_type:'server', organization_id:$organizationId})-[:DEPENDS_ON]->(d3)
+    CREATE (d5:CI {id:'t3-deep-l5', name:'deep layer', ci_type:'server', organization_id:$organizationId})-[:DEPENDS_ON]->(d4)
+    WITH d5 UNWIND range(0,99) AS i
+    CREATE (leaf:CI {id:'t3-deep-l6-'+toString(i), name:'deep leaf', ci_type:'server', organization_id:$organizationId})
+    CREATE (leaf)-[:DEPENDS_ON]->(d5)`, { organizationId: A });
+  await run(`MATCH (root:CI {id:'t3-deep-root'}), (child:CI {id:'t3-deep-l1'})
+    UNWIND range(1,20) AS n CREATE (child)-[:DEPENDS_ON {ordinal:n}]->(root)`);
+
+  const measured = async (send: () => Promise<request.Response>) => {
+    const originalGetSession = graph.getSession.bind(graph);
+    let statements = 0;
+    const sessions = jest.spyOn(graph, 'getSession').mockImplementation(() => {
+      const session = originalGetSession();
+      const originalRun = session.run.bind(session);
+      session.run = ((...args: Parameters<typeof originalRun>) => {
+        statements++;
+        return originalRun(...args);
+      }) as typeof session.run;
+      return session;
+    });
+    const pg = jest.spyOn(sql, 'query');
+    const started = Date.now();
+    try {
+      const response = await send();
+      return { response, statements, pgQueries: pg.mock.calls.length, ms: Date.now() - started };
+    } finally {
+      sessions.mockRestore();
+      pg.mockRestore();
+    }
+  };
+
+  const parallel = await measured(() =>
+    request(app).get('/api/v1/impact/graph/t3-parallel-root?max_depth=5').set(auth('a')));
+  expect(parallel.response.status).toBe(200);
+  expect(parallel.response.body.data.nodes.map((node: { ci_id: string }) => node.ci_id).sort())
+    .toEqual(['t3-parallel-leaf', 't3-parallel-root']);
+  expect(parallel.response.body.data.edges).toHaveLength(20);
+  expect(parallel.statements).toBeLessThanOrEqual(12);
+  expect(parallel.ms).toBeLessThan(4000);
+
+  const denseGraph = await measured(() =>
+    request(app).get('/api/v1/impact/graph/t3-dense-root?max_depth=5').set(auth('a')));
+  expect(denseGraph.response.status).toBe(503);
+  expect(denseGraph.response.body).toEqual({ success: false, error: 'Impact criticality resource limit exceeded' });
+  expect(denseGraph.statements).toBeLessThanOrEqual(5);
+  expect(denseGraph.pgQueries).toBe(0);
+  expect(denseGraph.ms).toBeLessThan(4000);
+
+  const affected = await measured(() =>
+    request(app).post('/api/v1/impact/predict').set(auth('a'))
+      .send({ ci_id: 't3-dense-root', change_type: 'RESTART' }));
+  expect(affected.response.status).toBe(503);
+  expect(affected.response.body).toEqual({ success: false, error: 'Impact criticality resource limit exceeded' });
+  expect(affected.statements).toBeLessThanOrEqual(6);
+  expect(affected.pgQueries).toBe(0);
+  expect(affected.ms).toBeLessThan(4000);
+
+  const criticalPath = await measured(() =>
+    request(app).post('/api/v1/impact/predict').set(auth('a'))
+      .send({ ci_id: 't3-deep-root', change_type: 'RESTART' }));
+  expect(criticalPath.response.status).toBe(503);
+  expect(criticalPath.response.body).toEqual({ success: false, error: 'Impact criticality resource limit exceeded' });
+  expect(criticalPath.statements).toBeLessThanOrEqual(15);
+  expect(criticalPath.pgQueries).toBe(0);
+  expect(criticalPath.ms).toBeLessThan(4000);
+});
+
+it('counts 300 owned inbound and outbound relationships without a Cartesian adjacency expansion', async () => {
+  await run(`CREATE (root:CI {id:'t3-degree-root', name:'degree root', ci_type:'server', organization_id:$organizationId})
+    CREATE (hub:CI {id:'t3-degree-hub', name:'degree hub', ci_type:'server', organization_id:$organizationId})
+    CREATE (dependent:CI {id:'t3-degree-dependent', name:'degree dependent', ci_type:'server', organization_id:$organizationId})
+    CREATE (dependency:CI {id:'t3-degree-dependency', name:'degree dependency', ci_type:'server', organization_id:$organizationId})
+    CREATE (hub)-[:DEPENDS_ON]->(root)
+    WITH hub, dependent, dependency UNWIND range(1,300) AS ordinal
+    CREATE (dependent)-[:DEPENDS_ON {ordinal:ordinal}]->(hub)
+    CREATE (hub)-[:USES {ordinal:ordinal}]->(dependency)`, { organizationId: A });
+
+  const captured = new Map<string, { cypher: string; params: Record<string, unknown> }>();
+  const originalGetSession = graph.getSession.bind(graph);
+  const sessions = jest.spyOn(graph, 'getSession').mockImplementation(() => {
+    const session = originalGetSession();
+    const originalRun = session.run.bind(session);
+    session.run = ((...args: Parameters<typeof originalRun>) => {
+      const cypher = String(args[0]);
+      if (cypher.includes('RETURN ci.id as ci_id') && cypher.includes('dependent_count')
+        && (args[1] as Record<string, unknown>)?.ciId === 't3-degree-hub') {
+        captured.set('criticality', { cypher, params: args[1] as Record<string, unknown> });
+      }
+      if (cypher.includes('RETURN node.id as id') && cypher.includes('dependencies_count')) {
+        captured.set('graph', { cypher, params: args[1] as Record<string, unknown> });
+      }
+      return originalRun(...args);
+    }) as typeof session.run;
+    return session;
+  });
+  let criticalityMs: number;
+  let graphMs: number;
+  try {
+    const criticalityStart = Date.now();
+    const criticality = await request(app).get('/api/v1/impact/criticality/t3-degree-hub').set(auth('a'));
+    criticalityMs = Date.now() - criticalityStart;
+    expect(criticality.status).toBe(200);
+    expect(criticality.body.data.factors.dependent_count).toBe(300);
+
+    const graphStart = Date.now();
+    const dependencyGraph = await request(app).get('/api/v1/impact/graph/t3-degree-root?max_depth=1').set(auth('a'));
+    graphMs = Date.now() - graphStart;
+    expect(dependencyGraph.status).toBe(200);
+    expect(dependencyGraph.body.data.nodes.map((node: {
+      ci_id: string; dependents_count: number; dependencies_count: number
+    }) => [node.ci_id, node.dependents_count, node.dependencies_count]).sort())
+      .toEqual([['t3-degree-hub', 300, 601], ['t3-degree-root', 1, 1]]);
+    expect(dependencyGraph.body.data.edges).toMatchObject([
+      { source_id: 't3-degree-hub', target_id: 't3-degree-root' },
+    ]);
+  } finally {
+    sessions.mockRestore();
+  }
+  expect(criticalityMs!).toBeLessThan(4000);
+  expect(graphMs!).toBeLessThan(4000);
+
+  for (const key of ['criticality', 'graph']) {
+    const statement = captured.get(key);
+    expect(statement).toBeDefined();
+    const session = graph.getSession();
+    try {
+      const profiled = await session.run(`PROFILE ${statement!.cypher}`, statement!.params, { timeout: 5000 });
+      if (!profiled.summary.profile) throw new Error('Expected Neo4j PROFILE plan');
+      const maxRows = (plan: { rows: number; children: Array<typeof plan> }): number =>
+        Math.max(plan.rows, ...plan.children.map(maxRows));
+      expect(maxRows(profiled.summary.profile)).toBeLessThan(10000);
+    } finally {
+      await session.close();
+    }
   }
 });
 

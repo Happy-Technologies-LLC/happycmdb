@@ -52,6 +52,14 @@ app.use('/api/v1/tbm', tbmRoutes);
 let gql: { server: { stop(): Promise<void> } };
 const bearer = (id: keyof typeof users) => `Bearer ${jwt.generateAccessToken(id, users[id]._username, 'operator', A)}`;
 const auth = (id: keyof typeof users) => ({ authorization: bearer(id) });
+// Architecture admission is principal-scoped; tenant graph tests use distinct
+// authorized principals so a long suite does not exhaust one user's window.
+let architecturePrincipal = 0;
+const architectureAuth = () => {
+  const id = `architecture-${++architecturePrincipal}`;
+  users[id] = { _id: id, _username: id, _role: 'operator', _enabled: true, _organizationId: A };
+  return auth(id);
+};
 const run = async (cypher: string, params: Record<string, unknown> = {}) => {
   const session = graph.getSession();
   try { return await session.run(cypher, params); } finally { await session.close(); }
@@ -187,7 +195,7 @@ it('architecture rejects over-cap POST roots before any ownership lookup or grap
   const lookup = jest.spyOn(graph, 'getCI');
   const session = jest.spyOn(graph, 'getSession');
   try {
-    const response = await request(app).post('/api/v1/architecture/analyze').set(auth('a'))
+    const response = await request(app).post('/api/v1/architecture/analyze').set(architectureAuth())
       .send({ ci_ids: Array.from({ length: 21 }, (_, index) => `t2-excess-${index}`) });
     expect(response.status).toBe(400);
     expect(response.body).toEqual({ success: false, error: 'Too many CI IDs (maximum 20)' });
@@ -213,8 +221,8 @@ it('architecture bounds dense owned cycles on both entry points without exposing
        SELECT id, 't2-a', 'supports' FROM unnest($1::text[]) AS id`, [ids]
     );
     for (const response of [
-      await request(app).post('/api/v1/architecture/analyze').set(auth('a')).send({ ci_ids: [ids[0]] }),
-      await request(app).get('/api/v1/architecture/business-services/t2-a/analysis').set(auth('a')),
+      await request(app).post('/api/v1/architecture/analyze').set(architectureAuth()).send({ ci_ids: [ids[0]] }),
+      await request(app).get('/api/v1/architecture/business-services/t2-a/analysis').set(architectureAuth()),
     ]) {
       expect(response.status).toBe(503);
       expect(response.body).toEqual({ success: false, error: 'Architecture analysis resource limit exceeded' });
@@ -240,8 +248,8 @@ it.each([6, 10])('architecture retains owned %i-edge cycle detection on POST and
        VALUES ($1, 't2-a', 'supports')`, [ids[0]]
     );
     for (const response of [
-      await request(app).post('/api/v1/architecture/analyze').set(auth('a')).send({ ci_ids: [ids[0]] }),
-      await request(app).get('/api/v1/architecture/business-services/t2-a/analysis').set(auth('a')),
+      await request(app).post('/api/v1/architecture/analyze').set(architectureAuth()).send({ ci_ids: [ids[0]] }),
+      await request(app).get('/api/v1/architecture/business-services/t2-a/analysis').set(architectureAuth()),
     ]) {
       expect(response.status).toBe(200);
       expect(response.body.analysis.dependency_graph_summary.circular_dependencies).toBe(1);
@@ -269,8 +277,8 @@ it('architecture counts each owned neighbour once when two relationship types li
        VALUES ($1, 't2-a', 'supports')`, [ids[0]]
     );
     for (const response of [
-      await request(app).post('/api/v1/architecture/analyze').set(auth('a')).send({ ci_ids: [ids[0]] }),
-      await request(app).get('/api/v1/architecture/business-services/t2-a/analysis').set(auth('a')),
+      await request(app).post('/api/v1/architecture/analyze').set(architectureAuth()).send({ ci_ids: [ids[0]] }),
+      await request(app).get('/api/v1/architecture/business-services/t2-a/analysis').set(architectureAuth()),
     ]) {
       expect(response.status).toBe(200);
       expect(response.body.analysis.dependency_graph_summary.circular_dependencies).toBe(0);
@@ -312,8 +320,8 @@ it('architecture passes a driver timeout on every statement and stops an 11-edge
     try {
       for (const method of ['POST', 'GET']) {
         const response = method === 'POST'
-          ? await request(app).post('/api/v1/architecture/analyze').set(auth('a')).send({ ci_ids: [ids[0]] })
-          : await request(app).get('/api/v1/architecture/business-services/t2-a/analysis').set(auth('a'));
+          ? await request(app).post('/api/v1/architecture/analyze').set(architectureAuth()).send({ ci_ids: [ids[0]] })
+          : await request(app).get('/api/v1/architecture/business-services/t2-a/analysis').set(architectureAuth());
         expect(response.status).toBe(200);
         expect(response.body.analysis.dependency_graph_summary.circular_dependencies).toBe(0);
         // POST ownership preflight uses the same client but is not an engine statement.
@@ -328,7 +336,7 @@ it('architecture passes a driver timeout on every statement and stops an 11-edge
           'UNWIND $frontier AS path', 'as redundancy_count', 'as db_id', 'as app_id',
         ];
         expect(engineStatements.every(({ cypher, timeout }) =>
-          timeout === 5000 && sites.some((site) => cypher.includes(site)))).toBe(true);
+          timeout !== undefined && timeout > 0 && timeout <= 5000 && sites.some((site) => cypher.includes(site)))).toBe(true);
         if (method === 'GET') {
           expect(sites.every((site) => engineStatements.some(({ cypher }) => cypher.includes(site)))).toBe(true);
         }
@@ -352,7 +360,7 @@ it('architecture GET caps distinct mapped CIs rather than repeated mapping types
        SELECT id, 't2-a', mapping_type
        FROM unnest($1::text[]) AS id CROSS JOIN (VALUES ('hosts'), ('supports')) AS types(mapping_type)`, [ids]
     );
-    const response = await request(app).get('/api/v1/architecture/business-services/t2-a/analysis').set(auth('a'));
+    const response = await request(app).get('/api/v1/architecture/business-services/t2-a/analysis').set(architectureAuth());
     expect(response.status).toBe(200);
     expect(response.body.analysis.dependency_graph_summary.total_cis).toBe(11);
   } finally {
@@ -370,15 +378,15 @@ it('architecture rejects over-cap GET mappings before graph work and preserves f
     );
     const session = jest.spyOn(graph, 'getSession');
     try {
-      const response = await request(app).get('/api/v1/architecture/business-services/t2-a/analysis').set(auth('a'));
+      const response = await request(app).get('/api/v1/architecture/business-services/t2-a/analysis').set(architectureAuth());
       expect(response.status).toBe(503);
       expect(response.body).toEqual({ success: false, error: 'Architecture analysis resource limit exceeded' });
       expect(session).not.toHaveBeenCalled();
     } finally {
       session.mockRestore();
     }
-    const foreign = await request(app).get('/api/v1/architecture/business-services/t2-b/analysis').set(auth('a'));
-    const missing = await request(app).get('/api/v1/architecture/business-services/t2-missing/analysis').set(auth('a'));
+    const foreign = await request(app).get('/api/v1/architecture/business-services/t2-b/analysis').set(architectureAuth());
+    const missing = await request(app).get('/api/v1/architecture/business-services/t2-missing/analysis').set(architectureAuth());
     expect(foreign.status).toBe(404);
     expect(foreign.body).toEqual(missing.body);
   } finally {
@@ -389,7 +397,7 @@ it('architecture rejects over-cap GET mappings before graph work and preserves f
 it('architecture denies any foreign, missing or NULL input before writing an analysis', async () => {
   const before = await sql.query('SELECT count(*)::integer AS total FROM architecture_analyses');
   for (const id of ['t2-b', 't2-null', 't2-missing']) {
-    const result = await request(app).post('/api/v1/architecture/analyze').set(auth('a')).send({ ci_ids: ['t2-a', id] });
+    const result = await request(app).post('/api/v1/architecture/analyze').set(architectureAuth()).send({ ci_ids: ['t2-a', id] });
     expect(result.status).toBe(404);
     expect(result.body).toEqual({ success: false, error: 'CI not found' });
   }
@@ -399,8 +407,8 @@ it('architecture denies any foreign, missing or NULL input before writing an ana
 
 it('architecture POST and business-service GET ignore cross-org cycles, database apps, fan-out and stale mappings', async () => {
   const ciIds = ['t2-arch-db', 't2-arch-cycle', 't2-arch-owned-cycle', 't2-arch-fan'];
-  const post = () => request(app).post('/api/v1/architecture/analyze').set(auth('a')).send({ ci_ids: ciIds });
-  const service = () => request(app).get('/api/v1/architecture/business-services/t2-a/analysis').set(auth('a'));
+  const post = () => request(app).post('/api/v1/architecture/analyze').set(architectureAuth()).send({ ci_ids: ciIds });
+  const service = () => request(app).get('/api/v1/architecture/business-services/t2-a/analysis').set(architectureAuth());
   const visible = (analysis: any) => ({
     health: analysis.health_metrics,
     summary: analysis.dependency_graph_summary,

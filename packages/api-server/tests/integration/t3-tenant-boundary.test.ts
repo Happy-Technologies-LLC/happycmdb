@@ -27,6 +27,7 @@ import { JWTService } from '../../src/auth/jwt.service';
 import { getAuthMiddleware } from '../../src/auth/auth-bootstrap';
 import { itilRoutes } from '../../src/rest/routes/itil.routes';
 import { driftRoutes, impactRoutes } from '../../src/rest/routes/drift-impact.routes';
+import { ciRoutes } from '../../src/rest/routes/ci.routes';
 import { createGraphQLServer } from '../../src/graphql/server';
 
 const graph = getNeo4jClient();
@@ -36,6 +37,7 @@ const app = express();
 app.use(express.json());
 app.use('/api/v1', getAuthMiddleware().authenticate());
 app.use('/api/v1/itil', itilRoutes);
+app.use('/api/v1/cis', ciRoutes);
 app.use('/api/v1/drift', driftRoutes);
 app.use('/api/v1/impact', impactRoutes);
 const auth = (key: keyof typeof users) => {
@@ -226,6 +228,98 @@ it('bounds real parallel-edge and fan-out-by-depth impact traversals before path
   expect(criticalPath.statements).toBeLessThanOrEqual(15);
   expect(criticalPath.pgQueries).toBe(0);
   expect(criticalPath.ms).toBeLessThan(4000);
+});
+
+it('bounds every REST and GraphQL CI traversal on real parallel-edge fan-out', async () => {
+  const smallDependencies = await request(app).get('/api/v1/cis/t3-a2/dependencies?depth=2').set(auth('a'));
+  expect(smallDependencies.status).toBe(200);
+  expect(smallDependencies.body.data.map((path: { end: { properties: { id: string } } }) => path.end.properties.id))
+    .toEqual(['t3-a']);
+  const smallImpact = await request(app).get('/api/v1/cis/t3-a/impact?depth=2').set(auth('a'));
+  expect(smallImpact.status).toBe(200);
+  expect(smallImpact.body.data.downstream.map((ci: { id: string }) => ci.id)).toEqual(['t3-a2']);
+  expect(smallImpact.body.data.upstream).toEqual([]);
+  const smallRelationships = await request(app).get('/api/v1/cis/t3-a/relationships?direction=in&depth=2').set(auth('a'));
+  expect(smallRelationships.status).toBe(200);
+  expect(smallRelationships.body.data.map((relationship: { source_ci_id: string }) => relationship.source_ci_id))
+    .toEqual(['t3-a2']);
+  const smallGraphql = await request(app).post('/graphql').set(auth('a')).send({
+    query: `{ getCIDependencies(id:"t3-a2", depth:2) { _id }
+      getImpactAnalysis(id:"t3-a", depth:2) { _distance _ci { _id } } }`,
+  });
+  expect(smallGraphql.body.errors).toBeUndefined();
+  expect(smallGraphql.body.data).toEqual({
+    getCIDependencies: [{ _id: 't3-a' }],
+    getImpactAnalysis: [{ _distance: 1, _ci: { _id: 't3-a2' } }],
+  });
+
+  await run("CREATE (:CI {id:'t3-h562-root', name:'dense root', type:'server', organization_id:$org})", { org: A });
+  for (const direction of ['out', 'in'] as const) {
+    await run(`MATCH (root:CI {id:'t3-h562-root'})
+      UNWIND range(1,10) AS i
+      CREATE (first:CI {id:'t3-h562-${direction}-'+toString(i), name:'first', type:'server', organization_id:$org})
+      ${direction === 'out' ? 'CREATE (root)-[:DEPENDS_ON]->(first)' : 'CREATE (first)-[:DEPENDS_ON]->(root)'}
+      WITH first, i
+      UNWIND range(1,10) AS j
+      CREATE (leaf:CI {id:'t3-h562-${direction}-'+toString(i)+'-'+toString(j),
+        name:'leaf', type:'server', organization_id:$org})
+      ${direction === 'out' ? 'CREATE (first)-[:DEPENDS_ON]->(leaf)' : 'CREATE (leaf)-[:DEPENDS_ON]->(first)'}`,
+    { org: A });
+    await run(`MATCH (root:CI {id:'t3-h562-root'}), (first:CI {id:'t3-h562-${direction}-1'})
+      UNWIND range(1,20) AS ordinal
+      ${direction === 'out'
+    ? 'CREATE (root)-[:USES {ordinal:ordinal}]->(first)'
+    : 'CREATE (first)-[:USES {ordinal:ordinal}]->(root)'}`);
+  }
+
+  const checked = async (requestCall: () => Promise<request.Response>): Promise<request.Response> => {
+    let statements = 0;
+    const original = graph.getSession.bind(graph);
+    const spy = jest.spyOn(graph, 'getSession').mockImplementation(() => {
+      const session = original();
+      const originalRun = session.run.bind(session);
+      session.run = ((...args: Parameters<typeof originalRun>) => {
+        statements++;
+        return originalRun(...args);
+      }) as typeof session.run;
+      return session;
+    });
+    const started = Date.now();
+    try {
+      return await requestCall();
+    } finally {
+      spy.mockRestore();
+      expect(Date.now() - started).toBeLessThan(4000);
+      expect(statements).toBeLessThanOrEqual(5);
+    }
+  };
+  for (const route of [
+    '/api/v1/cis/t3-h562-root/dependencies?depth=2',
+    '/api/v1/cis/t3-h562-root/impact?depth=2',
+    '/api/v1/cis/t3-h562-root/relationships?direction=out&depth=2',
+    '/api/v1/cis/t3-h562-root/relationships?direction=in&depth=2',
+  ]) {
+    const response = await checked(() => request(app).get(route).set(auth('a')));
+    expect(response.status).toBe(503);
+    expect(response.body).toEqual({ success: false, error: 'CI traversal resource limit exceeded' });
+  }
+  for (const query of [
+    '{ getCIDependencies(id:"t3-h562-root", depth:2) { _id } }',
+    '{ getImpactAnalysis(id:"t3-h562-root", depth:2) { _ci { _id } } }',
+    '{ getCI(id:"t3-h562-root") { _dependencies { _id } } }',
+  ]) {
+    const response = await checked(() => request(app).post('/graphql').set(auth('a')).send({ query }));
+    expect(response.status).toBe(200);
+    expect(response.body.errors?.[0]).toMatchObject({
+      message: 'CI traversal resource limit exceeded', extensions: { code: 'SERVICE_UNAVAILABLE' },
+    });
+  }
+  const foreign = await request(app).get('/api/v1/cis/t3-h562-root/dependencies').set(auth('b'));
+  const missing = await request(app).get('/api/v1/cis/t3-h562-missing/dependencies').set(auth('b'));
+  expect(foreign.status).toBe(404);
+  expect(foreign.body).toEqual(missing.body);
+  expect((await sql.query("SELECT ci_id FROM ci_criticality_scores WHERE ci_id = 't3-h562-root'")).rows).toEqual([]);
+  expect((await sql.query("SELECT id FROM impact_analyses WHERE source_ci_id = 't3-h562-root'")).rows).toEqual([]);
 });
 
 it('counts 300 owned inbound and outbound relationships without a Cartesian adjacency expansion', async () => {

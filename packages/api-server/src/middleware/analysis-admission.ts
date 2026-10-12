@@ -17,7 +17,7 @@ const graphQLWork = new WeakMap<Request, {
 
 type AnalysisResult = { status: number; body: unknown };
 type AnalysisPolicy = {
-  scope: 'architecture' | 'impact';
+  scope: 'architecture' | 'impact' | 'dashboard';
   timeoutMs: number;
   withDeadline: <T>(deadline: number, operation: () => Promise<T>) => Promise<T>;
   deadlineError: () => Error;
@@ -27,7 +27,7 @@ type AnalysisPolicy = {
 
 /** Shared verified-principal/tenant admission, with GraphQL consuming only concurrency slots. */
 function reserveWorkSlots(
-  scope: 'architecture' | 'impact' | 'graphql', org: string, principal: string,
+  scope: 'architecture' | 'impact' | 'dashboard' | 'graphql', org: string, principal: string,
   rateLimited: boolean
 ): (() => void) | null {
   const now = Date.now();
@@ -128,7 +128,7 @@ export async function executeBoundedAnalysis(
   const release = reserveWorkSlots(policy.scope, org, principal, true);
   if (!release) {
     res.status(429).json({ success: false,
-      error: `${policy.scope === 'architecture' ? 'Architecture' : 'Impact'} analysis rate limit exceeded` });
+      error: `${policy.scope[0]!.toUpperCase()}${policy.scope.slice(1)} analysis rate limit exceeded` });
     return;
   }
   const deadline = now + policy.timeoutMs;
@@ -142,7 +142,7 @@ export async function executeBoundedAnalysis(
     if (Date.now() >= deadline) throw policy.deadlineError();
     res.status(result.status).json(result.body);
   } catch (error) {
-    logger.error(`${policy.scope === 'architecture' ? 'Architecture' : 'Impact'} analysis failed`, {
+    logger.error(`${policy.scope[0]!.toUpperCase()}${policy.scope.slice(1)} analysis failed`, {
       error: errorLogFields(error),
     });
     const failure = policy.failure(error);

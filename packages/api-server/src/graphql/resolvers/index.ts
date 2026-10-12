@@ -46,7 +46,7 @@ export interface GraphQLContext {
   };
   /** Authenticated identity resolved from the request's bearer token or API key, when present. */
   user?: TokenPayload;
-  _ciTraversalWork?: CITraversalWork;
+  _ciTraversalWork?: () => CITraversalWork;
 }
 
 /**
@@ -526,13 +526,8 @@ const Query = {
         ]);
         return [...outgoing, ...incoming].map(toGraphQLRelatedCI);
       }
-    } catch (error: any) {
-      throw new GraphQLError('Failed to fetch CI relationships', {
-        extensions: {
-          code: 'INTERNAL_SERVER_ERROR',
-          originalError: error.message,
-        },
-      });
+    } catch (error) {
+      throw traversalError(error, 'Failed to fetch CI relationships');
     }
   },
 
@@ -550,7 +545,7 @@ const Query = {
     try {
       const paths = await _context._neo4jClient.getDependencies(
         _args.id, organizationId, depth,
-        _context._ciTraversalWork ??= createCITraversalWork()
+        _context._ciTraversalWork?.() ?? createCITraversalWork()
       );
       return paths.map(path => toGraphQLCI(path.end.properties));
     } catch (error) {
@@ -572,7 +567,7 @@ const Query = {
     try {
       const impacted = await _context._neo4jClient.impactAnalysis(
         _args.id, organizationId, depth,
-        _context._ciTraversalWork ??= createCITraversalWork()
+        _context._ciTraversalWork?.() ?? createCITraversalWork()
       );
       return impacted.map(item => ({ _ci: toGraphQLCI(item._ci), _distance: item._distance }));
     } catch (error) {
@@ -841,8 +836,12 @@ const CIResolvers = {
    */
   _relationships: async (parent: CIValue, _args: unknown, _context: GraphQLContext) => {
     const organizationId = requireGraphQLOrganization(_context);
-    const relationships = await _context._loaders._relationshipLoader.load(ciKey(parent._id, organizationId));
-    return relationships.map(toGraphQLRelatedCI);
+    try {
+      const relationships = await _context._loaders._relationshipLoader.load(ciKey(parent._id, organizationId));
+      return relationships.map(toGraphQLRelatedCI);
+    } catch (error) {
+      throw traversalError(error, 'Failed to fetch CI relationships');
+    }
   },
 
   /**
@@ -850,8 +849,12 @@ const CIResolvers = {
    */
   _dependents: async (parent: CIValue, _args: unknown, _context: GraphQLContext) => {
     const organizationId = requireGraphQLOrganization(_context);
-    const dependents = await _context._loaders._dependentLoader.load(ciKey(parent._id, organizationId));
-    return dependents.map(toGraphQLRelatedCI);
+    try {
+      const dependents = await _context._loaders._dependentLoader.load(ciKey(parent._id, organizationId));
+      return dependents.map(toGraphQLRelatedCI);
+    } catch (error) {
+      throw traversalError(error, 'Failed to fetch CI dependents');
+    }
   },
 
   /**
@@ -862,7 +865,7 @@ const CIResolvers = {
     try {
       const paths = await _context._neo4jClient.getDependencies(
         parent._id, organizationId, 5,
-        _context._ciTraversalWork ??= createCITraversalWork()
+        _context._ciTraversalWork?.() ?? createCITraversalWork()
       );
       return paths.map(path => toGraphQLCI(path.end.properties));
     } catch (error) {

@@ -13,6 +13,7 @@
 import { describe, it, expect, jest, beforeEach, afterEach } from '@jest/globals';
 import { resolvers, GraphQLContext } from '../index';
 import { createCILoader, createRelationshipLoader, createDependentLoader } from '../../dataloaders/ci-loader';
+import { createCITraversalWork } from '@cmdb/database';
 import { GraphQLError } from 'graphql';
 import neo4j from 'neo4j-driver';
 import { ApolloServer } from '@apollo/server';
@@ -45,9 +46,8 @@ jest.mock('@cmdb/common', () => ({
 
 // Mock other modules that may be imported transitively
 jest.mock('@cmdb/database', () => ({
+  ...jest.requireActual('@cmdb/database'),
   Neo4jClient: jest.fn(),
-  CITraversalLimitError: class extends Error {},
-  createCITraversalWork: () => ({ remaining: 400, nodes: new Set<string>() }),
   getNeo4jClient: jest.fn(),
   getPostgresClient: jest.fn().mockReturnValue({
     query: jest.fn(),
@@ -858,15 +858,19 @@ describe('GraphQL CI Resolvers', () => {
           return true;
         },
       } as unknown as GraphQLContext['_neo4jClient'];
-      const contextFor = (organizationId: string): GraphQLContext => ({
-        _neo4jClient: neo4jClient,
-        _loaders: {
-          _ciLoader: createCILoader(neo4jClient),
-          _relationshipLoader: createRelationshipLoader(neo4jClient),
-          _dependentLoader: createDependentLoader(neo4jClient),
-        },
-        user: { _userId: 'u1', _username: 'tester', _role: 'admin', _type: 'access', _organizationId: organizationId },
-      });
+      const contextFor = (organizationId: string): GraphQLContext => {
+        const work = createCITraversalWork();
+        return {
+          _neo4jClient: neo4jClient,
+          _loaders: {
+            _ciLoader: createCILoader(neo4jClient),
+            _relationshipLoader: createRelationshipLoader(neo4jClient, () => work),
+            _dependentLoader: createDependentLoader(neo4jClient, () => work),
+          },
+          _ciTraversalWork: () => work,
+          user: { _userId: 'u1', _username: 'tester', _role: 'admin', _type: 'access', _organizationId: organizationId },
+        };
+      };
       const server = new ApolloServer<GraphQLContext>({
         typeDefs: [typeDefs, analyticsTypeDefs, connectorTypeDefs, reconciliationTypeDefs, itilTypeDefs],
         resolvers: resolvers as unknown as ApolloServerOptionsWithTypeDefs<GraphQLContext>['resolvers'],

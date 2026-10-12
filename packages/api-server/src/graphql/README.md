@@ -377,8 +377,12 @@ and `TOO_MANY_REQUESTS`. Once operation work starts, slots remain held until
 both the server's operation and HTTP response finish, even after client disconnect.
 Disconnects before operation start release the slots without executing resolvers.
 Unauthenticated requests retain HTTP 401; a missing organization claim retains the
-resolver's `FORBIDDEN` response. CI traversals retain their separate per-request
-Neo4j work budget.
+resolver's `FORBIDDEN` response. Recursive CI traversals and one-hop relationship
+DataLoaders (`_relationships`, `_dependents`, and `getCIRelationships`) share one
+atomic budget per request: at most 400 adjacency rows and 100 distinct CI IDs.
+Every adjacency statement limits rows to the remaining allowance plus one and
+uses a five-second Neo4j transaction timeout. Exhaustion produces the fixed
+GraphQL error `CI traversal resource limit exceeded` / `SERVICE_UNAVAILABLE`.
 
 ## Environment Variables
 

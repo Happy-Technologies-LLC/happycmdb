@@ -25,6 +25,7 @@ jest.mock('../../auth/auth-bootstrap', () => {
   } as ConfigSchema['auth']) };
 });
 jest.mock('@cmdb/database', () => ({
+  ...jest.requireActual('@cmdb/database'),
   getNeo4jClient: () => ({ getSession: () => ({ run: mockRun, close: async () => {} }) }),
   getPostgresClient: () => ({ pool: { query: jest.fn() } }),
   getUnifiedCredentialService: () => ({}),

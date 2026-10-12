@@ -12,13 +12,8 @@
  * 008_business_service_organization_scope.sql.
  *
  * Neo4j is a recording session over an in-memory graph of :CI nodes from two
- * organizations plus one with no organization, and :BusinessService nodes
- * (one of them owned by org A in Postgres but org B's in Neo4j, one with no
- * organization). It honours exactly the tenant predicates the statement
- * contains: a statement without `ci.organization_id = $organizationId` /
- * `bs.organization_id = $organizationId` (or the path-wide
- * `all(n IN nodes(path) WHERE n.organization_id = $organizationId)`) matches
- * every organization's nodes, as Neo4j would.
+ * organizations plus one with no organization, and :BusinessService nodes.
+ * The fake honors the tenant predicates on each CI matched by a statement.
  */
 
 import { fork } from 'child_process';
@@ -119,24 +114,6 @@ const record = (fields: Record<string, unknown>): FakeRecord => ({ get: (key: st
 const node = (props: Props) => ({ labels: ['CI'], properties: props });
 const byId = (id: string) => CIS.find(c => c['id'] === id);
 
-const PATH_SCOPE = 'all(n IN nodes(path) WHERE n.organization_id = $organizationId)';
-
-/** Undirected expansion of up to `depth` hops with relationship uniqueness, like `-[r*0..depth]-`. */
-function paths(startId: string, depth: number): string[][] {
-  const out: string[][] = [];
-  const walk = (nodes: string[], used: Set<number>) => {
-    out.push(nodes);
-    if (used.size >= depth) return;
-    const at = nodes[nodes.length - 1];
-    EDGES.forEach((edge, i) => {
-      if (used.has(i)) return;
-      const next = edge.from === at ? edge.to : edge.to === at ? edge.from : null;
-      if (next !== null) walk([...nodes, next], new Set([...used, i]));
-    });
-  };
-  if (byId(startId) !== undefined) walk([startId], new Set());
-  return out;
-}
 
 function run(rawQuery: string, params: Params): FakeRecord[] {
   const query = rawQuery.replace(/\s+/g, ' ').trim();
@@ -149,14 +126,25 @@ function run(rawQuery: string, params: Params): FakeRecord[] {
     const checksOrg = query.includes('RETURN all(b IN nodes WHERE b.organization_id = $organizationId) AS allowed');
     return [record({ allowed: props === undefined || !checksOrg || sameOrg(props) })];
   }
-  if (query.startsWith('MATCH path = (ci:CI {id: $serviceId})-[r*0..3]-(related:CI)')) {
-    const kept = paths(params['serviceId'] as string, 3)
-      .filter(p => !query.includes(PATH_SCOPE) || p.every(id => sameOrg(byId(id)!)));
-    const nodeIds = [...new Set(kept.map(p => p[p.length - 1]!))];
-    return [record({
-      nodes: nodeIds.map(id => ({ id, label: byId(id)!['name'] })),
-      edges: kept.filter(p => p.length > 1).map(p => ({ from: p[0], to: p[1] })),
-    })];
+  if (query.startsWith('MATCH (ci:CI {id: $serviceId})')) {
+    const ci = byId(params['serviceId'] as string);
+    return ci && (!query.includes('ci.organization_id = $organizationId') || sameOrg(ci))
+      ? [record({ ci: node(ci) })] : [];
+  }
+  if (query.startsWith('UNWIND $frontier AS sourceId')) {
+    const rowLimit = (params['rowLimit'] as { toNumber: () => number }).toNumber();
+    return (params['frontier'] as string[]).flatMap(sourceId => {
+      const source = byId(sourceId);
+      if (!source || (query.includes('source.organization_id = $organizationId') && !sameOrg(source))) return [];
+      return EDGES.flatMap((edge, index) => {
+        const related = byId(edge.from === sourceId ? edge.to : edge.to === sourceId ? edge.from : '');
+        if (!related || (query.includes('related.organization_id = $organizationId') && !sameOrg(related))) return [];
+        return [record({
+          related: node(related), relationshipId: String(index),
+          fromId: edge.from, toId: edge.to, relationshipType: 'DEPENDS_ON',
+        })];
+      });
+    }).slice(0, rowLimit);
   }
 
   if (!query.startsWith('MATCH (ci:CI)')) throw new Error(`fake Neo4j: unmodelled statement: ${query}`);
@@ -199,6 +187,9 @@ jest.mock('@cmdb/database', () => ({
   getPostgresClient: () => pgClient,
   getNeo4jClient: () => ({ getSession: () => neo4jSession }),
   getAuditService: () => ({}),
+  CITraversalLimitError: class extends Error {},
+  MAX_CI_TRAVERSAL_NODES: 100,
+  MAX_CI_TRAVERSAL_WORK: 400,
 }));
 
 // bcrypt's native binding is only used for password hashing/login, never on token verification.
@@ -213,7 +204,8 @@ const USERS: Record<string, { _id: string; _username: string; _role: string; _en
 
 jest.mock('../../../auth/neo4j-auth.repository', () => ({
   Neo4jAuthRepository: jest.fn(() => ({
-    findUserById: async (userId: string) => USERS[userId] ?? null,
+    findUserById: async (userId: string) => USERS[userId] ??
+      (userId.startsWith('user-a-') ? { ...USERS['user-a']!, _id: userId } : null),
     findApiKeyByKey: async () => null,
     updateApiKeyLastUsed: async () => undefined,
   })),
@@ -245,12 +237,12 @@ INSERT INTO dim_business_services (service_id, name, service_classification, tbm
 
 const jwt = new JWTService(loadConfig().auth.jwt);
 const bearer = (userId: string, organizationId?: string) => {
-  const user = USERS[userId]!;
+  const user = USERS[userId] ?? USERS['user-a']!;
   return {
     Authorization: `Bearer ${jwt.generateAccessToken(userId, user._username, user._role as UserRole, organizationId)}`,
   };
 };
-const AS_A = bearer('user-a', ORG_A);
+let AS_A = bearer('user-a', ORG_A);
 
 const app = express();
 app.use(express.json());
@@ -261,14 +253,13 @@ app.use('/api/v1/dashboards', dashboardRoutes);
 const SPOOF = `organization_id=${ORG_B}&organizationId=${ORG_B}`;
 
 /**
- * Every (x:CI) pattern of every recorded statement is bound to the token org:
- * by `x.organization_id = $organizationId` or by the path-wide predicate; the
- * parameter is the token org. Returns the offending (statement, variable) pairs.
+ * Every (x:CI) pattern of every recorded statement is bound to the token org.
+ * Returns the offending (statement, variable) pairs.
  */
 function unscopedCIMatches(): string[] {
   return cypherRuns.flatMap(({ query, params }) => {
     const variables = [...query.matchAll(/\((\w+):CI\b/g)].map(m => m[1]!);
-    const unscoped = variables.filter(v => !query.includes(PATH_SCOPE) && !query.includes(`${v}.organization_id = $organizationId`));
+    const unscoped = variables.filter(v => !query.includes(`${v}.organization_id = $organizationId`));
     if (variables.length > 0 && params['organizationId'] !== ORG_A) unscoped.push('$organizationId param');
     return unscoped.map(v => `${v} in: ${query.replace(/\s+/g, ' ').trim()}`);
   });
@@ -284,6 +275,8 @@ afterAll(() => {
   host.kill();
 });
 
+let principalOrdinal = 0;
+beforeEach(() => { AS_A = bearer(`user-a-${++principalOrdinal}`, ORG_A); });
 beforeEach(() => {
   pgQueries = 0;
   cypherRuns.length = 0;
@@ -338,7 +331,9 @@ describe('GET /api/v1/dashboards/business-service/:serviceId', () => {
     expect(all.status).toBe(200);
     // a-hidden is in org A but only reachable through org B's b-secret.
     expect(own.body.data.serviceDependencies.nodes.map((n: { id: string }) => n.id).sort()).toEqual(['a-web', 'bs-a-app']);
-    expect(own.body.data.serviceDependencies.edges).toEqual([{ from: 'bs-a-app', to: 'a-web' }]);
+    expect(own.body.data.serviceDependencies.edges.map(
+      (edge: { from: string; to: string }) => ({ from: edge.from, to: edge.to })
+    )).toEqual([{ from: 'bs-a-app', to: 'a-web' }]);
     expect(unscopedCIMatches()).toEqual([]);
   });
 });

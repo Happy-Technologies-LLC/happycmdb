@@ -6,7 +6,11 @@
  * Provides aggregated data for Business Insights dashboards
  */
 
-import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
+import neo4j, { type Node } from 'neo4j-driver';
+import {
+  getNeo4jClient, getPostgresClient, CITraversalLimitError,
+  MAX_CI_TRAVERSAL_NODES, MAX_CI_TRAVERSAL_WORK,
+} from '@cmdb/database';
 import { logger } from '@cmdb/common';
 import { ownsBusinessService } from './business-service-ownership';
 
@@ -995,38 +999,69 @@ export class DashboardService {
     }
 
     const session = this.neo4j.getSession();
+    const nodes: BusinessServiceDashboardData['serviceDependencies']['nodes'] = [];
+    const edges: BusinessServiceDashboardData['serviceDependencies']['edges'] = [];
+    const discovered = new Set<string>();
+    const seenEdges = new Set<string>();
+    let remaining = MAX_CI_TRAVERSAL_WORK;
 
     try {
-      // Only paths whose every node is in the organization: no hop through, or
-      // result from, another organization's CI.
-      const result = await session.run(
-        `
-        MATCH path = (ci:CI {id: $serviceId})-[r*0..3]-(related:CI)
-        WHERE all(n IN nodes(path) WHERE n.organization_id = $organizationId)
-        WITH ci, related, r, path
-        RETURN
-          collect(DISTINCT {
-            id: related.id,
-            label: related.name,
-            type: related.type,
-            healthScore: 85,
-            status: related.status,
-            layer: size([n IN nodes(path) | n])
-          }) as nodes,
-          collect(DISTINCT {
-            id: elementId(r[0]),
-            from: startNode(r[0]).id,
-            to: endNode(r[0]).id,
-            type: type(r[0]),
-            healthImpact: 75
-          }) as edges
-        `,
-        { serviceId, organizationId }
+      const root = await session.run(
+        `MATCH (ci:CI {id: $serviceId})
+         WHERE ci.organization_id = $organizationId
+         RETURN ci LIMIT 1`,
+        { serviceId, organizationId },
+        { timeout: 5000 }
       );
+      const start = root.records[0]?.get('ci') as Node | undefined;
+      if (!start) return { nodes, edges };
+      discovered.add(serviceId);
+      nodes.push({
+        id: serviceId, label: start.properties['name'], type: start.properties['type'],
+        healthScore: 85, status: start.properties['status'], layer: 1,
+      });
 
-      const nodes = result.records[0]?.get('nodes') || [];
-      const edges = result.records[0]?.get('edges') || [];
-
+      let frontier = [serviceId];
+      for (let layer = 2; layer <= 4 && frontier.length > 0; layer++) {
+        if (remaining === 0) throw new CITraversalLimitError();
+        const result = await session.run(
+          `UNWIND $frontier AS sourceId
+           MATCH (source:CI {id: sourceId})
+           WHERE source.organization_id = $organizationId
+           MATCH (source)-[relationship]-(related:CI)
+           WHERE related.organization_id = $organizationId
+           RETURN related, elementId(relationship) AS relationshipId,
+                  startNode(relationship).id AS fromId, endNode(relationship).id AS toId,
+                  type(relationship) AS relationshipType
+           LIMIT $rowLimit`,
+          { frontier, organizationId, rowLimit: neo4j.int(remaining + 1) },
+          { timeout: 5000 }
+        );
+        if (result.records.length > remaining) throw new CITraversalLimitError();
+        remaining -= result.records.length;
+        const next: string[] = [];
+        for (const record of result.records) {
+          const related = record.get('related') as Node;
+          const id = related.properties['id'] as string;
+          const relationshipId = record.get('relationshipId') as string;
+          if (!seenEdges.has(relationshipId)) {
+            seenEdges.add(relationshipId);
+            edges.push({
+              id: relationshipId, from: record.get('fromId'), to: record.get('toId'),
+              type: record.get('relationshipType'), healthImpact: 75,
+            });
+          }
+          if (discovered.has(id)) continue;
+          discovered.add(id);
+          if (discovered.size > MAX_CI_TRAVERSAL_NODES) throw new CITraversalLimitError();
+          nodes.push({
+            id, label: related.properties['name'], type: related.properties['type'],
+            healthScore: 85, status: related.properties['status'], layer,
+          });
+          next.push(id);
+        }
+        frontier = next;
+      }
       return { nodes, edges };
     } finally {
       await session.close();

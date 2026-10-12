@@ -36,6 +36,7 @@ See [Authentication Guide](/api/authentication) for JWT token generation.
 - Every `/api/v1/dashboards/*` endpoint requires an organization claim on the token. A token without one gets `403 {"_error":"Forbidden","_message":"Organization claim required"}` before any data is read. The organization always comes from the token, never from request parameters.
 - Every dashboard is computed only from your organization's CIs (`:CI.organization_id`); dependency traversals never pass through or return another organization's CI.
 - `GET /business-service/:serviceId` (and `?serviceId=`) only covers business services your organization owns (`dim_business_services.organization_id`). Another organization's service, a missing service, and an owned id whose Neo4j `:BusinessService` node belongs to another organization or has no `organization_id` return the same `404 {"success":false,"error":"Not Found","message":"Business service not found"}`. An owned service with no `:BusinessService` node is served from your organization's CIs.
+- Business-service dependency graphs use at most three undirected, organization-scoped hops, 100 distinct CIs, and 400 adjacency rows. Each Neo4j statement has a five-second transaction timeout; the mounted endpoint admits at most one active dashboard analysis per principal and two per tenant, with rate and five-second deadline protection. A graph exceeding its budget returns `503 {"success":false,"error":"CI traversal resource limit exceeded"}` rather than a partial graph; admission refusal returns HTTP 429.
 
 ## Endpoints
 

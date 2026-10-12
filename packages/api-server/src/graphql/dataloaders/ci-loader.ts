@@ -4,8 +4,11 @@
 // packages/api-server/src/graphql/dataloaders/ci-loader.ts
 
 import DataLoader from 'dataloader';
-import type { Node, Relationship } from 'neo4j-driver';
-import { Neo4jClient } from '@cmdb/database';
+import neo4j, { type Node, type Relationship } from 'neo4j-driver';
+import {
+  Neo4jClient, CITraversalLimitError, MAX_CI_TRAVERSAL_NODES,
+  runWithinCITraversalBudget, type CITraversalWork,
+} from '@cmdb/database';
 import { CI } from '@cmdb/common';
 
 /**
@@ -113,7 +116,7 @@ export function createCILoader(neo4jClient: Neo4jClient): DataLoader<CILoaderKey
  * related CI must be in the key's organization.
  */
 function createDirectedRelationshipLoader(
-  neo4jClient: Neo4jClient,
+  neo4jClient: Neo4jClient, getWork: () => CITraversalWork,
   pattern: '(ci:CI {id: key.id})-[r]->(related:CI)' | '(ci:CI {id: key.id})<-[r]-(related:CI)'
 ): DataLoader<CILoaderKey, RelatedCIEntry[], string> {
   return new DataLoader<CILoaderKey, RelatedCIEntry[], string>(
@@ -121,26 +124,35 @@ function createDirectedRelationshipLoader(
       const session = neo4jClient.getSession();
 
       try {
-        const result = await session.run(
-          `
-          UNWIND $keys AS key
-          OPTIONAL MATCH ${pattern}
-          WHERE ci.organization_id = key.organizationId
-            AND related.organization_id = key.organizationId
-          RETURN key.id AS ciId, key.organizationId AS organizationId,
-                 type(r) AS relType, related, r AS relationship
-          `,
-          { keys: keyParams(keys) }
-        );
-
+        const work = getWork();
+        const records = await runWithinCITraversalBudget(work, async rowLimit => {
+          const result = await session.run(
+            `
+            UNWIND $keys AS key
+            OPTIONAL MATCH ${pattern}
+            WHERE ci.organization_id = key.organizationId
+              AND related.organization_id = key.organizationId
+            RETURN key.id AS ciId, key.organizationId AS organizationId,
+                   type(r) AS relType, related, r AS relationship
+            LIMIT $rowLimit
+            `,
+            { keys: keyParams(keys), rowLimit: neo4j.int(rowLimit) },
+            { timeout: 5000 }
+          );
+          return result.records;
+        });
+        for (const key of keys) work.nodes.add(key.id);
+        if (work.nodes.size > MAX_CI_TRAVERSAL_NODES) throw new CITraversalLimitError();
         // Group relationships by cache key
         const relationshipMap = new Map<string, RelatedCIEntry[]>();
-        result.records.forEach(record => {
+        records.forEach(record => {
           const relatedNode: Node | null = record.get('related');
           if (!relatedNode) {
             return;
           }
           const key = cacheKey({ id: record.get('ciId'), organizationId: record.get('organizationId') });
+          work.nodes.add(relatedNode.properties['id'] as string);
+          if (work.nodes.size > MAX_CI_TRAVERSAL_NODES) throw new CITraversalLimitError();
           const relationships = relationshipMap.get(key) ?? [];
           const relationship: Relationship = record.get('relationship');
           relationships.push({
@@ -164,13 +176,17 @@ function createDirectedRelationshipLoader(
 /**
  * DataLoader for batching outgoing relationship lookups
  */
-export function createRelationshipLoader(neo4jClient: Neo4jClient): DataLoader<CILoaderKey, RelatedCIEntry[], string> {
-  return createDirectedRelationshipLoader(neo4jClient, '(ci:CI {id: key.id})-[r]->(related:CI)');
+export function createRelationshipLoader(
+  neo4jClient: Neo4jClient, getWork: () => CITraversalWork
+): DataLoader<CILoaderKey, RelatedCIEntry[], string> {
+  return createDirectedRelationshipLoader(neo4jClient, getWork, '(ci:CI {id: key.id})-[r]->(related:CI)');
 }
 
 /**
  * DataLoader for batching incoming relationship lookups (dependents)
  */
-export function createDependentLoader(neo4jClient: Neo4jClient): DataLoader<CILoaderKey, RelatedCIEntry[], string> {
-  return createDirectedRelationshipLoader(neo4jClient, '(ci:CI {id: key.id})<-[r]-(related:CI)');
+export function createDependentLoader(
+  neo4jClient: Neo4jClient, getWork: () => CITraversalWork
+): DataLoader<CILoaderKey, RelatedCIEntry[], string> {
+  return createDirectedRelationshipLoader(neo4jClient, getWork, '(ci:CI {id: key.id})<-[r]-(related:CI)');
 }

@@ -367,6 +367,65 @@ it('reserves one request budget before parallel GraphQL alias queries hit Neo4j'
   expect(Date.now() - started).toBeLessThan(4000);
 });
 
+it('shares an atomic budget across both one-hop GraphQL DataLoaders in a single mounted request', async () => {
+  const small = await request(app).post('/graphql').set(auth('a')).send({
+    query: '{ getCI(id:"t3-a2") { _relationships { _ci { _id } } _dependents { _ci { _id } } } }',
+  });
+  expect(small.body.errors).toBeUndefined();
+  expect(small.body.data.getCI).toEqual({
+    _relationships: [{ _ci: { _id: 't3-a' } }], _dependents: [],
+  });
+
+  await run(`CREATE (first:CI {id:'t3-pre02-first', name:'first', type:'server', organization_id:$org})
+    CREATE (second:CI {id:'t3-pre02-second', name:'second', type:'server', organization_id:$org})
+    CREATE (shared:CI {id:'t3-pre02-shared', name:'shared', type:'server', organization_id:$org})
+    WITH first, second, shared UNWIND range(1,250) AS ordinal
+    CREATE (first)-[:DEPENDS_ON {ordinal:ordinal}]->(shared)
+    CREATE (shared)-[:USES {ordinal:ordinal}]->(second)`, { org: A });
+  let statements = 0;
+  let adjacencyRows = 0;
+  const original = graph.getSession.bind(graph);
+  const spy = jest.spyOn(graph, 'getSession').mockImplementation(() => {
+    const session = original();
+    const originalRun = session.run.bind(session);
+    session.run = (async (...args: Parameters<typeof originalRun>) => {
+      const adjacency = String(args[0]).includes('type(r) AS relType');
+      if (adjacency) statements++;
+      const result = await originalRun(...args);
+      if (adjacency) adjacencyRows += result.records.length;
+      return result;
+    }) as typeof session.run;
+    return session;
+  });
+  const started = Date.now();
+  try {
+    const response = await request(app).post('/graphql').set(auth('a')).send({
+      query: `{ first: getCI(id:"t3-pre02-first") { _relationships { _ci { _id } } }
+        second: getCI(id:"t3-pre02-second") { _dependents { _ci { _id } } } }`,
+    });
+    expect(response.status).toBe(200);
+    expect(response.body.errors).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        message: 'CI traversal resource limit exceeded',
+        extensions: expect.objectContaining({ code: 'SERVICE_UNAVAILABLE' }),
+      }),
+    ]));
+    expect(statements).toBeLessThanOrEqual(2);
+    expect(adjacencyRows).toBeLessThanOrEqual(401);
+
+    const both = await request(app).post('/graphql').set(auth('a')).send({
+      query: '{ getCIRelationships(id:"t3-pre02-shared", direction:"both") { _ci { _id } } }',
+    });
+    expect(both.status).toBe(200);
+    expect(both.body.errors?.[0]).toMatchObject({
+      message: 'CI traversal resource limit exceeded', extensions: { code: 'SERVICE_UNAVAILABLE' },
+    });
+  } finally {
+    spy.mockRestore();
+  }
+  expect(Date.now() - started).toBeLessThan(4000);
+});
+
 it('counts 300 owned inbound and outbound relationships without a Cartesian adjacency expansion', async () => {
   await run(`CREATE (root:CI {id:'t3-degree-root', name:'degree root', ci_type:'server', organization_id:$organizationId})
     CREATE (hub:CI {id:'t3-degree-hub', name:'degree hub', ci_type:'server', organization_id:$organizationId})

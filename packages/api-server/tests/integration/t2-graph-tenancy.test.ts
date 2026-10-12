@@ -34,6 +34,7 @@ import { searchRoutes } from '../../src/rest/routes/search.routes';
 import { reconciliationRoutes } from '../../src/rest/routes/reconciliation.routes';
 import { architectureRoutes } from '../../src/rest/routes/architecture.routes';
 import { tbmRoutes } from '../../src/rest/routes/tbm.routes';
+import { dashboardRoutes } from '../../src/rest/routes/dashboard.routes';
 import { createGraphQLServer } from '../../src/graphql/server';
 import { tbmResolvers } from '../../src/graphql/resolvers/tbm.resolvers';
 import type { GraphQLContext } from '../../src/graphql/resolvers';
@@ -49,6 +50,7 @@ app.use('/api/v1/search', searchRoutes);
 app.use('/api/v1/reconciliation', reconciliationRoutes);
 app.use('/api/v1/architecture', architectureRoutes);
 app.use('/api/v1/tbm', tbmRoutes);
+app.use('/api/v1/dashboards', dashboardRoutes);
 let gql: { server: { stop(): Promise<void> } };
 const bearer = (id: keyof typeof users) => `Bearer ${jwt.generateAccessToken(id, users[id]._username, 'operator', A)}`;
 const auth = (id: keyof typeof users) => ({ authorization: bearer(id) });
@@ -111,6 +113,51 @@ afterAll(async () => {
   await gql?.server.stop();
   await run('MATCH (n) WHERE n.id STARTS WITH "t2-" DETACH DELETE n');
   await sql.query("DELETE FROM dim_business_services WHERE service_id IN ('t2-a', 't2-b')");
+});
+
+it('bounds mounted dashboard parallel-edge and fan-out graphs before path expansion', async () => {
+  const small = await request(app).get('/api/v1/dashboards/business-service/t2-a').set(auth('a'));
+  expect(small.status).toBe(200);
+  expect(small.body.data.serviceDependencies.nodes.map((ci: { id: string }) => ci.id).sort())
+    .toEqual(['t2-a', 't2-a2']);
+  expect(small.body.data.serviceDependencies.edges.map((edge: { from: string; to: string }) =>
+    [edge.from, edge.to])).toEqual([['t2-a', 't2-a2']]);
+
+  await run(`MATCH (root:CI {id:'t2-a'}), (neighbor:CI {id:'t2-a2'})
+    UNWIND range(1,401) AS ordinal CREATE (root)-[:DASHBOARD_DENSE {ordinal:ordinal}]->(neighbor)`);
+  await run(`MATCH (root:CI {id:'t2-a'})
+    UNWIND range(1,10) AS leafNumber
+    CREATE (leaf:CI {id:'t2-dashboard-leaf-'+toString(leafNumber), name:'leaf',
+      type:'server', organization_id:$organizationId})
+    WITH root, leaf UNWIND range(1,50) AS ordinal
+    CREATE (root)-[:DASHBOARD_DENSE {ordinal:ordinal}]->(leaf)`, { organizationId: A });
+  let statements = 0;
+  let adjacencyRows = 0;
+  const original = graph.getSession.bind(graph);
+  const spy = jest.spyOn(graph, 'getSession').mockImplementation(() => {
+    const session = original();
+    const originalRun = session.run.bind(session);
+    session.run = (async (...args: Parameters<typeof originalRun>) => {
+      statements++;
+      const result = await originalRun(...args);
+      if (String(args[0]).includes('LIMIT $rowLimit')) adjacencyRows += result.records.length;
+      return result;
+    }) as typeof session.run;
+    return session;
+  });
+  const started = Date.now();
+  try {
+    const dense = await request(app).get('/api/v1/dashboards/business-service/t2-a').set(auth('a'));
+    expect(dense.status).toBe(503);
+    expect(dense.body).toEqual({ success: false, error: 'CI traversal resource limit exceeded' });
+    expect(statements).toBeLessThanOrEqual(4);
+    expect(adjacencyRows).toBeLessThanOrEqual(401);
+    expect(Date.now() - started).toBeLessThan(4000);
+  } finally {
+    spy.mockRestore();
+    await run("MATCH (:CI {id:'t2-a'})-[r:DASHBOARD_DENSE]->() DELETE r");
+    await run("MATCH (ci:CI) WHERE ci.id STARTS WITH 't2-dashboard-leaf-' DETACH DELETE ci");
+  }
 });
 
 it('relationships fence both endpoints for lists, type counts, create and atomic delete', async () => {
@@ -312,7 +359,7 @@ it('architecture passes a driver timeout on every statement and stops an 11-edge
       const session = originalSession();
       const originalRun = session.run.bind(session);
       jest.spyOn(session, 'run').mockImplementation((cypher, parameters, config) => {
-        statements.push({ cypher, timeout: config?.timeout });
+        statements.push({ cypher: cypher as string, timeout: (config as { timeout?: number } | undefined)?.timeout });
         return originalRun(cypher, parameters, config);
       });
       return session;

@@ -359,11 +359,24 @@ describe('GraphQL Resolvers', () => {
 
 ## Security Considerations
 
-1. **Input Validation**: All inputs are validated before processing
-2. **Error Sanitization**: Internal errors are sanitized in production
-3. **Query Complexity**: Consider adding query complexity limits for production
-4. **Rate Limiting**: Implement rate limiting at the HTTP layer
-5. **Authentication**: Add authentication middleware as needed
+The mounted `/graphql` endpoint authenticates JWTs or API keys before admission for
+both POST and GET queries. Its request-scoped operation analysis expands selected fragments and rejects field nesting
+deeper than 8, more than 20 aliases, more than 100 selected fields, or estimated
+list-amplified complexity above 500 (each list costs at least 10 times its nested
+selection; explicit list `limit` values above 100 are refused). A rejected operation
+returns HTTP 400 with only `GraphQL request limit exceeded` and
+`GRAPHQL_REQUEST_LIMIT_EXCEEDED`; no resolvers run.
+
+Verified identities may run one GraphQL request per principal and two per tenant at
+once, using the shared analysis admission rules but a separate capacity table so
+GraphQL traffic cannot exhaust impact admission slots. A verified identity without an
+organization claim uses an invalid-tenant bucket for concurrency accounting. Rejected
+concurrent requests return HTTP 429 with `GraphQL concurrent request limit exceeded`
+and `TOO_MANY_REQUESTS`. The slots remain held until both the server's operation
+and HTTP response finish, including a disconnected client's in-flight work.
+Unauthenticated requests retain HTTP 401; a missing organization claim retains the
+resolver's `FORBIDDEN` response. CI traversals retain their separate per-request
+Neo4j work budget.
 
 ## Environment Variables
 
@@ -396,9 +409,7 @@ logger.error('GraphQL Error:', {
 
 ## Future Enhancements
 
-- [ ] Add authentication and authorization
 - [ ] Implement subscriptions for real-time updates
-- [ ] Add query complexity analysis and limiting
 - [ ] Implement field-level caching with Redis
 - [ ] Add metrics and tracing (OpenTelemetry)
 - [ ] Add GraphQL federation for microservices

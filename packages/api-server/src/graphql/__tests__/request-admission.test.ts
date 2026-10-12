@@ -18,7 +18,7 @@ jest.mock('../../auth/auth-bootstrap', () => {
   );
   const verifier = { verifyToken: async (token: string) => ({
     _userId: token, _username: token, _role: 'viewer',
-    _organizationId: token.startsWith('b-') ? ORG_B : ORG_A, _type: 'access',
+    _organizationId: token === 'without-org' ? undefined : token.startsWith('b-') ? ORG_B : ORG_A, _type: 'access',
   }) } as unknown as AuthService;
   return { getAuthMiddleware: () => new AuthMiddleware(verifier, {
     apiKeys: { headerName: 'X-API-Key' },
@@ -56,6 +56,8 @@ it('rejects excessive aliases, fields, nested depth, and amplified complexity be
     `{ ${Array.from({ length: 101 }, () => '__typename').join(' ')} }`,
     '{ __type(name:"CI") { fields { type { ofType { ofType { ofType { ofType { ofType { name } } } } } } } } }',
     '{ __schema { types { fields { args { type { name } } } } } }',
+    `{ ${Array.from({ length: 21 }, () => '...Repeated').join(' ')} }
+      fragment Repeated on Query { alias: __typename }`,
   ];
   const statuses: number[] = [];
   const bodies: unknown[] = [];
@@ -64,8 +66,21 @@ it('rejects excessive aliases, fields, nested depth, and amplified complexity be
     statuses.push(response.status);
     bodies.push(response.body);
   }
-  expect(statuses).toEqual([400, 400, 400, 400]);
+  expect(statuses).toEqual([400, 400, 400, 400, 400]);
   for (const body of bodies) expect(body).toEqual(requestLimit);
+  const getAliases = await request(app).get('/graphql').set('authorization', 'Bearer a-owner')
+    .set('apollo-require-preflight', 'true')
+    .query({ query: requests[0] });
+  expect(getAliases.status).toBe(400);
+  expect(getAliases.body).toEqual(requestLimit);
+  expect(mockRun).not.toHaveBeenCalled();
+});
+
+it('rejects oversized list limits passed through variables before resolver work', async () => {
+  const response = await request(app).post('/graphql').set('authorization', 'Bearer a-page')
+    .send({ query: 'query($limit: Int!) { getCIs(limit: $limit) { _id } }', variables: { limit: 1000 } });
+  expect(response.status).toBe(400);
+  expect(response.body).toEqual(requestLimit);
   expect(mockRun).not.toHaveBeenCalled();
 });
 
@@ -86,7 +101,9 @@ it('holds one verified-principal slot and two tenant slots until mounted GraphQL
     return { records: [] };
   });
   const query = '{ getCIs { _id } }';
-  const first = execute(query, 'a-first').then(response => response);
+  const first = request(app).get('/graphql').set('authorization', 'Bearer a-first')
+    .set('apollo-require-preflight', 'true')
+    .query({ query }).then(response => response);
   try {
     await firstStarted;
     const samePrincipalRequest = execute(query, 'a-first').then(response => response);
@@ -126,4 +143,20 @@ it('leaves unauthenticated denial and ordinary owner-scoped reads unchanged', as
   expect(unauthenticated.status).toBe(401);
   expect(unauthenticated.body).toMatchObject({ _error: 'Unauthorized', _message: 'Authentication failed' });
   expect((await execute('{ getCIs { _id } }', 'b-owner')).body).toEqual({ data: { getCIs: [] } });
+  mockRun.mockClear();
+  const missingTenant = await execute('{ getCIs { _id } }', 'without-org');
+  expect(missingTenant.status).toBe(403);
+  expect(missingTenant.body.errors[0]).toMatchObject({
+    message: 'Organization claim required', extensions: { code: 'FORBIDDEN' },
+  });
+  expect(mockRun).not.toHaveBeenCalled();
+});
+
+it('returns a principal slot after Apollo rejects a malformed JSON operation', async () => {
+  const invalid = await request(app).post('/graphql')
+    .set('authorization', 'Bearer a-malformed').send({});
+  expect(invalid.status).toBe(400);
+  const next = await execute('{ __typename }', 'a-malformed');
+  expect(next.status).toBe(200);
+  expect(next.body).toEqual({ data: { __typename: 'Query' } });
 });

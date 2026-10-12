@@ -1,14 +1,19 @@
 // Copyright 2026 Happy Technologies LLC
 // SPDX-License-Identifier: Apache-2.0
 
-import { Request, Response } from 'express';
+import { Request, Response, NextFunction } from 'express';
 import { logger } from '@cmdb/common';
-import { requestOrganizationId, type AuthenticatedRequest } from './auth.middleware';
+import { optionalRequestOrganizationId, requestOrganizationId, type AuthenticatedRequest } from './auth.middleware';
 import { errorLogFields } from '../utils/log-error';
 
 const WINDOW_MS = 60_000;
 const MAX_LIMITER_KEYS = 2048;
 const limits = new Map<string, { start: number; count: number; active: number }>();
+// GraphQL's cardinality must not fill the impact/architecture limiter table.
+const graphqlLimits = new Map<string, { start: number; count: number; active: number }>();
+const graphQLWork = new WeakMap<Request, {
+  started: boolean; completed: boolean; closed: boolean; release: () => void;
+}>();
 
 type AnalysisResult = { status: number; body: unknown };
 type AnalysisPolicy = {
@@ -20,6 +25,94 @@ type AnalysisPolicy = {
   internalError: string;
 };
 
+/** Shared verified-principal/tenant admission, with GraphQL consuming only concurrency slots. */
+function reserveWorkSlots(
+  scope: 'architecture' | 'impact' | 'graphql', org: string, principal: string,
+  rateLimited: boolean
+): (() => void) | null {
+  const now = Date.now();
+  const store = scope === 'graphql' ? graphqlLimits : limits;
+  const keys = [
+    JSON.stringify([scope, 'org', org]),
+    JSON.stringify([scope, 'user', org, principal]),
+  ];
+  const buckets: Array<{ start: number; count: number; active: number }> = [];
+  for (const [index, key] of keys.entries()) {
+    let entry = store.get(key);
+    if (!entry) {
+      if (store.size >= MAX_LIMITER_KEYS) {
+        for (const [oldKey, old] of store) {
+          if (old.active === 0 && now - old.start >= WINDOW_MS) store.delete(oldKey);
+        }
+      }
+      if (store.size >= MAX_LIMITER_KEYS) return null;
+      entry = { start: now, count: 0, active: 0 };
+      store.set(key, entry);
+    }
+    if (now - entry.start >= WINDOW_MS) {
+      entry.start = now;
+      entry.count = 0;
+    }
+    buckets.push(entry);
+    if ((rateLimited && entry.count >= (index === 0 ? 40 : 10))
+      || entry.active >= (index === 0 ? 2 : 1)) return null;
+  }
+  for (const bucket of buckets) {
+    if (rateLimited) bucket.count++;
+    bucket.active++;
+  }
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    for (const bucket of buckets) bucket.active--;
+  };
+}
+
+/** Authenticate first; keep resolver-level FORBIDDEN parity for a missing tenant claim. */
+export function admitGraphQLRequest(req: Request, res: Response, next: NextFunction): void {
+  // Apollo rejects a bodyless POST without invoking request hooks; GET queries use the URL.
+  if (!req.body && req.method !== 'GET') {
+    next();
+    return;
+  }
+  // A verified identity without an organization still consumes principal/tenant slots;
+  // use a non-UUID bucket rather than allowing unbounded work before resolver denial.
+  const org = optionalRequestOrganizationId(req) ?? 'missing-organization-claim';
+  const principal = (req as AuthenticatedRequest).user!._userId;
+  const release = reserveWorkSlots('graphql', org, principal, false);
+  if (!release) {
+    res.status(429).json({ errors: [{
+      message: 'GraphQL concurrent request limit exceeded', extensions: { code: 'TOO_MANY_REQUESTS' },
+    }] });
+    return;
+  }
+  const work = { started: false, completed: false, closed: false, release };
+  graphQLWork.set(req, work);
+  const onClosed = () => {
+    work.closed = true;
+    // Apollo can reject an invalid HTTP body without starting a GraphQL operation.
+    if (work.completed || (!work.started && res.writableFinished)) release();
+  };
+  res.once('finish', onClosed);
+  res.once('close', onClosed);
+  next();
+}
+
+/** Mark requests that entered Apollo's operation lifecycle before resolver work. */
+export function graphQLWorkStarted(req: Request): void {
+  const work = graphQLWork.get(req);
+  if (work) work.started = true;
+}
+
+/** Do not free a disconnected client's slot while its GraphQL resolvers still run. */
+export function graphQLWorkCompleted(req: Request): void {
+  const work = graphQLWork.get(req);
+  if (!work) return;
+  work.completed = true;
+  if (work.closed) work.release();
+}
+
 /** Bound verified principal and tenant work before DB access; hold slots after a timed-out response. */
 export async function executeBoundedAnalysis(
   req: Request, res: Response, operation: () => Promise<AnalysisResult>, policy: AnalysisPolicy
@@ -27,45 +120,14 @@ export async function executeBoundedAnalysis(
   const now = Date.now();
   const org = requestOrganizationId(req);
   const principal = (req as AuthenticatedRequest).user!._userId;
-  const keys = [
-    JSON.stringify([policy.scope, 'org', org]),
-    JSON.stringify([policy.scope, 'user', org, principal]),
-  ];
-  const buckets: Array<{ start: number; count: number; active: number }> = [];
-  const throttled = { success: false, error: `${policy.scope === 'architecture' ? 'Architecture' : 'Impact'} analysis rate limit exceeded` };
-  for (const [index, key] of keys.entries()) {
-    let entry = limits.get(key);
-    if (!entry) {
-      if (limits.size >= MAX_LIMITER_KEYS) {
-        for (const [oldKey, old] of limits) {
-          if (old.active === 0 && now - old.start >= WINDOW_MS) limits.delete(oldKey);
-        }
-      }
-      if (limits.size >= MAX_LIMITER_KEYS) {
-        res.status(429).json(throttled);
-        return;
-      }
-      entry = { start: now, count: 0, active: 0 };
-      limits.set(key, entry);
-    }
-    if (now - entry.start >= WINDOW_MS) {
-      entry.start = now;
-      entry.count = 0;
-    }
-    buckets.push(entry);
-    if (entry.count >= (index === 0 ? 40 : 10) || entry.active >= (index === 0 ? 2 : 1)) {
-      res.status(429).json(throttled);
-      return;
-    }
-  }
-  for (const bucket of buckets) {
-    bucket.count++;
-    bucket.active++;
+  const release = reserveWorkSlots(policy.scope, org, principal, true);
+  if (!release) {
+    res.status(429).json({ success: false,
+      error: `${policy.scope === 'architecture' ? 'Architecture' : 'Impact'} analysis rate limit exceeded` });
+    return;
   }
   const deadline = now + policy.timeoutMs;
-  const work = policy.withDeadline(deadline, operation).finally(() => {
-    for (const bucket of buckets) bucket.active--;
-  });
+  const work = policy.withDeadline(deadline, operation).finally(release);
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const timeout = new Promise<never>((_resolve, reject) => {

@@ -33,6 +33,7 @@ import type { TokenPayload } from '../../auth/types';
 import { checkGraphQLPermission } from '../../middleware/auth.middleware';
 import { requireGraphQLOrganization } from '../require-organization';
 import type { CILoaderKey } from '../dataloaders/ci-loader';
+import { GRAPHQL_PAGE_DEFAULTS, normalizePagination } from '../pagination';
 
 /**
  * GraphQL Context type containing database clients and dataloaders
@@ -46,7 +47,7 @@ export interface GraphQLContext {
   };
   /** Authenticated identity resolved from the request's bearer token or API key, when present. */
   user?: TokenPayload;
-  _ciTraversalWork?: CITraversalWork;
+  _ciTraversalWork?: () => CITraversalWork;
 }
 
 /**
@@ -248,13 +249,6 @@ type CIValue = Partial<CI> & {
   _discoveredAt?: string;
 };
 
-function normalizePagination(value: number | undefined, fallback: number): number {
-  if (typeof value !== 'number' || !Number.isFinite(value)) {
-    return fallback;
-  }
-  return Math.max(0, Math.floor(value));
-}
-
 function convertDbEnumToGraphQL(value: string): string {
   return value.toUpperCase().replace(/-/g, '_');
 }
@@ -341,7 +335,7 @@ const Query = {
 
     try {
       const { filter } = _args;
-      const limit = normalizePagination(_args.limit, 100);
+      const limit = normalizePagination(_args.limit, GRAPHQL_PAGE_DEFAULTS.getCIs);
       const offset = normalizePagination(_args.offset, 0);
       // The org filter runs before SKIP/LIMIT, so other tenants' CIs never use up a page.
       const conditions: string[] = ['ci.organization_id = $organizationId'];
@@ -450,7 +444,7 @@ const Query = {
       const params: Record<string, unknown> = {
         organizationId,
         query,
-        limit: neo4j.int(normalizePagination(_args.limit, 50)),
+        limit: neo4j.int(normalizePagination(_args.limit, GRAPHQL_PAGE_DEFAULTS.searchCIs)),
       };
 
       if (filter?._type) {
@@ -526,13 +520,8 @@ const Query = {
         ]);
         return [...outgoing, ...incoming].map(toGraphQLRelatedCI);
       }
-    } catch (error: any) {
-      throw new GraphQLError('Failed to fetch CI relationships', {
-        extensions: {
-          code: 'INTERNAL_SERVER_ERROR',
-          originalError: error.message,
-        },
-      });
+    } catch (error) {
+      throw traversalError(error, 'Failed to fetch CI relationships');
     }
   },
 
@@ -550,7 +539,7 @@ const Query = {
     try {
       const paths = await _context._neo4jClient.getDependencies(
         _args.id, organizationId, depth,
-        _context._ciTraversalWork ??= createCITraversalWork()
+        _context._ciTraversalWork?.() ?? createCITraversalWork()
       );
       return paths.map(path => toGraphQLCI(path.end.properties));
     } catch (error) {
@@ -572,7 +561,7 @@ const Query = {
     try {
       const impacted = await _context._neo4jClient.impactAnalysis(
         _args.id, organizationId, depth,
-        _context._ciTraversalWork ??= createCITraversalWork()
+        _context._ciTraversalWork?.() ?? createCITraversalWork()
       );
       return impacted.map(item => ({ _ci: toGraphQLCI(item._ci), _distance: item._distance }));
     } catch (error) {
@@ -841,8 +830,12 @@ const CIResolvers = {
    */
   _relationships: async (parent: CIValue, _args: unknown, _context: GraphQLContext) => {
     const organizationId = requireGraphQLOrganization(_context);
-    const relationships = await _context._loaders._relationshipLoader.load(ciKey(parent._id, organizationId));
-    return relationships.map(toGraphQLRelatedCI);
+    try {
+      const relationships = await _context._loaders._relationshipLoader.load(ciKey(parent._id, organizationId));
+      return relationships.map(toGraphQLRelatedCI);
+    } catch (error) {
+      throw traversalError(error, 'Failed to fetch CI relationships');
+    }
   },
 
   /**
@@ -850,8 +843,12 @@ const CIResolvers = {
    */
   _dependents: async (parent: CIValue, _args: unknown, _context: GraphQLContext) => {
     const organizationId = requireGraphQLOrganization(_context);
-    const dependents = await _context._loaders._dependentLoader.load(ciKey(parent._id, organizationId));
-    return dependents.map(toGraphQLRelatedCI);
+    try {
+      const dependents = await _context._loaders._dependentLoader.load(ciKey(parent._id, organizationId));
+      return dependents.map(toGraphQLRelatedCI);
+    } catch (error) {
+      throw traversalError(error, 'Failed to fetch CI dependents');
+    }
   },
 
   /**
@@ -862,7 +859,7 @@ const CIResolvers = {
     try {
       const paths = await _context._neo4jClient.getDependencies(
         parent._id, organizationId, 5,
-        _context._ciTraversalWork ??= createCITraversalWork()
+        _context._ciTraversalWork?.() ?? createCITraversalWork()
       );
       return paths.map(path => toGraphQLCI(path.end.properties));
     } catch (error) {
@@ -929,7 +926,7 @@ const itilCIQueries = {
     if (args.ciType) { conditions.push('ci.type = $ciType'); params.ciType = convertEnumToDbFormat(args.ciType); }
     const where = `WHERE ${conditions.join(' AND ')}`;
     const page = Math.max(1, normalizePagination(args.page, 1));
-    const limit = Math.min(100, Math.max(1, normalizePagination(args.limit, 50)));
+    const limit = Math.min(100, Math.max(1, normalizePagination(args.limit, GRAPHQL_PAGE_DEFAULTS.configurationItems)));
     try {
       const count = await session.run(`MATCH (ci:CI) ${where} RETURN count(ci) AS total`, params);
       const total = count.records[0]!.get('total').toNumber() as number;
@@ -951,7 +948,7 @@ const itilCIQueries = {
   configurationItem: (_parent: unknown, args: { id: string }, context: GraphQLContext) =>
     itilCI(context, args.id, requireGraphQLOrganization(context)),
   ciHistory: (_parent: unknown, args: { id: string; limit?: number }, context: GraphQLContext) =>
-    itilHistory(context, args.id, args.limit ?? 100),
+    itilHistory(context, args.id, args.limit ?? GRAPHQL_PAGE_DEFAULTS.ciHistory),
   cisDueForAudit: async (_parent: unknown, args: { limit?: number }, context: GraphQLContext) => {
     const organizationId = requireGraphQLOrganization(context);
     const session = context._neo4jClient.getSession();
@@ -960,7 +957,7 @@ const itilCIQueries = {
         `MATCH (ci:CI) WHERE ci.organization_id = $organizationId
          AND (ci.itil_next_audit_date <= datetime() OR ci.itil_last_audited IS NULL)
          RETURN ci ORDER BY ci.itil_next_audit_date LIMIT $limit`,
-        { organizationId, limit: neo4j.int(Math.min(100, Math.max(1, args.limit ?? 100))) }
+        { organizationId, limit: neo4j.int(Math.min(100, Math.max(1, args.limit ?? GRAPHQL_PAGE_DEFAULTS.cisDueForAudit))) }
       );
       return result.records.map(record => {
         const ci = record.get('ci').properties as CIValue;
@@ -1076,7 +1073,7 @@ export const resolvers = {
       };
     },
     history: (parent: { _id: string }, args: { limit?: number }, context: GraphQLContext) =>
-      itilHistory(context, parent._id, args.limit ?? 100),
+      itilHistory(context, parent._id, args.limit ?? GRAPHQL_PAGE_DEFAULTS.history),
     incidents: itilRecordsUnavailable,
     changes: itilRecordsUnavailable,
   },

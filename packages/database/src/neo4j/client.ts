@@ -62,6 +62,27 @@ export function createCITraversalWork(): CITraversalWork {
   return { remaining: MAX_CI_TRAVERSAL_WORK, nodes: new Set<string>(), pending: Promise.resolve() };
 }
 
+/** Serialize sibling traversals, reserving the remaining row allowance before Neo4j runs. */
+export async function runWithinCITraversalBudget<T>(
+  work: CITraversalWork, run: (rowLimit: number) => Promise<T[]>
+): Promise<T[]> {
+  const previous = work.pending;
+  let release!: () => void;
+  work.pending = new Promise<void>(resolve => { release = resolve; });
+  try {
+    await previous;
+    const reserved = work.remaining;
+    if (reserved === 0) throw new CITraversalLimitError();
+    work.remaining -= reserved;
+    const records = await run(reserved + 1);
+    if (records.length > reserved) throw new CITraversalLimitError();
+    work.remaining += reserved - records.length;
+    return records;
+  } finally {
+    release();
+  }
+}
+
 type TraversalEdge = {
   source: Node;
   target: Node;
@@ -446,16 +467,7 @@ export class Neo4jClient {
       : `(source)<-[relationship${relation}]-(target:CI)`;
     try {
       for (let distance = 1; distance <= depth && frontier.length > 0; distance++) {
-        // GraphQL sibling aliases share this object. Queue each hop so the
-        // remaining allowance is reserved before any Neo4j statement begins.
-        const previous = work.pending;
-        let release!: () => void;
-        work.pending = new Promise<void>(resolve => { release = resolve; });
-        try {
-          await previous;
-          const reserved = work.remaining;
-          if (reserved === 0) throw new CITraversalLimitError();
-          work.remaining -= reserved;
+        const records = await runWithinCITraversalBudget(work, async rowLimit => {
           const result = await session.run(
             `UNWIND $frontier AS sourceId
              MATCH (source:CI {id: sourceId})
@@ -466,37 +478,34 @@ export class Neo4jClient {
                     startNode(relationship).id AS startNodeId,
                     endNode(relationship).id AS endNodeId
              LIMIT $rowLimit`,
-            { frontier, organizationId, rowLimit: neo4j.int(reserved + 1) },
+            { frontier, organizationId, rowLimit: neo4j.int(rowLimit) },
             { timeout: CI_TRAVERSAL_QUERY_TIMEOUT_MS }
           );
-          if (result.records.length > reserved) throw new CITraversalLimitError();
-          work.remaining += reserved - result.records.length;
-          const next: string[] = [];
-          for (const record of result.records) {
-            const source = record.get('source') as Node;
-            const target = record.get('target') as Node;
-            const relationship = record.get('relationship') as Relationship;
-            const sourceId = source.properties['id'] as string;
-            const targetId = target.properties['id'] as string;
-            nodeById.set(sourceId, source);
-            edges.push({
-              source, target, relationship,
-              startNodeId: record.get('startNodeId'),
-              endNodeId: record.get('endNodeId'),
-            });
-            if (discovered.has(targetId)) continue;
-            discovered.add(targetId);
-            work.nodes.add(targetId);
-            if (work.nodes.size > MAX_CI_TRAVERSAL_NODES) throw new CITraversalLimitError();
-            nodeById.set(targetId, target);
-            parents.set(targetId, { sourceId, relationship });
-            nodes.push({ node: target, distance });
-            next.push(targetId);
-          }
-          frontier = next;
-        } finally {
-          release();
+          return result.records;
+        });
+        const next: string[] = [];
+        for (const record of records) {
+          const source = record.get('source') as Node;
+          const target = record.get('target') as Node;
+          const relationship = record.get('relationship') as Relationship;
+          const sourceId = source.properties['id'] as string;
+          const targetId = target.properties['id'] as string;
+          nodeById.set(sourceId, source);
+          edges.push({
+            source, target, relationship,
+            startNodeId: record.get('startNodeId'),
+            endNodeId: record.get('endNodeId'),
+          });
+          if (discovered.has(targetId)) continue;
+          discovered.add(targetId);
+          work.nodes.add(targetId);
+          if (work.nodes.size > MAX_CI_TRAVERSAL_NODES) throw new CITraversalLimitError();
+          nodeById.set(targetId, target);
+          parents.set(targetId, { sourceId, relationship });
+          nodes.push({ node: target, distance });
+          next.push(targetId);
         }
+        frontier = next;
       }
       const paths: Path[] = [];
       for (const { node } of nodes) {

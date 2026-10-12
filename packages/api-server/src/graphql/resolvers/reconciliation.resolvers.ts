@@ -13,6 +13,7 @@ import { TransformedCI, IdentificationAttributes } from '@cmdb/integration-frame
 import { GraphQLContext } from './index';
 import { checkGraphQLPermission } from '../../middleware/auth.middleware';
 import { requireGraphQLOrganization } from '../require-organization';
+import { GRAPHQL_PAGE_DEFAULTS } from '../pagination';
 import {
   getOwnedConflict, getOwnedFieldSources, getOwnedLineage,
   listOwnedConflicts, updateOwnedConflict
@@ -102,7 +103,7 @@ const ReconciliationQuery = {
     const organizationId = requireGraphQLOrganization(_context);
     try {
       const status = (_args._status || 'pending').toLowerCase();
-      const limit = Math.min(_args._limit || 100, 1000);
+      const limit = Math.min(_args._limit || GRAPHQL_PAGE_DEFAULTS.listConflicts, 1000);
       const offset = _args._offset || 0;
 
       const result = await listOwnedConflicts(postgresClient, status, limit, offset, organizationId);

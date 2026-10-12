@@ -11,7 +11,7 @@ import express from 'express';
 import http from 'http';
 import cors from 'cors';
 import { json } from 'body-parser';
-import { getNeo4jClient } from '@cmdb/database';
+import { getNeo4jClient, createCITraversalWork } from '@cmdb/database';
 import { logger } from '@cmdb/common';
 import { typeDefs } from './schema/typeDefs';
 import { analyticsTypeDefs } from './schema/analytics.schema';
@@ -24,6 +24,8 @@ import { resolvers } from './resolvers';
 import { createCILoader, createRelationshipLoader, createDependentLoader } from './dataloaders/ci-loader';
 import { GraphQLContext } from './resolvers';
 import { GraphQLFormattedError } from 'graphql';
+import { admitGraphQLRequest, graphQLWorkCompleted, graphQLWorkStarted } from '../middleware/analysis-admission';
+import { enforceGraphQLRequestLimits } from './request-admission';
 
 /**
  * Create and configure Apollo Server with Express
@@ -36,6 +38,8 @@ export async function createGraphQLServer(app: express.Application) {
   const neo4jClient = getNeo4jClient();
 
   const authMiddleware = getAuthMiddleware();
+  // Apollo clones contextValue before invoking plugins; enumerable symbol survives that clone.
+  const requestKey = Symbol('graphql-admission-request');
 
   // Create Apollo Server with schema and resolvers
   const server = new ApolloServer<GraphQLContext>({
@@ -44,6 +48,24 @@ export async function createGraphQLServer(app: express.Application) {
     plugins: [
       // Proper shutdown for HTTP server
       ApolloServerPluginDrainHttpServer({ httpServer }),
+      {
+        async requestDidStart({ contextValue }) {
+          const req = (contextValue as GraphQLContext & { [requestKey]?: express.Request })[requestKey];
+          if (req && !graphQLWorkStarted(req)) throw new Error('GraphQL request disconnected');
+          return {
+            async didResolveOperation({ operation, document, schema, request }) {
+              if (operation && document) {
+                enforceGraphQLRequestLimits(operation, document, schema, request.variables, resolvers);
+              }
+            },
+            async willSendResponse({ contextValue }) {
+              if (!contextValue) return;
+              const req = (contextValue as GraphQLContext & { [requestKey]?: express.Request })[requestKey];
+              if (req) graphQLWorkCompleted(req);
+            },
+          };
+        },
+      },
       // GraphQL Playground in development mode
       process.env['NODE_ENV'] === 'production'
         ? ApolloServerPluginLandingPageLocalDefault({ footer: false })
@@ -60,6 +82,12 @@ export async function createGraphQLServer(app: express.Application) {
         code: formattedError.extensions?.['code'],
         path: formattedError.path,
       });
+      if (formattedError.extensions?.['code'] === 'GRAPHQL_REQUEST_LIMIT_EXCEEDED') {
+        return {
+          message: 'GraphQL request limit exceeded',
+          extensions: { code: 'GRAPHQL_REQUEST_LIMIT_EXCEEDED' },
+        };
+      }
 
       // Don't expose internal error details in production
       if (process.env['NODE_ENV'] === 'production') {
@@ -89,22 +117,29 @@ export async function createGraphQLServer(app: express.Application) {
     cors<cors.CorsRequest>(),
     json(),
     authMiddleware.authenticate(),
+    admitGraphQLRequest,
     expressMiddleware(server, {
-      context: async ({ req }): Promise<GraphQLContext> => {
-        // Create fresh DataLoaders for each request (prevents caching across requests)
+      context: async ({ req, res }): Promise<GraphQLContext> => {
+        if (res.destroyed) throw new Error('GraphQL request disconnected');
+        // Both DataLoaders and recursive resolvers lazily share one atomic row/node budget.
+        let work: ReturnType<typeof createCITraversalWork> | undefined;
+        const getWork = () => work ??= createCITraversalWork();
         const loaders = {
           _ciLoader: createCILoader(neo4jClient),
-          _relationshipLoader: createRelationshipLoader(neo4jClient),
-          _dependentLoader: createDependentLoader(neo4jClient),
+          _relationshipLoader: createRelationshipLoader(neo4jClient, getWork),
+          _dependentLoader: createDependentLoader(neo4jClient, getWork),
         };
 
         const user = (req as AuthenticatedRequest).user!;
 
-        return {
+        const context = {
           _neo4jClient: neo4jClient,
           _loaders: loaders,
+          _ciTraversalWork: getWork,
           user,
+          [requestKey]: req,
         };
+        return context;
       },
     })
   );

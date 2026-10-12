@@ -124,6 +124,10 @@ REST `GET /api/v1/cis/:id/{relationships,dependencies,impact}` and GraphQL `getC
 
 GraphQL sibling CI traversal aliases queue their one-hop statements on the request's shared work budget: each statement reserves its maximum row allowance before dispatch, refunds unused rows after completion, and cannot start a second over-budget expansion. REST relationships at depth greater than one report the actual owned edge's source and target CIs, never the requested root as a fabricated endpoint.
 
+GraphQL admission allows four active requests per verified principal and eight per tenant. Slots remain held until the HTTP response finishes, including while the socket writes after Apollo completes resolver work; the absolute write-phase deadline `GRAPHQL_RESPONSE_WRITE_DEADLINE_MS = 30_000` starts at `willSendResponse` and destroys a stalled response/socket after 30 seconds, releasing its slot. This timer does not limit resolver or DB execution time.
+
+The no-service-ID business-service dashboard collects only caller-owned active CIs using `LIMIT 101` before `collect(ci)` and a five-second Neo4j transaction timeout. More than 100 active CIs returns fixed HTTP 503 `CI traversal resource limit exceeded` rather than a partial dashboard. The service-ID dashboard's bounded dependency frontier remains independently limited to 100 discovered CIs and 400 adjacency rows.
+
 Impact GET/POST routes share the architecture verified-principal (10/min, one active) and tenant (40/min, two active) admission runner, with a 20-second end-to-end deadline for preflight, graph work and PostgreSQL statements; fixed 429/503/504 on rate, resource and timeout refusals. The rate/concurrency table is per API process. Criticality still counts every owned incoming relationship exactly, but transfers at most 101 distinct dependent IDs from Neo4j and refuses over-100 unique dependencies before cache writes. Real-Neo4j 130-distinct/150-relationship coverage and mounted concurrent/deadline regressions enforce this contract.
 
 ## Repository Structure
@@ -195,10 +199,11 @@ curl -X POST http://localhost:3000/api/v1/cis \
   -H "Authorization: Bearer $TOKEN" \
   -d '{"id":"vm-001","name":"web-server-01","type":"virtual-machine","status":"active"}'
 
-# GraphQL query
+# GraphQL query (authenticated, using the current CI schema)
 curl -X POST http://localhost:3000/graphql \
   -H "Content-Type: application/json" \
-  -d '{"query":"{ getCIs(type: \"server\") { id name status } }"}'
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"query":"{ getCIs(filter: {_type: SERVER}, limit: 100) { _id _name _status } }"}'
 ```
 
 Full API reference: `doc-site/docs/api/`

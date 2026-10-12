@@ -12,6 +12,7 @@ import { denyPlatformAdminGraphQL } from '../../middleware/platform-admin-unavai
 import { publicInstalledConnectorGraphQL } from '../../services/public-installed-connector';
 import { ConnectorJsonPatchBudget, ConnectorJsonPatchError, connectorJsonMerge, isConnectorJsonResultLimit, CONNECTOR_JSON_LIMIT_MESSAGE } from '../../services/connector-json-merge';
 import { connectorScope, connectorPredicate, scopeValues, PUBLIC_CONFIG, PUBLIC_RUN } from '../../auth/connector-scope';
+import { GRAPHQL_PAGE_DEFAULTS } from '../pagination';
 
 function scopedUser(context: GraphQLContext) {
   const scope = connectorScope(context.user);
@@ -362,7 +363,7 @@ const ConnectorQueryResolvers = {
       params.push(args.status.toLowerCase());
       conditions.push(`crh.status = $${params.length}`);
     }
-    params.push(Math.min(Math.max(args.first ?? 50, 1), 1000), Math.max(args.offset ?? 0, 0));
+    params.push(Math.min(Math.max(args.first ?? GRAPHQL_PAGE_DEFAULTS.connectorRuns, 1), 1000), Math.max(args.offset ?? 0, 0));
     try {
       if (args.configId) {
         const owner = await getPostgresClient().query(

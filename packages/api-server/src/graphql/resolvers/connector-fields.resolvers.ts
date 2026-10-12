@@ -8,6 +8,7 @@ import { getPostgresClient } from '@cmdb/database';
 import type { GraphQLContext } from './index';
 import { connectorScope, connectorPredicate, scopeValues, PUBLIC_RUN } from '../../auth/connector-scope';
 import { publicInstalledConnectorGraphQL } from '../../services/public-installed-connector';
+import { GRAPHQL_PAGE_DEFAULTS } from '../pagination';
 
 function requireScope(context: GraphQLContext) {
   const scope = connectorScope(context.user);
@@ -92,7 +93,7 @@ export const ConnectorConfigurationFieldResolvers = {
         `SELECT ${PUBLIC_RUN} FROM connector_run_history crh
          WHERE crh.config_id = $1 AND ${connectorPredicate('crh', 2)}
          ORDER BY crh.started_at DESC LIMIT $4 OFFSET $5`,
-        [parent.id, ...scopeValues(context.user), Math.min(Math.max(args.first ?? 50, 1), 1000), Math.max(args.offset ?? 0, 0)]
+        [parent.id, ...scopeValues(context.user), Math.min(Math.max(args.first ?? GRAPHQL_PAGE_DEFAULTS.runs, 1), 1000), Math.max(args.offset ?? 0, 0)]
       );
       return result.rows.map(row => ({
         id: row.id, organizationId: row.organization_id, configId: row.config_id,

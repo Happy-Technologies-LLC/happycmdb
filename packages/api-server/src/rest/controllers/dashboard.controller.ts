@@ -11,6 +11,11 @@ import { getDashboardService } from '../../services/dashboard.service';
 import { logger } from '@cmdb/common';
 import { requestOrganizationId } from '../../middleware/auth.middleware';
 import { BUSINESS_SERVICE_NOT_FOUND } from '../../services/business-service-ownership';
+import { CITraversalLimitError } from '@cmdb/database';
+import { executeBoundedAnalysis } from '../../middleware/analysis-admission';
+
+const DASHBOARD_TIMEOUT_MS = 5000;
+class DashboardDeadlineError extends Error {}
 
 export class DashboardController {
   private dashboardService = getDashboardService();
@@ -128,34 +133,38 @@ export class DashboardController {
    * Get Business Service Dashboard data
    */
   async getBusinessServiceDashboard(req: Request, res: Response): Promise<void> {
-    try {
+    await executeBoundedAnalysis(req, res, async () => {
       const serviceId = req.params.serviceId || req.query.serviceId;
       // A repeated (array) or nested (object) ?serviceId is never a service the caller owns.
       if (typeof serviceId === 'object') {
-        res.status(404).json(BUSINESS_SERVICE_NOT_FOUND);
-        return;
+        return { status: 404, body: BUSINESS_SERVICE_NOT_FOUND };
       }
 
       logger.info('Fetching business service dashboard', { serviceId });
-
       const data = await this.dashboardService.getBusinessServiceDashboard(requestOrganizationId(req), serviceId);
       if (data === null) {
-        res.status(404).json(BUSINESS_SERVICE_NOT_FOUND);
-        return;
+        return { status: 404, body: BUSINESS_SERVICE_NOT_FOUND };
       }
-
-      res.json({
-        success: true,
-        data,
-        serviceId,
-      });
-    } catch (error: any) {
-      logger.error('Error fetching business service dashboard', { error });
-      res.status(500).json({
-        success: false,
-        error: 'Failed to fetch business service dashboard',
-        message: error.message,
-      });
-    }
+      return { status: 200, body: { success: true, data, serviceId } };
+    }, {
+      scope: 'dashboard',
+      timeoutMs: DASHBOARD_TIMEOUT_MS,
+      withDeadline: (_deadline, operation) => operation(),
+      deadlineError: () => new DashboardDeadlineError(),
+      failure: error => {
+        if (error instanceof CITraversalLimitError) {
+          return { status: 503, message: 'CI traversal resource limit exceeded' };
+        }
+        if (error instanceof DashboardDeadlineError) {
+          return { status: 504, message: 'Dashboard analysis timed out' };
+        }
+        const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
+        if (typeof code === 'string' && (code.includes('TransactionTimedOut') || code.includes('Transaction.Terminated'))) {
+          return { status: 504, message: 'Dashboard analysis timed out' };
+        }
+        return null;
+      },
+      internalError: 'Failed to fetch business service dashboard',
+    });
   }
 }

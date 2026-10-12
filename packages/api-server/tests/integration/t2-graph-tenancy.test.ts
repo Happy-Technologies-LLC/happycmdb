@@ -226,6 +226,37 @@ it('architecture bounds dense owned cycles on both entry points without exposing
   }
 });
 
+it.each([6, 10])('architecture retains owned %i-edge cycle detection on POST and GET', async (length) => {
+  const ids = Array.from({ length }, (_, index) => `t2-ring-${index}`);
+  try {
+    await run(`UNWIND $ids AS id CREATE (:CI {id:id, name:id, organization_id:$a})`, { ids, a: A });
+    await run(`UNWIND range(0, size($ids)-1) AS index
+      MATCH (from:CI {id:$ids[index]}), (to:CI {id:$ids[(index+1) % size($ids)]})
+      CREATE (from)-[:DEPENDS_ON]->(to)`, { ids });
+    await run(`MATCH (root:CI {id:$id}), (foreign:CI {id:'t2-b'})
+      CREATE (root)-[:USES]->(foreign)-[:USES]->(root)`, { id: ids[0] });
+    await sql.query(
+      `INSERT INTO ci_business_service_mappings (ci_id, service_id, mapping_type)
+       VALUES ($1, 't2-a', 'supports')`, [ids[0]]
+    );
+    for (const response of [
+      await request(app).post('/api/v1/architecture/analyze').set(auth('a')).send({ ci_ids: [ids[0]] }),
+      await request(app).get('/api/v1/architecture/business-services/t2-a/analysis').set(auth('a')),
+    ]) {
+      expect(response.status).toBe(200);
+      expect(response.body.analysis.dependency_graph_summary.circular_dependencies).toBe(1);
+      const cycle = response.body.analysis.issues.find((issue: { issue_type: string }) =>
+        issue.issue_type === 'circular_dependency');
+      expect(cycle.affected_cis).toEqual([...ids, ids[0]]);
+      expect(cycle.metrics.chain_length).toBe(length + 1);
+      expect(JSON.stringify(response.body.analysis)).not.toContain('t2-b');
+    }
+  } finally {
+    await sql.query("DELETE FROM ci_business_service_mappings WHERE service_id = 't2-a' AND ci_id LIKE 't2-ring-%'");
+    await run("MATCH (ci:CI) WHERE ci.id STARTS WITH 't2-ring-' DETACH DELETE ci");
+  }
+});
+
 it('architecture rejects over-cap GET mappings before graph work and preserves foreign-service 404', async () => {
   const ids = Array.from({ length: 21 }, (_, index) => `t2-mapped-${index}`);
   try {

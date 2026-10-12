@@ -298,6 +298,7 @@ it('bounds every REST and GraphQL CI traversal on real parallel-edge fan-out', a
     '/api/v1/cis/t3-h562-root/impact?depth=2',
     '/api/v1/cis/t3-h562-root/relationships?direction=out&depth=2',
     '/api/v1/cis/t3-h562-root/relationships?direction=in&depth=2',
+    '/api/v1/cis/t3-h562-root/relationships?depth=2',
   ]) {
     const response = await checked(() => request(app).get(route).set(auth('a')));
     expect(response.status).toBe(503);

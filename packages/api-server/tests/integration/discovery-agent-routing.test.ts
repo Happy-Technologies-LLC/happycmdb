@@ -34,6 +34,13 @@ describe('Discovery Agent Routing Integration Tests', () => {
     agentService = new DiscoveryAgentService();
   }, 120000);
 
+  async function registerFresh(input: Omit<DiscoveryAgentRegistration, 'agent_id'>): Promise<string> {
+    const agent = await agentService.registerAgent(input, ORG);
+    if (!agent) throw new Error('Expected registration to succeed');
+    createdAgentIds.push(agent.agent_id);
+    return agent.agent_id;
+  }
+
   afterAll(async () => {
     // Cleanup created agents
     for (const agentId of createdAgentIds) {
@@ -56,7 +63,6 @@ describe('Discovery Agent Routing Integration Tests', () => {
   describe('Agent Registration', () => {
     it('should register a new discovery agent', async () => {
       const registration: DiscoveryAgentRegistration = {
-        agent_id: `test-agent-${uuidv4()}`,
         hostname: 'agent-01.local',
         provider_capabilities: ['nmap', 'ssh'],
         reachable_networks: ['10.0.0.0/8', '192.168.1.0/24'],
@@ -67,11 +73,10 @@ describe('Discovery Agent Routing Integration Tests', () => {
         tags: ['datacenter-1', 'production'],
       };
 
-      const agent = await agentService.registerAgent(registration, ORG);
-      if (!agent) throw new Error('Expected registration to succeed');
-      createdAgentIds.push(agent.agent_id);
-
-      expect(agent.agent_id).toBe(registration.agent_id);
+      const agentId = await registerFresh(registration);
+      const agent = await agentService.getAgent(agentId, ORG);
+      if (!agent) throw new Error('Expected registered agent to be readable');
+      expect(agent?.agent_id).toBe(agentId);
       expect(agent.hostname).toBe(registration.hostname);
       expect(agent.provider_capabilities).toEqual(registration.provider_capabilities);
       expect(agent.reachable_networks).toEqual(registration.reachable_networks);
@@ -82,12 +87,8 @@ describe('Discovery Agent Routing Integration Tests', () => {
     }, 60000);
 
     it('should update existing agent on re-registration', async () => {
-      const agentId = `test-agent-${uuidv4()}`;
-      createdAgentIds.push(agentId);
-
-      // Initial registration
-      const initialRegistration: DiscoveryAgentRegistration = {
-        agent_id: agentId,
+      // Initial registration issues the ID reused for the owned retry.
+      const agentId = await registerFresh({
         hostname: 'agent-02.local',
         provider_capabilities: ['nmap'],
         reachable_networks: ['10.0.0.0/8'],
@@ -95,9 +96,7 @@ describe('Discovery Agent Routing Integration Tests', () => {
         platform: 'linux',
         arch: 'x64',
         tags: ['test'],
-      };
-
-      await agentService.registerAgent(initialRegistration, ORG);
+      });
 
       // Re-register with updated capabilities
       const updatedRegistration: DiscoveryAgentRegistration = {
@@ -124,16 +123,12 @@ describe('Discovery Agent Routing Integration Tests', () => {
 
   describe('Agent Heartbeat', () => {
     it('should update agent heartbeat timestamp', async () => {
-      const agentId = `test-agent-${uuidv4()}`;
-      createdAgentIds.push(agentId);
-
-      // Register agent
-      await agentService.registerAgent({
-        agent_id: agentId,
+      // Register agent and retain its issued ID for heartbeats.
+      const agentId = await registerFresh({
         hostname: 'heartbeat-test.local',
         provider_capabilities: ['nmap'],
         reachable_networks: ['10.0.0.0/8'],
-      }, ORG);
+      });
 
       // Wait a moment to ensure timestamp difference
       await new Promise(resolve => setTimeout(resolve, 1000));
@@ -156,16 +151,11 @@ describe('Discovery Agent Routing Integration Tests', () => {
     }, 60000);
 
     it('should update agent statistics via heartbeat', async () => {
-      const agentId = `test-agent-${uuidv4()}`;
-      createdAgentIds.push(agentId);
-
-      // Register agent
-      await agentService.registerAgent({
-        agent_id: agentId,
+      const agentId = await registerFresh({
         hostname: 'stats-test.local',
         provider_capabilities: ['nmap', 'ssh'],
         reachable_networks: ['10.0.0.0/8'],
-      }, ORG);
+      });
 
       // Send heartbeat with stats
       const heartbeat: AgentHeartbeat = {
@@ -210,26 +200,18 @@ describe('Discovery Agent Routing Integration Tests', () => {
   describe('Smart Agent Routing with CIDR Networks', () => {
     it('should route job to agent based on network reachability', async () => {
       // Register agent for the first public network.
-      const agent1Id = `test-agent-${uuidv4()}`;
-      createdAgentIds.push(agent1Id);
-
-      await agentService.registerAgent({
-        agent_id: agent1Id,
+      const agent1Id = await registerFresh({
         hostname: 'agent-10-net.local',
         provider_capabilities: ['nmap', 'ssh'],
         reachable_networks: ['8.8.8.0/24'],
-      }, ORG);
+      });
 
       // Register agent for the second public network.
-      const agent2Id = `test-agent-${uuidv4()}`;
-      createdAgentIds.push(agent2Id);
-
-      await agentService.registerAgent({
-        agent_id: agent2Id,
+      const agent2Id = await registerFresh({
         hostname: 'agent-192-net.local',
         provider_capabilities: ['nmap', 'ssh'],
         reachable_networks: ['9.9.9.0/24'],
-      }, ORG);
+      });
 
       // Find the agent for the first public range.
       const bestAgent10 = await agentService.findBestAgentForNetworks(['8.8.8.0/24'], 'nmap', ORG);
@@ -244,15 +226,11 @@ describe('Discovery Agent Routing Integration Tests', () => {
 
     it('should prefer agent with better success rate', async () => {
       // Register agent with high success rate
-      const goodAgentId = `test-agent-${uuidv4()}`;
-      createdAgentIds.push(goodAgentId);
-
-      await agentService.registerAgent({
-        agent_id: goodAgentId,
+      const goodAgentId = await registerFresh({
         hostname: 'good-agent.local',
         provider_capabilities: ['nmap'],
         reachable_networks: ['8.8.8.0/24'],
-      }, ORG);
+      });
 
       // Simulate successful jobs
       await agentService.updateHeartbeat({
@@ -266,15 +244,11 @@ describe('Discovery Agent Routing Integration Tests', () => {
       }, ORG);
 
       // Register agent with lower success rate
-      const poorAgentId = `test-agent-${uuidv4()}`;
-      createdAgentIds.push(poorAgentId);
-
-      await agentService.registerAgent({
-        agent_id: poorAgentId,
+      const poorAgentId = await registerFresh({
         hostname: 'poor-agent.local',
         provider_capabilities: ['nmap'],
         reachable_networks: ['8.8.8.0/24'],
-      }, ORG);
+      });
 
       // Simulate failed jobs
       await agentService.updateHeartbeat({
@@ -296,15 +270,11 @@ describe('Discovery Agent Routing Integration Tests', () => {
 
     it('should return null if no suitable agent found', async () => {
       // Register agent for one public network.
-      const agentId = `test-agent-${uuidv4()}`;
-      createdAgentIds.push(agentId);
-
-      await agentService.registerAgent({
-        agent_id: agentId,
+      await registerFresh({
         hostname: 'limited-agent.local',
         provider_capabilities: ['nmap'],
         reachable_networks: ['8.8.8.0/24'],
-      }, ORG);
+      });
 
       // Try to find agent for completely different network
       const bestAgent = await agentService.findBestAgentForNetworks(['9.9.9.0/24'], 'nmap', ORG);
@@ -314,15 +284,11 @@ describe('Discovery Agent Routing Integration Tests', () => {
 
     it('should not route to agent without required provider capability', async () => {
       // Register agent with only NMAP capability
-      const agentId = `test-agent-${uuidv4()}`;
-      createdAgentIds.push(agentId);
-
-      await agentService.registerAgent({
-        agent_id: agentId,
+      await registerFresh({
         hostname: 'nmap-only-agent.local',
         provider_capabilities: ['nmap'],
         reachable_networks: ['8.8.8.0/24'],
-      }, ORG);
+      });
 
       // Try to find agent for SSH discovery
       const bestAgent = await agentService.findBestAgentForNetworks(['8.8.8.0/24'], 'ssh', ORG);
@@ -334,15 +300,11 @@ describe('Discovery Agent Routing Integration Tests', () => {
   describe('Agent Fault Tolerance (Offline Handling)', () => {
     it('should mark stale agents as offline', async () => {
       // Register agent
-      const agentId = `test-agent-${uuidv4()}`;
-      createdAgentIds.push(agentId);
-
-      await agentService.registerAgent({
-        agent_id: agentId,
+      const agentId = await registerFresh({
         hostname: 'stale-agent.local',
         provider_capabilities: ['nmap'],
         reachable_networks: ['10.0.0.0/8'],
-      }, ORG);
+      });
 
       // Manually set last_heartbeat_at to 10 minutes ago
       await pool.query(
@@ -364,26 +326,18 @@ describe('Discovery Agent Routing Integration Tests', () => {
 
     it('should not route to offline agents', async () => {
       // Register active agent
-      const activeAgentId = `test-agent-${uuidv4()}`;
-      createdAgentIds.push(activeAgentId);
-
-      await agentService.registerAgent({
-        agent_id: activeAgentId,
+      const activeAgentId = await registerFresh({
         hostname: 'active-agent.local',
         provider_capabilities: ['nmap'],
         reachable_networks: ['8.8.8.0/24'],
-      }, ORG);
+      });
 
       // Register offline agent
-      const offlineAgentId = `test-agent-${uuidv4()}`;
-      createdAgentIds.push(offlineAgentId);
-
-      await agentService.registerAgent({
-        agent_id: offlineAgentId,
+      const offlineAgentId = await registerFresh({
         hostname: 'offline-agent.local',
         provider_capabilities: ['nmap'],
         reachable_networks: ['8.8.8.0/24'],
-      }, ORG);
+      });
 
       // Mark second agent as offline
       await pool.query(
@@ -403,15 +357,11 @@ describe('Discovery Agent Routing Integration Tests', () => {
 
     it('should handle agent recovery (offline to active)', async () => {
       // Register agent
-      const agentId = `test-agent-${uuidv4()}`;
-      createdAgentIds.push(agentId);
-
-      await agentService.registerAgent({
-        agent_id: agentId,
+      const agentId = await registerFresh({
         hostname: 'recovery-agent.local',
         provider_capabilities: ['nmap'],
         reachable_networks: ['8.8.8.0/24'],
-      }, ORG);
+      });
 
       // Mark agent as offline
       await pool.query(
@@ -445,25 +395,19 @@ describe('Discovery Agent Routing Integration Tests', () => {
   describe('Agent Listing and Filtering', () => {
     it('should list all agents', async () => {
       // Register multiple agents
-      const agent1Id = `test-agent-${uuidv4()}`;
-      createdAgentIds.push(agent1Id);
-      await agentService.registerAgent({
-        agent_id: agent1Id,
+      const agent1Id = await registerFresh({
         hostname: 'list-agent-1.local',
         provider_capabilities: ['nmap'],
         reachable_networks: ['10.0.0.0/8'],
         tags: ['datacenter-1'],
-      }, ORG);
+      });
 
-      const agent2Id = `test-agent-${uuidv4()}`;
-      createdAgentIds.push(agent2Id);
-      await agentService.registerAgent({
-        agent_id: agent2Id,
+      const agent2Id = await registerFresh({
         hostname: 'list-agent-2.local',
         provider_capabilities: ['ssh'],
         reachable_networks: ['192.168.0.0/16'],
         tags: ['datacenter-2'],
-      }, ORG);
+      });
 
       // List all agents
       const agents = await agentService.listAgents(ORG);
@@ -475,24 +419,18 @@ describe('Discovery Agent Routing Integration Tests', () => {
 
     it('should filter agents by status', async () => {
       // Register active agent
-      const activeAgentId = `test-agent-${uuidv4()}`;
-      createdAgentIds.push(activeAgentId);
-      await agentService.registerAgent({
-        agent_id: activeAgentId,
+      const activeAgentId = await registerFresh({
         hostname: 'active-filter.local',
         provider_capabilities: ['nmap'],
         reachable_networks: ['10.0.0.0/8'],
-      }, ORG);
+      });
 
       // Register and mark another agent offline
-      const offlineAgentId = `test-agent-${uuidv4()}`;
-      createdAgentIds.push(offlineAgentId);
-      await agentService.registerAgent({
-        agent_id: offlineAgentId,
+      const offlineAgentId = await registerFresh({
         hostname: 'offline-filter.local',
         provider_capabilities: ['nmap'],
         reachable_networks: ['10.0.0.0/8'],
-      }, ORG);
+      });
 
       await pool.query(
         `UPDATE discovery_agents SET status = 'offline' WHERE agent_id = $1`,
@@ -512,24 +450,18 @@ describe('Discovery Agent Routing Integration Tests', () => {
 
     it('should filter agents by provider capability', async () => {
       // Register agent with NMAP capability
-      const nmapAgentId = `test-agent-${uuidv4()}`;
-      createdAgentIds.push(nmapAgentId);
-      await agentService.registerAgent({
-        agent_id: nmapAgentId,
+      const nmapAgentId = await registerFresh({
         hostname: 'nmap-filter.local',
         provider_capabilities: ['nmap'],
         reachable_networks: ['10.0.0.0/8'],
-      }, ORG);
+      });
 
       // Register agent with SSH capability
-      const sshAgentId = `test-agent-${uuidv4()}`;
-      createdAgentIds.push(sshAgentId);
-      await agentService.registerAgent({
-        agent_id: sshAgentId,
+      const sshAgentId = await registerFresh({
         hostname: 'ssh-filter.local',
         provider_capabilities: ['ssh', 'snmp'],
         reachable_networks: ['10.0.0.0/8'],
-      }, ORG);
+      });
 
       // Filter by NMAP provider
       const nmapAgents = await agentService.listAgents(ORG, { provider: 'nmap' });
@@ -542,25 +474,19 @@ describe('Discovery Agent Routing Integration Tests', () => {
 
     it('should filter agents by tags', async () => {
       // Register agents with different tags
-      const prod1Id = `test-agent-${uuidv4()}`;
-      createdAgentIds.push(prod1Id);
-      await agentService.registerAgent({
-        agent_id: prod1Id,
+      const prod1Id = await registerFresh({
         hostname: 'prod-agent-1.local',
         provider_capabilities: ['nmap'],
         reachable_networks: ['10.0.0.0/8'],
         tags: ['production', 'datacenter-1'],
-      }, ORG);
+      });
 
-      const dev1Id = `test-agent-${uuidv4()}`;
-      createdAgentIds.push(dev1Id);
-      await agentService.registerAgent({
-        agent_id: dev1Id,
+      const dev1Id = await registerFresh({
         hostname: 'dev-agent-1.local',
         provider_capabilities: ['nmap'],
         reachable_networks: ['192.168.0.0/16'],
         tags: ['development'],
-      }, ORG);
+      });
 
       // Filter by production tag
       const prodAgents = await agentService.listAgents(ORG, { tags: ['production'] });
@@ -571,15 +497,11 @@ describe('Discovery Agent Routing Integration Tests', () => {
 
   describe('Agent Deletion', () => {
     it('should delete agent', async () => {
-      const agentId = `test-agent-${uuidv4()}`;
-      createdAgentIds.push(agentId);
-
-      await agentService.registerAgent({
-        agent_id: agentId,
+      const agentId = await registerFresh({
         hostname: 'delete-test.local',
         provider_capabilities: ['nmap'],
         reachable_networks: ['10.0.0.0/8'],
-      }, ORG);
+      });
 
       // Verify agent exists
       const agentBefore = await agentService.getAgent(agentId, ORG);

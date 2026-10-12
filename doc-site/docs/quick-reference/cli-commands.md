@@ -65,82 +65,71 @@ cmdb worker restart aws-discovery-worker
 
 ## Job Management
 
+::: warning Jobs CLI tenant boundary
+`cmdb jobs list`, `status`, `retry` and `cancel` only see and change jobs owned by your
+organization. They call the authenticated `/api/v1/jobs` routes and need a JWT
+(`--token <jwt>` or `CMDB_ACCESS_TOKEN`) or an API key (the global `--key <key>` option or
+`CMDB_API_KEY`); without one they exit nonzero with
+`Jobs API authentication required (--key or --token)`. Each command takes an actual queue
+name such as `discovery-nmap` or `etl-sync` (not `discovery:aws`), and there is no
+tokenless or `--all` listing. A foreign, missing or organization-less job ID reads the same
+as any other unavailable job, and raw worker results, progress, failure reasons, stack
+traces and job configuration are never printed. Direct Redis or database credentials are
+infrastructure access, not a tenant identity.
+
+`cmdb jobs stats` and `cmdb jobs run:etl` are unavailable: they exit nonzero with
+`Queue operations require the authenticated API; global operations unavailable` without
+contacting BullMQ or the scheduler, until a separately authorized platform-operations API
+exists (HP1-S6/P-6). See the repository README, "Jobs CLI tenant boundary".
+:::
+
 ### List Jobs
 
 ```bash
-# List jobs in a queue
-cmdb jobs list discovery:aws
+# List your organization's waiting jobs in a queue (API key as a global option)
+cmdb --key "$CMDB_API_KEY" jobs list discovery-nmap
 
-# List with status filter
-cmdb jobs list discovery:aws -s failed
-cmdb jobs list discovery:aws -s completed
-cmdb jobs list discovery:aws -s active
-
-# Limit results
-cmdb jobs list discovery:aws -l 50
-
-# List all jobs
-cmdb jobs list --all
+# Filter by state (waiting, active, completed, failed) and limit (1-100), with a JWT
+cmdb jobs list discovery-nmap -s failed --token "$CMDB_ACCESS_TOKEN"
+cmdb jobs list etl-sync -s completed -l 50 --token "$CMDB_ACCESS_TOKEN"
 ```
 
 ### Run Jobs
 
 ```bash
-# Run discovery job
-cmdb jobs run:discovery aws
-cmdb jobs run:discovery azure
-cmdb jobs run:discovery gcp
+# Queue Nmap discovery for your organization (requires the write permission)
+cmdb jobs run:discovery nmap --token "$CMDB_ACCESS_TOKEN"
+cmdb jobs run:discovery nmap -c '{"targets":["<public-cidr>"]}' --token "$CMDB_ACCESS_TOKEN"
 
-# Run discovery with config
-cmdb jobs run:discovery aws -c '{"regions":["us-east-1"]}'
-cmdb jobs run:discovery azure -c '{"regions":["eastus"]}'
-
-# Run ETL job
+# Unavailable: exits nonzero with the fixed refusal above (HP1-S6/P-6)
 cmdb jobs run:etl sync
-cmdb jobs run:etl full-refresh
-cmdb jobs run:etl change-detection
-cmdb jobs run:etl reconciliation
-
-# Run ETL with config
-cmdb jobs run:etl sync -c '{"batchSize":2000}'
 ```
+
+The API accepts `nmap`, `active-directory` and `snmp` discovery; `ssh` returns
+`Credential-backed discovery execution unavailable` (HP1-S5), and cloud providers are not
+triggerable through this route. Loopback, link-local, private (RFC1918/ULA) and metadata
+targets are refused (see the README discovery egress restriction).
 
 ### Job Status & Control
 
 ```bash
-# Check job status
-cmdb jobs status discovery:aws <job-id>
-cmdb jobs status etl:sync <job-id>
+# Status of one of your jobs (no raw worker output)
+cmdb jobs status discovery-nmap <job-id> --token "$CMDB_ACCESS_TOKEN"
 
-# Get job logs
-cmdb jobs logs <job-id>
-
-# Retry failed job
-cmdb jobs retry discovery:aws <job-id>
-
-# Cancel job
-cmdb jobs cancel discovery:aws <job-id>
-
-# Clean completed jobs
-cmdb jobs clean discovery:aws
-cmdb jobs clean etl:sync
+# Retry or cancel one of your jobs (requires the write permission)
+cmdb jobs retry discovery-nmap <job-id> --token "$CMDB_ACCESS_TOKEN"
+cmdb jobs cancel etl-sync <job-id> --token "$CMDB_ACCESS_TOKEN"
 ```
+
+Retry and cancel on the `discovery-active-directory`, `discovery-snmp` and `discovery-ai`
+queues return `Queue mutation unavailable`.
 
 ### Queue Statistics
 
 ```bash
-# Get all queue statistics
+# Unavailable: exits nonzero with the fixed refusal above (HP1-S6/P-6)
 cmdb jobs stats
-
-# Get specific queue stats
-cmdb jobs stats discovery:aws
-cmdb jobs stats etl:sync
-
-# Get queue metrics
-cmdb jobs metrics discovery:aws
-
-# Get worker status
-cmdb jobs workers
+cmdb jobs stats discovery-nmap
 ```
 
 ## Data Mart Operations
@@ -530,14 +519,13 @@ cmdb worker start all -s
 # 3. Check worker status
 cmdb worker status
 
-# 4. Run discovery
-cmdb jobs run:discovery aws
+# 4. Run discovery for your organization (JWT or --key required)
+cmdb jobs run:discovery nmap --token "$CMDB_ACCESS_TOKEN"
 
 # 5. Monitor job
-cmdb jobs status discovery:aws <job-id>
+cmdb jobs status discovery-nmap <job-id> --token "$CMDB_ACCESS_TOKEN"
 
-# 6. Check queue stats
-cmdb jobs stats discovery:aws
+# 6. (Queue stats are unavailable: `cmdb jobs stats` exits nonzero, HP1-S6/P-6)
 
 # 7. Trigger ETL sync
 cmdb datamart sync --wait
@@ -561,17 +549,16 @@ cmdb logs tail --level error
 # 3. Check worker status
 cmdb worker status
 
-# 4. Check failed jobs
-cmdb jobs list discovery:aws -s failed
+# 4. Check your organization's failed jobs
+cmdb jobs list discovery-nmap -s failed --token "$CMDB_ACCESS_TOKEN"
 
-# 5. Get job details
-cmdb jobs status discovery:aws <job-id>
+# 5. Get job details (no raw worker output)
+cmdb jobs status discovery-nmap <job-id> --token "$CMDB_ACCESS_TOKEN"
 
-# 6. Check queue depth
-cmdb jobs stats
+# 6. (Queue depth is unavailable: `cmdb jobs stats` exits nonzero, HP1-S6/P-6)
 
 # 7. Retry failed job
-cmdb jobs retry discovery:aws <job-id>
+cmdb jobs retry discovery-nmap <job-id> --token "$CMDB_ACCESS_TOKEN"
 ```
 
 ### Maintenance Workflow
@@ -589,9 +576,7 @@ cmdb datamart validate --check-counts --check-relationships
 # 4. Run reconciliation
 cmdb datamart reconcile --auto-resolve
 
-# 5. Clean old jobs
-cmdb jobs clean discovery:aws
-cmdb jobs clean etl:sync
+# 5. (Cleaning queues is a global operation and unavailable, HP1-S6/P-6)
 
 # 6. View system stats
 cmdb analytics summary
@@ -601,11 +586,13 @@ cmdb db stats
 ## Environment Variables for CLI
 
 ```bash
-# API endpoint
-export CMDB_API_URL=https://cmdb.example.com
+# API endpoint (including /api/v1; default http://localhost:3000/api/v1)
+export CMDB_API_URL=https://cmdb.example.com/api/v1
 
-# API authentication
+# API authentication: an API key, or a JWT for the jobs commands
+# (`cmdb jobs list/status/retry/cancel/run:discovery` need one of the two)
 export CMDB_API_KEY=your-api-key
+export CMDB_ACCESS_TOKEN=your-jwt
 
 # Default output format
 export CMDB_OUTPUT_FORMAT=json

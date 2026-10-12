@@ -9,18 +9,24 @@ Queue management system for job orchestration using BullMQ with Redis backend.
 
 ## Queue Names
 
+These are the actual BullMQ queue names (`QUEUE_NAMES` in `@cmdb/common`) that the jobs CLI
+and the `/api/v1/jobs/:queueName` routes take.
+
 ### Discovery Queues
-- `discovery:aws` - AWS resource discovery
-- `discovery:azure` - Azure resource discovery
-- `discovery:gcp` - GCP resource discovery
-- `discovery:ssh` - SSH-based server discovery
-- `discovery:nmap` - Network mapping
+- `discovery-aws` - AWS resource discovery
+- `discovery-azure` - Azure resource discovery
+- `discovery-gcp` - GCP resource discovery
+- `discovery-ssh` - SSH-based server discovery
+- `discovery-nmap` - Network mapping
+- `discovery-active-directory` - Active Directory discovery (read-only through the jobs API)
+- `discovery-snmp` - SNMP discovery (read-only through the jobs API)
+- `discovery-ai` - AI discovery (read-only through the jobs API)
 
 ### ETL Queues
-- `etl:sync` - Incremental Neo4j → PostgreSQL sync
-- `etl:change-detection` - CI change detection
-- `etl:reconciliation` - Data reconciliation
-- `etl:full-refresh` - Full data refresh
+- `etl-sync` - Incremental Neo4j → PostgreSQL sync
+- `etl-change-detection` - CI change detection
+- `etl-reconciliation` - Data reconciliation
+- `etl-full-refresh` - Full data refresh
 
 ## CLI Commands
 
@@ -51,31 +57,35 @@ cmdb worker resume aws-discovery-worker
 
 ### Job Management
 
+::: warning Jobs CLI tenant boundary
+`cmdb jobs list`, `status`, `retry` and `cancel` only see and change jobs owned by your
+organization, through the authenticated `/api/v1/jobs` routes. They need a JWT
+(`--token <jwt>` or `CMDB_ACCESS_TOKEN`) or an API key (the global `--key <key>` option or
+`CMDB_API_KEY`) and an actual queue name such as `discovery-nmap` or `etl-sync`; there is no
+tokenless or `--all` listing, and raw worker results, progress, failure reasons, stack
+traces and job configuration are never printed. `cmdb jobs stats` and `cmdb jobs run:etl`
+exit nonzero with `Queue operations require the authenticated API; global operations
+unavailable` until a separately authorized platform-operations API exists (HP1-S6/P-6).
+See the repository README, "Jobs CLI tenant boundary", and the
+[CLI commands reference](/quick-reference/cli-commands#job-management).
+:::
+
 ```bash
-# List jobs in a queue
-cmdb jobs list discovery:aws
-cmdb jobs list discovery:aws -s failed -l 50
+# List your organization's jobs in a queue
+cmdb jobs list discovery-nmap --token "$CMDB_ACCESS_TOKEN"
+cmdb jobs list discovery-nmap -s failed -l 50 --token "$CMDB_ACCESS_TOKEN"
 
-# Run discovery job
-cmdb jobs run:discovery aws
-cmdb jobs run:discovery azure -c '{"regions":["eastus"]}'
+# Queue Nmap discovery for your organization
+cmdb jobs run:discovery nmap --token "$CMDB_ACCESS_TOKEN"
 
-# Run ETL job
+# Check, retry or cancel one of your jobs
+cmdb jobs status discovery-nmap <job-id> --token "$CMDB_ACCESS_TOKEN"
+cmdb jobs retry discovery-nmap <job-id> --token "$CMDB_ACCESS_TOKEN"
+cmdb jobs cancel discovery-nmap <job-id> --token "$CMDB_ACCESS_TOKEN"
+
+# Unavailable: exit nonzero with the fixed refusal (HP1-S6/P-6)
 cmdb jobs run:etl sync
-cmdb jobs run:etl full-refresh
-
-# Check job status
-cmdb jobs status discovery:aws <job-id>
-
-# Retry failed job
-cmdb jobs retry discovery:aws <job-id>
-
-# Cancel job
-cmdb jobs cancel discovery:aws <job-id>
-
-# Get queue statistics
 cmdb jobs stats
-cmdb jobs stats discovery:aws
 ```
 
 ## API Endpoints
@@ -375,35 +385,33 @@ cmdb worker status
 # Check worker status
 cmdb worker status
 
-# Check queue stats
-cmdb jobs stats discovery:aws
-
-# Resume paused queue
-curl -X POST http://localhost:3000/api/v1/queues/discovery:aws/resume
+# List your organization's waiting jobs in the queue
+cmdb jobs list discovery-nmap -s waiting --token "$CMDB_ACCESS_TOKEN"
 ```
+
+Queue statistics, pause and resume are global operations: `cmdb jobs stats` refuses (see
+above), and `/api/v1/queues/*/stats`, `/pause` and `/resume` return **403**
+`Global queue operations unavailable` for every caller (HP1-S6/P-6).
 
 ### High failure rate
 ```bash
-# Get failed jobs
-cmdb jobs list discovery:aws -s failed
+# List your organization's failed jobs
+cmdb jobs list discovery-nmap -s failed --token "$CMDB_ACCESS_TOKEN"
 
-# Check error patterns
-curl http://localhost:3000/api/v1/jobs/discovery:aws/failed | jq '.data.failedJobs[].failedReason'
-
-# Review job logs
-cmdb jobs status discovery:aws <job-id>
+# The API's failed-jobs listing (bounded start/end, caller-owned jobs only)
+curl -H "Authorization: Bearer $CMDB_ACCESS_TOKEN" \
+  "http://localhost:3000/api/v1/jobs/discovery-nmap/failed?start=0&end=49"
 ```
+
+Failed jobs are returned without raw failure reasons, stack traces, results or job data
+(the web UI shows the fixed text `Job failed`); investigate failure causes in the worker
+logs.
 
 ### Memory issues
-```bash
-# Clean completed jobs
-curl -X POST http://localhost:3000/api/v1/jobs/discovery:aws/clean
 
-# Check queue depth
-cmdb jobs stats
-
-# Adjust concurrency (in worker config)
-```
+Cleaning a queue (`POST /api/v1/jobs/:queueName/clean`) and queue-depth statistics are
+global operations and return **403** `Global queue operations unavailable` for every caller
+(HP1-S6/P-6). Adjust concurrency in the worker configuration.
 
 ## Best Practices
 

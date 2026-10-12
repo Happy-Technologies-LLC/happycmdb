@@ -383,19 +383,15 @@ export class CIController {
 
       // Transform relationships to match frontend expectations
       const transformedRelationships = relationships.map((rel: any) => {
-        const relatedCI = convertNeo4jTypes(rel._ci);
-
-        // Determine actual direction from Neo4j relationship start/end nodes
-        // If current CI is the start node, it's an outgoing relationship
-        const isOutgoing = rel._startNodeId === id;
-
+        const sourceCI = convertNeo4jTypes(rel._startCI);
+        const targetCI = convertNeo4jTypes(rel._endCI);
         return {
-          id: `${id}-${rel._type}-${relatedCI.id}`,
+          id: `${rel._startNodeId}-${rel._type}-${rel._endNodeId}`,
           type: rel._type,
-          source_ci_id: isOutgoing ? id : relatedCI.id,
-          target_ci_id: isOutgoing ? relatedCI.id : id,
-          source_ci: isOutgoing ? convertNeo4jTypes(ci) : relatedCI,
-          target_ci: isOutgoing ? relatedCI : convertNeo4jTypes(ci),
+          source_ci_id: rel._startNodeId,
+          target_ci_id: rel._endNodeId,
+          source_ci: sourceCI,
+          target_ci: targetCI,
           properties: convertNeo4jTypes(rel._properties),
           created_at: rel._properties?.created_at ? convertNeo4jTypes(rel._properties.created_at) : new Date().toISOString()
         };

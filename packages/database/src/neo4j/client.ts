@@ -55,10 +55,11 @@ export class CITraversalLimitError extends Error {
 export interface CITraversalWork {
   remaining: number;
   nodes: Set<string>;
+  pending: Promise<void>;
 }
 
 export function createCITraversalWork(): CITraversalWork {
-  return { remaining: MAX_CI_TRAVERSAL_WORK, nodes: new Set<string>() };
+  return { remaining: MAX_CI_TRAVERSAL_WORK, nodes: new Set<string>(), pending: Promise.resolve() };
 }
 
 type TraversalEdge = {
@@ -445,44 +446,57 @@ export class Neo4jClient {
       : `(source)<-[relationship${relation}]-(target:CI)`;
     try {
       for (let distance = 1; distance <= depth && frontier.length > 0; distance++) {
-        const result = await session.run(
-          `UNWIND $frontier AS sourceId
-           MATCH (source:CI {id: sourceId})
-           ${organizationId === null ? '' : 'WHERE source.organization_id = $organizationId'}
-           MATCH ${pattern}
-           ${organizationId === null ? '' : 'WHERE target.organization_id = $organizationId'}
-           RETURN DISTINCT source, target, relationship,
-                  startNode(relationship).id AS startNodeId,
-                  endNode(relationship).id AS endNodeId
-           LIMIT $rowLimit`,
-          { frontier, organizationId, rowLimit: neo4j.int(work.remaining + 1) },
-          { timeout: CI_TRAVERSAL_QUERY_TIMEOUT_MS }
-        );
-        if (result.records.length > work.remaining) throw new CITraversalLimitError();
-        work.remaining -= result.records.length;
-        const next: string[] = [];
-        for (const record of result.records) {
-          const source = record.get('source') as Node;
-          const target = record.get('target') as Node;
-          const relationship = record.get('relationship') as Relationship;
-          const sourceId = source.properties['id'] as string;
-          const targetId = target.properties['id'] as string;
-          nodeById.set(sourceId, source);
-          edges.push({
-            source, target, relationship,
-            startNodeId: record.get('startNodeId'),
-            endNodeId: record.get('endNodeId'),
-          });
-          if (discovered.has(targetId)) continue;
-          discovered.add(targetId);
-          work.nodes.add(targetId);
-          if (work.nodes.size > MAX_CI_TRAVERSAL_NODES) throw new CITraversalLimitError();
-          nodeById.set(targetId, target);
-          parents.set(targetId, { sourceId, relationship });
-          nodes.push({ node: target, distance });
-          next.push(targetId);
+        // GraphQL sibling aliases share this object. Queue each hop so the
+        // remaining allowance is reserved before any Neo4j statement begins.
+        const previous = work.pending;
+        let release!: () => void;
+        work.pending = new Promise<void>(resolve => { release = resolve; });
+        try {
+          await previous;
+          const reserved = work.remaining;
+          if (reserved === 0) throw new CITraversalLimitError();
+          work.remaining -= reserved;
+          const result = await session.run(
+            `UNWIND $frontier AS sourceId
+             MATCH (source:CI {id: sourceId})
+             ${organizationId === null ? '' : 'WHERE source.organization_id = $organizationId'}
+             MATCH ${pattern}
+             ${organizationId === null ? '' : 'WHERE target.organization_id = $organizationId'}
+             RETURN DISTINCT source, target, relationship,
+                    startNode(relationship).id AS startNodeId,
+                    endNode(relationship).id AS endNodeId
+             LIMIT $rowLimit`,
+            { frontier, organizationId, rowLimit: neo4j.int(reserved + 1) },
+            { timeout: CI_TRAVERSAL_QUERY_TIMEOUT_MS }
+          );
+          if (result.records.length > reserved) throw new CITraversalLimitError();
+          work.remaining += reserved - result.records.length;
+          const next: string[] = [];
+          for (const record of result.records) {
+            const source = record.get('source') as Node;
+            const target = record.get('target') as Node;
+            const relationship = record.get('relationship') as Relationship;
+            const sourceId = source.properties['id'] as string;
+            const targetId = target.properties['id'] as string;
+            nodeById.set(sourceId, source);
+            edges.push({
+              source, target, relationship,
+              startNodeId: record.get('startNodeId'),
+              endNodeId: record.get('endNodeId'),
+            });
+            if (discovered.has(targetId)) continue;
+            discovered.add(targetId);
+            work.nodes.add(targetId);
+            if (work.nodes.size > MAX_CI_TRAVERSAL_NODES) throw new CITraversalLimitError();
+            nodeById.set(targetId, target);
+            parents.set(targetId, { sourceId, relationship });
+            nodes.push({ node: target, distance });
+            next.push(targetId);
+          }
+          frontier = next;
+        } finally {
+          release();
         }
-        frontier = next;
       }
       const paths: Path[] = [];
       for (const { node } of nodes) {
@@ -511,7 +525,7 @@ export class Neo4jClient {
   ) {
     const seen = new Set<string>();
     const relationships: Array<{
-      _type: string; _ci: CI; _properties: Record<string, unknown>;
+      _type: string; _ci: CI; _startCI: CI; _endCI: CI; _properties: Record<string, unknown>;
       _startNodeId: string; _endNodeId: string;
     }> = [];
     for (const orientation of (direction === 'both' ? ['out', 'in'] : [direction]) as Array<'out' | 'in'>) {
@@ -521,9 +535,14 @@ export class Neo4jClient {
         const key = JSON.stringify([type, edge.startNodeId, edge.endNodeId]);
         if (seen.has(key)) continue;
         seen.add(key);
+        const origin = this.recordToCI(edge.source);
+        const neighbor = this.recordToCI(edge.target);
+        const originIsStart = edge.startNodeId === origin._id;
         relationships.push({
           _type: type,
-          _ci: this.recordToCI(edge.target),
+          _ci: neighbor,
+          _startCI: originIsStart ? origin : neighbor,
+          _endCI: originIsStart ? neighbor : origin,
           _properties: edge.relationship.properties,
           _startNodeId: edge.startNodeId,
           _endNodeId: edge.endNodeId,

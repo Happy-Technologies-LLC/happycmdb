@@ -61,6 +61,24 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+      - name: Require private design-system read token
+        env:
+          DESIGN_SYSTEM_REPO_TOKEN: ${{ secrets.DESIGN_SYSTEM_REPO_TOKEN }}
+        run: |
+          if [ -z "$DESIGN_SYSTEM_REPO_TOKEN" ]; then
+            echo "DESIGN_SYSTEM_REPO_TOKEN missing" >&2
+            exit 1
+          fi
+      - name: Checkout pinned private design system (0.7.3)
+        uses: actions/checkout@v4
+        with:
+          repository: Happy-Technologies-LLC/happy-technologies-design-system
+          ref: b58a68c8f7e64171facb72f4657fb1f54212f07d
+          token: ${{ secrets.DESIGN_SYSTEM_REPO_TOKEN }}
+          persist-credentials: false
+          path: happy-technologies-design-system
+      - name: Link design system at npm file dependency path
+        run: ln -s "$GITHUB_WORKSPACE/happy-technologies-design-system" "$GITHUB_WORKSPACE/../happy-technologies-design-system"
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:

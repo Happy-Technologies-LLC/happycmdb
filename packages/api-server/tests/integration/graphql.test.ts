@@ -33,7 +33,9 @@ describe('GraphQL API Integration Tests', () => {
   // authToken belongs to an ORG_A admin, orgBToken to an ORG_B admin.
   let authToken: string;
   let orgBToken: string;
-  const users = [ORG_A, ORG_B].map(organizationId => ({
+  let orgASecondToken: string;
+  let orgAThirdToken: string;
+  const users = [ORG_A, ORG_B, ORG_A, ORG_A].map(organizationId => ({
     organizationId,
     id: uuidv4(),
     username: `gqladmin${uuidv4().replace(/-/g, '').slice(0, 20)}`,
@@ -120,6 +122,8 @@ describe('GraphQL API Integration Tests', () => {
     };
     authToken = await login(users[0].username);
     orgBToken = await login(users[1].username);
+    orgASecondToken = await login(users[2].username);
+    orgAThirdToken = await login(users[3].username);
 
     ({ server } = await createGraphQLServer(app));
   }, 120000);
@@ -154,6 +158,75 @@ describe('GraphQL API Integration Tests', () => {
       _error: 'Unauthorized',
       _message: 'Authentication failed',
     });
+  });
+
+  it('rejects one-request aliases and concurrent verified-principal and tenant GraphQL work', async () => {
+    const aliases = `{ ${Array.from({ length: 21 }, (_, index) => `a${index}: __typename`).join(' ')} }`;
+    const oversized = await execute(aliases);
+    expect(oversized.status).toBe(400);
+    expect(oversized.body).toEqual({ errors: [{
+      message: 'GraphQL request limit exceeded',
+      extensions: { code: 'GRAPHQL_REQUEST_LIMIT_EXCEEDED' },
+    }] });
+
+    const graph = getNeo4jClient();
+    const originalGetSession = graph.getSession.bind(graph);
+    const entered: Array<() => void> = [];
+    const releases: Array<() => void> = [];
+    const firstStarted = new Promise<void>(resolve => { entered.push(resolve); });
+    const secondStarted = new Promise<void>(resolve => { entered.push(resolve); });
+    const thirdStarted = new Promise<void>(resolve => { entered.push(resolve); });
+    const sessions = jest.spyOn(graph, 'getSession').mockImplementation(() => {
+      const session = originalGetSession();
+      const originalRun = session.run.bind(session);
+      session.run = (async (...args: Parameters<typeof originalRun>) => {
+        const statement = String(args[0]);
+        if (statement.includes('MATCH (ci:CI)') && statement.includes('ORDER BY ci.created_at DESC')) {
+          const index = releases.length;
+          await new Promise<void>(resolve => {
+            releases.push(resolve);
+            entered[index]();
+          });
+        }
+        return originalRun(...args);
+      }) as typeof session.run;
+      return session;
+    });
+    const query = '{ getCIs { _id } }';
+    const first = execute(query, undefined, authToken).then(response => response);
+    try {
+      await firstStarted;
+      const sameRequest = execute(query, undefined, authToken).then(response => response);
+      await Promise.race([sameRequest, secondStarted]);
+      if (releases[1]) releases[1]();
+      const same = await sameRequest;
+      expect(same.status).toBe(429);
+      expect(same.body).toEqual({ errors: [{
+        message: 'GraphQL concurrent request limit exceeded', extensions: { code: 'TOO_MANY_REQUESTS' },
+      }] });
+
+      const second = execute(query, undefined, orgASecondToken).then(response => response);
+      try {
+        await secondStarted;
+        const overflowRequest = execute(query, undefined, orgAThirdToken).then(response => response);
+        await Promise.race([overflowRequest, thirdStarted]);
+        if (releases[2]) releases[2]();
+        const overflow = await overflowRequest;
+        expect(overflow.status).toBe(429);
+        expect(overflow.body).toEqual({ errors: [{
+          message: 'GraphQL concurrent request limit exceeded', extensions: { code: 'TOO_MANY_REQUESTS' },
+        }] });
+        expect(releases).toHaveLength(2);
+        expect(expectSuccess(await execute('{ __typename }', undefined, orgBToken)).__typename).toBe('Query');
+      } finally {
+        releases.forEach(release => release());
+        expect((await second).status).toBe(200);
+      }
+    } finally {
+      releases.forEach(release => release());
+      sessions.mockRestore();
+      expect((await first).status).toBe(200);
+    }
   });
 
   it('retrieves a CI by ID and returns null for an unknown ID', async () => {

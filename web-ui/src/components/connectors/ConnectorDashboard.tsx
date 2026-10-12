@@ -45,7 +45,7 @@ export const ConnectorDashboard: React.FC = () => {
     connector_type: connector.type,
     status: connector.status as ConnectorStatus,
     records_synced: Math.floor(Math.random() * 1000),
-    created_at: connector.last_run_at || connector.created_at || new Date().toISOString(),
+    created_at: connector.created_at,
   }));
 
   return (
@@ -132,11 +132,9 @@ export const ConnectorDashboard: React.FC = () => {
                       <p className="text-xs text-muted-foreground capitalize mb-2">
                         {connector.type.replace('_', ' ')}
                       </p>
-                      {connector.last_run_at && (
-                        <p className="text-xs text-muted-foreground">
-                          Last run: {new Date(connector.last_run_at).toLocaleDateString()}
-                        </p>
-                      )}
+                      <p className="text-xs text-muted-foreground">
+                        Updated: {new Date(connector.updated_at).toLocaleDateString()}
+                      </p>
                     </div>
                   </div>
                 </LiquidGlass>

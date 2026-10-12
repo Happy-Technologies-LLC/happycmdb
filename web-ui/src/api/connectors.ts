@@ -41,7 +41,20 @@ interface ConfigInput {
   enabled_resources?: string[];
 }
 
-function displayConfig(row: PublicConfig) {
+/** Only fields returned by the public connector-config projection. Run timestamps
+ * belong to the separate /runs response, not to configuration records. */
+export interface ConnectorConfigSummary {
+  id: string;
+  name: string;
+  description?: string;
+  type: string;
+  status: string;
+  schedule_enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+function displayConfig(row: PublicConfig): ConnectorConfigSummary {
   return {
     id: row.id, name: row.name, description: row.description,
     type: row.connector_type, status: row.enabled ? 'active' : 'inactive',

@@ -242,10 +242,7 @@ export const ConnectorMarketplace: React.FC = () => {
                 </div>
 
                 <div className="text-sm text-muted-foreground mb-3">
-                  Last run:{' '}
-                  {connector.last_run_at
-                    ? new Date(connector.last_run_at).toLocaleString()
-                    : 'Never'}
+                  Updated: {new Date(connector.updated_at).toLocaleString()}
                 </div>
 
                 <div className="flex gap-2">

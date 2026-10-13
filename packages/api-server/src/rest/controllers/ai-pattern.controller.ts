@@ -26,6 +26,7 @@ import {
   AIToolCall,
 } from '@cmdb/ai-discovery';
 import { AuthenticatedRequest } from '../../middleware/auth.middleware';
+import { requestOrganizationId } from '../../middleware/auth.middleware';
 
 /**
  * Raw ai_discovery_sessions row shape, mirroring the column mapping
@@ -163,7 +164,7 @@ export class AIPatternController {
         offset: offsetParam,
       };
 
-      const patterns = await this.storage.listPatterns(filters);
+      const patterns = await this.storage.listPatterns(filters, requestOrganizationId(req));
 
       res.json({
         success: true,
@@ -186,13 +187,13 @@ export class AIPatternController {
   async getPattern(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
       const { patternId } = req.params;
-      const pattern = await this.storage.getPattern(patternId);
+      const pattern = await this.storage.getTenantPattern(patternId, requestOrganizationId(req));
 
       if (!pattern) {
         res.status(404).json({
           success: false,
           error: 'Not Found',
-          message: `Pattern '${patternId}' not found`,
+          message: 'Pattern not found',
         });
         return;
       }
@@ -426,13 +427,13 @@ export class AIPatternController {
   async validatePattern(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
       const { patternId } = req.params;
-      const pattern = await this.storage.getPattern(patternId);
+      const pattern = await this.storage.getTenantPattern(patternId, requestOrganizationId(req));
 
       if (!pattern) {
         res.status(404).json({
           success: false,
           error: 'Not Found',
-          message: `Pattern '${patternId}' not found`,
+          message: 'Pattern not found',
         });
         return;
       }
@@ -460,13 +461,13 @@ export class AIPatternController {
   async getPatternUsage(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
       const { patternId } = req.params;
-      const pattern = await this.storage.getPattern(patternId);
+      const pattern = await this.storage.getTenantPattern(patternId, requestOrganizationId(req));
 
       if (!pattern) {
         res.status(404).json({
           success: false,
           error: 'Not Found',
-          message: `Pattern '${patternId}' not found`,
+          message: 'Pattern not found',
         });
         return;
       }
@@ -481,7 +482,7 @@ export class AIPatternController {
         return;
       }
 
-      const usage = await this.storage.getPatternUsage(patternId, days);
+      const usage = await this.storage.getPatternUsage(patternId, days, requestOrganizationId(req));
 
       res.json({
         success: true,
@@ -504,18 +505,18 @@ export class AIPatternController {
   async getPatternHistory(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
       const { patternId } = req.params;
-      const pattern = await this.storage.getPattern(patternId);
+      const pattern = await this.storage.getTenantPattern(patternId, requestOrganizationId(req));
 
       if (!pattern) {
         res.status(404).json({
           success: false,
           error: 'Not Found',
-          message: `Pattern '${patternId}' not found`,
+          message: 'Pattern not found',
         });
         return;
       }
 
-      const history = await this.workflow.getPatternHistory(patternId);
+      const history = await this.workflow.getPatternHistory(patternId, requestOrganizationId(req));
 
       res.json({
         success: true,
@@ -597,9 +598,9 @@ export class AIPatternController {
         req.query['maxCost'] !== undefined ? parseFloat(String(req.query['maxCost'])) : undefined;
       const search = req.query['search'] ? String(req.query['search']) : undefined;
 
-      const conditions: string[] = [];
-      const values: unknown[] = [];
-      let paramIndex = 1;
+      const conditions: string[] = ['organization_id = $1'];
+      const values: unknown[] = [requestOrganizationId(req)];
+      let paramIndex = 2;
 
       if (status && status.length > 0) {
         conditions.push(`status = ANY($${paramIndex++})`);
@@ -678,15 +679,15 @@ export class AIPatternController {
       const { sessionId } = req.params;
 
       const result = await this.postgresClient.query(
-        'SELECT * FROM ai_discovery_sessions WHERE session_id = $1 AND ai_model <> $2',
-        [sessionId, PATTERN_MATCHER_SYNTHETIC_MODEL]
+        'SELECT * FROM ai_discovery_sessions WHERE session_id = $1 AND organization_id = $2 AND ai_model <> $3',
+        [sessionId, requestOrganizationId(req), PATTERN_MATCHER_SYNTHETIC_MODEL]
       );
 
       if (result.rows.length === 0) {
         res.status(404).json({
           success: false,
           error: 'Not Found',
-          message: `Session '${sessionId}' not found`,
+          message: 'Session not found',
         });
         return;
       }
@@ -714,21 +715,21 @@ export class AIPatternController {
       const { sessionId } = req.params;
 
       const result = await this.postgresClient.query(
-        'SELECT * FROM ai_discovery_sessions WHERE session_id = $1',
-        [sessionId]
+        'SELECT * FROM ai_discovery_sessions WHERE session_id = $1 AND organization_id = $2 AND ai_model <> $3',
+        [sessionId, requestOrganizationId(req), PATTERN_MATCHER_SYNTHETIC_MODEL]
       );
 
       if (result.rows.length === 0) {
         res.status(404).json({
           success: false,
           error: 'Not Found',
-          message: `Session '${sessionId}' not found`,
+          message: 'Session not found',
         });
         return;
       }
 
       const session = this.rowToSession(result.rows[0]);
-      const analysis = await this.analyzer.analyzeSession(session);
+      const analysis = await this.analyzer.analyzeSession(session, requestOrganizationId(req));
 
       res.json({
         success: true,
@@ -758,6 +759,7 @@ export class AIPatternController {
     try {
       const dateFrom = req.query['dateFrom'] ? String(req.query['dateFrom']) : null;
       const dateTo = req.query['dateTo'] ? String(req.query['dateTo']) : null;
+      const organizationId = requestOrganizationId(req);
 
       const totalCostResult = await this.postgresClient.query(
         `SELECT
@@ -765,10 +767,10 @@ export class AIPatternController {
           COUNT(*) as total_sessions,
           AVG(estimated_cost) as avg_cost_per_session
         FROM ai_discovery_sessions
-        WHERE ai_model <> $1
+        WHERE ai_model <> $1 AND organization_id = $4
           AND ($2::timestamp IS NULL OR started_at >= $2)
           AND ($3::timestamp IS NULL OR started_at <= $3)`,
-        [PATTERN_MATCHER_SYNTHETIC_MODEL, dateFrom, dateTo]
+        [PATTERN_MATCHER_SYNTHETIC_MODEL, dateFrom, dateTo, organizationId]
       );
 
       const costByModelResult = await this.postgresClient.query(
@@ -777,12 +779,12 @@ export class AIPatternController {
           SUM(estimated_cost) as cost,
           COUNT(*) as sessions
         FROM ai_discovery_sessions
-        WHERE ai_model <> $1
+        WHERE ai_model <> $1 AND organization_id = $4
           AND ($2::timestamp IS NULL OR started_at >= $2)
           AND ($3::timestamp IS NULL OR started_at <= $3)
         GROUP BY ai_model
         ORDER BY cost DESC NULLS LAST`,
-        [PATTERN_MATCHER_SYNTHETIC_MODEL, dateFrom, dateTo]
+        [PATTERN_MATCHER_SYNTHETIC_MODEL, dateFrom, dateTo, organizationId]
       );
 
       // ::text casts to a bare `YYYY-MM-DD` (no time/offset suffix) so the
@@ -796,13 +798,13 @@ export class AIPatternController {
           SUM(estimated_cost) as cost,
           COUNT(*) as sessions
         FROM ai_discovery_sessions
-        WHERE ai_model <> $1
+        WHERE ai_model <> $1 AND organization_id = $4
           AND ($2::timestamp IS NULL OR started_at >= $2)
           AND ($3::timestamp IS NULL OR started_at <= $3)
         GROUP BY DATE(started_at)
         ORDER BY date DESC
         LIMIT 90`,
-        [PATTERN_MATCHER_SYNTHETIC_MODEL, dateFrom, dateTo]
+        [PATTERN_MATCHER_SYNTHETIC_MODEL, dateFrom, dateTo, organizationId]
       );
 
       // Pattern hits: successful fast-path matches in the same window, from
@@ -810,11 +812,12 @@ export class AIPatternController {
       // writes to on every pattern execution).
       const patternHitsResult = await this.postgresClient.query(
         `SELECT COUNT(*) as pattern_hits
-         FROM ai_pattern_usage
-         WHERE success = true
-           AND ($1::timestamp IS NULL OR "timestamp" >= $1)
-           AND ($2::timestamp IS NULL OR "timestamp" <= $2)`,
-        [dateFrom, dateTo]
+         FROM ai_pattern_usage u
+         JOIN ai_discovery_sessions s ON s.session_id = u.session_id
+         WHERE u.success = true AND s.organization_id = $3
+           AND ($1::timestamp IS NULL OR u."timestamp" >= $1)
+           AND ($2::timestamp IS NULL OR u."timestamp" <= $2)`,
+        [dateFrom, dateTo, organizationId]
       );
 
       const totalCost = parseFloat(totalCostResult.rows[0]?.total_cost || 0);
@@ -872,22 +875,23 @@ export class AIPatternController {
    * Get pattern-learning-flywheel statistics.
    * GET /ai/analytics/learning
    */
-  async getLearningStats(_req: AuthenticatedRequest, res: Response): Promise<void> {
+  async getLearningStats(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
+      const organizationId = requestOrganizationId(req);
       const patternStatsResult = await this.postgresClient.query(`
         SELECT
           COUNT(*) FILTER (WHERE status = 'active') as active_patterns,
           COUNT(*) FILTER (WHERE status = 'review') as pending_review,
           COUNT(*) as total_patterns,
           AVG(confidence_score) as avg_confidence
-        FROM ai_discovery_patterns
-      `);
+        FROM ai_discovery_patterns WHERE organization_id = $1
+      `, [organizationId]);
 
       const sessionResult = await this.postgresClient.query(
         `SELECT COUNT(*) as total_sessions
          FROM ai_discovery_sessions
-         WHERE status = 'completed' AND ai_model <> $1`,
-        [PATTERN_MATCHER_SYNTHETIC_MODEL]
+         WHERE status = 'completed' AND ai_model <> $1 AND organization_id = $2`,
+        [PATTERN_MATCHER_SYNTHETIC_MODEL, organizationId]
       );
 
       // auto-approval-system is the fixed performed_by PatternWorkflow.
@@ -896,11 +900,12 @@ export class AIPatternController {
       // ai_pattern_review_history, 004_run_logs_and_pattern_review.sql).
       const approvalResult = await this.postgresClient.query(`
         SELECT
-          COUNT(*) FILTER (WHERE performed_by = 'auto-approval-system') as auto_approved,
-          COUNT(*) FILTER (WHERE performed_by <> 'auto-approval-system') as manual_approved
-        FROM ai_pattern_review_history
-        WHERE action = 'approve'
-      `);
+          COUNT(*) FILTER (WHERE h.performed_by = 'auto-approval-system') as auto_approved,
+          COUNT(*) FILTER (WHERE h.performed_by <> 'auto-approval-system') as manual_approved
+        FROM ai_pattern_review_history h
+        JOIN ai_discovery_patterns p ON p.pattern_id = h.pattern_id
+        WHERE h.action = 'approve' AND p.organization_id = $1
+      `, [organizationId]);
 
       const stats = {
         totalPatterns: parseInt(patternStatsResult.rows[0]?.total_patterns || 0, 10),

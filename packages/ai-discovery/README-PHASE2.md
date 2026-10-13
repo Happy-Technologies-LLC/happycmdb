@@ -1,7 +1,13 @@
 # AI Discovery - Phase 2: Hybrid Architecture
 
-**Status**: ✅ Phase 2 Complete
+**Status**: Historical design; tenant global lifecycle currently disabled
 **Features**: Pattern Matching + AI Discovery + Industry Pattern Library
+
+**Historical design reference, not an enabled tenant runbook.** HAP-496
+disables global pattern lifecycle/storage writes for every tenant role until
+HP1-S6/P-6 platform authority exists. The SQL/programmatic pattern-import
+examples below are not authorized tenant actions. Internal active-pattern
+matching and execution telemetry remain available.
 
 ---
 

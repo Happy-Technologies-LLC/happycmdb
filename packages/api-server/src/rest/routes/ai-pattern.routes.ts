@@ -19,7 +19,7 @@
  * authentication only.
  */
 
-import { Router } from 'express';
+import { Router, type Request, type Response } from 'express';
 import Joi from 'joi';
 import { AIPatternController } from '../controllers/ai-pattern.controller';
 import { validateRequest, validateOptional } from '../middleware/validation.middleware';
@@ -28,6 +28,13 @@ import { getAuthMiddleware } from '../../auth/auth-bootstrap';
 export const aiPatternRoutes = Router();
 const controller = new AIPatternController();
 const authMiddleware = getAuthMiddleware();
+// Global pattern authority is not implemented (HP1-S6/P-6). Tenant roles,
+// including admin, cannot authorize mutations of the shared pattern library.
+const denyGlobalPatternWrite = (_req: Request, res: Response): void => {
+  res.status(403).json({
+    success: false, error: 'Forbidden', message: 'Global pattern writes are unavailable',
+  });
+};
 
 // ============================================================================
 // Validation schemas
@@ -99,6 +106,7 @@ const patternUsageSchema = Joi.object({
 // GET /api/v1/ai/patterns
 aiPatternRoutes.get(
   '/patterns',
+  authMiddleware.requireOrganization(),
   validateOptional(listPatternsSchema, 'query'),
   controller.listPatterns.bind(controller)
 );
@@ -108,17 +116,17 @@ aiPatternRoutes.get(
 aiPatternRoutes.post(
   '/patterns/compile',
   authMiddleware.requirePermission('write'),
-  controller.compileAndSubmitPatterns.bind(controller)
+  denyGlobalPatternWrite
 );
 
 // GET /api/v1/ai/patterns/:patternId
-aiPatternRoutes.get('/patterns/:patternId', controller.getPattern.bind(controller));
+aiPatternRoutes.get('/patterns/:patternId', authMiddleware.requireOrganization(), controller.getPattern.bind(controller));
 
 // DELETE /api/v1/ai/patterns/:patternId
 aiPatternRoutes.delete(
   '/patterns/:patternId',
   authMiddleware.requirePermission('write'),
-  controller.deletePattern.bind(controller)
+  denyGlobalPatternWrite
 );
 
 // ============================================================================
@@ -130,7 +138,7 @@ aiPatternRoutes.post(
   '/patterns/:patternId/submit',
   authMiddleware.requirePermission('write'),
   validateOptional(submitPatternSchema, 'body'),
-  controller.submitForReview.bind(controller)
+  denyGlobalPatternWrite
 );
 
 // POST /api/v1/ai/patterns/:patternId/approve
@@ -138,7 +146,7 @@ aiPatternRoutes.post(
   '/patterns/:patternId/approve',
   authMiddleware.requireRole('admin'),
   validateOptional(approvePatternSchema, 'body'),
-  controller.approvePattern.bind(controller)
+  denyGlobalPatternWrite
 );
 
 // POST /api/v1/ai/patterns/:patternId/reject
@@ -146,14 +154,14 @@ aiPatternRoutes.post(
   '/patterns/:patternId/reject',
   authMiddleware.requirePermission('write'),
   validateRequest(rejectPatternSchema, 'body'),
-  controller.rejectPattern.bind(controller)
+  denyGlobalPatternWrite
 );
 
 // POST /api/v1/ai/patterns/:patternId/activate
 aiPatternRoutes.post(
   '/patterns/:patternId/activate',
   authMiddleware.requireRole('admin'),
-  controller.activatePattern.bind(controller)
+  denyGlobalPatternWrite
 );
 
 // POST /api/v1/ai/patterns/:patternId/deactivate
@@ -161,21 +169,22 @@ aiPatternRoutes.post(
   '/patterns/:patternId/deactivate',
   authMiddleware.requirePermission('write'),
   validateOptional(deactivatePatternSchema, 'body'),
-  controller.deactivatePattern.bind(controller)
+  denyGlobalPatternWrite
 );
 
 // POST /api/v1/ai/patterns/:patternId/validate
-aiPatternRoutes.post('/patterns/:patternId/validate', controller.validatePattern.bind(controller));
+aiPatternRoutes.post('/patterns/:patternId/validate', authMiddleware.requireOrganization(), controller.validatePattern.bind(controller));
 
 // GET /api/v1/ai/patterns/:patternId/usage
 aiPatternRoutes.get(
   '/patterns/:patternId/usage',
+  authMiddleware.requireOrganization(),
   validateOptional(patternUsageSchema, 'query'),
   controller.getPatternUsage.bind(controller)
 );
 
 // GET /api/v1/ai/patterns/:patternId/history
-aiPatternRoutes.get('/patterns/:patternId/history', controller.getPatternHistory.bind(controller));
+aiPatternRoutes.get('/patterns/:patternId/history', authMiddleware.requireOrganization(), controller.getPatternHistory.bind(controller));
 
 // ============================================================================
 // Discovery Session Routes
@@ -184,15 +193,16 @@ aiPatternRoutes.get('/patterns/:patternId/history', controller.getPatternHistory
 // GET /api/v1/ai/sessions
 aiPatternRoutes.get(
   '/sessions',
+  authMiddleware.requireOrganization(),
   validateOptional(listSessionsSchema, 'query'),
   controller.listSessions.bind(controller)
 );
 
 // GET /api/v1/ai/sessions/:sessionId
-aiPatternRoutes.get('/sessions/:sessionId', controller.getSession.bind(controller));
+aiPatternRoutes.get('/sessions/:sessionId', authMiddleware.requireOrganization(), controller.getSession.bind(controller));
 
 // POST /api/v1/ai/sessions/:sessionId/analyze
-aiPatternRoutes.post('/sessions/:sessionId/analyze', controller.analyzeSession.bind(controller));
+aiPatternRoutes.post('/sessions/:sessionId/analyze', authMiddleware.requireOrganization(), controller.analyzeSession.bind(controller));
 
 // ============================================================================
 // Analytics Routes
@@ -201,9 +211,10 @@ aiPatternRoutes.post('/sessions/:sessionId/analyze', controller.analyzeSession.b
 // GET /api/v1/ai/analytics/cost
 aiPatternRoutes.get(
   '/analytics/cost',
+  authMiddleware.requireOrganization(),
   validateOptional(costAnalyticsSchema, 'query'),
   controller.getCostAnalytics.bind(controller)
 );
 
 // GET /api/v1/ai/analytics/learning
-aiPatternRoutes.get('/analytics/learning', controller.getLearningStats.bind(controller));
+aiPatternRoutes.get('/analytics/learning', authMiddleware.requireOrganization(), controller.getLearningStats.bind(controller));

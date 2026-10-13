@@ -7,7 +7,7 @@
  */
 
 import { DiscoveryPattern, AIDiscoverySession } from './types';
-import { PatternStorageService, type PatternReviewAction } from './pattern-storage';
+import { PatternStorageService, type PatternReviewAction, requirePlatformPatternAuthority } from './pattern-storage';
 import { PatternValidator, ValidationResult } from './pattern-validator';
 import { PatternCompiler } from './pattern-compiler';
 import { logger } from '@cmdb/common';
@@ -49,6 +49,7 @@ export class PatternWorkflow {
     error?: string;
     internal?: boolean;
   }> {
+    requirePlatformPatternAuthority();
     try {
       const pattern = await this.storage.getPattern(patternId);
       if (!pattern) {
@@ -123,6 +124,7 @@ export class PatternWorkflow {
     error?: string;
     internal?: boolean;
   }> {
+    requirePlatformPatternAuthority();
     try {
       const pattern = await this.storage.getPattern(patternId);
       if (!pattern) {
@@ -182,6 +184,7 @@ export class PatternWorkflow {
     error?: string;
     internal?: boolean;
   }> {
+    requirePlatformPatternAuthority();
     try {
       const pattern = await this.storage.getPattern(patternId);
       if (!pattern) {
@@ -231,6 +234,7 @@ export class PatternWorkflow {
     error?: string;
     internal?: boolean;
   }> {
+    requirePlatformPatternAuthority();
     try {
       const pattern = await this.storage.getPattern(patternId);
       if (!pattern) {
@@ -280,6 +284,7 @@ export class PatternWorkflow {
     error?: string;
     internal?: boolean;
   }> {
+    requirePlatformPatternAuthority();
     try {
       const pattern = await this.storage.getPattern(patternId);
       if (!pattern) {
@@ -323,6 +328,7 @@ export class PatternWorkflow {
    * (for patterns with very high confidence and usage)
    */
   async autoApproveIfEligible(patternId: string): Promise<boolean> {
+    requirePlatformPatternAuthority();
     try {
       const pattern = await this.storage.getPattern(patternId);
       if (!pattern) {
@@ -395,13 +401,15 @@ export class PatternWorkflow {
    * at all, since rejecting/deactivating a pattern doesn't leave a trace on
    * ai_discovery_patterns itself.
    */
-  async getPatternHistory(patternId: string): Promise<WorkflowAction[]> {
-    const pattern = await this.storage.getPattern(patternId);
+  async getPatternHistory(patternId: string, organizationId?: string): Promise<WorkflowAction[]> {
+    const pattern = organizationId
+      ? await this.storage.getTenantPattern(patternId, organizationId)
+      : await this.storage.getPattern(patternId);
     if (!pattern) {
       return [];
     }
 
-    const reviewHistory = await this.storage.getReviewHistory(patternId);
+    const reviewHistory = await this.storage.getReviewHistory(patternId, organizationId);
     if (reviewHistory.length > 0) {
       return reviewHistory.map(entry => ({
         action: entry.action,
@@ -451,6 +459,7 @@ export class PatternWorkflow {
     submitted: number;
     errors: string[];
   }> {
+    requirePlatformPatternAuthority();
     const errors: string[] = [];
     let compiled = 0;
     let submitted = 0;

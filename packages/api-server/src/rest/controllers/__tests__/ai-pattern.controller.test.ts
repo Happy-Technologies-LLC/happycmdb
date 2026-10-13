@@ -54,6 +54,7 @@ describe('AIPatternController', () => {
   let mockStorage: {
     listPatterns: jest.Mock<(...args: never[]) => Promise<unknown>>;
     getPattern: jest.Mock<(patternId: string) => Promise<unknown>>;
+    getTenantPattern: jest.Mock<(patternId: string, organizationId: string) => Promise<unknown>>;
     deletePattern: jest.Mock<(patternId: string) => Promise<boolean>>;
     getPatternUsage: jest.Mock<(...args: never[]) => Promise<unknown>>;
   };
@@ -87,7 +88,7 @@ describe('AIPatternController', () => {
       params: {},
       query: {},
       body: {},
-      user: { _userId: 'user-1', _username: 'alice', _role: 'operator', _type: 'access' },
+      user: { _userId: 'user-1', _username: 'alice', _role: 'operator', _type: 'access', _organizationId: 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa' },
       ...overrides,
     } as unknown as AuthenticatedRequest;
   }
@@ -96,6 +97,7 @@ describe('AIPatternController', () => {
     mockStorage = {
       listPatterns: jest.fn(),
       getPattern: jest.fn(),
+      getTenantPattern: jest.fn(),
       deletePattern: jest.fn(),
       getPatternUsage: jest.fn(),
     };
@@ -156,7 +158,7 @@ describe('AIPatternController', () => {
         search: 'nginx',
         limit: undefined,
         offset: undefined,
-      });
+      }, 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa');
       expect(bodyOf(res)).toEqual({ success: true, data: [{ patternId: 'pat-1' }] });
     });
 
@@ -178,14 +180,15 @@ describe('AIPatternController', () => {
       await controller.listPatterns(req, res);
 
       expect(mockStorage.listPatterns).toHaveBeenCalledWith(
-        expect.objectContaining({ status: ['draft', 'review'] })
+        expect.objectContaining({ status: ['draft', 'review'] }),
+        'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa'
       );
     });
   });
 
   describe('getPattern', () => {
     it('returns 404 for an unknown pattern id', async () => {
-      mockStorage.getPattern.mockResolvedValue(null);
+      mockStorage.getTenantPattern.mockResolvedValue(null);
       const req = authedReq({ params: { patternId: 'missing' } });
       const res = mockRes();
 
@@ -195,7 +198,7 @@ describe('AIPatternController', () => {
     });
 
     it('returns the pattern when found', async () => {
-      mockStorage.getPattern.mockResolvedValue({ patternId: 'pat-1' });
+      mockStorage.getTenantPattern.mockResolvedValue({ patternId: 'pat-1' });
       const req = authedReq({ params: { patternId: 'pat-1' } });
       const res = mockRes();
 
@@ -383,7 +386,7 @@ describe('AIPatternController', () => {
 
   describe('validatePattern', () => {
     it('returns 404 for an unknown pattern', async () => {
-      mockStorage.getPattern.mockResolvedValue(null);
+      mockStorage.getTenantPattern.mockResolvedValue(null);
       const req = authedReq({ params: { patternId: 'missing' } });
       const res = mockRes();
 
@@ -394,7 +397,7 @@ describe('AIPatternController', () => {
     });
 
     it('validates and returns the result for a known pattern', async () => {
-      mockStorage.getPattern.mockResolvedValue({ patternId: 'pat-1' });
+      mockStorage.getTenantPattern.mockResolvedValue({ patternId: 'pat-1' });
       mockValidator.validate.mockResolvedValue({ isValid: false, errors: ['bad code'] });
       const req = authedReq({ params: { patternId: 'pat-1' } });
       const res = mockRes();
@@ -407,7 +410,7 @@ describe('AIPatternController', () => {
 
   describe('getPatternUsage', () => {
     it('returns 400 when days is out of bounds', async () => {
-      mockStorage.getPattern.mockResolvedValue({ patternId: 'pat-1' });
+      mockStorage.getTenantPattern.mockResolvedValue({ patternId: 'pat-1' });
       const req = authedReq({ params: { patternId: 'pat-1' }, query: { days: '9999' } });
       const res = mockRes();
 
@@ -418,20 +421,20 @@ describe('AIPatternController', () => {
     });
 
     it('defaults to 30 days and returns usage records', async () => {
-      mockStorage.getPattern.mockResolvedValue({ patternId: 'pat-1' });
+      mockStorage.getTenantPattern.mockResolvedValue({ patternId: 'pat-1' });
       mockStorage.getPatternUsage.mockResolvedValue([{ patternId: 'pat-1', success: true }]);
       const req = authedReq({ params: { patternId: 'pat-1' } });
       const res = mockRes();
 
       await controller.getPatternUsage(req, res);
 
-      expect(mockStorage.getPatternUsage).toHaveBeenCalledWith('pat-1', 30);
+      expect(mockStorage.getPatternUsage).toHaveBeenCalledWith('pat-1', 30, 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa');
     });
   });
 
   describe('getPatternHistory', () => {
     it('returns 404 for an unknown pattern', async () => {
-      mockStorage.getPattern.mockResolvedValue(null);
+      mockStorage.getTenantPattern.mockResolvedValue(null);
       const req = authedReq({ params: { patternId: 'missing' } });
       const res = mockRes();
 
@@ -484,10 +487,11 @@ describe('AIPatternController', () => {
       await controller.listSessions(req, res);
 
       const [sql, params] = mockQuery.mock.calls[0];
-      expect(sql).toContain('ai_model = $2');
-      expect(sql).toContain('status = ANY($1)');
-      expect(sql).toContain('ai_model <> $3');
-      expect(params).toEqual([['completed'], 'claude-sonnet-4.5', 'pattern-matcher', 100, 0]);
+      expect(sql).toContain('organization_id = $1');
+      expect(sql).toContain('status = ANY($2)');
+      expect(sql).toContain('ai_model = $3');
+      expect(sql).toContain('ai_model <> $4');
+      expect(params).toEqual(['aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa', ['completed'], 'claude-sonnet-4.5', 'pattern-matcher', 100, 0]);
     });
 
     it('accepts a status array (axios status[]=... serialization) alongside a comma-separated string', async () => {
@@ -498,7 +502,7 @@ describe('AIPatternController', () => {
       await controller.listSessions(req, res);
 
       const [, params] = mockQuery.mock.calls[0];
-      expect(params[0]).toEqual(['completed', 'failed']);
+      expect(params[1]).toEqual(['completed', 'failed']);
     });
 
     it('includes synthetic pattern-matcher sessions only when includeSynthetic=true', async () => {
@@ -543,8 +547,8 @@ describe('AIPatternController', () => {
       await controller.getSession(req, res);
 
       const [sql, params] = mockQuery.mock.calls[0];
-      expect(sql).toContain('ai_model <> $2');
-      expect(params).toEqual(['synthetic-session', 'pattern-matcher']);
+      expect(sql).toContain('organization_id = $2');
+      expect(params).toEqual(['synthetic-session', 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa', 'pattern-matcher']);
       expect(statusOf(res)).toBe(404);
     });
   });
@@ -595,7 +599,8 @@ describe('AIPatternController', () => {
       await controller.analyzeSession(req, res);
 
       expect(mockAnalyzer.analyzeSession).toHaveBeenCalledWith(
-        expect.objectContaining({ sessionId: 'sess-1', aiModel: 'claude-sonnet-4.5', estimatedCost: 0.01 })
+        expect.objectContaining({ sessionId: 'sess-1', aiModel: 'claude-sonnet-4.5', estimatedCost: 0.01 }),
+        'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa'
       );
       expect(bodyOf(res)).toEqual({
         success: true,
@@ -625,7 +630,7 @@ describe('AIPatternController', () => {
 
       const [firstSql, firstParams] = mockQuery.mock.calls[0];
       expect(firstSql).toContain("ai_model <> $1");
-      expect(firstParams).toEqual(['pattern-matcher', null, null]);
+      expect(firstParams).toEqual(['pattern-matcher', null, null, 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa']);
 
       const [costByDaySql] = mockQuery.mock.calls[2];
       expect(costByDaySql).toContain('DATE(started_at)::text as date');

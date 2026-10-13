@@ -1,6 +1,15 @@
 # Phase 3: Pattern Learning and Compilation System
 
-**Status**: ✅ Complete
+**Status**: Historical design; global lifecycle currently disabled
+
+**Historical design reference, not an enabled runbook.** HAP-496 disables
+global pattern compilation and lifecycle mutations until HP1-S6/P-6 platform
+authority exists. Examples below predate tenant provenance: direct
+`analyzer.analyzeSession(session)` without a verified organization now fails
+closed, and `workflow.compileAndSubmitPatterns()` is unavailable. Use the
+authenticated, owner-scoped REST analysis route instead. Existing active
+patterns remain available to the internal matcher fast path.
+
 **Date**: October 2024
 
 ## Overview

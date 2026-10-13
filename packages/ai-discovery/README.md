@@ -271,43 +271,17 @@ Read file contents via SSH.
 
 ## Pattern Learning
 
-The system automatically learns patterns from AI discoveries and compiles them into reusable code:
-
-```typescript
-import {
-  HybridDiscoveryOrchestrator,
-  PatternAnalyzer,
-  PatternWorkflow
-} from '@cmdb/ai-discovery';
-
-const orchestrator = new HybridDiscoveryOrchestrator({
-  aiEnabled: true,
-  patternMatchingEnabled: true
-});
-
-const analyzer = new PatternAnalyzer();
-const workflow = new PatternWorkflow();
-
-// Perform discovery
-const result = await orchestrator.discover({
-  targetHost: '10.0.1.50',
-  targetPort: 8080
-});
-
-// If AI was used, check if we found a pattern
-if (result.method === 'ai') {
-  const analysis = await analyzer.analyzeSession(result.session);
-
-  if (analysis.isPattern) {
-    console.log('🎉 Pattern detected!');
-    console.log(`   Found ${analysis.candidate.signature.sessionCount} similar discoveries`);
-    console.log(`   Suggested name: ${analysis.candidate.suggestedName}`);
-
-    // Automatically compile and submit
-    await workflow.compileAndSubmitPatterns();
-  }
-}
-```
+Pattern candidate analysis is available only for a session proven to belong to
+the authenticated caller's organization. The REST
+`POST /api/v1/ai/sessions/{sessionId}/analyze` route verifies ownership before
+loading the session and bounds all similarity candidates to that tenant.
+Calling `PatternAnalyzer.analyzeSession(session, organizationId)` directly
+requires a **verified** organization ID; do not infer it from the host, session
+ID, pattern, or request body. Historical sessions have no tenant provenance
+and cannot be analyzed through the API. Global pattern compilation and
+lifecycle writes are disabled until HP1-S6/P-6 platform authority exists.
+Internal active-pattern matching and synthetic execution telemetry remain
+available.
 
 **The Learning Flywheel**:
 1. AI discovers unknown service (20s, $0.02)

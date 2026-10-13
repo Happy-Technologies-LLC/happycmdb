@@ -34,6 +34,52 @@ http://localhost:3000/api-docs/openapi.yaml
 ```
 
 ## API Endpoints Overview
+### AI discovery tenancy (`/api/v1/ai`)
+
+`GET /sessions`, `GET /sessions/{sessionId}` and
+`POST /sessions/{sessionId}/analyze` require an authenticated, valid organization
+claim. Session lists and analysis candidates use only rows stamped for that
+organization. Foreign, missing and legacy `NULL` organization session IDs
+receive the same 404 response for detail/analysis; legacy rows are not
+backfilled from hosts, IDs, or pattern references. Migration
+`027_ai_session_provenance.sql` adds nullable organization metadata to sessions
+and patterns only. The current image has no trusted writer of real AI discovery
+session or pattern ownership; real legacy sessions and unattributed patterns
+remain unavailable until a verified owner-aware writer/recovery process exists.
+Pattern-matcher telemetry stays synthetic and does not grant ownership to
+historical sessions.
+
+`GET /patterns`, `GET /patterns/{patternId}`,
+`GET /patterns/{patternId}/history`, `POST /patterns/{patternId}/validate`
+and `GET /patterns/{patternId}/usage` expose only caller-attributed patterns.
+Usage additionally requires the joined execution session to carry the same
+organization; foreign and legacy NULL session hosts/ports stay hidden even
+when the pattern itself belongs to the caller. Foreign, unattributed and
+missing pattern IDs all return the same 404. No existing explicit curated
+global source marker or platform administrator authority exists on main:
+seeded industry patterns, authors and filenames do not imply tenant or
+platform ownership. `GET /analytics/cost` and `/analytics/learning` aggregate
+only caller-attributed sessions, usage, patterns and approval history; a tenant
+with no attributable rows receives zero/empty results.
+
+`POST /patterns/compile`, `DELETE /patterns/{patternId}` and the five
+`POST /patterns/{patternId}/{submit|approve|reject|activate|deactivate}`
+transitions return 403 for every tenant role, including admin, regardless of
+pattern ID. Shared storage/workflow lifecycle entry points also refuse writes.
+No platform authority is implemented on main; HP1-S6/P-6 must establish it
+before these global operations can be restored. This change does not gate
+internal pattern-matcher execution telemetry.
+
+Candidate rollout order is installed snapshot, `027` candidate migrator, then
+the matching image. The forward migration is metadata-only, with no backfill
+or index scan. Manual rollback is transactional, uses bounded lock/statement
+timeouts, drops both metadata columns, and removes its migration ledger entry
+for reapply; revert the `027`-aware image first. Dropping stamped ownership
+destroys provenance, so preserve it before any authorized rollback. Reverting
+to an older unscoped image reopens the original exposures; this is not a
+live recovery instruction or approval. No staging/live migration or rollout
+is performed by this change.
+
 
 ### Authentication (`/api/v1/auth`)
 - `POST /auth/login` - User login with JWT

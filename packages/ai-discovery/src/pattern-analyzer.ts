@@ -45,11 +45,14 @@ export class PatternAnalyzer {
   /**
    * Analyze a discovery session to see if it contributes to a pattern
    */
-  async analyzeSession(session: AIDiscoverySession): Promise<{
+  async analyzeSession(session: AIDiscoverySession, organizationId?: string): Promise<{
     isPattern: boolean;
     signature: PatternSignature | null;
     candidate: PatternCandidate | null;
   }> {
+    // Analysis can include other sessions in a candidate. Without a verified
+    // tenant, it must never run the similarity query.
+    if (!organizationId) throw new Error('Organization required for session analysis');
     try {
       // Only analyze successful sessions with high confidence
       if (
@@ -71,7 +74,7 @@ export class PatternAnalyzer {
       const signature = this.generateSignature(session);
 
       // Find similar sessions
-      const similarSessions = await this.findSimilarSessions(signature);
+      const similarSessions = await this.findSimilarSessions(signature, organizationId);
 
       logger.info('Pattern analysis', {
         sessionId: session.sessionId,
@@ -184,7 +187,8 @@ export class PatternAnalyzer {
    * Find sessions with similar signatures
    */
   private async findSimilarSessions(
-    signature: PatternSignature
+    signature: PatternSignature,
+    organizationId: string
   ): Promise<AIDiscoverySession[]> {
     const client = await this.postgresClient.getClient();
 
@@ -201,11 +205,12 @@ export class PatternAnalyzer {
           created_at
         FROM ai_discovery_sessions
         WHERE status = 'completed'
+          AND organization_id = $1
           AND confidence_score >= 0.8
           AND jsonb_array_length(tool_calls) >= 2
         ORDER BY started_at DESC
         LIMIT 100`,
-        []
+        [organizationId]
       );
 
       const similarSessions: AIDiscoverySession[] = [];

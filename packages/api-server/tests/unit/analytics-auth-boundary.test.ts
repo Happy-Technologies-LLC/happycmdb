@@ -16,6 +16,19 @@ jest.mock('../../src/auth/neo4j-auth.repository', () => ({
     findUserById: async (id: string) => Object.values(users).find(user => user._id === id) ?? null,
   })),
 }));
+// The unit suite has no database/JWT environment. Provide only inert local
+// auth config; database clients below still throw if a reader is reached.
+jest.mock('@cmdb/common', () => ({
+  ...jest.requireActual('@cmdb/common'),
+  loadConfig: () => ({
+    auth: {
+      jwt: { secret: 'local-only-analytics-test-secret', accessTokenExpiresIn: '15m',
+        refreshTokenExpiresIn: '7d', issuer: 'analytics-test', audience: 'analytics-test' },
+      bcrypt: { rounds: 4 },
+      apiKeys: { headerName: 'x-api-key' },
+    },
+  }),
+}));
 jest.mock('@cmdb/database', () => ({
   getPostgresClient: jest.fn(() => ({ query: jest.fn(() => { throw new Error('no database access expected'); }) })),
   getNeo4jClient: jest.fn(() => ({ getSession: jest.fn(() => { throw new Error('no graph access expected'); }) })),

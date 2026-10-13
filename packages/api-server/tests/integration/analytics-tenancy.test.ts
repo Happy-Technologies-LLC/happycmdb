@@ -105,28 +105,33 @@ it('keeps every REST aggregate within own dimension and both relationship endpoi
 });
 
 it('scopes GraphQL aggregates and inventory through mounted execution', async () => {
-  const result = await gql('a', `{ analytics {
-    getCICountsByType { _ciType _count }
-    getCICountsByStatus { _status _count }
-    getCICountsByEnvironment { _environment _count }
-    getRelationshipCounts { _relationshipType _count }
-    getDiscoveryStats { _summary { _totalCis } }
-    getDiscoveryTimeline { _count }
-    getTopConnectedCIs { _ciId _relationshipCount }
-    getDependencyDepthStats { _topCis { _ciId } }
-    getDashboardStats { _summary { _totalCis _totalRelationships } }
-    getInventoryReport { _ciId _relationshipCount }
-  } }`);
-  expect(result.body.errors).toBeUndefined();
-  const data = result.body.data.analytics;
-  expect(data.getDashboardStats._summary).toMatchObject({ _totalCis: 2, _totalRelationships: 1 });
-  expect(data.getDiscoveryStats._summary._totalCis).toBe(2);
-  expect(data.getDiscoveryTimeline[0]._count).toBe(2);
-  expect(data.getRelationshipCounts).toEqual([{ _relationshipType: 'DEPENDS_ON', _count: 1 }]);
-  expect(data.getTopConnectedCIs.find((row: { _ciId: string }) => row._ciId === 'analytics-a')._relationshipCount).toBe(1);
-  expect(data.getInventoryReport.map((row: { _ciId: string }) => row._ciId).sort()).toEqual(['analytics-a', 'analytics-a2']);
-  expect(JSON.stringify(data)).not.toContain('analytics-b');
-  expect(JSON.stringify(data)).not.toContain('secret');
+  // The production request-admission budget caps aggregate fanout; exercise
+  // each reader as a separate authenticated operation, not one oversized alias query.
+  const readAnalytics = async (field: string) => {
+    const response = await gql('a', `{ analytics { ${field} } }`);
+    expect(response.body.errors).toBeUndefined();
+    expect(JSON.stringify(response.body.data)).not.toContain('analytics-b');
+    expect(JSON.stringify(response.body.data)).not.toContain('secret');
+    return response.body.data.analytics;
+  };
+  expect((await readAnalytics('getCICountsByType { _ciType _count }')).getCICountsByType)
+    .toEqual([{ _ciType: 'server', _count: 2 }]);
+  expect((await readAnalytics('getCICountsByStatus { _status _count }')).getCICountsByStatus)
+    .toEqual([{ _status: 'active', _count: 2 }]);
+  expect((await readAnalytics('getCICountsByEnvironment { _environment _count }')).getCICountsByEnvironment)
+    .toEqual([{ _environment: 'prod', _count: 2 }]);
+  expect((await readAnalytics('getRelationshipCounts { _relationshipType _count }')).getRelationshipCounts)
+    .toEqual([{ _relationshipType: 'DEPENDS_ON', _count: 1 }]);
+  expect((await readAnalytics('getDiscoveryStats { _summary { _totalCis } }')).getDiscoveryStats._summary._totalCis).toBe(2);
+  expect((await readAnalytics('getDiscoveryTimeline { _count }')).getDiscoveryTimeline[0]._count).toBe(2);
+  expect((await readAnalytics('getTopConnectedCIs { _ciId _relationshipCount }')).getTopConnectedCIs
+    .find((row: { _ciId: string }) => row._ciId === 'analytics-a')._relationshipCount).toBe(1);
+  expect((await readAnalytics('getDependencyDepthStats { _topCis { _ciId } }')).getDependencyDepthStats._topCis
+    .map((row: { _ciId: string }) => row._ciId)).toEqual(['analytics-a']);
+  expect((await readAnalytics('getDashboardStats { _summary { _totalCis _totalRelationships } }')).getDashboardStats._summary)
+    .toMatchObject({ _totalCis: 2, _totalRelationships: 1 });
+  expect((await readAnalytics('getInventoryReport { _ciId _relationshipCount }')).getInventoryReport
+    .map((row: { _ciId: string }) => row._ciId).sort()).toEqual(['analytics-a', 'analytics-a2']);
 });
 
 it('retains event-proven fresh history and fences reused IDs, NULL provenance and foreign IDs', async () => {

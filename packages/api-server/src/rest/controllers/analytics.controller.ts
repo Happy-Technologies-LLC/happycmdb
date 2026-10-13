@@ -6,6 +6,8 @@ import { getPostgresClient, getNeo4jClient } from '@cmdb/database';
 import { logger, ciIncarnationId, CIAnalyticsLimitError } from '@cmdb/common';
 import { requestOrganizationId } from '../../middleware/auth.middleware';
 import { executeBoundedAnalysis } from '../../middleware/analysis-admission';
+import { AnalyticsService, DependencyDepthLimitError } from '../../services/analytics.service';
+
 export class AnalyticsController {
   private postgresClient = getPostgresClient();
   private neo4jClient = getNeo4jClient();
@@ -308,94 +310,22 @@ export class AnalyticsController {
    * GET /analytics/dependency-depth
    */
   async getDependencyDepthStats(req: Request, res: Response): Promise<void> {
-    try {
-      const result = await this.postgresClient.query(`
-        WITH RECURSIVE tenant_relationships AS (
-          SELECT r.* FROM cmdb.fact_ci_relationships r
-          JOIN cmdb.dim_ci sc ON sc.ci_key = r.from_ci_key
-          JOIN cmdb.dim_ci tc ON tc.ci_key = r.to_ci_key
-          WHERE sc.is_current AND tc.is_current
-            AND sc.organization_id = $1 AND tc.organization_id = $1
-        ), dependency_depth AS (
-          SELECT from_ci_key as ci_key, to_ci_key, 1 as depth
-          FROM tenant_relationships
-          WHERE relationship_type = 'DEPENDS_ON'
-
-          UNION ALL
-
-          SELECT dd.ci_key, r.to_ci_key, dd.depth + 1
-          FROM dependency_depth dd
-          JOIN tenant_relationships r ON dd.to_ci_key = r.from_ci_key
-          WHERE r.relationship_type = 'DEPENDS_ON' AND dd.depth < 10
-        ),
-        depth_summary AS (
-          SELECT
-            ci_key,
-            MAX(depth) as max_depth,
-            COUNT(DISTINCT to_ci_key) as total_dependencies
-          FROM dependency_depth
-          GROUP BY ci_key
-        )
-        SELECT
-          c.ci_id,
-          ds.max_depth,
-          ds.total_dependencies
-        FROM depth_summary ds
-        JOIN cmdb.dim_ci c ON c.ci_key = ds.ci_key
-        WHERE c.is_current = true AND c.organization_id = $1
-        ORDER BY ds.max_depth DESC
-        LIMIT 100
-      `, [requestOrganizationId(req)]);
-
-      const depthDistribution = await this.postgresClient.query(`
-        WITH RECURSIVE tenant_relationships AS (
-          SELECT r.* FROM cmdb.fact_ci_relationships r
-          JOIN cmdb.dim_ci sc ON sc.ci_key = r.from_ci_key
-          JOIN cmdb.dim_ci tc ON tc.ci_key = r.to_ci_key
-          WHERE sc.is_current AND tc.is_current
-            AND sc.organization_id = $1 AND tc.organization_id = $1
-        ), dependency_depth AS (
-          SELECT from_ci_key as ci_key, to_ci_key, 1 as depth
-          FROM tenant_relationships
-          WHERE relationship_type = 'DEPENDS_ON'
-
-          UNION ALL
-
-          SELECT dd.ci_key, r.to_ci_key, dd.depth + 1
-          FROM dependency_depth dd
-          JOIN tenant_relationships r ON dd.to_ci_key = r.from_ci_key
-          WHERE r.relationship_type = 'DEPENDS_ON' AND dd.depth < 10
-        ),
-        max_depths AS (
-          SELECT
-            ci_key,
-            MAX(depth) as max_depth
-          FROM dependency_depth
-          GROUP BY ci_key
-        )
-        SELECT
-          max_depth,
-          COUNT(*) as count
-        FROM max_depths
-        GROUP BY max_depth
-        ORDER BY max_depth
-      `, [requestOrganizationId(req)]);
-
-      res.json({
+    await executeBoundedAnalysis(req, res, async () => ({
+      status: 200,
+      body: {
         success: true,
-        data: {
-          top_cis: result.rows,
-          depth_distribution: depthDistribution.rows,
-        },
-      });
-    } catch (error) {
-      logger.error('Error getting dependency depth stats', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to retrieve dependency depth statistics',
-        message: error instanceof Error ? error.message : 'Unknown error',
-      });
-    }
+        data: await new AnalyticsService().getDependencyDepthStats(requestOrganizationId(req)),
+      },
+    }), {
+      scope: 'analytics',
+      timeoutMs: 7000,
+      withDeadline: (_deadline, operation) => operation(),
+      deadlineError: () => new DependencyDepthLimitError(),
+      failure: error => error instanceof DependencyDepthLimitError ||
+        (typeof error === 'object' && error !== null && 'code' in error && error.code === '57014')
+        ? { status: 503, message: 'Dependency depth resource limit exceeded' } : null,
+      internalError: 'Failed to retrieve dependency depth statistics',
+    });
   }
 
   /**

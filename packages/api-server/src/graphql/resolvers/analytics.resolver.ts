@@ -4,7 +4,7 @@
 // packages/api-server/src/graphql/resolvers/analytics.resolver.ts
 
 import { GraphQLError } from 'graphql';
-import { AnalyticsService } from '../../services/analytics.service';
+import { AnalyticsService, DependencyDepthLimitError } from '../../services/analytics.service';
 import { logger, CIAnalyticsLimitError } from '@cmdb/common';
 import { requireGraphQLOrganization } from '../require-organization';
 import type { TokenPayload } from '../../auth/types';
@@ -295,13 +295,12 @@ const AnalyticsQueryResolvers = {
           _count: parseInt(String(row.count)),
         })),
       };
-    } catch (error: any) {
+    } catch (error: unknown) {
       logger.error('GraphQL: Error getting dependency depth stats', error);
-      throw new GraphQLError('Failed to retrieve dependency depth statistics', {
-        extensions: {
-          code: 'INTERNAL_SERVER_ERROR',
-          originalError: error.message,
-        },
+      const limited = error instanceof DependencyDepthLimitError ||
+        (typeof error === 'object' && error !== null && 'code' in error && error.code === '57014');
+      throw new GraphQLError(limited ? 'Dependency depth resource limit exceeded' : 'Failed to retrieve dependency depth statistics', {
+        extensions: { code: limited ? 'RESOURCE_LIMIT_EXCEEDED' : 'INTERNAL_SERVER_ERROR' },
       });
     }
   },

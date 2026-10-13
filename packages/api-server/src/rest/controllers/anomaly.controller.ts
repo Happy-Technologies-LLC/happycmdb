@@ -2,14 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Request, Response } from 'express';
-import { getPostgresClient } from '@cmdb/database';
-import { logger } from '@cmdb/common';
-import { getAnomalyDetectionEngine } from '@cmdb/ai-ml-engine';
+import { getPostgresClient, getNeo4jClient } from '@cmdb/database';
+import { logger, ciIncarnationId } from '@cmdb/common';
+import { requestOrganizationId } from '../../middleware/auth.middleware';
 import type { Anomaly, AnomalyStatus } from '@cmdb/ai-ml-engine';
 
 export class AnomalyController {
   private postgresClient = getPostgresClient();
-  private anomalyEngine = getAnomalyDetectionEngine();
+  private neo4jClient = getNeo4jClient();
 
   /**
    * Get recent anomalies
@@ -17,22 +17,21 @@ export class AnomalyController {
    */
   async getRecentAnomalies(req: Request, res: Response): Promise<void> {
     try {
-      const hours = parseInt(String(req.query['hours'] || 24));
-      const limit = parseInt(String(req.query['limit'] || 100));
-
-      const anomalies = await this.anomalyEngine.getRecentAnomalies(hours, limit);
-
-      res.json({
-        success: true,
-        data: anomalies,
-      });
+      const organizationId = requestOrganizationId(req);
+      const current = await this.currentIncarnations(organizationId);
+      const result = await this.postgresClient.query(
+        `SELECT a.* FROM anomalies a
+         JOIN jsonb_to_recordset($2::jsonb) AS ci("ciId" text, "incarnationId" uuid)
+           ON ci."ciId" = a.ci_id AND ci."incarnationId" = a.ci_incarnation_id
+         WHERE a.organization_id = $1 AND a.detected_at >= NOW() - ($3 * INTERVAL '1 hour')
+           AND a.status IN ('detected', 'investigating')
+         ORDER BY a.detected_at DESC LIMIT $4`,
+        [organizationId, JSON.stringify(current), Number(req.query['hours'] ?? 24), Number(req.query['limit'] ?? 100)]
+      );
+      res.json({ success: true, data: result.rows.map(row => this.mapRowToAnomaly(row)) });
     } catch (error) {
       logger.error('Error getting recent anomalies', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to retrieve recent anomalies',
-        message: error instanceof Error ? error.message : 'Unknown error',
-      });
+      res.status(500).json({ success: false, error: 'Failed to retrieve recent anomalies' });
     }
   }
 
@@ -43,21 +42,22 @@ export class AnomalyController {
   async getAnomaliesForCI(req: Request, res: Response): Promise<void> {
     try {
       const ciId = req.params['ciId'] || '';
-      const limit = parseInt(String(req.query['limit'] || 50));
-
-      const anomalies = await this.anomalyEngine.getAnomaliesForCI(ciId, limit);
-
-      res.json({
-        success: true,
-        data: anomalies,
-      });
+      const organizationId = requestOrganizationId(req);
+      const ci = await this.neo4jClient.getCI(ciId, organizationId);
+      const incarnationId = ciIncarnationId(ci);
+      if (!incarnationId) {
+        res.status(404).json({ success: false, error: 'Not Found', message: 'CI not found' });
+        return;
+      }
+      const result = await this.postgresClient.query(
+        `SELECT * FROM anomalies WHERE ci_id = $1 AND organization_id = $2
+           AND ci_incarnation_id = $3::uuid ORDER BY detected_at DESC LIMIT $4`,
+        [ciId, organizationId, incarnationId, Number(req.query['limit'] ?? 50)]
+      );
+      res.json({ success: true, data: result.rows.map(row => this.mapRowToAnomaly(row)) });
     } catch (error) {
       logger.error('Error getting anomalies for CI', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to retrieve anomalies for CI',
-        message: error instanceof Error ? error.message : 'Unknown error',
-      });
+      res.status(500).json({ success: false, error: 'Failed to retrieve anomalies for CI' });
     }
   }
 
@@ -88,15 +88,21 @@ export class AnomalyController {
         return;
       }
 
-      // Update the anomaly
+      // The graph establishes current ownership; the SQL mutation enforces the
+      // same owner and incarnation in its WHERE clause, not a prior row lookup.
+      const organizationId = requestOrganizationId(req);
       const result = await this.postgresClient.query(
-        `UPDATE anomalies
+        `UPDATE anomalies a
          SET status = $1,
-             resolved_at = CASE WHEN $2 IN ('resolved', 'false_positive') THEN NOW() ELSE resolved_at END,
-             resolved_by = CASE WHEN $2 IN ('resolved', 'false_positive') THEN $3 ELSE resolved_by END
-         WHERE id = $4
-         RETURNING *`,
-        [status, status, resolved_by, id]
+             resolved_at = CASE WHEN $1 IN ('resolved', 'false_positive') THEN NOW() ELSE a.resolved_at END,
+             resolved_by = CASE WHEN $1 IN ('resolved', 'false_positive') THEN $2 ELSE a.resolved_by END
+         WHERE a.id = $3 AND a.organization_id = $4
+           AND EXISTS (
+             SELECT 1 FROM jsonb_to_recordset($5::jsonb) AS ci("ciId" text, "incarnationId" uuid)
+             WHERE ci."ciId" = a.ci_id AND ci."incarnationId" = a.ci_incarnation_id
+           )
+         RETURNING a.*`,
+        [status, resolved_by, id, organizationId, JSON.stringify(await this.currentIncarnations(organizationId))]
       );
 
       if (result.rows.length === 0) {
@@ -126,66 +132,41 @@ export class AnomalyController {
    * Get anomaly statistics
    * GET /anomalies/stats
    */
-  async getAnomalyStats(_req: Request, res: Response): Promise<void> {
+  async getAnomalyStats(req: Request, res: Response): Promise<void> {
     try {
-      // Get total count
-      const totalResult = await this.postgresClient.query(
-        'SELECT COUNT(*) as total FROM anomalies'
+      const organizationId = requestOrganizationId(req);
+      const current = await this.currentIncarnations(organizationId);
+      const result = await this.postgresClient.query(
+        `WITH owned AS (
+           SELECT a.severity, a.anomaly_type, a.status FROM anomalies a
+           JOIN jsonb_to_recordset($2::jsonb) AS ci("ciId" text, "incarnationId" uuid)
+             ON ci."ciId" = a.ci_id AND ci."incarnationId" = a.ci_incarnation_id
+           WHERE a.organization_id = $1
+         )
+         SELECT severity, anomaly_type, status, COUNT(*) AS count,
+           GROUPING(severity, anomaly_type, status) AS grouping_key
+         FROM owned GROUP BY GROUPING SETS ((), (severity), (anomaly_type), (status))`,
+        [organizationId, JSON.stringify(current)]
       );
-
-      // Get counts by severity
-      const severityResult = await this.postgresClient.query(`
-        SELECT severity, COUNT(*) as count
-        FROM anomalies
-        GROUP BY severity
-      `);
-
-      // Get counts by type
-      const typeResult = await this.postgresClient.query(`
-        SELECT anomaly_type, COUNT(*) as count
-        FROM anomalies
-        GROUP BY anomaly_type
-        ORDER BY count DESC
-      `);
-
-      // Get counts by status
-      const statusResult = await this.postgresClient.query(`
-        SELECT status, COUNT(*) as count
-        FROM anomalies
-        GROUP BY status
-      `);
-
-      const bySeverity: Record<string, number> = {};
-      severityResult.rows.forEach((row: any) => {
-        bySeverity[row.severity] = parseInt(row.count);
-      });
-
-      const byType: Record<string, number> = {};
-      typeResult.rows.forEach((row: any) => {
-        byType[row.anomaly_type] = parseInt(row.count);
-      });
-
-      const byStatus: Record<string, number> = {};
-      statusResult.rows.forEach((row: any) => {
-        byStatus[row.status] = parseInt(row.count);
-      });
-
-      res.json({
-        success: true,
-        data: {
-          total: parseInt(totalResult.rows[0].total),
-          by_severity: bySeverity,
-          by_type: byType,
-          by_status: byStatus,
-        },
-      });
+      const data = {
+        total: 0,
+        by_severity: {} as Record<string, number>,
+        by_type: {} as Record<string, number>,
+        by_status: {} as Record<string, number>,
+      };
+      for (const row of result.rows) {
+        const count = Number(row.count);
+        switch (row.grouping_key) {
+          case 7: data.total = count; break;
+          case 3: data.by_severity[row.severity] = count; break;
+          case 5: data.by_type[row.anomaly_type] = count; break;
+          case 6: data.by_status[row.status] = count; break;
+        }
+      }
+      res.json({ success: true, data });
     } catch (error) {
       logger.error('Error getting anomaly stats', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to retrieve anomaly statistics',
-        message: error instanceof Error ? error.message : 'Unknown error',
-      });
+      res.status(500).json({ success: false, error: 'Failed to retrieve anomaly statistics' });
     }
   }
 
@@ -194,25 +175,17 @@ export class AnomalyController {
    * POST /anomalies/detect
    */
   async runAnomalyDetection(_req: Request, res: Response): Promise<void> {
-    try {
-      logger.info('Manual anomaly detection triggered via API');
-      const anomalies = await this.anomalyEngine.detectAnomalies();
+    // The scheduled producer scans across organizations and does not stamp
+    // trustworthy owner/incarnation provenance. It cannot be exposed to tenants.
+    res.status(403).json({ success: false, error: 'Forbidden' });
+  }
 
-      res.json({
-        success: true,
-        data: {
-          detected_count: anomalies.length,
-          anomalies: anomalies,
-        },
-      });
-    } catch (error) {
-      logger.error('Error running anomaly detection', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to run anomaly detection',
-        message: error instanceof Error ? error.message : 'Unknown error',
-      });
+  private async currentIncarnations(organizationId: string): Promise<Array<{ ciId: string; incarnationId: string }>> {
+    const current: Array<{ ciId: string; incarnationId: string }> = [];
+    for (const ci of await this.neo4jClient.listCIIncarnations(organizationId)) {
+      if (ci.organizationId === organizationId) current.push({ ciId: ci.ciId, incarnationId: ci.incarnationId });
     }
+    return current;
   }
 
   /**

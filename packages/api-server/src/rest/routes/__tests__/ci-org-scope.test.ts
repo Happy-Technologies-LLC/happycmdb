@@ -160,6 +160,20 @@ function run(rawCypher: string, params: Props = {}): FakeRecord[] {
     return rows.slice(0, num(params['rowLimit']));
   }
 
+  if (cypher.includes('dependent_count') && cypher.includes('dependency_count')) {
+    const props = graph.nodes.get(params['ciId'] as string);
+    if (!props || !ciInScope(props)) return [];
+    return [record({ ci_id: props['id'], ci_name: props['name'],
+      dependent_count: neo4j.int(0), dependency_count: neo4j.int(0), dependent_ids: [] })];
+  }
+
+  if (cypher.includes('SET ci.incarnation_id = coalesce(')) {
+    const props = graph.nodes.get(params['id'] as string);
+    if (!props || !ciInScope(props)) return [];
+    props['incarnation_id'] ??= randomUUID();
+    return [record({ incarnationId: props['incarnation_id'] })];
+  }
+
   if (cypher.startsWith('MATCH (ci:CI {id: $id})') && cypher.endsWith('RETURN ci')) {
     const props = graph.nodes.get(params['id'] as string);
     return props !== undefined && ciInScope(props) ? [record({ ci: node(props) })] : [];
@@ -192,11 +206,13 @@ function run(rawCypher: string, params: Props = {}): FakeRecord[] {
 }
 
 let holdIncarnationRead: (() => Promise<void>) | undefined;
+let incarnationRunTimeout: number | undefined;
 const fakeDriver = {
   session: () => ({
     // Plain functions (not jest.fn): the unit config resets mock implementations.
-    run: async (cypher: string, params?: Props) => {
+    run: async (cypher: string, params?: Props, config?: { timeout: number }) => {
       queryCount++;
+      if (cypher.includes('SET ci.incarnation_id = coalesce(')) incarnationRunTimeout = config?.timeout;
       if (cypher.includes('AS incarnationId') && !cypher.includes('ci.id > $afterId')) await holdIncarnationRead?.();
       return { records: run(cypher, params) };
     },
@@ -238,6 +254,11 @@ function sql(statement: string, params: unknown[] = []): Promise<unknown[]> {
 }
 const pg = {
   query: async (statement: string, params: unknown[] = []) => ({ rows: await sql(statement, params) }),
+  getClient: async () => ({
+    query: (statement: string, params: unknown[] = []) =>
+      statement.startsWith('SELECT set_config(') ? Promise.resolve({ rows: [] }) : pg.query(statement, params),
+    release: () => undefined,
+  }),
   transaction: async <T>(callback: (client: { query: typeof pg.query }) => Promise<T>): Promise<T> => {
     await sql('BEGIN');
     try {
@@ -262,6 +283,9 @@ jest.mock('@cmdb/database', () => ({
 // bcrypt's native binding is only used for password hashing/login, which the
 // token verification path exercised here never calls.
 jest.mock('bcrypt', () => ({}));
+jest.mock('@cmdb/event-processor', () => ({
+  getEventProducer: () => ({ emit: jest.fn() }), EventType: { RECONCILIATION_CONFLICT: 'reconciliation.conflict' },
+}));
 
 // Users as the Neo4j store returns them; the org is a user attribute, never a request input.
 const USERS: Record<string, { _id: string; _username: string; _role: string; _enabled: boolean; _organizationId?: string }> = {
@@ -279,10 +303,13 @@ jest.mock('../../../auth/neo4j-auth.repository', () => ({
 }));
 
 // Imported after mocks are registered (jest hoists jest.mock).
-import { loadConfig } from '@cmdb/common';
+import { loadConfig, logger } from '@cmdb/common';
 import { JWTService } from '../../../auth/jwt.service';
 import { getAuthMiddleware } from '../../../auth/auth-bootstrap';
 import { ciRoutes } from '../ci.routes';
+import { itilRoutes } from '../itil.routes';
+import { driftRoutes, impactRoutes } from '../drift-impact.routes';
+import { analyticsRoutes } from '../analytics.routes';
 import { createGraphQLServer } from '../../../graphql/server';
 
 const BACKFILL = join(__dirname, '../../../../../database/src/neo4j/migrations/001_ci_organization_backfill.cypher');
@@ -317,6 +344,10 @@ const app = express();
 app.use(express.json());
 app.use('/api/v1', getAuthMiddleware().authenticate());
 app.use('/api/v1/cis', ciRoutes);
+app.use('/api/v1/itil', itilRoutes);
+app.use('/api/v1/drift', driftRoutes);
+app.use('/api/v1/impact', impactRoutes);
+app.use('/api/v1/analytics', analyticsRoutes);
 
 function seedCI(id: string, organizationId: string | undefined, extra: Props = {}): void {
   const props: Props = {
@@ -343,6 +374,7 @@ beforeEach(() => {
   queryCount = 0;
   auditHistoryReads = 0;
   holdIncarnationRead = undefined;
+  incarnationRunTimeout = undefined;
 });
 
 it('caps graph incarnation enumeration before JSON/SQL analytics, including legacy unmarked nodes', async () => {
@@ -478,18 +510,64 @@ it('preserves every fresh B derivative when B reuses an ID between A graph delet
   }
 });
 
-it('reports a committed graph deletion as successful if SQL defense-in-depth cleanup fails', async () => {
+it('keeps surviving SQL rows fenced after a graph delete commits during SQL failure', async () => {
   const id = 'ci-delete-sql-down';
-  seedCI(id, ORG_A, { incarnation_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' });
+  const aInc = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const bInc = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  seedCI(id, ORG_A, { incarnation_id: aInc });
+  await sql(`INSERT INTO baseline_snapshots
+    (id, ci_id, snapshot_type, snapshot_data, created_at, created_by, is_approved, ci_incarnation_id)
+    VALUES ($1, $3, 'configuration', '{"secret":"A"}', NOW(), 'a', true, $2),
+           ($4, $3, 'configuration', '{"secret":"legacy"}', NOW(), 'a', true, NULL)`,
+    [randomUUID(), aInc, id, randomUUID()]);
+  await sql(`INSERT INTO drift_detection_results (ci_id, has_drift, drift_score, detected_at, ci_incarnation_id)
+    VALUES ($1, true, 99, NOW(), $2), ($1, true, 98, NOW(), NULL)`, [id, aInc]);
+  await sql(`INSERT INTO impact_analyses (id, source_ci_id, change_type, risk_level, analyzed_at, ci_incarnation_id)
+    VALUES ($1, $3, 'RESTART', 'high', NOW(), $2), ($4, $3, 'RESTART', 'high', NOW(), NULL)`,
+    [randomUUID(), aInc, id, randomUUID()]);
+  await sql(`INSERT INTO ci_criticality_scores (ci_id, factors, calculated_at, ci_incarnation_id)
+    VALUES ($1, '{"secret":"A"}', NOW(), $2)`, [id, aInc]);
+  await sql(`INSERT INTO ci_change_history
+    (ci_id, change_type, change_source, metadata, ci_incarnation_id)
+    VALUES ($1, 'FORMER_A', 'test', $2::jsonb, $3), ($1, 'LEGACY_A', 'test', $2::jsonb, NULL)`,
+    [id, JSON.stringify({ organization_id: ORG_B }), aInc]);
   const original = pg.transaction;
+  const log = jest.spyOn(logger, 'error').mockImplementation(() => undefined);
   pg.transaction = async () => { throw new Error('PostgreSQL unavailable'); };
   try {
     expect((await request(app).delete(`/api/v1/cis/${id}`).set(AS_A)).status).toBe(204);
     expect((await request(app).delete(`/api/v1/cis/${id}`).set(AS_A)).status).toBe(404);
     expect(graph.nodes.has(id)).toBe(false);
+    expect(log.mock.calls.filter(args => args[0] === 'CI_DERIVED_PURGE_FAILED'))
+      .toEqual([['CI_DERIVED_PURGE_FAILED']]);
   } finally {
     pg.transaction = original;
+    log.mockRestore();
   }
+  for (const table of derivedTables) {
+    const column = table === 'impact_analyses' ? 'source_ci_id' : 'ci_id';
+    const rows = await sql(`SELECT ci_incarnation_id FROM ${table} WHERE ${column} = $1`, [id]);
+    expect(rows).toContainEqual({ ci_incarnation_id: aInc });
+    if (table !== 'ci_criticality_scores') expect(rows).toContainEqual({ ci_incarnation_id: null });
+  }
+  seedCI(id, ORG_B, { incarnation_id: bInc, created_at: new Date().toISOString() });
+  const get = (path: string) => request(app).get(path).set(AS_B);
+  const paths = [
+    `/api/v1/drift/baseline/${id}`, `/api/v1/drift/history/${id}`,
+    `/api/v1/impact/history/${id}`, `/api/v1/itil/configuration-items/${id}/history`,
+    `/api/v1/analytics/change-history?ci_id=${id}`, '/api/v1/analytics/change-timeline',
+    `/api/v1/impact/criticality/${id}`,
+  ];
+  for (const path of paths) {
+    const response = await get(path);
+    expect(response.status).toBe(200);
+    if (path.includes('/drift/baseline/')) expect(response.body.data).toBeNull();
+    else if (path.includes('/impact/criticality/'))
+      expect(JSON.stringify(response.body.data)).not.toContain('secret');
+    else expect(response.body.data).toEqual([]);
+  }
+  expect(incarnationRunTimeout).toEqual(expect.any(Number));
+  expect(incarnationRunTimeout).toBeGreaterThan(0);
 });
 
 it('GraphQL CI deletion shares cleanup and foreign/missing not-found behavior', async () => {

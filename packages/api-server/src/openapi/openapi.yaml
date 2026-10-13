@@ -563,6 +563,7 @@ paths:
     delete:
       tags: [Configuration Items]
       summary: Delete CI
+      operationId: deleteCI
       description: >-
         Delete the CI in the graph, then best-effort purge its five SQL-derived
         families for the deleted incarnation and unmarked legacy rows. A new CI

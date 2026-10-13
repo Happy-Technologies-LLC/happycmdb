@@ -464,7 +464,7 @@ export class Neo4jClient {
    * derived write, atomically in Neo4j; racing writers receive the same ID.
    * An absent/foreign CI returns null without exposing which case occurred.
    */
-  async ensureCIIncarnation(id: string, scope: CIOrganizationScope): Promise<string | null> {
+  async ensureCIIncarnation(id: string, scope: CIOrganizationScope, timeoutMs?: number): Promise<string | null> {
     const organizationId = organizationIdParam(scope);
     const session = this.getSession();
     try {
@@ -473,7 +473,8 @@ export class Neo4jClient {
          ${nodeScopeClause(organizationId)}
          SET ci.incarnation_id = coalesce(ci.incarnation_id, randomUUID())
          RETURN ci.incarnation_id AS incarnationId`,
-        { id, organizationId }
+        { id, organizationId },
+        timeoutMs === undefined ? undefined : { timeout: timeoutMs }
       );
       return result.records.length ? result.records[0]!.get('incarnationId') as string : null;
     } finally {

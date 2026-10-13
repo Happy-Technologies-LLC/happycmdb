@@ -285,7 +285,7 @@ export class ImpactPredictionEngine {
       const ci = await this.neo4jClient.getCI(ciId, organizationId, architectureRemainingMs());
       if (!ci) throw new Error(`CI not found: ${ciId}`);
       const incarnationId = ciIncarnationId(ci)
-        ?? await this.neo4jClient.ensureCIIncarnation(ciId, organizationId);
+        ?? await this.neo4jClient.ensureCIIncarnation(ciId, organizationId, architectureRemainingMs());
       if (!incarnationId) throw new Error(`CI not found: ${ciId}`);
       const cached = await this.queryWithDeadline(
         `SELECT s.* FROM ci_criticality_scores s
@@ -662,7 +662,9 @@ export class ImpactPredictionEngine {
    * Store impact analysis
    */
   private async storeImpactAnalysis(impact: ImpactAnalysis, organizationId: string): Promise<void> {
-    const incarnationId = await this.neo4jClient.ensureCIIncarnation(impact.source_ci_id, organizationId);
+    const incarnationId = await this.neo4jClient.ensureCIIncarnation(
+      impact.source_ci_id, organizationId, architectureRemainingMs()
+    );
     if (!incarnationId) throw new Error('CI not found');
     const inserted = await this.queryWithDeadline(
       `INSERT INTO impact_analyses
@@ -694,7 +696,9 @@ export class ImpactPredictionEngine {
    * Store criticality score
    */
   private async storeCriticalityScore(score: CriticalityScore, organizationId: string): Promise<void> {
-    const incarnationId = await this.neo4jClient.ensureCIIncarnation(score.ci_id, organizationId);
+    const incarnationId = await this.neo4jClient.ensureCIIncarnation(
+      score.ci_id, organizationId, architectureRemainingMs()
+    );
     if (!incarnationId) throw new Error('CI not found');
     const inserted = await this.queryWithDeadline(
       `INSERT INTO ci_criticality_scores

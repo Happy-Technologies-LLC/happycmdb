@@ -261,8 +261,8 @@ describe('COR16-1: no false NOT_APPLIED from a delayed writer or a lost lock ses
 });
 
 describe('guarded self-service writes and the marker setter on Neo4j (SEC16-01, SEC16-04)', () => {
-  async function elementId(id = USER): Promise<string> {
-    return (await graph.run('MATCH (u:User {_id: $id}) RETURN elementId(u) AS e', { id })).records[0]!.get('e') as string;
+  async function elementId(): Promise<string> {
+    return (await graph.run('MATCH (u:User {_id: $id}) RETURN elementId(u) AS e', { id: USER })).records[0]!.get('e') as string;
   }
   async function unmark(): Promise<void> {
     await graph.run('MATCH (u:User {_id: $id}) SET u.defaultPasswordSuspect = false', { id: USER });
@@ -317,8 +317,11 @@ describe('guarded self-service writes and the marker setter on Neo4j (SEC16-01, 
       const rotation = await openRotation();
       const session = driver.session();
       const writing = session.run(cypher, params).then(r => neo4j.integer.toNumber(r.records[0]!.get('n')));
-      await untilBlocked('the guarded write');
-      await rotation.commit();
+      try {
+        await untilBlocked('the guarded write');
+      } finally {
+        await rotation.commit(); // never leave the node locked, whatever the wait observed
+      }
       const landed = await writing;
       await session.close();
       return { landed, rotatedHash: rotation.rotatedHash };

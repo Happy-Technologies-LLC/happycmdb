@@ -2562,6 +2562,8 @@ paths:
                   $ref: '#/components/schemas/Anomaly'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '503':
+          description: Tenant aggregate graph or SQL work budget exceeded; no partial result
 
   /anomalies/ci/{ciId}:
     get:
@@ -2620,6 +2622,8 @@ paths:
                     type: object
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '503':
+          description: Tenant aggregate graph or SQL work budget exceeded; no partial result
 
   /anomalies/{id}/status:
     patch:

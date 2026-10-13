@@ -3,8 +3,10 @@
 
 import { Request, Response } from 'express';
 import { getPostgresClient, getNeo4jClient } from '@cmdb/database';
-import { logger, ciIncarnationId } from '@cmdb/common';
+import { logger, ciIncarnationId, CIAnalyticsLimitError } from '@cmdb/common';
 import { requestOrganizationId } from '../../middleware/auth.middleware';
+import { executeBoundedAnalysis } from '../../middleware/analysis-admission';
+
 import type { Anomaly, AnomalyStatus } from '@cmdb/ai-ml-engine';
 
 export class AnomalyController {
@@ -16,23 +18,24 @@ export class AnomalyController {
    * GET /anomalies/recent
    */
   async getRecentAnomalies(req: Request, res: Response): Promise<void> {
-    try {
-      const organizationId = requestOrganizationId(req);
-      const current = await this.currentIncarnations(organizationId);
-      const result = await this.postgresClient.query(
-        `SELECT a.* FROM anomalies a
-         JOIN jsonb_to_recordset($2::jsonb) AS ci("ciId" text, "incarnationId" uuid)
-           ON ci."ciId" = a.ci_id AND ci."incarnationId" = a.ci_incarnation_id
-         WHERE a.organization_id = $1 AND a.detected_at >= NOW() - ($3 * INTERVAL '1 hour')
-           AND a.status IN ('detected', 'investigating')
-         ORDER BY a.detected_at DESC LIMIT $4`,
-        [organizationId, JSON.stringify(current), Number(req.query['hours'] ?? 24), Number(req.query['limit'] ?? 100)]
-      );
-      res.json({ success: true, data: result.rows.map(row => this.mapRowToAnomaly(row)) });
-    } catch (error) {
-      logger.error('Error getting recent anomalies', error);
-      res.status(500).json({ success: false, error: 'Failed to retrieve recent anomalies' });
-    }
+    await this.executeAggregate(req, res, async organizationId => {
+      const limit = Number(req.query['limit'] ?? 100);
+      const anomalies: Anomaly[] = [];
+      for await (const current of this.neo4jClient.iterateScopedAnomalyIncarnationPages(organizationId)) {
+        const result = await this.queryAggregate(
+          `SELECT a.* FROM anomalies a
+           JOIN jsonb_to_recordset($2::jsonb) AS ci("ciId" text, "incarnationId" uuid)
+             ON ci."ciId" = a.ci_id AND ci."incarnationId" = a.ci_incarnation_id
+           WHERE a.organization_id = $1 AND a.detected_at >= NOW() - ($3 * INTERVAL '1 hour')
+             AND a.status IN ('detected', 'investigating')
+           ORDER BY a.detected_at DESC, a.id LIMIT $4`,
+          [organizationId, JSON.stringify(current), Number(req.query['hours'] ?? 24), limit]
+        );
+        for (const row of result.rows) anomalies.push(this.mapRowToAnomaly(row));
+      }
+      anomalies.sort((a, b) => b.detected_at.getTime() - a.detected_at.getTime() || a.id.localeCompare(b.id));
+      return anomalies.slice(0, limit);
+    }, 'Failed to retrieve recent anomalies');
   }
 
   /**
@@ -88,21 +91,31 @@ export class AnomalyController {
         return;
       }
 
-      // The graph establishes current ownership; the SQL mutation enforces the
-      // same owner and incarnation in its WHERE clause, not a prior row lookup.
+      // Never enumerate the whole tenant for a single-row mutation. Resolve
+      // only a row already attributed to this caller, then verify its current
+      // graph CI before applying all provenance predicates in one SQL UPDATE.
       const organizationId = requestOrganizationId(req);
+      const owned = await this.postgresClient.query(
+        `SELECT ci_id, ci_incarnation_id FROM anomalies
+         WHERE id = $1 AND organization_id = $2 AND ci_incarnation_id IS NOT NULL`,
+        [id, organizationId]
+      );
+      const ciId: string | undefined = owned.rows[0]?.ci_id;
+      const incarnationId = ciId
+        ? ciIncarnationId(await this.neo4jClient.getCI(ciId, organizationId)) : null;
+      if (!incarnationId || incarnationId !== owned.rows[0].ci_incarnation_id) {
+        res.status(404).json({ success: false, error: 'Not Found', message: 'Anomaly not found' });
+        return;
+      }
       const result = await this.postgresClient.query(
         `UPDATE anomalies a
          SET status = $1::varchar,
              resolved_at = CASE WHEN $1::varchar IN ('resolved', 'false_positive') THEN NOW() ELSE a.resolved_at END,
              resolved_by = CASE WHEN $1::varchar IN ('resolved', 'false_positive') THEN $2 ELSE a.resolved_by END
-         WHERE a.id = $3 AND a.organization_id = $4
-           AND EXISTS (
-             SELECT 1 FROM jsonb_to_recordset($5::jsonb) AS ci("ciId" text, "incarnationId" uuid)
-             WHERE ci."ciId" = a.ci_id AND ci."incarnationId" = a.ci_incarnation_id
-           )
+         WHERE a.id = $3 AND a.organization_id = $4 AND a.ci_id = $5
+           AND a.ci_incarnation_id = $6::uuid
          RETURNING a.*`,
-        [status, resolved_by, id, organizationId, JSON.stringify(await this.currentIncarnations(organizationId))]
+        [status, resolved_by, id, organizationId, ciId, incarnationId]
       );
 
       if (result.rows.length === 0) {
@@ -133,41 +146,38 @@ export class AnomalyController {
    * GET /anomalies/stats
    */
   async getAnomalyStats(req: Request, res: Response): Promise<void> {
-    try {
-      const organizationId = requestOrganizationId(req);
-      const current = await this.currentIncarnations(organizationId);
-      const result = await this.postgresClient.query(
-        `WITH owned AS (
-           SELECT a.severity, a.anomaly_type, a.status FROM anomalies a
-           JOIN jsonb_to_recordset($2::jsonb) AS ci("ciId" text, "incarnationId" uuid)
-             ON ci."ciId" = a.ci_id AND ci."incarnationId" = a.ci_incarnation_id
-           WHERE a.organization_id = $1
-         )
-         SELECT severity, anomaly_type, status, COUNT(*) AS count,
-           GROUPING(severity, anomaly_type, status) AS grouping_key
-         FROM owned GROUP BY GROUPING SETS ((), (severity), (anomaly_type), (status))`,
-        [organizationId, JSON.stringify(current)]
-      );
+    await this.executeAggregate(req, res, async organizationId => {
       const data = {
         total: 0,
-        by_severity: {} as Record<string, number>,
-        by_type: {} as Record<string, number>,
-        by_status: {} as Record<string, number>,
+        by_severity: Object.create(null) as Record<string, number>,
+        by_type: Object.create(null) as Record<string, number>,
+        by_status: Object.create(null) as Record<string, number>,
       };
-      for (const row of result.rows) {
-        const count = Number(row.count);
-        switch (row.grouping_key) {
-          case 7: data.total = count; break;
-          case 3: data.by_severity[row.severity] = count; break;
-          case 5: data.by_type[row.anomaly_type] = count; break;
-          case 6: data.by_status[row.status] = count; break;
+      for await (const current of this.neo4jClient.iterateScopedAnomalyIncarnationPages(organizationId)) {
+        const result = await this.queryAggregate(
+          `WITH owned AS (
+             SELECT a.severity, a.anomaly_type, a.status FROM anomalies a
+             JOIN jsonb_to_recordset($2::jsonb) AS ci("ciId" text, "incarnationId" uuid)
+               ON ci."ciId" = a.ci_id AND ci."incarnationId" = a.ci_incarnation_id
+             WHERE a.organization_id = $1
+           )
+           SELECT severity, anomaly_type, status, COUNT(*) AS count,
+             GROUPING(severity, anomaly_type, status) AS grouping_key
+           FROM owned GROUP BY GROUPING SETS ((), (severity), (anomaly_type), (status))`,
+          [organizationId, JSON.stringify(current)]
+        );
+        for (const row of result.rows) {
+          const count = Number(row.count);
+          switch (row.grouping_key) {
+            case 7: data.total += count; break;
+            case 3: data.by_severity[row.severity] = (data.by_severity[row.severity] ?? 0) + count; break;
+            case 5: data.by_type[row.anomaly_type] = (data.by_type[row.anomaly_type] ?? 0) + count; break;
+            case 6: data.by_status[row.status] = (data.by_status[row.status] ?? 0) + count; break;
+          }
         }
       }
-      res.json({ success: true, data });
-    } catch (error) {
-      logger.error('Error getting anomaly stats', error);
-      res.status(500).json({ success: false, error: 'Failed to retrieve anomaly statistics' });
-    }
+      return data;
+    }, 'Failed to retrieve anomaly statistics');
   }
 
   /**
@@ -180,12 +190,29 @@ export class AnomalyController {
     res.status(403).json({ success: false, error: 'Forbidden' });
   }
 
-  private async currentIncarnations(organizationId: string): Promise<Array<{ ciId: string; incarnationId: string }>> {
-    const current: Array<{ ciId: string; incarnationId: string }> = [];
-    for (const ci of await this.neo4jClient.listCIIncarnations(organizationId)) {
-      if (ci.organizationId === organizationId) current.push({ ciId: ci.ciId, incarnationId: ci.incarnationId });
-    }
-    return current;
+  private async queryAggregate(query: string, params: unknown[]) {
+    return this.postgresClient.transaction(async client => {
+      await client.query("SELECT set_config('statement_timeout', $1, true)", ['5000']);
+      return client.query(query, params);
+    });
+  }
+
+  private async executeAggregate(
+    req: Request, res: Response, operation: (organizationId: string) => Promise<unknown>, internalError: string
+  ): Promise<void> {
+    await executeBoundedAnalysis(req, res, async () => ({
+      status: 200,
+      body: { success: true, data: await operation(requestOrganizationId(req)) },
+    }), {
+      scope: 'analytics',
+      timeoutMs: 12_000,
+      withDeadline: (_deadline, work) => work(),
+      deadlineError: () => new CIAnalyticsLimitError(),
+      failure: error => error instanceof CIAnalyticsLimitError ||
+        (typeof error === 'object' && error !== null && 'code' in error && error.code === '57014')
+        ? { status: 503, message: 'Anomaly aggregate resource limit exceeded' } : null,
+      internalError,
+    });
   }
 
   /**

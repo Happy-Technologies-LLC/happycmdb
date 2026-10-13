@@ -169,8 +169,9 @@ production scheduling. Credential-backed discovery is restored by HP1-S5
 
 ### Anomalies (`/api/v1/anomalies`)
 - All routes require a verified token organization. Recent, per-CI and stats reads include only rows explicitly stamped with that organization and the graph CI's current incarnation; old rows remain inaccessible.
-- `GET /anomalies/recent`, `GET /anomalies/ci/{ciId}`, `GET /anomalies/stats` - Tenant-proven anomalies only; foreign and missing CI IDs return identical 404.
-- `PATCH /anomalies/{id}/status` - Mutate only an owned, current-incarnation row; foreign, stale and missing IDs return identical 404.
+- `GET /anomalies/recent`, `GET /anomalies/stats` - Tenant-proven anomalies only. Scoped keyset pagination accepts up to 4096 graph CIs in 512-CI pages; each SQL page has a 5-second statement timeout, the request has a 12-second response deadline with admission held through work completion, and an exceeded budget returns fixed 503 without partial results.
+- `GET /anomalies/ci/{ciId}` - Tenant-proven current-incarnation anomalies; foreign and missing CI IDs return identical 404.
+- `PATCH /anomalies/{id}/status` - Look up only a caller-attributed row, verify its current graph CI directly, then mutate with atomic SQL row-owner/incarnation predicates; foreign, stale and missing IDs return identical 404 regardless of tenant graph size.
 - `POST /anomalies/detect` - Fixed 403 for all callers. Scheduled global producers continue to create unstamped rows; never infer their provenance from a matching CI ID.
 
 ### Jobs (`/api/v1/jobs`)

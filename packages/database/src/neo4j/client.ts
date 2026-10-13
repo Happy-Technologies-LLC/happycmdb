@@ -333,6 +333,54 @@ export class Neo4jClient {
   }
 
   /**
+   * Tenant-only keyset pages for anomaly aggregates. Never return a partial
+   * aggregate after the work budget is exhausted, even if some rows are NULL.
+   * Single-CI mutations use getCI instead and are independent of tenant size.
+   */
+  async *iterateScopedAnomalyIncarnationPages(scope: CIOrganizationScope): AsyncGenerator<Array<{
+    ciId: string; incarnationId: string
+  }>> {
+    const organizationId = organizationIdParam(scope);
+    if (!organizationId) throw new CIAnalyticsLimitError();
+    if (this.activeCIAnalyticsReads >= 8) throw new CIAnalyticsLimitError();
+    this.activeCIAnalyticsReads++;
+    let afterId = '';
+    try {
+      for (let page = 0; page < 8; page++) {
+        const session = this.getSession();
+        let records: Array<{ get(key: string): unknown }>;
+        try {
+          const result = await session.run(
+            `MATCH (ci:CI)
+             WHERE ci.organization_id = $organizationId AND ci.id > $afterId
+             RETURN ci.id AS ciId, ci.incarnation_id AS incarnationId
+             ORDER BY ci.id LIMIT $rowLimit`,
+            { organizationId, afterId, rowLimit: neo4j.int(MAX_CI_ANALYTICS_NODES + 1) },
+            { timeout: 5000 }
+          );
+          records = result.records;
+        } finally {
+          await session.close();
+        }
+        const count = Math.min(records.length, MAX_CI_ANALYTICS_NODES);
+        if (count === 0) return;
+        const incarnations: Array<{ ciId: string; incarnationId: string }> = [];
+        for (let i = 0; i < count; i++) {
+          const record = records[i]!;
+          const incarnationId = ciIncarnationId(record.get('incarnationId') as string | null);
+          if (incarnationId) incarnations.push({ ciId: record.get('ciId') as string, incarnationId });
+        }
+        afterId = records[count - 1]!.get('ciId') as string;
+        if (incarnations.length > 0) yield incarnations;
+        if (records.length <= MAX_CI_ANALYTICS_NODES) return;
+      }
+      throw new CIAnalyticsLimitError();
+    } finally {
+      this.activeCIAnalyticsReads--;
+    }
+  }
+
+  /**
    * System anomaly scans consume every organization in bounded keyset pages.
    * This does not share request analytics admission: tenant traffic cannot
    * suppress a scheduled scan by filling the request concurrency slots.

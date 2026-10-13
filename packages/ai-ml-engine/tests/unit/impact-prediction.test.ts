@@ -26,6 +26,7 @@ jest.mock('uuid', () => ({ v4: () => 'impact-test-uuid' }));
 import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
 
 import { ImpactPredictionEngine } from '../../src/engines/impact-prediction-engine';
+const INC = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 
 describe('ImpactPredictionEngine', () => {
   let engine: ImpactPredictionEngine;
@@ -40,8 +41,9 @@ describe('ImpactPredictionEngine', () => {
 
     mockNeo4jClient = {
       getCI: jest.fn().mockImplementation(async (id: string) =>
-        id.includes('nonexistent') ? null : { id }
+        id.includes('nonexistent') ? null : { id, _incarnation_id: INC }
       ),
+      ensureCIIncarnation: jest.fn().mockResolvedValue(INC),
       getSession: jest.fn(),
     };
     mockPgClient = createMockPgClient([]);

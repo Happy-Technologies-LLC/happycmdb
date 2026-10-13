@@ -95,6 +95,10 @@ Migration `012_itil_baseline_organization_scope.sql` adds the nullable baseline 
 
 Migration `013_itil_baseline_org_name_unique.sql` replaces global baseline-name uniqueness with uniqueness within each non-NULL organization. A caller can reuse a name held by another organization or an inaccessible legacy row; a duplicate name within the caller's organization returns 409 without database error details. Older unscoped service writers that still omit `organization_id` create NULL-owner rows, which remain inaccessible to REST callers; they cannot be attributed to a tenant without a verified organization claim.
 
+### CI incarnation boundary for derived PostgreSQL rows
+
+Graph CIs receive an immutable `incarnation_id` in their creation statement. Migration `025_ci_derived_incarnation.sql` adds nullable, indexed `ci_incarnation_id` columns to baseline snapshots, drift results, impact analyses, criticality scores, and CI change history. Derived writers prove the CI's current graph organization and stamp its incarnation; tenant reads match that graph incarnation exactly. Pre-migration rows with a NULL marker and surviving rows from a deleted/re-created CI ID remain unreadable, regardless of timestamps or historical owner metadata. An owned legacy graph CI gets a marker atomically on its next derived write; older NULL SQL rows are not backfilled. Graph deletion best-effort purges only the deleted incarnation and NULL legacy rows across the five SQL families, preserving derivatives of a new graph CI reusing that ID. A committed graph deletion returns success even if SQL cleanup fails; the UUID fence still makes stale rows unreadable. Change timeline and GraphQL change frequency cap graph enumeration at 512 tenant CIs (including legacy CIs), return a fixed resource-limit error above that cap, and never pass an unbounded graph JSON payload to SQL. The migration is shipped as source; apply it only through the separately approved fresh-database staging migration window, not from this development session.
+
 ### Authenticated role source of truth
 
 REST, GraphQL and integration-hub requests authorize JWTs using the enabled user's current role, not the role embedded in a previously issued access token. API keys use the less-privileged of their stored role and the enabled user's current role, compared by granted permissions; incompatible roles (for example, `agent` and `viewer`) are rejected rather than granting either role's exclusive permissions. Missing or disabled users are denied. The request organization remains the user's freshly loaded organization, not a token claim.
@@ -201,7 +205,7 @@ curl http://localhost:3000/api/v1/cis
 curl -X POST http://localhost:3000/api/v1/cis \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $TOKEN" \
-  -d '{"id":"vm-001","name":"web-server-01","type":"virtual-machine","status":"active"}'
+  -d '{"name":"web-server-01","type":"virtual-machine","status":"active"}'
 
 # GraphQL query (authenticated, using the current CI schema)
 curl -X POST http://localhost:3000/graphql \

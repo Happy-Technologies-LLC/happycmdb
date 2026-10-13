@@ -6,9 +6,11 @@ import Joi from 'joi';
 import { AnalyticsController } from '../controllers/analytics.controller';
 import { validateOptional, validateRequest } from '../middleware/validation.middleware';
 import { schemas } from '@cmdb/common';
+import { getAuthMiddleware } from '../../auth/auth-bootstrap';
 
 export const analyticsRoutes = Router();
 const controller = new AnalyticsController();
+const requireOrganization = getAuthMiddleware().requireOrganization();
 
 // Validation schemas
 const dateRangeSchema = Joi.object({
@@ -77,6 +79,7 @@ analyticsRoutes.get('/dependency-depth', controller.getDependencyDepthStats.bind
 // CI change history
 analyticsRoutes.get(
   '/change-history',
+  requireOrganization,
   validateOptional(changeHistorySchema, 'query'),
   controller.getChangeHistory.bind(controller)
 );
@@ -84,9 +87,10 @@ analyticsRoutes.get(
 // Relationship type matrix (source type x target type x relationship type)
 analyticsRoutes.get('/relationship-matrix', controller.getRelationshipMatrix.bind(controller));
 
-// Global change timeline (bounded date range)
+// Caller-organization change timeline (bounded date range)
 analyticsRoutes.get(
   '/change-timeline',
+  requireOrganization,
   validateOptional(dateRangeSchema, 'query'),
   controller.getChangeTimeline.bind(controller)
 );

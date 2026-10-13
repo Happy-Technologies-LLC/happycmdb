@@ -30,7 +30,7 @@ const organizationIdForbidden = Joi.any().forbidden();
 
 // Validation schemas
 const createBusinessServiceSchema = Joi.object({
-  service_id: Joi.string().required().pattern(/^bs-[a-z0-9-]+$/),
+  service_id: Joi.any().forbidden(),
   name: Joi.string().required().min(3).max(255),
   description: Joi.string().optional().allow(''),
   service_classification: Joi.string()

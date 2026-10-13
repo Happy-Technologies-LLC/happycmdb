@@ -7,7 +7,7 @@
  */
 
 import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
-import { logger } from '@cmdb/common';
+import { logger, ciIncarnationId } from '@cmdb/common';
 import {
   ImpactAnalysis,
   ChangeType,
@@ -282,16 +282,19 @@ export class ImpactPredictionEngine {
     if (walk.sharedWork) walk.sharedWork.remaining--;
     walk.active.add(ciId);
     try {
-      if (!await this.neo4jClient.getCI(ciId, organizationId, architectureRemainingMs())) {
-        throw new Error(`CI not found: ${ciId}`);
-      }
+      const ci = await this.neo4jClient.getCI(ciId, organizationId, architectureRemainingMs());
+      if (!ci) throw new Error(`CI not found: ${ciId}`);
+      const incarnationId = ciIncarnationId(ci)
+        ?? await this.neo4jClient.ensureCIIncarnation(ciId, organizationId, architectureRemainingMs());
+      if (!incarnationId) throw new Error(`CI not found: ${ciId}`);
       const cached = await this.queryWithDeadline(
         `SELECT s.* FROM ci_criticality_scores s
-         WHERE s.ci_id = $1 AND s.calculated_at >= NOW() - INTERVAL '7 days'`,
-        [ciId]
+         WHERE s.ci_id = $1 AND s.calculated_at >= NOW() - INTERVAL '7 days'
+           AND s.ci_incarnation_id = $2`,
+        [ciId, incarnationId]
       );
       if (cached.rows.length > 0) return this.mapRowToCriticalityScore(cached.rows[0]);
-      const score = await this.calculateCriticalityScore(ciId, organizationId, walk, depth);
+      const score = await this.calculateCriticalityScore(ciId, organizationId, walk, depth, incarnationId);
       walk.computed.set(ciId, score);
       return score;
     } finally {
@@ -303,7 +306,7 @@ export class ImpactPredictionEngine {
    * Calculate criticality score based on multiple factors
    */
   private async calculateCriticalityScore(
-    ciId: string, organizationId: string, walk: CriticalityWalk, depth: number
+    ciId: string, organizationId: string, walk: CriticalityWalk, depth: number, incarnationId: string
   ): Promise<CriticalityScore> {
     const session = this.neo4jClient.getSession();
 
@@ -355,7 +358,7 @@ export class ImpactPredictionEngine {
       if (dependentIds.length > MAX_CRITICALITY_NODES) throw new ImpactCriticalityLimitError();
 
       // Get change frequency
-      const changeFreq = await this.getChangeFrequency(ciId);
+      const changeFreq = await this.getChangeFrequency(ciId, incarnationId);
 
       // Calculate dependent weight (sum of dependent criticalities)
       let dependentWeight = 0;
@@ -406,11 +409,12 @@ export class ImpactPredictionEngine {
   /**
    * Get change frequency for a CI (changes per month)
    */
-  private async getChangeFrequency(ciId: string): Promise<number> {
+  private async getChangeFrequency(ciId: string, incarnationId: string): Promise<number> {
     const result = await this.queryWithDeadline(
       `SELECT COUNT(*) as change_count FROM ci_change_history h
-       WHERE h.ci_id = $1 AND h.changed_at >= NOW() - INTERVAL '30 days'`,
-      [ciId]
+       WHERE h.ci_id = $1 AND h.changed_at >= NOW() - INTERVAL '30 days'
+         AND h.ci_incarnation_id = $2`,
+      [ciId, incarnationId]
     );
 
     const firstRow = result.rows[0];
@@ -658,14 +662,17 @@ export class ImpactPredictionEngine {
    * Store impact analysis
    */
   private async storeImpactAnalysis(impact: ImpactAnalysis, organizationId: string): Promise<void> {
-    if (!await this.neo4jClient.getCI(impact.source_ci_id, organizationId, architectureRemainingMs())) throw new Error('CI not found');
+    const incarnationId = await this.neo4jClient.ensureCIIncarnation(
+      impact.source_ci_id, organizationId, architectureRemainingMs()
+    );
+    if (!incarnationId) throw new Error('CI not found');
     const inserted = await this.queryWithDeadline(
       `INSERT INTO impact_analyses
        (id, source_ci_id, source_ci_name, change_type, impact_score,
         blast_radius, critical_path, risk_level, analyzed_at,
-        estimated_downtime_minutes, affected_cis)
+        estimated_downtime_minutes, affected_cis, ci_incarnation_id)
        VALUES ($1::uuid, $2::varchar, $3::varchar, $4::varchar, $5::integer,
-         $6::integer, $7::jsonb, $8::varchar, $9::timestamptz, $10::integer, $11::jsonb)
+         $6::integer, $7::jsonb, $8::varchar, $9::timestamptz, $10::integer, $11::jsonb, $12::uuid)
        RETURNING id`,
       [
         impact.id,
@@ -679,6 +686,7 @@ export class ImpactPredictionEngine {
         impact.analyzed_at,
         impact.estimated_downtime_minutes,
         JSON.stringify(impact.affected_cis),
+        incarnationId,
       ]
     );
     if (inserted.rows.length === 0) throw new Error('CI not found');
@@ -688,21 +696,27 @@ export class ImpactPredictionEngine {
    * Store criticality score
    */
   private async storeCriticalityScore(score: CriticalityScore, organizationId: string): Promise<void> {
-    if (!await this.neo4jClient.getCI(score.ci_id, organizationId, architectureRemainingMs())) throw new Error('CI not found');
+    const incarnationId = await this.neo4jClient.ensureCIIncarnation(
+      score.ci_id, organizationId, architectureRemainingMs()
+    );
+    if (!incarnationId) throw new Error('CI not found');
     const inserted = await this.queryWithDeadline(
       `INSERT INTO ci_criticality_scores
-       (ci_id, ci_name, criticality_score, factors, calculated_at)
-       VALUES ($1::varchar, $2::varchar, $3::integer, $4::jsonb, $5::timestamptz)
+       (ci_id, ci_name, criticality_score, factors, calculated_at, ci_incarnation_id)
+       VALUES ($1::varchar, $2::varchar, $3::integer, $4::jsonb, $5::timestamptz, $6::uuid)
        ON CONFLICT (ci_id) DO UPDATE SET
+         ci_name = $2,
          criticality_score = $3,
          factors = $4,
-         calculated_at = $5 RETURNING ci_id`,
+         calculated_at = $5,
+         ci_incarnation_id = $6 RETURNING ci_id`,
       [
         score.ci_id,
         score.ci_name,
         score.criticality_score,
         JSON.stringify(score.factors),
         score.calculated_at,
+        incarnationId,
       ]
     );
     if (inserted.rows.length === 0) throw new Error('CI not found');
@@ -725,13 +739,13 @@ export class ImpactPredictionEngine {
    * Get impact analysis history for a CI
    */
   async getImpactHistory(ciId: string, limit: number, organizationId: string): Promise<ImpactAnalysis[]> {
-    if (!await this.neo4jClient.getCI(ciId, organizationId, architectureRemainingMs())) return [];
+    const incarnationId = ciIncarnationId(await this.neo4jClient.getCI(ciId, organizationId, architectureRemainingMs()));
+    if (!incarnationId) return [];
     const result = await this.queryWithDeadline(
       `SELECT h.* FROM impact_analyses h
-       WHERE h.source_ci_id = $1 ORDER BY h.analyzed_at DESC LIMIT $2`,
-      [ciId, limit]
+       WHERE h.source_ci_id = $1 AND h.ci_incarnation_id = $3 ORDER BY h.analyzed_at DESC LIMIT $2`,
+      [ciId, limit, incarnationId]
     );
-
     return result.rows.map((row: any) => ({
       id: row.id,
       source_ci_id: row.source_ci_id,

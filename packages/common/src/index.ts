@@ -15,6 +15,7 @@ export * from './types';
 
 // Export logger utilities
 export { createLogger, createChildLogger, logger, log } from './utils/logger';
+export { MAX_CI_ANALYTICS_NODES, CIAnalyticsLimitError } from './utils/ci-incarnation';
 export type { LoggerOptions, LogLevel } from './utils/logger';
 
 // Export validation utilities
@@ -33,6 +34,7 @@ export {
 
 // Export retry utilities
 export { withRetry } from './utils/retry';
+export { ciIncarnationId } from './utils/ci-incarnation';
 export { safeDiscoveryScanConfig, type SafeDiscoveryScanConfig } from './utils/discovery-scan-config';
 export {
   DISCOVERY_TARGET_REFUSED, assertDiscoveryAddress, assertDiscoveryHostname,

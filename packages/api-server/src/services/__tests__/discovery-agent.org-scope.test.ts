@@ -22,26 +22,17 @@ const row = (id: string, org: string | null): Row => ({
   tags: [], id,
 });
 
-// In-memory SQL boundary models the actual WHERE/ON CONFLICT predicates so an
-// unscoped service reads/mutates foreign and NULL records rather than echoing mocks.
+// In-memory SQL boundary applies the actual organization predicate for reads,
+// registration retries, heartbeats and deletes.
 const query = jest.fn();
 const executeQuery = async (sql: string, args: unknown[] = []) => {
   if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK') return { rows: [], rowCount: 0 };
-  if (sql.includes('INSERT INTO discovery_agents')) {
-    const id = args[0] as string;
-    const org = sql.includes('organization_id') ? args[9] as string : null;
-    const existing = rows.get(id);
-    if (existing && (!sql.includes('discovery_agents.organization_id = EXCLUDED.organization_id') || existing.organization_id === org)) {
-      existing.hostname = args[1] as string;
-      existing.reachable_networks = args[3] as string[];
-      return { rows: [existing], rowCount: 1 };
-    }
-    if (existing) return { rows: [], rowCount: 0 };
-    const added = row(id, org);
-    added.hostname = args[1] as string;
-    added.reachable_networks = args[3] as string[];
-    rows.set(id, added);
-    return { rows: [added], rowCount: 1 };
+  if (sql.startsWith('UPDATE discovery_agents SET') && sql.includes('hostname = $2')) {
+    const existing = rows.get(args[0] as string);
+    if (!existing || existing.organization_id !== args[9]) return { rows: [], rowCount: 0 };
+    existing.hostname = args[1] as string;
+    existing.reachable_networks = args[3] as string[];
+    return { rows: [existing], rowCount: 1 };
   }
   if (sql.includes('UPDATE discovery_agents') && sql.includes('last_heartbeat_at = NOW()')) {
     const id = args[args.length - (sql.includes('AND organization_id') ? 2 : 1)] as string;
@@ -95,8 +86,8 @@ const registration = (id: string, hostname = 'my.example') => ({ agent_id: id, h
 beforeEach(() => { rows.clear(); query.mockImplementation(executeQuery); rows.set('legacy', row('legacy', null)); });
 
 it('isolates list/get/find-best across two orgs and excludes legacy NULL even for admin org', async () => {
-  await service.registerAgent(registration('alpha'), A);
-  await service.registerAgent(registration('beta'), B);
+  rows.set('alpha', row('alpha', A));
+  rows.set('beta', row('beta', B));
   expect((await service.listAgents(A)).map(agent => agent.agent_id)).toEqual(['alpha']);
   expect((await service.listAgents(B)).map(agent => agent.agent_id)).toEqual(['beta']);
   expect(await service.getAgent('beta', A)).toBeNull();
@@ -106,11 +97,9 @@ it('isolates list/get/find-best across two orgs and excludes legacy NULL even fo
 });
 
 it('selects an org-scoped agent covering every public target, never one covering only the first', async () => {
-  await service.registerAgent({ ...registration('partial'), reachable_networks: ['8.8.8.0/24'] }, A);
-  await service.registerAgent({ ...registration('complete'),
-    reachable_networks: ['8.8.8.0/24', '9.9.9.0/24'] }, A);
-  await service.registerAgent({ ...registration('foreign'),
-    reachable_networks: ['8.8.8.0/24', '9.9.9.0/24'] }, B);
+  rows.set('partial', { ...row('partial', A), reachable_networks: ['8.8.8.0/24'] });
+  rows.set('complete', { ...row('complete', A), reachable_networks: ['8.8.8.0/24', '9.9.9.0/24'] });
+  rows.set('foreign', { ...row('foreign', B), reachable_networks: ['8.8.8.0/24', '9.9.9.0/24'] });
   expect(await service.findBestAgentForNetworks(['8.8.8.0/24', '9.9.9.0/24'], 'nmap', A)).toBe('complete');
   await expect(service.findBestAgentForNetworks(['8.8.8.0/24', '10.0.0.0/8'], 'nmap', A))
     .rejects.toThrow('Discovery target refused');
@@ -167,7 +156,7 @@ it('does not log registration URI or DB error text after a database failure', as
 });
 
 it('denies ID reuse and foreign/NULL heartbeat and delete without modifying existing data', async () => {
-  await service.registerAgent(registration('alpha'), A);
+  rows.set('alpha', { ...row('alpha', A), hostname: 'my.example' });
   expect(await service.registerAgent(registration('alpha', 'hijacked.example'), B)).toBeNull();
   expect(await service.registerAgent(registration('legacy'), A)).toBeNull();
   expect(rows.get('alpha')?.hostname).toBe('my.example');
@@ -182,8 +171,8 @@ it('denies ID reuse and foreign/NULL heartbeat and delete without modifying exis
 });
 
 it('only marks stale agents in the verified organization and never touches legacy NULL rows', async () => {
-  await service.registerAgent(registration('alpha'), A);
-  await service.registerAgent(registration('beta'), B);
+  rows.set('alpha', row('alpha', A));
+  rows.set('beta', row('beta', B));
   for (const id of ['alpha', 'beta', 'legacy']) {
     rows.get(id)!.last_heartbeat_at = new Date(Date.now() - 10 * 60 * 1000);
   }
@@ -197,7 +186,7 @@ it('only marks stale agents in the verified organization and never touches legac
 });
 
 it('returns identical HTTP 404 for foreign, missing, and legacy NULL agents on reads and mutations', async () => {
-  await service.registerAgent(registration('alpha'), A);
+  rows.set('alpha', row('alpha', A));
   const controller = new DiscoveryAgentController();
   const app = express();
   app.use(express.json());
@@ -218,10 +207,8 @@ it('returns identical HTTP 404 for foreign, missing, and legacy NULL agents on r
     for (const response of [get, del, heartbeat]) {
       expect([response.status, response.body]).toEqual([404, { success: false, error: 'Agent not found' }]);
     }
-    if (id !== 'missing') {
-      const collision = await request(app).post('/api/v1/agents/register').send(registration(id));
-      expect([collision.status, collision.body]).toEqual([404, { success: false, error: 'Agent not found' }]);
-    }
+    const collision = await request(app).post('/api/v1/agents/register').send(registration(id));
+    expect([collision.status, collision.body]).toEqual([404, { success: false, error: 'Agent not found' }]);
   }
   expect(rows.get('alpha')?.organization_id).toBe(A);
   expect(rows.get('legacy')?.organization_id).toBeNull();

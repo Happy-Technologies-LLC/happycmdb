@@ -43,7 +43,7 @@ http://localhost:3000/api-docs/openapi.yaml
 
 ### Configuration Items (`/api/v1/cis`)
 - `GET /cis` - List all CIs with filtering
-- `POST /cis` - Create new CI
+- `POST /cis` - Create a CI with server-assigned `id`; omit `id`, `external_id`, `organization_id`
 - `GET /cis/{id}` - Get CI by ID
 - `PUT /cis/{id}` - Update CI
 - `DELETE /cis/{id}` - Delete CI
@@ -52,6 +52,23 @@ http://localhost:3000/api-docs/openapi.yaml
 - `GET /cis/{id}/dependencies` - Get dependency tree
 - `GET /cis/{id}/impact` - Impact analysis
 - `GET /cis/{id}/audit` - Audit history
+
+REST/GraphQL CI deletion shares Neo4j `deleteCI`. The graph deletion captures
+the deleted CI's immutable `incarnation_id`; best-effort PostgreSQL cleanup
+deletes only rows for that UUID or unmarked legacy rows in `baseline_snapshots`,
+`drift_detection_results`, `impact_analyses`, `ci_criticality_scores`, and
+`ci_change_history`. A new CI reusing the ID retains its own marked rows.
+Neo4j and PostgreSQL **cannot commit atomically**: once graph deletion commits,
+the API reports success even if SQL cleanup fails and logs
+`CI_DERIVED_PURGE_FAILED` without row data. Derived reads require an exact match
+to the current tenant-owned graph CI's UUID; NULL legacy SQL markers and rows
+from former incarnations fail closed regardless of timestamps. A legacy graph
+CI gets a UUID only on its next owner-scoped derived write; old SQL rows are
+never backfilled. Migration `025_ci_derived_incarnation.sql` is source-only
+until the separately approved fresh-database staging window for 001–025.
+A dark, Nick-run purge needs separate approval, offline affected-ID and stale-row
+enumeration, and reviewed tenant-by-tenant dry-run counts. This PR does not
+execute or schedule a live purge, backfill, or direct staging migration.
 
 ### Relationships (`/api/v1/relationships`)
 - `GET /relationships` - List relationships
@@ -122,7 +139,7 @@ production scheduling. Credential-backed discovery is restored by HP1-S5
 
 ### Discovery Agents (`/api/v1/agents`)
 - `GET /agents` - List agents
-- `POST /agents/register` - Register agent
+- `POST /agents/register` - Omit `agent_id` to create and retain issued ID for heartbeat; provide issued ID to retry/update an existing agent owned by the caller. Foreign/missing IDs both return 404.
 - `POST /agents/heartbeat` - Update heartbeat
 - `POST /agents/find-best` - Find best agent
 - `GET /agents/{agentId}` - Get agent
@@ -205,7 +222,7 @@ SSH credential-backed execution is restored by HP1-S5.
 
 
 ### Business Services (`/api/v1/business-services`)
-Scoped to the caller's organization: 403 without an organization claim; a service outside the caller's organization returns the same 404 as a missing one. Create returns 409 for a `service_id` already in use.
+Scoped to the caller's organization: 403 without an organization claim; a service outside the caller's organization returns the same 404 as a missing one. Create assigns a globally unique `service_id`; supplied IDs are rejected with 400.
 - `GET /business-services` - List business services
 - `POST /business-services` - Create business service
 - `GET /business-services/{service_id}` - Get business service with mapped-CI and dependency counts

@@ -114,7 +114,6 @@ const writeRoutes: RouteCase[] = [
     'POST',
     '/business-services',
     {
-      service_id: 'bs-web',
       name: 'Web Storefront',
       service_classification: 'application',
       tbm_tower: 'application',

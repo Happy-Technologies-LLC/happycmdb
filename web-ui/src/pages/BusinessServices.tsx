@@ -115,10 +115,7 @@ const mapAPIToUI = (apiService: BusinessServiceAPI): BusinessService => {
 const mapUIToAPI = (
   uiService: Partial<BusinessService> & { name: string; criticality: Criticality }
 ): Partial<BusinessServiceAPI> => {
-  const serviceId = uiService.id || `bs-${uiService.name.toLowerCase().replace(/\s+/g, '-')}-${Date.now()}`;
-
   return {
-    service_id: serviceId,
     name: uiService.name,
     description: uiService.description,
     service_classification: 'application',

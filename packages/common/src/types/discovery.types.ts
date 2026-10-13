@@ -218,8 +218,8 @@ export type AgentStatus = 'active' | 'inactive' | 'offline' | 'disabled';
  * Discovery Agent Registration Input
  */
 export interface DiscoveryAgentRegistration {
-  /** Agent identifier (hostname-macaddr) */
-  agent_id: string;
+  /** Omit on initial registration; supply the issued ID to retry/update within the same organization. */
+  agent_id?: string;
   /** Hostname of the agent */
   hostname: string;
   /** Discovery providers this agent supports */

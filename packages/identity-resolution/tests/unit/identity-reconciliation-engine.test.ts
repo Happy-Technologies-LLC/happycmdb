@@ -655,10 +655,12 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
     // FD-4: organization_id on a :CI is written only from the token organization
     // (or the backfill). The stored node is modelled by applying the engine's
     // `SET ci += $properties` to it.
-    it('reconciliation merge cannot set or change organization_id', async () => {
+    it('reconciliation merge cannot set or change organization, identity or incarnation', async () => {
       const base = physicalServerDuplicates[1]; // has external_id
-      const ci = { ...base, attributes: { ...base.attributes, organization_id: 'attacker-org' } };
-      const node: Record<string, unknown> = { id: 'ci_existing_org', organization_id: 'owner-org' };
+      const ci = { ...base, attributes: { ...base.attributes, organization_id: 'attacker-org',
+        incarnation_id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', id: 'attacker-id', created_at: '2099-01-01' } };
+      const node: Record<string, unknown> = { id: 'ci_existing_org', organization_id: 'owner-org',
+        incarnation_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', created_at: '2020-01-01' };
 
       mockPostgresClient.query
         .mockResolvedValueOnce({ rows: [{ ci_id: 'ci_existing_org' }] }) // external_id match
@@ -672,11 +674,12 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
 
       await engine.reconcileCI(ci, 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa');
 
-      expect(node['organization_id']).toBe('owner-org');
+      expect(node).toMatchObject({ id: 'ci_existing_org', organization_id: 'owner-org',
+        incarnation_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', created_at: '2020-01-01' });
       const recordedFields = mockPostgresClient.query.mock.calls
         .filter(call => String(call[0]).includes('INSERT INTO ci_field_sources'))
         .map(call => (call[1] as unknown[])[1]);
-      expect(recordedFields).not.toContain('organization_id');
+      expect(recordedFields).not.toEqual(expect.arrayContaining(['organization_id', 'incarnation_id', 'id', 'created_at']));
     });
   });
 

@@ -46,6 +46,11 @@ describe('AnomalyDetectionEngine', () => {
     // Setup mock clients
     mockNeo4jClient = {
       getSession: jest.fn().mockReturnValue(createMockNeo4jSession([])),
+      listCIIncarnations: jest.fn().mockResolvedValue([]),
+      iterateUnscopedCIIncarnationPages: jest.fn(async function* () {
+        yield [{ ciId: mockCIs.webServer.id, incarnationId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          organizationId: 'org-a', ciType: 'server' }];
+      }),
     };
     mockPgClient = createMockPgClient([]);
     mockEventProducer = createMockEventProducer();
@@ -89,6 +94,43 @@ describe('AnomalyDetectionEngine', () => {
       expect(mockPgClient.query).toHaveBeenCalled();
       // Should not throw error
     });
+  });
+
+  it('continues relationship/configuration detection and persistence after 513 cross-tenant CIs', async () => {
+    const graphRows = Array.from({ length: 513 }, (_, index) => ({
+      ciId: `ci-${index}`, incarnationId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      organizationId: index % 2 ? 'org-a' : 'org-b', ciType: 'server',
+    }));
+    mockNeo4jClient.listCIIncarnations.mockRejectedValue(new Error('CI analytics resource limit exceeded'));
+    mockNeo4jClient.iterateUnscopedCIIncarnationPages = jest.fn(async function* () {
+      yield graphRows.slice(0, 512);
+      yield graphRows.slice(512);
+    });
+    const relationship = {
+      run: jest.fn()
+        .mockResolvedValueOnce({ records: [createMockNeo4jRecordLocal({
+          ci_id: 'ci-orphan', ci_name: 'orphan', ci_type: 'server',
+        })] })
+        .mockResolvedValue({ records: [] }),
+      close: jest.fn().mockResolvedValue(undefined),
+    };
+    const configuration = createMockNeo4jSession([{
+      ci_id: 'ci-misconfigured', ci_name: 'missing hostname', ci_type: 'server',
+    }]);
+    mockNeo4jClient.getSession.mockReturnValueOnce(relationship).mockReturnValueOnce(configuration);
+    mockPgClient.query.mockResolvedValue({ rows: [] });
+
+    const detected = await engine.detectAnomalies();
+
+    expect(detected.map(anomaly => anomaly.anomaly_type)).toEqual([
+      AnomalyType.ORPHANED_CI, AnomalyType.MISSING_REQUIRED_ATTRIBUTE,
+    ]);
+    const historyQueries = mockPgClient.query.mock.calls.filter(([sql]: [string]) =>
+      sql.includes('JOIN jsonb_to_recordset'));
+    expect(historyQueries.map(([, params]: [string, [number, string]]) =>
+      JSON.parse(params[1]).length)).toEqual([512, 1]);
+    expect(mockPgClient.query.mock.calls.filter(([sql]: [string]) => sql.includes('INSERT INTO anomalies')))
+      .toHaveLength(2);
   });
 
   describe('detectChangeFrequencyAnomalies', () => {

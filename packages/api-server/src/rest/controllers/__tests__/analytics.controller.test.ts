@@ -29,6 +29,7 @@ jest.mock('@cmdb/database', () => ({
 import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
 import { AnalyticsController } from '../analytics.controller';
 
+const ORG = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 function mockRes(): Response {
   const res: Partial<Response> = {
     status: jest.fn().mockReturnThis() as unknown as Response['status'],
@@ -43,7 +44,10 @@ describe('AnalyticsController - relationship matrix / change timeline / health m
 
   beforeEach(() => {
     query = jest.fn();
-    (getNeo4jClient as jest.Mock).mockReturnValue({ getSession: jest.fn() });
+    (getNeo4jClient as jest.Mock).mockReturnValue({
+      getSession: jest.fn(),
+      listCIIncarnations: jest.fn().mockResolvedValue([{ ciId: 'ci-a', incarnationId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', organizationId: ORG }]),
+    });
     (getPostgresClient as jest.Mock).mockReturnValue({ query });
     controller = new AnalyticsController();
   });
@@ -96,7 +100,7 @@ describe('AnalyticsController - relationship matrix / change timeline / health m
         rows: [{ date: '2026-01-01', created: 3, updated: 1, deleted: 0 }],
       });
 
-      const req = { query: {} } as unknown as Request;
+      const req = { query: {}, user: { _organizationId: ORG } } as unknown as Request;
       const res = mockRes();
 
       await controller.getChangeTimeline(req, res);
@@ -125,6 +129,7 @@ describe('AnalyticsController - relationship matrix / change timeline / health m
 
       const req = {
         query: { start_date: '2026-01-01T00:00:00.000Z', end_date: '2026-01-08T00:00:00.000Z' },
+        user: { _organizationId: ORG },
       } as unknown as Request;
       const res = mockRes();
 

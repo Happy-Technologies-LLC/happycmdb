@@ -7,6 +7,7 @@
  */
 
 import { Request, Response } from 'express';
+import { randomUUID } from 'crypto';
 import { getPostgresClient } from '@cmdb/database';
 import { logger } from '@cmdb/common';
 import { requestOrganizationId } from '../../middleware/auth.middleware';
@@ -207,7 +208,7 @@ export class BusinessServiceController {
   async createBusinessService(req: Request, res: Response): Promise<void> {
     try {
       const {
-        service_id,
+        // Globally unique service IDs are assigned by the API, never the request.
         name,
         description,
         service_classification,
@@ -226,6 +227,7 @@ export class BusinessServiceController {
         metadata
       } = req.body;
 
+      const service_id = `bs-${randomUUID()}`;
       // organization_id always comes from the token (the route's Joi schema
       // rejects it in the body).
       const result = await this.pgClient.query(
@@ -253,18 +255,7 @@ export class BusinessServiceController {
         data: result.rows[0]
       });
     } catch (error) {
-      logger.error('Error creating business service', { error: errorLogFields(error), service_id: req.body?.service_id });
-
-      // service_id is globally unique across organizations, so a conflict
-      // may name another tenant's id; the body stays generic either way.
-      if (errorLogFields(error).code === '23505') { // Unique violation (SQLSTATE)
-        res.status(409).json({
-          success: false,
-          error: 'Business service with this ID already exists'
-        });
-        return;
-      }
-
+      logger.error('Error creating business service', { error: errorLogFields(error) });
       res.status(500).json({
         success: false,
         error: 'Failed to create business service'

@@ -17,7 +17,8 @@
  * 001_ci_organization_backfill.cypher statement by statement over the graph.
  */
 
-import { randomBytes } from 'crypto';
+import { randomBytes, randomUUID } from 'crypto';
+import { fork } from 'child_process';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import express from 'express';
@@ -97,6 +98,7 @@ function run(rawCypher: string, params: Props = {}): FakeRecord[] {
       discovered_at: params['discovered_at'], discovery_provider: params['discovery_provider'],
       metadata: params['metadata'],
       organization_id: cypher.includes('organization_id: $organizationId') ? params['organizationId'] : undefined,
+      incarnation_id: cypher.includes('incarnation_id: randomUUID()') ? randomUUID() : undefined,
     };
     // Neo4j does not store null-valued properties.
     for (const key of Object.keys(props)) if (props[key] === null || props[key] === undefined) delete props[key];
@@ -112,7 +114,7 @@ function run(rawCypher: string, params: Props = {}): FakeRecord[] {
       graph.nodes.delete(id);
       graph.edges = graph.edges.filter(e => e.from !== id && e.to !== id);
     }
-    return cypher.includes('RETURN count(*) AS deleted') ? [record({ deleted: neo4j.int(matched ? 1 : 0) })] : [];
+    return matched ? [record({ deletedIncarnationId: props?.['incarnation_id'] ?? null })] : [];
   }
 
   if (cypher.includes('SET ci += $updates')) {
@@ -158,11 +160,34 @@ function run(rawCypher: string, params: Props = {}): FakeRecord[] {
     return rows.slice(0, num(params['rowLimit']));
   }
 
+  if (cypher.includes('dependent_count') && cypher.includes('dependency_count')) {
+    const props = graph.nodes.get(params['ciId'] as string);
+    if (!props || !ciInScope(props)) return [];
+    return [record({ ci_id: props['id'], ci_name: props['name'],
+      dependent_count: neo4j.int(0), dependency_count: neo4j.int(0), dependent_ids: [] })];
+  }
+
+  if (cypher.includes('SET ci.incarnation_id = coalesce(')) {
+    const props = graph.nodes.get(params['id'] as string);
+    if (!props || !ciInScope(props)) return [];
+    props['incarnation_id'] ??= randomUUID();
+    return [record({ incarnationId: props['incarnation_id'] })];
+  }
+
   if (cypher.startsWith('MATCH (ci:CI {id: $id})') && cypher.endsWith('RETURN ci')) {
     const props = graph.nodes.get(params['id'] as string);
     return props !== undefined && ciInScope(props) ? [record({ ci: node(props) })] : [];
   }
 
+  if (cypher.startsWith('MATCH (ci:CI) WHERE') && cypher.includes('AS incarnationId')) {
+    return [...graph.nodes.values()].filter(props => ciInScope(props)
+      && (params['afterId'] === undefined || (typeof props['organization_id'] === 'string'
+        && String(props['id']) > String(params['afterId']))))
+      .sort((a, b) => String(a['id']).localeCompare(String(b['id'])))
+      .slice(0, num(params['rowLimit']))
+      .map(props => record({ ciId: props['id'], incarnationId: props['incarnation_id'],
+        ownerId: props['organization_id'], ciType: props['type'] }));
+  }
   if (cypher.startsWith('MATCH (ci:CI) WHERE')) {
     const matches = [...graph.nodes.values()].filter(props =>
       ciInScope(props) &&
@@ -180,11 +205,15 @@ function run(rawCypher: string, params: Props = {}): FakeRecord[] {
   throw new Error(`fake Neo4j: unrecognised statement: ${cypher}`);
 }
 
+let holdIncarnationRead: (() => Promise<void>) | undefined;
+let incarnationRunTimeout: number | undefined;
 const fakeDriver = {
   session: () => ({
     // Plain functions (not jest.fn): the unit config resets mock implementations.
-    run: async (cypher: string, params?: Props) => {
+    run: async (cypher: string, params?: Props, config?: { timeout: number }) => {
       queryCount++;
+      if (cypher.includes('SET ci.incarnation_id = coalesce(')) incarnationRunTimeout = config?.timeout;
+      if (cypher.includes('AS incarnationId') && !cypher.includes('ci.id > $afterId')) await holdIncarnationRead?.();
       return { records: run(cypher, params) };
     },
     close: async () => undefined,
@@ -207,17 +236,56 @@ const driverSeam = neo4jClient as unknown as { driver: { close(): Promise<void> 
 void driverSeam.driver.close();
 driverSeam.driver = fakeDriver;
 
+const host = fork(join(__dirname, 'fixtures/pglite-host.cjs'), [], { serialization: 'advanced' });
+let sqlId = 0;
+const pending = new Map<number, { resolve: (rows: unknown[]) => void; reject: (error: Error) => void }>();
+host.on('message', ({ id, rows, error }: { id: number; rows: unknown[]; error?: string }) => {
+  const reply = pending.get(id)!;
+  pending.delete(id);
+  if (error) reply.reject(new Error(error));
+  else reply.resolve(rows);
+});
+function sql(statement: string, params: unknown[] = []): Promise<unknown[]> {
+  const id = sqlId++;
+  const { promise, resolve, reject } = Promise.withResolvers<unknown[]>();
+  pending.set(id, { resolve, reject });
+  host.send({ id, op: 'query', sql: statement, params });
+  return promise;
+}
+const pg = {
+  query: async (statement: string, params: unknown[] = []) => ({ rows: await sql(statement, params) }),
+  getClient: async () => ({
+    query: (statement: string, params: unknown[] = []) =>
+      statement.startsWith('SELECT set_config(') ? Promise.resolve({ rows: [] }) : pg.query(statement, params),
+    release: () => undefined,
+  }),
+  transaction: async <T>(callback: (client: { query: typeof pg.query }) => Promise<T>): Promise<T> => {
+    await sql('BEGIN');
+    try {
+      const result = await callback(pg);
+      await sql('COMMIT');
+      return result;
+    } catch (error) {
+      await sql('ROLLBACK');
+      throw error;
+    }
+  },
+};
+jest.mock('../../../../../database/src/postgres/client', () => ({ getPostgresClient: () => pg }));
 jest.mock('@cmdb/database', () => ({
   CITraversalLimitError,
   createCITraversalWork,
   getNeo4jClient: () => neo4jClient,
-  getPostgresClient: () => ({ pool: {} }),
+  getPostgresClient: () => ({ ...pg, pool: pg }),
   getAuditService: () => auditService,
 }));
 
 // bcrypt's native binding is only used for password hashing/login, which the
 // token verification path exercised here never calls.
 jest.mock('bcrypt', () => ({}));
+jest.mock('@cmdb/event-processor', () => ({
+  getEventProducer: () => ({ emit: jest.fn() }), EventType: { RECONCILIATION_CONFLICT: 'reconciliation.conflict' },
+}));
 
 // Users as the Neo4j store returns them; the org is a user attribute, never a request input.
 const USERS: Record<string, { _id: string; _username: string; _role: string; _enabled: boolean; _organizationId?: string }> = {
@@ -235,13 +303,33 @@ jest.mock('../../../auth/neo4j-auth.repository', () => ({
 }));
 
 // Imported after mocks are registered (jest hoists jest.mock).
-import { loadConfig } from '@cmdb/common';
+import { loadConfig, logger } from '@cmdb/common';
 import { JWTService } from '../../../auth/jwt.service';
 import { getAuthMiddleware } from '../../../auth/auth-bootstrap';
 import { ciRoutes } from '../ci.routes';
+import { itilRoutes } from '../itil.routes';
+import { driftRoutes, impactRoutes } from '../drift-impact.routes';
+import { analyticsRoutes } from '../analytics.routes';
+import { createGraphQLServer } from '../../../graphql/server';
 
 const BACKFILL = join(__dirname, '../../../../../database/src/neo4j/migrations/001_ci_organization_backfill.cypher');
 const NOT_FOUND = { success: false, error: 'Not Found', message: 'CI not found' };
+const derivedTables = [
+  'baseline_snapshots', 'drift_detection_results', 'impact_analyses',
+  'ci_criticality_scores', 'ci_change_history',
+];
+beforeAll(async () => {
+  const ddl = readFileSync(join(__dirname, '../../../../../database/src/postgres/migrations/001_complete_schema.sql'), 'utf8');
+  for (const table of derivedTables) {
+    const definition = ddl.match(new RegExp(`CREATE TABLE IF NOT EXISTS ${table} \\([\\s\\S]*?\\n\\);`));
+    if (!definition) throw new Error(`Missing production table ${table}`);
+    await sql(definition[0]);
+  }
+  for (const statement of readFileSync(
+    join(__dirname, '../../../../../database/src/postgres/migrations/025_ci_derived_incarnation.sql'), 'utf8'
+  ).split(';').map(part => part.trim()).filter(Boolean)) await sql(statement);
+});
+afterAll(() => { host.kill(); });
 
 const jwt = new JWTService(loadConfig().auth.jwt);
 const bearer = (userId: string, organizationId?: string) => ({
@@ -256,6 +344,10 @@ const app = express();
 app.use(express.json());
 app.use('/api/v1', getAuthMiddleware().authenticate());
 app.use('/api/v1/cis', ciRoutes);
+app.use('/api/v1/itil', itilRoutes);
+app.use('/api/v1/drift', driftRoutes);
+app.use('/api/v1/impact', impactRoutes);
+app.use('/api/v1/analytics', analyticsRoutes);
 
 function seedCI(id: string, organizationId: string | undefined, extra: Props = {}): void {
   const props: Props = {
@@ -281,6 +373,224 @@ beforeEach(() => {
   dependsOn('ci-b-app', 'ci-b-db');
   queryCount = 0;
   auditHistoryReads = 0;
+  holdIncarnationRead = undefined;
+  incarnationRunTimeout = undefined;
+});
+
+it('caps graph incarnation enumeration before JSON/SQL analytics, including legacy unmarked nodes', async () => {
+  const incarnationId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  for (let i = 0; i < 510; i++) seedCI(`ci-analytics-${i}`, ORG_A, { incarnation_id: incarnationId });
+  const before = queryCount;
+  expect((await neo4jClient.listCIIncarnations(ORG_A)).length).toBe(510);
+  expect(queryCount).toBe(before + 1);
+  seedCI('ci-analytics-over', ORG_A);
+  await expect(neo4jClient.listCIIncarnations(ORG_A)).rejects.toMatchObject({ name: 'CIAnalyticsLimitError' });
+  expect(queryCount).toBe(before + 2);
+});
+
+it('bounds simultaneous incarnation reads independently of incoming request concurrency', async () => {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  holdIncarnationRead = () => promise;
+  try {
+    const reads = Array.from({ length: 8 }, () => neo4jClient.listCIIncarnations(ORG_A));
+    await expect(neo4jClient.listCIIncarnations(ORG_A)).rejects.toMatchObject({ name: 'CIAnalyticsLimitError' });
+    expect(queryCount).toBe(8);
+    resolve();
+    await Promise.all(reads);
+    await neo4jClient.listCIIncarnations(ORG_A);
+    expect(queryCount).toBe(9);
+  } finally {
+    resolve();
+    holdIncarnationRead = undefined;
+  }
+});
+
+it('pages all organizations beyond 512 graph CIs without request admission or an unbounded result', async () => {
+  graph.nodes.clear();
+  for (let i = 0; i < 513; i++) seedCI(`ci-page-${String(i).padStart(4, '0')}`,
+    i % 2 ? ORG_A : ORG_B, { incarnation_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' });
+  const pages: string[][] = [];
+  for await (const page of neo4jClient.iterateUnscopedCIIncarnationPages()) {
+    pages.push(page.map(ci => ci.ciId));
+  }
+  expect(pages.map(page => page.length)).toEqual([512, 1]);
+  expect(new Set(pages.flat()).size).toBe(513);
+  expect(queryCount).toBe(2);
+  await expect(neo4jClient.listCIIncarnations(ORG_B)).resolves.toHaveLength(257);
+});
+
+it('does not let eight concurrent tenant analytics reads starve the background graph scan', async () => {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  holdIncarnationRead = () => promise;
+  try {
+    const requests = Array.from({ length: 8 }, () => neo4jClient.listCIIncarnations(ORG_A));
+    const pages = [];
+    for await (const page of neo4jClient.iterateUnscopedCIIncarnationPages()) pages.push(page);
+    expect(pages.flat()).toEqual([]);
+    expect(queryCount).toBe(9);
+    resolve();
+    await Promise.all(requests);
+  } finally {
+    resolve();
+    holdIncarnationRead = undefined;
+  }
+});
+
+it('deletes all five persisted CI-derived families on the owning REST deletion path', async () => {
+  const id = 'ci-reused';
+  seedCI(id, ORG_A);
+  await sql(`INSERT INTO baseline_snapshots
+    (id, ci_id, snapshot_type, snapshot_data, created_at, created_by, is_approved)
+    VALUES ('11111111-1111-4111-8111-111111111111', $1, 'configuration', '{"owner":"A"}', NOW(), 'A', true)`, [id]);
+  await sql(`INSERT INTO drift_detection_results
+    (ci_id, has_drift, detected_at, baseline_snapshot_id)
+    VALUES ($1, true, NOW(), '11111111-1111-4111-8111-111111111111')`, [id]);
+  await sql(`INSERT INTO impact_analyses (id, source_ci_id, change_type, risk_level, analyzed_at)
+    VALUES ('22222222-2222-4222-8222-222222222222', $1, 'UPDATE', 'high', NOW())`, [id]);
+  await sql(`INSERT INTO ci_criticality_scores (ci_id, factors, calculated_at) VALUES ($1, '{"owner":"A"}', NOW())`, [id]);
+  await sql(`INSERT INTO ci_change_history (ci_id, change_type, change_source, metadata)
+    VALUES ($1, 'UPDATE', 'test', '{"organization_id":"${ORG_A}"}')`, [id]);
+  expect((await request(app).delete(`/api/v1/cis/${id}`).set(AS_B)).status).toBe(404);
+  for (const table of derivedTables) {
+    const column = table === 'impact_analyses' ? 'source_ci_id' : 'ci_id';
+    expect(await sql(`SELECT 1 FROM ${table} WHERE ${column} = $1`, [id])).toHaveLength(1);
+  }
+  expect((await request(app).delete(`/api/v1/cis/${id}`).set(AS_A)).status).toBe(204);
+  seedCI(id, ORG_B, { created_at: new Date().toISOString() });
+  expect((await request(app).get(`/api/v1/cis/${id}`).set(AS_B)).status).toBe(200);
+  for (const table of derivedTables) {
+    const column = table === 'impact_analyses' ? 'source_ci_id' : 'ci_id';
+    expect(await sql(`SELECT 1 FROM ${table} WHERE ${column} = $1`, [id])).toEqual([]);
+  }
+});
+
+it('preserves every fresh B derivative when B reuses an ID between A graph deletion and SQL purge', async () => {
+  const id = 'ci-delete-race';
+  const aInc = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const bInc = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  seedCI(id, ORG_A, { incarnation_id: aInc });
+  await sql(`INSERT INTO ci_change_history (ci_id, change_type, change_source, metadata, ci_incarnation_id)
+    VALUES ($1, 'A', 'test', '{}', $2)`, [id, aInc]);
+
+  const original = pg.transaction;
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  pg.transaction = async callback => {
+    expect(graph.nodes.has(id)).toBe(false);
+    entered.resolve();
+    await release.promise;
+    return original(callback);
+  };
+  try {
+    const deleting = request(app).delete(`/api/v1/cis/${id}`).set(AS_A).then(response => response);
+    await entered.promise;
+    seedCI(id, ORG_B, { incarnation_id: bInc });
+    await sql(`INSERT INTO baseline_snapshots
+      (id, ci_id, snapshot_type, snapshot_data, created_at, created_by, ci_incarnation_id)
+      VALUES ('11111111-1111-4111-8111-111111111111', $1, 'configuration', '{}', NOW(), 'b', $2)`, [id, bInc]);
+    await sql(`INSERT INTO drift_detection_results (ci_id, has_drift, detected_at, ci_incarnation_id)
+      VALUES ($1, false, NOW(), $2)`, [id, bInc]);
+    await sql(`INSERT INTO impact_analyses (id, source_ci_id, change_type, risk_level, analyzed_at, ci_incarnation_id)
+      VALUES ('22222222-2222-4222-8222-222222222222', $1, 'UPDATE', 'low', NOW(), $2)`, [id, bInc]);
+    await sql(`INSERT INTO ci_criticality_scores (ci_id, factors, calculated_at, ci_incarnation_id)
+      VALUES ($1, '{}', NOW(), $2)`, [id, bInc]);
+    await sql(`INSERT INTO ci_change_history (ci_id, change_type, change_source, metadata, ci_incarnation_id)
+      VALUES ($1, 'B', 'test', '{}', $2)`, [id, bInc]);
+    release.resolve();
+    expect((await deleting).status).toBe(204);
+    for (const table of derivedTables) {
+      const column = table === 'impact_analyses' ? 'source_ci_id' : 'ci_id';
+      expect(await sql(`SELECT ci_incarnation_id FROM ${table} WHERE ${column} = $1`, [id]))
+        .toEqual([{ ci_incarnation_id: bInc }]);
+    }
+    expect((await request(app).get(`/api/v1/cis/${id}`).set(AS_B)).status).toBe(200);
+  } finally {
+    release.resolve();
+    pg.transaction = original;
+  }
+});
+
+it('keeps surviving SQL rows fenced after a graph delete commits during SQL failure', async () => {
+  const id = 'ci-delete-sql-down';
+  const aInc = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const bInc = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  seedCI(id, ORG_A, { incarnation_id: aInc });
+  await sql(`INSERT INTO baseline_snapshots
+    (id, ci_id, snapshot_type, snapshot_data, created_at, created_by, is_approved, ci_incarnation_id)
+    VALUES ($1, $3, 'configuration', '{"secret":"A"}', NOW(), 'a', true, $2),
+           ($4, $3, 'configuration', '{"secret":"legacy"}', NOW(), 'a', true, NULL)`,
+    [randomUUID(), aInc, id, randomUUID()]);
+  await sql(`INSERT INTO drift_detection_results (ci_id, has_drift, drift_score, detected_at, ci_incarnation_id)
+    VALUES ($1, true, 99, NOW(), $2), ($1, true, 98, NOW(), NULL)`, [id, aInc]);
+  await sql(`INSERT INTO impact_analyses (id, source_ci_id, change_type, risk_level, analyzed_at, ci_incarnation_id)
+    VALUES ($1, $3, 'RESTART', 'high', NOW(), $2), ($4, $3, 'RESTART', 'high', NOW(), NULL)`,
+    [randomUUID(), aInc, id, randomUUID()]);
+  await sql(`INSERT INTO ci_criticality_scores (ci_id, factors, calculated_at, ci_incarnation_id)
+    VALUES ($1, '{"secret":"A"}', NOW(), $2)`, [id, aInc]);
+  await sql(`INSERT INTO ci_change_history
+    (ci_id, change_type, change_source, metadata, ci_incarnation_id)
+    VALUES ($1, 'FORMER_A', 'test', $2::jsonb, $3), ($1, 'LEGACY_A', 'test', $2::jsonb, NULL)`,
+    [id, JSON.stringify({ organization_id: ORG_B }), aInc]);
+  const original = pg.transaction;
+  const log = jest.spyOn(logger, 'error').mockImplementation(() => undefined);
+  pg.transaction = async () => { throw new Error('PostgreSQL unavailable'); };
+  try {
+    expect((await request(app).delete(`/api/v1/cis/${id}`).set(AS_A)).status).toBe(204);
+    expect((await request(app).delete(`/api/v1/cis/${id}`).set(AS_A)).status).toBe(404);
+    expect(graph.nodes.has(id)).toBe(false);
+    expect(log.mock.calls.filter(args => args[0] === 'CI_DERIVED_PURGE_FAILED'))
+      .toEqual([['CI_DERIVED_PURGE_FAILED']]);
+  } finally {
+    pg.transaction = original;
+    log.mockRestore();
+  }
+  for (const table of derivedTables) {
+    const column = table === 'impact_analyses' ? 'source_ci_id' : 'ci_id';
+    const rows = await sql(`SELECT ci_incarnation_id FROM ${table} WHERE ${column} = $1`, [id]);
+    expect(rows).toContainEqual({ ci_incarnation_id: aInc });
+    if (table !== 'ci_criticality_scores') expect(rows).toContainEqual({ ci_incarnation_id: null });
+  }
+  seedCI(id, ORG_B, { incarnation_id: bInc, created_at: new Date().toISOString() });
+  const get = (path: string) => request(app).get(path).set(AS_B);
+  const paths = [
+    `/api/v1/drift/baseline/${id}`, `/api/v1/drift/history/${id}`,
+    `/api/v1/impact/history/${id}`, `/api/v1/itil/configuration-items/${id}/history`,
+    `/api/v1/analytics/change-history?ci_id=${id}`, '/api/v1/analytics/change-timeline',
+    `/api/v1/impact/criticality/${id}`,
+  ];
+  for (const path of paths) {
+    const response = await get(path);
+    expect(response.status).toBe(200);
+    if (path.includes('/drift/baseline/')) expect(response.body.data).toBeNull();
+    else if (path.includes('/impact/criticality/'))
+      expect(JSON.stringify(response.body.data)).not.toContain('secret');
+    else expect(response.body.data).toEqual([]);
+  }
+  expect(incarnationRunTimeout).toEqual(expect.any(Number));
+  expect(incarnationRunTimeout).toBeGreaterThan(0);
+});
+
+it('GraphQL CI deletion shares cleanup and foreign/missing not-found behavior', async () => {
+  const id = 'ci-graphql-deleted';
+  seedCI(id, ORG_A);
+  await sql(`INSERT INTO ci_change_history (ci_id, change_type, change_source, metadata)
+    VALUES ($1, 'UPDATE', 'test', '{"organization_id":"${ORG_A}"}')`, [id]);
+  const gql = express();
+  const { server } = await createGraphQLServer(gql);
+  try {
+    const del = (who: typeof AS_A) => request(gql).post('/graphql').set(who)
+      .send({ query: `mutation { deleteCI(id: "${id}") }` });
+    const foreign = await del(AS_B);
+    const missing = await request(gql).post('/graphql').set(AS_B)
+      .send({ query: 'mutation { deleteCI(id: "ci-absent") }' });
+    expect(foreign.body.errors?.[0].extensions.code).toBe('NOT_FOUND');
+    expect(missing.body.errors?.[0].extensions.code).toBe('NOT_FOUND');
+    expect(await sql('SELECT 1 FROM ci_change_history WHERE ci_id = $1', [id])).toHaveLength(1);
+    expect((await del(AS_A)).body.data).toEqual({ deleteCI: true });
+    expect(await sql('SELECT 1 FROM ci_change_history WHERE ci_id = $1', [id])).toEqual([]);
+  } finally {
+    await server.stop();
+  }
 });
 
 describe('/api/v1/cis tenant scoping', () => {
@@ -312,36 +622,30 @@ describe('/api/v1/cis tenant scoping', () => {
     expect(auditHistoryReads).toBe(0);
   });
 
-  it('POST /cis stores the token org and rejects organization_id in the body (400)', async () => {
-    const body = { id: 'ci-new', name: 'new-server', type: 'server' };
+  it('POST /cis assigns a tenant-scoped server ID and rejects chosen IDs and external IDs', async () => {
+    const body = { name: 'new-server', type: 'server' };
+    for (const id of ['ci-b-app', 'ci-nope']) {
+      const refused = await request(app).post('/api/v1/cis').set(AS_A).send({ ...body, id });
+      expect(refused.status).toBe(400);
+    }
+    for (const external_id of ['external-existing', 'external-missing']) {
+      const refused = await request(app).post('/api/v1/cis').set(AS_A).send({ ...body, external_id });
+      expect(refused.status).toBe(400);
+    }
     const created = await request(app).post('/api/v1/cis').set(AS_A).send(body);
-    expect(created.status).toBe(201);
-    expect(graph.nodes.get('ci-new')!['organization_id']).toBe(ORG_A);
-    expect((await request(app).get('/api/v1/cis/ci-new').set(AS_B)).status).toBe(404);
+    const other = await request(app).post('/api/v1/cis').set(AS_B).send(body);
+    expect([created.status, other.status]).toEqual([201, 201]);
+    const id = created.body.data.id;
+    expect(id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(other.body.data.id).not.toBe(id);
+    expect(graph.nodes.get(id)!['organization_id']).toBe(ORG_A);
+    expect((await request(app).get(`/api/v1/cis/${id}`).set(AS_B)).status).toBe(404);
 
-    const smuggled = await request(app).post('/api/v1/cis').set(AS_A).send({ ...body, id: 'ci-smuggled', organization_id: ORG_B });
+    const smuggled = await request(app).post('/api/v1/cis').set(AS_A).send({ ...body, organization_id: ORG_B });
     expect(smuggled.status).toBe(400);
-    expect(graph.nodes.has('ci-smuggled')).toBe(false);
-
-    const moved = await request(app).put('/api/v1/cis/ci-new').set(AS_A).send({ organization_id: ORG_B });
+    const moved = await request(app).put(`/api/v1/cis/${id}`).set(AS_A).send({ organization_id: ORG_B });
     expect(moved.status).toBe(400);
-    expect(graph.nodes.get('ci-new')!['organization_id']).toBe(ORG_A);
-  });
-
-  it('POST /cis rejects an id or external_id longer than cmdb.dim_ci stores (400) and creates nothing', async () => {
-    // cmdb.dim_ci.ci_id is VARCHAR(100) and external_id VARCHAR(200): a longer
-    // value would fail every ETL batch it lands in (migration 011).
-    const longId = 'x'.repeat(101);
-    const overlongId = await request(app).post('/api/v1/cis').set(AS_A).send({ id: longId, name: 'n', type: 'server' });
-    const overlongExternal = await request(app).post('/api/v1/cis').set(AS_A)
-      .send({ id: 'ci-long-ext', external_id: 'e'.repeat(201), name: 'n', type: 'server' });
-    expect([overlongId.status, overlongExternal.status]).toEqual([400, 400]);
-    expect(graph.nodes.has(longId)).toBe(false);
-    expect(graph.nodes.has('ci-long-ext')).toBe(false);
-
-    const atLimit = await request(app).post('/api/v1/cis').set(AS_A)
-      .send({ id: 'i'.repeat(100), external_id: 'e'.repeat(200), name: 'n', type: 'server' });
-    expect(atLimit.status).toBe(201);
+    expect(graph.nodes.get(id)!['organization_id']).toBe(ORG_A);
   });
 
   it('PUT and DELETE on a foreign CI are 404 and change nothing', async () => {

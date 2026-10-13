@@ -115,6 +115,9 @@ export function enforceGraphQLRequestLimits(
         } else if (pagedItems) {
           work += fanout;
         }
+        // This aggregate enumerates tenant graph incarnations before its SQL
+        // query; one invocation per operation even when aliases are used.
+        if (parent.name === 'AnalyticsQuery' && name === 'getChangeFrequencyByType') work += MAX_COMPLEXITY / 2;
         work += fanout * (children?.work ?? 0);
       }
       if (projection + work > MAX_COMPLEXITY) limitExceeded();

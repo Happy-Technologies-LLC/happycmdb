@@ -33,7 +33,7 @@ discoveryAgentRoutes.use(authMiddleware.requireOrganization());
 
 // Validation schemas
 const registerAgentSchema = Joi.object({
-  agent_id: Joi.string().required().min(1).max(255),
+  agent_id: Joi.string().optional().min(1).max(255),
   hostname: Joi.string().required().min(1).max(255),
   provider_capabilities: Joi.array()
     .items(schemas.discoveryProvider)

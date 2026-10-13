@@ -22,7 +22,6 @@ import type { TokenPayload } from '../../src/auth/types';
 
 // Request body for creating a CI (non-underscore field names per ciInputSchema).
 interface CICreateBody {
-  id: string;
   name: string;
   type: string;
   status?: string;
@@ -104,7 +103,6 @@ describe('CI REST API - Enhanced Integration Tests', () => {
     it('should handle concurrent CI creations', async () => {
       const ciPromises = Array.from({ length: 10 }, (_, i) => {
         const ciData: CICreateBody = {
-          id: uuidv4(),
           name: `concurrent-server-${i}`,
           type: 'server',
           status: 'active'
@@ -117,23 +115,21 @@ describe('CI REST API - Enhanced Integration Tests', () => {
       });
 
       const results = await Promise.all(ciPromises);
-
-      results.forEach(response => {
+      const issued = results.map(response => {
         expect(response.body.success).toBe(true);
-        expect(response.body.data).toHaveProperty('id');
+        return response.body.data.id as string;
       });
+      expect(new Set(issued).size).toBe(issued.length);
     });
 
     it('should handle concurrent reads without data corruption', async () => {
-      const ciId = uuidv4();
       const ciData: CICreateBody = {
-        id: ciId,
         name: 'read-test-server',
         type: 'server',
         status: 'active'
       };
 
-      await request(app).post('/api/v1/cis').send(ciData).expect(201);
+      const ciId = (await request(app).post('/api/v1/cis').send(ciData).expect(201)).body.data.id;
 
       const readPromises = Array.from({ length: 20 }, () =>
         request(app).get(`/api/v1/cis/${ciId}`).expect(200)
@@ -148,16 +144,14 @@ describe('CI REST API - Enhanced Integration Tests', () => {
     });
 
     it('should handle concurrent updates with optimistic locking', async () => {
-      const ciId = uuidv4();
       const ciData: CICreateBody = {
-        id: ciId,
         name: 'update-test-server',
         type: 'server',
         status: 'active',
         metadata: { counter: 0 }
       };
 
-      await request(app).post('/api/v1/cis').send(ciData).expect(201);
+      const ciId = (await request(app).post('/api/v1/cis').send(ciData).expect(201)).body.data.id;
 
       // Attempt 10 concurrent updates (update body uses non-underscore keys)
       const updatePromises = Array.from({ length: 10 }, (_, i) =>
@@ -189,7 +183,6 @@ describe('CI REST API - Enhanced Integration Tests', () => {
       // Create 25 test CIs
       const ciPromises = Array.from({ length: 25 }, (_, i) =>
         request(app).post('/api/v1/cis').send({
-          id: uuidv4(),
           name: `pagination-server-${String(i).padStart(3, '0')}`,
           type: 'server',
           status: 'active'
@@ -262,44 +255,37 @@ describe('CI REST API - Enhanced Integration Tests', () => {
     beforeEach(async () => {
       const specialCIs: CICreateBody[] = [
         {
-          id: uuidv4(),
           name: 'server-with-dashes',
           type: 'server'
         },
         {
-          id: uuidv4(),
           name: 'server.with.dots',
           type: 'server'
         },
         {
-          id: uuidv4(),
           name: 'server_with_underscores',
           type: 'server'
         },
         {
-          id: uuidv4(),
           name: 'server@special#chars!',
           type: 'server'
         },
         {
-          id: uuidv4(),
           name: 'Сервер', // Cyrillic
           type: 'server'
         },
         {
-          id: uuidv4(),
           name: 'サーバー', // Japanese
           type: 'server'
         },
         {
-          id: uuidv4(),
           name: '서버', // Korean
           type: 'server'
         }
       ];
 
       await Promise.all(
-        specialCIs.map(ci => request(app).post('/api/v1/cis').send(ci))
+        specialCIs.map(ci => request(app).post('/api/v1/cis').send(ci).expect(201))
       );
     });
 
@@ -367,42 +353,36 @@ describe('CI REST API - Enhanced Integration Tests', () => {
     beforeEach(async () => {
       const testCIs: CICreateBody[] = [
         {
-          id: uuidv4(),
           name: 'prod-web-01',
           type: 'server',
           status: 'active',
           environment: 'production'
         },
         {
-          id: uuidv4(),
           name: 'prod-web-02',
           type: 'server',
           status: 'active',
           environment: 'production'
         },
         {
-          id: uuidv4(),
           name: 'prod-db-01',
           type: 'database',
           status: 'active',
           environment: 'production'
         },
         {
-          id: uuidv4(),
           name: 'staging-web-01',
           type: 'server',
           status: 'active',
           environment: 'staging'
         },
         {
-          id: uuidv4(),
           name: 'staging-web-02',
           type: 'server',
           status: 'maintenance',
           environment: 'staging'
         },
         {
-          id: uuidv4(),
           name: 'dev-app-01',
           type: 'application',
           status: 'active',
@@ -411,7 +391,7 @@ describe('CI REST API - Enhanced Integration Tests', () => {
       ];
 
       await Promise.all(
-        testCIs.map(ci => request(app).post('/api/v1/cis').send(ci))
+        testCIs.map(ci => request(app).post('/api/v1/cis').send(ci).expect(201))
       );
     });
 
@@ -463,9 +443,8 @@ describe('CI REST API - Enhanced Integration Tests', () => {
   describe('Validation and Error Handling', () => {
     it('should validate required fields on creation', async () => {
       const invalidCIs = [
-        { name: 'no-id-or-type' },
-        { id: uuidv4(), name: 'no-type' },
-        { id: uuidv4(), type: 'server' } // Missing name
+        { name: 'no-type' },
+        { type: 'server' } // Missing name
       ];
 
       for (const ci of invalidCIs) {
@@ -480,7 +459,6 @@ describe('CI REST API - Enhanced Integration Tests', () => {
 
     it('should validate CI type enum', async () => {
       const ciData = {
-        id: uuidv4(),
         name: 'test-server',
         type: 'invalid-type' // Not in enum
       };
@@ -499,7 +477,6 @@ describe('CI REST API - Enhanced Integration Tests', () => {
 
     it('should validate status enum', async () => {
       const ciData = {
-        id: uuidv4(),
         name: 'test-server',
         type: 'server',
         status: 'invalid-status'
@@ -520,7 +497,6 @@ describe('CI REST API - Enhanced Integration Tests', () => {
       }
 
       const ciData: CICreateBody = {
-        id: uuidv4(),
         name: 'large-metadata-server',
         type: 'server',
         metadata: largeMetadata
@@ -553,37 +529,21 @@ describe('CI REST API - Enhanced Integration Tests', () => {
     let dbId: string;
 
     beforeEach(async () => {
-      server1Id = uuidv4();
-      server2Id = uuidv4();
-      appId = uuidv4();
-      dbId = uuidv4();
-
-      await Promise.all([
+      const created = await Promise.all([
         request(app).post('/api/v1/cis').send({
-          id: server1Id,
-          name: 'rel-server-1',
-          type: 'server',
-          status: 'active'
-        }),
+          name: 'rel-server-1', type: 'server', status: 'active'
+        }).expect(201),
         request(app).post('/api/v1/cis').send({
-          id: server2Id,
-          name: 'rel-server-2',
-          type: 'server',
-          status: 'active'
-        }),
+          name: 'rel-server-2', type: 'server', status: 'active'
+        }).expect(201),
         request(app).post('/api/v1/cis').send({
-          id: appId,
-          name: 'rel-app',
-          type: 'application',
-          status: 'active'
-        }),
+          name: 'rel-app', type: 'application', status: 'active'
+        }).expect(201),
         request(app).post('/api/v1/cis').send({
-          id: dbId,
-          name: 'rel-db',
-          type: 'database',
-          status: 'active'
-        })
+          name: 'rel-db', type: 'database', status: 'active'
+        }).expect(201),
       ]);
+      [server1Id, server2Id, appId, dbId] = created.map(response => response.body.data.id);
     });
 
     it('should handle relationship queries with no relationships', async () => {
@@ -667,15 +627,13 @@ describe('CI REST API - Enhanced Integration Tests', () => {
 
   describe('Audit Trail', () => {
     it('should record audit trail for create operations', async () => {
-      const ciId = uuidv4();
       const ciData: CICreateBody = {
-        id: ciId,
         name: 'audit-server',
         type: 'server',
         status: 'active'
       };
 
-      await request(app).post('/api/v1/cis').send(ciData).expect(201);
+      const ciId = (await request(app).post('/api/v1/cis').send(ciData).expect(201)).body.data.id;
 
       // Query audit history
       const auditResponse = await request(app)
@@ -687,13 +645,12 @@ describe('CI REST API - Enhanced Integration Tests', () => {
     });
 
     it('should record audit trail for update operations', async () => {
-      const ciId = uuidv4();
-      await request(app).post('/api/v1/cis').send({
-        id: ciId,
+      const created = await request(app).post('/api/v1/cis').send({
         name: 'audit-update-server',
         type: 'server',
         status: 'active'
-      });
+      }).expect(201);
+      const ciId = created.body.data.id;
 
       await request(app)
         .put(`/api/v1/cis/${ciId}`)

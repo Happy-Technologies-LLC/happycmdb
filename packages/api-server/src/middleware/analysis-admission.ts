@@ -20,7 +20,7 @@ const graphQLWork = new WeakMap<Request, GraphQLWork>();
 
 type AnalysisResult = { status: number; body: unknown };
 type AnalysisPolicy = {
-  scope: 'architecture' | 'impact' | 'dashboard';
+  scope: 'architecture' | 'impact' | 'dashboard' | 'analytics';
   timeoutMs: number;
   withDeadline: <T>(deadline: number, operation: () => Promise<T>) => Promise<T>;
   deadlineError: () => Error;
@@ -30,7 +30,7 @@ type AnalysisPolicy = {
 
 /** Shared verified-principal/tenant admission, with GraphQL consuming only concurrency slots. */
 function reserveWorkSlots(
-  scope: 'architecture' | 'impact' | 'dashboard' | 'graphql', org: string, principal: string,
+  scope: 'architecture' | 'impact' | 'dashboard' | 'analytics' | 'graphql', org: string, principal: string,
   rateLimited: boolean
 ): (() => void) | null {
   const now = Date.now();

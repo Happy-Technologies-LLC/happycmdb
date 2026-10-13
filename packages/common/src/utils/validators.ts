@@ -121,11 +121,10 @@ export const ciSchema = Joi.object({
  * CI Input validation schema
  */
 export const ciInputSchema = Joi.object({
-  // cmdb.dim_ci.ci_id is VARCHAR(100) and external_id VARCHAR(200): a longer
-  // value could never be synced and would fail every ETL batch it lands in.
-  // This bounds only writers that validate with this schema (POST
-  // /api/v1/cis); other :CI writers, e.g. reconciliation merge, are not
-  // bounded here.
+  // cmdb.dim_ci.ci_id is VARCHAR(100) and external_id VARCHAR(200). The REST
+  // route overrides id/external_id to forbid caller-chosen values and issues a
+  // UUID; this shared schema still bounds other validated internal writers.
+  // Direct :CI writers, e.g. reconciliation merge, bypass this validator.
   id: Joi.string().required().max(100),
   external_id: Joi.string().optional().max(200),
   name: Joi.string().required().min(1).max(500),

@@ -95,33 +95,41 @@ export class AnomalyDetectionEngine {
     const anomalies: Anomaly[] = [];
     const lookbackDays = this.config.lookback_days;
 
-    // Get CIs with their change counts
-    const result = await this.postgresClient.query(
-      `SELECT
-        cs.ci_id,
-        COUNT(*) as change_count,
-        COALESCE(MAX(dc.ci_name), cs.ci_id) as ci_name
-       FROM ci_change_statistics cs
-       JOIN ci_change_history ch ON cs.ci_id = ch.ci_id
-       LEFT JOIN cmdb.dim_ci dc ON dc.ci_id = cs.ci_id AND dc.is_current = true
-       WHERE ch.changed_at >= NOW() - ($1 * INTERVAL '1 day')
-       GROUP BY cs.ci_id
-       HAVING COUNT(*) > 0`,
-      [lookbackDays]
-    );
+    // Each graph page is bounded before serialization to SQL; global scans
+    // must not share the tenant request cap or its concurrency slots.
+    const changeRows: Array<{ ci_id: string; change_count: string; ci_name: string }> = [];
+    for await (const incarnations of this.neo4jClient.iterateUnscopedCIIncarnationPages()) {
+      const result = await this.postgresClient.query(
+        `SELECT
+          cs.ci_id,
+          COUNT(*) as change_count,
+          COALESCE(MAX(dc.ci_name), cs.ci_id) as ci_name
+         FROM ci_change_statistics cs
+         JOIN ci_change_history ch ON cs.ci_id = ch.ci_id
+         JOIN jsonb_to_recordset($2::jsonb) AS current_ci("ciId" text, "incarnationId" uuid, "organizationId" text)
+           ON ch.ci_id = current_ci."ciId" AND ch.ci_incarnation_id = current_ci."incarnationId"
+           AND ch.metadata->>'organization_id' = current_ci."organizationId"
+         LEFT JOIN cmdb.dim_ci dc ON dc.ci_id = cs.ci_id AND dc.is_current = true
+         WHERE ch.changed_at >= NOW() - ($1 * INTERVAL '1 day')
+         GROUP BY cs.ci_id
+         HAVING COUNT(*) > 0`,
+        [lookbackDays, JSON.stringify(incarnations)]
+      );
+      changeRows.push(...result.rows);
+    }
 
-    if (result.rows.length < 3) {
+    if (changeRows.length < 3) {
       return anomalies; // Need minimum sample size
     }
 
     // Calculate statistical measures
-    const changeCounts = result.rows.map((r: any) => parseInt(r.change_count));
+    const changeCounts = changeRows.map(r => parseInt(r.change_count));
     const mean = stats.mean(changeCounts);
     const stdDev = stats.standardDeviation(changeCounts);
     const threshold = mean + (this.getSensitivityMultiplier() * stdDev);
 
     // Identify anomalies (Z-score approach)
-    for (const row of result.rows) {
+    for (const row of changeRows) {
       const changeCount = parseInt(row.change_count);
       const zScore = (changeCount - mean) / stdDev;
 

@@ -123,10 +123,12 @@ import { JWTService } from '../../../auth/jwt.service';
 import { getAuthMiddleware } from '../../../auth/auth-bootstrap';
 import { businessServiceRoutes } from '../business-service.routes';
 import { architectureRoutes } from '../architecture.routes';
+import { discoveryAgentRoutes } from '../discovery-agent.routes';
 
 const MIGRATIONS = join(__dirname, '../../../../../database/src/postgres/migrations');
 const DDL_TABLES = [
   'dim_business_services',
+  'discovery_agents',
   'business_service_dependencies',
   'ci_business_service_mappings',
   'fact_business_service_incidents',
@@ -193,6 +195,7 @@ function buildApp() {
   app.use(express.json());
   app.use('/api/v1', getAuthMiddleware().authenticate());
   app.use('/api/v1/business-services', businessServiceRoutes);
+  app.use('/api/v1/agents', discoveryAgentRoutes);
   app.use('/api/v1/architecture', architectureRoutes);
   return app;
 }
@@ -231,6 +234,13 @@ beforeAll(async () => {
   backfilled = await db.rows('SELECT service_id, organization_id FROM dim_business_services ORDER BY service_id');
   dimCiSchemaBefore011 = await dimCiSchema();
   await db.exec(`BEGIN;\n${UP_011}\nCOMMIT;`);
+  const schema = readFileSync(join(MIGRATIONS, '001_complete_schema.sql'), 'utf8');
+  for (const view of ['active_discovery_agents', 'agent_network_coverage']) {
+    const definition = schema.match(new RegExp(`CREATE OR REPLACE VIEW ${view} AS[\\s\\S]*?;`));
+    if (!definition) throw new Error(`Missing production view ${view}`);
+    await db.exec(definition[0]);
+  }
+  await db.exec(readFileSync(join(MIGRATIONS, '019_discovery_agents_organization_scope.sql'), 'utf8'));
   ciBackfilled = await db.rows('SELECT ci_name, organization_id, org_backfilled FROM cmdb.dim_ci ORDER BY ci_key');
 });
 
@@ -598,25 +608,50 @@ describe('writes take the organization from the token only', () => {
     service_id: 'bs-b-new', name: 'B New', service_classification: 'compute', tbm_tower: 'compute', business_criticality: 'low',
   };
 
-  it("creates the service in the caller's organization", async () => {
-    const res = await request(app).post('/api/v1/business-services').set(AS_B).send(NEW_SERVICE);
-    expect(res.status).toBe(201);
-    expect(res.body.data.organization_id).toBe(ORG_B);
-    expect(await orgOf('bs-b-new')).toBe(ORG_B);
+  it('assigns distinct service IDs for both organizations and refuses chosen IDs regardless of occupancy', async () => {
+    const attempted = ['bs-a-app', 'bs-not-present'];
+    for (const service_id of attempted) {
+      const res = await request(app).post('/api/v1/business-services').set(AS_B)
+        .send({ ...NEW_SERVICE, service_id });
+      expect(res.status).toBe(400);
+    }
+    const a = await request(app).post('/api/v1/business-services').set(AS_A)
+      .send({ name: 'A New', service_classification: 'compute', tbm_tower: 'compute', business_criticality: 'low' });
+    const b = await request(app).post('/api/v1/business-services').set(AS_B)
+      .send({ name: 'B New', service_classification: 'compute', tbm_tower: 'compute', business_criticality: 'low' });
+    expect([a.status, b.status]).toEqual([201, 201]);
+    expect(a.body.data.service_id).toMatch(/^bs-[0-9a-f-]{36}$/);
+    expect(b.body.data.service_id).not.toBe(a.body.data.service_id);
+    expect(await orgOf(a.body.data.service_id)).toBe(INTERNAL_ORG);
+    expect(await orgOf(b.body.data.service_id)).toBe(ORG_B);
+    expect((await request(app).get(`/api/v1/business-services/${a.body.data.service_id}`).set(AS_B)).status).toBe(404);
+    expect(await orgOf('bs-a-app')).toBe(INTERNAL_ORG);
   });
 
-  it("cannot take over another organization's service_id through create", async () => {
-    const res = await request(app).post('/api/v1/business-services').set(AS_B).send({ ...NEW_SERVICE, service_id: 'bs-a-app' });
-    expect(res.status).toBe(409);
-    expect(res.body).toEqual({ success: false, error: 'Business service with this ID already exists' });
-    const [row] = await db.rows<{ name: string; organization_id: string }>(
-      `SELECT name, organization_id FROM dim_business_services WHERE service_id = 'bs-a-app'`
-    );
-    expect(row).toEqual({ name: 'A App', organization_id: INTERNAL_ORG });
+  it('registers agents with server IDs, preserves owned retry and hides foreign/missing IDs', async () => {
+    const registration = { hostname: 'worker', provider_capabilities: ['nmap'], reachable_networks: ['8.8.8.0/24'] };
+    const first = await request(app).post('/api/v1/agents/register').set(AS_A).send(registration);
+    const second = await request(app).post('/api/v1/agents/register').set(AS_B).send(registration);
+    expect([first.status, second.status]).toEqual([200, 200]);
+    const id = first.body.data.agent_id;
+    expect(id).toMatch(/^agent-[0-9a-f-]{36}$/);
+    expect(second.body.data.agent_id).not.toBe(id);
+    const owned = await request(app).post('/api/v1/agents/register').set(AS_A)
+      .send({ ...registration, agent_id: id, hostname: 'renamed-worker' });
+    expect(owned.status).toBe(200);
+    expect(owned.body.data).toMatchObject({ agent_id: id, hostname: 'renamed-worker' });
+    const foreign = await request(app).post('/api/v1/agents/register').set(AS_B)
+      .send({ ...registration, agent_id: id, hostname: 'intruder' });
+    const missing = await request(app).post('/api/v1/agents/register').set(AS_B)
+      .send({ ...registration, agent_id: 'agent-not-present', hostname: 'intruder' });
+    expect([foreign.status, foreign.body]).toEqual([404, { success: false, error: 'Agent not found' }]);
+    expect([missing.status, missing.body]).toEqual([foreign.status, foreign.body]);
+    expect((await request(app).get(`/api/v1/agents/${id}`).set(AS_A)).body.data.hostname).toBe('renamed-worker');
   });
 
   it('rejects organization_id in a create body and writes nothing', async () => {
-    const res = await request(app).post('/api/v1/business-services').set(AS_B).send({ ...NEW_SERVICE, organization_id: INTERNAL_ORG });
+    const res = await request(app).post('/api/v1/business-services').set(AS_B)
+      .send({ name: 'B New', service_classification: 'compute', tbm_tower: 'compute', business_criticality: 'low', organization_id: INTERNAL_ORG });
     expect(res.status).toBe(400);
     expect(res.body._details).toEqual([expect.objectContaining({ _field: 'organization_id', _type: 'any.unknown' })]);
     expect(await orgOf('bs-b-new')).toBeUndefined();

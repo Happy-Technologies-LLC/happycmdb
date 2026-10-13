@@ -7,7 +7,7 @@
  */
 
 import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
-import { logger } from '@cmdb/common';
+import { logger, ciIncarnationId } from '@cmdb/common';
 import { getEventProducer, EventType } from '@cmdb/event-processor';
 import {
   BaselineSnapshot,
@@ -113,7 +113,7 @@ export class ConfigurationDriftDetector {
     ciData: Record<string, any>
   ): Promise<Record<string, any>> {
     // Filter out system fields
-    const systemFields = ['id', 'created_at', 'updated_at', 'last_seen_at'];
+    const systemFields = ['id', 'created_at', 'updated_at', 'last_seen_at', 'incarnation_id'];
     const config: Record<string, any> = {};
 
     for (const [key, value] of Object.entries(ciData)) {
@@ -413,13 +413,14 @@ export class ConfigurationDriftDetector {
     snapshotType: 'configuration' | 'performance' | 'relationships',
     organizationId: string
   ): Promise<BaselineSnapshot | null> {
-    // Neo4j owns CI tenancy; reporting dim_ci can lag graph CI creation.
-    if (!await this.neo4jClient.getCI(ciId, organizationId)) return null;
+    const incarnationId = ciIncarnationId(await this.neo4jClient.getCI(ciId, organizationId));
+    if (!incarnationId) return null;
     const result = await this.postgresClient.query(
       `SELECT b.* FROM baseline_snapshots b
        WHERE b.ci_id = $1 AND b.snapshot_type = $2 AND b.is_approved = true
+         AND b.ci_incarnation_id = $3
        ORDER BY b.created_at DESC LIMIT 1`,
-      [ciId, snapshotType]
+      [ciId, snapshotType, incarnationId]
     );
 
     if (result.rows.length === 0) {
@@ -439,11 +440,13 @@ export class ConfigurationDriftDetector {
   ): Promise<BaselineSnapshot> {
     const existing = await this.getBaselineById(baselineId, organizationId);
     if (!existing) throw new Error('Baseline snapshot not found');
+    const incarnationId = ciIncarnationId(await this.neo4jClient.getCI(existing.ci_id, organizationId));
+    if (!incarnationId) throw new Error('Baseline snapshot not found');
     const result = await this.postgresClient.query(
       `UPDATE baseline_snapshots b
        SET is_approved = true, approved_by = $2, approved_at = NOW()
-       WHERE b.id = $1 AND b.ci_id = $3 RETURNING b.*`,
-      [baselineId, approvedBy, existing.ci_id]
+       WHERE b.id = $1 AND b.ci_id = $3 AND b.ci_incarnation_id = $4 RETURNING b.*`,
+      [baselineId, approvedBy, existing.ci_id, incarnationId]
     );
 
     if (result.rows.length === 0) throw new Error('Baseline snapshot not found');
@@ -465,7 +468,8 @@ export class ConfigurationDriftDetector {
       return null;
     }
 
-    if (!await this.neo4jClient.getCI(result.rows[0].ci_id, organizationId)) return null;
+    const incarnationId = ciIncarnationId(await this.neo4jClient.getCI(result.rows[0].ci_id, organizationId));
+    if (!incarnationId || result.rows[0].ci_incarnation_id !== incarnationId) return null;
     return this.mapRowToBaseline(result.rows[0]);
   }
 
@@ -473,12 +477,13 @@ export class ConfigurationDriftDetector {
    * Store baseline snapshot
    */
   private async storeBaseline(baseline: BaselineSnapshot, organizationId: string): Promise<void> {
-    // Revalidate graph ownership at the persistence boundary, not via asynchronous dim_ci ETL.
-    if (!await this.neo4jClient.getCI(baseline.ci_id, organizationId)) throw new Error('CI not found');
+    // Atomically mint a marker for a legacy owned graph node before SQL writes.
+    const incarnationId = await this.neo4jClient.ensureCIIncarnation(baseline.ci_id, organizationId);
+    if (!incarnationId) throw new Error('CI not found');
     const inserted = await this.postgresClient.query(
       `INSERT INTO baseline_snapshots
-       (id, ci_id, snapshot_type, snapshot_data, created_at, created_by, is_approved)
-       VALUES ($1::uuid, $2::varchar, $3::varchar, $4::jsonb, $5::timestamptz, $6::varchar, $7::boolean)
+       (id, ci_id, snapshot_type, snapshot_data, created_at, created_by, is_approved, ci_incarnation_id)
+       VALUES ($1::uuid, $2::varchar, $3::varchar, $4::jsonb, $5::timestamptz, $6::varchar, $7::boolean, $8::uuid)
        RETURNING id`,
       [
         baseline.id,
@@ -488,6 +493,7 @@ export class ConfigurationDriftDetector {
         baseline.created_at,
         baseline.created_by,
         baseline.is_approved,
+        incarnationId,
       ]
     );
     if (inserted.rows.length === 0) throw new Error('CI not found');
@@ -497,12 +503,13 @@ export class ConfigurationDriftDetector {
    * Store drift detection result
    */
   private async storeDriftResult(result: DriftDetectionResult, organizationId: string): Promise<void> {
-    if (!await this.neo4jClient.getCI(result.ci_id, organizationId)) throw new Error('CI not found');
+    const incarnationId = await this.neo4jClient.ensureCIIncarnation(result.ci_id, organizationId);
+    if (!incarnationId) throw new Error('CI not found');
     const inserted = await this.postgresClient.query(
       `INSERT INTO drift_detection_results
        (ci_id, ci_name, has_drift, drift_score, drifted_fields,
-        baseline_snapshot_id, detected_at)
-       VALUES ($1::varchar, $2::varchar, $3::boolean, $4::integer, $5::jsonb, $6::uuid, $7::timestamptz)
+        baseline_snapshot_id, detected_at, ci_incarnation_id)
+       VALUES ($1::varchar, $2::varchar, $3::boolean, $4::integer, $5::jsonb, $6::uuid, $7::timestamptz, $8::uuid)
        RETURNING id`,
       [
         result.ci_id,
@@ -512,6 +519,7 @@ export class ConfigurationDriftDetector {
         JSON.stringify(result.drifted_fields),
         result.baseline_snapshot_id,
         result.detected_at,
+        incarnationId,
       ]
     );
     if (inserted.rows.length === 0) throw new Error('CI not found');
@@ -538,11 +546,12 @@ export class ConfigurationDriftDetector {
    * Get drift history for a CI
    */
   async getDriftHistory(ciId: string, limit: number, organizationId: string): Promise<DriftDetectionResult[]> {
-    if (!await this.neo4jClient.getCI(ciId, organizationId)) return [];
+    const incarnationId = ciIncarnationId(await this.neo4jClient.getCI(ciId, organizationId));
+    if (!incarnationId) return [];
     const result = await this.postgresClient.query(
       `SELECT d.* FROM drift_detection_results d
-       WHERE d.ci_id = $1 ORDER BY d.detected_at DESC LIMIT $2`,
-      [ciId, limit]
+       WHERE d.ci_id = $1 AND d.ci_incarnation_id = $3 ORDER BY d.detected_at DESC LIMIT $2`,
+      [ciId, limit, incarnationId]
     );
 
     return result.rows.map((row: any) => ({

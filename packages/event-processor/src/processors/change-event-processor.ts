@@ -7,7 +7,7 @@
  */
 
 import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
-import { logger } from '@cmdb/common';
+import { logger, ciIncarnationId } from '@cmdb/common';
 import { EventConsumer, createEventConsumer } from '../kafka/event-consumer';
 import { KAFKA_TOPICS, CONSUMER_GROUPS } from '../kafka/topics';
 import {
@@ -15,7 +15,6 @@ import {
   EventType,
   CIDiscoveredEvent,
   CIUpdatedEvent,
-  CIDeletedEvent,
 } from '../types/events';
 
 export class ChangeEventProcessor {
@@ -27,11 +26,13 @@ export class ChangeEventProcessor {
     this.consumer = createEventConsumer(CONSUMER_GROUPS.CHANGE_PROCESSOR);
   }
 
-  // Reconciliation supplies organization_id from its authorized graph write.
-  // A legacy or mismatched event cannot establish provenance for history.
-  private async hasProvenOwner(event: CIDiscoveredEvent | CIUpdatedEvent): Promise<boolean> {
-    return typeof event.organization_id === 'string' && event.organization_id.length > 0
-      && Boolean(await this.neo4jClient.getCI(event.ci_id, event.organization_id));
+  // An event's organization_id is only a claim. Prove current ownership and
+  // stamp the graph incarnation before persisting any derived history.
+  private async provenIncarnation(event: CIDiscoveredEvent | CIUpdatedEvent): Promise<string | null> {
+    const sourceIncarnation = ciIncarnationId(event.ci_incarnation_id);
+    if (typeof event.organization_id !== 'string' || !event.organization_id || !sourceIncarnation) return null;
+    const currentIncarnation = await this.neo4jClient.ensureCIIncarnation(event.ci_id, event.organization_id);
+    return sourceIncarnation === currentIncarnation ? currentIncarnation : null;
   }
 
   async start(): Promise<void> {
@@ -43,7 +44,6 @@ export class ChangeEventProcessor {
     // Register event handlers
     this.consumer.on(EventType.CI_DISCOVERED, this.handleCIDiscovered.bind(this));
     this.consumer.on(EventType.CI_UPDATED, this.handleCIUpdated.bind(this));
-    this.consumer.on(EventType.CI_DELETED, this.handleCIDeleted.bind(this));
 
     // Start consuming
     await this.consumer.run();
@@ -61,14 +61,15 @@ export class ChangeEventProcessor {
    */
   private async handleCIDiscovered(event: CMDBEvent): Promise<void> {
     const ciEvent = event as CIDiscoveredEvent;
-    if (!await this.hasProvenOwner(ciEvent)) return;
+    const incarnationId = await this.provenIncarnation(ciEvent);
+    if (!incarnationId) return;
 
     try {
       // Record discovery in change history
       await this.postgresClient.query(
         `INSERT INTO ci_change_history
-         (ci_id, change_type, changed_by, change_source, changed_fields, new_values, metadata)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+         (ci_id, change_type, changed_by, change_source, changed_fields, new_values, metadata, ci_incarnation_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
         [
           ciEvent.ci_id,
           'discovered',
@@ -86,6 +87,7 @@ export class ChangeEventProcessor {
             organization_id: ciEvent.organization_id,
             timestamp: ciEvent.timestamp,
           }),
+          incarnationId,
         ]
       );
 
@@ -112,14 +114,15 @@ export class ChangeEventProcessor {
    */
   private async handleCIUpdated(event: CMDBEvent): Promise<void> {
     const updateEvent = event as CIUpdatedEvent;
-    if (!await this.hasProvenOwner(updateEvent)) return;
+    const incarnationId = await this.provenIncarnation(updateEvent);
+    if (!incarnationId) return;
 
     try {
       // Record update in change history
       await this.postgresClient.query(
         `INSERT INTO ci_change_history
-         (ci_id, change_type, changed_by, change_source, changed_fields, previous_values, new_values, metadata)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+         (ci_id, change_type, changed_by, change_source, changed_fields, previous_values, new_values, metadata, ci_incarnation_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
         [
           updateEvent.ci_id,
           'updated',
@@ -133,6 +136,7 @@ export class ChangeEventProcessor {
             timestamp: updateEvent.timestamp,
             organization_id: updateEvent.organization_id,
           }),
+          incarnationId,
         ]
       );
 
@@ -158,50 +162,6 @@ export class ChangeEventProcessor {
     }
   }
 
-  /**
-   * Handle CI deleted event
-   */
-  private async handleCIDeleted(event: CMDBEvent): Promise<void> {
-    const deleteEvent = event as CIDeletedEvent;
-
-    try {
-      // Record deletion in change history
-      await this.postgresClient.query(
-        `INSERT INTO ci_change_history
-         (ci_id, change_type, changed_by, change_source, metadata)
-         VALUES ($1, $2, $3, $4, $5)`,
-        [
-          deleteEvent.ci_id,
-          'deleted',
-          'system',
-          deleteEvent.event_type,
-          JSON.stringify({
-            event_id: deleteEvent.event_id,
-            timestamp: deleteEvent.timestamp,
-            reason: deleteEvent.reason,
-            ci_name: deleteEvent.ci_name,
-            ci_type: deleteEvent.ci_type,
-          }),
-        ]
-      );
-
-      // Update CI statistics
-      await this.updateCIStatistics(deleteEvent.ci_id, 'deleted');
-
-      logger.info('CI deletion tracked', {
-        ci_id: deleteEvent.ci_id,
-        ci_name: deleteEvent.ci_name,
-        reason: deleteEvent.reason,
-      });
-    } catch (error) {
-      logger.error('Failed to track CI deletion', {
-        event_id: deleteEvent.event_id,
-        ci_id: deleteEvent.ci_id,
-        error,
-      });
-      throw error;
-    }
-  }
 
   /**
    * Update CI change statistics
@@ -259,15 +219,20 @@ export class ChangeEventProcessor {
    */
   async getChangeHistory(
     ciId: string,
+    organizationId: string,
     limit: number = 100,
     offset: number = 0
   ): Promise<any[]> {
+    const ci = await this.neo4jClient.getCI(ciId, organizationId);
+    const incarnationId = ciIncarnationId(ci);
+    if (!incarnationId) return [];
     const result = await this.postgresClient.query(
       `SELECT * FROM ci_change_history
-       WHERE ci_id = $1
+       WHERE ci_id = $1 AND metadata->>'organization_id' = $4
+         AND ci_incarnation_id = $5
        ORDER BY changed_at DESC
        LIMIT $2 OFFSET $3`,
-      [ciId, limit, offset]
+      [ciId, limit, offset, organizationId, incarnationId]
     );
 
     return result.rows;

@@ -6,19 +6,23 @@
  */
 
 import { ChangeEventProcessor } from '../../src/processors/change-event-processor';
-import { EventType, CIDiscoveredEvent, CIUpdatedEvent, CIDeletedEvent } from '../../src/types/events';
+import { EventType, CIDiscoveredEvent, CIUpdatedEvent } from '../../src/types/events';
 
 // Mock dependencies
 const OWN = 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa';
+const INC = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const getCI = jest.fn();
+const ensureCIIncarnation = jest.fn();
 jest.mock('@cmdb/database', () => ({
-  getNeo4jClient: () => ({ getCI }),
+  getNeo4jClient: () => ({ getCI, ensureCIIncarnation }),
   getPostgresClient: jest.fn(() => ({
     query: jest.fn(),
   })),
 }));
 
 jest.mock('@cmdb/common', () => ({
+  ciIncarnationId: (ci: { _incarnation_id?: string } | string | null) =>
+    typeof ci === 'string' ? ci : ci?._incarnation_id ?? null,
   logger: {
     info: jest.fn(),
     error: jest.fn(),
@@ -48,7 +52,8 @@ describe('ChangeEventProcessor', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    getCI.mockImplementation(async (_ciId: string, org: string) => org === OWN ? { id: 'ci-123' } : null);
+    getCI.mockImplementation(async (_ciId: string, org: string) => org === OWN ? { id: 'ci-123', _incarnation_id: INC } : null);
+    ensureCIIncarnation.mockImplementation(async (_ciId: string, org: string) => org === OWN ? INC : null);
 
     mockPostgresClient = {
       query: jest.fn().mockResolvedValue({ rows: [] }),
@@ -71,11 +76,14 @@ describe('ChangeEventProcessor', () => {
     const event: CIDiscoveredEvent = {
       event_id: 'event', event_type: EventType.CI_DISCOVERED, timestamp: new Date(),
       source: 'identity-reconciliation-engine', ci_id: 'ci-123', organization_id: OWN,
+      ci_incarnation_id: INC,
       ci_name: 'host', ci_type: 'server', source_system: 'test',
       identifiers: {}, confidence_score: 1,
     };
     await (processor as any).handleCIDiscovered({ ...event, organization_id: undefined });
     await (processor as any).handleCIDiscovered({ ...event, organization_id: 'bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb' });
+    await (processor as any).handleCIDiscovered({ ...event, ci_incarnation_id: undefined });
+    await (processor as any).handleCIDiscovered({ ...event, ci_incarnation_id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' });
     expect(mockPostgresClient.query).not.toHaveBeenCalled();
   });
 
@@ -89,7 +97,6 @@ describe('ChangeEventProcessor', () => {
       );
       expect(mockConsumer.on).toHaveBeenCalledWith(EventType.CI_DISCOVERED, expect.any(Function));
       expect(mockConsumer.on).toHaveBeenCalledWith(EventType.CI_UPDATED, expect.any(Function));
-      expect(mockConsumer.on).toHaveBeenCalledWith(EventType.CI_DELETED, expect.any(Function));
       expect(mockConsumer.run).toHaveBeenCalled();
       expect(logger.info).toHaveBeenCalledWith('ChangeEventProcessor started');
     });
@@ -112,6 +119,7 @@ describe('ChangeEventProcessor', () => {
         timestamp: new Date(),
         ci_id: 'ci-123',
         organization_id: 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa',
+        ci_incarnation_id: INC,
         ci_name: 'Web Server 1',
         ci_type: 'server',
         source_system: 'aws-discovery',
@@ -149,6 +157,7 @@ describe('ChangeEventProcessor', () => {
         timestamp: new Date(),
         ci_id: 'ci-123',
         organization_id: 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa',
+        ci_incarnation_id: INC,
         ci_name: 'Web Server 1',
         ci_type: 'server',
         source_system: 'aws-discovery',
@@ -179,6 +188,7 @@ describe('ChangeEventProcessor', () => {
         timestamp: new Date(),
         ci_id: 'ci-123',
         organization_id: 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa',
+        ci_incarnation_id: INC,
         ci_name: 'Web Server 1',
         source_system: 'aws-discovery',
         changed_fields: ['status', 'ip_address'],
@@ -217,6 +227,7 @@ describe('ChangeEventProcessor', () => {
         timestamp: new Date(),
         ci_id: 'ci-123',
         organization_id: 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa',
+        ci_incarnation_id: INC,
         ci_name: 'Web Server 1',
         source_system: 'aws-discovery',
         changed_fields: ['status', 'tags'],
@@ -250,6 +261,7 @@ describe('ChangeEventProcessor', () => {
         timestamp: new Date(),
         ci_id: 'ci-123',
         organization_id: 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa',
+        ci_incarnation_id: INC,
         ci_name: 'Web Server 1',
         source_system: 'aws-discovery',
         changed_fields: ['tags', 'metadata'],
@@ -267,38 +279,6 @@ describe('ChangeEventProcessor', () => {
     });
   });
 
-  describe('handleCIDeleted', () => {
-    it('should handle CI deleted event', async () => {
-      const event: CIDeletedEvent = {
-        event_id: 'evt-3',
-        event_type: EventType.CI_DELETED,
-        timestamp: new Date(),
-        ci_id: 'ci-123',
-        ci_name: 'Web Server 1',
-        ci_type: 'server',
-        reason: 'Resource terminated',
-      };
-
-      await (processor as any).handleCIDeleted(event);
-
-      expect(mockPostgresClient.query).toHaveBeenCalledWith(
-        expect.stringContaining('INSERT INTO ci_change_history'),
-        expect.arrayContaining([
-          'ci-123',
-          'deleted',
-          'system',
-        ])
-      );
-
-      expect(logger.info).toHaveBeenCalledWith(
-        'CI deletion tracked',
-        expect.objectContaining({
-          ci_id: 'ci-123',
-          reason: 'Resource terminated',
-        })
-      );
-    });
-  });
 
   describe('updateCIStatistics', () => {
     it('should update CI statistics with upsert', async () => {
@@ -325,11 +305,11 @@ describe('ChangeEventProcessor', () => {
 
       mockPostgresClient.query.mockResolvedValue({ rows: mockHistory });
 
-      const result = await processor.getChangeHistory('ci-123', 50, 0);
+      const result = await processor.getChangeHistory('ci-123', OWN, 50, 0);
 
       expect(mockPostgresClient.query).toHaveBeenCalledWith(
         expect.stringContaining('SELECT * FROM ci_change_history'),
-        ['ci-123', 50, 0]
+        ['ci-123', 50, 0, OWN, INC]
       );
 
       expect(result).toEqual(mockHistory);
@@ -338,11 +318,11 @@ describe('ChangeEventProcessor', () => {
     it('should use default pagination values', async () => {
       mockPostgresClient.query.mockResolvedValue({ rows: [] });
 
-      await processor.getChangeHistory('ci-123');
+      await processor.getChangeHistory('ci-123', OWN);
 
       expect(mockPostgresClient.query).toHaveBeenCalledWith(
         expect.any(String),
-        ['ci-123', 100, 0]
+        ['ci-123', 100, 0, OWN, INC]
       );
     });
   });
@@ -418,6 +398,7 @@ describe('ChangeEventProcessor', () => {
           timestamp: new Date(),
           ci_id: 'ci-123',
           organization_id: 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa',
+          ci_incarnation_id: INC,
           ci_name: 'Test CI',
           source_system: 'test',
           changed_fields: [field, 'other_field'],

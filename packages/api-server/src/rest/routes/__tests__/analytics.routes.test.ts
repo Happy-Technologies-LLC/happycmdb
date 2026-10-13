@@ -2,22 +2,17 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Route-wiring tests for analytics.routes.ts. Authentication is applied
- * centrally by server.ts (`authMiddleware.authenticate()` mounted on every
- * /api/v1 route before any router), so this suite simulates that by
- * mounting the captured mock middleware ahead of `analyticsRoutes`,
- * mirroring production. Every route here is a read, so -- unlike
- * itil/business-service -- no route layers an additional
- * `requirePermission('write')` gate: any authenticated role, including a
- * read-only viewer, can reach every analytics endpoint.
+ * Analytics routes authenticate centrally (as server.ts does). Viewer and
+ * operator roles may read; history/timeline also require an organization.
  */
-
 import express, { type Request, type Response } from 'express';
 import request from 'supertest';
 import { jest, describe, it, expect, beforeEach } from '@jest/globals';
 import type { UserRole } from '../../../auth/types';
 
-type ReqWithUser = Request & { user?: { _userId?: string; _role?: UserRole } };
+type ReqWithUser = Request & {
+  user?: { _userId?: string; _role?: UserRole; _organizationId?: string };
+};
 
 const mockRouteHandler = jest.fn((req: Request, res: Response) => {
   res.status(200).json({ actor: (req as ReqWithUser).user?._userId });
@@ -26,20 +21,36 @@ const mockRouteHandler = jest.fn((req: Request, res: Response) => {
 const TOKEN_ROLES: Record<string, UserRole> = {
   'Bearer operator-token': 'operator',
   'Bearer viewer-token': 'viewer',
+  'Bearer no-org-token': 'operator',
 };
 
 const mockAuthenticate = jest.fn(() => (req: Request, res: Response, next: () => void) => {
-  const role = TOKEN_ROLES[req.get('authorization') ?? ''];
+  const token = req.get('authorization') ?? '';
+  const role = TOKEN_ROLES[token];
   if (!role) {
     res.status(401).json({ error: 'Unauthorized' });
     return;
   }
-  (req as ReqWithUser).user = { _userId: 'route-user', _role: role };
+  (req as ReqWithUser).user = {
+    _userId: 'route-user', _role: role,
+    ...(token === 'Bearer no-org-token' ? {} : { _organizationId: '11111111-1111-4111-8111-111111111111' }),
+  };
+  next();
+});
+
+const mockRequireOrganization = jest.fn(() => (req: Request, res: Response, next: () => void) => {
+  if (!(req as ReqWithUser).user?._organizationId) {
+    res.status(403).json({ error: 'Organization required' });
+    return;
+  }
   next();
 });
 
 jest.mock('../../../auth/auth-bootstrap', () => ({
-  getAuthMiddleware: jest.fn(() => ({ authenticate: mockAuthenticate })),
+  getAuthMiddleware: jest.fn(() => ({
+    authenticate: mockAuthenticate,
+    requireOrganization: mockRequireOrganization,
+  })),
 }));
 
 jest.mock('../../controllers/analytics.controller', () => ({
@@ -62,11 +73,8 @@ jest.mock('../../controllers/analytics.controller', () => ({
 
 import { analyticsRoutes } from '../analytics.routes';
 
-// Captured once at module scope (mirrors server.ts, which builds this
-// middleware once via `authMiddleware.authenticate()` when the app is
-// constructed). jest.config.unit.js sets `resetMocks: true`, which wipes
-// `mockAuthenticate`'s implementation before every test; calling it fresh
-// inside testApp() would return undefined once the suite is running.
+// server.ts captures this once. resetMocks wipes mock implementations before
+// each test, so calling mockAuthenticate again inside testApp would return undefined.
 const authenticateMiddleware = mockAuthenticate();
 
 function testApp(): express.Express {
@@ -87,7 +95,7 @@ const readRoutes: string[] = [
   '/analytics/discovery-timeline',
   '/analytics/top-connected',
   '/analytics/dependency-depth',
-  '/analytics/change-history',
+  '/analytics/change-history?ci_id=ci-1',
   '/analytics/relationship-matrix',
   '/analytics/change-timeline',
   '/analytics/health-metrics/ci-1',
@@ -100,23 +108,31 @@ describe('analytics routes', () => {
     });
   });
 
-  it.each(readRoutes)('returns 401 before reaching GET %s without credentials', async (path) => {
+  it.each(readRoutes)('returns 401 before reaching GET %s without credentials', async path => {
     const response = await request(testApp()).get(path);
     expect(response.status).toBe(401);
     expect(mockRouteHandler).not.toHaveBeenCalled();
   });
 
-  it.each(readRoutes)('a viewer (read-only) can reach GET %s -- reads authenticate only', async (path) => {
+  it.each(readRoutes)('a viewer (read-only) can reach GET %s', async path => {
     const response = await request(testApp()).get(path).set('authorization', 'Bearer viewer-token');
     expect(response.status).toBe(200);
     expect(mockRouteHandler).toHaveBeenCalled();
   });
 
-  it.each(readRoutes)('an operator can also reach GET %s', async (path) => {
+  it.each(readRoutes)('an operator can also reach GET %s', async path => {
     const response = await request(testApp()).get(path).set('authorization', 'Bearer operator-token');
     expect(response.status).toBe(200);
     expect(mockRouteHandler).toHaveBeenCalled();
   });
+
+  it.each(['/analytics/change-history?ci_id=ci-1', '/analytics/change-timeline'])(
+    'rejects GET %s with no organization', async path => {
+      const response = await request(testApp()).get(path).set('authorization', 'Bearer no-org-token');
+      expect(response.status).toBe(403);
+      expect(mockRouteHandler).not.toHaveBeenCalled();
+    }
+  );
 
   it('rejects an invalid/unrecognized bearer token with 401', async () => {
     const response = await request(testApp())

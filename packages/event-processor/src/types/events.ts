@@ -43,6 +43,7 @@ export interface CIDiscoveredEvent extends BaseEvent {
   event_type: EventType.CI_DISCOVERED;
   ci_id: string;
   organization_id: string;
+  ci_incarnation_id: string;
   ci_name: string;
   ci_type: string;
   source_system: string;
@@ -54,6 +55,7 @@ export interface CIUpdatedEvent extends BaseEvent {
   event_type: EventType.CI_UPDATED;
   ci_id: string;
   organization_id: string;
+  ci_incarnation_id: string;
   ci_name: string;
   changed_fields: string[];
   previous_values: Record<string, any>;

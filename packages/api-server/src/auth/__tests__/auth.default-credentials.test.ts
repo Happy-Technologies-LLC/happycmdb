@@ -94,9 +94,11 @@ class FakeRepository implements AuthRepository {
     if (this.beforeWrite !== undefined && this.users.get(id)?._enabled !== false) await this.beforeWrite();
     this.users.delete(id);
   }
+  /** Like MARK_DEFAULT_SUSPECT_CYPHER: unmarked, and still the hash and generation of the verified read `user`. */
   async markDefaultSuspect(user: User): Promise<boolean> {
     const current = this.users.get(user._id);
-    if (!current || current._defaultPasswordSuspect === true) return false;
+    if (!current || current._defaultPasswordSuspect === true || current._passwordHash !== user._passwordHash
+      || (current._credentialEpoch ?? 0) !== (user._credentialEpoch ?? 0)) return false;
     this.users.set(user._id, { ...current, _defaultPasswordSuspect: true });
     return true;
   }

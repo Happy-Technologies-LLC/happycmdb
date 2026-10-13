@@ -112,7 +112,7 @@ interface LockConnection {
  * run carries on safely because no outcome depends on the lock, and the
  * broken connection is discarded instead of crashing the process.
  */
-function lockOf(client: PostgresClient): RotationLock {
+export function lockOf(client: Pick<PostgresClient, 'getClient'>): RotationLock {
   let connection: LockConnection | undefined;
   let lost = false;
   const onError = (): void => {
@@ -127,8 +127,16 @@ function lockOf(client: PostgresClient): RotationLock {
       const acquired: LockConnection = await client.getClient();
       lost = false;
       acquired.on('error', onError);
-      const { rows } = await acquired.query('SELECT pg_try_advisory_lock(hashtextextended($1, 0)) AS locked', [LOCK_KEY]);
-      if (rows[0]?.['locked'] !== true) {
+      let locked: unknown;
+      try {
+        const { rows } = await acquired.query('SELECT pg_try_advisory_lock(hashtextextended($1, 0)) AS locked', [LOCK_KEY]);
+        locked = rows[0]?.['locked'];
+      } catch (error) {
+        // The connection's state is unknown: discard it rather than pool it.
+        giveBack(acquired, error instanceof Error ? error : true);
+        throw error;
+      }
+      if (locked !== true) {
         giveBack(acquired);
         throw new LockBusyError();
       }

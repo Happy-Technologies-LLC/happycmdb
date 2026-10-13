@@ -22,6 +22,9 @@ import type { RotationGraph, Row } from '../rotate-user-password';
 type Node = { elementId: string; props: Row };
 const norm = (cypher: string) => cypher.replace(/\s+/g, ' ').trim();
 const marked = (u: Node) => u.props['defaultPasswordSuspect'] === true || u.props['_defaultPasswordSuspect'] === true;
+const hashOf = (u: Node) => u.props['_passwordHash'] ?? u.props['passwordHash'] ?? null;
+const num = (value: unknown) => (neo4j.isInt(value) ? neo4j.integer.toNumber(value) : Number(value));
+const epochOf = (u: Node) => num(u.props['credentialEpoch'] ?? 0);
 
 function fakeGraph(users: Node[]): RotationGraph {
   const match = (id: unknown) => users.filter(u => u.props['_id'] === id || u.props['id'] === id);
@@ -40,7 +43,7 @@ function fakeGraph(users: Node[]): RotationGraph {
         return [{ holders: neo4j.int(users.filter(u => keys.includes(u.props['_id']) || keys.includes(u.props['id'])).length) }];
       }
       if (q === norm(SCAN_USERS_CYPHER)) {
-        return users.map(u => ({ eid: u.elementId, id: u.props['_id'] ?? u.props['id'], hash: u.props['_passwordHash'] ?? u.props['passwordHash'] ?? null }));
+        return users.map(u => ({ eid: u.elementId, id: u.props['_id'] ?? u.props['id'], hash: hashOf(u), e0: neo4j.int(epochOf(u)) }));
       }
       throw new Error(`unexpected read ${q}`);
     },
@@ -54,7 +57,9 @@ function fakeGraph(users: Node[]): RotationGraph {
         return [{ n: neo4j.int(ok ? 1 : 0) }];
       }
       if (q === norm(SCAN_MARK_CYPHER)) {
-        const ok = u !== undefined && !marked(u);
+        // Guards evaluated on the current node, as after the statement's lock.
+        const ok = u !== undefined && !marked(u)
+          && hashOf(u) === params['verifiedHash'] && epochOf(u) === num(params['verifiedEpoch']);
         if (ok) u!.props['defaultPasswordSuspect'] = true;
         return [{ n: neo4j.int(ok ? 1 : 0) }];
       }
@@ -112,5 +117,21 @@ describe('default-password scan', () => {
     expect(result).toEqual({ marked: ['a'], alreadyMarkedOrRaced: ['b'], nonBcrypt: ['d'] });
     expect(rows).toEqual([['a', 'window-script:nick']]);
     expect(users[2]!.props['defaultPasswordSuspect']).toBeUndefined();
+  });
+
+  it('never marks an account rotated between the scan read and its mark (review 6061922930 MEDIUM 1)', async () => {
+    const users: Node[] = [{ elementId: '4:a', props: { _id: 'a', _passwordHash: await bcrypt.hash('Admin123!', 4) } }];
+    const rows: unknown[][] = [];
+    const sql = { query: async (_text: string, params?: unknown[]) => { rows.push(params ?? []); return { rows: [] }; } };
+    const rotate = () => Object.assign(users[0]!.props, { _passwordHash: 'rotated-hash', credentialEpoch: neo4j.int(1), defaultPasswordSuspect: false });
+
+    const result = await scanDefaultPasswords(fakeGraph(users), sql, async (p, h) => {
+      rotate(); // an operator rotation commits while bcrypt runs
+      return bcrypt.compare(p, h);
+    }, 'nick');
+
+    expect(result).toEqual({ marked: [], alreadyMarkedOrRaced: ['a'], nonBcrypt: [] });
+    expect(users[0]!.props['defaultPasswordSuspect']).toBe(false);
+    expect(rows).toEqual([]);
   });
 });

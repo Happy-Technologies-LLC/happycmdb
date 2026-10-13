@@ -28,10 +28,11 @@ import neo4j from 'neo4j-driver';
 import { join } from 'path';
 
 import {
-  APPLY_CYPHER, CANCEL_CYPHER, DECISION_CONSTRAINT_PRESENT_CYPHER, DECISION_CYPHER, HOLDERS_CYPHER, IDENTITY_CYPHER,
-  applyRotation, prepareRotation, reconcileRotations, rotateUserPassword, RotationRefused,
-  type RotationDeps, type RotationGraph, type RotationLock, type RotationSql,
+  APPLY_CYPHER, CANCEL_CYPHER, DECISION_CONSTRAINT_CYPHER, DECISION_CONSTRAINT_PRESENT_CYPHER, DECISION_CYPHER, HOLDERS_CYPHER,
+  IDENTITY_CYPHER, applyRotation, parseArgs, prepareDecisionConstraint, prepareRotation, reconcileRotations, rotateUserPassword,
+  RotationRefused, type RotationDeps, type RotationGraph, type RotationLock, type RotationSql,
 } from '../rotate-user-password';
+import { lockOf } from '../operator-stores';
 
 // ---------------------------------------------------------------------------
 // PostgreSQL: PGlite in a child process (fixtures/pglite-host.cjs)
@@ -111,6 +112,10 @@ class FakeGraph implements RotationGraph {
   users: Node[] = [];
   decisions = new Map<string, Decision>();
   constraint = true;
+  /** Whether DECISION_CONSTRAINT_CYPHER creates the constraint (false: the server ignored it). */
+  constraintCreatable = true;
+  /** Runs before the identity precheck read answers. */
+  beforeIdentityRead?: () => Promise<void>;
   /** One-shot fault on the next write, or a permanent outage. */
   fault?: Fault;
   down = false;
@@ -121,6 +126,7 @@ class FakeGraph implements RotationGraph {
     const q = norm(cypher);
     if (q === norm(DECISION_CONSTRAINT_PRESENT_CYPHER)) return this.constraint ? [{ present: true }] : [];
     if (q === norm(IDENTITY_CYPHER)) {
+      await this.beforeIdentityRead?.();
       return this.match(params['id']).map(u => ({
         eid: u.elementId, _id: u.props['_id'] ?? null, id: u.props['id'] ?? null,
         e0: neo4j.int(Math.trunc(num(u.props['credentialEpoch'] ?? 0))),
@@ -153,6 +159,10 @@ class FakeGraph implements RotationGraph {
 
   /** Atomic: either every write of the statement lands or none does. */
   private execute(q: string, params: Props): Props[] {
+    if (q === norm(DECISION_CONSTRAINT_CYPHER)) {
+      if (this.constraintCreatable) this.constraint = true;
+      return [];
+    }
     if (q === norm(APPLY_CYPHER)) {
       this.applyParams.push(params);
       const u = this.users.find(n => n.elementId === params['eid']);
@@ -302,6 +312,61 @@ describe('N-21 (e) refusals write nothing anywhere', () => {
 
     await expect(rotateUserPassword(input(), deps)).rejects.toMatchObject({ reason: 'decision_constraint_missing' });
     expect(await events()).toEqual([]);
+  });
+
+  it('an intent opened by another operator after the precheck (review 6061922930 LOW 4): refused inside the intent transaction', async () => {
+    graph.beforeIdentityRead = async () => {
+      await send('query', `INSERT INTO auth_credential_events (user_id, event, target_epoch, actor)
+        VALUES ('user-u', 'password_rotation_intent', 1, 'operator:other') RETURNING id`);
+    };
+
+    await expect(rotateUserPassword(input(), deps)).rejects.toMatchObject({ reason: 'open_intent' });
+    expect((await events()).map(e => e['user_id'])).toEqual(['user-u']);
+    expect(graph.applyParams).toEqual([]);
+  });
+});
+
+describe('--prepare: the decision constraint on an existing database (review 6061922930 MEDIUM 3)', () => {
+  it('parses only as the sole argument', () => {
+    expect(parseArgs(['--prepare'])).toEqual({ mode: 'prepare' });
+    expect(() => parseArgs(['--prepare', '--operator', 'nick'])).toThrow('unexpected argument');
+  });
+
+  it('creates the constraint, after which rotation applies', async () => {
+    graph.constraint = false;
+
+    await prepareDecisionConstraint(graph);
+
+    expect(graph.constraint).toBe(true);
+    expect(await rotateUserPassword(input(), deps)).toMatchObject({ outcome: 'APPLIED' });
+  });
+
+  it('refuses when the constraint is still absent afterwards', async () => {
+    graph.constraint = false;
+    graph.constraintCreatable = false;
+
+    await expect(prepareDecisionConstraint(graph)).rejects.toMatchObject({ reason: 'decision_constraint_missing' });
+  });
+});
+
+describe('operator lock session (review 6061922930 LOW 6)', () => {
+  it('discards the connection with the error when the lock query itself fails, and holds nothing', async () => {
+    const failure = new Error('connection terminated');
+    const released: unknown[] = [];
+    const listeners = new Set<unknown>();
+    const connection = {
+      query: async () => { throw failure; },
+      release: (error?: unknown) => { released.push(error); },
+      on: (_event: string, listener: unknown) => { listeners.add(listener); },
+      removeListener: (_event: string, listener: unknown) => { listeners.delete(listener); },
+    };
+    const sessionLock = lockOf({ getClient: async () => connection } as never);
+
+    await expect(sessionLock.acquire()).rejects.toBe(failure);
+    expect(released).toEqual([failure]);
+    expect(listeners.size).toBe(0);
+    await sessionLock.release(); // nothing held: no second release
+    expect(released).toEqual([failure]);
   });
 });
 

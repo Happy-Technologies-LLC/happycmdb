@@ -21,6 +21,7 @@ import type {
   AuthRepository, CredentialEventInput, GuardedPasswordWrite, GuardedUserWrite, UserProfileUpdate,
 } from './auth.service';
 import type { ApiKey, User } from './types';
+import { LOCK_USER } from './user-lock';
 
 /** Structural shape of a neo4j-driver Node sufficient for property reads here. */
 interface Neo4jUserNode {
@@ -31,9 +32,14 @@ interface Neo4jUserNode {
 /** Either spelling of the default-password marker set means marked (fail-closed). */
 const MARKED = '(coalesce(u.defaultPasswordSuspect, false) OR coalesce(u._defaultPasswordSuspect, false))';
 
+// The node write lock is taken before every guard below (see user-lock.ts).
+
 /** HP1-S6 changePassword write: lands only on the node read, at the authorizing generation, unmarked, still holding the verified hash. */
 export const GUARDED_PASSWORD_CYPHER = `
-MATCH (u:User) WHERE elementId(u) = $elementId AND (u._id = $userId OR u.id = $userId)
+MATCH (u:User) WHERE elementId(u) = $elementId
+${LOCK_USER}
+WITH u
+WHERE (u._id = $userId OR u.id = $userId)
   AND coalesce(u.credentialEpoch, 0) = $credentialEpoch
   AND NOT ${MARKED}
   AND coalesce(u._passwordHash, u.passwordHash) = $readHash
@@ -42,16 +48,29 @@ RETURN count(u) AS n`;
 
 /** HP1-S6 deleteAccount first step: disables the account at the authorizing generation, unmarked. */
 export const GUARDED_DISABLE_CYPHER = `
-MATCH (u:User) WHERE elementId(u) = $elementId AND (u._id = $userId OR u.id = $userId)
+MATCH (u:User) WHERE elementId(u) = $elementId
+${LOCK_USER}
+WITH u
+WHERE (u._id = $userId OR u.id = $userId)
   AND coalesce(u.credentialEpoch, 0) = $credentialEpoch
   AND NOT ${MARKED}
 SET u._enabled = false, u.enabled = false, u._updatedAt = datetime(), u.updatedAt = datetime()
 RETURN count(u) AS n`;
 
-/** Login marker setter: false → true only, so an already-marked account adds no audit row. */
+/**
+ * Login marker setter: false → true only (so an already-marked account adds
+ * no audit row), and only while the node still holds the hash and generation
+ * that were actually verified against the default. A rotation that commits
+ * while the login's bcrypt runs changes both, so the stale result marks nothing.
+ */
 export const MARK_DEFAULT_SUSPECT_CYPHER = `
-MATCH (u:User) WHERE elementId(u) = $elementId AND (u._id = $userId OR u.id = $userId)
+MATCH (u:User) WHERE elementId(u) = $elementId
+${LOCK_USER}
+WITH u
+WHERE (u._id = $userId OR u.id = $userId)
   AND NOT ${MARKED}
+  AND coalesce(u._passwordHash, u.passwordHash) = $verifiedHash
+  AND coalesce(u.credentialEpoch, 0) = $verifiedEpoch
 SET u.defaultPasswordSuspect = true
 RETURN count(u) AS n`;
 
@@ -205,8 +224,16 @@ export class Neo4jAuthRepository implements AuthRepository {
     });
   }
 
+  /** `user` is the read whose hash was verified; its hash and generation guard the write. */
   async markDefaultSuspect(user: User): Promise<boolean> {
-    return this.guardedWrite(MARK_DEFAULT_SUSPECT_CYPHER, { elementId: user._elementId ?? null, userId: user._id });
+    const verifiedEpoch = user._credentialEpoch ?? 0;
+    if (typeof user._passwordHash !== 'string' || !Number.isSafeInteger(verifiedEpoch)) {
+      return false;
+    }
+    return this.guardedWrite(MARK_DEFAULT_SUSPECT_CYPHER, {
+      elementId: user._elementId ?? null, userId: user._id,
+      verifiedHash: user._passwordHash, verifiedEpoch: neo4j.int(verifiedEpoch),
+    });
   }
 
   async recordCredentialEvent(event: CredentialEventInput): Promise<void> {

@@ -25,6 +25,7 @@ import neo4j from 'neo4j-driver';
 
 import { DEFAULT_PLAINTEXTS } from '../auth/default-credentials';
 import { isSeededAccount } from '../auth/platform-admin';
+import { LOCK_USER } from '../auth/user-lock';
 
 import { isolateOperatorEnvironment, openOperatorStores, type OperatorStores } from './operator-stores';
 import type { RotationGraph, RotationSqlQuery, Row } from './rotate-user-password';
@@ -47,11 +48,21 @@ RETURN count(u) AS n`;
 
 export const SCAN_USERS_CYPHER = `
 MATCH (u:User)
-RETURN elementId(u) AS eid, coalesce(u._id, u.id) AS id, coalesce(u._passwordHash, u.passwordHash) AS hash`;
+RETURN elementId(u) AS eid, coalesce(u._id, u.id) AS id, coalesce(u._passwordHash, u.passwordHash) AS hash,
+       toInteger(coalesce(u.credentialEpoch, 0)) AS e0`;
 
+/**
+ * Marks only while the node still holds the hash and generation the scan
+ * verified, checked after taking the node's write lock: a rotation that
+ * commits between the scan's read and this write is never re-marked.
+ */
 export const SCAN_MARK_CYPHER = `
 MATCH (u:User) WHERE elementId(u) = $eid
-  AND NOT (coalesce(u.defaultPasswordSuspect, false) OR coalesce(u._defaultPasswordSuspect, false))
+${LOCK_USER}
+WITH u
+WHERE NOT (coalesce(u.defaultPasswordSuspect, false) OR coalesce(u._defaultPasswordSuspect, false))
+  AND coalesce(u._passwordHash, u.passwordHash) = $verifiedHash
+  AND coalesce(u.credentialEpoch, 0) = $verifiedEpoch
 SET u.defaultPasswordSuspect = true
 RETURN count(u) AS n`;
 
@@ -67,7 +78,10 @@ MATCH (v:User) WHERE v._id IN $keys OR v.id IN $keys
 RETURN count(v) AS holders`;
 
 export const GRANT_PLATFORM_ADMIN_CYPHER = `
-MATCH (u:User) WHERE elementId(u) = $eid AND (u._id = $id OR u.id = $id)
+MATCH (u:User) WHERE elementId(u) = $eid
+${LOCK_USER}
+WITH u
+WHERE (u._id = $id OR u.id = $id)
   AND u.seedProvenance IS NULL
   AND NOT (coalesce(u.defaultPasswordSuspect, false) OR coalesce(u._defaultPasswordSuspect, false))
 SET u.platformAdmin = true, u.platformAdminGrantedBy = $operator, u.platformAdminGrantedAt = datetime()
@@ -125,10 +139,10 @@ export async function scanDefaultPasswords(
         // A library error is a mismatch.
       }
     }
-    if (!matches) {
-continue;
-}
-    const [result] = await graph.write(SCAN_MARK_CYPHER, { eid: row['eid'] });
+    if (!matches || row['e0'] === null || row['e0'] === undefined) {
+      continue;
+    }
+    const [result] = await graph.write(SCAN_MARK_CYPHER, { eid: row['eid'], verifiedHash: hash, verifiedEpoch: row['e0'] });
     if (toNumber(result?.['n']) === 1) {
       await sql.query(SCAN_EVENT_SQL, [id, `window-script:${operator}`]);
       marked.push(id);

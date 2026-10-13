@@ -37,6 +37,13 @@ The seeded development admin (`admin` / `Admin123!`, used in the examples below)
   - Each run is audited in `auth_credential_events`: an intent row, then exactly one outcome.
   - When the run cannot see its outcome (Neo4j unreachable), it reports `PENDING`. Resolve that with
     `--reconcile` before rotating anyone else.
+  - **Existing databases: prepare once before the first rotation.** The rotation's outcome fence
+    needs the Neo4j uniqueness constraint `credential_rotation_decision_event`. New databases get it
+    from `infrastructure/scripts/init-neo4j.cypher`; never re-run that script on an existing
+    database. Instead run `rotate-user-password.ts --prepare` (same `CMDB_ROTATE_*` connection
+    variables; creates the constraint idempotently and confirms it) or apply
+    `packages/database/src/neo4j/migrations/002_credential_rotation_decision.cypher` with
+    `cypher-shell`. Without it every rotation is refused with `decision_constraint_missing`.
 
 **New passwords** (`PUT /api/auth/password`) are refused with `400 Password not allowed` in every
 environment when they are a default or a default-equivalent, contain U+0000, or exceed 72 UTF-8

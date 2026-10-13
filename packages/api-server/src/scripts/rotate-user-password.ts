@@ -34,19 +34,18 @@
  * runs; no outcome depends on it.
  *
  * Usage (operator, direct DB access; never network-exposed):
- *   rotate-user-password --user-id <id> --operator <name>   (new password on stdin)
+ *   rotate-user-password --prepare                           (once per existing database: decision constraint)
+ *   rotate-user-password --user-id <id> --operator <name>    (new password on stdin)
  *   rotate-user-password --reconcile --operator <name>
- * Exit codes: 0 APPLIED / reconciled, 2 refused, 3 NOT_APPLIED,
+ * Exit codes: 0 APPLIED / reconciled / prepared, 2 refused, 3 NOT_APPLIED,
  * 4 PENDING, 5 open intent, 6 lock busy, 1 error.
  */
 
 import * as bcrypt from 'bcrypt';
 import neo4j from 'neo4j-driver';
-
 import { DEFAULT_PLAINTEXTS, newPasswordAllowed, ROTATION_MIN_LENGTH } from '../auth/default-credentials';
-
+import { LOCK_USER } from '../auth/user-lock';
 import { isolateOperatorEnvironment, LockBusyError, openOperatorStores, type OperatorStores } from './operator-stores';
-
 
 // ---------------------------------------------------------------------------
 // Statements
@@ -74,11 +73,15 @@ MATCH (v:User) WHERE v._id IN $keys OR v.id IN $keys
 RETURN count(v) AS holders`;
 
 /**
- * Every guard is evaluated before any mutation; when one fails no row
- * reaches SET/CREATE and the transaction writes nothing (n = 0).
+ * The user's write lock is taken first (LOCK_USER); every guard is then
+ * evaluated on the latest committed row before any mutation. When one fails
+ * no row reaches SET/CREATE and the transaction writes nothing (n = 0), so a
+ * concurrent rotation of the same user can never be overwritten.
  */
 export const APPLY_CYPHER = `
 MATCH (u:User) WHERE elementId(u) = $eid
+${LOCK_USER}
+WITH u
 OPTIONAL MATCH (v:User) WHERE v._id IN $keys OR v.id IN $keys
 WITH u, count(v) AS holders
 WHERE (u._id = $id OR u.id = $id)
@@ -111,6 +114,10 @@ const INTENT_SQL = `
 INSERT INTO auth_credential_events (user_id, event, target_epoch, actor)
 VALUES ($1, 'password_rotation_intent', $2, $3)
 RETURNING id`;
+
+/** Serializes the open-intent check with the intent insert (released at commit). */
+const INTENT_LOCK_SQL = 'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))';
+const INTENT_LOCK_KEY = 'hp1:credential-rotation-intent';
 
 const REVOKE_SQL = `
 UPDATE api_keys SET enabled = false, revoked_at = NOW()
@@ -232,9 +239,11 @@ async function openIntents(sql: RotationSqlQuery): Promise<Row[]> {
 }
 
 /**
- * Validates the password, checks the fence constraint, the open-intent
- * interlock and the user's identity, then commits the intent row.
- * The caller holds the lock.
+ * Validates the password, checks the fence constraint and the user's
+ * identity, then commits the intent row. The open-intent check and the
+ * intent insert run in one PostgreSQL transaction under a transaction-level
+ * advisory lock, so two operator runs cannot both pass the check even if
+ * the session lock has been lost.
  */
 export async function prepareRotation(input: RotationInput, deps: RotationDeps): Promise<PreparedRotation> {
   const newHash = await refusePassword(input.password, deps);
@@ -247,30 +256,36 @@ export async function prepareRotation(input: RotationInput, deps: RotationDeps):
 
   const matches = await deps.graph.read(IDENTITY_CYPHER, { id: input.userId });
   if (matches.length === 0) {
-throw new RotationRefused('unknown_identity');
-}
+    throw new RotationRefused('unknown_identity');
+  }
   if (matches.length > 1) {
-throw new RotationRefused('ambiguous_identity');
-}
+    throw new RotationRefused('ambiguous_identity');
+  }
   const row = matches[0]!;
   const keys = [row['_id'], row['id']].filter((value): value is string => typeof value === 'string');
   const [holders] = await deps.graph.read(HOLDERS_CYPHER, { keys });
   if (toNumber(holders?.['holders']) !== 1) {
-throw new RotationRefused('identity_collision');
-}
+    throw new RotationRefused('identity_collision');
+  }
   if (row['e0'] === null || row['e0'] === undefined) {
-throw new RotationRefused('epoch_invalid');
-}
+    throw new RotationRefused('epoch_invalid');
+  }
   const e0 = toNumber(row['e0']);
   if (!Number.isSafeInteger(e0) || e0 < 0) {
-throw new RotationRefused('epoch_invalid');
-}
+    throw new RotationRefused('epoch_invalid');
+  }
 
   const userKey = mappedKey(row);
   const targetEpoch = e0 + 1;
   const actor = `operator:${input.operator}`;
-  const [intent] = (await deps.sql.query(INTENT_SQL, [userKey, targetEpoch, actor])).rows;
-  const eventId = String(intent!['id']);
+  const eventId = await deps.sql.transaction(async client => {
+    await client.query(INTENT_LOCK_SQL, [INTENT_LOCK_KEY]);
+    if ((await openIntents(client)).length > 0) {
+      throw new RotationRefused('open_intent');
+    }
+    const [intent] = (await client.query(INTENT_SQL, [userKey, targetEpoch, actor])).rows;
+    return String(intent!['id']);
+  });
   return {
     eventId, userKey, targetEpoch, actor,
     applyParams: {
@@ -278,6 +293,19 @@ throw new RotationRefused('epoch_invalid');
       e0: neo4j.int(e0), targetEpoch: neo4j.int(targetEpoch),
     },
   };
+}
+
+/**
+ * Creates the CredentialRotationDecision.eventId uniqueness constraint the
+ * fence needs (idempotent; DDL only, no data written), then confirms it.
+ * Run once on every existing database before the first rotation; the same
+ * statement is packages/database/src/neo4j/migrations/002_credential_rotation_decision.cypher.
+ */
+export async function prepareDecisionConstraint(graph: RotationGraph): Promise<void> {
+  await graph.write(DECISION_CONSTRAINT_CYPHER, {});
+  if ((await graph.read(DECISION_CONSTRAINT_PRESENT_CYPHER, {})).length === 0) {
+    throw new RotationRefused('decision_constraint_missing');
+  }
 }
 
 /** The committed decision for E, or null when none is observable (absent or unreadable). */
@@ -412,49 +440,57 @@ export async function reconcileRotations(
 // CLI
 // ---------------------------------------------------------------------------
 
-export function parseArgs(argv: readonly string[]): { mode: 'rotate'; userId: string; operator: string } | { mode: 'reconcile'; operator: string } {
+type CliArgs =
+  | { mode: 'prepare' }
+  | { mode: 'rotate'; userId: string; operator: string }
+  | { mode: 'reconcile'; operator: string };
+
+export function parseArgs(argv: readonly string[]): CliArgs {
+  if (argv.length === 1 && argv[0] === '--prepare') {
+    return { mode: 'prepare' };
+  }
   let userId: string | undefined;
   let operator: string | undefined;
   let reconcile = false;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
     if (arg === '--reconcile' && !reconcile) {
-reconcile = true;
-} else if (arg === '--user-id' && userId === undefined && argv[i + 1] !== undefined) {
-userId = argv[++i]!;
-} else if (arg === '--operator' && operator === undefined && argv[i + 1] !== undefined) {
-operator = argv[++i]!;
-} else {
-throw new Error(`unexpected argument: ${arg}`);
-}
+      reconcile = true;
+    } else if (arg === '--user-id' && userId === undefined && argv[i + 1] !== undefined) {
+      userId = argv[++i]!;
+    } else if (arg === '--operator' && operator === undefined && argv[i + 1] !== undefined) {
+      operator = argv[++i]!;
+    } else {
+      throw new Error(`unexpected argument: ${arg}`);
+    }
   }
   if (operator === undefined || operator.trim() === '') {
-throw new Error('--operator <name> is required');
-}
+    throw new Error('--operator <name> is required');
+  }
   if (reconcile) {
     if (userId !== undefined) {
-throw new Error('--reconcile takes no --user-id');
-}
+      throw new Error('--reconcile takes no --user-id');
+    }
     return { mode: 'reconcile', operator };
   }
   if (userId === undefined || userId === '') {
-throw new Error('--user-id <id> is required');
-}
+    throw new Error('--user-id <id> is required');
+  }
   return { mode: 'rotate', userId, operator };
 }
 
 export function exitCodeOf(result: RotationResult): number {
   if (result.outcome === 'APPLIED') {
-return 0;
-}
+    return 0;
+  }
   return result.outcome === 'NOT_APPLIED' ? 3 : 4;
 }
 
 async function readStdin(stdin: NodeJS.ReadableStream): Promise<string> {
   const chunks: Buffer[] = [];
   for await (const chunk of stdin) {
-chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
-}
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+  }
   return Buffer.concat(chunks).toString('utf8').replace(/\r?\n$/, '');
 }
 
@@ -473,9 +509,14 @@ export async function main(
     const args = parseArgs(argv);
     const rounds = Number(env['CMDB_ROTATE_BCRYPT_ROUNDS'] ?? '12');
     if (!Number.isInteger(rounds) || rounds < 10 || rounds > 15) {
-throw new Error('CMDB_ROTATE_BCRYPT_ROUNDS must be 10-15');
-}
+      throw new Error('CMDB_ROTATE_BCRYPT_ROUNDS must be 10-15');
+    }
     stores = openOperatorStores(env);
+    if (args.mode === 'prepare') {
+      await prepareDecisionConstraint(stores.graph);
+      io.stdout(JSON.stringify({ prepared: 'credential_rotation_decision_event' }));
+      return 0;
+    }
     const deps: RotationDeps = {
       graph: stores.graph, sql: stores.sql, lock: stores.lock,
       hash: password => bcrypt.hash(password, rounds),
@@ -485,11 +526,11 @@ throw new Error('CMDB_ROTATE_BCRYPT_ROUNDS must be 10-15');
     if (args.mode === 'reconcile') {
       const { resolved, pending } = await reconcileRotations(deps, `operator:${args.operator}`);
       for (const result of resolved) {
-io.stdout(JSON.stringify(result));
-}
+        io.stdout(JSON.stringify(result));
+      }
       for (const eventId of pending) {
-io.stdout(JSON.stringify({ eventId, outcome: 'PENDING' }));
-}
+        io.stdout(JSON.stringify({ eventId, outcome: 'PENDING' }));
+      }
       return pending.length === 0 ? 0 : 4;
     }
     const result = await rotateUserPassword(

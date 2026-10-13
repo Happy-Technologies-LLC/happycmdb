@@ -165,13 +165,14 @@ production scheduling. Credential-backed discovery is restored by HP1-S5
 - `GET /analytics/dashboard` - Dashboard statistics
 - `GET /analytics/ci-counts` - CI counts by type
 - `GET /analytics/discovery-stats` - Discovery statistics
+- `GET /analytics/dependency-depth` and GraphQL `getDependencyDepthStats` share a bounded tenant-edge traversal (128 edges, depth 10, 5-second SQL timeout). Larger graphs return a fixed resource-limit failure; request admission holds REST slots until work finishes.
 
 ### Anomalies (`/api/v1/anomalies`)
-- `GET /anomalies/recent` - Recent anomalies
-- `GET /anomalies/ci/{ciId}` - Anomalies for CI
-- `GET /anomalies/stats` - Statistics
-- `PATCH /anomalies/{id}/status` - Update status
-- `POST /anomalies/detect` - Run detection
+- All routes require a verified token organization. Recent, per-CI and stats reads include only rows explicitly stamped with that organization and the graph CI's current incarnation; old rows remain inaccessible.
+- `GET /anomalies/recent`, `GET /anomalies/stats` - Tenant-proven anomalies only. The two UI reads share dedicated anomaly admission: at most 2 in flight per principal and 4 per organization, with 10 requests/principal/minute and 40/organization/minute; unrelated analytics retain their own limits. Scoped keyset pagination accepts up to 4096 graph CIs in 512-CI pages; each SQL page has a 5-second statement timeout, the request has a 12-second response deadline with admission held through work completion, and an exceeded budget returns fixed 503 without partial results.
+- `GET /anomalies/ci/{ciId}` - Tenant-proven current-incarnation anomalies; foreign and missing CI IDs return identical 404.
+- `PATCH /anomalies/{id}/status` - Look up only a caller-attributed row, verify its current graph CI directly, then mutate with atomic SQL row-owner/incarnation predicates; foreign, stale and missing IDs return identical 404 regardless of tenant graph size.
+- `POST /anomalies/detect` - Fixed 403 for all callers. Scheduled global producers continue to create unstamped rows; never infer their provenance from a matching CI ID.
 
 ### Jobs (`/api/v1/jobs`)
 - `GET /jobs/stats` - Global job statistics (fixed 403)

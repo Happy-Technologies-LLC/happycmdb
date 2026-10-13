@@ -2534,7 +2534,7 @@ paths:
     get:
       tags: [Anomalies]
       summary: Get recent anomalies
-      description: Retrieve recently detected anomalies
+      description: Retrieve current-incarnation anomalies attributed to the verified token organization; legacy rows without provenance are excluded.
       operationId: getRecentAnomalies
       parameters:
         - name: hours
@@ -2562,12 +2562,14 @@ paths:
                   $ref: '#/components/schemas/Anomaly'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '503':
+          description: Tenant aggregate graph or SQL work budget exceeded; no partial result
 
   /anomalies/ci/{ciId}:
     get:
       tags: [Anomalies]
       summary: Get anomalies for CI
-      description: Get all anomalies detected for a specific CI
+      description: Get current-incarnation anomalies for a CI owned by the verified token organization. Foreign and missing CIs are indistinguishable.
       operationId: getAnomaliesForCI
       parameters:
         - name: ciId
@@ -2600,7 +2602,7 @@ paths:
     get:
       tags: [Anomalies]
       summary: Anomaly statistics
-      description: Get anomaly detection statistics
+      description: Statistics for proven anomalies of current CIs owned by the verified token organization.
       operationId: getAnomalyStats
       responses:
         '200':
@@ -2610,20 +2612,24 @@ paths:
               schema:
                 type: object
                 properties:
-                  total_anomalies:
+                  total:
                     type: integer
+                  by_severity:
+                    type: object
                   by_type:
                     type: object
                   by_status:
                     type: object
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '503':
+          description: Tenant aggregate graph or SQL work budget exceeded; no partial result
 
   /anomalies/{id}/status:
     patch:
       tags: [Anomalies]
       summary: Update anomaly status
-      description: Update the investigation status of an anomaly
+      description: Update only a proven anomaly of a current CI owned by the verified token organization. Foreign and missing anomaly IDs return the same 404.
       operationId: updateAnomalyStatus
       parameters:
         - name: id
@@ -2657,22 +2663,11 @@ paths:
     post:
       tags: [Anomalies]
       summary: Run anomaly detection
-      description: Manually trigger anomaly detection job
+      description: Refused for all callers until anomaly production can prove tenant and CI-incarnation provenance.
       operationId: runAnomalyDetection
       responses:
-        '202':
-          description: Detection job started
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  job_id:
-                    type: string
-                  message:
-                    type: string
-        '401':
-          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Manual global detection is unavailable
 
   # =============================================================================
   # JOBS

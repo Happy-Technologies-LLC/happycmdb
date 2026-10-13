@@ -134,6 +134,31 @@ it('scopes GraphQL aggregates and inventory through mounted execution', async ()
     .map((row: { _ciId: string }) => row._ciId).sort()).toEqual(['analytics-a', 'analytics-a2']);
 });
 
+it('caps dense cyclic dependency work in both APIs and serves a healthy follow-up', async () => {
+  await sql.query(`INSERT INTO cmdb.dim_ci (ci_id, ci_name, ci_type, ci_status, environment, organization_id)
+    SELECT 'analytics-depth-' || n, 'depth', 'server', 'active', 'prod', $1
+    FROM generate_series(1, 13) AS n`, [A]);
+  const edges = await sql.query(`INSERT INTO cmdb.fact_ci_relationships
+    (from_ci_key, to_ci_key, date_key, relationship_type, discovered_at)
+    SELECT source.ci_key, target.ci_key, 20991231, 'DEPENDS_ON', now()
+    FROM cmdb.dim_ci source CROSS JOIN cmdb.dim_ci target
+    WHERE source.ci_id LIKE 'analytics-depth-%' AND target.ci_id LIKE 'analytics-depth-%'
+      AND source.ci_key <> target.ci_key
+    RETURNING relationship_key`);
+  try {
+    expect((await rest('a', '/dependency-depth')).status).toBe(503);
+    const rejected = await gql('a', '{ analytics { getDependencyDepthStats { _topCis { _ciId } } } }');
+    expect(rejected.body.errors?.[0].extensions.code).toBe('RESOURCE_LIMIT_EXCEEDED');
+  } finally {
+    await sql.query('DELETE FROM cmdb.fact_ci_relationships WHERE relationship_key = ANY($1)', [edges.rows.map(row => row.relationship_key)]);
+    await sql.query("DELETE FROM cmdb.dim_ci WHERE ci_id LIKE 'analytics-depth-%'");
+  }
+  expect((await rest('a', '/dependency-depth')).status).toBe(200);
+  const healthy = await gql('a', '{ analytics { getDependencyDepthStats { _topCis { _ciId _maxDepth } } } }');
+  expect(healthy.body.data.analytics.getDependencyDepthStats._topCis)
+    .toEqual([{ _ciId: 'analytics-a', _maxDepth: 1 }]);
+});
+
 it('retains event-proven fresh history and fences reused IDs, NULL provenance and foreign IDs', async () => {
   await cypher("CREATE (:CI {id:'analytics-history', name:'fresh', type:'server', organization_id:$org, incarnation_id:randomUUID()})", { org: A });
   const aMarker = (await graph.getCI('analytics-history', A))?._incarnation_id;

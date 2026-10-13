@@ -428,68 +428,6 @@ describe('AnomalyDetectionEngine', () => {
       expect(mockEventProducer.emit).not.toHaveBeenCalled();
     });
   });
-
-  describe('getAnomaliesForCI', () => {
-    it('should retrieve anomalies for specific CI', async () => {
-      const mockAnomalies = [
-        {
-          id: 'anomaly-1',
-          ci_id: 'ci-001',
-          ci_name: 'test-server',
-          anomaly_type: AnomalyType.EXCESSIVE_CHANGES,
-          severity: AnomalySeverity.HIGH,
-          confidence_score: 85,
-          detected_at: new Date(),
-          description: 'Test',
-          metrics: {},
-          context: {},
-          status: AnomalyStatus.DETECTED,
-        },
-      ];
-
-      mockPgClient.query.mockResolvedValueOnce({ rows: mockAnomalies });
-
-      const result = await engine.getAnomaliesForCI('ci-001', 10);
-
-      expect(result).toHaveLength(1);
-      expect(result[0].ci_id).toBe('ci-001');
-      expect(mockPgClient.query).toHaveBeenCalledWith(
-        expect.stringContaining('WHERE ci_id = $1'),
-        ['ci-001', 10]
-      );
-    });
-  });
-
-  describe('getRecentAnomalies', () => {
-    it('should retrieve recent anomalies within time window', async () => {
-      const mockAnomalies = [
-        {
-          id: 'anomaly-1',
-          ci_id: 'ci-001',
-          ci_name: 'server-1',
-          anomaly_type: AnomalyType.EXCESSIVE_CHANGES,
-          severity: AnomalySeverity.HIGH,
-          confidence_score: 85,
-          detected_at: new Date(),
-          description: 'Recent anomaly',
-          metrics: {},
-          context: {},
-          status: AnomalyStatus.DETECTED,
-        },
-      ];
-
-      mockPgClient.query.mockResolvedValueOnce({ rows: mockAnomalies });
-
-      const result = await engine.getRecentAnomalies(24, 50);
-
-      expect(result).toHaveLength(1);
-      expect(mockPgClient.query).toHaveBeenCalledWith(
-        expect.stringContaining("INTERVAL '24 hours'"),
-        [50]
-      );
-    });
-  });
-
   describe('sensitivity settings', () => {
     it('should detect more anomalies with high sensitivity', async () => {
       const configWithHighSensitivity = {

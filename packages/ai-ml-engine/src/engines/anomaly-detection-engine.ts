@@ -410,58 +410,6 @@ export class AnomalyDetectionEngine {
       notification_enabled: true,
     };
   }
-
-  /**
-   * Get anomalies for a specific CI
-   */
-  async getAnomaliesForCI(ciId: string, limit: number = 50): Promise<Anomaly[]> {
-    const result = await this.postgresClient.query(
-      `SELECT * FROM anomalies
-       WHERE ci_id = $1
-       ORDER BY detected_at DESC
-       LIMIT $2`,
-      [ciId, limit]
-    );
-
-    return result.rows.map(this.mapRowToAnomaly);
-  }
-
-  /**
-   * Get recent anomalies
-   */
-  async getRecentAnomalies(hours: number = 24, limit: number = 100): Promise<Anomaly[]> {
-    const result = await this.postgresClient.query(
-      `SELECT * FROM anomalies
-       WHERE detected_at >= NOW() - INTERVAL '${hours} hours'
-       AND status IN ('detected', 'investigating')
-       ORDER BY detected_at DESC
-       LIMIT $1`,
-      [limit]
-    );
-
-    return result.rows.map(this.mapRowToAnomaly);
-  }
-
-  /**
-   * Map database row to Anomaly object
-   */
-  private mapRowToAnomaly(row: any): Anomaly {
-    return {
-      id: row.id,
-      ci_id: row.ci_id,
-      ci_name: row.ci_name,
-      anomaly_type: row.anomaly_type,
-      severity: row.severity,
-      confidence_score: row.confidence_score,
-      detected_at: row.detected_at,
-      description: row.description,
-      metrics: row.metrics,
-      context: row.context,
-      status: row.status,
-      resolved_at: row.resolved_at,
-      resolved_by: row.resolved_by,
-    };
-  }
 }
 
 export function getAnomalyDetectionEngine(): AnomalyDetectionEngine {

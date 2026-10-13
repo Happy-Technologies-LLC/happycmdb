@@ -13,6 +13,11 @@ const tenantRelationships = `
   WHERE source.is_current AND target.is_current
     AND source.organization_id = $1 AND target.organization_id = $1
 `;
+/** Bounded even for dense cyclic graphs; failure is identical for either API. */
+export class DependencyDepthLimitError extends Error {}
+const DEPTH_EDGE_LIMIT = 128;
+const DEPTH_STATEMENT_TIMEOUT_MS = 5000;
+
 
 /**
  * Analytics Service
@@ -231,36 +236,52 @@ export class AnalyticsService {
     }>;
   }> {
     try {
-      const depth = `
-        WITH RECURSIVE tenant_relationships AS (${tenantRelationships}),
-        dependency_depth AS (
+      // LIMIT is applied before recursion. UNION deduplicates (origin, target,
+      // depth) states so cycles cannot multiply path counts exponentially.
+      const query = `
+        WITH RECURSIVE tenant_relationships AS MATERIALIZED (
+          SELECT r.from_ci_key, r.to_ci_key
+          FROM cmdb.fact_ci_relationships r
+          JOIN cmdb.dim_ci source ON source.ci_key = r.from_ci_key
+          JOIN cmdb.dim_ci target ON target.ci_key = r.to_ci_key
+          WHERE source.is_current AND target.is_current
+            AND source.organization_id = $1 AND target.organization_id = $1
+            AND r.relationship_type = 'DEPENDS_ON'
+          LIMIT $2
+        ), bounds AS (
+          SELECT COUNT(*) <= $3 AS allowed FROM tenant_relationships
+        ), dependency_depth AS (
           SELECT from_ci_key AS ci_key, to_ci_key, 1 AS depth
-          FROM tenant_relationships WHERE relationship_type = 'DEPENDS_ON'
-          UNION ALL
+          FROM tenant_relationships CROSS JOIN bounds WHERE bounds.allowed
+          UNION
           SELECT dd.ci_key, r.to_ci_key, dd.depth + 1
           FROM dependency_depth dd
           JOIN tenant_relationships r ON r.from_ci_key = dd.to_ci_key
-          WHERE r.relationship_type = 'DEPENDS_ON' AND dd.depth < 10
+          WHERE dd.depth < 10
         ), max_depths AS (
           SELECT ci_key, MAX(depth) AS max_depth,
             COUNT(DISTINCT to_ci_key) AS total_dependencies
           FROM dependency_depth GROUP BY ci_key
         )
-      `;
-      const topCIsResult = await this.postgresClient.query(`${depth}
-        SELECT c.ci_id, d.max_depth, d.total_dependencies
-        FROM max_depths d JOIN cmdb.dim_ci c ON c.ci_key = d.ci_key
-        WHERE c.is_current AND c.organization_id = $1
-        ORDER BY d.max_depth DESC LIMIT 100
-      `, [organizationId]);
-      const distributionResult = await this.postgresClient.query(`${depth}
-        SELECT max_depth, COUNT(*) AS count
-        FROM max_depths GROUP BY max_depth ORDER BY max_depth
-      `, [organizationId]);
-
+        SELECT (SELECT allowed FROM bounds) AS allowed,
+          (SELECT COALESCE(json_agg(t), '[]'::json) FROM (
+            SELECT c.ci_id, d.max_depth, d.total_dependencies
+            FROM max_depths d JOIN cmdb.dim_ci c ON c.ci_key = d.ci_key
+            WHERE c.is_current AND c.organization_id = $1
+            ORDER BY d.max_depth DESC, c.ci_id LIMIT 100
+          ) t) AS top_cis,
+          (SELECT COALESCE(json_agg(t), '[]'::json) FROM (
+            SELECT max_depth, COUNT(*) AS count
+            FROM max_depths GROUP BY max_depth ORDER BY max_depth
+          ) t) AS depth_distribution`;
+      const result = await this.postgresClient.transaction(async client => {
+        await client.query("SELECT set_config('statement_timeout', $1, true)", [String(DEPTH_STATEMENT_TIMEOUT_MS)]);
+        return client.query(query, [organizationId, DEPTH_EDGE_LIMIT + 1, DEPTH_EDGE_LIMIT]);
+      });
+      if (!result.rows[0].allowed) throw new DependencyDepthLimitError();
       return {
-        top_cis: topCIsResult.rows,
-        depth_distribution: distributionResult.rows,
+        top_cis: result.rows[0].top_cis,
+        depth_distribution: result.rows[0].depth_distribution,
       };
     } catch (error) {
       logger.error('Error getting dependency depth stats', error);

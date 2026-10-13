@@ -10,6 +10,8 @@ import { getAuthMiddleware } from '../../auth/auth-bootstrap';
 export const anomalyRoutes = Router();
 const controller = new AnomalyController();
 const authMiddleware = getAuthMiddleware();
+// Every anomaly entry, including manual detection, requires a verified token tenant.
+anomalyRoutes.use(authMiddleware.requireOrganization());
 
 // Validation schemas
 const recentAnomaliesSchema = Joi.object({

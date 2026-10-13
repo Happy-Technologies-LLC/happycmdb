@@ -93,9 +93,9 @@ export class AnomalyController {
       const organizationId = requestOrganizationId(req);
       const result = await this.postgresClient.query(
         `UPDATE anomalies a
-         SET status = $1,
-             resolved_at = CASE WHEN $1 IN ('resolved', 'false_positive') THEN NOW() ELSE a.resolved_at END,
-             resolved_by = CASE WHEN $1 IN ('resolved', 'false_positive') THEN $2 ELSE a.resolved_by END
+         SET status = $1::varchar,
+             resolved_at = CASE WHEN $1::varchar IN ('resolved', 'false_positive') THEN NOW() ELSE a.resolved_at END,
+             resolved_by = CASE WHEN $1::varchar IN ('resolved', 'false_positive') THEN $2 ELSE a.resolved_by END
          WHERE a.id = $3 AND a.organization_id = $4
            AND EXISTS (
              SELECT 1 FROM jsonb_to_recordset($5::jsonb) AS ci("ciId" text, "incarnationId" uuid)

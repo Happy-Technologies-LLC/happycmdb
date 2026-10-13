@@ -278,26 +278,13 @@ loading the session and bounds all similarity candidates to that tenant.
 Calling `PatternAnalyzer.analyzeSession(session, organizationId)` directly
 requires a **verified** organization ID; do not infer it from the host, session
 ID, pattern, or request body. Historical sessions have no tenant provenance
-and cannot be analyzed through the API. Global pattern compilation and
-lifecycle writes are disabled until HP1-S6/P-6 platform authority exists.
-Internal active-pattern matching and synthetic execution telemetry remain
+and cannot be analyzed through the API. There is no trusted organization
+source for the former public pattern compiler or its illustrative demo, so
+both were removed rather than making unscoped analysis appear operational.
+Global pattern compilation and lifecycle writes remain unavailable until
+HP1-S6/P-6 platform authority exists. Read-only tenant session analysis,
+internal active-pattern matching, and synthetic execution telemetry remain
 available.
-
-**The Learning Flywheel**:
-1. AI discovers unknown service (20s, $0.02)
-2. System tracks discovery steps
-3. After 3+ similar discoveries → Pattern suggested
-4. Pattern compiler generates detection/discovery code
-5. Validator tests the pattern
-6. Review → Approve → Activate
-7. Future discoveries use pattern (<1s, $0.00)
-
-**Performance Impact**:
-- **First 3 discoveries**: 60 seconds, $0.06
-- **Next 997 discoveries**: 8 minutes, $0.00
-- **Savings**: 97% faster, 99.7% cost reduction
-
-**See**: [Phase 3 Documentation](./README-PHASE3.md) for complete pattern learning guide
 
 ## Cost Management
 

@@ -1,5 +1,13 @@
 # Pattern Learning
 
+> Historical design note: automatic compilation and tenant-triggered pattern
+> lifecycle writes are unavailable. There is no trusted platform authority for
+> the shared pattern library; the public compiler API and its demo were removed.
+> Current support is authenticated, organization-scoped session analysis at
+> `POST /api/v1/ai/sessions/{sessionId}/analyze`, plus internal matching of
+> already active patterns. Legacy sessions without verified provenance are not
+> tenant-readable. The design examples below are not callable APIs.
+
 Pattern Learning is HappyCMDB's system for automatically learning from successful AI discoveries and compiling them into reusable, high-performance discovery patterns.
 
 ## Overview
@@ -51,31 +59,14 @@ interface AIDiscoverySession {
 }
 ```
 
-### 2. Pattern Compilation
+### 2. Session analysis (current behavior)
 
-The Pattern Compiler analyzes successful sessions and generates patterns:
-
-```typescript
-// Analyze sessions for a specific target type
-const candidates = await findCompilationCandidates({
-  minSessions: 3,           // Require at least 3 successful discoveries
-  minConfidence: 0.85,      // 85% success rate minimum
-  targetType: 'web-server'  // Optional: filter by CI type
-});
-
-// Compile patterns
-for (const candidate of candidates) {
-  const pattern = await compilePattern(candidate);
-
-  // Pattern includes:
-  // - Detection logic (how to identify this type)
-  // - Discovery logic (how to extract CIs)
-  // - Test cases (validation scenarios)
-  // - Metadata (confidence, usage count, etc.)
-
-  await savePattern(pattern);
-}
-```
+Authenticated callers can analyze a session attributed to their organization
+through `POST /api/v1/ai/sessions/{sessionId}/analyze`. Its similarity query is
+bounded to the verified token organization. Foreign, missing, and unattributed
+sessions return the same 404. Analysis may suggest a candidate; it does not
+compile or persist a pattern. Compilation and global lifecycle writes remain
+disabled until a trusted platform authority is implemented.
 
 ### 3. Pattern Structure
 

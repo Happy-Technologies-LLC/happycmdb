@@ -5,7 +5,7 @@ import request from 'supertest';
 import { PGlite } from '@electric-sql/pglite';
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
-import { PatternStorageService, PatternWorkflow } from '@cmdb/ai-discovery';
+import { PatternAnalyzer, PatternStorageService, PatternWorkflow } from '@cmdb/ai-discovery';
 
 const db = new PGlite();
 const sql = {
@@ -155,6 +155,11 @@ test('analysis builds candidates from only the caller organization despite match
   expect(response.body.data.isPattern).toBe(true);
   expect(response.body.data.candidate.signature.sessions.sort()).toEqual(['own-2', 'own-3', 'owned']);
   expect((await post(B, '/sessions/owned/analyze')).status).toBe(404);
+  const session = (await get(A, '/sessions/owned')).body.data;
+  const analyzer = new PatternAnalyzer();
+  expect((await analyzer.analyzeSession(session, A)).candidate?.signature.sessions.sort())
+    .toEqual(['own-2', 'own-3', 'owned']);
+  await expect(analyzer.analyzeSession(session, '')).rejects.toThrow('Organization required');
 });
 
 test('tenant admin cannot write shared patterns through any mounted lifecycle route or storage/workflow bypass', async () => {

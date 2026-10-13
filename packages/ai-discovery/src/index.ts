@@ -16,12 +16,9 @@
  * - Industry-standard pattern library
  * - Cost-controlled AI discovery
  *
- * Phase 3 Features:
- * - Pattern analyzer (identifies repeatable patterns from AI discoveries)
- * - Pattern compiler (generates TypeScript code from AI traces)
- * - Pattern validator (tests and validates generated patterns)
- * - Pattern workflow (draft → review → approved → active)
- * - Auto-approval for high-confidence patterns
+ * Pattern analysis is restricted to attributed discovery sessions. Active
+ * patterns are available to the internal matcher; shared pattern lifecycle
+ * writes are unavailable until platform authority exists.
  */
 
 export * from './types';
@@ -32,7 +29,6 @@ export * from './pattern-matcher';
 export * from './pattern-storage';
 export * from './hybrid-discovery-orchestrator';
 export * from './pattern-analyzer';
-export * from './pattern-compiler';
 export * from './pattern-validator';
 export * from './pattern-workflow';
 
@@ -48,7 +44,6 @@ export { PatternMatcher } from './pattern-matcher';
 export { PatternStorageService } from './pattern-storage';
 export { HybridDiscoveryOrchestrator } from './hybrid-discovery-orchestrator';
 export { PatternAnalyzer } from './pattern-analyzer';
-export { PatternCompiler } from './pattern-compiler';
 export { PatternValidator } from './pattern-validator';
 export { PatternWorkflow } from './pattern-workflow';
 
@@ -64,5 +59,4 @@ export type {
   DiscoveryPattern,
   PatternMatch,
   IPatternMatcher,
-  IPatternCompiler,
 } from './types';

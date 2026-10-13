@@ -23,7 +23,6 @@ import { getPostgresClient, type PostgresClient } from '@cmdb/database';
 import type {
   PatternStorageService,
   PatternAnalyzer,
-  PatternCompiler,
   PatternValidator,
   PatternWorkflow,
 } from '@cmdb/ai-discovery';
@@ -59,7 +58,6 @@ describe('AIPatternController', () => {
     getPatternUsage: jest.Mock<(...args: never[]) => Promise<unknown>>;
   };
   let mockAnalyzer: { analyzeSession: jest.Mock<(...args: never[]) => Promise<unknown>> };
-  let mockCompiler: Record<string, never>;
   let mockValidator: { validate: jest.Mock<(...args: never[]) => Promise<unknown>> };
   let mockWorkflow: {
     submitForReview: jest.Mock<
@@ -102,7 +100,6 @@ describe('AIPatternController', () => {
       getPatternUsage: jest.fn(),
     };
     mockAnalyzer = { analyzeSession: jest.fn() };
-    mockCompiler = {};
     mockValidator = { validate: jest.fn() };
     mockWorkflow = {
       submitForReview: jest.fn(),
@@ -122,7 +119,6 @@ describe('AIPatternController', () => {
     controller = new AIPatternController(
       mockStorage as unknown as PatternStorageService,
       mockAnalyzer as unknown as PatternAnalyzer,
-      mockCompiler as unknown as PatternCompiler,
       mockValidator as unknown as PatternValidator,
       mockWorkflow as unknown as PatternWorkflow
     );

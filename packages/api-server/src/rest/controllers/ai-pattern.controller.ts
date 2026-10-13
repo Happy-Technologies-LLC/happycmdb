@@ -7,9 +7,8 @@
  * REST API controller backing the AI Pattern Learning UI (Pattern Library,
  * Discovery Sessions, Cost Analytics). Delegates pattern persistence and
  * lifecycle transitions to @cmdb/ai-discovery's PatternStorageService /
- * PatternWorkflow / PatternAnalyzer / PatternCompiler / PatternValidator,
- * and reads/aggregates ai_discovery_sessions directly (sessions are not
- * owned by any ai-discovery service class).
+ * PatternWorkflow / PatternAnalyzer / PatternValidator, and reads/aggregates
+ * ai_discovery_sessions directly.
  */
 
 import { Response } from 'express';
@@ -18,7 +17,6 @@ import { logger } from '@cmdb/common';
 import {
   PatternStorageService,
   PatternAnalyzer,
-  PatternCompiler,
   PatternValidator,
   PatternWorkflow,
   PatternListFilters,
@@ -66,22 +64,19 @@ export class AIPatternController {
   private postgresClient = getPostgresClient();
   private storage: PatternStorageService;
   private analyzer: PatternAnalyzer;
-  private compiler: PatternCompiler;
   private validator: PatternValidator;
   private workflow: PatternWorkflow;
 
   constructor(
     storage?: PatternStorageService,
     analyzer?: PatternAnalyzer,
-    compiler?: PatternCompiler,
     validator?: PatternValidator,
     workflow?: PatternWorkflow
   ) {
     this.storage = storage || new PatternStorageService();
     this.analyzer = analyzer || new PatternAnalyzer(this.storage);
-    this.compiler = compiler || new PatternCompiler();
     this.validator = validator || new PatternValidator();
-    this.workflow = workflow || new PatternWorkflow(this.storage, this.validator, this.compiler);
+    this.workflow = workflow || new PatternWorkflow(this.storage, this.validator);
   }
 
   /**

@@ -20,7 +20,7 @@ const graphQLWork = new WeakMap<Request, GraphQLWork>();
 
 type AnalysisResult = { status: number; body: unknown };
 type AnalysisPolicy = {
-  scope: 'architecture' | 'impact' | 'dashboard' | 'analytics';
+  scope: 'architecture' | 'impact' | 'dashboard' | 'analytics' | 'anomalies';
   timeoutMs: number;
   withDeadline: <T>(deadline: number, operation: () => Promise<T>) => Promise<T>;
   deadlineError: () => Error;
@@ -30,7 +30,7 @@ type AnalysisPolicy = {
 
 /** Shared verified-principal/tenant admission, with GraphQL consuming only concurrency slots. */
 function reserveWorkSlots(
-  scope: 'architecture' | 'impact' | 'dashboard' | 'analytics' | 'graphql', org: string, principal: string,
+  scope: 'architecture' | 'impact' | 'dashboard' | 'analytics' | 'anomalies' | 'graphql', org: string, principal: string,
   rateLimited: boolean
 ): (() => void) | null {
   const now = Date.now();
@@ -57,7 +57,8 @@ function reserveWorkSlots(
       entry.count = 0;
     }
     buckets.push(entry);
-    const maxActive = scope === 'graphql' ? (index === 0 ? 8 : 4) : (index === 0 ? 2 : 1);
+    const maxActive = scope === 'graphql' ? (index === 0 ? 8 : 4)
+      : (scope === 'anomalies' ? (index === 0 ? 4 : 2) : (index === 0 ? 2 : 1));
     if ((rateLimited && entry.count >= (index === 0 ? 40 : 10))
       || entry.active >= maxActive) return null;
   }

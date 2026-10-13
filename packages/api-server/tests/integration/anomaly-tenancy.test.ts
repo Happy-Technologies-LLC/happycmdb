@@ -117,9 +117,16 @@ it('serves owned anomalies across the 512-CI boundary and leaves the next reques
       total: 3, by_severity: { high: 3 }, by_status: { detected: 3 },
     });
     await cypher(`CREATE (:CI {id:'anomaly-bulk-511', organization_id:$org, incarnation_id:randomUUID()})`, { org: A });
-    expect((await get('aLarge', '/recent')).body.data.map((row: { id: string }) => row.id).sort())
+    // The UI mounts both reads concurrently; admission must allow both while
+    // they traverse multiple graph pages rather than rejecting the second.
+    const [recent, stats] = await Promise.all([
+      get('aLarge', '/recent'), get('aLarge', '/stats'),
+    ]);
+    expect(recent.status).toBe(200);
+    expect(stats.status).toBe(200);
+    expect(recent.body.data.map((row: { id: string }) => row.id).sort())
       .toEqual([OWN, REUSED, BULK].sort());
-    expect((await get('aLarge', '/stats')).body.data.total).toBe(3);
+    expect(stats.body.data.total).toBe(3);
     expect((await patch('a', BULK_FOREIGN)).body).toEqual((await patch('a', MISSING)).body);
     expect((await patch('a', OWN)).status).toBe(200);
     expect((await get('a', '/ci/anomaly-own')).body.data.map((row: { id: string }) => row.id)).toEqual([OWN]);

@@ -204,7 +204,7 @@ export class AnomalyController {
       status: 200,
       body: { success: true, data: await operation(requestOrganizationId(req)) },
     }), {
-      scope: 'analytics',
+      scope: 'anomalies',
       timeoutMs: 12_000,
       withDeadline: (_deadline, work) => work(),
       deadlineError: () => new CIAnalyticsLimitError(),

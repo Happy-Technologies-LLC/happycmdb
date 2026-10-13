@@ -6,12 +6,10 @@
  * Manages pattern lifecycle: draft → review → approved → active
  */
 
-import { DiscoveryPattern, AIDiscoverySession } from './types';
-import { PatternStorageService, type PatternReviewAction } from './pattern-storage';
+import { DiscoveryPattern } from './types';
+import { PatternStorageService, type PatternReviewAction, requirePlatformPatternAuthority } from './pattern-storage';
 import { PatternValidator, ValidationResult } from './pattern-validator';
-import { PatternCompiler } from './pattern-compiler';
 import { logger } from '@cmdb/common';
-import { getPostgresClient } from '@cmdb/database';
 
 export interface WorkflowAction {
   action: PatternReviewAction;
@@ -23,17 +21,13 @@ export interface WorkflowAction {
 export class PatternWorkflow {
   private storage: PatternStorageService;
   private validator: PatternValidator;
-  private compiler: PatternCompiler;
-  private postgresClient = getPostgresClient();
 
   constructor(
     storage?: PatternStorageService,
-    validator?: PatternValidator,
-    compiler?: PatternCompiler
+    validator?: PatternValidator
   ) {
     this.storage = storage || new PatternStorageService();
     this.validator = validator || new PatternValidator();
-    this.compiler = compiler || new PatternCompiler();
   }
 
   /**
@@ -49,6 +43,7 @@ export class PatternWorkflow {
     error?: string;
     internal?: boolean;
   }> {
+    requirePlatformPatternAuthority();
     try {
       const pattern = await this.storage.getPattern(patternId);
       if (!pattern) {
@@ -123,6 +118,7 @@ export class PatternWorkflow {
     error?: string;
     internal?: boolean;
   }> {
+    requirePlatformPatternAuthority();
     try {
       const pattern = await this.storage.getPattern(patternId);
       if (!pattern) {
@@ -182,6 +178,7 @@ export class PatternWorkflow {
     error?: string;
     internal?: boolean;
   }> {
+    requirePlatformPatternAuthority();
     try {
       const pattern = await this.storage.getPattern(patternId);
       if (!pattern) {
@@ -231,6 +228,7 @@ export class PatternWorkflow {
     error?: string;
     internal?: boolean;
   }> {
+    requirePlatformPatternAuthority();
     try {
       const pattern = await this.storage.getPattern(patternId);
       if (!pattern) {
@@ -280,6 +278,7 @@ export class PatternWorkflow {
     error?: string;
     internal?: boolean;
   }> {
+    requirePlatformPatternAuthority();
     try {
       const pattern = await this.storage.getPattern(patternId);
       if (!pattern) {
@@ -323,6 +322,7 @@ export class PatternWorkflow {
    * (for patterns with very high confidence and usage)
    */
   async autoApproveIfEligible(patternId: string): Promise<boolean> {
+    requirePlatformPatternAuthority();
     try {
       const pattern = await this.storage.getPattern(patternId);
       if (!pattern) {
@@ -395,13 +395,15 @@ export class PatternWorkflow {
    * at all, since rejecting/deactivating a pattern doesn't leave a trace on
    * ai_discovery_patterns itself.
    */
-  async getPatternHistory(patternId: string): Promise<WorkflowAction[]> {
-    const pattern = await this.storage.getPattern(patternId);
+  async getPatternHistory(patternId: string, organizationId?: string): Promise<WorkflowAction[]> {
+    const pattern = organizationId
+      ? await this.storage.getTenantPattern(patternId, organizationId)
+      : await this.storage.getPattern(patternId);
     if (!pattern) {
       return [];
     }
 
-    const reviewHistory = await this.storage.getReviewHistory(patternId);
+    const reviewHistory = await this.storage.getReviewHistory(patternId, organizationId);
     if (reviewHistory.length > 0) {
       return reviewHistory.map(entry => ({
         action: entry.action,
@@ -444,177 +446,13 @@ export class PatternWorkflow {
   }
 
   /**
-   * Compile and save new patterns from AI discoveries
+   * Global compilation and submission have no trusted pattern authority.
    */
   async compileAndSubmitPatterns(): Promise<{
     compiled: number;
     submitted: number;
     errors: string[];
   }> {
-    const errors: string[] = [];
-    let compiled = 0;
-    let submitted = 0;
-
-    try {
-      logger.info('Looking for pattern candidates to compile');
-
-      // Get candidates from compiler
-      const candidates = await this.compiler.getCandidates();
-
-      logger.info('Found pattern candidates', { count: candidates.length });
-
-      for (const candidate of candidates) {
-        try {
-          // Get sessions for this candidate
-          const sessions = await this.getSessionsForCandidate(
-            candidate.signature.sessions
-          );
-
-          if (sessions.length === 0) {
-            logger.warn('No sessions found for candidate', {
-              signature: candidate.signature.signatureHash,
-            });
-            continue;
-          }
-
-          // Compile pattern
-          const pattern = await this.compiler.compilePattern(sessions);
-          compiled++;
-
-          // Save as draft
-          await this.storage.savePattern(pattern);
-
-          // Submit for review
-          const submitResult = await this.submitForReview(
-            pattern.patternId,
-            'pattern-compiler'
-          );
-
-          if (submitResult.success) {
-            submitted++;
-
-            // Try auto-approval if eligible
-            await this.autoApproveIfEligible(pattern.patternId);
-          } else {
-            errors.push(
-              `Failed to submit ${pattern.patternId}: ${submitResult.error}`
-            );
-          }
-
-          logger.info('Pattern compiled and submitted', {
-            patternId: pattern.patternId,
-            name: pattern.name,
-          });
-        } catch (error) {
-          const errorMsg = error instanceof Error ? error.message : String(error);
-          errors.push(`Compilation error: ${errorMsg}`);
-          logger.error('Error compiling pattern', { error });
-        }
-      }
-
-      logger.info('Pattern compilation complete', { compiled, submitted });
-
-      return { compiled, submitted, errors };
-    } catch (error) {
-      logger.error('Error in pattern compilation workflow', { error });
-      return {
-        compiled,
-        submitted,
-        errors: [error instanceof Error ? error.message : String(error)],
-      };
-    }
-  }
-
-  /**
-   * Get sessions by IDs (helper method)
-   *
-   * Backs compileAndSubmitPatterns(): candidate.signature.sessions holds the
-   * session_ids the analyzer already grouped as similar; resolve them to
-   * full AIDiscoverySession rows so the compiler has real data to work from.
-   */
-  private async getSessionsForCandidate(
-    sessionIds: string[]
-  ): Promise<AIDiscoverySession[]> {
-    if (sessionIds.length === 0) {
-      return [];
-    }
-
-    const client = await this.postgresClient.getClient();
-
-    try {
-      const result = await client.query(
-        `SELECT
-          id, session_id, target_host, target_port,
-          scan_result, status, started_at, completed_at,
-          duration_ms, ai_model, total_tokens, prompt_tokens,
-          completion_tokens, estimated_cost, discovered_cis,
-          confidence_score, tool_calls, ai_reasoning,
-          pattern_matched, error_message, retry_count,
-          created_at
-        FROM ai_discovery_sessions
-        WHERE session_id = ANY($1)`,
-        [sessionIds]
-      );
-
-      return result.rows.map(row => this.rowToSession(row));
-    } catch (error) {
-      logger.error('Failed to fetch sessions for candidate', {
-        sessionIds,
-        error,
-      });
-      throw error;
-    } finally {
-      client.release();
-    }
-  }
-
-  /**
-   * Convert database row to AIDiscoverySession
-   * (mirrors PatternAnalyzer.rowToSession's column mapping)
-   */
-  private rowToSession(row: {
-    id: string;
-    session_id: string;
-    target_host: string;
-    target_port: number;
-    status: 'running' | 'completed' | 'failed';
-    started_at: Date;
-    completed_at: Date | null;
-    duration_ms: number | null;
-    ai_model: string;
-    total_tokens: number | null;
-    prompt_tokens: number | null;
-    completion_tokens: number | null;
-    estimated_cost: string | null;
-    discovered_cis: unknown[] | null;
-    confidence_score: number | null;
-    tool_calls: AIDiscoverySession['toolCalls'] | null;
-    ai_reasoning: string | null;
-    pattern_matched: string | null;
-    error_message: string | null;
-    retry_count: number | null;
-  }): AIDiscoverySession {
-    return {
-      id: row.id,
-      sessionId: row.session_id,
-      targetHost: row.target_host,
-      targetPort: row.target_port,
-      status: row.status,
-      startedAt: row.started_at,
-      completedAt: row.completed_at ?? undefined,
-      durationMs: row.duration_ms ?? undefined,
-      aiModel: row.ai_model,
-      totalTokens: row.total_tokens ?? undefined,
-      promptTokens: row.prompt_tokens ?? undefined,
-      completionTokens: row.completion_tokens ?? undefined,
-      estimatedCost: row.estimated_cost ? parseFloat(row.estimated_cost) : undefined,
-      discoveredCIs: row.discovered_cis || [],
-      confidenceScore: row.confidence_score ?? undefined,
-      toolCalls: row.tool_calls || [],
-      aiReasoning: row.ai_reasoning ?? undefined,
-      patternMatched: row.pattern_matched ?? undefined,
-      errorMessage: row.error_message ?? undefined,
-      retryCount: row.retry_count || 0,
-    };
+    throw new Error('Global pattern writes are unavailable until platform authority exists');
   }
 }

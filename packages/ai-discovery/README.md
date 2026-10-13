@@ -271,59 +271,20 @@ Read file contents via SSH.
 
 ## Pattern Learning
 
-The system automatically learns patterns from AI discoveries and compiles them into reusable code:
-
-```typescript
-import {
-  HybridDiscoveryOrchestrator,
-  PatternAnalyzer,
-  PatternWorkflow
-} from '@cmdb/ai-discovery';
-
-const orchestrator = new HybridDiscoveryOrchestrator({
-  aiEnabled: true,
-  patternMatchingEnabled: true
-});
-
-const analyzer = new PatternAnalyzer();
-const workflow = new PatternWorkflow();
-
-// Perform discovery
-const result = await orchestrator.discover({
-  targetHost: '10.0.1.50',
-  targetPort: 8080
-});
-
-// If AI was used, check if we found a pattern
-if (result.method === 'ai') {
-  const analysis = await analyzer.analyzeSession(result.session);
-
-  if (analysis.isPattern) {
-    console.log('🎉 Pattern detected!');
-    console.log(`   Found ${analysis.candidate.signature.sessionCount} similar discoveries`);
-    console.log(`   Suggested name: ${analysis.candidate.suggestedName}`);
-
-    // Automatically compile and submit
-    await workflow.compileAndSubmitPatterns();
-  }
-}
-```
-
-**The Learning Flywheel**:
-1. AI discovers unknown service (20s, $0.02)
-2. System tracks discovery steps
-3. After 3+ similar discoveries → Pattern suggested
-4. Pattern compiler generates detection/discovery code
-5. Validator tests the pattern
-6. Review → Approve → Activate
-7. Future discoveries use pattern (<1s, $0.00)
-
-**Performance Impact**:
-- **First 3 discoveries**: 60 seconds, $0.06
-- **Next 997 discoveries**: 8 minutes, $0.00
-- **Savings**: 97% faster, 99.7% cost reduction
-
-**See**: [Phase 3 Documentation](./README-PHASE3.md) for complete pattern learning guide
+Pattern candidate analysis is available only for a session proven to belong to
+the authenticated caller's organization. The REST
+`POST /api/v1/ai/sessions/{sessionId}/analyze` route verifies ownership before
+loading the session and bounds all similarity candidates to that tenant.
+Calling `PatternAnalyzer.analyzeSession(session, organizationId)` directly
+requires a **verified** organization ID; do not infer it from the host, session
+ID, pattern, or request body. Historical sessions have no tenant provenance
+and cannot be analyzed through the API. There is no trusted organization
+source for the former public pattern compiler or its illustrative demo, so
+both were removed rather than making unscoped analysis appear operational.
+Global pattern compilation and lifecycle writes remain unavailable until
+HP1-S6/P-6 platform authority exists. Read-only tenant session analysis,
+internal active-pattern matching, and synthetic execution telemetry remain
+available.
 
 ## Cost Management
 

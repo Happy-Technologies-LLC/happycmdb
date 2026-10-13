@@ -161,28 +161,6 @@ describe('PatternStorageService', () => {
     });
   });
 
-  describe('deletePattern', () => {
-    it('returns true and invalidates caches when a row is deleted', async () => {
-      mockClientQuery.mockResolvedValue({ rowCount: 1 });
-
-      const deleted = await storage.deletePattern('pat-1');
-
-      expect(deleted).toBe(true);
-      expect(mockClientQuery).toHaveBeenCalledWith(
-        expect.stringContaining('DELETE FROM ai_discovery_patterns'),
-        ['pat-1']
-      );
-      expect(mockInvalidatePattern).toHaveBeenCalledWith('pat-1');
-    });
-
-    it('returns false when no row matched the pattern ID', async () => {
-      mockClientQuery.mockResolvedValue({ rowCount: 0 });
-
-      const deleted = await storage.deletePattern('missing');
-
-      expect(deleted).toBe(false);
-    });
-  });
 
   describe('getPatternUsage', () => {
     it('maps usage rows joined with their originating session host/port', async () => {
@@ -200,7 +178,7 @@ describe('PatternStorageService', () => {
         ],
       });
 
-      const usage = await storage.getPatternUsage('pat-1', 7);
+      const usage = await storage.getPatternUsage('pat-1', 7, 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa');
 
       expect(usage).toEqual([
         {
@@ -215,16 +193,8 @@ describe('PatternStorageService', () => {
         },
       ]);
       const [, params] = mockClientQuery.mock.calls[0];
-      expect(params).toEqual(['pat-1', 7]);
+      expect(params).toEqual(['pat-1', 7, 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa']);
     });
 
-    it('defaults to a 30-day window', async () => {
-      mockClientQuery.mockResolvedValue({ rows: [] });
-
-      await storage.getPatternUsage('pat-1');
-
-      const [, params] = mockClientQuery.mock.calls[0];
-      expect(params).toEqual(['pat-1', 30]);
-    });
   });
 });

@@ -236,26 +236,3 @@ export interface IPatternMatcher {
    */
   addPattern(pattern: DiscoveryPattern): Promise<void>;
 }
-
-/**
- * Pattern compiler interface
- */
-export interface IPatternCompiler {
-  /**
-   * Analyze discovery session to see if it's a pattern
-   */
-  analyzeSession(session: AIDiscoverySession): Promise<boolean>;
-
-  /**
-   * Compile pattern from AI discovery traces
-   */
-  compilePattern(sessions: AIDiscoverySession[]): Promise<DiscoveryPattern>;
-
-  /**
-   * Validate generated pattern
-   */
-  validatePattern(pattern: DiscoveryPattern): Promise<{
-    isValid: boolean;
-    errors: string[];
-  }>;
-}

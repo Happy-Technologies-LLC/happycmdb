@@ -4,26 +4,17 @@
 import { lookup } from 'dns/promises';
 import { getRedisClient } from '@cmdb/database';
 import { PatternMatcher } from '../pattern-matcher';
-import { PatternCompiler } from '../pattern-compiler';
 import { PatternValidator } from '../pattern-validator';
 import { safeDiscoveryHttp } from '../tools/safe-http';
 import { HybridDiscoveryOrchestrator } from '../hybrid-discovery-orchestrator';
 import { UNSUPPORTED_PATTERN_PLAN } from '../pattern-plan';
 import { PatternStorageService } from '../pattern-storage';
-import type { DiscoveryPattern, AIDiscoverySession } from '../types';
-import type { PatternAnalyzer, PatternCandidate } from '../pattern-analyzer';
+import type { DiscoveryPattern } from '../types';
 
 jest.mock('dns/promises', () => ({ lookup: jest.fn() }));
 jest.mock('@cmdb/database', () => ({ getRedisClient: jest.fn(), getPostgresClient: jest.fn(() => ({})) }));
 jest.mock('../tools/safe-http', () => ({ safeDiscoveryHttp: jest.fn() }));
 
-const candidate: PatternCandidate = {
-  suggestedName: 'Web service', suggestedCategory: 'web', readyForCompilation: true,
-  signature: { signatureHash: 'hash', toolSequence: [], serviceIndicators: [],
-    confidenceScore: 0.9, sessionCount: 1, sessions: ['one'] },
-  commonElements: { ports: [443], headers: [], endpoints: ['/status'], serviceNames: [] },
-};
-const session = { aiModel: 'test-model', discoveredCIs: [] } as unknown as AIDiscoverySession;
 const redis = { get: jest.fn().mockResolvedValue(null), setex: jest.fn().mockResolvedValue('OK') };
 const storage = {
   loadPatterns: jest.fn(), createExecutionSession: jest.fn().mockResolvedValue(undefined),
@@ -31,6 +22,27 @@ const storage = {
 };
 const context = { targetHost: 'public.example', targetPort: 443,
   scanResult: { services: [{ port: 443, version: '1.2' }], http: { endpoints: ['/status'] } } };
+
+function validPattern(endpoints: string[] = ['/status']): DiscoveryPattern {
+  return {
+    id: 'pattern-1', patternId: 'web-service', name: 'Web service', version: '1.0.0',
+    category: 'web', author: 'fixture', license: 'MIT', confidenceScore: 0.9,
+    usageCount: 0, successCount: 0, failureCount: 0, status: 'draft', isActive: false,
+    createdAt: new Date(), updatedAt: new Date(),
+    detectionCode: JSON.stringify({
+      kind: 'detection-v1', ports: [443], headers: [], endpoints, serviceNames: [],
+    }),
+    discoveryCode: JSON.stringify({
+      kind: 'discovery-v1', name: 'Web service', category: 'web',
+      serviceType: 'application', endpoints,
+    }),
+    testCases: [{
+      name: 'Detection test',
+      input: { services: [{ port: 443 }], http: { endpoints } },
+      expected: { matches: true, confidenceMin: 0.5 },
+    }],
+  };
+}
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -43,11 +55,9 @@ beforeEach(() => {
 
 afterEach(() => jest.restoreAllMocks());
 
-it('compiles data-only plans and interprets detection and HTTP discovery', async () => {
-  const analyzer = { analyzeSession: jest.fn().mockResolvedValue({ candidate }) };
-  const compiler = new PatternCompiler(analyzer as unknown as PatternAnalyzer);
-  const pattern = await compiler.compilePattern([session]);
-  expect(await compiler.validatePattern(pattern)).toMatchObject({ isValid: true });
+it('accepts data-only plans and interprets detection and HTTP discovery', async () => {
+  const pattern = validPattern();
+  expect(await new PatternValidator().validate(pattern)).toMatchObject({ isValid: true });
   storage.loadPatterns.mockResolvedValue([pattern]);
   const matcher = new PatternMatcher(storage as unknown as PatternStorageService);
   const match = await matcher.match(context.scanResult);
@@ -59,17 +69,12 @@ it('compiles data-only plans and interprets detection and HTTP discovery', async
     expect.objectContaining({ method: 'GET' }));
 });
 
-it('compiles and executes safe dotted endpoint paths without changing their target', async () => {
-  const analyzer = { analyzeSession: jest.fn().mockResolvedValue({
-    candidate: { ...candidate, commonElements: { ...candidate.commonElements,
-      endpoints: ['/health.json', '/.well-known/status'] } },
-  }) };
-  const compiler = new PatternCompiler(analyzer as unknown as PatternAnalyzer);
-  const sourceSession = { ...session, scanResult: {
-    services: [{ port: 443 }], http: { endpoints: ['/health.json', '/.well-known/status'] },
+it('accepts and executes safe dotted endpoint paths without changing their target', async () => {
+  const endpoints = ['/health.json', '/.well-known/status'];
+  const sourceSession = { scanResult: {
+    services: [{ port: 443 }], http: { endpoints },
   } };
-  const pattern = await compiler.compilePattern([sourceSession]);
-  expect(await compiler.validatePattern(pattern)).toMatchObject({ isValid: true });
+  const pattern = validPattern(endpoints);
   expect(await new PatternValidator().validate(pattern)).toMatchObject({ isValid: true });
   storage.loadPatterns.mockResolvedValue([pattern]);
   const matcher = new PatternMatcher(storage as unknown as PatternStorageService);
@@ -86,8 +91,7 @@ it('compiles and executes safe dotted endpoint paths without changing their targ
 });
 
 it('rejects host-constructor escape payloads before execution, including legacy detection', async () => {
-  const analyzer = { analyzeSession: jest.fn().mockResolvedValue({ candidate }) };
-  const base = await new PatternCompiler(analyzer as unknown as PatternAnalyzer).compilePattern([session]);
+  const base = validPattern();
   const malicious = { ...base,
     detectionCode: `function detect() { console.constructor('return process')(); return {matches:true,confidence:1}; }`,
     discoveryCode: `async function discover() { fetch.constructor('return process')(); return []; }`,
@@ -102,8 +106,7 @@ it('rejects host-constructor escape payloads before execution, including legacy 
 });
 
 it('refuses legacy discovery even with a valid detection plan; hybrid exposes the refusal', async () => {
-  const analyzer = { analyzeSession: jest.fn().mockResolvedValue({ candidate }) };
-  const base = await new PatternCompiler(analyzer as unknown as PatternAnalyzer).compilePattern([session]);
+  const base = validPattern();
   const malicious = { ...base,
     discoveryCode: `async function discover() { fetch.constructor('return process')(); return []; }`,
   } as DiscoveryPattern;
@@ -121,8 +124,7 @@ it('refuses legacy discovery even with a valid detection plan; hybrid exposes th
 });
 
 it('rejects legacy active plans before returning a stale cached negative match', async () => {
-  const analyzer = { analyzeSession: jest.fn().mockResolvedValue({ candidate }) };
-  const base = await new PatternCompiler(analyzer as unknown as PatternAnalyzer).compilePattern([session]);
+  const base = validPattern();
   storage.loadPatterns.mockResolvedValue([{ ...base, detectionCode: `function detect() {
     return {matches:true,confidence:1}; }` }]);
   redis.get.mockResolvedValueOnce('null');
@@ -131,8 +133,7 @@ it('rejects legacy active plans before returning a stale cached negative match',
 });
 
 it('rejects active legacy discovery plans even when detection does not match', async () => {
-  const analyzer = { analyzeSession: jest.fn().mockResolvedValue({ candidate }) };
-  const base = await new PatternCompiler(analyzer as unknown as PatternAnalyzer).compilePattern([session]);
+  const base = validPattern();
   const malformed = { ...base,
     discoveryCode: `async function discover() { fetch.constructor('return process')(); return []; }`,
   };
@@ -148,8 +149,7 @@ it('rejects active legacy discovery plans even when detection does not match', a
 });
 
 it('refreshes active plans after a cached negative when storage changes to legacy code', async () => {
-  const analyzer = { analyzeSession: jest.fn().mockResolvedValue({ candidate }) };
-  const base = await new PatternCompiler(analyzer as unknown as PatternAnalyzer).compilePattern([session]);
+  const base = validPattern();
   let active: DiscoveryPattern[] = [base];
   storage.loadPatterns.mockImplementation(async () => active);
   const cached = new Map<string, string>();
@@ -169,8 +169,7 @@ it('refreshes active plans after a cached negative when storage changes to legac
 });
 
 it('invalidates cached positives on plan edits and refuses a subsequently deactivated pattern', async () => {
-  const analyzer = { analyzeSession: jest.fn().mockResolvedValue({ candidate }) };
-  const base = await new PatternCompiler(analyzer as unknown as PatternAnalyzer).compilePattern([session]);
+  const base = validPattern();
   let active: DiscoveryPattern[] = [base];
   storage.loadPatterns.mockImplementation(async () => active);
   const cached = new Map<string, string>();
@@ -201,8 +200,7 @@ it('does not fall back to AI when the active plan list cannot be verified', asyn
 });
 
 it('propagates a denied HTTP endpoint instead of returning a partial CI', async () => {
-  const analyzer = { analyzeSession: jest.fn().mockResolvedValue({ candidate }) };
-  const pattern = await new PatternCompiler(analyzer as unknown as PatternAnalyzer).compilePattern([session]);
+  const pattern = validPattern();
   storage.loadPatterns.mockResolvedValue([pattern]);
   (safeDiscoveryHttp as jest.Mock).mockRejectedValue(new Error('Discovery target refused'));
   const matcher = new PatternMatcher(storage as unknown as PatternStorageService);
@@ -211,8 +209,7 @@ it('propagates a denied HTTP endpoint instead of returning a partial CI', async 
 });
 
 it('refuses malformed endpoint plans and private targets without outbound HTTP', async () => {
-  const analyzer = { analyzeSession: jest.fn().mockResolvedValue({ candidate }) };
-  const base = await new PatternCompiler(analyzer as unknown as PatternAnalyzer).compilePattern([session]);
+  const base = validPattern();
   const malicious = { ...base, discoveryCode: JSON.stringify({ ...JSON.parse(base.discoveryCode),
     endpoints: ['//169.254.169.254/latest'] }) } as DiscoveryPattern;
   storage.loadPatterns.mockResolvedValue([malicious]);

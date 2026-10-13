@@ -45,11 +45,14 @@ export class PatternAnalyzer {
   /**
    * Analyze a discovery session to see if it contributes to a pattern
    */
-  async analyzeSession(session: AIDiscoverySession): Promise<{
+  async analyzeSession(session: AIDiscoverySession, organizationId: string): Promise<{
     isPattern: boolean;
     signature: PatternSignature | null;
     candidate: PatternCandidate | null;
   }> {
+    // Analysis can include other sessions in a candidate. Without a verified
+    // tenant, it must never run the similarity query.
+    if (!organizationId) throw new Error('Organization required for session analysis');
     try {
       // Only analyze successful sessions with high confidence
       if (
@@ -71,7 +74,7 @@ export class PatternAnalyzer {
       const signature = this.generateSignature(session);
 
       // Find similar sessions
-      const similarSessions = await this.findSimilarSessions(signature);
+      const similarSessions = await this.findSimilarSessions(signature, organizationId);
 
       logger.info('Pattern analysis', {
         sessionId: session.sessionId,
@@ -184,7 +187,8 @@ export class PatternAnalyzer {
    * Find sessions with similar signatures
    */
   private async findSimilarSessions(
-    signature: PatternSignature
+    signature: PatternSignature,
+    organizationId: string
   ): Promise<AIDiscoverySession[]> {
     const client = await this.postgresClient.getClient();
 
@@ -201,11 +205,12 @@ export class PatternAnalyzer {
           created_at
         FROM ai_discovery_sessions
         WHERE status = 'completed'
+          AND organization_id = $1
           AND confidence_score >= 0.8
           AND jsonb_array_length(tool_calls) >= 2
         ORDER BY started_at DESC
         LIMIT 100`,
-        []
+        [organizationId]
       );
 
       const similarSessions: AIDiscoverySession[] = [];
@@ -490,68 +495,6 @@ export class PatternAnalyzer {
       return 'nodejs-frameworks';
 
     return 'applications';
-  }
-
-  /**
-   * Get all pattern candidates ready for compilation
-   */
-  async getPatternCandidates(): Promise<PatternCandidate[]> {
-    const client = await this.postgresClient.getClient();
-
-    try {
-      // Get all completed sessions
-      const result = await client.query(
-        `SELECT
-          id, session_id, target_host, target_port,
-          scan_result, status, started_at, completed_at,
-          duration_ms, ai_model, total_tokens, prompt_tokens,
-          completion_tokens, estimated_cost, discovered_cis,
-          confidence_score, tool_calls, ai_reasoning,
-          pattern_matched, error_message, retry_count,
-          created_at
-        FROM ai_discovery_sessions
-        WHERE status = 'completed'
-          AND confidence_score >= 0.8
-          AND pattern_matched IS NULL
-        ORDER BY started_at DESC
-        LIMIT 200`
-      );
-
-      const sessions = result.rows.map(row => this.rowToSession(row));
-
-      // Group sessions by signature
-      const signatureGroups = new Map<string, AIDiscoverySession[]>();
-
-      for (const session of sessions) {
-        const signature = this.generateSignature(session);
-        const existing = signatureGroups.get(signature.signatureHash) || [];
-        signatureGroups.set(signature.signatureHash, [...existing, session]);
-      }
-
-      // Build candidates for groups with enough sessions
-      const candidates: PatternCandidate[] = [];
-
-      for (const [hash, groupSessions] of signatureGroups.entries()) {
-        if (groupSessions.length >= this.PATTERN_THRESHOLD) {
-          const signature = this.generateSignature(groupSessions[0]);
-          const candidate = await this.buildPatternCandidate(
-            signature,
-            groupSessions
-          );
-          candidates.push(candidate);
-        }
-      }
-
-      logger.info('Found pattern candidates', {
-        totalSessions: sessions.length,
-        signatureGroups: signatureGroups.size,
-        candidates: candidates.length,
-      });
-
-      return candidates;
-    } finally {
-      client.release();
-    }
   }
 
   /**

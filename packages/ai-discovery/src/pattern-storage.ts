@@ -20,6 +20,10 @@ import { PatternCacheService } from './pattern-cache.service';
  * the same five actions.
  */
 export type PatternReviewAction = 'submit' | 'approve' | 'reject' | 'activate' | 'deactivate';
+/** No caller can mutate the global library until platform authority exists. */
+export function requirePlatformPatternAuthority(): void {
+  throw new Error('Global pattern writes are unavailable until platform authority exists');
+}
 
 /**
  * Filters accepted by PatternStorageService.listPatterns(). Unlike
@@ -168,9 +172,22 @@ export class PatternStorageService {
   }
 
   /**
+   * HTTP tenant lookup never consults the shared matcher cache. No existing
+   * pattern carries a trustworthy curated-global marker; NULL stays hidden.
+   */
+  async getTenantPattern(patternId: string, organizationId: string): Promise<DiscoveryPattern | null> {
+    const result = await this.postgresClient.query(
+      'SELECT * FROM ai_discovery_patterns WHERE pattern_id = $1 AND organization_id = $2',
+      [patternId, organizationId]
+    );
+    return result.rows[0] ? this.rowToPattern(result.rows[0]) : null;
+  }
+
+  /**
    * Save new pattern
    */
   async savePattern(pattern: Omit<DiscoveryPattern, 'id'>): Promise<DiscoveryPattern> {
+    requirePlatformPatternAuthority();
     const client = await this.postgresClient.getClient();
 
     try {
@@ -234,6 +251,7 @@ export class PatternStorageService {
     patternId: string,
     updates: Partial<DiscoveryPattern>
   ): Promise<void> {
+    requirePlatformPatternAuthority();
     const client = await this.postgresClient.getClient();
 
     try {
@@ -419,6 +437,7 @@ export class PatternStorageService {
     performedBy: string,
     comment?: string
   ): Promise<void> {
+    requirePlatformPatternAuthority();
     const client = await this.postgresClient.getClient();
 
     try {
@@ -472,6 +491,7 @@ export class PatternStorageService {
     performedBy: string,
     comment?: string
   ): Promise<void> {
+    requirePlatformPatternAuthority();
     try {
       await this.postgresClient.transaction(async client => {
         await this.applyPatternUpdate(client, patternId, updates);
@@ -497,7 +517,7 @@ export class PatternStorageService {
    * Get the full workflow transition history for a pattern, ordered oldest
    * first, including each actor's comment/reason.
    */
-  async getReviewHistory(patternId: string): Promise<
+  async getReviewHistory(patternId: string, organizationId?: string): Promise<
     Array<{
       action: PatternReviewAction;
       performedBy: string;
@@ -509,11 +529,12 @@ export class PatternStorageService {
 
     try {
       const result = await client.query(
-        `SELECT action, performed_by, comment, created_at
-         FROM ai_pattern_review_history
-         WHERE pattern_id = $1
-         ORDER BY created_at ASC`,
-        [patternId]
+        `SELECT h.action, h.performed_by, h.comment, h.created_at
+         FROM ai_pattern_review_history h
+         JOIN ai_discovery_patterns p ON p.pattern_id = h.pattern_id
+         WHERE h.pattern_id = $1 AND ($2::uuid IS NULL OR p.organization_id = $2)
+         ORDER BY h.created_at ASC`,
+        [patternId, organizationId ?? null]
       );
 
       return result.rows.map(row => ({
@@ -560,13 +581,17 @@ export class PatternStorageService {
    * deprecated patterns the active-only Redis cache never holds) and is not
    * itself cached.
    */
-  async listPatterns(filters: PatternListFilters = {}): Promise<DiscoveryPattern[]> {
+  async listPatterns(filters: PatternListFilters = {}, organizationId?: string): Promise<DiscoveryPattern[]> {
     const client = await this.postgresClient.getClient();
 
     try {
       const conditions: string[] = [];
       const values: unknown[] = [];
       let paramIndex = 1;
+      if (organizationId !== undefined) {
+        conditions.push(`organization_id = $${paramIndex++}`);
+        values.push(organizationId);
+      }
 
       if (filters.status && filters.status.length > 0) {
         conditions.push(`status = ANY($${paramIndex++})`);
@@ -629,6 +654,7 @@ export class PatternStorageService {
    * Returns whether a row was actually deleted.
    */
   async deletePattern(patternId: string): Promise<boolean> {
+    requirePlatformPatternAuthority();
     const client = await this.postgresClient.getClient();
 
     try {
@@ -658,7 +684,7 @@ export class PatternStorageService {
    * enriched with the target host/port of the discovery session each
    * execution ran against.
    */
-  async getPatternUsage(patternId: string, days: number = 30): Promise<PatternUsageRecord[]> {
+  async getPatternUsage(patternId: string, days: number, organizationId: string): Promise<PatternUsageRecord[]> {
     const client = await this.postgresClient.getClient();
 
     try {
@@ -668,11 +694,12 @@ export class PatternStorageService {
           u.confidence_score, u.error_message,
           s.target_host, s.target_port
         FROM ai_pattern_usage u
-        LEFT JOIN ai_discovery_sessions s ON s.session_id = u.session_id
-        WHERE u.pattern_id = $1
+        INNER JOIN ai_discovery_sessions s ON s.session_id = u.session_id
+        INNER JOIN ai_discovery_patterns p ON p.pattern_id = u.pattern_id
+        WHERE u.pattern_id = $1 AND s.organization_id = $3 AND p.organization_id = $3
           AND u.timestamp >= NOW() - ($2 || ' days')::interval
         ORDER BY u.timestamp DESC`,
-        [patternId, days]
+        [patternId, days, organizationId]
       );
 
       return result.rows.map(row => ({

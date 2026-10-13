@@ -78,10 +78,11 @@ const AnalyticsQueryResolvers = {
   /**
    * Get CI counts by type
    */
-  getCICountsByType: async (): Promise<any[]> => {
+  getCICountsByType: async (_parent: any, _args: any, context: GraphQLContext): Promise<any[]> => {
+    const organizationId = requireGraphQLOrganization(context);
     try {
       const service = new AnalyticsService();
-      const results = await service.getCICountsByType();
+      const results = await service.getCICountsByType(organizationId);
 
       return results.map(row => ({
         _ciType: row.ci_type,
@@ -101,10 +102,11 @@ const AnalyticsQueryResolvers = {
   /**
    * Get CI counts by status
    */
-  getCICountsByStatus: async (): Promise<any[]> => {
+  getCICountsByStatus: async (_parent: any, _args: any, context: GraphQLContext): Promise<any[]> => {
+    const organizationId = requireGraphQLOrganization(context);
     try {
       const service = new AnalyticsService();
-      const results = await service.getCICountsByStatus();
+      const results = await service.getCICountsByStatus(organizationId);
 
       return results.map(row => ({
         _status: row.status,
@@ -124,10 +126,11 @@ const AnalyticsQueryResolvers = {
   /**
    * Get CI counts by environment
    */
-  getCICountsByEnvironment: async (): Promise<any[]> => {
+  getCICountsByEnvironment: async (_parent: any, _args: any, context: GraphQLContext): Promise<any[]> => {
+    const organizationId = requireGraphQLOrganization(context);
     try {
       const service = new AnalyticsService();
-      const results = await service.getCICountsByEnvironment();
+      const results = await service.getCICountsByEnvironment(organizationId);
 
       return results.map(row => ({
         _environment: row.environment,
@@ -147,10 +150,11 @@ const AnalyticsQueryResolvers = {
   /**
    * Get relationship counts by type
    */
-  getRelationshipCounts: async (): Promise<any[]> => {
+  getRelationshipCounts: async (_parent: any, _args: any, context: GraphQLContext): Promise<any[]> => {
+    const organizationId = requireGraphQLOrganization(context);
     try {
       const service = new AnalyticsService();
-      const results = await service.getRelationshipCounts();
+      const results = await service.getRelationshipCounts(organizationId);
 
       return results.map(row => ({
         _relationshipType: row.relationship_type,
@@ -172,14 +176,16 @@ const AnalyticsQueryResolvers = {
    */
   getDiscoveryStats: async (
     _parent: any,
-    args: { startDate?: string; endDate?: string }
+    args: { startDate?: string; endDate?: string },
+    context: GraphQLContext
   ): Promise<any> => {
+    const organizationId = requireGraphQLOrganization(context);
     try {
       const service = new AnalyticsService();
       const startDate = parseDate(args.startDate);
       const endDate = parseDate(args.endDate);
 
-      const results = await service.getDiscoveryStats(startDate, endDate);
+      const results = await service.getDiscoveryStats(organizationId, startDate, endDate);
 
       return {
         _summary: {
@@ -209,14 +215,16 @@ const AnalyticsQueryResolvers = {
    */
   getDiscoveryTimeline: async (
     _parent: any,
-    args: { interval?: string; limit?: number }
+    args: { interval?: string; limit?: number },
+    context: GraphQLContext
   ): Promise<any[]> => {
+    const organizationId = requireGraphQLOrganization(context);
     try {
       const service = new AnalyticsService();
       const interval = convertTimeInterval(args.interval);
       const limit = Math.min(args.limit || 30, 365);
 
-      const results = await service.getDiscoveryTimeline(interval, limit);
+      const results = await service.getDiscoveryTimeline(organizationId, interval, limit);
 
       return results.map(row => ({
         _period: row.period.toISOString(),
@@ -239,14 +247,16 @@ const AnalyticsQueryResolvers = {
    */
   getTopConnectedCIs: async (
     _parent: any,
-    args: { limit?: number; direction?: string }
+    args: { limit?: number; direction?: string },
+    context: GraphQLContext
   ): Promise<any[]> => {
+    const organizationId = requireGraphQLOrganization(context);
     try {
       const service = new AnalyticsService();
       const limit = Math.min(args.limit || 10, 100);
       const direction = convertRelationshipDirection(args.direction);
 
-      const results = await service.getTopConnectedCIs(limit, direction);
+      const results = await service.getTopConnectedCIs(organizationId, limit, direction);
 
       return results.map(row => ({
         _ciId: row.ci_id,
@@ -268,10 +278,11 @@ const AnalyticsQueryResolvers = {
   /**
    * Get dependency depth statistics
    */
-  getDependencyDepthStats: async (): Promise<any> => {
+  getDependencyDepthStats: async (_parent: any, _args: any, context: GraphQLContext): Promise<any> => {
+    const organizationId = requireGraphQLOrganization(context);
     try {
       const service = new AnalyticsService();
-      const results = await service.getDependencyDepthStats();
+      const results = await service.getDependencyDepthStats(organizationId);
 
       return {
         _topCis: results.top_cis.map(row => ({
@@ -303,6 +314,7 @@ const AnalyticsQueryResolvers = {
     args: { ciId: string; limit?: number },
     context: GraphQLContext
   ): Promise<any[]> => {
+    const organizationId = requireGraphQLOrganization(context);
     try {
       if (!args.ciId) {
         throw new GraphQLError('CI ID is required', {
@@ -313,7 +325,7 @@ const AnalyticsQueryResolvers = {
       const service = new AnalyticsService();
       const limit = Math.min(args.limit || 50, 1000);
 
-      const results = await service.getChangeHistory(args.ciId, requireGraphQLOrganization(context), limit);
+      const results = await service.getChangeHistory(args.ciId, organizationId, limit);
 
       return results.map(row => ({
         _changeTimestamp: row.change_timestamp.toISOString(),
@@ -375,10 +387,11 @@ const AnalyticsQueryResolvers = {
   /**
    * Get dashboard statistics
    */
-  getDashboardStats: async (): Promise<any> => {
+  getDashboardStats: async (_parent: any, _args: any, context: GraphQLContext): Promise<any> => {
+    const organizationId = requireGraphQLOrganization(context);
     try {
       const service = new AnalyticsService();
-      const results = await service.getDashboardStats();
+      const results = await service.getDashboardStats(organizationId);
 
       return {
         _summary: {
@@ -417,50 +430,10 @@ const AnalyticsQueryResolvers = {
   /**
    * Get CI health metrics (time-series)
    */
-  getCIHealthMetrics: async (
-    _parent: any,
-    args: { ciId: string; startTime: string; endTime: string; interval?: string }
-  ): Promise<any[]> => {
-    try {
-      if (!args.ciId) {
-        throw new GraphQLError('CI ID is required', {
-          extensions: { code: 'BAD_USER_INPUT' },
-        });
-      }
-
-      const startTime = parseDate(args.startTime);
-      const endTime = parseDate(args.endTime);
-
-      if (!startTime || !endTime) {
-        throw new GraphQLError('Start time and end time are required', {
-          extensions: { code: 'BAD_USER_INPUT' },
-        });
-      }
-
-      const service = new AnalyticsService();
-      const interval = convertMetricsInterval(args.interval);
-
-      const results = await service.getCIHealthMetrics(args.ciId, startTime, endTime, interval);
-
-      return results.map(row => ({
-        _timeBucket: row.time_bucket.toISOString(),
-        _avgCpu: row.avg_cpu ? parseFloat(String(row.avg_cpu)) : null,
-        _avgMemory: row.avg_memory ? parseFloat(String(row.avg_memory)) : null,
-        _avgDisk: row.avg_disk ? parseFloat(String(row.avg_disk)) : null,
-        _statusChanges: parseInt(String(row.status_changes)),
-      }));
-    } catch (error: any) {
-      logger.error('GraphQL: Error getting CI health metrics', error);
-      if (error instanceof GraphQLError) {
-        throw error;
-      }
-      throw new GraphQLError('Failed to retrieve CI health metrics', {
-        extensions: {
-          code: 'INTERNAL_SERVER_ERROR',
-          originalError: error.message,
-        },
-      });
-    }
+  getCIHealthMetrics: async (_parent: any, _args: any, context: GraphQLContext): Promise<any[]> => {
+    requireGraphQLOrganization(context);
+    // The legacy metrics_ci_health reader has no tenant/incarnation provenance.
+    throw new GraphQLError('Forbidden', { extensions: { code: 'FORBIDDEN' } });
   },
 
   /**
@@ -468,8 +441,10 @@ const AnalyticsQueryResolvers = {
    */
   getInventoryReport: async (
     _parent: any,
-    args: { filter?: { _type?: string; _status?: string; _environment?: string } }
+    args: { filter?: { _type?: string; _status?: string; _environment?: string } },
+    context: GraphQLContext
   ): Promise<any[]> => {
+    const organizationId = requireGraphQLOrganization(context);
     try {
       const service = new AnalyticsService();
       const filter = args.filter
@@ -480,7 +455,7 @@ const AnalyticsQueryResolvers = {
           }
         : undefined;
 
-      const results = await service.getInventoryReport(filter);
+      const results = await service.getInventoryReport(organizationId, filter);
 
       return results.map(row => ({
         _ciId: row.ci_id,

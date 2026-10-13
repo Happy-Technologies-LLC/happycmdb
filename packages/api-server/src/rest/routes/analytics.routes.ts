@@ -11,6 +11,8 @@ import { getAuthMiddleware } from '../../auth/auth-bootstrap';
 export const analyticsRoutes = Router();
 const controller = new AnalyticsController();
 const requireOrganization = getAuthMiddleware().requireOrganization();
+// No analytics read may reach a store without a validated identity organization.
+analyticsRoutes.use(requireOrganization);
 
 // Validation schemas
 const dateRangeSchema = Joi.object({
@@ -79,7 +81,6 @@ analyticsRoutes.get('/dependency-depth', controller.getDependencyDepthStats.bind
 // CI change history
 analyticsRoutes.get(
   '/change-history',
-  requireOrganization,
   validateOptional(changeHistorySchema, 'query'),
   controller.getChangeHistory.bind(controller)
 );
@@ -90,7 +91,6 @@ analyticsRoutes.get('/relationship-matrix', controller.getRelationshipMatrix.bin
 // Caller-organization change timeline (bounded date range)
 analyticsRoutes.get(
   '/change-timeline',
-  requireOrganization,
   validateOptional(dateRangeSchema, 'query'),
   controller.getChangeTimeline.bind(controller)
 );

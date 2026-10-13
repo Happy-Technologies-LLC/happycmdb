@@ -14,17 +14,17 @@ export class AnalyticsController {
    * Get CI count by type
    * GET /analytics/ci-counts
    */
-  async getCICountsByType(_req: Request, res: Response): Promise<void> {
+  async getCICountsByType(req: Request, res: Response): Promise<void> {
     try {
       const result = await this.postgresClient.query(`
         SELECT
           ci_type,
           COUNT(*) as count
         FROM cmdb.dim_ci
-        WHERE is_current = true
+        WHERE is_current = true AND organization_id = $1
         GROUP BY ci_type
         ORDER BY count DESC
-      `);
+      `, [requestOrganizationId(req)]);
 
       res.json({
         success: true,
@@ -44,17 +44,17 @@ export class AnalyticsController {
    * Get CI count by status
    * GET /analytics/ci-status
    */
-  async getCICountsByStatus(_req: Request, res: Response): Promise<void> {
+  async getCICountsByStatus(req: Request, res: Response): Promise<void> {
     try {
       const result = await this.postgresClient.query(`
         SELECT
           ci_status as status,
           COUNT(*) as count
         FROM cmdb.dim_ci
-        WHERE is_current = true
+        WHERE is_current = true AND organization_id = $1
         GROUP BY ci_status
         ORDER BY count DESC
-      `);
+      `, [requestOrganizationId(req)]);
 
       res.json({
         success: true,
@@ -74,17 +74,17 @@ export class AnalyticsController {
    * Get CI count by environment
    * GET /analytics/ci-environments
    */
-  async getCICountsByEnvironment(_req: Request, res: Response): Promise<void> {
+  async getCICountsByEnvironment(req: Request, res: Response): Promise<void> {
     try {
       const result = await this.postgresClient.query(`
         SELECT
           environment,
           COUNT(*) as count
         FROM cmdb.dim_ci
-        WHERE is_current = true AND environment IS NOT NULL
+        WHERE is_current = true AND environment IS NOT NULL AND organization_id = $1
         GROUP BY environment
         ORDER BY count DESC
-      `);
+      `, [requestOrganizationId(req)]);
 
       res.json({
         success: true,
@@ -104,16 +104,18 @@ export class AnalyticsController {
    * Get relationship count by type
    * GET /analytics/relationship-counts
    */
-  async getRelationshipCounts(_req: Request, res: Response): Promise<void> {
+  async getRelationshipCounts(req: Request, res: Response): Promise<void> {
     try {
       const result = await this.postgresClient.query(`
-        SELECT
-          relationship_type,
-          COUNT(*) as count
-        FROM cmdb.fact_ci_relationships
-        GROUP BY relationship_type
+        SELECT r.relationship_type, COUNT(*) as count
+        FROM cmdb.fact_ci_relationships r
+        JOIN cmdb.dim_ci sc ON sc.ci_key = r.from_ci_key
+        JOIN cmdb.dim_ci tc ON tc.ci_key = r.to_ci_key
+        WHERE sc.is_current AND tc.is_current
+          AND sc.organization_id = $1 AND tc.organization_id = $1
+        GROUP BY r.relationship_type
         ORDER BY count DESC
-      `);
+      `, [requestOrganizationId(req)]);
 
       res.json({
         success: true,
@@ -138,7 +140,7 @@ export class AnalyticsController {
       const { start_date, end_date } = req.query;
 
       let dateFilter = '';
-      const params: unknown[] = [];
+      const params: unknown[] = [requestOrganizationId(req)];
 
       if (start_date) {
         params.push(start_date);
@@ -159,7 +161,7 @@ export class AnalyticsController {
           MAX(f.discovered_at) as last_discovery
         FROM cmdb.fact_discovery f
         INNER JOIN cmdb.dim_ci c ON f.ci_key = c.ci_key
-        WHERE c.is_current = true ${dateFilter}
+        WHERE c.is_current = true AND c.organization_id = $1 ${dateFilter}
         `,
         params
       );
@@ -171,7 +173,7 @@ export class AnalyticsController {
           COUNT(*) as count
         FROM cmdb.fact_discovery f
         INNER JOIN cmdb.dim_ci c ON f.ci_key = c.ci_key
-        WHERE c.is_current = true AND f.discovery_provider IS NOT NULL ${dateFilter}
+        WHERE c.is_current = true AND c.organization_id = $1 AND f.discovery_provider IS NOT NULL ${dateFilter}
         GROUP BY f.discovery_provider
         ORDER BY count DESC
         `,
@@ -220,6 +222,7 @@ export class AnalyticsController {
 
       const limitNum = Math.min(parseInt(String(limit)), 365);
 
+      const organizationId = requestOrganizationId(req);
       const result = await this.postgresClient.query(
         `
         SELECT
@@ -228,12 +231,12 @@ export class AnalyticsController {
           COUNT(DISTINCT c.ci_type) as unique_types
         FROM cmdb.fact_discovery f
         INNER JOIN cmdb.dim_ci c ON f.ci_key = c.ci_key
-        WHERE c.is_current = true
+        WHERE c.is_current = true AND c.organization_id = $3
         GROUP BY period
         ORDER BY period DESC
         LIMIT $2
         `,
-        [interval, limitNum]
+        [interval, limitNum, organizationId]
       );
 
       res.json({
@@ -261,53 +264,29 @@ export class AnalyticsController {
 
       const limitNum = Math.min(parseInt(String(limit)), 100);
 
-      let query = '';
-      if (direction === 'in') {
-        query = `
-          SELECT
-            c.ci_id,
-            c.ci_name,
-            c.ci_type,
-            COUNT(r.relationship_key) as relationship_count
-          FROM cmdb.dim_ci c
-          JOIN cmdb.fact_ci_relationships r ON c.ci_key = r.to_ci_key
-          WHERE c.is_current = true
-          GROUP BY c.ci_id, c.ci_name, c.ci_type
-          ORDER BY relationship_count DESC
-          LIMIT $1
-        `;
-      } else if (direction === 'out') {
-        query = `
-          SELECT
-            c.ci_id,
-            c.ci_name,
-            c.ci_type,
-            COUNT(r.relationship_key) as relationship_count
-          FROM cmdb.dim_ci c
-          JOIN cmdb.fact_ci_relationships r ON c.ci_key = r.from_ci_key
-          WHERE c.is_current = true
-          GROUP BY c.ci_id, c.ci_name, c.ci_type
-          ORDER BY relationship_count DESC
-          LIMIT $1
-        `;
-      } else {
-        query = `
-          SELECT
-            c.ci_id,
-            c.ci_name,
-            c.ci_type,
-            COUNT(DISTINCT r1.relationship_key) + COUNT(DISTINCT r2.relationship_key) as relationship_count
-          FROM cmdb.dim_ci c
-          LEFT JOIN cmdb.fact_ci_relationships r1 ON c.ci_key = r1.from_ci_key
-          LEFT JOIN cmdb.fact_ci_relationships r2 ON c.ci_key = r2.to_ci_key
-          WHERE c.is_current = true
-          GROUP BY c.ci_id, c.ci_name, c.ci_type
-          ORDER BY relationship_count DESC
-          LIMIT $1
-        `;
-      }
-
-      const result = await this.postgresClient.query(query, [limitNum]);
+      // Both endpoints must belong to the caller; a cross-tenant edge is not
+      // part of either organization's analytics.
+      const tenantRelationships = `
+        SELECT r.* FROM cmdb.fact_ci_relationships r
+        JOIN cmdb.dim_ci source ON source.ci_key = r.from_ci_key
+        JOIN cmdb.dim_ci target ON target.ci_key = r.to_ci_key
+        WHERE source.is_current AND target.is_current
+          AND source.organization_id = $2 AND target.organization_id = $2
+      `;
+      const edge = direction === 'in' ? 'r.to_ci_key = c.ci_key'
+        : direction === 'out' ? 'r.from_ci_key = c.ci_key'
+        : '(r.from_ci_key = c.ci_key OR r.to_ci_key = c.ci_key)';
+      const result = await this.postgresClient.query(`
+        WITH tenant_relationships AS (${tenantRelationships})
+        SELECT c.ci_id, c.ci_name, c.ci_type,
+          COUNT(r.relationship_key) AS relationship_count
+        FROM cmdb.dim_ci c
+        LEFT JOIN tenant_relationships r ON ${edge}
+        WHERE c.is_current AND c.organization_id = $2
+        GROUP BY c.ci_key, c.ci_id, c.ci_name, c.ci_type
+        ORDER BY relationship_count DESC
+        LIMIT $1
+      `, [limitNum, requestOrganizationId(req)]);
 
       res.json({
         success: true,
@@ -328,25 +307,25 @@ export class AnalyticsController {
    * Get dependency depth statistics
    * GET /analytics/dependency-depth
    */
-  async getDependencyDepthStats(_req: Request, res: Response): Promise<void> {
+  async getDependencyDepthStats(req: Request, res: Response): Promise<void> {
     try {
       const result = await this.postgresClient.query(`
-        WITH RECURSIVE dependency_depth AS (
-          SELECT
-            from_ci_key as ci_key,
-            to_ci_key as to_ci_key,
-            1 as depth
-          FROM cmdb.fact_ci_relationships
+        WITH RECURSIVE tenant_relationships AS (
+          SELECT r.* FROM cmdb.fact_ci_relationships r
+          JOIN cmdb.dim_ci sc ON sc.ci_key = r.from_ci_key
+          JOIN cmdb.dim_ci tc ON tc.ci_key = r.to_ci_key
+          WHERE sc.is_current AND tc.is_current
+            AND sc.organization_id = $1 AND tc.organization_id = $1
+        ), dependency_depth AS (
+          SELECT from_ci_key as ci_key, to_ci_key, 1 as depth
+          FROM tenant_relationships
           WHERE relationship_type = 'DEPENDS_ON'
 
           UNION ALL
 
-          SELECT
-            dd.ci_key,
-            r.to_ci_key,
-            dd.depth + 1
+          SELECT dd.ci_key, r.to_ci_key, dd.depth + 1
           FROM dependency_depth dd
-          JOIN cmdb.fact_ci_relationships r ON dd.to_ci_key = r.from_ci_key
+          JOIN tenant_relationships r ON dd.to_ci_key = r.from_ci_key
           WHERE r.relationship_type = 'DEPENDS_ON' AND dd.depth < 10
         ),
         depth_summary AS (
@@ -363,28 +342,28 @@ export class AnalyticsController {
           ds.total_dependencies
         FROM depth_summary ds
         JOIN cmdb.dim_ci c ON c.ci_key = ds.ci_key
-        WHERE c.is_current = true
+        WHERE c.is_current = true AND c.organization_id = $1
         ORDER BY ds.max_depth DESC
         LIMIT 100
-      `);
+      `, [requestOrganizationId(req)]);
 
       const depthDistribution = await this.postgresClient.query(`
-        WITH RECURSIVE dependency_depth AS (
-          SELECT
-            from_ci_key as ci_key,
-            to_ci_key as to_ci_key,
-            1 as depth
-          FROM cmdb.fact_ci_relationships
+        WITH RECURSIVE tenant_relationships AS (
+          SELECT r.* FROM cmdb.fact_ci_relationships r
+          JOIN cmdb.dim_ci sc ON sc.ci_key = r.from_ci_key
+          JOIN cmdb.dim_ci tc ON tc.ci_key = r.to_ci_key
+          WHERE sc.is_current AND tc.is_current
+            AND sc.organization_id = $1 AND tc.organization_id = $1
+        ), dependency_depth AS (
+          SELECT from_ci_key as ci_key, to_ci_key, 1 as depth
+          FROM tenant_relationships
           WHERE relationship_type = 'DEPENDS_ON'
 
           UNION ALL
 
-          SELECT
-            dd.ci_key,
-            r.to_ci_key,
-            dd.depth + 1
+          SELECT dd.ci_key, r.to_ci_key, dd.depth + 1
           FROM dependency_depth dd
-          JOIN cmdb.fact_ci_relationships r ON dd.to_ci_key = r.from_ci_key
+          JOIN tenant_relationships r ON dd.to_ci_key = r.from_ci_key
           WHERE r.relationship_type = 'DEPENDS_ON' AND dd.depth < 10
         ),
         max_depths AS (
@@ -400,7 +379,7 @@ export class AnalyticsController {
         FROM max_depths
         GROUP BY max_depth
         ORDER BY max_depth
-      `);
+      `, [requestOrganizationId(req)]);
 
       res.json({
         success: true,
@@ -519,7 +498,7 @@ export class AnalyticsController {
    * Get relationship type matrix (source CI type x target CI type x relationship type)
    * GET /analytics/relationship-matrix
    */
-  async getRelationshipMatrix(_req: Request, res: Response): Promise<void> {
+  async getRelationshipMatrix(req: Request, res: Response): Promise<void> {
     try {
       const result = await this.postgresClient.query(`
         SELECT
@@ -531,9 +510,10 @@ export class AnalyticsController {
         JOIN cmdb.dim_ci sc ON r.from_ci_key = sc.ci_key
         JOIN cmdb.dim_ci tc ON r.to_ci_key = tc.ci_key
         WHERE sc.is_current = true AND tc.is_current = true AND r.is_active = true
+          AND sc.organization_id = $1 AND tc.organization_id = $1
         GROUP BY sc.ci_type, tc.ci_type, r.relationship_type
         ORDER BY count DESC
-      `);
+      `, [requestOrganizationId(req)]);
 
       res.json({
         success: true,
@@ -608,101 +588,60 @@ export class AnalyticsController {
    * (default last 7 days, max 90 days)
    * GET /analytics/health-metrics/:ciId
    */
-  async getHealthMetrics(req: Request, res: Response): Promise<void> {
-    try {
-      const { ciId } = req.params;
-      const { start_date, end_date } = req.query;
-
-      const range = this.resolveDateRange(start_date, end_date, 7, 90);
-      if ('error' in range) {
-        res.status(400).json({
-          success: false,
-          error: 'Bad Request',
-          message: range.error,
-        });
-        return;
-      }
-
-      const result = await this.postgresClient.query(
-        `
-        SELECT
-          detected_at as timestamp,
-          status,
-          (metrics->>'cpu_usage')::numeric as cpu_usage,
-          (metrics->>'memory_usage')::numeric as memory_usage,
-          (metrics->>'disk_usage')::numeric as disk_usage,
-          (metrics->>'network_latency')::numeric as network_latency
-        FROM anomalies
-        WHERE ci_id = $1 AND detected_at >= $2 AND detected_at <= $3
-        ORDER BY detected_at ASC
-        LIMIT 1000
-        `,
-        [ciId, range.startDate.toISOString(), range.endDate.toISOString()]
-      );
-
-      res.json({
-        success: true,
-        data: result.rows,
-        ci_id: ciId,
-        filters: {
-          start_date: range.startDate.toISOString(),
-          end_date: range.endDate.toISOString(),
-        },
-      });
-    } catch (error) {
-      logger.error('Error getting health metrics', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to retrieve health metrics',
-        message: error instanceof Error ? error.message : 'Unknown error',
-      });
-    }
+  async getHealthMetrics(_req: Request, res: Response): Promise<void> {
+    // anomalies has only ci_id, no tenant or incarnation provenance. A graph
+    // ownership check cannot attribute rows after an ID is reused.
+    res.status(403).json({ success: false, error: 'Forbidden' });
   }
 
   /**
    * Get dashboard summary statistics
    * GET /analytics/dashboard
    */
-  async getDashboardStats(_req: Request, res: Response): Promise<void> {
+  async getDashboardStats(req: Request, res: Response): Promise<void> {
+    const organizationId = requestOrganizationId(req);
     const session = this.neo4jClient.getSession();
     try {
-      // Get overall counts from Neo4j
       const ciCountsResult = await session.run(`
         MATCH (ci:CI)
+        WHERE ci.organization_id = $organizationId
         RETURN
           COUNT(ci) as total_cis,
           COUNT(DISTINCT ci.type) as unique_types,
           COUNT(DISTINCT ci.environment) as unique_environments
-      `);
-
+      `, { organizationId });
       const relationshipCountResult = await session.run(`
-        MATCH ()-[r]->()
+        MATCH (source:CI)-[r]->(target:CI)
+        WHERE source.organization_id = $organizationId AND target.organization_id = $organizationId
         RETURN COUNT(r) as total_relationships
-      `);
+      `, { organizationId });
 
       const byTypeResult = await session.run(`
         MATCH (ci:CI)
+        WHERE ci.organization_id = $organizationId
         RETURN ci.type as ci_type, COUNT(ci) as count
         ORDER BY count DESC
-      `);
+      `, { organizationId });
 
       const byStatusResult = await session.run(`
         MATCH (ci:CI)
+        WHERE ci.organization_id = $organizationId
         RETURN ci.status as status, COUNT(ci) as count
         ORDER BY count DESC
-      `);
+      `, { organizationId });
 
       const byEnvironmentResult = await session.run(`
         MATCH (ci:CI)
-        WHERE ci.environment IS NOT NULL
+        WHERE ci.organization_id = $organizationId AND ci.environment IS NOT NULL
         RETURN ci.environment as environment, COUNT(ci) as count
         ORDER BY count DESC
-      `);
+      `, { organizationId });
 
       // Get recent discoveries (last 10 CIs discovered by discovery workers)
       const recentDiscoveriesResult = await session.run(`
         MATCH (ci:CI)
-        WHERE ci.metadata CONTAINS 'discovery_provider'
+        WHERE ci.organization_id = $organizationId AND ci.metadata CONTAINS 'discovery_provider'
+        WITH ci ORDER BY ci.discovered_at DESC LIMIT 10
         RETURN ci {
           .id,
           .name,
@@ -711,9 +650,7 @@ export class AnalyticsController {
           .environment,
           last_discovered: ci.discovered_at
         } as ci
-        ORDER BY ci.discovered_at DESC
-        LIMIT 10
-      `);
+      `, { organizationId });
 
       // Transform arrays to Record<string, number>
       const byTypeMap = byTypeResult.records.reduce((acc: Record<string, number>, record: any) => {

@@ -737,6 +737,24 @@ it('fences future-dated A rows across real graph deletion and B ID collision, wh
   expect((await get(`/api/v1/itil/configuration-items/${id}/history`)).body.data).toMatchObject([{ change_type: 'FRESH_B' }]);
 });
 
+it('pages more than 512 real Neo4j CIs across organizations without truncating the system scan', async () => {
+  await run(`UNWIND range(0, 512) AS index
+    CREATE (:CI {id:'t3-global-page-' + toString(index), name:'page fixture',
+      organization_id: CASE WHEN index % 2 = 0 THEN $a ELSE $b END,
+      incarnation_id:randomUUID()})`, { a: A, b: B });
+  const scanned = new Set<string>();
+  let pages = 0;
+  for await (const page of graph.iterateUnscopedCIIncarnationPages()) {
+    pages++;
+    expect(page.length).toBeLessThanOrEqual(512);
+    for (const ci of page) {
+      if (ci.ciId.startsWith('t3-global-page-')) scanned.add(ci.ciId);
+    }
+  }
+  expect(pages).toBeGreaterThan(1);
+  expect(scanned.size).toBe(513);
+});
+
 it('rejects an identity without an organization before graph and SQL access', async () => {
   const poolQuery = jest.spyOn(sql.pool, 'query');
   const session = jest.spyOn(graph, 'getSession');

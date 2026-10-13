@@ -166,7 +166,10 @@ function run(rawCypher: string, params: Props = {}): FakeRecord[] {
   }
 
   if (cypher.startsWith('MATCH (ci:CI) WHERE') && cypher.includes('AS incarnationId')) {
-    return [...graph.nodes.values()].filter(ciInScope)
+    return [...graph.nodes.values()].filter(props => ciInScope(props)
+      && (params['afterId'] === undefined || (typeof props['organization_id'] === 'string'
+        && String(props['id']) > String(params['afterId']))))
+      .sort((a, b) => String(a['id']).localeCompare(String(b['id'])))
       .slice(0, num(params['rowLimit']))
       .map(props => record({ ciId: props['id'], incarnationId: props['incarnation_id'],
         ownerId: props['organization_id'], ciType: props['type'] }));
@@ -194,7 +197,7 @@ const fakeDriver = {
     // Plain functions (not jest.fn): the unit config resets mock implementations.
     run: async (cypher: string, params?: Props) => {
       queryCount++;
-      if (cypher.includes('AS incarnationId')) await holdIncarnationRead?.();
+      if (cypher.includes('AS incarnationId') && !cypher.includes('ci.id > $afterId')) await holdIncarnationRead?.();
       return { records: run(cypher, params) };
     },
     close: async () => undefined,
@@ -364,6 +367,37 @@ it('bounds simultaneous incarnation reads independently of incoming request conc
     await Promise.all(reads);
     await neo4jClient.listCIIncarnations(ORG_A);
     expect(queryCount).toBe(9);
+  } finally {
+    resolve();
+    holdIncarnationRead = undefined;
+  }
+});
+
+it('pages all organizations beyond 512 graph CIs without request admission or an unbounded result', async () => {
+  graph.nodes.clear();
+  for (let i = 0; i < 513; i++) seedCI(`ci-page-${String(i).padStart(4, '0')}`,
+    i % 2 ? ORG_A : ORG_B, { incarnation_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' });
+  const pages: string[][] = [];
+  for await (const page of neo4jClient.iterateUnscopedCIIncarnationPages()) {
+    pages.push(page.map(ci => ci.ciId));
+  }
+  expect(pages.map(page => page.length)).toEqual([512, 1]);
+  expect(new Set(pages.flat()).size).toBe(513);
+  expect(queryCount).toBe(2);
+  await expect(neo4jClient.listCIIncarnations(ORG_B)).resolves.toHaveLength(257);
+});
+
+it('does not let eight concurrent tenant analytics reads starve the background graph scan', async () => {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  holdIncarnationRead = () => promise;
+  try {
+    const requests = Array.from({ length: 8 }, () => neo4jClient.listCIIncarnations(ORG_A));
+    const pages = [];
+    for await (const page of neo4jClient.iterateUnscopedCIIncarnationPages()) pages.push(page);
+    expect(pages.flat()).toEqual([]);
+    expect(queryCount).toBe(9);
+    resolve();
+    await Promise.all(requests);
   } finally {
     resolve();
     holdIncarnationRead = undefined;

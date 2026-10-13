@@ -53,16 +53,22 @@ http://localhost:3000/api-docs/openapi.yaml
 - `GET /cis/{id}/impact` - Impact analysis
 - `GET /cis/{id}/audit` - Audit history
 
-REST/GraphQL CI deletion shares Neo4j `deleteCI`: after graph deletion it
-deletes `baseline_snapshots`, `drift_detection_results`, `impact_analyses`,
-`ci_criticality_scores`, and `ci_change_history` in one PostgreSQL transaction.
-Neo4j and PostgreSQL **cannot commit atomically**. Derived reads compare each
-row's timestamp to the graph CI's immutable creation epoch, hiding rows from a
-former incarnation even if SQL cleanup fails. A graph CI without a valid
-creation epoch cannot read legacy derived rows. A dark, Nick-run purge needs
-separate approval: enumerate affected graph IDs and stale SQL rows offline,
-review a dry-run count, then authorize targeted deletion; this PR does not
-execute or schedule a purge.
+REST/GraphQL CI deletion shares Neo4j `deleteCI`. The graph deletion captures
+the deleted CI's immutable `incarnation_id`; best-effort PostgreSQL cleanup
+deletes only rows for that UUID or unmarked legacy rows in `baseline_snapshots`,
+`drift_detection_results`, `impact_analyses`, `ci_criticality_scores`, and
+`ci_change_history`. A new CI reusing the ID retains its own marked rows.
+Neo4j and PostgreSQL **cannot commit atomically**: once graph deletion commits,
+the API reports success even if SQL cleanup fails and logs
+`CI_DERIVED_PURGE_FAILED` without row data. Derived reads require an exact match
+to the current tenant-owned graph CI's UUID; NULL legacy SQL markers and rows
+from former incarnations fail closed regardless of timestamps. A legacy graph
+CI gets a UUID only on its next owner-scoped derived write; old SQL rows are
+never backfilled. Migration `025_ci_derived_incarnation.sql` is source-only
+until the separately approved fresh-database staging window for 001–025.
+A dark, Nick-run purge needs separate approval, offline affected-ID and stale-row
+enumeration, and reviewed tenant-by-tenant dry-run counts. This PR does not
+execute or schedule a live purge, backfill, or direct staging migration.
 
 ### Relationships (`/api/v1/relationships`)
 - `GET /relationships` - List relationships

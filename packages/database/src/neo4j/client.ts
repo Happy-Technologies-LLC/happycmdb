@@ -332,6 +332,49 @@ export class Neo4jClient {
     }
   }
 
+  /**
+   * System anomaly scans consume every organization in bounded keyset pages.
+   * This does not share request analytics admission: tenant traffic cannot
+   * suppress a scheduled scan by filling the request concurrency slots.
+   */
+  async *iterateUnscopedCIIncarnationPages(): AsyncGenerator<Array<{
+    ciId: string; incarnationId: string; organizationId: string; ciType: string | null
+  }>> {
+    let afterId = '';
+    while (true) {
+      const session = this.getSession();
+      let records: Array<{ get(key: string): unknown }>;
+      try {
+        const result = await session.run(
+          `MATCH (ci:CI)
+           WHERE ci.id > $afterId AND ci.organization_id IS NOT NULL
+           RETURN ci.id AS ciId, ci.incarnation_id AS incarnationId, ci.organization_id AS ownerId,
+                  coalesce(ci.type, ci.ci_type) AS ciType
+           ORDER BY ci.id
+           LIMIT $rowLimit`,
+          { afterId, rowLimit: neo4j.int(MAX_CI_ANALYTICS_NODES) },
+          { timeout: 5000 }
+        );
+        records = result.records;
+      } finally {
+        await session.close();
+      }
+      if (records.length === 0) return;
+      afterId = records[records.length - 1]!.get('ciId') as string;
+      const incarnations: Array<{ ciId: string; incarnationId: string; organizationId: string; ciType: string | null }> = [];
+      for (const record of records) {
+        const incarnationId = ciIncarnationId(record.get('incarnationId') as string | null);
+        const ownerId = record.get('ownerId');
+        if (incarnationId && typeof ownerId === 'string') {
+          incarnations.push({ ciId: record.get('ciId') as string, incarnationId,
+            organizationId: ownerId, ciType: record.get('ciType') as string | null });
+        }
+      }
+      if (incarnations.length > 0) yield incarnations;
+      if (records.length < MAX_CI_ANALYTICS_NODES) return;
+    }
+  }
+
   async updateCI(id: string, updates: Partial<CIInput>, scope: CIOrganizationScope): Promise<CI> {
     const organizationId = organizationIdParam(scope);
     const session = this.getSession();

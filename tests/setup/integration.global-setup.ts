@@ -174,8 +174,8 @@ async function loadPostgresSchema(container: StartedTestContainer): Promise<void
     const target = `/tmp/${file}`;
     await container.copyContentToContainer([{ content: sql, target }]);
     // Earlier migrations include legacy non-fatal Timescale notices. S1 and
-    // HAP-630 ACLs must fail the hosted suite on any SQL error.
-    const guarded = /^0(28|29|30|31|32)_/.test(file);
+    // HAP-630/HAP-644 ACLs must fail the hosted suite on any SQL error.
+    const guarded = /^0(28|29|30|31|32|33)_/.test(file);
     const load = await container.exec([
       'psql', '-v', `ON_ERROR_STOP=${guarded ? '1' : '0'}`,
       ...(guarded ? ['-1'] : []),

@@ -61,7 +61,6 @@ BEGIN
       'public.v_service_dependency_graph', 'public.v_itil_incident_summary',
       'public.v_itil_change_summary', 'public.v_tbm_cost_pool_summary',
       'public.v_tbm_depreciation_tracking', 'public.v_unified_service_health',
-      'public.v_business_service_health',
       'cmdb.v_ci_discovery_summary',
       'public.v_criticality_distribution', 'public.v_revenue_at_risk',
       'public.v_compliance_summary', 'public.v_sox_pci_inventory',
@@ -85,6 +84,18 @@ BEGIN
             EXECUTE format('GRANT SELECT ON %s TO metabase_readonly', name);
         END IF;
     END LOOP;
+END
+$bi$;
+
+-- FD-6 health reporting is parameterized; the unfiltered view is private.
+-- 033 installs the definer boundary when the service schema exists.
+DO $bi$
+BEGIN
+    IF to_regprocedure('cmdb.fn_business_service_health(uuid)') IS NOT NULL
+       AND (SELECT p.prosecdef FROM pg_proc p
+            WHERE p.oid = to_regprocedure('cmdb.fn_business_service_health(uuid)')) THEN
+        GRANT EXECUTE ON FUNCTION cmdb.fn_business_service_health(uuid) TO metabase_readonly;
+    END IF;
 END
 $bi$;
 

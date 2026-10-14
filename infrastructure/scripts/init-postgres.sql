@@ -1686,17 +1686,41 @@ VALUES (
 -- Grant usage on schemas
 GRANT USAGE ON SCHEMA cmdb TO PUBLIC;
 
--- Grant select on all tables in cmdb schema
-GRANT SELECT ON ALL TABLES IN SCHEMA cmdb TO PUBLIC;
+-- Sensitive CI metadata and change payloads are never PUBLIC-readable.
+-- Keep the audit-safe discovery aggregate readable; app owner retains access.
+REVOKE SELECT ON ALL TABLES IN SCHEMA cmdb FROM PUBLIC;
+DO $acl$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'cmdb_user') THEN
+    GRANT SELECT ON ALL TABLES IN SCHEMA cmdb TO cmdb_user;
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'metabase_readonly') THEN
+    REVOKE SELECT ON ALL TABLES IN SCHEMA cmdb FROM metabase_readonly;
+    GRANT SELECT ON cmdb.v_ci_discovery_summary TO metabase_readonly;
+  END IF;
+END
+$acl$;
 
 -- Grant usage on sequences
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA cmdb TO PUBLIC;
 
--- Grant permissions on public schema tables
-GRANT SELECT ON audit_log TO PUBLIC;
+-- Public audit aggregates are redacted; raw payload/IP/UA and detailed
+-- field-change views belong to the application owner only.
+REVOKE ALL ON audit_log, v_ci_change_history_audit FROM PUBLIC;
+DO $acl$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'cmdb_user') THEN
+    GRANT SELECT, INSERT ON audit_log TO cmdb_user;
+    GRANT SELECT ON v_ci_change_history_audit TO cmdb_user;
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'metabase_readonly') THEN
+    REVOKE ALL ON audit_log, v_ci_change_history_audit FROM metabase_readonly;
+  END IF;
+END
+$acl$;
 GRANT SELECT ON recent_audit_activity TO PUBLIC;
 GRANT SELECT ON ci_change_history TO PUBLIC;
-GRANT SELECT ON v_ci_change_history_audit TO PUBLIC;
+-- v_ci_change_history_audit is deliberately excluded: it includes changes.
 -- The table owner retains auth/discovery writes. Never expose credential-linked
 -- configuration or credential-derived views through the historical PUBLIC ACL.
 REVOKE ALL ON api_keys, credentials, credential_sets, discovery_definitions,

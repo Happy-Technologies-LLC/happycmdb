@@ -66,6 +66,34 @@ async function deniedPrivileges(pool: Pool, role: string) {
   }
 }
 
+async function appOperations(pool: Pool, role?: string) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    if (role) await client.query(`SET LOCAL ROLE ${role}`);
+    const key = await client.query(`INSERT INTO api_keys (user_id, key_hash, name, role)
+      VALUES ('hap630', repeat('a', 64), 'test', 'agent') RETURNING id`);
+    const credential = await client.query(`INSERT INTO credentials
+      (name, protocol, scope, credentials, created_by)
+      VALUES ('hap630', 'api_key', 'api', '{"key":"disposable"}', 'hap630') RETURNING id`);
+    const set = await client.query(`INSERT INTO credential_sets (name, credential_ids, created_by)
+      VALUES ('hap630', ARRAY[$1]::uuid[], 'hap630') RETURNING id`, [credential.rows[0].id]);
+    await client.query('UPDATE api_keys SET last_used_at = now() WHERE id = $1', [key.rows[0].id]);
+    await client.query('UPDATE credentials SET validation_status = $1 WHERE id = $2',
+      ['valid', credential.rows[0].id]);
+    expect((await client.query('SELECT credentials FROM credentials WHERE id = $1',
+      [credential.rows[0].id])).rows[0].credentials.key).toBe('disposable');
+    expect((await client.query('SELECT id FROM credential_summaries WHERE id = $1',
+      [credential.rows[0].id])).rows[0].id).toBe(credential.rows[0].id);
+    await client.query('DELETE FROM credential_sets WHERE id = $1', [set.rows[0].id]);
+    await client.query('DELETE FROM credentials WHERE id = $1', [credential.rows[0].id]);
+    await client.query('DELETE FROM api_keys WHERE id = $1', [key.rows[0].id]);
+  } finally {
+    await client.query('ROLLBACK');
+    client.release();
+  }
+}
+
 if (process.env['HAP630_ACCEPTANCE'] !== '1') {
   it.skip('HAP-630 runs in its isolated hosted real-store job', () => {});
 }
@@ -76,11 +104,12 @@ if (process.env['HAP630_ACCEPTANCE'] === '1') {
     await db.query('CREATE ROLE hap630_nonowner LOGIN');
     await db.query('GRANT USAGE ON SCHEMA public TO hap630_nonowner');
     await db.query('CREATE ROLE metabase_readonly LOGIN');
+    await db.query('CREATE ROLE cmdb_user LOGIN');
   });
   afterAll(async () => {
     if (!db) return;
-    await db.query('DROP OWNED BY hap630_nonowner, metabase_readonly');
-    await db.query('DROP ROLE hap630_nonowner, metabase_readonly');
+    await db.query('DROP OWNED BY hap630_nonowner, metabase_readonly, cmdb_user');
+    await db.query('DROP ROLE hap630_nonowner, metabase_readonly, cmdb_user');
     await db.end();
   });
 
@@ -93,28 +122,7 @@ if (process.env['HAP630_ACCEPTANCE'] === '1') {
     describe('HAP-630 effective privileges', () => {
       it('migrator-built schema denies a new non-owner; owner still operates credentials and API keys', async () => {
         await deniedPrivileges(db, 'hap630_nonowner');
-        const client = await db.connect();
-        try {
-          await client.query('BEGIN');
-          const key = await client.query(`INSERT INTO api_keys (user_id, key_hash, name, role)
-            VALUES ('hap630', repeat('a', 64), 'test', 'agent') RETURNING id`);
-          const credential = await client.query(`INSERT INTO credentials
-            (name, protocol, scope, credentials, created_by)
-            VALUES ('hap630', 'api_key', 'api', '{"key":"disposable"}', 'hap630') RETURNING id`);
-          const set = await client.query(`INSERT INTO credential_sets (name, credential_ids, created_by)
-            VALUES ('hap630', ARRAY[$1]::uuid[], 'hap630') RETURNING id`, [credential.rows[0].id]);
-          await client.query('UPDATE api_keys SET last_used_at = now() WHERE id = $1', [key.rows[0].id]);
-          await client.query('UPDATE credentials SET validation_status = $1 WHERE id = $2',
-            ['valid', credential.rows[0].id]);
-          expect((await client.query('SELECT credentials FROM credentials WHERE id = $1',
-            [credential.rows[0].id])).rows[0].credentials.key).toBe('disposable');
-          await client.query('DELETE FROM credential_sets WHERE id = $1', [set.rows[0].id]);
-          await client.query('DELETE FROM credentials WHERE id = $1', [credential.rows[0].id]);
-          await client.query('DELETE FROM api_keys WHERE id = $1', [key.rows[0].id]);
-        } finally {
-          await client.query('ROLLBACK');
-          client.release();
-        }
+        await appOperations(db);
       });
 
       it('fresh initdb and both BI initialization orders never regrant secrets or S1 private tables', async () => {
@@ -124,12 +132,13 @@ if (process.env['HAP630_ACCEPTANCE'] === '1') {
           await db.query(`CREATE DATABASE ${database}`);
           const fresh = poolFor(database);
           try {
-            await fresh.query('GRANT USAGE ON SCHEMA public TO hap630_nonowner, metabase_readonly');
+            await fresh.query('GRANT USAGE ON SCHEMA public TO hap630_nonowner, metabase_readonly, cmdb_user');
             // Previous bootstrap default grants may predate the fresh initializer.
             if (!biBeforeMigration) await fresh.query(`ALTER DEFAULT PRIVILEGES IN SCHEMA public
               GRANT SELECT ON TABLES TO metabase_readonly`);
             await fresh.query(initSql);
             await deniedPrivileges(fresh, 'hap630_nonowner');
+            await appOperations(fresh, 'cmdb_user');
             if (biBeforeMigration) {
               // Model an already-provisioned legacy BI reader on an existing DB.
               await fresh.query('GRANT SELECT ON ALL TABLES IN SCHEMA public TO metabase_readonly');
@@ -152,6 +161,7 @@ if (process.env['HAP630_ACCEPTANCE'] === '1') {
               await asRole(fresh, 'metabase_readonly', `SELECT * FROM ${view} LIMIT 1`, false);
             }
             await deniedPrivileges(fresh, 'metabase_readonly');
+            await appOperations(fresh, 'cmdb_user');
             await fresh.query('CREATE TABLE public.hap630_future_probe (id int)');
             const future = await fresh.query(`SELECT has_table_privilege(
               'metabase_readonly', 'public.hap630_future_probe', 'SELECT') AS allowed`);

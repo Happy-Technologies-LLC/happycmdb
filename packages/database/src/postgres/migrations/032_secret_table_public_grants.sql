@@ -11,6 +11,7 @@ DECLARE
   default_acl record;
   name text;
   kind "char";
+  expected_kind "char";
 BEGIN
   PERFORM set_config('lock_timeout', '5s', true);
   PERFORM set_config('statement_timeout', '10s', true);
@@ -22,9 +23,12 @@ BEGIN
   ] LOOP
     SELECT c.relkind INTO kind FROM pg_class c
       WHERE c.oid = to_regclass(format('public.%I', name));
-    IF kind IS DISTINCT FROM CASE WHEN name IN ('active_api_keys', 'credential_summaries',
-        'credential_set_summaries', 'discovery_definitions_with_credentials')
-      THEN 'v'::"char" ELSE 'r'::"char" END THEN
+    expected_kind := 'r';
+    IF name IN ('active_api_keys', 'credential_summaries',
+        'credential_set_summaries', 'discovery_definitions_with_credentials') THEN
+      expected_kind := 'v';
+    END IF;
+    IF kind IS DISTINCT FROM expected_kind THEN
       RAISE EXCEPTION '032 expected public.% to be a table or view of the audited kind', name;
     END IF;
     EXECUTE format('REVOKE ALL ON public.%I FROM PUBLIC', name);

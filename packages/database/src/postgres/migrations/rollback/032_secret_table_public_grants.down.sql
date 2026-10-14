@@ -11,6 +11,7 @@ DO $acl$
 DECLARE
   name text;
   kind "char";
+  expected_kind "char";
 BEGIN
   IF to_regclass('cmdb.schema_migrations') IS NULL THEN
     RAISE EXCEPTION '032 down requires its migration ledger row';
@@ -27,9 +28,12 @@ BEGIN
   ] LOOP
     SELECT c.relkind INTO kind FROM pg_class c
       WHERE c.oid = to_regclass(format('public.%I', name));
-    IF kind IS DISTINCT FROM CASE WHEN name IN ('active_api_keys', 'credential_summaries',
-        'credential_set_summaries', 'discovery_definitions_with_credentials')
-      THEN 'v'::"char" ELSE 'r'::"char" END THEN
+    expected_kind := 'r';
+    IF name IN ('active_api_keys', 'credential_summaries',
+        'credential_set_summaries', 'discovery_definitions_with_credentials') THEN
+      expected_kind := 'v';
+    END IF;
+    IF kind IS DISTINCT FROM expected_kind THEN
       RAISE EXCEPTION '032 down wrong or missing public.% relation', name;
     END IF;
   END LOOP;

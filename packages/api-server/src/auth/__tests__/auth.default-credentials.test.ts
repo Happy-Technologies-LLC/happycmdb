@@ -314,6 +314,22 @@ describe('N-21 (i) login race: a rotation committing during login yields no usab
 
     await expect(service.login({ username: 'u', password: OPERATOR_PASSWORD })).rejects.toMatchObject(INVALID);
   });
+
+  it('with the post-bcrypt re-check disabled (seam), the minted token carries _cep = 0 and is refused on first use', async () => {
+    repository.users.set('u', user('u', { _passwordHash: operatorHash }));
+    // Seam: the re-check reads the pre-rotation snapshot while the rotation commits underneath it.
+    jest.spyOn(repository, 'findUserById').mockImplementationOnce(async id => {
+      const stale = { ...repository.users.get(id)! };
+      repository.rotate(id, operatorHash);
+      return stale;
+    });
+
+    const minted = await service.login({ username: 'u', password: OPERATOR_PASSWORD });
+
+    expect(jwt.verifyToken(minted._accessToken)._cep).toBe(0);
+    await expect(service.verifyToken(minted._accessToken)).rejects.toMatchObject({ reason: 'revoked' });
+    await expect(service.refreshToken({ refreshToken: minted._refreshToken })).rejects.toMatchObject({ reason: 'revoked' });
+  });
 });
 
 describe('N-21 (h5) in-flight self-service writes across a live rotation (SEC16-01)', () => {
@@ -368,26 +384,41 @@ describe('N-21 new-password rules (every environment)', () => {
 });
 
 describe('N-21 SEC12-02: per-request paths never run bcrypt; a non-bcrypt hash is a plain refusal', () => {
-  it('verifyToken, refreshToken and verifyApiKey make zero bcrypt calls', async () => {
-    repository.users.set('u', user('u', { _passwordHash: operatorHash }));
-    const login = await service.login({ username: 'u', password: OPERATOR_PASSWORD });
-    const key = await addKey('u', 0);
+  it('5 000 users × 10 requests (verifyToken, refreshToken, verifyApiKey), then a process restart: zero bcrypt calls', async () => {
+    const users = Array.from({ length: 5000 }, (_, i) => `scale-${i}`);
+    for (const id of users) repository.users.set(id, user(id, { _passwordHash: operatorHash }));
+    const credentials = await Promise.all(users.map(async id => ({
+      access: jwt.generateAccessToken(id, id, 'admin', ORG_A, 0),
+      refresh: jwt.generateRefreshToken(id, id, 'admin', 0),
+      key: await addKey(id, 0),
+    })));
     const compare = jest.spyOn(PasswordService.prototype, 'verify');
     const hash = jest.spyOn(PasswordService.prototype, 'hash');
+    let requests = 0;
+    const burst = async (target: AuthService) => {
+      for (const { access, refresh, key } of credentials) {
+        for (let i = 0; i < 8; i++) await target.verifyToken(access);
+        await target.refreshToken({ refreshToken: refresh });
+        await target.verifyApiKey(key);
+        requests += 10;
+      }
+    };
 
-    await service.verifyToken(login._accessToken);
-    await service.refreshToken({ refreshToken: login._refreshToken });
-    await service.verifyApiKey(key);
+    await burst(service);
+    await burst(new AuthService(authConfig, repository)); // a fresh process: no warm state
 
+    expect(requests).toBe(100_000);
     expect(compare).not.toHaveBeenCalled();
     expect(hash).not.toHaveBeenCalled();
-  });
+  }, 120_000);
 
   it.each([['missing', undefined], ['plaintext', 'Admin123!'], ['garbage', '$2b$xx']])(
-    'a %s stored hash gives the same 401 without throwing', async (_label, stored) => {
+    'a %s stored hash: login gives the same 401 without throwing; an existing token keeps working until expiry', async (_label, stored) => {
       repository.users.set('n', user('n', { _passwordHash: stored as string }));
+      const existing = jwt.generateAccessToken('n', 'n', 'admin', ORG_A);
 
       await expect(service.login({ username: 'n', password: 'some-other-password' })).rejects.toMatchObject(INVALID);
+      await expect(service.verifyToken(existing)).resolves.toMatchObject({ _userId: 'n', _cep: 0 });
     }
   );
 });

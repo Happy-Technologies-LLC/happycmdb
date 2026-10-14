@@ -56,7 +56,7 @@ import {
 } from '../../../packages/api-server/src/scripts/identity-window';
 import { LockBusyError, openOperatorStores, type OperatorStores } from '../../../packages/api-server/src/scripts/operator-stores';
 import { main as rotationCli } from '../../../packages/api-server/src/scripts/rotate-user-password';
-import { isSeededAccount } from '../../../packages/api-server/src/auth/platform-admin';
+import { isPlatformAdmin, isSeededAccount } from '../../../packages/api-server/src/auth/platform-admin';
 import {
   GUARDED_DISABLE_CYPHER, GUARDED_PASSWORD_CYPHER, MARK_DEFAULT_SUSPECT_CYPHER, Neo4jAuthRepository,
 } from '../../../packages/api-server/src/auth/neo4j-auth.repository';
@@ -494,6 +494,23 @@ describe('LOW 4: the open-intent check and the intent insert are serialized acro
     const intents = await pool.query("SELECT user_id FROM auth_credential_events WHERE event = 'password_rotation_intent'");
     expect(intents.rows).toEqual([{ user_id: USER }]);
   }, 30_000);
+});
+
+describe('N-21 (l): a rotated seeded account keeps seedProvenance and gains no platform power', () => {
+  it('rotation clears the marker and bumps the generation but leaves provenance; the grant still refuses it', async () => {
+    await graph.run("MATCH (u:User {_id: $id}) SET u.seedProvenance = 'init-neo4j', u.platformAdmin = true", { id: USER });
+
+    expect(await rotateUserPassword({ userId: USER, operator: 'ci', password: NEW_PASSWORD }, operator()))
+      .toMatchObject({ outcome: 'APPLIED' });
+
+    const props = await userProps();
+    expect(props['seedProvenance']).toBe('init-neo4j');
+    expect(props['defaultPasswordSuspect']).toBe(false);
+    const rotated = (await new Neo4jAuthRepository().findUserById(USER))!;
+    expect(isSeededAccount(rotated)).toBe(true);
+    expect(isPlatformAdmin(rotated)).toBe(false);
+    await expect(grantPlatformAdmin(operator().graph, USER, 'ci')).rejects.toMatchObject({ reason: 'seeded_account' });
+  });
 });
 
 describe('N-21 (h4): reconcile under a live rotation never writes an outcome for its intent', () => {

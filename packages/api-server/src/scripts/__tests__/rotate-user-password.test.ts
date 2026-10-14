@@ -291,9 +291,11 @@ describe('N-21 (e) refusals write nothing anywhere', () => {
   it.each([
     ['the default', 'Admin123!'],
     ['a bcrypt-equivalent of the default', 'Admin123!\u0000'.repeat(8).slice(0, 72)],
+    ['a NUL ("Admin123!\\u0000x")', 'Admin123!\u0000x'],
     ['a NUL', 'long-enough-pass\u0000x'],
-    ['more than 72 UTF-8 bytes', 'é'.repeat(37)],
-    ['fewer than 12 characters', 'short-pass1'],
+    ['exactly 73 UTF-8 bytes', 'a'.repeat(73)],
+    ['more than 72 UTF-8 bytes (multi-byte)', 'é'.repeat(37)],
+    ['an 11-character password', 'short-pass1'],
   ])('%s', async (_label, password) => {
     await expect(rotateUserPassword({ ...input(), password }, deps)).rejects.toBeInstanceOf(RotationRefused);
 

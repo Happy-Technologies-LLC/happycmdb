@@ -227,6 +227,22 @@ describe('AuthController profile/password/account routes', () => {
           _id: 'user-admin-001', _username: 'admin', _email: 'admin@happycmdb.local', _passwordHash: seededHash,
           _role: 'admin', _enabled: true, _createdAt: new Date('2024-01-01'), _updatedAt: new Date('2024-01-01'),
         } as User);
+        // The seeded admin's credentials, issued before this deploy (as on main: no generation claim, key generation 0).
+        const preAccess = jwtService.generateAccessToken('user-admin-001', 'admin', 'admin');
+        const preRefresh = jwtService.generateRefreshToken('user-admin-001', 'admin', 'admin');
+        const preKey = 'seeded-admin-pre-issued-key';
+        const { createHash } = await import('crypto');
+        repository.issuedKeys.set(createHash('sha256').update(preKey).digest('hex'), {
+          _id: 'k-admin', _key: preKey, _keyHash: createHash('sha256').update(preKey).digest('hex'), _name: 'admin-key',
+          _userId: 'user-admin-001', _role: 'admin', _tier: 'standard', _enabled: true, _createdAt: new Date(), _credentialEpoch: 0,
+        } as ApiKey);
+        // The repository marks like MARK_DEFAULT_SUSPECT_CYPHER (unmarked, verified hash still current).
+        jest.spyOn(repository, 'markDefaultSuspect').mockImplementation(async verified => {
+          const current = repository.users.get(verified._id);
+          if (!current || current._defaultPasswordSuspect === true || current._passwordHash !== verified._passwordHash) return false;
+          current._defaultPasswordSuspect = true;
+          return true;
+        });
         const login = (password: string) => request(app).post('/api/v1/auth/login').send({ username: 'admin', password });
         const bytes = (response: request.Response) => ({
           status: response.status,
@@ -249,6 +265,12 @@ describe('AuthController profile/password/account routes', () => {
         const logged = JSON.stringify(warnings.mock.calls);
         expect(logged).not.toContain('Admin123');
         expect(logged).not.toContain(seededHash);
+
+        // The refused login marked the seeded admin: every pre-issued credential is now refused.
+        expect(repository.users.get('user-admin-001')!._defaultPasswordSuspect).toBe(true);
+        expect((await request(app).get('/api/v1/auth/me').set('Authorization', `Bearer ${preAccess}`)).status).toBe(401);
+        expect((await request(app).post('/api/v1/auth/refresh').send({ refreshToken: preRefresh })).status).toBe(401);
+        expect((await request(app).get('/api/v1/auth/me').set('X-API-Key', preKey)).status).toBe(401);
       } finally {
         warnings.mockRestore();
         if (savedNodeEnv === undefined) delete process.env['NODE_ENV'];
@@ -256,6 +278,35 @@ describe('AuthController profile/password/account routes', () => {
       }
     }
   );
+
+  it('N-21 (b): no auth route sets a password without an authenticated session', async () => {
+    const hashes = () => [...repository.users.values()].map(u => [u._id, u._passwordHash]);
+    const before = hashes();
+    type Layer = { route?: { path: string; methods: Record<string, boolean> }; handle: { stack?: Layer[] } };
+    const routes = ((app as unknown as { _router: { stack: Layer[] } })._router.stack)
+      .flatMap(layer => layer.handle.stack ?? [])
+      .flatMap(layer => (layer.route ? Object.keys(layer.route.methods).map(method => ({ method, path: layer.route!.path })) : []));
+    const body = {
+      username: 'alice', password: 'correct-horse-battery-staple', currentPassword: 'correct-horse-battery-staple',
+      newPassword: 'attacker-chosen-long-pass', userId: 'user-1', refreshToken: 'x',
+    };
+
+    // The inventory: a new auth route fails here until it is reviewed.
+    expect(routes.map(({ method, path }) => `${method.toUpperCase()} ${path}`).sort()).toEqual([
+      'DELETE /account', 'DELETE /api-key/:keyId', 'GET /api-keys', 'GET /me', 'POST /api-key', 'POST /login',
+      'POST /logout', 'POST /refresh', 'PUT /password', 'PUT /profile',
+    ]);
+    const statuses: Record<string, number> = {};
+    for (const { method, path } of routes) {
+      const url = `/api/v1/auth${path.replace(':keyId', 'alice-key')}`;
+      statuses[`${method.toUpperCase()} ${path}`] =
+        (await (request(app) as unknown as Record<string, (u: string) => request.Test>)[method]!(url).send(body)).status;
+    }
+
+    expect(hashes()).toEqual(before);
+    // Without a session only login answers other than 401, and login verifies a password, never sets one.
+    expect(Object.entries(statuses).filter(([, status]) => status !== 401).map(([route]) => route)).toEqual(['POST /login']);
+  });
 
   it('returns one fixed refresh failure for invalid, expired, wrong-type, revoked, disabled, and store failures', async () => {
     const warnings = jest.spyOn(logger, 'warn').mockImplementation(() => logger);

@@ -172,6 +172,7 @@ async function loadPostgresSchema(container: StartedTestContainer): Promise<void
   for (const file of migrationFiles) {
     const sql = readFileSync(resolve(MIGRATIONS_DIR, file), 'utf-8');
     const target = `/tmp/${file}`;
+    await container.copyContentToContainer([{ content: sql, target }]);
     // Earlier migrations include legacy non-fatal Timescale notices. S1 is
     // transactional and must fail the hosted suite if even one statement fails.
     const hp1 = /^0(28|29|30|31)_/.test(file);

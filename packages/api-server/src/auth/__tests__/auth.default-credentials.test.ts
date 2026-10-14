@@ -167,16 +167,42 @@ afterEach(() => {
 });
 
 describe('N-21 (a) default and bcrypt-equivalent logins are refused outside development', () => {
-  it.each([DEFAULT, ...EQUIVALENT])('refuses %j for an unmarked default-hash user (reason default_credential_refused)', async password => {
+  /** No rotation outcome, clear or generation change: the only event ever written by a refused login is the marker transition. */
+  const expectNoClearNoRotation = (id: string, epochBefore: number | undefined) => {
+    expect(repository.users.get(id)!._credentialEpoch).toBe(epochBefore);
+    expect(repository.events.filter(e => e.event !== 'default_marker_set_login')).toEqual([]);
+  };
+
+  it.each([DEFAULT, ...EQUIVALENT])('unmarked U: %j → 401 (default_credential_refused), no tokens, marked once, no clear or generation change', async password => {
     repository.users.set('u', user('u'));
 
     await expect(service.login({ username: 'u', password })).rejects.toMatchObject(DEFAULT_REFUSED);
+
+    expect(repository.users.get('u')!._defaultPasswordSuspect).toBe(true);
+    expect(repository.events).toEqual([{ userId: 'u', event: 'default_marker_set_login', actor: 'u' }]);
+    expectNoClearNoRotation('u', undefined);
   });
 
-  it('refuses the NUL variant "Admin123!\\u0000x" by the NUL rule (reason invalid)', async () => {
+  it('unmarked U: "Admin123!\\u0000x" → 401 by the NUL rule (invalid), no tokens, not marked, no clear or generation change', async () => {
     repository.users.set('u', user('u'));
 
     await expect(service.login({ username: 'u', password: 'Admin123!\u0000x' })).rejects.toMatchObject(INVALID);
+
+    expect(repository.users.get('u')!._defaultPasswordSuspect).toBeUndefined();
+    expect(repository.events).toEqual([]);
+    expectNoClearNoRotation('u', undefined);
+  });
+
+  it.each([
+    [DEFAULT, DEFAULT_REFUSED], ...EQUIVALENT.map(p => [p, DEFAULT_REFUSED] as const), ['Admin123!\u0000x', INVALID],
+  ] as Array<[string, typeof INVALID]>)('marked M: %j → 401, no tokens, marker stays true, no clear, no event, generation unchanged', async (password, refusal) => {
+    repository.users.set('m', user('m', { _defaultPasswordSuspect: true, _credentialEpoch: 3 }));
+
+    await expect(service.login({ username: 'm', password })).rejects.toMatchObject(refusal);
+
+    expect(repository.users.get('m')!._defaultPasswordSuspect).toBe(true);
+    expect(repository.events).toEqual([]);
+    expectNoClearNoRotation('m', 3);
   });
 
   describe('bcryptKey and isDefaultEquivalent agree with the real bcrypt binding on $2b$ hashes', () => {
@@ -201,6 +227,7 @@ describe('N-21 (a) default and bcrypt-equivalent logins are refused outside deve
       ['near miss: cycle cut at 60 bytes', CYCLE.slice(0, 60), false],
       ['near miss: cycle cut at 70 bytes', CYCLE.slice(0, 70), false],
       ['near miss: cycle cut at 71 bytes', CYCLE.slice(0, 71), false],
+      ['NUL variant Admin123!\\u0000x', 'Admin123!\u0000x', false],
     ] as Array<[string, string, boolean]>)('%s', async (_label, candidate, equivalent) => {
       const real = await bcrypt.compare(candidate, reference);
 

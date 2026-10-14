@@ -203,11 +203,12 @@ jobs:
             const head = read("head"), base = read("base");
             console.log("head:", JSON.stringify(head));
             if (base) console.log("base:", JSON.stringify(base));
-            if (head.verdict === "PASS") { console.log(`SEC12-02 MET: median p99 ratio ${head.ratio} <= 1.10`); process.exit(0); }
+            const stats = s => `median of per-round ratios ${s.median_of_round_ratios ?? s.ratio}, ratio of medians ${s.ratio_of_medians ?? s.ratio}`;
+            if (head.verdict === "PASS") { console.log(`SEC12-02 MET: ${stats(head)}, both <= 1.10`); process.exit(0); }
             const cause = !base ? "unclassified (no base run)"
               : base.verdict === "PASS" ? "INTRODUCED by this PR (base within 1.10)"
-              : `PRE-EXISTING scaling also at base (base ratio ${base.ratio})`;
-            console.log(`SEC12-02 UNMET: median p99 ratio ${head.ratio} > 1.10; cause: ${cause}`);
+              : `PRE-EXISTING scaling also at base (${stats(base)})`;
+            console.log(`SEC12-02 UNMET: ${stats(head)} (both must be <= 1.10); cause: ${cause}`);
             process.exit(1);
           '
 

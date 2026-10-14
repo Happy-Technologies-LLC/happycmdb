@@ -20,8 +20,10 @@ The seeded development admin (`admin` / `Admin123!`, used in the examples below)
 `NODE_ENV=development`. In every other environment:
 
 - **Default passwords are refused.** A login with `Admin123!`, or with any string bcrypt treats as the
-  same key (for example `'Admin123!\0'` repeated to 72 bytes), gets the same `401 Invalid credentials`
-  as a wrong password. A login password containing U+0000 is also refused.
+  same key (for example `'Admin123!\0'` repeated to 72 bytes), gets the same response as a wrong
+  password: `401` with `{"success":false,"error":"Authentication failed"}`. A login password containing
+  U+0000 is also refused. The server log records the reason `default_credential_refused` (never the
+  password).
 - **Marked accounts.** If such a login matches the account's stored hash, the account is marked
   (`defaultPasswordSuspect`). A marked account cannot log in, refresh, use API keys or keep a
   WebSocket open, even with a different password. Login never clears the mark. The seeded admin

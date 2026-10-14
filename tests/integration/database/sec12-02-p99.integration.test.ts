@@ -259,14 +259,20 @@ measure('SEC12-02: auth p99 with 5 000 vs 10 users on real Neo4j and PostgreSQL'
     }
   }
 
-  const perRoundRatio = p99[LARGE]!.map((large, round) => +(large / p99[SMALL]![round]!).toFixed(4));
-  const ratio = median(p99[LARGE]!) / median(p99[SMALL]!);
+  const roundRatios = p99[LARGE]!.map((large, round) => large / p99[SMALL]![round]!);
+  const perRoundRatio = roundRatios.map(r => +r.toFixed(4));
+  // Signed statistic (choice A): the median over the alternating rounds of p99(5000)/p99(10).
+  const medianOfRoundRatios = median(roundRatios);
+  // Also required within the bound, and reported: the ratio of the two cohorts' median p99s.
+  const ratioOfMedians = median(p99[LARGE]!) / median(p99[SMALL]!);
   const summary = {
     label: process.env['P99_LABEL'] ?? 'unlabelled', user_indexes: userSchema,
-    p99_10_median_ms: ms(median(p99[SMALL]!)), p99_5000_median_ms: ms(median(p99[LARGE]!)), ratio: +ratio.toFixed(4),
+    p99_10_median_ms: ms(median(p99[SMALL]!)), p99_5000_median_ms: ms(median(p99[LARGE]!)),
+    statistic: 'median of per-round p99(5000)/p99(10); ratio of medians also required <= threshold',
+    ratio: +medianOfRoundRatios.toFixed(4), median_of_round_ratios: +medianOfRoundRatios.toFixed(4), ratio_of_medians: +ratioOfMedians.toFixed(4),
     per_round_ratio: perRoundRatio, spread: { min: Math.min(...perRoundRatio), max: Math.max(...perRoundRatio) },
     store_find_user_by_id_p99_median_ms: { [SMALL]: ms(median(storeP99[SMALL]!)), [LARGE]: ms(median(storeP99[LARGE]!)) },
-    threshold: THRESHOLD, verdict: ratio <= THRESHOLD ? 'PASS' : 'EXCEEDS',
+    threshold: THRESHOLD, verdict: medianOfRoundRatios <= THRESHOLD && ratioOfMedians <= THRESHOLD ? 'PASS' : 'EXCEEDS',
     bcrypt_verify_calls: verify.mock.calls.length, bcrypt_hash_calls: hash.mock.calls.length,
     warmup_per_phase: WARMUP, samples_per_round_per_cohort: SAMPLES, rounds: ROUNDS, node: process.version,
   };

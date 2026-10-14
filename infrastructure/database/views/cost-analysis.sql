@@ -291,4 +291,4 @@ GRANT SELECT ON v_unit_economics TO metabase_readonly;
 GRANT SELECT ON v_cloud_vs_onprem_costs TO metabase_readonly;
 GRANT SELECT ON v_cost_allocation_summary TO metabase_readonly;
 GRANT SELECT ON v_depreciation_summary TO metabase_readonly;
-GRANT SELECT ON v_top_cost_drivers TO metabase_readonly;
+-- v_top_cost_drivers exposes unbounded ci.metadata; do not allow BI to read it.

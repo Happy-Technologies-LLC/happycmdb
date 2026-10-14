@@ -108,14 +108,43 @@ schema, including `011`'s dimension columns and S1's journal ACL. Its
 lineage/field-source `ci_id` remains UUID per the initdb contract; unlike the
 migrator-built 001 schema, fresh initdb rejects non-UUID identifiers there.
 Both the migration and fresh init revoke named `metabase_readonly` grants if
-that role already exists; `metabase-init.sql` explicitly denies the two
-private tables immediately after its all-public-table grant if BI setup runs
-later. Other BI table grants remain intact. On initdb, the business-service
+that role already exists; `metabase-init.sql` now grants only audited reporting
+views rather than all present and future tables. On initdb, the business-service
 view exists only if `009`/`010` were applied; `031` records an absent view when
 those source tables and the view are absent. Guarded downs in
 `migrations/rollback/028`–`031` are manual only, in reverse order,
 refuse to discard stamped provenance, and transactionally remove their exact
 `cmdb.schema_migrations` rows so an authorized reapplication is not skipped.
+
+## HAP-630 credential and BI ACLs
+
+Migration `032_secret_table_public_grants.sql` follows `031` on existing
+databases; the fresh initializer mirrors its restricted secret ACLs. The 001
+audit identified `api_keys.key_hash`, `credentials.credentials`,
+`credential_sets.credential_ids`, `discovery_definitions.config` and
+`connector_configurations.connection/options` (which may contain connection
+secrets), plus unconstrained `system_config.config_value`. Four credential-
+derived views (`active_api_keys`, `credential_summaries`,
+`credential_set_summaries`, `discovery_definitions_with_credentials`) expose
+credential identity, affinity or configuration and are not BI reporting views.
+`032` revokes PUBLIC access on all ten relations and clears the old named BI
+blanket table grants and default privileges; it regrants only audited non-secret
+views if the BI role exists. The app's owning role keeps its privileges and
+`cmdb_user`, if distinct from the owner, gets explicit DML on six protected
+tables and SELECT on their four derived views. Non-secret `discovery_agents`
+remain unchanged; this is not a global schema ACL rewrite. Effective access
+still depends on any separately granted role memberships, which are outside
+this migration's scope.
+
+`metabase-init.sql` revokes historical named blanket grants before allowlisting
+existing reporting views. The three `infrastructure/database/views/*.sql` files
+grant their own views when created later, except `v_top_cost_drivers`: its
+unbounded `ci.metadata` makes it unsuitable for the BI role. Keep the BI scripts
+and `032`/BI allowlists aligned if adding reporting views. Existing PUBLIC reads
+on unrelated `cmdb` reporting tables still apply to BI through role
+inheritance. The guarded `rollback/032_*.down.sql` is manual, removes its exact
+ledger row and restores 001's unsafe PUBLIC grants; it deliberately does not
+resurrect unknown prior BI grants. Never use this down as a security recovery.
 
 For existing Neo4j databases an operator must separately apply
 `packages/database/src/neo4j/migrations/004_reconciliation_op_fence.cypher`

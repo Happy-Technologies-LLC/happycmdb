@@ -186,15 +186,12 @@ describe('HP1-S1 expand contract on actual Timescale hypertables', () => {
     }
   });
 
-  it('denies the named BI role before and after setup, then removes ledger rows on down and reapplies', async () => {
+  it('denies the named BI role in both setup orders, then removes ledger rows on down and reapplies', async () => {
     const migrationDir = join(__dirname, '../../../packages/database/src/postgres/migrations');
     const biInit = readFileSync(join(__dirname, '../../../infrastructure/database/metabase-init.sql'), 'utf8');
     const defaultGrant = 'ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO metabase_readonly;';
-    const existingGrants = biInit.slice(biInit.indexOf('-- Grant SELECT on all existing tables in public schema'),
-      biInit.indexOf('-- Grant SELECT on all existing views'));
-    const futureGrants = biInit.slice(biInit.indexOf('-- Grant SELECT on all future tables'),
-      biInit.indexOf('-- Grant SELECT on all sequences'));
-    expect(biInit).toContain(defaultGrant);
+    const reportingGrants = biInit.slice(biInit.indexOf('-- Only audited reporting views'),
+      biInit.indexOf('-- Create Helper Functions for Metabase'));
     const files = ['028_change_history_reconciliation_org_provenance',
       '029_reconciliation_conflict_identity_rules', '030_drift_impact_org_provenance',
       '031_business_service_mapping_ownership'];
@@ -226,8 +223,7 @@ describe('HP1-S1 expand contract on actual Timescale hypertables', () => {
             }
           };
           await assertPrivate();
-          await fresh.query(existingGrants);
-          await fresh.query(futureGrants);
+          await fresh.query(reportingGrants);
           await assertPrivate(); // A later BI bootstrap must leave private tables denied.
           const { rows: ordinary } = await fresh.query(`SELECT has_table_privilege(
             'metabase_readonly', 'public.ci_change_history', 'SELECT') AS readable`);

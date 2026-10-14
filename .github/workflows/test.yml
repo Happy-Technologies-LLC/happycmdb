@@ -238,18 +238,66 @@ jobs:
         with:
           node-version: 22.x
           cache: npm
-      - name: Fail-before on the PR base with the same real-store harness
+      - name: Fail-before on PR bases predating HP1-S1
         run: |
           set -euo pipefail
-          git worktree add ../hp1-s1-base "$BASE_SHA"
-          cp "$HARNESS" "../hp1-s1-base/$HARNESS"
-          cd ../hp1-s1-base
-          npm ci
-          HP1_S1_BASELINE=1 ./node_modules/.bin/jest -c jest.config.integration.js "$HARNESS" --runInBand
+          # The merged #78 base already has the journal: its old fail-before
+          # assertion must not be run against a post-S1 PR base.
+          if git cat-file -e "${BASE_SHA}:packages/database/src/postgres/migrations/028_change_history_reconciliation_org_provenance.sql" 2>/dev/null; then
+            echo 'HP1-S1 already on the base; fail-before is not applicable.'
+          else
+            git worktree add ../hp1-s1-base "$BASE_SHA"
+            cp "$HARNESS" "../hp1-s1-base/$HARNESS"
+            cd ../hp1-s1-base
+            npm ci
+            HP1_S1_BASELINE=1 ./node_modules/.bin/jest -c jest.config.integration.js "$HARNESS" --runInBand
+          fi
       - name: Pass-after on PR head
         run: |
           npm ci
           ./node_modules/.bin/jest -c jest.config.integration.js "$HARNESS" --runInBand
+
+  hap630-real-store:
+    name: HAP-630 ACL baseline and real-store acceptance
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    permissions:
+      contents: read
+    env:
+      HARNESS: tests/integration/database/hap630-acl.integration.test.ts
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+      - name: Fail-before on base ACL (expected permission assertion failure)
+        run: |
+          set -euo pipefail
+          git worktree add ../hap630-base "$BASE_SHA"
+          cp "$HARNESS" "../hap630-base/$HARNESS"
+          cd ../hap630-base
+          npm ci
+          set +e
+          output=$(HAP630_ACCEPTANCE=1 HAP630_BASELINE=1 ./node_modules/.bin/jest \
+            -c jest.config.integration.js "$HARNESS" --runInBand 2>&1)
+          result=$?
+          set -e
+          printf '%s\n' "$output"
+          if [ "$result" -eq 0 ] || [[ "$output" != *"Received promise resolved instead of rejected"* ]]; then
+            echo 'Base ACL did not produce the expected permission assertion failure' >&2
+            exit 1
+          fi
+      - name: Pass-after on PR head (disposable PG15/Timescale)
+        run: |
+          npm ci
+          HAP630_ACCEPTANCE=1 ./node_modules/.bin/jest \
+            -c jest.config.integration.js "$HARNESS" --runInBand
 
   staging-migrations:
     name: Staging Migration Contract
@@ -358,7 +406,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
   ci-rollup:
-    needs: [unit-tests, integration-tests, e2e-tests, staging-migrations, web-ui-build]
+    needs: [unit-tests, integration-tests, e2e-tests, staging-migrations, web-ui-build, hap630-real-store]
     if: always()
     runs-on: ubuntu-latest
     permissions:
@@ -374,6 +422,7 @@ jobs:
           STAGING_MIGRATIONS_RESULT: ${{ needs.staging-migrations.result }}
           E2E_TESTS_RESULT: ${{ needs.e2e-tests.result }}
           WEB_UI_BUILD_RESULT: ${{ needs.web-ui-build.result }}
+          HAP630_RESULT: ${{ needs.hap630-real-store.result }}
         run: |
           set -euo pipefail
           if [ -z "$HEAD_SHA" ]; then
@@ -384,9 +433,10 @@ jobs:
              [ "$INTEGRATION_TESTS_RESULT" = "success" ] &&
              [ "$E2E_TESTS_RESULT" = "success" ] &&
              [ "$STAGING_MIGRATIONS_RESULT" = "success" ] &&
-             [ "$WEB_UI_BUILD_RESULT" = "success" ]; then
+             [ "$WEB_UI_BUILD_RESULT" = "success" ] &&
+             { [ "$HAP630_RESULT" = "success" ] || { [ "${{ github.event_name }}" = "push" ] && [ "$HAP630_RESULT" = "skipped" ]; }; }; then
             state=success
-            description="all 5 gates passed"
+            description="all required gates passed"
           else
             state=failure
             failures=()
@@ -395,6 +445,9 @@ jobs:
             [ "$E2E_TESTS_RESULT" = "success" ] || failures+=("e2e-tests=$E2E_TESTS_RESULT")
             [ "$STAGING_MIGRATIONS_RESULT" = "success" ] || failures+=("staging-migrations=$STAGING_MIGRATIONS_RESULT")
             [ "$WEB_UI_BUILD_RESULT" = "success" ] || failures+=("web-ui-build=$WEB_UI_BUILD_RESULT")
+            if [ "$HAP630_RESULT" != "success" ] && [ "${{ github.event_name }}" != "push" ]; then
+              failures+=("hap630-real-store=$HAP630_RESULT")
+            fi
             description="test gates failed: ${failures[*]}"
             if [ "${#description}" -gt 140 ]; then
               description="${description:0:137}..."

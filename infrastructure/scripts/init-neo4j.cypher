@@ -14,6 +14,10 @@ FOR (ci:CI) REQUIRE ci.id IS UNIQUE;
 CREATE CONSTRAINT ci_external_id_unique IF NOT EXISTS
 FOR (ci:CI) REQUIRE ci.external_id IS UNIQUE;
 
+// HP1-S1 operator fence 004, fresh databases only.
+CREATE CONSTRAINT reconciliation_op_fence_unique IF NOT EXISTS
+FOR (o:ReconciliationOp) REQUIRE o.op_id IS UNIQUE;
+
 // Unique constraint on User.email - User email identifier
 CREATE CONSTRAINT user_email_unique IF NOT EXISTS
 FOR (u:User) REQUIRE u.email IS UNIQUE;

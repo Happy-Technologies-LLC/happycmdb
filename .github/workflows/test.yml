@@ -106,6 +106,9 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          # S1 acceptance loads the immutable V2 initializer at the PR base.
+          fetch-depth: 0
 
       - name: Setup Node.js ${{ matrix.node-version }}
         uses: actions/setup-node@v4
@@ -218,6 +221,35 @@ jobs:
         with:
           name: sec12-02-p99-results
           path: test-results/sec12-02-p99/
+
+  hp1-s1-real-store:
+    name: HP1-S1 baseline and real-store acceptance
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      HARNESS: tests/integration/database/hp1-s1-schema.integration.test.ts
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+      - name: Fail-before on the PR base with the same real-store harness
+        run: |
+          set -euo pipefail
+          git worktree add ../hp1-s1-base "$BASE_SHA"
+          cp "$HARNESS" "../hp1-s1-base/$HARNESS"
+          cd ../hp1-s1-base
+          npm ci
+          HP1_S1_BASELINE=1 ./node_modules/.bin/jest -c jest.config.integration.js "$HARNESS" --runInBand
+      - name: Pass-after on PR head
+        run: |
+          npm ci
+          ./node_modules/.bin/jest -c jest.config.integration.js "$HARNESS" --runInBand
 
   staging-migrations:
     name: Staging Migration Contract

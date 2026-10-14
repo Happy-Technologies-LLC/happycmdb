@@ -45,6 +45,20 @@ GRANT USAGE ON SCHEMA cmdb TO metabase_readonly;
 -- Grant SELECT on all existing tables in public schema
 GRANT SELECT ON ALL TABLES IN SCHEMA public TO metabase_readonly;
 GRANT SELECT ON ALL TABLES IN SCHEMA cmdb TO metabase_readonly;
+-- Keep the private HP1 reconciliation journal out of BI even when this
+-- bootstrap runs after migration 028 or the V3 initializer. If it runs
+-- first, the migration/initializer revokes its named default grant.
+DO $$
+BEGIN
+    IF to_regclass('public.ci_reconciliation_operations') IS NOT NULL THEN
+        REVOKE ALL ON public.ci_reconciliation_operations FROM metabase_readonly;
+    END IF;
+    IF to_regclass('public.ci_reconciliation_epochs') IS NOT NULL THEN
+        REVOKE ALL ON public.ci_reconciliation_epochs FROM metabase_readonly;
+    END IF;
+END
+$$;
+
 
 -- Grant SELECT on all existing views
 GRANT SELECT ON ALL VIEWS IN SCHEMA public TO metabase_readonly;

@@ -29,10 +29,11 @@ const poolFor = (database?: string) => new Pool({
 });
 let db: Pool;
 
-async function asRole(pool: Pool, role: string, sql: string, denied = false) {
+async function asRole(pool: Pool, role: string, sql: string, denied = false, ownerPrelude?: string) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    if (ownerPrelude) await client.query(ownerPrelude);
     await client.query(`SET LOCAL ROLE ${role}`);
     if (denied) await expect(client.query(sql)).rejects.toMatchObject({ code: '42501' });
     else return (await client.query(sql)).rows;
@@ -62,7 +63,12 @@ async function closed(pool: Pool) {
       ['hap668_nonowner', `cmdb.${sequence}`, 'USAGE'])).rows[0].allowed).toBe(false);
     expect((await pool.query('SELECT has_sequence_privilege($1, $2, $3) AS allowed',
       ['hap668_nonowner', `cmdb.${sequence}`, 'SELECT'])).rows[0].allowed).toBe(false);
+    expect((await pool.query('SELECT has_sequence_privilege($1, $2, $3) AS allowed',
+      ['hap668_nonowner', `cmdb.${sequence}`, 'UPDATE'])).rows[0].allowed).toBe(false);
     await asRole(pool, 'hap668_nonowner', `SELECT nextval('cmdb.${sequence}')`, true);
+    await asRole(pool, 'hap668_nonowner', `SELECT setval('cmdb.${sequence}', 1)`, true);
+    await asRole(pool, 'hap668_nonowner', `SELECT currval('cmdb.${sequence}')`, true,
+      `SELECT nextval('cmdb.${sequence}')`);
   }
   await asRole(pool, 'hap668_nonowner', 'SELECT previous_values, new_values, metadata FROM ci_change_history', true);
 }
@@ -106,16 +112,22 @@ if (process.env['HAP668_ACCEPTANCE'] !== '1') {
     });
   } else {
     it('upgrade from 033: deny nonowner, retain app writers and scoped BI', async () => {
-      // The fixture loaded 034 before test roles existed; replay it as an
-      // upgrade from 033 with those roles present.
-      await db.query(up);
-      await closed(db);
       await db.query(`CREATE TABLE IF NOT EXISTS cmdb.schema_migrations
         (migration_name varchar(255) PRIMARY KEY, checksum varchar(64) NOT NULL)`);
       await db.query(`INSERT INTO cmdb.schema_migrations VALUES
         ('032_secret_table_public_grants.sql', 'disposable-proof'),
         ('033_public_business_service_audit_acl.sql', 'disposable-proof'),
         ('034_history_sequence_discovery_acl.sql', 'disposable-proof')`);
+      // The fixture loaded 034 before the roles existed. Its guarded down
+      // recreates merged #80's PUBLIC ACLs without reopening 019's agents.
+      await db.query(down);
+      await asRole(db, 'hap668_nonowner', 'SELECT metadata FROM ci_change_history LIMIT 1');
+      await asRole(db, 'hap668_nonowner', `SELECT nextval('cmdb.dim_ci_ci_key_seq')`);
+      await asRole(db, 'hap668_nonowner', 'SELECT * FROM discovery_agents LIMIT 1', true);
+      await db.query(up);
+      await db.query(`INSERT INTO cmdb.schema_migrations VALUES
+        ('034_history_sequence_discovery_acl.sql', 'disposable-proof')`);
+      await closed(db);
       await expect(db.query(down032)).rejects.toThrow('032 down refused');
       await expect(db.query(down033)).rejects.toThrow('033 down refused');
       await db.query(`INSERT INTO cmdb.schema_migrations VALUES
@@ -125,6 +137,7 @@ if (process.env['HAP668_ACCEPTANCE'] !== '1') {
       await db.query(bi);
       await appAndBI(db);
       await db.query(down);
+      await expect(db.query(down)).rejects.toThrow('034 down requires its migration ledger row');
       // 032 is still dependent on 033 even after 034 is removed.
       await expect(db.query(down032)).rejects.toThrow('032 down refused');
       await asRole(db, 'hap668_nonowner', 'SELECT metadata FROM ci_change_history LIMIT 1');

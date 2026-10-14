@@ -13,11 +13,11 @@ SET LOCAL statement_timeout = '10s';
 DO $hp1$
 BEGIN
   IF to_regclass('public.dim_business_services') IS NOT NULL
-     AND NOT EXISTS (SELECT 1 FROM pg_class WHERE oid = 'public.dim_business_services'::regclass AND relkind IN ('r', 'p')) THEN
+     AND NOT EXISTS (SELECT 1 FROM pg_class WHERE oid = to_regclass('public.dim_business_services') AND relkind IN ('r', 'p')) THEN
     RAISE EXCEPTION '031 down wrong object: dim_business_services must be a table';
   END IF;
   IF to_regclass('public.v_business_service_health') IS NOT NULL
-     AND NOT EXISTS (SELECT 1 FROM pg_class WHERE oid = 'public.v_business_service_health'::regclass AND relkind = 'v') THEN
+     AND NOT EXISTS (SELECT 1 FROM pg_class WHERE oid = to_regclass('public.v_business_service_health') AND relkind = 'v') THEN
     RAISE EXCEPTION '031 down wrong object: v_business_service_health must be a view';
   END IF;
   IF to_regclass('public.dim_business_services') IS NULL

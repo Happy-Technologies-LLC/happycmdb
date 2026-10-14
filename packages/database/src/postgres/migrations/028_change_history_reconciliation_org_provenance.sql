@@ -26,11 +26,11 @@ BEGIN
   PERFORM set_config('lock_timeout', '5s', true);
   PERFORM set_config('statement_timeout', '10s', true);
   IF to_regclass('public.ci_reconciliation_operations') IS NOT NULL
-     AND NOT EXISTS (SELECT 1 FROM pg_class WHERE oid = 'public.ci_reconciliation_operations'::regclass AND relkind = 'r') THEN
+     AND NOT EXISTS (SELECT 1 FROM pg_class WHERE oid = to_regclass('public.ci_reconciliation_operations') AND relkind = 'r') THEN
     RAISE EXCEPTION 'HP1 012 wrong object: ci_reconciliation_operations must be a table';
   END IF;
   IF to_regclass('public.ci_reconciliation_epochs') IS NOT NULL
-     AND NOT EXISTS (SELECT 1 FROM pg_class WHERE oid = 'public.ci_reconciliation_epochs'::regclass AND relkind = 'r') THEN
+     AND NOT EXISTS (SELECT 1 FROM pg_class WHERE oid = to_regclass('public.ci_reconciliation_epochs') AND relkind = 'r') THEN
     RAISE EXCEPTION 'HP1 012 wrong object: ci_reconciliation_epochs must be a table';
   END IF;
   IF NOT EXISTS (SELECT 1 FROM information_schema.columns

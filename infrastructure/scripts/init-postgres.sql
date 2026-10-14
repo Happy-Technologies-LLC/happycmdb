@@ -1697,17 +1697,29 @@ GRANT SELECT ON audit_log TO PUBLIC;
 GRANT SELECT ON recent_audit_activity TO PUBLIC;
 GRANT SELECT ON ci_change_history TO PUBLIC;
 GRANT SELECT ON v_ci_change_history_audit TO PUBLIC;
-GRANT SELECT, INSERT, UPDATE, DELETE ON api_keys TO PUBLIC;
-GRANT SELECT ON active_api_keys TO PUBLIC;
-GRANT SELECT, INSERT, UPDATE, DELETE ON credentials TO PUBLIC;
-GRANT SELECT, INSERT, UPDATE, DELETE ON credential_sets TO PUBLIC;
-GRANT SELECT ON credential_summaries TO PUBLIC;
-GRANT SELECT ON credential_set_summaries TO PUBLIC;
+-- The table owner retains auth/discovery writes. Never expose credential-linked
+-- configuration or credential-derived views through the historical PUBLIC ACL.
+REVOKE ALL ON api_keys, credentials, credential_sets, discovery_definitions,
+  connector_configurations, system_config, active_api_keys, credential_summaries,
+  credential_set_summaries, discovery_definitions_with_credentials FROM PUBLIC;
+DO $acl$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'cmdb_user') THEN
+    GRANT SELECT, INSERT, UPDATE, DELETE ON api_keys, credentials, credential_sets,
+      discovery_definitions, connector_configurations, system_config TO cmdb_user;
+    GRANT SELECT ON active_api_keys, credential_summaries,
+      credential_set_summaries, discovery_definitions_with_credentials TO cmdb_user;
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'metabase_readonly') THEN
+    REVOKE ALL ON api_keys, credentials, credential_sets, discovery_definitions,
+      connector_configurations, system_config, active_api_keys, credential_summaries,
+      credential_set_summaries, discovery_definitions_with_credentials FROM metabase_readonly;
+  END IF;
+END
+$acl$;
 GRANT SELECT, INSERT, UPDATE, DELETE ON discovery_agents TO PUBLIC;
 GRANT SELECT ON active_discovery_agents TO PUBLIC;
 GRANT SELECT ON agent_network_coverage TO PUBLIC;
-GRANT SELECT, INSERT, UPDATE, DELETE ON discovery_definitions TO PUBLIC;
-GRANT SELECT ON discovery_definitions_with_credentials TO PUBLIC;
 
 -- ============================================
 -- TABLE COMMENTS

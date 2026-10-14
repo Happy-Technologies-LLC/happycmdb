@@ -38,39 +38,55 @@ CREATE USER metabase_readonly WITH ENCRYPTED PASSWORD 'readonly_password_change_
 -- Grant connect to database
 GRANT CONNECT ON DATABASE cmdb TO metabase_readonly;
 
--- Grant usage on public schema
+-- Only audited reporting views get named BI grants. Remove grants left by an
+-- older bootstrap (including the HP1 private journal) and its future-table
+-- default; PUBLIC ACLs for unrelated reporting tables remain unchanged.
 GRANT USAGE ON SCHEMA public TO metabase_readonly;
 GRANT USAGE ON SCHEMA cmdb TO metabase_readonly;
+REVOKE ALL ON ALL TABLES IN SCHEMA public FROM metabase_readonly;
+REVOKE ALL ON ALL TABLES IN SCHEMA cmdb FROM metabase_readonly;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE SELECT ON TABLES FROM metabase_readonly;
+ALTER DEFAULT PRIVILEGES IN SCHEMA cmdb REVOKE SELECT ON TABLES FROM metabase_readonly;
 
--- Grant SELECT on all existing tables in public schema
-GRANT SELECT ON ALL TABLES IN SCHEMA public TO metabase_readonly;
-GRANT SELECT ON ALL TABLES IN SCHEMA cmdb TO metabase_readonly;
--- Keep the private HP1 reconciliation journal out of BI even when this
--- bootstrap runs after migration 028 or the V3 initializer. If it runs
--- first, the migration/initializer revokes its named default grant.
-DO $$
+-- BI view scripts grant their own views after creation. This list also covers
+-- already-created reporting views, without granting future tables or secrets.
+DO $bi$
+DECLARE
+    name text;
+    kind "char";
 BEGIN
-    IF to_regclass('public.ci_reconciliation_operations') IS NOT NULL THEN
-        REVOKE ALL ON public.ci_reconciliation_operations FROM metabase_readonly;
-    END IF;
-    IF to_regclass('public.ci_reconciliation_epochs') IS NOT NULL THEN
-        REVOKE ALL ON public.ci_reconciliation_epochs FROM metabase_readonly;
-    END IF;
+    FOREACH name IN ARRAY ARRAY[
+      'public.recent_audit_activity', 'public.v_business_service_summary',
+      'public.v_application_service_summary', 'public.v_business_capability_summary',
+      'public.v_service_dependency_graph', 'public.v_itil_incident_summary',
+      'public.v_itil_change_summary', 'public.v_tbm_cost_pool_summary',
+      'public.v_tbm_depreciation_tracking', 'public.v_unified_service_health',
+      'public.v_business_service_health',
+      'cmdb.v_ci_discovery_summary',
+      'public.v_criticality_distribution', 'public.v_revenue_at_risk',
+      'public.v_compliance_summary', 'public.v_sox_pci_inventory',
+      'public.v_disaster_recovery_tiers', 'public.v_business_capability_health',
+      'public.v_service_dependency_map', 'public.v_customer_impact_analysis',
+      'public.v_executive_cost_summary', 'public.v_cost_by_tower',
+      'public.v_cost_trends', 'public.v_unit_economics',
+      'public.v_cloud_vs_onprem_costs', 'public.v_cost_allocation_summary',
+      'public.v_depreciation_summary',
+      'public.v_incident_summary', 'public.v_incident_trends',
+      'public.v_change_success_rates', 'public.v_change_calendar',
+      'public.v_configuration_accuracy', 'public.v_sla_compliance',
+      'public.v_service_health_scorecard', 'public.v_mttr_mtbf_analysis',
+      'public.v_baseline_drift_detection'
+    ] LOOP
+        IF to_regclass(name) IS NOT NULL THEN
+            SELECT c.relkind INTO kind FROM pg_class c WHERE c.oid = to_regclass(name);
+            IF kind <> 'v' THEN
+                RAISE EXCEPTION 'BI reporting object % is not a view', name;
+            END IF;
+            EXECUTE format('GRANT SELECT ON %s TO metabase_readonly', name);
+        END IF;
+    END LOOP;
 END
-$$;
-
-
--- Grant SELECT on all existing views
-GRANT SELECT ON ALL VIEWS IN SCHEMA public TO metabase_readonly;
-GRANT SELECT ON ALL VIEWS IN SCHEMA cmdb TO metabase_readonly;
-
--- Grant SELECT on all future tables (default privileges)
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO metabase_readonly;
-ALTER DEFAULT PRIVILEGES IN SCHEMA cmdb GRANT SELECT ON TABLES TO metabase_readonly;
-
--- Grant SELECT on all sequences (needed for some queries)
-GRANT SELECT ON ALL SEQUENCES IN SCHEMA public TO metabase_readonly;
-GRANT SELECT ON ALL SEQUENCES IN SCHEMA cmdb TO metabase_readonly;
+$bi$;
 
 -- ============================================
 -- Create Helper Functions for Metabase

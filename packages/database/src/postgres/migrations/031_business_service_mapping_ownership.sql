@@ -20,6 +20,7 @@
 DO $hp1$
 BEGIN
   PERFORM set_config('lock_timeout', '5s', true);
+  PERFORM set_config('statement_timeout', '10s', true);
   IF to_regclass('public.ci_criticality_scores') IS NULL
      OR NOT EXISTS (SELECT 1 FROM information_schema.columns
                     WHERE table_schema = 'public' AND table_name = 'ci_criticality_scores'
@@ -29,6 +30,28 @@ BEGIN
 END
 $hp1$;
 
+-- V2 initdb does not ship 001's business-service tables or 009's view.
+-- Record that branch as absent; never mask a name occupied by another kind.
+DO $hp1$
+BEGIN
+  IF to_regclass('public.dim_business_services') IS NOT NULL
+     AND NOT EXISTS (SELECT 1 FROM pg_class WHERE oid = 'public.dim_business_services'::regclass AND relkind IN ('r', 'p')) THEN
+    RAISE EXCEPTION 'HP1 017 wrong object: dim_business_services must be a table';
+  END IF;
+  IF to_regclass('public.v_business_service_health') IS NOT NULL
+     AND NOT EXISTS (SELECT 1 FROM pg_class WHERE oid = 'public.v_business_service_health'::regclass AND relkind = 'v') THEN
+    RAISE EXCEPTION 'HP1 017 wrong object: v_business_service_health must be a view';
+  END IF;
+  IF to_regclass('public.dim_business_services') IS NULL
+     OR to_regclass('public.v_business_service_health') IS NULL THEN
+    IF to_regclass('public.dim_business_services') IS NOT NULL
+       OR to_regclass('public.v_business_service_health') IS NOT NULL THEN
+      RAISE EXCEPTION 'HP1 017 incomplete business-service schema';
+    END IF;
+    RAISE NOTICE 'HP1 017 business-service view absent on initdb; no view to replace';
+    RETURN;
+  END IF;
+  EXECUTE $view$
 CREATE OR REPLACE VIEW v_business_service_health AS
 SELECT
     bs.organization_id,
@@ -83,5 +106,7 @@ CROSS JOIN LATERAL (
     WHERE f.service_id = bs.service_id
       AND f.change_date >= CURRENT_DATE - INTERVAL '30 days'
 ) chg;
-
-REVOKE SELECT ON public.v_business_service_health FROM PUBLIC;
+  $view$;
+  REVOKE SELECT ON public.v_business_service_health FROM PUBLIC;
+END
+$hp1$;

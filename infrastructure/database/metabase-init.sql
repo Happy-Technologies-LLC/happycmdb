@@ -45,15 +45,6 @@ GRANT USAGE ON SCHEMA cmdb TO metabase_readonly;
 -- Grant SELECT on all existing tables in public schema
 GRANT SELECT ON ALL TABLES IN SCHEMA public TO metabase_readonly;
 GRANT SELECT ON ALL TABLES IN SCHEMA cmdb TO metabase_readonly;
-
--- Grant SELECT on all existing views
-GRANT SELECT ON ALL VIEWS IN SCHEMA public TO metabase_readonly;
-GRANT SELECT ON ALL VIEWS IN SCHEMA cmdb TO metabase_readonly;
-
--- Grant SELECT on all future tables (default privileges)
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO metabase_readonly;
-ALTER DEFAULT PRIVILEGES IN SCHEMA cmdb GRANT SELECT ON TABLES TO metabase_readonly;
-
 -- Keep the private HP1 reconciliation journal out of BI even when this
 -- bootstrap runs after migration 028 or the V3 initializer. If it runs
 -- first, the migration/initializer revokes its named default grant.
@@ -67,6 +58,15 @@ BEGIN
     END IF;
 END
 $$;
+
+
+-- Grant SELECT on all existing views
+GRANT SELECT ON ALL VIEWS IN SCHEMA public TO metabase_readonly;
+GRANT SELECT ON ALL VIEWS IN SCHEMA cmdb TO metabase_readonly;
+
+-- Grant SELECT on all future tables (default privileges)
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO metabase_readonly;
+ALTER DEFAULT PRIVILEGES IN SCHEMA cmdb GRANT SELECT ON TABLES TO metabase_readonly;
 
 -- Grant SELECT on all sequences (needed for some queries)
 GRANT SELECT ON ALL SEQUENCES IN SCHEMA public TO metabase_readonly;

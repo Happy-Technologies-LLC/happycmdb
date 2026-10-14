@@ -24,6 +24,7 @@
 DO $hp1$
 BEGIN
   PERFORM set_config('lock_timeout', '5s', true);
+  PERFORM set_config('statement_timeout', '10s', true);
   IF to_regclass('public.ci_reconciliation_operations') IS NULL
      OR NOT EXISTS (SELECT 1 FROM information_schema.columns
                     WHERE table_schema = 'public' AND table_name = 'reconciliation_conflicts'

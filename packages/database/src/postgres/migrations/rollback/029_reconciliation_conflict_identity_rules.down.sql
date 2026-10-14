@@ -9,6 +9,8 @@
 -- Run: psql -v ON_ERROR_STOP=1 -f 029_reconciliation_conflict_identity_rules.down.sql
 
 BEGIN;
+SET LOCAL lock_timeout = '3s';
+SET LOCAL statement_timeout = '10s';
 
 DO $$
 BEGIN

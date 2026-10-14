@@ -19,6 +19,7 @@
 DO $hp1$
 BEGIN
   PERFORM set_config('lock_timeout', '5s', true);
+  PERFORM set_config('statement_timeout', '10s', true);
   IF NOT EXISTS (SELECT 1 FROM information_schema.columns
                  WHERE table_schema = 'public' AND table_name = 'ci_field_sources' AND column_name = 'value_json') THEN
     RAISE EXCEPTION 'HP1 014 requires 013_reconciliation_conflict_identity_rules';

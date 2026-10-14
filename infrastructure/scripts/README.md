@@ -104,14 +104,16 @@ PostgreSQL migrations `028`–`031` follow merged main `020`–`027`. Inventory
 applied migration number or edit an applied checksum. The migrator applies each
 file and its tracker row in one transaction. `028` requires `011`; subsequent
 files require the preceding S1 objects. `init-postgres.sql` mirrors the fresh
-schema, including `011`'s dimension columns, canonical 001 varchar CI IDs
-for lineage/field sources (previously UUID only in initdb), and S1's journal
-ACL. Both the migration and fresh init revoke named `metabase_readonly` grants
-if that role already exists; `metabase-init.sql` explicitly denies the two
-private tables after its all-public-table grant if BI setup runs later. Other
-BI table grants remain intact. On initdb, the business-service view is created
-by `009`/`010` and then scoped by `031`; initdb alone has no view. Guarded
-downs in `migrations/rollback/028`–`031` are manual only, in reverse order,
+schema, including `011`'s dimension columns and S1's journal ACL. Its
+lineage/field-source `ci_id` remains UUID per the initdb contract; unlike the
+migrator-built 001 schema, fresh initdb rejects non-UUID identifiers there.
+Both the migration and fresh init revoke named `metabase_readonly` grants if
+that role already exists; `metabase-init.sql` explicitly denies the two
+private tables immediately after its all-public-table grant if BI setup runs
+later. Other BI table grants remain intact. On initdb, the business-service
+view exists only if `009`/`010` were applied; `031` records an absent view when
+those source tables and the view are absent. Guarded downs in
+`migrations/rollback/028`–`031` are manual only, in reverse order,
 refuse to discard stamped provenance, and transactionally remove their exact
 `cmdb.schema_migrations` rows so an authorized reapplication is not skipped.
 

@@ -7,6 +7,29 @@
 -- Run: psql -v ON_ERROR_STOP=1 -f 031_business_service_mapping_ownership.down.sql
 
 BEGIN;
+SET LOCAL lock_timeout = '3s';
+SET LOCAL statement_timeout = '10s';
+
+DO $hp1$
+BEGIN
+  IF to_regclass('public.dim_business_services') IS NOT NULL
+     AND NOT EXISTS (SELECT 1 FROM pg_class WHERE oid = 'public.dim_business_services'::regclass AND relkind IN ('r', 'p')) THEN
+    RAISE EXCEPTION '031 down wrong object: dim_business_services must be a table';
+  END IF;
+  IF to_regclass('public.v_business_service_health') IS NOT NULL
+     AND NOT EXISTS (SELECT 1 FROM pg_class WHERE oid = 'public.v_business_service_health'::regclass AND relkind = 'v') THEN
+    RAISE EXCEPTION '031 down wrong object: v_business_service_health must be a view';
+  END IF;
+  IF to_regclass('public.dim_business_services') IS NULL
+     OR to_regclass('public.v_business_service_health') IS NULL THEN
+    IF to_regclass('public.dim_business_services') IS NOT NULL
+       OR to_regclass('public.v_business_service_health') IS NOT NULL THEN
+      RAISE EXCEPTION '031 down incomplete business-service schema';
+    END IF;
+    RAISE NOTICE '031 down business-service view absent on initdb; no view to restore';
+    RETURN;
+  END IF;
+  EXECUTE $view$
 
 CREATE OR REPLACE VIEW v_business_service_health AS
 SELECT
@@ -57,8 +80,10 @@ CROSS JOIN LATERAL (
     WHERE f.service_id = bs.service_id
       AND f.change_date >= CURRENT_DATE - INTERVAL '30 days'
 ) chg;
-
-REVOKE SELECT ON public.v_business_service_health FROM PUBLIC;
+  $view$;
+  REVOKE SELECT ON public.v_business_service_health FROM PUBLIC;
+END
+$hp1$;
 
 DELETE FROM cmdb.schema_migrations
  WHERE migration_name = '031_business_service_mapping_ownership.sql';

@@ -8,9 +8,15 @@
 -- Run: psql -v ON_ERROR_STOP=1 -f 028_change_history_reconciliation_org_provenance.down.sql
 
 BEGIN;
+SET LOCAL lock_timeout = '3s';
+SET LOCAL statement_timeout = '10s';
 
 DO $$
 BEGIN
+  IF EXISTS (SELECT 1 FROM cmdb.schema_migrations
+             WHERE migration_name = '029_reconciliation_conflict_identity_rules.sql') THEN
+    RAISE EXCEPTION '028 down refused: 029 migration still recorded';
+  END IF;
   IF EXISTS (SELECT 1 FROM ci_change_history WHERE organization_id IS NOT NULL OR correlation_id IS NOT NULL)
      OR EXISTS (SELECT 1 FROM ci_source_lineage WHERE organization_id IS NOT NULL OR last_correlation_id IS NOT NULL)
      OR EXISTS (SELECT 1 FROM ci_field_sources WHERE organization_id IS NOT NULL OR last_correlation_id IS NOT NULL)

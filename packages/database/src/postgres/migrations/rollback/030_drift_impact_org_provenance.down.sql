@@ -6,6 +6,8 @@
 -- Run: psql -v ON_ERROR_STOP=1 -f 030_drift_impact_org_provenance.down.sql
 
 BEGIN;
+SET LOCAL lock_timeout = '3s';
+SET LOCAL statement_timeout = '10s';
 
 DO $$
 BEGIN

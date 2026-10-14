@@ -5,6 +5,7 @@
  * applies 001–031 and fails hard on 028–031. No live database is contacted. */
 import { afterAll, beforeAll, describe, expect, it } from '@jest/globals';
 import { readFileSync } from 'fs';
+import { execFileSync } from 'child_process';
 import { join } from 'path';
 import neo4j, { Driver } from 'neo4j-driver';
 import { Pool } from 'pg';
@@ -119,6 +120,9 @@ describe('HP1-S1 expand contract on actual Timescale hypertables', () => {
         ('hp1-s1-backfilled', 'hp1-s1-service', 'hosts')`);
       const { rows } = await q(`SELECT supported_ci_count FROM v_business_service_health WHERE service_id = 'hp1-s1-service'`);
       expect(Number(rows[0].supported_ci_count)).toBe(1);
+      const health = await q(`SELECT supported_ci_count FROM cmdb.fn_business_service_health($1)
+        WHERE service_id = 'hp1-s1-service'`, [A]);
+      expect(Number(health.rows[0].supported_ci_count)).toBe(1);
     });
   });
   it('accepts superseded JSON evidence without imposing S4 immutability', async () => {
@@ -149,7 +153,9 @@ describe('HP1-S1 expand contract on actual Timescale hypertables', () => {
         FROM information_schema.columns WHERE table_schema = 'public'
           AND table_name = ANY($1) AND column_name IN
             ('organization_id', 'correlation_id', 'last_correlation_id', 'value_json', 'ci_id',
-             'incoming_json', 'detected_by', 'epoch') ORDER BY 1, 2`;
+             'incoming_json', 'detected_by', 'epoch')
+          AND NOT (table_name IN ('ci_source_lineage', 'ci_field_sources') AND column_name = 'ci_id')
+        ORDER BY 1, 2`;
       const indexes = `SELECT tablename, indexname, regexp_replace(indexdef, ' ON [^ ]+ ', ' ON table ', 'g') AS definition
         FROM pg_indexes WHERE schemaname = 'public' AND tablename = ANY($1)
           AND indexname IN ('ci_source_lineage_org_key', 'ci_field_sources_org_key',
@@ -159,6 +165,12 @@ describe('HP1-S1 expand contract on actual Timescale hypertables', () => {
       expect((await fresh.query(indexes, [tableNames])).rows).toEqual((await db.query(indexes, [tableNames])).rows);
       await fresh.query(`INSERT INTO ci_source_lineage (ci_id, source_name, source_id) VALUES ($1, 'legacy', 'instance')
         ON CONFLICT (ci_id, source_name, source_id) DO UPDATE SET source_id = EXCLUDED.source_id`, [CI]);
+      for (const table of ['ci_source_lineage', 'ci_field_sources']) {
+        const fields = table === 'ci_source_lineage' ? '(ci_id, source_name, source_id)' :
+          '(ci_id, field_name, source_name)';
+        await expect(fresh.query(`INSERT INTO ${table} ${fields}
+          VALUES ('ci_non_uuid', 'host', 'source')`)).rejects.toMatchObject({ code: '22P02' });
+      }
       await fresh.query(`INSERT INTO reconciliation_conflicts
         (ci_id, conflict_type, source_data, status) VALUES ($1, 'field', '{}', 'superseded')`, [CI]);
       const down = readFileSync(join(__dirname,
@@ -286,6 +298,143 @@ describe('HP1-S1 expand contract on actual Timescale hypertables', () => {
       }
     } finally {
       await db.query('DROP ROLE metabase_readonly');
+    }
+  });
+
+  it('migrates existing V2 initdb into V3 parity and enforces guards and atomic rollback', async () => {
+    const dir = join(__dirname, '../../../packages/database/src/postgres/migrations');
+    const base = '11f026b00454444795db403bc0b75cb09af5ecd2';
+    const v2Script = execFileSync('git', ['show', `${base}:infrastructure/scripts/init-postgres.sql`],
+      { encoding: 'utf8' });
+    const v3Script = readFileSync(join(__dirname, '../../../infrastructure/scripts/init-postgres.sql'), 'utf8');
+    const files = ['028_change_history_reconciliation_org_provenance',
+      '029_reconciliation_conflict_identity_rules', '030_drift_impact_org_provenance',
+      '031_business_service_mapping_ownership'];
+    const up = (n: number) => readFileSync(join(dir, `${files[n]}.sql`), 'utf8');
+    const down = (n: number) => readFileSync(join(dir, 'rollback', `${files[n]}.down.sql`), 'utf8');
+    const connection = (database: string) => new Pool({ host: process.env['POSTGRES_HOST'],
+      port: Number(process.env['POSTGRES_PORT']), database,
+      user: process.env['POSTGRES_USER'], password: process.env['POSTGRES_PASSWORD'] });
+    for (const name of ['hp1_s1_existing_v2', 'hp1_s1_fresh_v3']) await db.query(`CREATE DATABASE ${name}`);
+    const existing = connection('hp1_s1_existing_v2');
+    const fresh = connection('hp1_s1_fresh_v3');
+    const client = await existing.connect();
+    const q = (sql: string, values?: unknown[]) => client.query(sql, values);
+    try {
+      await q(v2Script);
+      await fresh.query(v3Script);
+      await q(`CREATE TABLE cmdb.schema_migrations (
+        migration_name VARCHAR(255) PRIMARY KEY, checksum VARCHAR(64) NOT NULL,
+        applied_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP)`);
+      await expect(q(up(0))).rejects.toThrow('HP1 012 requires 011_ci_organization_scope');
+      await q(readFileSync(join(dir, '011_ci_organization_scope.sql'), 'utf8'));
+      for (const [index, reason] of [[1, 'HP1 013 requires 012'], [2, 'HP1 014 requires 013'],
+        [3, 'HP1 017 requires 014']] as const) {
+        await expect(q(up(index))).rejects.toThrow(reason);
+      }
+
+      await q('BEGIN');
+      await q('CREATE VIEW ci_reconciliation_operations AS SELECT 1 AS x');
+      await expect(q(up(0))).rejects.toThrow('HP1 012 wrong object');
+      await q('ROLLBACK');
+      expect((await q(`SELECT to_regclass('public.ci_reconciliation_operations') AS journal`))
+        .rows[0].journal).toBeNull();
+
+      // The same V2 copy must not retain 028 after any later step aborts.
+      await q('BEGIN');
+      await q(up(0));
+      await expect(q('SELECT 1 / 0')).rejects.toMatchObject({ code: '22012' });
+      await q('ROLLBACK');
+      expect((await q(`SELECT to_regclass('public.ci_reconciliation_operations') AS journal`))
+        .rows[0].journal).toBeNull();
+      expect((await q(`SELECT column_name FROM information_schema.columns
+        WHERE table_name = 'ci_change_history' AND column_name = 'organization_id'`)).rows).toEqual([]);
+
+      for (let i = 0; i < files.length; i++) {
+        await q('BEGIN');
+        await q(up(i));
+        await q(`INSERT INTO cmdb.schema_migrations (migration_name, checksum)
+          VALUES ($1, 'disposable-proof')`, [`${files[i]}.sql`]);
+        await q('COMMIT');
+      }
+      expect((await q(`SELECT to_regclass('public.v_business_service_health') AS view`))
+        .rows[0].view).toBeNull(); // 009/010 absent on V2; 031 records absence.
+      await q('BEGIN');
+      await q('CREATE TABLE v_business_service_health (x int)');
+      await expect(q(up(3))).rejects.toThrow('HP1 017 wrong object');
+      await q('ROLLBACK');
+
+      const catalog = async (pool: Pool) => ({
+        columns: (await pool.query(`SELECT table_name, column_name, data_type, is_nullable
+          FROM information_schema.columns WHERE table_schema IN ('public', 'cmdb')
+            AND table_name IN ('ci_change_history', 'ci_source_lineage', 'ci_field_sources',
+              'reconciliation_conflicts', 'reconciliation_rules', 'source_authority',
+              'baseline_snapshots', 'drift_detection_results', 'impact_analyses',
+              'ci_criticality_scores', 'audit_log', 'ci_reconciliation_operations',
+              'ci_reconciliation_epochs', 'dim_ci')
+            AND column_name IN ('organization_id', 'org_backfilled', 'correlation_id',
+              'last_correlation_id', 'value_json', 'ci_id', 'incoming_json', 'epoch')
+          ORDER BY table_name, column_name`)).rows,
+        indexes: (await pool.query(`SELECT tablename, indexname,
+            regexp_replace(indexdef, ' ON [^ ]+ ', ' ON table ', 'g') AS definition
+          FROM pg_indexes WHERE schemaname = 'public'
+            AND indexname IN ('ci_change_history_correlation_key', 'ci_source_lineage_org_key',
+              'ci_field_sources_org_key', 'reconciliation_conflicts_pending_key',
+              'ci_reconciliation_operations_inflight', 'ci_criticality_scores_org_ci_key')
+          ORDER BY tablename, indexname`)).rows,
+        acl: (await pool.query(`SELECT relname, relacl::text AS acl FROM pg_class
+          WHERE oid IN ('public.ci_reconciliation_operations'::regclass,
+            'public.ci_reconciliation_epochs'::regclass) ORDER BY relname`)).rows,
+      });
+      const migrated = await catalog(existing);
+      for (let i = 0; i < files.length; i++) {
+        await q('BEGIN');
+        await q(up(i));
+        await q('COMMIT');
+      }
+      expect(await catalog(existing)).toEqual(migrated); // rerun makes no catalog/ACL difference
+      expect(await catalog(fresh)).toEqual(migrated); // existing V2+011+028–031 = fresh V3
+
+      await expect(q(down(0))).rejects.toThrow('028 down refused: 029 migration still recorded');
+      await q('ROLLBACK');
+      expect((await q(`SELECT count(*)::int AS applied FROM cmdb.schema_migrations`))
+        .rows[0].applied).toBe(4);
+      await q(down(3));
+      await q(`INSERT INTO baseline_snapshots
+        (id, ci_id, snapshot_type, snapshot_data, created_at, created_by, organization_id)
+        VALUES ($1, 'hp1', 'manual', '{}', now(), 'test', $2)`, [CI, A]);
+      await expect(q(down(2))).rejects.toThrow('030 down refused: organization-stamped');
+      await q('ROLLBACK');
+      expect((await q(`SELECT count(*)::int AS applied FROM cmdb.schema_migrations
+        WHERE migration_name = $1`, [`${files[2]}.sql`])).rows[0].applied).toBe(1);
+      await q('DELETE FROM baseline_snapshots WHERE id = $1', [CI]);
+      await q(down(2));
+      await q(down(1));
+      await q(`INSERT INTO audit_log (actor, entity_type, entity_id, action, organization_id)
+        VALUES ('test', 'CI', 'hp1-v2-audit', 'UPDATE', $1)`, [A]);
+      await expect(q(down(0))).rejects.toThrow('028 down refused: organization provenance');
+      await q('ROLLBACK');
+      expect((await q(`SELECT count(*)::int AS applied FROM cmdb.schema_migrations
+        WHERE migration_name = $1`, [`${files[0]}.sql`])).rows[0].applied).toBe(1);
+      await q(`DELETE FROM audit_log WHERE entity_id = 'hp1-v2-audit'`);
+      await q(`INSERT INTO ci_change_history (ci_id, change_type, change_source, organization_id)
+        VALUES ('hp1-v2-history', 'updated', 'kafka', $1)`, [A]);
+      await expect(q(down(0))).rejects.toThrow('028 down refused: organization provenance');
+      await q('ROLLBACK');
+      expect((await q(`SELECT column_name FROM information_schema.columns
+        WHERE table_name = 'ci_change_history' AND column_name = 'organization_id'`)).rows)
+        .toHaveLength(1);
+      await q(`DELETE FROM ci_change_history WHERE ci_id = 'hp1-v2-history'`);
+      await q(down(0));
+      expect((await q(`SELECT count(*)::int AS applied FROM cmdb.schema_migrations`))
+        .rows[0].applied).toBe(0);
+    } finally {
+      client.release();
+      await existing.end();
+      await fresh.end();
+      for (const name of ['hp1_s1_existing_v2', 'hp1_s1_fresh_v3']) {
+        await db.query(`DROP DATABASE ${name} WITH (FORCE)`);
+      }
     }
   });
 

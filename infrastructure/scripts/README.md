@@ -104,8 +104,9 @@ PostgreSQL migrations `028`–`031` follow merged main `020`–`027`. Inventory
 applied migration number or edit an applied checksum. The migrator applies each
 file and its tracker row in one transaction. `028` requires `011`; subsequent
 files require the preceding S1 objects. `init-postgres.sql` mirrors the fresh
-schema, including `011`'s dimension columns and S1's journal ACL. On initdb,
-the business-service view is created by `009`/`010` and then scoped by `031`;
+schema, including `011`'s dimension columns, canonical 001 varchar CI IDs
+for lineage/field sources (previously UUID only in initdb), and S1's journal
+ACL. On initdb, the business-service view is created by `009`/`010` and then scoped by `031`;
 initdb alone has no view. Guarded downs in `migrations/rollback/028`–`031`
 are manual only, in reverse order, and refuse to discard stamped provenance.
 

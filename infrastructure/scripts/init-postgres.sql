@@ -858,7 +858,7 @@ CREATE INDEX idx_source_authority_score ON source_authority(authority_score DESC
 -- ----------------------------------------
 CREATE TABLE IF NOT EXISTS ci_source_lineage (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  ci_id UUID NOT NULL,
+  ci_id VARCHAR(255) NOT NULL,
   source_name VARCHAR(255) NOT NULL,
   source_id VARCHAR(255) NOT NULL,
   discovered_at TIMESTAMPTZ DEFAULT NOW(),
@@ -875,7 +875,7 @@ CREATE INDEX idx_ci_source_lineage_source ON ci_source_lineage(source_name);
 -- ----------------------------------------
 CREATE TABLE IF NOT EXISTS ci_field_sources (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  ci_id UUID NOT NULL,
+  ci_id VARCHAR(255) NOT NULL,
   field_name VARCHAR(255) NOT NULL,
   field_value TEXT,
   source_name VARCHAR(255) NOT NULL,

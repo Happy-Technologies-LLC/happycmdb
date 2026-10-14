@@ -325,6 +325,10 @@ jobs:
       - name: Fail-before on post-79 base ACL
         run: |
           set -euo pipefail
+          if git cat-file -e "${BASE_SHA}:packages/database/src/postgres/migrations/033_public_business_service_audit_acl.sql" 2>/dev/null; then
+            echo 'HAP-644 already on the base; fail-before is not applicable.'
+            exit 0
+          fi
           git worktree add ../hap644-base "$BASE_SHA"
           cp "$HARNESS" "../hap644-base/$HARNESS"
           cd ../hap644-base

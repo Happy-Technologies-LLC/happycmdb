@@ -73,7 +73,7 @@ BEGIN
       'public.v_executive_cost_summary', 'public.v_cost_by_tower',
       'public.v_cost_trends', 'public.v_unit_economics',
       'public.v_cloud_vs_onprem_costs', 'public.v_cost_allocation_summary',
-      'public.v_depreciation_summary', 'public.v_top_cost_drivers',
+      'public.v_depreciation_summary',
       'public.v_incident_summary', 'public.v_incident_trends',
       'public.v_change_success_rates', 'public.v_change_calendar',
       'public.v_configuration_accuracy', 'public.v_sla_compliance',

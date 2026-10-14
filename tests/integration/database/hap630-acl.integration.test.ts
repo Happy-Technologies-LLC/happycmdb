@@ -166,6 +166,9 @@ if (process.env['HAP630_ACCEPTANCE'] === '1') {
         await deniedPrivileges(db, 'metabase_readonly');
         for (const view of reporting) await asRole(db, 'metabase_readonly',
           `SELECT * FROM ${view} LIMIT 1`, false);
+        await db.query(readFileSync(join(root, 'infrastructure/database/views/cost-analysis.sql'), 'utf8'));
+        await asRole(db, 'metabase_readonly', 'SELECT * FROM v_cost_by_tower LIMIT 1', false);
+        await asRole(db, 'metabase_readonly', 'SELECT * FROM v_top_cost_drivers LIMIT 1', true);
       }, 180000);
 
       it('guarded manual down refuses wrong relation and removes exactly its ledger entry', async () => {

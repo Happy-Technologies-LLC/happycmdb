@@ -222,6 +222,17 @@ describe('HP1-S1 expand contract on actual Timescale hypertables', () => {
           expect(ordinary[0].readable).toBe(true);
           if (!before) continue;
 
+          // V3 initdb contains the S1 columns, not the older business-service
+          // tables/views: build those from their canonical 001 and 008–010 SQL.
+          const baseSql = readFileSync(join(migrationDir, '001_complete_schema.sql'), 'utf8');
+          await fresh.query(baseSql.slice(baseSql.indexOf('-- Dimension table for business services'),
+            baseSql.indexOf('-- View: Business Service Health Dashboard')));
+          for (const file of ['008_business_service_organization_scope',
+            '009_business_service_views_org_scope', '010_business_service_views_org_functions',
+            '031_business_service_mapping_ownership']) {
+            await fresh.query(readFileSync(join(migrationDir, `${file}.sql`), 'utf8'));
+          }
+
           await fresh.query(`CREATE TABLE cmdb.schema_migrations (
             migration_name VARCHAR(255) PRIMARY KEY, checksum VARCHAR(64) NOT NULL,
             applied_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP)`);

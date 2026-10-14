@@ -312,6 +312,8 @@ CREATE TABLE IF NOT EXISTS api_keys (
   last_used_at TIMESTAMPTZ,
   revoked_at TIMESTAMPTZ,
   metadata JSONB DEFAULT '{}'::jsonb,
+  -- Credential generation of the authorizing credential (HP1-S6; mirrors migration 020).
+  credential_epoch INTEGER NOT NULL DEFAULT 0,
   CONSTRAINT api_keys_user_id_check CHECK (user_id IS NOT NULL AND user_id <> ''),
   CONSTRAINT api_keys_name_check CHECK (name IS NOT NULL AND name <> ''),
   CONSTRAINT api_keys_role_check CHECK (role IN ('admin', 'operator', 'viewer', 'agent'))
@@ -322,6 +324,53 @@ CREATE INDEX idx_api_keys_key_hash ON api_keys(key_hash);
 CREATE INDEX idx_api_keys_enabled ON api_keys(enabled) WHERE enabled = TRUE;
 CREATE INDEX idx_api_keys_expires_at ON api_keys(expires_at) WHERE expires_at IS NOT NULL;
 CREATE INDEX idx_api_keys_created_at ON api_keys(created_at DESC);
+
+-- ----------------------------------------
+-- auth_credential_events: append-only credential lifecycle audit
+-- (HP1-S6; mirrors packages/database/src/postgres/migrations/020_auth_credential_events.sql)
+-- ----------------------------------------
+CREATE TABLE IF NOT EXISTS auth_credential_events (
+  id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id          VARCHAR(255) NOT NULL,
+  event            VARCHAR(40)  NOT NULL,
+  ref_event_id     UUID,
+  target_epoch     INTEGER,
+  revoked_api_keys INTEGER,
+  reason           VARCHAR(32),
+  actor            VARCHAR(255) NOT NULL,
+  occurred_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+  CONSTRAINT auth_credential_events_user_id_check CHECK (user_id <> ''),
+  CONSTRAINT auth_credential_events_actor_check CHECK (actor <> ''),
+  CONSTRAINT auth_credential_events_event_check CHECK (event IN (
+    'default_marker_set_scan', 'default_marker_set_login',
+    'password_rotation_intent', 'password_rotated_operator', 'password_rotation_not_applied')),
+  CONSTRAINT auth_credential_events_reason_check CHECK (reason IS NULL OR reason IN ('guard_failed', 'fenced')),
+  CONSTRAINT auth_credential_events_outcome_ref_check CHECK (
+    (event IN ('password_rotated_operator', 'password_rotation_not_applied')) = (ref_event_id IS NOT NULL)),
+  CONSTRAINT auth_credential_events_intent_epoch_check CHECK (
+    (event = 'password_rotation_intent') = (target_epoch IS NOT NULL)),
+  CONSTRAINT auth_credential_events_not_applied_reason_check CHECK (
+    (event = 'password_rotation_not_applied') = (reason IS NOT NULL)),
+  CONSTRAINT auth_credential_events_revoked_keys_check CHECK (
+    (event = 'password_rotated_operator') = (revoked_api_keys IS NOT NULL) AND (revoked_api_keys IS NULL OR revoked_api_keys >= 0))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS auth_credential_events_one_outcome
+  ON auth_credential_events (ref_event_id) WHERE ref_event_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS auth_credential_events_open_intents
+  ON auth_credential_events (occurred_at) WHERE event = 'password_rotation_intent';
+CREATE OR REPLACE FUNCTION auth_credential_events_append_only() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  RAISE EXCEPTION 'auth_credential_events is append-only' USING ERRCODE = '55000';
+END;
+$$;
+CREATE OR REPLACE TRIGGER auth_credential_events_no_update_delete
+  BEFORE UPDATE OR DELETE ON auth_credential_events
+  FOR EACH ROW EXECUTE FUNCTION auth_credential_events_append_only();
+CREATE OR REPLACE TRIGGER auth_credential_events_no_truncate
+  BEFORE TRUNCATE ON auth_credential_events
+  FOR EACH STATEMENT EXECUTE FUNCTION auth_credential_events_append_only();
+REVOKE ALL ON auth_credential_events FROM PUBLIC;
 
 -- ============================================
 -- SECTION 3: UNIFIED CREDENTIAL SYSTEM

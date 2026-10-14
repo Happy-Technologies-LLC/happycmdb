@@ -31,6 +31,28 @@ export interface User {
    * verifyApiKey). Unset => org-scoped routes (business services, TBM) return 403.
    */
   _organizationId?: string;
+  /** Neo4j elementId of the user node; guarded writes address the node by it. */
+  _elementId?: string;
+  /**
+   * Dedicated platform-administrator flag (P-6): stored `platformAdmin`.
+   * Independent of role and organization; never effective on a seeded
+   * account (see platform-admin.ts isPlatformAdmin).
+   */
+  _platformAdmin?: boolean;
+  /** Immutable seed provenance stamped by the seed writers / §12 inventory. */
+  _seedProvenance?: string;
+  /**
+   * Stored `defaultPasswordSuspect`: the stored hash verified against a
+   * default plaintext. Outside development the account can neither log in
+   * nor use any credential until an operator rotation clears it.
+   */
+  _defaultPasswordSuspect?: boolean;
+  /**
+   * Credential generation (stored `credentialEpoch`, absent = 0). Every token
+   * and API key is valid only for the generation it was minted in; an
+   * operator rotation increments it. NaN when the stored value is malformed.
+   */
+  _credentialEpoch?: number;
 }
 
 export type ApiKeyTier = 'standard' | 'premium' | 'enterprise';
@@ -47,6 +69,8 @@ export interface ApiKey {
   expiresAt?: Date;
   _createdAt: Date;
   lastUsedAt?: Date;
+  /** Credential generation of the credential that authorized this key's creation. */
+  _credentialEpoch?: number;
 }
 
 export interface TokenPayload {
@@ -61,6 +85,8 @@ export interface TokenPayload {
    * value minted into the token.
    */
   _organizationId?: string;
+  /** Credential generation the token was minted in (absent on pre-HP1 tokens = 0). */
+  _cep?: number;
   iat?: number;
   exp?: number;
   iss?: string;
@@ -69,6 +95,20 @@ export interface TokenPayload {
 
 export interface AuthenticatedRequest extends Request {
   user?: TokenPayload;
+}
+
+/**
+ * More than one distinct :User node matches an identifier across its two
+ * spellings (`_id`/`id`, or `_username`/`username`). Per-property UNIQUE
+ * constraints do not stop one user's `_id` equalling another user's `id`, so
+ * a first-row choice would authorize as an arbitrary node. Every lookup
+ * refuses instead (HP1-S6, approvals/cmdb-pr50-sec12-02-user-id-index-scope-a-AMENDMENT.go).
+ */
+export class AmbiguousUserIdentityError extends Error {
+  constructor() {
+    super('Ambiguous user identity');
+    this.name = 'AmbiguousUserIdentityError';
+  }
 }
 
 export interface LoginRequest {

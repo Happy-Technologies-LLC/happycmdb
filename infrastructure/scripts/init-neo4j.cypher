@@ -22,6 +22,19 @@ FOR (u:User) REQUIRE u.email IS UNIQUE;
 CREATE CONSTRAINT user_id_unique IF NOT EXISTS
 FOR (u:User) REQUIRE u.id IS UNIQUE;
 
+// Index on User._id (HP1-S6 SEC12-02; mirrors neo4j migration 003): the
+// per-request auth lookup `u._id = $id OR u.id = $id` seeks this index and
+// user_id_unique instead of scanning every :User node.
+CREATE INDEX user_id_lookup IF NOT EXISTS
+FOR (u:User) ON (u._id);
+
+// One decision per operator password rotation event (HP1-S6): the
+// uniqueness lets an `applied` decision (atomic with the rotation) or a
+// `cancelled` fence commit, never both, so a delayed rotation can never
+// apply after it was recorded as not applied.
+CREATE CONSTRAINT credential_rotation_decision_event IF NOT EXISTS
+FOR (d:CredentialRotationDecision) REQUIRE d.eventId IS UNIQUE;
+
 // ============================================
 // NODE LABEL CONSTRAINTS
 // ============================================
@@ -133,8 +146,11 @@ ON EACH [ci.name, ci.metadata];
 // INITIAL USER DATA
 // ============================================
 
-// Create admin user
-// Password: Admin123! (bcrypt hash)
+// Create admin user (development bootstrap)
+// Password: Admin123! (bcrypt hash). It carries seedProvenance (never a
+// platform admin) and the default-password marker: outside
+// NODE_ENV=development it cannot log in or use any credential until an
+// operator rotates its password (rotate-user-password, HP1-S6).
 // organizationId: the internal organization; business-service routes reject
 // tokens without an org claim (see migration 008_business_service_organization_scope.sql).
 MERGE (u:User {email: 'admin@happycmdb.local'})
@@ -145,7 +161,9 @@ SET u.id = 'user-admin-001',
     u.enabled = true,
     u.organizationId = '00000000-0000-0000-0000-000000000000',
     u.createdAt = datetime(),
-    u.updatedAt = datetime();
+    u.updatedAt = datetime(),
+    u.seedProvenance = coalesce(u.seedProvenance, 'init-neo4j'),
+    u.defaultPasswordSuspect = true;
 
 // ============================================
 // SAMPLE CI DATA - SERVERS

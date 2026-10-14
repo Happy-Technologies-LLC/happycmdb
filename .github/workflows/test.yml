@@ -133,6 +133,92 @@ jobs:
           name: integration-test-results
           path: test-results/integration/junit.xml
 
+  sec12-02-p99:
+    # v16 §15 N-21 SEC12-02 real-store auth p99, 10 vs 5 000 users (operator Choice A and its erratum,
+    # approvals/cmdb-pr50-sec12-02-p99-realstore-choice-A*.go). Real HTTP auth path on the integration
+    # global setup's disposable Neo4j 5.15 and PostgreSQL. Fails when the median p99 ratio exceeds 1.10
+    # (SEC12-02 unmet); in that case the same harness also runs at the PR base, only to classify the cause.
+    name: SEC12-02 Auth p99 (real store)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    env:
+      HARNESS: tests/integration/database/sec12-02-p99.integration.test.ts
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Applies to this PR? (auth request path, harness or this job changed)
+        id: scope
+        run: |
+          set -euo pipefail
+          changed=$(git diff --name-only "$BASE_SHA" HEAD -- \
+            packages/api-server/src/auth packages/api-server/src/middleware/auth.middleware.ts \
+            packages/api-server/src/rest/auth.controller.ts "$HARNESS" .github/workflows/test.yml)
+          if [ -n "$changed" ]; then echo "run=true" >> "$GITHUB_OUTPUT"; else echo "run=false" >> "$GITHUB_OUTPUT"; fi
+          printf 'Relevant changes:\n%s\n' "${changed:-<none>}"
+
+      - name: Setup Node.js 22.x
+        if: steps.scope.outputs.run == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: 'npm'
+
+      - name: Install dependencies
+        if: steps.scope.outputs.run == 'true'
+        run: npm ci
+
+      - name: Measure at PR head
+        if: steps.scope.outputs.run == 'true'
+        env:
+          SEC12_02_P99: '1'
+          P99_LABEL: head
+          P99_RESULT_FILE: ${{ github.workspace }}/test-results/sec12-02-p99/head.json
+        run: npx jest -c jest.config.integration.js "$HARNESS" --runInBand
+
+      - name: Classify (same harness at the PR base, only when the head ratio exceeds 1.10)
+        if: steps.scope.outputs.run == 'true'
+        run: |
+          set -euo pipefail
+          verdict=$(node -p "require('./test-results/sec12-02-p99/head.json').summary.verdict")
+          if [ "$verdict" = "PASS" ]; then echo "Head ratio within 1.10; no base run needed."; exit 0; fi
+          git worktree add ../p99-base "$BASE_SHA"
+          mkdir -p "../p99-base/$(dirname "$HARNESS")"
+          cp "$HARNESS" "../p99-base/$HARNESS"
+          cd ../p99-base
+          npm ci
+          SEC12_02_P99=1 P99_LABEL=base P99_RESULT_FILE="$GITHUB_WORKSPACE/test-results/sec12-02-p99/base.json" \
+            npx jest -c jest.config.integration.js "$HARNESS" --runInBand
+
+      - name: SEC12-02 verdict
+        if: steps.scope.outputs.run == 'true'
+        run: |
+          node -e '
+            const fs = require("fs");
+            const read = l => { const f = `test-results/sec12-02-p99/${l}.json`; return fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, "utf8")).summary : null; };
+            const head = read("head"), base = read("base");
+            console.log("head:", JSON.stringify(head));
+            if (base) console.log("base:", JSON.stringify(base));
+            const stats = s => `median of per-round ratios ${s.median_of_round_ratios ?? s.ratio}, ratio of medians ${s.ratio_of_medians ?? s.ratio}`;
+            if (head.verdict === "PASS") { console.log(`SEC12-02 MET: ${stats(head)}, both <= 1.10`); process.exit(0); }
+            const cause = !base ? "unclassified (no base run)"
+              : base.verdict === "PASS" ? "INTRODUCED by this PR (base within 1.10)"
+              : `PRE-EXISTING scaling also at base (${stats(base)})`;
+            console.log(`SEC12-02 UNMET: ${stats(head)} (both must be <= 1.10); cause: ${cause}`);
+            process.exit(1);
+          '
+
+      - name: Upload SEC12-02 results
+        if: always() && steps.scope.outputs.run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: sec12-02-p99-results
+          path: test-results/sec12-02-p99/
+
   staging-migrations:
     name: Staging Migration Contract
     runs-on: ubuntu-latest

@@ -87,11 +87,30 @@ const keyOf = (id: string) => `idr-key-${id}`;
 const keyHash = (raw: string) => createHash('sha256').update(raw).digest('hex');
 const reason = (error: unknown) => (error instanceof AuthFailureError ? error.reason : error instanceof Error ? error.name : String(error));
 
+const INIT_NEO4J = join(__dirname, '../../../infrastructure/scripts/init-neo4j.cypher');
+const cypherStatements = (text: string) => text.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
+  .split(';').map(s => s.trim()).filter(Boolean);
+
+/**
+ * The integration global setup does not load init-neo4j.cypher, so this
+ * suite creates the fresh-install :User lookup schema itself: the
+ * user_id_unique constraint taken verbatim from init-neo4j.cypher (it backs
+ * `id` on every deployed database), and migration 003 for `_id`.
+ */
+async function ensureUserIdUnique(): Promise<void> {
+  const statement = cypherStatements(readFileSync(INIT_NEO4J, 'utf8')).find(s => s.startsWith('CREATE CONSTRAINT user_id_unique'));
+  await cypher(statement!);
+}
 async function apply003(): Promise<void> {
-  const statements = readFileSync(MIGRATION_003, 'utf8').split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
-    .split(';').map(s => s.trim()).filter(Boolean);
-  for (const statement of statements) await cypher(statement);
+  for (const statement of cypherStatements(readFileSync(MIGRATION_003, 'utf8'))) await cypher(statement);
   await cypher('CALL db.awaitIndexes(300)');
+}
+/** Names of the schema objects present before this suite, restored afterwards. */
+const preexisting = { constraint: false, index: false };
+async function schemaPresent() {
+  const constraint = await cypher("SHOW CONSTRAINTS YIELD name WHERE name = 'user_id_unique' RETURN count(*) AS n");
+  const index = await cypher("SHOW INDEXES YIELD name WHERE name = 'user_id_lookup' RETURN count(*) AS n");
+  return { constraint: neo4j.integer.toNumber(constraint.records[0]!.get('n')) > 0, index: neo4j.integer.toNumber(index.records[0]!.get('n')) > 0 };
 }
 
 /** Every observable outcome of every lookup, in one run. */
@@ -141,8 +160,10 @@ beforeAll(async () => {
   service = new AuthService(authConfig as never, repository);
   jwt = new JWTService(authConfig.jwt as never);
   const hash = await bcrypt.hash(PASSWORD, 4);
+  Object.assign(preexisting, await schemaPresent());
   await cypher("MATCH (u:User) WHERE coalesce(u._id, u.id) STARTS WITH 'idr-' DETACH DELETE u");
   await pool.query("DELETE FROM api_keys WHERE user_id LIKE 'idr-%'");
+  await ensureUserIdUnique();
   for (const [label, props] of Object.entries(FIXTURES)) {
     const enabled = 'role' in props ? { enabled: true } : { _enabled: true };
     const created = await cypher('CREATE (u:User) SET u = $props RETURN elementId(u) AS e',
@@ -155,7 +176,10 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await apply003(); // leave the shared integration database with the fresh-install schema
+  // Restore the schema this suite found, so later suites see the CI default.
+  if (!preexisting.index) await cypher('DROP INDEX user_id_lookup IF EXISTS');
+  else await apply003();
+  if (!preexisting.constraint) await cypher('DROP CONSTRAINT user_id_unique IF EXISTS');
   await cypher("MATCH (u:User) WHERE coalesce(u._id, u.id) STARTS WITH 'idr-' DETACH DELETE u");
   await pool?.query("DELETE FROM api_keys WHERE user_id LIKE 'idr-%'");
   await pool?.end();

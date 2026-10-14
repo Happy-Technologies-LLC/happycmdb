@@ -33,7 +33,7 @@ import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
 import { logger } from '@cmdb/common';
 import { createHash } from 'crypto';
 import express from 'express';
-import { mkdirSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import http from 'http';
 import { AddressInfo } from 'net';
 import neo4j, { Driver } from 'neo4j-driver';
@@ -69,6 +69,9 @@ const STORE_SAMPLES = 5000;
 const THRESHOLD = 1.1;
 /** neo4j-auth.repository.ts findUserById, byte-identical at base 7d594eb and at this head. */
 const FIND_USER_BY_ID = 'MATCH (u:User) WHERE u._id = $id OR u.id = $id RETURN u';
+const INIT_NEO4J = resolve(__dirname, '../../../infrastructure/scripts/init-neo4j.cypher');
+/** Present at the PR head; absent at base 7d594eb, where the classification run then measures base's schema. */
+const MIGRATION_003 = resolve(__dirname, '../../../packages/database/src/neo4j/migrations/003_user_id_lookup_index.cypher');
 
 type Credential = { id: string; access: string; refresh: string; key: string };
 type PlanNode = { operatorType: string; identifiers?: string[]; arguments?: Record<string, unknown>; dbHits?: number; rows?: number; children: PlanNode[] };
@@ -86,6 +89,11 @@ const keyHashOf = (key: string) => createHash('sha256').update(key).digest('hex'
 const pct = (sorted: number[], q: number) => sorted[Math.min(sorted.length - 1, Math.ceil(q * sorted.length) - 1)]!;
 const median = (xs: number[]) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)]!;
 const ms = (x: number) => +x.toFixed(3);
+const cypherStatements = (text: string) => text.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
+  .split(';').map(s => s.trim()).filter(Boolean);
+/** Schema objects present before the run, restored afterwards (the global setup does not load init-neo4j). */
+const preexisting = { constraint: true, index: true };
+let userSchema: string[] = [];
 
 async function cypher(statement: string, params: Record<string, unknown> = {}) {
   const session = driver.session();
@@ -179,6 +187,17 @@ beforeAll(async () => {
   pool = new Pool({ host: process.env['POSTGRES_HOST'], port: Number(process.env['POSTGRES_PORT']), database: process.env['POSTGRES_DB'],
     user: process.env['POSTGRES_USER'], password: process.env['POSTGRES_PASSWORD'] });
   passwordHash = await new PasswordService(authConfig.bcrypt as never).hash('p99-harness-password');
+  // Deployed :User lookup schema: init-neo4j's user_id_unique, plus migration 003 where this tree has it.
+  const count = async (q: string) => neo4j.integer.toNumber((await cypher(q)).records[0]!.get('n'));
+  preexisting.constraint = (await count("SHOW CONSTRAINTS YIELD name WHERE name = 'user_id_unique' RETURN count(*) AS n")) > 0;
+  preexisting.index = (await count("SHOW INDEXES YIELD name WHERE name = 'user_id_lookup' RETURN count(*) AS n")) > 0;
+  await cypher(cypherStatements(readFileSync(INIT_NEO4J, 'utf8')).find(s => s.startsWith('CREATE CONSTRAINT user_id_unique'))!);
+  if (existsSync(MIGRATION_003)) {
+    for (const statement of cypherStatements(readFileSync(MIGRATION_003, 'utf8'))) await cypher(statement);
+  }
+  await cypher('CALL db.awaitIndexes(300)');
+  userSchema = (await cypher("SHOW INDEXES YIELD name, labelsOrTypes, properties, state WHERE 'User' IN labelsOrTypes RETURN name, properties, state ORDER BY name"))
+    .records.map(r => `${r.get('name')}(${(r.get('properties') as string[]).join(',')}):${r.get('state')}`);
   const jwt = new JWTService(authConfig.jwt as never);
   creds = Array.from({ length: LARGE }, (_, i) => {
     const id = idOf(i);
@@ -202,6 +221,8 @@ afterAll(async () => {
   server?.close();
   agent.destroy();
   if (creds.length > 0) await removeUsers(0);
+  if (driver && !preexisting.index) await cypher('DROP INDEX user_id_lookup IF EXISTS');
+  if (driver && !preexisting.constraint) await cypher('DROP CONSTRAINT user_id_unique IF EXISTS');
   await pool?.end();
   await driver?.close();
   await getNeo4jClient().close();
@@ -241,7 +262,7 @@ measure('SEC12-02: auth p99 with 5 000 vs 10 users on real Neo4j and PostgreSQL'
   const perRoundRatio = p99[LARGE]!.map((large, round) => +(large / p99[SMALL]![round]!).toFixed(4));
   const ratio = median(p99[LARGE]!) / median(p99[SMALL]!);
   const summary = {
-    label: process.env['P99_LABEL'] ?? 'unlabelled',
+    label: process.env['P99_LABEL'] ?? 'unlabelled', user_indexes: userSchema,
     p99_10_median_ms: ms(median(p99[SMALL]!)), p99_5000_median_ms: ms(median(p99[LARGE]!)), ratio: +ratio.toFixed(4),
     per_round_ratio: perRoundRatio, spread: { min: Math.min(...perRoundRatio), max: Math.max(...perRoundRatio) },
     store_find_user_by_id_p99_median_ms: { [SMALL]: ms(median(storeP99[SMALL]!)), [LARGE]: ms(median(storeP99[LARGE]!)) },

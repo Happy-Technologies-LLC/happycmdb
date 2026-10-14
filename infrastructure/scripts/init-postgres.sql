@@ -1701,8 +1701,17 @@ BEGIN
 END
 $acl$;
 
--- Grant usage on sequences
-GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA cmdb TO PUBLIC;
+-- Serial sequences are app-writer only; never grant nextval to PUBLIC.
+REVOKE USAGE, SELECT ON ALL SEQUENCES IN SCHEMA cmdb FROM PUBLIC;
+DO $acl$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'cmdb_user') THEN
+    GRANT USAGE ON ALL SEQUENCES IN SCHEMA cmdb TO cmdb_user;
+    GRANT INSERT ON cmdb.dim_ci, cmdb.dim_location, cmdb.dim_owner,
+      cmdb.fact_discovery, cmdb.fact_ci_changes, cmdb.fact_ci_relationships TO cmdb_user;
+  END IF;
+END
+$acl$;
 
 -- Public audit aggregates are redacted; raw payload/IP/UA and detailed
 -- field-change views belong to the application owner only.
@@ -1719,7 +1728,15 @@ BEGIN
 END
 $acl$;
 GRANT SELECT ON recent_audit_activity TO PUBLIC;
-GRANT SELECT ON ci_change_history TO PUBLIC;
+-- Raw cross-organization CI change payloads are application-only.
+REVOKE SELECT ON ci_change_history FROM PUBLIC;
+DO $acl$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'cmdb_user') THEN
+    GRANT SELECT, INSERT ON ci_change_history TO cmdb_user;
+  END IF;
+END
+$acl$;
 -- v_ci_change_history_audit is deliberately excluded: it includes changes.
 -- The table owner retains auth/discovery writes. Never expose credential-linked
 -- configuration or credential-derived views through the historical PUBLIC ACL.
@@ -1741,9 +1758,17 @@ BEGIN
   END IF;
 END
 $acl$;
-GRANT SELECT, INSERT, UPDATE, DELETE ON discovery_agents TO PUBLIC;
-GRANT SELECT ON active_discovery_agents TO PUBLIC;
-GRANT SELECT ON agent_network_coverage TO PUBLIC;
+-- Match migration 019: never expose raw agent registration or unscoped views.
+REVOKE SELECT, INSERT, UPDATE, DELETE ON discovery_agents FROM PUBLIC;
+REVOKE SELECT ON active_discovery_agents, agent_network_coverage FROM PUBLIC;
+DO $acl$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'cmdb_user') THEN
+    GRANT SELECT, INSERT, UPDATE, DELETE ON discovery_agents TO cmdb_user;
+    GRANT SELECT ON active_discovery_agents, agent_network_coverage TO cmdb_user;
+  END IF;
+END
+$acl$;
 
 -- ============================================
 -- TABLE COMMENTS

@@ -140,11 +140,12 @@ this migration's scope.
 existing reporting views. The three `infrastructure/database/views/*.sql` files
 grant their own views when created later, except `v_top_cost_drivers`: its
 unbounded `ci.metadata` makes it unsuitable for the BI role. Keep the BI scripts
-and `032`/BI allowlists aligned if adding reporting views. Existing PUBLIC reads
-on unrelated `cmdb` reporting tables still apply to BI through role
-inheritance. The guarded `rollback/032_*.down.sql` is manual, removes its exact
-ledger row and restores 001's unsafe PUBLIC grants; it deliberately does not
-resurrect unknown prior BI grants. Never use this down as a security recovery.
+and `032`/BI allowlists aligned if adding reporting views. Migration `033`
+closes unrelated `cmdb` reporting tables to PUBLIC and BI. The guarded
+`rollback/032_*.down.sql` refuses while `033` or `034` remains recorded;
+it is manual, removes its exact ledger row and restores 001's unsafe PUBLIC
+grants. It deliberately does not resurrect unknown prior BI grants. Never
+use this down as a security recovery.
 
 ## HAP-644 PUBLIC business-service and audit ACLs
 
@@ -173,6 +174,27 @@ grants for the existing 001 schema, leaves newer private journals and named BI
 grants closed, then deletes the row. It is unsafe and manual-only; reapply `033`
 through the migrator after any authorized rollback. External SQL exposure is
 unverified; no deployed reachability was probed.
+
+## HAP-668 raw history, sequence and discovery-agent ACLs
+
+Migration `034_history_sequence_discovery_acl.sql` closes PUBLIC SELECT on
+`public.ci_change_history` (including previous/new values and metadata) and
+PUBLIC USAGE/SELECT on `cmdb` sequences. `cmdb_user` receives explicit history
+SELECT/INSERT, sequence USAGE and INSERT on the six serial-backed `cmdb` tables
+if separate from the owner. It also
+revokes legacy PUBLIC discovery-agent table read/write and unscoped view reads,
+matching `019`; the app role receives explicit discovery-agent access.
+`init-postgres.sql` mirrors these ACLs for standalone fresh installations.
+Reporting keeps the redacted discovery summary and audit activity, not raw
+history or unscoped agent views. `034` validates required objects before
+changing grants; it does not modify migration `033` or its checksum.
+
+Manual `rollback/034_*.down.sql` requires its ledger row, rejects later
+migrations and restores unsafe history/sequence PUBLIC grants, but never
+restores discovery-agent grants already closed by `019`. Roll back `034`
+before `033`, and `033` before `032`; both older down scripts refuse while
+their dependent migration is recorded. Reapply in ascending order. Never
+run any of these rollback scripts as routine security recovery.
 
 For existing Neo4j databases an operator must separately apply
 `packages/database/src/neo4j/migrations/004_reconciliation_op_fence.cypher`

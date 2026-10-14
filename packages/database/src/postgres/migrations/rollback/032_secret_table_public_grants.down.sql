@@ -20,6 +20,11 @@ BEGIN
                  WHERE migration_name = '032_secret_table_public_grants.sql') THEN
     RAISE EXCEPTION '032 down requires its migration ledger row';
   END IF;
+  IF EXISTS (SELECT 1 FROM cmdb.schema_migrations
+             WHERE migration_name IN ('033_public_business_service_audit_acl.sql',
+               '034_history_sequence_discovery_acl.sql')) THEN
+    RAISE EXCEPTION '032 down refused: dependent migration still recorded';
+  END IF;
   FOREACH name IN ARRAY ARRAY[
     'api_keys', 'credentials', 'credential_sets', 'discovery_definitions',
     'connector_configurations', 'system_config', 'active_api_keys',

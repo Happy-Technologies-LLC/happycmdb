@@ -345,6 +345,48 @@ jobs:
           HAP644_ACCEPTANCE=1 ./node_modules/.bin/jest \
             -c jest.config.integration.js "$HARNESS" --runInBand
 
+  hap668-real-store:
+    name: HAP-668 history, sequence and discovery ACL acceptance
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    env:
+      HARNESS: tests/integration/database/hap668-acl.integration.test.ts
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+      - name: Fail-before on merged HAP-644 ACL
+        run: |
+          set -euo pipefail
+          git worktree add ../hap668-base "$BASE_SHA"
+          cp "$HARNESS" "../hap668-base/$HARNESS"
+          cd ../hap668-base
+          npm ci
+          set +e
+          output=$(HAP668_ACCEPTANCE=1 HAP668_BASELINE=1 ./node_modules/.bin/jest \
+            -c jest.config.integration.js "$HARNESS" --runInBand 2>&1)
+          result=$?
+          set -e
+          printf '%s\n' "$output"
+          if [ "$result" -eq 0 ] || [[ "$output" != *"Received promise resolved instead of rejected"* ]]; then
+            echo 'Base ACL did not produce the expected permission assertion failure' >&2
+            exit 1
+          fi
+      - name: Pass-after on PR head (disposable PG15/Timescale)
+        run: |
+          npm ci
+          HAP668_ACCEPTANCE=1 ./node_modules/.bin/jest \
+            -c jest.config.integration.js "$HARNESS" --runInBand
+
   staging-migrations:
     name: Staging Migration Contract
     runs-on: ubuntu-latest
@@ -452,7 +494,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
   ci-rollup:
-    needs: [unit-tests, integration-tests, e2e-tests, staging-migrations, web-ui-build, hap630-real-store]
+    needs: [unit-tests, integration-tests, e2e-tests, staging-migrations, web-ui-build, hap630-real-store, hap644-real-store, hap668-real-store]
     if: always()
     runs-on: ubuntu-latest
     permissions:
@@ -469,6 +511,8 @@ jobs:
           E2E_TESTS_RESULT: ${{ needs.e2e-tests.result }}
           WEB_UI_BUILD_RESULT: ${{ needs.web-ui-build.result }}
           HAP630_RESULT: ${{ needs.hap630-real-store.result }}
+          HAP644_RESULT: ${{ needs.hap644-real-store.result }}
+          HAP668_RESULT: ${{ needs.hap668-real-store.result }}
         run: |
           set -euo pipefail
           if [ -z "$HEAD_SHA" ]; then
@@ -480,7 +524,9 @@ jobs:
              [ "$E2E_TESTS_RESULT" = "success" ] &&
              [ "$STAGING_MIGRATIONS_RESULT" = "success" ] &&
              [ "$WEB_UI_BUILD_RESULT" = "success" ] &&
-             { [ "$HAP630_RESULT" = "success" ] || { [ "${{ github.event_name }}" = "push" ] && [ "$HAP630_RESULT" = "skipped" ]; }; }; then
+             { [ "$HAP630_RESULT" = "success" ] || { [ "${{ github.event_name }}" = "push" ] && [ "$HAP630_RESULT" = "skipped" ]; }; } &&
+             { [ "$HAP644_RESULT" = "success" ] || { [ "${{ github.event_name }}" = "push" ] && [ "$HAP644_RESULT" = "skipped" ]; }; } &&
+             { [ "$HAP668_RESULT" = "success" ] || { [ "${{ github.event_name }}" = "push" ] && [ "$HAP668_RESULT" = "skipped" ]; }; }; then
             state=success
             description="all required gates passed"
           else
@@ -493,6 +539,12 @@ jobs:
             [ "$WEB_UI_BUILD_RESULT" = "success" ] || failures+=("web-ui-build=$WEB_UI_BUILD_RESULT")
             if [ "$HAP630_RESULT" != "success" ] && [ "${{ github.event_name }}" != "push" ]; then
               failures+=("hap630-real-store=$HAP630_RESULT")
+            fi
+            if [ "$HAP644_RESULT" != "success" ] && [ "${{ github.event_name }}" != "push" ]; then
+              failures+=("hap644-real-store=$HAP644_RESULT")
+            fi
+            if [ "$HAP668_RESULT" != "success" ] && [ "${{ github.event_name }}" != "push" ]; then
+              failures+=("hap668-real-store=$HAP668_RESULT")
             fi
             description="test gates failed: ${failures[*]}"
             if [ "${#description}" -gt 140 ]; then

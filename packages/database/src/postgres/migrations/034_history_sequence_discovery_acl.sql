@@ -52,7 +52,7 @@ BEGIN
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'cmdb_user') THEN
     GRANT SELECT, INSERT ON public.ci_change_history TO cmdb_user;
     GRANT USAGE ON ALL SEQUENCES IN SCHEMA cmdb TO cmdb_user;
-    GRANT INSERT ON cmdb.dim_ci, cmdb.dim_location, cmdb.dim_owner,
+    GRANT SELECT, INSERT ON cmdb.dim_ci, cmdb.dim_location, cmdb.dim_owner,
       cmdb.fact_discovery, cmdb.fact_ci_changes, cmdb.fact_ci_relationships TO cmdb_user;
     GRANT SELECT, INSERT, UPDATE, DELETE ON public.discovery_agents TO cmdb_user;
     GRANT SELECT ON public.active_discovery_agents, public.agent_network_coverage TO cmdb_user;

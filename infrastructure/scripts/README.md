@@ -180,8 +180,8 @@ unverified; no deployed reachability was probed.
 Migration `034_history_sequence_discovery_acl.sql` closes PUBLIC SELECT on
 `public.ci_change_history` (including previous/new values and metadata) and
 PUBLIC USAGE/SELECT on `cmdb` sequences. `cmdb_user` receives explicit history
-SELECT/INSERT, sequence USAGE and INSERT on the six serial-backed `cmdb` tables
-if separate from the owner. It also
+SELECT/INSERT, sequence USAGE and SELECT/INSERT on the six serial-backed
+`cmdb` tables if separate from the owner. It also
 revokes legacy PUBLIC discovery-agent table read/write and unscoped view reads,
 matching `019`; the app role receives explicit discovery-agent access.
 `init-postgres.sql` mirrors these ACLs for standalone fresh installations.

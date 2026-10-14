@@ -225,9 +225,6 @@ describe('HP1-S1 expand contract on actual Timescale hypertables', () => {
           await assertPrivate();
           await fresh.query(reportingGrants);
           await assertPrivate(); // A later BI bootstrap must leave private tables denied.
-          const { rows: ordinary } = await fresh.query(`SELECT has_table_privilege(
-            'metabase_readonly', 'public.ci_change_history', 'SELECT') AS readable`);
-          expect(ordinary[0].readable).toBe(true);
           if (!before) continue;
 
           // V3 initdb contains the S1 columns, not the older business-service

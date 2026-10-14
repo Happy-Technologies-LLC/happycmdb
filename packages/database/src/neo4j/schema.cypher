@@ -28,6 +28,10 @@ CREATE CONSTRAINT ci_external_id_unique IF NOT EXISTS
 FOR (c:CI)
 REQUIRE c.external_id IS UNIQUE;
 
+// HP1-S1 operator fence 004 (also in init-neo4j.cypher).
+CREATE CONSTRAINT reconciliation_op_fence_unique IF NOT EXISTS
+FOR (o:ReconciliationOp) REQUIRE o.op_id IS UNIQUE;
+
 // ============================================
 // v3.0 BUSINESS ENTITY CONSTRAINTS
 // ============================================

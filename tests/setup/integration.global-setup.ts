@@ -172,19 +172,18 @@ async function loadPostgresSchema(container: StartedTestContainer): Promise<void
   for (const file of migrationFiles) {
     const sql = readFileSync(resolve(MIGRATIONS_DIR, file), 'utf-8');
     const target = `/tmp/${file}`;
-    await container.copyContentToContainer([{ content: sql, target }]);
+    // Earlier migrations include legacy non-fatal Timescale notices. S1 is
+    // transactional and must fail the hosted suite if even one statement fails.
+    const hp1 = /^0(28|29|30|31)_/.test(file);
     const load = await container.exec([
-      'psql',
-      '-v',
-      'ON_ERROR_STOP=0',
-      '-U',
-      POSTGRES_USER,
-      '-d',
-      POSTGRES_DB,
-      '-f',
-      target,
+      'psql', '-v', `ON_ERROR_STOP=${hp1 ? '1' : '0'}`,
+      ...(hp1 ? ['-1'] : []),
+      '-U', POSTGRES_USER, '-d', POSTGRES_DB, '-f', target,
     ]);
-    if (load.exitCode !== 0) {
+    if (hp1 && load.exitCode !== 0) {
+      throw new Error(`HP1-S1 migration ${file} failed: ${load.output}`);
+    }
+    if (!hp1 && load.exitCode !== 0) {
       console.warn(`psql load of ${file} exited with code ${load.exitCode} (non-fatal notices expected)`);
     }
   }

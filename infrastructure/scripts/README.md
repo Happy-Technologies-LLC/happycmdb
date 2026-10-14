@@ -97,6 +97,34 @@ For detailed backup/restore documentation, see:
 
 This section contains comprehensive scripts for initializing and populating the HappyCMDB database with test data.
 
+## HP1-S1 additive schema (HAP-440 / HAP-471)
+
+PostgreSQL migrations `028`–`031` follow merged main `020`–`027`. Inventory
+`cmdb.schema_migrations` and catalog objects before application; never reuse an
+applied migration number or edit an applied checksum. The migrator applies each
+file and its tracker row in one transaction. `028` requires `011`; subsequent
+files require the preceding S1 objects. `init-postgres.sql` mirrors the fresh
+schema, including `011`'s dimension columns and S1's journal ACL. On initdb,
+the business-service view is created by `009`/`010` and then scoped by `031`;
+initdb alone has no view. Guarded downs in `migrations/rollback/028`–`031`
+are manual only, in reverse order, and refuse to discard stamped provenance.
+
+For existing Neo4j databases an operator must separately apply
+`packages/database/src/neo4j/migrations/004_reconciliation_op_fence.cypher`
+after reserved `002` and `003`, and verify the constraint is ONLINE. The
+initializers mirror `004` for **new databases only**; do not rerun the seed
+initializer on an existing graph. This change authorizes no operator action.
+
+This is expansion, not writer cutover: legacy global unique keys, org-less
+inserts and updates remain valid. The global keys still prevent two tenants
+from writing the *same* lineage/field/rule/authority key; S4 drops them in the
+same PR as the org-aware writers, adds the new-row org/actor checks and conflict
+immutability trigger, and swaps the criticality PK. Until that cutover, only the
+new journal's `(organization_id, ci_id)` inflight key isolates an identical CI
+id across tenants. S2/S3 wait for S1 merge; #44 waits for S4. A merge can
+automatically deploy migrations to staging; no manual deployment or live
+database step is included here.
+
 ## v3.0 Initialization Scripts
 
 ### init-kafka.sh

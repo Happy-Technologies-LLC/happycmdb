@@ -107,6 +107,15 @@ CREATE TABLE IF NOT EXISTS cmdb.dim_ci (
     updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Fresh-initdb parity with 011: no legacy rows need the backfill marker.
+ALTER TABLE cmdb.dim_ci ADD COLUMN IF NOT EXISTS organization_id UUID NOT NULL
+  DEFAULT '00000000-0000-0000-0000-000000000000';
+ALTER TABLE cmdb.dim_ci ALTER COLUMN organization_id DROP DEFAULT;
+ALTER TABLE cmdb.dim_ci ADD COLUMN IF NOT EXISTS org_backfilled BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE cmdb.dim_ci ALTER COLUMN org_backfilled SET DEFAULT FALSE;
+CREATE INDEX IF NOT EXISTS idx_dim_ci_organization ON cmdb.dim_ci(organization_id, effective_from);
+CREATE INDEX IF NOT EXISTS idx_dim_ci_ci_id_effective_from ON cmdb.dim_ci(ci_id, effective_from);
+
 CREATE INDEX IF NOT EXISTS idx_dim_ci_id_current ON cmdb.dim_ci(ci_id) WHERE is_current = TRUE;
 CREATE INDEX IF NOT EXISTS idx_dim_ci_type ON cmdb.dim_ci(ci_type);
 CREATE INDEX IF NOT EXISTS idx_dim_ci_status ON cmdb.dim_ci(ci_status);
@@ -1528,6 +1537,100 @@ SELECT
 FROM discovery_agents
 WHERE status = 'active'
 ORDER BY agent_id, network;
+
+-- HP1-S1 expand-only parity with migrations 028–030. These statements run
+-- after the base tables exist. Preserve legacy keys and nullable org columns.
+ALTER TABLE ci_change_history ADD COLUMN IF NOT EXISTS organization_id UUID,
+  ADD COLUMN IF NOT EXISTS correlation_id UUID;
+CREATE UNIQUE INDEX IF NOT EXISTS ci_change_history_correlation_key ON ci_change_history(correlation_id);
+ALTER TABLE ci_source_lineage ADD COLUMN IF NOT EXISTS organization_id UUID,
+  ADD COLUMN IF NOT EXISTS last_correlation_id UUID;
+CREATE UNIQUE INDEX IF NOT EXISTS ci_source_lineage_org_key
+  ON ci_source_lineage(organization_id, ci_id, source_name, source_id);
+ALTER TABLE ci_field_sources ADD COLUMN IF NOT EXISTS organization_id UUID,
+  ADD COLUMN IF NOT EXISTS last_correlation_id UUID, ADD COLUMN IF NOT EXISTS value_json JSONB;
+CREATE UNIQUE INDEX IF NOT EXISTS ci_field_sources_org_key
+  ON ci_field_sources(organization_id, ci_id, field_name);
+ALTER TABLE reconciliation_conflicts ADD COLUMN IF NOT EXISTS organization_id UUID,
+  ADD COLUMN IF NOT EXISTS correlation_id UUID;
+ALTER TABLE reconciliation_conflicts ALTER COLUMN ci_id TYPE VARCHAR(255) USING ci_id::text;
+ALTER TABLE reconciliation_conflicts
+  ADD COLUMN IF NOT EXISTS field_name VARCHAR(255),
+  ADD COLUMN IF NOT EXISTS source_name VARCHAR(255),
+  ADD COLUMN IF NOT EXISTS source_id VARCHAR(255),
+  ADD COLUMN IF NOT EXISTS incoming_json JSONB,
+  ADD COLUMN IF NOT EXISTS target_json JSONB,
+  ADD COLUMN IF NOT EXISTS target_source_name VARCHAR(255),
+  ADD COLUMN IF NOT EXISTS content_hash VARCHAR(64),
+  ADD COLUMN IF NOT EXISTS target_field_correlation_id UUID,
+  ADD COLUMN IF NOT EXISTS detected_by VARCHAR(255),
+  ADD COLUMN IF NOT EXISTS suppression_hash VARCHAR(64),
+  ADD COLUMN IF NOT EXISTS resolution_correlation_id UUID,
+  ADD COLUMN IF NOT EXISTS superseded_by UUID;
+CREATE UNIQUE INDEX IF NOT EXISTS reconciliation_conflicts_pending_key
+  ON reconciliation_conflicts(organization_id, ci_id, field_name, source_name, source_id)
+  WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS reconciliation_conflicts_suppression
+  ON reconciliation_conflicts(organization_id, ci_id, field_name, source_name, source_id, suppression_hash)
+  WHERE status = 'resolved';
+ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS organization_id UUID;
+ALTER TABLE reconciliation_rules ADD COLUMN IF NOT EXISTS organization_id UUID;
+CREATE UNIQUE INDEX IF NOT EXISTS reconciliation_rules_org_name_key
+  ON reconciliation_rules(organization_id, name) WHERE organization_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS reconciliation_rules_org_enabled
+  ON reconciliation_rules(organization_id, enabled, updated_at DESC, id DESC);
+ALTER TABLE source_authority ADD COLUMN IF NOT EXISTS organization_id UUID;
+CREATE UNIQUE INDEX IF NOT EXISTS source_authority_org_source_key
+  ON source_authority(organization_id, source_name) WHERE organization_id IS NOT NULL;
+ALTER TABLE baseline_snapshots ADD COLUMN IF NOT EXISTS organization_id UUID;
+CREATE INDEX IF NOT EXISTS idx_baseline_snapshots_org_ci
+  ON baseline_snapshots(organization_id, ci_id, created_at DESC);
+ALTER TABLE drift_detection_results ADD COLUMN IF NOT EXISTS organization_id UUID;
+CREATE INDEX IF NOT EXISTS idx_drift_results_org_ci
+  ON drift_detection_results(organization_id, ci_id, detected_at DESC);
+ALTER TABLE impact_analyses ADD COLUMN IF NOT EXISTS organization_id UUID;
+CREATE INDEX IF NOT EXISTS idx_impact_analyses_org_source_ci
+  ON impact_analyses(organization_id, source_ci_id, analyzed_at DESC);
+ALTER TABLE ci_criticality_scores ADD COLUMN IF NOT EXISTS organization_id UUID;
+CREATE UNIQUE INDEX IF NOT EXISTS ci_criticality_scores_org_ci_key
+  ON ci_criticality_scores(organization_id, ci_id) WHERE organization_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS ci_reconciliation_operations (
+  id UUID PRIMARY KEY,
+  group_id UUID NOT NULL,
+  organization_id UUID NOT NULL,
+  ci_id VARCHAR(255) NOT NULL,
+  origin VARCHAR(16) NOT NULL CHECK (origin IN ('api', 'etl', 'discovery')),
+  operation VARCHAR(32) NOT NULL CHECK (operation IN
+    ('create', 'update', 'hold', 'delete', 'resolve_conflict', 'direct_write', 'relationship_write', 'restore')),
+  graph_effect BOOLEAN NOT NULL,
+  state VARCHAR(16) NOT NULL CHECK (state IN ('pending', 'committed', 'aborted', 'failed')),
+  actor VARCHAR(255) NOT NULL,
+  epoch BIGINT NOT NULL,
+  plan JSONB,
+  lease_expires_at TIMESTAMPTZ NOT NULL,
+  claim_token UUID,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  last_error VARCHAR(64),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ci_reconciliation_operations_inflight
+  ON ci_reconciliation_operations(organization_id, ci_id) WHERE state IN ('pending', 'failed');
+CREATE INDEX IF NOT EXISTS ci_reconciliation_operations_org_epoch
+  ON ci_reconciliation_operations(organization_id, epoch);
+CREATE INDEX IF NOT EXISTS ci_reconciliation_operations_recovery
+  ON ci_reconciliation_operations(lease_expires_at) WHERE state = 'pending';
+CREATE INDEX IF NOT EXISTS ci_reconciliation_operations_group
+  ON ci_reconciliation_operations(group_id);
+CREATE TABLE IF NOT EXISTS ci_reconciliation_epochs (
+  organization_id UUID PRIMARY KEY, epoch BIGINT NOT NULL
+);
+REVOKE ALL ON ci_reconciliation_operations, ci_reconciliation_epochs FROM PUBLIC;
+COMMENT ON COLUMN ci_change_history.organization_id IS
+  'HP1: verified tenant at write time; legacy NULL rows are hidden from tenants and never inferred from current CI ownership';
+COMMENT ON TABLE ci_reconciliation_operations IS
+  'HP1 reconciliation journal; id is the Neo4j :ReconciliationOp fence op_id';
 
 -- ============================================
 -- INITIAL DATA POPULATION

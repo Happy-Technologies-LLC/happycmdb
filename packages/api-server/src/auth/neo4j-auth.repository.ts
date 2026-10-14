@@ -20,8 +20,24 @@ import neo4j from 'neo4j-driver';
 import type {
   AuthRepository, CredentialEventInput, GuardedPasswordWrite, GuardedUserWrite, UserProfileUpdate,
 } from './auth.service';
-import type { ApiKey, User } from './types';
+import { AmbiguousUserIdentityError, type ApiKey, type User } from './types';
 import { LOCK_USER } from './user-lock';
+
+/**
+ * Per-request user lookups (both spellings). Each returns every matching
+ * node; callers accept exactly one distinct node (singleUserNode). `User.id`
+ * is index-backed by user_id_unique and `User._id` by user_id_lookup (neo4j
+ * migration 003), so with 003 this is two index seeks. Without it the result
+ * is the same, only slower.
+ */
+export const FIND_USER_BY_ID_CYPHER = 'MATCH (u:User) WHERE u._id = $id OR u.id = $id RETURN u';
+export const FIND_USER_BY_USERNAME_CYPHER = 'MATCH (u:User) WHERE u._username = $username OR u.username = $username RETURN u';
+/** Resolves exactly one node before writing; reports how many matched. */
+export const UPDATE_LAST_LOGIN_CYPHER = `
+MATCH (u:User) WHERE u._id = $userId OR u.id = $userId
+WITH collect(DISTINCT u) AS matched
+FOREACH (x IN CASE WHEN size(matched) = 1 THEN matched ELSE [] END | SET x._lastLoginAt = datetime(), x.lastLoginAt = datetime())
+RETURN size(matched) AS matched`;
 
 /** Structural shape of a neo4j-driver Node sufficient for property reads here. */
 interface Neo4jUserNode {
@@ -114,24 +130,35 @@ export class Neo4jAuthRepository implements AuthRepository {
     } as User;
   }
 
+  /**
+   * The single :User node among `records` (column `u`), deduplicated by node
+   * identity: null when none, AmbiguousUserIdentityError when more than one.
+   * No spelling preference, ordering or first-row choice.
+   */
+  private singleUserNode(records: Array<{ get(key: string): unknown }>): Neo4jUserNode | null {
+    // Node identity: the elementId every driver Node carries (object identity only for nodes without one).
+    const nodes = new Map<unknown, Neo4jUserNode>();
+    for (const record of records) {
+      const node = record.get('u') as Neo4jUserNode | null;
+      if (node) {
+        nodes.set(node.elementId ?? node, node);
+      }
+    }
+    if (nodes.size > 1) {
+      throw new AmbiguousUserIdentityError();
+    }
+    return nodes.size === 1 ? [...nodes.values()][0]! : null;
+  }
+
   async findUserByUsername(username: string): Promise<User | null> {
     const session = this.neo4jClient.getSession();
     try {
-      const result = await session.run(
-        'MATCH (u:User) WHERE u._username = $username OR u.username = $username RETURN u',
-        { username }
-      );
-
-      if (result.records.length === 0) {
-        return null;
-      }
-
-      const node = result.records[0]?.get('u');
-      if (!node) {
-        return null;
-      }
-      return this.mapUserNode(node);
+      const node = this.singleUserNode((await session.run(FIND_USER_BY_USERNAME_CYPHER, { username })).records);
+      return node ? this.mapUserNode(node) : null;
     } catch (error) {
+      if (error instanceof AmbiguousUserIdentityError) {
+        throw error;
+      }
       throw new Error(`Failed to find user by username: ${error instanceof Error ? error.message : 'Unknown error'}`);
     } finally {
       await session.close();
@@ -141,51 +168,47 @@ export class Neo4jAuthRepository implements AuthRepository {
   async findUserById(id: string): Promise<User | null> {
     const session = this.neo4jClient.getSession();
     try {
-      const result = await session.run(
-        'MATCH (u:User) WHERE u._id = $id OR u.id = $id RETURN u',
-        { id }
-      );
-
-      if (result.records.length === 0) {
-        return null;
-      }
-
-      const node = result.records[0]?.get('u');
-      if (!node) {
-        return null;
-      }
-      return this.mapUserNode(node);
+      const node = this.singleUserNode((await session.run(FIND_USER_BY_ID_CYPHER, { id })).records);
+      return node ? this.mapUserNode(node) : null;
     } catch (error) {
+      if (error instanceof AmbiguousUserIdentityError) {
+        throw error;
+      }
       throw new Error(`Failed to find user by ID: ${error instanceof Error ? error.message : 'Unknown error'}`);
     } finally {
       await session.close();
     }
   }
 
+  /** Writes only when exactly one node matches; an ambiguous identifier writes nothing. */
   async updateUserLastLogin(userId: string): Promise<void> {
     const session = this.neo4jClient.getSession();
     try {
-      await session.run(
-        'MATCH (u:User) WHERE u._id = $userId OR u.id = $userId SET u._lastLoginAt = datetime(), u.lastLoginAt = datetime() RETURN u',
-        { userId }
-      );
+      const result = await session.run(UPDATE_LAST_LOGIN_CYPHER, { userId });
+      if (toCount(result.records[0]?.get('matched')) > 1) {
+        throw new AmbiguousUserIdentityError();
+      }
     } catch (error) {
+      if (error instanceof AmbiguousUserIdentityError) {
+        throw error;
+      }
       throw new Error(`Failed to update user last login: ${error instanceof Error ? error.message : 'Unknown error'}`);
     } finally {
       await session.close();
     }
   }
 
+  /** Writes only when exactly one node matches; an ambiguous identifier writes nothing. */
   async updateUser(id: string, updates: UserProfileUpdate): Promise<User> {
-    const setClauses: string[] = ['u._updatedAt = datetime()', 'u.updatedAt = datetime()'];
+    const setClauses: string[] = ['x._updatedAt = datetime()', 'x.updatedAt = datetime()'];
     const params: Record<string, unknown> = { id };
 
     if (updates.name !== undefined) {
-      setClauses.push('u._name = $name', 'u.name = $name');
+      setClauses.push('x._name = $name', 'x.name = $name');
       params['name'] = updates.name;
     }
     if (updates.avatar !== undefined) {
-      setClauses.push('u._avatar = $avatar', 'u.avatar = $avatar');
+      setClauses.push('x._avatar = $avatar', 'x.avatar = $avatar');
       params['avatar'] = updates.avatar;
     }
 
@@ -193,18 +216,23 @@ export class Neo4jAuthRepository implements AuthRepository {
     try {
       const result = await session.run(
         `MATCH (u:User) WHERE u._id = $id OR u.id = $id
-         SET ${setClauses.join(', ')}
-         RETURN u`,
+         WITH collect(DISTINCT u) AS matched
+         FOREACH (x IN CASE WHEN size(matched) = 1 THEN matched ELSE [] END | SET ${setClauses.join(', ')})
+         RETURN size(matched) AS matched, CASE WHEN size(matched) = 1 THEN matched[0] END AS u`,
         params
       );
-
-      if (result.records.length === 0) {
+      const matched = toCount(result.records[0]?.get('matched'));
+      if (matched > 1) {
+        throw new AmbiguousUserIdentityError();
+      }
+      if (matched === 0) {
         throw new Error('User not found');
       }
-
-      const node = result.records[0]?.get('u');
-      return this.mapUserNode(node);
+      return this.mapUserNode(result.records[0]!.get('u'));
     } catch (error) {
+      if (error instanceof AmbiguousUserIdentityError) {
+        throw error;
+      }
       throw new Error(`Failed to update user: ${error instanceof Error ? error.message : 'Unknown error'}`);
     } finally {
       await session.close();

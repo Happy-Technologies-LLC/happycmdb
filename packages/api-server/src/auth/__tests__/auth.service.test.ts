@@ -12,7 +12,7 @@
 import { describe, it, expect, beforeEach } from '@jest/globals';
 import { ApiKeyNotFoundError, AuthService, AuthRepository, UserProfileUpdate } from '../auth.service';
 import type { GuardedPasswordWrite, GuardedUserWrite } from '../auth.service';
-import { User, ApiKey } from '../types';
+import { AmbiguousUserIdentityError, User, ApiKey } from '../types';
 import { PasswordService } from '../password.service';
 import { JWTService } from '../jwt.service';
 
@@ -262,6 +262,26 @@ describe('AuthService profile/password/account lifecycle', () => {
         _userId: 'user-1', _role: 'admin', _tier: 'standard', _enabled: true, _createdAt: new Date(),
       } as ApiKey;
       expect(await service.verifyApiKey('opaque')).not.toHaveProperty('_platformAdmin');
+    });
+  });
+
+  describe('ambiguous identity (more than one :User node for an identifier)', () => {
+    it('refuses login, bearer, refresh and API key with the uniform failure, reason ambiguous_identity', async () => {
+      const jwtService = new JWTService(authConfig.jwt);
+      repository.apiKey = {
+        _id: 'key-1', _key: '', _keyHash: '', _name: 'cli',
+        _userId: 'user-1', _role: 'admin', _tier: 'standard', _enabled: true, _createdAt: new Date(),
+      } as ApiKey;
+      const ambiguous = async () => { throw new AmbiguousUserIdentityError(); };
+      repository.findUserById = ambiguous;
+      repository.findUserByUsername = ambiguous;
+      const refused = { message: 'Authentication failed', reason: 'ambiguous_identity' };
+
+      await expect(service.login({ username: 'alice', password: 'correct-horse-battery-staple' })).rejects.toMatchObject(refused);
+      await expect(service.verifyToken(jwtService.generateAccessToken('user-1', 'alice', 'admin'))).rejects.toMatchObject(refused);
+      await expect(service.refreshToken({ refreshToken: jwtService.generateRefreshToken('user-1', 'alice', 'admin') }))
+        .rejects.toMatchObject(refused);
+      await expect(service.verifyApiKey('opaque')).rejects.toMatchObject(refused);
     });
   });
 });

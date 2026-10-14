@@ -21,6 +21,7 @@ import {
   ApiKeyResponse,
   TokenPayload,
   ROLE_PERMISSIONS,
+  AmbiguousUserIdentityError,
 } from './types';
 
 export interface UserProfileUpdate {
@@ -115,11 +116,13 @@ export class ApiKeyNotFoundError extends Error {
 /**
  * Logged reason of an authentication failure; never part of a response.
  * `default_credential_refused` (v16 §15 N-21) is a default-equivalent login
- * password refused outside development; callers send it the same response as
- * any other failure.
+ * password refused outside development; `ambiguous_identity` is an
+ * identifier matching more than one :User node. Callers send both the same
+ * response as any other failure.
  */
 export type AuthFailureReason =
-  | 'invalid' | 'expired' | 'wrong_type' | 'disabled' | 'revoked' | 'store_error' | 'default_credential_refused';
+  | 'invalid' | 'expired' | 'wrong_type' | 'disabled' | 'revoked' | 'store_error' | 'default_credential_refused'
+  | 'ambiguous_identity';
 
 export class AuthFailureError extends Error {
   override readonly cause: unknown;
@@ -132,6 +135,13 @@ export class AuthFailureError extends Error {
 
 function tokenFailure(error: unknown): AuthFailureError {
   return new AuthFailureError(error instanceof TokenVerificationError ? error.reason : 'store_error', error);
+}
+
+/** Any failure inside a credential check as an AuthFailureError (fail closed). */
+function asAuthFailure(error: unknown): AuthFailureError {
+  if (error instanceof AuthFailureError) return error;
+  if (error instanceof AmbiguousUserIdentityError) return new AuthFailureError('ambiguous_identity', error);
+  return new AuthFailureError('store_error', error);
 }
 
 export class AuthService {
@@ -209,8 +219,7 @@ export class AuthService {
         },
       };
     } catch (error) {
-      if (error instanceof AuthFailureError) throw error;
-      throw new AuthFailureError('store_error', error);
+      throw asAuthFailure(error);
     }
   }
 
@@ -256,8 +265,7 @@ export class AuthService {
         },
       };
     } catch (error) {
-      if (error instanceof AuthFailureError) throw error;
-      throw new AuthFailureError('store_error', error);
+      throw asAuthFailure(error);
     }
   }
 
@@ -302,8 +310,7 @@ export class AuthService {
         aud: payload.aud,
       };
     } catch (error) {
-      if (error instanceof AuthFailureError) throw error;
-      throw new AuthFailureError('store_error', error);
+      throw asAuthFailure(error);
     }
   }
 
@@ -415,8 +422,7 @@ export class AuthService {
         _cep: credentialEpoch,
       };
     } catch (error) {
-      if (error instanceof AuthFailureError) throw error;
-      throw new AuthFailureError('store_error', error);
+      throw asAuthFailure(error);
     }
   }
 

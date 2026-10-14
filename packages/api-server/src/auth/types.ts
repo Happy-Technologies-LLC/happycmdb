@@ -97,6 +97,20 @@ export interface AuthenticatedRequest extends Request {
   user?: TokenPayload;
 }
 
+/**
+ * More than one distinct :User node matches an identifier across its two
+ * spellings (`_id`/`id`, or `_username`/`username`). Per-property UNIQUE
+ * constraints do not stop one user's `_id` equalling another user's `id`, so
+ * a first-row choice would authorize as an arbitrary node. Every lookup
+ * refuses instead (HP1-S6, approvals/cmdb-pr50-sec12-02-user-id-index-scope-a-AMENDMENT.go).
+ */
+export class AmbiguousUserIdentityError extends Error {
+  constructor() {
+    super('Ambiguous user identity');
+    this.name = 'AmbiguousUserIdentityError';
+  }
+}
+
 export interface LoginRequest {
   username: string;
   password: string;

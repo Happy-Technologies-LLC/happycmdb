@@ -45,6 +45,21 @@ The seeded development admin (`admin` / `Admin123!`, used in the examples below)
     `packages/database/src/neo4j/migrations/002_credential_rotation_decision.cypher` with
     `cypher-shell`. Without it every rotation is refused with `decision_constraint_missing`.
 
+**User lookup index (Neo4j migration 003).** Every authenticated request loads the user by `_id` or
+`id`. New databases get the `user_id_lookup` index on `User._id` from `init-neo4j.cypher`. On an
+existing database an operator applies
+`packages/database/src/neo4j/migrations/003_user_id_lookup_index.cypher` once with `cypher-shell`,
+then waits until `SHOW INDEXES YIELD name, state WHERE name = 'user_id_lookup'` reports `ONLINE`.
+Never re-run `init-neo4j.cypher` on an existing database (it also writes the seeded admin and sample
+data), and note that `rotate-user-password.ts --prepare` does not create this index. Without it
+authentication is unchanged but slower, because each lookup scans every user.
+
+**One user per identifier.** An identifier must resolve to exactly one user node across both
+spellings (`_id`/`id` for tokens and API keys, `_username`/`username` for login). If two different
+nodes match, for example one user's `_id` equal to another user's `id`, every login, token, refresh
+token and API key for that identifier gets the standard `401`, and profile writes change nothing.
+An operator must make the identifiers unique.
+
 **New passwords** (`PUT /api/auth/password`) are refused with `400 Password not allowed` in every
 environment when they are a default or a default-equivalent, contain U+0000, or exceed 72 UTF-8
 bytes. A password change or account deletion authorized before an operator rotation is refused with

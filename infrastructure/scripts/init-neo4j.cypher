@@ -22,6 +22,12 @@ FOR (u:User) REQUIRE u.email IS UNIQUE;
 CREATE CONSTRAINT user_id_unique IF NOT EXISTS
 FOR (u:User) REQUIRE u.id IS UNIQUE;
 
+// Index on User._id (HP1-S6 SEC12-02; mirrors neo4j migration 003): the
+// per-request auth lookup `u._id = $id OR u.id = $id` seeks this index and
+// user_id_unique instead of scanning every :User node.
+CREATE INDEX user_id_lookup IF NOT EXISTS
+FOR (u:User) ON (u._id);
+
 // One decision per operator password rotation event (HP1-S6): the
 // uniqueness lets an `applied` decision (atomic with the rotation) or a
 // `cancelled` fence commit, never both, so a delayed rotation can never

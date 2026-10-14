@@ -17,6 +17,7 @@ jest.mock('@cmdb/database', () => ({
 import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
 import neo4j from 'neo4j-driver';
 import { Neo4jAuthRepository } from '../neo4j-auth.repository';
+import { AmbiguousUserIdentityError } from '../types';
 
 type AnyMock = jest.Mock<(...args: any[]) => any>;
 
@@ -39,40 +40,66 @@ describe('Neo4jAuthRepository', () => {
     repository = new Neo4jAuthRepository();
   });
 
+  const node = (elementId: string, properties: Record<string, unknown>) => ({ elementId, properties });
+
   describe('updateUser', () => {
-    it('sets only the provided fields and returns the mapped user', async () => {
-      mockSession.run.mockResolvedValue({
-        records: [
-          {
-            get: () => ({
-              properties: {
-                _id: 'user-1',
-                _username: 'alice',
-                _email: 'alice@example.com',
-                _passwordHash: 'hash',
-                _role: 'operator',
-                _enabled: true,
-                _name: 'Alice Updated',
-              },
-            }),
-          },
-        ],
+    it('sets only the provided fields on the single matched node and returns it', async () => {
+      const alice = node('4:a', {
+        _id: 'user-1', _username: 'alice', _email: 'alice@example.com', _passwordHash: 'hash', _role: 'operator',
+        _enabled: true, _name: 'Alice Updated',
       });
+      mockSession.run.mockResolvedValue({ records: [{ get: (k: string) => (k === 'matched' ? neo4j.int(1) : alice) }] });
 
       const result = await repository.updateUser('user-1', { name: 'Alice Updated' });
 
       expect(result._name).toBe('Alice Updated');
       const [cypher, params] = mockSession.run.mock.calls[0] as [string, Record<string, unknown>];
-      expect(cypher).toContain('u._name = $name');
+      expect(cypher).toContain('x._name = $name');
       expect(cypher).not.toContain('$avatar');
       expect(params).toEqual({ id: 'user-1', name: 'Alice Updated' });
       expect(mockSession.close).toHaveBeenCalled();
     });
 
     it('throws when the user does not exist', async () => {
-      mockSession.run.mockResolvedValue({ records: [] });
+      mockSession.run.mockResolvedValue({ records: [{ get: (k: string) => (k === 'matched' ? neo4j.int(0) : null) }] });
 
       await expect(repository.updateUser('ghost', { name: 'x' })).rejects.toThrow('User not found');
+    });
+
+    it('refuses an identifier matching more than one node', async () => {
+      mockSession.run.mockResolvedValue({ records: [{ get: (k: string) => (k === 'matched' ? neo4j.int(2) : null) }] });
+
+      await expect(repository.updateUser('x', { name: 'x' })).rejects.toBeInstanceOf(AmbiguousUserIdentityError);
+    });
+  });
+
+  describe('exactly one distinct node per identifier (both spellings)', () => {
+    const records = (...nodes: unknown[]) => ({ records: nodes.map(n => ({ get: () => n })) });
+
+    it('findUserById: none → null, one → the user, the same node twice → that user, two nodes → refused', async () => {
+      const a = node('4:a', { _id: 'x', _role: 'viewer', _enabled: true });
+      const b = node('4:b', { id: 'x', _role: 'admin', _enabled: true });
+
+      mockSession.run.mockResolvedValueOnce(records());
+      await expect(repository.findUserById('x')).resolves.toBeNull();
+      mockSession.run.mockResolvedValueOnce(records(a));
+      await expect(repository.findUserById('x')).resolves.toMatchObject({ _elementId: '4:a', _role: 'viewer' });
+      mockSession.run.mockResolvedValueOnce(records(a, a));
+      await expect(repository.findUserById('x')).resolves.toMatchObject({ _elementId: '4:a' });
+      mockSession.run.mockResolvedValueOnce(records(a, b));
+      await expect(repository.findUserById('x')).rejects.toBeInstanceOf(AmbiguousUserIdentityError);
+    });
+
+    it('findUserByUsername refuses two nodes', async () => {
+      mockSession.run.mockResolvedValueOnce(records(node('4:a', { _username: 'dup' }), node('4:b', { username: 'dup' })));
+
+      await expect(repository.findUserByUsername('dup')).rejects.toBeInstanceOf(AmbiguousUserIdentityError);
+    });
+
+    it('updateUserLastLogin refuses when more than one node matched (its statement writes none then)', async () => {
+      mockSession.run.mockResolvedValueOnce({ records: [{ get: () => neo4j.int(2) }] });
+
+      await expect(repository.updateUserLastLogin('x')).rejects.toBeInstanceOf(AmbiguousUserIdentityError);
     });
   });
 

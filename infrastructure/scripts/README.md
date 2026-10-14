@@ -146,6 +146,34 @@ inheritance. The guarded `rollback/032_*.down.sql` is manual, removes its exact
 ledger row and restores 001's unsafe PUBLIC grants; it deliberately does not
 resurrect unknown prior BI grants. Never use this down as a security recovery.
 
+## HAP-644 PUBLIC business-service and audit ACLs
+
+Migration `033_public_business_service_audit_acl.sql` follows `032`. It removes
+001's blanket `cmdb` SELECT (including `dim_ci.metadata` and inventory/change
+views), PUBLIC raw business-service DML and SELECT, and PUBLIC `audit_log` and
+`v_ci_change_history_audit` SELECT. The application owner retains its access;
+`cmdb_user`, if a separate role, receives explicit access. The redacted
+`recent_audit_activity` and `cmdb.v_ci_discovery_summary` BI reads remain.
+Named BI grants on raw service/audit data and the unfiltered
+`v_business_service_health` view are removed. BI calls
+`cmdb.fn_business_service_health(organization_id)` instead: it returns one
+requested organization's rows through a fixed-search-path SECURITY DEFINER
+function, while the underlying view remains inaccessible to BI. A caller able
+to choose arbitrary organization IDs can request each organization separately;
+this function is not a tenant identity verifier. Only the trusted BI connection
+role receives EXECUTE, not arbitrary nonowner roles. Superusers, owners and
+roles with inherited owner/bypass privileges remain outside this ACL boundary.
+
+The standalone V3 `init-postgres.sql` has no 001 business-service schema: its
+fresh ACL mirrors `033` for CI and audit, and `033` skips absent FD-6 objects
+only when the entire service schema is absent. `metabase-init.sql` never grants
+the global health view, whether BI setup runs before or after `033`.
+`rollback/033_*.down.sql` requires its ledger row, restores only 001's PUBLIC
+grants for the existing 001 schema, leaves newer private journals and named BI
+grants closed, then deletes the row. It is unsafe and manual-only; reapply `033`
+through the migrator after any authorized rollback. External SQL exposure is
+unverified; no deployed reachability was probed.
+
 For existing Neo4j databases an operator must separately apply
 `packages/database/src/neo4j/migrations/004_reconciliation_op_fence.cypher`
 after reserved `002` and `003`, and verify the constraint is ONLINE. The

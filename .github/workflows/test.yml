@@ -279,6 +279,10 @@ jobs:
       - name: Fail-before on base ACL (expected permission assertion failure)
         run: |
           set -euo pipefail
+          if git cat-file -e "${BASE_SHA}:packages/database/src/postgres/migrations/032_secret_table_public_grants.sql" 2>/dev/null; then
+            echo 'HAP-630 already on the base; fail-before is not applicable.'
+            exit 0
+          fi
           git worktree add ../hap630-base "$BASE_SHA"
           cp "$HARNESS" "../hap630-base/$HARNESS"
           cd ../hap630-base
@@ -297,6 +301,48 @@ jobs:
         run: |
           npm ci
           HAP630_ACCEPTANCE=1 ./node_modules/.bin/jest \
+            -c jest.config.integration.js "$HARNESS" --runInBand
+
+  hap644-real-store:
+    name: HAP-644 ACL baseline and real-store acceptance
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    env:
+      HARNESS: tests/integration/database/hap644-acl.integration.test.ts
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+      - name: Fail-before on post-79 base ACL
+        run: |
+          set -euo pipefail
+          git worktree add ../hap644-base "$BASE_SHA"
+          cp "$HARNESS" "../hap644-base/$HARNESS"
+          cd ../hap644-base
+          npm ci
+          set +e
+          output=$(HAP644_ACCEPTANCE=1 HAP644_BASELINE=1 ./node_modules/.bin/jest \
+            -c jest.config.integration.js "$HARNESS" --runInBand 2>&1)
+          result=$?
+          set -e
+          printf '%s\n' "$output"
+          if [ "$result" -eq 0 ] || [[ "$output" != *"Received promise resolved instead of rejected"* ]]; then
+            echo 'Base ACL did not produce the expected permission assertion failure' >&2
+            exit 1
+          fi
+      - name: Pass-after on PR head (disposable PG15/Timescale)
+        run: |
+          npm ci
+          HAP644_ACCEPTANCE=1 ./node_modules/.bin/jest \
             -c jest.config.integration.js "$HARNESS" --runInBand
 
   staging-migrations:

@@ -50,4 +50,7 @@ ALTER TABLE ci_field_sources DROP COLUMN IF EXISTS value_json;
 ALTER TABLE reconciliation_rules DROP COLUMN IF EXISTS organization_id;
 ALTER TABLE source_authority DROP COLUMN IF EXISTS organization_id;
 
+DELETE FROM cmdb.schema_migrations
+ WHERE migration_name = '029_reconciliation_conflict_identity_rules.sql';
+
 COMMIT;

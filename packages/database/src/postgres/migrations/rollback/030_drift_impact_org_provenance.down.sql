@@ -27,4 +27,7 @@ ALTER TABLE drift_detection_results DROP COLUMN IF EXISTS organization_id;
 ALTER TABLE impact_analyses DROP COLUMN IF EXISTS organization_id;
 ALTER TABLE ci_criticality_scores DROP COLUMN IF EXISTS organization_id;
 
+DELETE FROM cmdb.schema_migrations
+ WHERE migration_name = '030_drift_impact_org_provenance.sql';
+
 COMMIT;

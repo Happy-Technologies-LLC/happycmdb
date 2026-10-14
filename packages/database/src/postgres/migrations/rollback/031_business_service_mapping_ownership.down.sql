@@ -60,4 +60,7 @@ CROSS JOIN LATERAL (
 
 REVOKE SELECT ON public.v_business_service_health FROM PUBLIC;
 
+DELETE FROM cmdb.schema_migrations
+ WHERE migration_name = '031_business_service_mapping_ownership.sql';
+
 COMMIT;

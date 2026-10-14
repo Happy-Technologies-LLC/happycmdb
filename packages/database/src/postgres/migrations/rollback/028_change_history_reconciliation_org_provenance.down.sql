@@ -34,4 +34,8 @@ ALTER TABLE ci_field_sources DROP COLUMN IF EXISTS organization_id, DROP COLUMN 
 ALTER TABLE reconciliation_conflicts DROP COLUMN IF EXISTS organization_id, DROP COLUMN IF EXISTS correlation_id;
 ALTER TABLE audit_log DROP COLUMN IF EXISTS organization_id;
 
+-- Keep the migration runner in sync with the objects removed above.
+DELETE FROM cmdb.schema_migrations
+ WHERE migration_name = '028_change_history_reconciliation_org_provenance.sql';
+
 COMMIT;

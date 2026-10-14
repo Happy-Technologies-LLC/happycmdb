@@ -106,9 +106,14 @@ file and its tracker row in one transaction. `028` requires `011`; subsequent
 files require the preceding S1 objects. `init-postgres.sql` mirrors the fresh
 schema, including `011`'s dimension columns, canonical 001 varchar CI IDs
 for lineage/field sources (previously UUID only in initdb), and S1's journal
-ACL. On initdb, the business-service view is created by `009`/`010` and then scoped by `031`;
-initdb alone has no view. Guarded downs in `migrations/rollback/028`–`031`
-are manual only, in reverse order, and refuse to discard stamped provenance.
+ACL. Both the migration and fresh init revoke named `metabase_readonly` grants
+if that role already exists; `metabase-init.sql` explicitly denies the two
+private tables after its all-public-table grant if BI setup runs later. Other
+BI table grants remain intact. On initdb, the business-service view is created
+by `009`/`010` and then scoped by `031`; initdb alone has no view. Guarded
+downs in `migrations/rollback/028`–`031` are manual only, in reverse order,
+refuse to discard stamped provenance, and transactionally remove their exact
+`cmdb.schema_migrations` rows so an authorized reapplication is not skipped.
 
 For existing Neo4j databases an operator must separately apply
 `packages/database/src/neo4j/migrations/004_reconciliation_op_fence.cypher`

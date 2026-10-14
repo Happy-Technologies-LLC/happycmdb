@@ -94,9 +94,16 @@ CREATE TABLE IF NOT EXISTS ci_reconciliation_epochs (
   epoch           BIGINT NOT NULL
 );
 
--- Created unqualified in public; 001's GRANT SELECT ON ALL TABLES IN SCHEMA
--- cmdb TO PUBLIC does not reach them, and nothing else may either.
+-- 001's cmdb-wide PUBLIC grant does not reach these public tables. Metabase
+-- may already have installed a named default SELECT grant for their owner.
 REVOKE ALL ON ci_reconciliation_operations, ci_reconciliation_epochs FROM PUBLIC;
+DO $hp1$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'metabase_readonly') THEN
+    EXECUTE 'REVOKE ALL ON public.ci_reconciliation_operations, public.ci_reconciliation_epochs FROM metabase_readonly';
+  END IF;
+END
+$hp1$;
 
 COMMENT ON COLUMN ci_change_history.organization_id IS
   'HP1: verified tenant at write time; legacy NULL rows are hidden from tenants and never inferred from current CI ownership';

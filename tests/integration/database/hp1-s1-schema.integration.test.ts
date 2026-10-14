@@ -174,6 +174,110 @@ describe('HP1-S1 expand contract on actual Timescale hypertables', () => {
     }
   });
 
+  it('denies the named BI role before and after setup, then removes ledger rows on down and reapplies', async () => {
+    const migrationDir = join(__dirname, '../../../packages/database/src/postgres/migrations');
+    const biInit = readFileSync(join(__dirname, '../../../infrastructure/database/metabase-init.sql'), 'utf8');
+    const defaultGrant = 'ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO metabase_readonly;';
+    const existingGrants = biInit.slice(biInit.indexOf('-- Grant SELECT on all existing tables in public schema'),
+      biInit.indexOf('-- Grant SELECT on all existing views'));
+    const futureGrants = biInit.slice(biInit.indexOf('-- Grant SELECT on all future tables'),
+      biInit.indexOf('-- Grant SELECT on all sequences'));
+    expect(biInit).toContain(defaultGrant);
+    const files = ['028_change_history_reconciliation_org_provenance',
+      '029_reconciliation_conflict_identity_rules', '030_drift_impact_org_provenance',
+      '031_business_service_mapping_ownership'];
+    await db.query('CREATE ROLE metabase_readonly LOGIN');
+    try {
+      for (const [database, before] of [['hp1_s1_bi_before', true], ['hp1_s1_bi_after', false]] as const) {
+        await db.query(`CREATE DATABASE ${database}`);
+        const fresh = new Pool({ host: process.env['POSTGRES_HOST'], port: Number(process.env['POSTGRES_PORT']),
+          database, user: process.env['POSTGRES_USER'], password: process.env['POSTGRES_PASSWORD'] });
+        try {
+          await fresh.query('GRANT USAGE ON SCHEMA public TO metabase_readonly');
+          if (before) await fresh.query(defaultGrant);
+          await fresh.query(readFileSync(join(__dirname, '../../../infrastructure/scripts/init-postgres.sql'), 'utf8'));
+          const assertPrivate = async () => {
+            for (const table of ['ci_reconciliation_operations', 'ci_reconciliation_epochs']) {
+              const { rows } = await fresh.query(`SELECT has_table_privilege('metabase_readonly', $1, 'SELECT') AS readable`,
+                [`public.${table}`]);
+              expect(rows[0].readable).toBe(false);
+              const connection = await fresh.connect();
+              try {
+                await connection.query('BEGIN');
+                await connection.query('SET LOCAL ROLE metabase_readonly');
+                await expect(connection.query(`SELECT * FROM public.${table}`))
+                  .rejects.toMatchObject({ code: '42501' });
+              } finally {
+                await connection.query('ROLLBACK');
+                connection.release();
+              }
+            }
+          };
+          await assertPrivate();
+          await fresh.query(existingGrants);
+          await fresh.query(futureGrants);
+          await assertPrivate(); // A later BI bootstrap must leave private tables denied.
+          const { rows: ordinary } = await fresh.query(`SELECT has_table_privilege(
+            'metabase_readonly', 'public.ci_change_history', 'SELECT') AS readable`);
+          expect(ordinary[0].readable).toBe(true);
+          if (!before) continue;
+
+          await fresh.query(`CREATE TABLE cmdb.schema_migrations (
+            migration_name VARCHAR(255) PRIMARY KEY, checksum VARCHAR(64) NOT NULL,
+            applied_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP)`);
+          for (const file of files) {
+            await fresh.query(`INSERT INTO cmdb.schema_migrations (migration_name, checksum)
+              VALUES ($1, 'disposable-proof')`, [`${file}.sql`]);
+          }
+          await fresh.query(`INSERT INTO dim_business_services
+            (service_id, name, service_classification, tbm_tower, business_criticality, operational_status, organization_id)
+            VALUES ('hp1-reapply-service', 'S1', 'application', 'application', 'high', 'active', $1)`, [A]);
+          await fresh.query(`INSERT INTO cmdb.dim_ci (ci_id, ci_name, ci_type, ci_status, organization_id, org_backfilled)
+            VALUES ('hp1-reapply-own', 'own', 'server', 'active', $1, false),
+              ('hp1-reapply-foreign', 'foreign', 'server', 'active', $2, false)`, [A, B]);
+          await fresh.query(`INSERT INTO ci_business_service_mappings (ci_id, service_id, mapping_type)
+            VALUES ('hp1-reapply-own', 'hp1-reapply-service', 'hosts'),
+              ('hp1-reapply-foreign', 'hp1-reapply-service', 'hosts')`);
+          await fresh.query(`INSERT INTO reconciliation_conflicts
+            (ci_id, conflict_type, source_data, status)
+            VALUES ($1, 'field', '{}', 'superseded')`, [CI]);
+          await expect(fresh.query(readFileSync(join(migrationDir, 'rollback',
+            `${files[1]}.down.sql`), 'utf8'))).rejects.toThrow('029 down refused: superseded conflicts exist');
+          await fresh.query('ROLLBACK');
+          expect((await fresh.query(`SELECT count(*)::int AS applied FROM cmdb.schema_migrations
+            WHERE migration_name = $1`, [`${files[1]}.sql`])).rows[0].applied).toBe(1);
+          await fresh.query(`DELETE FROM reconciliation_conflicts WHERE status = 'superseded' AND ci_id = $1`, [CI]);
+          for (const file of [...files].reverse()) {
+            await fresh.query(readFileSync(join(migrationDir, 'rollback', `${file}.down.sql`), 'utf8'));
+          }
+          expect((await fresh.query(`SELECT migration_name FROM cmdb.schema_migrations
+            WHERE migration_name = ANY($1)`, [files.map(file => `${file}.sql`)])).rows).toEqual([]);
+          expect((await fresh.query(`SELECT to_regclass('public.ci_reconciliation_operations') AS journal`))
+            .rows[0].journal).toBeNull();
+          expect(Number((await fresh.query(`SELECT supported_ci_count FROM v_business_service_health
+            WHERE service_id = 'hp1-reapply-service'`)).rows[0].supported_ci_count)).toBe(2);
+          for (const file of files) {
+            await fresh.query(readFileSync(join(migrationDir, `${file}.sql`), 'utf8'));
+            await fresh.query(`INSERT INTO cmdb.schema_migrations (migration_name, checksum)
+              VALUES ($1, 'disposable-proof')`, [`${file}.sql`]);
+          }
+          expect((await fresh.query(`SELECT count(*)::int AS applied FROM cmdb.schema_migrations
+            WHERE migration_name = ANY($1)`, [files.map(file => `${file}.sql`)])).rows[0].applied).toBe(4);
+          expect((await fresh.query(`SELECT to_regclass('public.ci_reconciliation_operations') AS journal`))
+            .rows[0].journal).not.toBeNull();
+          expect(Number((await fresh.query(`SELECT supported_ci_count FROM v_business_service_health
+            WHERE service_id = 'hp1-reapply-service'`)).rows[0].supported_ci_count)).toBe(1);
+          await assertPrivate(); // A named default grant must also be stripped by 028 reapply.
+        } finally {
+          await fresh.end();
+          await db.query(`DROP DATABASE ${database} WITH (FORCE)`);
+        }
+      }
+    } finally {
+      await db.query('DROP ROLE metabase_readonly');
+    }
+  });
+
 });
 
 it('Neo4j 004 rejects a duplicate op_id across distinct tenants', async () => {

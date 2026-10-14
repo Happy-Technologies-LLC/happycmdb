@@ -13,9 +13,14 @@
 -- operator rotation additionally requires rotating the JWT signing secret
 -- in the same deploy (it would otherwise accept pre-rotation tokens again).
 --
+-- Revert the 020-aware API image BEFORE running this file. It also removes
+-- the 020 ledger row, so the migrator re-applies 020 on a later redeploy.
+--
 -- Run: psql -v ON_ERROR_STOP=1 -f 020_auth_credential_events.down.sql
 
 BEGIN;
+SET LOCAL lock_timeout = '3s';
+SET LOCAL statement_timeout = '10s';
 
 DO $$
 BEGIN
@@ -31,5 +36,7 @@ $$;
 ALTER TABLE api_keys DROP COLUMN IF EXISTS credential_epoch;
 DROP TABLE IF EXISTS auth_credential_events;
 DROP FUNCTION IF EXISTS auth_credential_events_append_only();
+DELETE FROM cmdb.schema_migrations
+ WHERE migration_name = '020_auth_credential_events.sql';
 
 COMMIT;

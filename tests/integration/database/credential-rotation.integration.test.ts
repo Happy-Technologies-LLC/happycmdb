@@ -29,6 +29,14 @@
  *   rotation until neo4j migration 002 (or --prepare) creates it;
  * - LOW 4: two operators that both lost their lock sessions cannot both open
  *   an intent.
+ *
+ * Operator FULL pair (b2eec4e) N-21 acceptance on these real stores:
+ * - (h4) reconcile started while a rotation holds the operator lock never
+ *   writes an outcome for the live intent (try-lock: exit 6, see PR body
+ *   deviation from v16's blocking pg_advisory_lock);
+ * - SEC13-02: the seed inventory returns pre-provenance seeds written with
+ *   either property spelling and with overrides; stamp never overwrites
+ *   provenance and leaves --except ids alone.
  */
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from '@jest/globals';
@@ -43,8 +51,12 @@ import {
   APPLY_CYPHER, DECISION_CONSTRAINT_CYPHER, applyRotation, prepareDecisionConstraint, prepareRotation, reconcileRotations,
   rotateUserPassword, type RotationDeps, type RotationSqlQuery,
 } from '../../../packages/api-server/src/scripts/rotate-user-password';
-import { scanDefaultPasswords } from '../../../packages/api-server/src/scripts/identity-window';
-import { openOperatorStores, type OperatorStores } from '../../../packages/api-server/src/scripts/operator-stores';
+import {
+  grantPlatformAdmin, inventorySeedAccounts, scanDefaultPasswords, stampSeedAccounts,
+} from '../../../packages/api-server/src/scripts/identity-window';
+import { LockBusyError, openOperatorStores, type OperatorStores } from '../../../packages/api-server/src/scripts/operator-stores';
+import { main as rotationCli } from '../../../packages/api-server/src/scripts/rotate-user-password';
+import { isSeededAccount } from '../../../packages/api-server/src/auth/platform-admin';
 import {
   GUARDED_DISABLE_CYPHER, GUARDED_PASSWORD_CYPHER, MARK_DEFAULT_SUSPECT_CYPHER, Neo4jAuthRepository,
 } from '../../../packages/api-server/src/auth/neo4j-auth.repository';
@@ -142,7 +154,7 @@ beforeAll(async () => {
 });
 afterAll(async () => {
   await Promise.all(stores.map(s => s.close()));
-  await graph?.run('MATCH (n) WHERE (n:User AND n._id STARTS WITH "hp1-s6-") OR n:CredentialRotationDecision DETACH DELETE n');
+  await graph?.run('MATCH (n) WHERE (n:User AND coalesce(n._id, n.id) STARTS WITH "hp1-s6-") OR n:CredentialRotationDecision DETACH DELETE n');
   await graph?.close();
   await driver?.close();
   await pool?.end();
@@ -156,7 +168,7 @@ beforeEach(async () => {
   await pool.query('DELETE FROM auth_credential_events');
   await pool.query('ALTER TABLE auth_credential_events ENABLE TRIGGER USER');
   await pool.query("DELETE FROM api_keys WHERE user_id LIKE 'hp1-s6-%'");
-  await graph.run('MATCH (n) WHERE (n:User AND n._id STARTS WITH "hp1-s6-") OR n:CredentialRotationDecision DETACH DELETE n');
+  await graph.run('MATCH (n) WHERE (n:User AND coalesce(n._id, n.id) STARTS WITH "hp1-s6-") OR n:CredentialRotationDecision DETACH DELETE n');
   await graph.run(
     'CREATE (:User {_id: $id, _username: $id, _passwordHash: $hash, _enabled: true, defaultPasswordSuspect: true})',
     { id: USER, hash: defaultHash }
@@ -482,4 +494,100 @@ describe('LOW 4: the open-intent check and the intent insert are serialized acro
     const intents = await pool.query("SELECT user_id FROM auth_credential_events WHERE event = 'password_rotation_intent'");
     expect(intents.rows).toEqual([{ user_id: USER }]);
   }, 30_000);
+});
+
+describe('N-21 (h4): reconcile under a live rotation never writes an outcome for its intent', () => {
+  it('the reconcile is refused with LockBusyError (CLI exit 6), writes nothing, and the live rotation then applies', async () => {
+    const writer = operator();
+    await writer.lock.acquire();
+    try {
+      const prepared = await prepareRotation({ userId: USER, operator: 'ci', password: NEW_PASSWORD }, writer); // live intent
+
+      await expect(reconcileRotations(operator(), 'operator:ci')).rejects.toBeInstanceOf(LockBusyError);
+      const stdout: string[] = [];
+      const stderr: string[] = [];
+      const exit = await rotationCli(['--reconcile', '--operator', 'ci'], operatorEnv(), {
+        stdin: process.stdin, stdout: line => stdout.push(line), stderr: line => stderr.push(line),
+      });
+      expect(exit).toBe(6);
+      expect(stdout).toEqual([]);
+      expect(stderr).toEqual(['rotate-user-password: another rotation or reconcile is running']);
+
+      expect(await events()).toEqual(['password_rotation_intent']);
+      const decisions = await graph.run('MATCH (d:CredentialRotationDecision {eventId: $e}) RETURN count(d) AS n', { e: prepared.eventId });
+      expect(neo4j.integer.toNumber(decisions.records[0]!.get('n'))).toBe(0);
+
+      expect(await applyRotation(prepared, writer)).toMatchObject({ outcome: 'APPLIED' });
+      expect(await events()).toEqual(['password_rotation_intent', 'password_rotated_operator']);
+    } finally {
+      await writer.lock.release();
+    }
+  }, 30_000);
+});
+
+describe('N-21 SEC13-02: seed inventory and stamp over both property spellings', () => {
+  const INTERNAL = '00000000-0000-0000-0000-000000000000';
+  const OTHER_ORG = '11111111-1111-4111-8111-111111111111';
+  const fixture = (props: Record<string, unknown>) =>
+    graph.run('CREATE (u:User) SET u = $props', { props: { _enabled: true, _passwordHash: defaultHash, ...props } });
+
+  beforeEach(async () => {
+    // seed-data.ts shape: underscore spelling, random-looking id, username/email overrides, no provenance.
+    await fixture({ _id: 'hp1-s6-seed-data', _username: 'ops-root', _email: 'ops-root@corp.example', _role: 'admin', _organizationId: INTERNAL });
+    // init-neo4j.cypher shape: plain spelling, with overrides, no provenance.
+    await fixture({ id: 'hp1-s6-init', username: 'hp1-s6-init', email: 'hp1-s6-init@corp.example', role: 'admin', organizationId: INTERNAL });
+    // Already provenanced by its seed writer.
+    await fixture({ _id: 'hp1-s6-provenanced', _role: 'viewer', _organizationId: OTHER_ORG, seedProvenance: 'seed-data' });
+    // An internal admin Nick names as a human account (--except).
+    await fixture({ _id: 'hp1-s6-human', _username: 'hp1-s6-human', _role: 'admin', _organizationId: INTERNAL });
+    // Not seed candidates.
+    await fixture({ _id: 'hp1-s6-tenant-admin', _role: 'admin', _organizationId: OTHER_ORG });
+    await fixture({ id: 'hp1-s6-internal-viewer', role: 'viewer', organizationId: INTERNAL });
+  });
+
+  async function provenance(id: string): Promise<unknown> {
+    const result = await graph.run('MATCH (u:User) WHERE u._id = $id OR u.id = $id RETURN u.seedProvenance AS p', { id });
+    return result.records[0]!.get('p');
+  }
+
+  it('inventory returns both spellings and overrides; v13\'s literal role selector misses the seed-data shape', async () => {
+    const candidates = (await inventorySeedAccounts(operator().graph)).filter(c => c.id.startsWith('hp1-s6-'));
+
+    expect(candidates.map(({ id, reason }) => ({ id, reason })).sort((a, b) => a.id.localeCompare(b.id))).toEqual([
+      { id: 'hp1-s6-human', reason: 'internal-org admin' },
+      { id: 'hp1-s6-init', reason: 'internal-org admin' },
+      { id: 'hp1-s6-provenanced', reason: 'seedProvenance' },
+      { id: 'hp1-s6-seed-data', reason: 'internal-org admin' },
+    ]);
+    const v13 = await graph.run(
+      "MATCH (u:User) WHERE u.role = 'admin' AND u.organizationId = $org AND coalesce(u._id, u.id) STARTS WITH 'hp1-s6-' RETURN coalesce(u._id, u.id) AS id",
+      { org: INTERNAL }
+    );
+    expect(v13.records.map(r => r.get('id'))).toEqual(['hp1-s6-init']);
+  });
+
+  it('stamp: coalesce never overwrites provenance, --except ids stay unstamped and grantable, stamped seeds are refused the platform flag', async () => {
+    const others = (await inventorySeedAccounts(operator().graph)).map(c => c.id).filter(id => !id.startsWith('hp1-s6-'));
+
+    const result = await stampSeedAccounts(operator().graph, ['hp1-s6-human', ...others]);
+
+    expect(result.excepted).toEqual(expect.arrayContaining(['hp1-s6-human']));
+    expect(result.stamped).toBe(3);
+    expect(await provenance('hp1-s6-seed-data')).toBe('pre-cutover-inventory');
+    expect(await provenance('hp1-s6-init')).toBe('pre-cutover-inventory');
+    expect(await provenance('hp1-s6-provenanced')).toBe('seed-data');
+    expect(await provenance('hp1-s6-human')).toBeNull();
+    expect(await provenance('hp1-s6-tenant-admin')).toBeNull();
+    expect(await provenance('hp1-s6-internal-viewer')).toBeNull();
+
+    const repository = new Neo4jAuthRepository();
+    expect(isSeededAccount((await repository.findUserById('hp1-s6-seed-data'))!)).toBe(true);
+    await expect(grantPlatformAdmin(operator().graph, 'hp1-s6-seed-data', 'ci')).rejects.toMatchObject({ reason: 'seeded_account' });
+    await expect(grantPlatformAdmin(operator().graph, 'hp1-s6-human', 'ci')).resolves.toEqual({ userId: 'hp1-s6-human' });
+
+    // A second stamp changes nothing already stamped.
+    await stampSeedAccounts(operator().graph, ['hp1-s6-human', ...others]);
+    expect(await provenance('hp1-s6-provenanced')).toBe('seed-data');
+    expect(await provenance('hp1-s6-human')).toBeNull();
+  });
 });

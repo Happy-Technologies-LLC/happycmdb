@@ -22,6 +22,12 @@
 -- owning user's current :User.credentialEpoch (absent = 0), which an operator
 -- rotation increments. Existing keys get 0 = every user's initial generation,
 -- so no key changes validity when this migration is applied.
+--
+-- The migrator wraps this file in its transaction. The api_keys column add
+-- is metadata-only but needs ACCESS EXCLUSIVE: bound it so it never queues
+-- per-request API-key verification behind a long transaction.
+SET LOCAL lock_timeout = '3s';
+SET LOCAL statement_timeout = '10s';
 
 CREATE TABLE IF NOT EXISTS auth_credential_events (
   id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),

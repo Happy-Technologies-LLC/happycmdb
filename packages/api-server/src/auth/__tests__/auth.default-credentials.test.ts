@@ -14,12 +14,13 @@
  * environment other than development refuses default credentials.
  */
 
-import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import * as bcrypt from 'bcrypt';
 import { createHash } from 'crypto';
 import type { Response } from 'express';
 import { AuthService, AuthRepository, UserProfileUpdate } from '../auth.service';
 import { JWTService } from '../jwt.service';
+import { bcryptKey, isDefaultEquivalent } from '../default-credentials';
 import { PasswordService } from '../password.service';
 import { AuthMiddleware } from '../../middleware/auth.middleware';
 import type { ApiKey, AuthenticatedRequest, TokenPayload, User } from '../types';
@@ -44,6 +45,8 @@ const EQUIVALENT = [CYCLE.slice(0, 59), CYCLE.slice(0, 72), CYCLE.slice(0, 80)];
 const OPERATOR_PASSWORD = 'operator-chosen-16';
 /** Every refused login is the same uniform failure (main #63), whatever the S6 cause. */
 const INVALID = { name: 'Error', message: 'Authentication failed', reason: 'invalid' };
+/** A default-equivalent login: the same failure, with only the logged reason distinct (N-21). */
+const DEFAULT_REFUSED = { name: 'Error', message: 'Authentication failed', reason: 'default_credential_refused' };
 
 type Hook = () => void | Promise<void>;
 type Events = Array<{ userId: string; event: string; actor: string }>;
@@ -164,17 +167,54 @@ afterEach(() => {
 });
 
 describe('N-21 (a) default and bcrypt-equivalent logins are refused outside development', () => {
-  it.each([DEFAULT, ...EQUIVALENT, 'Admin123!\u0000x'])('refuses %j for an unmarked default-hash user', async password => {
+  it.each([DEFAULT, ...EQUIVALENT])('refuses %j for an unmarked default-hash user (reason default_credential_refused)', async password => {
     repository.users.set('u', user('u'));
 
-    await expect(service.login({ username: 'u', password })).rejects.toMatchObject(INVALID);
+    await expect(service.login({ username: 'u', password })).rejects.toMatchObject(DEFAULT_REFUSED);
+  });
+
+  it('refuses the NUL variant "Admin123!\\u0000x" by the NUL rule (reason invalid)', async () => {
+    repository.users.set('u', user('u'));
+
+    await expect(service.login({ username: 'u', password: 'Admin123!\u0000x' })).rejects.toMatchObject(INVALID);
+  });
+
+  describe('bcryptKey and isDefaultEquivalent agree with the real bcrypt binding on $2b$ hashes', () => {
+    const REFERENCE = 'Admin123!';
+    let reference: string;
+    beforeAll(async () => {
+      reference = await bcrypt.hash(REFERENCE, 4);
+    });
+
+    it('uses $2b$ hashes', () => {
+      expect(reference.startsWith('$2b$')).toBe(true);
+    });
+
+    it.each([
+      ['the default itself', REFERENCE, true],
+      ['cycle cut at 59 bytes', CYCLE.slice(0, 59), true],
+      ['cycle cut at 72 bytes', CYCLE.slice(0, 72), true],
+      ['cycle cut at 80 bytes', CYCLE.slice(0, 80), true],
+      ['near miss Admin123!x', 'Admin123!x', false],
+      ['near miss Admin123', 'Admin123', false],
+      ['near miss admin123!', 'admin123!', false],
+      ['near miss: cycle cut at 60 bytes', CYCLE.slice(0, 60), false],
+      ['near miss: cycle cut at 70 bytes', CYCLE.slice(0, 70), false],
+      ['near miss: cycle cut at 71 bytes', CYCLE.slice(0, 71), false],
+    ] as Array<[string, string, boolean]>)('%s', async (_label, candidate, equivalent) => {
+      const real = await bcrypt.compare(candidate, reference);
+
+      expect(real).toBe(equivalent);
+      expect(bcryptKey(candidate).equals(bcryptKey(REFERENCE))).toBe(real);
+      expect(isDefaultEquivalent(candidate)).toBe(real);
+    });
   });
 
   it('marks the account on the first matching default login and audits only that transition', async () => {
     repository.users.set('u', user('u'));
 
     for (let i = 0; i < 10; i++) {
-      await expect(service.login({ username: 'u', password: DEFAULT })).rejects.toMatchObject(INVALID);
+      await expect(service.login({ username: 'u', password: DEFAULT })).rejects.toMatchObject(DEFAULT_REFUSED);
     }
 
     expect(repository.users.get('u')!._defaultPasswordSuspect).toBe(true);
@@ -184,7 +224,7 @@ describe('N-21 (a) default and bcrypt-equivalent logins are refused outside deve
   it('never marks an account whose stored hash is not a default', async () => {
     repository.users.set('o', user('o', { _passwordHash: operatorHash }));
 
-    await expect(service.login({ username: 'o', password: DEFAULT })).rejects.toMatchObject(INVALID);
+    await expect(service.login({ username: 'o', password: DEFAULT })).rejects.toMatchObject(DEFAULT_REFUSED);
 
     expect(repository.users.get('o')!._defaultPasswordSuspect).toBeUndefined();
     expect(repository.events).toEqual([]);

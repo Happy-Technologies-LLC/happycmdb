@@ -112,7 +112,14 @@ export class ApiKeyNotFoundError extends Error {
   }
 }
 
-export type AuthFailureReason = 'invalid' | 'expired' | 'wrong_type' | 'disabled' | 'revoked' | 'store_error';
+/**
+ * Logged reason of an authentication failure; never part of a response.
+ * `default_credential_refused` (v16 §15 N-21) is a default-equivalent login
+ * password refused outside development; callers send it the same response as
+ * any other failure.
+ */
+export type AuthFailureReason =
+  | 'invalid' | 'expired' | 'wrong_type' | 'disabled' | 'revoked' | 'store_error' | 'default_credential_refused';
 
 export class AuthFailureError extends Error {
   override readonly cause: unknown;
@@ -163,7 +170,7 @@ export class AuthService {
       if (refuseDefaults) {
         if (isDefaultEquivalent(password)) {
           await this.markIfDefaultHash(user, password);
-          throw new AuthFailureError('invalid');
+          throw new AuthFailureError('default_credential_refused');
         }
         if (containsNul(password)) throw new AuthFailureError('invalid');
       }

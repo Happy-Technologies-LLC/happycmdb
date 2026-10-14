@@ -214,6 +214,49 @@ describe('AuthController profile/password/account routes', () => {
     }
   });
 
+  it.each([['production'], [undefined]])(
+    'N-21: NODE_ENV=%s refuses the seeded admin/Admin123! byte-identically to a wrong password, logging default_credential_refused and no password',
+    async nodeEnv => {
+      const savedNodeEnv = process.env['NODE_ENV'];
+      if (nodeEnv === undefined) delete process.env['NODE_ENV'];
+      else process.env['NODE_ENV'] = nodeEnv;
+      const warnings = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
+      try {
+        const seededHash = await passwordService.hash('Admin123!');
+        repository.users.set('user-admin-001', {
+          _id: 'user-admin-001', _username: 'admin', _email: 'admin@happycmdb.local', _passwordHash: seededHash,
+          _role: 'admin', _enabled: true, _createdAt: new Date('2024-01-01'), _updatedAt: new Date('2024-01-01'),
+        } as User);
+        const login = (password: string) => request(app).post('/api/v1/auth/login').send({ username: 'admin', password });
+        const bytes = (response: request.Response) => ({
+          status: response.status,
+          text: response.text,
+          contentType: response.headers['content-type'],
+          contentLength: response.headers['content-length'],
+          etag: response.headers['etag'],
+        });
+
+        const wrong = await login('not-the-password');
+        expect(warnings).toHaveBeenLastCalledWith('Authentication failed', { credentialType: 'login', reason: 'invalid' });
+        const refused = await login('Admin123!');
+
+        expect(bytes(refused)).toEqual(bytes(wrong));
+        expect(refused.status).toBe(401);
+        expect(refused.body._accessToken ?? refused.body.data).toBeUndefined();
+        expect(warnings).toHaveBeenLastCalledWith('Authentication failed', {
+          credentialType: 'login', reason: 'default_credential_refused',
+        });
+        const logged = JSON.stringify(warnings.mock.calls);
+        expect(logged).not.toContain('Admin123');
+        expect(logged).not.toContain(seededHash);
+      } finally {
+        warnings.mockRestore();
+        if (savedNodeEnv === undefined) delete process.env['NODE_ENV'];
+        else process.env['NODE_ENV'] = savedNodeEnv;
+      }
+    }
+  );
+
   it('returns one fixed refresh failure for invalid, expired, wrong-type, revoked, disabled, and store failures', async () => {
     const warnings = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
     const failed = { success: false, error: 'Authentication failed' };

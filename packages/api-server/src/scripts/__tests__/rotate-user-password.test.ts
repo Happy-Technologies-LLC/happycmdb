@@ -302,6 +302,24 @@ describe('N-21 (e) refusals write nothing anywhere', () => {
     expect(lock.held).toBe(false);
   });
 
+  it('a forced bcrypt.compare(default, newHash) = true seam: exit 2, no intent, no Neo4j write, no lock', async () => {
+    const compared: Array<[string, string]> = [];
+    deps.compare = async (plaintext, hash) => {
+      compared.push([plaintext, hash]);
+      return true; // the binding claims the new hash verifies the default
+    };
+
+    const refusal = await rotateUserPassword(input(), deps).catch((error: unknown) => error);
+
+    expect(refusal).toBeInstanceOf(RotationRefused);
+    expect(refusal).toMatchObject({ reason: 'password_not_allowed', exitCode: 2 });
+    expect(compared.map(([plaintext]) => plaintext)).toEqual(['Admin123!']);
+    expect(await bcrypt.compare(NEW_PASSWORD, compared[0]![1])).toBe(true); // the compare ran against the new hash
+    expect(await events()).toEqual([]);
+    expect(graph.applyParams).toEqual([]);
+    expect(lock.held).toBe(false);
+  });
+
   it('an unknown user id', async () => {
     await expect(rotateUserPassword(input('ghost'), deps)).rejects.toMatchObject({ reason: 'unknown_identity' });
     expect(await events()).toEqual([]);

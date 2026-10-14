@@ -186,15 +186,19 @@ revokes legacy PUBLIC discovery-agent table read/write and unscoped view reads,
 matching `019`; the app role receives explicit discovery-agent access.
 `init-postgres.sql` mirrors these ACLs for standalone fresh installations.
 Reporting keeps the redacted discovery summary and audit activity, not raw
-history or unscoped agent views. `034` validates required objects before
-changing grants; it does not modify migration `033` or its checksum.
+history or unscoped agent views. `034` validates required objects and records
+their prior PUBLIC history/sequence ACLs transactionally before revoking them;
+it does not modify migration `033` or its checksum.
 
-Manual `rollback/034_*.down.sql` requires its ledger row, rejects later
-migrations and restores unsafe history/sequence PUBLIC grants, but never
-restores discovery-agent grants already closed by `019`. Roll back `034`
-before `033`, and `033` before `032`; both older down scripts refuse while
-their dependent migration is recorded. Reapply in ascending order. Never
-run any of these rollback scripts as routine security recovery.
+Manual `rollback/034_*.down.sql` requires its ledger row and complete prior
+ACL snapshot, rejects later migrations and mismatched/replaced objects, then
+restores each history/sequence PUBLIC grant only if it existed before `034`.
+Legacy 001 installations regain their old unsafe grants; a closed fresh
+initializer remains closed throughout rollback. The snapshot and ledger row
+are removed atomically. Discovery-agent grants already closed by `019` stay
+closed. Roll back `034` before `033`, and `033` before `032`; both older down
+scripts refuse while their dependent migration is recorded. Reapply in
+ascending order. Never run these rollback scripts as routine security recovery.
 
 For existing Neo4j databases an operator must separately apply
 `packages/database/src/neo4j/migrations/004_reconciliation_op_fence.cypher`

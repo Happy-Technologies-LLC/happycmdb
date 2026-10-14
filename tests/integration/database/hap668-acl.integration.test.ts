@@ -45,7 +45,8 @@ async function asRole(pool: Pool, role: string, sql: string, denied = false, own
 async function closed(pool: Pool) {
   for (const relation of ['public.ci_change_history', 'public.discovery_agents',
     'public.active_discovery_agents', 'public.agent_network_coverage']) {
-    const privileges = relation === 'public.discovery_agents' ?
+    const privileges = relation === 'public.discovery_agents' ||
+      relation === 'public.ci_change_history' ?
       ['SELECT', 'INSERT', 'UPDATE', 'DELETE'] : ['SELECT'];
     for (const privilege of privileges) {
       expect((await pool.query('SELECT has_table_privilege($1, $2, $3) AS allowed',
@@ -57,6 +58,12 @@ async function closed(pool: Pool) {
     `INSERT INTO discovery_agents (agent_id, hostname) VALUES ('untrusted', 'host')`,
     `UPDATE discovery_agents SET hostname = 'untrusted' WHERE false`,
     `DELETE FROM discovery_agents WHERE false`,
+  ]) await asRole(pool, 'hap668_nonowner', sql, true);
+  for (const sql of [
+    `INSERT INTO ci_change_history (ci_id, change_type, change_source)
+      VALUES ('untrusted', 'updated', 'untrusted')`,
+    `UPDATE ci_change_history SET change_source = 'untrusted' WHERE false`,
+    `DELETE FROM ci_change_history WHERE false`,
   ]) await asRole(pool, 'hap668_nonowner', sql, true);
   for (const sequence of sequences) {
     expect((await pool.query('SELECT has_sequence_privilege($1, $2, $3) AS allowed',
@@ -121,8 +128,17 @@ if (process.env['HAP668_ACCEPTANCE'] !== '1') {
       // The fixture loaded 034 before the roles existed. Its guarded down
       // recreates merged #80's PUBLIC ACLs without reopening 019's agents.
       await db.query(down);
-      await asRole(db, 'hap668_nonowner', 'SELECT metadata FROM ci_change_history LIMIT 1');
-      await asRole(db, 'hap668_nonowner', `SELECT nextval('cmdb.dim_ci_ci_key_seq')`);
+      await asRole(db, 'hap668_nonowner',
+        'SELECT previous_values, new_values, metadata FROM ci_change_history LIMIT 1');
+      for (const sequence of sequences) {
+        for (const privilege of ['USAGE', 'SELECT']) {
+          expect((await db.query('SELECT has_sequence_privilege($1, $2, $3) AS allowed',
+            ['hap668_nonowner', `cmdb.${sequence}`, privilege])).rows[0].allowed).toBe(true);
+        }
+        await asRole(db, 'hap668_nonowner', `SELECT nextval('cmdb.${sequence}')`);
+        await asRole(db, 'hap668_nonowner', `SELECT currval('cmdb.${sequence}')`, false,
+          `SELECT nextval('cmdb.${sequence}')`);
+      }
       await asRole(db, 'hap668_nonowner', 'SELECT * FROM discovery_agents LIMIT 1', true);
       await db.query(up);
       await db.query(`INSERT INTO cmdb.schema_migrations VALUES
@@ -140,9 +156,6 @@ if (process.env['HAP668_ACCEPTANCE'] !== '1') {
       await expect(db.query(down)).rejects.toThrow('034 down requires its migration ledger row');
       // 032 is still dependent on 033 even after 034 is removed.
       await expect(db.query(down032)).rejects.toThrow('032 down refused');
-      await asRole(db, 'hap668_nonowner', 'SELECT metadata FROM ci_change_history LIMIT 1');
-      await asRole(db, 'hap668_nonowner', `SELECT nextval('cmdb.dim_ci_ci_key_seq')`);
-      await asRole(db, 'hap668_nonowner', 'SELECT * FROM discovery_agents LIMIT 1', true);
       await db.query(up);
       await db.query(`INSERT INTO cmdb.schema_migrations VALUES
         ('034_history_sequence_discovery_acl.sql', 'disposable-proof')`);
@@ -160,6 +173,10 @@ if (process.env['HAP668_ACCEPTANCE'] !== '1') {
           if (before) await fresh.query(bi);
           await closed(fresh);
           await fresh.query(up);
+          if (before) {
+            await expect(fresh.query(down)).rejects.toThrow('034 down requires its migration ledger row');
+            await closed(fresh);
+          }
           if (!before) await fresh.query(bi);
           await closed(fresh);
           await appAndBI(fresh);
@@ -168,8 +185,20 @@ if (process.env['HAP668_ACCEPTANCE'] !== '1') {
           await fresh.query(`INSERT INTO cmdb.schema_migrations VALUES
             ('034_history_sequence_discovery_acl.sql', 'disposable-proof')`);
           await fresh.query(down);
+          // On a fresh installer these were private BEFORE 034: rollback must
+          // not create a PUBLIC exposure even briefly before reapplication.
+          await closed(fresh);
+          await appAndBI(fresh);
+          await expect(fresh.query(down)).rejects.toThrow('034 down requires its migration ledger row');
           await fresh.query(up);
           await closed(fresh);
+          if (before) {
+            await fresh.query(`INSERT INTO cmdb.schema_migrations VALUES
+              ('034_history_sequence_discovery_acl.sql', 'disposable-proof')`);
+            await fresh.query('DROP TABLE cmdb.hap668_acl_prior');
+            await expect(fresh.query(down)).rejects.toThrow('034 down requires its prior ACL snapshot');
+            await closed(fresh);
+          }
         } finally {
           await fresh.end();
           await db.query(`DROP DATABASE ${database} WITH (FORCE)`);

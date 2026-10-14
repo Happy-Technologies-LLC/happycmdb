@@ -45,6 +45,27 @@ BEGIN
       RAISE EXCEPTION '034 missing cmdb serial sequence for %', sequence_name;
     END IF;
   END LOOP;
+  -- Preserve the actual PUBLIC ACL, not an assumption about 001 vs. a
+  -- standalone initializer. A repeated manual apply must not overwrite it.
+  IF to_regclass('cmdb.hap668_acl_prior') IS NOT NULL THEN
+    RAISE EXCEPTION '034 prior ACL snapshot already exists';
+  END IF;
+  CREATE TABLE cmdb.hap668_acl_prior (
+    relation_oid oid PRIMARY KEY,
+    relation_kind "char" NOT NULL,
+    public_select boolean NOT NULL,
+    public_usage boolean NOT NULL
+  );
+  INSERT INTO cmdb.hap668_acl_prior
+    (relation_oid, relation_kind, public_select, public_usage)
+  SELECT c.oid, c.relkind,
+    EXISTS (SELECT 1 FROM aclexplode(c.relacl) a
+            WHERE a.grantee = 0 AND a.privilege_type = 'SELECT'),
+    EXISTS (SELECT 1 FROM aclexplode(c.relacl) a
+            WHERE a.grantee = 0 AND a.privilege_type = 'USAGE')
+  FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+  WHERE c.oid = 'public.ci_change_history'::regclass
+     OR (n.nspname = 'cmdb' AND c.relkind = 'S');
   REVOKE SELECT ON public.ci_change_history FROM PUBLIC;
   REVOKE USAGE, SELECT ON ALL SEQUENCES IN SCHEMA cmdb FROM PUBLIC;
   REVOKE SELECT, INSERT, UPDATE, DELETE ON public.discovery_agents FROM PUBLIC;

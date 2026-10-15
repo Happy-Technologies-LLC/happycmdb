@@ -173,7 +173,7 @@ it('retains event-proven fresh history and fences reused IDs, NULL provenance an
   expect((await history('a')).body.data.map((row: { change_type: string }) => row.change_type)).toEqual(['OWN']);
   expect((await graphql('a')).body.data.analytics.getChangeHistory).toEqual([{ _changeType: 'OWN' }]);
   expect((await history('b')).status).toBe((await rest('b', '/change-history?ci_id=analytics-absent')).status);
-  expect((await graphql('b')).body.data.analytics.getChangeHistory).toEqual([]);
+  expect((await graphql('b')).body.errors?.[0].extensions.code).toBe('NOT_FOUND');
   await cypher("MATCH (ci:CI {id:'analytics-history'}) DETACH DELETE ci");
   await cypher("CREATE (:CI {id:'analytics-history', name:'reused', type:'server', organization_id:$org, incarnation_id:randomUUID()})", { org: B });
   const bMarker = (await graph.getCI('analytics-history', B))?._incarnation_id;
@@ -182,7 +182,7 @@ it('retains event-proven fresh history and fences reused IDs, NULL provenance an
     [JSON.stringify({ organization_id: B }), bMarker, B]);
   expect((await history('a')).status).toBe(404);
   expect((await history('b')).body.data.map((row: { change_type: string }) => row.change_type)).toEqual(['NEW']);
-  expect((await graphql('a')).body.data.analytics.getChangeHistory).toEqual([]);
+  expect((await graphql('a')).body.errors?.[0].extensions.code).toBe('NOT_FOUND');
   expect((await graphql('b')).body.data.analytics.getChangeHistory).toEqual([{ _changeType: 'NEW' }]);
 });
 

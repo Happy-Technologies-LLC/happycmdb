@@ -351,16 +351,17 @@ it('all search paths filter before count, ordering and LIMIT, including NULL leg
   expect(related.body.data.map((ci: { id: string }) => ci.id)).toEqual(['t2-a']);
   const orphans = await request(app).get('/api/v1/search/orphaned').set(auth('a'));
   expect(orphans.status).toBe(200);
-  expect(orphans.body.data.map((ci: { id: string }) => ci.id).sort()).toEqual([
+  const orphanIds = orphans.body.data.map((ci: { id: string }) => ci.id);
+  expect([...orphanIds].sort()).toEqual([
     't2-cost2', 't2-foreign-link', 't2-null-link', 't2-own-support',
     't2-through-foreign', 't2-through-null',
   ]);
   expect(orphans.body.pagination.total).toBe(6);
-  for (const [offset, id] of [[0, 't2-foreign-link'], [1, 't2-null-link']] as const) {
+  for (const offset of [0, 1]) {
     const page = await request(app).get(`/api/v1/search/orphaned?limit=1&offset=${offset}`).set(auth('a'));
     expect(page.status).toBe(200);
     expect(page.body.pagination).toMatchObject({ total: 6, count: 1, offset, limit: 1 });
-    expect(page.body.data.map((ci: { id: string }) => ci.id)).toEqual([id]);
+    expect(page.body.data.map((ci: { id: string }) => ci.id)).toEqual([orphanIds[offset]]);
   }
 });
 

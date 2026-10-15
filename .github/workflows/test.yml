@@ -371,6 +371,10 @@ jobs:
       - name: Fail-before on merged HAP-644 ACL
         run: |
           set -euo pipefail
+          if git cat-file -e "${BASE_SHA}:packages/database/src/postgres/migrations/034_history_sequence_discovery_acl.sql" 2>/dev/null; then
+            echo 'HAP-668 already on the base; fail-before is not applicable.'
+            exit 0
+          fi
           git worktree add ../hap668-base "$BASE_SHA"
           cp "$HARNESS" "../hap668-base/$HARNESS"
           cd ../hap668-base

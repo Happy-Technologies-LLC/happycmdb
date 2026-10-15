@@ -43,10 +43,9 @@ interface RelationshipItem {
   target_ci_id: string;
 }
 
-// Shape of a search result item (raw Neo4j node properties + score).
+// Shape of the tenant-filtered search result (raw Neo4j node properties).
 interface SearchResultItem {
   ci: { id: string; name: string; type: string; external_id?: string };
-  score: number;
 }
 
 const ORG_A = '11111111-1111-4111-8111-111111111111';
@@ -507,8 +506,8 @@ describe('CI REST API Integration Tests', () => {
 
       expect(response.body).toHaveProperty('success', true);
       expect(response.body.data).toBeInstanceOf(Array);
-      expect(response.body.data.length).toBeGreaterThanOrEqual(2);
-      expect(response.body.data[0]).toHaveProperty('score');
+      expect(response.body.data.map((item: SearchResultItem) => item.ci.name).sort())
+        .toEqual(['production-database', 'production-web-server']);
     });
 
     it('should search CIs by type', async () => {

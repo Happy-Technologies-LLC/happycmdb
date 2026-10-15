@@ -162,10 +162,11 @@ it('caps dense cyclic dependency work in both APIs and serves a healthy follow-u
 it('retains event-proven fresh history and fences reused IDs, NULL provenance and foreign IDs', async () => {
   await cypher("CREATE (:CI {id:'analytics-history', name:'fresh', type:'server', organization_id:$org, incarnation_id:randomUUID()})", { org: A });
   const aMarker = (await graph.getCI('analytics-history', A))?._incarnation_id;
-  await sql.query(`INSERT INTO ci_change_history (ci_id, change_type, change_source, metadata, ci_incarnation_id)
-    VALUES ('analytics-history', 'OWN', 'test', $1::jsonb, $2),
-      ('analytics-history', 'LEGACY', 'test', NULL, $2),
-      ('analytics-history', 'FOREIGN', 'test', $3::jsonb, $2)`, [JSON.stringify({ organization_id: A }), aMarker, JSON.stringify({ organization_id: B })]);
+  await sql.query(`INSERT INTO ci_change_history (ci_id, change_type, change_source, metadata, ci_incarnation_id, organization_id)
+    VALUES ('analytics-history', 'OWN', 'test', $1::jsonb, $2, $3),
+      ('analytics-history', 'LEGACY', 'test', NULL, $2, NULL),
+      ('analytics-history', 'FOREIGN', 'test', $4::jsonb, $2, $5)`,
+    [JSON.stringify({ organization_id: A }), aMarker, A, JSON.stringify({ organization_id: B }), B]);
   const history = (user: keyof typeof users) => rest(user, '/change-history?ci_id=analytics-history');
   const graphql = (user: keyof typeof users) => gql(user, '{ analytics { getChangeHistory(ciId:"analytics-history") { _changeType } } }');
   expect((await sql.query("SELECT ci_id FROM cmdb.dim_ci WHERE ci_id='analytics-history'")).rows).toEqual([]);
@@ -176,8 +177,9 @@ it('retains event-proven fresh history and fences reused IDs, NULL provenance an
   await cypher("MATCH (ci:CI {id:'analytics-history'}) DETACH DELETE ci");
   await cypher("CREATE (:CI {id:'analytics-history', name:'reused', type:'server', organization_id:$org, incarnation_id:randomUUID()})", { org: B });
   const bMarker = (await graph.getCI('analytics-history', B))?._incarnation_id;
-  await sql.query(`INSERT INTO ci_change_history (ci_id, change_type, change_source, metadata, ci_incarnation_id)
-    VALUES ('analytics-history', 'NEW', 'test', $1::jsonb, $2)`, [JSON.stringify({ organization_id: B }), bMarker]);
+  await sql.query(`INSERT INTO ci_change_history (ci_id, change_type, change_source, metadata, ci_incarnation_id, organization_id)
+    VALUES ('analytics-history', 'NEW', 'test', $1::jsonb, $2, $3)`,
+    [JSON.stringify({ organization_id: B }), bMarker, B]);
   expect((await history('a')).status).toBe(404);
   expect((await history('b')).body.data.map((row: { change_type: string }) => row.change_type)).toEqual(['NEW']);
   expect((await graphql('a')).body.data.analytics.getChangeHistory).toEqual([]);

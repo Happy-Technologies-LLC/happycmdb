@@ -10,6 +10,7 @@ import { Queue, Worker, Job, QueueEvents } from 'bullmq';
 import { Logger } from 'winston';
 import { getRedisClient, getPostgresClient } from '@cmdb/database';
 import { startOfMonth, endOfMonth, subDays } from 'date-fns';
+import { codedProcessor, jobErrorCode } from '@cmdb/common';
 import { AWSCostExplorer, AWSCredentials } from './aws-cost-explorer';
 import { AzureCostManagement, AzureCredentials } from './azure-cost-management';
 import { GCPBilling, GCPCredentials } from './gcp-billing';
@@ -26,6 +27,18 @@ export interface CostSyncOptions {
   credentialId: string;
   lookbackDays?: number;
   batchSize?: number;
+}
+export interface SafeSyncResult {
+  success: boolean;
+  recordsProcessed: number;
+  recordsCreated: number;
+  recordsUpdated: number;
+  recordsFailed: number;
+  errorCount: number;
+  errorCodes: Record<string, number>;
+  durationMs: number;
+  syncStartTime: string;
+  syncEndTime: string;
 }
 
 export class CostSyncService {
@@ -74,63 +87,46 @@ export class CostSyncService {
   private initializeWorkers(): void {
     const worker = new Worker(
       'cost-sync',
-      async (job: Job) => {
+      codedProcessor('cost-sync', {
+        success: 'flag', recordsProcessed: 'count', recordsCreated: 'count',
+        recordsUpdated: 'count', recordsFailed: 'count', errorCount: 'count',
+        errorCodes: 'errorCounts', durationMs: 'count',
+        syncStartTime: 'timestamp', syncEndTime: 'timestamp',
+      }, async (job: Job) => {
         this.logger.info('Processing cost sync job', {
-          jobId: job.id,
-          provider: job.data.provider,
+          jobId: job.id, provider: job.data.provider,
         });
-
-        try {
-          let result: SyncResult;
-
-          switch (job.data.provider) {
-            case 'aws':
-              result = await this.syncAWSCosts(job.data);
-              break;
-            case 'azure':
-              result = await this.syncAzureCosts(job.data);
-              break;
-            case 'gcp':
-              result = await this.syncGCPCosts(job.data);
-              break;
-            case 'gl':
-              result = await this.syncGLCostsInternal(job.data);
-              break;
-            case 'license':
-              result = await this.syncLicenseCostsInternal(job.data);
-              break;
-            default:
-              throw new Error(`Unknown provider: ${job.data.provider}`);
-          }
-
-          return result;
-        } catch (error) {
-          this.logger.error('Cost sync job failed', {
-            jobId: job.id,
-            error,
-          });
-          throw error;
+        let result: SyncResult;
+        switch (job.data.provider) {
+          case 'aws': result = await this.syncAWSCosts(job.data); break;
+          case 'azure': result = await this.syncAzureCosts(job.data); break;
+          case 'gcp': result = await this.syncGCPCosts(job.data); break;
+          case 'gl': result = await this.syncGLCostsInternal(job.data); break;
+          case 'license': result = await this.syncLicenseCostsInternal(job.data); break;
+          default: throw new Error('ERR_VALIDATION');
         }
-      },
-      {
-        connection: this.redisClient,
-        concurrency: 5,
-      }
+        const errorCount = result.errors?.length ?? 0;
+        return {
+          success: result.success, recordsProcessed: result.recordsProcessed,
+          recordsCreated: result.recordsCreated, recordsUpdated: result.recordsUpdated,
+          recordsFailed: result.recordsFailed, errorCount,
+          errorCodes: errorCount ? { ERR_INTERNAL: errorCount } : {},
+          durationMs: Math.max(0, Math.ceil(result.duration)),
+          syncStartTime: result.syncStartTime.toISOString(),
+          syncEndTime: result.syncEndTime.toISOString(),
+        };
+      }),
+      { connection: this.redisClient, concurrency: 5 }
     );
 
-    worker.on('completed', (job, result) => {
+    worker.on('completed', (_job, result) => {
       this.logger.info('Cost sync job completed', {
-        jobId: job.id,
-        provider: job.data.provider,
         recordsProcessed: result.recordsProcessed,
       });
     });
 
-    worker.on('failed', (job, error) => {
-      this.logger.error('Cost sync job failed', {
-        jobId: job?.id,
-        error,
-      });
+    worker.on('failed', (_job, error) => {
+      this.logger.error('Cost sync job failed', { code: jobErrorCode(error) });
     });
   }
 
@@ -140,7 +136,7 @@ export class CostSyncService {
   async syncCloudCosts(
     provider: 'aws' | 'azure' | 'gcp',
     options?: Partial<CostSyncOptions>
-  ): Promise<SyncResult> {
+  ): Promise<SafeSyncResult> {
     this.logger.info('Initiating cloud cost sync', { provider });
 
     // Queue the sync job
@@ -256,7 +252,7 @@ export class CostSyncService {
         duration: syncEndTime.getTime() - syncStartTime.getTime(),
       };
     } catch (error) {
-      this.logger.error('AWS cost sync failed', { error });
+      this.logger.error('AWS cost sync failed', { code: 'ERR_INTERNAL' });
       throw error;
     }
   }
@@ -354,7 +350,7 @@ export class CostSyncService {
         duration: syncEndTime.getTime() - syncStartTime.getTime(),
       };
     } catch (error) {
-      this.logger.error('Azure cost sync failed', { error });
+      this.logger.error('Azure cost sync failed', { code: 'ERR_INTERNAL' });
       throw error;
     }
   }
@@ -443,7 +439,7 @@ export class CostSyncService {
         duration: syncEndTime.getTime() - syncStartTime.getTime(),
       };
     } catch (error) {
-      this.logger.error('GCP cost sync failed', { error });
+      this.logger.error('GCP cost sync failed', { code: 'ERR_INTERNAL' });
       throw error;
     }
   }
@@ -505,7 +501,7 @@ export class CostSyncService {
         duration: syncEndTime.getTime() - syncStartTime.getTime(),
       };
     } catch (error) {
-      this.logger.error('GL cost sync failed', { error });
+      this.logger.error('GL cost sync failed', { code: 'ERR_INTERNAL' });
       throw error;
     }
   }
@@ -595,10 +591,7 @@ export class CostSyncService {
           }
         } catch (error) {
           recordsFailed++;
-          this.logger.error('Failed to sync license cost', {
-            licenseId: license.id,
-            error,
-          });
+          this.logger.error('Failed to sync license cost', { code: 'ERR_INTERNAL' });
         }
       }
 
@@ -616,7 +609,7 @@ export class CostSyncService {
         duration: syncEndTime.getTime() - syncStartTime.getTime(),
       };
     } catch (error) {
-      this.logger.error('License cost sync failed', { error });
+      this.logger.error('License cost sync failed', { code: 'ERR_INTERNAL' });
       throw error;
     }
   }

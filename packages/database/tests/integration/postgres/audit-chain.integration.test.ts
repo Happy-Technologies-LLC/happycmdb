@@ -132,7 +132,8 @@ describeIfDb('AuditService hash chain (cmdb_test)', () => {
     expect((await auditService.verifyAuditChain()).ok).toBe(true);
 
     await pool.query(
-      "INSERT INTO audit_log (entity_type,entity_id,action,actor,changes) VALUES ('CI','ci-1','CREATE','legacy','[]')"
+      `INSERT INTO audit_log (entity_type,entity_id,action,actor,changes,timestamp)
+       VALUES ('CI','ci-1','CREATE','legacy','[]','2000-01-01')`
     );
     expect((await auditService.getCIAuditHistory('ci-1', ORG_A)).length).toBe(2);
     expect((await auditService.verifyAuditChain()).orgBindingViolations).toEqual([]);

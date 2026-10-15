@@ -21,9 +21,9 @@ type PublicJob = { id: string; name: string; state: string };
  */
 export function createJobsCommand(): Command {
   const jobsCmd = new Command('jobs');
-  jobsCmd.description('Manage caller-owned jobs via the authenticated API; global queue and ETL operations unavailable');
-  // A CLI process has no verified local tenant. Only the authenticated API
-  // can derive one before accessing a shared BullMQ queue.
+  jobsCmd.description('Manage platform queue jobs via the authenticated API; discovery execution and ETL triggers unavailable');
+  // A CLI process has no verified platform identity. The API validates a
+  // freshly verified platform administrator JWT before shared queue access.
   function apiAccess(token?: string) {
     const globals = jobsCmd.optsWithGlobals();
     const apiKey = globals['key'] || process.env['CMDB_API_KEY'];
@@ -47,7 +47,7 @@ export function createJobsCommand(): Command {
 
   jobsCmd
     .command('list <queueName>')
-    .description('List caller-owned jobs in a queue through the authenticated API')
+    .description('List platform queue jobs through the authenticated API')
     .option('-s, --state <state>', 'Job state (waiting, active, completed, failed)', 'waiting')
     .option('-l, --limit <limit>', 'Maximum jobs to show (1-100)', '20')
     .option('--token <token>', 'JWT access token (or CMDB_ACCESS_TOKEN)')
@@ -64,7 +64,7 @@ export function createJobsCommand(): Command {
         const response = await axios.get<{ data: { jobs: PublicJob[] } }>(`${url}/jobs/${encodeURIComponent(queueName)}`, {
           headers, params: { state: options.state, start: 0, end: limit - 1 },
         });
-        console.log(`\n=== ${queueName} - ${options.state} caller-owned jobs ===`);
+        console.log(`\n=== ${queueName} - ${options.state} jobs ===`);
         for (const job of response.data.data.jobs) {
           console.log(`Job ${job.id}: ${job.name} (${job.state})`);
         }
@@ -77,13 +77,13 @@ export function createJobsCommand(): Command {
   // Run discovery job command
   jobsCmd
     .command('run:discovery <provider>')
-    .description('Run Nmap discovery through the authenticated API (SSH execution unavailable until HP1-S5)')
+    .description('Unavailable: discovery execution requires organization-owned journaled definitions')
     .option('-c, --config <config>', 'Job configuration (JSON string)')
     .option('--token <token>', 'JWT access token for API (or CMDB_ACCESS_TOKEN)')
     .action(async (provider: string, options: any) => {
       try {
-        // There is no verified CLI-local tenant. Only the authenticated API
-        // can derive an organization before a job is added to BullMQ.
+        // Legacy endpoints cannot queue discovery; they return a controlled
+        // refusal until organization-owned journaled definitions are enabled.
         const { url: apiUrl, headers } = apiAccess(options.token);
         let config;
         if (options.config) {
@@ -101,7 +101,7 @@ export function createJobsCommand(): Command {
 
         logger.info(`Discovery job ${jobId} queued for ${provider}`);
         console.log(`\nJob ID: ${jobId}`);
-        console.log(`Use 'cmdb jobs status <queueName> ${jobId} --token <token>' to check caller-owned status\n`);
+        console.log(`Use 'cmdb jobs status <queueName> ${jobId} --token <token>' to check status\n`);
 
         process.exit(0);
       } catch (error) {
@@ -124,7 +124,7 @@ export function createJobsCommand(): Command {
 
   jobsCmd
     .command('status <queueName> <jobId>')
-    .description('Read caller-owned job status through the authenticated API (no raw worker output)')
+    .description('Read platform job status through the authenticated API (no raw worker output)')
     .option('--token <token>', 'JWT access token (or CMDB_ACCESS_TOKEN)')
     .action(async (queueName: string, jobId: string, options: { token?: string }) => {
       try {
@@ -141,7 +141,7 @@ export function createJobsCommand(): Command {
   for (const [command, method] of [['retry', 'post'], ['cancel', 'delete']] as const) {
     jobsCmd
       .command(`${command} <queueName> <jobId>`)
-      .description(`${command} a caller-owned job through the authenticated API`)
+      .description(`${command} a platform queue job through the authenticated API`)
       .option('--token <token>', 'JWT access token (or CMDB_ACCESS_TOKEN)')
       .action(async (queueName: string, jobId: string, options: { token?: string }) => {
         try {

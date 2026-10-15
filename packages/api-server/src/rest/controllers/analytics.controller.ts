@@ -3,10 +3,11 @@
 
 import { Request, Response } from 'express';
 import { getPostgresClient, getNeo4jClient } from '@cmdb/database';
-import { logger, ciIncarnationId, CIAnalyticsLimitError } from '@cmdb/common';
+import { logger, CIAnalyticsLimitError } from '@cmdb/common';
 import { requestOrganizationId } from '../../middleware/auth.middleware';
 import { executeBoundedAnalysis } from '../../middleware/analysis-admission';
 import { AnalyticsService, DependencyDepthLimitError } from '../../services/analytics.service';
+import { assertNoCIGap, CIGapError, CI_GAP_RESPONSE, readSingleCI } from '../../read-admission';
 
 export class AnalyticsController {
   private postgresClient = getPostgresClient();
@@ -345,50 +346,30 @@ export class AnalyticsController {
         return;
       }
 
+      const id = String(ci_id);
       const organizationId = requestOrganizationId(req);
-      const ci = await this.neo4jClient.getCI(String(ci_id), organizationId);
+      const ci = await this.neo4jClient.getCI(id, organizationId);
       if (!ci) {
-        res.status(404).json({ success: false, error: 'Not Found' });
+        await assertNoCIGap(organizationId, id);
+        res.status(404).json({ success: false, error: 'Not Found', message: 'CI not found' });
         return;
       }
-      const incarnationId = ciIncarnationId(ci);
-      if (!incarnationId) {
-        res.json({ success: true, data: [], ci_id });
-        return;
-      }
-
-      const limitNum = Math.min(parseInt(String(limit)), 1000);
-
-      const result = await this.postgresClient.query(
-        `
-        SELECT
-          changed_at,
-          change_type,
-          changed_fields,
-          previous_values,
-          new_values,
-          changed_by
-        FROM ci_change_history
-        WHERE ci_id = $1 AND ci_incarnation_id = $3
-          AND metadata->>'organization_id' = $4
-        ORDER BY changed_at DESC
-        LIMIT $2
-        `,
-        [ci_id, limitNum, incarnationId, organizationId]
-      );
-
-      res.json({
-        success: true,
-        data: result.rows,
-        ci_id,
-      });
+      const limitNum = Math.min(parseInt(String(limit), 10), 1000);
+      const result = await readSingleCI(organizationId, id, () => this.postgresClient.query(
+        `SELECT changed_at, change_type, changed_fields, previous_values, new_values, changed_by
+         FROM ci_change_history WHERE ci_id = $1 AND organization_id = $2
+           AND ci_incarnation_id = $3::uuid
+         ORDER BY changed_at DESC, id LIMIT $4`,
+        [id, organizationId, ci._incarnation_id ?? null, limitNum]
+      ));
+      res.json({ success: true, data: result.rows, ci_id });
     } catch (error) {
+      if (error instanceof CIGapError) {
+        res.status(409).json(CI_GAP_RESPONSE);
+        return;
+      }
       logger.error('Error getting change history', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to retrieve change history',
-        message: error instanceof Error ? error.message : 'Unknown error',
-      });
+      res.status(500).json({ success: false, error: 'Failed to retrieve change history' });
     }
   }
 
@@ -485,7 +466,7 @@ export class AnalyticsController {
         JOIN jsonb_to_recordset($3::jsonb) AS current_ci("ciId" text, "incarnationId" uuid)
           ON h.ci_id = current_ci."ciId" AND h.ci_incarnation_id = current_ci."incarnationId"
         WHERE h.changed_at >= $1 AND h.changed_at <= $2
-          AND h.metadata->>'organization_id' = $4
+          AND h.organization_id = $4::uuid
         GROUP BY date
         ORDER BY date ASC
         `,

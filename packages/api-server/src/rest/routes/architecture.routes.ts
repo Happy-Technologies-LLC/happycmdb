@@ -17,14 +17,21 @@ import { getAuthMiddleware } from '../../auth/auth-bootstrap';
 import { requestOrganizationId } from '../../middleware/auth.middleware';
 import { executeBoundedAnalysis } from '../../middleware/analysis-admission';
 import { errorLogFields } from '../../utils/log-error';
-import { assertNoCIGap } from '../../read-admission';
+import { assertNoCIGap, CIGapError, CI_GAP_RESPONSE } from '../../read-admission';
 
 export const architectureRoutes = Router();
 const authMiddleware = getAuthMiddleware();
+const invalidCIId = /\u0000|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u;
 function executeAnalysis(
   req: Request, res: Response, operation: () => Promise<{ status: number; body: unknown }>
 ): Promise<void> {
-  return executeBoundedAnalysis(req, res, operation, {
+  return executeBoundedAnalysis(req, res, async () => {
+    try { return await operation(); }
+    catch (error) {
+      if (error instanceof CIGapError) return { status: 409, body: CI_GAP_RESPONSE };
+      throw error;
+    }
+  }, {
     scope: 'architecture',
     timeoutMs: ARCHITECTURE_REQUEST_TIMEOUT_MS,
     withDeadline: withArchitectureDeadline,
@@ -75,7 +82,8 @@ architectureRoutes.post(
       if (!Array.isArray(ci_ids) || ci_ids.length === 0) {
         return { status: 400, body: { success: false, error: 'ci_ids array is required' } };
       }
-      if (!ci_ids.every((id: unknown) => typeof id === 'string' && id.length >= 1 && id.length <= 255)) {
+      if (!ci_ids.every((id: unknown) => typeof id === 'string' &&
+        id.length >= 1 && id.length <= 255 && !invalidCIId.test(id))) {
         return { status: 400, body: { success: false, error: 'ci_ids must contain CI IDs of 1–255 characters' } };
       }
       const ids = [...new Set(ci_ids as string[])];

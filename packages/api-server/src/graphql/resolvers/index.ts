@@ -35,6 +35,7 @@ import { checkGraphQLPermission } from '../../middleware/auth.middleware';
 import { requireGraphQLOrganization } from '../require-organization';
 import type { CILoaderKey } from '../dataloaders/ci-loader';
 import { GRAPHQL_PAGE_DEFAULTS, normalizePagination } from '../pagination';
+import { readCIList, readSingleCI, assertNoCIGap, CIGapError, CIListUnavailableError } from '../../read-admission';
 
 /**
  * GraphQL Context type containing database clients and dataloaders
@@ -48,6 +49,8 @@ export interface GraphQLContext {
   };
   /** Authenticated identity resolved from the request's bearer token or API key, when present. */
   user?: TokenPayload;
+  /** Credential kind set by authentication, never supplied by GraphQL input. */
+  credentialType?: 'jwt' | 'api-key';
   _ciTraversalWork?: () => CITraversalWork;
 }
 
@@ -338,8 +341,7 @@ const Query = {
       const { filter } = _args;
       const limit = normalizePagination(_args.limit, GRAPHQL_PAGE_DEFAULTS.getCIs);
       const offset = normalizePagination(_args.offset, 0);
-      // The org filter runs before SKIP/LIMIT, so other tenants' CIs never use up a page.
-      const conditions: string[] = ['ci.organization_id = $organizationId'];
+      const conditions: string[] = ['ci.organization_id = $organizationId', 'NOT ci.id IN $pending'];
       const params: Record<string, unknown> = {
         organizationId,
         limit: neo4j.int(limit),
@@ -367,26 +369,23 @@ const Query = {
       }
 
       const whereClause = `WHERE ${conditions.join(' AND ')}`;
-      const result = await session.run(
-        `
-        MATCH (ci:CI)
-        ${whereClause}
-        RETURN ci
-        ORDER BY ci.created_at DESC
-        SKIP $offset
-        LIMIT $limit
-        `,
-        params
-      );
-
-      return result.records.map((record: any) => toGraphQLCI(record.get('ci').properties));
-    } catch (error: any) {
-      throw new GraphQLError('Failed to fetch CIs', {
-        extensions: {
-          code: 'INTERNAL_SERVER_ERROR',
-          originalError: error.message,
-        },
+      return await readCIList(organizationId, async (pending, timeout) => {
+        const result = await session.run(
+          `MATCH (ci:CI)
+           ${whereClause}
+           WITH ci ORDER BY ci.created_at DESC, ci.id
+           WITH collect(ci) AS cs
+           RETURN size(cs) AS total, cs[$offset..$end] AS page`,
+          { ...params, pending, end: neo4j.int(offset + limit) }, { timeout }
+        );
+        return (result.records[0]?.get('page') ?? []).map(
+          (ci: { properties: CIValue }) => toGraphQLCI(ci.properties));
       });
+    } catch (error: unknown) {
+      if (error instanceof CIListUnavailableError) {
+        throw new GraphQLError('CI list temporarily unavailable', { extensions: { code: 'SERVICE_UNAVAILABLE' } });
+      }
+      throw new GraphQLError('Failed to fetch CIs', { extensions: { code: 'INTERNAL_SERVER_ERROR' } });
     } finally {
       await session.close();
     }
@@ -402,16 +401,19 @@ const Query = {
   ): Promise<GraphQLCI | null> => {
     const organizationId = requireGraphQLOrganization(_context);
     try {
-      // A CI of another organization resolves to null, exactly like a missing one.
-      const ci = await _context._loaders._ciLoader.load(ciKey(_args.id, organizationId));
+      const owned = await _context._neo4jClient.getCI(_args.id, organizationId);
+      if (!owned) {
+        await assertNoCIGap(organizationId, _args.id);
+        return null;
+      }
+      const ci = await readSingleCI(organizationId, _args.id,
+        () => _context._loaders._ciLoader.load(ciKey(_args.id, organizationId)));
       return ci ? toGraphQLCI(ci) : null;
-    } catch (error: any) {
-      throw new GraphQLError('Failed to fetch CI', {
-        extensions: {
-          code: 'INTERNAL_SERVER_ERROR',
-          originalError: error.message,
-        },
-      });
+    } catch (error: unknown) {
+      if (error instanceof CIGapError) {
+        throw new GraphQLError('CI is temporarily unavailable', { extensions: { code: 'CONFLICT' } });
+      }
+      throw new GraphQLError('Failed to fetch CI', { extensions: { code: 'INTERNAL_SERVER_ERROR' } });
     }
   },
 
@@ -440,6 +442,7 @@ const Query = {
       // The org filter runs before LIMIT, so other tenants' hits never use up the page.
       const conditions: string[] = [
         'ci.organization_id = $organizationId',
+        'NOT ci.id IN $pending',
         '(ci.name CONTAINS $query OR ci.external_id CONTAINS $query)',
       ];
       const params: Record<string, unknown> = {
@@ -468,25 +471,23 @@ const Query = {
         params.name = filter._name;
       }
 
-      const result = await session.run(
-        `
-        MATCH (ci:CI)
-        WHERE ${conditions.join(' AND ')}
-        RETURN ci
-        ORDER BY ci.name
-        LIMIT $limit
-        `,
-        params
-      );
-
-      return result.records.map((record: any) => toGraphQLCI(record.get('ci').properties));
-    } catch (error: any) {
-      throw new GraphQLError('Failed to search CIs', {
-        extensions: {
-          code: 'INTERNAL_SERVER_ERROR',
-          originalError: error.message,
-        },
+      return await readCIList(organizationId, async (pending, timeout) => {
+        const result = await session.run(
+          `MATCH (ci:CI)
+           WHERE ${conditions.join(' AND ')}
+           WITH ci ORDER BY ci.name, ci.id
+           WITH collect(ci) AS cs
+           RETURN size(cs) AS total, cs[0..$limit] AS page`,
+          { ...params, pending }, { timeout }
+        );
+        return (result.records[0]?.get('page') ?? []).map(
+          (ci: { properties: CIValue }) => toGraphQLCI(ci.properties));
       });
+    } catch (error: unknown) {
+      if (error instanceof CIListUnavailableError) {
+        throw new GraphQLError('CI list temporarily unavailable', { extensions: { code: 'SERVICE_UNAVAILABLE' } });
+      }
+      throw new GraphQLError('Failed to search CIs', { extensions: { code: 'INTERNAL_SERVER_ERROR' } });
     } finally {
       await session.close();
     }
@@ -878,18 +879,25 @@ const CIResolvers = {
 
 /** The ITIL GraphQL CI fields share the same organization boundary as REST. */
 async function maybeITILCI(context: GraphQLContext, id: string, organizationId: string): Promise<Record<string, unknown> | null> {
-  const session = context._neo4jClient.getSession();
-  try {
-    const result = await session.run(
-      'MATCH (ci:CI {id: $id}) WHERE ci.organization_id = $organizationId RETURN ci',
-      { id, organizationId }
-    );
-    if (result.records.length === 0) return null;
-    const properties = result.records[0]!.get('ci').properties as CIValue;
-    return { ...properties, ...toGraphQLCI(properties) };
-  } finally {
-    await session.close();
+  const owned = await context._neo4jClient.getCI(id, organizationId);
+  if (!owned) {
+    await assertNoCIGap(organizationId, id);
+    return null;
   }
+  return readSingleCI(organizationId, id, async () => {
+    const session = context._neo4jClient.getSession();
+    try {
+      const result = await session.run(
+        'MATCH (ci:CI {id: $id}) WHERE ci.organization_id = $organizationId RETURN ci',
+        { id, organizationId }, { timeout: 10_000 }
+      );
+      if (result.records.length === 0) return null;
+      const properties = result.records[0]!.get('ci').properties as CIValue;
+      return { ...properties, ...toGraphQLCI(properties) };
+    } finally {
+      await session.close();
+    }
+  });
 }
 
 async function itilCI(context: GraphQLContext, id: string, organizationId: string): Promise<Record<string, unknown>> {
@@ -901,25 +909,29 @@ async function itilCI(context: GraphQLContext, id: string, organizationId: strin
 async function itilHistory(context: GraphQLContext, id: string, limit: number) {
   const organizationId = requireGraphQLOrganization(context);
   await requireCIInOrganization(context, id, organizationId);
-  const incarnationId = ciIncarnationId(await context._loaders._ciLoader.load(ciKey(id, organizationId)));
-  if (!incarnationId) return [];
-  const result = await getPostgresClient().pool.query(
-    `SELECT h.* FROM ci_change_history h WHERE h.ci_id = $1
-     AND h.metadata->>'organization_id' = $3 AND h.ci_incarnation_id = $4
-     ORDER BY h.changed_at DESC LIMIT $2`,
-    [id, Math.min(Math.max(limit, 1), 500), organizationId, incarnationId]
-  );
-  return result.rows.map((row: {
-    id: string; ci_id: string; changed_at: Date; changed_by: string;
-    change_type: string; changed_fields: string[] | null;
-    previous_values: unknown; new_values: unknown;
-  }) => ({
-    id: row.id, ciId: row.ci_id, changedAt: row.changed_at,
-    changedBy: row.changed_by, changeType: row.change_type,
-    attributeName: row.changed_fields?.join(', ') ?? '',
-    oldValue: row.previous_values === null ? null : JSON.stringify(row.previous_values),
-    newValue: row.new_values === null ? null : JSON.stringify(row.new_values),
-  }));
+  return readSingleCI(organizationId, id, async () => {
+    const incarnationId = ciIncarnationId(await context._loaders._ciLoader.load(ciKey(id, organizationId)));
+    if (!incarnationId) return [];
+    const result = await getPostgresClient().pool.query(
+      `SELECT h.id, h.ci_id, h.changed_at, h.changed_by, h.change_type,
+              h.changed_fields, h.previous_values, h.new_values
+       FROM ci_change_history h WHERE h.ci_id = $1
+         AND h.organization_id = $3 AND h.ci_incarnation_id = $4
+       ORDER BY h.changed_at DESC LIMIT $2`,
+      [id, Math.min(Math.max(limit, 1), 500), organizationId, incarnationId]
+    );
+    return result.rows.map((row: {
+      id: string; ci_id: string; changed_at: Date; changed_by: string;
+      change_type: string; changed_fields: string[] | null;
+      previous_values: unknown; new_values: unknown;
+    }) => ({
+      id: row.id, ciId: row.ci_id, changedAt: row.changed_at,
+      changedBy: row.changed_by, changeType: row.change_type,
+      attributeName: row.changed_fields?.join(', ') ?? '',
+      oldValue: row.previous_values === null ? null : JSON.stringify(row.previous_values),
+      newValue: row.new_values === null ? null : JSON.stringify(row.new_values),
+    }));
+  });
 }
 
 const itilCIQueries = {
@@ -928,7 +940,7 @@ const itilCIQueries = {
   }, context: GraphQLContext) => {
     const organizationId = requireGraphQLOrganization(context);
     const session = context._neo4jClient.getSession();
-    const conditions = ['ci.organization_id = $organizationId'];
+    const conditions = ['ci.organization_id = $organizationId', 'NOT ci.id IN $pending'];
     const params: Record<string, unknown> = { organizationId };
     if (args.lifecycle) { conditions.push('ci.itil_lifecycle = $lifecycle'); params.lifecycle = args.lifecycle; }
     if (args.status) { conditions.push('ci.itil_config_status = $status'); params.status = args.status; }
@@ -937,19 +949,24 @@ const itilCIQueries = {
     const page = Math.max(1, normalizePagination(args.page, 1));
     const limit = Math.min(100, Math.max(1, normalizePagination(args.limit, GRAPHQL_PAGE_DEFAULTS.configurationItems)));
     try {
-      const count = await session.run(`MATCH (ci:CI) ${where} RETURN count(ci) AS total`, params);
-      const total = count.records[0]!.get('total').toNumber() as number;
-      const result = await session.run(
-        `MATCH (ci:CI) ${where} RETURN ci ORDER BY ci.name SKIP $offset LIMIT $limit`,
-        { ...params, offset: neo4j.int((page - 1) * limit), limit: neo4j.int(limit) }
-      );
-      return {
-        items: result.records.map(record => {
-          const ci = record.get('ci').properties as CIValue;
-          return { ...ci, ...toGraphQLCI(ci) };
-        }),
-        total, page, limit, pages: Math.ceil(total / limit),
-      };
+      return await readCIList(organizationId, async (pending, timeout) => {
+        const result = await session.run(
+          `MATCH (ci:CI) ${where}
+           WITH ci ORDER BY ci.name, ci.id
+           WITH collect(ci) AS cs
+           RETURN size(cs) AS total, cs[$offset..$end] AS page`,
+          { ...params, pending, offset: neo4j.int((page - 1) * limit),
+            end: neo4j.int(page * limit) }, { timeout }
+        );
+        const row = result.records[0]!;
+        const total = row.get('total').toNumber() as number;
+        return {
+          items: (row.get('page') as Array<{ properties: CIValue }>).map(node => ({
+            ...node.properties, ...toGraphQLCI(node.properties),
+          })),
+          total, page, limit, pages: Math.ceil(total / limit),
+        };
+      });
     } finally {
       await session.close();
     }
@@ -962,15 +979,21 @@ const itilCIQueries = {
     const organizationId = requireGraphQLOrganization(context);
     const session = context._neo4jClient.getSession();
     try {
-      const result = await session.run(
-        `MATCH (ci:CI) WHERE ci.organization_id = $organizationId
-         AND (ci.itil_next_audit_date <= datetime() OR ci.itil_last_audited IS NULL)
-         RETURN ci ORDER BY ci.itil_next_audit_date LIMIT $limit`,
-        { organizationId, limit: neo4j.int(Math.min(100, Math.max(1, args.limit ?? GRAPHQL_PAGE_DEFAULTS.cisDueForAudit))) }
-      );
-      return result.records.map(record => {
-        const ci = record.get('ci').properties as CIValue;
-        return { ...ci, ...toGraphQLCI(ci) };
+      return await readCIList(organizationId, async (pending, timeout) => {
+        const result = await session.run(
+          `MATCH (ci:CI) WHERE ci.organization_id = $organizationId
+           AND NOT ci.id IN $pending
+           AND (ci.itil_next_audit_date <= datetime() OR ci.itil_last_audited IS NULL)
+           WITH ci ORDER BY ci.itil_next_audit_date, ci.id
+           WITH collect(ci) AS cs
+           RETURN size(cs) AS total, cs[0..$limit] AS page`,
+          { organizationId, pending,
+            limit: neo4j.int(Math.min(100, Math.max(1, args.limit ?? GRAPHQL_PAGE_DEFAULTS.cisDueForAudit))) },
+          { timeout }
+        );
+        return (result.records[0]?.get('page') ?? []).map((node: { properties: CIValue }) => ({
+          ...node.properties, ...toGraphQLCI(node.properties),
+        }));
       });
     } finally {
       await session.close();

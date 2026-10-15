@@ -136,6 +136,12 @@ export class ArchitectureOptimizationEngine {
       `SELECT DISTINCT s.name, m.ci_id
        FROM dim_business_services s
        LEFT JOIN ci_business_service_mappings m ON m.service_id = s.service_id
+         AND EXISTS (SELECT 1 FROM cmdb.dim_ci d
+                     WHERE d.ci_id = m.ci_id AND d.is_current = TRUE
+                       AND d.organization_id = s.organization_id AND d.org_backfilled = FALSE)
+         AND NOT EXISTS (SELECT 1 FROM ci_reconciliation_operations j
+                         WHERE j.organization_id = s.organization_id AND j.ci_id = m.ci_id
+                           AND j.state IN ('pending','failed'))
        WHERE s.service_id = $1 AND s.organization_id = $2
        LIMIT $3`,
       [serviceId, organizationId, MAX_ARCHITECTURE_ROOTS + 1]

@@ -12,20 +12,69 @@ import { denyPlatformAdminGraphQL } from '../../middleware/platform-admin-unavai
 import { ownedBusinessServiceIds, ownsBusinessService } from '../../services/business-service-ownership';
 import { ciCostTrends } from '../../services/ci-cost-trends';
 import { errorLogFields } from '../../utils/log-error';
+import { getAuthService } from '../../auth/auth-bootstrap';
+import { isPlatformAdmin } from '../../auth/platform-admin';
+import { filterGlobalCIGaps, readCIList, CIListUnavailableError } from '../../read-admission';
 
 /**
  * TBM GraphQL Resolvers
  *
  * Provides GraphQL queries and mutations for TBM cost management.
  *
- * Global cost/installation controls refuse every caller until dedicated
- * platform-admin authority exists. Tenant-owned service, capability and trend
- * reads bind the verified organization; trends retain their admin permission.
+ * Platform-wide license lists require a freshly verified platform administrator;
+ * tenant-owned service, capability and trend reads bind the verified organization.
  */
-// All global TBM operations share one interim refusal. No service or graph
-// access remains behind these resolvers until a separate platform-admin PR.
 function denyGlobalTbmOperation(_parent: unknown, _args: unknown, _context: GraphQLContext): never {
   return denyPlatformAdminGraphQL();
+}
+
+async function requirePlatformAdmin(context: GraphQLContext): Promise<void> {
+  if (context.credentialType !== 'jwt' || !context.user) return denyPlatformAdminGraphQL();
+  try {
+    const user = await getAuthService().findEnabledUser(context.user._userId);
+    if (user && isPlatformAdmin(user)) return;
+  } catch {
+    // Unavailable identity storage cannot grant platform access.
+  }
+  return denyPlatformAdminGraphQL();
+}
+
+async function licenseList(
+  context: GraphQLContext,
+  where: string,
+  params: Record<string, unknown>
+): Promise<Record<string, unknown>[]> {
+  await requirePlatformAdmin(context);
+  const session = context._neo4jClient.getSession();
+  try {
+    const result = await session.run(
+      `MATCH (ci:CI {type: 'software'}) WHERE ${where}
+       RETURN ci ORDER BY ci.license_expiry_date ASC LIMIT 100`,
+      params
+    );
+    const rows = await filterGlobalCIGaps(
+      result.records.map(record => record.get('ci').properties as { id: string; organization_id?: string })
+    );
+    return rows.map((ci: any) => ({
+      id: ci.id,
+      name: ci.name,
+      vendor: ci.vendor,
+      licenseType: ci.license_type,
+      licenseStatus: ci.license_status?.toUpperCase(),
+      licenseExpiryDate: ci.license_expiry_date?.toString(),
+      renewalDate: ci.renewal_date?.toString(),
+      monthlyCost: Number(ci.tbm_monthly_cost ?? 0),
+      licenseCount: ci.license_count == null ? null : Number(ci.license_count),
+      complianceStatus: ci.compliance_status?.toUpperCase(),
+    }));
+  } catch (error) {
+    logger.error('Failed to retrieve software licenses', error);
+    throw new GraphQLError('Failed to retrieve software licenses', {
+      extensions: { code: 'INTERNAL_SERVER_ERROR' },
+    });
+  } finally {
+    await session.close();
+  }
 }
 
 const Query = {
@@ -37,16 +86,19 @@ const Query = {
     // Only the caller organization's services are traversed: owned in Postgres
     // (FD-2) and carrying the organization on the node (FD-16 c).
     const orgServiceIds = [...(await ownedBusinessServiceIds(organizationId))];
-    const session = context._neo4jClient.getSession();
     try {
+      return await readCIList(organizationId, async (pending, timeout) => {
+        const session = context._neo4jClient.getSession();
+        try {
       const result = await session.run(
         `
         MATCH (cap:BusinessCapability {id: $capabilityId})-[:REALIZES]->(service:BusinessService)
         WHERE service.id IN $orgServiceIds AND service.organization_id = $organizationId
         OPTIONAL MATCH (service)-[:SUPPORTED_BY]->(app:ApplicationService)
         OPTIONAL MATCH costPath = (app)-[:DEPENDS_ON|RUNS_ON*1..2]->(ci:CI)
-        WHERE all(node IN nodes(costPath) WHERE NOT node:CI OR node.organization_id = $organizationId)
-          AND ci.tbm_monthly_cost IS NOT NULL
+        WHERE all(node IN nodes(costPath) WHERE NOT node:CI OR
+          (node.organization_id = $organizationId AND NOT node.id IN $pending))
+          AND ci.tbm_monthly_cost IS NOT NULL AND NOT ci.id IN $pending
         WITH cap, collect(DISTINCT service.id) as serviceIds, collect(DISTINCT ci) as cis,
              collect(DISTINCT ci.tbm_resource_tower) as towers
         RETURN
@@ -57,7 +109,7 @@ const Query = {
           size(cis) as ciCount,
           towers
         `,
-        { capabilityId: args.id, orgServiceIds, organizationId }
+        { capabilityId: args.id, orgServiceIds, organizationId, pending }, { timeout }
       );
 
       if (result.records.length === 0) {
@@ -75,8 +127,10 @@ const Query = {
         WHERE service.id IN $orgServiceIds AND service.organization_id = $organizationId
         OPTIONAL MATCH (service)-[:SUPPORTED_BY]->(app:ApplicationService)
         OPTIONAL MATCH costPath = (app)-[:DEPENDS_ON|RUNS_ON*1..2]->(ci:CI)
-        WHERE all(node IN nodes(costPath) WHERE NOT node:CI OR node.organization_id = $organizationId)
+        WHERE all(node IN nodes(costPath) WHERE NOT node:CI OR
+          (node.organization_id = $organizationId AND NOT node.id IN $pending))
           AND ci.tbm_monthly_cost IS NOT NULL AND ci.tbm_resource_tower IS NOT NULL
+          AND NOT ci.id IN $pending
         WITH ci.tbm_resource_tower as tower, collect(DISTINCT ci) as cis
         RETURN
           tower,
@@ -84,7 +138,7 @@ const Query = {
           size(cis) as ciCount
         ORDER BY totalCost DESC
         `,
-        { capabilityId: args.id, orgServiceIds, organizationId }
+        { capabilityId: args.id, orgServiceIds, organizationId, pending }, { timeout }
       );
 
       const costByTower = towerResult.records.map((r: any) => ({
@@ -101,14 +155,19 @@ const Query = {
         supportingServices: record.get('serviceIds').length,
         costByTower,
       };
-    } catch (error: any) {
-      logger.error('Error getting costs by capability', error);
-      if (error instanceof GraphQLError) throw error;
-      throw new GraphQLError('Failed to retrieve costs by capability', {
-        extensions: { code: 'INTERNAL_SERVER_ERROR', originalError: error.message },
+        } finally {
+          await session.close();
+        }
       });
-    } finally {
-      await session.close();
+    } catch (error: unknown) {
+      if (error instanceof GraphQLError) throw error;
+      if (error instanceof CIListUnavailableError) {
+        throw new GraphQLError('CI list temporarily unavailable', { extensions: { code: 'SERVICE_UNAVAILABLE' } });
+      }
+      logger.error('Error getting costs by capability');
+      throw new GraphQLError('Failed to retrieve costs by capability', {
+        extensions: { code: 'INTERNAL_SERVER_ERROR' },
+      });
     }
   },
 
@@ -121,8 +180,10 @@ const Query = {
         extensions: { code: 'NOT_FOUND' },
       });
     }
-    const session = context._neo4jClient.getSession();
     try {
+      return await readCIList(organizationId, async (pending, timeout) => {
+        const session = context._neo4jClient.getSession();
+        try {
       // The node must also carry the caller's organization (FD-16 c): a node
       // with another organization's id, or none, matches nothing (NOT_FOUND).
       const result = await session.run(
@@ -131,8 +192,9 @@ const Query = {
         WHERE service.organization_id = $organizationId
         OPTIONAL MATCH (service)-[:SUPPORTED_BY]->(app:ApplicationService)
         OPTIONAL MATCH costPath = (app)-[:DEPENDS_ON|RUNS_ON*1..2]->(ci:CI)
-        WHERE all(node IN nodes(costPath) WHERE NOT node:CI OR node.organization_id = $organizationId)
-          AND ci.tbm_monthly_cost IS NOT NULL
+        WHERE all(node IN nodes(costPath) WHERE NOT node:CI OR
+          (node.organization_id = $organizationId AND NOT node.id IN $pending))
+          AND ci.tbm_monthly_cost IS NOT NULL AND NOT ci.id IN $pending
         WITH service, collect(DISTINCT ci) as cis, collect(DISTINCT ci.tbm_resource_tower) as towers
         RETURN
           service.id as serviceId,
@@ -142,7 +204,7 @@ const Query = {
           size(cis) as ciCount,
           towers
         `,
-        { serviceId: args.id, organizationId }
+        { serviceId: args.id, organizationId, pending }, { timeout }
       );
 
       if (result.records.length === 0) {
@@ -164,14 +226,19 @@ const Query = {
         costPerUser: userCount > 0 ? totalCost / userCount : null,
         costPerTransaction: null, // Would require transaction count
       };
-    } catch (error: any) {
-      logger.error('Error getting costs by business service', error);
-      if (error instanceof GraphQLError) throw error;
-      throw new GraphQLError('Failed to retrieve costs by business service', {
-        extensions: { code: 'INTERNAL_SERVER_ERROR', originalError: error.message },
+        } finally {
+          await session.close();
+        }
       });
-    } finally {
-      await session.close();
+    } catch (error: unknown) {
+      if (error instanceof GraphQLError) throw error;
+      if (error instanceof CIListUnavailableError) {
+        throw new GraphQLError('CI list temporarily unavailable', { extensions: { code: 'SERVICE_UNAVAILABLE' } });
+      }
+      logger.error('Error getting costs by business service');
+      throw new GraphQLError('Failed to retrieve costs by business service', {
+        extensions: { code: 'INTERNAL_SERVER_ERROR' },
+      });
     }
   },
 
@@ -193,8 +260,16 @@ const Query = {
   },
 
   costAllocations: denyGlobalTbmOperation,
-  licenses: denyGlobalTbmOperation,
-  upcomingRenewals: denyGlobalTbmOperation,
+  licenses: (_parent: unknown, args: { vendor?: string; status?: string }, context: GraphQLContext) =>
+    licenseList(context,
+      `1=1${args.vendor ? ' AND ci.vendor = $vendor' : ''}${args.status ? ' AND ci.license_status = $status' : ''}`,
+      { vendor: args.vendor, status: args.status?.toLowerCase() }),
+  upcomingRenewals: (_parent: unknown, args: { days?: number }, context: GraphQLContext) =>
+    licenseList(context,
+      `ci.license_expiry_date IS NOT NULL
+       AND ci.license_expiry_date <= date() + duration({days: $days})
+       AND ci.license_expiry_date >= date()`,
+      { days: args.days ?? 90 }),
 };
 
 const Mutation = {

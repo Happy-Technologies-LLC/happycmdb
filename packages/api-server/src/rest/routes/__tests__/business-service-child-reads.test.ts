@@ -72,7 +72,12 @@ const pgClient = {
 
 jest.mock('@cmdb/database', () => ({
   getPostgresClient: () => pgClient,
-  getNeo4jClient: () => ({}),
+  getNeo4jClient: () => ({ getSession: () => ({
+    run: async (_cypher: string, params: { ids: string[]; organizationId: string }) => ({
+      records: params.ids.filter(id => ['ci-new', 'ci-old', 'ci-foreign'].includes(id)
+        && params.organizationId === ORG).map(id => ({ get: () => id })),
+    }), close: async () => undefined,
+  }) }),
   getAuditService: () => ({}),
 }));
 
@@ -193,6 +198,11 @@ function buildApp() {
 // schema is created once and the host is killed only after the last block.
 beforeAll(async () => {
   await db.exec(productionDdl());
+  const provenance = readFileSync(join(__dirname,
+    '../../../../../database/src/postgres/migrations/028_change_history_reconciliation_org_provenance.sql'), 'utf8');
+  const journal = provenance.match(/CREATE TABLE IF NOT EXISTS ci_reconciliation_operations \([\s\S]*?\n\);/);
+  if (!journal) throw new Error('Missing S1 journal table');
+  await db.exec(journal[0]);
 });
 
 afterAll(() => {

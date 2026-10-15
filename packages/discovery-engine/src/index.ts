@@ -13,7 +13,6 @@ export { DiscoveryOrchestrator } from './orchestrator/discovery-orchestrator';
 export { SSHDiscoveryWorker } from './workers/ssh-discovery.worker';
 export { NmapDiscoveryWorker } from './workers/nmap-discovery.worker';
 export { ActiveDirectoryDiscoveryWorker } from './workers/active-directory-discovery.worker';
-export { InternalAPIClient, getInternalAPIClient } from './api/internal-api-client';
 
 // Export ITIL enrichment module
 export { ITILEnricher, ITILClassifier, LifecycleDetector } from './enrichment';

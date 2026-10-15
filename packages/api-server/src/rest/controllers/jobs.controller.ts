@@ -16,11 +16,9 @@ import { Request, Response } from 'express';
 import { Job } from 'bullmq';
 import { getQueueManager, logger } from '@cmdb/common';
 import type { DiscoveryProvider, ETLJobType } from '@cmdb/common';
-import { getDiscoveryScheduler, getDiscoveryJobScheduler } from '@cmdb/discovery-engine';
+import { getDiscoveryJobScheduler } from '@cmdb/discovery-engine';
 import { getNeo4jClient } from '@cmdb/database';
 import { getETLScheduler } from '@cmdb/etl-processor';
-import { optionalRequestOrganizationId } from '../../middleware/auth.middleware';
-import type { AuthenticatedRequest } from '../../middleware/auth.middleware';
 import { JOB_NOT_FOUND, publicJob } from './job-scope';
 
 interface ScheduleUpdate {
@@ -73,7 +71,6 @@ function hasCompletionTimestamps(
  */
 export class JobsController {
   private queueManager = getQueueManager();
-  private discoveryScheduler = getDiscoveryScheduler();
   private discoveryJobScheduler = getDiscoveryJobScheduler();
   private neo4jClient = getNeo4jClient();
   private etlScheduler = getETLScheduler();
@@ -82,36 +79,11 @@ export class JobsController {
    * POST /api/v1/jobs/discovery/:provider
    * Trigger immediate discovery job
    */
-  async triggerDiscovery(req: Request, res: Response): Promise<void> {
-    try {
-      const provider = req.params['provider'] as DiscoveryProvider;
-      const organizationId = optionalRequestOrganizationId(req);
-      if (!organizationId) {
-        res.status(403).json({ success: false, error: 'Organization claim required' });
-        return;
-      }
-      // SSH requires credentials; credential-backed execution belongs to HP1-S5.
-      if (provider === 'ssh') {
-        res.status(409).json({ success: false, error: 'Credential-backed discovery execution unavailable' });
-        return;
-      }
-      const { config } = req.body;
-      const triggeredBy = (req as AuthenticatedRequest).user?._userId || 'api';
-      const jobId = await this.discoveryScheduler.triggerDiscovery(provider, config, triggeredBy, organizationId);
-
-      res.status(202).json({
-        success: true,
-        data: {
-          jobId,
-          provider,
-          status: 'queued',
-          message: `Discovery job for ${provider} has been queued`,
-        },
-      });
-    } catch {
-      logger.error('Error triggering discovery job');
-      res.status(500).json({ success: false, error: 'Failed to trigger discovery job' });
-    }
+  async triggerDiscovery(_req: Request, res: Response): Promise<void> {
+    res.status(409).json({
+      success: false, error: 'Conflict',
+      message: 'Create runs through organization-owned definitions',
+    });
   }
 
   /**
@@ -131,10 +103,10 @@ export class JobsController {
         type,
       });
     } catch (err: any) {
-      logger.error('Error triggering ETL job', err);
+      logger.error('Error triggering ETL job');
       res.status(500).json({
         success: false,
-        error: err.message,
+        error: 'Failed to trigger ETL job',
       });
     }
   }
@@ -326,7 +298,7 @@ export class JobsController {
           try {
             return await this.queueManager.getQueueStats(queueName);
           } catch (err) {
-            logger.error(`Error getting stats for ${queueName}`, err);
+            logger.error(`Error getting stats for ${queueName}`);
             return {
               queueName,
               error: 'Failed to get stats',
@@ -343,10 +315,10 @@ export class JobsController {
         },
       });
     } catch (err: any) {
-      logger.error('Error getting job stats', err);
+      logger.error('Error getting job stats');
       res.status(500).json({
         success: false,
-        error: err.message,
+        error: 'Failed to get job stats',
       });
     }
   }
@@ -476,7 +448,7 @@ export class JobsController {
             // Filter out nulls (jobs that couldn't be loaded)
             return jobs.filter((job) => job !== null);
           } catch (err) {
-            logger.error(`Error getting jobs for ${queueName}`, err);
+            logger.error(`Error getting jobs for ${queueName}`);
             return [];
           }
         })
@@ -546,7 +518,7 @@ export class JobsController {
               ciCount = result.records[0]?.get('total').toNumber() || 0;
               await session.close();
             } catch (neoErr) {
-              logger.error(`Error querying Neo4j for ${provider} CIs`, neoErr);
+              logger.error(`Error querying Neo4j for ${provider} CIs`);
             }
 
             // Real average duration computed from a recent sample of completed
@@ -568,7 +540,7 @@ export class JobsController {
               enabled: schedule?._enabled,
             };
           } catch (err) {
-            logger.error(`Error getting stats for ${queueName}`, err);
+            logger.error(`Error getting stats for ${queueName}`);
             const provider = queueName.replace(/^discovery-/, '');
             return {
               provider,
@@ -592,10 +564,10 @@ export class JobsController {
         data: stats,
       });
     } catch (err: any) {
-      logger.error('Error getting discovery stats', err);
+      logger.error('Error getting discovery stats');
       res.status(500).json({
         success: false,
-        error: err.message,
+        error: 'Failed to get discovery stats',
       });
     }
   }
@@ -621,7 +593,7 @@ export class JobsController {
 
       return durations.reduce((sum, duration) => sum + duration, 0) / durations.length;
     } catch (err) {
-      logger.error(`Error computing average job duration for ${queueName}`, err);
+      logger.error(`Error computing average job duration for ${queueName}`);
       return null;
     }
   }
@@ -706,10 +678,10 @@ export class JobsController {
         },
       });
     } catch (err: any) {
-      logger.error('Error cleaning queue', err);
+      logger.error('Error cleaning queue');
       res.status(500).json({
         success: false,
-        error: err.message,
+        error: 'Failed to clean queue',
       });
     }
   }
@@ -732,10 +704,10 @@ export class JobsController {
         data: schedules,
       });
     } catch (err: any) {
-      logger.error('Error getting discovery schedules', err);
+      logger.error('Error getting discovery schedules');
       res.status(500).json({
         success: false,
-        error: err.message,
+        error: 'Failed to get discovery schedules',
       });
     }
   }
@@ -758,10 +730,10 @@ export class JobsController {
         data: schedules,
       });
     } catch (err: any) {
-      logger.error('Error getting ETL schedules', err);
+      logger.error('Error getting ETL schedules');
       res.status(500).json({
         success: false,
-        error: err.message,
+        error: 'Failed to get ETL schedules',
       });
     }
   }
@@ -784,52 +756,30 @@ export class JobsController {
       }
 
       const { cronExpression, enabled } = update;
-      if (provider === 'ssh' && (enabled !== false || cronExpression !== undefined)) {
-        res.status(409).json({ success: false, error: 'Credential-backed discovery execution unavailable' });
-        return;
-      }
-
-      const schedule = await this.discoveryJobScheduler.getScheduleView(provider);
-      if (!schedule) {
-        res.status(404).json({
-          success: false,
-          error: 'Not Found',
-          message: `No schedule found for provider: ${provider}`,
+      if (enabled !== false || cronExpression !== undefined) {
+        res.status(409).json({
+          success: false, error: 'Conflict',
+          message: 'Provider-level discovery schedules are retired; schedule an organization-owned definition',
         });
         return;
       }
-
-      if (cronExpression !== undefined) {
-        await this.discoveryJobScheduler.updateSchedule(provider, cronExpression);
-      }
-
-      if (enabled !== undefined && enabled !== schedule._enabled) {
-        if (enabled) {
-          await this.discoveryJobScheduler.enableSchedule(provider);
-        } else {
-          await this.discoveryJobScheduler.disableSchedule(provider);
-        }
-      }
-
-      const updated = (await this.discoveryJobScheduler.getScheduleView(provider))!;
-
-      logger.info(`Schedule updated for ${provider}`, { cronExpression, enabled });
-
+      await this.discoveryJobScheduler.disableSchedule(provider);
+      const schedule = await this.discoveryJobScheduler.getScheduleView(provider);
       res.status(200).json({
         success: true,
         data: {
           provider,
-          queueName: updated._queueName,
-          cronExpression: updated._cronPattern,
-          enabled: updated._enabled,
+          queueName: schedule?._queueName,
+          cronExpression: schedule?._cronPattern,
+          enabled: false,
         },
-        message: `Discovery schedule for ${provider} updated successfully`,
+        message: `Discovery schedule for ${provider} disabled successfully`,
       });
     } catch (err) {
-      logger.error('Error updating discovery schedule', err);
+      logger.error('Error updating discovery schedule');
       res.status(500).json({
         success: false,
-        error: err instanceof Error ? err.message : String(err),
+        error: 'Failed to update discovery schedule',
       });
     }
   }
@@ -890,10 +840,10 @@ export class JobsController {
         message: `ETL schedule for ${type} updated successfully`,
       });
     } catch (err) {
-      logger.error('Error updating ETL schedule', err);
+      logger.error('Error updating ETL schedule');
       res.status(500).json({
         success: false,
-        error: err instanceof Error ? err.message : String(err),
+        error: 'Failed to update ETL schedule',
       });
     }
   }

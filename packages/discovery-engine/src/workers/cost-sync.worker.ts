@@ -8,7 +8,7 @@
  */
 
 import { Worker, Job } from 'bullmq';
-import { logger } from '@cmdb/common';
+import { codedProcessor, jobErrorCode, logger } from '@cmdb/common';
 import { getRedisClient } from '@cmdb/database';
 import {
   processAWSCostSync,
@@ -25,27 +25,46 @@ import {
   GCPCostSyncJobData,
   GCPCostSyncResult,
 } from '../jobs/gcp-cost-sync.job';
+interface SafeCostResult {
+  success: boolean;
+  costsImported: number;
+  errorCount: number;
+  errorCodes: Record<string, number>;
+  startDate: string;
+  endDate: string;
+}
+const costResultSchema = {
+  success: 'flag', costsImported: 'count', errorCount: 'count',
+  errorCodes: 'errorCounts', startDate: 'timestamp', endDate: 'timestamp',
+} as const;
+function safeCostResult(result: AWSCostSyncResult | AzureCostSyncResult | GCPCostSyncResult): SafeCostResult {
+  const errorCount = result.errors?.length ?? 0;
+  return {
+    success: result.success, costsImported: result.costsImported,
+    errorCount, errorCodes: errorCount ? { ERR_INTERNAL: errorCount } : {},
+    startDate: new Date(result.startDate).toISOString(),
+    endDate: new Date(result.endDate).toISOString(),
+  };
+}
 
 /**
  * AWS Cost Sync Worker
  */
 export class AWSCostSyncWorker {
-  private worker: Worker<AWSCostSyncJobData, AWSCostSyncResult>;
+  private worker: Worker<AWSCostSyncJobData, SafeCostResult>;
 
   constructor() {
     const redisClient = getRedisClient();
     const connection = redisClient.getConnection();
 
-    this.worker = new Worker<AWSCostSyncJobData, AWSCostSyncResult>(
+    this.worker = new Worker<AWSCostSyncJobData, SafeCostResult>(
       'cost-sync-aws',
-      async (job: Job<AWSCostSyncJobData>) => {
+      codedProcessor('cost-sync-aws', costResultSchema, async (job: Job<AWSCostSyncJobData>) => {
         logger.info('[AWSCostSyncWorker] Processing AWS cost sync job', {
-          jobId: job.id,
           attempt: job.attemptsMade + 1,
         });
-
-        return await processAWSCostSync(job);
-      },
+        return safeCostResult(await processAWSCostSync(job));
+      }),
       {
         connection,
         concurrency: 1, // Process one AWS job at a time to avoid API rate limits
@@ -56,20 +75,15 @@ export class AWSCostSyncWorker {
       }
     );
 
-    this.worker.on('completed', (job, result) => {
+    this.worker.on('completed', (_job, result) => {
       logger.info('[AWSCostSyncWorker] Job completed', {
-        jobId: job.id,
         costsImported: result.costsImported,
-        totalCost: result.totalCost,
+        errorCount: result.errorCount,
       });
     });
 
-    this.worker.on('failed', (job, error) => {
-      logger.error('[AWSCostSyncWorker] Job failed', {
-        jobId: job?.id,
-        error: error.message,
-        stack: error.stack,
-      });
+    this.worker.on('failed', (_job, error) => {
+      logger.error('[AWSCostSyncWorker] Job failed', { code: jobErrorCode(error) });
     });
 
     logger.info('[AWSCostSyncWorker] Worker initialized and listening');
@@ -80,7 +94,7 @@ export class AWSCostSyncWorker {
     logger.info('[AWSCostSyncWorker] Worker closed');
   }
 
-  getWorker(): Worker<AWSCostSyncJobData, AWSCostSyncResult> {
+  getWorker(): Worker<AWSCostSyncJobData, SafeCostResult> {
     return this.worker;
   }
 }
@@ -89,22 +103,20 @@ export class AWSCostSyncWorker {
  * Azure Cost Sync Worker
  */
 export class AzureCostSyncWorker {
-  private worker: Worker<AzureCostSyncJobData, AzureCostSyncResult>;
+  private worker: Worker<AzureCostSyncJobData, SafeCostResult>;
 
   constructor() {
     const redisClient = getRedisClient();
     const connection = redisClient.getConnection();
 
-    this.worker = new Worker<AzureCostSyncJobData, AzureCostSyncResult>(
+    this.worker = new Worker<AzureCostSyncJobData, SafeCostResult>(
       'cost-sync-azure',
-      async (job: Job<AzureCostSyncJobData>) => {
+      codedProcessor('cost-sync-azure', costResultSchema, async (job: Job<AzureCostSyncJobData>) => {
         logger.info('[AzureCostSyncWorker] Processing Azure cost sync job', {
-          jobId: job.id,
           attempt: job.attemptsMade + 1,
         });
-
-        return await processAzureCostSync(job);
-      },
+        return safeCostResult(await processAzureCostSync(job));
+      }),
       {
         connection,
         concurrency: 1, // Process one Azure job at a time
@@ -115,20 +127,15 @@ export class AzureCostSyncWorker {
       }
     );
 
-    this.worker.on('completed', (job, result) => {
+    this.worker.on('completed', (_job, result) => {
       logger.info('[AzureCostSyncWorker] Job completed', {
-        jobId: job.id,
         costsImported: result.costsImported,
-        totalCost: result.totalCost,
+        errorCount: result.errorCount,
       });
     });
 
-    this.worker.on('failed', (job, error) => {
-      logger.error('[AzureCostSyncWorker] Job failed', {
-        jobId: job?.id,
-        error: error.message,
-        stack: error.stack,
-      });
+    this.worker.on('failed', (_job, error) => {
+      logger.error('[AzureCostSyncWorker] Job failed', { code: jobErrorCode(error) });
     });
 
     logger.info('[AzureCostSyncWorker] Worker initialized and listening');
@@ -139,7 +146,7 @@ export class AzureCostSyncWorker {
     logger.info('[AzureCostSyncWorker] Worker closed');
   }
 
-  getWorker(): Worker<AzureCostSyncJobData, AzureCostSyncResult> {
+  getWorker(): Worker<AzureCostSyncJobData, SafeCostResult> {
     return this.worker;
   }
 }
@@ -148,22 +155,20 @@ export class AzureCostSyncWorker {
  * GCP Cost Sync Worker
  */
 export class GCPCostSyncWorker {
-  private worker: Worker<GCPCostSyncJobData, GCPCostSyncResult>;
+  private worker: Worker<GCPCostSyncJobData, SafeCostResult>;
 
   constructor() {
     const redisClient = getRedisClient();
     const connection = redisClient.getConnection();
 
-    this.worker = new Worker<GCPCostSyncJobData, GCPCostSyncResult>(
+    this.worker = new Worker<GCPCostSyncJobData, SafeCostResult>(
       'cost-sync-gcp',
-      async (job: Job<GCPCostSyncJobData>) => {
+      codedProcessor('cost-sync-gcp', costResultSchema, async (job: Job<GCPCostSyncJobData>) => {
         logger.info('[GCPCostSyncWorker] Processing GCP cost sync job', {
-          jobId: job.id,
           attempt: job.attemptsMade + 1,
         });
-
-        return await processGCPCostSync(job);
-      },
+        return safeCostResult(await processGCPCostSync(job));
+      }),
       {
         connection,
         concurrency: 1, // Process one GCP job at a time
@@ -174,20 +179,15 @@ export class GCPCostSyncWorker {
       }
     );
 
-    this.worker.on('completed', (job, result) => {
+    this.worker.on('completed', (_job, result) => {
       logger.info('[GCPCostSyncWorker] Job completed', {
-        jobId: job.id,
         costsImported: result.costsImported,
-        totalCost: result.totalCost,
+        errorCount: result.errorCount,
       });
     });
 
-    this.worker.on('failed', (job, error) => {
-      logger.error('[GCPCostSyncWorker] Job failed', {
-        jobId: job?.id,
-        error: error.message,
-        stack: error.stack,
-      });
+    this.worker.on('failed', (_job, error) => {
+      logger.error('[GCPCostSyncWorker] Job failed', { code: jobErrorCode(error) });
     });
 
     logger.info('[GCPCostSyncWorker] Worker initialized and listening');
@@ -198,7 +198,7 @@ export class GCPCostSyncWorker {
     logger.info('[GCPCostSyncWorker] Worker closed');
   }
 
-  getWorker(): Worker<GCPCostSyncJobData, GCPCostSyncResult> {
+  getWorker(): Worker<GCPCostSyncJobData, SafeCostResult> {
     return this.worker;
   }
 }

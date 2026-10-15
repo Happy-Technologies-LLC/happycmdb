@@ -46,11 +46,11 @@ export class QueueController {
               isPaused,
               jobCounts,
             };
-          } catch (err: any) {
-            logger.error(`Error getting stats for ${queueName}`, err);
+          } catch {
+            logger.error(`Error getting stats for ${queueName}`);
             return {
               queueName,
-              error: err.message,
+              error: 'ERR_QUEUE_UNAVAILABLE',
             };
           }
         })
@@ -73,11 +73,11 @@ export class QueueController {
           aggregate,
         },
       });
-    } catch (err: any) {
-      logger.error('Error getting queue stats', err);
+    } catch {
+      logger.error('Error getting queue stats');
       res.status(500).json({
         success: false,
-        error: err.message,
+        error: 'Failed to get queue stats',
       });
     }
   }
@@ -124,18 +124,18 @@ export class QueueController {
             _next: job.next,
           })),
           recentCompleted: recentCompleted.map(job => ({
-            id: job.id, name: job.name, timestamp: job.timestamp, finishedOn: job.finishedOn,
+            id: job.id, name: queueName, timestamp: job.timestamp, finishedOn: job.finishedOn,
           })),
           recentFailed: recentFailed.map(job => ({
-            id: job.id, name: job.name, timestamp: job.timestamp, finishedOn: job.finishedOn,
+            id: job.id, name: queueName, timestamp: job.timestamp, finishedOn: job.finishedOn,
           })),
         },
       });
-    } catch (err: any) {
-      logger.error('Error getting queue stats', err);
+    } catch {
+      logger.error('Error getting queue stats');
       res.status(500).json({
         success: false,
-        error: err.message,
+        error: 'Failed to get queue stats',
       });
     }
   }
@@ -167,11 +167,11 @@ export class QueueController {
           overallHealthy: discoveryHealthy && etlHealthy,
         },
       });
-    } catch (err: any) {
-      logger.error('Error getting worker status', err);
+    } catch {
+      logger.error('Error getting worker status');
       res.status(500).json({
         success: false,
-        error: err.message,
+        error: 'Failed to get worker status',
       });
     }
   }
@@ -237,11 +237,11 @@ export class QueueController {
           },
         },
       });
-    } catch (err: any) {
-      logger.error('Error getting queue metrics', err);
+    } catch {
+      logger.error('Error getting queue metrics');
       res.status(500).json({
         success: false,
-        error: err.message,
+        error: 'Failed to get queue metrics',
       });
     }
   }
@@ -275,11 +275,11 @@ export class QueueController {
           message: 'Queue paused successfully',
         },
       });
-    } catch (err: any) {
-      logger.error('Error pausing queue', err);
+    } catch {
+      logger.error('Error pausing queue');
       res.status(500).json({
         success: false,
-        error: err.message,
+        error: 'Failed to pause queue',
       });
     }
   }
@@ -313,11 +313,11 @@ export class QueueController {
           message: 'Queue resumed successfully',
         },
       });
-    } catch (err: any) {
-      logger.error('Error resuming queue', err);
+    } catch {
+      logger.error('Error resuming queue');
       res.status(500).json({
         success: false,
-        error: err.message,
+        error: 'Failed to resume queue',
       });
     }
   }
@@ -362,11 +362,11 @@ export class QueueController {
               issues,
               jobCounts,
             };
-          } catch (err: any) {
+          } catch {
             return {
               queueName,
               status: 'unhealthy',
-              issues: [err.message],
+              issues: ['ERR_QUEUE_UNAVAILABLE'],
             };
           }
         })
@@ -403,11 +403,11 @@ export class QueueController {
           },
         },
       });
-    } catch (err: any) {
-      logger.error('Error getting queue health', err);
+    } catch {
+      logger.error('Error getting queue health');
       res.status(500).json({
         success: false,
-        error: err.message,
+        error: 'Failed to get queue health',
       });
     }
   }
@@ -433,8 +433,11 @@ export class QueueController {
         res.status(404).json(JOB_NOT_FOUND);
         return;
       }
-      // BullMQ logs are free-form worker output and may contain credentials.
-      res.json({ success: true, data: { jobId, queueName, logs: [], count: 0 } });
+      // Legacy BullMQ logs are free-form. Only exact coded events are safe.
+      const { logs } = await this.queueManager.getQueue(queueName).getJobLogs(jobId, 0, 99);
+      const codes = logs.filter(line =>
+        /^DEAD_LETTER:ERR_(INTERNAL|RESULT_SCHEMA|VALIDATION|NOT_FOUND|UNAVAILABLE)$/.test(line));
+      res.json({ success: true, data: { jobId, queueName, logs: codes, count: codes.length } });
     } catch {
       logger.error('Error getting job logs');
       res.status(500).json({ success: false, error: 'Failed to get job logs' });

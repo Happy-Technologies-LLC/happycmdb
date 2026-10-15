@@ -18,6 +18,7 @@ import {
   getOwnedConflict, getOwnedFieldSources, getOwnedLineage,
   listOwnedConflicts, updateOwnedConflict
 } from '../../reconciliation/tenant-queries';
+import { assertNoCIGap, CIGapError, readSingleCI } from '../../read-admission';
 
 const reconciliationEngine = getIdentityReconciliationEngine();
 const postgresClient = getPostgresClient();
@@ -153,7 +154,12 @@ const ReconciliationQuery = {
   ) => {
     const organizationId = requireGraphQLOrganization(_context);
     try {
-      const result = await getOwnedLineage(postgresClient, _args._ciId, organizationId);
+      if (!await _context._neo4jClient.getCI(_args._ciId, organizationId)) {
+        await assertNoCIGap(organizationId, _args._ciId);
+        throw new GraphQLError('CI not found', { extensions: { code: 'NOT_FOUND' } });
+      }
+      const result = await readSingleCI(organizationId, _args._ciId,
+        () => getOwnedLineage(postgresClient, _args._ciId, organizationId));
       if (result.rows.length === 0) {
         throw new GraphQLError('CI not found', { extensions: { code: 'NOT_FOUND' } });
       }
@@ -168,14 +174,14 @@ const ReconciliationQuery = {
           _lastSeenAt: row.last_seen_at.toISOString()
         }))
       };
-    } catch (error: any) {
+    } catch (error: unknown) {
+      if (error instanceof CIGapError) {
+        throw new GraphQLError('CI is temporarily unavailable', { extensions: { code: 'CONFLICT' } });
+      }
       if (error instanceof GraphQLError && error.extensions['code'] === 'NOT_FOUND') throw error;
-      logger.error('GraphQL: Error getting CI lineage', error);
+      logger.error('GraphQL: Error getting CI lineage');
       throw new GraphQLError('Failed to get CI lineage', {
-        extensions: {
-          code: 'INTERNAL_SERVER_ERROR',
-          originalError: error.message,
-        },
+        extensions: { code: 'INTERNAL_SERVER_ERROR' },
       });
     }
   },
@@ -190,7 +196,12 @@ const ReconciliationQuery = {
   ) => {
     const organizationId = requireGraphQLOrganization(_context);
     try {
-      const result = await getOwnedFieldSources(postgresClient, _args._ciId, organizationId);
+      if (!await _context._neo4jClient.getCI(_args._ciId, organizationId)) {
+        await assertNoCIGap(organizationId, _args._ciId);
+        throw new GraphQLError('CI not found', { extensions: { code: 'NOT_FOUND' } });
+      }
+      const result = await readSingleCI(organizationId, _args._ciId,
+        () => getOwnedFieldSources(postgresClient, _args._ciId, organizationId));
       if (result.rows.length === 0) {
         throw new GraphQLError('CI not found', { extensions: { code: 'NOT_FOUND' } });
       }
@@ -204,14 +215,14 @@ const ReconciliationQuery = {
           _updatedAt: row.updated_at.toISOString()
         }))
       };
-    } catch (error: any) {
+    } catch (error: unknown) {
+      if (error instanceof CIGapError) {
+        throw new GraphQLError('CI is temporarily unavailable', { extensions: { code: 'CONFLICT' } });
+      }
       if (error instanceof GraphQLError && error.extensions['code'] === 'NOT_FOUND') throw error;
-      logger.error('GraphQL: Error getting CI field sources', error);
+      logger.error('GraphQL: Error getting CI field sources');
       throw new GraphQLError('Failed to get CI field sources', {
-        extensions: {
-          code: 'INTERNAL_SERVER_ERROR',
-          originalError: error.message,
-        },
+        extensions: { code: 'INTERNAL_SERVER_ERROR' },
       });
     }
   }

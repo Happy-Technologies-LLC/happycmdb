@@ -1,7 +1,7 @@
 // Copyright 2026 Happy Technologies LLC
 // SPDX-License-Identifier: Apache-2.0
 import { Pool } from 'pg';
-import { getPostgresClient } from '@cmdb/database';
+import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
 
 export class CIGapError extends Error {
   constructor() { super('CI is temporarily unavailable'); }
@@ -32,6 +32,78 @@ export async function readSingleCI<T>(organizationId: string, ciId: string, read
   const result = await read();
   await assertNoCIGap(organizationId, ciId);
   return result;
+}
+/** AP-P': hold the organization epoch share lock through the CI-referencing write. */
+export async function writeReferencedCIs<T>(
+  organizationId: string, ciIds: string[], write: (client: import('pg').PoolClient) => Promise<T>
+): Promise<T> {
+  const client = await getPostgresClient().pool.connect();
+  try {
+    await client.query('BEGIN');
+    try {
+      await client.query(`SET LOCAL lock_timeout = '5s'`);
+      await client.query(`INSERT INTO ci_reconciliation_epochs (organization_id, epoch)
+                          VALUES ($1, 0) ON CONFLICT (organization_id) DO NOTHING`, [organizationId]);
+      await client.query(`SELECT epoch FROM ci_reconciliation_epochs WHERE organization_id=$1 FOR SHARE`,
+        [organizationId]);
+      const gap = await client.query(
+        `SELECT 1 FROM ci_reconciliation_operations
+         WHERE organization_id=$1 AND ci_id=ANY($2::text[]) AND state IN ('pending','failed') LIMIT 1`,
+        [organizationId, ciIds]);
+      if (gap.rows.length) throw new CIGapError();
+      const result = await write(client);
+      await client.query('COMMIT');
+      return result;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    }
+  } finally {
+    client.release();
+  }
+}
+/** AP-D': the dimension row alone is not proof that the current graph node is owned. */
+export async function filterOwnedDimensionRows<T extends { ci_id: string }>(
+  organizationId: string, rows: T[]
+): Promise<T[]> {
+  if (!rows.length) return rows;
+  const owned = new Set<string>();
+  const session = getNeo4jClient().getSession();
+  try {
+    for (let offset = 0; offset < rows.length; offset += 1000) {
+      const ids = [...new Set(rows.slice(offset, offset + 1000).map(row => row.ci_id))];
+      const result = await session.run(
+        `MATCH (ci:CI) WHERE ci.id IN $ids AND ci.organization_id = $organizationId
+         RETURN ci.id AS id`,
+        { ids, organizationId }, { timeout: 10_000 });
+      for (const record of result.records) owned.add(record.get('id'));
+    }
+  } finally {
+    await session.close();
+  }
+  return rows.filter(row => owned.has(row.ci_id));
+}
+/** AP-R: omit pending/failed rows after a platform-wide graph read. */
+export async function filterGlobalCIGaps<T extends { id?: unknown; organization_id?: unknown }>(
+  rows: T[]
+): Promise<T[]> {
+  const validOrg = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const omitted = new Set<string>();
+  for (let offset = 0; offset < rows.length; offset += 1000) {
+    const pairs = rows.slice(offset, offset + 1000).filter(row =>
+      typeof row.id === 'string' && typeof row.organization_id === 'string' &&
+      validOrg.test(row.organization_id));
+    if (!pairs.length) continue;
+    const result = await getPostgresClient().query(
+      `SELECT organization_id, ci_id FROM ci_reconciliation_operations
+       WHERE (organization_id, ci_id) IN
+         (SELECT * FROM unnest($1::uuid[], $2::text[]))
+         AND state IN ('pending','failed')`,
+      [pairs.map(row => row.organization_id), pairs.map(row => row.id)]
+    );
+    for (const row of result.rows) omitted.add(`${row.organization_id}:${row.ci_id}`);
+  }
+  return rows.filter(row => !omitted.has(`${row.organization_id}:${row.id}`));
 }
 
 interface Snapshot { epoch: string; pending: string[] }

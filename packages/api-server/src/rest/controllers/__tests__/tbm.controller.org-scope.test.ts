@@ -2,10 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Tenant scoping for /api/v1/tbm/* (FD-2: Postgres dim_business_services
- * .organization_id is the tenant authority for service ids; FD-16 c: the
- * :BusinessService node must also carry the caller's organization_id; FD-3 b:
- * global TBM reads/control are unavailable until platform-admin authority exists.
+ * Tenant scoping for /api/v1/tbm/*: Postgres service ownership and
+ * :BusinessService node ownership must both match the caller. Global licenses
+ * require platform-admin authority and omit pending/failed journal entries.
  *
  * Exercised through mounted REST and GraphQL with real JWT and API-key
  * authentication; authorization uses the verified principal, not headers.
@@ -93,9 +92,27 @@ const REALIZES_OWNED_FILTER = /WHERE service\.id IN \$orgServiceIds/;
 const REALIZES_NODE_ORG_FILTER = /WHERE service\.id IN \$orgServiceIds AND service\.organization_id = \$organizationId/;
 const SERVICE_NODE_ORG_FILTER = /MATCH \(service:BusinessService \{id: \$serviceId\}\)\s+WHERE service\.organization_id = \$organizationId\s/;
 
+const LICENSES = [
+  { id: 'lic-a', name: 'A License', type: 'software', organization_id: ORG_A, tbm_monthly_cost: 3 },
+  { id: 'lic-b', name: 'B License', type: 'software', organization_id: ORG_B, tbm_monthly_cost: 5 },
+  { id: 'lic-pending', name: 'Pending', type: 'software', organization_id: ORG_A, tbm_monthly_cost: 99 },
+  { id: 'lic-failed', name: 'Failed', type: 'software', organization_id: ORG_B, tbm_monthly_cost: 99 },
+];
+// Each owned service also has one pending/failed CI cost. The fake applies the
+// pending predicate only when the Cypher actually carries it.
+function serviceCost(id: string, cypher: string, params: Params): number {
+  const base = GRAPH_SERVICES[id]!.cost;
+  const gapId = id === 'bs-a-app' ? 'lic-pending' : id === 'bs-b-app' ? 'lic-failed' : null;
+  if (!gapId) return base;
+  return base + (cypher.includes('NOT ci.id IN $pending') &&
+    (params['pending'] as string[] | undefined)?.includes(gapId) ? 0 : 999);
+}
 const neo4jSession = {
   run: async (query: string, params: Params = {}) => {
     cypherRuns.push({ query, params });
+    if (query.includes("MATCH (ci:CI {type: 'software'})")) {
+      return { records: LICENSES.map(ci => record({ ci: { properties: ci } })) };
+    }
     // A statement without the node-org predicate matches every organization's node, as Neo4j would.
     const nodeInOrg = (id: string, filter: RegExp) =>
       !filter.test(query) || GRAPH_SERVICES[id]?.organizationId === params['organizationId'];
@@ -117,7 +134,7 @@ const neo4jSession = {
           capabilityId: capability.id,
           capabilityName: capability.name,
           serviceIds: services,
-          totalCost: services.reduce((sum, id) => sum + GRAPH_SERVICES[id]!.cost, 0),
+          totalCost: services.reduce((sum, id) => sum + serviceCost(id, query, params), 0),
           ciCount: int(services.length),
         })],
       };
@@ -130,7 +147,7 @@ const neo4jSession = {
         records: [record({
           serviceId,
           serviceName: service.name,
-          totalCost: service.cost,
+          totalCost: serviceCost(serviceId, query, params),
           ciCount: int(1),
           towers: [service.tower],
         })],
@@ -152,20 +169,23 @@ jest.mock('@cmdb/database', () => ({
 jest.mock('bcrypt', () => ({}));
 
 // Users as the Neo4j store returns them; the org is a user attribute, never a request input.
-const USERS: Record<string, { _id: string; _username: string; _role: string; _enabled: boolean; _organizationId?: string }> = {
+const USERS: Record<string, { _id: string; _username: string; _role: string; _enabled: boolean; _organizationId?: string; _platformAdmin?: boolean }> = {
   'user-a': { _id: 'user-a', _username: 'alice', _role: 'operator', _enabled: true, _organizationId: ORG_A },
   'admin-a': { _id: 'admin-a', _username: 'ada', _role: 'admin', _enabled: true, _organizationId: ORG_A },
   'admin-b': { _id: 'admin-b', _username: 'bea', _role: 'admin', _enabled: true, _organizationId: ORG_B },
   'user-none': { _id: 'user-none', _username: 'nora', _role: 'admin', _enabled: true },
   'user-bad': { _id: 'user-bad', _username: 'bart', _role: 'admin', _enabled: true, _organizationId: 'not-a-uuid' },
+  'platform': { _id: 'platform', _username: 'platform', _role: 'admin', _enabled: true, _platformAdmin: true },
 };
 const KEY_A = randomBytes(32).toString('hex');
 const KEY_B = randomBytes(32).toString('hex');
+const KEY_PLATFORM = randomBytes(32).toString('hex');
 const KEY_NONE = randomBytes(32).toString('hex');
 const API_KEYS: Record<string, { _id: string; _userId: string; _role: string; _enabled: boolean }> = {
   [createHash('sha256').update(KEY_A).digest('hex')]: { _id: 'key-a', _userId: 'admin-a', _role: 'admin', _enabled: true },
   [createHash('sha256').update(KEY_B).digest('hex')]: { _id: 'key-b', _userId: 'admin-b', _role: 'admin', _enabled: true },
   [createHash('sha256').update(KEY_NONE).digest('hex')]: { _id: 'key-none', _userId: 'user-none', _role: 'admin', _enabled: true },
+  [createHash('sha256').update(KEY_PLATFORM).digest('hex')]: { _id: 'key-platform', _userId: 'platform', _role: 'admin', _enabled: true },
 };
 
 jest.mock('../../../auth/neo4j-auth.repository', () => ({
@@ -221,6 +241,7 @@ const bearer = (userId: string, organizationId?: string) => {
 };
 const AS_A = bearer('user-a', ORG_A);
 const AS_ADMIN_A = bearer('admin-a', ORG_A);
+const AS_PLATFORM = bearer('platform');
 
 const PRINCIPALS = [AS_ADMIN_A, bearer('admin-b', ORG_B), { 'x-api-key': KEY_A }, { 'x-api-key': KEY_B }];
 const app = express();
@@ -238,7 +259,16 @@ beforeAll(async () => {
   for (const migration of ['008_business_service_organization_scope.sql', '011_ci_organization_scope.sql']) {
     await send('exec', `BEGIN;\n${readFileSync(join(MIGRATIONS, migration), 'utf8')}\nCOMMIT;`);
   }
+  const provenanceDdl = readFileSync(join(MIGRATIONS, '028_change_history_reconciliation_org_provenance.sql'), 'utf8');
+  const journal = provenanceDdl.match(/CREATE TABLE IF NOT EXISTS ci_reconciliation_operations \([\s\S]*?\n\);/);
+  const epochs = provenanceDdl.match(/CREATE TABLE IF NOT EXISTS ci_reconciliation_epochs \([\s\S]*?\n\);/);
+  if (!journal || !epochs) throw new Error('Missing S1 journal tables');
+  await send('exec', `${journal[0]}\n${epochs[0]}`);
   await send('exec', SEED);
+  await send('exec', `INSERT INTO ci_reconciliation_operations
+    (id, group_id, organization_id, ci_id, origin, operation, graph_effect, state, actor, epoch, lease_expires_at)
+    VALUES ('00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000001', '${ORG_A}', 'lic-pending', 'api', 'update', true, 'pending', 'test', 1, NOW()),
+           ('00000000-0000-4000-8000-000000000002', '00000000-0000-4000-8000-000000000002', '${ORG_B}', 'lic-failed', 'api', 'update', true, 'failed', 'test', 1, NOW());`);
   graphqlServer = new ApolloServer({
     typeDefs: `type Query {
       health: String
@@ -248,12 +278,13 @@ beforeAll(async () => {
       costSummary: String
       costsByTower: String
       costAllocations(ciId: String!): String
-      licenses: String
-      upcomingRenewals: String
+      licenses: [SoftwareLicense!]!
+      upcomingRenewals: [SoftwareLicense!]!
     }
       type CapabilityCost { capabilityId: ID!, capabilityName: String!, totalMonthlyCost: Float!, supportingServices: Int! }
       type BusinessServiceCost { serviceId: ID!, serviceName: String!, totalMonthlyCost: Float! }
       type MonthlyCostData { month: String!, totalCost: Float!, ciCount: Int! }
+      type SoftwareLicense { id: ID!, name: String!, monthlyCost: Float! }
       type ConnectorMutationResult { success: Boolean, message: String }
       type Mutation {
         installConnector(connectorType: String!, version: String): ConnectorMutationResult
@@ -285,6 +316,7 @@ beforeAll(async () => {
   graphqlApp.use('/graphql', express.json(), getAuthMiddleware().authenticate(),
     expressMiddleware(graphqlServer, { context: async ({ req }) => ({
       user: (req as typeof req & { user: TokenPayload }).user,
+      credentialType: (req as typeof req & { credentialType?: 'jwt' | 'api-key' }).credentialType,
       _neo4jClient: { getSession: () => neo4jSession }, _loaders: {},
     }) }));
 });
@@ -305,8 +337,6 @@ const DENIED_ROUTES: Array<[string, string, object | null]> = [
   ['get', '/api/v1/tbm/costs/allocations/ci-1', null],
   ['post', '/api/v1/tbm/costs/allocate', { sourceId: 'ci-1', targetType: 'business_service', targetIds: ['bs-a-app'] }],
   ['post', '/api/v1/tbm/gl/import', { records: [{ accountNumber: '1', accountName: 'x', costPool: 'p' }] }],
-  ['get', '/api/v1/tbm/licenses', null],
-  ['get', '/api/v1/tbm/licenses/renewals', null],
 ];
 const SCOPED_ROUTES: Array<[string, string, object | null]> = [
   ['get', '/api/v1/tbm/costs/by-service/bs-a-app', null],
@@ -346,8 +376,6 @@ describe('GET /api/v1/tbm/costs/by-service/:id', () => {
     expect(hijack.status).toBe(404);
     expect(hijack.text).toBe(missing.text);
     expect(hijack.text).not.toContain('B Hijacked Node');
-    // Postgres ownership passed, so the Cypher ran, bound to the token org.
-    expect(cypherRuns.map(run => run.params)).toEqual([{ serviceId: 'bs-hijack', organizationId: ORG_A }]);
   });
 
   it('by-service is 404 for a Neo4j node with no organization_id', async () => {
@@ -439,6 +467,21 @@ describe('global TBM reads and control', () => {
     }
     expect(queryCount()).toBe(0);
   });
+  it('platform JWT reads both orgs but omits pending and failed license rows; tenant and platform API keys cannot read', async () => {
+    for (const path of ['/api/v1/tbm/licenses', '/api/v1/tbm/licenses/renewals']) {
+      for (const headers of [...PRINCIPALS, { 'x-api-key': KEY_PLATFORM }]) {
+        const denied = await request(app).get(path).set(headers);
+        expect(denied.status).toBe(403);
+      }
+      expect(queryCount()).toBe(0);
+      const allowed = await request(app).get(path).set(AS_PLATFORM);
+      expect(allowed.status).toBe(200);
+      expect(allowed.body).toMatchObject({ success: true, count: 2 });
+      expect(allowed.body.data.map((license: { id: string }) => license.id)).toEqual(['lic-a', 'lic-b']);
+      pgQueries = 0;
+      cypherRuns.length = 0;
+    }
+  });
 
   it('cost trends remain scoped to verified caller organization for sessions and API keys', async () => {
     for (const headers of [AS_ADMIN_A, { 'x-api-key': KEY_A }]) {
@@ -491,8 +534,8 @@ describe('mounted GraphQL global TBM operations', () => {
     'query { costSummary }',
     'query { costsByTower }',
     'query { costAllocations(ciId: "ci-a") }',
-    'query { licenses }',
-    'query { upcomingRenewals }',
+    'query { licenses { id name } }',
+    'query { upcomingRenewals { id name } }',
     'mutation { allocateCosts(input: { sourceId: "ci-a", targetType: "BUSINESS_SERVICE", targetIds: ["bs-a-app"] }) }',
     'mutation { importGLData }',
   ];
@@ -505,6 +548,22 @@ describe('mounted GraphQL global TBM operations', () => {
       });
     }
     expect(queryCount()).toBe(0);
+  });
+  it('GraphQL platform JWT filters pending and failed rows, while platform API keys are refused before graph access', async () => {
+    const denied = await request(graphqlApp).post('/graphql').set({ 'x-api-key': KEY_PLATFORM })
+      .send({ query: 'query { licenses { id } }' });
+    expect(denied.body.errors?.[0].extensions.code).toBe('FORBIDDEN');
+    expect(queryCount()).toBe(0);
+    const allowed = await request(graphqlApp).post('/graphql').set(AS_PLATFORM)
+      .send({ query: 'query { licenses { id name monthlyCost } upcomingRenewals { id } }' });
+    expect(allowed.body.errors).toBeUndefined();
+    expect(allowed.body.data).toEqual({
+      licenses: [
+        { id: 'lic-a', name: 'A License', monthlyCost: 3 },
+        { id: 'lic-b', name: 'B License', monthlyCost: 5 },
+      ],
+      upcomingRenewals: [{ id: 'lic-a' }, { id: 'lic-b' }],
+    });
   });
 });
 

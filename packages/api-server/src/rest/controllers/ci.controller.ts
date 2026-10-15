@@ -588,8 +588,8 @@ export class CIController {
         return;
       }
 
-      const limitNum = parseInt(limit as string);
-      if (isNaN(limitNum) || limitNum < 1 || limitNum > 1000) {
+      const limitNum = Number(limit);
+      if (!Number.isSafeInteger(limitNum) || limitNum < 1 || limitNum > 1000) {
         res.status(400).json({
           success: false,
           error: 'Bad Request',
@@ -599,35 +599,35 @@ export class CIController {
       }
 
       const organizationId = requestOrganizationId(req);
-      const session = this.neo4jClient.getSession();
-      try {
-        // The org filter runs before LIMIT so other tenants' hits never use up the page.
-        const result = await session.run(
-          `
-          CALL db.index.fulltext.queryNodes('ci_fulltext_idx', $query)
-          YIELD node
-          WHERE node:CI AND node.organization_id = $organizationId
-          WITH node ORDER BY toLower(coalesce(node.name, '')), node.id
-          LIMIT $limit
-          RETURN node
-          `,
-          { query: literalFulltextQuery(query), limit: neo4j.int(limitNum), organizationId }
-        );
-
-        const cis = result.records.map((r: { get: (key: string) => { properties: Record<string, unknown> } }) => ({
-          ci: r.get('node').properties,
-        }));
-
-        res.json({
-          success: true,
-          data: cis,
-          count: cis.length,
-          query: query.trim()
-        });
-      } finally {
-        await session.close();
-      }
+      const { cis, total } = await readCIList(organizationId, async (pending, timeout) => {
+        const session = this.neo4jClient.getSession();
+        try {
+          const result = await session.run(
+            `CALL db.index.fulltext.queryNodes('ci_fulltext_idx', $query)
+             YIELD node
+             WHERE node:CI AND node.organization_id = $organizationId AND NOT node.id IN $pending
+             WITH node ORDER BY toLower(coalesce(node.name, '')), node.id
+             WITH collect(node) AS nodes
+             RETURN size(nodes) AS total, nodes[0..$limit] AS page`,
+            { query: literalFulltextQuery(query), limit: neo4j.int(limitNum), organizationId, pending },
+            { timeout }
+          );
+          const row = result.records[0]!;
+          return {
+            total: row.get('total').toNumber() as number,
+            cis: (row.get('page') as Array<{ properties: Record<string, unknown> }>)
+              .map(node => ({ ci: node.properties })),
+          };
+        } finally {
+          await session.close();
+        }
+      });
+      res.json({ success: true, data: cis, count: cis.length, total, query: query.trim() });
     } catch (error) {
+      if (error instanceof CIListUnavailableError) {
+        res.status(503).json(CI_LIST_UNAVAILABLE_RESPONSE);
+        return;
+      }
       logger.error('Error searching CIs', error);
       res.status(500).json({
         success: false,

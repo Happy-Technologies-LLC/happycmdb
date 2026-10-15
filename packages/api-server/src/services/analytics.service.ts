@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
-import { logger, ciIncarnationId } from '@cmdb/common';
+import { logger } from '@cmdb/common';
 
 // A relationship is reportable only if both current dimension endpoints
 // belong to the caller. Use the same edge set in all relationship reports.
@@ -295,7 +295,8 @@ export class AnalyticsService {
   async getChangeHistory(
     ciId: string,
     organizationId: string,
-    limit: number = 50
+    limit: number,
+    incarnationId: string | null
   ): Promise<
     Array<{
       change_timestamp: Date;
@@ -306,33 +307,24 @@ export class AnalyticsService {
       changed_by?: string;
     }>
   > {
-    const ci = await this.neo4jClient.getCI(ciId, organizationId);
-    const incarnationId = ciIncarnationId(ci);
-    if (!incarnationId) return [];
-    try {
-      const result = await this.postgresClient.query(
-        `
-        SELECT
-          changed_at AS change_timestamp,
-          change_type,
-          changed_fields::text AS field_name,
-          previous_values::text AS old_value,
-          new_values::text AS new_value,
-          changed_by
-        FROM ci_change_history
-        WHERE ci_id = $1 AND ci_incarnation_id = $3
-          AND metadata->>'organization_id' = $4
-        ORDER BY changed_at DESC
-        LIMIT $2
-        `,
-        [ciId, limit, incarnationId, organizationId]
-      );
-
-      return result.rows;
-    } catch (error) {
-      logger.error('Error getting change history', error);
-      throw error;
-    }
+    const result = await this.postgresClient.query(
+      `SELECT h.changed_at AS change_timestamp, h.change_type, h.changed_by,
+              f.field_name,
+              h.previous_values ->> f.field_name AS old_value,
+              h.new_values ->> f.field_name AS new_value
+       FROM ci_change_history h
+       CROSS JOIN LATERAL unnest(
+         CASE WHEN h.changed_fields IS NULL OR cardinality(h.changed_fields) = 0
+                OR h.changed_fields = ARRAY['*'] THEN ARRAY[NULL::text]
+              ELSE h.changed_fields END
+       ) WITH ORDINALITY AS f(field_name, ord)
+       WHERE h.ci_id = $1 AND h.organization_id = $2
+         AND h.ci_incarnation_id = $4::uuid
+       ORDER BY h.changed_at DESC, h.id, f.ord
+       LIMIT $3`,
+      [ciId, organizationId, limit, incarnationId]
+    );
+    return result.rows;
   }
 
   /**
@@ -377,7 +369,7 @@ export class AnalyticsService {
         JOIN jsonb_to_recordset($2::jsonb) AS current_ci("ciId" text, "incarnationId" uuid, "organizationId" text, "ciType" text)
           ON ch.ci_id = current_ci."ciId" AND ch.ci_incarnation_id = current_ci."incarnationId"
           AND current_ci."organizationId" = $3
-        WHERE ch.metadata->>'organization_id' = $3 ${dateFilter}
+        WHERE ch.organization_id = $3::uuid ${dateFilter}
         GROUP BY current_ci."ciType", period
         ORDER BY period DESC, change_count DESC
         `,

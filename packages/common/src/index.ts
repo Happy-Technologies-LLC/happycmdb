@@ -46,7 +46,7 @@ export type { RetryOptions } from './utils/retry';
 export { UnrecoverableError } from 'bullmq';
 export * from './queues';
 export { getQueueManager } from './queues/queue-manager';
-export { QUEUE_NAMES } from './queues/queue-config';
+export { QUEUE_NAMES, DISCOVERY_RETENTION } from './queues/queue-config';
 export type { EnhancedQueueManager } from './queues/queue-manager';
 
 // Export metrics

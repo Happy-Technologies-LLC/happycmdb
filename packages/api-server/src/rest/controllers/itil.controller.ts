@@ -3,10 +3,11 @@
 
 import { Request, Response } from 'express';
 import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
-import { logger, ciIncarnationId } from '@cmdb/common';
+import { logger } from '@cmdb/common';
 import { v4 as uuidv4 } from 'uuid';
-import neo4j, { type Integer } from 'neo4j-driver';
+import neo4j from 'neo4j-driver';
 import { requestOrganizationId } from '../../middleware/auth.middleware';
+import { assertNoCIGap, CIGapError, CI_GAP_RESPONSE, readSingleCI, readCIList, CIListUnavailableError, CI_LIST_UNAVAILABLE_RESPONSE } from '../../read-admission';
 
 
 /**
@@ -33,8 +34,9 @@ export class ITILController {
 
       const session = this.neo4jClient.getSession();
       try {
-        let query = 'MATCH (ci:CI) WHERE ci.organization_id = $organizationId';
-        const params: Record<string, string | Integer> = { organizationId: requestOrganizationId(req) };
+        let query = 'MATCH (ci:CI) WHERE ci.organization_id = $organizationId AND NOT ci.id IN $pending';
+        const organizationId = requestOrganizationId(req);
+        const params: Record<string, unknown> = { organizationId };
 
         // Apply filters
         if (typeof lifecycle === 'string') {
@@ -50,50 +52,47 @@ export class ITILController {
           params.ciType = ciType;
         }
 
-        // Get total count
-        const countResult = await session.run(query + ' RETURN count(ci) as total', params);
-        const total = countResult.records[0]!.get('total').toNumber();
-
-        // Get paginated results
         const pageNum = parseInt(page as string);
         const limitNum = Math.min(parseInt(limit as string), 1000);
         const offset = (pageNum - 1) * limitNum;
-
-        query += ' RETURN ci ORDER BY ci.name SKIP $offset LIMIT $limit';
-        params.offset = neo4j.int(offset);
-        params.limit = neo4j.int(limitNum);
-
-        const result = await session.run(query, params);
-        const items = result.records.map((r: any) => this.convertNeo4jCI(r.get('ci').properties));
-
+        const { total, items } = await readCIList(organizationId, async (pending, timeout) => {
+          const result = await session.run(
+            `${query} WITH ci ORDER BY ci.name, ci.id
+             WITH collect(ci) AS cs
+             RETURN size(cs) AS total, cs[$offset..$end] AS page`,
+            { ...params, pending, offset: neo4j.int(offset), end: neo4j.int(offset + limitNum) },
+            { timeout }
+          );
+          const row = result.records[0]!;
+          return {
+            total: row.get('total').toNumber() as number,
+            items: (row.get('page') as Array<{ properties: Record<string, unknown> }>)
+              .map(ci => this.convertNeo4jCI(ci.properties)),
+          };
+        });
         res.json({
-          success: true,
-          data: items,
-          pagination: {
-            total,
-            page: pageNum,
-            limit: limitNum,
-            pages: Math.ceil(total / limitNum),
-          },
+          success: true, data: items,
+          pagination: { total, page: pageNum, limit: limitNum, pages: Math.ceil(total / limitNum) },
         });
       } finally {
         await session.close();
       }
     } catch (error) {
       logger.error('Error getting configuration items', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to retrieve configuration items',
-        message: error instanceof Error ? error.message : 'Unknown error',
-      });
+      if (error instanceof CIListUnavailableError) {
+        res.status(503).json(CI_LIST_UNAVAILABLE_RESPONSE);
+      } else {
+        res.status(500).json({ success: false, error: 'Failed to retrieve configuration items' });
+      }
     }
   }
 
   async getConfigurationItem(req: Request, res: Response): Promise<void> {
     try {
       const { id } = req.params;
-
-      const ci = await this.neo4jClient.getCI(id, requestOrganizationId(req));
+      const organizationId = requestOrganizationId(req);
+      const ci = await readSingleCI(organizationId, id,
+        () => this.neo4jClient.getCI(id, organizationId));
 
       if (!ci) {
         res.status(404).json({
@@ -110,11 +109,11 @@ export class ITILController {
       });
     } catch (error) {
       logger.error('Error getting configuration item', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to retrieve configuration item',
-        message: error instanceof Error ? error.message : 'Unknown error',
-      });
+      if (error instanceof CIGapError) {
+        res.status(409).json(CI_GAP_RESPONSE);
+      } else {
+        res.status(500).json({ success: false, error: 'Failed to retrieve configuration item' });
+      }
     }
   }
 
@@ -215,37 +214,28 @@ export class ITILController {
   async getCIHistory(_req: Request, res: Response): Promise<void> {
     try {
       const { id } = _req.params;
-      const ci = await this.neo4jClient.getCI(id, requestOrganizationId(_req));
+      const organizationId = requestOrganizationId(_req);
+      const ci = await this.neo4jClient.getCI(id, organizationId);
       if (!ci) {
-        res.status(404).json({ success: false, error: 'Not Found', message: `Configuration item with ID '${id}' not found` });
-        return;
-      }
-      const incarnationId = ciIncarnationId(ci);
-      if (!incarnationId) {
-        res.json({ success: true, data: [], count: 0 });
+        await assertNoCIGap(organizationId, id);
+        res.status(404).json({ success: false, error: 'Not Found', message: 'CI not found' });
         return;
       }
       const { limit = 100 } = _req.query;
-
-      const pool = this.postgresClient.pool;
-      const result = await pool.query(
-        `
-        SELECT h.* FROM ci_change_history h
-        WHERE h.ci_id = $1
-          AND h.metadata->>'organization_id' = $3
-          AND h.ci_incarnation_id = $4
-        ORDER BY h.changed_at DESC
-        LIMIT $2
-        `,
-        [id, parseInt(limit as string), requestOrganizationId(_req), incarnationId]
-      );
-
-      res.json({
-        success: true,
-        data: result.rows,
-        count: result.rows.length,
-      });
+      const result = await readSingleCI(organizationId, id, () => this.postgresClient.query(
+        `SELECT h.id, h.ci_id, h.change_type, h.changed_fields, h.previous_values,
+                h.new_values, h.changed_at, h.changed_by, h.correlation_id
+         FROM ci_change_history h
+         WHERE h.ci_id = $1 AND h.organization_id = $2
+         ORDER BY h.changed_at DESC, h.id LIMIT $3`,
+        [id, organizationId, parseInt(String(limit), 10)]
+      ));
+      res.json({ success: true, data: result.rows, count: result.rows.length });
     } catch (error) {
+      if (error instanceof CIGapError) {
+        res.status(409).json(CI_GAP_RESPONSE);
+        return;
+      }
       logger.error('Error getting CI history', error);
       res.status(500).json({
         success: false,
@@ -259,18 +249,14 @@ export class ITILController {
     try {
       const session = this.neo4jClient.getSession();
       try {
-        const result = await session.run(
-          `
-          MATCH (ci:CI)
-          WHERE ci.organization_id = $organizationId
-            AND (ci.itil_next_audit_date <= datetime()
-            OR ci.itil_last_audited IS NULL)
-          RETURN ci
-          ORDER BY ci.itil_next_audit_date
-          LIMIT 100
-          `,
-          { organizationId: requestOrganizationId(req) }
-        );
+        const organizationId = requestOrganizationId(req);
+        const result = await readCIList(organizationId, (pending, timeout) => session.run(
+          `MATCH (ci:CI)
+           WHERE ci.organization_id = $organizationId AND NOT ci.id IN $pending
+             AND (ci.itil_next_audit_date <= datetime() OR ci.itil_last_audited IS NULL)
+           RETURN ci ORDER BY ci.itil_next_audit_date LIMIT 100`,
+          { organizationId, pending }, { timeout }
+        ));
 
         const cis = result.records.map((r: any) => this.convertNeo4jCI(r.get('ci').properties));
 
@@ -284,11 +270,8 @@ export class ITILController {
       }
     } catch (error) {
       logger.error('Error getting CIs due for audit', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to retrieve CIs due for audit',
-        message: error instanceof Error ? error.message : 'Unknown error',
-      });
+      if (error instanceof CIListUnavailableError) res.status(503).json(CI_LIST_UNAVAILABLE_RESPONSE);
+      else res.status(500).json({ success: false, error: 'Failed to retrieve CIs due for audit' });
     }
   }
 
@@ -1369,14 +1352,16 @@ export class ITILController {
   async getConfigurationAccuracy(req: Request, res: Response): Promise<void> {
     const session = this.neo4jClient.getSession();
     try {
-      // Read from Neo4j CI nodes - completeAudit writes itil_audit_status there
-      const result = await session.run(`
+      // Count only rows outside the S1 pending/failed journal gap.
+      const organizationId = requestOrganizationId(req);
+      const result = await readCIList(organizationId, (pending, timeout) => session.run(`
         MATCH (ci:CI)
-        WHERE ci.organization_id = $organizationId AND ci.itil_audit_status IS NOT NULL
+        WHERE ci.organization_id = $organizationId AND NOT ci.id IN $pending
+          AND ci.itil_audit_status IS NOT NULL
         RETURN
           count(CASE WHEN ci.itil_audit_status = 'COMPLIANT' THEN 1 ELSE null END) as compliantCount,
           count(ci) as totalAudited
-      `, { organizationId: requestOrganizationId(req) });
+      `, { organizationId, pending }, { timeout }));
 
       const row = result.records[0];
       const compliantCount = row ? row.get('compliantCount').toNumber() : 0;
@@ -1393,11 +1378,8 @@ export class ITILController {
       });
     } catch (error) {
       logger.error('Error getting configuration accuracy', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to retrieve configuration accuracy',
-        message: error instanceof Error ? error.message : 'Unknown error',
-      });
+      if (error instanceof CIListUnavailableError) res.status(503).json(CI_LIST_UNAVAILABLE_RESPONSE);
+      else res.status(500).json({ success: false, error: 'Failed to retrieve configuration accuracy' });
     } finally {
       await session.close();
     }

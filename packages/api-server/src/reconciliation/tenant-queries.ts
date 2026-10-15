@@ -4,11 +4,15 @@
 import type { PostgresClient } from '@cmdb/database';
 import type { QueryResult } from 'pg';
 
-// Interim LH-5 ownership gate: metadata tables do not carry organization_id.
-// Only a current, explicitly owned CI in the SQL dimension authorizes access.
-const ownedConflict = `EXISTS (
+// Evidence belongs to the org recorded at creation, not the org holding a
+// recyclable CI ID today. Legacy NULL-org evidence is never attributed.
+const ownedConflict = `c.organization_id = $2 AND EXISTS (
   SELECT 1 FROM cmdb.dim_ci ci
-  WHERE ci.ci_id = c.ci_id::text AND ci.is_current = TRUE AND ci.organization_id = $2
+  WHERE ci.ci_id = c.ci_id::text AND ci.is_current = TRUE
+    AND NOT ci.org_backfilled AND ci.organization_id = $2
+    AND NOT EXISTS (SELECT 1 FROM ci_reconciliation_operations j
+                    WHERE j.organization_id = $2 AND j.ci_id = ci.ci_id
+                      AND j.state IN ('pending','failed'))
 )`;
 
 // LEFT JOIN keeps the owned CI visible when it has no metadata. A missing/foreign
@@ -16,15 +20,25 @@ const ownedConflict = `EXISTS (
 export async function getOwnedLineage(db: PostgresClient, ciId: string, organizationId: string): Promise<QueryResult> {
   return db.query(`SELECT lineage.source_name, lineage.source_id, lineage.confidence_score,
       lineage.discovered_at AS first_seen_at, lineage.last_seen_at
-    FROM cmdb.dim_ci ci LEFT JOIN ci_source_lineage lineage ON lineage.ci_id = ci.ci_id
-    WHERE ci.ci_id = $1 AND ci.is_current = TRUE AND ci.organization_id = $2
+    FROM cmdb.dim_ci ci LEFT JOIN ci_source_lineage lineage
+      ON lineage.ci_id = ci.ci_id AND lineage.organization_id = $2
+    WHERE ci.ci_id = $1 AND ci.is_current = TRUE AND NOT ci.org_backfilled
+      AND ci.organization_id = $2
+      AND NOT EXISTS (SELECT 1 FROM ci_reconciliation_operations j
+                      WHERE j.organization_id = $2 AND j.ci_id = ci.ci_id
+                        AND j.state IN ('pending','failed'))
     ORDER BY lineage.last_seen_at DESC`, [ciId, organizationId]);
 }
 
 export async function getOwnedFieldSources(db: PostgresClient, ciId: string, organizationId: string): Promise<QueryResult> {
   return db.query(`SELECT fields.field_name, fields.field_value, fields.source_name, fields.updated_at
-    FROM cmdb.dim_ci ci LEFT JOIN ci_field_sources fields ON fields.ci_id = ci.ci_id
-    WHERE ci.ci_id = $1 AND ci.is_current = TRUE AND ci.organization_id = $2
+    FROM cmdb.dim_ci ci LEFT JOIN ci_field_sources fields
+      ON fields.ci_id = ci.ci_id AND fields.organization_id = $2
+    WHERE ci.ci_id = $1 AND ci.is_current = TRUE AND NOT ci.org_backfilled
+      AND ci.organization_id = $2
+      AND NOT EXISTS (SELECT 1 FROM ci_reconciliation_operations j
+                      WHERE j.organization_id = $2 AND j.ci_id = ci.ci_id
+                        AND j.state IN ('pending','failed'))
     ORDER BY fields.field_name`, [ciId, organizationId]);
 }
 
@@ -32,18 +46,26 @@ export async function listOwnedConflicts(db: PostgresClient, status: string, lim
   return db.query(`SELECT c.id, c.ci_id, c.conflict_type, c.source_data, c.target_data,
       c.conflicting_fields, c.status, c.created_at
     FROM reconciliation_conflicts c
-    WHERE c.status = $1 AND EXISTS (
+    WHERE c.status = $1 AND c.organization_id = $4 AND EXISTS (
       SELECT 1 FROM cmdb.dim_ci ci
-      WHERE ci.ci_id = c.ci_id::text AND ci.is_current = TRUE AND ci.organization_id = $4
+      WHERE ci.ci_id = c.ci_id::text AND ci.is_current = TRUE
+        AND NOT ci.org_backfilled AND ci.organization_id = $4
+        AND NOT EXISTS (SELECT 1 FROM ci_reconciliation_operations j
+                        WHERE j.organization_id = $4 AND j.ci_id = ci.ci_id
+                          AND j.state IN ('pending','failed'))
     )
     ORDER BY c.created_at DESC LIMIT $2 OFFSET $3`, [status, limit, offset, organizationId]);
 }
 
 export async function countOwnedConflicts(db: PostgresClient, status: string, organizationId: string): Promise<QueryResult> {
   return db.query(`SELECT COUNT(*) AS count FROM reconciliation_conflicts c
-    WHERE c.status = $1 AND EXISTS (
+    WHERE c.status = $1 AND c.organization_id = $2 AND EXISTS (
       SELECT 1 FROM cmdb.dim_ci ci
-      WHERE ci.ci_id = c.ci_id::text AND ci.is_current = TRUE AND ci.organization_id = $2
+      WHERE ci.ci_id = c.ci_id::text AND ci.is_current = TRUE
+        AND NOT ci.org_backfilled AND ci.organization_id = $2
+        AND NOT EXISTS (SELECT 1 FROM ci_reconciliation_operations j
+                        WHERE j.organization_id = $2 AND j.ci_id = ci.ci_id
+                          AND j.state IN ('pending','failed'))
     )`, [status, organizationId]);
 }
 

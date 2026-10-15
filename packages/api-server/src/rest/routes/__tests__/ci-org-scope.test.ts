@@ -127,9 +127,14 @@ function run(rawCypher: string, params: Props = {}): FakeRecord[] {
   if (cypher.startsWith('CALL db.index.fulltext.queryNodes')) {
     const term = String(params['query']).toLowerCase();
     const inScope = tenantPredicate(cypher, params, 'node');
-    return [...graph.nodes.values()]
-      .filter(props => String(props['name']).toLowerCase().includes(term) && inScope(props))
-      .slice(0, num(params['limit']))
+    const matches = [...graph.nodes.values()]
+      .filter(props => String(props['name']).toLowerCase().includes(term) && inScope(props) &&
+        !(params['pending'] as string[] | undefined)?.includes(String(props['id'])));
+    if (cypher.includes('AS page')) {
+      return [record({ total: neo4j.int(matches.length),
+        page: matches.slice(0, num(params['limit'])).map(node) })];
+    }
+    return matches.slice(0, num(params['limit']))
       .map(props => record({ node: node(props), score: 1 }));
   }
 
@@ -194,11 +199,16 @@ function run(rawCypher: string, params: Props = {}): FakeRecord[] {
       ['type', 'status', 'environment'].every(f => params[f] === undefined || props[f] === params[f]) &&
       (params['search'] === undefined || String(props['name']).toLowerCase().includes(String(params['search']).toLowerCase()))
     );
-    if (cypher.includes('count(ci) as total')) return [record({ total: neo4j.int(matches.length) })];
+    const visible = matches.filter(props =>
+      !Array.isArray(params['pending']) || !(params['pending'] as string[]).includes(String(props['id'])));
+    if (cypher.includes('count(ci) as total')) return [record({ total: neo4j.int(visible.length) })];
     const offset = num(params['offset']);
-    return matches
-      .sort((x, y) => String(x['name']).localeCompare(String(y['name'])))
-      .slice(offset, offset + num(params['limit']))
+    const sorted = visible.sort((x, y) => String(x['name']).localeCompare(String(y['name'])));
+    if (cypher.includes('AS page')) {
+      const end = num(params['end'] ?? params['limit']);
+      return [record({ total: neo4j.int(sorted.length), page: sorted.slice(offset, end).map(node) })];
+    }
+    return sorted.slice(offset, offset + num(params['limit']))
       .map(props => record({ ci: node(props) }));
   }
 
@@ -318,11 +328,21 @@ const derivedTables = [
   'baseline_snapshots', 'drift_detection_results', 'impact_analyses',
   'ci_criticality_scores', 'ci_change_history',
 ];
+const provenanceDdl = readFileSync(
+  join(__dirname, '../../../../../database/src/postgres/migrations/028_change_history_reconciliation_org_provenance.sql'), 'utf8');
 beforeAll(async () => {
   const ddl = readFileSync(join(__dirname, '../../../../../database/src/postgres/migrations/001_complete_schema.sql'), 'utf8');
   for (const table of derivedTables) {
     const definition = ddl.match(new RegExp(`CREATE TABLE IF NOT EXISTS ${table} \\([\\s\\S]*?\\n\\);`));
     if (!definition) throw new Error(`Missing production table ${table}`);
+    await sql(definition[0]);
+  }
+  const historyColumns = provenanceDdl.match(/ALTER TABLE ci_change_history\s+ADD COLUMN[\s\S]*?;/);
+  if (!historyColumns) throw new Error('Missing S1 history provenance columns');
+  await sql(historyColumns[0]);
+  for (const table of ['ci_reconciliation_operations', 'ci_reconciliation_epochs']) {
+    const definition = provenanceDdl.match(new RegExp(`CREATE TABLE IF NOT EXISTS ${table} \\([\\s\\S]*?\\n\\);`));
+    if (!definition) throw new Error(`Missing S1 journal table ${table}`);
     await sql(definition[0]);
   }
   for (const statement of readFileSync(

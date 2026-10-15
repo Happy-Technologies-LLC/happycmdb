@@ -30,7 +30,7 @@
     "@azure/identity": "^4.0.0",
     "@google-cloud/billing": "^4.2.0",
     "@google-cloud/bigquery": "^7.3.0",
-    "bullmq": "^4.15.0",
+    "bullmq": "5.61.0",
     "csv-parse": "^5.5.3",
     "csv-stringify": "^6.4.5",
     "date-fns": "^2.30.0",

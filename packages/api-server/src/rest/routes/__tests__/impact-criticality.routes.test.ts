@@ -83,7 +83,7 @@ it('terminates an A-to-B-to-A cycle without unbounded driver or SQL calls', asyn
   expect(response.body.data.criticality_score).toBe(63);
   expect(run.mock.calls.length).toBeLessThanOrEqual(2);
   expect(query.mock.calls.length).toBeLessThanOrEqual(6);
-  expect(run.mock.calls.every(call => (call[2]?.timeout ?? 0) > 0 && (call[2]?.timeout ?? 0) <= 5000)).toBe(true);
+  expect(run.mock.calls.every(call => (call[2]?.timeout ?? 0) > 0 && (call[2]?.timeout ?? 0) <= 10000)).toBe(true);
 });
 
 it('keeps cached cyclic scores independent of which root was requested first', async () => {

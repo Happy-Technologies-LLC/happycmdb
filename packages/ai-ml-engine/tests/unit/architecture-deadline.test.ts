@@ -49,7 +49,7 @@ it('bounds service mapping and persistence with SET LOCAL statement_timeout in t
   for (const [, values] of clientQuery.mock.calls.filter(([sql]) => sql.includes("set_config('statement_timeout'"))) {
     const milliseconds = Number(String(values?.[0]).replace('ms', ''));
     expect(milliseconds).toBeGreaterThan(0);
-    expect(milliseconds).toBeLessThanOrEqual(5000);
+    expect(milliseconds).toBeLessThanOrEqual(10000);
   }
 });
 

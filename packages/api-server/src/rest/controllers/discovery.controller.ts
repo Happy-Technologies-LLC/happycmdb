@@ -3,9 +3,7 @@
 
 import { Request, Response } from 'express';
 import { queueManager, QUEUE_NAMES } from '@cmdb/database';
-import { logger, safeDiscoveryScanConfig } from '@cmdb/common';
-import { v4 as uuidv4 } from 'uuid';
-import { requestOrganizationId } from '../../middleware/auth.middleware';
+import { logger } from '@cmdb/common';
 
 function discoveryQueues(): string[] {
   return [
@@ -16,7 +14,6 @@ function discoveryQueues(): string[] {
   ];
 }
 const NOT_FOUND = { success: false, error: 'Not Found', message: 'Discovery job not found' };
-const UNAVAILABLE = { success: false, error: 'Credential-backed discovery execution unavailable' };
 
 // Never spread BullMQ job.data, returnvalue, progress objects, or worker failure text.
 interface PublicJobSource {
@@ -79,45 +76,14 @@ export class DiscoveryController {
     return null;
   }
 
-  async scheduleDiscovery(req: Request, res: Response): Promise<void> {
-    try {
-      const { provider, config } = req.body;
-      if (provider === 'ssh' || provider === 'snmp' || provider === 'active-directory') {
-        res.status(409).json(UNAVAILABLE);
-        return;
-      }
-      if (provider !== 'nmap') {
-        res.status(400).json({ success: false, error: 'Bad Request', message: 'Unsupported provider' });
-        return;
-      }
-      let safeConfig;
-      try {
-        safeConfig = safeDiscoveryScanConfig(config);
-      } catch {
-        res.status(400).json({ success: false, error: 'Invalid discovery scan configuration' });
-        return;
-      }
-      const organizationId = requestOrganizationId(req);
-      const jobId = uuidv4();
-      const created_at = new Date().toISOString();
-      await queueManager.getQueue(QUEUE_NAMES._DISCOVERY_NMAP).add('discover', {
-        id: jobId, organizationId, provider: 'nmap', method: 'agentless',
-        config: safeConfig, status: 'pending', created_at,
-      }, { jobId, attempts: 3, backoff: { type: 'exponential', delay: 2000 } });
-      res.status(201).json({ success: true, data: { id: jobId, provider: 'nmap', status: 'pending', created_at }, message: 'Discovery job scheduled successfully' });
-    } catch (error) {
-      logger.error('Error scheduling discovery job', error);
-      res.status(500).json({ success: false, error: 'Failed to schedule discovery job' });
-    }
-  }
 
   async getJobStatus(req: Request, res: Response): Promise<void> {
     try {
       const job = await this.findJob(req.params.id!);
       if (!job) { res.status(404).json(NOT_FOUND); return; }
       res.json({ success: true, data: publicJob(job, await job.getState()) });
-    } catch (error) {
-      logger.error('Error getting discovery job status', error);
+    } catch {
+      logger.error('Error getting discovery job status');
       res.status(500).json({ success: false, error: 'Failed to retrieve discovery job' });
     }
   }
@@ -148,8 +114,8 @@ export class DiscoveryController {
       // A limit applies to each queue/state window, not to the merged result:
       // slicing here would permanently discard jobs from later states.
       res.json({ success: true, data: allJobs, pagination: { count: allJobs.length, offset: offsetNum, limit: limitNum, truncated: true } });
-    } catch (error) {
-      logger.error('Error listing discovery jobs', error);
+    } catch {
+      logger.error('Error listing discovery jobs');
       res.status(500).json({ success: false, error: 'Failed to list discovery jobs' });
     }
   }
@@ -165,8 +131,8 @@ export class DiscoveryController {
       }
       await job.remove();
       res.json({ success: true, message: 'Discovery job cancelled successfully', data: { id: job.id, previousState: state } });
-    } catch (error) {
-      logger.error('Error cancelling discovery job', error);
+    } catch {
+      logger.error('Error cancelling discovery job');
       res.status(500).json({ success: false, error: 'Failed to cancel discovery job' });
     }
   }

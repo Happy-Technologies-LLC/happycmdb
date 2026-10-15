@@ -127,6 +127,7 @@ function testApp(): express.Express {
 }
 
 type RouteCase = [string, string, Record<string, unknown> | undefined];
+const RECORD_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 
 const readRoutes: RouteCase[] = [
   ['GET', '/itil/configuration-items', undefined],
@@ -134,17 +135,17 @@ const readRoutes: RouteCase[] = [
   ['GET', '/itil/configuration-items/ci-1/history', undefined],
   ['GET', '/itil/configuration-items/audit/due', undefined],
   ['GET', '/itil/baselines', undefined],
-  ['GET', '/itil/baselines/base-1', undefined],
-  ['GET', '/itil/baselines/base-1/comparison', undefined],
+  ['GET', `/itil/baselines/${RECORD_ID}`, undefined],
+  ['GET', `/itil/baselines/${RECORD_ID}/comparison`, undefined],
   ['GET', '/itil/metrics/configuration-accuracy', undefined],
 ];
 const recordRoutes: RouteCase[] = [
   ['GET', '/itil/incidents', undefined],
-  ['GET', '/itil/incidents/inc-1', undefined],
-  ['GET', '/itil/incidents/inc-1/priority', undefined],
+  ['GET', `/itil/incidents/${RECORD_ID}`, undefined],
+  ['GET', `/itil/incidents/${RECORD_ID}/priority`, undefined],
   ['GET', '/itil/changes', undefined],
-  ['GET', '/itil/changes/chg-1', undefined],
-  ['GET', '/itil/changes/chg-1/risk-assessment', undefined],
+  ['GET', `/itil/changes/${RECORD_ID}`, undefined],
+  ['GET', `/itil/changes/${RECORD_ID}/risk-assessment`, undefined],
   ['GET', '/itil/metrics/incident-summary', undefined],
   ['GET', '/itil/metrics/change-success-rate', undefined],
   ['GET', '/itil/metrics/mttr', undefined],
@@ -154,10 +155,10 @@ const recordRoutes: RouteCase[] = [
     '/itil/incidents',
     { affectedCIId: 'ci-1', description: 'disk usage exceeded threshold', reportedBy: 'alice' },
   ],
-  ['PATCH', '/itil/incidents/inc-1', { status: 'IN_PROGRESS' }],
+  ['PATCH', `/itil/incidents/${RECORD_ID}`, { status: 'IN_PROGRESS' }],
   [
     'POST',
-    '/itil/incidents/inc-1/resolve',
+    `/itil/incidents/${RECORD_ID}/resolve`,
     { resolution: 'root cause identified and patched', resolvedBy: 'alice' },
   ],
   [
@@ -173,18 +174,18 @@ const recordRoutes: RouteCase[] = [
       implementationPlan: 'drain traffic, apply patch, restart service, verify health checks pass',
     },
   ],
-  ['PATCH', '/itil/changes/chg-1', { status: 'APPROVED' }],
-  ['POST', '/itil/changes/chg-1/approve', undefined],
-  ['POST', '/itil/changes/chg-1/implement', undefined],
-  ['POST', '/itil/changes/chg-1/close', { result: 'SUCCESS', closedBy: 'alice' }],
+  ['PATCH', `/itil/changes/${RECORD_ID}`, { status: 'APPROVED' }],
+  ['POST', `/itil/changes/${RECORD_ID}/approve`, undefined],
+  ['POST', `/itil/changes/${RECORD_ID}/implement`, undefined],
+  ['POST', `/itil/changes/${RECORD_ID}/close`, { result: 'SUCCESS', closedBy: 'alice' }],
 ];
 
 const writeRoutes: RouteCase[] = [
   ['PATCH', '/itil/configuration-items/ci-1/lifecycle', { stage: 'BUILD' }],
   ['PATCH', '/itil/configuration-items/ci-1/status', { status: 'ACTIVE' }],
   ['POST', '/itil/baselines', { name: 'pre-patch-baseline', ciIds: ['ci-1'], createdBy: 'alice' }],
-  ['DELETE', '/itil/baselines/base-1', undefined],
-  ['POST', '/itil/baselines/base-1/restore', { ciId: 'ci-1', performedBy: 'alice' }],
+  ['DELETE', `/itil/baselines/${RECORD_ID}`, undefined],
+  ['POST', `/itil/baselines/${RECORD_ID}/restore`, { ciId: 'ci-1', performedBy: 'alice' }],
 ];
 
 async function invoke(app: express.Express, method: string, path: string, body: unknown, token?: string) {
@@ -201,6 +202,7 @@ async function invoke(app: express.Express, method: string, path: string, body: 
 
 describe('itil routes', () => {
   beforeEach(() => {
+    sqlQuery.mockResolvedValue({ rows: [{ available: true }] });
     mockRouteHandler.mockImplementation((req: Request, res: Response) => {
       res.status(200).json({ actor: (req as ReqWithUser).user?._userId });
     });
@@ -215,17 +217,38 @@ describe('itil routes', () => {
     }
   );
 
-  it.each(recordRoutes.flatMap(route => ['viewer', 'operator', 'admin'].map(role => [route, role] as const)))(
-    'refuses unscopeable ITIL records for %s as %s without reaching the controller',
-    async ([method, path, body], role) => {
-      const response = await invoke(testApp(), method, path, body, `Bearer ${role}-token`);
-      expect(response.status).toBe(403);
-      expect(response.body).toEqual({ success: false, error: 'ITIL records unavailable' });
-      expect(mockRouteHandler).not.toHaveBeenCalled();
+  it.each(recordRoutes)(
+    'requires an organization and an installed record table for %s %s',
+    async (method, path, body) => {
+      const orgless = await invoke(testApp(), method, path, body, 'Bearer orgless-token');
+      expect(orgless.status).toBe(403);
       expect(sqlQuery).not.toHaveBeenCalled();
+      sqlQuery.mockResolvedValueOnce({ rows: [{ available: false }] });
+      const absent = await invoke(testApp(), method, path, body, 'Bearer operator-token');
+      expect(absent.status).toBe(503);
+      expect(absent.body).toEqual({ success: false, error: 'ITIL records unavailable' });
+      expect(mockRouteHandler).not.toHaveBeenCalled();
       expect(graphRun).not.toHaveBeenCalled();
     }
   );
+
+  it.each(recordRoutes)('an operator reaches installed record route %s %s', async (method, path, body) => {
+    const response = await invoke(testApp(), method, path, body, 'Bearer operator-token');
+    expect(response.status).toBe(200);
+    expect(mockRouteHandler).toHaveBeenCalled();
+  });
+
+  it.each([
+    ['/itil/incidents/invalid', 'Incident'],
+    ['/itil/changes/invalid', 'Change'],
+    ['/itil/baselines/invalid', 'Baseline'],
+  ])('returns fixed 404 before record lookup for malformed %s', async (path, kind) => {
+    const response = await invoke(testApp(), 'GET', path, undefined, 'Bearer operator-token');
+    expect(response.status).toBe(404);
+    expect(response.body).toEqual({ success: false, error: 'Not Found', message: `${kind} not found` });
+    expect(mockRouteHandler).not.toHaveBeenCalled();
+    expect(sqlQuery).toHaveBeenCalledTimes(1); // catalog availability only
+  });
 
   it.each(readRoutes)('a viewer (read-only) can reach %s %s', async (method, path, body) => {
     const response = await invoke(testApp(), method, path, body, 'Bearer viewer-token');
@@ -253,10 +276,10 @@ describe('itil routes', () => {
 
   it.each([
     ['GET', '/itil/baselines', undefined],
-    ['GET', '/itil/baselines/base-1', undefined],
-    ['GET', '/itil/baselines/base-1/comparison', undefined],
+    ['GET', `/itil/baselines/${RECORD_ID}`, undefined],
+    ['GET', `/itil/baselines/${RECORD_ID}/comparison`, undefined],
     ['POST', '/itil/baselines', { name: 'baseline', ciIds: ['ci-1'], createdBy: 'alice' }],
-    ['POST', '/itil/baselines/base-1/restore', { ciId: 'ci-1', performedBy: 'alice' }],
+    ['POST', `/itil/baselines/${RECORD_ID}/restore`, { ciId: 'ci-1', performedBy: 'alice' }],
   ])('rejects org-less actor before %s %s reaches the controller', async (method, path, body) => {
     const response = await invoke(testApp(), method, path, body, 'Bearer orgless-token');
     expect(response.status).toBe(403);

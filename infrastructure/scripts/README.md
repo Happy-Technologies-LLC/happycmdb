@@ -116,6 +116,29 @@ those source tables and the view are absent. Guarded downs in
 refuse to discard stamped provenance, and transactionally remove their exact
 `cmdb.schema_migrations` rows so an authorized reapplication is not skipped.
 
+## HP1-S2 ITIL record tenancy (HAP-441 / HAP-480)
+
+Migration `035_itil_record_ownership.sql` follows `034` on the V1 schema.
+`012`/`013` already installed baseline ownership and per-organization name
+uniqueness. `035` adds nullable, no-default ownership to incidents and changes,
+write guards to all three ITIL record tables, org-leading indexes, and a
+NULL-only baseline name index. Historical NULL-owner rows remain unattributed
+and invisible; incident/change numbers retain global uniqueness. On a V2/V3
+installation with none of the ITIL tables, migration `035` records an absent
+schema and REST/GraphQL record operations refuse with 503, not a partial table
+creation. An incomplete or wrong-kind V1 table shape aborts the migration.
+The fresh initializer also has no ITIL tables; apply the canonical V1
+migrations to provision them. The manual `035` down refuses any owned
+record and keeps baseline `012`/`013` intact.
+
+Incident/change REST records and the mounted GraphQL record twin are scoped to
+the authenticated organization. Baseline restore remains 503 **after** a
+scoped baseline lookup: it cannot perform a direct Neo4j CI mutation before
+HP1-S4's journal admission/fence exists. The dormant GraphQL ITIL resolver
+module is not mounted. Staging rollout remains suspended: persisted staging
+volumes have not applied `032`–`034` or the offline ACL preflight; no deployment
+or staging verification is implied by this source change.
+
 ## HAP-630 credential and BI ACLs
 
 Migration `032_secret_table_public_grants.sql` follows `031` on existing

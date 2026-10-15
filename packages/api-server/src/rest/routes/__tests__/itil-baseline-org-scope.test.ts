@@ -181,7 +181,7 @@ it('lists only own rows and gives identical detail not-found for foreign, missin
   expect(await remaining()).toEqual([ID_A, ID_B, ID_NULL]);
 });
 
-it('restores only owned baselines into owned CIs, leaving foreign and NULL state intact', async () => {
+it('conceals foreign and NULL baselines and blocks owned restore until journal admission', async () => {
   const restore = (id: string, user: string, ciId: string) =>
     request(app).post(`${endpoint(id)}/restore`).set(authorization(user))
       .send({ ciId, performedBy: user });
@@ -194,13 +194,13 @@ it('restores only owned baselines into owned CIs, leaving foreign and NULL state
   expect((await restore(ID_NULL, 'admin', 'ci-a')).status).toBe(404);
   expect((await restore(ID_A, 'noorg', 'ci-a')).status).toBe(403);
   expect(graphWrites).toBe(0);
-  expect((await restore(ID_A, 'a', 'ci-b')).status).toBe(404);
+  expect((await restore(ID_A, 'a', 'ci-b')).status).toBe(503);
   expect(graphWrites).toBe(0);
   expect(ciNodes['ci-b']?.name).toBe('current-b');
   const own = await restore(ID_A, 'a', 'ci-a');
-  expect(own.status).toBe(200);
-  expect(graphWrites).toBe(1);
-  expect(ciNodes['ci-a']?.name).toBe('baseline-a');
+  expect(own.status).toBe(503);
+  expect(graphWrites).toBe(0);
+  expect(ciNodes['ci-a']?.name).toBe('current-a');
   expect(ciNodes['ci-b']?.name).toBe('current-b');
   expect(await remaining()).toEqual([ID_A, ID_B, ID_NULL]);
 });

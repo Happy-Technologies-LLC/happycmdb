@@ -175,7 +175,7 @@ async function loadPostgresSchema(container: StartedTestContainer): Promise<void
     await container.copyContentToContainer([{ content: sql, target }]);
     // Earlier migrations include legacy non-fatal Timescale notices. ACL
     // migrations must fail the hosted suite on any SQL error.
-    const guarded = /^0(28|29|30|31|32|33|34)_/.test(file);
+    const guarded = /^0(28|29|30|31|32|33|34|35)_/.test(file);
     const load = await container.exec([
       'psql', '-v', `ON_ERROR_STOP=${guarded ? '1' : '0'}`,
       ...(guarded ? ['-1'] : []),

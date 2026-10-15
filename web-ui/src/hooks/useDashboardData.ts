@@ -11,7 +11,6 @@ import { useState } from 'react';
 import dashboardService, {
   ExecutiveSummaryData,
   CIOMetricsData,
-  ITSMDashboardData,
   FinOpsDashboardData,
   BusinessServiceDashboardData,
 } from '../services/dashboard.service';
@@ -70,59 +69,6 @@ export const useCIODashboard = (timeRange: TimeRange) => {
     loading: isLoading,
     error,
     refetch,
-  };
-};
-
-// ITSM Dashboard Hook
-export const useITSMDashboard = (_filters?: any) => {
-  const { data, isLoading, error, refetch } = useQuery({
-    queryKey: ['itsm-dashboard'],
-    queryFn: () => dashboardService.getITSMDashboard(),
-    staleTime: 10000, // 10 seconds
-    refetchInterval: 10000, // More frequent for incidents
-  });
-
-  return {
-    incidents: {
-      data: data?.openIncidents || [],
-      loading: isLoading,
-      error,
-      refetch,
-    },
-    changes: {
-      data: data?.changesInProgress || [],
-      loading: isLoading,
-      error,
-      refetch,
-    },
-    ciStatus: {
-      data: data?.ciStatus || [],
-      loading: isLoading,
-      error,
-      refetch,
-    },
-    topFailing: {
-      data: data?.topFailingCIs || [],
-      loading: isLoading,
-      error,
-      refetch,
-    },
-    slaCompliance: {
-      data: data?.slaCompliance || [],
-      loading: isLoading,
-      error,
-      refetch,
-    },
-    baselineCompliance: {
-      data: data?.baselineCompliance || [],
-      loading: isLoading,
-      error,
-      refetch,
-    },
-    realTimeUpdates: {
-      incidents: null,
-      changes: null,
-    },
   };
 };
 

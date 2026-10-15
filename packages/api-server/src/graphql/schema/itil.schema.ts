@@ -153,6 +153,8 @@ enum IncidentStatus {
   IN_PROGRESS
   RESOLVED
   CLOSED
+  PENDING
+  CANCELLED
 }
 
 """Business service impacted by incidents/changes"""

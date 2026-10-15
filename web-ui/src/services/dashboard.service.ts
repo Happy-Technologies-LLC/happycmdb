@@ -128,69 +128,6 @@ export interface CIOMetricsData {
   }>;
 }
 
-// ITSM Dashboard Types
-export interface ITSMDashboardData {
-  openIncidents: Array<{
-    id: string;
-    title: string;
-    priority: string;
-    status: string;
-    affectedCI: string;
-    assignedTeam: string;
-    createdAt: string;
-    updatedAt: string;
-    age: number;
-  }>;
-  changesInProgress: Array<{
-    id: string;
-    title: string;
-    status: string;
-    type: string;
-    riskLevel: string;
-    scheduledDate: string;
-    affectedCIs: string[];
-    assignedTo: string;
-    createdAt: string;
-  }>;
-  ciStatus: Array<{
-    status: string;
-    count: number;
-    cis: Array<{
-      ci_id: string;
-      name: string;
-      type: string;
-      status: string;
-      environment: string;
-      lastSeen: string;
-    }>;
-  }>;
-  topFailingCIs: Array<{
-    ci_id: string;
-    name: string;
-    type: string;
-    incidentCount: number;
-    mttr: number;
-    lastFailure: string;
-    recommendation: string;
-  }>;
-  slaCompliance: Array<{
-    priority: string;
-    withinSLA: number;
-    total: number;
-    compliancePercentage: number;
-    target: number;
-  }>;
-  baselineCompliance: Array<{
-    ci_id: string;
-    name: string;
-    type: string;
-    driftSeverity: string;
-    driftDetails: string;
-    remediationStatus: string;
-    lastChecked: string;
-  }>;
-}
-
 // FinOps Dashboard Types
 export interface FinOpsDashboardData {
   cloudCosts: Array<{
@@ -336,16 +273,6 @@ class DashboardService {
   async getCIODashboard(days: number = 30): Promise<CIOMetricsData> {
     const response = await apiClient.get<DashboardResponse<CIOMetricsData>>(
       `/dashboards/cio?days=${days}`
-    );
-    return response.data.data;
-  }
-
-  /**
-   * Get ITSM Dashboard data
-   */
-  async getITSMDashboard(): Promise<ITSMDashboardData> {
-    const response = await apiClient.get<DashboardResponse<ITSMDashboardData>>(
-      `/dashboards/itsm`
     );
     return response.data.data;
   }

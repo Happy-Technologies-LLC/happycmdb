@@ -31,7 +31,7 @@ async function recordCall(context: GraphQLContext, kind: RecordKind, handler: Ha
   const input = { ...(args.input ?? {}) };
   if (kind === 'change' && input.status === 'REQUESTED') input.status = 'DRAFT';
   const query = { ...args };
-  if (kind === 'change' && query.status === 'REQUESTED') query.status = 'DRAFT';
+  if (kind === 'change' && query.status === 'REQUESTED') query.status = 'requested';
   const req = { user: context.user, params: { id: args.id },
     query, body: { ...input, ...args, ...(kind === 'change' && input.status ? { status: input.status } : {}) } } as unknown as Request;
   let status = 200;
@@ -196,8 +196,10 @@ export const itilNestedRecords = {
     }
     const result = await getPostgresClient().pool.query(
       `SELECT * FROM itil_changes WHERE organization_id = $1 AND $2 = ANY(affected_ci_ids)
-        AND ($3::text IS NULL OR status = $3) ORDER BY created_at DESC LIMIT $4`,
-      [organizationId, ciId, args.status === 'REQUESTED' ? 'draft' : args.status?.toLowerCase() ?? null,
+        AND ($3::text IS NULL OR status = $3
+          OR ($3 = 'requested' AND status IN ('draft', 'pending_approval')))
+        ORDER BY created_at DESC LIMIT $4`,
+      [organizationId, ciId, args.status === 'REQUESTED' ? 'requested' : args.status?.toLowerCase() ?? null,
         Math.min(100, Math.max(1, args.limit ?? 50))]);
     return result.rows.map(row => change(row));
   },

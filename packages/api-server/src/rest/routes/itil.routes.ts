@@ -107,9 +107,9 @@ const resolveIncidentSchema = Joi.object({
 });
 
 const createChangeSchema = Joi.object({
-  changeType: Joi.string().valid('STANDARD', 'NORMAL', 'EMERGENCY').required(),
+  changeType: Joi.string().valid('STANDARD', 'NORMAL', 'EMERGENCY', 'MAJOR').required(),
   description: Joi.string().required().min(10),
-  affectedCIIds: Joi.array().items(Joi.string()).min(1).required(),
+  affectedCIIds: Joi.array().items(Joi.string()).min(1).max(100).required(),
   requestedBy: Joi.string().required(),
   plannedStart: Joi.date().iso().required(),
   plannedDuration: Joi.number().integer().min(1).required(), // in minutes

@@ -877,19 +877,25 @@ const CIResolvers = {
 };
 
 /** The ITIL GraphQL CI fields share the same organization boundary as REST. */
-async function itilCI(context: GraphQLContext, id: string, organizationId: string): Promise<Record<string, unknown>> {
+async function maybeITILCI(context: GraphQLContext, id: string, organizationId: string): Promise<Record<string, unknown> | null> {
   const session = context._neo4jClient.getSession();
   try {
     const result = await session.run(
       'MATCH (ci:CI {id: $id}) WHERE ci.organization_id = $organizationId RETURN ci',
       { id, organizationId }
     );
-    if (result.records.length === 0) throw ciNotFound();
+    if (result.records.length === 0) return null;
     const properties = result.records[0]!.get('ci').properties as CIValue;
     return { ...properties, ...toGraphQLCI(properties) };
   } finally {
     await session.close();
   }
+}
+
+async function itilCI(context: GraphQLContext, id: string, organizationId: string): Promise<Record<string, unknown>> {
+  const ci = await maybeITILCI(context, id, organizationId);
+  if (!ci) throw ciNotFound();
+  return ci;
 }
 
 async function itilHistory(context: GraphQLContext, id: string, limit: number) {
@@ -1045,12 +1051,25 @@ export const resolvers = {
   },
   Incident: {
     affectedCI: (parent: { affectedCIId: string }, _args: unknown, context: GraphQLContext) =>
-      itilCI(context, parent.affectedCIId, requireGraphQLOrganization(context)),
+      maybeITILCI(context, parent.affectedCIId, requireGraphQLOrganization(context)),
   },
   Change: {
     affectedCIs: async (parent: { affectedCIIds: string[] }, _args: unknown, context: GraphQLContext) => {
       const organizationId = requireGraphQLOrganization(context);
-      return Promise.all(parent.affectedCIIds.map(id => itilCI(context, id, organizationId)));
+      const uniqueIds = [...new Set(parent.affectedCIIds)];
+      if (uniqueIds.length > 100) {
+        throw new GraphQLError('Change has more than 100 distinct affected CIs',
+          { extensions: { code: 'BAD_USER_INPUT' } });
+      }
+      const cis = new Map<string, Record<string, unknown> | null>();
+      let next = 0;
+      await Promise.all(Array.from({ length: Math.min(8, uniqueIds.length) }, async () => {
+        while (next < uniqueIds.length) {
+          const id = uniqueIds[next++]!;
+          cis.set(id, await maybeITILCI(context, id, organizationId));
+        }
+      }));
+      return parent.affectedCIIds.map(id => cis.get(id) ?? null);
     },
   },
   CI: {

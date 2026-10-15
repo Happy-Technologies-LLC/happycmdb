@@ -17,6 +17,16 @@ tenant-safe** for record reads; migration `035` rejects their unowned writes.
 Use the mounted authenticated `/itil` REST or GraphQL record API instead. Baseline
 restore remains unavailable until journal/fence admission in HP1-S4.
 
+The mounted change API accepts at most 100 affected CI IDs per new change.
+GraphQL `REQUESTED` lists include both persisted `draft` and
+`pending_approval`; `MAJOR` is a supported persisted change type. Historical
+incident/change records remain readable if an affected CI disappears:
+`Incident.affectedCI` is nullable, and `Change.affectedCIs` retains each
+position with null for a missing or no-longer-owned CI. Existing changes with
+more than 100 *distinct* affected CI IDs return `BAD_USER_INPUT` when that
+GraphQL field is selected; repeated IDs are resolved once per distinct ID,
+with at most eight graph lookups in flight.
+
 ## Features
 
 ### Configuration Management

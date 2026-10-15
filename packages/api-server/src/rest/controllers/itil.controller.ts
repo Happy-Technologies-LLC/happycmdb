@@ -729,6 +729,12 @@ export class ITILController {
         testPlan = '',
       } = req.body;
 
+      // The GraphQL mutation calls this controller directly, bypassing REST's Joi schema.
+      if (!Array.isArray(affectedCIIds) || affectedCIIds.length < 1 || affectedCIIds.length > 100) {
+        res.status(400).json({ success: false, error: 'Affected CI IDs must contain 1 to 100 entries' });
+        return;
+      }
+
       // Verify all affected CIs exist
       for (const ciId of affectedCIIds) {
         const ci = await this.neo4jClient.getCI(ciId, requestOrganizationId(req));
@@ -803,8 +809,12 @@ export class ITILController {
       let paramIndex = 2;
 
       if (status) {
-        conditions.push(`status = $${paramIndex++}`);
-        params.push(String(status).toLowerCase());
+        if (String(status).toLowerCase() === 'requested') {
+          conditions.push(`status IN ('draft', 'pending_approval')`);
+        } else {
+          conditions.push(`status = $${paramIndex++}`);
+          params.push(String(status).toLowerCase());
+        }
       }
       if (changeType) {
         conditions.push(`change_type = $${paramIndex++}`);

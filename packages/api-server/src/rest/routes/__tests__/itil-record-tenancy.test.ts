@@ -174,6 +174,18 @@ it('scopes lists, affectedCIId, counts and metrics and stamps created rows from 
   expect((await request(app).get('/itil/changes').set(auth('B'))).body.pagination.total).toBe(1);
 });
 
+it('rejects more than 100 affected CI IDs before writing a change', async () => {
+  const response = await request(app).post('/itil/changes').set(auth('A')).send({
+    changeType: 'NORMAL', description: 'local CI patch rollout',
+    affectedCIIds: Array(101).fill('ci-a'), requestedBy: 'alice',
+    plannedStart: '2026-11-01T00:00:00Z', plannedDuration: 60,
+    implementationPlan: 'drain workload, patch system, restart, and confirm all health checks',
+  });
+  expect(response.status).toBe(400);
+  expect(await sql('SELECT COUNT(*)::int AS total FROM itil_changes WHERE organization_id = $1', [A]))
+    .toEqual([{ total: 0 }]);
+});
+
 it('ETL does not copy recycled A dimension data into B or legacy incidents', async () => {
   await sql(`INSERT INTO cmdb.dim_ci(ci_id, ci_key, ci_name, ci_type, bsm_attributes,
       organization_id, is_current, org_backfilled)

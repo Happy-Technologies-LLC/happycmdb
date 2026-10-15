@@ -1,33 +1,64 @@
 // Copyright 2026 Happy Technologies LLC
 // SPDX-License-Identifier: Apache-2.0
 
-import { Router, type Request, type Response } from 'express';
+import { Router, type Request, type Response, type NextFunction } from 'express';
 import Joi from 'joi';
 import { ITILController } from '../controllers/itil.controller';
 import { validateRequest, validateOptional } from '../middleware/validation.middleware';
 import { auditMiddleware } from '../../middleware/audit.middleware';
 import { getAuthMiddleware } from '../../auth/auth-bootstrap';
+import { getPostgresClient } from '@cmdb/database';
 
 export const itilRoutes = Router();
 const controller = new ITILController();
 const authMiddleware = getAuthMiddleware();
 
-itilRoutes.use('/configuration-items', authMiddleware.requireOrganization());
-itilRoutes.use('/metrics/configuration-accuracy', authMiddleware.requireOrganization());
+itilRoutes.use(authMiddleware.requireOrganization());
 // Apply audit middleware to all routes
 itilRoutes.use(auditMiddleware);
 
-// Incident/change records have no tenant column until HP1-S2. Refuse every
-// authenticated caller before validation, role checks or database access.
-const recordsUnavailable = (_req: Request, res: Response): void => {
-  res.status(403).json({ success: false, error: 'ITIL records unavailable' });
-};
-itilRoutes.use('/incidents', recordsUnavailable);
-itilRoutes.use('/changes', recordsUnavailable);
-itilRoutes.use('/metrics/incident-summary', recordsUnavailable);
-itilRoutes.use('/metrics/change-success-rate', recordsUnavailable);
-itilRoutes.use('/metrics/mttr', recordsUnavailable);
-itilRoutes.use('/metrics/mtbf', recordsUnavailable);
+// V2/V3 deliberately have no ITIL record tables. Check catalog metadata,
+// never probe record data or turn undefined-table errors into an existence leak.
+const recordTable = (name: 'itil_incidents' | 'itil_changes' | 'itil_baselines') =>
+  async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const result = await getPostgresClient().pool.query(
+        `SELECT EXISTS (
+          SELECT 1 FROM pg_attribute
+          WHERE attrelid = to_regclass($1) AND attname = 'organization_id' AND NOT attisdropped
+        ) AS available`,
+        [`public.${name}`]
+      );
+      if (!result.rows[0]?.available) {
+        res.status(503).json({ success: false, error: 'ITIL records unavailable' });
+        return;
+      }
+      next();
+    } catch {
+      res.status(503).json({ success: false, error: 'ITIL records unavailable' });
+    }
+  };
+itilRoutes.use('/incidents', recordTable('itil_incidents'));
+itilRoutes.use('/changes', recordTable('itil_changes'));
+itilRoutes.use('/baselines', recordTable('itil_baselines'));
+itilRoutes.use('/metrics/incident-summary', recordTable('itil_incidents'));
+itilRoutes.use('/metrics/change-success-rate', recordTable('itil_changes'));
+itilRoutes.use('/metrics/mttr', recordTable('itil_incidents'));
+itilRoutes.use('/metrics/mtbf', recordTable('itil_incidents'));
+
+// Malformed UUIDs must have the same not-found response as unknown record ids,
+// before any record lookup (and without surfacing PostgreSQL's cast error).
+const recordId = (kind: 'Incident' | 'Change' | 'Baseline') =>
+  (req: Request, res: Response, next: NextFunction): void => {
+    if (!/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(req.params['id'] ?? '')) {
+      res.status(404).json({ success: false, error: 'Not Found', message: `${kind} not found` });
+      return;
+    }
+    next();
+  };
+itilRoutes.use('/incidents/:id', recordId('Incident'));
+itilRoutes.use('/changes/:id', recordId('Change'));
+itilRoutes.use('/baselines/:id', recordId('Baseline'));
 
 // Validation schemas
 const updateLifecycleSchema = Joi.object({
@@ -76,9 +107,9 @@ const resolveIncidentSchema = Joi.object({
 });
 
 const createChangeSchema = Joi.object({
-  changeType: Joi.string().valid('STANDARD', 'NORMAL', 'EMERGENCY').required(),
+  changeType: Joi.string().valid('STANDARD', 'NORMAL', 'EMERGENCY', 'MAJOR').required(),
   description: Joi.string().required().min(10),
-  affectedCIIds: Joi.array().items(Joi.string()).min(1).required(),
+  affectedCIIds: Joi.array().items(Joi.string()).min(1).max(100).required(),
   requestedBy: Joi.string().required(),
   plannedStart: Joi.date().iso().required(),
   plannedDuration: Joi.number().integer().min(1).required(), // in minutes

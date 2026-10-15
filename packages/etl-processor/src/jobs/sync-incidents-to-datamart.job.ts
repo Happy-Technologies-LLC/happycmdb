@@ -149,6 +149,7 @@ async function processIncidents(
   // Get incidents updated since last sync
   const incidentsResult = await pool.query(
     `SELECT
+      organization_id,
       id,
       incident_number,
       title,
@@ -177,7 +178,7 @@ async function processIncidents(
       created_at,
       updated_at
     FROM itil_incidents
-    WHERE updated_at >= $1
+    WHERE updated_at >= $1 AND organization_id IS NOT NULL
     ORDER BY updated_at DESC`,
     [incrementalSince]
   );
@@ -260,6 +261,7 @@ async function processChanges(
   // Get changes updated since last sync
   const changesResult = await pool.query(
     `SELECT
+      organization_id,
       id,
       change_number,
       title,
@@ -284,7 +286,7 @@ async function processChanges(
       created_at,
       updated_at
     FROM itil_changes
-    WHERE updated_at >= $1
+    WHERE updated_at >= $1 AND organization_id IS NOT NULL
     ORDER BY updated_at DESC`,
     [incrementalSince]
   );
@@ -402,14 +404,17 @@ async function enrichIncident(incident: any): Promise<{
     const values: any[] = [];
     let paramIndex = 1;
 
+    // Legacy NULL-owner records have no authority for enrichment.
+    if (!incident.organization_id) return { enriched: false, errors };
     // Enrich with CI details if affected_ci_id is set
     if (incident.affected_ci_id) {
       const ciResult = await pool.query(
         `SELECT ci_key, ci_name, ci_type, bsm_attributes
          FROM cmdb.dim_ci
-         WHERE ci_id = $1 AND is_current = true
+         WHERE ci_id = $1 AND organization_id = $2
+           AND is_current = true AND org_backfilled = false
          LIMIT 1`,
-        [incident.affected_ci_id]
+        [incident.affected_ci_id, incident.organization_id]
       );
 
       if (ciResult.rows.length > 0) {
@@ -429,14 +434,15 @@ async function enrichIncident(incident: any): Promise<{
 
     // Update incident if enriched
     if (updates.length > 0) {
-      values.push(incident.id);
-      await pool.query(
+      values.push(incident.id, incident.organization_id);
+      const updated = await pool.query(
         `UPDATE itil_incidents
          SET ${updates.join(', ')},
              updated_at = NOW()
-         WHERE id = $${paramIndex}`,
+         WHERE id = $${paramIndex} AND organization_id = $${paramIndex + 1}`,
         values
       );
+      enriched = (updated.rowCount ?? 0) > 0;
 
       logger.debug('[SyncIncidentsToDatamart] Enriched incident', {
         incident_number: incident.incident_number,

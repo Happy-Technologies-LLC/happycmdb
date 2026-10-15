@@ -2,14 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * ITIL Service Manager Integration Tests
- *
- * Exercises the ITIL service-manager services against the shared integration
- * containers (Neo4j + TimescaleDB). CIs live as `:CI` nodes in Neo4j; business
- * services, incidents, changes and baselines live in the canonical Postgres
- * schema. Kafka is not part of the integration infrastructure, so the
- * event-streaming DiscoveryProducer used by the configuration-management
- * service is stubbed to a no-op.
+ * Exercises CI and risk services against shared integration containers.
+ * Unscoped standalone record writers must be rejected by HP1-S2 V1 guards;
+ * tenant-owned record operations live on the authenticated REST/GraphQL API.
+ * Kafka is not started, so event emission is stubbed.
  */
 
 import { getNeo4jClient, getPostgresClient, closeQueueManagerConnection } from '@cmdb/database';
@@ -115,19 +111,6 @@ describe('ITIL Service Manager Integration Tests', () => {
         return null;
       }
       return result.records[0].get('ci').properties as Record<string, unknown>;
-    } finally {
-      await session.close();
-    }
-  }
-
-  /** Set the itil_attributes JSON on an existing CI (simulates drift). */
-  async function setItilAttributes(ciId: string, itil: Record<string, unknown>): Promise<void> {
-    const session = getNeo4jClient().getSession();
-    try {
-      await session.run(
-        'MATCH (ci:CI {id: $ciId}) SET ci.itil_attributes = $itil, ci.updated_at = datetime()',
-        { ciId, itil: JSON.stringify(itil) }
-      );
     } finally {
       await session.close();
     }
@@ -297,47 +280,25 @@ describe('ITIL Service Manager Integration Tests', () => {
   });
 
   describe('Incident Priority Service', () => {
-    it('should create incident with calculated priority', async () => {
+    it('rejects an incident from the standalone writer without tenant authority', async () => {
       const ciId = `${CI_ID_PREFIX}inc-create`;
-      await seedCI({
-        id: ciId,
-        itilAttributes: { lifecycle_stage: 'operate' },
-        bsmAttributes: {
-          business_criticality: 'tier_1',
-          customer_count: 5000,
-          annual_revenue_supported: 1_000_000,
-        },
-      });
-
+      await seedCI({ id: ciId, itilAttributes: { lifecycle_stage: 'operate' },
+        bsmAttributes: { business_criticality: 'tier_1', customer_count: 5000 } });
       const service = new IncidentPriorityService();
-      const incident = await service.createIncident({
+      await expect(service.createIncident({
         affectedCIId: ciId,
         title: 'Database unavailable',
         description: 'Primary database is not responding',
-        reportedBy: 'oncall',
         category: 'availability',
         subcategory: 'database',
+        reportedBy: 'itil-itest-unowned',
         symptoms: ['timeouts'],
-      });
-
-      expect(incident.id).toBeTruthy();
-      expect(incident.incidentNumber).toMatch(/^INC-\d{8}-\d{4}$/);
-      expect(incident.affectedCiId).toBe(ciId);
-      expect(incident.status).toBe('new');
-      // Tier 1 CI -> critical impact.
-      expect(incident.impact).toBe('critical');
-      expect(incident.priority).toBeGreaterThanOrEqual(1);
-      expect(incident.priority).toBeLessThanOrEqual(5);
-
-      // Persisted.
-      const row = await getPostgresClient().query(
-        'SELECT id, impact FROM itil_incidents WHERE id = $1',
-        [incident.id]
-      );
-      expect(row.rows).toHaveLength(1);
-      expect(row.rows[0].impact).toBe('critical');
+      })).rejects.toMatchObject({ code: '23514' });
+      const rows = await getPostgresClient().query(
+        'SELECT COUNT(*)::int AS count FROM itil_incidents WHERE reported_by = $1',
+        ['itil-itest-unowned']);
+      expect(rows.rows[0].count).toBe(0);
     });
-
     it('should calculate priority based on affected business services', async () => {
       const ciId = `${CI_ID_PREFIX}inc-bsm`;
       // The CI itself is only tier_3; the dependent business service is tier_1
@@ -383,20 +344,11 @@ describe('ITIL Service Manager Integration Tests', () => {
   });
 
   describe('Change Risk Service', () => {
-    it('should assess change risk and create change', async () => {
+    it('rejects a change from the standalone writer without tenant authority', async () => {
       const ciId = `${CI_ID_PREFIX}chg-create`;
-      await seedCI({
-        id: ciId,
-        itilAttributes: { lifecycle_stage: 'operate' },
-        bsmAttributes: {
-          business_criticality: 'tier_2',
-          customer_count: 100,
-          annual_revenue_supported: 500_000,
-        },
-      });
-
+      await seedCI({ id: ciId, bsmAttributes: { business_criticality: 'tier_2', customer_count: 100 } });
       const service = new ChangeRiskService();
-      const change = await service.createChange({
+      await expect(service.createChange({
         affectedCIIds: [ciId],
         title: 'Upgrade database engine',
         description: 'Apply minor version upgrade',
@@ -407,24 +359,13 @@ describe('ITIL Service Manager Integration Tests', () => {
         implementationPlan: 'Run upgrade script',
         backoutPlan: 'Restore from snapshot',
         testPlan: 'Validate in staging',
-        requestedBy: 'change-mgr',
-      });
-
-      expect(change.id).toBeTruthy();
-      expect(change.changeNumber).toMatch(/^CHG-\d{8}-\d{4}$/);
-      expect(change.changeType).toBe('normal');
-      expect(change.affectedCiIds).toContain(ciId);
-      expect(change.riskAssessment).toHaveProperty('risk_level');
-      expect(['low', 'medium', 'high', 'very_high']).toContain(change.riskAssessment.risk_level);
-
-      // Persisted.
-      const row = await getPostgresClient().query(
-        'SELECT id FROM itil_changes WHERE id = $1',
-        [change.id]
-      );
-      expect(row.rows).toHaveLength(1);
+        requestedBy: 'itil-itest-unowned',
+      })).rejects.toMatchObject({ code: '23514' });
+      const rows = await getPostgresClient().query(
+        'SELECT COUNT(*)::int AS count FROM itil_changes WHERE requested_by = $1',
+        ['itil-itest-unowned']);
+      expect(rows.rows[0].count).toBe(0);
     });
-
     it('should determine CAB approval requirement', async () => {
       const ciId = `${CI_ID_PREFIX}chg-cab`;
       await seedCI({
@@ -459,86 +400,18 @@ describe('ITIL Service Manager Integration Tests', () => {
   });
 
   describe('Baseline Service', () => {
-    it('should create baseline and detect drift', async () => {
-      const ciId = `${CI_ID_PREFIX}bl-drift`;
-      await seedCI({
-        id: ciId,
-        status: 'active',
-        environment: 'production',
-        itilAttributes: {
-          lifecycle_stage: 'operate',
-          configuration_status: 'active',
-          version: '1.0.0',
-        },
-        bsmAttributes: { business_criticality: 'tier_2' },
-      });
-
+    it('rejects a baseline from the standalone writer without tenant authority', async () => {
+      const ciId = `${CI_ID_PREFIX}bl-create`;
+      const name = `${CI_ID_PREFIX}baseline-unowned`;
+      await seedCI({ id: ciId, status: 'active', environment: 'production',
+        itilAttributes: { lifecycle_stage: 'operate', version: '1.0.0' },
+        bsmAttributes: { business_criticality: 'tier_2' } });
       const service = new BaselineService();
-      const baseline = await service.createBaseline(
-        `${CI_ID_PREFIX}baseline-drift`,
-        [ciId],
-        'drift detection baseline',
-        'configuration',
-        BS_OWNER
-      );
-
-      expect(baseline.id).toBeTruthy();
-      expect(baseline.scope.ciIds).toContain(ciId);
-      expect(baseline.baselineData[ciId]).toBeDefined();
-
-      // Introduce drift: bump the version.
-      await setItilAttributes(ciId, {
-        lifecycle_stage: 'operate',
-        configuration_status: 'active',
-        version: '2.0.0',
-      });
-
-      const comparison = await service.compareToBaseline(baseline.id);
-      expect(comparison.totalDriftCount).toBe(1);
-      expect(comparison.driftPercentage).toBe(100);
-      expect(comparison.driftedCIs[0].ciId).toBe(ciId);
-      const driftedAttrs = comparison.driftedCIs[0].changedAttributes.map((c) => c.attribute);
-      expect(driftedAttrs).toContain('itil_attributes.version');
-    });
-
-    it('should restore CI from baseline', async () => {
-      const ciId = `${CI_ID_PREFIX}bl-restore`;
-      await seedCI({
-        id: ciId,
-        status: 'active',
-        environment: 'production',
-        itilAttributes: {
-          lifecycle_stage: 'operate',
-          configuration_status: 'active',
-          version: '1.0.0',
-        },
-        bsmAttributes: { business_criticality: 'tier_2' },
-      });
-
-      const service = new BaselineService();
-      const baseline = await service.createBaseline(
-        `${CI_ID_PREFIX}baseline-restore`,
-        [ciId],
-        'restore baseline',
-        'configuration',
-        BS_OWNER
-      );
-
-      // Drift the CI away from the baseline.
-      await setItilAttributes(ciId, {
-        lifecycle_stage: 'operate',
-        configuration_status: 'active',
-        version: '9.9.9',
-      });
-
-      const restored = await service.restoreFromBaseline(ciId, baseline.id, 'restorer');
-      expect(restored.id).toBe(ciId);
-      expect(restored.itil_attributes.version).toBe('1.0.0');
-
-      // Persisted back to the baseline value.
-      const persisted = await readCI(ciId);
-      const itil = JSON.parse(persisted!.itil_attributes as string);
-      expect(itil.version).toBe('1.0.0');
+      await expect(service.createBaseline(name, [ciId], 'Unowned baseline', 'configuration', BS_OWNER))
+        .rejects.toMatchObject({ code: '23514' });
+      const rows = await getPostgresClient().query(
+        'SELECT COUNT(*)::int AS count FROM itil_baselines WHERE name = $1', [name]);
+      expect(rows.rows[0].count).toBe(0);
     });
   });
 });

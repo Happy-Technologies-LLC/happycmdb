@@ -29,7 +29,7 @@ import { analyticsResolvers } from './analytics.resolver';
 import { connectorResolvers } from './connector.resolvers';
 import { connectorFieldResolvers } from './connector-fields.resolvers';
 import { reconciliationResolvers } from './reconciliation.resolvers';
-// ITIL record resolvers remain unavailable until HP1-S2 adds tenant ownership.
+import { itilRecordQueries, itilRecordMutations, itilNestedRecords } from './itil-record.resolvers';
 import type { TokenPayload } from '../../auth/types';
 import { checkGraphQLPermission } from '../../middleware/auth.middleware';
 import { requireGraphQLOrganization } from '../require-organization';
@@ -877,19 +877,25 @@ const CIResolvers = {
 };
 
 /** The ITIL GraphQL CI fields share the same organization boundary as REST. */
-async function itilCI(context: GraphQLContext, id: string, organizationId: string): Promise<Record<string, unknown>> {
+async function maybeITILCI(context: GraphQLContext, id: string, organizationId: string): Promise<Record<string, unknown> | null> {
   const session = context._neo4jClient.getSession();
   try {
     const result = await session.run(
       'MATCH (ci:CI {id: $id}) WHERE ci.organization_id = $organizationId RETURN ci',
       { id, organizationId }
     );
-    if (result.records.length === 0) throw ciNotFound();
+    if (result.records.length === 0) return null;
     const properties = result.records[0]!.get('ci').properties as CIValue;
     return { ...properties, ...toGraphQLCI(properties) };
   } finally {
     await session.close();
   }
+}
+
+async function itilCI(context: GraphQLContext, id: string, organizationId: string): Promise<Record<string, unknown>> {
+  const ci = await maybeITILCI(context, id, organizationId);
+  if (!ci) throw ciNotFound();
+  return ci;
 }
 
 async function itilHistory(context: GraphQLContext, id: string, limit: number) {
@@ -1022,27 +1028,7 @@ const itilCIMutations = {
     updateITILCI(context, args.id, { itil_audit_status: args.auditStatus, itil_last_audited: neo4j.types.DateTime.fromStandardDate(new Date()),
       itil_audit_findings: args.findings ?? null, itil_audit_completed_by: args.completedBy }),
 };
-const itilRecordsUnavailable = (): never => {
-  throw new GraphQLError('ITIL records unavailable', { extensions: { code: 'FORBIDDEN' } });
-};
-const itilRecordQueries = {
-  incidents: itilRecordsUnavailable,
-  incident: itilRecordsUnavailable,
-  incidentMetrics: itilRecordsUnavailable,
-  changes: itilRecordsUnavailable,
-  change: itilRecordsUnavailable,
-  changeMetrics: itilRecordsUnavailable,
-};
-const itilRecordMutations = {
-  createIncident: itilRecordsUnavailable,
-  updateIncident: itilRecordsUnavailable,
-  resolveIncident: itilRecordsUnavailable,
-  createChange: itilRecordsUnavailable,
-  updateChange: itilRecordsUnavailable,
-  approveChange: itilRecordsUnavailable,
-  implementChange: itilRecordsUnavailable,
-  closeChange: itilRecordsUnavailable,
-};
+
 
 /**
  * Export all resolvers
@@ -1063,6 +1049,29 @@ export const resolvers = {
     ...itilCIMutations,
     ...itilRecordMutations,
   },
+  Incident: {
+    affectedCI: (parent: { affectedCIId: string }, _args: unknown, context: GraphQLContext) =>
+      maybeITILCI(context, parent.affectedCIId, requireGraphQLOrganization(context)),
+  },
+  Change: {
+    affectedCIs: async (parent: { affectedCIIds: string[] }, _args: unknown, context: GraphQLContext) => {
+      const organizationId = requireGraphQLOrganization(context);
+      const uniqueIds = [...new Set(parent.affectedCIIds)];
+      if (uniqueIds.length > 100) {
+        throw new GraphQLError('Change has more than 100 distinct affected CIs',
+          { extensions: { code: 'BAD_USER_INPUT' } });
+      }
+      const cis = new Map<string, Record<string, unknown> | null>();
+      let next = 0;
+      await Promise.all(Array.from({ length: Math.min(8, uniqueIds.length) }, async () => {
+        while (next < uniqueIds.length) {
+          const id = uniqueIds[next++]!;
+          cis.set(id, await maybeITILCI(context, id, organizationId));
+        }
+      }));
+      return parent.affectedCIIds.map(id => cis.get(id) ?? null);
+    },
+  },
   CI: {
     ...CIResolvers,
     itilAttributes: async (parent: { _id: string }, _args: unknown, context: GraphQLContext) => {
@@ -1077,8 +1086,14 @@ export const resolvers = {
     },
     history: (parent: { _id: string }, args: { limit?: number }, context: GraphQLContext) =>
       itilHistory(context, parent._id, args.limit ?? GRAPHQL_PAGE_DEFAULTS.history),
-    incidents: itilRecordsUnavailable,
-    changes: itilRecordsUnavailable,
+    incidents: async (parent: { _id: string }, args: { status?: string; limit?: number }, context: GraphQLContext) => {
+      await itilCI(context, parent._id, requireGraphQLOrganization(context));
+      return itilNestedRecords.incidents(parent._id, args, context);
+    },
+    changes: async (parent: { _id: string }, args: { status?: string; limit?: number }, context: GraphQLContext) => {
+      await itilCI(context, parent._id, requireGraphQLOrganization(context));
+      return itilNestedRecords.changes(parent._id, args, context);
+    },
   },
   JSON: JSONScalar,
   AnalyticsQuery: analyticsResolvers.AnalyticsQuery,

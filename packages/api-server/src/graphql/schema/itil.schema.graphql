@@ -106,7 +106,8 @@ type CIHistoryEvent {
 type Incident {
   id: ID!
   incidentNumber: String!
-  affectedCI: CI!
+  """Null if the referenced CI was removed after the incident was recorded."""
+  affectedCI: CI
   description: String!
   reportedBy: String!
   reportedAt: String!
@@ -147,6 +148,8 @@ enum IncidentStatus {
   IN_PROGRESS
   RESOLVED
   CLOSED
+  PENDING
+  CANCELLED
 }
 
 """Business service impacted by incidents/changes"""
@@ -178,7 +181,8 @@ type Change {
   changeNumber: String!
   changeType: ChangeType!
   description: String!
-  affectedCIs: [CI!]!
+  """Preserves affected CI positions; missing or no-longer-owned CIs are null."""
+  affectedCIs: [CI]!
   requestedBy: String!
   requestedAt: String!
   plannedStart: String!
@@ -202,6 +206,7 @@ enum ChangeType {
   STANDARD
   NORMAL
   EMERGENCY
+  MAJOR
 }
 
 """Change status values"""

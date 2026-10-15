@@ -11,6 +11,22 @@ This package provides comprehensive ITIL v4 service management capabilities for 
 - **Change Management**: Risk assessment with CAB approval workflows
 - **Baseline Management**: Configuration drift detection and remediation
 
+**HP1-S2 tenant boundary:** This standalone package has no authenticated
+organization context. Its incident/change/baseline repositories are **not
+tenant-safe** for record reads; migration `035` rejects their unowned writes.
+Use the mounted authenticated `/itil` REST or GraphQL record API instead. Baseline
+restore remains unavailable until journal/fence admission in HP1-S4.
+
+The mounted change API accepts at most 100 affected CI IDs per new change.
+GraphQL `REQUESTED` lists include both persisted `draft` and
+`pending_approval`; `MAJOR` is a supported persisted change type. Historical
+incident/change records remain readable if an affected CI disappears:
+`Incident.affectedCI` is nullable, and `Change.affectedCIs` retains each
+position with null for a missing or no-longer-owned CI. Existing changes with
+more than 100 *distinct* affected CI IDs return `BAD_USER_INPUT` when that
+GraphQL field is selected; repeated IDs are resolved once per distinct ID,
+with at most eight graph lookups in flight.
+
 ## Features
 
 ### Configuration Management
@@ -41,11 +57,9 @@ This package provides comprehensive ITIL v4 service management capabilities for 
 
 ### Baseline Management
 
-- ✅ Configuration baseline creation
-- ✅ Drift detection and comparison
-- ✅ Severity and compliance scoring
-- ✅ CI restoration from baseline
-- ✅ Baseline approval workflows
+Tenant-owned baseline create/read/compare/delete are available through the
+authenticated REST API. Direct standalone baseline access has no tenant
+authority; its restore method refuses before any data access or CI mutation.
 
 ## Installation
 
@@ -129,10 +143,6 @@ console.log(`Estimated users affected: ${priority.estimatedUserImpact}`);
 console.log(`Estimated revenue at risk: $${priority.estimatedRevenueImpact}`);
 console.log(`Requires escalation: ${priority.requiresEscalation}`);
 console.log(`Response team: ${priority.recommendedResponseTeam.join(', ')}`);
-
-// Create incident with calculated priority
-const incident = await incidentService.createIncident(incidentInput);
-console.log(`Incident created: ${incident.incidentNumber}`);
 ```
 
 ### Priority Matrix
@@ -189,75 +199,14 @@ console.log('\nRecommendations:');
 riskAssessment.recommendations.forEach((rec, i) => {
   console.log(`  ${i + 1}. ${rec}`);
 });
-
-// Create change with risk assessment
-const change = await changeService.createChange(changeRequest);
-console.log(`Change created: ${change.changeNumber}`);
 ```
 
 ### Baseline Management
 
-```typescript
-import { BaselineService } from '@cmdb/itil-service-manager';
-
-// Initialize service
-const baselineService = new BaselineService();
-
-// Create configuration baseline
-const baseline = await baselineService.createBaseline(
-  'Production Q4 2025',
-  ['ci-web-001', 'ci-db-001', 'ci-lb-001'],
-  'Quarterly production configuration baseline',
-  'configuration',
-  'admin@example.com'
-);
-
-console.log(`Baseline created: ${baseline.name}`);
-
-// Compare current state to baseline (detect drift)
-const comparison = await baselineService.compareToBaseline(baseline.id);
-
-console.log(`Total CIs: ${baseline.scope.ciIds.length}`);
-console.log(`Drifted CIs: ${comparison.totalDriftCount}`);
-console.log(`Drift Percentage: ${comparison.driftPercentage.toFixed(2)}%`);
-console.log(`Compliance Score: ${comparison.complianceScore.toFixed(2)}%`);
-
-// Review drifted CIs
-if (comparison.driftedCIs.length > 0) {
-  console.log('\nConfiguration Drift Detected:');
-  comparison.driftedCIs.forEach((drift) => {
-    console.log(`\n  CI: ${drift.ciName} (${drift.ciId})`);
-    console.log(`  Severity: ${drift.severity}`);
-    console.log(`  Changes:`);
-    drift.changedAttributes.forEach((change) => {
-      console.log(`    - ${change.attribute}:`);
-      console.log(`      Baseline: ${JSON.stringify(change.baselineValue)}`);
-      console.log(`      Current:  ${JSON.stringify(change.currentValue)}`);
-    });
-  });
-}
-
-// Restore CI from baseline
-const restoredCI = await baselineService.restoreFromBaseline(
-  'ci-web-001',
-  baseline.id,
-  'admin@example.com'
-);
-
-// Approve baseline
-const approvedBaseline = await baselineService.approveBaseline(
-  baseline.id,
-  'manager@example.com'
-);
-
-// Get compliance summary across all baselines
-const summary = await baselineService.getComplianceSummary();
-console.log(`\nCompliance Summary:`);
-console.log(`  Total Baselines: ${summary.totalBaselines}`);
-console.log(`  Compliant CIs: ${summary.compliantCIs}`);
-console.log(`  Drifted CIs: ${summary.driftedCIs}`);
-console.log(`  Average Compliance: ${summary.averageComplianceScore.toFixed(2)}%`);
-```
+Use `/itil/baselines` through the authenticated API for tenant-scoped baseline
+creation and comparison. The standalone `BaselineService` has no trusted
+organization context and must not be used to access tenant records. Baseline
+restore is unavailable until HP1-S4 journal/fence admission.
 
 ### Utility Classes
 

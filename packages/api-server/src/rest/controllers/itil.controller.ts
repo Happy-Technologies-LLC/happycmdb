@@ -2,35 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Request, Response } from 'express';
-import { getNeo4jClient, getPostgresClient, UNSCOPED_CI_ACCESS } from '@cmdb/database';
+import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
 import { logger, ciIncarnationId } from '@cmdb/common';
 import { v4 as uuidv4 } from 'uuid';
 import neo4j, { type Integer } from 'neo4j-driver';
 import { requestOrganizationId } from '../../middleware/auth.middleware';
 
-/** Shape of a Neo4j Integer once it has round-tripped through JSON (JS numbers cannot hold a full 64-bit int, so the driver represents one as `{ low, high }`). */
-type Neo4jIntegerLike = { low: number; high: number };
-
-function isNeo4jIntegerLike(value: Record<string, unknown>): value is Neo4jIntegerLike {
-  return (
-    typeof value['low'] === 'number' &&
-    typeof value['high'] === 'number' &&
-    Object.keys(value).length === 2
-  );
-}
-
-// Coerces a Neo4j temporal field (a plain number, or an Integer-shaped
-// `{ low, high }` object after a JSON round-trip) to a number, defaulting
-// missing fields (e.g. `hour` on a Date-only value) to zero. Shared by every
-// field of `sanitizeBaselineValue`'s DateTime conversion, which must treat
-// year/month/day/hour/minute/second/nanosecond identically.
-function toIntegerlikeNumber(value: unknown): number {
-  if (value === undefined || value === null) return 0;
-  if (typeof value === 'object' && isNeo4jIntegerLike(value as Record<string, unknown>)) {
-    return neo4j.integer.toNumber(value as Neo4jIntegerLike);
-  }
-  return Number(value);
-}
 
 /**
  * ITIL Controller
@@ -39,12 +16,8 @@ function toIntegerlikeNumber(value: unknown): number {
  * - Configuration Management (lifecycle, status, audit)
  * - Incident Management (priority calculation, resolution)
  * - Change Management (risk assessment, approval workflow)
- * - Configuration Baselines (snapshot, comparison, restoration)
+ * - Configuration Baselines (snapshot, comparison; restore awaits journal admission)
  * - ITIL Metrics (accuracy, MTTR, MTBF, change success rate)
- *
- * NOTE: This controller provides REST API endpoints. The actual business logic
- * will be implemented by Agent 5 in the @cmdb/itil-service-manager package.
- * For now, we implement the API contract with placeholder logic.
  */
 export class ITILController {
   private neo4jClient = getNeo4jClient();
@@ -433,7 +406,7 @@ export class ITILController {
       const { affectedCIId, description, reportedBy, detectedAt } = req.body;
 
       // Verify CI exists
-      const ci = await this.neo4jClient.getCI(affectedCIId, UNSCOPED_CI_ACCESS);
+      const ci = await this.neo4jClient.getCI(affectedCIId, requestOrganizationId(req));
       if (!ci) {
         res.status(404).json({
           success: false,
@@ -448,7 +421,7 @@ export class ITILController {
       const priority = this.calculateBasicPriority(ci);
 
       const incidentUuid = uuidv4();
-      const incidentNumber = `INC-${Date.now()}`;
+      const incidentNumber = `INC-${incidentUuid}`;
       const title = description.length > 500 ? `${description.slice(0, 497)}...` : description;
       const pool = this.postgresClient.pool;
 
@@ -456,9 +429,9 @@ export class ITILController {
         `
         INSERT INTO itil_incidents (
           id, incident_number, title, description, affected_ci_id,
-          reported_by, reported_at, priority, impact, urgency, status
+          reported_by, reported_at, priority, impact, urgency, status, organization_id
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
         RETURNING *
         `,
         [
@@ -473,6 +446,7 @@ export class ITILController {
           priority.impact,
           priority.urgency,
           'new',
+          requestOrganizationId(req),
         ]
       );
 
@@ -497,9 +471,9 @@ export class ITILController {
       const { status, priority, affectedCIId, page = 1, limit = 50 } = req.query;
 
       const pool = this.postgresClient.pool;
-      const conditions: string[] = [];
-      const params: any[] = [];
-      let paramIndex = 1;
+      const conditions: string[] = ['organization_id = $1'];
+      const params: unknown[] = [requestOrganizationId(req)];
+      let paramIndex = 2;
 
       if (status) {
         conditions.push(`status = $${paramIndex++}`);
@@ -565,15 +539,15 @@ export class ITILController {
 
       const pool = this.postgresClient.pool;
       const result = await pool.query(
-        'SELECT * FROM itil_incidents WHERE id = $1',
-        [id]
+        'SELECT * FROM itil_incidents WHERE id = $1 AND organization_id = $2',
+        [id, requestOrganizationId(req)]
       );
 
       if (result.rows.length === 0) {
         res.status(404).json({
           success: false,
           error: 'Not Found',
-          message: `Incident with ID '${id}' not found`,
+          message: 'Incident not found',
         });
         return;
       }
@@ -625,13 +599,13 @@ export class ITILController {
         return;
       }
 
-      params.push(id);
+      params.push(id, requestOrganizationId(req));
       const pool = this.postgresClient.pool;
       const result = await pool.query(
         `
         UPDATE itil_incidents
         SET ${updates.join(', ')}
-        WHERE id = $${paramIndex}
+        WHERE id = $${paramIndex} AND organization_id = $${paramIndex + 1}
         RETURNING *
         `,
         params
@@ -641,7 +615,7 @@ export class ITILController {
         res.status(404).json({
           success: false,
           error: 'Not Found',
-          message: `Incident with ID '${id}' not found`,
+          message: 'Incident not found',
         });
         return;
       }
@@ -674,17 +648,17 @@ export class ITILController {
             resolution = $1,
             resolved_at = NOW(),
             updated_at = NOW()
-        WHERE id = $2
+        WHERE id = $2 AND organization_id = $3
         RETURNING *
         `,
-        [resolution, id]
+        [resolution, id, requestOrganizationId(req)]
       );
 
       if (result.rows.length === 0) {
         res.status(404).json({
           success: false,
           error: 'Not Found',
-          message: `Incident with ID '${id}' not found`,
+          message: 'Incident not found',
         });
         return;
       }
@@ -710,15 +684,15 @@ export class ITILController {
 
       const pool = this.postgresClient.pool;
       const result = await pool.query(
-        'SELECT priority, impact, urgency FROM itil_incidents WHERE id = $1',
-        [id]
+        'SELECT priority, impact, urgency FROM itil_incidents WHERE id = $1 AND organization_id = $2',
+        [id, requestOrganizationId(req)]
       );
 
       if (result.rows.length === 0) {
         res.status(404).json({
           success: false,
           error: 'Not Found',
-          message: `Incident with ID '${id}' not found`,
+          message: 'Incident not found',
         });
         return;
       }
@@ -755,9 +729,15 @@ export class ITILController {
         testPlan = '',
       } = req.body;
 
+      // The GraphQL mutation calls this controller directly, bypassing REST's Joi schema.
+      if (!Array.isArray(affectedCIIds) || affectedCIIds.length < 1 || affectedCIIds.length > 100) {
+        res.status(400).json({ success: false, error: 'Affected CI IDs must contain 1 to 100 entries' });
+        return;
+      }
+
       // Verify all affected CIs exist
       for (const ciId of affectedCIIds) {
-        const ci = await this.neo4jClient.getCI(ciId, UNSCOPED_CI_ACCESS);
+        const ci = await this.neo4jClient.getCI(ciId, requestOrganizationId(req));
         if (!ci) {
           res.status(404).json({
             success: false,
@@ -769,7 +749,7 @@ export class ITILController {
       }
 
       const changeUuid = uuidv4();
-      const changeNumber = `CHG-${Date.now()}`;
+      const changeNumber = `CHG-${changeUuid}`;
       const title = description.length > 500 ? `${description.slice(0, 497)}...` : description;
       const scheduledStart = new Date(plannedStart);
       const scheduledEnd = new Date(scheduledStart.getTime() + plannedDuration * 60000);
@@ -781,9 +761,9 @@ export class ITILController {
           id, change_number, title, description, change_type,
           affected_ci_ids, requested_by,
           scheduled_start, scheduled_end, status,
-          implementation_plan, backout_plan, test_plan
+          implementation_plan, backout_plan, test_plan, organization_id
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
         RETURNING *
         `,
         [
@@ -800,6 +780,7 @@ export class ITILController {
           implementationPlan,
           backoutPlan,
           testPlan,
+          requestOrganizationId(req),
         ]
       );
 
@@ -823,13 +804,17 @@ export class ITILController {
       const { status, changeType, requestedBy, page = 1, limit = 50 } = req.query;
 
       const pool = this.postgresClient.pool;
-      const conditions: string[] = [];
-      const params: any[] = [];
-      let paramIndex = 1;
+      const conditions: string[] = ['organization_id = $1'];
+      const params: unknown[] = [requestOrganizationId(req)];
+      let paramIndex = 2;
 
       if (status) {
-        conditions.push(`status = $${paramIndex++}`);
-        params.push(String(status).toLowerCase());
+        if (String(status).toLowerCase() === 'requested') {
+          conditions.push(`status IN ('draft', 'pending_approval')`);
+        } else {
+          conditions.push(`status = $${paramIndex++}`);
+          params.push(String(status).toLowerCase());
+        }
       }
       if (changeType) {
         conditions.push(`change_type = $${paramIndex++}`);
@@ -891,15 +876,15 @@ export class ITILController {
 
       const pool = this.postgresClient.pool;
       const result = await pool.query(
-        'SELECT * FROM itil_changes WHERE id = $1',
-        [id]
+        'SELECT * FROM itil_changes WHERE id = $1 AND organization_id = $2',
+        [id, requestOrganizationId(req)]
       );
 
       if (result.rows.length === 0) {
         res.status(404).json({
           success: false,
           error: 'Not Found',
-          message: `Change with ID '${id}' not found`,
+          message: 'Change not found',
         });
         return;
       }
@@ -951,13 +936,13 @@ export class ITILController {
         return;
       }
 
-      params.push(id);
+      params.push(id, requestOrganizationId(req));
       const pool = this.postgresClient.pool;
       const result = await pool.query(
         `
         UPDATE itil_changes
         SET ${updates.join(', ')}
-        WHERE id = $${paramIndex}
+        WHERE id = $${paramIndex} AND organization_id = $${paramIndex + 1}
         RETURNING *
         `,
         params
@@ -967,7 +952,7 @@ export class ITILController {
         res.status(404).json({
           success: false,
           error: 'Not Found',
-          message: `Change with ID '${id}' not found`,
+          message: 'Change not found',
         });
         return;
       }
@@ -993,15 +978,15 @@ export class ITILController {
 
       const pool = this.postgresClient.pool;
       const result = await pool.query(
-        'SELECT * FROM itil_changes WHERE id = $1',
-        [id]
+        'SELECT * FROM itil_changes WHERE id = $1 AND organization_id = $2',
+        [id, requestOrganizationId(req)]
       );
 
       if (result.rows.length === 0) {
         res.status(404).json({
           success: false,
           error: 'Not Found',
-          message: `Change with ID '${id}' not found`,
+          message: 'Change not found',
         });
         return;
       }
@@ -1036,17 +1021,17 @@ export class ITILController {
         UPDATE itil_changes
         SET status = 'approved',
             updated_at = NOW()
-        WHERE id = $1
+        WHERE id = $1 AND organization_id = $2
         RETURNING *
         `,
-        [id]
+        [id, requestOrganizationId(req)]
       );
 
       if (result.rows.length === 0) {
         res.status(404).json({
           success: false,
           error: 'Not Found',
-          message: `Change with ID '${id}' not found`,
+          message: 'Change not found',
         });
         return;
       }
@@ -1078,17 +1063,17 @@ export class ITILController {
             actual_start = COALESCE(actual_start, NOW()),
             actual_end = NOW(),
             updated_at = NOW()
-        WHERE id = $1
+        WHERE id = $1 AND organization_id = $2
         RETURNING *
         `,
-        [id]
+        [id, requestOrganizationId(req)]
       );
 
       if (result.rows.length === 0) {
         res.status(404).json({
           success: false,
           error: 'Not Found',
-          message: `Change with ID '${id}' not found`,
+          message: 'Change not found',
         });
         return;
       }
@@ -1132,17 +1117,17 @@ export class ITILController {
             closure_notes = $2,
             closed_at = NOW(),
             updated_at = NOW()
-        WHERE id = $3
+        WHERE id = $3 AND organization_id = $4
         RETURNING *
         `,
-        [outcome, notes, id]
+        [outcome, notes, id, requestOrganizationId(req)]
       );
 
       if (result.rows.length === 0) {
         res.status(404).json({
           success: false,
           error: 'Not Found',
-          message: `Change with ID '${id}' not found`,
+          message: 'Change not found',
         });
         return;
       }
@@ -1360,122 +1345,20 @@ export class ITILController {
   async restoreFromBaseline(req: Request, res: Response): Promise<void> {
     try {
       const { id } = req.params;
-      const { ciId, restoreAttributes, performedBy } = req.body;
-      const organizationId = requestOrganizationId(req);
-
-      const pool = this.postgresClient.pool;
-      const baselineResult = await pool.query(
-        'SELECT * FROM itil_baselines WHERE id = $1 AND organization_id = $2',
-        [id, organizationId]
+      const result = await this.postgresClient.pool.query(
+        'SELECT id FROM itil_baselines WHERE id = $1 AND organization_id = $2',
+        [id, requestOrganizationId(req)]
       );
-
-      if (baselineResult.rows.length === 0) {
-        res.status(404).json({
-          success: false,
-          error: 'Not Found',
-          message: 'Baseline not found',
-        });
+      if (result.rows.length === 0) {
+        res.status(404).json({ success: false, error: 'Not Found', message: 'Baseline not found' });
         return;
       }
-
-      const baseline = baselineResult.rows[0];
-      const snapshot = baseline.baseline_data ? baseline.baseline_data[ciId] : undefined;
-
-      if (!snapshot) {
-        res.status(404).json({
-          success: false,
-          error: 'Not Found',
-          message: `No snapshot for CI '${ciId}' in baseline '${id}'`,
-        });
-        return;
-      }
-
-      const attributeKeys: string[] =
-        Array.isArray(restoreAttributes) && restoreAttributes.length > 0
-          ? restoreAttributes
-          : Object.keys(snapshot);
-
-      const restoreProps: Record<string, any> = {};
-      let discoveredAtValue: string | null = null;
-      const restoredFieldNames: string[] = [];
-
-      for (const key of attributeKeys) {
-        if (!Object.prototype.hasOwnProperty.call(snapshot, key)) continue;
-
-        // baseline_data snapshots retain Neo4j's underscore-prefixed field
-        // names (e.g. `_type`, `_status`, `_created_at`); strip the prefix so
-        // the restored value lands on the CI node's real property instead of
-        // creating a stray `_`-prefixed one.
-        const cleanKey = key.startsWith('_') ? key.substring(1) : key;
-        // `id` is immutable, and `updated_at` is always stamped with the
-        // current restore time below, so neither is settable from a snapshot.
-        // `organization_id` is written only from the token organization (or
-        // the backfill): a restore never changes which organization owns a CI.
-        // `created_at` is when the node was created: the ETL relies on it
-        // (migration 011), so a snapshot never rewrites it.
-        if (cleanKey === 'id' || cleanKey === 'updated_at' || cleanKey === 'organization_id'
-          || cleanKey === 'created_at' || cleanKey === 'incarnation_id') {
-          continue;
-        }
-
-        const value = this.sanitizeBaselineValue(snapshot[key]);
-        if (value === undefined) continue;
-
-        if (cleanKey === 'discovered_at') {
-          discoveredAtValue = typeof value === 'string' ? value : String(value);
-        } else {
-          restoreProps[cleanKey] = value;
-        }
-        restoredFieldNames.push(cleanKey);
-      }
-
-      const session = this.neo4jClient.getSession();
-      try {
-        const result = await session.run(
-          `
-          MATCH (ci:CI {id: $ciId})
-          WHERE ci.organization_id = $organizationId
-          SET ci += $restoreProps
-          SET ci.discovered_at = coalesce(datetime($discoveredAt), ci.discovered_at)
-          SET ci.updated_at = datetime()
-          RETURN ci
-          `,
-          { ciId, organizationId, restoreProps, discoveredAt: discoveredAtValue }
-        );
-
-        if (result.records.length === 0) {
-          res.status(404).json({
-            success: false,
-            error: 'Not Found',
-            message: 'Configuration item not found',
-          });
-          return;
-        }
-
-        const ci = this.convertNeo4jCI(result.records[0]!.get('ci').properties);
-
-        logger.info('Baseline restored to CI', {
-          baselineId: id,
-          ciId,
-          performedBy,
-          restoredFields: restoredFieldNames,
-        });
-
-        res.json({
-          success: true,
-          data: ci,
-          message: `Restored ${restoredFieldNames.length} attribute(s) from baseline '${id}' to CI '${ciId}'`,
-        });
-      } finally {
-        await session.close();
-      }
+      // S4 owns journaled CI mutations. Direct graph restore cannot safely
+      // apply baseline_data until the fenced admission contract is installed.
+      res.status(503).json({ success: false, error: 'Baseline restore unavailable' });
     } catch (error) {
       logger.error('Error restoring from baseline', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to restore from baseline',
-        message: error instanceof Error ? error.message : 'Unknown error',
-      });
+      res.status(500).json({ success: false, error: 'Failed to restore from baseline' });
     }
   }
 
@@ -1520,7 +1403,7 @@ export class ITILController {
     }
   }
 
-  async getIncidentSummary(_req: Request, res: Response): Promise<void> {
+  async getIncidentSummary(req: Request, res: Response): Promise<void> {
     try {
       const pool = this.postgresClient.pool;
       const result = await pool.query(`
@@ -1529,9 +1412,10 @@ export class ITILController {
           priority,
           COUNT(*) as count
         FROM itil_incidents
+        WHERE organization_id = $1
         GROUP BY status, priority
         ORDER BY priority, status
-      `);
+      `, [requestOrganizationId(req)]);
 
       res.json({
         success: true,
@@ -1547,7 +1431,7 @@ export class ITILController {
     }
   }
 
-  async getChangeSuccessRate(_req: Request, res: Response): Promise<void> {
+  async getChangeSuccessRate(req: Request, res: Response): Promise<void> {
     try {
       const pool = this.postgresClient.pool;
       const result = await pool.query(`
@@ -1555,12 +1439,12 @@ export class ITILController {
           COUNT(*) FILTER (WHERE outcome = 'successful') as successful_changes,
           COUNT(*) FILTER (WHERE status = 'closed') as total_closed_changes
         FROM itil_changes
-        WHERE status = 'closed'
-      `);
+        WHERE status = 'closed' AND organization_id = $1
+      `, [requestOrganizationId(req)]);
 
       const successfulChanges = parseInt(result.rows[0]?.successful_changes || '0');
-      const totalClosedChanges = parseInt(result.rows[0]?.total_closed_changes || '1');
-      const successRate = (successfulChanges / totalClosedChanges) * 100;
+      const totalClosedChanges = parseInt(result.rows[0]?.total_closed_changes || '0');
+      const successRate = totalClosedChanges ? (successfulChanges / totalClosedChanges) * 100 : 0;
 
       res.json({
         success: true,
@@ -1580,16 +1464,16 @@ export class ITILController {
     }
   }
 
-  async getMeanTimeToResolve(_req: Request, res: Response): Promise<void> {
+  async getMeanTimeToResolve(req: Request, res: Response): Promise<void> {
     try {
       const pool = this.postgresClient.pool;
       const result = await pool.query(`
         SELECT
           AVG(EXTRACT(EPOCH FROM (resolved_at - reported_at))/3600) as mttr_hours
         FROM itil_incidents
-        WHERE status = 'resolved'
+        WHERE organization_id = $1 AND status = 'resolved'
         AND resolved_at IS NOT NULL
-      `);
+      `, [requestOrganizationId(req)]);
 
       const mttrHours = parseFloat(result.rows[0]?.mttr_hours || '0');
 
@@ -1610,7 +1494,7 @@ export class ITILController {
     }
   }
 
-  async getMeanTimeBetweenFailures(_req: Request, res: Response): Promise<void> {
+  async getMeanTimeBetweenFailures(req: Request, res: Response): Promise<void> {
     try {
       const pool = this.postgresClient.pool;
 
@@ -1621,12 +1505,13 @@ export class ITILController {
             affected_ci_id,
             reported_at - LAG(reported_at) OVER (PARTITION BY affected_ci_id ORDER BY reported_at) as gap
           FROM itil_incidents
+          WHERE organization_id = $1
         )
         SELECT
           AVG(EXTRACT(EPOCH FROM gap)/3600) as mtbf_hours
         FROM incident_gaps
         WHERE gap IS NOT NULL
-      `);
+      `, [requestOrganizationId(req)]);
 
       const mtbfHours = parseFloat(result.rows[0]?.mtbf_hours || '0');
 
@@ -1664,59 +1549,6 @@ export class ITILController {
     return converted;
   }
 
-  /**
-   * Convert a baseline_data snapshot value into a Neo4j-settable primitive
-   * (or array of primitives). CI snapshots captured by createBaseline hold
-   * live `getCI()` property values, which include Neo4j temporal/Integer
-   * types; once round-tripped through Postgres JSONB storage they arrive
-   * here as plain objects shaped like `{ low, high }` (Integer) or
-   * `{ year, month, day, ... }` (DateTime/Date). Cypher's `SET node += $map`
-   * rejects any map value that isn't a primitive or array of primitives, so
-   * those shapes -- and any other nested object such as `metadata` -- must
-   * be converted before the SET, the same way createCI/updateCI already
-   * stringify `metadata` and wrap ISO date strings in `datetime()`.
-   */
-  private sanitizeBaselineValue(value: unknown): unknown {
-    if (value === null || value === undefined) {
-      return value;
-    }
-
-    if (Array.isArray(value)) {
-      const isPrimitiveArray = value.every(
-        (item) => item === null || ['string', 'number', 'boolean'].includes(typeof item)
-      );
-      return isPrimitiveArray ? value : JSON.stringify(value);
-    }
-
-    if (typeof value === 'object') {
-      const record = value as Record<string, unknown>;
-
-      // Neo4j Integer shape: { low, high }
-      if (isNeo4jIntegerLike(record)) {
-        return neo4j.integer.toNumber(record);
-      }
-
-      // Neo4j DateTime/Date/LocalDateTime shape: { year, month, day, ... }
-      if (record['year'] !== undefined && record['month'] !== undefined && record['day'] !== undefined) {
-        const year = toIntegerlikeNumber(record['year']);
-        const month = String(toIntegerlikeNumber(record['month'])).padStart(2, '0');
-        const day = String(toIntegerlikeNumber(record['day'])).padStart(2, '0');
-        const hour = String(toIntegerlikeNumber(record['hour'])).padStart(2, '0');
-        const minute = String(toIntegerlikeNumber(record['minute'])).padStart(2, '0');
-        const second = String(toIntegerlikeNumber(record['second'])).padStart(2, '0');
-        const nanosecond = toIntegerlikeNumber(record['nanosecond']);
-        const millisecond = String(Math.floor(nanosecond / 1000000)).padStart(3, '0');
-        return `${year}-${month}-${day}T${hour}:${minute}:${second}.${millisecond}Z`;
-      }
-
-      // Any other nested object (e.g. `metadata`) - Neo4j properties cannot
-      // hold maps, so persist it the same way createCI/updateCI do: as a
-      // JSON string.
-      return JSON.stringify(value);
-    }
-
-    return value;
-  }
 
   private calculateBasicPriority(ci: any): any {
     // Basic priority calculation based on CI type and environment

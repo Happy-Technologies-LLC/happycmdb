@@ -13,6 +13,10 @@ BEGIN
      WHERE migration_name = '033_public_business_service_audit_acl.sql') THEN
     RAISE EXCEPTION '033 down requires its migration ledger row';
   END IF;
+  IF EXISTS (SELECT 1 FROM cmdb.schema_migrations
+             WHERE migration_name = '034_history_sequence_discovery_acl.sql') THEN
+    RAISE EXCEPTION '033 down refused: 034 migration still recorded';
+  END IF;
   FOR item IN SELECT * FROM (VALUES
     ('public.dim_business_services', 'r'),
     ('public.business_service_dependencies', 'r'),
@@ -59,8 +63,9 @@ BEGIN
   END IF;
 END
 $acl$;
--- Restore only 001's cmdb grants on the 001 schema. Never open newer
--- reconciliation journals; the standalone V3 init had no PUBLIC cmdb SELECT.
+-- Restore only 001's cmdb grants on the 001 schema. Older standalone V3
+-- initializers did grant PUBLIC cmdb SELECT; that legacy path stays intentionally
+-- closed on rollback rather than reinstating an unsafe blanket grant.
 DO $acl$
 BEGIN
   IF to_regprocedure('cmdb.fn_business_service_health(uuid)') IS NOT NULL THEN

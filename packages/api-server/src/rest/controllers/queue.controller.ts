@@ -15,7 +15,7 @@ import { Request, Response } from 'express';
 import { getQueueManager, QUEUE_NAMES, logger } from '@cmdb/common';
 import { getDiscoveryWorkerManager } from '@cmdb/discovery-engine';
 import { getETLWorkerManager } from '@cmdb/etl-processor';
-import { JOB_NOT_FOUND, ownsJob } from './job-scope';
+import { JOB_NOT_FOUND } from './job-scope';
 
 /**
  * Queue Monitoring Controller
@@ -123,10 +123,10 @@ export class QueueController {
             pattern: job.pattern,
             _next: job.next,
           })),
-          recentCompleted: recentCompleted.filter(job => ownsJob(req, job)).map(job => ({
+          recentCompleted: recentCompleted.map(job => ({
             id: job.id, name: job.name, timestamp: job.timestamp, finishedOn: job.finishedOn,
           })),
-          recentFailed: recentFailed.filter(job => ownsJob(req, job)).map(job => ({
+          recentFailed: recentFailed.map(job => ({
             id: job.id, name: job.name, timestamp: job.timestamp, finishedOn: job.finishedOn,
           })),
         },
@@ -429,7 +429,7 @@ export class QueueController {
       }
 
       const job = await this.queueManager.getJob(queueName, jobId);
-      if (!job || !ownsJob(req, job)) {
+      if (!job) {
         res.status(404).json(JOB_NOT_FOUND);
         return;
       }

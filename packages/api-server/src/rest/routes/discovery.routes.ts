@@ -87,14 +87,14 @@ discoveryRoutes.post(
 // GET /discovery/jobs/:id - Get job status
 discoveryRoutes.get(
   '/jobs/:id',
-  requireDiscoveryOrganization,
+  authMiddleware.requirePlatformAdmin(),
   controller.getJobStatus.bind(controller)
 );
 
 // GET /discovery/jobs - List all jobs with pagination
 discoveryRoutes.get(
   '/jobs',
-  requireDiscoveryOrganization,
+  authMiddleware.requirePlatformAdmin(),
   refuseDeepJobOffset,
   validateOptional(listJobsQuerySchema, 'query'),
   controller.listJobs.bind(controller)
@@ -103,8 +103,7 @@ discoveryRoutes.get(
 // DELETE /discovery/jobs/:id - Cancel job (write: mutates discovery state)
 discoveryRoutes.delete(
   '/jobs/:id',
-  authMiddleware.requirePermission('write'),
-  requireDiscoveryOrganization,
+  authMiddleware.requirePlatformAdmin(),
   controller.cancelJob.bind(controller)
 );
 

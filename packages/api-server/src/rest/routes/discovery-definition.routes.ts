@@ -35,6 +35,19 @@ function requireDefinitionOrganization(req: Request, res: Response, next: NextFu
 export const discoveryDefinitionRoutes = Router();
 const controller = new DiscoveryDefinitionController();
 const authMiddleware = getAuthMiddleware();
+// Global schedule control is not an organization operation; a dedicated
+// platform administrator may have no organization claim.
+discoveryDefinitionRoutes.post(
+  '/:id/schedule/enable',
+  authMiddleware.requirePlatformAdmin(),
+  controller.enableSchedule.bind(controller)
+);
+discoveryDefinitionRoutes.post(
+  '/:id/schedule/disable',
+  authMiddleware.requirePlatformAdmin(),
+  controller.disableSchedule.bind(controller)
+);
+
 discoveryDefinitionRoutes.use(requireDefinitionOrganization);
 
 // Validation schemas
@@ -119,18 +132,4 @@ discoveryDefinitionRoutes.post(
   '/:id/run',
   authMiddleware.requirePermission('write'),
   controller.runDefinition.bind(controller)
-);
-
-// POST /api/v1/discovery/definitions/:id/schedule/enable - Enable scheduled runs (write)
-discoveryDefinitionRoutes.post(
-  '/:id/schedule/enable',
-  authMiddleware.requirePermission('write'),
-  controller.enableSchedule.bind(controller)
-);
-
-// POST /api/v1/discovery/definitions/:id/schedule/disable - Disable scheduled runs (write)
-discoveryDefinitionRoutes.post(
-  '/:id/schedule/disable',
-  authMiddleware.requirePermission('write'),
-  controller.disableSchedule.bind(controller)
 );

@@ -13,7 +13,7 @@
  */
 
 import { Request, Response } from 'express';
-import type { Job } from 'bullmq';
+import { Job } from 'bullmq';
 import { getQueueManager, logger } from '@cmdb/common';
 import type { DiscoveryProvider, ETLJobType } from '@cmdb/common';
 import { getDiscoveryScheduler, getDiscoveryJobScheduler } from '@cmdb/discovery-engine';
@@ -21,7 +21,7 @@ import { getNeo4jClient } from '@cmdb/database';
 import { getETLScheduler } from '@cmdb/etl-processor';
 import { optionalRequestOrganizationId } from '../../middleware/auth.middleware';
 import type { AuthenticatedRequest } from '../../middleware/auth.middleware';
-import { JOB_NOT_FOUND, ownsJob, publicJob } from './job-scope';
+import { JOB_NOT_FOUND, publicJob } from './job-scope';
 
 interface ScheduleUpdate {
   cronExpression?: string;
@@ -156,7 +156,7 @@ export class JobsController {
       }
 
       const job = await this.queueManager.getJob(queueName, jobId);
-      if (!job || !ownsJob(req, job)) {
+      if (!job) {
         res.status(404).json(JOB_NOT_FOUND);
         return;
       }
@@ -212,12 +212,9 @@ export class JobsController {
         }
       }
 
-      const jobsData = await Promise.all(
-        jobs.filter((job) => ownsJob(req, job)).map((job) => publicJob(job, queueName))
-      );
+      const jobsData = await Promise.all(jobs.map((job) => publicJob(job, queueName)));
 
-      // Queue offsets may hide owned jobs behind foreign jobs. Mark every
-      // non-empty bounded read incomplete without revealing queue occupancy.
+      // Queue offsets may omit jobs outside this bounded read.
       res.json({
         success: true,
         data: { queueName, state, jobs: jobsData, count: jobsData.length },
@@ -246,7 +243,7 @@ export class JobsController {
       }
 
       const job = await this.queueManager.getJob(queueName, jobId);
-      if (!job || !ownsJob(req, job)) {
+      if (!job) {
         res.status(404).json(JOB_NOT_FOUND);
         return;
       }
@@ -285,7 +282,7 @@ export class JobsController {
       }
 
       const job = await this.queueManager.getJob(queueName, jobId);
-      if (!job || !ownsJob(req, job)) {
+      if (!job) {
         res.status(404).json(JOB_NOT_FOUND);
         return;
       }
@@ -452,15 +449,13 @@ export class JobsController {
             const allJobIds = jobIdSets.flat();
             logger.info(`Loaded discovery job IDs for ${queueName}`, { count: allJobIds.length });
 
-            // Load jobs to verify their stamped organization before serialization.
+            // Only the platform-admin route reaches this list. Legacy payloads
+            // are never serialized even when they contain stored credentials.
             const jobs = await Promise.all(
               allJobIds.map(async (jobId) => {
                 try {
-                  const { Job } = await import('bullmq');
                   const job = await Job.fromId(queue, jobId);
-
                   if (!job) return null;
-                  if (!ownsJob(req, job)) return null;
                   return {
                     id: job.id,
                     provider: providerName,
@@ -655,7 +650,7 @@ export class JobsController {
         : [];
 
       const jobsData = await Promise.all(
-        failedJobs.filter((job) => ownsJob(req, job)).map((job) => publicJob(job, queueName))
+        failedJobs.map((job) => publicJob(job, queueName))
       );
 
       res.json({

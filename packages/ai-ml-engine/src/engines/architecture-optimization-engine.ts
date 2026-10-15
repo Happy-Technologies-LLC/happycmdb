@@ -23,11 +23,11 @@ import {
 } from '../types/architecture.types';
 
 /** Analysis bounds shared by POST roots and owned business-service mappings. */
-export const MAX_ARCHITECTURE_ROOTS = 20;
+export const MAX_ARCHITECTURE_ROOTS = 100;
 export const MAX_ARCHITECTURE_DEPTH = 10;
 export const MAX_ARCHITECTURE_EXPANSIONS = 1000;
-export const ARCHITECTURE_QUERY_TIMEOUT_MS = 5000;
-export const ARCHITECTURE_REQUEST_TIMEOUT_MS = 20000;
+export const ARCHITECTURE_QUERY_TIMEOUT_MS = 10_000;
+export const ARCHITECTURE_REQUEST_TIMEOUT_MS = 30_000;
 const analysisDeadline = new AsyncLocalStorage<number>();
 
 export class ArchitectureDeadlineError extends Error {

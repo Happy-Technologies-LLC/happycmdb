@@ -10,7 +10,7 @@
 
 import { Worker, Job } from 'bullmq';
 import { getNeo4jClient, getPostgresClient, getRedisClient, QUEUE_NAMES } from '@cmdb/database';
-import { logger } from '@cmdb/common';
+import { logger, codedProcessor } from '@cmdb/common';
 import {
   processNeo4jToPostgresJob,
   type Neo4jToPostgresJobData,
@@ -113,10 +113,13 @@ export class ETLWorkerManager {
       // Neo4j to PostgreSQL sync worker
       const syncWorker = new Worker(
         QUEUE_NAMES._ETL_SYNC,
-        async (job: Job<Neo4jToPostgresJobData>) => {
+        codedProcessor('etl-sync', {
+          cisProcessed: 'count', relationshipsProcessed: 'count', recordsInserted: 'count',
+          recordsUpdated: 'count', errors: 'count', durationMs: 'count', completedAt: 'timestamp',
+        }, async (job: Job<Neo4jToPostgresJobData>) => {
           logger.info('Processing Neo4j to PostgreSQL sync job', { jobId: job.id });
-          return await processNeo4jToPostgresJob(job, this.neo4jClient, this.postgresClient);
-        },
+          return processNeo4jToPostgresJob(job, this.neo4jClient, this.postgresClient);
+        }),
         {
           connection: this.redisClient.getConnection(),
           concurrency: 2, // Process 2 sync jobs concurrently
@@ -147,10 +150,13 @@ export class ETLWorkerManager {
       // Reconciliation worker
       const reconciliationWorker = new Worker(
         QUEUE_NAMES._ETL_RECONCILIATION,
-        async (job: Job<ReconciliationJobData>) => {
+        codedProcessor('etl-reconciliation', {
+          _cisChecked: 'count', _conflictsDetected: 'count', _conflictsResolved: 'count',
+          _manualReviewRequired: 'count', _durationMs: 'count', _completedAt: 'timestamp',
+        }, async (job: Job<ReconciliationJobData>) => {
           logger.info('Processing reconciliation job', { jobId: job.id });
-          return await processReconciliationJob(job, this.neo4jClient, this.postgresClient);
-        },
+          return processReconciliationJob(job, this.neo4jClient, this.postgresClient);
+        }),
         {
           connection: this.redisClient.getConnection(),
           concurrency: 1, // Process one reconciliation at a time
@@ -182,10 +188,13 @@ export class ETLWorkerManager {
       // Change detection worker
       const changeDetectionWorker = new Worker(
         QUEUE_NAMES._ETL_CHANGE_DETECTION,
-        async (job: Job<ChangeDetectionJobData>) => {
+        codedProcessor('etl-change-detection', {
+          cisChecked: 'count', changesDetected: 'count', changesRecorded: 'count',
+          durationMs: 'count', completedAt: 'timestamp',
+        }, async (job: Job<ChangeDetectionJobData>) => {
           logger.info('Processing change detection job', { jobId: job.id });
-          return await processChangeDetectionJob(job, this.neo4jClient, this.postgresClient);
-        },
+          return processChangeDetectionJob(job, this.neo4jClient, this.postgresClient);
+        }),
         {
           connection: this.redisClient.getConnection(),
           concurrency: 3, // Process 3 change detection jobs concurrently
@@ -216,10 +225,13 @@ export class ETLWorkerManager {
       // Full refresh worker
       const fullRefreshWorker = new Worker(
         QUEUE_NAMES._ETL_FULL_REFRESH,
-        async (job: Job<FullRefreshJobData>) => {
+        codedProcessor('etl-full-refresh', {
+          cisProcessed: 'count', relationshipsProcessed: 'count', dimensionsCreated: 'count',
+          factsCreated: 'count', durationMs: 'count', completedAt: 'timestamp', stagesCompleted: 'stages',
+        }, async (job: Job<FullRefreshJobData>) => {
           logger.info('Processing full refresh job', { jobId: job.id });
-          return await processFullRefreshJob(job, this.neo4jClient, this.postgresClient);
-        },
+          return processFullRefreshJob(job, this.neo4jClient, this.postgresClient);
+        }),
         {
           connection: this.redisClient.getConnection(),
           concurrency: 1, // Process one full refresh at a time

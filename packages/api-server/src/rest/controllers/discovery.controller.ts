@@ -71,10 +71,10 @@ function publicJob(job: PublicJobSource, status: string): PublicDiscoveryJob {
 }
 
 export class DiscoveryController {
-  private async findOwnedJob(id: string, organizationId: string) {
+  private async findJob(id: string) {
     for (const queueName of discoveryQueues()) {
       const job = await queueManager.getQueue(queueName).getJob(id);
-      if (job && job.data?.organizationId === organizationId) return job;
+      if (job) return job;
     }
     return null;
   }
@@ -113,7 +113,7 @@ export class DiscoveryController {
 
   async getJobStatus(req: Request, res: Response): Promise<void> {
     try {
-      const job = await this.findOwnedJob(req.params.id!, requestOrganizationId(req));
+      const job = await this.findJob(req.params.id!);
       if (!job) { res.status(404).json(NOT_FOUND); return; }
       res.json({ success: true, data: publicJob(job, await job.getState()) });
     } catch (error) {
@@ -124,7 +124,6 @@ export class DiscoveryController {
 
   async listJobs(req: Request, res: Response): Promise<void> {
     try {
-      const organizationId = requestOrganizationId(req);
       const { status, provider, limit = 100, offset = 0 } = req.query;
       const limitNum = Number(limit);
       const offsetNum = Number(offset);
@@ -141,7 +140,7 @@ export class DiscoveryController {
           !status || status === 'failed' ? queue.getFailed(offsetNum, lastIndex) : [],
         ]);
         for (const job of jobs.flat()) {
-          if (job.data?.organizationId !== organizationId || (provider && job.data.provider !== provider)) continue;
+          if (provider && job.data?.provider !== provider) continue;
           allJobs.push(publicJob(job, await job.getState()));
         }
       }
@@ -157,7 +156,7 @@ export class DiscoveryController {
 
   async cancelJob(req: Request, res: Response): Promise<void> {
     try {
-      const job = await this.findOwnedJob(req.params.id!, requestOrganizationId(req));
+      const job = await this.findJob(req.params.id!);
       if (!job) { res.status(404).json(NOT_FOUND); return; }
       const state = await job.getState();
       if (state === 'completed' || state === 'failed') {

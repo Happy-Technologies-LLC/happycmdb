@@ -13,6 +13,7 @@
 
 import { Job } from 'bullmq';
 import { logger } from '../utils/logger';
+import { jobErrorCode, jobLog } from './coded-processor';
 
 /**
  * Error categories for job failures
@@ -105,10 +106,9 @@ export class JobErrorHandler {
     logger.error(`Job ${job.id} failed`, {
       _jobName: job.name,
       _queueName: job.queueName,
-      _error: error.message,
+      _code: jobErrorCode(error),
       _category: classification._category,
       _attemptsMade: job.attemptsMade,
-      _data: job.data,
     });
 
     // Log to dead letter queue if max attempts reached
@@ -136,19 +136,11 @@ export class JobErrorHandler {
       _category: _classification._category,
     });
 
-    // In a real implementation, this would send to a separate DLQ
-    // For now, we log the failure
-    await _job.log(`DEAD LETTER: ${_error.message}`);
-
-    // Store in metadata for later inspection
+    const code = jobErrorCode(_error);
+    await jobLog(_job, `DEAD_LETTER:${code}`);
     await _job.updateData({
       ..._job.data,
-      __dlq: {
-        _error: _error.message,
-        _category: _classification._category,
-        _timestamp: new Date().toISOString(),
-        _attemptsMade: _job.attemptsMade,
-      },
+      __dlq: { _code: code },
     });
   }
 
@@ -164,9 +156,8 @@ export class JobErrorHandler {
     logger.error(`ADMIN NOTIFICATION: Job ${_job.id} failed critically`, {
       _jobName: _job.name,
       _queueName: _job.queueName,
-      _error: _error.message,
+      _code: jobErrorCode(_error),
       _category: _classification._category,
-      _data: _job.data,
     });
   }
 
@@ -214,7 +205,7 @@ export function createErrorHandlerMiddleware() {
   return {
     _onFailed: async (job: Job | undefined, error: Error) => {
       if (!job) {
-        logger.error('Job failed without job context', { error: error.message });
+        logger.error('Job failed without job context', { code: jobErrorCode(error) });
         return;
       }
 

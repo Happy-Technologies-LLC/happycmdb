@@ -4,7 +4,6 @@ import express from 'express';
 import request from 'supertest';
 import type { AuthService } from '../../../auth/auth.service';
 import type { ConfigSchema } from '@cmdb/common';
-import type { UserRole } from '../../../auth/types';
 import type { AuthMiddleware as AuthMiddlewareClass } from '../../../middleware/auth.middleware';
 
 const touched = jest.fn();
@@ -15,9 +14,14 @@ jest.mock('../../../auth/auth-bootstrap', () => {
   const { AuthMiddleware } = jest.requireActual<{ AuthMiddleware: typeof AuthMiddlewareClass }>('../../../middleware/auth.middleware');
   const authService = {
     verifyToken: async (token: string) => {
-      if (!['viewer', 'operator', 'admin'].includes(token)) throw new Error('Invalid token');
-      return { _role: token as UserRole, _organizationId: '11111111-1111-4111-8111-111111111111' };
+      if (!['viewer', 'operator', 'admin', 'internal-admin', 'seed', 'platform'].includes(token)) throw new Error('Invalid token');
+      return { _userId: token, _role: token === 'viewer' ? 'viewer' : 'admin',
+        _organizationId: token === 'platform' ? undefined : '11111111-1111-4111-8111-111111111111' };
     },
+    findEnabledUser: async (id: string) => ({
+      _id: id === 'seed' ? 'user-admin-001' : id, _username: id,
+      _platformAdmin: id === 'seed' || id === 'platform',
+    }),
   } as unknown as AuthService;
   const middleware = new AuthMiddleware(authService, { apiKeys: { headerName: 'X-API-Key' } } as ConfigSchema['auth']);
   return { getAuthMiddleware: () => middleware };
@@ -40,16 +44,21 @@ const paths = [
   ['put', '/jobs/schedules/etl/sync'],
 ] as const;
 
-test('every authenticated role receives identical global refusal without touching queues or schedules', async () => {
+test('tenant admins, internal admins and flagged seeds cannot reach global queues', async () => {
   touched.mockImplementation((_req: express.Request, res: express.Response) =>
     res.status(200).json({ success: true, data: { queueName: 'foreign', counts: { failed: 42 } } }));
-  const responses = [];
-  for (const role of ['viewer', 'operator', 'admin']) {
+  for (const role of ['viewer', 'operator', 'admin', 'internal-admin', 'seed']) {
     for (const [method, path] of paths) {
-      const response = await request(app)[method](`/api/v1${path}`).set('authorization', `Bearer ${role}`).send({ enabled: true });
-      responses.push({ status: response.status, body: response.body });
+      const response = await request(app)[method](`/api/v1${path}`)
+        .set('authorization', `Bearer ${role}`).send({ enabled: true });
+      expect(response.status).toBe(403);
+      expect(response.body).toEqual({
+        success: false, error: 'Forbidden', message: 'Platform administrator required',
+      });
     }
   }
-  expect(responses).toEqual(Array(responses.length).fill({ status: 403, body: { success: false, error: 'Global queue operations unavailable' } }));
   expect(touched).not.toHaveBeenCalled();
+  const platform = await request(app).get('/api/v1/jobs/stats').set('authorization', 'Bearer platform');
+  expect(platform.status).toBe(200);
+  expect(touched).toHaveBeenCalledTimes(1);
 });

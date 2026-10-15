@@ -6,6 +6,7 @@ import { getNeo4jClient } from '@cmdb/database';
 import { requestOrganizationId } from '../../middleware/auth.middleware';
 import { logger } from '@cmdb/common';
 import neo4j from 'neo4j-driver';
+import { literalFulltextQuery } from './literal-fulltext-query';
 
 export class SearchController {
   private neo4jClient = getNeo4jClient();
@@ -167,13 +168,13 @@ export class SearchController {
         const result = await session.run(
           `
           CALL db.index.fulltext.queryNodes('ci_fulltext_idx', $query)
-          YIELD node, score
+          YIELD node
           WHERE node:CI AND node.organization_id = $organizationId
-          RETURN node, score
-          ORDER BY score DESC
+          WITH node ORDER BY toLower(coalesce(node.name, '')), node.id
           LIMIT $limit
+          RETURN node
           `,
-          { query: query.trim(), organizationId: requestOrganizationId(req), limit: neo4j.int(limitNum) }
+          { query: literalFulltextQuery(query), organizationId: requestOrganizationId(req), limit: neo4j.int(limitNum) }
         );
 
         const cis = result.records.map((r) => {
@@ -191,7 +192,6 @@ export class SearchController {
               discovered_at: props.discovered_at,
               metadata: props.metadata ? JSON.parse(props.metadata) : {},
             },
-            score: r.get('score'),
           };
         });
 

@@ -43,6 +43,7 @@ describe('baseline restore until S4 journal admission', () => {
     const res = response();
     await new ITILController().restoreFromBaseline(req, res);
     expect(res.code).toBe(503);
+    expect(res.body).toEqual({ success: false, error: 'Baseline restore unavailable' });
     expect(getSession).not.toHaveBeenCalled();
   });
 });

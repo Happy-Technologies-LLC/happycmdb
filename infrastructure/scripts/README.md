@@ -135,7 +135,13 @@ Incident/change REST records and the mounted GraphQL record twin are scoped to
 the authenticated organization. Baseline restore remains 503 **after** a
 scoped baseline lookup: it cannot perform a direct Neo4j CI mutation before
 HP1-S4's journal admission/fence exists. The dormant GraphQL ITIL resolver
-module is not mounted. Staging rollout remains suspended: persisted staging
+module is not mounted. The standalone `@cmdb/itil-service-manager` has no
+authenticated organization context: `035` rejects its unowned record writes
+and its exported restore method refuses before data access. Do not mount its
+unscoped record readers. Signed Option A keeps HAP-480 PARTIAL: HP1-S4 must
+replace these refusals with journaled same-org restore under admission/fence,
+including cross-store failure, late-writer and recovery tests. Staging rollout
+remains suspended: persisted staging
 volumes have not applied `032`–`034` or the offline ACL preflight; no deployment
 or staging verification is implied by this source change.
 

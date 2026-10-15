@@ -65,6 +65,10 @@ it('adds V1 ownership guards and org-local names without attributing legacy rows
     .rejects.toMatchObject({ code: '23514' });
   await expect(exec(`UPDATE itil_changes SET change_number = 'CHG-new' WHERE id = '${id(3)}'`))
     .rejects.toMatchObject({ code: '23514' });
+  await expect(exec(`INSERT INTO itil_changes(id, change_number)
+    VALUES ('${id(11)}', 'CHG-no-org')`)).rejects.toMatchObject({ code: '23514' });
+  await expect(exec(`INSERT INTO itil_baselines(id, name)
+    VALUES ('${id(12)}', 'baseline-no-org')`)).rejects.toMatchObject({ code: '23514' });
   await exec(`INSERT INTO itil_baselines(id, name, organization_id) VALUES
     ('${id(5)}', 'shared', '${A}'), ('${id(6)}', 'shared', '${B}'),
     ('${id(7)}', 'legacy', '${A}')`);

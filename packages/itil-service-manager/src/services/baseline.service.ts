@@ -355,41 +355,15 @@ export class BaselineService {
   }
 
   /**
-   * Restore CI to baseline configuration
+   * No tenant authority or journal admission exists on this standalone API.
+   * Preserve the public method contract but refuse every restore before data access.
    */
   async restoreFromBaseline(
-    ciId: string,
-    baselineId: string,
+    _ciId: string,
+    _baselineId: string,
     _restoredBy: string = 'system'
   ): Promise<ConfigurationItem> {
-    // Get baseline
-    const baseline = await this.baselineRepository.getBaselineById(baselineId);
-    if (!baseline) {
-      throw new Error(`Baseline not found: ${baselineId}`);
-    }
-
-    // Get baseline configuration for this CI
-    const baselineCI = baseline.baselineData[ciId];
-    if (!baselineCI) {
-      throw new Error(`CI ${ciId} not found in baseline ${baselineId}`);
-    }
-
-    // Get current CI
-    const currentCI = await this.ciRepository.getCI(ciId);
-    if (!currentCI) {
-      throw new Error(`CI not found: ${ciId}`);
-    }
-
-    // Restore ITIL attributes
-    await this.ciRepository.updateITILAttributes(ciId, baselineCI.itil_attributes);
-
-    // Get updated CI
-    const restoredCI = await this.ciRepository.getCI(ciId);
-    if (!restoredCI) {
-      throw new Error(`Failed to restore CI: ${ciId}`);
-    }
-
-    return restoredCI;
+    throw new Error('Baseline restore unavailable until journal admission');
   }
 
   /**

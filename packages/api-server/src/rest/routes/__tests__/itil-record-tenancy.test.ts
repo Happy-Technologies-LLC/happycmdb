@@ -166,6 +166,10 @@ it('scopes lists, affectedCIId, counts and metrics and stamps created rows from 
   expect(mixed.status).toBe(404);
   expect(change.status).toBe(201);
   expect(change.body.data.organization_id).toBe(A);
+  const filteredIncidents = await request(app).get('/itil/incidents?status=NEW').set(auth('A'));
+  const filteredChanges = await request(app).get('/itil/changes?status=DRAFT').set(auth('A'));
+  expect(filteredIncidents.body.pagination.total).toBe(1);
+  expect(filteredChanges.body.pagination.total).toBe(1);
   expect((await request(app).get('/itil/incidents').set(auth('B'))).body.pagination.total).toBe(2);
   expect((await request(app).get('/itil/changes').set(auth('B'))).body.pagination.total).toBe(1);
 });

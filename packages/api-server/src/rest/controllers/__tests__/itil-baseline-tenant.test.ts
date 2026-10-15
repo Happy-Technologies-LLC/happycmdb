@@ -37,16 +37,10 @@ function caller(org: string | undefined, id?: string, ciId = 'ci-a', role = 'vie
 
 describe('ITIL baseline tenant boundary', () => {
   let controller: ITILController;
-  let graphWrites: number;
-  let ciOwner: string;
-  let ciName: string;
   let insertedOwner: unknown;
 
   beforeEach(() => {
-    graphWrites = 0;
-    ciOwner = A;
     insertedOwner = undefined;
-    ciName = 'current';
     (getPostgresClient as jest.Mock).mockReturnValue({ pool: {
       query: async (sql: string, params: unknown[] = []) => {
         if (sql.includes('INSERT INTO itil_baselines')) {
@@ -59,17 +53,7 @@ describe('ITIL baseline tenant boundary', () => {
       },
     } });
     (getNeo4jClient as jest.Mock).mockReturnValue({
-      getCI: async (id: string, org: string) => id === 'ci-a' && org === A ? { id, name: ciName } : null,
-      getSession: () => ({
-        run: async (cypher: string, params: Record<string, unknown>) => {
-          if (params['ciId'] !== 'ci-a' || (cypher.includes('ci.organization_id = $organizationId') && params['organizationId'] !== ciOwner)) return { records: [] };
-          graphWrites++;
-          const props = params['restoreProps'];
-          if (props && typeof props === 'object' && 'name' in props && typeof props.name === 'string') ciName = props.name;
-          return { records: [{ get: () => ({ properties: { id: 'ci-a', name: ciName, organization_id: ciOwner } }) }] };
-        },
-        close: async () => undefined,
-      }),
+      getCI: async (id: string, org: string) => id === 'ci-a' && org === A ? { id, name: 'current' } : null,
     });
     controller = new ITILController();
   });
@@ -97,38 +81,6 @@ describe('ITIL baseline tenant boundary', () => {
     await controller.getBaseline(caller(A, 'base-a'), own.mock);
     expect(own.res.statusCode).toBe(200);
     expect(own.res.body).toEqual({ success: true, data: baselines[0] });
-  });
-
-  it('restores only an owned baseline into an owned CI, never writing a foreign graph node', async () => {
-    const foreign = response();
-    await controller.restoreFromBaseline(caller(B, 'base-a'), foreign.mock);
-    const missing = response();
-    await controller.restoreFromBaseline(caller(B, 'missing'), missing.mock);
-    expect(foreign.res).toEqual(missing.res);
-    expect(graphWrites).toBe(0);
-
-    const legacy = response();
-    await controller.restoreFromBaseline(caller(A, 'base-legacy'), legacy.mock);
-    expect(legacy.res.statusCode).toBe(404);
-    expect(graphWrites).toBe(0);
-
-    ciOwner = B;
-    const foreignCI = response();
-    await controller.restoreFromBaseline(caller(A, 'base-a'), foreignCI.mock);
-    expect(foreignCI.res.statusCode).toBe(404);
-    const missingCI = response();
-    await controller.restoreFromBaseline(caller(A, 'base-a', 'ci-b'), missingCI.mock);
-    expect(missingCI.res).toEqual(foreignCI.res);
-    expect(graphWrites).toBe(0);
-    expect(graphWrites).toBe(0);
-    expect(ciName).toBe('current');
-
-    ciOwner = A;
-    const own = response();
-    await controller.restoreFromBaseline(caller(A, 'base-a'), own.mock);
-    expect(own.res.statusCode).toBe(200);
-    expect(graphWrites).toBe(1);
-    expect(ciName).toBe('old');
   });
 
   it('creates a baseline only from owned CIs, stamping the verified owner', async () => {

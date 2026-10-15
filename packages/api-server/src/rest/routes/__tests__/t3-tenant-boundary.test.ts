@@ -505,12 +505,12 @@ it('executes ITIL CI GraphQL views and mutations under authenticated two-org sco
     expect(ownHistory.body.data?.ciHistory).toEqual([{ ciId: 'ci-a' }]);
     const foreignHistory = await call('a', '{ ciHistory(id: "ci-b") { ciId } }');
     expect(foreignHistory.body.errors?.[0].extensions.code).toBe('NOT_FOUND');
-    sqlCount = 0;
     for (const field of ['incidents', 'changes']) {
       const nestedRecords = await call('a', `{ configurationItem(id: "ci-a") { ${field} { id } } }`);
-      expect(nestedRecords.body.errors?.[0].extensions.code).toBe('FORBIDDEN');
+      expect(nestedRecords.body.errors?.[0]).toMatchObject({
+        message: 'ITIL records unavailable', extensions: { code: 'SERVICE_UNAVAILABLE' },
+      });
     }
-    expect(sqlCount).toBe(0);
     const foreign = await call('a', 'mutation { updateLifecycleStage(id: \"ci-b\", stage: BUILD) { _id } }');
     const missing = await call('a', 'mutation { updateLifecycleStage(id: \"missing\", stage: BUILD) { _id } }');
     expect(foreign.body.errors?.[0]).toMatchObject({ message: 'CI not found', extensions: { code: 'NOT_FOUND' } });

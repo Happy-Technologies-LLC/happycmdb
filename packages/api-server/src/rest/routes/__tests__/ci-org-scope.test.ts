@@ -130,9 +130,9 @@ function run(rawCypher: string, params: Props = {}): FakeRecord[] {
     const matches = [...graph.nodes.values()]
       .filter(props => String(props['name']).toLowerCase().includes(term) && inScope(props) &&
         !(params['pending'] as string[] | undefined)?.includes(String(props['id'])));
-    if (cypher.includes('AS page')) {
-      return [record({ total: neo4j.int(matches.length),
-        page: matches.slice(0, num(params['limit'])).map(node) })];
+    if (cypher.includes('collect(node)')) throw new Error('Unbounded full-text materialization');
+    if (cypher.includes('count(node)')) {
+      return [record({ total: neo4j.int(matches.length) })];
     }
     return matches.slice(0, num(params['limit']))
       .map(props => record({ node: node(props), score: 1 }));

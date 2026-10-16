@@ -373,13 +373,11 @@ const Query = {
         const result = await session.run(
           `MATCH (ci:CI)
            ${whereClause}
-           WITH ci ORDER BY ci.created_at DESC, ci.id
-           WITH collect(ci) AS cs
-           RETURN size(cs) AS total, cs[$offset..$end] AS page`,
-          { ...params, pending, end: neo4j.int(offset + limit) }, { timeout }
+           RETURN ci ORDER BY ci.created_at DESC, ci.id SKIP $offset LIMIT $limit`,
+          { ...params, pending }, { timeout }
         );
-        return (result.records[0]?.get('page') ?? []).map(
-          (ci: { properties: CIValue }) => toGraphQLCI(ci.properties));
+        return result.records.map(row =>
+          toGraphQLCI((row.get('ci') as { properties: CIValue }).properties));
       });
     } catch (error: unknown) {
       if (error instanceof CIListUnavailableError) {
@@ -475,13 +473,11 @@ const Query = {
         const result = await session.run(
           `MATCH (ci:CI)
            WHERE ${conditions.join(' AND ')}
-           WITH ci ORDER BY ci.name, ci.id
-           WITH collect(ci) AS cs
-           RETURN size(cs) AS total, cs[0..$limit] AS page`,
+           RETURN ci ORDER BY ci.name, ci.id LIMIT $limit`,
           { ...params, pending }, { timeout }
         );
-        return (result.records[0]?.get('page') ?? []).map(
-          (ci: { properties: CIValue }) => toGraphQLCI(ci.properties));
+        return result.records.map(row =>
+          toGraphQLCI((row.get('ci') as { properties: CIValue }).properties));
       });
     } catch (error: unknown) {
       if (error instanceof CIListUnavailableError) {
@@ -950,20 +946,26 @@ const itilCIQueries = {
     const limit = Math.min(100, Math.max(1, normalizePagination(args.limit, GRAPHQL_PAGE_DEFAULTS.configurationItems)));
     try {
       return await readCIList(organizationId, async (pending, timeout) => {
-        const result = await session.run(
-          `MATCH (ci:CI) ${where}
-           WITH ci ORDER BY ci.name, ci.id
-           WITH collect(ci) AS cs
-           RETURN size(cs) AS total, cs[$offset..$end] AS page`,
-          { ...params, pending, offset: neo4j.int((page - 1) * limit),
-            end: neo4j.int(page * limit) }, { timeout }
-        );
-        const row = result.records[0]!;
-        const total = row.get('total').toNumber() as number;
+        const query = `MATCH (ci:CI) ${where}`;
+        const queryParams = { ...params, pending, offset: neo4j.int((page - 1) * limit),
+          limit: neo4j.int(limit) };
+        const expiresAt = Date.now() + timeout;
+        const remaining = () => {
+          const milliseconds = expiresAt - Date.now();
+          if (milliseconds <= 0) throw new CIListUnavailableError();
+          return milliseconds;
+        };
+        const countResult = await session.run(
+          `${query} RETURN count(ci) AS total`, queryParams, { timeout: remaining() });
+        const pageResult = await session.run(
+          `${query} RETURN ci ORDER BY ci.name, ci.id SKIP $offset LIMIT $limit`,
+          queryParams, { timeout: remaining() });
+        const total = countResult.records[0]!.get('total').toNumber() as number;
         return {
-          items: (row.get('page') as Array<{ properties: CIValue }>).map(node => ({
-            ...node.properties, ...toGraphQLCI(node.properties),
-          })),
+          items: pageResult.records.map(row => {
+            const ci = (row.get('ci') as { properties: CIValue }).properties;
+            return { ...ci, ...toGraphQLCI(ci) };
+          }),
           total, page, limit, pages: Math.ceil(total / limit),
         };
       });
@@ -984,16 +986,15 @@ const itilCIQueries = {
           `MATCH (ci:CI) WHERE ci.organization_id = $organizationId
            AND NOT ci.id IN $pending
            AND (ci.itil_next_audit_date <= datetime() OR ci.itil_last_audited IS NULL)
-           WITH ci ORDER BY ci.itil_next_audit_date, ci.id
-           WITH collect(ci) AS cs
-           RETURN size(cs) AS total, cs[0..$limit] AS page`,
+           RETURN ci ORDER BY ci.itil_next_audit_date, ci.id LIMIT $limit`,
           { organizationId, pending,
             limit: neo4j.int(Math.min(100, Math.max(1, args.limit ?? GRAPHQL_PAGE_DEFAULTS.cisDueForAudit))) },
           { timeout }
         );
-        return (result.records[0]?.get('page') ?? []).map((node: { properties: CIValue }) => ({
-          ...node.properties, ...toGraphQLCI(node.properties),
-        }));
+        return result.records.map(row => {
+          const ci = (row.get('ci') as { properties: CIValue }).properties;
+          return { ...ci, ...toGraphQLCI(ci) };
+        });
       });
     } finally {
       await session.close();

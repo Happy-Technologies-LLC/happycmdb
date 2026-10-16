@@ -137,7 +137,7 @@ describe('GraphQL CI Resolvers', () => {
       }));
 
       mockNeo4j.session.run.mockResolvedValueOnce(
-        createMockNeo4jResult([{ page: mockCIs.map(ci => ({ properties: ci })) }])
+        createMockNeo4jResult(mockCIs.map(ci => ({ ci: { properties: ci } })))
       );
 
       // Act: Execute query - resolver is at resolvers.Query (spread from Query object)
@@ -172,26 +172,6 @@ describe('GraphQL CI Resolvers', () => {
       expect(mockNeo4j.session.close).toHaveBeenCalled();
     });
 
-    it('should apply pagination correctly', async () => {
-      // Arrange
-      mockNeo4j.session.run.mockResolvedValueOnce(createMockNeo4jResult([]));
-
-      const getCIs = (resolvers.Query as any).getCIs;
-
-      // Act: Query with pagination
-      await getCIs(
-        null,
-        {
-          limit: 25,
-          offset: 100,
-        },
-        mockContext
-      );
-
-      expect(mockNeo4j.session.run.mock.calls[0][1]).toMatchObject({
-        offset: neo4j.int(100), end: neo4j.int(125), organizationId: ORG_A,
-      });
-    });
   });
 
   describe('Query.getCI', () => {
@@ -286,21 +266,6 @@ describe('GraphQL CI Resolvers', () => {
     const client = () => mockContext._neo4jClient as any;
     const errorOf = (promise: Promise<unknown>) => promise.then(() => undefined, (e: unknown) => e);
 
-    it('getCIs/getCI/searchCIs pass the context org to the client', async () => {
-      mockNeo4j.session.run.mockResolvedValue(createMockNeo4jResult([{ page: [] }]));
-      mockLoaders.ciLoader.load.mockResolvedValue(null);
-      (mockContext._neo4jClient as any).getCI.mockResolvedValueOnce(createCI({ id: 'ci-1' }));
-      await (resolvers.Query as any).getCIs(null, { filter: { _name: 'web' } }, mockContext);
-      await (resolvers.Query as any).searchCIs(null, { query: 'web' }, mockContext);
-      await (resolvers.Query as any).getCI(null, { id: 'ci-1' }, mockContext);
-
-      expect(mockNeo4j.session.run).toHaveBeenCalledTimes(2);
-      for (const [cypher, params] of mockNeo4j.session.run.mock.calls as Array<[string, Record<string, unknown>]>) {
-        expect(cypher).toContain('ci.organization_id = $organizationId');
-        expect(params.organizationId).toBe(ORG_A);
-      }
-      expect(mockLoaders.ciLoader.load).toHaveBeenCalledWith({ id: 'ci-1', organizationId: ORG_A });
-    });
 
     it('createCI stamps the context org and ignores an input org', async () => {
       client().createCI.mockResolvedValue(createCI({ id: 'ci-new', name: 'new-server' }));

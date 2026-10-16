@@ -50,7 +50,13 @@ function graphRun(cypher: string, params: Record<string, any>) {
   }
   eligible.sort((left, right) => left.name.localeCompare(right.name));
   if (cypher.includes('CALL db.index.fulltext')) {
-    if (cypher.includes('collect(node)')) throw new Error('Unbounded full-text materialization');
+    if (cypher.includes('collect(node)')) {
+      if (eligible.length > 100) throw new Error('Unbounded full-text materialization');
+      return { records: [row({
+        total: neo4j.int(eligible.length),
+        page: eligible.slice(0, params.limit.toNumber()).map(properties => ({ properties })),
+      })] };
+    }
     if (cypher.includes('count(node)')) return { records: [row({ total: neo4j.int(eligible.length) })] };
     if (cypher.includes('ORDER BY score DESC')) {
       eligible.sort((left, right) =>
@@ -77,12 +83,14 @@ jest.mock('../../../auth/neo4j-auth.repository', () => ({ Neo4jAuthRepository: j
 import { loadConfig } from '@cmdb/common';
 import { JWTService } from '../../../auth/jwt.service';
 import { getAuthMiddleware } from '../../../auth/auth-bootstrap';
+import { ciRoutes } from '../ci.routes';
 import { searchRoutes } from '../search.routes';
 const jwt = new JWTService(loadConfig().auth.jwt);
 const app = express();
 app.use(express.json());
 app.use('/api/v1', getAuthMiddleware().authenticate());
 app.use('/api/v1/search', searchRoutes);
+app.use('/api/v1/cis', ciRoutes);
 const auth = (user: 'a' | 'b') => ({ Authorization: `Bearer ${jwt.generateAccessToken(user, users[user]._username, 'viewer', users[user]._organizationId)}` });
 
 it('omits pending CIs and foreign CIs from every mounted search list and count for two signed organizations', async () => {
@@ -148,6 +156,47 @@ it('ranks tenant-owned full-text hits by index relevance before limit and return
       expect(response.status).toBe(200);
       expect(response.body.total).toBe(5);
       expect(response.body.data).toEqual([{ ci: expect.objectContaining({ id: `${user}-strong` }), score: 8 }]);
+    }
+  } finally {
+    nodes.length = originalSize;
+    fulltextScores.clear();
+  }
+});
+
+it('bounds and score-ranks both tenants on mounted CI search even when the index has thousands of matches', async () => {
+  const originalSize = nodes.length;
+  try {
+    for (const user of ['a', 'b'] as const) {
+      nodes.push(
+        { id: `${user}-weak`, name: `host-${user}-aaa`, organization_id: users[user]._organizationId,
+          type: 'server', created_at: '2026-10-15T00:00:00Z' },
+        { id: `${user}-strong`, name: `host-${user}-zzz`, organization_id: users[user]._organizationId,
+          type: 'server', created_at: '2026-10-15T00:00:00Z' },
+      );
+      fulltextScores.set(`${user}-weak`, 0.25);
+      fulltextScores.set(`${user}-strong`, 8);
+    }
+    const small = await Promise.all((['a', 'b'] as const).map(user =>
+      request(app).post('/api/v1/cis/search').set(auth(user)).send({ query: 'host', limit: 1 })));
+    expect(small.map(response => response.status)).toEqual([200, 200]);
+    for (let index = 0; index < 2400; index++) {
+      for (const [user, organization_id] of [['a', A], ['b', B]] as const) {
+        nodes.push({ id: `${user}-bulk-${index}`, name: `host-${user}-bulk-${index}`,
+          organization_id, type: 'server', created_at: '2026-10-15T00:00:00Z' });
+      }
+    }
+    for (const user of ['a', 'b'] as const) {
+      const response = await request(app).post('/api/v1/cis/search').set(auth(user))
+        .send({ query: 'host', limit: 1 });
+      expect(response.status).toBe(200);
+      expect(response.body).toMatchObject({
+        total: 2405, count: 1, data: [{ ci: { id: `${user}-strong` }, score: 8 }],
+      });
+    }
+    for (const [index, user] of (['a', 'b'] as const).entries()) {
+      expect(small[index]!.body).toMatchObject({
+        total: 5, count: 1, data: [{ ci: { id: `${user}-strong` }, score: 8 }],
+      });
     }
   } finally {
     nodes.length = originalSize;

@@ -85,6 +85,9 @@ const graph = {
       const visible = [...nodes.values()].filter(ci => ci.organization_id === org);
       const ungapped = visible.filter(ci =>
         !Array.isArray(params['pending']) || !(params['pending'] as string[]).includes(ci.id));
+      if (statement.includes('collect(ci)') && ungapped.length > 100) {
+        throw new Error('Unbounded CI materialization');
+      }
       if (statement.includes('AS page')) {
         const offset = Number((params['offset'] as { toNumber?: () => number })?.toNumber?.() ?? 0);
         const end = Number((params['end'] as { toNumber?: () => number })?.toNumber?.() ?? 50);
@@ -99,7 +102,7 @@ const graph = {
       }
       const ci = visible.find(row => row.id === id);
       if (/RETURN count\(ci\) (as|AS) total/.test(statement)) {
-        return { records: [record({ total: integer(visible.length) })] };
+        return { records: [record({ total: integer(ungapped.length) })] };
       }
       if (statement.includes('compliantCount')) {
         return { records: [record({ compliantCount: integer(ungapped.filter(row => row.itil_audit_status === 'COMPLIANT').length), totalAudited: integer(ungapped.filter(row => row.itil_audit_status).length) })] };
@@ -136,6 +139,26 @@ const graph = {
       if (statement.includes('SET ci.itil_') && ci) {
         ci.itil_audit_status = String(params['auditStatus'] ?? ci.itil_audit_status ?? '');
         return { records: [record({ ci: { properties: { ...ci } } })] };
+      }
+      if (statement.includes('RETURN ci') && statement.includes('LIMIT $limit')) {
+        const query = params['query'];
+        const matching = typeof query === 'string'
+          ? ungapped.filter(row => row.name.includes(query) || row.id.includes(query))
+          : ungapped;
+        const sorted = [...matching].sort((left, right) => {
+          if (statement.includes('ci.created_at DESC')) {
+            const byDate = String(right.created_at ?? '').localeCompare(String(left.created_at ?? ''));
+            if (byDate) return byDate;
+          } else {
+            const byName = left.name.localeCompare(right.name);
+            if (byName) return byName;
+          }
+          return left.id.localeCompare(right.id);
+        });
+        const offset = (params['offset'] as { toNumber?: () => number })?.toNumber?.() ?? 0;
+        const limit = (params['limit'] as { toNumber: () => number }).toNumber();
+        return { records: sorted.slice(offset, offset + limit)
+          .map(row => record({ ci: { properties: { ...row, type: 'server', status: 'active' } } })) };
       }
       if (id !== undefined && statement.includes('RETURN ci')) {
         return { records: ci ? [record({ ci: { properties: { ...ci } } })] : [] };
@@ -545,5 +568,42 @@ it('executes ITIL CI GraphQL views and mutations under authenticated two-org sco
     expect(sqlCount).toBe(0);
   } finally {
     await server.stop();
+  }
+});
+
+it('bounds all four mounted CI GraphQL lists for both tenants with broad limit-one matches', async () => {
+  const ids: string[] = [];
+  for (const [user, organization_id] of [['a', A], ['b', B]] as const) {
+    for (let index = 0; index < 140; index++) {
+      const id = `ci-${user}-bulk-${String(index).padStart(3, '0')}`;
+      nodes.set(id, { id, name: `bulk-${String(index).padStart(3, '0')}`, organization_id,
+        created_at: '2026-10-16T00:00:00Z' });
+      ids.push(id);
+    }
+  }
+  const gqlApp = express();
+  const { server } = await createGraphQLServer(gqlApp);
+  try {
+    for (const user of ['a', 'b'] as const) {
+      const fields = [
+        'getCIs(limit:1, offset:1) { _id }',
+        'searchCIs(query:"bulk", limit:1) { _id }',
+        'configurationItems(page:2, limit:1) { total page pages items { _id } }',
+        'cisDueForAudit(limit:1) { _id }',
+      ];
+      const bodies = await Promise.all(fields.map(field =>
+        request(gqlApp).post('/graphql').set(auth(user)).send({ query: `{ ${field} }` })
+          .then(response => response.body)));
+      expect(bodies.map(body => body.errors?.[0]?.message ?? null)).toEqual([null, null, null, null]);
+      expect(bodies[0].data.getCIs).toEqual([{ _id: `ci-${user}-bulk-001` }]);
+      expect(bodies[1].data.searchCIs).toEqual([{ _id: `ci-${user}-bulk-000` }]);
+      expect(bodies[2].data.configurationItems).toMatchObject({
+        total: 141, page: 2, pages: 141, items: [{ _id: `ci-${user}-bulk-000` }],
+      });
+      expect(bodies[3].data.cisDueForAudit).toEqual([{ _id: `ci-${user}` }]);
+    }
+  } finally {
+    await server.stop();
+    for (const id of ids) nodes.delete(id);
   }
 });

@@ -602,21 +602,27 @@ export class CIController {
       const { cis, total } = await readCIList(organizationId, async (pending, timeout) => {
         const session = this.neo4jClient.getSession();
         try {
-          const result = await session.run(
-            `CALL db.index.fulltext.queryNodes('ci_fulltext_idx', $query)
-             YIELD node
-             WHERE node:CI AND node.organization_id = $organizationId AND NOT node.id IN $pending
-             WITH node ORDER BY toLower(coalesce(node.name, '')), node.id
-             WITH collect(node) AS nodes
-             RETURN size(nodes) AS total, nodes[0..$limit] AS page`,
-            { query: literalFulltextQuery(query), limit: neo4j.int(limitNum), organizationId, pending },
-            { timeout }
-          );
-          const row = result.records[0]!;
+          const params = { query: literalFulltextQuery(query), limit: neo4j.int(limitNum), organizationId, pending };
+          const matched = `CALL db.index.fulltext.queryNodes('ci_fulltext_idx', $query)
+             YIELD node, score
+             WHERE node:CI AND node.organization_id = $organizationId AND NOT node.id IN $pending`;
+          const expiresAt = Date.now() + timeout;
+          const remaining = () => {
+            const milliseconds = expiresAt - Date.now();
+            if (milliseconds <= 0) throw new CIListUnavailableError();
+            return milliseconds;
+          };
+          const countResult = await session.run(
+            `${matched} RETURN count(node) AS total`, params, { timeout: remaining() });
+          const pageResult = await session.run(
+            `${matched} RETURN node, score ORDER BY score DESC, node.id LIMIT $limit`,
+            params, { timeout: remaining() });
           return {
-            total: row.get('total').toNumber() as number,
-            cis: (row.get('page') as Array<{ properties: Record<string, unknown> }>)
-              .map(node => ({ ci: node.properties })),
+            total: countResult.records[0]!.get('total').toNumber() as number,
+            cis: pageResult.records.map(row => ({
+              ci: (row.get('node') as { properties: Record<string, unknown> }).properties,
+              score: row.get('score') as number,
+            })),
           };
         } finally {
           await session.close();

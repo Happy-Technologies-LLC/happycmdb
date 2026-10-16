@@ -46,3 +46,51 @@ test('per-org cap refuses a third pessimistic request without queueing it', asyn
   unblock();
   await Promise.all([first, second]);
 });
+
+test('out-of-order fallback completion preserves the cap and releases both slots', async () => {
+  query.mockReset();
+  admissionQuery.mockReset();
+  query.mockImplementation(async () => ({ rows: [{ epoch: String(query.mock.calls.length), pending: [] }] }));
+  admissionQuery.mockResolvedValue({ rows: [] });
+  const gates = Array.from({ length: 7 }, () => Promise.withResolvers<void>());
+  const org = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+  const start = (index: number) => {
+    let optimistic = true;
+    return readCIList(org, async () => {
+      if (optimistic) {
+        optimistic = false;
+        return index;
+      }
+      await gates[index]!.promise;
+      return index;
+    });
+  };
+  const flush = () => new Promise<void>(resolve => setImmediate(resolve));
+  const requests = [start(0), start(1)];
+  try {
+    await flush();
+    gates[1]!.resolve();
+    expect(await requests[1]).toBe(1);
+    requests.push(start(2));
+    await flush();
+    gates[0]!.resolve();
+    expect(await requests[0]).toBe(0);
+    requests.push(start(3));
+    await flush();
+    gates[4]!.resolve();
+    const overflow = start(4);
+    requests.push(overflow);
+    await expect(overflow).rejects.toBeInstanceOf(CIListUnavailableError);
+    gates[3]!.resolve();
+    gates[2]!.resolve();
+    expect(await Promise.all([requests[2], requests[3]])).toEqual([2, 3]);
+    requests.push(start(5), start(6));
+    await flush();
+    gates[5]!.resolve();
+    gates[6]!.resolve();
+    expect(await Promise.all([requests[5], requests[6]])).toEqual([5, 6]);
+  } finally {
+    for (const gate of gates) gate.resolve();
+    await Promise.allSettled(requests);
+  }
+});

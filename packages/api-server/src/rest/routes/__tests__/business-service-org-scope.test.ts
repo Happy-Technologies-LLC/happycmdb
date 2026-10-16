@@ -551,6 +551,33 @@ describe('two-organization isolation', () => {
     expect([missing.status, missing.body]).toEqual([404, CI_NOT_FOUND]);
   });
 
+  it('reports an own pending CI gap before a missing graph node, but not foreign or unknown IDs', async () => {
+    const operationId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    graphOwners.delete('ci-a2');
+    await db.exec(`INSERT INTO ci_reconciliation_operations
+      (id, group_id, organization_id, ci_id, origin, operation, graph_effect, state, actor, epoch, lease_expires_at)
+      VALUES ('${operationId}', '${operationId}', '${INTERNAL_ORG}', 'ci-a2',
+        'api', 'update', TRUE, 'pending', 'test', 1, NOW())`);
+    const post = (id: string) => request(app).post('/api/v1/business-services/bs-a-app/cis')
+      .set(AS_A).send({ ci_ids: [id] });
+    try {
+      const pending = await post('ci-a2');
+      expect([pending.status, pending.body]).toEqual([
+        409, { success: false, error: 'Conflict', message: 'CI is temporarily unavailable' },
+      ]);
+      const foreign = await post('ci-b');
+      const missing = await post('ci-missing');
+      expect([foreign.status, foreign.body]).toEqual([missing.status, missing.body]);
+      expect([missing.status, missing.body]).toEqual([
+        404, { success: false, error: 'Not Found', message: 'CI not found' },
+      ]);
+      expect(await db.rows(`SELECT ci_id FROM ci_business_service_mappings WHERE ci_id = 'ci-a2'`)).toEqual([]);
+    } finally {
+      await db.exec(`DELETE FROM ci_reconciliation_operations WHERE id = '${operationId}'`);
+      graphOwners.set('ci-a2', INTERNAL_ORG);
+    }
+  });
+
   it('/costs excludes a CI owned by another org even if a stale mapping row exists', async () => {
     await db.exec(`INSERT INTO ci_business_service_mappings (ci_id, service_id, mapping_type)
       VALUES ('ci-b', 'bs-a-app', 'supports')`);

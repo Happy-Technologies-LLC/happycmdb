@@ -12,7 +12,7 @@ import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
 import { logger } from '@cmdb/common';
 import { requestOrganizationId } from '../../middleware/auth.middleware';
 import { errorLogFields } from '../../utils/log-error';
-import { CIGapError, CI_GAP_RESPONSE, filterOwnedDimensionRows, writeReferencedCIs } from '../../read-admission';
+import { assertNoCIGap, CIGapError, CI_GAP_RESPONSE, filterOwnedDimensionRows, writeReferencedCIs } from '../../read-admission';
 
 /*
  * Tenant scoping: every handler reads the caller's organization from the
@@ -431,6 +431,7 @@ export class BusinessServiceController {
         return;
       }
       for (const ciId of ci_ids as string[]) {
+        await assertNoCIGap(organizationId, ciId);
         if (!await getNeo4jClient().getCI(ciId, organizationId)) {
           res.status(404).json({ success: false, error: 'Not Found', message: 'CI not found' });
           return;

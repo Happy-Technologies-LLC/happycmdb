@@ -68,7 +68,7 @@ const cypherRuns: Array<{ query: string; params: Params }> = [];
 const int = (n: number) => ({ toNumber: () => n });
 const record = (fields: Record<string, unknown>) => ({ get: (key: string) => fields[key] });
 
-const ORG_A = '11111111-1111-4111-8111-111111111111';
+const ORG_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const ORG_B = '22222222-2222-4222-8222-222222222222';
 
 // The graph: each :BusinessService node carries organization_id (FD-16 c) or,
@@ -95,7 +95,7 @@ const SERVICE_NODE_ORG_FILTER = /MATCH \(service:BusinessService \{id: \$service
 const LICENSES = [
   { id: 'lic-a', name: 'A License', type: 'software', organization_id: ORG_A, tbm_monthly_cost: 3 },
   { id: 'lic-b', name: 'B License', type: 'software', organization_id: ORG_B, tbm_monthly_cost: 5 },
-  { id: 'lic-pending', name: 'Pending', type: 'software', organization_id: ORG_A, tbm_monthly_cost: 99 },
+  { id: 'lic-pending', name: 'Pending', type: 'software', organization_id: ORG_A.toUpperCase(), tbm_monthly_cost: 99 },
   { id: 'lic-failed', name: 'Failed', type: 'software', organization_id: ORG_B, tbm_monthly_cost: 99 },
 ];
 // Each owned service also has one pending/failed CI cost. The fake applies the

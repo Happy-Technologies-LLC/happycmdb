@@ -101,9 +101,10 @@ export async function filterGlobalCIGaps<T extends { id?: unknown; organization_
          AND state IN ('pending','failed')`,
       [pairs.map(row => row.organization_id), pairs.map(row => row.id)]
     );
-    for (const row of result.rows) omitted.add(`${row.organization_id}:${row.ci_id}`);
+    for (const row of result.rows) omitted.add(`${row.organization_id.toLowerCase()}:${row.ci_id}`);
   }
-  return rows.filter(row => !omitted.has(`${row.organization_id}:${row.id}`));
+  return rows.filter(row => typeof row.organization_id !== 'string' ||
+    !omitted.has(`${row.organization_id.toLowerCase()}:${row.id}`));
 }
 
 interface Snapshot { epoch: string; pending: string[] }
@@ -165,7 +166,8 @@ export async function readCIList<T>(
     if (error instanceof CIGapError) throw error;
     throw new CIListUnavailableError();
   } finally {
-    if (active === 0) activeByOrg.delete(organizationId);
-    else activeByOrg.set(organizationId, active);
+    const current = activeByOrg.get(organizationId)!;
+    if (current === 1) activeByOrg.delete(organizationId);
+    else activeByOrg.set(organizationId, current - 1);
   }
 }

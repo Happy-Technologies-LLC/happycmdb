@@ -31,7 +31,9 @@ const SERVICE_ORG: Record<string, string> = {
 
 // Plain functions (not jest.fn): jest.config.unit.js resets mock implementations.
 const pgCalls: Array<{ sql: string; params: unknown[] }> = [];
-const pgQuery = async (sql: string, params: unknown[] = []) => {
+const pgQuery = async (command: string | { text: string; values?: unknown[] }, values: unknown[] = []) => {
+  const sql = typeof command === 'string' ? command : command.text;
+  const params = typeof command === 'string' ? values : command.values ?? [];
   pgCalls.push({ sql, params });
   if (sql.includes('ci_reconciliation_epochs')) return { rows: [{ epoch: '0', pending: [] }] };
   if (!sql.includes('dim_business_services')) return { rows: [] };

@@ -170,7 +170,9 @@ const graph = {
   }),
 };
 const pg = {
-  query: async (sql: string, params: unknown[] = []) => {
+  query: async (command: string | { text: string; values?: unknown[] }, values: unknown[] = []) => {
+    const sql = typeof command === 'string' ? command : command.text;
+    const params = typeof command === 'string' ? values : command.values ?? [];
     sqlCount++;
     return { rows: await db.rows(sql, params) };
   },

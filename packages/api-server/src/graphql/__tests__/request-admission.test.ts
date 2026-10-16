@@ -17,8 +17,10 @@ import type { AuthMiddleware as AuthMiddlewareClass } from '../../middleware/aut
 const ORG_A = '11111111-1111-4111-8111-111111111111';
 const ORG_B = '22222222-2222-4222-8222-222222222222';
 const mockRun = jest.fn(async (_statement: string): Promise<{ records: never[] }> => ({ records: [] }));
-const mockPgQuery = jest.fn(async (sql: string) => ({ rows: sql.includes('ci_reconciliation_epochs')
-  ? [{ epoch: '0', pending: [] }] : [] }));
+const mockPgQuery = jest.fn(async (command: string | { text: string }) => ({
+  rows: (typeof command === 'string' ? command : command.text).includes('ci_reconciliation_epochs')
+    ? [{ epoch: '0', pending: [] }] : [],
+}));
 
 jest.mock('../../auth/auth-bootstrap', () => {
   const { AuthMiddleware } = jest.requireActual<{ AuthMiddleware: typeof AuthMiddlewareClass }>(
@@ -70,8 +72,10 @@ beforeAll(async () => { ({ server, httpServer } = await createGraphQLServer(app)
 afterAll(async () => { await server.stop(); });
 beforeEach(() => {
   mockRun.mockImplementation(async () => ({ records: [] }));
-  mockPgQuery.mockImplementation(async (sql: string) => ({ rows: sql.includes('ci_reconciliation_epochs')
-    ? [{ epoch: '0', pending: [] }] : [] }));
+  mockPgQuery.mockImplementation(async (command: string | { text: string }) => ({
+    rows: (typeof command === 'string' ? command : command.text).includes('ci_reconciliation_epochs')
+      ? [{ epoch: '0', pending: [] }] : [],
+  }));
 });
 
 it('rejects excessive aliases, fields, nested depth, and amplified complexity before graph access', async () => {

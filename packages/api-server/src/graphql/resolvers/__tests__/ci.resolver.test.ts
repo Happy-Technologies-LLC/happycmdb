@@ -72,12 +72,14 @@ describe('GraphQL CI Resolvers', () => {
   beforeEach(() => {
     // Arrange: Create mock Neo4j client
     mockNeo4j = createMockNeo4jDriver();
+    const query = jest.fn().mockImplementation(async (command: string | { text: string }) => ({
+      rows: (typeof command === 'string' ? command : command.text)
+        .includes('SELECT 1 FROM ci_reconciliation_operations')
+        ? [] : [{ epoch: '0', pending: [] }],
+    }));
     jest.mocked(getPostgresClient).mockReturnValue({
-      query: jest.fn().mockImplementation(async (sql: string) => ({
-        rows: sql.includes('SELECT 1 FROM ci_reconciliation_operations') ?
-          [] : [{ epoch: '0', pending: [] }],
-      })),
-      pool: { options: {} },
+      query,
+      pool: { options: {}, query },
     } as never);
 
     // Arrange: Create mock DataLoaders

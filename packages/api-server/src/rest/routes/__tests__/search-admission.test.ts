@@ -71,10 +71,15 @@ function graphRun(cypher: string, params: Record<string, any>) {
   return { records: eligible.slice(offset, offset + limit).map(properties => row({ ci: { properties } })) };
 }
 const graph = { getSession: () => ({ run: async (query: string, params: Record<string, any>) => graphRun(query, params), close: async () => undefined }) };
-const pg = { query: async (query: string, params: string[]) => {
-  if (!query.includes('ci_reconciliation_operations') || !query.includes('organization_id=$1')) throw new Error('Unexpected admission query');
+const pgQuery = async (command: string | { text: string; values?: string[] }, values: string[] = []) => {
+  const query = typeof command === 'string' ? command : command.text;
+  const params = typeof command === 'string' ? values : command.values ?? [];
+  if (!query.includes('ci_reconciliation_operations') || !query.includes('organization_id=$1')) {
+    throw new Error('Unexpected admission query');
+  }
   return { rows: [{ epoch: '0', pending: [params[0] === A ? 'a-pending' : 'b-pending'] }] };
-} };
+};
+const pg = { query: pgQuery, pool: { query: pgQuery } };
 jest.mock('@cmdb/database', () => ({ getNeo4jClient: () => graph, getPostgresClient: () => pg }));
 jest.mock('../../../auth/neo4j-auth.repository', () => ({ Neo4jAuthRepository: jest.fn(() => ({
   findUserById: async (id: 'a' | 'b') => users[id] ?? null,

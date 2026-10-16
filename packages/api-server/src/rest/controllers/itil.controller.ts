@@ -56,18 +56,23 @@ export class ITILController {
         const limitNum = Math.min(parseInt(limit as string), 1000);
         const offset = (pageNum - 1) * limitNum;
         const { total, items } = await readCIList(organizationId, async (pending, timeout) => {
-          const result = await session.run(
-            `${query} WITH ci ORDER BY ci.name, ci.id
-             WITH collect(ci) AS cs
-             RETURN size(cs) AS total, cs[$offset..$end] AS page`,
-            { ...params, pending, offset: neo4j.int(offset), end: neo4j.int(offset + limitNum) },
-            { timeout }
-          );
-          const row = result.records[0]!;
+          const queryParams = { ...params, pending, offset: neo4j.int(offset),
+            limit: neo4j.int(limitNum) };
+          const expiresAt = Date.now() + timeout;
+          const remaining = () => {
+            const milliseconds = expiresAt - Date.now();
+            if (milliseconds <= 0) throw new CIListUnavailableError();
+            return milliseconds;
+          };
+          const countResult = await session.run(
+            `${query} RETURN count(ci) AS total`, queryParams, { timeout: remaining() });
+          const pageResult = await session.run(
+            `${query} RETURN ci ORDER BY ci.name, ci.id SKIP $offset LIMIT $limit`,
+            queryParams, { timeout: remaining() });
           return {
-            total: row.get('total').toNumber() as number,
-            items: (row.get('page') as Array<{ properties: Record<string, unknown> }>)
-              .map(ci => this.convertNeo4jCI(ci.properties)),
+            total: countResult.records[0]!.get('total').toNumber() as number,
+            items: pageResult.records.map(row =>
+              this.convertNeo4jCI((row.get('ci') as { properties: Record<string, unknown> }).properties)),
           };
         });
         res.json({

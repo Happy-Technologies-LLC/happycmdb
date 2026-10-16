@@ -552,8 +552,8 @@ export class TBMController {
           ORDER BY ci.license_expiry_date ASC, ci.id
           SKIP $offset LIMIT 100
         `;
-        const licenses = await readGlobalCIPage(async offset => {
-          const result = await session.run(query, { ...params, offset });
+        const licenses = await readGlobalCIPage(async (offset, timeout) => {
+          const result = await session.run(query, { ...params, offset }, { timeout });
           return result.records.map((r: any) => r.get('ci').properties);
         });
 
@@ -566,6 +566,10 @@ export class TBMController {
         await session.close();
       }
     } catch (error) {
+      if (error instanceof CIListUnavailableError) {
+        res.status(503).json(CI_LIST_UNAVAILABLE_RESPONSE);
+        return;
+      }
       logger.error('Error getting licenses', error);
       res.status(500).json({
         success: false,

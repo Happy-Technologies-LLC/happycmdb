@@ -85,7 +85,7 @@ export async function filterOwnedDimensionRows<T extends { ci_id: string }>(
 }
 /** AP-R: omit pending/failed rows after a platform-wide graph read. */
 export async function filterGlobalCIGaps<T extends { id?: unknown; organization_id?: unknown }>(
-  rows: T[]
+  rows: T[], timeoutMs?: number
 ): Promise<T[]> {
   const validOrg = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   const omitted = new Set<string>();
@@ -94,30 +94,45 @@ export async function filterGlobalCIGaps<T extends { id?: unknown; organization_
       typeof row.id === 'string' && typeof row.organization_id === 'string' &&
       validOrg.test(row.organization_id));
     if (!pairs.length) continue;
-    const result = await getPostgresClient().query(
-      `SELECT organization_id, ci_id FROM ci_reconciliation_operations
+    const text = `SELECT organization_id, ci_id FROM ci_reconciliation_operations
        WHERE (organization_id, ci_id) IN
          (SELECT * FROM unnest($1::uuid[], $2::text[]))
-         AND state IN ('pending','failed')`,
-      [pairs.map(row => row.organization_id), pairs.map(row => row.id)]
-    );
+         AND state IN ('pending','failed')`;
+    const values = [pairs.map(row => row.organization_id), pairs.map(row => row.id)];
+    const timedQuery = { text, values, query_timeout: timeoutMs };
+    const result = timeoutMs === undefined
+      ? await getPostgresClient().query(text, values)
+      : await getPostgresClient().pool.query(timedQuery);
     for (const row of result.rows) omitted.add(`${row.organization_id.toLowerCase()}:${row.ci_id}`);
   }
   return rows.filter(row => typeof row.organization_id !== 'string' ||
     !omitted.has(`${row.organization_id.toLowerCase()}:${row.id}`));
 }
 
-/** Fill a global graph page with committed CIs even when journal gaps lead the ordering. */
+/** Fill a global page without an unbounded gap scan or a partial success on exhaustion. */
 export async function readGlobalCIPage<T extends { id?: unknown; organization_id?: unknown }>(
-  page: (offset: number) => Promise<T[]>
+  page: (offset: number, timeoutMs: number) => Promise<T[]>
 ): Promise<T[]> {
   const result: T[] = [];
-  for (let offset = 0; result.length < 100; offset += 100) {
-    const candidates = await page(offset);
-    result.push(...(await filterGlobalCIGaps(candidates)).slice(0, 100 - result.length));
-    if (candidates.length < 100) break;
+  const expiresAt = Date.now() + 10_000;
+  const remaining = () => {
+    const milliseconds = expiresAt - Date.now();
+    if (milliseconds <= 0) throw new CIListUnavailableError();
+    return milliseconds;
+  };
+  for (let batch = 0; batch < 20; batch++) {
+    const candidates = await page(batch * 100, remaining());
+    remaining();
+    try {
+      result.push(...(await filterGlobalCIGaps(candidates, remaining())).slice(0, 100 - result.length));
+    } catch (error) {
+      if (Date.now() >= expiresAt) throw new CIListUnavailableError();
+      throw error;
+    }
+    remaining();
+    if (result.length === 100 || candidates.length < 100) return result;
   }
-  return result;
+  throw new CIListUnavailableError();
 }
 
 interface Snapshot { epoch: string; pending: string[] }

@@ -47,11 +47,11 @@ async function licenseList(
   await requirePlatformAdmin(context);
   const session = context._neo4jClient.getSession();
   try {
-    const rows = await readGlobalCIPage(async offset => {
+    const rows = await readGlobalCIPage(async (offset, timeout) => {
       const result = await session.run(
         `MATCH (ci:CI {type: 'software'}) WHERE ${where}
          RETURN ci ORDER BY ci.license_expiry_date ASC, ci.id SKIP $offset LIMIT 100`,
-        { ...params, offset }
+        { ...params, offset }, { timeout }
       );
       return result.records.map(record =>
         record.get('ci').properties as { id: string; organization_id?: string });
@@ -69,6 +69,11 @@ async function licenseList(
       complianceStatus: ci.compliance_status?.toUpperCase(),
     }));
   } catch (error) {
+    if (error instanceof CIListUnavailableError) {
+      throw new GraphQLError('CI list temporarily unavailable', {
+        extensions: { code: 'SERVICE_UNAVAILABLE' },
+      });
+    }
     logger.error('Failed to retrieve software licenses', error);
     throw new GraphQLError('Failed to retrieve software licenses', {
       extensions: { code: 'INTERNAL_SERVER_ERROR' },

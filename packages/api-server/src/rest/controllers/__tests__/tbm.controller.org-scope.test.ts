@@ -56,9 +56,11 @@ function send(op: 'exec' | 'query', sql: string, params: unknown[] = []): Promis
 
 // Every data access is counted: Postgres through the client or its pool, Neo4j per Cypher run.
 let pgQueries = 0;
-const pgQuery = async (sql: string, params: unknown[] = []) => {
+const pgQuery = async (input: string | { text: string; values: unknown[]; query_timeout?: number },
+  params: unknown[] = []) => {
   pgQueries++;
-  return { rows: await send('query', sql, params) };
+  return { rows: await send('query', typeof input === 'string' ? input : input.text,
+    typeof input === 'string' ? params : input.values) };
 };
 // Plain functions (not jest.fn): the unit config resets mock implementations.
 const pgClient = { query: pgQuery, pool: { query: pgQuery } };
@@ -511,6 +513,34 @@ describe('global TBM reads and control', () => {
       licenseRows = LICENSES;
       await send('exec', `DELETE FROM ci_reconciliation_operations
         WHERE organization_id = '${ORG_A}' AND ci_id LIKE 'lic-bulk-%'`);
+    }
+  });
+
+  it('fails closed within finite work when a long pending-license backlog precedes eligible rows', async () => {
+    licenseRows = Array.from({ length: 2200 }, (_, i) => ({
+      id: `lic-gap-${String(i).padStart(4, '0')}`,
+      name: `Pending ${i}`, type: 'software', organization_id: ORG_A, tbm_monthly_cost: 1,
+    }));
+    licenseRows.push({ ...LICENSES[0], id: 'lic-after-gaps' });
+    await send('exec', `INSERT INTO ci_reconciliation_operations
+      (id, group_id, organization_id, ci_id, origin, operation, graph_effect, state, actor, epoch, lease_expires_at)
+      SELECT gen_random_uuid(), gen_random_uuid(), '${ORG_A}', 'lic-gap-' || lpad(i::text, 4, '0'),
+        'api', 'update', true, 'pending', 'test', 1, NOW()
+      FROM generate_series(0, 2199) AS i`);
+    try {
+      const rest = await request(app).get('/api/v1/tbm/licenses').set(AS_PLATFORM);
+      expect(rest.status).toBe(503);
+      expect(rest.body.error).toBe('Service Unavailable');
+      expect(cypherRuns).toHaveLength(20);
+      cypherRuns.length = 0;
+      const gql = await request(graphqlApp).post('/graphql').set(AS_PLATFORM)
+        .send({ query: 'query { licenses { id } }' });
+      expect(gql.body.errors?.[0].extensions.code).toBe('SERVICE_UNAVAILABLE');
+      expect(cypherRuns).toHaveLength(20);
+    } finally {
+      licenseRows = LICENSES;
+      await send('exec', `DELETE FROM ci_reconciliation_operations
+        WHERE organization_id = '${ORG_A}' AND ci_id LIKE 'lic-gap-%'`);
     }
   });
 

@@ -634,6 +634,16 @@ describe('/api/v1/cis tenant scoping', () => {
     expect(res.body.data.map((ci: { id: string }) => ci.id)).toEqual(['ci-a-db']);
   });
 
+  it('paginates large own-org ITIL inventory without collecting all nodes for limit one', async () => {
+    for (let i = 0; i < 1200; i++) {
+      seedCI(`ci-itil-${String(i).padStart(4, '0')}`, ORG_A);
+    }
+    const res = await request(app).get('/api/v1/itil/configuration-items?limit=1').set(AS_A);
+    expect(res.status).toBe(200);
+    expect(res.body.pagination).toMatchObject({ total: 1202, page: 1, limit: 1 });
+    expect(res.body.data.map((ci: { id: string }) => ci.id)).toEqual(['ci-a-db']);
+  });
+
   it("POST /cis/search returns only the caller org's matches", async () => {
     const res = await request(app).post('/api/v1/cis/search').set(AS_A).send({ query: 'database' });
     expect(res.status).toBe(200);

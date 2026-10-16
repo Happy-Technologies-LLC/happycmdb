@@ -30,26 +30,47 @@ session_label="${AO_SESSION_ID:-founder-n18-$nonce}"
 run_label="n18.run=$nonce"
 receipt_dir="$repo/test-results/n18"
 [[ ! -L "$repo/test-results" && ! -L "$receipt_dir" ]] || { echo 'Refusing symlinked receipt directory' >&2; exit 2; }
-mkdir -p "$receipt_dir"
+mkdir -m 700 -p "$receipt_dir"
 chmod 700 "$receipt_dir"
 receipt="$receipt_dir/$nonce.jsonl"
 run_log="$receipt_dir/$nonce.run.log"
 schema_log="$receipt_dir/$nonce.migrations.log"
+junit="$receipt_dir/$nonce.junit.xml"
+for leaf in "$receipt" "$run_log" "$schema_log" "$junit"; do
+  [[ ! -e $leaf && ! -L $leaf ]] || { echo "Refusing existing receipt artifact: $leaf" >&2; exit 2; }
+done
+set -C # Exclusive creation rejects existing regular files and symlinks, including dangling ones.
 : > "$receipt"
 : > "$run_log"
 : > "$schema_log"
+: > "$junit"
 started=("$pg_name" "$neo_name" "$redis_name")
+creating=''
 cleanup() {
-  local status=$? teardown=0 name ids id
+  local status=$? teardown=0 name ids id attempt found
   trap - EXIT INT TERM
   for name in "${started[@]}"; do
-    if ! ids=$(docker container ls -aq --filter "name=^/${name}$" --filter "label=ao.session=$session_label" --filter "label=$run_label"); then
+    found=0
+    # An interrupted docker client may return before the daemon exposes its create.
+    # Never report a clean teardown while that run remains unaccounted for.
+    for attempt in {1..50}; do
+      if ! ids=$(docker container ls -aq --filter "name=^/${name}$" --filter "label=ao.session=$session_label" --filter "label=$run_label"); then
+        teardown=1
+      else
+        while IFS= read -r id; do
+          if [[ -n $id ]]; then
+            found=1
+            docker rm -f "$id" >/dev/null 2>&1 || teardown=1
+          fi
+        done <<< "$ids"
+      fi
+      [[ $name == "$creating" && $found -eq 0 ]] || break
+      sleep 0.2
+    done
+    if [[ $name == "$creating" && $found -eq 0 ]]; then
+      printf 'N18_UNRECONCILED=%s\n' "$name" | tee -a "$run_log"
       teardown=1
-      continue
     fi
-    while IFS= read -r id; do
-      [[ -z $id ]] || docker rm -f "$id" >/dev/null 2>&1 || teardown=1
-    done <<< "$ids"
   done
   if [[ $status -eq 0 && $teardown -ne 0 ]]; then status=1; fi
   printf 'N18_TEARDOWN=%s N18_EXIT_STATUS=%s HEAD=%s RECEIPT=%s\n' "$([[ $teardown -eq 0 ]] && echo ok || echo failed)" "$status" "$expected_head" "$receipt" | tee -a "$run_log"
@@ -62,9 +83,13 @@ printf 'N18_HEAD=%s IMAGES=%s,%s,%s\n' "$expected_head" "$neo_image" "$pg_image"
 for image in "$neo_image" "$pg_image" "$redis_image"; do docker pull --platform linux/amd64 "$image" >/dev/null; done
 
 # No host mounts, no external/production data, no provider tokens. Every published socket binds loopback only.
+creating=$pg_name
 docker run -d --rm --platform linux/amd64 --pull never --name "$pg_name" --label "ao.session=$session_label" --label "$run_label" -p 127.0.0.1::5432 -e POSTGRES_USER=test -e POSTGRES_PASSWORD=testpassword -e POSTGRES_DB=cmdb_test "$pg_image" >/dev/null
+creating=$neo_name
 docker run -d --rm --platform linux/amd64 --pull never --name "$neo_name" --label "ao.session=$session_label" --label "$run_label" -p 127.0.0.1::7687 -e NEO4J_AUTH=neo4j/testpassword "$neo_image" >/dev/null
+creating=$redis_name
 docker run -d --rm --platform linux/amd64 --pull never --name "$redis_name" --label "ao.session=$session_label" --label "$run_label" -p 127.0.0.1::6379 "$redis_image" >/dev/null
+creating=''
 for attempt in {1..120}; do docker exec "$pg_name" pg_isready -U test -d cmdb_test >/dev/null 2>&1 && break; sleep 1; done
 docker exec "$pg_name" pg_isready -U test -d cmdb_test >/dev/null
 for attempt in {1..120}; do docker exec "$neo_name" cypher-shell -u neo4j -p testpassword 'RETURN 1' >/dev/null 2>&1 && break; sleep 1; done

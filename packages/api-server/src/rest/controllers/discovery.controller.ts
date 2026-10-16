@@ -71,7 +71,7 @@ export class DiscoveryController {
   private async findJob(id: string) {
     for (const queueName of discoveryQueues()) {
       const job = await queueManager.getQueue(queueName).getJob(id);
-      if (job) return job;
+      if (job) return { job, queueName };
     }
     return null;
   }
@@ -79,8 +79,9 @@ export class DiscoveryController {
 
   async getJobStatus(req: Request, res: Response): Promise<void> {
     try {
-      const job = await this.findJob(req.params.id!);
-      if (!job) { res.status(404).json(NOT_FOUND); return; }
+      const found = await this.findJob(req.params.id!);
+      if (!found) { res.status(404).json(NOT_FOUND); return; }
+      const { job } = found;
       res.json({ success: true, data: publicJob(job, await job.getState()) });
     } catch {
       logger.error('Error getting discovery job status');
@@ -122,8 +123,13 @@ export class DiscoveryController {
 
   async cancelJob(req: Request, res: Response): Promise<void> {
     try {
-      const job = await this.findJob(req.params.id!);
-      if (!job) { res.status(404).json(NOT_FOUND); return; }
+      const found = await this.findJob(req.params.id!);
+      if (!found) { res.status(404).json(NOT_FOUND); return; }
+      const { job, queueName } = found;
+      if (queueName === 'discovery-active-directory' || queueName === 'discovery-snmp') {
+        res.status(403).json({ success: false, error: 'Queue mutation unavailable' });
+        return;
+      }
       const state = await job.getState();
       if (state === 'completed' || state === 'failed') {
         res.status(400).json({ success: false, error: 'Cannot cancel finished discovery job' });

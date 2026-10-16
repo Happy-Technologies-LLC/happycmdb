@@ -4,6 +4,7 @@ import {
   DelayedError, RateLimitError, UnrecoverableError, WaitingChildrenError,
   type Job,
 } from 'bullmq';
+import { getETLQueueNames } from './queue-config';
 
 export type JobErrorCode = 'ERR_INTERNAL' | 'ERR_RESULT_SCHEMA' | 'ERR_VALIDATION' | 'ERR_NOT_FOUND' | 'ERR_UNAVAILABLE';
 const ERROR_CODES: ReadonlySet<string> = new Set<JobErrorCode>([
@@ -32,6 +33,10 @@ export function jobLog(job: Job, eventCode: `DEAD_LETTER:${JobErrorCode}`): Prom
 export type ResultShape = Record<string, 'count' | 'flag' | 'timestamp' | 'errorCounts' | 'stages'>;
 const STAGES: ReadonlySet<string> = new Set([
   'truncate', 'extract-cis', 'load-dimensions', 'load-relationships', 'rebuild-indexes',
+]);
+const SCRUBBED_QUEUES = new Set([
+  ...getETLQueueNames(), 'etl-cis', 'etl-costs', 'etl-incidents',
+  'cost-sync', 'cost-sync-aws', 'cost-sync-azure', 'cost-sync-gcp',
 ]);
 
 function validResult(fields: Record<string, unknown>, schema: ResultShape): boolean {
@@ -62,6 +67,9 @@ export function codedProcessor<Data, Result>(
       if (!(Array.isArray(schema) ? schema : [schema]).some(shape => validResult(fields, shape))) {
         throw new CodedJobError('ERR_RESULT_SCHEMA');
       }
+      // The job's input is no longer needed after the real processor returns.
+      // Redis must not retain pre-cutover payloads once a coded result is stored.
+      if (SCRUBBED_QUEUES.has(job.queueName)) await job.updateData({} as Data);
       return result;
     } catch (error) {
       if (error instanceof DelayedError || error instanceof WaitingChildrenError ||

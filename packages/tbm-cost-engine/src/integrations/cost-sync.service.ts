@@ -10,7 +10,7 @@ import { Queue, Worker, Job, QueueEvents } from 'bullmq';
 import { Logger } from 'winston';
 import { getRedisClient, getPostgresClient } from '@cmdb/database';
 import { startOfMonth, endOfMonth, subDays } from 'date-fns';
-import { codedProcessor, jobErrorCode } from '@cmdb/common';
+import { codedProcessor, jobErrorCode, JobErrorHandler } from '@cmdb/common';
 import { AWSCostExplorer, AWSCredentials } from './aws-cost-explorer';
 import { AzureCostManagement, AzureCredentials } from './azure-cost-management';
 import { GCPBilling, GCPCredentials } from './gcp-billing';
@@ -47,6 +47,8 @@ export class CostSyncService {
   private queueEvents: QueueEvents;
   private dbClient: any;
   private redisClient: any;
+  private workerConnection = getRedisClient().getConnection().duplicate({ maxRetriesPerRequest: null });
+  private worker!: Worker;
 
   constructor(logger: Logger) {
     this.logger = logger;
@@ -74,7 +76,10 @@ export class CostSyncService {
 
     // Initialize QueueEvents for job completion tracking
     this.queueEvents = new QueueEvents('cost-sync', {
-      connection: this.redisClient,
+      connection: this.workerConnection,
+    });
+    this.queueEvents.on('error', error => {
+      this.logger.error('Cost sync events failed', { code: jobErrorCode(error) });
     });
 
     // Initialize workers
@@ -85,7 +90,7 @@ export class CostSyncService {
    * Initialize BullMQ workers for processing sync jobs
    */
   private initializeWorkers(): void {
-    const worker = new Worker(
+    this.worker = new Worker(
       'cost-sync',
       codedProcessor('cost-sync', {
         success: 'flag', recordsProcessed: 'count', recordsCreated: 'count',
@@ -116,18 +121,30 @@ export class CostSyncService {
           syncEndTime: result.syncEndTime.toISOString(),
         };
       }),
-      { connection: this.redisClient, concurrency: 5 }
+      { connection: this.workerConnection, concurrency: 5 }
     );
 
-    worker.on('completed', (_job, result) => {
+    this.worker.on('completed', (_job, result) => {
       this.logger.info('Cost sync job completed', {
         recordsProcessed: result.recordsProcessed,
       });
     });
 
-    worker.on('failed', (_job, error) => {
+    this.worker.on('failed', (job, error) => {
       this.logger.error('Cost sync job failed', { code: jobErrorCode(error) });
+      if (job) void JobErrorHandler.handleJobFailure(job, error).catch(() =>
+        this.logger.error('Cost sync dead-letter handling failed', { code: 'ERR_INTERNAL' }));
     });
+    this.worker.on('error', error => {
+      this.logger.error('Cost sync worker failed', { code: jobErrorCode(error) });
+    });
+  }
+
+  async close(): Promise<void> {
+    await this.worker.close();
+    await this.queueEvents.close();
+    await this.syncQueue.close();
+    await this.workerConnection.quit();
   }
 
   /**

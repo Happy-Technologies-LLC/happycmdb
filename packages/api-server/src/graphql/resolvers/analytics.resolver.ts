@@ -7,7 +7,7 @@ import { GraphQLError } from 'graphql';
 import { AnalyticsService, DependencyDepthLimitError } from '../../services/analytics.service';
 import { logger, CIAnalyticsLimitError } from '@cmdb/common';
 import { requireGraphQLOrganization } from '../require-organization';
-import { assertNoCIGap, CIGapError, readSingleCI } from '../../read-admission';
+import { assertNoCIGap, CIGapError, CIListUnavailableError, readSingleCI } from '../../read-admission';
 import type { TokenPayload } from '../../auth/types';
 
 /**
@@ -265,13 +265,12 @@ const AnalyticsQueryResolvers = {
         _ciType: row.ci_type,
         _relationshipCount: parseInt(String(row.relationship_count)),
       }));
-    } catch (error: any) {
+    } catch (error: unknown) {
       logger.error('GraphQL: Error getting top connected CIs', error);
-      throw new GraphQLError('Failed to retrieve top connected CIs', {
-        extensions: {
-          code: 'INTERNAL_SERVER_ERROR',
-          originalError: error.message,
-        },
+      const limited = error instanceof CIListUnavailableError ||
+        (typeof error === 'object' && error !== null && 'code' in error && error.code === '57014');
+      throw new GraphQLError(limited ? 'Top connected CI resource limit exceeded' : 'Failed to retrieve top connected CIs', {
+        extensions: { code: limited ? 'RESOURCE_LIMIT_EXCEEDED' : 'INTERNAL_SERVER_ERROR' },
       });
     }
   },

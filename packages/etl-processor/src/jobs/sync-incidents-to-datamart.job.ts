@@ -62,10 +62,7 @@ export async function processSyncIncidentsToDatamart(
     durationMs: 0,
   };
 
-  logger.info('[SyncIncidentsToDatamart] Starting incident data sync job', {
-    jobId: job.id,
-    data: job.data,
-  });
+  logger.info('[SyncIncidentsToDatamart] Starting incident data sync job', { jobId: job.id });
 
   try {
     const incrementalSince = job.data.incrementalSince || subDays(new Date(), 1).toISOString();

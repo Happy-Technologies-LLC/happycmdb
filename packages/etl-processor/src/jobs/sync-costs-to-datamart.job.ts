@@ -80,10 +80,7 @@ export async function processSyncCostsToDatamart(
     durationMs: 0,
   };
 
-  logger.info('[SyncCostsToDatamart] Starting cost data sync job', {
-    jobId: job.id,
-    data: job.data,
-  });
+  logger.info('[SyncCostsToDatamart] Starting cost data sync job', { jobId: job.id });
 
   try {
     const fiscalPeriod = job.data.fiscalPeriod || format(new Date(), 'yyyy-MM');

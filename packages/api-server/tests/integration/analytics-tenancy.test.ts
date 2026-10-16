@@ -144,6 +144,32 @@ it('omits pending, failed, backfilled and graph-reassigned top-connected CIs and
   }
 });
 
+it('bounds limit-one ranking over large two-org stale inventories and serves the owned tenant page', async () => {
+  const stale = Array.from({ length: 1025 }, (_, index) => `analytics-0-volume-a-${String(index).padStart(4, '0')}`);
+  const other = Array.from({ length: 1025 }, (_, index) => `analytics-0-volume-b-${String(index).padStart(4, '0')}`);
+  await sql.query(`INSERT INTO cmdb.dim_ci (ci_id, ci_name, ci_type, ci_status, organization_id)
+    SELECT id, id, 'server', 'active', $2 FROM unnest($1::text[]) AS id`, [stale, A]);
+  await sql.query(`INSERT INTO cmdb.dim_ci (ci_id, ci_name, ci_type, ci_status, organization_id)
+    SELECT id, id, 'server', 'active', $2 FROM unnest($1::text[]) AS id`, [other, B]);
+  await cypher('CREATE (:CI {id:$id, name:$id, organization_id:$org})', { id: other[0], org: B });
+  try {
+    const refused = await rest('a', '/top-connected?limit=1');
+    expect(refused.status).toBe(503);
+    expect(refused.body).toEqual({ success: false, error: 'Top connected CI resource limit exceeded' });
+    const rejected = await gql('a', '{ analytics { getTopConnectedCIs(limit:1) { _ciId } } }');
+    expect(rejected.body.errors?.[0].extensions.code).toBe('RESOURCE_LIMIT_EXCEEDED');
+    const owned = await rest('b', '/top-connected?limit=1');
+    expect(owned.status).toBe(200);
+    expect(owned.body.data).toEqual([{
+      ci_id: other[0], ci_name: other[0], ci_type: 'server', relationship_count: '0',
+    }]);
+  } finally {
+    await sql.query("DELETE FROM cmdb.dim_ci WHERE ci_id LIKE 'analytics-0-volume-%'");
+    await cypher('MATCH (ci:CI {id:$id}) DETACH DELETE ci', { id: other[0] });
+  }
+  expect((await rest('a', '/top-connected?limit=1')).body.data[0].ci_id).toBe('analytics-a');
+});
+
 it('scopes GraphQL aggregates and inventory through mounted execution', async () => {
   // The production request-admission budget caps aggregate fanout; exercise
   // each reader as a separate authenticated operation, not one oversized alias query.

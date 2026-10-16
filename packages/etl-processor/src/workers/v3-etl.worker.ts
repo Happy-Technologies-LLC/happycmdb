@@ -13,7 +13,7 @@
  */
 
 import { Worker, Job } from 'bullmq';
-import { logger, codedProcessor, jobErrorCode } from '@cmdb/common';
+import { logger, codedProcessor, jobErrorCode, JobErrorHandler } from '@cmdb/common';
 import { getRedisClient } from '@cmdb/database';
 import {
   processSyncCIsToDatamart,
@@ -43,14 +43,14 @@ type SafeIncidentResult = Omit<SyncIncidentsJobResult, 'validationErrors' | 'enr
  */
 export class CISyncWorker {
   private worker: Worker<SyncCIsJobData, SafeCIResult>;
+  private connection = getRedisClient().getConnection().duplicate({ maxRetriesPerRequest: null });
 
   constructor() {
-    const redisClient = getRedisClient();
-    const connection = redisClient.getConnection();
+    const connection = this.connection;
 
     this.worker = new Worker<SyncCIsJobData, SafeCIResult>(
-      'etl:cis',
-      codedProcessor('etl:cis', {
+      'etl-cis',
+      codedProcessor('etl-cis', {
         success: 'flag', cisProcessed: 'count', cisInserted: 'count', cisUpdated: 'count',
         cisSkipped: 'count', errorCount: 'count', errorCodes: 'errorCounts',
         startTime: 'timestamp', endTime: 'timestamp', durationMs: 'count',
@@ -88,6 +88,8 @@ export class CISyncWorker {
         attemptsMade: job?.attemptsMade,
         code: jobErrorCode(error),
       });
+      if (job) void JobErrorHandler.handleJobFailure(job, error).catch(() =>
+        logger.error('[CISyncWorker] Dead-letter handling failed', { code: 'ERR_INTERNAL' }));
     });
 
     this.worker.on('error', (error) => {
@@ -105,6 +107,7 @@ export class CISyncWorker {
   async stop(): Promise<void> {
     logger.info('[CISyncWorker] Stopping worker...');
     await this.worker.close();
+    await this.connection.quit();
     logger.info('[CISyncWorker] Worker stopped');
   }
 
@@ -123,13 +126,13 @@ export class CISyncWorker {
 export class CostValidationWorker {
   private worker: Worker<SyncCostsJobData, SafeCostResult>;
 
+  private connection = getRedisClient().getConnection().duplicate({ maxRetriesPerRequest: null });
   constructor() {
-    const redisClient = getRedisClient();
-    const connection = redisClient.getConnection();
+    const connection = this.connection;
 
     this.worker = new Worker<SyncCostsJobData, SafeCostResult>(
-      'etl:costs',
-      codedProcessor('etl:costs', {
+      'etl-costs',
+      codedProcessor('etl-costs', {
         success: 'flag', periodsProcessed: 'count', costPoolsValidated: 'count',
         costPoolsEnriched: 'count', errorCount: 'count', errorCodes: 'errorCounts',
         startTime: 'timestamp', endTime: 'timestamp', durationMs: 'count',
@@ -167,6 +170,8 @@ export class CostValidationWorker {
         attemptsMade: job?.attemptsMade,
         code: jobErrorCode(error),
       });
+      if (job) void JobErrorHandler.handleJobFailure(job, error).catch(() =>
+        logger.error('[CostValidationWorker] Dead-letter handling failed', { code: 'ERR_INTERNAL' }));
     });
 
     this.worker.on('error', (error) => {
@@ -184,6 +189,7 @@ export class CostValidationWorker {
   async stop(): Promise<void> {
     logger.info('[CostValidationWorker] Stopping worker...');
     await this.worker.close();
+    await this.connection.quit();
     logger.info('[CostValidationWorker] Worker stopped');
   }
 
@@ -202,13 +208,13 @@ export class CostValidationWorker {
 export class IncidentSyncWorker {
   private worker: Worker<SyncIncidentsJobData, SafeIncidentResult>;
 
+  private connection = getRedisClient().getConnection().duplicate({ maxRetriesPerRequest: null });
   constructor() {
-    const redisClient = getRedisClient();
-    const connection = redisClient.getConnection();
+    const connection = this.connection;
 
     this.worker = new Worker<SyncIncidentsJobData, SafeIncidentResult>(
-      'etl:incidents',
-      codedProcessor('etl:incidents', {
+      'etl-incidents',
+      codedProcessor('etl-incidents', {
         success: 'flag', incidentsProcessed: 'count', incidentsEnriched: 'count',
         changesProcessed: 'count', changesEnriched: 'count', slaViolations: 'count',
         errorCount: 'count', errorCodes: 'errorCounts',
@@ -254,6 +260,8 @@ export class IncidentSyncWorker {
         attemptsMade: job?.attemptsMade,
         code: jobErrorCode(error),
       });
+      if (job) void JobErrorHandler.handleJobFailure(job, error).catch(() =>
+        logger.error('[IncidentSyncWorker] Dead-letter handling failed', { code: 'ERR_INTERNAL' }));
     });
 
     this.worker.on('error', (error) => {
@@ -271,6 +279,7 @@ export class IncidentSyncWorker {
   async stop(): Promise<void> {
     logger.info('[IncidentSyncWorker] Stopping worker...');
     await this.worker.close();
+    await this.connection.quit();
     logger.info('[IncidentSyncWorker] Worker stopped');
   }
 

@@ -7,7 +7,7 @@ import { logger, CIAnalyticsLimitError } from '@cmdb/common';
 import { requestOrganizationId } from '../../middleware/auth.middleware';
 import { executeBoundedAnalysis } from '../../middleware/analysis-admission';
 import { AnalyticsService, DependencyDepthLimitError } from '../../services/analytics.service';
-import { assertNoCIGap, CIGapError, CI_GAP_RESPONSE, readSingleCI } from '../../read-admission';
+import { assertNoCIGap, CIGapError, CI_GAP_RESPONSE, CIListUnavailableError, readSingleCI } from '../../read-admission';
 
 export class AnalyticsController {
   private postgresClient = getPostgresClient();
@@ -278,11 +278,12 @@ export class AnalyticsController {
       });
     } catch (error) {
       logger.error('Error getting top connected CIs', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to retrieve top connected CIs',
-        message: error instanceof Error ? error.message : 'Unknown error',
-      });
+      if (error instanceof CIListUnavailableError ||
+        (typeof error === 'object' && error !== null && 'code' in error && error.code === '57014')) {
+        res.status(503).json({ success: false, error: 'Top connected CI resource limit exceeded' });
+        return;
+      }
+      res.status(500).json({ success: false, error: 'Failed to retrieve top connected CIs' });
     }
   }
 

@@ -29,6 +29,7 @@ function inventory(): Map<string, string> {
     }
   }
   walk(join(ROOT, 'infrastructure', 'scripts'), sources);
+  walk(join(ROOT, 'infrastructure', 'database'), sources);
   walk(join(ROOT, 'scripts'), sources);
   return sources;
 }
@@ -112,4 +113,16 @@ it.each(injected)('refuses an injected gate bypass in %s', (path, addition) => {
   const original = audited.get(path) ?? '';
   const changed = new Map([[path, `${original}\n${addition}\n`]]);
   expect(violations(changed)).not.toEqual([]);
+});
+
+it.each([
+  'infrastructure/database/metabase-init.sql',
+  'infrastructure/database/views/cost-analysis.sql',
+  'infrastructure/database/views/itil-analysis.sql',
+  'infrastructure/database/views/bsm-analysis.sql',
+])('rejects an unchained trigger injected into deployed SQL %s', path => {
+  expect(audited.has(path)).toBe(true);
+  const changed = new Map(audited);
+  changed.set(path, `${audited.get(path)}\nCREATE TRIGGER bad AFTER UPDATE ON cis FOR EACH ROW EXECUTE FUNCTION log_ci_change();`);
+  expect(violations(changed)).toContain(`${path}: unchained CI audit trigger`);
 });

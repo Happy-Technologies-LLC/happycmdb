@@ -48,9 +48,11 @@ function graphRun(cypher: string, params: Record<string, any>) {
     }));
   }
   eligible.sort((left, right) => left.name.localeCompare(right.name));
-  if (cypher.includes('CALL db.index.fulltext')) return { records: [row({
-    total: neo4j.int(eligible.length), page: eligible.slice(0, params.limit.toNumber()).map(properties => ({ properties })),
-  })] };
+  if (cypher.includes('CALL db.index.fulltext')) {
+    if (cypher.includes('collect(node)')) throw new Error('Unbounded full-text materialization');
+    if (cypher.includes('count(node)')) return { records: [row({ total: neo4j.int(eligible.length) })] };
+    return { records: eligible.slice(0, params.limit.toNumber()).map(properties => row({ node: { properties } })) };
+  }
   if (cypher.includes('count(ci)')) return { records: [row({ total: neo4j.int(eligible.length) })] };
   const offset = params.offset ? params.offset.toNumber() : 0;
   const limit = params.limit.toNumber();
@@ -93,5 +95,30 @@ it('omits pending CIs and foreign CIs from every mounted search list and count f
     expect(relationship.body.data.map((ci: { id: string }) => ci.id)).toEqual([`${user}-rel`]);
     expect(orphaned.body.pagination.total).toBe(1);
     expect(orphaned.body.data.map((ci: { id: string }) => ci.id)).toEqual([`${user}-orphan`]);
+  }
+});
+
+it('returns exact two-org full-text totals and the first owned match with a large limit-one inventory', async () => {
+  const originalSize = nodes.length;
+  try {
+    for (let index = 0; index < 2400; index++) {
+      nodes.push({
+        id: `a-bulk-${String(index).padStart(4, '0')}`, name: `host-a-bulk-${String(index).padStart(4, '0')}`,
+        organization_id: A, type: 'server', created_at: '2026-10-15T00:00:00Z',
+      }, {
+        id: `b-bulk-${String(index).padStart(4, '0')}`, name: `host-b-bulk-${String(index).padStart(4, '0')}`,
+        organization_id: B, type: 'server', created_at: '2026-10-15T00:00:00Z',
+      });
+    }
+    for (const user of ['a', 'b'] as const) {
+      const response = await request(app).post('/api/v1/search/fulltext').set(auth(user))
+        .send({ query: 'host', limit: 1 });
+      expect(response.status).toBe(200);
+      expect(response.body).toMatchObject({
+        total: 2403, count: 1, data: [{ ci: { id: `${user}-bulk-0000` } }],
+      });
+    }
+  } finally {
+    nodes.length = originalSize;
   }
 });

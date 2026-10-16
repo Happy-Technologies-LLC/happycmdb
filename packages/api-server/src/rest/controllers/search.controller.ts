@@ -129,21 +129,24 @@ export class SearchController {
       const { cis, total } = await readCIList(organizationId, async (pending, timeout) => {
         const session = this.neo4jClient.getSession();
         try {
-          const result = await session.run(
-            `CALL db.index.fulltext.queryNodes('ci_fulltext_idx', $query)
+          const params = { query: literalFulltextQuery(query), organizationId, pending, limit: neo4j.int(limitNum) };
+          const matched = `CALL db.index.fulltext.queryNodes('ci_fulltext_idx', $query)
              YIELD node
-             WHERE node:CI AND node.organization_id = $organizationId AND NOT node.id IN $pending
-             WITH node ORDER BY toLower(coalesce(node.name, '')), node.id
-             WITH collect(node) AS nodes
-             RETURN size(nodes) AS total, nodes[0..$limit] AS page`,
-            { query: literalFulltextQuery(query), organizationId, pending, limit: neo4j.int(limitNum) },
-            { timeout }
-          );
-          const row = result.records[0]!;
-          const nodes = row.get('page') as Array<{ properties: Record<string, unknown> }>;
-          return { total: row.get('total').toNumber() as number,
-            cis: nodes.map(node => {
-              const props = node.properties;
+             WHERE node:CI AND node.organization_id = $organizationId AND NOT node.id IN $pending`;
+          const expiresAt = Date.now() + timeout;
+          const remaining = () => {
+            const milliseconds = expiresAt - Date.now();
+            if (milliseconds <= 0) throw new CIListUnavailableError();
+            return milliseconds;
+          };
+          const countResult = await session.run(
+            `${matched} RETURN count(node) AS total`, params, { timeout: remaining() });
+          const pageResult = await session.run(
+            `${matched} RETURN node ORDER BY toLower(coalesce(node.name, '')), node.id LIMIT $limit`,
+            params, { timeout: remaining() });
+          return { total: countResult.records[0]!.get('total').toNumber() as number,
+            cis: pageResult.records.map(row => {
+              const props = (row.get('node') as { properties: Record<string, unknown> }).properties;
               return { ci: {
                 id: props['id'], external_id: props['external_id'], name: props['name'], type: props['type'],
                 status: props['status'], environment: props['environment'],

@@ -8,7 +8,7 @@
  */
 
 import { Worker, Job } from 'bullmq';
-import { codedProcessor, jobErrorCode, logger } from '@cmdb/common';
+import { codedProcessor, jobErrorCode, JobErrorHandler, logger } from '@cmdb/common';
 import { getRedisClient } from '@cmdb/database';
 import {
   processAWSCostSync,
@@ -52,10 +52,10 @@ function safeCostResult(result: AWSCostSyncResult | AzureCostSyncResult | GCPCos
  */
 export class AWSCostSyncWorker {
   private worker: Worker<AWSCostSyncJobData, SafeCostResult>;
+  private connection = getRedisClient().getConnection().duplicate({ maxRetriesPerRequest: null });
 
   constructor() {
-    const redisClient = getRedisClient();
-    const connection = redisClient.getConnection();
+    const connection = this.connection;
 
     this.worker = new Worker<AWSCostSyncJobData, SafeCostResult>(
       'cost-sync-aws',
@@ -82,8 +82,13 @@ export class AWSCostSyncWorker {
       });
     });
 
-    this.worker.on('failed', (_job, error) => {
+    this.worker.on('failed', (job, error) => {
       logger.error('[AWSCostSyncWorker] Job failed', { code: jobErrorCode(error) });
+      if (job) void JobErrorHandler.handleJobFailure(job, error).catch(() =>
+        logger.error('[AWSCostSyncWorker] Dead-letter handling failed', { code: 'ERR_INTERNAL' }));
+    });
+    this.worker.on('error', error => {
+      logger.error('[AWSCostSyncWorker] Worker error', { code: jobErrorCode(error) });
     });
 
     logger.info('[AWSCostSyncWorker] Worker initialized and listening');
@@ -91,6 +96,7 @@ export class AWSCostSyncWorker {
 
   async close(): Promise<void> {
     await this.worker.close();
+    await this.connection.quit();
     logger.info('[AWSCostSyncWorker] Worker closed');
   }
 
@@ -104,10 +110,10 @@ export class AWSCostSyncWorker {
  */
 export class AzureCostSyncWorker {
   private worker: Worker<AzureCostSyncJobData, SafeCostResult>;
+  private connection = getRedisClient().getConnection().duplicate({ maxRetriesPerRequest: null });
 
   constructor() {
-    const redisClient = getRedisClient();
-    const connection = redisClient.getConnection();
+    const connection = this.connection;
 
     this.worker = new Worker<AzureCostSyncJobData, SafeCostResult>(
       'cost-sync-azure',
@@ -134,8 +140,13 @@ export class AzureCostSyncWorker {
       });
     });
 
-    this.worker.on('failed', (_job, error) => {
+    this.worker.on('failed', (job, error) => {
       logger.error('[AzureCostSyncWorker] Job failed', { code: jobErrorCode(error) });
+      if (job) void JobErrorHandler.handleJobFailure(job, error).catch(() =>
+        logger.error('[AzureCostSyncWorker] Dead-letter handling failed', { code: 'ERR_INTERNAL' }));
+    });
+    this.worker.on('error', error => {
+      logger.error('[AzureCostSyncWorker] Worker error', { code: jobErrorCode(error) });
     });
 
     logger.info('[AzureCostSyncWorker] Worker initialized and listening');
@@ -143,6 +154,7 @@ export class AzureCostSyncWorker {
 
   async close(): Promise<void> {
     await this.worker.close();
+    await this.connection.quit();
     logger.info('[AzureCostSyncWorker] Worker closed');
   }
 
@@ -156,10 +168,10 @@ export class AzureCostSyncWorker {
  */
 export class GCPCostSyncWorker {
   private worker: Worker<GCPCostSyncJobData, SafeCostResult>;
+  private connection = getRedisClient().getConnection().duplicate({ maxRetriesPerRequest: null });
 
   constructor() {
-    const redisClient = getRedisClient();
-    const connection = redisClient.getConnection();
+    const connection = this.connection;
 
     this.worker = new Worker<GCPCostSyncJobData, SafeCostResult>(
       'cost-sync-gcp',
@@ -186,8 +198,13 @@ export class GCPCostSyncWorker {
       });
     });
 
-    this.worker.on('failed', (_job, error) => {
+    this.worker.on('failed', (job, error) => {
       logger.error('[GCPCostSyncWorker] Job failed', { code: jobErrorCode(error) });
+      if (job) void JobErrorHandler.handleJobFailure(job, error).catch(() =>
+        logger.error('[GCPCostSyncWorker] Dead-letter handling failed', { code: 'ERR_INTERNAL' }));
+    });
+    this.worker.on('error', error => {
+      logger.error('[GCPCostSyncWorker] Worker error', { code: jobErrorCode(error) });
     });
 
     logger.info('[GCPCostSyncWorker] Worker initialized and listening');
@@ -195,6 +212,7 @@ export class GCPCostSyncWorker {
 
   async close(): Promise<void> {
     await this.worker.close();
+    await this.connection.quit();
     logger.info('[GCPCostSyncWorker] Worker closed');
   }
 

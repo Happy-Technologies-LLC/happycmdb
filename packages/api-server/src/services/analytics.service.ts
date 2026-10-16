@@ -3,7 +3,7 @@
 
 import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
 import { logger } from '@cmdb/common';
-import { filterOwnedDimensionRows } from '../read-admission';
+import { CIListUnavailableError } from '../read-admission';
 
 // A relationship is reportable only if both current dimension endpoints
 // belong to the caller. Use the same edge set in all relationship reports.
@@ -196,51 +196,118 @@ export class AnalyticsService {
       ci_id: string;
       ci_name: string;
       ci_type: string;
-      relationship_count: number;
+      relationship_count: string;
     }>
   > {
     try {
-      // The mart can retain a row after the graph ID has been reassigned.
-      // Resolve the entire eligible set before applying the requested limit:
-      // limiting in SQL first would allow stale rows to hide valid CIs.
-      const eligible = await this.postgresClient.query(`
-        SELECT c.ci_id FROM cmdb.dim_ci c
+      // Rank by the mart's upper bound, then verify graph ownership only for
+      // candidates that can still enter the page. A zero-edge limit-one read
+      // never sends the complete tenant inventory to Neo4j.
+      const expiresAt = Date.now() + 7000;
+      const remaining = () => {
+        const ms = expiresAt - Date.now();
+        if (ms <= 0) throw new CIListUnavailableError();
+        return ms;
+      };
+      const query = async (text: string, values: unknown[]) => {
+        try {
+          return await this.postgresClient.pool.query({
+            text, values, query_timeout: remaining(),
+          } as import('pg').QueryConfig & { query_timeout: number });
+        } catch (error) {
+          if (error instanceof Error && error.message === 'Query read timeout') {
+            throw new CIListUnavailableError();
+          }
+          throw error;
+        }
+      };
+      const eligible = `SELECT c.* FROM cmdb.dim_ci c
         WHERE c.is_current AND NOT c.org_backfilled AND c.organization_id = $1
-          AND NOT EXISTS (
-            SELECT 1 FROM ci_reconciliation_operations j
+          AND NOT EXISTS (SELECT 1 FROM ci_reconciliation_operations j
             WHERE j.organization_id = $1 AND j.ci_id = c.ci_id
-              AND j.state IN ('pending', 'failed')
-          )
-      `, [organizationId]);
-      const owned = await filterOwnedDimensionRows(organizationId, eligible.rows);
-      if (!owned.length) return [];
+              AND j.state IN ('pending', 'failed'))`;
       const edge = direction === 'in' ? 'r.to_ci_key = c.ci_key'
         : direction === 'out' ? 'r.from_ci_key = c.ci_key'
         : '(r.from_ci_key = c.ci_key OR r.to_ci_key = c.ci_key)';
-      const result = await this.postgresClient.query(`
-        WITH eligible AS (
-          SELECT c.* FROM cmdb.dim_ci c
-          WHERE c.is_current AND NOT c.org_backfilled AND c.organization_id = $1
-            AND c.ci_id = ANY($3::text[])
-            AND NOT EXISTS (
-              SELECT 1 FROM ci_reconciliation_operations j
-              WHERE j.organization_id = $1 AND j.ci_id = c.ci_id
-                AND j.state IN ('pending', 'failed')
-            )
-        ), tenant_relationships AS (
-          SELECT r.* FROM cmdb.fact_ci_relationships r
-          JOIN eligible source ON source.ci_key = r.from_ci_key
-          JOIN eligible target ON target.ci_key = r.to_ci_key
-        )
-        SELECT c.ci_id, c.ci_name, c.ci_type,
-          COUNT(r.relationship_key) AS relationship_count
-        FROM eligible c
-        LEFT JOIN tenant_relationships r ON ${edge}
-        GROUP BY c.ci_key, c.ci_id, c.ci_name, c.ci_type
-        ORDER BY relationship_count DESC, c.ci_id
-        LIMIT $2
-      `, [organizationId, limit, owned.map(row => row.ci_id)]);
-      return result.rows;
+      const relationships = `SELECT r.*, source.ci_id AS from_id, target.ci_id AS to_id
+        FROM cmdb.fact_ci_relationships r
+        JOIN eligible source ON source.ci_key = r.from_ci_key
+        JOIN eligible target ON target.ci_key = r.to_ci_key`;
+      const pageSize = Math.min(32, Math.max(2, limit + 1));
+      const selected: Array<{
+        ci_id: string; ci_name: string; ci_type: string; relationship_count: string;
+      }> = [];
+      let offset = 0;
+      while (offset < 1024) {
+        const batch = await query(`
+          WITH eligible AS (${eligible}), tenant_relationships AS (${relationships})
+          SELECT c.ci_id, c.ci_name, c.ci_type,
+            COUNT(r.relationship_key) AS upper_count
+          FROM eligible c LEFT JOIN tenant_relationships r ON ${edge}
+          GROUP BY c.ci_key, c.ci_id, c.ci_name, c.ci_type
+          ORDER BY upper_count DESC, c.ci_id LIMIT $2 OFFSET $3
+        `, [organizationId, pageSize, offset]);
+        if (!batch.rows.length) return selected;
+        offset += batch.rows.length;
+        const candidates = batch.rows as Array<{
+          ci_id: string; ci_name: string; ci_type: string; upper_count: string;
+        }>;
+        const worst = selected[limit - 1];
+        const competitive = worst ? candidates.filter(candidate =>
+          Number(candidate.upper_count) > Number(worst.relationship_count) ||
+          (Number(candidate.upper_count) === Number(worst.relationship_count) &&
+            candidate.ci_id < worst.ci_id)) : candidates;
+        if (!competitive.length) return selected;
+        const session = this.neo4jClient.getSession();
+        const owned = new Set<string>();
+        try {
+          const ids = competitive.map(candidate => candidate.ci_id);
+          const edges = await query(`
+            WITH eligible AS (${eligible}), tenant_relationships AS (${relationships})
+            SELECT c.ci_id, r.from_id, r.to_id
+            FROM eligible c JOIN tenant_relationships r ON ${edge}
+            WHERE c.ci_id = ANY($2::text[])
+            ORDER BY c.ci_id, r.relationship_key LIMIT $3
+          `, [organizationId, ids, 2049]);
+          if (edges.rows.length > 2048) throw new CIListUnavailableError();
+          const graphIds = [...new Set([...ids, ...edges.rows.flatMap(
+            row => [row.from_id as string, row.to_id as string])])];
+          for (let start = 0; start < graphIds.length; start += 512) {
+            const result = await session.run(
+              `MATCH (ci:CI) WHERE ci.id IN $ids AND ci.organization_id = $organizationId
+               RETURN ci.id AS id`,
+              { ids: graphIds.slice(start, start + 512), organizationId },
+              { timeout: remaining() });
+            for (const record of result.records) owned.add(record.get('id') as string);
+          }
+          const counts = new Map<string, number>();
+          for (const row of edges.rows) {
+            const neighbor = row.from_id === row.ci_id ? row.to_id : row.from_id;
+            if (owned.has(neighbor)) counts.set(row.ci_id, (counts.get(row.ci_id) ?? 0) + 1);
+          }
+          for (const candidate of competitive) {
+            if (!owned.has(candidate.ci_id)) continue;
+            selected.push({
+              ci_id: candidate.ci_id, ci_name: candidate.ci_name, ci_type: candidate.ci_type,
+              relationship_count: String(counts.get(candidate.ci_id) ?? 0),
+            });
+          }
+          selected.sort((a, b) =>
+            Number(b.relationship_count) - Number(a.relationship_count) || a.ci_id.localeCompare(b.ci_id));
+          selected.length = Math.min(selected.length, limit);
+        } finally {
+          await session.close();
+        }
+        if (batch.rows.length < pageSize) return selected;
+        const last = candidates[candidates.length - 1]!;
+        const floor = selected[limit - 1];
+        if (floor && (Number(last.upper_count) < Number(floor.relationship_count) ||
+          (Number(last.upper_count) === Number(floor.relationship_count) && last.ci_id >= floor.ci_id))) {
+          return selected;
+        }
+        remaining();
+      }
+      throw new CIListUnavailableError();
     } catch (error) {
       logger.error('Error getting top connected CIs', error);
       throw error;

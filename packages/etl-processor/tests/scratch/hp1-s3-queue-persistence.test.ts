@@ -4,6 +4,9 @@
  * This suite must be run only by the founder on an approved disposable substrate.
  */
 import { Queue, Job } from 'bullmq';
+import { randomUUID } from 'crypto';
+import { createLogger } from 'winston';
+import { appendFileSync } from 'fs';
 import { getDiscoveryQueueNames } from '@cmdb/common';
 import {
   closeQueueManagerConnection, getNeo4jClient, getPostgresClient, getRedisClient, queueManager,
@@ -11,16 +14,25 @@ import {
 } from '@cmdb/database';
 import { DiscoveryOrchestrator } from '@cmdb/discovery-engine';
 import { ETLWorkerManager } from '../../src';
+import { V3ETLWorkerManager } from '../../src/workers/v3-etl.worker';
+import { CostSyncWorkerManager } from '../../../discovery-engine/src/workers/cost-sync.worker';
+import { CostSyncService } from '../../../tbm-cost-engine/src/integrations/cost-sync.service';
 
 const orgs = ['aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa', 'bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb'];
 const etlQueues = [QUEUE_NAMES._ETL_SYNC, QUEUE_NAMES._ETL_RECONCILIATION,
   QUEUE_NAMES._ETL_CHANGE_DETECTION, QUEUE_NAMES._ETL_FULL_REFRESH];
+const costQueues = ['cost-sync-aws', 'cost-sync-azure', 'cost-sync-gcp', 'cost-sync'];
+const v3Queues = ['etl-cis', 'etl-costs', 'etl-incidents'];
 const marker = 'never-persist-private-n18';
 const redis = getRedisClient();
 const graph = getNeo4jClient();
 const postgres = getPostgresClient();
 const discovery = new DiscoveryOrchestrator();
 const etl = new ETLWorkerManager();
+let cloud: CostSyncWorkerManager;
+let tbm: CostSyncService;
+let createdLicenseTable = false;
+let v3: V3ETLWorkerManager;
 const etlConnections = new Map<string, Queue>();
 const submitted: Job[] = [];
 
@@ -34,25 +46,61 @@ async function settled(queue: Queue, job: Job, expected: 'completed' | 'failed')
   throw new Error(`Timed out waiting for ${job.queueName}: ${expected}`);
 }
 
+/** Store only verified, Redis-reloaded fields; never include the submitted payload. */
+function recordReceipt(queue: string, organizationId: string, phase: 'normal' | 'forced-failure',
+  persisted: Job, logs: string[]): void {
+  const fields = {
+    returnvalue: persisted.returnvalue, logs,
+    failedReason: persisted.failedReason, stacktrace: persisted.stacktrace,
+    data: persisted.data,
+  };
+  const markerAbsent = !JSON.stringify(fields).includes(marker);
+  expect(markerAbsent).toBe(true);
+  const saved = {
+    queue, organizationId, phase, state: phase === 'normal' ? 'completed' : 'failed',
+    ...fields, markerAbsent,
+  };
+  if (process.env.N18_RECEIPT_PATH) {
+    appendFileSync(process.env.N18_RECEIPT_PATH, `${JSON.stringify(saved)}\n`, { mode: 0o600 });
+  }
+}
+
 beforeAll(async () => {
   await discovery.start();
   await etl.start();
-  for (const name of etlQueues) {
+  const licenseTable = await postgres.query("SELECT to_regclass('public.software_licenses') AS name");
+  if (!licenseTable.rows[0].name) {
+    await postgres.query(`CREATE TABLE public.software_licenses (
+      license_id text PRIMARY KEY, software_name text, vendor text, license_type text,
+      quantity integer, unit_cost numeric, currency text, renewal_date date,
+      purchase_date date, expiry_date date, license_key text, support_included boolean, notes text
+    )`);
+    createdLicenseTable = true;
+  }
+  cloud = new CostSyncWorkerManager();
+  tbm = new CostSyncService(createLogger({ silent: true }));
+  v3 = new V3ETLWorkerManager();
+  await v3.start();
+  for (const name of [...etlQueues, ...costQueues, ...v3Queues]) {
     etlConnections.set(name, new Queue(name, { connection: redis.getConnection() }));
   }
 }, 60_000);
 
 afterAll(async () => {
   await etl.stop();
-  await queueManager.closeAll();
+  await cloud?.closeAll();
+  await tbm?.close();
+  await v3?.stop();
   for (const job of submitted) {
     if (await job.getState() !== 'unknown') await job.remove();
   }
   await Promise.all([...etlConnections.values()].map(queue => queue.close()));
+  await queueManager.closeAll();
   await discovery.stop();
   const session = graph.getSession();
   try { await session.run('MATCH (ci:CI) WHERE ci.id IN [91991, 91992] DETACH DELETE ci'); }
   finally { await session.close(); }
+  if (createdLicenseTable) await postgres.query('DROP TABLE public.software_licenses');
   await postgres.close();
   await graph.close();
   await redis.close();
@@ -76,6 +124,7 @@ it('scrubs two organizations of pre-cutover discovery jobs in every §10.5 queue
         failure: persisted.failedReason, stack: persisted.stacktrace, data: persisted.data }))
         .not.toContain(marker);
       expect(persisted.data.__dlq).toBeUndefined();
+      recordReceipt(name, organizationId, 'normal', persisted, logs.logs);
     }
   }
 }, 70_000);
@@ -118,6 +167,7 @@ it('classifies and scrubs injected updateData command faults in each registered 
       expect(JSON.stringify({ result: fresh?.returnvalue, logs: logs.logs,
         failure: fresh?.failedReason, stack: fresh?.stacktrace, data: fresh?.data }))
         .not.toContain(marker);
+      recordReceipt(name, orgs[1], 'forced-failure', fresh!, logs.logs);
     } finally {
       fault.mockRestore();
       await queue.resume();
@@ -127,10 +177,11 @@ it('classifies and scrubs injected updateData command faults in each registered 
 
 it('persists coded success for A and B and sanitized forced failure through every production ETL worker', async () => {
   const safe = (name: string, organizationId: string): Record<string, unknown> => {
-    if (name === QUEUE_NAMES._ETL_SYNC) return { organizationId, incrementalSince: '2099-01-01T00:00:00Z' };
-    if (name === QUEUE_NAMES._ETL_RECONCILIATION) return { organizationId, ciIds: [] };
-    if (name === QUEUE_NAMES._ETL_CHANGE_DETECTION) return { organizationId, ciIds: [], since: '2099-01-01T00:00:00Z' };
-    return { organizationId, truncateTables: false, rebuildIndexes: false };
+    const common = { organizationId, privateMarker: marker };
+    if (name === QUEUE_NAMES._ETL_SYNC) return { ...common, incrementalSince: '2099-01-01T00:00:00Z' };
+    if (name === QUEUE_NAMES._ETL_RECONCILIATION) return { ...common, ciIds: [] };
+    if (name === QUEUE_NAMES._ETL_CHANGE_DETECTION) return { ...common, ciIds: [], since: '2099-01-01T00:00:00Z' };
+    return { ...common, truncateTables: false, rebuildIndexes: false };
   };
   const unsafe = (name: string): Record<string, unknown> => {
     const common = { organizationId: orgs[1], privateMarker: marker };
@@ -150,9 +201,12 @@ it('persists coded success for A and B and sanitized forced failure through ever
       expect(completed.returnvalue).not.toHaveProperty('organizationId');
       expect(completed.failedReason).toBe('');
       expect(completed.stacktrace).toEqual([]);
+      expect(completed.data).toEqual({});
       expect(JSON.stringify({ result: completed.returnvalue,
         logs: (await queue.getJobLogs(success.id!)).logs })).not.toContain(marker);
       expect(JSON.stringify(completed.returnvalue)).not.toContain(orgs[1]);
+      recordReceipt(name, organizationId, 'normal', completed,
+        (await queue.getJobLogs(success.id!)).logs);
     }
 
     if (name === QUEUE_NAMES._ETL_FULL_REFRESH) {
@@ -187,5 +241,122 @@ it('persists coded success for A and B and sanitized forced failure through ever
     expect(JSON.stringify({ result: fresh?.returnvalue, logs: logs.logs,
       failure: fresh?.failedReason, stack: fresh?.stacktrace, data: fresh?.data }))
       .not.toContain(marker);
+    recordReceipt(name, orgs[1], 'forced-failure', fresh!, logs.logs);
   }
 }, 760_000);
+
+it('persists coded outcomes and scrubs two-org inputs across four actual cloud/TBM cost workers', async () => {
+  for (const name of costQueues) {
+    const queue = etlConnections.get(name)!;
+    for (const organizationId of orgs) {
+      const data = name === 'cost-sync'
+        ? { provider: 'license', organizationId, privateMarker: marker }
+        : { organizationId, credentialId: randomUUID(), startDate: '2099-01-01',
+          endDate: '2099-01-02', privateMarker: marker };
+      const job = await queue.add('n18-cost-normal', data,
+        { removeOnComplete: false, removeOnFail: false, attempts: 1 });
+      submitted.push(job);
+      const fresh = await settled(queue, job, 'completed');
+      const result = fresh.returnvalue as Record<string, unknown>;
+      expect(fresh.data).toEqual({});
+      expect(result).toEqual(expect.objectContaining(name === 'cost-sync'
+        ? { success: true, recordsProcessed: 0, errorCount: 0 }
+        : { success: false, costsImported: 0, errorCount: 1 }));
+      expect(fresh.failedReason).toBe('');
+      expect(fresh.stacktrace).toEqual([]);
+      expect(JSON.stringify({ result, logs: (await queue.getJobLogs(job.id!)).logs,
+        data: fresh.data, failure: fresh.failedReason, stack: fresh.stacktrace })).not.toContain(marker);
+      recordReceipt(name, organizationId, 'normal', fresh,
+        (await queue.getJobLogs(job.id!)).logs);
+    }
+    const data = name === 'cost-sync'
+      ? { provider: 'invalid', organizationId: orgs[1], privateMarker: marker }
+      : { organizationId: orgs[1], credentialId: randomUUID(),
+        startDate: marker, endDate: '2099-01-02', privateMarker: marker };
+    const job = await queue.add('n18-cost-fault', data,
+      { removeOnComplete: false, removeOnFail: false, attempts: 1 });
+    submitted.push(job);
+    await settled(queue, job, 'failed');
+    let fresh = await Job.fromId(queue, job.id!);
+    const deadline = Date.now() + 10_000;
+    while (!fresh?.data.__dlq && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 50));
+      fresh = await Job.fromId(queue, job.id!);
+    }
+    const logs = await queue.getJobLogs(job.id!);
+    expect(fresh?.returnvalue).toBeNull();
+    expect(fresh?.failedReason).toBe('ERR_INTERNAL');
+    expect(fresh?.stacktrace?.length).toBeGreaterThan(0);
+    expect(logs.logs).toContain('DEAD_LETTER:ERR_INTERNAL');
+    expect(fresh?.data).toEqual({ _legacy: true, __dlq: { _code: 'ERR_INTERNAL' } });
+    expect(JSON.stringify({ result: fresh?.returnvalue, logs: logs.logs,
+      data: fresh?.data, failure: fresh?.failedReason, stack: fresh?.stacktrace })).not.toContain(marker);
+    recordReceipt(name, orgs[1], 'forced-failure', fresh!, logs.logs);
+  }
+}, 90_000);
+
+it('persists scrubbed two-org results and coded DLQ failures through three registered v3 workers', async () => {
+  for (const name of v3Queues) {
+    const queue = etlConnections.get(name)!;
+    for (const organizationId of orgs) {
+      const data = name === 'etl-cis'
+        ? { organizationId, incrementalSince: '2099-01-01T00:00:00Z', privateMarker: marker }
+        : name === 'etl-costs'
+          ? { organizationId, fiscalPeriod: '2099-01', validateAllocations: false, privateMarker: marker }
+          : { organizationId, incrementalSince: '2099-01-01T00:00:00Z',
+            includeChanges: false, privateMarker: marker };
+      const job = await queue.add('n18-v3-normal', data,
+        { removeOnComplete: false, removeOnFail: false, attempts: 1 });
+      submitted.push(job);
+      const fresh = await settled(queue, job, 'completed');
+      expect(fresh.data).toEqual({});
+      expect(fresh.returnvalue).toEqual(expect.objectContaining({
+        success: expect.any(Boolean), errorCount: expect.any(Number), errorCodes: expect.any(Object),
+      }));
+      expect(fresh.failedReason).toBe('');
+      expect(fresh.stacktrace).toEqual([]);
+      expect(JSON.stringify({ result: fresh.returnvalue,
+        logs: (await queue.getJobLogs(job.id!)).logs, data: fresh.data })).not.toContain(marker);
+      recordReceipt(name, organizationId, 'normal', fresh,
+        (await queue.getJobLogs(job.id!)).logs);
+    }
+    await queue.pause();
+    const faulted = await queue.add('n18-v3-fault', {
+      organizationId: orgs[1], incrementalSince: '2099-01-01T00:00:00Z',
+      fiscalPeriod: '2099-01', validateAllocations: false, includeChanges: false, privateMarker: marker,
+    }, { removeOnComplete: false, removeOnFail: false, attempts: 1 });
+    submitted.push(faulted);
+    const updateData = Job.prototype.updateData;
+    let injected = false;
+    const fault = jest.spyOn(Job.prototype, 'updateData').mockImplementation(function (this: Job, data) {
+      if (this.id === faulted.id && !injected) {
+        injected = true;
+        return Promise.reject(new Error(marker));
+      }
+      return updateData.call(this, data);
+    });
+    try {
+      await queue.resume();
+      await settled(queue, faulted, 'failed');
+      let fresh = await Job.fromId(queue, faulted.id!);
+      const deadline = Date.now() + 10_000;
+      while (!fresh?.data.__dlq && Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 50));
+        fresh = await Job.fromId(queue, faulted.id!);
+      }
+      const logs = await queue.getJobLogs(faulted.id!);
+      expect(injected).toBe(true);
+      expect(fresh?.returnvalue).toBeNull();
+      expect(fresh?.failedReason).toBe('ERR_INTERNAL');
+      expect(fresh?.stacktrace?.length).toBeGreaterThan(0);
+      expect(logs.logs).toContain('DEAD_LETTER:ERR_INTERNAL');
+      expect(fresh?.data).toEqual({ _legacy: true, __dlq: { _code: 'ERR_INTERNAL' } });
+      expect(JSON.stringify({ result: fresh?.returnvalue, logs: logs.logs,
+        data: fresh?.data, failure: fresh?.failedReason, stack: fresh?.stacktrace })).not.toContain(marker);
+      recordReceipt(name, orgs[1], 'forced-failure', fresh!, logs.logs);
+    } finally {
+      fault.mockRestore();
+      await queue.resume();
+    }
+  }
+}, 90_000);

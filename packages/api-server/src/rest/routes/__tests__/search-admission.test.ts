@@ -25,6 +25,7 @@ const nodes = [A, B].flatMap((organization_id, index) => {
   }));
 });
 const edges = new Map([['a-rel', 'a-target'], ['b-rel', 'b-target']]);
+const fulltextScores = new Map<string, number>();
 const row = (fields: Record<string, unknown>) => ({ get: (key: string) => fields[key] });
 function graphRun(cypher: string, params: Record<string, any>) {
   const root = cypher.includes('CALL db.index.fulltext') ? 'node' : 'ci';
@@ -51,7 +52,12 @@ function graphRun(cypher: string, params: Record<string, any>) {
   if (cypher.includes('CALL db.index.fulltext')) {
     if (cypher.includes('collect(node)')) throw new Error('Unbounded full-text materialization');
     if (cypher.includes('count(node)')) return { records: [row({ total: neo4j.int(eligible.length) })] };
-    return { records: eligible.slice(0, params.limit.toNumber()).map(properties => row({ node: { properties } })) };
+    if (cypher.includes('ORDER BY score DESC')) {
+      eligible.sort((left, right) =>
+        (fulltextScores.get(right.id) ?? 1) - (fulltextScores.get(left.id) ?? 1) || left.id.localeCompare(right.id));
+    }
+    return { records: eligible.slice(0, params.limit.toNumber()).map(properties =>
+      row({ node: { properties }, score: fulltextScores.get(properties.id) ?? 1 })) };
   }
   if (cypher.includes('count(ci)')) return { records: [row({ total: neo4j.int(eligible.length) })] };
   const offset = params.offset ? params.offset.toNumber() : 0;
@@ -120,5 +126,31 @@ it('returns exact two-org full-text totals and the first owned match with a larg
     }
   } finally {
     nodes.length = originalSize;
+  }
+});
+
+it('ranks tenant-owned full-text hits by index relevance before limit and returns each score', async () => {
+  const originalSize = nodes.length;
+  try {
+    for (const user of ['a', 'b'] as const) {
+      nodes.push(
+        { id: `${user}-weak`, name: `host-${user}-aaa`, organization_id: users[user]._organizationId,
+          type: 'server', created_at: '2026-10-15T00:00:00Z' },
+        { id: `${user}-strong`, name: `host-${user}-zzz`, organization_id: users[user]._organizationId,
+          type: 'server', created_at: '2026-10-15T00:00:00Z' },
+      );
+      fulltextScores.set(`${user}-weak`, 0.25);
+      fulltextScores.set(`${user}-strong`, 8);
+    }
+    for (const user of ['a', 'b'] as const) {
+      const response = await request(app).post('/api/v1/search/fulltext').set(auth(user))
+        .send({ query: 'host', limit: 1 });
+      expect(response.status).toBe(200);
+      expect(response.body.total).toBe(5);
+      expect(response.body.data).toEqual([{ ci: expect.objectContaining({ id: `${user}-strong` }), score: 8 }]);
+    }
+  } finally {
+    nodes.length = originalSize;
+    fulltextScores.clear();
   }
 });

@@ -131,7 +131,7 @@ export class SearchController {
         try {
           const params = { query: literalFulltextQuery(query), organizationId, pending, limit: neo4j.int(limitNum) };
           const matched = `CALL db.index.fulltext.queryNodes('ci_fulltext_idx', $query)
-             YIELD node
+             YIELD node, score
              WHERE node:CI AND node.organization_id = $organizationId AND NOT node.id IN $pending`;
           const expiresAt = Date.now() + timeout;
           const remaining = () => {
@@ -142,7 +142,7 @@ export class SearchController {
           const countResult = await session.run(
             `${matched} RETURN count(node) AS total`, params, { timeout: remaining() });
           const pageResult = await session.run(
-            `${matched} RETURN node ORDER BY toLower(coalesce(node.name, '')), node.id LIMIT $limit`,
+            `${matched} RETURN node, score ORDER BY score DESC, node.id LIMIT $limit`,
             params, { timeout: remaining() });
           return { total: countResult.records[0]!.get('total').toNumber() as number,
             cis: pageResult.records.map(row => {
@@ -153,7 +153,7 @@ export class SearchController {
                 created_at: props['created_at'], updated_at: props['updated_at'],
                 discovered_at: props['discovered_at'],
                 metadata: typeof props['metadata'] === 'string' ? JSON.parse(props['metadata']) : {},
-              } };
+              }, score: row.get('score') as number };
             }) };
         } finally {
           await session.close();

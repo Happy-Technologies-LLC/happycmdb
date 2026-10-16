@@ -3,6 +3,7 @@
 
 import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
 import { logger } from '@cmdb/common';
+import { filterOwnedDimensionRows } from '../read-admission';
 
 // A relationship is reportable only if both current dimension endpoints
 // belong to the caller. Use the same edge set in all relationship reports.
@@ -199,20 +200,46 @@ export class AnalyticsService {
     }>
   > {
     try {
+      // The mart can retain a row after the graph ID has been reassigned.
+      // Resolve the entire eligible set before applying the requested limit:
+      // limiting in SQL first would allow stale rows to hide valid CIs.
+      const eligible = await this.postgresClient.query(`
+        SELECT c.ci_id FROM cmdb.dim_ci c
+        WHERE c.is_current AND NOT c.org_backfilled AND c.organization_id = $1
+          AND NOT EXISTS (
+            SELECT 1 FROM ci_reconciliation_operations j
+            WHERE j.organization_id = $1 AND j.ci_id = c.ci_id
+              AND j.state IN ('pending', 'failed')
+          )
+      `, [organizationId]);
+      const owned = await filterOwnedDimensionRows(organizationId, eligible.rows);
+      if (!owned.length) return [];
       const edge = direction === 'in' ? 'r.to_ci_key = c.ci_key'
         : direction === 'out' ? 'r.from_ci_key = c.ci_key'
         : '(r.from_ci_key = c.ci_key OR r.to_ci_key = c.ci_key)';
       const result = await this.postgresClient.query(`
-        WITH tenant_relationships AS (${tenantRelationships})
+        WITH eligible AS (
+          SELECT c.* FROM cmdb.dim_ci c
+          WHERE c.is_current AND NOT c.org_backfilled AND c.organization_id = $1
+            AND c.ci_id = ANY($3::text[])
+            AND NOT EXISTS (
+              SELECT 1 FROM ci_reconciliation_operations j
+              WHERE j.organization_id = $1 AND j.ci_id = c.ci_id
+                AND j.state IN ('pending', 'failed')
+            )
+        ), tenant_relationships AS (
+          SELECT r.* FROM cmdb.fact_ci_relationships r
+          JOIN eligible source ON source.ci_key = r.from_ci_key
+          JOIN eligible target ON target.ci_key = r.to_ci_key
+        )
         SELECT c.ci_id, c.ci_name, c.ci_type,
           COUNT(r.relationship_key) AS relationship_count
-        FROM cmdb.dim_ci c
+        FROM eligible c
         LEFT JOIN tenant_relationships r ON ${edge}
-        WHERE c.is_current AND c.organization_id = $1
         GROUP BY c.ci_key, c.ci_id, c.ci_name, c.ci_type
-        ORDER BY relationship_count DESC
+        ORDER BY relationship_count DESC, c.ci_id
         LIMIT $2
-      `, [organizationId, limit]);
+      `, [organizationId, limit, owned.map(row => row.ci_id)]);
       return result.rows;
     } catch (error) {
       logger.error('Error getting top connected CIs', error);

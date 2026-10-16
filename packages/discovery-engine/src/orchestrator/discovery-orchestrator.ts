@@ -1,8 +1,8 @@
 // Copyright 2026 Happy Technologies LLC
 // SPDX-License-Identifier: Apache-2.0
 import type { Job } from 'bullmq';
-import { queueManager, QUEUE_NAMES } from '@cmdb/database';
-import { codedProcessor, logger, type DiscoveryJob } from '@cmdb/common';
+import { queueManager } from '@cmdb/database';
+import { codedProcessor, getDiscoveryQueueNames, logger, type DiscoveryJob } from '@cmdb/common';
 
 /** S3 drains pre-cutover Redis payloads; S5 owns admission and discovery execution. */
 export class DiscoveryOrchestrator {
@@ -27,7 +27,7 @@ export class DiscoveryOrchestrator {
         return { _refused: 1 };
       }
     );
-    for (const queue of [QUEUE_NAMES._DISCOVERY_SSH, QUEUE_NAMES._DISCOVERY_NMAP, 'discovery-ai']) {
+    for (const queue of getDiscoveryQueueNames()) {
       queueManager.registerWorker(queue, drain, { concurrency: 2 });
     }
     logger.info('Discovery queues registered for legacy payload draining');
@@ -50,7 +50,7 @@ export class DiscoveryOrchestrator {
   }
 
   async getAllWorkerStatuses(): Promise<Array<{ name: string; running: boolean; concurrency: number }>> {
-    return [QUEUE_NAMES._DISCOVERY_SSH, QUEUE_NAMES._DISCOVERY_NMAP, 'discovery-ai'].map(name => ({
+    return getDiscoveryQueueNames().map(name => ({
       name, running: this.workersRegistered, concurrency: 2,
     }));
   }

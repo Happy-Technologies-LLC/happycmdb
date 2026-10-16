@@ -1,51 +1,113 @@
-// Copyright 2026 Happy Technologies LLC
-// SPDX-License-Identifier: Apache-2.0
-
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.AuditService = void 0;
+exports.AuditService = exports.AUDIT_CHAIN_PARTITION = void 0;
 exports.getAuditService = getAuditService;
+const crypto_1 = require("crypto");
 const common_1 = require("@cmdb/common");
+const audit_1 = require("@happy-technologies/audit");
+exports.AUDIT_CHAIN_PARTITION = 'global';
+function toChainFields(row) {
+    return {
+        id: row.id,
+        action: row.action,
+        actorId: row.actor,
+        tenantId: exports.AUDIT_CHAIN_PARTITION,
+        resourceType: row.entity_type,
+        resourceId: row.entity_id,
+        metadata: row.metadata ?? {},
+        ipAddress: row.ip_address ?? null,
+        userAgent: row.user_agent ?? null,
+    };
+}
+let auditChainKernel = null;
+function getAuditChainKernel() {
+    if (!auditChainKernel) {
+        const secret = process.env['AUDIT_CHAIN_KEY'];
+        if (!secret) {
+            throw new Error('AUDIT_CHAIN_KEY environment variable is not set; it is required to compute or verify the audit hash chain');
+        }
+        auditChainKernel = (0, audit_1.createAuditChain)(secret);
+    }
+    return auditChainKernel;
+}
 class AuditService {
     pool;
     constructor(pool) {
         this.pool = pool;
     }
-    async logAudit(entry) {
-        const client = await this.pool.connect();
+    async logAudit(entry, organizationId) {
+        if (!organizationId || !entry['actor'])
+            throw new Error('Verified actor and organization required');
+        let client;
         try {
-            await client.query(`
-        INSERT INTO audit_log (
-          entity_type,
-          entity_id,
-          action,
-          actor,
-          actor_type,
-          changes,
-          metadata,
-          ip_address,
-          user_agent
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-        `, [
-                entry['entity_type'],
-                entry['entity_id'],
-                entry['action'],
-                entry['actor'],
-                entry['actor_type'],
-                JSON.stringify(entry['changes']),
-                entry['metadata'] ? JSON.stringify(entry['metadata']) : null,
-                entry['ip_address'] || null,
-                entry['user_agent'] || null,
-            ]);
+            client = await this.pool.connect();
+            await client.query('BEGIN');
+            try {
+                await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [exports.AUDIT_CHAIN_PARTITION]);
+                const prevResult = await client.query(`
+          SELECT entry_hash FROM audit_log
+          WHERE entry_hash IS NOT NULL
+          ORDER BY timestamp DESC, id DESC
+          LIMIT 1
+          `);
+                const prevHash = prevResult.rows[0]?.entry_hash ?? null;
+                const id = (0, crypto_1.randomUUID)();
+                const metadata = { ...(entry['metadata'] ?? {}), organization_id: organizationId };
+                const chainFields = toChainFields({
+                    id,
+                    action: entry['action'],
+                    actor: entry['actor'],
+                    entity_type: entry['entity_type'],
+                    entity_id: entry['entity_id'],
+                    metadata,
+                    ip_address: entry['ip_address'] ?? null,
+                    user_agent: entry['user_agent'] ?? null,
+                });
+                const entryHash = getAuditChainKernel().computeEntryHash(chainFields, prevHash);
+                await client.query(`
+          INSERT INTO audit_log (
+            id, entity_type, entity_id, action, actor, actor_type, changes,
+            metadata, ip_address, user_agent, prev_hash, entry_hash, organization_id
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+          `, [
+                    id, entry['entity_type'], entry['entity_id'], entry['action'],
+                    entry['actor'], entry['actor_type'], JSON.stringify(entry['changes']),
+                    JSON.stringify(metadata), entry['ip_address'] || null,
+                    entry['user_agent'] || null, prevHash, entryHash, organizationId,
+                ]);
+                await client.query('COMMIT');
+            }
+            catch (txError) {
+                await client.query('ROLLBACK');
+                throw txError;
+            }
         }
         catch (error) {
-            common_1.logger.error('Failed to log audit entry', { error, entry });
+            common_1.logger.error('Failed to log audit entry');
+            throw error;
         }
         finally {
-            client.release();
+            client?.release();
         }
     }
-    async logCICreate(ciId, actor, actorType, newData) {
+    async verifyAuditChain() {
+        const result = await this.pool.query(`
+      SELECT id, entity_type, entity_id, action, actor, metadata, organization_id, ip_address, user_agent, prev_hash, entry_hash
+      FROM audit_log
+      ORDER BY timestamp ASC, id ASC
+      `);
+        const rows = result.rows.map((row) => ({
+            ...toChainFields(row),
+            prevHash: row.prev_hash ?? null,
+            entryHash: row.entry_hash ?? null,
+        }));
+        const kernel = getAuditChainKernel().verifyAuditChain(rows);
+        const orgBindingViolations = result.rows.filter(row => row.organization_id === null
+            ? row.metadata !== null && Object.prototype.hasOwnProperty.call(row.metadata, 'organization_id')
+            : row.metadata?.['organization_id'] !== row.organization_id).map(row => row.id);
+        return { ...kernel, ok: kernel.ok && orgBindingViolations.length === 0, orgBindingViolations };
+    }
+    async logCICreate(ciId, organizationId, actor, actorType, newData) {
         const changes = Object.entries(newData).map(([field, value]) => ({
             field,
             old_value: null,
@@ -58,9 +120,9 @@ class AuditService {
             actor,
             actor_type: actorType,
             changes,
-        });
+        }, organizationId);
     }
-    async logCIUpdate(ciId, actor, actorType, oldData, newData, metadata) {
+    async logCIUpdate(ciId, organizationId, actor, actorType, oldData, newData, metadata) {
         const changes = [];
         for (const [field, newValue] of Object.entries(newData)) {
             const oldValue = oldData[field];
@@ -81,10 +143,10 @@ class AuditService {
                 actor_type: actorType,
                 changes,
                 metadata,
-            });
+            }, organizationId);
         }
     }
-    async logCIDelete(ciId, actor, actorType, deletedData) {
+    async logCIDelete(ciId, organizationId, actor, actorType, deletedData) {
         const changes = Object.entries(deletedData).map(([field, value]) => ({
             field,
             old_value: value,
@@ -97,9 +159,9 @@ class AuditService {
             actor,
             actor_type: actorType,
             changes,
-        });
+        }, organizationId);
     }
-    async logRelationshipAdd(fromId, toId, type, actor, actorType, properties) {
+    async logRelationshipAdd(fromId, toId, type, organizationId, actor, actorType, properties) {
         const relationshipId = `${fromId}-${type}-${toId}`;
         await this.logAudit({
             entity_type: 'RELATIONSHIP',
@@ -113,9 +175,9 @@ class AuditService {
                 { field: 'type', old_value: null, new_value: type },
                 { field: 'properties', old_value: null, new_value: properties },
             ],
-        });
+        }, organizationId);
     }
-    async logRelationshipRemove(fromId, toId, type, actor, actorType, properties) {
+    async logRelationshipRemove(fromId, toId, type, organizationId, actor, actorType, properties) {
         const relationshipId = `${fromId}-${type}-${toId}`;
         await this.logAudit({
             entity_type: 'RELATIONSHIP',
@@ -129,9 +191,9 @@ class AuditService {
                 { field: 'type', old_value: type, new_value: null },
                 { field: 'properties', old_value: properties, new_value: null },
             ],
-        });
+        }, organizationId);
     }
-    async logDiscoveryUpdate(ciId, discoveryJobId, oldData, newData) {
+    async logDiscoveryUpdate(ciId, discoveryJobId, organizationId, oldData, newData) {
         const changes = [];
         for (const [field, newValue] of Object.entries(newData)) {
             const oldValue = oldData[field];
@@ -154,7 +216,7 @@ class AuditService {
                 metadata: {
                     discovery_job_id: discoveryJobId,
                 },
-            });
+            }, organizationId);
         }
     }
     async queryAuditLogs(query) {
@@ -186,6 +248,11 @@ class AuditService {
             if (query.to_date) {
                 conditions.push(`timestamp <= $${paramIndex++}`);
                 params.push(query.to_date);
+            }
+            if (query.organizationId) {
+                conditions.push(`organization_id = $${paramIndex}::uuid AND metadata->>'organization_id' = $${paramIndex}::text`);
+                params.push(query.organizationId);
+                paramIndex++;
             }
             const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
             const countResult = await client.query(`SELECT COUNT(*) as total FROM audit_log ${whereClause}`, params);
@@ -236,10 +303,13 @@ class AuditService {
             client.release();
         }
     }
-    async getCIAuditHistory(ciId, limit = 100) {
+    async getCIAuditHistory(ciId, organizationId, limit = 100) {
+        if (!organizationId)
+            throw new Error('Organization required for CI audit history');
         const response = await this.queryAuditLogs({
             entity_type: 'CI',
             entity_id: ciId,
+            organizationId,
             limit,
         });
         return response.entries;

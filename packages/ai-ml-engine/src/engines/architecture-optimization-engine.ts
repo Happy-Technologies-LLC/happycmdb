@@ -200,8 +200,16 @@ export class ArchitectureOptimizationEngine {
     const recommendations: ArchitectureRecommendation[] = [];
 
     // Reject the whole analysis rather than returning partial metrics.
-    const traversal = await this.walkDependencies(ciIds, organizationId);
-    const graphMetrics = await this.calculateDependencyGraphMetrics(ciIds, organizationId, traversal.depths);
+    // A mapped root may be healthy while a traversed neighbor is in a
+    // reconciliation gap. Carry one org-scoped exclusion set through every
+    // graph query so neither cycles nor issue counts can include that neighbor.
+    const gaps = await this.queryWithDeadline(
+      `SELECT ci_id FROM ci_reconciliation_operations
+       WHERE organization_id = $1 AND state IN ('pending', 'failed')`, [organizationId]
+    );
+    const excluded = gaps.rows.map((row: { ci_id: string }) => row.ci_id);
+    const traversal = await this.walkDependencies(ciIds, organizationId, excluded);
+    const graphMetrics = await this.calculateDependencyGraphMetrics(ciIds, organizationId, traversal.depths, excluded);
     const circularDeps = this.config.detect_circular_dependencies ? traversal.cycles : [];
     if (circularDeps.length > 0) {
       issues.push(...this.createCircularDependencyIssues(circularDeps));
@@ -222,19 +230,19 @@ export class ArchitectureOptimizationEngine {
     }
 
     // 5. Detect single points of failure
-    const spofIssues = await this.detectSinglePointsOfFailure(graphMetrics, organizationId);
+    const spofIssues = await this.detectSinglePointsOfFailure(graphMetrics, organizationId, excluded);
     if (spofIssues.length > 0) {
       issues.push(...spofIssues);
     }
 
     // 6. Detect shared database anti-pattern
-    const sharedDbIssues = await this.detectSharedDatabasePattern(ciIds, organizationId);
+    const sharedDbIssues = await this.detectSharedDatabasePattern(ciIds, organizationId, excluded);
     if (sharedDbIssues.length > 0) {
       issues.push(...sharedDbIssues);
     }
 
     // 7. Detect poor separation of concerns
-    const separationIssues = await this.detectPoorSeparation(ciIds, organizationId);
+    const separationIssues = await this.detectPoorSeparation(ciIds, organizationId, excluded);
     if (separationIssues.length > 0) {
       issues.push(...separationIssues);
     }
@@ -303,7 +311,8 @@ export class ArchitectureOptimizationEngine {
   private async calculateDependencyGraphMetrics(
     ciIds: string[],
     organizationId: string,
-    depths: Map<string, number>
+    depths: Map<string, number>,
+    excluded: string[]
   ): Promise<DependencyGraphMetrics[]> {
     const session = this.neo4jClient.getSession();
     const metrics: DependencyGraphMetrics[] = [];
@@ -315,8 +324,9 @@ export class ArchitectureOptimizationEngine {
           `MATCH (ci:CI {id: $ciId})<-[r:DEPENDS_ON|USES|HOSTED_ON]-(dependent:CI)
            WHERE ci.organization_id = $organizationId
              AND dependent.organization_id = $organizationId
+             AND NOT dependent.id IN $excluded
            RETURN COUNT(DISTINCT dependent) as fan_in`,
-          { ciId, organizationId },
+          { ciId, organizationId, excluded },
           { timeout: architectureRemainingMs() }
         );
         const fanIn = fanInResult.records[0]?.get('fan_in').toNumber() || 0;
@@ -326,8 +336,9 @@ export class ArchitectureOptimizationEngine {
           `MATCH (ci:CI {id: $ciId})-[r:DEPENDS_ON|USES|HOSTED_ON]->(dependency:CI)
            WHERE ci.organization_id = $organizationId
              AND dependency.organization_id = $organizationId
+             AND NOT dependency.id IN $excluded
            RETURN COUNT(DISTINCT dependency) as fan_out`,
-          { ciId, organizationId },
+          { ciId, organizationId, excluded },
           { timeout: architectureRemainingMs() }
         );
         const fanOut = fanOutResult.records[0]?.get('fan_out').toNumber() || 0;
@@ -371,7 +382,8 @@ export class ArchitectureOptimizationEngine {
    */
   private async walkDependencies(
     ciIds: string[],
-    organizationId: string
+    organizationId: string,
+    excluded: string[]
   ): Promise<{ depths: Map<string, number>; cycles: CircularDependencyChain[] }> {
     const session = this.neo4jClient.getSession();
     const depths = new Map<string, number>();
@@ -386,12 +398,12 @@ export class ArchitectureOptimizationEngine {
           const result = await session.run(
             `UNWIND $frontier AS path
              MATCH (ci:CI {id: path[size(path)-1]})
-             WHERE ci.organization_id = $organizationId
+             WHERE ci.organization_id = $organizationId AND NOT ci.id IN $excluded
              OPTIONAL MATCH (ci)-[:DEPENDS_ON|USES]->(next:CI)
-             WHERE next.organization_id = $organizationId
+             WHERE next.organization_id = $organizationId AND NOT next.id IN $excluded
              RETURN DISTINCT path, next.id AS nextId
              LIMIT toInteger($limit)`,
-            { frontier, organizationId, limit: remaining + 1 },
+            { frontier, organizationId, excluded, limit: remaining + 1 },
             { timeout: architectureRemainingMs() }
           );
           if (result.records.length > remaining) throw new ArchitectureResourceLimitError();
@@ -577,7 +589,8 @@ export class ArchitectureOptimizationEngine {
    */
   private async detectSinglePointsOfFailure(
     metrics: DependencyGraphMetrics[],
-    organizationId: string
+    organizationId: string,
+    excluded: string[]
   ): Promise<ArchitectureIssue[]> {
     const issues: ArchitectureIssue[] = [];
     const session = this.neo4jClient.getSession();
@@ -592,12 +605,13 @@ export class ArchitectureOptimizationEngine {
            MATCH (similar:CI)
            WHERE ci.organization_id = $organizationId
              AND similar.organization_id = $organizationId
+             AND NOT similar.id IN $excluded
              AND similar.ci_type = ci.ci_type
              AND similar.environment = ci.environment
              AND similar.id <> ci.id
              AND similar.status = 'active'
            RETURN COUNT(similar) as redundancy_count`,
-          { ciId: metric.ci_id, organizationId },
+          { ciId: metric.ci_id, organizationId, excluded },
           { timeout: architectureRemainingMs() }
         );
 
@@ -654,7 +668,7 @@ export class ArchitectureOptimizationEngine {
   /**
    * Detect shared database anti-pattern
    */
-  private async detectSharedDatabasePattern(ciIds: string[], organizationId: string): Promise<ArchitectureIssue[]> {
+  private async detectSharedDatabasePattern(ciIds: string[], organizationId: string, excluded: string[]): Promise<ArchitectureIssue[]> {
     const issues: ArchitectureIssue[] = [];
     const session = this.neo4jClient.getSession();
 
@@ -668,10 +682,11 @@ export class ArchitectureOptimizationEngine {
          MATCH (app:CI)-[:USES|DEPENDS_ON]->(db)
          WHERE app.ci_type IN ['application', 'service', 'api', 'web-app']
            AND app.organization_id = $organizationId
+           AND NOT app.id IN $excluded
          WITH db, COLLECT(DISTINCT app.id) as apps
          WHERE SIZE(apps) > 2
          RETURN db.id as db_id, db.name as db_name, apps, SIZE(apps) as app_count`,
-        { ciIds, organizationId },
+        { ciIds, organizationId, excluded },
         { timeout: architectureRemainingMs() }
       );
 
@@ -733,7 +748,7 @@ export class ArchitectureOptimizationEngine {
   /**
    * Detect poor separation of concerns
    */
-  private async detectPoorSeparation(ciIds: string[], organizationId: string): Promise<ArchitectureIssue[]> {
+  private async detectPoorSeparation(ciIds: string[], organizationId: string, excluded: string[]): Promise<ArchitectureIssue[]> {
     const issues: ArchitectureIssue[] = [];
     const session = this.neo4jClient.getSession();
 
@@ -744,12 +759,13 @@ export class ArchitectureOptimizationEngine {
          WHERE app.id IN $ciIds
            AND app.organization_id = $organizationId
            AND resource.organization_id = $organizationId
+           AND NOT resource.id IN $excluded
            AND app.ci_type IN ['application', 'service']
            AND resource.ci_type IN ['database', 'queue', 'cache', 'storage']
          WITH app, COLLECT(DISTINCT resource.ci_type) as resource_types
          WHERE SIZE(resource_types) > 3
          RETURN app.id as app_id, app.name as app_name, resource_types, SIZE(resource_types) as type_count`,
-        { ciIds, organizationId },
+        { ciIds, organizationId, excluded },
         { timeout: architectureRemainingMs() }
       );
 

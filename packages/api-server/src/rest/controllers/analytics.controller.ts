@@ -267,33 +267,13 @@ export class AnalyticsController {
 
       const limitNum = Math.min(parseInt(String(limit)), 100);
 
-      // Both endpoints must belong to the caller; a cross-tenant edge is not
-      // part of either organization's analytics.
-      const tenantRelationships = `
-        SELECT r.* FROM cmdb.fact_ci_relationships r
-        JOIN cmdb.dim_ci source ON source.ci_key = r.from_ci_key
-        JOIN cmdb.dim_ci target ON target.ci_key = r.to_ci_key
-        WHERE source.is_current AND target.is_current
-          AND source.organization_id = $2 AND target.organization_id = $2
-      `;
-      const edge = direction === 'in' ? 'r.to_ci_key = c.ci_key'
-        : direction === 'out' ? 'r.from_ci_key = c.ci_key'
-        : '(r.from_ci_key = c.ci_key OR r.to_ci_key = c.ci_key)';
-      const result = await this.postgresClient.query(`
-        WITH tenant_relationships AS (${tenantRelationships})
-        SELECT c.ci_id, c.ci_name, c.ci_type,
-          COUNT(r.relationship_key) AS relationship_count
-        FROM cmdb.dim_ci c
-        LEFT JOIN tenant_relationships r ON ${edge}
-        WHERE c.is_current AND c.organization_id = $2
-        GROUP BY c.ci_key, c.ci_id, c.ci_name, c.ci_type
-        ORDER BY relationship_count DESC
-        LIMIT $1
-      `, [limitNum, requestOrganizationId(req)]);
+      const result = await new AnalyticsService().getTopConnectedCIs(
+        requestOrganizationId(req), limitNum, direction as 'in' | 'out' | 'both'
+      );
 
       res.json({
         success: true,
-        data: result.rows,
+        data: result,
         direction,
       });
     } catch (error) {

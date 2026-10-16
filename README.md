@@ -195,6 +195,30 @@ npm run lint              # ESLint
 npm run format            # Prettier
 ```
 
+HP1 S3 audit gate: `packages/api-server/src/__tests__/hp1-s3-source-gates.test.ts`
+scans deployable TypeScript, committed JavaScript, and SQL for unbound audit
+writers, legacy `log_ci_change` trigger installation, and raw discovery job
+serialization. Top-connected REST/GraphQL rows and their relationship endpoints
+must have current, non-backfilled, non-pending dimensions and matching current
+graph ownership. Architecture analyses exclude pending/failed neighbors from
+cycles, counts, and issue details; the existing traversal budgets still apply.
+Discovery execution remains disabled until the separately authorized S5 cutover:
+all configured discovery workers only scrub pre-cutover queued payloads.
+
+The N-18 persisted queue proof is deliberately outside default integration
+discovery. **Only after approval for disposable real-store execution**, run from
+this repository with founder-controlled Testcontainers/Redis/PostgreSQL/Neo4j:
+
+```bash
+npm run test:integration -- --testMatch='**/packages/etl-processor/tests/scratch/**/*.test.ts' --runTestsByPath packages/etl-processor/tests/scratch/hp1-s3-queue-persistence.test.ts --runInBand
+```
+
+The fixture exercises eight discovery queues and four ETL queues with two
+organizations, real worker registrations and Redis-persisted results, failure
+codes, stack traces, logs, and DLQ data. The ETL full-refresh production limiter
+requires approximately ten minutes for its three jobs. Typechecks and unit
+tests do not replace this real-store evidence.
+
 ## API Examples
 
 ```bash

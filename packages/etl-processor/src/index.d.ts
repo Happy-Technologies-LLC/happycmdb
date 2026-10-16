@@ -9,6 +9,7 @@ export declare class ETLWorkerManager {
     private neo4jClient;
     private postgresClient;
     private redisClient;
+    private workerConnection?;
     startWorkers(): Promise<void>;
     start(): Promise<void>;
     stopWorkers(): Promise<void>;
@@ -27,7 +28,19 @@ export interface WorkerHealthStatus {
     }[];
 }
 export declare function getETLWorkerManager(): ETLWorkerManager;
-export declare const getETLScheduler: typeof getETLWorkerManager;
+export { getETLScheduler, ETLScheduler } from './schedulers/etl-scheduler';
+import { getV3ETLScheduler, V3ETLScheduler } from './schedulers/v3-etl-scheduler';
+import { getV3ETLWorkerManager, V3ETLWorkerManager, CISyncWorker, CostValidationWorker, IncidentSyncWorker } from './workers/v3-etl.worker';
+export { getV3ETLScheduler, V3ETLScheduler, };
+export { getV3ETLWorkerManager, V3ETLWorkerManager, CISyncWorker, CostValidationWorker, IncidentSyncWorker, };
+export { processSyncCIsToDatamart, syncCIsJobConfig, type SyncCIsJobData, type SyncCIsJobResult, } from './jobs/sync-cis-to-datamart.job';
+export { processSyncCostsToDatamart, syncCostsJobConfig, type SyncCostsJobData, type SyncCostsJobResult, } from './jobs/sync-costs-to-datamart.job';
+export { processSyncIncidentsToDatamart, syncIncidentsJobConfig, type SyncIncidentsJobData, type SyncIncidentsJobResult, } from './jobs/sync-incidents-to-datamart.job';
 export declare function initializeETLWorkers(): Promise<ETLWorkerManager>;
+export declare function initializeV3ETL(): Promise<{
+    scheduler: V3ETLScheduler;
+    workerManager: V3ETLWorkerManager;
+}>;
 export declare function shutdownETLWorkers(): Promise<void>;
+export declare function shutdownV3ETL(): Promise<void>;
 //# sourceMappingURL=index.d.ts.map

@@ -454,6 +454,48 @@ it.each([6, 10])('architecture retains owned %i-edge cycle detection on POST and
   }
 });
 
+it('architecture omits non-root pending and failed neighbors from cycles, counts and issue descriptions', async () => {
+  const root = 't2-gap-root';
+  const valid = 't2-gap-valid';
+  const pending = 't2-gap-pending';
+  const failed = 't2-gap-failed';
+  const ids = [root, valid, pending, failed];
+  await run(`UNWIND $ids AS id CREATE (:CI {id:id, name:id, organization_id:$a})`, { ids, a: A });
+  await run(`MATCH (root:CI {id:$root})
+    UNWIND $neighbors AS id MATCH (neighbor:CI {id:id})
+    CREATE (root)-[:DEPENDS_ON]->(neighbor)-[:DEPENDS_ON]->(root)`,
+    { root, neighbors: [valid, pending, failed] });
+  await syncOwnedDimension([root]);
+  await sql.query(`INSERT INTO ci_business_service_mappings (ci_id, service_id, mapping_type)
+    VALUES ($1, 't2-a', 'supports')`, [root]);
+  await sql.query(`INSERT INTO ci_reconciliation_operations
+    (id, group_id, organization_id, ci_id, origin, operation, graph_effect, state, actor, epoch, lease_expires_at)
+    VALUES ('aaaaaaaa-2000-4000-8000-000000000001', 'aaaaaaaa-2000-4000-8000-000000000001',
+      $1, $2, 'api', 'update', true, 'pending', 'test', 1, now()),
+      ('aaaaaaaa-2000-4000-8000-000000000002', 'aaaaaaaa-2000-4000-8000-000000000002',
+      $1, $3, 'api', 'update', true, 'failed', 'test', 1, now())`, [A, pending, failed]);
+  try {
+    for (const response of [
+      await request(app).post('/api/v1/architecture/analyze').set(architectureAuth()).send({ ci_ids: [root] }),
+      await request(app).get('/api/v1/architecture/business-services/t2-a/analysis').set(architectureAuth()),
+    ]) {
+      expect(response.status).toBe(200);
+      expect(response.body.analysis.dependency_graph_summary).toMatchObject({
+        total_dependencies: 1, circular_dependencies: 1,
+      });
+      expect(response.body.analysis.issues.find((issue: { issue_type: string }) =>
+        issue.issue_type === 'circular_dependency').affected_cis).toEqual([root, valid, root]);
+      expect(JSON.stringify(response.body.analysis)).not.toContain(pending);
+      expect(JSON.stringify(response.body.analysis)).not.toContain(failed);
+    }
+  } finally {
+    await sql.query("DELETE FROM ci_reconciliation_operations WHERE ci_id = ANY($1::text[])", [[pending, failed]]);
+    await sql.query("DELETE FROM ci_business_service_mappings WHERE ci_id = $1", [root]);
+    await sql.query("DELETE FROM cmdb.dim_ci WHERE ci_id = $1", [root]);
+    await run('MATCH (ci:CI) WHERE ci.id IN $ids DETACH DELETE ci', { ids });
+  }
+});
+
 it('architecture counts each owned neighbour once when two relationship types link every CI in a chain', async () => {
   const ids = Array.from({ length: 10 }, (_, index) => `t2-dual-${index}`);
   try {

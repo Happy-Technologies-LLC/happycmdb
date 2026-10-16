@@ -5,7 +5,7 @@
 
 import { Queue, Worker, Job } from 'bullmq';
 import IORedis from 'ioredis';
-import { logger, DISCOVERY_RETENTION } from '@cmdb/common';
+import { logger, DISCOVERY_RETENTION, JobErrorHandler } from '@cmdb/common';
 
 const connection = new IORedis({
   host: process.env['REDIS_HOST'] || 'localhost',
@@ -45,8 +45,11 @@ export class QueueManager {
       logger.info(`Job in queue ${queueName} completed`);
     });
 
-    worker.on('failed', () => {
+    worker.on('failed', (job, error) => {
       logger.error(`Job in queue ${queueName} failed`, { code: 'ERR_INTERNAL' });
+      if (job) void JobErrorHandler.handleJobFailure(job, error).catch(() => {
+        logger.error(`Dead-letter handling failed in queue ${queueName}`, { code: 'ERR_INTERNAL' });
+      });
     });
 
     this.workers.set(queueName, worker);
@@ -75,15 +78,4 @@ export async function closeQueueManagerConnection(): Promise<void> {
   await connection.quit();
 }
 
-// Queue names (BullMQ v5.0.0 does not allow colons in queue names)
-export const QUEUE_NAMES = {
-  _DISCOVERY_AWS: 'discovery-aws',
-  _DISCOVERY_AZURE: 'discovery-azure',
-  _DISCOVERY_GCP: 'discovery-gcp',
-  _DISCOVERY_SSH: 'discovery-ssh',
-  _DISCOVERY_NMAP: 'discovery-nmap',
-  _ETL_SYNC: 'etl-sync',
-  _ETL_FULL_REFRESH: 'etl-full-refresh',
-  _ETL_CHANGE_DETECTION: 'etl-change-detection',
-  _ETL_RECONCILIATION: 'etl-reconciliation',
-} as const;
+export { QUEUE_NAMES } from '@cmdb/common';

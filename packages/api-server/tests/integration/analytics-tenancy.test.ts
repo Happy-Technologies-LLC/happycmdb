@@ -104,6 +104,46 @@ it('keeps every REST aggregate within own dimension and both relationship endpoi
   expect((await rest('a', '/dashboard')).body.total_cis).toBe(2);
 });
 
+it('omits pending, failed, backfilled and graph-reassigned top-connected CIs and their edges in REST and GraphQL', async () => {
+  const ids = ['analytics-top-pending', 'analytics-top-failed', 'analytics-top-backfilled', 'analytics-top-recycled'];
+  await sql.query(`INSERT INTO cmdb.dim_ci
+    (ci_id, ci_name, ci_type, ci_status, organization_id, org_backfilled)
+    SELECT id, id, 'server', 'active', $2, id = 'analytics-top-backfilled'
+    FROM unnest($1::text[]) AS id`, [ids, A]);
+  await sql.query(`INSERT INTO ci_reconciliation_operations
+    (id, group_id, organization_id, ci_id, origin, operation, graph_effect, state, actor, epoch, lease_expires_at)
+    VALUES ('aaaaaaaa-1000-4000-8000-000000000001', 'aaaaaaaa-1000-4000-8000-000000000001',
+      $1, $2, 'api', 'update', true, 'pending', 'test', 1, now()),
+      ('aaaaaaaa-1000-4000-8000-000000000002', 'aaaaaaaa-1000-4000-8000-000000000002',
+      $1, $3, 'api', 'update', true, 'failed', 'test', 1, now())`, [A, ids[0], ids[1]]);
+  await sql.query(`INSERT INTO cmdb.fact_ci_relationships
+    (from_ci_key, to_ci_key, date_key, relationship_type, discovered_at)
+    SELECT source.ci_key, target.ci_key, 20991231, 'DEPENDS_ON', now()
+    FROM cmdb.dim_ci source JOIN cmdb.dim_ci target ON target.ci_id = ANY($1::text[])
+    WHERE source.ci_id = 'analytics-a'`, [ids]);
+  await cypher(`UNWIND $ids AS id CREATE (:CI {id:id, name:id, organization_id:
+    CASE WHEN id = 'analytics-top-recycled' THEN $b ELSE $a END})`, { ids, a: A, b: B });
+  try {
+    const response = await rest('a', '/top-connected?limit=2');
+    expect(response.status).toBe(200);
+    expect(response.body.data).toEqual([
+      { ci_id: 'analytics-a', ci_name: 'own', ci_type: 'server', relationship_count: '1' },
+      { ci_id: 'analytics-a2', ci_name: 'own dependent', ci_type: 'server', relationship_count: '1' },
+    ]);
+    const graphql = await gql('a', '{ analytics { getTopConnectedCIs(limit:2) { _ciId _relationshipCount } } }');
+    expect(graphql.body.errors).toBeUndefined();
+    expect(graphql.body.data.analytics.getTopConnectedCIs).toEqual([
+      { _ciId: 'analytics-a', _relationshipCount: 1 },
+      { _ciId: 'analytics-a2', _relationshipCount: 1 },
+    ]);
+  } finally {
+    await sql.query("DELETE FROM cmdb.fact_ci_relationships WHERE to_ci_key IN (SELECT ci_key FROM cmdb.dim_ci WHERE ci_id = ANY($1::text[]))", [ids]);
+    await sql.query("DELETE FROM ci_reconciliation_operations WHERE ci_id = ANY($1::text[])", [ids]);
+    await sql.query("DELETE FROM cmdb.dim_ci WHERE ci_id = ANY($1::text[])", [ids]);
+    await cypher('MATCH (ci:CI) WHERE ci.id IN $ids DETACH DELETE ci', { ids });
+  }
+});
+
 it('scopes GraphQL aggregates and inventory through mounted execution', async () => {
   // The production request-admission budget caps aggregate fanout; exercise
   // each reader as a separate authenticated operation, not one oversized alias query.

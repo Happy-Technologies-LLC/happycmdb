@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Founder-only, disposable Build01 N-18 proof. NEVER run against existing services.
+# Founder-only, disposable CONTAINERS only. Pre-provisioned pinned images persist in the shared daemon.
 # Image digests: Docker Hub linux/amd64 image detail pages (not mutable tags):
 # https://hub.docker.com/layers/library/neo4j/5.15.0/images/sha256-69c579facb7acab1e98f28952b91144c89e469a081804a5dafebd6c3030433b8
 # https://hub.docker.com/layers/timescale/timescaledb/2.28.3-pg15/images/sha256-ab92d61763e450dbb814072b48fdcd8b7258a9432e520941848472e0cd3bcc0e
@@ -85,8 +85,13 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-printf 'N18_HEAD=%s IMAGES=%s,%s,%s\n' "$expected_head" "$neo_image" "$pg_image" "$redis_image" | tee -a "$run_log"
-for image in "$neo_image" "$pg_image" "$redis_image"; do docker_call 180 pull --platform linux/amd64 "$image" >/dev/null; done
+printf 'N18_HEAD=%s IMAGES=%s,%s,%s IMAGE_LIFECYCLE=preprovisioned-persistent\n' "$expected_head" "$neo_image" "$pg_image" "$redis_image" | tee -a "$run_log"
+for image in "$neo_image" "$pg_image" "$redis_image"; do
+  docker_call 5 image inspect "$image" >/dev/null || {
+    echo "Missing pre-provisioned digest-pinned image: $image; operator owns image provisioning and retention" >&2
+    exit 2
+  }
+done
 
 # No host mounts, no external/production data, no provider tokens. Every published socket binds loopback only.
 creating=$pg_name

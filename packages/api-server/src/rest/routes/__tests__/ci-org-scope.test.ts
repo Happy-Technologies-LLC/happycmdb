@@ -266,7 +266,9 @@ function sql(statement: string, params: unknown[] = []): Promise<unknown[]> {
   return promise;
 }
 const pg = {
-  query: async (statement: string, params: unknown[] = []) => ({ rows: await sql(statement, params) }),
+  query: async (statement: string | { text: string; values?: unknown[]; query_timeout?: number },
+    params: unknown[] = []) => ({ rows: await sql(typeof statement === 'string' ? statement : statement.text,
+    typeof statement === 'string' ? params : statement.values) }),
   getClient: async () => ({
     query: (statement: string, params: unknown[] = []) =>
       statement.startsWith('SELECT set_config(') ? Promise.resolve({ rows: [] }) : pg.query(statement, params),
@@ -642,6 +644,25 @@ describe('/api/v1/cis tenant scoping', () => {
     expect(res.status).toBe(200);
     expect(res.body.pagination).toMatchObject({ total: 1202, page: 1, limit: 1 });
     expect(res.body.data.map((ci: { id: string }) => ci.id)).toEqual(['ci-a-db']);
+  });
+
+  it('returns unavailable for a tiny CI page when durable failed backlog exceeds admission work', async () => {
+    await sql(`INSERT INTO ci_reconciliation_operations
+      (id, group_id, organization_id, ci_id, origin, operation, graph_effect, state, actor, epoch, lease_expires_at)
+      SELECT gen_random_uuid(), gen_random_uuid(), $1, 'ci-durable-' || i::text,
+        'api', 'update', true, 'failed', 'test', 1, NOW()
+      FROM generate_series(0, 1200) AS i`, [ORG_A]);
+    try {
+      const ci = await request(app).get('/api/v1/cis?limit=1').set(AS_A);
+      expect(ci.status).toBe(503);
+      expect(ci.body.error).toBe('Service Unavailable');
+      const itil = await request(app).get('/api/v1/itil/configuration-items?limit=1').set(AS_A);
+      expect(itil.status).toBe(503);
+      expect(itil.body.error).toBe('Service Unavailable');
+    } finally {
+      await sql(`DELETE FROM ci_reconciliation_operations
+        WHERE organization_id=$1 AND ci_id LIKE 'ci-durable-%'`, [ORG_A]);
+    }
   });
 
   it("POST /cis/search returns only the caller org's matches", async () => {

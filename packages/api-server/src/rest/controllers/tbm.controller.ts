@@ -584,19 +584,18 @@ export class TBMController {
 
       const session = this.neo4jClient.getSession();
       try {
-        const result = await session.run(
-          `
-          MATCH (ci:CI {type: 'software'})
-          WHERE ci.license_expiry_date IS NOT NULL
-            AND ci.license_expiry_date <= date() + duration({days: $days})
-            AND ci.license_expiry_date >= date()
-          RETURN ci
-          ORDER BY ci.license_expiry_date ASC
-          `,
-          { days: parseInt(days as string) }
-        );
-
-        const renewals = await filterGlobalCIGaps(result.records.map((r: any) => r.get('ci').properties));
+        const renewals = await readGlobalCIPage(async (offset, timeout) => {
+          const result = await session.run(
+            `MATCH (ci:CI {type: 'software'})
+             WHERE ci.license_expiry_date IS NOT NULL
+               AND ci.license_expiry_date <= date() + duration({days: $days})
+               AND ci.license_expiry_date >= date()
+             RETURN ci ORDER BY ci.license_expiry_date ASC, ci.id
+             SKIP $offset LIMIT 100`,
+            { days: parseInt(days as string), offset }, { timeout }
+          );
+          return result.records.map((r: any) => r.get('ci').properties);
+        });
 
         res.json({
           success: true,
@@ -607,6 +606,10 @@ export class TBMController {
         await session.close();
       }
     } catch (error) {
+      if (error instanceof CIListUnavailableError) {
+        res.status(503).json(CI_LIST_UNAVAILABLE_RESPONSE);
+        return;
+      }
       logger.error('Error getting upcoming renewals', error);
       res.status(500).json({
         success: false,

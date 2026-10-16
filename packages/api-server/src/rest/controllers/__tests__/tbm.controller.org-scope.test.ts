@@ -114,6 +114,9 @@ const neo4jSession = {
   run: async (query: string, params: Params = {}) => {
     cypherRuns.push({ query, params });
     if (query.includes("MATCH (ci:CI {type: 'software'})")) {
+      if (licenseRows.length > 100 && !query.includes('LIMIT 100')) {
+        throw new Error('Unbounded global software CI response');
+      }
       const offset = Number(params['offset'] ?? 0);
       const count = query.includes('LIMIT 100') ? 100 : licenseRows.length;
       return { records: licenseRows.slice(offset, offset + count)
@@ -490,6 +493,24 @@ describe('global TBM reads and control', () => {
     }
   });
 
+  it('bounds mounted platform renewal inventory before materializing software CIs', async () => {
+    licenseRows = Array.from({ length: 1200 }, (_, i) => ({
+      id: `lic-renewal-${String(i).padStart(4, '0')}`,
+      name: `Renewal ${i}`, type: 'software', organization_id: i % 2 ? ORG_A : ORG_B,
+      license_expiry_date: '2026-10-20', tbm_monthly_cost: 1,
+    }));
+    try {
+      const res = await request(app).get('/api/v1/tbm/licenses/renewals?days=365').set(AS_PLATFORM);
+      expect(res.status).toBe(200);
+      expect(res.body.count).toBe(100);
+      expect(res.body.data.map((ci: { id: string }) => ci.id)).toEqual(
+        licenseRows.slice(0, 100).map(ci => ci.id));
+      expect(cypherRuns).toHaveLength(1);
+    } finally {
+      licenseRows = LICENSES;
+    }
+  });
+
   it('returns the committed 101st license after 100 pending entries via mounted REST', async () => {
     const pendingLicenses = Array.from({ length: 100 }, (_, i) => ({
       id: `lic-bulk-${String(i).padStart(3, '0')}`,
@@ -536,6 +557,11 @@ describe('global TBM reads and control', () => {
       const gql = await request(graphqlApp).post('/graphql').set(AS_PLATFORM)
         .send({ query: 'query { licenses { id } }' });
       expect(gql.body.errors?.[0].extensions.code).toBe('SERVICE_UNAVAILABLE');
+      expect(cypherRuns).toHaveLength(20);
+      cypherRuns.length = 0;
+      const renewals = await request(app).get('/api/v1/tbm/licenses/renewals?days=365').set(AS_PLATFORM);
+      expect(renewals.status).toBe(503);
+      expect(renewals.body.error).toBe('Service Unavailable');
       expect(cypherRuns).toHaveLength(20);
     } finally {
       licenseRows = LICENSES;

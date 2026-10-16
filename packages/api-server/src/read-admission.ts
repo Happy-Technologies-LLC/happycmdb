@@ -135,15 +135,24 @@ export async function readGlobalCIPage<T extends { id?: unknown; organization_id
   throw new CIListUnavailableError();
 }
 
+const MAX_PENDING_CI_IDS = 1000;
 interface Snapshot { epoch: string; pending: string[] }
-async function snapshot(organizationId: string): Promise<Snapshot> {
-  const result = await getPostgresClient().query(
-    `SELECT COALESCE((SELECT epoch FROM ci_reconciliation_epochs WHERE organization_id=$1), 0)::text AS epoch,
-            ARRAY(SELECT ci_id FROM ci_reconciliation_operations
-                  WHERE organization_id=$1 AND state IN ('pending','failed')) AS pending`,
-    [organizationId]
-  );
-  return result.rows[0] as Snapshot;
+async function snapshot(organizationId: string, timeoutMs: number): Promise<Snapshot> {
+  try {
+    const timedSnapshot = {
+      text: `SELECT COALESCE((SELECT epoch FROM ci_reconciliation_epochs WHERE organization_id=$1), 0)::text AS epoch,
+             ARRAY(SELECT ci_id FROM ci_reconciliation_operations
+                   WHERE organization_id=$1 AND state IN ('pending','failed')
+                   LIMIT $2) AS pending`,
+      values: [organizationId, MAX_PENDING_CI_IDS + 1], query_timeout: timeoutMs,
+    };
+    const result = await getPostgresClient().pool.query(timedSnapshot);
+    const row = result.rows[0] as Snapshot;
+    if (!row || row.pending.length > MAX_PENDING_CI_IDS) throw new CIListUnavailableError();
+    return row;
+  } catch {
+    throw new CIListUnavailableError();
+  }
 }
 
 let admissionPool: Pool | undefined;
@@ -161,9 +170,17 @@ function isolatedPool(): Pool {
 export async function readCIList<T>(
   organizationId: string, read: (pending: string[], timeoutMs: number) => Promise<T>
 ): Promise<T> {
-  const first = await snapshot(organizationId);
-  const optimistic = await read(first.pending, 10_000);
-  const second = await snapshot(organizationId);
+  const expiresAt = Date.now() + 10_000;
+  const remaining = () => {
+    const milliseconds = expiresAt - Date.now();
+    if (milliseconds <= 0) throw new CIListUnavailableError();
+    return milliseconds;
+  };
+  const first = await snapshot(organizationId, remaining());
+  remaining();
+  const optimistic = await read(first.pending, remaining());
+  const second = await snapshot(organizationId, remaining());
+  remaining();
   if (BigInt(second.epoch) === BigInt(first.epoch)) return optimistic;
 
   const active = activeByOrg.get(organizationId) ?? 0;
@@ -172,19 +189,27 @@ export async function readCIList<T>(
   try {
     const client = await isolatedPool().connect();
     try {
-      await client.query('BEGIN');
+      const timedQuery = (text: string, values?: (string | number)[]) =>
+        ({ text, values, query_timeout: remaining() });
+      remaining();
+      await client.query(timedQuery('BEGIN'));
       try {
-        await client.query(`INSERT INTO ci_reconciliation_epochs (organization_id, epoch)
-                            VALUES ($1, 0) ON CONFLICT (organization_id) DO NOTHING`, [organizationId]);
-        await client.query('SELECT epoch FROM ci_reconciliation_epochs WHERE organization_id=$1 FOR SHARE', [organizationId]);
-        const pending = await client.query<{ ci_id: string }>(
+        await client.query(timedQuery(`INSERT INTO ci_reconciliation_epochs (organization_id, epoch)
+                            VALUES ($1, 0) ON CONFLICT (organization_id) DO NOTHING`, [organizationId]));
+        await client.query(timedQuery('SELECT epoch FROM ci_reconciliation_epochs WHERE organization_id=$1 FOR SHARE',
+          [organizationId]));
+        const pending = await client.query<{ ci_id: string }>(timedQuery(
           `SELECT ci_id FROM ci_reconciliation_operations
-           WHERE organization_id=$1 AND state IN ('pending','failed')`, [organizationId]);
-        const result = await read(pending.rows.map(row => row.ci_id), 10_000);
-        await client.query('COMMIT');
+           WHERE organization_id=$1 AND state IN ('pending','failed') LIMIT $2`,
+          [organizationId, MAX_PENDING_CI_IDS + 1]));
+        if (pending.rows.length > MAX_PENDING_CI_IDS) throw new CIListUnavailableError();
+        const result = await read(pending.rows.map(row => row.ci_id), remaining());
+        remaining();
+        await client.query(timedQuery('COMMIT'));
         return result;
       } catch (error) {
-        await client.query('ROLLBACK');
+        const rollback = { text: 'ROLLBACK', query_timeout: Math.max(1, expiresAt - Date.now()) };
+        await client.query(rollback);
         throw error;
       }
     } finally {

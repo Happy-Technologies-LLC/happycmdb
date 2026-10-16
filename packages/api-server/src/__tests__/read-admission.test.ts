@@ -6,7 +6,7 @@ const admissionQuery = jest.fn();
 const release = jest.fn();
 const connect = jest.fn(() => Promise.resolve({ query: admissionQuery, release }));
 jest.mock('pg', () => ({ Pool: class { connect() { return connect(); } } }));
-jest.mock('@cmdb/database', () => ({ getPostgresClient: () => ({ query, pool: { options: {} } }) }));
+jest.mock('@cmdb/database', () => ({ getPostgresClient: () => ({ query, pool: { options: {}, query } }) }));
 
 import { readCIList, CIListUnavailableError } from '../read-admission';
 beforeEach(() => {
@@ -19,13 +19,14 @@ test('an epoch change discards optimistic page and reruns with pending ids under
   admissionQuery.mockReset();
   query.mockResolvedValueOnce({ rows: [{ epoch: '0', pending: [] }] })
     .mockResolvedValueOnce({ rows: [{ epoch: '1', pending: ['ci-new'] }] });
-  admissionQuery.mockImplementation(async (sql: string) => sql.includes('SELECT ci_id')
-    ? { rows: [{ ci_id: 'ci-new' }] } : { rows: [] });
+  admissionQuery.mockImplementation(async (command: string | { text: string }) =>
+    (typeof command === 'string' ? command : command.text).includes('SELECT ci_id')
+      ? { rows: [{ ci_id: 'ci-new' }] } : { rows: [] });
   const read = jest.fn(async (pending: string[]) => pending.length
     ? { total: 0, page: [] } : { total: 1, page: ['ci-new'] });
   expect(await readCIList('aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa', read)).toEqual({ total: 0, page: [] });
   expect(read.mock.calls.map(([pending]) => pending)).toEqual([[], ['ci-new']]);
-  expect(admissionQuery.mock.calls.map(([sql]) => sql)).toContain('COMMIT');
+  expect(admissionQuery.mock.calls.map(([command]) => typeof command === 'string' ? command : command.text)).toContain('COMMIT');
   expect(release).toHaveBeenCalledTimes(1);
 });
 
@@ -34,8 +35,8 @@ test('per-org cap refuses a third pessimistic request without queueing it', asyn
   admissionQuery.mockReset();
   query.mockImplementation(async () => ({ rows: [{ epoch: String(query.mock.calls.length), pending: [] }] }));
   const { promise: blocked, resolve: unblock } = Promise.withResolvers<void>();
-  admissionQuery.mockImplementation(async (sql: string) => {
-    if (sql.includes('SELECT ci_id')) await blocked;
+  admissionQuery.mockImplementation(async (command: string | { text: string }) => {
+    if ((typeof command === 'string' ? command : command.text).includes('SELECT ci_id')) await blocked;
     return { rows: [] };
   });
   const org = 'bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb';

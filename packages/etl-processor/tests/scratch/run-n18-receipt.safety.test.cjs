@@ -45,7 +45,10 @@ exec "$REAL_TIMEOUT" --signal=TERM --kill-after=0.1s 0.5s "$@"
 set -eu
 command=$1; shift
 case "$command" in
-  pull) exit 0 ;;
+  pull) exit 9 ;;
+  image)
+    [[ $1 == inspect ]] || exit 9
+    [[ $MODE != missing-image ]] ;;
   run)
     name='' session='' run=''
     while (( $# )); do
@@ -172,4 +175,11 @@ test('all ignored artifact leaf symlinks are refused before Docker and do not ov
     assert.match(result.stderr, /Refusing existing receipt artifact/, leaf);
     assert.equal(result.victim, 'unchanged\n', leaf);
   }
+});
+
+test('requires pre-provisioned images and never pulls into the shared daemon', async () => {
+  const result = await scenario('missing-image');
+  assert.equal(result.status, 2, result.stderr);
+  assert.match(result.stderr, /Missing pre-provisioned digest-pinned image/);
+  assert.deepEqual(result.owned, []);
 });

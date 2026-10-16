@@ -8,6 +8,14 @@ module.exports = {
   globalSetup: undefined,
   globalTeardown: undefined,
   setupFilesAfterEnv: [],
+  reporters: [
+    'default',
+    ['jest-junit', {
+      ...base.reporters[1][1],
+      outputDirectory: resolve(__dirname, '../../../../test-results/n18'),
+      outputName: `${process.env.N18_RUN_NONCE || 'n18'}.junit.xml`,
+    }],
+  ],
   testMatch: ['**/packages/etl-processor/tests/scratch/hp1-s3-queue-persistence.test.ts'],
   maxWorkers: 1,
 };

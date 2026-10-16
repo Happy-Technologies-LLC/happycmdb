@@ -27,20 +27,29 @@ neo_name="n18-neo-$nonce"
 pg_name="n18-pg-$nonce"
 redis_name="n18-redis-$nonce"
 session_label="${AO_SESSION_ID:-founder-n18-$nonce}"
+run_label="n18.run=$nonce"
 receipt_dir="$repo/test-results/n18"
+[[ ! -L "$repo/test-results" && ! -L "$receipt_dir" ]] || { echo 'Refusing symlinked receipt directory' >&2; exit 2; }
 mkdir -p "$receipt_dir"
+chmod 700 "$receipt_dir"
 receipt="$receipt_dir/$nonce.jsonl"
 run_log="$receipt_dir/$nonce.run.log"
 schema_log="$receipt_dir/$nonce.migrations.log"
 : > "$receipt"
 : > "$run_log"
 : > "$schema_log"
-started=()
+started=("$pg_name" "$neo_name" "$redis_name")
 cleanup() {
-  local status=$? teardown=0 name
+  local status=$? teardown=0 name ids id
   trap - EXIT INT TERM
   for name in "${started[@]}"; do
-    docker rm -f "$name" >/dev/null 2>&1 || teardown=1
+    if ! ids=$(docker container ls -aq --filter "name=^/${name}$" --filter "label=ao.session=$session_label" --filter "label=$run_label"); then
+      teardown=1
+      continue
+    fi
+    while IFS= read -r id; do
+      [[ -z $id ]] || docker rm -f "$id" >/dev/null 2>&1 || teardown=1
+    done <<< "$ids"
   done
   if [[ $status -eq 0 && $teardown -ne 0 ]]; then status=1; fi
   printf 'N18_TEARDOWN=%s N18_EXIT_STATUS=%s HEAD=%s RECEIPT=%s\n' "$([[ $teardown -eq 0 ]] && echo ok || echo failed)" "$status" "$expected_head" "$receipt" | tee -a "$run_log"
@@ -53,12 +62,9 @@ printf 'N18_HEAD=%s IMAGES=%s,%s,%s\n' "$expected_head" "$neo_image" "$pg_image"
 for image in "$neo_image" "$pg_image" "$redis_image"; do docker pull --platform linux/amd64 "$image" >/dev/null; done
 
 # No host mounts, no external/production data, no provider tokens. Every published socket binds loopback only.
-docker run -d --rm --platform linux/amd64 --pull never --name "$pg_name" --label "ao.session=$session_label" -p 127.0.0.1::5432 -e POSTGRES_USER=test -e POSTGRES_PASSWORD=testpassword -e POSTGRES_DB=cmdb_test "$pg_image" >/dev/null
-started+=("$pg_name")
-docker run -d --rm --platform linux/amd64 --pull never --name "$neo_name" --label "ao.session=$session_label" -p 127.0.0.1::7687 -e NEO4J_AUTH=neo4j/testpassword "$neo_image" >/dev/null
-started+=("$neo_name")
-docker run -d --rm --platform linux/amd64 --pull never --name "$redis_name" --label "ao.session=$session_label" -p 127.0.0.1::6379 "$redis_image" >/dev/null
-started+=("$redis_name")
+docker run -d --rm --platform linux/amd64 --pull never --name "$pg_name" --label "ao.session=$session_label" --label "$run_label" -p 127.0.0.1::5432 -e POSTGRES_USER=test -e POSTGRES_PASSWORD=testpassword -e POSTGRES_DB=cmdb_test "$pg_image" >/dev/null
+docker run -d --rm --platform linux/amd64 --pull never --name "$neo_name" --label "ao.session=$session_label" --label "$run_label" -p 127.0.0.1::7687 -e NEO4J_AUTH=neo4j/testpassword "$neo_image" >/dev/null
+docker run -d --rm --platform linux/amd64 --pull never --name "$redis_name" --label "ao.session=$session_label" --label "$run_label" -p 127.0.0.1::6379 "$redis_image" >/dev/null
 for attempt in {1..120}; do docker exec "$pg_name" pg_isready -U test -d cmdb_test >/dev/null 2>&1 && break; sleep 1; done
 docker exec "$pg_name" pg_isready -U test -d cmdb_test >/dev/null
 for attempt in {1..120}; do docker exec "$neo_name" cypher-shell -u neo4j -p testpassword 'RETURN 1' >/dev/null 2>&1 && break; sleep 1; done
@@ -97,7 +103,7 @@ CYPHER
 export NODE_ENV=test LOG_LEVEL=warn POSTGRES_HOST=127.0.0.1 POSTGRES_PORT="$pg_port" POSTGRES_DB=cmdb_test POSTGRES_USER=test POSTGRES_PASSWORD=testpassword
 export NEO4J_URI="bolt://127.0.0.1:$neo_port" NEO4J_USERNAME=neo4j NEO4J_PASSWORD=testpassword REDIS_HOST=127.0.0.1 REDIS_PORT="$redis_port"
 export JWT_SECRET=test-jwt-secret-for-integration-tests CREDENTIAL_ENCRYPTION_KEY=test-encryption-key-minimum-32-chars-required-for-security
-export KAFKA_CLIENT_ID=cmdb-test KAFKA_GROUP_ID=cmdb-test-group N18_RECEIPT_PATH="$receipt"
+export KAFKA_CLIENT_ID=cmdb-test KAFKA_GROUP_ID=cmdb-test-group N18_RECEIPT_PATH="$receipt" N18_RUN_NONCE="$nonce"
 set +e
 NODE_OPTIONS=--experimental-vm-modules timeout --signal=TERM --kill-after=30s 1500s ./node_modules/.bin/jest --config packages/etl-processor/tests/scratch/jest.n18.config.cjs --runInBand --runTestsByPath packages/etl-processor/tests/scratch/hp1-s3-queue-persistence.test.ts 2>&1 | tee -a "$run_log"
 test_status=${PIPESTATUS[0]}

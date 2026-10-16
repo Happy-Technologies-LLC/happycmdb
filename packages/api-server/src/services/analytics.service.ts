@@ -221,7 +221,7 @@ export class AnalyticsService {
           throw error;
         }
       };
-      const eligible = `SELECT c.* FROM cmdb.dim_ci c
+      const eligible = `SELECT c.ci_key, c.ci_id, c.ci_name, c.ci_type FROM cmdb.dim_ci c
         WHERE c.is_current AND NOT c.org_backfilled AND c.organization_id = $1
           AND NOT EXISTS (SELECT 1 FROM ci_reconciliation_operations j
             WHERE j.organization_id = $1 AND j.ci_id = c.ci_id
@@ -229,10 +229,17 @@ export class AnalyticsService {
       const edge = direction === 'in' ? 'r.to_ci_key = c.ci_key'
         : direction === 'out' ? 'r.from_ci_key = c.ci_key'
         : '(r.from_ci_key = c.ci_key OR r.to_ci_key = c.ci_key)';
-      const relationships = `SELECT r.*, source.ci_id AS from_id, target.ci_id AS to_id
+      const relationships = `SELECT r.relationship_key, r.from_ci_key, r.to_ci_key,
+          source.ci_id AS from_id, target.ci_id AS to_id
         FROM cmdb.fact_ci_relationships r
         JOIN eligible source ON source.ci_key = r.from_ci_key
         JOIN eligible target ON target.ci_key = r.to_ci_key`;
+      const rankedEndpoints = direction === 'in'
+        ? 'SELECT to_ci_key AS ci_key FROM tenant_relationships'
+        : direction === 'out'
+          ? 'SELECT from_ci_key AS ci_key FROM tenant_relationships'
+          : `SELECT from_ci_key AS ci_key FROM tenant_relationships
+             UNION ALL SELECT to_ci_key FROM tenant_relationships WHERE to_ci_key <> from_ci_key`;
       const pageSize = Math.min(32, Math.max(2, limit + 1));
       const selected: Array<{
         ci_id: string; ci_name: string; ci_type: string; relationship_count: string;
@@ -240,11 +247,15 @@ export class AnalyticsService {
       let offset = 0;
       while (offset < 1024) {
         const batch = await query(`
-          WITH eligible AS (${eligible}), tenant_relationships AS (${relationships})
+          WITH eligible AS MATERIALIZED (${eligible}),
+            tenant_relationships AS MATERIALIZED (${relationships}),
+            upper_counts AS (
+              SELECT ci_key, COUNT(*) AS upper_count
+              FROM (${rankedEndpoints}) endpoints GROUP BY ci_key
+            )
           SELECT c.ci_id, c.ci_name, c.ci_type,
-            COUNT(r.relationship_key) AS upper_count
-          FROM eligible c LEFT JOIN tenant_relationships r ON ${edge}
-          GROUP BY c.ci_key, c.ci_id, c.ci_name, c.ci_type
+            COALESCE(upper_counts.upper_count, 0) AS upper_count
+          FROM eligible c LEFT JOIN upper_counts ON upper_counts.ci_key = c.ci_key
           ORDER BY upper_count DESC, c.ci_id LIMIT $2 OFFSET $3
         `, [organizationId, pageSize, offset]);
         if (!batch.rows.length) return selected;

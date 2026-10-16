@@ -151,6 +151,15 @@ it('bounds limit-one ranking over large two-org stale inventories and serves the
     SELECT id, id, 'server', 'active', $2 FROM unnest($1::text[]) AS id`, [stale, A]);
   await sql.query(`INSERT INTO cmdb.dim_ci (ci_id, ci_name, ci_type, ci_status, organization_id)
     SELECT id, id, 'server', 'active', $2 FROM unnest($1::text[]) AS id`, [other, B]);
+  // Keep the pre-existing A graph nodes out of this zero-edge stale-inventory case.
+  // Otherwise their owned relationship correctly wins the rank before any stale row.
+  await sql.query(`INSERT INTO ci_reconciliation_operations
+    (id, group_id, organization_id, ci_id, origin, operation, graph_effect, state, actor, epoch, lease_expires_at)
+    SELECT id::uuid, id::uuid, $1, ci_id, 'api', 'update', true, 'pending', 'test', 1, now()
+    FROM (VALUES
+      ('aaaaaaaa-1000-4000-8000-000000000011', 'analytics-a'),
+      ('aaaaaaaa-1000-4000-8000-000000000012', 'analytics-a2')
+    ) AS excluded(id, ci_id)`, [A]);
   await cypher('CREATE (:CI {id:$id, name:$id, organization_id:$org})', { id: other[0], org: B });
   try {
     const refused = await rest('a', '/top-connected?limit=1');
@@ -163,7 +172,13 @@ it('bounds limit-one ranking over large two-org stale inventories and serves the
     expect(owned.body.data).toEqual([{
       ci_id: other[0], ci_name: other[0], ci_type: 'server', relationship_count: '0',
     }]);
+    const graphqlOwned = await gql('b', '{ analytics { getTopConnectedCIs(limit:1) { _ciId _relationshipCount } } }');
+    expect(graphqlOwned.body.errors).toBeUndefined();
+    expect(graphqlOwned.body.data.analytics.getTopConnectedCIs).toEqual([
+      { _ciId: other[0], _relationshipCount: 0 },
+    ]);
   } finally {
+    await sql.query("DELETE FROM ci_reconciliation_operations WHERE ci_id IN ('analytics-a', 'analytics-a2') AND actor = 'test'");
     await sql.query("DELETE FROM cmdb.dim_ci WHERE ci_id LIKE 'analytics-0-volume-%'");
     await cypher('MATCH (ci:CI {id:$id}) DETACH DELETE ci', { id: other[0] });
   }

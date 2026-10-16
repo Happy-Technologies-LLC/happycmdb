@@ -46,25 +46,31 @@ set -C # Exclusive creation rejects existing regular files and symlinks, includi
 : > "$junit"
 started=("$pg_name" "$neo_name" "$redis_name")
 creating=''
+docker_call() {
+  local seconds=$1
+  shift
+  timeout --signal=TERM --kill-after=2s "${seconds}s" docker "$@"
+}
 cleanup() {
-  local status=$? teardown=0 name ids id attempt found
+  local status=$? teardown=0 name ids id attempt found deadline
   trap - EXIT INT TERM
   for name in "${started[@]}"; do
     found=0
+    deadline=$((SECONDS + 12))
     # An interrupted docker client may return before the daemon exposes its create.
     # Never report a clean teardown while that run remains unaccounted for.
     for attempt in {1..50}; do
-      if ! ids=$(docker container ls -aq --filter "name=^/${name}$" --filter "label=ao.session=$session_label" --filter "label=$run_label"); then
+      if ! ids=$(docker_call 3 container ls -aq --filter "name=^/${name}$" --filter "label=ao.session=$session_label" --filter "label=$run_label"); then
         teardown=1
       else
         while IFS= read -r id; do
           if [[ -n $id ]]; then
             found=1
-            docker rm -f "$id" >/dev/null 2>&1 || teardown=1
+            docker_call 3 rm -f "$id" >/dev/null 2>&1 || teardown=1
           fi
         done <<< "$ids"
       fi
-      [[ $name == "$creating" && $found -eq 0 ]] || break
+      [[ $name == "$creating" && $found -eq 0 && $SECONDS -lt $deadline ]] || break
       sleep 0.2
     done
     if [[ $name == "$creating" && $found -eq 0 ]]; then
@@ -80,26 +86,26 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 printf 'N18_HEAD=%s IMAGES=%s,%s,%s\n' "$expected_head" "$neo_image" "$pg_image" "$redis_image" | tee -a "$run_log"
-for image in "$neo_image" "$pg_image" "$redis_image"; do docker pull --platform linux/amd64 "$image" >/dev/null; done
+for image in "$neo_image" "$pg_image" "$redis_image"; do docker_call 180 pull --platform linux/amd64 "$image" >/dev/null; done
 
 # No host mounts, no external/production data, no provider tokens. Every published socket binds loopback only.
 creating=$pg_name
-docker run -d --rm --platform linux/amd64 --pull never --name "$pg_name" --label "ao.session=$session_label" --label "$run_label" -p 127.0.0.1::5432 -e POSTGRES_USER=test -e POSTGRES_PASSWORD=testpassword -e POSTGRES_DB=cmdb_test "$pg_image" >/dev/null
+docker_call 20 run -d --rm --platform linux/amd64 --pull never --name "$pg_name" --label "ao.session=$session_label" --label "$run_label" -p 127.0.0.1::5432 -e POSTGRES_USER=test -e POSTGRES_PASSWORD=testpassword -e POSTGRES_DB=cmdb_test "$pg_image" >/dev/null
 creating=$neo_name
-docker run -d --rm --platform linux/amd64 --pull never --name "$neo_name" --label "ao.session=$session_label" --label "$run_label" -p 127.0.0.1::7687 -e NEO4J_AUTH=neo4j/testpassword "$neo_image" >/dev/null
+docker_call 20 run -d --rm --platform linux/amd64 --pull never --name "$neo_name" --label "ao.session=$session_label" --label "$run_label" -p 127.0.0.1::7687 -e NEO4J_AUTH=neo4j/testpassword "$neo_image" >/dev/null
 creating=$redis_name
-docker run -d --rm --platform linux/amd64 --pull never --name "$redis_name" --label "ao.session=$session_label" --label "$run_label" -p 127.0.0.1::6379 "$redis_image" >/dev/null
+docker_call 20 run -d --rm --platform linux/amd64 --pull never --name "$redis_name" --label "ao.session=$session_label" --label "$run_label" -p 127.0.0.1::6379 "$redis_image" >/dev/null
 creating=''
-for attempt in {1..120}; do docker exec "$pg_name" pg_isready -U test -d cmdb_test >/dev/null 2>&1 && break; sleep 1; done
-docker exec "$pg_name" pg_isready -U test -d cmdb_test >/dev/null
-for attempt in {1..120}; do docker exec "$neo_name" cypher-shell -u neo4j -p testpassword 'RETURN 1' >/dev/null 2>&1 && break; sleep 1; done
-docker exec "$neo_name" cypher-shell -u neo4j -p testpassword 'RETURN 1' >/dev/null
-for attempt in {1..60}; do [[ $(docker exec "$redis_name" redis-cli ping 2>/dev/null) == PONG ]] && break; sleep 1; done
-docker exec "$redis_name" redis-cli ping >/dev/null
+for attempt in {1..120}; do docker_call 5 exec "$pg_name" pg_isready -U test -d cmdb_test >/dev/null 2>&1 && break; sleep 1; done
+docker_call 5 exec "$pg_name" pg_isready -U test -d cmdb_test >/dev/null
+for attempt in {1..120}; do docker_call 5 exec "$neo_name" cypher-shell -u neo4j -p testpassword 'RETURN 1' >/dev/null 2>&1 && break; sleep 1; done
+docker_call 5 exec "$neo_name" cypher-shell -u neo4j -p testpassword 'RETURN 1' >/dev/null
+for attempt in {1..60}; do [[ $(docker_call 5 exec "$redis_name" redis-cli ping 2>/dev/null) == PONG ]] && break; sleep 1; done
+docker_call 5 exec "$redis_name" redis-cli ping >/dev/null
 
 port() {
   local binding
-  binding=$(docker port "$1" "$2/tcp")
+  binding=$(docker_call 5 port "$1" "$2/tcp")
   [[ $binding =~ ^127\.0\.0\.1:[0-9]+$ ]] || { echo "Refusing non-loopback binding for $1:$2" >&2; return 1; }
   printf '%s' "${binding##*:}"
 }
@@ -110,13 +116,13 @@ redis_port=$(port "$redis_name" 6379)
 # Match tests/setup/postgres-schema.ts: ordered canonical migrations; 028-035 are guarded and atomic.
 for file in packages/database/src/postgres/migrations/*.sql; do
   if [[ ${file##*/} =~ ^0(28|29|30|31|32|33|34|35)_ ]]; then
-    docker exec -i "$pg_name" psql -v ON_ERROR_STOP=1 -1 -U test -d cmdb_test < "$file" >> "$schema_log" 2>&1
+    docker_call 120 exec -i "$pg_name" psql -v ON_ERROR_STOP=1 -1 -U test -d cmdb_test < "$file" >> "$schema_log" 2>&1
   else
-    docker exec -i "$pg_name" psql -v ON_ERROR_STOP=0 -U test -d cmdb_test < "$file" >> "$schema_log" 2>&1
+    docker_call 120 exec -i "$pg_name" psql -v ON_ERROR_STOP=0 -U test -d cmdb_test < "$file" >> "$schema_log" 2>&1
   fi
 done
-[[ $(docker exec "$pg_name" psql -U test -d cmdb_test -tAc "SELECT count(*) FROM information_schema.tables WHERE table_name IN ('api_keys','oauth_states','ci_reconciliation_operations','ci_reconciliation_epochs')") == 4 ]] || { echo 'Canonical PostgreSQL schema incomplete' >&2; exit 1; }
-docker exec -i "$neo_name" cypher-shell -u neo4j -p testpassword >/dev/null <<'CYPHER'
+[[ $(docker_call 10 exec "$pg_name" psql -U test -d cmdb_test -tAc "SELECT count(*) FROM information_schema.tables WHERE table_name IN ('api_keys','oauth_states','ci_reconciliation_operations','ci_reconciliation_epochs')") == 4 ]] || { echo 'Canonical PostgreSQL schema incomplete' >&2; exit 1; }
+docker_call 30 exec -i "$neo_name" cypher-shell -u neo4j -p testpassword >/dev/null <<'CYPHER'
 CREATE CONSTRAINT ci_id_unique IF NOT EXISTS FOR (ci:CI) REQUIRE ci.id IS UNIQUE;
 CREATE INDEX ci_type_idx IF NOT EXISTS FOR (ci:CI) ON (ci.type);
 CREATE INDEX ci_status_idx IF NOT EXISTS FOR (ci:CI) ON (ci.status);

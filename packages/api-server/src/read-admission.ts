@@ -107,6 +107,19 @@ export async function filterGlobalCIGaps<T extends { id?: unknown; organization_
     !omitted.has(`${row.organization_id.toLowerCase()}:${row.id}`));
 }
 
+/** Fill a global graph page with committed CIs even when journal gaps lead the ordering. */
+export async function readGlobalCIPage<T extends { id?: unknown; organization_id?: unknown }>(
+  page: (offset: number) => Promise<T[]>
+): Promise<T[]> {
+  const result: T[] = [];
+  for (let offset = 0; result.length < 100; offset += 100) {
+    const candidates = await page(offset);
+    result.push(...(await filterGlobalCIGaps(candidates)).slice(0, 100 - result.length));
+    if (candidates.length < 100) break;
+  }
+  return result;
+}
+
 interface Snapshot { epoch: string; pending: string[] }
 async function snapshot(organizationId: string): Promise<Snapshot> {
   const result = await getPostgresClient().query(

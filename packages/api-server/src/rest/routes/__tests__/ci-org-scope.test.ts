@@ -201,7 +201,10 @@ function run(rawCypher: string, params: Props = {}): FakeRecord[] {
     );
     const visible = matches.filter(props =>
       !Array.isArray(params['pending']) || !(params['pending'] as string[]).includes(String(props['id'])));
-    if (cypher.includes('count(ci) as total')) return [record({ total: neo4j.int(visible.length) })];
+    if (cypher.includes('collect(ci)') && visible.length > 1000) {
+      throw new Error('Unbounded tenant CI list materialization');
+    }
+    if (/count\(ci\) AS total/i.test(cypher)) return [record({ total: neo4j.int(visible.length) })];
     const offset = num(params['offset']);
     const sorted = visible.sort((x, y) => String(x['name']).localeCompare(String(y['name'])));
     if (cypher.includes('AS page')) {
@@ -619,6 +622,16 @@ describe('/api/v1/cis tenant scoping', () => {
     expect(res.status).toBe(200);
     expect(res.body.data.map((ci: { id: string }) => ci.id).sort()).toEqual(['ci-a-app', 'ci-a-db']);
     expect(res.body.pagination.total).toBe(2);
+  });
+
+  it('paginates a large own-org CI inventory without collecting all nodes for limit one', async () => {
+    for (let i = 0; i < 1200; i++) {
+      seedCI(`ci-load-${String(i).padStart(4, '0')}`, ORG_A);
+    }
+    const res = await request(app).get('/api/v1/cis?limit=1&offset=0').set(AS_A);
+    expect(res.status).toBe(200);
+    expect(res.body.pagination).toMatchObject({ total: 1202, count: 1, limit: 1 });
+    expect(res.body.data.map((ci: { id: string }) => ci.id)).toEqual(['ci-a-db']);
   });
 
   it("POST /cis/search returns only the caller org's matches", async () => {

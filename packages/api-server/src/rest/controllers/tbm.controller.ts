@@ -12,7 +12,7 @@ import {
 } from '../../services/business-service-ownership';
 import { ciCostTrends } from '../../services/ci-cost-trends';
 import { errorLogFields } from '../../utils/log-error';
-import { filterGlobalCIGaps, readCIList, CIListUnavailableError, CI_LIST_UNAVAILABLE_RESPONSE } from '../../read-admission';
+import { filterGlobalCIGaps, readGlobalCIPage, readCIList, CIListUnavailableError, CI_LIST_UNAVAILABLE_RESPONSE } from '../../read-admission';
 
 /**
  * A single GL account entry accepted by importGLData. Mirrors the fields the
@@ -549,12 +549,13 @@ export class TBMController {
 
         query += `
           RETURN ci
-          ORDER BY ci.license_expiry_date ASC
-          LIMIT 100
+          ORDER BY ci.license_expiry_date ASC, ci.id
+          SKIP $offset LIMIT 100
         `;
-
-        const result = await session.run(query, params);
-        const licenses = await filterGlobalCIGaps(result.records.map((r: any) => r.get('ci').properties));
+        const licenses = await readGlobalCIPage(async offset => {
+          const result = await session.run(query, { ...params, offset });
+          return result.records.map((r: any) => r.get('ci').properties);
+        });
 
         res.json({
           success: true,

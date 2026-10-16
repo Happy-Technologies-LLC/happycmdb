@@ -144,25 +144,31 @@ export class CIController {
           finalPage = Math.floor(finalOffset / finalLimit) + 1;
         }
 
-        // Page and total are derived from the same statement and exclusion set.
+        // Count and page share the same journal snapshot inside readCIList;
+        // never collect the complete graph inventory just to return one page.
         const sortField = validateCISortField((sort_by as string) || 'name');
         const sortDirection = validateSortDirection((sort_order as string) || 'asc');
-        query += ` AND NOT ci.id IN $pending
-                   WITH ci ORDER BY ci.${sortField} ${sortDirection}, ci.id
-                   WITH collect(ci) AS cs
-                   RETURN size(cs) AS total, cs[$offset..$end] AS page`;
+        query += ' AND NOT ci.id IN $pending';
         const { total, cis } = await readCIList(organizationId, async (pending, timeout) => {
           const session = this.neo4jClient.getSession();
           try {
-            const result = await session.run(query, {
-              ...params, pending, offset: neo4j.int(finalOffset),
-              end: neo4j.int(finalOffset + finalLimit),
-            }, { timeout });
-            const row = result.records[0]!;
+            const queryParams = { ...params, pending, offset: neo4j.int(finalOffset),
+              limit: neo4j.int(finalLimit) };
+            const expiresAt = Date.now() + timeout;
+            const remaining = () => {
+              const milliseconds = expiresAt - Date.now();
+              if (milliseconds <= 0) throw new CIListUnavailableError();
+              return milliseconds;
+            };
+            const countResult = await session.run(
+              `${query} RETURN count(ci) AS total`, queryParams, { timeout: remaining() });
+            const pageResult = await session.run(
+              `${query} RETURN ci ORDER BY ci.${sortField} ${sortDirection}, ci.id
+               SKIP $offset LIMIT $limit`, queryParams, { timeout: remaining() });
             return {
-              total: row.get('total').toNumber() as number,
-              cis: (row.get('page') as Array<{ properties: Record<string, unknown> }>)
-                .map(node => convertNeo4jTypes(node.properties)),
+              total: countResult.records[0]!.get('total').toNumber() as number,
+              cis: pageResult.records.map(row =>
+                convertNeo4jTypes((row.get('ci') as { properties: Record<string, unknown> }).properties)),
             };
           } finally {
             await session.close();

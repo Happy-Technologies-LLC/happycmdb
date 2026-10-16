@@ -14,7 +14,7 @@ import { ciCostTrends } from '../../services/ci-cost-trends';
 import { errorLogFields } from '../../utils/log-error';
 import { getAuthService } from '../../auth/auth-bootstrap';
 import { isPlatformAdmin } from '../../auth/platform-admin';
-import { filterGlobalCIGaps, readCIList, CIListUnavailableError } from '../../read-admission';
+import { readGlobalCIPage, readCIList, CIListUnavailableError } from '../../read-admission';
 
 /**
  * TBM GraphQL Resolvers
@@ -47,14 +47,15 @@ async function licenseList(
   await requirePlatformAdmin(context);
   const session = context._neo4jClient.getSession();
   try {
-    const result = await session.run(
-      `MATCH (ci:CI {type: 'software'}) WHERE ${where}
-       RETURN ci ORDER BY ci.license_expiry_date ASC LIMIT 100`,
-      params
-    );
-    const rows = await filterGlobalCIGaps(
-      result.records.map(record => record.get('ci').properties as { id: string; organization_id?: string })
-    );
+    const rows = await readGlobalCIPage(async offset => {
+      const result = await session.run(
+        `MATCH (ci:CI {type: 'software'}) WHERE ${where}
+         RETURN ci ORDER BY ci.license_expiry_date ASC, ci.id SKIP $offset LIMIT 100`,
+        { ...params, offset }
+      );
+      return result.records.map(record =>
+        record.get('ci').properties as { id: string; organization_id?: string });
+    });
     return rows.map((ci: any) => ({
       id: ci.id,
       name: ci.name,

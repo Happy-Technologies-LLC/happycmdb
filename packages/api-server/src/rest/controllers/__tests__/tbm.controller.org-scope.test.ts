@@ -98,6 +98,7 @@ const LICENSES = [
   { id: 'lic-pending', name: 'Pending', type: 'software', organization_id: ORG_A.toUpperCase(), tbm_monthly_cost: 99 },
   { id: 'lic-failed', name: 'Failed', type: 'software', organization_id: ORG_B, tbm_monthly_cost: 99 },
 ];
+let licenseRows = LICENSES;
 // Each owned service also has one pending/failed CI cost. The fake applies the
 // pending predicate only when the Cypher actually carries it.
 function serviceCost(id: string, cypher: string, params: Params): number {
@@ -111,7 +112,10 @@ const neo4jSession = {
   run: async (query: string, params: Params = {}) => {
     cypherRuns.push({ query, params });
     if (query.includes("MATCH (ci:CI {type: 'software'})")) {
-      return { records: LICENSES.map(ci => record({ ci: { properties: ci } })) };
+      const offset = Number(params['offset'] ?? 0);
+      const count = query.includes('LIMIT 100') ? 100 : licenseRows.length;
+      return { records: licenseRows.slice(offset, offset + count)
+        .map(ci => record({ ci: { properties: ci } })) };
     }
     // A statement without the node-org predicate matches every organization's node, as Neo4j would.
     const nodeInOrg = (id: string, filter: RegExp) =>
@@ -329,6 +333,7 @@ afterAll(async () => {
 beforeEach(() => {
   pgQueries = 0;
   cypherRuns.length = 0;
+  licenseRows = LICENSES;
 });
 
 const DENIED_ROUTES: Array<[string, string, object | null]> = [
@@ -480,6 +485,32 @@ describe('global TBM reads and control', () => {
       expect(allowed.body.data.map((license: { id: string }) => license.id)).toEqual(['lic-a', 'lic-b']);
       pgQueries = 0;
       cypherRuns.length = 0;
+    }
+  });
+
+  it('returns the committed 101st license after 100 pending entries via mounted REST', async () => {
+    const pendingLicenses = Array.from({ length: 100 }, (_, i) => ({
+      id: `lic-bulk-${String(i).padStart(3, '0')}`,
+      name: `Pending ${i}`, type: 'software', organization_id: ORG_A, tbm_monthly_cost: 1,
+    }));
+    licenseRows = [...pendingLicenses, { ...LICENSES[0], id: 'lic-committed-101' }];
+    await send('exec', `INSERT INTO ci_reconciliation_operations
+      (id, group_id, organization_id, ci_id, origin, operation, graph_effect, state, actor, epoch, lease_expires_at)
+      SELECT gen_random_uuid(), gen_random_uuid(), '${ORG_A}', 'lic-bulk-' || lpad(i::text, 3, '0'),
+        'api', 'update', true, 'pending', 'test', 1, NOW()
+      FROM generate_series(0, 99) AS i`);
+    try {
+      const rest = await request(app).get('/api/v1/tbm/licenses').set(AS_PLATFORM);
+      expect(rest.status).toBe(200);
+      expect(rest.body.data.map((ci: { id: string }) => ci.id)).toEqual(['lic-committed-101']);
+      const gql = await request(graphqlApp).post('/graphql').set(AS_PLATFORM)
+        .send({ query: 'query { licenses { id } }' });
+      expect(gql.body.errors).toBeUndefined();
+      expect(gql.body.data.licenses).toEqual([{ id: 'lic-committed-101' }]);
+    } finally {
+      licenseRows = LICENSES;
+      await send('exec', `DELETE FROM ci_reconciliation_operations
+        WHERE organization_id = '${ORG_A}' AND ci_id LIKE 'lic-bulk-%'`);
     }
   });
 

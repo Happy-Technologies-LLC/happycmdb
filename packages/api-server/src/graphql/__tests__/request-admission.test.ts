@@ -33,7 +33,7 @@ jest.mock('../../auth/auth-bootstrap', () => {
   } as ConfigSchema['auth']) };
 });
 jest.mock('@cmdb/database', () => ({
-  ...jest.requireActual('@cmdb/database'),
+  ...jest.requireActual('@cmdb/database/neo4j/client'),
   getNeo4jClient: () => ({ getSession: () => ({ run: mockRun, close: async () => {} }) }),
   getPostgresClient: () => ({ query: mockPgQuery, pool: { query: mockPgQuery } }),
   getUnifiedCredentialService: () => ({}),
@@ -281,11 +281,12 @@ it('admits four parallel principal reads and eight tenant reads, rejecting only 
 it('releases GraphQL slots after 30 seconds of a non-reading large response and admits a healthy client', async () => {
   const principal = 'a-nonreading';
   const metadata = { payload: 'x'.repeat(256 * 1024) };
-  const page = Array.from({ length: 100 }, (_, index) =>
-    ({ properties: { id: `large-${index}`, metadata } }));
-  mockRun.mockImplementation(async () => ({ records: [{
-    get: (field: string) => field === 'page' ? page : { toNumber: () => page.length },
-  }] as never[] }));
+  const records = Array.from({ length: 100 }, (_, index) => ({
+    get: (field: string) => field === 'ci'
+      ? { properties: { id: `large-${index}`, metadata } }
+      : undefined,
+  }));
+  mockRun.mockImplementation(async () => ({ records: records as never[] }));
   slowResponses.length = 0;
   await new Promise<void>(resolve => httpServer.listen(0, '127.0.0.1', resolve));
   const port = (httpServer.address() as AddressInfo).port;

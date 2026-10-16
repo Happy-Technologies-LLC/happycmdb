@@ -6,10 +6,9 @@
  * constraints/indexes, and exports connection details as environment variables.
  */
 
-import { readFileSync } from 'fs';
-import { resolve } from 'path';
 import { GenericContainer, StartedTestContainer, Wait } from 'testcontainers';
 import neo4j from 'neo4j-driver';
+import { loadPostgresSchema } from '../setup/postgres-schema';
 
 interface ContainerStore {
   __NEO4J_CONTAINER__?: StartedTestContainer;
@@ -23,11 +22,6 @@ const POSTGRES_USER = 'test';
 const POSTGRES_PASSWORD = 'testpassword';
 const POSTGRES_DB = 'cmdb_test';
 const NEO4J_PASSWORD = 'testpassword';
-
-const SCHEMA_PATH = resolve(
-  process.cwd(),
-  'packages/database/src/postgres/migrations/001_complete_schema.sql'
-);
 
 export default async function globalSetup(): Promise<void> {
   console.log('Starting E2E test containers...');
@@ -73,7 +67,7 @@ export default async function globalSetup(): Promise<void> {
     containerStore.__POSTGRES_CONTAINER__ = postgresContainer;
     console.log(`PostgreSQL started on localhost:${postgresPort}`);
 
-    await loadPostgresSchema(postgresContainer);
+    await loadPostgresSchema(postgresContainer, POSTGRES_USER, POSTGRES_DB);
     console.log('PostgreSQL schema loaded');
 
     // ---- Redis -------------------------------------------------------------
@@ -128,31 +122,5 @@ async function initializeNeo4jSchema(uri: string, password: string): Promise<voi
   } finally {
     await session.close();
     await driver.close();
-  }
-}
-
-/**
- * Load the canonical PostgreSQL schema into the running container.
- */
-async function loadPostgresSchema(container: StartedTestContainer): Promise<void> {
-  const schemaSql = readFileSync(SCHEMA_PATH, 'utf-8');
-  await container.copyContentToContainer([{ content: schemaSql, target: '/tmp/schema.sql' }]);
-
-  const load = await container.exec([
-    'psql', '-v', 'ON_ERROR_STOP=0',
-    '-U', POSTGRES_USER, '-d', POSTGRES_DB, '-f', '/tmp/schema.sql',
-  ]);
-  if (load.exitCode !== 0) {
-    console.warn(`psql schema load exited with code ${load.exitCode} (non-fatal notices expected)`);
-  }
-
-  const check = await container.exec([
-    'psql', '-U', POSTGRES_USER, '-d', POSTGRES_DB, '-tAc',
-    "SELECT count(*) FROM information_schema.tables WHERE table_name = 'api_keys'",
-  ]);
-  if (check.output.trim() !== '1') {
-    throw new Error(
-      `PostgreSQL schema load failed: core table 'api_keys' missing (psql output: ${check.output.trim()})`
-    );
   }
 }

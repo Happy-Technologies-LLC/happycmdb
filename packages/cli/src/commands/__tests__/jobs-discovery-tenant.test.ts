@@ -43,6 +43,13 @@ jest.mock('../../../../api-server/src/auth/auth-bootstrap', () => ({ getAuthMidd
     if (!(req as express.Request & { user?: { _role: string } }).user?._role) return res.status(403).json({ error: 'Forbidden' });
     next();
   },
+  requirePlatformAdmin: () => (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (req.get('Authorization') !== 'Bearer valid-jwt') {
+      res.status(403).json({ success: false, error: 'Global queue operations unavailable' });
+      return;
+    }
+    next();
+  },
 }) }));
 
 async function invoke(args: string[], captured: string[] = []): Promise<number> {
@@ -103,30 +110,15 @@ afterAll(async () => {
 beforeEach(() => queueManager.addJob.mockResolvedValue({ id: 'owned-job' }));
 
 
-test('CLI uses authenticated API identity for nmap jobs and refuses absent, invalid and tenantless credentials', async () => {
+test('CLI cannot trigger legacy discovery even with a platform JWT or queue credentials', async () => {
   const base = ['--url', `${apiUrl}/`, 'jobs', 'run:discovery', 'nmap'];
-  const config = JSON.stringify({
-    targets: ['192.0.2.1'],
-    scanOptions: { serviceDetection: true, password: 'synthetic-secret' },
-    password: 'synthetic-secret',
-  });
-  expect(await invoke([...base, '--config', config])).toBe(1);
+  const config = JSON.stringify({ targets: ['192.0.2.1'], password: 'synthetic-secret' });
+  for (const auth of [[], ['--key', 'invalid-key'], ['--key', 'valid-key'],
+    ['--key', 'tenantless-key'], ['--token', 'valid-jwt']]) {
+    expect(await invoke([...base, ...auth, '--config', config])).toBe(1);
+  }
   expect(queueManager.addJob).not.toHaveBeenCalled();
-
-  expect(await invoke(['--key', 'invalid-key', ...base])).toBe(1);
-  expect(await invoke(['--key', 'tenantless-key', ...base])).toBe(1);
-  expect(queueManager.addJob).not.toHaveBeenCalled();
-
-  expect(await invoke(['--key', 'valid-key', ...base, '--config', config])).toBe(0);
-  expect(queueManager.addJob).toHaveBeenCalledWith('discovery-nmap', 'discovery-nmap-manual',
-    expect.objectContaining({
-      organizationId: ORG, _config: { targets: ['192.0.2.1'], scanOptions: { serviceDetection: true } },
-    }), expect.any(Object));
-  expect(JSON.stringify(queueManager.addJob.mock.calls)).not.toContain('synthetic-secret');
-  expect(await invoke([...base, '--token', 'valid-jwt', '--config', config])).toBe(0);
-  expect(queueManager.addJob).toHaveBeenCalledTimes(2);
   expect(JSON.stringify(jest.mocked(logger).error.mock.calls)).not.toMatch(/valid-key|invalid-key|tenantless-key|valid-jwt|synthetic-secret/);
-  expect(JSON.stringify(jest.mocked(logger).info.mock.calls)).not.toMatch(/valid-key|valid-jwt|synthetic-secret/);
 });
 
 test('mounted manual SSH refuses object and string targets without queueing credentials', async () => {
@@ -140,9 +132,9 @@ test('mounted manual SSH refuses object and string targets without queueing cred
     responses.push(await request(apiUrl).post('/jobs/discovery/ssh')
       .set('X-Workspace-Key', 'valid-key').send({ config }));
   }
-  expect(responses.map(response => response.status)).toEqual([409, 409]);
+  expect(responses.map(response => response.status)).toEqual([403, 403]);
   for (const denied of responses) {
-    expect(denied.body).toEqual({ success: false, error: 'Credential-backed discovery execution unavailable' });
+    expect(denied.body).toEqual({ success: false, error: 'Global queue operations unavailable' });
     expect(JSON.stringify(denied.body)).not.toContain('synthetic-secret');
   }
   expect(queueManager.addJob).toHaveBeenCalledTimes(before);
@@ -185,37 +177,23 @@ test('CLI cannot bypass tenant-scoped job API or print worker secrets from direc
   expect(triggerETL).not.toHaveBeenCalled();
 });
 
-test('authenticated CLI keeps owned list/status/retry/cancel and hides foreign, missing and orgless jobs', async () => {
-  const secret = 'foreign-nested-secret';
-  const jobs = ['own', 'foreign', 'orgless'].map((id, index) => ({
-    id, name: 'scan', data: index === 2 ? {} : { organizationId: index === 0 ? ORG : OTHER_ORG },
-    returnvalue: { nested: { secret } }, progress: { password: secret },
+test('CLI requires a platform JWT for queue reads and never prints legacy job payloads', async () => {
+  const secret = 'synthetic-cross-org-secret';
+  const job = {
+    id: 'legacy', name: 'scan', data: { organizationId: ORG, password: secret },
+    returnvalue: { nested: secret }, progress: { password: secret },
     failedReason: secret, stacktrace: [secret], timestamp: 1, attemptsMade: 0, opts: { attempts: 1 },
     getState: async () => 'completed',
-  }));
-  queueManager.getQueue.mockReturnValue({ getWaiting: async () => jobs });
-  queueManager.getJob.mockImplementation(async (_queue: string, id: string) => jobs.find(job => job.id === id));
-  const printed: string[] = [];
-  const base = ['--url', apiUrl, '--key', 'valid-key', 'jobs'];
-  expect(await invoke([...base, 'list', 'discovery-nmap'], printed)).toBe(0);
-  expect(printed.join(' ')).toContain('own');
-  expect(printed.join(' ')).not.toMatch(/foreign|orgless|foreign-nested-secret/);
-  expect(await invoke([...base, 'status', 'discovery-nmap', 'own'], printed)).toBe(0);
-  expect(printed.join(' ')).not.toContain(secret);
-  const denied = [];
-  for (const id of ['foreign', 'missing', 'orgless']) {
-    for (const command of ['status', 'retry', 'cancel']) {
-      denied.push(await invoke([...base, command, 'discovery-nmap', id], printed));
-    }
-  }
-  expect(denied).toEqual(Array(9).fill(1));
-  expect(queueManager.removeJob).not.toHaveBeenCalled();
-  expect(queueManager.retryJob).not.toHaveBeenCalled();
-  expect(await invoke([...base, 'retry', 'discovery-nmap', 'own'], printed)).toBe(0);
-  expect(await invoke([...base, 'cancel', 'discovery-nmap', 'own'], printed)).toBe(0);
-  expect(queueManager.retryJob).toHaveBeenCalledWith('discovery-nmap', 'own');
-  expect(queueManager.removeJob).toHaveBeenCalledWith('discovery-nmap', 'own');
-  expect(await invoke(['--url', apiUrl, '--key', 'valid-key-b', 'jobs', 'status', 'discovery-nmap', 'foreign'], printed)).toBe(0);
-  expect(printed.join(' ')).not.toContain(secret);
+  };
+  queueManager.getQueue.mockReturnValue({ getWaiting: async () => [job] });
+  queueManager.getJob.mockResolvedValue(job);
+  const output: string[] = [];
+  const base = ['--url', apiUrl, 'jobs'];
+  expect(await invoke([...base, '--key', 'valid-key', 'list', 'discovery-nmap'], output)).toBe(1);
+  expect(queueManager.getQueue).not.toHaveBeenCalled();
+  expect(await invoke([...base, 'list', 'discovery-nmap', '--token', 'valid-jwt'], output)).toBe(0);
+  expect(await invoke([...base, 'status', 'discovery-nmap', 'legacy', '--token', 'valid-jwt'], output)).toBe(0);
+  expect(output.join(' ')).toContain('legacy');
+  expect(output.join(' ')).not.toContain(secret);
   expect(triggerETL).not.toHaveBeenCalled();
 });

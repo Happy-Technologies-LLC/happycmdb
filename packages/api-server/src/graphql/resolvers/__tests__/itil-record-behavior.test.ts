@@ -31,7 +31,7 @@ const getCI = jest.fn();
 const getSession = jest.fn();
 jest.mock('@cmdb/database', () => ({
   Neo4jClient: jest.fn(),
-  getPostgresClient: () => ({ pool: { query } }),
+  getPostgresClient: () => ({ query, pool: { query } }),
   getNeo4jClient: () => ({ getSession, getCI }),
   getUnifiedCredentialService: () => ({}),
   queueManager: { getQueue: jest.fn() },
@@ -62,6 +62,10 @@ const app = express();
 let server: Awaited<ReturnType<typeof createGraphQLServer>>['server'];
 beforeAll(async () => {
   await sql(['itil_baselines', 'itil_incidents', 'itil_changes'].map(tableDDL).join('\n'), [], 'exec');
+  const migration = readFileSync(join(migrationDir, '028_change_history_reconciliation_org_provenance.sql'), 'utf8');
+  const journalTable = migration.match(/CREATE TABLE IF NOT EXISTS ci_reconciliation_operations \([\s\S]*?\n\);/);
+  if (!journalTable) throw new Error('Missing journal DDL');
+  await sql(journalTable[0], [], 'exec');
   for (const file of ['012_itil_baseline_organization_scope.sql', '013_itil_baseline_org_name_unique.sql',
     '035_itil_record_ownership.sql']) await sql(readFileSync(join(migrationDir, file), 'utf8'), [], 'exec');
   ({ server } = await createGraphQLServer(app));

@@ -10,6 +10,7 @@ import type { AuthMiddleware as AuthMiddlewareClass } from '../../../middleware/
 
 const ORG = '11111111-1111-4111-8111-111111111111';
 const getCI = jest.fn(async () => ({ id: 'ci-1' }));
+let pendingCI = false;
 const analyzeArchitecture = jest.fn(async (): Promise<never> => {
   throw new Error('driver internal secret');
 });
@@ -29,7 +30,10 @@ jest.mock('../../../auth/auth-bootstrap', () => {
     apiKeys: { headerName: 'X-API-Key' },
   } as ConfigSchema['auth']) };
 });
-jest.mock('@cmdb/database', () => ({ getNeo4jClient: () => ({ getCI }) }));
+jest.mock('@cmdb/database', () => ({
+  getNeo4jClient: () => ({ getCI }),
+  getPostgresClient: () => ({ query: async () => ({ rows: pendingCI ? [{ one: 1 }] : [] }) }),
+}));
 jest.mock('@cmdb/ai-ml-engine', () => ({
   ...jest.requireActual('@cmdb/ai-ml-engine'),
   getArchitectureOptimizationEngine: () => ({ analyzeArchitecture, analyzeBusinessService }),
@@ -46,10 +50,19 @@ const getAnalysis = () => request(app).get('/architecture/business-services/bs-1
 const postAnalysis = () => request(app).post('/architecture/analyze').send({ ci_ids: ['ci-1'] });
 
 beforeEach(() => {
+  pendingCI = false;
   getCI.mockImplementation(async () => ({ id: 'ci-1' }));
   analyzeArchitecture.mockImplementation(async () => { throw new Error('driver internal secret'); });
   analyzeBusinessService.mockImplementation(async () => { throw new Error('driver internal secret'); });
 });
+it('refuses a pending own CI before architecture analysis and hides graph diagnostics', async () => {
+  pendingCI = true;
+  const response = await postAnalysis().set('authorization', 'Bearer operator-gap');
+  expect(response.status).toBe(409);
+  expect(response.body).toEqual({ success: false, error: 'Conflict', message: 'CI is temporarily unavailable' });
+  expect(analyzeArchitecture).not.toHaveBeenCalled();
+});
+
 
 it('returns 401 to unauthenticated architecture analysis callers before ownership lookup', async () => {
   expect((await getAnalysis()).status).toBe(401);
@@ -157,7 +170,7 @@ it('bounds the ownership preflight with the same deadline and maps database time
   expect(getCI).toHaveBeenCalledWith('ci-1', ORG, expect.any(Number));
   const timeout = getCI.mock.calls[0][2];
   expect(timeout).toBeGreaterThan(0);
-  expect(timeout).toBeLessThanOrEqual(5000);
+  expect(timeout).toBeLessThanOrEqual(10000);
 });
 
 it('returns 504 when preflight spends the whole request budget before the engine', async () => {

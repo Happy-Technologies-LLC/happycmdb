@@ -13,6 +13,8 @@
 
 import { Job } from 'bullmq';
 import { logger } from '../utils/logger';
+import { jobErrorCode, jobLog } from './coded-processor';
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * Error categories for job failures
@@ -102,13 +104,12 @@ export class JobErrorHandler {
   static async handleJobFailure(job: Job, error: Error): Promise<void> {
     const classification = this.classifyError(error);
 
-    logger.error(`Job ${job.id} failed`, {
-      _jobName: job.name,
+    logger.error('Job failed', {
+      _jobName: job.queueName,
       _queueName: job.queueName,
-      _error: error.message,
+      _code: jobErrorCode(error),
       _category: classification._category,
       _attemptsMade: job.attemptsMade,
-      _data: job.data,
     });
 
     // Log to dead letter queue if max attempts reached
@@ -130,26 +131,22 @@ export class JobErrorHandler {
     _error: Error,
     _classification: ErrorClassification
   ): Promise<void> {
-    logger.warn(`Job ${_job.id} moved to dead letter queue`, {
-      _jobName: _job.name,
+    logger.warn('Job moved to dead letter queue', {
+      _jobName: _job.queueName,
       _queueName: _job.queueName,
       _category: _classification._category,
     });
 
-    // In a real implementation, this would send to a separate DLQ
-    // For now, we log the failure
-    await _job.log(`DEAD LETTER: ${_error.message}`);
-
-    // Store in metadata for later inspection
-    await _job.updateData({
-      ..._job.data,
-      __dlq: {
-        _error: _error.message,
-        _category: _classification._category,
-        _timestamp: new Date().toISOString(),
-        _attemptsMade: _job.attemptsMade,
-      },
-    });
+    const code = jobErrorCode(_error);
+    await jobLog(_job, `DEAD_LETTER:${code}`);
+    const discovery = _job.queueName.startsWith('discovery-');
+    const data = discovery
+      ? typeof _job.data?._runId === 'string' && UUID.test(_job.data._runId) ? { _runId: _job.data._runId }
+        : typeof _job.data?._definitionId === 'string' && UUID.test(_job.data._definitionId)
+          ? { _definitionId: _job.data._definitionId }
+          : { _legacy: true }
+      : { _legacy: true };
+    await _job.updateData({ ...data, __dlq: { _code: code } });
   }
 
   /**
@@ -161,12 +158,11 @@ export class JobErrorHandler {
     _classification: ErrorClassification
   ): Promise<void> {
     // In a real implementation, this would send email/Slack/PagerDuty alerts
-    logger.error(`ADMIN NOTIFICATION: Job ${_job.id} failed critically`, {
-      _jobName: _job.name,
+    logger.error('ADMIN NOTIFICATION: Job failed critically', {
+      _jobName: _job.queueName,
       _queueName: _job.queueName,
-      _error: _error.message,
+      _code: jobErrorCode(_error),
       _category: _classification._category,
-      _data: _job.data,
     });
   }
 
@@ -214,15 +210,15 @@ export function createErrorHandlerMiddleware() {
   return {
     _onFailed: async (job: Job | undefined, error: Error) => {
       if (!job) {
-        logger.error('Job failed without job context', { error: error.message });
+        logger.error('Job failed without job context', { code: jobErrorCode(error) });
         return;
       }
 
       await JobErrorHandler.handleJobFailure(job, error);
     },
 
-    _onStalled: async (jobId: string) => {
-      logger.warn(`Job ${jobId} stalled - may need manual intervention`);
+    _onStalled: async (_jobId: string) => {
+      logger.warn('Job stalled - may need manual intervention');
     },
   };
 }

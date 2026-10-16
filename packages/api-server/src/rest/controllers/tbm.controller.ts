@@ -12,6 +12,7 @@ import {
 } from '../../services/business-service-ownership';
 import { ciCostTrends } from '../../services/ci-cost-trends';
 import { errorLogFields } from '../../utils/log-error';
+import { filterGlobalCIGaps, readGlobalCIPage, readCIList, CIListUnavailableError, CI_LIST_UNAVAILABLE_RESPONSE } from '../../read-admission';
 
 /**
  * A single GL account entry accepted by importGLData. Mirrors the fields the
@@ -169,18 +170,20 @@ export class TBMController {
       // (FD-2) and carrying the organization on the node (FD-16 c).
       const orgServiceIds = [...(await ownedBusinessServiceIds(organizationId))];
 
-      const session = this.neo4jClient.getSession();
-      try {
-        // A capability exists for this tenant only when an owned, org-stamped
-        // service realizes it. A foreign-only capability must not reveal its name.
-        const result = await session.run(
+      // Hold an AP-M snapshot across the graph aggregate; a later T1 cannot
+      // leave a pending CI in either the cost or count returned to the caller.
+      const record = await readCIList(organizationId, async (pending, timeout) => {
+        const session = this.neo4jClient.getSession();
+        try {
+          const result = await session.run(
           `
           MATCH (cap:BusinessCapability {id: $capabilityId})-[:REALIZES]->(service:BusinessService)
           WHERE service.id IN $orgServiceIds AND service.organization_id = $organizationId
           OPTIONAL MATCH (service)-[:SUPPORTED_BY]->(app:ApplicationService)
           OPTIONAL MATCH costPath = (app)-[:DEPENDS_ON|RUNS_ON*1..2]->(ci:CI)
-          WHERE all(node IN nodes(costPath) WHERE NOT node:CI OR node.organization_id = $organizationId)
-            AND ci.tbm_monthly_cost IS NOT NULL
+          WHERE all(node IN nodes(costPath) WHERE NOT node:CI OR
+            (node.organization_id = $organizationId AND NOT node.id IN $pending))
+            AND ci.tbm_monthly_cost IS NOT NULL AND NOT ci.id IN $pending
           WITH cap, collect(DISTINCT service.id) as serviceIds, collect(DISTINCT ci) as cis
           RETURN
             cap.id as capabilityId,
@@ -189,15 +192,17 @@ export class TBMController {
             reduce(total = 0, node IN cis | total + node.tbm_monthly_cost) as totalCost,
             size(cis) as ciCount
           `,
-          { capabilityId: id, orgServiceIds, organizationId }
+          { capabilityId: id, orgServiceIds, organizationId, pending }, { timeout }
         );
-
-        if (result.records.length === 0) {
-          res.status(404).json({ success: false, error: 'Business capability not found' });
-          return;
+          return result.records[0] ?? null;
+        } finally {
+          await session.close();
         }
-
-        const record = result.records[0]!;
+      });
+      if (!record) {
+        res.status(404).json({ success: false, error: 'Business capability not found' });
+        return;
+      }
 
         res.json({
           success: true,
@@ -209,16 +214,13 @@ export class TBMController {
             supportingServices: record.get('serviceIds').length,
           },
         });
-      } finally {
-        await session.close();
-      }
     } catch (error) {
-      logger.error('Error getting costs by capability', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to retrieve costs by capability',
-        message: error instanceof Error ? error.message : 'Unknown error',
-      });
+      if (error instanceof CIListUnavailableError) {
+        res.status(503).json(CI_LIST_UNAVAILABLE_RESPONSE);
+        return;
+      }
+      logger.error('Error getting costs by capability');
+      res.status(500).json({ success: false, error: 'Failed to retrieve costs by capability' });
     }
   }
 
@@ -233,18 +235,18 @@ export class TBMController {
         return;
       }
 
-      const session = this.neo4jClient.getSession();
-      try {
-        // The node must also carry the caller's organization (FD-16 c): a node
-        // with another organization's id, or none, matches nothing (404).
-        const result = await session.run(
+      const record = await readCIList(organizationId, async (pending, timeout) => {
+        const session = this.neo4jClient.getSession();
+        try {
+          const result = await session.run(
           `
           MATCH (service:BusinessService {id: $serviceId})
           WHERE service.organization_id = $organizationId
           OPTIONAL MATCH (service)-[:SUPPORTED_BY]->(app:ApplicationService)
           OPTIONAL MATCH costPath = (app)-[:DEPENDS_ON|RUNS_ON*1..2]->(ci:CI)
-          WHERE all(node IN nodes(costPath) WHERE NOT node:CI OR node.organization_id = $organizationId)
-            AND ci.tbm_monthly_cost IS NOT NULL
+          WHERE all(node IN nodes(costPath) WHERE NOT node:CI OR
+            (node.organization_id = $organizationId AND NOT node.id IN $pending))
+            AND ci.tbm_monthly_cost IS NOT NULL AND NOT ci.id IN $pending
           WITH service, collect(DISTINCT ci) as cis, collect(DISTINCT ci.tbm_resource_tower) as towers
           RETURN
             service.id as serviceId,
@@ -253,15 +255,17 @@ export class TBMController {
             size(cis) as ciCount,
             towers
           `,
-          { serviceId: id, organizationId }
+          { serviceId: id, organizationId, pending }, { timeout }
         );
-
-        if (result.records.length === 0) {
-          res.status(404).json(BUSINESS_SERVICE_NOT_FOUND);
-          return;
+          return result.records[0] ?? null;
+        } finally {
+          await session.close();
         }
-
-        const record = result.records[0]!;
+      });
+      if (!record) {
+        res.status(404).json(BUSINESS_SERVICE_NOT_FOUND);
+        return;
+      }
 
         res.json({
           success: true,
@@ -273,16 +277,13 @@ export class TBMController {
             towers: record.get('towers'),
           },
         });
-      } finally {
-        await session.close();
-      }
     } catch (error) {
-      logger.error('Error getting costs by business service', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to retrieve costs by business service',
-        message: error instanceof Error ? error.message : 'Unknown error',
-      });
+      if (error instanceof CIListUnavailableError) {
+        res.status(503).json(CI_LIST_UNAVAILABLE_RESPONSE);
+        return;
+      }
+      logger.error('Error getting costs by business service');
+      res.status(500).json({ success: false, error: 'Failed to retrieve costs by business service' });
     }
   }
 
@@ -548,12 +549,13 @@ export class TBMController {
 
         query += `
           RETURN ci
-          ORDER BY ci.license_expiry_date ASC
-          LIMIT 100
+          ORDER BY ci.license_expiry_date ASC, ci.id
+          SKIP $offset LIMIT 100
         `;
-
-        const result = await session.run(query, params);
-        const licenses = result.records.map((r: any) => r.get('ci').properties);
+        const licenses = await readGlobalCIPage(async (offset, timeout) => {
+          const result = await session.run(query, { ...params, offset }, { timeout });
+          return result.records.map((r: any) => r.get('ci').properties);
+        });
 
         res.json({
           success: true,
@@ -564,11 +566,14 @@ export class TBMController {
         await session.close();
       }
     } catch (error) {
+      if (error instanceof CIListUnavailableError) {
+        res.status(503).json(CI_LIST_UNAVAILABLE_RESPONSE);
+        return;
+      }
       logger.error('Error getting licenses', error);
       res.status(500).json({
         success: false,
         error: 'Failed to retrieve licenses',
-        message: error instanceof Error ? error.message : 'Unknown error',
       });
     }
   }
@@ -579,19 +584,18 @@ export class TBMController {
 
       const session = this.neo4jClient.getSession();
       try {
-        const result = await session.run(
-          `
-          MATCH (ci:CI {type: 'software'})
-          WHERE ci.license_expiry_date IS NOT NULL
-            AND ci.license_expiry_date <= date() + duration({days: $days})
-            AND ci.license_expiry_date >= date()
-          RETURN ci
-          ORDER BY ci.license_expiry_date ASC
-          `,
-          { days: parseInt(days as string) }
-        );
-
-        const renewals = result.records.map((r: any) => r.get('ci').properties);
+        const renewals = await readGlobalCIPage(async (offset, timeout) => {
+          const result = await session.run(
+            `MATCH (ci:CI {type: 'software'})
+             WHERE ci.license_expiry_date IS NOT NULL
+               AND ci.license_expiry_date <= date() + duration({days: $days})
+               AND ci.license_expiry_date >= date()
+             RETURN ci ORDER BY ci.license_expiry_date ASC, ci.id
+             SKIP $offset LIMIT 100`,
+            { days: parseInt(days as string), offset }, { timeout }
+          );
+          return result.records.map((r: any) => r.get('ci').properties);
+        });
 
         res.json({
           success: true,
@@ -602,11 +606,14 @@ export class TBMController {
         await session.close();
       }
     } catch (error) {
+      if (error instanceof CIListUnavailableError) {
+        res.status(503).json(CI_LIST_UNAVAILABLE_RESPONSE);
+        return;
+      }
       logger.error('Error getting upcoming renewals', error);
       res.status(500).json({
         success: false,
         error: 'Failed to retrieve upcoming renewals',
-        message: error instanceof Error ? error.message : 'Unknown error',
       });
     }
   }

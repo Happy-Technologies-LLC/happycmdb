@@ -95,6 +95,7 @@ export interface TokenPayload {
 
 export interface AuthenticatedRequest extends Request {
   user?: TokenPayload;
+  credentialType?: 'jwt' | 'api-key';
 }
 
 /**

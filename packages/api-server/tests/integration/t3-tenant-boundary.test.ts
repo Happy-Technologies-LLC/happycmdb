@@ -729,8 +729,9 @@ it('fences future-dated A rows across real graph deletion and B ID collision, wh
     VALUES ($1, false, 0, NOW(), $2)`, [id, bMarker]);
   await sql.query(`INSERT INTO impact_analyses (id, source_ci_id, change_type, risk_level, analyzed_at, ci_incarnation_id)
     VALUES ('44444444-4444-4444-8444-444444444444', $1, 'RESTART', 'low', NOW(), $2)`, [id, bMarker]);
-  await sql.query(`INSERT INTO ci_change_history (ci_id, change_type, change_source, metadata, ci_incarnation_id)
-    VALUES ($1, 'FRESH_B', 'test', $2::jsonb, $3)`, [id, JSON.stringify({ organization_id: B }), bMarker]);
+  await sql.query(`INSERT INTO ci_change_history (ci_id, change_type, change_source, metadata, ci_incarnation_id, organization_id)
+    VALUES ($1, 'FRESH_B', 'test', $2::jsonb, $3, $4)`,
+    [id, JSON.stringify({ organization_id: B }), bMarker, B]);
   expect((await get(`/api/v1/drift/baseline/${id}`)).body.data.snapshot_data).toEqual({ owner: 'B' });
   expect((await get(`/api/v1/drift/history/${id}`)).body.data).toMatchObject([{ drift_score: 0 }]);
   expect((await get(`/api/v1/impact/history/${id}`)).body.data).toMatchObject([{ risk_level: 'low' }]);

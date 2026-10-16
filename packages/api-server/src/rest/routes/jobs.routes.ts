@@ -5,18 +5,14 @@
  * Jobs API Routes
  *
  * This module defines all REST API routes for job management and queue
- * monitoring. Authentication is enforced centrally: server.ts mounts
- * `authMiddleware.authenticate()` on every /api/v1 route before this
- * router. Tenant-scoped job routes also require a verified organization claim.
- * Mutating routes additionally require the 'write' permission via
- * `authMiddleware.requirePermission('write')`.
+ * monitoring. Authentication is enforced centrally; every route below also
+ * requires a freshly verified platform administrator JWT before queue access.
  */
 
 import { Router } from 'express';
 import { jobsController } from '../controllers/jobs.controller';
 import { queueController } from '../controllers/queue.controller';
 import { getAuthMiddleware } from '../../auth/auth-bootstrap';
-import { optionalRequestOrganizationId } from '../../middleware/auth.middleware';
 import type { Request, Response, NextFunction } from 'express';
 import { QUEUE_NAMES } from '@cmdb/common';
 
@@ -56,83 +52,54 @@ function requireKnownProvider(req: Request, res: Response, next: NextFunction): 
 }
 
 
-function requireJobOrganization(req: Request, res: Response, next: NextFunction): void {
-  if (!optionalRequestOrganizationId(req)) {
-    res.status(403).json({ success: false, error: 'Organization claim required' });
-    return;
-  }
-  next();
-}
-
-// Global queue and schedule operations have no tenant-scoped authorization policy yet.
-// Refuse before role checks so viewer, operator and admin receive the same response.
-function refuseGlobalOperation(_req: Request, res: Response): void {
-  res.status(403).json({ success: false, error: 'Global queue operations unavailable' });
-}
-
-
 const router = Router();
 const authMiddleware = getAuthMiddleware();
+// All job, schedule and queue surfaces expose global Redis state. Only a
+// freshly verified platform administrator's JWT may reach their handlers.
+router.use(authMiddleware.requirePlatformAdmin());
 
 // Job Management Routes
 // IMPORTANT: More specific routes must come BEFORE generic parameterized routes
 // to avoid route conflicts (e.g., /jobs/stats vs /jobs/:queueName)
 
-// Job statistics (specific routes first)
-router.get('/jobs/stats', refuseGlobalOperation);
+router.get('/jobs/stats', (req, res) => jobsController.getJobStats(req, res));
+router.get('/jobs/schedules/discovery', (req, res) => jobsController.getDiscoverySchedules(req, res));
+router.get('/jobs/schedules/etl', (req, res) => jobsController.getETLSchedules(req, res));
+router.put('/jobs/schedules/discovery/:provider', requireKnownProvider,
+  (req, res) => jobsController.updateDiscoverySchedule(req, res));
+router.put('/jobs/schedules/etl/:type', (req, res) => jobsController.updateETLSchedule(req, res));
 
-// Schedule management (specific routes)
-router.get('/jobs/schedules/discovery', refuseGlobalOperation);
-router.get('/jobs/schedules/etl', refuseGlobalOperation);
-router.put('/jobs/schedules/discovery/:provider', refuseGlobalOperation);
-router.put('/jobs/schedules/etl/:type', refuseGlobalOperation);
+router.get('/jobs/discovery/stats', (req, res) => jobsController.getDiscoveryStats(req, res));
+router.get('/jobs/discovery', (req, res) => jobsController.listDiscoveryJobs(req, res));
+router.post('/jobs/discovery/:provider', requireKnownProvider,
+  (req, res) => jobsController.triggerDiscovery(req, res));
+router.post('/jobs/etl/:type', (req, res) => jobsController.triggerETL(req, res));
 
-// Discovery jobs (specific routes)
-router.get('/jobs/discovery/stats', refuseGlobalOperation);
-router.get('/jobs/discovery', requireJobOrganization, (req, res) =>
-  jobsController.listDiscoveryJobs(req, res)
-);
-router.post('/jobs/discovery/:provider', authMiddleware.requirePermission('write'), requireJobOrganization, requireKnownProvider, (req, res) =>
-  jobsController.triggerDiscovery(req, res)
-);
+router.get('/jobs/:queueName/failed', requireKnownQueue,
+  (req, res) => jobsController.getFailedJobs(req, res));
+router.post('/jobs/:queueName/clean', requireKnownQueue, requireMutableQueue,
+  (req, res) => jobsController.cleanQueue(req, res));
+router.get('/jobs/:queueName/:jobId', requireKnownQueue,
+  (req, res) => jobsController.getJobStatus(req, res));
+router.get('/jobs/:queueName', requireKnownQueue,
+  (req, res) => jobsController.listJobs(req, res));
+router.delete('/jobs/:queueName/:jobId', requireKnownQueue, requireMutableQueue,
+  (req, res) => jobsController.cancelJob(req, res));
+router.post('/jobs/:queueName/:jobId/retry', requireKnownQueue, requireMutableQueue,
+  (req, res) => jobsController.retryJob(req, res));
 
-// ETL jobs (specific routes)
-router.post('/jobs/etl/:type', authMiddleware.requirePermission('write'), (req, res) =>
-  jobsController.triggerETL(req, res)
-);
-
-// Queue-specific routes (must come after /jobs/discovery/stats to avoid conflicts)
-router.get('/jobs/:queueName/failed', requireJobOrganization, requireKnownQueue, (req, res) =>
-  jobsController.getFailedJobs(req, res)
-);
-router.post('/jobs/:queueName/clean', refuseGlobalOperation);
-
-// Generic job routes (MUST be last due to :queueName and :jobId parameters)
-router.get('/jobs/:queueName/:jobId', requireJobOrganization, requireKnownQueue, (req, res) =>
-  jobsController.getJobStatus(req, res)
-);
-router.get('/jobs/:queueName', requireJobOrganization, requireKnownQueue, (req, res) => jobsController.listJobs(req, res));
-router.delete('/jobs/:queueName/:jobId', authMiddleware.requirePermission('write'), requireJobOrganization, requireKnownQueue, requireMutableQueue, (req, res) =>
-  jobsController.cancelJob(req, res)
-);
-router.post('/jobs/:queueName/:jobId/retry', authMiddleware.requirePermission('write'), requireJobOrganization, requireKnownQueue, requireMutableQueue, (req, res) =>
-  jobsController.retryJob(req, res)
-);
-
-// Queue Monitoring Routes
-router.get('/queues/stats', refuseGlobalOperation);
-router.get('/queues/:queueName/stats', refuseGlobalOperation);
-router.get('/queues/:queueName/metrics', refuseGlobalOperation);
-router.get('/queues/workers/status', refuseGlobalOperation);
-router.get('/queues/health', refuseGlobalOperation);
-
-// Queue control
-router.post('/queues/:queueName/pause', refuseGlobalOperation);
-router.post('/queues/:queueName/resume', refuseGlobalOperation);
-
-// Job logs
-router.get('/queues/:queueName/jobs/:jobId/logs', requireJobOrganization, requireKnownQueue, (req, res) =>
-  queueController.getJobLogs(req, res)
-);
+router.get('/queues/stats', (req, res) => queueController.getAllQueueStats(req, res));
+router.get('/queues/:queueName/stats', requireKnownQueue,
+  (req, res) => queueController.getQueueStats(req, res));
+router.get('/queues/:queueName/metrics', requireKnownQueue,
+  (req, res) => queueController.getQueueMetrics(req, res));
+router.get('/queues/workers/status', (req, res) => queueController.getAllWorkerStatus(req, res));
+router.get('/queues/health', (req, res) => queueController.getQueueHealth(req, res));
+router.post('/queues/:queueName/pause', requireKnownQueue, requireMutableQueue,
+  (req, res) => queueController.pauseQueue(req, res));
+router.post('/queues/:queueName/resume', requireKnownQueue, requireMutableQueue,
+  (req, res) => queueController.resumeQueue(req, res));
+router.get('/queues/:queueName/jobs/:jobId/logs', requireKnownQueue,
+  (req, res) => queueController.getJobLogs(req, res));
 
 export default router;

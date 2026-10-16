@@ -104,6 +104,87 @@ it('keeps every REST aggregate within own dimension and both relationship endpoi
   expect((await rest('a', '/dashboard')).body.total_cis).toBe(2);
 });
 
+it('omits pending, failed, backfilled and graph-reassigned top-connected CIs and their edges in REST and GraphQL', async () => {
+  const ids = ['analytics-top-pending', 'analytics-top-failed', 'analytics-top-backfilled', 'analytics-top-recycled'];
+  await sql.query(`INSERT INTO cmdb.dim_ci
+    (ci_id, ci_name, ci_type, ci_status, organization_id, org_backfilled)
+    SELECT id, id, 'server', 'active', $2, id = 'analytics-top-backfilled'
+    FROM unnest($1::text[]) AS id`, [ids, A]);
+  await sql.query(`INSERT INTO ci_reconciliation_operations
+    (id, group_id, organization_id, ci_id, origin, operation, graph_effect, state, actor, epoch, lease_expires_at)
+    VALUES ('aaaaaaaa-1000-4000-8000-000000000001', 'aaaaaaaa-1000-4000-8000-000000000001',
+      $1, $2, 'api', 'update', true, 'pending', 'test', 1, now()),
+      ('aaaaaaaa-1000-4000-8000-000000000002', 'aaaaaaaa-1000-4000-8000-000000000002',
+      $1, $3, 'api', 'update', true, 'failed', 'test', 1, now())`, [A, ids[0], ids[1]]);
+  await sql.query(`INSERT INTO cmdb.fact_ci_relationships
+    (from_ci_key, to_ci_key, date_key, relationship_type, discovered_at)
+    SELECT source.ci_key, target.ci_key, 20991231, 'DEPENDS_ON', now()
+    FROM cmdb.dim_ci source JOIN cmdb.dim_ci target ON target.ci_id = ANY($1::text[])
+    WHERE source.ci_id = 'analytics-a'`, [ids]);
+  await cypher(`UNWIND $ids AS id CREATE (:CI {id:id, name:id, organization_id:
+    CASE WHEN id = 'analytics-top-recycled' THEN $b ELSE $a END})`, { ids, a: A, b: B });
+  try {
+    const response = await rest('a', '/top-connected?limit=2');
+    expect(response.status).toBe(200);
+    expect(response.body.data).toEqual([
+      { ci_id: 'analytics-a', ci_name: 'own', ci_type: 'server', relationship_count: '1' },
+      { ci_id: 'analytics-a2', ci_name: 'own dependent', ci_type: 'server', relationship_count: '1' },
+    ]);
+    const graphql = await gql('a', '{ analytics { getTopConnectedCIs(limit:2) { _ciId _relationshipCount } } }');
+    expect(graphql.body.errors).toBeUndefined();
+    expect(graphql.body.data.analytics.getTopConnectedCIs).toEqual([
+      { _ciId: 'analytics-a', _relationshipCount: 1 },
+      { _ciId: 'analytics-a2', _relationshipCount: 1 },
+    ]);
+  } finally {
+    await sql.query("DELETE FROM cmdb.fact_ci_relationships WHERE to_ci_key IN (SELECT ci_key FROM cmdb.dim_ci WHERE ci_id = ANY($1::text[]))", [ids]);
+    await sql.query("DELETE FROM ci_reconciliation_operations WHERE ci_id = ANY($1::text[])", [ids]);
+    await sql.query("DELETE FROM cmdb.dim_ci WHERE ci_id = ANY($1::text[])", [ids]);
+    await cypher('MATCH (ci:CI) WHERE ci.id IN $ids DETACH DELETE ci', { ids });
+  }
+});
+
+it('bounds limit-one ranking over large two-org stale inventories and serves the owned tenant page', async () => {
+  const stale = Array.from({ length: 1025 }, (_, index) => `analytics-0-volume-a-${String(index).padStart(4, '0')}`);
+  const other = Array.from({ length: 1025 }, (_, index) => `analytics-0-volume-b-${String(index).padStart(4, '0')}`);
+  await sql.query(`INSERT INTO cmdb.dim_ci (ci_id, ci_name, ci_type, ci_status, organization_id)
+    SELECT id, id, 'server', 'active', $2 FROM unnest($1::text[]) AS id`, [stale, A]);
+  await sql.query(`INSERT INTO cmdb.dim_ci (ci_id, ci_name, ci_type, ci_status, organization_id)
+    SELECT id, id, 'server', 'active', $2 FROM unnest($1::text[]) AS id`, [other, B]);
+  // Keep the pre-existing A graph nodes out of this zero-edge stale-inventory case.
+  // Otherwise their owned relationship correctly wins the rank before any stale row.
+  await sql.query(`INSERT INTO ci_reconciliation_operations
+    (id, group_id, organization_id, ci_id, origin, operation, graph_effect, state, actor, epoch, lease_expires_at)
+    SELECT id::uuid, id::uuid, $1, ci_id, 'api', 'update', true, 'pending', 'test', 1, now()
+    FROM (VALUES
+      ('aaaaaaaa-1000-4000-8000-000000000011', 'analytics-a'),
+      ('aaaaaaaa-1000-4000-8000-000000000012', 'analytics-a2')
+    ) AS excluded(id, ci_id)`, [A]);
+  await cypher('CREATE (:CI {id:$id, name:$id, organization_id:$org})', { id: other[0], org: B });
+  try {
+    const refused = await rest('a', '/top-connected?limit=1');
+    expect(refused.status).toBe(503);
+    expect(refused.body).toEqual({ success: false, error: 'Top connected CI resource limit exceeded' });
+    const rejected = await gql('a', '{ analytics { getTopConnectedCIs(limit:1) { _ciId } } }');
+    expect(rejected.body.errors?.[0].extensions.code).toBe('RESOURCE_LIMIT_EXCEEDED');
+    const owned = await rest('b', '/top-connected?limit=1');
+    expect(owned.status).toBe(200);
+    expect(owned.body.data).toEqual([{
+      ci_id: other[0], ci_name: other[0], ci_type: 'server', relationship_count: '0',
+    }]);
+    const graphqlOwned = await gql('b', '{ analytics { getTopConnectedCIs(limit:1) { _ciId _relationshipCount } } }');
+    expect(graphqlOwned.body.errors).toBeUndefined();
+    expect(graphqlOwned.body.data.analytics.getTopConnectedCIs).toEqual([
+      { _ciId: other[0], _relationshipCount: 0 },
+    ]);
+  } finally {
+    await sql.query("DELETE FROM ci_reconciliation_operations WHERE ci_id IN ('analytics-a', 'analytics-a2') AND actor = 'test'");
+    await sql.query("DELETE FROM cmdb.dim_ci WHERE ci_id LIKE 'analytics-0-volume-%'");
+    await cypher('MATCH (ci:CI {id:$id}) DETACH DELETE ci', { id: other[0] });
+  }
+  expect((await rest('a', '/top-connected?limit=1')).body.data[0].ci_id).toBe('analytics-a');
+});
+
 it('scopes GraphQL aggregates and inventory through mounted execution', async () => {
   // The production request-admission budget caps aggregate fanout; exercise
   // each reader as a separate authenticated operation, not one oversized alias query.
@@ -162,25 +243,27 @@ it('caps dense cyclic dependency work in both APIs and serves a healthy follow-u
 it('retains event-proven fresh history and fences reused IDs, NULL provenance and foreign IDs', async () => {
   await cypher("CREATE (:CI {id:'analytics-history', name:'fresh', type:'server', organization_id:$org, incarnation_id:randomUUID()})", { org: A });
   const aMarker = (await graph.getCI('analytics-history', A))?._incarnation_id;
-  await sql.query(`INSERT INTO ci_change_history (ci_id, change_type, change_source, metadata, ci_incarnation_id)
-    VALUES ('analytics-history', 'OWN', 'test', $1::jsonb, $2),
-      ('analytics-history', 'LEGACY', 'test', NULL, $2),
-      ('analytics-history', 'FOREIGN', 'test', $3::jsonb, $2)`, [JSON.stringify({ organization_id: A }), aMarker, JSON.stringify({ organization_id: B })]);
+  await sql.query(`INSERT INTO ci_change_history (ci_id, change_type, change_source, metadata, ci_incarnation_id, organization_id)
+    VALUES ('analytics-history', 'OWN', 'test', $1::jsonb, $2, $3),
+      ('analytics-history', 'LEGACY', 'test', NULL, $2, NULL),
+      ('analytics-history', 'FOREIGN', 'test', $4::jsonb, $2, $5)`,
+    [JSON.stringify({ organization_id: A }), aMarker, A, JSON.stringify({ organization_id: B }), B]);
   const history = (user: keyof typeof users) => rest(user, '/change-history?ci_id=analytics-history');
   const graphql = (user: keyof typeof users) => gql(user, '{ analytics { getChangeHistory(ciId:"analytics-history") { _changeType } } }');
   expect((await sql.query("SELECT ci_id FROM cmdb.dim_ci WHERE ci_id='analytics-history'")).rows).toEqual([]);
   expect((await history('a')).body.data.map((row: { change_type: string }) => row.change_type)).toEqual(['OWN']);
   expect((await graphql('a')).body.data.analytics.getChangeHistory).toEqual([{ _changeType: 'OWN' }]);
   expect((await history('b')).status).toBe((await rest('b', '/change-history?ci_id=analytics-absent')).status);
-  expect((await graphql('b')).body.data.analytics.getChangeHistory).toEqual([]);
+  expect((await graphql('b')).body.errors?.[0].extensions.code).toBe('NOT_FOUND');
   await cypher("MATCH (ci:CI {id:'analytics-history'}) DETACH DELETE ci");
   await cypher("CREATE (:CI {id:'analytics-history', name:'reused', type:'server', organization_id:$org, incarnation_id:randomUUID()})", { org: B });
   const bMarker = (await graph.getCI('analytics-history', B))?._incarnation_id;
-  await sql.query(`INSERT INTO ci_change_history (ci_id, change_type, change_source, metadata, ci_incarnation_id)
-    VALUES ('analytics-history', 'NEW', 'test', $1::jsonb, $2)`, [JSON.stringify({ organization_id: B }), bMarker]);
+  await sql.query(`INSERT INTO ci_change_history (ci_id, change_type, change_source, metadata, ci_incarnation_id, organization_id)
+    VALUES ('analytics-history', 'NEW', 'test', $1::jsonb, $2, $3)`,
+    [JSON.stringify({ organization_id: B }), bMarker, B]);
   expect((await history('a')).status).toBe(404);
   expect((await history('b')).body.data.map((row: { change_type: string }) => row.change_type)).toEqual(['NEW']);
-  expect((await graphql('a')).body.data.analytics.getChangeHistory).toEqual([]);
+  expect((await graphql('a')).body.errors?.[0].extensions.code).toBe('NOT_FOUND');
   expect((await graphql('b')).body.data.analytics.getChangeHistory).toEqual([{ _changeType: 'NEW' }]);
 });
 

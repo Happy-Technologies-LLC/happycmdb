@@ -195,6 +195,46 @@ npm run lint              # ESLint
 npm run format            # Prettier
 ```
 
+HP1 S3 audit gate: `packages/api-server/src/__tests__/hp1-s3-source-gates.test.ts`
+scans deployable TypeScript, committed JavaScript, package SQL, and deployed
+`infrastructure/database` SQL (Metabase initialization and all three views)
+for unbound audit writers, legacy `log_ci_change` trigger installation, and
+raw discovery job serialization. Full-text search counts index hits without
+collecting nodes and separately reads the ordered, tenant-scoped limited page.
+Top-connected REST/GraphQL rows and both relationship endpoints require current,
+non-backfilled, non-pending dimensions and current graph ownership; candidate
+pages and graph verification have bounded size and a shared deadline, with a
+503/resource-limit response rather than an incomplete ranking. Architecture
+analyses exclude pending/failed neighbors from cycles, counts, and issue details;
+the existing traversal budgets still apply. Discovery execution remains disabled
+until the separately authorized S5 cutover: its workers only scrub old payloads.
+
+The N-18 persisted queue proof is deliberately outside default integration
+discovery. Nick alone runs the founder-approved, disposable Build01 Docker
+receipt against a clean checkout of the exact draft PR head with locked npm
+dependencies already installed:
+
+```bash
+./packages/etl-processor/tests/scratch/run-n18-receipt.sh <exact-40-character-PR-head-SHA>
+```
+
+The script pins the linux/amd64 Neo4j, TimescaleDB and Redis images by digest,
+binds only disposable loopback ports, loads the canonical schema, runs the real
+registered processors, and removes only its own labeled containers on both
+success and failure. It writes `test-results/n18/<sha-prefix>-<pid>.jsonl`
+(persisted returnvalue, logs, failedReason, stacktrace, data and marker status
+per case) and `.run.log` (57-case table, exact head and teardown/exit status).
+Agents must not run this script. The fixture covers eight discovery, four base
+ETL, three v3 ETL and four cloud/TBM cost queues for both organizations and
+forced failure. Nick approved `etl-cis`, `etl-costs`, `etl-incidents` as the
+§10.5 names matching the shipped scheduler; external/manual Redis consumers
+and data remain unverified, with that risk accepted, not declared migration-free.
+The credential-free cloud cost workers complete with schema-valid
+`success:false` and no provider API call; this is an approved return-schema
+case, **not** a successful cloud sync. The full-refresh limiter adds at least
+ten minutes; reserve at least 30 minutes of admitted founder execution after
+substrate startup. Typechecks and unit tests do not replace this receipt.
+
 ## API Examples
 
 ```bash

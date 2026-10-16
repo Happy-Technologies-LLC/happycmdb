@@ -46,8 +46,6 @@ export interface ReconciliationResult {
   _conflictsResolved: number;
   /** Number of conflicts requiring manual review */
   _manualReviewRequired: number;
-  /** Conflicts found */
-  _conflicts: Conflict[];
   /** Duration in milliseconds */
   _durationMs: number;
   /** Timestamp of completion */
@@ -111,7 +109,6 @@ export class ReconciliationJob {
       _conflictsDetected: 0,
       _conflictsResolved: 0,
       _manualReviewRequired: 0,
-      _conflicts: [],
       _durationMs: 0,
       _completedAt: new Date().toISOString()
     };
@@ -134,7 +131,6 @@ export class ReconciliationJob {
 
           if (conflicts.length > 0) {
             result._conflictsDetected += conflicts.length;
-            result._conflicts.push(...conflicts);
 
             const resolved = conflicts.filter(c => c._autoResolved).length;
             result._conflictsResolved += resolved;
@@ -144,7 +140,7 @@ export class ReconciliationJob {
           result._cisChecked++;
 
         } catch (error) {
-          logger.error('Error reconciling CI', { ciId, error });
+          logger.error('Error reconciling CI', { code: 'ERR_INTERNAL' });
         }
       }
 
@@ -155,7 +151,7 @@ export class ReconciliationJob {
       return result;
 
     } catch (error) {
-      logger.error('Reconciliation job failed', { error, jobId: job.id });
+      logger.error('Reconciliation job failed', { code: 'ERR_INTERNAL' });
       throw error;
     }
   }

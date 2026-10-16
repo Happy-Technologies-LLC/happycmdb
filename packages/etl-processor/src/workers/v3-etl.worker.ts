@@ -13,7 +13,7 @@
  */
 
 import { Worker, Job } from 'bullmq';
-import { logger } from '@cmdb/common';
+import { logger, codedProcessor, jobErrorCode, JobErrorHandler } from '@cmdb/common';
 import { getRedisClient } from '@cmdb/database';
 import {
   processSyncCIsToDatamart,
@@ -30,28 +30,36 @@ import {
   SyncIncidentsJobData,
   SyncIncidentsJobResult,
 } from '../jobs/sync-incidents-to-datamart.job';
+type SafeCIResult = Omit<SyncCIsJobResult, 'errors'> & { errorCount: number; errorCodes: Record<string, number> };
+type SafeCostResult = Omit<SyncCostsJobResult,
+  'validationErrors' | 'enrichmentErrors' | 'totalMonthlyCost' | 'totalAnnualCost'> &
+  { errorCount: number; errorCodes: Record<string, number> };
+type SafeIncidentResult = Omit<SyncIncidentsJobResult, 'validationErrors' | 'enrichmentErrors'> &
+  { errorCount: number; errorCodes: Record<string, number> };
 
 /**
  * CI Sync Worker
  * Processes jobs that sync CIs from Neo4j to PostgreSQL dim_ci table
  */
 export class CISyncWorker {
-  private worker: Worker<SyncCIsJobData, SyncCIsJobResult>;
+  private worker: Worker<SyncCIsJobData, SafeCIResult>;
+  private connection = getRedisClient().getConnection().duplicate({ maxRetriesPerRequest: null });
 
   constructor() {
-    const redisClient = getRedisClient();
-    const connection = redisClient.getConnection();
+    const connection = this.connection;
 
-    this.worker = new Worker<SyncCIsJobData, SyncCIsJobResult>(
-      'etl:cis',
-      async (job: Job<SyncCIsJobData>) => {
-        logger.info('[CISyncWorker] Processing CI sync job', {
-          jobId: job.id,
-          attemptsMade: job.attemptsMade,
-        });
-
-        return await processSyncCIsToDatamart(job);
-      },
+    this.worker = new Worker<SyncCIsJobData, SafeCIResult>(
+      'etl-cis',
+      codedProcessor('etl-cis', {
+        success: 'flag', cisProcessed: 'count', cisInserted: 'count', cisUpdated: 'count',
+        cisSkipped: 'count', errorCount: 'count', errorCodes: 'errorCounts',
+        startTime: 'timestamp', endTime: 'timestamp', durationMs: 'count',
+      }, async (job: Job<SyncCIsJobData>): Promise<SafeCIResult> => {
+        logger.info('[CISyncWorker] Processing CI sync job', { jobId: job.id });
+        const { errors, ...counts } = await processSyncCIsToDatamart(job);
+        const errorCount = errors.length;
+        return { ...counts, errorCount, errorCodes: errorCount ? { ERR_VALIDATION: errorCount } : {} };
+      }),
       {
         connection,
         concurrency: 1, // Process one CI sync job at a time to avoid lock contention
@@ -78,15 +86,15 @@ export class CISyncWorker {
       logger.error('[CISyncWorker] Job failed', {
         jobId: job?.id,
         attemptsMade: job?.attemptsMade,
-        error: error.message,
-        stack: error.stack,
+        code: jobErrorCode(error),
       });
+      if (job) void JobErrorHandler.handleJobFailure(job, error).catch(() =>
+        logger.error('[CISyncWorker] Dead-letter handling failed', { code: 'ERR_INTERNAL' }));
     });
 
     this.worker.on('error', (error) => {
       logger.error('[CISyncWorker] Worker error', {
-        error: error.message,
-        stack: error.stack,
+        code: jobErrorCode(error),
       });
     });
 
@@ -99,13 +107,14 @@ export class CISyncWorker {
   async stop(): Promise<void> {
     logger.info('[CISyncWorker] Stopping worker...');
     await this.worker.close();
+    await this.connection.quit();
     logger.info('[CISyncWorker] Worker stopped');
   }
 
   /**
    * Get worker instance
    */
-  getWorker(): Worker<SyncCIsJobData, SyncCIsJobResult> {
+  getWorker(): Worker<SyncCIsJobData, SafeCIResult> {
     return this.worker;
   }
 }
@@ -115,22 +124,25 @@ export class CISyncWorker {
  * Processes jobs that validate and enrich cost data
  */
 export class CostValidationWorker {
-  private worker: Worker<SyncCostsJobData, SyncCostsJobResult>;
+  private worker: Worker<SyncCostsJobData, SafeCostResult>;
 
+  private connection = getRedisClient().getConnection().duplicate({ maxRetriesPerRequest: null });
   constructor() {
-    const redisClient = getRedisClient();
-    const connection = redisClient.getConnection();
+    const connection = this.connection;
 
-    this.worker = new Worker<SyncCostsJobData, SyncCostsJobResult>(
-      'etl:costs',
-      async (job: Job<SyncCostsJobData>) => {
-        logger.info('[CostValidationWorker] Processing cost validation job', {
-          jobId: job.id,
-          attemptsMade: job.attemptsMade,
-        });
-
-        return await processSyncCostsToDatamart(job);
-      },
+    this.worker = new Worker<SyncCostsJobData, SafeCostResult>(
+      'etl-costs',
+      codedProcessor('etl-costs', {
+        success: 'flag', periodsProcessed: 'count', costPoolsValidated: 'count',
+        costPoolsEnriched: 'count', errorCount: 'count', errorCodes: 'errorCounts',
+        startTime: 'timestamp', endTime: 'timestamp', durationMs: 'count',
+      }, async (job: Job<SyncCostsJobData>): Promise<SafeCostResult> => {
+        logger.info('[CostValidationWorker] Processing cost validation job', { jobId: job.id });
+        const { validationErrors, enrichmentErrors, totalMonthlyCost, totalAnnualCost, ...counts } =
+          await processSyncCostsToDatamart(job);
+        const errorCount = validationErrors.length + enrichmentErrors.length;
+        return { ...counts, errorCount, errorCodes: errorCount ? { ERR_VALIDATION: errorCount } : {} };
+      }),
       {
         connection,
         concurrency: 1, // Process one cost job at a time
@@ -147,7 +159,6 @@ export class CostValidationWorker {
         jobId: job.id,
         periodsProcessed: result.periodsProcessed,
         costPoolsValidated: result.costPoolsValidated,
-        totalMonthlyCost: result.totalMonthlyCost,
         durationMs: result.durationMs,
         success: result.success,
       });
@@ -157,15 +168,15 @@ export class CostValidationWorker {
       logger.error('[CostValidationWorker] Job failed', {
         jobId: job?.id,
         attemptsMade: job?.attemptsMade,
-        error: error.message,
-        stack: error.stack,
+        code: jobErrorCode(error),
       });
+      if (job) void JobErrorHandler.handleJobFailure(job, error).catch(() =>
+        logger.error('[CostValidationWorker] Dead-letter handling failed', { code: 'ERR_INTERNAL' }));
     });
 
     this.worker.on('error', (error) => {
       logger.error('[CostValidationWorker] Worker error', {
-        error: error.message,
-        stack: error.stack,
+        code: jobErrorCode(error),
       });
     });
 
@@ -178,13 +189,14 @@ export class CostValidationWorker {
   async stop(): Promise<void> {
     logger.info('[CostValidationWorker] Stopping worker...');
     await this.worker.close();
+    await this.connection.quit();
     logger.info('[CostValidationWorker] Worker stopped');
   }
 
   /**
    * Get worker instance
    */
-  getWorker(): Worker<SyncCostsJobData, SyncCostsJobResult> {
+  getWorker(): Worker<SyncCostsJobData, SafeCostResult> {
     return this.worker;
   }
 }
@@ -194,22 +206,25 @@ export class CostValidationWorker {
  * Processes jobs that validate incidents, calculate SLAs, and enrich with CI data
  */
 export class IncidentSyncWorker {
-  private worker: Worker<SyncIncidentsJobData, SyncIncidentsJobResult>;
+  private worker: Worker<SyncIncidentsJobData, SafeIncidentResult>;
 
+  private connection = getRedisClient().getConnection().duplicate({ maxRetriesPerRequest: null });
   constructor() {
-    const redisClient = getRedisClient();
-    const connection = redisClient.getConnection();
+    const connection = this.connection;
 
-    this.worker = new Worker<SyncIncidentsJobData, SyncIncidentsJobResult>(
-      'etl:incidents',
-      async (job: Job<SyncIncidentsJobData>) => {
-        logger.info('[IncidentSyncWorker] Processing incident sync job', {
-          jobId: job.id,
-          attemptsMade: job.attemptsMade,
-        });
-
-        return await processSyncIncidentsToDatamart(job);
-      },
+    this.worker = new Worker<SyncIncidentsJobData, SafeIncidentResult>(
+      'etl-incidents',
+      codedProcessor('etl-incidents', {
+        success: 'flag', incidentsProcessed: 'count', incidentsEnriched: 'count',
+        changesProcessed: 'count', changesEnriched: 'count', slaViolations: 'count',
+        errorCount: 'count', errorCodes: 'errorCounts',
+        startTime: 'timestamp', endTime: 'timestamp', durationMs: 'count',
+      }, async (job: Job<SyncIncidentsJobData>): Promise<SafeIncidentResult> => {
+        logger.info('[IncidentSyncWorker] Processing incident sync job', { jobId: job.id });
+        const { validationErrors, enrichmentErrors, ...counts } = await processSyncIncidentsToDatamart(job);
+        const errorCount = validationErrors.length + enrichmentErrors.length;
+        return { ...counts, errorCount, errorCodes: errorCount ? { ERR_VALIDATION: errorCount } : {} };
+      }),
       {
         connection,
         concurrency: 2, // Can process 2 incident jobs concurrently for real-time ITSM
@@ -243,15 +258,15 @@ export class IncidentSyncWorker {
       logger.error('[IncidentSyncWorker] Job failed', {
         jobId: job?.id,
         attemptsMade: job?.attemptsMade,
-        error: error.message,
-        stack: error.stack,
+        code: jobErrorCode(error),
       });
+      if (job) void JobErrorHandler.handleJobFailure(job, error).catch(() =>
+        logger.error('[IncidentSyncWorker] Dead-letter handling failed', { code: 'ERR_INTERNAL' }));
     });
 
     this.worker.on('error', (error) => {
       logger.error('[IncidentSyncWorker] Worker error', {
-        error: error.message,
-        stack: error.stack,
+        code: jobErrorCode(error),
       });
     });
 
@@ -264,13 +279,14 @@ export class IncidentSyncWorker {
   async stop(): Promise<void> {
     logger.info('[IncidentSyncWorker] Stopping worker...');
     await this.worker.close();
+    await this.connection.quit();
     logger.info('[IncidentSyncWorker] Worker stopped');
   }
 
   /**
    * Get worker instance
    */
-  getWorker(): Worker<SyncIncidentsJobData, SyncIncidentsJobResult> {
+  getWorker(): Worker<SyncIncidentsJobData, SafeIncidentResult> {
     return this.worker;
   }
 }
@@ -331,9 +347,9 @@ export class V3ETLWorkerManager {
    * Get worker instances (for monitoring or testing)
    */
   getWorkers(): {
-    ciSync: Worker<SyncCIsJobData, SyncCIsJobResult>;
-    costValidation: Worker<SyncCostsJobData, SyncCostsJobResult>;
-    incidentSync: Worker<SyncIncidentsJobData, SyncIncidentsJobResult>;
+    ciSync: Worker<SyncCIsJobData, SafeCIResult>;
+    costValidation: Worker<SyncCostsJobData, SafeCostResult>;
+    incidentSync: Worker<SyncIncidentsJobData, SafeIncidentResult>;
   } {
     return {
       ciSync: this.ciSyncWorker.getWorker(),

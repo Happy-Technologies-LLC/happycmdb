@@ -17,7 +17,10 @@ import type { AuthMiddleware as AuthMiddlewareClass } from '../../middleware/aut
 const ORG_A = '11111111-1111-4111-8111-111111111111';
 const ORG_B = '22222222-2222-4222-8222-222222222222';
 const mockRun = jest.fn(async (_statement: string): Promise<{ records: never[] }> => ({ records: [] }));
-const mockPgQuery = jest.fn(async () => ({ rows: [] }));
+const mockPgQuery = jest.fn(async (command: string | { text: string }) => ({
+  rows: (typeof command === 'string' ? command : command.text).includes('ci_reconciliation_epochs')
+    ? [{ epoch: '0', pending: [] }] : [],
+}));
 
 jest.mock('../../auth/auth-bootstrap', () => {
   const { AuthMiddleware } = jest.requireActual<{ AuthMiddleware: typeof AuthMiddlewareClass }>(
@@ -32,7 +35,7 @@ jest.mock('../../auth/auth-bootstrap', () => {
   } as ConfigSchema['auth']) };
 });
 jest.mock('@cmdb/database', () => ({
-  ...jest.requireActual('@cmdb/database'),
+  ...jest.requireActual('@cmdb/database/neo4j/client'),
   getNeo4jClient: () => ({ getSession: () => ({ run: mockRun, close: async () => {} }) }),
   getPostgresClient: () => ({ query: mockPgQuery, pool: { query: mockPgQuery } }),
   getUnifiedCredentialService: () => ({}),
@@ -69,7 +72,10 @@ beforeAll(async () => { ({ server, httpServer } = await createGraphQLServer(app)
 afterAll(async () => { await server.stop(); });
 beforeEach(() => {
   mockRun.mockImplementation(async () => ({ records: [] }));
-  mockPgQuery.mockImplementation(async () => ({ rows: [] }));
+  mockPgQuery.mockImplementation(async (command: string | { text: string }) => ({
+    rows: (typeof command === 'string' ? command : command.text).includes('ci_reconciliation_epochs')
+      ? [{ epoch: '0', pending: [] }] : [],
+  }));
 });
 
 it('rejects excessive aliases, fields, nested depth, and amplified complexity before graph access', async () => {
@@ -280,7 +286,9 @@ it('releases GraphQL slots after 30 seconds of a non-reading large response and 
   const principal = 'a-nonreading';
   const metadata = { payload: 'x'.repeat(256 * 1024) };
   const records = Array.from({ length: 100 }, (_, index) => ({
-    get: () => ({ properties: { id: `large-${index}`, metadata } }),
+    get: (field: string) => field === 'ci'
+      ? { properties: { id: `large-${index}`, metadata } }
+      : undefined,
   }));
   mockRun.mockImplementation(async () => ({ records: records as never[] }));
   slowResponses.length = 0;

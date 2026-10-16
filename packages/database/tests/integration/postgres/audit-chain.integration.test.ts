@@ -11,6 +11,8 @@
  */
 
 import { Pool } from 'pg';
+const ORG_A = '11111111-1111-4111-8111-111111111111';
+const ORG_B = '22222222-2222-4222-8222-222222222222';
 import { AuditService } from '../../../src/postgres/audit.service';
 
 const DATABASE_URL = process.env['DATABASE_URL'];
@@ -52,6 +54,7 @@ describeIfDb('AuditService hash chain (cmdb_test)', () => {
         timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         ip_address INET,
         user_agent TEXT,
+        organization_id UUID,
         PRIMARY KEY (id, timestamp)
       )
     `);
@@ -80,7 +83,7 @@ describeIfDb('AuditService hash chain (cmdb_test)', () => {
       actor_type: 'user',
       changes: [],
       metadata: { note: 'first' },
-    });
+    }, ORG_A);
     await auditService.logAudit({
       entity_type: 'CI',
       entity_id: 'ci-1',
@@ -89,7 +92,7 @@ describeIfDb('AuditService hash chain (cmdb_test)', () => {
       actor_type: 'user',
       changes: [{ field: 'name', old_value: 'a', new_value: 'b' }],
       metadata: { note: 'second' },
-    });
+    }, ORG_A);
     await auditService.logAudit({
       entity_type: 'RELATIONSHIP',
       entity_id: 'rel-1',
@@ -97,7 +100,7 @@ describeIfDb('AuditService hash chain (cmdb_test)', () => {
       actor: 'system',
       actor_type: 'system',
       changes: [],
-    });
+    }, ORG_A);
 
     const { rows } = await pool.query('SELECT id, entry_hash, prev_hash FROM audit_log');
     expect(rows).toHaveLength(3);
@@ -108,6 +111,50 @@ describeIfDb('AuditService hash chain (cmdb_test)', () => {
     const verification = await auditService.verifyAuditChain();
     expect(verification.ok).toBe(true);
     expect(verification.checked).toBe(3);
+    expect(verification.orgBindingViolations).toEqual([]);
+    expect(verification).not.toHaveProperty('valid');
+  });
+
+  it('hides recycled/legacy audit rows and detects column-only and metadata tampering', async () => {
+    const { rows } = await pool.query<{ id: string }>(
+      "SELECT id FROM audit_log WHERE entity_type = 'CI' ORDER BY timestamp, id LIMIT 1"
+    );
+    const id = rows[0]!.id;
+    expect((await auditService.getCIAuditHistory('ci-1', ORG_A)).length).toBe(2);
+    await pool.query('UPDATE audit_log SET organization_id = $1 WHERE id = $2', [ORG_B, id]);
+    expect((await auditService.getCIAuditHistory('ci-1', ORG_A)).length).toBe(1);
+    expect(await auditService.getCIAuditHistory('ci-1', ORG_B)).toEqual([]);
+    const changed = await auditService.verifyAuditChain();
+    expect(changed.ok).toBe(false);
+    expect(changed.orgBindingViolations).toContain(id);
+    expect(changed.reason).toBeUndefined();
+    await pool.query('UPDATE audit_log SET organization_id = $1 WHERE id = $2', [ORG_A, id]);
+    expect((await auditService.verifyAuditChain()).ok).toBe(true);
+
+    await pool.query(
+      `INSERT INTO audit_log (entity_type,entity_id,action,actor,changes,timestamp)
+       VALUES ('CI','ci-1','CREATE','legacy','[]','2000-01-01')`
+    );
+    expect((await auditService.getCIAuditHistory('ci-1', ORG_A)).length).toBe(2);
+    expect((await auditService.verifyAuditChain()).orgBindingViolations).toEqual([]);
+    const legacy = await pool.query<{ id: string }>(
+      "SELECT id FROM audit_log WHERE actor = 'legacy'"
+    );
+    await pool.query('UPDATE audit_log SET organization_id = $1 WHERE id = $2', [ORG_B, legacy.rows[0]!.id]);
+    expect((await auditService.verifyAuditChain()).orgBindingViolations).toContain(legacy.rows[0]!.id);
+    await pool.query('UPDATE audit_log SET organization_id = NULL WHERE id = $1', [legacy.rows[0]!.id]);
+    await pool.query("UPDATE audit_log SET metadata = jsonb_set(metadata, '{organization_id}', to_jsonb($1::text)) WHERE id = $2", [ORG_B, id]);
+    const metadataChanged = await auditService.verifyAuditChain();
+    expect(metadataChanged.ok).toBe(false);
+    expect(metadataChanged.reason).toBe('content');
+    expect(metadataChanged.brokenAt).toBe(id);
+    expect(metadataChanged.orgBindingViolations).toContain(id);
+    await pool.query("UPDATE audit_log SET metadata = jsonb_set(metadata, '{organization_id}', to_jsonb($1::text)) WHERE id = $2", [ORG_A, id]);
+    expect((await auditService.verifyAuditChain()).ok).toBe(true);
+    await expect(auditService.logAudit({
+      entity_type: 'CI', entity_id: 'ci-1', action: 'UPDATE',
+      actor: 'tester', actor_type: 'user', changes: [],
+    }, '')).rejects.toThrow('Verified actor and organization required');
   });
 
   it('detects tampering with reason=content', async () => {

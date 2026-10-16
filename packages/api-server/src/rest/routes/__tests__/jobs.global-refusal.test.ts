@@ -62,3 +62,30 @@ test('tenant admins, internal admins and flagged seeds cannot reach global queue
   expect(platform.status).toBe(200);
   expect(touched).toHaveBeenCalledTimes(1);
 });
+
+test('platform admin cannot mutate read-only discovery queues but can mutate an enabled queue', async () => {
+  touched.mockClear();
+  touched.mockImplementation((_req: express.Request, res: express.Response) =>
+    res.status(200).json({ success: true }));
+  const mutations = [
+    (queueName: string) => `/jobs/${queueName}/clean`,
+    (queueName: string) => `/queues/${queueName}/pause`,
+    (queueName: string) => `/queues/${queueName}/resume`,
+  ];
+  for (const queueName of ['discovery-active-directory', 'discovery-snmp', 'discovery-ai']) {
+    for (const path of mutations) {
+      const response = await request(app).post(`/api/v1${path(queueName)}`)
+        .set('authorization', 'Bearer platform');
+      expect(response.status).toBe(403);
+      expect(response.body).toEqual({ success: false, error: 'Queue mutation unavailable' });
+    }
+  }
+  expect(touched).not.toHaveBeenCalled();
+  for (const path of mutations) {
+    const response = await request(app).post(`/api/v1${path('discovery-nmap')}`)
+      .set('authorization', 'Bearer platform');
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ success: true });
+  }
+  expect(touched).toHaveBeenCalledTimes(3);
+});

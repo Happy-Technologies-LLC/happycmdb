@@ -77,7 +77,7 @@ router.post('/jobs/etl/:type', (req, res) => jobsController.triggerETL(req, res)
 
 router.get('/jobs/:queueName/failed', requireKnownQueue,
   (req, res) => jobsController.getFailedJobs(req, res));
-router.post('/jobs/:queueName/clean', requireKnownQueue,
+router.post('/jobs/:queueName/clean', requireKnownQueue, requireMutableQueue,
   (req, res) => jobsController.cleanQueue(req, res));
 router.get('/jobs/:queueName/:jobId', requireKnownQueue,
   (req, res) => jobsController.getJobStatus(req, res));
@@ -95,9 +95,9 @@ router.get('/queues/:queueName/metrics', requireKnownQueue,
   (req, res) => queueController.getQueueMetrics(req, res));
 router.get('/queues/workers/status', (req, res) => queueController.getAllWorkerStatus(req, res));
 router.get('/queues/health', (req, res) => queueController.getQueueHealth(req, res));
-router.post('/queues/:queueName/pause', requireKnownQueue,
+router.post('/queues/:queueName/pause', requireKnownQueue, requireMutableQueue,
   (req, res) => queueController.pauseQueue(req, res));
-router.post('/queues/:queueName/resume', requireKnownQueue,
+router.post('/queues/:queueName/resume', requireKnownQueue, requireMutableQueue,
   (req, res) => queueController.resumeQueue(req, res));
 router.get('/queues/:queueName/jobs/:jobId/logs', requireKnownQueue,
   (req, res) => queueController.getJobLogs(req, res));

@@ -37,10 +37,10 @@ export function strictDiscoveryDefinitionConfig(input: unknown): SafeDiscoverySc
   }
 }
 
-/** Never return raw stored JSON; malformed legacy values expose no configuration. */
+/** Never project any part of unsafe historical JSON, including legacy aliases. */
 export function publicDiscoveryDefinitionConfig(input: unknown): SafeDiscoveryScanConfig {
   try {
-    return safeDiscoveryScanConfig(input);
+    return strictDiscoveryDefinitionConfig(input);
   } catch {
     return {};
   }

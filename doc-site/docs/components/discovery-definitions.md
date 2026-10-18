@@ -14,8 +14,9 @@ and `scanOptions` (`aggressive`, `osDetection`, `serviceDetection`, `fullPortSca
 `portScan` booleans) in `config`. `targets` and `range` are alternatives.
 Inline credentials and unknown fields are rejected on create and update; use
 `credential_id` for a credential held in the unified credential store.
-REST definition reads return only these nonsecret settings from older rows.
-Legacy rows with extra or invalid settings remain unchanged: config replacement,
+REST definition reads return permitted settings only for safe rows; any historical
+config with an unknown key (including `_targets`) or invalid value projects `{}`.
+Such legacy rows remain unchanged: config replacement,
 manual and background triggering, and queued definition execution (including
 stale repeatable jobs) are blocked before scanning until an approved
 operator-controlled migration resolves them. No automatic legacy credential

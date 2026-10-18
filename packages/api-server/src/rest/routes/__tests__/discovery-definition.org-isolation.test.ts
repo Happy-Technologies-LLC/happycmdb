@@ -346,6 +346,16 @@ test('inline credentials and unknown settings never cross the writer-to-viewer b
   expect(scanNetworks).toHaveBeenCalledTimes(1);
   expect((await request(app).put(`${url}/${id}`).set(headers('a')).send({ config: payload.config })).status).toBe(400);
   expect((await request(app).put(`${url}/${id}`).set(headers('viewer')).send({ config: payload.config })).status).toBe(403);
+  const alias = { _targets: [secret] };
+  await query('UPDATE discovery_definitions SET config = $1 WHERE id = $2', [JSON.stringify(alias), id]);
+  const aliasDetail = await request(app).get(`${url}/${id}`).set(headers('viewer'));
+  const aliasList = await request(app).get(url).set(headers('viewer'));
+  expect(aliasDetail.body.data.config).toEqual({});
+  expect(aliasList.body.data.find((row: { id: string }) => row.id === id).config).toEqual({});
+  expect(JSON.stringify([aliasDetail.body, aliasList.body])).not.toContain(secret);
+  expect((await request(app).get(`${url}/${id}`).set(headers('b'))).status).toBe(404);
+  expect((await request(app).post(`${url}/${id}/run`).set(headers('a'))).status).toBe(409);
+  expect((await query('SELECT config FROM discovery_definitions WHERE id = $1', [id])).rows[0].config).toEqual(alias);
   const legacy = { targets: ['192.0.2.1'], scanOptions: { serviceDetection: true, password: secret },
     credentials: { password: secret }, unexpected: { token: secret } };
   await query('UPDATE discovery_definitions SET config = $1 WHERE id = $2', [JSON.stringify(legacy), id]);
@@ -365,7 +375,7 @@ test('inline credentials and unknown settings never cross the writer-to-viewer b
   expect(replacement.status).toBe(409);
   const detail = await request(app).get(`${url}/${id}`).set(headers('viewer'));
   const listed = await request(app).get(url).set(headers('viewer'));
-  expect(detail.body.data.config).toEqual({ targets: ['192.0.2.1'], scanOptions: { serviceDetection: true } });
+  expect(detail.body.data.config).toEqual({});
   expect(listed.body.data.find((row: { id: string }) => row.id === id).config).toEqual(detail.body.data.config);
   expect(JSON.stringify([detail.body, listed.body])).not.toContain(secret);
   expect((await request(app).get(`${url}/${id}`).set(headers('b'))).status).toBe(404);

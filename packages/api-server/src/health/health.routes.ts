@@ -18,23 +18,22 @@ function refuseGlobalMetrics(_req: Request, res: Response): void {
 }
 
 /**
- * GET / - Comprehensive health check
- * Returns detailed health status of all system components
- * Accessible at: /api/v1/health
+ * GET / - Public, minimal overall dependency status
+ * Accessible at: /api/v1/cmdb-health
  */
 router.get('/', (req, res) => healthController.getHealth(req, res));
 
 /**
  * GET /ready - Readiness probe
  * Returns 200 if service is ready to accept traffic
- * Accessible at: /api/v1/health/ready
+ * Accessible at: /api/v1/cmdb-health/ready
  */
 router.get('/ready', (req, res) => healthController.getReadiness(req, res));
 
 /**
  * GET /alive - Liveness probe
  * Returns 200 if service is alive and running
- * Accessible at: /api/v1/health/alive
+ * Accessible at: /api/v1/cmdb-health/alive
  */
 router.get('/alive', (req, res) => healthController.getLiveness(req, res));
 

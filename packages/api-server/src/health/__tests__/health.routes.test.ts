@@ -184,3 +184,91 @@ test('public health and readiness never echo injected dependency errors', async 
     expect(response.text).not.toContain(secret);
   }
 });
+
+test('public root and readiness share one probe burst and five-second completion TTL', async () => {
+  const { promise: held, resolve: release } = Promise.withResolvers<unknown>();
+  const { promise: started, resolve: signalStarted } = Promise.withResolvers<void>();
+  mockPostgresQuery.mockImplementationOnce(() => { signalStarted(); return held as Promise<{ rows: unknown[] }>; });
+  const burst = Promise.all(Array.from({ length: 12 }, (_, index) =>
+    request(app).get(index % 2 ? `${path}/ready` : path)));
+  await started;
+  expect(mockPostgresQuery).toHaveBeenCalledTimes(1);
+  expect(mockGetSession).toHaveBeenCalledTimes(1);
+  expect(mockSet).toHaveBeenCalledTimes(1);
+  release({ rows: [{ test: 1 }] });
+  const responses = await burst;
+  expect(responses.every(response => response.status === 200)).toBe(true);
+  for (const response of responses) {
+    expect(response.body).toEqual(response.req.path.endsWith('/ready') ? { _ready: true } : { _status: 'healthy' });
+  }
+  await request(app).get(path);
+  now += 4999;
+  await request(app).get(`${path}/ready`);
+  expect(mockPostgresQuery).toHaveBeenCalledTimes(1);
+  now += 1;
+  await request(app).get(path);
+  expect(mockPostgresQuery).toHaveBeenCalledTimes(2);
+  expect(mockGetSession).toHaveBeenCalledTimes(2);
+  expect(mockSet).toHaveBeenCalledTimes(2);
+});
+
+test('public failures are cached, sanitized and preserve mounted deploy probe status', async () => {
+  mockRun.mockRejectedValue(new Error(secret));
+  mockPostgresQuery.mockRejectedValue(new Error(secret));
+  mockSet.mockRejectedValue(new Error(secret));
+  for (const [suffix, status, body] of [
+    ['', 503, { _status: 'unhealthy' }],
+    ['/ready', 503, { _ready: false }],
+    ['/alive', 200, { _alive: true }],
+  ] as const) {
+    const response = await request(app).get(`${path}${suffix}`);
+    expect(response.status).toBe(status);
+    expect(response.body).toEqual(body);
+    expect(response.text).not.toContain(secret);
+  }
+  expect(mockGetSession).toHaveBeenCalledTimes(1);
+  expect(mockPostgresQuery).toHaveBeenCalledTimes(1);
+  expect(mockSet).toHaveBeenCalledTimes(1);
+  now += 5000;
+  mockRun.mockResolvedValue({ records: [{ test: 1 }] });
+  mockPostgresQuery.mockResolvedValue({ rows: [{ test: 1 }] });
+  mockSet.mockResolvedValue(undefined);
+  expect((await request(app).get(`${path}/ready`)).body).toEqual({ _ready: true });
+  // Credentials do not turn the public path into a diagnostic endpoint.
+  expect((await request(app).get(path).set('authorization', 'Bearer valid')).body).toEqual({ _status: 'healthy' });
+});
+
+test.each(['run', 'close', 'postgres', 'redis-set', 'redis-get'] as const)(
+  'public unresolved %s operation has a bounded deadline and cannot multiply after expiry', async step => {
+    jest.useFakeTimers({ doNotFake: ['Date', 'nextTick', 'setImmediate'] });
+    const { promise: held, resolve: release } = Promise.withResolvers<any>();
+    const { promise: started, resolve: signalStarted } = Promise.withResolvers<void>();
+    if (step === 'run') mockRun.mockImplementationOnce(() => { signalStarted(); return held; });
+    if (step === 'close') mockClose.mockImplementationOnce(() => { signalStarted(); return held; });
+    if (step === 'postgres') mockPostgresQuery.mockImplementationOnce(() => { signalStarted(); return held; });
+    if (step === 'redis-set') mockSet.mockImplementationOnce(() => { signalStarted(); return held; });
+    if (step === 'redis-get') mockGet.mockImplementationOnce(() => { signalStarted(); return held; });
+    const first = request(app).get(path).then(response => response);
+    try {
+      await started;
+      await jest.advanceTimersByTimeAsync(2000);
+      expect((await first).body).toEqual({ _status: 'unhealthy' });
+      const counts = [mockGetSession.mock.calls.length, mockPostgresQuery.mock.calls.length, mockSet.mock.calls.length, mockGet.mock.calls.length];
+      now += 5000;
+      const burst = await Promise.all(Array.from({ length: 8 }, () => request(app).get(`${path}/ready`)));
+      expect(burst.every(response => response.status === 503 && response.body._ready === false)).toBe(true);
+      const later = [mockGetSession.mock.calls.length, mockPostgresQuery.mock.calls.length, mockSet.mock.calls.length, mockGet.mock.calls.length];
+      const heldIndex = step === 'run' || step === 'close' ? 0 : step === 'postgres' ? 1 : step === 'redis-set' ? 2 : 3;
+      expect(later[heldIndex]).toBe(counts[heldIndex]);
+      release(step === 'postgres' ? { rows: [{ test: 1 }] } : step === 'run' ? { records: [{ test: 1 }] } : step === 'redis-get' ? 'test' : undefined);
+      await Promise.resolve();
+      expect((await request(app).get(`${path}/ready`)).body).toEqual({ _ready: false });
+      now += 5000;
+      expect((await request(app).get(`${path}/ready`)).body).toEqual({ _ready: true });
+      expect((step === 'run' || step === 'close' ? mockGetSession : step === 'postgres' ? mockPostgresQuery : step === 'redis-set' ? mockSet : mockGet).mock.calls.length).toBe(counts[heldIndex] + 1);
+    } finally {
+      release(undefined);
+      jest.useRealTimers();
+    }
+  }
+);

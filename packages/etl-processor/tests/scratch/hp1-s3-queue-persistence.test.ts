@@ -46,6 +46,12 @@ async function settled(queue: Queue, job: Job, expected: 'completed' | 'failed')
   throw new Error(`Timed out waiting for ${job.queueName}: ${expected}`);
 }
 
+/** Job.fromJSON drops an empty Redis failedReason; only completed jobs use this assertion. */
+function expectNoFailure(job: Job): void {
+  expect([undefined, '']).toContain(job.failedReason);
+  expect(job.stacktrace).toEqual([]);
+}
+
 /** Store only verified, Redis-reloaded fields; never include the submitted payload. */
 function recordReceipt(queue: string, organizationId: string, phase: 'normal' | 'forced-failure',
   persisted: Job, logs: string[]): void {
@@ -118,8 +124,7 @@ it('scrubs two organizations of pre-cutover discovery jobs in every §10.5 queue
       const logs = await queue.getJobLogs(job.id!);
       expect(persisted.data).toEqual({});
       expect(persisted.returnvalue).toEqual({ _refused: 1 });
-      expect(persisted.failedReason).toBe('');
-      expect(persisted.stacktrace).toEqual([]);
+      expectNoFailure(persisted);
       expect(JSON.stringify({ result: persisted.returnvalue, logs: logs.logs,
         failure: persisted.failedReason, stack: persisted.stacktrace, data: persisted.data }))
         .not.toContain(marker);
@@ -199,8 +204,7 @@ it('persists coded success for A and B and sanitized forced failure through ever
       const completed = await settled(queue, success, 'completed');
       expect(completed.returnvalue).toEqual(expect.any(Object));
       expect(completed.returnvalue).not.toHaveProperty('organizationId');
-      expect(completed.failedReason).toBe('');
-      expect(completed.stacktrace).toEqual([]);
+      expectNoFailure(completed);
       expect(completed.data).toEqual({});
       expect(JSON.stringify({ result: completed.returnvalue,
         logs: (await queue.getJobLogs(success.id!)).logs })).not.toContain(marker);
@@ -262,8 +266,7 @@ it('persists coded outcomes and scrubs two-org inputs across four actual cloud/T
       expect(result).toEqual(expect.objectContaining(name === 'cost-sync'
         ? { success: true, recordsProcessed: 0, errorCount: 0 }
         : { success: false, costsImported: 0, errorCount: 1 }));
-      expect(fresh.failedReason).toBe('');
-      expect(fresh.stacktrace).toEqual([]);
+      expectNoFailure(fresh);
       expect(JSON.stringify({ result, logs: (await queue.getJobLogs(job.id!)).logs,
         data: fresh.data, failure: fresh.failedReason, stack: fresh.stacktrace })).not.toContain(marker);
       recordReceipt(name, organizationId, 'normal', fresh,
@@ -313,8 +316,7 @@ it('persists scrubbed two-org results and coded DLQ failures through three regis
       expect(fresh.returnvalue).toEqual(expect.objectContaining({
         success: expect.any(Boolean), errorCount: expect.any(Number), errorCodes: expect.any(Object),
       }));
-      expect(fresh.failedReason).toBe('');
-      expect(fresh.stacktrace).toEqual([]);
+      expectNoFailure(fresh);
       expect(JSON.stringify({ result: fresh.returnvalue,
         logs: (await queue.getJobLogs(job.id!)).logs, data: fresh.data })).not.toContain(marker);
       recordReceipt(name, organizationId, 'normal', fresh,

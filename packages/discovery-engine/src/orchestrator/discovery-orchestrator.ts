@@ -4,7 +4,10 @@
 // packages/discovery-engine/src/orchestrator/discovery-orchestrator.ts
 
 import { queueManager, QUEUE_NAMES, getPostgresClient } from '@cmdb/database';
-import { logger, DISCOVERY_TARGET_REFUSED, UnrecoverableError, safeDiscoveryScanConfig } from '@cmdb/common';
+import {
+  logger, DISCOVERY_TARGET_REFUSED, UnrecoverableError, safeDiscoveryScanConfig,
+  hasUnsafeDiscoveryDefinitionConfig,
+} from '@cmdb/common';
 import type { DiscoveredCI, DiscoveryJob, DiscoveryProvider } from '@cmdb/common';
 import { NmapDiscoveryWorker } from '../workers/nmap-discovery.worker';
 import { ActiveDirectoryDiscoveryWorker } from '../workers/active-directory-discovery.worker';
@@ -152,6 +155,9 @@ export class DiscoveryOrchestrator {
     if (!result.rows.length) throw new Error('Discovery definition not found');
     const definition = result.rows[0];
     if (definition.provider !== 'nmap') throw new Error('Credential-backed discovery execution is unavailable');
+    if (hasUnsafeDiscoveryDefinitionConfig(definition.config)) {
+      throw new Error('Unsafe legacy discovery configuration requires migration');
+    }
     const jobId = `${definition.provider}-${Date.now()}`;
     const queue = queueManager.getQueue(this.getQueueName(definition.provider));
     await queue.add('discover', {
@@ -571,11 +577,14 @@ export class DiscoveryOrchestrator {
   private async assertDefinitionOwner(definitionId: string, organizationId: unknown): Promise<void> {
     if (typeof organizationId !== 'string' || !organizationId) throw new Error('Discovery definition not found');
     const result = await this.postgresClient.query(
-      `SELECT id FROM discovery_definitions WHERE id = $1 AND organization_id = $2
+      `SELECT id, config FROM discovery_definitions WHERE id = $1 AND organization_id = $2
        AND is_active = true AND credential_id IS NULL AND credential_set_id IS NULL`,
       [definitionId, organizationId]
     );
     if (!result.rows.length) throw new Error('Discovery definition not found');
+    if (hasUnsafeDiscoveryDefinitionConfig(result.rows[0].config)) {
+      throw new UnrecoverableError('Unsafe legacy discovery configuration requires migration');
+    }
   }
 
   private async updateDefinitionRunStatus(

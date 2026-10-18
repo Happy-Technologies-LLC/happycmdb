@@ -84,6 +84,7 @@ jest.mock('@cmdb/database', () => ({
 }));
 jest.mock('@cmdb/common', () => ({
   QUEUE_NAMES: { _DISCOVERY_SSH: 'discovery-ssh', _DISCOVERY_NMAP: 'discovery-nmap' },
+  UnrecoverableError: require('bullmq').UnrecoverableError,
   logger: { info: jest.fn(), error: jest.fn(), warn: jest.fn() },
   safeDiscoveryScanConfig: require('../../../../../common/src/utils/discovery-scan-config').safeDiscoveryScanConfig,
   strictDiscoveryDefinitionConfig: require('../../../../../common/src/utils/discovery-scan-config').strictDiscoveryDefinitionConfig,
@@ -326,11 +327,39 @@ test('inline credentials and unknown settings never cross the writer-to-viewer b
   const permittedDetail = await request(app).get(`${url}/${id}`).set(headers('viewer'));
   expect(permittedDetail.body.data.config)
     .toEqual({ targets: ['10.0.0.0/24'], scanOptions: { serviceDetection: true, osDetection: false } });
+  const scanNetworks = jest.fn().mockResolvedValue([]);
+  jest.mocked(NmapDiscoveryWorker).mockImplementation(() => ({ scanNetworks }) as never);
+  const orchestrator = Object.create(DiscoveryOrchestrator.prototype) as DiscoveryOrchestrator;
+  Object.assign(orchestrator, {
+    postgresClient: db,
+    updateDefinitionRunStatus: jest.fn().mockResolvedValue(undefined),
+    persistCIs: jest.fn().mockResolvedValue(undefined),
+  });
+  orchestrator.registerWorkers();
+  const runQueued = jest.mocked(queueManager.registerWorker).mock.calls
+    .findLast(([name]) => name === 'discovery-nmap')?.[1] as (job: unknown) => Promise<unknown>;
+  expect(runQueued).toBeDefined();
+  await orchestrator.triggerDiscoveryFromDefinition(id, 'a', ORG_A);
+  const queued = queue.add.mock.calls.at(-1)?.[1];
+  await expect(runQueued({ id: 'allowed', data: queued, updateProgress: jest.fn() }))
+    .resolves.toEqual({ discovered: 0 });
+  expect(scanNetworks).toHaveBeenCalledTimes(1);
   expect((await request(app).put(`${url}/${id}`).set(headers('a')).send({ config: payload.config })).status).toBe(400);
   expect((await request(app).put(`${url}/${id}`).set(headers('viewer')).send({ config: payload.config })).status).toBe(403);
   const legacy = { targets: ['192.0.2.1'], scanOptions: { serviceDetection: true, password: secret },
     credentials: { password: secret }, unexpected: { token: secret } };
   await query('UPDATE discovery_definitions SET config = $1 WHERE id = $2', [JSON.stringify(legacy), id]);
+  // Stale repeatable jobs retain sanitized payload from before a definition became unsafe.
+  await expect(runQueued({ id: 'stale', data: queued, updateProgress: jest.fn() }))
+    .rejects.toThrow('Unsafe legacy discovery configuration requires migration');
+  expect(scanNetworks).toHaveBeenCalledTimes(1);
+  const enqueuesBefore = queue.add.mock.calls.length;
+  await expect(orchestrator.triggerDiscoveryFromDefinition(id, 'a', ORG_A))
+    .rejects.toThrow('Unsafe legacy discovery configuration requires migration');
+  expect(queue.add).toHaveBeenCalledTimes(enqueuesBefore);
+  await expect(runQueued({ id: 'foreign', data: { ...queued, organizationId: ORG_B },
+    updateProgress: jest.fn() })).rejects.toThrow('Discovery definition not found');
+  expect(scanNetworks).toHaveBeenCalledTimes(1);
   const replacement = await request(app).put(`${url}/${id}`).set(headers('a'))
     .send({ config: { range: '192.0.2.1' } });
   expect(replacement.status).toBe(409);

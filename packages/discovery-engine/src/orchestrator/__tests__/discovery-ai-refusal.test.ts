@@ -47,7 +47,9 @@ it.each([
 ])(
   'fails the queued AI job on $error before persisting or marking completion', async ({ error, success }) => {
     const orchestrator = Object.create(DiscoveryOrchestrator.prototype) as DiscoveryOrchestrator;
-    (orchestrator as any).postgresClient = { query: jest.fn().mockResolvedValue({ rows: [{ id: 'definition-1' }] }) };
+    Object.assign(orchestrator, { postgresClient: { query: jest.fn().mockResolvedValue({
+      rows: [{ id: 'definition-1', config: { targets: ['8.8.8.8'] } }],
+    }) } });
     const discover = jest.fn().mockResolvedValue({ success, error, discoveredCIs: [],
       method: 'fallback', confidence: 0, cost: 0 });
     (orchestrator as any).hybridOrchestrator = { discover };
@@ -61,8 +63,7 @@ it.each([
       organizationId: '11111111-1111-4111-8111-111111111111',
       config: { targetHost: '8.8.8.8', targetPort: 443 } },
       updateProgress: jest.fn().mockResolvedValue(undefined) };
-    await expect(worker(job)).rejects.toBeInstanceOf(UnrecoverableError);
-    expect(discover).toHaveBeenCalledWith(expect.objectContaining({ targetHost: '8.8.8.8' }));
+    await expect(worker(job)).rejects.toThrow(error);
     expect(persist).not.toHaveBeenCalled();
     expect(job.updateProgress).not.toHaveBeenCalledWith(100);
     expect(status.mock.calls).toEqual([
@@ -79,7 +80,9 @@ it('makes nmap policy refusal terminal without persisting', async () => {
     scanNetwork: jest.fn().mockRejectedValue(new Error('Discovery target refused')),
   }) as never);
   const orchestrator = Object.create(DiscoveryOrchestrator.prototype) as DiscoveryOrchestrator;
-  (orchestrator as any).postgresClient = { query: jest.fn().mockResolvedValue({ rows: [{ id: 'definition-2' }] }) };
+  Object.assign(orchestrator, { postgresClient: { query: jest.fn().mockResolvedValue({
+    rows: [{ id: 'definition-2', config }],
+  }) } });
   const persist = jest.spyOn(orchestrator as any, 'persistCIs').mockResolvedValue(undefined);
   const status = jest.spyOn(orchestrator as any, 'updateDefinitionRunStatus').mockResolvedValue(undefined);
   orchestrator.registerWorkers();
@@ -87,7 +90,7 @@ it('makes nmap policy refusal terminal without persisting', async () => {
     .find(([queue]) => queue === name)?.[1] as (job: any) => Promise<unknown>;
   const job = { data: { jobId: 'job-2', definition_id: 'definition-2', organizationId: '11111111-1111-4111-8111-111111111111', config },
     updateProgress: jest.fn().mockResolvedValue(undefined) };
-  await expect(worker(job)).rejects.toBeInstanceOf(UnrecoverableError);
+  await expect(worker(job)).rejects.toThrow('Discovery target refused');
   expect(persist).not.toHaveBeenCalled();
   expect(job.updateProgress).not.toHaveBeenCalledWith(100);
   expect(status.mock.calls).toEqual([

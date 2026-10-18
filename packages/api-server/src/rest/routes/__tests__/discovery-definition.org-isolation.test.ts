@@ -86,6 +86,9 @@ jest.mock('@cmdb/common', () => ({
   QUEUE_NAMES: { _DISCOVERY_SSH: 'discovery-ssh', _DISCOVERY_NMAP: 'discovery-nmap' },
   logger: { info: jest.fn(), error: jest.fn(), warn: jest.fn() },
   safeDiscoveryScanConfig: require('../../../../../common/src/utils/discovery-scan-config').safeDiscoveryScanConfig,
+  strictDiscoveryDefinitionConfig: require('../../../../../common/src/utils/discovery-scan-config').strictDiscoveryDefinitionConfig,
+  publicDiscoveryDefinitionConfig: require('../../../../../common/src/utils/discovery-scan-config').publicDiscoveryDefinitionConfig,
+  hasUnsafeDiscoveryDefinitionConfig: require('../../../../../common/src/utils/discovery-scan-config').hasUnsafeDiscoveryDefinitionConfig,
   validate: (schema: Joi.Schema, value: unknown) => {
     const result = schema.validate(value);
     return { valid: !result.error, value: result.value, error: result.error?.message, details: result.error?.details };
@@ -106,6 +109,7 @@ jest.mock('@cmdb/ai-discovery', () => ({
   HybridDiscoveryOrchestrator: jest.fn(), PatternStorageService: jest.fn(), getDefaultLLMConfig: jest.fn(),
 }));
 import { queueManager } from '@cmdb/database';
+import { logger } from '@cmdb/common';
 import { DiscoveryOrchestrator } from '../../../../../discovery-engine/src/orchestrator/discovery-orchestrator';
 import { DiscoveryScheduler } from '../../../../../discovery-engine/src/schedulers/discovery-scheduler';
 import { NmapDiscoveryWorker } from '../../../../../discovery-engine/src/workers/nmap-discovery.worker';
@@ -115,7 +119,8 @@ app.use(express.json());
 app.use((req, _res, next) => {
   const user = req.get('x-test-user');
   (req as typeof req & { user: object }).user = {
-    _userId: user, _role: 'operator', _organizationId: user === 'a' ? ORG_A : user === 'b' ? ORG_B : undefined,
+    _userId: user, _role: user === 'viewer' ? 'viewer' : 'operator',
+    _organizationId: user === 'a' || user === 'viewer' ? ORG_A : user === 'b' ? ORG_B : undefined,
   };
   next();
 });
@@ -145,8 +150,7 @@ afterAll(async () => {
 test('mounted definitions isolate two users and orgs, reject legacy and credential attachment, and stamp queued jobs', async () => {
   const create = (name: string, user: string) => request(app).post(url).set(headers(user)).send({
     name, provider: 'nmap', method: 'agentless', config: {
-      targets: ['192.0.2.1'], scanOptions: { serviceDetection: true, password: 'synthetic-secret' },
-      credentials: { password: 'synthetic-secret' },
+      targets: ['192.0.2.1'], scanOptions: { serviceDetection: true },
     }, schedule: '0 * * * *',
   });
   const own = await create(`own-${randomBytes(4).toString('hex')}`, 'a');
@@ -231,7 +235,6 @@ test('mounted definitions isolate two users and orgs, reject legacy and credenti
     organizationId: ORG_A, definition_id: idA,
     config: { targets: ['192.0.2.1'], scanOptions: { serviceDetection: true } },
   }), expect.any(Object));
-  expect(JSON.stringify(queue.add.mock.calls)).not.toContain('synthetic-secret');
   const scanNetworks = jest.fn().mockResolvedValue([]);
   const scanNetwork = jest.fn().mockResolvedValue([]);
   jest.mocked(NmapDiscoveryWorker).mockImplementation(() => ({ scanNetworks, scanNetwork }) as never);
@@ -250,35 +253,27 @@ test('mounted definitions isolate two users and orgs, reject legacy and credenti
   ] as const) {
     if (option !== 'serviceDetection') {
       const updated = await request(app).put(`${url}/${idA}`).set(headers('a')).send({
-        config: {
-          targets: ['192.0.2.1'], scanOptions: { [option]: true, password: 'synthetic-secret' },
-          credentials: { password: 'synthetic-secret' },
-        },
+        config: { targets: ['192.0.2.1'], scanOptions: { [option]: true } },
       });
       expect(updated.status).toBe(200);
       expect((await request(app).post(`${url}/${idA}/run`).set(headers('a'))).status).toBe(202);
     }
     const queued = queue.add.mock.calls.at(-1)?.[1];
     expect(queued.config.scanOptions).toEqual({ [option]: true });
-    expect(JSON.stringify(queued)).not.toContain('synthetic-secret');
     await expect(worker({ data: queued, updateProgress: jest.fn() })).resolves.toEqual({ discovered: 0 });
     expect(scanNetworks).toHaveBeenLastCalledWith(queued.jobId, [{ range: '192.0.2.1', scanType }]);
   }
   const updatedRange = await request(app).put(`${url}/${idA}`).set(headers('a')).send({
-    config: { range: '192.0.2.1', scanOptions: { serviceDetection: true, password: 'synthetic-secret' } },
+    config: { range: '192.0.2.1', scanOptions: { serviceDetection: true } },
   });
   expect(updatedRange.status).toBe(200);
   expect((await request(app).post(`${url}/${idA}/run`).set(headers('a'))).status).toBe(202);
   const queuedRange = queue.add.mock.calls.at(-1)?.[1];
   expect(queuedRange.config).toEqual({ range: '192.0.2.1', scanOptions: { serviceDetection: true } });
-  expect(JSON.stringify(queuedRange)).not.toContain('synthetic-secret');
   await expect(worker({ data: queuedRange, updateProgress: jest.fn() })).resolves.toEqual({ discovered: 0 });
   expect(scanNetwork).toHaveBeenCalledWith(queuedRange.jobId, '192.0.2.1', 'version');
   const scheduledConfig = await request(app).put(`${url}/${idA}`).set(headers('a')).send({
-    config: {
-      targets: ['192.0.2.1'], scanOptions: { serviceDetection: true, password: 'synthetic-secret' },
-      credentials: { password: 'synthetic-secret' },
-    },
+    config: { targets: ['192.0.2.1'], scanOptions: { serviceDetection: true } },
   });
   expect(scheduledConfig.status).toBe(200);
   queue.getRepeatableJobs.mockResolvedValue([{ name: `discovery-definition-${idA}`, key: 'repeat-key' }]);
@@ -291,15 +286,13 @@ test('mounted definitions isolate two users and orgs, reject legacy and credenti
     config: { targets: ['192.0.2.1'], scanOptions: { serviceDetection: true } },
   });
   expect(repeatable).not.toHaveProperty('jobId');
-  expect(JSON.stringify(repeatable)).not.toContain('synthetic-secret');
   for (const jobId of ['repeat:nmap-first', 'repeat:nmap-second']) {
     await expect(worker({ id: jobId, data: repeatable, updateProgress: jest.fn() }))
       .resolves.toEqual({ discovered: 0 });
     expect(scanNetworks).toHaveBeenLastCalledWith(jobId, [{ range: '192.0.2.1', scanType: 'version' }]);
   }
   const sshDefinition = await request(app).put(`${url}/${idA}`).set(headers('a')).send({
-    provider: 'ssh',
-    config: { targets: ['192.0.2.1'], credentials: { password: 'synthetic-secret' } },
+    provider: 'ssh', config: { targets: ['192.0.2.1'] },
   });
   expect(sshDefinition.status).toBe(200);
   const sshId = idA;
@@ -310,9 +303,58 @@ test('mounted definitions isolate two users and orgs, reject legacy and credenti
   expect(sshRun.body).toEqual(unavailable.body);
   expect(sshEnable.body).toEqual(unavailable.body);
   expect(queue.add).toHaveBeenCalledTimes(beforeSSH);
-  expect(JSON.stringify([sshRun.body, sshEnable.body])).not.toContain('synthetic-secret');
   expect((await request(app).get(url).set(headers('none'))).status).toBe(403);
   expect((await query('SELECT name FROM discovery_definitions WHERE id = $1', [idB])).rows).toEqual([{ name: other.body.data.name }]);
+});
+
+test('inline credentials and unknown settings never cross the writer-to-viewer boundary', async () => {
+  const secret = 'synthetic-inline-credential';
+  const payload = {
+    name: `sensitive-${randomBytes(4).toString('hex')}`, provider: 'nmap', method: 'agentless',
+    config: { targets: ['192.0.2.1'], scanOptions: { serviceDetection: true, password: secret },
+      credentials: { password: secret }, unexpected: { token: secret } },
+  };
+  const created = await request(app).post(url).set(headers('a')).send(payload);
+  expect(created.status).toBe(400);
+  expect(JSON.stringify(created.body)).not.toContain(secret);
+  const allowed = await request(app).post(url).set(headers('a')).send({
+    ...payload, config: { targets: ['192.0.2.1'],
+      scanOptions: { serviceDetection: true, osDetection: false } },
+  });
+  expect(allowed.status).toBe(201);
+  const id = allowed.body.data.id;
+  const permittedDetail = await request(app).get(`${url}/${id}`).set(headers('viewer'));
+  expect(permittedDetail.body.data.config)
+    .toEqual({ targets: ['192.0.2.1'], scanOptions: { serviceDetection: true, osDetection: false } });
+  expect((await request(app).put(`${url}/${id}`).set(headers('a')).send({ config: payload.config })).status).toBe(400);
+  expect((await request(app).put(`${url}/${id}`).set(headers('viewer')).send({ config: payload.config })).status).toBe(403);
+  const legacy = { targets: ['192.0.2.1'], scanOptions: { serviceDetection: true, password: secret },
+    credentials: { password: secret }, unexpected: { token: secret } };
+  await query('UPDATE discovery_definitions SET config = $1 WHERE id = $2', [JSON.stringify(legacy), id]);
+  const replacement = await request(app).put(`${url}/${id}`).set(headers('a'))
+    .send({ config: { range: '192.0.2.1' } });
+  expect(replacement.status).toBe(409);
+  const detail = await request(app).get(`${url}/${id}`).set(headers('viewer'));
+  const listed = await request(app).get(url).set(headers('viewer'));
+  expect(detail.body.data.config).toEqual({ targets: ['192.0.2.1'], scanOptions: { serviceDetection: true } });
+  expect(listed.body.data.find((row: { id: string }) => row.id === id).config).toEqual(detail.body.data.config);
+  expect(JSON.stringify([detail.body, listed.body])).not.toContain(secret);
+  expect((await request(app).get(`${url}/${id}`).set(headers('b'))).status).toBe(404);
+  expect((await request(app).post(`${url}/${id}/run`).set(headers('a'))).status).toBe(409);
+  expect((await request(app).post(`${url}/${id}/schedule/enable`).set(headers('a'))).status).toBe(409);
+  const scheduler = Object.create(DiscoveryScheduler.prototype) as DiscoveryScheduler;
+  Object.assign(scheduler, { queueManager, definitionMappings: new Map() });
+  await expect(scheduler.scheduleDefinition(id, ORG_A))
+    .rejects.toThrow('Unsafe legacy discovery configuration requires migration');
+  expect((await query('SELECT config FROM discovery_definitions WHERE id = $1', [id])).rows[0].config).toEqual(legacy);
+  await query('UPDATE discovery_definitions SET config = $1 WHERE id = $2',
+    [JSON.stringify({ targets: [{ password: secret }], credentials: legacy.credentials }), id]);
+  const malformedDetail = await request(app).get(`${url}/${id}`).set(headers('viewer'));
+  expect(malformedDetail.body.data.config).toEqual({});
+  expect(JSON.stringify([
+    jest.mocked(logger.info).mock.calls, jest.mocked(logger.warn).mock.calls,
+    jest.mocked(logger.error).mock.calls,
+  ])).not.toContain(secret);
 });
 
 test('poisoned org A schedule cannot block org B load or cron re-add', async () => {

@@ -173,6 +173,10 @@ export class DiscoveryDefinitionController {
           res.status(400).json({ success: false, error: 'Bad Request', message: error.message });
           return;
         }
+        if (error.message === 'Unsafe legacy discovery configuration requires migration') {
+          res.status(409).json({ success: false, error: 'Discovery configuration requires migration' });
+          return;
+        }
         if (error.message.toLowerCase().includes('credential') && error.message.toLowerCase().includes('not found')) {
           res.status(404).json(CREDENTIAL_NOT_FOUND);
           return;
@@ -281,6 +285,10 @@ export class DiscoveryDefinitionController {
         res.status(409).json({ success: false, error: 'Credential-backed discovery execution unavailable' });
         return;
       }
+      if (error instanceof Error && error.message === 'Unsafe legacy discovery configuration requires migration') {
+        res.status(409).json({ success: false, error: 'Discovery configuration requires migration' });
+        return;
+      }
       res.status(500).json({ success: false, error: 'Failed to run discovery definition' });
     }
   }
@@ -314,6 +322,10 @@ export class DiscoveryDefinitionController {
 
       if (error instanceof Error && error.message === 'Credential-backed discovery execution is unavailable') {
         res.status(409).json({ success: false, error: 'Credential-backed discovery execution unavailable' });
+        return;
+      }
+      if (error instanceof Error && error.message === 'Unsafe legacy discovery configuration requires migration') {
+        res.status(409).json({ success: false, error: 'Discovery configuration requires migration' });
         return;
       }
 

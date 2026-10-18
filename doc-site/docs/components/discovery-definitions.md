@@ -7,6 +7,19 @@ description: Reusable discovery configurations with scheduling and job tracking
 
 Reusable discovery configurations that define what to discover, how to authenticate, and when to run discovery operations.
 
+## HAP-755: configuration safety
+
+The current REST definition API accepts only `targets` (string array), `range` (string),
+and `scanOptions` (`aggressive`, `osDetection`, `serviceDetection`, `fullPortScan`,
+`portScan` booleans) in `config`. `targets` and `range` are alternatives.
+Inline credentials and unknown fields are rejected on create and update; use
+`credential_id` for a credential held in the unified credential store.
+REST definition reads return only these nonsecret settings from older rows.
+Legacy rows with extra or invalid settings remain unchanged: config replacement,
+execution, and scheduling are blocked until an approved operator-controlled
+migration resolves them. No automatic legacy credential migration is authorized;
+older values must not be removed just because their read representation is redacted.
+
 ## Overview
 
 Discovery Definitions are the cornerstone of HappyCMDB's ServiceNow-style discovery architecture. They provide a reusable, schedulable, and auditable way to configure infrastructure discovery operations.

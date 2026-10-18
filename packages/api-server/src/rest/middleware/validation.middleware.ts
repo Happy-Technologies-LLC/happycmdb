@@ -21,8 +21,10 @@ export function validateRequest(
     const result = validate(schema, data);
 
     // Joi details can include nested connection values (including credentials).
-    if (!result.valid && req.baseUrl.includes('/connector-configs')) {
-      logger.warn('Connector request validation failed', { source, path: req.path });
+    // Discovery definitions may include arbitrary inline credentials in invalid input.
+    if (!result.valid && (req.baseUrl.includes('/connector-configs') ||
+        req.baseUrl.includes('/discovery/definitions'))) {
+      logger.warn('Request validation failed', { source, path: req.path });
       res.status(400).json({ success: false, error: 'Validation Error' });
       return;
     }

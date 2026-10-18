@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { getPostgresClient, queueManager } from '@cmdb/database';
-import { logger, safeDiscoveryScanConfig } from '@cmdb/common';
+import {
+  logger, safeDiscoveryScanConfig, strictDiscoveryDefinitionConfig,
+  publicDiscoveryDefinitionConfig, hasUnsafeDiscoveryDefinitionConfig,
+} from '@cmdb/common';
 import {
   DiscoveryDefinition,
   DiscoveryDefinitionInput,
@@ -19,13 +22,6 @@ function credentialMatchesProvider(provider: string, protocol: string): boolean 
   return PROVIDER_CREDENTIAL_PROTOCOLS[provider]?.includes(protocol) ?? false;
 }
 
-function validateScanConfiguration(config: unknown): void {
-  try {
-    safeDiscoveryScanConfig(config);
-  } catch {
-    throw new Error('Invalid discovery scan configuration');
-  }
-}
 
 function requireCredentialForProvider(provider: string, credentialId: string | null | undefined): void {
   if ((provider === 'active-directory' || provider === 'snmp') &&
@@ -56,7 +52,7 @@ export class DiscoveryDefinitionService {
 
     try {
       await client.query('BEGIN');
-      validateScanConfiguration(input.config);
+      strictDiscoveryDefinitionConfig(input.config ?? {});
       requireCredentialForProvider(input.provider, input.credential_id);
 
       // Validate that credential exists and matches provider (skip for nmap)
@@ -224,7 +220,7 @@ export class DiscoveryDefinitionService {
 
       // Check if definition exists
       const existingResult = await client.query(
-        'SELECT id, credential_id, provider FROM discovery_definitions WHERE id = $1 AND organization_id = $2 FOR UPDATE',
+        'SELECT id, credential_id, provider, config FROM discovery_definitions WHERE id = $1 AND organization_id = $2 FOR UPDATE',
         [id, organizationId]
       );
 
@@ -233,7 +229,12 @@ export class DiscoveryDefinitionService {
       }
 
       const existing = existingResult.rows[0];
-      if (updates.config !== undefined) validateScanConfiguration(updates.config);
+      if (updates.config !== undefined) {
+        strictDiscoveryDefinitionConfig(updates.config);
+        if (hasUnsafeDiscoveryDefinitionConfig(existing.config)) {
+          throw new Error('Unsafe legacy discovery configuration requires migration');
+        }
+      }
       if (updates.provider !== undefined || updates.credential_id !== undefined) {
         requireCredentialForProvider(updates.provider ?? existing.provider,
           updates.credential_id ?? existing.credential_id);
@@ -420,6 +421,9 @@ export class DiscoveryDefinitionService {
         throw new Error('Credential-backed discovery execution is unavailable');
       }
 
+      if (hasUnsafeDiscoveryDefinitionConfig(definitionResult.rows[0].config)) {
+        throw new Error('Unsafe legacy discovery configuration requires migration');
+      }
       const definition = this.mapRowToDefinition(definitionResult.rows[0]);
 
       if (!definition.is_active) {
@@ -497,7 +501,7 @@ export class DiscoveryDefinitionService {
       provider: row.provider,
       method: row.method,
       credential_id: row.credential_id,
-      config: typeof row.config === 'string' ? JSON.parse(row.config) : row.config,
+      config: publicDiscoveryDefinitionConfig(typeof row.config === 'string' ? JSON.parse(row.config) : row.config),
       schedule: row.schedule,
       is_active: row.is_active,
       tags: row.tags || [],
@@ -526,11 +530,14 @@ export class DiscoveryDefinitionService {
       }
       // Do not arm a schedule that background workers must refuse.
       const boundSet = await this.postgresClient.query(
-        'SELECT credential_set_id FROM discovery_definitions WHERE id = $1 AND organization_id = $2',
+        'SELECT credential_set_id, config FROM discovery_definitions WHERE id = $1 AND organization_id = $2',
         [id, organizationId]
       );
       if (definition.credential_id || boundSet.rows[0]?.credential_set_id) {
         throw new Error('Credential-backed discovery execution is unavailable');
+      }
+      if (hasUnsafeDiscoveryDefinitionConfig(boundSet.rows[0]?.config)) {
+        throw new Error('Unsafe legacy discovery configuration requires migration');
       }
 
 

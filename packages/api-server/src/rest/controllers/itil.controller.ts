@@ -3,7 +3,7 @@
 
 import { Request, Response } from 'express';
 import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
-import { logger } from '@cmdb/common';
+import { logger, ciIncarnationId } from '@cmdb/common';
 import { v4 as uuidv4 } from 'uuid';
 import neo4j from 'neo4j-driver';
 import { requestOrganizationId } from '../../middleware/auth.middleware';
@@ -227,14 +227,18 @@ export class ITILController {
         return;
       }
       const { limit = 100 } = _req.query;
-      const result = await readSingleCI(organizationId, id, () => this.postgresClient.query(
-        `SELECT h.id, h.ci_id, h.change_type, h.changed_fields, h.previous_values,
-                h.new_values, h.changed_at, h.changed_by, h.correlation_id
-         FROM ci_change_history h
-         WHERE h.ci_id = $1 AND h.organization_id = $2
-         ORDER BY h.changed_at DESC, h.id LIMIT $3`,
-        [id, organizationId, parseInt(String(limit), 10)]
-      ));
+      const incarnationId = ciIncarnationId(ci);
+      const result = await readSingleCI(organizationId, id, () => incarnationId
+        ? this.postgresClient.query(
+          `SELECT h.id, h.ci_id, h.change_type, h.changed_fields, h.previous_values,
+                  h.new_values, h.changed_at, h.changed_by, h.correlation_id
+           FROM ci_change_history h
+           WHERE h.ci_id = $1 AND h.organization_id = $2
+             AND h.ci_incarnation_id = $3::uuid
+           ORDER BY h.changed_at DESC, h.id LIMIT $4`,
+          [id, organizationId, incarnationId, parseInt(String(limit), 10)]
+        )
+        : Promise.resolve({ rows: [] }));
       res.json({ success: true, data: result.rows, count: result.rows.length });
     } catch (error) {
       if (error instanceof CIGapError) {

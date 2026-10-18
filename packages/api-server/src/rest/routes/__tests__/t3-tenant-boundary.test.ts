@@ -341,6 +341,45 @@ it('shows only current graph-incarnation history after deletion and re-creation'
   }
 });
 
+it('excludes previous same-org CI incarnations from ITIL history even when their timestamps are newer', async () => {
+  const id = 'ci-fresh';
+  const formerIncarnation = randomUUID();
+  const currentIncarnation = randomUUID();
+  nodes.set(id, { id, name: 'Former A', organization_id: A, incarnation_id: formerIncarnation });
+  await db.rows(
+    `INSERT INTO ci_change_history
+      (ci_id, change_type, change_source, organization_id, ci_incarnation_id,
+       previous_values, new_values, changed_at)
+     VALUES ($1, 'updated', 'test', $2, $3, '{"name":"former"}', '{"name":"old-secret"}',
+       NOW() + INTERVAL '1 day')`,
+    [id, A, formerIncarnation]
+  );
+  nodes.set(id, { id, name: 'Current A', organization_id: A, incarnation_id: currentIncarnation });
+  await db.rows(
+    `INSERT INTO ci_change_history
+      (ci_id, change_type, change_source, organization_id, ci_incarnation_id,
+       previous_values, new_values, changed_at)
+     VALUES ($1, 'updated', 'test', $2, $3, '{"name":"current"}', '{"name":"new-value"}', NOW())`,
+    [id, A, currentIncarnation]
+  );
+
+  const history = (limit: number) => request(app)
+    .get(`/api/v1/itil/configuration-items/${id}/history?limit=${limit}`).set(auth('a'));
+  const first = await history(1);
+  expect(first.status).toBe(200);
+  expect(first.body.count).toBe(1);
+  expect(first.body.data.map((row: { new_values: { name: string } }) => row.new_values.name))
+    .toEqual(['new-value']);
+
+  const full = await history(10);
+  expect(full.body.data.map((row: { previous_values: { name: string } }) => row.previous_values.name))
+    .toEqual(['current']);
+  nodes.get(id)!.incarnation_id = undefined;
+  const noIncarnation = await history(10);
+  expect(noIncarnation.status).toBe(200);
+  expect(noIncarnation.body).toMatchObject({ data: [], count: 0 });
+});
+
 it('fences legacy SQL derivatives across a deleted and re-created CI ID, but reads fresh B rows', async () => {
   const id = 'ci-fresh';
   const old = new Date(Date.now() - 48 * 60 * 60 * 1000);

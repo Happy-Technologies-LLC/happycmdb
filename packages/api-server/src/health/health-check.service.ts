@@ -107,10 +107,10 @@ export class HealthCheckService {
       } finally {
         await session.close();
       }
-    } catch (error: any) {
+    } catch {
       return {
         _status: 'unhealthy',
-        message: `Neo4j connection failed: ${error.message}`,
+        message: 'Neo4j connection failed',
       };
     }
   }
@@ -139,10 +139,10 @@ export class HealthCheckService {
         latency_ms: latency,
         message: 'PostgreSQL is responding normally',
       };
-    } catch (error: any) {
+    } catch {
       return {
         _status: 'unhealthy',
-        message: `PostgreSQL connection failed: ${error.message}`,
+        message: 'PostgreSQL connection failed',
       };
     }
   }
@@ -177,10 +177,10 @@ export class HealthCheckService {
           connected: true,
         },
       };
-    } catch (error: any) {
+    } catch {
       return {
         _status: 'unhealthy',
-        message: `Redis connection failed: ${error.message}`,
+        message: 'Redis connection failed',
       };
     }
   }
@@ -216,10 +216,10 @@ export class HealthCheckService {
           used_percent: usedPercent,
         },
       };
-    } catch (error: any) {
+    } catch {
       return {
         _status: 'degraded',
-        message: `Unable to check disk space: ${error.message}`,
+        message: 'Unable to check disk space',
       };
     }
   }
@@ -276,10 +276,10 @@ export class HealthCheckService {
           ? 'Service is ready'
           : 'Service is not ready - dependencies unavailable',
       };
-    } catch (error: any) {
+    } catch {
       return {
         ready: false,
-        message: `Readiness check failed: ${error.message}`,
+        message: 'Readiness check failed',
       };
     }
   }
@@ -346,7 +346,7 @@ export class HealthCheckService {
     }
     return {
       _status: 'unhealthy',
-      message: `Check failed: ${result.reason}`,
+      message: 'Check failed',
     };
   }
 

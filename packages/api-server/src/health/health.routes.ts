@@ -45,11 +45,10 @@ router.get('/alive', (req, res) => healthController.getLiveness(req, res));
 router.get('/metrics', getAuthMiddleware().authenticate(), refuseGlobalMetrics);
 
 /**
- * GET /services - Service health status
- * Returns health status of all services
- * Accessible at: /api/v1/health/services
+ * GET /services - Authenticated service status (bounded probes in the controller).
+ * This router mounts before the shared /api/v1 authentication gate.
  */
-router.get('/services', (req, res) => healthController.getServices(req, res));
+router.get('/services', getAuthMiddleware().authenticate(), (req, res) => healthController.getServices(req, res));
 
 /**
  * GET /api/v1/cmdb-health/timeseries - same authenticated global refusal.

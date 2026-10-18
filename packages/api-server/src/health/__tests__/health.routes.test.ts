@@ -142,6 +142,38 @@ test('unresolved Redis work times out without amplifying probes, then recovers a
   }
 });
 
+test.each(['run', 'close'] as const)('unresolved Neo4j %s is bounded and session is not duplicated', async step => {
+  jest.useFakeTimers({ doNotFake: ['Date', 'nextTick', 'setImmediate'] });
+  const { promise: held, resolve: release } = Promise.withResolvers<void>();
+  const { promise: started, resolve: signalStarted } = Promise.withResolvers<void>();
+  if (step === 'run') mockRun.mockImplementationOnce(() => { signalStarted(); return held; });
+  else mockClose.mockImplementationOnce(() => { signalStarted(); return held; });
+  const first = authorized();
+  const firstResponse = first.then(response => response);
+  try {
+    await started;
+    expect(mockRun).toHaveBeenCalledWith('RETURN 1', {}, { timeout: 2000 });
+    await jest.advanceTimersByTimeAsync(2000);
+    const timedOut = await firstResponse;
+    expect(timedOut.status).toBe(200);
+    expect(timedOut.body).toEqual(expect.arrayContaining([expect.objectContaining({ service: 'Neo4j', status: 'down' })]));
+    now += 5000;
+    const next = await authorized();
+    expect(next.status).toBe(200);
+    expect(mockGetSession).toHaveBeenCalledTimes(1);
+    release();
+    await Promise.resolve();
+    expect((await authorized()).body).toEqual(next.body);
+    now += 5000;
+    const recovered = await authorized();
+    expect(recovered.body).toEqual(expect.arrayContaining([expect.objectContaining({ service: 'Neo4j', status: 'healthy' })]));
+    expect(mockGetSession).toHaveBeenCalledTimes(2);
+  } finally {
+    release();
+    jest.useRealTimers();
+  }
+});
+
 test('public health and readiness never echo injected dependency errors', async () => {
   mockRun.mockRejectedValue(new Error(secret));
   mockPostgresQuery.mockRejectedValue(new Error(secret));

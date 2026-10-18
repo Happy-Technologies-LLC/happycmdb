@@ -286,7 +286,7 @@ Scoped to the caller's organization: 403 without an organization claim; a servic
 
 ### Health (`/api/v1/cmdb-health`)
 - `GET /cmdb-health`, `/ready`, `/alive` - Public health and deploy probes. Dependency failure messages are fixed, not raw exceptions.
-- `GET /cmdb-health/services` - Authenticated service status and latency (JWT or API key); probes share an in-flight request and are cached for 5 seconds, including down statuses. Header and HealthDashboard use the authenticated `apiClient`.
+- `GET /cmdb-health/services` - Authenticated service status and latency (JWT or API key); probes share an in-flight request and are cached for 5 seconds, including down statuses. Each physical dependency is limited to one outstanding probe; a two-second timeout returns down without starting another probe until the old operation settles. Header and HealthDashboard use the authenticated `apiClient`.
 - `GET /cmdb-health/metrics`, `/timeseries` - Authentication required, then fixed 403 for every role; global counts and trends are not tenant-scoped. The Health dashboard shows service availability without polling refused aggregates.
 
 ## Authentication

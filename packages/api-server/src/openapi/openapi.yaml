@@ -3639,7 +3639,7 @@ paths:
     get:
       tags: [Health]
       summary: Authenticated component health
-      description: Returns per-service status and latency. Probes are single-flight and cached for five seconds, including failed dependencies.
+      description: Returns per-service status and latency. Probes are single-flight and cached for five seconds, including failed dependencies. A two-second probe timeout reports down; at most one physical probe per dependency remains outstanding.
       operationId: serviceHealth
       security:
         - BearerAuth: []

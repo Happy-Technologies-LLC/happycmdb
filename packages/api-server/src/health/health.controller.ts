@@ -22,11 +22,31 @@ type ServiceHealth = {
 };
 
 const SERVICE_CACHE_MS = 5000;
+const SERVICE_PROBE_TIMEOUT_MS = 2000;
+
+// A timed-out response must not wait for a driver forever. The underlying
+// operation is still tracked separately: never open another session/command
+// against a dependency until that physical operation (including close) settles.
+async function withinProbeDeadline<T>(work: Promise<T>): Promise<T> {
+  // The project TS lib predates Promise.withResolvers; the timer callback
+  // needs the executor's rejection function.
+  let timer: NodeJS.Timeout;
+  const expired = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error('Service probe timed out')), SERVICE_PROBE_TIMEOUT_MS);
+  });
+  try {
+    return await Promise.race([work, expired]);
+  } finally {
+    clearTimeout(timer!);
+  }
+}
 
 export class HealthController {
   private healthService: HealthCheckService;
   private servicesCache?: { value: ServiceHealth[]; expiresAt: number };
   private servicesInFlight?: Promise<ServiceHealth[]>;
+  private neo4jPending?: Promise<ServiceHealth>;
+  private redisPending?: Promise<ServiceHealth>;
 
   constructor() {
     this.healthService = new HealthCheckService(process.env['APP_VERSION'] || '1.0.0');
@@ -117,45 +137,10 @@ export class HealthController {
   }
 
   private async probeServices(): Promise<ServiceHealth[]> {
-    const services: ServiceHealth[] = [];
-
-    let session: Session | undefined;
-    try {
-      session = getNeo4jClient().getSession();
-      const start = Date.now();
-      await session.run('RETURN 1');
-      services.push({
-        service: 'Neo4j',
-        status: 'healthy',
-        last_check: new Date().toISOString(),
-        response_time_ms: Date.now() - start,
-      });
-    } catch {
-      services.push({ service: 'Neo4j', status: 'down', last_check: new Date().toISOString() });
-    } finally {
-      if (session) {
-        try {
-          await session.close();
-        } catch {
-          // Closing failure must not prevent Redis from being checked.
-        }
-      }
-    }
-
-    try {
-      const redis = getRedisClient();
-      const start = Date.now();
-      await redis.set('health:check', 'ok', 10);
-      await redis.get('health:check');
-      services.push({
-        service: 'Redis',
-        status: 'healthy',
-        last_check: new Date().toISOString(),
-        response_time_ms: Date.now() - start,
-      });
-    } catch {
-      services.push({ service: 'Redis', status: 'down', last_check: new Date().toISOString() });
-    }
+    const services: ServiceHealth[] = [
+      await this.probeNeo4j(),
+      await this.probeRedis(),
+    ];
 
     // Existing static entries retained for the UI response contract.
     services.push(
@@ -165,6 +150,78 @@ export class HealthController {
     );
     return services;
   }
+
+  private async probeNeo4j(): Promise<ServiceHealth> {
+    if (!this.neo4jPending) {
+      const pending = this.checkNeo4jService();
+      this.neo4jPending = pending;
+      const clear = () => {
+        if (this.neo4jPending === pending) this.neo4jPending = undefined;
+      };
+      void pending.then(clear, clear);
+    } else {
+      // Timed-out physical work still owns the session; report down, do not amplify it.
+      return { service: 'Neo4j', status: 'down', last_check: new Date().toISOString() };
+    }
+    try {
+      return await withinProbeDeadline(this.neo4jPending);
+    } catch {
+      return { service: 'Neo4j', status: 'down', last_check: new Date().toISOString() };
+    }
+  }
+
+  private async checkNeo4jService(): Promise<ServiceHealth> {
+    let session: Session | undefined;
+    let result: ServiceHealth = { service: 'Neo4j', status: 'down', last_check: new Date().toISOString() };
+    try {
+      session = getNeo4jClient().getSession();
+      const start = Date.now();
+      await session.run('RETURN 1', {}, { timeout: SERVICE_PROBE_TIMEOUT_MS });
+      result = { service: 'Neo4j', status: 'healthy', last_check: new Date().toISOString(), response_time_ms: Date.now() - start };
+    } catch {
+      // No driver exception details enter the response.
+    } finally {
+      if (session) {
+        try {
+          await session.close();
+        } catch {
+          result = { service: 'Neo4j', status: 'down', last_check: new Date().toISOString() };
+        }
+      }
+    }
+    return result;
+  }
+
+  private async probeRedis(): Promise<ServiceHealth> {
+    if (!this.redisPending) {
+      const pending = this.checkRedisService();
+      this.redisPending = pending;
+      const clear = () => {
+        if (this.redisPending === pending) this.redisPending = undefined;
+      };
+      void pending.then(clear, clear);
+    } else {
+      return { service: 'Redis', status: 'down', last_check: new Date().toISOString() };
+    }
+    try {
+      return await withinProbeDeadline(this.redisPending);
+    } catch {
+      return { service: 'Redis', status: 'down', last_check: new Date().toISOString() };
+    }
+  }
+
+  private async checkRedisService(): Promise<ServiceHealth> {
+    try {
+      const redis = getRedisClient();
+      const start = Date.now();
+      await redis.set('health:check', 'ok', 10);
+      await redis.get('health:check');
+      return { service: 'Redis', status: 'healthy', last_check: new Date().toISOString(), response_time_ms: Date.now() - start };
+    } catch {
+      return { service: 'Redis', status: 'down', last_check: new Date().toISOString() };
+    }
+  }
+
 
   /**
    * Map health status to HTTP status code

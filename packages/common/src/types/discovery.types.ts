@@ -10,6 +10,7 @@
  */
 
 import { CIInput } from './ci.types';
+import type { SafeDiscoveryScanConfig } from '../utils/discovery-scan-config';
 
 /**
  * Discovery Job - Represents a discovery operation
@@ -115,8 +116,8 @@ export interface DiscoveryDefinition {
   credential_id?: string;
   /** Agent ID for agent-based discovery - NULL for agentless */
   agent_id?: string;
-  /** Provider-specific configuration (regions, filters, targets, etc.) */
-  config: DiscoveryConfig;
+  /** Nonsecret targets/range and scan-mode switches; credentials use credential_id. */
+  config: SafeDiscoveryScanConfig;
   /** Field mappings from source fields to target CI fields (standard or metadata) */
   field_mappings?: Record<string, string>;
   /** Cron expression for scheduled execution (optional) */
@@ -155,8 +156,8 @@ export interface DiscoveryDefinitionInput {
   credential_id?: string;
   /** Agent ID for agent-based discovery (optional - only for method='agent') */
   agent_id?: string;
-  /** Provider-specific configuration */
-  config: DiscoveryConfig;
+  /** Nonsecret scan settings only. */
+  config: SafeDiscoveryScanConfig;
   /** Field mappings from source fields to target CI fields (standard or metadata) */
   field_mappings?: Record<string, string>;
   /** Cron expression for scheduled execution (optional) */

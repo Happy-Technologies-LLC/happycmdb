@@ -318,14 +318,14 @@ test('inline credentials and unknown settings never cross the writer-to-viewer b
   expect(created.status).toBe(400);
   expect(JSON.stringify(created.body)).not.toContain(secret);
   const allowed = await request(app).post(url).set(headers('a')).send({
-    ...payload, config: { targets: ['192.0.2.1'],
+    ...payload, config: { targets: ['10.0.0.0/24'],
       scanOptions: { serviceDetection: true, osDetection: false } },
   });
   expect(allowed.status).toBe(201);
   const id = allowed.body.data.id;
   const permittedDetail = await request(app).get(`${url}/${id}`).set(headers('viewer'));
   expect(permittedDetail.body.data.config)
-    .toEqual({ targets: ['192.0.2.1'], scanOptions: { serviceDetection: true, osDetection: false } });
+    .toEqual({ targets: ['10.0.0.0/24'], scanOptions: { serviceDetection: true, osDetection: false } });
   expect((await request(app).put(`${url}/${id}`).set(headers('a')).send({ config: payload.config })).status).toBe(400);
   expect((await request(app).put(`${url}/${id}`).set(headers('viewer')).send({ config: payload.config })).status).toBe(403);
   const legacy = { targets: ['192.0.2.1'], scanOptions: { serviceDetection: true, password: secret },

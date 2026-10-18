@@ -285,7 +285,8 @@ Scoped to the caller's organization: 403 without an organization claim; a servic
 - `GET /business-services/{service_id}/costs` - Monthly cost summary
 
 ### Health (`/api/v1/cmdb-health`)
-- `GET /cmdb-health`, `/ready`, `/alive` - Public health and deploy probes. Dependency failure messages are fixed, not raw exceptions.
+- `GET /cmdb-health`, `/ready` - Public dependency status (`{ "_status": "healthy" | "unhealthy" }` or `{ "_ready": boolean }`); 200 when ready, 503 otherwise. Both routes share a five-second completion-based cache, including failures, and a two-second response deadline. At most one physical operation per dependency is outstanding, even after a timeout; no further probe begins on that dependency until it settles. No dependency details, version, uptime, timestamp, capacity or raw errors are public. `GET /alive` is a public process-only liveness probe returning 200 `{ "_alive": true }` without dependency I/O.
+  Supplying credentials to these public paths does not enable detailed output; authenticated UI and operator diagnostics remain on `/cmdb-health/services`.
 - `GET /cmdb-health/services` - Authenticated service status and latency (JWT or API key); probes share an in-flight request and are cached for 5 seconds, including down statuses. Each physical dependency is limited to one outstanding probe; a two-second timeout returns down without starting another probe until the old operation settles. Header and HealthDashboard use the authenticated `apiClient`.
 - `GET /cmdb-health/metrics`, `/timeseries` - Authentication required, then fixed 403 for every role; global counts and trends are not tenant-scoped. The Health dashboard shows service availability without polling refused aggregates.
 
@@ -514,17 +515,9 @@ All credentials stored with AES-256 encryption:
 curl http://localhost:3000/api/v1/cmdb-health
 ```
 
-Response:
+Response (200; returns 503 with `{ "_status": "unhealthy" }` if unavailable):
 ```json
-{
-  "status": "healthy",
-  "timestamp": "2025-10-18T12:00:00Z",
-  "services": {
-    "neo4j": "up",
-    "postgres": "up",
-    "redis": "up"
-  }
-}
+{ "_status": "healthy" }
 ```
 
 ### API Documentation Health

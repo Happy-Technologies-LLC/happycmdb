@@ -3590,50 +3590,83 @@ paths:
   /cmdb-health:
     get:
       tags: [Health]
-      summary: Health check
-      description: Get overall system health status
+      summary: Public dependency status
+      description: Shares a five-second completion-based cache with /ready, including failures. A two-second deadline bounds responses; at most one physical probe per dependency remains outstanding until settled. No diagnostic details are public.
       operationId: healthCheck
       security: []
       responses:
         '200':
-          description: System healthy
+          description: All critical dependencies ready
           content:
             application/json:
               schema:
                 type: object
+                required: [_status]
                 properties:
-                  status:
+                  _status:
                     type: string
-                    enum: [healthy, degraded, unhealthy]
-                  timestamp:
-                    type: string
-                    format: date-time
-                  services:
-                    type: object
-                    properties:
-                      neo4j:
-                        type: string
-                        enum: [up, down]
-                      postgres:
-                        type: string
-                        enum: [up, down]
-                      redis:
-                        type: string
-                        enum: [up, down]
+                    enum: [healthy]
         '503':
-          description: System unhealthy
+          description: A dependency failed, timed out or is still pending
           content:
             application/json:
               schema:
                 type: object
+                required: [_status]
                 properties:
-                  status:
+                  _status:
                     type: string
                     enum: [unhealthy]
-                  errors:
-                    type: array
-                    items:
-                      type: string
+
+  /cmdb-health/ready:
+    get:
+      tags: [Health]
+      summary: Public dependency readiness
+      description: Shares the bounded cached dependency snapshot with /cmdb-health.
+      operationId: healthReadiness
+      security: []
+      responses:
+        '200':
+          description: Ready to accept traffic
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [_ready]
+                properties:
+                  _ready:
+                    type: boolean
+                    enum: [true]
+        '503':
+          description: Not ready to accept traffic
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [_ready]
+                properties:
+                  _ready:
+                    type: boolean
+                    enum: [false]
+
+  /cmdb-health/alive:
+    get:
+      tags: [Health]
+      summary: Public process liveness (no dependency probe)
+      operationId: healthLiveness
+      security: []
+      responses:
+        '200':
+          description: Process is alive
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [_alive]
+                properties:
+                  _alive:
+                    type: boolean
+                    enum: [true]
 
   /cmdb-health/services:
     get:

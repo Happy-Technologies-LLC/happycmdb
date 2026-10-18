@@ -129,10 +129,9 @@ export class RestAPIServer {
     this.app.use('/api/v1/auth', authRoutes);
 
     // Every remaining /api/v1 route requires authentication (JWT bearer or
-    // API key -- discovery agents authenticate with an agent-role API key
-    // through the same check). Public endpoints (Swagger docs, health
-    // check, and /api/v1/auth's own login/register/refresh routes) are all
-    // mounted above this line and are therefore unaffected. Individual
+    // API key -- discovery agents authenticate through the same gate). Public
+    // Swagger docs, bounded status probes and /api/v1/auth actions mount above.
+    // Authenticated /cmdb-health/services retains diagnostics. Individual
     // routers layer `requirePermission()`/`requireRole()` on top for
     // write/admin gating; they must not call `.authenticate()` themselves
     // to avoid re-verifying the same credential twice per request.

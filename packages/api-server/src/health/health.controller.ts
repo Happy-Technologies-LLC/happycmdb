@@ -42,31 +42,22 @@ async function withinProbeDeadline<T>(work: Promise<T>): Promise<T> {
 }
 
 export class HealthController {
-  private healthService: HealthCheckService;
   private servicesCache?: { value: ServiceHealth[]; expiresAt: number };
   private servicesInFlight?: Promise<ServiceHealth[]>;
   private neo4jPending?: Promise<ServiceHealth>;
   private redisPending?: Promise<ServiceHealth>;
 
-  constructor() {
-    this.healthService = new HealthCheckService(process.env['APP_VERSION'] || '1.0.0');
-  }
+  private healthService = new HealthCheckService();
 
   /**
-   * GET /health - Comprehensive health check
+   * GET /health - Public overall dependency status
    */
   async getHealth(_req: Request, res: Response): Promise<void> {
     try {
-      const health = await this.healthService.checkHealth();
-
-      const statusCode = this.getStatusCode(health._status);
-      res.status(statusCode).json(health);
+      const ready = await this.healthService.checkPublicHealth();
+      res.status(ready ? 200 : 503).json({ _status: ready ? 'healthy' : 'unhealthy' });
     } catch {
-      res.status(503).json({
-        _status: 'unhealthy',
-        _message: 'Health check failed',
-        _timestamp: new Date().toISOString(),
-      });
+      res.status(503).json({ _status: 'unhealthy' });
     }
   }
 
@@ -75,19 +66,10 @@ export class HealthController {
    */
   async getReadiness(_req: Request, res: Response): Promise<void> {
     try {
-      const readiness = await this.healthService.checkReadiness();
-
-      res.status(readiness.ready ? 200 : 503).json({
-        _ready: readiness.ready,
-        _message: readiness.message,
-        _timestamp: new Date().toISOString(),
-      });
+      const ready = await this.healthService.checkPublicHealth();
+      res.status(ready ? 200 : 503).json({ _ready: ready });
     } catch {
-      res.status(503).json({
-        _ready: false,
-        _message: 'Readiness check failed',
-        _timestamp: new Date().toISOString(),
-      });
+      res.status(503).json({ _ready: false });
     }
   }
 
@@ -95,21 +77,7 @@ export class HealthController {
    * GET /alive - Liveness check (still running)
    */
   async getLiveness(_req: Request, res: Response): Promise<void> {
-    try {
-      const liveness = await this.healthService.checkLiveness();
-
-      res.status(liveness.alive ? 200 : 503).json({
-        _alive: liveness.alive,
-        _message: liveness.message,
-        _timestamp: new Date().toISOString(),
-      });
-    } catch {
-      res.status(503).json({
-        _alive: false,
-        _message: 'Liveness check failed',
-        _timestamp: new Date().toISOString(),
-      });
-    }
+    res.status(200).json({ _alive: true });
   }
   /**
    * GET /health/services - Service health status
@@ -222,20 +190,4 @@ export class HealthController {
     }
   }
 
-
-  /**
-   * Map health status to HTTP status code
-   */
-  private getStatusCode(status: string): number {
-    switch (status) {
-      case 'healthy':
-        return 200;
-      case 'degraded':
-        return 200; // Still accepting traffic
-      case 'unhealthy':
-        return 503;
-      default:
-        return 500;
-    }
-  }
 }

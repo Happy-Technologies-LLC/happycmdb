@@ -285,12 +285,13 @@ Scoped to the caller's organization: 403 without an organization claim; a servic
 - `GET /business-services/{service_id}/costs` - Monthly cost summary
 
 ### Health (`/api/v1/cmdb-health`)
-- `GET /cmdb-health`, `/ready`, `/alive`, `/services` - Public service health and liveness.
+- `GET /cmdb-health`, `/ready`, `/alive` - Public health and deploy probes. Dependency failure messages are fixed, not raw exceptions.
+- `GET /cmdb-health/services` - Authenticated service status and latency (JWT or API key); probes share an in-flight request and are cached for 5 seconds, including down statuses. Header and HealthDashboard use the authenticated `apiClient`.
 - `GET /cmdb-health/metrics`, `/timeseries` - Authentication required, then fixed 403 for every role; global counts and trends are not tenant-scoped. The Health dashboard shows service availability without polling refused aggregates.
 
 ## Authentication
 
-All API endpoints except `/auth` public actions, `/cmdb-health` liveness/service probes, `/api-docs`, and public Prometheus `/metrics` require authentication. `/cmdb-health/metrics` and `/timeseries` authenticate before their fixed refusal.
+All API endpoints except `/auth` public actions, `/cmdb-health`, `/cmdb-health/ready`, `/cmdb-health/alive`, `/api-docs`, and public Prometheus `/metrics` require authentication. `/cmdb-health/metrics` and `/timeseries` authenticate before their fixed refusal; `/cmdb-health/services` authenticates before probing.
 
 ### JWT Token Authentication
 

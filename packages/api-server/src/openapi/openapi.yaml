@@ -3635,6 +3635,39 @@ paths:
                     items:
                       type: string
 
+  /cmdb-health/services:
+    get:
+      tags: [Health]
+      summary: Authenticated component health
+      description: Returns per-service status and latency. Probes are single-flight and cached for five seconds, including failed dependencies.
+      operationId: serviceHealth
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
+      responses:
+        '200':
+          description: Service statuses; dependency failures appear as down without raw error details.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  required: [service, status, last_check]
+                  properties:
+                    service:
+                      type: string
+                    status:
+                      type: string
+                      enum: [healthy, down]
+                    last_check:
+                      type: string
+                      format: date-time
+                    response_time_ms:
+                      type: number
+        '401':
+          description: Authentication required; no service probes run.
+
 # =============================================================================
 # REUSABLE COMPONENTS
 # =============================================================================

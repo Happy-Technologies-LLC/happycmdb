@@ -111,6 +111,37 @@ test('failed probes close the session, return only safe status, and remain bound
   expect(mockClose).toHaveBeenCalledTimes(2);
 });
 
+test('unresolved Redis work times out without amplifying probes, then recovers after release', async () => {
+  jest.useFakeTimers({ doNotFake: ['Date', 'nextTick', 'setImmediate'] });
+  const { promise: held, resolve: release } = Promise.withResolvers<void>();
+  const { promise: started, resolve: signalStarted } = Promise.withResolvers<void>();
+  mockSet.mockImplementationOnce(() => { signalStarted(); return held; });
+  const first = authorized();
+  const firstResponse = first.then(response => response);
+  try {
+    await started;
+    await jest.advanceTimersByTimeAsync(2000);
+    const timedOut = await firstResponse;
+    expect(timedOut.status).toBe(200);
+    expect(timedOut.body).toEqual(expect.arrayContaining([expect.objectContaining({ service: 'Redis', status: 'down' })]));
+    now += 5000;
+    const next = await authorized();
+    expect(next.status).toBe(200);
+    expect(mockRun).toHaveBeenCalledTimes(2);
+    expect(mockSet).toHaveBeenCalledTimes(1); // The original Redis operation is still pending.
+    release();
+    await Promise.resolve();
+    expect((await authorized()).body).toEqual(next.body); // Old completion cannot overwrite cache.
+    now += 5000;
+    const recovered = await authorized();
+    expect(recovered.body).toEqual(expect.arrayContaining([expect.objectContaining({ service: 'Redis', status: 'healthy' })]));
+    expect(mockSet).toHaveBeenCalledTimes(2);
+  } finally {
+    release();
+    jest.useRealTimers();
+  }
+});
+
 test('public health and readiness never echo injected dependency errors', async () => {
   mockRun.mockRejectedValue(new Error(secret));
   mockPostgresQuery.mockRejectedValue(new Error(secret));

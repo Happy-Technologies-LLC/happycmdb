@@ -36,14 +36,20 @@ let v3: V3ETLWorkerManager;
 const etlConnections = new Map<string, Queue>();
 const submitted: Job[] = [];
 
-async function settled(queue: Queue, job: Job, expected: 'completed' | 'failed'): Promise<Job> {
-  const deadline = Date.now() + 370_000; // real BullMQ limiter: fake timers cannot advance Redis
+async function settled(queue: Queue, job: Job, expected: 'completed' | 'failed',
+  timeoutMs = 370_000): Promise<Job> {
+  const deadline = Date.now() + timeoutMs; // real BullMQ limiter: fake timers cannot advance Redis
+  let state = 'unknown';
   while (Date.now() < deadline) {
     const persisted = await Job.fromId(queue, job.id!);
-    if (persisted && await persisted.getState() === expected) return persisted;
+    state = persisted ? await persisted.getState() : 'unknown';
+    if (persisted && state === expected) return persisted;
+    if (state === 'completed' || state === 'failed') {
+      throw new Error(`Unexpected terminal state for ${job.queueName}: ${state} (expected ${expected})`);
+    }
     await new Promise(resolve => setTimeout(resolve, 250));
   }
-  throw new Error(`Timed out waiting for ${job.queueName}: ${expected}`);
+  throw new Error(`Timed out waiting for ${job.queueName}: ${expected} (last state: ${state})`);
 }
 
 /** Job.fromJSON drops an empty Redis failedReason; only completed jobs use this assertion. */
@@ -190,6 +196,8 @@ it('persists coded success for A and B and sanitized forced failure through ever
   };
   const unsafe = (name: string): Record<string, unknown> => {
     const common = { organizationId: orgs[1], privateMarker: marker };
+    // On an empty graph Neo4j can return zero CIs without evaluating this bad
+    // date. The sync failure below must instead inject a scoped storage fault.
     if (name === QUEUE_NAMES._ETL_SYNC) return { ...common, incrementalSince: 'not-an-iso-date' };
     if (name === QUEUE_NAMES._ETL_RECONCILIATION) return { ...common, ciIds: marker };
     if (name === QUEUE_NAMES._ETL_CHANGE_DETECTION) return { ...common, lookbackHours: 'invalid' };
@@ -223,29 +231,53 @@ it('persists coded success for A and B and sanitized forced failure through ever
         { a: orgs[0], b: orgs[1] });
       } finally { await session.close(); }
     }
+    const syncFault = name === QUEUE_NAMES._ETL_SYNC;
+    if (syncFault) await queue.pause();
     const failed = await queue.add('n18-foreign-failure', unsafe(name),
       { removeOnComplete: false, removeOnFail: false, attempts: 1 });
     submitted.push(failed);
-    await settled(queue, failed, 'failed');
-    // The failed event's asynchronous DLQ hook follows BullMQ's persisted state
-    // transition; poll the real Redis record rather than mutating it in the test.
-    let fresh = await Job.fromId(queue, failed.id!);
-    const deadline = Date.now() + 10_000;
-    while (!fresh?.data.__dlq && Date.now() < deadline) {
-      await new Promise(resolve => setTimeout(resolve, 50));
-      fresh = await Job.fromId(queue, failed.id!);
+    let restore = () => {};
+    let injected = false;
+    try {
+      if (syncFault) {
+        // The empty graph makes the invalid date an unreliable failure stimulus.
+        // Fail exactly this real worker's first Redis payload scrub instead.
+        const updateData = Job.prototype.updateData;
+        const fault = jest.spyOn(Job.prototype, 'updateData').mockImplementation(function (this: Job, data) {
+          if (this.id === failed.id && this.queueName === name && !injected) {
+            injected = true;
+            return Promise.reject(new Error(marker));
+          }
+          return updateData.call(this, data);
+        });
+        restore = () => fault.mockRestore();
+        await queue.resume();
+      }
+      await settled(queue, failed, 'failed', syncFault ? 20_000 : 370_000);
+      if (syncFault) expect(injected).toBe(true);
+      // The failed event's asynchronous DLQ hook follows BullMQ's persisted state
+      // transition; poll the real Redis record rather than mutating it in the test.
+      let fresh = await Job.fromId(queue, failed.id!);
+      const deadline = Date.now() + 10_000;
+      while (!fresh?.data.__dlq && Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 50));
+        fresh = await Job.fromId(queue, failed.id!);
+      }
+      const logs = await queue.getJobLogs(failed.id!);
+      expect(fresh?.returnvalue).toBeNull();
+      expect(fresh?.failedReason).toBe('ERR_INTERNAL');
+      expect(fresh?.stacktrace?.length).toBeGreaterThan(0);
+      expect(fresh?.stacktrace?.every(line => !line.includes(marker))).toBe(true);
+      expect(logs.logs).toContain('DEAD_LETTER:ERR_INTERNAL');
+      expect(fresh?.data).toEqual({ _legacy: true, __dlq: { _code: 'ERR_INTERNAL' } });
+      expect(JSON.stringify({ result: fresh?.returnvalue, logs: logs.logs,
+        failure: fresh?.failedReason, stack: fresh?.stacktrace, data: fresh?.data }))
+        .not.toContain(marker);
+      recordReceipt(name, orgs[1], 'forced-failure', fresh!, logs.logs);
+    } finally {
+      restore();
+      if (syncFault) await queue.resume();
     }
-    const logs = await queue.getJobLogs(failed.id!);
-    expect(fresh?.returnvalue).toBeNull();
-    expect(fresh?.failedReason).toBe('ERR_INTERNAL');
-    expect(fresh?.stacktrace?.length).toBeGreaterThan(0);
-    expect(fresh?.stacktrace?.every(line => !line.includes(marker))).toBe(true);
-    expect(logs.logs).toContain('DEAD_LETTER:ERR_INTERNAL');
-    expect(fresh?.data).toEqual({ _legacy: true, __dlq: { _code: 'ERR_INTERNAL' } });
-    expect(JSON.stringify({ result: fresh?.returnvalue, logs: logs.logs,
-      failure: fresh?.failedReason, stack: fresh?.stacktrace, data: fresh?.data }))
-      .not.toContain(marker);
-    recordReceipt(name, orgs[1], 'forced-failure', fresh!, logs.logs);
   }
 }, 760_000);
 

@@ -24,6 +24,11 @@ const nodes = [A, B].flatMap((organization_id, index) => {
     type: 'server', created_at: '2026-10-15T00:00:00Z',
   }));
 });
+const services = [
+  { id: 'a-business-service', organization_id: A, label: 'BusinessService' },
+  { id: 'a-application-service', organization_id: A, label: 'ApplicationService' },
+  { id: 'b-business-service', organization_id: B, label: 'BusinessService' },
+];
 const edges = new Map([['a-rel', 'a-target'], ['b-rel', 'b-target']]);
 const fulltextScores = new Map<string, number>();
 const row = (fields: Record<string, unknown>) => ({ get: (key: string) => fields[key] });
@@ -42,11 +47,22 @@ function graphRun(cypher: string, params: Record<string, any>) {
     });
   }
   if (cypher.includes('AND NOT EXISTS')) {
-    eligible = eligible.filter(n => !nodes.some(other => {
-      const related = edges.get(n.id) === other.id || edges.get(other.id) === n.id;
-      return related && (!cypher.includes('related.organization_id = $organizationId') || other.organization_id === params.organizationId) &&
-        (!cypher.includes('NOT related.id IN $pending') || !params.pending.includes(other.id));
-    }));
+    eligible = eligible.filter(
+      (n) =>
+        ![...nodes, ...services].some((other) => {
+          const related = edges.get(n.id) === other.id || edges.get(other.id) === n.id;
+          const label = 'label' in other ? other.label : 'CI';
+          return (
+            related &&
+            (!cypher.includes('MATCH (ci)-[]-(related:CI)') || label === 'CI') &&
+            (!cypher.includes('related.organization_id = $organizationId') ||
+              other.organization_id === params.organizationId) &&
+            (!cypher.includes('NOT related.id IN $pending') ||
+              label !== 'CI' ||
+              !params.pending.includes(other.id))
+          );
+        })
+    );
   }
   eligible.sort((left, right) => left.name.localeCompare(right.name));
   if (cypher.includes('CALL db.index.fulltext')) {
@@ -114,6 +130,39 @@ it('omits pending CIs and foreign CIs from every mounted search list and count f
     expect(relationship.body.data.map((ci: { id: string }) => ci.id)).toEqual([`${user}-rel`]);
     expect(orphaned.body.pagination.total).toBe(1);
     expect(orphaned.body.data.map((ci: { id: string }) => ci.id)).toEqual([`${user}-orphan`]);
+  }
+});
+
+it('orphan search excludes CIs attached only to owned services, not foreign services or pending CIs', async () => {
+  const originalSize = nodes.length;
+  const links = [
+    ['a-service-business', 'a-business-service'],
+    ['a-service-application', 'a-application-service'],
+    ['a-service-foreign', 'b-business-service'],
+    ['a-pending-neighbor', 'a-pending'],
+  ] as const;
+  try {
+    for (const [id, relatedId] of links) {
+      nodes.push({
+        id,
+        name: `host-${id}`,
+        organization_id: A,
+        type: 'server',
+        created_at: '2026-10-15T00:00:00Z',
+      });
+      edges.set(id, relatedId);
+    }
+    const result = await request(app).get('/api/v1/search/orphaned').set(auth('a'));
+    expect(result.status).toBe(200);
+    expect(result.body.pagination.total).toBe(3);
+    expect(result.body.data.map((ci: { id: string }) => ci.id)).toEqual([
+      'a-orphan',
+      'a-pending-neighbor',
+      'a-service-foreign',
+    ]);
+  } finally {
+    nodes.length = originalSize;
+    for (const [id] of links) edges.delete(id);
   }
 });
 

@@ -257,8 +257,9 @@ export class SearchController {
           const params = { organizationId, pending, offset: neo4j.int(offsetNum), limit: neo4j.int(limitNum) };
           const where = `ci.organization_id = $organizationId AND NOT ci.id IN $pending
             AND NOT EXISTS {
-              MATCH (ci)-[]-(related:CI)
-              WHERE related.organization_id = $organizationId AND NOT related.id IN $pending
+              MATCH (ci)-[]-(related)
+              WHERE related.organization_id = $organizationId
+                AND (NOT related:CI OR NOT related.id IN $pending)
             }`;
           const countResult = await session.run(
             `MATCH (ci:CI) WHERE ${where} RETURN count(ci) AS total`,

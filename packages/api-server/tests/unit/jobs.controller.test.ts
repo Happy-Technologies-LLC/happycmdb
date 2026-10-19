@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Request, Response } from 'express';
-import { getQueueManager } from '@cmdb/common';
+import { getQueueManager, ScrubbedJobRetryError } from '@cmdb/common';
 import { getDiscoveryScheduler, getDiscoveryJobScheduler } from '@cmdb/discovery-engine';
 import { getNeo4jClient } from '@cmdb/database';
 import { getETLScheduler } from '@cmdb/etl-processor';
@@ -10,6 +10,7 @@ import { JobsController } from '../../src/rest/controllers/jobs.controller';
 
 jest.mock('@cmdb/common', () => ({
   getQueueManager: jest.fn(),
+  ScrubbedJobRetryError: class extends Error {},
   logger: {
     info: jest.fn(),
     error: jest.fn(),
@@ -242,6 +243,20 @@ describe('JobsController', () => {
       await controller.retryJob(req, res);
 
       expect(mockQueueManager.retryJob).toHaveBeenCalledWith('etl-sync', 'job-42');
+    });
+
+    it('reports scrubbed failed jobs as resubmission-required, never as retry success', async () => {
+      const req = { params: { queueName: 'etl-full-refresh', jobId: 'failed-1' } } as unknown as Request;
+      mockQueueManager.getJob.mockResolvedValue(mockBullJob({ id: 'failed-1' }));
+      mockQueueManager.retryJob.mockRejectedValue(new ScrubbedJobRetryError());
+      const res = mockResponse();
+
+      await controller.retryJob(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(409);
+      expect(res.json).toHaveBeenCalledWith({
+        success: false, error: 'Conflict', message: 'Job input unavailable; resubmit the original workload',
+      });
     });
   });
 

@@ -14,7 +14,7 @@
 
 import { Request, Response } from 'express';
 import { Job } from 'bullmq';
-import { getQueueManager, logger } from '@cmdb/common';
+import { getQueueManager, logger, ScrubbedJobRetryError } from '@cmdb/common';
 import type { DiscoveryProvider, ETLJobType } from '@cmdb/common';
 import { getDiscoveryJobScheduler } from '@cmdb/discovery-engine';
 import { getNeo4jClient } from '@cmdb/database';
@@ -270,7 +270,13 @@ export class JobsController {
           message: 'Job retried successfully',
         },
       });
-    } catch {
+    } catch (error) {
+      if (error instanceof ScrubbedJobRetryError) {
+        res.status(409).json({
+          success: false, error: 'Conflict', message: 'Job input unavailable; resubmit the original workload',
+        });
+        return;
+      }
       logger.error('Error retrying job');
       res.status(500).json({ success: false, error: 'Failed to retry job' });
     }

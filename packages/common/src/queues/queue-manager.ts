@@ -18,6 +18,9 @@ import { logger } from '../utils/logger';
 import { getQueueConfig, QUEUE_CONFIGS } from './queue-config';
 import { jobErrorCode } from './coded-processor';
 import type { JobProgress, WorkerConfig } from '../types/job.types';
+export class ScrubbedJobRetryError extends Error {
+  constructor() { super('Job input unavailable; resubmit the original workload'); }
+}
 
 /**
  * Redis connection for BullMQ
@@ -277,6 +280,9 @@ export class EnhancedQueueManager {
   async retryJob(queueName: string, jobId: string): Promise<void> {
     const job = await this.getJob(queueName, jobId);
     if (job) {
+      if (job.data?.__dlq !== undefined || job.data?._legacy === true) {
+        throw new ScrubbedJobRetryError();
+      }
       await job.retry();
       logger.info(`Job ${jobId} retried in queue ${queueName}`);
     }

@@ -493,19 +493,38 @@ describe('global TBM reads and control', () => {
     }
   });
 
-  it('bounds mounted platform renewal inventory before materializing software CIs', async () => {
-    licenseRows = Array.from({ length: 1200 }, (_, i) => ({
+  it('never reports a complete license inventory when the 101st committed row exists', async () => {
+    licenseRows = Array.from({ length: 101 }, (_, i) => ({
       id: `lic-renewal-${String(i).padStart(4, '0')}`,
       name: `Renewal ${i}`, type: 'software', organization_id: i % 2 ? ORG_A : ORG_B,
       license_expiry_date: '2026-10-20', tbm_monthly_cost: 1,
     }));
     try {
-      const res = await request(app).get('/api/v1/tbm/licenses/renewals?days=365').set(AS_PLATFORM);
-      expect(res.status).toBe(200);
-      expect(res.body.count).toBe(100);
-      expect(res.body.data.map((ci: { id: string }) => ci.id)).toEqual(
-        licenseRows.slice(0, 100).map(ci => ci.id));
-      expect(cypherRuns).toHaveLength(1);
+      for (const path of ['/api/v1/tbm/licenses', '/api/v1/tbm/licenses/renewals?days=365']) {
+        const res = await request(app).get(path).set(AS_PLATFORM);
+        expect(res.status).toBe(503);
+        expect(res.body).toMatchObject({ success: false, error: 'Service Unavailable' });
+      }
+      for (const field of ['licenses', 'upcomingRenewals']) {
+        const res = await request(graphqlApp).post('/graphql').set(AS_PLATFORM)
+          .send({ query: `query { ${field} { id } }` });
+        expect(res.body.errors?.[0].extensions.code).toBe('SERVICE_UNAVAILABLE');
+        expect(res.body.data).toBeNull();
+      }
+      licenseRows.pop();
+      const expected = licenseRows.map(ci => ci.id);
+      for (const path of ['/api/v1/tbm/licenses', '/api/v1/tbm/licenses/renewals?days=365']) {
+        const exact = await request(app).get(path).set(AS_PLATFORM);
+        expect(exact.status).toBe(200);
+        expect(exact.body.count).toBe(100);
+        expect(exact.body.data.map((ci: { id: string }) => ci.id)).toEqual(expected);
+      }
+      for (const field of ['licenses', 'upcomingRenewals']) {
+        const exact = await request(graphqlApp).post('/graphql').set(AS_PLATFORM)
+          .send({ query: `query { ${field} { id } }` });
+        expect(exact.body.errors).toBeUndefined();
+        expect(exact.body.data[field].map((ci: { id: string }) => ci.id)).toEqual(expected);
+      }
     } finally {
       licenseRows = LICENSES;
     }

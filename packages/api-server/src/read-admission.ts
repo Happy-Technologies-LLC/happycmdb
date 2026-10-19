@@ -124,13 +124,15 @@ export async function readGlobalCIPage<T extends { id?: unknown; organization_id
     const candidates = await page(batch * 100, remaining());
     remaining();
     try {
-      result.push(...(await filterGlobalCIGaps(candidates, remaining())).slice(0, 100 - result.length));
+      result.push(...(await filterGlobalCIGaps(candidates, remaining())).slice(0, 101 - result.length));
     } catch (error) {
       if (Date.now() >= expiresAt) throw new CIListUnavailableError();
       throw error;
     }
     remaining();
-    if (result.length === 100 || candidates.length < 100) return result;
+    // A full accepted page is not proof of completeness: look ahead for the 101st.
+    if (result.length > 100) throw new CIListUnavailableError();
+    if (candidates.length < 100) return result;
   }
   throw new CIListUnavailableError();
 }

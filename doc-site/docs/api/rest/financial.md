@@ -523,6 +523,10 @@ curl -X POST "http://localhost:3000/api/v1/tbm/gl/import" \
 
 Get all software licenses and subscriptions.
 
+The global list returns at most 100 committed licenses. If a bounded read cannot
+prove the list is complete (including when a 101st committed license exists),
+it returns 503 Service Unavailable rather than a partial success.
+
 **Endpoint**: `GET /api/v1/tbm/licenses`
 
 **Query Parameters**:
@@ -590,6 +594,10 @@ curl "http://localhost:3000/api/v1/tbm/licenses?status=active" \
 ### Get Upcoming Renewals
 
 Get licenses expiring within a specified timeframe.
+
+The global renewal list returns at most 100 committed licenses. If a bounded
+read cannot prove completeness (including a 101st matching renewal), it returns
+503 Service Unavailable rather than a partial success.
 
 **Endpoint**: `GET /api/v1/tbm/licenses/renewals`
 

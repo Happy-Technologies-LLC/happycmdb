@@ -137,6 +137,7 @@ export async function createGraphQLServer(app: express.Application) {
           _loaders: loaders,
           _ciTraversalWork: getWork,
           user,
+          credentialType: (req as AuthenticatedRequest).credentialType,
           [requestKey]: req,
         };
         return context;

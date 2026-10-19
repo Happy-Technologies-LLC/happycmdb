@@ -40,6 +40,7 @@ jest.mock('../../../auth/auth-bootstrap', () => ({ getAuthService: () => ({}), g
   },
   requirePermission: () => (_req: Request, _res: Response, next: NextFunction) => next(),
   requireRole: () => (_req: Request, _res: Response, next: NextFunction) => next(),
+  requirePlatformAdmin: () => (_req: Request, _res: Response, next: NextFunction) => next(),
   requireOrganization: () => (req: Request, res: Response, next: NextFunction) => {
     if (!(req as Request & { user: { _organizationId?: string } }).user._organizationId) return res.status(403).json({ error: 'Forbidden' });
     next();

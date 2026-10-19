@@ -84,7 +84,6 @@ jest.mock('@cmdb/database', () => ({
 }));
 jest.mock('@cmdb/common', () => ({
   QUEUE_NAMES: { _DISCOVERY_SSH: 'discovery-ssh', _DISCOVERY_NMAP: 'discovery-nmap' },
-  UnrecoverableError: require('bullmq').UnrecoverableError,
   logger: { info: jest.fn(), error: jest.fn(), warn: jest.fn() },
   safeDiscoveryScanConfig: require('../../../../../common/src/utils/discovery-scan-config').safeDiscoveryScanConfig,
   strictDiscoveryDefinitionConfig: require('../../../../../common/src/utils/discovery-scan-config').strictDiscoveryDefinitionConfig,
@@ -107,18 +106,17 @@ jest.mock('../../../auth/auth-bootstrap', () => ({ getAuthMiddleware: () => ({
     if ((req as express.Request & { user?: { _role: string } }).user?._role !== 'admin') return res.status(403).json({ error: 'Forbidden' });
     next();
   },
+  requirePlatformAdmin: () => (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if ((req as express.Request & { user?: { _role: string } }).user?._role !== 'admin') {
+      res.status(403).json({ success: false, error: 'Global queue operations unavailable' });
+      return;
+    }
+    next();
+  },
 }) }));
-jest.mock('../../../../../discovery-engine/src/workers/nmap-discovery.worker', () => ({
-  NmapDiscoveryWorker: jest.fn(),
-}));
-jest.mock('@cmdb/ai-discovery', () => ({
-  HybridDiscoveryOrchestrator: jest.fn(), PatternStorageService: jest.fn(), getDefaultLLMConfig: jest.fn(),
-}));
 import { queueManager } from '@cmdb/database';
 import { logger } from '@cmdb/common';
-import { DiscoveryOrchestrator } from '../../../../../discovery-engine/src/orchestrator/discovery-orchestrator';
 import { DiscoveryScheduler } from '../../../../../discovery-engine/src/schedulers/discovery-scheduler';
-import { NmapDiscoveryWorker } from '../../../../../discovery-engine/src/workers/nmap-discovery.worker';
 import { discoveryDefinitionRoutes } from '../discovery-definition.routes';
 const app = express();
 app.use(express.json());
@@ -155,7 +153,7 @@ afterAll(async () => {
   await exited;
 });
 
-test('mounted definitions isolate two users and orgs, reject legacy and credential attachment, and stamp queued jobs', async () => {
+test('mounted definitions isolate two organizations, redact credentials and refuse execution', async () => {
   const create = (name: string, user: string) => request(app).post(url).set(headers(user)).send({
     name, provider: 'nmap', method: 'agentless', config: {
       targets: ['192.0.2.1'], scanOptions: { serviceDetection: true },
@@ -195,14 +193,9 @@ test('mounted definitions isolate two users and orgs, reject legacy and credenti
   for (const id of [idB, LEGACY, 'dddddddd-dddd-4ddd-8ddd-dddddddddddd']) {
     const denied = await request(app).get(`${url}/${id}`).set(headers('a'));
     expect({ status: denied.status, body: denied.body }).toEqual({ status: 404, body: { success: false, error: 'Not Found', message: 'Discovery definition not found' } });
-    for (const method of ['put', 'delete', 'post'] as const) {
-      const route = method === 'post' ? `${url}/${id}/run` : `${url}/${id}`;
-      const result = await request(app)[method](route).set(headers('a')).send({ name: 'changed' });
+    for (const method of ['put', 'delete'] as const) {
+      const result = await request(app)[method](`${url}/${id}`).set(headers('a')).send({ name: 'changed' });
       expect({ status: result.status, body: result.body }).toEqual({ status: 404, body: denied.body });
-    }
-    for (const action of ['enable', 'disable']) {
-      const schedule = await request(app).post(`${url}/${id}/schedule/${action}`).set(headers('a'));
-      expect({ status: schedule.status, body: schedule.body }).toEqual({ status: 404, body: denied.body });
     }
   }
   for (const credentialId of [CRED_B, 'dddddddd-dddd-4ddd-8ddd-dddddddddddd']) {
@@ -222,10 +215,10 @@ test('mounted definitions isolate two users and orgs, reject legacy and credenti
   expect(attached.status).toBe(201);
   const queueBefore = queue.add.mock.calls.length;
   const unavailable = await request(app).post(`${url}/${attached.body.data.id}/run`).set(headers('a'));
-  expect(unavailable.status).toBe(409);
+  expect(unavailable.status).toBe(503);
   expect(queue.add).toHaveBeenCalledTimes(queueBefore);
-  const unavailableSchedule = await request(app).post(`${url}/${attached.body.data.id}/schedule/enable`).set(headers('a'));
-  expect(unavailableSchedule.status).toBe(409);
+  const unavailableSchedule = await request(app).post(`${url}/${attached.body.data.id}/schedule/enable`).set(headers('admin-a'));
+  expect(unavailableSchedule.status).toBe(503);
   expect(unavailableSchedule.body).toEqual(unavailable.body);
   expect(queue.add).toHaveBeenCalledTimes(queueBefore);
   await query('UPDATE credentials SET organization_id = $1 WHERE id = $2', [ORG_B, CRED_A]);
@@ -234,83 +227,17 @@ test('mounted definitions isolate two users and orgs, reject legacy and credenti
   expect(staleAttachment.status).toBe(404);
   expect(staleAttachment.body).toEqual({ success: false, error: 'Not Found', message: 'Credential not found' });
   const reassigned = await request(app).post(`${url}/${attached.body.data.id}/run`).set(headers('a'));
-  expect(reassigned.status).toBe(409);
+  expect(reassigned.status).toBe(503);
   expect(reassigned.body).toEqual(unavailable.body);
   expect(queue.add).toHaveBeenCalledTimes(queueBefore);
-  const run = await request(app).post(`${url}/${idA}/run`).set(headers('a'));
-  expect(run.status).toBe(202);
-  expect(queue.add).toHaveBeenCalledWith('discover', expect.objectContaining({
-    organizationId: ORG_A, definition_id: idA,
-    config: { targets: ['192.0.2.1'], scanOptions: { serviceDetection: true } },
-  }), expect.any(Object));
-  const scanNetworks = jest.fn().mockResolvedValue([]);
-  const scanNetwork = jest.fn().mockResolvedValue([]);
-  jest.mocked(NmapDiscoveryWorker).mockImplementation(() => ({ scanNetworks, scanNetwork }) as never);
-  const orchestrator = Object.create(DiscoveryOrchestrator.prototype) as DiscoveryOrchestrator;
-  Object.assign(orchestrator, {
-    postgresClient: db,
-    updateDefinitionRunStatus: jest.fn().mockResolvedValue(undefined),
-    persistCIs: jest.fn().mockResolvedValue(undefined),
-  });
-  orchestrator.registerWorkers();
-  const worker = jest.mocked(queueManager.registerWorker).mock.calls
-    .find(([name]) => name === 'discovery-nmap')?.[1] as (job: unknown) => Promise<unknown>;
-  expect(worker).toBeDefined();
-  for (const [option, scanType] of [
-    ['serviceDetection', 'version'], ['osDetection', 'os'], ['portScan', 'port'],
-  ] as const) {
-    if (option !== 'serviceDetection') {
-      const updated = await request(app).put(`${url}/${idA}`).set(headers('a')).send({
-        config: { targets: ['192.0.2.1'], scanOptions: { [option]: true } },
-      });
-      expect(updated.status).toBe(200);
-      expect((await request(app).post(`${url}/${idA}/run`).set(headers('a'))).status).toBe(202);
-    }
-    const queued = queue.add.mock.calls.at(-1)?.[1];
-    expect(queued.config.scanOptions).toEqual({ [option]: true });
-    await expect(worker({ data: queued, updateProgress: jest.fn() })).resolves.toEqual({ discovered: 0 });
-    expect(scanNetworks).toHaveBeenLastCalledWith(queued.jobId, [{ range: '192.0.2.1', scanType }]);
+  for (const [user, id] of [['a', idA], ['b', idB], ['a', idB], ['a', LEGACY]] as const) {
+    const run = await request(app).post(`${url}/${id}/run`).set(headers(user));
+    const schedule = await request(app).post(`${url}/${id}/schedule/enable`).set(headers('admin-a'));
+    expect([run.status, schedule.status]).toEqual([503, 503]);
+    expect(run.body).toEqual(unavailable.body);
+    expect(schedule.body).toEqual(unavailable.body);
   }
-  const updatedRange = await request(app).put(`${url}/${idA}`).set(headers('a')).send({
-    config: { range: '192.0.2.1', scanOptions: { serviceDetection: true } },
-  });
-  expect(updatedRange.status).toBe(200);
-  expect((await request(app).post(`${url}/${idA}/run`).set(headers('a'))).status).toBe(202);
-  const queuedRange = queue.add.mock.calls.at(-1)?.[1];
-  expect(queuedRange.config).toEqual({ range: '192.0.2.1', scanOptions: { serviceDetection: true } });
-  await expect(worker({ data: queuedRange, updateProgress: jest.fn() })).resolves.toEqual({ discovered: 0 });
-  expect(scanNetwork).toHaveBeenCalledWith(queuedRange.jobId, '192.0.2.1', 'version');
-  const scheduledConfig = await request(app).put(`${url}/${idA}`).set(headers('a')).send({
-    config: { targets: ['192.0.2.1'], scanOptions: { serviceDetection: true } },
-  });
-  expect(scheduledConfig.status).toBe(200);
-  queue.getRepeatableJobs.mockResolvedValue([{ name: `discovery-definition-${idA}`, key: 'repeat-key' }]);
-  const scheduler = Object.create(DiscoveryScheduler.prototype) as DiscoveryScheduler;
-  Object.assign(scheduler, { queueManager, definitionMappings: new Map() });
-  await scheduler.scheduleDefinition(idA, ORG_A);
-  const repeatable = jest.mocked(queueManager.addRepeatableJob).mock.calls.at(-1)?.[2];
-  expect(repeatable).toMatchObject({
-    provider: 'nmap', organizationId: ORG_A, definition_id: idA,
-    config: { targets: ['192.0.2.1'], scanOptions: { serviceDetection: true } },
-  });
-  expect(repeatable).not.toHaveProperty('jobId');
-  for (const jobId of ['repeat:nmap-first', 'repeat:nmap-second']) {
-    await expect(worker({ id: jobId, data: repeatable, updateProgress: jest.fn() }))
-      .resolves.toEqual({ discovered: 0 });
-    expect(scanNetworks).toHaveBeenLastCalledWith(jobId, [{ range: '192.0.2.1', scanType: 'version' }]);
-  }
-  const sshDefinition = await request(app).put(`${url}/${idA}`).set(headers('a')).send({
-    provider: 'ssh', config: { targets: ['192.0.2.1'] },
-  });
-  expect(sshDefinition.status).toBe(200);
-  const sshId = idA;
-  const beforeSSH = queue.add.mock.calls.length;
-  const sshRun = await request(app).post(`${url}/${sshId}/run`).set(headers('a'));
-  const sshEnable = await request(app).post(`${url}/${sshId}/schedule/enable`).set(headers('a'));
-  expect([sshRun.status, sshEnable.status]).toEqual([409, 409]);
-  expect(sshRun.body).toEqual(unavailable.body);
-  expect(sshEnable.body).toEqual(unavailable.body);
-  expect(queue.add).toHaveBeenCalledTimes(beforeSSH);
+  expect(queue.add).toHaveBeenCalledTimes(queueBefore);
   expect((await request(app).get(url).set(headers('none'))).status).toBe(403);
   expect((await query('SELECT name FROM discovery_definitions WHERE id = $1', [idB])).rows).toEqual([{ name: other.body.data.name }]);
 });
@@ -334,23 +261,6 @@ test('inline credentials and unknown settings never cross the writer-to-viewer b
   const permittedDetail = await request(app).get(`${url}/${id}`).set(headers('viewer'));
   expect(permittedDetail.body.data.config)
     .toEqual({ targets: ['10.0.0.0/24'], scanOptions: { serviceDetection: true, osDetection: false } });
-  const scanNetworks = jest.fn().mockResolvedValue([]);
-  jest.mocked(NmapDiscoveryWorker).mockImplementation(() => ({ scanNetworks }) as never);
-  const orchestrator = Object.create(DiscoveryOrchestrator.prototype) as DiscoveryOrchestrator;
-  Object.assign(orchestrator, {
-    postgresClient: db,
-    updateDefinitionRunStatus: jest.fn().mockResolvedValue(undefined),
-    persistCIs: jest.fn().mockResolvedValue(undefined),
-  });
-  orchestrator.registerWorkers();
-  const runQueued = jest.mocked(queueManager.registerWorker).mock.calls
-    .findLast(([name]) => name === 'discovery-nmap')?.[1] as (job: unknown) => Promise<unknown>;
-  expect(runQueued).toBeDefined();
-  await orchestrator.triggerDiscoveryFromDefinition(id, 'a', ORG_A);
-  const queued = queue.add.mock.calls.at(-1)?.[1];
-  await expect(runQueued({ id: 'allowed', data: queued, updateProgress: jest.fn() }))
-    .resolves.toEqual({ discovered: 0 });
-  expect(scanNetworks).toHaveBeenCalledTimes(1);
   expect((await request(app).put(`${url}/${id}`).set(headers('a')).send({ config: payload.config })).status).toBe(400);
   expect((await request(app).put(`${url}/${id}`).set(headers('viewer')).send({ config: payload.config })).status).toBe(403);
   const alias = { _targets: [secret] };
@@ -361,22 +271,11 @@ test('inline credentials and unknown settings never cross the writer-to-viewer b
   expect(aliasList.body.data.find((row: { id: string }) => row.id === id).config).toEqual({});
   expect(JSON.stringify([aliasDetail.body, aliasList.body])).not.toContain(secret);
   expect((await request(app).get(`${url}/${id}`).set(headers('b'))).status).toBe(404);
-  expect((await request(app).post(`${url}/${id}/run`).set(headers('a'))).status).toBe(409);
+  expect((await request(app).post(`${url}/${id}/run`).set(headers('a'))).status).toBe(503);
   expect((await query('SELECT config FROM discovery_definitions WHERE id = $1', [id])).rows[0].config).toEqual(alias);
   const legacy = { targets: ['192.0.2.1'], scanOptions: { serviceDetection: true, password: secret },
     credentials: { password: secret }, unexpected: { token: secret } };
   await query('UPDATE discovery_definitions SET config = $1 WHERE id = $2', [JSON.stringify(legacy), id]);
-  // Stale repeatable jobs retain sanitized payload from before a definition became unsafe.
-  await expect(runQueued({ id: 'stale', data: queued, updateProgress: jest.fn() }))
-    .rejects.toThrow('Unsafe legacy discovery configuration requires migration');
-  expect(scanNetworks).toHaveBeenCalledTimes(1);
-  const enqueuesBefore = queue.add.mock.calls.length;
-  await expect(orchestrator.triggerDiscoveryFromDefinition(id, 'a', ORG_A))
-    .rejects.toThrow('Unsafe legacy discovery configuration requires migration');
-  expect(queue.add).toHaveBeenCalledTimes(enqueuesBefore);
-  await expect(runQueued({ id: 'foreign', data: { ...queued, organizationId: ORG_B },
-    updateProgress: jest.fn() })).rejects.toThrow('Discovery definition not found');
-  expect(scanNetworks).toHaveBeenCalledTimes(1);
   const replacement = await request(app).put(`${url}/${id}`).set(headers('a'))
     .send({ config: { range: '192.0.2.1' } });
   expect(replacement.status).toBe(409);
@@ -393,17 +292,20 @@ test('inline credentials and unknown settings never cross the writer-to-viewer b
   const deleted = await request(app).delete(`${url}/${id}`).set(headers('a'));
   expect(deleted.status).toBe(409);
   expect(deleted.body).toEqual(replacement.body);
-  const disabled = await request(app).post(`${url}/${id}/schedule/disable`).set(headers('a'));
-  expect(disabled.status).toBe(409);
-  expect(disabled.body).toEqual(replacement.body);
+  const disabled = await request(app).post(`${url}/${id}/schedule/disable`).set(headers('admin-a'));
+  expect(disabled.status).toBe(503);
+  expect(disabled.body).toEqual({
+    success: false, error: 'Service Unavailable',
+    message: 'Discovery execution is disabled until the journaled cutover',
+  });
   const detail = await request(app).get(`${url}/${id}`).set(headers('viewer'));
   const listed = await request(app).get(url).set(headers('viewer'));
   expect(detail.body.data.config).toEqual({});
   expect(listed.body.data.find((row: { id: string }) => row.id === id).config).toEqual(detail.body.data.config);
   expect(JSON.stringify([detail.body, listed.body])).not.toContain(secret);
   expect((await request(app).get(`${url}/${id}`).set(headers('b'))).status).toBe(404);
-  expect((await request(app).post(`${url}/${id}/run`).set(headers('a'))).status).toBe(409);
-  expect((await request(app).post(`${url}/${id}/schedule/enable`).set(headers('a'))).status).toBe(409);
+  expect((await request(app).post(`${url}/${id}/run`).set(headers('a'))).status).toBe(503);
+  expect((await request(app).post(`${url}/${id}/schedule/enable`).set(headers('admin-a'))).status).toBe(503);
   const scheduler = Object.create(DiscoveryScheduler.prototype) as DiscoveryScheduler;
   Object.assign(scheduler, { queueManager, definitionMappings: new Map() });
   await expect(scheduler.scheduleDefinition(id, ORG_A))
@@ -446,67 +348,6 @@ test('admin inventory lists only tenant-owned quarantined IDs without stored con
     .toEqual({ credentials: { password: secret } });
 });
 
-test('poisoned org A schedule cannot block org B load or cron re-add', async () => {
-  const poisonId = 'dddddddd-dddd-4ddd-8ddd-000000000001';
-  await query(`INSERT INTO discovery_definitions
-    (id, name, provider, method, config, schedule, is_active, created_by, organization_id, created_at)
-    VALUES ($1, 'legacy-poison', 'nmap', 'agentless', $2::jsonb, '0 * * * *', true,
-      'legacy', $3, '2020-01-01')`, [poisonId, JSON.stringify({ targets: [{ host: '192.0.2.1' }] }), ORG_A]);
-  const credentiallessIds: string[] = [];
-  for (const [index, provider] of ['active-directory', 'snmp'].entries()) {
-    const id = `dddddddd-dddd-4ddd-8ddd-00000000000${index + 2}`;
-    credentiallessIds.push(id);
-    await query(`INSERT INTO discovery_definitions
-      (id, name, provider, method, config, schedule, is_active, created_by, organization_id)
-      VALUES ($1, 'legacy-unbound', $2, 'agentless', '{}'::jsonb, '0 * * * *', true, 'legacy', $3)`,
-    [id, provider, ORG_A]);
-    const run = await request(app).post(`${url}/${id}/run`).set(headers('a'));
-    const enable = await request(app).post(`${url}/${id}/schedule/enable`).set(headers('a'));
-    expect([run.status, enable.status]).toEqual([409, 409]);
-    expect(run.body).toEqual({ success: false, error: 'Credential-backed discovery execution unavailable' });
-    expect(enable.body).toEqual(run.body);
-    const disable = await request(app).post(`${url}/${id}/schedule/disable`).set(headers('a'));
-    expect(disable.status).toBe(200);
-    expect(disable.body.data.is_active).toBe(false);
-    const rename = await request(app).put(`${url}/${id}`).set(headers('a')).send({ name: 'safe-legacy-edit' });
-    expect(rename.status).toBe(200);
-    const switchProvider = await request(app).put(`${url}/${id}`).set(headers('a')).send({ provider: 'snmp' });
-    expect(switchProvider.status).toBe(400);
-  }
-  const healthy = await request(app).post(url).set(headers('b')).send({
-    name: 'healthy-org-b', provider: 'nmap', method: 'agentless',
-    config: { targets: ['198.51.100.2'] }, schedule: '0 * * * *',
-  });
-  expect(healthy.status).toBe(201);
-  const healthyId = healthy.body.data.id;
-  const scheduled = jest.mocked(queueManager.addRepeatableJob);
-  scheduled.mockClear();
-  queue.getRepeatableJobs.mockImplementation(async () => [
-    { name: `discovery-definition-${healthyId}`, key: 'healthy-repeat-key' },
-  ]);
-  const removeRepeatableByKey = jest.fn().mockResolvedValue(undefined);
-  Object.assign(queue, { removeRepeatableByKey });
-  const scheduler = Object.create(DiscoveryScheduler.prototype) as DiscoveryScheduler;
-  Object.assign(scheduler, { queueManager, definitionMappings: new Map(), useDatabaseDefinitions: true });
-  const load = scheduler as unknown as { loadAndScheduleDefinitions: () => Promise<void> };
-  await load.loadAndScheduleDefinitions();
-  expect(scheduled).toHaveBeenCalledWith('discovery-nmap', `discovery-definition-${healthyId}`,
-    expect.objectContaining({ organizationId: ORG_B, config: { targets: ['198.51.100.2'] } }),
-    { pattern: '0 * * * *', immediately: false });
-  expect(scheduled.mock.calls.some(([, name]) => name === `discovery-definition-${poisonId}`)).toBe(false);
-  for (const id of credentiallessIds) {
-    await expect(scheduler.scheduleDefinition(id, ORG_A))
-      .rejects.toThrow('Credential-backed discovery execution is unavailable');
-    expect(scheduled.mock.calls.some(([, name]) => name === `discovery-definition-${id}`)).toBe(false);
-  }
-  await query('UPDATE discovery_definitions SET schedule = $1 WHERE id = $2 AND organization_id = $3',
-    ['15 * * * *', healthyId, ORG_B]);
-  await scheduler.syncSchedules();
-  expect(removeRepeatableByKey).toHaveBeenCalledWith('healthy-repeat-key');
-  expect(scheduled).toHaveBeenLastCalledWith('discovery-nmap', `discovery-definition-${healthyId}`,
-    expect.objectContaining({ organizationId: ORG_B, config: { targets: ['198.51.100.2'] } }),
-    { pattern: '15 * * * *', immediately: false });
-});
 
 test('real migrator applies, rolls back and reapplies organization migration on disposable schema', async () => {
   await exec(readFileSync(join(migrationDir, 'rollback/024_discovery_definition_organization_scope.down.sql'), 'utf8'));

@@ -57,7 +57,16 @@ function send(op: 'exec' | 'query', sql: string, params: unknown[] = []): Promis
 const query = async (sql: string, params: unknown[] = []) => ({ rows: await send('query', sql, params) });
 const pgClient = {
   query,
-  pool: { query },
+  pool: { query, connect: async () => ({
+    query: async (sql: string, params: unknown[] = []) => {
+      if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK') {
+        await send('exec', sql);
+        return { rows: [] };
+      }
+      return query(sql, params);
+    },
+    release: () => undefined,
+  }) },
   // One PGlite connection: BEGIN/COMMIT around the callback is a real transaction.
   transaction: async <T>(callback: (client: { query: typeof query }) => Promise<T>): Promise<T> => {
     await send('exec', 'BEGIN');
@@ -74,7 +83,8 @@ const pgClient = {
 
 jest.mock('@cmdb/database', () => ({
   getPostgresClient: () => pgClient,
-  getNeo4jClient: () => ({}),
+  getNeo4jClient: () => ({ getCI: async (id: string, org: string) =>
+    nodes.find(ci => ci.id === id && ci.organization_id === org) ?? null }),
   getAuditService: () => ({}),
   UNSCOPED_CI_ACCESS: Symbol('UNSCOPED_CI_ACCESS'),
 }));
@@ -172,6 +182,12 @@ beforeAll(async () => {
   for (const migration of ['008_business_service_organization_scope.sql', '011_ci_organization_scope.sql']) {
     await send('exec', `BEGIN;\n${readFileSync(join(MIGRATIONS, migration), 'utf8')}\nCOMMIT;`);
   }
+  const provenance = readFileSync(join(MIGRATIONS, '028_change_history_reconciliation_org_provenance.sql'), 'utf8');
+  for (const name of ['ci_reconciliation_operations', 'ci_reconciliation_epochs']) {
+    const definition = provenance.match(new RegExp(`CREATE TABLE IF NOT EXISTS ${name} \\([\\s\\S]*?\\n\\);`));
+    if (!definition) throw new Error(`Missing S1 journal table ${name}`);
+    await send('exec', definition[0]);
+  }
 });
 
 afterAll(() => {
@@ -215,7 +231,7 @@ it("a CI that keeps failing to load does not keep a deleted CI's backfill window
   await sync(false);
 
   const mapped = await mapIntoB('ci-gone');
-  expect([mapped.status, mapped.body]).toEqual([404, { success: false, error: 'CI not found' }]);
+  expect([mapped.status, mapped.body]).toEqual([404, { success: false, error: 'Not Found', message: 'CI not found' }]);
   const trends = await trendsOfB();
   expect([trends.success, trends.data]).toEqual([true, []]);
   expect(JSON.stringify(await costsOfB())).not.toContain('999');

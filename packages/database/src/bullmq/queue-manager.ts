@@ -5,7 +5,7 @@
 
 import { Queue, Worker, Job } from 'bullmq';
 import IORedis from 'ioredis';
-import { logger } from '@cmdb/common';
+import { logger, DISCOVERY_RETENTION, JobErrorHandler } from '@cmdb/common';
 
 const connection = new IORedis({
   host: process.env['REDIS_HOST'] || 'localhost',
@@ -19,14 +19,17 @@ export class QueueManager {
 
   getQueue(name: string): Queue {
     if (!this.queues.has(name)) {
-      this.queues.set(name, new Queue(name, { connection }));
+      this.queues.set(name, new Queue(name, {
+        connection,
+        ...(name.startsWith('discovery-') ? { defaultJobOptions: DISCOVERY_RETENTION } : {}),
+      }));
     }
     return this.queues.get(name)!;
   }
 
   registerWorker(
     queueName: string,
-    processor: (job: Job) => Promise<any>,
+    processor: (job: Job, token?: string) => Promise<any>,
     options?: { concurrency?: number }
   ): Worker {
     if (this.workers.has(queueName)) {
@@ -38,12 +41,15 @@ export class QueueManager {
       concurrency: options?.concurrency || 1,
     });
 
-    worker.on('completed', (job) => {
-      logger.info(`Job ${job.id} in queue ${queueName} completed`);
+    worker.on('completed', () => {
+      logger.info(`Job in queue ${queueName} completed`);
     });
 
-    worker.on('failed', (job, err) => {
-      logger.error(`Job ${job?.id} in queue ${queueName} failed`, err);
+    worker.on('failed', (job, error) => {
+      logger.error(`Job in queue ${queueName} failed`, { code: 'ERR_INTERNAL' });
+      if (job) void JobErrorHandler.handleJobFailure(job, error).catch(() => {
+        logger.error(`Dead-letter handling failed in queue ${queueName}`, { code: 'ERR_INTERNAL' });
+      });
     });
 
     this.workers.set(queueName, worker);
@@ -72,15 +78,4 @@ export async function closeQueueManagerConnection(): Promise<void> {
   await connection.quit();
 }
 
-// Queue names (BullMQ v5.0.0 does not allow colons in queue names)
-export const QUEUE_NAMES = {
-  _DISCOVERY_AWS: 'discovery-aws',
-  _DISCOVERY_AZURE: 'discovery-azure',
-  _DISCOVERY_GCP: 'discovery-gcp',
-  _DISCOVERY_SSH: 'discovery-ssh',
-  _DISCOVERY_NMAP: 'discovery-nmap',
-  _ETL_SYNC: 'etl-sync',
-  _ETL_FULL_REFRESH: 'etl-full-refresh',
-  _ETL_CHANGE_DETECTION: 'etl-change-detection',
-  _ETL_RECONCILIATION: 'etl-reconciliation',
-} as const;
+export { QUEUE_NAMES } from '@cmdb/common';

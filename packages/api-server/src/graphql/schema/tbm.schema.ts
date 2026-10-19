@@ -317,10 +317,10 @@ extend type Query {
   costAllocations(ciId: ID!): CIAllocationHistory!
 
   # License Management Queries
-  """Get all software licenses"""
+  """Get all software licenses when the bounded read proves completeness; otherwise SERVICE_UNAVAILABLE"""
   licenses(vendor: String, status: LicenseStatus): [SoftwareLicense!]!
 
-  """Get upcoming license renewals"""
+  """Get upcoming license renewals when the bounded read proves completeness; otherwise SERVICE_UNAVAILABLE"""
   upcomingRenewals(days: Int = 90): [SoftwareLicense!]!
 }
 

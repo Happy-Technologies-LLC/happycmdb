@@ -127,9 +127,14 @@ function run(rawCypher: string, params: Props = {}): FakeRecord[] {
   if (cypher.startsWith('CALL db.index.fulltext.queryNodes')) {
     const term = String(params['query']).toLowerCase();
     const inScope = tenantPredicate(cypher, params, 'node');
-    return [...graph.nodes.values()]
-      .filter(props => String(props['name']).toLowerCase().includes(term) && inScope(props))
-      .slice(0, num(params['limit']))
+    const matches = [...graph.nodes.values()]
+      .filter(props => String(props['name']).toLowerCase().includes(term) && inScope(props) &&
+        !(params['pending'] as string[] | undefined)?.includes(String(props['id'])));
+    if (cypher.includes('collect(node)')) throw new Error('Unbounded full-text materialization');
+    if (cypher.includes('count(node)')) {
+      return [record({ total: neo4j.int(matches.length) })];
+    }
+    return matches.slice(0, num(params['limit']))
       .map(props => record({ node: node(props), score: 1 }));
   }
 
@@ -194,11 +199,19 @@ function run(rawCypher: string, params: Props = {}): FakeRecord[] {
       ['type', 'status', 'environment'].every(f => params[f] === undefined || props[f] === params[f]) &&
       (params['search'] === undefined || String(props['name']).toLowerCase().includes(String(params['search']).toLowerCase()))
     );
-    if (cypher.includes('count(ci) as total')) return [record({ total: neo4j.int(matches.length) })];
+    const visible = matches.filter(props =>
+      !Array.isArray(params['pending']) || !(params['pending'] as string[]).includes(String(props['id'])));
+    if (cypher.includes('collect(ci)') && visible.length > 1000) {
+      throw new Error('Unbounded tenant CI list materialization');
+    }
+    if (/count\(ci\) AS total/i.test(cypher)) return [record({ total: neo4j.int(visible.length) })];
     const offset = num(params['offset']);
-    return matches
-      .sort((x, y) => String(x['name']).localeCompare(String(y['name'])))
-      .slice(offset, offset + num(params['limit']))
+    const sorted = visible.sort((x, y) => String(x['name']).localeCompare(String(y['name'])));
+    if (cypher.includes('AS page')) {
+      const end = num(params['end'] ?? params['limit']);
+      return [record({ total: neo4j.int(sorted.length), page: sorted.slice(offset, end).map(node) })];
+    }
+    return sorted.slice(offset, offset + num(params['limit']))
       .map(props => record({ ci: node(props) }));
   }
 
@@ -253,7 +266,9 @@ function sql(statement: string, params: unknown[] = []): Promise<unknown[]> {
   return promise;
 }
 const pg = {
-  query: async (statement: string, params: unknown[] = []) => ({ rows: await sql(statement, params) }),
+  query: async (statement: string | { text: string; values?: unknown[]; query_timeout?: number },
+    params: unknown[] = []) => ({ rows: await sql(typeof statement === 'string' ? statement : statement.text,
+    typeof statement === 'string' ? params : statement.values) }),
   getClient: async () => ({
     query: (statement: string, params: unknown[] = []) =>
       statement.startsWith('SELECT set_config(') ? Promise.resolve({ rows: [] }) : pg.query(statement, params),
@@ -318,11 +333,21 @@ const derivedTables = [
   'baseline_snapshots', 'drift_detection_results', 'impact_analyses',
   'ci_criticality_scores', 'ci_change_history',
 ];
+const provenanceDdl = readFileSync(
+  join(__dirname, '../../../../../database/src/postgres/migrations/028_change_history_reconciliation_org_provenance.sql'), 'utf8');
 beforeAll(async () => {
   const ddl = readFileSync(join(__dirname, '../../../../../database/src/postgres/migrations/001_complete_schema.sql'), 'utf8');
   for (const table of derivedTables) {
     const definition = ddl.match(new RegExp(`CREATE TABLE IF NOT EXISTS ${table} \\([\\s\\S]*?\\n\\);`));
     if (!definition) throw new Error(`Missing production table ${table}`);
+    await sql(definition[0]);
+  }
+  const historyColumns = provenanceDdl.match(/ALTER TABLE ci_change_history\s+ADD COLUMN[\s\S]*?;/);
+  if (!historyColumns) throw new Error('Missing S1 history provenance columns');
+  await sql(historyColumns[0]);
+  for (const table of ['ci_reconciliation_operations', 'ci_reconciliation_epochs']) {
+    const definition = provenanceDdl.match(new RegExp(`CREATE TABLE IF NOT EXISTS ${table} \\([\\s\\S]*?\\n\\);`));
+    if (!definition) throw new Error(`Missing S1 journal table ${table}`);
     await sql(definition[0]);
   }
   for (const statement of readFileSync(
@@ -599,6 +624,45 @@ describe('/api/v1/cis tenant scoping', () => {
     expect(res.status).toBe(200);
     expect(res.body.data.map((ci: { id: string }) => ci.id).sort()).toEqual(['ci-a-app', 'ci-a-db']);
     expect(res.body.pagination.total).toBe(2);
+  });
+
+  it('paginates a large own-org CI inventory without collecting all nodes for limit one', async () => {
+    for (let i = 0; i < 1200; i++) {
+      seedCI(`ci-load-${String(i).padStart(4, '0')}`, ORG_A);
+    }
+    const res = await request(app).get('/api/v1/cis?limit=1&offset=0').set(AS_A);
+    expect(res.status).toBe(200);
+    expect(res.body.pagination).toMatchObject({ total: 1202, count: 1, limit: 1 });
+    expect(res.body.data.map((ci: { id: string }) => ci.id)).toEqual(['ci-a-db']);
+  });
+
+  it('paginates large own-org ITIL inventory without collecting all nodes for limit one', async () => {
+    for (let i = 0; i < 1200; i++) {
+      seedCI(`ci-itil-${String(i).padStart(4, '0')}`, ORG_A);
+    }
+    const res = await request(app).get('/api/v1/itil/configuration-items?limit=1').set(AS_A);
+    expect(res.status).toBe(200);
+    expect(res.body.pagination).toMatchObject({ total: 1202, page: 1, limit: 1 });
+    expect(res.body.data.map((ci: { id: string }) => ci.id)).toEqual(['ci-a-db']);
+  });
+
+  it('returns unavailable for a tiny CI page when durable failed backlog exceeds admission work', async () => {
+    await sql(`INSERT INTO ci_reconciliation_operations
+      (id, group_id, organization_id, ci_id, origin, operation, graph_effect, state, actor, epoch, lease_expires_at)
+      SELECT gen_random_uuid(), gen_random_uuid(), $1, 'ci-durable-' || i::text,
+        'api', 'update', true, 'failed', 'test', 1, NOW()
+      FROM generate_series(0, 1200) AS i`, [ORG_A]);
+    try {
+      const ci = await request(app).get('/api/v1/cis?limit=1').set(AS_A);
+      expect(ci.status).toBe(503);
+      expect(ci.body.error).toBe('Service Unavailable');
+      const itil = await request(app).get('/api/v1/itil/configuration-items?limit=1').set(AS_A);
+      expect(itil.status).toBe(503);
+      expect(itil.body.error).toBe('Service Unavailable');
+    } finally {
+      await sql(`DELETE FROM ci_reconciliation_operations
+        WHERE organization_id=$1 AND ci_id LIKE 'ci-durable-%'`, [ORG_A]);
+    }
   });
 
   it("POST /cis/search returns only the caller org's matches", async () => {

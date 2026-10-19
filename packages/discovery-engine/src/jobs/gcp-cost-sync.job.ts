@@ -87,10 +87,7 @@ export async function processGCPCostSync(
   job: Job<GCPCostSyncJobData>
 ): Promise<GCPCostSyncResult> {
   const startTime = Date.now();
-  logger.info('[GCPCostSync] Starting GCP cost sync job', {
-    jobId: job.id,
-    data: job.data,
-  });
+  logger.info('[GCPCostSync] Starting GCP cost sync job');
 
   try {
     // Step 1: Get credentials
@@ -109,12 +106,7 @@ export async function processGCPCostSync(
       ? new Date(job.data.endDate)
       : endOfMonth(new Date());
 
-    logger.info('[GCPCostSync] Fetching costs from GCP Cloud Billing', {
-      startDate: format(startDate, 'yyyy-MM-dd'),
-      endDate: format(endDate, 'yyyy-MM-dd'),
-      projectId: job.data.projectId,
-      billingAccountId: job.data.billingAccountId,
-    });
+    logger.info('[GCPCostSync] Fetching costs from GCP Cloud Billing');
 
     // Step 3: Initialize GCP Cloud Billing client
     const cloudBilling = new GCPCloudBilling(credentials, logger);
@@ -300,7 +292,6 @@ export async function processGCPCostSync(
 
       logger.info('[GCPCostSync] GCP costs synced successfully', {
         costsImported,
-        totalCost: totalCost.toFixed(2),
         duration: Date.now() - startTime,
       });
 
@@ -318,12 +309,8 @@ export async function processGCPCostSync(
     } finally {
       client.release();
     }
-  } catch (error) {
-    logger.error('[GCPCostSync] GCP cost sync failed', {
-      jobId: job.id,
-      error: error instanceof Error ? error.message : String(error),
-      stack: error instanceof Error ? error.stack : undefined,
-    });
+  } catch {
+    logger.error('[GCPCostSync] GCP cost sync failed', { code: 'ERR_INTERNAL' });
 
     return {
       success: false,
@@ -332,7 +319,7 @@ export async function processGCPCostSync(
       totalCost: 0,
       startDate: job.data.startDate || format(startOfMonth(new Date()), 'yyyy-MM-dd'),
       endDate: job.data.endDate || format(endOfMonth(new Date()), 'yyyy-MM-dd'),
-      errors: [error instanceof Error ? error.message : String(error)],
+      errors: ['ERR_INTERNAL'],
     };
   }
 }
@@ -364,7 +351,7 @@ async function getGCPCredentials(
     );
 
     if (result.rows.length === 0) {
-      logger.warn('[GCPCostSync] No active GCP credential found', { credentialId });
+      logger.warn('[GCPCostSync] No active GCP credential found');
       return null;
     }
 

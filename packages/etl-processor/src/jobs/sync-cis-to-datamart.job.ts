@@ -63,10 +63,7 @@ export async function processSyncCIsToDatamart(
     durationMs: 0,
   };
 
-  logger.info('[SyncCIsToDatamart] Starting CI sync job', {
-    jobId: job.id,
-    data: job.data,
-  });
+  logger.info('[SyncCIsToDatamart] Starting CI sync job', { jobId: job.id });
 
   try {
     const batchSize = job.data.batchSize || 100;

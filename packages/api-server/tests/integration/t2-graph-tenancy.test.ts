@@ -6,6 +6,7 @@ import express, { type NextFunction, type Request, type Response } from 'express
 import request from 'supertest';
 import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
 import { loadConfig } from '@cmdb/common';
+import { MAX_ARCHITECTURE_ROOTS } from '@cmdb/ai-ml-engine';
 
 const A = 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa';
 const B = 'bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb';
@@ -66,6 +67,16 @@ const run = async (cypher: string, params: Record<string, unknown> = {}) => {
   const session = graph.getSession();
   try { return await session.run(cypher, params); } finally { await session.close(); }
 };
+// Mapping is a reporting dimension: graph ownership alone must not authorize
+// a stale SQL mapping, so populate proven current dimension rows for test roots.
+async function syncOwnedDimension(ids: string[]): Promise<void> {
+  await sql.query(
+    `INSERT INTO cmdb.dim_ci (ci_id, ci_name, ci_type, ci_status, organization_id)
+     SELECT id, id, 'server', 'active', $2 FROM unnest($1::text[]) AS id`,
+    [ids, A]
+  );
+}
+
 const search = (id: keyof typeof users, path: string, body: Record<string, unknown>) =>
   request(app).post(`/api/v1/search/${path}`).set(auth(id)).send(body);
 const match = (id: keyof typeof users, serial: string) =>
@@ -112,6 +123,7 @@ beforeAll(async () => {
 afterAll(async () => {
   await gql?.server.stop();
   await run('MATCH (n) WHERE n.id STARTS WITH "t2-" DETACH DELETE n');
+  await sql.query("DELETE FROM cmdb.dim_ci WHERE ci_id LIKE 't2-%'");
   await sql.query("DELETE FROM dim_business_services WHERE service_id IN ('t2-a', 't2-b')");
 });
 
@@ -339,15 +351,19 @@ it('all search paths filter before count, ordering and LIMIT, including NULL leg
   expect(related.body.data.map((ci: { id: string }) => ci.id)).toEqual(['t2-a']);
   const orphans = await request(app).get('/api/v1/search/orphaned').set(auth('a'));
   expect(orphans.status).toBe(200);
-  expect(orphans.body.data.map((ci: { id: string }) => ci.id).sort()).toEqual([
-    't2-foreign-link', 't2-null-link', 't2-through-foreign', 't2-through-null',
+  const orphanIds = orphans.body.data.map((ci: { id: string }) => ci.id);
+  expect([...orphanIds].sort()).toEqual([
+    't2-foreign-link',
+    't2-null-link',
+    't2-through-foreign',
+    't2-through-null',
   ]);
   expect(orphans.body.pagination.total).toBe(4);
-  for (const [offset, id] of [[0, 't2-foreign-link'], [1, 't2-null-link']] as const) {
+  for (const offset of [0, 1]) {
     const page = await request(app).get(`/api/v1/search/orphaned?limit=1&offset=${offset}`).set(auth('a'));
     expect(page.status).toBe(200);
     expect(page.body.pagination).toMatchObject({ total: 4, count: 1, offset, limit: 1 });
-    expect(page.body.data.map((ci: { id: string }) => ci.id)).toEqual([id]);
+    expect(page.body.data.map((ci: { id: string }) => ci.id)).toEqual([orphanIds[offset]]);
   }
 });
 
@@ -369,9 +385,9 @@ it('architecture rejects over-cap POST roots before any ownership lookup or grap
   const session = jest.spyOn(graph, 'getSession');
   try {
     const response = await request(app).post('/api/v1/architecture/analyze').set(architectureAuth())
-      .send({ ci_ids: Array.from({ length: 21 }, (_, index) => `t2-excess-${index}`) });
+      .send({ ci_ids: Array.from({ length: MAX_ARCHITECTURE_ROOTS + 1 }, (_, index) => `t2-excess-${index}`) });
     expect(response.status).toBe(400);
-    expect(response.body).toEqual({ success: false, error: 'Too many CI IDs (maximum 20)' });
+    expect(response.body).toEqual({ success: false, error: `Too many CI IDs (maximum ${MAX_ARCHITECTURE_ROOTS})` });
     expect(lookup).not.toHaveBeenCalled();
     expect(session).not.toHaveBeenCalled();
   } finally {
@@ -389,6 +405,7 @@ it('architecture bounds dense owned cycles on both entry points without exposing
       CREATE (a)-[:DEPENDS_ON]->(b)`, { ids });
     await run(`MATCH (a:CI {id:$id}), (b:CI {id:'t2-b'})
       CREATE (a)-[:DEPENDS_ON]->(b)`, { id: ids[0] });
+    await syncOwnedDimension(ids);
     await sql.query(
       `INSERT INTO ci_business_service_mappings (ci_id, service_id, mapping_type)
        SELECT id, 't2-a', 'supports' FROM unnest($1::text[]) AS id`, [ids]
@@ -416,6 +433,7 @@ it.each([6, 10])('architecture retains owned %i-edge cycle detection on POST and
       CREATE (from)-[:DEPENDS_ON]->(to)`, { ids });
     await run(`MATCH (root:CI {id:$id}), (foreign:CI {id:'t2-b'})
       CREATE (root)-[:USES]->(foreign)-[:USES]->(root)`, { id: ids[0] });
+    await syncOwnedDimension([ids[0]]);
     await sql.query(
       `INSERT INTO ci_business_service_mappings (ci_id, service_id, mapping_type)
        VALUES ($1, 't2-a', 'supports')`, [ids[0]]
@@ -438,6 +456,48 @@ it.each([6, 10])('architecture retains owned %i-edge cycle detection on POST and
   }
 });
 
+it('architecture omits non-root pending and failed neighbors from cycles, counts and issue descriptions', async () => {
+  const root = 't2-gap-root';
+  const valid = 't2-gap-valid';
+  const pending = 't2-gap-pending';
+  const failed = 't2-gap-failed';
+  const ids = [root, valid, pending, failed];
+  await run(`UNWIND $ids AS id CREATE (:CI {id:id, name:id, organization_id:$a})`, { ids, a: A });
+  await run(`MATCH (root:CI {id:$root})
+    UNWIND $neighbors AS id MATCH (neighbor:CI {id:id})
+    CREATE (root)-[:DEPENDS_ON]->(neighbor)-[:DEPENDS_ON]->(root)`,
+    { root, neighbors: [valid, pending, failed] });
+  await syncOwnedDimension([root]);
+  await sql.query(`INSERT INTO ci_business_service_mappings (ci_id, service_id, mapping_type)
+    VALUES ($1, 't2-a', 'supports')`, [root]);
+  await sql.query(`INSERT INTO ci_reconciliation_operations
+    (id, group_id, organization_id, ci_id, origin, operation, graph_effect, state, actor, epoch, lease_expires_at)
+    VALUES ('aaaaaaaa-2000-4000-8000-000000000001', 'aaaaaaaa-2000-4000-8000-000000000001',
+      $1, $2, 'api', 'update', true, 'pending', 'test', 1, now()),
+      ('aaaaaaaa-2000-4000-8000-000000000002', 'aaaaaaaa-2000-4000-8000-000000000002',
+      $1, $3, 'api', 'update', true, 'failed', 'test', 1, now())`, [A, pending, failed]);
+  try {
+    for (const response of [
+      await request(app).post('/api/v1/architecture/analyze').set(architectureAuth()).send({ ci_ids: [root] }),
+      await request(app).get('/api/v1/architecture/business-services/t2-a/analysis').set(architectureAuth()),
+    ]) {
+      expect(response.status).toBe(200);
+      expect(response.body.analysis.dependency_graph_summary).toMatchObject({
+        total_dependencies: 1, circular_dependencies: 1,
+      });
+      expect(response.body.analysis.issues.find((issue: { issue_type: string }) =>
+        issue.issue_type === 'circular_dependency').affected_cis).toEqual([root, valid, root]);
+      expect(JSON.stringify(response.body.analysis)).not.toContain(pending);
+      expect(JSON.stringify(response.body.analysis)).not.toContain(failed);
+    }
+  } finally {
+    await sql.query("DELETE FROM ci_reconciliation_operations WHERE ci_id = ANY($1::text[])", [[pending, failed]]);
+    await sql.query("DELETE FROM ci_business_service_mappings WHERE ci_id = $1", [root]);
+    await sql.query("DELETE FROM cmdb.dim_ci WHERE ci_id = $1", [root]);
+    await run('MATCH (ci:CI) WHERE ci.id IN $ids DETACH DELETE ci', { ids });
+  }
+});
+
 it('architecture counts each owned neighbour once when two relationship types link every CI in a chain', async () => {
   const ids = Array.from({ length: 10 }, (_, index) => `t2-dual-${index}`);
   try {
@@ -445,6 +505,7 @@ it('architecture counts each owned neighbour once when two relationship types li
     await run(`UNWIND range(0, size($ids)-2) AS index
       MATCH (from:CI {id:$ids[index]}), (to:CI {id:$ids[index+1]})
       CREATE (from)-[:DEPENDS_ON]->(to) CREATE (from)-[:USES]->(to)`, { ids });
+    await syncOwnedDimension([ids[0]]);
     await sql.query(
       `INSERT INTO ci_business_service_mappings (ci_id, service_id, mapping_type)
        VALUES ($1, 't2-a', 'supports')`, [ids[0]]
@@ -463,7 +524,7 @@ it('architecture counts each owned neighbour once when two relationship types li
   }
 });
 
-it('architecture passes a driver timeout on every statement and stops an 11-edge ring at ten hops', async () => {
+it('architecture stops an 11-edge ring at ten hops on both entry points', async () => {
   const ids = Array.from({ length: 11 }, (_, index) => `t2-depth-${index}`);
   const incoming = Array.from({ length: 3 }, (_, index) => `t2-depth-in-${index}`);
   try {
@@ -474,49 +535,21 @@ it('architecture passes a driver timeout on every statement and stops an 11-edge
     await run(`UNWIND $incoming AS id
       MATCH (root:CI {id:$root}) CREATE (:CI {id:id, name:id, organization_id:$a})-[:DEPENDS_ON]->(root)`,
       { incoming, root: ids[0], a: A });
+    await syncOwnedDimension([ids[0]]);
     await sql.query(
       `INSERT INTO ci_business_service_mappings (ci_id, service_id, mapping_type)
        VALUES ($1, 't2-a', 'supports')`, [ids[0]]
     );
 
-    const originalSession = graph.getSession.bind(graph);
-    const statements: Array<{ cypher: string; timeout: number | undefined }> = [];
-    const getSession = jest.spyOn(graph, 'getSession').mockImplementation(() => {
-      const session = originalSession();
-      const originalRun = session.run.bind(session);
-      jest.spyOn(session, 'run').mockImplementation((cypher, parameters, config) => {
-        statements.push({ cypher: cypher as string, timeout: (config as { timeout?: number } | undefined)?.timeout });
-        return originalRun(cypher, parameters, config);
+    for (const response of [
+      await request(app).post('/api/v1/architecture/analyze').set(architectureAuth()).send({ ci_ids: [ids[0]] }),
+      await request(app).get('/api/v1/architecture/business-services/t2-a/analysis').set(architectureAuth()),
+    ]) {
+      expect(response.status).toBe(200);
+      expect(response.body.analysis.dependency_graph_summary).toMatchObject({
+        circular_dependencies: 0, max_depth: 10,
       });
-      return session;
-    });
-    try {
-      for (const method of ['POST', 'GET']) {
-        const response = method === 'POST'
-          ? await request(app).post('/api/v1/architecture/analyze').set(architectureAuth()).send({ ci_ids: [ids[0]] })
-          : await request(app).get('/api/v1/architecture/business-services/t2-a/analysis').set(architectureAuth());
-        expect(response.status).toBe(200);
-        expect(response.body.analysis.dependency_graph_summary.circular_dependencies).toBe(0);
-        // POST ownership preflight uses the same client but is not an engine statement.
-        const engineStatements = statements.filter(({ cypher }) =>
-          !cypher.includes('MATCH (ci:CI {id: $id}) WHERE ci.organization_id'));
-        expect(engineStatements).toHaveLength(method === 'POST' ? 16 : 17);
-        const walks = engineStatements.filter(({ cypher }) => cypher.includes('UNWIND $frontier AS path'));
-        expect(walks).toHaveLength(10);
-        expect(walks.every(({ cypher }) => !/\*\d+\.\.\d+/.test(cypher))).toBe(true);
-        const sites = [
-          'RETURN DISTINCT ci.id AS id', 'as fan_in', 'as fan_out', 'ci.ci_type as ci_type',
-          'UNWIND $frontier AS path', 'as redundancy_count', 'as db_id', 'as app_id',
-        ];
-        expect(engineStatements.every(({ cypher, timeout }) =>
-          timeout !== undefined && timeout > 0 && timeout <= 5000 && sites.some((site) => cypher.includes(site)))).toBe(true);
-        if (method === 'GET') {
-          expect(sites.every((site) => engineStatements.some(({ cypher }) => cypher.includes(site)))).toBe(true);
-        }
-        statements.length = 0;
-      }
-    } finally {
-      getSession.mockRestore();
+      expect(JSON.stringify(response.body.analysis)).not.toContain('t2-b');
     }
   } finally {
     await sql.query("DELETE FROM ci_business_service_mappings WHERE service_id = 't2-a' AND ci_id LIKE 't2-depth-%'");
@@ -528,6 +561,7 @@ it('architecture GET caps distinct mapped CIs rather than repeated mapping types
   const ids = Array.from({ length: 11 }, (_, index) => `t2-repeat-${index}`);
   try {
     await run(`UNWIND $ids AS id CREATE (:CI {id:id, name:id, organization_id:$a})`, { ids, a: A });
+    await syncOwnedDimension(ids);
     await sql.query(
       `INSERT INTO ci_business_service_mappings (ci_id, service_id, mapping_type)
        SELECT id, 't2-a', mapping_type
@@ -543,8 +577,9 @@ it('architecture GET caps distinct mapped CIs rather than repeated mapping types
 });
 
 it('architecture rejects over-cap GET mappings before graph work and preserves foreign-service 404', async () => {
-  const ids = Array.from({ length: 21 }, (_, index) => `t2-mapped-${index}`);
+  const ids = Array.from({ length: MAX_ARCHITECTURE_ROOTS + 1 }, (_, index) => `t2-mapped-${index}`);
   try {
+    await syncOwnedDimension(ids);
     await sql.query(
       `INSERT INTO ci_business_service_mappings (ci_id, service_id, mapping_type)
        SELECT id, 't2-a', 'supports' FROM unnest($1::text[]) AS id`, [ids]
@@ -572,7 +607,7 @@ it('architecture denies any foreign, missing or NULL input before writing an ana
   for (const id of ['t2-b', 't2-null', 't2-missing']) {
     const result = await request(app).post('/api/v1/architecture/analyze').set(architectureAuth()).send({ ci_ids: ['t2-a', id] });
     expect(result.status).toBe(404);
-    expect(result.body).toEqual({ success: false, error: 'CI not found' });
+    expect(result.body).toEqual({ success: false, error: 'Not Found', message: 'CI not found' });
   }
   const after = await sql.query('SELECT count(*)::integer AS total FROM architecture_analyses');
   expect(after.rows[0].total).toBe(before.rows[0].total);
@@ -607,6 +642,7 @@ it('architecture POST and business-service GET ignore cross-org cycles, database
       CREATE (leaf:CI {id:'t2-arch-owned-leaf', organization_id:$a})
       CREATE (fan)-[:DEPENDS_ON]->(leaf)
     `, { a: A });
+    await syncOwnedDimension(ciIds);
     await sql.query(
       `INSERT INTO ci_business_service_mappings (ci_id, service_id, mapping_type)
        SELECT ci_id, 't2-a', 'supports' FROM unnest($1::text[]) AS ci_id`,

@@ -379,111 +379,34 @@ describe('Discovery Definition REST API Integration Tests', () => {
     });
   });
 
-  describe('POST /api/v1/discovery/definitions/:id/run - Run Definition', () => {
-    it('should trigger a discovery job from definition', async () => {
-      const createResponse = await request(app)
-        .post('/api/v1/discovery/definitions')
-        .send({
-          name: 'NMAP Discovery',
-          provider: 'nmap',
-          method: 'agentless',
-          config: {
-            targets: ['192.0.2.1'],
-          },
-        })
-        .expect(201);
+  describe('S3 discovery execution gate', () => {
+    it('refuses existing and missing definition runs identically', async () => {
+      const created = await request(app).post('/api/v1/discovery/definitions').send({
+        name: 'NMAP Discovery', provider: 'nmap', method: 'agentless',
+        config: { targets: ['192.0.2.1'] },
+      }).expect(201);
 
-      const definitionId = createResponse.body.data.id;
-
-      const response = await request(app)
-        .post(`/api/v1/discovery/definitions/${definitionId}/run`)
-        .expect(202);
-
-      expect(response.body).toHaveProperty('success', true);
-      expect(response.body.data).toHaveProperty('job_id');
-      expect(response.body.data).toHaveProperty('definition_id', definitionId);
-      expect(response.body.data).toHaveProperty('provider', 'nmap');
-      expect(response.body.data).toHaveProperty('status', 'pending');
+      const existing = await request(app)
+        .post(`/api/v1/discovery/definitions/${created.body.data.id}/run`).expect(503);
+      const missing = await request(app)
+        .post(`/api/v1/discovery/definitions/${uuidv4()}/run`).expect(503);
+      expect(existing.body).toEqual(missing.body);
+      expect(JSON.stringify(existing.body)).not.toContain('192.0.2.1');
     });
 
-    it('should return 404 when running non-existent definition', async () => {
-      const response = await request(app)
-        .post(`/api/v1/discovery/definitions/${uuidv4()}/run`)
-        .expect(404);
-
-      expect(response.body).toHaveProperty('success', false);
-    });
-  });
-
-  describe('POST /api/v1/discovery/definitions/:id/schedule/enable - Enable Schedule', () => {
-    it('should enable schedule for a definition with schedule configured', async () => {
-      const createResponse = await request(app)
-        .post('/api/v1/discovery/definitions')
-        .send({
-          name: 'Scheduled Discovery',
-          provider: 'nmap',
-          method: 'agentless',
-          config: {},
-          schedule: '0 2 * * *',
-          is_active: false,
-        })
-        .expect(201);
-
-      const definitionId = createResponse.body.data.id;
-
-      const response = await request(app)
-        .post(`/api/v1/discovery/definitions/${definitionId}/schedule/enable`)
-        .expect(200);
-
-      expect(response.body).toHaveProperty('success', true);
-      expect(response.body.data.is_active).toBe(true);
-    });
-
-    it('should reject enabling schedule when no schedule configured', async () => {
-      const createResponse = await request(app)
-        .post('/api/v1/discovery/definitions')
-        .send({
-          name: 'No Schedule',
-          provider: 'nmap',
-          method: 'agentless',
-          config: {},
-          // No schedule provided
-        })
-        .expect(201);
-
-      const definitionId = createResponse.body.data.id;
-
-      const response = await request(app)
-        .post(`/api/v1/discovery/definitions/${definitionId}/schedule/enable`)
-        .expect(400);
-
-      expect(response.body).toHaveProperty('success', false);
-      expect(response.body.message).toContain('no schedule configured');
-    });
-  });
-
-  describe('POST /api/v1/discovery/definitions/:id/schedule/disable - Disable Schedule', () => {
-    it('should disable schedule for a definition', async () => {
-      const createResponse = await request(app)
-        .post('/api/v1/discovery/definitions')
-        .send({
-          name: 'Active Scheduled Discovery',
-          provider: 'nmap',
-          method: 'agentless',
-          config: {},
-          schedule: '0 2 * * *',
-          is_active: true,
-        })
-        .expect(201);
-
-      const definitionId = createResponse.body.data.id;
-
-      const response = await request(app)
-        .post(`/api/v1/discovery/definitions/${definitionId}/schedule/disable`)
-        .expect(200);
-
-      expect(response.body).toHaveProperty('success', true);
-      expect(response.body.data.is_active).toBe(false);
+    it('denies schedule controls before resource access without a platform JWT', async () => {
+      const created = await request(app).post('/api/v1/discovery/definitions').send({
+        name: 'Scheduled Discovery', provider: 'nmap', method: 'agentless',
+        config: {}, schedule: '0 2 * * *', is_active: false,
+      }).expect(201);
+      const id = created.body.data.id as string;
+      const enable = await request(app)
+        .post(`/api/v1/discovery/definitions/${id}/schedule/enable`).expect(403);
+      const disable = await request(app)
+        .post(`/api/v1/discovery/definitions/${id}/schedule/disable`).expect(403);
+      expect(enable.body).toEqual(disable.body);
+      expect((await request(app).get(`/api/v1/discovery/definitions/${id}`).expect(200))
+        .body.data.is_active).toBe(false);
     });
   });
 });

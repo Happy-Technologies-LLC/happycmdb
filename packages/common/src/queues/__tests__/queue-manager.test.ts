@@ -29,3 +29,22 @@ test('only registered queue names allocate BullMQ queues; unknown names never gr
   manager.getQueue(QUEUE_NAMES._DISCOVERY_NMAP);
   expect(queueConstructor).toHaveBeenCalledTimes(initial);
 });
+
+test('refuses a failed ETL retry after the original workload is scrubbed, but permits intact input', async () => {
+  jest.mocked(IORedis).mockImplementation(() => ({ on: jest.fn() }) as never);
+  const manager = new EnhancedQueueManager();
+  const retry = jest.fn(async () => undefined);
+  const job: { data: Record<string, unknown>; retry: jest.Mock } = {
+    data: { _legacy: true, __dlq: { _code: 'ERR_INTERNAL' } }, retry,
+  };
+  jest.spyOn(manager, 'getJob').mockImplementation(async () => job as never);
+
+  for (const data of [job.data, { _runId: 'retained-id', __dlq: { _code: 'ERR_INTERNAL' } }, { _legacy: true }]) {
+    job.data = data;
+    await expect(manager.retryJob(QUEUE_NAMES._ETL_FULL_REFRESH, 'failed-1')).rejects.toThrow('resubmit');
+    expect(retry).not.toHaveBeenCalled();
+  }
+  job.data = { truncateTables: true };
+  await manager.retryJob(QUEUE_NAMES._ETL_FULL_REFRESH, 'failed-1');
+  expect(retry).toHaveBeenCalledTimes(1);
+});

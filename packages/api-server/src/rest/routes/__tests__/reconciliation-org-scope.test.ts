@@ -48,7 +48,13 @@ const db = { query: async (text: string, params: unknown[] = []) => {
   }
   return { rows: await sql(text, params) };
 } };
-jest.mock('@cmdb/database', () => ({ getPostgresClient: () => db }));
+jest.mock('@cmdb/database', () => ({
+  getPostgresClient: () => db,
+  getNeo4jClient: () => ({
+    getCI: async (id: string, organizationId: string) =>
+      (id === CI_A && organizationId === A) || (id === CI_B && organizationId === B) ? { id } : null,
+  }),
+}));
 jest.mock('@cmdb/identity-resolution', () => ({ getIdentityReconciliationEngine: () => ({}) }));
 // Authentication and organization rehydration are the production middleware
 // from #49; only the identity store is substituted.
@@ -67,6 +73,7 @@ jest.mock('../../../auth/neo4j-auth.repository', () => ({
 jest.mock('../../../middleware/audit.middleware', () => ({ auditMiddleware: (_req: Request, _res: Response, next: NextFunction) => next() }));
 
 import { loadConfig } from '@cmdb/common';
+import { getNeo4jClient } from '@cmdb/database';
 import { JWTService } from '../../../auth/jwt.service';
 import { getAuthMiddleware } from '../../../auth/auth-bootstrap';
 import type { TokenPayload } from '../../../auth/types';
@@ -101,6 +108,15 @@ beforeAll(async () => {
     return match[0];
   }).join('\n'), [], 'exec');
   await sql(readFileSync(join(migration, '011_ci_organization_scope.sql'), 'utf8'), [], 'exec');
+  const journalMigration = readFileSync(join(migration, '028_change_history_reconciliation_org_provenance.sql'), 'utf8');
+  const provenance = ['ci_source_lineage', 'ci_field_sources', 'reconciliation_conflicts'].map(table => {
+    const match = journalMigration.match(new RegExp(`ALTER TABLE ${table}\\s+[\\s\\S]*?;`));
+    if (!match) throw new Error(`Missing provenance DDL ${table}`);
+    return match[0];
+  });
+  const journalTable = journalMigration.match(/CREATE TABLE IF NOT EXISTS ci_reconciliation_operations \([\s\S]*?\n\);/);
+  if (!journalTable) throw new Error('Missing journal DDL');
+  await sql([...provenance, journalTable[0]].join('\n'), [], 'exec');
   // Simulate an unsafely imported legacy NULL-org row; production migration 011 disallows new NULLs.
   await sql('ALTER TABLE cmdb.dim_ci ALTER COLUMN organization_id DROP NOT NULL', [], 'exec');
   server = new ApolloServer({
@@ -109,7 +125,9 @@ beforeAll(async () => {
   });
   await server.start();
   gqlApp.use('/graphql', express.json(), getAuthMiddleware().authenticate(),
-    expressMiddleware(server, { context: async ({ req }) => ({ user: (req as Request & { user: TokenPayload }).user }) }));
+    expressMiddleware(server, { context: async ({ req }) => ({
+      user: (req as Request & { user: TokenPayload }).user, _neo4jClient: getNeo4jClient(),
+    }) }));
 });
 afterAll(async () => { await server?.stop(); host.kill(); });
 beforeEach(async () => {
@@ -120,10 +138,11 @@ beforeEach(async () => {
     ('${CI_B}', 'B', 'server', 'active', '${B}'),
     ('${CI_NULL}', 'legacy', 'server', 'active', NULL)`, [], 'exec');
   for (const [index, ci] of [CI_A, CI_B, CI_NULL].entries()) {
-    await sql(`INSERT INTO ci_source_lineage(ci_id, source_name, source_id, confidence_score) VALUES ($1, $2, $3, 90)`, [ci, `source-${index}`, `secret-${index}`]);
-    await sql(`INSERT INTO ci_field_sources(ci_id, field_name, field_value, source_name) VALUES ($1, 'password', $2, $3)`, [ci, `value-${index}`, `source-${index}`]);
-    await sql(`INSERT INTO reconciliation_conflicts(id, ci_id, conflict_type, source_data, target_data, conflicting_fields)
-      VALUES ($1, $2, 'field_conflict', $3, $4, '["password"]')`, [cid(index), ci, JSON.stringify({ secret: `source-${index}` }), JSON.stringify({ secret: `target-${index}` })]);
+    const org = index === 0 ? A : index === 1 ? B : null;
+    await sql(`INSERT INTO ci_source_lineage(ci_id, source_name, source_id, confidence_score, organization_id) VALUES ($1, $2, $3, 90, $4)`, [ci, `source-${index}`, `secret-${index}`, org]);
+    await sql(`INSERT INTO ci_field_sources(ci_id, field_name, field_value, source_name, organization_id) VALUES ($1, 'password', $2, $3, $4)`, [ci, `value-${index}`, `source-${index}`, org]);
+    await sql(`INSERT INTO reconciliation_conflicts(id, ci_id, conflict_type, source_data, target_data, conflicting_fields, organization_id)
+      VALUES ($1, $2, 'field_conflict', $3, $4, '["password"]', $5)`, [cid(index), ci, JSON.stringify({ secret: `source-${index}` }), JSON.stringify({ secret: `target-${index}` }), org]);
   }
 });
 it('refuses global policy REST and GraphQL in both verified organizations without reading or mutating SQL tables', async () => {

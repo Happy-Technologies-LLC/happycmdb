@@ -35,6 +35,14 @@ function requireDefinitionOrganization(req: Request, res: Response, next: NextFu
 export const discoveryDefinitionRoutes = Router();
 const controller = new DiscoveryDefinitionController();
 const authMiddleware = getAuthMiddleware();
+// S5 installs organization-owned schedules; S3 must not enqueue or enable
+// legacy definition payloads (which may contain inline credentials).
+const unavailable = (_req: Request, res: Response): void => {
+  res.status(503).json({ success: false, error: 'Service Unavailable',
+    message: 'Discovery execution is disabled until the journaled cutover' });
+};
+discoveryDefinitionRoutes.use('/:id/schedule',
+  authMiddleware.requirePlatformAdmin(), unavailable);
 discoveryDefinitionRoutes.use(requireDefinitionOrganization);
 
 // Do not let validation details reflect arbitrary inline credential values.
@@ -148,7 +156,7 @@ discoveryDefinitionRoutes.delete(
 discoveryDefinitionRoutes.post(
   '/:id/run',
   authMiddleware.requirePermission('write'),
-  controller.runDefinition.bind(controller)
+  unavailable
 );
 
 // POST /api/v1/discovery/definitions/:id/schedule/enable - Enable scheduled runs (write)

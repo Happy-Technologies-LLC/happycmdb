@@ -11,9 +11,8 @@
  * SQL is executed by PGlite hosted in a forked child process
  * (fixtures/pglite-host.cjs). Schema: the CREATE TABLE blocks read verbatim
  * from 001_complete_schema.sql (PGlite has no TimescaleDB, so the fact tables
- * are plain tables), then 008_business_service_organization_scope.sql and
- * 011_ci_organization_scope.sql applied verbatim over pre-existing (legacy,
- * org-less) rows.
+ * are plain tables), then 008/011 and the S1 journal DDL extracted from
+ * 028_change_history_reconciliation_org_provenance.sql.
  *
  * Substitutions: Neo4jAuthRepository -> in-memory users/API keys;
  * getPostgresClient -> IPC client to that PGlite process; Neo4j -> {} (the
@@ -77,11 +76,30 @@ const pgClient = {
     return { rows };
   },
   getClient: async () => ({ query: pgClient.query, release: () => undefined }),
+  pool: { connect: async () => ({ query: pgClient.query, release: () => undefined }) },
+};
+const graphOwners = new Map<string, string>([
+  ['ci-a', '00000000-0000-0000-0000-000000000000'],
+  ['ci-a2', '00000000-0000-0000-0000-000000000000'],
+  ['ci-b', '22222222-2222-4222-8222-222222222222'],
+  ['ci-b2', '22222222-2222-4222-8222-222222222222'],
+  ['ci-b3', '22222222-2222-4222-8222-222222222222'],
+]);
+const graphClient = {
+  getCI: async (id: string, organizationId: string) =>
+    graphOwners.get(id) === organizationId ? { id } : null,
+  getSession: () => ({
+    run: async (_query: string, params: { ids: string[]; organizationId: string }) => ({
+      records: params.ids.filter(id => graphOwners.get(id) === params.organizationId)
+        .map(id => ({ get: () => id })),
+    }),
+    close: async () => undefined,
+  }),
 };
 
 jest.mock('@cmdb/database', () => ({
   getPostgresClient: () => pgClient,
-  getNeo4jClient: () => ({}),
+  getNeo4jClient: () => graphClient,
   getAuditService: () => ({}),
 }));
 
@@ -143,6 +161,15 @@ function baseDdl(): string {
     const match = sql.match(new RegExp(`CREATE TABLE IF NOT EXISTS ${table.replace('.', '\\.')} \\([\\s\\S]*?\\n\\);`));
     if (!match) throw new Error(`DDL for ${table} not found in 001_complete_schema.sql`);
     return match[0];
+  }).join('\n');
+}
+
+function journalDdl(): string {
+  const source = readFileSync(join(MIGRATIONS, '028_change_history_reconciliation_org_provenance.sql'), 'utf8');
+  return ['ci_reconciliation_operations', 'ci_reconciliation_epochs'].map(table => {
+    const ddl = source.match(new RegExp(`CREATE TABLE IF NOT EXISTS ${table} \\([\\s\\S]*?\\n\\);`));
+    if (!ddl) throw new Error(`Missing S1 journal table ${table}`);
+    return ddl[0];
   }).join('\n');
 }
 
@@ -234,6 +261,7 @@ beforeAll(async () => {
   backfilled = await db.rows('SELECT service_id, organization_id FROM dim_business_services ORDER BY service_id');
   dimCiSchemaBefore011 = await dimCiSchema();
   await db.exec(`BEGIN;\n${UP_011}\nCOMMIT;`);
+  await db.exec(journalDdl());
   const schema = readFileSync(join(MIGRATIONS, '001_complete_schema.sql'), 'utf8');
   for (const view of ['active_discovery_agents', 'agent_network_coverage']) {
     const definition = schema.match(new RegExp(`CREATE OR REPLACE VIEW ${view} AS[\\s\\S]*?;`));
@@ -507,7 +535,7 @@ describe('two-organization isolation', () => {
     const before = await mappings();
     const post = (body: object) => request(app).post('/api/v1/business-services/bs-a-app/cis').set(AS_A).send(body);
 
-    const CI_NOT_FOUND = { success: false, error: 'CI not found' };
+    const CI_NOT_FOUND = { success: false, error: 'Not Found', message: 'CI not found' };
     for (const body of [
       { ci_ids: ['ci-b'] },
       // One foreign CI refuses the whole request, including the caller's own CI.
@@ -521,6 +549,33 @@ describe('two-organization isolation', () => {
     // The same body as a CI that does not exist anywhere.
     const missing = await post({ ci_ids: ['ci-missing'] });
     expect([missing.status, missing.body]).toEqual([404, CI_NOT_FOUND]);
+  });
+
+  it('reports an own pending CI gap before a missing graph node, but not foreign or unknown IDs', async () => {
+    const operationId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    graphOwners.delete('ci-a2');
+    await db.exec(`INSERT INTO ci_reconciliation_operations
+      (id, group_id, organization_id, ci_id, origin, operation, graph_effect, state, actor, epoch, lease_expires_at)
+      VALUES ('${operationId}', '${operationId}', '${INTERNAL_ORG}', 'ci-a2',
+        'api', 'update', TRUE, 'pending', 'test', 1, NOW())`);
+    const post = (id: string) => request(app).post('/api/v1/business-services/bs-a-app/cis')
+      .set(AS_A).send({ ci_ids: [id] });
+    try {
+      const pending = await post('ci-a2');
+      expect([pending.status, pending.body]).toEqual([
+        409, { success: false, error: 'Conflict', message: 'CI is temporarily unavailable' },
+      ]);
+      const foreign = await post('ci-b');
+      const missing = await post('ci-missing');
+      expect([foreign.status, foreign.body]).toEqual([missing.status, missing.body]);
+      expect([missing.status, missing.body]).toEqual([
+        404, { success: false, error: 'Not Found', message: 'CI not found' },
+      ]);
+      expect(await db.rows(`SELECT ci_id FROM ci_business_service_mappings WHERE ci_id = 'ci-a2'`)).toEqual([]);
+    } finally {
+      await db.exec(`DELETE FROM ci_reconciliation_operations WHERE id = '${operationId}'`);
+      graphOwners.set('ci-a2', INTERNAL_ORG);
+    }
   });
 
   it('/costs excludes a CI owned by another org even if a stale mapping row exists', async () => {
@@ -698,6 +753,7 @@ describe('POST /cis rejects ci_ids the mapping table cannot hold', () => {
     // Mapping requires a current cmdb.dim_ci row in the service's organization.
     await db.rows(`INSERT INTO cmdb.dim_ci (ci_id, ci_name, ci_type, ci_status, is_current, organization_id)
       VALUES ($1, 'Longest', 'server', 'active', TRUE, $2)`, [longest, ORG_B]);
+    graphOwners.set(longest, ORG_B);
     const ok = await request(app).post('/api/v1/business-services/bs-b-app/cis').set(AS_B).send({ ci_ids: [longest] });
     expect(ok.status).toBe(201);
     expect(await db.rows(`SELECT ci_id FROM ci_business_service_mappings WHERE service_id = 'bs-b-app' AND ci_id <> 'ci-b'`))

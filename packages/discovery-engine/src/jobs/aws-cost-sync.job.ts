@@ -76,10 +76,7 @@ export async function processAWSCostSync(
   job: Job<AWSCostSyncJobData>
 ): Promise<AWSCostSyncResult> {
   const startTime = Date.now();
-  logger.info('[AWSCostSync] Starting AWS cost sync job', {
-    jobId: job.id,
-    data: job.data,
-  });
+  logger.info('[AWSCostSync] Starting AWS cost sync job');
 
   try {
     // Step 1: Get credentials
@@ -98,11 +95,7 @@ export async function processAWSCostSync(
       ? new Date(job.data.endDate)
       : endOfMonth(new Date());
 
-    logger.info('[AWSCostSync] Fetching costs from AWS Cost Explorer', {
-      startDate: format(startDate, 'yyyy-MM-dd'),
-      endDate: format(endDate, 'yyyy-MM-dd'),
-      accountId: job.data.accountId,
-    });
+    logger.info('[AWSCostSync] Fetching costs from AWS Cost Explorer');
 
     // Step 3: Initialize AWS Cost Explorer client
     const costExplorer = new AWSCostExplorer(credentials, logger);
@@ -225,7 +218,6 @@ export async function processAWSCostSync(
 
       logger.info('[AWSCostSync] AWS costs synced successfully', {
         costsImported,
-        totalCost: totalCost.toFixed(2),
         duration: Date.now() - startTime,
       });
 
@@ -243,12 +235,8 @@ export async function processAWSCostSync(
     } finally {
       client.release();
     }
-  } catch (error) {
-    logger.error('[AWSCostSync] AWS cost sync failed', {
-      jobId: job.id,
-      error: error instanceof Error ? error.message : String(error),
-      stack: error instanceof Error ? error.stack : undefined,
-    });
+  } catch {
+    logger.error('[AWSCostSync] AWS cost sync failed', { code: 'ERR_INTERNAL' });
 
     return {
       success: false,
@@ -257,7 +245,7 @@ export async function processAWSCostSync(
       totalCost: 0,
       startDate: job.data.startDate || format(startOfMonth(new Date()), 'yyyy-MM-dd'),
       endDate: job.data.endDate || format(endOfMonth(new Date()), 'yyyy-MM-dd'),
-      errors: [error instanceof Error ? error.message : String(error)],
+      errors: ['ERR_INTERNAL'],
     };
   }
 }
@@ -289,7 +277,7 @@ async function getAWSCredentials(
     );
 
     if (result.rows.length === 0) {
-      logger.warn('[AWSCostSync] No active AWS credential found', { credentialId });
+      logger.warn('[AWSCostSync] No active AWS credential found');
       return null;
     }
 

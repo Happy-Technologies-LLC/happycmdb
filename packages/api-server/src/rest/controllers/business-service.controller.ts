@@ -8,10 +8,11 @@
 
 import { Request, Response } from 'express';
 import { randomUUID } from 'crypto';
-import { getPostgresClient } from '@cmdb/database';
+import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
 import { logger } from '@cmdb/common';
 import { requestOrganizationId } from '../../middleware/auth.middleware';
 import { errorLogFields } from '../../utils/log-error';
+import { assertNoCIGap, CIGapError, CI_GAP_RESPONSE, filterOwnedDimensionRows, writeReferencedCIs } from '../../read-admission';
 
 /*
  * Tenant scoping: every handler reads the caller's organization from the
@@ -378,7 +379,16 @@ export class BusinessServiceController {
           m.confidence_score,
           m.created_at
         FROM dim_business_services s
-        LEFT JOIN ci_business_service_mappings m ON m.service_id = s.service_id
+        LEFT JOIN LATERAL (
+          SELECT m.* FROM ci_business_service_mappings m
+          JOIN cmdb.dim_ci c ON c.ci_id = m.ci_id AND c.is_current AND NOT c.org_backfilled
+            AND c.organization_id = s.organization_id
+          WHERE m.service_id = s.service_id
+            AND NOT EXISTS (
+              SELECT 1 FROM ci_reconciliation_operations j
+              WHERE j.organization_id = s.organization_id AND j.ci_id = m.ci_id
+                AND j.state IN ('pending','failed'))
+        ) m ON true
         WHERE s.service_id = $1 AND s.organization_id = $2
         ORDER BY m.created_at DESC`,
         [service_id, requestOrganizationId(req)]
@@ -392,10 +402,9 @@ export class BusinessServiceController {
         return;
       }
 
-      res.json({
-        success: true,
-        data: result.rows[0].ci_id === null ? [] : result.rows
-      });
+      const mappings = result.rows[0].ci_id === null ? [] :
+        await filterOwnedDimensionRows(requestOrganizationId(req), result.rows);
+      res.json({ success: true, data: mappings });
     } catch (error) {
       logger.error('Error getting mapped CIs', { error: errorLogFields(error), service_id: req.params.service_id });
       res.status(500).json({
@@ -413,6 +422,21 @@ export class BusinessServiceController {
     try {
       const { service_id } = req.params;
       const { ci_ids, mapping_type = 'supports', confidence_score = 1.0 } = req.body;
+      const organizationId = requestOrganizationId(req);
+      const parent = await this.pgClient.query(
+        'SELECT 1 FROM dim_business_services WHERE service_id = $1 AND organization_id = $2',
+        [service_id, organizationId]);
+      if (!parent.rows.length) {
+        res.status(404).json({ success: false, error: 'Business service not found' });
+        return;
+      }
+      for (const ciId of ci_ids as string[]) {
+        await assertNoCIGap(organizationId, ciId);
+        if (!await getNeo4jClient().getCI(ciId, organizationId)) {
+          res.status(404).json({ success: false, error: 'Not Found', message: 'CI not found' });
+          return;
+        }
+      }
 
       // Bulk upsert rooted at the org-filtered parent. Every requested CI must
       // be a current cmdb.dim_ci row of the parent's organization (migration
@@ -420,7 +444,7 @@ export class BusinessServiceController {
       // of an existing mapping. Zero rows (ci_ids is non-empty per the route
       // schema) => unknown or foreign service, or a CI that is missing or
       // belongs to another organization (404).
-      const result = await this.pgClient.query(
+      const result = await writeReferencedCIs(organizationId, ci_ids, client => client.query(
         `WITH parent AS (
           SELECT service_id FROM dim_business_services WHERE service_id = $1 AND organization_id = $2
         ),
@@ -431,7 +455,8 @@ export class BusinessServiceController {
           SELECT q.ci_id FROM requested q
           WHERE EXISTS (
             SELECT 1 FROM cmdb.dim_ci c
-            WHERE c.ci_id = q.ci_id AND c.is_current = TRUE AND c.organization_id = $2
+            WHERE c.ci_id = q.ci_id AND c.is_current = TRUE AND NOT c.org_backfilled
+              AND c.organization_id = $2
           )
         )
         INSERT INTO ci_business_service_mappings (ci_id, service_id, mapping_type, confidence_score)
@@ -442,20 +467,11 @@ export class BusinessServiceController {
         ON CONFLICT (ci_id, service_id, mapping_type) DO UPDATE
         SET confidence_score = EXCLUDED.confidence_score, updated_at = NOW()
         RETURNING *`,
-        [service_id, requestOrganizationId(req), mapping_type, confidence_score, ci_ids]
-      );
+        [service_id, organizationId, mapping_type, confidence_score, ci_ids]
+      ));
 
       if (result.rows.length === 0) {
-        // Only picks the 404 body; nothing was written either way. A CI of
-        // another organization gets the same body as a missing one.
-        const parent = await this.pgClient.query(
-          'SELECT 1 FROM dim_business_services WHERE service_id = $1 AND organization_id = $2',
-          [service_id, requestOrganizationId(req)]
-        );
-        res.status(404).json({
-          success: false,
-          error: parent.rows.length === 0 ? 'Business service not found' : 'CI not found'
-        });
+        res.status(404).json({ success: false, error: 'Not Found', message: 'CI not found' });
         return;
       }
 
@@ -467,6 +483,14 @@ export class BusinessServiceController {
         data: result.rows
       });
     } catch (error) {
+      if (error instanceof CIGapError) {
+        res.status(409).json(CI_GAP_RESPONSE);
+        return;
+      }
+      if (error && typeof error === 'object' && 'code' in error && error.code === '55P03') {
+        res.status(503).json({ success: false, error: 'Service Unavailable' });
+        return;
+      }
       logger.error('Error mapping CIs to service', { error: errorLogFields(error), service_id: req.params.service_id });
       res.status(500).json({
         success: false,
@@ -807,7 +831,8 @@ export class BusinessServiceController {
             (dc.tbm_attributes->>'monthly_cost')::numeric AS monthly_cost
           FROM mapped_cis mc
           JOIN cmdb.dim_ci dc
-            ON dc.ci_id = mc.ci_id AND dc.is_current = TRUE AND dc.organization_id = $2
+            ON dc.ci_id = mc.ci_id AND dc.is_current = TRUE AND NOT dc.org_backfilled
+              AND dc.organization_id = $2
         ),
         tower_costs AS (
           SELECT resource_tower, SUM(monthly_cost) AS tower_cost

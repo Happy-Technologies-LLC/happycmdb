@@ -24,11 +24,19 @@ const DEFAULT_JOB_OPTIONS: JobOptions = {
   removeOnFail: 500, // Keep last 500 failed jobs
 };
 
+/** BullMQ prunes on finalization; bounded count also caps historical payloads. */
+export const DISCOVERY_RETENTION = {
+  removeOnComplete: { age: 24 * 60 * 60, count: 100 },
+  removeOnFail: { age: 7 * 24 * 60 * 60, count: 500 },
+} as const;
+
 /**
  * Discovery job options - longer timeout for cloud API calls
  */
 const DISCOVERY_JOB_OPTIONS: JobOptions = {
   ...DEFAULT_JOB_OPTIONS,
+  // Cap retention by age as well as count in low-volume discovery queues.
+  ...DISCOVERY_RETENTION,
   _timeout: 900000, // 15 minutes for discovery jobs
   _attempts: 3,
   _backoff: {

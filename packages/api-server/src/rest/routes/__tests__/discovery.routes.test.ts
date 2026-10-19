@@ -1,18 +1,8 @@
 // Copyright 2026 Happy Technologies LLC
 // SPDX-License-Identifier: Apache-2.0
 
-/**
- * Route-wiring tests for discovery.routes.ts (legacy ad-hoc discovery
- * endpoints). Authentication is applied centrally by server.ts
- * (`authMiddleware.authenticate()` mounted on every /api/v1 route before
- * any router), so this suite simulates that by mounting the captured mock
- * middleware ahead of `discoveryRoutes`, mirroring production. Scheduling
- * a job (POST /schedule) and cancelling one (DELETE /jobs/:id) mutate
- * discovery state and additionally require the 'write' permission
- * (`authMiddleware.requirePermission('write')`, satisfied by operator,
- * agent, and admin). Legacy job reads and writes require a verified org;
- * test-connection remains authenticated without a job organization guard.
- */
+/** Mounted legacy discovery authorization: queue reads require a platform JWT;
+ * ad-hoc execution and credential testing stay disabled until journal cutover. */
 
 import express, { type Request, type Response } from 'express';
 import request from 'supertest';
@@ -29,9 +19,7 @@ const TOKEN_ROLES: Record<string, UserRole> = {
   'Bearer admin-token': 'admin',
   'Bearer operator-token': 'operator',
   'Bearer viewer-token': 'viewer',
-  // API-key-shaped credential for a discovery agent: the 'agent' role
-  // has 'write' (ROLE_PERMISSIONS), so agents can schedule/cancel jobs
-  // alongside operator/admin.
+  // API-key-shaped credentials cannot read the global queue.
   'Bearer agent-token': 'agent',
 };
 
@@ -59,11 +47,19 @@ const mockRequirePermission = jest.fn(
     next();
   }
 );
+const mockRequirePlatformAdmin = jest.fn(() => (req: Request, res: Response, next: () => void) => {
+  if ((req as ReqWithUser).user?._role !== 'admin') {
+    res.status(403).json({ success: false, error: 'Global queue operations unavailable' });
+    return;
+  }
+  next();
+});
 
 jest.mock('../../../auth/auth-bootstrap', () => ({
   getAuthMiddleware: jest.fn(() => ({
     authenticate: mockAuthenticate,
     requirePermission: mockRequirePermission,
+    requirePlatformAdmin: mockRequirePlatformAdmin,
   })),
 }));
 
@@ -100,16 +96,14 @@ function testApp(): express.Express {
 }
 
 type RouteCase = [string, string, Record<string, unknown> | undefined];
-
-const readRoutes: RouteCase[] = [
+const adminRoutes: RouteCase[] = [
   ['GET', '/discovery/jobs/job-1', undefined],
   ['GET', '/discovery/jobs', undefined],
-  ['POST', '/discovery/test-connection', { provider: 'aws', credentials: {} }],
-];
-
-const writeRoutes: RouteCase[] = [
-  ['POST', '/discovery/schedule', { provider: 'nmap' }],
   ['DELETE', '/discovery/jobs/job-1', undefined],
+];
+const unavailableRoutes: RouteCase[] = [
+  ['POST', '/discovery/schedule', { provider: 'nmap' }],
+  ['POST', '/discovery/test-connection', { provider: 'aws', credentials: {} }],
 ];
 
 async function invoke(app: express.Express, method: string, path: string, body: unknown, token?: string) {
@@ -129,7 +123,7 @@ describe('discovery routes', () => {
     });
   });
 
-  it.each([...readRoutes, ...writeRoutes])(
+  it.each([...adminRoutes, ...unavailableRoutes])(
     'returns 401 before reaching %s %s without credentials',
     async (method, path, body) => {
       const response = await invoke(testApp(), method, path, body);
@@ -138,40 +132,21 @@ describe('discovery routes', () => {
     }
   );
 
-  it.each(readRoutes)('a viewer (read-only) can reach %s %s', async (method, path, body) => {
-    const response = await invoke(testApp(), method, path, body, 'Bearer viewer-token');
-    expect(response.status).toBe(200);
-    expect(mockRouteHandler).toHaveBeenCalled();
+  it.each(adminRoutes)('requires platform admin for %s %s', async (method, path, body) => {
+    for (const token of ['Bearer viewer-token', 'Bearer operator-token', 'Bearer agent-token']) {
+      const denied = await invoke(testApp(), method, path, body, token);
+      expect(denied.status).toBe(403);
+      expect(mockRouteHandler).not.toHaveBeenCalled();
+    }
+    const allowed = await invoke(testApp(), method, path, body, 'Bearer admin-token');
+    expect(allowed.status).toBe(200);
+    expect(mockRouteHandler).toHaveBeenCalledTimes(1);
   });
 
-  it.each(writeRoutes)('a viewer (read-only) receives 403 on %s %s', async (method, path, body) => {
-    const response = await invoke(testApp(), method, path, body, 'Bearer viewer-token');
-    expect(response.status).toBe(403);
-    expect(mockRouteHandler).not.toHaveBeenCalled();
-  });
-
-  it.each(writeRoutes)('an operator (write) can reach %s %s', async (method, path, body) => {
-    const response = await invoke(testApp(), method, path, body, 'Bearer operator-token');
-    expect(response.status).toBe(200);
-    expect(mockRouteHandler).toHaveBeenCalled();
-  });
-
-  it.each(writeRoutes)('a discovery agent (API-key-shaped req.user, write) can reach %s %s', async (method, path, body) => {
-    const response = await invoke(testApp(), method, path, body, 'Bearer agent-token');
-    expect(response.status).toBe(200);
-    expect(mockRouteHandler).toHaveBeenCalled();
-  });
-
-  it('refuses both legacy SSH target shapes before validation or queue access for operators and admins', async () => {
-    for (const [token, config] of [
-      ['Bearer operator-token', { targets: [{ host: '192.0.2.1', password: 'synthetic-secret' }] }],
-      ['Bearer admin-token', { targets: ['192.0.2.1'], credentials: { password: 'synthetic-secret' } }],
-    ] as const) {
-      const response = await invoke(testApp(), 'POST', '/discovery/schedule',
-        { provider: 'ssh', config }, token);
-      expect(response.status).toBe(409);
-      expect(response.body).toEqual({ success: false, error: 'Credential-backed discovery execution unavailable' });
-      expect(JSON.stringify(response.body)).not.toContain('synthetic-secret');
+  it.each(unavailableRoutes)('keeps %s %s disabled after authentication', async (method, path, body) => {
+    for (const token of ['Bearer viewer-token', 'Bearer operator-token', 'Bearer admin-token']) {
+      const response = await invoke(testApp(), method, path, body, token);
+      expect(response.status).toBe(token === 'Bearer viewer-token' && path.endsWith('schedule') ? 403 : 503);
       expect(mockRouteHandler).not.toHaveBeenCalled();
     }
   });

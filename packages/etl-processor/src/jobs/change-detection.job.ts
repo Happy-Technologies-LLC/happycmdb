@@ -37,8 +37,6 @@ export interface ChangeDetectionResult {
   changesDetected: number;
   /** Changes recorded in database */
   changesRecorded: number;
-  /** Change events */
-  changes: ChangeEvent[];
   /** Duration in milliseconds */
   durationMs: number;
   /** Timestamp of completion */
@@ -108,7 +106,6 @@ export class ChangeDetectionJob {
       cisChecked: 0,
       changesDetected: 0,
       changesRecorded: 0,
-      changes: [],
       durationMs: 0,
       completedAt: new Date().toISOString()
     };
@@ -129,7 +126,6 @@ export class ChangeDetectionJob {
 
           if (changes.length > 0) {
             result.changesDetected += changes.length;
-            result.changes.push(...changes);
 
             // Record changes in database
             await this.recordChanges(changes);
@@ -147,7 +143,6 @@ export class ChangeDetectionJob {
       if (data.includeRelationships) {
         const relChanges = await this.detectRelationshipChanges(since);
         result.changesDetected += relChanges.length;
-        result.changes.push(...relChanges);
 
         if (relChanges.length > 0) {
           await this.recordChanges(relChanges);
@@ -166,7 +161,7 @@ export class ChangeDetectionJob {
       return result;
 
     } catch (error) {
-      logger.error('Change detection job failed', { error, jobId: job.id });
+      logger.error('Change detection job failed', { code: 'ERR_INTERNAL', jobId: job.id });
       throw error;
     }
   }

@@ -19,8 +19,9 @@ config with an unknown key (including `_targets`) or invalid value projects `{}`
 Unsafe rows retain their original stored JSON and reject all normal updates
 (including metadata, credential attachment and schedule changes), deletion,
 manual/background triggering, schedule activation, and stale queued execution.
-The fixed rejection never returns the raw configuration. Safe rows continue
-to use the existing REST and nmap scan paths.
+The fixed rejection never returns the raw configuration. Safe rows retain
+their REST create/read/update/delete behavior; HP1-S3 disables discovery
+execution and schedule activation for every row until the journaled cutover.
 
 ### Operator-only quarantine inventory and manual review
 

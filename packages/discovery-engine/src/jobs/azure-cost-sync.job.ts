@@ -86,10 +86,7 @@ export async function processAzureCostSync(
   job: Job<AzureCostSyncJobData>
 ): Promise<AzureCostSyncResult> {
   const startTime = Date.now();
-  logger.info('[AzureCostSync] Starting Azure cost sync job', {
-    jobId: job.id,
-    data: job.data,
-  });
+  logger.info('[AzureCostSync] Starting Azure cost sync job');
 
   try {
     // Step 1: Get credentials
@@ -108,11 +105,7 @@ export async function processAzureCostSync(
       ? new Date(job.data.endDate)
       : endOfMonth(new Date());
 
-    logger.info('[AzureCostSync] Fetching costs from Azure Cost Management', {
-      startDate: format(startDate, 'yyyy-MM-dd'),
-      endDate: format(endDate, 'yyyy-MM-dd'),
-      subscriptionId: job.data.subscriptionId,
-    });
+    logger.info('[AzureCostSync] Fetching costs from Azure Cost Management');
 
     // Step 3: Initialize Azure Cost Management client
     const costManagement = new AzureCostManagement(credentials, logger);
@@ -294,7 +287,6 @@ export async function processAzureCostSync(
 
       logger.info('[AzureCostSync] Azure costs synced successfully', {
         costsImported,
-        totalCost: totalCost.toFixed(2),
         duration: Date.now() - startTime,
       });
 
@@ -313,12 +305,8 @@ export async function processAzureCostSync(
     } finally {
       client.release();
     }
-  } catch (error) {
-    logger.error('[AzureCostSync] Azure cost sync failed', {
-      jobId: job.id,
-      error: error instanceof Error ? error.message : String(error),
-      stack: error instanceof Error ? error.stack : undefined,
-    });
+  } catch {
+    logger.error('[AzureCostSync] Azure cost sync failed', { code: 'ERR_INTERNAL' });
 
     return {
       success: false,
@@ -327,7 +315,7 @@ export async function processAzureCostSync(
       totalCost: 0,
       startDate: job.data.startDate || format(startOfMonth(new Date()), 'yyyy-MM-dd'),
       endDate: job.data.endDate || format(endOfMonth(new Date()), 'yyyy-MM-dd'),
-      errors: [error instanceof Error ? error.message : String(error)],
+      errors: ['ERR_INTERNAL'],
     };
   }
 }
@@ -359,7 +347,7 @@ async function getAzureCredentials(
     );
 
     if (result.rows.length === 0) {
-      logger.warn('[AzureCostSync] No active Azure credential found', { credentialId });
+      logger.warn('[AzureCostSync] No active Azure credential found');
       return null;
     }
 

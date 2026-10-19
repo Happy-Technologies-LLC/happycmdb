@@ -9,6 +9,11 @@ import {
 import { logger, validateCISortField, validateSortDirection } from '@cmdb/common';
 import neo4j from 'neo4j-driver';
 import { requestOrganizationId } from '../../middleware/auth.middleware';
+import { literalFulltextQuery } from './literal-fulltext-query';
+import {
+  assertNoCIGap, CIGapError, CI_GAP_RESPONSE, CIListUnavailableError, readCIList,
+  readSingleCI, CI_LIST_UNAVAILABLE_RESPONSE,
+} from '../../read-admission';
 
 /**
  * The one 404 for a CI that is missing or belongs to another organization:
@@ -95,9 +100,7 @@ export class CIController {
       } = req.query;
 
       const organizationId = requestOrganizationId(req);
-      const session = this.neo4jClient.getSession();
-      try {
-        let query = 'MATCH (ci:CI) WHERE ci.organization_id = $organizationId';
+      let query = 'MATCH (ci:CI) WHERE ci.organization_id = $organizationId';
         const params: Record<string, unknown> = { organizationId };
 
         // Apply filters
@@ -141,43 +144,49 @@ export class CIController {
           finalPage = Math.floor(finalOffset / finalLimit) + 1;
         }
 
-        // Get total count for pagination
-        const countQuery = query.replace('MATCH (ci:CI)', 'MATCH (ci:CI)') + ' RETURN count(ci) as total';
-        const countResult = await session.run(countQuery, params);
-        const total = countResult.records[0]!.get('total').toNumber();
-
-        // Validate sort parameters to prevent Cypher injection
+        // Count and page share the same journal snapshot inside readCIList;
+        // never collect the complete graph inventory just to return one page.
         const sortField = validateCISortField((sort_by as string) || 'name');
         const sortDirection = validateSortDirection((sort_order as string) || 'asc');
-
-        // Safe to use template literals here because sortField and sortDirection are validated
-        const sortClause = `ORDER BY ci.${sortField} ${sortDirection}`;
-
-        // Get paginated results
-        query += ` RETURN ci ${sortClause} SKIP $offset LIMIT $limit`;
-        params.offset = neo4j.int(finalOffset);
-        params.limit = neo4j.int(finalLimit);
-
-        const result = await session.run(query, params);
-        const cis = result.records.map((r: any) => convertNeo4jTypes(r.get('ci').properties));
-
+        query += ' AND NOT ci.id IN $pending';
+        const { total, cis } = await readCIList(organizationId, async (pending, timeout) => {
+          const session = this.neo4jClient.getSession();
+          try {
+            const queryParams = { ...params, pending, offset: neo4j.int(finalOffset),
+              limit: neo4j.int(finalLimit) };
+            const expiresAt = Date.now() + timeout;
+            const remaining = () => {
+              const milliseconds = expiresAt - Date.now();
+              if (milliseconds <= 0) throw new CIListUnavailableError();
+              return milliseconds;
+            };
+            const countResult = await session.run(
+              `${query} RETURN count(ci) AS total`, queryParams, { timeout: remaining() });
+            const pageResult = await session.run(
+              `${query} RETURN ci ORDER BY ci.${sortField} ${sortDirection}, ci.id
+               SKIP $offset LIMIT $limit`, queryParams, { timeout: remaining() });
+            return {
+              total: countResult.records[0]!.get('total').toNumber() as number,
+              cis: pageResult.records.map(row =>
+                convertNeo4jTypes((row.get('ci') as { properties: Record<string, unknown> }).properties)),
+            };
+          } finally {
+            await session.close();
+          }
+        });
         res.json({
           success: true,
           data: cis,
           pagination: {
-            total,
-            count: cis.length,
-            offset: finalOffset,
-            limit: finalLimit,
-            page: finalPage,
-            pageSize: finalLimit,
-            totalPages: Math.ceil(total / finalLimit),
+            total, count: cis.length, offset: finalOffset, limit: finalLimit,
+            page: finalPage, pageSize: finalLimit, totalPages: Math.ceil(total / finalLimit),
           },
         });
-      } finally {
-        await session.close();
-      }
     } catch (error) {
+      if (error instanceof CIListUnavailableError) {
+        res.status(503).json(CI_LIST_UNAVAILABLE_RESPONSE);
+        return;
+      }
       logger.error('Error getting CIs', error);
       res.status(500).json({
         success: false,
@@ -200,18 +209,25 @@ export class CIController {
         return;
       }
 
-      const ci = await this.neo4jClient.getCI(id, requestOrganizationId(req));
-
+      const organizationId = requestOrganizationId(req);
+      const owned = await this.neo4jClient.getCI(id, organizationId);
+      if (!owned) {
+        await assertNoCIGap(organizationId, id);
+        sendCINotFound(res);
+        return;
+      }
+      const ci = await readSingleCI(organizationId, id,
+        () => this.neo4jClient.getCI(id, organizationId));
       if (!ci) {
         sendCINotFound(res);
         return;
       }
-
-      res.json({
-        success: true,
-        data: convertNeo4jTypes(ci)
-      });
+      res.json({ success: true, data: convertNeo4jTypes(ci) });
     } catch (error) {
+      if (error instanceof CIGapError) {
+        res.status(409).json(CI_GAP_RESPONSE);
+        return;
+      }
       logger.error('Error getting CI', error);
       res.status(500).json({
         success: false,
@@ -578,8 +594,8 @@ export class CIController {
         return;
       }
 
-      const limitNum = parseInt(limit as string);
-      if (isNaN(limitNum) || limitNum < 1 || limitNum > 1000) {
+      const limitNum = Number(limit);
+      if (!Number.isSafeInteger(limitNum) || limitNum < 1 || limitNum > 1000) {
         res.status(400).json({
           success: false,
           error: 'Bad Request',
@@ -589,36 +605,41 @@ export class CIController {
       }
 
       const organizationId = requestOrganizationId(req);
-      const session = this.neo4jClient.getSession();
-      try {
-        // The org filter runs before LIMIT so other tenants' hits never use up the page.
-        const result = await session.run(
-          `
-          CALL db.index.fulltext.queryNodes('ci_fulltext_idx', $query)
-          YIELD node, score
-          WHERE node.organization_id = $organizationId
-          RETURN node, score
-          ORDER BY score DESC
-          LIMIT $limit
-          `,
-          { query: query.trim(), limit: neo4j.int(limitNum), organizationId }
-        );
-
-        const cis = result.records.map((r: any) => ({
-          ci: r.get('node').properties,
-          score: r.get('score'),
-        }));
-
-        res.json({
-          success: true,
-          data: cis,
-          count: cis.length,
-          query: query.trim()
-        });
-      } finally {
-        await session.close();
-      }
+      const { cis, total } = await readCIList(organizationId, async (pending, timeout) => {
+        const session = this.neo4jClient.getSession();
+        try {
+          const params = { query: literalFulltextQuery(query), limit: neo4j.int(limitNum), organizationId, pending };
+          const matched = `CALL db.index.fulltext.queryNodes('ci_fulltext_idx', $query)
+             YIELD node, score
+             WHERE node:CI AND node.organization_id = $organizationId AND NOT node.id IN $pending`;
+          const expiresAt = Date.now() + timeout;
+          const remaining = () => {
+            const milliseconds = expiresAt - Date.now();
+            if (milliseconds <= 0) throw new CIListUnavailableError();
+            return milliseconds;
+          };
+          const countResult = await session.run(
+            `${matched} RETURN count(node) AS total`, params, { timeout: remaining() });
+          const pageResult = await session.run(
+            `${matched} RETURN node, score ORDER BY score DESC, node.id LIMIT $limit`,
+            params, { timeout: remaining() });
+          return {
+            total: countResult.records[0]!.get('total').toNumber() as number,
+            cis: pageResult.records.map(row => ({
+              ci: (row.get('node') as { properties: Record<string, unknown> }).properties,
+              score: row.get('score') as number,
+            })),
+          };
+        } finally {
+          await session.close();
+        }
+      });
+      res.json({ success: true, data: cis, count: cis.length, total, query: query.trim() });
     } catch (error) {
+      if (error instanceof CIListUnavailableError) {
+        res.status(503).json(CI_LIST_UNAVAILABLE_RESPONSE);
+        return;
+      }
       logger.error('Error searching CIs', error);
       res.status(500).json({
         success: false,
@@ -652,10 +673,12 @@ export class CIController {
         return;
       }
 
-      // The audit log has no organization column: history is only served for
-      // a CI that currently exists in the caller's organization.
-      const ci = await this.neo4jClient.getCI(id, requestOrganizationId(req));
+      // Ownership is checked before the org-bound audit query; legacy and
+      // foreign rows are excluded by the service even after CI ID recycling.
+      const organizationId = requestOrganizationId(req);
+      const ci = await this.neo4jClient.getCI(id, organizationId);
       if (!ci) {
+        await assertNoCIGap(organizationId, id);
         sendCINotFound(res);
         return;
       }
@@ -663,7 +686,8 @@ export class CIController {
       const postgresClient = getPostgresClient();
       const auditService = getAuditService(postgresClient['pool']);
 
-      const auditHistory = await auditService.getCIAuditHistory(id, limitNum);
+      const auditHistory = await readSingleCI(organizationId, id,
+        () => auditService.getCIAuditHistory(id, organizationId, limitNum));
 
       res.json({
         success: true,
@@ -671,6 +695,10 @@ export class CIController {
         count: auditHistory.length
       });
     } catch (error) {
+      if (error instanceof CIGapError) {
+        res.status(409).json(CI_GAP_RESPONSE);
+        return;
+      }
       logger.error('Error getting CI audit history', error);
       res.status(500).json({
         success: false,

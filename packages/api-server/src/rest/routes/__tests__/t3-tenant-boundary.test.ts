@@ -83,16 +83,29 @@ const graph = {
         throw new Error('Unscoped Neo4j statement');
       }
       const visible = [...nodes.values()].filter(ci => ci.organization_id === org);
+      const ungapped = visible.filter(ci =>
+        !Array.isArray(params['pending']) || !(params['pending'] as string[]).includes(ci.id));
+      if (statement.includes('collect(ci)') && ungapped.length > 100) {
+        throw new Error('Unbounded CI materialization');
+      }
+      if (statement.includes('AS page')) {
+        const offset = Number((params['offset'] as { toNumber?: () => number })?.toNumber?.() ?? 0);
+        const end = Number((params['end'] as { toNumber?: () => number })?.toNumber?.() ?? 50);
+        return { records: [record({
+          total: integer(ungapped.length),
+          page: ungapped.slice(offset, end).map(ci => ({ properties: { ...ci, type: 'server', status: 'active' } })),
+        })] };
+      }
       const id = params['id'] ?? params['ciId'] ?? params['rootCiId'];
       if (statement.includes('RETURN ci.id AS ciId, ci.incarnation_id AS incarnationId')) {
         return { records: visible.map(row => record({ ciId: row.id, incarnationId: row.incarnation_id })) };
       }
       const ci = visible.find(row => row.id === id);
       if (/RETURN count\(ci\) (as|AS) total/.test(statement)) {
-        return { records: [record({ total: integer(visible.length) })] };
+        return { records: [record({ total: integer(ungapped.length) })] };
       }
       if (statement.includes('compliantCount')) {
-        return { records: [record({ compliantCount: integer(visible.filter(row => row.itil_audit_status === 'COMPLIANT').length), totalAudited: integer(visible.filter(row => row.itil_audit_status).length) })] };
+        return { records: [record({ compliantCount: integer(ungapped.filter(row => row.itil_audit_status === 'COMPLIANT').length), totalAudited: integer(ungapped.filter(row => row.itil_audit_status).length) })] };
       }
       if (statement.includes('RETURN ci.id as id')) {
         return { records: ci ? [record({ id: ci.id, name: ci.name, ci_type: 'server' })] : [] };
@@ -127,6 +140,26 @@ const graph = {
         ci.itil_audit_status = String(params['auditStatus'] ?? ci.itil_audit_status ?? '');
         return { records: [record({ ci: { properties: { ...ci } } })] };
       }
+      if (statement.includes('RETURN ci') && statement.includes('LIMIT $limit')) {
+        const query = params['query'];
+        const matching = typeof query === 'string'
+          ? ungapped.filter(row => row.name.includes(query) || row.id.includes(query))
+          : ungapped;
+        const sorted = [...matching].sort((left, right) => {
+          if (statement.includes('ci.created_at DESC')) {
+            const byDate = String(right.created_at ?? '').localeCompare(String(left.created_at ?? ''));
+            if (byDate) return byDate;
+          } else {
+            const byName = left.name.localeCompare(right.name);
+            if (byName) return byName;
+          }
+          return left.id.localeCompare(right.id);
+        });
+        const offset = (params['offset'] as { toNumber?: () => number })?.toNumber?.() ?? 0;
+        const limit = (params['limit'] as { toNumber: () => number }).toNumber();
+        return { records: sorted.slice(offset, offset + limit)
+          .map(row => record({ ci: { properties: { ...row, type: 'server', status: 'active' } } })) };
+      }
       if (id !== undefined && statement.includes('RETURN ci')) {
         return { records: ci ? [record({ ci: { properties: { ...ci } } })] : [] };
       }
@@ -137,7 +170,9 @@ const graph = {
   }),
 };
 const pg = {
-  query: async (sql: string, params: unknown[] = []) => {
+  query: async (command: string | { text: string; values?: unknown[] }, values: unknown[] = []) => {
+    const sql = typeof command === 'string' ? command : command.text;
+    const params = typeof command === 'string' ? values : command.values ?? [];
     sqlCount++;
     return { rows: await db.rows(sql, params) };
   },
@@ -206,11 +241,20 @@ beforeAll(async () => {
     ${table('impact_analyses')} ${table('ci_criticality_scores')}`);
   await db.exec(readFileSync(join(migrations, '011_ci_organization_scope.sql'), 'utf8'));
   await db.exec(readFileSync(join(migrations, '025_ci_derived_incarnation.sql'), 'utf8'));
+  const provenance = readFileSync(join(migrations, '028_change_history_reconciliation_org_provenance.sql'), 'utf8');
+  const historyColumns = provenance.match(/ALTER TABLE ci_change_history\s+ADD COLUMN[\s\S]*?;/);
+  if (!historyColumns) throw new Error('Missing S1 history org columns');
+  await db.exec(historyColumns[0]);
+  for (const name of ['ci_reconciliation_operations', 'ci_reconciliation_epochs']) {
+    const definition = provenance.match(new RegExp(`CREATE TABLE IF NOT EXISTS ${name} \\([\\s\\S]*?\\n\\);`));
+    if (!definition) throw new Error(`Missing S1 journal table ${name}`);
+    await db.exec(definition[0]);
+  }
   await db.exec(`INSERT INTO cmdb.dim_ci (ci_id, ci_name, ci_type, ci_status, organization_id) VALUES
     ('ci-a', 'A', 'server', 'active', '${A}'), ('ci-b', 'B', 'server', 'active', '${B}');`);
-  await db.exec(`INSERT INTO ci_change_history (ci_id, change_type, change_source, metadata, ci_incarnation_id) VALUES
-    ('ci-a', 'UPDATE', 'test', '{"organization_id":"${A}"}', '${A_INC}'),
-    ('ci-b', 'UPDATE', 'test', '{"organization_id":"${B}"}', '${B_INC}');`);
+  await db.exec(`INSERT INTO ci_change_history (ci_id, change_type, change_source, metadata, ci_incarnation_id, organization_id) VALUES
+    ('ci-a', 'UPDATE', 'test', '{"organization_id":"${A}"}', '${A_INC}', '${A}'),
+    ('ci-b', 'UPDATE', 'test', '{"organization_id":"${B}"}', '${B_INC}', '${B}');`);
   nodes.set('ci-a', { id: 'ci-a', name: 'A', organization_id: A, incarnation_id: A_INC, created_at: '2020-01-01T00:00:00Z', itil_audit_status: 'COMPLIANT' });
   nodes.set('ci-b', { id: 'ci-b', name: 'B', organization_id: B, incarnation_id: B_INC, created_at: '2020-01-01T00:00:00Z', itil_audit_status: 'FAILED' });
 });
@@ -268,9 +312,9 @@ it('persists fresh graph-owned CI derivatives before the reporting dimension syn
 it('shows only current graph-incarnation history after deletion and re-creation', async () => {
   nodes.set('ci-fresh', { id: 'ci-fresh', name: 'Former A', organization_id: A, incarnation_id: A_INC });
   await db.rows(
-    `INSERT INTO ci_change_history (ci_id, change_type, change_source, metadata, ci_incarnation_id) VALUES
-      ('ci-fresh', 'A_EVENT', 'reconciliation', $1::jsonb, $2),
-      ('ci-fresh', 'LEGACY', 'unknown', NULL, NULL)`,
+    `INSERT INTO ci_change_history (ci_id, change_type, change_source, metadata, ci_incarnation_id, organization_id) VALUES
+      ('ci-fresh', 'A_EVENT', 'reconciliation', $1::jsonb, $2, '${A}'),
+      ('ci-fresh', 'LEGACY', 'unknown', NULL, NULL, NULL)`,
     [JSON.stringify({ organization_id: A, event_id: 'a-1' }), A_INC]
   );
   const gqlApp = express();
@@ -285,8 +329,8 @@ it('shows only current graph-incarnation history after deletion and re-creation'
     nodes.delete('ci-fresh');
     nodes.set('ci-fresh', { id: 'ci-fresh', name: 'New B', organization_id: B, incarnation_id: B_INC });
     await db.rows(
-      "INSERT INTO ci_change_history (ci_id, change_type, change_source, metadata, ci_incarnation_id) VALUES ('ci-fresh', 'B_EVENT', 'reconciliation', $1::jsonb, $2)",
-      [JSON.stringify({ organization_id: B, event_id: 'b-1' }), B_INC]
+      "INSERT INTO ci_change_history (ci_id, change_type, change_source, metadata, ci_incarnation_id, organization_id) VALUES ('ci-fresh', 'B_EVENT', 'reconciliation', $1::jsonb, $2, $3)",
+      [JSON.stringify({ organization_id: B, event_id: 'b-1' }), B_INC, B]
     );
     expect((await rest('aa')).status).toBe(404);
     expect((await gql('aa')).body.errors?.[0].extensions.code).toBe('NOT_FOUND');
@@ -295,6 +339,45 @@ it('shows only current graph-incarnation history after deletion and re-creation'
   } finally {
     await server.stop();
   }
+});
+
+it('excludes previous same-org CI incarnations from ITIL history even when their timestamps are newer', async () => {
+  const id = 'ci-fresh';
+  const formerIncarnation = randomUUID();
+  const currentIncarnation = randomUUID();
+  nodes.set(id, { id, name: 'Former A', organization_id: A, incarnation_id: formerIncarnation });
+  await db.rows(
+    `INSERT INTO ci_change_history
+      (ci_id, change_type, change_source, organization_id, ci_incarnation_id,
+       previous_values, new_values, changed_at)
+     VALUES ($1, 'updated', 'test', $2, $3, '{"name":"former"}', '{"name":"old-secret"}',
+       NOW() + INTERVAL '1 day')`,
+    [id, A, formerIncarnation]
+  );
+  nodes.set(id, { id, name: 'Current A', organization_id: A, incarnation_id: currentIncarnation });
+  await db.rows(
+    `INSERT INTO ci_change_history
+      (ci_id, change_type, change_source, organization_id, ci_incarnation_id,
+       previous_values, new_values, changed_at)
+     VALUES ($1, 'updated', 'test', $2, $3, '{"name":"current"}', '{"name":"new-value"}', NOW())`,
+    [id, A, currentIncarnation]
+  );
+
+  const history = (limit: number) => request(app)
+    .get(`/api/v1/itil/configuration-items/${id}/history?limit=${limit}`).set(auth('a'));
+  const first = await history(1);
+  expect(first.status).toBe(200);
+  expect(first.body.count).toBe(1);
+  expect(first.body.data.map((row: { new_values: { name: string } }) => row.new_values.name))
+    .toEqual(['new-value']);
+
+  const full = await history(10);
+  expect(full.body.data.map((row: { previous_values: { name: string } }) => row.previous_values.name))
+    .toEqual(['current']);
+  nodes.get(id)!.incarnation_id = undefined;
+  const noIncarnation = await history(10);
+  expect(noIncarnation.status).toBe(200);
+  expect(noIncarnation.body).toMatchObject({ data: [], count: 0 });
 });
 
 it('fences legacy SQL derivatives across a deleted and re-created CI ID, but reads fresh B rows', async () => {
@@ -342,16 +425,16 @@ it('fences legacy SQL derivatives across a deleted and re-created CI ID, but rea
     VALUES ($1, false, 0, NOW(), $2)`, [id, B_INC]);
   await db.rows(`INSERT INTO impact_analyses (id, source_ci_id, change_type, risk_level, analyzed_at, ci_incarnation_id)
     VALUES ('44444444-4444-4444-8444-444444444444', $1, 'RESTART', 'low', NOW(), $2)`, [id, B_INC]);
-  await db.rows(`INSERT INTO ci_change_history (ci_id, change_type, change_source, metadata, changed_at, ci_incarnation_id)
-    VALUES ($1, 'FRESH_B', 'test', $2::jsonb, NOW(), $3)`, [id, JSON.stringify({ organization_id: B }), B_INC]);
+  await db.rows(`INSERT INTO ci_change_history (ci_id, change_type, change_source, metadata, changed_at, ci_incarnation_id, organization_id)
+    VALUES ($1, 'FRESH_B', 'test', $2::jsonb, NOW(), $3, $4)`, [id, JSON.stringify({ organization_id: B }), B_INC, B]);
   expect((await get(`/api/v1/drift/baseline/${id}`)).body.data.snapshot_data).toEqual({ owner: 'B' });
   expect((await get(`/api/v1/drift/history/${id}`)).body.data).toMatchObject([{ drift_score: 0 }]);
   expect((await get(`/api/v1/impact/history/${id}`)).body.data).toMatchObject([{ risk_level: 'low' }]);
   expect((await get(`/api/v1/itil/configuration-items/${id}/history`)).body.data)
     .toMatchObject([{ change_type: 'FRESH_B' }]);
-  await db.rows(`INSERT INTO ci_change_history (ci_id, change_type, change_source, metadata, ci_incarnation_id)
-    VALUES ($1, 'updated', 'test', $2::jsonb, $3), ($1, 'updated', 'test', $2::jsonb, $4)`,
-    [id, JSON.stringify({ organization_id: B }), A_INC, B_INC]);
+  await db.rows(`INSERT INTO ci_change_history (ci_id, change_type, change_source, metadata, ci_incarnation_id, organization_id)
+    VALUES ($1, 'updated', 'test', $2::jsonb, $3, $5), ($1, 'updated', 'test', $2::jsonb, $4, $5)`,
+    [id, JSON.stringify({ organization_id: B }), A_INC, B_INC, B]);
   const analyticsHistory = await get(`/api/v1/analytics/change-history?ci_id=${id}`);
   expect(analyticsHistory.status).toBe(200);
   expect(analyticsHistory.body.data.map((row: { change_type: string }) => row.change_type))
@@ -526,5 +609,42 @@ it('executes ITIL CI GraphQL views and mutations under authenticated two-org sco
     expect(sqlCount).toBe(0);
   } finally {
     await server.stop();
+  }
+});
+
+it('bounds all four mounted CI GraphQL lists for both tenants with broad limit-one matches', async () => {
+  const ids: string[] = [];
+  for (const [user, organization_id] of [['a', A], ['b', B]] as const) {
+    for (let index = 0; index < 140; index++) {
+      const id = `ci-${user}-bulk-${String(index).padStart(3, '0')}`;
+      nodes.set(id, { id, name: `bulk-${String(index).padStart(3, '0')}`, organization_id,
+        created_at: '2026-10-16T00:00:00Z' });
+      ids.push(id);
+    }
+  }
+  const gqlApp = express();
+  const { server } = await createGraphQLServer(gqlApp);
+  try {
+    for (const user of ['a', 'b'] as const) {
+      const fields = [
+        'getCIs(limit:1, offset:1) { _id }',
+        'searchCIs(query:"bulk", limit:1) { _id }',
+        'configurationItems(page:2, limit:1) { total page pages items { _id } }',
+        'cisDueForAudit(limit:1) { _id }',
+      ];
+      const bodies = await Promise.all(fields.map(field =>
+        request(gqlApp).post('/graphql').set(auth(user)).send({ query: `{ ${field} }` })
+          .then(response => response.body)));
+      expect(bodies.map(body => body.errors?.[0]?.message ?? null)).toEqual([null, null, null, null]);
+      expect(bodies[0].data.getCIs).toEqual([{ _id: `ci-${user}-bulk-001` }]);
+      expect(bodies[1].data.searchCIs).toEqual([{ _id: `ci-${user}-bulk-000` }]);
+      expect(bodies[2].data.configurationItems).toMatchObject({
+        total: 141, page: 2, pages: 141, items: [{ _id: `ci-${user}-bulk-000` }],
+      });
+      expect(bodies[3].data.cisDueForAudit).toEqual([{ _id: `ci-${user}` }]);
+    }
+  } finally {
+    await server.stop();
+    for (const id of ids) nodes.delete(id);
   }
 });

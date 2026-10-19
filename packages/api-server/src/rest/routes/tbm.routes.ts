@@ -16,8 +16,8 @@ const authMiddleware = getAuthMiddleware();
 // Apply audit middleware to all routes
 tbmRoutes.use(auditMiddleware);
 
-// Only tenant-owned operations require an organization claim. Global operations
-// refuse every authenticated caller identically, including org-less admins.
+// Tenant-owned operations require an organization claim. Licenses and
+// renewals are platform-wide reads reserved for a verified platform admin.
 const tenantScope = authMiddleware.requireOrganization();
 const tenantTrendsAdmin = authMiddleware.requirePermission('admin');
 
@@ -127,14 +127,14 @@ tbmRoutes.post(
 
 tbmRoutes.get(
   '/licenses',
-  denyPlatformAdminRest,
+  authMiddleware.requirePlatformAdmin(),
   validateOptional(licenseQuerySchema, 'query'),
   controller.getLicenses.bind(controller)
 );
 
 tbmRoutes.get(
   '/licenses/renewals',
-  denyPlatformAdminRest,
+  authMiddleware.requirePlatformAdmin(),
   validateOptional(renewalsQuerySchema, 'query'),
   controller.getUpcomingRenewals.bind(controller)
 );

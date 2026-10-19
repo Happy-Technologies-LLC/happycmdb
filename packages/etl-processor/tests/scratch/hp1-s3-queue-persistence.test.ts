@@ -1,6 +1,8 @@
 // Copyright 2026 Happy Technologies LLC
 // SPDX-License-Identifier: Apache-2.0
 /** v16 §15 N-18: runs production worker registrations against disposable Redis, PostgreSQL and Neo4j.
+ * Forced ETL failures inject scoped graph-read or worker-entry faults into the
+ * registered processors. Settlement diagnostics contain only states and coded logs.
  * This suite must be run only by the founder on an approved disposable substrate.
  */
 import { Queue, Job } from 'bullmq';
@@ -17,6 +19,8 @@ import { ETLWorkerManager } from '../../src';
 import { V3ETLWorkerManager } from '../../src/workers/v3-etl.worker';
 import { CostSyncWorkerManager } from '../../../discovery-engine/src/workers/cost-sync.worker';
 import { CostSyncService } from '../../../tbm-cost-engine/src/integrations/cost-sync.service';
+import { installETLReadFault } from './n18-etl-read-fault';
+import { installWorkerStartFault } from './n18-worker-start-fault';
 
 const orgs = ['aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa', 'bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb'];
 const etlQueues = [QUEUE_NAMES._ETL_SYNC, QUEUE_NAMES._ETL_RECONCILIATION,
@@ -36,20 +40,49 @@ let v3: V3ETLWorkerManager;
 const etlConnections = new Map<string, Queue>();
 const submitted: Job[] = [];
 
+/** Diagnostic output is bounded and never contains job data, raw errors, or raw logs. */
+async function settlementFailure(queue: Queue, job: Job, expected: string,
+  states: string[], injected?: () => boolean): Promise<Error> {
+  const persisted = await Job.fromId(queue, job.id!);
+  const lastState = persisted ? await persisted.getState() : 'unknown';
+  const logs = (await queue.getJobLogs(job.id!, 0, 20)).logs
+    .filter(line => /^DEAD_LETTER:ERR_(INTERNAL|RESULT_SCHEMA|VALIDATION|NOT_FOUND|UNAVAILABLE)$/.test(line));
+  const counts = await queue.getJobCounts('waiting', 'active', 'delayed', 'completed', 'failed', 'paused');
+  const evidence = {
+    queue: queue.name, jobId: /^\d+$/.test(job.id ?? '') ? job.id : '(non-numeric)',
+    expected, states, lastState, paused: await queue.isPaused(), counts,
+    attemptsMade: persisted?.attemptsMade, attemptsStarted: persisted?.attemptsStarted,
+    processed: !!persisted?.processedOn, finished: !!persisted?.finishedOn,
+    failedCode: /^ERR_(INTERNAL|RESULT_SCHEMA|VALIDATION|NOT_FOUND|UNAVAILABLE)$/.test(persisted?.failedReason ?? '')
+      ? persisted?.failedReason : undefined,
+    returnvaluePresent: persisted?.returnvalue != null, dataRetained: !!persisted && Object.keys(persisted.data).length > 0,
+    codedLogs: logs,
+    ...(injected && { faultInjected: injected() }),
+  };
+  return new Error(`N18 BullMQ settlement mismatch: ${JSON.stringify(evidence)}`);
+}
+
 async function settled(queue: Queue, job: Job, expected: 'completed' | 'failed',
-  timeoutMs = 370_000): Promise<Job> {
+  timeoutMs = 370_000, injected?: () => boolean): Promise<Job> {
   const deadline = Date.now() + timeoutMs; // real BullMQ limiter: fake timers cannot advance Redis
-  let state = 'unknown';
+  const states: string[] = [];
+  let scrubDeadline: number | undefined;
   while (Date.now() < deadline) {
     const persisted = await Job.fromId(queue, job.id!);
-    state = persisted ? await persisted.getState() : 'unknown';
-    if (persisted && state === expected) return persisted;
-    if (state === 'completed' || state === 'failed') {
-      throw new Error(`Unexpected terminal state for ${job.queueName}: ${state} (expected ${expected})`);
+    const state = persisted ? await persisted.getState() : 'unknown';
+    if (states[states.length - 1] !== state && states.length < 16) states.push(state);
+    if (persisted && state === expected) {
+      // BullMQ commits completion before the worker's asynchronous scrub callback.
+      if (expected === 'failed' || Object.keys(persisted.data).length === 0) return persisted;
+      scrubDeadline ??= Date.now() + 5_000;
+      if (Date.now() >= scrubDeadline) throw await settlementFailure(queue, job, expected, states, injected);
+    } else if (state === 'completed' || state === 'failed') {
+      throw await settlementFailure(queue, job, expected, states, injected);
     }
+    // Real Redis timers cannot be advanced with Jest fake timers.
     await new Promise(resolve => setTimeout(resolve, 250));
   }
-  throw new Error(`Timed out waiting for ${job.queueName}: ${expected} (last state: ${state})`);
+  throw await settlementFailure(queue, job, expected, states, injected);
 }
 
 /** Job.fromJSON drops an empty Redis failedReason; only completed jobs use this assertion. */
@@ -109,9 +142,6 @@ afterAll(async () => {
   await Promise.all([...etlConnections.values()].map(queue => queue.close()));
   await queueManager.closeAll();
   await discovery.stop();
-  const session = graph.getSession();
-  try { await session.run('MATCH (ci:CI) WHERE ci.id IN [91991, 91992] DETACH DELETE ci'); }
-  finally { await session.close(); }
   if (createdLicenseTable) await postgres.query('DROP TABLE public.software_licenses');
   await postgres.close();
   await graph.close();
@@ -196,9 +226,8 @@ it('persists coded success for A and B and sanitized forced failure through ever
   };
   const unsafe = (name: string): Record<string, unknown> => {
     const common = { organizationId: orgs[1], privateMarker: marker };
-    // On an empty graph Neo4j can return zero CIs without evaluating this bad
-    // date. The sync failure below must instead inject a scoped storage fault.
-    if (name === QUEUE_NAMES._ETL_SYNC) return { ...common, incrementalSince: 'not-an-iso-date' };
+    // The scoped read fault below is independent of how many CIs the graph contains.
+    if (name === QUEUE_NAMES._ETL_SYNC) return { ...common, incrementalSince: 'n18-read-fault' };
     if (name === QUEUE_NAMES._ETL_RECONCILIATION) return { ...common, ciIds: marker };
     if (name === QUEUE_NAMES._ETL_CHANGE_DETECTION) return { ...common, lookbackHours: 'invalid' };
     return { ...common, truncateTables: false, rebuildIndexes: false };
@@ -220,41 +249,16 @@ it('persists coded success for A and B and sanitized forced failure through ever
       recordReceipt(name, organizationId, 'normal', completed,
         (await queue.getJobLogs(success.id!)).logs);
     }
-
-    if (name === QUEUE_NAMES._ETL_FULL_REFRESH) {
-      // Bad numeric graph IDs force this registered processor's guard to fail
-      // before any dimension write; the A and B jobs ran against clean stores.
-      const session = graph.getSession();
-      try {
-        await session.run(`CREATE (:CI {id: 91991, name:'invalid-n18-a', organization_id:$a})
-          CREATE (:CI {id: 91992, name:'invalid-n18-b', organization_id:$b})`,
-        { a: orgs[0], b: orgs[1] });
-      } finally { await session.close(); }
-    }
-    const syncFault = name === QUEUE_NAMES._ETL_SYNC;
-    if (syncFault) await queue.pause();
+    const readFault = name === QUEUE_NAMES._ETL_SYNC || name === QUEUE_NAMES._ETL_FULL_REFRESH;
+    if (readFault) await queue.pause();
     const failed = await queue.add('n18-foreign-failure', unsafe(name),
       { removeOnComplete: false, removeOnFail: false, attempts: 1 });
     submitted.push(failed);
-    let restore = () => {};
-    let injected = false;
+    const fault = readFault ? installETLReadFault(graph, failed) : undefined;
     try {
-      if (syncFault) {
-        // The empty graph makes the invalid date an unreliable failure stimulus.
-        // Fail exactly this real worker's first Redis payload scrub instead.
-        const updateData = Job.prototype.updateData;
-        const fault = jest.spyOn(Job.prototype, 'updateData').mockImplementation(function (this: Job, data) {
-          if (this.id === failed.id && this.queueName === name && !injected) {
-            injected = true;
-            return Promise.reject(new Error(marker));
-          }
-          return updateData.call(this, data);
-        });
-        restore = () => fault.mockRestore();
-        await queue.resume();
-      }
-      await settled(queue, failed, 'failed', syncFault ? 20_000 : 370_000);
-      if (syncFault) expect(injected).toBe(true);
+      if (readFault) await queue.resume();
+      await settled(queue, failed, 'failed', readFault ? 20_000 : 370_000, fault?.injected);
+      if (fault) expect(fault.injected()).toBe(true);
       // The failed event's asynchronous DLQ hook follows BullMQ's persisted state
       // transition; poll the real Redis record rather than mutating it in the test.
       let fresh = await Job.fromId(queue, failed.id!);
@@ -275,8 +279,8 @@ it('persists coded success for A and B and sanitized forced failure through ever
         .not.toContain(marker);
       recordReceipt(name, orgs[1], 'forced-failure', fresh!, logs.logs);
     } finally {
-      restore();
-      if (syncFault) await queue.resume();
+      fault?.restore();
+      if (readFault) await queue.resume();
     }
   }
 }, 760_000);
@@ -360,18 +364,10 @@ it('persists scrubbed two-org results and coded DLQ failures through three regis
       fiscalPeriod: '2099-01', validateAllocations: false, includeChanges: false, privateMarker: marker,
     }, { removeOnComplete: false, removeOnFail: false, attempts: 1 });
     submitted.push(faulted);
-    const updateData = Job.prototype.updateData;
-    let injected = false;
-    const fault = jest.spyOn(Job.prototype, 'updateData').mockImplementation(function (this: Job, data) {
-      if (this.id === faulted.id && !injected) {
-        injected = true;
-        return Promise.reject(new Error(marker));
-      }
-      return updateData.call(this, data);
-    });
+    const fault = installWorkerStartFault(faulted);
     try {
       await queue.resume();
-      await settled(queue, faulted, 'failed');
+      await settled(queue, faulted, 'failed', 20_000, fault.injected);
       let fresh = await Job.fromId(queue, faulted.id!);
       const deadline = Date.now() + 10_000;
       while (!fresh?.data.__dlq && Date.now() < deadline) {
@@ -379,7 +375,7 @@ it('persists scrubbed two-org results and coded DLQ failures through three regis
         fresh = await Job.fromId(queue, faulted.id!);
       }
       const logs = await queue.getJobLogs(faulted.id!);
-      expect(injected).toBe(true);
+      expect(fault.injected()).toBe(true);
       expect(fresh?.returnvalue).toBeNull();
       expect(fresh?.failedReason).toBe('ERR_INTERNAL');
       expect(fresh?.stacktrace?.length).toBeGreaterThan(0);
@@ -389,7 +385,7 @@ it('persists scrubbed two-org results and coded DLQ failures through three regis
         data: fresh?.data, failure: fresh?.failedReason, stack: fresh?.stacktrace })).not.toContain(marker);
       recordReceipt(name, orgs[1], 'forced-failure', fresh!, logs.logs);
     } finally {
-      fault.mockRestore();
+      fault.restore();
       await queue.resume();
     }
   }

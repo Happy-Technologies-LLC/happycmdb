@@ -7,6 +7,7 @@ import { GraphQLError } from 'graphql';
 import { AnalyticsService, DependencyDepthLimitError } from '../../services/analytics.service';
 import { logger, CIAnalyticsLimitError } from '@cmdb/common';
 import { requireGraphQLOrganization } from '../require-organization';
+import { assertNoCIGap, CIGapError, CIListUnavailableError, readSingleCI } from '../../read-admission';
 import type { TokenPayload } from '../../auth/types';
 
 /**
@@ -264,13 +265,12 @@ const AnalyticsQueryResolvers = {
         _ciType: row.ci_type,
         _relationshipCount: parseInt(String(row.relationship_count)),
       }));
-    } catch (error: any) {
+    } catch (error: unknown) {
       logger.error('GraphQL: Error getting top connected CIs', error);
-      throw new GraphQLError('Failed to retrieve top connected CIs', {
-        extensions: {
-          code: 'INTERNAL_SERVER_ERROR',
-          originalError: error.message,
-        },
+      const limited = error instanceof CIListUnavailableError ||
+        (typeof error === 'object' && error !== null && 'code' in error && error.code === '57014');
+      throw new GraphQLError(limited ? 'Top connected CI resource limit exceeded' : 'Failed to retrieve top connected CIs', {
+        extensions: { code: limited ? 'RESOURCE_LIMIT_EXCEEDED' : 'INTERNAL_SERVER_ERROR' },
       });
     }
   },
@@ -321,29 +321,31 @@ const AnalyticsQueryResolvers = {
         });
       }
 
+      const ci = await context._neo4jClient.getCI(args.ciId, organizationId);
+      if (!ci) {
+        await assertNoCIGap(organizationId, args.ciId);
+        throw new GraphQLError('CI not found', { extensions: { code: 'NOT_FOUND' } });
+      }
       const service = new AnalyticsService();
       const limit = Math.min(args.limit || 50, 1000);
-
-      const results = await service.getChangeHistory(args.ciId, organizationId, limit);
-
+      const results = await readSingleCI(organizationId, args.ciId,
+        () => service.getChangeHistory(args.ciId, organizationId, limit, ci._incarnation_id ?? null));
       return results.map(row => ({
         _changeTimestamp: row.change_timestamp.toISOString(),
         _changeType: row.change_type,
-        _fieldName: row.field_name || null,
-        _oldValue: row.old_value || null,
-        _newValue: row.new_value || null,
-        _changedBy: row.changed_by || null,
+        _fieldName: row.field_name ?? null,
+        _oldValue: row.old_value ?? null,
+        _newValue: row.new_value ?? null,
+        _changedBy: row.changed_by ?? null,
       }));
-    } catch (error: any) {
-      logger.error('GraphQL: Error getting change history', error);
-      if (error instanceof GraphQLError) {
-        throw error;
+    } catch (error: unknown) {
+      if (error instanceof CIGapError) {
+        throw new GraphQLError('CI is temporarily unavailable', { extensions: { code: 'CONFLICT' } });
       }
+      if (error instanceof GraphQLError) throw error;
+      logger.error('GraphQL: Error getting change history');
       throw new GraphQLError('Failed to retrieve change history', {
-        extensions: {
-          code: 'INTERNAL_SERVER_ERROR',
-          originalError: error.message,
-        },
+        extensions: { code: 'INTERNAL_SERVER_ERROR' },
       });
     }
   },

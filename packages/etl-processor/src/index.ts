@@ -8,9 +8,10 @@
  * Handles data synchronization between Neo4j graph database and PostgreSQL data mart.
  */
 
+import type Redis from 'ioredis';
 import { Worker, Job } from 'bullmq';
 import { getNeo4jClient, getPostgresClient, getRedisClient, QUEUE_NAMES } from '@cmdb/database';
-import { logger } from '@cmdb/common';
+import { logger, codedProcessor, scrubCompletedJobs, JobErrorHandler } from '@cmdb/common';
 import {
   processNeo4jToPostgresJob,
   type Neo4jToPostgresJobData,
@@ -95,6 +96,7 @@ export class ETLWorkerManager {
   private neo4jClient = getNeo4jClient();
   private postgresClient = getPostgresClient();
   private redisClient = getRedisClient();
+  private workerConnection?: Redis;
 
   /**
    * Start all ETL workers
@@ -110,15 +112,22 @@ export class ETLWorkerManager {
     logger.info('Starting ETL workers...');
 
     try {
+      // BullMQ workers need unbounded blocking retries; do not change the
+      // shared cache client's bounded retry policy.
+      const workerConnection = this.redisClient.getConnection().duplicate({ maxRetriesPerRequest: null });
+      this.workerConnection = workerConnection;
       // Neo4j to PostgreSQL sync worker
       const syncWorker = new Worker(
         QUEUE_NAMES._ETL_SYNC,
-        async (job: Job<Neo4jToPostgresJobData>) => {
+        codedProcessor('etl-sync', {
+          cisProcessed: 'count', relationshipsProcessed: 'count', recordsInserted: 'count',
+          recordsUpdated: 'count', errors: 'count', durationMs: 'count', completedAt: 'timestamp',
+        }, async (job: Job<Neo4jToPostgresJobData>) => {
           logger.info('Processing Neo4j to PostgreSQL sync job', { jobId: job.id });
-          return await processNeo4jToPostgresJob(job, this.neo4jClient, this.postgresClient);
-        },
+          return processNeo4jToPostgresJob(job, this.neo4jClient, this.postgresClient);
+        }),
         {
-          connection: this.redisClient.getConnection(),
+          connection: workerConnection,
           concurrency: 2, // Process 2 sync jobs concurrently
           limiter: {
             max: 10, // Max 10 jobs
@@ -127,6 +136,7 @@ export class ETLWorkerManager {
         }
       );
 
+      scrubCompletedJobs(syncWorker);
       syncWorker.on('completed', (job, result: ETLJobResult) => {
         logger.info('Sync job completed', {
           _jobId: job.id,
@@ -147,12 +157,15 @@ export class ETLWorkerManager {
       // Reconciliation worker
       const reconciliationWorker = new Worker(
         QUEUE_NAMES._ETL_RECONCILIATION,
-        async (job: Job<ReconciliationJobData>) => {
+        codedProcessor('etl-reconciliation', {
+          _cisChecked: 'count', _conflictsDetected: 'count', _conflictsResolved: 'count',
+          _manualReviewRequired: 'count', _durationMs: 'count', _completedAt: 'timestamp',
+        }, async (job: Job<ReconciliationJobData>) => {
           logger.info('Processing reconciliation job', { jobId: job.id });
-          return await processReconciliationJob(job, this.neo4jClient, this.postgresClient);
-        },
+          return processReconciliationJob(job, this.neo4jClient, this.postgresClient);
+        }),
         {
-          connection: this.redisClient.getConnection(),
+          connection: workerConnection,
           concurrency: 1, // Process one reconciliation at a time
           limiter: {
             max: 5,
@@ -161,6 +174,7 @@ export class ETLWorkerManager {
         }
       );
 
+      scrubCompletedJobs(reconciliationWorker);
       reconciliationWorker.on('completed', (job, result: ReconciliationResult) => {
         logger.info('Reconciliation job completed', {
           _jobId: job.id,
@@ -182,12 +196,15 @@ export class ETLWorkerManager {
       // Change detection worker
       const changeDetectionWorker = new Worker(
         QUEUE_NAMES._ETL_CHANGE_DETECTION,
-        async (job: Job<ChangeDetectionJobData>) => {
+        codedProcessor('etl-change-detection', {
+          cisChecked: 'count', changesDetected: 'count', changesRecorded: 'count',
+          durationMs: 'count', completedAt: 'timestamp',
+        }, async (job: Job<ChangeDetectionJobData>) => {
           logger.info('Processing change detection job', { jobId: job.id });
-          return await processChangeDetectionJob(job, this.neo4jClient, this.postgresClient);
-        },
+          return processChangeDetectionJob(job, this.neo4jClient, this.postgresClient);
+        }),
         {
-          connection: this.redisClient.getConnection(),
+          connection: workerConnection,
           concurrency: 3, // Process 3 change detection jobs concurrently
           limiter: {
             max: 20,
@@ -195,7 +212,7 @@ export class ETLWorkerManager {
           }
         }
       );
-
+      scrubCompletedJobs(changeDetectionWorker);
       changeDetectionWorker.on('completed', (job, result: ChangeDetectionResult) => {
         logger.info('Change detection job completed', {
           _jobId: job.id,
@@ -216,12 +233,15 @@ export class ETLWorkerManager {
       // Full refresh worker
       const fullRefreshWorker = new Worker(
         QUEUE_NAMES._ETL_FULL_REFRESH,
-        async (job: Job<FullRefreshJobData>) => {
+        codedProcessor('etl-full-refresh', {
+          cisProcessed: 'count', relationshipsProcessed: 'count', dimensionsCreated: 'count',
+          factsCreated: 'count', durationMs: 'count', completedAt: 'timestamp', stagesCompleted: 'stages',
+        }, async (job: Job<FullRefreshJobData>) => {
           logger.info('Processing full refresh job', { jobId: job.id });
-          return await processFullRefreshJob(job, this.neo4jClient, this.postgresClient);
-        },
+          return processFullRefreshJob(job, this.neo4jClient, this.postgresClient);
+        }),
         {
-          connection: this.redisClient.getConnection(),
+          connection: workerConnection,
           concurrency: 1, // Process one full refresh at a time
           limiter: {
             max: 1,
@@ -230,6 +250,7 @@ export class ETLWorkerManager {
         }
       );
 
+      scrubCompletedJobs(fullRefreshWorker);
       fullRefreshWorker.on('completed', (job, result: FullRefreshResult) => {
         logger.info('Full refresh job completed', {
           jobId: job.id,
@@ -269,6 +290,12 @@ export class ETLWorkerManager {
           logger.warn('Job stalled', { jobId });
         });
 
+        worker.on('failed', (job, error) => {
+          if (job) void JobErrorHandler.handleJobFailure(job, error).catch(() => {
+            logger.error('ETL dead-letter handling failed', { code: 'ERR_INTERNAL' });
+          });
+        });
+
         worker.on('error', (error) => {
           logger.error('Worker error', { error });
         });
@@ -279,7 +306,11 @@ export class ETLWorkerManager {
       });
 
     } catch (error) {
-      logger.error('Failed to start ETL workers', { error });
+      await Promise.allSettled(this.workers.map(worker => worker.close()));
+      this.workers = [];
+      await this.workerConnection?.quit().catch(() => undefined);
+      this.workerConnection = undefined;
+      logger.error('Failed to start ETL workers', { code: 'ERR_INTERNAL' });
       throw error;
     }
   }
@@ -306,6 +337,8 @@ export class ETLWorkerManager {
       );
 
       this.workers = [];
+      await this.workerConnection?.quit();
+      this.workerConnection = undefined;
       logger.info('All ETL workers stopped successfully');
 
     } catch (error) {

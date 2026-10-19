@@ -2904,7 +2904,10 @@ paths:
     post:
       tags: [Jobs]
       summary: Retry failed job
-      description: Retry a failed job; AD, SNMP, and AI discovery queues return 403 Queue mutation unavailable
+      description: >-
+        Retry an intact failed job. A scrubbed job has no original workload and
+        returns 409; explicitly resubmit its original input instead. AD, SNMP,
+        and AI discovery queues return 403 Queue mutation unavailable.
       operationId: retryJob
       parameters:
         - name: queueName
@@ -2926,6 +2929,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          description: Original job input has been scrubbed; resubmit the workload
 
   # =============================================================================
   # BUSINESS SERVICES

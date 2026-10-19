@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Request, Response } from 'express';
-import { getQueueManager } from '@cmdb/common';
+import { getQueueManager, ScrubbedJobRetryError } from '@cmdb/common';
 import { getDiscoveryScheduler, getDiscoveryJobScheduler } from '@cmdb/discovery-engine';
 import { getNeo4jClient } from '@cmdb/database';
 import { getETLScheduler } from '@cmdb/etl-processor';
@@ -10,6 +10,7 @@ import { JobsController } from '../../src/rest/controllers/jobs.controller';
 
 jest.mock('@cmdb/common', () => ({
   getQueueManager: jest.fn(),
+  ScrubbedJobRetryError: class extends Error {},
   logger: {
     info: jest.fn(),
     error: jest.fn(),
@@ -243,6 +244,20 @@ describe('JobsController', () => {
 
       expect(mockQueueManager.retryJob).toHaveBeenCalledWith('etl-sync', 'job-42');
     });
+
+    it('reports scrubbed failed jobs as resubmission-required, never as retry success', async () => {
+      const req = { params: { queueName: 'etl-full-refresh', jobId: 'failed-1' } } as unknown as Request;
+      mockQueueManager.getJob.mockResolvedValue(mockBullJob({ id: 'failed-1' }));
+      mockQueueManager.retryJob.mockRejectedValue(new ScrubbedJobRetryError());
+      const res = mockResponse();
+
+      await controller.retryJob(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(409);
+      expect(res.json).toHaveBeenCalledWith({
+        success: false, error: 'Conflict', message: 'Job input unavailable; resubmit the original workload',
+      });
+    });
   });
 
   describe('getFailedJobs (bounded pagination)', () => {
@@ -350,45 +365,31 @@ describe('JobsController', () => {
       expect(JSON.stringify((etlResponse.json as jest.Mock).mock.calls)).not.toContain('synthetic-secret');
     });
 
-    it('round-trips a discovery cronExpression and enabled state', async () => {
+    it('refuses legacy schedule enable and only permits disabling without changing cron', async () => {
       const schedule = {
-        _provider: 'nmap',
-        _queueName: 'discovery-nmap',
-        _cronPattern: '0 * * * *',
-        _enabled: true,
-        _config: { targets: [] },
+        _provider: 'nmap', _queueName: 'discovery-nmap',
+        _cronPattern: '0 * * * *', _enabled: true,
       };
       const discoveryJobScheduler = (getDiscoveryJobScheduler as jest.Mock).mock.results[0]?.value;
-      discoveryJobScheduler.getScheduleView.mockImplementation(async () => schedule);
-      discoveryJobScheduler.updateSchedule.mockImplementation(
-        async (_provider: string, cronExpression: string) => {
-          schedule._cronPattern = cronExpression;
-        }
-      );
-      discoveryJobScheduler.disableSchedule.mockImplementation(async () => {
-        schedule._enabled = false;
-      });
-      const req = {
-        params: { provider: 'nmap' },
-        body: { cronExpression: '*/15 * * * *', enabled: false },
-      } as unknown as Request;
-      const res = mockResponse();
+      discoveryJobScheduler.getScheduleView.mockResolvedValue(schedule);
 
-      await controller.updateDiscoverySchedule(req, res);
+      const enable = mockResponse();
+      await controller.updateDiscoverySchedule({
+        params: { provider: 'nmap' }, body: { enabled: true },
+      } as unknown as Request, enable);
+      expect(enable.status).toHaveBeenCalledWith(409);
+      expect(discoveryJobScheduler.updateSchedule).not.toHaveBeenCalled();
+      expect(discoveryJobScheduler.disableSchedule).not.toHaveBeenCalled();
 
-      expect(discoveryJobScheduler.updateSchedule).toHaveBeenCalledWith('nmap', '*/15 * * * *');
+      const disabled = mockResponse();
+      await controller.updateDiscoverySchedule({
+        params: { provider: 'nmap' }, body: { enabled: false },
+      } as unknown as Request, disabled);
       expect(discoveryJobScheduler.disableSchedule).toHaveBeenCalledWith('nmap');
-      expect(res.json).toHaveBeenCalledWith(
-        expect.objectContaining({
-          success: true,
-          data: {
-            provider: 'nmap',
-            queueName: 'discovery-nmap',
-            cronExpression: '*/15 * * * *',
-            enabled: false,
-          },
-        })
-      );
+      expect(disabled.json).toHaveBeenCalledWith(expect.objectContaining({
+        success: true,
+        data: { provider: 'nmap', queueName: 'discovery-nmap', cronExpression: '0 * * * *', enabled: false },
+      }));
     });
 
     it('rejects legacy cronPattern rather than ignoring it', async () => {

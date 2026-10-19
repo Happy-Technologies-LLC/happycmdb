@@ -17,13 +17,21 @@ import { getAuthMiddleware } from '../../auth/auth-bootstrap';
 import { requestOrganizationId } from '../../middleware/auth.middleware';
 import { executeBoundedAnalysis } from '../../middleware/analysis-admission';
 import { errorLogFields } from '../../utils/log-error';
+import { assertNoCIGap, CIGapError, CI_GAP_RESPONSE } from '../../read-admission';
 
 export const architectureRoutes = Router();
 const authMiddleware = getAuthMiddleware();
+const invalidCIId = /\u0000|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u;
 function executeAnalysis(
   req: Request, res: Response, operation: () => Promise<{ status: number; body: unknown }>
 ): Promise<void> {
-  return executeBoundedAnalysis(req, res, operation, {
+  return executeBoundedAnalysis(req, res, async () => {
+    try { return await operation(); }
+    catch (error) {
+      if (error instanceof CIGapError) return { status: 409, body: CI_GAP_RESPONSE };
+      throw error;
+    }
+  }, {
     scope: 'architecture',
     timeoutMs: ARCHITECTURE_REQUEST_TIMEOUT_MS,
     withDeadline: withArchitectureDeadline,
@@ -41,8 +49,8 @@ function executeAnalysis(
  */
 architectureRoutes.get(
   '/business-services/:serviceId/analysis',
-  authMiddleware.requirePermission('write'),
   authMiddleware.requireOrganization(),
+  authMiddleware.requirePermission('write'),
   async (req: Request, res: Response): Promise<void> => {
     await executeAnalysis(req, res, async () => {
       const { serviceId } = req.params;
@@ -66,30 +74,35 @@ architectureRoutes.get(
  */
 architectureRoutes.post(
   '/analyze',
-  authMiddleware.requirePermission('write'),
   authMiddleware.requireOrganization(),
+  authMiddleware.requirePermission('write'),
   async (req: Request, res: Response): Promise<void> => {
     await executeAnalysis(req, res, async () => {
       const { ci_ids } = req.body;
-      if (!ci_ids || !Array.isArray(ci_ids) || ci_ids.length === 0) {
+      if (!Array.isArray(ci_ids) || ci_ids.length === 0) {
         return { status: 400, body: { success: false, error: 'ci_ids array is required' } };
       }
-      if (ci_ids.length > MAX_ARCHITECTURE_ROOTS) {
+      if (!ci_ids.every((id: unknown) => typeof id === 'string' &&
+        id.length >= 1 && id.length <= 255 && !invalidCIId.test(id))) {
+        return { status: 400, body: { success: false, error: 'ci_ids must contain CI IDs of 1–255 characters' } };
+      }
+      const ids = [...new Set(ci_ids as string[])];
+      if (ids.length > MAX_ARCHITECTURE_ROOTS) {
         return { status: 400, body: { success: false, error: `Too many CI IDs (maximum ${MAX_ARCHITECTURE_ROOTS})` } };
       }
       const organizationId = requestOrganizationId(req);
-      if (!ci_ids.every((id: unknown) => typeof id === 'string' && id.length > 0)) {
-        return { status: 400, body: { success: false, error: 'ci_ids must contain CI IDs' } };
-      }
-      for (const id of ci_ids as string[]) {
+      for (const id of ids) {
         const ci = await getNeo4jClient().getCI(id, organizationId, architectureRemainingMs());
         architectureRemainingMs();
         if (!ci) {
-          return { status: 404, body: { success: false, error: 'CI not found' } };
+          await assertNoCIGap(organizationId, id);
+          return { status: 404, body: { success: false, error: 'Not Found', message: 'CI not found' } };
         }
       }
-      logger.info('Architecture analysis requested for CIs', { ci_count: ci_ids.length });
-      const analysis = await getArchitectureOptimizationEngine().analyzeArchitecture(ci_ids, organizationId);
+      for (const id of ids) await assertNoCIGap(organizationId, id);
+      logger.info('Architecture analysis requested for CIs', { ci_count: ids.length });
+      const analysis = await getArchitectureOptimizationEngine().analyzeArchitecture(ids, organizationId);
+      for (const id of ids) await assertNoCIGap(organizationId, id);
       return { status: 200, body: { success: true, analysis } };
     });
   }
@@ -101,6 +114,7 @@ architectureRoutes.post(
  */
 architectureRoutes.get(
   '/recommendations',
+  authMiddleware.requireOrganization(),
   async (req: Request, res: Response): Promise<void> => {
     try {
       // This endpoint would aggregate recommendations across all business services

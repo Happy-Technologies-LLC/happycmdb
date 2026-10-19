@@ -172,9 +172,9 @@ export interface JobOptions {
   /** Job timeout in milliseconds */
   _timeout: number;
   /** Remove on complete */
-  removeOnComplete?: boolean | number;
+  removeOnComplete?: boolean | number | { age: number; count: number };
   /** Remove on fail */
-  removeOnFail?: boolean | number;
+  removeOnFail?: boolean | number | { age: number; count: number };
   /** Job priority (higher = more priority) */
   priority?: number;
 }

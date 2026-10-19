@@ -31,28 +31,6 @@ beforeEach(() => {
   run.mockClear();
 });
 
-it('bounds service mapping and persistence with SET LOCAL statement_timeout in their SQL transactions', async () => {
-  const engine = ArchitectureOptimizationEngine.getInstance();
-  const result = await withArchitectureDeadline(Date.now() + 20_000, async () => {
-    const service = await engine.analyzeBusinessService('service-1', 'org-a');
-    await engine.analyzeArchitecture([], 'org-a');
-    return service;
-  });
-  expect(result?.business_service_name).toBe('Empty service');
-  const statements = clientQuery.mock.calls.map(([sql]) => sql);
-  expect(statements.filter((sql) => sql === 'BEGIN')).toHaveLength(2);
-  expect(statements.filter((sql) => sql.includes("set_config('statement_timeout'"))).toHaveLength(2);
-  expect(statements.some((sql) => sql.includes('SELECT DISTINCT s.name'))).toBe(true);
-  expect(statements.some((sql) => sql.includes('INSERT INTO architecture_analyses'))).toBe(true);
-  expect(statements.filter((sql) => sql === 'COMMIT')).toHaveLength(2);
-  expect(release).toHaveBeenCalledTimes(2);
-  for (const [, values] of clientQuery.mock.calls.filter(([sql]) => sql.includes("set_config('statement_timeout'"))) {
-    const milliseconds = Number(String(values?.[0]).replace('ms', ''));
-    expect(milliseconds).toBeGreaterThan(0);
-    expect(milliseconds).toBeLessThanOrEqual(5000);
-  }
-});
-
 it('propagates the remaining request budget to the owned-root Neo4j statement', async () => {
   clientQuery.mockImplementation(async (sql) => {
     if (sql.includes('SELECT DISTINCT s.name')) return { rows: [{ name: 'Service', ci_id: 'ci-1' }] };

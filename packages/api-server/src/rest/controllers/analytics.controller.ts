@@ -3,10 +3,11 @@
 
 import { Request, Response } from 'express';
 import { getPostgresClient, getNeo4jClient } from '@cmdb/database';
-import { logger, ciIncarnationId, CIAnalyticsLimitError } from '@cmdb/common';
+import { logger, CIAnalyticsLimitError } from '@cmdb/common';
 import { requestOrganizationId } from '../../middleware/auth.middleware';
 import { executeBoundedAnalysis } from '../../middleware/analysis-admission';
 import { AnalyticsService, DependencyDepthLimitError } from '../../services/analytics.service';
+import { assertNoCIGap, CIGapError, CI_GAP_RESPONSE, CIListUnavailableError, readSingleCI } from '../../read-admission';
 
 export class AnalyticsController {
   private postgresClient = getPostgresClient();
@@ -266,42 +267,23 @@ export class AnalyticsController {
 
       const limitNum = Math.min(parseInt(String(limit)), 100);
 
-      // Both endpoints must belong to the caller; a cross-tenant edge is not
-      // part of either organization's analytics.
-      const tenantRelationships = `
-        SELECT r.* FROM cmdb.fact_ci_relationships r
-        JOIN cmdb.dim_ci source ON source.ci_key = r.from_ci_key
-        JOIN cmdb.dim_ci target ON target.ci_key = r.to_ci_key
-        WHERE source.is_current AND target.is_current
-          AND source.organization_id = $2 AND target.organization_id = $2
-      `;
-      const edge = direction === 'in' ? 'r.to_ci_key = c.ci_key'
-        : direction === 'out' ? 'r.from_ci_key = c.ci_key'
-        : '(r.from_ci_key = c.ci_key OR r.to_ci_key = c.ci_key)';
-      const result = await this.postgresClient.query(`
-        WITH tenant_relationships AS (${tenantRelationships})
-        SELECT c.ci_id, c.ci_name, c.ci_type,
-          COUNT(r.relationship_key) AS relationship_count
-        FROM cmdb.dim_ci c
-        LEFT JOIN tenant_relationships r ON ${edge}
-        WHERE c.is_current AND c.organization_id = $2
-        GROUP BY c.ci_key, c.ci_id, c.ci_name, c.ci_type
-        ORDER BY relationship_count DESC
-        LIMIT $1
-      `, [limitNum, requestOrganizationId(req)]);
+      const result = await new AnalyticsService().getTopConnectedCIs(
+        requestOrganizationId(req), limitNum, direction as 'in' | 'out' | 'both'
+      );
 
       res.json({
         success: true,
-        data: result.rows,
+        data: result,
         direction,
       });
     } catch (error) {
       logger.error('Error getting top connected CIs', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to retrieve top connected CIs',
-        message: error instanceof Error ? error.message : 'Unknown error',
-      });
+      if (error instanceof CIListUnavailableError ||
+        (typeof error === 'object' && error !== null && 'code' in error && error.code === '57014')) {
+        res.status(503).json({ success: false, error: 'Top connected CI resource limit exceeded' });
+        return;
+      }
+      res.status(500).json({ success: false, error: 'Failed to retrieve top connected CIs' });
     }
   }
 
@@ -345,50 +327,30 @@ export class AnalyticsController {
         return;
       }
 
+      const id = String(ci_id);
       const organizationId = requestOrganizationId(req);
-      const ci = await this.neo4jClient.getCI(String(ci_id), organizationId);
+      const ci = await this.neo4jClient.getCI(id, organizationId);
       if (!ci) {
-        res.status(404).json({ success: false, error: 'Not Found' });
+        await assertNoCIGap(organizationId, id);
+        res.status(404).json({ success: false, error: 'Not Found', message: 'CI not found' });
         return;
       }
-      const incarnationId = ciIncarnationId(ci);
-      if (!incarnationId) {
-        res.json({ success: true, data: [], ci_id });
-        return;
-      }
-
-      const limitNum = Math.min(parseInt(String(limit)), 1000);
-
-      const result = await this.postgresClient.query(
-        `
-        SELECT
-          changed_at,
-          change_type,
-          changed_fields,
-          previous_values,
-          new_values,
-          changed_by
-        FROM ci_change_history
-        WHERE ci_id = $1 AND ci_incarnation_id = $3
-          AND metadata->>'organization_id' = $4
-        ORDER BY changed_at DESC
-        LIMIT $2
-        `,
-        [ci_id, limitNum, incarnationId, organizationId]
-      );
-
-      res.json({
-        success: true,
-        data: result.rows,
-        ci_id,
-      });
+      const limitNum = Math.min(parseInt(String(limit), 10), 1000);
+      const result = await readSingleCI(organizationId, id, () => this.postgresClient.query(
+        `SELECT changed_at, change_type, changed_fields, previous_values, new_values, changed_by
+         FROM ci_change_history WHERE ci_id = $1 AND organization_id = $2
+           AND ci_incarnation_id = $3::uuid
+         ORDER BY changed_at DESC, id LIMIT $4`,
+        [id, organizationId, ci._incarnation_id ?? null, limitNum]
+      ));
+      res.json({ success: true, data: result.rows, ci_id });
     } catch (error) {
+      if (error instanceof CIGapError) {
+        res.status(409).json(CI_GAP_RESPONSE);
+        return;
+      }
       logger.error('Error getting change history', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to retrieve change history',
-        message: error instanceof Error ? error.message : 'Unknown error',
-      });
+      res.status(500).json({ success: false, error: 'Failed to retrieve change history' });
     }
   }
 
@@ -485,7 +447,7 @@ export class AnalyticsController {
         JOIN jsonb_to_recordset($3::jsonb) AS current_ci("ciId" text, "incarnationId" uuid)
           ON h.ci_id = current_ci."ciId" AND h.ci_incarnation_id = current_ci."incarnationId"
         WHERE h.changed_at >= $1 AND h.changed_at <= $2
-          AND h.metadata->>'organization_id' = $4
+          AND h.organization_id = $4::uuid
         GROUP BY date
         ORDER BY date ASC
         `,

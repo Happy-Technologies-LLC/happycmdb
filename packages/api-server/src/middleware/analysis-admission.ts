@@ -5,6 +5,7 @@ import { Request, Response, NextFunction } from 'express';
 import { logger } from '@cmdb/common';
 import { optionalRequestOrganizationId, requestOrganizationId, type AuthenticatedRequest } from './auth.middleware';
 import { errorLogFields } from '../utils/log-error';
+import { CIGapError, CI_GAP_RESPONSE } from '../read-admission';
 
 const WINDOW_MS = 60_000;
 export const GRAPHQL_RESPONSE_WRITE_DEADLINE_MS = 30_000;
@@ -158,6 +159,10 @@ export async function executeBoundedAnalysis(
     if (Date.now() >= deadline) throw policy.deadlineError();
     res.status(result.status).json(result.body);
   } catch (error) {
+    if (error instanceof CIGapError) {
+      res.status(409).json(CI_GAP_RESPONSE);
+      return;
+    }
     logger.error(`${policy.scope[0]!.toUpperCase()}${policy.scope.slice(1)} analysis failed`, {
       error: errorLogFields(error),
     });

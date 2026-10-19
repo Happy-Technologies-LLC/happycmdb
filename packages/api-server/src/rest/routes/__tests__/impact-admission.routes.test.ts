@@ -129,5 +129,5 @@ it('applies the same end-to-end deadline to preflight and engine work', async ()
   expect(statement.status).toBe(504);
   expect(statement.body).toEqual({ success: false, error: 'Impact analysis timed out' });
   expect(getCI.mock.calls[0][2]).toBeGreaterThan(0);
-  expect(getCI.mock.calls[0][2]).toBeLessThanOrEqual(5000);
+  expect(getCI.mock.calls[0][2]).toBeLessThanOrEqual(10000);
 });

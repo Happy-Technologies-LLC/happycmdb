@@ -16,7 +16,11 @@ import { Queue, Worker, Job, QueueEvents } from 'bullmq';
 import IORedis from 'ioredis';
 import { logger } from '../utils/logger';
 import { getQueueConfig, QUEUE_CONFIGS } from './queue-config';
+import { jobErrorCode } from './coded-processor';
 import type { JobProgress, WorkerConfig } from '../types/job.types';
+export class ScrubbedJobRetryError extends Error {
+  constructor() { super('Job input unavailable; resubmit the original workload'); }
+}
 
 /**
  * Redis connection for BullMQ
@@ -45,8 +49,8 @@ export class EnhancedQueueManager {
     this.connection = getRedisConnection();
 
     // Handle connection errors
-    this.connection.on('error', (err) => {
-      logger.error('Redis connection error', err);
+    this.connection.on('error', () => {
+      logger.error('Redis connection error', { code: 'ERR_UNAVAILABLE' });
     });
 
     this.connection.on('connect', () => {
@@ -97,24 +101,24 @@ export class EnhancedQueueManager {
       logger.info(`Worker ${name} ready for queue ${_queueName}`);
     });
 
-    worker.on('active', (job) => {
-      logger.info(`Worker ${name} processing job ${job.id}`);
+    worker.on('active', () => {
+      logger.info(`Worker ${name} processing job`);
     });
 
-    worker.on('completed', (job, result) => {
-      logger.info(`Worker ${name} completed job ${job.id}`, { result });
+    worker.on('completed', () => {
+      logger.info(`Worker ${name} completed job`);
     });
 
-    worker.on('failed', (job, err) => {
-      logger.error(`Worker ${name} failed job ${job?.id}`, err);
+    worker.on('failed', (_job, err) => {
+      logger.error(`Worker ${name} failed job`, { code: jobErrorCode(err) });
     });
 
-    worker.on('error', (err) => {
-      logger.error(`Worker ${name} error`, err);
+    worker.on('error', () => {
+      logger.error(`Worker ${name} error`, { code: 'ERR_INTERNAL' });
     });
 
-    worker.on('stalled', (jobId) => {
-      logger.warn(`Worker ${name} job ${jobId} stalled`);
+    worker.on('stalled', () => {
+      logger.warn(`Worker ${name} job stalled`);
     });
 
     // Setup graceful shutdown if enabled
@@ -137,24 +141,24 @@ export class EnhancedQueueManager {
         connection: this.connection,
       });
 
-      queueEvents.on('waiting', ({ jobId }) => {
-        logger.debug(`Job ${jobId} is waiting in queue ${queueName}`);
+      queueEvents.on('waiting', () => {
+        logger.debug(`Job waiting in queue ${queueName}`);
       });
 
-      queueEvents.on('active', ({ jobId }) => {
-        logger.debug(`Job ${jobId} is active in queue ${queueName}`);
+      queueEvents.on('active', () => {
+        logger.debug(`Job active in queue ${queueName}`);
       });
 
-      queueEvents.on('completed', ({ jobId, returnvalue }) => {
-        logger.info(`Job ${jobId} completed in queue ${queueName}`, { returnvalue });
+      queueEvents.on('completed', () => {
+        logger.info(`Job completed in queue ${queueName}`);
       });
 
-      queueEvents.on('failed', ({ jobId, failedReason }) => {
-        logger.error(`Job ${jobId} failed in queue ${queueName}`, { failedReason });
+      queueEvents.on('failed', () => {
+        logger.error(`Job failed in queue ${queueName}`, { code: 'ERR_INTERNAL' });
       });
 
-      queueEvents.on('progress', ({ jobId, data }) => {
-        logger.debug(`Job ${jobId} progress in queue ${queueName}`, data);
+      queueEvents.on('progress', () => {
+        logger.debug(`Job progress in queue ${queueName}`);
       });
 
       this.queueEvents.set(queueName, queueEvents);
@@ -174,7 +178,7 @@ export class EnhancedQueueManager {
   ): Promise<Job<T>> {
     const queue = this.getQueue<T>(_queueName);
     const job = await queue.add(_jobName as any, _data as any, options);
-    logger.info(`Job ${job.id} added to queue ${_queueName}`, { _jobName, _data });
+    logger.info(`Job added to queue ${_queueName}`);
     return job as Job<T>;
   }
 
@@ -276,6 +280,9 @@ export class EnhancedQueueManager {
   async retryJob(queueName: string, jobId: string): Promise<void> {
     const job = await this.getJob(queueName, jobId);
     if (job) {
+      if (job.data?.__dlq !== undefined || job.data?._legacy === true) {
+        throw new ScrubbedJobRetryError();
+      }
       await job.retry();
       logger.info(`Job ${jobId} retried in queue ${queueName}`);
     }
@@ -337,8 +344,8 @@ export class EnhancedQueueManager {
         await _worker.close();
         logger.info(`Worker ${_name} shut down successfully`);
         process.exit(0);
-      } catch (err) {
-        logger.error(`Error shutting down worker ${_name}`, err as Error);
+      } catch {
+        logger.error(`Error shutting down worker ${_name}`, { code: 'ERR_INTERNAL' });
         process.exit(1);
       }
     };

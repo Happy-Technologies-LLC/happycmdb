@@ -9,13 +9,14 @@
 import { Request, Response } from 'express';
 import { logger } from '@cmdb/common';
 import { getIdentityReconciliationEngine } from '@cmdb/identity-resolution';
-import { getPostgresClient } from '@cmdb/database';
+import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
 import { TransformedCI, IdentificationAttributes } from '@cmdb/integration-framework';
 import { requestOrganizationId } from '../../middleware/auth.middleware';
 import {
   countOwnedConflicts, getOwnedConflict, getOwnedFieldSources, getOwnedLineage,
   listOwnedConflicts, updateOwnedConflict
 } from '../../reconciliation/tenant-queries';
+import { assertNoCIGap, CIGapError, CI_GAP_RESPONSE, readSingleCI } from '../../read-admission';
 
 export class ReconciliationController {
   private reconciliationEngine = getIdentityReconciliationEngine();
@@ -248,7 +249,13 @@ export class ReconciliationController {
     try {
       const organizationId = requestOrganizationId(req);
       const { ci_id } = req.params;
-      const result = await getOwnedLineage(this.postgresClient, ci_id, organizationId);
+      if (!await getNeo4jClient().getCI(ci_id, organizationId)) {
+        await assertNoCIGap(organizationId, ci_id);
+        res.status(404).json({ success: false, error: 'Not Found', message: 'CI not found' });
+        return;
+      }
+      const result = await readSingleCI(organizationId, ci_id,
+        () => getOwnedLineage(this.postgresClient, ci_id, organizationId));
       if (result.rows.length === 0) {
         res.status(404).json({ success: false, error: 'Not Found', message: 'CI not found' });
         return;
@@ -268,6 +275,10 @@ export class ReconciliationController {
         }
       });
     } catch (error) {
+      if (error instanceof CIGapError) {
+        res.status(409).json(CI_GAP_RESPONSE);
+        return;
+      }
       logger.error('Error getting CI lineage', error);
       res.status(500).json({
         success: false,
@@ -285,7 +296,13 @@ export class ReconciliationController {
     try {
       const organizationId = requestOrganizationId(req);
       const { ci_id } = req.params;
-      const result = await getOwnedFieldSources(this.postgresClient, ci_id, organizationId);
+      if (!await getNeo4jClient().getCI(ci_id, organizationId)) {
+        await assertNoCIGap(organizationId, ci_id);
+        res.status(404).json({ success: false, error: 'Not Found', message: 'CI not found' });
+        return;
+      }
+      const result = await readSingleCI(organizationId, ci_id,
+        () => getOwnedFieldSources(this.postgresClient, ci_id, organizationId));
       if (result.rows.length === 0) {
         res.status(404).json({ success: false, error: 'Not Found', message: 'CI not found' });
         return;
@@ -303,6 +320,10 @@ export class ReconciliationController {
         }
       });
     } catch (error) {
+      if (error instanceof CIGapError) {
+        res.status(409).json(CI_GAP_RESPONSE);
+        return;
+      }
       logger.error('Error getting CI field sources', error);
       res.status(500).json({
         success: false,

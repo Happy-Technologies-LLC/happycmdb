@@ -9,10 +9,11 @@
  * the `test-containers` helper — no suite starts its own containers.
  */
 
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'fs';
+import { mkdirSync, writeFileSync } from 'fs';
 import { resolve } from 'path';
 import { GenericContainer, StartedTestContainer, Wait } from 'testcontainers';
 import neo4j from 'neo4j-driver';
+import { loadPostgresSchema } from './postgres-schema';
 
 interface ContainerStore {
   __NEO4J_CONTAINER__?: StartedTestContainer;
@@ -31,7 +32,6 @@ const RUNTIME_ENV_PATH = resolve(
   process.cwd(),
   'test-results/integration/runtime-env.json'
 );
-const MIGRATIONS_DIR = resolve(process.cwd(), 'packages/database/src/postgres/migrations');
 
 export default async function globalSetup(): Promise<void> {
   console.log('Starting integration test containers...');
@@ -86,7 +86,7 @@ export default async function globalSetup(): Promise<void> {
     containerStore.__POSTGRES_CONTAINER__ = postgresContainer;
     console.log(`PostgreSQL started on localhost:${postgresPort}`);
 
-    await loadPostgresSchema(postgresContainer);
+    await loadPostgresSchema(postgresContainer, POSTGRES_USER, POSTGRES_DB);
     console.log('PostgreSQL schema loaded');
 
     // ---- Redis -------------------------------------------------------------
@@ -151,56 +151,5 @@ async function initializeNeo4jSchema(uri: string, password: string): Promise<voi
   } finally {
     await session.close();
     await driver.close();
-  }
-}
-
-/**
- * Load the canonical PostgreSQL schema into the running container.
- *
- * Applies every migration in packages/database/src/postgres/migrations in
- * sorted order (001_complete_schema, 002_oauth_substrate, ...), mirroring the
- * migrator's own discovery. Each file is executed via `psql` (statement-per-line
- * autocommit, ON_ERROR_STOP=0) so the expected non-fatal hypertable primary-key
- * notices do not abort the load. After loading we assert a core table and the
- * OAuth state table exist to catch a genuinely broken load.
- */
-async function loadPostgresSchema(container: StartedTestContainer): Promise<void> {
-  const migrationFiles = readdirSync(MIGRATIONS_DIR)
-    .filter((file) => file.endsWith('.sql'))
-    .sort();
-
-  for (const file of migrationFiles) {
-    const sql = readFileSync(resolve(MIGRATIONS_DIR, file), 'utf-8');
-    const target = `/tmp/${file}`;
-    await container.copyContentToContainer([{ content: sql, target }]);
-    // Earlier migrations include legacy non-fatal Timescale notices. ACL
-    // migrations must fail the hosted suite on any SQL error.
-    const guarded = /^0(28|29|30|31|32|33|34|35)_/.test(file);
-    const load = await container.exec([
-      'psql', '-v', `ON_ERROR_STOP=${guarded ? '1' : '0'}`,
-      ...(guarded ? ['-1'] : []),
-      '-U', POSTGRES_USER, '-d', POSTGRES_DB, '-f', target,
-    ]);
-    if (guarded && load.exitCode !== 0) {
-      throw new Error(`Guarded migration ${file} failed: ${load.output}`);
-    }
-    if (!guarded && load.exitCode !== 0) {
-      console.warn(`psql load of ${file} exited with code ${load.exitCode} (non-fatal notices expected)`);
-    }
-  }
-
-  const check = await container.exec([
-    'psql',
-    '-U',
-    POSTGRES_USER,
-    '-d',
-    POSTGRES_DB,
-    '-tAc',
-    "SELECT count(*) FROM information_schema.tables WHERE table_name IN ('api_keys', 'oauth_states')",
-  ]);
-  if (check.output.trim() !== '2') {
-    throw new Error(
-      `PostgreSQL schema load failed: expected core tables missing (psql output: ${check.output.trim()})`
-    );
   }
 }

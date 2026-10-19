@@ -68,8 +68,8 @@ export class ChangeEventProcessor {
       // Record discovery in change history
       await this.postgresClient.query(
         `INSERT INTO ci_change_history
-         (ci_id, change_type, changed_by, change_source, changed_fields, new_values, metadata, ci_incarnation_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+         (ci_id, change_type, changed_by, change_source, changed_fields, new_values, metadata, ci_incarnation_id, organization_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
         [
           ciEvent.ci_id,
           'discovered',
@@ -88,6 +88,7 @@ export class ChangeEventProcessor {
             timestamp: ciEvent.timestamp,
           }),
           incarnationId,
+          ciEvent.organization_id,
         ]
       );
 
@@ -121,8 +122,8 @@ export class ChangeEventProcessor {
       // Record update in change history
       await this.postgresClient.query(
         `INSERT INTO ci_change_history
-         (ci_id, change_type, changed_by, change_source, changed_fields, previous_values, new_values, metadata, ci_incarnation_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+         (ci_id, change_type, changed_by, change_source, changed_fields, previous_values, new_values, metadata, ci_incarnation_id, organization_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
         [
           updateEvent.ci_id,
           'updated',
@@ -137,6 +138,7 @@ export class ChangeEventProcessor {
             organization_id: updateEvent.organization_id,
           }),
           incarnationId,
+          updateEvent.organization_id,
         ]
       );
 
@@ -228,7 +230,7 @@ export class ChangeEventProcessor {
     if (!incarnationId) return [];
     const result = await this.postgresClient.query(
       `SELECT * FROM ci_change_history
-       WHERE ci_id = $1 AND metadata->>'organization_id' = $4
+       WHERE ci_id = $1 AND organization_id = $4
          AND ci_incarnation_id = $5
        ORDER BY changed_at DESC
        LIMIT $2 OFFSET $3`,

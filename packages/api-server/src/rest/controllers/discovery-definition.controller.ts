@@ -62,6 +62,17 @@ export class DiscoveryDefinitionController {
     }
   }
 
+  /** Tenant-scoped, admin-only inventory; no legacy configuration or credential payload. */
+  async listUnsafeDefinitionIds(req: Request, res: Response): Promise<void> {
+    try {
+      const ids = await this.service.listUnsafeDefinitionIds(requestOrganizationId(req));
+      res.json({ success: true, data: ids, count: ids.length });
+    } catch {
+      logger.error('Error listing unsafe discovery definitions');
+      res.status(500).json({ success: false, error: 'Failed to list unsafe discovery definitions' });
+    }
+  }
+
   /**
    * Get a discovery definition by ID
    * GET /api/v1/discovery/definitions/:id
@@ -221,6 +232,10 @@ export class DiscoveryDefinitionController {
       res.status(204).send();
     } catch (error) {
       logger.error('Error deleting discovery definition');
+      if (error instanceof Error && error.message === 'Unsafe legacy discovery configuration requires migration') {
+        res.status(409).json({ success: false, error: 'Discovery configuration requires migration' });
+        return;
+      }
 
       if (error instanceof Error && error.message.includes('not found')) {
         res.status(404).json(DEFINITION_NOT_FOUND);
@@ -379,6 +394,10 @@ export class DiscoveryDefinitionController {
       });
     } catch (error) {
       logger.error('Error disabling schedule');
+      if (error instanceof Error && error.message === 'Unsafe legacy discovery configuration requires migration') {
+        res.status(409).json({ success: false, error: 'Discovery configuration requires migration' });
+        return;
+      }
 
       if (error instanceof Error && error.message.includes('not found')) {
         res.status(404).json(DEFINITION_NOT_FOUND);

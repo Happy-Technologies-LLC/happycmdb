@@ -205,6 +205,15 @@ export class DiscoveryDefinitionService {
     }
   }
 
+  /** Inventory only opaque IDs; never return or log stored legacy JSON. */
+  async listUnsafeDefinitionIds(organizationId: string): Promise<string[]> {
+    const result = await this.postgresClient.query(
+      'SELECT id, config FROM discovery_definitions WHERE organization_id = $1 ORDER BY id',
+      [organizationId]
+    );
+    return result.rows.filter(row => hasUnsafeDiscoveryDefinitionConfig(row.config)).map(row => row.id);
+  }
+
   /**
    * Update a discovery definition
    */
@@ -229,11 +238,11 @@ export class DiscoveryDefinitionService {
       }
 
       const existing = existingResult.rows[0];
+      if (hasUnsafeDiscoveryDefinitionConfig(existing.config)) {
+        throw new Error('Unsafe legacy discovery configuration requires migration');
+      }
       if (updates.config !== undefined) {
         strictDiscoveryDefinitionConfig(updates.config);
-        if (hasUnsafeDiscoveryDefinitionConfig(existing.config)) {
-          throw new Error('Unsafe legacy discovery configuration requires migration');
-        }
       }
       if (updates.provider !== undefined || updates.credential_id !== undefined) {
         requireCredentialForProvider(updates.provider ?? existing.provider,
@@ -370,20 +379,26 @@ export class DiscoveryDefinitionService {
    * Delete a discovery definition
    */
   async deleteDefinition(id: string, organizationId: string): Promise<void> {
+    const client = await this.postgresClient.getClient();
     try {
-      const result = await this.postgresClient.query(
-        'DELETE FROM discovery_definitions WHERE id = $1 AND organization_id = $2',
+      await client.query('BEGIN');
+      const existing = await client.query(
+        'SELECT config FROM discovery_definitions WHERE id = $1 AND organization_id = $2 FOR UPDATE',
         [id, organizationId]
       );
-
-      if (result.rowCount === 0) {
-        throw new Error(`Discovery definition ${id} not found`);
+      if (!existing.rows.length) throw new Error(`Discovery definition ${id} not found`);
+      if (hasUnsafeDiscoveryDefinitionConfig(existing.rows[0].config)) {
+        throw new Error('Unsafe legacy discovery configuration requires migration');
       }
-
+      await client.query('DELETE FROM discovery_definitions WHERE id = $1 AND organization_id = $2', [id, organizationId]);
+      await client.query('COMMIT');
       logger.info('Discovery definition deleted', { definitionId: id });
     } catch (error) {
+      await client.query('ROLLBACK');
       logger.error('Error deleting discovery definition');
       throw error;
+    } finally {
+      client.release();
     }
   }
 
@@ -412,6 +427,9 @@ export class DiscoveryDefinitionService {
       if (definitionResult.rows.length === 0) {
         throw new Error(`Discovery definition ${id} not found`);
       }
+      if (hasUnsafeDiscoveryDefinitionConfig(definitionResult.rows[0].config)) {
+        throw new Error('Unsafe legacy discovery configuration requires migration');
+      }
       // Approved T1a fail-closed boundary: HP1-S5 owns credential-backed runs.
       // Do not resolve credentials, enqueue, or change last-run state here.
       if (definitionResult.rows[0].credential_id || definitionResult.rows[0].credential_set_id) {
@@ -421,9 +439,6 @@ export class DiscoveryDefinitionService {
         throw new Error('Credential-backed discovery execution is unavailable');
       }
 
-      if (hasUnsafeDiscoveryDefinitionConfig(definitionResult.rows[0].config)) {
-        throw new Error('Unsafe legacy discovery configuration requires migration');
-      }
       const definition = this.mapRowToDefinition(definitionResult.rows[0]);
 
       if (!definition.is_active) {
@@ -525,19 +540,19 @@ export class DiscoveryDefinitionService {
       if (!definition) {
         throw new Error(`Discovery definition ${id} not found`);
       }
-      if (definition.provider !== 'nmap') {
-        throw new Error('Credential-backed discovery execution is unavailable');
-      }
       // Do not arm a schedule that background workers must refuse.
       const boundSet = await this.postgresClient.query(
         'SELECT credential_set_id, config FROM discovery_definitions WHERE id = $1 AND organization_id = $2',
         [id, organizationId]
       );
-      if (definition.credential_id || boundSet.rows[0]?.credential_set_id) {
-        throw new Error('Credential-backed discovery execution is unavailable');
-      }
       if (hasUnsafeDiscoveryDefinitionConfig(boundSet.rows[0]?.config)) {
         throw new Error('Unsafe legacy discovery configuration requires migration');
+      }
+      if (definition.provider !== 'nmap') {
+        throw new Error('Credential-backed discovery execution is unavailable');
+      }
+      if (definition.credential_id || boundSet.rows[0]?.credential_set_id) {
+        throw new Error('Credential-backed discovery execution is unavailable');
       }
 
 

@@ -12,16 +12,39 @@ Reusable discovery configurations that define what to discover, how to authentic
 The current REST definition API accepts only `targets` (string array), `range` (string),
 and `scanOptions` (`aggressive`, `osDetection`, `serviceDetection`, `fullPortScan`,
 `portScan` booleans) in `config`. `targets` and `range` are alternatives.
-Inline credentials and unknown fields are rejected on create and update; use
-`credential_id` for a credential held in the unified credential store.
+Inline credentials and unknown fields are rejected on create and update; `credential_id`
+is a unified-store reference, not a substitute for an available execution consumer.
 REST definition reads return permitted settings only for safe rows; any historical
 config with an unknown key (including `_targets`) or invalid value projects `{}`.
-Such legacy rows remain unchanged: config replacement,
-manual and background triggering, and queued definition execution (including
-stale repeatable jobs) are blocked before scanning until an approved
-operator-controlled migration resolves them. No automatic legacy credential
-migration is authorized; older values must not be removed just because their
-read representation is redacted.
+Unsafe rows retain their original stored JSON and reject all normal updates
+(including metadata, credential attachment and schedule changes), deletion,
+manual/background triggering, schedule activation, and stale queued execution.
+The fixed rejection never returns the raw configuration. Safe rows continue
+to use the existing REST and nmap scan paths.
+
+### Operator-only quarantine inventory and manual review
+
+An authenticated tenant admin can call `GET /api/v1/discovery/definitions/migration/inventory`.
+The response is an organization-scoped list of **IDs only** for rows whose stored
+configuration fails the same strict predicate used by the execution guard.
+It never returns stored JSON, names, credential payloads, or cross-tenant IDs.
+For each ID, open a review record with verified tenant ID, definition ID,
+assigned admin operator and quarantined status. Mark the future mapping
+**unresolved** unless the separate contract proves the legacy shape, tenant
+owner, protocol, credential scope and consuming provider; do not infer any of
+these from the row's name, creator or arbitrary JSON key. The only authorized
+manual action now is inventory and deferral. Produce a redacted receipt with
+those IDs, review time, quarantine status and deferral decision; never copy
+secrets, JSON, token-bearing URLs, API responses containing credential
+payloads or logs. Keep the original row untouched, including its schedule.
+
+The signed 2026-10-19 containment split leaves HAP-755 **open**. This endpoint
+does not map, decrypt, transfer, bind or re-enable any legacy credential.
+Credential-backed discovery execution currently rejects all credential
+references; nmap does not consume them. The separate approved consumer and
+legacy shape/tenant/scope contract must land before a manual per-row transfer,
+replacement, rollback or activation procedure can be authorized. Unknown and
+unrecognized rows remain quarantined rather than silently stripped.
 
 ## Overview
 

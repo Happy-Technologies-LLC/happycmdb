@@ -11,8 +11,8 @@
  * router. Create/update/delete/run and enabling or disabling a schedule
  * all mutate definition state, so they additionally require the 'write'
  * permission (`authMiddleware.requirePermission('write')`, satisfied by
- * operator, agent, and admin roles). Listing and reading a single
- * definition are read-only and stay authenticated-only with no extra gate.
+ * operator, agent, and admin roles). Normal listing and reads require
+ * authentication; the quarantined-row inventory additionally requires admin.
  */
 
 import { Router } from 'express';
@@ -113,6 +113,13 @@ discoveryDefinitionRoutes.get(
   '/',
   validateOptional(listDefinitionsQuerySchema, 'query'),
   controller.listDefinitions.bind(controller)
+);
+
+// GET /migration/inventory - admin-only, redacted tenant-scoped quarantine inventory.
+discoveryDefinitionRoutes.get(
+  '/migration/inventory',
+  authMiddleware.requireRole('admin'),
+  controller.listUnsafeDefinitionIds.bind(controller)
 );
 
 // GET /api/v1/discovery/definitions/:id - Get definition by ID

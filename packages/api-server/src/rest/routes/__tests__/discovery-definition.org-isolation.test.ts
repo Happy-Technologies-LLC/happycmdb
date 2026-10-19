@@ -99,7 +99,12 @@ jest.mock('@cmdb/common', () => ({
 }));
 jest.mock('../../../auth/auth-bootstrap', () => ({ getAuthMiddleware: () => ({
   requirePermission: () => (req: express.Request, res: express.Response, next: express.NextFunction) => {
-    if ((req as express.Request & { user?: { _role: string } }).user?._role !== 'operator') return res.status(403).json({ error: 'Forbidden' });
+    const role = (req as express.Request & { user?: { _role: string } }).user?._role;
+    if (role !== 'operator' && role !== 'admin') return res.status(403).json({ error: 'Forbidden' });
+    next();
+  },
+  requireRole: () => (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if ((req as express.Request & { user?: { _role: string } }).user?._role !== 'admin') return res.status(403).json({ error: 'Forbidden' });
     next();
   },
 }) }));
@@ -120,14 +125,16 @@ app.use(express.json());
 app.use((req, _res, next) => {
   const user = req.get('x-test-user');
   (req as typeof req & { user: object }).user = {
-    _userId: user, _role: user === 'viewer' ? 'viewer' : 'operator',
-    _organizationId: user === 'a' || user === 'viewer' ? ORG_A : user === 'b' ? ORG_B : undefined,
+    _userId: user, _role: user === 'viewer' ? 'viewer' : user.startsWith('admin-') ? 'admin' : 'operator',
+    _organizationId: user === 'a' || user === 'viewer' || user === 'admin-a' ? ORG_A :
+      user === 'b' || user === 'admin-b' ? ORG_B : undefined,
   };
   next();
 });
 app.use('/api/v1/discovery/definitions', discoveryDefinitionRoutes);
 const headers = (user: string) => ({ 'x-test-user': user });
 const url = '/api/v1/discovery/definitions';
+const inventoryUrl = `${url}/migration/inventory`;
 const migrationDir = join(__dirname, '../../../../../database/src/postgres/migrations');
 
 beforeAll(async () => {
@@ -373,6 +380,22 @@ test('inline credentials and unknown settings never cross the writer-to-viewer b
   const replacement = await request(app).put(`${url}/${id}`).set(headers('a'))
     .send({ config: { range: '192.0.2.1' } });
   expect(replacement.status).toBe(409);
+  for (const updates of [
+    { name: 'silently-renamed' }, { credential_id: CRED_A }, { schedule: '0 * * * *' },
+    { is_active: true }, { is_active: false }, { provider: 'ssh' },
+  ]) {
+    const changed = await request(app).put(`${url}/${id}`).set(headers('a')).send(updates);
+    expect(changed.status).toBe(409);
+    expect(changed.body).toEqual(replacement.body);
+  }
+  const foreignMutation = await request(app).put(`${url}/${id}`).set(headers('b')).send({ name: 'foreign' });
+  expect(foreignMutation.status).toBe(404);
+  const deleted = await request(app).delete(`${url}/${id}`).set(headers('a'));
+  expect(deleted.status).toBe(409);
+  expect(deleted.body).toEqual(replacement.body);
+  const disabled = await request(app).post(`${url}/${id}/schedule/disable`).set(headers('a'));
+  expect(disabled.status).toBe(409);
+  expect(disabled.body).toEqual(replacement.body);
   const detail = await request(app).get(`${url}/${id}`).set(headers('viewer'));
   const listed = await request(app).get(url).set(headers('viewer'));
   expect(detail.body.data.config).toEqual({});
@@ -394,6 +417,33 @@ test('inline credentials and unknown settings never cross the writer-to-viewer b
     jest.mocked(logger.info).mock.calls, jest.mocked(logger.warn).mock.calls,
     jest.mocked(logger.error).mock.calls,
   ])).not.toContain(secret);
+});
+
+test('admin inventory lists only tenant-owned quarantined IDs without stored config', async () => {
+  const unsafeId = 'dddddddd-dddd-4ddd-8ddd-000000000099';
+  const safeId = 'dddddddd-dddd-4ddd-8ddd-000000000098';
+  const foreignId = 'dddddddd-dddd-4ddd-8ddd-000000000097';
+  const secret = 'synthetic-inventory-secret';
+  await query(`INSERT INTO discovery_definitions (id, name, provider, method, config, created_by, organization_id)
+    VALUES ($1, 'unsafe', 'nmap', 'agentless', $2::jsonb, 'a', $3),
+      ($4, 'safe', 'nmap', 'agentless', '{"targets":["192.0.2.1"]}', 'a', $3),
+      ($5, 'foreign', 'nmap', 'agentless', $2::jsonb, 'b', $6)`,
+    [unsafeId, JSON.stringify({ credentials: { password: secret } }), ORG_A, safeId, foreignId, ORG_B]);
+  const own = await request(app).get(inventoryUrl).set(headers('admin-a'));
+  expect(own.status).toBe(200);
+  expect(own.body.success).toBe(true);
+  expect(own.body.data).toContain(unsafeId);
+  expect(own.body.data).not.toContain(safeId);
+  expect(own.body.data).not.toContain(foreignId);
+  expect(JSON.stringify(own.body)).not.toContain(secret);
+  const foreign = await request(app).get(inventoryUrl).set(headers('admin-b'));
+  expect(foreign.body).toEqual({ success: true, data: [foreignId], count: 1 });
+  for (const user of ['a', 'viewer', 'none']) {
+    expect((await request(app).get(inventoryUrl).set(headers(user))).status).toBe(403);
+  }
+  expect((await request(app).delete(`${url}/${safeId}`).set(headers('a'))).status).toBe(204);
+  expect((await query('SELECT config FROM discovery_definitions WHERE id = $1', [unsafeId])).rows[0].config)
+    .toEqual({ credentials: { password: secret } });
 });
 
 test('poisoned org A schedule cannot block org B load or cron re-add', async () => {

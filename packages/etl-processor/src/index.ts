@@ -11,7 +11,7 @@
 import type Redis from 'ioredis';
 import { Worker, Job } from 'bullmq';
 import { getNeo4jClient, getPostgresClient, getRedisClient, QUEUE_NAMES } from '@cmdb/database';
-import { logger, codedProcessor, JobErrorHandler } from '@cmdb/common';
+import { logger, codedProcessor, scrubCompletedJobs, JobErrorHandler } from '@cmdb/common';
 import {
   processNeo4jToPostgresJob,
   type Neo4jToPostgresJobData,
@@ -136,6 +136,7 @@ export class ETLWorkerManager {
         }
       );
 
+      scrubCompletedJobs(syncWorker);
       syncWorker.on('completed', (job, result: ETLJobResult) => {
         logger.info('Sync job completed', {
           _jobId: job.id,
@@ -173,6 +174,7 @@ export class ETLWorkerManager {
         }
       );
 
+      scrubCompletedJobs(reconciliationWorker);
       reconciliationWorker.on('completed', (job, result: ReconciliationResult) => {
         logger.info('Reconciliation job completed', {
           _jobId: job.id,
@@ -210,7 +212,7 @@ export class ETLWorkerManager {
           }
         }
       );
-
+      scrubCompletedJobs(changeDetectionWorker);
       changeDetectionWorker.on('completed', (job, result: ChangeDetectionResult) => {
         logger.info('Change detection job completed', {
           _jobId: job.id,
@@ -248,6 +250,7 @@ export class ETLWorkerManager {
         }
       );
 
+      scrubCompletedJobs(fullRefreshWorker);
       fullRefreshWorker.on('completed', (job, result: FullRefreshResult) => {
         logger.info('Full refresh job completed', {
           jobId: job.id,

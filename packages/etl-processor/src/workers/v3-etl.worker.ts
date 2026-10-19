@@ -13,7 +13,7 @@
  */
 
 import { Worker, Job } from 'bullmq';
-import { logger, codedProcessor, jobErrorCode, JobErrorHandler } from '@cmdb/common';
+import { logger, codedProcessor, scrubCompletedJobs, jobErrorCode, JobErrorHandler } from '@cmdb/common';
 import { getRedisClient } from '@cmdb/database';
 import {
   processSyncCIsToDatamart,
@@ -69,6 +69,7 @@ export class CISyncWorker {
         },
       }
     );
+    scrubCompletedJobs(this.worker);
 
     // Event handlers
     this.worker.on('completed', (job, result) => {
@@ -153,6 +154,7 @@ export class CostValidationWorker {
       }
     );
 
+    scrubCompletedJobs(this.worker);
     // Event handlers
     this.worker.on('completed', (job, result) => {
       logger.info('[CostValidationWorker] Job completed', {
@@ -234,6 +236,7 @@ export class IncidentSyncWorker {
         },
       }
     );
+    scrubCompletedJobs(this.worker);
 
     // Event handlers
     this.worker.on('completed', (job, result) => {

@@ -40,3 +40,27 @@ it('validates terminal discovery outcomes without leaking result details', async
     async () => ({ _refused: 1, config: { password: 'marker-secret' } }));
   await expect(unsafe(job)).rejects.toMatchObject({ message: 'ERR_RESULT_SCHEMA' });
 });
+
+it('retains cost-sync retry input when completion fails after processor success', async () => {
+  const input = { provider: 'aws', credentialId: 'credential-ref' };
+  let persisted: Record<string, string> = { ...input };
+  const process = codedProcessor('cost-sync', schema, async (attempt: Job) => {
+    if (attempt.data.provider !== 'aws' || attempt.data.credentialId !== 'credential-ref') {
+      throw new Error('missing retry input');
+    }
+    return { processed: 2, completedAt: '2026-10-15T21:00:00.000Z' };
+  });
+  const loadStalledJob = () => ({
+    queueName: 'cost-sync',
+    data: { ...persisted },
+    updateData: async (data: Record<string, string>) => { persisted = { ...data }; },
+  }) as unknown as Job;
+
+  // BullMQ commits completion only after the processor returns. Simulate a lost
+  // lock at that boundary and reload the stalled job from durable queue data.
+  await process(loadStalledJob());
+  expect(persisted).toEqual(input);
+  await expect(process(loadStalledJob())).resolves.toEqual({
+    processed: 2, completedAt: '2026-10-15T21:00:00.000Z',
+  });
+});

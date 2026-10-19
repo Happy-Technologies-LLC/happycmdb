@@ -68,6 +68,15 @@ if (result.valid) {
 }
 ```
 
+### Coded BullMQ Workers
+
+Workers using `codedProcessor` must register `scrubCompletedJobs(worker)` after
+creating the worker. The processor validates a data-free result but retains job
+input through BullMQ completion so a stalled job can retry with its original
+payload. The completed callback scrubs retained job data only while Redis still
+records the job as completed; a crash before the callback may leave completed
+payloads retained until their configured removal policy expires.
+
 ## Type Definitions
 
 ### CI Types

@@ -10,7 +10,7 @@ import { Queue, Worker, Job, QueueEvents } from 'bullmq';
 import { Logger } from 'winston';
 import { getRedisClient, getPostgresClient } from '@cmdb/database';
 import { startOfMonth, endOfMonth, subDays } from 'date-fns';
-import { codedProcessor, jobErrorCode, JobErrorHandler } from '@cmdb/common';
+import { codedProcessor, scrubCompletedJobs, jobErrorCode, JobErrorHandler } from '@cmdb/common';
 import { AWSCostExplorer, AWSCredentials } from './aws-cost-explorer';
 import { AzureCostManagement, AzureCredentials } from './azure-cost-management';
 import { GCPBilling, GCPCredentials } from './gcp-billing';
@@ -123,6 +123,7 @@ export class CostSyncService {
       }),
       { connection: this.workerConnection, concurrency: 5 }
     );
+    scrubCompletedJobs(this.worker);
 
     this.worker.on('completed', (_job, result) => {
       this.logger.info('Cost sync job completed', {

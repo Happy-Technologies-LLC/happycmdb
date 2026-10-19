@@ -8,7 +8,7 @@
  */
 
 import { Worker, Job } from 'bullmq';
-import { codedProcessor, jobErrorCode, JobErrorHandler, logger } from '@cmdb/common';
+import { codedProcessor, scrubCompletedJobs, jobErrorCode, JobErrorHandler, logger } from '@cmdb/common';
 import { getRedisClient } from '@cmdb/database';
 import {
   processAWSCostSync,
@@ -74,6 +74,7 @@ export class AWSCostSyncWorker {
         },
       }
     );
+    scrubCompletedJobs(this.worker);
 
     this.worker.on('completed', (_job, result) => {
       logger.info('[AWSCostSyncWorker] Job completed', {
@@ -132,6 +133,7 @@ export class AzureCostSyncWorker {
         },
       }
     );
+    scrubCompletedJobs(this.worker);
 
     this.worker.on('completed', (_job, result) => {
       logger.info('[AzureCostSyncWorker] Job completed', {
@@ -190,6 +192,7 @@ export class GCPCostSyncWorker {
         },
       }
     );
+    scrubCompletedJobs(this.worker);
 
     this.worker.on('completed', (_job, result) => {
       logger.info('[GCPCostSyncWorker] Job completed', {

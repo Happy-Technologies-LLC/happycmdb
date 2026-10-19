@@ -30,6 +30,55 @@ test('an epoch change discards optimistic page and reruns with pending ids under
   expect(release).toHaveBeenCalledTimes(1);
 });
 
+test('inserting a pending CI during a graph read invalidates the result even when epoch is unchanged', async () => {
+  query.mockReset();
+  admissionQuery.mockReset();
+  query.mockResolvedValueOnce({ rows: [{ epoch: '0', pending: [] }] })
+    .mockResolvedValueOnce({ rows: [{ epoch: '0', pending: ['ci-new'] }] });
+  admissionQuery.mockImplementation(async (command: string | { text: string }) =>
+    (typeof command === 'string' ? command : command.text).includes('SELECT ci_id')
+      ? { rows: [{ ci_id: 'ci-new' }] } : { rows: [] });
+  const read = jest.fn(async (pending: string[]) => pending.includes('ci-new')
+    ? { total: 0, page: [] } : { total: 1, page: ['ci-new'] });
+  expect(await readCIList('aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa', read))
+    .toEqual({ total: 0, page: [] });
+  expect(read.mock.calls.map(([pending]) => pending)).toEqual([[], ['ci-new']]);
+});
+
+test('committing a previously pending CI during a graph read discards the excluded page', async () => {
+  query.mockReset();
+  admissionQuery.mockReset();
+  query.mockResolvedValueOnce({ rows: [{ epoch: '0', pending: ['ci-old'] }] })
+    .mockResolvedValueOnce({ rows: [{ epoch: '0', pending: [] }] });
+  admissionQuery.mockResolvedValue({ rows: [] });
+  const read = jest.fn(async (pending: string[]) => pending.includes('ci-old')
+    ? { total: 0, page: [] } : { total: 1, page: ['ci-old'] });
+  expect(await readCIList('aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa', read))
+    .toEqual({ total: 1, page: ['ci-old'] });
+  expect(read.mock.calls.map(([pending]) => pending)).toEqual([['ci-old'], []]);
+});
+
+test('a newly pending CI during the locked fallback graph read fails closed', async () => {
+  query.mockReset();
+  admissionQuery.mockReset();
+  query.mockResolvedValueOnce({ rows: [{ epoch: '0', pending: [] }] })
+    .mockResolvedValueOnce({ rows: [{ epoch: '1', pending: [] }] });
+  let pendingReads = 0;
+  admissionQuery.mockImplementation(async (command: string | { text: string }) => {
+    if ((typeof command === 'string' ? command : command.text).includes('SELECT ci_id')) {
+      pendingReads++;
+      return { rows: pendingReads === 1 ? [] : [{ ci_id: 'ci-new' }] };
+    }
+    return { rows: [] };
+  });
+  const read = jest.fn(async () => ({ total: 1, page: ['ci-new'] }));
+  await expect(readCIList('aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa', read))
+    .rejects.toBeInstanceOf(CIListUnavailableError);
+  expect(read).toHaveBeenCalledTimes(2);
+  expect(admissionQuery.mock.calls.map(([command]) => typeof command === 'string' ? command : command.text))
+    .toContain('ROLLBACK');
+});
+
 test('per-org cap refuses a third pessimistic request without queueing it', async () => {
   query.mockReset();
   admissionQuery.mockReset();

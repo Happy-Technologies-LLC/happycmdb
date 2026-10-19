@@ -137,6 +137,13 @@ export async function readGlobalCIPage<T extends { id?: unknown; organization_id
 
 const MAX_PENDING_CI_IDS = 1000;
 interface Snapshot { epoch: string; pending: string[] }
+/** Journal writers do not yet bump the epoch; pending/failed membership is the read fence. */
+function samePending(first: string[], second: string[]): boolean {
+  if (first.length !== second.length) return false;
+  if (first.length === 0) return true;
+  const left = new Set(first);
+  return left.size === new Set(second).size && second.every(ciId => left.has(ciId));
+}
 async function snapshot(organizationId: string, timeoutMs: number): Promise<Snapshot> {
   try {
     const timedSnapshot = {
@@ -181,7 +188,8 @@ export async function readCIList<T>(
   const optimistic = await read(first.pending, remaining());
   const second = await snapshot(organizationId, remaining());
   remaining();
-  if (BigInt(second.epoch) === BigInt(first.epoch)) return optimistic;
+  if (BigInt(second.epoch) === BigInt(first.epoch) &&
+    samePending(first.pending, second.pending)) return optimistic;
 
   const active = activeByOrg.get(organizationId) ?? 0;
   if (active >= 2) throw new CIListUnavailableError();
@@ -203,7 +211,14 @@ export async function readCIList<T>(
            WHERE organization_id=$1 AND state IN ('pending','failed') LIMIT $2`,
           [organizationId, MAX_PENDING_CI_IDS + 1]));
         if (pending.rows.length > MAX_PENDING_CI_IDS) throw new CIListUnavailableError();
-        const result = await read(pending.rows.map(row => row.ci_id), remaining());
+        const pendingIds = pending.rows.map(row => row.ci_id);
+        const result = await read(pendingIds, remaining());
+        const latest = await client.query<{ ci_id: string }>(timedQuery(
+          `SELECT ci_id FROM ci_reconciliation_operations
+           WHERE organization_id=$1 AND state IN ('pending','failed') LIMIT $2`,
+          [organizationId, MAX_PENDING_CI_IDS + 1]));
+        if (latest.rows.length > MAX_PENDING_CI_IDS ||
+          !samePending(pendingIds, latest.rows.map(row => row.ci_id))) throw new CIListUnavailableError();
         remaining();
         await client.query(timedQuery('COMMIT'));
         return result;

@@ -56,6 +56,7 @@ export const reconciliationTypeDefs = `
     PENDING
     RESOLVED
     DISMISSED
+    SUPERSEDED
   }
 
   """
@@ -78,6 +79,25 @@ export const reconciliationTypeDefs = `
     _status: ConflictStatus!
     """Creation timestamp"""
     _createdAt: String!
+    """Conflicting field (v16 §7)"""
+    _fieldName: String
+    """Typed incoming value"""
+    _incomingValue: JSON
+    """Typed stored value at detection"""
+    _targetValue: JSON
+    """Content revision a resolve must present as _expectedRevision"""
+    _revision: String
+  }
+
+  """
+  Outcome of a conflict resolution
+  """
+  type ConflictResolutionResult {
+    _id: ID!
+    _ciId: ID!
+    """RESOLVED, or SUPERSEDED for dismiss_stale"""
+    _status: ConflictStatus!
+    _correlationId: ID!
   }
 
   """
@@ -251,6 +271,10 @@ export const reconciliationTypeDefs = `
     _mergedFields: [String!]
     """Conflicts encountered"""
     _conflicts: [ReconciliationConflict!]
+    """Pending review conflict ids when the whole merge was held (_action pending_review)"""
+    _conflictIds: [ID!]
+    """Request correlation id"""
+    _correlationId: ID
   }
 
   """
@@ -346,15 +370,17 @@ export const reconciliationTypeDefs = `
       _status: String
     ): MergeResult!
 
-    """Resolve only a caller-owned conflict; both lookup and update enforce CI ownership"""
+    """Resolve a caller-owned conflict at its current revision (v16 §7.4)"""
     resolveConflict(
       """Conflict ID"""
       _id: ID!
-      """Resolution action"""
+      """accept_source, accept_target, merge or dismiss_stale"""
       _resolution: String!
-      """Merged data (for merge resolution)"""
+      """The conflict's _revision; a stale or changed revision is CONFLICT"""
+      _expectedRevision: String!
+      """Merged value (merge resolution only)"""
       _mergedData: JSON
-    ): ReconciliationConflict!
+    ): ConflictResolutionResult!
 
     """Global policy mutation unavailable to all roles until platform operations are available"""
     createRule(

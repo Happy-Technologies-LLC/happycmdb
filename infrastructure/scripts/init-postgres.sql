@@ -1646,6 +1646,38 @@ ALTER TABLE ci_criticality_scores DROP CONSTRAINT IF EXISTS ci_criticality_score
   ADD CONSTRAINT ci_criticality_scores_organization_required CHECK (organization_id IS NOT NULL) NOT VALID;
 CREATE UNIQUE INDEX IF NOT EXISTS ci_criticality_scores_legacy_ci_key
   ON ci_criticality_scores(ci_id) WHERE organization_id IS NULL;
+-- HP1-S4b contract parity with migration 037.
+ALTER TABLE ci_source_lineage DROP CONSTRAINT IF EXISTS ci_source_lineage_ci_id_source_name_source_id_key,
+  ADD CONSTRAINT ci_source_lineage_organization_required CHECK (organization_id IS NOT NULL) NOT VALID;
+ALTER TABLE ci_field_sources DROP CONSTRAINT IF EXISTS ci_field_sources_ci_id_field_name_key,
+  ADD CONSTRAINT ci_field_sources_organization_required CHECK (organization_id IS NOT NULL) NOT VALID;
+ALTER TABLE reconciliation_conflicts
+  ADD CONSTRAINT reconciliation_conflicts_organization_required CHECK (organization_id IS NOT NULL) NOT VALID,
+  ADD CONSTRAINT reconciliation_conflicts_detector_required CHECK (organization_id IS NULL OR detected_by IS NOT NULL) NOT VALID;
+ALTER TABLE reconciliation_rules DROP CONSTRAINT IF EXISTS reconciliation_rules_name_key;
+ALTER TABLE source_authority DROP CONSTRAINT IF EXISTS source_authority_source_name_key;
+CREATE UNIQUE INDEX IF NOT EXISTS reconciliation_rules_legacy_name_key ON reconciliation_rules(name) WHERE organization_id IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS source_authority_legacy_source_key ON source_authority(source_name) WHERE organization_id IS NULL;
+CREATE OR REPLACE FUNCTION reconciliation_conflicts_immutable() RETURNS trigger LANGUAGE plpgsql AS $fn$
+DECLARE
+  lifecycle CONSTANT text[] := ARRAY['status', 'resolved_at', 'resolved_by', 'resolution_action', 'resolution_data',
+    'suppression_hash', 'resolution_correlation_id', 'superseded_by'];
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    IF OLD.organization_id IS NOT NULL THEN
+      RAISE EXCEPTION 'reconciliation conflict evidence is immutable' USING ERRCODE = '55000';
+    END IF;
+    RETURN OLD;
+  END IF;
+  IF OLD.status <> 'pending' OR NEW.status NOT IN ('resolved', 'superseded')
+     OR to_jsonb(NEW) - lifecycle IS DISTINCT FROM to_jsonb(OLD) - lifecycle THEN
+    RAISE EXCEPTION 'reconciliation conflict evidence is immutable' USING ERRCODE = '55000';
+  END IF;
+  RETURN NEW;
+END
+$fn$;
+CREATE TRIGGER reconciliation_conflicts_immutable BEFORE UPDATE OR DELETE ON reconciliation_conflicts
+  FOR EACH ROW EXECUTE FUNCTION reconciliation_conflicts_immutable();
 
 -- ============================================
 -- INITIAL DATA POPULATION

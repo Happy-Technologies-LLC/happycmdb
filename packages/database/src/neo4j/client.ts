@@ -9,7 +9,7 @@ import { logger, CI, CIInput, ciIncarnationId, CIAnalyticsLimitError, MAX_CI_ANA
 import * as fs from 'fs';
 import * as path from 'path';
 import { getPostgresClient } from '../postgres/client';
-import { enc, PlanUnrepresentableError } from '../journal/encoding';
+import { enc } from '../journal/encoding';
 import {
   assertJournalSchema, JournalGapError, JournalGraphRunner, JournalTargetMissingError, ReconciliationJournal, StoredPlan,
 } from '../journal/journal';
@@ -370,40 +370,40 @@ export class Neo4jClient {
   }
 
   /**
-   * Journaled property update of an owned CI; values are stored as given
-   * (callers validate them as Neo4j-storable). Null when missing or foreign.
+   * Journaled direct property update of an owned CI (state only, A-10); values are
+   * stored as given (callers validate them as Neo4j-storable). Null when missing or foreign.
    * Identity, tenant, fence aliases and the incarnation never change in place.
-   * With `mergeSource` it is the reconciliation `update` (v16 §3.1), whose T2
-   * writes one org-stamped `updated` history row; direct writes are state only (A-10).
    */
-  async updateCIProperties(id: string, props: Record<string, unknown>, organizationId: string, actor: string,
-    mergeSource?: string): Promise<Record<string, unknown> | null> {
+  async updateCIProperties(id: string, props: Record<string, unknown>, organizationId: string,
+    actor: string): Promise<Record<string, unknown> | null> {
     if (Object.keys(props).some(key => ['id', 'organization_id', 'organizationid', 'op_id', 'reconciliation_op_id',
       'created_at', 'incarnation_id'].includes(key.replace(/^_+/, '').toLowerCase()))) {
       throw new Error('CI identity and incarnation cannot be updated');
     }
-    if (mergeSource !== undefined && mergeSource.length > 255) throw new PlanUnrepresentableError(); // T2 change_source VARCHAR(255)
+    return this.reconcileOwned(id, organizationId, actor, 'direct_write', async current => {
+      // A pre-incarnation node gets its marker in the same W.
+      const write = typeof current['incarnation_id'] === 'string' ? props : { ...props, incarnation_id: randomUUID() };
+      return { graph: { kind: 'update', label: null, params: enc({ id, props: write }) } };
+    }, () => this.ownedProperties(id, organizationId));
+  }
+
+  /**
+   * One journaled operation on an owned CI whose plan reads the current stored
+   * properties under the slot: direct updates, and the reconciliation merge,
+   * hold and conflict resolve (v16 §3.1, §7). Null when missing or foreign.
+   */
+  async reconcileOwned<T>(id: string, organizationId: string, actor: string,
+    operation: 'direct_write' | 'update' | 'resolve_conflict',
+    plan: (current: Record<string, unknown>) => Promise<StoredPlan>, result: (groupId: string) => Promise<T>): Promise<T | null> {
     if (!(await this.admitOwned(organizationId, [id]))) return null;
     try {
       return await this.journal.run({
-        organizationId, actor, operation: mergeSource ? 'update' : 'direct_write', ciIds: [id],
-        plan: async (): Promise<StoredPlan> => {
+        organizationId, actor, operation, ciIds: [id], result,
+        plan: async () => {
           const current = await this.ownedProperties(id, organizationId);
           if (!current) throw new JournalTargetMissingError();
-          // A pre-incarnation node gets its marker in the same W, so the history row names it.
-          const existing = current['incarnation_id'];
-          const incarnationId = typeof existing === 'string' ? existing : randomUUID();
-          const write = typeof existing === 'string' ? props : { ...props, incarnation_id: incarnationId };
-          return {
-            graph: { kind: 'update', label: null, params: enc({ id, props: write }) },
-            ...(mergeSource ? { history: {
-              changeType: 'updated' as const, changedFields: Object.keys(props), source: mergeSource,
-              previous: enc(Object.fromEntries(Object.keys(props).map(key => [key, current[key] ?? null]))),
-              next: enc(props), incarnationId: ciIncarnationId(incarnationId),
-            } } : {}),
-          };
+          return plan(current);
         },
-        result: () => this.ownedProperties(id, organizationId),
       });
     } catch (error) {
       if (error instanceof JournalTargetMissingError) return null;

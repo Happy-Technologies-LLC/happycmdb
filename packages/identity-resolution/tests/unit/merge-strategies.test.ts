@@ -21,15 +21,27 @@ jest.mock('@cmdb/common', () => ({
     error: jest.fn(),
   },
   sanitizeCITypeForLabel: (ciType: string): string => ciType.replace(/-/g, '_').toLowerCase(),
+  ciIncarnationId: () => null,
 }));
 
+type PlannedMerge = { graph: { params: { props: Record<string, unknown> } } | null;
+  fields?: Array<{ name: string; text: string; source: string }>; lineage?: { source: string; sourceId: string } };
 const mockNeo4jClient = {
   getSession: jest.fn(),
-  // The journaled merge update (journal internals run in tests/integration): replays its graph write on the mock session.
-  updateCIProperties: async (ciId: string, properties: Record<string, unknown>, organizationId: string) => {
-    const result = await mockNeo4jClient.getSession().run(`MATCH (ci:CI {id: $ciId}) WHERE ci.organization_id = $organizationId
-      SET ci += $properties RETURN ci.incarnation_id AS incarnation_id`, { ciId, organizationId, properties });
-    return result.records.length ? { incarnation_id: result.records[0].get('incarnation_id') } : null;
+  // The journaled merge (journal internals run in tests/integration): plans, then replays W on the
+  // mock session and the T2 field-source/lineage upserts on the mock client.
+  reconcileOwned: async (ciId: string, organizationId: string, _actor: string, _operation: string,
+    plan: (current: Record<string, unknown>) => Promise<PlannedMerge>, result: (groupId: string) => Promise<unknown>) => {
+    const planned = await plan({});
+    const written = await mockNeo4jClient.getSession().run(`MATCH (ci:CI {id: $ciId}) WHERE ci.organization_id = $organizationId
+      SET ci += $properties RETURN ci.incarnation_id AS incarnation_id`, { ciId, organizationId, properties: planned.graph?.params.props });
+    for (const field of planned.fields ?? []) {
+      await mockPostgresClient.query('INSERT INTO ci_field_sources ON CONFLICT', [ciId, field.name, field.text, field.source]);
+    }
+    if (planned.lineage) {
+      await mockPostgresClient.query('INSERT INTO ci_source_lineage ON CONFLICT', [ciId, planned.lineage.source, planned.lineage.sourceId]);
+    }
+    return written.records.length ? result('group') : null;
   },
 };
 
@@ -47,6 +59,7 @@ const mockSession = {
 };
 
 jest.mock('@cmdb/database', () => ({
+  ...jest.requireActual('@cmdb/database/journal/journal'), enc: jest.requireActual('@cmdb/database/journal/encoding').enc,
   getNeo4jClient: jest.fn(() => mockNeo4jClient),
   getPostgresClient: jest.fn(() => mockPostgresClient),
 }));
@@ -75,34 +88,6 @@ describe('Merge Strategies and Conflict Resolution', () => {
 
     (IdentityReconciliationEngine as any).instance = undefined;
     engine = IdentityReconciliationEngine.getInstance();
-
-    // Setup configuration from database with source authorities
-    mockPostgresClient.query
-      .mockResolvedValueOnce({ // Custom config from database
-        rows: [{
-          name: 'test-config',
-          identification_rules: [
-            { attribute: 'external_id', priority: 1, match_type: 'exact', match_confidence: 100 },
-            { attribute: 'serial_number', priority: 2, match_type: 'exact', match_confidence: 95 },
-          ],
-          merge_strategies: [],
-        }],
-      })
-      .mockResolvedValueOnce({ // Source authorities
-        rows: [
-          { source_name: 'servicenow', authority_score: 10 },
-          { source_name: 'vmware', authority_score: 9 },
-          { source_name: 'aws', authority_score: 9 },
-          { source_name: 'azure', authority_score: 9 },
-          { source_name: 'datadog', authority_score: 8 },
-          { source_name: 'ssh', authority_score: 7 },
-          { source_name: 'nmap', authority_score: 5 },
-          { source_name: 'manual', authority_score: 3 },
-        ],
-      });
-
-    await engine.loadConfiguration();
-    mockPostgresClient.query.mockReset();
   });
 
   describe('Authority-Based Field Merging', () => {
@@ -161,7 +146,7 @@ describe('Merge Strategies and Conflict Resolution', () => {
             {
               field_name: 'version',
               field_value: '14.8',
-              source_name: 'datadog', // Authority 8 (higher)
+              source_name: 'vmware', // Default authority 9 (higher); authorities are read per org, not cached
             },
           ],
         });
@@ -528,32 +513,6 @@ describe('Merge Strategies and Conflict Resolution', () => {
       expect(lineageInsert).toBeTruthy();
       expect(lineageInsert?.[1]).toContain(ci.source);
       expect(lineageInsert?.[1]).toContain(ci.source_id);
-    });
-
-    it('should update last_seen_at when rediscovered by same source', async () => {
-      const ci = createDatabase('prod-db', 'datadog', '14.8', 95);
-
-      // FQDN match via Neo4j returns existing CI
-      mockSession.run.mockResolvedValueOnce({
-        records: [{ get: jest.fn().mockReturnValue('ci_existing') }],
-      });
-
-      mockPostgresClient.query
-        .mockResolvedValueOnce({ rows: [] }) // getFieldSources
-        .mockResolvedValueOnce({ rows: [] }); // Source lineage upsert
-
-      mockPostgresClient.query.mockResolvedValue({ rows: [] });
-      mockSession.run.mockResolvedValue({ records: [{ get: () => 'ci_existing' }] });
-
-      await engine.reconcileCI(ci, 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa');
-
-      const lineageUpsert = mockPostgresClient.query.mock.calls.find(
-        call => call[0].includes('ci_source_lineage')
-      );
-
-      // Should upsert (update existing or insert new)
-      expect(lineageUpsert?.[0]).toContain('ON CONFLICT');
-      expect(lineageUpsert?.[0]).toContain('last_seen_at = NOW()');
     });
   });
 

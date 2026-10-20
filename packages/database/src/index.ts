@@ -15,9 +15,9 @@ export { initializeNeo4jSchema } from './neo4j/initializer';
 // HP1 reconciliation journal (v16 §3–§4)
 export {
   JournalGapError, JournalAbortedError, JournalTargetMissingError, JournalUnavailableError, PlanUnrepresentableError,
-  requeueFailedJournalGroup, setJournalSeam, ADMISSION_LOCK_KEY,
+  JournalConflictError, requeueFailedJournalGroup, setJournalSeam, ADMISSION_LOCK_KEY,
 } from './journal/journal';
-export type { JournalSeam } from './journal/journal';
+export type { JournalSeam, StoredPlan, ConflictPlan } from './journal/journal';
 export { enc, dec, isStorableString } from './journal/encoding';
 
 // PostgreSQL exports

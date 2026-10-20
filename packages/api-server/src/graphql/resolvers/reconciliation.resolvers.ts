@@ -15,14 +15,14 @@ import { checkGraphQLPermission } from '../../middleware/auth.middleware';
 import { requireGraphQLOrganization } from '../require-organization';
 import { GRAPHQL_PAGE_DEFAULTS } from '../pagination';
 import {
-  getOwnedConflict, getOwnedFieldSources, getOwnedLineage,
-  listOwnedConflicts, updateOwnedConflict
+  getOwnedFieldSources, getOwnedLineage, listOwnedConflicts,
 } from '../../reconciliation/tenant-queries';
 import { assertNoCIGap, CIGapError, readSingleCI } from '../../read-admission';
 import { assertRequestShape, assertStorableProperties, journalGraphQLError, RequestShapeError } from '../../journal-http';
 
 const reconciliationEngine = getIdentityReconciliationEngine();
 const postgresClient = getPostgresClient();
+const RESOLUTIONS = ['accept_source', 'accept_target', 'merge', 'dismiss_stale'];
 function refuseGlobalPolicy(context: GraphQLContext): never {
   if (!context.user) throw new GraphQLError('Authentication required', { extensions: { code: 'UNAUTHENTICATED' } });
   throw new GraphQLError('Global reconciliation policy unavailable', { extensions: { code: 'FORBIDDEN' } });
@@ -122,7 +122,11 @@ const ReconciliationQuery = {
         _targetData: row.target_data,
         _conflictingFields: row.conflicting_fields,
         _status: row.status.toUpperCase(),
-        _createdAt: row.created_at.toISOString()
+        _createdAt: new Date(row.created_at).toISOString(),
+        _fieldName: row.field_name,
+        _incomingValue: row.incoming_json,
+        _targetValue: row.target_json,
+        _revision: row.content_hash,
       }));
     } catch (error: any) {
       logger.error('GraphQL: Error listing conflicts', error);
@@ -279,18 +283,20 @@ const ReconciliationMutation = {
       // §3.6: the same shape and Neo4j-storable guard as REST merge, before any store access.
       assertRequestShape(discoveredCI);
       assertStorableProperties(discoveredCI.attributes);
-      if (discoveredCI.source.length > 255) throw new RequestShapeError();
-      const ciId = await reconciliationEngine.reconcileCI(discoveredCI, organizationId, false, _context.user!._userId);
-      if (ciId === null) {
+      if (discoveredCI.source.length > 255 || discoveredCI.source_id.length > 255) throw new RequestShapeError();
+      const outcome = await reconciliationEngine.mergeCI(discoveredCI, organizationId, _context.user!._userId);
+      if (outcome === null) {
         throw new GraphQLError('CI not found', { extensions: { code: 'NOT_FOUND', http: { status: 404 } } });
       }
 
       return {
         _success: true,
-        _ciId: ciId,
-        _action: 'updated',
-        _mergedFields: Object.keys(_args._attributes || {}),
-        _conflicts: []
+        _ciId: outcome.ci_id,
+        _action: outcome.action,
+        _mergedFields: outcome.action === 'updated' ? Object.keys(_args._attributes || {}) : [],
+        _conflicts: [],
+        _conflictIds: outcome.conflict_ids,
+        _correlationId: outcome.correlation_id
       };
     } catch (error: any) {
       if (error instanceof GraphQLError && error.extensions['code'] === 'NOT_FOUND') throw error;
@@ -314,7 +320,8 @@ const ReconciliationMutation = {
     _args: {
       _id: string;
       _resolution: string;
-      _mergedData?: any;
+      _expectedRevision: string;
+      _mergedData?: unknown;
     },
     _context: GraphQLContext
   ) => {
@@ -322,52 +329,23 @@ const ReconciliationMutation = {
     const organizationId = requireGraphQLOrganization(_context);
     try {
       const resolution = _args._resolution.toLowerCase();
-
-      if (!['accept_source', 'accept_target', 'merge'].includes(resolution)) {
-        throw new GraphQLError('Invalid resolution type', {
-          extensions: { code: 'BAD_USER_INPUT' }
-        });
+      if (!RESOLUTIONS.includes(resolution) || !/^[0-9a-f]{64}$/.test(_args._expectedRevision) ||
+        (resolution === 'merge') !== (_args._mergedData !== undefined)) {
+        throw new RequestShapeError();
       }
-
-      const conflictResult = await getOwnedConflict(postgresClient, _args._id, organizationId);
-
-      if (conflictResult.rows.length === 0) {
-        throw new GraphQLError('Conflict not found', {
-          extensions: { code: 'NOT_FOUND' }
-        });
-      }
-
-      const conflict = conflictResult.rows[0];
-
-      const updated = await updateOwnedConflict(
-        postgresClient, _args._id, organizationId,
-        JSON.stringify({ resolution, merged_data: _args._mergedData })
-      );
-      if (updated.rows.length === 0) {
+      assertStorableProperties({ merged: _args._mergedData ?? null });
+      const resolved = await reconciliationEngine.resolveConflict(organizationId, _context.user!._userId, _args._id,
+        resolution as 'merge', _args._expectedRevision, _args._mergedData);
+      if (resolved === null) {
         throw new GraphQLError('Conflict not found', { extensions: { code: 'NOT_FOUND' } });
       }
-
-      return {
-        _id: _args._id,
-        _ciId: conflict.ci_id,
-        _conflictType: conflict.conflict_type.toUpperCase(),
-        _sourceData: conflict.source_data,
-        _targetData: conflict.target_data,
-        _conflictingFields: conflict.conflicting_fields,
-        _status: 'RESOLVED',
-        _createdAt: conflict.created_at.toISOString()
-      };
-    } catch (error: any) {
-      if (error instanceof GraphQLError) {
-        throw error;
-      }
-      logger.error('GraphQL: Error resolving conflict', error);
-      throw new GraphQLError('Failed to resolve conflict', {
-        extensions: {
-          code: 'INTERNAL_SERVER_ERROR',
-          originalError: error.message,
-        },
-      });
+      return { _id: _args._id, _ciId: resolved.ci_id, _status: resolved.status.toUpperCase(), _correlationId: resolved.correlation_id };
+    } catch (error: unknown) {
+      if (error instanceof GraphQLError) throw error;
+      const journal = journalGraphQLError(error);
+      if (journal) throw journal;
+      logger.error('GraphQL: Error resolving conflict');
+      throw new GraphQLError('Failed to resolve conflict', { extensions: { code: 'INTERNAL_SERVER_ERROR' } });
     }
   },
 

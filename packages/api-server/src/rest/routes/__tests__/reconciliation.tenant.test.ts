@@ -26,11 +26,14 @@ jest.mock('@cmdb/database', () => ({
   ...jest.requireActual<object>('@cmdb/database/journal/encoding'),
   getNeo4jClient: () => ({
     getSession: () => ({ run, close }),
-    // The journaled merge update (journal internals run in tests/integration) replays its graph write.
-    updateCIProperties: async (ciId: string, properties: Record<string, unknown>, organizationId: string) => {
-      const result = await run(`MATCH (ci:CI {id: $ciId}) WHERE ci.organization_id = $organizationId
-        SET ci += $properties RETURN ci.incarnation_id AS incarnation_id`, { ciId, organizationId, properties });
-      return result.records.length ? { incarnation_id: result.records[0].get('incarnation_id') } : null;
+    // The journaled merge (journal internals run in tests/integration) plans, then replays its graph write.
+    reconcileOwned: async (ciId: string, organizationId: string, _actor: string, _operation: string,
+      plan: (current: Record<string, unknown>) => Promise<{ graph: { params: { props: Record<string, unknown> } } | null }>,
+      result: (groupId: string) => Promise<unknown>) => {
+      const planned = await plan({ incarnation_id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' });
+      const written = await run(`MATCH (ci:CI {id: $ciId}) WHERE ci.organization_id = $organizationId
+        SET ci += $properties RETURN ci.incarnation_id AS incarnation_id`, { ciId, organizationId, properties: planned.graph?.params.props });
+      return written.records.length ? result('group') : null;
     },
   }),
   getPostgresClient: () => ({ query }),

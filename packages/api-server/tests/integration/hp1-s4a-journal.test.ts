@@ -194,6 +194,10 @@ it('R44-M1: a reused CI id never shows the former owner history; B rows stay B-s
   await create('a', ci, { metadata: { created_at: '1999-01-01T00:00:00Z' } });
   // A merges a current value into its X: one journaled `update` whose T2 writes ONE A history row.
   await cypher('MATCH (c:CI {id: $id}) SET c.serial_number = $serial', { id: ci, serial: `serial-${ci}` });
+  // R44-M2: B's retained field source for the reused id; A's current dimension row for the field-source reader.
+  await rows(`INSERT INTO ci_field_sources (organization_id, ci_id, field_name, field_value, source_name)
+    VALUES ($1, $2, 'owner_note', $3, 'b-source')`, [B, ci, secret]);
+  await rows(`INSERT INTO cmdb.dim_ci (ci_id, ci_name, ci_type, ci_status, organization_id) VALUES ($1, $1, 'server', 'active', $2)`, [ci, A]);
   const merged = await api('a').post('/reconciliation/merge', { name: ci, ci_type: 'server', source: 'a-source',
     source_id: 'a-1', identifiers: { serial_number: `serial-${ci}` }, attributes: { owner_note: 'A_CURRENT' } });
   expect([merged.status, merged.body.data?.ci_id]).toEqual([200, ci]);
@@ -212,6 +216,10 @@ it('R44-M1: a reused CI id never shows the former owner history; B rows stay B-s
   expect(aRows.map(row => [row.change_type, row.changed_by, row.correlation_id])).toEqual([['updated', 's4a-a', mergeOp.group_id]]);
   const stamped = await rows('SELECT organization_id, count(*)::int AS n FROM ci_change_history WHERE ci_id = $1 GROUP BY 1 ORDER BY 1', [ci]);
   expect(stamped).toEqual(expect.arrayContaining([{ organization_id: B, n: 2 }, { organization_id: A, n: 1 }, { organization_id: null, n: 1 }]));
+  const fields = await api('a').get(`/reconciliation/field-sources/${ci}`);
+  expect(fields.body.data.fields).toEqual([expect.objectContaining({ field_name: 'owner_note', field_value: 'A_CURRENT', source_name: 'a-source' })]);
+  expect(await rows('SELECT organization_id, field_value FROM ci_field_sources WHERE ci_id = $1 ORDER BY field_value', [ci]))
+    .toEqual([{ organization_id: A, field_value: 'A_CURRENT' }, { organization_id: B, field_value: secret }]);
 });
 
 it('F0/X-14/N-7b: invalid shapes and reserved aliases are 400 before any journal row; the CI is unchanged', async () => {

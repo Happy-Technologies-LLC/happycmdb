@@ -50,9 +50,6 @@ describe('ReconciliationWorkflow - Integration Tests', () => {
     (IdentityReconciliationEngine as any).instance = undefined;
     engine = IdentityReconciliationEngine.getInstance();
 
-    // Load configuration
-    await engine.loadConfiguration();
-
     // Clean up test data
     await cleanupTestData();
   });

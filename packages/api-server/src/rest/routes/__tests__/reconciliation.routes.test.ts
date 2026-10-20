@@ -10,8 +10,8 @@
  * the merge and conflict-resolve mutations also need the 'write' permission,
  * so a read-only viewer gets 403 before the handler runs.
  *
- * The global policy routes (rules, source-authorities) refuse every caller and
- * are covered by t4-global-policy.test.ts; their handlers no longer exist.
+ * The per-organization policy routes (rules, source-authorities) are covered by
+ * hp1-s4b-merge-conflicts.test.ts and t4-global-policy.test.ts.
  */
 
 import express from 'express';
@@ -25,7 +25,8 @@ const handler = jest.fn();
 jest.mock('../../controllers/reconciliation.controller', () => ({
   ReconciliationController: jest.fn().mockImplementation(() => ({
     findMatches: handler, mergeCI: handler, listConflicts: handler, resolveConflict: handler,
-    getCILineage: handler, getCIFieldSources: handler,
+    getCILineage: handler, getCIFieldSources: handler, listRules: handler, writeRule: handler,
+    listSourceAuthorities: handler, updateSourceAuthority: handler,
   })),
 }));
 jest.mock('../../../auth/auth-bootstrap', () => {
@@ -53,7 +54,7 @@ type RouteCase = readonly ['get' | 'post', string, Record<string, unknown> | und
 const MERGE_BODY = { name: 'web-01', ci_type: 'server', source: 'aws', source_id: 'i-123', identifiers: { external_id: 'ext-1' } };
 const writeRoutes: RouteCase[] = [
   ['post', '/reconciliation/merge', MERGE_BODY],
-  ['post', '/reconciliation/conflicts/conflict-1/resolve', { resolution: 'accept_source' }],
+  ['post', '/reconciliation/conflicts/conflict-1/resolve', { resolution: 'accept_source', expected_revision: 'a'.repeat(64) }],
 ];
 const readRoutes: RouteCase[] = [
   ['post', '/reconciliation/match', { identifiers: { external_id: 'ext-1' } }],

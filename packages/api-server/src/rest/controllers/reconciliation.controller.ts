@@ -13,11 +13,13 @@ import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
 import { TransformedCI, IdentificationAttributes } from '@cmdb/integration-framework';
 import { requestOrganizationId } from '../../middleware/auth.middleware';
 import {
-  countOwnedConflicts, getOwnedConflict, getOwnedFieldSources, getOwnedLineage,
-  listOwnedConflicts, updateOwnedConflict
+  deleteOrgRule, getOwnedFieldSources, getOwnedLineage, insertOrgRule, listOrgAuthorities, listOrgRules,
+  listOwnedConflicts, updateOrgRule, upsertOrgAuthority,
 } from '../../reconciliation/tenant-queries';
 import { assertNoCIGap, CIGapError, CI_GAP_RESPONSE, readSingleCI } from '../../read-admission';
 import { requestActor, sendJournalError } from '../../journal-http';
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export class ReconciliationController {
   private reconciliationEngine = getIdentityReconciliationEngine();
@@ -113,20 +115,20 @@ export class ReconciliationController {
         return;
       }
 
-      // Perform reconciliation
-      const ciId = await this.reconciliationEngine.reconcileCI(discoveredCI, requestOrganizationId(req), false,
-        requestActor(req));
-      if (ciId === null) {
+      // v16 §3.1/§7.2: one journaled merge; a review field holds the whole merge (202, stable conflict ids).
+      const outcome = await this.reconciliationEngine.mergeCI(discoveredCI, requestOrganizationId(req), requestActor(req));
+      if (outcome === null) {
         res.status(404).json({ success: false, error: 'Not Found', message: 'CI not found' });
         return;
       }
-
+      if (outcome.action === 'pending_review') {
+        res.status(202).json({ success: true, data: { ci_id: outcome.ci_id, status: 'pending_review',
+          conflict_ids: outcome.conflict_ids, correlation_id: outcome.correlation_id } });
+        return;
+      }
       res.json({
         success: true,
-        data: {
-          ci_id: ciId,
-          action: 'updated'
-        },
+        data: { ci_id: outcome.ci_id, action: outcome.action, correlation_id: outcome.correlation_id },
         message: 'CI reconciled successfully'
       });
     } catch (error) {
@@ -153,7 +155,6 @@ export class ReconciliationController {
       const offsetNum = parseInt(offset as string) || 0;
 
       const result = await listOwnedConflicts(this.postgresClient, status as string, limitNum, offsetNum, organizationId);
-      const total = await countOwnedConflicts(this.postgresClient, status as string, organizationId);
 
       res.json({
         success: true,
@@ -165,10 +166,13 @@ export class ReconciliationController {
           target_data: row.target_data,
           conflicting_fields: row.conflicting_fields,
           status: row.status,
-          created_at: row.created_at
+          created_at: new Date(row.created_at),
+          // v16 §7: typed values and the revision (content hash) a resolve must present
+          field_name: row.field_name, source_name: row.source_name, incoming_value: row.incoming_json,
+          target_value: row.target_json, revision: row.content_hash, detected_by: row.detected_by
         })),
         pagination: {
-          total: parseInt(total.rows[0].count),
+          total: result.total,
           count: result.rows.length,
           offset: offsetNum,
           limit: limitNum
@@ -190,57 +194,82 @@ export class ReconciliationController {
    */
   async resolveConflict(req: Request, res: Response): Promise<void> {
     try {
-      const organizationId = requestOrganizationId(req);
-      const { id } = req.params;
-      const { resolution, merged_data } = req.body;
-      if (!resolution || !['accept_source', 'accept_target', 'merge'].includes(resolution)) {
-        res.status(400).json({
-          success: false,
-          error: 'Bad Request',
-          message: 'resolution must be one of: accept_source, accept_target, merge'
-        });
+      const { resolution, expected_revision, merged_data } = req.body;
+      // v16 §7.4: missing/foreign conflict or CI share one 404; a stale or wrong revision is 409.
+      const resolved = await this.reconciliationEngine.resolveConflict(requestOrganizationId(req), requestActor(req),
+        req.params['id']!, resolution, expected_revision, merged_data);
+      if (resolved === null) {
+        res.status(404).json({ success: false, error: 'Not Found', message: 'Conflict not found' });
         return;
       }
-
-      // Both detail access and the write must be scoped; ownership can change between statements.
-      const conflictResult = await getOwnedConflict(this.postgresClient, id, organizationId);
-      if (conflictResult.rows.length === 0) {
-        res.status(404).json({
-          success: false,
-          error: 'Not Found',
-          message: 'Conflict not found'
-        });
-        return;
-      }
-
-      const updated = await updateOwnedConflict(
-        this.postgresClient, id, organizationId, JSON.stringify({ resolution, merged_data })
-      );
-      if (updated.rows.length === 0) {
-        res.status(404).json({
-          success: false,
-          error: 'Not Found',
-          message: 'Conflict not found'
-        });
-        return;
-      }
-
       res.json({
         success: true,
-        data: {
-          conflict_id: id,
-          resolution: resolution,
-          status: 'resolved'
-        },
+        data: { conflict_id: req.params['id'], resolution, status: resolved.status, correlation_id: resolved.correlation_id },
         message: 'Conflict resolved successfully'
       });
     } catch (error) {
+      if (sendJournalError(res, error)) return;
       logger.error('Error resolving conflict', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to resolve conflict',
-        message: error instanceof Error ? error.message : 'Unknown error'
-      });
+      res.status(500).json({ success: false, error: 'Failed to resolve conflict' });
+    }
+  }
+
+  /** GET /api/v1/reconciliation/rules: the caller organization's rules (v16 §8). */
+  async listRules(req: Request, res: Response): Promise<void> {
+    try {
+      res.json({ success: true, data: (await listOrgRules(this.postgresClient, requestOrganizationId(req))).rows });
+    } catch (error) {
+      logger.error('Error listing rules', error);
+      res.status(500).json({ success: false, error: 'Failed to list rules' });
+    }
+  }
+
+  /**
+   * POST /rules creates (O, name); PUT/DELETE /rules/:id change only O's rule: foreign, missing
+   * and legacy global rules share one 404. A duplicate name in O is 409 (v16 §8).
+   */
+  async writeRule(req: Request, res: Response): Promise<void> {
+    try {
+      const organizationId = requestOrganizationId(req);
+      const id = req.params['id'];
+      if (id === undefined) {
+        res.status(201).json({ success: true, data: (await insertOrgRule(this.postgresClient, organizationId, req.body)).rows[0] });
+        return;
+      }
+      const result = !UUID.test(id) ? null : req.method === 'DELETE' ? await deleteOrgRule(this.postgresClient, id, organizationId)
+        : await updateOrgRule(this.postgresClient, id, organizationId, req.body);
+      if (!result?.rows.length) res.status(404).json({ success: false, error: 'Not Found', message: 'Rule not found' });
+      else if (req.method === 'DELETE') res.status(204).end();
+      else res.json({ success: true, data: result.rows[0] });
+    } catch (error) {
+      if (typeof error === 'object' && error !== null && 'code' in error && error.code === '23505') {
+        res.status(409).json({ success: false, error: 'Conflict', message: 'Rule name already exists' });
+        return;
+      }
+      logger.error('Error writing rule', error);
+      res.status(500).json({ success: false, error: 'Failed to write rule' });
+    }
+  }
+
+  /** GET /api/v1/reconciliation/source-authorities: the caller organization's authorities. */
+  async listSourceAuthorities(req: Request, res: Response): Promise<void> {
+    try {
+      res.json({ success: true, data: (await listOrgAuthorities(this.postgresClient, requestOrganizationId(req))).rows });
+    } catch (error) {
+      logger.error('Error listing source authorities', error);
+      res.status(500).json({ success: false, error: 'Failed to list source authorities' });
+    }
+  }
+
+  /** PUT /api/v1/reconciliation/source-authorities/:source: upsert (O, source) only. */
+  async updateSourceAuthority(req: Request, res: Response): Promise<void> {
+    try {
+      const result = await upsertOrgAuthority(this.postgresClient, requestOrganizationId(req), req.params['source']!,
+        req.body.authority_score, req.body.description ?? null);
+      res.json({ success: true, data: result.rows[0] });
+    } catch (error) {
+      logger.error('Error updating source authority', error);
+      res.status(500).json({ success: false, error: 'Failed to update source authority' });
     }
   }
 

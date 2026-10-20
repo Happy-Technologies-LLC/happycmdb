@@ -11,7 +11,7 @@ const touched = jest.fn();
 jest.mock('../../controllers/reconciliation.controller', () => ({
   ReconciliationController: jest.fn().mockImplementation(() => ({
     findMatches: touched, mergeCI: touched, listConflicts: touched, resolveConflict: touched,
-    listRules: touched, createRule: touched, listSourceAuthorities: touched, updateSourceAuthority: touched,
+    listRules: touched, writeRule: touched, listSourceAuthorities: touched, updateSourceAuthority: touched,
     getCILineage: touched, getCIFieldSources: touched,
   })),
 }));
@@ -37,17 +37,15 @@ app.use('/api/v1/cmdb-health', healthRoutes);
 app.use('/api/v1', getAuthMiddleware().authenticate());
 app.use('/api/v1/reconciliation', reconciliationRoutes);
 
-const policy = [
-  ['get', '/reconciliation/rules'], ['post', '/reconciliation/rules'],
-  ['get', '/reconciliation/source-authorities'], ['put', '/reconciliation/source-authorities/aws'],
-] as const;
+// Tenants manage their own policy (HP1-S4b); the legacy NULL-org global rows stay unreadable.
+const policy = [['get', '/reconciliation/rules?scope=global'], ['get', '/reconciliation/source-authorities?scope=global']] as const;
 const health = ['/cmdb-health/metrics', '/cmdb-health/timeseries?hours=24'];
 
 beforeEach(() => {
   touched.mockImplementation((_req: express.Request, res: express.Response) => res.status(200).json({ success: true, data: [{ name: 'foreign-policy' }] }));
 });
 
-test('global policy refuses both verified organizations and all roles identically, without mutation or reads', async () => {
+test('legacy global policy refuses both verified organizations and all roles identically, without reads', async () => {
   const replies = [];
   for (const org of ['org-a', 'org-b']) {
     for (const role of ['viewer', 'operator', 'admin']) {

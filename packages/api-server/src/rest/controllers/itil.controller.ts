@@ -2,12 +2,16 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Request, Response } from 'express';
-import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
+import { dec, enc, getNeo4jClient, getPostgresClient, PlanUnrepresentableError } from '@cmdb/database';
 import { logger, ciIncarnationId } from '@cmdb/common';
 import { v4 as uuidv4 } from 'uuid';
 import neo4j from 'neo4j-driver';
 import { requestOrganizationId } from '../../middleware/auth.middleware';
-import { assertNoCIGap, CIGapError, CI_GAP_RESPONSE, readSingleCI, readCIList, CIListUnavailableError, CI_LIST_UNAVAILABLE_RESPONSE } from '../../read-admission';
+import {
+  assertNoCIGap, CIGapError, CI_GAP_RESPONSE, readSingleCI, readCIList, CIListUnavailableError,
+  CI_LIST_UNAVAILABLE_RESPONSE, writeReferencedCIs,
+} from '../../read-admission';
+import { assertCIId, isReservedKey, requestActor, sendJournalError } from '../../journal-http';
 
 
 /**
@@ -122,98 +126,31 @@ export class ITILController {
     }
   }
 
-  async updateLifecycleStage(req: Request, res: Response): Promise<void> {
+  /** ITIL lifecycle/status/audit writes are journaled direct writes (v16 §3.1). */
+  private async writeCI(req: Request, res: Response, props: Record<string, unknown>, message: string): Promise<void> {
     try {
-      const { id } = req.params;
-      const { stage } = req.body;
-
-      const session = this.neo4jClient.getSession();
-      try {
-        const result = await session.run(
-          `
-          MATCH (ci:CI {id: $id})
-          WHERE ci.organization_id = $organizationId
-          SET ci.itil_lifecycle = $stage,
-              ci.updated_at = datetime()
-          RETURN ci
-          `,
-          { id, stage, organizationId: requestOrganizationId(req) }
-        );
-
-        if (result.records.length === 0) {
-          res.status(404).json({
-            success: false,
-            error: 'Not Found',
-            message: `Configuration item with ID '${id}' not found`,
-          });
-          return;
-        }
-
-        const ci = this.convertNeo4jCI(result.records[0]!.get('ci').properties);
-
-        res.json({
-          success: true,
-          data: ci,
-          message: `Lifecycle stage updated to ${stage}`,
-        });
-      } finally {
-        await session.close();
+      assertCIId(req.params['id']);
+      const ci = await this.neo4jClient.updateCIProperties(
+        req.params['id'], props, requestOrganizationId(req), requestActor(req));
+      if (!ci) {
+        res.status(404).json({ success: false, error: 'Not Found', message: 'CI not found' });
+        return;
       }
+      res.json({ success: true, data: this.convertNeo4jCI(ci), message });
     } catch (error) {
-      logger.error('Error updating lifecycle stage', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to update lifecycle stage',
-        message: error instanceof Error ? error.message : 'Unknown error',
-      });
+      if (sendJournalError(res, error)) return;
+      logger.error('Error updating configuration item', error);
+      res.status(500).json({ success: false, error: 'Failed to update configuration item' });
     }
   }
 
+  async updateLifecycleStage(req: Request, res: Response): Promise<void> {
+    await this.writeCI(req, res, { itil_lifecycle: req.body.stage }, `Lifecycle stage updated to ${req.body.stage}`);
+  }
+
   async updateConfigurationStatus(req: Request, res: Response): Promise<void> {
-    try {
-      const { id } = req.params;
-      const { status } = req.body;
-
-      const session = this.neo4jClient.getSession();
-      try {
-        const result = await session.run(
-          `
-          MATCH (ci:CI {id: $id})
-          WHERE ci.organization_id = $organizationId
-          SET ci.itil_config_status = $status,
-              ci.updated_at = datetime()
-          RETURN ci
-          `,
-          { id, status, organizationId: requestOrganizationId(req) }
-        );
-
-        if (result.records.length === 0) {
-          res.status(404).json({
-            success: false,
-            error: 'Not Found',
-            message: `Configuration item with ID '${id}' not found`,
-          });
-          return;
-        }
-
-        const ci = this.convertNeo4jCI(result.records[0]!.get('ci').properties);
-
-        res.json({
-          success: true,
-          data: ci,
-          message: `Configuration status updated to ${status}`,
-        });
-      } finally {
-        await session.close();
-      }
-    } catch (error) {
-      logger.error('Error updating configuration status', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to update configuration status',
-        message: error instanceof Error ? error.message : 'Unknown error',
-      });
-    }
+    await this.writeCI(req, res, { itil_config_status: req.body.status },
+      `Configuration status updated to ${req.body.status}`);
   }
 
   async getCIHistory(_req: Request, res: Response): Promise<void> {
@@ -285,108 +222,22 @@ export class ITILController {
   }
 
   async scheduleAudit(req: Request, res: Response): Promise<void> {
-    try {
-      const { id } = req.params;
-      const { auditDate, auditor, notes } = req.body;
-
-      const session = this.neo4jClient.getSession();
-      try {
-        const result = await session.run(
-          `
-          MATCH (ci:CI {id: $id})
-          WHERE ci.organization_id = $organizationId
-          SET ci.itil_next_audit_date = datetime($auditDate),
-              ci.itil_audit_scheduled_by = $auditor,
-              ci.itil_audit_notes = $notes,
-              ci.updated_at = datetime()
-          RETURN ci
-          `,
-          {
-            id,
-            organizationId: requestOrganizationId(req),
-            auditDate: new Date(auditDate).toISOString(),
-            auditor: auditor ?? null,
-            notes: notes ?? null,
-          }
-        );
-
-        if (result.records.length === 0) {
-          res.status(404).json({
-            success: false,
-            error: 'Not Found',
-            message: `Configuration item with ID '${id}' not found`,
-          });
-          return;
-        }
-
-        const ci = this.convertNeo4jCI(result.records[0]!.get('ci').properties);
-
-        res.json({
-          success: true,
-          data: ci,
-          message: 'Audit scheduled successfully',
-        });
-      } finally {
-        await session.close();
-      }
-    } catch (error) {
-      logger.error('Error scheduling audit', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to schedule audit',
-        message: error instanceof Error ? error.message : 'Unknown error',
-      });
-    }
+    const { auditDate, auditor, notes } = req.body;
+    await this.writeCI(req, res, {
+      itil_next_audit_date: neo4j.types.DateTime.fromStandardDate(new Date(auditDate)),
+      itil_audit_scheduled_by: auditor ?? null,
+      itil_audit_notes: notes ?? null,
+    }, 'Audit scheduled successfully');
   }
 
   async completeAudit(req: Request, res: Response): Promise<void> {
-    try {
-      const { id } = req.params;
-      const { auditStatus, findings, completedBy } = req.body;
-
-      const session = this.neo4jClient.getSession();
-      try {
-        const result = await session.run(
-          `
-          MATCH (ci:CI {id: $id})
-          WHERE ci.organization_id = $organizationId
-          SET ci.itil_audit_status = $auditStatus,
-              ci.itil_last_audited = datetime(),
-              ci.itil_audit_findings = $findings,
-              ci.itil_audit_completed_by = $completedBy,
-              ci.updated_at = datetime()
-          RETURN ci
-          `,
-          { id, auditStatus, findings: findings ?? null, completedBy, organizationId: requestOrganizationId(req) }
-        );
-
-        if (result.records.length === 0) {
-          res.status(404).json({
-            success: false,
-            error: 'Not Found',
-            message: `Configuration item with ID '${id}' not found`,
-          });
-          return;
-        }
-
-        const ci = this.convertNeo4jCI(result.records[0]!.get('ci').properties);
-
-        res.json({
-          success: true,
-          data: ci,
-          message: 'Audit completed successfully',
-        });
-      } finally {
-        await session.close();
-      }
-    } catch (error) {
-      logger.error('Error completing audit', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to complete audit',
-        message: error instanceof Error ? error.message : 'Unknown error',
-      });
-    }
+    const { auditStatus, findings, completedBy } = req.body;
+    await this.writeCI(req, res, {
+      itil_audit_status: auditStatus,
+      itil_last_audited: neo4j.types.DateTime.fromStandardDate(new Date()),
+      itil_audit_findings: findings ?? null,
+      itil_audit_completed_by: completedBy,
+    }, 'Audit completed successfully');
   }
 
   // ============================================================================
@@ -415,9 +266,8 @@ export class ITILController {
       const incidentUuid = uuidv4();
       const incidentNumber = `INC-${incidentUuid}`;
       const title = description.length > 500 ? `${description.slice(0, 497)}...` : description;
-      const pool = this.postgresClient.pool;
-
-      const result = await pool.query(
+      // AP-P': the referenced CI cannot enter a gap between this check and the insert.
+      const result = await writeReferencedCIs(requestOrganizationId(req), [affectedCIId], client => client.query(
         `
         INSERT INTO itil_incidents (
           id, incident_number, title, description, affected_ci_id,
@@ -440,7 +290,7 @@ export class ITILController {
           'new',
           requestOrganizationId(req),
         ]
-      );
+      ));
 
       res.status(201).json({
         success: true,
@@ -449,6 +299,7 @@ export class ITILController {
         message: `Incident created with priority P${priority.priority}`,
       });
     } catch (error) {
+      if (sendJournalError(res, error)) return;
       logger.error('Error creating incident', error);
       res.status(500).json({
         success: false,
@@ -745,9 +596,7 @@ export class ITILController {
       const title = description.length > 500 ? `${description.slice(0, 497)}...` : description;
       const scheduledStart = new Date(plannedStart);
       const scheduledEnd = new Date(scheduledStart.getTime() + plannedDuration * 60000);
-      const pool = this.postgresClient.pool;
-
-      const result = await pool.query(
+      const result = await writeReferencedCIs(requestOrganizationId(req), affectedCIIds, client => client.query(
         `
         INSERT INTO itil_changes (
           id, change_number, title, description, change_type,
@@ -774,7 +623,7 @@ export class ITILController {
           testPlan,
           requestOrganizationId(req),
         ]
-      );
+      ));
 
       res.status(201).json({
         success: true,
@@ -782,6 +631,7 @@ export class ITILController {
         message: 'Change request created successfully',
       });
     } catch (error) {
+      if (sendJournalError(res, error)) return;
       logger.error('Error creating change', error);
       res.status(500).json({
         success: false,
@@ -1148,25 +998,34 @@ export class ITILController {
       const { name, ciIds, description, createdBy } = req.body;
       const organizationId = requestOrganizationId(req);
 
-      // Verify all CIs exist and snapshot their current state for baseline_data
-      const ciSnapshots: Record<string, any> = {};
+      // §5.2: owned lookup (identical 404, own gap 409); then an AP-M'' snapshot of
+      // the raw typed properties (never a W-state CI), persisted under AP-P'.
       for (const ciId of ciIds) {
-        const ci = await this.neo4jClient.getCI(ciId, organizationId);
-        if (!ci) {
-          res.status(404).json({
-            success: false,
-            error: 'Not Found',
-            message: `CI with ID '${ciId}' not found`,
-          });
+        assertCIId(ciId);
+        if (!(await this.neo4jClient.getCI(ciId, organizationId))) {
+          await assertNoCIGap(organizationId, ciId);
+          res.status(404).json({ success: false, error: 'Not Found', message: 'CI not found' });
           return;
         }
-        ciSnapshots[ciId] = ci;
+      }
+      const snapshots = await readCIList(organizationId, async (pending, timeout) => {
+        if (ciIds.some((ciId: string) => pending.includes(ciId))) throw new CIGapError();
+        const session = this.neo4jClient.getSession();
+        try {
+          const result = await session.run(`MATCH (ci:CI) WHERE ci.id IN $ids AND ci.organization_id = $organizationId
+            RETURN ci.id AS id, properties(ci) AS props`, { ids: ciIds, organizationId }, { timeout });
+          return Object.fromEntries(result.records.map(record => [record.get('id'), enc(record.get('props'))]));
+        } finally {
+          await session.close();
+        }
+      });
+      if (ciIds.some((ciId: string) => !Object.hasOwn(snapshots, ciId))) {
+        res.status(404).json({ success: false, error: 'Not Found', message: 'CI not found' });
+        return;
       }
 
       const baselineId = uuidv4();
-      const pool = this.postgresClient.pool;
-
-      const result = await pool.query(
+      const result = await writeReferencedCIs(organizationId, ciIds, client => client.query(
         `
         INSERT INTO itil_baselines (
           id, name, description, baseline_type, scope, baseline_data, created_by, organization_id
@@ -1180,11 +1039,11 @@ export class ITILController {
           description || null,
           'configuration',
           JSON.stringify({ ci_ids: ciIds, ci_types: [], environment: null }),
-          JSON.stringify(ciSnapshots),
+          JSON.stringify(snapshots),
           createdBy,
           organizationId,
         ]
-      );
+      ));
 
       res.status(201).json({
         success: true,
@@ -1192,6 +1051,11 @@ export class ITILController {
         message: 'Baseline created successfully',
       });
     } catch (error) {
+      if (sendJournalError(res, error)) return;
+      if (error instanceof CIListUnavailableError) {
+        res.status(503).json(CI_LIST_UNAVAILABLE_RESPONSE);
+        return;
+      }
       if (error && typeof error === 'object' && 'code' in error && error.code === '23505') {
         res.status(409).json({
           success: false,
@@ -1334,21 +1198,36 @@ export class ITILController {
     }
   }
 
+  /** Journaled single-CI restore (v16 §3.1, §4.1) from an owned baseline's typed snapshot. */
   async restoreFromBaseline(req: Request, res: Response): Promise<void> {
     try {
-      const { id } = req.params;
+      const { ciId, restoreAttributes } = req.body;
+      const organizationId = requestOrganizationId(req);
+      assertCIId(ciId);
       const result = await this.postgresClient.pool.query(
-        'SELECT id FROM itil_baselines WHERE id = $1 AND organization_id = $2',
-        [id, requestOrganizationId(req)]
+        'SELECT baseline_data FROM itil_baselines WHERE id = $1 AND organization_id = $2',
+        [req.params['id'], organizationId]
       );
       if (result.rows.length === 0) {
         res.status(404).json({ success: false, error: 'Not Found', message: 'Baseline not found' });
         return;
       }
-      // S4 owns journaled CI mutations. Direct graph restore cannot safely
-      // apply baseline_data until the fenced admission contract is installed.
-      res.status(503).json({ success: false, error: 'Baseline restore unavailable' });
+      const data = result.rows[0].baseline_data;
+      const snapshot = data && typeof data === 'object' && Object.hasOwn(data, ciId) ? dec(data[ciId]) : null;
+      if (!snapshot || typeof snapshot !== 'object') {
+        res.status(404).json({ success: false, error: 'Not Found', message: 'CI not found' });
+        return;
+      }
+      const restore = baselineRestore(snapshot as Record<string, unknown>, restoreAttributes);
+      const ci = await this.neo4jClient.restoreCI(ciId, restore.props, restore.createdAt, restore.discoveredAt,
+        organizationId, requestActor(req));
+      if (!ci) {
+        res.status(404).json({ success: false, error: 'Not Found', message: 'CI not found' });
+        return;
+      }
+      res.json({ success: true, data: this.convertNeo4jCI(ci), message: 'CI restored from baseline' });
     } catch (error) {
+      if (sendJournalError(res, error)) return;
       logger.error('Error restoring from baseline', error);
       res.status(500).json({ success: false, error: 'Failed to restore from baseline' });
     }
@@ -1617,4 +1496,43 @@ export class ITILController {
       ],
     };
   }
+}
+
+const isGraphScalar = (value: unknown): boolean => value === null || ['boolean', 'number', 'string'].includes(typeof value) ||
+  [neo4j.isInt, neo4j.isPoint, neo4j.isDate, neo4j.isDateTime, neo4j.isLocalDateTime, neo4j.isTime,
+    neo4j.isLocalTime, neo4j.isDuration].some(test => test(value));
+
+/**
+ * Main's restore key handling (legacy snapshots carry `_`-prefixed names) plus
+ * v16 §4.4: every reserved key is dropped, never written. A value Neo4j cannot
+ * store is a definitive 422, never a lossy restore.
+ */
+function baselineRestore(snapshot: Record<string, unknown>, attributes?: string[]): {
+  props: Record<string, unknown>; createdAt: unknown; discoveredAt: unknown;
+} {
+  const props: Record<string, unknown> = {};
+  let createdAt: unknown = null;
+  let discoveredAt: unknown = null;
+  for (const key of attributes?.length ? attributes : Object.keys(snapshot)) {
+    const name = key.startsWith('_') ? key.slice(1) : key;
+    if (!Object.hasOwn(snapshot, key) || isReservedKey(key) || name === 'updated_at' || name === 'incarnation_id') continue;
+    let value = snapshot[key];
+    if (name === 'created_at' || name === 'discovered_at') {
+      // Legacy snapshots hold ISO strings; typed snapshots hold the stored DateTime.
+      const parsed = typeof value === 'string' ? new Date(value) : null;
+      const at = neo4j.isDateTime(value) ? value
+        : parsed && !Number.isNaN(parsed.getTime()) ? neo4j.types.DateTime.fromStandardDate(parsed) : null;
+      if (name === 'created_at') createdAt = at;
+      else discoveredAt = at;
+      continue;
+    }
+    if (name === 'metadata' && value !== null && typeof value === 'object') value = JSON.stringify(value);
+    const members = Array.isArray(value) ? value : [value];
+    if (!members.every(isGraphScalar) ||
+      new Set(members.map(member => neo4j.isInt(member) ? 'int' : typeof member)).size > 1) {
+      throw new PlanUnrepresentableError();
+    }
+    props[name] = value;
+  }
+  return { props, createdAt, discoveredAt };
 }

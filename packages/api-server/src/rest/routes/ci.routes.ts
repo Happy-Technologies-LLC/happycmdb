@@ -8,6 +8,7 @@ import { validateRequest, validateOptional } from '../middleware/validation.midd
 import { auditMiddleware } from '../../middleware/audit.middleware';
 import { getAuthMiddleware } from '../../auth/auth-bootstrap';
 import { ciInputSchema, ciUpdateSchema, queryFiltersSchema } from '@cmdb/common';
+import { journalRequestGuard } from '../../journal-http';
 
 export const ciRoutes = Router();
 const controller = new CIController();
@@ -26,8 +27,9 @@ ciRoutes.use(auditMiddleware);
 const organizationIdForbidden = Joi.any().forbidden();
 
 // Validation schemas
+// v16 §4.4: a client-chosen top-level `id` is the immutable identity and journal key.
 const createCISchema = ciInputSchema.keys({
-  id: Joi.any().forbidden(),
+  id: Joi.string().min(1).max(100).optional(),
   external_id: Joi.any().forbidden(),
   organization_id: organizationIdForbidden,
 });
@@ -73,6 +75,7 @@ ciRoutes.get('/:id', controller.getCIById.bind(controller));
 ciRoutes.post(
   '/',
   authMiddleware.requirePermission('write'),
+  journalRequestGuard({ allowIdentity: true }),
   validateRequest(createCISchema, 'body'),
   controller.createCI.bind(controller)
 );
@@ -81,12 +84,14 @@ ciRoutes.post(
 ciRoutes.put(
   '/:id',
   authMiddleware.requirePermission('write'),
+  journalRequestGuard(),
   validateRequest(updateCISchema, 'body'),
   controller.updateCI.bind(controller)
 );
 
 // Delete CI
-ciRoutes.delete('/:id', authMiddleware.requirePermission('write'), controller.deleteCI.bind(controller));
+ciRoutes.delete('/:id', authMiddleware.requirePermission('write'), journalRequestGuard(),
+  controller.deleteCI.bind(controller));
 
 // Get CI relationships
 ciRoutes.get(

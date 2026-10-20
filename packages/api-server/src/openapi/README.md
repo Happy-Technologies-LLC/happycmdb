@@ -99,14 +99,18 @@ is performed by this change.
 - `GET /cis/{id}/impact` - Impact analysis
 - `GET /cis/{id}/audit` - Audit history
 
-REST/GraphQL CI deletion shares Neo4j `deleteCI`. The graph deletion captures
-the deleted CI's immutable `incarnation_id`; best-effort PostgreSQL cleanup
-deletes only rows for that UUID or unmarked legacy rows in `baseline_snapshots`,
-`drift_detection_results`, `impact_analyses`, `ci_criticality_scores`, and
-`ci_change_history`. A new CI reusing the ID retains its own marked rows.
-Neo4j and PostgreSQL **cannot commit atomically**: once graph deletion commits,
-the API reports success even if SQL cleanup fails and logs
-`CI_DERIVED_PURGE_FAILED` without row data. Derived reads require an exact match
+Every REST/GraphQL CI and relationship write (create, update, delete, ITIL
+lifecycle/status/audit, baseline restore) is one journaled operation (HP1 v16
+§3–§4, HP1-S4a): a PostgreSQL intent row, one auto-commit Neo4j statement that
+also creates a `:ReconciliationOp` fence, then a PostgreSQL commit of the
+evidence. An unproven graph outcome answers 503 with `correlation_id`; until the
+recovery sweep proves the fence, the owner gets 409 `CI is temporarily
+unavailable` on that CI and lists mask it, while other organizations still get
+the identical 404. A delete writes exactly one organization-stamped `deleted`
+history row and, in the same transaction, removes only the deleted
+incarnation's (or unmarked legacy) `baseline_snapshots`,
+`drift_detection_results`, `impact_analyses` and `ci_criticality_scores` rows.
+Prior change history is evidence and is never purged. Derived reads require an exact match
 to the current tenant-owned graph CI's UUID; NULL legacy SQL markers and rows
 from former incarnations fail closed regardless of timestamps. A legacy graph
 CI gets a UUID only on its next owner-scoped derived write; old SQL rows are

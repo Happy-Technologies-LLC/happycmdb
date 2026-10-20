@@ -134,7 +134,7 @@ const closeChangeSchema = Joi.object({
 
 const createBaselineSchema = Joi.object({
   name: Joi.string().required().min(3).max(100),
-  ciIds: Joi.array().items(Joi.string()).min(1).required(),
+  ciIds: Joi.array().items(Joi.string()).min(1).max(100).unique().required(),
   description: Joi.string().optional(),
   createdBy: Joi.string().required(),
 });

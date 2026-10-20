@@ -14,6 +14,7 @@ export { ReconciliationController } from './rest/controllers/reconciliation.cont
 // Start server when executed as main module
 import { RestAPIServer, listenTargetFromEnv } from './rest/server';
 import { logger } from '@cmdb/common';
+import { startJournalSweeper } from '@cmdb/database';
 import { getDiscoveryOrchestrator } from '@cmdb/discovery-engine';
 import { getAnomalyDetectionEngine } from '@cmdb/ai-ml-engine';
 import { loadConnectorsAtStartup } from './utils/connector-loader';
@@ -48,6 +49,9 @@ async function startServer() {
     const wsService = getWebSocketService();
     wsService.initialize(httpServer);
     logger.info('WebSocket service initialized');
+
+    // HP1 v16 §4.3: recover pending journaled CI writes every 15 s.
+    startJournalSweeper();
 
     // Start discovery workers
     const discoveryOrchestrator = getDiscoveryOrchestrator();

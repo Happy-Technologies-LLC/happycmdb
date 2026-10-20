@@ -4,7 +4,7 @@
 /** Authenticated T3 routes against the integration suite's disposable Neo4j and PostgreSQL. */
 import express from 'express';
 import request from 'supertest';
-import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
+import { getNeo4jClient, getPostgresClient, setJournalSeam } from '@cmdb/database';
 import { loadConfig } from '@cmdb/common';
 import { ChangeEventProcessor, EventType, type CIDiscoveredEvent, type CIUpdatedEvent } from '@cmdb/event-processor';
 
@@ -579,75 +579,49 @@ it('persists a newly created graph CI before the reporting dimension is populate
   expect((await sql.query("SELECT ci_id FROM cmdb.dim_ci WHERE ci_id = 't3-fresh'")).rows).toEqual([]);
 });
 
-it('returns only event-proven CI history before dimension sync and after cross-tenant ID reuse', async () => {
+it('H-3/N-8: proven and forged Kafka CI events write no history; reads stay org- and incarnation-scoped', async () => {
   await run("CREATE (:CI {id:'t3-history', name:'history', ci_type:'server', organization_id:$organizationId})", { organizationId: A });
   const aMarker = await graph.ensureCIIncarnation('t3-history', A);
   const processor = new ChangeEventProcessor() as unknown as {
     handleCIDiscovered(event: CIDiscoveredEvent): Promise<void>;
     handleCIUpdated(event: CIUpdatedEvent): Promise<void>;
   };
-  await sql.query("INSERT INTO ci_change_history (ci_id, change_type, change_source) VALUES ('t3-history', 'LEGACY', 'unknown')");
   await processor.handleCIDiscovered({
     event_id: 't3-history-a', event_type: EventType.CI_DISCOVERED, timestamp: new Date(),
     source: 'identity-reconciliation-engine', ci_id: 't3-history', organization_id: A,
-    ci_incarnation_id: aMarker!,
-    ci_name: 'history', ci_type: 'server', source_system: 'test',
+    ci_incarnation_id: aMarker!, ci_name: 'history', ci_type: 'server', source_system: 'test',
     identifiers: {}, confidence_score: 1,
   });
-  const rest = (user: keyof typeof users) =>
-    request(app).get('/api/v1/itil/configuration-items/t3-history/history').set(auth(user));
-  const graphql = (user: keyof typeof users) =>
-    request(app).post('/graphql').set(auth(user)).send({ query: '{ ciHistory(id: "t3-history") { changeType } }' });
-  expect((await sql.query("SELECT ci_id FROM cmdb.dim_ci WHERE ci_id = 't3-history'")).rows).toEqual([]);
-  expect((await rest('a')).body.data.map((row: { change_type: string }) => row.change_type)).toEqual(['discovered']);
-  expect((await graphql('a')).body.data?.ciHistory).toEqual([{ changeType: 'discovered' }]);
-  expect((await rest('b')).status).toBe(404);
-  expect((await graphql('b')).body.errors?.[0].extensions.code).toBe('NOT_FOUND');
-
-  await sql.query("INSERT INTO cmdb.dim_ci (ci_id, ci_name, ci_type, ci_status, organization_id) VALUES ('t3-history', 'stale', 'server', 'active', $1)", [A]);
-  await run("MATCH (ci:CI {id:'t3-history'}) DETACH DELETE ci");
-  await run("CREATE (:CI {id:'t3-history', name:'new B history', ci_type:'server', organization_id:$organizationId, incarnation_id:randomUUID()})", { organizationId: B });
-  const bMarker = (await graph.getCI('t3-history', B))?._incarnation_id;
-  await processor.handleCIUpdated({ // A queued event must not become a B event after reuse.
-    event_id: 't3-history-stale', event_type: EventType.CI_UPDATED, timestamp: new Date(),
+  await processor.handleCIUpdated({
+    event_id: 't3-history-forged', event_type: EventType.CI_UPDATED, timestamp: new Date(),
     source: 'identity-reconciliation-engine', ci_id: 't3-history', organization_id: B,
-    ci_incarnation_id: aMarker!, ci_name: 'stale', source_system: 'test',
+    ci_incarnation_id: aMarker!, ci_name: 'forged', source_system: 'test',
     changed_fields: [], previous_values: {}, new_values: {},
   });
-  await processor.handleCIUpdated({
-    event_id: 't3-history-b', event_type: EventType.CI_UPDATED, timestamp: new Date(),
-    source: 'identity-reconciliation-engine', ci_id: 't3-history', organization_id: B,
-    ci_incarnation_id: bMarker!,
-    ci_name: 'history', source_system: 'test', changed_fields: [],
-    previous_values: {}, new_values: {},
-  });
-  expect((await rest('a')).status).toBe(404);
-  expect((await graphql('a')).body.errors?.[0].extensions.code).toBe('NOT_FOUND');
-  expect((await rest('b')).body.data.map((row: { change_type: string }) => row.change_type)).toEqual(['updated']);
-  expect((await graphql('b')).body.data?.ciHistory).toEqual([{ changeType: 'updated' }]);
+  expect((await sql.query("SELECT 1 FROM ci_change_history WHERE ci_id = 't3-history'")).rows).toEqual([]);
+  const rest = (user: keyof typeof users) =>
+    request(app).get('/api/v1/itil/configuration-items/t3-history/history').set(auth(user));
+  expect((await rest('a')).body.data).toEqual([]);
+  expect((await rest('b')).status).toBe(404);
 });
 
-it('retains B rows in all five SQL families when real graph deletion pauses before SQL purge', async () => {
+it('retains B rows in all derived SQL families when A\'s journaled delete is held before T2', async () => {
   const id = 't3-delete-race';
-  const a = await graph.createCI({ _id: id, name: 'former A', _type: 'server' }, A);
+  const a = await graph.createCI({ _id: id, name: 'former A', _type: 'server' }, A, 't3-a');
   const aMarker = a._incarnation_id;
-  await sql.query(`INSERT INTO ci_change_history (ci_id, change_type, change_source, metadata, ci_incarnation_id)
-    VALUES ($1, 'FORMER_A', 'test', $2::jsonb, $3)`, [id, JSON.stringify({ organization_id: A }), aMarker]);
   await sql.query(`INSERT INTO baseline_snapshots (id, ci_id, snapshot_type, snapshot_data, created_at, created_by)
     VALUES ('55555555-5555-4555-8555-555555555555', $1, 'configuration', '{}', NOW(), 'legacy')`, [id]);
   const entered = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
-  const originalTransaction = sql.transaction.bind(sql);
-  const spy = jest.spyOn(sql, 'transaction').mockImplementation(async callback => {
-    expect(await graph.getCI(id, A)).toBeNull();
-    entered.resolve();
-    await release.promise;
-    return originalTransaction(callback);
+  setJournalSeam(async (point, context) => {
+    if (point === 'beforeT2' && !context.recovery) { entered.resolve(); await release.promise; }
   });
   try {
-    const deletion = graph.deleteCI(id, A);
+    const deletion = graph.deleteCI(id, A, 't3-a');
     await entered.promise;
-    const b = await graph.createCI({ _id: id, name: 'new B', _type: 'server' }, B);
+    expect(await graph.getCI(id, A)).toBeNull();
+    setJournalSeam(undefined);
+    const b = await graph.createCI({ _id: id, name: 'new B', _type: 'server' }, B, 't3-b');
     const bMarker = b._incarnation_id;
     expect(bMarker).not.toBe(aMarker);
     await sql.query(`INSERT INTO baseline_snapshots (id, ci_id, snapshot_type, snapshot_data, created_at, created_by, ci_incarnation_id)
@@ -656,30 +630,29 @@ it('retains B rows in all five SQL families when real graph deletion pauses befo
       VALUES ($1, false, NOW(), $2)`, [id, bMarker]);
     await sql.query(`INSERT INTO impact_analyses (id, source_ci_id, change_type, risk_level, analyzed_at, ci_incarnation_id)
       VALUES ('77777777-7777-4777-8777-777777777777', $1, 'RESTART', 'low', NOW(), $2)`, [id, bMarker]);
-    await sql.query(`INSERT INTO ci_criticality_scores (ci_id, factors, calculated_at, ci_incarnation_id)
-      VALUES ($1, '{"owner":"B"}', NOW(), $2)`, [id, bMarker]);
-    await sql.query(`INSERT INTO ci_change_history (ci_id, change_type, change_source, metadata, ci_incarnation_id)
-      VALUES ($1, 'FRESH_B', 'test', $2::jsonb, $3)`, [id, JSON.stringify({ organization_id: B }), bMarker]);
+    await sql.query(`INSERT INTO ci_criticality_scores (ci_id, factors, calculated_at, ci_incarnation_id, organization_id)
+      VALUES ($1, '{"owner":"B"}', NOW(), $2, $3)`, [id, bMarker, B]);
     release.resolve();
     expect(await deletion).toBe(true);
-    for (const table of ['baseline_snapshots', 'drift_detection_results', 'impact_analyses',
-      'ci_criticality_scores', 'ci_change_history']) {
+    for (const table of ['baseline_snapshots', 'drift_detection_results', 'impact_analyses', 'ci_criticality_scores']) {
       const column = table === 'impact_analyses' ? 'source_ci_id' : 'ci_id';
       expect((await sql.query(`SELECT ci_incarnation_id FROM ${table} WHERE ${column}=$1`, [id])).rows)
         .toEqual([{ ci_incarnation_id: bMarker }]);
     }
+    expect((await sql.query(`SELECT change_type, organization_id, ci_incarnation_id FROM ci_change_history
+      WHERE ci_id = $1`, [id])).rows).toEqual([{ change_type: 'deleted', organization_id: A, ci_incarnation_id: aMarker }]);
     expect((await graph.getCI(id, B))?._incarnation_id).toBe(bMarker);
   } finally {
     release.resolve();
-    spy.mockRestore();
+    setJournalSeam(undefined);
   }
 });
 
 it('fences future-dated A rows across real graph deletion and B ID collision, while reading B rows with clock skew', async () => {
-  const issued = await graph.createCI({ _id: 't3-graph-marker', name: 'marker', _type: 'server' }, A);
+  const issued = await graph.createCI({ _id: 't3-graph-marker', name: 'marker', _type: 'server' }, A, 't3-a');
   expect(issued._incarnation_id).toMatch(/^[0-9a-f-]{36}$/i);
   expect((await graph.getCI('t3-graph-marker', A))?._incarnation_id).toBe(issued._incarnation_id);
-  expect(await graph.deleteCI('t3-graph-marker', A)).toBe(true);
+  expect(await graph.deleteCI('t3-graph-marker', A, 't3-a')).toBe(true);
   const id = 't3-reincarnated';
   await run('CREATE (:CI {id:$id, name:"former A", type:"server", organization_id:$organizationId, incarnation_id:randomUUID()})',
     { id, organizationId: A });
@@ -695,8 +668,8 @@ it('fences future-dated A rows across real graph deletion and B ID collision, wh
     VALUES ('22222222-2222-4222-8222-222222222222', $1, 'RESTART', 'high', $2, $3)`, [id, future, aMarker]);
   await sql.query(`INSERT INTO ci_criticality_scores (ci_id, factors, calculated_at, ci_incarnation_id)
     VALUES ($1, '{"secret":"A"}', $2, $3)`, [id, future, aMarker]);
-  await sql.query(`INSERT INTO ci_change_history (ci_id, change_type, change_source, metadata, changed_at, ci_incarnation_id)
-    VALUES ($1, 'FORMER', 'test', $2::jsonb, $3, $4)`, [id, JSON.stringify({ organization_id: B }), future, aMarker]);
+  await sql.query(`INSERT INTO ci_change_history (ci_id, change_type, change_source, metadata, changed_at, ci_incarnation_id, organization_id)
+    VALUES ($1, 'FORMER', 'test', $2::jsonb, $3, $4, $5)`, [id, JSON.stringify({ organization_id: B }), future, aMarker, A]);
   // Model an incomplete cross-store delete. Production graph.deleteCI also purges
   // PostgreSQL; this surviving-row case verifies that purge is not the fence.
   await run('MATCH (ci:CI {id:$id}) DETACH DELETE ci', { id });
@@ -706,7 +679,7 @@ it('fences future-dated A rows across real graph deletion and B ID collision, wh
   const bMarker = current?._incarnation_id;
   expect(bMarker).toMatch(/^[0-9a-f-]{36}$/i);
   expect(bMarker).not.toBe(aMarker);
-  await expect(graph.updateCI(id, { organization_id: A, incarnation_id: aMarker } as any, B))
+  await expect(graph.updateCI(id, { organization_id: A, incarnation_id: aMarker } as any, B, 't3-b'))
     .rejects.toThrow('CI identity and incarnation cannot be updated');
   expect((await graph.getCI(id, B))?._incarnation_id).toBe(bMarker);
   expect(await graph.getCI(id, A)).toBeNull();

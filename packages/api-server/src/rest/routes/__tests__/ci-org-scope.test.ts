@@ -318,14 +318,13 @@ jest.mock('../../../auth/neo4j-auth.repository', () => ({
 }));
 
 // Imported after mocks are registered (jest hoists jest.mock).
-import { loadConfig, logger } from '@cmdb/common';
+import { loadConfig } from '@cmdb/common';
 import { JWTService } from '../../../auth/jwt.service';
 import { getAuthMiddleware } from '../../../auth/auth-bootstrap';
 import { ciRoutes } from '../ci.routes';
 import { itilRoutes } from '../itil.routes';
 import { driftRoutes, impactRoutes } from '../drift-impact.routes';
 import { analyticsRoutes } from '../analytics.routes';
-import { createGraphQLServer } from '../../../graphql/server';
 
 const BACKFILL = join(__dirname, '../../../../../database/src/neo4j/migrations/001_ci_organization_backfill.cypher');
 const NOT_FOUND = { success: false, error: 'Not Found', message: 'CI not found' };
@@ -461,163 +460,6 @@ it('does not let eight concurrent tenant analytics reads starve the background g
   }
 });
 
-it('deletes all five persisted CI-derived families on the owning REST deletion path', async () => {
-  const id = 'ci-reused';
-  seedCI(id, ORG_A);
-  await sql(`INSERT INTO baseline_snapshots
-    (id, ci_id, snapshot_type, snapshot_data, created_at, created_by, is_approved)
-    VALUES ('11111111-1111-4111-8111-111111111111', $1, 'configuration', '{"owner":"A"}', NOW(), 'A', true)`, [id]);
-  await sql(`INSERT INTO drift_detection_results
-    (ci_id, has_drift, detected_at, baseline_snapshot_id)
-    VALUES ($1, true, NOW(), '11111111-1111-4111-8111-111111111111')`, [id]);
-  await sql(`INSERT INTO impact_analyses (id, source_ci_id, change_type, risk_level, analyzed_at)
-    VALUES ('22222222-2222-4222-8222-222222222222', $1, 'UPDATE', 'high', NOW())`, [id]);
-  await sql(`INSERT INTO ci_criticality_scores (ci_id, factors, calculated_at) VALUES ($1, '{"owner":"A"}', NOW())`, [id]);
-  await sql(`INSERT INTO ci_change_history (ci_id, change_type, change_source, metadata)
-    VALUES ($1, 'UPDATE', 'test', '{"organization_id":"${ORG_A}"}')`, [id]);
-  expect((await request(app).delete(`/api/v1/cis/${id}`).set(AS_B)).status).toBe(404);
-  for (const table of derivedTables) {
-    const column = table === 'impact_analyses' ? 'source_ci_id' : 'ci_id';
-    expect(await sql(`SELECT 1 FROM ${table} WHERE ${column} = $1`, [id])).toHaveLength(1);
-  }
-  expect((await request(app).delete(`/api/v1/cis/${id}`).set(AS_A)).status).toBe(204);
-  seedCI(id, ORG_B, { created_at: new Date().toISOString() });
-  expect((await request(app).get(`/api/v1/cis/${id}`).set(AS_B)).status).toBe(200);
-  for (const table of derivedTables) {
-    const column = table === 'impact_analyses' ? 'source_ci_id' : 'ci_id';
-    expect(await sql(`SELECT 1 FROM ${table} WHERE ${column} = $1`, [id])).toEqual([]);
-  }
-});
-
-it('preserves every fresh B derivative when B reuses an ID between A graph deletion and SQL purge', async () => {
-  const id = 'ci-delete-race';
-  const aInc = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
-  const bInc = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
-  seedCI(id, ORG_A, { incarnation_id: aInc });
-  await sql(`INSERT INTO ci_change_history (ci_id, change_type, change_source, metadata, ci_incarnation_id)
-    VALUES ($1, 'A', 'test', '{}', $2)`, [id, aInc]);
-
-  const original = pg.transaction;
-  const entered = Promise.withResolvers<void>();
-  const release = Promise.withResolvers<void>();
-  pg.transaction = async callback => {
-    expect(graph.nodes.has(id)).toBe(false);
-    entered.resolve();
-    await release.promise;
-    return original(callback);
-  };
-  try {
-    const deleting = request(app).delete(`/api/v1/cis/${id}`).set(AS_A).then(response => response);
-    await entered.promise;
-    seedCI(id, ORG_B, { incarnation_id: bInc });
-    await sql(`INSERT INTO baseline_snapshots
-      (id, ci_id, snapshot_type, snapshot_data, created_at, created_by, ci_incarnation_id)
-      VALUES ('11111111-1111-4111-8111-111111111111', $1, 'configuration', '{}', NOW(), 'b', $2)`, [id, bInc]);
-    await sql(`INSERT INTO drift_detection_results (ci_id, has_drift, detected_at, ci_incarnation_id)
-      VALUES ($1, false, NOW(), $2)`, [id, bInc]);
-    await sql(`INSERT INTO impact_analyses (id, source_ci_id, change_type, risk_level, analyzed_at, ci_incarnation_id)
-      VALUES ('22222222-2222-4222-8222-222222222222', $1, 'UPDATE', 'low', NOW(), $2)`, [id, bInc]);
-    await sql(`INSERT INTO ci_criticality_scores (ci_id, factors, calculated_at, ci_incarnation_id)
-      VALUES ($1, '{}', NOW(), $2)`, [id, bInc]);
-    await sql(`INSERT INTO ci_change_history (ci_id, change_type, change_source, metadata, ci_incarnation_id)
-      VALUES ($1, 'B', 'test', '{}', $2)`, [id, bInc]);
-    release.resolve();
-    expect((await deleting).status).toBe(204);
-    for (const table of derivedTables) {
-      const column = table === 'impact_analyses' ? 'source_ci_id' : 'ci_id';
-      expect(await sql(`SELECT ci_incarnation_id FROM ${table} WHERE ${column} = $1`, [id]))
-        .toEqual([{ ci_incarnation_id: bInc }]);
-    }
-    expect((await request(app).get(`/api/v1/cis/${id}`).set(AS_B)).status).toBe(200);
-  } finally {
-    release.resolve();
-    pg.transaction = original;
-  }
-});
-
-it('keeps surviving SQL rows fenced after a graph delete commits during SQL failure', async () => {
-  const id = 'ci-delete-sql-down';
-  const aInc = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
-  const bInc = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
-  seedCI(id, ORG_A, { incarnation_id: aInc });
-  await sql(`INSERT INTO baseline_snapshots
-    (id, ci_id, snapshot_type, snapshot_data, created_at, created_by, is_approved, ci_incarnation_id)
-    VALUES ($1, $3, 'configuration', '{"secret":"A"}', NOW(), 'a', true, $2),
-           ($4, $3, 'configuration', '{"secret":"legacy"}', NOW(), 'a', true, NULL)`,
-    [randomUUID(), aInc, id, randomUUID()]);
-  await sql(`INSERT INTO drift_detection_results (ci_id, has_drift, drift_score, detected_at, ci_incarnation_id)
-    VALUES ($1, true, 99, NOW(), $2), ($1, true, 98, NOW(), NULL)`, [id, aInc]);
-  await sql(`INSERT INTO impact_analyses (id, source_ci_id, change_type, risk_level, analyzed_at, ci_incarnation_id)
-    VALUES ($1, $3, 'RESTART', 'high', NOW(), $2), ($4, $3, 'RESTART', 'high', NOW(), NULL)`,
-    [randomUUID(), aInc, id, randomUUID()]);
-  await sql(`INSERT INTO ci_criticality_scores (ci_id, factors, calculated_at, ci_incarnation_id)
-    VALUES ($1, '{"secret":"A"}', NOW(), $2)`, [id, aInc]);
-  await sql(`INSERT INTO ci_change_history
-    (ci_id, change_type, change_source, metadata, ci_incarnation_id)
-    VALUES ($1, 'FORMER_A', 'test', $2::jsonb, $3), ($1, 'LEGACY_A', 'test', $2::jsonb, NULL)`,
-    [id, JSON.stringify({ organization_id: ORG_B }), aInc]);
-  const original = pg.transaction;
-  const log = jest.spyOn(logger, 'error').mockImplementation(() => undefined);
-  pg.transaction = async () => { throw new Error('PostgreSQL unavailable'); };
-  try {
-    expect((await request(app).delete(`/api/v1/cis/${id}`).set(AS_A)).status).toBe(204);
-    expect((await request(app).delete(`/api/v1/cis/${id}`).set(AS_A)).status).toBe(404);
-    expect(graph.nodes.has(id)).toBe(false);
-    expect(log.mock.calls.filter(args => args[0] === 'CI_DERIVED_PURGE_FAILED'))
-      .toEqual([['CI_DERIVED_PURGE_FAILED']]);
-  } finally {
-    pg.transaction = original;
-    log.mockRestore();
-  }
-  for (const table of derivedTables) {
-    const column = table === 'impact_analyses' ? 'source_ci_id' : 'ci_id';
-    const rows = await sql(`SELECT ci_incarnation_id FROM ${table} WHERE ${column} = $1`, [id]);
-    expect(rows).toContainEqual({ ci_incarnation_id: aInc });
-    if (table !== 'ci_criticality_scores') expect(rows).toContainEqual({ ci_incarnation_id: null });
-  }
-  seedCI(id, ORG_B, { incarnation_id: bInc, created_at: new Date().toISOString() });
-  const get = (path: string) => request(app).get(path).set(AS_B);
-  const paths = [
-    `/api/v1/drift/baseline/${id}`, `/api/v1/drift/history/${id}`,
-    `/api/v1/impact/history/${id}`, `/api/v1/itil/configuration-items/${id}/history`,
-    `/api/v1/analytics/change-history?ci_id=${id}`, '/api/v1/analytics/change-timeline',
-    `/api/v1/impact/criticality/${id}`,
-  ];
-  for (const path of paths) {
-    const response = await get(path);
-    expect(response.status).toBe(200);
-    if (path.includes('/drift/baseline/')) expect(response.body.data).toBeNull();
-    else if (path.includes('/impact/criticality/'))
-      expect(JSON.stringify(response.body.data)).not.toContain('secret');
-    else expect(response.body.data).toEqual([]);
-  }
-  expect(incarnationRunTimeout).toEqual(expect.any(Number));
-  expect(incarnationRunTimeout).toBeGreaterThan(0);
-});
-
-it('GraphQL CI deletion shares cleanup and foreign/missing not-found behavior', async () => {
-  const id = 'ci-graphql-deleted';
-  seedCI(id, ORG_A);
-  await sql(`INSERT INTO ci_change_history (ci_id, change_type, change_source, metadata)
-    VALUES ($1, 'UPDATE', 'test', '{"organization_id":"${ORG_A}"}')`, [id]);
-  const gql = express();
-  const { server } = await createGraphQLServer(gql);
-  try {
-    const del = (who: typeof AS_A) => request(gql).post('/graphql').set(who)
-      .send({ query: `mutation { deleteCI(id: "${id}") }` });
-    const foreign = await del(AS_B);
-    const missing = await request(gql).post('/graphql').set(AS_B)
-      .send({ query: 'mutation { deleteCI(id: "ci-absent") }' });
-    expect(foreign.body.errors?.[0].extensions.code).toBe('NOT_FOUND');
-    expect(missing.body.errors?.[0].extensions.code).toBe('NOT_FOUND');
-    expect(await sql('SELECT 1 FROM ci_change_history WHERE ci_id = $1', [id])).toHaveLength(1);
-    expect((await del(AS_A)).body.data).toEqual({ deleteCI: true });
-    expect(await sql('SELECT 1 FROM ci_change_history WHERE ci_id = $1', [id])).toEqual([]);
-  } finally {
-    await server.stop();
-  }
-});
-
 describe('/api/v1/cis tenant scoping', () => {
   it("GET /cis lists only the caller org's CIs", async () => {
     const res = await request(app).get('/api/v1/cis').set(AS_A);
@@ -686,46 +528,16 @@ describe('/api/v1/cis tenant scoping', () => {
     expect(auditHistoryReads).toBe(0);
   });
 
-  it('POST /cis assigns a tenant-scoped server ID and rejects chosen IDs and external IDs', async () => {
+  // Journaled create/update/delete with real stores: tests/integration hp1-s4a-journal.
+  it('POST/PUT /cis refuse external IDs and organization aliases before any store access', async () => {
     const body = { name: 'new-server', type: 'server' };
-    for (const id of ['ci-b-app', 'ci-nope']) {
-      const refused = await request(app).post('/api/v1/cis').set(AS_A).send({ ...body, id });
-      expect(refused.status).toBe(400);
+    for (const extra of [{ external_id: 'external-missing' }, { organization_id: ORG_B }, { _organizationId: ORG_B }]) {
+      expect((await request(app).post('/api/v1/cis').set(AS_A).send({ ...body, ...extra })).status).toBe(400);
     }
-    for (const external_id of ['external-existing', 'external-missing']) {
-      const refused = await request(app).post('/api/v1/cis').set(AS_A).send({ ...body, external_id });
-      expect(refused.status).toBe(400);
+    for (const update of [{ organization_id: ORG_B }, { id: 'other' }, { metadata: { a: { __op_id: 1 } } }]) {
+      expect((await request(app).put('/api/v1/cis/ci-a-app').set(AS_A).send(update)).status).toBe(400);
     }
-    const created = await request(app).post('/api/v1/cis').set(AS_A).send(body);
-    const other = await request(app).post('/api/v1/cis').set(AS_B).send(body);
-    expect([created.status, other.status]).toEqual([201, 201]);
-    const id = created.body.data.id;
-    expect(id).toMatch(/^[0-9a-f-]{36}$/);
-    expect(other.body.data.id).not.toBe(id);
-    expect(graph.nodes.get(id)!['organization_id']).toBe(ORG_A);
-    expect((await request(app).get(`/api/v1/cis/${id}`).set(AS_B)).status).toBe(404);
-
-    const smuggled = await request(app).post('/api/v1/cis').set(AS_A).send({ ...body, organization_id: ORG_B });
-    expect(smuggled.status).toBe(400);
-    const moved = await request(app).put(`/api/v1/cis/${id}`).set(AS_A).send({ organization_id: ORG_B });
-    expect(moved.status).toBe(400);
-    expect(graph.nodes.get(id)!['organization_id']).toBe(ORG_A);
-  });
-
-  it('PUT and DELETE on a foreign CI are 404 and change nothing', async () => {
-    const before = JSON.stringify([[...graph.nodes.entries()], graph.edges]);
-
-    const put = await request(app).put('/api/v1/cis/ci-b-app').set(AS_A).send({ name: 'renamed-by-a' });
-    expect([put.status, put.body]).toEqual([404, NOT_FOUND]);
-    const del = await request(app).delete('/api/v1/cis/ci-b-app').set(AS_A);
-    expect([del.status, del.body]).toEqual([404, NOT_FOUND]);
-
-    expect(JSON.stringify([[...graph.nodes.entries()], graph.edges])).toBe(before);
-
-    // The owner can still update and delete it.
-    expect((await request(app).put('/api/v1/cis/ci-b-app').set(AS_B).send({ name: 'renamed-by-b' })).status).toBe(200);
-    expect((await request(app).delete('/api/v1/cis/ci-b-app').set(AS_B)).status).toBe(204);
-    expect(graph.nodes.has('ci-b-app')).toBe(false);
+    expect(graph.nodes.get('ci-a-app')!['organization_id']).toBe(ORG_A);
   });
 
   it("GET /cis/:id/impact excludes other orgs' nodes", async () => {

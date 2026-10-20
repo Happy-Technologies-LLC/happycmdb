@@ -425,8 +425,10 @@ paths:
       tags: [Configuration Items]
       summary: Create new CI
       description: >-
-        Create a CI with a server-assigned globally unique id. Rejects id,
-        external_id and organization_id in the request body with 400.
+        Create a CI through the HP1 journal. An optional `id` (1-100 characters)
+        is the immutable identity; without one the server issues a UUID.
+        external_id, organization_id and any reserved alias (`_id`, `op_id`,
+        `organizationId`, ...) at the top level or inside metadata are 400.
       operationId: createCI
       requestBody:
         required: true
@@ -461,7 +463,7 @@ paths:
                     framework: Node.js
       responses:
         '201':
-          description: CI created successfully; data.id is server-assigned
+          description: CI created successfully; data.id is the requested or issued identity
           content:
             application/json:
               schema:
@@ -475,8 +477,7 @@ paths:
                     properties:
                       id:
                         type: string
-                        format: uuid
-                        description: Globally unique server-assigned identity
+                        description: Globally unique identity
                       name:
                         type: string
                       type:
@@ -489,7 +490,7 @@ paths:
         '403':
           $ref: '#/components/responses/CIForbidden'
         '409':
-          description: Unlikely server-generated ID collision; no client-chosen ID accepted
+          description: The id is in use (in any organization), or a write to this id is in flight
           content:
             application/json:
               schema:

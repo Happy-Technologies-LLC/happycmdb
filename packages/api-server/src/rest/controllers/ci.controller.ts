@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Request, Response } from 'express';
-import { randomUUID } from 'crypto';
+import { requestActor, sendJournalError } from '../../journal-http';
 import {
   CITraversalLimitError, createCITraversalWork, getNeo4jClient, getPostgresClient, getAuditService,
 } from '@cmdb/database';
@@ -237,7 +237,7 @@ export class CIController {
     }
   }
 
-  /** REST CI IDs follow the GraphQL contract: globally unique and server assigned. */
+  /** Journaled direct create (v16 §3.1); a client-chosen `id` is the identity, otherwise one is issued. */
   async createCI(req: Request, res: Response): Promise<void> {
     try {
       if (!req.body.name || !req.body.type) {
@@ -249,102 +249,52 @@ export class CIController {
         return;
       }
 
-      // organization_id and both globally unique identifiers are not client-settable.
-      const ci = await this.neo4jClient.createCI(
-        { ...req.body, id: randomUUID() }, requestOrganizationId(req)
-      );
+      // organization_id and external_id are not client-settable (route schema).
+      const ci = await this.neo4jClient.createCI(req.body, requestOrganizationId(req), requestActor(req));
       res.status(201).json({
         success: true,
         data: convertNeo4jTypes(ci),
         message: 'CI created successfully'
       });
     } catch (error) {
+      if (sendJournalError(res, error)) return;
       logger.error('Error creating CI', error);
-
-      // Check for duplicate ID error
-      if (error instanceof Error && error.message.includes('already exists')) {
-        res.status(409).json({
-          success: false,
-          error: 'Conflict',
-          message: 'CI with this ID already exists'
-        });
-        return;
-      }
-
-      res.status(500).json({
-        success: false,
-        error: 'Failed to create CI',
-        message: error instanceof Error ? error.message : 'Unknown error'
-      });
+      res.status(500).json({ success: false, error: 'Failed to create CI' });
     }
   }
 
   async updateCI(req: Request, res: Response): Promise<void> {
     try {
-      const { id } = req.params;
-
-      if (!id) {
-        res.status(400).json({
-          success: false,
-          error: 'Bad Request',
-          message: 'CI ID is required'
-        });
-        return;
-      }
-
-      const organizationId = requestOrganizationId(req);
-
-      // Check if CI exists in the caller's organization first
-      const existing = await this.neo4jClient.getCI(id, organizationId);
-      if (!existing) {
+      const ci = await this.neo4jClient.updateCI(
+        req.params['id']!, req.body, requestOrganizationId(req), requestActor(req));
+      if (!ci) {
         sendCINotFound(res);
         return;
       }
-
-      const ci = await this.neo4jClient.updateCI(id, req.body, organizationId);
       res.json({
         success: true,
         data: convertNeo4jTypes(ci),
         message: 'CI updated successfully'
       });
     } catch (error) {
+      if (sendJournalError(res, error)) return;
       logger.error('Error updating CI', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to update CI',
-        message: error instanceof Error ? error.message : 'Unknown error'
-      });
+      res.status(500).json({ success: false, error: 'Failed to update CI' });
     }
   }
 
   async deleteCI(req: Request, res: Response): Promise<void> {
     try {
-      const { id } = req.params;
-
-      if (!id) {
-        res.status(400).json({
-          success: false,
-          error: 'Bad Request',
-          message: 'CI ID is required'
-        });
-        return;
-      }
-
       // Deletes only a CI of the caller's organization; a foreign id deletes nothing.
-      const deleted = await this.neo4jClient.deleteCI(id, requestOrganizationId(req));
-      if (!deleted) {
+      if (!(await this.neo4jClient.deleteCI(req.params['id']!, requestOrganizationId(req), requestActor(req)))) {
         sendCINotFound(res);
         return;
       }
-
       res.status(204).send();
     } catch (error) {
+      if (sendJournalError(res, error)) return;
       logger.error('Error deleting CI', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to delete CI',
-        message: error instanceof Error ? error.message : 'Unknown error'
-      });
+      res.status(500).json({ success: false, error: 'Failed to delete CI' });
     }
   }
 

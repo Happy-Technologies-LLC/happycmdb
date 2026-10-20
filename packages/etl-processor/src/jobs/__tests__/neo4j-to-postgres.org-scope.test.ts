@@ -108,8 +108,8 @@ const neo4jClient = {
       ? { _id: ciId, name: properties.name, _type: properties.type,
           _status: properties.status, environment: properties.environment } : null;
   },
-  createCI: async (ci: CI, scope: string | symbol) => {
-    // The production Neo4jClient.createCI stamps only its scope, not CI input.
+  legacyCreateCIUnjournaled: async (ci: CI, scope: string | symbol) => {
+    // The production legacy writer stamps only its scope, not CI input.
     nodes.push(node(ci._id, typeof scope === 'string' ? scope : undefined, { name: ci.name }));
     return ci;
   },

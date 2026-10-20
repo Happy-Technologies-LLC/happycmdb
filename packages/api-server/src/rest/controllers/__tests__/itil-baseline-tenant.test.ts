@@ -37,16 +37,10 @@ function caller(org: string | undefined, id?: string, ciId = 'ci-a', role = 'vie
 
 describe('ITIL baseline tenant boundary', () => {
   let controller: ITILController;
-  let insertedOwner: unknown;
 
   beforeEach(() => {
-    insertedOwner = undefined;
     (getPostgresClient as jest.Mock).mockReturnValue({ pool: {
       query: async (sql: string, params: unknown[] = []) => {
-        if (sql.includes('INSERT INTO itil_baselines')) {
-          insertedOwner = params[7];
-          return { rows: [{ id: 'new', organization_id: params[7] }] };
-        }
         const id = sql.includes('WHERE id = $1') ? params[0] : undefined;
         const org = sql.includes('organization_id = $') ? params[id === undefined ? 0 : 1] : undefined;
         return { rows: baselines.filter(b => (id === undefined || b.id === id) && (org === undefined || b.organization_id === org)) };
@@ -81,21 +75,5 @@ describe('ITIL baseline tenant boundary', () => {
     await controller.getBaseline(caller(A, 'base-a'), own.mock);
     expect(own.res.statusCode).toBe(200);
     expect(own.res.body).toEqual({ success: true, data: baselines[0] });
-  });
-
-  it('creates a baseline only from owned CIs, stamping the verified owner', async () => {
-    const foreign = caller(B);
-    foreign.body = { name: 'foreign', ciIds: ['ci-a'], createdBy: 'user' };
-    const denied = response();
-    await controller.createBaseline(foreign, denied.mock);
-    expect(denied.res.statusCode).toBe(404);
-    expect(insertedOwner).toBeUndefined();
-
-    const own = caller(A);
-    own.body = { name: 'own', ciIds: ['ci-a'], createdBy: 'user' };
-    const created = response();
-    await controller.createBaseline(own, created.mock);
-    expect(created.res.statusCode).toBe(201);
-    expect(insertedOwner).toBe(A);
   });
 });

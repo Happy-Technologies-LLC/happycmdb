@@ -7,6 +7,8 @@ import type { Request, Response } from 'express';
 const query = jest.fn<(...args: unknown[]) => Promise<{ rows: unknown[] }>>();
 const getSession = jest.fn();
 jest.mock('@cmdb/database', () => ({
+  ...jest.requireActual<object>('@cmdb/database/journal/journal'),
+  ...jest.requireActual<object>('@cmdb/database/journal/encoding'),
   getNeo4jClient: () => ({ getSession }),
   getPostgresClient: () => ({ pool: { query } }),
 }));
@@ -24,7 +26,7 @@ function response(): Response & { code: number; body: unknown } {
 const req = { params: { id: 'base-1' }, user: { _organizationId: ORG },
   body: { ciId: 'ci-1', performedBy: 'alice' } } as unknown as Request;
 
-describe('baseline restore until S4 journal admission', () => {
+describe('baseline restore tenancy', () => {
   beforeEach(() => { query.mockReset(); getSession.mockReset(); });
   it('returns the same 404 for absent and foreign baselines without reading snapshot data', async () => {
     query.mockResolvedValue({ rows: [] });
@@ -37,13 +39,5 @@ describe('baseline restore until S4 journal admission', () => {
     expect(foreign.code).toBe(404);
     expect(getSession).not.toHaveBeenCalled();
     expect(query.mock.calls.every(call => String(call[0]).includes('organization_id = $2'))).toBe(true);
-  });
-  it('blocks owned restore without a direct graph write until S4', async () => {
-    query.mockResolvedValue({ rows: [{ id: 'base-1' }] });
-    const res = response();
-    await new ITILController().restoreFromBaseline(req, res);
-    expect(res.code).toBe(503);
-    expect(res.body).toEqual({ success: false, error: 'Baseline restore unavailable' });
-    expect(getSession).not.toHaveBeenCalled();
   });
 });

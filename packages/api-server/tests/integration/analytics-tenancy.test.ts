@@ -243,11 +243,18 @@ it('caps dense cyclic dependency work in both APIs and serves a healthy follow-u
 it('retains event-proven fresh history and fences reused IDs, NULL provenance and foreign IDs', async () => {
   await cypher("CREATE (:CI {id:'analytics-history', name:'fresh', type:'server', organization_id:$org, incarnation_id:randomUUID()})", { org: A });
   const aMarker = (await graph.getCI('analytics-history', A))?._incarnation_id;
-  await sql.query(`INSERT INTO ci_change_history (ci_id, change_type, change_source, metadata, ci_incarnation_id, organization_id)
-    VALUES ('analytics-history', 'OWN', 'test', $1::jsonb, $2, $3),
-      ('analytics-history', 'LEGACY', 'test', NULL, $2, NULL),
-      ('analytics-history', 'FOREIGN', 'test', $4::jsonb, $2, $5)`,
-    [JSON.stringify({ organization_id: A }), aMarker, A, JSON.stringify({ organization_id: B }), B]);
+  // A pre-036 legacy NULL-org row: the contract CHECK refuses new ones, so seed it with the check lifted.
+  await sql.query('ALTER TABLE ci_change_history DROP CONSTRAINT ci_change_history_organization_required');
+  try {
+    await sql.query(`INSERT INTO ci_change_history (ci_id, change_type, change_source, metadata, ci_incarnation_id, organization_id)
+      VALUES ('analytics-history', 'OWN', 'test', $1::jsonb, $2, $3),
+        ('analytics-history', 'LEGACY', 'test', NULL, $2, NULL),
+        ('analytics-history', 'FOREIGN', 'test', $4::jsonb, $2, $5)`,
+      [JSON.stringify({ organization_id: A }), aMarker, A, JSON.stringify({ organization_id: B }), B]);
+  } finally {
+    await sql.query(`ALTER TABLE ci_change_history ADD CONSTRAINT ci_change_history_organization_required
+      CHECK (organization_id IS NOT NULL) NOT VALID`);
+  }
   const history = (user: keyof typeof users) => rest(user, '/change-history?ci_id=analytics-history');
   const graphql = (user: keyof typeof users) => gql(user, '{ analytics { getChangeHistory(ciId:"analytics-history") { _changeType } } }');
   expect((await sql.query("SELECT ci_id FROM cmdb.dim_ci WHERE ci_id='analytics-history'")).rows).toEqual([]);

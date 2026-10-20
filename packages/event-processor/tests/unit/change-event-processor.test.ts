@@ -129,54 +129,10 @@ describe('ChangeEventProcessor', () => {
 
       await (processor as any).handleCIDiscovered(event);
 
+      // HP1 v16 §3.5 / H-3 / N-8: a proven-owner Kafka event never writes history.
+      expect(mockPostgresClient.query.mock.calls.some(([sql]: [string]) => sql.includes('ci_change_history'))).toBe(false);
       expect(mockPostgresClient.query).toHaveBeenCalledWith(
-        expect.stringContaining('INSERT INTO ci_change_history'),
-        expect.arrayContaining([
-          'ci-123',
-          'discovered',
-          'system',
-          'aws-discovery',
-        ])
-      );
-      const historyCall = mockPostgresClient.query.mock.calls.find(([sql]: [string]) => sql.includes('INSERT INTO ci_change_history'));
-      expect(JSON.parse(historyCall[1][6])).toMatchObject({ organization_id: OWN, event_id: 'evt-1' });
-
-      expect(logger.info).toHaveBeenCalledWith(
-        'CI discovery tracked',
-        expect.objectContaining({
-          ci_id: 'ci-123',
-          ci_name: 'Web Server 1',
-        })
-      );
-    });
-
-    it('should handle errors during CI discovery tracking', async () => {
-      const event: CIDiscoveredEvent = {
-        event_id: 'evt-1',
-        event_type: EventType.CI_DISCOVERED,
-        timestamp: new Date(),
-        ci_id: 'ci-123',
-        organization_id: 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa',
-        ci_incarnation_id: INC,
-        ci_name: 'Web Server 1',
-        ci_type: 'server',
-        source_system: 'aws-discovery',
-        identifiers: {},
-        confidence_score: 0.95,
-      };
-
-      const dbError = new Error('Database connection failed');
-      mockPostgresClient.query.mockRejectedValueOnce(dbError);
-
-      await expect((processor as any).handleCIDiscovered(event)).rejects.toThrow(dbError);
-
-      expect(logger.error).toHaveBeenCalledWith(
-        'Failed to track CI discovery',
-        expect.objectContaining({
-          event_id: 'evt-1',
-          ci_id: 'ci-123',
-        })
-      );
+        expect.stringContaining('INSERT INTO ci_change_statistics'), ['ci-123', 'discovered']);
     });
   });
 
@@ -198,26 +154,9 @@ describe('ChangeEventProcessor', () => {
 
       await (processor as any).handleCIUpdated(event);
 
+      expect(mockPostgresClient.query.mock.calls.some(([sql]: [string]) => sql.includes('ci_change_history'))).toBe(false);
       expect(mockPostgresClient.query).toHaveBeenCalledWith(
-        expect.stringContaining('INSERT INTO ci_change_history'),
-        expect.arrayContaining([
-          'ci-123',
-          'updated',
-          'system',
-          'aws-discovery',
-          ['status', 'ip_address'],
-        ])
-      );
-      const historyCall = mockPostgresClient.query.mock.calls.find(([sql]: [string]) => sql.includes('INSERT INTO ci_change_history'));
-      expect(JSON.parse(historyCall[1][7])).toMatchObject({ organization_id: OWN, event_id: 'evt-2' });
-
-      expect(logger.info).toHaveBeenCalledWith(
-        'CI update tracked',
-        expect.objectContaining({
-          ci_id: 'ci-123',
-          changed_fields: ['status', 'ip_address'],
-        })
-      );
+        expect.stringContaining('INSERT INTO ci_change_statistics'), ['ci-123', 'updated']);
     });
 
     it('should detect significant changes and create alerts', async () => {

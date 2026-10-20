@@ -456,7 +456,8 @@ export class ReconciliationJob {
   private async resolveByCreatingInNeo4j(ci: PostgresCI): Promise<void> {
     // Only this Postgres-backed restore can stamp a tenant: the current
     // cmdb.dim_ci row is trusted; reconciliation merge inputs are not.
-    await this.neo4jClient.createCI(ci, ci.organization_id);
+    // HP1-S5 owns this non-API writer's journal cutover (A-12); until then it is the named unjournaled residual.
+    await this.neo4jClient.legacyCreateCIUnjournaled(ci, ci.organization_id);
     logger.info('Created CI in Neo4j from PostgreSQL', { ciId: ci._id });
   }
 

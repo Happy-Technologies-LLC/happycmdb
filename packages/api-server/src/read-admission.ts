@@ -1,7 +1,7 @@
 // Copyright 2026 Happy Technologies LLC
 // SPDX-License-Identifier: Apache-2.0
 import { Pool } from 'pg';
-import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
+import { getNeo4jClient, getPostgresClient, JournalUnavailableError } from '@cmdb/database';
 
 export class CIGapError extends Error {
   constructor() { super('CI is temporarily unavailable'); }
@@ -56,6 +56,8 @@ export async function writeReferencedCIs<T>(
       return result;
     } catch (error) {
       await client.query('ROLLBACK');
+      // v16 §5.3: lock_timeout on the epoch share lock is a 503, never a 500.
+      if (error && typeof error === 'object' && 'code' in error && error.code === '55P03') throw new JournalUnavailableError();
       throw error;
     }
   } finally {

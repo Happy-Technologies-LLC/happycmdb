@@ -6,11 +6,19 @@
 // Neo4j exports
 export {
   Neo4jClient, getNeo4jClient, UNSCOPED_CI_ACCESS,
-  CITraversalLimitError, createCITraversalWork, runWithinCITraversalBudget,
+  CITraversalLimitError, createCITraversalWork, runWithinCITraversalBudget, startJournalSweeper,
   MAX_CI_TRAVERSAL_NODES, MAX_CI_TRAVERSAL_WORK,
 } from './neo4j/client';
 export type { CIOrganizationScope, CITraversalWork } from './neo4j/client';
 export { initializeNeo4jSchema } from './neo4j/initializer';
+
+// HP1 reconciliation journal (v16 §3–§4)
+export {
+  JournalGapError, JournalAbortedError, JournalTargetMissingError, JournalUnavailableError, PlanUnrepresentableError,
+  requeueFailedJournalGroup, setJournalSeam,
+} from './journal/journal';
+export type { JournalSeam } from './journal/journal';
+export { enc, dec, isStorableString } from './journal/encoding';
 
 // PostgreSQL exports
 export { PostgresClient, getPostgresClient } from './postgres/client';

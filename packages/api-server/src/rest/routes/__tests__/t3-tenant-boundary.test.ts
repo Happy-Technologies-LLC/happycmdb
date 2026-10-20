@@ -47,6 +47,13 @@ let graphCount = 0;
 const record = (fields: Record<string, unknown>) => ({ get: (key: string) => fields[key] });
 const integer = (n: number) => ({ toNumber: () => n });
 const graph = {
+  // Journaled direct write of an owned CI (the journal itself runs in tests/integration).
+  updateCIProperties: async (id: string, props: Record<string, unknown>, org: string) => {
+    const ci = nodes.get(id);
+    if (ci?.organization_id !== org) return null;
+    Object.assign(ci, props);
+    return { ...ci };
+  },
   getCI: async (id: string, org: string) => {
     graphCount++;
     const ci = nodes.get(id);
@@ -95,6 +102,10 @@ const graph = {
           total: integer(ungapped.length),
           page: ungapped.slice(offset, end).map(ci => ({ properties: { ...ci, type: 'server', status: 'active' } })),
         })] };
+      }
+      if (statement.includes('properties(ci) AS props')) {
+        return { records: visible.filter(row => (params['ids'] as string[]).includes(row.id))
+          .map(row => record({ id: row.id, props: { ...row } })) };
       }
       const id = params['id'] ?? params['ciId'] ?? params['rootCiId'];
       if (statement.includes('RETURN ci.id AS ciId, ci.incarnation_id AS incarnationId')) {
@@ -184,8 +195,11 @@ const pg = {
         : pg.query(sql, params),
     release: () => undefined,
   }),
+  get connect() { return pg.getClient; },
 };
 jest.mock('@cmdb/database', () => ({
+  ...jest.requireActual<object>('@cmdb/database/journal/journal'),
+  ...jest.requireActual<object>('@cmdb/database/journal/encoding'),
   getNeo4jClient: () => graph,
   getPostgresClient: () => ({ ...pg, pool: pg }),
   getAuditService: () => ({}),
@@ -241,6 +255,9 @@ beforeAll(async () => {
     ${table('impact_analyses')} ${table('ci_criticality_scores')}`);
   await db.exec(readFileSync(join(migrations, '011_ci_organization_scope.sql'), 'utf8'));
   await db.exec(readFileSync(join(migrations, '025_ci_derived_incarnation.sql'), 'utf8'));
+  // 030's org column and key with 036's primary-key swap: the criticality upsert's conflict target.
+  await db.exec(`ALTER TABLE ci_criticality_scores ADD COLUMN organization_id UUID, DROP CONSTRAINT ci_criticality_scores_pkey;
+    ${readFileSync(join(migrations, '030_drift_impact_org_provenance.sql'), 'utf8').match(/CREATE UNIQUE INDEX[\s\S]*?;/)![0]}`);
   const provenance = readFileSync(join(migrations, '028_change_history_reconciliation_org_provenance.sql'), 'utf8');
   const historyColumns = provenance.match(/ALTER TABLE ci_change_history\s+ADD COLUMN[\s\S]*?;/);
   if (!historyColumns) throw new Error('Missing S1 history org columns');

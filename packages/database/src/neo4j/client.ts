@@ -3,11 +3,16 @@
 
 // packages/database/src/neo4j/client.ts
 
-import neo4j, { Driver, Session, Node, Relationship, Path, PathSegment } from 'neo4j-driver';
+import neo4j, { AuthToken, Config, Driver, Session, Node, Relationship, Path, PathSegment } from 'neo4j-driver';
+import { randomUUID } from 'crypto';
 import { logger, CI, CIInput, ciIncarnationId, CIAnalyticsLimitError, MAX_CI_ANALYTICS_NODES, sanitizeCITypeForLabel, validateRelationshipType } from '@cmdb/common';
 import * as fs from 'fs';
 import * as path from 'path';
 import { getPostgresClient } from '../postgres/client';
+import { enc } from '../journal/encoding';
+import {
+  assertJournalSchema, JournalGapError, JournalGraphRunner, JournalTargetMissingError, ReconciliationJournal, StoredPlan,
+} from '../journal/journal';
 
 /**
  * Explicit opt-out of CI tenant scoping, for callers that have no request
@@ -97,6 +102,22 @@ type TraversalNode = { node: Node; distance: number };
 export class Neo4jClient {
   private driver: Driver;
   private activeCIAnalyticsReads = 0;
+  private readonly driverConfig: Config;
+  private readonly connection: { uri: string; auth: AuthToken };
+  /** v16 §4.2: W and the recovery fence run on a dedicated driver with a 5 s acquisition bound. */
+  private journalDriver?: Driver;
+  private readonly runJournalStatement: JournalGraphRunner = async (query, params) => {
+    this.journalDriver ??= neo4j.driver(this.connection.uri, this.connection.auth,
+      { ...this.driverConfig, connectionAcquisitionTimeout: 5_000 });
+    const session = this.journalDriver.session({ database: 'neo4j' });
+    try {
+      // Auto-commit only: never executeWrite (managed retry) and never re-sent.
+      return (await session.run(query, params, { timeout: 10_000 })).records.map(record => record.toObject());
+    } finally {
+      await session.close();
+    }
+  };
+  readonly journal = new ReconciliationJournal(this.runJournalStatement);
 
   constructor(uri: string, username: string, password: string, config?: {
     encrypted?: boolean;
@@ -112,17 +133,17 @@ export class Neo4jClient {
                          (process.env['NEO4J_SSL_TRUST_STRATEGY'] as any) ||
                          'TRUST_SYSTEM_CA_SIGNED_CERTIFICATES';
 
-    this.driver = neo4j.driver(
-      uri,
-      neo4j.auth.basic(username, password),
-      {
-        maxConnectionLifetime: 3 * 60 * 60 * 1000, // 3 hours
-        maxConnectionPoolSize: 50,
-        connectionAcquisitionTimeout: 2 * 60 * 1000, // 2 minutes
-        encrypted: sslEnabled ? 'ENCRYPTION_ON' : 'ENCRYPTION_OFF',
-        trust: trustStrategy,
-      }
-    );
+    this.driverConfig = {
+      maxConnectionLifetime: 3 * 60 * 60 * 1000, // 3 hours
+      maxConnectionPoolSize: 50,
+      encrypted: sslEnabled ? 'ENCRYPTION_ON' : 'ENCRYPTION_OFF',
+      trust: trustStrategy,
+    };
+    this.connection = { uri, auth: neo4j.auth.basic(username, password) };
+    this.driver = neo4j.driver(uri, this.connection.auth, {
+      ...this.driverConfig,
+      connectionAcquisitionTimeout: 2 * 60 * 1000, // 2 minutes
+    });
 
     if (sslEnabled) {
       logger.info('Neo4j client initialized with SSL/TLS encryption enabled');
@@ -240,11 +261,13 @@ export class Neo4jClient {
   }
 
   async close(): Promise<void> {
+    await this.journalDriver?.close();
     await this.driver.close();
   }
 
   // CI Operations
-  async createCI(ci: CIInput, scope: CIOrganizationScope): Promise<CI> {
+  /** Pre-journal unscoped create kept ONLY for the S5-owned ETL writer (HP1-S5 cutover). */
+  async legacyCreateCIUnjournaled(ci: CIInput, scope: CIOrganizationScope): Promise<CI> {
     // The organization comes only from the scope, never from the CI input.
     const organizationId = organizationIdParam(scope);
     const session = this.getSession();
@@ -292,6 +315,109 @@ export class Neo4jClient {
       return this.recordToCI(result.records[0]!.get('ci'));
     } finally {
       await session.close();
+    }
+  }
+
+  /** Raw stored properties of an owned CI (metadata stays its stored string). */
+  private async ownedProperties(id: string, organizationId: string): Promise<Record<string, unknown> | null> {
+    const session = this.getSession();
+    try {
+      const result = await session.run(
+        'MATCH (ci:CI {id: $id}) WHERE ci.organization_id = $organizationId RETURN properties(ci) AS props',
+        { id, organizationId }, { timeout: 10_000 });
+      return result.records.length ? result.records[0]!.get('props') as Record<string, unknown> : null;
+    } finally {
+      await session.close();
+    }
+  }
+
+  /**
+   * v16 §5.2 steps 5–6: schema gate, then the owned lookup. A missing or
+   * foreign CI is `false` (the caller's identical 404); the caller's own
+   * pending/failed operation on the id is the gap 409.
+   */
+  private async admitOwned(organizationId: string, ids: string[]): Promise<boolean> {
+    await assertJournalSchema(this.runJournalStatement);
+    for (const id of ids) {
+      if (await this.getCI(id, organizationId, 10_000)) continue;
+      const gap = await getPostgresClient().query(`SELECT 1 FROM ci_reconciliation_operations
+        WHERE organization_id = $1 AND ci_id = $2 AND state IN ('pending', 'failed') LIMIT 1`, [organizationId, id]);
+      if (gap.rows.length) throw new JournalGapError();
+      return false;
+    }
+    return true;
+  }
+
+  // CI operations. Every :CI mutation below is one journaled, fenced operation (v16 §3, §4).
+  /** Direct create; a client-chosen `id` is the immutable identity and journal key. */
+  async createCI(ci: CIInput, organizationId: string, actor: string): Promise<CI> {
+    await assertJournalSchema(this.runJournalStatement);
+    const id = (ci as { id?: string }).id || ci._id || randomUUID();
+    const type = (ci as { type?: string }).type || ci._type;
+    const label = sanitizeCITypeForLabel(type);
+    const props = {
+      external_id: ci.external_id ?? null, name: ci.name, type, status: ci.status || 'active',
+      environment: ci.environment || 'development',
+      discovered_at: neo4j.types.DateTime.fromStandardDate(new Date(ci.discovered_at || Date.now())),
+      discovery_provider: (ci as { discovery_provider?: string }).discovery_provider || null,
+      metadata: JSON.stringify(ci.metadata || {}), incarnation_id: randomUUID(),
+    };
+    return this.journal.run({
+      organizationId, actor, operation: 'direct_write', ciIds: [id],
+      plan: async () => ({ graph: { kind: 'create', label, params: enc({ id, props }) } }),
+      result: async () => (await this.getCI(id, organizationId))!,
+    });
+  }
+
+  /**
+   * Journaled property update of an owned CI; values are stored as given
+   * (callers validate them as Neo4j-storable). Null when missing or foreign.
+   * Identity, tenant, fence aliases and the incarnation never change in place.
+   */
+  async updateCIProperties(id: string, props: Record<string, unknown>, organizationId: string, actor: string
+  ): Promise<Record<string, unknown> | null> {
+    if (Object.keys(props).some(key => ['id', 'organization_id', 'organizationid', 'op_id', 'reconciliation_op_id',
+      'created_at', 'incarnation_id'].includes(key.replace(/^_+/, '').toLowerCase()))) {
+      throw new Error('CI identity and incarnation cannot be updated');
+    }
+    if (!(await this.admitOwned(organizationId, [id]))) return null;
+    try {
+      return await this.journal.run({
+        organizationId, actor, operation: 'direct_write', ciIds: [id],
+        plan: async () => ({ graph: { kind: 'update', label: null, params: enc({ id, props }) } }),
+        result: () => this.ownedProperties(id, organizationId),
+      });
+    } catch (error) {
+      if (error instanceof JournalTargetMissingError) return null;
+      throw error;
+    }
+  }
+
+  async updateCI(id: string, updates: Partial<CIInput>, organizationId: string, actor: string): Promise<CI | null> {
+    const props: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(updates)) {
+      if (value === undefined || value === null) continue;
+      props[key] = key === 'metadata' ? JSON.stringify(value) : value;
+    }
+    return await this.updateCIProperties(id, props, organizationId, actor) ? this.getCI(id, organizationId) : null;
+  }
+
+  /**
+   * Journaled restore (v16 §4.1): `props` and the timestamps come from an
+   * owned baseline; the caller has dropped reserved keys. Null when missing or foreign.
+   */
+  async restoreCI(id: string, props: Record<string, unknown>, createdAt: unknown, discoveredAt: unknown,
+    organizationId: string, actor: string): Promise<Record<string, unknown> | null> {
+    if (!(await this.admitOwned(organizationId, [id]))) return null;
+    try {
+      return await this.journal.run({
+        organizationId, actor, operation: 'restore', ciIds: [id],
+        plan: async () => ({ graph: { kind: 'restore', label: null, params: enc({ id, props, createdAt, discoveredAt }) } }),
+        result: () => this.ownedProperties(id, organizationId),
+      });
+    } catch (error) {
+      if (error instanceof JournalTargetMissingError) return null;
+      throw error;
     }
   }
 
@@ -423,70 +549,6 @@ export class Neo4jClient {
     }
   }
 
-  async updateCI(id: string, updates: Partial<CIInput>, scope: CIOrganizationScope): Promise<CI> {
-    const organizationId = organizationIdParam(scope);
-    const session = this.getSession();
-    try {
-      // Process updates to handle both underscore and non-underscore prefixes
-      // and stringify any nested objects
-      const processedUpdates: any = {};
-
-      for (const [key, value] of Object.entries(updates)) {
-        // Remove underscore prefix if present
-        const cleanKey = key.startsWith('_') ? key.substring(1) : key;
-
-        // Skip undefined/null values
-        if (value === undefined || value === null) {
-          continue;
-        }
-
-        // Handle metadata specially - always stringify
-        if (cleanKey === 'metadata') {
-          processedUpdates[cleanKey] = JSON.stringify(value);
-        }
-        // Stringify any other nested objects or arrays of objects
-        else if (typeof value === 'object' && value !== null) {
-          // Check if it's an array of objects or a plain object
-          if (Array.isArray(value) && value.length > 0 && typeof value[0] === 'object') {
-            processedUpdates[cleanKey] = JSON.stringify(value);
-          } else if (!Array.isArray(value)) {
-            processedUpdates[cleanKey] = JSON.stringify(value);
-          } else {
-            // Primitive array - keep as is
-            processedUpdates[cleanKey] = value;
-          }
-        } else {
-          // Primitive value - keep as is
-          processedUpdates[cleanKey] = value;
-        }
-      }
-
-      // Identity, tenant and the graph-issued incarnation cannot change in place.
-      if (['organization_id', 'id', 'created_at', 'incarnation_id'].some(key => key in processedUpdates)) {
-        throw new Error('CI identity and incarnation cannot be updated');
-      }
-
-      const result = await session.run(
-        `
-        MATCH (ci:CI {id: $id})
-        ${nodeScopeClause(organizationId)}
-        SET ci += $updates,
-            ci.updated_at = datetime()
-        RETURN ci
-        `,
-        { id, updates: processedUpdates, organizationId }
-      );
-
-      if (result.records.length === 0) {
-        throw new Error(`CI not found: ${id}`);
-      }
-
-      return this.recordToCI(result.records[0]!.get('ci'));
-    } finally {
-      await session.close();
-    }
-  }
-
   async getCI(id: string, scope: CIOrganizationScope, timeoutMs?: number): Promise<CI | null> {
     const organizationId = organizationIdParam(scope);
     const session = this.getSession();
@@ -531,84 +593,50 @@ export class Neo4jClient {
   }
 
   /**
-   * SQL cleanup is defense in depth. Capture the deleted graph incarnation
-   * in the deletion statement so a later owner reusing the ID retains its
-   * own derivatives. Remove legacy unmarked rows for the deleted ID too.
-   * Once graph deletion commits, SQL cleanup failure cannot change its result.
+   * Journaled delete (v16 §6.4). The snapshot is the raw property map read by
+   * one statement under the slot; T2 writes exactly one org-stamped `deleted`
+   * history row and purges this incarnation's derived drift/impact rows. Prior
+   * history is evidence and is never purged. False when missing or foreign.
    */
-  async deleteCI(id: string, scope: CIOrganizationScope): Promise<boolean> {
-    const organizationId = organizationIdParam(scope);
-    const session = this.getSession();
+  async deleteCI(id: string, organizationId: string, actor: string): Promise<boolean> {
+    if (!(await this.admitOwned(organizationId, [id]))) return false;
     try {
-      const result = await session.run(
-        `
-        MATCH (ci:CI {id: $id})
-        ${nodeScopeClause(organizationId)}
-        WITH ci, ci.incarnation_id AS deletedIncarnationId
-        DETACH DELETE ci
-        RETURN deletedIncarnationId
-        `,
-        { id, organizationId }
-      );
-
-      if (result.records.length === 0) return false;
-      const deletedIncarnationId = result.records[0]!.get('deletedIncarnationId') as string | null;
-      try {
-        await getPostgresClient().transaction(async client => {
-          await client.query('DELETE FROM drift_detection_results WHERE ci_id = $1 AND (ci_incarnation_id = $2::uuid OR ci_incarnation_id IS NULL)', [id, deletedIncarnationId]);
-          await client.query('DELETE FROM baseline_snapshots WHERE ci_id = $1 AND (ci_incarnation_id = $2::uuid OR ci_incarnation_id IS NULL)', [id, deletedIncarnationId]);
-          await client.query('DELETE FROM impact_analyses WHERE source_ci_id = $1 AND (ci_incarnation_id = $2::uuid OR ci_incarnation_id IS NULL)', [id, deletedIncarnationId]);
-          await client.query('DELETE FROM ci_criticality_scores WHERE ci_id = $1 AND (ci_incarnation_id = $2::uuid OR ci_incarnation_id IS NULL)', [id, deletedIncarnationId]);
-          await client.query('DELETE FROM ci_change_history WHERE ci_id = $1 AND (ci_incarnation_id = $2::uuid OR ci_incarnation_id IS NULL)', [id, deletedIncarnationId]);
-        });
-      } catch {
-        logger.error('CI_DERIVED_PURGE_FAILED');
-      }
-      return true;
-    } finally {
-      await session.close();
+      return await this.journal.run({
+        organizationId, actor, operation: 'delete', ciIds: [id],
+        plan: async (): Promise<StoredPlan> => {
+          const props = await this.ownedProperties(id, organizationId);
+          if (!props) throw new JournalTargetMissingError();
+          return {
+            graph: { kind: 'delete', label: null, params: enc({ id }) },
+            deleted: { snapshot: enc(props), incarnationId: ciIncarnationId(props['incarnation_id'] as string | null) },
+          };
+        },
+        result: async () => true,
+      });
+    } catch (error) {
+      if (error instanceof JournalTargetMissingError) return false;
+      throw error;
     }
   }
 
   /**
-   * MERGE a relationship between two CIs of the scope. Returns false (and
-   * writes nothing) when either endpoint does not exist in the scope's
-   * organization, so a cross-organization relationship can never be created.
+   * Journaled two-key relationship write (both endpoints reserved in one T1,
+   * one W with two fences). False (nothing written) when either endpoint is
+   * missing or foreign, or, on delete, when no such relationship exists.
    */
-  async createRelationship(
-    fromId: string,
-    toId: string,
-    type: string,
-    scope: CIOrganizationScope,
-    properties: Record<string, any> = {}
-  ): Promise<boolean> {
-    const organizationId = organizationIdParam(scope);
-    const session = this.getSession();
+  async writeRelationship(kind: 'relationship_create' | 'relationship_delete', fromId: string, toId: string,
+    type: string, organizationId: string, actor: string, props: Record<string, unknown> = {}): Promise<boolean> {
+    const label = validateRelationshipType(type);
+    if (!(await this.admitOwned(organizationId, [fromId, toId]))) return false;
     try {
-      // Validate relationship type to prevent Cypher injection
-      const validatedType = validateRelationshipType(type);
-      const endpointScope = organizationId === null
-        ? ''
-        : 'WHERE from.organization_id = $organizationId AND to.organization_id = $organizationId';
-
-      // Safe to use template literal here because validatedType is validated against whitelist
-      const result = await session.run(
-        `
-        MATCH (from:CI {id: $fromId})
-        MATCH (to:CI {id: $toId})
-        ${endpointScope}
-        MERGE (from)-[r:${validatedType}]->(to)
-        SET r += $properties,
-            r.created_at = coalesce(r.created_at, datetime()),
-            r.updated_at = datetime()
-        RETURN count(r) AS created
-        `,
-        { fromId, toId, properties, organizationId }
-      );
-
-      return result.records[0]!.get('created').toNumber() > 0;
-    } finally {
-      await session.close();
+      return await this.journal.run({
+        organizationId, actor, operation: 'relationship_write', ciIds: [fromId, toId],
+        plan: async () => ({ graph: { kind, label, params: enc({ from: fromId, to: toId, props }) } }),
+        result: async () => true,
+      });
+    } catch (error) {
+      if (error instanceof JournalTargetMissingError) return false;
+      throw error;
     }
   }
 
@@ -778,4 +806,18 @@ export function getNeo4jClient(): Neo4jClient {
     );
   }
   return neo4jClient;
+}
+
+/** v16 §4.3: every journaling process sweeps eligible pending operations every 15 s. Returns a stop function. */
+export function startJournalSweeper(intervalMs = 15_000): () => void {
+  let running = false;
+  const timer = setInterval(() => {
+    if (running) return;
+    running = true;
+    getNeo4jClient().journal.sweep()
+      .catch(() => logger.warn('HP1 journal sweep failed; retrying next interval'))
+      .finally(() => { running = false; });
+  }, intervalMs);
+  timer.unref();
+  return () => clearInterval(timer);
 }

@@ -229,6 +229,7 @@ import { itilRoutes } from '../itil.routes';
 import { driftRoutes, impactRoutes } from '../drift-impact.routes';
 import { analyticsRoutes } from '../analytics.routes';
 import { createGraphQLServer } from '../../../graphql/server';
+import { getAnomalyDetectionEngine } from '@cmdb/ai-ml-engine';
 const jwt = new JWTService(loadConfig().auth.jwt);
 const app = express();
 app.use(express.json());
@@ -664,4 +665,14 @@ it('bounds all four mounted CI GraphQL lists for both tenants with broad limit-o
     await server.stop();
     for (const id of ids) nodes.delete(id);
   }
+});
+
+it('anomaly change frequency counts journal T2 history, which stamps the organization_id column and no metadata', async () => {
+  await db.exec(`${table('ci_change_statistics')} INSERT INTO ci_change_statistics (ci_id) VALUES ('ci-fresh'); INSERT INTO ci_change_history
+    (ci_id, change_type, change_source, ci_incarnation_id, organization_id) VALUES ('ci-fresh', 'updated', 'api', '${A_INC}', '${A}')`);
+  Object.assign(graph, { iterateUnscopedCIIncarnationPages: async function* () { yield [{ ciId: 'ci-fresh', incarnationId: A_INC, organizationId: A }]; } });
+  const query = jest.spyOn(pg, 'query');
+  await (getAnomalyDetectionEngine() as unknown as { detectChangeFrequencyAnomalies(): Promise<unknown> }).detectChangeFrequencyAnomalies();
+  const { rows } = await query.mock.results[0]!.value as { rows: Array<{ ci_id: string; change_count: unknown }> };
+  expect(rows.map(row => [row.ci_id, Number(row.change_count)])).toEqual([['ci-fresh', 1]]);
 });

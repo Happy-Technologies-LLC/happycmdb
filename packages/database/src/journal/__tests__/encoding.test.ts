@@ -49,4 +49,7 @@ it('rejects a plan over the §3.6 limits as unrepresentable (422), not truncated
   for (let i = 0; i < 40; i++) deep = [deep];
   expect(() => assertPlanRepresentable(enc(deep))).toThrow(PlanUnrepresentableError);
   expect(() => assertPlanRepresentable(enc({ name: 'ok', n: neo4j.int(3) }))).not.toThrow();
+  const props = { a: 'x'.repeat(30_000), b: 'y'.repeat(30_000), c: 'z'.repeat(30_000) }; // 64 KiB bounds a value, not the envelope
+  expect(() => assertPlanRepresentable({ graph: { params: enc({ props }) }, history: { previous: enc(props) } })).not.toThrow();
+  expect(() => assertPlanRepresentable(enc({ props: { a: 'x'.repeat(65_535) } }))).toThrow(PlanUnrepresentableError);
 });

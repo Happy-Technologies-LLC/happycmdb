@@ -106,4 +106,8 @@ describe('tenant reconciliation routes', () => {
     expect(response.status).toBe(200);
     expect(handler).toHaveBeenCalledTimes(1);
   });
+  it('refuses a 256-char merge source (T2 change_source VARCHAR(255)) before the handler', async () => {
+    const merge = (source: string) => call(['post', '/reconciliation/merge', { ...MERGE_BODY, source }], 'org-a:operator');
+    expect([(await merge('s'.repeat(256))).status, (await merge('s'.repeat(255))).status, handler.mock.calls.length]).toEqual([400, 200, 1]);
+  });
 });

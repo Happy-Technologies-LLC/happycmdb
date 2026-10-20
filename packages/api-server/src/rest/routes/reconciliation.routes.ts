@@ -45,7 +45,7 @@ const matchRequestSchema = Joi.object({
 const mergeRequestSchema = Joi.object({
   name: Joi.string().required(),
   ci_type: Joi.string().required(),
-  source: Joi.string().required(),
+  source: Joi.string().max(255).required(), // T2 writes it to ci_change_history.change_source VARCHAR(255)
   source_id: Joi.string().required(),
   identifiers: Joi.object({
     external_id: Joi.string().optional(),

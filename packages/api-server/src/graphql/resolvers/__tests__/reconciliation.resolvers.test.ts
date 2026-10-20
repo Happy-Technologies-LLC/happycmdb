@@ -118,6 +118,11 @@ describe('mergeCI', () => {
     expect(result._success).toBe(true);
     expect(result._ciId).toBe('ci-created-1');
   });
+
+  it('refuses a source the T2 history column cannot hold (256 chars) before the engine', async () => {
+    await expectGraphQLErrorCode(mergeCI(null, { ...args, _source: 's'.repeat(256) }, contextWith(operatorUser)), 'BAD_USER_INPUT');
+    expect(mockReconcileCI).not.toHaveBeenCalled();
+  });
 });
 
 describe('resolveConflict', () => {

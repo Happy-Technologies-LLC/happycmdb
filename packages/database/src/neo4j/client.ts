@@ -9,7 +9,7 @@ import { logger, CI, CIInput, ciIncarnationId, CIAnalyticsLimitError, MAX_CI_ANA
 import * as fs from 'fs';
 import * as path from 'path';
 import { getPostgresClient } from '../postgres/client';
-import { enc } from '../journal/encoding';
+import { enc, PlanUnrepresentableError } from '../journal/encoding';
 import {
   assertJournalSchema, JournalGapError, JournalGraphRunner, JournalTargetMissingError, ReconciliationJournal, StoredPlan,
 } from '../journal/journal';
@@ -382,6 +382,7 @@ export class Neo4jClient {
       'created_at', 'incarnation_id'].includes(key.replace(/^_+/, '').toLowerCase()))) {
       throw new Error('CI identity and incarnation cannot be updated');
     }
+    if (mergeSource !== undefined && mergeSource.length > 255) throw new PlanUnrepresentableError(); // T2 change_source VARCHAR(255)
     if (!(await this.admitOwned(organizationId, [id]))) return null;
     try {
       return await this.journal.run({

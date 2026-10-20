@@ -240,6 +240,7 @@ it('F0/X-14/N-7b: invalid shapes and reserved aliases are 400 before any journal
       requestedBy: 'a', plannedStart: '2026-01-01T00:00:00Z', plannedDuration: 5, implementationPlan: 'x'.repeat(60) })],
     ['101 baseline CIs', () => api('a').post('/itil/baselines', { name: 'too-many', ciIds: ids101, createdBy: 'a' })],
     ['invalid auditDate', () => api('a').post(`/itil/configuration-items/${ci}/audit`, { auditDate: 'not-a-date' })],
+    ['256-char merge source', () => api('a').post('/reconciliation/merge', { name: 'm', ci_type: 'server', source: 's'.repeat(256), source_id: 'f0', identifiers: { serial_number: ci } })],
   ];
   for (const [name, call] of cases) expect({ name, status: (await call()).status }).toEqual({ name, status: 400 });
   expect((await rows('SELECT count(*)::int AS n FROM ci_reconciliation_operations WHERE organization_id = $1', [A]))[0].n).toBe(before);
@@ -285,6 +286,9 @@ it('X-27/X-27b/N-7c: delete and restore snapshots keep every Neo4j type; oversiz
   expect(String(snapshot['at'])).toBe('2026-01-01T00:00:00.000000005Z');
   expect(snapshot['name']).toBe('r');
 
+  const wide = id('wide'); // §3.6 bounds each value, not the envelope: three 30 KiB properties still delete.
+  await cypher("CREATE (c:CI {id: $id, organization_id: $org, name: 'w', a: $v, b: $v, c: $v})", { id: wide, org: A, v: 'x'.repeat(30_000) });
+  expect((await api('a').delete(`/cis/${wide}`)).status).toBe(204);
   const huge = id('huge');
   await cypher("CREATE (c:CI {id: $id, organization_id: $org, name: 'h', metadata: $m})",
     { id: huge, org: A, m: JSON.stringify({ blob: 'x'.repeat(2 * 1024 * 1024) }) });

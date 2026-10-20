@@ -108,7 +108,7 @@ export class AnomalyDetectionEngine {
          JOIN ci_change_history ch ON cs.ci_id = ch.ci_id
          JOIN jsonb_to_recordset($2::jsonb) AS current_ci("ciId" text, "incarnationId" uuid, "organizationId" text)
            ON ch.ci_id = current_ci."ciId" AND ch.ci_incarnation_id = current_ci."incarnationId"
-           AND ch.metadata->>'organization_id' = current_ci."organizationId"
+           AND ch.organization_id::text = current_ci."organizationId"
          LEFT JOIN cmdb.dim_ci dc ON dc.ci_id = cs.ci_id AND dc.is_current = true
          WHERE ch.changed_at >= NOW() - ($1 * INTERVAL '1 day')
          GROUP BY cs.ci_id

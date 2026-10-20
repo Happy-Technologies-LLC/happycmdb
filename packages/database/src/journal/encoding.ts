@@ -128,7 +128,7 @@ export function dec(value: Encoded): unknown {
   }
 }
 
-/** v16 §3.6 limits applied to a derived plan; violation is a definitive 422 abort. */
+/** v16 §3.6 limits on a derived plan (422 abort): valueBytes per stored value, never the envelope; totalBytes per plan. */
 export const PLAN_LIMITS = { depth: 32, valueBytes: 65_536, keys: 1_000, array: 1_000, totalBytes: 1_048_576 };
 export function assertPlanRepresentable(plan: Encoded): void {
   const walk = (value: Encoded, depth: number): void => {
@@ -137,13 +137,10 @@ export function assertPlanRepresentable(plan: Encoded): void {
       if (value.length > PLAN_LIMITS.array) throw new PlanUnrepresentableError();
       value.forEach(member => walk(member, depth + 1));
     } else if (value !== null && typeof value === 'object') {
-      const entries = Object.entries(value);
-      if (entries.length > PLAN_LIMITS.keys) throw new PlanUnrepresentableError();
-      for (const [, member] of entries) {
-        if (Buffer.byteLength(JSON.stringify(member)) > PLAN_LIMITS.valueBytes) throw new PlanUnrepresentableError();
-        walk(member, depth + 1);
-      }
-    }
+      const members = Object.values(value);
+      if (members.length > PLAN_LIMITS.keys) throw new PlanUnrepresentableError();
+      members.forEach(member => walk(member, depth + 1));
+    } else if (Buffer.byteLength(JSON.stringify(value)) > PLAN_LIMITS.valueBytes) throw new PlanUnrepresentableError();
   };
   if (Buffer.byteLength(JSON.stringify(plan)) > PLAN_LIMITS.totalBytes) throw new PlanUnrepresentableError();
   walk(plan, 0);

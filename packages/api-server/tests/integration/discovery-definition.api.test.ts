@@ -69,8 +69,8 @@ describe('Discovery Definition REST API Integration Tests', () => {
         provider: 'nmap',
         method: 'agentless',
         config: {
-          networks: ['10.0.0.0/24'],
-          filters: { environment: 'production' },
+          targets: ['10.0.0.0/24'],
+          scanOptions: { serviceDetection: true },
         },
         schedule: '0 2 * * *', // Daily at 2 AM
         is_active: true,
@@ -93,6 +93,7 @@ describe('Discovery Definition REST API Integration Tests', () => {
         schedule: definitionData.schedule,
         is_active: true,
         tags: definitionData.tags,
+        config: definitionData.config,
       });
       // `nmap` does not require a credential.
       expect(response.body.data.credential_id).toBeNull();
@@ -131,10 +132,12 @@ describe('Discovery Definition REST API Integration Tests', () => {
         .send(invalidData)
         .expect(400);
 
-      // Validation failures come from the shared validation middleware, which
-      // uses the underscore envelope (unlike the controller's own responses).
-      expect(response.body).toHaveProperty('_success', false);
-      expect(response.body).toHaveProperty('_error');
+      const { postgresClient } = getTestContext();
+      const stored = await postgresClient['pool'].query(
+        'SELECT id FROM discovery_definitions WHERE name = $1 AND organization_id = $2',
+        [invalidData.name, '11111111-1111-4111-8111-111111111111']
+      );
+      expect(stored.rows).toEqual([]);
     });
 
     it('should create definition with minimal required fields', async () => {

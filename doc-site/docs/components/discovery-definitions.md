@@ -7,6 +7,46 @@ description: Reusable discovery configurations with scheduling and job tracking
 
 Reusable discovery configurations that define what to discover, how to authenticate, and when to run discovery operations.
 
+## HAP-755: configuration safety
+
+The current REST definition API accepts only `targets` (string array), `range` (string),
+and `scanOptions` (`aggressive`, `osDetection`, `serviceDetection`, `fullPortScan`,
+`portScan` booleans) in `config`. `targets` and `range` are alternatives.
+Inline credentials and unknown fields are rejected on create and update; `credential_id`
+is a unified-store reference, not a substitute for an available execution consumer.
+REST definition reads return permitted settings only for safe rows; any historical
+config with an unknown key (including `_targets`) or invalid value projects `{}`.
+Unsafe rows retain their original stored JSON and reject all normal updates
+(including metadata, credential attachment and schedule changes), deletion,
+manual/background triggering, schedule activation, and stale queued execution.
+The fixed rejection never returns the raw configuration. Safe rows retain
+their REST create/read/update/delete behavior; HP1-S3 disables discovery
+execution and schedule activation for every row until the journaled cutover.
+
+### Operator-only quarantine inventory and manual review
+
+An authenticated tenant admin can call `GET /api/v1/discovery/definitions/migration/inventory`.
+The response is an organization-scoped list of **IDs only** for rows whose stored
+configuration fails the same strict predicate used by the execution guard.
+It never returns stored JSON, names, credential payloads, or cross-tenant IDs.
+For each ID, open a review record with verified tenant ID, definition ID,
+assigned admin operator and quarantined status. Mark the future mapping
+**unresolved** unless the separate contract proves the legacy shape, tenant
+owner, protocol, credential scope and consuming provider; do not infer any of
+these from the row's name, creator or arbitrary JSON key. The only authorized
+manual action now is inventory and deferral. Produce a redacted receipt with
+those IDs, review time, quarantine status and deferral decision; never copy
+secrets, JSON, token-bearing URLs, API responses containing credential
+payloads or logs. Keep the original row untouched, including its schedule.
+
+The signed 2026-10-19 containment split leaves HAP-755 **open**. This endpoint
+does not map, decrypt, transfer, bind or re-enable any legacy credential.
+Credential-backed discovery execution currently rejects all credential
+references; nmap does not consume them. The separate approved consumer and
+legacy shape/tenant/scope contract must land before a manual per-row transfer,
+replacement, rollback or activation procedure can be authorized. Unknown and
+unrecognized rows remain quarantined rather than silently stripped.
+
 ## Overview
 
 Discovery Definitions are the cornerstone of HappyCMDB's ServiceNow-style discovery architecture. They provide a reusable, schedulable, and auditable way to configure infrastructure discovery operations.

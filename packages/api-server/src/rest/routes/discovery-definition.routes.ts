@@ -11,15 +11,15 @@
  * router. Create/update/delete/run and enabling or disabling a schedule
  * all mutate definition state, so they additionally require the 'write'
  * permission (`authMiddleware.requirePermission('write')`, satisfied by
- * operator, agent, and admin roles). Listing and reading a single
- * definition are read-only and stay authenticated-only with no extra gate.
+ * operator, agent, and admin roles). Normal listing and reads require
+ * authentication; the quarantined-row inventory additionally requires admin.
  */
 
 import { Router } from 'express';
 import Joi from 'joi';
 import { DiscoveryDefinitionController } from '../controllers/discovery-definition.controller';
 import { validateRequest, validateOptional } from '../middleware/validation.middleware';
-import { schemas } from '@cmdb/common';
+import { schemas, strictDiscoveryDefinitionConfig } from '@cmdb/common';
 import { getAuthMiddleware } from '../../auth/auth-bootstrap';
 import { optionalRequestOrganizationId } from '../../middleware/auth.middleware';
 import type { Request, Response, NextFunction } from 'express';
@@ -45,6 +45,27 @@ discoveryDefinitionRoutes.use('/:id/schedule',
   authMiddleware.requirePlatformAdmin(), unavailable);
 discoveryDefinitionRoutes.use(requireDefinitionOrganization);
 
+// Do not let validation details reflect arbitrary inline credential values.
+function rejectUnsafeDefinitionConfig(req: Request, res: Response, next: NextFunction): void {
+  if (req.body?.config !== undefined) {
+    try {
+      strictDiscoveryDefinitionConfig(req.body.config);
+    } catch {
+      res.status(400).json({ success: false, error: 'Bad Request', message: 'Invalid discovery scan configuration' });
+      return;
+    }
+  }
+  next();
+}
+
+const scanOptionsSchema = Joi.object({
+  aggressive: Joi.boolean(), osDetection: Joi.boolean(), serviceDetection: Joi.boolean(),
+  fullPortScan: Joi.boolean(), portScan: Joi.boolean(),
+});
+const configSchema = Joi.object({
+  targets: Joi.array().items(Joi.string()), range: Joi.string(), scanOptions: scanOptionsSchema,
+});
+
 // Validation schemas
 const createDefinitionSchema = Joi.object({
   name: Joi.string().required().min(1).max(255),
@@ -61,7 +82,7 @@ const createDefinitionSchema = Joi.object({
     then: Joi.required(),
     otherwise: Joi.optional()
   }),
-  config: Joi.object().unknown(true).optional().default({}),
+  config: configSchema.optional().default({}),
   schedule: Joi.string().optional(), // Cron expression
   is_active: Joi.boolean().optional().default(true),
   tags: Joi.array().items(Joi.string()).optional(),
@@ -74,7 +95,7 @@ const updateDefinitionSchema = Joi.object({
   method: schemas.discoveryMethod.optional(),
   credential_id: Joi.string().uuid().optional(),
   agent_id: Joi.string().max(255).optional(),
-  config: Joi.object().unknown(true).optional(),
+  config: configSchema.optional(),
   schedule: Joi.string().optional(),
   is_active: Joi.boolean().optional(),
   tags: Joi.array().items(Joi.string()).optional(),
@@ -90,6 +111,7 @@ const listDefinitionsQuerySchema = Joi.object({
 discoveryDefinitionRoutes.post(
   '/',
   authMiddleware.requirePermission('write'),
+  rejectUnsafeDefinitionConfig,
   validateRequest(createDefinitionSchema, 'body'),
   controller.createDefinition.bind(controller)
 );
@@ -99,6 +121,13 @@ discoveryDefinitionRoutes.get(
   '/',
   validateOptional(listDefinitionsQuerySchema, 'query'),
   controller.listDefinitions.bind(controller)
+);
+
+// GET /migration/inventory - admin-only, redacted tenant-scoped quarantine inventory.
+discoveryDefinitionRoutes.get(
+  '/migration/inventory',
+  authMiddleware.requireRole('admin'),
+  controller.listUnsafeDefinitionIds.bind(controller)
 );
 
 // GET /api/v1/discovery/definitions/:id - Get definition by ID
@@ -111,6 +140,7 @@ discoveryDefinitionRoutes.get(
 discoveryDefinitionRoutes.put(
   '/:id',
   authMiddleware.requirePermission('write'),
+  rejectUnsafeDefinitionConfig,
   validateRequest(updateDefinitionSchema, 'body'),
   controller.updateDefinition.bind(controller)
 );

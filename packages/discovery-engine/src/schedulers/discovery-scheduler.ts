@@ -10,7 +10,7 @@
  * Now supports dynamic scheduling based on discovery definitions stored in PostgreSQL.
  */
 
-import { getQueueManager, QUEUE_NAMES, logger, safeDiscoveryScanConfig } from '@cmdb/common';
+import { getQueueManager, QUEUE_NAMES, logger, safeDiscoveryScanConfig, hasUnsafeDiscoveryDefinitionConfig } from '@cmdb/common';
 import type { DiscoveryJobData, DiscoveryProvider, DiscoveryDefinition } from '@cmdb/common';
 import { getPostgresClient, getScheduleConfigStore } from '@cmdb/database';
 import { v4 as uuidv4 } from 'uuid';
@@ -468,6 +468,9 @@ export class DiscoveryScheduler {
     }
 
     const definition = this.mapRowToDefinition(result.rows[0]);
+    if (hasUnsafeDiscoveryDefinitionConfig(definition.config)) {
+      throw new Error('Unsafe legacy discovery configuration requires migration');
+    }
     if (definition.provider !== 'nmap') throw new Error('Credential-backed discovery execution is unavailable');
 
     if (!definition.schedule) {
@@ -575,7 +578,9 @@ export class DiscoveryScheduler {
       for (const row of result.rows) {
         try {
           const definition = this.mapRowToDefinition(row);
-          safeDiscoveryScanConfig(definition.config);
+          if (hasUnsafeDiscoveryDefinitionConfig(definition.config)) {
+            throw new Error('Unsafe legacy discovery configuration requires migration');
+          }
           currentDefinitions.set(definition.id, { definition, organizationId: row.organization_id });
         } catch {
           logger.error('Skipping invalid discovery definition', { definitionId: row.id });

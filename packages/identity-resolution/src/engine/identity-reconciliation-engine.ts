@@ -537,6 +537,7 @@ export class IdentityReconciliationEngine {
    */
   async resolveConflict(organizationId: string, actor: string, conflictId: string, resolution: ConflictResolution,
     expectedRevision: string, mergedValue?: unknown): Promise<{ ci_id: string; status: string; correlation_id: string } | null> {
+    await this.neo4jClient.assertJournalReady(true); // v16 §3.2: the gate precedes the owner lookup
     const owner = (await this.postgresClient.query(`SELECT ci_id FROM reconciliation_conflicts
       WHERE id = $1 AND organization_id = $2`, [conflictId, organizationId])).rows[0];
     if (!owner) return null;

@@ -118,6 +118,7 @@ export class Neo4jClient {
     }
   };
   readonly journal = new ReconciliationJournal(this.runJournalStatement);
+  assertJournalReady(merge = false): Promise<void> { return assertJournalSchema(this.runJournalStatement, merge); }
 
   constructor(uri: string, username: string, password: string, config?: {
     encrypted?: boolean;

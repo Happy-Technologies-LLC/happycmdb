@@ -46,13 +46,13 @@ jest.mock('pg', () => {
   class Pool {
     options = {};
     on() { return this; }
-    query(text: string, params?: unknown[]) { return mockSql(text, params); }
-    async connect() { return { query: (text: string, params?: unknown[]) => mockSql(text, params), release: () => undefined }; }
+    query(text: string, params?: unknown[]) { mockGraph.sql.push(text); return mockSql(text, params); }
+    async connect() { return { query: (text: string, params?: unknown[]) => (mockGraph.sql.push(text), mockSql(text, params)), release: () => undefined }; }
     async end() { return undefined; }
   }
   return { ...actual, Pool, default: { ...actual, Pool } };
 });
-const mockGraph = { nodes: new Map<string, Record<string, unknown>>(), statements: [] as string[] };
+const mockGraph = { nodes: new Map<string, Record<string, unknown>>(), statements: [] as string[], sql: [] as string[] };
 jest.mock('neo4j-driver', () => {
   const actual = jest.requireActual('neo4j-driver');
   const record = (values: Record<string, unknown>) => ({ get: (key: string) => values[key], toObject: () => values });
@@ -171,6 +171,25 @@ beforeAll(async () => {
 });
 afterAll(async () => { await server?.stop(); host.kill(); });
 beforeEach(() => { mockEmit.mockClear(); });
+
+// First in the file: the journal caches a passing §3.2 gate per process.
+it('v16 §3.2: before 037 or 028 a resolve is 503 on REST and GraphQL before any HP1 data query', async () => {
+  for (const [down, up] of [
+    ['ALTER TABLE ci_field_sources DROP CONSTRAINT ci_field_sources_organization_required',
+      'ALTER TABLE ci_field_sources ADD CONSTRAINT ci_field_sources_organization_required CHECK (organization_id IS NOT NULL) NOT VALID'],
+    ['ALTER TABLE ci_reconciliation_operations RENAME TO hp1_hidden; ALTER TABLE reconciliation_conflicts RENAME COLUMN organization_id TO hp1_org',
+      'ALTER TABLE hp1_hidden RENAME TO ci_reconciliation_operations; ALTER TABLE reconciliation_conflicts RENAME COLUMN hp1_org TO organization_id'],
+  ]) {
+    await mockSql(down, [], 'exec');
+    mockGraph.sql.length = 0;
+    const rest = await resolve('a', randomUUID(), { resolution: 'accept_target', expected_revision: 'a'.repeat(64) });
+    const gql = await api('a').gql(`mutation { _reconciliation { resolveConflict(_id: "${randomUUID()}",
+      _resolution: "accept_target", _expectedRevision: "${'a'.repeat(64)}") { _status } } }`);
+    await mockSql(up, [], 'exec');
+    expect([rest.status, gql.body.errors?.[0]?.extensions?.code]).toEqual([503, 'SERVICE_UNAVAILABLE']);
+    expect(mockGraph.sql.filter(text => !text.includes('to_regclass'))).toEqual([]); // only the gate ran
+  }
+});
 
 it('R44-M2: after B-delete/A-reuse of one CI id, A sees only its own field sources and lineage; B and legacy rows stay keyed', async () => {
   const X = REUSED;

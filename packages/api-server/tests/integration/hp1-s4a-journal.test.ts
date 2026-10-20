@@ -112,6 +112,8 @@ it('X-30/M-6: without the fence constraint a journaled write is 503 before any j
   try {
     const name = id('gate');
     expect((await api('a').post('/cis', { name, type: 'server' })).status).toBe(503);
+    expect((await api('a').post(`/reconciliation/conflicts/${randomUUID()}/resolve`, { resolution: 'accept_target',
+      expected_revision: 'a'.repeat(64) })).status).toBe(503); // v16 §3.2: gate before the conflict owner lookup (404 before)
     expect(await rows('SELECT id FROM ci_reconciliation_operations WHERE organization_id = $1', [A])).toEqual([]);
     expect(await cypher('MATCH (c:CI {name: $name}) RETURN c', { name })).toEqual([]);
   } finally {

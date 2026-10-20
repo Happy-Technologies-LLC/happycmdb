@@ -666,8 +666,8 @@ it('fences future-dated A rows across real graph deletion and B ID collision, wh
     VALUES ($1, true, 99, $2, $3)`, [id, future, aMarker]);
   await sql.query(`INSERT INTO impact_analyses (id, source_ci_id, change_type, risk_level, analyzed_at, ci_incarnation_id)
     VALUES ('22222222-2222-4222-8222-222222222222', $1, 'RESTART', 'high', $2, $3)`, [id, future, aMarker]);
-  await sql.query(`INSERT INTO ci_criticality_scores (ci_id, factors, calculated_at, ci_incarnation_id)
-    VALUES ($1, '{"secret":"A"}', $2, $3)`, [id, future, aMarker]);
+  await sql.query(`INSERT INTO ci_criticality_scores (ci_id, factors, calculated_at, ci_incarnation_id, organization_id)
+    VALUES ($1, '{"secret":"A"}', $2, $3, $4)`, [id, future, aMarker, A]);
   await sql.query(`INSERT INTO ci_change_history (ci_id, change_type, change_source, metadata, changed_at, ci_incarnation_id, organization_id)
     VALUES ($1, 'FORMER', 'test', $2::jsonb, $3, $4, $5)`, [id, JSON.stringify({ organization_id: B }), future, aMarker, A]);
   // Model an incomplete cross-store delete. Production graph.deleteCI also purges
@@ -694,7 +694,8 @@ it('fences future-dated A rows across real graph deletion and B ID collision, wh
   const criticality = await get(`/api/v1/impact/criticality/${id}`);
   expect(criticality.status).toBe(200);
   expect(JSON.stringify(criticality.body)).not.toContain('secret');
-  expect((await sql.query('SELECT ci_incarnation_id FROM ci_criticality_scores WHERE ci_id=$1', [id])).rows[0].ci_incarnation_id).toBe(bMarker);
+  expect((await sql.query('SELECT ci_incarnation_id FROM ci_criticality_scores WHERE ci_id=$1 AND organization_id=$2',
+    [id, B])).rows).toEqual([{ ci_incarnation_id: bMarker }]);
 
   await sql.query(`INSERT INTO baseline_snapshots (id, ci_id, snapshot_type, snapshot_data, created_at, created_by, is_approved, ci_incarnation_id)
     VALUES ('33333333-3333-4333-8333-333333333333', $1, 'configuration', '{"owner":"B"}', NOW(), 'b', true, $2)`, [id, bMarker]);

@@ -44,7 +44,7 @@ import { itilRoutes } from '../../src/rest/routes/itil.routes';
 import { analyticsRoutes } from '../../src/rest/routes/analytics.routes';
 import { reconciliationRoutes } from '../../src/rest/routes/reconciliation.routes';
 import { createGraphQLServer } from '../../src/graphql/server';
-import { CIListUnavailableError, readCIList } from '../../src/read-admission';
+import { CIListUnavailableError, readCIList, writeReferencedCIs } from '../../src/read-admission';
 
 type User = keyof typeof users;
 const graph = getNeo4jClient();
@@ -522,6 +522,43 @@ it('F5 X-11/X-15a/X-29: lists mask own gaps from one membership point; a busy or
   await rows(`UPDATE ci_reconciliation_operations SET state = 'aborted' WHERE organization_id = $1 AND ci_id = $2`, [A, gap]);
 });
 
+it("F8 v16 §5.1: a queued T1 is served before a later reader (R1 -> T1 -> R2); other orgs never wait", async () => {
+  const [x, y, z, bx] = [id('f8-x'), id('f8-y'), id('f8-z'), id('f8-bx')];
+  await create('a', y);
+  expect((await rows('SELECT hashtextextended($1::text, 4431) <> hashtextextended($2::text, 4431) AS distinct', [A, B]))[0].distinct).toBe(true);
+  const blockedBy = async (pid: number) =>
+    (await rows('SELECT count(*)::int AS n FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))', [pid]))[0].n as number;
+  // Real-time poll (5 s max): PG lock waits are only observable from another session, never as an event.
+  const until = async (check: () => Promise<boolean>) => {
+    for (let wait = 0; wait < 100 && !(await check()); wait++) {
+      const tick = Promise.withResolvers<void>(); setTimeout(tick.resolve, 50); await tick.promise;
+    }
+  };
+  const held = Promise.withResolvers<number>();
+  const release = Promise.withResolvers<void>();
+  const r1 = writeReferencedCIs(A, [x], async client => {
+    held.resolve((await client.query('SELECT pg_backend_pid() AS pid')).rows[0].pid);
+    await release.promise;
+  });
+  const r1Pid = await held.promise;
+  const t1 = api('a').put(`/cis/${y}`, { name: 'f8' }).then(response => response);
+  await until(async () => (await blockedBy(r1Pid)) > 0);
+  const [t1Pid] = (await rows('SELECT pid FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))', [r1Pid])).map(row => row.pid);
+  expect(t1Pid).toBeDefined();
+  let entered = false;
+  const r2 = writeReferencedCIs(A, [z], async client => {
+    entered = true;
+    return (await client.query(`SELECT count(*)::int AS n FROM ci_reconciliation_operations
+      WHERE organization_id = $1 AND ci_id = $2`, [A, y])).rows[0].n as number;
+  });
+  await until(async () => entered || (await blockedBy(t1Pid)) > 0);
+  expect(entered).toBe(false);
+  await writeReferencedCIs(B, [bx], async () => undefined);
+  release.resolve();
+  await r1;
+  expect(await r2).toBe(2);
+  expect((await t1).status).toBe(200);
+});
 it('F7 H-2/H-4 and the old-then-new writer cutover: NULL-org history and global criticality upserts are refused', async () => {
   await expect(rows("INSERT INTO ci_change_history (ci_id, change_type, change_source) VALUES ('s4a-h2', 'x', 'old')"))
     .rejects.toMatchObject({ code: '23514' });

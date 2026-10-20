@@ -116,10 +116,20 @@ function schemaFault(error: unknown): void {
 
 interface Slot { id: string; ciId: string; operation: JournalOperation }
 
+/**
+ * v16 §5.1 F7/F8 per-org admission lock. A tuple FOR SHARE on the epoch row
+ * overtakes a queued T1 UPDATE (operator probe 12/12), so readers take this
+ * heavyweight advisory lock shared and T1 exclusive: a new shared request queues
+ * behind a waiting exclusive one. 64-bit key with a dedicated seed; two orgs whose
+ * keys collide only wait on each other (availability, never correctness).
+ */
+export const ADMISSION_LOCK_KEY = 'hashtextextended($1::text, 4431)';
 /** Every S4a operation has a graph effect; holds (graph_effect=false) arrive with the S4b merge writer. */
 async function t1(organizationId: string, actor: string, groupId: string, slots: Slot[]): Promise<void> {
   await getPostgresClient().transaction(async client => {
     await client.query(`SET LOCAL lock_timeout = '12s'`);
+    // F8': queued here, T1 blocks newly arriving own-org admission readers (their shared lock waits behind it).
+    await client.query(`SELECT pg_advisory_xact_lock(${ADMISSION_LOCK_KEY})`, [organizationId]);
     await client.query(`INSERT INTO ci_reconciliation_epochs (organization_id, epoch) VALUES ($1, 0)
       ON CONFLICT (organization_id) DO NOTHING`, [organizationId]);
     const epoch = await client.query(`UPDATE ci_reconciliation_epochs SET epoch = epoch + 1

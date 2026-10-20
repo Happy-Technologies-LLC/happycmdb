@@ -98,6 +98,7 @@ const graphClient = {
 };
 
 jest.mock('@cmdb/database', () => ({
+  ...jest.requireActual<object>('@cmdb/database/journal/journal'),
   getPostgresClient: () => pgClient,
   getNeo4jClient: () => graphClient,
   getAuditService: () => ({}),

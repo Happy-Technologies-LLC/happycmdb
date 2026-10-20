@@ -141,7 +141,7 @@ export async function readGlobalCIPage<T extends { id?: unknown; organization_id
 
 const MAX_PENDING_CI_IDS = 1000;
 interface Snapshot { epoch: string; pending: string[] }
-/** Journal writers do not yet bump the epoch; pending/failed membership is the read fence. */
+/** The read fence is the epoch every T1 bumps plus pending/failed membership. */
 function samePending(first: string[], second: string[]): boolean {
   if (first.length !== second.length) return false;
   if (first.length === 0) return true;
@@ -170,8 +170,9 @@ let admissionPool: Pool | undefined;
 const activeByOrg = new Map<string, number>();
 function isolatedPool(): Pool {
   if (!admissionPool) {
-    admissionPool = new Pool({ ...getPostgresClient().pool.options,
-      max: 4, connectionTimeoutMillis: 250,
+    // pg-pool hides `password` from enumeration, so a bare spread would connect without it.
+    const { options } = getPostgresClient().pool;
+    admissionPool = new Pool({ ...options, password: options.password, max: 4, connectionTimeoutMillis: 250,
       options: '-c statement_timeout=12000 -c lock_timeout=2000 -c idle_in_transaction_session_timeout=15000' });
   }
   return admissionPool;

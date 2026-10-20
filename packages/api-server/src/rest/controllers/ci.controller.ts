@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Request, Response } from 'express';
+import { randomUUID } from 'crypto';
 import { requestActor, sendJournalError } from '../../journal-http';
 import {
   CITraversalLimitError, createCITraversalWork, getNeo4jClient, getPostgresClient, getAuditService,
@@ -237,7 +238,7 @@ export class CIController {
     }
   }
 
-  /** Journaled direct create (v16 §3.1); a client-chosen `id` is the identity, otherwise one is issued. */
+  /** REST CI IDs follow the GraphQL contract: globally unique and server assigned. */
   async createCI(req: Request, res: Response): Promise<void> {
     try {
       if (!req.body.name || !req.body.type) {
@@ -249,8 +250,9 @@ export class CIController {
         return;
       }
 
-      // organization_id and external_id are not client-settable (route schema).
-      const ci = await this.neo4jClient.createCI(req.body, requestOrganizationId(req), requestActor(req));
+      // organization_id and both globally unique identifiers are not client-settable.
+      const ci = await this.neo4jClient.createCI(
+        { ...req.body, id: randomUUID() }, requestOrganizationId(req), requestActor(req));
       res.status(201).json({
         success: true,
         data: convertNeo4jTypes(ci),

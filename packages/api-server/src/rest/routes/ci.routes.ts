@@ -27,9 +27,8 @@ ciRoutes.use(auditMiddleware);
 const organizationIdForbidden = Joi.any().forbidden();
 
 // Validation schemas
-// v16 §4.4: a client-chosen top-level `id` is the immutable identity and journal key.
 const createCISchema = ciInputSchema.keys({
-  id: Joi.string().min(1).max(100).optional(),
+  id: Joi.any().forbidden(),
   external_id: Joi.any().forbidden(),
   organization_id: organizationIdForbidden,
 });
@@ -75,7 +74,7 @@ ciRoutes.get('/:id', controller.getCIById.bind(controller));
 ciRoutes.post(
   '/',
   authMiddleware.requirePermission('write'),
-  journalRequestGuard({ allowIdentity: true }),
+  journalRequestGuard(),
   validateRequest(createCISchema, 'body'),
   controller.createCI.bind(controller)
 );

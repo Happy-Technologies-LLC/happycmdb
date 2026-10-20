@@ -11,11 +11,10 @@
 import { randomUUID } from 'crypto';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { Pool } from 'pg';
 import express from 'express';
 import request from 'supertest';
 import neo4j, { Session } from 'neo4j-driver';
-import { dec, enc, getNeo4jClient, getPostgresClient, requeueFailedJournalGroup, setJournalSeam } from '@cmdb/database';
+import { dec, enc, getNeo4jClient, getPostgresClient, JournalAbortedError, requeueFailedJournalGroup, setJournalSeam } from '@cmdb/database';
 import { loadConfig } from '@cmdb/common';
 
 const A = randomUUID();
@@ -86,10 +85,9 @@ const sweep = async (org: string) => {
   return graph.journal.sweep();
 };
 const id = (label: string) => `s4a-${label}-${randomUUID().slice(0, 8)}`;
-const create = async (user: User, ciId: string, extra: object = {}) => {
-  const response = await api(user).post('/cis', { id: ciId, name: ciId, type: 'server', ...extra });
-  expect(response.status).toBe(201);
-};
+/** Fixtures with a known id use the journaled engine: REST CI ids are server-issued (T5). */
+const create = (user: User, ciId: string, extra: { metadata?: Record<string, unknown> } = {}) =>
+  graph.createCI({ _id: ciId, name: ciId, _type: 'server', ...extra }, users[user]._organizationId, users[user]._id);
 const seamOnce = (point: string, action: () => Promise<void>) => {
   let used = false;
   setJournalSeam(async (at, context) => {
@@ -104,28 +102,27 @@ afterEach(() => setJournalSeam(undefined));
 afterAll(async () => {
   await rows(`UPDATE ci_reconciliation_operations SET state = 'aborted' WHERE organization_id = ANY($1::uuid[])
     AND state IN ('pending', 'failed')`, [[A, B, C]]);
-  await cypher("MATCH (c:CI) WHERE c.id STARTS WITH 's4a-' DETACH DELETE c");
+  await cypher('MATCH (c:CI) WHERE c.organization_id IN $orgs DETACH DELETE c', { orgs: [A, B, C] });
   await server?.stop();
 });
 
 it('X-30/M-6: without the fence constraint a journaled write is 503 before any journal row', async () => {
   await cypher('DROP CONSTRAINT reconciliation_op_fence_unique IF EXISTS');
   try {
-    const ci = id('gate');
-    expect((await api('a').post('/cis', { id: ci, name: ci, type: 'server' })).status).toBe(503);
-    expect(await ops(A, ci)).toEqual([]);
-    expect(await node(ci)).toBeUndefined();
+    const name = id('gate');
+    expect((await api('a').post('/cis', { name, type: 'server' })).status).toBe(503);
+    expect(await rows('SELECT id FROM ci_reconciliation_operations WHERE organization_id = $1', [A])).toEqual([]);
+    expect(await cypher('MATCH (c:CI {name: $name}) RETURN c', { name })).toEqual([]);
   } finally {
     await cypher('CREATE CONSTRAINT reconciliation_op_fence_unique IF NOT EXISTS FOR (o:ReconciliationOp) REQUIRE o.op_id IS UNIQUE');
   }
 });
 
 it('J1/X-23/H-6: a direct create is one committed intent plus one applied fence, no fence key, no history', async () => {
-  const ci = id('j1');
   const other = id('j1-peer');
-  const created = await api('a').post('/cis', { id: ci, name: ci, type: 'server' });
-  expect(created.status).toBe(201);
-  expect(created.body.data.id).toBe(ci);
+  const created = await api('a').post('/cis', { name: 'j1', type: 'server' });
+  const ci = created.body.data.id;
+  expect([created.status, ci]).toEqual([201, expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)]);
   await create('a', other);
   expect((await api('a').put(`/cis/${ci}`, { name: 'renamed' })).status).toBe(200);
   expect((await api('a').post('/relationships', { from_id: ci, to_id: other, type: 'DEPENDS_ON' })).status).toBe(201);
@@ -227,7 +224,7 @@ it('F0/X-14/N-7b: invalid shapes and reserved aliases are 400 before any journal
   for (let depth = 0; depth < 33; depth++) deep = { d: deep };
   const ids101 = Array.from({ length: 101 }, (_, n) => `${ci}-${n}`);
   const cases: Array<[string, () => request.Test]> = [
-    ['top-level alias', () => api('a').post('/cis', { id: id('x'), _id: 'y', name: 'n', type: 'server' })],
+    ['top-level alias', () => api('a').post('/cis', { _id: 'y', name: 'n', type: 'server' })],
     ['nested metadata alias', () => api('a').post('/cis', { name: 'n', type: 'server', metadata: { a: { _organization_id: B } } })],
     ['PUT id', () => api('a').put(`/cis/${ci}`, { id: 'other' })],
     ['PUT metadata op id', () => api('a').put(`/cis/${ci}`, { metadata: { __op_id: 1 } })],
@@ -242,7 +239,7 @@ it('F0/X-14/N-7b: invalid shapes and reserved aliases are 400 before any journal
     ['101 change CIs', () => api('a').post('/itil/changes', { changeType: 'NORMAL', description: 'x'.repeat(20), affectedCIIds: ids101,
       requestedBy: 'a', plannedStart: '2026-01-01T00:00:00Z', plannedDuration: 5, implementationPlan: 'x'.repeat(60) })],
     ['101 baseline CIs', () => api('a').post('/itil/baselines', { name: 'too-many', ciIds: ids101, createdBy: 'a' })],
-    ['invalid auditDate', () => api('a').patch(`/itil/configuration-items/${ci}/audit`, { auditDate: 'not-a-date' })],
+    ['invalid auditDate', () => api('a').post(`/itil/configuration-items/${ci}/audit`, { auditDate: 'not-a-date' })],
   ];
   for (const [name, call] of cases) expect({ name, status: (await call()).status }).toEqual({ name, status: 400 });
   expect((await rows('SELECT count(*)::int AS n FROM ci_reconciliation_operations WHERE organization_id = $1', [A]))[0].n).toBe(before);
@@ -403,16 +400,19 @@ it('F2 X-9/X-23: a W sent after recovery fenced its op aborted rolls back whole;
   for (const spy of managed) expect(spy).not.toHaveBeenCalled();
 });
 
-it('F3 X-5/X-24/X-25: no foreign overwrite, pending delete gates only its owner, a vanished target aborts without a fence', async () => {
-  const ci = id('x5');
+it('F3 X-5/X-24/X-25: no id oracle or foreign overwrite, pending delete gates only its owner, a vanished target aborts without a fence', async () => {
+  const [ci, free] = [id('x5'), id('x5-free')];
   await create('a', ci);
   const before = await node(ci);
-  const collision = await api('b').post('/cis', { id: ci, name: 'stolen', type: 'server' });
-  expect([collision.status, collision.body]).toEqual([409, { success: false, error: 'Conflict', message: 'CI could not be reconciled' }]);
+  // T5: REST ids are server-issued; a taken and a free id are one identical 400 before any journal row or graph write.
+  const taken = await api('b').post('/cis', { id: ci, name: 'stolen', type: 'server' });
+  const unused = await api('b').post('/cis', { id: free, name: 'stolen', type: 'server' });
+  expect([taken.status, taken.body, unused.text]).toEqual([400, { success: false, error: 'Bad Request', message: 'Invalid request' }, taken.text]);
+  expect([await ops(B, ci), await ops(B, free), await node(free)]).toEqual([[], [], undefined]);
+  // The engine path still cannot overwrite a foreign id: a definitive abort with no fence.
+  await expect(create('b', ci)).rejects.toBeInstanceOf(JournalAbortedError);
   const [lost] = await ops(B, ci);
-  expect(lost.state).toBe('aborted');
-  expect(await fences(lost.id)).toEqual([]);
-  expect(await node(ci)).toEqual(before);
+  expect([lost.state, await fences(lost.id), await node(ci)]).toEqual(['aborted', [], before]);
 
   const pendingDelete = id('x24');
   await create('b', pendingDelete);
@@ -462,7 +462,6 @@ it('F4 X-16..X-21: writers and AP-P\'/AP-M\'\' readers on a CI with an in-flight
 });
 
 it('F5 X-11/X-15a/X-29: lists mask own gaps from one membership point; a busy org fails only itself', async () => {
-  const ci = id('x15');
   const entered = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
   seamOnce('beforeW', async () => { entered.resolve(); await release.promise; });
@@ -471,18 +470,18 @@ it('F5 X-11/X-15a/X-29: lists mask own gaps from one membership point; a busy or
   const total = await readCIList(A, async pending => {
     seen.push(pending);
     if (!creating) {
-      creating = api('a').post('/cis', { id: ci, name: ci, type: 'server' }).then(response => response);
+      creating = api('a').post('/cis', { name: 'x15', type: 'server' }).then(response => response);
       await entered.promise;
     }
     return (await cypher('MATCH (c:CI) WHERE c.organization_id = $org AND NOT c.id IN $pending RETURN count(c) AS n',
       { org: A, pending }))[0]!['n'];
   });
   expect(seen).toHaveLength(2);
-  expect(seen[1]).toContain(ci);
   release.resolve();
-  expect((await creating as request.Response).status).toBe(201);
+  const created = await creating as request.Response;
+  expect([created.status, seen[1]]).toEqual([201, expect.arrayContaining([created.body.data.id])]);
   expect(Number(total)).toBe(Number((await cypher('MATCH (c:CI) WHERE c.organization_id = $org AND c.id <> $id RETURN count(c) AS n',
-    { org: A, id: ci }))[0]!['n']));
+    { org: A, id: created.body.data.id }))[0]!['n']));
 
   // Own-org pessimistic cap: two held re-reads, a third A list 503s at once, B is unaffected.
   // Both optimistic phases bump the epoch before either takes its FOR SHARE lock; the third
@@ -573,7 +572,7 @@ it('F7 H-2/H-4 and the old-then-new writer cutover: NULL-org history and global 
   expect((await rows("SELECT organization_id FROM ci_criticality_scores WHERE ci_id = 's4a-crit' ORDER BY 1")).length).toBe(2);
   await rows("DELETE FROM ci_criticality_scores WHERE ci_id = 's4a-crit'");
 
-  // M-1/M-2 for 036: a rerun changes nothing, and a fresh initdb carries the same contract.
+  // M-1 for 036: a rerun changes nothing. M-2 (fresh initdb parity) is in hp1-s1-schema's initdb case.
   const contract = `SELECT
     (SELECT count(*) FROM pg_constraint WHERE conname IN ('ci_change_history_organization_required',
       'ci_criticality_scores_organization_required'))::int AS org_checks,
@@ -581,19 +580,9 @@ it('F7 H-2/H-4 and the old-then-new writer cutover: NULL-org history and global 
     (SELECT count(*) FROM pg_indexes WHERE indexname IN ('ci_criticality_scores_org_ci_key',
       'ci_criticality_scores_legacy_ci_key'))::int AS keys`;
   const expected = { org_checks: 2, pk: 0, keys: 2 };
-  const root = join(__dirname, '../../../..');
-  await sql.pool.query(readFileSync(join(root,
-    'packages/database/src/postgres/migrations/036_history_criticality_org_contract.sql'), 'utf8'));
+  await sql.pool.query(readFileSync(join(__dirname,
+    '../../../database/src/postgres/migrations/036_history_criticality_org_contract.sql'), 'utf8'));
   expect((await rows(contract))[0]).toEqual(expected);
-  await sql.pool.query('CREATE DATABASE s4a_initdb');
-  const fresh = new Pool({ ...sql.pool.options, database: 's4a_initdb' });
-  try {
-    await fresh.query(readFileSync(join(root, 'infrastructure/scripts/init-postgres.sql'), 'utf8'));
-    expect((await fresh.query(contract)).rows[0]).toEqual(expected);
-  } finally {
-    await fresh.end();
-    await sql.pool.query('DROP DATABASE s4a_initdb WITH (FORCE)');
-  }
 
   const ci = id('h4');
   await create('a', ci);

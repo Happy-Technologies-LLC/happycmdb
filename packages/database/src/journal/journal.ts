@@ -294,8 +294,8 @@ export class ReconciliationJournal {
       [token, onlyId ?? null])).rows;
     for (const row of claimed) {
       const decide = (state: 'aborted' | 'failed', reason: string) => getPostgresClient().pool.query(
-        `UPDATE ci_reconciliation_operations SET state = $3, last_error = $4, claim_token = NULL,
-           plan = CASE WHEN $3 = 'aborted' THEN NULL ELSE plan END, updated_at = now()
+        `UPDATE ci_reconciliation_operations SET state = $3::varchar, last_error = $4, claim_token = NULL,
+           plan = CASE WHEN $3::varchar = 'aborted' THEN NULL ELSE plan END, updated_at = now()
          WHERE group_id = $1 AND state = 'pending'
            AND EXISTS (SELECT 1 FROM ci_reconciliation_operations WHERE id = $2 AND claim_token = $5)`,
         [row.group_id, row.id, state, reason, token]);

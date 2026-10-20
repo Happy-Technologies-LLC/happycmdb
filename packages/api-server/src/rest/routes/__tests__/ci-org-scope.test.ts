@@ -288,6 +288,8 @@ const pg = {
 };
 jest.mock('../../../../../database/src/postgres/client', () => ({ getPostgresClient: () => pg }));
 jest.mock('@cmdb/database', () => ({
+  ...jest.requireActual<object>('@cmdb/database/journal/journal'),
+  ...jest.requireActual<object>('@cmdb/database/journal/encoding'),
   CITraversalLimitError,
   createCITraversalWork,
   getNeo4jClient: () => neo4jClient,
@@ -529,11 +531,17 @@ describe('/api/v1/cis tenant scoping', () => {
   });
 
   // Journaled create/update/delete with real stores: tests/integration hp1-s4a-journal.
-  it('POST/PUT /cis refuse external IDs and organization aliases before any store access', async () => {
+  it('POST/PUT /cis refuse chosen and external IDs and organization aliases before any store access', async () => {
     const body = { name: 'new-server', type: 'server' };
     for (const extra of [{ external_id: 'external-missing' }, { organization_id: ORG_B }, { _organizationId: ORG_B }]) {
       expect((await request(app).post('/api/v1/cis').set(AS_A).send({ ...body, ...extra })).status).toBe(400);
     }
+    // T5: a foreign-owned and an unused id get one identical 400, so a chosen id is no cross-org oracle.
+    const [taken, unused] = [await request(app).post('/api/v1/cis').set(AS_A).send({ ...body, id: 'ci-b-app' }),
+      await request(app).post('/api/v1/cis').set(AS_A).send({ ...body, id: 'ci-nope' })];
+    expect([taken.status, taken.body, unused.status, unused.text]).toEqual(
+      [400, { success: false, error: 'Bad Request', message: 'Invalid request' }, 400, taken.text]);
+    expect([graph.nodes.has('ci-nope'), await sql('SELECT id FROM ci_reconciliation_operations')]).toEqual([false, []]);
     for (const update of [{ organization_id: ORG_B }, { id: 'other' }, { metadata: { a: { __op_id: 1 } } }]) {
       expect((await request(app).put('/api/v1/cis/ci-a-app').set(AS_A).send(update)).status).toBe(400);
     }

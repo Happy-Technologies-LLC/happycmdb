@@ -349,7 +349,7 @@ export class Neo4jClient {
   }
 
   // CI operations. Every :CI mutation below is one journaled, fenced operation (v16 §3, §4).
-  /** Direct create; a client-chosen `id` is the immutable identity and journal key. */
+  /** Direct create; the caller's server-issued `id` (REST, GraphQL: T5) is the immutable identity and journal key. */
   async createCI(ci: CIInput, organizationId: string, actor: string): Promise<CI> {
     await assertJournalSchema(this.runJournalStatement);
     const id = (ci as { id?: string }).id || ci._id || randomUUID();

@@ -8,7 +8,7 @@
 
 import { Request, Response } from 'express';
 import { randomUUID } from 'crypto';
-import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
+import { getNeo4jClient, getPostgresClient, JournalUnavailableError } from '@cmdb/database';
 import { logger } from '@cmdb/common';
 import { requestOrganizationId } from '../../middleware/auth.middleware';
 import { errorLogFields } from '../../utils/log-error';
@@ -487,7 +487,7 @@ export class BusinessServiceController {
         res.status(409).json(CI_GAP_RESPONSE);
         return;
       }
-      if (error && typeof error === 'object' && 'code' in error && error.code === '55P03') {
+      if (error instanceof JournalUnavailableError) {
         res.status(503).json({ success: false, error: 'Service Unavailable' });
         return;
       }

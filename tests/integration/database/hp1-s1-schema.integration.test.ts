@@ -157,9 +157,17 @@ describe('HP1-S1 expand contract on actual Timescale hypertables', () => {
         FROM pg_indexes WHERE schemaname = 'public' AND tablename = ANY($1)
           AND indexname IN ('ci_source_lineage_org_key', 'ci_field_sources_org_key',
             'reconciliation_conflicts_pending_key', 'ci_reconciliation_operations_inflight',
-            'ci_criticality_scores_org_ci_key') ORDER BY 1, 2`;
+            'ci_criticality_scores_org_ci_key', 'ci_criticality_scores_legacy_ci_key') ORDER BY 1, 2`;
+      // HP1-S4a 036 (M-2): the same NOT VALID org checks and no criticality PRIMARY KEY.
+      const checks = `SELECT conrelid::regclass::text AS tbl, conname, contype, convalidated FROM pg_constraint
+        WHERE conrelid IN ('ci_change_history'::regclass, 'ci_criticality_scores'::regclass) AND (conname LIKE
+          '%organization_required' OR (contype = 'p' AND conrelid = 'ci_criticality_scores'::regclass)) ORDER BY 1, 2`;
       expect((await fresh.query(columns, [tableNames])).rows).toEqual((await db.query(columns, [tableNames])).rows);
       expect((await fresh.query(indexes, [tableNames])).rows).toEqual((await db.query(indexes, [tableNames])).rows);
+      const contract = (await fresh.query(checks)).rows;
+      expect(contract).toEqual((await db.query(checks)).rows);
+      expect(contract.map(row => [row.conname, row.convalidated])).toEqual([
+        ['ci_change_history_organization_required', false], ['ci_criticality_scores_organization_required', false]]);
       await fresh.query(`INSERT INTO ci_source_lineage (ci_id, source_name, source_id) VALUES ($1, 'legacy', 'instance')
         ON CONFLICT (ci_id, source_name, source_id) DO UPDATE SET source_id = EXCLUDED.source_id`, [CI]);
       for (const table of ['ci_source_lineage', 'ci_field_sources']) {

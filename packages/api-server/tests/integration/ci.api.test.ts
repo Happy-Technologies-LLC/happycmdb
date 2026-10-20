@@ -142,14 +142,13 @@ describe('CI REST API Integration Tests', () => {
       expect(response.body).toHaveProperty('_error');
     });
 
-    // v16 §4.4: a chosen id is the identity; a taken one is a definitive journal abort.
-    it('should refuse a chosen ID that collides with an existing CI without changing it', async () => {
+    it('should reject a chosen ID even when it collides with an existing CI', async () => {
       const existing = await request(app).post('/api/v1/cis')
         .send({ name: 'server-01', type: 'server' }).expect(201);
       const issuedId = existing.body.data.id;
       const response = await request(app).post('/api/v1/cis')
-        .send({ id: issuedId, name: 'server-02', type: 'server' }).expect(409);
-      expect(response.body).toEqual({ success: false, error: 'Conflict', message: 'CI could not be reconciled' });
+        .send({ id: issuedId, name: 'server-02', type: 'server' }).expect(400);
+      expect(response.body).toEqual({ success: false, error: 'Bad Request', message: 'Invalid request' });
       expect((await request(app).get(`/api/v1/cis/${issuedId}`).expect(200)).body.data.name)
         .toBe('server-01');
     });

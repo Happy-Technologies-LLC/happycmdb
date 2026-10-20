@@ -31,24 +31,29 @@ export function isReservedKey(key: string): boolean {
   return RESERVED[key.replace(/^_+/, '').toLowerCase()] === true;
 }
 
-/** §3.6 limits on every string (including member names), depth, collections and size. */
-export function assertRequestShape(value: unknown, depth = 0): void {
+/** §3.6 limits on strings (member names too), depth, collections, size; returns JSON bytes, summed once bottom-up. */
+export function assertRequestShape(value: unknown, depth = 0): number {
   if (depth > 32) throw new RequestShapeError();
+  let size = value !== null && typeof value === 'object' ? 0 : Buffer.byteLength(JSON.stringify(value) ?? '');
   if (typeof value === 'string') {
     if (!isStorableString(value)) throw new RequestShapeError();
   } else if (Array.isArray(value)) {
     if (value.length > 1000) throw new RequestShapeError();
-    value.forEach(member => assertRequestShape(member, depth + 1));
+    size = value.reduce((total: number, member) => total + assertRequestShape(member, depth + 1),
+      Math.max(value.length, 1) + 1);
   } else if (value !== null && typeof value === 'object') {
     const entries = Object.entries(value);
     if (entries.length > 1000) throw new RequestShapeError();
+    size = Math.max(entries.length, 1) + 1;
     for (const [key, member] of entries) {
       if (key.length < 1 || key.length > 255 || !isStorableString(key)) throw new RequestShapeError();
-      if (Buffer.byteLength(JSON.stringify(member) ?? '') > 65_536) throw new RequestShapeError();
-      assertRequestShape(member, depth + 1);
+      const bytes = assertRequestShape(member, depth + 1);
+      if (bytes > 65_536) throw new RequestShapeError();
+      size += Buffer.byteLength(JSON.stringify(key)) + 1 + bytes;
     }
   }
-  if (depth === 0 && Buffer.byteLength(JSON.stringify(value) ?? '') > 1_048_576) throw new RequestShapeError();
+  if (depth === 0 && size > 1_048_576) throw new RequestShapeError();
+  return size;
 }
 
 export function assertCIId(id: unknown): asserts id is string {
@@ -78,19 +83,16 @@ export function assertStorableProperties(props: Record<string, unknown>): void {
 
 /**
  * Route guard for journaled CI writes, run on the raw body before Joi strips
- * unknown keys: path ids, §3.6 shape, top-level reserved keys (`id` only as the
- * POST /cis identity), reserved names inside metadata and relationship properties.
+ * unknown keys: path ids, §3.6 shape, top-level reserved keys (a client `id` included:
+ * CI ids are server-issued, T5), reserved names inside metadata and relationship properties.
  */
-export function journalRequestGuard(options: { allowIdentity?: boolean; relationship?: boolean; merge?: boolean } = {}) {
+export function journalRequestGuard(options: { relationship?: boolean; merge?: boolean } = {}) {
   return (req: Request, res: Response, next: NextFunction): void => {
     try {
       for (const param of Object.values(req.params)) if (param !== undefined) assertCIId(param);
       const body: Record<string, unknown> = req.body ?? {};
       assertRequestShape(body);
-      for (const key of Object.keys(body)) {
-        if (isReservedKey(key) && !(options.allowIdentity && key === 'id')) throw new RequestShapeError();
-      }
-      if (options.allowIdentity && body['id'] !== undefined) assertCIId(body['id']);
+      if (Object.keys(body).some(isReservedKey)) throw new RequestShapeError();
       assertNoReservedMembers(body['metadata']);
       // Merge attributes become graph properties; reserved names there are dropped by the engine (§4.4).
       if (options.merge) assertStorableProperties((body['attributes'] ?? {}) as Record<string, unknown>);

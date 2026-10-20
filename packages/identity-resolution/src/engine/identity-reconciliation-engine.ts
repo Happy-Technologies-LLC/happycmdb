@@ -491,7 +491,7 @@ export class IdentityReconciliationEngine {
           if (pending && !isStale(pending, target)) throw new JournalConflictError('pending_content');
           const id = randomUUID();
           conflictIds.push(id);
-          conflicts.push({ id, field, source, sourceId, incoming: enc(value), target: enc(target.value_json),
+          conflicts.push({ id, field, source, sourceId, incoming: value, target: target.value_json,
             targetSource: target.source_name, contentHash: hash, targetCorrelationId: target.last_correlation_id,
             ...(pending ? { supersedes: { id: pending.id, contentHash: pending.content_hash } } : {}) });
         } else if (!target || policy.authority(source) >= policy.authority(target.source_name)) {
@@ -509,7 +509,7 @@ export class IdentityReconciliationEngine {
           params: enc({ id: match.ci_id, props: typeof existing === 'string' ? merged : { ...merged, incarnation_id: incarnationId } }) },
         history: { changeType: 'updated', changedFields: keys, source, next: enc(merged), incarnationId: ciIncarnationId(incarnationId),
           previous: enc(Object.fromEntries(keys.map(key => [key, current[key] ?? null]))) },
-        fields: keys.map(name => ({ name, value: enc(merged[name]), text: fieldText(merged[name]), source })),
+        fields: keys.map(name => ({ name, value: merged[name], text: fieldText(merged[name]), source })),
         lineage: { source, sourceId, confidence: match.confidence },
       };
     }, async groupId => ({ ci_id: match.ci_id, action: applied ? 'updated' as const : 'pending_review' as const,
@@ -565,7 +565,7 @@ export class IdentityReconciliationEngine {
       const value = resolution === 'accept_source' ? conflict.incoming_json : mergedValue;
       return {
         graph: { kind: 'update', label: null, params: enc({ id: ciId, props: { [field]: value } }) },
-        fields: [{ name: field, value: enc(value), text: fieldText(value),
+        fields: [{ name: field, value, text: fieldText(value),
           source: resolution === 'accept_source' ? conflict.source_name : 'manual_resolution' }],
         resolve: { ...resolve, suppressionHash: conflictHash(field, { value }, { value: conflict.incoming_json },
           conflict.source_name, conflict.source_id) },

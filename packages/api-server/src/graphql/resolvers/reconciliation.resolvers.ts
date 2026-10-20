@@ -333,7 +333,7 @@ const ReconciliationMutation = {
         (resolution === 'merge') !== (_args._mergedData !== undefined)) {
         throw new RequestShapeError();
       }
-      assertStorableProperties({ merged: _args._mergedData ?? null });
+      assertRequestShape(_args._mergedData ?? null); assertStorableProperties({ merged: _args._mergedData ?? null });
       const resolved = await reconciliationEngine.resolveConflict(organizationId, _context.user!._userId, _args._id,
         resolution as 'merge', _args._expectedRevision, _args._mergedData);
       if (resolved === null) {

@@ -205,10 +205,10 @@ production scheduling. Credential-backed discovery is restored by HP1-S5
 
 ### Reconciliation (`/api/v1/reconciliation`)
 - `POST /reconciliation/match` - Find matching CIs
-- `POST /reconciliation/merge` - Merge CI
-- `GET /reconciliation/conflicts` - List conflicts
-- `POST /reconciliation/conflicts/{id}/resolve` - Resolve conflict
-- `GET /reconciliation/rules`, `POST /reconciliation/rules`, `GET /reconciliation/source-authorities`, `PUT /reconciliation/source-authorities/{source}` - Authenticated global policy reads and writes return the same fixed 403 for every role and organization until platform operations are available. GraphQL getRules/getSourceAuthorities/createRule/updateSourceAuthority have the same refusal.
+- `POST /reconciliation/merge` - Merge CI; 200 updated, or 202 `pending_review` with stable `conflict_ids` when a manual-review field holds the whole merge (no CI change)
+- `GET /reconciliation/conflicts` - List the caller organization's conflicts with typed values and `revision`; page and total from one statement
+- `POST /reconciliation/conflicts/{id}/resolve` - `accept_source | accept_target | merge | dismiss_stale` at `expected_revision`; stale or changed revision 409, foreign/missing 404
+- `GET/POST /reconciliation/rules`, `PUT/DELETE /reconciliation/rules/{id}`, `GET /reconciliation/source-authorities`, `PUT /reconciliation/source-authorities/{source}` - The caller organization's policy only (writes need admin); foreign, missing and legacy rules share one 404. `?scope=global` is 403 for every role, and legacy organization-less rows are inert (founder decision 2026-10-20). GraphQL getRules/getSourceAuthorities/createRule/updateSourceAuthority remain refused.
 - `GET /reconciliation/lineage/{ci_id}` - Caller-owned CI lineage
 
 ### Analytics (`/api/v1/analytics`)

@@ -19,9 +19,9 @@ export type JournalOperation = 'update' | 'hold' | 'delete' | 'resolve_conflict'
   | 'restore';
 export type GraphPlanKind = 'create' | 'update' | 'restore' | 'delete' | 'relationship_create' | 'relationship_delete';
 
-/** v16 §7.2 one review field of a hold; `supersedes` is the stale pending row it replaces (exact match). */
+/** v16 §7.2 one review field of a hold (typed values are raw JSON, §7.0); `supersedes` is the stale pending row it replaces. */
 export interface ConflictPlan {
-  id: string; field: string; source: string; sourceId: string; incoming: Encoded; target: Encoded;
+  id: string; field: string; source: string; sourceId: string; incoming: unknown; target: unknown;
   targetSource: string; contentHash: string; targetCorrelationId: string | null;
   supersedes?: { id: string; contentHash: string };
 }
@@ -40,8 +40,8 @@ export interface StoredPlan {
     changeType: 'updated' | 'deleted' | 'conflict_superseded'; changedFields: string[]; source: string;
     previous: Encoded; next: Encoded | null; incarnationId: string | null;
   };
-  /** T2 merge/resolve evidence, keyed by (organization, CI): typed field values, lineage, conflicts (v16 §7). */
-  fields?: Array<{ name: string; value: Encoded; text: string; source: string }>;
+  /** T2 merge/resolve evidence, keyed by (organization, CI): raw JSON field values (v16 §7.0), lineage, conflicts. */
+  fields?: Array<{ name: string; value: unknown; text: string; source: string }>;
   lineage?: { source: string; sourceId: string; confidence: number };
   conflicts?: ConflictPlan[];
   resolve?: { id: string; revision: string; status: 'resolved' | 'superseded'; action: string;

@@ -69,7 +69,7 @@ const mergeRequestSchema = Joi.object({
 
 const resolveConflictSchema = Joi.object({
   resolution: Joi.string().valid('accept_source', 'accept_target', 'merge', 'dismiss_stale').required(),
-  expected_revision: Joi.string().hex().length(64).required(),
+  expected_revision: Joi.string().pattern(/^[0-9a-f]{64}$/).required(),
   merged_data: Joi.any().when('resolution', { is: 'merge', then: Joi.required(), otherwise: Joi.forbidden() })
 });
 

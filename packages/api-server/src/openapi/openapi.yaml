@@ -2294,21 +2294,11 @@ paths:
               $ref: '#/components/schemas/MergeRequest'
       responses:
         '200':
-          description: CI merged successfully
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ci:
-                    $ref: '#/components/schemas/CI'
-                  action:
-                    type: string
-                    enum: [updated, merged]
-                  conflicts:
-                    type: array
-                    items:
-                      type: object
+          description: CI merged (`data.ci_id`, `data.action` updated, `data.correlation_id`)
+        '202':
+          description: A manual-review field held the whole merge; nothing was written to the CI (`data.status` pending_review, `data.conflict_ids`, `data.correlation_id`)
+        '409':
+          description: CI temporarily unavailable, or `pending_content` (changed content against a live pending conflict)
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -2327,7 +2317,7 @@ paths:
           in: query
           schema:
             type: string
-            enum: [pending, resolved, dismissed]
+            enum: [pending, resolved, dismissed, superseded]
             default: pending
         - $ref: '#/components/parameters/Limit'
         - $ref: '#/components/parameters/Offset'
@@ -2352,7 +2342,7 @@ paths:
     post:
       tags: [Reconciliation]
       summary: Resolve conflict
-      description: Resolve a specific reconciliation conflict
+      description: Resolve a caller-owned conflict at its current revision (the listed `revision`). accept_target and dismiss_stale do not change the CI; dismiss_stale applies only to a stale conflict.
       operationId: resolveConflict
       parameters:
         - name: id
@@ -2367,13 +2357,16 @@ paths:
           application/json:
             schema:
               type: object
-              required: [resolution]
+              required: [resolution, expected_revision]
               properties:
                 resolution:
                   type: string
-                  enum: [accept_source, accept_target, merge]
+                  enum: [accept_source, accept_target, merge, dismiss_stale]
+                expected_revision:
+                  type: string
+                  pattern: '^[0-9a-f]{64}$'
                 merged_data:
-                  type: object
+                  description: Required for (and only for) merge; a Neo4j-storable value
       responses:
         '200':
           description: Conflict resolved
@@ -2381,28 +2374,60 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          description: revision_mismatch, stale_conflict or not_stale; or CI temporarily unavailable
 
   /reconciliation/rules:
     get:
       tags: [Reconciliation]
-      summary: Global reconciliation policy read unavailable
-      description: Authentication is required; every role receives the same fixed 403 until platform operations are available.
+      summary: List the caller organization's rules
+      description: Legacy organization-less rules are inert and never listed; `?scope=global` returns 403 for every role.
       operationId: listReconciliationRules
       responses:
-        '401':
-          $ref: '#/components/responses/Unauthorized'
+        '200':
+          description: Rules of the caller's organization
         '403':
-          description: Global reconciliation policy unavailable
+          description: Global reconciliation policy unavailable (`scope` given) or organization claim required
     post:
       tags: [Reconciliation]
-      summary: Global reconciliation policy mutation unavailable
-      description: Authentication is required; every role receives the same fixed 403 without mutating rules.
+      summary: Create a rule in the caller's organization (admin)
       operationId: createReconciliationRule
       responses:
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          description: Global reconciliation policy unavailable
+        '201':
+          description: Rule created
+        '409':
+          description: Rule name already exists in the organization
+
+  /reconciliation/rules/{id}:
+    put:
+      tags: [Reconciliation]
+      summary: Replace a rule of the caller's organization (admin)
+      description: Foreign, missing and legacy rules return one identical 404.
+      operationId: updateReconciliationRule
+      responses:
+        '200':
+          description: Rule updated
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Reconciliation]
+      summary: Delete a rule of the caller's organization (admin)
+      operationId: deleteReconciliationRule
+      responses:
+        '204':
+          description: Rule deleted
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /reconciliation/source-authorities/{source}:
+    put:
+      tags: [Reconciliation]
+      summary: Set the caller organization's authority score for a source (admin)
+      description: GET /reconciliation/source-authorities lists the caller organization's scores; `?scope=global` returns 403 for every role.
+      operationId: updateSourceAuthority
+      responses:
+        '200':
+          description: Authority score set
 
   /reconciliation/lineage/{ci_id}:
     get:

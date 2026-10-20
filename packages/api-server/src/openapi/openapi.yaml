@@ -2399,6 +2399,13 @@ paths:
           description: Rule name already exists in the organization
 
   /reconciliation/rules/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
     put:
       tags: [Reconciliation]
       summary: Replace a rule of the caller's organization (admin)
@@ -2420,6 +2427,13 @@ paths:
           $ref: '#/components/responses/NotFound'
 
   /reconciliation/source-authorities/{source}:
+    parameters:
+      - name: source
+        in: path
+        required: true
+        schema:
+          type: string
+          maxLength: 255
     put:
       tags: [Reconciliation]
       summary: Set the caller organization's authority score for a source (admin)

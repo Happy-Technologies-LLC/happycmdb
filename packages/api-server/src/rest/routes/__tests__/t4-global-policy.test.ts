@@ -37,15 +37,18 @@ app.use('/api/v1/cmdb-health', healthRoutes);
 app.use('/api/v1', getAuthMiddleware().authenticate());
 app.use('/api/v1/reconciliation', reconciliationRoutes);
 
-// Tenants manage their own policy (HP1-S4b); the legacy NULL-org global rows stay unreadable.
-const policy = [['get', '/reconciliation/rules?scope=global'], ['get', '/reconciliation/source-authorities?scope=global']] as const;
+// Tenants manage their own policy (HP1-S4b); global scope is refused for every role and method (founder decision 1A).
+const RULE = '11111111-1111-4111-8111-111111111111';
+const policy = [['get', '/reconciliation/rules?scope=global'], ['get', '/reconciliation/source-authorities?scope=global'],
+  ['post', '/reconciliation/rules?scope=global'], ['put', `/reconciliation/rules/${RULE}?scope=global`],
+  ['delete', `/reconciliation/rules/${RULE}?scope=global`], ['put', '/reconciliation/source-authorities/aws?scope=global']] as const;
 const health = ['/cmdb-health/metrics', '/cmdb-health/timeseries?hours=24'];
 
 beforeEach(() => {
   touched.mockImplementation((_req: express.Request, res: express.Response) => res.status(200).json({ success: true, data: [{ name: 'foreign-policy' }] }));
 });
 
-test('legacy global policy refuses both verified organizations and all roles identically, without reads', async () => {
+test('legacy global policy refuses both verified organizations and all roles identically, without reads or writes', async () => {
   const replies = [];
   for (const org of ['org-a', 'org-b']) {
     for (const role of ['viewer', 'operator', 'admin']) {

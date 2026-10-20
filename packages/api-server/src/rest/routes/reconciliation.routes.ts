@@ -164,16 +164,16 @@ reconciliationRoutes.get('/rules', authMiddleware.requireOrganization(), refuseG
  * POST /api/v1/reconciliation/rules
  * Create a new reconciliation rule
  */
-reconciliationRoutes.post('/rules', authMiddleware.requirePermission('admin'), authMiddleware.requireOrganization(),
+reconciliationRoutes.post('/rules', refuseGlobalScope, authMiddleware.requirePermission('admin'), authMiddleware.requireOrganization(),
   validateRequest(ruleSchema, 'body'), controller.writeRule.bind(controller));
 
 /**
  * PUT/DELETE /api/v1/reconciliation/rules/:id
  * Foreign, missing and legacy global rules return one identical 404 (v16 §8).
  */
-reconciliationRoutes.put('/rules/:id', authMiddleware.requirePermission('admin'), authMiddleware.requireOrganization(),
+reconciliationRoutes.put('/rules/:id', refuseGlobalScope, authMiddleware.requirePermission('admin'), authMiddleware.requireOrganization(),
   validateRequest(ruleSchema, 'body'), controller.writeRule.bind(controller));
-reconciliationRoutes.delete('/rules/:id', authMiddleware.requirePermission('admin'), authMiddleware.requireOrganization(),
+reconciliationRoutes.delete('/rules/:id', refuseGlobalScope, authMiddleware.requirePermission('admin'), authMiddleware.requireOrganization(),
   controller.writeRule.bind(controller));
 
 /**
@@ -187,7 +187,7 @@ reconciliationRoutes.get('/source-authorities', authMiddleware.requireOrganizati
  * PUT /api/v1/reconciliation/source-authorities/:source
  * Update source authority score
  */
-reconciliationRoutes.put('/source-authorities/:source', authMiddleware.requirePermission('admin'),
+reconciliationRoutes.put('/source-authorities/:source', refuseGlobalScope, authMiddleware.requirePermission('admin'),
   authMiddleware.requireOrganization(), validateRequest(Joi.object({ source: Joi.string().max(255).required() }), 'params'),
   validateRequest(authoritySchema, 'body'), controller.updateSourceAuthority.bind(controller));
 

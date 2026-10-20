@@ -103,6 +103,7 @@ afterAll(async () => {
   await rows(`UPDATE ci_reconciliation_operations SET state = 'aborted' WHERE organization_id = ANY($1::uuid[])
     AND state IN ('pending', 'failed')`, [[A, B, C]]);
   await cypher('MATCH (c:CI) WHERE c.organization_id IN $orgs DETACH DELETE c', { orgs: [A, B, C] });
+  await rows('DELETE FROM cmdb.dim_ci WHERE organization_id = ANY($1::uuid[])', [[A, B, C]]); // shared integration DB (etl.test counts current rows)
   await server?.stop();
 });
 

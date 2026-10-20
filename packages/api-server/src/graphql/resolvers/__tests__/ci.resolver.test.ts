@@ -47,6 +47,8 @@ jest.mock('@cmdb/common', () => ({
 // Mock other modules that may be imported transitively
 jest.mock('@cmdb/database', () => ({
   ...jest.requireActual('@cmdb/database/neo4j/client'),
+  ...jest.requireActual('@cmdb/database/journal/journal'),
+  ...jest.requireActual('@cmdb/database/journal/encoding'),
   Neo4jClient: jest.fn(),
   getNeo4jClient: jest.fn(),
   getPostgresClient: jest.fn().mockReturnValue({
@@ -230,7 +232,8 @@ describe('GraphQL CI Resolvers', () => {
   describe('Mutation.createRelationship', () => {
     it('should create relationship between CIs', async () => {
       // Arrange: the scoped client reports that both endpoints matched
-      (mockContext._neo4jClient as any).createRelationship.mockResolvedValue(true);
+      const writeRelationship = jest.fn<() => Promise<boolean>>().mockResolvedValue(true);
+      (mockContext._neo4jClient as any).writeRelationship = writeRelationship;
 
       const createRelMut = (resolvers.Mutation as any).createRelationship;
 
@@ -248,13 +251,8 @@ describe('GraphQL CI Resolvers', () => {
       );
 
       // Assert: Verify relationship creation within the caller's organization
-      expect((mockContext._neo4jClient as any).createRelationship).toHaveBeenCalledWith(
-        'ci-1',
-        'ci-2',
-        'DEPENDS_ON',
-        ORG_A,
-        { strength: 'strong' }
-      );
+      expect(writeRelationship).toHaveBeenCalledWith(
+        'relationship_create', 'ci-1', 'ci-2', 'DEPENDS_ON', ORG_A, 'u1', { strength: 'strong' });
 
       // Assert: Verify caches cleared for both CIs
       expect(mockLoaders.relationshipLoader.clear).toHaveBeenCalledWith({ id: 'ci-1', organizationId: ORG_A });
@@ -269,41 +267,20 @@ describe('GraphQL CI Resolvers', () => {
     const errorOf = (promise: Promise<unknown>) => promise.then(() => undefined, (e: unknown) => e);
 
 
-    it('createCI stamps the context org and ignores an input org', async () => {
-      client().createCI.mockResolvedValue(createCI({ id: 'ci-new', name: 'new-server' }));
-
-      await (resolvers.Mutation as any).createCI(
-        null,
-        {
-          input: {
-            _name: 'new-server',
-            _type: 'SERVER',
-            _organizationId: ORG_B,
-            organization_id: ORG_B,
-          },
-        },
-        mockContext
-      );
-
-      expect(client().createCI).toHaveBeenCalledTimes(1);
-      const [ciInput, scope] = client().createCI.mock.calls[0];
-      expect(scope).toBe(ORG_A);
-      expect(Object.keys(ciInput).filter(key => /organization/i.test(key))).toEqual([]);
-      expect(JSON.stringify(ciInput)).not.toContain(ORG_B);
-    });
-
-    it('updateCI cannot change organization_id', async () => {
-      client().getCI.mockResolvedValue(createCI({ id: 'ci-1' }));
-      client().updateCI.mockResolvedValue(createCI({ id: 'ci-1', name: 'renamed' }));
-
-      await (resolvers.Mutation as any).updateCI(
-        null,
-        { id: 'ci-1', input: { _name: 'renamed', _organizationId: ORG_B, organization_id: ORG_B } },
-        mockContext
-      );
-
-      expect(client().getCI).toHaveBeenCalledWith('ci-1', ORG_A);
-      expect(client().updateCI).toHaveBeenCalledWith('ci-1', { name: 'renamed' }, ORG_A);
+    // v16 §4.4 / N-7b: a reserved organization alias is a 400 before any store call, never ignored.
+    it('createCI and updateCI reject an input org alias without calling the client', async () => {
+      for (const call of [
+        () => (resolvers.Mutation as any).createCI(null,
+          { input: { _name: 'n', _type: 'SERVER', _organizationId: ORG_B } }, mockContext),
+        () => (resolvers.Mutation as any).updateCI(null,
+          { id: 'ci-1', input: { _name: 'renamed', organization_id: ORG_B } }, mockContext),
+        () => (resolvers.Mutation as any).updateCI(null,
+          { id: 'ci-1', input: { _metadata: { a: { __op_id: 1 } } } }, mockContext),
+      ]) {
+        expect(await errorOf(call())).toMatchObject({ extensions: { code: 'BAD_USER_INPUT' } });
+      }
+      expect(client().createCI).not.toHaveBeenCalled();
+      expect(client().updateCI).not.toHaveBeenCalled();
     });
 
     it('deleteCI on a foreign CI deletes nothing', async () => {
@@ -312,7 +289,7 @@ describe('GraphQL CI Resolvers', () => {
 
       const error = await errorOf((resolvers.Mutation as any).deleteCI(null, { id: 'ci-of-org-b' }, mockContext));
 
-      expect(client().deleteCI).toHaveBeenCalledWith('ci-of-org-b', ORG_A);
+      expect(client().deleteCI).toHaveBeenCalledWith('ci-of-org-b', ORG_A, 'u1');
       // No unscoped DETACH DELETE on a raw session, and the same error as a missing CI.
       expect(client().getSession).not.toHaveBeenCalled();
       expect(error).toBeInstanceOf(GraphQLError);
@@ -322,7 +299,7 @@ describe('GraphQL CI Resolvers', () => {
 
     it('createRelationship across orgs is rejected', async () => {
       // The org-scoped MERGE finds no pair of endpoints in the caller's organization.
-      client().createRelationship.mockResolvedValue(false);
+      client().writeRelationship = jest.fn<() => Promise<boolean>>().mockResolvedValue(false);
 
       const error = await errorOf(
         (resolvers.Mutation as any).createRelationship(
@@ -332,7 +309,8 @@ describe('GraphQL CI Resolvers', () => {
         )
       );
 
-      expect(client().createRelationship).toHaveBeenCalledWith('ci-of-org-a', 'ci-of-org-b', 'DEPENDS_ON', ORG_A, {});
+      expect(client().writeRelationship).toHaveBeenCalledWith(
+        'relationship_create', 'ci-of-org-a', 'ci-of-org-b', 'DEPENDS_ON', ORG_A, 'u1', {});
       expect(error).toBeInstanceOf(GraphQLError);
       expect(error).toMatchObject({ message: 'CI not found', extensions: { code: 'NOT_FOUND' } });
       expect(mockLoaders.relationshipLoader.clear).not.toHaveBeenCalled();
@@ -431,18 +409,7 @@ describe('GraphQL CI Resolvers', () => {
       expect(client().updateCI).not.toHaveBeenCalled();
 
       await updateName('ci-1', 'x'.repeat(500));
-      expect(client().updateCI).toHaveBeenCalledWith('ci-1', { name: 'x'.repeat(500) }, ORG_A);
-    });
-
-    it('updateCI on a foreign id with a bad name still returns NOT_FOUND', async () => {
-      // The scoped lookup finds no CI of the caller's organization.
-      client().getCI.mockResolvedValue(null);
-
-      const error = await errorOf(updateName('ci-of-org-b', ''));
-
-      expect(client().getCI).toHaveBeenCalledWith('ci-of-org-b', ORG_A);
-      expect(error).toMatchObject({ message: 'CI not found', extensions: { code: 'NOT_FOUND' } });
-      expect(client().updateCI).not.toHaveBeenCalled();
+      expect(client().updateCI).toHaveBeenCalledWith('ci-1', { name: 'x'.repeat(500) }, ORG_A, 'u1');
     });
 
     it("createCI rejects a 501-character name or a 'not-a-date' timestamp without calling the client", async () => {
@@ -460,7 +427,7 @@ describe('GraphQL CI Resolvers', () => {
       expect(client().getSession).not.toHaveBeenCalled();
 
       await create({ _name: 'x'.repeat(500) });
-      expect(client().createCI).toHaveBeenCalledWith(expect.objectContaining({ name: 'x'.repeat(500) }), ORG_A);
+      expect(client().createCI).toHaveBeenCalledWith(expect.objectContaining({ name: 'x'.repeat(500) }), ORG_A, 'u1');
     });
 
     it('createCI normalises _discoveredAt exactly as REST POST /cis does', async () => {

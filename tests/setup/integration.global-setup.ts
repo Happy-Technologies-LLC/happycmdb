@@ -148,6 +148,10 @@ async function initializeNeo4jSchema(uri: string, password: string): Promise<voi
       `CREATE FULLTEXT INDEX ci_fulltext_idx IF NOT EXISTS
        FOR (ci:CI) ON EACH [ci.name, ci.type, ci.external_id]`
     );
+    // Neo4j operator migration 004: the HP1 journal fence (v16 §2.4).
+    await session.run(
+      'CREATE CONSTRAINT reconciliation_op_fence_unique IF NOT EXISTS FOR (o:ReconciliationOp) REQUIRE o.op_id IS UNIQUE'
+    );
   } finally {
     await session.close();
     await driver.close();

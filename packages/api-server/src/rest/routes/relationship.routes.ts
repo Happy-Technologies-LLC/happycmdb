@@ -6,6 +6,7 @@ import Joi from 'joi';
 import { RelationshipController } from '../controllers/relationship.controller';
 import { validateRequest, validateOptional } from '../middleware/validation.middleware';
 import { getAuthMiddleware } from '../../auth/auth-bootstrap';
+import { journalRequestGuard } from '../../journal-http';
 import { relationshipSchema, schemas } from '@cmdb/common';
 
 export const relationshipRoutes = Router();
@@ -34,6 +35,7 @@ relationshipRoutes.get(
 relationshipRoutes.post(
   '/',
   authMiddleware.requirePermission('write'),
+  journalRequestGuard({ relationship: true }),
   validateRequest(relationshipSchema, 'body'),
   controller.createRelationship.bind(controller)
 );

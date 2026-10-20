@@ -79,7 +79,7 @@ describe('GraphQL API Integration Tests', () => {
       status: overrides._status ?? 'active',
       environment: overrides._environment ?? 'production',
       metadata: overrides._metadata ?? {},
-    }, organizationId);
+    }, organizationId, 'graphql-test');
     return id;
   };
 

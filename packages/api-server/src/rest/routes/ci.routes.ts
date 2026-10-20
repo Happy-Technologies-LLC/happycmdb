@@ -8,6 +8,7 @@ import { validateRequest, validateOptional } from '../middleware/validation.midd
 import { auditMiddleware } from '../../middleware/audit.middleware';
 import { getAuthMiddleware } from '../../auth/auth-bootstrap';
 import { ciInputSchema, ciUpdateSchema, queryFiltersSchema } from '@cmdb/common';
+import { journalRequestGuard } from '../../journal-http';
 
 export const ciRoutes = Router();
 const controller = new CIController();
@@ -73,6 +74,7 @@ ciRoutes.get('/:id', controller.getCIById.bind(controller));
 ciRoutes.post(
   '/',
   authMiddleware.requirePermission('write'),
+  journalRequestGuard(),
   validateRequest(createCISchema, 'body'),
   controller.createCI.bind(controller)
 );
@@ -81,12 +83,14 @@ ciRoutes.post(
 ciRoutes.put(
   '/:id',
   authMiddleware.requirePermission('write'),
+  journalRequestGuard(),
   validateRequest(updateCISchema, 'body'),
   controller.updateCI.bind(controller)
 );
 
 // Delete CI
-ciRoutes.delete('/:id', authMiddleware.requirePermission('write'), controller.deleteCI.bind(controller));
+ciRoutes.delete('/:id', authMiddleware.requirePermission('write'), journalRequestGuard(),
+  controller.deleteCI.bind(controller));
 
 // Get CI relationships
 ciRoutes.get(

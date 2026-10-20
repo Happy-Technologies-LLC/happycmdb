@@ -98,6 +98,7 @@ const graphClient = {
 };
 
 jest.mock('@cmdb/database', () => ({
+  ...jest.requireActual<object>('@cmdb/database/journal/journal'),
   getPostgresClient: () => pgClient,
   getNeo4jClient: () => graphClient,
   getAuditService: () => ({}),
@@ -575,6 +576,18 @@ describe('two-organization isolation', () => {
     } finally {
       await db.exec(`DELETE FROM ci_reconciliation_operations WHERE id = '${operationId}'`);
       graphOwners.set('ci-a2', INTERNAL_ORG);
+    }
+  });
+
+  it('an admission lock timeout on a mapping write is a 503, never a 500 (v16 §5.3)', async () => {
+    const query = pgClient.query;
+    pgClient.query = async (sql: string, params: unknown[] = []) => sql.includes('pg_advisory_xact_lock_shared')
+      ? Promise.reject(Object.assign(new Error('lock timeout'), { code: '55P03' })) : query(sql, params);
+    try {
+      const res = await request(app).post('/api/v1/business-services/bs-a-app/cis').set(AS_A).send({ ci_ids: ['ci-a'] });
+      expect([res.status, res.body]).toEqual([503, { success: false, error: 'Service Unavailable' }]);
+    } finally {
+      pgClient.query = query;
     }
   });
 

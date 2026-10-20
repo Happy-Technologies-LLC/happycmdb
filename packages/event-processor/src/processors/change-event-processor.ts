@@ -57,111 +57,27 @@ export class ChangeEventProcessor {
   }
 
   /**
-   * Handle CI discovered event
+   * Handle CI discovered event. HP1 v16 §3.5: Kafka is notification-only;
+   * change history is written by the journaled writer's T2, never here.
    */
   private async handleCIDiscovered(event: CMDBEvent): Promise<void> {
     const ciEvent = event as CIDiscoveredEvent;
-    const incarnationId = await this.provenIncarnation(ciEvent);
-    if (!incarnationId) return;
-
-    try {
-      // Record discovery in change history
-      await this.postgresClient.query(
-        `INSERT INTO ci_change_history
-         (ci_id, change_type, changed_by, change_source, changed_fields, new_values, metadata, ci_incarnation_id, organization_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-        [
-          ciEvent.ci_id,
-          'discovered',
-          'system',
-          ciEvent.source_system,
-          ['*'], // All fields are new
-          JSON.stringify({
-            ci_name: ciEvent.ci_name,
-            ci_type: ciEvent.ci_type,
-            identifiers: ciEvent.identifiers,
-            confidence_score: ciEvent.confidence_score,
-          }),
-          JSON.stringify({
-            event_id: ciEvent.event_id,
-            organization_id: ciEvent.organization_id,
-            timestamp: ciEvent.timestamp,
-          }),
-          incarnationId,
-          ciEvent.organization_id,
-        ]
-      );
-
-      // Update CI statistics
-      await this.updateCIStatistics(ciEvent.ci_id, 'discovered');
-
-      logger.info('CI discovery tracked', {
-        ci_id: ciEvent.ci_id,
-        ci_name: ciEvent.ci_name,
-        source: ciEvent.source_system,
-      });
-    } catch (error) {
-      logger.error('Failed to track CI discovery', {
-        event_id: ciEvent.event_id,
-        ci_id: ciEvent.ci_id,
-        error,
-      });
-      throw error;
-    }
+    if (!(await this.provenIncarnation(ciEvent))) return;
+    await this.updateCIStatistics(ciEvent.ci_id, 'discovered');
+    logger.info('CI discovery tracked', { ci_id: ciEvent.ci_id, source: ciEvent.source_system });
   }
 
-  /**
-   * Handle CI updated event
-   */
+  /** Handle CI updated event (notification-only; see handleCIDiscovered). */
   private async handleCIUpdated(event: CMDBEvent): Promise<void> {
     const updateEvent = event as CIUpdatedEvent;
-    const incarnationId = await this.provenIncarnation(updateEvent);
-    if (!incarnationId) return;
-
-    try {
-      // Record update in change history
-      await this.postgresClient.query(
-        `INSERT INTO ci_change_history
-         (ci_id, change_type, changed_by, change_source, changed_fields, previous_values, new_values, metadata, ci_incarnation_id, organization_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-        [
-          updateEvent.ci_id,
-          'updated',
-          'system',
-          updateEvent.source_system,
-          updateEvent.changed_fields,
-          JSON.stringify(updateEvent.previous_values),
-          JSON.stringify(updateEvent.new_values),
-          JSON.stringify({
-            event_id: updateEvent.event_id,
-            timestamp: updateEvent.timestamp,
-            organization_id: updateEvent.organization_id,
-          }),
-          incarnationId,
-          updateEvent.organization_id,
-        ]
-      );
-
-      // Update CI statistics
-      await this.updateCIStatistics(updateEvent.ci_id, 'updated');
-
-      // Check for significant changes that might require alerts
-      await this.checkForSignificantChanges(updateEvent);
-
-      logger.info('CI update tracked', {
-        ci_id: updateEvent.ci_id,
-        ci_name: updateEvent.ci_name,
-        changed_fields: updateEvent.changed_fields,
-        source: updateEvent.source_system,
-      });
-    } catch (error) {
-      logger.error('Failed to track CI update', {
-        event_id: updateEvent.event_id,
-        ci_id: updateEvent.ci_id,
-        error,
-      });
-      throw error;
-    }
+    if (!(await this.provenIncarnation(updateEvent))) return;
+    await this.updateCIStatistics(updateEvent.ci_id, 'updated');
+    await this.checkForSignificantChanges(updateEvent);
+    logger.info('CI update tracked', {
+      ci_id: updateEvent.ci_id,
+      changed_fields: updateEvent.changed_fields,
+      source: updateEvent.source_system,
+    });
   }
 
 

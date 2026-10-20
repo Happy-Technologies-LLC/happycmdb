@@ -82,6 +82,7 @@ const pgClient = {
 };
 
 jest.mock('@cmdb/database', () => ({
+  ...jest.requireActual<object>('@cmdb/database/journal/journal'),
   getPostgresClient: () => pgClient,
   getNeo4jClient: () => ({ getCI: async (id: string, org: string) =>
     nodes.find(ci => ci.id === id && ci.organization_id === org) ?? null }),

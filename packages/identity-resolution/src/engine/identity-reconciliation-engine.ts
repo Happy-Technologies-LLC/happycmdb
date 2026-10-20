@@ -332,7 +332,8 @@ export class IdentityReconciliationEngine {
   /**
    * Create or update CI with reconciliation
    */
-  async reconcileCI(discoveredCI: TransformedCI, organizationId: string, createIfMissing = true): Promise<string | null> {
+  async reconcileCI(discoveredCI: TransformedCI, organizationId: string, createIfMissing = true,
+    actor = 'system:identity-reconciliation'): Promise<string | null> {
     const identifiers = discoveredCI.identifiers;
 
     // Find existing CI
@@ -345,14 +346,12 @@ export class IdentityReconciliationEngine {
         strategy: match.match_strategy
       });
 
-      const incarnationId = await this.updateExistingCI(match.ci_id, discoveredCI, match, organizationId);
+      const incarnationId = await this.updateExistingCI(match.ci_id, discoveredCI, match, organizationId, actor);
       if (!incarnationId) return null;
 
-      // Emit CI updated event
-      await this.eventProducer.emit<CIUpdatedEvent>(
-        EventType.CI_UPDATED,
-        'identity-reconciliation-engine',
-        {
+      // v16 §3.3 step 7: notify after T2, best-effort; a Kafka failure cannot undo or fail the committed write.
+      try {
+        await this.eventProducer.emit<CIUpdatedEvent>(EventType.CI_UPDATED, 'identity-reconciliation-engine', {
           ci_id: match.ci_id,
           organization_id: organizationId,
           ci_incarnation_id: incarnationId,
@@ -361,8 +360,10 @@ export class IdentityReconciliationEngine {
           previous_values: {},
           new_values: discoveredCI.attributes,
           source_system: discoveredCI.source,
-        }
-      );
+        });
+      } catch {
+        logger.warn('CI updated notification not published', { ci_id: match.ci_id });
+      }
 
       return match.ci_id;
     } else if (!createIfMissing) {
@@ -440,42 +441,28 @@ export class IdentityReconciliationEngine {
   /**
    * Update existing CI with new data
    */
-  private async updateExistingCI(ciId: string, ci: TransformedCI, match: MatchResult, organizationId: string): Promise<string | null> {
+  private async updateExistingCI(ciId: string, ci: TransformedCI, match: MatchResult, organizationId: string,
+    actor: string): Promise<string | null> {
     // Get source authority
     const sourceAuthority = this.config?.source_authorities[ci.source] || 5;
 
     // A target can disappear or change ownership between identification and SET.
-    // Do not write lineage or field sources until the tenant-scoped SET succeeds.
+    // Do not write lineage or field sources until the tenant-scoped write commits.
     const mergedData = await this.mergeFields(ciId, ci, sourceAuthority);
 
-    // Update Neo4j
-    const session = this.neo4jClient.getSession();
-
-    try {
-      const result = await session.run(
-        `MATCH (ci:CI {id: $ciId})
-         WHERE ci.organization_id = $organizationId
-         SET ci += $properties, ci.incarnation_id = coalesce(ci.incarnation_id, randomUUID()), ci.updated_at = datetime()
-         RETURN ci.incarnation_id AS incarnation_id`,
-        {
-          ciId,
-          organizationId,
-          properties: mergedData
-        }
-      );
-      if (result.records.length === 0) return null;
-      for (const [field, value] of Object.entries(mergedData)) {
-        await this.recordFieldSource(ciId, field, value, ci.source);
-      }
-
-      // Update source lineage
-      await this.recordSourceLineage(ciId, ci.source, ci.source_id, match.confidence);
-
-      logger.info('CI updated', { ci_id: ciId, source: ci.source });
-      return result.records[0]!.get('incarnation_id') as string;
-    } finally {
-      await session.close();
+    // HP1-S4a: one journaled, fenced `update` whose T2 writes the org-stamped history row.
+    const updated = await this.neo4jClient.updateCIProperties(ciId, mergedData, organizationId, actor, ci.source);
+    if (!updated) return null;
+    // Field sources and lineage keep their pre-HP1 keys until the HP1-S4b merge writer.
+    for (const [field, value] of Object.entries(mergedData)) {
+      await this.recordFieldSource(ciId, field, value, ci.source);
     }
+
+    // Update source lineage
+    await this.recordSourceLineage(ciId, ci.source, ci.source_id, match.confidence);
+
+    logger.info('CI updated', { ci_id: ciId, source: ci.source });
+    return updated['incarnation_id'] as string;
   }
 
   /**
@@ -488,7 +475,9 @@ export class IdentityReconciliationEngine {
 
     // Reconciliation may change attributes, never identity, tenant or incarnation.
     for (const [field, value] of Object.entries(withoutOrganizationId(newCI.attributes))) {
-      if (field === 'id' || field === 'created_at' || field === 'incarnation_id') continue;
+      // v16 §4.4: reserved aliases, timestamps and the incarnation are dropped, never written.
+      if (['id', 'organization_id', 'organizationid', 'op_id', 'reconciliation_op_id', 'created_at', 'incarnation_id']
+        .includes(field.replace(/^_+/, '').toLowerCase())) continue;
       const existing = existingFields.get(field);
 
       if (!existing) {

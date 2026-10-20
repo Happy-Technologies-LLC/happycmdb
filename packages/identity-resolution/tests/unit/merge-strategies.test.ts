@@ -25,6 +25,12 @@ jest.mock('@cmdb/common', () => ({
 
 const mockNeo4jClient = {
   getSession: jest.fn(),
+  // The journaled merge update (journal internals run in tests/integration): replays its graph write on the mock session.
+  updateCIProperties: async (ciId: string, properties: Record<string, unknown>, organizationId: string) => {
+    const result = await mockNeo4jClient.getSession().run(`MATCH (ci:CI {id: $ciId}) WHERE ci.organization_id = $organizationId
+      SET ci += $properties RETURN ci.incarnation_id AS incarnation_id`, { ciId, organizationId, properties });
+    return result.records.length ? { incarnation_id: result.records[0].get('incarnation_id') } : null;
+  },
 };
 
 const mockPostgresClient = {

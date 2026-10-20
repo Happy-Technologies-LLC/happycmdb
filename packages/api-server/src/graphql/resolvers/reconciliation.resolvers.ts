@@ -19,6 +19,7 @@ import {
   listOwnedConflicts, updateOwnedConflict
 } from '../../reconciliation/tenant-queries';
 import { assertNoCIGap, CIGapError, readSingleCI } from '../../read-admission';
+import { assertRequestShape, assertStorableProperties, journalGraphQLError, RequestShapeError } from '../../journal-http';
 
 const reconciliationEngine = getIdentityReconciliationEngine();
 const postgresClient = getPostgresClient();
@@ -275,7 +276,11 @@ const ReconciliationMutation = {
         status: _args._status || 'active'
       };
 
-      const ciId = await reconciliationEngine.reconcileCI(discoveredCI, organizationId, false);
+      // §3.6: the same shape and Neo4j-storable guard as REST merge, before any store access.
+      assertRequestShape(discoveredCI);
+      assertStorableProperties(discoveredCI.attributes);
+      if (discoveredCI.source.length > 255) throw new RequestShapeError();
+      const ciId = await reconciliationEngine.reconcileCI(discoveredCI, organizationId, false, _context.user!._userId);
       if (ciId === null) {
         throw new GraphQLError('CI not found', { extensions: { code: 'NOT_FOUND', http: { status: 404 } } });
       }
@@ -289,6 +294,8 @@ const ReconciliationMutation = {
       };
     } catch (error: any) {
       if (error instanceof GraphQLError && error.extensions['code'] === 'NOT_FOUND') throw error;
+      const journal = journalGraphQLError(error);
+      if (journal) throw journal;
       logger.error('GraphQL: Error merging CI', error);
       throw new GraphQLError('Failed to merge CI', {
         extensions: {

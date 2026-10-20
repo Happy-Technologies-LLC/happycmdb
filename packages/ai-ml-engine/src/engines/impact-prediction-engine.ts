@@ -290,8 +290,8 @@ export class ImpactPredictionEngine {
       const cached = await this.queryWithDeadline(
         `SELECT s.* FROM ci_criticality_scores s
          WHERE s.ci_id = $1 AND s.calculated_at >= NOW() - INTERVAL '7 days'
-           AND s.ci_incarnation_id = $2`,
-        [ciId, incarnationId]
+           AND s.ci_incarnation_id = $2 AND s.organization_id = $3`,
+        [ciId, incarnationId, organizationId]
       );
       if (cached.rows.length > 0) return this.mapRowToCriticalityScore(cached.rows[0]);
       const score = await this.calculateCriticalityScore(ciId, organizationId, walk, depth, incarnationId);
@@ -702,9 +702,9 @@ export class ImpactPredictionEngine {
     if (!incarnationId) throw new Error('CI not found');
     const inserted = await this.queryWithDeadline(
       `INSERT INTO ci_criticality_scores
-       (ci_id, ci_name, criticality_score, factors, calculated_at, ci_incarnation_id)
-       VALUES ($1::varchar, $2::varchar, $3::integer, $4::jsonb, $5::timestamptz, $6::uuid)
-       ON CONFLICT (ci_id) DO UPDATE SET
+       (ci_id, ci_name, criticality_score, factors, calculated_at, ci_incarnation_id, organization_id)
+       VALUES ($1::varchar, $2::varchar, $3::integer, $4::jsonb, $5::timestamptz, $6::uuid, $7::uuid)
+       ON CONFLICT (organization_id, ci_id) WHERE organization_id IS NOT NULL DO UPDATE SET
          ci_name = $2,
          criticality_score = $3,
          factors = $4,
@@ -717,6 +717,7 @@ export class ImpactPredictionEngine {
         JSON.stringify(score.factors),
         score.calculated_at,
         incarnationId,
+        organizationId,
       ]
     );
     if (inserted.rows.length === 0) throw new Error('CI not found');

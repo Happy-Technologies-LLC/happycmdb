@@ -47,6 +47,13 @@ let graphCount = 0;
 const record = (fields: Record<string, unknown>) => ({ get: (key: string) => fields[key] });
 const integer = (n: number) => ({ toNumber: () => n });
 const graph = {
+  // Journaled direct write of an owned CI (the journal itself runs in tests/integration).
+  updateCIProperties: async (id: string, props: Record<string, unknown>, org: string) => {
+    const ci = nodes.get(id);
+    if (ci?.organization_id !== org) return null;
+    Object.assign(ci, props);
+    return { ...ci };
+  },
   getCI: async (id: string, org: string) => {
     graphCount++;
     const ci = nodes.get(id);
@@ -95,6 +102,10 @@ const graph = {
           total: integer(ungapped.length),
           page: ungapped.slice(offset, end).map(ci => ({ properties: { ...ci, type: 'server', status: 'active' } })),
         })] };
+      }
+      if (statement.includes('properties(ci) AS props')) {
+        return { records: visible.filter(row => (params['ids'] as string[]).includes(row.id))
+          .map(row => record({ id: row.id, props: { ...row } })) };
       }
       const id = params['id'] ?? params['ciId'] ?? params['rootCiId'];
       if (statement.includes('RETURN ci.id AS ciId, ci.incarnation_id AS incarnationId')) {
@@ -184,8 +195,11 @@ const pg = {
         : pg.query(sql, params),
     release: () => undefined,
   }),
+  get connect() { return pg.getClient; },
 };
 jest.mock('@cmdb/database', () => ({
+  ...jest.requireActual<object>('@cmdb/database/journal/journal'),
+  ...jest.requireActual<object>('@cmdb/database/journal/encoding'),
   getNeo4jClient: () => graph,
   getPostgresClient: () => ({ ...pg, pool: pg }),
   getAuditService: () => ({}),
@@ -215,6 +229,7 @@ import { itilRoutes } from '../itil.routes';
 import { driftRoutes, impactRoutes } from '../drift-impact.routes';
 import { analyticsRoutes } from '../analytics.routes';
 import { createGraphQLServer } from '../../../graphql/server';
+import { getAnomalyDetectionEngine } from '@cmdb/ai-ml-engine';
 const jwt = new JWTService(loadConfig().auth.jwt);
 const app = express();
 app.use(express.json());
@@ -241,6 +256,9 @@ beforeAll(async () => {
     ${table('impact_analyses')} ${table('ci_criticality_scores')}`);
   await db.exec(readFileSync(join(migrations, '011_ci_organization_scope.sql'), 'utf8'));
   await db.exec(readFileSync(join(migrations, '025_ci_derived_incarnation.sql'), 'utf8'));
+  // 030's org column and key with 036's primary-key swap: the criticality upsert's conflict target.
+  await db.exec(`ALTER TABLE ci_criticality_scores ADD COLUMN organization_id UUID, DROP CONSTRAINT ci_criticality_scores_pkey;
+    ${readFileSync(join(migrations, '030_drift_impact_org_provenance.sql'), 'utf8').match(/CREATE UNIQUE INDEX[\s\S]*?;/)![0]}`);
   const provenance = readFileSync(join(migrations, '028_change_history_reconciliation_org_provenance.sql'), 'utf8');
   const historyColumns = provenance.match(/ALTER TABLE ci_change_history\s+ADD COLUMN[\s\S]*?;/);
   if (!historyColumns) throw new Error('Missing S1 history org columns');
@@ -647,4 +665,14 @@ it('bounds all four mounted CI GraphQL lists for both tenants with broad limit-o
     await server.stop();
     for (const id of ids) nodes.delete(id);
   }
+});
+
+it('anomaly change frequency counts journal T2 history, which stamps the organization_id column and no metadata', async () => {
+  await db.exec(`${table('ci_change_statistics')} INSERT INTO ci_change_statistics (ci_id) VALUES ('ci-fresh'); INSERT INTO ci_change_history
+    (ci_id, change_type, change_source, ci_incarnation_id, organization_id) VALUES ('ci-fresh', 'updated', 'api', '${A_INC}', '${A}')`);
+  Object.assign(graph, { iterateUnscopedCIIncarnationPages: async function* () { yield [{ ciId: 'ci-fresh', incarnationId: A_INC, organizationId: A }]; } });
+  const query = jest.spyOn(pg, 'query');
+  await (getAnomalyDetectionEngine() as unknown as { detectChangeFrequencyAnomalies(): Promise<unknown> }).detectChangeFrequencyAnomalies();
+  const { rows } = await query.mock.results[0]!.value as { rows: Array<{ ci_id: string; change_count: unknown }> };
+  expect(rows.map(row => [row.ci_id, Number(row.change_count)])).toEqual([['ci-fresh', 1]]);
 });

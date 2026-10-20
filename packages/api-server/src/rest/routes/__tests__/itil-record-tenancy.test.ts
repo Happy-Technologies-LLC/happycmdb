@@ -33,7 +33,10 @@ const LEGACY_I = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
 const LEGACY_C = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
 const ciNodes: Record<string, string> = { 'ci-a': A, 'ci-b': B };
 jest.mock('@cmdb/database', () => ({
-  getPostgresClient: () => ({ pool: { query } }),
+  ...jest.requireActual<object>('@cmdb/database/journal/journal'),
+  ...jest.requireActual<object>('@cmdb/database/journal/encoding'),
+  // pglite has one session, so the AP-P' transaction runs serially on it.
+  getPostgresClient: () => ({ pool: { query, connect: async () => ({ query, release: () => undefined }) } }),
   getNeo4jClient: () => ({ getCI: async (id: string, org: string) =>
     ciNodes[id] === org ? { id, organization_id: org, type: 'server', environment: 'test' } : null }),
   getAuditService: () => ({}),
@@ -66,6 +69,8 @@ const tableDDL = (name: string) => {
 };
 beforeAll(async () => {
   await sql(['itil_baselines', 'itil_incidents', 'itil_changes'].map(tableDDL).join('\n'), [], 'exec');
+  await sql(readFileSync(join(migrationDir, '028_change_history_reconciliation_org_provenance.sql'), 'utf8')
+    .match(/CREATE TABLE IF NOT EXISTS ci_reconciliation_\w+ \([\s\S]*?\n\);/g)!.join('\n'), [], 'exec');
   await sql(`CREATE UNIQUE INDEX idx_itil_baselines_unique_name ON itil_baselines(name);
     INSERT INTO itil_baselines(id, name, baseline_type, baseline_data, created_by)
       VALUES ('cccccccc-cccc-4ccc-8ccc-cccccccccccc', 'legacy', 'configuration', '{}', 'legacy');

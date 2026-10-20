@@ -1,7 +1,7 @@
 // Copyright 2026 Happy Technologies LLC
 // SPDX-License-Identifier: Apache-2.0
 import { Pool } from 'pg';
-import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
+import { ADMISSION_LOCK_KEY, getNeo4jClient, getPostgresClient, JournalUnavailableError } from '@cmdb/database';
 
 export class CIGapError extends Error {
   constructor() { super('CI is temporarily unavailable'); }
@@ -33,19 +33,18 @@ export async function readSingleCI<T>(organizationId: string, ciId: string, read
   await assertNoCIGap(organizationId, ciId);
   return result;
 }
-/** AP-P': hold the organization epoch share lock through the CI-referencing write. */
+/** AP-P': hold the organization admission lock shared through the CI-referencing write. */
 export async function writeReferencedCIs<T>(
   organizationId: string, ciIds: string[], write: (client: import('pg').PoolClient) => Promise<T>
 ): Promise<T> {
   const client = await getPostgresClient().pool.connect();
+  let broken: Error | undefined;
   try {
     await client.query('BEGIN');
     try {
       await client.query(`SET LOCAL lock_timeout = '5s'`);
-      await client.query(`INSERT INTO ci_reconciliation_epochs (organization_id, epoch)
-                          VALUES ($1, 0) ON CONFLICT (organization_id) DO NOTHING`, [organizationId]);
-      await client.query(`SELECT epoch FROM ci_reconciliation_epochs WHERE organization_id=$1 FOR SHARE`,
-        [organizationId]);
+      // Shared, so it queues behind a waiting T1 instead of overtaking it (F8').
+      await client.query(`SELECT pg_advisory_xact_lock_shared(${ADMISSION_LOCK_KEY})`, [organizationId]);
       const gap = await client.query(
         `SELECT 1 FROM ci_reconciliation_operations
          WHERE organization_id=$1 AND ci_id=ANY($2::text[]) AND state IN ('pending','failed') LIMIT 1`,
@@ -55,11 +54,14 @@ export async function writeReferencedCIs<T>(
       await client.query('COMMIT');
       return result;
     } catch (error) {
-      await client.query('ROLLBACK');
+      // A failed ROLLBACK destroys the connection: never pool it in a transaction still holding the lock.
+      await client.query('ROLLBACK').catch((rollbackError: Error) => { broken = rollbackError; });
+      // v16 §5.3: lock_timeout on the admission lock is a 503, never a 500.
+      if (error && typeof error === 'object' && 'code' in error && error.code === '55P03') throw new JournalUnavailableError();
       throw error;
     }
   } finally {
-    client.release();
+    client.release(broken);
   }
 }
 /** AP-D': the dimension row alone is not proof that the current graph node is owned. */
@@ -139,7 +141,7 @@ export async function readGlobalCIPage<T extends { id?: unknown; organization_id
 
 const MAX_PENDING_CI_IDS = 1000;
 interface Snapshot { epoch: string; pending: string[] }
-/** Journal writers do not yet bump the epoch; pending/failed membership is the read fence. */
+/** The read fence is the epoch every T1 bumps plus pending/failed membership. */
 function samePending(first: string[], second: string[]): boolean {
   if (first.length !== second.length) return false;
   if (first.length === 0) return true;
@@ -168,8 +170,9 @@ let admissionPool: Pool | undefined;
 const activeByOrg = new Map<string, number>();
 function isolatedPool(): Pool {
   if (!admissionPool) {
-    admissionPool = new Pool({ ...getPostgresClient().pool.options,
-      max: 4, connectionTimeoutMillis: 250,
+    // pg-pool hides `password` from enumeration, so a bare spread would connect without it.
+    const { options } = getPostgresClient().pool;
+    admissionPool = new Pool({ ...options, password: options.password, max: 4, connectionTimeoutMillis: 250,
       options: '-c statement_timeout=12000 -c lock_timeout=2000 -c idle_in_transaction_session_timeout=15000' });
   }
   return admissionPool;
@@ -198,16 +201,14 @@ export async function readCIList<T>(
   activeByOrg.set(organizationId, active + 1);
   try {
     const client = await isolatedPool().connect();
+    let broken: Error | undefined;
     try {
       const timedQuery = (text: string, values?: (string | number)[]) =>
         ({ text, values, query_timeout: remaining() });
       remaining();
       await client.query(timedQuery('BEGIN'));
       try {
-        await client.query(timedQuery(`INSERT INTO ci_reconciliation_epochs (organization_id, epoch)
-                            VALUES ($1, 0) ON CONFLICT (organization_id) DO NOTHING`, [organizationId]));
-        await client.query(timedQuery('SELECT epoch FROM ci_reconciliation_epochs WHERE organization_id=$1 FOR SHARE',
-          [organizationId]));
+        await client.query(timedQuery(`SELECT pg_advisory_xact_lock_shared(${ADMISSION_LOCK_KEY})`, [organizationId]));
         const pending = await client.query<{ ci_id: string }>(timedQuery(
           `SELECT ci_id FROM ci_reconciliation_operations
            WHERE organization_id=$1 AND state IN ('pending','failed') LIMIT $2`,
@@ -226,11 +227,11 @@ export async function readCIList<T>(
         return result;
       } catch (error) {
         const rollback = { text: 'ROLLBACK', query_timeout: Math.max(1, expiresAt - Date.now()) };
-        await client.query(rollback);
+        await client.query(rollback).catch((rollbackError: Error) => { broken = rollbackError; });
         throw error;
       }
     } finally {
-      client.release();
+      client.release(broken);
     }
   } catch (error) {
     if (error instanceof CIGapError) throw error;

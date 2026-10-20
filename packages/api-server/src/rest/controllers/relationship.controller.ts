@@ -4,6 +4,7 @@
 import { Request, Response } from 'express';
 import { getNeo4jClient } from '@cmdb/database';
 import { requestOrganizationId } from '../../middleware/auth.middleware';
+import { assertCIId, requestActor, sendJournalError } from '../../journal-http';
 import { logger, RelationshipType } from '@cmdb/common';
 import neo4j from 'neo4j-driver';
 
@@ -147,18 +148,6 @@ export class RelationshipController {
       }
 
       const organizationId = requestOrganizationId(req);
-      const fromCI = await this.neo4jClient.getCI(from_id, organizationId);
-      const toCI = await this.neo4jClient.getCI(to_id, organizationId);
-
-      if (!fromCI || !toCI) {
-        res.status(404).json({
-          success: false,
-          error: 'Not Found',
-          message: 'CI not found'
-        });
-        return;
-      }
-
       // Prevent self-relationships
       if (from_id === to_id) {
         res.status(400).json({
@@ -169,12 +158,14 @@ export class RelationshipController {
         return;
       }
 
-      // Recheck both endpoints within the write query; a removed or moved endpoint
-      // cannot cause an edge to be created outside the caller's organization.
-      if (!(await this.neo4jClient.createRelationship(from_id, to_id, type, organizationId, properties))) {
+      // One journaled two-key write; a missing or foreign endpoint writes nothing.
+      if (!(await this.neo4jClient.writeRelationship('relationship_create', from_id, to_id, type,
+        organizationId, requestActor(req), properties))) {
         res.status(404).json({ success: false, error: 'Not Found', message: 'CI not found' });
         return;
       }
+      const fromCI = await this.neo4jClient.getCI(from_id, organizationId);
+      const toCI = await this.neo4jClient.getCI(to_id, organizationId);
 
       logger.info('Relationship created', {
         from_id,
@@ -186,34 +177,20 @@ export class RelationshipController {
         success: true,
         data: {
           from_id,
-          from_name: fromCI.name,
-          from_type: fromCI._type,
+          from_name: fromCI?.name,
+          from_type: fromCI?._type,
           to_id,
-          to_name: toCI.name,
-          to_type: toCI._type,
+          to_name: toCI?.name,
+          to_type: toCI?._type,
           type,
           properties,
         },
         message: 'Relationship created successfully',
       });
     } catch (error) {
+      if (sendJournalError(res, error)) return;
       logger.error('Error creating relationship', error);
-
-      // Check for duplicate relationship error
-      if (error instanceof Error && error.message.includes('already exists')) {
-        res.status(409).json({
-          success: false,
-          error: 'Conflict',
-          message: 'Relationship already exists'
-        });
-        return;
-      }
-
-      res.status(500).json({
-        success: false,
-        error: 'Failed to create relationship',
-        message: error instanceof Error ? error.message : 'Unknown error'
-      });
+      res.status(500).json({ success: false, error: 'Failed to create relationship' });
     }
   }
 
@@ -224,84 +201,42 @@ export class RelationshipController {
    */
   async deleteRelationship(req: Request, res: Response): Promise<void> {
     try {
-      // Support both path parameter and query parameter deletion
-      const { id } = req.params;
       const { from_id, to_id, type } = req.query;
-      const organizationId = requestOrganizationId(req);
-
-      const session = this.neo4jClient.getSession();
-      try {
-
-        if (id) {
-          // Delete by relationship ID (if Neo4j internal ID or custom ID)
-          res.status(400).json({
-            success: false,
-            error: 'Bad Request',
-            message: 'Deletion by relationship ID not supported. Use from_id, to_id, and type query parameters.'
-          });
-          return;
-        } else if (from_id && to_id && type) {
-          // Delete by from_id, to_id, and type
-          // Validate relationship type against the allowed enum to prevent Cypher injection
-          const allowedTypes: string[] = ['DEPENDS_ON', 'HOSTS', 'CONNECTS_TO', 'USES', 'OWNED_BY', 'PART_OF', 'DEPLOYED_ON', 'BACKED_UP_BY'];
-          if (!allowedTypes.includes(type as string)) {
-            res.status(400).json({
-              success: false,
-              error: 'Bad Request',
-              message: `Invalid relationship type. Allowed: ${allowedTypes.join(', ')}`,
-            });
-            return;
-          }
-          // Match and delete in one scoped query to avoid a check/write race.
-          const result = await session.run(`
-            MATCH (from:CI {id: $from_id})-[r:${type}]->(to:CI {id: $to_id})
-            WHERE from.organization_id = $organizationId AND to.organization_id = $organizationId
-            WITH r
-            DELETE r
-            RETURN count(r) AS deleted
-          `, { from_id, to_id, organizationId });
-
-          if (result.records[0]!.get('deleted').toNumber() === 0) {
-            res.status(404).json({
-              success: false,
-              error: 'Not Found',
-              message: 'Relationship not found'
-            });
-            return;
-          }
-
-          logger.info('Relationship deleted', {
-            from_id,
-            to_id,
-            type,
-          });
-
-          res.json({
-            success: true,
-            message: 'Relationship deleted successfully',
-            data: {
-              from_id,
-              to_id,
-              type,
-            },
-          });
-        } else {
-          res.status(400).json({
-            success: false,
-            error: 'Bad Request',
-            message: 'Missing required parameters: from_id, to_id, and type'
-          });
-        }
-      } finally {
-        await session.close();
+      if (req.params['id']) {
+        res.status(400).json({
+          success: false,
+          error: 'Bad Request',
+          message: 'Deletion by relationship ID not supported. Use from_id, to_id, and type query parameters.'
+        });
+        return;
       }
-    } catch (error) {
-      logger.error('Error deleting relationship', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to delete relationship',
-        message: error instanceof Error ? error.message : 'Unknown error'
+      const allowedTypes: string[] = ['DEPENDS_ON', 'HOSTS', 'CONNECTS_TO', 'USES', 'OWNED_BY', 'PART_OF', 'DEPLOYED_ON', 'BACKED_UP_BY'];
+      if (typeof from_id !== 'string' || typeof to_id !== 'string' || typeof type !== 'string' ||
+        !allowedTypes.includes(type)) {
+        res.status(400).json({
+          success: false,
+          error: 'Bad Request',
+          message: `Required: from_id, to_id and type (one of ${allowedTypes.join(', ')})`
+        });
+        return;
+      }
+      assertCIId(from_id);
+      assertCIId(to_id);
+      if (!(await this.neo4jClient.writeRelationship('relationship_delete', from_id, to_id, type,
+        requestOrganizationId(req), requestActor(req)))) {
+        res.status(404).json({ success: false, error: 'Not Found', message: 'Relationship not found' });
+        return;
+      }
+      logger.info('Relationship deleted', { from_id, to_id, type });
+      res.json({
+        success: true,
+        message: 'Relationship deleted successfully',
+        data: { from_id, to_id, type },
       });
+    } catch (error) {
+      if (sendJournalError(res, error)) return;
+      logger.error('Error deleting relationship', error);
+      res.status(500).json({ success: false, error: 'Failed to delete relationship' });
     }
   }
 

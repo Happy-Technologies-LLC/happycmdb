@@ -148,7 +148,7 @@ describe('CI REST API Integration Tests', () => {
       const issuedId = existing.body.data.id;
       const response = await request(app).post('/api/v1/cis')
         .send({ id: issuedId, name: 'server-02', type: 'server' }).expect(400);
-      expect(response.body._success).toBe(false);
+      expect(response.body).toEqual({ success: false, error: 'Bad Request', message: 'Invalid request' });
       expect((await request(app).get(`/api/v1/cis/${issuedId}`).expect(200)).body.data.name)
         .toBe('server-01');
     });

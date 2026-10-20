@@ -80,9 +80,11 @@ async function closed(pool: Pool) {
   await asRole(pool, 'hap668_nonowner', 'SELECT previous_values, new_values, metadata FROM ci_change_history', true);
 }
 async function appAndBI(pool: Pool) {
+  // HP1-S4a (036): the application writer always stamps the verified organization.
   await asRole(pool, 'cmdb_user', `INSERT INTO ci_change_history
-    (ci_id, change_type, change_source, previous_values, new_values, metadata)
-    VALUES ('hap668-ci', 'updated', 'acceptance', '{"private":true}', '{"private":false}', '{"org":"a"}')`);
+    (ci_id, change_type, change_source, previous_values, new_values, metadata, organization_id)
+    VALUES ('hap668-ci', 'updated', 'acceptance', '{"private":true}', '{"private":false}', '{"org":"a"}',
+      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')`);
   await asRole(pool, 'cmdb_user', `INSERT INTO cmdb.dim_location
     (location_id, location_name, location_type) VALUES ('hap668-loc', 'test', 'datacenter')
     RETURNING location_key`);

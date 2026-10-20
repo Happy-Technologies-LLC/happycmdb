@@ -50,7 +50,9 @@ if (process.env['HP1_S1_BASELINE'] === '1') {
 } else {
 
 describe('HP1-S1 expand contract on actual Timescale hypertables', () => {
-  it('keeps legacy ON CONFLICT writers, org-less inserts and conflict update/delete working', async () => {
+  // The criticality ON CONFLICT (ci_id) and org-less history writers are contracted by
+  // HP1-S4a migration 036 (asserted refused in hp1-s4a-journal); the rest stays S1-compatible.
+  it('keeps legacy lineage/field/authority ON CONFLICT writers and conflict update/delete working', async () => {
     await transaction(async q => {
       for (let i = 0; i < 2; i++) {
         await q(`INSERT INTO ci_source_lineage (ci_id, source_name, source_id, confidence_score)
@@ -59,20 +61,15 @@ describe('HP1-S1 expand contract on actual Timescale hypertables', () => {
         await q(`INSERT INTO ci_field_sources (ci_id, field_name, field_value, source_name)
           VALUES ($1, 'host', 'old', 'hp1-old-source') ON CONFLICT (ci_id, field_name)
           DO UPDATE SET field_value = EXCLUDED.field_value`, [CI]);
-        await q(`INSERT INTO ci_criticality_scores (ci_id, factors, calculated_at) VALUES ('hp1-old-ci', '{}', now())
-          ON CONFLICT (ci_id) DO UPDATE SET factors = EXCLUDED.factors`);
         await q(`INSERT INTO source_authority (source_name, authority_score) VALUES ('hp1-old-source', 5)
           ON CONFLICT (source_name) DO UPDATE SET authority_score = EXCLUDED.authority_score`);
       }
-      await q(`INSERT INTO ci_change_history (ci_id, change_type, change_source) VALUES ('hp1-old-ci', 'updated', 'kafka')`);
       await q(`INSERT INTO audit_log (actor, entity_type, entity_id, action)
         VALUES ('old', 'CI', 'hp1-old-ci', 'UPDATE')`);
       const { rows } = await q(`INSERT INTO reconciliation_conflicts (ci_id, conflict_type, source_data)
         VALUES ($1, 'field', '{}') RETURNING id`, [CI]);
       await q(`UPDATE reconciliation_conflicts SET status = 'resolved', resolution_data = '{}' WHERE id = $1`, [rows[0].id]);
       await q(`DELETE FROM reconciliation_conflicts WHERE id = $1`, [rows[0].id]);
-      const legacy = await q(`SELECT organization_id FROM ci_change_history WHERE ci_id = 'hp1-old-ci'`);
-      expect(legacy.rows[0].organization_id).toBeNull();
     });
   });
 
@@ -160,9 +157,17 @@ describe('HP1-S1 expand contract on actual Timescale hypertables', () => {
         FROM pg_indexes WHERE schemaname = 'public' AND tablename = ANY($1)
           AND indexname IN ('ci_source_lineage_org_key', 'ci_field_sources_org_key',
             'reconciliation_conflicts_pending_key', 'ci_reconciliation_operations_inflight',
-            'ci_criticality_scores_org_ci_key') ORDER BY 1, 2`;
+            'ci_criticality_scores_org_ci_key', 'ci_criticality_scores_legacy_ci_key') ORDER BY 1, 2`;
+      // HP1-S4a 036 (M-2): the same NOT VALID org checks and no criticality PRIMARY KEY.
+      const checks = `SELECT conrelid::regclass::text AS tbl, conname, contype, convalidated FROM pg_constraint
+        WHERE conrelid IN ('ci_change_history'::regclass, 'ci_criticality_scores'::regclass) AND (conname LIKE
+          '%organization_required' OR (contype = 'p' AND conrelid = 'ci_criticality_scores'::regclass)) ORDER BY 1, 2`;
       expect((await fresh.query(columns, [tableNames])).rows).toEqual((await db.query(columns, [tableNames])).rows);
       expect((await fresh.query(indexes, [tableNames])).rows).toEqual((await db.query(indexes, [tableNames])).rows);
+      const contract = (await fresh.query(checks)).rows;
+      expect(contract).toEqual((await db.query(checks)).rows);
+      expect(contract.map(row => [row.conname, row.convalidated])).toEqual([
+        ['ci_change_history_organization_required', false], ['ci_criticality_scores_organization_required', false]]);
       await fresh.query(`INSERT INTO ci_source_lineage (ci_id, source_name, source_id) VALUES ($1, 'legacy', 'instance')
         ON CONFLICT (ci_id, source_name, source_id) DO UPDATE SET source_id = EXCLUDED.source_id`, [CI]);
       for (const table of ['ci_source_lineage', 'ci_field_sources']) {

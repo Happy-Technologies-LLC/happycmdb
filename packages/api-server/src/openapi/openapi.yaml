@@ -425,8 +425,10 @@ paths:
       tags: [Configuration Items]
       summary: Create new CI
       description: >-
-        Create a CI with a server-assigned globally unique id. Rejects id,
-        external_id and organization_id in the request body with 400.
+        Create a CI with a server-assigned globally unique id through the HP1
+        journal. Rejects id, external_id, organization_id and any reserved alias
+        (`_id`, `op_id`, `organizationId`, ...) at the top level or inside
+        metadata with 400.
       operationId: createCI
       requestBody:
         required: true

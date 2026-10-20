@@ -39,34 +39,40 @@ const db = {
 let writes = 0;
 let graphWrites = 0;
 let ciNodes: Record<string, { id: string; name: string; organization_id: string }> = {};
-const pgClient = {
-  pool: {
-    query: async (sql: string, params: unknown[] = []) => {
-      if (sql.startsWith('DELETE')) writes++;
-      return { rows: await db.rows(sql, params) };
-    },
-  },
+type Query = string | { text: string; values?: unknown[] };
+const runSql = async (sql: Query, params: unknown[] = []) => {
+  const [text, values] = typeof sql === 'string' ? [sql, params] : [sql.text, sql.values ?? []];
+  if (text.startsWith('DELETE')) writes++;
+  return { rows: await db.rows(text, values) };
 };
+// pglite has one session, so the AP-P' transaction runs serially on it.
+const pgClient = { query: runSql, pool: { query: runSql, connect: async () => ({ query: runSql, release: () => undefined }) } };
 
 jest.mock('@cmdb/database', () => ({
+  ...jest.requireActual<object>('@cmdb/database/journal/journal'),
+  ...jest.requireActual<object>('@cmdb/database/journal/encoding'),
   getPostgresClient: () => pgClient,
   getNeo4jClient: () => ({
     getCI: async (id: string, organizationId: string) => {
       const node = ciNodes[id];
       return node?.organization_id === organizationId ? { ...node } : null;
     },
+    // The baseline snapshot read: owned nodes among $ids.
     getSession: () => ({
-      run: async (cypher: string, params: { ciId: string; organizationId: string; restoreProps: Record<string, unknown> }) => {
-        const node = ciNodes[params.ciId];
-        if (!node || !cypher.includes('WHERE ci.organization_id = $organizationId') || node.organization_id !== params.organizationId) {
-          return { records: [] };
-        }
-        graphWrites++;
-        Object.assign(node, params.restoreProps);
-        return { records: [{ get: () => ({ properties: { ...node } }) }] };
-      },
+      run: async (_cypher: string, params: { ids: string[]; organizationId: string }) => ({
+        records: params.ids.filter(id => ciNodes[id]?.organization_id === params.organizationId)
+          .map(id => ({ get: (key: string) => key === 'id' ? id : { ...ciNodes[id] } })),
+      }),
       close: async () => undefined,
     }),
+    // The journaled restore writes only an owned node (the journal itself is covered by integration).
+    restoreCI: async (id: string, props: Record<string, unknown>, _c: unknown, _d: unknown, organizationId: string) => {
+      const node = ciNodes[id];
+      if (node?.organization_id !== organizationId) return null;
+      graphWrites++;
+      Object.assign(node, props);
+      return { ...node };
+    },
   }),
   getAuditService: () => ({}),
 }));
@@ -120,6 +126,9 @@ let preexistingDuplicateCode: string | undefined;
 
 beforeAll(async () => {
   await db.exec(ddl[0] + '\n' + uniqueName[0]);
+  const journal = readFileSync(join(migrations, '028_change_history_reconciliation_org_provenance.sql'), 'utf8')
+    .match(/CREATE TABLE IF NOT EXISTS ci_reconciliation_\w+ \([\s\S]*?\n\);/g);
+  await db.exec(journal!.join('\n'));
   await db.exec(`INSERT INTO itil_baselines (id, name, baseline_type, baseline_data, created_by)
     VALUES ('${ID_NULL}', 'legacy', 'configuration', '{}', 'legacy')`);
   await db.exec(readFileSync(join(migrations, '012_itil_baseline_organization_scope.sql'), 'utf8'));
@@ -181,7 +190,7 @@ it('lists only own rows and gives identical detail not-found for foreign, missin
   expect(await remaining()).toEqual([ID_A, ID_B, ID_NULL]);
 });
 
-it('conceals foreign and NULL baselines and blocks owned restore until journal admission', async () => {
+it('conceals foreign and NULL baselines and restores only an owned CI from an owned baseline', async () => {
   const restore = (id: string, user: string, ciId: string) =>
     request(app).post(`${endpoint(id)}/restore`).set(authorization(user))
       .send({ ciId, performedBy: user });
@@ -194,14 +203,16 @@ it('conceals foreign and NULL baselines and blocks owned restore until journal a
   expect((await restore(ID_NULL, 'admin', 'ci-a')).status).toBe(404);
   expect((await restore(ID_A, 'noorg', 'ci-a')).status).toBe(403);
   expect(graphWrites).toBe(0);
-  expect((await restore(ID_A, 'a', 'ci-b')).status).toBe(503);
+  // An owned baseline's snapshot of a now-foreign CI: identical CI 404, nothing written.
+  const foreignCI = await restore(ID_A, 'a', 'ci-b');
+  expect(foreignCI.status).toBe(404);
+  expect(foreignCI.body).toEqual({ success: false, error: 'Not Found', message: 'CI not found' });
   expect(graphWrites).toBe(0);
   expect(ciNodes['ci-b']?.name).toBe('current-b');
   const own = await restore(ID_A, 'a', 'ci-a');
-  expect(own.status).toBe(503);
-  expect(own.body).toEqual({ success: false, error: 'Baseline restore unavailable' });
-  expect(graphWrites).toBe(0);
-  expect(ciNodes['ci-a']?.name).toBe('current-a');
+  expect(own.status).toBe(200);
+  expect(graphWrites).toBe(1);
+  expect(ciNodes['ci-a']?.name).toBe('baseline-a');
   expect(ciNodes['ci-b']?.name).toBe('current-b');
   expect(await remaining()).toEqual([ID_A, ID_B, ID_NULL]);
 });

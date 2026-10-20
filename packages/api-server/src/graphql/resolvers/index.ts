@@ -36,6 +36,10 @@ import { requireGraphQLOrganization } from '../require-organization';
 import type { CILoaderKey } from '../dataloaders/ci-loader';
 import { GRAPHQL_PAGE_DEFAULTS, normalizePagination } from '../pagination';
 import { readCIList, readSingleCI, assertNoCIGap, CIGapError, CIListUnavailableError } from '../../read-admission';
+import {
+  assertCIId, assertNoReservedMembers, assertRequestShape, assertStorableProperties, isReservedKey,
+  journalGraphQLError, RequestShapeError,
+} from '../../journal-http';
 
 /**
  * GraphQL Context type containing database clients and dataloaders
@@ -607,6 +611,7 @@ const Mutation = {
       });
     }
     try {
+      assertGraphQLWriteInput(_args.input);
       const input = validateAsRest<ValidatedCIInput>(ciInputSchema, {
         id: randomUUID(),
         name: _args.input._name,
@@ -625,19 +630,11 @@ const Mutation = {
         discovered_at: input.discovered_at ?? new Date().toISOString(),
         metadata: input.metadata,
       };
-      const ci = await _context._neo4jClient.createCI(ciInput, organizationId);
+      const ci = await _context._neo4jClient.createCI(ciInput, organizationId, graphQLActor(_context));
       _context._loaders._ciLoader.clear(ciKey(ci._id, organizationId));
       return toGraphQLCI(ci);
-    } catch (error: any) {
-      if (error instanceof GraphQLError) {
-        throw error;
-      }
-      throw new GraphQLError('Failed to create CI', {
-        extensions: {
-          code: 'INTERNAL_SERVER_ERROR',
-          originalError: error.message,
-        },
-      });
+    } catch (error: unknown) {
+      throw mutationError(error, 'Failed to create CI');
     }
   },
 
@@ -661,11 +658,8 @@ const Mutation = {
     const organizationId = requireGraphQLOrganization(_context);
     checkGraphQLPermission(_context, 'write');
     try {
-      if (!(await _context._neo4jClient.getCI(_args.id, organizationId))) {
-        throw ciNotFound();
-      }
-
-      // Validated after the scoped lookup, so a foreign id still gets NOT_FOUND.
+      assertCIId(_args.id);
+      assertGraphQLWriteInput(_args.input);
       const updates = validateAsRest<Partial<CIInput>>(ciUpdateSchema, {
         name: _args.input._name,
         status: enumInput(_args.input._status),
@@ -673,22 +667,15 @@ const Mutation = {
         metadata: _args.input._metadata,
       });
 
-      const ci = await _context._neo4jClient.updateCI(_args.id, updates, organizationId);
+      const ci = await _context._neo4jClient.updateCI(_args.id, updates, organizationId, graphQLActor(_context));
+      if (!ci) throw ciNotFound();
       _context._loaders._ciLoader.clear(ciKey(_args.id, organizationId));
       // Related CI snapshots can be cached under any neighboring CI's key.
       _context._loaders._relationshipLoader.clearAll();
       _context._loaders._dependentLoader.clearAll();
       return toGraphQLCI(ci);
-    } catch (error: any) {
-      if (error instanceof GraphQLError) {
-        throw error;
-      }
-      throw new GraphQLError('Failed to update CI', {
-        extensions: {
-          code: 'INTERNAL_SERVER_ERROR',
-          originalError: error.message,
-        },
-      });
+    } catch (error: unknown) {
+      throw mutationError(error, 'Failed to update CI');
     }
   },
 
@@ -704,7 +691,8 @@ const Mutation = {
     const organizationId = requireGraphQLOrganization(_context);
     checkGraphQLPermission(_context, 'write');
     try {
-      if (!(await _context._neo4jClient.deleteCI(_args.id, organizationId))) {
+      assertCIId(_args.id);
+      if (!(await _context._neo4jClient.deleteCI(_args.id, organizationId, graphQLActor(_context)))) {
         throw ciNotFound();
       }
       const key = ciKey(_args.id, organizationId);
@@ -713,16 +701,8 @@ const Mutation = {
       _context._loaders._relationshipLoader.clearAll();
       _context._loaders._dependentLoader.clearAll();
       return true;
-    } catch (error: any) {
-      if (error instanceof GraphQLError) {
-        throw error;
-      }
-      throw new GraphQLError('Failed to delete CI', {
-        extensions: {
-          code: 'INTERNAL_SERVER_ERROR',
-          originalError: error.message,
-        },
-      });
+    } catch (error: unknown) {
+      throw mutationError(error, 'Failed to delete CI');
     }
   },
 
@@ -731,7 +711,7 @@ const Mutation = {
    * missing or foreign endpoint writes nothing and gets NOT_FOUND.
    */
   createRelationship: async (
-    __parent: any,
+    __parent: unknown,
     _args: {
       input: {
         _fromId: string;
@@ -746,29 +726,20 @@ const Mutation = {
     checkGraphQLPermission(_context, 'write');
     try {
       const { _fromId, _toId, _type, _properties = {} } = _args.input;
-      const created = await _context._neo4jClient.createRelationship(
-        _fromId,
-        _toId,
-        _type,
-        organizationId,
-        _properties
-      );
-      if (!created) {
+      assertCIId(_fromId);
+      assertCIId(_toId);
+      assertRequestShape(_properties);
+      assertNoReservedMembers(_properties);
+      assertStorableProperties(_properties);
+      if (!(await _context._neo4jClient.writeRelationship('relationship_create', _fromId, _toId, _type,
+        organizationId, graphQLActor(_context), _properties))) {
         throw ciNotFound();
       }
       _context._loaders._relationshipLoader.clear(ciKey(_fromId, organizationId));
       _context._loaders._dependentLoader.clear(ciKey(_toId, organizationId));
       return true;
-    } catch (error: any) {
-      if (error instanceof GraphQLError) {
-        throw error;
-      }
-      throw new GraphQLError('Failed to create relationship', {
-        extensions: {
-          code: 'INTERNAL_SERVER_ERROR',
-          originalError: error.message,
-        },
-      });
+    } catch (error: unknown) {
+      throw mutationError(error, 'Failed to create relationship');
     }
   },
 
@@ -776,48 +747,47 @@ const Mutation = {
    * Delete a relationship between two CIs of the caller's organization
    */
   deleteRelationship: async (
-    __parent: any,
+    __parent: unknown,
     _args: { fromId: string; toId: string; type: RelationshipType },
     _context: GraphQLContext
   ): Promise<boolean> => {
     const organizationId = requireGraphQLOrganization(_context);
     checkGraphQLPermission(_context, 'write');
-    const session = _context._neo4jClient.getSession();
-
     try {
-      const result = await session.run(
-        `
-        MATCH (from:CI {id: $fromId})-[r:${_args.type}]->(to:CI {id: $toId})
-        WHERE from.organization_id = $organizationId AND to.organization_id = $organizationId
-        DELETE r
-        RETURN count(r) as deleted
-        `,
-        { fromId: _args.fromId, toId: _args.toId, organizationId }
-      );
-      const deleted = result.records[0]?.get('deleted').toNumber() || 0;
-      if (deleted === 0) {
-        throw new GraphQLError('Relationship not found', {
-          extensions: { code: 'NOT_FOUND' },
-        });
+      assertCIId(_args.fromId);
+      assertCIId(_args.toId);
+      if (!(await _context._neo4jClient.writeRelationship('relationship_delete', _args.fromId, _args.toId,
+        _args.type, organizationId, graphQLActor(_context)))) {
+        throw new GraphQLError('Relationship not found', { extensions: { code: 'NOT_FOUND' } });
       }
       _context._loaders._relationshipLoader.clear(ciKey(_args.fromId, organizationId));
       _context._loaders._dependentLoader.clear(ciKey(_args.toId, organizationId));
       return true;
-    } catch (error: any) {
-      if (error instanceof GraphQLError) {
-        throw error;
-      }
-      throw new GraphQLError('Failed to delete relationship', {
-        extensions: {
-          code: 'INTERNAL_SERVER_ERROR',
-          originalError: error.message,
-        },
-      });
-    } finally {
-      await session.close();
+    } catch (error: unknown) {
+      throw mutationError(error, 'Failed to delete relationship');
     }
   },
 };
+
+/** The verified user id: the journal actor. requireGraphQLOrganization has established `user`. */
+function graphQLActor(context: GraphQLContext): string {
+  const actor = context.user?._userId;
+  if (!actor) throw new GraphQLError('Authentication required', { extensions: { code: 'UNAUTHENTICATED' } });
+  return actor;
+}
+
+/** v16 §3.6/§4.4 on a direct-write input: shape limits, no reserved field or metadata member. */
+function assertGraphQLWriteInput(input: Record<string, unknown>): void {
+  assertRequestShape(input);
+  if (Object.keys(input).some(isReservedKey)) throw new RequestShapeError();
+  assertNoReservedMembers(input['_metadata']);
+}
+
+/** Journal outcomes and GraphQL errors pass through; anything else is a sanitized internal error. */
+function mutationError(error: unknown, message: string): GraphQLError {
+  if (error instanceof GraphQLError) return error;
+  return journalGraphQLError(error) ?? new GraphQLError(message, { extensions: { code: 'INTERNAL_SERVER_ERROR' } });
+}
 
 /**
  * CI type resolvers for nested fields
@@ -1021,23 +991,26 @@ const itilCIQueries = {
   },
 };
 
+/** ITIL lifecycle/status/audit mutations are journaled direct writes (v16 §3.1). */
 async function updateITILCI(context: GraphQLContext, id: string, updates: Record<string, unknown>): Promise<Record<string, unknown>> {
   const organizationId = requireGraphQLOrganization(context);
   checkGraphQLPermission(context, 'write');
-  const session = context._neo4jClient.getSession();
   try {
-    const result = await session.run(
-      `MATCH (ci:CI {id: $id}) WHERE ci.organization_id = $organizationId
-       SET ci += $updates, ci.updated_at = datetime() RETURN ci`,
-      { id, organizationId, updates }
-    );
-    if (result.records.length === 0) throw ciNotFound();
-    const ci = result.records[0]!.get('ci').properties as CIValue;
+    assertCIId(id);
+    assertRequestShape(updates);
+    const ci = await context._neo4jClient.updateCIProperties(id, updates, organizationId, graphQLActor(context)) as CIValue | null;
+    if (!ci) throw ciNotFound();
     context._loaders._ciLoader.clear(ciKey(id, organizationId));
     return { ...ci, ...toGraphQLCI(ci) };
-  } finally {
-    await session.close();
+  } catch (error: unknown) {
+    throw mutationError(error, 'Failed to update CI');
   }
+}
+
+function auditDate(value: string): unknown {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) throw new GraphQLError('Invalid request', { extensions: { code: 'BAD_USER_INPUT' } });
+  return neo4j.types.DateTime.fromStandardDate(date);
 }
 
 const itilCIMutations = {
@@ -1046,7 +1019,7 @@ const itilCIMutations = {
   updateConfigurationStatus: (_parent: unknown, args: { id: string; status: string }, context: GraphQLContext) =>
     updateITILCI(context, args.id, { itil_config_status: args.status }),
   scheduleAudit: (_parent: unknown, args: { id: string; auditDate: string; auditor?: string; notes?: string }, context: GraphQLContext) =>
-    updateITILCI(context, args.id, { itil_next_audit_date: neo4j.types.DateTime.fromStandardDate(new Date(args.auditDate)),
+    updateITILCI(context, args.id, { itil_next_audit_date: auditDate(args.auditDate),
       itil_audit_scheduled_by: args.auditor ?? null, itil_audit_notes: args.notes ?? null }),
   completeAudit: (_parent: unknown, args: { id: string; auditStatus: string; findings?: string; completedBy: string }, context: GraphQLContext) =>
     updateITILCI(context, args.id, { itil_audit_status: args.auditStatus, itil_last_audited: neo4j.types.DateTime.fromStandardDate(new Date()),

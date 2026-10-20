@@ -110,6 +110,10 @@ async function initializeNeo4jSchema(uri: string, password: string): Promise<voi
     await session.run(
       'CREATE CONSTRAINT ci_id_unique IF NOT EXISTS FOR (ci:CI) REQUIRE ci.id IS UNIQUE'
     );
+    // Neo4j operator migration 004: the HP1 journal fence that every CI write requires.
+    await session.run(
+      'CREATE CONSTRAINT reconciliation_op_fence_unique IF NOT EXISTS FOR (o:ReconciliationOp) REQUIRE o.op_id IS UNIQUE'
+    );
     await session.run('CREATE INDEX ci_type_idx IF NOT EXISTS FOR (ci:CI) ON (ci.type)');
     await session.run('CREATE INDEX ci_status_idx IF NOT EXISTS FOR (ci:CI) ON (ci.status)');
     await session.run(

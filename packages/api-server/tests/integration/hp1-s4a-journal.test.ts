@@ -14,7 +14,7 @@ import { join } from 'path';
 import { Pool } from 'pg';
 import express from 'express';
 import request from 'supertest';
-import neo4j from 'neo4j-driver';
+import neo4j, { Session } from 'neo4j-driver';
 import { dec, enc, getNeo4jClient, getPostgresClient, requeueFailedJournalGroup, setJournalSeam } from '@cmdb/database';
 import { loadConfig } from '@cmdb/common';
 
@@ -139,10 +139,11 @@ it('J1/X-23/H-6: a direct create is one committed intent plus one applied fence,
   }
   const props = await node(ci);
   expect(Object.keys(props!).filter(key => /op_id|reconciliation/i.test(key))).toEqual([]);
-  // F8/N-9 subset: no fence or alias leaks through CI, list, ITIL or relationship outputs.
-  for (const path of [`/cis/${ci}`, `/cis?search=${ci}`, `/itil/configuration-items/${ci}`, `/cis/${ci}/relationships`]) {
-    expect({ path, body: JSON.stringify((await api('a').get(path)).body) }).not.toMatchObject({ body: expect.stringMatching(/op_id|ReconciliationOp/) });
-  }
+  // F8/N-9 subset: no fence key or foreign org in CI, list, ITIL, relationship, ITIL-write or GraphQL outputs.
+  const outputs = [`/cis/${ci}`, `/cis?search=${ci}`, `/itil/configuration-items/${ci}`, `/cis/${ci}/relationships`]
+    .map(path => () => api('a').get(path)).concat(() => api('a').patch(`/itil/configuration-items/${ci}/lifecycle`, { stage: 'TEST' }),
+      () => api('a').gql(`{ getCI(id:"${ci}") { _id _name _metadata } getCIs(limit: 5) { _id _metadata } }`));
+  for (const output of outputs) expect(JSON.stringify((await output()).body)).not.toMatch(new RegExp(`op_id|ReconciliationOp|${B}`));
   expect(await history(ci)).toEqual([]);
 });
 
@@ -383,6 +384,25 @@ it('F2 X-4/X-10/X-13/X-22: outages back off, failed stays gated until corrective
   await create('c', id('cap-last'));
 });
 
+it('F2 X-9/X-23: a W sent after recovery fenced its op aborted rolls back whole; W never uses managed retries', async () => {
+  const ci = id('x9');
+  await create('a', ci);
+  const managed = (['executeWrite', 'writeTransaction'] as const).map(name => jest.spyOn(Session.prototype, name));
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  seamOnce('beforeW', async () => { entered.resolve(); await release.promise; });
+  const late = api('a').put(`/cis/${ci}`, { name: 'late' }).then(response => response);
+  await entered.promise;
+  await sweep(A);
+  const [, op] = await ops(A, ci);
+  expect(op.state).toBe('aborted');
+  release.resolve();
+  expect((await late).body).toEqual({ success: false, error: 'Conflict', message: 'CI could not be reconciled' });
+  expect((await node(ci))!['name']).toBe(ci);
+  expect(await fences(op.id)).toEqual([{ o: expect.objectContaining({ outcome: 'aborted' }) }]);
+  for (const spy of managed) expect(spy).not.toHaveBeenCalled();
+});
+
 it('F3 X-5/X-24/X-25: no foreign overwrite, pending delete gates only its owner, a vanished target aborts without a fence', async () => {
   const ci = id('x5');
   await create('a', ci);
@@ -507,6 +527,8 @@ it('F7 H-2/H-4 and the old-then-new writer cutover: NULL-org history and global 
     .rejects.toMatchObject({ code: '23514' });
   await expect(rows(`INSERT INTO ci_criticality_scores (ci_id, factors, calculated_at) VALUES ('s4a-crit', '{}', now())
     ON CONFLICT (ci_id) DO NOTHING`)).rejects.toMatchObject({ code: '42P10' });
+  await expect(rows("INSERT INTO ci_criticality_scores (ci_id, factors, calculated_at) VALUES ('s4a-crit', '{}', now())"))
+    .rejects.toMatchObject({ code: '23514' });
   const upsert = (org: string) => rows(`INSERT INTO ci_criticality_scores (ci_id, factors, calculated_at, organization_id)
     VALUES ('s4a-crit', '{}', now(), $1) ON CONFLICT (organization_id, ci_id) WHERE organization_id IS NOT NULL
     DO UPDATE SET calculated_at = now()`, [org]);
@@ -516,11 +538,12 @@ it('F7 H-2/H-4 and the old-then-new writer cutover: NULL-org history and global 
 
   // M-1/M-2 for 036: a rerun changes nothing, and a fresh initdb carries the same contract.
   const contract = `SELECT
-    (SELECT count(*) FROM pg_constraint WHERE conname = 'ci_change_history_organization_required')::int AS history_check,
+    (SELECT count(*) FROM pg_constraint WHERE conname IN ('ci_change_history_organization_required',
+      'ci_criticality_scores_organization_required'))::int AS org_checks,
     (SELECT count(*) FROM pg_constraint WHERE conrelid = 'ci_criticality_scores'::regclass AND contype = 'p')::int AS pk,
     (SELECT count(*) FROM pg_indexes WHERE indexname IN ('ci_criticality_scores_org_ci_key',
       'ci_criticality_scores_legacy_ci_key'))::int AS keys`;
-  const expected = { history_check: 1, pk: 0, keys: 2 };
+  const expected = { org_checks: 2, pk: 0, keys: 2 };
   const root = join(__dirname, '../../../..');
   await sql.pool.query(readFileSync(join(root,
     'packages/database/src/postgres/migrations/036_history_criticality_org_contract.sql'), 'utf8'));

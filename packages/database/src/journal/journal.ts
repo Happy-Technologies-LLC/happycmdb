@@ -70,10 +70,11 @@ function wStatement(kind: GraphPlanKind, label: string | null): string {
       WITH collect(ci) AS cs WHERE size(cs) = 1 UNWIND cs AS ci DETACH DELETE ci WITH 1 AS one ${FENCE}`;
     case 'relationship_create': return `MATCH (a:CI {id: $from}) WHERE a.organization_id = $org
       MATCH (b:CI {id: $to}) WHERE b.organization_id = $org MERGE (a)-[r:${label}]->(b)
-      SET r += $props, r.created_at = coalesce(r.created_at, datetime()), r.updated_at = datetime() WITH r ${FENCE}`;
+      SET r += $props, r.created_at = coalesce(r.created_at, datetime()), r.updated_at = datetime()
+      WITH DISTINCT 1 AS one ${FENCE}`;
     case 'relationship_delete': return `MATCH (a:CI {id: $from})-[r:${label}]->(b:CI {id: $to})
       WHERE a.organization_id = $org AND b.organization_id = $org
-      WITH collect(r) AS rs WHERE size(rs) >= 1 UNWIND rs AS r DELETE r WITH 1 AS one ${FENCE}`;
+      WITH collect(r) AS rs WHERE size(rs) >= 1 UNWIND rs AS r DELETE r WITH DISTINCT 1 AS one ${FENCE}`;
   }
 }
 
@@ -196,9 +197,12 @@ export class ReconciliationJournal {
     const slots = [...new Set(write.ciIds)].sort().map(ciId => ({ id: randomUUID(), ciId, operation: write.operation }));
     await this.reserve(write, groupId, slots);
     let plan: StoredPlan;
+    let params: Record<string, unknown>;
     try {
       plan = await write.plan();
       assertPlanRepresentable(plan as unknown as Encoded);
+      // Decoded before W: an undecodable value is a definitive 422, never an unproven W.
+      try { params = dec(plan.graph.params) as Record<string, unknown>; } catch { throw new PlanUnrepresentableError(); }
     } catch (error) {
       await abortGroup(groupId, error instanceof PlanUnrepresentableError ? 'plan_unrepresentable'
         : error instanceof JournalTargetMissingError ? 'target_missing' : 'plan_failed');
@@ -219,7 +223,7 @@ export class ReconciliationJournal {
     try {
       await seam?.('beforeW', { groupId, recovery: false });
       const records = await this.graph(wStatement(plan.graph.kind, plan.graph.label),
-        { ...(dec(plan.graph.params) as Record<string, unknown>), org: write.organizationId, fences });
+        { ...params, org: write.organizationId, fences });
       await seam?.('afterW', { groupId, recovery: false });
       created = Number(records[0]?.['fences_created'] ?? 0);
     } catch (error) {

@@ -19,6 +19,8 @@ const mockReconcileCI = jest.fn();
 const mockGetIdentityReconciliationEngine = jest.fn();
 
 jest.mock('@cmdb/database', () => ({
+  ...jest.requireActual<object>('@cmdb/database/journal/journal'),
+  ...jest.requireActual<object>('@cmdb/database/journal/encoding'),
   getPostgresClient: (...args: unknown[]) => mockGetPostgresClient(...args),
 }));
 

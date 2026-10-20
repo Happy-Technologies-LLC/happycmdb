@@ -19,7 +19,7 @@ import {
   listOwnedConflicts, updateOwnedConflict
 } from '../../reconciliation/tenant-queries';
 import { assertNoCIGap, CIGapError, readSingleCI } from '../../read-admission';
-import { journalGraphQLError } from '../../journal-http';
+import { assertRequestShape, assertStorableProperties, journalGraphQLError } from '../../journal-http';
 
 const reconciliationEngine = getIdentityReconciliationEngine();
 const postgresClient = getPostgresClient();
@@ -276,6 +276,9 @@ const ReconciliationMutation = {
         status: _args._status || 'active'
       };
 
+      // §3.6: the same shape and Neo4j-storable guard as REST merge, before any store access.
+      assertRequestShape(discoveredCI);
+      assertStorableProperties(discoveredCI.attributes);
       const ciId = await reconciliationEngine.reconcileCI(discoveredCI, organizationId, false, _context.user!._userId);
       if (ciId === null) {
         throw new GraphQLError('CI not found', { extensions: { code: 'NOT_FOUND', http: { status: 404 } } });

@@ -13,7 +13,8 @@
 --   - ci_criticality_scores: PRIMARY KEY (ci_id) is replaced by the org key from
 --     030 plus a legacy-only UNIQUE (ci_id) WHERE organization_id IS NULL, so a
 --     reused CI id in another organization cannot collide with a former owner's
---     cached score. The impact engine now upserts on (organization_id, ci_id).
+--     cached score. The impact engine now upserts on (organization_id, ci_id),
+--     so new rows also get CHECK (organization_id IS NOT NULL) NOT VALID (v16 §2.3).
 -- Lineage, field-source and conflict contract objects ship with the S4b merge
 -- writer, which is the writer that needs them.
 --
@@ -38,6 +39,10 @@ BEGIN
     EXECUTE format('ALTER TABLE ci_criticality_scores DROP CONSTRAINT %I',
       (SELECT conname FROM pg_constraint
        WHERE conrelid = 'public.ci_criticality_scores'::regclass AND contype = 'p'));
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ci_criticality_scores_organization_required') THEN
+    ALTER TABLE ci_criticality_scores ADD CONSTRAINT ci_criticality_scores_organization_required
+      CHECK (organization_id IS NOT NULL) NOT VALID;
   END IF;
 END
 $hp1$;

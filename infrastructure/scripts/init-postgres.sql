@@ -1642,7 +1642,8 @@ COMMENT ON TABLE ci_reconciliation_operations IS
 -- HP1-S4a contract parity with migration 036.
 ALTER TABLE ci_change_history ADD CONSTRAINT ci_change_history_organization_required
   CHECK (organization_id IS NOT NULL) NOT VALID;
-ALTER TABLE ci_criticality_scores DROP CONSTRAINT IF EXISTS ci_criticality_scores_pkey;
+ALTER TABLE ci_criticality_scores DROP CONSTRAINT IF EXISTS ci_criticality_scores_pkey,
+  ADD CONSTRAINT ci_criticality_scores_organization_required CHECK (organization_id IS NOT NULL) NOT VALID;
 CREATE UNIQUE INDEX IF NOT EXISTS ci_criticality_scores_legacy_ci_key
   ON ci_criticality_scores(ci_id) WHERE organization_id IS NULL;
 

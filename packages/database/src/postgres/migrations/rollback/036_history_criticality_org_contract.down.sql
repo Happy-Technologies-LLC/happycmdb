@@ -18,6 +18,7 @@ END;
 $$;
 
 DROP INDEX IF EXISTS ci_criticality_scores_legacy_ci_key;
+ALTER TABLE ci_criticality_scores DROP CONSTRAINT IF EXISTS ci_criticality_scores_organization_required;
 ALTER TABLE ci_criticality_scores ADD PRIMARY KEY (ci_id);
 ALTER TABLE ci_change_history DROP CONSTRAINT IF EXISTS ci_change_history_organization_required;
 

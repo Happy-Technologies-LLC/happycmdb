@@ -7,7 +7,7 @@
  */
 
 import { IdentityReconciliationEngine } from '../../src/engine/identity-reconciliation-engine';
-import { closeQueueManagerConnection } from '@cmdb/database';
+import { closeQueueManagerConnection, JournalGapError } from '@cmdb/database';
 import { TransformedCI } from '@cmdb/integration-framework';
 import {
   physicalServerDuplicates,
@@ -326,13 +326,17 @@ describe('ReconciliationWorkflow - Integration Tests', () => {
 
       const startTime = Date.now();
 
-      const results = await Promise.all(
+      // v16 X-6/AP-W: concurrent journaled updates of one CI serialize; a loser gets the gap refusal.
+      const results = await Promise.allSettled(
         bulkDiscoveries.map(discovery => engine.reconcileCI(discovery, 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa'))
       );
 
       const duration = Date.now() - startTime;
 
       expect(results).toHaveLength(bulkDiscoveries.length);
+      for (const result of results) {
+        if (result.status === 'rejected') expect(result.reason).toBeInstanceOf(JournalGapError);
+      }
       expect(duration).toBeLessThan(5000); // Should complete in <5 seconds
     });
 
@@ -344,10 +348,13 @@ describe('ReconciliationWorkflow - Integration Tests', () => {
         engine.reconcileCI({ ...ci }, 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa')
       );
 
-      const ciIds = await Promise.all(promises);
-
-      // Every concurrent discovery resolves without error.
-      expect(ciIds).toHaveLength(10);
+      const settled = await Promise.allSettled(promises);
+      for (const result of settled) {
+        if (result.status === 'rejected') expect(result.reason).toBeInstanceOf(JournalGapError);
+      }
+      const ciIds = settled.flatMap(result => result.status === 'fulfilled' ? [result.value] : []);
+      // At least one discovery wins; every winner names a CI.
+      expect(ciIds.length).toBeGreaterThan(0);
       expect(ciIds.every((id) => typeof id === 'string' && id.length > 0)).toBe(true);
 
       // The engine performs no distributed locking, so simultaneous first-time

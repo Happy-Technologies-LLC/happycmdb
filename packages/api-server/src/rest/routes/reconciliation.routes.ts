@@ -12,6 +12,7 @@ import { ReconciliationController } from '../controllers/reconciliation.controll
 import { validateRequest, validateOptional } from '../middleware/validation.middleware';
 import { auditMiddleware } from '../../middleware/audit.middleware';
 import { getAuthMiddleware } from '../../auth/auth-bootstrap';
+import { journalRequestGuard } from '../../journal-http';
 
 export const reconciliationRoutes = Router();
 const controller = new ReconciliationController();
@@ -97,6 +98,7 @@ reconciliationRoutes.post(
   '/merge',
   authMiddleware.requirePermission('write'),
   authMiddleware.requireOrganization(),
+  journalRequestGuard({ merge: true }),
   validateRequest(mergeRequestSchema, 'body'),
   controller.mergeCI.bind(controller)
 );

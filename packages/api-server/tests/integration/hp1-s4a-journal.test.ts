@@ -31,6 +31,10 @@ jest.mock('../../src/auth/neo4j-auth.repository', () => ({
     findUserById: async (id: string) => Object.values(users).find(user => user._id === id) ?? null,
   })),
 }));
+// No Kafka in the integration stores; post-commit notification is best-effort (v16 §3.3 step 7).
+jest.mock('@cmdb/event-processor', () => ({
+  ...jest.requireActual<object>('@cmdb/event-processor'), getEventProducer: () => ({ emit: async () => [] }),
+}));
 
 import { JWTService } from '../../src/auth/jwt.service';
 import { getAuthMiddleware } from '../../src/auth/auth-bootstrap';
@@ -38,6 +42,7 @@ import { ciRoutes } from '../../src/rest/routes/ci.routes';
 import { relationshipRoutes } from '../../src/rest/routes/relationship.routes';
 import { itilRoutes } from '../../src/rest/routes/itil.routes';
 import { analyticsRoutes } from '../../src/rest/routes/analytics.routes';
+import { reconciliationRoutes } from '../../src/rest/routes/reconciliation.routes';
 import { createGraphQLServer } from '../../src/graphql/server';
 import { CIListUnavailableError, readCIList } from '../../src/read-admission';
 
@@ -52,6 +57,7 @@ app.use('/api/v1/cis', ciRoutes);
 app.use('/api/v1/relationships', relationshipRoutes);
 app.use('/api/v1/itil', itilRoutes);
 app.use('/api/v1/analytics', analyticsRoutes);
+app.use('/api/v1/reconciliation', reconciliationRoutes);
 const auth = (user: User) => ({ authorization: `Bearer ${jwt.generateAccessToken(users[user]._id,
   users[user]._username, users[user]._role, users[user]._organizationId)}` });
 const api = (user: User) => ({
@@ -133,7 +139,10 @@ it('J1/X-23/H-6: a direct create is one committed intent plus one applied fence,
   }
   const props = await node(ci);
   expect(Object.keys(props!).filter(key => /op_id|reconciliation/i.test(key))).toEqual([]);
-  expect(JSON.stringify((await api('a').get(`/cis/${ci}`)).body)).not.toMatch(/op_id|ReconciliationOp/);
+  // F8/N-9 subset: no fence or alias leaks through CI, list, ITIL or relationship outputs.
+  for (const path of [`/cis/${ci}`, `/cis?search=${ci}`, `/itil/configuration-items/${ci}`, `/cis/${ci}/relationships`]) {
+    expect({ path, body: JSON.stringify((await api('a').get(path)).body) }).not.toMatchObject({ body: expect.stringMatching(/op_id|ReconciliationOp/) });
+  }
   expect(await history(ci)).toEqual([]);
 });
 
@@ -185,17 +194,26 @@ it('R44-M1: a reused CI id never shows the former owner history; B rows stay B-s
   expect(JSON.stringify(deleted[0].previous_values)).toContain(secret);
 
   await create('a', ci, { metadata: { created_at: '1999-01-01T00:00:00Z' } });
+  // A merges a current value into its X: one journaled `update` whose T2 writes ONE A history row.
+  await cypher('MATCH (c:CI {id: $id}) SET c.serial_number = $serial', { id: ci, serial: `serial-${ci}` });
+  const merged = await api('a').post('/reconciliation/merge', { name: ci, ci_type: 'server', source: 'a-source',
+    source_id: 'a-1', identifiers: { serial_number: `serial-${ci}` }, attributes: { owner_note: 'A_CURRENT' } });
+  expect([merged.status, merged.body.data?.ci_id]).toEqual([200, ci]);
   const analytics = await api('a').get(`/analytics/change-history?ci_id=${ci}`);
   const itil = await api('a').get(`/itil/configuration-items/${ci}/history`);
   const graphql = await api('a').gql(`{ analytics { getChangeHistory(ciId:"${ci}") { _changeType _newValue _oldValue } } }`);
   expect([analytics.status, itil.status, graphql.status]).toEqual([200, 200, 200]);
   for (const body of [analytics.body, itil.body, graphql.body]) expect(JSON.stringify(body)).not.toContain(secret);
-  expect(analytics.body.data).toEqual([]);
-  expect(itil.body.data).toEqual([]);
-  expect(graphql.body.data.analytics.getChangeHistory).toEqual([]);
+  expect(analytics.body.data.map((row: { change_type: string }) => row.change_type)).toEqual(['updated']);
+  expect(itil.body.data).toHaveLength(1);
+  expect(JSON.stringify(itil.body.data)).toContain('A_CURRENT');
+  expect(graphql.body.data.analytics.getChangeHistory).toEqual([{ _changeType: 'updated', _newValue: 'A_CURRENT', _oldValue: null }]);
+  const [mergeOp] = (await ops(A, ci)).filter(op => op.operation === 'update');
+  expect(mergeOp.state).toBe('committed');
+  const aRows = await rows('SELECT * FROM ci_change_history WHERE ci_id = $1 AND organization_id = $2', [ci, A]);
+  expect(aRows.map(row => [row.change_type, row.changed_by, row.correlation_id])).toEqual([['updated', 's4a-a', mergeOp.group_id]]);
   const stamped = await rows('SELECT organization_id, count(*)::int AS n FROM ci_change_history WHERE ci_id = $1 GROUP BY 1 ORDER BY 1', [ci]);
-  expect(stamped).toEqual(expect.arrayContaining([{ organization_id: B, n: 2 }, { organization_id: null, n: 1 }]));
-  expect(stamped.find(row => row.organization_id === A)).toBeUndefined();
+  expect(stamped).toEqual(expect.arrayContaining([{ organization_id: B, n: 2 }, { organization_id: A, n: 1 }, { organization_id: null, n: 1 }]));
 });
 
 it('F0/X-14/N-7b: invalid shapes and reserved aliases are 400 before any journal row; the CI is unchanged', async () => {

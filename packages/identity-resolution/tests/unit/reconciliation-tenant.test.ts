@@ -13,7 +13,15 @@ const createBaseline = jest.fn();
 const detectDrift = jest.fn();
 jest.mock('@cmdb/common', () => ({ logger: { info: jest.fn(), warn: jest.fn(), debug: jest.fn(), error: jest.fn() }, sanitizeCITypeForLabel: (s: string) => s }));
 jest.mock('@cmdb/database', () => ({
-  getNeo4jClient: () => ({ getSession: () => ({ run, close }) }),
+  getNeo4jClient: () => ({
+    getSession: () => ({ run, close }),
+    // The journaled merge update (journal internals run in tests/integration) replays its graph write.
+    updateCIProperties: async (ciId: string, properties: Record<string, unknown>, organizationId: string) => {
+      const result = await run(`MATCH (ci:CI {id: $ciId}) WHERE ci.organization_id = $organizationId
+        SET ci += $properties RETURN ci.incarnation_id AS incarnation_id`, { ciId, organizationId, properties });
+      return result.records.length ? { incarnation_id: result.records[0].get('incarnation_id') } : null;
+    },
+  }),
   getPostgresClient: () => ({ query }),
 }));
 jest.mock('@cmdb/event-processor', () => ({

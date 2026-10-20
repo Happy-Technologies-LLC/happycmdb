@@ -81,7 +81,7 @@ export function assertStorableProperties(props: Record<string, unknown>): void {
  * unknown keys: path ids, §3.6 shape, top-level reserved keys (`id` only as the
  * POST /cis identity), reserved names inside metadata and relationship properties.
  */
-export function journalRequestGuard(options: { allowIdentity?: boolean; relationship?: boolean } = {}) {
+export function journalRequestGuard(options: { allowIdentity?: boolean; relationship?: boolean; merge?: boolean } = {}) {
   return (req: Request, res: Response, next: NextFunction): void => {
     try {
       for (const param of Object.values(req.params)) if (param !== undefined) assertCIId(param);
@@ -92,6 +92,8 @@ export function journalRequestGuard(options: { allowIdentity?: boolean; relation
       }
       if (options.allowIdentity && body['id'] !== undefined) assertCIId(body['id']);
       assertNoReservedMembers(body['metadata']);
+      // Merge attributes become graph properties; reserved names there are dropped by the engine (§4.4).
+      if (options.merge) assertStorableProperties((body['attributes'] ?? {}) as Record<string, unknown>);
       if (options.relationship) {
         assertCIId(body['from_id']);
         assertCIId(body['to_id']);

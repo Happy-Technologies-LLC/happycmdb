@@ -22,7 +22,17 @@ jest.mock('@cmdb/common', () => ({
   },
 }));
 jest.mock('@cmdb/database', () => ({
-  getNeo4jClient: () => ({ getSession: () => ({ run, close }) }),
+  ...jest.requireActual<object>('@cmdb/database/journal/journal'),
+  ...jest.requireActual<object>('@cmdb/database/journal/encoding'),
+  getNeo4jClient: () => ({
+    getSession: () => ({ run, close }),
+    // The journaled merge update (journal internals run in tests/integration) replays its graph write.
+    updateCIProperties: async (ciId: string, properties: Record<string, unknown>, organizationId: string) => {
+      const result = await run(`MATCH (ci:CI {id: $ciId}) WHERE ci.organization_id = $organizationId
+        SET ci += $properties RETURN ci.incarnation_id AS incarnation_id`, { ciId, organizationId, properties });
+      return result.records.length ? { incarnation_id: result.records[0].get('incarnation_id') } : null;
+    },
+  }),
   getPostgresClient: () => ({ query }),
   getAuditService: () => ({}),
   getUnifiedCredentialService: () => ({}),
@@ -35,7 +45,7 @@ jest.mock('../../../auth/auth-bootstrap', () => ({ getAuthService: () => ({}), g
   authenticate: () => (req: Request, res: Response, next: NextFunction) => {
     const org = req.get('authorization');
     if (!org) return res.status(401).json({ error: 'Unauthorized' });
-    (req as Request & { user: object }).user = { _role: 'operator', _organizationId: org === 'Bearer org-a' ? ORG_A : org === 'Bearer org-b' ? ORG_B : undefined };
+    (req as Request & { user: object }).user = { _userId: 'u-route', _role: 'operator', _organizationId: org === 'Bearer org-a' ? ORG_A : org === 'Bearer org-b' ? ORG_B : undefined };
     next();
   },
   requirePermission: () => (_req: Request, _res: Response, next: NextFunction) => next(),

@@ -373,9 +373,11 @@ export class Neo4jClient {
    * Journaled property update of an owned CI; values are stored as given
    * (callers validate them as Neo4j-storable). Null when missing or foreign.
    * Identity, tenant, fence aliases and the incarnation never change in place.
+   * With `mergeSource` it is the reconciliation `update` (v16 §3.1), whose T2
+   * writes one org-stamped `updated` history row; direct writes are state only (A-10).
    */
-  async updateCIProperties(id: string, props: Record<string, unknown>, organizationId: string, actor: string
-  ): Promise<Record<string, unknown> | null> {
+  async updateCIProperties(id: string, props: Record<string, unknown>, organizationId: string, actor: string,
+    mergeSource?: string): Promise<Record<string, unknown> | null> {
     if (Object.keys(props).some(key => ['id', 'organization_id', 'organizationid', 'op_id', 'reconciliation_op_id',
       'created_at', 'incarnation_id'].includes(key.replace(/^_+/, '').toLowerCase()))) {
       throw new Error('CI identity and incarnation cannot be updated');
@@ -383,8 +385,23 @@ export class Neo4jClient {
     if (!(await this.admitOwned(organizationId, [id]))) return null;
     try {
       return await this.journal.run({
-        organizationId, actor, operation: 'direct_write', ciIds: [id],
-        plan: async () => ({ graph: { kind: 'update', label: null, params: enc({ id, props }) } }),
+        organizationId, actor, operation: mergeSource ? 'update' : 'direct_write', ciIds: [id],
+        plan: async (): Promise<StoredPlan> => {
+          const current = await this.ownedProperties(id, organizationId);
+          if (!current) throw new JournalTargetMissingError();
+          // A pre-incarnation node gets its marker in the same W, so the history row names it.
+          const existing = current['incarnation_id'];
+          const incarnationId = typeof existing === 'string' ? existing : randomUUID();
+          const write = typeof existing === 'string' ? props : { ...props, incarnation_id: incarnationId };
+          return {
+            graph: { kind: 'update', label: null, params: enc({ id, props: write }) },
+            ...(mergeSource ? { history: {
+              changeType: 'updated' as const, changedFields: Object.keys(props), source: mergeSource,
+              previous: enc(Object.fromEntries(Object.keys(props).map(key => [key, current[key] ?? null]))),
+              next: enc(props), incarnationId: ciIncarnationId(incarnationId),
+            } } : {}),
+          };
+        },
         result: () => this.ownedProperties(id, organizationId),
       });
     } catch (error) {
@@ -608,7 +625,8 @@ export class Neo4jClient {
           if (!props) throw new JournalTargetMissingError();
           return {
             graph: { kind: 'delete', label: null, params: enc({ id }) },
-            deleted: { snapshot: enc(props), incarnationId: ciIncarnationId(props['incarnation_id'] as string | null) },
+            history: { changeType: 'deleted', changedFields: ['*'], source: 'api', previous: enc(props), next: null,
+              incarnationId: ciIncarnationId(props['incarnation_id'] as string | null) },
           };
         },
         result: async () => true,

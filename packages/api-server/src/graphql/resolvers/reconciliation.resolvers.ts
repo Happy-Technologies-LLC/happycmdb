@@ -19,6 +19,7 @@ import {
   listOwnedConflicts, updateOwnedConflict
 } from '../../reconciliation/tenant-queries';
 import { assertNoCIGap, CIGapError, readSingleCI } from '../../read-admission';
+import { journalGraphQLError } from '../../journal-http';
 
 const reconciliationEngine = getIdentityReconciliationEngine();
 const postgresClient = getPostgresClient();
@@ -275,7 +276,7 @@ const ReconciliationMutation = {
         status: _args._status || 'active'
       };
 
-      const ciId = await reconciliationEngine.reconcileCI(discoveredCI, organizationId, false);
+      const ciId = await reconciliationEngine.reconcileCI(discoveredCI, organizationId, false, _context.user!._userId);
       if (ciId === null) {
         throw new GraphQLError('CI not found', { extensions: { code: 'NOT_FOUND', http: { status: 404 } } });
       }
@@ -289,6 +290,8 @@ const ReconciliationMutation = {
       };
     } catch (error: any) {
       if (error instanceof GraphQLError && error.extensions['code'] === 'NOT_FOUND') throw error;
+      const journal = journalGraphQLError(error);
+      if (journal) throw journal;
       logger.error('GraphQL: Error merging CI', error);
       throw new GraphQLError('Failed to merge CI', {
         extensions: {

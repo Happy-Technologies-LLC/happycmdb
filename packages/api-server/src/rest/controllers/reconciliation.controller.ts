@@ -17,6 +17,7 @@ import {
   listOwnedConflicts, updateOwnedConflict
 } from '../../reconciliation/tenant-queries';
 import { assertNoCIGap, CIGapError, CI_GAP_RESPONSE, readSingleCI } from '../../read-admission';
+import { requestActor, sendJournalError } from '../../journal-http';
 
 export class ReconciliationController {
   private reconciliationEngine = getIdentityReconciliationEngine();
@@ -113,7 +114,8 @@ export class ReconciliationController {
       }
 
       // Perform reconciliation
-      const ciId = await this.reconciliationEngine.reconcileCI(discoveredCI, requestOrganizationId(req), false);
+      const ciId = await this.reconciliationEngine.reconcileCI(discoveredCI, requestOrganizationId(req), false,
+        requestActor(req));
       if (ciId === null) {
         res.status(404).json({ success: false, error: 'Not Found', message: 'CI not found' });
         return;
@@ -128,6 +130,7 @@ export class ReconciliationController {
         message: 'CI reconciled successfully'
       });
     } catch (error) {
+      if (sendJournalError(res, error)) return;
       logger.error('Error merging CI', error);
       res.status(500).json({
         success: false,

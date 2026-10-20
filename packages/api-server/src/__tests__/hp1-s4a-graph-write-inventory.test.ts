@@ -15,7 +15,7 @@ const LIBRARY_ONLY = ['bsm-impact-engine', 'itil-service-manager', 'framework-in
 const ALLOWED: Record<string, { count: number; reason: string }> = {
   'database/src/journal/journal.ts': { count: 10, reason: 'the journaled W statements and the recovery fence' },
   'database/src/neo4j/client.ts': { count: 2, reason: 'legacyCreateCIUnjournaled (HP1-S5 ETL residual) and the incarnation marker' },
-  'identity-resolution/src/engine/identity-reconciliation-engine.ts': { count: 3, reason: 'merge writer, journaled by HP1-S4b' },
+  'identity-resolution/src/engine/identity-reconciliation-engine.ts': { count: 2, reason: 'create-if-missing path, reached only by non-API writers (HP1-S5)' },
   'etl-processor/src/jobs/reconciliation.job.ts': { count: 1, reason: 'ETL writer, journaled by HP1-S5 (A-12)' },
   'bsm-impact-engine/src/utils/graph-traversal.ts': { count: 1, reason: 'library with no deployable importer (asserted below)' },
   'itil-service-manager/src/repositories/ci-repository.ts': { count: 1, reason: 'library with no deployable importer (asserted below)' },

@@ -15,13 +15,19 @@ import { logger } from '@cmdb/common';
 import { getPostgresClient } from '../postgres/client';
 import { assertPlanRepresentable, dec, Encoded, PlanUnrepresentableError } from './encoding';
 
-export type JournalOperation = 'delete' | 'direct_write' | 'relationship_write' | 'restore';
+export type JournalOperation = 'update' | 'delete' | 'direct_write' | 'relationship_write' | 'restore';
 export type GraphPlanKind = 'create' | 'update' | 'restore' | 'delete' | 'relationship_create' | 'relationship_delete';
 
 export interface StoredPlan {
   graph: { kind: GraphPlanKind; label: string | null; params: Encoded };
-  /** T2 evidence of a delete: one `deleted` history row and the derived-row purge. */
-  deleted?: { snapshot: Encoded; incarnationId: string | null };
+  /**
+   * T2 history evidence (v16 §3.1): one org-stamped row for a merge `updated`
+   * or a `deleted`; a delete also purges this incarnation's derived rows.
+   */
+  history?: {
+    changeType: 'updated' | 'deleted'; changedFields: string[]; source: string;
+    previous: Encoded; next: Encoded | null; incarnationId: string | null;
+  };
 }
 
 /** Graph runner for W and recovery: one auto-commit statement, records as plain objects. */
@@ -138,17 +144,19 @@ async function abortGroup(groupId: string, reason: string): Promise<void> {
 /** T2 evidence; idempotent under the history correlation key. */
 async function writeEvidence(client: PoolClient, row: { group_id: string; organization_id: string; ci_id: string;
   actor: string; plan: StoredPlan }): Promise<void> {
-  const deleted = row.plan.deleted;
-  if (!deleted) return;
+  const history = row.plan.history;
+  if (!history) return;
   await client.query(`INSERT INTO ci_change_history (ci_id, change_type, changed_by, change_source, changed_fields,
-      previous_values, ci_incarnation_id, organization_id, correlation_id)
-    VALUES ($1, 'deleted', $2, 'api', ARRAY['*'], $3::jsonb, $4::uuid, $5, $6)
+      previous_values, new_values, ci_incarnation_id, organization_id, correlation_id)
+    VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::uuid, $9, $10)
     ON CONFLICT (correlation_id) DO NOTHING`,
-    [row.ci_id, row.actor, JSON.stringify(deleted.snapshot), deleted.incarnationId, row.organization_id, row.group_id]);
+  [row.ci_id, history.changeType, row.actor, history.source, history.changedFields, JSON.stringify(history.previous),
+    history.next === null ? null : JSON.stringify(history.next), history.incarnationId, row.organization_id, row.group_id]);
+  if (history.changeType !== 'deleted') return;
   for (const [table, column] of [['drift_detection_results', 'ci_id'], ['baseline_snapshots', 'ci_id'],
     ['impact_analyses', 'source_ci_id'], ['ci_criticality_scores', 'ci_id']] as const) {
     await client.query(`DELETE FROM ${table} WHERE ${column} = $1
-      AND (ci_incarnation_id = $2::uuid OR ci_incarnation_id IS NULL)`, [row.ci_id, deleted.incarnationId]);
+      AND (ci_incarnation_id = $2::uuid OR ci_incarnation_id IS NULL)`, [row.ci_id, history.incarnationId]);
   }
 }
 

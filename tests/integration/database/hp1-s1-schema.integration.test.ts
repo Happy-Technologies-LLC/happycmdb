@@ -141,19 +141,45 @@ describe('HP1-S1 expand contract on actual Timescale hypertables', () => {
           AND indexname IN ('ci_source_lineage_org_key', 'ci_field_sources_org_key',
             'reconciliation_conflicts_pending_key', 'ci_reconciliation_operations_inflight',
             'ci_criticality_scores_org_ci_key', 'ci_criticality_scores_legacy_ci_key') ORDER BY 1, 2`;
-      // HP1-S4a 036 and S4b 037 (M-2): the same NOT VALID org checks and no criticality PRIMARY KEY.
+      // HP1-S4a 036, S4b 037 and S4c 038 (M-2): the same NOT VALID org checks and no criticality PRIMARY KEY.
       const checks = `SELECT conrelid::regclass::text AS tbl, conname, contype, convalidated FROM pg_constraint
         WHERE conrelid IN ('ci_change_history'::regclass, 'ci_criticality_scores'::regclass, 'ci_source_lineage'::regclass,
-          'ci_field_sources'::regclass, 'reconciliation_conflicts'::regclass) AND (conname LIKE
+          'ci_field_sources'::regclass, 'reconciliation_conflicts'::regclass, 'baseline_snapshots'::regclass,
+          'drift_detection_results'::regclass, 'impact_analyses'::regclass) AND (conname LIKE
           '%_required' OR (contype = 'p' AND conrelid = 'ci_criticality_scores'::regclass)) ORDER BY 1, 2`;
       expect((await fresh.query(columns, [tableNames])).rows).toEqual((await db.query(columns, [tableNames])).rows);
       expect((await fresh.query(indexes, [tableNames])).rows).toEqual((await db.query(indexes, [tableNames])).rows);
       const contract = (await fresh.query(checks)).rows;
       expect(contract).toEqual((await db.query(checks)).rows);
       expect(contract.map(row => [row.conname, row.convalidated])).toEqual([
+        ['baseline_snapshots_organization_required', false],
         ['ci_change_history_organization_required', false], ['ci_criticality_scores_organization_required', false],
         ['ci_field_sources_organization_required', false], ['ci_source_lineage_organization_required', false],
+        ['drift_detection_results_organization_required', false], ['impact_analyses_organization_required', false],
         ['reconciliation_conflicts_detector_required', false], ['reconciliation_conflicts_organization_required', false]]);
+
+      // S4c old-then-new cutover on the initdb schema: the org-less (pre-S4c) drift/impact writers are refused;
+      // the manual down restores them, and 038 then applies NOT VALID over their legacy rows (rerun: no change).
+      const migrationDir = join(__dirname, '../../../packages/database/src/postgres/migrations');
+      const oldWriters = [
+        `INSERT INTO baseline_snapshots (id, ci_id, snapshot_type, snapshot_data, created_at, created_by)
+          VALUES (gen_random_uuid(), 'hp1-s4c', 'configuration', '{}', now(), 'old')`,
+        `INSERT INTO drift_detection_results (ci_id, has_drift, detected_at) VALUES ('hp1-s4c', false, now())`,
+        `INSERT INTO impact_analyses (id, source_ci_id, change_type, risk_level, analyzed_at)
+          VALUES (gen_random_uuid(), 'hp1-s4c', 'RESTART', 'low', now())`];
+      for (const write of oldWriters) await expect(fresh.query(write)).rejects.toMatchObject({ code: '23514' });
+      await fresh.query(`CREATE TABLE cmdb.schema_migrations (migration_name VARCHAR(255) PRIMARY KEY)`);
+      await fresh.query(readFileSync(join(migrationDir, 'rollback/038_drift_impact_org_contract.down.sql'), 'utf8'));
+      for (const write of oldWriters) await fresh.query(write);
+      for (let run = 0; run < 2; run++) {
+        await fresh.query(readFileSync(join(migrationDir, '038_drift_impact_org_contract.sql'), 'utf8'));
+        expect((await fresh.query(checks)).rows).toEqual(contract);
+      }
+      for (const write of oldWriters) await expect(fresh.query(write)).rejects.toMatchObject({ code: '23514' });
+      await fresh.query(`INSERT INTO drift_detection_results (ci_id, has_drift, detected_at, organization_id)
+        VALUES ('hp1-s4c', false, now(), $1)`, [A]);
+      expect((await fresh.query(`SELECT organization_id FROM drift_detection_results WHERE ci_id = 'hp1-s4c'
+        ORDER BY organization_id NULLS FIRST`)).rows).toEqual([{ organization_id: null }, { organization_id: A }]);
       for (const table of ['ci_source_lineage', 'ci_field_sources']) {
         const fields = table === 'ci_source_lineage' ? '(ci_id, source_name, source_id)' :
           '(ci_id, field_name, source_name)';

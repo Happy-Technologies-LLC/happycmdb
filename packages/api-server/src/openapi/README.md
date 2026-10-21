@@ -119,6 +119,11 @@ until the separately approved fresh-database staging window for 001–025.
 A dark, Nick-run purge needs separate approval, offline affected-ID and stale-row
 enumeration, and reviewed tenant-by-tenant dry-run counts. This PR does not
 execute or schedule a live purge, backfill, or direct staging migration.
+Drift baselines, drift results and impact analyses also carry the writer's
+authenticated `organization_id` (HP1-S4c, migration `038`, `NOT VALID` checks):
+derived reads additionally require that organization, so legacy org-less and
+foreign-org rows fail closed; legacy rows are kept, never backfilled, and an
+org-less (pre-S4c) writer is refused with SQLSTATE 23514.
 
 ### Relationships (`/api/v1/relationships`)
 - `GET /relationships` - List relationships

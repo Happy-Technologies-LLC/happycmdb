@@ -4,7 +4,7 @@
 /** Authenticated routes with real migrated PostgreSQL DDL and an instrumented graph. */
 import { fork } from 'child_process';
 import { randomBytes, randomUUID } from 'crypto';
-import { readFileSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import express from 'express';
 import request from 'supertest';
@@ -217,6 +217,8 @@ const USERS: Record<string, { _id: string; _username: string; _role: string; _en
   bc: { _id: 'bc', _username: 'bob-reuse', _role: 'admin', _enabled: true, _organizationId: B },
   bd: { _id: 'bd', _username: 'bob-future', _role: 'admin', _enabled: true, _organizationId: B },
   be: { _id: 'be', _username: 'bob-skew', _role: 'admin', _enabled: true, _organizationId: B },
+  sa: { _id: 'sa', _username: 'alice-s4c', _role: 'admin', _enabled: true, _organizationId: A },
+  sb: { _id: 'sb', _username: 'bob-s4c', _role: 'admin', _enabled: true, _organizationId: B },
 };
 jest.mock('../../../auth/neo4j-auth.repository', () => ({
   Neo4jAuthRepository: jest.fn(() => ({ findUserById: async (id: string) => USERS[id] ?? null })),
@@ -250,15 +252,21 @@ const table = (name: string) => {
   return match[0];
 };
 
+// HP1-S4c contract (absent before S4c, so the S4c cases below fail first on the old source).
+const S4C_UP = join(migrations, '038_drift_impact_org_contract.sql');
+const S4C_DOWN = join(migrations, 'rollback/038_drift_impact_org_contract.down.sql');
+const applyIfPresent = async (file: string) => { if (existsSync(file)) await db.exec(readFileSync(file, 'utf8')); };
 beforeAll(async () => {
   await db.exec(`CREATE SCHEMA cmdb; ${table('cmdb.dim_ci')} ${table('ci_change_history')}
     ${table('baseline_snapshots')} ${table('drift_detection_results')}
     ${table('impact_analyses')} ${table('ci_criticality_scores')}`);
   await db.exec(readFileSync(join(migrations, '011_ci_organization_scope.sql'), 'utf8'));
   await db.exec(readFileSync(join(migrations, '025_ci_derived_incarnation.sql'), 'utf8'));
-  // 030's org column and key with 036's primary-key swap: the criticality upsert's conflict target.
-  await db.exec(`ALTER TABLE ci_criticality_scores ADD COLUMN organization_id UUID, DROP CONSTRAINT ci_criticality_scores_pkey;
-    ${readFileSync(join(migrations, '030_drift_impact_org_provenance.sql'), 'utf8').match(/CREATE UNIQUE INDEX[\s\S]*?;/)![0]}`);
+  // 030's org columns and keys with 036's primary-key swap: the criticality upsert's conflict target.
+  await db.exec(`ALTER TABLE ci_criticality_scores DROP CONSTRAINT ci_criticality_scores_pkey;
+    ${readFileSync(join(migrations, '030_drift_impact_org_provenance.sql'), 'utf8').split('$hp1$;')[1]}
+    CREATE TABLE cmdb.schema_migrations (migration_name VARCHAR(255) PRIMARY KEY);`);
+  await applyIfPresent(S4C_UP);
   const provenance = readFileSync(join(migrations, '028_change_history_reconciliation_org_provenance.sql'), 'utf8');
   const historyColumns = provenance.match(/ALTER TABLE ci_change_history\s+ADD COLUMN[\s\S]*?;/);
   if (!historyColumns) throw new Error('Missing S1 history org columns');
@@ -405,12 +413,12 @@ it('fences legacy SQL derivatives across a deleted and re-created CI ID, but rea
   nodes.set(id, { id, name: 'Former A', organization_id: A, incarnation_id: A_INC, created_at: new Date(old.getTime() - 1000).toISOString() });
   // A legacy graph writer may reuse an ID during the REST cutover. Model rows
   // surviving an incomplete cross-store delete, not a fake atomic commit.
-  await db.rows(`INSERT INTO baseline_snapshots (id, ci_id, snapshot_type, snapshot_data, created_at, created_by, is_approved)
-    VALUES ('11111111-1111-4111-8111-111111111111', $1, 'configuration', '{"secret":"A"}', $2, 'a', true)`, [id, old]);
-  await db.rows(`INSERT INTO drift_detection_results (ci_id, has_drift, drift_score, detected_at)
-    VALUES ($1, true, 99, $2)`, [id, old]);
-  await db.rows(`INSERT INTO impact_analyses (id, source_ci_id, change_type, risk_level, analyzed_at)
-    VALUES ('22222222-2222-4222-8222-222222222222', $1, 'RESTART', 'high', $2)`, [id, old]);
+  await db.rows(`INSERT INTO baseline_snapshots (id, ci_id, snapshot_type, snapshot_data, created_at, created_by, is_approved, organization_id)
+    VALUES ('11111111-1111-4111-8111-111111111111', $1, 'configuration', '{"secret":"A"}', $2, 'a', true, $3)`, [id, old, A]);
+  await db.rows(`INSERT INTO drift_detection_results (ci_id, has_drift, drift_score, detected_at, organization_id)
+    VALUES ($1, true, 99, $2, $3)`, [id, old, A]);
+  await db.rows(`INSERT INTO impact_analyses (id, source_ci_id, change_type, risk_level, analyzed_at, organization_id)
+    VALUES ('22222222-2222-4222-8222-222222222222', $1, 'RESTART', 'high', $2, $3)`, [id, old, A]);
   await db.rows(`INSERT INTO ci_criticality_scores (ci_id, factors, calculated_at)
     VALUES ($1, '{"secret":"A"}', $2)`, [id, old]);
   await db.rows(`INSERT INTO ci_change_history (ci_id, change_type, change_source, metadata, changed_at)
@@ -437,12 +445,12 @@ it('fences legacy SQL derivatives across a deleted and re-created CI ID, but rea
   expect((await get(`/api/v1/impact/history/${id}`)).body.data).toEqual([]);
   expect((await get(`/api/v1/itil/configuration-items/${id}/history`)).body.data).toEqual([]);
   nodes.get(id)!.incarnation_id = B_INC;
-  await db.rows(`INSERT INTO baseline_snapshots (id, ci_id, snapshot_type, snapshot_data, created_at, created_by, is_approved, ci_incarnation_id)
-    VALUES ('33333333-3333-4333-8333-333333333333', $1, 'configuration', '{"owner":"B"}', NOW(), 'b', true, $2)`, [id, B_INC]);
-  await db.rows(`INSERT INTO drift_detection_results (ci_id, has_drift, drift_score, detected_at, ci_incarnation_id)
-    VALUES ($1, false, 0, NOW(), $2)`, [id, B_INC]);
-  await db.rows(`INSERT INTO impact_analyses (id, source_ci_id, change_type, risk_level, analyzed_at, ci_incarnation_id)
-    VALUES ('44444444-4444-4444-8444-444444444444', $1, 'RESTART', 'low', NOW(), $2)`, [id, B_INC]);
+  await db.rows(`INSERT INTO baseline_snapshots (id, ci_id, snapshot_type, snapshot_data, created_at, created_by, is_approved, ci_incarnation_id, organization_id)
+    VALUES ('33333333-3333-4333-8333-333333333333', $1, 'configuration', '{"owner":"B"}', NOW(), 'b', true, $2, $3)`, [id, B_INC, B]);
+  await db.rows(`INSERT INTO drift_detection_results (ci_id, has_drift, drift_score, detected_at, ci_incarnation_id, organization_id)
+    VALUES ($1, false, 0, NOW(), $2, $3)`, [id, B_INC, B]);
+  await db.rows(`INSERT INTO impact_analyses (id, source_ci_id, change_type, risk_level, analyzed_at, ci_incarnation_id, organization_id)
+    VALUES ('44444444-4444-4444-8444-444444444444', $1, 'RESTART', 'low', NOW(), $2, $3)`, [id, B_INC, B]);
   await db.rows(`INSERT INTO ci_change_history (ci_id, change_type, change_source, metadata, changed_at, ci_incarnation_id, organization_id)
     VALUES ($1, 'FRESH_B', 'test', $2::jsonb, NOW(), $3, $4)`, [id, JSON.stringify({ organization_id: B }), B_INC, B]);
   expect((await get(`/api/v1/drift/baseline/${id}`)).body.data.snapshot_data).toEqual({ owner: 'B' });
@@ -477,12 +485,12 @@ it('never gives B future-dated A derivatives after CI ID reuse, even with A hist
   const id = 'ci-fresh';
   const future = new Date(Date.now() + 24 * 60 * 60 * 1000);
   nodes.set(id, { id, name: 'Former A', organization_id: A, incarnation_id: A_INC, created_at: '2020-01-01T00:00:00Z' });
-  await db.rows(`INSERT INTO baseline_snapshots (id, ci_id, snapshot_type, snapshot_data, created_at, created_by, is_approved, ci_incarnation_id)
-    VALUES ('11111111-1111-4111-8111-111111111111', $1, 'configuration', '{"secret":"A"}', $2, 'a', true, $3)`, [id, future, A_INC]);
-  await db.rows(`INSERT INTO drift_detection_results (ci_id, has_drift, drift_score, detected_at, ci_incarnation_id)
-    VALUES ($1, true, 99, $2, $3)`, [id, future, A_INC]);
-  await db.rows(`INSERT INTO impact_analyses (id, source_ci_id, change_type, risk_level, analyzed_at, ci_incarnation_id)
-    VALUES ('22222222-2222-4222-8222-222222222222', $1, 'RESTART', 'high', $2, $3)`, [id, future, A_INC]);
+  await db.rows(`INSERT INTO baseline_snapshots (id, ci_id, snapshot_type, snapshot_data, created_at, created_by, is_approved, ci_incarnation_id, organization_id)
+    VALUES ('11111111-1111-4111-8111-111111111111', $1, 'configuration', '{"secret":"A"}', $2, 'a', true, $3, $4)`, [id, future, A_INC, A]);
+  await db.rows(`INSERT INTO drift_detection_results (ci_id, has_drift, drift_score, detected_at, ci_incarnation_id, organization_id)
+    VALUES ($1, true, 99, $2, $3, $4)`, [id, future, A_INC, A]);
+  await db.rows(`INSERT INTO impact_analyses (id, source_ci_id, change_type, risk_level, analyzed_at, ci_incarnation_id, organization_id)
+    VALUES ('22222222-2222-4222-8222-222222222222', $1, 'RESTART', 'high', $2, $3, $4)`, [id, future, A_INC, A]);
   await db.rows(`INSERT INTO ci_criticality_scores (ci_id, factors, calculated_at, ci_incarnation_id)
     VALUES ($1, '{"secret":"A"}', $2, $3)`, [id, future, A_INC]);
   await db.rows(`INSERT INTO ci_change_history (ci_id, change_type, change_source, metadata, changed_at, ci_incarnation_id)
@@ -501,8 +509,8 @@ it('reads freshly written B derivatives when the graph clock is ahead of Postgre
   const id = 'ci-fresh';
   nodes.set(id, { id, name: 'New B', organization_id: B, incarnation_id: B_INC,
     created_at: new Date(Date.now() + 60 * 60 * 1000).toISOString() });
-  await db.rows(`INSERT INTO baseline_snapshots (id, ci_id, snapshot_type, snapshot_data, created_at, created_by, is_approved, ci_incarnation_id)
-    VALUES ('33333333-3333-4333-8333-333333333333', $1, 'configuration', '{"owner":"B"}', NOW(), 'b', true, $2)`, [id, B_INC]);
+  await db.rows(`INSERT INTO baseline_snapshots (id, ci_id, snapshot_type, snapshot_data, created_at, created_by, is_approved, ci_incarnation_id, organization_id)
+    VALUES ('33333333-3333-4333-8333-333333333333', $1, 'configuration', '{"owner":"B"}', NOW(), 'b', true, $2, $3)`, [id, B_INC, B]);
   const result = await request(app).get(`/api/v1/drift/baseline/${id}`).set(auth('be'));
   expect(result.status).toBe(200);
   expect(result.body.data.snapshot_data).toEqual({ owner: 'B' });
@@ -591,6 +599,81 @@ it('isolates drift/impact foreign reads and writes, and persists own derived rec
   expect(ownImpact.status).toBe(201);
   expect((await db.rows<{ source_ci_id: string }>('SELECT source_ci_id FROM impact_analyses')).map(row => row.source_ci_id)).toEqual(['ci-a']);
   expect((await request(app).get('/api/v1/impact/history/ci-a').set(auth('b'))).status).toBe(404);
+});
+
+// HP1-S4c (v16 §2.3, §6.5): the three derived writer families stamp the authenticated org; 038 refuses org-less rows.
+const DERIVED = [['baseline_snapshots', 'ci_id'], ['drift_detection_results', 'ci_id'], ['impact_analyses', 'source_ci_id']] as const;
+const derivedOrgs = (id: string) => Promise.all(DERIVED.map(([name, column]) => db.rows(`SELECT organization_id AS org,
+  ci_incarnation_id AS inc FROM ${name} WHERE ${column} = $1 ORDER BY organization_id NULLS FIRST`, [id])));
+const writeDerived = async (user: string, id: string) => {
+  const baseline = await request(app).post('/api/v1/drift/baseline').set(auth(user)).send({ ci_id: id, snapshot_type: 'configuration' });
+  expect(baseline.status).toBe(201);
+  expect((await request(app).post(`/api/v1/drift/baseline/${baseline.body.data.id}/approve`).set(auth(user))).status).toBe(200);
+  expect((await request(app).post(`/api/v1/drift/detect/${id}`).set(auth(user))).status).toBe(200);
+  expect((await request(app).post('/api/v1/impact/predict').set(auth(user)).send({ ci_id: id, change_type: 'RESTART' })).status).toBe(201);
+};
+// Pre-S4c writers' column lists (no organization_id) unless an org is forced; later-dated so a leak would be the newest row.
+const oldWriters = (id: string, inc: string, org?: string) => {
+  const [column, value, params] = org ? [', organization_id', ', $3', [id, inc, org]] : ['', '', [id, inc]];
+  return [
+    `INSERT INTO baseline_snapshots (id, ci_id, snapshot_type, snapshot_data, created_at, created_by, is_approved, ci_incarnation_id${column})
+      VALUES (gen_random_uuid(), $1, 'configuration', '{"marker":"S4C_SECRET"}', NOW() + interval '1 hour', 'old', true, $2${value})`,
+    `INSERT INTO drift_detection_results (ci_id, ci_name, has_drift, drift_score, detected_at, ci_incarnation_id${column})
+      VALUES ($1, 'S4C_SECRET', true, 77, NOW() + interval '1 hour', $2${value})`,
+    `INSERT INTO impact_analyses (id, source_ci_id, source_ci_name, change_type, risk_level, analyzed_at, ci_incarnation_id${column})
+      VALUES (gen_random_uuid(), $1, 'S4C_SECRET', 'RESTART', 'high', NOW() + interval '1 hour', $2${value})`,
+  ].map(sql => () => db.rows(sql, params));
+};
+
+it('S4c: all three derived writers stamp the authenticated org across two orgs and a reused CI id', async () => {
+  const id = 'ci-fresh';
+  nodes.set(id, { id, name: 'Former B', organization_id: B, incarnation_id: B_INC });
+  await writeDerived('sb', id);
+  expect(await derivedOrgs(id)).toEqual(DERIVED.map(() => [{ org: B, inc: B_INC }]));
+  nodes.delete(id);
+  const reused = randomUUID();
+  nodes.set(id, { id, name: 'New A', organization_id: A, incarnation_id: reused });
+  await writeDerived('sa', id);
+  // Each row keeps the org that wrote it: B's rows are not reattributed to the id's new owner.
+  expect(await derivedOrgs(id)).toEqual(DERIVED.map(() => [{ org: A, inc: reused }, { org: B, inc: B_INC }]));
+  expect((await request(app).get(`/api/v1/drift/history/${id}`).set(auth('sa'))).body.data).toHaveLength(1);
+  expect((await request(app).get(`/api/v1/impact/history/${id}`).set(auth('sa'))).body.data).toHaveLength(1);
+});
+
+it('S4c old-then-new cutover: 038 keeps legacy org-less rows NOT VALID, refuses the old writers, own-org writes pass', async () => {
+  const id = 'ci-fresh';
+  const inc = randomUUID();
+  nodes.set(id, { id, name: 'Cutover A', organization_id: A, incarnation_id: inc });
+  await applyIfPresent(S4C_DOWN);
+  for (const write of oldWriters(id, inc)) await write(); // pre-038 schema: the old writers still work
+  await applyIfPresent(S4C_UP);
+  await applyIfPresent(S4C_UP); // rerun is a no-op
+  expect(await db.rows(`SELECT conrelid::regclass::text AS tbl, convalidated FROM pg_constraint
+    WHERE conname LIKE '%organization_required' AND conrelid = ANY($1::regclass[]) ORDER BY 1`,
+  [DERIVED.map(([name]) => name)])).toEqual(DERIVED.map(([tbl]) => ({ tbl, convalidated: false })));
+  for (const write of oldWriters(id, inc)) await expect(write()).rejects.toThrow(/_organization_required/);
+  expect(await derivedOrgs(id)).toEqual(DERIVED.map(() => [{ org: null, inc }])); // legacy rows stay, no backfill
+  await writeDerived('sa', id);
+  expect(await derivedOrgs(id)).toEqual(DERIVED.map(() => [{ org: null, inc }, { org: A, inc }]));
+});
+
+it('S4c readers never return legacy org-less, foreign-org or own former-incarnation rows', async () => {
+  const id = 'ci-fresh';
+  const inc = randomUUID();
+  nodes.set(id, { id, name: 'Reader A', organization_id: A, incarnation_id: inc });
+  await applyIfPresent(S4C_DOWN);
+  for (const write of oldWriters(id, inc)) await write();
+  await applyIfPresent(S4C_UP);
+  for (const write of oldWriters(id, inc, B)) await write();
+  for (const write of oldWriters(id, A_INC, A)) await write(); // same org, former incarnation: the incarnation fence
+  const read = (path: string) => request(app).get(path).set(auth('sa'));
+  const reads = [await read(`/api/v1/drift/baseline/${id}`), await read(`/api/v1/drift/history/${id}`),
+    await read(`/api/v1/impact/history/${id}`)];
+  expect(reads.map(response => [response.status, response.body.data])).toEqual([[200, null], [200, []], [200, []]]);
+  for (const row of await db.rows<{ id: string }>('SELECT id FROM baseline_snapshots WHERE ci_id = $1', [id])) {
+    expect((await request(app).post(`/api/v1/drift/baseline/${row.id}/approve`).set(auth('sa'))).status).toBe(404);
+  }
+  expect((await request(app).post(`/api/v1/drift/detect/${id}`).set(auth('sa'))).status).toBe(404);
 });
 
 it('executes ITIL CI GraphQL views and mutations under authenticated two-org scope', async () => {

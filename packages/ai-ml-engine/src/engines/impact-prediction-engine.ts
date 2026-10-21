@@ -670,9 +670,9 @@ export class ImpactPredictionEngine {
       `INSERT INTO impact_analyses
        (id, source_ci_id, source_ci_name, change_type, impact_score,
         blast_radius, critical_path, risk_level, analyzed_at,
-        estimated_downtime_minutes, affected_cis, ci_incarnation_id)
+        estimated_downtime_minutes, affected_cis, ci_incarnation_id, organization_id)
        VALUES ($1::uuid, $2::varchar, $3::varchar, $4::varchar, $5::integer,
-         $6::integer, $7::jsonb, $8::varchar, $9::timestamptz, $10::integer, $11::jsonb, $12::uuid)
+         $6::integer, $7::jsonb, $8::varchar, $9::timestamptz, $10::integer, $11::jsonb, $12::uuid, $13::uuid)
        RETURNING id`,
       [
         impact.id,
@@ -687,6 +687,7 @@ export class ImpactPredictionEngine {
         impact.estimated_downtime_minutes,
         JSON.stringify(impact.affected_cis),
         incarnationId,
+        organizationId,
       ]
     );
     if (inserted.rows.length === 0) throw new Error('CI not found');
@@ -744,8 +745,9 @@ export class ImpactPredictionEngine {
     if (!incarnationId) return [];
     const result = await this.queryWithDeadline(
       `SELECT h.* FROM impact_analyses h
-       WHERE h.source_ci_id = $1 AND h.ci_incarnation_id = $3 ORDER BY h.analyzed_at DESC LIMIT $2`,
-      [ciId, limit, incarnationId]
+       WHERE h.source_ci_id = $1 AND h.ci_incarnation_id = $3 AND h.organization_id = $4
+       ORDER BY h.analyzed_at DESC LIMIT $2`,
+      [ciId, limit, incarnationId, organizationId]
     );
     return result.rows.map((row: any) => ({
       id: row.id,

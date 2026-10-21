@@ -574,7 +574,9 @@ it('persists a newly created graph CI before the reporting dimension is populate
     ['baseline_snapshots', 'ci_id'], ['drift_detection_results', 'ci_id'],
     ['impact_analyses', 'source_ci_id'], ['ci_criticality_scores', 'ci_id'],
   ] as const) {
-    expect((await sql.query(`SELECT ${column} FROM ${table} WHERE ${column} = 't3-fresh'`)).rows.length).toBeGreaterThan(0);
+    const rows = (await sql.query(`SELECT organization_id FROM ${table} WHERE ${column} = 't3-fresh'`)).rows;
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.every(row => row.organization_id === A)).toBe(true); // HP1-S4c: stamped with the caller's org
   }
   expect((await sql.query("SELECT ci_id FROM cmdb.dim_ci WHERE ci_id = 't3-fresh'")).rows).toEqual([]);
 });
@@ -609,8 +611,8 @@ it('retains B rows in all derived SQL families when A\'s journaled delete is hel
   const id = 't3-delete-race';
   const a = await graph.createCI({ _id: id, name: 'former A', _type: 'server' }, A, 't3-a');
   const aMarker = a._incarnation_id;
-  await sql.query(`INSERT INTO baseline_snapshots (id, ci_id, snapshot_type, snapshot_data, created_at, created_by)
-    VALUES ('55555555-5555-4555-8555-555555555555', $1, 'configuration', '{}', NOW(), 'legacy')`, [id]);
+  await sql.query(`INSERT INTO baseline_snapshots (id, ci_id, snapshot_type, snapshot_data, created_at, created_by, organization_id)
+    VALUES ('55555555-5555-4555-8555-555555555555', $1, 'configuration', '{}', NOW(), 'legacy', $2)`, [id, A]);
   const entered = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
   setJournalSeam(async (point, context) => {
@@ -624,12 +626,12 @@ it('retains B rows in all derived SQL families when A\'s journaled delete is hel
     const b = await graph.createCI({ _id: id, name: 'new B', _type: 'server' }, B, 't3-b');
     const bMarker = b._incarnation_id;
     expect(bMarker).not.toBe(aMarker);
-    await sql.query(`INSERT INTO baseline_snapshots (id, ci_id, snapshot_type, snapshot_data, created_at, created_by, ci_incarnation_id)
-      VALUES ('66666666-6666-4666-8666-666666666666', $1, 'configuration', '{"owner":"B"}', NOW(), 'b', $2)`, [id, bMarker]);
-    await sql.query(`INSERT INTO drift_detection_results (ci_id, has_drift, detected_at, ci_incarnation_id)
-      VALUES ($1, false, NOW(), $2)`, [id, bMarker]);
-    await sql.query(`INSERT INTO impact_analyses (id, source_ci_id, change_type, risk_level, analyzed_at, ci_incarnation_id)
-      VALUES ('77777777-7777-4777-8777-777777777777', $1, 'RESTART', 'low', NOW(), $2)`, [id, bMarker]);
+    await sql.query(`INSERT INTO baseline_snapshots (id, ci_id, snapshot_type, snapshot_data, created_at, created_by, ci_incarnation_id, organization_id)
+      VALUES ('66666666-6666-4666-8666-666666666666', $1, 'configuration', '{"owner":"B"}', NOW(), 'b', $2, $3)`, [id, bMarker, B]);
+    await sql.query(`INSERT INTO drift_detection_results (ci_id, has_drift, detected_at, ci_incarnation_id, organization_id)
+      VALUES ($1, false, NOW(), $2, $3)`, [id, bMarker, B]);
+    await sql.query(`INSERT INTO impact_analyses (id, source_ci_id, change_type, risk_level, analyzed_at, ci_incarnation_id, organization_id)
+      VALUES ('77777777-7777-4777-8777-777777777777', $1, 'RESTART', 'low', NOW(), $2, $3)`, [id, bMarker, B]);
     await sql.query(`INSERT INTO ci_criticality_scores (ci_id, factors, calculated_at, ci_incarnation_id, organization_id)
       VALUES ($1, '{"owner":"B"}', NOW(), $2, $3)`, [id, bMarker, B]);
     release.resolve();
@@ -660,12 +662,12 @@ it('fences future-dated A rows across real graph deletion and B ID collision, wh
   const aMarker = former?._incarnation_id;
   expect(aMarker).toMatch(/^[0-9a-f-]{36}$/i);
   const future = new Date(Date.now() + 24 * 60 * 60 * 1000);
-  await sql.query(`INSERT INTO baseline_snapshots (id, ci_id, snapshot_type, snapshot_data, created_at, created_by, is_approved, ci_incarnation_id)
-    VALUES ('11111111-1111-4111-8111-111111111111', $1, 'configuration', '{"secret":"A"}', $2, 'a', true, $3)`, [id, future, aMarker]);
-  await sql.query(`INSERT INTO drift_detection_results (ci_id, has_drift, drift_score, detected_at, ci_incarnation_id)
-    VALUES ($1, true, 99, $2, $3)`, [id, future, aMarker]);
-  await sql.query(`INSERT INTO impact_analyses (id, source_ci_id, change_type, risk_level, analyzed_at, ci_incarnation_id)
-    VALUES ('22222222-2222-4222-8222-222222222222', $1, 'RESTART', 'high', $2, $3)`, [id, future, aMarker]);
+  await sql.query(`INSERT INTO baseline_snapshots (id, ci_id, snapshot_type, snapshot_data, created_at, created_by, is_approved, ci_incarnation_id, organization_id)
+    VALUES ('11111111-1111-4111-8111-111111111111', $1, 'configuration', '{"secret":"A"}', $2, 'a', true, $3, $4)`, [id, future, aMarker, A]);
+  await sql.query(`INSERT INTO drift_detection_results (ci_id, has_drift, drift_score, detected_at, ci_incarnation_id, organization_id)
+    VALUES ($1, true, 99, $2, $3, $4)`, [id, future, aMarker, A]);
+  await sql.query(`INSERT INTO impact_analyses (id, source_ci_id, change_type, risk_level, analyzed_at, ci_incarnation_id, organization_id)
+    VALUES ('22222222-2222-4222-8222-222222222222', $1, 'RESTART', 'high', $2, $3, $4)`, [id, future, aMarker, A]);
   await sql.query(`INSERT INTO ci_criticality_scores (ci_id, factors, calculated_at, ci_incarnation_id, organization_id)
     VALUES ($1, '{"secret":"A"}', $2, $3, $4)`, [id, future, aMarker, A]);
   await sql.query(`INSERT INTO ci_change_history (ci_id, change_type, change_source, metadata, changed_at, ci_incarnation_id, organization_id)
@@ -697,12 +699,12 @@ it('fences future-dated A rows across real graph deletion and B ID collision, wh
   expect((await sql.query('SELECT ci_incarnation_id FROM ci_criticality_scores WHERE ci_id=$1 AND organization_id=$2',
     [id, B])).rows).toEqual([{ ci_incarnation_id: bMarker }]);
 
-  await sql.query(`INSERT INTO baseline_snapshots (id, ci_id, snapshot_type, snapshot_data, created_at, created_by, is_approved, ci_incarnation_id)
-    VALUES ('33333333-3333-4333-8333-333333333333', $1, 'configuration', '{"owner":"B"}', NOW(), 'b', true, $2)`, [id, bMarker]);
-  await sql.query(`INSERT INTO drift_detection_results (ci_id, has_drift, drift_score, detected_at, ci_incarnation_id)
-    VALUES ($1, false, 0, NOW(), $2)`, [id, bMarker]);
-  await sql.query(`INSERT INTO impact_analyses (id, source_ci_id, change_type, risk_level, analyzed_at, ci_incarnation_id)
-    VALUES ('44444444-4444-4444-8444-444444444444', $1, 'RESTART', 'low', NOW(), $2)`, [id, bMarker]);
+  await sql.query(`INSERT INTO baseline_snapshots (id, ci_id, snapshot_type, snapshot_data, created_at, created_by, is_approved, ci_incarnation_id, organization_id)
+    VALUES ('33333333-3333-4333-8333-333333333333', $1, 'configuration', '{"owner":"B"}', NOW(), 'b', true, $2, $3)`, [id, bMarker, B]);
+  await sql.query(`INSERT INTO drift_detection_results (ci_id, has_drift, drift_score, detected_at, ci_incarnation_id, organization_id)
+    VALUES ($1, false, 0, NOW(), $2, $3)`, [id, bMarker, B]);
+  await sql.query(`INSERT INTO impact_analyses (id, source_ci_id, change_type, risk_level, analyzed_at, ci_incarnation_id, organization_id)
+    VALUES ('44444444-4444-4444-8444-444444444444', $1, 'RESTART', 'low', NOW(), $2, $3)`, [id, bMarker, B]);
   await sql.query(`INSERT INTO ci_change_history (ci_id, change_type, change_source, metadata, ci_incarnation_id, organization_id)
     VALUES ($1, 'FRESH_B', 'test', $2::jsonb, $3, $4)`,
     [id, JSON.stringify({ organization_id: B }), bMarker, B]);

@@ -2481,6 +2481,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+        '503':
+          description: HP1 schema or Neo4j fence constraint missing (v16 §3.2); no data query
 
   # =============================================================================
   # ANALYTICS

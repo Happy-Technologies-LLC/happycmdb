@@ -214,7 +214,7 @@ production scheduling. Credential-backed discovery is restored by HP1-S5
 - `GET /reconciliation/conflicts` - List the caller organization's conflicts with typed values and `revision`; page and total from one statement
 - `POST /reconciliation/conflicts/{id}/resolve` - `accept_source | accept_target | merge | dismiss_stale` at `expected_revision`; stale or changed revision 409, foreign/missing 404
 - `GET/POST /reconciliation/rules`, `PUT/DELETE /reconciliation/rules/{id}`, `GET /reconciliation/source-authorities`, `PUT /reconciliation/source-authorities/{source}` - The caller organization's policy only (writes need admin); foreign, missing and legacy rules share one 404. `?scope=global` is 403 for every role, and legacy organization-less rows are inert (founder decision 2026-10-20). GraphQL getRules/getSourceAuthorities/createRule/updateSourceAuthority remain refused.
-- `GET /reconciliation/lineage/{ci_id}` - Caller-owned CI lineage
+- `GET /reconciliation/lineage/{ci_id}`, `GET /reconciliation/field-sources/{ci_id}` - Caller-owned CI lineage and field sources; foreign and missing CIs share one 404 (GraphQL `getCILineage`/`getCIFieldSources` NOT_FOUND). After the organization guard, both and their GraphQL counterparts return 503 `Service Unavailable` (GraphQL `SERVICE_UNAVAILABLE`) before any data query while the HP1 schema or the Neo4j fence constraint is missing (v16 §3.2)
 
 ### Analytics (`/api/v1/analytics`)
 - `GET /analytics/dashboard` - Dashboard statistics

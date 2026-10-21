@@ -838,24 +838,30 @@ describe('H-1 (v16 §3.1, §15 H-1): REST merge creates through the journal unde
     }
   });
 
-  it('H-1 retries: a replay re-identifies (A lineage, node identifier); a lost T2 is recovered; each leaves one created row', async () => {
-    const v = value('external_id', 'retry');
-    const first = await merge('external_id', v);
+  it('H-1 retries: a replay re-identifies (node identifier, A lineage); a lost T2 gates retries until recovered', async () => {
+    const v = value('serial_number', 'retry');
+    const first = await merge('serial_number', v);
     expect([first.status, first.body.data?.action]).toEqual([200, 'created']);
-    const replay = await merge('external_id', v);
+    const replay = await merge('serial_number', v); // the created node keeps its identifiers
     expect([replay.status, replay.body.data?.ci_id, replay.body.data?.action]).toEqual([200, first.body.data.ci_id, 'updated']);
     expect((await history(first.body.data.ci_id)).map(row => row.change_type)).toEqual(['created', 'updated']);
 
+    // external_id identity is lineage only, written by T2: a retry before recovery hits the gap, never a second CI.
     seamOnce('beforeT2', async () => { throw new Error('T2 connection lost'); });
-    const serial = value('serial_number', 'lost');
-    const lost = await merge('serial_number', serial);
+    const key = value('external_id', 'lost');
+    const lost = await merge('external_id', key);
     expect([lost.status, lost.body.correlation_id]).toEqual([503, expect.any(String)]);
     const [op] = await rows('SELECT ci_id FROM ci_reconciliation_operations WHERE group_id = $1', [lost.body.correlation_id]);
     expect((await api('a').get(`/cis/${op.ci_id}`)).body).toEqual(GAP);
+    const early = await merge('external_id', key);
+    expect([early.status, early.body]).toEqual([409, GAP]);
     await sweep(A);
     await sweep(A);
     await createdOnce({ ci_id: op.ci_id, correlation_id: lost.body.correlation_id });
-    const again = await merge('serial_number', serial); // the created node keeps its identifiers
+    expect(await cypher('MATCH (c:CI {h1_note: $key}) RETURN c.id AS id', { key })).toEqual([{ id: op.ci_id }]);
+    expect(await rows("SELECT organization_id, ci_id FROM ci_source_lineage WHERE source_name = 'h1' AND source_id = $1", [key]))
+      .toEqual([{ organization_id: A, ci_id: op.ci_id }]);
+    const again = await merge('external_id', key);
     expect([again.status, again.body.data?.ci_id, again.body.data?.action]).toEqual([200, op.ci_id, 'updated']);
   });
 });

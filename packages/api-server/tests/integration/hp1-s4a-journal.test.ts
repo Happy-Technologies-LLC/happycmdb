@@ -838,7 +838,7 @@ describe('H-1 (v16 §3.1, §15 H-1): REST merge creates through the journal unde
     }
   });
 
-  it('H-1 retries: a replay re-identifies via A lineage; a lost T2 is recovered; each leaves one created row', async () => {
+  it('H-1 retries: a replay re-identifies (A lineage, node identifier); a lost T2 is recovered; each leaves one created row', async () => {
     const v = value('external_id', 'retry');
     const first = await merge('external_id', v);
     expect([first.status, first.body.data?.action]).toEqual([200, 'created']);
@@ -847,12 +847,15 @@ describe('H-1 (v16 §3.1, §15 H-1): REST merge creates through the journal unde
     expect((await history(first.body.data.ci_id)).map(row => row.change_type)).toEqual(['created', 'updated']);
 
     seamOnce('beforeT2', async () => { throw new Error('T2 connection lost'); });
-    const lost = await merge('serial_number', value('serial_number', 'lost'));
+    const serial = value('serial_number', 'lost');
+    const lost = await merge('serial_number', serial);
     expect([lost.status, lost.body.correlation_id]).toEqual([503, expect.any(String)]);
     const [op] = await rows('SELECT ci_id FROM ci_reconciliation_operations WHERE group_id = $1', [lost.body.correlation_id]);
     expect((await api('a').get(`/cis/${op.ci_id}`)).body).toEqual(GAP);
     await sweep(A);
     await sweep(A);
     await createdOnce({ ci_id: op.ci_id, correlation_id: lost.body.correlation_id });
+    const again = await merge('serial_number', serial); // the created node keeps its identifiers
+    expect([again.status, again.body.data?.ci_id, again.body.data?.action]).toEqual([200, op.ci_id, 'updated']);
   });
 });

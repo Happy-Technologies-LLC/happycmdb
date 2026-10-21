@@ -35,6 +35,8 @@ jest.mock('@cmdb/database', () => ({
         SET ci += $properties RETURN ci.incarnation_id AS incarnation_id`, { ciId, organizationId, properties: planned.graph?.params.props });
       return written.records.length ? result('group') : null;
     },
+    // An unmatched REST merge is one journaled create (its journal internals run in tests/integration).
+    journal: { run: async (write: { plan: () => Promise<unknown>; result: (group: string) => Promise<unknown> }) => { await write.plan(); return write.result('group'); } },
   }),
   getPostgresClient: () => ({ query }),
   getAuditService: () => ({}),
@@ -88,7 +90,8 @@ beforeEach(() => {
   });
 });
 
-it('merges own CI, but returns identical 404 for foreign, org-less and missing targets without writing', async () => {
+it('merges own CI; foreign, org-less and missing targets get the identical created response without writing them', async () => {
+  const masked = (response: request.Response) => ({ status: response.status, body: { ...response.body, data: { ...response.body.data, ci_id: '<server>' } } });
   node = { id: 'target', organization_id: ORG_A, serial_number: 'same' };
   const success = await request(app).post('/api/v1/reconciliation/merge').set('authorization', 'Bearer org-a').send(payload);
   expect(success.status).toBe(200);
@@ -97,15 +100,15 @@ it('merges own CI, but returns identical 404 for foreign, org-less and missing t
 
   node.status = undefined;
   const missing = await request(app).post('/api/v1/reconciliation/merge').set('authorization', 'Bearer org-b').send(payload);
-  expect(missing.status).toBe(404);
+  expect([missing.status, missing.body.data.action]).toEqual([200, 'created']);
   expect(node.status).toBeUndefined();
   node.organization_id = null;
   const orgless = await request(app).post('/api/v1/reconciliation/merge').set('authorization', 'Bearer org-a').send(payload);
-  expect({ status: orgless.status, body: orgless.body }).toEqual({ status: missing.status, body: missing.body });
+  expect(masked(orgless)).toEqual(masked(missing));
   expect(node.status).toBeUndefined();
   node = null;
   const absent = await request(app).post('/api/v1/reconciliation/merge').set('authorization', 'Bearer org-a').send(payload);
-  expect({ status: absent.status, body: absent.body }).toEqual({ status: missing.status, body: missing.body });
+  expect(masked(absent)).toEqual(masked(missing));
   expect(run.mock.calls.filter(([cypher]) => String(cypher).includes('SET ci += $properties'))).toHaveLength(1);
-  expect(emit).toHaveBeenCalledTimes(1);
+  expect(emit).toHaveBeenCalledTimes(4); // one ci.updated, three ci.discovered
 });

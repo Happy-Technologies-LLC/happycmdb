@@ -197,7 +197,7 @@ reconciliationRoutes.put('/source-authorities/:source', refuseGlobalScope, authM
  */
 reconciliationRoutes.get(
   '/lineage/:ci_id',
-  authMiddleware.requireOrganization(),
+  authMiddleware.requireOrganization(), journalSchemaGate, // v16 §3.2 (HAP-822: 011/028 org-scoped evidence reader)
   controller.getCILineage.bind(controller)
 );
 
@@ -207,6 +207,6 @@ reconciliationRoutes.get(
  */
 reconciliationRoutes.get(
   '/field-sources/:ci_id',
-  authMiddleware.requireOrganization(),
+  authMiddleware.requireOrganization(), journalSchemaGate, // v16 §3.2 (HAP-822: 011/028 org-scoped evidence reader)
   controller.getCIFieldSources.bind(controller)
 );

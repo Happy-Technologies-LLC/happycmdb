@@ -173,7 +173,10 @@ afterAll(async () => { await server?.stop(); host.kill(); });
 beforeEach(() => { mockEmit.mockClear(); });
 
 // First in the file: the journal caches a passing §3.2 gate per process.
-it('v16 §3.2: before 037 or 029/028 resolve, merge, match, the conflict list and the per-org policy routes are 503 before any HP1 data query', async () => {
+it('v16 §3.2: before 037 or 029/028 resolve, merge, match, the conflict list, the per-org policy routes and the lineage/field-source readers are 503 before any HP1 data query', async () => {
+  // HAP-822: an owned CI with evidence, so an ungated reader would read Neo4j and PostgreSQL.
+  const owned = await ci(A);
+  await stored(A, owned, 'name', 'GATED_FIELD_SECRET', 'gate');
   for (const [down, up] of [
     ['ALTER TABLE ci_field_sources DROP CONSTRAINT ci_field_sources_organization_required',
       'ALTER TABLE ci_field_sources ADD CONSTRAINT ci_field_sources_organization_required CHECK (organization_id IS NOT NULL) NOT VALID'],
@@ -191,10 +194,17 @@ it('v16 §3.2: before 037 or 029/028 resolve, merge, match, the conflict list an
       await api('a').delete(`rules/${ruleId}`), await api('a').get('source-authorities'), await api('a').put('source-authorities/gate', { authority_score: 5 }),
       await api('a').post('match', { identifiers: { external_id: 'gate-1' } })];
     const reads = await api('a').gql('{ _reconciliation { findMatches(_identifiers: { _externalId: "gate-1" }) { _ciId } listConflicts { _id } } }');
+    const evidence = [await api('a').get(`lineage/${owned}`), await api('a').get(`field-sources/${owned}`)];
+    const evidenceGraph = await api('a').gql(`{ _reconciliation { getCILineage(_ciId: "${owned}") { _ciId }
+      getCIFieldSources(_ciId: "${owned}") { _ciId } } }`);
     await mockSql(up, [], 'exec');
     expect([rest.status, gql.body.errors?.[0]?.extensions?.code, merged.status, ...policy.map(response => response.status)])
       .toEqual([503, 'SERVICE_UNAVAILABLE', 503, 503, 503, 503, 503, 503, 503, 503, 503]);
     expect(reads.body.errors?.map((error: { extensions: object }) => error.extensions)).toEqual([{ code: 'SERVICE_UNAVAILABLE' }, { code: 'SERVICE_UNAVAILABLE' }]);
+    expect(evidence.map(response => [response.status, response.body])).toEqual([0, 1].map(() =>
+      [503, { success: false, error: 'Service Unavailable', message: 'CI write temporarily unavailable' }]));
+    expect(evidenceGraph.body.errors?.map((error: { message: string; extensions: object }) => [error.message, error.extensions]))
+      .toEqual([0, 1].map(() => ['CI write temporarily unavailable', { code: 'SERVICE_UNAVAILABLE' }]));
     expect([mockGraph.sql.filter(text => !text.includes('to_regclass')), mockGraph.statements.filter(text => !text.startsWith('SHOW CONSTRAINTS'))])
       .toEqual([[], []]); // only the gate ran
   }

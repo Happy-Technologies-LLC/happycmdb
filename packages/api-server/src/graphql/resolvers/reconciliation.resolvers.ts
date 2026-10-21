@@ -160,6 +160,7 @@ const ReconciliationQuery = {
     _context: GraphQLContext
   ) => {
     const organizationId = requireGraphQLOrganization(_context);
+    await _context._neo4jClient.assertJournalReady().catch((error: unknown) => Promise.reject(journalGraphQLError(error) ?? error)); // v16 §3.2 (HAP-822)
     try {
       if (!await _context._neo4jClient.getCI(_args._ciId, organizationId)) {
         await assertNoCIGap(organizationId, _args._ciId);
@@ -202,6 +203,7 @@ const ReconciliationQuery = {
     _context: GraphQLContext
   ) => {
     const organizationId = requireGraphQLOrganization(_context);
+    await _context._neo4jClient.assertJournalReady().catch((error: unknown) => Promise.reject(journalGraphQLError(error) ?? error)); // v16 §3.2 (HAP-822)
     try {
       if (!await _context._neo4jClient.getCI(_args._ciId, organizationId)) {
         await assertNoCIGap(organizationId, _args._ciId);

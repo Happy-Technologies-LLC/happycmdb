@@ -174,8 +174,8 @@ for (const [route, field, graphField, detail] of [
     expect(own.body.data[field]).toHaveLength(1);
     const absent = await api('a', `${route}/${MISSING}`);
     expect(absent.status).toBe(404);
-    expect((await api('a', `${route}/${CI_B}`)).body).toEqual(absent.body);
-    expect((await api('a', `${route}/${CI_NULL}`)).body).toEqual(absent.body);
+    expect((await api('a', `${route}/${CI_B}`)).text).toBe(absent.text); // byte-identical
+    expect((await api('a', `${route}/${CI_NULL}`)).text).toBe(absent.text);
     const gqlName = route === 'lineage' ? 'getCILineage' : 'getCIFieldSources';
     const ownGraph = await gql('a', `{ _reconciliation { ${gqlName}(_ciId: "${CI_A}") { ${graphField} { ${detail} } } } }`);
     expect(ownGraph.body.errors).toBeUndefined();
@@ -187,7 +187,7 @@ for (const [route, field, graphField, detail] of [
     expect(emptyGraph.body.data._reconciliation[gqlName][graphField]).toEqual([]);
     const outcomes = await Promise.all([MISSING, CI_B, CI_NULL].map(id => gql('a', `{ _reconciliation { ${gqlName}(_ciId: "${id}") { _ciId } } }`)));
     expect(outcomes.map(outcome => outcome.body.errors[0].extensions.code)).toEqual(['NOT_FOUND', 'NOT_FOUND', 'NOT_FOUND']);
-    expect(outcomes[1].body.errors[0].message).toBe(outcomes[0].body.errors[0].message);
-    expect(outcomes[2].body.errors[0].message).toBe(outcomes[0].body.errors[0].message);
+    expect(outcomes[1].text).toBe(outcomes[0].text); // byte-identical, GraphQL parity
+    expect(outcomes[2].text).toBe(outcomes[0].text);
   });
 }

@@ -124,6 +124,11 @@ authenticated `organization_id` (HP1-S4c, migration `038`, `NOT VALID` checks):
 derived reads additionally require that organization, so legacy org-less and
 foreign-org rows fail closed; legacy rows are kept, never backfilled, and an
 org-less (pre-S4c) writer is refused with SQLSTATE 23514.
+`POST /drift/detect/{ciId}`, `POST /drift/baseline`, `POST /impact/predict` and
+`GET /impact/criticality/{ciId}` persist only in one admission transaction (HP1-S4d,
+AP-P′) after a gap check over the root and every CI the result read: while any is
+pending/failed for the caller's organization they answer 409 `CI is temporarily
+unavailable` with no row or event; an admission lock timeout answers 503.
 
 ### Relationships (`/api/v1/relationships`)
 - `GET /relationships` - List relationships

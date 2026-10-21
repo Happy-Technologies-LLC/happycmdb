@@ -28,7 +28,9 @@ jest.mock('../../../auth/auth-bootstrap', () => {
     apiKeys: { headerName: 'X-API-Key' },
   } as ConfigSchema['auth']) };
 });
-jest.mock('@cmdb/database', () => ({ getNeo4jClient: () => ({ getCI }), getPostgresClient: () => ({}) }));
+jest.mock('@cmdb/database', () => ({
+  getNeo4jClient: () => ({ getCI }), getPostgresClient: () => ({ query: async () => ({ rows: [] }) }),
+}));
 jest.mock('@cmdb/ai-ml-engine', () => ({
   ...jest.requireActual('@cmdb/ai-ml-engine'),
   getConfigurationDriftDetector: () => ({}),

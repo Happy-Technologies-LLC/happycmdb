@@ -16,12 +16,15 @@ import {
   AnomalySeverity,
 } from '../types/anomaly.types';
 import { v4 as uuidv4 } from 'uuid';
+import type { ReferencedWrite } from './impact-prediction-engine';
 
 export class ConfigurationDriftDetector {
   private static instance: ConfigurationDriftDetector;
   private neo4jClient = getNeo4jClient();
   private postgresClient = getPostgresClient();
   private eventProducer = getEventProducer();
+  /** Plain engine calls (the Kafka consumer) keep auto-commit SQL; REST routes pass AP-P′. */
+  private direct: ReferencedWrite = (_ciIds, write) => write(this.postgresClient);
 
   private constructor() {}
 
@@ -39,7 +42,8 @@ export class ConfigurationDriftDetector {
     ciId: string,
     snapshotType: 'configuration' | 'performance' | 'relationships',
     createdBy: string,
-    organizationId: string
+    organizationId: string,
+    admit?: ReferencedWrite
   ): Promise<BaselineSnapshot> {
     logger.info('Creating baseline snapshot', { ci_id: ciId, snapshot_type: snapshotType });
 
@@ -90,8 +94,10 @@ export class ConfigurationDriftDetector {
         is_approved: false,
       };
 
-      // Store baseline
-      await this.storeBaseline(baseline, organizationId);
+      // Store baseline; a relationships snapshot also reads each related CI (v16 §6.5 neighbours).
+      const related: { ci_id: string }[] = snapshotType === 'relationships'
+        ? [...snapshotData['outgoing'], ...snapshotData['incoming']] : [];
+      await this.storeBaseline(baseline, organizationId, [ciId, ...related.map(rel => rel.ci_id)], admit);
 
       logger.info('Baseline snapshot created', {
         baseline_id: baseline.id,
@@ -200,7 +206,7 @@ export class ConfigurationDriftDetector {
   /**
    * Detect configuration drift for a CI
    */
-  async detectDrift(ciId: string, organizationId: string): Promise<DriftDetectionResult> {
+  async detectDrift(ciId: string, organizationId: string, admit?: ReferencedWrite): Promise<DriftDetectionResult> {
     logger.info('Detecting configuration drift', { ci_id: ciId });
 
     // Get approved baseline
@@ -250,8 +256,8 @@ export class ConfigurationDriftDetector {
         detected_at: new Date(),
       };
 
-      // Store drift detection result
-      await this.storeDriftResult(driftResult, organizationId);
+      // Store drift detection result; the event below follows only a committed row
+      await this.storeDriftResult(driftResult, organizationId, admit);
 
       // Emit event for significant drift
       if (hasDrift && driftScore > 30) {
@@ -476,11 +482,13 @@ export class ConfigurationDriftDetector {
   /**
    * Store baseline snapshot
    */
-  private async storeBaseline(baseline: BaselineSnapshot, organizationId: string): Promise<void> {
-    // Atomically mint a marker for a legacy owned graph node before SQL writes.
+  private async storeBaseline(
+    baseline: BaselineSnapshot, organizationId: string, ciIds: string[], admit?: ReferencedWrite
+  ): Promise<void> {
+    // Atomically mint a marker for a legacy owned graph node before SQL writes (never inside the transaction).
     const incarnationId = await this.neo4jClient.ensureCIIncarnation(baseline.ci_id, organizationId);
     if (!incarnationId) throw new Error('CI not found');
-    const inserted = await this.postgresClient.query(
+    const inserted = await (admit ?? this.direct)(ciIds, client => client.query(
       `INSERT INTO baseline_snapshots
        (id, ci_id, snapshot_type, snapshot_data, created_at, created_by, is_approved, ci_incarnation_id, organization_id)
        VALUES ($1::uuid, $2::varchar, $3::varchar, $4::jsonb, $5::timestamptz, $6::varchar, $7::boolean, $8::uuid, $9::uuid)
@@ -496,17 +504,17 @@ export class ConfigurationDriftDetector {
         incarnationId,
         organizationId,
       ]
-    );
+    ));
     if (inserted.rows.length === 0) throw new Error('CI not found');
   }
 
   /**
    * Store drift detection result
    */
-  private async storeDriftResult(result: DriftDetectionResult, organizationId: string): Promise<void> {
+  private async storeDriftResult(result: DriftDetectionResult, organizationId: string, admit?: ReferencedWrite): Promise<void> {
     const incarnationId = await this.neo4jClient.ensureCIIncarnation(result.ci_id, organizationId);
     if (!incarnationId) throw new Error('CI not found');
-    const inserted = await this.postgresClient.query(
+    const inserted = await (admit ?? this.direct)([result.ci_id], client => client.query(
       `INSERT INTO drift_detection_results
        (ci_id, ci_name, has_drift, drift_score, drifted_fields,
         baseline_snapshot_id, detected_at, ci_incarnation_id, organization_id)
@@ -523,7 +531,7 @@ export class ConfigurationDriftDetector {
         incarnationId,
         organizationId,
       ]
-    );
+    ));
     if (inserted.rows.length === 0) throw new Error('CI not found');
   }
 

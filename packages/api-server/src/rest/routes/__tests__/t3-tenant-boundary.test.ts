@@ -219,6 +219,7 @@ const USERS: Record<string, { _id: string; _username: string; _role: string; _en
   be: { _id: 'be', _username: 'bob-skew', _role: 'admin', _enabled: true, _organizationId: B },
   sa: { _id: 'sa', _username: 'alice-s4c', _role: 'admin', _enabled: true, _organizationId: A },
   sb: { _id: 'sb', _username: 'bob-s4c', _role: 'admin', _enabled: true, _organizationId: B },
+  sf: { _id: 'sf', _username: 'bob-s4d', _role: 'admin', _enabled: true, _organizationId: B },
 };
 jest.mock('../../../auth/neo4j-auth.repository', () => ({
   Neo4jAuthRepository: jest.fn(() => ({ findUserById: async (id: string) => USERS[id] ?? null })),
@@ -503,6 +504,15 @@ it('never gives B future-dated A derivatives after CI ID reuse, even with A hist
   expect((await get(`/api/v1/impact/history/${id}`)).body.data).toEqual([]);
   expect((await get(`/api/v1/itil/configuration-items/${id}/history`)).body.data).toEqual([]);
   expect(JSON.stringify((await get(`/api/v1/impact/criticality/${id}`)).body)).not.toContain('secret');
+});
+
+it('S4d §6.5: criticality change frequency ignores foreign-org history rows on the same CI id and incarnation', async () => {
+  const id = 'ci-fresh';
+  nodes.set(id, { id, name: 'New B', organization_id: B, incarnation_id: B_INC, created_at: new Date().toISOString() });
+  await db.rows(`INSERT INTO ci_change_history (ci_id, change_type, change_source, ci_incarnation_id, organization_id)
+    VALUES ($1, 'updated', 'test', $2, $3), ($1, 'updated', 'test', $2, $3), ($1, 'updated', 'test', $2, $4)`, [id, B_INC, A, B]);
+  const criticality = await request(app).get(`/api/v1/impact/criticality/${id}`).set(auth('sf'));
+  expect([criticality.status, criticality.body.data?.factors.change_frequency]).toEqual([200, 1]);
 });
 
 it('reads freshly written B derivatives when the graph clock is ahead of PostgreSQL', async () => {

@@ -35,12 +35,17 @@ export class ImpactCriticalityLimitError extends Error {
   }
 }
 
+type Queryable = { query: (text: string, values: unknown[]) => Promise<{ rows: unknown[] }> };
+/** AP-P′ (v16 §5.3): the caller's admission transaction, which 409s when any of `ciIds` is in a gap. */
+export type ReferencedWrite = <T>(ciIds: string[], write: (client: Queryable) => Promise<T>) => Promise<T>;
+
 interface CriticalityWalk {
   active: Set<string>;
   computed: Map<string, CriticalityScore>;
   remaining: number;
   cycleDetected: boolean;
   sharedWork?: { remaining: number };
+  incarnations: Map<string, string>;
 }
 
 interface DependentNode {
@@ -85,13 +90,26 @@ export class ImpactPredictionEngine {
     }
   }
 
+  /** AP-P′ when the caller admits the write; plain engine calls keep per-statement deadline SQL. */
+  private async persist(admit: ReferencedWrite | undefined, ciIds: string[], write: (client: Queryable) => Promise<void>) {
+    if (!admit) return write({ query: (text, values) => this.queryWithDeadline(text, values) });
+    await admit(ciIds, async client => {
+      if (architectureDeadlineAt() !== undefined) {
+        await client.query("SELECT set_config('statement_timeout', $1, true)", [`${architectureRemainingMs()}ms`]);
+      }
+      await write(client);
+      architectureRemainingMs(); // a request past its deadline commits nothing
+    });
+  }
+
   /**
    * Predict impact of a change on a CI
    */
   async predictChangeImpact(
     ciId: string,
     changeType: ChangeType,
-    organizationId: string
+    organizationId: string,
+    admit?: ReferencedWrite
   ): Promise<ImpactAnalysis> {
     logger.info('Predicting change impact', { ci_id: ciId, change_type: changeType });
 
@@ -121,11 +139,11 @@ export class ImpactPredictionEngine {
       const affectedCIs = await this.findAffectedCIs(ciId, organizationId, traversalWork);
 
       // Finish bounded graph work before any criticality cache write.
-      const criticalPath = await this.findCriticalPath(ciId, organizationId, traversalWork);
-      const criticalityScore = await this.getCriticalityScore(ciId, organizationId, traversalWork);
+      const { path: criticalPath, read: chainRead } = await this.findCriticalPath(ciId, organizationId, traversalWork);
+      const criticality = await this.scoreCriticality(ciId, organizationId, traversalWork);
       const impactScore = this.calculateImpactScore(
         affectedCIs.length,
-        criticalityScore.criticality_score,
+        criticality.score.criticality_score,
         changeType
       );
 
@@ -146,8 +164,14 @@ export class ImpactPredictionEngine {
         estimated_downtime_minutes: this.estimateDowntime(changeType, affectedCIs.length),
       };
 
-      // Store impact analysis
-      await this.storeImpactAnalysis(impact, organizationId);
+      // One admitted transaction after the gap check over every CI this computation read (v16 §6.5).
+      const referenced = [...criticality.walk.incarnations.keys(), ...affectedCIs.map(ci => ci.ci_id), ...chainRead];
+      await this.persist(admit, referenced, async client => {
+        await this.storeImpactAnalysis(client, impact, criticality.walk.incarnations.get(ciId)!, organizationId);
+        for (const score of criticality.cacheable) {
+          await this.storeCriticalityScore(client, score, criticality.walk.incarnations.get(score.ci_id)!, organizationId);
+        }
+      });
 
       logger.info('Impact analysis completed', {
         impact_score: impact.impact_score,
@@ -240,34 +264,41 @@ export class ImpactPredictionEngine {
    */
   private async findCriticalPath(
     ciId: string, organizationId: string, work: { remaining: number }
-  ): Promise<string[]> {
+  ): Promise<{ path: string[]; read: string[] }> {
     const discovered = await this.traverseDependents(ciId, organizationId, 10, ['DEPENDS_ON'], work);
-    return discovered[discovered.length - 1]?.path ?? [ciId];
+    return { path: discovered[discovered.length - 1]?.path ?? [ciId], read: discovered.map(node => node.id) };
   }
 
   /**
    * Get or calculate criticality score for a CI
    */
-  async getCriticalityScore(
-    ciId: string, organizationId: string, sharedWork?: { remaining: number }
-  ): Promise<CriticalityScore> {
+  async getCriticalityScore(ciId: string, organizationId: string, admit?: ReferencedWrite): Promise<CriticalityScore> {
+    const { score, walk, cacheable } = await this.scoreCriticality(ciId, organizationId);
+    // Admitted even with nothing cacheable: the gap check is also the result's post-check (X-26).
+    await this.persist(admit, [...walk.incarnations.keys()], async client => {
+      for (const computed of cacheable) {
+        await this.storeCriticalityScore(client, computed, walk.incarnations.get(computed.ci_id)!, organizationId);
+      }
+    });
+    return score;
+  }
+
+  private async scoreCriticality(ciId: string, organizationId: string, sharedWork?: { remaining: number }) {
     const walk: CriticalityWalk = {
       active: new Set<string>(),
       computed: new Map<string, CriticalityScore>(),
       remaining: MAX_CRITICALITY_NODES,
       cycleDetected: false,
       sharedWork,
+      incarnations: new Map<string, string>(),
     };
     const score = await this.walkCriticality(ciId, organizationId, walk, 0);
     // A back-edge makes descendants depend on the requested root. Return the
     // bounded result, but never cache context-dependent scores from that walk.
-    // Budget failures still leave no partial cache; acyclic walks persist as before.
-    if (!walk.cycleDetected) {
-      for (const computed of walk.computed.values()) {
-        await this.storeCriticalityScore(computed, organizationId);
-      }
-    }
-    return score;
+    // Budget failures still leave no partial cache; acyclic walks persist as before, in one
+    // ci_id order so concurrent admitted upserts cannot deadlock.
+    const cacheable = walk.cycleDetected ? [] : [...walk.computed.values()].sort((a, b) => (a.ci_id < b.ci_id ? -1 : 1));
+    return { score, walk, cacheable };
   }
 
   private async walkCriticality(
@@ -287,6 +318,7 @@ export class ImpactPredictionEngine {
       const incarnationId = ciIncarnationId(ci)
         ?? await this.neo4jClient.ensureCIIncarnation(ciId, organizationId, architectureRemainingMs());
       if (!incarnationId) throw new Error(`CI not found: ${ciId}`);
+      walk.incarnations.set(ciId, incarnationId);
       const cached = await this.queryWithDeadline(
         `SELECT s.* FROM ci_criticality_scores s
          WHERE s.ci_id = $1 AND s.calculated_at >= NOW() - INTERVAL '7 days'
@@ -358,7 +390,7 @@ export class ImpactPredictionEngine {
       if (dependentIds.length > MAX_CRITICALITY_NODES) throw new ImpactCriticalityLimitError();
 
       // Get change frequency
-      const changeFreq = await this.getChangeFrequency(ciId, incarnationId);
+      const changeFreq = await this.getChangeFrequency(ciId, incarnationId, organizationId);
 
       // Calculate dependent weight (sum of dependent criticalities)
       let dependentWeight = 0;
@@ -409,12 +441,12 @@ export class ImpactPredictionEngine {
   /**
    * Get change frequency for a CI (changes per month)
    */
-  private async getChangeFrequency(ciId: string, incarnationId: string): Promise<number> {
+  private async getChangeFrequency(ciId: string, incarnationId: string, organizationId: string): Promise<number> {
     const result = await this.queryWithDeadline(
       `SELECT COUNT(*) as change_count FROM ci_change_history h
        WHERE h.ci_id = $1 AND h.changed_at >= NOW() - INTERVAL '30 days'
-         AND h.ci_incarnation_id = $2`,
-      [ciId, incarnationId]
+         AND h.ci_incarnation_id = $2 AND h.organization_id = $3`,
+      [ciId, incarnationId, organizationId]
     );
 
     const firstRow = result.rows[0];
@@ -433,6 +465,7 @@ export class ImpactPredictionEngine {
     const work = { remaining: MAX_IMPACT_GRAPH_WORK };
     const reusableScores = new Map<string, CriticalityScore>();
     const pendingScores = new Map<string, CriticalityScore>();
+    const incarnations = new Map<string, string>();
     let cacheable = true;
 
     try {
@@ -527,6 +560,7 @@ export class ImpactPredictionEngine {
           remaining: MAX_CRITICALITY_NODES,
           cycleDetected: false,
           sharedWork: work,
+          incarnations,
         };
         const score = await this.walkCriticality(nodeId, organizationId, walk, 0);
         if (walk.cycleDetected) {
@@ -562,7 +596,11 @@ export class ImpactPredictionEngine {
         // request budget cannot leave only part of the graph's cache behind.
         if (pendingScores.size > work.remaining) throw new ImpactCriticalityLimitError();
         work.remaining -= pendingScores.size;
-        for (const score of pendingScores.values()) await this.storeCriticalityScore(score, organizationId);
+        await this.persist(undefined, [], async client => {
+          for (const score of pendingScores.values()) {
+            await this.storeCriticalityScore(client, score, incarnations.get(score.ci_id)!, organizationId);
+          }
+        });
       }
 
       return {
@@ -661,12 +699,10 @@ export class ImpactPredictionEngine {
   /**
    * Store impact analysis
    */
-  private async storeImpactAnalysis(impact: ImpactAnalysis, organizationId: string): Promise<void> {
-    const incarnationId = await this.neo4jClient.ensureCIIncarnation(
-      impact.source_ci_id, organizationId, architectureRemainingMs()
-    );
-    if (!incarnationId) throw new Error('CI not found');
-    const inserted = await this.queryWithDeadline(
+  private async storeImpactAnalysis(
+    client: Queryable, impact: ImpactAnalysis, incarnationId: string, organizationId: string
+  ): Promise<void> {
+    const inserted = await client.query(
       `INSERT INTO impact_analyses
        (id, source_ci_id, source_ci_name, change_type, impact_score,
         blast_radius, critical_path, risk_level, analyzed_at,
@@ -696,12 +732,10 @@ export class ImpactPredictionEngine {
   /**
    * Store criticality score
    */
-  private async storeCriticalityScore(score: CriticalityScore, organizationId: string): Promise<void> {
-    const incarnationId = await this.neo4jClient.ensureCIIncarnation(
-      score.ci_id, organizationId, architectureRemainingMs()
-    );
-    if (!incarnationId) throw new Error('CI not found');
-    const inserted = await this.queryWithDeadline(
+  private async storeCriticalityScore(
+    client: Queryable, score: CriticalityScore, incarnationId: string, organizationId: string
+  ): Promise<void> {
+    const inserted = await client.query(
       `INSERT INTO ci_criticality_scores
        (ci_id, ci_name, criticality_score, factors, calculated_at, ci_incarnation_id, organization_id)
        VALUES ($1::varchar, $2::varchar, $3::integer, $4::jsonb, $5::timestamptz, $6::uuid, $7::uuid)

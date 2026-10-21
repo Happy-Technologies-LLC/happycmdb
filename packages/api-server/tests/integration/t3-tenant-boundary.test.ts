@@ -221,7 +221,7 @@ it('bounds real parallel-edge and fan-out-by-depth impact traversals before path
   expect(affected.response.status).toBe(503);
   expect(affected.response.body).toEqual({ success: false, error: 'Impact criticality resource limit exceeded' });
   expect(affected.statements).toBeLessThanOrEqual(6);
-  expect(affected.pgQueries).toBe(0);
+  expect(affected.pgQueries).toBe(1); // only the AP-S own-org gap pre-check (HP1-S4d)
   expect(affected.ms).toBeLessThan(4000);
 
   const criticalPath = await measured(() =>
@@ -230,7 +230,7 @@ it('bounds real parallel-edge and fan-out-by-depth impact traversals before path
   expect(criticalPath.response.status).toBe(503);
   expect(criticalPath.response.body).toEqual({ success: false, error: 'Impact criticality resource limit exceeded' });
   expect(criticalPath.statements).toBeLessThanOrEqual(15);
-  expect(criticalPath.pgQueries).toBe(0);
+  expect(criticalPath.pgQueries).toBe(1);
   expect(criticalPath.ms).toBeLessThan(4000);
 });
 

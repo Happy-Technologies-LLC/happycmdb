@@ -754,3 +754,105 @@ it('F7 H-2/H-4 and the old-then-new writer cutover: NULL-org history and global 
   expect((await api('a').gql(`mutation { deleteCI(id:"${ci}") }`)).body.data).toEqual({ deleteCI: true });
   expect((await history(ci)).map(row => [row.change_type, row.organization_id])).toEqual([['deleted', A]]);
 });
+
+describe('H-1 (v16 §3.1, §15 H-1): REST merge creates through the journal under the deployed external_id constraint', () => {
+  // Deployed Neo4j (schema.cypher, init-neo4j.cypher) makes CI.external_id globally unique; the integration
+  // global setup does not. Added here, and dropped afterwards only when this block added it.
+  let added = false;
+  beforeAll(async () => {
+    added = (await cypher("SHOW CONSTRAINTS YIELD name WHERE name = 'ci_external_id_unique' RETURN name")).length === 0;
+    await cypher('CREATE CONSTRAINT ci_external_id_unique IF NOT EXISTS FOR (c:CI) REQUIRE c.external_id IS UNIQUE');
+  });
+  afterAll(async () => {
+    await cypher("MATCH (c:CI) WHERE c.id STARTS WITH 's4a-h1-null-' DETACH DELETE c");
+    if (added) await cypher('DROP CONSTRAINT ci_external_id_unique IF EXISTS');
+  });
+
+  type Kind = 'external_id' | 'serial_number' | 'uuid' | 'mac_address' | 'fqdn' | 'hostname_ip';
+  const KINDS: Kind[] = ['external_id', 'serial_number', 'uuid', 'mac_address', 'fqdn', 'hostname_ip'];
+  const value = (kind: Kind, who: string) => `h1-${kind.replace(/_/g, '-')}-${who}-${randomUUID().slice(0, 8)}`;
+  /** Every identifier mergeRequestSchema accepts: the request form, and the node properties the engine matches. */
+  const identity = (kind: Kind, v: string): [Record<string, unknown>, Record<string, unknown>] => ({
+    external_id: [{ external_id: v }, { external_id: v }], serial_number: [{ serial_number: v }, { serial_number: v }],
+    uuid: [{ uuid: v }, { uuid: v }], mac_address: [{ mac_address: [v] }, { mac_addresses: [v] }], fqdn: [{ fqdn: v }, { fqdn: v }],
+    hostname_ip: [{ hostname: v, ip_address: [`10.${v}`] }, { hostname: v, ip_addresses: [`10.${v}`] }],
+  } satisfies Record<Kind, [Record<string, unknown>, Record<string, unknown>]>)[kind];
+  /** A CI holding the value; external_id identity is also the owner's lineage (findByExternalId). */
+  const seed = async (owner: 'a' | 'b' | null, kind: Kind, v: string) => {
+    const ciId = id(`h1-${owner ?? 'null'}`);
+    if (owner) await create(owner, ciId); else await cypher('CREATE (:CI:Server {id: $ciId, name: $ciId})', { ciId });
+    await cypher('MATCH (c:CI {id: $ciId}) SET c += $props', { ciId, props: identity(kind, v)[1] });
+    if (owner && kind === 'external_id') await rows(`INSERT INTO ci_source_lineage (organization_id, ci_id, source_name,
+      source_id, confidence_score) VALUES ($1, $2, 'h1', $3, 90)`, [users[owner]._organizationId, ciId, v]);
+    return ciId;
+  };
+  // external_id also rides in attributes: a naive create copying either onto the node would 409 on B's value.
+  const merge = (kind: Kind, v: string) => api('a').post('/reconciliation/merge', { name: `h1-${v}`, ci_type: 'server',
+    source: 'h1', source_id: v, identifiers: identity(kind, v)[0],
+    attributes: { h1_note: v, ...(kind === 'external_id' ? { external_id: v } : {}) } });
+  const mask = (body: { data?: object }) => ({ ...body, data: { ...body.data, ci_id: '<server>', correlation_id: '<server>' } });
+  const journalCount = async (ids: string[]) =>
+    (await rows('SELECT count(*)::int AS n FROM ci_reconciliation_operations WHERE ci_id = ANY($1)', [ids]))[0].n as number;
+  /** One committed `create` op and applied fence; an A node without external_id; exactly one created history row. */
+  const createdOnce = async ({ ci_id: ciId, correlation_id: correlationId }: { ci_id: string; correlation_id: string }) => {
+    const created = await node(ciId);
+    expect(created).toMatchObject({ organization_id: A });
+    expect(created).not.toHaveProperty('external_id');
+    const journal = await ops(A, ciId);
+    expect(journal.map(op => [op.operation, op.state, op.actor, op.group_id])).toEqual([['create', 'committed', 's4a-a', correlationId]]);
+    expect(await fences(journal[0].id)).toEqual([{ o: expect.objectContaining(
+      { organization_id: A, ci_id: ciId, operation: 'create', outcome: 'applied' }) }]);
+    expect((await history(ciId)).map(row => [row.change_type, row.organization_id, row.changed_by, row.correlation_id,
+      row.ci_incarnation_id])).toEqual([['created', A, 's4a-a', correlationId, created!['incarnation_id']]]);
+  };
+
+  it('control: an owned value of every accepted identifier is one journaled update; the constraint is live', async () => {
+    for (const kind of KINDS) {
+      const v = value(kind, 'own');
+      const owned = await seed('a', kind, v);
+      const response = await merge(kind, v);
+      expect([kind, response.status, response.body.data?.ci_id, response.body.data?.action]).toEqual([kind, 200, owned, 'updated']);
+      expect((await history(owned)).map(row => [row.change_type, row.organization_id, row.changed_by, row.correlation_id]))
+        .toEqual([['updated', A, 's4a-a', response.body.data.correlation_id]]);
+    }
+    const foreign = value('external_id', 'live');
+    await seed('b', 'external_id', foreign);
+    await expect(cypher('CREATE (:CI {id: $id, external_id: $foreign})', { id: id('h1-dup'), foreign }))
+      .rejects.toMatchObject({ code: 'Neo.ClientError.Schema.ConstraintValidationFailed' });
+  });
+
+  it('H-1: a foreign, NULL-org or missing value of every identifier creates one own-org CI; nothing discloses or mutates B/NULL', async () => {
+    for (const kind of KINDS) {
+      const [foreignValue, legacyValue, missingValue] = ['b', 'null', 'none'].map(who => value(kind, who));
+      const targets = [await seed('b', kind, foreignValue), await seed(null, kind, legacyValue)];
+      const before = { nodes: [await node(targets[0]!), await node(targets[1]!)], journal: await journalCount(targets) };
+      const responses = [await merge(kind, missingValue), await merge(kind, foreignValue), await merge(kind, legacyValue)];
+      for (const response of responses) expect([kind, response.status, mask(response.body)]).toEqual([kind, 200, mask(responses[0]!.body)]);
+      expect(responses[0]!.body.data.action).toBe('created');
+      const created = responses.map(response => response.body.data.ci_id as string);
+      expect(new Set([...created, ...targets]).size).toBe(5);
+      for (const response of responses) await createdOnce(response.body.data);
+      expect([await node(targets[0]!), await node(targets[1]!)]).toEqual(before.nodes);
+      expect(await journalCount(targets)).toBe(before.journal);
+      expect([...await history(targets[0]!), ...await history(targets[1]!)]).toEqual([]);
+    }
+  });
+
+  it('H-1 retries: a replay re-identifies via A lineage; a lost T2 is recovered; each leaves one created row', async () => {
+    const v = value('external_id', 'retry');
+    const first = await merge('external_id', v);
+    expect([first.status, first.body.data?.action]).toEqual([200, 'created']);
+    const replay = await merge('external_id', v);
+    expect([replay.status, replay.body.data?.ci_id, replay.body.data?.action]).toEqual([200, first.body.data.ci_id, 'updated']);
+    expect((await history(first.body.data.ci_id)).map(row => row.change_type)).toEqual(['created', 'updated']);
+
+    seamOnce('beforeT2', async () => { throw new Error('T2 connection lost'); });
+    const lost = await merge('serial_number', value('serial_number', 'lost'));
+    expect([lost.status, lost.body.correlation_id]).toEqual([503, expect.any(String)]);
+    const [op] = await rows('SELECT ci_id FROM ci_reconciliation_operations WHERE group_id = $1', [lost.body.correlation_id]);
+    expect((await api('a').get(`/cis/${op.ci_id}`)).body).toEqual(GAP);
+    await sweep(A);
+    await sweep(A);
+    await createdOnce({ ci_id: op.ci_id, correlation_id: lost.body.correlation_id });
+  });
+});

@@ -137,7 +137,7 @@ reconciliationRoutes.post(
 reconciliationRoutes.get(
   '/conflicts',
   authMiddleware.requireOrganization(),
-  validateOptional(conflictsQuerySchema, 'query'),
+  validateOptional(conflictsQuerySchema, 'query'), journalSchemaGate, // v16 §3.2 (S4b reads the 029 columns)
   controller.listConflicts.bind(controller)
 );
 

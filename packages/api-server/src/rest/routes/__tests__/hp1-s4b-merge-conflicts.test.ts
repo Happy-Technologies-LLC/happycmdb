@@ -173,7 +173,7 @@ afterAll(async () => { await server?.stop(); host.kill(); });
 beforeEach(() => { mockEmit.mockClear(); });
 
 // First in the file: the journal caches a passing §3.2 gate per process.
-it('v16 §3.2: before 037 or 028 resolve, external-id merge and the per-org policy routes are 503 before any HP1 data query', async () => {
+it('v16 §3.2: before 037 or 028 resolve, external-id merge, the conflict list and the per-org policy routes are 503 before any HP1 data query', async () => {
   for (const [down, up] of [
     ['ALTER TABLE ci_field_sources DROP CONSTRAINT ci_field_sources_organization_required',
       'ALTER TABLE ci_field_sources ADD CONSTRAINT ci_field_sources_organization_required CHECK (organization_id IS NOT NULL) NOT VALID'],
@@ -187,11 +187,11 @@ it('v16 §3.2: before 037 or 028 resolve, external-id merge and the per-org poli
       _resolution: "accept_target", _expectedRevision: "${'a'.repeat(64)}") { _status } } }`);
     const merged = await api('a').post('merge', { name: 'gate', ci_type: 'server', source: 'gate', source_id: 'gate-1', identifiers: { external_id: 'gate-1' } });
     const [rule, ruleId] = [{ name: 'gate', identification_rules: [] }, randomUUID()];
-    const policy = [await api('a').get('rules'), await api('a').post('rules', rule), await api('a').put(`rules/${ruleId}`, rule),
+    const policy = [await api('a').get('conflicts'), await api('a').get('rules'), await api('a').post('rules', rule), await api('a').put(`rules/${ruleId}`, rule),
       await api('a').delete(`rules/${ruleId}`), await api('a').get('source-authorities'), await api('a').put('source-authorities/gate', { authority_score: 5 })];
     await mockSql(up, [], 'exec');
     expect([rest.status, gql.body.errors?.[0]?.extensions?.code, merged.status, ...policy.map(response => response.status)])
-      .toEqual([503, 'SERVICE_UNAVAILABLE', 503, 503, 503, 503, 503, 503, 503]);
+      .toEqual([503, 'SERVICE_UNAVAILABLE', 503, 503, 503, 503, 503, 503, 503, 503]);
     expect(mockGraph.sql.filter(text => !text.includes('to_regclass'))).toEqual([]); // only the gate ran
   }
 });

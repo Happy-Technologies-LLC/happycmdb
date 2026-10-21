@@ -29,6 +29,7 @@ jest.mock('../../controllers/reconciliation.controller', () => ({
     listSourceAuthorities: handler, updateSourceAuthority: handler,
   })),
 }));
+jest.mock('../../../journal-http', () => ({ ...jest.requireActual<object>('../../../journal-http'), journalSchemaGate: (_req: unknown, _res: unknown, next: () => void) => next() }));
 jest.mock('../../../auth/auth-bootstrap', () => {
   const { AuthMiddleware } = jest.requireActual<{ AuthMiddleware: typeof AuthMiddlewareClass }>('../../../middleware/auth.middleware');
   const authService = {

@@ -42,7 +42,7 @@ function sql(text: string, params: unknown[] = [], op: 'query' | 'exec' = 'query
 const db = { query: async (text: string, params: unknown[] = []) => ({ rows: await sql(text, params) }) };
 jest.mock('@cmdb/database', () => ({
   getPostgresClient: () => db,
-  getNeo4jClient: () => ({
+  getNeo4jClient: () => ({ assertJournalReady: async () => undefined, // schema present (the real §3.2 gate: hp1-s4b-merge-conflicts)
     getCI: async (id: string, organizationId: string) =>
       (id === CI_A && organizationId === A) || (id === CI_B && organizationId === B) ? { id } : null,
   }),

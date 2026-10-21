@@ -10,7 +10,7 @@ import type { NextFunction, Request, Response } from 'express';
 import { GraphQLError } from 'graphql';
 import {
   isStorableString, JournalAbortedError, JournalConflictError, JournalGapError, JournalTargetMissingError,
-  JournalUnavailableError, PlanUnrepresentableError,
+  JournalUnavailableError, PlanUnrepresentableError, getNeo4jClient,
 } from '@cmdb/database';
 import type { AuthenticatedRequest } from './middleware/auth.middleware';
 import { CIGapError } from './read-admission';
@@ -112,6 +112,7 @@ export function journalRequestGuard(options: { relationship?: boolean; merge?: b
     }
   };
 }
+export const journalSchemaGate = (_req: Request, res: Response, next: NextFunction): void => void getNeo4jClient().assertJournalReady().then(() => next(), (error: unknown) => sendJournalError(res, error) || next(error)); // v16 §3.2: 503 before any HP1 data query
 
 /** Maps a journal outcome to its sanitized REST response. False when `error` is not one. */
 export function sendJournalError(res: Response, error: unknown): boolean {

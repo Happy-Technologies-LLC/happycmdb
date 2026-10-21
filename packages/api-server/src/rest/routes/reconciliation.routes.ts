@@ -12,7 +12,7 @@ import { ReconciliationController } from '../controllers/reconciliation.controll
 import { validateRequest, validateOptional } from '../middleware/validation.middleware';
 import { auditMiddleware } from '../../middleware/audit.middleware';
 import { getAuthMiddleware } from '../../auth/auth-bootstrap';
-import { journalRequestGuard } from '../../journal-http';
+import { journalRequestGuard, journalSchemaGate } from '../../journal-http';
 
 export const reconciliationRoutes = Router();
 const controller = new ReconciliationController();
@@ -158,30 +158,30 @@ reconciliationRoutes.post(
  * GET /api/v1/reconciliation/rules
  * List reconciliation rules and configuration
  */
-reconciliationRoutes.get('/rules', authMiddleware.requireOrganization(), refuseGlobalScope, controller.listRules.bind(controller));
+reconciliationRoutes.get('/rules', authMiddleware.requireOrganization(), refuseGlobalScope, journalSchemaGate, controller.listRules.bind(controller));
 
 /**
  * POST /api/v1/reconciliation/rules
  * Create a new reconciliation rule
  */
 reconciliationRoutes.post('/rules', refuseGlobalScope, authMiddleware.requirePermission('admin'), authMiddleware.requireOrganization(),
-  validateRequest(ruleSchema, 'body'), controller.writeRule.bind(controller));
+  validateRequest(ruleSchema, 'body'), journalSchemaGate, controller.writeRule.bind(controller));
 
 /**
  * PUT/DELETE /api/v1/reconciliation/rules/:id
  * Foreign, missing and legacy global rules return one identical 404 (v16 §8).
  */
 reconciliationRoutes.put('/rules/:id', refuseGlobalScope, authMiddleware.requirePermission('admin'), authMiddleware.requireOrganization(),
-  validateRequest(ruleSchema, 'body'), controller.writeRule.bind(controller));
+  validateRequest(ruleSchema, 'body'), journalSchemaGate, controller.writeRule.bind(controller));
 reconciliationRoutes.delete('/rules/:id', refuseGlobalScope, authMiddleware.requirePermission('admin'), authMiddleware.requireOrganization(),
-  controller.writeRule.bind(controller));
+  journalSchemaGate, controller.writeRule.bind(controller));
 
 /**
  * GET /api/v1/reconciliation/source-authorities
  * List source authority scores
  */
 reconciliationRoutes.get('/source-authorities', authMiddleware.requireOrganization(), refuseGlobalScope,
-  controller.listSourceAuthorities.bind(controller));
+  journalSchemaGate, controller.listSourceAuthorities.bind(controller));
 
 /**
  * PUT /api/v1/reconciliation/source-authorities/:source
@@ -189,7 +189,7 @@ reconciliationRoutes.get('/source-authorities', authMiddleware.requireOrganizati
  */
 reconciliationRoutes.put('/source-authorities/:source', refuseGlobalScope, authMiddleware.requirePermission('admin'),
   authMiddleware.requireOrganization(), validateRequest(Joi.object({ source: Joi.string().max(255).required() }), 'params'),
-  validateRequest(authoritySchema, 'body'), controller.updateSourceAuthority.bind(controller));
+  validateRequest(authoritySchema, 'body'), journalSchemaGate, controller.updateSourceAuthority.bind(controller));
 
 /**
  * GET /api/v1/reconciliation/lineage/:ci_id

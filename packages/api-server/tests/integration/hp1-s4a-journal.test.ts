@@ -114,6 +114,14 @@ it('X-30/M-6: without the fence constraint a journaled write is 503 before any j
     expect((await api('a').post('/cis', { name, type: 'server' })).status).toBe(503);
     expect((await api('a').post(`/reconciliation/conflicts/${randomUUID()}/resolve`, { resolution: 'accept_target',
       expected_revision: 'a'.repeat(64) })).status).toBe(503); // v16 §3.2: gate before the conflict owner lookup (404 before)
+    const [rule, ruleId] = [{ name: id('gate-rule'), identification_rules: [] }, randomUUID()];
+    const gated = [await api('a').post('/reconciliation/merge', { name, ci_type: 'server', source: 'gate', source_id: 'gate-1',
+      identifiers: { external_id: name } }), await api('a').get('/reconciliation/rules'), await api('a').post('/reconciliation/rules', rule),
+      await api('a').put(`/reconciliation/rules/${ruleId}`, rule), await api('a').delete(`/reconciliation/rules/${ruleId}`),
+      await api('a').get('/reconciliation/source-authorities'), await api('a').put('/reconciliation/source-authorities/gate', { authority_score: 5 })];
+    expect(gated.map(response => response.status)).toEqual([503, 503, 503, 503, 503, 503, 503]); // merge and the six policy routes
+    expect(await rows(`SELECT 1 FROM reconciliation_rules WHERE organization_id = $1
+      UNION ALL SELECT 1 FROM source_authority WHERE organization_id = $1`, [A])).toEqual([]);
     expect(await rows('SELECT id FROM ci_reconciliation_operations WHERE organization_id = $1', [A])).toEqual([]);
     expect(await cypher('MATCH (c:CI {name: $name}) RETURN c', { name })).toEqual([]);
   } finally {

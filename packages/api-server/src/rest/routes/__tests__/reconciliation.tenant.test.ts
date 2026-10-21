@@ -25,7 +25,7 @@ jest.mock('@cmdb/database', () => ({
   ...jest.requireActual<object>('@cmdb/database/journal/journal'),
   ...jest.requireActual<object>('@cmdb/database/journal/encoding'),
   getNeo4jClient: () => ({
-    getSession: () => ({ run, close }),
+    getSession: () => ({ run, close }), assertJournalReady: async () => undefined, // schema present
     // The journaled merge (journal internals run in tests/integration) plans, then replays its graph write.
     reconcileOwned: async (ciId: string, organizationId: string, _actor: string, _operation: string,
       plan: (current: Record<string, unknown>) => Promise<{ graph: { params: { props: Record<string, unknown> } } | null }>,

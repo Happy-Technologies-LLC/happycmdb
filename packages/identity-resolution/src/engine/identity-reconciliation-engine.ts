@@ -446,6 +446,7 @@ export class IdentityReconciliationEngine {
 
   /** REST/GraphQL merge into an existing owned CI (v16 §3.1, §7): updated or held for review; null when unmatched. */
   async mergeCI(discoveredCI: TransformedCI, organizationId: string, actor: string): Promise<MergeOutcome | null> {
+    await this.neo4jClient.assertJournalReady(true); // v16 §3.2: the gate precedes identification (lineage/graph reads)
     const match = await this.findExistingCI(discoveredCI.identifiers, discoveredCI, organizationId);
     return match ? this.mergeIntoCI(match, discoveredCI, organizationId, actor) : null;
   }

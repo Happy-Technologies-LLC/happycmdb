@@ -577,15 +577,20 @@ it('S4d X-26/X-20: drift, baseline, impact and criticality persist nothing while
     const write = api('a').put(`/cis/${ci}`, { name: `${ci}-renamed` }).then(response => response);
     await entered.promise;
     const responses: request.Response[] = [];
-    for (const call of calls) responses.push(await call()); // impact admits one request per principal at a time
-    release.resolve();
+    try {
+      for (const call of calls) responses.push(await call()); // impact admits one request per principal at a time
+    } finally {
+      release.resolve(); // a failing call must never leave the W held for later tests
+    }
     expect((await write).status).toBe(200);
     return responses.map(response => [response.status, response.body]);
   };
-  // Root in the gap: the pre-check. Neighbour in the gap: only the post-check sees it. Org B gets no oracle.
-  expect(await duringGap(root, [...persisting('a'), persisting('b')[0]!])).toEqual([...Array(4).fill([409, GAP]),
-    [404, { success: false, error: 'Not Found', message: `CI with ID '${root}' not found` }]]);
-  expect(await duringGap(peer, persisting('a').slice(1))).toEqual(Array(3).fill([409, GAP]));
+  // Root in the gap: the pre-check. Neighbour in the gap: only the post-check sees it. Org B never gets the 409 oracle.
+  const absent = [404, { success: false, error: 'Not Found', message: `CI with ID '${root}' not found` }];
+  expect(await duringGap(root, [...persisting('a'), ...persisting('b')]))
+    .toEqual([...Array(4).fill([409, GAP]), ...Array(4).fill(absent)]);
+  expect(await duringGap(peer, [...persisting('a').slice(1), ...persisting('b').slice(1)]))
+    .toEqual([...Array(3).fill([409, GAP]), ...Array(3).fill(absent)]);
   expect([await derived([root, peer]), driftEvents()]).toEqual([before, emitted]);
 
   const statuses: number[] = [];
@@ -608,6 +613,7 @@ it('S4d X-20: a drift persist admitted before a T1 on its CI commits first; the 
     inFlight.push(api('a').post(`/drift/detect/${ci}`, {}).then(response => response));
     await until(async () => (await waitingOn(blockerPid)).length > 0);
     const [detectPid] = await waitingOn(blockerPid);
+    expect(detectPid).toBeDefined();
     inFlight.push(api('a').put(`/cis/${ci}`, { name: 'after-drift' }).then(response => response));
     await until(async () => (await waitingOn(detectPid!)).length > 0);
     expect((await waitingOn(detectPid!))[0]).toBeDefined();

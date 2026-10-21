@@ -20,8 +20,11 @@ import {
   ChangeType,
   ImpactCriticalityLimitError,
   architectureRemainingMs,
+  type ReferencedWrite,
 } from '@cmdb/ai-ml-engine';
 import { AuthenticatedRequest, requestOrganizationId } from '../../middleware/auth.middleware';
+import { assertNoCIGap, writeReferencedCIs } from '../../read-admission';
+import { sendJournalError } from '../../journal-http';
 
 type SnapshotType = 'configuration' | 'performance' | 'relationships';
 
@@ -49,6 +52,11 @@ export class DriftImpactController {
     return req.user?._userId || req.user?._username || 'system';
   }
 
+  /** v16 §6.5: persist computed results only in AP-P′, after the gap check over every CI they read. */
+  private admit(req: AuthenticatedRequest): ReferencedWrite {
+    return (ciIds, write) => writeReferencedCIs(requestOrganizationId(req), ciIds, write);
+  }
+
   // ==========================================================================
   // Drift
   // ==========================================================================
@@ -70,6 +78,8 @@ export class DriftImpactController {
       }
 
       const ci = await this.neo4jClient.getCI(ciId, requestOrganizationId(req));
+      // §5.2 step 6 when missing (own-org gap → 409, else 404); AP-S pre-check when present.
+      await assertNoCIGap(requestOrganizationId(req), ciId);
       if (!ci) {
         res.status(404).json({
           success: false,
@@ -89,13 +99,14 @@ export class DriftImpactController {
         return;
       }
 
-      const result = await this.driftDetector.detectDrift(ciId, requestOrganizationId(req));
+      const result = await this.driftDetector.detectDrift(ciId, requestOrganizationId(req), this.admit(req));
 
       res.json({
         success: true,
         data: result,
       });
     } catch (error) {
+      if (sendJournalError(res, error)) return;
       logger.error('Error detecting configuration drift', error);
       res.status(500).json({
         success: false,
@@ -170,6 +181,7 @@ export class DriftImpactController {
       }
 
       const ci = await this.neo4jClient.getCI(ci_id, requestOrganizationId(req));
+      await assertNoCIGap(requestOrganizationId(req), ci_id);
       if (!ci) {
         res.status(404).json({
           success: false,
@@ -183,7 +195,8 @@ export class DriftImpactController {
         ci_id,
         snapshot_type,
         this.getActor(req),
-        requestOrganizationId(req)
+        requestOrganizationId(req),
+        this.admit(req)
       );
 
       res.status(201).json({
@@ -192,6 +205,7 @@ export class DriftImpactController {
         message: 'Baseline snapshot created successfully',
       });
     } catch (error) {
+      if (sendJournalError(res, error)) return;
       logger.error('Error creating baseline snapshot', error);
       res.status(500).json({
         success: false,
@@ -308,13 +322,15 @@ export class DriftImpactController {
       } };
     }
     const ci = await this.neo4jClient.getCI(ci_id, requestOrganizationId(req), architectureRemainingMs());
+    await assertNoCIGap(requestOrganizationId(req), ci_id);
     if (!ci) {
       return { status: 404, body: {
         success: false, error: 'Not Found', message: `CI with ID '${ci_id}' not found`,
       } };
     }
     architectureRemainingMs();
-    const impact = await this.impactEngine.predictChangeImpact(ci_id, normalizedChangeType, requestOrganizationId(req));
+    const impact = await this.impactEngine.predictChangeImpact(
+      ci_id, normalizedChangeType, requestOrganizationId(req), this.admit(req));
     return { status: 201, body: { success: true, data: impact } };
   }
 
@@ -393,13 +409,14 @@ export class DriftImpactController {
       return { status: 400, body: { success: false, error: 'Bad Request', message: 'CI ID is required' } };
     }
     const ci = await this.neo4jClient.getCI(ciId, requestOrganizationId(req), architectureRemainingMs());
+    await assertNoCIGap(requestOrganizationId(req), ciId);
     if (!ci) {
       return { status: 404, body: {
         success: false, error: 'Not Found', message: `CI with ID '${ciId}' not found`,
       } };
     }
     architectureRemainingMs();
-    const score = await this.impactEngine.getCriticalityScore(ciId, requestOrganizationId(req));
+    const score = await this.impactEngine.getCriticalityScore(ciId, requestOrganizationId(req), this.admit(req));
     return { status: 200, body: { success: true, data: score } };
   }
 

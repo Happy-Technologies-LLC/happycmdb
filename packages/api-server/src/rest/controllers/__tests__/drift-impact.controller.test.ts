@@ -23,7 +23,7 @@ jest.mock('@cmdb/common', () => ({
 
 jest.mock('@cmdb/database', () => ({
   getNeo4jClient: jest.fn(),
-  getPostgresClient: jest.fn(),
+  getPostgresClient: () => ({ query: async () => ({ rows: [] }) }), // no own-org journal gap
 }));
 
 jest.mock('@cmdb/ai-ml-engine', () => ({
@@ -212,7 +212,8 @@ describe('DriftImpactController', () => {
         'ci-001',
         'configuration',
         'auth-user',
-        ORG
+        ORG,
+        expect.any(Function)
       );
     });
   });
@@ -302,7 +303,7 @@ describe('DriftImpactController', () => {
 
       await controller.predictImpact(req, res);
 
-      expect(mockImpactEngine.predictChangeImpact).toHaveBeenCalledWith('ci-001', 'restart', ORG);
+      expect(mockImpactEngine.predictChangeImpact).toHaveBeenCalledWith('ci-001', 'restart', ORG, expect.any(Function));
       expect(res.status).toHaveBeenCalledWith(201);
     });
   });

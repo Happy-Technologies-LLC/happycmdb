@@ -16,6 +16,7 @@ import {
   ArchitectureDeadlineError, architectureFailure, withArchitectureDeadline,
   ImpactCriticalityLimitError, ARCHITECTURE_REQUEST_TIMEOUT_MS,
 } from '@cmdb/ai-ml-engine';
+import { JournalUnavailableError } from '@cmdb/database';
 import { DriftImpactController } from '../controllers/drift-impact.controller';
 import { validateRequest, validateOptional } from '../middleware/validation.middleware';
 import { getAuthMiddleware } from '../../auth/auth-bootstrap';
@@ -44,10 +45,12 @@ function executeImpact(
         return { status: 503, message: 'Impact criticality resource limit exceeded' };
       }
       const failure = architectureFailure(error);
-      return failure && {
-        status: failure.status,
-        message: failure.status === 504 ? 'Impact analysis timed out' : 'Impact criticality resource limit exceeded',
-      };
+      if (failure) {
+        return { status: failure.status,
+          message: failure.status === 504 ? 'Impact analysis timed out' : 'Impact criticality resource limit exceeded' };
+      }
+      // v16 §5.3: an AP-P′ admission lock timeout is a 503, never a 500.
+      return error instanceof JournalUnavailableError ? { status: 503, message: 'CI write temporarily unavailable' } : null;
     },
     internalError: 'Failed to analyze impact',
   });

@@ -506,7 +506,7 @@ it('never gives B future-dated A derivatives after CI ID reuse, even with A hist
   expect(JSON.stringify((await get(`/api/v1/impact/criticality/${id}`)).body)).not.toContain('secret');
 });
 
-it('S4d §6.5: a reused CI id counts only its own organization in the criticality change frequency', async () => {
+it('S4d §6.5: criticality change frequency ignores foreign-org history rows on the same CI id and incarnation', async () => {
   const id = 'ci-fresh';
   nodes.set(id, { id, name: 'New B', organization_id: B, incarnation_id: B_INC, created_at: new Date().toISOString() });
   await db.rows(`INSERT INTO ci_change_history (ci_id, change_type, change_source, ci_incarnation_id, organization_id)

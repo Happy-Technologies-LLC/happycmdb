@@ -17,18 +17,24 @@ const INC = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const getCI = jest.fn(async (id: string) => ({ id, _incarnation_id: INC }));
 const query = jest.fn(async (_sql: string, _params?: unknown[]) => ({ rows: [] as Array<Record<string, unknown>> }));
 
-jest.mock('@cmdb/database', () => ({
-  getNeo4jClient: () => ({ getCI, ensureCIIncarnation: async () => INC, getSession: () => ({ run, close: async () => undefined }) }),
-  getPostgresClient: () => ({
-    query,
-    getClient: async () => ({
-      query: (sql: string, params?: unknown[]) =>
-        sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK' || sql.includes("set_config('statement_timeout'")
-          ? Promise.resolve({ rows: [] }) : query(sql, params),
-      release: () => undefined,
+// HP1 admission (gap checks, shared admission lock) finds no gap; `query` counts only engine SQL.
+const mockAdmission = (sql: string) => /ci_reconciliation_operations|pg_advisory_xact_lock_shared|lock_timeout/.test(sql);
+jest.mock('@cmdb/database', () => {
+  const client = {
+    query: (sql: string, params?: unknown[]) =>
+      sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK' || sql.includes("set_config('statement_timeout'")
+        || mockAdmission(sql) ? Promise.resolve({ rows: [] }) : query(sql, params),
+    release: () => undefined,
+  };
+  return {
+    getNeo4jClient: () => ({ getCI, ensureCIIncarnation: async () => INC, getSession: () => ({ run, close: async () => undefined }) }),
+    getPostgresClient: () => ({
+      query: (sql: string, params?: unknown[]) => mockAdmission(sql) ? Promise.resolve({ rows: [] }) : query(sql, params),
+      getClient: async () => client,
+      pool: { connect: async () => client },
     }),
-  }),
-}));
+  };
+});
 let principalSequence = 0;
 jest.mock('../../../auth/auth-bootstrap', () => {
   const { AuthMiddleware } = jest.requireActual<{ AuthMiddleware: typeof AuthMiddlewareClass }>(

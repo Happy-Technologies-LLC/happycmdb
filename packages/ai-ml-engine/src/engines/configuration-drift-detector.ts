@@ -418,9 +418,9 @@ export class ConfigurationDriftDetector {
     const result = await this.postgresClient.query(
       `SELECT b.* FROM baseline_snapshots b
        WHERE b.ci_id = $1 AND b.snapshot_type = $2 AND b.is_approved = true
-         AND b.ci_incarnation_id = $3
+         AND b.ci_incarnation_id = $3 AND b.organization_id = $4
        ORDER BY b.created_at DESC LIMIT 1`,
-      [ciId, snapshotType, incarnationId]
+      [ciId, snapshotType, incarnationId, organizationId]
     );
 
     if (result.rows.length === 0) {
@@ -445,8 +445,8 @@ export class ConfigurationDriftDetector {
     const result = await this.postgresClient.query(
       `UPDATE baseline_snapshots b
        SET is_approved = true, approved_by = $2, approved_at = NOW()
-       WHERE b.id = $1 AND b.ci_id = $3 AND b.ci_incarnation_id = $4 RETURNING b.*`,
-      [baselineId, approvedBy, existing.ci_id, incarnationId]
+       WHERE b.id = $1 AND b.ci_id = $3 AND b.ci_incarnation_id = $4 AND b.organization_id = $5 RETURNING b.*`,
+      [baselineId, approvedBy, existing.ci_id, incarnationId, organizationId]
     );
 
     if (result.rows.length === 0) throw new Error('Baseline snapshot not found');
@@ -457,11 +457,11 @@ export class ConfigurationDriftDetector {
    * Get a baseline snapshot by ID
    */
   async getBaselineById(baselineId: string, organizationId: string): Promise<BaselineSnapshot | null> {
-    // The baseline ID is not an ownership credential: resolve it only when
-    // its linked CI is visible to this tenant.
+    // The baseline ID is not an ownership credential: resolve it only when it
+    // was written by this tenant and its linked CI is visible to this tenant.
     const result = await this.postgresClient.query(
-      'SELECT b.* FROM baseline_snapshots b WHERE b.id = $1',
-      [baselineId]
+      'SELECT b.* FROM baseline_snapshots b WHERE b.id = $1 AND b.organization_id = $2',
+      [baselineId, organizationId]
     );
 
     if (result.rows.length === 0) {
@@ -482,8 +482,8 @@ export class ConfigurationDriftDetector {
     if (!incarnationId) throw new Error('CI not found');
     const inserted = await this.postgresClient.query(
       `INSERT INTO baseline_snapshots
-       (id, ci_id, snapshot_type, snapshot_data, created_at, created_by, is_approved, ci_incarnation_id)
-       VALUES ($1::uuid, $2::varchar, $3::varchar, $4::jsonb, $5::timestamptz, $6::varchar, $7::boolean, $8::uuid)
+       (id, ci_id, snapshot_type, snapshot_data, created_at, created_by, is_approved, ci_incarnation_id, organization_id)
+       VALUES ($1::uuid, $2::varchar, $3::varchar, $4::jsonb, $5::timestamptz, $6::varchar, $7::boolean, $8::uuid, $9::uuid)
        RETURNING id`,
       [
         baseline.id,
@@ -494,6 +494,7 @@ export class ConfigurationDriftDetector {
         baseline.created_by,
         baseline.is_approved,
         incarnationId,
+        organizationId,
       ]
     );
     if (inserted.rows.length === 0) throw new Error('CI not found');
@@ -508,8 +509,8 @@ export class ConfigurationDriftDetector {
     const inserted = await this.postgresClient.query(
       `INSERT INTO drift_detection_results
        (ci_id, ci_name, has_drift, drift_score, drifted_fields,
-        baseline_snapshot_id, detected_at, ci_incarnation_id)
-       VALUES ($1::varchar, $2::varchar, $3::boolean, $4::integer, $5::jsonb, $6::uuid, $7::timestamptz, $8::uuid)
+        baseline_snapshot_id, detected_at, ci_incarnation_id, organization_id)
+       VALUES ($1::varchar, $2::varchar, $3::boolean, $4::integer, $5::jsonb, $6::uuid, $7::timestamptz, $8::uuid, $9::uuid)
        RETURNING id`,
       [
         result.ci_id,
@@ -520,6 +521,7 @@ export class ConfigurationDriftDetector {
         result.baseline_snapshot_id,
         result.detected_at,
         incarnationId,
+        organizationId,
       ]
     );
     if (inserted.rows.length === 0) throw new Error('CI not found');
@@ -550,8 +552,9 @@ export class ConfigurationDriftDetector {
     if (!incarnationId) return [];
     const result = await this.postgresClient.query(
       `SELECT d.* FROM drift_detection_results d
-       WHERE d.ci_id = $1 AND d.ci_incarnation_id = $3 ORDER BY d.detected_at DESC LIMIT $2`,
-      [ciId, limit, incarnationId]
+       WHERE d.ci_id = $1 AND d.ci_incarnation_id = $3 AND d.organization_id = $4
+       ORDER BY d.detected_at DESC LIMIT $2`,
+      [ciId, limit, incarnationId, organizationId]
     );
 
     return result.rows.map((row: any) => ({

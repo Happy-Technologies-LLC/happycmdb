@@ -1678,6 +1678,13 @@ END
 $fn$;
 CREATE TRIGGER reconciliation_conflicts_immutable BEFORE UPDATE OR DELETE ON reconciliation_conflicts
   FOR EACH ROW EXECUTE FUNCTION reconciliation_conflicts_immutable();
+-- HP1-S4c contract parity with migration 038.
+ALTER TABLE baseline_snapshots
+  ADD CONSTRAINT baseline_snapshots_organization_required CHECK (organization_id IS NOT NULL) NOT VALID;
+ALTER TABLE drift_detection_results
+  ADD CONSTRAINT drift_detection_results_organization_required CHECK (organization_id IS NOT NULL) NOT VALID;
+ALTER TABLE impact_analyses
+  ADD CONSTRAINT impact_analyses_organization_required CHECK (organization_id IS NOT NULL) NOT VALID;
 
 -- ============================================
 -- INITIAL DATA POPULATION

@@ -44,6 +44,7 @@ const ReconciliationQuery = {
     _context: GraphQLContext
   ) => {
     const organizationId = requireGraphQLOrganization(_context);
+    await _context._neo4jClient.assertJournalReady().catch((error: unknown) => Promise.reject(journalGraphQLError(error) ?? error)); // v16 §3.2
     try {
       const { _identifiers, _source } = _args;
 
@@ -107,6 +108,7 @@ const ReconciliationQuery = {
     _context: GraphQLContext
   ) => {
     const organizationId = requireGraphQLOrganization(_context);
+    await _context._neo4jClient.assertJournalReady().catch((error: unknown) => Promise.reject(journalGraphQLError(error) ?? error)); // v16 §3.2
     try {
       const status = (_args._status || 'pending').toLowerCase();
       const limit = Math.min(_args._limit || GRAPHQL_PAGE_DEFAULTS.listConflicts, 1000);

@@ -173,26 +173,30 @@ afterAll(async () => { await server?.stop(); host.kill(); });
 beforeEach(() => { mockEmit.mockClear(); });
 
 // First in the file: the journal caches a passing §3.2 gate per process.
-it('v16 §3.2: before 037 or 028 resolve, external-id merge, the conflict list and the per-org policy routes are 503 before any HP1 data query', async () => {
+it('v16 §3.2: before 037 or 029/028 resolve, merge, match, the conflict list and the per-org policy routes are 503 before any HP1 data query', async () => {
   for (const [down, up] of [
     ['ALTER TABLE ci_field_sources DROP CONSTRAINT ci_field_sources_organization_required',
       'ALTER TABLE ci_field_sources ADD CONSTRAINT ci_field_sources_organization_required CHECK (organization_id IS NOT NULL) NOT VALID'],
-    ['ALTER TABLE ci_reconciliation_operations RENAME TO hp1_hidden; ALTER TABLE reconciliation_conflicts RENAME COLUMN organization_id TO hp1_org; ALTER TABLE ci_source_lineage RENAME COLUMN organization_id TO hp1_org',
-      'ALTER TABLE hp1_hidden RENAME TO ci_reconciliation_operations; ALTER TABLE reconciliation_conflicts RENAME COLUMN hp1_org TO organization_id; ALTER TABLE ci_source_lineage RENAME COLUMN hp1_org TO organization_id'],
+    ['ALTER TABLE ci_reconciliation_operations RENAME TO hp1_hidden; ALTER TABLE reconciliation_conflicts RENAME COLUMN organization_id TO hp1_org; ALTER TABLE ci_source_lineage RENAME COLUMN organization_id TO hp1_org; ALTER TABLE reconciliation_conflicts RENAME COLUMN field_name TO hp1_field',
+      'ALTER TABLE hp1_hidden RENAME TO ci_reconciliation_operations; ALTER TABLE reconciliation_conflicts RENAME COLUMN hp1_org TO organization_id; ALTER TABLE ci_source_lineage RENAME COLUMN hp1_org TO organization_id; ALTER TABLE reconciliation_conflicts RENAME COLUMN hp1_field TO field_name'],
   ]) {
     await mockSql(down, [], 'exec');
-    mockGraph.sql.length = 0;
+    [mockGraph.sql.length, mockGraph.statements.length] = [0, 0];
     const rest = await resolve('a', randomUUID(), { resolution: 'accept_target', expected_revision: 'a'.repeat(64) });
     const gql = await api('a').gql(`mutation { _reconciliation { resolveConflict(_id: "${randomUUID()}",
       _resolution: "accept_target", _expectedRevision: "${'a'.repeat(64)}") { _status } } }`);
     const merged = await api('a').post('merge', { name: 'gate', ci_type: 'server', source: 'gate', source_id: 'gate-1', identifiers: { external_id: 'gate-1' } });
     const [rule, ruleId] = [{ name: 'gate', identification_rules: [] }, randomUUID()];
     const policy = [await api('a').get('conflicts'), await api('a').get('rules'), await api('a').post('rules', rule), await api('a').put(`rules/${ruleId}`, rule),
-      await api('a').delete(`rules/${ruleId}`), await api('a').get('source-authorities'), await api('a').put('source-authorities/gate', { authority_score: 5 })];
+      await api('a').delete(`rules/${ruleId}`), await api('a').get('source-authorities'), await api('a').put('source-authorities/gate', { authority_score: 5 }),
+      await api('a').post('match', { identifiers: { external_id: 'gate-1' } })];
+    const reads = await api('a').gql('{ _reconciliation { findMatches(_identifiers: { _externalId: "gate-1" }) { _ciId } listConflicts { _id } } }');
     await mockSql(up, [], 'exec');
     expect([rest.status, gql.body.errors?.[0]?.extensions?.code, merged.status, ...policy.map(response => response.status)])
-      .toEqual([503, 'SERVICE_UNAVAILABLE', 503, 503, 503, 503, 503, 503, 503, 503]);
-    expect(mockGraph.sql.filter(text => !text.includes('to_regclass'))).toEqual([]); // only the gate ran
+      .toEqual([503, 'SERVICE_UNAVAILABLE', 503, 503, 503, 503, 503, 503, 503, 503, 503]);
+    expect(reads.body.errors?.map((error: { extensions: object }) => error.extensions)).toEqual([{ code: 'SERVICE_UNAVAILABLE' }, { code: 'SERVICE_UNAVAILABLE' }]);
+    expect([mockGraph.sql.filter(text => !text.includes('to_regclass')), mockGraph.statements.filter(text => !text.startsWith('SHOW CONSTRAINTS'))])
+      .toEqual([[], []]); // only the gate ran
   }
 });
 

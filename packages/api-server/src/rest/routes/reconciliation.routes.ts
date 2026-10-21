@@ -113,7 +113,7 @@ const conflictsQuerySchema = Joi.object({
 reconciliationRoutes.post(
   '/match',
   authMiddleware.requireOrganization(),
-  validateRequest(matchRequestSchema, 'body'),
+  validateRequest(matchRequestSchema, 'body'), journalSchemaGate, // v16 §3.2 (S4b scopes lineage to the organization)
   controller.findMatches.bind(controller)
 );
 

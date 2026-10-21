@@ -119,8 +119,10 @@ it('X-30/M-6: without the fence constraint a journaled write is 503 before any j
       identifiers: { external_id: name } }), await api('a').get('/reconciliation/rules'), await api('a').post('/reconciliation/rules', rule),
       await api('a').put(`/reconciliation/rules/${ruleId}`, rule), await api('a').delete(`/reconciliation/rules/${ruleId}`),
       await api('a').get('/reconciliation/source-authorities'), await api('a').put('/reconciliation/source-authorities/gate', { authority_score: 5 }),
-      await api('a').get('/reconciliation/conflicts')];
-    expect(gated.map(response => response.status)).toEqual([503, 503, 503, 503, 503, 503, 503, 503]); // merge, six policy routes, conflict list
+      await api('a').get('/reconciliation/conflicts'), await api('a').post('/reconciliation/match', { identifiers: { external_id: name } })];
+    expect(gated.map(response => response.status)).toEqual([503, 503, 503, 503, 503, 503, 503, 503, 503]); // merge, six policy routes, list, match
+    const reads = await api('a').gql(`{ _reconciliation { findMatches(_identifiers: { _externalId: "${name}" }) { _ciId } listConflicts { _id } } }`);
+    expect(reads.body.errors?.map((error: { extensions: object }) => error.extensions)).toEqual([{ code: 'SERVICE_UNAVAILABLE' }, { code: 'SERVICE_UNAVAILABLE' }]);
     expect(await rows(`SELECT 1 FROM reconciliation_rules WHERE organization_id = $1
       UNION ALL SELECT 1 FROM source_authority WHERE organization_id = $1`, [A])).toEqual([]);
     expect(await rows('SELECT id FROM ci_reconciliation_operations WHERE organization_id = $1', [A])).toEqual([]);

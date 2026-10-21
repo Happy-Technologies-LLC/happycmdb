@@ -73,10 +73,6 @@ describe('Matching Strategies - Detailed Tests', () => {
     (IdentityReconciliationEngine as any).instance = undefined;
     engine = IdentityReconciliationEngine.getInstance();
 
-    // Setup mock for loadConfiguration (returns no custom config => uses defaults)
-    mockPostgresClient.query.mockResolvedValueOnce({ rows: [] });
-    await engine.loadConfiguration();
-    mockPostgresClient.query.mockReset();
     mockSession.run.mockImplementation(async (_cypher: string, params: { ciIds?: string[] }) => ({
       records: params.ciIds ? [{ get: () => params.ciIds![0] }] : [],
     }));

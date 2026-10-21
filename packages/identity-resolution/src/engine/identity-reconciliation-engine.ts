@@ -6,10 +6,13 @@
  * Multi-source CI deduplication and reconciliation
  */
 
-import { logger, sanitizeCITypeForLabel } from '@cmdb/common';
-import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
+import { createHash, randomUUID } from 'crypto';
+import { ciIncarnationId, logger, sanitizeCITypeForLabel } from '@cmdb/common';
+import {
+  enc, getNeo4jClient, getPostgresClient, JournalConflictError, PlanUnrepresentableError, type ConflictPlan, type StoredPlan,
+} from '@cmdb/database';
 import { IdentificationAttributes, TransformedCI } from '@cmdb/integration-framework';
-import { MatchResult, ReconciliationConfig } from '../types/reconciliation.types';
+import { FieldMergeRule, MatchResult, ReconciliationConfig } from '../types/reconciliation.types';
 import * as fuzzball from 'fuzzball';
 import { getEventProducer, EventType, type CIDiscoveredEvent, type CIUpdatedEvent } from '@cmdb/event-processor';
 
@@ -23,12 +26,50 @@ function withoutOrganizationId<T extends Record<string, unknown>>(properties: T)
   return rest;
 }
 
+/** v16 §7.0 canon(v): sorted keys (UTF-16 order), no whitespace, ECMAScript JSON escaping, quoted strings. */
+export function canon(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canon).join(',')}]`;
+  if (value !== null && typeof value === 'object') {
+    const object = value as Record<string, unknown>;
+    return `{${Object.keys(object).sort().map(key => `${JSON.stringify(key)}:${canon(object[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'null';
+}
+
+/** v16 §7.0 H(F, old, new, source, source_id); a side is ["v", value] or, when absent, ["absent"]. */
+export function conflictHash(field: string, old: { value: unknown } | null, next: { value: unknown } | null,
+  source: string, sourceId: string): string {
+  const side = (present: { value: unknown } | null) => present ? ['v', present.value] : ['absent'];
+  return createHash('sha256').update(canon(['hp1-conflict-v1', field, side(old), side(next), source, sourceId])).digest('hex');
+}
+
+/** v16 §7.0 field_value text: strings verbatim, numbers/booleans unchanged, null "null", collections canon. */
+function fieldText(value: unknown): string {
+  return typeof value === 'string' ? value : value !== null && typeof value === 'object' ? canon(value) : String(value);
+}
+
+interface StoredField { value_json: unknown; source_name: string; last_correlation_id: string | null }
+interface ConflictRow {
+  id: string; field_name: string; status: string; content_hash: string; suppression_hash: string | null;
+  source_name: string; source_id: string; incoming_json: unknown; target_json: unknown; target_source_name: string;
+}
+/** v16 §7.3: stale iff O's field source is absent, from another source, or holds another value than the target. */
+function isStale(conflict: ConflictRow, stored: StoredField | undefined): boolean {
+  return !stored || stored.source_name !== conflict.target_source_name || canon(stored.value_json) !== canon(conflict.target_json);
+}
+
+export interface MergeOutcome {
+  ci_id: string; action: 'updated' | 'pending_review'; correlation_id: string; conflict_ids: string[];
+}
+export type ConflictResolution = 'accept_source' | 'accept_target' | 'merge' | 'dismiss_stale';
+const RESERVED_ATTRIBUTES = ['id', 'organization_id', 'organizationid', 'op_id', 'reconciliation_op_id', 'created_at',
+  'incarnation_id'];
+
 export class IdentityReconciliationEngine {
   private static instance: IdentityReconciliationEngine;
   private neo4jClient = getNeo4jClient();
   private postgresClient = getPostgresClient();
   private eventProducer = getEventProducer();
-  private config: ReconciliationConfig | null = null;
 
   private constructor() {}
 
@@ -43,47 +84,30 @@ export class IdentityReconciliationEngine {
   }
 
   /**
-   * Load reconciliation configuration
+   * v16 §8: the requesting organization's newest enabled rule and its authorities,
+   * read per operation (no process cache). Org row → code default → 5; legacy
+   * NULL-org rules and authorities are inert.
    */
-  async loadConfiguration(): Promise<void> {
-    // Load from database
-    const result = await this.postgresClient.query(
-      'SELECT * FROM reconciliation_rules WHERE enabled = true LIMIT 1'
-    );
-
-    if (result.rows.length === 0) {
-      logger.warn('No reconciliation rules found, using default configuration');
-      this.config = this.getDefaultConfiguration();
-    } else {
-      const row = result.rows[0];
-      this.config = {
-        name: row.name,
-        identification_rules: row.identification_rules,
-        merge_rules: row.merge_strategies,
-        source_authorities: await this.loadSourceAuthorities(),
-      };
-    }
-
-    logger.info('Reconciliation configuration loaded', {
-      name: this.config.name,
-      rules: this.config.identification_rules.length
-    });
+  private async loadPolicy(organizationId: string): Promise<{ review: Set<string>; authority: (source: string) => number }> {
+    const result = await this.postgresClient.query(`SELECT
+        (SELECT merge_strategies FROM reconciliation_rules WHERE organization_id = $1 AND enabled
+          ORDER BY updated_at DESC, id DESC LIMIT 1) AS merge_strategies,
+        (SELECT coalesce(jsonb_object_agg(source_name, authority_score), '{}'::jsonb) FROM source_authority
+          WHERE organization_id = $1) AS authorities`, [organizationId]);
+    const row = result.rows[0] ?? {};
+    const rules: FieldMergeRule[] = Array.isArray(row.merge_strategies) ? row.merge_strategies : [];
+    const authorities: Record<string, number> = { ...this.getDefaultConfiguration().source_authorities, ...row.authorities };
+    return {
+      review: new Set(rules.filter(rule => rule?.strategy === 'manual_review').map(rule => rule.field_name)),
+      authority: source => Object.prototype.hasOwnProperty.call(authorities, source) ? authorities[source]! : 5,
+    };
   }
 
-  /**
-   * Load source authority scores
-   */
-  private async loadSourceAuthorities(): Promise<Record<string, number>> {
-    const result = await this.postgresClient.query(
-      'SELECT source_name, authority_score FROM source_authority'
-    );
-
-    const authorities: Record<string, number> = {};
-    for (const row of result.rows) {
-      authorities[row.source_name] = row.authority_score;
-    }
-
-    return authorities;
+  /** O's field sources of a CI; never another organization's or legacy rows. */
+  private async loadFieldSources(organizationId: string, ciId: string): Promise<Map<string, StoredField>> {
+    const result = await this.postgresClient.query(`SELECT field_name, value_json, source_name, last_correlation_id
+      FROM ci_field_sources WHERE organization_id = $1 AND ci_id = $2`, [organizationId, ciId]);
+    return new Map(result.rows.map(row => [row.field_name as string, row as StoredField]));
   }
 
   /**
@@ -180,11 +204,12 @@ export class IdentityReconciliationEngine {
    * Find CI by external_id from specific source
    */
   private async findByExternalId(externalId: string, source: string, organizationId: string): Promise<{ ci_id: string } | null> {
+    // Only O's lineage: a former owner's (or legacy) lineage of a reused id never identifies O's CI.
     const result = await this.postgresClient.query(
       `SELECT ci_id FROM ci_source_lineage
-       WHERE source_name = $1 AND source_id = $2
+       WHERE source_name = $1 AND source_id = $2 AND organization_id = $3
        ORDER BY last_seen_at DESC`,
-      [source, externalId]
+      [source, externalId, organizationId]
     );
     if (result.rows.length === 0) return null;
 
@@ -346,26 +371,7 @@ export class IdentityReconciliationEngine {
         strategy: match.match_strategy
       });
 
-      const incarnationId = await this.updateExistingCI(match.ci_id, discoveredCI, match, organizationId, actor);
-      if (!incarnationId) return null;
-
-      // v16 §3.3 step 7: notify after T2, best-effort; a Kafka failure cannot undo or fail the committed write.
-      try {
-        await this.eventProducer.emit<CIUpdatedEvent>(EventType.CI_UPDATED, 'identity-reconciliation-engine', {
-          ci_id: match.ci_id,
-          organization_id: organizationId,
-          ci_incarnation_id: incarnationId,
-          ci_name: discoveredCI.name,
-          changed_fields: Object.keys(discoveredCI.attributes),
-          previous_values: {},
-          new_values: discoveredCI.attributes,
-          source_system: discoveredCI.source,
-        });
-      } catch {
-        logger.warn('CI updated notification not published', { ci_id: match.ci_id });
-      }
-
-      return match.ci_id;
+      return (await this.mergeIntoCI(match, discoveredCI, organizationId, actor)) ? match.ci_id : null;
     } else if (!createIfMissing) {
       return null;
     } else {
@@ -428,7 +434,7 @@ export class IdentityReconciliationEngine {
       );
 
       // Record source lineage
-      await this.recordSourceLineage(ciId, ci.source, ci.source_id, ci.confidence_score);
+      await this.recordSourceLineage(ciId, ci.source, ci.source_id, ci.confidence_score, organizationId);
 
       logger.info('New CI created', { ci_id: ciId, name: ci.name });
       return { ciId: result.records[0]!.get('ci_id') as string,
@@ -438,119 +444,146 @@ export class IdentityReconciliationEngine {
     }
   }
 
-  /**
-   * Update existing CI with new data
-   */
-  private async updateExistingCI(ciId: string, ci: TransformedCI, match: MatchResult, organizationId: string,
-    actor: string): Promise<string | null> {
-    // Get source authority
-    const sourceAuthority = this.config?.source_authorities[ci.source] || 5;
-
-    // A target can disappear or change ownership between identification and SET.
-    // Do not write lineage or field sources until the tenant-scoped write commits.
-    const mergedData = await this.mergeFields(ciId, ci, sourceAuthority);
-
-    // HP1-S4a: one journaled, fenced `update` whose T2 writes the org-stamped history row.
-    const updated = await this.neo4jClient.updateCIProperties(ciId, mergedData, organizationId, actor, ci.source);
-    if (!updated) return null;
-    // Field sources and lineage keep their pre-HP1 keys until the HP1-S4b merge writer.
-    for (const [field, value] of Object.entries(mergedData)) {
-      await this.recordFieldSource(ciId, field, value, ci.source);
-    }
-
-    // Update source lineage
-    await this.recordSourceLineage(ciId, ci.source, ci.source_id, match.confidence);
-
-    logger.info('CI updated', { ci_id: ciId, source: ci.source });
-    return updated['incarnation_id'] as string;
+  /** REST/GraphQL merge into an existing owned CI (v16 §3.1, §7): updated or held for review; null when unmatched. */
+  async mergeCI(discoveredCI: TransformedCI, organizationId: string, actor: string): Promise<MergeOutcome | null> {
+    await this.neo4jClient.assertJournalReady(true); // v16 §3.2: the gate precedes identification (lineage/graph reads)
+    const match = await this.findExistingCI(discoveredCI.identifiers, discoveredCI, organizationId);
+    return match ? this.mergeIntoCI(match, discoveredCI, organizationId, actor) : null;
   }
 
   /**
-   * Merge fields with conflict resolution
+   * v16 §3.3, §7.1–7.2: one journaled `update` whose plan, under the slot, reads O's policy,
+   * field sources and this source's conflicts and classifies every field suppressed | review |
+   * merge. Any review field holds the whole merge: no W, fence, field/lineage/history row or
+   * event; T2 writes only the conflicts, and identical content reuses the pending conflict id.
+   * Changed content against a live (non-stale) pending conflict aborts as pending_content.
    */
-  private async mergeFields(ciId: string, newCI: TransformedCI, sourceAuthority: number): Promise<Record<string, unknown>> {
-    // Get existing field sources
-    const existingFields = await this.getFieldSources(ciId);
-    const mergedData: Record<string, unknown> = {};
-
-    // Reconciliation may change attributes, never identity, tenant or incarnation.
-    for (const [field, value] of Object.entries(withoutOrganizationId(newCI.attributes))) {
-      // v16 §4.4: reserved aliases, timestamps and the incarnation are dropped, never written.
-      if (['id', 'organization_id', 'organizationid', 'op_id', 'reconciliation_op_id', 'created_at', 'incarnation_id']
-        .includes(field.replace(/^_+/, '').toLowerCase())) continue;
-      const existing = existingFields.get(field);
-
-      if (!existing) {
-        // New field, just add it
-        mergedData[field] = value;
-      } else {
-        // Field exists, check authority
-        const existingAuthority = this.config?.source_authorities[existing.source_name] || 5;
-
-        if (sourceAuthority >= existingAuthority) {
-          // New source has higher or equal authority
-          mergedData[field] = value;
+  private async mergeIntoCI(match: MatchResult, ci: TransformedCI, organizationId: string,
+    actor: string): Promise<MergeOutcome | null> {
+    const { source, source_id: sourceId } = ci;
+    // T2 writes both into VARCHAR(255) evidence; refusing after W would leave a permanently failed gap.
+    if (typeof sourceId !== 'string' || !sourceId || sourceId.length > 255 || source.length > 255) {
+      throw new PlanUnrepresentableError();
+    }
+    const conflictIds: string[] = [];
+    let applied: Record<string, unknown> | null = null;
+    let incarnationId: string | null = null;
+    const outcome = await this.neo4jClient.reconcileOwned(match.ci_id, organizationId, actor, 'update', async current => {
+      const stored = await this.loadFieldSources(organizationId, match.ci_id);
+      const policy = await this.loadPolicy(organizationId);
+      const known: ConflictRow[] = (await this.postgresClient.query(`SELECT id, field_name, status, content_hash,
+          suppression_hash, source_name, source_id, incoming_json, target_json, target_source_name
+        FROM reconciliation_conflicts WHERE organization_id = $1 AND ci_id = $2 AND source_name = $3 AND source_id = $4
+          AND status IN ('pending', 'resolved')`, [organizationId, match.ci_id, source, sourceId])).rows;
+      const merged: Record<string, unknown> = {};
+      const conflicts: ConflictPlan[] = [];
+      for (const [field, value] of Object.entries(withoutOrganizationId(ci.attributes))) {
+        // v16 §4.4: reserved aliases, timestamps and the incarnation are dropped, never written.
+        if (RESERVED_ATTRIBUTES.includes(field.replace(/^_+/, '').toLowerCase())) continue;
+        const target = stored.get(field);
+        const hash = conflictHash(field, target ? { value: target.value_json } : null, { value }, source, sourceId);
+        if (known.some(row => row.status === 'resolved' && row.field_name === field && row.suppression_hash === hash)) continue;
+        if (policy.review.has(field) && target && target.source_name !== source && canon(target.value_json) !== canon(value)) {
+          const pending = known.find(row => row.status === 'pending' && row.field_name === field);
+          if (pending?.content_hash === hash) {
+            conflictIds.push(pending.id);
+            continue;
+          }
+          if (pending && !isStale(pending, target)) throw new JournalConflictError('pending_content');
+          const id = randomUUID();
+          conflictIds.push(id);
+          conflicts.push({ id, field, source, sourceId, incoming: value, target: target.value_json,
+            targetSource: target.source_name, contentHash: hash, targetCorrelationId: target.last_correlation_id,
+            ...(pending ? { supersedes: { id: pending.id, contentHash: pending.content_hash } } : {}) });
+        } else if (!target || policy.authority(source) >= policy.authority(target.source_name)) {
+          merged[field] = value;
         }
-        // Otherwise keep existing value
+      }
+      if (conflictIds.length) return { graph: null, operation: 'hold', conflicts };
+      applied = merged;
+      const keys = Object.keys(merged);
+      // A pre-incarnation node gets its marker in the same W, so the history row names it.
+      const existing = current['incarnation_id'];
+      incarnationId = typeof existing === 'string' ? existing : randomUUID();
+      return {
+        graph: { kind: 'update', label: null,
+          params: enc({ id: match.ci_id, props: typeof existing === 'string' ? merged : { ...merged, incarnation_id: incarnationId } }) },
+        history: { changeType: 'updated', changedFields: keys, source, next: enc(merged), incarnationId: ciIncarnationId(incarnationId),
+          previous: enc(Object.fromEntries(keys.map(key => [key, current[key] ?? null]))) },
+        fields: keys.map(name => ({ name, value: merged[name], text: fieldText(merged[name]), source })),
+        lineage: { source, sourceId, confidence: match.confidence },
+      };
+    }, async groupId => ({ ci_id: match.ci_id, action: applied ? 'updated' as const : 'pending_review' as const,
+      correlation_id: groupId, conflict_ids: conflictIds }));
+    const changed: Record<string, unknown> = applied ?? {};
+    if (outcome?.action === 'updated' && Object.keys(changed).length) {
+      // v16 §3.3 step 7: notify after T2, best-effort; a Kafka failure cannot undo or fail the committed write.
+      try {
+        await this.eventProducer.emit<CIUpdatedEvent>(EventType.CI_UPDATED, 'identity-reconciliation-engine', {
+          ci_id: match.ci_id, organization_id: organizationId, ci_incarnation_id: incarnationId!, ci_name: ci.name,
+          changed_fields: Object.keys(changed), previous_values: {}, new_values: changed, source_system: source,
+        });
+      } catch {
+        logger.warn('CI updated notification not published', { ci_id: match.ci_id });
       }
     }
-
-    return mergedData;
+    return outcome;
   }
 
   /**
-   * Get field sources for CI
+   * v16 §7.4: load the conflict by id and O (else the identical 404), then one journaled
+   * `resolve_conflict` on the owned CI. Under the slot the row must still be pending at
+   * `expectedRevision` (else 409); a stale row accepts only dismiss_stale, a fresh row never.
+   * accept_source/merge write F (W) and its field source; accept_target/dismiss_stale have no graph effect.
    */
-  private async getFieldSources(ciId: string): Promise<Map<string, any>> {
-    const result = await this.postgresClient.query(
-      'SELECT field_name, field_value, source_name FROM ci_field_sources WHERE ci_id = $1',
-      [ciId]
-    );
-
-    const fields = new Map();
-    for (const row of result.rows) {
-      fields.set(row.field_name, {
-        value: row.field_value,
-        source_name: row.source_name
-      });
-    }
-
-    return fields;
+  async resolveConflict(organizationId: string, actor: string, conflictId: string, resolution: ConflictResolution,
+    expectedRevision: string, mergedValue?: unknown): Promise<{ ci_id: string; status: string; correlation_id: string } | null> {
+    await this.neo4jClient.assertJournalReady(true); // v16 §3.2: the gate precedes the owner lookup
+    const owner = (await this.postgresClient.query(`SELECT ci_id FROM reconciliation_conflicts
+      WHERE id = $1 AND organization_id = $2`, [conflictId, organizationId])).rows[0];
+    if (!owner) return null;
+    const ciId: string = owner.ci_id;
+    const status = resolution === 'dismiss_stale' ? 'superseded' as const : 'resolved' as const;
+    return this.neo4jClient.reconcileOwned(ciId, organizationId, actor, 'resolve_conflict', async (current): Promise<StoredPlan> => {
+      const conflict: ConflictRow | undefined = (await this.postgresClient.query(`SELECT id, field_name, status, content_hash,
+          suppression_hash, source_name, source_id, incoming_json, target_json, target_source_name
+        FROM reconciliation_conflicts WHERE id = $1 AND organization_id = $2 AND ci_id = $3`,
+      [conflictId, organizationId, ciId])).rows[0];
+      if (!conflict || conflict.status !== 'pending' || conflict.content_hash !== expectedRevision) {
+        throw new JournalConflictError('revision_mismatch');
+      }
+      const field = conflict.field_name;
+      const stale = isStale(conflict, (await this.loadFieldSources(organizationId, ciId)).get(field));
+      if (stale !== (resolution === 'dismiss_stale')) throw new JournalConflictError(stale ? 'stale_conflict' : 'not_stale');
+      const resolve = { id: conflictId, revision: expectedRevision, status, action: resolution,
+        data: enc(resolution === 'merge' ? { resolution, value: mergedValue } : { resolution }) };
+      if (resolution === 'dismiss_stale') {
+        return { graph: null, resolve: { ...resolve, suppressionHash: null }, history: {
+          changeType: 'conflict_superseded', changedFields: [field], source: conflict.source_name,
+          previous: enc({ [field]: conflict.target_json }), next: enc({ [field]: conflict.incoming_json }),
+          incarnationId: ciIncarnationId(current['incarnation_id'] as string | null) } };
+      }
+      if (resolution === 'accept_target') return { graph: null, resolve: { ...resolve, suppressionHash: conflict.content_hash } };
+      const value = resolution === 'accept_source' ? conflict.incoming_json : mergedValue;
+      return {
+        graph: { kind: 'update', label: null, params: enc({ id: ciId, props: { [field]: value } }) },
+        fields: [{ name: field, value, text: fieldText(value),
+          source: resolution === 'accept_source' ? conflict.source_name : 'manual_resolution' }],
+        resolve: { ...resolve, suppressionHash: conflictHash(field, { value }, { value: conflict.incoming_json },
+          conflict.source_name, conflict.source_id) },
+      };
+    }, async groupId => ({ ci_id: ciId, status, correlation_id: groupId }));
   }
 
-  /**
-   * Record source lineage
-   */
-  private async recordSourceLineage(
-    ciId: string,
-    sourceName: string,
-    sourceId: string,
-    confidence: number
-  ): Promise<void> {
+  /** Lineage of a CI created by discovery/ETL (S5 residual: not yet journaled), keyed by organization. */
+  private async recordSourceLineage(ciId: string, sourceName: string, sourceId: string, confidence: number,
+    organizationId: string): Promise<void> {
     await this.postgresClient.query(
-      `INSERT INTO ci_source_lineage (ci_id, source_name, source_id, confidence_score, last_seen_at)
-       VALUES ($1, $2, $3, $4, NOW())
-       ON CONFLICT (ci_id, source_name, source_id)
-       DO UPDATE SET last_seen_at = NOW(), confidence_score = $4`,
-      [ciId, sourceName, sourceId, Math.round(confidence)]
-    );
-  }
-
-  /**
-   * Record field source
-   */
-  private async recordFieldSource(
-    ciId: string,
-    fieldName: string,
-    fieldValue: any,
-    sourceName: string
-  ): Promise<void> {
-    await this.postgresClient.query(
-      `INSERT INTO ci_field_sources (ci_id, field_name, field_value, source_name, updated_at)
-       VALUES ($1, $2, $3, $4, NOW())
-       ON CONFLICT (ci_id, field_name)
-       DO UPDATE SET field_value = $3, source_name = $4, updated_at = NOW()`,
-      [ciId, fieldName, String(fieldValue), sourceName]
+      `INSERT INTO ci_source_lineage (organization_id, ci_id, source_name, source_id, confidence_score, last_seen_at)
+       VALUES ($1, $2, $3, $4, $5, NOW())
+       ON CONFLICT (organization_id, ci_id, source_name, source_id)
+       DO UPDATE SET last_seen_at = NOW(), confidence_score = $5`,
+      [organizationId, ciId, sourceName, sourceId, Math.round(confidence)]
     );
   }
 

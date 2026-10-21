@@ -9,8 +9,8 @@
 import type { NextFunction, Request, Response } from 'express';
 import { GraphQLError } from 'graphql';
 import {
-  isStorableString, JournalAbortedError, JournalGapError, JournalTargetMissingError, JournalUnavailableError,
-  PlanUnrepresentableError,
+  isStorableString, JournalAbortedError, JournalConflictError, JournalGapError, JournalTargetMissingError,
+  JournalUnavailableError, PlanUnrepresentableError, getNeo4jClient,
 } from '@cmdb/database';
 import type { AuthenticatedRequest } from './middleware/auth.middleware';
 import { CIGapError } from './read-admission';
@@ -86,7 +86,7 @@ export function assertStorableProperties(props: Record<string, unknown>): void {
  * unknown keys: path ids, §3.6 shape, top-level reserved keys (a client `id` included:
  * CI ids are server-issued, T5), reserved names inside metadata and relationship properties.
  */
-export function journalRequestGuard(options: { relationship?: boolean; merge?: boolean } = {}) {
+export function journalRequestGuard(options: { relationship?: boolean; merge?: boolean; resolve?: boolean } = {}) {
   return (req: Request, res: Response, next: NextFunction): void => {
     try {
       for (const param of Object.values(req.params)) if (param !== undefined) assertCIId(param);
@@ -96,6 +96,8 @@ export function journalRequestGuard(options: { relationship?: boolean; merge?: b
       assertNoReservedMembers(body['metadata']);
       // Merge attributes become graph properties; reserved names there are dropped by the engine (§4.4).
       if (options.merge) assertStorableProperties((body['attributes'] ?? {}) as Record<string, unknown>);
+      // A merge resolution writes merged_data as the field's graph value (v16 §7.4).
+      if (options.resolve) assertStorableProperties({ merged: body['merged_data'] ?? null });
       if (options.relationship) {
         assertCIId(body['from_id']);
         assertCIId(body['to_id']);
@@ -110,6 +112,7 @@ export function journalRequestGuard(options: { relationship?: boolean; merge?: b
     }
   };
 }
+export const journalSchemaGate = (_req: Request, res: Response, next: NextFunction): void => void getNeo4jClient().assertJournalReady().then(() => next(), (error: unknown) => sendJournalError(res, error) || next(error)); // v16 §3.2: 503 before any HP1 data query
 
 /** Maps a journal outcome to its sanitized REST response. False when `error` is not one. */
 export function sendJournalError(res: Response, error: unknown): boolean {
@@ -120,6 +123,8 @@ export function sendJournalError(res: Response, error: unknown): boolean {
       ...(error.correlationId ? { correlation_id: error.correlationId } : {}) });
   } else if (error instanceof JournalAbortedError) {
     res.status(409).json({ success: false, error: 'Conflict', message: 'CI could not be reconciled' });
+  } else if (error instanceof JournalConflictError) {
+    res.status(409).json({ success: false, error: 'Conflict', message: error.reason });
   } else if (error instanceof PlanUnrepresentableError) {
     res.status(422).json({ success: false, error: 'Unprocessable Entity', message: 'CI cannot be changed through the audited path' });
   } else if (error instanceof JournalTargetMissingError) {
@@ -138,6 +143,7 @@ export function journalGraphQLError(error: unknown): GraphQLError | null {
     error instanceof JournalGapError || error instanceof CIGapError ? ['CONFLICT', 'CI is temporarily unavailable']
     : error instanceof JournalUnavailableError ? ['SERVICE_UNAVAILABLE', 'CI write temporarily unavailable']
     : error instanceof JournalAbortedError ? ['CONFLICT', 'CI could not be reconciled']
+    : error instanceof JournalConflictError ? ['CONFLICT', error.reason]
     : error instanceof PlanUnrepresentableError ? ['UNPROCESSABLE_ENTITY', 'CI cannot be changed through the audited path']
     : error instanceof JournalTargetMissingError ? ['NOT_FOUND', 'CI not found']
     : error instanceof RequestShapeError ? ['BAD_USER_INPUT', 'Invalid request']

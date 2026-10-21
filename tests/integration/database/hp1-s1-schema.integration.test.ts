@@ -50,26 +50,21 @@ if (process.env['HP1_S1_BASELINE'] === '1') {
 } else {
 
 describe('HP1-S1 expand contract on actual Timescale hypertables', () => {
-  // The criticality ON CONFLICT (ci_id) and org-less history writers are contracted by
-  // HP1-S4a migration 036 (asserted refused in hp1-s4a-journal); the rest stays S1-compatible.
-  it('keeps legacy lineage/field/authority ON CONFLICT writers and conflict update/delete working', async () => {
+  // HP1-S4a 036 and HP1-S4b 037 contract the org-less writers (asserted refused in hp1-s4a-journal and below).
+  it('037: global lineage/field arbiters are gone, new evidence needs an organization and conflict evidence is immutable', async () => {
+    const refused = (sql: string, values: unknown[], code: string) => transaction(async q => {
+      await expect(q(sql, values)).rejects.toMatchObject({ code });
+    });
+    await refused(`INSERT INTO ci_field_sources (ci_id, field_name, source_name, organization_id) VALUES ($1, 'host', 's', $2)
+      ON CONFLICT (ci_id, field_name) DO NOTHING`, [CI, A], '42P10');
+    await refused(`INSERT INTO ci_source_lineage (ci_id, source_name, source_id) VALUES ($1, 's', 'i')`, [CI], '23514');
+    await refused(`INSERT INTO reconciliation_conflicts (ci_id, conflict_type, source_data, organization_id)
+      VALUES ($1, 'field', '{}', $2)`, [CI, A], '23514');
     await transaction(async q => {
-      for (let i = 0; i < 2; i++) {
-        await q(`INSERT INTO ci_source_lineage (ci_id, source_name, source_id, confidence_score)
-          VALUES ($1, 'hp1-old-source', 'instance', 90) ON CONFLICT (ci_id, source_name, source_id)
-          DO UPDATE SET confidence_score = EXCLUDED.confidence_score`, [CI]);
-        await q(`INSERT INTO ci_field_sources (ci_id, field_name, field_value, source_name)
-          VALUES ($1, 'host', 'old', 'hp1-old-source') ON CONFLICT (ci_id, field_name)
-          DO UPDATE SET field_value = EXCLUDED.field_value`, [CI]);
-        await q(`INSERT INTO source_authority (source_name, authority_score) VALUES ('hp1-old-source', 5)
-          ON CONFLICT (source_name) DO UPDATE SET authority_score = EXCLUDED.authority_score`);
-      }
-      await q(`INSERT INTO audit_log (actor, entity_type, entity_id, action)
-        VALUES ('old', 'CI', 'hp1-old-ci', 'UPDATE')`);
-      const { rows } = await q(`INSERT INTO reconciliation_conflicts (ci_id, conflict_type, source_data)
-        VALUES ($1, 'field', '{}') RETURNING id`, [CI]);
-      await q(`UPDATE reconciliation_conflicts SET status = 'resolved', resolution_data = '{}' WHERE id = $1`, [rows[0].id]);
-      await q(`DELETE FROM reconciliation_conflicts WHERE id = $1`, [rows[0].id]);
+      const { rows } = await q(`INSERT INTO reconciliation_conflicts (ci_id, conflict_type, source_data, organization_id, detected_by)
+        VALUES ($1, 'field', '{}', $2, 's4b') RETURNING id`, [CI, A]);
+      await expect(q(`UPDATE reconciliation_conflicts SET source_data = '{"forged":true}' WHERE id = $1`, [rows[0].id]))
+        .rejects.toMatchObject({ code: '55000' });
     });
   });
 
@@ -84,9 +79,9 @@ describe('HP1-S1 expand contract on actual Timescale hypertables', () => {
     });
     await transaction(async q => {
       const insert = (org: string) => q(`INSERT INTO reconciliation_conflicts
-        (ci_id, conflict_type, source_data, organization_id, field_name, source_name, source_id)
-        VALUES ('ci_non_uuid', 'field', '{}', $1, 'host', 'hp1-source', 'instance')`, [org]);
-      await insert(A); // S4, not S1, enforces detected_by on org-owned rows.
+        (ci_id, conflict_type, source_data, organization_id, field_name, source_name, source_id, detected_by)
+        VALUES ('ci_non_uuid', 'field', '{}', $1, 'host', 'hp1-source', 'instance', 's4b')`, [org]);
+      await insert(A);
       await insert(B);
       await expect(insert(A)).rejects.toMatchObject({ code: '23505' });
     });
@@ -122,20 +117,8 @@ describe('HP1-S1 expand contract on actual Timescale hypertables', () => {
       expect(Number(health.rows[0].supported_ci_count)).toBe(1);
     });
   });
-  it('accepts superseded JSON evidence without imposing S4 immutability', async () => {
-    await transaction(async q => {
-      const { rows } = await q(`INSERT INTO reconciliation_conflicts
-        (ci_id, conflict_type, source_data, organization_id, incoming_json, status)
-        VALUES ('ci_non_uuid', 'field', '{}', $1, '{"host":"new"}', 'superseded') RETURNING id`, [A]);
-      await q(`UPDATE reconciliation_conflicts SET incoming_json = '{"host":"corrected"}' WHERE id = $1`, [rows[0].id]);
-      const evidence = await q(`SELECT incoming_json->>'host' AS host, detected_by
-        FROM reconciliation_conflicts WHERE id = $1`, [rows[0].id]);
-      expect(evidence.rows).toEqual([{ host: 'corrected', detected_by: null }]);
-      await q(`DELETE FROM reconciliation_conflicts WHERE id = $1`, [rows[0].id]);
-    });
-  });
 
-  it('fresh initdb preserves old writers and matches migrated S1 column and index contracts', async () => {
+  it('fresh initdb matches migrated S1 columns and indexes and the S4a/S4b contract checks', async () => {
     const database = 'hp1_s1_v3_parity';
     await db.query(`CREATE DATABASE ${database}`);
     const fresh = new Pool({ host: process.env['POSTGRES_HOST'], port: Number(process.env['POSTGRES_PORT']),
@@ -158,26 +141,27 @@ describe('HP1-S1 expand contract on actual Timescale hypertables', () => {
           AND indexname IN ('ci_source_lineage_org_key', 'ci_field_sources_org_key',
             'reconciliation_conflicts_pending_key', 'ci_reconciliation_operations_inflight',
             'ci_criticality_scores_org_ci_key', 'ci_criticality_scores_legacy_ci_key') ORDER BY 1, 2`;
-      // HP1-S4a 036 (M-2): the same NOT VALID org checks and no criticality PRIMARY KEY.
+      // HP1-S4a 036 and S4b 037 (M-2): the same NOT VALID org checks and no criticality PRIMARY KEY.
       const checks = `SELECT conrelid::regclass::text AS tbl, conname, contype, convalidated FROM pg_constraint
-        WHERE conrelid IN ('ci_change_history'::regclass, 'ci_criticality_scores'::regclass) AND (conname LIKE
-          '%organization_required' OR (contype = 'p' AND conrelid = 'ci_criticality_scores'::regclass)) ORDER BY 1, 2`;
+        WHERE conrelid IN ('ci_change_history'::regclass, 'ci_criticality_scores'::regclass, 'ci_source_lineage'::regclass,
+          'ci_field_sources'::regclass, 'reconciliation_conflicts'::regclass) AND (conname LIKE
+          '%_required' OR (contype = 'p' AND conrelid = 'ci_criticality_scores'::regclass)) ORDER BY 1, 2`;
       expect((await fresh.query(columns, [tableNames])).rows).toEqual((await db.query(columns, [tableNames])).rows);
       expect((await fresh.query(indexes, [tableNames])).rows).toEqual((await db.query(indexes, [tableNames])).rows);
       const contract = (await fresh.query(checks)).rows;
       expect(contract).toEqual((await db.query(checks)).rows);
       expect(contract.map(row => [row.conname, row.convalidated])).toEqual([
-        ['ci_change_history_organization_required', false], ['ci_criticality_scores_organization_required', false]]);
-      await fresh.query(`INSERT INTO ci_source_lineage (ci_id, source_name, source_id) VALUES ($1, 'legacy', 'instance')
-        ON CONFLICT (ci_id, source_name, source_id) DO UPDATE SET source_id = EXCLUDED.source_id`, [CI]);
+        ['ci_change_history_organization_required', false], ['ci_criticality_scores_organization_required', false],
+        ['ci_field_sources_organization_required', false], ['ci_source_lineage_organization_required', false],
+        ['reconciliation_conflicts_detector_required', false], ['reconciliation_conflicts_organization_required', false]]);
       for (const table of ['ci_source_lineage', 'ci_field_sources']) {
         const fields = table === 'ci_source_lineage' ? '(ci_id, source_name, source_id)' :
           '(ci_id, field_name, source_name)';
         await expect(fresh.query(`INSERT INTO ${table} ${fields}
           VALUES ('ci_non_uuid', 'host', 'source')`)).rejects.toMatchObject({ code: '22P02' });
       }
-      await fresh.query(`INSERT INTO reconciliation_conflicts
-        (ci_id, conflict_type, source_data, status) VALUES ($1, 'field', '{}', 'superseded')`, [CI]);
+      await fresh.query(`INSERT INTO reconciliation_conflicts (ci_id, conflict_type, source_data, status, organization_id,
+        detected_by) VALUES ($1, 'field', '{}', 'superseded', $2, 's4b')`, [CI, A]);
       const down = readFileSync(join(__dirname,
         '../../../packages/database/src/postgres/migrations/rollback/029_reconciliation_conflict_identity_rules.down.sql'), 'utf8');
       await expect(fresh.query(down)).rejects.toThrow('029 down refused: superseded conflicts exist');
@@ -259,15 +243,14 @@ describe('HP1-S1 expand contract on actual Timescale hypertables', () => {
           await fresh.query(`INSERT INTO ci_business_service_mappings (ci_id, service_id, mapping_type)
             VALUES ('hp1-reapply-own', 'hp1-reapply-service', 'hosts'),
               ('hp1-reapply-foreign', 'hp1-reapply-service', 'hosts')`);
-          await fresh.query(`INSERT INTO reconciliation_conflicts
-            (ci_id, conflict_type, source_data, status)
-            VALUES ($1, 'field', '{}', 'superseded')`, [CI]);
-          await expect(fresh.query(readFileSync(join(migrationDir, 'rollback',
-            `${files[1]}.down.sql`), 'utf8'))).rejects.toThrow('029 down refused: superseded conflicts exist');
+          // Seeded inside the refused down's transaction: 037 keeps org-owned conflict evidence undeletable.
+          await expect(fresh.query(`BEGIN; INSERT INTO reconciliation_conflicts (ci_id, conflict_type, source_data, status,
+            organization_id, detected_by) VALUES ('${CI}', 'field', '{}', 'superseded', '${A}', 's4b');
+            ${readFileSync(join(migrationDir, 'rollback', `${files[1]}.down.sql`), 'utf8')}`))
+            .rejects.toThrow('029 down refused: superseded conflicts exist');
           await fresh.query('ROLLBACK');
           expect((await fresh.query(`SELECT count(*)::int AS applied FROM cmdb.schema_migrations
             WHERE migration_name = $1`, [`${files[1]}.sql`])).rows[0].applied).toBe(1);
-          await fresh.query(`DELETE FROM reconciliation_conflicts WHERE status = 'superseded' AND ci_id = $1`, [CI]);
           for (const file of [...files].reverse()) {
             await fresh.query(readFileSync(join(migrationDir, 'rollback', `${file}.down.sql`), 'utf8'));
           }

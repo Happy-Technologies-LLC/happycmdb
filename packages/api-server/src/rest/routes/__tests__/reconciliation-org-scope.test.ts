@@ -39,18 +39,10 @@ function sql(text: string, params: unknown[] = [], op: 'query' | 'exec' = 'query
   host.send({ id, op, sql: text, params });
   return promise;
 }
-let beforeUpdate: (() => Promise<void>) | undefined;
-const db = { query: async (text: string, params: unknown[] = []) => {
-  if (beforeUpdate && text.includes('UPDATE reconciliation_conflicts')) {
-    const action = beforeUpdate;
-    beforeUpdate = undefined;
-    await action();
-  }
-  return { rows: await sql(text, params) };
-} };
+const db = { query: async (text: string, params: unknown[] = []) => ({ rows: await sql(text, params) }) };
 jest.mock('@cmdb/database', () => ({
   getPostgresClient: () => db,
-  getNeo4jClient: () => ({
+  getNeo4jClient: () => ({ assertJournalReady: async () => undefined, // schema present (the real §3.2 gate: hp1-s4b-merge-conflicts)
     getCI: async (id: string, organizationId: string) =>
       (id === CI_A && organizationId === A) || (id === CI_B && organizationId === B) ? { id } : null,
   }),
@@ -117,6 +109,7 @@ beforeAll(async () => {
   const journalTable = journalMigration.match(/CREATE TABLE IF NOT EXISTS ci_reconciliation_operations \([\s\S]*?\n\);/);
   if (!journalTable) throw new Error('Missing journal DDL');
   await sql([...provenance, journalTable[0]].join('\n'), [], 'exec');
+  await sql(readFileSync(join(migration, '029_reconciliation_conflict_identity_rules.sql'), 'utf8'), [], 'exec');
   // Simulate an unsafely imported legacy NULL-org row; production migration 011 disallows new NULLs.
   await sql('ALTER TABLE cmdb.dim_ci ALTER COLUMN organization_id DROP NOT NULL', [], 'exec');
   server = new ApolloServer({
@@ -131,7 +124,6 @@ beforeAll(async () => {
 });
 afterAll(async () => { await server?.stop(); host.kill(); });
 beforeEach(async () => {
-  beforeUpdate = undefined;
   await sql('TRUNCATE reconciliation_conflicts, ci_source_lineage, ci_field_sources, cmdb.dim_ci, reconciliation_rules, source_authority', [], 'exec');
   await sql(`INSERT INTO cmdb.dim_ci (ci_id, ci_name, ci_type, ci_status, organization_id) VALUES
     ('${CI_A}', 'A', 'server', 'active', '${A}'),
@@ -145,42 +137,6 @@ beforeEach(async () => {
       VALUES ($1, $2, 'field_conflict', $3, $4, '["password"]', $5)`, [cid(index), ci, JSON.stringify({ secret: `source-${index}` }), JSON.stringify({ secret: `target-${index}` }), org]);
   }
 });
-it('refuses global policy REST and GraphQL in both verified organizations without reading or mutating SQL tables', async () => {
-  await sql(`INSERT INTO reconciliation_rules (name, identification_rules, merge_strategies, enabled)
-    VALUES ('existing', '[]', '[]', true)`);
-  await sql(`INSERT INTO source_authority (source_name, authority_score) VALUES ('aws', 6)`);
-  const rest = [
-    (org: string) => api(org, 'rules'),
-    (org: string) => api(org, 'source-authorities'),
-    (org: string) => request(app).post('/api/v1/reconciliation/rules').set('authorization', bearer(org)).send({ name: 'injected', identification_rules: [] }),
-    (org: string) => request(app).put('/api/v1/reconciliation/source-authorities/aws').set('authorization', bearer(org)).send({ authority_score: 9 }),
-  ];
-  const queries = [
-    '{ _reconciliation { getRules { _name } } }',
-    '{ _reconciliation { getSourceAuthorities { _sourceName } } }',
-    'mutation { _reconciliation { createRule(_input: { _name: "injected", _identificationRules: [] }) { _id } } }',
-    'mutation { _reconciliation { updateSourceAuthority(_input: { _sourceName: "aws", _authorityScore: 9 }) { _sourceName } } }',
-  ];
-  for (const org of ['a', 'b']) {
-    for (const invoke of rest) {
-      const response = await invoke(org);
-      expect({ status: response.status, body: response.body }).toEqual({
-        status: 403, body: { success: false, error: 'Global reconciliation policy unavailable' },
-      });
-    }
-    for (const query of queries) {
-      const response = await gql(org, query);
-      expect(response.body.errors).toEqual([expect.objectContaining({
-        message: 'Global reconciliation policy unavailable',
-        extensions: expect.objectContaining({ code: 'FORBIDDEN' }),
-      })]);
-    }
-  }
-  expect((await sql('SELECT name FROM reconciliation_rules')).map(row => row.name)).toEqual(['existing']);
-  expect((await sql('SELECT source_name, authority_score FROM source_authority'))).toEqual([{ source_name: 'aws', authority_score: 6 }]);
-});
-
-
 it('lists only owned conflicts with matching total and no foreign/NULL metadata via REST and mounted GraphQL', async () => {
   const rest = await api('a', 'conflicts');
   expect(rest.status).toBe(200);
@@ -201,7 +157,7 @@ it('refuses an authenticated caller without a verified organization on every met
     '{ _reconciliation { listConflicts { _id } } }',
     `{ _reconciliation { getCILineage(_ciId: "${CI_A}") { _ciId } } }`,
     `{ _reconciliation { getCIFieldSources(_ciId: "${CI_A}") { _ciId } } }`,
-    `mutation { _reconciliation { resolveConflict(_id: "${cid(0)}", _resolution: "merge") { _id } } }`,
+    `mutation { _reconciliation { resolveConflict(_id: "${cid(0)}", _resolution: "merge", _expectedRevision: "r") { _id } } }`,
   ]) {
     expect((await gql('unverified', query)).body.errors[0].extensions.code).toBe('FORBIDDEN');
   }
@@ -235,28 +191,3 @@ for (const [route, field, graphField, detail] of [
     expect(outcomes[2].body.errors[0].message).toBe(outcomes[0].body.errors[0].message);
   });
 }
-
-it('resolves owned conflicts, hides foreign/missing/NULL details, and never mutates foreign rows', async () => {
-  expect((await post('a', cid(0))).status).toBe(200);
-  const missing = await post('a', cid(9));
-  expect(missing.status).toBe(404);
-  for (const id of [cid(1), cid(2)]) expect((await post('a', id)).body).toEqual(missing.body);
-  const mutation = (id: string) => `mutation { _reconciliation { resolveConflict(_id: "${id}", _resolution: "accept_source") { _id _status _sourceData } } }`;
-  const own = await gql('b', mutation(cid(1)));
-  expect(own.body.errors).toBeUndefined();
-  expect(own.body.data._reconciliation.resolveConflict._status).toBe('RESOLVED');
-  const denied = await Promise.all([cid(0), cid(2), cid(9)].map(id => gql('b', mutation(id))));
-  expect(denied.map(result => result.body.errors[0].extensions.code)).toEqual(['NOT_FOUND', 'NOT_FOUND', 'NOT_FOUND']);
-  expect(denied.map(result => result.body.errors[0].message)).toEqual(['Conflict not found', 'Conflict not found', 'Conflict not found']);
-  expect((await sql('SELECT id, status FROM reconciliation_conflicts ORDER BY id')).map(row => row.status)).toEqual(['resolved', 'resolved', 'pending']);
-});
-
-it('UPDATE rechecks ownership if a previously owned CI changes organization after the detail lookup', async () => {
-  beforeUpdate = async () => { await sql('UPDATE cmdb.dim_ci SET organization_id = $1 WHERE ci_id = $2', [B, CI_A]); };
-  expect((await post('a', cid(0))).status).toBe(404);
-  expect((await sql('SELECT status FROM reconciliation_conflicts WHERE id = $1', [cid(0)]))[0].status).toBe('pending');
-  beforeUpdate = async () => { await sql('UPDATE cmdb.dim_ci SET organization_id = $1 WHERE ci_id = $2', [A, CI_B]); };
-  const graph = await gql('b', `mutation { _reconciliation { resolveConflict(_id: "${cid(1)}", _resolution: "merge") { _status } } }`);
-  expect(graph.body.errors[0].extensions.code).toBe('NOT_FOUND');
-  expect((await sql('SELECT status FROM reconciliation_conflicts WHERE id = $1', [cid(1)]))[0].status).toBe('pending');
-});

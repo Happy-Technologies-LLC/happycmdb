@@ -12,8 +12,8 @@ const db = new PGlite();
 process.on('message', async ({ id, op, sql, params }) => {
   try {
     // exec: simple protocol (several statements allowed); rows of the last statement.
-    const rows = op === 'exec' ? ((await db.exec(sql)).at(-1)?.rows ?? []) : (await db.query(sql, params)).rows;
-    process.send({ id, rows });
+    const result = op === 'exec' ? (await db.exec(sql)).at(-1) : await db.query(sql, params);
+    process.send({ id, rows: result?.rows ?? [], rowCount: result?.affectedRows });
   } catch (error) {
     // Mirror pg's SQLSTATE and safe/unsafe diagnostic fields to exercise log boundaries.
     process.send({ id, error: error.message, code: error.code, constraint: error.constraint,

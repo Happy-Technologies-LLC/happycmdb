@@ -11,15 +11,22 @@ const emit = jest.fn();
 const listeners = new Map<string, (event: Record<string, unknown>) => Promise<void>>();
 const createBaseline = jest.fn();
 const detectDrift = jest.fn();
-jest.mock('@cmdb/common', () => ({ logger: { info: jest.fn(), warn: jest.fn(), debug: jest.fn(), error: jest.fn() }, sanitizeCITypeForLabel: (s: string) => s }));
+jest.mock('@cmdb/common', () => ({ logger: { info: jest.fn(), warn: jest.fn(), debug: jest.fn(), error: jest.fn() },
+  sanitizeCITypeForLabel: (s: string) => s, ciIncarnationId: jest.requireActual('@cmdb/common/utils/ci-incarnation').ciIncarnationId }));
 jest.mock('@cmdb/database', () => ({
+  ...jest.requireActual('@cmdb/database/journal/journal'), enc: jest.requireActual('@cmdb/database/journal/encoding').enc,
   getNeo4jClient: () => ({
     getSession: () => ({ run, close }),
-    // The journaled merge update (journal internals run in tests/integration) replays its graph write.
-    updateCIProperties: async (ciId: string, properties: Record<string, unknown>, organizationId: string) => {
-      const result = await run(`MATCH (ci:CI {id: $ciId}) WHERE ci.organization_id = $organizationId
-        SET ci += $properties RETURN ci.incarnation_id AS incarnation_id`, { ciId, organizationId, properties });
-      return result.records.length ? { incarnation_id: result.records[0].get('incarnation_id') } : null;
+    // The journaled merge (journal internals run in tests/integration) plans on the owned node, then replays its graph write.
+    reconcileOwned: async (ciId: string, organizationId: string, _actor: string, _operation: string,
+      plan: (current: Record<string, unknown>) => Promise<{ graph: { params: { props: Record<string, unknown> } } | null }>,
+      result: (groupId: string) => Promise<unknown>) => {
+      const current = await run('MATCH (ci:CI {id: $ciId}) WHERE ci.organization_id = $organizationId RETURN ci', { ciId, organizationId });
+      if (!current.records.length) return null;
+      const planned = await plan(current.records[0].get('ci'));
+      const written = planned.graph && await run(`MATCH (ci:CI {id: $ciId}) WHERE ci.organization_id = $organizationId
+        SET ci += $properties RETURN ci.incarnation_id AS incarnation_id`, { ciId, organizationId, properties: planned.graph.params.props });
+      return written && !written.records.length ? null : result('group');
     },
   }),
   getPostgresClient: () => ({ query }),

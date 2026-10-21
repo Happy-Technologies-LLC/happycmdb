@@ -15,19 +15,37 @@ import { logger } from '@cmdb/common';
 import { getPostgresClient } from '../postgres/client';
 import { assertPlanRepresentable, dec, Encoded, PlanUnrepresentableError } from './encoding';
 
-export type JournalOperation = 'update' | 'delete' | 'direct_write' | 'relationship_write' | 'restore';
+export type JournalOperation = 'update' | 'hold' | 'delete' | 'resolve_conflict' | 'direct_write' | 'relationship_write'
+  | 'restore';
 export type GraphPlanKind = 'create' | 'update' | 'restore' | 'delete' | 'relationship_create' | 'relationship_delete';
 
+/** v16 §7.2 one review field of a hold (typed values are raw JSON, §7.0); `supersedes` is the stale pending row it replaces. */
+export interface ConflictPlan {
+  id: string; field: string; source: string; sourceId: string; incoming: unknown; target: unknown;
+  targetSource: string; contentHash: string; targetCorrelationId: string | null;
+  supersedes?: { id: string; contentHash: string };
+}
+
 export interface StoredPlan {
-  graph: { kind: GraphPlanKind; label: string | null; params: Encoded };
+  /** Null: no W and no fence (hold, accept_target, dismiss_stale); T1b records graph_effect=false. */
+  graph: { kind: GraphPlanKind; label: string | null; params: Encoded } | null;
+  /** Decided under the slot: a merge update whose pre-scan found a review field is a hold (v16 §7.2). */
+  operation?: 'hold';
   /**
-   * T2 history evidence (v16 §3.1): one org-stamped row for a merge `updated`
-   * or a `deleted`; a delete also purges this incarnation's derived rows.
+   * T2 history evidence (v16 §3.1): one org-stamped row for a merge `updated`,
+   * a `deleted`, or a `dismiss_stale` `conflict_superseded`; a delete also purges
+   * this incarnation's derived rows.
    */
   history?: {
-    changeType: 'updated' | 'deleted'; changedFields: string[]; source: string;
+    changeType: 'updated' | 'deleted' | 'conflict_superseded'; changedFields: string[]; source: string;
     previous: Encoded; next: Encoded | null; incarnationId: string | null;
   };
+  /** T2 merge/resolve evidence, keyed by (organization, CI): raw JSON field values (v16 §7.0), lineage, conflicts. */
+  fields?: Array<{ name: string; value: unknown; text: string; source: string }>;
+  lineage?: { source: string; sourceId: string; confidence: number };
+  conflicts?: ConflictPlan[];
+  resolve?: { id: string; revision: string; status: 'resolved' | 'superseded'; action: string;
+    suppressionHash: string | null; data: Encoded };
 }
 
 /** Graph runner for W and recovery: one auto-commit statement, records as plain objects. */
@@ -48,6 +66,10 @@ export class JournalAbortedError extends Error {
 /** The guarded target disappeared before W: fences_created = 0, aborted, no effect. */
 export class JournalTargetMissingError extends Error {
   constructor() { super('CI not found'); }
+}
+/** v16 §7 conflict precondition refused under the slot (409); the journal row is aborted with the reason. */
+export class JournalConflictError extends Error {
+  constructor(readonly reason: 'pending_content' | 'stale_conflict' | 'revision_mismatch' | 'not_stale') { super(reason); }
 }
 export { PlanUnrepresentableError };
 
@@ -89,29 +111,41 @@ function errorCode(error: unknown): string {
 }
 
 let schemaReady = false;
-/** v16 §3.2 schema/fence gate, before any journal or data query of a journaled writer. */
-export async function assertJournalSchema(graph: JournalGraphRunner): Promise<void> {
-  if (schemaReady) return;
+let mergeReady = false;
+/**
+ * v16 §3.2 schema/fence gate, before any journal or data query of a journaled writer.
+ * `merge` (merge, hold, resolve) also refuses the initdb variant whose lineage/field `ci_id` is uuid.
+ */
+export async function assertJournalSchema(graph: JournalGraphRunner, merge = false): Promise<void> {
   try {
-    const pg = await getPostgresClient().pool.query(`SELECT
-      to_regclass('public.ci_reconciliation_operations') IS NOT NULL
-      AND to_regclass('public.ci_reconciliation_epochs') IS NOT NULL
-      AND EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ci_change_history_organization_required')
-      AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'cmdb'
-                  AND table_name = 'dim_ci' AND column_name = 'org_backfilled') AS ready`);
-    const fence = await graph(`SHOW CONSTRAINTS YIELD name WHERE name = 'reconciliation_op_fence_unique'
-      RETURN count(*) AS present`, {});
-    schemaReady = pg.rows[0]?.ready === true && Number(fence[0]?.['present']) === 1;
+    if (!schemaReady) {
+      const pg = await getPostgresClient().pool.query(`SELECT
+        to_regclass('public.ci_reconciliation_operations') IS NOT NULL
+        AND to_regclass('public.ci_reconciliation_epochs') IS NOT NULL
+        AND EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ci_change_history_organization_required')
+        AND EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ci_field_sources_organization_required')
+        AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'cmdb'
+                    AND table_name = 'dim_ci' AND column_name = 'org_backfilled') AS ready`);
+      const fence = await graph(`SHOW CONSTRAINTS YIELD name WHERE name = 'reconciliation_op_fence_unique'
+        RETURN count(*) AS present`, {});
+      schemaReady = pg.rows[0]?.ready === true && Number(fence[0]?.['present']) === 1;
+    }
+    if (schemaReady && merge && !mergeReady) {
+      const ids = await getPostgresClient().pool.query(`SELECT count(*)::int AS n FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name IN ('ci_source_lineage', 'ci_field_sources')
+          AND column_name = 'ci_id' AND data_type = 'character varying'`);
+      mergeReady = ids.rows[0]?.n === 2;
+    }
   } catch {
-    schemaReady = false;
+    schemaReady = mergeReady = false;
   }
-  if (!schemaReady) throw new JournalUnavailableError();
+  if (!schemaReady || (merge && !mergeReady)) throw new JournalUnavailableError();
 }
 
 function schemaFault(error: unknown): void {
   const code = errorCode(error);
   if (code === '42P01' || code === '42703' ||
-    (code.startsWith('Neo.ClientError.Schema.') && !code.endsWith('ConstraintValidationFailed'))) schemaReady = false;
+    (code.startsWith('Neo.ClientError.Schema.') && !code.endsWith('ConstraintValidationFailed'))) schemaReady = mergeReady = false;
 }
 
 interface Slot { id: string; ciId: string; operation: JournalOperation }
@@ -124,7 +158,7 @@ interface Slot { id: string; ciId: string; operation: JournalOperation }
  * keys collide only wait on each other (availability, never correctness).
  */
 export const ADMISSION_LOCK_KEY = 'hashtextextended($1::text, 4431)';
-/** Every S4a operation has a graph effect; holds (graph_effect=false) arrive with the S4b merge writer. */
+/** T1 records graph_effect=true; T1b (before any W) sets the final operation and graph_effect from the plan. */
 async function t1(organizationId: string, actor: string, groupId: string, slots: Slot[]): Promise<void> {
   await getPostgresClient().transaction(async client => {
     await client.query(`SET LOCAL lock_timeout = '12s'`);
@@ -155,6 +189,49 @@ async function abortGroup(groupId: string, reason: string): Promise<void> {
 /** T2 evidence; idempotent under the history correlation key. */
 async function writeEvidence(client: PoolClient, row: { group_id: string; organization_id: string; ci_id: string;
   actor: string; plan: StoredPlan }): Promise<void> {
+  const { plan, organization_id: org, ci_id: ci, group_id: group, actor } = row;
+  for (const field of plan.fields ?? []) {
+    await client.query(`INSERT INTO ci_field_sources (organization_id, ci_id, field_name, field_value, value_json,
+        source_name, last_correlation_id, updated_at) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, now())
+      ON CONFLICT (organization_id, ci_id, field_name) DO UPDATE SET field_value = EXCLUDED.field_value,
+        value_json = EXCLUDED.value_json, source_name = EXCLUDED.source_name,
+        last_correlation_id = EXCLUDED.last_correlation_id, updated_at = now()`,
+    [org, ci, field.name, field.text, JSON.stringify(field.value), field.source, group]);
+  }
+  if (plan.lineage) {
+    await client.query(`INSERT INTO ci_source_lineage (organization_id, ci_id, source_name, source_id, confidence_score,
+        last_correlation_id, last_seen_at) VALUES ($1, $2, $3, $4, $5, $6, now())
+      ON CONFLICT (organization_id, ci_id, source_name, source_id) DO UPDATE SET
+        confidence_score = EXCLUDED.confidence_score, last_correlation_id = EXCLUDED.last_correlation_id, last_seen_at = now()`,
+    [org, ci, plan.lineage.source, plan.lineage.sourceId, Math.round(plan.lineage.confidence), group]);
+  }
+  const exactlyOne = (count: number | null) => {
+    if (count !== 1) throw Object.assign(new Error('conflict lifecycle mismatch'), { code: 'HP1CF' });
+  };
+  for (const conflict of plan.conflicts ?? []) {
+    if (conflict.supersedes) {
+      exactlyOne((await client.query(`UPDATE reconciliation_conflicts SET status = 'superseded', superseded_by = $3,
+          resolution_correlation_id = $4, resolved_at = now()
+        WHERE id = $1 AND organization_id = $5 AND ci_id = $6 AND status = 'pending' AND content_hash = $2`,
+      [conflict.supersedes.id, conflict.supersedes.contentHash, conflict.id, group, org, ci])).rowCount);
+    }
+    await client.query(`INSERT INTO reconciliation_conflicts (id, organization_id, ci_id, conflict_type, source_data,
+        target_data, conflicting_fields, field_name, source_name, source_id, incoming_json, target_json,
+        target_source_name, content_hash, target_field_correlation_id, detected_by, correlation_id)
+      VALUES ($1, $2, $3, 'field_conflict', $4::jsonb, $5::jsonb, $6::jsonb, $7, $8, $9, $10::jsonb, $11::jsonb,
+        $12, $13, $14, $15, $16)`,
+    [conflict.id, org, ci, JSON.stringify({ source_name: conflict.source, source_id: conflict.sourceId, value: conflict.incoming }),
+      JSON.stringify({ source_name: conflict.targetSource, value: conflict.target }), JSON.stringify([conflict.field]),
+      conflict.field, conflict.source, conflict.sourceId, JSON.stringify(conflict.incoming), JSON.stringify(conflict.target),
+      conflict.targetSource, conflict.contentHash, conflict.targetCorrelationId, actor, group]);
+  }
+  if (plan.resolve) {
+    exactlyOne((await client.query(`UPDATE reconciliation_conflicts SET status = $3, resolution_action = $4,
+        resolved_by = $5, resolved_at = now(), suppression_hash = $6, resolution_correlation_id = $7, resolution_data = $8::jsonb
+      WHERE id = $1 AND organization_id = $9 AND ci_id = $10 AND status = 'pending' AND content_hash = $2`,
+    [plan.resolve.id, plan.resolve.revision, plan.resolve.status, plan.resolve.action, actor, plan.resolve.suppressionHash,
+      group, JSON.stringify(plan.resolve.data), org, ci])).rowCount);
+  }
   const history = row.plan.history;
   if (!history) return;
   await client.query(`INSERT INTO ci_change_history (ci_id, change_type, changed_by, change_source, changed_fields,
@@ -193,16 +270,17 @@ export interface JournaledWrite<T> {
   actor: string;
   operation: JournalOperation;
   ciIds: string[];
-  /** Runs under the slot; may throw JournalTargetMissingError or PlanUnrepresentableError. */
+  /** Runs under the slot; may throw JournalTargetMissingError, PlanUnrepresentableError or JournalConflictError. */
   plan: () => Promise<StoredPlan>;
-  result: () => Promise<T>;
+  /** After T2; `groupId` is the request correlation id. */
+  result: (groupId: string) => Promise<T>;
 }
 
 export class ReconciliationJournal {
   constructor(private readonly graph: JournalGraphRunner) {}
 
   async run<T>(write: JournaledWrite<T>): Promise<T> {
-    await assertJournalSchema(this.graph);
+    await assertJournalSchema(this.graph, write.operation === 'update' || write.operation === 'resolve_conflict');
     const groupId = randomUUID();
     const slots = [...new Set(write.ciIds)].sort().map(ciId => ({ id: randomUUID(), ciId, operation: write.operation }));
     await this.reserve(write, groupId, slots);
@@ -212,25 +290,27 @@ export class ReconciliationJournal {
       plan = await write.plan();
       assertPlanRepresentable(plan as unknown as Encoded);
       // Decoded before W: an undecodable value is a definitive 422, never an unproven W.
-      try { params = dec(plan.graph.params) as Record<string, unknown>; } catch { throw new PlanUnrepresentableError(); }
+      try { params = plan.graph ? dec(plan.graph.params) as Record<string, unknown> : {}; } catch { throw new PlanUnrepresentableError(); }
     } catch (error) {
       await abortGroup(groupId, error instanceof PlanUnrepresentableError ? 'plan_unrepresentable'
-        : error instanceof JournalTargetMissingError ? 'target_missing' : 'plan_failed');
+        : error instanceof JournalTargetMissingError ? 'target_missing'
+        : error instanceof JournalConflictError ? error.reason : 'plan_failed');
       schemaFault(error);
       throw error;
     }
     const lease = await getPostgresClient().pool.query(`UPDATE ci_reconciliation_operations
-      SET plan = $2::jsonb, lease_expires_at = now() + interval '30 seconds', updated_at = now()
+      SET plan = $2::jsonb, operation = coalesce($3, operation), graph_effect = $4,
+        lease_expires_at = now() + interval '30 seconds', updated_at = now()
       WHERE group_id = $1 AND state = 'pending'
       RETURNING lease_expires_at - clock_timestamp() >= interval '20 seconds' AS sendable`,
-      [groupId, JSON.stringify(plan)]);
+      [groupId, JSON.stringify(plan), plan.operation ?? null, plan.graph !== null]);
     if (lease.rows.length !== slots.length || !lease.rows.every(row => row.sendable)) {
       await abortGroup(groupId, 'lease_expired');
       throw new JournalUnavailableError(groupId);
     }
     const fences = slots.map(slot => ({ op_id: slot.id, ci_id: slot.ciId, operation: slot.operation }));
-    let created: number;
-    try {
+    let created = fences.length;
+    if (plan.graph) try {
       await seam?.('beforeW', { groupId, recovery: false });
       const records = await this.graph(wStatement(plan.graph.kind, plan.graph.label),
         { ...params, org: write.organizationId, fences });
@@ -261,7 +341,7 @@ export class ReconciliationJournal {
       schemaFault(error);
       throw error instanceof JournalUnavailableError ? error : new JournalUnavailableError(groupId);
     }
-    return write.result();
+    return write.result(groupId);
   }
 
   private async reserve(write: JournaledWrite<unknown>, groupId: string, slots: Slot[]): Promise<void> {
@@ -290,7 +370,7 @@ export class ReconciliationJournal {
       WHERE id IN (SELECT id FROM ci_reconciliation_operations WHERE state = 'pending'
                    AND lease_expires_at + interval '20 seconds' < now() AND ($2::uuid IS NULL OR id = $2::uuid)
                    ORDER BY lease_expires_at FOR UPDATE SKIP LOCKED LIMIT 50)
-      RETURNING id, group_id, organization_id, ci_id, operation, plan IS NULL AS plan_missing`,
+      RETURNING id, group_id, organization_id, ci_id, operation, graph_effect, plan IS NULL AS plan_missing`,
       [token, onlyId ?? null])).rows;
     for (const row of claimed) {
       const decide = (state: 'aborted' | 'failed', reason: string) => getPostgresClient().pool.query(
@@ -299,8 +379,10 @@ export class ReconciliationJournal {
          WHERE group_id = $1 AND state = 'pending'
            AND EXISTS (SELECT 1 FROM ci_reconciliation_operations WHERE id = $2 AND claim_token = $5)`,
         [row.group_id, row.id, state, reason, token]);
-      let outcome: Record<string, unknown> | undefined;
-      try {
+      // v16 §4.3: graph_effect=false (hold, accept_target, dismiss_stale) never had a W or fence: T2 decides.
+      let outcome: Record<string, unknown> | undefined = row.graph_effect ? undefined
+        : { outcome: 'applied', org: row.organization_id, ci: row.ci_id, operation: row.operation };
+      if (row.graph_effect) try {
         await seam?.('beforeFence', { groupId: row.group_id, recovery: true });
         outcome = (await this.graph(`MERGE (op:ReconciliationOp {op_id: $op}) ON CREATE SET
             op.organization_id = $org, op.ci_id = $ci, op.operation = $operation, op.outcome = 'aborted',

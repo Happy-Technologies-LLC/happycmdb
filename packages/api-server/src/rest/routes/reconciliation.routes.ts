@@ -12,15 +12,19 @@ import { ReconciliationController } from '../controllers/reconciliation.controll
 import { validateRequest, validateOptional } from '../middleware/validation.middleware';
 import { auditMiddleware } from '../../middleware/audit.middleware';
 import { getAuthMiddleware } from '../../auth/auth-bootstrap';
-import { journalRequestGuard } from '../../journal-http';
+import { journalRequestGuard, journalSchemaGate } from '../../journal-http';
 
 export const reconciliationRoutes = Router();
 const controller = new ReconciliationController();
 const authMiddleware = getAuthMiddleware();
-// Policy tables are global. Until platform operations have their own boundary,
-// no authenticated role may inspect or change them.
+// Legacy NULL-org policy rows are global and inert (v16 §8). Until platform operations
+// have their own boundary, no authenticated role may inspect them (T4); tenants manage their own.
 function refuseGlobalPolicy(_req: Request, res: Response): void {
   res.status(403).json({ success: false, error: 'Global reconciliation policy unavailable' });
+}
+function refuseGlobalScope(req: Request, res: Response, next: () => void): void {
+  if (req.query['scope'] === undefined) next();
+  else refuseGlobalPolicy(req, res);
 }
 
 // Apply audit middleware to all routes
@@ -46,7 +50,7 @@ const mergeRequestSchema = Joi.object({
   name: Joi.string().required(),
   ci_type: Joi.string().required(),
   source: Joi.string().max(255).required(), // T2 writes it to ci_change_history.change_source VARCHAR(255)
-  source_id: Joi.string().required(),
+  source_id: Joi.string().max(255).required(), // T2 lineage/conflict source_id VARCHAR(255)
   identifiers: Joi.object({
     external_id: Joi.string().optional(),
     serial_number: Joi.string().optional(),
@@ -64,13 +68,36 @@ const mergeRequestSchema = Joi.object({
 });
 
 const resolveConflictSchema = Joi.object({
-  resolution: Joi.string().valid('accept_source', 'accept_target', 'merge').required(),
-  merged_data: Joi.object().optional()
+  resolution: Joi.string().valid('accept_source', 'accept_target', 'merge', 'dismiss_stale').required(),
+  expected_revision: Joi.string().pattern(/^[0-9a-f]{64}$/).required(),
+  merged_data: Joi.any().when('resolution', { is: 'merge', then: Joi.required(), otherwise: Joi.forbidden() })
 });
 
+const ruleSchema = Joi.object({
+  name: Joi.string().max(255).required(),
+  description: Joi.string().max(10_000).allow(null, '').optional(),
+  enabled: Joi.boolean().optional(),
+  identification_rules: Joi.array().max(100).items(Joi.object({
+    attribute: Joi.string().max(255).required(),
+    priority: Joi.number().integer().required(),
+    match_type: Joi.string().valid('exact', 'fuzzy', 'composite').required(),
+    match_confidence: Joi.number().min(0).max(100).required(),
+    fuzzy_threshold: Joi.number().min(0).max(100).optional()
+  })).required(),
+  merge_strategies: Joi.array().max(1000).items(Joi.object({
+    field_name: Joi.string().max(255).required(),
+    strategy: Joi.string().valid('highest_authority', 'most_recent', 'aggregate', 'manual_review').required(),
+    conflict_threshold: Joi.number().min(0).max(100).optional()
+  })).default([])
+});
+
+const authoritySchema = Joi.object({
+  authority_score: Joi.number().integer().min(1).max(10).required(),
+  description: Joi.string().max(10_000).allow(null, '').optional()
+});
 
 const conflictsQuerySchema = Joi.object({
-  status: Joi.string().valid('pending', 'resolved', 'dismissed').default('pending'),
+  status: Joi.string().valid('pending', 'resolved', 'dismissed', 'superseded').default('pending'),
   limit: Joi.number().integer().min(1).max(1000).default(100),
   offset: Joi.number().integer().min(0).default(0)
 });
@@ -86,7 +113,7 @@ const conflictsQuerySchema = Joi.object({
 reconciliationRoutes.post(
   '/match',
   authMiddleware.requireOrganization(),
-  validateRequest(matchRequestSchema, 'body'),
+  validateRequest(matchRequestSchema, 'body'), journalSchemaGate, // v16 §3.2 (S4b scopes lineage to the organization)
   controller.findMatches.bind(controller)
 );
 
@@ -110,7 +137,7 @@ reconciliationRoutes.post(
 reconciliationRoutes.get(
   '/conflicts',
   authMiddleware.requireOrganization(),
-  validateOptional(conflictsQuerySchema, 'query'),
+  validateOptional(conflictsQuerySchema, 'query'), journalSchemaGate, // v16 §3.2 (S4b reads the 029 columns)
   controller.listConflicts.bind(controller)
 );
 
@@ -122,6 +149,7 @@ reconciliationRoutes.post(
   '/conflicts/:id/resolve',
   authMiddleware.requirePermission('write'),
   authMiddleware.requireOrganization(),
+  journalRequestGuard({ resolve: true }),
   validateRequest(resolveConflictSchema, 'body'),
   controller.resolveConflict.bind(controller)
 );
@@ -130,25 +158,38 @@ reconciliationRoutes.post(
  * GET /api/v1/reconciliation/rules
  * List reconciliation rules and configuration
  */
-reconciliationRoutes.get('/rules', refuseGlobalPolicy);
+reconciliationRoutes.get('/rules', authMiddleware.requireOrganization(), refuseGlobalScope, journalSchemaGate, controller.listRules.bind(controller));
 
 /**
  * POST /api/v1/reconciliation/rules
  * Create a new reconciliation rule
  */
-reconciliationRoutes.post('/rules', refuseGlobalPolicy);
+reconciliationRoutes.post('/rules', refuseGlobalScope, authMiddleware.requirePermission('admin'), authMiddleware.requireOrganization(),
+  validateRequest(ruleSchema, 'body'), journalSchemaGate, controller.writeRule.bind(controller));
+
+/**
+ * PUT/DELETE /api/v1/reconciliation/rules/:id
+ * Foreign, missing and legacy global rules return one identical 404 (v16 §8).
+ */
+reconciliationRoutes.put('/rules/:id', refuseGlobalScope, authMiddleware.requirePermission('admin'), authMiddleware.requireOrganization(),
+  validateRequest(ruleSchema, 'body'), journalSchemaGate, controller.writeRule.bind(controller));
+reconciliationRoutes.delete('/rules/:id', refuseGlobalScope, authMiddleware.requirePermission('admin'), authMiddleware.requireOrganization(),
+  journalSchemaGate, controller.writeRule.bind(controller));
 
 /**
  * GET /api/v1/reconciliation/source-authorities
  * List source authority scores
  */
-reconciliationRoutes.get('/source-authorities', refuseGlobalPolicy);
+reconciliationRoutes.get('/source-authorities', authMiddleware.requireOrganization(), refuseGlobalScope,
+  journalSchemaGate, controller.listSourceAuthorities.bind(controller));
 
 /**
  * PUT /api/v1/reconciliation/source-authorities/:source
  * Update source authority score
  */
-reconciliationRoutes.put('/source-authorities/:source', refuseGlobalPolicy);
+reconciliationRoutes.put('/source-authorities/:source', refuseGlobalScope, authMiddleware.requirePermission('admin'),
+  authMiddleware.requireOrganization(), validateRequest(Joi.object({ source: Joi.string().max(255).required() }), 'params'),
+  validateRequest(authoritySchema, 'body'), journalSchemaGate, controller.updateSourceAuthority.bind(controller));
 
 /**
  * GET /api/v1/reconciliation/lineage/:ci_id

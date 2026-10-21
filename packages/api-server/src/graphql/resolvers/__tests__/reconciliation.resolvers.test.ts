@@ -16,6 +16,7 @@ import type { TokenPayload } from '../../../auth/types';
 const mockQuery = jest.fn();
 const mockGetPostgresClient = jest.fn();
 const mockReconcileCI = jest.fn();
+const mockResolveConflict = jest.fn();
 const mockGetIdentityReconciliationEngine = jest.fn();
 
 jest.mock('@cmdb/database', () => ({
@@ -38,7 +39,7 @@ jest.mock('@cmdb/identity-resolution', () => ({
 // reconfigure per-test: the captured `{ query: mockQuery }` object keeps
 // referencing the same mock function identity across jest's resetMocks.
 mockGetPostgresClient.mockReturnValue({ query: mockQuery });
-mockGetIdentityReconciliationEngine.mockReturnValue({ reconcileCI: mockReconcileCI });
+mockGetIdentityReconciliationEngine.mockReturnValue({ mergeCI: mockReconcileCI, resolveConflict: mockResolveConflict });
 
 // Imported after the mocks above so the module picks up the mocked
 // singletons at its own module-load time (`getPostgresClient()` and
@@ -110,7 +111,7 @@ describe('mergeCI', () => {
   });
 
   it('succeeds for an operator and delegates to the reconciliation engine', async () => {
-    mockReconcileCI.mockResolvedValue('ci-created-1');
+    mockReconcileCI.mockResolvedValue({ ci_id: 'ci-created-1', action: 'updated', correlation_id: 'group-1', conflict_ids: [] });
 
     const result = await mergeCI(null, args, contextWith(operatorUser));
 
@@ -126,7 +127,7 @@ describe('mergeCI', () => {
 });
 
 describe('resolveConflict', () => {
-  const args = { _id: 'conflict-1', _resolution: 'accept_source' };
+  const args = { _id: 'conflict-1', _resolution: 'accept_source', _expectedRevision: 'a'.repeat(64) };
 
   it('rejects unauthenticated requests with UNAUTHENTICATED', async () => {
     await expectGraphQLErrorCode(resolveConflict(null, args, contextWith(undefined)), 'UNAUTHENTICATED');
@@ -138,26 +139,14 @@ describe('resolveConflict', () => {
     expect(mockQuery).not.toHaveBeenCalled();
   });
 
-  it('succeeds for an operator and updates the conflict row', async () => {
-    mockQuery
-      .mockResolvedValueOnce({
-        rows: [
-          {
-            ci_id: 'ci-1',
-            conflict_type: 'field_mismatch',
-            source_data: {},
-            target_data: {},
-            conflicting_fields: ['name'],
-            created_at: new Date(),
-          },
-        ],
-      })
-      .mockResolvedValueOnce({ rows: [{ id: 'conflict-1' }] });
+  it('succeeds for an operator at the expected revision through the journaled engine resolve', async () => {
+    mockResolveConflict.mockResolvedValue({ ci_id: 'ci-1', status: 'resolved', correlation_id: 'group-1' });
 
     const result = await resolveConflict(null, args, contextWith(operatorUser));
 
-    expect(mockQuery).toHaveBeenCalledTimes(2);
-    expect(result._status).toBe('RESOLVED');
+    expect(mockResolveConflict).toHaveBeenCalledWith(operatorUser._organizationId, 'op-1', 'conflict-1', 'accept_source',
+      'a'.repeat(64), undefined);
+    expect(result).toEqual({ _id: 'conflict-1', _ciId: 'ci-1', _status: 'RESOLVED', _correlationId: 'group-1' });
   });
 });
 

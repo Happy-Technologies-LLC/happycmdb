@@ -103,6 +103,7 @@ afterAll(async () => {
   await rows(`UPDATE ci_reconciliation_operations SET state = 'aborted' WHERE organization_id = ANY($1::uuid[])
     AND state IN ('pending', 'failed')`, [[A, B, C]]);
   await cypher('MATCH (c:CI) WHERE c.organization_id IN $orgs DETACH DELETE c', { orgs: [A, B, C] });
+  await rows('DELETE FROM cmdb.dim_ci WHERE organization_id = ANY($1::uuid[])', [[A, B, C]]); // shared integration DB (etl.test counts current rows)
   await server?.stop();
 });
 
@@ -111,6 +112,19 @@ it('X-30/M-6: without the fence constraint a journaled write is 503 before any j
   try {
     const name = id('gate');
     expect((await api('a').post('/cis', { name, type: 'server' })).status).toBe(503);
+    expect((await api('a').post(`/reconciliation/conflicts/${randomUUID()}/resolve`, { resolution: 'accept_target',
+      expected_revision: 'a'.repeat(64) })).status).toBe(503); // v16 §3.2: gate before the conflict owner lookup (404 before)
+    const [rule, ruleId] = [{ name: id('gate-rule'), identification_rules: [] }, randomUUID()];
+    const gated = [await api('a').post('/reconciliation/merge', { name, ci_type: 'server', source: 'gate', source_id: 'gate-1',
+      identifiers: { external_id: name } }), await api('a').get('/reconciliation/rules'), await api('a').post('/reconciliation/rules', rule),
+      await api('a').put(`/reconciliation/rules/${ruleId}`, rule), await api('a').delete(`/reconciliation/rules/${ruleId}`),
+      await api('a').get('/reconciliation/source-authorities'), await api('a').put('/reconciliation/source-authorities/gate', { authority_score: 5 }),
+      await api('a').get('/reconciliation/conflicts'), await api('a').post('/reconciliation/match', { identifiers: { external_id: name } })];
+    expect(gated.map(response => response.status)).toEqual([503, 503, 503, 503, 503, 503, 503, 503, 503]); // merge, six policy routes, list, match
+    const reads = await api('a').gql(`{ _reconciliation { findMatches(_identifiers: { _externalId: "${name}" }) { _ciId } listConflicts { _id } } }`);
+    expect(reads.body.errors?.map((error: { extensions: object }) => error.extensions)).toEqual([{ code: 'SERVICE_UNAVAILABLE' }, { code: 'SERVICE_UNAVAILABLE' }]);
+    expect(await rows(`SELECT 1 FROM reconciliation_rules WHERE organization_id = $1
+      UNION ALL SELECT 1 FROM source_authority WHERE organization_id = $1`, [A])).toEqual([]);
     expect(await rows('SELECT id FROM ci_reconciliation_operations WHERE organization_id = $1', [A])).toEqual([]);
     expect(await cypher('MATCH (c:CI {name: $name}) RETURN c', { name })).toEqual([]);
   } finally {
@@ -194,6 +208,14 @@ it('R44-M1: a reused CI id never shows the former owner history; B rows stay B-s
   await create('a', ci, { metadata: { created_at: '1999-01-01T00:00:00Z' } });
   // A merges a current value into its X: one journaled `update` whose T2 writes ONE A history row.
   await cypher('MATCH (c:CI {id: $id}) SET c.serial_number = $serial', { id: ci, serial: `serial-${ci}` });
+  // R44-M2: B's retained field source, lineage and conflict for the reused id; A's current dimension row for the readers.
+  await rows(`INSERT INTO ci_field_sources (organization_id, ci_id, field_name, field_value, source_name)
+    VALUES ($1, $2, 'owner_note', $3, 'b-source')`, [B, ci, secret]);
+  await rows(`INSERT INTO ci_source_lineage (organization_id, ci_id, source_name, source_id, confidence_score)
+    VALUES ($1, $2, 'b-source', $3, 90)`, [B, ci, secret]);
+  await rows(`INSERT INTO reconciliation_conflicts (organization_id, ci_id, conflict_type, source_data, detected_by)
+    VALUES ($1, $2, 'field_conflict', $3::jsonb, 's4a-b')`, [B, ci, JSON.stringify({ secret })]);
+  await rows(`INSERT INTO cmdb.dim_ci (ci_id, ci_name, ci_type, ci_status, organization_id) VALUES ($1, $1, 'server', 'active', $2)`, [ci, A]);
   const merged = await api('a').post('/reconciliation/merge', { name: ci, ci_type: 'server', source: 'a-source',
     source_id: 'a-1', identifiers: { serial_number: `serial-${ci}` }, attributes: { owner_note: 'A_CURRENT' } });
   expect([merged.status, merged.body.data?.ci_id]).toEqual([200, ci]);
@@ -212,6 +234,52 @@ it('R44-M1: a reused CI id never shows the former owner history; B rows stay B-s
   expect(aRows.map(row => [row.change_type, row.changed_by, row.correlation_id])).toEqual([['updated', 's4a-a', mergeOp.group_id]]);
   const stamped = await rows('SELECT organization_id, count(*)::int AS n FROM ci_change_history WHERE ci_id = $1 GROUP BY 1 ORDER BY 1', [ci]);
   expect(stamped).toEqual(expect.arrayContaining([{ organization_id: B, n: 2 }, { organization_id: A, n: 1 }, { organization_id: null, n: 1 }]));
+  const fields = await api('a').get(`/reconciliation/field-sources/${ci}`);
+  expect(fields.body.data.fields).toEqual([expect.objectContaining({ field_name: 'owner_note', field_value: 'A_CURRENT', source_name: 'a-source' })]);
+  expect(await rows('SELECT organization_id, field_value FROM ci_field_sources WHERE ci_id = $1 ORDER BY field_value', [ci]))
+    .toEqual([{ organization_id: A, field_value: 'A_CURRENT' }, { organization_id: B, field_value: secret }]);
+  const lineage = await api('a').get(`/reconciliation/lineage/${ci}`);
+  expect(lineage.body.data.sources).toEqual([expect.objectContaining({ source_name: 'a-source', source_id: 'a-1' })]);
+  const conflicts = await api('a').get('/reconciliation/conflicts');
+  const gql = await api('a').gql(`{ _reconciliation { getCIFieldSources(_ciId: "${ci}") { _fields { _fieldName _fieldValue _sourceName } }
+    getCILineage(_ciId: "${ci}") { _sources { _sourceId } } listConflicts { _ciId } } }`);
+  expect(gql.body.data._reconciliation).toEqual({
+    getCIFieldSources: { _fields: [{ _fieldName: 'owner_note', _fieldValue: 'A_CURRENT', _sourceName: 'a-source' }] },
+    getCILineage: { _sources: [{ _sourceId: 'a-1' }] }, listConflicts: [] });
+  expect([conflicts.body.data, conflicts.body.pagination.total]).toEqual([[], 0]); // B's conflict is not A's, nor counted
+  for (const body of [fields.body, lineage.body, conflicts.body, gql.body]) expect(JSON.stringify(body)).not.toContain(secret);
+  expect(await rows(`SELECT organization_id, source_id FROM ci_source_lineage WHERE ci_id = $1 ORDER BY organization_id = $2 DESC`,
+    [ci, A])).toEqual([{ organization_id: A, source_id: 'a-1' }, { organization_id: B, source_id: secret }]);
+});
+
+it('F6 C-2/C-12/X-8/H-5 on real stores: holds and accept_target have no fence or graph effect; a stale conflict is superseded', async () => {
+  const ci = id('f6');
+  await create('a', ci);
+  await cypher('MATCH (c:CI {id: $id}) SET c.serial_number = $id, c.name = "stored"', { id: ci });
+  await rows(`INSERT INTO ci_field_sources (organization_id, ci_id, field_name, field_value, value_json, source_name)
+    VALUES ($1, $2, 'name', 'stored', '"stored"', 'cmdb')`, [A, ci]);
+  expect((await api('a').post('/reconciliation/rules', { name: `review-${ci}`, identification_rules: [],
+    merge_strategies: [{ field_name: 'name', strategy: 'manual_review' }] })).status).toBe(201);
+  const merge = (source: string, name: string) => api('a').post('/reconciliation/merge', { name: ci, ci_type: 'server', source,
+    source_id: `${source}-1`, identifiers: { serial_number: ci }, attributes: { name } });
+  const held = await merge('scan', 'v1');
+  expect([held.status, held.body.data.status]).toEqual([202, 'pending_review']);
+  const [c1] = held.body.data.conflict_ids;
+  expect((await node(ci))!['name']).toBe('stored');
+  // C-12: a same-source merge moves the stored value on, so c1 is stale; changed content supersedes it.
+  expect((await merge('cmdb', 'stored2')).status).toBe(200);
+  const [c2] = (await merge('scan', 'v2')).body.data.conflict_ids;
+  expect(await rows('SELECT id, status, superseded_by FROM reconciliation_conflicts WHERE ci_id = $1 ORDER BY created_at', [ci]))
+    .toEqual([{ id: c1, status: 'superseded', superseded_by: c2 }, { id: c2, status: 'pending', superseded_by: null }]);
+  const [{ content_hash: revision }] = await rows('SELECT content_hash FROM reconciliation_conflicts WHERE id = $1', [c2]);
+  const resolved = await api('a').post(`/reconciliation/conflicts/${c2}/resolve`, { resolution: 'accept_target', expected_revision: revision });
+  expect([resolved.status, resolved.body.data.status]).toEqual([200, 'resolved']);
+  const journal = await ops(A, ci);
+  expect(journal.map(op => [op.operation, op.graph_effect, op.state])).toEqual([['direct_write', true, 'committed'],
+    ['hold', false, 'committed'], ['update', true, 'committed'], ['hold', false, 'committed'], ['resolve_conflict', false, 'committed']]);
+  for (const op of journal) expect(await fences(op.id)).toHaveLength(op.graph_effect ? 1 : 0);
+  expect((await node(ci))!['name']).toBe('stored2');
+  expect((await history(ci)).map(row => row.change_type)).toEqual(['updated']);
 });
 
 it('F0/X-14/N-7b: invalid shapes and reserved aliases are 400 before any journal row; the CI is unchanged', async () => {

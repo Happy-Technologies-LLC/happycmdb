@@ -31,8 +31,9 @@ jest.mock('../../src/auth/neo4j-auth.repository', () => ({
   })),
 }));
 // No Kafka in the integration stores; post-commit notification is best-effort (v16 §3.3 step 7).
+const mockEmit = jest.fn(async (..._args: unknown[]) => [] as unknown[]);
 jest.mock('@cmdb/event-processor', () => ({
-  ...jest.requireActual<object>('@cmdb/event-processor'), getEventProducer: () => ({ emit: async () => [] }),
+  ...jest.requireActual<object>('@cmdb/event-processor'), getEventProducer: () => ({ emit: (...args: unknown[]) => mockEmit(...args) }),
 }));
 
 import { JWTService } from '../../src/auth/jwt.service';
@@ -42,6 +43,7 @@ import { relationshipRoutes } from '../../src/rest/routes/relationship.routes';
 import { itilRoutes } from '../../src/rest/routes/itil.routes';
 import { analyticsRoutes } from '../../src/rest/routes/analytics.routes';
 import { reconciliationRoutes } from '../../src/rest/routes/reconciliation.routes';
+import { driftRoutes, impactRoutes } from '../../src/rest/routes/drift-impact.routes';
 import { createGraphQLServer } from '../../src/graphql/server';
 import { CIListUnavailableError, readCIList, writeReferencedCIs } from '../../src/read-admission';
 
@@ -57,6 +59,8 @@ app.use('/api/v1/relationships', relationshipRoutes);
 app.use('/api/v1/itil', itilRoutes);
 app.use('/api/v1/analytics', analyticsRoutes);
 app.use('/api/v1/reconciliation', reconciliationRoutes);
+app.use('/api/v1/drift', driftRoutes);
+app.use('/api/v1/impact', impactRoutes);
 const auth = (user: User) => ({ authorization: `Bearer ${jwt.generateAccessToken(users[user]._id,
   users[user]._username, users[user]._role, users[user]._organizationId)}` });
 const api = (user: User) => ({
@@ -95,6 +99,25 @@ const seamOnce = (point: string, action: () => Promise<void>) => {
   });
 };
 const GAP = { success: false, error: 'Conflict', message: 'CI is temporarily unavailable' };
+// Real-time poll (5 s max): PG lock waits are only observable from another session, never as an event.
+const until = async (check: () => Promise<boolean>) => {
+  for (let wait = 0; wait < 100 && !(await check()); wait++) {
+    const tick = Promise.withResolvers<void>(); setTimeout(tick.resolve, 50); await tick.promise;
+  }
+};
+const waitingOn = async (pid: number) =>
+  (await rows('SELECT pid FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))', [pid])).map(row => row.pid as number);
+const derived = async (ids: string[]) => (await rows(`SELECT
+    (SELECT count(*) FROM drift_detection_results WHERE ci_id = ANY($1))::int AS drift,
+    (SELECT count(*) FROM baseline_snapshots WHERE ci_id = ANY($1))::int AS baselines,
+    (SELECT count(*) FROM impact_analyses WHERE source_ci_id = ANY($1))::int AS impact,
+    (SELECT count(*) FROM ci_criticality_scores WHERE ci_id = ANY($1))::int AS criticality`, [ids]))[0];
+const approvedBaseline = async (ci: string) => {
+  const created = await api('a').post('/drift/baseline', { ci_id: ci, snapshot_type: 'configuration' });
+  expect((await api('a').post(`/drift/baseline/${created.body.data.id}/approve`, {})).status).toBe(200);
+};
+const driftEvents = () => mockEmit.mock.calls.filter(([, , payload]) => payload && typeof payload === 'object'
+  && 'conflict_type' in payload && payload.conflict_type === 'configuration_drift').length;
 let server: { stop(): Promise<void> };
 
 beforeAll(async () => { ({ server } = await createGraphQLServer(app)); });
@@ -533,6 +556,75 @@ it('F4 X-16..X-21: writers and AP-P\'/AP-M\'\' readers on a CI with an in-flight
   expect((await api('a').post('/itil/incidents', { affectedCIId: ci, description: 'incident after gap', reportedBy: 'a' })).status).toBe(201);
 });
 
+it('S4d X-26/X-20: drift, baseline, impact and criticality persist nothing while the root or a neighbour is in a gap', async () => {
+  const [root, peer] = [id('x26'), id('x26-peer')];
+  await create('a', root);
+  await create('a', peer);
+  expect((await api('a').post('/relationships', { from_id: peer, to_id: root, type: 'DEPENDS_ON' })).status).toBe(201);
+  await approvedBaseline(root);
+  await cypher('MATCH (c:CI {id: $id}) SET c.hostname = "drifted", c.ip_address = "10.0.0.26"', { id: root });
+  const [before, emitted] = [await derived([root, peer]), driftEvents()];
+  const persisting = (user: User) => [
+    () => api(user).post(`/drift/detect/${root}`, {}),
+    () => api(user).post('/drift/baseline', { ci_id: root, snapshot_type: 'relationships' }),
+    () => api(user).post('/impact/predict', { ci_id: root, change_type: 'RESTART' }),
+    () => api(user).get(`/impact/criticality/${root}`),
+  ];
+  const duringGap = async (ci: string, calls: (() => request.Test)[]) => {
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    seamOnce('beforeW', async () => { entered.resolve(); await release.promise; });
+    const write = api('a').put(`/cis/${ci}`, { name: `${ci}-renamed` }).then(response => response);
+    await entered.promise;
+    const responses: request.Response[] = [];
+    for (const call of calls) responses.push(await call()); // impact admits one request per principal at a time
+    release.resolve();
+    expect((await write).status).toBe(200);
+    return responses.map(response => [response.status, response.body]);
+  };
+  // Root in the gap: the pre-check. Neighbour in the gap: only the post-check sees it. Org B gets no oracle.
+  expect(await duringGap(root, [...persisting('a'), persisting('b')[0]!])).toEqual([...Array(4).fill([409, GAP]),
+    [404, { success: false, error: 'Not Found', message: `CI with ID '${root}' not found` }]]);
+  expect(await duringGap(peer, persisting('a').slice(1))).toEqual(Array(3).fill([409, GAP]));
+  expect([await derived([root, peer]), driftEvents()]).toEqual([before, emitted]);
+
+  const statuses: number[] = [];
+  for (const call of persisting('a')) statuses.push((await call()).status);
+  expect(statuses).toEqual([200, 201, 201, 200]);
+  expect([await derived([root, peer]), driftEvents()]).toEqual([{ drift: before.drift + 1,
+    baselines: before.baselines + 1, impact: before.impact + 1, criticality: before.criticality + 2 }, emitted + 1]);
+});
+
+it('S4d X-20: a drift persist admitted before a T1 on its CI commits first; the T1 waits (<= 2 admission locks)', async () => {
+  const ci = id('x20');
+  await create('a', ci);
+  await approvedBaseline(ci);
+  const blocker = await sql.pool.connect();
+  const inFlight: Promise<request.Response>[] = [];
+  try {
+    await blocker.query('BEGIN');
+    await blocker.query('LOCK TABLE drift_detection_results IN SHARE MODE');
+    const blockerPid = (await blocker.query('SELECT pg_backend_pid() AS pid')).rows[0].pid as number;
+    inFlight.push(api('a').post(`/drift/detect/${ci}`, {}).then(response => response));
+    await until(async () => (await waitingOn(blockerPid)).length > 0);
+    const [detectPid] = await waitingOn(blockerPid);
+    inFlight.push(api('a').put(`/cis/${ci}`, { name: 'after-drift' }).then(response => response));
+    await until(async () => (await waitingOn(detectPid!)).length > 0);
+    expect((await waitingOn(detectPid!))[0]).toBeDefined();
+    // Every lock on org A's admission key (64-bit advisory: classid high, objid low, objsubid 1).
+    expect(await rows(`SELECT pid = $1 AS detect, mode, granted FROM pg_locks WHERE locktype = 'advisory' AND objsubid = 1
+      AND ((classid::bigint << 32) | objid::bigint) = hashtextextended($2::text, 4431) ORDER BY granted DESC`, [detectPid, A]))
+      .toEqual([{ detect: true, mode: 'ShareLock', granted: true }, { detect: false, mode: 'ExclusiveLock', granted: false }]);
+    await blocker.query('COMMIT');
+    expect((await Promise.all(inFlight)).map(response => response.status)).toEqual([200, 200]);
+  } finally {
+    await blocker.query('ROLLBACK').catch(() => undefined);
+    blocker.release();
+    await Promise.allSettled(inFlight); // never leave a queued T1 to consume a later test's seam
+  }
+  expect((await derived([ci])).drift).toBe(1);
+});
+
 it('F5 X-11/X-15a/X-29: lists mask own gaps from one membership point; a busy org fails only itself', async () => {
   const entered = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
@@ -599,12 +691,6 @@ it("F8 v16 §5.1: a queued T1 is served before a later reader (R1 -> T1 -> R2); 
   expect((await rows('SELECT hashtextextended($1::text, 4431) <> hashtextextended($2::text, 4431) AS distinct', [A, B]))[0].distinct).toBe(true);
   const blockedBy = async (pid: number) =>
     (await rows('SELECT count(*)::int AS n FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))', [pid]))[0].n as number;
-  // Real-time poll (5 s max): PG lock waits are only observable from another session, never as an event.
-  const until = async (check: () => Promise<boolean>) => {
-    for (let wait = 0; wait < 100 && !(await check()); wait++) {
-      const tick = Promise.withResolvers<void>(); setTimeout(tick.resolve, 50); await tick.promise;
-    }
-  };
   const held = Promise.withResolvers<number>();
   const release = Promise.withResolvers<void>();
   const r1 = writeReferencedCIs(A, [x], async client => {

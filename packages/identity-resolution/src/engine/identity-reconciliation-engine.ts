@@ -457,7 +457,7 @@ export class IdentityReconciliationEngine {
   }
 
   /**
-   * v16 §3.1/§3.3, §15 H-1: one journaled `create` under a server-issued id. W stamps the verified
+   * v16 §3.1/§3.3, §15 H-1: one journaled `create` under the id of (O, source, source_id). W stamps the verified
    * org; T2 writes exactly one `created` history row, the lineage and the attribute field sources.
    * `external_id` never reaches the node: the deployed constraint on it is global, so a collision
    * would disclose another org's value. That identity is O's lineage (findByExternalId).
@@ -470,7 +470,8 @@ export class IdentityReconciliationEngine {
     const attributes = kept(ci.attributes);
     const fields = { name: ci.name, ci_type: ci.ci_type, status: ci.status || 'active',
       ...(ci.environment ? { environment: ci.environment } : {}), ...attributes, ...kept(ci.identifiers) };
-    const ciId = this.generateCIId();
+    // One stable slot per (O, source, source_id): a retry while T2 is pending meets the in-flight gap (409), never a 2nd CI.
+    const ciId = `ci_${createHash('sha256').update(JSON.stringify([organizationId, source, sourceId])).digest('hex').slice(0, 32)}`;
     const incarnationId = randomUUID();
     const outcome = await this.neo4jClient.journal.run({
       organizationId, actor, operation: 'create', ciIds: [ciId],

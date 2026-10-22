@@ -5,12 +5,12 @@ const query = jest.fn();
 const admissionQuery = jest.fn();
 const release = jest.fn();
 const connect = jest.fn(() => Promise.resolve({ query: admissionQuery, release }));
-jest.mock('pg', () => ({ Pool: class { connect() { return connect(); } } }));
+jest.mock('pg', () => ({ Pool: class { on() {} connect() { return connect(); } } }));
 jest.mock('@cmdb/database', () => ({ getPostgresClient: () => ({ query, pool: { options: {}, query } }) }));
 
 import { readCIList, CIListUnavailableError } from '../read-admission';
 beforeEach(() => {
-  connect.mockImplementation(() => Promise.resolve({ query: admissionQuery, release }));
+  connect.mockImplementation(() => Promise.resolve({ query: admissionQuery, release, on: jest.fn(), removeListener: jest.fn() }));
   release.mockClear();
 });
 

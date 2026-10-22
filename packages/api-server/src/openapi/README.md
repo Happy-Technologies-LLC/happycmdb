@@ -137,6 +137,9 @@ for at most 5 s); overflow or an expired wait gets the route's existing body: 50
 temporarily unavailable`, or 429 `Impact analysis rate limit exceeded` on the impact graph.
 A slot is held until the handler's work settles, even after a timed-out response. Writes,
 other reads and GraphQL are not gated, and other organizations never wait.
+Journaled writes (HAP-873): per organization and API process, only one write at a time waits for the
+admission lock while holding a database connection; later ones queue in arrival order without one. The
+same 12 s budget covers both waits, and expiry answers the existing 503 `CI write temporarily unavailable`.
 
 ### Relationships (`/api/v1/relationships`)
 - `GET /relationships` - List relationships

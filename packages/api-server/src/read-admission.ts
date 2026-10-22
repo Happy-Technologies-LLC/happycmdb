@@ -173,6 +173,7 @@ function isolatedPool(): Pool {
     // pg-pool hides `password` from enumeration, so a bare spread would connect without it.
     const { options } = getPostgresClient().pool;
     admissionPool = new Pool({ ...options, password: options.password, max: 4, connectionTimeoutMillis: 250,
+      application_name: 'cmdb-read-admission',
       options: '-c statement_timeout=12000 -c lock_timeout=2000 -c idle_in_transaction_session_timeout=15000' });
   }
   return admissionPool;

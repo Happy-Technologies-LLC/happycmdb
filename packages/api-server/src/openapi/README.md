@@ -130,6 +130,14 @@ AP-P′) after a gap check over the root and every CI the result read: while any
 pending/failed for the caller's organization they answer 409 `CI is temporarily
 unavailable` with no row or event; an admission lock timeout answers 503.
 
+Per-organization read gate (HAP-850, X-29): `GET /cis`, `POST /cis/search`, the four
+`/search` endpoints and `GET /impact/graph/{rootCiId}` run at most 2 at once per verified
+organization per API process. Others wait FIFO (at most 64, admitted at least 50 ms apart,
+for at most 5 s); overflow or an expired wait gets the route's existing body: 503 `CI list
+temporarily unavailable`, or 429 `Impact analysis rate limit exceeded` on the impact graph.
+A slot is held until the handler's work settles, even after a timed-out response. Writes,
+other reads and GraphQL are not gated, and other organizations never wait.
+
 ### Relationships (`/api/v1/relationships`)
 - `GET /relationships` - List relationships
 - `POST /relationships` - Create relationship

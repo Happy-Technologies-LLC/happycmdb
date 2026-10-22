@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import { Pool } from 'pg';
 import { ADMISSION_LOCK_KEY, getNeo4jClient, getPostgresClient, JournalUnavailableError } from '@cmdb/database';
+import { logger } from '@cmdb/common';
 
 export class CIGapError extends Error {
   constructor() { super('CI is temporarily unavailable'); }
@@ -175,6 +176,8 @@ function isolatedPool(): Pool {
     admissionPool = new Pool({ ...options, password: options.password, max: 4, connectionTimeoutMillis: 250,
       application_name: 'cmdb-read-admission',
       options: '-c statement_timeout=12000 -c lock_timeout=2000 -c idle_in_transaction_session_timeout=15000' });
+    admissionPool.on('error', (error: Error & { code?: string }) => // unlistened 'error' would crash; SQLSTATE only, never message/detail
+      logger.warn('Read admission idle PostgreSQL client error', { code: error.code }));
   }
   return admissionPool;
 }
@@ -203,6 +206,8 @@ export async function readCIList<T>(
   try {
     const client = await isolatedPool().connect();
     let broken: Error | undefined;
+    const onError = (error: Error) => { broken ??= error; }; // backend lost while held: the next query rejects (503)
+    client.on('error', onError);
     try {
       const timedQuery = (text: string, values?: (string | number)[]) =>
         ({ text, values, query_timeout: remaining() });
@@ -232,6 +237,7 @@ export async function readCIList<T>(
         throw error;
       }
     } finally {
+      client.removeListener('error', onError);
       client.release(broken);
     }
   } catch (error) {

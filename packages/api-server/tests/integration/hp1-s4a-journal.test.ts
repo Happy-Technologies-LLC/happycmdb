@@ -676,6 +676,10 @@ it('F5 X-11/X-15a/X-29: lists mask own gaps from one membership point; a busy or
   };
   const reads = [busy(), busy()];
   await held.promise;
+  const admissionTags = (await rows(`SELECT count(*) FILTER (WHERE a.application_name = 'cmdb-read-admission' AND l.granted)::int AS tagged,
+      count(*) FILTER (WHERE a.application_name <> 'cmdb-read-admission' AND a.state LIKE 'idle in transaction%')::int AS shared
+    FROM pg_stat_activity a LEFT JOIN pg_locks l ON l.pid = a.pid AND l.locktype = 'advisory' AND l.mode = 'ShareLock'
+    WHERE a.datname = current_database()`))[0];
   const gap = id('x29');
   const third = readCIList(A, async () => {
     await rows(`INSERT INTO ci_reconciliation_operations (id, group_id, organization_id, ci_id, origin, operation,
@@ -689,6 +693,7 @@ it('F5 X-11/X-15a/X-29: lists mask own gaps from one membership point; a busy or
   hold.resolve();
   await Promise.allSettled(reads);
   await rows(`UPDATE ci_reconciliation_operations SET state = 'aborted' WHERE organization_id = $1 AND ci_id = $2`, [A, gap]);
+  expect(admissionTags).toEqual({ tagged: 2, shared: 0 }); // X-29: held A re-reads tagged; no shared-pool tx idle across them
 });
 
 it("F8 v16 §5.1: a queued T1 is served before a later reader (R1 -> T1 -> R2); other orgs never wait", async () => {

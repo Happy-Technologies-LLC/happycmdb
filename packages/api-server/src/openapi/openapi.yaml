@@ -2284,7 +2284,7 @@ paths:
     post:
       tags: [Reconciliation]
       summary: Merge CI
-      description: Merge an existing CI in the authenticated caller's organization. Unknown, foreign-organization, and organization-less targets all return the same 404; this endpoint does not create CIs.
+      description: Merge into the CI that the caller's identifiers match in the caller's organization, or create a new one there when none matches. Foreign-organization and organization-less CIs never match, so they get the same new-CI response as a missing one. A created CI has no `external_id` property; its external identity is the caller's lineage.
       operationId: mergeCI
       requestBody:
         required: true
@@ -2294,7 +2294,7 @@ paths:
               $ref: '#/components/schemas/MergeRequest'
       responses:
         '200':
-          description: CI merged (`data.ci_id`, `data.action` updated, `data.correlation_id`)
+          description: CI merged or created (`data.ci_id`, `data.action` updated or created, `data.correlation_id`)
         '202':
           description: A manual-review field held the whole merge; nothing was written to the CI (`data.status` pending_review, `data.conflict_ids`, `data.correlation_id`)
         '409':

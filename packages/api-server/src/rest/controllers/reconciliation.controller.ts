@@ -115,8 +115,8 @@ export class ReconciliationController {
         return;
       }
 
-      // v16 §3.1/§7.2: one journaled merge; a review field holds the whole merge (202, stable conflict ids).
-      const outcome = await this.reconciliationEngine.mergeCI(discoveredCI, requestOrganizationId(req), requestActor(req));
+      // v16 §3.1/§7.2: one journaled merge (a review field holds it: 202) or, unmatched, one journaled create (H-1).
+      const outcome = await this.reconciliationEngine.mergeCI(discoveredCI, requestOrganizationId(req), requestActor(req), true);
       if (outcome === null) {
         res.status(404).json({ success: false, error: 'Not Found', message: 'CI not found' });
         return;

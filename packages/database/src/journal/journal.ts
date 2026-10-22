@@ -16,7 +16,7 @@ import { getPostgresClient } from '../postgres/client';
 import { assertPlanRepresentable, dec, Encoded, PlanUnrepresentableError } from './encoding';
 
 export type JournalOperation = 'update' | 'hold' | 'delete' | 'resolve_conflict' | 'direct_write' | 'relationship_write'
-  | 'restore';
+  | 'restore' | 'create';
 export type GraphPlanKind = 'create' | 'update' | 'restore' | 'delete' | 'relationship_create' | 'relationship_delete';
 
 /** v16 §7.2 one review field of a hold (typed values are raw JSON, §7.0); `supersedes` is the stale pending row it replaces. */
@@ -32,17 +32,17 @@ export interface StoredPlan {
   /** Decided under the slot: a merge update whose pre-scan found a review field is a hold (v16 §7.2). */
   operation?: 'hold';
   /**
-   * T2 history evidence (v16 §3.1): one org-stamped row for a merge `updated`,
+   * T2 history evidence (v16 §3.1): one org-stamped row for a merge `created`/`updated`,
    * a `deleted`, or a `dismiss_stale` `conflict_superseded`; a delete also purges
    * this incarnation's derived rows.
    */
   history?: {
-    changeType: 'updated' | 'deleted' | 'conflict_superseded'; changedFields: string[]; source: string;
+    changeType: 'created' | 'updated' | 'deleted' | 'conflict_superseded'; changedFields: string[]; source: string;
     previous: Encoded; next: Encoded | null; incarnationId: string | null;
   };
   /** T2 merge/resolve evidence, keyed by (organization, CI): raw JSON field values (v16 §7.0), lineage, conflicts. */
   fields?: Array<{ name: string; value: unknown; text: string; source: string }>;
-  lineage?: { source: string; sourceId: string; confidence: number };
+  lineage?: { source: string; sourceId: string; confidence: number | null };
   conflicts?: ConflictPlan[];
   resolve?: { id: string; revision: string; status: 'resolved' | 'superseded'; action: string;
     suppressionHash: string | null; data: Encoded };
@@ -203,7 +203,7 @@ async function writeEvidence(client: PoolClient, row: { group_id: string; organi
         last_correlation_id, last_seen_at) VALUES ($1, $2, $3, $4, $5, $6, now())
       ON CONFLICT (organization_id, ci_id, source_name, source_id) DO UPDATE SET
         confidence_score = EXCLUDED.confidence_score, last_correlation_id = EXCLUDED.last_correlation_id, last_seen_at = now()`,
-    [org, ci, plan.lineage.source, plan.lineage.sourceId, Math.round(plan.lineage.confidence), group]);
+    [org, ci, plan.lineage.source, plan.lineage.sourceId, plan.lineage.confidence === null ? null : Math.round(plan.lineage.confidence), group]);
   }
   const exactlyOne = (count: number | null) => {
     if (count !== 1) throw Object.assign(new Error('conflict lifecycle mismatch'), { code: 'HP1CF' });
@@ -280,7 +280,7 @@ export class ReconciliationJournal {
   constructor(private readonly graph: JournalGraphRunner) {}
 
   async run<T>(write: JournaledWrite<T>): Promise<T> {
-    await assertJournalSchema(this.graph, write.operation === 'update' || write.operation === 'resolve_conflict');
+    await assertJournalSchema(this.graph, ['create', 'update', 'resolve_conflict'].includes(write.operation));
     const groupId = randomUUID();
     const slots = [...new Set(write.ciIds)].sort().map(ciId => ({ id: randomUUID(), ciId, operation: write.operation }));
     await this.reserve(write, groupId, slots);

@@ -59,7 +59,7 @@ function isStale(conflict: ConflictRow, stored: StoredField | undefined): boolea
 }
 
 export interface MergeOutcome {
-  ci_id: string; action: 'updated' | 'pending_review'; correlation_id: string; conflict_ids: string[];
+  ci_id: string; action: 'created' | 'updated' | 'pending_review'; correlation_id: string; conflict_ids: string[];
 }
 export type ConflictResolution = 'accept_source' | 'accept_target' | 'merge' | 'dismiss_stale';
 const RESERVED_ATTRIBUTES = ['id', 'organization_id', 'organizationid', 'op_id', 'reconciliation_op_id', 'created_at',
@@ -444,11 +444,55 @@ export class IdentityReconciliationEngine {
     }
   }
 
-  /** REST/GraphQL merge into an existing owned CI (v16 §3.1, §7): updated or held for review; null when unmatched. */
-  async mergeCI(discoveredCI: TransformedCI, organizationId: string, actor: string): Promise<MergeOutcome | null> {
+  /**
+   * REST/GraphQL merge into an existing owned CI (v16 §3.1, §7): updated or held for review. Unmatched: null,
+   * or for REST (`createIfMissing`) one journaled create, so foreign, NULL-org and missing targets look alike.
+   */
+  async mergeCI(discoveredCI: TransformedCI, organizationId: string, actor: string,
+    createIfMissing = false): Promise<MergeOutcome | null> {
     await this.neo4jClient.assertJournalReady(true); // v16 §3.2: the gate precedes identification (lineage/graph reads)
     const match = await this.findExistingCI(discoveredCI.identifiers, discoveredCI, organizationId);
-    return match ? this.mergeIntoCI(match, discoveredCI, organizationId, actor) : null;
+    if (match) return this.mergeIntoCI(match, discoveredCI, organizationId, actor);
+    return createIfMissing ? this.createFromMerge(discoveredCI, organizationId, actor) : null;
+  }
+
+  /**
+   * v16 §3.1/§3.3, §15 H-1: one journaled `create` under the id of (O, source, source_id). W stamps the verified
+   * org; T2 writes exactly one `created` history row, the lineage and the attribute field sources.
+   * `external_id` never reaches the node: the deployed constraint on it is global, so a collision
+   * would disclose another org's value. That identity is O's lineage (findByExternalId).
+   */
+  private async createFromMerge(ci: TransformedCI, organizationId: string, actor: string): Promise<MergeOutcome> {
+    const { source, source_id: sourceId } = ci;
+    if (typeof sourceId !== 'string' || !sourceId || sourceId.length > 255 || source.length > 255) throw new PlanUnrepresentableError();
+    const kept = (map: object = {}) => Object.fromEntries(Object.entries(map).filter(([key, value]) => value !== undefined
+      && key !== 'external_id' && !RESERVED_ATTRIBUTES.includes(key.replace(/^_+/, '').toLowerCase()))); // v16 §4.4
+    const attributes = kept(ci.attributes);
+    const fields = { name: ci.name, ci_type: ci.ci_type, status: ci.status || 'active',
+      ...(ci.environment ? { environment: ci.environment } : {}), ...attributes, ...kept(ci.identifiers) };
+    // One stable slot per (O, source, source_id): a retry while T2 is pending meets the in-flight gap (409), never a 2nd CI.
+    const ciId = `ci_${createHash('sha256').update(JSON.stringify([organizationId, source, sourceId])).digest('hex').slice(0, 32)}`;
+    const incarnationId = randomUUID();
+    const outcome = await this.neo4jClient.journal.run({
+      organizationId, actor, operation: 'create', ciIds: [ciId],
+      plan: async () => ({
+        graph: { kind: 'create', label: sanitizeCITypeForLabel(ci.ci_type),
+          params: enc({ id: ciId, props: { ...fields, incarnation_id: incarnationId } }) },
+        history: { changeType: 'created', changedFields: Object.keys(fields), source, previous: enc({}), next: enc(fields),
+          incarnationId: ciIncarnationId(incarnationId) },
+        fields: Object.entries(attributes).map(([name, value]) => ({ name, value, text: fieldText(value), source })),
+        lineage: { source, sourceId, confidence: ci.confidence_score ?? null },
+      }),
+      result: async groupId => ({ ci_id: ciId, action: 'created' as const, correlation_id: groupId, conflict_ids: [] }),
+    });
+    try { // v16 §3.3 step 7: after T2, best-effort
+      await this.eventProducer.emit<CIDiscoveredEvent>(EventType.CI_DISCOVERED, 'identity-reconciliation-engine', {
+        ci_id: ciId, organization_id: organizationId, ci_incarnation_id: incarnationId, ci_name: ci.name, ci_type: ci.ci_type,
+        source_system: source, confidence_score: ci.confidence_score, identifiers: ci.identifiers });
+    } catch {
+      logger.warn('CI discovered notification not published', { ci_id: ciId });
+    }
+    return outcome;
   }
 
   /**

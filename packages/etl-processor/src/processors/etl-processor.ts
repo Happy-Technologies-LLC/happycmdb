@@ -239,7 +239,7 @@ export class ETLJobProcessor {
         ORDER BY c.updated_at
         `,
         {
-          _lastCheck: new Date(Date.now() - 10 * 60 * 1000).toISOString(), // Last 10 minutes
+          lastCheck: new Date(Date.now() - 10 * 60 * 1000).toISOString(), // Last 10 minutes
         }
       );
 

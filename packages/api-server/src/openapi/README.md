@@ -140,6 +140,11 @@ other reads and GraphQL are not gated, and other organizations never wait.
 Journaled writes (HAP-873): per organization and API process, only one write at a time waits for the
 admission lock while holding a database connection; later ones queue in arrival order without one. The
 same 12 s budget covers both waits, and expiry answers the existing 503 `CI write temporarily unavailable`.
+CI-referencing writes that hold the admission lock shared (AP-P′: the persisting drift/impact endpoints above, ITIL
+incidents, changes and baselines, business-service CI mappings; HAP-879) do the same: one waits per organization and
+API process with a database connection, the rest wait without one. One 5 s budget covers the queue and the lock wait
+(the connection checkout keeps the pool's own 2 s bound); expiry answers the route's existing 503. Behind a sustained
+stream of the same organization's CI writes, about one queued referenced write per process enters per CI write.
 
 ### Relationships (`/api/v1/relationships`)
 - `GET /relationships` - List relationships

@@ -35,18 +35,46 @@ export async function readSingleCI<T>(organizationId: string, ciId: string, read
   await assertNoCIGap(organizationId, ciId);
   return result;
 }
+/**
+ * HAP-879 (R-873b): per process, only the head referenced write of an organization waits for its admission lock on
+ * a shared-pool connection; later ones queue here in arrival order without one. One 5 s budget spans the queue and
+ * the lock wait; the pool checkout between them keeps its own connectionTimeoutMillis bound.
+ */
+const lockTurns = new Map<string, Promise<void>>();
+const REFERENCED_LOCK_BUDGET_MS = 5_000;
+async function lockTurn(organizationId: string, deadline: number): Promise<() => void> {
+  const previous = lockTurns.get(organizationId) ?? Promise.resolve();
+  let resolveMine!: () => void;
+  const mine = new Promise<void>(resolve => { resolveMine = resolve; }); // resolvable even if this write expires while queued
+  const turn = previous.then(() => mine);
+  lockTurns.set(organizationId, turn);
+  const release = (): void => {
+    resolveMine();
+    void turn.then(() => { if (lockTurns.get(organizationId) === turn) lockTurns.delete(organizationId); }); // idle once predecessors finish too
+  };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<boolean>(resolve => { timer = setTimeout(resolve, Math.max(0, deadline - performance.now()), true); });
+  const late = await Promise.race([previous.then(() => false), expired]);
+  clearTimeout(timer);
+  if (!late) return release;
+  release();
+  throw new JournalUnavailableError(); // the same 503 as the lock_timeout below
+}
 /** AP-P': hold the organization admission lock shared through the CI-referencing write. */
 export async function writeReferencedCIs<T>(
   organizationId: string, ciIds: string[], write: (client: import('pg').PoolClient) => Promise<T>
 ): Promise<T> {
-  const client = await getPostgresClient().pool.connect();
+  const deadline = performance.now() + REFERENCED_LOCK_BUDGET_MS;
+  const releaseTurn = await lockTurn(organizationId, deadline);
+  const client = await getPostgresClient().pool.connect().catch((error: unknown) => { releaseTurn(); throw error; });
   let broken: Error | undefined;
   try {
     await client.query('BEGIN');
     try {
-      await client.query(`SET LOCAL lock_timeout = '5s'`);
+      await client.query(`SET LOCAL lock_timeout = '${Math.max(1, Math.ceil(deadline - performance.now()))}ms'`);
       // Shared, so it queues behind a waiting T1 instead of overtaking it (F8').
       await client.query(`SELECT pg_advisory_xact_lock_shared(${ADMISSION_LOCK_KEY})`, [organizationId]);
+      releaseTurn(); // granted: the organization's next referenced write may now wait in PostgreSQL
       const gap = await client.query(
         `SELECT 1 FROM ci_reconciliation_operations
          WHERE organization_id=$1 AND ci_id=ANY($2::text[]) AND state IN ('pending','failed') LIMIT 1`,
@@ -63,6 +91,7 @@ export async function writeReferencedCIs<T>(
       throw error;
     }
   } finally {
+    releaseTurn();
     client.release(broken);
   }
 }

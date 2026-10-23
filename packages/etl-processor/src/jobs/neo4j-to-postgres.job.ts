@@ -15,6 +15,7 @@
  */
 
 import { Job } from 'bullmq';
+import type { Node } from 'neo4j-driver';
 import { Neo4jClient, PostgresClient } from '@cmdb/database';
 import { logger, CI, CIType } from '@cmdb/common';
 import { CIDimension, DimensionTransformer, DiscoveryFact } from '../transformers/dimension-transformer';
@@ -49,6 +50,34 @@ export interface ETLJobResult {
   durationMs: number;
   /** Timestamp of completion */
   completedAt: string;
+}
+
+/**
+ * A :CI node's properties as the dimension writer reads them, or null when
+ * its metadata is not JSON: that node is skipped and logged.
+ */
+export function extractedCI(props: Node['properties'], job: string): ExtractedCI | null {
+  const metadata = parseNodeMetadata(props['metadata']);
+  if (metadata === UNREADABLE_METADATA) {
+    // The id only when it is a valid ci_id: a node id is client-writable.
+    logger.warn('Skipping CI node whose metadata is not JSON', {
+      job, ciId: isDimCiId(props['id']) ? props['id'] : '(invalid id)',
+    });
+    return null;
+  }
+  return {
+    _id: props['id'],
+    external_id: props['external_id'],
+    name: props['name'],
+    _type: props['type'],
+    _status: props['status'],
+    environment: props['environment'],
+    _created_at: props['created_at'],
+    _updated_at: props['updated_at'],
+    _discovered_at: props['discovered_at'],
+    _metadata: metadata as ExtractedCI['_metadata'],
+    organization_id: props['organization_id']
+  };
 }
 
 /**
@@ -189,28 +218,12 @@ export class Neo4jToPostgresJob {
       const unreadableIds: unknown[] = [];
       for (const record of result.records as any[]) {
         const props = record.get('ci').properties;
-        const metadata = parseNodeMetadata(props.metadata);
-        if (metadata === UNREADABLE_METADATA) {
-          // The id only when it is a valid ci_id: a node id is client-writable.
-          logger.warn('Skipping CI node whose metadata is not JSON', {
-            job: 'neo4j-to-postgres', ciId: isDimCiId(props.id) ? props.id : '(invalid id)',
-          });
+        const ci = extractedCI(props, 'neo4j-to-postgres');
+        if (ci === null) {
           unreadableIds.push(props.id);
           continue;
         }
-        cis.push({
-          _id: props.id,
-          external_id: props.external_id,
-          name: props.name,
-          _type: props.type,
-          _status: props.status,
-          environment: props.environment,
-          _created_at: props.created_at,
-          _updated_at: props.updated_at,
-          _discovered_at: props.discovered_at,
-          _metadata: metadata as ExtractedCI['_metadata'],
-          organization_id: props.organization_id
-        });
+        cis.push(ci);
       }
       return { cis, unreadableIds };
 
@@ -221,9 +234,11 @@ export class Neo4jToPostgresJob {
 
   /**
    * Process a batch of CIs - transform and load into PostgreSQL
-   * Implements Type 2 SCD with retry logic and detailed logging
+   * Implements Type 2 SCD with retry logic and detailed logging.
+   * Also the load step of the incremental `sync` job (ETLJobProcessor), so
+   * every cmdb.dim_ci CI write follows one set of lock and organization rules.
    */
-  private async processBatch(
+  async processBatch(
     cis: ExtractedCI[],
     fullRefresh: boolean,
     jobId: string = 'neo4j-to-postgres-etl',

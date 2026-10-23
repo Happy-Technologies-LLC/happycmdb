@@ -1071,20 +1071,27 @@ it('X-29b: over 1 000 distinct operations in one A list window give the own-org 
 });
 
 it('X-31: with no writers a list holds no PG transaction across a Neo4j call; the probe sees one in a forced pessimistic read', async () => {
-  const samples: unknown[] = [];
-  jest.spyOn(Session.prototype, 'run').mockImplementation(async function (this: Session, ...args: Parameters<Session['run']>) {
-    samples.push(await activity());
-    return sessionRun.apply(this, args);
-  } as unknown as Session['run']);
-  const listed = await api('a').get('/cis?limit=1');
-  jest.restoreAllMocks();
-  let [calls, tagged] = [0, -1];
-  await readCIList(A, async () => {
-    if (++calls === 1) await rows('UPDATE ci_reconciliation_epochs SET epoch = epoch + 1 WHERE organization_id = $1', [A]);
-    else tagged = (await activity()).tagged;
-    return 0;
-  });
-  expect([listed.status, samples, tagged]).toEqual([200, [{ idle: 0, tagged: 0 }, { idle: 0, tagged: 0 }], 1]);
+  // Run alone, org A has no epoch row (journaled writes create it) and the bump below would force nothing. Epoch 0 reads as no row.
+  const seeded = (await rows(`INSERT INTO ci_reconciliation_epochs (organization_id, epoch) VALUES ($1, 0)
+    ON CONFLICT (organization_id) DO NOTHING RETURNING 1`, [A])).length === 1;
+  try {
+    const samples: unknown[] = [];
+    jest.spyOn(Session.prototype, 'run').mockImplementation(async function (this: Session, ...args: Parameters<Session['run']>) {
+      samples.push(await activity());
+      return sessionRun.apply(this, args);
+    } as unknown as Session['run']);
+    const listed = await api('a').get('/cis?limit=1');
+    jest.restoreAllMocks();
+    let [calls, tagged] = [0, -1];
+    await readCIList(A, async () => {
+      if (++calls === 1) await rows('UPDATE ci_reconciliation_epochs SET epoch = epoch + 1 WHERE organization_id = $1', [A]);
+      else tagged = (await activity()).tagged;
+      return 0;
+    });
+    expect([listed.status, samples, tagged]).toEqual([200, [{ idle: 0, tagged: 0 }, { idle: 0, tagged: 0 }], 1]);
+  } finally {
+    if (seeded) await rows('DELETE FROM ci_reconciliation_epochs WHERE organization_id = $1', [A]); // only the row this test added
+  }
 });
 
 it('N-7: reserved aliases in merge attributes or identifiers never reach the node, field sources or history; the org stays A', async () => {

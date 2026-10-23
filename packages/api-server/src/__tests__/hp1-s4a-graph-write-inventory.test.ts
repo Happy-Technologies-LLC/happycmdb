@@ -15,6 +15,7 @@ const LIBRARY_ONLY = ['bsm-impact-engine', 'itil-service-manager', 'framework-in
 const ALLOWED: Record<string, { count: number; reason: string }> = {
   'database/src/journal/journal.ts': { count: 10, reason: 'the journaled W statements and the recovery fence' },
   'database/src/neo4j/client.ts': { count: 2, reason: 'legacyCreateCIUnjournaled (HP1-S5 ETL residual) and the incarnation marker' },
+  'database/src/neo4j/client.js': { count: 4, reason: 'stale tsc output (operator D2 scope exception; removal is S5)' },
   'identity-resolution/src/engine/identity-reconciliation-engine.ts': { count: 2, reason: 'create-if-missing path, reached only by non-API writers (HP1-S5)' },
   'etl-processor/src/jobs/reconciliation.job.ts': { count: 1, reason: 'ETL writer, journaled by HP1-S5 (A-12)' },
   'bsm-impact-engine/src/utils/graph-traversal.ts': { count: 1, reason: 'library with no deployable importer (asserted below)' },
@@ -34,21 +35,22 @@ function sources(): Array<{ file: string; text: string }> {
       const path = join(dir, name);
       if (statSync(path).isDirectory()) {
         if (!['node_modules', 'dist', '__tests__'].includes(name)) walk(path);
-      } else if (name.endsWith('.ts') && !name.endsWith('.d.ts') && !name.endsWith('.test.ts')) {
+      } else if (/\.[jt]s$/.test(name) && !/\.d\.ts$|\.(test|spec)\.[jt]s$/.test(name)) { // §10.4: committed .js too
         out.push({ file: relative(PACKAGES, path), text: readFileSync(path, 'utf8') });
       }
     }
   };
   for (const pkg of readdirSync(PACKAGES)) {
-    // common holds Cypher/SQL validators whose strings name these keywords.
-    if (pkg !== 'common' && statSync(join(PACKAGES, pkg)).isDirectory()) {
+    if (statSync(join(PACKAGES, pkg)).isDirectory()) {
       try { walk(join(PACKAGES, pkg, 'src')); } catch { /* package without src */ }
     }
   }
   return out;
 }
 
-const files = sources();
+const all = sources();
+// common holds Cypher/SQL validators whose strings name these keywords.
+const files = all.filter(({ file }) => !file.startsWith('common/'));
 
 it('allows graph mutations only in the journal and named residuals', () => {
   const found: Record<string, number> = {};
@@ -68,4 +70,52 @@ it('keeps the residual library writers unreachable from deployable packages', ()
   const importers = files.filter(({ file, text }) => !LIBRARY_ONLY.some(pkg => file.startsWith(`${pkg}/`)) &&
     LIBRARY_ONLY.some(pkg => text.includes(`@cmdb/${pkg}`)));
   expect(importers.map(({ file }) => file)).toEqual([]);
+});
+
+it('E-7 g1 self-test: the scan matches every listed graph-write construct exactly once', () => {
+  const constructs = ['SET ci.name = $n', 'SET ci += $props', 'SET ci = $props', 'DETACH DELETE ci', 'DELETE r', 'REMOVE ci.name',
+    'CREATE (c:CI {id: $id})', 'MERGE (ci:CI {id: $id})', 'MERGE (a)-[r:DEPENDS_ON]->(b)', 'MATCH (ci:CI) RETURN ci'];
+  expect(constructs.map(text => text.match(GRAPH_MUTATION)?.length ?? 0)).toEqual([1, 1, 1, 1, 1, 1, 1, 1, 1, 0]);
+});
+
+// §10.4 gate 2: no CI write over HTTP from a deployable module (the 7bde921 discovery InternalAPIClient path).
+const HTTP_CI_WRITE = /\bInternalAPIClient\b|internal-api-client|\b(?:axios|fetch|\w+\.(?:post|put|patch|delete|get|request))\s*\(\s*[`'"][^`'"]*\/api\/v1\/(?:cis|reconciliation)\b/;
+it('E-7 g2: no module imports InternalAPIClient or calls axios/fetch with a /api/v1/cis or /reconciliation literal', () => {
+  expect(all.filter(({ text }) => HTTP_CI_WRITE.test(text)).map(({ file }) => file)).toEqual([]);
+  expect(["import { getInternalAPIClient } from '../api/internal-api-client';", 'private api: InternalAPIClient;',
+    "await axios.post('/api/v1/cis', ci)", 'await fetch(`${base}/api/v1/reconciliation/merge`, init)',
+    'this.client.put(`/api/v1/cis/${id}`, data)', "axios.get('/api/v1/relationships')", "const path = '/api/v1/cis';"]
+    .map(text => HTTP_CI_WRITE.test(text))).toEqual([true, true, true, true, true, false, false]);
+});
+
+// §10.4 gate 3 / §10.5: every BullMQ registration is listed; all but the two primitives wrap codedProcessor.
+const WORKER_SITE = /\bnew\s+(?:\w+\.)?Worker\s*(?:<[^>]*>)?\s*\(|\.registerWorker\s*\(/g;
+const WORKERS: Record<string, { count: number; primitive?: true }> = {
+  'common/src/queues/queue-manager.ts': { count: 1, primitive: true }, // registerWorker: its callers are listed below
+  'database/src/bullmq/queue-manager.ts': { count: 1, primitive: true },
+  'discovery-engine/src/orchestrator/discovery-orchestrator.ts': { count: 1 },
+  'discovery-engine/src/workers/cost-sync.worker.ts': { count: 3 },
+  'etl-processor/src/index.ts': { count: 4 },
+  'etl-processor/src/index.js': { count: 4 }, // committed tsc copy of index.ts
+  'etl-processor/src/workers/v3-etl.worker.ts': { count: 3 },
+  'tbm-cost-engine/src/integrations/cost-sync.service.ts': { count: 1 },
+};
+/** Sites whose processor argument is neither a codedProcessor(...) call nor a local bound to one. */
+const unwrapped = (text: string) => [...text.matchAll(WORKER_SITE)].filter(site => {
+  const arg = /^\s*[^,()]+,\s*(?:(?:\(0,\s*)?(?:\w+\.)?codedProcessor\)?\s*[<(]|(\w+)\s*[,)])/.exec(text.slice(site.index! + site[0].length));
+  return !arg || (arg[1] !== undefined && !new RegExp(`\\b${arg[1]}\\s*=\\s*codedProcessor\\b`).test(text));
+}).length;
+it('E-7 g3: an unlisted or unwrapped Worker/registerWorker site fails', () => {
+  const found: Record<string, number> = {};
+  const bare: string[] = [];
+  for (const { file, text } of all) {
+    const count = text.match(WORKER_SITE)?.length ?? 0;
+    if (count) found[file] = count;
+    if (count && !WORKERS[file]?.primitive && unwrapped(text)) bare.push(file);
+  }
+  expect([found, bare]).toEqual([Object.fromEntries(Object.entries(WORKERS).map(([file, { count }]) => [file, count])), []]);
+  expect(["new Worker('q', async job => job.data)", "queueManager.registerWorker('q', handler)",
+    "const handler = codedProcessor('q', s, fn); queueManager.registerWorker(q, handler, {})",
+    "new bullmq_1.Worker(names.Q, (0, common_1.codedProcessor)('q', {}, fn))", "new Worker<T, R>('q', codedProcessor('q', s, fn))"]
+    .map(unwrapped)).toEqual([1, 1, 0, 0, 0]);
 });

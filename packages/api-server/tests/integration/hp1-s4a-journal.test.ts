@@ -45,7 +45,9 @@ import { analyticsRoutes } from '../../src/rest/routes/analytics.routes';
 import { reconciliationRoutes } from '../../src/rest/routes/reconciliation.routes';
 import { driftRoutes, impactRoutes } from '../../src/rest/routes/drift-impact.routes';
 import { createGraphQLServer } from '../../src/graphql/server';
-import { CIListUnavailableError, readCIList, writeReferencedCIs } from '../../src/read-admission';
+import { businessServiceRoutes } from '../../src/rest/routes/business-service.routes';
+import { architectureRoutes } from '../../src/rest/routes/architecture.routes';
+import { CIListUnavailableError, readCIList, readGlobalCIPage, writeReferencedCIs } from '../../src/read-admission';
 
 type User = keyof typeof users;
 const graph = getNeo4jClient();
@@ -61,6 +63,8 @@ app.use('/api/v1/analytics', analyticsRoutes);
 app.use('/api/v1/reconciliation', reconciliationRoutes);
 app.use('/api/v1/drift', driftRoutes);
 app.use('/api/v1/impact', impactRoutes);
+app.use('/api/v1/business-services', businessServiceRoutes);
+app.use('/api/v1/architecture', architectureRoutes);
 const auth = (user: User) => ({ authorization: `Bearer ${jwt.generateAccessToken(users[user]._id,
   users[user]._username, users[user]._role, users[user]._organizationId)}` });
 const api = (user: User) => ({
@@ -98,6 +102,33 @@ const seamOnce = (point: string, action: () => Promise<void>) => {
     if (at === point && !used && !context.recovery) { used = true; await action(); }
   });
 };
+/** Hold the next non-recovery journal step at `point` until released. */
+const holdAt = (point: string) => {
+  const [entered, release] = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+  seamOnce(point, async () => { entered.resolve(); await release.promise; });
+  return { entered: entered.promise, release: release.resolve };
+};
+const sessionRun = Session.prototype.run;
+/** Runs `inside` once, after the next Neo4j statement containing `marker` returns and before its caller resumes. */
+const afterStatement = (marker: string, inside: () => Promise<unknown>) => {
+  let used = false;
+  jest.spyOn(Session.prototype, 'run').mockImplementation(function (this: Session, ...args: Parameters<Session['run']>) {
+    const result = sessionRun.apply(this, args);
+    if (used || !String(args[0]).includes(marker)) return result;
+    used = true;
+    return result.then(async summary => { await inside(); return summary; });
+  } as Session['run']);
+};
+/** Runs `inside` once, after the `nth` shared-pool query containing `marker` returns and before its caller resumes. */
+const afterPoolQuery = (marker: string, nth: number, inside: () => Promise<unknown>) => {
+  const query = sql.pool.query.bind(sql.pool);
+  let seen = 0;
+  jest.spyOn(sql.pool, 'query').mockImplementation((async (...args: Parameters<typeof query>) => {
+    const result = await query(...args);
+    if (JSON.stringify(args[0]).includes(marker) && ++seen === nth) await inside();
+    return result;
+  }) as typeof query);
+};
 const GAP = { success: false, error: 'Conflict', message: 'CI is temporarily unavailable' };
 // Real-time poll (5 s max): PG lock waits are only observable from another session, never as an event.
 const until = async (check: () => Promise<boolean>) => {
@@ -107,6 +138,13 @@ const until = async (check: () => Promise<boolean>) => {
 };
 const waitingOn = async (pid: number) =>
   (await rows('SELECT pid FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))', [pid])).map(row => row.pid as number);
+/** Backends idle inside a transaction, and read-admission (isolated pool) backends inside one. */
+const activity = async () => (await rows(`SELECT count(*) FILTER (WHERE state LIKE 'idle in transaction%')::int AS idle,
+    count(*) FILTER (WHERE application_name = 'cmdb-read-admission' AND xact_start IS NOT NULL)::int AS tagged
+  FROM pg_stat_activity WHERE datname = current_database()`))[0] as { idle: number; tagged: number };
+/** Every lock on an org's admission key (64-bit advisory: classid high, objid low, objsubid 1). */
+const admissionLocks = (org: string) => rows(`SELECT pid, mode, granted FROM pg_locks WHERE locktype = 'advisory' AND objsubid = 1
+  AND ((classid::bigint << 32) | objid::bigint) = hashtextextended($1::text, 4431) ORDER BY granted DESC`, [org]);
 const derived = async (ids: string[]) => (await rows(`SELECT
     (SELECT count(*) FROM drift_detection_results WHERE ci_id = ANY($1))::int AS drift,
     (SELECT count(*) FROM baseline_snapshots WHERE ci_id = ANY($1))::int AS baselines,
@@ -209,18 +247,21 @@ it('R44-M1: a reused CI id never shows the former owner history; B rows stay B-s
   await create('b', ci, { metadata: { note: secret } });
   const bIncarnation = (await node(ci))!['incarnation_id'];
   // The pre-S4 processor shape: B-stamped CI_UPDATED with a future timestamp, plus a legacy NULL row.
-  await rows(`INSERT INTO ci_change_history (ci_id, change_type, change_source, new_values, changed_at,
+  // changed_fields names the field, so the GraphQL reader would project B's value (R44-M1 nonvacuous).
+  await rows(`INSERT INTO ci_change_history (ci_id, change_type, change_source, changed_fields, new_values, changed_at,
       ci_incarnation_id, organization_id, correlation_id)
-    VALUES ($1, 'updated', 'reconciliation', $2::jsonb, now() + interval '1 day', $3, $4, $5)`,
+    VALUES ($1, 'updated', 'reconciliation', ARRAY['name'], $2::jsonb, now() + interval '1 day', $3, $4, $5)`,
   [ci, JSON.stringify({ name: secret }), bIncarnation, B, randomUUID()]);
   await sql.pool.query('ALTER TABLE ci_change_history DROP CONSTRAINT ci_change_history_organization_required');
   try {
-    await rows(`INSERT INTO ci_change_history (ci_id, change_type, change_source, new_values, ci_incarnation_id)
-      VALUES ($1, 'updated', 'legacy', $2::jsonb, $3)`, [ci, JSON.stringify({ name: secret }), bIncarnation]);
+    await rows(`INSERT INTO ci_change_history (ci_id, change_type, change_source, changed_fields, new_values, ci_incarnation_id)
+      VALUES ($1, 'updated', 'legacy', ARRAY['name'], $2::jsonb, $3)`, [ci, JSON.stringify({ name: secret }), bIncarnation]);
   } finally {
     await sql.pool.query(`ALTER TABLE ci_change_history ADD CONSTRAINT ci_change_history_organization_required
       CHECK (organization_id IS NOT NULL) NOT VALID`);
   }
+  expect((await api('b').gql(`{ analytics { getChangeHistory(ciId:"${ci}") { _changeType _newValue } } }`)).body.data)
+    .toEqual({ analytics: { getChangeHistory: [{ _changeType: 'updated', _newValue: secret }] } }); // control: B reads its own
   expect((await api('b').delete(`/cis/${ci}`)).status).toBe(204);
   const deleted = (await history(ci)).filter(row => row.change_type === 'deleted');
   const [deleteOp] = (await ops(B, ci)).filter(op => op.operation === 'delete');
@@ -303,6 +344,18 @@ it('F6 C-2/C-12/X-8/H-5 on real stores: holds and accept_target have no fence or
   for (const op of journal) expect(await fences(op.id)).toHaveLength(op.graph_effect ? 1 : 0);
   expect((await node(ci))!['name']).toBe('stored2');
   expect((await history(ci)).map(row => row.change_type)).toEqual(['updated']);
+  // X-18: GraphQL updateCI while an accept_source resolve's W is in flight is refused; after release both succeed.
+  const [c3] = (await merge('scan', 'v3')).body.data.conflict_ids;
+  const [{ content_hash: c3Revision }] = await rows('SELECT content_hash FROM reconciliation_conflicts WHERE id = $1', [c3]);
+  const pause = holdAt('beforeW');
+  const resolving = api('a').post(`/reconciliation/conflicts/${c3}/resolve`, { resolution: 'accept_source', expected_revision: c3Revision })
+    .then(response => response);
+  await pause.entered;
+  const update = `mutation { updateCI(id:"${ci}", input: { _name: "gql" }) { _name } }`;
+  const during = await api('a').gql(update);
+  pause.release();
+  expect([during.body.errors?.[0]?.extensions?.code, (await resolving).status, (await api('a').gql(update)).body.data?.updateCI])
+    .toEqual(['CONFLICT', 200, { _name: 'gql' }]);
 });
 
 it('F0/X-14/N-7b: invalid shapes and reserved aliases are 400 before any journal row; the CI is unchanged', async () => {
@@ -313,7 +366,7 @@ it('F0/X-14/N-7b: invalid shapes and reserved aliases are 400 before any journal
   const before = (await rows('SELECT count(*)::int AS n FROM ci_reconciliation_operations WHERE organization_id = $1', [A]))[0].n;
   let deep: unknown = 1;
   for (let depth = 0; depth < 33; depth++) deep = { d: deep };
-  const ids101 = Array.from({ length: 101 }, (_, n) => `${ci}-${n}`);
+  const [ids101, L] = [Array.from({ length: 101 }, (_, n) => `${ci}-${n}`), 'x'.repeat(256)];
   const cases: Array<[string, () => request.Test]> = [
     ['top-level alias', () => api('a').post('/cis', { _id: 'y', name: 'n', type: 'server' })],
     ['nested metadata alias', () => api('a').post('/cis', { name: 'n', type: 'server', metadata: { a: { _organization_id: B } } })],
@@ -332,24 +385,48 @@ it('F0/X-14/N-7b: invalid shapes and reserved aliases are 400 before any journal
     ['101 baseline CIs', () => api('a').post('/itil/baselines', { name: 'too-many', ciIds: ids101, createdBy: 'a' })],
     ['invalid auditDate', () => api('a').post(`/itil/configuration-items/${ci}/audit`, { auditDate: 'not-a-date' })],
     ['256-char merge source', () => api('a').post('/reconciliation/merge', { name: 'm', ci_type: 'server', source: 's'.repeat(256), source_id: 'f0', identifiers: { serial_number: ci } })],
+    ['256-unit source_id', () => api('a').post('/reconciliation/merge', { name: 'm', ci_type: 'server', source: 'f0', source_id: L, identifiers: { serial_number: ci } })],
+    ['256-unit nested member name', () => api('a').put(`/cis/${ci}`, { metadata: { a: { [L]: 1 } } })],
+    ['U+0000 key', () => api('a').put(`/cis/${ci}`, { metadata: { 'a\u0000': 1 } })],
+    ['U+0000 merge source', () => api('a').post('/reconciliation/merge', { name: 'm', ci_type: 'server', source: 'a\u0000b', source_id: 'f0', identifiers: { serial_number: ci } })],
+    ['lone surrogate value', () => api('a').put(`/cis/${ci}`, { metadata: { v: 'a\uD800' } })],
+    ['256-unit relationship from', () => api('a').post('/relationships', { from_id: L, to_id: peer, type: 'DEPENDS_ON' })],
+    ['256-unit relationship to', () => api('a').post('/relationships', { from_id: ci, to_id: L, type: 'DEPENDS_ON' })],
+    ['256-unit ITIL CI', () => api('a').patch(`/itil/configuration-items/${L}/lifecycle`, { stage: 'TEST' })],
+    ['256-unit baseline CI', () => api('a').post('/itil/baselines', { name: 'too-long', ciIds: [L], createdBy: 'a' })],
+    ['101 mapping CIs', () => api('a').post(`/business-services/${randomUUID()}/cis`, { ci_ids: ids101 })],
+    ['101 architecture CIs', () => api('a').post('/architecture/analyze', { ci_ids: ids101 })],
   ];
   for (const [name, call] of cases) expect({ name, status: (await call()).status }).toEqual({ name, status: 400 });
   expect((await rows('SELECT count(*)::int AS n FROM ci_reconciliation_operations WHERE organization_id = $1', [A]))[0].n).toBe(before);
   expect((await node(ci))!['name']).toBe(ci);
+  // Positives: a null attribute merges (value_json null, field_value "null") and reads back; an absent confidence is NULL.
+  const merged = await api('a').post('/reconciliation/merge', { name: 'f0-null', ci_type: 'server', source: 'f0', source_id: ci,
+    identifiers: { serial_number: `${ci}-null` }, attributes: { note: null } });
+  const made = merged.body.data?.ci_id;
+  expect([merged.status, await rows('SELECT field_value, value_json FROM ci_field_sources WHERE ci_id = $1', [made]),
+    (await api('a').get(`/reconciliation/field-sources/${made}`)).body.data?.fields.map((field: { field_value: string }) => field.field_value),
+    await rows('SELECT confidence_score FROM ci_source_lineage WHERE ci_id = $1', [made])])
+    .toEqual([200, [{ field_value: 'null', value_json: null }], ['null'], [{ confidence_score: null }]]);
 });
 
 it('X-27/X-27b/N-7c: delete and restore snapshots keep every Neo4j type; oversized plans are a 422 abort', async () => {
   const ci = id('typed');
+  const HP1 = ['{"$hp1":"int","v":"1152921504606846976"}', '{"$hp1":"utf16","b64":"AAA="}', '{"$hp1":"map","entries":[]}',
+    '{"$hp1":"x"}', '{"a":{"$hp1":"temporal","t":"DateTime","v":"2026-01-01T00:00:00Z"}}'];
+  const extremes = { imax: neo4j.int('9223372036854775807'), imin: neo4j.int('-9223372036854775808'), f2p53: 9007199254740994,
+    pinf: Infinity, ninf: -Infinity, ...Object.fromEntries(HP1.map((text, n) => [`m${n}`, text])) };
   const original = {
     name: 'a\u0000b', i60: neo4j.int('1152921504606846976'), i5: neo4j.int(5), f5: 5, nan: NaN, negZero: -0,
     big: 1e300, tiny: 5e-324, floats: [1.5, 1e300], ints: [neo4j.int(1), neo4j.int(2)],
-    metadata: '{"\\ud800":1,"$hp1":"int","v":"5"}',
+    metadata: '{"\\ud800":1,"$hp1":"int","v":"5"}', ...extremes,
   };
   await cypher(`CREATE (c:CI:Server {id: $id, organization_id: $org, incarnation_id: $inc, type: 'server'})
     SET c += $props, c.at = datetime('2026-01-01T00:00:00.000000005Z')`, { id: ci, org: A, inc: randomUUID(), props: original });
   const baseline = await api('a').post('/itil/baselines', { name: id('bl'), ciIds: [ci], createdBy: 'a' });
   expect(baseline.status).toBe(201);
-  await cypher('MATCH (c:CI {id: $id}) SET c.i60 = 0, c.f5 = 0.5, c.name = "changed", c.nan = 1.0', { id: ci });
+  await cypher('MATCH (c:CI {id: $id}) SET c.i60 = 0, c.f5 = 0.5, c.name = "changed", c.nan = 1.0, c += $zeroed',
+    { id: ci, zeroed: Object.fromEntries(Object.keys(extremes).map(key => [key, 0])) });
   const restored = await api('a').post(`/itil/baselines/${baseline.body.data.id}/restore`, { ciId: ci, performedBy: 'a' });
   expect(restored.status).toBe(200);
   const props = (await node(ci))!;
@@ -360,6 +437,11 @@ it('X-27/X-27b/N-7c: delete and restore snapshots keep every Neo4j type; oversiz
   expect(Number.isNaN(props['nan'])).toBe(true);
   expect(Object.is(props['negZero'], -0)).toBe(true);
   expect((props['ints'] as unknown[]).every(value => neo4j.isInt(value))).toBe(true);
+  // X-27b: Integer extremes stay Integer, 2^53+2 and ±∞ stay Float, the $hp1-shaped strings stay strings; H-6: no history.
+  expect([String(props['imax']), String(props['imin']), neo4j.isInt(props['imax']) && neo4j.isInt(props['imin']), neo4j.isInt(props['f2p53'])])
+    .toEqual(['9223372036854775807', '-9223372036854775808', true, false]);
+  expect([props['f2p53'], props['pinf'], props['ninf'], ...HP1.map((_, n) => props[`m${n}`])]).toEqual([9007199254740994, Infinity, -Infinity, ...HP1]);
+  expect(await history(ci)).toEqual([]);
 
   // N-7c: reserved keys in a stored snapshot are dropped, never written; the org is unchanged.
   const spoofed = await rows(`INSERT INTO itil_baselines (id, name, baseline_type, baseline_data, created_by, organization_id)
@@ -414,7 +496,11 @@ it('F1 X-1/X-2/X-3/X-12: unproven outcomes stay gated until the fence decides; e
     expect(await node(target)).toBeUndefined();
     expect((await api('a').get(`/cis/${target}`)).body).toEqual(GAP);
     expect((await api('b').get(`/cis/${target}`)).status).toBe(404);
+    let idle: unknown; // X-23: the sweeper holds no PG transaction across its fence call
+    setJournalSeam(async at => { if (at === 'beforeFence') idle ??= (await activity()).idle; });
     await sweep(A);
+    setJournalSeam(undefined);
+    expect(idle).toBe(0);
     await sweep(A);
     expect((await ops(A, target)).map(op => op.state)).toEqual(['committed', 'committed']);
     expect((await history(target)).filter(row => row.change_type === 'deleted')).toHaveLength(1);
@@ -427,6 +513,9 @@ it('F2 X-4/X-10/X-13/X-22: outages back off, failed stays gated until corrective
   await create('a', ci);
   seamOnce('afterW', async () => { throw new Error('lost'); });
   expect((await api('a').put(`/cis/${ci}`, { name: 'applied' })).status).toBe(503);
+  // X-2: in the lost-ack state the owner's evidence route is the gap and its list masks the applied CI.
+  expect([(await api('a').get(`/reconciliation/field-sources/${ci}`)).body, (await api('a').get(`/cis?search=${ci}`)).body.pagination.total])
+    .toEqual([GAP, 0]);
   setJournalSeam(async point => { if (point === 'beforeFence') throw new Error('Neo4j down'); });
   await sweep(A);
   const [, stalled] = await ops(A, ci);
@@ -435,7 +524,7 @@ it('F2 X-4/X-10/X-13/X-22: outages back off, failed stays gated until corrective
   setJournalSeam(undefined);
   await sweep(A);
   expect((await ops(A, ci))[1].state).toBe('committed');
-  expect((await node(ci))!['name']).toBe('applied');
+  expect([(await node(ci))!['name'], (await api('a').get(`/cis?search=${ci}`)).body.pagination.total]).toEqual(['applied', 1]);
 
   const failing = id('x10');
   await create('a', failing);
@@ -495,6 +584,34 @@ it('F2 X-9/X-23: a W sent after recovery fenced its op aborted rolls back whole;
   for (const spy of managed) expect(spy).not.toHaveBeenCalled();
 });
 
+it('X-9 b-d: a W blocked on a CI lock is never aborted with a changed CI, committed without it, or evidenced twice', async () => {
+  const outcomes: unknown[] = [];
+  for (const variant of ['released before the sweep', 'swept while blocked', 'never released']) {
+    const ci = id('x9-lock');
+    await create('a', ci);
+    const holder = graph.getSession();
+    const tx = holder.beginTransaction(); // test-owned write lock on the CI node
+    try {
+      await tx.run('MATCH (c:CI {id: $id}) SET c.lock_probe = 1', { id: ci });
+      const put = api('a').put(`/cis/${ci}`, { name: 'late' }).then(response => response);
+      await until(async () => (await cypher(`SHOW TRANSACTIONS YIELD currentQuery, status
+        WHERE currentQuery CONTAINS 'ReconciliationOp' AND status STARTS WITH 'Blocked' RETURN 1 AS blocked`)).length > 0);
+      if (variant === 'released before the sweep') await tx.rollback();
+      if (variant === 'swept while blocked') { await sweep(A); await tx.rollback(); }
+      const response = await put; // never released: the 10 s W timeout (neo4j/client.ts runJournalStatement)
+      await sweep(A);
+      const [, op] = await ops(A, ci);
+      outcomes.push([variant, response.status, op.state, (await node(ci))!['name'] === 'late',
+        (await cypher('MATCH (o:ReconciliationOp {op_id: $id}) RETURN o.outcome AS outcome', { id: op.id })).map(row => row['outcome'])]);
+    } finally {
+      await tx.rollback().catch(() => undefined);
+      await holder.close();
+    }
+  }
+  expect(outcomes).toEqual([['released before the sweep', 200, 'committed', true, ['applied']],
+    ['swept while blocked', 409, 'aborted', false, ['aborted']], ['never released', 503, 'aborted', false, ['aborted']]]);
+});
+
 it('F3 X-5/X-24/X-25: no id oracle or foreign overwrite, pending delete gates only its owner, a vanished target aborts without a fence', async () => {
   const [ci, free] = [id('x5'), id('x5-free')];
   await create('a', ci);
@@ -508,6 +625,13 @@ it('F3 X-5/X-24/X-25: no id oracle or foreign overwrite, pending delete gates on
   await expect(create('b', ci)).rejects.toBeInstanceOf(JournalAbortedError);
   const [lost] = await ops(B, ci);
   expect([lost.state, await fences(lost.id), await node(ci)]).toEqual(['aborted', [], before]);
+  // X-5: B's ambiguous (unsent) W on A's id is recovered as aborted: no applied fence, A's node byte-identical.
+  seamOnce('beforeW', async () => { throw new Error('connection reset'); });
+  await expect(create('b', ci)).rejects.toThrow('CI write temporarily unavailable');
+  await sweep(B);
+  const [, ambiguous] = await ops(B, ci);
+  expect([ambiguous.state, await fences(ambiguous.id), await node(ci), (await api('b').get(`/cis/${ci}`)).status])
+    .toEqual(['aborted', [{ o: expect.objectContaining({ outcome: 'aborted' }) }], before, 404]);
 
   const pendingDelete = id('x24');
   await create('b', pendingDelete);
@@ -528,12 +652,44 @@ it('F3 X-5/X-24/X-25: no id oracle or foreign overwrite, pending delete gates on
   const [, missed] = await ops(A, vanishing);
   expect([missed.state, missed.last_error]).toEqual(['aborted', 'target_missing']);
   expect(await fences(missed.id)).toEqual([]);
+
+  // X-25 for restore, delete and relationship delete; each runs first on an intact CI (control).
+  const peer = id('x25-peer');
+  await create('a', peer);
+  const detach = 'MATCH (c:CI {id: $id}) DETACH DELETE c';
+  const writes: Array<[string, (ci: string) => Promise<() => request.Test>, string]> = [
+    ['restore', async ci => {
+      const baseline = (await api('a').post('/itil/baselines', { name: id('x25'), ciIds: [ci], createdBy: 'a' })).body.data.id;
+      return () => api('a').post(`/itil/baselines/${baseline}/restore`, { ciId: ci, performedBy: 'a' });
+    }, detach],
+    ['delete', async ci => () => api('a').delete(`/cis/${ci}`), detach],
+    ['relationship delete', async ci => {
+      expect((await api('a').post('/relationships', { from_id: ci, to_id: peer, type: 'DEPENDS_ON' })).status).toBe(201);
+      return () => api('a').delete(`/relationships?from_id=${ci}&to_id=${peer}&type=DEPENDS_ON`);
+    }, 'MATCH (:CI {id: $id})-[r:DEPENDS_ON]->() DELETE r'],
+  ];
+  for (const [label, prepare, vanish] of writes) {
+    const [intact, target] = [id('x25-ok'), id('x25-gone')];
+    for (const ci of [intact, target]) await create('a', ci);
+    const control = await (await prepare(intact))();
+    const write = await prepare(target);
+    seamOnce('beforeW', async () => { await cypher(vanish, { id: target }); });
+    await write();
+    const op = (await ops(A, target)).at(-1)!;
+    expect([label, control.status < 300, op.state, op.last_error, await fences(op.id), await node(target) === undefined])
+      .toEqual([label, true, 'aborted', 'target_missing', [], label !== 'relationship delete']);
+  }
 });
 
 it('F4 X-16..X-21: writers and AP-P\'/AP-M\'\' readers on a CI with an in-flight W are refused, never interleaved', async () => {
   const [ci, peer] = [id('x17'), id('x17-peer')];
   await create('a', ci);
   await create('a', peer);
+  await cypher('MATCH (c:CI {id: $id}) SET c.serial_number = $id', { id: ci });
+  const service = (await api('a').post('/business-services', { name: id('x20-svc'), service_classification: 'application',
+    tbm_tower: 'application', business_criticality: 'low' })).body.data.service_id;
+  const merge = (name: string) => api('a').post('/reconciliation/merge', { name: ci, ci_type: 'server', source: 'x17',
+    source_id: 'x17-1', identifiers: { serial_number: ci }, attributes: { name } });
   const baseline = (await api('a').post('/itil/baselines', { name: id('x19'), ciIds: [ci], createdBy: 'a' })).body.data.id;
   const entered = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
@@ -548,11 +704,29 @@ it('F4 X-16..X-21: writers and AP-P\'/AP-M\'\' readers on a CI with an in-flight
     api('a').post('/itil/incidents', { affectedCIId: ci, description: 'incident on gap', reportedBy: 'a' }),
     api('a').post('/itil/baselines', { name: id('x21'), ciIds: [ci], createdBy: 'a' }),
     api('a').get(`/cis/${ci}`),
+    merge('second'), // X-6/X-17: a merge as the second party
+    api('a').post('/itil/changes', { changeType: 'NORMAL', description: 'change on gap', affectedCIIds: [ci], requestedBy: 'a',
+      plannedStart: '2026-01-01T00:00:00Z', plannedDuration: 5, implementationPlan: 'x'.repeat(60) }), // X-20
+    api('a').post(`/business-services/${service}/cis`, { ci_ids: [ci] }), // X-20 mapping
   ]);
-  expect(refused.map(response => response.status)).toEqual([409, 409, 409, 409, 409, 409, 409]);
+  expect(refused.map(response => response.status)).toEqual(Array(10).fill(409));
   release.resolve();
   expect((await first).status).toBe(200);
   expect((await node(ci))!['name']).toBe('first');
+  // X-17: a merge after the PUT plans from the post-PUT state.
+  expect((await merge('merged')).status).toBe(200);
+  expect((await history(ci)).map(row => row.previous_values)).toEqual([{ name: 'first' }]);
+  // Merge first: PUT, merge, relationship, restore and lifecycle as the second party are refused; the graph shows the merge.
+  const held = holdAt('beforeW');
+  const winner = merge('merge-first').then(response => response);
+  await held.entered;
+  const losers = await Promise.all([api('a').put(`/cis/${ci}`, { name: 'put-second' }), merge('merge-second'),
+    api('a').post('/relationships', { from_id: ci, to_id: peer, type: 'DEPENDS_ON' }),
+    api('a').post(`/itil/baselines/${baseline}/restore`, { ciId: ci, performedBy: 'a' }),
+    api('a').patch(`/itil/configuration-items/${ci}/lifecycle`, { stage: 'TEST' })]);
+  held.release();
+  expect([...losers.map(response => response.status), (await winner).status, (await node(ci))!['name']])
+    .toEqual([409, 409, 409, 409, 409, 200, 'merge-first']);
   expect((await api('a').post('/itil/incidents', { affectedCIId: ci, description: 'incident after gap', reportedBy: 'a' })).status).toBe(201);
 });
 
@@ -629,6 +803,38 @@ it('S4d X-20: a drift persist admitted before a T1 on its CI commits first; the 
     await Promise.allSettled(inFlight); // never leave a queued T1 to consume a later test's seam
   }
   expect((await derived([ci])).drift).toBe(1);
+});
+
+it('X-20: incident, change and mapping persists admitted before a T1 on their CI insert first; the T1 waits (<= 2 locks)', async () => {
+  const service = (await api('a').post('/business-services', { name: id('x20-map'), service_classification: 'application',
+    tbm_tower: 'application', business_criticality: 'low' })).body.data.service_id;
+  const persists: Array<[string, (ci: string) => request.Test]> = [
+    ['itil_incidents', ci => api('a').post('/itil/incidents', { affectedCIId: ci, description: 'incident first', reportedBy: 'a' })],
+    ['itil_changes', ci => api('a').post('/itil/changes', { changeType: 'NORMAL', description: 'change first', affectedCIIds: [ci],
+      requestedBy: 'a', plannedStart: '2026-01-01T00:00:00Z', plannedDuration: 5, implementationPlan: 'x'.repeat(60) })],
+    ['ci_business_service_mappings', ci => api('a').post(`/business-services/${service}/cis`, { ci_ids: [ci] })],
+  ];
+  for (const [table, persist] of persists) {
+    const ci = id('x20');
+    await create('a', ci);
+    await rows(`INSERT INTO cmdb.dim_ci (ci_id, ci_name, ci_type, ci_status, organization_id) VALUES ($1, $1, 'server', 'active', $2)`, [ci, A]);
+    const blocker = await sql.pool.connect();
+    const inFlight: Promise<request.Response>[] = [];
+    try {
+      await blocker.query(`BEGIN; LOCK TABLE ${table} IN SHARE MODE`); // the admitted persist waits here, holding its shared lock
+      inFlight.push(persist(ci).then(response => response));
+      await until(async () => (await admissionLocks(A)).length === 1);
+      inFlight.push(api('a').put(`/cis/${ci}`, { name: 'after-persist' }).then(response => response));
+      await until(async () => (await admissionLocks(A)).length === 2);
+      expect((await admissionLocks(A)).map(lock => [lock['mode'], lock['granted']])).toEqual([['ShareLock', true], ['ExclusiveLock', false]]);
+      await blocker.query('COMMIT');
+      expect([table, ...(await Promise.all(inFlight)).map(response => response.status)]).toEqual([table, 201, 200]);
+    } finally {
+      await blocker.query('ROLLBACK').catch(() => undefined);
+      blocker.release();
+      await Promise.allSettled(inFlight);
+    }
+  }
 });
 
 it('F5 X-11/X-15a/X-29: lists mask own gaps from one membership point; a busy org fails only itself', async () => {
@@ -727,6 +933,181 @@ it("F8 v16 §5.1: a queued T1 is served before a later reader (R1 -> T1 -> R2); 
   expect(await r2).toBe(2);
   expect((await t1).status).toBe(200);
 });
+
+it('X-15b/X-15c: a list racing a filter-changing PUT counts one membership; a W after its second snapshot leaves the pre-W state', async () => {
+  const tag = id('x15b');
+  const fixture = [1, 2, 3].map(n => `${tag}-${n}`);
+  for (const ci of fixture) await create('a', ci);
+  const active = async () => {
+    const { status, body } = await api('a').get(`/cis?status=active&search=${tag}`);
+    return [status, body.pagination?.total, body.data?.length];
+  };
+  expect(await active()).toEqual([200, 3, 3]); // control: no race
+  afterStatement('RETURN count(ci) AS total', async () => // after the optimistic count, before its page: retire one fixture CI
+    expect((await api('a').put(`/cis/${fixture[0]}`, { status: 'inactive' })).status).toBe(200));
+  expect(await active()).toEqual([200, 2, 2]); // total equals the page membership of one statement
+
+  const pause = holdAt('afterW');
+  let put: Promise<request.Response> | undefined;
+  afterPoolQuery('ci_reconciliation_epochs', 2, async () => { // X-15c: after the second snapshot, a W applies (T2 held)
+    put = api('a').put(`/cis/${fixture[1]}`, { name: 'post-w' }).then(response => response);
+    await pause.entered;
+  });
+  const names = async () => (await api('a').get(`/cis?search=${fixture[1]}`)).body.data.map((ci: { name: string }) => ci.name);
+  const before = await names();
+  pause.release();
+  expect([before, (await put!).status, await names()]).toEqual([[fixture[1]], 200, ['post-w']]);
+});
+
+it('X-15d: during a pessimistic list phase a T1 waits on the admission lock and commits within 10 s; B never waits', async () => {
+  const [ci, theirs] = [id('x15d'), id('x15d-b')];
+  await create('a', ci);
+  await create('b', theirs);
+  const [inPhase, release] = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+  let calls = 0;
+  const read = readCIList(A, async () => {
+    if (++calls === 1) await rows('UPDATE ci_reconciliation_epochs SET epoch = epoch + 1 WHERE organization_id = $1', [A]);
+    else { inPhase.resolve(); await release.promise; }
+    return 0;
+  });
+  await inPhase.promise;
+  const started = Date.now();
+  const put = api('a').put(`/cis/${ci}`, { name: 'x15d' }).then(response => [response.status, Date.now() - started <= 10_000]);
+  try {
+    await until(async () => (await admissionLocks(A)).length === 2);
+    expect((await admissionLocks(A)).map(lock => [lock['mode'], lock['granted']])).toEqual([['ShareLock', true], ['ExclusiveLock', false]]);
+    expect((await api('b').put(`/cis/${theirs}`, { name: 'b-free' })).status).toBe(200);
+  } finally {
+    release.resolve();
+  }
+  await read;
+  expect(await put).toEqual([200, true]);
+});
+
+it('X-16: a T1 committed between a single read\'s pre-check and its read is caught by the post-check on all four readers', async () => {
+  const ci = id('x16');
+  await create('a', ci);
+  const readers = [`/cis/${ci}`, `/itil/configuration-items/${ci}`, `/analytics/change-history?ci_id=${ci}`]
+    .map(path => () => api('a').get(path)).concat(() => api('a').gql(`{ getCI(id:"${ci}") { _id } }`));
+  const outcome = (response: request.Response) => response.body.errors?.[0]?.extensions?.code ?? response.status;
+  const query = sql.query.bind(sql);
+  let armed: (() => Promise<void>) | undefined;
+  jest.spyOn(sql, 'query').mockImplementation((async (...args: Parameters<typeof query>) => {
+    const result = await query(...args);
+    const race = armed;
+    if (race && String(args[0]).includes("ci_id = $2 AND state IN ('pending', 'failed') LIMIT 1")) { armed = undefined; await race(); }
+    return result;
+  }) as typeof query);
+  const raced: unknown[] = [];
+  for (const read of readers) {
+    const pause = holdAt('beforeW');
+    let put: Promise<request.Response> | undefined;
+    armed = async () => { put = api('a').put(`/cis/${ci}`, { name: 'x16' }).then(response => response); await pause.entered; };
+    raced.push(outcome(await read()));
+    pause.release();
+    await put;
+  }
+  expect([raced, (await Promise.all(readers.map(read => read()))).map(outcome)]).toEqual([[409, 409, 409, 'CONFLICT'], [200, 200, 200, 200]]);
+});
+
+it('X-28: a platform-wide AP-R page omits a CI in its org\'s gap, shows the pre-W state after its lookup, never 503s', async () => {
+  const vendor = id('x28');
+  const [mine, theirs] = [id('x28-a'), id('x28-b')];
+  await create('a', mine);
+  await create('b', theirs);
+  await cypher(`MATCH (c:CI) WHERE c.id IN $ids SET c.type = 'software', c.vendor = $vendor, c.license_expiry_date = '2000-01-01'`,
+    { ids: [mine, theirs], vendor });
+  // The AP-R reader behind the platform-wide TBM license lists, on a vendor-scoped page. Not the mounted /tbm/licenses route:
+  // its JS-number SKIP reaches Neo4j as a Float (reported separately; no source change in this slice).
+  const licenses = async () => {
+    const page = await readGlobalCIPage(async offset => (await cypher(`MATCH (ci:CI {type: 'software'}) WHERE ci.vendor = $vendor
+      RETURN properties(ci) AS ci ORDER BY ci.license_expiry_date ASC, ci.id SKIP $offset LIMIT 100`, { vendor, offset: neo4j.int(offset) }))
+      .map(row => row['ci'] as Record<string, unknown>));
+    return Object.fromEntries(page.map(ci => [ci['id'], ci['name']])); // a CIListUnavailableError (503) rejects
+  };
+  expect(await licenses()).toEqual({ [mine]: mine, [theirs]: theirs });
+  const pause = holdAt('beforeT2'); // (1) B's T1+W committed before the global graph read, T2 held: omitted
+  const write = api('b').put(`/cis/${theirs}`, { name: 'x28-w' }).then(response => response);
+  await pause.entered;
+  const during = await licenses();
+  pause.release();
+  expect([during, (await write).status, await licenses()]).toEqual([{ [mine]: mine }, 200, { [mine]: mine, [theirs]: 'x28-w' }]);
+  afterPoolQuery('unnest($1::uuid[], $2::text[])', 1, async () => // (2) B's whole write after the gap lookup: pre-W state shown
+    expect((await api('b').put(`/cis/${theirs}`, { name: 'x28-late' })).status).toBe(200));
+  expect(await licenses()).toEqual({ [mine]: mine, [theirs]: 'x28-w' });
+  await rows(`INSERT INTO ci_reconciliation_operations (id, group_id, organization_id, ci_id, origin, operation, graph_effect, state,
+      actor, epoch, plan, lease_expires_at) SELECT gen_random_uuid(), gen_random_uuid(), org, ci, 'api', 'direct_write', true, 'pending',
+      'x28-seed', 0, NULL, now() + interval '5 minutes' FROM unnest($1::uuid[], $2::text[]) AS t(org, ci)`, [[A, B], [mine, theirs]]);
+  const both = await Promise.all([licenses(), licenses()]); // (3) both orgs in a gap, two concurrent global reads
+  await rows(`UPDATE ci_reconciliation_operations SET state = 'aborted' WHERE actor = 'x28-seed' AND ci_id = ANY($1)`, [[mine, theirs]]);
+  expect(both).toEqual([{}, {}]);
+});
+
+it('X-29b: over 1 000 distinct operations in one A list window give the own-org 503 or a consistent 200; B is unaffected', async () => {
+  const tag = id('x29b');
+  const fixture = [1, 2, 3].map(n => `${tag}-${n}`);
+  for (const ci of fixture) await create('a', ci);
+  const seed = (actor: string) => rows(`INSERT INTO ci_reconciliation_operations (id, group_id, organization_id, ci_id, origin,
+      operation, graph_effect, state, actor, epoch, plan, lease_expires_at) SELECT gen_random_uuid(), gen_random_uuid(), $1,
+      CASE WHEN n <= 3 THEN ($2::text[])[n] ELSE $3 || '-op-' || n END, 'api', 'direct_write', true, 'pending', $4, 0, NULL,
+      now() + interval '1 hour' FROM generate_series(1, 1001) n`, [A, fixture, tag, actor]);
+  const list = () => api('a').get(`/cis?search=${tag}`);
+  expect((await list()).body.pagination.total).toBe(3); // control
+  const count = 'RETURN count(ci) AS total'; // the window opens after the list's first count
+  afterStatement(count, () => seed('x29b-i')); // (i) all 1 001 still pending at the second snapshot
+  const busy = await list();
+  const other = await api('b').get('/cis');
+  await rows(`UPDATE ci_reconciliation_operations SET state = 'aborted' WHERE organization_id = $1 AND actor = 'x29b-i'`, [A]);
+  expect([busy.status, busy.body, other.status]).toEqual([503, { success: false, error: 'Service Unavailable', message: 'CI list temporarily unavailable' }, 200]);
+  afterStatement(count, async () => { // (ii) all 1 001 move pending -> committed with an epoch bump inside the window
+    await seed('x29b-ii');
+    await rows(`UPDATE ci_reconciliation_operations SET state = 'committed' WHERE organization_id = $1 AND actor = 'x29b-ii'`, [A]);
+    await rows('UPDATE ci_reconciliation_epochs SET epoch = epoch + 1 WHERE organization_id = $1', [A]);
+  });
+  const settled = await list();
+  expect([settled.status, settled.body.pagination.total, settled.body.data.length]).toEqual([200, 3, 3]); // = single-statement membership
+});
+
+it('X-31: with no writers a list holds no PG transaction across a Neo4j call; the probe sees one in a forced pessimistic read', async () => {
+  const samples: unknown[] = [];
+  jest.spyOn(Session.prototype, 'run').mockImplementation(async function (this: Session, ...args: Parameters<Session['run']>) {
+    samples.push(await activity());
+    return sessionRun.apply(this, args);
+  } as unknown as Session['run']);
+  const listed = await api('a').get('/cis?limit=1');
+  jest.restoreAllMocks();
+  let [calls, tagged] = [0, -1];
+  await readCIList(A, async () => {
+    if (++calls === 1) await rows('UPDATE ci_reconciliation_epochs SET epoch = epoch + 1 WHERE organization_id = $1', [A]);
+    else tagged = (await activity()).tagged;
+    return 0;
+  });
+  expect([listed.status, samples, tagged]).toEqual([200, [{ idle: 0, tagged: 0 }, { idle: 0, tagged: 0 }], 1]);
+});
+
+it('N-7: reserved aliases in merge attributes or identifiers never reach the node, field sources or history; the org stays A', async () => {
+  const ALIASES = ['id', '_id', 'organization_id', '_organization_id', '__organization_id', 'organizationId', '_organizationId', 'op_id',
+    'reconciliation_op_id', '_reconciliation_op_id'];
+  const evil = Object.fromEntries(ALIASES.map(key => [key, B]));
+  const existing = id('n7');
+  await create('a', existing);
+  await cypher('MATCH (c:CI {id: $id}) SET c.serial_number = $id', { id: existing });
+  const journaled = async () => (await rows('SELECT count(*)::int AS n FROM ci_reconciliation_operations WHERE organization_id = $1', [A]))[0].n;
+  for (const [serial, where] of [[existing, 'attributes'], [existing, 'identifiers'], [id('n7-new'), 'attributes'], [id('n7-new'), 'identifiers']]) {
+    const before = await journaled();
+    const response = await api('a').post('/reconciliation/merge', { name: 'n7', ci_type: 'server', source: 'n7', source_id: `${serial}-${where}`,
+      identifiers: { serial_number: serial, ...(where === 'identifiers' ? evil : {}) },
+      attributes: { n7_note: 'kept', ...(where === 'attributes' ? evil : {}) } });
+    if (response.status === 400) { expect([where, await journaled()]).toEqual([where, before]); continue; } // a 400 precedes the journal
+    const ci = response.body.data.ci_id;
+    const props = (await node(ci))!;
+    const evidence = [...(await rows('SELECT field_name FROM ci_field_sources WHERE ci_id = $1', [ci])).map(row => row.field_name),
+      ...(await history(ci)).flatMap(row => row.changed_fields ?? [])];
+    expect([serial === existing, where, response.status, props['id'] === ci, props['organization_id'], props['n7_note'],
+      Object.keys(props).filter(key => ALIASES.includes(key) && key !== 'id' && key !== 'organization_id'), evidence.filter(key => ALIASES.includes(key))])
+      .toEqual([serial === existing, where, 200, true, A, 'kept', [], []]);
+  }
+});
 it('F7 H-2/H-4 and the old-then-new writer cutover: NULL-org history and global criticality upserts are refused', async () => {
   await expect(rows("INSERT INTO ci_change_history (ci_id, change_type, change_source) VALUES ('s4a-h2', 'x', 'old')"))
     .rejects.toMatchObject({ code: '23514' });
@@ -824,6 +1205,17 @@ describe('H-1 (v16 §3.1, §15 H-1): REST merge creates through the journal unde
     await seed('b', 'external_id', foreign);
     await expect(cypher('CREATE (:CI {id: $id, external_id: $foreign})', { id: id('h1-dup'), foreign }))
       .rejects.toMatchObject({ code: 'Neo.ClientError.Schema.ConstraintValidationFailed' });
+  });
+
+  it('X-7: an update to another org\'s live external_id is the one sanitized abort; neither node changes', async () => {
+    const [foreign, serial] = [value('external_id', 'x7'), value('serial_number', 'x7')];
+    const [theirs, mine] = [await seed('b', 'external_id', foreign), await seed('a', 'serial_number', serial)];
+    const before = [await node(theirs), await node(mine)];
+    const response = await api('a').post('/reconciliation/merge', { name: mine, ci_type: 'server', source: 'x7', source_id: serial,
+      identifiers: { serial_number: serial }, attributes: { external_id: foreign } });
+    const [op] = (await ops(A, mine)).filter(row => row.operation === 'update');
+    expect([response.status, response.text, op?.state, op?.last_error, op && await fences(op.id), await node(theirs), await node(mine)])
+      .toEqual([409, JSON.stringify({ success: false, error: 'Conflict', message: 'CI could not be reconciled' }), 'aborted', 'constraint', [], ...before]);
   });
 
   it('H-1: a foreign, NULL-org or missing value of every identifier creates one own-org CI; nothing discloses or mutates B/NULL', async () => {

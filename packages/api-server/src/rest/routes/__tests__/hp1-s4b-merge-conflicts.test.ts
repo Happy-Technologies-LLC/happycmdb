@@ -273,7 +273,8 @@ it('F6 C-2/C-3/C-4/C-13/X-8/H-5: a manual-review field holds the whole merge wit
   expect([again.status, again.body.data.conflict_ids]).toEqual([202, [id]]);
   const original = await conflict(id);
   const changed = await merge('op', X, 'scanner', { name: 'changed' });
-  expect([changed.status, changed.body]).toEqual([409, { success: false, error: 'Conflict', message: 'pending_content' }]);
+  expect([changed.status, changed.body, await rows('SELECT change_type FROM ci_change_history WHERE ci_id = $1', [X])])
+    .toEqual([409, { success: false, error: 'Conflict', message: 'pending_content' }, []]); // H-5: no history row
   expect(await conflict(id)).toEqual(original);
   expect((await journal(X)).map(row => [row.operation, row.graph_effect, row.state, row.actor, row.last_error])).toEqual([
     ['hold', false, 'committed', 'actor-op', null], ['hold', false, 'committed', 'actor-op', null],
@@ -343,6 +344,7 @@ it('F6 C-5/C-6/C-7/C-11/H-6: resolve needs the current revision of an owned conf
   const c3 = await hold('s3', 'v3');
   expect((await resolve('a', c3, { resolution: 'merge', merged_data: 'm', expected_revision: (await conflict(c3)).content_hash })).status).toBe(200);
   expect(mockGraph.nodes.get(X)!['name']).toBe('m');
+  expect([(await merge('a', X, 's3', { name: 'v3' })).status, mockGraph.nodes.get(X)!['name']]).toEqual([200, 'm']); // C-6 after merge
   expect(await rows('SELECT field_value, source_name FROM ci_field_sources WHERE ci_id = $1 AND organization_id = $2', [X, A]))
     .toEqual([{ field_value: 'm', source_name: 'manual_resolution' }]);
 
@@ -353,12 +355,49 @@ it('F6 C-5/C-6/C-7/C-11/H-6: resolve needs the current revision of an owned conf
   expect((await merge('a', X, 'manual_resolution', { name: 'm2' })).status).toBe(200);
   const stale = await resolve('a', c4, { resolution: 'accept_target', expected_revision: c4Revision });
   expect([stale.status, stale.body.message]).toEqual([409, 'stale_conflict']);
+  const dismiss = (user: string, id: string, revision?: string) => resolve(user, id, { resolution: 'dismiss_stale',
+    ...(revision ? { expected_revision: revision } : {}) });
+  const [unknown, foreignStale] = [await dismiss('b', randomUUID(), c4Revision), await dismiss('b', c4, c4Revision)];
+  expect([(await dismiss('a', c4)).status, (await dismiss('a', c4, 'f'.repeat(64))).body.message, foreignStale.status, foreignStale.text])
+    .toEqual([400, 'revision_mismatch', 404, unknown.text]); // C-11 dismiss_stale negatives
   const dismissed = await resolve('a', c4, { resolution: 'dismiss_stale', expected_revision: c4Revision });
   expect([dismissed.status, dismissed.body.data.status]).toEqual([200, 'superseded']);
   expect(await conflict(c4)).toMatchObject({ status: 'superseded', incoming_json: 'v4', target_json: 'm' });
   expect(await rows(`SELECT change_type, organization_id, changed_by FROM ci_change_history WHERE ci_id = $1
     AND change_type = 'conflict_superseded'`, [X])).toEqual([{ change_type: 'conflict_superseded', organization_id: A, changed_by: 'actor-a' }]);
   expect(await hold('s4', 'v4')).not.toBe(c4);
+});
+
+it('C-1/C-8/C-9/C-10: only the full review conjunction holds; ci_ and UUID ids, typed values and a same-value rediscovery', async () => {
+  await rows(`INSERT INTO reconciliation_rules (organization_id, name, identification_rules, merge_strategies)
+    VALUES ($1, $2, '[]', '[{"field_name":"name","strategy":"manual_review"}]')`, [A, `review-${randomUUID()}`]);
+  const run = async (id: string | undefined, evidence: boolean, source: string, attributes: Record<string, unknown>) => {
+    const X = await ci(A, id, { name: 'stored', owner: 'stored' });
+    if (evidence) for (const field of ['name', 'owner']) await stored(A, X, field, 'stored', 'cmdb');
+    const response = await merge('a', X, source, attributes);
+    const conflicts = await rows('SELECT id, ci_id, content_hash FROM reconciliation_conflicts WHERE ci_id::text = $1', [X]);
+    return { X, status: response.status, conflicts };
+  };
+  // C-8: a hold on a UUID-text and on a ci_<hex> CI id keeps the id and resolves.
+  for (const id of [randomUUID(), `ci_${randomBytes(16).toString('hex')}`]) {
+    const { X, status, conflicts: [held, ...more] } = await run(id, true, 'scan', { name: 'new' });
+    expect([status, held?.ci_id, more]).toEqual([202, X, []]);
+    expect((await resolve('a', held!.id, { resolution: 'accept_target', expected_revision: held!.content_hash })).status).toBe(200);
+  }
+  // C-1: all four terms hold; negating any one (field not under review, no target, same source, same value) merges.
+  const outcomes = [await run(undefined, true, 'scan', { name: 'new' }), await run(undefined, true, 'scan', { owner: 'new' }),
+    await run(undefined, false, 'scan', { name: 'new' }), await run(undefined, true, 'cmdb', { name: 'new' }),
+    await run(undefined, true, 'scan', { name: 'stored' })];
+  expect(outcomes.map(({ status, conflicts }) => [status, conflicts.length])).toEqual([[202, 1], [200, 0], [200, 0], [200, 0], [200, 0]]);
+  // C-9: a stored "1" against an incoming 1 from another source is a type change: review.
+  const typed = await ci(A);
+  await stored(A, typed, 'name', '1', 'cmdb');
+  expect((await merge('a', typed, 'scan', { name: 1 })).status).toBe(202);
+  // C-10: the target source re-sends its stored value; the conflict stays resolvable at its original revision.
+  const { X, conflicts: [c10] } = outcomes[0]!;
+  expect((await merge('a', X, 'cmdb', { name: 'stored' })).status).toBe(200);
+  const resolved = await resolve('a', c10!.id, { resolution: 'accept_target', expected_revision: c10!.content_hash });
+  expect([resolved.status, resolved.body.data?.status]).toEqual([200, 'resolved']);
 });
 
 it('N-5/N-6/N-10: rules and authorities are per organization; foreign, missing and legacy rules are one 404', async () => {

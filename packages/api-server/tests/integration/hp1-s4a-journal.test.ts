@@ -404,6 +404,8 @@ it('F0/X-14/N-7b: invalid shapes and reserved aliases are 400 before any journal
   const merged = await api('a').post('/reconciliation/merge', { name: 'f0-null', ci_type: 'server', source: 'f0', source_id: ci,
     identifiers: { serial_number: `${ci}-null` }, attributes: { note: null } });
   const made = merged.body.data?.ci_id;
+  await rows(`INSERT INTO cmdb.dim_ci (ci_id, ci_name, ci_type, ci_status, organization_id) VALUES ($1, $1, 'server', 'active', $2)`,
+    [made, A]); // the REST evidence reader requires the CI's current dimension row (AP-D'); ETL is not running here
   expect([merged.status, await rows('SELECT field_value, value_json FROM ci_field_sources WHERE ci_id = $1', [made]),
     (await api('a').get(`/reconciliation/field-sources/${made}`)).body.data?.fields.map((field: { field_value: string }) => field.field_value),
     await rows('SELECT confidence_score FROM ci_source_lineage WHERE ci_id = $1', [made])])

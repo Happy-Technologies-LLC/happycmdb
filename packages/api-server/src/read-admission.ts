@@ -1,5 +1,6 @@
 // Copyright 2026 Happy Technologies LLC
 // SPDX-License-Identifier: Apache-2.0
+import neo4j, { type Integer } from 'neo4j-driver';
 import { Pool } from 'pg';
 import { ADMISSION_LOCK_KEY, getNeo4jClient, getPostgresClient, JournalUnavailableError } from '@cmdb/database';
 import { logger } from '@cmdb/common';
@@ -112,9 +113,12 @@ export async function filterGlobalCIGaps<T extends { id?: unknown; organization_
     !omitted.has(`${row.organization_id.toLowerCase()}:${row.id}`));
 }
 
-/** Fill a global page without an unbounded gap scan or a partial success on exhaustion. */
+/**
+ * Fill a global page without an unbounded gap scan or a partial success on exhaustion.
+ * The offset is a Neo4j Integer: a JS number is sent as a Float, which `SKIP` rejects.
+ */
 export async function readGlobalCIPage<T extends { id?: unknown; organization_id?: unknown }>(
-  page: (offset: number, timeoutMs: number) => Promise<T[]>
+  page: (offset: Integer, timeoutMs: number) => Promise<T[]>
 ): Promise<T[]> {
   const result: T[] = [];
   const expiresAt = Date.now() + 10_000;
@@ -124,7 +128,7 @@ export async function readGlobalCIPage<T extends { id?: unknown; organization_id
     return milliseconds;
   };
   for (let batch = 0; batch < 20; batch++) {
-    const candidates = await page(batch * 100, remaining());
+    const candidates = await page(neo4j.int(batch * 100), remaining());
     remaining();
     try {
       result.push(...(await filterGlobalCIGaps(candidates, remaining())).slice(0, 101 - result.length));

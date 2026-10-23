@@ -577,6 +577,8 @@ export class ITILController {
         res.status(400).json({ success: false, error: 'Affected CI IDs must contain 1 to 100 entries' });
         return;
       }
+      // v16 §3.6: an invalid CI id is a 400 before any owned-CI lookup or journal access.
+      for (const ciId of affectedCIIds) assertCIId(ciId);
 
       // Verify all affected CIs exist
       for (const ciId of affectedCIIds) {

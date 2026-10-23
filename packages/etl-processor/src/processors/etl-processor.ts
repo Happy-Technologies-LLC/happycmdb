@@ -133,7 +133,7 @@ export class ETLJobProcessor {
         LIMIT $batchSize
         `,
         {
-          _lastSync: new Date(Date.now() - 5 * 60 * 1000).toISOString(), // Last 5 minutes
+          lastSync: new Date(Date.now() - 5 * 60 * 1000).toISOString(), // Last 5 minutes
           batchSize,
         }
       );

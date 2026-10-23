@@ -9,6 +9,7 @@
  */
 
 import { Job } from 'bullmq';
+import neo4j from 'neo4j-driver';
 import { logger, getQueueManager } from '@cmdb/common';
 import type { ETLJobData, JobResult, JobProgress } from '@cmdb/common';
 import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
@@ -133,8 +134,9 @@ export class ETLJobProcessor {
         LIMIT $batchSize
         `,
         {
-          _lastSync: new Date(Date.now() - 5 * 60 * 1000).toISOString(), // Last 5 minutes
-          batchSize,
+          lastSync: new Date(Date.now() - 5 * 60 * 1000).toISOString(), // Last 5 minutes
+          // A JS number reaches Neo4j as a Float, which LIMIT rejects.
+          batchSize: neo4j.int(batchSize),
         }
       );
 

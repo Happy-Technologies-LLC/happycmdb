@@ -4,7 +4,7 @@
 /**
  * HAP-892: the incremental `sync` ETL job reads the CIs changed in the last
  * five minutes from real Neo4j, oldest change first, at most `batchSize` of
- * them, and hands each one to the data-mart load step.
+ * them, and loads each one into the cmdb.dim_ci data mart.
  *
  * Infrastructure: the shared global integration Neo4j and PostgreSQL (env vars
  * exported by the global setup), reached through the `@cmdb/database`
@@ -42,20 +42,31 @@ function syncJob(config: ETLJobData['_config']): Job<ETLJobData> {
   } as unknown as Job<ETLJobData>;
 }
 
-/** Runs the sync job and returns its result and the CI ids it handed to the load step, in order. */
+async function clearDataMart(): Promise<void> {
+  await getPostgresClient().query(`DELETE FROM cmdb.fact_discovery
+    WHERE ci_key IN (SELECT ci_key FROM cmdb.dim_ci WHERE ci_id LIKE 'hap892-%')`);
+  await getPostgresClient().query("DELETE FROM cmdb.dim_ci WHERE ci_id LIKE 'hap892-%'");
+}
+
+/** Runs the sync job and returns its result and the CI ids it loaded into cmdb.dim_ci, in load order. */
 async function runSync(config: ETLJobData['_config']) {
-  const load = jest.spyOn(getPostgresClient(), 'query');
   const result = await etlJobProcessor.process(syncJob(config));
-  return { result, loaded: load.mock.calls.map(([, params]) => params?.[1]) };
+  const loaded = await getPostgresClient().query(
+    "SELECT ci_id FROM cmdb.dim_ci WHERE ci_id LIKE 'hap892-%' AND is_current ORDER BY ci_key"
+  );
+  return { result, loaded: loaded.rows.map(row => row.ci_id) };
 }
 
 beforeEach(async () => {
   // The sync query is global over (:CI); clear every CI so only these rows are eligible.
   await cypher('MATCH (c:CI) DETACH DELETE c');
+  await clearDataMart();
   // Three CIs changed inside the five-minute window and one changed six minutes ago.
   await cypher(
     `UNWIND $rows AS row
      CREATE (:CI {id: row.id, name: row.id, type: 'server', status: 'active',
+       created_at: datetime() - duration({minutes: row.minutesAgo}),
+       discovered_at: datetime() - duration({minutes: row.minutesAgo}),
        updated_at: datetime() - duration({minutes: row.minutesAgo})})`,
     { rows: [
       { id: STALE, minutesAgo: 6 },
@@ -73,6 +84,7 @@ beforeEach(async () => {
 
 afterAll(async () => {
   await cypher('MATCH (c:CI) DETACH DELETE c');
+  await clearDataMart();
   await getNeo4jClient().close();
   await getPostgresClient().close();
   await getQueueManager().closeAll();

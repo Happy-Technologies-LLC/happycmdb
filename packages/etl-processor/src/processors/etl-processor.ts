@@ -9,11 +9,15 @@
  */
 
 import { Job } from 'bullmq';
-import neo4j from 'neo4j-driver';
+import neo4j, { type Record as Neo4jRecord } from 'neo4j-driver';
 import { logger, getQueueManager } from '@cmdb/common';
 import type { ETLJobData, JobResult, JobProgress } from '@cmdb/common';
 import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
-import { dimCiOrganizationId } from '../transformers/ci-organization';
+import { extractedCI, Neo4jToPostgresJob } from '../jobs/neo4j-to-postgres.job';
+import { type ExtractedCI, withDimCiIds } from '../transformers/ci-organization';
+
+/** CIs per load transaction, the neo4j-to-postgres default batch size. */
+const LOAD_BATCH_SIZE = 100;
 
 /**
  * ETL Job Processor
@@ -140,7 +144,14 @@ export class ETLJobProcessor {
         }
       );
 
-      const cis = result.records.map((record: any) => record.get('c').properties);
+      const selected = result.records.length;
+      const cis = withDimCiIds(
+        result.records
+          .map((record: Neo4jRecord) => extractedCI(record.get('c').properties, 'etl-sync'))
+          .filter((ci: ExtractedCI | null): ci is ExtractedCI => ci !== null),
+        (ci: ExtractedCI) => ci._id,
+        'etl-sync'
+      );
 
       // Update progress: Transforming
       await this.updateProgress(_job, {
@@ -148,7 +159,7 @@ export class ETLJobProcessor {
         _currentStep: 'transforming',
         _totalSteps: 4,
         _itemsProcessed: 0,
-        totalItems: cis.length,
+        totalItems: selected,
         _startedAt: _job.processedOn ? new Date(_job.processedOn).toISOString() : new Date().toISOString(),
         _updatedAt: new Date().toISOString(),
       });
@@ -159,57 +170,34 @@ export class ETLJobProcessor {
         _currentStep: 'loading',
         _totalSteps: 4,
         _itemsProcessed: 0,
-        totalItems: cis.length,
+        totalItems: selected,
         _startedAt: _job.processedOn ? new Date(_job.processedOn).toISOString() : new Date().toISOString(),
         _updatedAt: new Date().toISOString(),
       });
 
-      // Load to PostgreSQL
+      // Load through the neo4j-to-postgres SCD Type 2 writer: cmdb.dim_ci,
+      // per-CI locks, each CI in its own organization (migration 011). A
+      // batch that fails on anything but one CI's own values throws and fails
+      // the job; batches already committed stay loaded.
+      const loader = new Neo4jToPostgresJob(this.neo4jClient, this.postgresClient);
+      let itemsLoaded = 0;
       let itemsCreated = 0;
       let itemsUpdated = 0;
-      let itemsFailed = 0;
-
-      for (const ci of cis) {
-        try {
-          // Upsert to dim_ci table
-          await this.postgresClient.query(
-            `
-            INSERT INTO dim_ci (
-              ci_key, ci_id, ci_name, ci_type, ci_status,
-              environment, external_id, created_at, updated_at, organization_id
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-            ON CONFLICT (ci_id) DO UPDATE SET
-              ci_name = EXCLUDED.ci_name,
-              ci_status = EXCLUDED.ci_status,
-              updated_at = EXCLUDED.updated_at
-            RETURNING (xmax = 0) AS inserted
-            `,
-            [
-              ci.id, // ci_key
-              ci.id,
-              ci.name,
-              ci.type,
-              ci.status,
-              ci.environment || 'unknown',
-              ci.external_id,
-              ci.created_at,
-              ci.updated_at,
-              dimCiOrganizationId(ci.organization_id),
-            ]
-          );
-
-          itemsUpdated++;
-        } catch (err: any) {
-          logger.error(`Failed to sync CI ${ci.id}`, err);
-          itemsFailed++;
-        }
+      for (let i = 0; i < cis.length; i += LOAD_BATCH_SIZE) {
+        const batch = await loader.processBatch(cis.slice(i, i + LOAD_BATCH_SIZE), false, _job.id);
+        itemsLoaded += batch.cisProcessed;
+        itemsCreated += batch.recordsInserted;
+        itemsUpdated += batch.recordsUpdated;
       }
 
       return {
-        _itemsProcessed: cis.length,
+        // Loaded: current in cmdb.dim_ci after the run, new version or unchanged.
+        _itemsProcessed: itemsLoaded,
         _itemsCreated: itemsCreated,
         _itemsUpdated: itemsUpdated,
-        _itemsFailed: itemsFailed,
+        // Every other selected CI: an invalid id, metadata that is not JSON,
+        // values that cannot be loaded, or a conflict with its stored organization.
+        _itemsFailed: selected - itemsLoaded,
       };
     } finally {
       await session.close();

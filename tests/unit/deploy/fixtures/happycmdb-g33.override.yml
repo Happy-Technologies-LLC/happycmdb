@@ -1,0 +1,16 @@
+volumes:
+  postgres_data:
+    external: true
+    name: staging-happycmdb-data-g33_postgres_data
+  neo4j_data:
+    external: true
+    name: staging-happycmdb-data-g33_neo4j_data
+  neo4j_logs:
+    external: true
+    name: staging-happycmdb-data-g33_neo4j_logs
+  neo4j_plugins:
+    external: true
+    name: staging-happycmdb-data-g33_neo4j_plugins
+  redis_data:
+    external: true
+    name: staging-happycmdb-data-g33_redis_data

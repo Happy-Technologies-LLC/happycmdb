@@ -21,6 +21,7 @@ import { DriftImpactController } from '../controllers/drift-impact.controller';
 import { validateRequest, validateOptional } from '../middleware/validation.middleware';
 import { getAuthMiddleware } from '../../auth/auth-bootstrap';
 import { executeBoundedAnalysis } from '../../middleware/analysis-admission';
+import { orgReadGate } from '../../middleware/org-read-gate';
 import type { AuthenticatedRequest } from '../../middleware/auth.middleware';
 
 export const driftRoutes = Router();
@@ -155,8 +156,13 @@ impactRoutes.post(
 impactRoutes.get(
   '/graph/:rootCiId',
   validateOptional(dependencyGraphQuerySchema, 'query'),
-  (req: Request, res: Response) =>
-    executeImpact(req, res, () => controller.getDependencyGraphResult(req as AuthenticatedRequest))
+  // HAP-850: a timed-out response can precede its analysis work; the gate slot spans that work.
+  orgReadGate(429, { success: false, error: 'Impact analysis rate limit exceeded' },
+    async (req: Request, res: Response) => {
+      let work: Promise<unknown> = Promise.resolve();
+      await executeImpact(req, res, () => (work = controller.getDependencyGraphResult(req as AuthenticatedRequest)));
+      await work.catch(() => undefined);
+    })
 );
 
 // Get the criticality score for a CI

@@ -158,10 +158,32 @@ interface Slot { id: string; ciId: string; operation: JournalOperation }
  * keys collide only wait on each other (availability, never correctness).
  */
 export const ADMISSION_LOCK_KEY = 'hashtextextended($1::text, 4431)';
-/** T1 records graph_effect=true; T1b (before any W) sets the final operation and graph_effect from the plan. */
+/** HAP-873: same-org T1s queue here in arrival order without a shared-pool connection; one 12 s budget spans both waits. */
+const t1Turns = new Map<string, Promise<void>>();
+const T1_LOCK_BUDGET_MS = 12_000;
 async function t1(organizationId: string, actor: string, groupId: string, slots: Slot[]): Promise<void> {
+  const started = performance.now();
+  const previous = t1Turns.get(organizationId) ?? Promise.resolve();
+  let release!: () => void;
+  const mine = new Promise<void>(resolve => { release = resolve; }); // resolvable even if this T1 expires while queued
+  const turn = previous.then(() => mine);
+  t1Turns.set(organizationId, turn);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const expired = new Promise<boolean>(resolve => { timer = setTimeout(resolve, T1_LOCK_BUDGET_MS, true); });
+    // Expiry is the same 55P03 as the PG lock_timeout: reserve() maps both to the existing 503.
+    if (await Promise.race([previous.then(() => false), expired])) throw Object.assign(new Error('T1 turn expired'), { code: '55P03' });
+    await t1Transaction(organizationId, actor, groupId, slots, Math.max(1, Math.ceil(T1_LOCK_BUDGET_MS - (performance.now() - started))));
+  } finally {
+    clearTimeout(timer);
+    release();
+    void turn.then(() => { if (t1Turns.get(organizationId) === turn) t1Turns.delete(organizationId); }); // idle once predecessors finish too
+  }
+}
+/** T1 records graph_effect=true; T1b (before any W) sets the final operation and graph_effect from the plan. */
+async function t1Transaction(organizationId: string, actor: string, groupId: string, slots: Slot[], lockTimeoutMs: number): Promise<void> {
   await getPostgresClient().transaction(async client => {
-    await client.query(`SET LOCAL lock_timeout = '12s'`);
+    await client.query(`SET LOCAL lock_timeout = '${lockTimeoutMs}ms'`);
     // F8': queued here, T1 blocks newly arriving own-org admission readers (their shared lock waits behind it).
     await client.query(`SELECT pg_advisory_xact_lock(${ADMISSION_LOCK_KEY})`, [organizationId]);
     await client.query(`INSERT INTO ci_reconciliation_epochs (organization_id, epoch) VALUES ($1, 0)

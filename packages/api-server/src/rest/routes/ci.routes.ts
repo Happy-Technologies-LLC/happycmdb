@@ -9,6 +9,8 @@ import { auditMiddleware } from '../../middleware/audit.middleware';
 import { getAuthMiddleware } from '../../auth/auth-bootstrap';
 import { ciInputSchema, ciUpdateSchema, queryFiltersSchema } from '@cmdb/common';
 import { journalRequestGuard } from '../../journal-http';
+import { orgReadGate } from '../../middleware/org-read-gate';
+import { CI_LIST_UNAVAILABLE_RESPONSE } from '../../read-admission';
 
 export const ciRoutes = Router();
 const controller = new CIController();
@@ -55,7 +57,7 @@ const depthQuerySchema = Joi.object({
 ciRoutes.get(
   '/',
   validateOptional(queryFiltersSchema, 'query'),
-  controller.getAllCIs.bind(controller)
+  orgReadGate(503, CI_LIST_UNAVAILABLE_RESPONSE, controller.getAllCIs.bind(controller))
 );
 
 // Search CIs (must be before /:id to avoid route conflict)
@@ -64,7 +66,7 @@ ciRoutes.get(
 ciRoutes.post(
   '/search',
   validateRequest(searchCISchema, 'body'),
-  controller.searchCIs.bind(controller)
+  orgReadGate(503, CI_LIST_UNAVAILABLE_RESPONSE, controller.searchCIs.bind(controller))
 );
 
 // Get CI by ID

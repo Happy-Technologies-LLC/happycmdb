@@ -7,6 +7,8 @@ import { SearchController } from '../controllers/search.controller';
 import { validateRequest, validateOptional } from '../middleware/validation.middleware';
 import { schemas } from '@cmdb/common';
 import { getAuthMiddleware } from '../../auth/auth-bootstrap';
+import { orgReadGate } from '../../middleware/org-read-gate';
+import { CI_LIST_UNAVAILABLE_RESPONSE } from '../../read-admission';
 
 export const searchRoutes = Router();
 const controller = new SearchController();
@@ -44,26 +46,26 @@ const orphanedQuerySchema = Joi.object({
 searchRoutes.post(
   '/advanced',
   validateRequest(advancedSearchSchema, 'body'),
-  controller.advancedSearch.bind(controller)
+  orgReadGate(503, CI_LIST_UNAVAILABLE_RESPONSE, controller.advancedSearch.bind(controller))
 );
 
 // Full-text search using Neo4j full-text index
 searchRoutes.post(
   '/fulltext',
   validateRequest(fulltextSearchSchema, 'body'),
-  controller.fulltextSearch.bind(controller)
+  orgReadGate(503, CI_LIST_UNAVAILABLE_RESPONSE, controller.fulltextSearch.bind(controller))
 );
 
 // Search by relationship pattern
 searchRoutes.post(
   '/relationships',
   validateRequest(relationshipSearchSchema, 'body'),
-  controller.searchByRelationship.bind(controller)
+  orgReadGate(503, CI_LIST_UNAVAILABLE_RESPONSE, controller.searchByRelationship.bind(controller))
 );
 
 // Get orphaned CIs (no relationships)
 searchRoutes.get(
   '/orphaned',
   validateOptional(orphanedQuerySchema, 'query'),
-  controller.getOrphanedCIs.bind(controller)
+  orgReadGate(503, CI_LIST_UNAVAILABLE_RESPONSE, controller.getOrphanedCIs.bind(controller))
 );

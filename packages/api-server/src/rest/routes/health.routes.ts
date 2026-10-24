@@ -4,6 +4,7 @@
 import { Router, Request, Response } from 'express';
 import { getNeo4jClient, getPostgresClient, getRedisClient } from '@cmdb/database';
 import { logger } from '@cmdb/common';
+import { parseKafkaBrokers } from '@cmdb/event-processor';
 
 export const healthRoutes = Router();
 
@@ -103,8 +104,7 @@ healthRoutes.get('/', async (__req: Request, res: Response) => {
 
   // Check Kafka connectivity (simplified - just check if env is configured)
   try {
-    const kafkaBrokers = process.env['KAFKA_BROKERS'];
-    if (kafkaBrokers && kafkaBrokers.length > 0) {
+    if (parseKafkaBrokers().length > 0) {
       healthCheck._services._kafka = {
         _status: 'healthy',
       };

@@ -263,10 +263,11 @@ async function writeEvidence(client: PoolClient, row: { group_id: string; organi
   [row.ci_id, history.changeType, row.actor, history.source, history.changedFields, JSON.stringify(history.previous),
     history.next === null ? null : JSON.stringify(history.next), history.incarnationId, row.organization_id, row.group_id]);
   if (history.changeType !== 'deleted') return;
+  // Org-scoped: a recycled ci_id's foreign rows and legacy NULL-org rows are never this delete's to purge.
   for (const [table, column] of [['drift_detection_results', 'ci_id'], ['baseline_snapshots', 'ci_id'],
     ['impact_analyses', 'source_ci_id'], ['ci_criticality_scores', 'ci_id']] as const) {
-    await client.query(`DELETE FROM ${table} WHERE ${column} = $1
-      AND (ci_incarnation_id = $2::uuid OR ci_incarnation_id IS NULL)`, [row.ci_id, history.incarnationId]);
+    await client.query(`DELETE FROM ${table} WHERE organization_id = $1 AND ${column} = $2
+      AND (ci_incarnation_id = $3::uuid OR ci_incarnation_id IS NULL)`, [org, ci, history.incarnationId]);
   }
 }
 

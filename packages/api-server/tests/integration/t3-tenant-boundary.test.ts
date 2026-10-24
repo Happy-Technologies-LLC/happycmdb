@@ -650,6 +650,48 @@ it('retains B rows in all derived SQL families when A\'s journaled delete is hel
   }
 });
 
+it('HAP-837: A\'s delete of a recycled ci_id purges only A\'s rows, keeping B\'s and legacy NULL-incarnation rows and history', async () => {
+  const id = 't3-delete-recycled';
+  const aMarker = (await graph.createCI({ _id: id, name: 'current A', _type: 'server' }, A, 't3-a'))._incarnation_id;
+  const families = ['baseline_snapshots', 'drift_detection_results', 'impact_analyses', 'ci_criticality_scores'];
+  await sql.transaction(async client => {
+    const seed = async (org: string | null, inc: string | null, criticality = true) => {
+      await client.query(`INSERT INTO baseline_snapshots (id, ci_id, snapshot_type, snapshot_data, created_at, created_by, ci_incarnation_id, organization_id)
+        VALUES (gen_random_uuid(), $1, 'configuration', '{}', NOW(), 't3', $2, $3)`, [id, inc, org]);
+      await client.query(`INSERT INTO drift_detection_results (ci_id, has_drift, detected_at, ci_incarnation_id, organization_id)
+        VALUES ($1, false, NOW(), $2, $3)`, [id, inc, org]);
+      await client.query(`INSERT INTO impact_analyses (id, source_ci_id, change_type, risk_level, analyzed_at, ci_incarnation_id, organization_id)
+        VALUES (gen_random_uuid(), $1, 'RESTART', 'low', NOW(), $2, $3)`, [id, inc, org]);
+      if (criticality) await client.query(`INSERT INTO ci_criticality_scores (ci_id, factors, calculated_at, ci_incarnation_id, organization_id)
+        VALUES ($1, '{}', NOW(), $2, $3)`, [id, inc, org]);
+    };
+    // Pre-036/038 legacy NULL-org rows: the contract CHECKs refuse new ones, so seed them with the checks lifted.
+    for (const table of families) await client.query(`ALTER TABLE ${table} DROP CONSTRAINT ${table}_organization_required`);
+    await seed(null, null);
+    for (const table of families) await client.query(`ALTER TABLE ${table}
+      ADD CONSTRAINT ${table}_organization_required CHECK (organization_id IS NOT NULL) NOT VALID`);
+    await seed(B, null); // B's pre-incarnation rows from when it owned this ci_id
+    await seed(A, aMarker);
+    await seed(A, null, false); // criticality is unique per (organization_id, ci_id)
+    await client.query(`INSERT INTO ci_change_history (ci_id, change_type, change_source, ci_incarnation_id, organization_id)
+      VALUES ($1, 'B_PRIOR', 'test', NULL, $2), ($1, 'A_PRIOR', 'test', $3, $4)`, [id, B, aMarker, A]);
+  });
+  expect(await graph.deleteCI(id, A, 't3-a')).toBe(true);
+  for (const table of families) {
+    const column = table === 'impact_analyses' ? 'source_ci_id' : 'ci_id';
+    expect((await sql.query(`SELECT organization_id, ci_incarnation_id FROM ${table} WHERE ${column} = $1
+      ORDER BY organization_id NULLS LAST`, [id])).rows).toEqual([
+      { organization_id: B, ci_incarnation_id: null }, { organization_id: null, ci_incarnation_id: null },
+    ]);
+  }
+  expect((await sql.query(`SELECT change_type, organization_id, ci_incarnation_id FROM ci_change_history
+    WHERE ci_id = $1 ORDER BY change_type`, [id])).rows).toEqual([
+    { change_type: 'A_PRIOR', organization_id: A, ci_incarnation_id: aMarker },
+    { change_type: 'B_PRIOR', organization_id: B, ci_incarnation_id: null },
+    { change_type: 'deleted', organization_id: A, ci_incarnation_id: aMarker },
+  ]);
+});
+
 it('fences future-dated A rows across real graph deletion and B ID collision, while reading B rows with clock skew', async () => {
   const issued = await graph.createCI({ _id: 't3-graph-marker', name: 'marker', _type: 'server' }, A, 't3-a');
   expect(issued._incarnation_id).toMatch(/^[0-9a-f-]{36}$/i);

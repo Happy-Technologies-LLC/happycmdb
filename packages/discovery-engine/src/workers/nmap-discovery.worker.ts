@@ -213,9 +213,12 @@ export class NmapDiscoveryWorker {
             }
           });
 
-          scanner.on('error', (error: Error) => {
-            logger.error('Nmap host scan failed', { jobId, host, error: error.message });
-            reject(error);
+          scanner.on('error', (error: unknown) => {
+            logger.error('Nmap host scan failed', {
+              jobId,
+              errorClass: error instanceof Error ? error.constructor.name : typeof error,
+            });
+            reject(new Error('Nmap host scan failed'));
           });
 
           scanner.startScan();

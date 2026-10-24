@@ -6,6 +6,11 @@ import { DiscoveryAgentService, AGENT_NOT_FOUND } from '../../services/discovery
 import { logger, DISCOVERY_TARGET_REFUSED } from '@cmdb/common';
 import { requestOrganizationId } from '../../middleware/auth.middleware';
 
+/** Error class name only; never the message, stack or cause. */
+function errorClass(error: unknown): string {
+  return error instanceof Error ? error.constructor.name : typeof error;
+}
+
 /**
  * Discovery Agent Controller
  * Handles HTTP requests for agent registration and management
@@ -54,12 +59,11 @@ export class DiscoveryAgentController {
         success: true,
         message: 'Heartbeat updated',
       });
-    } catch (error: any) {
-      logger.error('Error in updateHeartbeat controller', error);
+    } catch (error: unknown) {
+      logger.error('Error in updateHeartbeat controller', { errorClass: errorClass(error) });
       res.status(500).json({
         success: false,
         error: 'Failed to update heartbeat',
-        message: error.message,
       });
     }
   }
@@ -93,12 +97,11 @@ export class DiscoveryAgentController {
         data: agents,
         count: agents.length,
       });
-    } catch (error: any) {
-      logger.error('Error in listAgents controller', error);
+    } catch (error: unknown) {
+      logger.error('Error in listAgents controller', { errorClass: errorClass(error) });
       res.status(500).json({
         success: false,
         error: 'Failed to list agents',
-        message: error.message,
       });
     }
   }
@@ -132,12 +135,11 @@ export class DiscoveryAgentController {
         success: true,
         data: agent,
       });
-    } catch (error: any) {
-      logger.error('Error in getAgent controller', error);
+    } catch (error: unknown) {
+      logger.error('Error in getAgent controller', { errorClass: errorClass(error) });
       res.status(500).json({
         success: false,
         error: 'Failed to get agent',
-        message: error.message,
       });
     }
   }
@@ -167,12 +169,11 @@ export class DiscoveryAgentController {
         success: true,
         message: 'Agent deleted successfully',
       });
-    } catch (error: any) {
-      logger.error('Error in deleteAgent controller', error);
+    } catch (error: unknown) {
+      logger.error('Error in deleteAgent controller', { errorClass: errorClass(error) });
       res.status(500).json({
         success: false,
         error: 'Failed to delete agent',
-        message: error.message,
       });
     }
   }

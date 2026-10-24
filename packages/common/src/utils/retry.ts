@@ -72,14 +72,14 @@ export async function withRetry<T>(
         );
 
         logger.warn(`${operationName} failed (attempt ${attempt}/${maxAttempts})`, {
-          _error: lastError.message,
+          _errorClass: lastError instanceof Error ? lastError.constructor.name : typeof lastError,
           _retryIn: `${delay}ms`,
         });
 
         await sleep(delay);
       } else {
         logger.error(`${operationName} failed after ${maxAttempts} attempts`, {
-          _error: lastError.message,
+          _errorClass: lastError instanceof Error ? lastError.constructor.name : typeof lastError,
         });
       }
     }

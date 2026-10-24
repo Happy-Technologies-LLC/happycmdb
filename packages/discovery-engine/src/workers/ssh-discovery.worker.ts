@@ -208,7 +208,10 @@ export class SSHDiscoveryWorker {
             },
           };
         } catch (error) {
-          logger.error('SSH discovery failed', { host, error: (error as Error).message });
+          logger.error('SSH discovery failed', {
+            jobId,
+            errorClass: error instanceof Error ? error.constructor.name : typeof error,
+          });
           throw error;
         } finally {
           ssh.dispose();

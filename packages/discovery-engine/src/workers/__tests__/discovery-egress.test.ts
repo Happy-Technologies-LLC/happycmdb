@@ -131,3 +131,107 @@ it('does not disclose credentials while reporting an empty SSH target list', asy
     warn.mockRestore();
   }
 });
+
+const SYNTHETIC_MARKERS = [
+  'error-host.invalid',
+  '192.0.2.77',
+  'cn=svc-synthetic,ou=people,dc=example,dc=invalid',
+];
+const SYNTHETIC_PAYLOAD = `failure for ${SYNTHETIC_MARKERS.join(' ')}`;
+
+function captureAllLogArguments() {
+  const spies = (['debug', 'info', 'warn', 'error'] as const)
+    .map(level => jest.spyOn(logger, level).mockImplementation(() => logger));
+  return {
+    calls: () => spies.flatMap(spy => spy.mock.calls),
+    errorSpy: spies[3],
+  };
+}
+
+function expectNoSyntheticMarkers(value: unknown) {
+  const serialized = JSON.stringify(value);
+  for (const marker of [...SYNTHETIC_MARKERS, SYNTHETIC_PAYLOAD]) {
+    expect(serialized).not.toContain(marker);
+  }
+}
+
+it('nmap scanHost scanner error event logs fixed text and class, and rejects with a sanitized error', async () => {
+  jest.useFakeTimers();
+  const logs = captureAllLogArguments();
+  const scanner = new EventEmitter() as EventEmitter & { startScan: () => void };
+  scanner.startScan = () => scanner.emit('error', new TypeError(SYNTHETIC_PAYLOAD));
+  jest.mocked(nmap.NmapScan).mockImplementation(() => scanner as never);
+  try {
+    const settled = new NmapDiscoveryWorker().scanHost('job', '8.8.8.8').then(
+      () => ({ error: undefined as unknown }),
+      (error: unknown) => ({ error })
+    );
+    await jest.runAllTimersAsync();
+    const { error } = await settled;
+
+    expect(nmap.NmapScan).toHaveBeenCalledTimes(3);
+    expect(error).toBeInstanceOf(Error);
+    const rejection = error as Error;
+    expect(rejection.message).toBe('Nmap host scan failed');
+    expect(rejection.cause).toBeUndefined();
+    expectNoSyntheticMarkers(
+      Object.getOwnPropertyNames(rejection).map(key => String((rejection as never)[key]))
+    );
+    expect(logs.errorSpy).toHaveBeenCalledWith('Nmap host scan failed', {
+      jobId: 'job',
+      errorClass: 'TypeError',
+    });
+    expectNoSyntheticMarkers(logs.calls());
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+it('nmap scanHost scanner error event with a non-Error payload leaks nothing', async () => {
+  jest.useFakeTimers();
+  const logs = captureAllLogArguments();
+  const scanner = new EventEmitter() as EventEmitter & { startScan: () => void };
+  scanner.startScan = () => scanner.emit('error', SYNTHETIC_PAYLOAD);
+  jest.mocked(nmap.NmapScan).mockImplementation(() => scanner as never);
+  try {
+    const settled = new NmapDiscoveryWorker().scanHost('job', '8.8.8.8').catch((error: Error) => error);
+    await jest.runAllTimersAsync();
+    const error = (await settled) as Error;
+
+    expect(error.message).toBe('Nmap host scan failed');
+    expect(logs.errorSpy).toHaveBeenCalledWith('Nmap host scan failed', {
+      jobId: 'job',
+      errorClass: 'string',
+    });
+    expectNoSyntheticMarkers(logs.calls());
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+it('ssh discoverHost per-host catch logs fixed text and class only', async () => {
+  jest.useFakeTimers();
+  const logs = captureAllLogArguments();
+  const original = new RangeError(SYNTHETIC_PAYLOAD);
+  const dispose = jest.fn();
+  jest.mocked(NodeSSH).mockImplementation(
+    () => ({ connect: jest.fn().mockRejectedValue(original), dispose }) as never
+  );
+  try {
+    const settled = new SSHDiscoveryWorker()
+      .discoverHost('job', '8.8.8.8', 'user', undefined, 'unused')
+      .catch((error: unknown) => error);
+    await jest.runAllTimersAsync();
+
+    // Existing control flow preserved: the original error is still rethrown and the client disposed.
+    expect(await settled).toBe(original);
+    expect(dispose).toHaveBeenCalledTimes(3);
+    expect(logs.errorSpy).toHaveBeenCalledWith('SSH discovery failed', {
+      jobId: 'job',
+      errorClass: 'RangeError',
+    });
+    expectNoSyntheticMarkers(logs.calls());
+  } finally {
+    jest.useRealTimers();
+  }
+});

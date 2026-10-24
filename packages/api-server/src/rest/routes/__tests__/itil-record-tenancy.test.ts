@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { fork } from 'child_process';
-import { readFileSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import express, { type Request, type Response, type NextFunction } from 'express';
 import request from 'supertest';
@@ -80,6 +80,9 @@ beforeAll(async () => {
       VALUES ('${LEGACY_C}', 'CHG-legacy', 'legacy', 'normal', ARRAY['ci-a'], 'legacy');`, [], 'exec');
   for (const file of ['012_itil_baseline_organization_scope.sql', '013_itil_baseline_org_name_unique.sql',
     '035_itil_record_ownership.sql']) await sql(readFileSync(join(migrationDir, file), 'utf8'), [], 'exec');
+  // HAP-922 columns; absent before the fix, so the base fails on behaviour rather than a missing file.
+  const hap922 = join(migrationDir, '040_itil_change_implementation_fields.sql');
+  if (existsSync(hap922)) await sql(readFileSync(hap922, 'utf8'), [], 'exec');
   await sql(`CREATE SCHEMA cmdb;
     CREATE TABLE cmdb.dim_ci(ci_id text, ci_key text, ci_name text, ci_type text,
       bsm_attributes jsonb, organization_id uuid, is_current boolean, org_backfilled boolean);`, [], 'exec');
@@ -111,6 +114,7 @@ it('conceals foreign, absent and NULL incidents/changes on every mounted detail 
     (id: string) => request(app).get(`/itil/changes/${id}`).set(auth('A')),
     (id: string) => request(app).get(`/itil/changes/${id}/risk-assessment`).set(auth('A')),
     (id: string) => request(app).patch(`/itil/changes/${id}`).set(auth('A')).send({ status: 'APPROVED' }),
+    (id: string) => request(app).patch(`/itil/changes/${id}`).set(auth('A')).send({ implementedBy: 'mallory', actualDuration: 5 }),
     (id: string) => changeMutation(`${id}/approve`),
     (id: string) => changeMutation(`${id}/implement`),
     (id: string) => changeMutation(`${id}/close`, { result: 'SUCCESS', closedBy: 'alice' }),
@@ -189,6 +193,40 @@ it('rejects more than 100 affected CI IDs before writing a change', async () => 
   expect(response.status).toBe(400);
   expect(await sql('SELECT COUNT(*)::int AS total FROM itil_changes WHERE organization_id = $1', [A]))
     .toEqual([{ total: 0 }]);
+});
+
+it('HAP-922: PATCH persists implementedBy and actualDuration on an owned change; GET reads them back', async () => {
+  const own = '12121212-1212-4121-8121-121212121212';
+  await sql(`INSERT INTO itil_changes(id, change_number, title, change_type, affected_ci_ids, requested_by, status, organization_id)
+    VALUES ('${own}', 'CHG-A', 'A change', 'normal', ARRAY['ci-a'], 'alice', 'approved', '${A}')`, [], 'exec');
+  const [before] = await sql('SELECT * FROM itil_changes WHERE id = $1', [own]) as Record<string, unknown>[];
+  const patch = (body: object) => request(app).patch(`/itil/changes/${own}`).set(auth('A')).send(body);
+  const fields = (row: Record<string, unknown>) =>
+    [row.status, row.implemented_by, row.actual_duration];
+  const results = [];
+  for (const body of [{ implementedBy: 'alice' }, { actualDuration: 45 },
+    { status: 'IMPLEMENTED', implementedBy: 'bob', actualDuration: 90 }]) {
+    const response = await patch(body);
+    results.push([response.status, fields(response.body.data ?? {})]);
+  }
+  expect(results).toEqual([[200, ['approved', 'alice', null]], [200, ['approved', 'alice', 45]],
+    [200, ['implemented', 'bob', 90]]]);
+  const [after] = await sql('SELECT * FROM itil_changes WHERE id = $1', [own]) as Record<string, unknown>[];
+  const untouched = (row: Record<string, unknown>) => {
+    const { status: _s, implemented_by: _i, actual_duration: _d, updated_at: _u, ...rest } = row;
+    return rest;
+  };
+  expect(untouched(after!)).toEqual(untouched(before!));
+  const read = await request(app).get(`/itil/changes/${own}`).set(auth('A'));
+  expect([read.status, fields(read.body.data)]).toEqual([200, ['implemented', 'bob', 90]]);
+  const listed = await request(app).get('/itil/changes').set(auth('A'));
+  expect(listed.body.data.map(fields)).toEqual([['implemented', 'bob', 90]]);
+  // Bounds of the persisted columns: 400 with no write, never a database 500.
+  const rejected = [];
+  for (const body of [{ actualDuration: 0 }, { actualDuration: 2147483648 }, { implementedBy: 'x'.repeat(256) },
+    { implementedBy: 'nul\u0000' }]) rejected.push((await patch(body)).status);
+  expect(rejected).toEqual([400, 400, 400, 400]);
+  expect(await sql('SELECT * FROM itil_changes WHERE id = $1', [own])).toEqual([after]);
 });
 
 it('ETL does not copy recycled A dimension data into B or legacy incidents', async () => {

@@ -1759,8 +1759,8 @@ BEGIN
 END
 $acl$;
 
--- Public audit aggregates are redacted; raw payload/IP/UA and detailed
--- field-change views belong to the application owner only.
+-- Raw audit payload/IP/UA and detailed field-change views belong to the
+-- application owner only; the redacted aggregate below is named-reader only.
 REVOKE ALL ON audit_log, v_ci_change_history_audit FROM PUBLIC;
 DO $acl$
 BEGIN
@@ -1773,7 +1773,19 @@ BEGIN
   END IF;
 END
 $acl$;
-GRANT SELECT ON recent_audit_activity TO PUBLIC;
+-- recent_audit_activity runs with its owner's privileges: grant it only to
+-- named readers (039), never PUBLIC.
+REVOKE ALL ON recent_audit_activity FROM PUBLIC;
+DO $acl$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'metabase_readonly') THEN
+    GRANT SELECT ON recent_audit_activity TO metabase_readonly;
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'cmdb_user') THEN
+    GRANT SELECT ON recent_audit_activity TO cmdb_user;
+  END IF;
+END
+$acl$;
 -- Raw cross-organization CI change payloads are application-only.
 REVOKE SELECT ON ci_change_history FROM PUBLIC;
 DO $acl$

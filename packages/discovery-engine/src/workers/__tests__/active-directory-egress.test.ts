@@ -99,3 +99,25 @@ it('keeps LDAP client failures and rejected resource reasons out of logs and err
   expect(JSON.stringify(log.mock.calls)).not.toContain(sensitive);
   log.mockRestore();
 });
+
+it('logs LDAP unbind failures with error class only and still resolves cleanup', async () => {
+  const host = 'dc01.synthetic-directory.invalid';
+  const bindDn = 'CN=svc-synthetic,OU=Service,DC=synthetic-directory,DC=invalid';
+  class SyntheticUnbindError extends Error {
+    constructor(message: string) { super(message); this.name = 'SyntheticUnbindError'; }
+  }
+  const warn = jest.spyOn(logger, 'warn').mockImplementation(() => undefined);
+  const unbind = jest.fn((callback: (error?: Error) => void) =>
+    callback(new SyntheticUnbindError(`unbind ldaps://${host}:636 failed for ${bindDn}`)));
+  const worker = new ActiveDirectoryDiscoveryWorker('public.example', 'DC=example,DC=com', credential);
+  // closeLDAPClient is private; expose it by contract for the real-method call.
+  const privateWorker = worker as unknown as { closeLDAPClient(client: unknown): Promise<void> };
+  await expect(privateWorker.closeLDAPClient({ unbind })).resolves.toBeUndefined();
+  expect(unbind).toHaveBeenCalledTimes(1);
+  expect(warn.mock.calls).toEqual([['LDAP unbind error', { error: 'SyntheticUnbindError' }]]);
+  const serialized = JSON.stringify(warn.mock.calls);
+  expect(serialized).not.toContain(host);
+  expect(serialized).not.toContain(bindDn);
+  expect(serialized).not.toContain('CN=');
+  warn.mockRestore();
+});

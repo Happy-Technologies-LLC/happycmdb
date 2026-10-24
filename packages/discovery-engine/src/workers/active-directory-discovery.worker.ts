@@ -800,7 +800,7 @@ export class ActiveDirectoryDiscoveryWorker {
     return new Promise((resolve) => {
       client.unbind((err) => {
         if (err) {
-          logger.warn('LDAP unbind error', { error: err.message });
+          logger.warn('LDAP unbind error', { error: err.name });
         }
         resolve();
       });

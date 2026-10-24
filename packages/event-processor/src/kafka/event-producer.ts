@@ -12,12 +12,17 @@ import { CMDBEvent, EventType, BaseEvent } from '../types/events';
 import { KAFKA_TOPICS } from './topics';
 
 export class EventProducer {
-  private kafka: Kafka;
-  private producer: Producer;
+  /** Null when no brokers are configured: the producer is disabled and never touches the network. */
+  private readonly producer: Producer | null = null;
   private isConnected: boolean = false;
 
   constructor(brokers: string[] = ['localhost:9092'], clientId: string = 'cmdb-event-producer') {
-    this.kafka = new Kafka({
+    if (brokers.length === 0) {
+      logger.warn('Kafka brokers not configured (KAFKA_BROKERS); event notification disabled');
+      return;
+    }
+
+    const kafka = new Kafka({
       clientId,
       brokers,
       retry: {
@@ -26,14 +31,14 @@ export class EventProducer {
       },
     });
 
-    this.producer = this.kafka.producer({
+    this.producer = kafka.producer({
       allowAutoTopicCreation: false,
       transactionalId: `${clientId}-${uuidv4()}`,
     });
   }
 
   async connect(): Promise<void> {
-    if (this.isConnected) {
+    if (this.isConnected || !this.producer) {
       return;
     }
 
@@ -48,7 +53,7 @@ export class EventProducer {
   }
 
   async disconnect(): Promise<void> {
-    if (!this.isConnected) {
+    if (!this.isConnected || !this.producer) {
       return;
     }
 
@@ -66,6 +71,10 @@ export class EventProducer {
    * Publish a CMDB event to appropriate topic
    */
   async publishEvent(event: CMDBEvent): Promise<RecordMetadata[]> {
+    if (!this.producer) {
+      return [];
+    }
+
     if (!this.isConnected) {
       await this.connect();
     }
@@ -114,6 +123,10 @@ export class EventProducer {
    * Publish multiple events in a batch
    */
   async publishBatch(events: CMDBEvent[]): Promise<RecordMetadata[]> {
+    if (!this.producer) {
+      return [];
+    }
+
     if (!this.isConnected) {
       await this.connect();
     }
@@ -167,6 +180,10 @@ export class EventProducer {
    * Send failed event to Dead Letter Queue
    */
   private async sendToDLQ(event: CMDBEvent, error: Error): Promise<void> {
+    if (!this.producer) {
+      return;
+    }
+
     try {
       await this.producer.send({
         topic: KAFKA_TOPICS.DLQ,
@@ -291,7 +308,8 @@ let producerInstance: EventProducer | null = null;
 export function getEventProducer(): EventProducer {
   if (!producerInstance) {
     const brokersEnv = process.env['KAFKA_BROKERS'];
-    const brokers = brokersEnv ? brokersEnv.split(',') : ['localhost:9092'];
+    // Absent, empty or whitespace-only means Kafka is not configured: run disabled.
+    const brokers = brokersEnv?.trim() ? brokersEnv.split(',') : [];
     producerInstance = new EventProducer(brokers);
   }
   return producerInstance;

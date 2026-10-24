@@ -829,7 +829,10 @@ export class ActiveDirectoryDiscoveryWorker {
         });
 
         res.on('error', (err) => {
-          logger.error('LDAP search error', { error: err.message });
+          logger.error('LDAP search error', {
+            // ldapjs result-code errors have anonymous constructors; their fixed `name` is the class.
+            errorClass: err instanceof Error ? (err.constructor.name !== '' ? err.constructor.name : err.name) : typeof err,
+          });
           reject(err);
         });
 

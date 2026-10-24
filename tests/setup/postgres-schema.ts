@@ -18,9 +18,10 @@ export async function loadPostgresSchema(
     await container.copyContentToContainer([{
       content: readFileSync(resolve(directory, file), 'utf-8'), target,
     }]);
-    // The initial schema has non-fatal legacy Timescale notices. Tenant and
-    // journal migrations must abort on every SQL error, atomically.
-    const guarded = /^0(28|29|30|31|32|33|34|35|36|37|38|39)_/.test(file);
+    // The legacy initial schema (001-027) has non-fatal Timescale notices. Every
+    // later migration (tenant/journal 028+, including 040 and any future file)
+    // must abort on every SQL error, atomically.
+    const guarded = !/^0([01]\d|2[0-7])_/.test(file);
     const load = await container.exec([
       'psql', '-v', `ON_ERROR_STOP=${guarded ? '1' : '0'}`,
       ...(guarded ? ['-1'] : []), '-U', user, '-d', database, '-f', target,

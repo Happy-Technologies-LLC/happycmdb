@@ -20,7 +20,7 @@ export async function loadPostgresSchema(
     }]);
     // The initial schema has non-fatal legacy Timescale notices. Tenant and
     // journal migrations must abort on every SQL error, atomically.
-    const guarded = /^0(28|29|30|31|32|33|34|35|36|37|38)_/.test(file);
+    const guarded = /^0(28|29|30|31|32|33|34|35|36|37|38|39)_/.test(file);
     const load = await container.exec([
       'psql', '-v', `ON_ERROR_STOP=${guarded ? '1' : '0'}`,
       ...(guarded ? ['-1'] : []), '-U', user, '-d', database, '-f', target,

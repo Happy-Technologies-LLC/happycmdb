@@ -245,6 +245,22 @@ id across tenants. S2/S3 wait for S1 merge; #44 waits for S4. A merge can
 automatically deploy migrations to staging; no manual deployment or live
 database step is included here.
 
+## HAP-835 recent audit activity view ACL
+
+`public.recent_audit_activity` runs with its owner's privileges, so `033`'s
+`audit_log` revoke left 001's PUBLIC SELECT on the view open to any connected
+role. Migration `039_recent_audit_activity_acl.sql` revokes all PUBLIC access to
+the view. Readers are now the owner plus explicitly granted roles. `039` grants
+SELECT to `metabase_readonly` (the BI allowlist) and to `cmdb_user` (which
+already reads `audit_log` through `033`) if those roles exist. It leaves other
+named grants in place. Any other or future reader role, including a separate
+least-privileged application role, needs its own explicit
+`GRANT SELECT ON public.recent_audit_activity`. The application code does not
+read this view. `init-postgres.sql` mirrors the ACL for fresh installations.
+`039` must run as the view owner; otherwise it fails rather than leaving PUBLIC
+access open. It is idempotent and has no rollback: the pre-`039` state is the
+exposure.
+
 ## v3.0 Initialization Scripts
 
 ### init-kafka.sh

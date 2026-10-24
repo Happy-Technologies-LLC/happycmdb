@@ -261,6 +261,23 @@ read this view. `init-postgres.sql` mirrors the ACL for fresh installations.
 access open. It is idempotent and has no rollback: the pre-`039` state is the
 exposure.
 
+## HAP-922 change implementation fields
+
+REST `PATCH /api/v1/itil/changes/:id` and GraphQL `updateChange` accept
+`implementedBy` and `actualDuration`, and the GraphQL `Change` type returns
+them, but no migration created the `itil_changes` columns, so those updates
+failed with `column "implemented_by" ... does not exist`. Migration
+`040_itil_change_implementation_fields.sql` adds nullable
+`implemented_by VARCHAR(255)` and `actual_duration INTEGER` (whole minutes,
+`CHECK > 0`). Existing rows keep NULL; ownership and indexes are unchanged.
+On a V2/V3 installation without ITIL tables it creates nothing, as `035`
+does. A non-table `itil_changes`, or a pre-existing column of another type
+or `NOT NULL`, aborts the migration. It is idempotent. It has no rollback:
+dropping the columns would discard recorded values and return the update API
+to the 500. The API rejects an empty, over-255-character or non-storable
+`implementedBy` and an `actualDuration` outside 1–2147483647 with 400 before
+any write.
+
 ## v3.0 Initialization Scripts
 
 ### init-kafka.sh

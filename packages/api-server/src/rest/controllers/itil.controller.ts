@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Request, Response } from 'express';
-import { dec, enc, getNeo4jClient, getPostgresClient, PlanUnrepresentableError } from '@cmdb/database';
+import { dec, enc, getNeo4jClient, getPostgresClient, isStorableString, PlanUnrepresentableError } from '@cmdb/database';
 import { logger, ciIncarnationId } from '@cmdb/common';
 import { v4 as uuidv4 } from 'uuid';
 import neo4j from 'neo4j-driver';
@@ -751,6 +751,15 @@ export class ITILController {
     try {
       const { id } = req.params;
       const { status, implementedBy, actualDuration } = req.body;
+      // GraphQL updateChange calls this controller directly, bypassing REST's Joi schema;
+      // these bounds keep both entry points within the persisted column types (040).
+      if ((implementedBy != null && (typeof implementedBy !== 'string' || implementedBy.length < 1 ||
+          implementedBy.length > 255 || !isStorableString(implementedBy))) ||
+        (actualDuration != null && (!Number.isInteger(actualDuration) || actualDuration < 1 ||
+          actualDuration > 2147483647))) {
+        res.status(400).json({ success: false, error: 'Bad Request', message: 'Invalid request' });
+        return;
+      }
 
       const updates: string[] = [];
       const params: any[] = [];
@@ -760,11 +769,11 @@ export class ITILController {
         updates.push(`status = $${paramIndex++}`);
         params.push(String(status).toLowerCase());
       }
-      if (implementedBy) {
+      if (implementedBy != null) {
         updates.push(`implemented_by = $${paramIndex++}`);
         params.push(implementedBy);
       }
-      if (actualDuration) {
+      if (actualDuration != null) {
         updates.push(`actual_duration = $${paramIndex++}`);
         params.push(actualDuration);
       }

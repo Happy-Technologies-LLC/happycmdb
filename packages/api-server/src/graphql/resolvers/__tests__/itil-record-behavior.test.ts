@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { fork } from 'child_process';
-import { readFileSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import express, { type Request, type Response, type NextFunction } from 'express';
 import request from 'supertest';
@@ -30,6 +30,7 @@ const ciNodes = new Map<string, string>();
 const getCI = jest.fn();
 const getSession = jest.fn();
 jest.mock('@cmdb/database', () => ({
+  ...jest.requireActual<object>('@cmdb/database/journal/encoding'),
   Neo4jClient: jest.fn(),
   getPostgresClient: () => ({ query, pool: { query } }),
   getNeo4jClient: () => ({ getSession, getCI }),
@@ -68,6 +69,8 @@ beforeAll(async () => {
   await sql(journalTable[0], [], 'exec');
   for (const file of ['012_itil_baseline_organization_scope.sql', '013_itil_baseline_org_name_unique.sql',
     '035_itil_record_ownership.sql']) await sql(readFileSync(join(migrationDir, file), 'utf8'), [], 'exec');
+  const hap922 = join(migrationDir, '040_itil_change_implementation_fields.sql');
+  if (existsSync(hap922)) await sql(readFileSync(hap922, 'utf8'), [], 'exec');
   ({ server } = await createGraphQLServer(app));
 }, 30000);
 afterAll(async () => { await server?.stop(); host.kill(); });
@@ -166,4 +169,38 @@ it('refuses oversized affected-CI writes and bounds legacy graph reads by distin
   const oversized = await graphql(`{ change(id: "${id}") { affectedCIs { _id } } }`);
   expect(oversized.body.errors?.[0]?.extensions?.code).toBe('BAD_USER_INPUT');
   expect(getSession).not.toHaveBeenCalled();
+});
+
+it('HAP-922: updateChange persists implementedBy and actualDuration; change and changes read them back', async () => {
+  const id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const foreign = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  await seedChange(id, 'approved');
+  await seedChange(foreign, 'approved', 'normal', ['ci-b'], B);
+  const update = (target: string, input: string) => graphql(`mutation { updateChange(id: "${target}", input: ${input})
+    { id status implementedBy actualDuration } }`);
+  const results = [];
+  for (const input of ['{ implementedBy: "alice" }', '{ actualDuration: 45 }',
+    '{ status: IMPLEMENTED, implementedBy: "bob", actualDuration: 90 }']) results.push((await update(id, input)).body);
+  expect(results).toEqual([
+    { data: { updateChange: { id, status: 'APPROVED', implementedBy: 'alice', actualDuration: null } } },
+    { data: { updateChange: { id, status: 'APPROVED', implementedBy: 'alice', actualDuration: 45 } } },
+    { data: { updateChange: { id, status: 'IMPLEMENTED', implementedBy: 'bob', actualDuration: 90 } } },
+  ]);
+  const read = await graphql(`{ change(id: "${id}") { implementedBy actualDuration }
+    changes { items { id implementedBy actualDuration } } }`);
+  expect(read.body).toEqual({ data: { change: { implementedBy: 'bob', actualDuration: 90 },
+    changes: { items: [{ id, implementedBy: 'bob', actualDuration: 90 }] } } });
+  const rows = await sql('SELECT * FROM itil_changes ORDER BY id');
+  // Foreign is indistinguishable from missing; GraphQL bypasses Joi, so the controller bounds apply.
+  const input = '{ implementedBy: "mallory", actualDuration: 5 }';
+  const [foreignBody, missingBody] = [(await update(foreign, input)).body,
+    (await update('dddddddd-dddd-4ddd-8ddd-dddddddddddd', input)).body];
+  expect(foreignBody.errors?.[0]?.extensions?.code).toBe('NOT_FOUND');
+  expect(JSON.stringify(foreignBody)).toBe(JSON.stringify(missingBody));
+  const rejected = [];
+  for (const bad of ['{ actualDuration: -5 }', `{ implementedBy: "${'x'.repeat(256)}" }`, '{ implementedBy: "nul\\u0000" }']) {
+    rejected.push((await update(id, bad)).body.errors?.[0]?.extensions?.code);
+  }
+  expect(rejected).toEqual(['BAD_USER_INPUT', 'BAD_USER_INPUT', 'BAD_USER_INPUT']);
+  expect(await sql('SELECT * FROM itil_changes ORDER BY id')).toEqual(rows);
 });

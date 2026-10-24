@@ -80,6 +80,24 @@ jest.mock('../../controllers/discovery-agent.controller', () => ({
   })),
 }));
 
+const mockAgentService = {
+  updateHeartbeat: jest.fn<(...args: unknown[]) => Promise<unknown>>(),
+  listAgents: jest.fn<(...args: unknown[]) => Promise<unknown>>(),
+  getAgent: jest.fn<(...args: unknown[]) => Promise<unknown>>(),
+  deleteAgent: jest.fn<(...args: unknown[]) => Promise<unknown>>(),
+};
+
+// Plain class (not jest.fn) so `resetMocks: true` cannot wipe its behavior.
+jest.mock('../../../services/discovery-agent.service', () => ({
+  AGENT_NOT_FOUND: 'Agent not found',
+  DiscoveryAgentService: class {
+    constructor() {
+      return mockAgentService;
+    }
+  },
+}));
+
+import { logger } from '@cmdb/common';
 import { discoveryAgentRoutes } from '../discovery-agent.routes';
 
 // Captured once at module scope (mirrors server.ts, which builds this
@@ -174,5 +192,71 @@ describe('discovery agent routes', () => {
     const response = await invoke(testApp(), 'GET', '/agents', undefined, 'Bearer garbage-token');
     expect(response.status).toBe(401);
     expect(mockRouteHandler).not.toHaveBeenCalled();
+  });
+});
+
+describe('discovery agent controller failure responses', () => {
+  const MARKERS = [
+    'error-host.invalid',
+    '192.0.2.77',
+    'cn=svc-synthetic,ou=people,dc=example,dc=invalid',
+  ];
+  const FAILURE_TEXT = `backend failure for ${MARKERS.join(' ')}`;
+
+  // The route-wiring suite above mocks the controller; failure handling lives in
+  // the real controller, so mount its actual handlers behind the same auth stub.
+  function failureApp(): express.Express {
+    const { DiscoveryAgentController: RealController } = jest.requireActual<
+      typeof import('../../controllers/discovery-agent.controller')
+    >('../../controllers/discovery-agent.controller');
+    const controller = new RealController();
+    const app = express();
+    app.use(express.json());
+    app.use(authenticateMiddleware);
+    app.post('/agents/heartbeat', (req, res) => controller.updateHeartbeat(req, res));
+    app.get('/agents', (req, res) => controller.listAgents(req, res));
+    app.get('/agents/:agentId', (req, res) => controller.getAgent(req, res));
+    app.delete('/agents/:agentId', (req, res) => controller.deleteAgent(req, res));
+    return app;
+  }
+
+  const cases: Array<[keyof typeof mockAgentService, string, string, Record<string, unknown> | undefined, string]> = [
+    ['updateHeartbeat', 'POST', '/agents/heartbeat', { agent_id: 'agent-1', status: 'active' }, 'Failed to update heartbeat'],
+    ['listAgents', 'GET', '/agents', undefined, 'Failed to list agents'],
+    ['getAgent', 'GET', '/agents/agent-1', undefined, 'Failed to get agent'],
+    ['deleteAgent', 'DELETE', '/agents/agent-1', undefined, 'Failed to delete agent'],
+  ];
+
+  it.each(cases)('%s returns a fixed 500 and logs only fixed text and error class', async (serviceMethod, method, path, body, fixedError) => {
+    const logSpies = (['debug', 'info', 'warn', 'error'] as const).map((level) =>
+      jest.spyOn(logger, level).mockImplementation(() => logger)
+    );
+    mockAgentService[serviceMethod].mockRejectedValue(
+      new Error(FAILURE_TEXT, { cause: new Error(MARKERS.join(' ')) })
+    );
+
+    const response = await invoke(failureApp(), method, path, body, 'Bearer operator-token');
+
+    expect(mockAgentService[serviceMethod]).toHaveBeenCalledTimes(1);
+    expect(response.status).toBe(500);
+    expect(response.body).toEqual({ success: false, error: fixedError });
+    expect(logSpies[3]).toHaveBeenCalledWith(`Error in ${serviceMethod} controller`, { errorClass: 'Error' });
+
+    const everything = JSON.stringify([response.body, response.text, ...logSpies.map((spy) => spy.mock.calls)]);
+    for (const marker of [...MARKERS, FAILURE_TEXT]) {
+      expect(everything).not.toContain(marker);
+    }
+  });
+
+  it('logs only the type for a non-Error rejection', async () => {
+    const error = jest.spyOn(logger, 'error').mockImplementation(() => logger);
+    mockAgentService.listAgents.mockRejectedValue({ detail: FAILURE_TEXT });
+
+    const response = await invoke(failureApp(), 'GET', '/agents', undefined, 'Bearer operator-token');
+
+    expect(response.status).toBe(500);
+    expect(response.body).toEqual({ success: false, error: 'Failed to list agents' });
+    expect(error).toHaveBeenCalledWith('Error in listAgents controller', { errorClass: 'object' });
+    expect(JSON.stringify(error.mock.calls)).not.toContain(FAILURE_TEXT);
   });
 });

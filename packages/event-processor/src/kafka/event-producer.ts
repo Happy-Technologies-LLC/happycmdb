@@ -302,15 +302,17 @@ export class EventProducer {
   }
 }
 
+/** Shared by producer and health: absent/empty/whitespace-only is unconfigured ([]); else split on ','. */
+export function parseKafkaBrokers(value: string | undefined = process.env['KAFKA_BROKERS']): string[] {
+  return value?.trim() ? value.split(',') : [];
+}
+
 // Singleton instance
 let producerInstance: EventProducer | null = null;
 
 export function getEventProducer(): EventProducer {
   if (!producerInstance) {
-    const brokersEnv = process.env['KAFKA_BROKERS'];
-    // Absent, empty or whitespace-only means Kafka is not configured: run disabled.
-    const brokers = brokersEnv?.trim() ? brokersEnv.split(',') : [];
-    producerInstance = new EventProducer(brokers);
+    producerInstance = new EventProducer(parseKafkaBrokers());
   }
   return producerInstance;
 }

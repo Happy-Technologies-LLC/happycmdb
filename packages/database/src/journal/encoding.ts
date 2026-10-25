@@ -25,7 +25,8 @@ const TEMPORALS: Array<[string, (v: unknown) => boolean]> = [
 ];
 
 export function enc(value: unknown): Encoded {
-  if (value === null || value === undefined || typeof value === 'boolean') return value ?? null;
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'boolean') return value;
   if (neo4j.isInt(value)) return { $hp1: 'int', v: value.toString() };
   if (typeof value === 'number') {
     if (Number.isFinite(value) && !Object.is(value, -0)) return value;

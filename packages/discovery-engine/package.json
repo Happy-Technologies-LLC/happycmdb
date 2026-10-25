@@ -38,7 +38,6 @@
     "@azure/arm-appservice": "^14.0.0",
     "@azure/arm-containerservice": "^19.0.0",
     "@google-cloud/functions": "^3.0.0",
-    "@google-cloud/sql": "^3.0.0",
     "@googleapis/container": "^8.0.0"
   },
   "devDependencies": {

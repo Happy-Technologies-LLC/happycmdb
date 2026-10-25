@@ -313,17 +313,13 @@ console.log(`Audit every ${auditFrequency} days`); // 45 days
 ## Testing
 
 ```bash
-# Run all tests
-npm test
-
 # Run unit tests only
 npm run test:unit
 
-# Run integration tests only
-npm run test:integration
-
-# Run with coverage
-npm run test:coverage
+# Integration tests run only from the repository root, against throwaway
+# Testcontainers (needs Docker): `npm run test:integration` at the root.
+# Here, `npm test`, `test:integration` and `test:coverage` include that suite,
+# which refuses to load (HAP-972) before any Neo4j or PostgreSQL access.
 ```
 
 ## Configuration

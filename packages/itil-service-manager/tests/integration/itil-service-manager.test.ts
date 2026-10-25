@@ -14,6 +14,11 @@ import { IncidentPriorityService } from '../../src/services/incident-priority.se
 import { ChangeRiskService } from '../../src/services/change-risk.service';
 import { BaselineService } from '../../src/services/baseline.service';
 import { v4 as uuidv4 } from 'uuid';
+import { assertIsolatedIntegrationTarget } from '../../../../tests/setup/isolated-integration-target';
+
+// HAP-972: fail at module load, before any hook can reach a database. jest-circus
+// still runs afterAll(cleanup) when a beforeAll hook throws, so a hook is too late.
+assertIsolatedIntegrationTarget();
 
 // Kafka is not started for integration tests. Stub the event producer so the
 // configuration-management service's event emission is a no-op rather than a
@@ -58,8 +63,13 @@ interface SeedCIOptions {
   tbmAttributes?: Record<string, unknown>;
 }
 
-const CI_ID_PREFIX = 'itil-test-';
-const BS_OWNER = 'itil-itest';
+// Run-unique fixture identity: cleanup deletes only what this run created.
+const RUN = uuidv4();
+const CI_ID_PREFIX = `itil-test-${RUN}-`;
+const BS_OWNER = `itil-itest-${RUN}`;
+const UNOWNED = `itil-itest-unowned-${RUN}`;
+const createdCiIds: string[] = [];
+const createdBsIds: string[] = [];
 
 describe('ITIL Service Manager Integration Tests', () => {
   /**
@@ -97,6 +107,7 @@ describe('ITIL Service Manager Integration Tests', () => {
           metadata: JSON.stringify({}),
         }
       );
+      createdCiIds.push(options.id);
     } finally {
       await session.close();
     }
@@ -148,6 +159,7 @@ describe('ITIL Service Manager Integration Tests', () => {
         BS_OWNER,
       ]
     );
+    createdBsIds.push(id);
 
     const session = getNeo4jClient().getSession();
     try {
@@ -167,29 +179,27 @@ describe('ITIL Service Manager Integration Tests', () => {
   }
 
   async function cleanup(): Promise<void> {
+    assertIsolatedIntegrationTarget();
+    const ciIds = [...createdCiIds];
+    const bsIds = [...createdBsIds];
     const session = getNeo4jClient().getSession();
     try {
-      await session.run(
-        'MATCH (n) WHERE n.id STARTS WITH $prefix DETACH DELETE n',
-        { prefix: CI_ID_PREFIX }
-      );
-      // Business service nodes are keyed by uuid, not the test prefix; remove
-      // any that were attached to the test CIs (now already deleted) by label.
-      await session.run('MATCH (bs:BusinessService) DETACH DELETE bs');
+      await session.run('MATCH (bs:BusinessService) WHERE bs.id IN $bsIds DETACH DELETE bs', { bsIds });
+      await session.run('MATCH (ci:CI) WHERE ci.id IN $ciIds DETACH DELETE ci', { ciIds });
     } finally {
       await session.close();
     }
 
     const pg = getPostgresClient();
-    await pg.query('DELETE FROM business_services WHERE created_by = $1', [BS_OWNER]);
-    await pg.query('DELETE FROM itil_incidents WHERE affected_ci_id LIKE $1', [`${CI_ID_PREFIX}%`]);
-    await pg.query(
-      `DELETE FROM itil_changes WHERE EXISTS (
-         SELECT 1 FROM unnest(affected_ci_ids) AS cid WHERE cid LIKE $1
-       )`,
-      [`${CI_ID_PREFIX}%`]
-    );
-    await pg.query('DELETE FROM itil_baselines WHERE created_by = $1', [BS_OWNER]);
+    await pg.query('DELETE FROM business_services WHERE id = ANY($1::uuid[]) AND created_by = $2', [bsIds, BS_OWNER]);
+    // The standalone writers are rejected (23514), so these normally match nothing;
+    // the keys are run-unique, so they can never reach another run's rows.
+    await pg.query('DELETE FROM itil_incidents WHERE reported_by = $1', [UNOWNED]);
+    await pg.query('DELETE FROM itil_changes WHERE requested_by = $1', [UNOWNED]);
+    await pg.query('DELETE FROM itil_baselines WHERE name = $1 AND created_by = $2',
+      [`${CI_ID_PREFIX}baseline-unowned`, BS_OWNER]);
+    createdCiIds.length = 0;
+    createdBsIds.length = 0;
   }
 
   beforeEach(async () => {
@@ -291,12 +301,12 @@ describe('ITIL Service Manager Integration Tests', () => {
         description: 'Primary database is not responding',
         category: 'availability',
         subcategory: 'database',
-        reportedBy: 'itil-itest-unowned',
+        reportedBy: UNOWNED,
         symptoms: ['timeouts'],
       })).rejects.toMatchObject({ code: '23514' });
       const rows = await getPostgresClient().query(
         'SELECT COUNT(*)::int AS count FROM itil_incidents WHERE reported_by = $1',
-        ['itil-itest-unowned']);
+        [UNOWNED]);
       expect(rows.rows[0].count).toBe(0);
     });
     it('should calculate priority based on affected business services', async () => {
@@ -310,7 +320,7 @@ describe('ITIL Service Manager Integration Tests', () => {
       });
       await seedBusinessService({
         ciId,
-        name: 'Checkout Service',
+        name: `Checkout Service ${RUN}`,
         bsmAttributes: {
           business_criticality: 'tier_1',
           customer_count: 5000,
@@ -335,7 +345,7 @@ describe('ITIL Service Manager Integration Tests', () => {
       });
 
       expect(priority.affectedBusinessServices).toHaveLength(1);
-      expect(priority.affectedBusinessServices[0].name).toBe('Checkout Service');
+      expect(priority.affectedBusinessServices[0].name).toBe(`Checkout Service ${RUN}`);
       // Escalated to critical because of the tier_1 dependent service.
       expect(priority.impact).toBe('critical');
       expect(priority.estimatedUserImpact).toBe(5000);
@@ -359,11 +369,11 @@ describe('ITIL Service Manager Integration Tests', () => {
         implementationPlan: 'Run upgrade script',
         backoutPlan: 'Restore from snapshot',
         testPlan: 'Validate in staging',
-        requestedBy: 'itil-itest-unowned',
+        requestedBy: UNOWNED,
       })).rejects.toMatchObject({ code: '23514' });
       const rows = await getPostgresClient().query(
         'SELECT COUNT(*)::int AS count FROM itil_changes WHERE requested_by = $1',
-        ['itil-itest-unowned']);
+        [UNOWNED]);
       expect(rows.rows[0].count).toBe(0);
     });
     it('should determine CAB approval requirement', async () => {
@@ -412,6 +422,53 @@ describe('ITIL Service Manager Integration Tests', () => {
       const rows = await getPostgresClient().query(
         'SELECT COUNT(*)::int AS count FROM itil_baselines WHERE name = $1', [name]);
       expect(rows.rows[0].count).toBe(0);
+    });
+  });
+
+  describe('Cleanup scope (HAP-972)', () => {
+    it('deletes the fixtures it created and leaves rows matching the old fixed prefix and owner', async () => {
+      // Literal pre-HAP-972 prefix 'itil-test-' and owner 'itil-itest', in another organization.
+      const tag = uuidv4();
+      const other = uuidv4();
+      const ciId = `itil-test-foreign-${tag}`;
+      const ids = { bsNode: uuidv4(), bs: uuidv4(), incident: uuidv4(), change: uuidv4(), baseline: uuidv4() };
+      const pg = getPostgresClient();
+      const session = getNeo4jClient().getSession();
+      try {
+        await session.run('CREATE (:CI {id: $ciId, organization_id: $other}) CREATE (:BusinessService {id: $bsNode})',
+          { ciId, other, bsNode: ids.bsNode });
+        await pg.query(`INSERT INTO business_services (id, name, created_by) VALUES ($1, $2, 'itil-itest')`,
+          [ids.bs, `foreign-${tag}`]);
+        await pg.query(`INSERT INTO itil_incidents (id, incident_number, title, impact, urgency, priority,
+          reported_by, affected_ci_id, organization_id) VALUES ($1, $2, 'foreign', 'low', 'low', 5, 'foreign', $3, $4)`,
+          [ids.incident, `INC-${tag}`, ciId, other]);
+        await pg.query(`INSERT INTO itil_changes (id, change_number, title, change_type, requested_by,
+          affected_ci_ids, organization_id) VALUES ($1, $2, 'foreign', 'normal', 'foreign', ARRAY[$3]::text[], $4)`,
+          [ids.change, `CHG-${tag}`, ciId, other]);
+        await pg.query(`INSERT INTO itil_baselines (id, name, baseline_type, baseline_data, created_by,
+          organization_id) VALUES ($1, $2, 'configuration', '{}', 'itil-itest', $3)`, [ids.baseline, `foreign-${tag}`, other]);
+        const ownedCi = `${CI_ID_PREFIX}owned`;
+        await seedCI({ id: ownedCi });
+        const ownedBs = await seedBusinessService({ ciId: ownedCi, name: `owned-${tag}`, bsmAttributes: {}, itilAttributes: {} });
+        await cleanup();
+        const graph = await session.run('MATCH (n) WHERE (n:CI OR n:BusinessService) AND n.id IN $nodes RETURN n.id AS id',
+          { nodes: [ciId, ids.bsNode, ownedCi, ownedBs] });
+        const rows = await pg.query(`SELECT id::text FROM business_services WHERE id = ANY($1::uuid[])
+          UNION ALL SELECT id::text FROM itil_incidents WHERE id = $2 UNION ALL SELECT id::text FROM itil_changes WHERE id = $3
+          UNION ALL SELECT id::text FROM itil_baselines WHERE id = $4`, [[ids.bs, ownedBs], ids.incident, ids.change, ids.baseline]);
+        expect([...graph.records.map(record => record.get('id')), ...rows.rows.map(row => row.id)].sort())
+          .toEqual([ciId, ids.bsNode, ids.bs, ids.incident, ids.change, ids.baseline].sort());
+      } finally {
+        try {
+          await session.run('MATCH (n) WHERE (n:CI AND n.id = $ciId) OR (n:BusinessService AND n.id = $bsNode) DETACH DELETE n',
+            { ciId, bsNode: ids.bsNode });
+        } finally {
+          await session.close();
+          await pg.query(`WITH a AS (DELETE FROM business_services WHERE id = $1),
+            b AS (DELETE FROM itil_incidents WHERE id = $2), c AS (DELETE FROM itil_changes WHERE id = $3)
+            DELETE FROM itil_baselines WHERE id = $4`, [ids.bs, ids.incident, ids.change, ids.baseline]);
+        }
+      }
     });
   });
 });

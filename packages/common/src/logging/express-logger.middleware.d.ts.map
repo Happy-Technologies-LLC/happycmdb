@@ -1,1 +1,0 @@
-{"version":3,"file":"express-logger.middleware.d.ts","sourceRoot":"","sources":["express-logger.middleware.ts"],"names":[],"mappings":"AAKA,OAAO,EAAE,OAAO,EAAE,QAAQ,EAAE,YAAY,EAAE,MAAM,SAAS,CAAC;AAO1D,eAAO,MAAM,uBAAuB,GAClC,KAAK,OAAO,EACZ,KAAK,QAAQ,EACb,MAAM,YAAY,KACjB,IAkEF,CAAC;AA0BF,eAAO,MAAM,qBAAqB,GAChC,KAAK,KAAK,EACV,KAAK,OAAO,EACZ,MAAM,QAAQ,EACd,MAAM,YAAY,KACjB,IAWF,CAAC"}

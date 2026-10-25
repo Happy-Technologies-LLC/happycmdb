@@ -6,8 +6,8 @@ module.exports = {
   testEnvironment: 'node',
   roots: ['<rootDir>/tests'],
   testMatch: ['**/*.test.ts'],
-  // Prefer TypeScript source over the stale compiled .js artifacts committed alongside it in
-  // packages/*/src (e.g. @cmdb/database's src/index.js), which lag behind index.ts.
+  // Prefer TypeScript source if a compiled .js sibling ever appears in packages/*/src;
+  // tests/unit/repo-hygiene/no-compiled-src-twins.test.ts keeps none tracked.
   moduleFileExtensions: ['ts', 'tsx', 'js', 'mjs', 'cjs', 'jsx', 'json', 'node'],
   collectCoverageFrom: [
     'src/**/*.ts',

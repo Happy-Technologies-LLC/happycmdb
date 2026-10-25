@@ -15,7 +15,6 @@ const LIBRARY_ONLY = ['bsm-impact-engine', 'itil-service-manager', 'framework-in
 const ALLOWED: Record<string, { count: number; reason: string }> = {
   'database/src/journal/journal.ts': { count: 10, reason: 'the journaled W statements and the recovery fence' },
   'database/src/neo4j/client.ts': { count: 2, reason: 'legacyCreateCIUnjournaled (HP1-S5 ETL residual) and the incarnation marker' },
-  'database/src/neo4j/client.js': { count: 4, reason: 'stale tsc output (operator D2 scope exception; removal is S5)' },
   'identity-resolution/src/engine/identity-reconciliation-engine.ts': { count: 2, reason: 'create-if-missing path, reached only by non-API writers (HP1-S5)' },
   'etl-processor/src/jobs/reconciliation.job.ts': { count: 1, reason: 'ETL writer, journaled by HP1-S5 (A-12)' },
   'bsm-impact-engine/src/utils/graph-traversal.ts': { count: 1, reason: 'library with no deployable importer (asserted below)' },
@@ -96,7 +95,6 @@ const WORKERS: Record<string, { count: number; primitive?: true }> = {
   'discovery-engine/src/orchestrator/discovery-orchestrator.ts': { count: 1 },
   'discovery-engine/src/workers/cost-sync.worker.ts': { count: 3 },
   'etl-processor/src/index.ts': { count: 4 },
-  'etl-processor/src/index.js': { count: 4 }, // committed tsc copy of index.ts
   'etl-processor/src/workers/v3-etl.worker.ts': { count: 3 },
   'tbm-cost-engine/src/integrations/cost-sync.service.ts': { count: 1 },
 };

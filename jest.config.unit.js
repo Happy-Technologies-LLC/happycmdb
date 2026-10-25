@@ -66,8 +66,8 @@ module.exports = {
     '^@test/utils$': '<rootDir>/tests/utils',
   },
 
-  // Prefer TypeScript source over the stale compiled .js artifacts committed in
-  // packages/*/src (those are incomplete in a clean checkout).
+  // Prefer TypeScript source if a compiled .js sibling ever appears in packages/*/src;
+  // tests/unit/repo-hygiene/no-compiled-src-twins.test.ts keeps none tracked.
   moduleFileExtensions: ['ts', 'tsx', 'js', 'mjs', 'cjs', 'jsx', 'json', 'node'],
 
   // Transform TypeScript files

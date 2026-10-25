@@ -48,7 +48,7 @@ module.exports = {
     '^@cmdb/([^/]+)$': '<rootDir>/packages/$1/src',
   },
 
-  // Prefer TypeScript source over stale compiled .js artifacts in packages/*/src.
+  // Prefer TypeScript source over any compiled .js sibling in packages/*/src (none tracked; HAP-955).
   moduleFileExtensions: ['ts', 'tsx', 'js', 'mjs', 'cjs', 'jsx', 'json', 'node'],
 
   // Coverage configuration (optional for E2E)

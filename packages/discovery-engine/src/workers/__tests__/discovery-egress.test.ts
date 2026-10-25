@@ -235,3 +235,43 @@ it('ssh discoverHost per-host catch logs fixed text and class only', async () =>
     jest.useRealTimers();
   }
 });
+
+// Expands Error own properties: plain JSON.stringify renders an Error as {} and would hide a leak.
+function serializeWithErrors(value: unknown): string {
+  return JSON.stringify(value, (_key, item: unknown) =>
+    item instanceof Error ? { name: item.name, message: item.message, stack: item.stack } : item);
+}
+
+it('ssh discoverHosts aggregate logs fixed text and class only, and still rethrows a refusal', async () => {
+  jest.useFakeTimers();
+  const logs = captureAllLogArguments();
+  jest.mocked(NodeSSH).mockImplementation(() => ({
+    connect: jest.fn().mockRejectedValue(new RangeError(SYNTHETIC_PAYLOAD)), dispose: jest.fn(),
+  }) as never);
+  try {
+    const settled = new SSHDiscoveryWorker()
+      .discoverHosts('job', [{ host: '8.8.8.8', username: 'user', password: 'unused' }]);
+    await jest.runAllTimersAsync();
+    const cis = await settled;
+
+    expect(cis).toEqual([]);
+    expect(logs.errorSpy).toHaveBeenCalledWith('SSH discovery failed for host', {
+      jobId: 'job',
+      errorClass: 'RangeError',
+    });
+    for (const marker of [...SYNTHETIC_MARKERS, SYNTHETIC_PAYLOAD]) {
+      expect(serializeWithErrors(logs.calls())).not.toContain(marker);
+    }
+  } finally {
+    jest.useRealTimers();
+  }
+
+  // DNS rebind after the public preflight answer: the aggregate still rethrows the fixed refusal.
+  jest.mocked(NodeSSH).mockClear();
+  mockedLookup.mockResolvedValueOnce([{ address: '8.8.8.8', family: 4 }] as never)
+    .mockResolvedValue([{ address: '169.254.169.254', family: 4 }] as never);
+  await expect(new SSHDiscoveryWorker()
+    .discoverHosts('job', [{ host: 'public.example', username: 'user', password: 'unused' }]))
+    .rejects.toThrow(DISCOVERY_TARGET_REFUSED);
+  expect(NodeSSH).not.toHaveBeenCalled();
+});

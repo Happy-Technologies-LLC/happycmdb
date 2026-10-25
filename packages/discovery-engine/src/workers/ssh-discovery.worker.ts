@@ -284,7 +284,10 @@ export class SSHDiscoveryWorker {
         if (result.reason instanceof Error && result.reason.message === DISCOVERY_TARGET_REFUSED) {
           throw result.reason;
         }
-        logger.error('SSH discovery failed for host', { jobId, error: result.reason });
+        logger.error('SSH discovery failed for host', {
+          jobId,
+          errorClass: result.reason instanceof Error ? result.reason.constructor.name : typeof result.reason,
+        });
       }
     });
 

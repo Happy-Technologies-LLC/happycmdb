@@ -1,6 +1,8 @@
 // Copyright 2026 Happy Technologies LLC
 // SPDX-License-Identifier: Apache-2.0
 
+import { spawnSync } from 'child_process';
+import * as path from 'path';
 import { withRetry } from '../retry';
 import { logger } from '../logger';
 import { DISCOVERY_TARGET_REFUSED } from '../../security/discovery-egress';
@@ -101,4 +103,18 @@ describe('withRetry error logging', () => {
     expect(log.warn).not.toHaveBeenCalled();
     expect(log.error).not.toHaveBeenCalled();
   });
+});
+
+// Plain Node and every per-package Jest config without an explicit ts-first moduleFileExtensions
+// (Jest's default order is js-first) resolve
+// `./retry` to a compiled .js twin before retry.ts. A tracked twin there shadows the sanitized source
+// covered above; the stale one logged lastError.message and retried refused discovery targets.
+// Probed in a separate Node process: inside Jest, `module.createRequire` is Jest's ts-first resolver.
+it('js-first module resolution cannot reach a compiled retry twin that shadows retry.ts', () => {
+  const probe = spawnSync(process.execPath, ['-p', "require.resolve('./retry')"], {
+    cwd: path.join(__dirname, '..'),
+    encoding: 'utf8',
+  });
+  expect(probe.stdout).toBe('');
+  expect(probe.stderr).toContain("Cannot find module './retry'");
 });

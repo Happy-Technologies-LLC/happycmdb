@@ -9,6 +9,7 @@
  * the `test-containers` helper — no suite starts its own containers.
  */
 
+import { randomUUID } from 'crypto';
 import { mkdirSync, writeFileSync } from 'fs';
 import { resolve } from 'path';
 import { GenericContainer, StartedTestContainer, Wait } from 'testcontainers';
@@ -37,6 +38,7 @@ export default async function globalSetup(): Promise<void> {
   console.log('Starting integration test containers...');
 
   try {
+    process.env.CMDB_TESTCONTAINERS_RUN_ID = randomUUID(); // HAP-972 isolated-run marker
     // ---- Neo4j -------------------------------------------------------------
     console.log('Starting Neo4j container...');
     const neo4jContainer = await new GenericContainer('neo4j:5.15.0')
@@ -106,6 +108,7 @@ export default async function globalSetup(): Promise<void> {
     writeFileSync(
       RUNTIME_ENV_PATH,
       JSON.stringify({
+        CMDB_TESTCONTAINERS_RUN_ID: process.env.CMDB_TESTCONTAINERS_RUN_ID,
         NEO4J_URI: process.env.NEO4J_URI,
         NEO4J_USERNAME: process.env.NEO4J_USERNAME,
         NEO4J_PASSWORD: process.env.NEO4J_PASSWORD,

@@ -11,7 +11,7 @@
  */
 
 import { ConnectorLoader } from '../packages/api-server/src/utils/connector-loader';
-import { logger } from '../packages/common/src/logger';
+import { logger } from '../packages/common/src/utils/logger';
 
 async function main() {
   try {
@@ -33,7 +33,7 @@ async function main() {
     process.exit(0);
 
   } catch (error) {
-    logger.error('Fatal error loading connectors', error);
+    logger.error('Fatal error loading connectors');
     process.exit(1);
   }
 }

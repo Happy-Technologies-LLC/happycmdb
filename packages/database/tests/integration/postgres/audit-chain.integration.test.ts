@@ -127,7 +127,7 @@ describeIfDb('AuditService hash chain (cmdb_test)', () => {
     const changed = await auditService.verifyAuditChain();
     expect(changed.ok).toBe(false);
     expect(changed.orgBindingViolations).toContain(id);
-    expect(changed.reason).toBeUndefined();
+    expect(changed.reason).toBe('content'); // HAP-1001 v2 hashes the organization_id column
     await pool.query('UPDATE audit_log SET organization_id = $1 WHERE id = $2', [ORG_A, id]);
     expect((await auditService.verifyAuditChain()).ok).toBe(true);
 

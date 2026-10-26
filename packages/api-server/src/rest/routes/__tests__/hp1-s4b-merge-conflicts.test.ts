@@ -22,6 +22,7 @@ Object.assign(process.env, {
   NEO4J_URI: 'bolt://127.0.0.1:1', NEO4J_USERNAME: 'unused', NEO4J_PASSWORD: 'unused',
   POSTGRES_HOST: '127.0.0.1', POSTGRES_DB: 'unused', POSTGRES_USER: 'unused', POSTGRES_PASSWORD: 'unused',
   REDIS_HOST: '127.0.0.1', KAFKA_CLIENT_ID: 'unused', KAFKA_GROUP_ID: 'unused',
+  AUDIT_CHAIN_KEY: randomBytes(32).toString('hex'), // HAP-1001: merge and resolve writes append chained audit rows
 });
 const host = fork(join(__dirname, 'fixtures/pglite-host.cjs'), [], { serialization: 'advanced' });
 let serial = 0;
@@ -63,6 +64,10 @@ jest.mock('neo4j-driver', () => {
       return node?.['organization_id'] === org ? node : undefined;
     };
     if (query.includes('SHOW CONSTRAINTS')) return { records: [record({ present: 1 })] };
+    if (query.startsWith('CREATE (ci:CI')) { // the W create: SET ci = $props, id, org; one fence per slot
+      mockGraph.nodes.set(params['id'], { ...params['props'], id: params['id'], organization_id: params['org'] });
+      return { records: [record({ fences_created: params['fences'].length })] };
+    }
     if (query.includes('SET ci += $props')) {
       const node = owned(params['id'], params['org']);
       if (node) Object.assign(node, params['props']);
@@ -100,7 +105,7 @@ jest.mock('../../../auth/neo4j-auth.repository', () => ({
 jest.mock('../../../middleware/audit.middleware', () => ({ auditMiddleware: (_req: Request, _res: Response, next: NextFunction) => next() }));
 
 import { loadConfig } from '@cmdb/common';
-import { getNeo4jClient, setJournalSeam } from '@cmdb/database';
+import { getAuditService, getNeo4jClient, getPostgresClient, setJournalSeam } from '@cmdb/database';
 import { conflictHash } from '@cmdb/identity-resolution/engine/identity-reconciliation-engine';
 import { JWTService } from '../../../auth/jwt.service';
 import { getAuthMiddleware } from '../../../auth/auth-bootstrap';
@@ -145,11 +150,13 @@ const graphWrites = () => mockGraph.statements.filter(statement => /SET ci \+=|R
 
 beforeAll(async () => {
   const schema = readFileSync(join(migrations, '001_complete_schema.sql'), 'utf8');
-  const tables = ['cmdb.dim_ci', 'ci_source_lineage', 'ci_field_sources', 'reconciliation_conflicts', 'reconciliation_rules',
+  const tables = ['audit_log', 'cmdb.dim_ci', 'ci_source_lineage', 'ci_field_sources', 'reconciliation_conflicts', 'reconciliation_rules',
     'source_authority', 'ci_change_history'];
-  await mockSql('CREATE SCHEMA cmdb; CREATE TABLE audit_log (id uuid);\n' + tables.map(table =>
-    schema.match(new RegExp(`CREATE TABLE IF NOT EXISTS ${table.replace('.', '\\.')} \\([\\s\\S]*?\\n\\);`))![0]).join('\n'), [], 'exec');
-  await mockSql(readFileSync(join(migrations, '011_ci_organization_scope.sql'), 'utf8'), [], 'exec');
+  await mockSql(['CREATE SCHEMA cmdb;', ...schema.match(/CREATE TYPE audit_\w+ AS ENUM \([^;]*\);/g)!, ...tables.map(table =>
+    schema.match(new RegExp(`CREATE TABLE IF NOT EXISTS ${table.replace('.', '\\.')} \\([\\s\\S]*?\\n\\);`))![0])].join('\n'), [], 'exec');
+  for (const file of ['003_audit_hash_chain.sql', '011_ci_organization_scope.sql']) {
+    await mockSql(readFileSync(join(migrations, file), 'utf8'), [], 'exec');
+  }
   await mockSql(`ALTER TABLE ci_change_history ADD COLUMN ci_incarnation_id UUID`, [], 'exec');
   // 037 is absent on the pre-S4b base, which is how this file is run fail-first. The legacy
   // NULL-org field source predates the 037 contract.
@@ -435,4 +442,29 @@ it('N-5/N-6/N-10: rules and authorities are per organization; foreign, missing a
   expect(mockGraph.nodes.get(XA)!['status']).toBeUndefined();
   expect((await api('a').delete(`rules/${created.body.data.id}`)).status).toBe(204);
   await rows('DELETE FROM source_authority WHERE organization_id IS NULL');
+});
+
+it('S2-T3 (HAP-1001): merge create, merge update and resolve accept_source append one chained row each; hold and accept_target none', async () => {
+  const serial = `s2t3-${randomUUID()}`;
+  const send = (source: string, owner: string) => api('a').post('merge', { name: serial, ci_type: 'server', source,
+    source_id: `${source}-1`, identifiers: { serial_number: serial }, attributes: { owner } });
+  const created = await send('scan', 'o1');
+  const X = created.body.data.ci_id as string;
+  expect([created.status, created.body.data.action, (await send('scan', 'o2')).status]).toEqual([200, 'created', 200]);
+  await rows(`INSERT INTO reconciliation_rules (organization_id, name, identification_rules, merge_strategies)
+    VALUES ($1, $2, '[]', '[{"field_name":"owner","strategy":"manual_review"}]')`, [A, `review-${X}`]);
+  const settle = async (source: string, owner: string, resolution: string) => {
+    const held = await send(source, owner);
+    const [id] = held.body.data.conflict_ids;
+    return [held.status, (await resolve('a', id, { resolution, expected_revision: (await conflict(id)).content_hash })).status];
+  };
+  expect([await settle('other', 'o3', 'accept_source'), await settle('third', 'o4', 'accept_target')]).toEqual([[202, 200], [202, 200]]);
+  const audit = await rows('SELECT action, actor, actor_type, changes, metadata FROM audit_log WHERE entity_id = $1 ORDER BY timestamp, id', [X]);
+  expect(audit.map(row => [row['action'], row['actor'], row['actor_type'], row['metadata'].journal_operation])).toEqual([
+    ['CREATE', 'actor-a', 'user', 'create'], ['UPDATE', 'actor-a', 'user', 'update'], ['UPDATE', 'actor-a', 'user', 'resolve_conflict']]);
+  expect(audit[0]!['changes']).toContainEqual({ field: 'owner', old_value: null, new_value: 'o1' });
+  expect(audit.slice(1).map(row => row['changes'])).toEqual([[{ field: 'owner', old_value: 'o1', new_value: 'o2' }],
+    [{ field: 'owner', old_value: 'o2', new_value: 'o3' }]]);
+  expect([mockGraph.nodes.get(X)!['owner'], await getAuditService(getPostgresClient().pool).verifyAuditChain()])
+    .toEqual(['o3', expect.objectContaining({ ok: true })]);
 });

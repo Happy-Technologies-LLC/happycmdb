@@ -482,6 +482,9 @@ export class IdentityReconciliationEngine {
           incarnationId: ciIncarnationId(incarnationId) },
         fields: Object.entries(attributes).map(([name, value]) => ({ name, value, text: fieldText(value), source })),
         lineage: { source, sourceId, confidence: ci.confidence_score ?? null },
+        // HAP-1001: explicit changes (D13), so a stored plan recovered by an older image stays truthful.
+        audit: { action: 'CREATE', changes: enc(Object.entries(fields).map(([field, value]) => ({ field, old_value: null,
+          new_value: value }))) },
       }),
       result: async groupId => ({ ci_id: ciId, action: 'created' as const, correlation_id: groupId, conflict_ids: [] }),
     });
@@ -556,6 +559,8 @@ export class IdentityReconciliationEngine {
           previous: enc(Object.fromEntries(keys.map(key => [key, current[key] ?? null]))) },
         fields: keys.map(name => ({ name, value: merged[name], text: fieldText(merged[name]), source })),
         lineage: { source, sourceId, confidence: match.confidence },
+        audit: { action: 'UPDATE', changes: enc(keys.map(field => ({ field, old_value: current[field] ?? null,
+          new_value: merged[field] }))) },
       };
     }, async groupId => ({ ci_id: match.ci_id, action: applied ? 'updated' as const : 'pending_review' as const,
       correlation_id: groupId, conflict_ids: conflictIds }));
@@ -615,6 +620,7 @@ export class IdentityReconciliationEngine {
           source: resolution === 'accept_source' ? conflict.source_name : 'manual_resolution' }],
         resolve: { ...resolve, suppressionHash: conflictHash(field, { value }, { value: conflict.incoming_json },
           conflict.source_name, conflict.source_id) },
+        audit: { action: 'UPDATE', changes: enc([{ field, old_value: current[field] ?? null, new_value: value }]) },
       };
     }, async groupId => ({ ci_id: ciId, status, correlation_id: groupId }));
   }

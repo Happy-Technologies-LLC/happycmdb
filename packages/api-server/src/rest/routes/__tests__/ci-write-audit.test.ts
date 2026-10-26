@@ -7,7 +7,7 @@
  * AUDIT_CHAIN_KEY the write is 503 before T1. Mounted ciRoutes, real JWT auth, journal, Neo4jClient and
  * AuditService on PGlite (migrations 001/003/011/028/029/037); Neo4j is an in-memory node map.
  * HAP-1001 S1: chain v2 binds changes, actor_type, timestamp and the org column; v1 rows still verify; a chain-lock
- * timeout (55P03) is a 503 and a recovery backoff.
+ * timeout (55P03) is a 503 and a recovery backoff. S2: ITIL, restore and relationship writes are audited too (D9).
  */
 import { fork } from 'child_process';
 import { randomBytes, randomUUID } from 'crypto';
@@ -59,7 +59,7 @@ jest.mock('pg', () => {
   return { ...actual, Pool, default: { ...actual, Pool } };
 });
 const mockGraph = { nodes: new Map<string, Record<string, unknown>>(), fences: new Map<string, Record<string, unknown>>(),
-  writes: [] as string[] };
+  writes: [] as string[], relationships: new Set<string>() };
 jest.mock('neo4j-driver', () => {
   const actual = jest.requireActual('neo4j-driver');
   const record = (values: Record<string, unknown>) => ({ get: (key: string) => values[key], toObject: () => values });
@@ -77,8 +77,10 @@ jest.mock('neo4j-driver', () => {
         mockGraph.nodes.set(params['id'], { ...params['props'], id: params['id'], organization_id: params['org'] });
       } else if (query.includes('DETACH DELETE')) {
         if (applied) mockGraph.nodes.delete(params['id']);
-      } else if (query.includes('MERGE (a)')) {
-        applied = owner(params['from']) === params['org'] && owner(params['to']) === params['org'];
+      } else if ('from' in params) { // relationship_create MERGEs the edge; relationship_delete needs it to exist
+        const edge = `${params['from']}-${/\[r:(\w+)\]/.exec(query)![1]}->${params['to']}`;
+        applied = owner(params['from']) === params['org'] && owner(params['to']) === params['org'] &&
+          (query.includes('MERGE (a)') ? Boolean(mockGraph.relationships.add(edge)) : mockGraph.relationships.delete(edge));
       } else if (applied) Object.assign(mockGraph.nodes.get(params['id'])!, params['props']);
       for (const fence of applied ? params['fences'] : []) {
         mockGraph.fences.set(fence.op_id, { outcome: 'applied', org: params['org'], ci: fence.ci_id, operation: fence.operation });
@@ -109,7 +111,7 @@ jest.mock('../../../auth/neo4j-auth.repository', () => ({
 
 import { createAuditChain } from '@happy-technologies/audit';
 import { loadConfig, logger } from '@cmdb/common';
-import { getAuditService, getNeo4jClient, getPostgresClient, setJournalSeam } from '@cmdb/database';
+import { getAuditService, getNeo4jClient, getPostgresClient, JournalUnavailableError, setJournalSeam } from '@cmdb/database';
 import { JWTService } from '../../../auth/jwt.service';
 import { getAuthMiddleware } from '../../../auth/auth-bootstrap';
 import { ciRoutes } from '../ci.routes';
@@ -158,12 +160,17 @@ beforeAll(async () => {
 afterAll(() => { host.kill(); });
 
 // The D2 cases run first: the audit chain kernel is memoized once the key is present.
-it('D2: without AUDIT_CHAIN_KEY a CI create, update or delete is 503 before T1: no journal row, graph write or audit row; one fixed log line', async () => {
+it('D2: without AUDIT_CHAIN_KEY every journaled CI write is 503 before T1: no journal row, graph write or audit row; one fixed log line', async () => {
   const errors = jest.spyOn(logger, 'error');
-  const owned = seed(A);
+  const [owned, other, graph] = [seed(A), seed(A), getNeo4jClient()];
   const statuses = [(await post('a', { name: 'n', type: 'server' })).status, (await put('a', owned, { name: 'x' })).status,
     (await del('a', owned)).status];
   expect(statuses).toEqual([503, 503, 503]);
+  for (const write of [() => graph.updateCIProperties(owned, { itil_lifecycle: 'retired' }, A, 'actor-a'),
+    () => graph.restoreCI(owned, { name: 'restored' }, null, null, A, 'actor-a'),
+    () => graph.writeRelationship('relationship_create', owned, other, 'DEPENDS_ON', A, 'actor-a')]) {
+    await expect(write()).rejects.toBeInstanceOf(JournalUnavailableError);
+  }
   expect([await rows('SELECT id FROM ci_reconciliation_operations'), await audit(), mockGraph.writes, mockGraph.nodes.get(owned)?.['name']])
     .toEqual([[], [], [], 'seeded']);
   expect(errors.mock.calls.filter(([message]) => /AUDIT_CHAIN_KEY/.test(String(message))))
@@ -251,14 +258,41 @@ describe('with AUDIT_CHAIN_KEY', () => {
     expect((await audit()).length).toBe(before);
   });
 
-  it('D4: ITIL-style updateCIProperties, restore and relationship writes commit without an audit row', async () => {
+  it('S2-T1: ITIL updateCIProperties, restoreCI and relationship create/delete append chained rows by the verified actor; no history (H-6)', async () => {
     const graph = getNeo4jClient();
     const [from, to] = [seed(A), seed(A)];
-    const before = (await audit()).length;
     expect(await graph.updateCIProperties(from, { itil_lifecycle: 'retired' }, A, 'actor-a')).toMatchObject({ itil_lifecycle: 'retired' });
     expect(await graph.restoreCI(from, { name: 'restored' }, null, null, A, 'actor-a')).toMatchObject({ name: 'restored' });
-    expect(await graph.writeRelationship('relationship_create', from, to, 'DEPENDS_ON', A, 'actor-a')).toBe(true);
-    expect((await audit()).length).toBe(before);
+    expect([await graph.writeRelationship('relationship_create', from, to, 'DEPENDS_ON', A, 'actor-a', { weight: 1 }),
+      await graph.writeRelationship('relationship_delete', from, to, 'DEPENDS_ON', A, 'actor-a')]).toEqual([true, true]);
+    const edge = { type: 'DEPENDS_ON', from_id: from, to_id: to };
+    const relationship = [['RELATIONSHIP_ADD', 'actor-a', 'user', [{ field: 'relationship', old_value: null,
+      new_value: { ...edge, properties: { weight: 1 } } }], 'relationship_write'],
+    ['RELATIONSHIP_REMOVE', 'actor-a', 'user', [{ field: 'relationship', old_value: edge, new_value: null }], 'relationship_write']];
+    const logged = async (id: string) => (await audit(id)).map(row => [row['action'], row['actor'], row['actor_type'], row['changes'],
+      row['metadata'].journal_operation]);
+    expect([await logged(from), await logged(to)]).toEqual([[
+      ['UPDATE', 'actor-a', 'user', [{ field: 'itil_lifecycle', old_value: null, new_value: 'retired' }], 'direct_write'],
+      ['UPDATE', 'actor-a', 'user', [{ field: 'name', old_value: 'seeded', new_value: 'restored' }], 'restore'], ...relationship],
+    relationship]);
+    const groups = async (id: string) => (await audit(id)).map(row => row['metadata'].correlation_id);
+    expect((await groups(from)).slice(2)).toEqual(await groups(to)); // one journal group, one row per endpoint
+    expect([await history(from), await history(to), (await getAuditService(getPostgresClient().pool).verifyAuditChain()).ok])
+      .toEqual([[], [], true]);
+  });
+
+  it('S2-T2: a relationship W left pending is audited once per endpoint, by the original actor, when recovery commits it', async () => {
+    const [from, to, graph] = [seed(A), seed(A), getNeo4jClient()];
+    setJournalSeam(async point => { if (point === 'afterW') throw new Error('reply lost'); });
+    const lost = await graph.writeRelationship('relationship_create', from, to, 'DEPENDS_ON', A, 'actor-a').catch(error => error);
+    setJournalSeam(undefined);
+    expect([lost, await audit(from), await audit(to)]).toEqual([expect.any(JournalUnavailableError), [], []]);
+    await rows(`UPDATE ci_reconciliation_operations SET lease_expires_at = now() - interval '1 minute' WHERE ci_id IN ($1, $2)`, [from, to]);
+    await graph.journal.sweep();
+    await graph.journal.sweep();
+    const added = [['RELATIONSHIP_ADD', 'actor-a', [{ field: 'relationship', old_value: null,
+      new_value: { type: 'DEPENDS_ON', from_id: from, to_id: to, properties: {} } }]]];
+    expect([await summary(from), await summary(to)]).toEqual([added, added]);
   });
 
   /** Sets one column of one row, verifies, restores it; returns the tampered verification and whether the restore verifies. */

@@ -307,13 +307,14 @@ describe('with AUDIT_CHAIN_KEY', () => {
     // Independent copy of the 21e91ef v1 mapping: tenantId 'global', raw ip; changes, actor_type, timestamp, org column unhashed.
     const v1 = createAuditChain(process.env['AUDIT_CHAIN_KEY']!);
     let prev: string | null = null;
-    for (const entity of ['legacy-1', 'legacy-2']) {
+    for (const [index, entity] of ['legacy-1', 'legacy-2'].entries()) {
       const [id, metadata] = [randomUUID(), { organization_id: A }];
       const hash: string = v1.computeEntryHash({ id, action: 'UPDATE', actorId: 'actor-a', tenantId: 'global', resourceType: 'CI',
         resourceId: entity, metadata, ipAddress: '10.0.0.1', userAgent: null }, prev);
       await rows(`INSERT INTO audit_log (id, entity_type, entity_id, action, actor, actor_type, changes, metadata, ip_address,
         prev_hash, entry_hash, organization_id, timestamp) VALUES ($1, 'CI', $2, 'UPDATE', 'actor-a', 'user', '[{"field":"x"}]',
-        $3, '10.0.0.1', $4, $5, $6, clock_timestamp())`, [id, entity, JSON.stringify(metadata), prev, hash, A]);
+        $3, '10.0.0.1', $4, $5, $6, clock_timestamp() - interval '1 minute' + $7::int * interval '1 second')`, // strictly ordered
+      [id, entity, JSON.stringify(metadata), prev, hash, A, index]);
       prev = hash;
     }
     const service = getAuditService(getPostgresClient().pool);

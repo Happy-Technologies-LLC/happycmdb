@@ -9,6 +9,7 @@ export JWT_SECRET=ci_disposable_jwt
 export JWT_ISSUER=ci_disposable_issuer
 export JWT_AUDIENCE=ci_disposable_audience
 export ENCRYPTION_KEY=ci_disposable_encryption_key
+export AUDIT_CHAIN_KEY=ci_disposable_audit_chain_key
 export STAGING_PUBLIC_URL=https://ci.invalid
 export COMPOSE_PROJECT_NAME="stg-mig-ci-${GITHUB_RUN_ID:?CI only}-${GITHUB_RUN_ATTEMPT:?CI only}"
 

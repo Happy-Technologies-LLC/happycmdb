@@ -10,9 +10,12 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { getPostgresClient } from '../postgres/client';
 import { enc } from '../journal/encoding';
+import type { Encoded } from '../journal/encoding';
 import {
   assertJournalSchema, JournalGapError, JournalGraphRunner, JournalTargetMissingError, ReconciliationJournal, StoredPlan,
+  JournalUnavailableError,
 } from '../journal/journal';
+import { auditChainReady } from '../postgres/audit.service';
 
 /**
  * Explicit opt-out of CI tenant scoping, for callers that have no request
@@ -45,6 +48,15 @@ function organizationIdParam(scope: CIOrganizationScope): string | null {
 /** WHERE clause restricting `ci` to the scope's organization ('' when unscoped). */
 function nodeScopeClause(organizationId: string | null): string {
   return organizationId === null ? '' : 'WHERE ci.organization_id = $organizationId';
+}
+
+/** HAP-784: CI CRUD commits its audit_log row in T2, so without the chain key it is refused (503) before T1. */
+function assertAuditChainReady(): void {
+  if (!auditChainReady()) throw new JournalUnavailableError();
+}
+/** HAP-784 audit changes of `fields`, v16 §3.8-encoded like the plan they ride in. */
+function auditChanges(fields: string[], previous: Record<string, unknown>, next: Record<string, unknown>): Encoded {
+  return enc(fields.map(field => ({ field, old_value: previous[field] ?? null, new_value: next[field] ?? null })));
 }
 
 
@@ -352,6 +364,7 @@ export class Neo4jClient {
   // CI operations. Every :CI mutation below is one journaled, fenced operation (v16 §3, §4).
   /** Direct create; the caller's server-issued `id` (REST, GraphQL: T5) is the immutable identity and journal key. */
   async createCI(ci: CIInput, organizationId: string, actor: string): Promise<CI> {
+    assertAuditChainReady();
     await assertJournalSchema(this.runJournalStatement);
     const id = (ci as { id?: string }).id || ci._id || randomUUID();
     const type = (ci as { type?: string }).type || ci._type;
@@ -365,7 +378,8 @@ export class Neo4jClient {
     };
     return this.journal.run({
       organizationId, actor, operation: 'direct_write', ciIds: [id],
-      plan: async () => ({ graph: { kind: 'create', label, params: enc({ id, props }) } }),
+      plan: async () => ({ graph: { kind: 'create', label, params: enc({ id, props }) },
+        audit: { action: 'CREATE', changes: auditChanges(Object.keys(props), {}, props) } }),
       result: async () => (await this.getCI(id, organizationId))!,
     });
   }
@@ -374,17 +388,22 @@ export class Neo4jClient {
    * Journaled direct property update of an owned CI (state only, A-10); values are
    * stored as given (callers validate them as Neo4j-storable). Null when missing or foreign.
    * Identity, tenant, fence aliases and the incarnation never change in place.
+   * `audit` (updateCI only, HAP-784) adds the T2 audit row of the changed keys; ITIL and other callers stay unaudited.
    */
   async updateCIProperties(id: string, props: Record<string, unknown>, organizationId: string,
-    actor: string): Promise<Record<string, unknown> | null> {
+    actor: string, audit = false): Promise<Record<string, unknown> | null> {
     if (Object.keys(props).some(key => ['id', 'organization_id', 'organizationid', 'op_id', 'reconciliation_op_id',
       'created_at', 'incarnation_id'].includes(key.replace(/^_+/, '').toLowerCase()))) {
       throw new Error('CI identity and incarnation cannot be updated');
     }
+    if (audit) assertAuditChainReady();
     return this.reconcileOwned(id, organizationId, actor, 'direct_write', async current => {
       // A pre-incarnation node gets its marker in the same W.
       const write = typeof current['incarnation_id'] === 'string' ? props : { ...props, incarnation_id: randomUUID() };
-      return { graph: { kind: 'update', label: null, params: enc({ id, props: write }) } };
+      const plan: StoredPlan = { graph: { kind: 'update', label: null, params: enc({ id, props: write }) } };
+      if (audit) plan.audit = { action: 'UPDATE', changes: auditChanges(Object.keys(props)
+        .filter(key => JSON.stringify(enc(current[key])) !== JSON.stringify(enc(props[key]))), current, props) };
+      return plan;
     }, () => this.ownedProperties(id, organizationId));
   }
 
@@ -418,7 +437,7 @@ export class Neo4jClient {
       if (value === undefined || value === null) continue;
       props[key] = key === 'metadata' ? JSON.stringify(value) : value;
     }
-    return await this.updateCIProperties(id, props, organizationId, actor) ? this.getCI(id, organizationId) : null;
+    return await this.updateCIProperties(id, props, organizationId, actor, true) ? this.getCI(id, organizationId) : null;
   }
 
   /**
@@ -618,6 +637,7 @@ export class Neo4jClient {
    * history is evidence and is never purged. False when missing or foreign.
    */
   async deleteCI(id: string, organizationId: string, actor: string): Promise<boolean> {
+    assertAuditChainReady();
     if (!(await this.admitOwned(organizationId, [id]))) return false;
     try {
       return await this.journal.run({
@@ -629,6 +649,7 @@ export class Neo4jClient {
             graph: { kind: 'delete', label: null, params: enc({ id }) },
             history: { changeType: 'deleted', changedFields: ['*'], source: 'api', previous: enc(props), next: null,
               incarnationId: ciIncarnationId(props['incarnation_id'] as string | null) },
+            audit: { action: 'DELETE' },
           };
         },
         result: async () => true,

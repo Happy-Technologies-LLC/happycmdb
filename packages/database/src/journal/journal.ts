@@ -12,7 +12,9 @@
 import { randomUUID } from 'crypto';
 import type { PoolClient } from 'pg';
 import { logger } from '@cmdb/common';
+import type { AuditChange } from '@cmdb/common';
 import { getPostgresClient } from '../postgres/client';
+import { appendAuditEntry, auditChainReady } from '../postgres/audit.service';
 import { assertPlanRepresentable, dec, Encoded, PlanUnrepresentableError } from './encoding';
 
 export type JournalOperation = 'update' | 'hold' | 'delete' | 'resolve_conflict' | 'direct_write' | 'relationship_write'
@@ -46,6 +48,11 @@ export interface StoredPlan {
   conflicts?: ConflictPlan[];
   resolve?: { id: string; revision: string; status: 'resolved' | 'superseded'; action: string;
     suppressionHash: string | null; data: Encoded };
+  /**
+   * HAP-784: one hash-chained audit_log row for a CI create/update/delete, appended in T2 by the
+   * journal row's actor. `changes` are v16 §3.8-encoded values; on delete, T2 derives them from `history.previous`.
+   */
+  audit?: { action: 'CREATE' | 'UPDATE' | 'DELETE'; changes?: Encoded };
 }
 
 /** Graph runner for W and recovery: one auto-commit statement, records as plain objects. */
@@ -271,6 +278,18 @@ async function writeEvidence(client: PoolClient, row: { group_id: string; organi
   }
 }
 
+/** HAP-784 T2 audit row, appended after all other evidence so the global chain lock is held only until commit. */
+async function writeAudit(client: PoolClient, row: { group_id: string; organization_id: string; ci_id: string;
+  actor: string; plan: StoredPlan }): Promise<void> {
+  const { audit, history } = row.plan;
+  if (!audit) return;
+  const changes = audit.changes ?? Object.entries((history?.previous ?? {}) as Record<string, Encoded>)
+    .map(([field, value]) => ({ field, old_value: value, new_value: null }));
+  await appendAuditEntry(client, { entity_type: 'CI', entity_id: row.ci_id, action: audit.action, actor: row.actor,
+    actor_type: 'user', changes: changes as unknown as AuditChange[], metadata: { correlation_id: row.group_id } },
+  row.organization_id);
+}
+
 /** Returns true when this call or an earlier one committed the group. */
 async function t2(groupId: string, recovery: boolean, claimToken?: string): Promise<boolean> {
   await seam?.('beforeT2', { groupId, recovery });
@@ -281,7 +300,10 @@ async function t2(groupId: string, recovery: boolean, claimToken?: string): Prom
     if (rows.some(row => row.state !== 'pending') ||
       (claimToken !== undefined && !rows.some(row => row.claim_token === claimToken))) return false;
     if (rows.some(row => row.plan === null)) throw Object.assign(new Error('journal plan missing'), { code: 'HP1PL' });
+    // HAP-784: 57P03 is in the sweep's backoff class, so without the key an audited op stays pending (never failed or unaudited).
+    if (rows[0].plan.audit && !auditChainReady()) throw Object.assign(new Error('audit chain key unavailable'), { code: '57P03' });
     await writeEvidence(client, rows[0]);
+    await writeAudit(client, rows[0]);
     await client.query(`UPDATE ci_reconciliation_operations SET state = 'committed', plan = NULL,
       claim_token = NULL, updated_at = now() WHERE group_id = $1`, [groupId]);
     return true;

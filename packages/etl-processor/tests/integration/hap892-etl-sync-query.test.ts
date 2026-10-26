@@ -11,16 +11,24 @@
  * singletons that the processor itself uses.
  */
 
+import { randomUUID } from 'crypto';
 import type { Job } from 'bullmq';
 import { getQueueManager } from '@cmdb/common';
 import type { ETLJobData } from '@cmdb/common';
 import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
 import { etlJobProcessor } from '../../src/processors/etl-processor';
+import { assertIsolatedIntegrationTarget } from '../../../../tests/setup/isolated-integration-target';
+import { deleteOwnedDataMart } from './helpers/owned-data-mart';
 
-const STALE = 'hap892-ci-6m';
-const OLDEST_RECENT = 'hap892-ci-4m';
-const MIDDLE_RECENT = 'hap892-ci-3m';
-const NEWEST_RECENT = 'hap892-ci-2m';
+// HAP-975: fail at module load, before any hook can reach a database (or wipe its CIs).
+assertIsolatedIntegrationTarget();
+
+const RUN = randomUUID();
+const STALE = `hap892-${RUN}-ci-6m`;
+const OLDEST_RECENT = `hap892-${RUN}-ci-4m`;
+const MIDDLE_RECENT = `hap892-${RUN}-ci-3m`;
+const NEWEST_RECENT = `hap892-${RUN}-ci-2m`;
+const OWNED = [STALE, OLDEST_RECENT, MIDDLE_RECENT, NEWEST_RECENT];
 
 /** Runs a Cypher statement on the shared integration Neo4j and returns its `id` column. */
 async function cypher(query: string, params: Record<string, unknown> = {}): Promise<string[]> {
@@ -43,16 +51,14 @@ function syncJob(config: ETLJobData['_config']): Job<ETLJobData> {
 }
 
 async function clearDataMart(): Promise<void> {
-  await getPostgresClient().query(`DELETE FROM cmdb.fact_discovery
-    WHERE ci_key IN (SELECT ci_key FROM cmdb.dim_ci WHERE ci_id LIKE 'hap892-%')`);
-  await getPostgresClient().query("DELETE FROM cmdb.dim_ci WHERE ci_id LIKE 'hap892-%'");
+  await deleteOwnedDataMart((text, params) => getPostgresClient().query(text, params), OWNED);
 }
 
 /** Runs the sync job and returns its result and the CI ids it loaded into cmdb.dim_ci, in load order. */
 async function runSync(config: ETLJobData['_config']) {
   const result = await etlJobProcessor.process(syncJob(config));
   const loaded = await getPostgresClient().query(
-    "SELECT ci_id FROM cmdb.dim_ci WHERE ci_id LIKE 'hap892-%' AND is_current ORDER BY ci_key"
+    'SELECT ci_id FROM cmdb.dim_ci WHERE ci_id = ANY($1::varchar[]) AND is_current ORDER BY ci_key', [OWNED]
   );
   return { result, loaded: loaded.rows.map(row => row.ci_id) };
 }

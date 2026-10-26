@@ -12,6 +12,11 @@ import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals
 import { SchedulerSyncService } from '../../src/schedulers/scheduler-sync.service';
 import { DiscoveryScheduler } from '../../src/schedulers/discovery-scheduler';
 import { getPostgresClient } from '@cmdb/database';
+import { assertIsolatedIntegrationTarget } from '../../../../tests/setup/isolated-integration-target';
+
+// HAP-975: its hooks delete discovery_definitions rows by a fixed owner; refuse at module load outside
+// the isolated root Testcontainers run, before any hook can reach a database.
+assertIsolatedIntegrationTarget();
 
 describe('SchedulerSyncService', () => {
   let syncService: SchedulerSyncService;

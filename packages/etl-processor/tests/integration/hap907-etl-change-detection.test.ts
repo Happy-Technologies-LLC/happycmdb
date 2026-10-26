@@ -16,6 +16,10 @@ import { getQueueManager } from '@cmdb/common';
 import type { ETLJobData } from '@cmdb/common';
 import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
 import { etlJobProcessor } from '../../src/processors/etl-processor';
+import { assertIsolatedIntegrationTarget } from '../../../../tests/setup/isolated-integration-target';
+
+// HAP-975: fail at module load, before any hook can reach a database (or wipe its CIs).
+assertIsolatedIntegrationTarget();
 
 const BEFORE_WATERMARK = [
   { id: 'hap907-ci-20m', minutesAgo: 20 },

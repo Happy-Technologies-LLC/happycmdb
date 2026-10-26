@@ -28,6 +28,12 @@ import {
   Neo4jToPostgresJobData,
 } from '../../src/jobs/neo4j-to-postgres.job';
 import { Neo4jClient, PostgresClient, closeQueueManagerConnection } from '@cmdb/database';
+import { assertIsolatedIntegrationTarget } from '../../../../tests/setup/isolated-integration-target';
+import { deleteOwnedDataMart } from './helpers/owned-data-mart';
+
+// HAP-975: fail at module load, before any hook can reach a database. jest-circus
+// still runs afterEach hooks when a beforeAll hook throws, so a hook is too late.
+assertIsolatedIntegrationTarget();
 
 interface CISeed {
   _id: string;
@@ -37,6 +43,9 @@ interface CISeed {
   _environment?: string;
   _external_id?: string;
 }
+
+/** CI ids this run created; cleanup deletes the data mart rows of exactly these. */
+const ownedCiIds: string[] = [];
 
 describe('ETL Processor Integration Tests', () => {
   let neo4jDriver: Driver;
@@ -68,25 +77,23 @@ describe('ETL Processor Integration Tests', () => {
     );
   }, 60000);
 
-  afterEach(async () => {
-    // Clean the rows this suite creates in both databases. Truncating
-    // cmdb.dim_ci CASCADE also clears cmdb.fact_discovery, cmdb.fact_ci_changes
-    // and cmdb.fact_ci_relationships (all FK-reference dim_ci) without
-    // touching the pre-populated cmdb.dim_time table.
+  // The jobs under test read every (:CI), so each test still ends by clearing the CI graph; the
+  // module-load guard confines that to the isolated Testcontainers run (HAP-975). The data mart
+  // keeps every row except those of the CI ids this run created.
+  async function cleanup(): Promise<void> {
+    assertIsolatedIntegrationTarget();
+    const ciIds = [...ownedCiIds];
     const neo4jSession = neo4jDriver.session();
     try {
-      await neo4jSession.run('MATCH (n) DETACH DELETE n');
+      await neo4jSession.run('MATCH (c:CI) DETACH DELETE c');
     } finally {
       await neo4jSession.close();
     }
+    await deleteOwnedDataMart((text, params) => postgresPool.query(text, params), ciIds);
+    ownedCiIds.length = 0;
+  }
 
-    const pgClient = await postgresPool.connect();
-    try {
-      await pgClient.query('TRUNCATE TABLE cmdb.dim_ci CASCADE');
-    } finally {
-      pgClient.release();
-    }
-  });
+  afterEach(cleanup);
 
   afterAll(async () => {
     await neo4jClient.close();
@@ -135,7 +142,8 @@ describe('ETL Processor Integration Tests', () => {
       const pgClient = await postgresPool.connect();
       try {
         const dimResult = await pgClient.query(
-          'SELECT * FROM cmdb.dim_ci WHERE is_current = true ORDER BY ci_name'
+          'SELECT * FROM cmdb.dim_ci WHERE is_current = true AND ci_id = ANY($1) ORDER BY ci_name',
+          [ownedCiIds]
         );
 
         expect(dimResult.rows).toHaveLength(2);
@@ -428,7 +436,8 @@ describe('ETL Processor Integration Tests', () => {
 
       const pgClient = await postgresPool.connect();
       try {
-        const dims = await pgClient.query('SELECT * FROM cmdb.dim_ci WHERE is_current = true');
+        const dims = await pgClient.query(
+          'SELECT * FROM cmdb.dim_ci WHERE is_current = true AND ci_id = ANY($1)', [ownedCiIds]);
         expect(dims.rows).toHaveLength(1);
         expect(dims.rows[0].ci_id).toBe(newCiId);
       } finally {
@@ -462,7 +471,8 @@ describe('ETL Processor Integration Tests', () => {
       // Verify all persisted
       const pgClient = await postgresPool.connect();
       try {
-        const count = await pgClient.query('SELECT COUNT(*) FROM cmdb.dim_ci WHERE is_current = true');
+        const count = await pgClient.query(
+          'SELECT COUNT(*) FROM cmdb.dim_ci WHERE is_current = true AND ci_id = ANY($1)', [ownedCiIds]);
         expect(parseInt(count.rows[0].count)).toBe(25);
       } finally {
         pgClient.release();
@@ -503,7 +513,8 @@ describe('ETL Processor Integration Tests', () => {
 
       const pgClient = await postgresPool.connect();
       try {
-        const dims = await pgClient.query('SELECT ci_type FROM cmdb.dim_ci WHERE is_current = true');
+        const dims = await pgClient.query(
+          'SELECT ci_type FROM cmdb.dim_ci WHERE is_current = true AND ci_id = ANY($1)', [ownedCiIds]);
         expect(dims.rows).toHaveLength(2);
         expect(dims.rows.map((r) => r.ci_type).sort()).toEqual(['database', 'server']);
       } finally {
@@ -564,11 +575,71 @@ describe('ETL Processor Integration Tests', () => {
       }
     });
   });
+
+  describe('Cleanup scope (HAP-975)', () => {
+    it('deletes the data it created and leaves foreign rows that the old wipe, truncate and prefix deletes matched', async () => {
+      // Foreign: a non-CI node (old MATCH (n) wipe) and dim_ci rows plus a fact (old TRUNCATE ... CASCADE
+      // and the old hap892-/hap908- prefix deletes). Owned: one CI node, its dim_ci row and fact.
+      const owned = uuidv4();
+      const foreignNode = uuidv4();
+      const foreignPlain = uuidv4();
+      const foreignCis = [foreignPlain, `hap892-foreign-${uuidv4()}`, `hap908-foreign-${uuidv4()}`];
+      const ids = [owned, ...foreignCis];
+      try {
+        await createCIInNeo4j(neo4jDriver, { _id: owned, _name: 'owned', _type: 'server' });
+        const session = neo4jDriver.session();
+        try {
+          await session.run('CREATE (:BusinessService {id: $id})', { id: foreignNode });
+        } finally {
+          await session.close();
+        }
+        const keys = new Map<string, number>((await postgresPool.query(
+          `INSERT INTO cmdb.dim_ci (ci_id, ci_name, ci_type, ci_status, is_current, organization_id)
+           SELECT id, id, 'server', 'active', TRUE, 'a9750000-0000-4000-8000-00000000000a'
+           FROM unnest($1::varchar[]) AS id RETURNING ci_id, ci_key`, [ids]
+        )).rows.map((row): [string, number] => [row.ci_id, row.ci_key]));
+        const factKeys = [keys.get(owned), keys.get(foreignPlain)];
+        await postgresPool.query(
+          `INSERT INTO cmdb.fact_discovery
+             (ci_key, date_key, discovered_at, discovery_job_id, discovery_provider, discovery_method)
+           SELECT key, (SELECT MIN(date_key) FROM cmdb.dim_time), now(), 'hap975', 'test', 'test'
+           FROM unnest($1::int[]) AS key`, [factKeys]);
+
+        await cleanup();
+
+        const graph = neo4jDriver.session();
+        const nodes = await graph.run('MATCH (n) WHERE n.id IN $ids RETURN n.id AS id', { ids: [owned, foreignNode] })
+          .then((result) => result.records.map((record) => record.get('id')))
+          .finally(() => graph.close());
+        const dims = (await postgresPool.query('SELECT ci_id FROM cmdb.dim_ci WHERE ci_id = ANY($1)', [ids]))
+          .rows.map((row) => row.ci_id).sort();
+        const facts = (await postgresPool.query(
+          'SELECT ci_key FROM cmdb.fact_discovery WHERE ci_key = ANY($1::int[])', [factKeys]
+        )).rows.map((row) => row.ci_key);
+        expect({ nodes, dims, facts }).toEqual({
+          nodes: [foreignNode],
+          dims: [...foreignCis].sort(),
+          facts: [keys.get(foreignPlain)],
+        });
+      } finally {
+        await postgresPool.query(`DELETE FROM cmdb.fact_discovery
+          WHERE ci_key IN (SELECT ci_key FROM cmdb.dim_ci WHERE ci_id = ANY($1::varchar[]))`, [ids]);
+        await postgresPool.query('DELETE FROM cmdb.dim_ci WHERE ci_id = ANY($1::varchar[])', [ids]);
+        const session = neo4jDriver.session();
+        try {
+          await session.run('MATCH (n) WHERE n.id IN $ids DETACH DELETE n', { ids: [owned, foreignNode] });
+        } finally {
+          await session.close();
+        }
+      }
+    });
+  });
 });
 
 // Helper Functions
 
 async function createCIInNeo4j(driver: Driver, ci: CISeed): Promise<void> {
+  ownedCiIds.push(ci._id);
   const session = driver.session();
   try {
     await session.run(

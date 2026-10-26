@@ -11,20 +11,28 @@
  * singletons that the processor itself uses.
  */
 
+import { randomUUID } from 'crypto';
 import type { Job } from 'bullmq';
 import { getQueueManager } from '@cmdb/common';
 import type { ETLJobData } from '@cmdb/common';
 import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
 import { etlJobProcessor } from '../../src/processors/etl-processor';
+import { assertIsolatedIntegrationTarget } from '../../../../tests/setup/isolated-integration-target';
+import { deleteOwnedDataMart } from './helpers/owned-data-mart';
+
+// HAP-975: fail at module load, before any hook can reach a database (or wipe its CIs).
+assertIsolatedIntegrationTarget();
 
 const ORG_A = 'a9080000-0000-4000-8000-00000000000a';
 const ORG_B = 'b9080000-0000-4000-8000-00000000000b';
 
-const A_NEW = 'hap908-a-new';
-const B_NEW = 'hap908-b-new';
-const A_RENAMED = 'hap908-a-renamed';
-const A_OWNED_CLAIMED_BY_B = 'hap908-a-owned-claimed-by-b';
-const A_STALE = 'hap908-a-stale';
+const RUN = randomUUID();
+const A_NEW = `hap908-${RUN}-a-new`;
+const B_NEW = `hap908-${RUN}-b-new`;
+const A_RENAMED = `hap908-${RUN}-a-renamed`;
+const A_OWNED_CLAIMED_BY_B = `hap908-${RUN}-a-owned-claimed-by-b`;
+const A_STALE = `hap908-${RUN}-a-stale`;
+const OWNED = [A_NEW, B_NEW, A_RENAMED, A_OWNED_CLAIMED_BY_B, A_STALE];
 
 async function cypher(query: string, params: Record<string, unknown> = {}): Promise<string[]> {
   const session = getNeo4jClient().getSession();
@@ -39,9 +47,7 @@ async function cypher(query: string, params: Record<string, unknown> = {}): Prom
 const sql = (text: string, params: unknown[] = []) => getPostgresClient().query(text, params);
 
 async function clearDataMart(): Promise<void> {
-  await sql(`DELETE FROM cmdb.fact_discovery
-    WHERE ci_key IN (SELECT ci_key FROM cmdb.dim_ci WHERE ci_id LIKE 'hap908-%')`);
-  await sql("DELETE FROM cmdb.dim_ci WHERE ci_id LIKE 'hap908-%'");
+  await deleteOwnedDataMart(sql, OWNED);
 }
 
 beforeEach(async () => {
@@ -97,7 +103,7 @@ test('sync loads each selected CI into cmdb.dim_ci in its own organization and c
 
   const rows = (await sql(
     `SELECT ci_id, ci_name, organization_id, is_current FROM cmdb.dim_ci
-     WHERE ci_id LIKE 'hap908-%' ORDER BY ci_id, is_current`
+     WHERE ci_id = ANY($1::varchar[]) ORDER BY ci_id, is_current`, [OWNED]
   )).rows;
 
   expect({

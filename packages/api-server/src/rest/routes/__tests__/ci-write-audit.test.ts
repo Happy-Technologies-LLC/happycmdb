@@ -6,6 +6,8 @@
  * by the verified journal actor (never a request header); a refused write appends none; without
  * AUDIT_CHAIN_KEY the write is 503 before T1. Mounted ciRoutes, real JWT auth, journal, Neo4jClient and
  * AuditService on PGlite (migrations 001/003/011/028/029/037); Neo4j is an in-memory node map.
+ * HAP-1001 S1: chain v2 binds changes, actor_type, timestamp and the org column; v1 rows still verify; a chain-lock
+ * timeout (55P03) is a 503 and a recovery backoff.
  */
 import { fork } from 'child_process';
 import { randomBytes, randomUUID } from 'crypto';
@@ -33,7 +35,11 @@ host.on('message', ({ id, rows, rowCount, error, code }: { id: number; rows: Rec
   if (error) call.reject(Object.assign(new Error(error), { code }));
   else call.resolve({ rows, rowCount: rowCount || rows.length });
 });
+const mockFault = { chainLock: false };
 function mockSql(text: string, params: unknown[] = [], op: 'query' | 'exec' = 'query') {
+  if (mockFault.chainLock && text.includes('pg_advisory_xact_lock(hashtext($1))')) {
+    return Promise.reject(Object.assign(new Error('canceling statement due to lock timeout'), { code: '55P03' }));
+  }
   const id = serial++;
   const call = Promise.withResolvers<{ rows: Record<string, any>[]; rowCount: number }>();
   pending.set(id, call);
@@ -101,7 +107,8 @@ jest.mock('../../../auth/neo4j-auth.repository', () => ({
   })),
 }));
 
-import { loadConfig } from '@cmdb/common';
+import { createAuditChain } from '@happy-technologies/audit';
+import { loadConfig, logger } from '@cmdb/common';
 import { getAuditService, getNeo4jClient, getPostgresClient, setJournalSeam } from '@cmdb/database';
 import { JWTService } from '../../../auth/jwt.service';
 import { getAuthMiddleware } from '../../../auth/auth-bootstrap';
@@ -151,13 +158,16 @@ beforeAll(async () => {
 afterAll(() => { host.kill(); });
 
 // The D2 cases run first: the audit chain kernel is memoized once the key is present.
-it('D2: without AUDIT_CHAIN_KEY a CI create, update or delete is 503 before T1: no journal row, graph write or audit row', async () => {
+it('D2: without AUDIT_CHAIN_KEY a CI create, update or delete is 503 before T1: no journal row, graph write or audit row; one fixed log line', async () => {
+  const errors = jest.spyOn(logger, 'error');
   const owned = seed(A);
   const statuses = [(await post('a', { name: 'n', type: 'server' })).status, (await put('a', owned, { name: 'x' })).status,
     (await del('a', owned)).status];
   expect(statuses).toEqual([503, 503, 503]);
   expect([await rows('SELECT id FROM ci_reconciliation_operations'), await audit(), mockGraph.writes, mockGraph.nodes.get(owned)?.['name']])
     .toEqual([[], [], [], 'seeded']);
+  expect(errors.mock.calls.filter(([message]) => /AUDIT_CHAIN_KEY/.test(String(message))))
+    .toEqual([['Audit chain unavailable: AUDIT_CHAIN_KEY is not set; audited CI writes refused (503)']]);
 });
 
 it('D2: recovery without AUDIT_CHAIN_KEY leaves an audited pending op pending (backoff): never committed unaudited, never failed', async () => {
@@ -249,5 +259,75 @@ describe('with AUDIT_CHAIN_KEY', () => {
     expect(await graph.restoreCI(from, { name: 'restored' }, null, null, A, 'actor-a')).toMatchObject({ name: 'restored' });
     expect(await graph.writeRelationship('relationship_create', from, to, 'DEPENDS_ON', A, 'actor-a')).toBe(true);
     expect((await audit()).length).toBe(before);
+  });
+
+  /** Sets one column of one row, verifies, restores it; returns the tampered verification and whether the restore verifies. */
+  async function tamper(id: string, column: string, value: string) {
+    const service = getAuditService(getPostgresClient().pool);
+    const [saved] = await rows(`SELECT ${column}::text AS v FROM audit_log WHERE id = $1`, [id]);
+    await rows(`UPDATE audit_log SET ${column} = ${value} WHERE id = $1`, [id]);
+    const tampered = await service.verifyAuditChain();
+    await rows(`UPDATE audit_log SET ${column} = $2 WHERE id = $1`, [id, saved!['v']]);
+    return [tampered, (await service.verifyAuditChain()).ok];
+  }
+  const content = (id: unknown) => [expect.objectContaining({ ok: false, reason: 'content', brokenAt: id }), true];
+
+  it('S1-T1: v2 binds changes, actor_type, timestamp and the organization_id column: each tamper is content at its row', async () => {
+    const id = (await post('a', { name: 'v2', type: 'server' })).body.data.id as string;
+    expect([(await put('a', id, { name: 'v2-renamed' })).status, (await del('a', id)).status]).toEqual([200, 204]);
+    const [create, update, remove] = (await rows('SELECT id FROM audit_log WHERE entity_id = $1 ORDER BY timestamp, id', [id]))
+      .map(row => row['id'] as string);
+    const cases: Array<[string, string, string]> = [[update!, 'changes', `'[]'`], [create!, 'actor_type', `'system'`],
+      [remove!, 'timestamp', `timestamp + interval '1 microsecond'`], [create!, 'organization_id', `'${B}'`]];
+    const results = [];
+    for (const [row, column, value] of cases) results.push(await tamper(row, column, value));
+    expect(results).toEqual(cases.map(([row]) => content(row)));
+  });
+
+  it('S1-T4: a chain-lock timeout (55P03) is a live 503 left pending and a recovery backoff, never failed; then audited once', async () => {
+    const id = seed(A);
+    const op = 'SELECT state, claim_token, lease_expires_at > now() AS backed_off FROM ci_reconciliation_operations WHERE ci_id = $1';
+    const expire = `UPDATE ci_reconciliation_operations SET lease_expires_at = now() - interval '1 minute' WHERE ci_id = $1`;
+    mockFault.chainLock = true;
+    const res = await put('a', id, { name: 'locked' });
+    expect([res.status, res.body.correlation_id, (await rows(op, [id]))[0]!['state'], await audit(id)])
+      .toEqual([503, expect.any(String), 'pending', []]);
+    await rows(expire, [id]);
+    await getNeo4jClient().journal.sweep();
+    mockFault.chainLock = false;
+    expect([await rows(op, [id]), await audit(id)]).toEqual([[{ state: 'pending', claim_token: null, backed_off: true }], []]);
+    await rows(expire, [id]);
+    await getNeo4jClient().journal.sweep();
+    expect([(await rows(op, [id]))[0]!['state'], await summary(id)])
+      .toEqual(['committed', [['UPDATE', 'actor-a', [{ field: 'name', old_value: 'seeded', new_value: 'locked' }]]]]);
+  });
+
+  it('S1-T2: a legacy v1 prefix verifies and v2 rows chain onto it; a v2 changes tamper, a downgraded v2 row and a v1 tamper are content', async () => {
+    await rows('DELETE FROM audit_log');
+    // Independent copy of the 21e91ef v1 mapping: tenantId 'global', raw ip; changes, actor_type, timestamp, org column unhashed.
+    const v1 = createAuditChain(process.env['AUDIT_CHAIN_KEY']!);
+    let prev: string | null = null;
+    for (const [index, entity] of ['legacy-1', 'legacy-2'].entries()) {
+      const [id, metadata] = [randomUUID(), { organization_id: A }];
+      const hash: string = v1.computeEntryHash({ id, action: 'UPDATE', actorId: 'actor-a', tenantId: 'global', resourceType: 'CI',
+        resourceId: entity, metadata, ipAddress: '10.0.0.1', userAgent: null }, prev);
+      await rows(`INSERT INTO audit_log (id, entity_type, entity_id, action, actor, actor_type, changes, metadata, ip_address,
+        prev_hash, entry_hash, organization_id, timestamp) VALUES ($1, 'CI', $2, 'UPDATE', 'actor-a', 'user', '[{"field":"x"}]',
+        $3, '10.0.0.1', $4, $5, $6, clock_timestamp() - interval '1 minute' + $7::int * interval '1 second')`, // strictly ordered
+      [id, entity, JSON.stringify(metadata), prev, hash, A, index]);
+      prev = hash;
+    }
+    const service = getAuditService(getPostgresClient().pool);
+    await service.logAudit({ entity_type: 'CI', entity_id: 'v2-direct', action: 'UPDATE', actor: 'actor-a', actor_type: 'user',
+      changes: [{ field: 'x', old_value: 1, new_value: 2 }], ip_address: '10.0.0.2', user_agent: 'jest' }, A);
+    expect((await put('a', seed(A), { name: 'after-legacy' })).status).toBe(200);
+    const chain = await rows('SELECT id, prev_hash FROM audit_log ORDER BY timestamp, id');
+    expect([chain.length, chain[2]!['prev_hash'], await service.verifyAuditChain()])
+      .toEqual([4, prev, expect.objectContaining({ ok: true, checked: 4, orgBindingViolations: [] })]);
+    const [legacy, fresh] = [chain[1]!['id'], chain[3]!['id']];
+    const envelope = `jsonb_build_object('v', 2, 'metadata', metadata, 'changes', changes, 'actor_type', actor_type,
+      'timestamp', to_char(timestamp AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'), 'organization_id', organization_id)`;
+    expect([await tamper(fresh, 'changes', `'[]'`), await tamper(fresh, 'metadata', envelope),
+      await tamper(legacy, 'metadata', `'{"organization_id":"${A}","x":1}'`)]).toEqual([content(fresh), content(fresh), content(legacy)]);
   });
 });

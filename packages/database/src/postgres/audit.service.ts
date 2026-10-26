@@ -21,12 +21,17 @@ import {
  * per-partition Postgres advisory lock that serializes chained writes.
  */
 export const AUDIT_CHAIN_PARTITION = 'global';
+/** HAP-1001: bound on the chain-lock wait; its 55P03 is the journal's live 503 and a recovery backoff, never t2_failed. */
+export const AUDIT_CHAIN_LOCK_TIMEOUT_MS = 5_000;
+/** UTC microsecond text of a timestamptz: v2 hashes it and the INSERT writes it verbatim, so it round-trips exactly. */
+const CHAIN_TS = `'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'`;
 
 /**
  * Map a happycmdb audit_log row's content columns onto the shared kernel's
  * AuditChainFields. This mapping MUST be used identically at write time
  * (computeEntryHash) and at verify time (rebuilding ChainRow[] from stored
  * rows) or the chain will not verify.
+ * v1: written by images up to 21e91ef; verify-only since HAP-1001 (toChainFieldsV2), so it must never change.
  *
  *   action        -> action
  *   actor          -> actorId
@@ -61,6 +66,17 @@ function toChainFields(row: {
 }
 
 /**
+ * HAP-1001 chain v2, written by appendAuditEntry. The domain-separated tenantId 'global#v2' means neither mapping can
+ * verify the other's hash, so a v2 row cannot be relabelled v1. The envelope adds changes, actor_type, the UTC µs
+ * timestamp text and the organization_id column to the v1 fields; ip_address is the canonical ip_address::text.
+ */
+function toChainFieldsV2(row: Parameters<typeof toChainFields>[0] & { actor_type: string; changes: unknown; ts: string;
+  organization_id: string | null }): AuditChainFields {
+  return { ...toChainFields(row), tenantId: `${AUDIT_CHAIN_PARTITION}#v2`, metadata: { v: 2, metadata: row.metadata ?? {},
+    changes: row.changes, actor_type: row.actor_type, timestamp: row.ts, organization_id: row.organization_id } };
+}
+
+/**
  * Lazily-memoized keyed audit chain kernel, bound to the app-held secret in
  * AUDIT_CHAIN_KEY. Read lazily (not at module load) so importing this module
  * never throws when the key is unset; the error only surfaces when an audit
@@ -81,39 +97,55 @@ function getAuditChainKernel(): ChainKernel {
   return auditChainKernel;
 }
 
+let missingKeyLoggedAt = -Infinity;
 /** HAP-784: whether the chain kernel can be built (AUDIT_CHAIN_KEY set); CI CRUD writes are refused without it. */
 export function auditChainReady(): boolean {
-  try { return Boolean(getAuditChainKernel()); } catch { return false; }
+  try { return Boolean(getAuditChainKernel()); } catch {
+    // HAP-1001: fixed text, at most once per 60 s (monotonic) per process; never the env value or the error.
+    if (performance.now() - missingKeyLoggedAt >= 60_000) {
+      missingKeyLoggedAt = performance.now();
+      logger.error('Audit chain unavailable: AUDIT_CHAIN_KEY is not set; audited CI writes refused (503)');
+    }
+    return false;
+  }
 }
 
 /**
  * Appends one hash-chained audit_log row on the caller's open transaction: logAudit's own, or the
  * HP1 journal T2 (HAP-784). The timestamp is taken after the chain lock, so verifyAuditChain's
  * (timestamp, id) order is the chain order even when the transaction began before its predecessor's.
+ * HAP-1001: v2-hashed; the lock wait is bounded (55P03); ts is strictly after the head's and, with org and ip,
+ * canonicalised by Postgres; changes and metadata are hashed as the JSON that JSONB stores.
  */
 export async function appendAuditEntry(client: PoolClient, entry: Omit<AuditLogEntry, 'id' | 'timestamp'>,
   organizationId: string): Promise<void> {
   if (!organizationId || !entry['actor']) throw new Error('Verified actor and organization required');
+  await client.query(`SET LOCAL lock_timeout = '${AUDIT_CHAIN_LOCK_TIMEOUT_MS}ms'`);
   await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [AUDIT_CHAIN_PARTITION]);
-  const prevResult = await client.query<{ entry_hash: string | null }>(
-    'SELECT entry_hash FROM audit_log WHERE entry_hash IS NOT NULL ORDER BY timestamp DESC, id DESC LIMIT 1');
-  const prevHash = prevResult.rows[0]?.entry_hash ?? null;
+  const { prev_hash: prevHash, ts, org, ip } = (await client.query<{ prev_hash: string | null; ts: string; org: string;
+    ip: string | null }>(
+    `WITH head AS (SELECT entry_hash, timestamp FROM audit_log WHERE entry_hash IS NOT NULL ORDER BY timestamp DESC, id DESC LIMIT 1)
+    SELECT (SELECT entry_hash FROM head) AS prev_hash, to_char(GREATEST(clock_timestamp(),
+      (SELECT timestamp FROM head) + interval '1 microsecond') AT TIME ZONE 'UTC', ${CHAIN_TS}) AS ts,
+      $1::uuid::text AS org, $2::inet::text AS ip`, [organizationId, entry['ip_address'] || null])).rows[0]!;
   const id = randomUUID();
-  const metadata = { ...(entry['metadata'] ?? {}), organization_id: organizationId };
-  const entryHash = getAuditChainKernel().computeEntryHash(toChainFields({
+  const metadata = JSON.parse(JSON.stringify({ ...(entry['metadata'] ?? {}), organization_id: organizationId }));
+  const changes = JSON.parse(JSON.stringify(entry['changes'] ?? []));
+  const entryHash = getAuditChainKernel().computeEntryHash(toChainFieldsV2({
     id, action: entry['action'], actor: entry['actor'], entity_type: entry['entity_type'], entity_id: entry['entity_id'],
-    metadata, ip_address: entry['ip_address'] ?? null, user_agent: entry['user_agent'] ?? null,
+    metadata, ip_address: ip, user_agent: entry['user_agent'] || null, actor_type: entry['actor_type'], changes, ts,
+    organization_id: org,
   }), prevHash);
   await client.query(
     `INSERT INTO audit_log (
       id, entity_type, entity_id, action, actor, actor_type, changes,
       metadata, ip_address, user_agent, prev_hash, entry_hash, organization_id, timestamp
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, clock_timestamp())`,
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::timestamptz)`,
     [
       id, entry['entity_type'], entry['entity_id'], entry['action'],
-      entry['actor'], entry['actor_type'], JSON.stringify(entry['changes']),
+      entry['actor'], entry['actor_type'], JSON.stringify(changes),
       JSON.stringify(metadata), entry['ip_address'] || null,
-      entry['user_agent'] || null, prevHash, entryHash, organizationId,
+      entry['user_agent'] || null, prevHash, entryHash, organizationId, ts,
     ]
   );
 }
@@ -160,11 +192,13 @@ export class AuditService {
   /**
    * Verify the audit_log hash chain for the single ('global') partition.
    * Reads rows ordered (timestamp ASC, id ASC) -- the order they were
-   * written in -- rebuilds each row's AuditChainFields using the same
-   * mapping as logAudit, and delegates to the shared kernel's
+   * written in -- rebuilds each row's AuditChainFields (HAP-1001: the v2
+   * mapping when it reproduces entry_hash, else v1), and delegates to the shared kernel's
    * verifyAuditChain. Rows with entry_hash IS NULL (pre-migration, or
    * inserted by a path other than logAudit, e.g. a DB trigger) are treated
    * as unhashed by the kernel and are skipped until the first hashed row.
+   * Lenient mixed chain: v1 rows may follow v2 ones (image rollback). Neither mapping yields the other's hash, so a
+   * tampered row fails both (reason 'content'). The === only selects the mapping; the kernel compares timing-safe.
    */
   async verifyAuditChain(): Promise<HP1ChainVerification> {
     const result = await this.pool.query<{
@@ -179,16 +213,22 @@ export class AuditService {
       user_agent: string | null;
       prev_hash: string | null;
       entry_hash: string | null;
+      actor_type: string;
+      changes: unknown;
+      ip_text: string | null;
+      ts: string;
     }>(
       `
-      SELECT id, entity_type, entity_id, action, actor, metadata, organization_id, ip_address, user_agent, prev_hash, entry_hash
+      SELECT id, entity_type, entity_id, action, actor, actor_type, changes, metadata, organization_id, ip_address,
+        ip_address::text AS ip_text, user_agent, prev_hash, entry_hash, to_char(timestamp AT TIME ZONE 'UTC', ${CHAIN_TS}) AS ts
       FROM audit_log
       ORDER BY timestamp ASC, id ASC
       `
     );
 
-    const rows: ChainRow[] = result.rows.map((row) => ({
-      ...toChainFields(row),
+    const v2 = result.rows.map(row => toChainFieldsV2({ ...row, ip_address: row.ip_text }));
+    const rows: ChainRow[] = result.rows.map((row, i) => ({
+      ...(getAuditChainKernel().computeEntryHash(v2[i]!, row.prev_hash) === row.entry_hash ? v2[i]! : toChainFields(row)),
       prevHash: row.prev_hash ?? null,
       entryHash: row.entry_hash ?? null,
     }));

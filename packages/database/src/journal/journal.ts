@@ -452,7 +452,8 @@ export class ReconciliationJournal {
         try {
           await t2(row.group_id, true, token);
         } catch (error) {
-          if (['08', '40', '53', '57'].includes(errorCode(error).slice(0, 2))) {
+          // HAP-1001: the audit chain-lock timeout (exact 55P03, not class 55) backs off too, never t2_failed.
+          if (errorCode(error) === '55P03' || ['08', '40', '53', '57'].includes(errorCode(error).slice(0, 2))) {
             await getPostgresClient().pool.query(`UPDATE ci_reconciliation_operations SET claim_token = NULL,
                 lease_expires_at = now() + make_interval(secs => LEAST(power(2, attempts) * 15, 900))
               WHERE id = $1 AND claim_token = $2`, [row.id, token]);

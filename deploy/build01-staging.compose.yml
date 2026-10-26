@@ -88,6 +88,7 @@ services:
       KAFKA_CLIENT_ID: cmdb-api-server
       KAFKA_GROUP_ID: cmdb-api-group
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      AUDIT_CHAIN_KEY: ${AUDIT_CHAIN_KEY:?AUDIT_CHAIN_KEY is required}
       JWT_EXPIRES_IN: 7d
       JWT_ISSUER: ${JWT_ISSUER:?JWT_ISSUER is required}
       JWT_AUDIENCE: ${JWT_AUDIENCE:?JWT_AUDIENCE is required}

@@ -734,6 +734,8 @@ All user-facing documentation lives in exactly ONE place: `/doc-site/docs/`
 
 `packages/database` consumes `@happy-technologies/audit` ^0.2.0 (keyed HMAC-SHA256 tamper-proof chain). `audit.service.ts` `logAudit` is hash-chained via a lazily-memoized `createAuditChain(process.env.AUDIT_CHAIN_KEY)` kernel; additive nullable `prev_hash`/`entry_hash` columns land in migration `003_audit_hash_chain`. Single GLOBAL chain partition (this `audit_log` has no `tenant_id`; advisory lock keyed on the constant `AUDIT_CHAIN_PARTITION`).
 
-REQUIRED env: `AUDIT_CHAIN_KEY` (32-byte / 64-hex, `openssl rand -hex 32`; stable, per-app, never commit). IMPORTANT: `logAudit` is non-fatal (swallows errors), so a MISSING key fails SILENTLY (no audit row written / chain gap) rather than throwing. `package-lock.json` must stay in sync (`npm ci` in CI).
+REQUIRED env: `AUDIT_CHAIN_KEY` (32-byte / 64-hex, `openssl rand -hex 32`; stable, per-app, never commit). `logAudit` THROWS on any failure, a missing key included. `package-lock.json` must stay in sync (`npm ci` in CI).
+
+HAP-784: `Neo4jClient.createCI`/`updateCI`/`deleteCI` (REST and GraphQL) append one chained `audit_log` row inside journal T2 (`appendAuditEntry`, actor = verified journal actor). Without `AUDIT_CHAIN_KEY` they fail closed with 503 before T1; ITIL `updateCIProperties`, restore, relationship and merge writes are not audited.
 
 Adopted via PR #15 (open as of 2026-07-10; blocked by the CLA-signature gate + pre-existing flaky Neo4j `ci_fulltext_search` CI, not by this change).

@@ -81,6 +81,43 @@ function getAuditChainKernel(): ChainKernel {
   return auditChainKernel;
 }
 
+/** HAP-784: whether the chain kernel can be built (AUDIT_CHAIN_KEY set); CI CRUD writes are refused without it. */
+export function auditChainReady(): boolean {
+  try { return Boolean(getAuditChainKernel()); } catch { return false; }
+}
+
+/**
+ * Appends one hash-chained audit_log row on the caller's open transaction: logAudit's own, or the
+ * HP1 journal T2 (HAP-784). The timestamp is taken after the chain lock, so verifyAuditChain's
+ * (timestamp, id) order is the chain order even when the transaction began before its predecessor's.
+ */
+export async function appendAuditEntry(client: PoolClient, entry: Omit<AuditLogEntry, 'id' | 'timestamp'>,
+  organizationId: string): Promise<void> {
+  if (!organizationId || !entry['actor']) throw new Error('Verified actor and organization required');
+  await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [AUDIT_CHAIN_PARTITION]);
+  const prevResult = await client.query<{ entry_hash: string | null }>(
+    'SELECT entry_hash FROM audit_log WHERE entry_hash IS NOT NULL ORDER BY timestamp DESC, id DESC LIMIT 1');
+  const prevHash = prevResult.rows[0]?.entry_hash ?? null;
+  const id = randomUUID();
+  const metadata = { ...(entry['metadata'] ?? {}), organization_id: organizationId };
+  const entryHash = getAuditChainKernel().computeEntryHash(toChainFields({
+    id, action: entry['action'], actor: entry['actor'], entity_type: entry['entity_type'], entity_id: entry['entity_id'],
+    metadata, ip_address: entry['ip_address'] ?? null, user_agent: entry['user_agent'] ?? null,
+  }), prevHash);
+  await client.query(
+    `INSERT INTO audit_log (
+      id, entity_type, entity_id, action, actor, actor_type, changes,
+      metadata, ip_address, user_agent, prev_hash, entry_hash, organization_id, timestamp
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, clock_timestamp())`,
+    [
+      id, entry['entity_type'], entry['entity_id'], entry['action'],
+      entry['actor'], entry['actor_type'], JSON.stringify(entry['changes']),
+      JSON.stringify(metadata), entry['ip_address'] || null,
+      entry['user_agent'] || null, prevHash, entryHash, organizationId,
+    ]
+  );
+}
+
 export type HP1ChainVerification = ChainVerification & { orgBindingViolations: string[] };
 
 export class AuditService {
@@ -106,47 +143,7 @@ export class AuditService {
       client = await this.pool.connect();
       await client.query('BEGIN');
       try {
-        await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [AUDIT_CHAIN_PARTITION]);
-
-        const prevResult = await client.query<{ entry_hash: string | null }>(
-          `
-          SELECT entry_hash FROM audit_log
-          WHERE entry_hash IS NOT NULL
-          ORDER BY timestamp DESC, id DESC
-          LIMIT 1
-          `
-        );
-        const prevHash = prevResult.rows[0]?.entry_hash ?? null;
-
-        const id = randomUUID();
-        const metadata = { ...(entry['metadata'] ?? {}), organization_id: organizationId };
-        const chainFields = toChainFields({
-          id,
-          action: entry['action'],
-          actor: entry['actor'],
-          entity_type: entry['entity_type'],
-          entity_id: entry['entity_id'],
-          metadata,
-          ip_address: entry['ip_address'] ?? null,
-          user_agent: entry['user_agent'] ?? null,
-        });
-        const entryHash = getAuditChainKernel().computeEntryHash(chainFields, prevHash);
-
-        await client.query(
-          `
-          INSERT INTO audit_log (
-            id, entity_type, entity_id, action, actor, actor_type, changes,
-            metadata, ip_address, user_agent, prev_hash, entry_hash, organization_id
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-          `,
-          [
-            id, entry['entity_type'], entry['entity_id'], entry['action'],
-            entry['actor'], entry['actor_type'], JSON.stringify(entry['changes']),
-            JSON.stringify(metadata), entry['ip_address'] || null,
-            entry['user_agent'] || null, prevHash, entryHash, organizationId,
-          ]
-        );
-
+        await appendAuditEntry(client, entry, organizationId);
         await client.query('COMMIT');
       } catch (txError) {
         await client.query('ROLLBACK');

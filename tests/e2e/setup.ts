@@ -91,6 +91,8 @@ export default async function globalSetup(): Promise<void> {
     process.env.JWT_SECRET =
       process.env.JWT_SECRET ||
       'test-jwt-secret-for-e2e-tests-minimum-32-characters-long';
+    process.env.AUDIT_CHAIN_KEY =
+      process.env.AUDIT_CHAIN_KEY || 'test-audit-chain-key-for-e2e-tests';
     process.env.KAFKA_CLIENT_ID = process.env.KAFKA_CLIENT_ID || 'happycmdb-e2e';
     process.env.KAFKA_GROUP_ID = process.env.KAFKA_GROUP_ID || 'happycmdb-e2e-tests';
     console.log('All E2E test containers started successfully');

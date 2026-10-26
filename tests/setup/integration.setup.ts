@@ -38,6 +38,7 @@ process.env.CREDENTIAL_ENCRYPTION_KEY =
   process.env.CREDENTIAL_ENCRYPTION_KEY ||
   'test-encryption-key-minimum-32-chars-required-for-security';
 process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-jwt-secret-for-integration-tests';
+process.env.AUDIT_CHAIN_KEY = process.env.AUDIT_CHAIN_KEY || 'test-audit-chain-key-for-integration-tests';
 
 // auth.routes loads + validates the full app config at module load (loadConfig).
 // The schema rejects empty databases.kafka.clientId/groupId, so provide test

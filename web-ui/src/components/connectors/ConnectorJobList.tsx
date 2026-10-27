@@ -4,6 +4,7 @@
 import React, { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
+  allRunsQuery,
   connectorsApi,
   formatRunCount,
   formatRunDuration,
@@ -24,23 +25,22 @@ export const ConnectorJobList: React.FC = () => {
   const [filterStatus, setFilterStatus] = useState<string>('all');
 
   // Run rows come only from GET /connector-configs/runs/all, independent of configurations.
-  const runsQuery = useQuery({
-    queryKey: ['connector-runs', 'all'],
-    queryFn: connectorsApi.getAllRuns,
-  });
-  const runs = runsQuery.data ?? [];
+  // The server applies the filters, so these are exactly the newest rows matching them.
+  const runsQuery = useQuery(allRunsQuery({
+    status: filterStatus === 'all' ? undefined : filterStatus,
+    connectorType: filterType === 'all' ? undefined : filterType,
+  }));
+  const filteredRuns = runsQuery.data?.runs ?? [];
+  const total = runsQuery.data?.total ?? null;
+  const filtered = filterType !== 'all' || filterStatus !== 'all';
 
-  // Filter choices reflect what was actually fetched; unrecognized statuses stay selectable.
-  const connectorTypes = [...new Set(runs.map((run) => run.connectorType))].sort();
-  const statuses = [
-    ...RUN_STATUSES,
-    ...[...new Set(runs.map((run) => run.status))].filter((status) => !(RUN_STATUSES as readonly string[]).includes(status)).sort(),
-  ];
-
-  const filteredRuns = runs.filter((run) =>
-    (filterType === 'all' || run.connectorType === filterType) &&
-    (filterStatus === 'all' || run.status === filterStatus)
-  );
+  // Type choices come from the tenant's configurations, not one page of runs; a selected value
+  // stays listed so the control never hides an active filter. Statuses are the server's filter enum.
+  const configsQuery = useQuery({ queryKey: ['connectors'], queryFn: connectorsApi.list });
+  const connectorTypes = [
+    ...new Set([...(configsQuery.data ?? []).map((config) => config.type), ...(filterType === 'all' ? [] : [filterType])]),
+  ].sort();
+  const statuses = RUN_STATUSES;
 
   const handleRowClick = (jobId: string) => {
     setExpandedJobId(expandedJobId === jobId ? null : jobId);
@@ -88,6 +88,12 @@ export const ConnectorJobList: React.FC = () => {
             </option>
           ))}
         </select>
+
+        {total !== null && total > filteredRuns.length && (
+          <p role="status" className="text-sm text-muted-foreground">
+            Showing newest {filteredRuns.length} of {total} {filtered ? 'matching ' : ''}runs
+          </p>
+        )}
       </div>
 
       {/* Table */}
@@ -109,7 +115,7 @@ export const ConnectorJobList: React.FC = () => {
               messageRow('Loading connector runs…', 'text-muted-foreground')
             ) : runsQuery.isError ? (
               messageRow('Failed to load connector runs', 'text-danger')
-            ) : runs.length === 0 ? (
+            ) : filteredRuns.length === 0 && !filtered ? (
               messageRow('No connector runs recorded', 'text-muted-foreground')
             ) : filteredRuns.length === 0 ? (
               messageRow('No runs match the selected filters', 'text-muted-foreground')

@@ -1,6 +1,6 @@
 import React, { useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { connectorsApi, formatRunCount, formatRunTimestamp, runStatusDisplay } from '../../api/connectors';
+import { allRunsQuery, connectorsApi, formatRunCount, formatRunTimestamp, runStatusDisplay } from '../../api/connectors';
 import { useNavigate } from 'react-router-dom';
 import { LiquidGlass } from '../ui/liquid-glass';
 import { Badge } from '../ui/badge';
@@ -13,17 +13,19 @@ import {
   TableRow,
 } from '../ui/table';
 
+/** The dashboard shows only the newest few runs; the jobs tab holds the full history. */
+const RECENT_RUN_LIMIT = 5;
+
 export const ConnectorDashboard: React.FC = () => {
   const navigate = useNavigate();
   const { data: connectors = [], refetch } = useQuery({
     queryKey: ['connectors'],
     queryFn: connectorsApi.list,
   });
-  const runsQuery = useQuery({
-    queryKey: ['connector-runs', 'all'],
-    queryFn: connectorsApi.getAllRuns,
-  });
-  const runs = runsQuery.data ?? [];
+  const runsQuery = useQuery(allRunsQuery());
+  const runs = runsQuery.data?.runs ?? [];
+  const recentRuns = runs.slice(0, RECENT_RUN_LIMIT);
+  const totalRuns = runsQuery.data?.total ?? runs.length;
 
   useEffect(() => {
     refetch();
@@ -136,7 +138,22 @@ export const ConnectorDashboard: React.FC = () => {
 
       {/* Recent Connector Runs: real rows from GET /connector-configs/runs/all */}
       <div>
-        <h3 className="text-lg font-semibold mb-4">Recent Connector Runs</h3>
+        <div className="flex items-center justify-between gap-3 mb-4">
+          <h3 className="text-lg font-semibold">Recent Connector Runs</h3>
+          {totalRuns > recentRuns.length && (
+            <div className="flex items-center gap-3">
+              <p role="status" className="text-sm text-muted-foreground">
+                Showing newest {recentRuns.length} of {totalRuns} runs
+              </p>
+              <button
+                onClick={() => navigate('/connectors?tab=jobs')}
+                className="text-sm text-primary hover:underline"
+              >
+                View all runs
+              </button>
+            </div>
+          )}
+        </div>
         <LiquidGlass size="sm" rounded="xl" className="overflow-hidden">
           <Table>
             <TableHeader>
@@ -169,7 +186,7 @@ export const ConnectorDashboard: React.FC = () => {
                   </TableCell>
                 </TableRow>
               ) : (
-                runs.map((run) => {
+                recentRuns.map((run) => {
                   const status = runStatusDisplay(run.status);
                   return (
                     <TableRow

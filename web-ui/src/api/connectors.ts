@@ -5,6 +5,7 @@
  * Connector API endpoints
  */
 
+import { queryOptions } from '@tanstack/react-query';
 import { apiClient } from '../lib/api-client';
 
 interface PublicConfig {
@@ -115,6 +116,32 @@ export function sortRunsNewestFirst(runs: ConnectorRun[]): ConnectorRun[] {
   });
 }
 
+/** Server-side run filters; empty means "all". Values go to the route's validated query schema. */
+export interface RunFilters {
+  status?: string;
+  connectorType?: string;
+}
+
+/** One page of runs plus the server's matching-row total (null when not reported). */
+export interface RunPage {
+  runs: ConnectorRun[];
+  total: number | null;
+}
+
+const RUN_POLL_MS = 10_000;
+
+/** Shared runs query. Run actions live on other tabs/pages and do not invalidate this key, so it
+ * refetches on every mount and polls while a loaded run is still queued or running. */
+export function allRunsQuery(filters: RunFilters = {}) {
+  return queryOptions({
+    queryKey: ['connector-runs', 'all', filters.status ?? 'all', filters.connectorType ?? 'all'],
+    queryFn: () => connectorsApi.getAllRuns(filters),
+    refetchOnMount: 'always',
+    refetchInterval: (query) =>
+      query.state.data?.runs.some((run) => run.status === 'queued' || run.status === 'running') ? RUN_POLL_MS : false,
+  });
+}
+
 export const RUN_STATUSES = ['queued', 'running', 'completed', 'failed', 'cancelled'] as const;
 
 const RUN_STATUS_DISPLAY: Record<string, { variant: 'default' | 'secondary' | 'destructive' | 'outline'; label: string }> = {
@@ -220,13 +247,21 @@ export const connectorsApi = {
     return response.data.map(displayRun);
   },
 
-  // Tenant-scoped run history across all configurations. The server orders and scopes it;
+  // Tenant-scoped run history across all configurations. The server scopes, filters and orders it;
   // ordering is repeated here so unsorted responses still render deterministically.
-  getAllRuns: async () => {
-    const response = await apiClient.get<{ success: boolean; data: PublicRun[] }>('/connector-configs/runs/all', {
-      params: { sort_by: 'started_at', sort_order: 'desc' },
-    });
-    return sortRunsNewestFirst(response.data.map(displayRun));
+  getAllRuns: async (filters: RunFilters = {}): Promise<RunPage> => {
+    const params: Record<string, string> = { sort_by: 'started_at', sort_order: 'desc' };
+    if (filters.status) params.status = filters.status;
+    if (filters.connectorType) params.connector_type = filters.connectorType;
+    const response = await apiClient.get<{ success: boolean; data: PublicRun[]; pagination?: { total?: unknown } }>(
+      '/connector-configs/runs/all',
+      { params },
+    );
+    const total = response.pagination?.total;
+    return {
+      runs: sortRunsNewestFirst(response.data.map(displayRun)),
+      total: typeof total === 'number' && Number.isFinite(total) ? total : null,
+    };
   },
 
   // Test connector connection

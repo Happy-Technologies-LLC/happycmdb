@@ -44,18 +44,24 @@ const activeConfig = {
   id: 'cfg-1', name: 'My ServiceNow', connector_type: 'servicenow', enabled: true,
   schedule_enabled: false, created_at: '2026-10-09T00:00:00Z', updated_at: '2026-10-10T00:00:00Z',
 };
+// The workday configuration has no runs at all, so only the configuration list can offer it.
+const CONFIGS = [activeConfig, { ...activeConfig, id: 'cfg-2', name: 'My Jira', connector_type: 'jira' },
+  { ...activeConfig, id: 'cfg-3', name: 'My Workday', connector_type: 'workday' }];
 
-function mockEndpoints(runs: () => Promise<unknown>) {
-  apiClient.get.mockImplementation(async (path: string) => {
-    if (path === '/connector-configs') return { data: [activeConfig] };
-    if (path === RUNS_PATH) return runs();
+type RunParams = { status?: string; connector_type?: string };
+function mockEndpoints(runs: (params: RunParams) => Promise<unknown>) {
+  apiClient.get.mockImplementation(async (path: string, config?: { params?: RunParams }) => {
+    if (path === '/connector-configs') return { data: CONFIGS };
+    if (path === RUNS_PATH) return runs(config?.params ?? {});
     throw new Error('Unexpected test endpoint');
   });
 }
-const ok = (data: unknown[]) => () => Promise.resolve({
-  success: true, data,
-  pagination: { total: data.length, count: data.length, limit: 100, offset: 0 },
-});
+/** Emulates the server: filters by the sent params and reports the matching total. */
+const ok = (all: unknown[], total?: number) => (params: RunParams) => {
+  const data = (all as Array<{ status: string; connector_type: string }>).filter((r) =>
+    (!params.status || r.status === params.status) && (!params.connector_type || r.connector_type === params.connector_type));
+  return Promise.resolve({ success: true, data, pagination: { total: total ?? data.length, count: data.length, limit: 100, offset: 0 } });
+};
 
 function mount(Component: React.ComponentType) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -70,17 +76,18 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
+// The dashboard shows only the newest five runs; the job list shows the whole returned page.
 describe.each([
-  ['dashboard', ConnectorDashboard],
-  ['job list', ConnectorJobList],
-] as const)('%s run history', (_name, Component) => {
-  it('requests the sorted global runs endpoint and shows every returned run newest-first', async () => {
+  ['dashboard', ConnectorDashboard, 5],
+  ['job list', ConnectorJobList, RUNS.length],
+] as const)('%s run history', (_name, Component, shown) => {
+  it('requests the sorted global runs endpoint and shows the returned runs newest-first', async () => {
     mockEndpoints(ok(RUNS));
     mount(Component);
-    await waitFor(() => expect(runRows()).toHaveLength(RUNS.length));
+    await waitFor(() => expect(runRows()).toHaveLength(shown));
 
     expect(apiClient.get).toHaveBeenCalledWith(RUNS_PATH, { params: { sort_by: 'started_at', sort_order: 'desc' } });
-    expect(rowIds()).toEqual(NEWEST_FIRST);
+    expect(rowIds()).toEqual(NEWEST_FIRST.slice(0, shown));
     for (const row of runRows()) {
       const id = /run-id-(\d+)/.exec(row.textContent ?? '')![1];
       expect(within(row).getByText(`run-id-${id}`)).toBeTruthy(); // full ID, not truncated
@@ -90,9 +97,10 @@ describe.each([
   });
 
   it('renders valid timestamps, "—" for missing or invalid ones, and keeps real zero counts', async () => {
-    mockEndpoints(ok(RUNS));
+    const subset = RUNS.filter((r) => /-0[1368]$/.test(r.id)); // four rows: fits the dashboard cap
+    mockEndpoints(ok(subset));
     mount(Component);
-    await waitFor(() => expect(runRows()).toHaveLength(RUNS.length));
+    await waitFor(() => expect(runRows()).toHaveLength(subset.length));
     const row = (n: string) => runRows().find((r) => r.textContent!.includes(`run-id-${n}`))!;
 
     expect(within(row('08')).getByText(new Date('2026-10-27T01:00:00Z').toLocaleString())).toBeTruthy();
@@ -106,6 +114,14 @@ describe.each([
     expect(within(row('03')).getAllByText('—').length).toBeGreaterThanOrEqual(2);
     expect(screen.queryByRole('progressbar')).toBeNull();
     expect(screen.queryAllByRole('cell').filter((cell) => /%/.test(cell.textContent ?? ''))).toHaveLength(0);
+  });
+
+  it('says how many of the matching runs are shown when the server reports more', async () => {
+    mockEndpoints(ok(RUNS, 250));
+    mount(Component);
+    await waitFor(() => expect(runRows()).toHaveLength(shown));
+
+    expect(screen.getByRole('status').textContent).toBe(`Showing newest ${shown} of 250 runs`);
   });
 
   it('shows no jobs, and no configuration-derived status, when the runs response is empty', async () => {
@@ -162,30 +178,43 @@ describe('job list filters and details', () => {
     const user = userEvent.setup();
     mount(ConnectorJobList);
     await waitFor(() => expect(runRows()).toHaveLength(RUNS.length));
+    const sort = { sort_by: 'started_at', sort_order: 'desc' };
 
     await user.selectOptions(screen.getByLabelText('Filter by status'), 'failed');
-    expect(rowIds()).toEqual(['run-id-02']);
-
-    await user.selectOptions(screen.getByLabelText('Filter by status'), 'queued');
-    expect(rowIds()).toEqual(['run-id-03']);
+    await waitFor(() => expect(rowIds()).toEqual(['run-id-02']));
+    expect(apiClient.get).toHaveBeenCalledWith(RUNS_PATH, { params: { ...sort, status: 'failed' } });
 
     await user.selectOptions(screen.getByLabelText('Filter by status'), 'all');
     await user.selectOptions(screen.getByLabelText('Filter by connector type'), 'jira');
-    expect(rowIds()).toEqual(['run-id-08']);
+    await waitFor(() => expect(rowIds()).toEqual(['run-id-08']));
+    expect(apiClient.get).toHaveBeenCalledWith(RUNS_PATH, { params: { ...sort, connector_type: 'jira' } });
 
     await user.selectOptions(screen.getByLabelText('Filter by status'), 'failed');
+    expect(await screen.findByText('No runs match the selected filters')).toBeTruthy();
+    expect(apiClient.get).toHaveBeenCalledWith(RUNS_PATH, { params: { ...sort, status: 'failed', connector_type: 'jira' } });
     expect(runRows()).toHaveLength(0);
-    expect(screen.getByText('No runs match the selected filters')).toBeTruthy();
     expect(screen.queryByText('No connector runs recorded')).toBeNull();
   });
 
-  it('derives connector-type choices from the fetched runs only', async () => {
+  it('derives connector-type choices from the configurations, not from the fetched runs', async () => {
     mockEndpoints(ok(RUNS));
     mount(ConnectorJobList);
-    await waitFor(() => expect(runRows()).toHaveLength(RUNS.length));
+    await screen.findByRole('option', { name: 'WORKDAY' }); // a configured type with no runs
 
     const options = within(screen.getByLabelText('Filter by connector type')).getAllByRole('option').map((o) => o.getAttribute('value'));
-    expect(options).toEqual(['all', 'jira', 'servicenow']);
+    expect(options).toEqual(['all', 'jira', 'servicenow', 'workday']);
+  });
+
+  it('refetches runs on remount despite the app-wide 5-minute staleTime (Run actions do not invalidate them)', async () => {
+    mockEndpoints(ok(RUNS.slice(0, 1)));
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 5 * 60 * 1000 } } });
+    const tree = (key: string) => <QueryClientProvider client={queryClient}><MemoryRouter><ConnectorJobList key={key} /></MemoryRouter></QueryClientProvider>;
+    const { rerender } = render(tree('first'));
+    await waitFor(() => expect(runRows()).toHaveLength(1));
+
+    mockEndpoints(ok(RUNS.slice(0, 2))); // a run started elsewhere since the first read
+    rerender(tree('second'));
+    await waitFor(() => expect(runRows()).toHaveLength(2));
   });
 
   it('expands only real projected fields, keeping unreported ones unknown', async () => {

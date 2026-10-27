@@ -42,6 +42,9 @@ jobs:
       - name: Verify connector wizard schedule deployment
         run: npm run test:run --workspace=@cmdb/web-ui -- --config vitest.connector-wizard.config.ts src/components/connectors/ConnectorDeploySchedule.test.tsx
 
+      - name: Verify connector run history (HAP-567)
+        run: npm run test:run --workspace=@cmdb/web-ui -- --config vitest.connector-wizard.config.ts src/components/connectors/ConnectorRunHistory.test.tsx
+
       - name: Verify web-ui jobs service tenant contract
         run: npm run test:run --workspace=@cmdb/web-ui -- src/services/jobs.service.test.ts
 

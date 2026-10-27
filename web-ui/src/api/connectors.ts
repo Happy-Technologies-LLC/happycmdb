@@ -24,8 +24,15 @@ interface PublicRun {
   connector_type: string;
   config_name: string;
   status: string;
-  started_at: string;
-  records_loaded: number;
+  started_at: string | null;
+  records_loaded: number | null;
+  resource_id?: string | null;
+  completed_at?: string | null;
+  records_extracted?: number | null;
+  records_transformed?: number | null;
+  records_failed?: number | null;
+  duration_ms?: number | null;
+  triggered_by?: string | null;
 }
 
 interface ConfigInput {
@@ -62,12 +69,91 @@ function displayConfig(row: PublicConfig): ConnectorConfigSummary {
   };
 }
 
-function displayRun(row: PublicRun) {
+/** Public run telemetry as returned by the API; absent values stay null, never defaulted. */
+export interface ConnectorRun {
+  id: string;
+  configId: string;
+  connectorType: string;
+  configName: string;
+  status: string;
+  startedAt: string | null;
+  recordsLoaded: number | null;
+  resourceId: string | null;
+  completedAt: string | null;
+  recordsExtracted: number | null;
+  recordsTransformed: number | null;
+  recordsFailed: number | null;
+  durationMs: number | null;
+  triggeredBy: string | null;
+}
+
+function displayRun(row: PublicRun): ConnectorRun {
   return {
     id: row.id, configId: row.config_id, connectorType: row.connector_type,
     configName: row.config_name, status: row.status, startedAt: row.started_at,
     recordsLoaded: row.records_loaded,
+    resourceId: row.resource_id ?? null, completedAt: row.completed_at ?? null,
+    recordsExtracted: row.records_extracted ?? null, recordsTransformed: row.records_transformed ?? null,
+    recordsFailed: row.records_failed ?? null, durationMs: row.duration_ms ?? null,
+    triggeredBy: row.triggered_by ?? null,
   };
+}
+
+/** Epoch ms of a supplied, valid timestamp; null when absent or unparseable. */
+function startedAtMs(run: ConnectorRun): number | null {
+  const ms = run.startedAt ? Date.parse(run.startedAt) : NaN;
+  return Number.isNaN(ms) ? null : ms;
+}
+
+/** Newest started_at first; runs without a valid started_at go last. Non-mutating and stable. */
+export function sortRunsNewestFirst(runs: ConnectorRun[]): ConnectorRun[] {
+  return [...runs].sort((a, b) => {
+    const am = startedAtMs(a);
+    const bm = startedAtMs(b);
+    if (am === null || bm === null) return am === bm ? 0 : am === null ? 1 : -1;
+    return bm - am;
+  });
+}
+
+export const RUN_STATUSES = ['queued', 'running', 'completed', 'failed', 'cancelled'] as const;
+
+const RUN_STATUS_DISPLAY: Record<string, { variant: 'default' | 'secondary' | 'destructive' | 'outline'; label: string }> = {
+  queued: { variant: 'outline', label: 'Queued' },
+  running: { variant: 'default', label: 'Running' },
+  completed: { variant: 'secondary', label: 'Completed' },
+  failed: { variant: 'destructive', label: 'Failed' },
+  cancelled: { variant: 'outline', label: 'Cancelled' },
+};
+
+/** Known statuses get a label; anything else is shown verbatim with neutral styling. */
+export function runStatusDisplay(status: string) {
+  return Object.prototype.hasOwnProperty.call(RUN_STATUS_DISPLAY, status)
+    ? RUN_STATUS_DISPLAY[status]
+    : { variant: 'outline' as const, label: status };
+}
+
+export const UNKNOWN_VALUE = '—';
+
+/** Locale date-time for a supplied, valid timestamp; otherwise "—". Never substitutes "now". */
+export function formatRunTimestamp(value: string | null | undefined): string {
+  if (!value || Number.isNaN(Date.parse(value))) return UNKNOWN_VALUE;
+  return new Date(value).toLocaleString();
+}
+
+/** Actual counts only (0 stays "0"); absent or non-numeric stays "—". */
+export function formatRunCount(value: number | null | undefined): string {
+  return typeof value === 'number' && Number.isFinite(value) ? String(value) : UNKNOWN_VALUE;
+}
+
+/** Format a reported duration_ms; absent or invalid stays "—". */
+export function formatRunDuration(ms: number | null | undefined): string {
+  if (typeof ms !== 'number' || !Number.isFinite(ms) || ms < 0) return UNKNOWN_VALUE;
+  if (ms < 1000) return `${ms} ms`;
+  const total = Math.floor(ms / 1000);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  return [h && `${h}h`, (h || m) && `${m}m`, `${s}s`].filter(Boolean).join(' ');
 }
 
 /** Surface only the known, fixed server refusal; never display arbitrary response errors. */
@@ -133,6 +219,16 @@ export const connectorsApi = {
     });
     return response.data.map(displayRun);
   },
+
+  // Tenant-scoped run history across all configurations. The server orders and scopes it;
+  // ordering is repeated here so unsorted responses still render deterministically.
+  getAllRuns: async () => {
+    const response = await apiClient.get<{ success: boolean; data: PublicRun[] }>('/connector-configs/runs/all', {
+      params: { sort_by: 'started_at', sort_order: 'desc' },
+    });
+    return sortRunsNewestFirst(response.data.map(displayRun));
+  },
+
   // Test connector connection
   test: (id: string) =>
     apiClient.post<{ success: boolean; message: string }>(`/connector-configs/${id}/test`),

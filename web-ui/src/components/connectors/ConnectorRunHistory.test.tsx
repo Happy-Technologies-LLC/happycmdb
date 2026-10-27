@@ -1,6 +1,6 @@
 // Copyright 2026 Happy Technologies LLC
 // SPDX-License-Identifier: Apache-2.0
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -29,7 +29,8 @@ const RUNS = [
   run('02', { started_at: '2026-10-25T09:00:00Z', status: 'failed', records_extracted: 20, records_loaded: 12, records_failed: 3, duration_ms: 4000 }),
   run('03', { started_at: null, status: 'queued' }),
   run('04', { started_at: '2026-10-26T08:00:00Z', status: 'running', records_loaded: 7 }),
-  run('05', { started_at: '2026-10-22T08:00:00Z', status: 'cancelled' }),
+  // Ended (completed_at set) but no reported duration_ms: a duration must not be derived from timestamps.
+  run('05', { started_at: '2026-10-22T08:00:00Z', completed_at: '2026-10-22T08:03:00Z', status: 'cancelled' }),
   run('06', { started_at: 'not-a-date', status: 'completed', records_loaded: 5 }),
   run('07', { started_at: '2026-10-24T08:00:00Z', status: 'completed', records_loaded: 9 }),
   run('08', { started_at: '2026-10-27T01:00:00Z', status: 'completed', connector_type: 'jira', config_name: 'My Jira', records_loaded: 41 }),
@@ -49,9 +50,10 @@ const CONFIGS = [activeConfig, { ...activeConfig, id: 'cfg-2', name: 'My Jira', 
   { ...activeConfig, id: 'cfg-3', name: 'My Workday', connector_type: 'workday' }];
 
 type RunParams = { status?: string; connector_type?: string };
-function mockEndpoints(runs: (params: RunParams) => Promise<unknown>) {
-  apiClient.get.mockImplementation(async (path: string, config?: { params?: RunParams }) => {
-    if (path === '/connector-configs') return { data: CONFIGS };
+type ConfigParams = { limit?: number };
+function mockEndpoints(runs: (params: RunParams) => Promise<unknown>, configs: (params: ConfigParams) => unknown[] = () => CONFIGS) {
+  apiClient.get.mockImplementation(async (path: string, config?: { params?: RunParams & ConfigParams }) => {
+    if (path === '/connector-configs') return { data: configs(config?.params ?? {}) };
     if (path === RUNS_PATH) return runs(config?.params ?? {});
     throw new Error('Unexpected test endpoint');
   });
@@ -122,6 +124,19 @@ describe.each([
     await waitFor(() => expect(runRows()).toHaveLength(shown));
 
     expect(screen.getByRole('status').textContent).toBe(`Showing newest ${shown} of 250 runs`);
+  });
+
+  it('drops the "N of M" line when a later refetch fails instead of showing a stale count', async () => {
+    mockEndpoints(ok(RUNS, 250));
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const tree = (key: string) => <QueryClientProvider client={queryClient}><MemoryRouter><Component key={key} /></MemoryRouter></QueryClientProvider>;
+    const { rerender } = render(tree('first'));
+    await waitFor(() => expect(screen.getByRole('status').textContent).toBe(`Showing newest ${shown} of 250 runs`));
+
+    mockEndpoints(() => Promise.reject(new Error('refetch failed'))); // react-query keeps the previous data
+    rerender(tree('second'));
+    expect(await screen.findByText('Failed to load connector runs')).toBeTruthy();
+    expect(screen.queryByRole('status')).toBeNull();
   });
 
   it('shows no jobs, and no configuration-derived status, when the runs response is empty', async () => {
@@ -205,6 +220,19 @@ describe('job list filters and details', () => {
     expect(options).toEqual(['all', 'jira', 'servicenow', 'workday']);
   });
 
+  it('offers a connector type that only appears after the first 100 configurations', async () => {
+    // Emulates listConfigsSchema: limit defaults to 100 and is rejected above 1000; rows sorted by name.
+    const many = Array.from({ length: 1000 }, (_, i) => ({ ...activeConfig, id: `cfg-${i}`,
+      name: `Config ${String(i).padStart(4, '0')}`, connector_type: i === 999 ? 'zendesk' : 'servicenow' }));
+    mockEndpoints(ok(RUNS), ({ limit = 100 }) => {
+      if (limit > 1000) throw new Error('400: limit must be less than or equal to 1000');
+      return many.slice(0, limit);
+    });
+    mount(ConnectorJobList);
+
+    expect(await screen.findByRole('option', { name: 'ZENDESK' })).toBeTruthy();
+  });
+
   it('refetches runs on remount despite the app-wide 5-minute staleTime (Run actions do not invalidate them)', async () => {
     mockEndpoints(ok(RUNS.slice(0, 1)));
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 5 * 60 * 1000 } } });
@@ -232,5 +260,31 @@ describe('job list filters and details', () => {
     expect(within(detail).getByText('Duration').nextElementSibling!.textContent).toBe('4s');
     expect(within(detail).getByText('Triggered By').nextElementSibling!.textContent).toBe('—');
     expect(screen.queryByText(/Records Created|Records Updated/)).toBeNull();
+
+    // run-05 ended but reported no duration_ms: no duration is invented or derived from its timestamps.
+    await user.click(runRows().find((r) => r.textContent!.includes('run-id-05'))!);
+    const ended = screen.getByTestId('run-detail');
+    expect(within(ended).getByText('Completed').nextElementSibling!.textContent).toBe(new Date('2026-10-22T08:03:00Z').toLocaleString());
+    expect(within(ended).getByText('Duration').nextElementSibling!.textContent).toBe('—');
+  });
+});
+
+describe('run polling', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // 35 s of fake time: a polled view makes the initial read plus reads at 10, 20 and 30 s.
+  it.each([
+    ['keeps polling a run that started a minute ago', 60_000, 4],
+    ['stops polling a run left running for over two hours', 2 * 60 * 60 * 1000 + 60_000, 1],
+  ] as const)('%s', async (_name, ageMs, reads) => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    mockEndpoints(ok([run('10', { status: 'running', started_at: new Date(Date.now() - ageMs).toISOString() })]));
+    mount(ConnectorJobList);
+    await waitFor(() => expect(runRows()).toHaveLength(1));
+
+    await vi.advanceTimersByTimeAsync(35_000);
+    expect(apiClient.get.mock.calls.filter(([path]) => path === RUNS_PATH)).toHaveLength(reads);
   });
 });

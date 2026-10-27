@@ -89,7 +89,7 @@ export const ConnectorJobList: React.FC = () => {
           ))}
         </select>
 
-        {total !== null && total > filteredRuns.length && (
+        {!runsQuery.isError && total !== null && total > filteredRuns.length && (
           <p role="status" className="text-sm text-muted-foreground">
             Showing newest {filteredRuns.length} of {total} {filtered ? 'matching ' : ''}runs
           </p>

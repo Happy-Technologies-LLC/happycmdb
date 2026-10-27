@@ -129,16 +129,24 @@ export interface RunPage {
 }
 
 const RUN_POLL_MS = 10_000;
+/** A run still queued/running after this long is treated as stuck: it no longer drives polling. */
+const RUN_POLL_MAX_AGE_MS = 2 * 60 * 60 * 1000;
 
 /** Shared runs query. Run actions live on other tabs/pages and do not invalidate this key, so it
- * refetches on every mount and polls while a loaded run is still queued or running. */
+ * refetches on every mount and polls while a loaded run started under two hours ago is still
+ * queued or running; older or undated active rows do not keep a tab polling forever. */
 export function allRunsQuery(filters: RunFilters = {}) {
   return queryOptions({
     queryKey: ['connector-runs', 'all', filters.status ?? 'all', filters.connectorType ?? 'all'],
     queryFn: () => connectorsApi.getAllRuns(filters),
     refetchOnMount: 'always',
-    refetchInterval: (query) =>
-      query.state.data?.runs.some((run) => run.status === 'queued' || run.status === 'running') ? RUN_POLL_MS : false,
+    refetchInterval: (query) => {
+      const now = Date.now();
+      return query.state.data?.runs.some((run) => {
+        const started = startedAtMs(run);
+        return (run.status === 'queued' || run.status === 'running') && started !== null && now - started < RUN_POLL_MAX_AGE_MS;
+      }) ? RUN_POLL_MS : false;
+    },
   });
 }
 
@@ -198,10 +206,15 @@ export function connectorRunErrorMessage(error: unknown): string {
   return 'Failed to start connector';
 }
 
+/** listConfigsSchema's maximum page size; the route defaults to 100 when no limit is sent. */
+const CONFIG_LIST_LIMIT = 1000;
+
 export const connectorsApi = {
-  // List all connector CONFIGURATIONS (deployed instances)
+  // List all connector CONFIGURATIONS (deployed instances), up to the route's maximum page.
   list: async () => {
-    const response = await apiClient.get<{ success: boolean; data: PublicConfig[] }>('/connector-configs');
+    const response = await apiClient.get<{ success: boolean; data: PublicConfig[] }>('/connector-configs', {
+      params: { limit: CONFIG_LIST_LIMIT },
+    });
     return response.data.map(displayConfig);
   },
 

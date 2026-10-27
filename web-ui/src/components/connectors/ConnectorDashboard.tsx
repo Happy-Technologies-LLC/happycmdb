@@ -140,7 +140,7 @@ export const ConnectorDashboard: React.FC = () => {
       <div>
         <div className="flex items-center justify-between gap-3 mb-4">
           <h3 className="text-lg font-semibold">Recent Connector Runs</h3>
-          {totalRuns > recentRuns.length && (
+          {!runsQuery.isError && totalRuns > recentRuns.length && (
             <div className="flex items-center gap-3">
               <p role="status" className="text-sm text-muted-foreground">
                 Showing newest {recentRuns.length} of {totalRuns} runs

@@ -50,13 +50,14 @@ function nodeScopeClause(organizationId: string | null): string {
   return organizationId === null ? '' : 'WHERE ci.organization_id = $organizationId';
 }
 
-/** HAP-784: CI CRUD commits its audit_log row in T2, so without the chain key it is refused (503) before T1. */
-function assertAuditChainReady(): void {
-  if (!auditChainReady()) throw new JournalUnavailableError();
-}
 /** HAP-784 audit changes of `fields`, v16 §3.8-encoded like the plan they ride in. */
 function auditChanges(fields: string[], previous: Record<string, unknown>, next: Record<string, unknown>): Encoded {
   return enc(fields.map(field => ({ field, old_value: previous[field] ?? null, new_value: next[field] ?? null })));
+}
+/** HAP-784/HAP-1001 UPDATE audit of the keys of `next` whose stored value differs from `current`. */
+function auditUpdate(current: Record<string, unknown>, next: Record<string, unknown>): StoredPlan['audit'] {
+  return { action: 'UPDATE', changes: auditChanges(Object.keys(next)
+    .filter(key => JSON.stringify(enc(current[key])) !== JSON.stringify(enc(next[key]))), current, next) };
 }
 
 
@@ -350,6 +351,9 @@ export class Neo4jClient {
    * pending/failed operation on the id is the gap 409.
    */
   private async admitOwned(organizationId: string, ids: string[]): Promise<boolean> {
+    // HAP-1001 D12: every owned write commits audit rows in T2, so without the chain key it is 503 before T1 (owned,
+    // foreign and missing ids alike).
+    if (!auditChainReady()) throw new JournalUnavailableError();
     await assertJournalSchema(this.runJournalStatement);
     for (const id of ids) {
       if (await this.getCI(id, organizationId, 10_000)) continue;
@@ -364,7 +368,6 @@ export class Neo4jClient {
   // CI operations. Every :CI mutation below is one journaled, fenced operation (v16 §3, §4).
   /** Direct create; the caller's server-issued `id` (REST, GraphQL: T5) is the immutable identity and journal key. */
   async createCI(ci: CIInput, organizationId: string, actor: string): Promise<CI> {
-    assertAuditChainReady();
     await assertJournalSchema(this.runJournalStatement);
     const id = (ci as { id?: string }).id || ci._id || randomUUID();
     const type = (ci as { type?: string }).type || ci._type;
@@ -388,32 +391,28 @@ export class Neo4jClient {
    * Journaled direct property update of an owned CI (state only, A-10); values are
    * stored as given (callers validate them as Neo4j-storable). Null when missing or foreign.
    * Identity, tenant, fence aliases and the incarnation never change in place.
-   * `audit` (updateCI only, HAP-784) adds the T2 audit row of the changed keys; ITIL and other callers stay unaudited.
+   * Every call (updateCI, ITIL, GraphQL) adds the T2 audit row of the changed keys (HAP-784, HAP-1001).
    */
   async updateCIProperties(id: string, props: Record<string, unknown>, organizationId: string,
-    actor: string, audit = false): Promise<Record<string, unknown> | null> {
+    actor: string): Promise<Record<string, unknown> | null> {
     if (Object.keys(props).some(key => ['id', 'organization_id', 'organizationid', 'op_id', 'reconciliation_op_id',
       'created_at', 'incarnation_id'].includes(key.replace(/^_+/, '').toLowerCase()))) {
       throw new Error('CI identity and incarnation cannot be updated');
     }
-    if (audit) assertAuditChainReady();
     return this.reconcileOwned(id, organizationId, actor, 'direct_write', async current => {
       // A pre-incarnation node gets its marker in the same W.
       const write = typeof current['incarnation_id'] === 'string' ? props : { ...props, incarnation_id: randomUUID() };
-      const plan: StoredPlan = { graph: { kind: 'update', label: null, params: enc({ id, props: write }) } };
-      if (audit) plan.audit = { action: 'UPDATE', changes: auditChanges(Object.keys(props)
-        .filter(key => JSON.stringify(enc(current[key])) !== JSON.stringify(enc(props[key]))), current, props) };
-      return plan;
+      return { graph: { kind: 'update', label: null, params: enc({ id, props: write }) }, audit: auditUpdate(current, props) };
     }, () => this.ownedProperties(id, organizationId));
   }
 
   /**
    * One journaled operation on an owned CI whose plan reads the current stored
-   * properties under the slot: direct updates, and the reconciliation merge,
+   * properties under the slot: direct updates, restore, and the reconciliation merge,
    * hold and conflict resolve (v16 §3.1, §7). Null when missing or foreign.
    */
   async reconcileOwned<T>(id: string, organizationId: string, actor: string,
-    operation: 'direct_write' | 'update' | 'resolve_conflict',
+    operation: 'direct_write' | 'update' | 'resolve_conflict' | 'restore',
     plan: (current: Record<string, unknown>) => Promise<StoredPlan>, result: (groupId: string) => Promise<T>): Promise<T | null> {
     if (!(await this.admitOwned(organizationId, [id]))) return null;
     try {
@@ -437,26 +436,21 @@ export class Neo4jClient {
       if (value === undefined || value === null) continue;
       props[key] = key === 'metadata' ? JSON.stringify(value) : value;
     }
-    return await this.updateCIProperties(id, props, organizationId, actor, true) ? this.getCI(id, organizationId) : null;
+    return await this.updateCIProperties(id, props, organizationId, actor) ? this.getCI(id, organizationId) : null;
   }
 
   /**
    * Journaled restore (v16 §4.1): `props` and the timestamps come from an
    * owned baseline; the caller has dropped reserved keys. Null when missing or foreign.
+   * HAP-1001: audited as an UPDATE of the changed keys (W keeps a stored timestamp when the baseline's is null).
    */
   async restoreCI(id: string, props: Record<string, unknown>, createdAt: unknown, discoveredAt: unknown,
     organizationId: string, actor: string): Promise<Record<string, unknown> | null> {
-    if (!(await this.admitOwned(organizationId, [id]))) return null;
-    try {
-      return await this.journal.run({
-        organizationId, actor, operation: 'restore', ciIds: [id],
-        plan: async () => ({ graph: { kind: 'restore', label: null, params: enc({ id, props, createdAt, discoveredAt }) } }),
-        result: () => this.ownedProperties(id, organizationId),
-      });
-    } catch (error) {
-      if (error instanceof JournalTargetMissingError) return null;
-      throw error;
-    }
+    return this.reconcileOwned(id, organizationId, actor, 'restore', async current => ({
+      graph: { kind: 'restore', label: null, params: enc({ id, props, createdAt, discoveredAt }) },
+      audit: auditUpdate(current, { ...props, ...Object.fromEntries(Object.entries({ created_at: createdAt,
+        discovered_at: discoveredAt }).filter(([, value]) => value !== null && value !== undefined)) }),
+    }), () => this.ownedProperties(id, organizationId));
   }
 
   /** Enumerate at most one bounded page; never serialize an entire tenant graph into SQL. */
@@ -637,7 +631,6 @@ export class Neo4jClient {
    * history is evidence and is never purged. False when missing or foreign.
    */
   async deleteCI(id: string, organizationId: string, actor: string): Promise<boolean> {
-    assertAuditChainReady();
     if (!(await this.admitOwned(organizationId, [id]))) return false;
     try {
       return await this.journal.run({
@@ -664,15 +657,20 @@ export class Neo4jClient {
    * Journaled two-key relationship write (both endpoints reserved in one T1,
    * one W with two fences). False (nothing written) when either endpoint is
    * missing or foreign, or, on delete, when no such relationship exists.
+   * HAP-1001: T2 appends one RELATIONSHIP_ADD/RELATIONSHIP_REMOVE audit row per endpoint.
    */
   async writeRelationship(kind: 'relationship_create' | 'relationship_delete', fromId: string, toId: string,
     type: string, organizationId: string, actor: string, props: Record<string, unknown> = {}): Promise<boolean> {
     const label = validateRelationshipType(type);
     if (!(await this.admitOwned(organizationId, [fromId, toId]))) return false;
+    const create = kind === 'relationship_create';
+    const relationship = { type: label, from_id: fromId, to_id: toId, ...(create ? { properties: props } : {}) };
     try {
       return await this.journal.run({
         organizationId, actor, operation: 'relationship_write', ciIds: [fromId, toId],
-        plan: async () => ({ graph: { kind, label, params: enc({ from: fromId, to: toId, props }) } }),
+        plan: async () => ({ graph: { kind, label, params: enc({ from: fromId, to: toId, props }) },
+          audit: { action: create ? 'RELATIONSHIP_ADD' : 'RELATIONSHIP_REMOVE', changes: enc([{ field: 'relationship',
+            old_value: create ? null : relationship, new_value: create ? relationship : null }]) } }),
         result: async () => true,
       });
     } catch (error) {

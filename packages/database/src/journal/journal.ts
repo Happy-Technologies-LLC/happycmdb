@@ -51,8 +51,9 @@ export interface StoredPlan {
   /**
    * HAP-784: one hash-chained audit_log row for a CI create/update/delete, appended in T2 by the
    * journal row's actor. `changes` are v16 §3.8-encoded values; on delete, T2 derives them from `history.previous`.
+   * HAP-1001: also relationship rows, and one row per journal slot (a relationship: one per endpoint).
    */
-  audit?: { action: 'CREATE' | 'UPDATE' | 'DELETE'; changes?: Encoded };
+  audit?: { action: 'CREATE' | 'UPDATE' | 'DELETE' | 'RELATIONSHIP_ADD' | 'RELATIONSHIP_REMOVE'; changes?: Encoded };
 }
 
 /** Graph runner for W and recovery: one auto-commit statement, records as plain objects. */
@@ -280,13 +281,13 @@ async function writeEvidence(client: PoolClient, row: { group_id: string; organi
 
 /** HAP-784 T2 audit row, appended after all other evidence so the global chain lock is held only until commit. */
 async function writeAudit(client: PoolClient, row: { group_id: string; organization_id: string; ci_id: string;
-  actor: string; plan: StoredPlan }): Promise<void> {
+  actor: string; operation: string; plan: StoredPlan }): Promise<void> {
   const { audit, history } = row.plan;
   if (!audit) return;
   const changes = audit.changes ?? Object.entries((history?.previous ?? {}) as Record<string, Encoded>)
     .map(([field, value]) => ({ field, old_value: value, new_value: null }));
   await appendAuditEntry(client, { entity_type: 'CI', entity_id: row.ci_id, action: audit.action, actor: row.actor,
-    actor_type: 'user', changes: changes as unknown as AuditChange[], metadata: { correlation_id: row.group_id } },
+    actor_type: 'user', changes: changes as unknown as AuditChange[], metadata: { correlation_id: row.group_id, journal_operation: row.operation } },
   row.organization_id);
 }
 
@@ -294,7 +295,7 @@ async function writeAudit(client: PoolClient, row: { group_id: string; organizat
 async function t2(groupId: string, recovery: boolean, claimToken?: string): Promise<boolean> {
   await seam?.('beforeT2', { groupId, recovery });
   return getPostgresClient().transaction(async client => {
-    const rows = (await client.query(`SELECT id, group_id, organization_id, ci_id, actor, state, plan, claim_token
+    const rows = (await client.query(`SELECT id, group_id, organization_id, ci_id, actor, operation, state, plan, claim_token
       FROM ci_reconciliation_operations WHERE group_id = $1 ORDER BY organization_id, ci_id FOR UPDATE`, [groupId])).rows;
     if (rows.every(row => row.state === 'committed')) return true;
     if (rows.some(row => row.state !== 'pending') ||
@@ -303,7 +304,8 @@ async function t2(groupId: string, recovery: boolean, claimToken?: string): Prom
     // HAP-784: 57P03 is in the sweep's backoff class, so without the key an audited op stays pending (never failed or unaudited).
     if (rows[0].plan.audit && !auditChainReady()) throw Object.assign(new Error('audit chain key unavailable'), { code: '57P03' });
     await writeEvidence(client, rows[0]);
-    await writeAudit(client, rows[0]);
+    // HAP-1001: one row per slot, last: appendAuditEntry's SET LOCAL lock_timeout lasts until this T2 commits.
+    for (const row of rows) await writeAudit(client, row);
     await client.query(`UPDATE ci_reconciliation_operations SET state = 'committed', plan = NULL,
       claim_token = NULL, updated_at = now() WHERE group_id = $1`, [groupId]);
     return true;
@@ -325,6 +327,7 @@ export class ReconciliationJournal {
   constructor(private readonly graph: JournalGraphRunner) {}
 
   async run<T>(write: JournaledWrite<T>): Promise<T> {
+    if (!auditChainReady()) throw new JournalUnavailableError(); // HAP-1001 D12: every journaled write, before T1
     await assertJournalSchema(this.graph, ['create', 'update', 'resolve_conflict'].includes(write.operation));
     const groupId = randomUUID();
     const slots = [...new Set(write.ciIds)].sort().map(ciId => ({ id: randomUUID(), ciId, operation: write.operation }));

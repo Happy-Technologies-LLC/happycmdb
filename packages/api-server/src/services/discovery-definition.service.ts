@@ -12,15 +12,10 @@ import {
   DiscoveryProvider,
 } from '@cmdb/common';
 
+// HAP-774 C-1: only ssh consumes a credential; AD/SNMP attach is unsupported and nmap forbids one.
 const PROVIDER_CREDENTIAL_PROTOCOLS: Record<string, readonly string[]> = {
   ssh: ['ssh_password', 'ssh_key'],
-  snmp: ['snmp_v2c', 'snmp_v3'],
-  'active-directory': ['kerberos', 'basic'],
 };
-
-function credentialMatchesProvider(provider: string, protocol: string): boolean {
-  return PROVIDER_CREDENTIAL_PROTOCOLS[provider]?.includes(protocol) ?? false;
-}
 
 
 function requireCredentialForProvider(provider: string, credentialId: string | null | undefined): void {
@@ -28,7 +23,19 @@ function requireCredentialForProvider(provider: string, credentialId: string | n
       (credentialId === undefined || credentialId === null || credentialId === '')) {
     throw new Error('Discovery provider requires credential');
   }
+  if (provider === 'ssh' && !credentialId) throw new Error('Discovery provider requires credential');
+  if (credentialId && !PROVIDER_CREDENTIAL_PROTOCOLS[provider]) throw new Error('Provider mismatch');
 }
+
+/** C-4: ssh dials each target, so hostnames and IP literals only (no CIDR, no range); config is already strict. */
+function rejectSshRanges(provider: string, config: { range?: unknown; targets?: string[] } | undefined): void {
+  if (provider === 'ssh' && (config?.range !== undefined || config?.targets?.some(target => target.includes('/')))) {
+    throw new Error('Invalid discovery scan configuration');
+  }
+}
+
+// C-3: owner + org + protocol in SQL, never the payload; every miss is the same "not found".
+const ATTACHABLE_CREDENTIAL = 'AND created_by = $3 AND protocol = ANY($4::text[])';
 
 /**
  * Discovery Definition Service
@@ -53,24 +60,19 @@ export class DiscoveryDefinitionService {
     try {
       await client.query('BEGIN');
       strictDiscoveryDefinitionConfig(input.config ?? {});
+      rejectSshRanges(input.provider, input.config);
       requireCredentialForProvider(input.provider, input.credential_id);
 
       // Validate that credential exists and matches provider (skip for nmap)
       if (input.credential_id) {
         const credentialResult = await client.query(
           `SELECT id AS credential_id, protocol AS provider
-           FROM credentials WHERE id = $1 AND organization_id = $2`,
-          [input.credential_id, organizationId]
+           FROM credentials WHERE id = $1 AND organization_id = $2 ${ATTACHABLE_CREDENTIAL}`,
+          [input.credential_id, organizationId, userId, PROVIDER_CREDENTIAL_PROTOCOLS['ssh']]
         );
 
         if (credentialResult.rows.length === 0) {
           throw new Error(`Credential with ID ${input.credential_id} not found`);
-        }
-
-        const credential = credentialResult.rows[0];
-
-        if (!credentialMatchesProvider(input.provider, credential.provider)) {
-          throw new Error('Provider mismatch');
         }
       }
 
@@ -220,7 +222,8 @@ export class DiscoveryDefinitionService {
   async updateDefinition(
     id: string,
     updates: Partial<DiscoveryDefinitionInput>,
-    organizationId: string
+    organizationId: string,
+    actorId?: string // D3: credential attach requires the requesting user to own it; absent actor matches nothing.
   ): Promise<DiscoveryDefinition> {
     const client = await this.postgresClient.getClient();
 
@@ -244,6 +247,9 @@ export class DiscoveryDefinitionService {
       if (updates.config !== undefined) {
         strictDiscoveryDefinitionConfig(updates.config);
       }
+      if (updates.config !== undefined || updates.provider !== undefined) {
+        rejectSshRanges(updates.provider ?? existing.provider, updates.config ?? existing.config);
+      }
       if (updates.provider !== undefined || updates.credential_id !== undefined) {
         requireCredentialForProvider(updates.provider ?? existing.provider,
           updates.credential_id ?? existing.credential_id);
@@ -253,19 +259,12 @@ export class DiscoveryDefinitionService {
       // the credential ID matches an older association.
       if (updates.credential_id) {
         const credentialResult = await client.query(
-          'SELECT id AS credential_id, protocol AS provider FROM credentials WHERE id = $1 AND organization_id = $2',
-          [updates.credential_id, organizationId]
+          `SELECT id AS credential_id, protocol AS provider FROM credentials WHERE id = $1 AND organization_id = $2 ${ATTACHABLE_CREDENTIAL}`,
+          [updates.credential_id, organizationId, actorId, PROVIDER_CREDENTIAL_PROTOCOLS['ssh']]
         );
 
         if (credentialResult.rows.length === 0) {
           throw new Error(`Credential with ID ${updates.credential_id} not found`);
-        }
-
-        const credential = credentialResult.rows[0];
-
-        const targetProvider = updates.provider || existing.provider;
-        if (!credentialMatchesProvider(targetProvider, credential.provider)) {
-          throw new Error('Provider mismatch');
         }
       }
 
@@ -274,14 +273,11 @@ export class DiscoveryDefinitionService {
           (updates.credential_id || existing.credential_id)) {
         const credentialId = updates.credential_id || existing.credential_id;
         const credentialResult = await client.query(
-          'SELECT protocol AS provider FROM credentials WHERE id = $1 AND organization_id = $2',
-          [credentialId, organizationId]
+          `SELECT protocol AS provider FROM credentials WHERE id = $1 AND organization_id = $2 ${ATTACHABLE_CREDENTIAL}`,
+          [credentialId, organizationId, actorId, PROVIDER_CREDENTIAL_PROTOCOLS['ssh']]
         );
 
         if (!credentialResult.rows.length) throw new Error('Credential not found');
-        if (!credentialMatchesProvider(updates.provider, credentialResult.rows[0].provider)) {
-          throw new Error('Provider mismatch');
-        }
       }
 
       // Validate cron expression if schedule is being updated

@@ -17,6 +17,9 @@ const ORG_B = '22222222-2222-4222-8222-222222222222';
 const LEGACY = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const CRED_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const CRED_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const CRED_OWNED = 'aaaaaaaa-aaaa-4aaa-8aaa-000000000001';
+const CRED_SNMP = 'aaaaaaaa-aaaa-4aaa-8aaa-000000000002';
+const CRED_NULL_ORG = 'aaaaaaaa-aaaa-4aaa-8aaa-000000000003';
 const host = fork(join(__dirname, 'fixtures/pglite-host.cjs'), [], { serialization: 'advanced' });
 let nextId = 0;
 const pending = new Map<number, { resolve: (rows: Record<string, unknown>[]) => void; reject: (error: Error) => void }>();
@@ -118,6 +121,7 @@ import { queueManager } from '@cmdb/database';
 import { logger } from '@cmdb/common';
 import { DiscoveryScheduler } from '../../../../../discovery-engine/src/schedulers/discovery-scheduler';
 import { discoveryDefinitionRoutes } from '../discovery-definition.routes';
+import { DiscoveryDefinitionService } from '../../../services/discovery-definition.service';
 const app = express();
 app.use(express.json());
 app.use((req, _res, next) => {
@@ -144,6 +148,10 @@ beforeAll(async () => {
   await run024Migration();
   await query(`INSERT INTO credentials (id, protocol, organization_id) VALUES ($1, 'ssh_password', $2), ($3, 'ssh_password', $4)`,
     [CRED_B, ORG_B, CRED_A, ORG_A]);
+  await exec(`ALTER TABLE credentials ADD COLUMN created_by TEXT;
+    UPDATE credentials SET created_by = CASE id WHEN '${CRED_A}' THEN 'a' ELSE 'b' END`);
+  await query(`INSERT INTO credentials (id, protocol, organization_id, created_by) VALUES ($1, 'ssh_password', $2, 'a'),
+    ($3, 'snmp_v2c', $2, 'a'), ($4, 'ssh_password', NULL, 'a')`, [CRED_OWNED, ORG_A, CRED_SNMP, CRED_NULL_ORG]);
   await query(`INSERT INTO discovery_definitions (id, name, provider, method, created_by, organization_id)
     VALUES ($1, 'legacy', 'nmap', 'agentless', 'legacy', NULL)`, [LEGACY]);
 });
@@ -201,7 +209,7 @@ test('mounted definitions isolate two organizations, redact credentials and refu
   for (const credentialId of [CRED_B, 'dddddddd-dddd-4ddd-8ddd-dddddddddddd']) {
     for (const operation of [
       request(app).post(url).set(headers('a')).send({ name: `credential-${credentialId}`, provider: 'ssh', method: 'agentless', credential_id: credentialId }),
-      request(app).put(`${url}/${idA}`).set(headers('a')).send({ credential_id: credentialId }),
+      request(app).put(`${url}/${idA}`).set(headers('a')).send({ provider: 'ssh', credential_id: credentialId }),
     ]) {
       const result = await operation;
       expect({ status: result.status, body: result.body }).toEqual({
@@ -387,6 +395,55 @@ test('credential-shaped targets are refused on write and quarantined on read and
   expect(JSON.stringify(inventory.body)).not.toContain('pw');
   expect((await query('SELECT config FROM discovery_definitions WHERE id = $1', [legacyId])).rows[0].config)
     .toEqual({ targets: [target] });
+});
+
+const sshDefinition = (user: string, credential_id: string, config?: object) => request(app).post(url).set(headers(user))
+  .send({ name: `ssh-${randomBytes(4).toString('hex')}`, provider: 'ssh', method: 'agentless', credential_id, config });
+const definitionRows = async () => (await query('SELECT id, provider, credential_id, config FROM discovery_definitions ORDER BY id')).rows;
+
+test('HAP-774 C-3: a non-owner, wrong-protocol or NULL-org credential gets the identical 404 and changes nothing', async () => {
+  expect((await sshDefinition('a', CRED_OWNED)).status).toBe(201);
+  const nmap = await request(app).post(url).set(headers('admin-a'))
+    .send({ name: 'non-owner-nmap', provider: 'nmap', method: 'agentless', config: { targets: ['192.0.2.1'] } });
+  const before = await definitionRows();
+  for (const [user, credentialId] of [['admin-a', CRED_OWNED], ['a', CRED_SNMP], ['a', CRED_NULL_ORG]]) {
+    const created = await sshDefinition(user, credentialId);
+    const updated = await request(app).put(`${url}/${nmap.body.data.id}`).set(headers(user))
+      .send({ provider: 'ssh', credential_id: credentialId });
+    expect([created, updated].map(({ status, body }) => ({ status, body }))).toEqual(Array(2).fill({
+      status: 404, body: { success: false, error: 'Not Found', message: 'Credential not found' } }));
+  }
+  expect(await definitionRows()).toEqual(before);
+});
+
+test('HAP-774 C-3 (D3 actor): a same-org non-owner re-attaching the owner credential on update gets the identical 404', async () => {
+  const owned = await sshDefinition('a', CRED_OWNED, { targets: ['192.0.2.1'] });
+  const before = await definitionRows();
+  const retarget = { credential_id: CRED_OWNED, config: { targets: ['198.51.100.7'] } };
+  const refused = await request(app).put(`${url}/${owned.body.data.id}`).set(headers('admin-a')).send(retarget);
+  expect({ status: refused.status, body: refused.body }).toEqual({
+    status: 404, body: { success: false, error: 'Not Found', message: 'Credential not found' } });
+  expect(await definitionRows()).toEqual(before);
+  expect((await request(app).put(`${url}/${owned.body.data.id}`).set(headers('a')).send(retarget)).status).toBe(200);
+});
+
+test('HAP-774 C-2: the service itself refuses an ssh definition without a credential', async () => {
+  await expect(new DiscoveryDefinitionService().createDefinition(
+    { name: 'direct-ssh', provider: 'ssh', method: 'agentless' } as never, 'a', ORG_A))
+    .rejects.toThrow('Discovery provider requires credential');
+});
+
+test('HAP-774 C-4: ssh targets are hostnames or IP literals only, never a CIDR or range', async () => {
+  const owned = await sshDefinition('a', CRED_OWNED, { targets: ['host.example.com', '192.0.2.1'] });
+  expect(owned.status).toBe(201);
+  const before = await definitionRows();
+  for (const config of [{ targets: ['192.0.2.0/24'] }, { range: '192.0.2.1' }]) {
+    const created = await sshDefinition('a', CRED_OWNED, config);
+    const updated = await request(app).put(`${url}/${owned.body.data.id}`).set(headers('a')).send({ config });
+    expect([created, updated].map(({ status, body }) => ({ status, body }))).toEqual(Array(2).fill({
+      status: 400, body: { success: false, error: 'Bad Request', message: 'Invalid discovery scan configuration' } }));
+  }
+  expect(await definitionRows()).toEqual(before);
 });
 
 

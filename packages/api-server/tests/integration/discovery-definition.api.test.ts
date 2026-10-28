@@ -321,17 +321,23 @@ describe('Discovery Definition REST API Integration Tests', () => {
 
       const definitionId = createResponse.body.data.id;
 
-      // The existence-check error reads "Credential with ID X not found", which
-      // the update controller maps to 404 (its catch matches 'not found' first).
+      // HAP-774 C-1: nmap forbids any credential: fixed 400 before any credential lookup.
       const response = await request(app)
         .put(`/api/v1/discovery/definitions/${definitionId}`)
         .send({
           credential_id: uuidv4(), // Non-existent credential
         })
-        .expect(404);
+        .expect(400);
 
       expect(response.body).toHaveProperty('success', false);
-      expect(response.body.message).toContain('Credential');
+      expect(response.body.message).toBe('Provider mismatch');
+
+      // HAP-774 C-3: on ssh the owner + org + protocol lookup misses: the identical 404.
+      const sshResponse = await request(app)
+        .put(`/api/v1/discovery/definitions/${definitionId}`)
+        .send({ provider: 'ssh', credential_id: uuidv4() })
+        .expect(404);
+      expect(sshResponse.body).toEqual({ success: false, error: 'Not Found', message: 'Credential not found' });
     });
 
     it('should return 404 when updating non-existent definition', async () => {

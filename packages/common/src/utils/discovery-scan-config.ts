@@ -75,7 +75,7 @@ export function safeDiscoveryScanConfig(input: unknown): SafeDiscoveryScanConfig
   if (!input || typeof input !== 'object' || Array.isArray(input)) return {};
   const config = input as Record<string, unknown>;
   const result: SafeDiscoveryScanConfig = {};
-  const targets = config['targets'] ?? config['_targets'];
+  const targets = config['targets'];
   if (targets !== undefined) {
     // Each target is a hostname, IP or CIDR: never userinfo, scheme, port, path, whitespace or control characters.
     if (!Array.isArray(targets) || targets.length > MAX_DISCOVERY_TARGETS ||

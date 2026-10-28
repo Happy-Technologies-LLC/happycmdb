@@ -167,7 +167,7 @@ export class DiscoveryDefinitionController {
         return;
       }
 
-      const definition = await this.service.updateDefinition(id, req.body, requestOrganizationId(req));
+      const definition = await this.service.updateDefinition(id, req.body, requestOrganizationId(req), (req as AuthenticatedRequest).user?._userId);
 
       res.json({
         success: true,

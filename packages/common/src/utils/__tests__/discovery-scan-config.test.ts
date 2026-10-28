@@ -48,3 +48,11 @@ it('malformed targets are refused and never projected', () => {
     rejectEverywhere(value);
   }
 });
+
+it('HAP-768 follow-up: newline-joined and space-padded hostnames are refused and never projected', () => {
+  for (const value of ['example.com\nroot:pw@10.0.0.5', ' example.com']) rejectEverywhere(value);
+});
+
+it('the legacy _targets alias is never read into the queue projection', () => {
+  expect(safeDiscoveryScanConfig({ _targets: ['192.0.2.1'] })).toEqual({});
+});

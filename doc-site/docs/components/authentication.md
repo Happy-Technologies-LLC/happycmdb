@@ -532,8 +532,15 @@ organization when a CI is created through `POST /api/v1/cis` or GraphQL `createC
   `DELETE` deletes nothing. Relationship, dependency and impact traversals only
   follow paths whose every node belongs to the tenant.
 - `organization_id` in a create or update body is rejected with **400**.
-- CI ids (and `external_id`s) are unique across all organizations: creating a CI
+- CI ids are unique across all organizations: creating a CI
   with an id another organization uses returns **409**, which reveals that the id exists.
+- A CI's `external_id` is unique per organization: the Neo4j constraint `ci_org_external_id_unique`
+  on `(organization_id, external_id)` lets two organizations hold the same value and rejects a
+  second CI with it in one organization; CIs without `organization_id` are not covered. New
+  databases (`init-neo4j.cypher`, `schema.cypher`) get only this constraint. An existing database
+  keeps the global `ci_external_id_unique` until an operator, after the backfill below, applies
+  `packages/database/src/neo4j/migrations/005_ci_external_id_org_unique.cypher` with `cypher-shell`
+  (pre-checks in its header; it creates the composite before it drops the global constraint).
 - CIs written by discovery, connectors, ETL and reconciliation carry no
   `organization_id` and are invisible to every organization through `/api/v1/cis`,
   `/api/v1/dashboards` and the GraphQL CI operations.

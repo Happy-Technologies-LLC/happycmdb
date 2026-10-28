@@ -136,8 +136,8 @@ else
     print_success "Created constraint: ci.id UNIQUE"
 
     docker exec $(docker ps -qf "name=neo4j") cypher-shell -u "$NEO4J_USER" -p "$NEO4J_PASSWORD" \
-        "CREATE CONSTRAINT ci_external_id_unique IF NOT EXISTS FOR (ci:CI) REQUIRE ci.external_id IS UNIQUE" 2>/dev/null || true
-    print_success "Created constraint: ci.external_id UNIQUE"
+        "CREATE CONSTRAINT ci_org_external_id_unique IF NOT EXISTS FOR (ci:CI) REQUIRE (ci.organization_id, ci.external_id) IS UNIQUE" 2>/dev/null || true
+    print_success "Created constraint: (ci.organization_id, ci.external_id) UNIQUE"
 
     # Create basic indexes
     docker exec $(docker ps -qf "name=neo4j") cypher-shell -u "$NEO4J_USER" -p "$NEO4J_PASSWORD" \

@@ -16,7 +16,7 @@
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import * as bcrypt from 'bcrypt';
-import { createHash } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
 import type { Response } from 'express';
 import { AuthService, AuthRepository, UserProfileUpdate } from '../auth.service';
 import { JWTService } from '../jwt.service';
@@ -24,6 +24,7 @@ import { bcryptKey, isDefaultEquivalent } from '../default-credentials';
 import { PasswordService } from '../password.service';
 import { AuthMiddleware } from '../../middleware/auth.middleware';
 import type { ApiKey, AuthenticatedRequest, TokenPayload, User } from '../types';
+import { AmbiguousUserIdentityError } from '../types';
 
 const authConfig = {
   jwt: {
@@ -42,7 +43,7 @@ const DEFAULT = 'Admin123!';
 const CYCLE = 'Admin123!\u0000'.repeat(8);
 /** Strings bcrypt treats as the same key as 'Admin123!' (key = utf8(p) ‖ 0x00, cycled to 72 bytes). */
 const EQUIVALENT = [CYCLE.slice(0, 59), CYCLE.slice(0, 72), CYCLE.slice(0, 80)];
-const OPERATOR_PASSWORD = 'operator-chosen-16';
+const OPERATOR_PASSWORD = randomBytes(12).toString('hex');
 /** Every refused login is the same uniform failure (main #63), whatever the S6 cause. */
 const INVALID = { name: 'Error', message: 'Authentication failed', reason: 'invalid' };
 /** A default-equivalent login: the same failure, with only the logged reason distinct (N-21). */
@@ -448,6 +449,61 @@ describe('N-21 SEC12-02: per-request paths never run bcrypt; a non-bcrypt hash i
       await expect(service.verifyToken(existing)).resolves.toMatchObject({ _userId: 'n', _cep: 0 });
     }
   );
+});
+
+describe('HAP-552 every login attempt costs exactly one bcrypt compare, whatever its outcome', () => {
+  type Account = 'none' | 'ambiguous' | 'operator' | 'disabled' | 'missing' | 'plaintext' | 'default';
+  const attemptAs = (id: string, secret: string) => service.login({ username: id, password: secret });
+
+  it.each([
+    ['T1a no such account', 'none', OPERATOR_PASSWORD, 'invalid', 'dummy'],
+    ['T1b no such account, default password', 'none', DEFAULT, 'invalid', 'dummy'],
+    ['T1c ambiguous identity', 'ambiguous', OPERATOR_PASSWORD, 'ambiguous_identity', 'dummy'],
+    ['T1d disabled account', 'disabled', OPERATOR_PASSWORD, 'disabled', 'stored'],
+    ['T1e NUL password', 'operator', `${OPERATOR_PASSWORD}\u0000x`, 'invalid', 'stored'],
+    ['T1f missing stored hash', 'missing', OPERATOR_PASSWORD, 'invalid', 'dummy'],
+    ['T1g non-bcrypt stored hash', 'plaintext', OPERATOR_PASSWORD, 'invalid', 'dummy'],
+    ['T1h default-equivalent refused', 'default', DEFAULT, 'default_credential_refused', 'stored'],
+    ['T1i wrong password', 'operator', `${OPERATOR_PASSWORD}-wrong`, 'invalid', 'stored'],
+    ['T1j correct password', 'operator', OPERATOR_PASSWORD, 'ok', 'stored'],
+  ] as Array<[string, Account, string, string, 'stored' | 'dummy']>)('%s', async (_label, account, password, reason, compared) => {
+    const stored = ({ operator: operatorHash, disabled: operatorHash, default: defaultHash, plaintext: DEFAULT } as Record<string, string>)[account];
+    if (account === 'ambiguous') {
+      jest.spyOn(repository, 'findUserByUsername').mockRejectedValue(new AmbiguousUserIdentityError());
+    } else if (account !== 'none') {
+      repository.users.set('u', user('u', { _passwordHash: stored, _enabled: account !== 'disabled' }));
+    }
+    const verify = jest.spyOn(PasswordService.prototype, 'verify');
+
+    const attempt = attemptAs('u', password);
+    if (reason === 'ok') {
+      await expect(attempt).resolves.toMatchObject({ _accessToken: expect.any(String) });
+    } else {
+      await expect(attempt).rejects.toMatchObject({ message: 'Authentication failed', reason });
+    }
+
+    expect(verify).toHaveBeenCalledTimes(1);
+    const hash = verify.mock.calls[0]![1];
+    expect(bcrypt.getRounds(hash)).toBe(authConfig.bcrypt.rounds);
+    if (compared === 'stored') {
+      expect(hash).toBe(stored);
+    } else {
+      expect([operatorHash, defaultHash]).not.toContain(hash);
+    }
+  });
+
+  it('creates the dummy hash once, on the first attempt whatever its outcome', async () => {
+    repository.users.set('o', user('o', { _passwordHash: operatorHash }));
+    repository.users.set('d', user('d', { _passwordHash: operatorHash, _enabled: false }));
+    const hash = jest.spyOn(PasswordService.prototype, 'hash');
+
+    await expect(attemptAs('o', OPERATOR_PASSWORD)).resolves.toBeDefined();
+    expect(hash).toHaveBeenCalledTimes(1);
+
+    await expect(attemptAs('ghost', OPERATOR_PASSWORD)).rejects.toMatchObject(INVALID);
+    await expect(attemptAs('d', OPERATOR_PASSWORD)).rejects.toMatchObject({ reason: 'disabled' });
+    expect(hash).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('N-21 P-6 dedicated platform-admin flag with seeded-account exclusion', () => {

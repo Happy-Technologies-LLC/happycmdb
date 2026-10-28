@@ -144,10 +144,14 @@ function asAuthFailure(error: unknown): AuthFailureError {
   return new AuthFailureError('store_error', error);
 }
 
+/** A stored hash bcrypt compares at its own cost ($2a/$2b/$2y, two-digit cost, 53-char salt+digest). */
+const BCRYPT_HASH = /^\$2[aby]\$\d{2}\$[./A-Za-z0-9]{53}$/;
+
 export class AuthService {
   private jwtService: JWTService;
   private passwordService: PasswordService;
   private repository: AuthRepository;
+  private dummyHash: Promise<string> | undefined;
 
   constructor(
     _config: ConfigSchema['auth'],
@@ -161,8 +165,11 @@ export class AuthService {
   /**
    * Login with username and password.
    *
+   * Every attempt makes exactly one bcrypt compare before any outcome is
+   * decided (HAP-552): against a usable stored hash, else the dummy hash.
+   *
    * Outside development (HP1-S6, v16 §1.1): a default-equivalent password is
-   * refused before anything else, and if it matches the stored hash the
+   * always refused, and if it matches the stored hash the
    * account is marked; a password containing U+0000 is refused; a marked
    * account never gets tokens; login never clears the marker. Tokens carry
    * the credential generation of the user read whose hash was compared, and
@@ -172,22 +179,30 @@ export class AuthService {
   async login(request: LoginRequest): Promise<LoginResponse> {
     const { username, password } = request;
     try {
-      const user = await this.repository.findUserByUsername(username);
+      const dummyHash = await this.loginDummyHash();
+      let lookupFailure: { error: unknown } | undefined;
+      const user = await this.repository.findUserByUsername(username).catch((error: unknown) => {
+        lookupFailure = { error };
+        return null;
+      });
+      // Exactly one compare, whatever the lookup found; a dummy compare never matches.
+      const stored = user?._passwordHash;
+      const usable = typeof stored === 'string' && BCRYPT_HASH.test(stored);
+      const matched = (await this.verifyPassword(password, usable ? stored : dummyHash)) && usable;
+      if (lookupFailure !== undefined) throw lookupFailure.error;
       if (!user) throw new AuthFailureError('invalid');
       if (!user._enabled) throw new AuthFailureError('disabled');
 
       const refuseDefaults = defaultCredentialsRefused();
       if (refuseDefaults) {
         if (isDefaultEquivalent(password)) {
-          await this.markIfDefaultHash(user, password);
+          if (matched) await this.markIfDefaultHash(user);
           throw new AuthFailureError('default_credential_refused');
         }
         if (containsNul(password)) throw new AuthFailureError('invalid');
       }
 
-      if (!(await this.verifyPassword(password, user._passwordHash))) {
-        throw new AuthFailureError('invalid');
-      }
+      if (!matched) throw new AuthFailureError('invalid');
       if (refuseDefaults && user._defaultPasswordSuspect === true) {
         throw new AuthFailureError('invalid');
       }
@@ -549,14 +564,25 @@ export class AuthService {
   }
 
   /**
-   * A refused default-equivalent login whose password matches the stored
+   * bcrypt hash of 32 random bytes at the configured cost, created on the
+   * first login attempt and memoized; compared when there is no usable stored
+   * hash so that every attempt costs exactly one compare (HAP-552). Its
+   * plaintext is discarded. A failed generation is not memoized.
+   */
+  private loginDummyHash(): Promise<string> {
+    this.dummyHash ??= this.passwordService.hash(randomBytes(32).toString('hex')).catch((error: unknown) => {
+      this.dummyHash = undefined;
+      throw error;
+    });
+    return this.dummyHash;
+  }
+
+  /**
+   * A refused default-equivalent login whose password matched the stored
    * hash marks the account (transition only) and audits that transition.
    * Failures here never turn the refusal into a different response.
    */
-  private async markIfDefaultHash(user: User, password: string): Promise<void> {
-    if (!(await this.verifyPassword(password, user._passwordHash))) {
-      return;
-    }
+  private async markIfDefaultHash(user: User): Promise<void> {
     try {
       if (await this.repository.markDefaultSuspect(user)) {
         await this.repository.recordCredentialEvent({ userId: user._id, event: 'default_marker_set_login', actor: user._id });

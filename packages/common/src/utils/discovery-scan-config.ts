@@ -1,6 +1,8 @@
 // Copyright 2026 Happy Technologies LLC
 // SPDX-License-Identifier: Apache-2.0
 
+import { isIP } from 'net';
+
 const SCAN_MODE_KEYS = ['aggressive', 'osDetection', 'serviceDetection', 'fullPortScan', 'portScan'] as const;
 type ScanModeKey = typeof SCAN_MODE_KEYS[number];
 
@@ -8,6 +10,18 @@ export interface SafeDiscoveryScanConfig {
   targets?: string[];
   range?: string;
   scanOptions?: Partial<Record<ScanModeKey, boolean>>;
+}
+
+const MAX_DISCOVERY_TARGETS = 256;
+// Same RFC 1123 grammar as security/discovery-egress.ts; egress allow/deny policy stays at execution.
+const HOSTNAME = /^(?=.{1,253}$)[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?)*\.?$/;
+
+/** Syntax only: an IP literal (no zone id) or CIDR with an in-family prefix. */
+function isDiscoveryRange(value: string): boolean {
+  const [address = '', prefix, extra] = value.split('/');
+  const family = /^[0-9a-fA-F.:]+$/.test(address) ? isIP(address) : 0;
+  if (!family || extra !== undefined) return false;
+  return prefix === undefined || (/^(0|[1-9]\d{0,2})$/.test(prefix) && Number(prefix) <= (family === 4 ? 32 : 128));
 }
 
 /** Definition writes must not retain opaque values that readers can later retrieve. */
@@ -63,11 +77,14 @@ export function safeDiscoveryScanConfig(input: unknown): SafeDiscoveryScanConfig
   const result: SafeDiscoveryScanConfig = {};
   const targets = config['targets'] ?? config['_targets'];
   if (targets !== undefined) {
-    if (!Array.isArray(targets) || targets.some(target => typeof target !== 'string')) {
+    // Each target is a hostname, IP or CIDR: never userinfo, scheme, port, path, whitespace or control characters.
+    if (!Array.isArray(targets) || targets.length > MAX_DISCOVERY_TARGETS ||
+        targets.some(target => typeof target !== 'string' || !(HOSTNAME.test(target) || isDiscoveryRange(target)))) {
       throw new Error('Invalid discovery targets');
     }
     result.targets = targets;
   } else if (typeof config['range'] === 'string') {
+    if (!isDiscoveryRange(config['range'])) throw new Error('Invalid discovery range');
     result.range = config['range'];
   }
 

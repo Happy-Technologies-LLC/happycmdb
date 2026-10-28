@@ -348,6 +348,47 @@ test('admin inventory lists only tenant-owned quarantined IDs without stored con
     .toEqual({ credentials: { password: secret } });
 });
 
+test('credential-shaped targets are refused on write and quarantined on read and run', async () => {
+  const target = 'root:pw@10.0.0.5';
+  const control = { targets: ['example.com', '10.0.0.5', '2001:db8::1'], scanOptions: { serviceDetection: true } };
+  const created = await request(app).post(url).set(headers('a'))
+    .send({ name: `grammar-${randomBytes(4).toString('hex')}`, provider: 'nmap', method: 'agentless', config: control });
+  expect(created.status).toBe(201);
+  const controlId = created.body.data.id;
+  const invalidConfig = { success: false, error: 'Bad Request', message: 'Invalid discovery scan configuration' };
+  const refused = [
+    await request(app).post(url).set(headers('a'))
+      .send({ name: 'credential-target', provider: 'nmap', method: 'agentless', config: { targets: [target] } }),
+    await request(app).put(`${url}/${controlId}`).set(headers('a')).send({ config: { targets: [target] } }),
+  ];
+  for (const result of refused) {
+    expect({ status: result.status, body: result.body }).toEqual({ status: 400, body: invalidConfig });
+    expect(JSON.stringify(result.body)).not.toMatch(/pw|10\.0\.0\.5/);
+  }
+  expect((await request(app).get(`${url}/${controlId}`).set(headers('viewer'))).body.data.config).toEqual(control);
+  expect((await query('SELECT config FROM discovery_definitions WHERE id = $1', [controlId])).rows[0].config).toEqual(control);
+  const legacyId = 'dddddddd-dddd-4ddd-8ddd-000000000768';
+  await query(`INSERT INTO discovery_definitions (id, name, provider, method, config, created_by, organization_id)
+    VALUES ($1, 'credential-target', 'nmap', 'agentless', $2::jsonb, 'a', $3)`,
+  [legacyId, JSON.stringify({ targets: [target] }), ORG_A]);
+  const detail = await request(app).get(`${url}/${legacyId}`).set(headers('viewer'));
+  const listed = await request(app).get(url).set(headers('viewer'));
+  expect(detail.body.data.config).toEqual({});
+  expect(listed.body.data.find((row: { id: string }) => row.id === legacyId).config).toEqual({});
+  expect(JSON.stringify([detail.body, listed.body])).not.toContain('pw');
+  expect((await request(app).post(`${url}/${legacyId}/run`).set(headers('a'))).status).toBe(503);
+  const scheduler = Object.create(DiscoveryScheduler.prototype) as DiscoveryScheduler;
+  Object.assign(scheduler, { queueManager, definitionMappings: new Map() });
+  await expect(scheduler.scheduleDefinition(legacyId, ORG_A))
+    .rejects.toThrow('Unsafe legacy discovery configuration requires migration');
+  const inventory = await request(app).get(inventoryUrl).set(headers('admin-a'));
+  expect(inventory.body.data).toContain(legacyId);
+  expect(inventory.body.data).not.toContain(controlId);
+  expect(JSON.stringify(inventory.body)).not.toContain('pw');
+  expect((await query('SELECT config FROM discovery_definitions WHERE id = $1', [legacyId])).rows[0].config)
+    .toEqual({ targets: [target] });
+});
+
 
 test('real migrator applies, rolls back and reapplies organization migration on disposable schema', async () => {
   await exec(readFileSync(join(migrationDir, 'rollback/024_discovery_definition_organization_scope.down.sql'), 'utf8'));

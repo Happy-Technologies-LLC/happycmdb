@@ -712,11 +712,11 @@ describe('infrastructure/scripts/init-neo4j.cypher sample data (scripts/db-init.
       .map(({ statement }) => statement.split('\n')[0]);
     expect(badSeeds).toEqual([]);
 
-    // Apart from the index, no other statement touches organization_id: a re-run of
+    // Apart from the index and the per-org external_id constraint, no other statement touches organization_id: a re-run of
     // db-init must not claim CIs written by discovery, connectors, ETL or the API.
     const otherWriters = all
       .filter(s => s.includes('organization_id') && !seeded.some(({ statement }) => statement === s))
-      .filter(s => !/^CREATE INDEX ci_organization_id_idx IF NOT EXISTS\s+FOR \(ci:CI\) ON \(ci\.organization_id\)$/.test(s))
+      .filter(s => !/^CREATE INDEX ci_organization_id_idx IF NOT EXISTS\s+FOR \(ci:CI\) ON \(ci\.organization_id\)$|^CREATE CONSTRAINT ci_org_external_id_unique IF NOT EXISTS\s+FOR \(ci:CI\) REQUIRE \(ci\.organization_id, ci\.external_id\) IS UNIQUE$/.test(s))
       .map(s => s.split('\n')[0]);
     expect(otherWriters).toEqual([]);
   });

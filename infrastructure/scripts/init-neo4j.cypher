@@ -10,9 +10,9 @@
 CREATE CONSTRAINT ci_id_unique IF NOT EXISTS
 FOR (ci:CI) REQUIRE ci.id IS UNIQUE;
 
-// Unique constraint on CI.external_id - External system identifier
-CREATE CONSTRAINT ci_external_id_unique IF NOT EXISTS
-FOR (ci:CI) REQUIRE ci.external_id IS UNIQUE;
+// CI.external_id is unique per organization (mirrors neo4j migration 005)
+CREATE CONSTRAINT ci_org_external_id_unique IF NOT EXISTS
+FOR (ci:CI) REQUIRE (ci.organization_id, ci.external_id) IS UNIQUE;
 
 // HP1-S1 operator fence 004, fresh databases only.
 CREATE CONSTRAINT reconciliation_op_fence_unique IF NOT EXISTS

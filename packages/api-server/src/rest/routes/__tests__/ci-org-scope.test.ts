@@ -27,6 +27,9 @@ import neo4j from 'neo4j-driver';
 import {
   Neo4jClient, CITraversalLimitError, createCITraversalWork,
 } from '../../../../../database/src/neo4j/client';
+import * as journalModule from '../../../../../database/src/journal/journal';
+import type { JournaledWrite } from '../../../../../database/src/journal/journal';
+import { dec } from '../../../../../database/src/journal/encoding';
 
 // Placeholder config so loadConfig() validates; no Neo4j/Redis/PostgreSQL server is contacted.
 // The signing secret is generated per run in memory; no literal credential.
@@ -531,9 +534,10 @@ describe('/api/v1/cis tenant scoping', () => {
   });
 
   // Journaled create/update/delete with real stores: tests/integration hp1-s4a-journal.
-  it('POST/PUT /cis refuse chosen and external IDs and organization aliases before any store access', async () => {
+  it('POST/PUT /cis refuse chosen IDs, invalid external IDs and organization aliases before any store access', async () => {
     const body = { name: 'new-server', type: 'server' };
-    for (const extra of [{ external_id: 'external-missing' }, { organization_id: ORG_B }, { _organizationId: ORG_B }]) {
+    for (const extra of [{ external_id: 'a\u0001b' }, { external_id: 'x'.repeat(201) }, { external_id: '' },
+      { organization_id: ORG_B }, { _organizationId: ORG_B }]) {
       expect((await request(app).post('/api/v1/cis').set(AS_A).send({ ...body, ...extra })).status).toBe(400);
     }
     // T5: a foreign-owned and an unused id get one identical 400, so a chosen id is no cross-org oracle.
@@ -546,6 +550,45 @@ describe('/api/v1/cis tenant scoping', () => {
       expect((await request(app).put('/api/v1/cis/ci-a-app').set(AS_A).send(update)).status).toBe(400);
     }
     expect(graph.nodes.get('ci-a-app')!['organization_id']).toBe(ORG_A);
+  });
+
+  it('POST /cis stores a client external_id only when the schema gate is ready; PUT never passes it on (FD17-S3)', async () => {
+    const COMPOSITE = { labelsOrTypes: ['CI'], properties: ['organization_id', 'external_id'] };
+    const GLOBAL = { labelsOrTypes: ['CI'], properties: ['external_id'] };
+    let constraints: object[] = [COMPOSITE]; // ready: 005 applied
+    let probes = 0;
+    const seam = neo4jClient as unknown as { journalDriver?: unknown };
+    const realJournalDriver = seam.journalDriver;
+    seam.journalDriver = { session: () => ({ close: async () => undefined, run: async () => {
+      probes++;
+      return { records: constraints.map(row => ({ toObject: () => row })) };
+    } }) };
+    const schema = jest.spyOn(journalModule, 'assertJournalSchema').mockResolvedValue();
+    // The journal itself is covered with real stores (tests/integration); here W just applies the create plan.
+    const journal = jest.spyOn(neo4jClient.journal, 'run').mockImplementation((async (write: JournaledWrite<unknown>) => {
+      const { id, props } = dec((await write.plan()).graph!.params) as { id: string; props: Props };
+      graph.nodes.set(id, { ...props, id, organization_id: write.organizationId });
+      return write.result('group');
+    }) as typeof neo4jClient.journal.run);
+    const update = jest.spyOn(neo4jClient, 'updateCI').mockResolvedValue(null);
+    try {
+      const post = (extra: object) => request(app).post('/api/v1/cis').set(AS_A).send({ name: 'n', type: 'server', ...extra });
+      const UNAVAILABLE = { success: false, error: 'Service Unavailable', message: 'CI write temporarily unavailable' };
+      const created = await post({ external_id: 'ext-1' });
+      expect([created.status, created.body.data.external_id]).toEqual([201, 'ext-1']);
+      expect(graph.nodes.get(created.body.data.id)).toMatchObject({ organization_id: ORG_A, external_id: 'ext-1' });
+      for (const rows of [[], [GLOBAL], [COMPOSITE, GLOBAL]]) { // probed on every create: no cached "ready"
+        constraints = rows;
+        const refused = await post({ external_id: 'ext-1' });
+        expect([refused.status, refused.body, journal.mock.calls.length]).toEqual([503, UNAVAILABLE, 1]);
+      }
+      expect([(await post({})).status, probes]).toEqual([201, 4]); // no external_id: no probe
+      await request(app).put('/api/v1/cis/ci-a-app').set(AS_A).send({ name: 'renamed', external_id: 'ext-2' });
+      expect(update.mock.calls).toEqual([['ci-a-app', { name: 'renamed' }, ORG_A, 'user-a']]);
+    } finally {
+      seam.journalDriver = realJournalDriver;
+      [schema, journal, update].forEach(spy => spy.mockRestore());
+    }
   });
 
   it("GET /cis/:id/impact excludes other orgs' nodes", async () => {

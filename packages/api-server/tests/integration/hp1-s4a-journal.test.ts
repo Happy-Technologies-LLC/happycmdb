@@ -1151,8 +1151,8 @@ it('F7 H-2/H-4 and the old-then-new writer cutover: NULL-org history and global 
 });
 
 describe('H-1 (v16 §3.1, §15 H-1): REST merge creates through the journal under the deployed external_id constraint', () => {
-  // Deployed Neo4j (schema.cypher, init-neo4j.cypher) makes CI.external_id globally unique; the integration
-  // global setup does not. Added here, and dropped afterwards only when this block added it.
+  // A Neo4j database not yet migrated by 005 keeps the global CI.external_id constraint; the initializers and the
+  // integration global setup create only the per-org one. Added here, and dropped afterwards only when this block added it.
   let added = false;
   beforeAll(async () => {
     added = (await cypher("SHOW CONSTRAINTS YIELD name WHERE name = 'ci_external_id_unique' RETURN name")).length === 0;

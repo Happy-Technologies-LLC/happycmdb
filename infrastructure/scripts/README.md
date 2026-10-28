@@ -234,6 +234,9 @@ For existing Neo4j databases an operator must separately apply
 after reserved `002` and `003`, and verify the constraint is ONLINE. The
 initializers mirror `004` for **new databases only**; do not rerun the seed
 initializer on an existing graph. This change authorizes no operator action.
+Likewise `005_ci_external_id_org_unique.cypher`, a manual step after `004` and
+the CI organization backfill (pre-checks in its header), replaces the global
+`CI.external_id` constraint with the per-organization one.
 
 This is expansion, not writer cutover: legacy global unique keys, org-less
 inserts and updates remain valid. The global keys still prevent two tenants

@@ -480,7 +480,7 @@ describe('GraphQL CI Resolvers', () => {
     const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
     it('createCI rejects a client _id or _externalId identically whether or not another org uses it, with zero Neo4j calls', async () => {
-      // Global uniqueness as Neo4j enforces it: a value another org already uses fails the CREATE.
+      // Global uniqueness as Neo4j enforces it on ids (and on external_id before 005): a value another org already uses fails the CREATE.
       client().createCI.mockImplementation(async (ci: { _id: string; external_id?: string }) => {
         if (ci._id === 'ci-of-org-b' || ci.external_id === 'ext-of-org-b') {
           throw new Error('Node(7) already exists with label `CI` and property `id`');

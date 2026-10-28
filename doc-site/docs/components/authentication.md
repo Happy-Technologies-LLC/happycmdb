@@ -481,8 +481,8 @@ organization of the `:CI` node it versions.
   marker until the node is readable. Until a run completes, the internal organization
   can map those CIs; such mapping rows stay listed by `GET /:id/cis` afterwards but add
   nothing to `/costs`.
-- `POST /api/v1/cis` rejects an `id` longer than 100 characters or an `external_id`
-  longer than 200 (the `cmdb.dim_ci` column widths) with **400**. Other values, such as
+- `POST /api/v1/cis` rejects any `id` (ids are server-issued) and an `external_id`
+  longer than 200 (the `cmdb.dim_ci` column width) with **400**. Other values, such as
   `metadata`, are not bounded; a CI whose values cannot be loaded is skipped by the ETL
   without failing other CIs (see above).
 - `POST /api/v1/itil/baselines/:id/restore` never writes a CI's `created_at` (nor its
@@ -532,8 +532,8 @@ organization when a CI is created through `POST /api/v1/cis` or GraphQL `createC
   `DELETE` deletes nothing. Relationship, dependency and impact traversals only
   follow paths whose every node belongs to the tenant.
 - `organization_id` in a create or update body is rejected with **400**.
-- CI ids are unique across all organizations: creating a CI
-  with an id another organization uses returns **409**, which reveals that the id exists.
+- CI ids are server-issued and globally unique: a create body with an `id` returns the same
+  **400** whether or not another organization uses that id, so it reveals nothing.
 - A CI's `external_id` is unique per organization: the Neo4j constraint `ci_org_external_id_unique`
   on `(organization_id, external_id)` lets two organizations hold the same value and rejects a
   second CI with it in one organization; CIs without `organization_id` are not covered. New
@@ -541,6 +541,13 @@ organization when a CI is created through `POST /api/v1/cis` or GraphQL `createC
   keeps the global `ci_external_id_unique` until an operator, after the backfill below, applies
   `packages/database/src/neo4j/migrations/005_ci_external_id_org_unique.cypher` with `cypher-shell`
   (pre-checks in its header; it creates the composite before it drops the global constraint).
+- `POST /api/v1/cis` accepts an optional `external_id` (at most 200 characters, no control
+  characters, stored as sent, not trimmed); `PUT /api/v1/cis/:id` ignores it. Another
+  organization's value is created normally (**201**). A value already used in the caller's
+  organization returns **409** `{"success":false,"error":"Conflict","message":"CI could not be reconciled"}`
+  without echoing it. Until the database has `ci_org_external_id_unique` and no uniqueness
+  constraint on `external_id` alone (checked by shape on every such create), any create with an
+  `external_id` returns **503** `CI write temporarily unavailable`, whatever the value.
 - CIs written by discovery, connectors, ETL and reconciliation carry no
   `organization_id` and are invisible to every organization through `/api/v1/cis`,
   `/api/v1/dashboards` and the GraphQL CI operations.

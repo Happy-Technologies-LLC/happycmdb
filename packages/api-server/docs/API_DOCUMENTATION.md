@@ -1707,10 +1707,10 @@ query GetImpactAnalysis($id: ID!, $depth: Int) {
 #### createCI
 
 Create a new CI in the caller's organization. The server assigns the CI id (a UUID,
-returned as `_id`); `CreateCIInput` has no `_id` or `_externalId`, because CI ids and
-external ids are unique across all organizations and a client-chosen value would
-reveal whether another organization uses it. Use REST `POST /cis` to set an
-`external_id`. The other fields are validated with the same schema as `POST /cis`
+returned as `_id`); `CreateCIInput` has no `_id` or `_externalId`. A client-chosen id
+could reveal whether another organization uses it; an `external_id` (unique per
+organization) can be set only through REST `POST /cis` for now. The other fields
+are validated with the same schema as `POST /cis`
 (`ciInputSchema`): for example `_name` must be 1-500 characters and `_discoveredAt`
 must be an ISO date, stored normalised the same way REST stores it (e.g. `2024-02-30`
 becomes `2024-03-01T00:00:00.000Z`). Validation failures return `BAD_USER_INPUT`.

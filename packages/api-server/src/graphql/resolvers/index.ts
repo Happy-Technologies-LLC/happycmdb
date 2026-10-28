@@ -581,10 +581,10 @@ const Mutation = {
   /**
    * Create a new CI in the caller's organization. The organization comes only
    * from the token: the input fields are whitelisted, so no input can set it.
-   * CI ids and external ids are unique across all organizations, so a client
-   * choosing either could probe another organization's CIs (free value:
-   * created; used value: rejected). The server therefore assigns the id, and
-   * neither `_id` nor `_externalId` is accepted.
+   * A client choosing a globally unique CI id could probe another organization's
+   * CIs (free value: created; used value: rejected), so the server assigns the
+   * id. `_externalId` (unique per organization) is not accepted here either;
+   * REST create sets it behind the FD17 schema gate.
    */
   createCI: async (
     __parent: unknown,

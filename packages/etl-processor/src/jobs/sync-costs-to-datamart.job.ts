@@ -18,6 +18,7 @@ import { Job } from 'bullmq';
 import { logger } from '@cmdb/common';
 import { getPostgresClient } from '@cmdb/database';
 import { format } from 'date-fns';
+import { INTERNAL_ORGANIZATION_ID } from '../transformers/ci-organization';
 
 /**
  * Valid `tbm_cost_pools.cost_pool_type` values, mirroring the
@@ -351,13 +352,14 @@ async function enrichCostPoolMetadata(pool: any): Promise<{
 
       const resourceId = metadata.resourceId || metadata.resource_id;
       if (resourceId) {
-        // Check if CI exists in dim_ci
+        // Check if CI exists in dim_ci. Cost pools are org-less system data, so only the internal
+        // organization's CIs may match (FD17-S1): a tenant CI's external_id never links a pool.
         const ciResult = await poolInstance.query(
           `SELECT ci_key, ci_name, ci_type
            FROM cmdb.dim_ci
-           WHERE external_id = $1 AND is_current = true
+           WHERE external_id = $1 AND is_current = true AND organization_id = $2
            LIMIT 1`,
-          [resourceId]
+          [resourceId, INTERNAL_ORGANIZATION_ID]
         );
 
         if (ciResult.rows.length > 0) {

@@ -426,9 +426,10 @@ paths:
       summary: Create new CI
       description: >-
         Create a CI with a server-assigned globally unique id through the HP1
-        journal. Rejects id, external_id, organization_id and any reserved alias
+        journal. Rejects id, organization_id and any reserved alias
         (`_id`, `op_id`, `organizationId`, ...) at the top level or inside
-        metadata with 400.
+        metadata with 400. An optional `external_id` is unique per organization;
+        PUT ignores it.
       operationId: createCI
       requestBody:
         required: true
@@ -491,7 +492,19 @@ paths:
         '403':
           $ref: '#/components/responses/CIForbidden'
         '409':
-          description: Unlikely server-generated ID collision; no client-chosen ID accepted
+          description: >-
+            `external_id` already used by another CI of the caller's organization
+            (the body never echoes the value; another organization's value is no
+            conflict), or an unlikely server-generated ID collision
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: >-
+            Journal schema not ready; or, with `external_id`, the database lacks
+            the per-organization constraint (Neo4j migration 005) or still has a
+            uniqueness constraint on external_id alone. Independent of the value.
           content:
             application/json:
               schema:
@@ -4044,6 +4057,13 @@ components:
       type: object
       required: [name, type]
       properties:
+        external_id:
+          type: string
+          maxLength: 200
+          pattern: '^\P{Cc}*$'
+          description: >-
+            Optional external system id, unique per organization; no control
+            characters, stored as sent (not trimmed); create only
         name:
           type: string
         type:

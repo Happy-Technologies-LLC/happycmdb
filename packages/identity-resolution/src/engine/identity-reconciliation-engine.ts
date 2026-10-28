@@ -459,8 +459,8 @@ export class IdentityReconciliationEngine {
   /**
    * v16 §3.1/§3.3, §15 H-1: one journaled `create` under the id of (O, source, source_id). W stamps the verified
    * org; T2 writes exactly one `created` history row, the lineage and the attribute field sources.
-   * `external_id` never reaches the node: the deployed constraint on it is global, so a collision
-   * would disclose another org's value. That identity is O's lineage (findByExternalId).
+   * `external_id` never reaches the node: a database not yet migrated by Neo4j 005 keeps a global constraint on it,
+   * so a collision would disclose another org's value. That identity is O's lineage (findByExternalId).
    */
   private async createFromMerge(ci: TransformedCI, organizationId: string, actor: string): Promise<MergeOutcome> {
     const { source, source_id: sourceId } = ci;

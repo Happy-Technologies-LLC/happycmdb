@@ -150,6 +150,27 @@ export async function assertJournalSchema(graph: JournalGraphRunner, merge = fal
   if (!schemaReady || (merge && !mergeReady)) throw new JournalUnavailableError();
 }
 
+/**
+ * FD17-S3 (D17-5, D17-6) gate for a CI create carrying `external_id`, by constraint shape, not name: ready only when a
+ * uniqueness constraint covers exactly :CI(organization_id, external_id) (Neo4j 005) and no node uniqueness or key constraint
+ * on any label covers external_id without organization_id (e.g. the un-migrated global one, whose 409 on a foreign value
+ * would reveal it). Probed on every call and never cached: a re-created global constraint closes it at once.
+ */
+export async function assertExternalIdSchema(graph: JournalGraphRunner): Promise<void> {
+  let ready = false;
+  try {
+    const keys = (await graph(`SHOW CONSTRAINTS YIELD entityType, type, labelsOrTypes, properties
+      WHERE entityType = 'NODE' AND (type CONTAINS 'UNIQUENESS' OR type ENDS WITH 'KEY') AND 'external_id' IN properties
+      RETURN labelsOrTypes, properties`, {}))
+      .map(row => [row['labelsOrTypes'], row['properties']].map(list => (Array.isArray(list) ? list : []) as unknown[]));
+    ready = keys.some(([labels, props]) => labels!.join() === 'CI' && props!.length === 2 && props!.includes('organization_id'))
+      && keys.every(([, props]) => props!.includes('organization_id'));
+  } catch {
+    ready = false;
+  }
+  if (!ready) throw new JournalUnavailableError();
+}
+
 function schemaFault(error: unknown): void {
   const code = errorCode(error);
   if (code === '42P01' || code === '42703' ||

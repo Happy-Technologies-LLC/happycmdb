@@ -2,10 +2,16 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // FD17-S2: migration 005 makes CI.external_id unique per organization, on the integration neo4j:5.15.0.
+// FD17-S3: REST create accepts external_id behind the schema gate, with real PostgreSQL and Neo4j.
 import { randomUUID } from 'crypto';
 import { readFileSync } from 'fs';
 import { join } from 'path';
+import express from 'express';
+import request from 'supertest';
 import neo4j, { Driver } from 'neo4j-driver';
+import { getPostgresClient } from '@cmdb/database';
+import { ciRoutes } from '../../src/rest/routes/ci.routes';
+import type { TokenPayload } from '../../src/auth/types';
 
 const NEO4J_DIR = join(__dirname, '../../../database/src/neo4j');
 const MIGRATION = join(NEO4J_DIR, 'migrations/005_ci_external_id_org_unique.cypher');
@@ -17,6 +23,7 @@ const COMPOSITE = 'CREATE CONSTRAINT ci_org_external_id_unique IF NOT EXISTS FOR
 const GLOBAL = 'CREATE CONSTRAINT ci_external_id_unique IF NOT EXISTS FOR (ci:CI) REQUIRE ci.external_id IS UNIQUE';
 const COMPOSITE_ONLY = [{ name: 'ci_org_external_id_unique', properties: ['organization_id', 'external_id'] }];
 const [ORG_A, ORG_B] = ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222'];
+const [A, B, C] = [randomUUID(), randomUUID(), randomUUID()]; // FD17-S3 REST orgs, fresh per run
 
 /** Statements as cypher-shell -f reads them: comment lines dropped, split on ';', whitespace collapsed. */
 const statements = (file: string): string[] => readFileSync(file, 'utf8')
@@ -55,9 +62,10 @@ describe('on the integration Neo4j', () => {
   };
 
   beforeAll(() => { driver = neo4j.driver(process.env.NEO4J_URI!, neo4j.auth.basic(process.env.NEO4J_USERNAME || 'neo4j', process.env.NEO4J_PASSWORD!)); });
+  // No test leaves a shared external_id behind: a later global constraint creation would fail on it.
+  afterEach(() => run("MATCH (c:CI) WHERE c.id STARTS WITH 'fd17-s2-' OR c.organization_id IN $orgs DETACH DELETE c", { orgs: [A, B, C] }));
   afterAll(async () => {
     // Leave the schema the integration global setup creates: the composite only.
-    await run("MATCH (c:CI) WHERE c.id STARTS WITH 'fd17-s2-' DETACH DELETE c");
     await run('DROP CONSTRAINT ci_external_id_unique IF EXISTS');
     await run(COMPOSITE);
     await driver.close();
@@ -88,5 +96,52 @@ describe('on the integration Neo4j', () => {
     await expect(ci(ORG_A, externalId)).rejects.toMatchObject({ code: 'Neo.ClientError.Schema.ConstraintValidationFailed' });
     expect(await apply005()).toEqual({ added: 0, removed: 0 });
     expect(await externalIdConstraints()).toEqual(COMPOSITE_ONLY);
+  });
+
+  describe('REST POST /cis with external_id (FD17-S3)', () => {
+    const app = express().use(express.json()).use((req, _res, next) => {
+      // An authenticated operator of the org the test names; JWT verification is not under test here.
+      (req as express.Request & { user?: TokenPayload }).user = { _userId: 'fd17-s3', _username: 'fd17-s3',
+        _role: 'operator', _type: 'access', _organizationId: req.header('x-org')! };
+      next();
+    }).use('/api/v1/cis', ciRoutes);
+    const post = (org: string, externalId: string) => request(app).post('/api/v1/cis').set('x-org', org)
+      .send({ name: 'fd17-s3', type: 'server', external_id: externalId });
+    const [ext1, unused] = [`fd17-s3-${randomUUID()}`, `fd17-s3-${randomUUID()}`];
+
+    it('un-migrated (a global external_id constraint): 503 identical for a used and an unused value, no journal row', async () => {
+      await run('CREATE (:CI:Server {id: $id, organization_id: $A, external_id: $ext1})', { id: `fd17-s3-${randomUUID()}`, A, ext1 });
+      try {
+        for (const dropComposite of [false, true]) { // with 005's composite (an initializer re-run), then without it
+          await run(GLOBAL);
+          if (dropComposite) await run('DROP CONSTRAINT ci_org_external_id_unique IF EXISTS');
+          const [used, free] = [await post(B, ext1), await post(B, unused)];
+          expect([used.status, used.body, free.status, free.text]).toEqual([503,
+            { success: false, error: 'Service Unavailable', message: 'CI write temporarily unavailable' }, 503, used.text]);
+        }
+        expect((await getPostgresClient().query('SELECT count(*)::int AS n FROM ci_reconciliation_operations WHERE organization_id = $1', [B])).rows[0].n).toBe(0);
+        // The journal itself is ready: the same create without external_id commits.
+        expect((await request(app).post('/api/v1/cis').set('x-org', C).send({ name: 'fd17-s3', type: 'server' })).status).toBe(201);
+      } finally {
+        await run('DROP CONSTRAINT ci_external_id_unique IF EXISTS');
+        await run(COMPOSITE);
+      }
+    });
+
+    it('after 005: one value in two orgs, identical answers for a used and an unused value, value-free same-org 409', async () => {
+      expect(await externalIdConstraints()).toEqual(COMPOSITE_ONLY);
+      const [a, b] = [await post(A, ext1), await post(B, ext1)];
+      expect([a.status, a.body.data.external_id, b.status, b.body.data.external_id]).toEqual([201, ext1, 201, ext1]);
+      expect(b.body.data.id).not.toBe(a.body.data.id);
+      const [used, free] = [await post(C, ext1), await post(C, unused)];
+      const [usedShape, freeShape] = [used, free].map(res => [res.status, res.body.message, Object.keys(res.body.data).sort()]);
+      expect([used.status, usedShape]).toEqual([201, freeShape]);
+      const again = await post(A, ext1);
+      expect([again.status, again.body]).toEqual([409, { success: false, error: 'Conflict', message: 'CI could not be reconciled' }]);
+      expect((await run('MATCH (c:CI {organization_id: $A}) RETURN count(c) AS n', { A })).records[0]!.get('n').toNumber()).toBe(1);
+      // Immutable after create (D17-3): PUT strips it.
+      const put = await request(app).put(`/api/v1/cis/${a.body.data.id}`).set('x-org', A).send({ name: 'renamed', external_id: unused });
+      expect([put.status, put.body.data.name, put.body.data.external_id]).toEqual([200, 'renamed', ext1]);
+    });
   });
 });

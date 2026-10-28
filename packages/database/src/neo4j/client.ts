@@ -13,7 +13,7 @@ import { enc } from '../journal/encoding';
 import type { Encoded } from '../journal/encoding';
 import {
   assertJournalSchema, JournalGapError, JournalGraphRunner, JournalTargetMissingError, ReconciliationJournal, StoredPlan,
-  JournalUnavailableError,
+  JournalUnavailableError, assertExternalIdSchema,
 } from '../journal/journal';
 import { auditChainReady } from '../postgres/audit.service';
 
@@ -366,9 +366,14 @@ export class Neo4jClient {
   }
 
   // CI operations. Every :CI mutation below is one journaled, fenced operation (v16 §3, §4).
-  /** Direct create; the caller's server-issued `id` (REST, GraphQL: T5) is the immutable identity and journal key. */
+  /**
+   * Direct create; the caller's server-issued `id` (REST, GraphQL: T5) is the immutable identity and journal key.
+   * A client `external_id` (REST create, FD17-S3) is unique per organization: 503 before any journal row until the
+   * schema enforces exactly that; a same-org duplicate is the constraint abort (409, no value echoed).
+   */
   async createCI(ci: CIInput, organizationId: string, actor: string): Promise<CI> {
     await assertJournalSchema(this.runJournalStatement);
+    if (ci.external_id !== undefined && ci.external_id !== null) await assertExternalIdSchema(this.runJournalStatement);
     const id = (ci as { id?: string }).id || ci._id || randomUUID();
     const type = (ci as { type?: string }).type || ci._type;
     const label = sanitizeCITypeForLabel(type);

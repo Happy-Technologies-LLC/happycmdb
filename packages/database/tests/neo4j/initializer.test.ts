@@ -103,10 +103,10 @@ describe('Neo4j Schema Initializer', () => {
       );
     });
 
-    it('should create unique constraint on CI.external_id', async () => {
+    it('should create the per-organization unique constraint on CI.external_id', async () => {
       const schemaCypher = `
-        CREATE CONSTRAINT ci_external_id_unique IF NOT EXISTS
-        FOR (c:CI) REQUIRE c.external_id IS UNIQUE;
+        CREATE CONSTRAINT ci_org_external_id_unique IF NOT EXISTS
+        FOR (c:CI) REQUIRE (c.organization_id, c.external_id) IS UNIQUE;
       `;
 
       (fs.existsSync as jest.Mock).mockReturnValue(true);
@@ -115,7 +115,7 @@ describe('Neo4j Schema Initializer', () => {
       await initializeNeo4jSchema(mockClient);
 
       expect(mockSession.run).toHaveBeenCalledWith(
-        expect.stringContaining('external_id IS UNIQUE')
+        expect.stringContaining('(c.organization_id, c.external_id) IS UNIQUE')
       );
     });
 

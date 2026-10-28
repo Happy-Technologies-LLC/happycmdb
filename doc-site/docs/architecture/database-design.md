@@ -138,8 +138,8 @@ CREATE (from)-[r:DEPENDS_ON {
 CREATE CONSTRAINT ci_id_unique IF NOT EXISTS
 FOR (ci:CI) REQUIRE ci.id IS UNIQUE;
 
-CREATE CONSTRAINT ci_external_id_unique IF NOT EXISTS
-FOR (ci:CI) REQUIRE ci.external_id IS UNIQUE;
+CREATE CONSTRAINT ci_org_external_id_unique IF NOT EXISTS
+FOR (ci:CI) REQUIRE (ci.organization_id, ci.external_id) IS UNIQUE;
 
 // Indexes for performance
 CREATE INDEX ci_type_index IF NOT EXISTS

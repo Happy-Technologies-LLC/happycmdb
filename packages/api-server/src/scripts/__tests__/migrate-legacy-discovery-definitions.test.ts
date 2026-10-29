@@ -403,7 +403,7 @@ describe('migrate-legacy-discovery-definitions write modes (S5b, 041 on PGlite; 
     const result = await run([`--${mode}`, ['apply', 'retire'].includes(mode) ? '--plan' : '--receipt', file, '--sha256', digest, '--out', outPath()], env, open, classify);
     return { ...result, receipt: (result.out === '' ? null : JSON.parse(result.out)) as Receipt };
   }
-  let [plan, applied, resumed] = ['', '', ''];
+  let [plan, applied, partial, resumed] = ['', '', '', ''];
 
   it('(a) a wrong --sha256, a tampered or foreign input, a missing key or an unverified host refuses: exit 1, no connection, no receipt', async () => {
     plan = (await run()).out;
@@ -472,6 +472,7 @@ describe('migrate-legacy-discovery-definitions write modes (S5b, 041 on PGlite; 
     const faulty: SqlClient = { ...client, query: (sql, params) => sql.startsWith('INSERT INTO discovery_definition_migration_escrow') && params?.[0] !== ids[0]
       ? Promise.reject(new Error('S5ASENTINEL')) : client.query(sql, params) };
     const first = await write('apply', body, { open: jest.fn((_config: unknown) => faulty) });
+    partial = first.out;
     expect([first.code, first.receipt.rows.map(entry => entry.action), await count('credentials WHERE name = ANY($1)', [ids.map(id => `legacy-discovery-${id}`)])]).toEqual([1, ['converted', 'failed', 'failed'], 1]);
     expectValueFree(first.err);
     const second = await write('apply', body);
@@ -502,15 +503,31 @@ describe('migrate-legacy-discovery-definitions write modes (S5b, 041 on PGlite; 
     expect(await Promise.all([l1Credential, ...kept, uuid(90)].map(id => count('credentials WHERE id = $1', [id])))).toEqual([0, 1, 1, 1, 1, 1]);
   }, 30_000);
 
-  it('(e) stored jsonb numbers come back byte-exact; re-applying a rolled-back plan reports drifted, never converted', async () => {
-    for (const [i, config] of ['{"ports": 80.0, "targets": ["h206.example"]}', '{"ports": 12345678901234567890, "targets": ["h207.example"]}'].entries()) await add(206 + i, config, 'nmap');
-    const original = await Promise.all([206, 207].map(async n => (await row(n))['text']));
-    const body = await planOf([uuid(206), uuid(207)]);
+  it('(e) jsonb numbers come back byte-exact; a re-skeletoned escrow is refused; ledger `at` is taken after the lock; a rolled-back plan re-applies as drifted', async () => {
+    const ids = [206, 207, 212];
+    for (const [i, config] of ['{"ports": 80.0, "targets": ["h206.example"]}', '{"ports": 12345678901234567890, "targets": ["h207.example"]}', '{"ports": "22", "targets": ["h212.example"]}'].entries()) await add(ids[i]!, config, 'nmap');
+    const original = await Promise.all(ids.map(async n => (await row(n))['text']));
+    const body = await planOf(ids.map(uuid));
     const once = await write('apply', body);
-    expect([once.receipt.rows.map(entry => entry.action), (await write('rollback', once.out)).code]).toEqual([['benign_strip', 'benign_strip'], 0]);
-    expect([await Promise.all([206, 207].map(async n => (await row(n))['text'])), original[0]]).toEqual([original, '{"ports": 80.0, "targets": ["h206.example"]}']);
+    // Row 212's escrow is swapped for an envelope of another key set (same key): refused, never written back.
+    await q('UPDATE discovery_definition_migration_escrow SET envelope = $1 WHERE definition_id = $2', [JSON.stringify(getEncryptionService(KEY).encrypt('{"targets": ["h212.example"], "tampered": 1}')), uuid(212)]);
+    // Each row transaction starts, then waits (as for the row lock): its ledger `at` must be read after the wait, not at the start.
+    const starts: string[] = [];
+    const waiting: SqlClient = { ...client, async query(sql, params) {
+      const result = await client.query(sql, params);
+      if (sql === 'BEGIN') {
+        starts.push(String((await client.query('SELECT now()::text AS t, pg_sleep(0.002)')).rows[0]!['t']));
+      }
+      return result;
+    } };
+    const back = await write('rollback', once.out, { open: jest.fn((_config: unknown) => waiting) });
+    expect([once.receipt.rows.map(entry => entry.action), back.code, back.receipt.rows.map(entry => entry.action)]).toEqual([['benign_strip', 'benign_strip', 'benign_strip'], 1, ['rolled_back', 'rolled_back', 'refused']]);
+    expect([Number((await q(`SELECT count(*) FILTER (WHERE l.at >= s.t::timestamptz + interval '2 milliseconds') AS n FROM unnest($1::uuid[], $2::text[]) AS s(id, t)
+      JOIN discovery_definition_migrations l ON l.definition_id = s.id AND l.action = 'rolled_back'`, [ids.slice(0, 2).map(uuid), starts.slice(0, 2)]))[0]!['n']),
+      hasUnsafeDiscoveryDefinitionConfig((await row(212))['config']), await Promise.all(ids.slice(0, 2).map(async n => (await row(n))['text'])), original[0]])
+      .toEqual([2, false, original.slice(0, 2), '{"ports": 80.0, "targets": ["h206.example"]}']);
     const again = await write('apply', body);
-    expect([again.code, again.receipt.rows.map(entry => entry.action)]).toEqual([0, ['drifted', 'drifted']]);
+    expect([again.code, again.receipt.rows.map(entry => entry.action)]).toEqual([0, ['drifted', 'drifted', 'benign_strip']]);
   }, 30_000);
 
   it('an L1d whose stored credential changed between plan and apply is re-classified and ledgered drifted', async () => {
@@ -559,11 +576,14 @@ describe('migrate-legacy-discovery-definitions write modes (S5b, 041 on PGlite; 
   it('(f) --finalize deletes the receipt\'s escrow; --rollback then refuses every row and changes nothing', async () => {
     const ids = [203, 204, 205].map(uuid);
     const outputs = spyOutputs();
+    // The partial run-1 receipt finalizes only its own converted row; the rows run 2 resumed keep their escrow.
+    const early = await write('finalize', partial);
+    expect([early.receipt.rows, await count('discovery_definition_migration_escrow WHERE definition_id = ANY($1)', [ids])]).toEqual([[{ definition_id: ids[0], action: 'finalized' }], 2]);
     const finalized = await write('finalize', resumed);
     const back = await write('rollback', resumed);
     expectValueFree([outputs(), finalized.out, finalized.err, back.out, back.err].join('\n'));
     expect([finalized.code, finalized.receipt.rows, await count('discovery_definition_migration_escrow WHERE definition_id = ANY($1)', [ids])])
-      .toEqual([0, ids.map(id => ({ definition_id: id, action: 'finalized' })), 0]);
+      .toEqual([0, ids.slice(1).map(id => ({ definition_id: id, action: 'finalized' })), 0]);
     expect([back.code, back.receipt.rows.map(entry => entry.action), hasUnsafeDiscoveryDefinitionConfig((await row(203))['config'])]).toEqual([1, ['refused', 'refused', 'refused'], false]);
   }, 30_000);
 

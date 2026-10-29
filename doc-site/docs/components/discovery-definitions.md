@@ -87,8 +87,9 @@ writes one new `--out` file (mode 0600) holding ids, codes, timestamps, digests 
 3. `--rollback --receipt apply.json --sha256 <…> --out …` (needs the key): rows still at their post-apply `updated_at`
    get the escrowed original config back (plaintext again, by design) and their prior `credential_id`; a created
    credential is deleted only if unused and unmodified. Other rows are `refused` (exit 1).
-4. `--finalize --receipt apply.json --sha256 <…> --out …`, at least 7 days after apply (D7), deletes that receipt's
-   escrow; rollback is then backup-restore only.
+4. `--finalize --receipt apply.json --sha256 <…> --out …`, at least 7 days after apply (D7), deletes the escrow of the
+   rows that receipt lists as applied; rollback is then backup-restore only. Rollback and finalize must use the receipt
+   of the last (complete) apply run of a plan: an earlier partial receipt does not list the rows a resume converted.
 5. `--retire --plan retire.json --sha256 <…> --out …` sets `config = '{}'` and `is_active = false` on the listed LEAVE
    rows, built from the dry run: `jq -c '{mode: "retire", rows: [.rows[] | select(.definition_id | IN("<id>", …))]}' plan.json`.
 

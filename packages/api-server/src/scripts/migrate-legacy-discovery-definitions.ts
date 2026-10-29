@@ -336,8 +336,9 @@ export function convertedConfig(config: Obj, row: Classification): { safe: Obj; 
 }
 
 type Tx = Pick<SqlClient, 'query'>;
-const LEDGER_SQL = `INSERT INTO discovery_definition_migrations (receipt_id, definition_id, organization_id, action, reason, shape,
-  prior_credential_id, created_credential_id, pre_updated_at, post_updated_at, key_skeleton_sha256) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`;
+// `at` is clock_timestamp(), read after the row lock (not the transaction start): the settled check orders rows by lock order.
+const LEDGER_SQL = `INSERT INTO discovery_definition_migrations (receipt_id, definition_id, organization_id, action, reason, shape, prior_credential_id,
+  created_credential_id, pre_updated_at, post_updated_at, key_skeleton_sha256, at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, clock_timestamp())`;
 const UPDATE_SQL = `UPDATE discovery_definitions SET config = $2::jsonb, credential_id = $3, updated_at = now() WHERE id = $1 RETURNING ${utc('updated_at')} AS updated_at`;
 const RETIRE_SQL = `UPDATE discovery_definitions SET config = '{}'::jsonb, is_active = false, updated_at = now() WHERE id = $1 RETURNING ${utc('updated_at')} AS updated_at`;
 // §3.3, R7: a direct insert returning the id only; the deterministic name and idx_credentials_unique_name fail a duplicate closed.
@@ -345,7 +346,7 @@ const CREDENTIAL_SQL = `INSERT INTO credentials (name, description, protocol, sc
   VALUES ('legacy-discovery-' || $1, 'HAP-774 migrated legacy discovery credential', $2, 'ssh', $3::jsonb, ARRAY['hap-774-migrated'], $4, $5) RETURNING id`;
 const ESCROW_SQL = 'INSERT INTO discovery_definition_migration_escrow (definition_id, receipt_id, envelope) VALUES ($1, $2, $3)';
 // Rollback needs the post-apply updated_at (µs) still on the row and its escrow (deleted by --finalize).
-const ROLLBACK_SQL = `SELECT l.organization_id, l.prior_credential_id, l.created_credential_id, e.envelope, ${utc('l.post_updated_at')} AS post_updated_at
+const ROLLBACK_SQL = `SELECT l.organization_id, l.prior_credential_id, l.created_credential_id, l.key_skeleton_sha256, e.envelope, ${utc('l.post_updated_at')} AS post_updated_at
   FROM discovery_definition_migrations l JOIN discovery_definitions d ON d.id = l.definition_id AND d.updated_at = l.post_updated_at JOIN discovery_definition_migration_escrow e
   ON e.definition_id = l.definition_id AND e.receipt_id = l.receipt_id WHERE l.receipt_id = $1 AND l.definition_id = $2 AND l.action = $3 FOR UPDATE OF d, e`;
 const UNUSED_CREDENTIAL_SQL = `DELETE FROM credentials c WHERE c.id = $1 AND c.updated_at = c.created_at AND NOT EXISTS (SELECT 1 FROM discovery_definitions WHERE credential_id = c.id)
@@ -432,6 +433,10 @@ async function writeMode(mode: Exclude<Mode, 'dry-run'>, sha: string, input: Sig
         }
         // This re-creates the legacy plaintext at rest by design (§3.4); the created credential goes only if unused and unmodified.
         const original = service!.decrypt(JSON.parse(found['envelope'] as string) as EncryptedData);
+        // The escrow must still have the applied row's key skeleton: a swapped or tampered envelope is refused, never written back.
+        if (keySkeletonSha256(JSON.parse(original)) !== found['key_skeleton_sha256']) {
+          return 'refused';
+        }
         const post = (await tx.query(UPDATE_SQL, [id, original, found['prior_credential_id']])).rows[0]!['updated_at'];
         await tx.query('DELETE FROM discovery_definition_migration_escrow WHERE definition_id = $1', [id]);
         if (found['created_credential_id'] !== null) {
@@ -441,7 +446,10 @@ async function writeMode(mode: Exclude<Mode, 'dry-run'>, sha: string, input: Sig
       });
     }
   } else {
-    const deleted = (await client.query('DELETE FROM discovery_definition_migration_escrow WHERE receipt_id = $1 RETURNING definition_id', [input.receipt_id])).rows;
+    // Only the rows this signed receipt lists as applied: a later resume run under the same receipt id keeps its escrow.
+    const applied = (input.rows as ReceiptRow[]).filter(row => Object.values(APPLIED).includes(row.action)).map(row => row.definition_id);
+    const deleted = (await client.query('DELETE FROM discovery_definition_migration_escrow WHERE receipt_id = $1 AND definition_id = ANY($2::uuid[]) RETURNING definition_id',
+      [input.receipt_id, applied])).rows;
     rows.push(...deleted.map(row => ({ definition_id: row['definition_id'] as string, action: 'finalized' as const })).sort((a, b) => a.definition_id.localeCompare(b.definition_id)));
   }
   return [encodeReceipt(mode, receiptId, sha, rows), rows.some(row => row.action === 'failed' || row.action === 'refused') ? 1 : 0];

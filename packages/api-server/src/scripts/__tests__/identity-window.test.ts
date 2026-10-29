@@ -172,8 +172,8 @@ describe('assign-organization (FD-5)', () => {
 
   it.each([
     [['--user-id', 'p', '--organization-id', 'not-a-uuid', '--operator', 'nick'], '--organization-id <uuid> is required'],
-    [['--user-id', 'p', '--organization-id', 'AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE', '--operator', 'nick'], '--organization-id <uuid> is required'],
-    [['--user-id', 'p', '--organization-id', 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeeE', '--operator', 'nick'], '--organization-id <uuid> is required'],
+    [['--user-id', 'p', '--organization-id', 'AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE', '--operator', 'nick'], '--organization-id must be a lowercase UUID'],
+    [['--user-id', 'p', '--organization-id', 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeeE', '--operator', 'nick'], '--organization-id must be a lowercase UUID'],
     [['--user-id', 'p', '--organization-id', ORG, '--operator', ' '], '--operator <name> is required'],
   ])('A6: %j exits 1 before any store opens', async (args, message) => {
     const lines: string[] = [];

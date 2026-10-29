@@ -16,6 +16,7 @@ const mockQueue = (queue: string) => new Proxy<Record<string, unknown>>({
 const mockRows = [
   { id: 'valid', organization_id: 'org-a', provider: 'nmap', config: { targets: ['192.0.2.1'] }, schedule: '0 3 * * *', is_active: true },
   { id: 'quarantined', organization_id: 'org-a', provider: 'nmap', config: { targets: ['192.0.2.2'], password: MARKER }, schedule: '0 4 * * *', is_active: true },
+  { id: 'disabled', organization_id: 'org-a', provider: 'nmap', config: { targets: ['192.0.2.3'] }, schedule: '0 6 * * *', is_active: false },
 ];
 
 jest.mock('@cmdb/common', () => {
@@ -30,18 +31,18 @@ jest.mock('@cmdb/common', () => {
   };
 });
 jest.mock('@cmdb/database', () => ({
-  getPostgresClient: () => ({ pool: { query: async (_sql: string, params?: string[]) =>
-    ({ rows: params ? mockRows.filter((row) => row.id === params[0]) : mockRows }) } }),
+  getPostgresClient: () => ({ pool: { query: async (sql: string, params?: string[]) => ({ rows: mockRows.filter((row) =>
+    (params ? row.id === params[0] : true) && (row.is_active || !sql.includes('is_active = true'))) }) } }),
   getScheduleConfigStore: () => ({ seedIfAbsent: async (_kind: string, _provider: string, seed: unknown) => seed }),
 }));
 
 import { DiscoveryScheduler } from '../discovery-scheduler';
 
-it.each(['syncSchedules', 'start'] as const)('%s removes deleted, quarantined and provider-level repeatables, keeps valid ones, reads keys only', async (entry) => {
+it.each(['syncSchedules', 'start'] as const)('%s removes deleted, quarantined, disabled and provider-level repeatables, keeps valid ones, reads keys only', async (entry) => {
   mockRepeatables.clear();
   mockRemoved.length = mockTouched.length = mockLogs.length = 0;
   const nmap = mockJobs('discovery-nmap');
-  ['valid:0 3 * * *', 'quarantined:0 4 * * *', 'deleted:0 5 * * *'].forEach((k) => nmap.set(`discovery-definition-${k}`, `discovery-definition-${k.split(':')[0]}`));
+  ['valid:0 3 * * *', 'quarantined:0 4 * * *', 'deleted:0 5 * * *', 'disabled:0 6 * * *'].forEach((k) => nmap.set(`discovery-definition-${k}`, `discovery-definition-${k.split(':')[0]}`));
   nmap.set('discovery-nmap::::0 2 * * *', 'discovery-nmap');
 
   const scheduler = new DiscoveryScheduler(undefined, true);
@@ -49,6 +50,7 @@ it.each(['syncSchedules', 'start'] as const)('%s removes deleted, quarantined an
   expect(mockRemoved).toEqual(expect.arrayContaining([
     'discovery-nmap discovery-definition-quarantined:0 4 * * *',
     'discovery-nmap discovery-definition-deleted:0 5 * * *',
+    'discovery-nmap discovery-definition-disabled:0 6 * * *',
     'discovery-nmap discovery-nmap::::0 2 * * *',
   ]));
   expect(Array.from(nmap.keys())).toEqual(['discovery-definition-valid:0 3 * * *']);

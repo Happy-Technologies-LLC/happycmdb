@@ -5,6 +5,7 @@ import { fork } from 'child_process';
 import { randomBytes } from 'crypto';
 import { readFileSync } from 'fs';
 import { join } from 'path';
+import { inspect } from 'util';
 import express from 'express';
 import request from 'supertest';
 import type { Pool } from 'pg';
@@ -58,11 +59,13 @@ jest.mock('../../../auth/neo4j-auth.repository', () => ({
   Neo4jAuthRepository: jest.fn(() => ({ findUserById: async (id: string) => identities[id] ?? null })),
 }));
 import { loadConfig } from '@cmdb/common';
+import { logger, EncryptionService, getEncryptionService } from '@cmdb/common';
 import { JWTService } from '../../../auth/jwt.service';
 import { getAuthMiddleware } from '../../../auth/auth-bootstrap';
 import { unifiedCredentialRoutes } from '../unified-credential.routes';
 import { UnifiedCredentialService } from '../../../../../database/src/postgres/unified-credential.service';
 import { CredentialSetService } from '../../../../../database/src/postgres/credential-set.service';
+import { CredentialCRUDService } from '../../../../../database/src/postgres/credential-services/crud.service';
 const migrations = join(__dirname, '../../../../../database/src/postgres/migrations');
 const app = express();
 app.use(express.json());
@@ -258,4 +261,55 @@ it('enforces owner and organization in SQL even when the service is called direc
   const owned = await service.getById(aId, 'a', A);
   expect(owned?.name).toBe('A-private');
   expect(owned?.credentials).toEqual({ key: 'only-A-private' });
+});
+
+it('HAP-774 C-6: discovery credentials resolve only in-org, protocol-matched and never decode on refusal', async () => {
+  const seen: string[] = [];
+  const crud = new CredentialCRUDService({ connect: async () => ({ query: async (text: string, params?: unknown[]) => { seen.push(text); return { rows: await sql(text, params) }; }, release: () => undefined }) } as unknown as Pool);
+  const ssh = async (name: string, protocol: 'ssh_password' | 'ssh_key', owner: string, org: string) => (await crud.create({ name, protocol, scope: 'ssh', credentials: { username: 'root', password: `pw-${name}` } }, owner, org)).id;
+  const [own, key, foreign, nullOrg] = [await ssh('A-ssh', 'ssh_password', 'a', A), await ssh('A-key', 'ssh_key', 'a', A), await ssh('B-ssh', 'ssh_password', 'b', B), '77777777-7777-4777-8777-777777777777'];
+  await sql(`INSERT INTO credentials (id, name, protocol, scope, credentials, created_by) VALUES ($1, 'A-null', 'ssh_password', 'ssh', $2, 'a')`,
+    [nullOrg, JSON.stringify(getEncryptionService().encrypt('{"password":"null-org"}'))]);
+  const both = ['ssh_password', 'ssh_key'] as const;
+  const decrypt = jest.spyOn(EncryptionService.prototype, 'decrypt');
+  try {
+    const refusals = await Promise.all([
+      ...[foreign, nullOrg, missing, 'not-a-uuid', `${own}' OR '1'='1`, ''].map((id) => crud.resolveDiscoveryCredential(id, A, both)),
+      crud.resolveDiscoveryCredential(own, null as unknown as string, both),
+      crud.resolveDiscoveryCredential(key, A, ['ssh_password']),
+      crud.resolveDiscoveryCredential(own, A, ['ssh_key']),
+      crud.resolveDiscoveryCredential(aId, A, both),
+      crud.resolveDiscoveryCredential(aId, A, ['api_key'] as never),
+      ...[foreign, nullOrg, missing, 'not-a-uuid'].map((id) => crud.assertDiscoveryCredential(id, A, 'a', both)),
+      crud.assertDiscoveryCredential(own, A, 'd', both),
+      crud.assertDiscoveryCredential(own, A, null as unknown as string, both),
+      crud.assertDiscoveryCredential(key, A, 'a', ['ssh_password']),
+    ]);
+    expect(refusals).toEqual(refusals.map(() => null));
+    expect(decrypt).not.toHaveBeenCalled();
+    seen.length = 0;
+    expect(await crud.assertDiscoveryCredential(own, A, 'a', ['ssh_password'])).toBe(own);
+    expect(await crud.assertDiscoveryCredential(own, A, undefined, both)).toBe(own);
+    expect(seen).toEqual([expect.stringMatching(/^SELECT id FROM credentials WHERE /), expect.stringMatching(/^SELECT id FROM credentials WHERE /)]);
+    expect(decrypt).not.toHaveBeenCalled();
+    expect(await crud.resolveDiscoveryCredential(own, A, ['ssh_password'])).toEqual({ ok: true, protocol: 'ssh_password', credentials: { username: 'root', password: 'pw-A-ssh' } });
+    expect(decrypt).toHaveBeenCalledTimes(1);
+  } finally {
+    decrypt.mockRestore();
+  }
+});
+
+it('HAP-774 C-6: a decode failure is a fixed code and logs no id, payload or error text', async () => {
+  const [bad, marker] = ['66666666-6666-4666-8666-666666666666', 'Zq7MarkerHAP774'];
+  await sql(`INSERT INTO credentials (id, name, protocol, scope, credentials, created_by, organization_id) VALUES ($1, 'A-bad', 'ssh_password', 'ssh', $2, 'a', $3)`,
+    [bad, JSON.stringify(getEncryptionService().encrypt(marker)), A]);
+  const spies = (['error', 'warn', 'info', 'debug'] as const).map((level) => jest.spyOn(logger, level));
+  try {
+    expect(await new CredentialCRUDService(pool as unknown as Pool).resolveDiscoveryCredential(bad, A, ['ssh_password'])).toEqual({ ok: false, code: 'ERR_CREDENTIAL_DECODE' });
+    const logged = inspect(spies.map((spy) => spy.mock.calls), { depth: 10 });
+    expect(logged).toContain('ERR_CREDENTIAL_DECODE');
+    for (const leak of [marker, bad, 'JSON']) expect(logged).not.toContain(leak);
+  } finally {
+    spies.forEach((spy) => spy.mockRestore());
+  }
 });

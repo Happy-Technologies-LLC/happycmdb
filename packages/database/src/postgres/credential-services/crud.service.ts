@@ -26,6 +26,15 @@ export interface CredentialFilters {
   offset?: number;
 }
 
+/** HAP-774 §2.1: ssh is the only runnable credential-backed discovery provider. */
+export const DISCOVERY_CREDENTIAL_PROTOCOLS = ['ssh_password', 'ssh_key'] as const;
+export type DiscoveryCredentialProtocol = (typeof DISCOVERY_CREDENTIAL_PROTOCOLS)[number];
+export const ERR_CREDENTIAL_DECODE = 'ERR_CREDENTIAL_DECODE';
+export type DiscoveryCredentialResolution =
+  | { ok: true; protocol: DiscoveryCredentialProtocol; credentials: Record<string, unknown> }
+  | { ok: false; code: typeof ERR_CREDENTIAL_DECODE };
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export class CredentialCRUDService {
   private encryptionService = getEncryptionService();
 
@@ -178,6 +187,54 @@ export class CredentialCRUDService {
     } finally {
       client.release();
     }
+  }
+
+  /** HAP-774 C-6 gate: malformed input never reaches SQL; org, protocol and owner (if given) filter in SQL. */
+  private async findDiscoveryCredential(columns: 'id' | 'protocol, credentials', id: unknown, organizationId: unknown, protocols: unknown, owner?: string) {
+    const allowed = Array.isArray(protocols) ? protocols.filter((p) => (DISCOVERY_CREDENTIAL_PROTOCOLS as readonly unknown[]).includes(p)) : [];
+    if (typeof id !== 'string' || !UUID.test(id) || typeof organizationId !== 'string' || !UUID.test(organizationId) || allowed.length === 0) {
+      return null;
+    }
+    const client = await this.pool.connect();
+    try {
+      const result = await client.query(
+        `SELECT ${columns} FROM credentials WHERE id = $1 AND organization_id = $2 AND protocol = ANY($3::text[])${owner === undefined ? '' : ' AND created_by = $4'}`,
+        owner === undefined ? [id, organizationId, allowed] : [id, organizationId, allowed, owner]
+      );
+      return result.rows.length === 1 ? result.rows[0] : null;
+    } finally {
+      client.release();
+    }
+  }
+
+  /** HAP-774 C-6 attach check: selects the id only and never decodes; every refusal is the same null. */
+  async assertDiscoveryCredential(id: string, organizationId: string, owner: string | undefined, protocols: readonly DiscoveryCredentialProtocol[]): Promise<string | null> {
+    if (owner !== undefined && (typeof owner !== 'string' || owner === '')) {
+      return null;
+    }
+    const row = await this.findDiscoveryCredential('id', id, organizationId, protocols, owner);
+    return row ? (row.id as string) : null;
+  }
+
+  /**
+   * HAP-774 C-6 execution-time resolution: decodes only a row that already matched the SQL org/protocol
+   * filter. Refusals are the same null; a decode failure is a fixed code that logs no id, payload or error.
+   */
+  async resolveDiscoveryCredential(id: string, organizationId: string, protocols: readonly DiscoveryCredentialProtocol[]): Promise<DiscoveryCredentialResolution | null> {
+    const row = await this.findDiscoveryCredential('protocol, credentials', id, organizationId, protocols);
+    if (!row) {
+      return null;
+    }
+    try {
+      const credentials = this.decodeStoredCredentials(row.credentials);
+      if (typeof credentials === 'object' && credentials !== null && !Array.isArray(credentials)) {
+        return { ok: true, protocol: row.protocol, credentials };
+      }
+    } catch {
+      // Dropped: the error text can carry plaintext (e.g. a JSON.parse snippet).
+    }
+    logger.error('Discovery credential decode failed', { code: ERR_CREDENTIAL_DECODE });
+    return { ok: false, code: ERR_CREDENTIAL_DECODE };
   }
 
   async list(

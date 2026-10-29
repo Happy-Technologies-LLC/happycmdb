@@ -274,7 +274,13 @@ describe('migrate-legacy-discovery-definitions (dry run, PGlite)', () => {
       expect([code, err, existsSync(path)]).toEqual([1, 'migrate-legacy-discovery-definitions: refused: a non-loopback host needs CMDB_MIGRATION_POSTGRES_SSL=verify-full', false]);
       expect(open).not.toHaveBeenCalled();
     }
-    const allowed: Array<[string, string?]> = [['db.example', 'verify-full'], ['127.0.0.1'], ['127.8.9.10', 'require'], ['::1'], ['localhost'], ['/var/run/postgresql']];
+    // verify-full cannot verify an IP literal (pg sends no servername), so it needs a DNS name off loopback.
+    for (const host of ['192.0.2.10', '2001:db8::1']) {
+      const { code, err, open, path } = await run(undefined, env(host, 'verify-full'));
+      expect([code, err, existsSync(path)]).toEqual([1, 'migrate-legacy-discovery-definitions: refused: verify-full needs a DNS host name, not an IP literal', false]);
+      expect(open).not.toHaveBeenCalled();
+    }
+    const allowed: Array<[string, string?]> = [['db.example', 'verify-full'], ['127.0.0.1', 'verify-full'], ['127.0.0.1'], ['127.8.9.10', 'require'], ['::1'], ['localhost'], ['/var/run/postgresql']];
     for (const [host, ssl] of allowed) {
       const { code, open } = await run(undefined, env(host, ssl));
       expect([code, open.mock.calls[0]?.[0]]).toEqual([0, expect.objectContaining({ _host: host, ssl: ssl ?? false })]);
@@ -310,6 +316,13 @@ describe('migrate-legacy-discovery-definitions (dry run, PGlite)', () => {
     expectValueFree(child.stderr);
     expect(child.stderr).not.toMatch(/connect ECONNREFUSED|127\.0\.0\.1:1|\n\s+at /); // the error message and stack
   }, 60_000);
+
+  it('a failing run whose --out file vanished still exits 1 with fixed text only', async () => {
+    const path = outPath();
+    const vanishing: SqlClient = { query: async () => { rmSync(path); throw new Error(`S5ASENTINEL ${path}`); }, close: async () => undefined };
+    const { code, err } = await run(['--out', path], undefined, jest.fn((_config: unknown) => vanishing));
+    expect([code, err, existsSync(path)]).toEqual([1, 'migrate-legacy-discovery-definitions: failed (Error)', false]);
+  });
 
   it('a connection failure prints fixed text with the error name and SQLSTATE only', async () => {
     const failing: SqlClient = { query: async () => { throw Object.assign(new Error(`password authentication failed for user u at postgres://u:${ENV.CMDB_MIGRATION_POSTGRES_PASSWORD}@h`), { code: '28P01' }); }, close: async () => undefined };

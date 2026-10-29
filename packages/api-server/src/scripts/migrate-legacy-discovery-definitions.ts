@@ -5,8 +5,8 @@
  * HAP-774 S5a (design §3.2, §3.4): classifies every legacy discovery_definitions row, NULL-org rows included (R22),
  * and writes a value-free dry-run plan to `--out <path>` only: a new file (O_EXCL, mode 0600), never stdout. SELECT only;
  * nothing else is written. There is no apply here (S5b), so any other argument, --apply included, exits 1 before a
- * connection opens. A non-loopback, non-socket host needs CMDB_MIGRATION_POSTGRES_SSL=verify-full (refused otherwise,
- * before connecting). Every plan field passes the allow-list encoder (uuid, enum, timestamp, count, key-skeleton and
+ * connection opens. A non-loopback, non-socket host needs CMDB_MIGRATION_POSTGRES_SSL=verify-full and a DNS name
+ * (refused otherwise, before connecting). Every plan field passes the allow-list encoder (uuid, enum, timestamp, count, key-skeleton and
  * plan digests); anything else exits 2 with no plan. Errors print fixed text plus at most the error name and SQLSTATE.
  * L1d payload equality is compared in memory with the operator-held CREDENTIAL_ENCRYPTION_KEY (§3.5); without it, or
  * on any decode failure, the row stays DUAL_CREDENTIAL_MISMATCH. Connects only through CMDB_MIGRATION_POSTGRES_*.
@@ -287,6 +287,10 @@ export async function main(
   if (config.ssl !== 'verify-full' && !isLocalHost(config._host)) {
     return fail('refused: a non-loopback host needs CMDB_MIGRATION_POSTGRES_SSL=verify-full', 1);
   }
+  // pg sets the TLS servername only for DNS names; for an IP literal Node checks the certificate against 'localhost'.
+  if (config.ssl === 'verify-full' && isIP(config._host) !== 0 && !isLocalHost(config._host)) {
+    return fail('refused: verify-full needs a DNS host name, not an IP literal', 1);
+  }
   let fd: number;
   try {
     fd = openSync(out, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
@@ -327,9 +331,13 @@ export async function main(
     return fail(`failed (${name}${typeof code === 'string' && /^[0-9A-Z]{5}$/.test(code) ? `, ${code}` : ''})`, 1);
   } finally {
     await client?.close().catch(() => undefined);
-    closeSync(fd);
-    if (!written) {
-      unlinkSync(out); // this run created it: no partial or empty plan survives a failure
+    try {
+      closeSync(fd);
+      if (!written) {
+        unlinkSync(out); // this run created it: no partial or empty plan survives a failure
+      }
+    } catch {
+      // Already gone: no plan remains, and the fixed-text result above stands (never an ENOENT with the path).
     }
   }
 }
@@ -347,5 +355,6 @@ if (require.main === module) {
   delete process.env['POSTGRES_SSL_MODE'];
   delete process.env['POSTGRES_SSL_ENABLED'];
   void main(process.argv.slice(2), process.env, { stderr: line => process.stderr.write(`${line}\n`) })
+    .catch(() => (process.stderr.write('migrate-legacy-discovery-definitions: failed (unexpected)\n'), 1))
     .then(code => exitAfterFlush(code, (chunk, done) => process.stderr.write(chunk, done), exitCode => process.exit(exitCode)));
 }

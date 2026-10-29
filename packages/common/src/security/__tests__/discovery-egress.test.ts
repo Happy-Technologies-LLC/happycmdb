@@ -42,6 +42,13 @@ it('refuses CIDRs with prohibited overlap, host lists and injected nmap syntax',
   expect(assertDiscoveryRange('3001::1')).toBe('3001::1');
 });
 
+it('HAP-1079: execution refuses a public CIDR above 4,096 addresses', () => {
+  for (const range of ['8.8.0.0/19', '8.0.0.0/8', '32.0.0.0/3']) {
+    expect(() => assertDiscoveryRange(range)).toThrow(DISCOVERY_TARGET_REFUSED);
+  }
+  expect(assertDiscoveryRange('8.8.0.0/20')).toBe('8.8.0.0/20');
+});
+
 it('refuses DNS rebinding before connection instead of using the original hostname', async () => {
   mockedLookup.mockResolvedValueOnce([{ address: '8.8.8.8', family: 4 }] as never)
     .mockResolvedValueOnce([{ address: '10.0.0.3', family: 4 }] as never);

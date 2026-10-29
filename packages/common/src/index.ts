@@ -41,7 +41,7 @@ export {
 } from './utils/discovery-scan-config';
 export {
   DISCOVERY_TARGET_REFUSED, assertDiscoveryAddress, assertDiscoveryHostname,
-  assertDiscoveryRange, resolveDiscoveryHost, connectDiscoveryHost,
+  assertDiscoveryRange, resolveDiscoveryHost, connectDiscoveryHost, assertDiscoveryScanVolume,
 } from './security/discovery-egress';
 export type { RetryOptions } from './utils/retry';
 

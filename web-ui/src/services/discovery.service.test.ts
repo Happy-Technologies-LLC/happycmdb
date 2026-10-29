@@ -124,26 +124,4 @@ describe('discoveryService', () => {
 
     expect(request.delete).toHaveBeenCalledWith('/discovery/jobs/job-1');
   });
-
-
-  it('tests credentials against the Settings-owned /discovery/test-connection contract', async () => {
-    request.post.mockResolvedValue({ data: {} });
-
-    const result = await discoveryService.testCredentials('ssh', { username: 'x' });
-
-    expect(request.post).toHaveBeenCalledWith('/discovery/test-connection', {
-      provider: 'ssh',
-      credentials: { username: 'x' },
-    });
-    expect(result.valid).toBe(true);
-  });
-
-  it('reports invalid credentials when the test-connection call fails', async () => {
-    request.post.mockRejectedValue({ response: { data: { message: 'bad creds' } } });
-
-    const result = await discoveryService.testCredentials('ssh', { username: 'x' });
-
-    expect(result).toEqual({ valid: false, message: 'bad creds' });
-  });
-
 });

@@ -55,6 +55,40 @@ legacy shape/tenant/scope contract must land before a manual per-row transfer,
 replacement, rollback or activation procedure can be authorized. Unknown and
 unrecognized rows remain quarantined rather than silently stripped.
 
+### HAP-774: legacy migration tool (operator procedure)
+
+`packages/api-server/src/scripts/migrate-legacy-discovery-definitions.ts` converts a quarantined row only when it proves
+the shape, tenant, protocol, scope and consumer (design §3.2); every other row stays quarantined with a reason code.
+**CMDB never runs it.** Every mode needs its own signed GO, and any live DB is Nick's (D12).
+
+**Hard preconditions.**
+- Before any dry run or any production write run: a remote `CMDB_MIGRATION_POSTGRES_SSL=verify-full` success over the
+  network to that DB, with a real CA and a DNS host name.
+- Before any production `--apply`: a separate migration-owner role, so the API role cannot read the escrow (Nick,
+  access control). 041's ledger and escrow are owner-only (`REVOKE ALL FROM PUBLIC`, no grant), but on staging
+  `cmdb_user` is both the API role and their owner, so there the API role can read the escrow (accepted for staging only).
+- Before any non-scratch `--retire`: a signed founder GO naming the exact retire-plan sha256 and the target DB, and a
+  fresh restic backup receipt of that DB taken after the dry run. Retire is irreversible except by backup restore.
+- Design §3.6: a restore-tested backup, workers and schedulers stopped, the S6 Redis purge in the same window, recorded
+  dry-run counts, an independently reviewed plan sha256, and a scratch-DB rehearsal with 0 marker bytes.
+
+**Modes.** Connect only through `CMDB_MIGRATION_POSTGRES_*` (loopback, a socket, or verify-full to a DNS name). Each run
+writes one new `--out` file (mode 0600) holding ids, codes, timestamps, digests and counts only; stdout stays empty.
+1. Dry run: `--out plan.json`. Expect about 0 `STRIP_EQUAL` rows from UI-written data (its credentials are mislabelled
+   `ssh_key`, C1). With `CREDENTIAL_ENCRYPTION_KEY`, stderr reports `credential decode failures: N` for a wrong key.
+2. `--apply --plan plan.json --sha256 <sha256 of plan.json> --out apply.json` (needs the key). One transaction per row;
+   a row whose `updated_at`, skeleton or classification changed is ledgered `drifted` and untouched. Exit 1 lists
+   `failed` rows: rerun the same command with a new `--out` to resume; settled rows are never redone.
+3. `--rollback --receipt apply.json --sha256 <…> --out …` (needs the key): rows still at their post-apply `updated_at`
+   get the escrowed original config back (plaintext again, by design) and their prior `credential_id`; a created
+   credential is deleted only if unused and unmodified. Other rows are `refused` (exit 1).
+4. `--finalize --receipt apply.json --sha256 <…> --out …`, at least 7 days after apply (D7), deletes that receipt's
+   escrow; rollback is then backup-restore only.
+5. `--retire --plan retire.json --sha256 <…> --out …` sets `config = '{}'` and `is_active = false` on the listed LEAVE
+   rows, built from the dry run: `jq -c '{mode: "retire", rows: [.rows[] | select(.definition_id | IN("<id>", …))]}' plan.json`.
+
+Afterwards check design §3.7 and file the value-free plan and receipts under `exchange/receipts/`.
+
 ## Overview
 
 Discovery Definitions are the cornerstone of HappyCMDB's ServiceNow-style discovery architecture. They provide a reusable, schedulable, and auditable way to configure infrastructure discovery operations.

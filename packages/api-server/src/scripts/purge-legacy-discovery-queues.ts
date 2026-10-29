@@ -3,12 +3,13 @@
 
 /**
  * HAP-774 S6 (design §4b, R1): purges the legacy, secret-bearing discovery queues and schedule-config keys from
- * Redis, operator-run after every worker and scheduler has stopped. Default: a read-only dry run printing a
- * counts report (plus the server run_id and db index, never the URL) and its sha256. `--apply --operator <name>
- * --sha256 <dry-run sha256>` re-runs that report live and refuses (exit 2, nothing written) on a mismatch or an
- * attached worker; otherwise it pauses each queue, removes its repeatables and job schedulers, obliterates it,
- * deletes the schedule-config keys and verifies every count is 0 (exit 1 otherwise). Unknown flags exit 1.
- * Never reads job data; SCAN, never KEYS; prints counts only. Connects only to CMDB_PURGE_REDIS_URL.
+ * Redis, operator-run after every worker and scheduler has stopped. Default: a read-only dry run printing a counts
+ * report (plus the server run_id and confirmed db, never the URL) and a sha256 that also covers each discovery key's
+ * name and TYPE (never printed). `--apply --operator <name> --sha256 <dry-run sha256>` re-runs it live and refuses
+ * (exit 2, nothing written) on a mismatch or an attached worker; otherwise it pauses each queue, removes its
+ * repeatables and job schedulers, obliterates it, deletes the schedule-config keys and verifies every count is 0
+ * (exit 1 otherwise). Bad flags, an unconfirmed db or a failed connect (once, bounded) exit 1. Never reads job data;
+ * SCAN, never KEYS; prints counts and error names only. Connects only to CMDB_PURGE_REDIS_URL.
  */
 
 import { createHash } from 'crypto';
@@ -24,11 +25,13 @@ const PREFIX = 'bull';
 const SCHEDULE_CONFIG_KEYS = 'cmdb:schedule-config:v1:discovery:*';
 
 export interface PurgeDeps { redis: Redis; Queue: typeof Queue }
+/** Bounded startup: connect explicitly, once, within 5 s; no reconnect and no offline queue, so nothing hangs. */
+export const openRedis = (url: string): PurgeDeps => ({ redis: new Redis(url, { lazyConnect: true, connectTimeout: 5_000, retryStrategy: () => null, maxRetriesPerRequest: 1, enableOfflineQueue: false }), Queue });
 interface QueuePurge { removedRepeatables: number; removedSchedulers: number; failed?: string }
 interface Survey { prefix: string; target: { runId: string; db: number }; queues: Record<string, { jobs: number; repeatables: number; keys: number; workers: number }>; scheduleConfigKeys: number }
 
-/** Counts (and optionally hands over) every distinct key matching `pattern`, one SCAN page at a time. */
-async function scanCount(redis: Redis, pattern: string, onKeys?: (keys: string[]) => Promise<unknown>): Promise<number> {
+/** Every distinct key matching `pattern`, sorted, one SCAN page at a time (each page optionally handed over). */
+async function scanKeys(redis: Redis, pattern: string, onKeys?: (keys: string[]) => Promise<unknown>): Promise<string[]> {
   const seen = new Set<string>(); // SCAN may repeat a key; the report must not depend on that
   let cursor = '0';
   do {
@@ -37,17 +40,17 @@ async function scanCount(redis: Redis, pattern: string, onKeys?: (keys: string[]
     keys.forEach(key => seen.add(key));
     cursor = next;
   } while (cursor !== '0');
-  return seen.size;
+  return [...seen].sort();
 }
 
-async function survey(redis: Redis, queues: Map<string, Queue>): Promise<Survey> {
-  const counts: Survey['queues'] = {};
+async function survey(redis: Redis, queues: Map<string, Queue>, db: number, inventory: string[] = []): Promise<Survey> {
+  const [counts, collect]: [Survey['queues'], (keys: string[]) => Promise<number>] = [{}, keys => Promise.resolve(inventory.push(...keys))];
   for (const [name, queue] of queues) {
     counts[name] = { jobs: Object.values(await queue.getJobCounts()).reduce((sum, n) => sum + n, 0), repeatables: await queue.getJobSchedulersCount(),
-      keys: await scanCount(redis, `${PREFIX}:${name}:*`), workers: await queue.getWorkersCount() };
+      keys: (await scanKeys(redis, `${PREFIX}:${name}:*`, collect)).length, workers: await queue.getWorkersCount() };
   }
-  const target = { runId: /^run_id:(\w+)/m.exec(await redis.info('server'))?.[1] ?? 'unknown', db: redis.options.db ?? 0 };
-  return { prefix: PREFIX, target, queues: counts, scheduleConfigKeys: await scanCount(redis, SCHEDULE_CONFIG_KEYS) };
+  const target = { runId: /^run_id:(\w+)/m.exec(await redis.info('server'))?.[1] ?? 'unknown', db };
+  return { prefix: PREFIX, target, queues: counts, scheduleConfigKeys: (await scanKeys(redis, SCHEDULE_CONFIG_KEYS, collect)).length };
 }
 
 /** Names the first failed step, never its error. */
@@ -72,7 +75,7 @@ export async function main(
   argv: readonly string[],
   env: NodeJS.ProcessEnv,
   io: { stdout: (line: string) => void; stderr: (line: string) => void },
-  open = (url: string): PurgeDeps => ({ redis: new Redis(url, { maxRetriesPerRequest: 1 }), Queue })
+  open = openRedis
 ): Promise<number> {
   let deps: PurgeDeps | undefined;
   const queues = new Map<string, Queue>();
@@ -89,13 +92,23 @@ export async function main(
       return fail('usage: CMDB_PURGE_REDIS_URL=<url> purge-legacy-discovery-queues [--apply --operator <name> --sha256 <dry-run sha256>]', 1);
     }
     const { redis, Queue: QueueClass } = (deps = open(url));
+    // Before any command: an unhandled BullMQ/ioredis error event is console.error'ed with its AUTH arguments.
+    const onError = (error: unknown): void => io.stderr(`purge-legacy-discovery-queues: redis error (${error instanceof Error ? error.name : 'unknown'})`);
+    await redis.on('error', onError).connect();
+    // ioredis only logs a failed SELECT and stays on db 0: trust only the db the server reports.
+    const db = Number(/\bdb=(\d+)/.exec(String(await redis.client('INFO')))?.[1] ?? -1);
+    if (db !== (redis.options.db ?? 0)) {
+      return fail('refused: the server did not confirm the requested db', 1);
+    }
     for (const name of getDiscoveryQueueNames()) {
       // skipMetasUpdate: constructing a queue must not write its meta hash.
-      queues.set(name, new QueueClass(name, { connection: redis, prefix: PREFIX, skipMetasUpdate: true }));
+      queues.set(name, new QueueClass(name, { connection: redis, prefix: PREFIX, skipMetasUpdate: true }).on('error', onError));
     }
-    const before = await survey(redis, queues);
-    // The canonical report: the dry-run JSON without `mode` and `sha256`, keys in survey order.
-    const sha256 = createHash('sha256').update(JSON.stringify(before)).digest('hex');
+    const inventory: string[] = [];
+    const before = await survey(redis, queues, db, inventory);
+    // Canonical input: the printed report (without `mode`/`sha256`), then each sorted discovery key's name and TYPE.
+    const typed = await Promise.all([...new Set(inventory)].sort().map(async key => `${key}\t${await redis.type(key)}`));
+    const sha256 = createHash('sha256').update(`${JSON.stringify(before)}\n${typed.join('\n')}`).digest('hex');
     if (!apply) {
       io.stdout(JSON.stringify({ mode: 'dry-run', ...before, sha256 }));
       return 0;
@@ -110,8 +123,8 @@ export async function main(
     for (const [name, queue] of queues) {
       purged[name] = await purgeQueue(queue);
     }
-    const deleted = await scanCount(redis, SCHEDULE_CONFIG_KEYS, keys => redis.del(...keys)).catch(() => null);
-    const after = await survey(redis, queues);
+    const deleted = await scanKeys(redis, SCHEDULE_CONFIG_KEYS, keys => redis.del(...keys)).then(keys => keys.length, () => null);
+    const after = await survey(redis, queues, db);
     const ok = deleted !== null && Object.values(purged).every(result => result.failed === undefined) && after.scheduleConfigKeys === 0
       && Object.values(after.queues).every(counts => counts.jobs + counts.repeatables + counts.keys + counts.workers === 0);
     io.stdout(JSON.stringify({ mode: 'apply', operator, sha256, before, purged, deletedScheduleConfigKeys: deleted, after, ok }));

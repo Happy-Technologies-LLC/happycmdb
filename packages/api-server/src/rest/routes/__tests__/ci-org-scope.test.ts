@@ -555,12 +555,14 @@ describe('/api/v1/cis tenant scoping', () => {
   it('POST /cis stores a client external_id only when the schema gate is ready; PUT never passes it on (FD17-S3)', async () => {
     const COMPOSITE = { labelsOrTypes: ['CI'], properties: ['organization_id', 'external_id'] };
     const GLOBAL = { labelsOrTypes: ['CI'], properties: ['external_id'] };
-    let constraints: object[] = [COMPOSITE]; // ready: 005 applied
+    const SERVER_GLOBAL = { labelsOrTypes: ['Server'], properties: ['external_id'] }; // F3: a subtype-label global
+    let constraints: object[] | 'throw' = [COMPOSITE]; // ready: 005 applied
     let probes = 0;
     const seam = neo4jClient as unknown as { journalDriver?: unknown };
     const realJournalDriver = seam.journalDriver;
     seam.journalDriver = { session: () => ({ close: async () => undefined, run: async () => {
       probes++;
+      if (constraints === 'throw') throw new Error('probe failed'); // F4: a probe error fails closed
       return { records: constraints.map(row => ({ toObject: () => row })) };
     } }) };
     const schema = jest.spyOn(journalModule, 'assertJournalSchema').mockResolvedValue();
@@ -574,15 +576,17 @@ describe('/api/v1/cis tenant scoping', () => {
     try {
       const post = (extra: object) => request(app).post('/api/v1/cis').set(AS_A).send({ name: 'n', type: 'server', ...extra });
       const UNAVAILABLE = { success: false, error: 'Service Unavailable', message: 'CI write temporarily unavailable' };
-      const created = await post({ external_id: 'ext-1' });
-      expect([created.status, created.body.data.external_id]).toEqual([201, 'ext-1']);
-      expect(graph.nodes.get(created.body.data.id)).toMatchObject({ organization_id: ORG_A, external_id: 'ext-1' });
-      for (const rows of [[], [GLOBAL], [COMPOSITE, GLOBAL]]) { // probed on every create: no cached "ready"
+      for (const external of [' ext-1 ', 'x'.repeat(200)]) { // F1: stored verbatim, never trimmed (D17-9); F2: 200 is the bound
+        const created = await post({ external_id: external });
+        expect([created.status, created.body.data.external_id]).toEqual([201, external]);
+        expect(graph.nodes.get(created.body.data.id)).toMatchObject({ organization_id: ORG_A, external_id: external });
+      }
+      for (const rows of [[], [GLOBAL], [COMPOSITE, GLOBAL], [COMPOSITE, SERVER_GLOBAL], 'throw' as const]) { // probed on every create
         constraints = rows;
         const refused = await post({ external_id: 'ext-1' });
-        expect([refused.status, refused.body, journal.mock.calls.length]).toEqual([503, UNAVAILABLE, 1]);
+        expect([rows, refused.status, refused.body, journal.mock.calls.length]).toEqual([rows, 503, UNAVAILABLE, 2]);
       }
-      expect([(await post({})).status, probes]).toEqual([201, 4]); // no external_id: no probe
+      expect([(await post({})).status, probes]).toEqual([201, 7]); // no external_id: no probe
       await request(app).put('/api/v1/cis/ci-a-app').set(AS_A).send({ name: 'renamed', external_id: 'ext-2' });
       expect(update.mock.calls).toEqual([['ci-a-app', { name: 'renamed' }, ORG_A, 'user-a']]);
     } finally {

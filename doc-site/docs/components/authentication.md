@@ -548,6 +548,11 @@ organization when a CI is created through `POST /api/v1/cis` or GraphQL `createC
   without echoing it. Until the database has `ci_org_external_id_unique` and no uniqueness
   constraint on `external_id` alone (checked by shape on every such create), any create with an
   `external_id` returns **503** `CI write temporarily unavailable`, whatever the value.
+- `external_id` is set only by that create and never changes afterwards (HAP-1099): the
+  reconciliation merge (`/api/v1/reconciliation/merge`, GraphQL `_reconciliation { mergeCI }`)
+  ignores `attributes.external_id`, an ITIL baseline restore skips it, and resolving an
+  `external_id` conflict with `merge` or `accept_source` returns the fixed **422** `CI cannot be
+  changed through the audited path` whatever the value (`accept_target`/`dismiss_stale` still work).
 - CIs written by discovery, connectors, ETL and reconciliation carry no
   `organization_id` and are invisible to every organization through `/api/v1/cis`,
   `/api/v1/dashboards` and the GraphQL CI operations.

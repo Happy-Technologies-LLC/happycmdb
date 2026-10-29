@@ -217,6 +217,14 @@ it('conceals foreign and NULL baselines and restores only an owned CI from an ow
   expect(await remaining()).toEqual([ID_A, ID_B, ID_NULL]);
 });
 
+it('B-1 (HAP-1099): a restore never writes the snapshot external_id (D17-3); the other attributes restore', async () => {
+  await db.exec(`UPDATE itil_baselines SET baseline_data = '{"ci-a":{"name":"baseline-a","external_id":"old-ext","_external_id":"old-ext"}}'
+    WHERE id = '${ID_A}'`);
+  Object.assign(ciNodes['ci-a']!, { external_id: 'cur-ext' });
+  const restored = await request(app).post(`${endpoint(ID_A)}/restore`).set(authorization('a')).send({ ciId: 'ci-a', performedBy: 'a' });
+  expect([restored.status, ciNodes['ci-a']]).toEqual([200, { id: 'ci-a', name: 'baseline-a', organization_id: A, external_id: 'cur-ext' }]);
+});
+
 it('keeps old-writer NULL rows inaccessible to tenant reads and deletes', async () => {
   await db.exec(`INSERT INTO itil_baselines (id, name, baseline_type, baseline_data, created_by)
     VALUES ('${ID_MISSING}', 'new-orphan', 'configuration', '{}', 'old-writer')`);

@@ -2297,7 +2297,7 @@ paths:
     post:
       tags: [Reconciliation]
       summary: Merge CI
-      description: Merge into the CI that the caller's identifiers match in the caller's organization, or create a new one there when none matches. Foreign-organization and organization-less CIs never match, so they get the same new-CI response as a missing one. A created CI has no `external_id` property; its external identity is the caller's lineage.
+      description: Merge into the CI that the caller's identifiers match in the caller's organization, or create a new one there when none matches. Foreign-organization and organization-less CIs never match, so they get the same new-CI response as a missing one. A created CI has no `external_id` property; its external identity is the caller's lineage. `attributes.external_id` is ignored; a merge never sets or changes `external_id` (HAP-1099).
       operationId: mergeCI
       requestBody:
         required: true
@@ -2389,6 +2389,8 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           description: revision_mismatch, stale_conflict or not_stale; or CI temporarily unavailable
+        '422':
+          description: A merge or accept_source of an `external_id` conflict, which can never be written after create (HAP-1099); the fixed `CI cannot be changed through the audited path`, whatever the value
 
   /reconciliation/rules:
     get:

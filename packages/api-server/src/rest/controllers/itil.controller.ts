@@ -1515,7 +1515,8 @@ const isGraphScalar = (value: unknown): boolean => value === null || ['boolean',
 
 /**
  * Main's restore key handling (legacy snapshots carry `_`-prefixed names) plus
- * v16 §4.4: every reserved key is dropped, never written. A value Neo4j cannot
+ * v16 §4.4: every reserved key is dropped, never written, and so is `external_id`
+ * (D17-3, HAP-1099: set only by REST create). A value Neo4j cannot
  * store is a definitive 422, never a lossy restore.
  */
 function baselineRestore(snapshot: Record<string, unknown>, attributes?: string[]): {
@@ -1526,7 +1527,7 @@ function baselineRestore(snapshot: Record<string, unknown>, attributes?: string[
   let discoveredAt: unknown = null;
   for (const key of attributes?.length ? attributes : Object.keys(snapshot)) {
     const name = key.startsWith('_') ? key.slice(1) : key;
-    if (!Object.hasOwn(snapshot, key) || isReservedKey(key) || name === 'updated_at' || name === 'incarnation_id') continue;
+    if (!Object.hasOwn(snapshot, key) || isReservedKey(key) || ['updated_at', 'incarnation_id', 'external_id'].includes(name)) continue;
     let value = snapshot[key];
     if (name === 'created_at' || name === 'discovered_at') {
       // Legacy snapshots hold ISO strings; typed snapshots hold the stored DateTime.

@@ -53,7 +53,8 @@ jest.mock('pg', () => {
   }
   return { ...actual, Pool, default: { ...actual, Pool } };
 });
-const mockGraph = { nodes: new Map<string, Record<string, unknown>>(), statements: [] as string[], sql: [] as string[] };
+const mockGraph = { nodes: new Map<string, Record<string, unknown>>(), statements: [] as string[], sql: [] as string[],
+  fences: new Map<string, Record<string, unknown>>() };
 jest.mock('neo4j-driver', () => {
   const actual = jest.requireActual('neo4j-driver');
   const record = (values: Record<string, unknown>) => ({ get: (key: string) => values[key], toObject: () => values });
@@ -64,6 +65,10 @@ jest.mock('neo4j-driver', () => {
       return node?.['organization_id'] === org ? node : undefined;
     };
     if (query.includes('SHOW CONSTRAINTS')) return { records: [record({ present: 1 })] };
+    if (query.includes('MERGE (op:ReconciliationOp')) { // the recovery fence: a seeded applied one, else created aborted
+      const fence = mockGraph.fences.get(params['op']) ?? { outcome: 'aborted', org: params['org'], ci: params['ci'], operation: params['operation'] };
+      return { records: [record(fence)] };
+    }
     if (query.startsWith('CREATE (ci:CI')) { // the W create: SET ci = $props, id, org; one fence per slot
       mockGraph.nodes.set(params['id'], { ...params['props'], id: params['id'], organization_id: params['org'] });
       return { records: [record({ fences_created: params['fences'].length })] };
@@ -105,7 +110,7 @@ jest.mock('../../../auth/neo4j-auth.repository', () => ({
 jest.mock('../../../middleware/audit.middleware', () => ({ auditMiddleware: (_req: Request, _res: Response, next: NextFunction) => next() }));
 
 import { loadConfig } from '@cmdb/common';
-import { getAuditService, getNeo4jClient, getPostgresClient, setJournalSeam } from '@cmdb/database';
+import { enc, getAuditService, getNeo4jClient, getPostgresClient, requeueFailedJournalGroup, setJournalSeam } from '@cmdb/database';
 import { conflictHash } from '@cmdb/identity-resolution/engine/identity-reconciliation-engine';
 import { JWTService } from '../../../auth/jwt.service';
 import { getAuthMiddleware } from '../../../auth/auth-bootstrap';
@@ -467,4 +472,52 @@ it('S2-T3 (HAP-1001): merge create, merge update and resolve accept_source appen
     [{ field: 'owner', old_value: 'o2', new_value: 'o3' }]]);
   expect([mockGraph.nodes.get(X)!['owner'], await getAuditService(getPostgresClient().pool).verifyAuditChain()])
     .toEqual(['o3', expect.objectContaining({ ok: true })]);
+});
+
+it('R-1 (HAP-1099): a legacy external_id conflict never writes; merge and accept_source are one value-free 422 before admission', async () => {
+  const X = await ci(A, undefined, { external_id: 'mine' });
+  await stored(A, X, 'external_id', 'mine', 'cmdb');
+  const legacy = async (sourceId: string) => { // held before HAP-1099 (journal.ts T2 column set); one per pending key
+    const hash = conflictHash('external_id', { value: 'mine' }, { value: 'held-by-b' }, 'scan', sourceId);
+    const [row] = await rows(`INSERT INTO reconciliation_conflicts (id, organization_id, ci_id, conflict_type, source_data, target_data,
+        conflicting_fields, field_name, source_name, source_id, incoming_json, target_json, target_source_name, content_hash, detected_by)
+      VALUES ($1, $2, $3, 'field_conflict', '{}', '{}', '["external_id"]', 'external_id', 'scan', $4, '"held-by-b"', '"mine"', 'cmdb', $5,
+        'actor-a') RETURNING id`, [randomUUID(), A, X, sourceId, hash]);
+    return { id: row!['id'] as string, expected_revision: hash };
+  };
+  const before = { ...mockGraph.nodes.get(X) };
+  const refused = [];
+  for (const [sourceId, body] of [['s1', { resolution: 'merge', merged_data: 'held-by-b' }], ['s2', { resolution: 'merge', merged_data: 'unused' }],
+    ['s3', { resolution: 'accept_source' }]] as const) {
+    const { id, expected_revision } = await legacy(sourceId);
+    refused.push(await resolve('a', id, { ...body, expected_revision }));
+  }
+  expect(refused.map(response => [response.status, response.text])).toEqual(Array(3).fill([422,
+    JSON.stringify({ success: false, error: 'Unprocessable Entity', message: 'CI cannot be changed through the audited path' })]));
+  expect([mockGraph.nodes.get(X), await journal(X)]).toEqual([before, []]);
+  const target = await legacy('s4');
+  expect((await resolve('a', target.id, { resolution: 'accept_target', expected_revision: target.expected_revision })).status).toBe(200);
+  const merged = await api('a').gql(`mutation { _reconciliation { mergeCI(_name: "${X}", _ciType: "server", _source: "scan", _sourceId: "scan-1",
+    _identifiers: { _serialNumber: "${X}" }, _attributes: { external_id: "held-by-b", note: "n" }) { _action } } }`);
+  // Store leg (D17-3): a direct property write refuses it too.
+  await expect(getNeo4jClient().updateCIProperties(X, { external_id: 'unused' }, A, 'actor-a')).rejects.toThrow('CI identity and incarnation');
+  const created = (await merge('a', `s4b-${randomUUID()}`, 'scan', { external_id: 'held-by-b' })).body.data;
+  expect([merged.body.data?._reconciliation.mergeCI._action, mockGraph.nodes.get(X)!['note'], mockGraph.nodes.get(X)!['external_id'],
+    created.action, Object.hasOwn(mockGraph.nodes.get(created.ci_id)!, 'external_id')]).toEqual(['updated', 'n', 'mine', 'created', false]);
+});
+
+it('HAP-1099 row 13: recovery refuses a stored pre-fix plan that sets external_id; no evidence commits, the slot stays failed', async () => {
+  const X = await ci(A, undefined, { external_id: 'mine' });
+  const [op, props] = [randomUUID(), { external_id: 'stored-plan', note: 'n' }];
+  const plan = { graph: { kind: 'update', label: null, params: enc({ id: X, props }) },
+    fields: Object.entries(props).map(([name, value]) => ({ name, value, text: value, source: 'old' })),
+    history: { changeType: 'updated', changedFields: Object.keys(props), source: 'old', previous: enc({ external_id: 'mine', note: null }),
+      next: enc(props), incarnationId: null } };
+  await rows(`INSERT INTO ci_reconciliation_operations (id, group_id, organization_id, ci_id, origin, operation, graph_effect, state,
+    actor, epoch, plan, lease_expires_at, last_error) VALUES ($1, $1, $2, $3, 'api', 'update', true, 'failed', 'actor-a', 0, $4::jsonb,
+    now(), 't2_failed')`, [op, A, X, JSON.stringify(plan)]);
+  mockGraph.fences.set(op, { outcome: 'applied', org: A, ci: X, operation: 'update' }); // its W ran before the deploy; T2 failed
+  expect([await requeueFailedJournalGroup(op), await getNeo4jClient().journal.sweep(op)]).toEqual([1, 1]);
+  expect([(await journal(X)).map(row => [row.state, row.last_error]), await rows(`SELECT 1 FROM ci_field_sources WHERE ci_id = $1
+    UNION ALL SELECT 1 FROM ci_change_history WHERE ci_id = $1`, [X])]).toEqual([[['failed', 'external_id_immutable']], []]);
 });

@@ -439,7 +439,7 @@ export class ReconciliationJournal {
       WHERE id IN (SELECT id FROM ci_reconciliation_operations WHERE state = 'pending'
                    AND lease_expires_at + interval '20 seconds' < now() AND ($2::uuid IS NULL OR id = $2::uuid)
                    ORDER BY lease_expires_at FOR UPDATE SKIP LOCKED LIMIT 50)
-      RETURNING id, group_id, organization_id, ci_id, operation, graph_effect, plan IS NULL AS plan_missing`,
+      RETURNING id, group_id, organization_id, ci_id, operation, graph_effect, plan IS NULL AS plan_missing, plan->'graph' AS graph`,
       [token, onlyId ?? null])).rows;
     for (const row of claimed) {
       const decide = (state: 'aborted' | 'failed', reason: string) => getPostgresClient().pool.query(
@@ -464,6 +464,8 @@ export class ReconciliationJournal {
           WHERE id = $1 AND claim_token = $2`, [row.id, token]);
         continue;
       }
+      // HAP-1099 row 13 (D17-3): recovery never commits a stored plan that sets external_id after create.
+      const stored = ['update', 'restore'].includes(row.graph?.kind) ? dec(row.graph.params) : null;
       if (!outcome || outcome['org'] !== row.organization_id || outcome['ci'] !== row.ci_id ||
         outcome['operation'] !== row.operation) {
         await decide('failed', 'fence_mismatch');
@@ -472,6 +474,8 @@ export class ReconciliationJournal {
         await decide('aborted', 'fence_aborted');
       } else if (row.plan_missing) {
         await decide('failed', 'plan_missing');
+      } else if (stored instanceof Object && 'props' in stored && stored.props instanceof Object && Object.hasOwn(stored.props, 'external_id')) {
+        await decide('failed', 'external_id_immutable');
       } else {
         try {
           await t2(row.group_id, true, token);

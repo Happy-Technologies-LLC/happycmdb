@@ -395,13 +395,13 @@ export class Neo4jClient {
   /**
    * Journaled direct property update of an owned CI (state only, A-10); values are
    * stored as given (callers validate them as Neo4j-storable). Null when missing or foreign.
-   * Identity, tenant, fence aliases and the incarnation never change in place.
+   * Identity, tenant, fence aliases, the incarnation and external_id (D17-3: REST create only) never change in place.
    * Every call (updateCI, ITIL, GraphQL) adds the T2 audit row of the changed keys (HAP-784, HAP-1001).
    */
   async updateCIProperties(id: string, props: Record<string, unknown>, organizationId: string,
     actor: string): Promise<Record<string, unknown> | null> {
     if (Object.keys(props).some(key => ['id', 'organization_id', 'organizationid', 'op_id', 'reconciliation_op_id',
-      'created_at', 'incarnation_id'].includes(key.replace(/^_+/, '').toLowerCase()))) {
+      'created_at', 'incarnation_id', 'external_id'].includes(key.replace(/^_+/, '').toLowerCase()))) {
       throw new Error('CI identity and incarnation cannot be updated');
     }
     return this.reconcileOwned(id, organizationId, actor, 'direct_write', async current => {

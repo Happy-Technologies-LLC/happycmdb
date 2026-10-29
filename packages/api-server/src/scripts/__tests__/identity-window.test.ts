@@ -14,6 +14,7 @@ import * as bcrypt from 'bcrypt';
 import neo4j from 'neo4j-driver';
 
 import {
+  ASSIGN_ORGANIZATION_CYPHER, assignOrganization, main,
   GRANT_HOLDERS_CYPHER, GRANT_IDENTITY_CYPHER, GRANT_PLATFORM_ADMIN_CYPHER, GrantRefused, SCAN_MARK_CYPHER,
   SCAN_USERS_CYPHER, grantPlatformAdmin, scanDefaultPasswords,
 } from '../identity-window';
@@ -22,6 +23,8 @@ import type { RotationGraph, Row } from '../rotate-user-password';
 type Node = { elementId: string; props: Row };
 const norm = (cypher: string) => cypher.replace(/\s+/g, ' ').trim();
 const marked = (u: Node) => u.props['defaultPasswordSuspect'] === true || u.props['_defaultPasswordSuspect'] === true;
+const admin = (u: Node) => u.props['_platformAdmin'] === true || u.props['platformAdmin'] === true;
+const orgOf = (u: Node) => u.props['_organizationId'] ?? u.props['organizationId'] ?? null;
 const hashOf = (u: Node) => u.props['_passwordHash'] ?? u.props['passwordHash'] ?? null;
 const num = (value: unknown) => (neo4j.isInt(value) ? neo4j.integer.toNumber(value) : Number(value));
 const epochOf = (u: Node) => num(u.props['credentialEpoch'] ?? 0);
@@ -36,6 +39,7 @@ function fakeGraph(users: Node[]): RotationGraph {
           eid: u.elementId, _id: u.props['_id'] ?? null, id: u.props['id'] ?? null,
           username: u.props['_username'] ?? u.props['username'] ?? null, email: u.props['_email'] ?? u.props['email'] ?? null,
           seedProvenance: u.props['seedProvenance'] ?? null, marked: marked(u),
+          platformAdmin: admin(u), org: orgOf(u),
         }));
       }
       if (q === norm(GRANT_HOLDERS_CYPHER)) {
@@ -61,6 +65,17 @@ function fakeGraph(users: Node[]): RotationGraph {
         const ok = u !== undefined && !marked(u)
           && hashOf(u) === params['verifiedHash'] && epochOf(u) === num(params['verifiedEpoch']);
         if (ok) u!.props['defaultPasswordSuspect'] = true;
+        return [{ n: neo4j.int(ok ? 1 : 0) }];
+      }
+      if (q === norm(ASSIGN_ORGANIZATION_CYPHER)) {
+        // Each guard and the written property are read from the statement, so a dropped guard shows.
+        const ok = u !== undefined && (u.props['_id'] === params['id'] || u.props['id'] === params['id'])
+          && (!q.includes('u.seedProvenance IS NULL') || u.props['seedProvenance'] === undefined)
+          && (!q.includes('AND NOT (coalesce(u.defaultPasswordSuspect') || !marked(u))
+          && (!q.includes('AND NOT (coalesce(u._platformAdmin') || !admin(u))
+          && (!q.includes('observed = $observed') || orgOf(u) === params['observed']);
+        const property = /SET u\.(\w+) = \$organizationId/.exec(q)![1]!;
+        if (ok) Object.assign(u!.props, { [property]: params['organizationId'], organizationAssignedBy: params['operator'] });
         return [{ n: neo4j.int(ok ? 1 : 0) }];
       }
       throw new Error(`unexpected write ${q}`);
@@ -97,6 +112,69 @@ describe('grant-platform-admin (P-6)', () => {
     await expect(grantPlatformAdmin(fakeGraph(twin), 'x', 'nick')).rejects.toBeInstanceOf(GrantRefused);
     await expect(grantPlatformAdmin(fakeGraph(collide), 'y', 'nick')).rejects.toMatchObject({ reason: 'identity_collision' });
     expect([...twin, ...collide].some(u => u.props['platformAdmin'] !== undefined)).toBe(false);
+  });
+});
+
+describe('assign-organization (FD-5)', () => {
+  const [ORG, ORG_X] = ['33333333-3333-4333-8333-333333333333', '44444444-4444-4444-8444-444444444444'];
+  const user = (props: Row): Node[] => [{ elementId: '4:p', props: { _id: 'p', _username: 'pat', ...props } }];
+  const keys = { query: async (_text: string, params?: unknown[]) => ({ rows: [{ n: params?.[0] === 'p' ? '2' : '0' }] }) };
+  const assign = (users: Node[], graph = fakeGraph(users)) => assignOrganization(graph, keys, 'p', ORG, 'nick');
+  const refused = (reason: string) => new Error(`organization assignment refused: ${reason}`);
+
+  it.each([
+    ['no organization', {}],
+    ['an invalid _organizationId over a valid organizationId', { _organizationId: 'not-a-uuid', organizationId: ORG_X }],
+  ])('A1: assigns a user with %s through _organizationId, stamped by the operator', async (_label, props) => {
+    const users = user(props);
+    await expect(assign(users)).resolves.toEqual({ userId: 'p', organizationId: ORG, outcome: 'assigned', enabledApiKeys: 2 });
+    expect(users[0]!.props).toMatchObject({ _organizationId: ORG, organizationAssignedBy: 'nick' });
+  });
+
+  it('A2: the same organization again is unchanged, with no write', async () => {
+    const users = user({ organizationId: ORG });
+    const graph = fakeGraph(users);
+    graph.write = async () => { throw new Error('unexpected write'); };
+    await expect(assign(users, graph)).resolves.toEqual({ userId: 'p', organizationId: ORG, outcome: 'unchanged', enabledApiKeys: 2 });
+  });
+
+  it.each([
+    ['another valid organization (A3)', user({ _organizationId: ORG_X }), 'already_assigned'],
+    ['an unknown id', [{ elementId: '4:q', props: { _id: 'q' } }], 'unknown_identity'],
+    ['an ambiguous id', [{ elementId: '4:a', props: { _id: 'p' } }, { elementId: '4:b', props: { id: 'p' } }], 'ambiguous_identity'],
+    ['a colliding id', [{ elementId: '4:a', props: { _id: 'p', id: 'y' } }, { elementId: '4:b', props: { _id: 'y' } }], 'identity_collision'],
+    ['seed provenance', user({ seedProvenance: 'seed-data' }), 'seeded_account'],
+    ['the default-password marker', user({ defaultPasswordSuspect: true }), 'seeded_account'],
+    ['a platform admin', user({ platformAdmin: true }), 'platform_admin_target'],
+    ['a platform admin (underscore spelling)', user({ _platformAdmin: true }), 'platform_admin_target'],
+    ['a non-string organization', user({ _organizationId: 7 }), 'unsupported_value'],
+  ])('A3/A4: refuses %s with a value-free reason, the node unchanged', async (_label, users: Node[], reason) => {
+    const before = JSON.stringify(users);
+    await expect(assign(users)).rejects.toThrow(refused(reason));
+    expect(JSON.stringify(users)).toBe(before);
+  });
+
+  it.each([
+    ['gains an organization', { _organizationId: ORG_X }],
+    ['becomes a platform admin', { platformAdmin: true }],
+    ['is marked', { defaultPasswordSuspect: true }],
+    ['gets seed provenance', { seedProvenance: 'seed-data' }],
+  ])('A5: not_applied when the user %s between the read and the write', async (_label, change) => {
+    const users = user({});
+    const graph = fakeGraph(users);
+    const write = graph.write;
+    graph.write = async (cypher, params) => { Object.assign(users[0]!.props, change); return write(cypher, params); };
+    await expect(assign(users, graph)).rejects.toThrow(refused('not_applied'));
+    expect(users[0]!.props).toEqual({ _id: 'p', _username: 'pat', ...change });
+  });
+
+  it.each([
+    [['--user-id', 'p', '--organization-id', 'not-a-uuid', '--operator', 'nick'], '--organization-id <uuid> is required'],
+    [['--user-id', 'p', '--organization-id', ORG, '--operator', ' '], '--operator <name> is required'],
+  ])('A6: %j exits 1 before any store opens', async (args, message) => {
+    const lines: string[] = [];
+    const code = await main(['assign-organization', ...args], {}, { stdout: line => lines.push(line), stderr: line => lines.push(line) });
+    expect([code, lines]).toEqual([1, [`identity-window: ${message}`]]);
   });
 });
 

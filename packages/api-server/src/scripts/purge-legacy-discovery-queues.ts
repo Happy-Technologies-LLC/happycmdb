@@ -2,13 +2,16 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * HAP-774 S6 (design §4b, R1): purges the legacy, secret-bearing discovery queues and schedule-config keys
- * from Redis, operator-run after every worker and scheduler has stopped. Default: a read-only dry run.
- * `--apply --operator <name>` refuses (exit 2, nothing written) while a worker is attached; otherwise it
- * pauses each queue, removes its repeatables and job schedulers, obliterates it, deletes the schedule-config
- * keys and verifies every count is 0 (exit 1 on any failed step). Never reads job data; SCAN, never KEYS;
- * prints counts only. Connects only to CMDB_PURGE_REDIS_URL.
+ * HAP-774 S6 (design §4b, R1): purges the legacy, secret-bearing discovery queues and schedule-config keys from
+ * Redis, operator-run after every worker and scheduler has stopped. Default: a read-only dry run printing a
+ * counts report (plus the server run_id and db index, never the URL) and its sha256. `--apply --operator <name>
+ * --sha256 <dry-run sha256>` re-runs that report live and refuses (exit 2, nothing written) on a mismatch or an
+ * attached worker; otherwise it pauses each queue, removes its repeatables and job schedulers, obliterates it,
+ * deletes the schedule-config keys and verifies every count is 0 (exit 1 otherwise). Unknown flags exit 1.
+ * Never reads job data; SCAN, never KEYS; prints counts only. Connects only to CMDB_PURGE_REDIS_URL.
  */
+
+import { createHash } from 'crypto';
 
 import { Queue } from 'bullmq';
 import { Redis } from 'ioredis';
@@ -22,27 +25,29 @@ const SCHEDULE_CONFIG_KEYS = 'cmdb:schedule-config:v1:discovery:*';
 
 export interface PurgeDeps { redis: Redis; Queue: typeof Queue }
 interface QueuePurge { removedRepeatables: number; removedSchedulers: number; failed?: string }
-interface Survey { prefix: string; queues: Record<string, { jobs: number; repeatables: number; keys: number; workers: number }>; scheduleConfigKeys: number }
+interface Survey { prefix: string; target: { runId: string; db: number }; queues: Record<string, { jobs: number; repeatables: number; keys: number; workers: number }>; scheduleConfigKeys: number }
 
-/** Counts (and optionally hands over) every key matching `pattern`, one SCAN page at a time. */
+/** Counts (and optionally hands over) every distinct key matching `pattern`, one SCAN page at a time. */
 async function scanCount(redis: Redis, pattern: string, onKeys?: (keys: string[]) => Promise<unknown>): Promise<number> {
-  let [cursor, total] = ['0', 0];
+  const seen = new Set<string>(); // SCAN may repeat a key; the report must not depend on that
+  let cursor = '0';
   do {
     const [next, keys] = await redis.scan(cursor, 'MATCH', pattern, 'COUNT', 1000);
     await (keys.length > 0 ? onKeys?.(keys) : undefined);
-    [cursor, total] = [next, total + keys.length];
+    keys.forEach(key => seen.add(key));
+    cursor = next;
   } while (cursor !== '0');
-  return total;
+  return seen.size;
 }
 
 async function survey(redis: Redis, queues: Map<string, Queue>): Promise<Survey> {
   const counts: Survey['queues'] = {};
   for (const [name, queue] of queues) {
-    const jobs = Object.values(await queue.getJobCounts()).reduce((sum, n) => sum + n, 0);
-    const [repeatables, keys, workers] = [await queue.getJobSchedulersCount(), await scanCount(redis, `${PREFIX}:${name}:*`), await queue.getWorkersCount()];
-    counts[name] = { jobs, repeatables, keys, workers };
+    counts[name] = { jobs: Object.values(await queue.getJobCounts()).reduce((sum, n) => sum + n, 0), repeatables: await queue.getJobSchedulersCount(),
+      keys: await scanCount(redis, `${PREFIX}:${name}:*`), workers: await queue.getWorkersCount() };
   }
-  return { prefix: PREFIX, queues: counts, scheduleConfigKeys: await scanCount(redis, SCHEDULE_CONFIG_KEYS) };
+  const target = { runId: /^run_id:(\w+)/m.exec(await redis.info('server'))?.[1] ?? 'unknown', db: redis.options.db ?? 0 };
+  return { prefix: PREFIX, target, queues: counts, scheduleConfigKeys: await scanCount(redis, SCHEDULE_CONFIG_KEYS) };
 }
 
 /** Names the first failed step, never its error. */
@@ -74,9 +79,14 @@ export async function main(
   // Fixed text only: never a key, a value or an error message.
   const fail = (message: string, code: 1 | 2): number => (io.stderr(`purge-legacy-discovery-queues: ${message}`), code);
   try {
-    const [apply, url, operator] = [argv.includes('--apply'), env['CMDB_PURGE_REDIS_URL'] ?? '', argv.includes('--operator') ? argv[argv.indexOf('--operator') + 1] ?? '' : ''];
-    if (url === '' || (apply && (operator.trim() === '' || operator.startsWith('--')))) {
-      return fail('usage: CMDB_PURGE_REDIS_URL=<url> purge-legacy-discovery-queues [--apply --operator <name>]', 1);
+    const flags = new Map<string, string>(); // an unknown or valueless flag fails, so a typo never drops the gate
+    for (let i = 0; i < argv.length; i++) {
+      flags.set(argv[i]!, argv[i] === '--apply' ? '' : argv[++i] ?? '--');
+    }
+    const [apply, operator, reviewed, url] = [flags.has('--apply'), flags.get('--operator') ?? '', flags.get('--sha256') ?? '', env['CMDB_PURGE_REDIS_URL'] ?? ''];
+    const known = [...flags].every(([flag, value]) => flag === '--apply' || (['--operator', '--sha256'].includes(flag) && !value.startsWith('--')));
+    if (!known || url === '' || (apply && (operator.trim() === '' || !/^[0-9a-f]{64}$/.test(reviewed)))) {
+      return fail('usage: CMDB_PURGE_REDIS_URL=<url> purge-legacy-discovery-queues [--apply --operator <name> --sha256 <dry-run sha256>]', 1);
     }
     const { redis, Queue: QueueClass } = (deps = open(url));
     for (const name of getDiscoveryQueueNames()) {
@@ -84,12 +94,17 @@ export async function main(
       queues.set(name, new QueueClass(name, { connection: redis, prefix: PREFIX, skipMetasUpdate: true }));
     }
     const before = await survey(redis, queues);
+    // The canonical report: the dry-run JSON without `mode` and `sha256`, keys in survey order.
+    const sha256 = createHash('sha256').update(JSON.stringify(before)).digest('hex');
     if (!apply) {
-      io.stdout(JSON.stringify({ mode: 'dry-run', ...before }));
+      io.stdout(JSON.stringify({ mode: 'dry-run', ...before, sha256 }));
       return 0;
     }
     if (Object.values(before.queues).some(counts => counts.workers !== 0)) {
       return fail('refused: a worker is attached to a discovery queue', 2);
+    }
+    if (sha256 !== reviewed) {
+      return fail('refused: the live report differs from the reviewed dry run (--sha256)', 2);
     }
     const purged: Record<string, QueuePurge> = {};
     for (const [name, queue] of queues) {
@@ -99,7 +114,7 @@ export async function main(
     const after = await survey(redis, queues);
     const ok = deleted !== null && Object.values(purged).every(result => result.failed === undefined) && after.scheduleConfigKeys === 0
       && Object.values(after.queues).every(counts => counts.jobs + counts.repeatables + counts.keys + counts.workers === 0);
-    io.stdout(JSON.stringify({ mode: 'apply', operator, before, purged, deletedScheduleConfigKeys: deleted, after, ok }));
+    io.stdout(JSON.stringify({ mode: 'apply', operator, sha256, before, purged, deletedScheduleConfigKeys: deleted, after, ok }));
     return ok ? 0 : 1;
   } catch (error) {
     return fail(`failed (${error instanceof Error ? error.name : 'unknown'})`, 1);

@@ -74,8 +74,10 @@ function fakeGraph(users: Node[]): RotationGraph {
           && (!q.includes('AND NOT (coalesce(u.defaultPasswordSuspect') || !marked(u))
           && (!q.includes('AND NOT (coalesce(u._platformAdmin') || !admin(u))
           && (!q.includes('observed = $observed') || orgOf(u) === params['observed']);
-        const property = /SET u\.(\w+) = \$organizationId/.exec(q)![1]!;
-        if (ok) Object.assign(u!.props, { [property]: params['organizationId'], organizationAssignedBy: params['operator'] });
+        // Every SET assignment is applied as written ($param, datetime(), or literal text), so a dropped or changed stamp shows.
+        const sets = /.*SET (.+) RETURN/.exec(q)![1]!.split(', ').map(s => /^u\.(\w+) = (.+)$/.exec(s)!);
+        if (ok) Object.assign(u!.props, Object.fromEntries(sets.map(([, key, value]) =>
+          [key!, value!.startsWith('$') ? params[value!.slice(1)] : value === 'datetime()' ? new Date() : value])));
         return [{ n: neo4j.int(ok ? 1 : 0) }];
       }
       throw new Error(`unexpected write ${q}`);
@@ -128,7 +130,7 @@ describe('assign-organization (FD-5)', () => {
   ])('A1: assigns a user with %s through _organizationId, stamped by the operator', async (_label, props) => {
     const users = user(props);
     await expect(assign(users)).resolves.toEqual({ userId: 'p', organizationId: ORG, outcome: 'assigned', enabledApiKeys: 2 });
-    expect(users[0]!.props).toMatchObject({ _organizationId: ORG, organizationAssignedBy: 'nick' });
+    expect(users[0]!.props).toMatchObject({ _organizationId: ORG, organizationAssignedBy: 'nick', organizationAssignedAt: expect.any(Date) });
   });
 
   it('A2: the same organization again is unchanged, with no write', async () => {
@@ -170,6 +172,8 @@ describe('assign-organization (FD-5)', () => {
 
   it.each([
     [['--user-id', 'p', '--organization-id', 'not-a-uuid', '--operator', 'nick'], '--organization-id <uuid> is required'],
+    [['--user-id', 'p', '--organization-id', 'AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE', '--operator', 'nick'], '--organization-id <uuid> is required'],
+    [['--user-id', 'p', '--organization-id', 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeeE', '--operator', 'nick'], '--organization-id <uuid> is required'],
     [['--user-id', 'p', '--organization-id', ORG, '--operator', ' '], '--operator <name> is required'],
   ])('A6: %j exits 1 before any store opens', async (args, message) => {
     const lines: string[] = [];

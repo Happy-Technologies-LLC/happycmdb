@@ -44,3 +44,14 @@ it('HAP-1079: no further range starts after a policy refusal', async () => {
   await expect(worker.scanNetworks('job', ranges)).rejects.toThrow(new Error(DISCOVERY_TARGET_REFUSED));
   expect(scan).toHaveBeenCalledTimes(4);
 });
+
+it('HAP-1079 F2: an ordinary nmap failure in one range does not stop the pool; only a policy refusal does', async () => {
+  const worker = new NmapDiscoveryWorker();
+  const scan = jest.spyOn(worker, 'scanNetwork').mockImplementation(async (_job, range) => {
+    if (range === '8.8.8.1') throw new Error('Nmap scan failed');
+    await setImmediate();
+    return [{ name: range } as never];
+  });
+  await expect(worker.scanNetworks('job', ranges)).resolves.toHaveLength(9);
+  expect(scan).toHaveBeenCalledTimes(10); // the DISCOVERY_TARGET_REFUSED case above stops after 4
+});

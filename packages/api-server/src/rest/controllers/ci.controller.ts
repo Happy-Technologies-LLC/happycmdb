@@ -92,6 +92,7 @@ export class CIController {
         status,
         environment,
         search,
+        external_id: externalId,
         sort_by = 'name',
         sort_order = 'asc',
         limit,
@@ -101,8 +102,16 @@ export class CIController {
       } = req.query;
 
       const organizationId = requestOrganizationId(req);
+      // The organization predicate is unconditional: every filter below only narrows the caller's own CIs.
       let query = 'MATCH (ci:CI) WHERE ci.organization_id = $organizationId';
         const params: Record<string, unknown> = { organizationId };
+
+        // FD17-S4: exact external_id match (validated by the route, never trimmed). A value that is used only by
+        // another organization and an unused value both give the same empty page; there is no global lookup.
+        if (externalId !== undefined) {
+          query += ' AND ci.external_id = $externalId';
+          params.externalId = externalId;
+        }
 
         // Apply filters
         if (type) {

@@ -322,7 +322,8 @@ Scoped to the caller's organization: 403 without an organization claim; a servic
 
 ## Authentication
 
-All API endpoints except `/auth` public actions, `/cmdb-health`, `/cmdb-health/ready`, `/cmdb-health/alive`, `/api-docs`, and public Prometheus `/metrics` require authentication. `/cmdb-health/metrics` and `/timeseries` authenticate before their fixed refusal; `/cmdb-health/services` authenticates before probing.
+All API endpoints except `/auth` public actions, `/cmdb-health`, `/cmdb-health/ready`, `/cmdb-health/alive` and `/api-docs` require authentication. `/cmdb-health/metrics` and `/timeseries` authenticate before their fixed refusal; `/cmdb-health/services` authenticates before probing.
+Root Prometheus `/metrics` (outside `/api/v1`) accepts only `Authorization: Bearer $METRICS_SCRAPE_TOKEN` (401 otherwise) and answers 404 while that token is unset or shorter than 32 characters.
 
 ### JWT Token Authentication
 

@@ -116,7 +116,7 @@ export function classifyDefinition(row: DefinitionRow, stored: ReadonlyMap<strin
   }
   const blocked: Reason | null = row.organization_id === null ? 'NO_VERIFIED_ORG' : row.credential_set_id !== null ? 'CREDENTIAL_SET_UNSUPPORTED' : null;
   const convert = (shape: Shape, reason: Reason, protocol: Protocol | null = null): Classification =>
-    blocked !== null ? leave(shape, blocked) : protocol !== null && row.credential_id !== null ? leave(shape, 'DUAL_CREDENTIAL_MISMATCH')
+    blocked !== null ? leave(shape, blocked) : row.credential_id !== null ? leave(shape, 'DUAL_CREDENTIAL_MISMATCH')
       : { shape, disposition: 'CONVERT', reason, new_credential_protocol: protocol };
   const ssh = provider === 'ssh';
   if (ssh && 'credentials' in config) {
@@ -154,12 +154,14 @@ export function classifyDefinition(row: DefinitionRow, stored: ReadonlyMap<strin
     }
     return validHosts(hosts.map(entry => entry['host']), true, false) ? convert('L10', 'INLINE_CREDENTIAL', 'ssh_password') : leave('L10', 'TARGET_GRAMMAR');
   }
-  const targets: unknown[] = Array.isArray(config['targets']) ? config['targets'] : typeof config['range'] === 'string' ? [config['range']] : [];
+  const aliased = Array.isArray(config['targets']) ? config['targets'] : config['_targets'];
+  const targets: unknown[] = Array.isArray(aliased) ? aliased : typeof config['range'] === 'string' ? [config['range']] : [];
   if (targets.some(target => typeof target === 'string' && target.includes('@'))) {
     if (!ssh) {
       return leave('L11', 'NMAP_SECRET_NO_CONSUMER');
     }
-    const parsed = targets.map(target => typeof target === 'string' ? /^(?:ssh:\/\/)?([^:@/\s]+):([^@/\s]+)@([^@/\s]+)$/.exec(target) : null);
+    // A `%` in userinfo is never decoded: literal or percent-encoded is a guess, so the row stays TARGET_SECRET.
+    const parsed = targets.map(target => typeof target === 'string' ? /^(?:ssh:\/\/)?([^:@/\s%]+):([^@/\s%]+)@([^@/\s]+)$/.exec(target) : null);
     const exact = single(config) && parsed.every(match => match !== null) && new Set(parsed.map(match => JSON.stringify(match?.slice(1, 3)))).size === 1;
     return exact && validHosts(parsed.map(match => match?.[3]), true, true) ? convert('L11', 'INLINE_CREDENTIAL', 'ssh_password') : leave('L11', 'TARGET_SECRET');
   }
@@ -179,26 +181,37 @@ export function classifyDefinition(row: DefinitionRow, stored: ReadonlyMap<strin
     }
     return validHosts(config['targets'], false, false) ? convert(shape, 'BENIGN_STRIP') : leave(shape, 'TARGET_GRAMMAR');
   }
-  if (ssh && onlyKeys(config, 'targets', 'port', 'timeout') && row.credential_id === null) {
+  const numeric = [config['port'], config['timeout']].every(value => value === undefined || (typeof value === 'number' && Number.isFinite(value)));
+  if (ssh && onlyKeys(config, 'targets', 'port', 'timeout') && validHosts(config['targets'], false, false) && numeric && row.credential_id === null) {
     return leave('L5', 'NO_CREDENTIAL_MATERIAL');
   }
   return leave('UNKNOWN', 'UNRECOGNIZED');
 }
 
-/** §3.4 drift skeleton: SHA-256 over the sorted, de-duplicated JSON key paths of config (array elements as 0); never values. */
+/** No legacy shape nests deeper than 4; a deeper config is MALFORMED rather than a stack risk for one row or the run. */
+export const MAX_CONFIG_DEPTH = 32;
+
+/**
+ * §3.4 drift skeleton: SHA-256 over the sorted, de-duplicated JSON key paths of config (array elements as 0); never
+ * values. Iterative; throws past MAX_CONFIG_DEPTH.
+ */
 export function keySkeletonSha256(config: unknown): string {
   const paths = new Set<string>();
-  const walk = (value: unknown, path: ReadonlyArray<string | 0>): void => {
+  const pending: Array<[unknown, ReadonlyArray<string | 0>]> = [[config, []]];
+  for (let next = pending.pop(); next !== undefined; next = pending.pop()) {
+    const [value, path] = next;
+    if (path.length > MAX_CONFIG_DEPTH) {
+      throw new RangeError();
+    }
     if (Array.isArray(value)) {
-      value.forEach(item => walk(item, [...path, 0]));
+      value.forEach(item => pending.push([item, [...path, 0]]));
     } else if (isObj(value)) {
       for (const [key, child] of Object.entries(value)) {
         paths.add(JSON.stringify([...path, key]));
-        walk(child, [...path, key]);
+        pending.push([child, [...path, key]]);
       }
     }
-  };
-  walk(config, []);
+  }
   return createHash('sha256').update(JSON.stringify([...paths].sort())).digest('hex');
 }
 
@@ -271,10 +284,18 @@ export async function main(
     const key = env['CREDENTIAL_ENCRYPTION_KEY'] ?? '';
     const service = key.length >= 32 ? getEncryptionService(key) : undefined;
     const decode: Decode | undefined = service === undefined ? undefined : envelope => service.decrypt(envelope);
-    io.stdout(encodePlan(rows.map(row => ({
-      definition_id: row.id, organization_id: row.organization_id, provider: PROVIDERS.includes(row.provider) ? row.provider : 'OTHER',
-      ...classify(row, stored, decode), updated_at: row.updated_at, key_skeleton_sha256: keySkeletonSha256(row.config),
-    }))));
+    const planRow = (row: DefinitionRow): Record<string, unknown> => {
+      const base = { definition_id: row.id, organization_id: row.organization_id, provider: PROVIDERS.includes(row.provider) ? row.provider : 'OTHER' };
+      try {
+        // Skeleton first: its depth cap also bounds the classifier's own traversals of this row.
+        const key_skeleton_sha256 = keySkeletonSha256(row.config);
+        return { ...base, ...classify(row, stored, decode), updated_at: row.updated_at, key_skeleton_sha256 };
+      } catch {
+        // One pathological row is MALFORMED (R17); it never aborts the plan for every other row.
+        return { ...base, ...leave('L12', 'MALFORMED'), updated_at: row.updated_at, key_skeleton_sha256: keySkeletonSha256(null) };
+      }
+    };
+    io.stdout(encodePlan(rows.map(planRow)));
     return 0;
   } catch (error) {
     if (error instanceof PlanEncodingError) {
@@ -288,6 +309,12 @@ export async function main(
   }
 }
 
+/** Exits only once stdout has flushed the plan: a slow piped reader must not truncate it at the pipe buffer. */
+export function exitAfterFlush(code: number, write: (chunk: string, done: () => void) => unknown, exit: (code: number) => void): void {
+  process.exitCode = code;
+  write('', () => exit(code));
+}
+
 if (require.main === module) {
   // stdout carries only the plan; every other stdout write (the shared logger, libraries) goes to stderr.
   const writePlan = process.stdout.write.bind(process.stdout);
@@ -298,5 +325,5 @@ if (require.main === module) {
   void main(process.argv.slice(2), process.env, {
     stdout: line => writePlan(`${line}\n`),
     stderr: line => process.stderr.write(`${line}\n`),
-  }).then(code => process.exit(code));
+  }).then(code => exitAfterFlush(code, writePlan, exitCode => process.exit(exitCode)));
 }

@@ -13,7 +13,7 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 
 import { EncryptionService, getEncryptionService } from '../../../../common/src/services/encryption.service';
-import { main, type SqlClient } from '../migrate-legacy-discovery-definitions';
+import { exitAfterFlush, main, MAX_CONFIG_DEPTH, type SqlClient } from '../migrate-legacy-discovery-definitions';
 
 const host = fork(join(__dirname, '../../rest/routes/__tests__/fixtures/pglite-host.cjs'), [], { serialization: 'advanced' });
 let nextId = 0;
@@ -50,6 +50,7 @@ const CREDENTIALS: Array<[number, string, string, string, object]> = [
 ];
 const ENVELOPE_IDS = new Map<string, number>(); // envelope iv -> credential number, to see which ones were decoded
 const ssh = (targets: string[], credentials: object = PASSWORD) => ({ targets, credentials });
+const nested = (depth: number): unknown => (depth === 0 ? PW : { a: nested(depth - 1) });
 // [fixture, provider, org, credential_id, credential_set_id, config, `shape disposition reason protocol`]
 const FIXTURES: Array<[string, string, string | null, number | null, number | null, unknown, string]> = [
   ['L1 uniform port', 'ssh', ORG, null, null, ssh([`${H(1)}:2222`, `${H(2)}:2222`]), 'L1 CONVERT INLINE_CREDENTIAL ssh_password'],
@@ -83,6 +84,18 @@ const FIXTURES: Array<[string, string, string | null, number | null, number | nu
   ['already safe', 'nmap', ORG, null, null, { targets: [H(13)] }, 'SAFE SKIP ALREADY_SAFE null'],
   ['unknown', 'ssh', ORG, null, null, { targets: [H(1)], token: PW }, 'UNKNOWN LEAVE UNRECOGNIZED null'],
   ['unlisted provider', 's5asentinel-provider', ORG, null, null, { token: PW }, 'L7 LEAVE UNSUPPORTED_PROVIDER null'],
+  // L5 is "no secret" (§3.2): key names alone never prove it.
+  ['ssh host objects in targets', 'ssh', ORG, null, null, { targets: [{ host: H(1), ...PASSWORD }] }, 'UNKNOWN LEAVE UNRECOGNIZED null'],
+  ['ssh password object in targets', 'ssh', ORG, null, null, { targets: [{ password: PW }] }, 'UNKNOWN LEAVE UNRECOGNIZED null'],
+  ['ssh secret timeout', 'ssh', ORG, null, null, { targets: [H(1)], timeout: { password: PW } }, 'UNKNOWN LEAVE UNRECOGNIZED null'],
+  ['ssh secret port', 'ssh', ORG, null, null, { port: 'S5ASENTINEL-SECRET' }, 'UNKNOWN LEAVE UNRECOGNIZED null'],
+  ['L9 ssh with credential', 'ssh', ORG, 90, null, { _targets: [H(9)] }, 'L9 LEAVE DUAL_CREDENTIAL_MISMATCH null'],
+  ['L9 nmap with credential', 'nmap', ORG, 90, null, { _targets: [H(9)] }, 'L9 LEAVE DUAL_CREDENTIAL_MISMATCH null'],
+  ['L9 nmap userinfo', 'nmap', ORG, null, null, { _targets: [`u:${PW}@${H(9)}`] }, 'L11 LEAVE NMAP_SECRET_NO_CONSUMER null'],
+  ['L9 ssh userinfo', 'ssh', ORG, null, null, { _targets: [`root:${PW}@${H(9)}`] }, 'L11 CONVERT INLINE_CREDENTIAL ssh_password'],
+  ['L11 percent-encoded userinfo', 'ssh', ORG, null, null, { targets: [`root:s5asentinel%40pw@${H(1)}`] }, 'L11 LEAVE TARGET_SECRET null'],
+  ['L1d port is never stripped', 'ssh', ORG, 90, null, ssh([`${H(1)}:2222`]), 'L1d LEAVE TARGET_GRAMMAR null'],
+  ['nested past the depth cap', 'ssh', ORG, null, null, nested(MAX_CONFIG_DEPTH + 8), 'L12 LEAVE MALFORMED null'],
 ];
 // Stored at +02:00 with microseconds; the plan must carry it as exact UTC.
 const UPDATED_AT = ['2026-10-01 14:34:56.123456+02', '2026-10-01T12:34:56.123456Z'];
@@ -175,6 +188,19 @@ describe('migrate-legacy-discovery-definitions (dry run, PGlite)', () => {
       expect(decrypt.mock.calls.map(([envelope]) => ENVELOPE_IDS.get(envelope.iv)).sort()).toEqual([90, 91, 96]);
     } finally {
       decrypt.mockRestore();
+    }
+  });
+
+  it('the CLI exits only after stdout has flushed the plan', () => {
+    const exit = jest.fn();
+    let flushed: (() => void) | undefined;
+    try {
+      exitAfterFlush(3, (_chunk, done) => { flushed = done; }, exit);
+      expect([exit.mock.calls.length, process.exitCode]).toEqual([0, 3]);
+      flushed!();
+      expect(exit.mock.calls).toEqual([[3]]);
+    } finally {
+      process.exitCode = undefined;
     }
   });
 

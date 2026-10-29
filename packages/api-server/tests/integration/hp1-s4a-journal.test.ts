@@ -1216,15 +1216,28 @@ describe('H-1 (v16 §3.1, §15 H-1): REST merge creates through the journal unde
       .rejects.toMatchObject({ code: 'Neo.ClientError.Schema.ConstraintValidationFailed' });
   });
 
-  it('X-7: an update to another org\'s live external_id is the one sanitized abort; neither node changes', async () => {
-    const [foreign, serial] = [value('external_id', 'x7'), value('serial_number', 'x7')];
+  it('X-7/T1 (HAP-1099): a merge never sets external_id; another org\'s value and an unused one get one answer, nothing changes', async () => {
+    const [foreign, unused, own, serial] = [value('external_id', 'x7'), value('external_id', 'free'), value('external_id', 'own'),
+      value('serial_number', 'x7')];
     const [theirs, mine] = [await seed('b', 'external_id', foreign), await seed('a', 'serial_number', serial)];
-    const before = [await node(theirs), await node(mine)];
-    const response = await api('a').post('/reconciliation/merge', { name: mine, ci_type: 'server', source: 'x7', source_id: serial,
-      identifiers: { serial_number: serial }, attributes: { external_id: foreign } });
-    const [op] = (await ops(A, mine)).filter(row => row.operation === 'update');
-    expect([response.status, response.text, op?.state, op?.last_error, op && await fences(op.id), await node(theirs), await node(mine)])
-      .toEqual([409, JSON.stringify({ success: false, error: 'Conflict', message: 'CI could not be reconciled' }), 'aborted', 'constraint', [], ...before]);
+    await cypher('MATCH (c:CI {id: $mine}) SET c.external_id = $own', { mine, own });
+    const before = await node(theirs);
+    const rest = (external: string) => api('a').post('/reconciliation/merge', { name: mine, ci_type: 'server', source: 'x7', source_id: serial,
+      identifiers: { serial_number: serial }, attributes: { external_id: external, x7_note: 'n' } });
+    const [first, second] = [await rest(foreign), await rest(unused)];
+    expect([first.status, first.body.data?.ci_id, first.body.data?.action, second.status, mask(second.body)])
+      .toEqual([200, mine, 'updated', 200, mask(first.body)]);
+    const gql = await request(app).post('/graphql').set(auth('a')).send({ variables: { attributes: { external_id: foreign, x7_note: 'g' } },
+      query: `mutation ($attributes: JSON) { _reconciliation { mergeCI(_name: "${mine}", _ciType: "server", _source: "x7",
+        _sourceId: "${serial}", _identifiers: { _serialNumber: "${serial}" }, _attributes: $attributes) { _ciId _action } } }` });
+    expect(gql.body.data?._reconciliation).toEqual({ mergeCI: { _ciId: mine, _action: 'updated' } });
+    // Store leg (D17-3): a direct property write cannot set it either.
+    await expect(graph.updateCIProperties(mine, { external_id: unused }, A, 's4a-a')).rejects.toThrow('CI identity and incarnation cannot be updated');
+    const evidence = [...(await rows('SELECT field_name FROM ci_field_sources WHERE ci_id = $1', [mine])).map(row => row.field_name),
+      ...(await history(mine)).flatMap(row => row.changed_fields ?? [])];
+    expect([(await node(mine))!['external_id'], (await node(mine))!['x7_note'], await node(theirs), evidence.includes('external_id'),
+      (await ops(A, mine)).filter(row => row.operation === 'update').map(row => row.state)])
+      .toEqual([own, 'g', before, false, ['committed', 'committed', 'committed']]);
   });
 
   it('H-1: a foreign, NULL-org or missing value of every identifier creates one own-org CI; nothing discloses or mutates B/NULL', async () => {

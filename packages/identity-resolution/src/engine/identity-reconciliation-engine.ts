@@ -62,8 +62,10 @@ export interface MergeOutcome {
   ci_id: string; action: 'created' | 'updated' | 'pending_review'; correlation_id: string; conflict_ids: string[];
 }
 export type ConflictResolution = 'accept_source' | 'accept_target' | 'merge' | 'dismiss_stale';
+/** v16 §4.4 plus D17-3 (HAP-1099): never written by a merge, hold or resolve; `external_id` is set only by REST create. */
 const RESERVED_ATTRIBUTES = ['id', 'organization_id', 'organizationid', 'op_id', 'reconciliation_op_id', 'created_at',
-  'incarnation_id'];
+  'incarnation_id', 'external_id'];
+const isReserved = (field: string): boolean => RESERVED_ATTRIBUTES.includes(field.replace(/^_+/, '').toLowerCase());
 
 export class IdentityReconciliationEngine {
   private static instance: IdentityReconciliationEngine;
@@ -459,14 +461,15 @@ export class IdentityReconciliationEngine {
   /**
    * v16 §3.1/§3.3, §15 H-1: one journaled `create` under the id of (O, source, source_id). W stamps the verified
    * org; T2 writes exactly one `created` history row, the lineage and the attribute field sources.
-   * `external_id` never reaches the node: a database not yet migrated by Neo4j 005 keeps a global constraint on it,
-   * so a collision would disclose another org's value. That identity is O's lineage (findByExternalId).
+   * `external_id` never reaches the node through any merge path (create, update, hold or resolve): a database not
+   * yet migrated by Neo4j 005 keeps a global constraint on it, so a collision would disclose another org's value.
+   * That identity is O's lineage (findByExternalId).
    */
   private async createFromMerge(ci: TransformedCI, organizationId: string, actor: string): Promise<MergeOutcome> {
     const { source, source_id: sourceId } = ci;
     if (typeof sourceId !== 'string' || !sourceId || sourceId.length > 255 || source.length > 255) throw new PlanUnrepresentableError();
     const kept = (map: object = {}) => Object.fromEntries(Object.entries(map).filter(([key, value]) => value !== undefined
-      && key !== 'external_id' && !RESERVED_ATTRIBUTES.includes(key.replace(/^_+/, '').toLowerCase()))); // v16 §4.4
+      && !isReserved(key))); // v16 §4.4
     const attributes = kept(ci.attributes);
     const fields = { name: ci.name, ci_type: ci.ci_type, status: ci.status || 'active',
       ...(ci.environment ? { environment: ci.environment } : {}), ...attributes, ...kept(ci.identifiers) };
@@ -525,8 +528,8 @@ export class IdentityReconciliationEngine {
       const merged: Record<string, unknown> = {};
       const conflicts: ConflictPlan[] = [];
       for (const [field, value] of Object.entries(withoutOrganizationId(ci.attributes))) {
-        // v16 §4.4: reserved aliases, timestamps and the incarnation are dropped, never written.
-        if (RESERVED_ATTRIBUTES.includes(field.replace(/^_+/, '').toLowerCase())) continue;
+        // v16 §4.4: reserved aliases, timestamps, the incarnation and external_id (D17-3) are dropped, never written.
+        if (isReserved(field)) continue;
         const target = stored.get(field);
         const hash = conflictHash(field, target ? { value: target.value_json } : null, { value }, source, sourceId);
         if (known.some(row => row.status === 'resolved' && row.field_name === field && row.suppression_hash === hash)) continue;
@@ -588,9 +591,11 @@ export class IdentityReconciliationEngine {
   async resolveConflict(organizationId: string, actor: string, conflictId: string, resolution: ConflictResolution,
     expectedRevision: string, mergedValue?: unknown): Promise<{ ci_id: string; status: string; correlation_id: string } | null> {
     await this.neo4jClient.assertJournalReady(true); // v16 §3.2: the gate precedes the owner lookup
-    const owner = (await this.postgresClient.query(`SELECT ci_id FROM reconciliation_conflicts
+    const owner = (await this.postgresClient.query(`SELECT ci_id, field_name FROM reconciliation_conflicts
       WHERE id = $1 AND organization_id = $2`, [conflictId, organizationId])).rows[0];
     if (!owner) return null;
+    // HAP-1099: a write to a reserved field (external_id) is one fixed 422 before admission, whatever the value.
+    if ((resolution === 'accept_source' || resolution === 'merge') && isReserved(owner.field_name)) throw new PlanUnrepresentableError();
     const ciId: string = owner.ci_id;
     const status = resolution === 'dismiss_stale' ? 'superseded' as const : 'resolved' as const;
     return this.neo4jClient.reconcileOwned(ciId, organizationId, actor, 'resolve_conflict', async (current): Promise<StoredPlan> => {

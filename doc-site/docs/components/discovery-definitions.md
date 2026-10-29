@@ -71,6 +71,10 @@ the shape, tenant, protocol, scope and consumer (design §3.2); every other row 
   fresh restic backup receipt of that DB taken after the dry run. Retire is irreversible except by backup restore.
 - Design §3.6: a restore-tested backup, workers and schedulers stopped, the S6 Redis purge in the same window, recorded
   dry-run counts, an independently reviewed plan sha256, and a scratch-DB rehearsal with 0 marker bytes.
+- Design §3.6: the API is deployed at a SHA that includes HAP-768, S1–S4 and S5a/S5b, and the dry run's unsafe count
+  equals the union of every organization's `/migration/inventory` plus the NULL-organization unsafe rows.
+- `CREDENTIAL_ENCRYPTION_KEY` must be the API's own key: apply seals the new credentials and the escrow with it, so
+  under any other key the API cannot decode the converted credentials and only a rollback with that same key undoes it.
 
 **Modes.** Connect only through `CMDB_MIGRATION_POSTGRES_*` (loopback, a socket, or verify-full to a DNS name). Each run
 writes one new `--out` file (mode 0600) holding ids, codes, timestamps, digests and counts only; stdout stays empty.
@@ -78,7 +82,8 @@ writes one new `--out` file (mode 0600) holding ids, codes, timestamps, digests 
    `ssh_key`, C1). With `CREDENTIAL_ENCRYPTION_KEY`, stderr reports `credential decode failures: N` for a wrong key.
 2. `--apply --plan plan.json --sha256 <sha256 of plan.json> --out apply.json` (needs the key). One transaction per row;
    a row whose `updated_at`, skeleton or classification changed is ledgered `drifted` and untouched. Exit 1 lists
-   `failed` rows: rerun the same command with a new `--out` to resume; settled rows are never redone.
+   `failed` rows: rerun the same command with a new `--out` to resume; settled rows are never redone. After a rollback
+   the same plan only reports those rows `drifted`; take a fresh dry run before applying again.
 3. `--rollback --receipt apply.json --sha256 <…> --out …` (needs the key): rows still at their post-apply `updated_at`
    get the escrowed original config back (plaintext again, by design) and their prior `credential_id`; a created
    credential is deleted only if unused and unmodified. Other rows are `refused` (exit 1).

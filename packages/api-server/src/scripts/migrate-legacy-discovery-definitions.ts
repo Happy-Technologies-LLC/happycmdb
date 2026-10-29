@@ -25,7 +25,8 @@ import { PostgresClient } from '../../../database/src/postgres/client';
 // updated_at as a UTC microsecond string: the S5b drift check compares it without Date's millisecond truncation.
 export const DEFINITIONS_SQL = `SELECT id, organization_id, provider, credential_id, credential_set_id, created_by, config,
   to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at FROM discovery_definitions ORDER BY id`;
-const SELECT_DEFINITION = DEFINITIONS_SQL.replace(' ORDER BY id', '');
+// The locked write-mode read also returns the stored jsonb text: escrow seals those bytes, never a JS re-serialisation (80.0, big integers).
+const SELECT_DEFINITION = DEFINITIONS_SQL.replace(' FROM discovery_definitions ORDER BY id', ', config::text AS config_text FROM discovery_definitions');
 const utc = (column: string): string => `to_char(${column} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`;
 /** Only credentials attached to an L1d candidate; decoded (in memory) only after the org, owner and protocol match. */
 export const CREDENTIALS_SQL = 'SELECT id, organization_id, protocol, created_by, credentials FROM credentials WHERE id = ANY($1::uuid[])';
@@ -362,7 +363,11 @@ async function writeMode(mode: Exclude<Mode, 'dry-run'>, sha: string, input: Sig
     try {
       // A row this receipt already settled (in an earlier, partial run) is reported from the ledger, never redone.
       action = await client.transaction(async tx => {
-        const settled = (await tx.query('SELECT action FROM discovery_definition_migrations WHERE receipt_id = $1 AND definition_id = $2', [receiptId, id])).rows[0];
+        // Under the definition's row lock: a concurrent rollback (FOR UPDATE OF d) commits before this read or after this row.
+        await tx.query('SELECT 1 FROM discovery_definitions WHERE id = $1 FOR UPDATE', [id]);
+        // Not settled once a later rollback undid it: the stale plan row is then re-checked (and so reports drifted).
+        const settled = (await tx.query(`SELECT action FROM discovery_definition_migrations l WHERE receipt_id = $1 AND definition_id = $2 AND NOT EXISTS
+          (SELECT 1 FROM discovery_definition_migrations r WHERE r.definition_id = l.definition_id AND r.action = 'rolled_back' AND r.at > l.at) ORDER BY at DESC LIMIT 1`, [receiptId, id])).rows[0];
         return settled === undefined ? step(tx) : settled['action'] as Action;
       });
     } catch {
@@ -390,7 +395,7 @@ async function writeMode(mode: Exclude<Mode, 'dry-run'>, sha: string, input: Sig
     const [skeleton, again] = now;
     return skeleton === p.key_skeleton_sha256 && (['shape', 'disposition', 'reason', 'new_credential_protocol'] as const).every(field => again[field] === p[field]) ? [row, again] : null;
   };
-  const seal = (value: unknown): string => JSON.stringify(service!.encrypt(JSON.stringify(value)));
+  const seal = (plaintext: string): string => JSON.stringify(service!.encrypt(plaintext));
   if (mode === 'apply') {
     for (const p of (input.rows as PlanRow[]).filter(row => row.disposition !== 'SKIP')) {
       await each(p.definition_id, async tx => {
@@ -400,8 +405,8 @@ async function writeMode(mode: Exclude<Mode, 'dry-run'>, sha: string, input: Sig
         }
         const [row, now] = locked;
         const { safe, payload } = convertedConfig(row.config as Obj, now);
-        const created = payload === null ? null : (await tx.query(CREDENTIAL_SQL, [row.id, now.new_credential_protocol, seal(payload), row.created_by, row.organization_id])).rows[0]!['id'];
-        await tx.query(ESCROW_SQL, [row.id, receiptId, seal(row.config)]);
+        const created = payload === null ? null : (await tx.query(CREDENTIAL_SQL, [row.id, now.new_credential_protocol, seal(JSON.stringify(payload)), row.created_by, row.organization_id])).rows[0]!['id'];
+        await tx.query(ESCROW_SQL, [row.id, receiptId, seal((row as DefinitionRow & { config_text: string }).config_text)]);
         const post = (await tx.query(UPDATE_SQL, [row.id, JSON.stringify(safe), created ?? row.credential_id])).rows[0]!['updated_at'];
         // Before commit: the stored config passes the strict write grammar (hasUnsafe is its negation), else the row rolls back.
         if (hasUnsafeDiscoveryDefinitionConfig((await tx.query('SELECT config FROM discovery_definitions WHERE id = $1', [row.id])).rows[0]!['config'])) {

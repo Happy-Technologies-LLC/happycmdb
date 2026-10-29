@@ -135,6 +135,7 @@ const FIXTURES: Array<[string, string, string | null, number | null, number | nu
   ['B5 L1d NULL org is never decoded', 'ssh', null, 90, null, ssh([H(1)]), 'L1d LEAVE NO_VERIFIED_ORG'],
   ['B5 L5 with a credential', 'ssh', ORG, 90, null, { targets: [H(5)], port: 22 }, 'UNKNOWN LEAVE UNRECOGNIZED'],
   ['B6 PEM with passphrase', 'ssh', ORG, null, null, ssh([`${H(1)}:2200`], { username: U, privateKey: PEM, passphrase: 'S5ASENTINEL-PP' }), 'L1 CONVERT INLINE_CREDENTIAL ssh_key'],
+  ['B6 empty passphrase is not a passphrase', 'ssh', ORG, null, null, ssh([H(1)], { username: U, privateKey: PEM, passphrase: '' }), 'L1 LEAVE UNRECOGNIZED'],
   ['B9 range userinfo beside targets', 'ssh', ORG, null, null, { targets: [H(1)], range: `ssh://u:${PW}@${H(2)}` }, 'L11 LEAVE TARGET_SECRET'],
   ['B9 _targets userinfo beside targets', 'nmap', ORG, null, null, { targets: [H(1)], _targets: [`u:${PW}@${H(2)}`] }, 'L11 LEAVE NMAP_SECRET_NO_CONSUMER'],
   ['B10 empty privateKey is absent', 'ssh', ORG, null, null, ssh([H(1)], { ...PASSWORD, privateKey: '' }), 'L1 CONVERT INLINE_CREDENTIAL ssh_password'],
@@ -389,15 +390,17 @@ describe('migrate-legacy-discovery-definitions write modes (S5b, 041 on PGlite; 
   const count = async (from: string, params?: unknown[]) => Number((await q(`SELECT count(*)::int AS n FROM ${from}`, params))[0]!['n']);
   const row = async (n: number) => (await q('SELECT config, credential_id, config::text AS text FROM discovery_definitions WHERE id = $1', [uuid(n)]))[0]!;
   const fixture = (name: string) => FIXTURES.findIndex(([label]) => label === name) + 1;
-  const add = (n: number) => q(`INSERT INTO discovery_definitions (id, name, provider, created_by, organization_id, config, updated_at) VALUES ($1, 'S5ASENTINEL-NAME', 'ssh', $2, $3, $4::jsonb, $5)`,
-    [uuid(n), OWNER, ORG, JSON.stringify(ssh([H(n)])), UPDATED_AT[0]]);
-  const planOf = async (ids: string[]) => `${encodePlan(JSON.parse((await run()).out).rows.filter((plan: { definition_id: string }) => ids.includes(plan.definition_id)))}\n`;
+  const add = (n: number, config = JSON.stringify(ssh([H(n)])), provider = 'ssh', credential: string | null = null) => q(`INSERT INTO discovery_definitions
+    (id, name, provider, created_by, organization_id, config, updated_at, credential_id) VALUES ($1, 'S5ASENTINEL-NAME', $6, $2, $3, $4::jsonb, $5, $7)`, [uuid(n), OWNER, ORG, config, UPDATED_AT[0], provider, credential]);
+  type Classify = Parameters<typeof main>[4];
+  const planOf = async (ids: string[], classify?: Classify) =>
+    `${encodePlan(JSON.parse((await run(undefined, undefined, undefined, classify)).out).rows.filter((plan: { definition_id: string }) => ids.includes(plan.definition_id)))}\n`;
   const decrypt = (envelope: unknown) => JSON.parse(getEncryptionService(KEY).decrypt(envelope as never));
   /** Writes the input file and runs one mode on it with its sha256 (or `digest`). */
-  async function write(mode: string, body: string, { digest = sha(body), env = { ...ENV, CREDENTIAL_ENCRYPTION_KEY: KEY } as NodeJS.ProcessEnv, open = jest.fn((_config: unknown) => client) } = {}) {
+  async function write(mode: string, body: string, { digest = sha(body), env = { ...ENV, CREDENTIAL_ENCRYPTION_KEY: KEY } as NodeJS.ProcessEnv, open = jest.fn((_config: unknown) => client), classify = undefined as Classify } = {}) {
     const file = outPath();
     writeFileSync(file, body);
-    const result = await run([`--${mode}`, ['apply', 'retire'].includes(mode) ? '--plan' : '--receipt', file, '--sha256', digest, '--out', outPath()], env, open);
+    const result = await run([`--${mode}`, ['apply', 'retire'].includes(mode) ? '--plan' : '--receipt', file, '--sha256', digest, '--out', outPath()], env, open, classify);
     return { ...result, receipt: (result.out === '' ? null : JSON.parse(result.out)) as Receipt };
   }
   let [plan, applied, resumed] = ['', '', ''];
@@ -478,26 +481,89 @@ describe('migrate-legacy-discovery-definitions write modes (S5b, 041 on PGlite; 
       await count('discovery_definition_migrations WHERE definition_id = ANY($1)', [ids])]).toEqual([3, 3, 3]);
   }, 30_000);
 
-  it('(e) --rollback restores the exact original JSON and prior credential, drops only unused credentials, refuses a moved row', async () => {
-    const [l1, l1d, l10, l11] = ['L1 uniform port', 'L1d equal payload', 'L10 shared', 'L11 ssh one credential'].map(fixture);
+  it('(e) --rollback restores the exact original JSON and prior credential, drops the escrow and only unused unmodified credentials, refuses a moved row', async () => {
+    const [l1, l1d, l10, ...others] = ['L1 uniform port', 'L1d equal payload', 'L10 shared', 'L11 ssh one credential', 'L1b PEM', 'B10 empty privateKey is absent', 'B1 PEM after a newline'].map(fixture);
     await q(`UPDATE discovery_definitions SET updated_at = updated_at + interval '1 microsecond' WHERE id = $1`, [uuid(l10!)]);
     const created = async (n: number) => (await row(n))['credential_id'];
-    const [l1Credential, l11Credential] = [await created(l1!), await created(l11!)];
-    await q('UPDATE discovery_definitions SET credential_id = $1 WHERE id = $2', [l11Credential, uuid(202)]); // now in use elsewhere
-    const { code, receipt } = await write('rollback', applied);
+    const [l1Credential, kept] = [await created(l1!), await Promise.all(others.map(created))];
+    // Kept: in use by another definition, modified after apply, in a credential set, used by a connector.
+    await q('UPDATE discovery_definitions SET credential_id = $1 WHERE id = $2', [kept[0], uuid(202)]);
+    await q(`UPDATE credentials SET updated_at = updated_at + interval '1 second' WHERE id = $1`, [kept[1]]);
+    await q('INSERT INTO credential_sets (credential_ids) VALUES (ARRAY[$1::uuid])', [kept[2]]);
+    await q('INSERT INTO connector_configurations (credential_id) VALUES ($1)', [kept[3]]);
+    const outputs = spyOutputs();
+    const { code, receipt, out, err } = await write('rollback', applied);
+    expectValueFree(`${outputs()}\n${err}\n${out}`);
     const actions = Object.fromEntries(receipt.rows.map(entry => [entry.definition_id, entry.action]));
     expect([code, actions[uuid(l10!)], actions[uuid(l1!)], actions[uuid(l1d!)], new Set(Object.values(actions)).size]).toEqual([1, 'refused', 'rolled_back', 'rolled_back', 2]);
-    for (const n of [l1!, l1d!, l11!]) expect((await row(n))['text']).toBe((await q('SELECT $1::jsonb::text AS text', [JSON.stringify(FIXTURES[n - 1]![5])]))[0]!['text']);
-    expect([await created(l1!), await created(l1d!), hasUnsafeDiscoveryDefinitionConfig((await row(l10!))['config'])]).toEqual([null, uuid(90), false]);
-    expect([await count('credentials WHERE id = $1', [l1Credential]), await count('credentials WHERE id = $1', [l11Credential]), await count('credentials WHERE id = $1', [uuid(90)])]).toEqual([0, 1, 1]);
+    for (const n of [l1!, l1d!, others[0]!]) expect((await row(n))['text']).toBe((await q('SELECT $1::jsonb::text AS text', [JSON.stringify(FIXTURES[n - 1]![5])]))[0]!['text']);
+    expect([await created(l1!), await created(l1d!), hasUnsafeDiscoveryDefinitionConfig((await row(l10!))['config']), await count('discovery_definition_migration_escrow WHERE definition_id = ANY($1)',
+      [receipt.rows.filter(entry => entry.action === 'rolled_back').map(entry => entry.definition_id)])]).toEqual([null, uuid(90), false, 0]);
+    expect(await Promise.all([l1Credential, ...kept, uuid(90)].map(id => count('credentials WHERE id = $1', [id])))).toEqual([0, 1, 1, 1, 1, 1]);
+  }, 30_000);
+
+  it('(e) stored jsonb numbers come back byte-exact; re-applying a rolled-back plan reports drifted, never converted', async () => {
+    for (const [i, config] of ['{"ports": 80.0, "targets": ["h206.example"]}', '{"ports": 12345678901234567890, "targets": ["h207.example"]}'].entries()) await add(206 + i, config, 'nmap');
+    const original = await Promise.all([206, 207].map(async n => (await row(n))['text']));
+    const body = await planOf([uuid(206), uuid(207)]);
+    const once = await write('apply', body);
+    expect([once.receipt.rows.map(entry => entry.action), (await write('rollback', once.out)).code]).toEqual([['benign_strip', 'benign_strip'], 0]);
+    expect([await Promise.all([206, 207].map(async n => (await row(n))['text'])), original[0]]).toEqual([original, '{"ports": 80.0, "targets": ["h206.example"]}']);
+    const again = await write('apply', body);
+    expect([again.code, again.receipt.rows.map(entry => entry.action)]).toEqual([0, ['drifted', 'drifted']]);
+  }, 30_000);
+
+  it('an L1d whose stored credential changed between plan and apply is re-classified and ledgered drifted', async () => {
+    const envelope = (password: string) => JSON.stringify(getEncryptionService(KEY).encrypt(JSON.stringify({ ...PASSWORD, password })));
+    await q(`INSERT INTO credentials (id, name, protocol, scope, credentials, created_by, organization_id) VALUES ($1, 's5asentinel-cred-209', 'ssh_password', 'ssh', $2, $3, $4)`, [uuid(209), envelope(PW), OWNER, ORG]);
+    await add(208, undefined, 'ssh', uuid(209));
+    const body = await planOf([uuid(208)]);
+    await q('UPDATE credentials SET credentials = $1 WHERE id = $2', [envelope('S5ASENTINEL-PW-9'), uuid(209)]);
+    const { code, receipt } = await write('apply', body);
+    expect([JSON.parse(body).rows[0].disposition, code, receipt.rows, hasUnsafeDiscoveryDefinitionConfig((await row(208))['config'])]).toEqual(['STRIP_EQUAL', 0, [{ definition_id: uuid(208), action: 'drifted' }], true]);
+  }, 30_000);
+
+  it('the before-commit strict check rolls back a row whose converted config is still unsafe', async () => {
+    await add(210, JSON.stringify({ _targets: ['S5ASENTINEL bad target'] }), 'nmap');
+    const forced: Classify = () => ({ shape: 'L9', disposition: 'CONVERT', reason: 'ALIAS_RENAME', new_credential_protocol: null });
+    const { code, receipt } = await write('apply', await planOf([uuid(210)], forced), { classify: forced });
+    expect([code, receipt.rows, hasUnsafeDiscoveryDefinitionConfig((await row(210))['config']), await count('discovery_definition_migration_escrow WHERE definition_id = $1', [uuid(210)])])
+      .toEqual([1, [{ definition_id: uuid(210), action: 'failed' }], true, 0]);
+  }, 30_000);
+
+  it('a rollback racing a re-run cannot land between its settled check and its report (no false converted)', async () => {
+    await add(211);
+    const body = await planOf([uuid(211)]);
+    expect((await write('apply', body)).receipt.rows[0]!.action).toBe('converted');
+    // A concurrent rollback commits right after the ledger read, unless this run already holds the row lock (then after its commit).
+    let [locked, deferred, injected] = [false, false, false];
+    const rollback = async () => {
+      injected = true;
+      await q(`UPDATE discovery_definitions SET config = $2::jsonb, credential_id = NULL, updated_at = clock_timestamp() WHERE id = $1`, [uuid(211), JSON.stringify(ssh([H(211)]))]);
+      await q(`INSERT INTO discovery_definition_migrations (receipt_id, definition_id, action) VALUES (gen_random_uuid(), $1, 'rolled_back')`, [uuid(211)]);
+    };
+    const racing: SqlClient = { ...client, async query(sql, params) {
+      locked = sql === 'BEGIN' ? false : locked || (/FOR UPDATE/.test(sql) && params?.[0] === uuid(211));
+      const result = await client.query(sql, params);
+      const settledRead = !injected && sql.startsWith('SELECT action FROM discovery_definition_migrations');
+      deferred ||= settledRead && locked;
+      if ((settledRead && !locked) || (!injected && deferred && sql === 'COMMIT')) {
+        await rollback();
+      }
+      return result;
+    } };
+    const { receipt } = await write('apply', body, { open: jest.fn((_config: unknown) => racing) });
+    expect([injected, deferred, receipt.rows[0]!.action]).toEqual([true, true, 'converted']);
   }, 30_000);
 
   it('(f) --finalize deletes the receipt\'s escrow; --rollback then refuses every row and changes nothing', async () => {
     const ids = [203, 204, 205].map(uuid);
+    const outputs = spyOutputs();
     const finalized = await write('finalize', resumed);
+    const back = await write('rollback', resumed);
+    expectValueFree([outputs(), finalized.out, finalized.err, back.out, back.err].join('\n'));
     expect([finalized.code, finalized.receipt.rows, await count('discovery_definition_migration_escrow WHERE definition_id = ANY($1)', [ids])])
       .toEqual([0, ids.map(id => ({ definition_id: id, action: 'finalized' })), 0]);
-    const back = await write('rollback', resumed);
     expect([back.code, back.receipt.rows.map(entry => entry.action), hasUnsafeDiscoveryDefinitionConfig((await row(203))['config'])]).toEqual([1, ['refused', 'refused', 'refused'], false]);
   }, 30_000);
 
@@ -509,7 +575,9 @@ describe('migrate-legacy-discovery-definitions write modes (S5b, 041 on PGlite; 
       file([]), `${JSON.stringify({ mode: 'retire', rows: [snmp] }, null, 1)}\n`];
     for (const body of refused) expect(await write('retire', body)).toMatchObject({ code: 1, out: '', open: expect.objectContaining({ mock: expect.objectContaining({ calls: [] }) }) });
     await q(`UPDATE discovery_definitions SET updated_at = updated_at + interval '1 microsecond' WHERE id = $1`, [ad!['definition_id']]);
-    const { code, receipt } = await write('retire', file([snmp, nmap, ad]));
+    const outputs = spyOutputs();
+    const { code, receipt, out, err } = await write('retire', file([snmp, nmap, ad]));
+    expectValueFree(`${outputs()}\n${err}\n${out}`);
     expect([code, receipt.rows.map(entry => entry.action)]).toEqual([0, ['retired', 'retired', 'drifted']]);
     expect(await q('SELECT config, is_active FROM discovery_definitions WHERE id = ANY($1) ORDER BY id', [[snmp!['definition_id'], nmap!['definition_id'], ad!['definition_id']]]))
       .toEqual([{ config: FIXTURES[fixture('L2 AD') - 1]![5], is_active: true }, { config: {}, is_active: false }, { config: {}, is_active: false }]);

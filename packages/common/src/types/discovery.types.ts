@@ -74,8 +74,6 @@ export type JobStatus =
  * Discovery Config - Configuration for a discovery job
  */
 export interface DiscoveryConfig {
-  /** Authentication credentials for the provider */
-  credentials?: any;
   /** Regions to discover (for cloud providers) */
   regions?: string[];
   /** Filters to apply during discovery */

@@ -12,10 +12,13 @@ import { createHash } from 'crypto';
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { inspect } from 'util';
+import { Console } from 'console';
 
 import type { PostgresClient } from '../../../../database/src/postgres/client';
 
 import { EncryptionService, getEncryptionService } from '../../../../common/src/services/encryption.service';
+import { logger } from '../../../../common/src/utils/logger';
 import { exitAfterFlush, main, MAX_CONFIG_DEPTH, openPostgres, type SqlClient } from '../migrate-legacy-discovery-definitions';
 
 const host = fork(join(__dirname, '../../rest/routes/__tests__/fixtures/pglite-host.cjs'), [], { serialization: 'advanced' });
@@ -121,6 +124,25 @@ async function run(argv = ['--out', outPath()], env: NodeJS.ProcessEnv = { ...EN
   const code = await main(argv, env, { stderr: line => err.push(line) }, open, classify);
   return { code, out: existsSync(path) ? readFileSync(path, 'utf8') : '', err: err.join('\n'), open, path };
 }
+/**
+ * Spies on the lowest in-process sinks, wired as in production: console is a real Console on the process streams and
+ * the shared logger runs at its most verbose level, so anything printed reaches process.stdout/stderr.write or a
+ * logger transport. Restored by the returned collector.
+ */
+function spyOutputs(): () => string {
+  expect(logger.transports.length).toBeGreaterThan(0); // the transport sink exists, so its spy is not vacuous
+  const [jestConsole, level] = [global.console, logger.level];
+  global.console = new Console(process.stdout, process.stderr);
+  logger.level = 'silly';
+  const spies: jest.SpyInstance[] = [jest.spyOn(process.stdout, 'write'), jest.spyOn(process.stderr, 'write'),
+    ...logger.transports.map(transport => jest.spyOn(transport as unknown as { log: () => void }, 'log'))];
+  return () => {
+    [global.console, logger.level] = [jestConsole, level];
+    const seen = spies.flatMap(spy => spy.mock.calls).map(call => inspect(call, { depth: 8 })).join('\n');
+    spies.forEach(spy => spy.mockRestore());
+    return seen;
+  };
+}
 const expectValueFree = (output: string) => {
   expect(output.toLowerCase()).not.toContain('s5asentinel');
   for (const literal of LITERALS) expect(output).not.toContain(literal);
@@ -172,10 +194,13 @@ describe('migrate-legacy-discovery-definitions (dry run, PGlite)', () => {
     for (const sql of queries) expect(sql).toMatch(/^SELECT [^;]*$/);
   });
 
-  it('never prints a marker, name, target, credential or decoded payload', async () => {
+  it('never prints a marker, name, target, credential or decoded payload, on any output channel', async () => {
+    // The run decodes the STRIP_EQUAL row (#90), fails to decode #97/#98 and hits the depth cap on one row.
+    const outputs = spyOutputs();
     const { code, out, err } = await run();
-    expect(code).toBe(0);
-    expectValueFree(`${out}\n${err}`);
+    const seen = outputs();
+    expect([code, JSON.parse(out).rows.some((row: { disposition: string }) => row.disposition === 'STRIP_EQUAL')]).toEqual([0, true]);
+    expectValueFree(`${out}\n${err}\n${seen}`);
   });
 
   it('without the encryption key an equal L1d payload is unproven: DUAL_CREDENTIAL_MISMATCH', async () => {
@@ -202,7 +227,7 @@ describe('migrate-legacy-discovery-definitions (dry run, PGlite)', () => {
     const decrypt = jest.spyOn(EncryptionService.prototype, 'decrypt');
     try {
       expect((await run()).code).toBe(0);
-      expect(decrypt.mock.calls.map(([envelope]) => ENVELOPE_IDS.get(envelope.iv)).sort()).toEqual([90, 91, 96, 97, 98]);
+      expect(decrypt.mock.calls.map(([envelope]) => ENVELOPE_IDS.get(envelope.iv)).sort()).toStrictEqual([90, 91, 96, 97, 98]);
     } finally {
       decrypt.mockRestore();
     }
@@ -288,7 +313,9 @@ describe('migrate-legacy-discovery-definitions (dry run, PGlite)', () => {
 
   it('a connection failure prints fixed text with the error name and SQLSTATE only', async () => {
     const failing: SqlClient = { query: async () => { throw Object.assign(new Error(`password authentication failed for user u at postgres://u:${ENV.CMDB_MIGRATION_POSTGRES_PASSWORD}@h`), { code: '28P01' }); }, close: async () => undefined };
+    const outputs = spyOutputs();
     const { code, out, err, path } = await run(undefined, undefined, jest.fn((_config: unknown) => failing));
+    expectValueFree(outputs());
     expect([code, out, err, existsSync(path)]).toEqual([1, '', 'migrate-legacy-discovery-definitions: failed (Error, 28P01)', false]);
   });
 });

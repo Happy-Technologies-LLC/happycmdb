@@ -448,11 +448,11 @@ test('HAP-774 C-4: ssh targets are hostnames or IP literals only, never a CIDR o
 
 test('HAP-774 R3: only the bound credential owner may retarget; config-less edits and replacing it with your own stay allowed', async () => {
   const CRED_ADMIN = 'aaaaaaaa-aaaa-4aaa-8aaa-000000000004', SET = 'cccccccc-cccc-4ccc-8ccc-000000000005';
-  const LEG_OWNED = 'cccccccc-cccc-4ccc-8ccc-000000000006', LEG_SNMP = 'cccccccc-cccc-4ccc-8ccc-000000000007';
+  const LEG_OWNED = 'cccccccc-cccc-4ccc-8ccc-000000000006', LEG_SNMP = 'cccccccc-cccc-4ccc-8ccc-000000000007', LEG_SSH = 'cccccccc-cccc-4ccc-8ccc-000000000008';
   await query(`INSERT INTO credentials (id, protocol, organization_id, created_by) VALUES ($1, 'ssh_password', $2, 'admin-a')`, [CRED_ADMIN, ORG_A]);
   await query(`INSERT INTO discovery_definitions (id, name, provider, method, credential_id, credential_set_id, created_by, organization_id)
     VALUES ($1, 'r3-set', 'ssh', 'agentless', NULL, $1, 'a', $4), ($2, 'r3-leg-owned', 'snmp', 'agentless', $5, NULL, 'a', $4),
-    ($3, 'r3-leg-snmp', 'snmp', 'agentless', $6, NULL, 'a', $4)`, [SET, LEG_OWNED, LEG_SNMP, ORG_A, CRED_OWNED, CRED_SNMP]);
+    ($3, 'r3-leg-snmp', 'snmp', 'agentless', $6, NULL, 'a', $4), ($7, 'v1-leg-ssh', 'ssh', 'agentless', $6, NULL, 'a', $4)`, [SET, LEG_OWNED, LEG_SNMP, ORG_A, CRED_OWNED, CRED_SNMP, LEG_SSH]);
   const put = (user: string, id: string, body: object) => request(app).put(`${url}/${id}`).set(headers(user)).send(body);
   const d = (await request(app).post(url).set(headers('admin-a')).send({ name: `r3-${randomBytes(4).toString('hex')}`,
     provider: 'nmap', method: 'agentless', config: { targets: ['192.0.2.1'] } })).body.data.id;
@@ -467,8 +467,9 @@ test('HAP-774 R3: only the bound credential owner may retarget; config-less edit
   expect((await put('a', d, { provider: 'ssh', credential_id: CRED_OWNED, config: { targets: ['192.0.2.1'] } })).status).toBe(200);
   const before = await definitionRows();
   const refused = [await put('admin-a', d, swap), await put('admin-a', d, { provider: 'ssh', ...swap }), await put('admin-a', SET, swap),
-    await put('admin-a', LEG_OWNED, { provider: 'ssh' }), await put('a', LEG_SNMP, { provider: 'ssh' })]; // F1 (O6): owner, protocol
-  expect(refused.map(({ status, body }) => ({ status, body }))).toEqual(Array(5).fill({
+    await put('admin-a', LEG_OWNED, { provider: 'ssh' }), await put('a', LEG_SNMP, { provider: 'ssh' }), // F1 (O6): owner, protocol
+    await put('a', LEG_SSH, swap), await put('a', d, { credential_id: CRED_SNMP })]; // V1 (X2/X2w): attach/recheck protocol
+  expect(refused.map(({ status, body }) => ({ status, body }))).toEqual(Array(7).fill({
     status: 404, body: { success: false, error: 'Not Found', message: 'Credential not found' } }));
   const service = new DiscoveryDefinitionService(); // T1 (O2): an absent actor fails closed exactly like a non-owner
   for (const actor of [undefined, 'admin-a']) {

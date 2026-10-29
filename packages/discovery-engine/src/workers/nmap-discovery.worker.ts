@@ -5,7 +5,10 @@
 
 import * as nmap from 'node-nmap';
 import { logger, withRetry, assertDiscoveryRange, resolveDiscoveryHost, connectDiscoveryHost, DISCOVERY_TARGET_REFUSED } from '@cmdb/common';
-import { DiscoveredCI, CIStatus, Relationship } from '@cmdb/common';
+import { DiscoveredCI, CIStatus, Relationship, assertDiscoveryScanVolume } from '@cmdb/common';
+
+// HAP-1079: concurrent nmap subprocesses per scanNetworks call (code constant).
+const NMAP_RANGE_CONCURRENCY = 4;
 
 /**
  * Nmap Discovery Worker
@@ -98,13 +101,14 @@ export class NmapDiscoveryWorker {
   }
 
   /**
-   * Scan multiple network ranges in parallel
+   * Scan multiple network ranges, at most NMAP_RANGE_CONCURRENCY at once
    */
   async scanNetworks(
     jobId: string,
     ranges: Array<{ range: string; scanType?: 'quick' | 'port' | 'os' | 'version' }>
   ): Promise<DiscoveredCI[]> {
-    // Reject the entire batch before scanning any member if one is forbidden.
+    // Reject the entire batch before scanning any member if one is forbidden or the batch is too large.
+    assertDiscoveryScanVolume(ranges.map(({ range }) => range));
     await Promise.all(ranges.map(({ range }) =>
       range.includes('/') ? Promise.resolve(assertDiscoveryRange(range)) : resolveDiscoveryHost(range)));
     logger.info('Starting Nmap scan for multiple ranges', {
@@ -112,9 +116,23 @@ export class NmapDiscoveryWorker {
       _rangeCount: ranges.length,
     });
 
-    const results = await Promise.allSettled(
-      ranges.map(({ range, scanType }) => this.scanNetwork(jobId, range, scanType || 'quick'))
-    );
+    // Fill the same settled results from a fixed pool; start no range after a policy refusal (D5).
+    const results: PromiseSettledResult<DiscoveredCI[]>[] = [];
+    let next = 0;
+    let refused = false;
+    const runner = async (): Promise<void> => {
+      while (next < ranges.length && !refused) {
+        const index = next++;
+        const { range, scanType } = ranges[index]!;
+        try {
+          results[index] = { status: 'fulfilled', value: await this.scanNetwork(jobId, range, scanType || 'quick') };
+        } catch (reason) {
+          results[index] = { status: 'rejected', reason };
+          if (reason instanceof Error && reason.message === DISCOVERY_TARGET_REFUSED) refused = true;
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(NMAP_RANGE_CONCURRENCY, ranges.length) }, runner));
     // A DNS answer may change between batch preflight and the actual scan.
     // Never report a policy refusal as partial success or interpolate its target.
     if (results.some(result => result.status === 'rejected' &&

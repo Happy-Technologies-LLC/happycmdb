@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { isIP } from 'net';
+import { assertDiscoveryScanVolume } from '../security/discovery-egress';
 
 const SCAN_MODE_KEYS = ['aggressive', 'osDetection', 'serviceDetection', 'fullPortScan', 'portScan'] as const;
 type ScanModeKey = typeof SCAN_MODE_KEYS[number];
@@ -22,6 +23,16 @@ function isDiscoveryRange(value: string): boolean {
   const family = /^[0-9a-fA-F.:]+$/.test(address) ? isIP(address) : 0;
   if (!family || extra !== undefined) return false;
   return prefix === undefined || (/^(0|[1-9]\d{0,2})$/.test(prefix) && Number(prefix) <= (family === 4 ? 32 : 128));
+}
+
+/** HAP-1079: the execution volume caps also bound every stored and queued definition. */
+function withinScanVolume(targets: string[]): boolean {
+  try {
+    assertDiscoveryScanVolume(targets);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Definition writes must not retain opaque values that readers can later retrieve. */
@@ -79,12 +90,13 @@ export function safeDiscoveryScanConfig(input: unknown): SafeDiscoveryScanConfig
   if (targets !== undefined) {
     // Each target is a hostname, IP or CIDR: never userinfo, scheme, port, path, whitespace or control characters.
     if (!Array.isArray(targets) || targets.length > MAX_DISCOVERY_TARGETS ||
-        targets.some(target => typeof target !== 'string' || !(HOSTNAME.test(target) || isDiscoveryRange(target)))) {
+        targets.some(target => typeof target !== 'string' || !(HOSTNAME.test(target) || isDiscoveryRange(target))) ||
+        !withinScanVolume(targets)) {
       throw new Error('Invalid discovery targets');
     }
     result.targets = targets;
   } else if (typeof config['range'] === 'string') {
-    if (!isDiscoveryRange(config['range'])) throw new Error('Invalid discovery range');
+    if (!isDiscoveryRange(config['range']) || !withinScanVolume([config['range']])) throw new Error('Invalid discovery range');
     result.range = config['range'];
   }
 

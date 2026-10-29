@@ -23,6 +23,14 @@ The fixed rejection never returns the raw configuration. Safe rows retain
 their REST create/read/update/delete behavior; HP1-S3 disables discovery
 execution and schedule activation for every row until the journaled cutover.
 
+**HAP-1079: scan volume caps.** Each target or `range` may cover at most 4,096
+addresses (IPv4 `/20`, IPv6 `/116`), and one definition at most 65,536 addresses in
+total; a hostname or IP literal counts as one address. Over-cap configs get the fixed
+400 `Invalid discovery scan configuration` on create and update, and over-cap stored
+rows are quarantined like any other unsafe row above. Execution re-checks both caps
+and runs at most 4 nmap ranges at once per batch, starting none after a refusal.
+The caps are code constants, not settings.
+
 ### Operator-only quarantine inventory and manual review
 
 An authenticated tenant admin can call `GET /api/v1/discovery/definitions/migration/inventory`.

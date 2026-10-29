@@ -33,7 +33,7 @@ it('targets accept hostnames, IP literals and CIDRs up to 256 entries, never 257
 });
 
 it('range accepts an IP or an in-family CIDR and bounds the prefix', () => {
-  for (const range of ['10.0.0.5', '10.0.0.0/24', '10.0.0.0/32', '2001:db8::/64', '2001:db8::/128']) {
+  for (const range of ['10.0.0.5', '10.0.0.0/24', '10.0.0.0/32', '2001:db8::/116', '2001:db8::/128']) {
     expectAccepted({ range });
   }
   for (const range of ['10.0.0.0/33', '2001:db8::/129', 'example.com']) expectRejected({ range });
@@ -55,4 +55,15 @@ it('HAP-768 follow-up: newline-joined and space-padded hostnames are refused and
 
 it('the legacy _targets alias is never read into the queue projection', () => {
   expect(safeDiscoveryScanConfig({ _targets: ['192.0.2.1'] })).toEqual({});
+});
+
+it('HAP-1079: a target or range above 4,096 addresses, or a definition above 65,536, is refused and never projected', () => {
+  const twenties = Array.from({ length: 16 }, () => '8.8.0.0/20');
+  expectAccepted({ range: '8.8.0.0/20' });
+  expectAccepted({ targets: twenties });
+  expectAccepted({ targets: Array.from({ length: 256 }, () => '8.8.8.0/24') });
+  for (const value of ['8.8.0.0/19', '8.0.0.0/8', '32.0.0.0/3', '0.0.0.0/0', '2001:db8::/115', '2001:db8::/64']) {
+    rejectEverywhere(value);
+  }
+  expectRejected({ targets: [...twenties, 'example.com'] });
 });

@@ -85,6 +85,23 @@ export async function connectDiscoveryHost(host: string, pinned: string): Promis
   return pinned;
 }
 
+// HAP-1079: code constants, never configuration; raising them is a reviewed change.
+export const MAX_DISCOVERY_RANGE_ADDRESSES = 4096; // IPv4 /20, IPv6 /116
+export const MAX_DISCOVERY_SCAN_ADDRESSES = 65536; // per definition and per nmap batch
+
+/** Refuse any target above the per-range cap or a batch above the total cap; NaN fails closed. */
+export function assertDiscoveryScanVolume(targets: readonly string[]): void {
+  let total = 0;
+  for (const target of targets) {
+    // A hostname or IP literal is one pinned address; a CIDR is 2^(bits - prefix).
+    const [address = '', prefix] = target.split('/');
+    const count = prefix === undefined ? 1 : 2 ** ((isIP(address) === 6 ? 128 : 32) - Number(prefix));
+    if (!(count <= MAX_DISCOVERY_RANGE_ADDRESSES)) throw new Error(DISCOVERY_TARGET_REFUSED);
+    total += count;
+  }
+  if (!(total <= MAX_DISCOVERY_SCAN_ADDRESSES)) throw new Error(DISCOVERY_TARGET_REFUSED);
+}
+
 /** Refuse ranges touching any blocked address; no nmap range or option syntax. */
 export function assertDiscoveryRange(range: string): string {
   if (typeof range !== 'string') throw new Error(DISCOVERY_TARGET_REFUSED);
@@ -100,7 +117,7 @@ export function assertDiscoveryRange(range: string): string {
     if (prefix !== 128) throw new Error(DISCOVERY_TARGET_REFUSED);
     return address;
   }
-  if (prefix < 1 || prefix > 32) throw new Error(DISCOVERY_TARGET_REFUSED);
+  if (prefix < 1 || prefix > 32 || 2 ** (32 - prefix) > MAX_DISCOVERY_RANGE_ADDRESSES) throw new Error(DISCOVERY_TARGET_REFUSED);
   const mask = (0xffffffff << (32 - prefix)) >>> 0;
   const network = (ipv4Number(address) & mask) >>> 0;
   if (network !== ipv4Number(address)) throw new Error(DISCOVERY_TARGET_REFUSED);

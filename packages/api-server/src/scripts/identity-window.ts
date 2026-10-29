@@ -259,7 +259,7 @@ function assignmentArgs(argv: readonly string[]): { userId: string; organization
   }
   // Lowercase only: tenancy compares the id exactly, and an assigned id cannot be corrected later.
   if (organizationId !== undefined && organizationId !== organizationId.toLowerCase()) {
-    throw new Error('--organization-id <uuid> is required');
+    throw new Error('--organization-id must be a lowercase UUID');
   }
   if (organizationId === undefined || !ORGANIZATION_ID_RE.test(organizationId)) {
     throw new Error('--organization-id <uuid> is required');

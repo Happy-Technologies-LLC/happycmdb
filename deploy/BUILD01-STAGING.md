@@ -27,7 +27,7 @@ Required secret/config names (Infisical /staging path /happycmdb):
 - STAGING_PUBLIC_URL — staging UI origin/hostname used to constrain allowed origins.
 - AUDIT_CHAIN_KEY — audit hash-chain HMAC key (32-byte hex); journaled CI writes fail closed (503) without it; never rotate without a re-chain plan.
 
-Optional names: REDIS_PASSWORD (only when Redis auth enabled), IMAGE_TAG (defaults local), HAPPYCMDB_API_PORT (defaults 19000), HAPPYCMDB_WEB_PORT (defaults 19080). NODE_ENV, database hosts/ports, Kafka brokers, JWT expiration, and internal TLS settings are fixed. See [production parity](PRODUCTION-PARITY.md). Never commit secret values.
+Optional names: REDIS_PASSWORD (only when Redis auth enabled), IMAGE_TAG (defaults local), HAPPYCMDB_API_PORT (defaults 19000), HAPPYCMDB_WEB_PORT (defaults 19080), METRICS_SCRAPE_TOKEN (bearer token for root `/metrics`, at least 32 characters; unset or shorter answers 404). NODE_ENV, database hosts/ports, Kafka brokers, JWT expiration, and internal TLS settings are fixed. See [production parity](PRODUCTION-PARITY.md). Never commit secret values.
 
 ## Storage and startup
 

@@ -42,6 +42,9 @@ scrape_configs:
   - job_name: 'cmdb-api-server'
     metrics_path: '/metrics'
     scrape_interval: 15s
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/secrets/cmdb-metrics-scrape-token
     static_configs:
       - targets:
           - 'api-server:3000'

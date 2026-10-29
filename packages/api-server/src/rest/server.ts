@@ -29,7 +29,7 @@ import { swaggerRoutes } from './routes/swagger.routes';
 import { itilRoutes } from './routes/itil.routes';
 import { businessServiceRoutes } from './routes/business-service.routes';
 import { architectureRoutes } from './routes/architecture.routes';
-import metricsRoutes from '../metrics/metrics.routes';
+import { createMetricsRoutes } from '../metrics/metrics.routes';
 import { tbmRoutes } from './routes/tbm.routes';
 import { settingsRoutes } from './routes/settings.routes';
 import { driftRoutes, impactRoutes } from './routes/drift-impact.routes';
@@ -157,8 +157,8 @@ export class RestAPIServer {
     this.app.use('/api/v1/drift', driftRoutes);
     this.app.use('/api/v1/impact', impactRoutes);
     this.app.use('/api/v1/ai', aiPatternRoutes);
-    // Prometheus metrics (public, root path -> /metrics)
-    this.app.use('/', metricsRoutes);
+    // Prometheus metrics (root /metrics): METRICS_SCRAPE_TOKEN bearer only; 404 when unset/short
+    this.app.use('/', createMetricsRoutes(process.env['METRICS_SCRAPE_TOKEN']));
     // Rate-limit monitoring (admin)
     try {
       const config = loadConfig();

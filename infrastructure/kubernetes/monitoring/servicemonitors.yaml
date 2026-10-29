@@ -18,6 +18,11 @@ spec:
       path: /metrics
       interval: 15s
       scrapeTimeout: 10s
+      authorization:
+        type: Bearer
+        credentials:
+          name: cmdb-metrics-scrape
+          key: token
 ---
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor

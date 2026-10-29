@@ -22,7 +22,7 @@ This guide provides links to all monitoring dashboards, key metrics to watch, an
 | **API Health** | http://localhost:3000/health | API health check |
 | **GraphQL Playground** | http://localhost:3000/graphql | GraphQL API explorer |
 | **Web UI** | http://localhost:3000 | User interface |
-| **API Metrics** | http://localhost:3000/metrics | Prometheus metrics endpoint |
+| **API Metrics** | http://localhost:3000/metrics | Prometheus metrics endpoint (`Authorization: Bearer $METRICS_SCRAPE_TOKEN`) |
 
 ### Infrastructure Access
 
@@ -661,7 +661,7 @@ curl http://localhost:9090/api/v1/targets
 curl http://localhost:9090/api/v1/label/__name__/values | grep <metric_name>
 
 # Check exporter is running
-curl http://localhost:3000/metrics
+curl -H "Authorization: Bearer $METRICS_SCRAPE_TOKEN" http://localhost:3000/metrics
 ```
 
 ### Slow Dashboard Loading

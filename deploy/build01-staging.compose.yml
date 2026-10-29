@@ -94,6 +94,7 @@ services:
       JWT_AUDIENCE: ${JWT_AUDIENCE:?JWT_AUDIENCE is required}
       BCRYPT_ROUNDS: 10
       CREDENTIAL_ENCRYPTION_KEY: ${ENCRYPTION_KEY:?ENCRYPTION_KEY is required}
+      METRICS_SCRAPE_TOKEN: ${METRICS_SCRAPE_TOKEN:-}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/api/v1/cmdb-health"]
       interval: 30s

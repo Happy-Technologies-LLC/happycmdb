@@ -19,11 +19,12 @@ interface HeaderProps {
   onMenuClick?: () => void;
 }
 
-// Live service-health -> topbar status-dot color. Unknown/missing -> neutral line.
+// Live service-health -> topbar status-dot color. Unknown/missing -> neutral line, no live pulse.
 const STATUS_DOT: Record<HealthStatus['status'], string> = {
   healthy: 'bg-[var(--hh-success)]',
   degraded: 'bg-[var(--hh-warning)]',
   down: 'bg-[var(--hh-danger)]',
+  unknown: 'bg-[var(--hh-border-strong)]',
 };
 
 const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
@@ -98,7 +99,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
           title={`Neo4j graph: ${graph?.status ?? 'unknown'}`}
         >
           <span
-            className={`h-2 w-2 rounded-full ${graph ? STATUS_DOT[graph.status] : 'bg-[var(--hh-border-strong)]'} ${graph ? 'animate-[hh-pulse_2.4s_ease-in-out_infinite]' : ''}`}
+            className={`h-2 w-2 rounded-full ${graph ? STATUS_DOT[graph.status] : STATUS_DOT.unknown} ${graph && graph.status !== 'unknown' ? 'animate-[hh-pulse_2.4s_ease-in-out_infinite]' : ''}`}
           />
           Graph
         </span>
@@ -107,7 +108,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
           title={`Data mart: ${mart?.status ?? 'unknown'}`}
         >
           <span
-            className={`h-2 w-2 rounded-full ${mart ? STATUS_DOT[mart.status] : 'bg-[var(--hh-border-strong)]'} ${mart ? 'animate-[hh-pulse_2.4s_ease-in-out_infinite]' : ''}`}
+            className={`h-2 w-2 rounded-full ${mart ? STATUS_DOT[mart.status] : STATUS_DOT.unknown} ${mart && mart.status !== 'unknown' ? 'animate-[hh-pulse_2.4s_ease-in-out_infinite]' : ''}`}
           />
           Mart
         </span>

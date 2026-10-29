@@ -111,6 +111,30 @@ test('failed probes close the session, return only safe status, and remain bound
   expect(mockClose).toHaveBeenCalledTimes(2);
 });
 
+const UNPROBED = ['PostgreSQL', 'Discovery Engine', 'ETL Processor'];
+
+test('HAP-772: unprobed components report unknown, with no latency and no new I/O', async () => {
+  const response = await authorized();
+  expect(response.status).toBe(200);
+  expect(response.body.map((row: { service: string }) => row.service)).toEqual(['Neo4j', 'Redis', ...UNPROBED]);
+  for (const row of response.body.slice(0, 2)) expect(row).toEqual(expect.objectContaining({ status: 'healthy', response_time_ms: expect.any(Number) }));
+  for (const [index, service] of UNPROBED.entries()) {
+    const row = response.body[index + 2];
+    expect(row).toEqual({ service, status: 'unknown', last_check: expect.any(String) });
+    expect(new Date(row.last_check).toISOString()).toBe(row.last_check);
+  }
+  expect(mockPostgresQuery).not.toHaveBeenCalled();
+});
+
+test('HAP-772: when every probe fails, no component reports healthy', async () => {
+  mockRun.mockRejectedValue(new Error(secret));
+  mockSet.mockRejectedValue(new Error(secret));
+  const response = await authorized();
+  const statuses: string[] = response.body.map((row: { status: string }) => row.status);
+  expect(statuses).not.toContain('healthy');
+  expect([...statuses].sort()).toEqual(['down', 'down', 'unknown', 'unknown', 'unknown']);
+});
+
 test('unresolved Redis work times out without amplifying probes, then recovers after release', async () => {
   jest.useFakeTimers({ doNotFake: ['Date', 'nextTick', 'setImmediate'] });
   const { promise: held, resolve: release } = Promise.withResolvers<void>();

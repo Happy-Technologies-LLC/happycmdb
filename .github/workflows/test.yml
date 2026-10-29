@@ -48,6 +48,9 @@ jobs:
       - name: Verify web-ui jobs service tenant contract
         run: npm run test:run --workspace=@cmdb/web-ui -- src/services/jobs.service.test.ts
 
+      - name: Verify service health unknown state (HAP-772)
+        run: npm run test:run --workspace=@cmdb/web-ui -- --config vitest.connector-wizard.config.ts src/components/health/service-health-unknown.test.tsx
+
       - name: Upload unit test coverage
         uses: codecov/codecov-action@v3
         with:

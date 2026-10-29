@@ -3735,7 +3735,7 @@ paths:
     get:
       tags: [Health]
       summary: Authenticated component health
-      description: Returns per-service status and latency. Probes are single-flight and cached for five seconds, including failed dependencies. A two-second probe timeout reports down; at most one physical probe per dependency remains outstanding.
+      description: Returns per-service status and latency. Probes are single-flight and cached for five seconds, including failed dependencies. A two-second probe timeout reports down; at most one physical probe per dependency remains outstanding. Components without a bounded probe (PostgreSQL, Discovery Engine, ETL Processor) report unknown, never healthy, and add no I/O.
       operationId: serviceHealth
       security:
         - BearerAuth: []
@@ -3755,12 +3755,14 @@ paths:
                       type: string
                     status:
                       type: string
-                      enum: [healthy, down]
+                      enum: [healthy, down, unknown]
                     last_check:
                       type: string
                       format: date-time
+                      description: Probe completion time; for unknown rows, the time the snapshot was assessed.
                     response_time_ms:
                       type: number
+                      description: Present only when a probe measured the latency (healthy Neo4j or Redis); never on down or unknown.
         '401':
           description: Authentication required; no service probes run.
 

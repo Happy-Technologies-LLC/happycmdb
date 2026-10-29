@@ -26,10 +26,10 @@ export const HealthDashboard: React.FC = () => {
           {services?.map((service) => (
             <div key={service.service} className="flex items-center justify-between p-4 border border-border rounded-lg">
               <div className="flex items-center gap-3">
-                <Icon name={service.status === 'healthy' ? 'check-circle' : service.status === 'degraded' ? 'warning-circle' : 'x-circle'} size={20} />
+                <Icon name={service.status === 'healthy' ? 'check-circle' : service.status === 'degraded' ? 'warning-circle' : service.status === 'unknown' ? 'question' : 'x-circle'} size={20} />
                 <div>
                   <div className="font-medium">{service.service}</div>
-                  <div className="text-sm text-muted-foreground">{service.response_time_ms ? `${service.response_time_ms}ms` : 'N/A'}</div>
+                  <div className="text-sm text-muted-foreground">{service.status === 'unknown' ? 'Not probed' : service.response_time_ms ? `${service.response_time_ms}ms` : 'N/A'}</div>
                 </div>
               </div>
               <div className="text-sm text-muted-foreground">{new Date(service.last_check).toLocaleTimeString()}</div>

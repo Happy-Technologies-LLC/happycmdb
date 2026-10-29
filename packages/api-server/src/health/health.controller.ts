@@ -16,7 +16,7 @@ const logger = getLogger();
 
 type ServiceHealth = {
   service: string;
-  status: 'healthy' | 'down';
+  status: 'healthy' | 'down' | 'unknown';
   last_check: string;
   response_time_ms?: number;
 };
@@ -110,12 +110,11 @@ export class HealthController {
       await this.probeRedis(),
     ];
 
-    // Existing static entries retained for the UI response contract.
-    services.push(
-      { service: 'PostgreSQL', status: 'healthy', last_check: new Date().toISOString(), response_time_ms: 15 },
-      { service: 'Discovery Engine', status: 'healthy', last_check: new Date().toISOString(), response_time_ms: 8 },
-      { service: 'ETL Processor', status: 'healthy', last_check: new Date().toISOString(), response_time_ms: 12 }
-    );
+    // These components have no bounded probe in the API process: report unknown, never healthy.
+    const assessedAt = new Date().toISOString();
+    for (const service of ['PostgreSQL', 'Discovery Engine', 'ETL Processor']) {
+      services.push({ service, status: 'unknown', last_check: assessedAt });
+    }
     return services;
   }
 

@@ -5,7 +5,7 @@
  * HAP-774 S5a (design §3.2, §3.4): classifies every legacy discovery_definitions row, NULL-org rows included (R22),
  * and prints a value-free dry-run plan. SELECT only; writes nothing. There is no apply here (S5b), so any argument,
  * --apply included, exits 1 before a connection opens. Every printed field passes the allow-list encoder (uuid, enum,
- * count, plan digest); anything else exits 2 with nothing on stdout. Errors print fixed text plus at most the error
+ * timestamp, count, key-skeleton and plan digests); anything else exits 2 with nothing on stdout. Errors print fixed text plus at most the error
  * name and SQLSTATE. L1d payload equality is compared in memory with the operator-held CREDENTIAL_ENCRYPTION_KEY
  * (§3.5); without it, or on any decode failure, the row stays DUAL_CREDENTIAL_MISMATCH. Connects only through
  * CMDB_MIGRATION_POSTGRES_*.
@@ -18,7 +18,9 @@ import { getEncryptionService, type EncryptedData } from '../../../common/src/se
 import { hasUnsafeDiscoveryDefinitionConfig } from '../../../common/src/utils/discovery-scan-config';
 import { PostgresClient } from '../../../database/src/postgres/client';
 
-export const DEFINITIONS_SQL = 'SELECT id, organization_id, provider, credential_id, credential_set_id, created_by, config FROM discovery_definitions ORDER BY id';
+// updated_at as a UTC microsecond string: the S5b drift check compares it without Date's millisecond truncation.
+export const DEFINITIONS_SQL = `SELECT id, organization_id, provider, credential_id, credential_set_id, created_by, config,
+  to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at FROM discovery_definitions ORDER BY id`;
 /** Only credentials attached to an L1d candidate; decoded (in memory) only after the org, owner and protocol match. */
 export const CREDENTIALS_SQL = 'SELECT id, organization_id, protocol, created_by, credentials FROM credentials WHERE id = ANY($1::uuid[])';
 
@@ -28,11 +30,14 @@ const REASONS = ['INLINE_CREDENTIAL', 'ALIAS_RENAME', 'BENIGN_STRIP', 'PAYLOAD_E
   'TARGET_GRAMMAR', 'DUAL_CREDENTIAL_MISMATCH', 'HETEROGENEOUS_CREDENTIALS', 'NO_CREDENTIAL_MATERIAL', 'UNSUPPORTED_PROVIDER',
   'TARGET_SECRET', 'NMAP_SECRET_NO_CONSUMER', 'MALFORMED', 'NO_VERIFIED_ORG', 'CREDENTIAL_SET_UNSUPPORTED', 'UNRECOGNIZED'] as const;
 const PROTOCOLS = ['ssh_password', 'ssh_key'] as const;
+/** The DB check's providers plus the seed's rewritten set (`:5-11`); any other stored value prints as OTHER. */
+const PROVIDERS = ['ssh', 'nmap', 'active-directory', 'snmp', 'aws', 'azure', 'gcp', 'kubernetes', 'docker', 'hyperv', 'idrac',
+  'ilo', 'proxmox', 'vmware', 'activedirectory', 'OTHER'];
 type Shape = typeof SHAPES[number];
 type Reason = typeof REASONS[number];
 type Protocol = typeof PROTOCOLS[number];
 
-export interface DefinitionRow { id: string; organization_id: string | null; provider: string; credential_id: string | null; credential_set_id: string | null; created_by: string; config: unknown }
+export interface DefinitionRow { id: string; organization_id: string | null; provider: string; credential_id: string | null; credential_set_id: string | null; created_by: string; config: unknown; updated_at: string }
 export interface StoredCredential { organization_id: string | null; protocol: string; created_by: string; credentials: unknown }
 /** Field order is the printed order; the encoder rejects any other key set. */
 export interface Classification { shape: Shape; disposition: typeof DISPOSITIONS[number]; reason: Reason; new_credential_protocol: Protocol | null }
@@ -180,6 +185,23 @@ export function classifyDefinition(row: DefinitionRow, stored: ReadonlyMap<strin
   return leave('UNKNOWN', 'UNRECOGNIZED');
 }
 
+/** §3.4 drift skeleton: SHA-256 over the sorted, de-duplicated JSON key paths of config (array elements as 0); never values. */
+export function keySkeletonSha256(config: unknown): string {
+  const paths = new Set<string>();
+  const walk = (value: unknown, path: ReadonlyArray<string | 0>): void => {
+    if (Array.isArray(value)) {
+      value.forEach(item => walk(item, [...path, 0]));
+    } else if (isObj(value)) {
+      for (const [key, child] of Object.entries(value)) {
+        paths.add(JSON.stringify([...path, key]));
+        walk(child, [...path, key]);
+      }
+    }
+  };
+  walk(config, []);
+  return createHash('sha256').update(JSON.stringify([...paths].sort())).digest('hex');
+}
+
 /** Carries no message: the rejected value is never echoed. */
 export class PlanEncodingError extends Error {}
 
@@ -188,10 +210,12 @@ const isUuid = (value: unknown): boolean => typeof value === 'string' && UUID.te
 const oneOf = (values: readonly string[]) => (value: unknown): boolean => typeof value === 'string' && values.includes(value);
 /** The only printable row fields, in order, each with its typed check. */
 const ROW_FIELDS: ReadonlyArray<[string, (value: unknown) => boolean]> = [
-  ['definition_id', isUuid], ['organization_id', value => value === null || isUuid(value)], ['shape', oneOf(SHAPES)],
+  ['definition_id', isUuid], ['organization_id', value => value === null || isUuid(value)], ['provider', oneOf(PROVIDERS)], ['shape', oneOf(SHAPES)],
   ['disposition', oneOf(DISPOSITIONS)], ['reason', oneOf(REASONS)], ['new_credential_protocol', value => value === null || oneOf(PROTOCOLS)(value)],
+  ['updated_at', value => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/.test(value)],
+  ['key_skeleton_sha256', value => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value)],
 ];
-type PlanRow = { definition_id: string; organization_id: string | null } & Classification;
+type PlanRow = { definition_id: string; organization_id: string | null; provider: string } & Classification & { updated_at: string; key_skeleton_sha256: string };
 
 /** Allow-list encoder: throws PlanEncodingError (never echoing the value) unless every row is exactly ROW_FIELDS. */
 export function encodePlan(rows: readonly unknown[]): string {
@@ -247,7 +271,10 @@ export async function main(
     const key = env['CREDENTIAL_ENCRYPTION_KEY'] ?? '';
     const service = key.length >= 32 ? getEncryptionService(key) : undefined;
     const decode: Decode | undefined = service === undefined ? undefined : envelope => service.decrypt(envelope);
-    io.stdout(encodePlan(rows.map(row => ({ definition_id: row.id, organization_id: row.organization_id, ...classify(row, stored, decode) }))));
+    io.stdout(encodePlan(rows.map(row => ({
+      definition_id: row.id, organization_id: row.organization_id, provider: PROVIDERS.includes(row.provider) ? row.provider : 'OTHER',
+      ...classify(row, stored, decode), updated_at: row.updated_at, key_skeleton_sha256: keySkeletonSha256(row.config),
+    }))));
     return 0;
   } catch (error) {
     if (error instanceof PlanEncodingError) {

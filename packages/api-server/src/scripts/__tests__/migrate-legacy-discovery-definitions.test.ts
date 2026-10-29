@@ -12,7 +12,7 @@ import { createHash } from 'crypto';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
-import { getEncryptionService } from '../../../../common/src/services/encryption.service';
+import { EncryptionService, getEncryptionService } from '../../../../common/src/services/encryption.service';
 import { main, type SqlClient } from '../migrate-legacy-discovery-definitions';
 
 const host = fork(join(__dirname, '../../rest/routes/__tests__/fixtures/pglite-host.cjs'), [], { serialization: 'advanced' });
@@ -46,7 +46,9 @@ const PASSWORD = { username: U, password: PW };
 const CREDENTIALS: Array<[number, string, string, string, object]> = [
   [90, ORG, OWNER, 'ssh_password', PASSWORD], [91, ORG, OWNER, 'ssh_password', { ...PASSWORD, password: 'S5ASENTINEL-PW-2' }],
   [92, ORG, OWNER, 'ssh_key', PASSWORD], [93, ORG_B, OWNER, 'ssh_password', PASSWORD], [94, ORG, 's5asentinel-other', 'ssh_password', PASSWORD],
+  [96, ORG, OWNER, 'ssh_password', { ...PASSWORD, extra: 'S5ASENTINEL-X' }],
 ];
+const ENVELOPE_IDS = new Map<string, number>(); // envelope iv -> credential number, to see which ones were decoded
 const ssh = (targets: string[], credentials: object = PASSWORD) => ({ targets, credentials });
 // [fixture, provider, org, credential_id, credential_set_id, config, `shape disposition reason protocol`]
 const FIXTURES: Array<[string, string, string | null, number | null, number | null, unknown, string]> = [
@@ -60,6 +62,7 @@ const FIXTURES: Array<[string, string, string | null, number | null, number | nu
   ['L1d C1 mislabeled ssh_key', 'ssh', ORG, 92, null, ssh([H(1)]), 'L1d LEAVE DUAL_CREDENTIAL_MISMATCH'],
   ['L1d other org', 'ssh', ORG, 93, null, ssh([H(1)]), 'L1d LEAVE DUAL_CREDENTIAL_MISMATCH'],
   ['L1d other owner', 'ssh', ORG, 94, null, ssh([H(1)]), 'L1d LEAVE DUAL_CREDENTIAL_MISMATCH'],
+  ['L1d stored payload has an extra key', 'ssh', ORG, 96, null, ssh([H(1)]), 'L1d LEAVE DUAL_CREDENTIAL_MISMATCH'],
   ['L2 AD', 'active-directory', ORG, null, null, { domain: H(2), base_dn: 'dc=s5asentinel', use_ssl: true, users: { enabled: true }, credentials: PASSWORD }, 'L2 LEAVE UNSUPPORTED_PROVIDER'],
   ['L3 SNMP', 'snmp', ORG, null, null, { targets: [H(3)], version: '2c', credentials: { community: PW } }, 'L3 LEAVE UNSUPPORTED_PROVIDER'],
   ['L4 UI ports', 'nmap', ORG, null, null, { targets: [H(4)], scanOptions: { ports: '22,80', serviceDetection: true } }, 'L4 CONVERT BENIGN_STRIP'],
@@ -79,7 +82,10 @@ const FIXTURES: Array<[string, string, string | null, number | null, number | nu
   ['credential set', 'ssh', ORG, null, 95, ssh([H(1)]), 'L1 LEAVE CREDENTIAL_SET_UNSUPPORTED'],
   ['already safe', 'nmap', ORG, null, null, { targets: [H(13)] }, 'SAFE SKIP ALREADY_SAFE null'],
   ['unknown', 'ssh', ORG, null, null, { targets: [H(1)], token: PW }, 'UNKNOWN LEAVE UNRECOGNIZED null'],
+  ['unlisted provider', 's5asentinel-provider', ORG, null, null, { token: PW }, 'L7 LEAVE UNSUPPORTED_PROVIDER null'],
 ];
+// Stored at +02:00 with microseconds; the plan must carry it as exact UTC.
+const UPDATED_AT = ['2026-10-01 14:34:56.123456+02', '2026-10-01T12:34:56.123456Z'];
 const LITERALS = ['192.168.1.0', '10.0.0.0', 'us-east-1', 'dc=', 'BEGIN OPENSSH', '2001:db8'];
 
 async function run(argv: string[] = [], env: NodeJS.ProcessEnv = { ...ENV, CREDENTIAL_ENCRYPTION_KEY: KEY }, open = jest.fn(() => client), classify?: Parameters<typeof main>[4]) {
@@ -102,12 +108,14 @@ beforeAll(async () => {
     ALTER TABLE discovery_definitions DROP CONSTRAINT discovery_definitions_provider_check;`);
   const service = getEncryptionService(KEY);
   for (const [n, org, owner, protocol, payload] of CREDENTIALS) {
+    const envelope = service.encrypt(JSON.stringify(payload));
+    ENVELOPE_IDS.set(envelope.iv, n);
     await send('query', `INSERT INTO credentials (id, name, protocol, scope, credentials, created_by, organization_id) VALUES ($1, 's5asentinel-cred', $2, 'ssh', $3, $4, $5)`,
-      [uuid(n), protocol, JSON.stringify(service.encrypt(JSON.stringify(payload))), owner, org]);
+      [uuid(n), protocol, JSON.stringify(envelope), owner, org]);
   }
   for (const [index, [name, provider, org, credential, set, config]] of FIXTURES.entries()) {
-    await send('query', `INSERT INTO discovery_definitions (id, name, provider, credential_id, credential_set_id, created_by, organization_id, config) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)`,
-      [uuid(index + 1), `S5ASENTINEL-NAME ${name}`, provider, credential && uuid(credential), set && uuid(set), OWNER, org, JSON.stringify(config)]);
+    await send('query', `INSERT INTO discovery_definitions (id, name, provider, credential_id, credential_set_id, created_by, organization_id, config, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9)`,
+      [uuid(index + 1), `S5ASENTINEL-NAME ${name}`, provider, credential && uuid(credential), set && uuid(set), OWNER, org, JSON.stringify(config), UPDATED_AT[0]]);
   }
 });
 afterAll(() => host.kill());
@@ -117,9 +125,12 @@ describe('migrate-legacy-discovery-definitions (dry run, PGlite)', () => {
     const { code, out } = await run();
     expect(code).toBe(0);
     const plan = JSON.parse(out);
-    expect(plan.rows).toEqual(FIXTURES.map(([, , org, , , , expected], index) => {
+    expect(plan.rows).toEqual(FIXTURES.map(([, provider, org, , , , expected], index) => {
       const [shape, disposition, reason, protocol = 'null'] = expected.split(' ');
-      return { definition_id: uuid(index + 1), organization_id: org, shape, disposition, reason, new_credential_protocol: protocol === 'null' ? null : protocol };
+      return {
+        definition_id: uuid(index + 1), organization_id: org, provider: provider.startsWith('s5asentinel') ? 'OTHER' : provider, shape, disposition, reason,
+        new_credential_protocol: protocol === 'null' ? null : protocol, updated_at: UPDATED_AT[1], key_skeleton_sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+      };
     }));
     expect(plan.counts.null_organization).toBe(4);
     expect(plan.plan_sha256).toBe(createHash('sha256').update(JSON.stringify({ rows: plan.rows, counts: plan.counts })).digest('hex'));
@@ -141,6 +152,30 @@ describe('migrate-legacy-discovery-definitions (dry run, PGlite)', () => {
     const { code, out } = await run([], ENV);
     expect(code).toBe(0);
     expect(JSON.parse(out).rows[5]).toMatchObject({ shape: 'L1d', disposition: 'LEAVE', reason: 'DUAL_CREDENTIAL_MISMATCH' });
+  });
+
+  it('key_skeleton_sha256 digests the sorted config key paths only: values never change it, keys always do', async () => {
+    const rows = JSON.parse((await run()).out).rows as Array<Record<string, string>>;
+    const skeleton = (name: string) => rows[FIXTURES.findIndex(([fixture]) => fixture === name)]!['key_skeleton_sha256'];
+    // Same key sets, different values (targets, ports, passwords, org): one digest.
+    expect(new Set(['L1 uniform port', 'L1 mixed ports', 'L1d equal payload', 'NULL org'].map(skeleton)).size).toBe(1);
+    expect(skeleton('L10 shared')).toBe(skeleton('L10 heterogeneous'));
+    // A renamed, added or removed key changes it.
+    expect(skeleton('L1b PEM')).not.toBe(skeleton('L1 uniform port'));
+    expect(skeleton('unknown')).not.toBe(skeleton('already safe'));
+    // Canonical form, pinned: the sorted JSON key paths, no values.
+    const paths = ['["credentials","password"]', '["credentials","username"]', '["credentials"]', '["targets"]'];
+    expect(skeleton('L1 uniform port')).toBe(createHash('sha256').update(JSON.stringify(paths)).digest('hex'));
+  });
+
+  it('decodes only credentials that pass the org, owner and protocol gate', async () => {
+    const decrypt = jest.spyOn(EncryptionService.prototype, 'decrypt');
+    try {
+      expect((await run()).code).toBe(0);
+      expect(decrypt.mock.calls.map(([envelope]) => ENVELOPE_IDS.get(envelope.iv)).sort()).toEqual([90, 91, 96]);
+    } finally {
+      decrypt.mockRestore();
+    }
   });
 
   it('the allow-list encoder aborts with exit 2 and prints nothing of an injected field or free-text value', async () => {

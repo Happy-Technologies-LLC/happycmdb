@@ -10,7 +10,7 @@
  * Now supports dynamic scheduling based on discovery definitions stored in PostgreSQL.
  */
 
-import { getQueueManager, QUEUE_NAMES, logger, safeDiscoveryScanConfig, hasUnsafeDiscoveryDefinitionConfig } from '@cmdb/common';
+import { getQueueManager, QUEUE_NAMES, logger, safeDiscoveryScanConfig, hasUnsafeDiscoveryDefinitionConfig, getDiscoveryQueueNames } from '@cmdb/common';
 import type { DiscoveryJobData, DiscoveryProvider, DiscoveryDefinition } from '@cmdb/common';
 import { getPostgresClient, getScheduleConfigStore } from '@cmdb/database';
 import { v4 as uuidv4 } from 'uuid';
@@ -48,18 +48,14 @@ const DEFAULT_SCHEDULES: DiscoverySchedule[] = [
     _queueName: QUEUE_NAMES._DISCOVERY_SSH,
     _cronPattern: '0 * * * *', // Every hour
     _enabled: true,
-    _config: {
-      _targets: [], // Loaded from environment or config
-    },
+    _config: {},
   },
   {
     _provider: 'nmap',
     _queueName: QUEUE_NAMES._DISCOVERY_NMAP,
     _cronPattern: '0 2 * * *', // Daily at 2 AM
     _enabled: true,
-    _config: {
-      _targets: [], // Loaded from environment or config
-    },
+    _config: {},
   },
 ];
 
@@ -112,6 +108,8 @@ export class DiscoveryScheduler {
     await this.loadPersistedSchedules();
 
     if (this.useDatabaseDefinitions) {
+      // HAP-774 C-9: drop every repeatable an earlier process left on the discovery queues.
+      await this.reconcileRepeatables();
       try {
         // Load and schedule all active definitions from PostgreSQL
         await this.loadAndScheduleDefinitions();
@@ -614,6 +612,8 @@ export class DiscoveryScheduler {
           }
         }
       }
+      // Also drop repeatables no live mapping owns (deleted/quarantined rows, provider-level).
+      removed += await this.reconcileRepeatables();
 
       for (const { id, organizationId } of toAdd) {
         try {
@@ -634,6 +634,25 @@ export class DiscoveryScheduler {
       logger.error('Failed to sync schedules');
       throw error;
     }
+  }
+
+  /**
+   * Remove every repeatable on the discovery queues whose key is not held by a live definition
+   * mapping, failing loudly. Reads repeatable keys only, never job data; other jobs are left alone.
+   */
+  private async reconcileRepeatables(): Promise<number> {
+    const owned = new Set(Array.from(this.definitionMappings.values(), (m) => `${m.queueName}\n${m.jobKey}`));
+    let removed = 0;
+    for (const queueName of getDiscoveryQueueNames()) {
+      const queue = this.queueManager.getQueue(queueName);
+      for (const { key } of await queue.getRepeatableJobs()) {
+        if (!owned.has(`${queueName}\n${key}`)) {
+          await queue.removeRepeatableByKey(key);
+          removed++;
+        }
+      }
+    }
+    return removed;
   }
 
   /**

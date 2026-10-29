@@ -446,6 +446,42 @@ test('HAP-774 C-4: ssh targets are hostnames or IP literals only, never a CIDR o
   expect(await definitionRows()).toEqual(before);
 });
 
+test('HAP-774 R3: only the bound credential owner may retarget; config-less edits and replacing it with your own stay allowed', async () => {
+  const CRED_ADMIN = 'aaaaaaaa-aaaa-4aaa-8aaa-000000000004', SET = 'cccccccc-cccc-4ccc-8ccc-000000000005';
+  const LEG_OWNED = 'cccccccc-cccc-4ccc-8ccc-000000000006', LEG_SNMP = 'cccccccc-cccc-4ccc-8ccc-000000000007';
+  await query(`INSERT INTO credentials (id, protocol, organization_id, created_by) VALUES ($1, 'ssh_password', $2, 'admin-a')`, [CRED_ADMIN, ORG_A]);
+  await query(`INSERT INTO discovery_definitions (id, name, provider, method, credential_id, credential_set_id, created_by, organization_id)
+    VALUES ($1, 'r3-set', 'ssh', 'agentless', NULL, $1, 'a', $4), ($2, 'r3-leg-owned', 'snmp', 'agentless', $5, NULL, 'a', $4),
+    ($3, 'r3-leg-snmp', 'snmp', 'agentless', $6, NULL, 'a', $4)`, [SET, LEG_OWNED, LEG_SNMP, ORG_A, CRED_OWNED, CRED_SNMP]);
+  const put = (user: string, id: string, body: object) => request(app).put(`${url}/${id}`).set(headers(user)).send(body);
+  const d = (await request(app).post(url).set(headers('admin-a')).send({ name: `r3-${randomBytes(4).toString('hex')}`,
+    provider: 'nmap', method: 'agentless', config: { targets: ['192.0.2.1'] } })).body.data.id;
+  const send = jest.spyOn(host, 'send'); // T2 (O3/O4): nmap + credential is a fixed 400 before any credential lookup
+  const mismatch = [await request(app).post(url).set(headers('a')).send({ name: 'r3-nmap-cred', provider: 'nmap',
+    method: 'agentless', credential_id: CRED_OWNED }), await put('a', d, { credential_id: CRED_OWNED })];
+  expect(mismatch.map(({ status, body }) => ({ status, body }))).toEqual(Array(2).fill({
+    status: 400, body: { success: false, error: 'Bad Request', message: 'Provider mismatch' } }));
+  expect(JSON.stringify(send.mock.calls)).not.toContain('FROM credentials');
+  send.mockRestore();
+  const swap = { config: { targets: ['198.51.100.7'] } };
+  expect((await put('a', d, { provider: 'ssh', credential_id: CRED_OWNED, config: { targets: ['192.0.2.1'] } })).status).toBe(200);
+  const before = await definitionRows();
+  const refused = [await put('admin-a', d, swap), await put('admin-a', d, { provider: 'ssh', ...swap }), await put('admin-a', SET, swap),
+    await put('admin-a', LEG_OWNED, { provider: 'ssh' }), await put('a', LEG_SNMP, { provider: 'ssh' })]; // F1 (O6): owner, protocol
+  expect(refused.map(({ status, body }) => ({ status, body }))).toEqual(Array(5).fill({
+    status: 404, body: { success: false, error: 'Not Found', message: 'Credential not found' } }));
+  const service = new DiscoveryDefinitionService(); // T1 (O2): an absent actor fails closed exactly like a non-owner
+  for (const actor of [undefined, 'admin-a']) {
+    await expect(service.updateDefinition(d, swap, ORG_A, actor)).rejects.toThrow(`Credential with ID ${CRED_OWNED} not found`);
+  }
+  await expect(service.updateDefinition(d, { credential_id: null } as never, ORG_A, 'a')) // P1: no direct-service detach
+    .rejects.toThrow('Discovery provider requires credential');
+  expect(await definitionRows()).toEqual(before);
+  expect((await put('admin-a', d, { description: 'config-less' })).status).toBe(200);
+  expect((await put('a', d, swap)).status).toBe(200);
+  const replaced = await put('admin-a', d, { credential_id: CRED_ADMIN, config: { targets: ['203.0.113.9'] } });
+  expect([replaced.status, replaced.body.data?.credential_id]).toEqual([200, CRED_ADMIN]);
+});
 
 test('real migrator applies, rolls back and reapplies organization migration on disposable schema', async () => {
   await exec(readFileSync(join(migrationDir, 'rollback/024_discovery_definition_organization_scope.down.sql'), 'utf8'));

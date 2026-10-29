@@ -232,7 +232,7 @@ export class DiscoveryDefinitionService {
 
       // Check if definition exists
       const existingResult = await client.query(
-        'SELECT id, credential_id, provider, config FROM discovery_definitions WHERE id = $1 AND organization_id = $2 FOR UPDATE',
+        'SELECT id, credential_id, credential_set_id, provider, config FROM discovery_definitions WHERE id = $1 AND organization_id = $2 FOR UPDATE',
         [id, organizationId]
       );
 
@@ -252,19 +252,21 @@ export class DiscoveryDefinitionService {
       }
       if (updates.provider !== undefined || updates.credential_id !== undefined) {
         requireCredentialForProvider(updates.provider ?? existing.provider,
-          updates.credential_id ?? existing.credential_id);
+          updates.credential_id !== undefined ? updates.credential_id : existing.credential_id);
       }
 
       // Every explicit attachment must revalidate current ownership, even if
-      // the credential ID matches an older association.
-      if (updates.credential_id) {
+      // the credential ID matches an older association. R3: new config re-checks the bound credential; a set cannot (D2).
+      if (updates.config !== undefined && existing.credential_set_id) throw new Error('Credential not found');
+      const attachId = updates.credential_id || (updates.config !== undefined ? existing.credential_id : null);
+      if (attachId) {
         const credentialResult = await client.query(
           `SELECT id AS credential_id, protocol AS provider FROM credentials WHERE id = $1 AND organization_id = $2 ${ATTACHABLE_CREDENTIAL}`,
-          [updates.credential_id, organizationId, actorId, PROVIDER_CREDENTIAL_PROTOCOLS['ssh']]
+          [attachId, organizationId, actorId, PROVIDER_CREDENTIAL_PROTOCOLS['ssh']]
         );
 
         if (credentialResult.rows.length === 0) {
-          throw new Error(`Credential with ID ${updates.credential_id} not found`);
+          throw new Error(`Credential with ID ${attachId} not found`);
         }
       }
 

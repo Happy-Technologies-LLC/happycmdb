@@ -391,7 +391,7 @@ export interface MetricsSummary {
 
 export interface HealthStatus {
   service: string;
-  status: 'healthy' | 'degraded' | 'down';
+  status: 'healthy' | 'degraded' | 'down' | 'unknown';
   last_check: string;
   response_time_ms?: number;
   error?: string;

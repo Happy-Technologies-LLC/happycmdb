@@ -43,6 +43,7 @@ Object.assign(process.env, {
 const INTERNAL_ORG = '00000000-0000-0000-0000-000000000000';
 const ORG_A = '11111111-1111-4111-8111-111111111111';
 const ORG_B = '22222222-2222-4222-8222-222222222222';
+const ORG_C = '33333333-3333-4333-8333-333333333333';
 
 // ---------------------------------------------------------------------------
 // In-memory graph and fake driver
@@ -200,6 +201,7 @@ function run(rawCypher: string, params: Props = {}): FakeRecord[] {
     const matches = [...graph.nodes.values()].filter(props =>
       ciInScope(props) &&
       ['type', 'status', 'environment'].every(f => params[f] === undefined || props[f] === params[f]) &&
+      (!cypher.includes('ci.external_id = $externalId') || props['external_id'] === params['externalId']) &&
       (params['search'] === undefined || String(props['name']).toLowerCase().includes(String(params['search']).toLowerCase()))
     );
     const visible = matches.filter(props =>
@@ -311,6 +313,7 @@ jest.mock('@cmdb/event-processor', () => ({
 const USERS: Record<string, { _id: string; _username: string; _role: string; _enabled: boolean; _organizationId?: string }> = {
   'user-a': { _id: 'user-a', _username: 'alice', _role: 'operator', _enabled: true, _organizationId: ORG_A },
   'user-b': { _id: 'user-b', _username: 'bob', _role: 'operator', _enabled: true, _organizationId: ORG_B },
+  'user-c': { _id: 'user-c', _username: 'carol', _role: 'operator', _enabled: true, _organizationId: ORG_C },
   'user-none': { _id: 'user-none', _username: 'nora', _role: 'admin', _enabled: true },
 };
 
@@ -366,6 +369,7 @@ const bearer = (userId: string, organizationId?: string) => ({
 });
 const AS_A = bearer('user-a', ORG_A);
 const AS_B = bearer('user-b', ORG_B);
+const AS_C = bearer('user-c', ORG_C);
 const NO_ORG = bearer('user-none');
 
 // Mirrors server.ts: authenticate once on /api/v1, then the router.
@@ -471,6 +475,28 @@ describe('/api/v1/cis tenant scoping', () => {
     expect(res.status).toBe(200);
     expect(res.body.data.map((ci: { id: string }) => ci.id).sort()).toEqual(['ci-a-app', 'ci-a-db']);
     expect(res.body.pagination.total).toBe(2);
+  });
+
+  it("GET /cis?external_id= matches exactly in the caller's org; another org gets one empty answer (FD17-S4)", async () => {
+    seedCI('ci-a-ext', ORG_A, { external_id: 'ext-1' });
+    seedCI('ci-a-ext10', ORG_A, { external_id: 'ext-10' });
+    seedCI('ci-b-ext', ORG_B, { external_id: 'ext-1' }); // the same value in another org (per-org unique key)
+    const list = (as: typeof AS_A, value: unknown) => request(app).get('/api/v1/cis').query({ external_id: value }).set(as);
+    const own = await list(AS_A, 'ext-1');
+    expect([own.status, own.body.data.map((ci: { id: string }) => ci.id), own.body.pagination.total])
+      .toEqual([200, ['ci-a-ext'], 1]);
+    expect((await list(AS_A, ' ext-1 ')).body.data).toEqual([]); // exact value, never trimmed (D17-9)
+    const used = await list(AS_C, 'ext-1');
+    expect([used.status, used.body.data, used.body.pagination.total]).toEqual([200, [], 0]);
+    for (const unused of ['ext-unused', 'x'.repeat(200)]) {
+      const other = await list(AS_C, unused);
+      expect([other.status, other.text]).toEqual([used.status, used.text]);
+    }
+    const before = queryCount; // the create rule: '', a control character, 201 characters, a non-string are 400
+    for (const bad of ['', 'a\u0001b', 'x'.repeat(201), ['ext-1', 'ext-2']]) {
+      expect((await list(AS_A, bad)).status).toBe(400);
+    }
+    expect(queryCount).toBe(before);
   });
 
   it('paginates a large own-org CI inventory without collecting all nodes for limit one', async () => {

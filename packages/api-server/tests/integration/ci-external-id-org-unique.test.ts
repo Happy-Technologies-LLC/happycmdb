@@ -3,6 +3,7 @@
 
 // FD17-S2: migration 005 makes CI.external_id unique per organization, on the integration neo4j:5.15.0.
 // FD17-S3: REST create accepts external_id behind the schema gate, with real PostgreSQL and Neo4j.
+// FD17-S4: GET /cis?external_id= on real Neo4j (#137 verification LOW-1: the unit fake cannot see an OR in the WHERE).
 import { randomUUID } from 'crypto';
 import { readFileSync } from 'fs';
 import { join } from 'path';
@@ -142,6 +143,17 @@ describe('on the integration Neo4j', () => {
       // Immutable after create (D17-3): PUT strips it.
       const put = await request(app).put(`/api/v1/cis/${a.body.data.id}`).set('x-org', A).send({ name: 'renamed', external_id: unused });
       expect([put.status, put.body.data.name, put.body.data.external_id]).toEqual([200, 'renamed', ext1]);
+    });
+
+    it('FD17-S4 GET ?external_id=: the own exact CI only; one identical empty answer for a foreign and an unused value', async () => {
+      const [a, b] = [await post(A, ext1), await post(B, ext1)];
+      expect([a.status, b.status]).toEqual([201, 201]);
+      const get = (org: string, externalId: string) => request(app).get('/api/v1/cis').query({ external_id: externalId }).set('x-org', org);
+      const own = await get(A, ext1);
+      expect([own.status, own.body.data.map((ci: { id: string }) => ci.id), own.body.pagination.total]).toEqual([200, [a.body.data.id], 1]);
+      // ' OR ci.external_id = $externalId' in the controller would return A's and B's CIs to C here.
+      const [used, free] = [await get(C, ext1), await get(C, unused)];
+      expect([used.status, used.body.data, used.body.pagination.total, used.text]).toEqual([200, [], 0, free.text]);
     });
   });
 });

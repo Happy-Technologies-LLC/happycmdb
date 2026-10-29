@@ -100,6 +100,16 @@ const RULES: Array<{ name: string; pattern: RegExp; reviewed: Record<string, num
       'packages/api-server/src/scripts/rotate-user-password.ts': 3,
     },
   },
+  {
+    name: 'organizationId (seed writers and the FD-5 operator assignment only)',
+    pattern: /\.\s*_?organizationId\s*=(?!=)|REMOVE\s+\w+\._?organizationId\b/g,
+    reviewed: {
+      'infrastructure/scripts/init-neo4j.cypher': 1,
+      'infrastructure/scripts/seed-data.ts': 1,
+      'packages/api-server/src/scripts/identity-window.ts': 1,
+      'packages/api-server/src/scripts/seed-tenant-fixture.ts': 1,
+    },
+  },
 ];
 
 /** Rules that forbid an operation everywhere, whatever the file. */
@@ -175,6 +185,7 @@ describe('inventory gate 4: user-security property writers', () => {
 
   const REPOSITORY = 'packages/api-server/src/auth/neo4j-auth.repository.ts';
   const ROTATION = 'packages/api-server/src/scripts/rotate-user-password.ts';
+  const IDENTITY_WINDOW = 'packages/api-server/src/scripts/identity-window.ts';
   // Negative cases inside already-reviewed files: the real source plus one plausible regression.
   it.each([
     ['the former unguarded updateUser password setter, restored in the repository', REPOSITORY,
@@ -192,6 +203,9 @@ describe('inventory gate 4: user-security property writers', () => {
       "const PUT = 'MATCH (u:User {_id: $id}) SET u = $props';"],
     ['deleting rotation decisions in the rotation', ROTATION,
       "const PURGE = 'MATCH (d:CredentialRotationDecision) DETACH DELETE d';"],
+    ['a second organization writer in the identity window', IDENTITY_WINDOW,
+      "const AGAIN = 'MATCH (u:User) WHERE elementId(u) = $e SET u.organizationId = $org';"],
+    ['an organization removal in the repository', REPOSITORY, "const R = 'MATCH (u:User) WHERE u._id = $id REMOVE u._organizationId';"],
   ])('fails on %s', (_label, file, addition) => {
     expect(violations(new Map([[file, sources.get(file)!]]))).toEqual([]);
     expect(violations(new Map([[file, `${sources.get(file)}\n${addition}\n`]]))).not.toEqual([]);

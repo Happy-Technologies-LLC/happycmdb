@@ -22,7 +22,7 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
   'api-server/src/auth/neo4j-auth.repository.ts': { count: 6, reason: ':User/:ApiKey nodes, not :CI' },
   'api-server/src/auth/user-lock.ts': { count: 2, reason: ':User lock, not :CI' },
   'api-server/src/scripts/backfill-business-service-organization.ts': { count: 4, reason: 'operator script, :BusinessService' },
-  'api-server/src/scripts/identity-window.ts': { count: 3, reason: 'operator script, :User' },
+  'api-server/src/scripts/identity-window.ts': { count: 4, reason: 'operator script, :User (FD-5 adds the organization assignment)' },
   'api-server/src/scripts/rotate-user-password.ts': { count: 2, reason: 'operator script, :User' },
   'api-server/src/scripts/seed-tenant-fixture.ts': { count: 1, reason: 'operator script, :User' },
 };

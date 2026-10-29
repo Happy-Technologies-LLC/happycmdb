@@ -200,11 +200,30 @@ Refresh tokens are accepted only by the refresh endpoint; as a bearer token they
   Check the view ACLs after deploying 010:
   `SELECT relname, relacl FROM pg_class WHERE relname IN ('v_business_service_health', 'v_tbm_tower_summary');`
 
-```cypher
-// Assign an existing user to the internal organization
-MATCH (u:User) WHERE u._username = 'svc-happyhive' OR u.username = 'svc-happyhive'
-SET u.organizationId = '00000000-0000-0000-0000-000000000000';
+**Assigning a user's organization (FD-5).** A user without one gets the 403 above until an
+operator assigns it, one user at a time (connections from the `CMDB_ROTATE_*` variables only):
+
+```bash
+packages/api-server/src/scripts/identity-window.ts assign-organization --user-id <id> --organization-id <uuid> --operator <name>
 ```
+
+- Run it only under a signed window instruction, with the user → organization mapping Nick
+  provides. The internal organization `00000000-0000-0000-0000-000000000000` is allowed (service
+  accounts such as `svc-happyhive`). Nothing checks that an organization exists: verify the UUID
+  the receipt echoes.
+- Refusals exit 2 with `identity-window: organization assignment refused: <reason>`, never naming
+  the user or organization: `unknown_identity`, `ambiguous_identity`, `identity_collision`,
+  `seeded_account` (seeded or default-password accounts), `platform_admin_target`,
+  `already_assigned` (a different UUID; reassignment is not supported), `unsupported_value` (a
+  non-string organization) and `not_applied` (the user changed meanwhile).
+- It writes `_organizationId`, `organizationAssignedBy` and `organizationAssignedAt` under the
+  user's write lock, only while the user still has no organization or a non-UUID one. The same
+  organization again is `unchanged`, with no write. It prints one JSON receipt
+  `{userId, organizationId, outcome, enabledApiKeys}`; archive it.
+- **Token effect.** No re-login, refresh or credential-generation change: the next request with
+  the user's existing access token or API key acts in the new organization. Every enabled API key
+  of the user gains it at once; `enabledApiKeys` counts them, so you can decide whether to revoke
+  them with the operator rotation.
 
 ### Neo4j `:BusinessService.organization_id`
 

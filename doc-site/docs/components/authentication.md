@@ -204,7 +204,7 @@ Refresh tokens are accepted only by the refresh endpoint; as a bearer token they
 operator assigns it, one user at a time (connections from the `CMDB_ROTATE_*` variables only):
 
 ```bash
-packages/api-server/src/scripts/identity-window.ts assign-organization --user-id <id> --organization-id <uuid> --operator <name>
+packages/api-server/src/scripts/identity-window.ts assign-organization --user-id <id> --organization-id <lowercase-uuid> --operator <name>
 ```
 
 - Run it only under a signed window instruction, with the user → organization mapping Nick

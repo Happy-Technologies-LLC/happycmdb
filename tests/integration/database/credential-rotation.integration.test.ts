@@ -52,7 +52,7 @@ import {
   rotateUserPassword, type RotationDeps, type RotationSqlQuery,
 } from '../../../packages/api-server/src/scripts/rotate-user-password';
 import {
-  grantPlatformAdmin, inventorySeedAccounts, scanDefaultPasswords, stampSeedAccounts,
+  assignOrganization, grantPlatformAdmin, inventorySeedAccounts, scanDefaultPasswords, stampSeedAccounts,
 } from '../../../packages/api-server/src/scripts/identity-window';
 import { LockBusyError, openOperatorStores, type OperatorStores } from '../../../packages/api-server/src/scripts/operator-stores';
 import { main as rotationCli } from '../../../packages/api-server/src/scripts/rotate-user-password';
@@ -606,5 +606,20 @@ describe('N-21 SEC13-02: seed inventory and stamp over both property spellings',
     await stampSeedAccounts(operator().graph, ['hp1-s6-human', ...others]);
     expect(await provenance('hp1-s6-provenanced')).toBe('seed-data');
     expect(await provenance('hp1-s6-human')).toBeNull();
+  });
+});
+
+describe('FD5-S1 LOW-1: assign-organization compare-and-set on Neo4j 5.15', () => {
+  it('assigns a user with neither organization property (observed null = $observed null), stamped by the operator', async () => {
+    const ORG = '22222222-2222-4222-8222-222222222222';
+    await graph.run('CREATE (:User {_id: $id, _username: $id, _enabled: true})', { id: 'hp1-s6-orgless' });
+    const window = operator();
+
+    await expect(assignOrganization(window.graph, window.sql, 'hp1-s6-orgless', ORG, 'ci'))
+      .resolves.toEqual({ userId: 'hp1-s6-orgless', organizationId: ORG, outcome: 'assigned', enabledApiKeys: 0 });
+    const props = (await graph.run('MATCH (u:User {_id: $id}) RETURN properties(u) AS p', { id: 'hp1-s6-orgless' })).records[0]!.get('p');
+    expect(props).toMatchObject({ _organizationId: ORG, organizationAssignedBy: 'ci' });
+    expect(props['organizationId']).toBeUndefined();
+    expect(neo4j.isDateTime(props['organizationAssignedAt'])).toBe(true);
   });
 });

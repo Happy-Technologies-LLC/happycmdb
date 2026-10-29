@@ -3,15 +3,18 @@
 
 /**
  * HAP-774 S5a (design §3.2, §3.4): classifies every legacy discovery_definitions row, NULL-org rows included (R22),
- * and prints a value-free dry-run plan. SELECT only; writes nothing. There is no apply here (S5b), so any argument,
- * --apply included, exits 1 before a connection opens. Every printed field passes the allow-list encoder (uuid, enum,
- * timestamp, count, key-skeleton and plan digests); anything else exits 2 with nothing on stdout. Errors print fixed text plus at most the error
- * name and SQLSTATE. L1d payload equality is compared in memory with the operator-held CREDENTIAL_ENCRYPTION_KEY
- * (§3.5); without it, or on any decode failure, the row stays DUAL_CREDENTIAL_MISMATCH. Connects only through
- * CMDB_MIGRATION_POSTGRES_*.
+ * and writes a value-free dry-run plan to `--out <path>` only: a new file (O_EXCL, mode 0600), never stdout. SELECT only;
+ * nothing else is written. There is no apply here (S5b), so any other argument, --apply included, exits 1 before a
+ * connection opens. A non-loopback, non-socket host needs CMDB_MIGRATION_POSTGRES_SSL=verify-full (refused otherwise,
+ * before connecting). Every plan field passes the allow-list encoder (uuid, enum, timestamp, count, key-skeleton and
+ * plan digests); anything else exits 2 with no plan. Errors print fixed text plus at most the error name and SQLSTATE.
+ * L1d payload equality is compared in memory with the operator-held CREDENTIAL_ENCRYPTION_KEY (§3.5); without it, or
+ * on any decode failure, the row stays DUAL_CREDENTIAL_MISMATCH. Connects only through CMDB_MIGRATION_POSTGRES_*.
  */
 
 import { createHash } from 'crypto';
+import { closeSync, constants, openSync, unlinkSync, writeFileSync } from 'fs';
+import { isIP } from 'net';
 
 // Direct modules, not the @cmdb/database barrel (it opens a Redis connection at load time).
 import { getEncryptionService, type EncryptedData } from '../../../common/src/services/encryption.service';
@@ -260,21 +263,38 @@ function postgresConfig(env: NodeJS.ProcessEnv): PostgresConfig | null {
   return { _host: host!, _port: Number(port), _database: database!, _user: user!, _password: password!, ssl: sslMode };
 }
 
+/** Loopback (127.0.0.0/8, ::1, localhost) or a Unix socket directory: the only hosts allowed without verify-full. */
+function isLocalHost(host: string): boolean {
+  return host === 'localhost' || host === '::1' || host.startsWith('/') || (isIP(host) === 4 && host.startsWith('127.'));
+}
+
 /** CLI entry: dry run only; returns the exit code. */
 export async function main(
   argv: readonly string[],
   env: NodeJS.ProcessEnv,
-  io: { stdout: (line: string) => void; stderr: (line: string) => void },
+  io: { stderr: (line: string) => void },
   open = openPostgres,
   classify = classifyDefinition
 ): Promise<number> {
   // Fixed text only: never a row value, a connection setting or an error message.
   const fail = (message: string, code: 1 | 2): number => (io.stderr(`migrate-legacy-discovery-definitions: ${message}`), code);
   const config = postgresConfig(env);
-  if (argv.length > 0 || config === null) {
-    return fail('usage: CMDB_MIGRATION_POSTGRES_{HOST,PORT,DB,USER,PASSWORD}=<...> [CMDB_MIGRATION_POSTGRES_SSL=require|verify-full] migrate-legacy-discovery-definitions (dry run only; takes no arguments)', 1);
+  const out = argv.length === 2 && argv[0] === '--out' && text(argv[1]) && !argv[1].startsWith('--') ? argv[1] : null;
+  if (out === null || config === null) {
+    return fail('usage: CMDB_MIGRATION_POSTGRES_{HOST,PORT,DB,USER,PASSWORD}=<...> [CMDB_MIGRATION_POSTGRES_SSL=require|verify-full] migrate-legacy-discovery-definitions --out <new plan file> (dry run only)', 1);
+  }
+  // PostgresClient maps verify-full to rejectUnauthorized:true (chain and host name); unset is cleartext and require does not verify.
+  if (config.ssl !== 'verify-full' && !isLocalHost(config._host)) {
+    return fail('refused: a non-loopback host needs CMDB_MIGRATION_POSTGRES_SSL=verify-full', 1);
+  }
+  let fd: number;
+  try {
+    fd = openSync(out, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
+  } catch {
+    return fail('refused: --out must be a new file', 1);
   }
   let client: SqlClient | undefined;
+  let written = false;
   try {
     client = open(config);
     const rows = (await client.query(DEFINITIONS_SQL)).rows as unknown as DefinitionRow[];
@@ -295,7 +315,8 @@ export async function main(
         return { ...base, ...leave('L12', 'MALFORMED'), updated_at: row.updated_at, key_skeleton_sha256: keySkeletonSha256(null) };
       }
     };
-    io.stdout(encodePlan(rows.map(planRow)));
+    writeFileSync(fd, `${encodePlan(rows.map(planRow))}\n`);
+    written = true;
     return 0;
   } catch (error) {
     if (error instanceof PlanEncodingError) {
@@ -306,24 +327,25 @@ export async function main(
     return fail(`failed (${name}${typeof code === 'string' && /^[0-9A-Z]{5}$/.test(code) ? `, ${code}` : ''})`, 1);
   } finally {
     await client?.close().catch(() => undefined);
+    closeSync(fd);
+    if (!written) {
+      unlinkSync(out); // this run created it: no partial or empty plan survives a failure
+    }
   }
 }
 
-/** Exits only once stdout has flushed the plan: a slow piped reader must not truncate it at the pipe buffer. */
+/** Exits only once the output stream has flushed: a slow piped reader must not lose the tail of it. */
 export function exitAfterFlush(code: number, write: (chunk: string, done: () => void) => unknown, exit: (code: number) => void): void {
   process.exitCode = code;
   write('', () => exit(code));
 }
 
 if (require.main === module) {
-  // stdout carries only the plan; every other stdout write (the shared logger, libraries) goes to stderr.
-  const writePlan = process.stdout.write.bind(process.stdout);
+  // Nothing goes to stdout: every stdout write (the shared logger, libraries) goes to stderr.
   process.stdout.write = process.stderr.write.bind(process.stderr);
   // PostgresClient also reads the api-server's TLS toggles; this tool is configured only by CMDB_MIGRATION_POSTGRES_*.
   delete process.env['POSTGRES_SSL_MODE'];
   delete process.env['POSTGRES_SSL_ENABLED'];
-  void main(process.argv.slice(2), process.env, {
-    stdout: line => writePlan(`${line}\n`),
-    stderr: line => process.stderr.write(`${line}\n`),
-  }).then(code => exitAfterFlush(code, writePlan, exitCode => process.exit(exitCode)));
+  void main(process.argv.slice(2), process.env, { stderr: line => process.stderr.write(`${line}\n`) })
+    .then(code => exitAfterFlush(code, (chunk, done) => process.stderr.write(chunk, done), exitCode => process.exit(exitCode)));
 }

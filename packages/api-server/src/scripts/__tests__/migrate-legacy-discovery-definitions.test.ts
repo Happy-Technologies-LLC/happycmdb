@@ -7,13 +7,16 @@
  * the seed's provider-check drop). Every secret, name and target carries the S5ASENTINEL marker.
  */
 
-import { fork } from 'child_process';
+import { fork, spawnSync } from 'child_process';
 import { createHash } from 'crypto';
-import { readFileSync } from 'fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
 import { join } from 'path';
 
+import type { PostgresClient } from '../../../../database/src/postgres/client';
+
 import { EncryptionService, getEncryptionService } from '../../../../common/src/services/encryption.service';
-import { exitAfterFlush, main, MAX_CONFIG_DEPTH, type SqlClient } from '../migrate-legacy-discovery-definitions';
+import { exitAfterFlush, main, MAX_CONFIG_DEPTH, openPostgres, type SqlClient } from '../migrate-legacy-discovery-definitions';
 
 const host = fork(join(__dirname, '../../rest/routes/__tests__/fixtures/pglite-host.cjs'), [], { serialization: 'advanced' });
 let nextId = 0;
@@ -35,18 +38,22 @@ const queries: string[] = [];
 const client: SqlClient = { query: async (sql, params) => (queries.push(sql), { rows: await send('query', sql, params) }), close: async () => undefined };
 
 const KEY = 'S5ASENTINEL-TEST-KEY-0123456789abcdef';
-const ENV = { CMDB_MIGRATION_POSTGRES_HOST: 'h', CMDB_MIGRATION_POSTGRES_PORT: '5432', CMDB_MIGRATION_POSTGRES_DB: 'd', CMDB_MIGRATION_POSTGRES_USER: 'u', CMDB_MIGRATION_POSTGRES_PASSWORD: 'S5ASENTINEL-DBPW' };
+const ENV = { CMDB_MIGRATION_POSTGRES_HOST: '127.0.0.1', CMDB_MIGRATION_POSTGRES_PORT: '5432', CMDB_MIGRATION_POSTGRES_DB: 'd', CMDB_MIGRATION_POSTGRES_USER: 'u', CMDB_MIGRATION_POSTGRES_PASSWORD: 'S5ASENTINEL-DBPW' };
 const [ORG, ORG_B, OWNER] = ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222', 's5asentinel-owner'];
 const [U, PW] = ['s5asentinel-user', 'S5ASENTINEL-PW-1'];
 const PEM = '-----BEGIN OPENSSH PRIVATE KEY-----\nS5ASENTINEL-KEY\n-----END OPENSSH PRIVATE KEY-----';
 const H = (n: number) => `s5asentinel-h${n}.example`;
 const uuid = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const PASSWORD = { username: U, password: PW };
-// Stored credentials for the L1d rows: [id, org, owner, protocol, decoded payload].
-const CREDENTIALS: Array<[number, string, string, string, object]> = [
+// Stored credentials for the L1d rows: [id, org, owner, protocol, decoded payload, stored value if not the test-key envelope].
+const CREDENTIALS: Array<[number, string, string, string, object, unknown?]> = [
   [90, ORG, OWNER, 'ssh_password', PASSWORD], [91, ORG, OWNER, 'ssh_password', { ...PASSWORD, password: 'S5ASENTINEL-PW-2' }],
   [92, ORG, OWNER, 'ssh_key', PASSWORD], [93, ORG_B, OWNER, 'ssh_password', PASSWORD], [94, ORG, 's5asentinel-other', 'ssh_password', PASSWORD],
   [96, ORG, OWNER, 'ssh_password', { ...PASSWORD, extra: 'S5ASENTINEL-X' }],
+  // Equal payloads whose decode fails (another key; a garbage envelope) or that is no envelope at all (C2 plaintext).
+  [97, ORG, OWNER, 'ssh_password', PASSWORD, new EncryptionService('S5ASENTINEL-OTHER-KEY-0123456789abcdef').encrypt(JSON.stringify(PASSWORD))],
+  [98, ORG, OWNER, 'ssh_password', PASSWORD, { iv: 'S5A98', encryptedData: 'S5ASENTINEL', authTag: 'S5A98' }],
+  [99, ORG, OWNER, 'ssh_password', PASSWORD, PASSWORD],
 ];
 const ENVELOPE_IDS = new Map<string, number>(); // envelope iv -> credential number, to see which ones were decoded
 const ssh = (targets: string[], credentials: object = PASSWORD) => ({ targets, credentials });
@@ -96,16 +103,23 @@ const FIXTURES: Array<[string, string, string | null, number | null, number | nu
   ['L11 percent-encoded userinfo', 'ssh', ORG, null, null, { targets: [`root:s5asentinel%40pw@${H(1)}`] }, 'L11 LEAVE TARGET_SECRET null'],
   ['L1d port is never stripped', 'ssh', ORG, 90, null, ssh([`${H(1)}:2222`]), 'L1d LEAVE TARGET_GRAMMAR null'],
   ['nested past the depth cap', 'ssh', ORG, null, null, nested(MAX_CONFIG_DEPTH + 8), 'L12 LEAVE MALFORMED null'],
+  ['L1d wrong-key envelope', 'ssh', ORG, 97, null, ssh([H(1)]), 'L1d LEAVE DUAL_CREDENTIAL_MISMATCH'],
+  ['L1d garbage envelope', 'ssh', ORG, 98, null, ssh([H(1)]), 'L1d LEAVE DUAL_CREDENTIAL_MISMATCH'],
+  ['L1d plaintext stored payload', 'ssh', ORG, 99, null, ssh([H(1)]), 'L1d LEAVE DUAL_CREDENTIAL_MISMATCH'],
 ];
 // Stored at +02:00 with microseconds; the plan must carry it as exact UTC.
 const UPDATED_AT = ['2026-10-01 14:34:56.123456+02', '2026-10-01T12:34:56.123456Z'];
 const LITERALS = ['192.168.1.0', '10.0.0.0', 'us-east-1', 'dc=', 'BEGIN OPENSSH', '2001:db8'];
 
-async function run(argv: string[] = [], env: NodeJS.ProcessEnv = { ...ENV, CREDENTIAL_ENCRYPTION_KEY: KEY }, open = jest.fn(() => client), classify?: Parameters<typeof main>[4]) {
-  const out: string[] = [], err: string[] = [];
+const OUT_DIR = mkdtempSync(join(tmpdir(), 's5a-plan-'));
+let outs = 0;
+const outPath = () => join(OUT_DIR, `plan-${outs++}.json`);
+async function run(argv = ['--out', outPath()], env: NodeJS.ProcessEnv = { ...ENV, CREDENTIAL_ENCRYPTION_KEY: KEY }, open = jest.fn((_config: unknown) => client), classify?: Parameters<typeof main>[4]) {
+  const err: string[] = [];
+  const path = argv[argv.indexOf('--out') + 1] ?? '';
   queries.length = 0;
-  const code = await main(argv, env, { stdout: line => out.push(line), stderr: line => err.push(line) }, open, classify);
-  return { code, out: out.join('\n'), err: err.join('\n'), open };
+  const code = await main(argv, env, { stderr: line => err.push(line) }, open, classify);
+  return { code, out: existsSync(path) ? readFileSync(path, 'utf8') : '', err: err.join('\n'), open, path };
 }
 const expectValueFree = (output: string) => {
   expect(output.toLowerCase()).not.toContain('s5asentinel');
@@ -120,9 +134,9 @@ beforeAll(async () => {
   await send('exec', `ALTER TABLE discovery_definitions ADD COLUMN organization_id UUID; ALTER TABLE credentials ADD COLUMN organization_id UUID;
     ALTER TABLE discovery_definitions DROP CONSTRAINT discovery_definitions_provider_check;`);
   const service = getEncryptionService(KEY);
-  for (const [n, org, owner, protocol, payload] of CREDENTIALS) {
-    const envelope = service.encrypt(JSON.stringify(payload));
-    ENVELOPE_IDS.set(envelope.iv, n);
+  for (const [n, org, owner, protocol, payload, raw] of CREDENTIALS) {
+    const envelope = raw ?? service.encrypt(JSON.stringify(payload));
+    ENVELOPE_IDS.set(String((envelope as { iv?: unknown }).iv), n);
     await send('query', `INSERT INTO credentials (id, name, protocol, scope, credentials, created_by, organization_id) VALUES ($1, 's5asentinel-cred', $2, 'ssh', $3, $4, $5)`,
       [uuid(n), protocol, JSON.stringify(envelope), owner, org]);
   }
@@ -131,7 +145,10 @@ beforeAll(async () => {
       [uuid(index + 1), `S5ASENTINEL-NAME ${name}`, provider, credential && uuid(credential), set && uuid(set), OWNER, org, JSON.stringify(config), UPDATED_AT[0]]);
   }
 });
-afterAll(() => host.kill());
+afterAll(() => {
+  host.kill();
+  rmSync(OUT_DIR, { recursive: true });
+});
 
 describe('migrate-legacy-discovery-definitions (dry run, PGlite)', () => {
   it('classifies every row, NULL org included, with the exact §3.2 disposition and reason, and digests the plan', async () => {
@@ -162,7 +179,7 @@ describe('migrate-legacy-discovery-definitions (dry run, PGlite)', () => {
   });
 
   it('without the encryption key an equal L1d payload is unproven: DUAL_CREDENTIAL_MISMATCH', async () => {
-    const { code, out } = await run([], ENV);
+    const { code, out } = await run(undefined, ENV);
     expect(code).toBe(0);
     expect(JSON.parse(out).rows[5]).toMatchObject({ shape: 'L1d', disposition: 'LEAVE', reason: 'DUAL_CREDENTIAL_MISMATCH' });
   });
@@ -185,13 +202,13 @@ describe('migrate-legacy-discovery-definitions (dry run, PGlite)', () => {
     const decrypt = jest.spyOn(EncryptionService.prototype, 'decrypt');
     try {
       expect((await run()).code).toBe(0);
-      expect(decrypt.mock.calls.map(([envelope]) => ENVELOPE_IDS.get(envelope.iv)).sort()).toEqual([90, 91, 96]);
+      expect(decrypt.mock.calls.map(([envelope]) => ENVELOPE_IDS.get(envelope.iv)).sort()).toEqual([90, 91, 96, 97, 98]);
     } finally {
       decrypt.mockRestore();
     }
   });
 
-  it('the CLI exits only after stdout has flushed the plan', () => {
+  it('the CLI exits only after its output stream has flushed', () => {
     const exit = jest.fn();
     let flushed: (() => void) | undefined;
     try {
@@ -207,23 +224,71 @@ describe('migrate-legacy-discovery-definitions (dry run, PGlite)', () => {
   it('the allow-list encoder aborts with exit 2 and prints nothing of an injected field or free-text value', async () => {
     const injections = [{ name: 'S5ASENTINEL-INJECTED' }, { reason: 'S5ASENTINEL free text' }];
     for (const injection of injections) {
-      const { code, out, err } = await run([], undefined, undefined, () => ({ shape: 'L1', disposition: 'LEAVE', reason: 'MALFORMED', new_credential_protocol: null, ...injection }) as never);
+      const { code, out, err } = await run(undefined, undefined, undefined, () => ({ shape: 'L1', disposition: 'LEAVE', reason: 'MALFORMED', new_credential_protocol: null, ...injection }) as never);
       expect([code, out]).toEqual([2, '']);
       expectValueFree(err);
     }
   });
 
-  it('refuses --apply, unknown or valueless flags and missing settings with exit 1 before any connection', async () => {
-    for (const [argv, env] of [[['--apply']], [['--plan', 'p', '--sha256', 'a'.repeat(64)]], [['--bogus']], [['--organization-id']], [[], { ...ENV, CMDB_MIGRATION_POSTGRES_PORT: 'x' }]] as Array<[string[], NodeJS.ProcessEnv?]>) {
-      const { code, out, open } = await run(argv, env);
-      expect([code, out]).toEqual([1, '']);
+  it('refuses --apply, unknown or valueless flags, a missing --out and bad settings with exit 1 before any connection', async () => {
+    const path = outPath();
+    const cases = [[['--apply']], [['--plan', 'p', '--sha256', 'a'.repeat(64)]], [['--bogus']], [['--organization-id']], [[]], [['--out']],
+      [['--out', path, '--apply']], [['--out', path], { ...ENV, CMDB_MIGRATION_POSTGRES_PORT: 'x' }]] as Array<[string[], NodeJS.ProcessEnv?]>;
+    for (const [argv, env] of cases) {
+      const { code, open } = await run(argv, env);
+      expect([code, existsSync(path)]).toEqual([1, false]);
       expect(open).not.toHaveBeenCalled();
     }
   });
 
+  it('refuses cleartext or unverified TLS to any host that is not loopback or a Unix socket, before connecting', async () => {
+    const env = (host: string, ssl?: string) => ({ ...ENV, CMDB_MIGRATION_POSTGRES_HOST: host, ...(ssl === undefined ? {} : { CMDB_MIGRATION_POSTGRES_SSL: ssl }) });
+    const refused: Array<[string, string?]> = [['db.example'], ['192.0.2.10', 'require'], ['127.0.0.1.evil.com'], ['localhost.example'], ['0.0.0.0'], ['::ffff:127.0.0.1', 'require']];
+    for (const [host, ssl] of refused) {
+      const { code, err, open, path } = await run(undefined, env(host, ssl));
+      expect([code, err, existsSync(path)]).toEqual([1, 'migrate-legacy-discovery-definitions: refused: a non-loopback host needs CMDB_MIGRATION_POSTGRES_SSL=verify-full', false]);
+      expect(open).not.toHaveBeenCalled();
+    }
+    const allowed: Array<[string, string?]> = [['db.example', 'verify-full'], ['127.0.0.1'], ['127.8.9.10', 'require'], ['::1'], ['localhost'], ['/var/run/postgresql']];
+    for (const [host, ssl] of allowed) {
+      const { code, open } = await run(undefined, env(host, ssl));
+      expect([code, open.mock.calls[0]?.[0]]).toEqual([0, expect.objectContaining({ _host: host, ssl: ssl ?? false })]);
+    }
+    // verify-full reaches pg as a verifying TLS config (certificate chain and host name); no socket is opened.
+    const pg = openPostgres({ _host: 'db.example', _port: 5432, _database: 'd', _user: 'u', _password: 'p', ssl: 'verify-full' }) as PostgresClient;
+    expect(pg.pool.options.ssl).toEqual({ rejectUnauthorized: true });
+    await pg.close();
+  });
+
+  it('writes the plan only to a new --out file with mode 0600, never to stdout, and refuses an existing path', async () => {
+    const stdout = jest.spyOn(process.stdout, 'write');
+    const { code, out, path } = await run();
+    expect([code, statSync(path).mode & 0o777, JSON.parse(out).rows.length]).toEqual([0, 0o600, FIXTURES.length]);
+    expect(stdout.mock.calls.flat().join('')).not.toContain('plan_sha256');
+    stdout.mockRestore();
+    const existing = outPath();
+    writeFileSync(existing, 'S5A-KEEP');
+    const again = await run(['--out', existing]);
+    expect([again.code, again.err, readFileSync(existing, 'utf8')]).toEqual([1, 'migrate-legacy-discovery-definitions: refused: --out must be a new file', 'S5A-KEEP']);
+    expect(again.open).not.toHaveBeenCalled();
+  });
+
+  it('as a real process: stdout stays empty and stderr carries no secret or error message', () => {
+    const path = outPath();
+    // Loopback port 1: nothing listens, so the run fails after PostgresClient logs (rerouted to stderr).
+    const child = spawnSync(process.execPath, ['-r', join(__dirname, 'fixtures/ts-source-register.cjs'), join(__dirname, '../migrate-legacy-discovery-definitions.ts'), '--out', path], {
+      env: { PATH: process.env['PATH'] ?? '', ...ENV, CMDB_MIGRATION_POSTGRES_PORT: '1', CREDENTIAL_ENCRYPTION_KEY: KEY }, encoding: 'utf8', timeout: 60_000,
+    });
+    expect([child.status, child.stdout, existsSync(path)]).toEqual([1, '', false]);
+    expect(child.stderr).toContain('PostgreSQL client initialized WITHOUT SSL');
+    expect(child.stderr.trimEnd().split('\n').at(-1)).toBe('migrate-legacy-discovery-definitions: failed (Error)');
+    expectValueFree(child.stderr);
+    expect(child.stderr).not.toMatch(/connect ECONNREFUSED|127\.0\.0\.1:1|\n\s+at /); // the error message and stack
+  }, 60_000);
+
   it('a connection failure prints fixed text with the error name and SQLSTATE only', async () => {
     const failing: SqlClient = { query: async () => { throw Object.assign(new Error(`password authentication failed for user u at postgres://u:${ENV.CMDB_MIGRATION_POSTGRES_PASSWORD}@h`), { code: '28P01' }); }, close: async () => undefined };
-    const { code, out, err } = await run([], undefined, jest.fn(() => failing));
-    expect([code, out, err]).toEqual([1, '', 'migrate-legacy-discovery-definitions: failed (Error, 28P01)']);
+    const { code, out, err, path } = await run(undefined, undefined, jest.fn((_config: unknown) => failing));
+    expect([code, out, err, existsSync(path)]).toEqual([1, '', 'migrate-legacy-discovery-definitions: failed (Error, 28P01)', false]);
   });
 });

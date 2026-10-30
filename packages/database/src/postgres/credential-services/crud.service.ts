@@ -14,7 +14,7 @@ import {
   UnifiedCredentialUpdateInput,
   UnifiedCredentialSummary,
 } from '@cmdb/common';
-import { getEncryptionService } from '@cmdb/common';
+import { getEncryptionService, CredentialProtocolAdapter } from '@cmdb/common';
 import { logger } from '@cmdb/common';
 
 export interface CredentialFilters {
@@ -34,6 +34,13 @@ export type DiscoveryCredentialResolution =
   | { ok: true; protocol: DiscoveryCredentialProtocol; credentials: Record<string, unknown> }
   | { ok: false; code: typeof ERR_CREDENTIAL_DECODE };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** HAP-444 K1: every writer (REST, GraphQL, scripts) gets the shared SSH port rule before anything is persisted. */
+function assertSshPort(protocol: unknown, credentials: Record<string, unknown> | undefined): void {
+  const port = credentials?.['port'];
+  if ((DISCOVERY_CREDENTIAL_PROTOCOLS as readonly unknown[]).includes(protocol) && port !== undefined && !CredentialProtocolAdapter.isSshPort(port)) {
+    throw new Error(CredentialProtocolAdapter.INVALID_SSH_PORT);
+  }
+}
 
 export class CredentialCRUDService {
   private encryptionService = getEncryptionService();
@@ -69,6 +76,7 @@ export class CredentialCRUDService {
     createdBy: string,
     organizationId: string
   ): Promise<UnifiedCredential> {
+    assertSshPort(input.protocol, input.credentials);
     const client = await this.pool.connect();
     try {
       const id = uuidv4();
@@ -311,6 +319,7 @@ export class CredentialCRUDService {
     organizationId: string
   ): Promise<UnifiedCredential> {
     const client = await this.pool.connect();
+    let inTransaction = false;
     try {
       const updates: string[] = [];
       const params: any[] = [];
@@ -327,10 +336,19 @@ export class CredentialCRUDService {
       }
 
       if (input.credentials !== undefined) {
+        // The protocol is only known from the row; lock it so the checked protocol is the one updated.
+        await client.query('BEGIN');
+        inTransaction = true;
+        const locked = await client.query(
+          'SELECT protocol FROM credentials WHERE id = $1 AND created_by = $2 AND organization_id = $3 FOR UPDATE',
+          [id, createdBy, organizationId]
+        );
+        // A missing or foreign row matches nothing here and in the UPDATE below, which reports it as not found.
+        assertSshPort(locked.rows[0]?.protocol, input.credentials);
         const encryptedData = this.encryptionService.encrypt(
           JSON.stringify(input.credentials)
         );
-        updates.push(`credentials = $${paramIndex++}`);
+        updates.push(`credentials = $${paramIndex++}`, 'validation_status = NULL', 'last_validated_at = NULL');
         params.push(encryptedData);
       }
 
@@ -361,6 +379,10 @@ export class CredentialCRUDService {
         RETURNING *`,
         params
       );
+      if (inTransaction) {
+        await client.query('COMMIT');
+        inTransaction = false;
+      }
 
       if (result.rows.length === 0) {
         throw new Error(`Credential with id ${id} not found`);
@@ -391,6 +413,9 @@ export class CredentialCRUDService {
         validation_status: row.validation_status,
       };
     } catch (error: any) {
+      if (inTransaction) {
+        await client.query('ROLLBACK').catch(() => undefined);
+      }
       if (error.code === '23505') {
         throw new Error(
           `Credential with name '${input.name}' already exists for this user`

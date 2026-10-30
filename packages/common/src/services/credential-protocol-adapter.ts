@@ -263,6 +263,13 @@ export class CredentialProtocolAdapter {
     } as GCPServiceAccountCredentials;
   }
 
+  static readonly INVALID_SSH_PORT = 'Invalid SSH port';
+
+  /** HAP-444 K1: the one SSH port rule. A JSON integer 1-65535; strings, null and floats are refused. */
+  static isSshPort(value: unknown): value is number {
+    return Number.isInteger(value) && (value as number) >= 1 && (value as number) <= 65535;
+  }
+
   /**
    * Convert UnifiedCredential to SSH connection configuration
    *
@@ -284,9 +291,13 @@ export class CredentialProtocolAdapter {
       throw new Error('SSH credentials must include username');
     }
 
+    if (port !== undefined && !CredentialProtocolAdapter.isSshPort(port)) {
+      throw new Error(CredentialProtocolAdapter.INVALID_SSH_PORT);
+    }
+
     const config: SSHConfig = {
       host,
-      port: port || 22,
+      port: port ?? 22,
       username,
     };
 

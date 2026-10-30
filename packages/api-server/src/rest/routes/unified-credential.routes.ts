@@ -10,6 +10,7 @@
 
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import Joi from 'joi';
+import { CredentialProtocolAdapter } from '@cmdb/common';
 import { UnifiedCredentialController } from '../controllers/unified-credential.controller';
 import { CredentialSetController } from '../controllers/credential-set.controller';
 import { validateRequest, validateOptional } from '../middleware/validation.middleware';
@@ -97,6 +98,11 @@ const credentialAffinitySchema = Joi.object({
   priority: Joi.number().integer().min(1).max(10).optional(),
 });
 
+/** HAP-444 K1: the shared SSH port rule; absent stays allowed (= 22). A bare fixed Error carries no Joi details, so no client value is logged. */
+const sshPortSchema = Joi.any()
+  .custom((value, helpers) => (CredentialProtocolAdapter.isSshPort(value) ? value : helpers.error('any.invalid')))
+  .error(new Error(CredentialProtocolAdapter.INVALID_SSH_PORT));
+
 /**
  * Create Credential schema
  */
@@ -105,7 +111,7 @@ const createCredentialSchema = Joi.object({
   description: Joi.string().optional().max(1000),
   protocol: authProtocolSchema.required(),
   scope: credentialScopeSchema.required(),
-  credentials: Joi.object().required(),
+  credentials: Joi.object().required().when('protocol', { is: Joi.valid('ssh_password', 'ssh_key'), then: Joi.object({ port: sshPortSchema }).unknown(true) }),
   affinity: credentialAffinitySchema.optional(),
   tags: Joi.array().items(Joi.string()).optional(),
 });
@@ -116,7 +122,8 @@ const createCredentialSchema = Joi.object({
 const updateCredentialSchema = Joi.object({
   name: Joi.string().optional().min(1).max(255),
   description: Joi.string().optional().max(1000),
-  credentials: Joi.object().optional(),
+  // The protocol lives on the row, so a present port is checked here and authoritatively in the CRUD service.
+  credentials: Joi.object({ port: sshPortSchema }).unknown(true).optional(),
   affinity: credentialAffinitySchema.optional(),
   tags: Joi.array().items(Joi.string()).optional(),
 });

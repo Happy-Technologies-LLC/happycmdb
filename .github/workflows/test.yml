@@ -60,6 +60,9 @@ jobs:
       - name: Verify web-ui never logs raw client errors or typed secrets (HAP-1210 S2a)
         run: npm run test:run --workspace=@cmdb/web-ui -- --config vitest.connector-wizard.config.ts src/utils/logger.test.ts src/pages/Credentials.secret-logging.test.tsx
 
+      - name: Verify the credential form sends SSH and WinRM ports as JSON numbers (HAP-444 K1)
+        run: npm run test:run --workspace=@cmdb/web-ui -- --config vitest.connector-wizard.config.ts src/components/credentials/CredentialForm.port.test.tsx
+
       - name: Upload unit test coverage
         uses: codecov/codecov-action@v3
         with:

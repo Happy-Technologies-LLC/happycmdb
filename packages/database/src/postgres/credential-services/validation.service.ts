@@ -11,7 +11,7 @@ import {
   UnifiedCredential,
   CredentialValidationResult,
 } from '@cmdb/common';
-import { logger } from '@cmdb/common';
+import { logger, CredentialProtocolAdapter } from '@cmdb/common';
 
 export class CredentialValidationService {
   constructor(private pool: Pool) {}
@@ -67,6 +67,10 @@ export class CredentialValidationService {
     const { protocol, credentials: creds } = credential;
 
     try {
+      // HAP-444 K1: no stored-port migration, so /validate is how an owner finds an out-of-range stored port.
+      if ((protocol === 'ssh_key' || protocol === 'ssh_password') && creds['port'] !== undefined && !CredentialProtocolAdapter.isSshPort(creds['port'])) {
+        return { valid: false, message: CredentialProtocolAdapter.INVALID_SSH_PORT, validated_at: new Date() };
+      }
       switch (protocol) {
         case 'aws_iam':
           if (!creds['access_key_id'] || !creds['secret_access_key']) {

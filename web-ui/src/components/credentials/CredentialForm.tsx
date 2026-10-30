@@ -121,6 +121,13 @@ export const CredentialForm: React.FC<CredentialFormProps> = ({
     });
   };
 
+  // HAP-444 K1: the API takes a port only as a JSON integer; an empty input omits it (the protocol default).
+  const handlePortChange = (value: string) => {
+    const next = { ...credentialsData };
+    if (value === '') delete next.port; else next.port = Number(value);
+    setValue('credentials', next);
+  };
+
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
@@ -326,7 +333,7 @@ export const CredentialForm: React.FC<CredentialFormProps> = ({
                 id="port"
                 type="number"
                 value={credentialsData.port || 22}
-                onChange={(e) => handleCredentialFieldChange('port', e.target.value)}
+                onChange={(e) => handlePortChange(e.target.value)}
                 placeholder="22"
               />
             </div>
@@ -356,7 +363,7 @@ export const CredentialForm: React.FC<CredentialFormProps> = ({
                 id="port"
                 type="number"
                 value={credentialsData.port || 22}
-                onChange={(e) => handleCredentialFieldChange('port', e.target.value)}
+                onChange={(e) => handlePortChange(e.target.value)}
                 placeholder="22"
               />
             </div>
@@ -626,7 +633,7 @@ export const CredentialForm: React.FC<CredentialFormProps> = ({
                 id="port"
                 type="number"
                 value={credentialsData.port || 5985}
-                onChange={(e) => handleCredentialFieldChange('port', e.target.value)}
+                onChange={(e) => handlePortChange(e.target.value)}
                 placeholder="5985"
               />
             </div>

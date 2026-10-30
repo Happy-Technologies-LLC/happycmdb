@@ -101,7 +101,7 @@ export const Credentials: React.FC = () => {
       showToast('Credential created successfully', 'success');
     } catch (error: any) {
       logClientError('Failed to create credential:', error);
-      const errorMessage = error?.response?.data?.message || error?.message || 'Failed to create credential';
+      const errorMessage = error?.response?.data?._message || error?.response?.data?.message || error?.message || 'Failed to create credential';
       showToast(errorMessage, 'error');
     } finally {
       setIsSubmitting(false);
@@ -124,7 +124,7 @@ export const Credentials: React.FC = () => {
       showToast('Credential updated successfully', 'success');
     } catch (error: any) {
       logClientError('Failed to update credential:', error);
-      const errorMessage = error?.response?.data?.message || error?.message || 'Failed to update credential';
+      const errorMessage = error?.response?.data?._message || error?.response?.data?.message || error?.message || 'Failed to update credential';
       showToast(errorMessage, 'error');
     } finally {
       setIsSubmitting(false);

@@ -8,6 +8,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { credentialService, type UnifiedCredentialSummary } from '../services/credential.service';
+import { logClientError } from '../utils/logger';
 
 export interface UseCredentialsReturn {
   credentials: UnifiedCredentialSummary[];
@@ -34,7 +35,7 @@ export const useCredentials = (): UseCredentialsReturn => {
     } catch (err: any) {
       const errorMsg = err.message || 'Failed to load credentials';
       setError(errorMsg);
-      console.error('Failed to load credentials:', err);
+      logClientError('Failed to load credentials:', err);
     } finally {
       setLoading(false);
     }

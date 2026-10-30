@@ -33,6 +33,7 @@ import {
 } from '@/services/credential.service';
 import { useToast } from '@/contexts/ToastContext';
 import { formatProtocol } from '@/lib/credential-display';
+import { logClientError } from '@/utils/logger';
 
 export const Credentials: React.FC = () => {
   const { showToast } = useToast();
@@ -81,7 +82,7 @@ export const Credentials: React.FC = () => {
       setCredentials(filteredData);
       setTotal(filteredData.length);
     } catch (error) {
-      console.error('Failed to load credentials:', error);
+      logClientError('Failed to load credentials:', error);
     } finally {
       setLoading(false);
     }
@@ -99,7 +100,7 @@ export const Credentials: React.FC = () => {
       loadCredentials();
       showToast('Credential created successfully', 'success');
     } catch (error: any) {
-      console.error('Failed to create credential:', error);
+      logClientError('Failed to create credential:', error);
       const errorMessage = error?.response?.data?.message || error?.message || 'Failed to create credential';
       showToast(errorMessage, 'error');
     } finally {
@@ -122,7 +123,7 @@ export const Credentials: React.FC = () => {
       loadCredentials();
       showToast('Credential updated successfully', 'success');
     } catch (error: any) {
-      console.error('Failed to update credential:', error);
+      logClientError('Failed to update credential:', error);
       const errorMessage = error?.response?.data?.message || error?.message || 'Failed to update credential';
       showToast(errorMessage, 'error');
     } finally {
@@ -140,7 +141,7 @@ export const Credentials: React.FC = () => {
       loadCredentials();
       showToast('Credential deleted successfully', 'success');
     } catch (error: any) {
-      console.error('Failed to delete credential:', error);
+      logClientError('Failed to delete credential:', error);
       const errorMessage = error?.response?.data?.message || error?.message || 'Failed to delete credential';
       showToast(errorMessage, 'error');
     } finally {
@@ -154,7 +155,7 @@ export const Credentials: React.FC = () => {
       setSelectedCredential(fullCredential);
       setDetailDialogOpen(true);
     } catch (error: any) {
-      console.error('Failed to load credential details:', error);
+      logClientError('Failed to load credential details:', error);
       const errorMessage = error?.response?.data?.message || error?.message || 'Failed to load credential details';
       showToast(errorMessage, 'error');
     }
@@ -166,7 +167,7 @@ export const Credentials: React.FC = () => {
       setSelectedCredential(fullCredential);
       setEditDialogOpen(true);
     } catch (error: any) {
-      console.error('Failed to load credential for editing:', error);
+      logClientError('Failed to load credential for editing:', error);
       const errorMessage = error?.response?.data?.message || error?.message || 'Failed to load credential';
       showToast(errorMessage, 'error');
     }
@@ -178,7 +179,7 @@ export const Credentials: React.FC = () => {
       setSelectedCredential(fullCredential);
       setDeleteDialogOpen(true);
     } catch (error: any) {
-      console.error('Failed to load credential for deletion:', error);
+      logClientError('Failed to load credential for deletion:', error);
       const errorMessage = error?.response?.data?.message || error?.message || 'Failed to load credential';
       showToast(errorMessage, 'error');
     }
@@ -195,7 +196,7 @@ export const Credentials: React.FC = () => {
         showToast(result.message || 'Credential validation failed', 'error');
       }
     } catch (error: any) {
-      console.error('Failed to test credential:', error);
+      logClientError('Failed to test credential:', error);
       const errorMessage = error?.response?.data?.message || error?.message || 'Failed to test credential';
       showToast(errorMessage, 'error');
     } finally {

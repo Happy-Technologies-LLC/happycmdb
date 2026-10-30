@@ -14,6 +14,7 @@ import {
   PaginatedJobsResponse,
 } from '../services/discovery.service';
 import { useToast } from '../contexts/ToastContext';
+import { logClientError } from '../utils/logger';
 
 const POLL_INTERVAL = 5000; // 5 seconds
 
@@ -109,7 +110,7 @@ export const useDiscoveryJobs = (
       }
     } catch (err: any) {
       // Silent failure for background refresh
-      console.error('Failed to refresh jobs:', err);
+      logClientError('Failed to refresh jobs:', err);
     }
   }, [filters, page]);
 

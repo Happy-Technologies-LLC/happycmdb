@@ -12,6 +12,7 @@ import { apiClient } from '../../services/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { logClientError } from '@/utils/logger';
 
 interface DatabaseStatus {
   name: string;
@@ -41,7 +42,7 @@ export const DatabaseSettings: React.FC = () => {
       const response = await apiClient.get<{ databases: DatabaseStatus[] }>('/settings/database');
       setDatabases(response.data.databases);
     } catch (error: any) {
-      console.error('Failed to fetch database status:', error);
+      logClientError('Failed to fetch database status:', error);
       setDatabases([]);
       setErrorMessage(
         error.response?.data?.message || 'Failed to load database status'

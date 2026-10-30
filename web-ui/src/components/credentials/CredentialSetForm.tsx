@@ -23,6 +23,7 @@ import {
   type CredentialSetStrategy,
   type UnifiedCredentialSummary,
 } from '@/services/credential.service';
+import { logClientError } from '@/utils/logger';
 
 interface CredentialSetFormProps {
   set?: CredentialSetSummary;
@@ -87,7 +88,7 @@ export const CredentialSetForm: React.FC<CredentialSetFormProps> = ({
         setSelectedCredentials(set.credentials);
       }
     } catch (error) {
-      console.error('Failed to load credentials:', error);
+      logClientError('Failed to load credentials:', error);
     } finally {
       setLoading(false);
     }

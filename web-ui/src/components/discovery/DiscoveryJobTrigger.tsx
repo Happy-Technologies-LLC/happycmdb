@@ -11,6 +11,7 @@ import { Button } from '../ui/button';
 import { LiquidGlass } from '../ui/liquid-glass';
 import { Alert, AlertDescription } from '../ui/alert';
 import DiscoveryDefinitionForm from './DiscoveryDefinitionForm';
+import { logClientError } from '../../utils/logger';
 
 export const DiscoveryJobTrigger: React.FC = () => {
   const navigate = useNavigate();
@@ -37,7 +38,7 @@ export const DiscoveryJobTrigger: React.FC = () => {
       // Then run it ad-hoc
       await handleRunAdHoc(data);
     } catch (error) {
-      console.error('Failed to save definition:', error);
+      logClientError('Failed to save definition:', error);
     }
   };
 

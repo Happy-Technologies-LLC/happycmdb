@@ -30,12 +30,14 @@ jest.mock('@cmdb/database', () => ({
 }));
 jest.mock('bcrypt', () => ({}));
 jest.mock('../../../auth/neo4j-auth.repository', () => ({ Neo4jAuthRepository: jest.fn(() => ({ findUserById: async (id: string) => (id === 'a' ? { _id: 'a', _username: 'alice', _role: 'operator', _enabled: true, _organizationId: A } : null) })) }));
+import Joi from 'joi';
 import { loadConfig, logger } from '@cmdb/common';
 import { JWTService } from '../../../auth/jwt.service';
 import { getAuthMiddleware } from '../../../auth/auth-bootstrap';
 import { unifiedCredentialRoutes } from '../unified-credential.routes';
 import { REDACTED_PLACEHOLDER, INVALID_CREDENTIALS_UPDATE } from '../../controllers/unified-credential.controller';
 import { CredentialCRUDService, DISCOVERY_CREDENTIAL_PROTOCOLS } from '../../../../../database/src/postgres/credential-services/crud.service';
+import { validateRequest, validateOptional, validateMultiple } from '../../middleware/validation.middleware';
 
 const [A, MARK] = ['11111111-1111-4111-8111-111111111111', rnd()];
 const stored = { username: 'svc', password: MARK };
@@ -80,4 +82,15 @@ it('(b) a create and an update with a non-object payload log the refusal but nev
   const logged = logs();
   expect([created.status, updated.status, JSON.stringify([created.body, updated.body]).includes(PM)]).toEqual([400, 400, false]);
   expect([logged.includes('Request validation failed'), logged.includes(PM), logged.includes(MARK)]).toEqual([true, false, false]);
+});
+
+it('(c) no validator logs a Joi message, even one that quotes the refused value', async () => {
+  // No credential-route rule quotes its value, so a pattern rule (whose message does) is mounted on each validator.
+  const [PM, schema] = [`x${rnd()}`, Joi.object({ v: Joi.string().pattern(/^\d+$/) })];
+  const probe = express().use(express.json()).post('/r', validateRequest(schema)).post('/o', validateOptional(schema)).post('/m', validateMultiple({ body: schema }));
+  const logs = capture();
+  const statuses: number[] = [];
+  for (const path of ['/r', '/o', '/m']) statuses.push((await request(probe).post(path).send({ v: PM })).status);
+  const logged = logs();
+  expect([statuses, logged.includes('Request validation failed'), logged.includes(PM)]).toEqual([[400, 400, 400], true, false]);
 });

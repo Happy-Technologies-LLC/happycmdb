@@ -44,7 +44,7 @@ interface ProviderCredentials {
 
 interface ConnectionStatus {
   provider: string;
-  status: 'idle' | 'testing' | 'success' | 'error';
+  status: 'idle' | 'success' | 'error';
   message?: string;
 }
 
@@ -61,38 +61,6 @@ export const DiscoverySettings: React.FC = () => {
         [field]: value,
       },
     }));
-  };
-
-  const testConnection = async (provider: string) => {
-    setConnectionStatus((prev) => ({
-      ...prev,
-      [provider]: { provider, status: 'testing' },
-    }));
-
-    try {
-      await apiClient.post(`/discovery/test-connection`, {
-        provider,
-        credentials: credentials[provider as keyof ProviderCredentials],
-      });
-
-      setConnectionStatus((prev) => ({
-        ...prev,
-        [provider]: {
-          provider,
-          status: 'success',
-          message: 'Connection successful',
-        },
-      }));
-    } catch (error: any) {
-      setConnectionStatus((prev) => ({
-        ...prev,
-        [provider]: {
-          provider,
-          status: 'error',
-          message: error.response?.data?.message || 'Connection failed',
-        },
-      }));
-    }
   };
 
   const saveCredentials = async (provider: string) => {
@@ -124,10 +92,6 @@ export const DiscoverySettings: React.FC = () => {
   const renderStatus = (provider: string) => {
     const status = connectionStatus[provider];
     if (!status) return null;
-
-    if (status.status === 'testing') {
-      return <Icon name="spinner-gap" size={20} className="animate-spin text-muted-foreground" />;
-    }
 
     if (status.status === 'success') {
       return <Icon name="check-circle" size={20} className="text-green-600" />;
@@ -197,13 +161,6 @@ export const DiscoverySettings: React.FC = () => {
                   />
                 </div>
                 <div className="flex gap-2">
-                  <Button
-                    variant="outline"
-                    onClick={() => testConnection('aws')}
-                    disabled={connectionStatus.aws?.status === 'testing'}
-                  >
-                    Test Connection
-                  </Button>
                   <Button onClick={() => saveCredentials('aws')}>
                     Save
                   </Button>
@@ -264,13 +221,6 @@ export const DiscoverySettings: React.FC = () => {
                   />
                 </div>
                 <div className="flex gap-2">
-                  <Button
-                    variant="outline"
-                    onClick={() => testConnection('azure')}
-                    disabled={connectionStatus.azure?.status === 'testing'}
-                  >
-                    Test Connection
-                  </Button>
                   <Button onClick={() => saveCredentials('azure')}>
                     Save
                   </Button>
@@ -315,13 +265,6 @@ export const DiscoverySettings: React.FC = () => {
                   />
                 </div>
                 <div className="flex gap-2">
-                  <Button
-                    variant="outline"
-                    onClick={() => testConnection('gcp')}
-                    disabled={connectionStatus.gcp?.status === 'testing'}
-                  >
-                    Test Connection
-                  </Button>
                   <Button onClick={() => saveCredentials('gcp')}>
                     Save
                   </Button>
@@ -366,13 +309,6 @@ export const DiscoverySettings: React.FC = () => {
                   />
                 </div>
                 <div className="flex gap-2">
-                  <Button
-                    variant="outline"
-                    onClick={() => testConnection('ssh')}
-                    disabled={connectionStatus.ssh?.status === 'testing'}
-                  >
-                    Test Connection
-                  </Button>
                   <Button onClick={() => saveCredentials('ssh')}>
                     Save
                   </Button>

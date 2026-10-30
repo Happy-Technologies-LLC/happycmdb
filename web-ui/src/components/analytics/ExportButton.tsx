@@ -16,6 +16,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Icon } from '@happy-technologies/design-system';
 import { analyticsService } from '../../services/analytics.service';
+import { logClientError } from '../../utils/logger';
 
 export interface ExportButtonProps {
   data: any[];
@@ -45,7 +46,7 @@ export const ExportButton: React.FC<ExportButtonProps> = ({
         await analyticsService.exportToJSON(data, fullFilename);
       }
     } catch (error) {
-      console.error('Export failed:', error);
+      logClientError('Export failed:', error);
       alert('Export failed. Please try again.');
     } finally {
       setExporting(false);

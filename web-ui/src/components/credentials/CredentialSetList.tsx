@@ -27,6 +27,7 @@ import {
 } from '@/services/credential.service';
 import { useToast } from '@/contexts/ToastContext';
 import { formatProtocol, formatScope, formatLabel } from '@/lib/credential-display';
+import { logClientError } from '@/utils/logger';
 
 export const CredentialSetList: React.FC = () => {
   const { showToast } = useToast();
@@ -47,7 +48,7 @@ export const CredentialSetList: React.FC = () => {
       const data = await credentialService.getCredentialSets();
       setSets(data);
     } catch (error) {
-      console.error('Failed to load credential sets:', error);
+      logClientError('Failed to load credential sets:', error);
       showToast('Failed to load credential sets', 'error');
     } finally {
       setLoading(false);
@@ -66,7 +67,7 @@ export const CredentialSetList: React.FC = () => {
       loadSets();
       showToast('Credential set created successfully', 'success');
     } catch (error: any) {
-      console.error('Failed to create credential set:', error);
+      logClientError('Failed to create credential set:', error);
       const errorMessage =
         error?.response?.data?.message || error?.message || 'Failed to create credential set';
       showToast(errorMessage, 'error');
@@ -85,7 +86,7 @@ export const CredentialSetList: React.FC = () => {
       loadSets();
       showToast('Credential set updated successfully', 'success');
     } catch (error: any) {
-      console.error('Failed to update credential set:', error);
+      logClientError('Failed to update credential set:', error);
       const errorMessage =
         error?.response?.data?.message || error?.message || 'Failed to update credential set';
       showToast(errorMessage, 'error');
@@ -104,7 +105,7 @@ export const CredentialSetList: React.FC = () => {
       loadSets();
       showToast('Credential set deleted successfully', 'success');
     } catch (error: any) {
-      console.error('Failed to delete credential set:', error);
+      logClientError('Failed to delete credential set:', error);
       const errorMessage =
         error?.response?.data?.message || error?.message || 'Failed to delete credential set';
       showToast(errorMessage, 'error');

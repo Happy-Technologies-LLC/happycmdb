@@ -57,6 +57,9 @@ jobs:
       - name: Verify discovery settings never send typed secrets to test-connection (HAP-1210 S1)
         run: npm run test:run --workspace=@cmdb/web-ui -- --config vitest.connector-wizard.config.ts src/components/settings/DiscoverySettings.secret-send.test.tsx
 
+      - name: Verify web-ui never logs raw client errors or typed secrets (HAP-1210 S2a)
+        run: npm run test:run --workspace=@cmdb/web-ui -- --config vitest.connector-wizard.config.ts src/utils/logger.test.ts src/pages/Credentials.secret-logging.test.tsx
+
       - name: Upload unit test coverage
         uses: codecov/codecov-action@v3
         with:

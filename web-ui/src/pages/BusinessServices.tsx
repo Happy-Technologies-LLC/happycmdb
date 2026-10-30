@@ -27,6 +27,7 @@ import {
 } from '../components/ui/select';
 import { apiClient } from '../lib/api-client';
 import { useToast } from '../contexts/ToastContext';
+import { logClientError } from '../utils/logger';
 
 /** Canonical business criticality accepted by /api/v1/business-services. */
 type Criticality = 'critical' | 'high' | 'medium' | 'low';
@@ -181,7 +182,7 @@ export const BusinessServices: React.FC = () => {
       const uiServices = response.data.map(mapAPIToUI);
       setServices(uiServices);
     } catch (error: any) {
-      console.error('Failed to load business services:', error);
+      logClientError('Failed to load business services:', error);
       showToast('Failed to load business services', 'error');
     } finally {
       setLoading(false);
@@ -240,7 +241,7 @@ export const BusinessServices: React.FC = () => {
       });
       setIsCreateDialogOpen(false);
     } catch (error: any) {
-      console.error('Failed to save business service:', error);
+      logClientError('Failed to save business service:', error);
       const message = error.response?.data?.error || 'Failed to save business service';
       showToast(message, 'error');
     } finally {
@@ -271,7 +272,7 @@ export const BusinessServices: React.FC = () => {
       setServices(services.filter(s => s.id !== id));
       showToast('Business service deleted successfully', 'success');
     } catch (error: any) {
-      console.error('Failed to delete business service:', error);
+      logClientError('Failed to delete business service:', error);
       const message = error.response?.data?.error || 'Failed to delete business service';
       showToast(message, 'error');
     }

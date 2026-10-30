@@ -30,6 +30,7 @@ import {
 } from '@/components/ui/dialog';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
+import { logClientError } from '@/utils/logger';
 
 interface ApiKey {
   _id: string;
@@ -75,7 +76,7 @@ export const ApiKeysManager: React.FC = () => {
       const response = await apiClient.get<ApiKeysResponse>('/auth/api-keys');
       setApiKeys(response.data.data);
     } catch (error) {
-      console.error('Failed to fetch API keys:', error);
+      logClientError('Failed to fetch API keys:', error);
     }
   };
 
@@ -89,7 +90,7 @@ export const ApiKeysManager: React.FC = () => {
       await fetchApiKeys();
       setNewKeyData({ name: '' });
     } catch (error: unknown) {
-      console.error('Failed to generate API key:', error);
+      logClientError('Failed to generate API key:', error);
     }
   };
 
@@ -102,7 +103,7 @@ export const ApiKeysManager: React.FC = () => {
       setRevokeDialogOpen(false);
       setSelectedKeyId(null);
     } catch (error) {
-      console.error('Failed to revoke API key:', error);
+      logClientError('Failed to revoke API key:', error);
     }
   };
 

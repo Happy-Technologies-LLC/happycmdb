@@ -6,6 +6,7 @@ import { useNavigate } from 'react-router-dom';
 import { api } from '@services/api';
 import { isTokenExpired } from '../utils/token';
 import type { User, AuthState, LoginCredentials } from '../types';
+import { logClientError } from '../utils/logger';
 
 interface AuthContextType extends AuthState {
   login: (credentials: LoginCredentials) => Promise<void>;
@@ -72,7 +73,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
           });
           localStorage.setItem('user', JSON.stringify(currentUser));
         } catch (error) {
-          console.error('Failed to refresh user:', error);
+          logClientError('Failed to refresh user:', error);
           // Token is invalid, clear auth state
           localStorage.removeItem('auth_token');
           localStorage.removeItem('user');
@@ -135,7 +136,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     try {
       await api.logout();
     } catch (error) {
-      console.error('Logout error:', error);
+      logClientError('Logout error:', error);
     } finally {
       localStorage.removeItem('auth_token');
       localStorage.removeItem('user');
@@ -155,7 +156,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       setState((prev) => ({ ...prev, user }));
       localStorage.setItem('user', JSON.stringify(user));
     } catch (error) {
-      console.error('Failed to refresh user:', error);
+      logClientError('Failed to refresh user:', error);
       throw error;
     }
   }, []);

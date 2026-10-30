@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import React, { useState, useEffect } from 'react';
-import axios from 'axios';
+import { apiClient } from '@/lib/api-client';
 import { LiquidGlass } from '@/components/ui/liquid-glass';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -37,8 +37,6 @@ interface DiscoveryAgent {
   registered_at: string;
 }
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api/v1';
-
 export const AgentList: React.FC = () => {
   const [agents, setAgents] = useState<DiscoveryAgent[]>([]);
   const [loading, setLoading] = useState(true);
@@ -47,8 +45,8 @@ export const AgentList: React.FC = () => {
   const fetchAgents = async () => {
     try {
       setLoading(true);
-      const response = await axios.get(`${API_BASE_URL}/agents`);
-      setAgents(response.data.data || []);
+      const response = await apiClient.get<{ data?: DiscoveryAgent[] }>('/agents');
+      setAgents(response.data || []);
       setError(null);
     } catch (err: any) {
       setError(err.message || 'Failed to fetch agents');
@@ -66,12 +64,13 @@ export const AgentList: React.FC = () => {
   }, []);
 
   const handleDelete = async (agentId: string) => {
+    if (agentId === '.' || agentId === '..') return; // a whole dot segment would resolve outside /agents/ even when encoded
     if (!confirm(`Are you sure you want to delete agent ${agentId}?`)) {
       return;
     }
 
     try {
-      await axios.delete(`${API_BASE_URL}/agents/${agentId}`);
+      await apiClient.delete(`/agents/${encodeURIComponent(agentId)}`);
       await fetchAgents();
     } catch (err: any) {
       alert(`Failed to delete agent: ${err.message}`);

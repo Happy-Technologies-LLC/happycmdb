@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import React, { useState, useEffect } from 'react';
-import axios from 'axios';
+import { apiClient } from '@/lib/api-client';
 import {
   Select,
   SelectContent,
@@ -34,8 +34,6 @@ interface AgentSelectorProps {
   targetNetworks?: string[];
 }
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api/v1';
-
 export const AgentSelector: React.FC<AgentSelectorProps> = ({
   method,
   provider,
@@ -62,13 +60,13 @@ export const AgentSelector: React.FC<AgentSelectorProps> = ({
   const fetchAgents = async () => {
     try {
       setLoading(true);
-      const response = await axios.get(`${API_BASE_URL}/agents`, {
+      const response = await apiClient.get<{ data?: Agent[] }>('/agents', {
         params: {
           status: 'active',
           provider,
         },
       });
-      setAgents(response.data.data || []);
+      setAgents(response.data || []);
     } catch (err) {
       logClientError('Error fetching agents:', err);
     } finally {
@@ -80,12 +78,12 @@ export const AgentSelector: React.FC<AgentSelectorProps> = ({
     if (targetNetworks.length === 0 || !provider) return;
 
     try {
-      const response = await axios.post(`${API_BASE_URL}/agents/find-best`, {
+      const response = await apiClient.post<{ success: boolean; data: { agent_id?: string } }>('/agents/find-best', {
         targetNetworks,
         provider,
       });
-      if (response.data.success && response.data.data.agent_id) {
-        setRecommendedAgent(response.data.data.agent_id);
+      if (response.success && response.data.agent_id) {
+        setRecommendedAgent(response.data.agent_id);
       }
     } catch (err) {
       logClientError('Error finding best agent:', err);

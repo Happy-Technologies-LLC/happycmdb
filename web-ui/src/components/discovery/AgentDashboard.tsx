@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import axios from 'axios';
+import { apiClient } from '@/lib/api-client';
 import { AgentList } from './AgentList';
 import { AgentStatusCard } from './AgentStatusCard';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -19,8 +19,6 @@ interface AgentStats {
   failedJobs: number;
   totalCIsDiscovered: number;
 }
-
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api/v1';
 
 export const AgentDashboard: React.FC = () => {
   const [stats, setStats] = useState<AgentStats>({
@@ -42,8 +40,8 @@ export const AgentDashboard: React.FC = () => {
 
   const fetchStats = async () => {
     try {
-      const response = await axios.get(`${API_BASE_URL}/agents`);
-      const agents = response.data.data || [];
+      const response = await apiClient.get<{ data?: unknown[] }>('/agents');
+      const agents = response.data || [];
 
       const calculated = agents.reduce(
         (acc: AgentStats, agent: any) => ({

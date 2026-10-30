@@ -69,6 +69,9 @@ jobs:
       - name: Verify no web-ui source logs a raw error or object, and the WebSocket hook still connects (HAP-1210 S2b)
         run: npm run test:run --workspace=@cmdb/web-ui -- --config vitest.connector-wizard.config.ts src/utils/logger.test.ts src/hooks/useWebSocket.test.tsx
 
+      - name: Verify the Agent views send the Bearer header via the shared apiClient (HAP-1234)
+        run: npm run test:run --workspace=@cmdb/web-ui -- --config vitest.connector-wizard.config.ts src/components/discovery/AgentViews.auth-header.test.tsx src/lib/no-own-api-client.test.ts
+
       - name: Upload unit test coverage
         uses: codecov/codecov-action@v3
         with:

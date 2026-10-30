@@ -122,8 +122,8 @@ const createCredentialSchema = Joi.object({
 const updateCredentialSchema = Joi.object({
   name: Joi.string().optional().min(1).max(255),
   description: Joi.string().optional().max(1000),
-  // The protocol lives on the row, so a present port is checked here and authoritatively in the CRUD service.
-  credentials: Joi.object({ port: sshPortSchema }).unknown(true).optional(),
+  // The body carries no protocol, so the SSH port rule is applied in the CRUD service against the locked stored protocol.
+  credentials: Joi.object().optional(),
   affinity: credentialAffinitySchema.optional(),
   tags: Joi.array().items(Joi.string()).optional(),
 });

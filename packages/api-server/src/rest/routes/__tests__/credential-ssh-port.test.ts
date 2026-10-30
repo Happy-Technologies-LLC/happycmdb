@@ -34,7 +34,7 @@ import { loadConfig, CredentialProtocolAdapter, getEncryptionService, logger, ty
 import { JWTService } from '../../../auth/jwt.service';
 import { getAuthMiddleware } from '../../../auth/auth-bootstrap';
 import { unifiedCredentialRoutes } from '../unified-credential.routes';
-import { CredentialCRUDService } from '../../../../../database/src/postgres/credential-services/crud.service';
+import { CredentialCRUDService, DISCOVERY_CREDENTIAL_PROTOCOLS } from '../../../../../database/src/postgres/credential-services/crud.service';
 
 const [A, FIXED, MARK] = ['11111111-1111-4111-8111-111111111111', 'Invalid SSH port', rnd()];
 const ssh = (port?: unknown) => ({ username: 'svc', password: MARK, ...(port === undefined ? {} : { port }) });
@@ -42,7 +42,12 @@ const app = express().use(express.json()).use('/api/v1', getAuthMiddleware().aut
 const auth = { Authorization: `Bearer ${new JWTService(loadConfig().auth.jwt).generateAccessToken('a', 'alice', 'operator', A)}` };
 const crud = new CredentialCRUDService(pool as unknown as Pool);
 const row = async (id: string) => (await sql('SELECT credentials::text AS c, validation_status, last_validated_at FROM credentials WHERE id = $1', [id]))[0];
-const post = (credentials: object, name = rnd()) => request(app).post('/api/v1/credentials').set(auth).send({ name, protocol: 'ssh_password', scope: 'ssh', credentials });
+const post = (credentials: object, protocol: string = DISCOVERY_CREDENTIAL_PROTOCOLS[0]) => request(app).post('/api/v1/credentials').set(auth).send({ name: rnd(), protocol, scope: 'ssh', credentials });
+const capture = () => {
+  jest.replaceProperty(logger, 'level', 'silly');
+  const sinks = [...(['error', 'warn', 'info', 'debug'] as const).flatMap((l) => [jest.spyOn(logger, l), jest.spyOn(console, l)]), ...logger.transports.map((t) => jest.spyOn(t as unknown as { log: () => void }, 'log')), jest.spyOn(process.stdout, 'write'), jest.spyOn(process.stderr, 'write')];
+  return () => { const logged = inspect(sinks.map((s) => s.mock.calls), { depth: null, maxArrayLength: null, maxStringLength: null }); jest.restoreAllMocks(); return logged; };
+};
 
 beforeAll(async () => {
   const baseline = readFileSync(join(__dirname, '../../../../../database/src/postgres/migrations/001_complete_schema.sql'), 'utf8');
@@ -53,14 +58,12 @@ afterAll(() => host.kill());
 
 it('(a) POST refuses a non-integer or out-of-range SSH port with a fixed 400, inserts nothing and logs no refused value', async () => {
   const PM = rnd();
-  jest.replaceProperty(logger, 'level', 'silly');
-  const sinks = [...(['error', 'warn', 'info', 'debug'] as const).flatMap((l) => [jest.spyOn(logger, l), jest.spyOn(console, l)]), ...logger.transports.map((t) => jest.spyOn(t as unknown as { log: () => void }, 'log')), jest.spyOn(process.stdout, 'write'), jest.spyOn(process.stderr, 'write')];
+  const logs = capture();
   for (const port of [70000, 0, '22', 22.5, null, PM]) {
     const res = await post(ssh(port));
     expect([res.status, JSON.stringify(res.body).includes(FIXED), JSON.stringify(res.body).includes(MARK)]).toEqual([400, true, false]);
   }
-  const logged = inspect(sinks.map((s) => s.mock.calls), { depth: null, maxArrayLength: null, maxStringLength: null });
-  jest.restoreAllMocks();
+  const logged = logs();
   expect([await sql('SELECT id FROM credentials'), logged.includes('Request validation failed'), logged.includes(PM), logged.includes(MARK)]).toEqual([[], true, false, false]);
   expect((await post(ssh(65535))).status).toBe(201);
 });
@@ -94,4 +97,24 @@ it('(e) an update with a new payload resets validation_status; the update route 
   expect([(await put(ssh('22'))).status, (await put(ssh(2222))).status]).toEqual([400, 200]);
   expect(await row(id)).toMatchObject({ validation_status: null, last_validated_at: null });
   expect((await crud.getById(id, 'a', A))?.credentials).toEqual(ssh(2222));
+});
+
+it('(f) a WinRM update keeps its port as given, as before #156: no SSH port rule applies to a non-SSH protocol', async () => {
+  const winrm = CredentialProtocolAdapter.getSupportedProtocols().find((p) => /^winrm$/.test(p))!;
+  const id = (await post(ssh(5985), winrm)).body.data.id;
+  for (const port of [5985, String(5985)]) {
+    const res = await request(app).put(`/api/v1/credentials/${id}`).set(auth).send({ credentials: ssh(port) });
+    expect([res.status, (await crud.getById(id, 'a', A))?.credentials]).toEqual([200, ssh(port)]);
+  }
+});
+
+it('(g) an SSH update with a string or out-of-range port gets the fixed 400, leaves the row unchanged and logs no value', async () => {
+  const [PM, id] = [rnd(), (await post(ssh(22), DISCOVERY_CREDENTIAL_PROTOCOLS[1])).body.data.id];
+  const [before, logs] = [await row(id), capture()];
+  for (const port of [String(22), 70000, PM]) {
+    const res = await request(app).put(`/api/v1/credentials/${id}`).set(auth).send({ name: rnd(), credentials: ssh(port) });
+    expect([res.status, res.body._message, JSON.stringify(res.body).includes(MARK)]).toEqual([400, FIXED, false]);
+  }
+  const logged = logs();
+  expect([await row(id), logged.includes(PM), logged.includes(MARK)]).toEqual([before, false, false]);
 });

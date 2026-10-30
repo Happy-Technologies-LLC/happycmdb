@@ -34,3 +34,14 @@ it('a refused create shows the fixed server _message in the toast (HAP-444 K1)',
   save();
   await waitFor(() => expect(showToast).toHaveBeenCalledWith('Invalid SSH port', 'error'));
 });
+it('a refused update shows the fixed server _message in the edit-dialog toast (HAP-444 K1)', async () => {
+  cleanup(); showToast.mockClear();
+  const cred = { id: 'c1', name: 'n', protocol: Object.keys(PROTOCOL_DISPLAY_NAMES).find((p) => /^ssh_/.test(p)), scope: 'universal', credentials: { username: 'svc' }, tags: [], created_at: new Date().toISOString() };
+  request.get.mockImplementation(async (url: string) => ({ data: { success: true, data: url.endsWith(cred.id) ? cred : [cred] } }));
+  request.put.mockRejectedValue(Object.assign(new Error('Request failed with status code 400'), { response: { status: 400, data: { _message: 'Invalid SSH port' } } }));
+  render(<Credentials />);
+  fireEvent.click(await screen.findByTitle('Edit'));
+  await screen.findByRole('button', { name: /save credential/i });
+  save();
+  await waitFor(() => expect(showToast).toHaveBeenCalledWith('Invalid SSH port', 'error'));
+});

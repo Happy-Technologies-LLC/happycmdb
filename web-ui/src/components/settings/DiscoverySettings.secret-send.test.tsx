@@ -9,6 +9,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 
 // Built at runtime from neutral parts so no fixture looks like a real value.
 const MARK = ['hap', String(1210), 'mark'].join('-');
+const MARKS = ['aws', 'azure', 'gcp', 'ssh'].map((provider) => `${MARK}-${provider}`);
 
 const { request } = vi.hoisted(() => ({ request: { get: vi.fn(), post: vi.fn(), put: vi.fn(), delete: vi.fn() } }));
 vi.mock('axios', () => ({ default: { create: () => ({
@@ -33,7 +34,7 @@ afterEach(() => {
   cleanup();
   // No console level ever sees the marker, in any argument, at any depth.
   const calls = spies.splice(0).map((spy) => {
-    const seen = inspect(spy.mock.calls, { depth: null });
+    const seen = inspect(spy.mock.calls, { depth: null, maxArrayLength: null, maxStringLength: null });
     spy.mockRestore();
     return seen;
   });
@@ -46,12 +47,10 @@ function renderFilled(): void {
   for (const name of SECTIONS) {
     fireEvent.click(screen.getByRole('button', { name }));
   }
-  for (const label of FIELDS) {
-    fireEvent.change(screen.getByLabelText(label), { target: { value: MARK } });
+  for (const [i, label] of FIELDS.entries()) {
+    fireEvent.change(screen.getByLabelText(label), { target: { value: MARKS[i] } });
   }
 }
-
-const postedPaths = (): string[] => (request.post.mock.calls as [string][]).map(([path]) => path);
 
 describe('DiscoverySettings secret send (HAP-1210 S1)', () => {
   it('(a) offers no connection test once every provider secret is typed', () => {
@@ -68,13 +67,14 @@ describe('DiscoverySettings secret send (HAP-1210 S1)', () => {
       fireEvent.click(button);
     }
     await waitFor(() => expect(request.put).toHaveBeenCalledTimes(4));
-    expect(postedPaths().filter((path) => /test-connection/.test(path))).toEqual([]);
+    const others = { get: request.get.mock.calls, post: request.post.mock.calls, delete: request.delete.mock.calls };
+    expect(others).toEqual({ get: [], post: [], delete: [] });
     expect(actions.map((button) => button.textContent?.trim())).toEqual(['Save', 'Save', 'Save', 'Save']);
     const puts = request.put.mock.calls as [string, unknown][];
     expect(puts.map(([path]) => path)).toEqual(
       ['aws', 'azure', 'gcp', 'ssh'].map((provider) => `/settings/discovery/${provider}`));
-    for (const [, body] of puts) {
-      expect(JSON.stringify(body)).toContain(MARK);
+    for (const [i, [, body]] of puts.entries()) {
+      expect(MARKS.filter((mark) => JSON.stringify(body).includes(mark))).toEqual([MARKS[i]]);
     }
     expect(await screen.findAllByText('Credentials saved successfully')).toHaveLength(4);
   });

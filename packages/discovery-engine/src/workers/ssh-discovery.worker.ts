@@ -6,6 +6,9 @@
 import { NodeSSH, SSHExecCommandResponse } from 'node-ssh';
 import { logger, withRetry, resolveDiscoveryHost, connectDiscoveryHost } from '@cmdb/common';
 import { DiscoveredCI, DiscoveryConfig, Relationship, SSHConfig } from '@cmdb/common';
+import {
+  ERR_HOSTKEY_MISMATCH, ERR_HOSTKEY_UNPINNED, HostKeyOutcome, HostKeyPin, hostKeyAlgorithms, isHostKeyPin, pinnedVerifier,
+} from './ssh-host-key';
 
 /**
  * SSH Discovery Worker
@@ -27,12 +30,18 @@ export class SSHDiscoveryWorker {
    * `target` comes from the definition, `auth` is the in-memory SSHConfig from
    * CredentialProtocolAdapter.toSSHConfig. Nothing is read from the worker filesystem,
    * and no log line carries the target, a credential field or a library error message.
+   * `hostKey` is the required pin (HAP-444 K2): without one nothing connects, and a host
+   * presenting any other key is refused during key exchange, before authentication, without retry.
    */
   async discoverHost(
     runId: string,
     target: { host: string; port: number },
-    auth: SSHConfig
+    auth: SSHConfig,
+    hostKey: HostKeyPin
   ): Promise<DiscoveredCI> {
+    if (!isHostKeyPin(hostKey)) {
+      throw new Error(ERR_HOSTKEY_UNPINNED);
+    }
     const { host, port } = target;
     if (!auth.privateKey && !auth.password) {
       throw new Error('SSH credential incomplete');
@@ -41,10 +50,11 @@ export class SSHDiscoveryWorker {
       ? { privateKey: auth.privateKey, ...(auth.passphrase ? { passphrase: auth.passphrase } : {}) }
       : { password: auth.password };
 
-    return withRetry(
+    const discovered = await withRetry<DiscoveredCI | null>(
       async () => {
         const destination = await connectDiscoveryHost(host, await resolveDiscoveryHost(host));
         const ssh = new NodeSSH();
+        const outcome: HostKeyOutcome = {};
 
         try {
           await ssh.connect({
@@ -52,6 +62,8 @@ export class SSHDiscoveryWorker {
             port,
             username: auth.username,
             ...secret,
+            hostVerifier: pinnedVerifier(hostKey, outcome),
+            algorithms: { serverHostKey: hostKeyAlgorithms(hostKey) },
             readyTimeout: 10000,
             keepaliveInterval: 5000,
           });
@@ -138,6 +150,8 @@ export class SSHDiscoveryWorker {
           const blockDevices = this.parseBlockDevices(this.getCommandOutput(blockDevicesResult));
 
           ssh.dispose();
+          // ssh2 re-verifies on every re-key: a key change mid-session discards the partial results.
+          if (outcome.code) throw new Error(ERR_HOSTKEY_MISMATCH);
 
           // Determine OS family
           const osFamily = this.determineOSFamily(osRelease);
@@ -208,6 +222,11 @@ export class SSHDiscoveryWorker {
             },
           };
         } catch (error) {
+          if (outcome.code) {
+            // Resolving (not throwing) ends withRetry: a host-key refusal is never retried.
+            logger.error('SSH host key refused', { runId, code: outcome.code });
+            return null;
+          }
           logger.error('SSH discovery failed', {
             runId,
             errorClass: error instanceof Error ? error.constructor.name : typeof error,
@@ -223,6 +242,10 @@ export class SSHDiscoveryWorker {
         operationName: 'discoverHost',
       }
     );
+    if (discovered === null) {
+      throw new Error(ERR_HOSTKEY_MISMATCH);
+    }
+    return discovered;
   }
 
   private getCommandOutput(result: PromiseSettledResult<SSHExecCommandResponse>): string {

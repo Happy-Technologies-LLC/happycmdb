@@ -8,6 +8,7 @@ import * as nmap from 'node-nmap';
 import { NodeSSH } from 'node-ssh';
 import { NmapDiscoveryWorker } from '../nmap-discovery.worker';
 import { SSHDiscoveryWorker } from '../ssh-discovery.worker';
+import { HostKeyType, hostKeyFingerprint } from '../ssh-host-key';
 import { DISCOVERY_TARGET_REFUSED, logger } from '@cmdb/common';
 
 jest.mock('dns/promises', () => ({ lookup: jest.fn() }));
@@ -16,6 +17,7 @@ jest.mock('node-ssh', () => ({ NodeSSH: jest.fn() }));
 const mockedLookup = jest.mocked(lookup);
 // The synthetic password is assembled at runtime so no source line reads as a secret assignment to scanners.
 const SSH_AUTH = { host: 'public.example', port: 22, username: 'user', password: ['un', 'used'].join('') };
+const PIN = { keyType: HostKeyType.Ed25519, fingerprint: hostKeyFingerprint(Buffer.from('k2-synthetic-blob')) };
 
 beforeEach(() => { mockedLookup.mockReset(); jest.mocked(nmap.QuickScan).mockClear(); jest.mocked(NodeSSH).mockClear(); });
 
@@ -98,7 +100,7 @@ it('nmap hostname DNS rebind and SSH rebind never construct scan or socket clien
   await expect(new NmapDiscoveryWorker().scanHost('job', 'public.example')).rejects.toThrow(DISCOVERY_TARGET_REFUSED);
   mockedLookup.mockResolvedValueOnce([{ address: '8.8.8.8', family: 4 }] as never)
     .mockResolvedValueOnce([{ address: '169.254.169.254', family: 4 }] as never);
-  await expect(new SSHDiscoveryWorker().discoverHost('job', { host: 'public.example', port: 22 }, SSH_AUTH))
+  await expect(new SSHDiscoveryWorker().discoverHost('job', { host: 'public.example', port: 22 }, SSH_AUTH, PIN))
     .rejects.toThrow(DISCOVERY_TARGET_REFUSED);
   expect(nmap.NmapScan).not.toHaveBeenCalled();
   expect(NodeSSH).not.toHaveBeenCalled();
@@ -115,7 +117,7 @@ it('never retries nmap or SSH after a refused DNS rebind, even if DNS becomes pu
   expect(nmap.QuickScan).not.toHaveBeenCalled();
   mockedLookup.mockReset().mockResolvedValueOnce(publicAnswer).mockResolvedValueOnce(privateAnswer)
     .mockResolvedValue(publicAnswer);
-  await expect(new SSHDiscoveryWorker().discoverHost('job', { host: 'public.example', port: 22 }, SSH_AUTH))
+  await expect(new SSHDiscoveryWorker().discoverHost('job', { host: 'public.example', port: 22 }, SSH_AUTH, PIN))
     .rejects.toThrow(DISCOVERY_TARGET_REFUSED);
   expect(mockedLookup).toHaveBeenCalledTimes(2);
   expect(NodeSSH).not.toHaveBeenCalled();
@@ -224,7 +226,7 @@ it.each([
   jest.mocked(NodeSSH).mockImplementation(() => ({ connect, dispose }) as never);
   try {
     const settled = new SSHDiscoveryWorker()
-      .discoverHost('job', { host: '8.8.8.8', port: 22 }, auth)
+      .discoverHost('job', { host: '8.8.8.8', port: 22 }, auth, PIN)
       .catch((error: unknown) => error);
     await jest.runAllTimersAsync();
 

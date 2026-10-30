@@ -8,10 +8,12 @@ const keysDeep = (value: unknown): string[] => (value && typeof value === 'objec
   ? Object.entries(value).flatMap(([key, child]) => [key, ...keysDeep(child)]) : []);
 const mockAdded: Array<[string, Record<string, unknown>, unknown]> = [];
 let mockConfig: unknown;
+let mockBound: Record<string, string> = {};
+const mockSql: string[] = [];
 jest.mock('@cmdb/database', () => ({
   getPostgresClient: () => ({ getClient: async () => ({
-    query: async (sql: string) => ({ rows: sql.includes('FROM discovery_definitions') ? [{
-      id: 'd1', name: 'n', provider: 'nmap', method: 'agentless', credential_id: null, credential_set_id: null,
+    query: async (sql: string) => (mockSql.push(sql), { rows: sql.includes('FROM discovery_definitions') ? [{
+      id: 'd1', name: 'n', provider: 'nmap', method: 'agentless', credential_id: null, credential_set_id: null, ...mockBound,
       config: mockConfig, schedule: null, is_active: true, tags: [], created_by: 'u',
       created_at: new Date(0), updated_at: new Date(0),
     }] : [] }),
@@ -26,9 +28,10 @@ jest.mock('@cmdb/common', () => ({
   logger: { info: () => undefined, warn: () => undefined, error: () => undefined, debug: () => undefined },
 }));
 
+import { randomUUID } from 'crypto';
 import { DiscoveryDefinitionService } from '../discovery-definition.service';
 
-beforeEach(() => { mockAdded.length = 0; });
+beforeEach(() => { mockAdded.length = 0; mockSql.length = 0; mockBound = {}; });
 afterEach(() => { expect(JSON.stringify(mockAdded)).not.toContain(SENTINEL); });
 
 it('runDefinition queues only targets and scan modes for a valid definition', async () => {
@@ -51,4 +54,19 @@ it.each([
   await expect(new DiscoveryDefinitionService().runDefinition('d1', 'u', 'org'))
     .rejects.toThrow(/Unsafe legacy discovery configuration/);
   expect(mockAdded).toEqual([]);
+});
+
+it.each([
+  ['credential_id', ['credential_id']],
+  ['credential_set_id', ['credential_set_id']],
+  ['credential_id and credential_set_id', ['credential_id', 'credential_set_id']],
+])('runDefinition refuses a %s-bound definition before enqueue or last-run update', async (_shape, columns) => {
+  const ref = randomUUID();
+  mockConfig = { targets: ['192.0.2.10'], scanOptions: { serviceDetection: true } };
+  mockBound = Object.fromEntries(columns.map((column) => [column, ref]));
+  const error = await new DiscoveryDefinitionService().runDefinition('d1', 'u', 'org').catch((caught: Error) => caught);
+  expect(error).toEqual(new Error('Credential-backed discovery execution is unavailable'));
+  expect(`${(error as Error).message}\n${(error as Error).stack}`).not.toContain(ref);
+  expect(mockAdded).toEqual([]);
+  expect(mockSql.filter((sql) => /^\s*UPDATE\b/i.test(sql))).toEqual([]);
 });

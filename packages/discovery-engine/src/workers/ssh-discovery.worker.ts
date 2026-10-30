@@ -4,8 +4,8 @@
 // packages/discovery-engine/src/workers/ssh-discovery.worker.ts
 
 import { NodeSSH, SSHExecCommandResponse } from 'node-ssh';
-import { logger, withRetry, resolveDiscoveryHost, connectDiscoveryHost, DISCOVERY_TARGET_REFUSED } from '@cmdb/common';
-import { DiscoveredCI, DiscoveryConfig, Relationship } from '@cmdb/common';
+import { logger, withRetry, resolveDiscoveryHost, connectDiscoveryHost } from '@cmdb/common';
+import { DiscoveredCI, DiscoveryConfig, Relationship, SSHConfig } from '@cmdb/common';
 
 /**
  * SSH Discovery Worker
@@ -23,40 +23,40 @@ import { DiscoveredCI, DiscoveryConfig, Relationship } from '@cmdb/common';
  */
 export class SSHDiscoveryWorker {
   /**
-   * Discover a single host via SSH
+   * Discover a single host via SSH. The single adapter entry point (HAP-774 C-7/C-8):
+   * `target` comes from the definition, `auth` is the in-memory SSHConfig from
+   * CredentialProtocolAdapter.toSSHConfig. Nothing is read from the worker filesystem,
+   * and no log line carries the target, a credential field or a library error message.
    */
   async discoverHost(
-    jobId: string,
-    host: string,
-    username: string,
-    privateKeyPath?: string,
-    password?: string
+    runId: string,
+    target: { host: string; port: number },
+    auth: SSHConfig
   ): Promise<DiscoveredCI> {
+    const { host, port } = target;
+    if (!auth.privateKey && !auth.password) {
+      throw new Error('SSH credential incomplete');
+    }
+    const secret = auth.privateKey
+      ? { privateKey: auth.privateKey, ...(auth.passphrase ? { passphrase: auth.passphrase } : {}) }
+      : { password: auth.password };
+
     return withRetry(
       async () => {
         const destination = await connectDiscoveryHost(host, await resolveDiscoveryHost(host));
         const ssh = new NodeSSH();
 
         try {
-          // Connect to host
-          const connectionConfig: any = {
+          await ssh.connect({
             host: destination,
-            username,
+            port,
+            username: auth.username,
+            ...secret,
             readyTimeout: 10000,
             keepaliveInterval: 5000,
-          };
+          });
 
-          if (privateKeyPath) {
-            connectionConfig.privateKeyPath = privateKeyPath;
-          } else if (password) {
-            connectionConfig.password = password;
-          } else {
-            throw new Error('Either privateKeyPath or password must be provided');
-          }
-
-          await ssh.connect(connectionConfig);
-
-          logger.info('SSH connection established', { host });
+          logger.info('SSH connection established', { runId });
 
           // Execute all discovery commands in parallel
           const [
@@ -149,7 +149,7 @@ export class SSHDiscoveryWorker {
             _type: 'server',
             status: 'active',
             discovered_at: new Date().toISOString(),
-            discovery_job_id: jobId,
+            discovery_job_id: runId,
             discovery_provider: 'ssh',
             confidence_score: 0.9,
             metadata: {
@@ -209,7 +209,7 @@ export class SSHDiscoveryWorker {
           };
         } catch (error) {
           logger.error('SSH discovery failed', {
-            jobId,
+            runId,
             errorClass: error instanceof Error ? error.constructor.name : typeof error,
           });
           throw error;
@@ -223,81 +223,6 @@ export class SSHDiscoveryWorker {
         operationName: 'discoverHost',
       }
     );
-  }
-
-  /**
-   * Main discovery method called by the discovery processor
-   */
-  async discover(config: any): Promise<DiscoveredCI[]> {
-    const jobId = config._jobId || `ssh-${Date.now()}`;
-
-    // Handle various config formats
-    let targets = [];
-    if (config._targets) {
-      targets = config._targets;
-    } else if (config.hosts) {
-      targets = config.hosts;
-    } else if (config._config?.targets) {
-      targets = config._config.targets;
-    } else if (config._config?.hosts) {
-      targets = config._config.hosts;
-    }
-
-    if (!targets || targets.length === 0) {
-      logger.warn('No SSH targets provided in config', { jobId, targetCount: 0 });
-      return [];
-    }
-
-    logger.info('SSH discovery starting', { jobId, targetCount: targets.length });
-    return this.discoverHosts(jobId, targets);
-  }
-
-  /**
-   * Discover multiple hosts in parallel
-   */
-  async discoverHosts(
-    jobId: string,
-    hosts: Array<{
-      host: string;
-      username: string;
-      privateKeyPath?: string;
-      password?: string;
-    }>
-  ): Promise<DiscoveredCI[]> {
-    await Promise.all(hosts.map(({ host }) => resolveDiscoveryHost(host)));
-    logger.info('Starting SSH discovery for multiple hosts', {
-      jobId,
-      hostCount: hosts.length,
-    });
-
-    const results = await Promise.allSettled(
-      hosts.map(({ host, username, privateKeyPath, password }) =>
-        this.discoverHost(jobId, host, username, privateKeyPath, password)
-      )
-    );
-
-    const cis: DiscoveredCI[] = [];
-    results.forEach(result => {
-      if (result.status === 'fulfilled') {
-        cis.push(result.value);
-      } else {
-        if (result.reason instanceof Error && result.reason.message === DISCOVERY_TARGET_REFUSED) {
-          throw result.reason;
-        }
-        logger.error('SSH discovery failed for host', {
-          jobId,
-          errorClass: result.reason instanceof Error ? result.reason.constructor.name : typeof result.reason,
-        });
-      }
-    });
-
-    logger.info('SSH discovery completed', {
-      jobId,
-      discovered: cis.length,
-      failed: hosts.length - cis.length,
-    });
-
-    return cis;
   }
 
   private getCommandOutput(result: PromiseSettledResult<SSHExecCommandResponse>): string {

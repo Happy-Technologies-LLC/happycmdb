@@ -175,7 +175,7 @@ paths:
         - { name: cmdb_rt, in: cookie, required: true, schema: { type: string } }
       responses:
         '200':
-          description: New access token in the body (no refresh token); Set-Cookie renews cmdb_rt
+          description: New access token in the body (no refresh token); Set-Cookie renews cmdb_rt with a full TTL (sliding, no absolute cap)
         '403':
           description: X-CMDB-Auth missing or not exactly 1 (fixed body, checked first)
         '401':
@@ -196,7 +196,7 @@ paths:
   /auth/logout:
     post:
       tags: [Authentication]
-      summary: Expire the cmdb_rt cookie (no header, no access token; stateless, a captured refresh token stays valid until expiry)
+      summary: "Expire this browser's cmdb_rt (no header, no access token). Stateless: a captured cmdb_rt can be renewed by refresh (sliding TTL, no absolute cap) until an operator password rotation, disable or delete; a self-service password change does not end it"
       security: []
       responses:
         '200':

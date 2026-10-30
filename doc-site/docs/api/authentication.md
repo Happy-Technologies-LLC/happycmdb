@@ -124,8 +124,8 @@ Authenticate with username/email and password to obtain JWT tokens.
 The refresh token is not in the body: it is set as `cmdb_rt=<refresh JWT>; Max-Age=<refresh TTL>; Path=/api/v1/auth; HttpOnly; Secure; SameSite=Strict` (HAP-1211 H1). Browsers do not store a `Secure` cookie from plain `http://` other than `localhost`.
 
 **Token Lifetimes**:
-- **Access Token**: 24 hours (configurable via `JWT_EXPIRATION`)
-- **Refresh Token**: 30 days
+- **Access Token**: 15 minutes by default (`JWT_ACCESS_TOKEN_EXPIRES_IN`)
+- **Refresh Token**: 7 days by default (`JWT_REFRESH_TOKEN_EXPIRES_IN`); each refresh issues a new one with a full TTL (sliding), with no absolute session cap
 
 **Error Responses**:
 - `401 Unauthorized` - Invalid credentials
@@ -136,9 +136,7 @@ The refresh token is not in the body: it is set as `cmdb_rt=<refresh JWT>; Max-A
 
 ### Refresh Token
 
-Exchange the `cmdb_rt` cookie for a new access token and a new `cmdb_rt` cookie (same attributes).
-
-**Endpoint**: `POST /api/auth/refresh` with the header `X-CMDB-Auth: 1` (exactly). The token is read only from the cookie; no body is read.
+**Endpoint**: `POST /api/auth/refresh` with the header `X-CMDB-Auth: 1` (exactly). Exchanges the `cmdb_rt` cookie (the only token source; no body is read) for a new access token and a new `cmdb_rt` cookie (same attributes, full TTL: sliding, no absolute cap).
 
 **Error Responses** (fixed bodies): `403 Forbidden` without `X-CMDB-Auth: 1`, checked first. `401 Unauthorized` when the cookie is missing, duplicated or malformed, or the token is invalid, expired, not a refresh token, of an older credential generation (HP1-S6), or its user is disabled.
 
@@ -146,11 +144,9 @@ Exchange the `cmdb_rt` cookie for a new access token and a new `cmdb_rt` cookie 
 
 ### Logout
 
-Expire the `cmdb_rt` cookie (`Max-Age=0`, past `Expires`, same attributes). No header and no access token are required.
+**Endpoint**: `POST /api/auth/logout` → `{ "success": true, "message": "Logged out successfully" }`. Expires the `cmdb_rt` cookie (`Max-Age=0`, past `Expires`, same attributes); no header and no access token are required.
 
-**Endpoint**: `POST /api/auth/logout` → `{ "success": true, "message": "Logged out successfully" }`
-
-**Stateless** (founder decision, HAP-1211 H1b): logout only clears the browser cookie. A refresh token captured before logout stays valid until its TTL expires, and the access token until it expires (15 minutes by default).
+**Stateless** (founder decision, HAP-1211 H1b): logout only clears this browser's cookie. Each refresh issues a new cookie with a full TTL and there is no absolute session cap, so a refresh cookie captured before logout can be renewed indefinitely (by refreshing at least once per TTL) until an operator password rotation changes the user's credential generation, or the account is disabled or deleted. A self-service password change does not end it. The access token stays valid until it expires (15 minutes by default).
 
 ---
 

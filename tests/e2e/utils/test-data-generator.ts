@@ -16,7 +16,6 @@ import {
 } from '../../../packages/common/src/types/ci.types';
 import {
   DiscoveryProvider,
-  DiscoveryConfig,
   DiscoveredCI,
 } from '../../../packages/common/src/types/discovery.types';
 
@@ -190,22 +189,6 @@ export function generateAWSEC2Instances(count: number): DiscoveredCI[] {
   }
 
   return instances;
-}
-
-/**
- * Generate mock AWS discovery config
- */
-export function generateAWSDiscoveryConfig(): DiscoveryConfig {
-  return {
-    credentials: {
-      accessKeyId: 'test-access-key',
-      secretAccessKey: 'test-secret-key',
-    },
-    regions: ['us-east-1', 'us-west-2'],
-    filters: {
-      'tag:Environment': 'production',
-    },
-  };
 }
 
 /**

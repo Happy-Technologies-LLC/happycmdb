@@ -113,7 +113,8 @@ export const DiscoveryDefinitionForm: React.FC<DiscoveryDefinitionFormProps> = (
       if (!newCred.name.trim()) newErrors.credentialName = 'Credential name is required';
       if (!newCred.username.trim()) newErrors.credentialUsername = 'Username is required';
       if (!newCred.secret) newErrors.credentialSecret = 'A password or private key is required';
-      if (newCred.port && !/^\d{1,5}$/.test(newCred.port)) newErrors.credentialPort = 'Port must be a number';
+      const port = Number(newCred.port);
+      if (newCred.port && !(/^\d{1,5}$/.test(newCred.port) && port >= 1 && port <= 65535)) newErrors.credentialPort = 'Port must be a whole number from 1 to 65535';
     }
 
     setErrors(newErrors);
@@ -176,7 +177,8 @@ export const DiscoveryDefinitionForm: React.FC<DiscoveryDefinitionFormProps> = (
   };
 
   const handleAdHocRun = () => {
-    if (!validateForm()) {
+    // HAP-774 L2: an ad-hoc run cannot carry a new credential; it must be saved first.
+    if (createSshCredential || !validateForm()) {
       return;
     }
 
@@ -476,11 +478,12 @@ export const DiscoveryDefinitionForm: React.FC<DiscoveryDefinitionFormProps> = (
           Cancel
         </Button>
         {showAdHocAction && onAdHocRun && (
-          <Button type="button" variant="secondary" onClick={handleAdHocRun}>
+          <Button type="button" variant="secondary" onClick={handleAdHocRun} disabled={createSshCredential}>
             <Icon name="play-circle" size={16} className="mr-2" />
             Run Once
           </Button>
         )}
+        {showAdHocAction && onAdHocRun && createSshCredential && <p className="text-xs text-muted-foreground self-center">Save the credential first to run once</p>}
         <Button type="submit">
           {showAdHocAction ? (
             <>

@@ -12,11 +12,12 @@ const MARKER = 'S7MARKER';
 const PEM = `-----BEGIN OPENSSH PRIVATE KEY-----\n${MARKER}-key\n-----END OPENSSH PRIVATE KEY-----`;
 
 const { request } = vi.hoisted(() => ({ request: { get: vi.fn(), post: vi.fn(), put: vi.fn(), delete: vi.fn() } }));
+const saved = vi.hoisted((): { id: string; name: string; protocol: string }[] => []);
 vi.mock('axios', () => ({ default: { create: () => ({
   ...request, interceptors: { request: { use: vi.fn() }, response: { use: vi.fn() } },
 }) } }));
 vi.mock('../../hooks/useCredentials', () => ({
-  useCredentials: () => ({ credentials: [], loading: false, error: null, loadCredentials: vi.fn() }),
+  useCredentials: () => ({ credentials: saved, loading: false, error: null, loadCredentials: vi.fn() }),
 }));
 // Radix Select does not open in jsdom; each item becomes a button that sets its Select's value.
 // vi.mock factories are hoisted above static imports, so React must be imported inside the factory.
@@ -41,6 +42,7 @@ import { discoveryService, type DiscoveryDefinitionInput } from '../../services/
 const spies: MockInstance[] = [];
 beforeEach(() => {
   vi.clearAllMocks();
+  saved.splice(0);
   request.post.mockImplementation((path: string) =>
     Promise.resolve({ data: { data: path === '/credentials' ? { id: 'cred-1' } : { id: 'def-1', is_active: true } } }));
   for (const level of ['log', 'info', 'debug', 'warn', 'error'] as const) {
@@ -67,8 +69,8 @@ const posted = (path: string): Posted | undefined =>
   (request.post.mock.calls as [string, Posted][]).find(([p]) => p === path)?.[1];
 
 // The password goes in first so that on base, the inline config field logs it before the new fields are missing.
-function renderSsh(password?: string): void {
-  render(<DiscoveryDefinitionForm onSubmit={submitToService} onCancel={vi.fn()} />);
+function renderSsh(password?: string, adHoc?: (data: DiscoveryDefinitionInput) => void): void {
+  render(<DiscoveryDefinitionForm onSubmit={submitToService} onCancel={vi.fn()} showAdHocAction={!!adHoc} onAdHocRun={adHoc} />);
   fireEvent.click(screen.getByRole('button', { name: 'SSH' }));
   type(/^name/i, 'web hosts');
   type(/target hosts/i, 'host1.example.com\n192.0.2.10');
@@ -77,6 +79,16 @@ function renderSsh(password?: string): void {
   }
   type(/credential name/i, 'ssh-web');
   type(/username/i, 'deploy');
+}
+
+// L1: the onSubmit data itself (not only the wire body) carries the credential id, no credentials key at any depth, no marker.
+function expectCleanSubmit(): void {
+  expect(submitToService).toHaveBeenCalledTimes(1);
+  const [data] = submitToService.mock.calls[0];
+  expect(data.credentialId).toBe('cred-1');
+  const deep = inspect(data, { depth: null });
+  expect(deep).not.toMatch(/\bcredentials\b/);
+  expect(deep).not.toContain(MARKER);
 }
 
 describe('HAP-774 S7 SSH discovery form', () => {
@@ -95,6 +107,7 @@ describe('HAP-774 S7 SSH discovery form', () => {
     expect(body?.config).toEqual({ targets: ['host1.example.com', '192.0.2.10'] });
     expect(JSON.stringify(body)).not.toContain(MARKER);
     expect(JSON.stringify(body)).not.toContain('credentials');
+    expectCleanSubmit();
   });
 
   it('(b) private-key path creates ssh_key with the PEM text as material', async () => {
@@ -107,6 +120,7 @@ describe('HAP-774 S7 SSH discovery form', () => {
     expect(posted('/credentials')).toMatchObject({ protocol: 'ssh_key', credentials: { username: 'deploy', private_key: PEM } });
     expect(posted('/credentials')?.credentials).not.toHaveProperty('password');
     expect(JSON.stringify(posted('/discovery/definitions'))).not.toContain(MARKER);
+    expectCleanSubmit();
   });
 
   it('(c) error path: a failed credential save shows a fixed message, submits nothing and logs nothing', async () => {
@@ -157,6 +171,41 @@ describe('HAP-774 S7 SSH discovery form', () => {
     }
     for (const file of ['components/discovery/DiscoveryConfigForm.tsx', 'components/discovery/DiscoveryDefinitionForm.tsx', 'services/discovery.service.ts']) {
       expect(readFileSync(`${root}${file}`, 'utf8'), file).not.toMatch(/console\.\w+\(/);
+    }
+  });
+
+  it('(g) Run Once is disabled while creating a new SSH credential and sends nothing', () => {
+    const onAdHocRun = vi.fn();
+    renderSsh(`${MARKER}-pw`, onAdHocRun);
+    const runOnce = screen.getByRole('button', { name: /run once/i });
+    expect(runOnce).toBeDisabled();
+    expect(screen.getByText('Save the credential first to run once')).toBeInTheDocument();
+    fireEvent.click(runOnce);
+    expect(onAdHocRun).not.toHaveBeenCalled();
+    expect(request.post).not.toHaveBeenCalled();
+    expect(document.body.textContent).not.toContain(MARKER);
+  });
+
+  it('(h) Run Once stays enabled with an existing SSH credential', () => {
+    saved.push({ id: 'cred-9', name: 'ops', protocol: 'ssh_key' });
+    const onAdHocRun = vi.fn();
+    renderSsh(undefined, onAdHocRun);
+    fireEvent.click(screen.getByRole('button', { name: 'ops' }));
+    fireEvent.click(screen.getByRole('button', { name: /run once/i }));
+    expect(onAdHocRun).toHaveBeenCalledWith(expect.objectContaining({ credentialId: 'cred-9' }));
+    expect(screen.queryByText('Save the credential first to run once')).toBeNull();
+  });
+
+  it.each([['0', false], ['1', true], ['65535', true], ['65536', false]])('(i) port %s accepted: %s', async (port, ok) => {
+    renderSsh(`${MARKER}-pw`);
+    type(/port/i, port);
+    fireEvent.click(screen.getByRole('button', { name: /create definition/i }));
+    if (ok) {
+      await waitFor(() => expect(posted('/discovery/definitions')).toBeDefined());
+      expect(posted('/credentials')?.credentials?.port).toBe(Number(port));
+    } else {
+      expect(await screen.findByText('Port must be a whole number from 1 to 65535')).toBeInTheDocument();
+      expect(request.post).not.toHaveBeenCalled();
     }
   });
 });

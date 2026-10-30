@@ -3,6 +3,7 @@
 
 import axios, { AxiosError, AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios';
 import type { AuthToken, LoginCredentials, User } from '../types';
+import { redactAxiosError } from '../lib/redact-axios-error';
 
 export interface UpdateProfileData {
   name?: string;
@@ -65,7 +66,7 @@ apiClient.interceptors.response.use(
       localStorage.removeItem('user');
       window.location.href = '/login';
     }
-    return Promise.reject(error);
+    return Promise.reject(redactAxiosError(error));
   }
 );
 

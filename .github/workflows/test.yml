@@ -72,6 +72,9 @@ jobs:
       - name: Verify the Agent views send the Bearer header via the shared apiClient (HAP-1234)
         run: npm run test:run --workspace=@cmdb/web-ui -- --config vitest.connector-wizard.config.ts src/components/discovery/AgentViews.auth-header.test.tsx src/lib/no-own-api-client.test.ts
 
+      - name: Verify rejected web-ui client errors carry no token or request body, and 401 handling is unchanged (HAP-1210 S3)
+        run: npm run test:run --workspace=@cmdb/web-ui -- --config vitest.connector-wizard.config.ts src/lib/redact-axios-error.test.ts
+
       - name: Upload unit test coverage
         uses: codecov/codecov-action@v3
         with:

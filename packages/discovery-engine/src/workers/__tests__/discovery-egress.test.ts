@@ -7,7 +7,7 @@ import { inspect } from 'util';
 import * as nmap from 'node-nmap';
 import { NodeSSH } from 'node-ssh';
 import { NmapDiscoveryWorker } from '../nmap-discovery.worker';
-import { SSHDiscoveryWorker } from '../ssh-discovery.worker';
+import { ERR_SSH_FAILED, SSHDiscoveryWorker, SshDiscoveryError } from '../ssh-discovery.worker';
 import { HostKeyType, hostKeyFingerprint } from '../ssh-host-key';
 import { DISCOVERY_TARGET_REFUSED, logger } from '@cmdb/common';
 
@@ -230,21 +230,27 @@ it.each([
       .catch((error: unknown) => error);
     await jest.runAllTimersAsync();
 
-    // Existing control flow preserved: the original error is still rethrown and the client disposed.
-    expect(await settled).toBe(original);
-    expect(dispose).toHaveBeenCalledTimes(3);
+    // HAP-444 K3 (§4.2): an unclassified failure is terminal and coded; the original is never rethrown or kept.
+    const error = await settled;
+    expect(error).not.toBe(original);
+    expect(error).toStrictEqual(new SshDiscoveryError(ERR_SSH_FAILED));
+    expect(error).not.toHaveProperty('cause');
+    expect(dispose).toHaveBeenCalledTimes(1);
     // Non-vacuity: every attempt handed this variant's credential fields to connect.
-    expect(connect).toHaveBeenCalledTimes(3);
+    expect(connect).toHaveBeenCalledTimes(1);
     for (const [options] of connect.mock.calls) {
       for (const marker of credentialMarkers) expect(Object.values(options)).toContain(marker);
     }
     expect(logs.errorSpy).toHaveBeenCalledWith('SSH discovery failed', {
       runId: 'job',
+      code: ERR_SSH_FAILED,
       errorClass: 'RangeError',
     });
     for (const marker of [...SYNTHETIC_MARKERS, SYNTHETIC_PAYLOAD, ...credentialMarkers]) {
       expect(serializeWithErrors(logs.calls())).not.toContain(marker);
     }
+    const thrown = `${(error as Error).message}\n${(error as Error).stack}\n${inspect(error)}`;
+    for (const marker of [...SYNTHETIC_MARKERS, SYNTHETIC_PAYLOAD, ...credentialMarkers]) expect(thrown).not.toContain(marker);
     for (const marker of credentialMarkers) {
       expect(`${inspect(original)}\n${original.stack}`).not.toContain(marker);
     }

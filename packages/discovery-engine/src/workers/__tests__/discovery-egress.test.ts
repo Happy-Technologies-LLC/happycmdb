@@ -3,6 +3,7 @@
 
 import { lookup } from 'dns/promises';
 import { EventEmitter } from 'events';
+import { inspect } from 'util';
 import * as nmap from 'node-nmap';
 import { NodeSSH } from 'node-ssh';
 import { NmapDiscoveryWorker } from '../nmap-discovery.worker';
@@ -203,29 +204,47 @@ function serializeWithErrors(value: unknown): string {
     item instanceof Error ? { name: item.name, message: item.message, stack: item.stack } : item);
 }
 
-it('ssh discoverHost per-host catch logs fixed text and class only', async () => {
+// Key-path auth: distinct per-field markers, assembled at runtime like SSH_AUTH.
+const KEY_AUTH = {
+  host: SSH_AUTH.host, port: SSH_AUTH.port, username: SSH_AUTH.username,
+  privateKey: ['l1', 'kmarker', 'synthetic'].join('-'),
+  passphrase: ['l1', 'pmarker', 'synthetic'].join('-'),
+};
+
+// Each variant: auth, plus the credential markers (distinct from the error payload) that it carries.
+it.each([
+  ['password', { ...SSH_AUTH, password: SYNTHETIC_PAYLOAD }, [] as string[]],
+  ['privateKey and passphrase', KEY_AUTH, [KEY_AUTH.privateKey, KEY_AUTH.passphrase]],
+])('ssh discoverHost per-host catch logs fixed text and class only (%s auth)', async (_variant, auth, credentialMarkers) => {
   jest.useFakeTimers();
   const logs = captureAllLogArguments();
   const original = new RangeError(SYNTHETIC_PAYLOAD);
   const dispose = jest.fn();
-  jest.mocked(NodeSSH).mockImplementation(
-    () => ({ connect: jest.fn().mockRejectedValue(original), dispose }) as never
-  );
+  const connect = jest.fn().mockRejectedValue(original);
+  jest.mocked(NodeSSH).mockImplementation(() => ({ connect, dispose }) as never);
   try {
     const settled = new SSHDiscoveryWorker()
-      .discoverHost('job', { host: '8.8.8.8', port: 22 }, { ...SSH_AUTH, password: SYNTHETIC_PAYLOAD })
+      .discoverHost('job', { host: '8.8.8.8', port: 22 }, auth)
       .catch((error: unknown) => error);
     await jest.runAllTimersAsync();
 
     // Existing control flow preserved: the original error is still rethrown and the client disposed.
     expect(await settled).toBe(original);
     expect(dispose).toHaveBeenCalledTimes(3);
+    // Non-vacuity: every attempt handed this variant's credential fields to connect.
+    expect(connect).toHaveBeenCalledTimes(3);
+    for (const [options] of connect.mock.calls) {
+      for (const marker of credentialMarkers) expect(Object.values(options)).toContain(marker);
+    }
     expect(logs.errorSpy).toHaveBeenCalledWith('SSH discovery failed', {
       runId: 'job',
       errorClass: 'RangeError',
     });
-    for (const marker of [...SYNTHETIC_MARKERS, SYNTHETIC_PAYLOAD]) {
+    for (const marker of [...SYNTHETIC_MARKERS, SYNTHETIC_PAYLOAD, ...credentialMarkers]) {
       expect(serializeWithErrors(logs.calls())).not.toContain(marker);
+    }
+    for (const marker of credentialMarkers) {
+      expect(`${inspect(original)}\n${original.stack}`).not.toContain(marker);
     }
   } finally {
     jest.useRealTimers();

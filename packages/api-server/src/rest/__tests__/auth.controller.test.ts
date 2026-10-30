@@ -329,9 +329,9 @@ describe('AuthController profile/password/account routes', () => {
 
     expect(hashes()).toEqual(before);
     // Without a session only login answers other than 401, and login verifies a password, never sets one.
-    // The cookie endpoints refuse a request without X-CMDB-Auth first (403, HAP-1211 B5).
+    // Refresh refuses a request without X-CMDB-Auth first (403); logout only expires the cookie (HAP-1211 H1).
     expect(Object.entries(statuses).filter(([, status]) => status !== 401).map(([route, status]) => `${route} ${status}`))
-      .toEqual(['POST /login 200', 'POST /refresh 403', 'POST /logout 403']);
+      .toEqual(['POST /login 200', 'POST /refresh 403', 'POST /logout 200']);
   });
 
   it('returns one fixed refresh failure for invalid, expired, wrong-type, revoked, disabled, and store failures', async () => {
@@ -400,13 +400,19 @@ describe('AuthController profile/password/account routes', () => {
       expect(sensitive.filter(value => output.includes(value)).length).toBe(0);
     });
 
-    it('login sets cmdb_rt (HttpOnly, Secure, SameSite=Strict, /api/v1/auth, refresh TTL) and no body refresh token', async () => {
+    /** A real login of alice with a runtime-built password; its Set-Cookie is the browser jar's cmdb_rt. */
+    const login = async () => {
       const pass = `pw-${randomUUID()}`;
       repository.users.get('user-1')!._passwordHash = await passwordService.hash(pass);
-      const response = await request(app).post('/api/v1/auth/login').send({ username: 'alice', password: pass });
+      sensitive.push(pass);
+      return request(app).post('/api/v1/auth/login').send({ username: 'alice', password: pass });
+    };
+
+    it('login sets cmdb_rt (HttpOnly, Secure, SameSite=Strict, /api/v1/auth, refresh TTL) and no body refresh token', async () => {
+      const response = await login();
       expect(response.status).toBe(200);
       const cookie = refreshCookieOf(response);
-      sensitive.push(pass, cookie.value, response.body.data._accessToken);
+      sensitive.push(cookie.value, response.body.data._accessToken);
       expect(Object.keys(response.body.data).sort()).toEqual(['_accessToken', '_expiresIn', '_user']);
       expect(cookie.attributes).toEqual(cookieAttributes(jwtService.getTokenExpiresIn('refresh')));
       expect(jwtService.verifyToken(cookie.value)._type).toBe('refresh');
@@ -450,15 +456,27 @@ describe('AuthController profile/password/account routes', () => {
       expect(jwtService.verifyToken(renewed.value)._type).toBe('refresh');
     });
 
-    it('logout clears cmdb_rt with the same attributes; it needs X-CMDB-Auth: 1, not a session', async () => {
-      const issued = jwtService.generateRefreshToken('user-1', 'alice', 'operator');
-      sensitive.push(issued);
-      const refused = await request(app).post('/api/v1/auth/logout').set('Cookie', `${REFRESH_COOKIE}=${issued}`);
-      expect([refused.status, refused.body, refused.headers['set-cookie']]).toEqual([403, forbidden, undefined]);
-      const out = await request(app).post('/api/v1/auth/logout').set('Cookie', `${REFRESH_COOKIE}=${issued}`)
-        .set(AUTH_HEADER, AUTH_HEADER_VALUE);
-      expect(out.status).toBe(200);
-      expect(refreshCookieOf(out)).toEqual({ value: '', attributes: cookieAttributes(0, 'Expires=Thu, 01 Jan 1970 00:00:00 GMT') });
+    it('the web-ui header-less logout clears cmdb_rt; the next refresh from that browser jar is 401', async () => {
+      // The browser jar (superagent's own jar never sends a Secure cookie over the test's plain http).
+      let jar: string | undefined = refreshCookieOf(await login()).value;
+      sensitive.push(jar);
+      // As the current web-ui sends it: no X-CMDB-Auth, no access token, the jar's cookie.
+      const out = await request(app).post('/api/v1/auth/logout').set('Cookie', `${REFRESH_COOKIE}=${jar}`);
+      expect([out.status, out.body]).toEqual([200, { success: true, message: 'Logged out successfully' }]);
+      const cleared = refreshCookieOf(out);
+      expect(cleared).toEqual({ value: '', attributes: cookieAttributes(0, 'Expires=Thu, 01 Jan 1970 00:00:00 GMT') });
+      if (cleared.attributes.includes('Max-Age=0')) jar = undefined; // RFC 6265 5.3: an expired Set-Cookie deletes it
+      const next = await refresh(jar);
+      expect([next.status, next.headers['set-cookie']]).toEqual([401, undefined]);
+    });
+
+    it('stateless per founder H1b; valid until refresh-token expiry: a cmdb_rt captured before logout still refreshes after it', async () => {
+      const captured = refreshCookieOf(await login()).value;
+      sensitive.push(captured);
+      expect((await request(app).post('/api/v1/auth/logout').set('Cookie', `${REFRESH_COOKIE}=${captured}`)).status).toBe(200);
+      const replay = await refresh(captured);
+      expect(replay.status).toBe(200);
+      sensitive.push(refreshCookieOf(replay).value, replay.body.data._accessToken);
     });
 
     it('HP1-S6: a cmdb_rt of an older credential generation is 401 (revoked); the current one refreshes', async () => {

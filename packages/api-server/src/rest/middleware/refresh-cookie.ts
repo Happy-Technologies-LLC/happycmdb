@@ -5,8 +5,8 @@
  * Refresh cookie of /api/v1/auth (HAP-1211 H1, B1/B4/B5/B6).
  *
  * The refresh JWT travels only in this HttpOnly cookie, never in a JSON body.
- * SameSite=Strict is the primary CSRF defence. The cookie endpoints (refresh,
- * logout) also require AUTH_HEADER: a cross-origin request can only add it
+ * SameSite=Strict is the primary CSRF defence. Refresh also requires
+ * AUTH_HEADER (logout does not: operator ruling Q1): a cross-origin request can only add it
  * after a CORS preflight, and the default cors() never allows credentials, so
  * such a request cannot carry the cookie. Nothing here logs the Cookie
  * header, the token or a Set-Cookie value.
@@ -57,7 +57,7 @@ export function clearRefreshCookie(res: Response): void {
   res.append('Set-Cookie', `${REFRESH_COOKIE}=; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT; ${ATTRIBUTES}`);
 }
 
-/** CSRF guard of the cookie endpoints: exactly `X-CMDB-Auth: 1`, else a fixed 403 before any token or store work. */
+/** CSRF guard of /auth/refresh: exactly `X-CMDB-Auth: 1`, else a fixed 403 before any token or store work. */
 export function requireAuthHeader(req: Request, res: Response, next: NextFunction): void {
   if (req.get(AUTH_HEADER) === AUTH_HEADER_VALUE) {
     next();

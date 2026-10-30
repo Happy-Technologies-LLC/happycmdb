@@ -6,9 +6,10 @@ import { join } from 'node:path';
 import { inspect } from 'node:util';
 import { createElement, type ReactNode } from 'react';
 import { fireEvent, render, renderHook, waitFor } from '@testing-library/react';
-import axios, { AxiosError, AxiosHeaders, CanceledError, type AxiosResponse, type InternalAxiosRequestConfig } from 'axios';
+import { AxiosError, AxiosHeaders, CanceledError, type AxiosResponse, type InternalAxiosRequestConfig } from 'axios';
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import AuthContext from '@/contexts/AuthContext';
+import { apiClient } from '@/lib/api-client';
 import { AgentList } from '@/components/discovery/AgentList';
 import { CredentialForm } from '@/components/credentials/CredentialForm';
 import { useWebSocket } from '@/hooks/useWebSocket';
@@ -163,8 +164,8 @@ describe('every non-test web-ui/src file (HAP-1210 S2b, T2)', () => {
 });
 
 describe('representative S2b sites log no part of the error (HAP-1210 S2b)', () => {
-  it('AgentList: a failed bare-axios request', async () => {
-    vi.spyOn(axios, 'get').mockRejectedValue(axiosError('ERR_BAD_RESPONSE', 500));
+  it('AgentList: a failed apiClient request', async () => {
+    vi.spyOn(apiClient, 'get').mockRejectedValue(axiosError('ERR_BAD_RESPONSE', 500));
     render(createElement(AgentList));
     await waitFor(() => expect(spy).toHaveBeenCalledWith('[ERROR] Error fetching agents:', { errorClass: 'AxiosError', status: 500 }));
   });

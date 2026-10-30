@@ -108,6 +108,11 @@ jobs:
         run: npm ci
       - name: Typecheck and bundle web UI
         run: npm run build --workspace=web-ui
+      - name: Verify built web UI references no Google Fonts or api.happycmdb.io (HAP-1211 H0)
+        run: |
+          test -f web-ui/dist/index.html || { echo "web-ui/dist/index.html missing" >&2; exit 1; }
+          rc=0; grep -rlE --include='*.html' --include='*.js' --include='*.css' 'fonts\.(googleapis|gstatic)\.com|api\.happycmdb\.io' web-ui/dist || rc=$?
+          test "$rc" -eq 1 || { echo "third-party origin in web-ui/dist (or grep error $rc)" >&2; exit 1; }
 
   integration-tests:
     name: Integration Tests

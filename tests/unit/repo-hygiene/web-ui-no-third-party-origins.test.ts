@@ -6,6 +6,7 @@ const REPO = resolve(__dirname, '../../..');
 const SRC = resolve(REPO, 'web-ui/src');
 const REMOTE =
   /(?:@import|url\()\s*(?:url\()?\s*['"]?(?:https?:)?\/\/[^'")\s;]*|fonts\.(?:googleapis|gstatic)\.com/g;
+const REMOTE_TAG = /<(?:link|script)\b[^>]*\b(?:href|src)\s*=\s*["']?(?:https?:)?\/\/[^>]*>/gi;
 
 it('web-ui CSS loads no stylesheet or font from another origin', () => {
   const all = readdirSync(SRC, { recursive: true }) as string[];
@@ -15,6 +16,11 @@ it('web-ui CSS loads no stylesheet or font from another origin', () => {
     [...readFileSync(resolve(SRC, f), 'utf8').matchAll(REMOTE)].map((m) => `${f}: ${m[0]}`)
   );
   expect(hits).toEqual([]);
+});
+
+it('web-ui/index.html links, loads or imports nothing from another origin', () => {
+  const html = readFileSync(resolve(REPO, 'web-ui/index.html'), 'utf8');
+  expect([...(html.match(REMOTE_TAG) ?? []), ...(html.match(REMOTE) ?? [])]).toEqual([]);
 });
 
 it('the font variables lead with the bundled Inter Variable / Jost Variable faces', () => {

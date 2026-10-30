@@ -84,11 +84,10 @@ export class AuthController {
     /**
      * POST /api/auth/logout
      * Logout (client-side token invalidation)
-     * HAP-1211 H1: clears the cmdb_rt cookie. No access token required (an expired one must not keep it).
+     * HAP-1211 H1: clears the cmdb_rt cookie. Neither X-CMDB-Auth (operator ruling Q1) nor an access token.
      */
     this.router.post(
       '/logout',
-      requireAuthHeader,
       this.logout.bind(this)
     );
 
@@ -214,7 +213,7 @@ export class AuthController {
    * Logout endpoint
    */
   private async logout(_req: AuthenticatedRequest, res: Response): Promise<void> {
-    // Stateless (founder decision, HAP-1211 H1b not built): the access token simply expires.
+    // Stateless (founder decision, H1b not built): nothing is stored to revoke; a captured refresh token stays valid until expiry.
     clearRefreshCookie(res);
 
     res.json({

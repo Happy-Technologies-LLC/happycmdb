@@ -112,28 +112,15 @@ Implement these endpoints in your backend:
 ```
 POST   /api/v1/auth/login           - { username, password } → { _accessToken, _expiresIn, _user } + cmdb_rt cookie
 POST   /api/v1/auth/refresh         - cmdb_rt cookie + X-CMDB-Auth: 1 → new access token + new cmdb_rt cookie
-POST   /api/v1/auth/logout          - X-CMDB-Auth: 1 → clears the cmdb_rt cookie
+POST   /api/v1/auth/logout          - (no header, no session) → expires the cmdb_rt cookie; stateless
 GET    /api/v1/auth/me              - Get current user
 PUT    /api/v1/auth/profile         - { name, avatar }
 PUT    /api/v1/auth/password        - { currentPassword, newPassword }
 DELETE /api/v1/auth/account         - Delete account
 ```
 
-### Refresh cookie (HAP-1211 H1)
-
-- Login and refresh never return the refresh token in the JSON body. They set
-  `cmdb_rt=<refresh JWT>; Max-Age=<refresh TTL>; Path=/api/v1/auth; HttpOnly; Secure; SameSite=Strict`.
-  `Max-Age` is the refresh token's lifetime (`auth.jwt.refreshTokenExpiresIn`, default `7d`).
-- Refresh reads the token only from that cookie; a `refreshToken` body field is ignored. A missing,
-  duplicated or malformed cookie (or a Cookie header over 8 KiB) gets the fixed **401**. The
-  existing checks are unchanged: refresh type, credential generation (HP1-S6), user and org re-read.
-- Refresh and logout require `X-CMDB-Auth: 1` exactly, else a fixed **403** before the cookie is read.
-  `SameSite=Strict` is the primary CSRF defence; the header forces a CORS preflight, and the API's
-  default `cors()` never allows credentials, so a cross-origin request cannot carry the cookie.
-- Logout is stateless and needs no access token: it expires the cookie (`Max-Age=0`, past `Expires`,
-  same attributes). The access token stays valid until it expires (15 minutes by default).
-- Browsers do not store a `Secure` cookie from a plain-`http://` origin other than `localhost`.
-- The Cookie header, the token and the `Set-Cookie` value are never logged.
+The refresh token travels only in the `cmdb_rt` HttpOnly cookie (HAP-1211 H1); see
+[Refresh Token](../api/authentication.md#refresh-token) and [Logout](../api/authentication.md#logout).
 
 ### Settings
 ```

@@ -107,7 +107,6 @@ Authenticate with username/email and password to obtain JWT tokens.
   "success": true,
   "data": {
     "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiJ1c2VyLWFkbWluLTAwMSIsInVzZXJuYW1lIjoiYWRtaW4iLCJyb2xlIjoiYWRtaW4iLCJpYXQiOjE2OTk1NTY0MDAsImV4cCI6MTY5OTY0MjgwMH0.signature",
-    "refreshToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiJ1c2VyLWFkbWluLTAwMSIsInR5cGUiOiJyZWZyZXNoIiwiaWF0IjoxNjk5NTU2NDAwLCJleHAiOjE3MDIxNDg0MDB9.signature",
     "expiresIn": 86400,
     "tokenType": "Bearer",
     "user": {
@@ -122,6 +121,7 @@ Authenticate with username/email and password to obtain JWT tokens.
   }
 }
 ```
+The refresh token is not in the body: it is set as `cmdb_rt=<refresh JWT>; Max-Age=<refresh TTL>; Path=/api/v1/auth; HttpOnly; Secure; SameSite=Strict` (HAP-1211 H1). Browsers do not store a `Secure` cookie from plain `http://` other than `localhost`.
 
 **Token Lifetimes**:
 - **Access Token**: 24 hours (configurable via `JWT_EXPIRATION`)
@@ -136,58 +136,21 @@ Authenticate with username/email and password to obtain JWT tokens.
 
 ### Refresh Token
 
-Exchange a refresh token for a new access token without re-entering credentials.
+Exchange the `cmdb_rt` cookie for a new access token and a new `cmdb_rt` cookie (same attributes).
 
-**Endpoint**: `POST /api/auth/refresh`
+**Endpoint**: `POST /api/auth/refresh` with the header `X-CMDB-Auth: 1` (exactly). The token is read only from the cookie; no body is read.
 
-**Request Body**:
-```json
-{
-  "refreshToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiJ1c2VyLWFkbWluLTAwMSIsInR5cGUiOiJyZWZyZXNoIiwiaWF0IjoxNjk5NTU2NDAwLCJleHAiOjE3MDIxNDg0MDB9.signature"
-}
-```
-
-**Response** (200 OK):
-```json
-{
-  "success": true,
-  "data": {
-    "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.new_access_token.signature",
-    "refreshToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.new_refresh_token.signature",
-    "expiresIn": 86400,
-    "tokenType": "Bearer"
-  }
-}
-```
-
-**Error Responses**:
-- `401 Unauthorized` - Invalid or expired refresh token
-- `403 Forbidden` - User account disabled
-
-**Best Practice**: Implement token refresh 5-10 minutes before expiration to avoid interruptions.
+**Error Responses** (fixed bodies): `403 Forbidden` without `X-CMDB-Auth: 1`, checked first. `401 Unauthorized` when the cookie is missing, duplicated or malformed, or the token is invalid, expired, not a refresh token, of an older credential generation (HP1-S6), or its user is disabled.
 
 ---
 
 ### Logout
 
-Logout from current session (client-side token invalidation).
+Expire the `cmdb_rt` cookie (`Max-Age=0`, past `Expires`, same attributes). No header and no access token are required.
 
-**Endpoint**: `POST /api/auth/logout`
+**Endpoint**: `POST /api/auth/logout` → `{ "success": true, "message": "Logged out successfully" }`
 
-**Headers**:
-```
-Authorization: Bearer YOUR_ACCESS_TOKEN
-```
-
-**Response** (200 OK):
-```json
-{
-  "success": true,
-  "message": "Logged out successfully"
-}
-```
-
-**Note**: Since JWTs are stateless, logout primarily tells the server to ignore the token. Clients should delete tokens from local storage.
+**Stateless** (founder decision, HAP-1211 H1b): logout only clears the browser cookie. A refresh token captured before logout stays valid until its TTL expires, and the access token until it expires (15 minutes by default).
 
 ---
 
@@ -548,10 +511,10 @@ Passwords must meet these criteria:
 
 1. User enters credentials on login page
 2. Frontend calls `POST /api/auth/login`
-3. Store `accessToken` in memory, `refreshToken` in httpOnly cookie
+3. Keep `accessToken` in memory; the server sets the refresh token as the `cmdb_rt` HttpOnly cookie
 4. Include `accessToken` in Authorization header for all API calls
-5. Before token expiry, call `POST /api/auth/refresh` to get new tokens
-6. On logout, call `POST /api/auth/logout` and clear tokens
+5. Before token expiry, call `POST /api/auth/refresh` with `X-CMDB-Auth: 1` (the browser sends the cookie)
+6. On logout, call `POST /api/auth/logout` (expires the cookie) and discard the access token
 
 ### API/Script Flow
 
@@ -564,7 +527,7 @@ Passwords must meet these criteria:
 
 1. User authenticates with `POST /api/auth/login`
 2. Store `accessToken` in secure storage (Keychain/Keystore)
-3. Store `refreshToken` in encrypted secure storage
+3. Keep the `cmdb_rt` cookie from the login response in encrypted secure storage
 4. Implement background token refresh
 5. Clear tokens on logout
 
@@ -582,10 +545,8 @@ Passwords must meet these criteria:
 
 **Example**:
 ```bash
-# Get new access token
-curl -X POST "http://localhost:3000/api/auth/refresh" \
-  -H "Content-Type: application/json" \
-  -d '{"refreshToken": "YOUR_REFRESH_TOKEN"}'
+# Get new access token (cookie jar written by the login call with -c cookies.txt)
+curl -X POST "http://localhost:3000/api/v1/auth/refresh" -H "X-CMDB-Auth: 1" -b cookies.txt -c cookies.txt
 ```
 
 ---

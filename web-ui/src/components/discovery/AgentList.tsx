@@ -64,12 +64,13 @@ export const AgentList: React.FC = () => {
   }, []);
 
   const handleDelete = async (agentId: string) => {
+    if (agentId === '.' || agentId === '..') return; // a whole dot segment would resolve outside /agents/ even when encoded
     if (!confirm(`Are you sure you want to delete agent ${agentId}?`)) {
       return;
     }
 
     try {
-      await apiClient.delete(`/agents/${agentId}`);
+      await apiClient.delete(`/agents/${encodeURIComponent(agentId)}`);
       await fetchAgents();
     } catch (err: any) {
       alert(`Failed to delete agent: ${err.message}`);

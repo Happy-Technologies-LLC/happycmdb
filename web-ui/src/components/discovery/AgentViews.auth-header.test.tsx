@@ -1,8 +1,8 @@
 // Copyright 2026 Happy Technologies LLC
 // SPDX-License-Identifier: Apache-2.0
 // HAP-1234: the Agent views call /agents through the shared apiClient, so the stored session's Bearer header is sent.
-import { beforeEach, expect, it, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { beforeEach, expect, it, onTestFinished, vi } from 'vitest';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import axios from 'axios';
 import type { InternalAxiosRequestConfig } from 'axios';
 vi.mock('@happy-technologies/design-system', () => ({ Icon: () => null, Eyebrow: () => null }));
@@ -41,4 +41,25 @@ it('AgentSelector sends the header on /agents and /agents/find-best and shows th
   expect(await screen.findByText(AGENTS[0].hostname, { selector: 'code' })).toBeInTheDocument();
   expect(sent('/agents')[0].params).toEqual({ status: 'active', provider: 'nmap' });
   expect(JSON.parse(sent('/agents/find-best')[0].data)).toEqual({ targetNetworks: ['10.0.0.0/8'], provider: 'nmap' });
+});
+const clickDelete = async (id: string) => { // an agent picks its own agent_id at registration
+  AGENTS.push({ ...AGENTS[0], agent_id: id, hostname: 'syn-dots.example.invalid' });
+  onTestFinished(() => { AGENTS.pop(); });
+  vi.spyOn(window, 'confirm').mockReturnValue(true);
+  render(<AgentList />);
+  fireEvent.click(within((await screen.findByText('syn-dots.example.invalid')).closest('tr')!).getByRole('button'));
+};
+it('AgentList deletes an agent_id containing ../ only inside /api/v1/agents/ (HAP-1234 S1)', async () => {
+  const id = ['..', 'reconciliation', 'rules', 'r1'].join('/');
+  await clickDelete(id);
+  await waitFor(() => expect(seen.some((c) => c.method === 'delete')).toBe(true));
+  const del = seen.find((c) => c.method === 'delete')!;
+  const sentPath = new URL(`${del.baseURL ?? ''}${del.url}`, window.location.origin).pathname; // dot segments resolved, as a browser does
+  expect(sentPath).toMatch(/^\/api\/v1\/agents\/[^/]+$/);
+  expect(decodeURIComponent(sentPath.split('/').pop()!)).toBe(id);
+});
+it.each(['.', '..'])('AgentList sends no DELETE for the dot-segment agent_id %j (HAP-1234 S1)', async (id) => {
+  await clickDelete(id);
+  expect(window.confirm).not.toHaveBeenCalled(); // the handler stops before confirm, so no DELETE can follow
+  expect(seen.some((c) => c.method === 'delete')).toBe(false);
 });

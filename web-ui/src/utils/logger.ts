@@ -2,28 +2,28 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Frontend Logger Utility
+ * Frontend Logger Utility. Fixed text only (HAP-1210): no meta argument; log a caught error with logClientError.
  */
 
 export const logger = {
-  info: (message: string, meta?: any) => {
+  info: (message: string) => {
     if (process.env.NODE_ENV === 'development') {
-      console.log(`[INFO] ${message}`, meta || '');
+      console.log(`[INFO] ${message}`);
     }
   },
 
-  debug: (message: string, meta?: any) => {
+  debug: (message: string) => {
     if (process.env.NODE_ENV === 'development') {
-      console.debug(`[DEBUG] ${message}`, meta || '');
+      console.debug(`[DEBUG] ${message}`);
     }
   },
 
-  warn: (message: string, meta?: any) => {
-    console.warn(`[WARN] ${message}`, meta || '');
+  warn: (message: string) => {
+    console.warn(`[WARN] ${message}`);
   },
 
-  error: (message: string, meta?: any) => {
-    console.error(`[ERROR] ${message}`, meta || '');
+  error: (message: string) => {
+    console.error(`[ERROR] ${message}`);
   },
 };
 

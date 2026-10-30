@@ -66,6 +66,9 @@ jobs:
       - name: Verify the credential edit dialog never sends the redacted secret back (HAP-1227)
         run: npm run test:run --workspace=@cmdb/web-ui -- --config vitest.connector-wizard.config.ts src/pages/Credentials.edit-secrets.test.tsx
 
+      - name: Verify no web-ui source logs a raw error or object, and the WebSocket hook still connects (HAP-1210 S2b)
+        run: npm run test:run --workspace=@cmdb/web-ui -- --config vitest.connector-wizard.config.ts src/utils/logger.test.ts src/hooks/useWebSocket.test.tsx
+
       - name: Upload unit test coverage
         uses: codecov/codecov-action@v3
         with:
@@ -114,11 +117,12 @@ jobs:
         run: npm ci
       - name: Typecheck and bundle web UI
         run: npm run build --workspace=web-ui
-      - name: Verify built web UI references no Google Fonts or api.happycmdb.io (HAP-1211 H0)
+      - name: Verify built web UI references no Google Fonts or api.happycmdb.io and has no inline script (HAP-1211 H0, HAP-1210 S2b)
         run: |
           test -f web-ui/dist/index.html || { echo "web-ui/dist/index.html missing" >&2; exit 1; }
           rc=0; grep -rlE --include='*.html' --include='*.js' --include='*.css' 'fonts\.(googleapis|gstatic)\.com|api\.happycmdb\.io' web-ui/dist || rc=$?
           test "$rc" -eq 1 || { echo "third-party origin in web-ui/dist (or grep error $rc)" >&2; exit 1; }
+          if tr '\n' ' ' < web-ui/dist/index.html | grep -oiE '<script(\s[^>]*)?>' | grep -viqE '\ssrc\s*='; then echo "inline <script> in web-ui/dist/index.html" >&2; exit 1; fi
 
   integration-tests:
     name: Integration Tests

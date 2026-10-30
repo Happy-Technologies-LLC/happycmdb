@@ -5,6 +5,7 @@ import React, { Component, ErrorInfo, ReactNode } from 'react';
 import { Icon } from '@happy-technologies/design-system';
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { logClientError } from '@/utils/logger';
 
 interface Props {
   children: ReactNode;
@@ -35,7 +36,7 @@ class ErrorBoundary extends Component<Props, State> {
   }
 
   componentDidCatch(error: Error, errorInfo: ErrorInfo) {
-    console.error('Error caught by ErrorBoundary:', error, errorInfo);
+    logClientError('Render error', error);
     this.setState({
       error,
       errorInfo,

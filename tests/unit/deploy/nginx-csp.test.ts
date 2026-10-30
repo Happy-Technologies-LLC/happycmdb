@@ -4,6 +4,7 @@ import { resolve } from 'path';
 
 const STATIC = /~\* .*\bjs\b/;
 const STRICT = [
+  "default-src 'self'",
   "script-src 'self'",
   "object-src 'none'",
   "base-uri 'none'",
@@ -28,6 +29,7 @@ it.each(['web-ui/nginx.conf', 'infrastructure/docker/nginx.conf'])('%s: SPA CSP'
     const [[, policy, always]] = csp;
     expect(always).toBe('always');
     expect(policy.split(/\s*;\s*/)).toEqual(expect.arrayContaining(STRICT));
+    expect(policy.match(/(?:^|;)\s*default-src\b/g)).toHaveLength(1);
     expect(policy).not.toMatch(/connect-src [^;]*api\.happycmdb\.io/);
   }
 });

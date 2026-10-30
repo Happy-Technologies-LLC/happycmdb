@@ -16,6 +16,7 @@ import {
 } from '@/components/ui/table';
 import { Icon } from '@happy-technologies/design-system';
 import { formatDistanceToNow } from 'date-fns';
+import { logClientError } from '@/utils/logger';
 
 interface DiscoveryAgent {
   id: string;
@@ -51,7 +52,7 @@ export const AgentList: React.FC = () => {
       setError(null);
     } catch (err: any) {
       setError(err.message || 'Failed to fetch agents');
-      console.error('Error fetching agents:', err);
+      logClientError('Error fetching agents:', err);
     } finally {
       setLoading(false);
     }

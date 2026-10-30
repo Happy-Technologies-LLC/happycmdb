@@ -197,7 +197,6 @@ export const DependencyGraph: React.FC<DependencyGraphProps> = ({
     cy.on('tap', 'node', (evt) => {
       const node = evt.target;
       const data = node.data();
-      console.log('Node clicked:', data);
     });
 
     cyRef.current = cy;

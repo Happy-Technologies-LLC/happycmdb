@@ -7,6 +7,7 @@ import { LiquidGlass } from '@/components/ui/liquid-glass';
 import { Badge } from '@/components/ui/badge';
 import { Eyebrow } from '@/components/ui/eyebrow';
 import { Icon } from '@happy-technologies/design-system';
+import { logClientError } from '@/utils/logger';
 
 interface AgentStats {
   totalAgents: number;
@@ -69,7 +70,7 @@ export const AgentDashboard: React.FC = () => {
 
       setStats(calculated);
     } catch (err) {
-      console.error('Error fetching agent stats:', err);
+      logClientError('Error fetching agent stats:', err);
     }
   };
 

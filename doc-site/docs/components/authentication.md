@@ -111,8 +111,8 @@ Implement these endpoints in your backend:
 ### Authentication
 ```
 POST   /api/v1/auth/login           - { username, password } → { _accessToken, _expiresIn, _user } + cmdb_rt cookie
-POST   /api/v1/auth/refresh         - cmdb_rt cookie + X-CMDB-Auth: 1 → new access token + new cmdb_rt cookie
-POST   /api/v1/auth/logout          - (no header, no session) → expires the cmdb_rt cookie; stateless
+POST   /api/v1/auth/refresh         - cmdb_rt cookie + X-CMDB-Auth: 1 → new access token + new cmdb_rt (full TTL, sliding, no absolute cap)
+POST   /api/v1/auth/logout          - (no header, no session) → expires only this browser's cmdb_rt; stateless (captured cookies stay renewable, see Logout)
 GET    /api/v1/auth/me              - Get current user
 PUT    /api/v1/auth/profile         - { name, avatar }
 PUT    /api/v1/auth/password        - { currentPassword, newPassword }

@@ -34,3 +34,10 @@ it('the edge CSP connect-src does not list api.happycmdb.io, which the built SPA
   expect(conf).toMatch(/connect-src 'self'/);
   expect(conf).not.toMatch(/connect-src [^;"]*api\.happycmdb\.io/);
 });
+
+it('no non-test web-ui/src file calls a localhost or 127.0.0.1 origin, which the CSP blocks (HAP-1234)', () => {
+  const files = (readdirSync(SRC, { recursive: true }) as string[]).filter((f) => /\.(?:[cm]?[jt]sx?|html)$/.test(f) && !/(?:\.test\.|__tests__)/.test(f));
+  expect(files).toContain('components/discovery/AgentList.tsx');
+  const hits = files.filter((f) => /localhost:3000|(?:https?:)?\/\/(?:localhost|127\.0\.0\.1)\b/.test(readFileSync(resolve(SRC, f), 'utf8')));
+  expect(hits).toEqual([]);
+});

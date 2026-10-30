@@ -15,6 +15,10 @@ import {
 import type { AuthenticatedRequest } from '../../auth/types';
 import { requestOrganizationId } from '../../middleware/auth.middleware';
 
+/** What every credential read returns instead of the secret. HAP-1227: an update carrying it is refused. */
+export const REDACTED_PLACEHOLDER = '***REDACTED***';
+export const INVALID_CREDENTIALS_UPDATE = 'Invalid credentials update';
+
 /**
  * Unified Credential Controller
  * Handles REST API requests for managing protocol-based credentials
@@ -43,7 +47,7 @@ export class UnifiedCredentialController {
       // Redact sensitive credentials before returning
       const safeCredential = {
         ...credential,
-        credentials: '***REDACTED***',
+        credentials: REDACTED_PLACEHOLDER,
       };
 
       res.status(201).json({
@@ -134,7 +138,7 @@ export class UnifiedCredentialController {
       // Never expose decrypted credential material on API reads.
       const safeCredential = {
         ...credential,
-        credentials: '***REDACTED***',
+        credentials: REDACTED_PLACEHOLDER,
       };
 
       res.status(200).json({
@@ -174,7 +178,7 @@ export class UnifiedCredentialController {
       // Redact sensitive credentials before returning
       const safeCredential = {
         ...credential,
-        credentials: '***REDACTED***',
+        credentials: REDACTED_PLACEHOLDER,
       };
 
       res.status(200).json({
@@ -327,7 +331,7 @@ export class UnifiedCredentialController {
         ...result,
         credential: {
           ...result.credential,
-          credentials: '***REDACTED***',
+          credentials: REDACTED_PLACEHOLDER,
         },
       };
 
@@ -359,7 +363,7 @@ export class UnifiedCredentialController {
         ...result,
         credential: {
           ...result.credential,
-          credentials: '***REDACTED***',
+          credentials: REDACTED_PLACEHOLDER,
         },
       }));
 

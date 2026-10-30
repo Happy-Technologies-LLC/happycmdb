@@ -1,8 +1,11 @@
 // Copyright 2026 Happy Technologies LLC
 // SPDX-License-Identifier: Apache-2.0
 
-import { Schema } from 'joi';
+import { Schema, type ValidationErrorItem } from 'joi';
 import { validate, logger } from '@cmdb/common';
+
+/** HAP-1227 P1: Joi details carry the client value (context.value, _original) and messages may quote it; log only type and path. */
+const loggableDetails = (details?: ValidationErrorItem[]) => details?.map(({ type, path }) => ({ type, path }));
 
 /**
  * Validation middleware factory
@@ -31,7 +34,7 @@ export function validateRequest(
     if (!result.valid) {
       logger.warn('Request validation failed', {
         source,
-        _errors: result.details,
+        _errors: loggableDetails(result.details),
         _path: req.path,
       });
 
@@ -89,7 +92,7 @@ export function validateMultiple(validations: {
 
     if (errors.length > 0) {
       logger.warn('Request validation failed', {
-        errors,
+        errors: errors.map((e) => ({ source: e.source, _details: loggableDetails(e._details) })),
         _path: req.path,
       });
 
@@ -145,7 +148,7 @@ export function validateOptional(
     if (!result.valid) {
       logger.warn('Request validation failed', {
         source,
-        _errors: result.details,
+        _errors: loggableDetails(result.details),
         _path: req.path,
       });
 

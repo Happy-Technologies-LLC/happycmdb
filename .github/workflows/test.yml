@@ -63,6 +63,9 @@ jobs:
       - name: Verify the credential form sends SSH and WinRM ports as JSON numbers (HAP-444 K1)
         run: npm run test:run --workspace=@cmdb/web-ui -- --config vitest.connector-wizard.config.ts src/components/credentials/CredentialForm.port.test.tsx
 
+      - name: Verify the credential edit dialog never sends the redacted secret back (HAP-1227)
+        run: npm run test:run --workspace=@cmdb/web-ui -- --config vitest.connector-wizard.config.ts src/pages/Credentials.edit-secrets.test.tsx
+
       - name: Upload unit test coverage
         uses: codecov/codecov-action@v3
         with:

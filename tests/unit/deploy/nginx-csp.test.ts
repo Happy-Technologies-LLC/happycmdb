@@ -9,9 +9,9 @@ const STRICT = [
   "base-uri 'none'",
   "frame-ancestors 'none'",
 ];
-const ADD_HEADER = /\badd_header\s+(\S+)\s+(?:"([^"]*)"|([^\s;]+))(?:\s+(always))?\s*;/g;
+const ADD_HEADER = /\badd_header\s+(\S+)\s+(?:"([^"]*)"|'([^']*)'|([^\s;]+))(?:\s+(always))?\s*;/g;
 const addHeaders = (text: string) =>
-  [...text.matchAll(ADD_HEADER)].map(([, n, q, v, a]) => [n, q ?? v, a ?? '']);
+  [...text.matchAll(ADD_HEADER)].map(([, n, dq, sq, v, a]) => [n, dq ?? sq ?? v, a ?? '']);
 
 it.each(['web-ui/nginx.conf', 'infrastructure/docker/nginx.conf'])('%s: SPA CSP', (file) => {
   const conf = readFileSync(resolve(__dirname, '../../..', file), 'utf8').replace(/#.*$/gm, '');

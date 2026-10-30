@@ -89,7 +89,8 @@ const EXPAND = { depth: null, maxArrayLength: null, maxStringLength: null };
 
 /** discoverHost on a fake NodeSSH, capturing every log level, console and stdout/stderr (retry sleeps on fake timers). */
 async function k3(connect: jest.Mock, { stdout = (_: string) => '', pin = PIN, fakeTimers = true } = {}) {
-  const execCommand = jest.fn(async (command: string) => ({ stdout: stdout(command), stderr: '', code: 0, signal: null }));
+  // Every command also writes the marker to stderr: no success-path test may let stderr reach the payload.
+  const execCommand = jest.fn(async (command: string) => ({ stdout: stdout(command), stderr: `${MARKER} stderr`, code: 0, signal: null }));
   jest.mocked(NodeSSH).mockImplementation(() => ({ connect, dispose: jest.fn(), execCommand }) as never);
   const [jestConsole, level] = [global.console, logger.level];
   [global.console, logger.level] = [new Console(process.stdout, process.stderr), 'silly'];
@@ -118,6 +119,21 @@ it.each([
   const connect = jest.fn().mockRejectedValue(Object.assign(new Error(MARKER), { level }));
   expect((await k3(connect)).result).toStrictEqual(new SshDiscoveryError(code));
   expect(connect).toHaveBeenCalledTimes(attempts);
+});
+
+it.each(['ECONNREFUSED', 'EHOSTUNREACH', 'ENETUNREACH', 'ETIMEDOUT'])('(b) socket code %s is retried up to 3 connects', async code => {
+  const connect = jest.fn().mockRejectedValue(Object.assign(new Error(MARKER), { code }));
+  expect((await k3(connect)).result).toStrictEqual(new SshDiscoveryError(ERR_SSH_UNREACHABLE));
+  expect(connect).toHaveBeenCalledTimes(3);
+});
+
+it('(c) keeps rejected-command errors and stderr out of the CI payload', async () => {
+  const { result } = await k3(jest.fn().mockResolvedValue(undefined), { stdout: command => {
+    if (/^(crontab|uptime|hostname)/.test(command)) throw new Error(`${MARKER} channel open failure`); // a rejected exec
+    return '1';
+  } });
+  expect(result).toMatchObject({ _type: 'server', metadata: { _system: { _uptime: '' }, _automation: { _cron_job_count: 0 } } });
+  expect(`${inspect(result, EXPAND)}\n${JSON.stringify(result)}`).not.toContain(MARKER);
 });
 
 it('(c) stores server-side counts only: no cron line, login or mount source reaches the metadata', async () => {

@@ -28,7 +28,7 @@ jest.mock('@cmdb/common', () => {
 });
 jest.mock('@cmdb/database', () => ({
   getPostgresClient: () => ({ pool: { query: async () => ({ rows: [mockRow] }) } }),
-  getScheduleConfigStore: () => ({}),
+  getScheduleConfigStore: () => ({ seedIfAbsent: async (_kind: string, _provider: string, seed: unknown) => seed }),
 }));
 
 import { DiscoveryScheduler } from '../discovery-scheduler';
@@ -54,4 +54,25 @@ it.each([
   const scheduling = new DiscoveryScheduler(undefined, false).scheduleDefinition('d1', 'org');
   await (queued ? expect(scheduling).resolves.toBeUndefined() : expect(scheduling).rejects.toThrow(/Unsafe legacy/));
   expect(mockAdded.map(([, , data]) => data.config)).toStrictEqual(queued ? [config] : []);
+});
+
+const providerSchedule = (provider: 'nmap' | 'ssh', config: unknown) =>
+  ({ _provider: provider, _queueName: `discovery-${provider}`, _cronPattern: '0 2 * * *', _enabled: true, _config: config });
+
+it('start() schedules the provider repeatable with a credential-free _config', async () => {
+  const config = { targets: ['192.0.2.22'], credentials: { password: SENTINEL }, credentialsId: SENTINEL, password: SENTINEL };
+  await expect(new DiscoveryScheduler([providerSchedule('nmap', config)], false).start()).resolves.toBeUndefined();
+  expect(mockAdded).toHaveLength(1);
+  expect(mockAdded[0].slice(0, 2)).toEqual(['discovery-nmap', 'discovery-nmap']);
+  expect(mockAdded[0][2]._config).toStrictEqual({ targets: ['192.0.2.22'] });
+});
+
+it('ssh provider schedules are refused before any addRepeatableJob', async () => {
+  const ssh = providerSchedule('ssh', { targets: ['192.0.2.23'] });
+  const scheduler = new DiscoveryScheduler([ssh], false);
+  await expect(scheduler.start()).resolves.toBeUndefined();
+  // Every public caller pre-filters ssh, so the builder's own refusal is reached directly.
+  await expect(scheduler['scheduleDiscoveryJob'](ssh))
+    .rejects.toThrow(/^Credential-backed discovery execution is unavailable$/);
+  expect(mockAdded).toEqual([]);
 });

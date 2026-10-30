@@ -9,6 +9,7 @@ import { NodeSSH } from 'node-ssh';
 import { CredentialProtocolAdapter, logger } from '@cmdb/common';
 import type { SSHConfig, UnifiedCredential } from '@cmdb/common';
 import { SSHDiscoveryWorker } from '../ssh-discovery.worker';
+import { HostKeyType, hostKeyFingerprint } from '../ssh-host-key';
 
 jest.mock('dns/promises', () => ({ lookup: jest.fn() }));
 jest.mock('node-ssh', () => ({ NodeSSH: jest.fn() }));
@@ -21,7 +22,9 @@ const PEM_LABEL = ['OPENSSH', 'PRIVATE', 'KEY'].join(' ');
 const KEY = `-----BEGIN ${PEM_LABEL}-----\n${MARKER}-KEY\n-----END ${PEM_LABEL}-----\n`;
 const PASSPHRASE = [MARKER, 'PASS'].join('-');
 const PASSWORD = [MARKER, 'PW'].join('-');
-const TIMEOUTS = { readyTimeout: 10000, keepaliveInterval: 5000 };
+const PIN = { keyType: HostKeyType.Ed25519, fingerprint: hostKeyFingerprint(Buffer.from('k2-synthetic-blob')) };
+const TIMEOUTS = { readyTimeout: 10000, keepaliveInterval: 5000,
+  hostVerifier: expect.any(Function), algorithms: { serverHostKey: [PIN.keyType] } };
 const toAuth = (protocol: 'ssh_key' | 'ssh_password', credentials: Record<string, unknown>) =>
   CredentialProtocolAdapter.toSSHConfig({ protocol, credentials } as unknown as UnifiedCredential, '8.8.8.8');
 
@@ -41,7 +44,7 @@ async function discover(auth: SSHConfig) {
   const sinks: jest.SpyInstance[] = [jest.spyOn(process.stdout, 'write'), jest.spyOn(process.stderr, 'write'),
     ...logger.transports.map(transport => jest.spyOn(transport as unknown as { log: () => void }, 'log'))];
   try {
-    await new SSHDiscoveryWorker().discoverHost('run-1', { host: auth.host, port: auth.port }, auth);
+    await new SSHDiscoveryWorker().discoverHost('run-1', { host: auth.host, port: auth.port }, auth, PIN);
   } finally {
     [global.console, logger.level] = [jestConsole, level];
   }
@@ -71,6 +74,6 @@ it('exposes only the adapter entry point and refuses an auth without a secret be
   expect(worker['discover']).toBeUndefined();
   expect(worker['discoverHosts']).toBeUndefined();
   await expect(new SSHDiscoveryWorker().discoverHost('run-1', { host: '8.8.8.8', port: 22 },
-    { host: '8.8.8.8', port: 22, username: 'svc' })).rejects.toThrow('SSH credential incomplete');
+    { host: '8.8.8.8', port: 22, username: 'svc' }, PIN)).rejects.toThrow('SSH credential incomplete');
   expect(NodeSSH).not.toHaveBeenCalled();
 });

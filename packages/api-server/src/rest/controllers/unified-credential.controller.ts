@@ -10,6 +10,7 @@ import {
   AuthProtocol,
   CredentialScope,
   logger,
+  CredentialProtocolAdapter,
 } from '@cmdb/common';
 import type { AuthenticatedRequest } from '../../auth/types';
 import { requestOrganizationId } from '../../middleware/auth.middleware';
@@ -182,6 +183,11 @@ export class UnifiedCredentialController {
         message: 'Credential updated successfully',
       });
     } catch (error) {
+      // HAP-444 K1: the CRUD service refuses an invalid SSH port against the stored protocol; same fixed, value-free 400 as the route rule.
+      if (error instanceof Error && error.message === CredentialProtocolAdapter.INVALID_SSH_PORT) {
+        res.status(400).json({ _success: false, _error: 'Validation Error', _message: CredentialProtocolAdapter.INVALID_SSH_PORT });
+        return;
+      }
       logger.error('Error updating credential', { error, id: req.params['id'] });
 
       // Check for not found error

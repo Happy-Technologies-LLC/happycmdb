@@ -57,6 +57,10 @@ const CREDENTIAL_SCOPES: CredentialScope[] = [
   'universal',
 ];
 
+/** HAP-1227: whether a new secret value was typed. Reads return only a placeholder, so an edit starts empty and sends credentials only if this holds. */
+export const hasSecretEntry = (credentials: Record<string, unknown> = {}): boolean =>
+  Object.values(credentials).some((v) => v !== '' && v !== undefined);
+
 export const CredentialForm: React.FC<CredentialFormProps> = ({
   credential,
   onSubmit,
@@ -75,7 +79,8 @@ export const CredentialForm: React.FC<CredentialFormProps> = ({
       description: credential?.description || '',
       protocol: credential?.protocol || 'aws_iam',
       scope: credential?.scope || 'universal',
-      credentials: credential?.credentials || {},
+      // HAP-1227: reads return a redaction placeholder, never the secret, so an edit starts with an empty secret section.
+      credentials: {},
       affinity: credential?.affinity || { priority: 5 },
       tags: credential?.tags || [],
     },
@@ -662,7 +667,8 @@ export const CredentialForm: React.FC<CredentialFormProps> = ({
 
   return (
     <Card className="p-6">
-      <form onSubmit={onFormSubmit} className="space-y-6">
+      {/* HAP-1227: a metadata-only edit skips the native required-secret gate; once a secret is typed, the full set is required. */}
+      <form onSubmit={onFormSubmit} noValidate={!!credential && !hasSecretEntry(credentialsData)} className="space-y-6">
         {/* Basic Information */}
         <div className="space-y-4">
           <div className="space-y-2">

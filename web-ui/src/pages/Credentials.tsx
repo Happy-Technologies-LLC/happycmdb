@@ -22,7 +22,7 @@ import {
   FormDialogBody,
   FormDialogTitle,
 } from '@/components/ui/form-dialog';
-import CredentialForm from '@/components/credentials/CredentialForm';
+import CredentialForm, { hasSecretEntry } from '@/components/credentials/CredentialForm';
 import CredentialDetail from '@/components/credentials/CredentialDetail';
 import {
   credentialService,
@@ -115,7 +115,8 @@ export const Credentials: React.FC = () => {
       await credentialService.updateCredential(selectedCredential.id, {
         name: data.name,
         description: data.description,
-        credentials: data.credentials,
+        // HAP-1227: the stored secret stays unless a new payload was typed; the redacted read is never sent back.
+        ...(hasSecretEntry(data.credentials) && { credentials: data.credentials }),
         tags: data.tags,
       });
       setEditDialogOpen(false);

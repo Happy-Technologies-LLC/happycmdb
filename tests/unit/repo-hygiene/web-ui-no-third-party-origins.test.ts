@@ -1,0 +1,30 @@
+// HAP-1211 C: the SPA requests no third-party font, so a 'self'-only CSP keeps its brand fonts.
+import { readdirSync, readFileSync } from 'fs';
+import { resolve } from 'path';
+
+const REPO = resolve(__dirname, '../../..');
+const SRC = resolve(REPO, 'web-ui/src');
+const REMOTE =
+  /(?:@import|url\()\s*(?:url\()?\s*['"]?(?:https?:)?\/\/[^'")\s;]*|fonts\.(?:googleapis|gstatic)\.com/g;
+
+it('web-ui CSS loads no stylesheet or font from another origin', () => {
+  const all = readdirSync(SRC, { recursive: true }) as string[];
+  const files = all.filter((f) => f.endsWith('.css'));
+  expect(files).toContain('styles/ds/tokens/fonts.css');
+  const hits = files.flatMap((f) =>
+    [...readFileSync(resolve(SRC, f), 'utf8').matchAll(REMOTE)].map((m) => `${f}: ${m[0]}`)
+  );
+  expect(hits).toEqual([]);
+});
+
+it('the font variables lead with the bundled Inter Variable / Jost Variable faces', () => {
+  const fonts = readFileSync(resolve(SRC, 'styles/ds/tokens/fonts.css'), 'utf8');
+  expect(fonts).toMatch(/--font-display:\s*"Inter Variable",/);
+  expect(fonts).toMatch(/--font-body:\s*"Jost Variable",/);
+});
+
+it('the edge CSP connect-src does not list api.happycmdb.io, which the built SPA never calls', () => {
+  const conf = readFileSync(resolve(REPO, 'infrastructure/docker/nginx.conf'), 'utf8');
+  expect(conf).toMatch(/connect-src 'self'/);
+  expect(conf).not.toMatch(/connect-src [^;"]*api\.happycmdb\.io/);
+});

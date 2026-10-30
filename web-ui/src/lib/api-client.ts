@@ -6,6 +6,7 @@
  */
 
 import axios, { AxiosInstance, AxiosRequestConfig } from 'axios';
+import { redactAxiosError } from './redact-axios-error';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api/v1';
 
@@ -41,7 +42,7 @@ class APIClient {
           localStorage.removeItem('auth_token');
           window.location.href = '/login';
         }
-        return Promise.reject(error);
+        return Promise.reject(redactAxiosError(error));
       }
     );
   }

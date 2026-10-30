@@ -213,7 +213,7 @@ export class AuthController {
    * Logout endpoint
    */
   private async logout(_req: AuthenticatedRequest, res: Response): Promise<void> {
-    // Stateless (founder decision, H1b not built): nothing is stored to revoke; a captured refresh token stays valid until expiry.
+    // Stateless (founder decision, H1b not built): nothing is stored to revoke; a captured refresh token is renewable until the credential epoch changes; see HAP-1285.
     clearRefreshCookie(res);
 
     res.json({

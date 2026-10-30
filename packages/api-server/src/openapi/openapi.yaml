@@ -196,7 +196,7 @@ paths:
   /auth/logout:
     post:
       tags: [Authentication]
-      summary: "Expire this browser's cmdb_rt (no header, no access token). Stateless: a captured cmdb_rt can be renewed by refresh (sliding TTL, no absolute cap) until an operator password rotation, disable or delete; a self-service password change does not end it"
+      summary: "Expire this browser's cmdb_rt (no header, no access token). Stateless: a captured cmdb_rt can be renewed by refresh (sliding TTL, no absolute cap) until an operator password rotation, disable or delete; a self-service password change does not end it. An absolute 7-day session cap from login, and ending all sessions on a self-service password change, are coming in HAP-1285; until then the lifetime is as described above."
       security: []
       responses:
         '200':

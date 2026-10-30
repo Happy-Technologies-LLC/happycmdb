@@ -125,7 +125,7 @@ The refresh token is not in the body: it is set as `cmdb_rt=<refresh JWT>; Max-A
 
 **Token Lifetimes**:
 - **Access Token**: 15 minutes by default (`JWT_ACCESS_TOKEN_EXPIRES_IN`)
-- **Refresh Token**: 7 days by default (`JWT_REFRESH_TOKEN_EXPIRES_IN`); each refresh issues a new one with a full TTL (sliding), with no absolute session cap
+- **Refresh Token**: 7 days by default (`JWT_REFRESH_TOKEN_EXPIRES_IN`); each refresh issues a new one with a full TTL (sliding), with no absolute session cap. An absolute 7-day session cap from login, and ending all sessions on a self-service password change, are coming in HAP-1285; until then the lifetime is as described above.
 
 **Error Responses**:
 - `401 Unauthorized` - Invalid credentials
@@ -146,7 +146,7 @@ The refresh token is not in the body: it is set as `cmdb_rt=<refresh JWT>; Max-A
 
 **Endpoint**: `POST /api/auth/logout` → `{ "success": true, "message": "Logged out successfully" }`. Expires the `cmdb_rt` cookie (`Max-Age=0`, past `Expires`, same attributes); no header and no access token are required.
 
-**Stateless** (founder decision, HAP-1211 H1b): logout only clears this browser's cookie. Each refresh issues a new cookie with a full TTL and there is no absolute session cap, so a refresh cookie captured before logout can be renewed indefinitely (by refreshing at least once per TTL) until an operator password rotation changes the user's credential generation, or the account is disabled or deleted. A self-service password change does not end it. The access token stays valid until it expires (15 minutes by default).
+**Stateless** (founder decision, HAP-1211 H1b): logout only clears this browser's cookie. Each refresh issues a new cookie with a full TTL and there is no absolute session cap, so a refresh cookie captured before logout can be renewed indefinitely (by refreshing at least once per TTL) until an operator password rotation changes the user's credential generation, or the account is disabled or deleted. A self-service password change does not end it. The access token stays valid until it expires (15 minutes by default). An absolute 7-day session cap from login, and ending all sessions on a self-service password change, are coming in HAP-1285; until then the lifetime is as described above.
 
 ---
 

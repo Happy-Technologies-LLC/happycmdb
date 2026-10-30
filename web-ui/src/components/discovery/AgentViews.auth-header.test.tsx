@@ -39,4 +39,6 @@ it('AgentSelector sends the header on /agents and /agents/find-best and shows th
   await expectAuthorized('/agents');
   await expectAuthorized('/agents/find-best');
   expect(await screen.findByText(AGENTS[0].hostname, { selector: 'code' })).toBeInTheDocument();
+  expect(sent('/agents')[0].params).toEqual({ status: 'active', provider: 'nmap' });
+  expect(JSON.parse(sent('/agents/find-best')[0].data)).toEqual({ targetNetworks: ['10.0.0.0/8'], provider: 'nmap' });
 });

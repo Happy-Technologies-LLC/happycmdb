@@ -11,10 +11,13 @@ const SHARED = ['lib/api-client.ts', 'services/api.ts', 'services/ci.service.ts'
 // Existing offenders not fixed yet, one commented entry per file. Empty at 878f62d once the Agent views moved to
 // apiClient: the other candidates only call react-query refetch() or import axios types.
 const OFFENDERS: string[] = [];
+// A value binding from 'axios': default, namespace or named. `import type` and all-`type` specifier lists stay allowed.
+const valueImport = { test: (t: string) => [...t.matchAll(/\bimport\s+(?!type\s)([^'";]*?)\s*from\s*['"]axios['"]/g)].some(([, clause]) => !/^\{(\s*type\s+[\w$]+(\s+as\s+[\w$]+)?\s*,?)*\s*\}$/.test(clause)) };
 const RULES = [
-  /import\s+(\*\s+as\s+)?[\w$]+\s*(,[^;]*)?\s+from\s+['"]axios['"]/, // a default or namespace axios import
+  valueImport,
+  /\b(require|import)\s*\(\s*['"]axios['"]\s*\)/, // require('axios') or a dynamic import('axios')
   /\baxios\s*(\.\s*(get|post|put|patch|delete|request|create)\s*)?\(/, // a direct axios call
-  /^(?=[\s\S]*(\/api\/v1|API_BASE_URL))[\s\S]*(?<![\w$.])fetch\s*\(/, // a fetch in a file that builds API URLs
+  /^(?=[\s\S]*(\/api\/v1|API_BASE_URL))[\s\S]*(?<![\w$])fetch\s*\(/, // fetch, window./globalThis./self.fetch, in a file that builds API URLs
 ];
 const walk = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(path.join(dir, e.name)) : [path.join(dir, e.name)]));
 const sources = walk(SRC).map((f) => path.relative(SRC, f)).filter((f) => /\.tsx?$/.test(f) && !/\.(test|spec)\.tsx?$|(^|\/)(__tests__|tests|mocks)\//.test(f));

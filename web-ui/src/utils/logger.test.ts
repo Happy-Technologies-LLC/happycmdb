@@ -58,6 +58,22 @@ describe('logClientError (HAP-1210 S2a, T1)', () => {
     expect(logged(axiosError(code))).toEqual([`[ERROR] ${LABEL}`, { errorClass: 'AxiosError' }]);
   });
 
+  it('emits the code it checked, even when a getter changes its value after the first read', () => {
+    const error = axiosError('ERR_NETWORK');
+    let reads = 0;
+    Object.defineProperty(error, 'code', { get: () => (++reads === 1 ? 'ERR_NETWORK' : MARK) });
+    expect(logged(error)).toEqual([`[ERROR] ${LABEL}`, { errorClass: 'AxiosError', code: 'ERR_NETWORK' }]);
+  });
+
+  it('does not admit a code inherited from Object.prototype', () => {
+    Object.defineProperty(Object.prototype, MARK, { value: true, configurable: true });
+    try {
+      expect(logged(axiosError(MARK))).toEqual([`[ERROR] ${LABEL}`, { errorClass: 'AxiosError' }]);
+    } finally {
+      delete (Object.prototype as Record<string, unknown>)[MARK];
+    }
+  });
+
   it.each<[string, unknown, string]>([
     ['a plain Error', new Error(MARK), 'Error'],
     ['an Error renamed to the marker', Object.assign(new Error(MARK), { name: MARK }), 'NonError'],

@@ -22,6 +22,7 @@ import type {
   CredentialAffinity,
 } from '@/services/credential.service';
 import { formatProtocol, formatScope } from '@/lib/credential-display';
+import { logClientError } from '@/utils/logger';
 
 interface CredentialFormProps {
   credential?: UnifiedCredential;
@@ -144,7 +145,7 @@ export const CredentialForm: React.FC<CredentialFormProps> = ({
           ...json,
         });
       } catch (error) {
-        console.error('Failed to parse JSON file:', error);
+        logClientError('Failed to parse JSON file', error);
       }
     }
   };

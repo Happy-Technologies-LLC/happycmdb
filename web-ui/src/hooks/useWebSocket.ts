@@ -17,7 +17,7 @@
 
 import { useContext, useEffect, useRef, useState, useCallback } from 'react';
 import AuthContext from '@/contexts/AuthContext';
-import { logger } from '@/utils/logger';
+import { logClientError, logger } from '@/utils/logger';
 
 const WS_PROTOCOL = 'cmdb.v1';
 const MAX_RECONNECT_DELAY_MS = 60_000;
@@ -76,7 +76,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
       const host = process.env.REACT_APP_API_HOST || window.location.host.replace(':3001', ':3000');
       const wsUrl = `${protocol}//${host}/ws`;
 
-      logger.info('Connecting to WebSocket', { url: wsUrl });
+      logger.info('Connecting to WebSocket');
 
       const ws = new WebSocket(wsUrl, [WS_PROTOCOL, `bearer.${token}`]);
 
@@ -90,11 +90,11 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
       ws.onmessage = (event) => {
         try {
           const message: WebSocketMessage = JSON.parse(event.data);
-          logger.debug('WebSocket message received', { type: message.type });
+          logger.debug('WebSocket message received');
           setLastMessage(message);
           callbacksRef.current.onMessage?.(message);
         } catch (error) {
-          logger.error('Failed to parse WebSocket message', { error });
+          logClientError('Failed to parse WebSocket message', error);
         }
       };
 
@@ -131,13 +131,13 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
       };
 
       ws.onerror = (error) => {
-        logger.error('WebSocket error', { error });
+        logClientError('WebSocket error', error);
         callbacksRef.current.onError?.(error);
       };
 
       wsRef.current = ws;
     } catch (error) {
-      logger.error('Failed to create WebSocket connection', { error });
+      logClientError('Failed to create WebSocket connection', error);
     }
   }, [token, reconnect, reconnectInterval]);
 

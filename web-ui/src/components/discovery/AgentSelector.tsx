@@ -14,6 +14,7 @@ import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Icon } from '@happy-technologies/design-system';
+import { logClientError } from '@/utils/logger';
 
 interface Agent {
   id: string;
@@ -69,7 +70,7 @@ export const AgentSelector: React.FC<AgentSelectorProps> = ({
       });
       setAgents(response.data.data || []);
     } catch (err) {
-      console.error('Error fetching agents:', err);
+      logClientError('Error fetching agents:', err);
     } finally {
       setLoading(false);
     }
@@ -87,7 +88,7 @@ export const AgentSelector: React.FC<AgentSelectorProps> = ({
         setRecommendedAgent(response.data.data.agent_id);
       }
     } catch (err) {
-      console.error('Error finding best agent:', err);
+      logClientError('Error finding best agent:', err);
       setRecommendedAgent(null);
     }
   };

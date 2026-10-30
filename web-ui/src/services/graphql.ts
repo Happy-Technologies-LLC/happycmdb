@@ -5,6 +5,7 @@ import { ApolloClient, InMemoryCache, createHttpLink, from } from '@apollo/clien
 import { setContext } from '@apollo/client/link/context';
 import { onError } from '@apollo/client/link/error';
 import { gql } from '@apollo/client';
+import { logClientError, logger } from '@/utils/logger';
 
 // HTTP Link
 const httpLink = createHttpLink({
@@ -25,15 +26,11 @@ const authLink = setContext((_, { headers }) => {
 // Error Link - handle errors
 const errorLink = onError(({ graphQLErrors, networkError }) => {
   if (graphQLErrors) {
-    graphQLErrors.forEach(({ message, locations, path }) => {
-      console.error(
-        `[GraphQL error]: Message: ${message}, Location: ${locations}, Path: ${path}`
-      );
-    });
+    graphQLErrors.forEach(() => logger.error('GraphQL error'));
   }
 
   if (networkError) {
-    console.error(`[Network error]: ${networkError}`);
+    logClientError('GraphQL network error', networkError);
     if ('statusCode' in networkError && networkError.statusCode === 401) {
       localStorage.removeItem('auth_token');
       localStorage.removeItem('user');

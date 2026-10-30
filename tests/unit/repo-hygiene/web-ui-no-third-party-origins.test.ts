@@ -23,6 +23,13 @@ it('web-ui/index.html links, loads or imports nothing from another origin', () =
   expect([...(html.match(REMOTE_TAG) ?? []), ...(html.match(REMOTE) ?? [])]).toEqual([]);
 });
 
+// HAP-1210 S2b (H0-F1): script-src 'self' blocks any inline script, so the SPA shell must carry none.
+const INLINE_SCRIPT = /<script\b(?![^>]*\ssrc\s*=)[^>]*>/gi;
+it('web-ui/index.html has no inline <script> (one without src)', () => {
+  expect('<script type="module" src="/a.js"></script><SCRIPT\n type="module">x</SCRIPT>'.match(INLINE_SCRIPT)).toHaveLength(1);
+  expect(readFileSync(resolve(REPO, 'web-ui/index.html'), 'utf8').match(INLINE_SCRIPT)).toBeNull();
+});
+
 it('the font variables lead with the bundled Inter Variable / Jost Variable faces', () => {
   const fonts = readFileSync(resolve(SRC, 'styles/ds/tokens/fonts.css'), 'utf8');
   expect(fonts).toMatch(/--font-display:\s*"Inter Variable",/);

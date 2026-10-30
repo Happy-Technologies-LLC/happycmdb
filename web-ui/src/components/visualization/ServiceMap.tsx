@@ -248,7 +248,6 @@ export const ServiceMap: React.FC<ServiceMapProps> = ({
       const node = evt.target;
       const data = node.data();
       const nodeType = node.hasClass('business-service') ? 'service' : 'ci';
-      console.log('Node clicked:', nodeType, data);
       if (onNodeClick) {
         onNodeClick({ id: data.id, type: nodeType, data });
       }

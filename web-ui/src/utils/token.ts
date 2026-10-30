@@ -6,6 +6,8 @@
  * Handles token storage, retrieval, decoding, and validation
  */
 
+import { logClientError } from './logger';
+
 interface DecodedToken {
   id: string;
   email: string;
@@ -23,7 +25,7 @@ export const getToken = (): string | null => {
   try {
     return localStorage.getItem(TOKEN_KEY);
   } catch (error) {
-    console.error('Error retrieving token:', error);
+    logClientError('Token read failed', error);
     return null;
   }
 };
@@ -35,7 +37,7 @@ export const setToken = (token: string): void => {
   try {
     localStorage.setItem(TOKEN_KEY, token);
   } catch (error) {
-    console.error('Error storing token:', error);
+    logClientError('Token store failed', error);
   }
 };
 
@@ -46,7 +48,7 @@ export const removeToken = (): void => {
   try {
     localStorage.removeItem(TOKEN_KEY);
   } catch (error) {
-    console.error('Error removing token:', error);
+    logClientError('Token remove failed', error);
   }
 };
 
@@ -66,7 +68,7 @@ export const decodeToken = (token: string): DecodedToken | null => {
 
     return decoded as DecodedToken;
   } catch (error) {
-    console.error('Error decoding token:', error);
+    logClientError('Token decode failed', error);
     return null;
   }
 };

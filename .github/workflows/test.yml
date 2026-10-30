@@ -51,6 +51,9 @@ jobs:
       - name: Verify service health unknown state (HAP-772)
         run: npm run test:run --workspace=@cmdb/web-ui -- --config vitest.connector-wizard.config.ts src/components/health/service-health-unknown.test.tsx
 
+      - name: Verify discovery form submits credential_id only (HAP-774 S7)
+        run: npm run test:run --workspace=@cmdb/web-ui -- --config vitest.connector-wizard.config.ts src/components/discovery/DiscoveryDefinitionForm.credential.test.tsx
+
       - name: Upload unit test coverage
         uses: codecov/codecov-action@v3
         with:

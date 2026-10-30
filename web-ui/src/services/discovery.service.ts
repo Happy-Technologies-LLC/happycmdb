@@ -6,7 +6,6 @@
  * Handles all discovery-related API calls
  */
 
-import type { AxiosError } from 'axios';
 import { apiClient as api } from './api';
 
 /**
@@ -80,52 +79,21 @@ interface RawLegacyDiscoveryJob {
 
 export interface TriggerDiscoveryJobRequest {
   provider: DiscoveryProvider;
-  config: AWSConfig | AzureConfig | GCPConfig | SSHConfig | NmapConfig;
+  config: SSHConfig | NmapConfig;
 }
 
-export interface AWSConfig {
-  regions: string[];
-  resourceTypes: ('ec2' | 'rds' | 's3' | 'ecs' | 'lambda')[];
-  credentials?: {
-    accessKeyId: string;
-    secretAccessKey: string;
-  };
-}
-
-export interface AzureConfig {
-  subscriptionId: string;
-  resourceGroups?: string[];
-  credentials?: {
-    tenantId: string;
-    clientId: string;
-    clientSecret: string;
-  };
-}
-
-export interface GCPConfig {
-  projectId: string;
-  zones?: string[];
-  credentials?: {
-    keyFile: string;
-  };
-}
-
+/** HAP-774 C-12: config never carries a secret; ssh authenticates via the definition's credential_id. */
 export interface SSHConfig {
-  targets: string[]; // Array of host:port
-  credentials: {
-    username: string;
-    password?: string;
-    privateKey?: string;
-  };
+  targets: string[]; // hostname or IP literal; no CIDR, range or port
 }
 
 export interface NmapConfig {
   targets: string[]; // Array of IP ranges/subnets
   scanOptions: {
-    ports?: string;
     aggressive?: boolean;
     serviceDetection?: boolean;
     osDetection?: boolean;
+    fullPortScan?: boolean;
   };
 }
 
@@ -333,27 +301,6 @@ class DiscoveryService {
    */
   async cancelJob(jobId: string): Promise<void> {
     await api.delete(`/discovery/jobs/${jobId}`);
-  }
-
-
-  /**
-   * Test provider credentials against the Settings-owned test-connection
-   * contract used by DiscoverySettings.tsx.
-   */
-  async testCredentials(
-    provider: DiscoveryProvider,
-    config: Record<string, unknown>
-  ): Promise<{ valid: boolean; message: string }> {
-    try {
-      await api.post('/discovery/test-connection', { provider, credentials: config });
-      return { valid: true, message: 'Connection successful' };
-    } catch (err) {
-      const axiosError = err as AxiosError<{ message?: string }>;
-      return {
-        valid: false,
-        message: axiosError.response?.data?.message || 'Connection failed',
-      };
-    }
   }
 
   /**

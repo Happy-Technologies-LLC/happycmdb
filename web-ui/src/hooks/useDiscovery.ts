@@ -24,10 +24,6 @@ export interface UseDiscoveryReturn {
 
   // Actions
   triggerJob: (request: TriggerDiscoveryJobRequest) => Promise<DiscoveryJob | null>;
-  testCredentials: (
-    provider: DiscoveryProvider,
-    config: Record<string, any>
-  ) => Promise<boolean>;
   retryJob: (jobId: string, provider: DiscoveryProvider) => Promise<void>;
   cancelJob: (jobId: string) => Promise<void>;
   getJobResult: (jobId: string) => Promise<DiscoveryJobResult | null>;
@@ -58,35 +54,6 @@ export const useDiscovery = (): UseDiscoveryReturn => {
         setError(errorMsg);
         showToast(errorMsg, 'error');
         return null;
-      } finally {
-        setLoading(false);
-      }
-    },
-    [showToast]
-  );
-
-
-  /**
-   * Test provider credentials
-   */
-  const testCredentials = useCallback(
-    async (provider: DiscoveryProvider, config: Record<string, any>): Promise<boolean> => {
-      setLoading(true);
-      setError(null);
-
-      try {
-        const result = await discoveryService.testCredentials(provider, config);
-        if (result.valid) {
-          showToast('Credentials are valid', 'success');
-        } else {
-          showToast(`Invalid credentials: ${result.message}`, 'error');
-        }
-        return result.valid;
-      } catch (err: any) {
-        const errorMsg = err.response?.data?.message || 'Failed to test credentials';
-        setError(errorMsg);
-        showToast(errorMsg, 'error');
-        return false;
       } finally {
         setLoading(false);
       }
@@ -166,7 +133,6 @@ export const useDiscovery = (): UseDiscoveryReturn => {
     loading,
     error,
     triggerJob,
-    testCredentials,
     retryJob,
     cancelJob,
     getJobResult,

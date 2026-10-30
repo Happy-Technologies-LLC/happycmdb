@@ -12,7 +12,6 @@ import { Input } from '../ui/input';
 import { Label } from '../ui/label';
 import { Textarea } from '../ui/textarea';
 import { Switch } from '../ui/switch';
-import { Checkbox } from '../ui/checkbox';
 import {
   Select,
   SelectContent,
@@ -27,7 +26,7 @@ import DiscoveryConfigForm, { DiscoveryConfigFormRef } from './DiscoveryConfigFo
 import { AgentSelector } from './AgentSelector';
 import { useCredentials } from '../../hooks/useCredentials';
 import { CronBuilder } from '../ui/cron-builder';
-import { credentialService, type AuthProtocol } from '../../services/credential.service';
+import { credentialService } from '../../services/credential.service';
 import { FieldMappingBuilder } from '../connectors/FieldMappingBuilder';
 
 interface DiscoveryDefinitionFormProps {
@@ -55,7 +54,7 @@ export const DiscoveryDefinitionForm: React.FC<DiscoveryDefinitionFormProps> = (
   onAdHocRun,
 }) => {
   const isEditMode = !!definition;
-  const { credentials, loading: credentialsLoading } = useCredentials();
+  const { credentials } = useCredentials();
 
   const [name, setName] = useState(definition?.name || '');
   const [description, setDescription] = useState(definition?.description || '');
@@ -75,8 +74,8 @@ export const DiscoveryDefinitionForm: React.FC<DiscoveryDefinitionFormProps> = (
     definition?.schedule.cronExpression || '0 9 * * *'
   );
   const [active, setActive] = useState(definition?.active ?? true);
-  const [saveCredentials, setSaveCredentials] = useState(false);
-  const [credentialName, setCredentialName] = useState('');
+  // HAP-774 C-12: a new SSH secret lives only here and goes only to the credential API, never into config.
+  const [newCred, setNewCred] = useState({ name: '', username: '', auth: 'password', secret: '', port: '' });
   const [fieldMappings, setFieldMappings] = useState<Record<string, string>>(
     definition?.field_mappings || {}
   );
@@ -84,27 +83,13 @@ export const DiscoveryDefinitionForm: React.FC<DiscoveryDefinitionFormProps> = (
 
   const configFormRef = React.useRef<DiscoveryConfigFormRef>(null);
 
-  // Map discovery provider to credential protocol
-  const getProtocolForProvider = (provider: DiscoveryProvider): AuthProtocol | null => {
-    switch (provider) {
-      case 'ssh':
-        return 'ssh_key'; // Could also be ssh_password, we accept both
-      case 'nmap':
-        return null; // nmap doesn't require credentials
-      default:
-        return null;
-    }
-  };
-
-  // Filter credentials by provider - accept both ssh_key and ssh_password for SSH
-  const providerCredentials = credentials.filter((cred) => {
-    const protocol = getProtocolForProvider(provider);
-    if (!protocol) return false;
-    if (provider === 'ssh') {
-      return cred.protocol === 'ssh_key' || cred.protocol === 'ssh_password';
-    }
-    return cred.protocol === protocol;
-  });
+  const unsupported = provider === 'active-directory' || provider === 'snmp';
+  const sshCredentials = credentials.filter(
+    (cred) => cred.protocol === 'ssh_password' || cred.protocol === 'ssh_key'
+  );
+  const createSshCredential = provider === 'ssh' && credentialId === 'none';
+  const setNewCredField = (key: keyof typeof newCred, value: string) =>
+    setNewCred((current) => ({ ...current, [key]: value }));
 
   useEffect(() => {
     // Reset config when provider changes
@@ -120,36 +105,31 @@ export const DiscoveryDefinitionForm: React.FC<DiscoveryDefinitionFormProps> = (
       newErrors.name = 'Name is required';
     }
 
-    if (saveCredentials && !credentialName.trim()) {
-      newErrors.credentialName = 'Credential name is required when saving credentials';
+    if (unsupported) {
+      newErrors.submit = `${provider.toUpperCase()} discovery is unsupported`;
+    }
+
+    if (createSshCredential) {
+      if (!newCred.name.trim()) newErrors.credentialName = 'Credential name is required';
+      if (!newCred.username.trim()) newErrors.credentialUsername = 'Username is required';
+      if (!newCred.secret) newErrors.credentialSecret = 'A password or private key is required';
+      if (newCred.port && !/^\d{1,5}$/.test(newCred.port)) newErrors.credentialPort = 'Port must be a number';
     }
 
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   };
 
-  const extractCredentialsFromConfig = (currentConfig: Record<string, any>): Record<string, any> | null => {
-    // Extract credentials based on provider type
-    if (provider === 'ssh' && currentConfig.credentials) {
-      return {
-        username: currentConfig.credentials.username,
-        password: currentConfig.credentials.password,
-        private_key: currentConfig.credentials.privateKey,
-      };
-    }
-    return null;
-  };
-
   const buildFormData = (): DiscoveryDefinitionInput => {
     // Get current config from child component to ensure we have latest state
     const currentConfig = configFormRef.current?.getConfig() || config;
 
-    const formData = {
+    return {
       name: name.trim(),
       description: description.trim() || undefined,
       provider,
       method,
-      credentialId: credentialId && credentialId !== 'none' ? credentialId : undefined,
+      credentialId: provider === 'ssh' && credentialId !== 'none' ? credentialId : undefined,
       agentId: method === 'agent' ? agentId : undefined,
       config: currentConfig,
       field_mappings: Object.keys(fieldMappings).length > 0 ? fieldMappings : undefined,
@@ -159,8 +139,6 @@ export const DiscoveryDefinitionForm: React.FC<DiscoveryDefinitionFormProps> = (
       },
       active,
     };
-    console.log('DiscoveryDefinitionForm: buildFormData returning:', formData);
-    return formData;
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -172,44 +150,29 @@ export const DiscoveryDefinitionForm: React.FC<DiscoveryDefinitionFormProps> = (
 
     let finalCredentialId = credentialId;
 
-    // If user wants to save credentials, create them first
-    if (saveCredentials && credentialId === 'none') {
+    if (createSshCredential) {
+      const { name: credentialName, username, auth, secret, port } = newCred;
+      const secretField = auth === 'key' ? { private_key: secret } : { password: secret };
       try {
-        const currentConfig = configFormRef.current?.getConfig() || config;
-        const credentialData = extractCredentialsFromConfig(currentConfig);
-
-        if (credentialData) {
-          const protocol = getProtocolForProvider(provider);
-          if (!protocol) {
-            setErrors({ ...errors, submit: `Cannot save credentials for provider: ${provider}` });
-            return;
-          }
-
-          const newCredential = await credentialService.createCredential({
-            name: credentialName.trim(),
-            protocol: protocol,
-            scope: 'universal', // Default to universal scope for discovery credentials
-            credentials: credentialData,
-          });
-          finalCredentialId = newCredential.id;
-
-          // Remove credentials from config since they're now in a credential record
-          const configWithoutCreds = { ...currentConfig };
-          delete configWithoutCreds.credentials;
-          setConfig(configWithoutCreds);
-        }
-      } catch (error: any) {
-        setErrors({ ...errors, submit: `Failed to save credentials: ${error.message}` });
+        const created = await credentialService.createCredential({
+          name: credentialName.trim(),
+          protocol: auth === 'key' ? 'ssh_key' : 'ssh_password',
+          scope: 'ssh',
+          credentials: { username: username.trim(), ...secretField, ...(port ? { port: Number(port) } : {}) },
+        });
+        finalCredentialId = created.id;
+        setCredentialId(created.id);
+        setNewCred((current) => ({ ...current, secret: '' }));
+      } catch {
+        setErrors({ submit: 'Failed to save the SSH credential' });
         return;
       }
     }
 
-    const formData = {
+    onSubmit({
       ...buildFormData(),
-      credentialId: finalCredentialId && finalCredentialId !== 'none' ? finalCredentialId : undefined,
-    };
-    console.log('DiscoveryDefinitionForm: handleSubmit calling onSubmit with:', formData);
-    onSubmit(formData);
+      credentialId: provider === 'ssh' && finalCredentialId !== 'none' ? finalCredentialId : undefined,
+    });
   };
 
   const handleAdHocRun = () => {
@@ -220,11 +183,6 @@ export const DiscoveryDefinitionForm: React.FC<DiscoveryDefinitionFormProps> = (
     if (onAdHocRun) {
       onAdHocRun(buildFormData());
     }
-  };
-
-  const handleConfigSubmit = (newConfig: Record<string, any>) => {
-    console.log('DiscoveryDefinitionForm: handleConfigSubmit called with:', newConfig);
-    setConfig(newConfig);
   };
 
   const handleCronChange = (newCron: string) => {
@@ -293,69 +251,91 @@ export const DiscoveryDefinitionForm: React.FC<DiscoveryDefinitionFormProps> = (
             )}
           </div>
 
-          <div className="space-y-2">
-            <Label htmlFor="credential">Credential (Optional)</Label>
-            <Select value={credentialId} onValueChange={setCredentialId}>
-              <SelectTrigger id="credential">
-                <SelectValue placeholder="Select a credential or use environment variables" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="none">None (use environment variables)</SelectItem>
-                {credentialsLoading ? (
-                  <SelectItem value="loading" disabled>
-                    Loading credentials...
-                  </SelectItem>
-                ) : providerCredentials.length === 0 ? (
-                  <SelectItem value="no-creds" disabled>
-                    No credentials for {provider.toUpperCase()}
-                  </SelectItem>
-                ) : (
-                  providerCredentials.map((cred) => (
+          {provider === 'ssh' && (
+            <div className="space-y-2">
+              <Label htmlFor="credential">SSH Credential *</Label>
+              <Select value={credentialId} onValueChange={setCredentialId}>
+                <SelectTrigger id="credential">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">Create a new SSH credential</SelectItem>
+                  {sshCredentials.map((cred) => (
                     <SelectItem key={cred.id} value={cred.id}>
                       {cred.name}
                     </SelectItem>
-                  ))
-                )}
-              </SelectContent>
-            </Select>
-            <p className="text-xs text-muted-foreground">
-              Credentials are managed on the Credentials page. Select one here or leave as
-              "None" to use environment variables.
-            </p>
-          </div>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
 
-          {credentialId === 'none' && !isEditMode && (
+          {createSshCredential && (
             <div className="space-y-3 p-4 border rounded-lg bg-muted/50">
-              <div className="flex items-center space-x-2">
-                <Checkbox
-                  id="saveCredentials"
-                  checked={saveCredentials}
-                  onCheckedChange={(checked) => setSaveCredentials(checked as boolean)}
-                />
-                <Label htmlFor="saveCredentials" className="cursor-pointer">
-                  Save credentials for reuse
-                </Label>
-              </div>
-              <p className="text-xs text-muted-foreground">
-                When checked, any credentials you enter in the configuration below will be saved
-                as a reusable credential that can be used in other discovery definitions.
-              </p>
-
-              {saveCredentials && (
-                <div className="space-y-2">
-                  <Label htmlFor="credentialName">Credential Name *</Label>
+              {([
+                ['name', 'Credential Name *', 'text', errors.credentialName],
+                ['username', 'Username *', 'text', errors.credentialUsername],
+                ['port', 'Port (optional, default 22)', 'number', errors.credentialPort],
+              ] as const).map(([key, label, type, error]) => (
+                <div key={key} className="space-y-2">
+                  <Label htmlFor={`ssh-cred-${key}`}>{label}</Label>
                   <Input
-                    id="credentialName"
-                    placeholder="e.g., AWS Production Account"
-                    value={credentialName}
-                    onChange={(e) => setCredentialName(e.target.value)}
-                    className={errors.credentialName ? 'border-destructive' : ''}
+                    id={`ssh-cred-${key}`}
+                    type={type}
+                    value={newCred[key]}
+                    onChange={(e) => setNewCredField(key, e.target.value)}
                   />
-                  {errors.credentialName && (
-                    <p className="text-sm text-destructive">{errors.credentialName}</p>
-                  )}
+                  {error && <p className="text-sm text-destructive">{error}</p>}
                 </div>
-              )}
+              ))}
+              <div className="space-y-2">
+                <Label htmlFor="ssh-cred-auth">Authentication</Label>
+                <Select
+                  value={newCred.auth}
+                  onValueChange={(auth) => setNewCred((current) => ({ ...current, auth, secret: '' }))}
+                >
+                  <SelectTrigger id="ssh-cred-auth">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="password">Password</SelectItem>
+                    <SelectItem value="key">Private key (PEM)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                {newCred.auth === 'key' ? (
+                  <>
+                    <Label htmlFor="ssh-cred-secret">Private Key (PEM text) *</Label>
+                    <Textarea
+                      id="ssh-cred-secret"
+                      placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
+                      value={newCred.secret}
+                      onChange={(e) => setNewCredField('secret', e.target.value)}
+                      rows={6}
+                      spellCheck={false}
+                      className="font-mono text-xs"
+                    />
+                  </>
+                ) : (
+                  <>
+                    <Label htmlFor="ssh-cred-secret">Password *</Label>
+                    <Input
+                      id="ssh-cred-secret"
+                      type="password"
+                      autoComplete="new-password"
+                      value={newCred.secret}
+                      onChange={(e) => setNewCredField('secret', e.target.value)}
+                    />
+                  </>
+                )}
+                {errors.credentialSecret && (
+                  <p className="text-sm text-destructive">{errors.credentialSecret}</p>
+                )}
+                <p className="text-xs text-muted-foreground">
+                  Saved as an encrypted credential; the definition stores only its id.
+                </p>
+              </div>
             </div>
           )}
 
@@ -414,7 +394,7 @@ export const DiscoveryDefinitionForm: React.FC<DiscoveryDefinitionFormProps> = (
             ref={configFormRef}
             provider={provider}
             initialConfig={config}
-            onSubmit={handleConfigSubmit}
+            onSubmit={setConfig}
             showActions={false}
           />
         </CardContent>

@@ -477,6 +477,52 @@ jobs:
           HAP835_ACCEPTANCE=1 ./node_modules/.bin/jest \
             -c jest.config.integration.js "$HARNESS" --runInBand
 
+  hap774-c1-real-store:
+    name: HAP-774 C1 app role grants acceptance
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    env:
+      HARNESS: tests/integration/database/hap774-c1-app-role-acl.integration.test.ts
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+      - name: Fail-before without the app role grants
+        run: |
+          set -euo pipefail
+          if git cat-file -e "${BASE_SHA}:packages/database/src/postgres/migrations/042_app_role_grants.sql" 2>/dev/null; then
+            echo 'HAP-774 C1 already on the base; fail-before is not applicable.'
+            exit 0
+          fi
+          git worktree add ../hap774-c1-base "$BASE_SHA"
+          cp "$HARNESS" "../hap774-c1-base/$HARNESS"
+          cd ../hap774-c1-base
+          npm ci
+          set +e
+          output=$(HAP774_C1_ACCEPTANCE=1 ./node_modules/.bin/jest \
+            -c jest.config.integration.js "$HARNESS" --runInBand 2>&1)
+          result=$?
+          set -e
+          printf '%s\n' "$output"
+          if [ "$result" -eq 0 ] || [[ "$output" != *"permission denied for table api_keys"* ]]; then
+            echo 'Base did not deny the app role the expected app query' >&2
+            exit 1
+          fi
+      - name: Pass-after on PR head (disposable PG15/Timescale)
+        run: |
+          npm ci
+          HAP774_C1_ACCEPTANCE=1 ./node_modules/.bin/jest \
+            -c jest.config.integration.js "$HARNESS" --runInBand
+
   staging-migrations:
     name: Staging Migration Contract
     runs-on: ubuntu-latest
@@ -584,7 +630,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
   ci-rollup:
-    needs: [unit-tests, integration-tests, e2e-tests, staging-migrations, web-ui-build, hap630-real-store, hap644-real-store, hap668-real-store, hap835-real-store]
+    needs: [unit-tests, integration-tests, e2e-tests, staging-migrations, web-ui-build, hap630-real-store, hap644-real-store, hap668-real-store, hap835-real-store, hap774-c1-real-store]
     if: always()
     runs-on: ubuntu-latest
     permissions:
@@ -604,6 +650,7 @@ jobs:
           HAP644_RESULT: ${{ needs.hap644-real-store.result }}
           HAP668_RESULT: ${{ needs.hap668-real-store.result }}
           HAP835_RESULT: ${{ needs.hap835-real-store.result }}
+          HAP774_C1_RESULT: ${{ needs.hap774-c1-real-store.result }}
         run: |
           set -euo pipefail
           if [ -z "$HEAD_SHA" ]; then
@@ -618,7 +665,8 @@ jobs:
              { [ "$HAP630_RESULT" = "success" ] || { [ "${{ github.event_name }}" = "push" ] && [ "$HAP630_RESULT" = "skipped" ]; }; } &&
              { [ "$HAP644_RESULT" = "success" ] || { [ "${{ github.event_name }}" = "push" ] && [ "$HAP644_RESULT" = "skipped" ]; }; } &&
              { [ "$HAP668_RESULT" = "success" ] || { [ "${{ github.event_name }}" = "push" ] && [ "$HAP668_RESULT" = "skipped" ]; }; } &&
-             { [ "$HAP835_RESULT" = "success" ] || { [ "${{ github.event_name }}" = "push" ] && [ "$HAP835_RESULT" = "skipped" ]; }; }; then
+             { [ "$HAP835_RESULT" = "success" ] || { [ "${{ github.event_name }}" = "push" ] && [ "$HAP835_RESULT" = "skipped" ]; }; } &&
+             { [ "$HAP774_C1_RESULT" = "success" ] || { [ "${{ github.event_name }}" = "push" ] && [ "$HAP774_C1_RESULT" = "skipped" ]; }; }; then
             state=success
             description="all required gates passed"
           else
@@ -640,6 +688,9 @@ jobs:
             fi
             if [ "$HAP835_RESULT" != "success" ] && [ "${{ github.event_name }}" != "push" ]; then
               failures+=("hap835-real-store=$HAP835_RESULT")
+            fi
+            if [ "$HAP774_C1_RESULT" != "success" ] && [ "${{ github.event_name }}" != "push" ]; then
+              failures+=("hap774-c1-real-store=$HAP774_C1_RESULT")
             fi
             description="test gates failed: ${failures[*]}"
             if [ "${#description}" -gt 140 ]; then

@@ -281,6 +281,24 @@ to the 500. The API rejects an empty, over-255-character or non-storable
 `implementedBy` and an `actualDuration` outside 1–2147483647 with 400 before
 any write.
 
+## HAP-774 S5b C1 application role grants
+
+Migration `042_app_role_grants.sql` grants the least-privileged API role
+`happycmdb_app` exactly the relation privileges of the signed role plan §3.2
+(code-derived plus the `032`/`033`/`034`/`039` grants; no TRUNCATE) and USAGE
+on the 11 serial sequences the app inserts through, then revokes everything on
+the S5b ledger and escrow from it. It creates no role and sets no password:
+Phase B creates the role (CONNECT and schema USAGE). `cmdb_user` grants are
+unchanged. If the role is absent, `042` only raises a fixed WARNING, and the
+migrator still records it and never reruns it, so `042` must reach a database
+only after the role exists there. The read-only readback query in its header
+lists the role's per-object privileges; an empty result means a skipped apply.
+With the role present, `042` aborts on a missing object, an ungranted privilege
+(for example when not run as the owner) or any remaining escrow access.
+`init-postgres.sql` does not mirror it. Manual `rollback/042_*.down.sql`
+revokes exactly those privileges and removes the ledger row; escrow stays
+revoked.
+
 ## v3.0 Initialization Scripts
 
 ### init-kafka.sh

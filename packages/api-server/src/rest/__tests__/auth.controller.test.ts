@@ -24,6 +24,9 @@ import { JWTService } from '../../auth/jwt.service';
 import { User, ApiKey } from '../../auth/types';
 import { logger } from '@cmdb/common';
 import * as jwt from 'jsonwebtoken';
+import { randomUUID } from 'crypto';
+import { inspect } from 'util';
+import { AUTH_HEADER, AUTH_HEADER_VALUE, REFRESH_COOKIE } from '../middleware/refresh-cookie';
 
 const authConfig = {
   jwt: {
@@ -126,6 +129,18 @@ function fakeRateLimiter(): RateLimitMiddleware {
   } as unknown as RateLimitMiddleware;
 }
 
+/** The single cmdb_rt Set-Cookie of a response: its value and sorted attributes. */
+function refreshCookieOf(response: request.Response): { value: string; attributes: string[] } {
+  const mine = ([] as string[]).concat(response.headers['set-cookie'] ?? []).filter(c => c.startsWith(`${REFRESH_COOKIE}=`));
+  expect(mine).toHaveLength(1);
+  const [pair, ...attributes] = mine[0]!.split('; ');
+  return { value: pair!.slice(REFRESH_COOKIE.length + 1), attributes: attributes.sort() };
+}
+
+/** The wire attributes of HAP-1211 B1/B4, written out (not from the module) so a changed attribute fails. */
+const cookieAttributes = (maxAge: number, ...extra: string[]) =>
+  [`Max-Age=${maxAge}`, 'Path=/api/v1/auth', 'HttpOnly', 'Secure', 'SameSite=Strict', ...extra].sort();
+
 describe('AuthController profile/password/account routes', () => {
   let app: express.Express;
   let repository: InMemoryAuthRepository;
@@ -176,6 +191,15 @@ describe('AuthController profile/password/account routes', () => {
     repository.apiKeys.set('alice-key', { userId: 'user-1', revoked: false });
     repository.apiKeys.set('bob-key', { userId: 'user-2', revoked: false });
   });
+
+  /** POST /refresh with cmdb_rt=<token> (or a raw Cookie header) and, unless null, X-CMDB-Auth. */
+  const refresh = (token?: string, header: string | null = AUTH_HEADER_VALUE,
+    cookie = token === undefined ? undefined : `${REFRESH_COOKIE}=${token}`) => {
+    const call = request(app).post('/api/v1/auth/refresh');
+    if (cookie !== undefined) call.set('Cookie', cookie);
+    if (header !== null) call.set(AUTH_HEADER, header);
+    return call;
+  };
 
   it('returns one fixed login failure for unknown, wrong, disabled, and store failures without logging driver text', async () => {
     const warnings = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
@@ -269,7 +293,7 @@ describe('AuthController profile/password/account routes', () => {
         // The refused login marked the seeded admin: every pre-issued credential is now refused.
         expect(repository.users.get('user-admin-001')!._defaultPasswordSuspect).toBe(true);
         expect((await request(app).get('/api/v1/auth/me').set('Authorization', `Bearer ${preAccess}`)).status).toBe(401);
-        expect((await request(app).post('/api/v1/auth/refresh').send({ refreshToken: preRefresh })).status).toBe(401);
+        expect((await refresh(preRefresh)).status).toBe(401);
         expect((await request(app).get('/api/v1/auth/me').set('X-API-Key', preKey)).status).toBe(401);
       } finally {
         warnings.mockRestore();
@@ -305,7 +329,9 @@ describe('AuthController profile/password/account routes', () => {
 
     expect(hashes()).toEqual(before);
     // Without a session only login answers other than 401, and login verifies a password, never sets one.
-    expect(Object.entries(statuses).filter(([, status]) => status !== 401).map(([route]) => route)).toEqual(['POST /login']);
+    // The cookie endpoints refuse a request without X-CMDB-Auth first (403, HAP-1211 B5).
+    expect(Object.entries(statuses).filter(([, status]) => status !== 401).map(([route, status]) => `${route} ${status}`))
+      .toEqual(['POST /login 200', 'POST /refresh 403', 'POST /logout 403']);
   });
 
   it('returns one fixed refresh failure for invalid, expired, wrong-type, revoked, disabled, and store failures', async () => {
@@ -323,27 +349,130 @@ describe('AuthController profile/password/account routes', () => {
         [victimToken, 'wrong_type'],
         [jwtService.generateRefreshToken('deleted-user', 'deleted', 'viewer'), 'revoked'],
       ]) {
-        const response = await request(app).post('/api/v1/auth/refresh').send({ refreshToken: token });
+        const response = await refresh(token);
         expect([response.status, response.body]).toEqual([401, failed]);
         expect(warnings).toHaveBeenLastCalledWith('Authentication failed', { credentialType: 'refresh', reason });
       }
       repository.users.get('user-1')!._enabled = false;
-      const disabled = await request(app).post('/api/v1/auth/refresh').send({ refreshToken: valid });
+      const disabled = await refresh(valid);
       expect([disabled.status, disabled.body]).toEqual([401, failed]);
       expect(warnings).toHaveBeenLastCalledWith('Authentication failed', { credentialType: 'refresh', reason: 'disabled' });
       repository.users.get('user-1')!._enabled = true;
       const lookup = jest.spyOn(repository, 'findUserById').mockRejectedValueOnce(new Error('private-driver-detail'));
-      const store = await request(app).post('/api/v1/auth/refresh').send({ refreshToken: valid });
+      const store = await refresh(valid);
       expect([store.status, store.body]).toEqual([401, failed]);
       expect(warnings).toHaveBeenLastCalledWith('Authentication failed', { credentialType: 'refresh', reason: 'store_error' });
       expect(JSON.stringify(warnings.mock.calls)).not.toContain('private-driver-detail');
       lookup.mockRestore();
-      const success = await request(app).post('/api/v1/auth/refresh').send({ refreshToken: valid });
+      const success = await refresh(valid);
       expect(success.status).toBe(200);
       expect(success.body.data._accessToken).toEqual(expect.any(String));
     } finally {
       warnings.mockRestore();
     }
+  });
+
+  describe('HAP-1211 H1 refresh cookie', () => {
+    const forbidden = { success: false, error: 'Forbidden' };
+    let records: unknown[];
+    let sensitive: string[];
+    let spies: Array<{ mockRestore(): void }>;
+    const record = (...args: unknown[]) => { records.push(args); };
+
+    // Every logger level, console and stdout/stderr are captured; afterEach proves no registered value reached them.
+    beforeEach(() => {
+      records = [];
+      sensitive = [];
+      spies = [
+        ...(['error', 'warn', 'info', 'http', 'verbose', 'debug', 'silly', 'log'] as const).map(level =>
+          jest.spyOn(logger, level).mockImplementation(((...args: unknown[]) => (record(...args), logger)) as never)),
+        ...(['log', 'info', 'warn', 'error', 'debug', 'trace'] as const).map(method =>
+          jest.spyOn(console, method).mockImplementation(record)),
+        ...[process.stdout, process.stderr].map(stream =>
+          jest.spyOn(stream, 'write').mockImplementation(((...args: unknown[]) => (record(...args), true)) as never)),
+      ];
+    });
+
+    afterEach(() => {
+      spies.forEach(spy => spy.mockRestore());
+      const output = inspect(records, { depth: null, maxArrayLength: null, maxStringLength: null });
+      expect(sensitive.length).toBeGreaterThan(0);
+      expect(sensitive.filter(value => output.includes(value)).length).toBe(0);
+    });
+
+    it('login sets cmdb_rt (HttpOnly, Secure, SameSite=Strict, /api/v1/auth, refresh TTL) and no body refresh token', async () => {
+      const pass = `pw-${randomUUID()}`;
+      repository.users.get('user-1')!._passwordHash = await passwordService.hash(pass);
+      const response = await request(app).post('/api/v1/auth/login').send({ username: 'alice', password: pass });
+      expect(response.status).toBe(200);
+      const cookie = refreshCookieOf(response);
+      sensitive.push(pass, cookie.value, response.body.data._accessToken);
+      expect(Object.keys(response.body.data).sort()).toEqual(['_accessToken', '_expiresIn', '_user']);
+      expect(cookie.attributes).toEqual(cookieAttributes(jwtService.getTokenExpiresIn('refresh')));
+      expect(jwtService.verifyToken(cookie.value)._type).toBe('refresh');
+    });
+
+    it('refresh answers a fixed 403 without exactly X-CMDB-Auth: 1, before any token or store work', async () => {
+      const issued = jwtService.generateRefreshToken('user-1', 'alice', 'operator');
+      sensitive.push(issued);
+      const lookups = jest.spyOn(repository, 'findUserById');
+      const verify = jest.spyOn(JWTService.prototype, 'verifyToken');
+      for (const header of [null, '0', 'true', '11']) {
+        const response = await refresh(issued, header);
+        expect([response.status, response.body, response.headers['set-cookie']]).toEqual([403, forbidden, undefined]);
+      }
+      expect(lookups).not.toHaveBeenCalled();
+      expect(verify).not.toHaveBeenCalled();
+    });
+
+    it('refresh reads only one well-formed cmdb_rt cookie: none, malformed, duplicate, oversized or a body token is 401', async () => {
+      const issued = jwtService.generateRefreshToken('user-1', 'alice', 'operator');
+      const malformed = `bad-${randomUUID()}`;
+      sensitive.push(issued, malformed);
+      const lookups = jest.spyOn(repository, 'findUserById');
+      for (const cookie of [
+        undefined, 'other=1', `${REFRESH_COOKIE}=${malformed}`, `${REFRESH_COOKIE}=${issued}; ${REFRESH_COOKIE}=${issued}`,
+        `${REFRESH_COOKIE}=${issued}; pad=${'p'.repeat(8192)}`,
+      ]) {
+        const response = await refresh(undefined, AUTH_HEADER_VALUE, cookie).send({ refreshToken: issued });
+        expect([response.status, response.body, response.headers['set-cookie']])
+          .toEqual([401, { success: false, error: 'Authentication failed' }, undefined]);
+      }
+      expect(lookups).not.toHaveBeenCalled();
+
+      const ok = await refresh(issued);
+      expect(ok.status).toBe(200);
+      const renewed = refreshCookieOf(ok);
+      sensitive.push(renewed.value, ok.body.data._accessToken);
+      expect(Object.keys(ok.body.data).sort()).toEqual(['_accessToken', '_expiresIn', '_user']);
+      expect(jwtService.verifyToken(ok.body.data._accessToken)._type).toBe('access');
+      expect(renewed.attributes).toEqual(cookieAttributes(jwtService.getTokenExpiresIn('refresh')));
+      expect(jwtService.verifyToken(renewed.value)._type).toBe('refresh');
+    });
+
+    it('logout clears cmdb_rt with the same attributes; it needs X-CMDB-Auth: 1, not a session', async () => {
+      const issued = jwtService.generateRefreshToken('user-1', 'alice', 'operator');
+      sensitive.push(issued);
+      const refused = await request(app).post('/api/v1/auth/logout').set('Cookie', `${REFRESH_COOKIE}=${issued}`);
+      expect([refused.status, refused.body, refused.headers['set-cookie']]).toEqual([403, forbidden, undefined]);
+      const out = await request(app).post('/api/v1/auth/logout').set('Cookie', `${REFRESH_COOKIE}=${issued}`)
+        .set(AUTH_HEADER, AUTH_HEADER_VALUE);
+      expect(out.status).toBe(200);
+      expect(refreshCookieOf(out)).toEqual({ value: '', attributes: cookieAttributes(0, 'Expires=Thu, 01 Jan 1970 00:00:00 GMT') });
+    });
+
+    it('HP1-S6: a cmdb_rt of an older credential generation is 401 (revoked); the current one refreshes', async () => {
+      repository.users.get('user-1')!._credentialEpoch = 2;
+      const stale = jwtService.generateRefreshToken('user-1', 'alice', 'operator', 1);
+      const current = jwtService.generateRefreshToken('user-1', 'alice', 'operator', 2);
+      sensitive.push(stale, current);
+      const refused = await refresh(stale);
+      expect([refused.status, refused.headers['set-cookie']]).toEqual([401, undefined]);
+      expect(records).toContainEqual(['Authentication failed', { credentialType: 'refresh', reason: 'revoked' }]);
+      const ok = await refresh(current);
+      expect(ok.status).toBe(200);
+      sensitive.push(refreshCookieOf(ok).value, ok.body.data._accessToken);
+    });
   });
 
   it('preserves the original store exception as an internal cause without exposing it', async () => {

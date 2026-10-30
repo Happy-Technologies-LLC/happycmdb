@@ -157,7 +157,10 @@ async function timedRequest(cohort: number, i: number): Promise<number> {
   const t0 = performance.now();
   const status = kind < 8 ? await call('GET', '/api/v1/auth/me', { authorization: `Bearer ${c.access}` })
     : kind === 8 ? await call('GET', '/api/v1/auth/me', { 'x-api-key': c.key })
-    : await call('POST', '/api/v1/auth/refresh', {}, JSON.stringify({ refreshToken: c.refresh }));
+    // HAP-1211 H1: the cmdb_rt cookie plus X-CMDB-Auth (wire names, no import: the base run must compile).
+    // The body copy serves only the pre-H1 base run; at head the body is stripped and never read.
+    : await call('POST', '/api/v1/auth/refresh', { cookie: `cmdb_rt=${c.refresh}`, 'x-cmdb-auth': '1' },
+      JSON.stringify({ refreshToken: c.refresh }));
   const elapsed = performance.now() - t0;
   if (status !== 200) throw new Error(`unexpected status ${status} (cohort ${cohort}, kind ${kind})`);
   return elapsed;

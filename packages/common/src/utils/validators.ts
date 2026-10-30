@@ -164,7 +164,11 @@ export const discoveryJobSchema = Joi.object({
   provider: schemas.discoveryProvider.required(),
   method: schemas.discoveryMethod.required(),
   config: Joi.object({
-    credentials: Joi.any().optional(),
+    // C-11: inline credentials are refused (use credential_id); the report drops the value so it is never echoed.
+    credentials: Joi.forbidden().error((errors) => errors.map((e) => {
+      Reflect.deleteProperty(e.local as object, 'value');
+      return e;
+    })),
     regions: Joi.array().items(Joi.string()).optional(),
     filters: Joi.object().optional(),
     targets: Joi.array().items(Joi.string()).optional(),

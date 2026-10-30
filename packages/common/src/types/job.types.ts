@@ -48,8 +48,6 @@ export interface DiscoveryJobConfig {
   filters?: Record<string, any>;
   /** Target hosts (SSH/Nmap) */
   targets?: string[];
-  /** Credentials reference (stored securely) */
-  credentialsId?: string;
 }
 
 /**

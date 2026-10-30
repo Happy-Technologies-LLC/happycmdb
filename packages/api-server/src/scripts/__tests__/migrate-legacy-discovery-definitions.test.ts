@@ -18,8 +18,10 @@ import { Console } from 'console';
 import type { PostgresClient } from '../../../../database/src/postgres/client';
 
 import { EncryptionService, getEncryptionService } from '../../../../common/src/services/encryption.service';
+import { CredentialCRUDService } from '../../../../database/src/postgres/credential-services/crud.service';
 import { logger } from '../../../../common/src/utils/logger';
-import { exitAfterFlush, main, MAX_CONFIG_DEPTH, openPostgres, type SqlClient } from '../migrate-legacy-discovery-definitions';
+import { hasUnsafeDiscoveryDefinitionConfig, publicDiscoveryDefinitionConfig } from '../../../../common/src/utils/discovery-scan-config';
+import { CLOSE_TIMEOUT_MS, encodePlan, exitAfterFlush, main, MAX_CONFIG_DEPTH, openPostgres, runCli, type SqlClient } from '../migrate-legacy-discovery-definitions';
 
 const host = fork(join(__dirname, '../../rest/routes/__tests__/fixtures/pglite-host.cjs'), [], { serialization: 'advanced' });
 let nextId = 0;
@@ -38,7 +40,16 @@ function send(op: 'exec' | 'query', sql: string, params: unknown[] = []): Promis
   return promise as Promise<Array<Record<string, unknown>>>;
 }
 const queries: string[] = [];
-const client: SqlClient = { query: async (sql, params) => (queries.push(sql), { rows: await send('query', sql, params) }), close: async () => undefined };
+const client: SqlClient = { query: async (sql, params) => (queries.push(sql), { rows: await send('query', sql, params) }), close: async () => undefined,
+  async transaction(work) {
+    await this.query('BEGIN');
+    try {
+      return await work(this).then(async result => (await this.query('COMMIT'), result));
+    } catch (error) {
+      await this.query('ROLLBACK');
+      throw error;
+    }
+  } };
 
 const KEY = 'S5ASENTINEL-TEST-KEY-0123456789abcdef';
 const ENV = { CMDB_MIGRATION_POSTGRES_HOST: '127.0.0.1', CMDB_MIGRATION_POSTGRES_PORT: '5432', CMDB_MIGRATION_POSTGRES_DB: 'd', CMDB_MIGRATION_POSTGRES_USER: 'u', CMDB_MIGRATION_POSTGRES_PASSWORD: 'S5ASENTINEL-DBPW' };
@@ -109,10 +120,41 @@ const FIXTURES: Array<[string, string, string | null, number | null, number | nu
   ['L1d wrong-key envelope', 'ssh', ORG, 97, null, ssh([H(1)]), 'L1d LEAVE DUAL_CREDENTIAL_MISMATCH'],
   ['L1d garbage envelope', 'ssh', ORG, 98, null, ssh([H(1)]), 'L1d LEAVE DUAL_CREDENTIAL_MISMATCH'],
   ['L1d plaintext stored payload', 'ssh', ORG, 99, null, ssh([H(1)]), 'L1d LEAVE DUAL_CREDENTIAL_MISMATCH'],
+  // S5b bindings B1-B11 (#142 body); N1-N12 are cmdb-932's CONVERT-safety guards.
+  ['B1 password plus key path', 'ssh', ORG, null, null, ssh([H(1)], { ...PASSWORD, privateKey: '/s5asentinel/k' }), 'L1 LEAVE UNRECOGNIZED'],
+  ['B1 key path plus extra key', 'ssh', ORG, null, null, ssh([H(1)], { username: U, privateKey: '/s5asentinel/k', port: 22 }), 'L1 LEAVE UNRECOGNIZED'],
+  ['B1 PEM after a newline', 'ssh', ORG, null, null, ssh([H(1)], { username: U, privateKey: `\n${PEM}` }), 'L1 CONVERT INLINE_CREDENTIAL ssh_key'],
+  ['B1 PEM inside a path', 'ssh', ORG, null, null, ssh([H(1)], { username: U, privateKey: `/k${PEM}` }), 'L1 LEAVE UNRECOGNIZED'],
+  ['B2 nmap _targets non-string', 'nmap', ORG, null, null, { _targets: [H(9), 7] }, 'L9 LEAVE UNRECOGNIZED'],
+  ['B2 L4 targets non-string', 'nmap', ORG, null, null, { targets: [{ password: PW }], scanOptions: { ports: '22' } }, 'L4 LEAVE UNRECOGNIZED'],
+  ['B2 L6 targets non-string', 'nmap', ORG, null, null, { targets: [7], ports: '22' }, 'L6 LEAVE UNRECOGNIZED'],
+  ['B3 ? in the user half', 'ssh', ORG, null, null, { targets: [`ro?ot:${PW}@${H(1)}`] }, 'L11 LEAVE TARGET_SECRET'],
+  ['B3 # in the password half', 'ssh', ORG, null, null, { targets: [`root:S5A#PW@${H(1)}`] }, 'L11 LEAVE TARGET_SECRET'],
+  ['B4 kubernetes inline credentials', 'kubernetes', ORG, null, null, { context: 'c', credentials: { token: PW } }, 'UNKNOWN LEAVE UNRECOGNIZED'],
+  ['B4 seed AD inline credentials', 'activedirectory', ORG, null, null, { ldap_url: `ldap://${H(7)}`, credentials: PASSWORD }, 'L2 LEAVE UNSUPPORTED_PROVIDER'],
+  ['B5 L1d NULL org is never decoded', 'ssh', null, 90, null, ssh([H(1)]), 'L1d LEAVE NO_VERIFIED_ORG'],
+  ['B5 L5 with a credential', 'ssh', ORG, 90, null, { targets: [H(5)], port: 22 }, 'UNKNOWN LEAVE UNRECOGNIZED'],
+  ['B6 PEM with passphrase', 'ssh', ORG, null, null, ssh([`${H(1)}:2200`], { username: U, privateKey: PEM, passphrase: 'S5ASENTINEL-PP' }), 'L1 CONVERT INLINE_CREDENTIAL ssh_key'],
+  ['B6 empty passphrase is not a passphrase', 'ssh', ORG, null, null, ssh([H(1)], { username: U, privateKey: PEM, passphrase: '' }), 'L1 LEAVE UNRECOGNIZED'],
+  ['B9 range userinfo beside targets', 'ssh', ORG, null, null, { targets: [H(1)], range: `ssh://u:${PW}@${H(2)}` }, 'L11 LEAVE TARGET_SECRET'],
+  ['B9 _targets userinfo beside targets', 'nmap', ORG, null, null, { targets: [H(1)], _targets: [`u:${PW}@${H(2)}`] }, 'L11 LEAVE NMAP_SECRET_NO_CONSUMER'],
+  ['B10 empty privateKey is absent', 'ssh', ORG, null, null, ssh([H(1)], { ...PASSWORD, privateKey: '' }), 'L1 CONVERT INLINE_CREDENTIAL ssh_password'],
+  ['N1 L11 extra key', 'ssh', ORG, null, null, { targets: [`root:${PW}@${H(1)}`], timeout: 5 }, 'L11 LEAVE TARGET_SECRET'],
+  ['N2 L10 extra key', 'ssh', ORG, null, null, { hosts: [{ host: H(1), ...PASSWORD }], port: 22 }, 'L10 LEAVE UNRECOGNIZED'],
+  ['N3 L10 entry extra key', 'ssh', ORG, null, null, { hosts: [{ host: H(1), ...PASSWORD, token: PW }] }, 'L10 LEAVE UNRECOGNIZED'],
+  ['N4 L4 non-mode scanOptions key', 'nmap', ORG, null, null, { targets: [H(4)], scanOptions: { ports: '22', script: PW } }, 'L4 LEAVE UNRECOGNIZED'],
+  ['N5 L1 extra key', 'ssh', ORG, null, null, { ...ssh([H(1)]), port: 22 }, 'L1 LEAVE UNRECOGNIZED'],
+  ['N6 port out of range', 'ssh', ORG, null, null, ssh([`${H(1)}:65536`]), 'L1 LEAVE TARGET_GRAMMAR'],
+  ['N7 scan_type not a word', 'nmap', ORG, null, null, { targets: [H(6)], scan_type: 'S5ASENTINEL PW!' }, 'L6 LEAVE UNRECOGNIZED'],
+  ['N8 ports not a port list', 'nmap', ORG, null, null, { targets: [H(6)], ports: 'S5ASENTINEL' }, 'L6 LEAVE UNRECOGNIZED'],
+  ['N11 L11 bad host', 'ssh', ORG, null, null, { targets: [`root:${PW}@[2001:db8::5a]`] }, 'L11 LEAVE TARGET_SECRET'],
+  ['N12 ssh CIDR', 'ssh', ORG, null, null, ssh(['198.51.100.0/24']), 'L1 LEAVE TARGET_GRAMMAR'],
 ];
 // Stored at +02:00 with microseconds; the plan must carry it as exact UTC.
 const UPDATED_AT = ['2026-10-01 14:34:56.123456+02', '2026-10-01T12:34:56.123456Z'];
 const LITERALS = ['192.168.1.0', '10.0.0.0', 'us-east-1', 'dc=', 'BEGIN OPENSSH', '2001:db8'];
+const MIGRATIONS = join(__dirname, '../../../../database/src/postgres/migrations');
+const LEDGER_041 = readFileSync(join(MIGRATIONS, '041_discovery_definition_migration_ledger.sql'), 'utf8');
 
 const OUT_DIR = mkdtempSync(join(tmpdir(), 's5a-plan-'));
 let outs = 0;
@@ -155,12 +197,15 @@ beforeAll(async () => {
   }
   await send('exec', `ALTER TABLE discovery_definitions ADD COLUMN organization_id UUID; ALTER TABLE credentials ADD COLUMN organization_id UUID;
     ALTER TABLE discovery_definitions DROP CONSTRAINT discovery_definitions_provider_check;`);
+  // 021's tenant name index (the converted credential's idempotency guard), the other credential referrers, and 041.
+  await send('exec', `CREATE UNIQUE INDEX idx_credentials_unique_name ON credentials (name, created_by, organization_id) WHERE organization_id IS NOT NULL;
+    CREATE TABLE credential_sets (credential_ids UUID[]); CREATE TABLE connector_configurations (credential_id UUID); ${LEDGER_041}`);
   const service = getEncryptionService(KEY);
   for (const [n, org, owner, protocol, payload, raw] of CREDENTIALS) {
     const envelope = raw ?? service.encrypt(JSON.stringify(payload));
     ENVELOPE_IDS.set(String((envelope as { iv?: unknown }).iv), n);
-    await send('query', `INSERT INTO credentials (id, name, protocol, scope, credentials, created_by, organization_id) VALUES ($1, 's5asentinel-cred', $2, 'ssh', $3, $4, $5)`,
-      [uuid(n), protocol, JSON.stringify(envelope), owner, org]);
+    await send('query', `INSERT INTO credentials (id, name, protocol, scope, credentials, created_by, organization_id) VALUES ($1, $6, $2, 'ssh', $3, $4, $5)`,
+      [uuid(n), protocol, JSON.stringify(envelope), owner, org, `s5asentinel-cred-${n}`]);
   }
   for (const [index, [name, provider, org, credential, set, config]] of FIXTURES.entries()) {
     await send('query', `INSERT INTO discovery_definitions (id, name, provider, credential_id, credential_set_id, created_by, organization_id, config, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9)`,
@@ -184,7 +229,7 @@ describe('migrate-legacy-discovery-definitions (dry run, PGlite)', () => {
         new_credential_protocol: protocol === 'null' ? null : protocol, updated_at: UPDATED_AT[1], key_skeleton_sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
       };
     }));
-    expect(plan.counts.null_organization).toBe(4);
+    expect(plan.counts.null_organization).toBe(5);
     expect(plan.plan_sha256).toBe(createHash('sha256').update(JSON.stringify({ rows: plan.rows, counts: plan.counts })).digest('hex'));
   });
 
@@ -207,6 +252,11 @@ describe('migrate-legacy-discovery-definitions (dry run, PGlite)', () => {
     const { code, out } = await run(undefined, ENV);
     expect(code).toBe(0);
     expect(JSON.parse(out).rows[5]).toMatchObject({ shape: 'L1d', disposition: 'LEAVE', reason: 'DUAL_CREDENTIAL_MISMATCH' });
+  });
+
+  it('B7: a decode failure is visible as fixed text plus a count (#97 and #98 fail under the key)', async () => {
+    expect((await run()).err).toBe('migrate-legacy-discovery-definitions: credential decode failures: 2');
+    expect((await run(undefined, ENV)).err).toBe('');
   });
 
   it('key_skeleton_sha256 digests the sorted config key paths only: values never change it, keys always do', async () => {
@@ -319,16 +369,296 @@ describe('migrate-legacy-discovery-definitions (dry run, PGlite)', () => {
 
   it('a failing run whose --out file vanished still exits 1 with fixed text only', async () => {
     const path = outPath();
-    const vanishing: SqlClient = { query: async () => { rmSync(path); throw new Error(`S5ASENTINEL ${path}`); }, close: async () => undefined };
+    const vanishing: SqlClient = { ...client, query: async () => { rmSync(path); throw new Error(`S5ASENTINEL ${path}`); }, close: async () => undefined };
     const { code, err } = await run(['--out', path], undefined, jest.fn((_config: unknown) => vanishing));
     expect([code, err, existsSync(path)]).toEqual([1, 'migrate-legacy-discovery-definitions: failed (Error)', false]);
   });
 
   it('a connection failure prints fixed text with the error name and SQLSTATE only', async () => {
-    const failing: SqlClient = { query: async () => { throw Object.assign(new Error(`password authentication failed for user u at postgres://u:${ENV.CMDB_MIGRATION_POSTGRES_PASSWORD}@h`), { code: '28P01' }); }, close: async () => undefined };
+    const failing: SqlClient = { ...client, query: async () => { throw Object.assign(new Error(`password authentication failed for user u at postgres://u:${ENV.CMDB_MIGRATION_POSTGRES_PASSWORD}@h`), { code: '28P01' }); }, close: async () => undefined };
     const outputs = spyOutputs();
     const { code, out, err, path } = await run(undefined, undefined, jest.fn((_config: unknown) => failing));
     expectValueFree(outputs());
     expect([code, out, err, existsSync(path)]).toEqual([1, '', 'migrate-legacy-discovery-definitions: failed (Error, 28P01)', false]);
+  });
+});
+
+describe('migrate-legacy-discovery-definitions write modes (S5b, 041 on PGlite; in order)', () => {
+  type Receipt = { receipt_id: string; rows: Array<{ definition_id: string; action: string }> };
+  const q = (sql: string, params?: unknown[]) => send('query', sql, params);
+  const sha = (body: string) => createHash('sha256').update(body).digest('hex');
+  const count = async (from: string, params?: unknown[]) => Number((await q(`SELECT count(*)::int AS n FROM ${from}`, params))[0]!['n']);
+  const row = async (n: number) => (await q('SELECT config, credential_id, config::text AS text FROM discovery_definitions WHERE id = $1', [uuid(n)]))[0]!;
+  const fixture = (name: string) => FIXTURES.findIndex(([label]) => label === name) + 1;
+  const add = (n: number, config = JSON.stringify(ssh([H(n)])), provider = 'ssh', credential: string | null = null) => q(`INSERT INTO discovery_definitions
+    (id, name, provider, created_by, organization_id, config, updated_at, credential_id) VALUES ($1, 'S5ASENTINEL-NAME', $6, $2, $3, $4::jsonb, $5, $7)`, [uuid(n), OWNER, ORG, config, UPDATED_AT[0], provider, credential]);
+  type Classify = Parameters<typeof main>[4];
+  const planOf = async (ids: string[], classify?: Classify) =>
+    `${encodePlan(JSON.parse((await run(undefined, undefined, undefined, classify)).out).rows.filter((plan: { definition_id: string }) => ids.includes(plan.definition_id)))}\n`;
+  const decrypt = (envelope: unknown) => JSON.parse(getEncryptionService(KEY).decrypt(envelope as never));
+  /** Writes the input file and runs one mode on it with its sha256 (or `digest`). */
+  async function write(mode: string, body: string, { digest = sha(body), env = { ...ENV, CREDENTIAL_ENCRYPTION_KEY: KEY } as NodeJS.ProcessEnv, open = jest.fn((_config: unknown) => client), classify = undefined as Classify } = {}) {
+    const file = outPath();
+    writeFileSync(file, body);
+    const result = await run([`--${mode}`, ['apply', 'retire'].includes(mode) ? '--plan' : '--receipt', file, '--sha256', digest, '--out', outPath()], env, open, classify);
+    return { ...result, receipt: (result.out === '' ? null : JSON.parse(result.out)) as Receipt };
+  }
+  let [plan, applied, partial, resumed] = ['', '', '', ''];
+
+  it('(a) a wrong --sha256, a tampered or foreign input, a missing key or an unverified host refuses: exit 1, no connection, no receipt', async () => {
+    plan = (await run()).out;
+    const cases = [await write('apply', plan, { digest: sha(`${plan} `) }), await write('apply', plan.replace('"LEAVE"', '"CONVERT"')), await write('apply', plan.trimEnd()),
+      await write('rollback', plan), await write('apply', plan, { env: ENV }), await write('apply', plan, { env: { ...ENV, CMDB_MIGRATION_POSTGRES_HOST: 'db.example', CREDENTIAL_ENCRYPTION_KEY: KEY } })];
+    for (const { code, open, out } of cases) expect([code, open.mock.calls.length, out]).toEqual([1, 0, '']);
+    expect((await write('apply', `${encodePlan([])}\n`)).code).toBe(0); // the same, correctly signed, runs
+  });
+
+  it('(b)(h) --apply converts per §3.2/§3.3 into envelope-only credentials and escrow, one ledger row per planned row, no value anywhere', async () => {
+    const create = jest.spyOn(CredentialCRUDService.prototype, 'create');
+    const outputs = spyOutputs();
+    const result = await write('apply', plan);
+    const seen = outputs();
+    expect([result.code, create.mock.calls.length]).toEqual([0, 0]); // R7: never CredentialCRUDService.create
+    create.mockRestore();
+    applied = result.out;
+    const planned = (JSON.parse(plan).rows as Array<Record<string, string>>).filter(entry => entry['disposition'] !== 'SKIP');
+    const action: Record<string, string> = { INLINE_CREDENTIAL: 'converted', ALIAS_RENAME: 'alias_rename', BENIGN_STRIP: 'benign_strip', PAYLOAD_EQUAL: 'strip_equal' };
+    expect(result.receipt.rows).toEqual(planned.map(entry => ({ definition_id: entry['definition_id'], action: entry['disposition'] === 'LEAVE' ? 'planned_leave' : action[entry['reason']!] })));
+    const changed = result.receipt.rows.filter(entry => entry.action !== 'planned_leave');
+    expect([await count(`credentials WHERE name LIKE 'legacy-discovery-%'`), await count('discovery_definition_migration_escrow'), await count('discovery_definition_migrations')])
+      .toEqual([result.receipt.rows.filter(entry => entry.action === 'converted').length, changed.length, planned.length]);
+    // L1: an ssh_password envelope of the row's org and owner; GET shows {targets} and credential_id; the inventory predicate drops it.
+    const l1 = await row(1);
+    const [credential] = await q('SELECT * FROM credentials WHERE id = $1', [l1['credential_id']]);
+    expect(credential).toMatchObject({ name: `legacy-discovery-${uuid(1)}`, protocol: 'ssh_password', scope: 'ssh', created_by: OWNER, organization_id: ORG, tags: ['hap-774-migrated'] });
+    expect([Object.keys(credential!['credentials'] as object).sort(), decrypt(credential!['credentials'])]).toEqual([['authTag', 'encryptedData', 'iv'], { ...PASSWORD, port: 2222 }]);
+    expect([publicDiscoveryDefinitionConfig(l1['config']), hasUnsafeDiscoveryDefinitionConfig(l1['config'])]).toEqual([{ targets: [H(1), H(2)] }, false]);
+    const [key] = await q('SELECT c.protocol, c.credentials FROM credentials c JOIN discovery_definitions d ON d.credential_id = c.id WHERE d.id = $1', [uuid(fixture('B6 PEM with passphrase'))]);
+    expect([key!['protocol'], decrypt(key!['credentials'])]).toEqual(['ssh_key', { username: U, private_key: PEM, passphrase: 'S5ASENTINEL-PP', port: 2200 }]);
+    for (const { definition_id: id } of changed) expect(hasUnsafeDiscoveryDefinitionConfig((await q('SELECT config FROM discovery_definitions WHERE id = $1', [id]))[0]!['config'])).toBe(false);
+    // Escrow: an envelope of the exact original config per changed row, nothing else.
+    const escrow = await q('SELECT definition_id, envelope FROM discovery_definition_migration_escrow');
+    for (const { definition_id: id, envelope } of escrow) expect([Object.keys(JSON.parse(envelope as string)).sort(), decrypt(JSON.parse(envelope as string))]).toEqual([['authTag', 'encryptedData', 'iv'], FIXTURES[Number(String(id).slice(-12)) - 1]![5]]);
+    expectValueFree([seen, result.err, result.out, JSON.stringify(await q('SELECT * FROM discovery_definition_migrations'))].join('\n'));
+    expect(JSON.stringify(escrow).toLowerCase()).not.toContain('s5asentinel');
+  }, 30_000);
+
+  it('(c) a re-run of the same plan changes nothing; a taken credential name fails that row closed', async () => {
+    const tables = ['credentials', 'discovery_definition_migration_escrow', 'discovery_definition_migrations'];
+    const before = await Promise.all(tables.map(table => count(table)));
+    expect(await write('apply', plan)).toMatchObject({ code: 0, out: applied });
+    expect(await Promise.all(tables.map(table => count(table)))).toEqual(before);
+    await add(201);
+    await q(`INSERT INTO credentials (name, protocol, scope, credentials, created_by, organization_id) VALUES ($1, 'ssh_password', 'ssh', '{}', $2, $3)`, [`legacy-discovery-${uuid(201)}`, OWNER, ORG]);
+    const taken = await write('apply', await planOf([uuid(201)]));
+    expect([taken.code, taken.receipt.rows, hasUnsafeDiscoveryDefinitionConfig((await row(201))['config'])]).toEqual([1, [{ definition_id: uuid(201), action: 'failed' }], true]);
+    expect([await count('discovery_definition_migration_escrow WHERE definition_id = $1', [uuid(201)]), await count('discovery_definition_migrations WHERE definition_id = $1', [uuid(201)])]).toEqual([0, 0]);
+  }, 30_000);
+
+  it('(d) a row whose updated_at moved by 1 µs since the plan is ledgered drifted and left untouched', async () => {
+    await add(202);
+    const body = await planOf([uuid(202)]);
+    await q(`UPDATE discovery_definitions SET updated_at = updated_at + interval '1 microsecond' WHERE id = $1`, [uuid(202)]);
+    const { code, receipt } = await write('apply', body);
+    expect([code, receipt.rows, (await row(202))['credential_id'], hasUnsafeDiscoveryDefinitionConfig((await row(202))['config'])]).toEqual([0, [{ definition_id: uuid(202), action: 'drifted' }], null, true]);
+    expect([await count('discovery_definition_migration_escrow WHERE definition_id = $1', [uuid(202)]), await q('SELECT action FROM discovery_definition_migrations WHERE definition_id = $1', [uuid(202)])]).toEqual([0, [{ action: 'drifted' }]]);
+  }, 30_000);
+
+  it('a partial apply resumes: a re-run of the same plan applies only the failed rows, with no duplicate credential, escrow or ledger row', async () => {
+    const ids = [203, 204, 205].map(uuid);
+    for (const n of [203, 204, 205]) await add(n);
+    const body = await planOf(ids);
+    // Rows 2 and 3 fail mid-run, at their escrow write.
+    const faulty: SqlClient = { ...client, query: (sql, params) => sql.startsWith('INSERT INTO discovery_definition_migration_escrow') && params?.[0] !== ids[0]
+      ? Promise.reject(new Error('S5ASENTINEL')) : client.query(sql, params) };
+    const first = await write('apply', body, { open: jest.fn((_config: unknown) => faulty) });
+    partial = first.out;
+    expect([first.code, first.receipt.rows.map(entry => entry.action), await count('credentials WHERE name = ANY($1)', [ids.map(id => `legacy-discovery-${id}`)])]).toEqual([1, ['converted', 'failed', 'failed'], 1]);
+    expectValueFree(first.err);
+    const second = await write('apply', body);
+    resumed = second.out;
+    expect([second.code, second.receipt.receipt_id, second.receipt.rows.map(entry => entry.action)]).toEqual([0, first.receipt.receipt_id, ['converted', 'converted', 'converted']]);
+    expect([await count('credentials WHERE name = ANY($1)', [ids.map(id => `legacy-discovery-${id}`)]), await count('discovery_definition_migration_escrow WHERE definition_id = ANY($1)', [ids]),
+      await count('discovery_definition_migrations WHERE definition_id = ANY($1)', [ids])]).toEqual([3, 3, 3]);
+  }, 30_000);
+
+  it('(e) --rollback restores the exact original JSON and prior credential, drops the escrow and only unused unmodified credentials, refuses a moved row', async () => {
+    const [l1, l1d, l10, ...others] = ['L1 uniform port', 'L1d equal payload', 'L10 shared', 'L11 ssh one credential', 'L1b PEM', 'B10 empty privateKey is absent', 'B1 PEM after a newline'].map(fixture);
+    await q(`UPDATE discovery_definitions SET updated_at = updated_at + interval '1 microsecond' WHERE id = $1`, [uuid(l10!)]);
+    const created = async (n: number) => (await row(n))['credential_id'];
+    const [l1Credential, kept] = [await created(l1!), await Promise.all(others.map(created))];
+    // Kept: in use by another definition, modified after apply, in a credential set, used by a connector.
+    await q('UPDATE discovery_definitions SET credential_id = $1 WHERE id = $2', [kept[0], uuid(202)]);
+    await q(`UPDATE credentials SET updated_at = updated_at + interval '1 second' WHERE id = $1`, [kept[1]]);
+    await q('INSERT INTO credential_sets (credential_ids) VALUES (ARRAY[$1::uuid])', [kept[2]]);
+    await q('INSERT INTO connector_configurations (credential_id) VALUES ($1)', [kept[3]]);
+    const outputs = spyOutputs();
+    const { code, receipt, out, err } = await write('rollback', applied);
+    expectValueFree(`${outputs()}\n${err}\n${out}`);
+    const actions = Object.fromEntries(receipt.rows.map(entry => [entry.definition_id, entry.action]));
+    expect([code, actions[uuid(l10!)], actions[uuid(l1!)], actions[uuid(l1d!)], new Set(Object.values(actions)).size]).toEqual([1, 'refused', 'rolled_back', 'rolled_back', 2]);
+    for (const n of [l1!, l1d!, others[0]!]) expect((await row(n))['text']).toBe((await q('SELECT $1::jsonb::text AS text', [JSON.stringify(FIXTURES[n - 1]![5])]))[0]!['text']);
+    expect([await created(l1!), await created(l1d!), hasUnsafeDiscoveryDefinitionConfig((await row(l10!))['config']), await count('discovery_definition_migration_escrow WHERE definition_id = ANY($1)',
+      [receipt.rows.filter(entry => entry.action === 'rolled_back').map(entry => entry.definition_id)])]).toEqual([null, uuid(90), false, 0]);
+    expect(await Promise.all([l1Credential, ...kept, uuid(90)].map(id => count('credentials WHERE id = $1', [id])))).toEqual([0, 1, 1, 1, 1, 1]);
+  }, 30_000);
+
+  it('(e) jsonb numbers come back byte-exact; a re-skeletoned escrow is refused; ledger `at` is taken after the lock; a rolled-back plan re-applies as drifted', async () => {
+    const ids = [206, 207, 212];
+    for (const [i, config] of ['{"ports": 80.0, "targets": ["h206.example"]}', '{"ports": 12345678901234567890, "targets": ["h207.example"]}', '{"ports": "22", "targets": ["h212.example"]}'].entries()) await add(ids[i]!, config, 'nmap');
+    const original = await Promise.all(ids.map(async n => (await row(n))['text']));
+    const body = await planOf(ids.map(uuid));
+    const once = await write('apply', body);
+    // Row 212's escrow is swapped for an envelope of another key set (same key): refused, never written back.
+    await q('UPDATE discovery_definition_migration_escrow SET envelope = $1 WHERE definition_id = $2', [JSON.stringify(getEncryptionService(KEY).encrypt('{"targets": ["h212.example"], "tampered": 1}')), uuid(212)]);
+    // Each row transaction starts, then waits (as for the row lock): its ledger `at` must be read after the wait, not at the start.
+    const starts: string[] = [];
+    const waiting: SqlClient = { ...client, async query(sql, params) {
+      const result = await client.query(sql, params);
+      if (sql === 'BEGIN') {
+        starts.push(String((await client.query('SELECT now()::text AS t, pg_sleep(0.002)')).rows[0]!['t']));
+      }
+      return result;
+    } };
+    const back = await write('rollback', once.out, { open: jest.fn((_config: unknown) => waiting) });
+    expect([once.receipt.rows.map(entry => entry.action), back.code, back.receipt.rows.map(entry => entry.action)]).toEqual([['benign_strip', 'benign_strip', 'benign_strip'], 1, ['rolled_back', 'rolled_back', 'refused']]);
+    expect([Number((await q(`SELECT count(*) FILTER (WHERE l.at >= s.t::timestamptz + interval '2 milliseconds') AS n FROM unnest($1::uuid[], $2::text[]) AS s(id, t)
+      JOIN discovery_definition_migrations l ON l.definition_id = s.id AND l.action = 'rolled_back'`, [ids.slice(0, 2).map(uuid), starts.slice(0, 2)]))[0]!['n']),
+      hasUnsafeDiscoveryDefinitionConfig((await row(212))['config']), await Promise.all(ids.slice(0, 2).map(async n => (await row(n))['text'])), original[0]])
+      .toEqual([2, false, original.slice(0, 2), '{"ports": 80.0, "targets": ["h206.example"]}']);
+    const again = await write('apply', body);
+    expect([again.code, again.receipt.rows.map(entry => entry.action)]).toEqual([0, ['drifted', 'drifted', 'benign_strip']]);
+  }, 30_000);
+
+  it('an L1d whose stored credential changed between plan and apply is re-classified and ledgered drifted', async () => {
+    const envelope = (password: string) => JSON.stringify(getEncryptionService(KEY).encrypt(JSON.stringify({ ...PASSWORD, password })));
+    await q(`INSERT INTO credentials (id, name, protocol, scope, credentials, created_by, organization_id) VALUES ($1, 's5asentinel-cred-209', 'ssh_password', 'ssh', $2, $3, $4)`, [uuid(209), envelope(PW), OWNER, ORG]);
+    await add(208, undefined, 'ssh', uuid(209));
+    const body = await planOf([uuid(208)]);
+    await q('UPDATE credentials SET credentials = $1 WHERE id = $2', [envelope('S5ASENTINEL-PW-9'), uuid(209)]);
+    const { code, receipt } = await write('apply', body);
+    expect([JSON.parse(body).rows[0].disposition, code, receipt.rows, hasUnsafeDiscoveryDefinitionConfig((await row(208))['config'])]).toEqual(['STRIP_EQUAL', 0, [{ definition_id: uuid(208), action: 'drifted' }], true]);
+  }, 30_000);
+
+  it('the before-commit strict check rolls back a row whose converted config is still unsafe', async () => {
+    await add(210, JSON.stringify({ _targets: ['S5ASENTINEL bad target'] }), 'nmap');
+    const forced: Classify = () => ({ shape: 'L9', disposition: 'CONVERT', reason: 'ALIAS_RENAME', new_credential_protocol: null });
+    const { code, receipt } = await write('apply', await planOf([uuid(210)], forced), { classify: forced });
+    expect([code, receipt.rows, hasUnsafeDiscoveryDefinitionConfig((await row(210))['config']), await count('discovery_definition_migration_escrow WHERE definition_id = $1', [uuid(210)])])
+      .toEqual([1, [{ definition_id: uuid(210), action: 'failed' }], true, 0]);
+  }, 30_000);
+
+  it('a rollback racing a re-run cannot land between its settled check and its report (no false converted)', async () => {
+    await add(211);
+    const body = await planOf([uuid(211)]);
+    expect((await write('apply', body)).receipt.rows[0]!.action).toBe('converted');
+    // A concurrent rollback commits right after the ledger read, unless this run already holds the row lock (then after its commit).
+    let [locked, deferred, injected] = [false, false, false];
+    const rollback = async () => {
+      injected = true;
+      await q(`UPDATE discovery_definitions SET config = $2::jsonb, credential_id = NULL, updated_at = clock_timestamp() WHERE id = $1`, [uuid(211), JSON.stringify(ssh([H(211)]))]);
+      await q(`INSERT INTO discovery_definition_migrations (receipt_id, definition_id, action) VALUES (gen_random_uuid(), $1, 'rolled_back')`, [uuid(211)]);
+    };
+    const racing: SqlClient = { ...client, async query(sql, params) {
+      locked = sql === 'BEGIN' ? false : locked || (/FOR UPDATE/.test(sql) && params?.[0] === uuid(211));
+      const result = await client.query(sql, params);
+      const settledRead = !injected && sql.startsWith('SELECT action FROM discovery_definition_migrations');
+      deferred ||= settledRead && locked;
+      if ((settledRead && !locked) || (!injected && deferred && sql === 'COMMIT')) {
+        await rollback();
+      }
+      return result;
+    } };
+    const { receipt } = await write('apply', body, { open: jest.fn((_config: unknown) => racing) });
+    expect([injected, deferred, receipt.rows[0]!.action]).toEqual([true, true, 'converted']);
+  }, 30_000);
+
+  it('(f) --finalize deletes the receipt\'s escrow; --rollback then refuses every row and changes nothing', async () => {
+    const ids = [203, 204, 205].map(uuid);
+    const outputs = spyOutputs();
+    // The partial run-1 receipt finalizes only its own converted row; the rows run 2 resumed keep their escrow.
+    const early = await write('finalize', partial);
+    expect([early.receipt.rows, await count('discovery_definition_migration_escrow WHERE definition_id = ANY($1)', [ids])]).toEqual([[{ definition_id: ids[0], action: 'finalized' }], 2]);
+    const finalized = await write('finalize', resumed);
+    const back = await write('rollback', resumed);
+    expectValueFree([outputs(), finalized.out, finalized.err, back.out, back.err].join('\n'));
+    expect([finalized.code, finalized.receipt.rows, await count('discovery_definition_migration_escrow WHERE definition_id = ANY($1)', [ids])])
+      .toEqual([0, ids.slice(1).map(id => ({ definition_id: id, action: 'finalized' })), 0]);
+    expect([back.code, back.receipt.rows.map(entry => entry.action), hasUnsafeDiscoveryDefinitionConfig((await row(203))['config'])]).toEqual([1, ['refused', 'refused', 'refused'], false]);
+  }, 30_000);
+
+  it('--retire empties and deactivates only the listed unchanged LEAVE rows; a malformed retire file refuses with no connection', async () => {
+    const rows = JSON.parse((await run()).out).rows as Array<Record<string, unknown>>;
+    const [snmp, nmap, ad] = ['L3 SNMP', 'L11 nmap', 'L2 AD'].map(name => rows[fixture(name) - 1]!);
+    const file = (list: unknown[], extra = {}) => `${JSON.stringify({ mode: 'retire', rows: list, ...extra })}\n`;
+    const refused = [file([snmp, snmp]), file([snmp, rows.find(entry => entry['disposition'] !== 'LEAVE')]), file([{ ...snmp, name: 'S5ASENTINEL' }]), file([snmp], { note: 'x' }),
+      file([]), `${JSON.stringify({ mode: 'retire', rows: [snmp] }, null, 1)}\n`];
+    for (const body of refused) expect(await write('retire', body)).toMatchObject({ code: 1, out: '', open: expect.objectContaining({ mock: expect.objectContaining({ calls: [] }) }) });
+    await q(`UPDATE discovery_definitions SET updated_at = updated_at + interval '1 microsecond' WHERE id = $1`, [ad!['definition_id']]);
+    const outputs = spyOutputs();
+    const { code, receipt, out, err } = await write('retire', file([snmp, nmap, ad]));
+    expectValueFree(`${outputs()}\n${err}\n${out}`);
+    expect([code, receipt.rows.map(entry => entry.action)]).toEqual([0, ['retired', 'retired', 'drifted']]);
+    expect(await q('SELECT config, is_active FROM discovery_definitions WHERE id = ANY($1) ORDER BY id', [[snmp!['definition_id'], nmap!['definition_id'], ad!['definition_id']]]))
+      .toEqual([{ config: FIXTURES[fixture('L2 AD') - 1]![5], is_active: true }, { config: {}, is_active: false }, { config: {}, is_active: false }]);
+  }, 30_000);
+
+  it('(g) the ledger refuses UPDATE, DELETE and TRUNCATE; cmdb_user has no access; the rollback drops exactly what 041 created', async () => {
+    for (const sql of ['UPDATE discovery_definition_migrations SET reason = NULL', 'DELETE FROM discovery_definition_migrations', 'TRUNCATE discovery_definition_migrations']) {
+      await expect(q(sql)).rejects.toThrow('discovery_definition_migrations is append-only');
+    }
+    await q('CREATE ROLE cmdb_user');
+    for (const table of ['discovery_definition_migrations', 'discovery_definition_migration_escrow']) {
+      await send('exec', 'BEGIN; SET LOCAL ROLE cmdb_user');
+      await expect(q(`DELETE FROM ${table}`)).rejects.toThrow('permission denied');
+      await q('ROLLBACK');
+    }
+    await send('exec', `CREATE SCHEMA cmdb; CREATE TABLE cmdb.schema_migrations (migration_name text); INSERT INTO cmdb.schema_migrations VALUES ('041_discovery_definition_migration_ledger.sql');
+      ${readFileSync(join(MIGRATIONS, 'rollback/041_discovery_definition_migration_ledger.down.sql'), 'utf8')}`);
+    expect(await q(`SELECT to_regclass('discovery_definition_migrations') AS ledger, to_regclass('discovery_definition_migration_escrow') AS escrow,
+      to_regprocedure('discovery_definition_migrations_append_only()') AS trigger, to_regclass('discovery_definitions')::text AS kept, (SELECT count(*)::int FROM cmdb.schema_migrations) AS recorded`))
+      .toEqual([{ ledger: null, escrow: null, trigger: null, kept: 'discovery_definitions', recorded: 0 }]);
+  }, 30_000);
+
+  it('#142 LOW-1: a failed run whose close() never settles still resolves 1, --out unlinked before close() is awaited', async () => {
+    const path = outPath();
+    let present: boolean | undefined;
+    const hanging: SqlClient = { ...client, query: () => Promise.reject(new Error('S5ASENTINEL')), close: () => (present = existsSync(path), Promise.withResolvers<void>().promise) };
+    expect([(await run(['--out', path], undefined, jest.fn((_config: unknown) => hanging))).code, present, existsSync(path)]).toEqual([1, false, false]);
+  }, CLOSE_TIMEOUT_MS + 5_000);
+
+  it('#142 LOW-1: the real CLI, when main never settles, exits 1 and leaves no --out', () => {
+    const [path, cli] = [outPath(), JSON.stringify(join(__dirname, '../migrate-legacy-discovery-definitions.ts'))];
+    // pg queries that never settle and hold no handle: the event loop drains with main still pending.
+    const script = `require('pg').Pool.prototype.query = () => Promise.withResolvers().promise; process.argv = [process.execPath, ${cli}, '--out', ${JSON.stringify(path)}];
+      require('module')._load(${cli}, null, true);`;
+    const child = spawnSync(process.execPath, ['-r', join(__dirname, 'fixtures/ts-source-register.cjs'), '-e', script], { env: { PATH: process.env['PATH'] ?? '', ...ENV }, encoding: 'utf8', timeout: 60_000 });
+    expect([child.status, existsSync(path)]).toEqual([1, false]);
+  }, 60_000);
+
+  it('a closeSync error on a successful run exits 1 and leaves no plan', async () => {
+    const fs: { closeSync: (fd: number) => void } = jest.requireActual('fs');
+    const realClose = fs.closeSync;
+    const close = jest.spyOn(fs, 'closeSync').mockImplementationOnce(fd => {
+      realClose(fd);
+      throw new Error('EIO');
+    });
+    const { code, err, path } = await run(undefined, ENV);
+    close.mockRestore();
+    expect([code, err, existsSync(path)]).toEqual([1, 'migrate-legacy-discovery-definitions: failed (Error)', false]);
+  });
+
+  it('runCli: a rejected run prints fixed text and exits 1 after the flush; a run that never settles keeps exit code 1 (G3/G4)', async () => {
+    const [chunks, exit] = [[] as string[], jest.fn()];
+    try {
+      await runCli(() => Promise.reject(new Error('S5ASENTINEL')), (chunk, done) => (chunks.push(chunk), done?.()), exit);
+      expect([chunks, exit.mock.calls, process.exitCode]).toEqual([['migrate-legacy-discovery-definitions: failed (unexpected)\n', ''], [[1]], 1]);
+      process.exitCode = 0;
+      void runCli(() => Promise.withResolvers<number>().promise, () => undefined, exit);
+      await new Promise(setImmediate);
+      expect([process.exitCode, exit.mock.calls.length]).toEqual([1, 1]);
+    } finally {
+      process.exitCode = undefined;
+    }
   });
 });

@@ -3,12 +3,17 @@
 
 // HAP-774 S3 (C-7/C-8): the SSH worker authenticates only from the in-memory SSHConfig.
 import { Console } from 'console';
+import { once } from 'events';
 import type * as Fs from 'fs';
+import type { AddressInfo } from 'net';
 import { inspect } from 'util';
 import { NodeSSH } from 'node-ssh';
+import { Server, utils } from 'ssh2';
 import { CredentialProtocolAdapter, logger } from '@cmdb/common';
 import type { SSHConfig, UnifiedCredential } from '@cmdb/common';
-import { SSHDiscoveryWorker } from '../ssh-discovery.worker';
+import {
+  ERR_HOSTKEY_ALGORITHM, ERR_SSH_AUTH, ERR_SSH_UNREACHABLE, SSHDiscoveryWorker, SshDiscoveryError,
+} from '../ssh-discovery.worker';
 import { HostKeyType, hostKeyFingerprint } from '../ssh-host-key';
 
 jest.mock('dns/promises', () => ({ lookup: jest.fn() }));
@@ -77,3 +82,87 @@ it('exposes only the adapter entry point and refuses an auth without a secret be
     { host: '8.8.8.8', port: 22, username: 'svc' }, PIN)).rejects.toThrow('SSH credential incomplete');
   expect(NodeSSH).not.toHaveBeenCalled();
 });
+
+// HAP-444 K3 (proposal §4.2-§4.4): error mapping, retry policy and server-side counts.
+const PASSWORD_AUTH: SSHConfig = { host: '8.8.8.8', port: 22, username: 'svc', password: PASSWORD };
+const EXPAND = { depth: null, maxArrayLength: null, maxStringLength: null };
+
+/** discoverHost on a fake NodeSSH, capturing every log level, console and stdout/stderr (retry sleeps on fake timers). */
+async function k3(connect: jest.Mock, { stdout = (_: string) => '', pin = PIN, fakeTimers = true } = {}) {
+  // Every command also writes the marker to stderr: no success-path test may let stderr reach the payload.
+  const execCommand = jest.fn(async (command: string) => ({ stdout: stdout(command), stderr: `${MARKER} stderr`, code: 0, signal: null }));
+  jest.mocked(NodeSSH).mockImplementation(() => ({ connect, dispose: jest.fn(), execCommand }) as never);
+  const [jestConsole, level] = [global.console, logger.level];
+  [global.console, logger.level] = [new Console(process.stdout, process.stderr), 'silly'];
+  const sinks: jest.SpyInstance[] = [jest.spyOn(process.stdout, 'write'), jest.spyOn(process.stderr, 'write'),
+    ...logger.transports.map(transport => jest.spyOn(transport as unknown as { log: () => void }, 'log'))];
+  if (fakeTimers) jest.useFakeTimers();
+  try {
+    const settled = new SSHDiscoveryWorker().discoverHost('run-1', { host: '8.8.8.8', port: 22 }, PASSWORD_AUTH, pin)
+      .catch((error: unknown) => error);
+    if (fakeTimers) await jest.runAllTimersAsync();
+    const result = await settled;
+    const logged = sinks.flatMap(spy => spy.mock.calls).map(call => inspect(call, EXPAND)).join('\n');
+    expect(logged).toContain(result instanceof Error ? 'SSH discovery failed' : 'SSH connection established'); // live sinks
+    expect(`${inspect(result, EXPAND)}\n${logged}`).not.toMatch(new RegExp(`${MARKER}|Handshake failed|no matching`, 'i'));
+    return { result, commands: execCommand.mock.calls.map(([command]) => command) };
+  } finally {
+    jest.useRealTimers();
+    [global.console, logger.level] = [jestConsole, level];
+  }
+}
+
+it.each([
+  ['(a) an authentication failure is terminal after one connect', 'client-authentication', 1, ERR_SSH_AUTH],
+  ['(b) a timeout is still retried up to 3 connects', 'client-timeout', 3, ERR_SSH_UNREACHABLE],
+] as const)('%s, with a fixed code', async (_case, level, attempts, code) => {
+  const connect = jest.fn().mockRejectedValue(Object.assign(new Error(MARKER), { level }));
+  expect((await k3(connect)).result).toStrictEqual(new SshDiscoveryError(code));
+  expect(connect).toHaveBeenCalledTimes(attempts);
+});
+
+it.each(['ECONNREFUSED', 'EHOSTUNREACH', 'ENETUNREACH', 'ETIMEDOUT'])('(b) socket code %s is retried up to 3 connects', async code => {
+  const connect = jest.fn().mockRejectedValue(Object.assign(new Error(MARKER), { code }));
+  expect((await k3(connect)).result).toStrictEqual(new SshDiscoveryError(ERR_SSH_UNREACHABLE));
+  expect(connect).toHaveBeenCalledTimes(3);
+});
+
+it('(c) keeps rejected-command errors and stderr out of the CI payload', async () => {
+  const { result } = await k3(jest.fn().mockResolvedValue(undefined), { stdout: command => {
+    if (/^(crontab|uptime|hostname)/.test(command)) throw new Error(`${MARKER} channel open failure`); // a rejected exec
+    return '1';
+  } });
+  expect(result).toMatchObject({ _type: 'server', metadata: { _system: { _uptime: '' }, _automation: { _cron_job_count: 0 } } });
+  expect(`${inspect(result, EXPAND)}\n${JSON.stringify(result)}`).not.toContain(MARKER);
+});
+
+it('(c) stores server-side counts only: no cron line, login or mount source reaches the metadata', async () => {
+  const cronCount = "crontab -l 2>/dev/null | grep -cvE '^\\s*(#|$)'";
+  const host: Record<string, string> = { who: `${MARKER} pts/0`, 'who | wc -l': '3', 'crontab -l': `* * * * * ${MARKER}`,
+    [cronCount]: '2', mount: `${MARKER} on /mnt/share type cifs (rw,${MARKER})` }; // the marker is in raw output only
+  const { result, commands } = await k3(jest.fn().mockResolvedValue(undefined), { stdout: command => host[command] ?? '' });
+  expect(commands).toEqual(expect.arrayContaining(['who | wc -l', cronCount]));
+  expect(commands.filter(command => command === 'who' || command === 'crontab -l')).toEqual([]);
+  expect(result).toMatchObject({ metadata: { _users: { _count: 3 }, _automation: { _cron_job_count: 2 },
+    _mounts: [{ _mount_point: '/mnt/share', _filesystem_type: 'cifs' }] } });
+  expect(inspect(result, EXPAND)).not.toMatch(/\b(_cron_jobs|_logged_in|_device|_options)\b/);
+});
+
+it('(f1) a host unable to offer the pinned algorithm is refused once, before authentication', async () => {
+  const methods: string[] = [];
+  const server = new Server({ hostKeys: [utils.generateKeyPairSync('ed25519').private] }, client => client
+    .on('error', () => undefined).on('authentication', context => { methods.push(context.method); context.reject(); }));
+  await once(server.listen(0, '127.0.0.1'), 'listening');
+  const { NodeSSH: Real } = jest.requireActual<{ NodeSSH: typeof NodeSSH }>('node-ssh');
+  const connect = jest.fn((config: object) => { // a real client, redirected to the loopback server
+    const ssh = new Real();
+    return ssh.connect({ ...config, host: '127.0.0.1', port: (server.address() as AddressInfo).port }).finally(() => ssh.dispose());
+  });
+  try {
+    const pin = { keyType: HostKeyType.Rsa, fingerprint: PIN.fingerprint };
+    expect((await k3(connect, { pin, fakeTimers: false })).result).toStrictEqual(new SshDiscoveryError(ERR_HOSTKEY_ALGORITHM));
+    expect([connect.mock.calls.length, methods]).toEqual([1, []]);
+  } finally {
+    await once(server.close(), 'close');
+  }
+}, 20000); // a retrying mutant sleeps 2 s + 4 s

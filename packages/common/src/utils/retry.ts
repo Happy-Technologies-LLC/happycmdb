@@ -22,6 +22,8 @@ export interface RetryOptions {
   backoffMultiplier?: number;
   /** Operation name for logging */
   operationName?: string;
+  /** Whether a failure may be retried (default: every failure); false ends the loop and rethrows it */
+  retryable?: (error: unknown) => boolean;
 }
 
 /**
@@ -42,6 +44,7 @@ export async function withRetry<T>(
     maxDelay = 30000,
     backoffMultiplier = 2,
     operationName = 'operation',
+    retryable = () => true,
   } = options;
 
   let lastError: Error | undefined;
@@ -64,7 +67,7 @@ export async function withRetry<T>(
         throw new Error(DISCOVERY_TARGET_REFUSED);
       }
 
-      if (attempt < maxAttempts) {
+      if (attempt < maxAttempts && retryable(lastError)) {
         // Calculate delay with exponential backoff
         const delay = Math.min(
           initialDelay * Math.pow(backoffMultiplier, attempt - 1),
@@ -78,9 +81,10 @@ export async function withRetry<T>(
 
         await sleep(delay);
       } else {
-        logger.error(`${operationName} failed after ${maxAttempts} attempts`, {
+        logger.error(`${operationName} failed after ${attempt} attempts`, {
           _errorClass: lastError instanceof Error ? lastError.constructor.name : typeof lastError,
         });
+        break;
       }
     }
   }

@@ -10,6 +10,35 @@ import {
   ERR_HOSTKEY_MISMATCH, ERR_HOSTKEY_UNPINNED, HostKeyOutcome, HostKeyPin, hostKeyAlgorithms, isHostKeyPin, pinnedVerifier,
 } from './ssh-host-key';
 
+// HAP-444 K3 (proposal §4.2): per-target codes, mapped from structured signals only, never a library message.
+export const ERR_SSH_AUTH = 'ERR_SSH_AUTH';
+export const ERR_SSH_UNREACHABLE = 'ERR_SSH_UNREACHABLE';
+export const ERR_SSH_FAILED = 'ERR_SSH_FAILED';
+/** Key exchange failed before authentication, e.g. the host cannot offer the pinned host-key algorithm. */
+export const ERR_HOSTKEY_ALGORITHM = 'ERR_HOSTKEY_ALGORITHM';
+export type SshDiscoveryErrorCode = typeof ERR_SSH_AUTH | typeof ERR_SSH_UNREACHABLE | typeof ERR_SSH_FAILED
+  | typeof ERR_HOSTKEY_ALGORITHM | typeof ERR_HOSTKEY_MISMATCH;
+
+/** Value-free per-target failure: the message is the code; the library error is never kept or rethrown. */
+export class SshDiscoveryError extends Error {
+  override readonly name = 'SshDiscoveryError';
+  constructor(readonly code: SshDiscoveryErrorCode) { super(code); }
+}
+
+const UNREACHABLE_SOCKET_CODES: Readonly<Record<string, true>> = {
+  ECONNREFUSED: true, ETIMEDOUT: true, EHOSTUNREACH: true, ENETUNREACH: true,
+};
+
+function sshErrorCode(error: unknown, outcome: HostKeyOutcome): SshDiscoveryErrorCode {
+  if (outcome.code) return outcome.code;
+  const { level, code } = (typeof error === 'object' && error !== null ? error : {}) as Record<string, unknown>;
+  if (level === 'client-authentication') return ERR_SSH_AUTH;
+  if (level === 'handshake') return ERR_HOSTKEY_ALGORITHM;
+  // node-ssh reports a connection closed before ready as `No response from server` with code ETIMEDOUT.
+  if (level === 'client-timeout' || UNREACHABLE_SOCKET_CODES[String(code)] === true) return ERR_SSH_UNREACHABLE;
+  return ERR_SSH_FAILED;
+}
+
 /**
  * SSH Discovery Worker
  *
@@ -50,7 +79,7 @@ export class SSHDiscoveryWorker {
       ? { privateKey: auth.privateKey, ...(auth.passphrase ? { passphrase: auth.passphrase } : {}) }
       : { password: auth.password };
 
-    const discovered = await withRetry<DiscoveredCI | null>(
+    return withRetry<DiscoveredCI>(
       async () => {
         const destination = await connectDiscoveryHost(host, await resolveDiscoveryHost(host));
         const ssh = new NodeSSH();
@@ -101,11 +130,11 @@ export class SSHDiscoveryWorker {
             ssh.execCommand('uptime -p'),
             this.detectPackageManager(ssh),
             ssh.execCommand('systemctl list-units --type=service --state=running --no-pager'),
-            ssh.execCommand('who'),
+            ssh.execCommand('who | wc -l'),
             ssh.execCommand('ip route'),
             ssh.execCommand('cat /etc/resolv.conf'),
             this.checkFirewall(ssh),
-            ssh.execCommand('crontab -l'),
+            ssh.execCommand("crontab -l 2>/dev/null | grep -cvE '^\\s*(#|$)'"),
             ssh.execCommand('mount'),
           ]);
 
@@ -121,11 +150,11 @@ export class SSHDiscoveryWorker {
           const uptime = this.getCommandOutput(uptimeResult);
           const packageCount = parseInt(this.getCommandOutput(packageCountResult)) || 0;
           const services = this.parseServices(this.getCommandOutput(servicesResult));
-          const users = this.parseUsers(this.getCommandOutput(usersResult));
+          const userCount = this.parseCount(this.getCommandOutput(usersResult));
           const routes = this.parseRoutes(this.getCommandOutput(ipRouteResult));
           const dns = this.parseDNS(this.getCommandOutput(dnsResult));
           const firewall = this.getCommandOutput(firewallResult);
-          const cronJobs = this.parseCronJobs(this.getCommandOutput(cronJobsResult));
+          const cronJobCount = this.parseCount(this.getCommandOutput(cronJobsResult));
           const mounts = this.parseMounts(this.getCommandOutput(mountsResult));
 
           // Get additional system information
@@ -208,30 +237,25 @@ export class SSHDiscoveryWorker {
                 _count: services.length,
               },
               _users: {
-                _logged_in: users,
-                _count: users.length,
+                _count: userCount,
               },
               _security: {
                 _firewall_status: firewall,
                 _selinux_status: selinux,
               },
               _automation: {
-                _cron_jobs: cronJobs,
-                _cron_job_count: cronJobs.length,
+                _cron_job_count: cronJobCount,
               },
             },
           };
         } catch (error) {
-          if (outcome.code) {
-            // Resolving (not throwing) ends withRetry: a host-key refusal is never retried.
-            logger.error('SSH host key refused', { runId, code: outcome.code });
-            return null;
-          }
+          const code = sshErrorCode(error, outcome);
           logger.error('SSH discovery failed', {
             runId,
+            code,
             errorClass: error instanceof Error ? error.constructor.name : typeof error,
           });
-          throw error;
+          throw new SshDiscoveryError(code);
         } finally {
           ssh.dispose();
         }
@@ -240,12 +264,10 @@ export class SSHDiscoveryWorker {
         maxAttempts: 3,
         initialDelay: 2000,
         operationName: 'discoverHost',
+        // Only an unreachable host is retried: a refused credential or host key is never presented again.
+        retryable: (error) => error instanceof SshDiscoveryError && error.code === ERR_SSH_UNREACHABLE,
       }
     );
-    if (discovered === null) {
-      throw new Error(ERR_HOSTKEY_MISMATCH);
-    }
-    return discovered;
   }
 
   private getCommandOutput(result: PromiseSettledResult<SSHExecCommandResponse>): string {
@@ -413,24 +435,9 @@ export class SSHDiscoveryWorker {
     return services;
   }
 
-  private parseUsers(output: string): Array<Record<string, any>> {
-    const lines = output.split('\n');
-    const users: Array<Record<string, any>> = [];
-
-    for (const line of lines) {
-      if (line.trim()) {
-        const parts = line.split(/\s+/);
-        if (parts[0]) {
-          users.push({
-            _username: parts[0],
-            _terminal: parts[1],
-            _login_time: parts.slice(2).join(' '),
-          });
-        }
-      }
-    }
-
-    return users;
+  /** A server-side count (HAP-444 D12): only a plain decimal is kept, never any other command output. */
+  private parseCount(output: string): number {
+    return /^\d{1,9}$/.test(output) ? Number(output) : 0;
   }
 
   private parseRoutes(output: string): Array<Record<string, any>> {
@@ -474,15 +481,6 @@ export class SSHDiscoveryWorker {
     return servers;
   }
 
-  private parseCronJobs(output: string): string[] {
-    if (output.includes('no crontab')) {
-      return [];
-    }
-
-    const lines = output.split('\n');
-    return lines.filter(line => line.trim() && !line.startsWith('#'));
-  }
-
   private parseMounts(output: string): Array<Record<string, any>> {
     const lines = output.split('\n');
     const mounts: Array<Record<string, any>> = [];
@@ -490,11 +488,10 @@ export class SSHDiscoveryWorker {
     for (const line of lines) {
       if (line.trim()) {
         const parts = line.split(/\s+/);
+        // The device (FUSE/CIFS sources can carry user:pass@) and the options are never stored (D12).
         mounts.push({
-          _device: parts[0],
           _mount_point: parts[2],
           _filesystem_type: parts[4],
-          _options: parts[5]?.replace(/[()]/g, '').split(','),
         });
       }
     }

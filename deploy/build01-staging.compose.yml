@@ -77,8 +77,8 @@ services:
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
       POSTGRES_DB: cmdb
-      POSTGRES_USER: cmdb_user
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_USER: happycmdb_app
+      POSTGRES_PASSWORD: ${HAPPYCMDB_APP_POSTGRES_PASSWORD:?HAPPYCMDB_APP_POSTGRES_PASSWORD is required}
       POSTGRES_SSL_ENABLED: "off"
       POSTGRES_SSL_MODE: disable
       REDIS_HOST: redis
@@ -114,8 +114,8 @@ services:
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
       POSTGRES_DB: cmdb
-      POSTGRES_USER: cmdb_user
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_USER: cmdb_migration_owner
+      POSTGRES_PASSWORD: ${CMDB_MIGRATION_OWNER_PASSWORD:?CMDB_MIGRATION_OWNER_PASSWORD is required}
       POSTGRES_SSL_MODE: disable
     command: ["node", "packages/database/dist/postgres/run-migrations.js", "/app/packages/database/src/postgres/migrations"]
     restart: "no"

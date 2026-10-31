@@ -213,7 +213,7 @@ export class AuthController {
    * Logout endpoint
    */
   private async logout(_req: AuthenticatedRequest, res: Response): Promise<void> {
-    // Stateless (founder decision, H1b not built): nothing is stored to revoke; a captured refresh token is renewable until the credential epoch changes; see HAP-1285.
+    // Stateless (founder decision, H1b not built): nothing is stored to revoke; a captured refresh token stays renewable until the 7-day cap from its login or a credential-epoch change (HAP-1285).
     clearRefreshCookie(res);
 
     res.json({
@@ -443,11 +443,16 @@ export class AuthController {
         currentPassword: string;
         newPassword: string;
       };
-      await this.authService.changePassword(req.user._userId, currentPassword, newPassword, authorizingEpoch(req));
+      // HAP-1285: the change ended every session of the user; this device gets a new one.
+      const { _refreshToken, ...data } = await this.authService.changePassword(
+        req.user._userId, currentPassword, newPassword, authorizingEpoch(req)
+      );
+      setRefreshCookie(res, _refreshToken);
 
       res.json({
         success: true,
-        message: 'Password changed successfully',
+        data,
+        message: 'Password changed. All other sessions and all your API keys have been revoked; this device stays signed in.',
       });
     } catch (error: any) {
       if (credentialRefusal(res, error)) return;

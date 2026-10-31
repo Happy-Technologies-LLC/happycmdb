@@ -112,8 +112,10 @@ class ApiService {
     return this.mapUser(response.data.data);
   }
 
+  /** HAP-1285: the change ends every session; the server re-issues this one (new access token, new cmdb_rt cookie). */
   async changePassword(data: ChangePasswordData): Promise<void> {
-    await apiClient.put('/auth/password', data);
+    const response = await apiClient.put<{ success: boolean; data: { _accessToken: string } }>('/auth/password', data);
+    localStorage.setItem('auth_token', response.data.data._accessToken);
   }
 
   async deleteAccount(): Promise<void> {

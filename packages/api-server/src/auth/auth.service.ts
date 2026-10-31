@@ -42,6 +42,8 @@ export interface GuardedPasswordWrite extends GuardedUserWrite {
   /** Hash the current password was verified against; the write lands only while it is still stored. */
   readHash: string;
   newHash: string;
+  /** Generation stored with the new hash (credentialEpoch + 1): every earlier token, refresh token and API key ends (HAP-1285). */
+  nextEpoch: number;
 }
 
 export interface CredentialEventInput {
@@ -147,6 +149,9 @@ function asAuthFailure(error: unknown): AuthFailureError {
 /** A stored hash bcrypt compares at its own cost ($2a/$2b/$2y, two-digit cost, 53-char salt+digest). */
 const BCRYPT_HASH = /^\$2[aby]\$\d{2}\$[./A-Za-z0-9]{53}$/;
 
+/** Absolute session cap (HAP-1285, founder decision): refresh is refused once now − `_authTime` exceeds it. Not configurable. */
+export const SESSION_ABSOLUTE_CAP_SECONDS = 7 * 24 * 60 * 60;
+
 export class AuthService {
   private jwtService: JWTService;
   private passwordService: PasswordService;
@@ -240,7 +245,8 @@ export class AuthService {
 
   /**
    * Refresh access token using refresh token. The refresh token must be of
-   * the user's current credential generation, and the user unmarked.
+   * the user's current credential generation, the user unmarked, and the
+   * login it descends from at most SESSION_ABSOLUTE_CAP_SECONDS old.
    */
   async refreshToken(request: RefreshTokenRequest): Promise<LoginResponse> {
     const { refreshToken } = request;
@@ -251,6 +257,10 @@ export class AuthService {
       throw tokenFailure(error);
     }
     if (payload._type !== 'refresh') throw new AuthFailureError('wrong_type');
+    // HAP-1285: a hard cap from the login, checked before any store read. A token without the claim predates it.
+    const authTime = payload._authTime;
+    if (!Number.isSafeInteger(authTime)) throw new AuthFailureError('invalid');
+    if (Math.floor(Date.now() / 1000) - authTime! > SESSION_ABSOLUTE_CAP_SECONDS) throw new AuthFailureError('expired');
 
     try {
       const user = await this.repository.findUserById(payload._userId);
@@ -264,11 +274,13 @@ export class AuthService {
         throw new AuthFailureError('revoked');
       }
 
-      // New tokens from the current user record (org re-read, not copied from the old token).
+      // New tokens from the current user record (org re-read, not copied from the old token); the login time is kept.
       const accessToken = this.jwtService.generateAccessToken(
         user._id, user._username, user._role, user._organizationId, credentialEpoch
       );
-      const newRefreshToken = this.jwtService.generateRefreshToken(user._id, user._username, user._role, credentialEpoch);
+      const newRefreshToken = this.jwtService.generateRefreshToken(
+        user._id, user._username, user._role, credentialEpoch, authTime
+      );
       return {
         _accessToken: accessToken,
         _refreshToken: newRefreshToken,
@@ -452,10 +464,15 @@ export class AuthService {
   }
 
   /**
-   * List all API keys for a user
+   * List all API keys for a user. A key of another credential generation no longer authenticates
+   * (verifyApiKey), so it is listed with `_enabled: false` (HAP-1285; read side only).
    */
   async listApiKeys(userId: string): Promise<Omit<ApiKey, '_key' | '_keyHash'>[]> {
-    return await this.repository.listApiKeys(userId);
+    const [user, keys] = await Promise.all([this.repository.findUserById(userId), this.repository.listApiKeys(userId)]);
+    const current = user ? credentialEpochOf(user) : Number.NaN;
+    return keys.map(({ _credentialEpoch, ...key }) => ({
+      ...key, _enabled: key._enabled && sameGeneration(_credentialEpoch ?? 0, current),
+    }));
   }
 
   /**
@@ -494,14 +511,17 @@ export class AuthService {
    * environment). The write is a compare-and-set against the authorizing
    * credential generation, the hash just verified and an unmarked account,
    * so a request authorized before an operator rotation cannot overwrite it.
-   * Never touches the marker or the generation.
+   * It advances the generation with the hash, ending every session and API
+   * key of the user (HAP-1285), and returns a new session for the caller's
+   * device: a fresh authentication, so its absolute cap starts now. Never
+   * touches the marker.
    */
   async changePassword(
     userId: string,
     currentPassword: string,
     newPassword: string,
     authorizingEpoch: number
-  ): Promise<void> {
+  ): Promise<LoginResponse> {
     if (!newPasswordAllowed(newPassword)) {
       throw new PasswordNotAllowedError();
     }
@@ -520,12 +540,22 @@ export class AuthService {
     }
 
     const newHash = await this.passwordService.hash(newPassword);
+    const nextEpoch = credentialEpoch + 1;
     const written = await this.repository.updatePasswordHashGuarded({
-      userId, elementId: user._elementId, credentialEpoch, readHash: user._passwordHash, newHash,
+      userId, elementId: user._elementId, credentialEpoch, readHash: user._passwordHash, newHash, nextEpoch,
     });
     if (!written) {
       throw new CredentialsChangedError();
     }
+    // A new session for this device at the new generation; a fresh authentication, so its login time is now.
+    return {
+      _accessToken: this.jwtService.generateAccessToken(
+        user._id, user._username, user._role, user._organizationId, nextEpoch
+      ),
+      _refreshToken: this.jwtService.generateRefreshToken(user._id, user._username, user._role, nextEpoch),
+      _expiresIn: this.jwtService.getTokenExpiresIn('access'),
+      _user: { _id: user._id, _username: user._username, _role: user._role },
+    };
   }
 
   /**

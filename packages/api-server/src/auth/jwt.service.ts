@@ -63,15 +63,20 @@ export class JWTService {
   /**
    * Generate refresh token. It carries no tenant claim: refreshToken()
    * re-reads the organization from the user record. It carries the
-   * credential generation like the access token.
+   * credential generation like the access token, and `authTime` as the
+   * `_authTime` claim (HAP-1285): the login time, now unless a refresh
+   * passes the presented token's own.
    */
-  generateRefreshToken(userId: string, username: string, role: UserRole, credentialEpoch = 0): string {
+  generateRefreshToken(
+    userId: string, username: string, role: UserRole, credentialEpoch = 0, authTime = Math.floor(Date.now() / 1000)
+  ): string {
     const payload: Omit<TokenPayload, 'iat' | 'exp' | 'iss' | 'aud'> = {
       _userId: userId,
       _username: username,
       _role: role,
       _type: 'refresh',
       _cep: credentialEpoch,
+      _authTime: authTime,
     };
 
     return jwt.sign(payload, this.secret, {

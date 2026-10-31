@@ -23,9 +23,13 @@ Required secret/config names (Infisical /staging path /happycmdb):
 - JWT_AUDIENCE — required audience stamped and verified on JWTs.
 - ENCRYPTION_KEY — credential encryption key consumed as CREDENTIAL_ENCRYPTION_KEY.
 - NEO4J_PASSWORD — Neo4j user password.
-- POSTGRES_PASSWORD — PostgreSQL user password.
+- POSTGRES_PASSWORD — password of the bootstrap superuser `cmdb_user` (initdb). Only the `postgres` service receives it; it is never in an app container (break-glass and operator admin only).
+- HAPPYCMDB_APP_POSTGRES_PASSWORD — password of `happycmdb_app`, the least-privilege role the api-server connects as (`POSTGRES_USER: happycmdb_app`).
+- CMDB_MIGRATION_OWNER_PASSWORD — password of `cmdb_migration_owner`, the non-superuser owner role the one-shot migrator connects as (`POSTGRES_USER: cmdb_migration_owner`).
 - STAGING_PUBLIC_URL — staging UI origin/hostname used to constrain allowed origins.
 - AUDIT_CHAIN_KEY — audit hash-chain HMAC key (32-byte hex); journaled CI writes fail closed (503) without it; never rotate without a re-chain plan.
+
+Postgres roles (HAP-774 S5b): both roles must exist in the target database before a deploy uses this file. On the live generation they are created by the signed role plan (Phase A: `cmdb_migration_owner`; Phase B step B3: `happycmdb_app`, whose grants come from migration 042). A fresh Postgres volume has only `cmdb_user`, so the deployer (C5) must, as `cmdb_user` and before the first migrator run, create both roles, grant the owner CONNECT and CREATE on database `cmdb` and USAGE and CREATE on schema `public`, grant the app CONNECT and USAGE on `public`, and create the `timescaledb` and `uuid-ossp` extensions; after the migrator it grants the app USAGE on schema `cmdb`. `happycmdb_app` must exist before that first run, or 042 is recorded as a no-op and never re-runs. The role plan's §2.3 default-privileges change (revoke EXECUTE on new functions from PUBLIC) must come only after the first run, or functions the app calls, such as `public.connector_jsonb_merge`, are created without EXECUTE for it. `deploy/test-staging-migrations.sh` does all of this except §2.3 on its disposable volume and proves every migrated object is owned by `cmdb_migration_owner`. Fail-closed: a missing key makes Compose refuse to render the stack, so nothing starts; a missing role or wrong password fails the migrator or the api-server health check on the candidate, and the live generation is kept.
 
 Optional names: REDIS_PASSWORD (only when Redis auth enabled), IMAGE_TAG (defaults local), HAPPYCMDB_API_PORT (defaults 19000), HAPPYCMDB_WEB_PORT (defaults 19080), METRICS_SCRAPE_TOKEN (bearer token for root `/metrics`, at least 32 characters; unset or shorter answers 404). NODE_ENV, database hosts/ports, Kafka brokers, JWT expiration, and internal TLS settings are fixed. See [production parity](PRODUCTION-PARITY.md). Never commit secret values.
 

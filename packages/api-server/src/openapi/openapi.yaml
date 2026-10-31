@@ -175,11 +175,11 @@ paths:
         - { name: cmdb_rt, in: cookie, required: true, schema: { type: string } }
       responses:
         '200':
-          description: New access token in the body (no refresh token); Set-Cookie renews cmdb_rt with a full TTL (sliding, no absolute cap)
+          description: New access token in the body (no refresh token); Set-Cookie renews cmdb_rt with a full TTL (sliding, within the 7-day absolute cap from login; HAP-1285)
         '403':
           description: X-CMDB-Auth missing or not exactly 1 (fixed body, checked first)
         '401':
-          description: Same fixed Authentication failed response as /auth/login
+          description: Same fixed Authentication failed response as /auth/login; also when more than 7 days have passed since the session's login (HAP-1285 absolute cap; a refresh token without the login-time claim is refused) or after a self-service password change
           content:
             application/json:
               schema:
@@ -196,7 +196,7 @@ paths:
   /auth/logout:
     post:
       tags: [Authentication]
-      summary: "Expire this browser's cmdb_rt (no header, no access token). Stateless: a captured cmdb_rt can be renewed by refresh (sliding TTL, no absolute cap) until an operator password rotation, disable or delete; a self-service password change does not end it. An absolute 7-day session cap from login, and ending all sessions on a self-service password change, are coming in HAP-1285; until then the lifetime is as described above."
+      summary: "Expire this browser's cmdb_rt (no header, no access token). Stateless: a captured cmdb_rt can be renewed by refresh until 7 days after its login (HAP-1285 absolute cap), or until a password change, operator rotation, disable or delete."
       security: []
       responses:
         '200':
@@ -252,7 +252,7 @@ paths:
     get:
       tags: [Authentication]
       summary: List API keys
-      description: Get all API keys for the authenticated user
+      description: Get all API keys for the authenticated user. A key created before the user's last password change no longer authenticates and is listed with _enabled false (HAP-1285).
       security:
         - BearerAuth: []
       operationId: listApiKeys
@@ -315,6 +315,10 @@ paths:
     put:
       tags: [Authentication]
       summary: Change own password
+      description: >-
+        HAP-1285: ends every session AND every API key of the user. It advances the user's credential generation
+        with the new hash, so other access tokens, refresh cookies, WebSockets and all API keys return 401 (keys
+        are listed with _enabled false). This device stays signed in with a new session whose 7-day cap starts now.
       security:
         - BearerAuth: []
       requestBody:
@@ -334,7 +338,22 @@ paths:
                   minLength: 8
       responses:
         '200':
-          description: Own password changed
+          description: Own password changed; data holds a new _accessToken, _expiresIn and _user (as login) and Set-Cookie sets a new cmdb_rt
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data, message]
+                properties:
+                  success: { type: boolean, enum: [true] }
+                  data:
+                    type: object
+                    required: [_accessToken, _expiresIn, _user]
+                    properties:
+                      _accessToken: { type: string }
+                      _expiresIn: { type: integer, description: Access-token lifetime in seconds }
+                      _user: { type: object }
+                  message: { type: string, description: States that all other sessions and all API keys of the user were revoked }
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':

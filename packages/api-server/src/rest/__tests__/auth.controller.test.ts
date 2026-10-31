@@ -71,12 +71,13 @@ class InMemoryAuthRepository implements AuthRepository {
     return updated;
   }
 
+  /** Like GUARDED_PASSWORD_CYPHER: the hash and the next generation land together. */
   async updatePasswordHashGuarded(write: GuardedPasswordWrite): Promise<boolean> {
     const existing = this.users.get(write.userId);
     if (!existing || existing._passwordHash !== write.readHash) {
       return false;
     }
-    this.users.set(write.userId, { ...existing, _passwordHash: write.newHash });
+    this.users.set(write.userId, { ...existing, _passwordHash: write.newHash, _credentialEpoch: write.nextEpoch });
     return true;
   }
 
@@ -470,7 +471,7 @@ describe('AuthController profile/password/account routes', () => {
       expect([next.status, next.headers['set-cookie']]).toEqual([401, undefined]);
     });
 
-    it('stateless per founder H1b; valid until refresh-token expiry: a cmdb_rt captured before logout still refreshes after it', async () => {
+    it('stateless per founder H1b; valid until refresh-token expiry or the 7-day cap: a cmdb_rt captured before logout still refreshes after it', async () => {
       const captured = refreshCookieOf(await login()).value;
       sensitive.push(captured);
       expect((await request(app).post('/api/v1/auth/logout').set('Cookie', `${REFRESH_COOKIE}=${captured}`)).status).toBe(200);
@@ -490,6 +491,103 @@ describe('AuthController profile/password/account routes', () => {
       const ok = await refresh(current);
       expect(ok.status).toBe(200);
       sensitive.push(refreshCookieOf(ok).value, ok.body.data._accessToken);
+    });
+
+    describe('HAP-1285 absolute cap and password change', () => {
+      const failed = { success: false, error: 'Authentication failed' };
+      const DAY = 24 * 60 * 60;
+      const T0 = Date.UTC(2026, 0, 5, 9, 0, 0);
+      /** Pins Date.now (jsonwebtoken's clock for iat, exp and verify) to T0 + `seconds`. */
+      let at: (seconds: number) => void;
+      beforeEach(() => {
+        const clock = jest.spyOn(Date, 'now');
+        spies.push(clock);
+        at = seconds => { clock.mockReturnValue(T0 + seconds * 1000); };
+      });
+
+      it('refresh is refused once now − login time exceeds 7 days, however often the cookie was renewed', async () => {
+        at(0);
+        let cookie = refreshCookieOf(await login()).value;
+        sensitive.push(cookie);
+        for (const seconds of [6 * DAY, 7 * DAY]) {
+          at(seconds);
+          const renewed = await refresh(cookie);
+          expect(renewed.status).toBe(200);
+          cookie = refreshCookieOf(renewed).value;
+          sensitive.push(cookie, renewed.body.data._accessToken);
+        }
+        at(7 * DAY + 1);
+        const refused = await refresh(cookie);
+        expect([refused.status, refused.body, refused.headers['set-cookie']]).toEqual([401, failed, undefined]);
+        expect(records).toContainEqual(['Authentication failed', { credentialType: 'refresh', reason: 'expired' }]);
+      });
+
+      it('a refresh token without _authTime (minted before the cap) is 401 before any store read', async () => {
+        const legacy = jwt.sign(
+          { _userId: 'user-1', _username: 'alice', _role: 'operator', _type: 'refresh', _cep: 0 },
+          authConfig.jwt.secret, { expiresIn: '7d', issuer: authConfig.jwt.issuer, audience: authConfig.jwt.audience }
+        );
+        sensitive.push(legacy);
+        const lookups = jest.spyOn(repository, 'findUserById');
+        const refused = await refresh(legacy);
+        expect([refused.status, refused.body, refused.headers['set-cookie']]).toEqual([401, failed, undefined]);
+        expect(lookups).not.toHaveBeenCalled();
+        expect(records).toContainEqual(['Authentication failed', { credentialType: 'refresh', reason: 'invalid' }]);
+      });
+
+      it('a self-service password change ends every session and API key of the user; the changing device gets a new one', async () => {
+        const pass = `pw-${randomUUID()}`;
+        const next = `pw-${randomUUID()}`;
+        repository.users.get('user-1')!._passwordHash = await passwordService.hash(pass);
+        sensitive.push(pass, next);
+        const signIn = async () => {
+          const response = await request(app).post('/api/v1/auth/login').send({ username: 'alice', password: pass });
+          expect(response.status).toBe(200);
+          const session = { access: response.body.data._accessToken as string, cookie: refreshCookieOf(response).value };
+          sensitive.push(session.access, session.cookie);
+          return session;
+        };
+        const me = (token: string) => request(app).get('/api/v1/auth/me').set('Authorization', `Bearer ${token}`);
+        at(0);
+        const changing = await signIn();
+        const other = await signIn();
+        const listKeys = async (token: string) => (await request(app).get('/api/v1/auth/api-keys')
+          .set('Authorization', `Bearer ${token}`)).body.data as Array<Record<string, unknown>>;
+        const issued = await request(app).post('/api/v1/auth/api-key').set('Authorization', `Bearer ${other.access}`).send({ name: 'pre-change key' });
+        const key = issued.body.data._apiKey as string;
+        sensitive.push(key);
+        expect((await listKeys(other.access)).map(k => k._enabled)).toEqual([true]);
+
+        at(60);
+        const changed = await request(app).put('/api/v1/auth/password')
+          .set('Authorization', `Bearer ${changing.access}`).send({ currentPassword: pass, newPassword: next });
+        expect(changed.status).toBe(200);
+        const reissued = refreshCookieOf(changed);
+        const access = changed.body.data._accessToken;
+        sensitive.push(reissued.value, access);
+        expect(Object.keys(changed.body.data).sort()).toEqual(['_accessToken', '_expiresIn', '_user']);
+        expect(changed.body.message)
+          .toBe('Password changed. All other sessions and all your API keys have been revoked; this device stays signed in.');
+        expect(reissued.attributes).toEqual(cookieAttributes(jwtService.getTokenExpiresIn('refresh')));
+
+        for (const old of [other.cookie, changing.cookie]) {
+          const refused = await refresh(old);
+          expect([refused.status, refused.body, refused.headers['set-cookie']]).toEqual([401, failed, undefined]);
+        }
+        expect(records).toContainEqual(['Authentication failed', { credentialType: 'refresh', reason: 'revoked' }]);
+        expect((await me(other.access)).status).toBe(401);
+        expect((await me(changing.access)).status).toBe(401);
+        expect((await me(access)).status).toBe(200);
+        // R2: the key minted before the change no longer authenticates and is listed as not enabled (read side only).
+        expect((await request(app).get('/api/v1/auth/me').set('X-API-Key', key)).status).toBe(401);
+        expect((await listKeys(access)).map(k => [k._enabled, '_credentialEpoch' in k])).toEqual([[false, false]]);
+
+        // The change is a fresh authentication: its cap runs from the change, not from the first login.
+        at(7 * DAY + 1);
+        const renewed = await refresh(reissued.value);
+        expect(renewed.status).toBe(200);
+        sensitive.push(refreshCookieOf(renewed).value, renewed.body.data._accessToken);
+      });
     });
   });
 

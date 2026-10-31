@@ -67,6 +67,16 @@ environment when they are a default or a default-equivalent, contain U+0000, or 
 bytes. A password change or account deletion authorized before an operator rotation is refused with
 `401 Credentials changed`.
 
+**A self-service password change ends every session AND every API key of the user** (HAP-1285): it
+advances the user's credential generation together with the new hash. Every other access token,
+refresh cookie and WebSocket of the user is refused on its next use (WebSockets within the 2-minute
+re-check), and so is every API key of the user: keys are valid only at the generation they were
+created in, so they stop authenticating (`401`), are listed by `GET /api/auth/api-keys` with
+`_enabled: false`, and must be recreated. The changing device stays signed in: the `200` response
+(message "Password changed. All other sessions and all your API keys have been revoked; this device
+stays signed in.") carries `data` (`_accessToken`, `_expiresIn`, `_user`, as login) and sets a new
+`cmdb_rt` cookie, whose 7-day cap starts at the change.
+
 **Platform administrators** are a dedicated flag, set only by the operator command
 `scripts/identity-window.ts grant-platform-admin`. Role `admin` and organization grant nothing. A
 seeded account (the init or seed-data admin, or any account with seed provenance or a default
@@ -125,7 +135,7 @@ The refresh token is not in the body: it is set as `cmdb_rt=<refresh JWT>; Max-A
 
 **Token Lifetimes**:
 - **Access Token**: 15 minutes by default (`JWT_ACCESS_TOKEN_EXPIRES_IN`)
-- **Refresh Token**: 7 days by default (`JWT_REFRESH_TOKEN_EXPIRES_IN`); each refresh issues a new one with a full TTL (sliding), with no absolute session cap. An absolute 7-day session cap from login, and ending all sessions on a self-service password change, are coming in HAP-1285; until then the lifetime is as described above.
+- **Refresh Token**: 7 days by default (`JWT_REFRESH_TOKEN_EXPIRES_IN`); each refresh issues a new one with a full TTL (sliding). **Absolute cap** (HAP-1285): refresh is refused once more than 7 days have passed since the login (or self-service password change) the session began with, however often it was renewed; then sign in again. The cap is fixed, not configurable. The last access token issued keeps its own TTL, so a session lasts at most 7 days plus the access TTL.
 
 **Error Responses**:
 - `401 Unauthorized` - Invalid credentials
@@ -136,9 +146,9 @@ The refresh token is not in the body: it is set as `cmdb_rt=<refresh JWT>; Max-A
 
 ### Refresh Token
 
-**Endpoint**: `POST /api/auth/refresh` with the header `X-CMDB-Auth: 1` (exactly). Exchanges the `cmdb_rt` cookie (the only token source; no body is read) for a new access token and a new `cmdb_rt` cookie (same attributes, full TTL: sliding, no absolute cap).
+**Endpoint**: `POST /api/auth/refresh` with the header `X-CMDB-Auth: 1` (exactly). Exchanges the `cmdb_rt` cookie (the only token source; no body is read) for a new access token and a new `cmdb_rt` cookie (same attributes, full TTL: sliding, within the 7-day absolute cap from login).
 
-**Error Responses** (fixed bodies): `403 Forbidden` without `X-CMDB-Auth: 1`, checked first. `401 Unauthorized` when the cookie is missing, duplicated or malformed, or the token is invalid, expired, not a refresh token, of an older credential generation (HP1-S6), or its user is disabled.
+**Error Responses** (fixed bodies): `403 Forbidden` without `X-CMDB-Auth: 1`, checked first. `401 Unauthorized` when the cookie is missing, duplicated or malformed, or the token is invalid, expired, not a refresh token, of an older credential generation (HP1-S6, including after a self-service password change), more than 7 days past its login (HAP-1285; a refresh token issued before HAP-1285 carries no login time and is refused too), or its user is disabled.
 
 ---
 
@@ -146,7 +156,7 @@ The refresh token is not in the body: it is set as `cmdb_rt=<refresh JWT>; Max-A
 
 **Endpoint**: `POST /api/auth/logout` → `{ "success": true, "message": "Logged out successfully" }`. Expires the `cmdb_rt` cookie (`Max-Age=0`, past `Expires`, same attributes); no header and no access token are required.
 
-**Stateless** (founder decision, HAP-1211 H1b): logout only clears this browser's cookie. Each refresh issues a new cookie with a full TTL and there is no absolute session cap, so a refresh cookie captured before logout can be renewed indefinitely (by refreshing at least once per TTL) until an operator password rotation changes the user's credential generation, or the account is disabled or deleted. A self-service password change does not end it. The access token stays valid until it expires (15 minutes by default). An absolute 7-day session cap from login, and ending all sessions on a self-service password change, are coming in HAP-1285; until then the lifetime is as described above.
+**Stateless** (founder decision, HAP-1211 H1b): logout only clears this browser's cookie. A refresh cookie captured before logout can still be renewed until 7 days after the login it came from (HAP-1285 absolute cap), or earlier when the user changes their password, an operator rotation changes the user's credential generation, or the account is disabled or deleted. The access token stays valid until it expires (15 minutes by default).
 
 ---
 

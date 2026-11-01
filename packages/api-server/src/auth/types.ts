@@ -87,6 +87,11 @@ export interface TokenPayload {
   _organizationId?: string;
   /** Credential generation the token was minted in (absent on pre-HP1 tokens = 0). */
   _cep?: number;
+  /**
+   * Refresh tokens only (HAP-1285): the login time, NumericDate seconds. Copied
+   * unchanged on every refresh; refresh is refused 7 days after it.
+   */
+  _authTime?: number;
   iat?: number;
   exp?: number;
   iss?: string;

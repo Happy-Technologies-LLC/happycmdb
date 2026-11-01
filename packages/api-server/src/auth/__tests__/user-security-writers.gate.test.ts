@@ -56,9 +56,12 @@ const RULES: Array<{ name: string; pattern: RegExp; reviewed: Record<string, num
     reviewed: { 'packages/api-server/src/scripts/rotate-user-password.ts': 1 },
   },
   {
-    name: 'credentialEpoch (the operator rotation only)',
+    name: 'credentialEpoch (the operator rotation and the guarded self-service password change)',
     pattern: /\.\s*_?credentialEpoch\s*=(?!=)|REMOVE\s+\w+\._?credentialEpoch\b/g,
-    reviewed: { 'packages/api-server/src/scripts/rotate-user-password.ts': 1 },
+    reviewed: {
+      'packages/api-server/src/auth/neo4j-auth.repository.ts': 1, // GUARDED_PASSWORD_CYPHER (HAP-1285)
+      'packages/api-server/src/scripts/rotate-user-password.ts': 1,
+    },
   },
   {
     name: 'password hash (rotation, guarded self-service change, seed writers)',

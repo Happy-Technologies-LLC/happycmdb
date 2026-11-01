@@ -50,7 +50,7 @@ const MARKED = '(coalesce(u.defaultPasswordSuspect, false) OR coalesce(u._defaul
 
 // The node write lock is taken before every guard below (see user-lock.ts).
 
-/** HP1-S6 changePassword write: lands only on the node read, at the authorizing generation, unmarked, still holding the verified hash. */
+/** HP1-S6 changePassword write: lands only on the node read, at the authorizing generation, unmarked, still holding the verified hash; advances the generation with the hash (HAP-1285). */
 export const GUARDED_PASSWORD_CYPHER = `
 MATCH (u:User) WHERE elementId(u) = $elementId
 ${LOCK_USER}
@@ -59,7 +59,8 @@ WHERE (u._id = $userId OR u.id = $userId)
   AND coalesce(u.credentialEpoch, 0) = $credentialEpoch
   AND NOT ${MARKED}
   AND coalesce(u._passwordHash, u.passwordHash) = $readHash
-SET u._passwordHash = $newHash, u.passwordHash = $newHash, u._updatedAt = datetime(), u.updatedAt = datetime()
+SET u._passwordHash = $newHash, u.passwordHash = $newHash, u.credentialEpoch = $nextEpoch,
+    u._updatedAt = datetime(), u.updatedAt = datetime()
 RETURN count(u) AS n`;
 
 /** HP1-S6 deleteAccount first step: disables the account at the authorizing generation, unmarked. */
@@ -242,7 +243,7 @@ export class Neo4jAuthRepository implements AuthRepository {
   async updatePasswordHashGuarded(write: GuardedPasswordWrite): Promise<boolean> {
     return this.guardedWrite(GUARDED_PASSWORD_CYPHER, {
       elementId: write.elementId ?? null, userId: write.userId, credentialEpoch: neo4j.int(write.credentialEpoch),
-      readHash: write.readHash, newHash: write.newHash,
+      readHash: write.readHash, newHash: write.newHash, nextEpoch: neo4j.int(write.nextEpoch),
     });
   }
 
@@ -423,7 +424,7 @@ export class Neo4jAuthRepository implements AuthRepository {
   async listApiKeys(userId: string): Promise<Omit<ApiKey, '_key' | '_keyHash'>[]> {
     try {
       const result = await this.postgresClient.query(
-        `SELECT id, user_id, name, role, enabled, created_at, expires_at, last_used_at
+        `SELECT id, user_id, name, role, enabled, created_at, expires_at, last_used_at, credential_epoch
          FROM api_keys
          WHERE user_id = $1 AND revoked_at IS NULL
          ORDER BY created_at DESC`,
@@ -439,6 +440,7 @@ export class Neo4jAuthRepository implements AuthRepository {
         _createdAt: row.created_at,
         expiresAt: row.expires_at,
         lastUsedAt: row.last_used_at,
+        _credentialEpoch: row.credential_epoch,
       })) as Omit<ApiKey, '_key' | '_keyHash'>[];
     } catch (error) {
       throw new Error(`Failed to list API keys: ${error instanceof Error ? error.message : 'Unknown error'}`);

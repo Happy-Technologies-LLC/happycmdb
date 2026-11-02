@@ -63,7 +63,7 @@ function auditUpdate(current: Record<string, unknown>, next: Record<string, unkn
 
 export const MAX_CI_TRAVERSAL_NODES = 100;
 export const MAX_CI_TRAVERSAL_WORK = 400;
-const CI_TRAVERSAL_QUERY_TIMEOUT_MS = 5000;
+export const CI_TRAVERSAL_QUERY_TIMEOUT_MS = 5000;
 
 export class CITraversalLimitError extends Error {
   constructor() {
@@ -818,6 +818,23 @@ export class Neo4jClient {
     return (await this.traverseCIs(ciId, scope, depth, 'in', true, work)).nodes.map(({ node, distance }) => ({
       _ci: this.recordToCI(node), _distance: distance,
     }));
+  }
+
+  /**
+   * Owned DEPENDS_ON subgraph reachable from `ciId` in one direction ('out':
+   * what it depends on; 'in': what depends on it), under traverseCIs' bounds.
+   * Each node carries its shortest-hop distance; each edge points from the
+   * dependent CI to the CI it depends on.
+   */
+  async getDependencyGraph(
+    ciId: string, scope: CIOrganizationScope, depth: number, direction: 'in' | 'out',
+    work: CITraversalWork = createCITraversalWork()
+  ): Promise<{ nodes: Array<{ ci: CI; distance: number }>; edges: Array<{ from: string; to: string; type: string }> }> {
+    const { nodes, edges } = await this.traverseCIs(ciId, scope, depth, direction, true, work);
+    return {
+      nodes: nodes.map(({ node, distance }) => ({ ci: this.recordToCI(node), distance })),
+      edges: edges.map(edge => ({ from: edge.startNodeId, to: edge.endNodeId, type: edge.relationship.type })),
+    };
   }
 
   private recordToCI(node: any): CI {

@@ -241,6 +241,16 @@ businessServiceRoutes.get(
 );
 
 /**
+ * @route   GET /api/v1/business-services/:service_id/context
+ * @desc    C1 context read: the bounded dependency and impact subgraph (HAP-1408)
+ * @access  Private
+ */
+businessServiceRoutes.get(
+  '/:service_id/context',
+  controller.getServiceContext.bind(controller)
+);
+
+/**
  * @route   POST /api/v1/business-services/:service_id/dependencies
  * @desc    Create a service dependency
  * @access  Private

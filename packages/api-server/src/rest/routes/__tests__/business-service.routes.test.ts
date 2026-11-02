@@ -74,6 +74,7 @@ jest.mock('../../controllers/business-service.controller', () => ({
     mapCIsToService: mockRouteHandler,
     unmapCIFromService: mockRouteHandler,
     getServiceDependencies: mockRouteHandler,
+    getServiceContext: mockRouteHandler,
     createServiceDependency: mockRouteHandler,
     deleteServiceDependency: mockRouteHandler,
     getServiceHealth: mockRouteHandler,

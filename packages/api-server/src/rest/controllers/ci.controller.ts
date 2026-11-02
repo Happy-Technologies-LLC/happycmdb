@@ -5,7 +5,7 @@ import { Request, Response } from 'express';
 import { randomUUID } from 'crypto';
 import { requestActor, sendJournalError } from '../../journal-http';
 import {
-  CITraversalLimitError, createCITraversalWork, getNeo4jClient, getPostgresClient, getAuditService,
+  createCITraversalWork, getNeo4jClient, getPostgresClient, getAuditService,
 } from '@cmdb/database';
 import { logger, validateCISortField, validateSortDirection } from '@cmdb/common';
 import neo4j from 'neo4j-driver';
@@ -15,6 +15,7 @@ import {
   assertNoCIGap, CIGapError, CI_GAP_RESPONSE, CIListUnavailableError, readCIList,
   readSingleCI, CI_LIST_UNAVAILABLE_RESPONSE,
 } from '../../read-admission';
+import { sendTraversalFailure } from './traversal-failure';
 
 /**
  * The one 404 for a CI that is missing or belongs to another organization:
@@ -27,19 +28,6 @@ function sendCINotFound(res: Response): void {
     error: 'Not Found',
     message: 'CI not found'
   });
-}
-
-function sendTraversalFailure(res: Response, error: unknown): boolean {
-  if (error instanceof CITraversalLimitError) {
-    res.status(503).json({ success: false, error: 'CI traversal resource limit exceeded' });
-    return true;
-  }
-  const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
-  if (typeof code === 'string' && (code.includes('TransactionTimedOut') || code.includes('Transaction.Terminated'))) {
-    res.status(504).json({ success: false, error: 'CI traversal timed out' });
-    return true;
-  }
-  return false;
 }
 
 // Helper function to convert Neo4j types to JavaScript types and transform field names

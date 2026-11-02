@@ -81,6 +81,7 @@ export default defineConfig({
         items: [
           { text: 'API Overview', link: '/api/overview' },
           { text: 'Authentication API', link: '/api/authentication' },
+          { text: 'Business Services (C1)', link: '/api/rest/business-services' },
           { text: 'Discovery API', link: '/api/rest/discovery' },
           { text: 'Unified Credentials API', link: '/api/rest/unified' },
           { text: 'Financial Management API', link: '/api/rest/financial' }
@@ -443,6 +444,7 @@ export default defineConfig({
             { text: 'REST API Overview', link: '/api/rest' },
             { text: 'Configuration Items', link: '/api/rest/configuration-items' },
             { text: 'Relationships', link: '/api/rest/relationships' },
+            { text: 'Business Services (C1)', link: '/api/rest/business-services' },
             { text: 'Discovery API', link: '/api/rest/discovery' },
             { text: 'Unified Credentials API', link: '/api/rest/unified' },
             { text: 'Financial Management API', link: '/api/rest/financial' },

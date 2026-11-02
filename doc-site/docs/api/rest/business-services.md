@@ -62,14 +62,14 @@ Not yet served: `owner_group`, `version` and `offerings[]` (C1 PoR extension, HA
 
 ## `GET /api/v1/business-services/{service_id}/context`
 
-This endpoint returns the dependency and impact subgraph. The service's dependencies and dependents are one hop each way. The CIs mapped to the service are expanded along owned `DEPENDS_ON` edges in both directions, using the same CI traversal bounds as `GET /api/v1/cis/{id}/impact`:
+This endpoint returns the dependency and impact subgraph. The service's dependencies and dependents are one hop each way. The CIs mapped to the service are expanded along owned `DEPENDS_ON` edges in both directions, with the CI traversal limits of `GET /api/v1/cis/{id}/impact`. Unlike that endpoint, depth is a refusing bound here:
 
 | Bound | Value |
 | -- | -- |
-| `max_depth` | 5 CI hops from each mapped CI |
+| `max_depth` | 5 CI hops from the mapped CIs. If an owned `DEPENDS_ON` edge leaves a node at hop 5 (to a new CI or back into the result), the read is refused. |
 | `max_nodes` | 100 distinct nodes in the response (and 100 visited CIs) |
 | `max_adjacency_rows` | 400 graph adjacency rows, shared by every traversal of the read |
-| `statement_timeout_ms` | 5000 per graph statement |
+| `statement_timeout_ms` | 5000 per graph statement, including the ownership check of the mapped CIs |
 | `service_hops` | 1 |
 
 A subgraph over a bound is refused with `503 {"success":false,"error":"CI traversal resource limit exceeded"}`. A graph statement timeout returns `504 {"success":false,"error":"CI traversal timed out"}`. The read never returns a truncated graph. A `200` reports the bounds it ran under in `bounds`.

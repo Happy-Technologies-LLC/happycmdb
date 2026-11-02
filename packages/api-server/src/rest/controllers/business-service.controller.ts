@@ -682,10 +682,10 @@ export class BusinessServiceController {
       const mappedRows = root.mapped_cis as Array<{
         ci_id: string; mapping_type: string; ci_name: string; ci_type: string; ci_status: string;
       }>;
-      if (dependsOn.length > MAX_CI_TRAVERSAL_NODES || dependents.length > MAX_CI_TRAVERSAL_NODES
-        || mappedRows.length > MAX_CI_TRAVERSAL_WORK) {
-        throw new CITraversalLimitError();
-      }
+      // Each related service is its own node (UNIQUE(service_id, depends_on_service_id)),
+      // so addNode's node bound refuses an overflowing service list. Mapping rows are
+      // per (CI, mapping type): more than the row budget is refused here, never cut.
+      if (mappedRows.length > MAX_CI_TRAVERSAL_WORK) throw new CITraversalLimitError();
 
       const nodes = new Map<string, ContextNode>();
       const edges = new Map<string, ContextEdge>();
@@ -720,9 +720,10 @@ export class BusinessServiceController {
 
       // The mapped CIs the caller's organization owns in the graph too, then
       // their owned DEPENDS_ON neighbourhood: one traversal per direction from
-      // all of them, under one traversal budget (at most 2 x CONTEXT_CI_DEPTH
-      // statements, as GET /cis/{id}/impact).
-      const mapped = mappedRows.length === 0 ? [] : await filterOwnedDimensionRows(organizationId, mappedRows);
+      // all of them, under one traversal budget (at most 2 x (CONTEXT_CI_DEPTH + 1)
+      // statements: each direction's hops plus its depth probe).
+      const mapped = mappedRows.length === 0 ? []
+        : await filterOwnedDimensionRows(organizationId, mappedRows, CI_TRAVERSAL_QUERY_TIMEOUT_MS);
       for (const mapping of mapped) {
         addNode({ kind: 'ci', id: mapping.ci_id, name: mapping.ci_name, type: mapping.ci_type, status: mapping.ci_status });
         addEdge({ from: root.service_id, to: mapping.ci_id, type: 'MAPPED_CI', mapping_type: mapping.mapping_type });

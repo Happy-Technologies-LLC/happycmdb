@@ -95,9 +95,12 @@ export async function writeReferencedCIs<T>(
     client.release(broken);
   }
 }
-/** AP-D': the dimension row alone is not proof that the current graph node is owned. */
+/**
+ * AP-D': the dimension row alone is not proof that the current graph node is owned.
+ * `timeoutMs` bounds each ownership statement (default 10 s).
+ */
 export async function filterOwnedDimensionRows<T extends { ci_id: string }>(
-  organizationId: string, rows: T[]
+  organizationId: string, rows: T[], timeoutMs = 10_000
 ): Promise<T[]> {
   if (!rows.length) return rows;
   const owned = new Set<string>();
@@ -108,7 +111,7 @@ export async function filterOwnedDimensionRows<T extends { ci_id: string }>(
       const result = await session.run(
         `MATCH (ci:CI) WHERE ci.id IN $ids AND ci.organization_id = $organizationId
          RETURN ci.id AS id`,
-        { ids, organizationId }, { timeout: 10_000 });
+        { ids, organizationId }, { timeout: timeoutMs });
       for (const record of result.records) owned.add(record.get('id'));
     }
   } finally {

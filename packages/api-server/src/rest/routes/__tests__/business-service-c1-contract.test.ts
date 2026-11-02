@@ -121,9 +121,17 @@ const neo4jClient = new Neo4jClient('bolt://127.0.0.1:1', 'unused', 'unused');
 // `driver` is private: this unchecked view of the instance is the test seam that swaps it.
 const driverSeam = neo4jClient as unknown as { driver: { close(): Promise<void> } };
 void driverSeam.driver.close();
+// Every graph statement's timeout (the read advertises bounds.statement_timeout_ms),
+// and an optional failure every statement throws (a Neo4j transaction timeout).
+let statementTimeouts: Array<number | undefined> = [];
+let graphFailure: Error | null = null;
 driverSeam.driver = {
   session: () => ({
-    run: async (cypher: string, params: Props = {}) => ({ records: runCypher(cypher, params) }),
+    run: async (cypher: string, params: Props = {}, config?: { timeout?: number }) => {
+      statementTimeouts.push(config?.timeout);
+      if (graphFailure) throw graphFailure;
+      return { records: runCypher(cypher, params) };
+    },
     close: async () => undefined,
   }),
   close: async () => undefined,
@@ -263,6 +271,8 @@ afterAll(() => {
 
 beforeEach(() => {
   seedGraph();
+  statementTimeouts = [];
+  graphFailure = null;
   logged = [];
   for (const method of LOG_METHODS) {
     jest.spyOn(logger, method).mockImplementation(((...args: unknown[]) => { logged.push(args); return logger; }) as never);
@@ -330,6 +340,9 @@ describe('C1 S1 happy path: the seeded service in tenant T', () => {
       'ci-t-workflow>ci-t-directory:DEPENDS_ON',
     ]);
     expect(data.nodes.length).toBeLessThanOrEqual(MAX_CI_TRAVERSAL_NODES);
+    // Every graph statement of the read, the ownership filter included, ran under the advertised timeout.
+    expect(statementTimeouts.length).toBeGreaterThan(0);
+    expect(new Set(statementTimeouts)).toEqual(new Set([CI_TRAVERSAL_QUERY_TIMEOUT_MS]));
   });
 
   it('refuses a subgraph over the node bound with 503, never a truncated graph', async () => {
@@ -342,6 +355,89 @@ describe('C1 S1 happy path: the seeded service in tenant T', () => {
 
     expect(res.status).toBe(503);
     expect(res.body).toEqual({ success: false, error: 'CI traversal resource limit exceeded' });
+  });
+});
+
+describe('C1 S1 bounds: the context read refuses a subgraph over any bound, never cuts it', () => {
+  const LIMIT_BODY = { success: false, error: 'CI traversal resource limit exceeded' };
+  const ciNode = (id: string) => ({ id, name: `CI ${id}`, type: 'server', status: 'active', organization_id: TENANT_T });
+  /** Seed T CIs mapped to S (dimension row, graph node and mapping rows), removed again after `run`. */
+  async function withMappedCIs(ids: string[], mappingTypes: string[], run: () => Promise<void>): Promise<void> {
+    await send('exec', `INSERT INTO cmdb.dim_ci (ci_id, ci_name, ci_type, ci_status, is_current, organization_id) VALUES
+      ${ids.map(id => `('${id}', 'CI ${id}', 'server', 'active', TRUE, '${TENANT_T}')`).join(',\n')};
+      INSERT INTO ci_business_service_mappings (ci_id, service_id, mapping_type) VALUES
+      ${ids.flatMap(id => mappingTypes.map(type => `('${id}', '${SEEDED_S}', '${type}')`)).join(',\n')};`);
+    for (const id of ids) graph.nodes.set(id, ciNode(id));
+    try {
+      await run();
+    } finally {
+      await send('exec', `DELETE FROM ci_business_service_mappings WHERE ci_id = ANY(ARRAY[${ids.map(id => `'${id}'`).join(',')}]);
+        DELETE FROM cmdb.dim_ci WHERE ci_id = ANY(ARRAY[${ids.map(id => `'${id}'`).join(',')}]);`);
+    }
+  }
+
+  it('refuses a CI chain that continues past max_depth, including a back edge from the last hop', async () => {
+    // Mapped CI (hop 0) > ci-t-directory (1) > d1 (2) > d2 (3) > d3 (4) > d4 (5 = max_depth).
+    for (const id of ['ci-t-d1', 'ci-t-d2', 'ci-t-d3', 'ci-t-d4', 'ci-t-d5']) graph.nodes.set(id, ciNode(id));
+    graph.edges.push(
+      { from: 'ci-t-directory', to: 'ci-t-d1', type: 'DEPENDS_ON' }, { from: 'ci-t-d1', to: 'ci-t-d2', type: 'DEPENDS_ON' },
+      { from: 'ci-t-d2', to: 'ci-t-d3', type: 'DEPENDS_ON' }, { from: 'ci-t-d3', to: 'ci-t-d4', type: 'DEPENDS_ON' });
+    const ending = await readContext(SEEDED_S);
+    expect(ending.status).toBe(200);
+    expect(ending.body.data.dependencies).toContainEqual({ kind: 'ci', id: 'ci-t-d4', distance: 6 });
+
+    const backEdge = { from: 'ci-t-d4', to: 'ci-t-directory', type: 'DEPENDS_ON' };
+    graph.edges.push(backEdge);
+    const withBackEdge = await readContext(SEEDED_S);
+    graph.edges = graph.edges.filter(edge => edge !== backEdge);
+    graph.edges.push({ from: 'ci-t-d4', to: 'ci-t-d5', type: 'DEPENDS_ON' });
+    const deeper = await readContext(SEEDED_S);
+
+    expect([withBackEdge.status, withBackEdge.body]).toEqual([503, LIMIT_BODY]);
+    expect([deeper.status, deeper.body]).toEqual([503, LIMIT_BODY]);
+  });
+
+  it('refuses more mapping rows than the adjacency-row budget', async () => {
+    // 81 CIs under 5 mapping types: 405 rows, 81 + 7 nodes.
+    const ids = Array.from({ length: 81 }, (_, i) => `ci-t-many-${i}`);
+    await withMappedCIs(ids, ['hosts', 'supports', 'consumes', 'depends_on', 'monitors'], async () => {
+      const res = await readContext(SEEDED_S);
+      expect([res.status, res.body]).toEqual([503, LIMIT_BODY]);
+    });
+  });
+
+  it('refuses more services and CIs together than the node bound', async () => {
+    // 7 seeded nodes + 60 dependent services + 41 mapped CIs = 108 > 100; only 45 of them are CIs.
+    const services = Array.from({ length: 60 }, (_, i) => `bs-t-dependent-${i}`);
+    await send('exec', `INSERT INTO dim_business_services (service_id, name, service_classification, tbm_tower,
+        business_criticality, operational_status, organization_id) VALUES
+      ${services.map(id => `('${id}', 'Dependent ${id}', 'application', 'application', 'low', 'active', '${TENANT_T}')`).join(',\n')};
+      INSERT INTO business_service_dependencies (service_id, depends_on_service_id, dependency_type) VALUES
+      ${services.map(id => `('${id}', '${SEEDED_S}', 'application')`).join(',\n')};`);
+    try {
+      await withMappedCIs(Array.from({ length: 41 }, (_, i) => `ci-t-mapped-${i}`), ['hosts'], async () => {
+        const res = await readContext(SEEDED_S);
+        expect([res.status, res.body]).toEqual([503, LIMIT_BODY]);
+      });
+    } finally {
+      await send('exec', `DELETE FROM dim_business_services WHERE service_id LIKE 'bs-t-dependent-%'`);
+    }
+  });
+
+  it('refuses a hop over the adjacency-row budget (parallel relationships count)', async () => {
+    for (let i = 0; i < MAX_CI_TRAVERSAL_WORK; i++) graph.edges.push({ from: 'ci-t-workflow', to: 'ci-t-directory', type: 'DEPENDS_ON' });
+
+    const res = await readContext(SEEDED_S);
+
+    expect([res.status, res.body]).toEqual([503, LIMIT_BODY]);
+  });
+
+  it('maps a graph statement timeout to the fixed 504', async () => {
+    graphFailure = Object.assign(new Error('timed out'), { code: 'Neo.ClientError.Transaction.TransactionTimedOut' });
+
+    const res = await readContext(SEEDED_S);
+
+    expect([res.status, res.body]).toEqual([504, { success: false, error: 'CI traversal timed out' }]);
   });
 });
 

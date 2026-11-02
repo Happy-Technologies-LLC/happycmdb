@@ -3592,7 +3592,9 @@ paths:
         the service (current, owned, not pending reconciliation) are expanded
         along owned DEPENDS_ON edges in both directions under the CI traversal
         bounds reported in `bounds` (depth 5, 100 nodes, 400 adjacency rows,
-        5-second statements). Edges point from the dependent to what it
+        5-second statements). Depth is a refusing bound: an owned DEPENDS_ON
+        edge leaving a CI at the last hop (to a new CI or back into the
+        result) refuses the read. Edges point from the dependent to what it
         depends on. A subgraph over a bound is refused with 503 (or 504 on a
         statement timeout), never truncated. A service with no relations
         returns only its own node.

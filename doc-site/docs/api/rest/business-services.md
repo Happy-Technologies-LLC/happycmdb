@@ -96,7 +96,7 @@ A subgraph over a bound is refused with `503 {"success":false,"error":"CI traver
 
 - Every edge points from the dependent to what it depends on. Service-to-service edges are `DEPENDS_ON` and carry `dependency_type`. Service-to-CI edges are `MAPPED_CI` and carry `mapping_type`. CI-to-CI edges are the graph's `DEPENDS_ON`.
 - `dependencies[]` lists what the service depends on and `impact[]` lists what depends on it. Each entry carries its shortest distance from the service, where 1 means direct.
-- A CI is included only if it is a current CI of the caller's organization in both PostgreSQL and the graph, with no pending reconciliation. Another tenant's service, CI or edge never appears.
+- A mapped CI is included only if it is a current CI of the caller's organization in both PostgreSQL and the graph, with no pending reconciliation. CIs reached from the mapped CIs are the caller's organization's graph nodes, exactly as in `GET /api/v1/cis/{id}/impact`. All mapped CIs are expanded in one traversal per direction. Another tenant's service, CI or edge never appears.
 
 ## Seeded internal IT service
 

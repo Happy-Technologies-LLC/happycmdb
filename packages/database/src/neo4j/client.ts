@@ -685,24 +685,26 @@ export class Neo4jClient {
   }
 
   /**
-   * Expand owned CI nodes once per hop. Each statement caps adjacency rows
-   * before transfer; the shared budget also charges parallel relationships.
+   * Expand owned CI nodes once per hop from every root at once. Each
+   * statement caps adjacency rows before transfer; the shared budget also
+   * charges parallel relationships. A node's distance is from its nearest root.
    */
   private async traverseCIs(
-    ciId: string, scope: CIOrganizationScope, depth: number,
+    roots: string[], scope: CIOrganizationScope, depth: number,
     direction: 'in' | 'out', dependencyOnly: boolean, work: CITraversalWork
   ): Promise<{ nodes: TraversalNode[]; edges: TraversalEdge[]; paths: Path[] }> {
     const organizationId = organizationIdParam(scope);
     if (!Number.isInteger(depth) || depth < 1 || depth > 10) throw new CITraversalLimitError();
-    work.nodes.add(ciId);
+    for (const root of roots) work.nodes.add(root);
     if (work.nodes.size > MAX_CI_TRAVERSAL_NODES) throw new CITraversalLimitError();
     const session = this.getSession();
     const nodes: TraversalNode[] = [];
     const edges: TraversalEdge[] = [];
-    const discovered = new Set<string>([ciId]);
+    const rootIds = new Set<string>(roots);
+    const discovered = new Set<string>(roots);
     const nodeById = new Map<string, Node>();
     const parents = new Map<string, { sourceId: string; relationship: Relationship }>();
-    let frontier = [ciId];
+    let frontier = [...rootIds];
     const relation = dependencyOnly ? ':DEPENDS_ON' : '';
     const pattern = direction === 'out'
       ? `(source)-[relationship${relation}]->(target:CI)`
@@ -753,7 +755,7 @@ export class Neo4jClient {
       for (const { node } of nodes) {
         const segments: PathSegment[] = [];
         let at = node.properties['id'] as string;
-        while (at !== ciId) {
+        while (!rootIds.has(at)) {
           const parent = parents.get(at)!;
           segments.push(new neo4j.types.PathSegment(
             nodeById.get(parent.sourceId)!, parent.relationship, nodeById.get(at)!
@@ -761,7 +763,7 @@ export class Neo4jClient {
           at = parent.sourceId;
         }
         segments.reverse();
-        paths.push(new neo4j.types.Path(nodeById.get(ciId)!, node, segments));
+        paths.push(new neo4j.types.Path(nodeById.get(at)!, node, segments));
       }
       return { nodes, edges, paths };
     } finally {
@@ -780,7 +782,7 @@ export class Neo4jClient {
       _startNodeId: string; _endNodeId: string;
     }> = [];
     for (const orientation of (direction === 'both' ? ['out', 'in'] : [direction]) as Array<'out' | 'in'>) {
-      const traversal = await this.traverseCIs(ciId, scope, depth, orientation, false, work);
+      const traversal = await this.traverseCIs([ciId], scope, depth, orientation, false, work);
       for (const edge of traversal.edges) {
         const type = edge.relationship.type;
         const key = JSON.stringify([type, edge.startNodeId, edge.endNodeId]);
@@ -808,29 +810,30 @@ export class Neo4jClient {
     ciId: string, scope: CIOrganizationScope, depth: number = 5,
     work: CITraversalWork = createCITraversalWork()
   ): Promise<Path[]> {
-    return (await this.traverseCIs(ciId, scope, depth, 'out', true, work)).paths;
+    return (await this.traverseCIs([ciId], scope, depth, 'out', true, work)).paths;
   }
 
   async impactAnalysis(
     ciId: string, scope: CIOrganizationScope, depth: number = 5,
     work: CITraversalWork = createCITraversalWork()
   ) {
-    return (await this.traverseCIs(ciId, scope, depth, 'in', true, work)).nodes.map(({ node, distance }) => ({
+    return (await this.traverseCIs([ciId], scope, depth, 'in', true, work)).nodes.map(({ node, distance }) => ({
       _ci: this.recordToCI(node), _distance: distance,
     }));
   }
 
   /**
-   * Owned DEPENDS_ON subgraph reachable from `ciId` in one direction ('out':
-   * what it depends on; 'in': what depends on it), under traverseCIs' bounds.
-   * Each node carries its shortest-hop distance; each edge points from the
-   * dependent CI to the CI it depends on.
+   * Owned DEPENDS_ON subgraph reachable from the root CIs in one direction
+   * ('out': what they depend on; 'in': what depends on them), expanded from
+   * all roots in one traversal under traverseCIs' bounds. Each node carries
+   * its shortest-hop distance from the nearest root; each edge points from
+   * the dependent CI to the CI it depends on.
    */
   async getDependencyGraph(
-    ciId: string, scope: CIOrganizationScope, depth: number, direction: 'in' | 'out',
+    ciIds: string[], scope: CIOrganizationScope, depth: number, direction: 'in' | 'out',
     work: CITraversalWork = createCITraversalWork()
   ): Promise<{ nodes: Array<{ ci: CI; distance: number }>; edges: Array<{ from: string; to: string; type: string }> }> {
-    const { nodes, edges } = await this.traverseCIs(ciId, scope, depth, direction, true, work);
+    const { nodes, edges } = await this.traverseCIs(ciIds, scope, depth, direction, true, work);
     return {
       nodes: nodes.map(({ node, distance }) => ({ ci: this.recordToCI(node), distance })),
       edges: edges.map(edge => ({ from: edge.startNodeId, to: edge.endNodeId, type: edge.relationship.type })),

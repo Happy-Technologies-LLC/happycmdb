@@ -694,7 +694,9 @@ export class BusinessServiceController {
         if (!nodes.has(`${contextNode.kind}:${contextNode.id}`)) nodes.set(`${contextNode.kind}:${contextNode.id}`, contextNode);
         if (nodes.size > MAX_CI_TRAVERSAL_NODES) throw new CITraversalLimitError();
       };
-      const addEdge = (edge: ContextEdge) => edges.set(JSON.stringify([edge.from, edge.to, edge.type]), edge);
+      // One MAPPED_CI edge per mapping type (UNIQUE(ci_id, service_id, mapping_type)).
+      const addEdge = (edge: ContextEdge) =>
+        edges.set(JSON.stringify([edge.from, edge.to, edge.type, edge.mapping_type ?? null]), edge);
       const reached = (list: Map<string, ContextReach>, kind: ContextNode['kind'], id: string, distance: number) => {
         const known = list.get(`${kind}:${id}`);
         if (!known || known.distance > distance) list.set(`${kind}:${id}`, { kind, id, distance });
@@ -717,7 +719,9 @@ export class BusinessServiceController {
       }
 
       // The mapped CIs the caller's organization owns in the graph too, then
-      // their owned DEPENDS_ON neighbourhood, all under one traversal budget.
+      // their owned DEPENDS_ON neighbourhood: one traversal per direction from
+      // all of them, under one traversal budget (at most 2 x CONTEXT_CI_DEPTH
+      // statements, as GET /cis/{id}/impact).
       const mapped = mappedRows.length === 0 ? [] : await filterOwnedDimensionRows(organizationId, mappedRows);
       for (const mapping of mapped) {
         addNode({ kind: 'ci', id: mapping.ci_id, name: mapping.ci_name, type: mapping.ci_type, status: mapping.ci_status });
@@ -725,16 +729,14 @@ export class BusinessServiceController {
         reached(reach.dependencies, 'ci', mapping.ci_id, 1);
       }
       const work = createCITraversalWork();
-      const neo4jClient = getNeo4jClient();
-      for (const ciId of [...new Set(mapped.map(mapping => mapping.ci_id))]) {
-        for (const direction of ['out', 'in'] as const) {
-          const graph = await neo4jClient.getDependencyGraph(ciId, organizationId, CONTEXT_CI_DEPTH, direction, work);
-          for (const { ci, distance } of graph.nodes) {
-            addNode({ kind: 'ci', id: ci._id, name: ci.name, type: ci._type, status: ci._status });
-            reached(direction === 'out' ? reach.dependencies : reach.impact, 'ci', ci._id, distance + 1);
-          }
-          for (const edge of graph.edges) addEdge(edge);
+      const roots = [...new Set(mapped.map(mapping => mapping.ci_id))];
+      for (const direction of roots.length === 0 ? [] : ['out', 'in'] as const) {
+        const graph = await getNeo4jClient().getDependencyGraph(roots, organizationId, CONTEXT_CI_DEPTH, direction, work);
+        for (const { ci, distance } of graph.nodes) {
+          addNode({ kind: 'ci', id: ci._id, name: ci.name, type: ci._type, status: ci._status });
+          reached(direction === 'out' ? reach.dependencies : reach.impact, 'ci', ci._id, distance + 1);
         }
+        for (const edge of graph.edges) addEdge(edge);
       }
 
       res.json({

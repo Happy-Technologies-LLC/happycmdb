@@ -169,10 +169,12 @@ function tableDdl(source: string, tables: string[]): string {
 }
 
 // Tenant T: S (seeded by 042) depends on the seeded dependency; T's portal depends on S.
-// S maps T's CI, which depends on T's database CI and is depended on by T's portal CI.
-// Tenant T2: its own service, dependency and CI, plus rows pointing at S that only
-// a direct database write can create (a T2 service depending on S, S mapping T2's
-// CI, T's CI depending on T2's CI in the graph): none of them may surface to T.
+// S maps two T CIs (the workflow engine under two mapping types) that share a
+// dependency on T's directory database; T's portal CI depends on the workflow engine.
+// Tenant T2: its own service, dependency and CI, plus rows pointing at or from S that
+// only a direct database write can create (S depending on a T2 service, a T2 service
+// depending on S, S mapping T2's CI, T's CI depending on T2's CI in the graph): none
+// of them may surface to T.
 const TEST_SEED = `
 INSERT INTO dim_business_services (service_id, name, service_classification, tbm_tower, business_criticality,
   operational_status, owned_by, organization_id) VALUES
@@ -181,25 +183,31 @@ INSERT INTO dim_business_services (service_id, name, service_classification, tbm
   ('bs-b-ledger', 'T2 Secret Ledger', 'data', 'data', 'critical', 'active', 'T2 Finance', '${TENANT_T2}');
 INSERT INTO business_service_dependencies (service_id, depends_on_service_id, dependency_type) VALUES
   ('bs-t-portal', '${SEEDED_S}', 'application'),
+  ('${SEEDED_S}', 'bs-b-ledger', 'platform'),
   ('bs-b-payroll', 'bs-b-ledger', 'platform'),
   ('bs-b-payroll', '${SEEDED_S}', 'application');
 INSERT INTO ci_business_service_mappings (ci_id, service_id, mapping_type) VALUES
   ('ci-t-workflow', '${SEEDED_S}', 'hosts'),
+  ('ci-t-workflow', '${SEEDED_S}', 'supports'),
+  ('ci-t-forms', '${SEEDED_S}', 'supports'),
   ('ci-b-payroll-db', '${SEEDED_S}', 'hosts'),
   ('ci-b-payroll-db', 'bs-b-payroll', 'hosts');
 INSERT INTO cmdb.dim_ci (ci_id, ci_name, ci_type, ci_status, is_current, organization_id) VALUES
   ('ci-t-workflow', 'Access workflow engine', 'application', 'active', TRUE, '${TENANT_T}'),
+  ('ci-t-forms', 'Access request forms', 'application', 'active', TRUE, '${TENANT_T}'),
   ('ci-b-payroll-db', 'T2 Secret Payroll DB', 'database', 'active', TRUE, '${TENANT_T2}');`;
 
 function seedGraph(): void {
   graph.nodes = new Map<string, Props>([
     ['ci-t-workflow', { id: 'ci-t-workflow', name: 'Access workflow engine', type: 'application', status: 'active', organization_id: TENANT_T }],
+    ['ci-t-forms', { id: 'ci-t-forms', name: 'Access request forms', type: 'application', status: 'active', organization_id: TENANT_T }],
     ['ci-t-directory', { id: 'ci-t-directory', name: 'Directory database', type: 'database', status: 'active', organization_id: TENANT_T }],
     ['ci-t-portal-web', { id: 'ci-t-portal-web', name: 'Portal web tier', type: 'server', status: 'active', organization_id: TENANT_T }],
     ['ci-b-payroll-db', { id: 'ci-b-payroll-db', name: 'T2 Secret Payroll DB', type: 'database', status: 'active', organization_id: TENANT_T2 }],
   ]);
   graph.edges = [
     { from: 'ci-t-workflow', to: 'ci-t-directory', type: 'DEPENDS_ON' },
+    { from: 'ci-t-forms', to: 'ci-t-directory', type: 'DEPENDS_ON' },
     { from: 'ci-t-portal-web', to: 'ci-t-workflow', type: 'DEPENDS_ON' },
     { from: 'ci-t-workflow', to: 'ci-b-payroll-db', type: 'DEPENDS_ON' },
     { from: 'ci-b-payroll-db', to: 'ci-t-workflow', type: 'DEPENDS_ON' },
@@ -307,13 +315,17 @@ describe('C1 S1 happy path: the seeded service in tenant T', () => {
     const ids = (entries: Array<{ kind: string; id: string; distance: number }>) =>
       entries.map(e => `${e.kind}:${e.id}@${e.distance}`).sort();
     expect(ids(data.dependencies)).toEqual([
-      `business_service:${SEEDED_DEPENDENCY}@1`, 'ci:ci-t-directory@2', 'ci:ci-t-workflow@1',
+      `business_service:${SEEDED_DEPENDENCY}@1`, 'ci:ci-t-directory@2', 'ci:ci-t-forms@1', 'ci:ci-t-workflow@1',
     ]);
     expect(ids(data.impact)).toEqual(['business_service:bs-t-portal@1', 'ci:ci-t-portal-web@2']);
-    expect(data.edges.map((e: { from: string; to: string; type: string }) => `${e.from}>${e.to}:${e.type}`).sort()).toEqual([
+    expect(data.edges.map((e: { from: string; to: string; type: string; mapping_type?: string }) =>
+      `${e.from}>${e.to}:${e.type}${e.mapping_type ? `/${e.mapping_type}` : ''}`).sort()).toEqual([
       `${SEEDED_S}>${SEEDED_DEPENDENCY}:DEPENDS_ON`,
-      `${SEEDED_S}>ci-t-workflow:MAPPED_CI`,
+      `${SEEDED_S}>ci-t-forms:MAPPED_CI/supports`,
+      `${SEEDED_S}>ci-t-workflow:MAPPED_CI/hosts`,
+      `${SEEDED_S}>ci-t-workflow:MAPPED_CI/supports`,
       `bs-t-portal>${SEEDED_S}:DEPENDS_ON`,
+      'ci-t-forms>ci-t-directory:DEPENDS_ON',
       'ci-t-portal-web>ci-t-workflow:DEPENDS_ON',
       'ci-t-workflow>ci-t-directory:DEPENDS_ON',
     ]);

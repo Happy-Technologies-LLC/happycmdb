@@ -3139,8 +3139,13 @@ paths:
       - $ref: '#/components/parameters/BusinessServiceId'
     get:
       tags: [Business Services]
-      summary: Get a business service
-      description: The service plus its mapped-CI and dependency counts.
+      summary: Get a business service (C1 service read)
+      description: >-
+        The service plus its mapped-CI and dependency counts, and the Suite
+        Contracts v2 C1 service-reference fields (tenant_id, owner,
+        criticality, lifecycle, dependencies). Another organization's service
+        answers the same 404 as a missing one; the tenant is the token's
+        organization, never a request parameter.
       operationId: getBusinessService
       responses:
         '200':
@@ -3573,6 +3578,70 @@ paths:
                 error: Dependency not found
         '500':
           $ref: '#/components/responses/BusinessServiceServerError'
+
+  /business-services/{service_id}/context:
+    parameters:
+      - $ref: '#/components/parameters/BusinessServiceId'
+    get:
+      tags: [Business Services]
+      summary: Get the C1 context subgraph of a business service
+      description: >-
+        Suite Contracts v2 C1 context read (HAP-1408). Services are reached
+        transitively along service dependencies in both directions (what this
+        service depends on, and what depends on it), joining only services of
+        the caller's organization on every hop: another organization's service
+        ends that branch and never appears. The CIs mapped to the service
+        (current, owned, not pending reconciliation) are expanded along owned
+        DEPENDS_ON edges in both directions. Both walks run under the bounds
+        reported in `bounds`: depth 5 (service hops from the service, CI hops
+        from its mapped CIs), 100 nodes, 400 adjacency rows shared by every walk
+        of the read, and 5-second statements. Depth is a refusing bound: if a
+        walk could continue past its last hop in its own direction (to a new
+        node or back into the result), the read is refused. Edges point from
+        the dependent to what it depends on. A subgraph over any bound is
+        refused with 503 (or 504 on a statement timeout), never truncated. A
+        service with no relations returns only its own node.
+      operationId: getBusinessServiceContext
+      responses:
+        '200':
+          description: Context subgraph
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success:
+                    type: boolean
+                    enum: [true]
+                  data:
+                    $ref: '#/components/schemas/BusinessServiceContext'
+        '401':
+          $ref: '#/components/responses/BusinessServiceUnauthorized'
+        '403':
+          $ref: '#/components/responses/BusinessServiceForbidden'
+        '404':
+          $ref: '#/components/responses/BusinessServiceNotFound'
+        '500':
+          $ref: '#/components/responses/BusinessServiceServerError'
+        '503':
+          description: The subgraph exceeds a traversal bound
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BusinessServiceError'
+              example:
+                success: false
+                error: CI traversal resource limit exceeded
+        '504':
+          description: A graph statement exceeded its timeout
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BusinessServiceError'
+              example:
+                success: false
+                error: CI traversal timed out
 
   /business-services/{service_id}/health:
     parameters:
@@ -4925,6 +4994,14 @@ components:
       type: string
       enum: [critical, high, medium, low]
 
+    C1Lifecycle:
+      type: string
+      description: >-
+        C1 lifecycle, derived from operational_status: active and maintenance
+        are live, inactive is retiring, decommissioned is retired. planned is
+        not produced until the record stores its own lifecycle (HAP-1423).
+      enum: [planned, live, retiring, retired]
+
     CountValue:
       description: >-
         Integer count, emitted as a decimal string (e.g. "10"). Clients
@@ -5019,7 +5096,7 @@ components:
       allOf:
         - $ref: '#/components/schemas/BusinessService'
         - type: object
-          required: [mapped_cis_count, dependencies_count]
+          required: [mapped_cis_count, dependencies_count, tenant_id, owner, criticality, lifecycle, dependencies]
           properties:
             mapped_cis_count:
               type: integer
@@ -5027,6 +5104,154 @@ components:
             dependencies_count:
               type: integer
               description: Number of services this service depends on
+            tenant_id:
+              type: string
+              format: uuid
+              description: C1 tenant (the owning organization, equal to organization_id)
+            owner:
+              type: object
+              required: [principal_id, display_name]
+              properties:
+                principal_id:
+                  type: string
+                  nullable: true
+                  description: >-
+                    Identity-provider subject of the accountable owner. Always
+                    null until HAP-1423 stores it.
+                display_name:
+                  type: string
+                  nullable: true
+                  description: The stored owned_by
+            criticality:
+              $ref: '#/components/schemas/BusinessCriticality'
+            lifecycle:
+              $ref: '#/components/schemas/C1Lifecycle'
+            dependencies:
+              type: array
+              description: >-
+                Services this service depends on in the caller's organization,
+                newest dependency first.
+              items:
+                type: object
+                required: [service_id, name, criticality, lifecycle, dependency_type]
+                properties:
+                  service_id:
+                    type: string
+                  name:
+                    type: string
+                  criticality:
+                    $ref: '#/components/schemas/BusinessCriticality'
+                  lifecycle:
+                    $ref: '#/components/schemas/C1Lifecycle'
+                  dependency_type:
+                    type: string
+
+    BusinessServiceContext:
+      type: object
+      required: [service_id, tenant_id, nodes, edges, dependencies, impact, bounds]
+      properties:
+        service_id:
+          type: string
+        tenant_id:
+          type: string
+          format: uuid
+        nodes:
+          type: array
+          description: The service itself, its related services and the reached CIs, each once
+          items:
+            type: object
+            required: [kind, id, name]
+            properties:
+              kind:
+                type: string
+                enum: [business_service, ci]
+              id:
+                type: string
+              name:
+                type: string
+              criticality:
+                $ref: '#/components/schemas/BusinessCriticality'
+              lifecycle:
+                $ref: '#/components/schemas/C1Lifecycle'
+              type:
+                type: string
+                description: CI type (ci nodes)
+              status:
+                type: string
+                description: CI status (ci nodes)
+        edges:
+          type: array
+          description: >-
+            From the dependent to what it depends on. DEPENDS_ON between
+            services carries dependency_type; MAPPED_CI (service to CI)
+            carries mapping_type; CI edges are the graph's DEPENDS_ON.
+          items:
+            type: object
+            required: [from, to, type]
+            properties:
+              from:
+                type: string
+              to:
+                type: string
+              type:
+                type: string
+                example: DEPENDS_ON
+              dependency_type:
+                type: string
+              mapping_type:
+                type: string
+        dependencies:
+          type: array
+          description: >-
+            Everything the service depends on, at its shortest distance (1 =
+            direct): services it depends on, directly or transitively; the CIs
+            mapped to it (distance 1); and the CIs those CIs depend on.
+          items:
+            $ref: '#/components/schemas/BusinessServiceContextReach'
+        impact:
+          type: array
+          description: >-
+            Everything impacted when the service fails, at its shortest
+            distance: services that depend on it, directly or transitively; and
+            CIs that depend on one of its mapped CIs. The service is realised by
+            its mapped CIs, so a CI depending on one of them is impacted (its
+            path in `edges` runs through that mapped CI, not through the
+            service node).
+          items:
+            $ref: '#/components/schemas/BusinessServiceContextReach'
+        bounds:
+          type: object
+          description: >-
+            The traversal bounds the read ran under (HAP-562). max_depth bounds
+            both service hops from the service and CI hops from its mapped CIs;
+            max_adjacency_rows is shared by every walk of the read.
+          required: [max_depth, max_nodes, max_adjacency_rows, statement_timeout_ms]
+          properties:
+            max_depth:
+              type: integer
+              example: 5
+            max_nodes:
+              type: integer
+              example: 100
+            max_adjacency_rows:
+              type: integer
+              example: 400
+            statement_timeout_ms:
+              type: integer
+              example: 5000
+
+    BusinessServiceContextReach:
+      type: object
+      required: [kind, id, distance]
+      properties:
+        kind:
+          type: string
+          enum: [business_service, ci]
+        id:
+          type: string
+        distance:
+          type: integer
+          minimum: 1
 
     BusinessServiceInput:
       type: object

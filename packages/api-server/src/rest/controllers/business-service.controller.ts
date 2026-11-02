@@ -8,11 +8,16 @@
 
 import { Request, Response } from 'express';
 import { randomUUID } from 'crypto';
-import { getNeo4jClient, getPostgresClient, JournalUnavailableError } from '@cmdb/database';
+import {
+  CI_TRAVERSAL_QUERY_TIMEOUT_MS, CITraversalLimitError, createCITraversalWork, getNeo4jClient, getPostgresClient,
+  JournalUnavailableError, MAX_CI_TRAVERSAL_NODES, MAX_CI_TRAVERSAL_WORK,
+} from '@cmdb/database';
 import { logger } from '@cmdb/common';
 import { requestOrganizationId } from '../../middleware/auth.middleware';
 import { errorLogFields } from '../../utils/log-error';
 import { assertNoCIGap, CIGapError, CI_GAP_RESPONSE, filterOwnedDimensionRows, writeReferencedCIs } from '../../read-admission';
+import { c1Lifecycle, serviceReference, StoredDependencyRow } from '../../services/business-service-reference';
+import { sendTraversalFailure } from './traversal-failure';
 
 /*
  * Tenant scoping: every handler reads the caller's organization from the
@@ -28,6 +33,24 @@ import { assertNoCIGap, CIGapError, CI_GAP_RESPONSE, filterOwnedDimensionRows, w
  * 500 responses carry a generic message only; driver errors (which name
  * tables/columns) are logged server-side, never returned.
  */
+
+/**
+ * The REST CI dependencies/impact default depth (ci.controller.ts, HAP-562), reused by the C1
+ * context read for both service hops from the service and CI hops from its mapped CIs.
+ */
+const CONTEXT_MAX_DEPTH = 5;
+
+/** The C1 context subgraph: services and CIs, edges pointing from the dependent to what it depends on. */
+type ContextNode =
+  | { kind: 'business_service'; id: string; name: string; criticality: string; lifecycle: string }
+  | { kind: 'ci'; id: string; name: string; type: string; status: string };
+type ContextEdge = { from: string; to: string; type: string; dependency_type?: string; mapping_type?: string };
+type ContextReach = { kind: ContextNode['kind']; id: string; distance: number };
+/** One step of a /context service walk; name and status columns belong to the service the step reaches. */
+type ServiceWalkRow = {
+  src: string; tgt: string; dependency_type: string; depth: number;
+  name: string; business_criticality: string; operational_status: string;
+};
 
 export class BusinessServiceController {
   private pgClient = getPostgresClient();
@@ -168,14 +191,22 @@ export class BusinessServiceController {
     try {
       const { service_id } = req.params;
 
-      // One statement: the child counts are read in the same snapshot as the
-      // org-filtered parent row, so a concurrent delete + recreate of this
-      // (globally unique) service_id by another organization cannot leak that
-      // organization's children into the counts.
+      // One statement: the child counts and the C1 dependencies are read in
+      // the same snapshot as the org-filtered parent row, so a concurrent
+      // delete + recreate of this (globally unique) service_id by another
+      // organization cannot leak that organization's children into them.
+      // Dependency targets outside the parent's organization are never joined.
       const result = await this.pgClient.query(
         `SELECT s.*,
           (SELECT COUNT(*) FROM ci_business_service_mappings m WHERE m.service_id = s.service_id)::int AS mapped_cis_count,
-          (SELECT COUNT(*) FROM business_service_dependencies d WHERE d.service_id = s.service_id)::int AS dependencies_count
+          (SELECT COUNT(*) FROM business_service_dependencies d WHERE d.service_id = s.service_id)::int AS dependencies_count,
+          COALESCE((SELECT json_agg(x) FROM (
+            SELECT t.service_id, t.name, t.business_criticality, t.operational_status, d.dependency_type
+            FROM business_service_dependencies d
+            JOIN dim_business_services t ON t.service_id = d.depends_on_service_id AND t.organization_id = s.organization_id
+            WHERE d.service_id = s.service_id
+            ORDER BY d.created_at DESC, t.service_id
+          ) x), '[]'::json) AS c1_dependencies
         FROM dim_business_services s
         WHERE s.service_id = $1 AND s.organization_id = $2`,
         [service_id, requestOrganizationId(req)]
@@ -189,9 +220,10 @@ export class BusinessServiceController {
         return;
       }
 
+      const { c1_dependencies: dependencies, ...row } = result.rows[0];
       res.json({
         success: true,
-        data: result.rows[0]
+        data: { ...row, ...serviceReference(row, dependencies as StoredDependencyRow[]) }
       });
     } catch (error) {
       logger.error('Error getting business service', { error: errorLogFields(error), service_id: req.params.service_id });
@@ -589,6 +621,212 @@ export class BusinessServiceController {
       res.status(500).json({
         success: false,
         error: 'Failed to get service dependencies'
+      });
+    }
+  }
+
+  /**
+   * GET /api/v1/business-services/:service_id/context
+   * C1 context read (HAP-1408): the service's dependency and impact subgraph.
+   * Services are expanded transitively along business_service_dependencies in
+   * both directions (what the service depends on, what depends on it), and the
+   * CIs mapped to the service along owned DEPENDS_ON edges in both directions,
+   * each up to CONTEXT_MAX_DEPTH hops under the HAP-562 bounds. A subgraph that
+   * continues past the last hop, or exceeds any bound, is refused (503/504),
+   * never truncated.
+   */
+  async getServiceContext(req: Request, res: Response): Promise<void> {
+    try {
+      const { service_id } = req.params;
+      const organizationId = requestOrganizationId(req);
+
+      // One statement rooted at the org-filtered parent: zero rows => unknown
+      // (or another organization's) service (404). Both service walks are
+      // bounded recursive CTEs: every hop joins the next service only within
+      // the parent's organization (so a foreign service ends the walk and never
+      // appears), recursion stops at CONTEXT_MAX_DEPTH + 1 (the last level is
+      // the probe for a further hop), a row closing a cycle is returned as an
+      // edge but not walked further, and each walk transfers at most one row
+      // over the adjacency budget (no ORDER BY, so the LIMIT stops the walk).
+      // Each row carries the reached service's columns. Mapped CIs follow
+      // getMappedCIs (current, owned, no pending reconciliation). The
+      // statement runs under the traversal statement timeout.
+      const result = await this.pgClient.transaction(async client => {
+        await client.query("SELECT set_config('statement_timeout', $1, true)", [String(CI_TRAVERSAL_QUERY_TIMEOUT_MS)]);
+        return client.query(
+          `WITH RECURSIVE parent AS (
+            SELECT s.service_id, s.name, s.business_criticality, s.operational_status, s.organization_id
+            FROM dim_business_services s
+            WHERE s.service_id = $1 AND s.organization_id = $2
+          ),
+          out_walk(src, tgt, dependency_type, depth, path, cycle, name, business_criticality, operational_status) AS (
+            SELECT d.service_id, d.depends_on_service_id, d.dependency_type, 1,
+              ARRAY[d.service_id, d.depends_on_service_id]::varchar[], false, t.name, t.business_criticality, t.operational_status
+            FROM parent p
+            JOIN business_service_dependencies d ON d.service_id = p.service_id
+            JOIN dim_business_services t ON t.service_id = d.depends_on_service_id AND t.organization_id = p.organization_id
+            UNION ALL
+            SELECT d.service_id, d.depends_on_service_id, d.dependency_type, w.depth + 1,
+              w.path || d.depends_on_service_id, d.depends_on_service_id = ANY(w.path), t.name, t.business_criticality, t.operational_status
+            FROM out_walk w
+            JOIN business_service_dependencies d ON d.service_id = w.tgt
+            JOIN dim_business_services t ON t.service_id = d.depends_on_service_id AND t.organization_id = $2
+            WHERE NOT w.cycle AND w.depth <= $3
+          ),
+          in_walk(src, tgt, dependency_type, depth, path, cycle, name, business_criticality, operational_status) AS (
+            SELECT d.service_id, d.depends_on_service_id, d.dependency_type, 1,
+              ARRAY[d.depends_on_service_id, d.service_id]::varchar[], false, t.name, t.business_criticality, t.operational_status
+            FROM parent p
+            JOIN business_service_dependencies d ON d.depends_on_service_id = p.service_id
+            JOIN dim_business_services t ON t.service_id = d.service_id AND t.organization_id = p.organization_id
+            UNION ALL
+            SELECT d.service_id, d.depends_on_service_id, d.dependency_type, w.depth + 1,
+              w.path || d.service_id, d.service_id = ANY(w.path), t.name, t.business_criticality, t.operational_status
+            FROM in_walk w
+            JOIN business_service_dependencies d ON d.depends_on_service_id = w.src
+            JOIN dim_business_services t ON t.service_id = d.service_id AND t.organization_id = $2
+            WHERE NOT w.cycle AND w.depth <= $3
+          )
+          SELECT p.service_id, p.name, p.business_criticality, p.operational_status, p.organization_id,
+            COALESCE((SELECT json_agg(x) FROM (
+              SELECT src, tgt, dependency_type, depth, name, business_criticality, operational_status FROM out_walk LIMIT $4
+            ) x), '[]'::json) AS out_walk,
+            COALESCE((SELECT json_agg(x) FROM (
+              SELECT src, tgt, dependency_type, depth, name, business_criticality, operational_status FROM in_walk LIMIT $4
+            ) x), '[]'::json) AS in_walk,
+            COALESCE((SELECT json_agg(x) FROM (
+              SELECT m.ci_id, m.mapping_type, c.ci_name, c.ci_type, c.ci_status
+              FROM ci_business_service_mappings m
+              JOIN cmdb.dim_ci c ON c.ci_id = m.ci_id AND c.is_current AND NOT c.org_backfilled
+                AND c.organization_id = p.organization_id
+              WHERE m.service_id = p.service_id
+                AND NOT EXISTS (
+                  SELECT 1 FROM ci_reconciliation_operations j
+                  WHERE j.organization_id = p.organization_id AND j.ci_id = m.ci_id
+                    AND j.state IN ('pending','failed'))
+              ORDER BY m.ci_id, m.mapping_type LIMIT $4
+            ) x), '[]'::json) AS mapped_cis
+          FROM parent p`,
+          [service_id, organizationId, CONTEXT_MAX_DEPTH, MAX_CI_TRAVERSAL_WORK + 1]
+        );
+      });
+
+      if (result.rows.length === 0) {
+        res.status(404).json({
+          success: false,
+          error: 'Business service not found'
+        });
+        return;
+      }
+
+      const root = result.rows[0];
+      const walks = { out: root.out_walk as ServiceWalkRow[], in: root.in_walk as ServiceWalkRow[] };
+      const mappedRows = root.mapped_cis as Array<{
+        ci_id: string; mapping_type: string; ci_name: string; ci_type: string; ci_status: string;
+      }>;
+      // Walk rows (one per path step, probe level included) and mapping rows (per CI and
+      // mapping type) are adjacency rows: they draw on the read's one row budget, which
+      // the CI traversal below then shares. Over the budget is refused here, never cut.
+      const work = createCITraversalWork();
+      work.remaining -= walks.out.length + walks.in.length;
+      if (work.remaining < 0 || mappedRows.length > MAX_CI_TRAVERSAL_WORK) throw new CITraversalLimitError();
+
+      const nodes = new Map<string, ContextNode>();
+      const edges = new Map<string, ContextEdge>();
+      const reach = { dependencies: new Map<string, ContextReach>(), impact: new Map<string, ContextReach>() };
+      const addNode = (contextNode: ContextNode) => {
+        if (!nodes.has(`${contextNode.kind}:${contextNode.id}`)) nodes.set(`${contextNode.kind}:${contextNode.id}`, contextNode);
+        if (nodes.size > MAX_CI_TRAVERSAL_NODES) throw new CITraversalLimitError();
+      };
+      // One MAPPED_CI edge per mapping type (UNIQUE(ci_id, service_id, mapping_type)).
+      const addEdge = (edge: ContextEdge) =>
+        edges.set(JSON.stringify([edge.from, edge.to, edge.type, edge.mapping_type ?? null]), edge);
+      const reached = (list: Map<string, ContextReach>, kind: ContextNode['kind'], id: string, distance: number) => {
+        const known = list.get(`${kind}:${id}`);
+        if (!known || known.distance > distance) list.set(`${kind}:${id}`, { kind, id, distance });
+      };
+      const serviceNode = (row: { service_id: string; name: string; business_criticality: string; operational_status: string }): ContextNode => ({
+        kind: 'business_service', id: row.service_id, name: row.name,
+        criticality: row.business_criticality, lifecycle: c1Lifecycle(row.operational_status),
+      });
+
+      addNode(serviceNode(root));
+      for (const direction of ['out', 'in'] as const) {
+        const rows = walks[direction];
+        // 'out' rows reach their target (a dependency), 'in' rows their source (a dependent).
+        const reachedId = (row: ServiceWalkRow) => (direction === 'out' ? row.tgt : row.src);
+        const fromId = (row: ServiceWalkRow) => (direction === 'out' ? row.src : row.tgt);
+        const distance = new Map<string, number>();
+        for (const row of rows) {
+          if (row.depth > CONTEXT_MAX_DEPTH || reachedId(row) === root.service_id) continue;
+          distance.set(reachedId(row), Math.min(distance.get(reachedId(row)) ?? Infinity, row.depth));
+        }
+        // Depth refuses like the CI side: an edge leaving a service first reached at the
+        // last hop (to a new service or back into the result) means the walk continues.
+        if (rows.some(row => row.depth > CONTEXT_MAX_DEPTH && distance.get(fromId(row)) === CONTEXT_MAX_DEPTH)) {
+          throw new CITraversalLimitError();
+        }
+        for (const row of rows) {
+          if (row.depth > CONTEXT_MAX_DEPTH) continue;
+          const id = reachedId(row);
+          if (id !== root.service_id) {
+            addNode(serviceNode({ ...row, service_id: id }));
+            reached(direction === 'out' ? reach.dependencies : reach.impact, 'business_service', id, distance.get(id)!);
+          }
+          addEdge({ from: row.src, to: row.tgt, type: 'DEPENDS_ON', dependency_type: row.dependency_type });
+        }
+      }
+
+      // The mapped CIs the caller's organization owns in the graph too, then
+      // their owned DEPENDS_ON neighbourhood: one traversal per direction from
+      // all of them, under the same row budget (at most 2 x (CONTEXT_MAX_DEPTH + 1)
+      // statements: each direction's hops plus its depth probe). Impact-side CIs
+      // depend on a CI that realises the service (the service is realised by its
+      // mapped CIs), so they are impacted when the service's CIs fail.
+      const mapped = mappedRows.length === 0 ? []
+        : await filterOwnedDimensionRows(organizationId, mappedRows, CI_TRAVERSAL_QUERY_TIMEOUT_MS);
+      for (const mapping of mapped) {
+        addNode({ kind: 'ci', id: mapping.ci_id, name: mapping.ci_name, type: mapping.ci_type, status: mapping.ci_status });
+        addEdge({ from: root.service_id, to: mapping.ci_id, type: 'MAPPED_CI', mapping_type: mapping.mapping_type });
+        reached(reach.dependencies, 'ci', mapping.ci_id, 1);
+      }
+      const roots = [...new Set(mapped.map(mapping => mapping.ci_id))];
+      for (const direction of roots.length === 0 ? [] : ['out', 'in'] as const) {
+        const graph = await getNeo4jClient().getDependencyGraph(roots, organizationId, CONTEXT_MAX_DEPTH, direction, work);
+        for (const { ci, distance } of graph.nodes) {
+          addNode({ kind: 'ci', id: ci._id, name: ci.name, type: ci._type, status: ci._status });
+          reached(direction === 'out' ? reach.dependencies : reach.impact, 'ci', ci._id, distance + 1);
+        }
+        for (const edge of graph.edges) addEdge(edge);
+      }
+
+      res.json({
+        success: true,
+        data: {
+          service_id: root.service_id,
+          tenant_id: root.organization_id,
+          nodes: [...nodes.values()],
+          edges: [...edges.values()],
+          dependencies: [...reach.dependencies.values()],
+          impact: [...reach.impact.values()],
+          bounds: {
+            max_depth: CONTEXT_MAX_DEPTH,
+            max_nodes: MAX_CI_TRAVERSAL_NODES,
+            max_adjacency_rows: MAX_CI_TRAVERSAL_WORK,
+            statement_timeout_ms: CI_TRAVERSAL_QUERY_TIMEOUT_MS,
+          },
+        }
+      });
+    } catch (error) {
+      if (sendTraversalFailure(res, error)) return;
+      if (errorLogFields(error).code === '57014') { // the service walk statement's statement_timeout
+        res.status(504).json({ success: false, error: 'CI traversal timed out' });
+        return;
+      }
+      logger.error('Error getting business service context', { error: errorLogFields(error), service_id: req.params.service_id });
+      res.status(500).json({
+        success: false,
+        error: 'Failed to get business service context'
       });
     }
   }

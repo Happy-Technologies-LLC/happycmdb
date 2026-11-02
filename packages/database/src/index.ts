@@ -7,7 +7,7 @@
 export {
   Neo4jClient, getNeo4jClient, UNSCOPED_CI_ACCESS,
   CITraversalLimitError, createCITraversalWork, runWithinCITraversalBudget, startJournalSweeper,
-  MAX_CI_TRAVERSAL_NODES, MAX_CI_TRAVERSAL_WORK,
+  MAX_CI_TRAVERSAL_NODES, MAX_CI_TRAVERSAL_WORK, CI_TRAVERSAL_QUERY_TIMEOUT_MS,
 } from './neo4j/client';
 export type { CIOrganizationScope, CITraversalWork } from './neo4j/client';
 export { initializeNeo4jSchema } from './neo4j/initializer';

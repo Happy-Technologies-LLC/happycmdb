@@ -3586,18 +3586,21 @@ paths:
       tags: [Business Services]
       summary: Get the C1 context subgraph of a business service
       description: >-
-        Suite Contracts v2 C1 context read (HAP-1408). Service edges are one
-        hop each way: the services this service depends on and the services
-        that depend on it, in the caller's organization. The CIs mapped to
-        the service (current, owned, not pending reconciliation) are expanded
-        along owned DEPENDS_ON edges in both directions under the CI traversal
-        bounds reported in `bounds` (depth 5, 100 nodes, 400 adjacency rows,
-        5-second statements). Depth is a refusing bound: an owned DEPENDS_ON
-        edge leaving a CI at the last hop (to a new CI or back into the
-        result) refuses the read. Edges point from the dependent to what it
-        depends on. A subgraph over a bound is refused with 503 (or 504 on a
-        statement timeout), never truncated. A service with no relations
-        returns only its own node.
+        Suite Contracts v2 C1 context read (HAP-1408). Services are reached
+        transitively along service dependencies in both directions (what this
+        service depends on, and what depends on it), joining only services of
+        the caller's organization on every hop: another organization's service
+        ends that branch and never appears. The CIs mapped to the service
+        (current, owned, not pending reconciliation) are expanded along owned
+        DEPENDS_ON edges in both directions. Both walks run under the bounds
+        reported in `bounds`: depth 5 (service hops from the service, CI hops
+        from its mapped CIs), 100 nodes, 400 adjacency rows shared by every walk
+        of the read, and 5-second statements. Depth is a refusing bound: if a
+        walk could continue past its last hop in its own direction (to a new
+        node or back into the result), the read is refused. Edges point from
+        the dependent to what it depends on. A subgraph over any bound is
+        refused with 503 (or 504 on a statement timeout), never truncated. A
+        service with no relations returns only its own node.
       operationId: getBusinessServiceContext
       responses:
         '200':
@@ -5199,18 +5202,30 @@ components:
                 type: string
         dependencies:
           type: array
-          description: What the service depends on, at its shortest distance (1 = direct)
+          description: >-
+            Everything the service depends on, at its shortest distance (1 =
+            direct): services it depends on, directly or transitively; the CIs
+            mapped to it (distance 1); and the CIs those CIs depend on.
           items:
             $ref: '#/components/schemas/BusinessServiceContextReach'
         impact:
           type: array
-          description: What depends on the service (is impacted when it fails), at its shortest distance
+          description: >-
+            Everything impacted when the service fails, at its shortest
+            distance: services that depend on it, directly or transitively; and
+            CIs that depend on one of its mapped CIs. The service is realised by
+            its mapped CIs, so a CI depending on one of them is impacted (its
+            path in `edges` runs through that mapped CI, not through the
+            service node).
           items:
             $ref: '#/components/schemas/BusinessServiceContextReach'
         bounds:
           type: object
-          description: The traversal bounds the read ran under (HAP-562)
-          required: [max_depth, max_nodes, max_adjacency_rows, statement_timeout_ms, service_hops]
+          description: >-
+            The traversal bounds the read ran under (HAP-562). max_depth bounds
+            both service hops from the service and CI hops from its mapped CIs;
+            max_adjacency_rows is shared by every walk of the read.
+          required: [max_depth, max_nodes, max_adjacency_rows, statement_timeout_ms]
           properties:
             max_depth:
               type: integer
@@ -5224,9 +5239,6 @@ components:
             statement_timeout_ms:
               type: integer
               example: 5000
-            service_hops:
-              type: integer
-              example: 1
 
     BusinessServiceContextReach:
       type: object

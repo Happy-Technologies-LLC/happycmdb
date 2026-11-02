@@ -62,17 +62,21 @@ Not yet served: `owner_group`, `version` and `offerings[]` (C1 PoR extension, HA
 
 ## `GET /api/v1/business-services/{service_id}/context`
 
-This endpoint returns the dependency and impact subgraph. The service's dependencies and dependents are one hop each way. The CIs mapped to the service are expanded along owned `DEPENDS_ON` edges in both directions, with the CI traversal limits of `GET /api/v1/cis/{id}/impact`. Unlike that endpoint, depth is a refusing bound here:
+This endpoint returns the dependency and impact subgraph. It walks the service's dependencies in both directions:
+
+- **Services** are reached transitively: what the service depends on, and what depends on it. Every hop joins only services of the caller's organization. Another organization's service ends that branch and never appears, and it never causes a refusal.
+- **CIs mapped to the service** are expanded along owned `DEPENDS_ON` edges in both directions, with the CI traversal limits of `GET /api/v1/cis/{id}/impact`.
+
+Unlike `GET /api/v1/cis/{id}/impact`, depth here is a refusing bound. Every walk of the read shares these bounds:
 
 | Bound | Value |
 | -- | -- |
-| `max_depth` | 5 CI hops from the mapped CIs. If an owned `DEPENDS_ON` edge leaves a node at hop 5 (to a new CI or back into the result), the read is refused. |
-| `max_nodes` | 100 distinct nodes in the response (and 100 visited CIs) |
-| `max_adjacency_rows` | 400 graph adjacency rows, shared by every traversal of the read |
-| `statement_timeout_ms` | 5000 per graph statement, including the ownership check of the mapped CIs |
-| `service_hops` | 1 |
+| `max_depth` | 5 hops, counted from the service for services and from the mapped CIs for CIs. If a walk could continue past its last hop in its own direction (to a new node or back into the result), the read is refused. |
+| `max_nodes` | 100 distinct nodes in the response (services and CIs together), and 100 visited CIs |
+| `max_adjacency_rows` | 400 adjacency rows, shared by every walk of the read. The service walks count one row per path step. |
+| `statement_timeout_ms` | 5000 per statement: the service walk statement, the ownership check of the mapped CIs, and each graph statement |
 
-A subgraph over a bound is refused with `503 {"success":false,"error":"CI traversal resource limit exceeded"}`. A graph statement timeout returns `504 {"success":false,"error":"CI traversal timed out"}`. The read never returns a truncated graph. A `200` reports the bounds it ran under in `bounds`.
+A subgraph over a bound is refused with `503 {"success":false,"error":"CI traversal resource limit exceeded"}`. A statement timeout returns `504 {"success":false,"error":"CI traversal timed out"}`. The read never returns a truncated graph. A `200` reports the bounds it ran under in `bounds`.
 
 ```json
 {
@@ -89,13 +93,15 @@ A subgraph over a bound is refused with `503 {"success":false,"error":"CI traver
     ],
     "dependencies": [ { "kind": "business_service", "id": "bs-ea0cc18a-823a-429b-9846-470882fbdfa3", "distance": 1 } ],
     "impact": [],
-    "bounds": { "max_depth": 5, "max_nodes": 100, "max_adjacency_rows": 400, "statement_timeout_ms": 5000, "service_hops": 1 }
+    "bounds": { "max_depth": 5, "max_nodes": 100, "max_adjacency_rows": 400, "statement_timeout_ms": 5000 }
   }
 }
 ```
 
 - Every edge points from the dependent to what it depends on. Service-to-service edges are `DEPENDS_ON` and carry `dependency_type`. Service-to-CI edges are `MAPPED_CI` and carry `mapping_type`. CI-to-CI edges are the graph's `DEPENDS_ON`.
-- `dependencies[]` lists what the service depends on and `impact[]` lists what depends on it. Each entry carries its shortest distance from the service, where 1 means direct.
+- `dependencies[]` lists everything the service depends on: services (direct or transitive), its mapped CIs (distance 1) and the CIs those depend on.
+- `impact[]` lists everything impacted when the service fails: services that depend on it (direct or transitive), and CIs that depend on one of its mapped CIs. The service is realised by its mapped CIs, so a CI that depends on one of them is impacted. Its path in `edges` runs through that mapped CI, not through the service node.
+- Each entry in either list carries its shortest distance from the service, where 1 means direct.
 - A mapped CI is included only if it is a current CI of the caller's organization in both PostgreSQL and the graph, with no pending reconciliation. CIs reached from the mapped CIs are the caller's organization's graph nodes, exactly as in `GET /api/v1/cis/{id}/impact`. All mapped CIs are expanded in one traversal per direction. Another tenant's service, CI or edge never appears.
 
 ## Seeded internal IT service

@@ -66,8 +66,32 @@ function send(op: 'exec' | 'query', sql: string, params: unknown[] = []): Promis
   host.send({ id, op, sql, params });
   return promise;
 }
+// The /context service walk runs in a transaction that sets its own statement_timeout:
+// the seam records that setting as the walk saw it, and can fail the walk statement.
+let walkStatementTimeouts: string[] = [];
+let walkFailure: Error | null = null;
 const pgClient = {
   query: async (sql: string, params: unknown[] = []) => ({ rows: await send('query', sql, params) }),
+  transaction: async <T>(callback: (client: { query: typeof pgClient.query }) => Promise<T>): Promise<T> => {
+    await send('exec', 'BEGIN');
+    try {
+      const result = await callback({
+        query: async (sql: string, params: unknown[] = []) => {
+          if (sql.includes('WITH RECURSIVE')) {
+            const [setting] = await send('query', `SELECT current_setting('statement_timeout') AS value`) as Array<{ value: string }>;
+            walkStatementTimeouts.push(setting!.value);
+            if (walkFailure) throw walkFailure;
+          }
+          return pgClient.query(sql, params);
+        },
+      });
+      await send('exec', 'COMMIT');
+      return result;
+    } catch (error) {
+      await send('exec', 'ROLLBACK');
+      throw error;
+    }
+  },
 };
 
 // ---------------------------------------------------------------- Neo4j (in-memory graph)
@@ -273,6 +297,8 @@ beforeEach(() => {
   seedGraph();
   statementTimeouts = [];
   graphFailure = null;
+  walkStatementTimeouts = [];
+  walkFailure = null;
   logged = [];
   for (const method of LOG_METHODS) {
     jest.spyOn(logger, method).mockImplementation(((...args: unknown[]) => { logged.push(args); return logger; }) as never);
@@ -319,7 +345,7 @@ describe('C1 S1 happy path: the seeded service in tenant T', () => {
       tenant_id: TENANT_T,
       bounds: {
         max_depth: 5, max_nodes: MAX_CI_TRAVERSAL_NODES, max_adjacency_rows: MAX_CI_TRAVERSAL_WORK,
-        statement_timeout_ms: CI_TRAVERSAL_QUERY_TIMEOUT_MS, service_hops: 1,
+        statement_timeout_ms: CI_TRAVERSAL_QUERY_TIMEOUT_MS,
       },
     });
     const ids = (entries: Array<{ kind: string; id: string; distance: number }>) =>
@@ -343,6 +369,10 @@ describe('C1 S1 happy path: the seeded service in tenant T', () => {
     // Every graph statement of the read, the ownership filter included, ran under the advertised timeout.
     expect(statementTimeouts.length).toBeGreaterThan(0);
     expect(new Set(statementTimeouts)).toEqual(new Set([CI_TRAVERSAL_QUERY_TIMEOUT_MS]));
+    // The service walk statement ran under the same timeout, set for its own transaction only.
+    expect(walkStatementTimeouts).toEqual(['5s']);
+    const [after] = await send('query', `SELECT current_setting('statement_timeout') AS value`) as Array<{ value: string }>;
+    expect(after!.value).toBe('0');
   });
 
   it('refuses a subgraph over the node bound with 503, never a truncated graph', async () => {
@@ -355,6 +385,103 @@ describe('C1 S1 happy path: the seeded service in tenant T', () => {
 
     expect(res.status).toBe(503);
     expect(res.body).toEqual({ success: false, error: 'CI traversal resource limit exceeded' });
+  });
+});
+
+describe('C1 S1 service walk: services are reached transitively in both directions, within the tenant and the bounds', () => {
+  const LIMIT_BODY = { success: false, error: 'CI traversal resource limit exceeded' };
+  const ids = (entries: Array<{ kind: string; id: string; distance: number }>) =>
+    entries.filter(e => e.kind === 'business_service').map(e => `${e.id}@${e.distance}`).sort();
+  /** Seed services (id -> organization) and dependency edges [from, to] for `run`, removed again afterwards. */
+  async function withServices(services: Record<string, string>, deps: Array<[string, string]>, run: () => Promise<void>): Promise<void> {
+    const created = Object.keys(services);
+    await send('exec', `INSERT INTO dim_business_services (service_id, name, service_classification, tbm_tower,
+        business_criticality, operational_status, organization_id) VALUES
+      ${Object.entries(services).map(([id, org]) => `('${id}', 'Service ${id}', 'application', 'application', 'medium', 'active', '${org}')`).join(',\n')};
+      INSERT INTO business_service_dependencies (service_id, depends_on_service_id, dependency_type) VALUES
+      ${deps.map(([from, to]) => `('${from}', '${to}', 'application')`).join(',\n')};`);
+    try {
+      await run();
+    } finally {
+      await send('exec', `DELETE FROM dim_business_services WHERE service_id = ANY(ARRAY[${created.map(id => `'${id}'`).join(',')}])`);
+    }
+  }
+
+  it('reaches a two-hop dependent and a two-hop dependency, at their distances, with every edge', async () => {
+    // bs-t-x -> bs-t-portal -> S (impact) and S -> IAM -> bs-t-y (dependencies).
+    await withServices({ 'bs-t-x': TENANT_T, 'bs-t-y': TENANT_T }, [['bs-t-x', 'bs-t-portal'], [SEEDED_DEPENDENCY, 'bs-t-y']], async () => {
+      const res = await readContext(SEEDED_S);
+
+      expect(res.status).toBe(200);
+      expect(ids(res.body.data.dependencies)).toEqual([`${SEEDED_DEPENDENCY}@1`, 'bs-t-y@2']);
+      expect(ids(res.body.data.impact)).toEqual(['bs-t-portal@1', 'bs-t-x@2']);
+      const edges = res.body.data.edges.map((e: { from: string; to: string; type: string }) => `${e.from}>${e.to}:${e.type}`);
+      expect(edges).toEqual(expect.arrayContaining([`${SEEDED_DEPENDENCY}>bs-t-y:DEPENDS_ON`, 'bs-t-x>bs-t-portal:DEPENDS_ON']));
+      expect(res.body.data.nodes).toEqual(expect.arrayContaining([
+        expect.objectContaining({ kind: 'business_service', id: 'bs-t-x' }), expect.objectContaining({ kind: 'business_service', id: 'bs-t-y' }),
+      ]));
+    });
+  });
+
+  it('refuses a service chain that continues past max_depth, including a back edge from the last hop', async () => {
+    // S -> IAM (1) -> c2 (2) -> c3 (3) -> c4 (4) -> c5 (5 = max_depth).
+    const chain = ['bs-t-c2', 'bs-t-c3', 'bs-t-c4', 'bs-t-c5'];
+    const steps: Array<[string, string]> = [[SEEDED_DEPENDENCY, 'bs-t-c2'], ['bs-t-c2', 'bs-t-c3'], ['bs-t-c3', 'bs-t-c4'], ['bs-t-c4', 'bs-t-c5']];
+    await withServices({ ...Object.fromEntries(chain.map(id => [id, TENANT_T])), 'bs-t-c6': TENANT_T }, steps, async () => {
+      const ending = await readContext(SEEDED_S);
+      expect(ending.status).toBe(200);
+      expect(ids(ending.body.data.dependencies)).toContain('bs-t-c5@5');
+
+      await send('exec', `INSERT INTO business_service_dependencies (service_id, depends_on_service_id, dependency_type) VALUES ('bs-t-c5', 'bs-t-c3', 'application')`);
+      const withBackEdge = await readContext(SEEDED_S);
+      await send('exec', `DELETE FROM business_service_dependencies WHERE service_id = 'bs-t-c5'`);
+      await send('exec', `INSERT INTO business_service_dependencies (service_id, depends_on_service_id, dependency_type) VALUES ('bs-t-c5', 'bs-t-c6', 'application')`);
+      const deeper = await readContext(SEEDED_S);
+
+      expect([withBackEdge.status, withBackEdge.body]).toEqual([503, LIMIT_BODY]);
+      expect([deeper.status, deeper.body]).toEqual([503, LIMIT_BODY]);
+    });
+  });
+
+  it('ends the walk at another tenant\'s service: neither it nor what lies past it appears, and nothing is refused', async () => {
+    // S -> IAM -> bs-t-y (T, appears at 2); IAM -> bs-b-mid (T2) -> bs-t-after (T) -> ... a long T-only tail past depth 5.
+    const tail = ['bs-t-after', 'bs-t-tail1', 'bs-t-tail2', 'bs-t-tail3', 'bs-t-tail4', 'bs-t-tail5'];
+    await withServices(
+      { 'bs-t-y': TENANT_T, 'bs-b-mid': TENANT_T2, ...Object.fromEntries(tail.map(id => [id, TENANT_T])) },
+      [[SEEDED_DEPENDENCY, 'bs-t-y'], [SEEDED_DEPENDENCY, 'bs-b-mid'], ['bs-b-mid', 'bs-t-after'],
+        ...tail.slice(1).map((id, i): [string, string] => [tail[i]!, id]), ['bs-b-mid', SEEDED_S]],
+      async () => {
+        const res = await readContext(SEEDED_S);
+
+        expect(res.status).toBe(200);
+        expect(ids(res.body.data.dependencies)).toEqual([`${SEEDED_DEPENDENCY}@1`, 'bs-t-y@2']);
+        expect(ids(res.body.data.impact)).toEqual(['bs-t-portal@1']);
+        for (const hidden of ['bs-b-mid', ...tail]) expect(res.text).not.toContain(hidden);
+      },
+    );
+  });
+
+  it('refuses a service walk over the adjacency-row budget even when its nodes fit the node bound', async () => {
+    // IAM -> 4 layers of 6 services, every service depending on all 6 of the next layer:
+    // 25 services, but 6 + 36 + 216 + 1296 walk rows (paths) > 400.
+    const layers = [0, 1, 2, 3].map(l => [0, 1, 2, 3, 4, 5].map(i => `bs-t-l${l}-${i}`));
+    const steps: Array<[string, string]> = [
+      ...layers[0]!.map((id): [string, string] => [SEEDED_DEPENDENCY, id]),
+      ...layers.slice(1).flatMap((layer, l) => layers[l]!.flatMap(from => layer.map((to): [string, string] => [from, to]))),
+    ];
+    await withServices(Object.fromEntries(layers.flat().map(id => [id, TENANT_T])), steps, async () => {
+      const res = await readContext(SEEDED_S);
+
+      expect([res.status, res.body]).toEqual([503, LIMIT_BODY]);
+    });
+  });
+
+  it('maps a service walk statement timeout to the fixed 504', async () => {
+    walkFailure = Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' });
+
+    const res = await readContext(SEEDED_S);
+
+    expect([res.status, res.body]).toEqual([504, { success: false, error: 'CI traversal timed out' }]);
   });
 });
 

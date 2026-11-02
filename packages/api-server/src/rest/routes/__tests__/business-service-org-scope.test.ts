@@ -77,6 +77,18 @@ const pgClient = {
   },
   getClient: async () => ({ query: pgClient.query, release: () => undefined }),
   pool: { connect: async () => ({ query: pgClient.query, release: () => undefined }) },
+  // The /context read runs its statement in a transaction (statement_timeout).
+  transaction: async <T>(callback: (client: { query: typeof pgClient.query }) => Promise<T>): Promise<T> => {
+    await send('exec', 'BEGIN');
+    try {
+      const result = await callback(pgClient);
+      await send('exec', 'COMMIT');
+      return result;
+    } catch (error) {
+      await send('exec', 'ROLLBACK');
+      throw error;
+    }
+  },
 };
 const graphOwners = new Map<string, string>([
   ['ci-a', '00000000-0000-0000-0000-000000000000'],
@@ -95,14 +107,24 @@ const graphClient = {
     }),
     close: async () => undefined,
   }),
+  // The /context CI traversal; these tests cover tenancy, not graph shape (see business-service-c1-contract.test.ts).
+  getDependencyGraph: async () => ({ nodes: [], edges: [] }),
 };
 
-jest.mock('@cmdb/database', () => ({
-  ...jest.requireActual<object>('@cmdb/database/journal/journal'),
-  getPostgresClient: () => pgClient,
-  getNeo4jClient: () => graphClient,
-  getAuditService: () => ({}),
-}));
+jest.mock('@cmdb/database', () => {
+  const traversal = jest.requireActual<Record<string, unknown>>('@cmdb/database/neo4j/client');
+  return {
+    ...jest.requireActual<object>('@cmdb/database/journal/journal'),
+    CITraversalLimitError: traversal['CITraversalLimitError'],
+    createCITraversalWork: traversal['createCITraversalWork'],
+    MAX_CI_TRAVERSAL_NODES: traversal['MAX_CI_TRAVERSAL_NODES'],
+    MAX_CI_TRAVERSAL_WORK: traversal['MAX_CI_TRAVERSAL_WORK'],
+    CI_TRAVERSAL_QUERY_TIMEOUT_MS: traversal['CI_TRAVERSAL_QUERY_TIMEOUT_MS'],
+    getPostgresClient: () => pgClient,
+    getNeo4jClient: () => graphClient,
+    getAuditService: () => ({}),
+  };
+});
 
 // bcrypt's native binding is only used for password hashing/login, which the
 // token/API-key verification paths exercised here never call.
@@ -415,6 +437,7 @@ describe('fail closed without an organization claim', () => {
     ['get', '/api/v1/business-services/bs-a-app', null],
     ['get', '/api/v1/business-services/bs-a-app/cis', null],
     ['get', '/api/v1/business-services/bs-a-app/dependencies', null],
+    ['get', '/api/v1/business-services/bs-a-app/context', null],
     ['get', '/api/v1/business-services/bs-a-app/health', null],
     ['get', '/api/v1/business-services/bs-a-app/costs', null],
     ['post', '/api/v1/business-services', {
@@ -443,7 +466,7 @@ describe('fail closed without an organization claim', () => {
 });
 
 describe('two-organization isolation', () => {
-  describe.each(['', '/cis', '/dependencies', '/health', '/costs'])('GET /api/v1/business-services/:id%s', suffix => {
+  describe.each(['', '/cis', '/dependencies', '/context', '/health', '/costs'])('GET /api/v1/business-services/:id%s', suffix => {
     it("returns exactly the missing-service 404 for another organization's service", async () => {
       const foreign = await request(app).get(`/api/v1/business-services/bs-a-app${suffix}`).set(AS_B);
       const missing = await request(app).get(`/api/v1/business-services/bs-missing${suffix}`).set(AS_B);

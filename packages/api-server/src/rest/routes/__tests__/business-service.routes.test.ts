@@ -106,6 +106,7 @@ const readRoutes: RouteCase[] = [
   ['GET', '/business-services/bs-web', undefined],
   ['GET', '/business-services/bs-web/cis', undefined],
   ['GET', '/business-services/bs-web/dependencies', undefined],
+  ['GET', '/business-services/bs-web/context', undefined],
   ['GET', '/business-services/bs-web/health', undefined],
   ['GET', '/business-services/bs-web/costs', undefined],
 ];

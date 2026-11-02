@@ -302,13 +302,14 @@ SSH credential-backed execution is restored by HP1-S5.
 Scoped to the caller's organization: 403 without an organization claim; a service outside the caller's organization returns the same 404 as a missing one. Create assigns a globally unique `service_id`; supplied IDs are rejected with 400.
 - `GET /business-services` - List business services
 - `POST /business-services` - Create business service
-- `GET /business-services/{service_id}` - Get business service with mapped-CI and dependency counts
+- `GET /business-services/{service_id}` - Get business service with mapped-CI and dependency counts, plus the Suite Contracts v2 C1 fields (`tenant_id`, `owner`, `criticality`, `lifecycle`, `dependencies[]`)
 - `PATCH /business-services/{service_id}` - Update business service
 - `DELETE /business-services/{service_id}` - Delete business service
 - `GET /business-services/{service_id}/cis` - Mapped CIs
 - `POST /business-services/{service_id}/cis` - Map CIs
 - `DELETE /business-services/{service_id}/cis/{ci_id}` - Unmap CI
 - `GET /business-services/{service_id}/dependencies` - Service dependencies
+- `GET /business-services/{service_id}/context` - C1 context read: dependency and impact subgraph (services and mapped CIs, both directions, depth 5 / 100 nodes / 400 adjacency rows / 5 s statements; refused with 503/504 over a bound, never truncated)
 - `POST /business-services/{service_id}/dependencies` - Create dependency
 - `DELETE /business-services/{service_id}/dependencies/{depends_on_service_id}` - Delete dependency
 - `GET /business-services/{service_id}/health` - Incident and change metrics (7/30-day UTC windows)
@@ -424,7 +425,8 @@ The OpenAPI spec defines comprehensive schemas for:
 - `AuditEntry` - Audit trail entry
 
 ### Business Services
-- `BusinessService`, `BusinessServiceDetail` - Service (detail adds counts)
+- `BusinessService`, `BusinessServiceDetail` - Service (detail adds counts and the C1 fields)
+- `BusinessServiceContext`, `BusinessServiceContextReach`, `C1Lifecycle` - C1 context subgraph and lifecycle
 - `BusinessServiceInput`, `BusinessServiceUpdate` - Create / update bodies
 - `BusinessServiceCIMapping`, `BusinessServiceDependency` - Child read items
 - `BusinessServiceHealth`, `BusinessServiceCosts` - Metric bodies

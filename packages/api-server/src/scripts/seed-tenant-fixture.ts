@@ -329,13 +329,15 @@ export async function seedBusinessServices(pg: SqlClient, spec: TenantFixtureSpe
   ];
   for (const service of services) {
     // The conditional DO UPDATE returns no row unless the existing service is
-    // one of this seed's fixtures in the same organization.
+    // one of this seed's fixtures in the same organization. lifecycle follows
+    // migration 043's backfill rule (live when active, else planned), so the
+    // active fixture keeps reading C1 lifecycle live (HAP-1423).
     const result = await pg.query(
       `INSERT INTO dim_business_services (
          service_id, name, description, service_classification, tbm_tower,
-         business_criticality, operational_status, organization_id, metadata
+         business_criticality, operational_status, organization_id, metadata, lifecycle
        ) VALUES ($1, $2, 'Tenant fixture seeded for the CO-1 acceptance runner', 'application', 'application',
-         'medium', $3, $4, $5::jsonb)
+         'medium', $3, $4, $5::jsonb, $6)
        ON CONFLICT (service_id) DO UPDATE SET
          name = EXCLUDED.name,
          description = EXCLUDED.description,
@@ -343,11 +345,13 @@ export async function seedBusinessServices(pg: SqlClient, spec: TenantFixtureSpe
          tbm_tower = EXCLUDED.tbm_tower,
          business_criticality = EXCLUDED.business_criticality,
          operational_status = EXCLUDED.operational_status,
+         lifecycle = EXCLUDED.lifecycle,
          updated_at = NOW()
        WHERE dim_business_services.organization_id = EXCLUDED.organization_id
          AND dim_business_services.metadata @> $5::jsonb
        RETURNING service_id`,
-      [service.service_id, `Fixture ${service.service_id}`, service.operational_status, service.organization_id, SERVICE_MARKER]
+      [service.service_id, `Fixture ${service.service_id}`, service.operational_status, service.organization_id, SERVICE_MARKER,
+        service.operational_status === 'active' ? 'live' : 'planned']
     );
     if (result.rows.length === 0) {
       throw new Error(

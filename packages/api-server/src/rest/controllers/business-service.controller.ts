@@ -8,15 +8,19 @@
 
 import { Request, Response } from 'express';
 import { randomUUID } from 'crypto';
+import type { PoolClient } from 'pg';
 import {
-  CI_TRAVERSAL_QUERY_TIMEOUT_MS, CITraversalLimitError, createCITraversalWork, getNeo4jClient, getPostgresClient,
-  JournalUnavailableError, MAX_CI_TRAVERSAL_NODES, MAX_CI_TRAVERSAL_WORK,
+  appendAuditEntry, auditChainReady, CI_TRAVERSAL_QUERY_TIMEOUT_MS, CITraversalLimitError, createCITraversalWork,
+  getNeo4jClient, getPostgresClient, JournalUnavailableError, MAX_CI_TRAVERSAL_NODES, MAX_CI_TRAVERSAL_WORK,
 } from '@cmdb/database';
-import { logger } from '@cmdb/common';
+import { logger, type AuditChange } from '@cmdb/common';
 import { requestOrganizationId } from '../../middleware/auth.middleware';
+import { requestActor } from '../../journal-http';
 import { errorLogFields } from '../../utils/log-error';
 import { assertNoCIGap, CIGapError, CI_GAP_RESPONSE, filterOwnedDimensionRows, writeReferencedCIs } from '../../read-admission';
-import { c1Lifecycle, serviceReference, StoredDependencyRow } from '../../services/business-service-reference';
+import {
+  C1Lifecycle, lifecycleMoveAllowed, lifecycleNeedsOwner, serviceReference, StoredDependencyRow,
+} from '../../services/business-service-reference';
 import { sendTraversalFailure } from './traversal-failure';
 
 /*
@@ -49,8 +53,61 @@ type ContextReach = { kind: ContextNode['kind']; id: string; distance: number };
 /** One step of a /context service walk; name and status columns belong to the service the step reaches. */
 type ServiceWalkRow = {
   src: string; tgt: string; dependency_type: string; depth: number;
-  name: string; business_criticality: string; operational_status: string;
+  name: string; business_criticality: string; lifecycle: C1Lifecycle;
 };
+
+/** HAP-1423: a dim_business_services row as the portfolio writes read it. */
+type ServiceRow = Record<string, unknown> & {
+  service_id: string; name: string; lifecycle: C1Lifecycle; owner_principal_id: string | null; version: number;
+};
+/** A refused portfolio write: nothing written, no audit row. */
+type WriteRefusal = { status: number; body: Record<string, unknown> };
+const NOT_FOUND_REFUSAL: WriteRefusal = { status: 404, body: { success: false, error: 'Business service not found' } };
+const OWNER_REQUIRED = {
+  success: false, error: 'Unprocessable Entity', message: 'owner_principal_id is required for a live or retiring service',
+};
+const WRITE_UNAVAILABLE = {
+  success: false, error: 'Service Unavailable', message: 'Business service write temporarily unavailable',
+};
+/** Not listed in a service audit row's changes: the row's organization_id column binds the org; timestamps are the row's. */
+const UNAUDITED_COLUMNS: Record<string, true> = { organization_id: true, created_at: true, updated_at: true };
+
+/**
+ * If-Match as a service version: null when absent or `*`, undefined when malformed (400). Accepts the strong ETag
+ * that POST and PATCH send (`"<version>"`, also the body's `version`) and bare digits; a weak tag (`W/"<n>"`) is
+ * malformed, so 400, never a match.
+ */
+function ifMatchVersion(header: string | undefined): number | null | undefined {
+  if (header === undefined || header.trim() === '*') return null;
+  const match = /^\s*(?:"([1-9][0-9]{0,9})"|([1-9][0-9]{0,9}))\s*$/.exec(header);
+  return match ? Number(match[1] ?? match[2]) : undefined;
+}
+
+/**
+ * One BUSINESS_SERVICE audit_log row on the write's own transaction, hash-chained by appendAuditEntry (C1 rule, F2:
+ * the portfolio's local chain, no ledger event). Actor: the verified token subject (requestActor, HAP-443); changes:
+ * the columns whose values differ between `before` and `after`.
+ */
+async function appendServiceAudit(client: PoolClient, req: Request, organizationId: string,
+  action: 'CREATE' | 'UPDATE' | 'DELETE', operation: 'create' | 'update' | 'retire' | 'delete',
+  before: ServiceRow | null, after: ServiceRow | null): Promise<void> {
+  const row = (after ?? before)!;
+  const changes: AuditChange[] = Object.keys(row).filter(field => UNAUDITED_COLUMNS[field] !== true).flatMap(field => {
+    const old_value = before?.[field] ?? null;
+    const new_value = after?.[field] ?? null;
+    return JSON.stringify(old_value) === JSON.stringify(new_value) ? [] : [{ field, old_value, new_value }];
+  });
+  await appendAuditEntry(client, {
+    entity_type: 'BUSINESS_SERVICE', entity_id: row.service_id, action, actor: requestActor(req), actor_type: 'user',
+    changes, metadata: { operation, version: row.version },
+  }, organizationId);
+}
+
+/** A chain-lock timeout (55P03) is a 503, as for journaled CI writes; anything else a generic 500 (detail in the log). */
+function sendWriteFailure(res: Response, error: unknown, message: string): void {
+  if ((error as { code?: unknown } | null)?.code === '55P03') res.status(503).json(WRITE_UNAVAILABLE);
+  else res.status(500).json({ success: false, error: message });
+}
 
 export class BusinessServiceController {
   private pgClient = getPostgresClient();
@@ -201,7 +258,7 @@ export class BusinessServiceController {
           (SELECT COUNT(*) FROM ci_business_service_mappings m WHERE m.service_id = s.service_id)::int AS mapped_cis_count,
           (SELECT COUNT(*) FROM business_service_dependencies d WHERE d.service_id = s.service_id)::int AS dependencies_count,
           COALESCE((SELECT json_agg(x) FROM (
-            SELECT t.service_id, t.name, t.business_criticality, t.operational_status, d.dependency_type
+            SELECT t.service_id, t.name, t.business_criticality, t.lifecycle, d.dependency_type
             FROM business_service_dependencies d
             JOIN dim_business_services t ON t.service_id = d.depends_on_service_id AND t.organization_id = s.organization_id
             WHERE d.service_id = s.service_id
@@ -221,6 +278,9 @@ export class BusinessServiceController {
       }
 
       const { c1_dependencies: dependencies, ...row } = result.rows[0];
+      // No version ETag here: this body also carries dependencies[] (each target's lifecycle, name, criticality) and
+      // the child counts, which change without bumping this record's version, so "<version>" would validate a stale
+      // 304. Express's default body-hash ETag stays; the body's `version` is the If-Match value.
       res.json({
         success: true,
         data: { ...row, ...serviceReference(row, dependencies as StoredDependencyRow[]) }
@@ -236,7 +296,7 @@ export class BusinessServiceController {
 
   /**
    * POST /api/v1/business-services
-   * Create a new business service
+   * Create a new business service: one CREATE audit row in the same transaction (HAP-1423).
    */
   async createBusinessService(req: Request, res: Response): Promise<void> {
     try {
@@ -248,6 +308,9 @@ export class BusinessServiceController {
         tbm_tower,
         business_criticality,
         operational_status = 'active',
+        lifecycle = 'planned',
+        owner_principal_id = null,
+        owner_group = null,
         service_type,
         owned_by,
         managed_by,
@@ -260,52 +323,65 @@ export class BusinessServiceController {
         metadata
       } = req.body;
 
+      if (lifecycleNeedsOwner(lifecycle) && !owner_principal_id) {
+        res.status(422).json(OWNER_REQUIRED);
+        return;
+      }
+      if (!auditChainReady()) {
+        res.status(503).json(WRITE_UNAVAILABLE);
+        return;
+      }
       const service_id = `bs-${randomUUID()}`;
       // organization_id always comes from the token (the route's Joi schema
       // rejects it in the body).
-      const result = await this.pgClient.query(
-        `INSERT INTO dim_business_services (
-          service_id, name, description, service_classification, tbm_tower,
-          business_criticality, operational_status, service_type, owned_by,
-          managed_by, support_group, service_level_requirement, category,
-          tags, related_ci_types, cost_allocation, metadata, organization_id
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
-        RETURNING *`,
-        [
-          service_id, name, description, service_classification, tbm_tower,
-          business_criticality, operational_status, service_type, owned_by,
-          managed_by, support_group, service_level_requirement, category,
-          tags, related_ci_types, cost_allocation ? JSON.stringify(cost_allocation) : null,
-          metadata ? JSON.stringify(metadata) : null,
-          requestOrganizationId(req)
-        ]
-      );
+      const organizationId = requestOrganizationId(req);
+      const created = await this.pgClient.transaction(async client => {
+        const result = await client.query(
+          `INSERT INTO dim_business_services (
+            service_id, name, description, service_classification, tbm_tower,
+            business_criticality, operational_status, service_type, owned_by,
+            managed_by, support_group, service_level_requirement, category,
+            tags, related_ci_types, cost_allocation, metadata, organization_id,
+            lifecycle, owner_principal_id, owner_group
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+          RETURNING *`,
+          [
+            service_id, name, description, service_classification, tbm_tower,
+            business_criticality, operational_status, service_type, owned_by,
+            managed_by, support_group, service_level_requirement, category,
+            tags, related_ci_types, cost_allocation ? JSON.stringify(cost_allocation) : null,
+            metadata ? JSON.stringify(metadata) : null,
+            organizationId, lifecycle, owner_principal_id, owner_group
+          ]
+        );
+        await appendServiceAudit(client, req, organizationId, 'CREATE', 'create', null, result.rows[0]);
+        return result.rows[0];
+      });
 
       logger.info('Business service created', { service_id, name });
 
-      res.status(201).json({
+      res.set('ETag', `"${created.version}"`).status(201).json({
         success: true,
-        data: result.rows[0]
+        data: created
       });
     } catch (error) {
       logger.error('Error creating business service', { error: errorLogFields(error) });
-      res.status(500).json({
-        success: false,
-        error: 'Failed to create business service'
-      });
+      sendWriteFailure(res, error, 'Failed to create business service');
     }
   }
 
   /**
    * PATCH /api/v1/business-services/:service_id
-   * Update an existing business service
+   * Update an existing business service (HAP-1423): optional If-Match "<version>" (409 when stale); lifecycle moves
+   * only forward and `retired` is terminal (409); a move to live/retiring needs owner_principal_id (422). An accepted
+   * update bumps version by one and appends one UPDATE audit row in the same transaction.
    */
   async updateBusinessService(req: Request, res: Response): Promise<void> {
     try {
       const { service_id } = req.params;
       const updates = req.body;
 
-      // Build dynamic UPDATE query
+      // Build dynamic UPDATE query (keys are the route schema's columns: Joi strips the rest)
       const fields = Object.keys(updates);
       if (fields.length === 0) {
         res.status(400).json({
@@ -314,9 +390,19 @@ export class BusinessServiceController {
         });
         return;
       }
+      const expectedVersion = ifMatchVersion(req.get('If-Match'));
+      if (expectedVersion === undefined) {
+        res.status(400).json({ success: false, error: 'Bad Request', message: 'If-Match must be a record version ("<version>")' });
+        return;
+      }
+      if (!auditChainReady()) {
+        res.status(503).json(WRITE_UNAVAILABLE);
+        return;
+      }
 
+      const organizationId = requestOrganizationId(req);
       const setClause = fields.map((field, index) => `${field} = $${index + 3}`).join(', ');
-      const values = [service_id, requestOrganizationId(req), ...fields.map(field => {
+      const values = [service_id, organizationId, ...fields.map(field => {
         // Stringify JSON fields
         if (['cost_allocation', 'metadata'].includes(field) && typeof updates[field] === 'object') {
           return JSON.stringify(updates[field]);
@@ -324,55 +410,105 @@ export class BusinessServiceController {
         return updates[field];
       })];
 
-      const result = await this.pgClient.query(
-        `UPDATE dim_business_services
-         SET ${setClause}, updated_at = NOW()
-         WHERE service_id = $1 AND organization_id = $2
-         RETURNING *`,
-        values
-      );
+      const outcome = await this.pgClient.transaction(async (client): Promise<WriteRefusal | { row: ServiceRow }> => {
+        const current: ServiceRow | undefined = (await client.query(
+          // FOR NO KEY UPDATE, unlike DELETE's FOR UPDATE: a PATCH changes no key, so it must not block the FOR KEY
+          // SHARE that mapping and dependency inserts take on this row while it waits on the audit-chain lock.
+          'SELECT * FROM dim_business_services WHERE service_id = $1 AND organization_id = $2 FOR NO KEY UPDATE',
+          [service_id, organizationId]
+        )).rows[0];
+        if (!current) return NOT_FOUND_REFUSAL;
+        if (expectedVersion !== null && current.version !== expectedVersion) {
+          return { status: 409, body: { success: false, error: 'Conflict', message: 'Version mismatch', version: current.version } };
+        }
+        const lifecycle: C1Lifecycle = updates.lifecycle ?? current.lifecycle;
+        if (!lifecycleMoveAllowed(current.lifecycle, lifecycle)) {
+          return { status: 409, body: { success: false, error: 'Conflict',
+            message: `Lifecycle cannot move from ${current.lifecycle} to ${lifecycle}` } };
+        }
+        const principal = 'owner_principal_id' in updates ? updates.owner_principal_id : current.owner_principal_id;
+        // A legacy live row without a principal stays editable; moving into live/retiring, or clearing the
+        // principal of such a row, needs one.
+        if (lifecycleNeedsOwner(lifecycle) && !principal && (lifecycle !== current.lifecycle || 'owner_principal_id' in updates)) {
+          return { status: 422, body: OWNER_REQUIRED };
+        }
 
-      if (result.rows.length === 0) {
-        res.status(404).json({
-          success: false,
-          error: 'Business service not found'
-        });
+        const result = await client.query(
+          `UPDATE dim_business_services
+           SET ${setClause}, version = version + 1, updated_at = NOW()
+           WHERE service_id = $1 AND organization_id = $2
+           RETURNING *`,
+          values
+        );
+        const retire = lifecycle === 'retired' && current.lifecycle !== 'retired';
+        await appendServiceAudit(client, req, organizationId, 'UPDATE', retire ? 'retire' : 'update', current, result.rows[0]);
+        return { row: result.rows[0] };
+      });
+
+      if (!('row' in outcome)) {
+        res.status(outcome.status).json(outcome.body);
         return;
       }
 
       logger.info('Business service updated', { service_id, updates: fields });
 
-      res.json({
+      res.set('ETag', `"${outcome.row.version}"`).json({
         success: true,
-        data: result.rows[0]
+        data: outcome.row
       });
     } catch (error) {
       logger.error('Error updating business service', { error: errorLogFields(error), service_id: req.params.service_id });
-      res.status(500).json({
-        success: false,
-        error: 'Failed to update business service'
-      });
+      sendWriteFailure(res, error, 'Failed to update business service');
     }
   }
 
   /**
    * DELETE /api/v1/business-services/:service_id
-   * Delete a business service
+   * Delete a business service that has no CI mappings or dependencies (HAP-1423: else 409, retire it instead);
+   * one audit row (action DELETE) in the same transaction.
    */
   async deleteBusinessService(req: Request, res: Response): Promise<void> {
     try {
       const { service_id } = req.params;
+      if (!auditChainReady()) {
+        res.status(503).json(WRITE_UNAVAILABLE);
+        return;
+      }
 
-      const result = await this.pgClient.query(
-        'DELETE FROM dim_business_services WHERE service_id = $1 AND organization_id = $2 RETURNING service_id, name',
-        [service_id, requestOrganizationId(req)]
-      );
+      const organizationId = requestOrganizationId(req);
+      const outcome = await this.pgClient.transaction(async (client): Promise<WriteRefusal | { row: ServiceRow }> => {
+        // FOR UPDATE conflicts with the FOR KEY SHARE a concurrent mapping or dependency insert takes on this row.
+        const current: ServiceRow | undefined = (await client.query(
+          'SELECT * FROM dim_business_services WHERE service_id = $1 AND organization_id = $2 FOR UPDATE',
+          [service_id, organizationId]
+        )).rows[0];
+        if (!current) return NOT_FOUND_REFUSAL;
+        // Only links the caller can see count (as getMappedCIs and the dependency reads): a mapping to a current, owned
+        // CI, and an edge whose other end is in the caller's organization. A stale mapping, or a legacy (pre-scoping)
+        // edge to or from another organization's service, must neither block nor reveal anything.
+        const { linked } = (await client.query(
+          `SELECT EXISTS (SELECT 1 FROM ci_business_service_mappings m
+               JOIN cmdb.dim_ci c ON c.ci_id = m.ci_id AND c.is_current AND NOT c.org_backfilled AND c.organization_id = $2
+               WHERE m.service_id = $1)
+             OR EXISTS (SELECT 1 FROM business_service_dependencies d
+               JOIN dim_business_services other ON other.organization_id = $2
+                 AND other.service_id = CASE WHEN d.service_id = $1 THEN d.depends_on_service_id ELSE d.service_id END
+               WHERE d.service_id = $1 OR d.depends_on_service_id = $1)
+             AS linked`,
+          [service_id, organizationId]
+        )).rows[0];
+        if (linked) {
+          return { status: 409, body: { success: false, error: 'Conflict',
+            message: 'Business service has CI mappings or dependencies; retire it (lifecycle = retired) instead' } };
+        }
+        await client.query('DELETE FROM dim_business_services WHERE service_id = $1 AND organization_id = $2',
+          [service_id, organizationId]);
+        await appendServiceAudit(client, req, organizationId, 'DELETE', 'delete', current, null);
+        return { row: current };
+      });
 
-      if (result.rows.length === 0) {
-        res.status(404).json({
-          success: false,
-          error: 'Business service not found'
-        });
+      if (!('row' in outcome)) {
+        res.status(outcome.status).json(outcome.body);
         return;
       }
 
@@ -381,14 +517,11 @@ export class BusinessServiceController {
       res.json({
         success: true,
         message: 'Business service deleted successfully',
-        data: result.rows[0]
+        data: { service_id: outcome.row.service_id, name: outcome.row.name }
       });
     } catch (error) {
       logger.error('Error deleting business service', { error: errorLogFields(error), service_id: req.params.service_id });
-      res.status(500).json({
-        success: false,
-        error: 'Failed to delete business service'
-      });
+      sendWriteFailure(res, error, 'Failed to delete business service');
     }
   }
 
@@ -655,44 +788,44 @@ export class BusinessServiceController {
         await client.query("SELECT set_config('statement_timeout', $1, true)", [String(CI_TRAVERSAL_QUERY_TIMEOUT_MS)]);
         return client.query(
           `WITH RECURSIVE parent AS (
-            SELECT s.service_id, s.name, s.business_criticality, s.operational_status, s.organization_id
+            SELECT s.service_id, s.name, s.business_criticality, s.lifecycle, s.organization_id
             FROM dim_business_services s
             WHERE s.service_id = $1 AND s.organization_id = $2
           ),
-          out_walk(src, tgt, dependency_type, depth, path, cycle, name, business_criticality, operational_status) AS (
+          out_walk(src, tgt, dependency_type, depth, path, cycle, name, business_criticality, lifecycle) AS (
             SELECT d.service_id, d.depends_on_service_id, d.dependency_type, 1,
-              ARRAY[d.service_id, d.depends_on_service_id]::varchar[], false, t.name, t.business_criticality, t.operational_status
+              ARRAY[d.service_id, d.depends_on_service_id]::varchar[], false, t.name, t.business_criticality, t.lifecycle
             FROM parent p
             JOIN business_service_dependencies d ON d.service_id = p.service_id
             JOIN dim_business_services t ON t.service_id = d.depends_on_service_id AND t.organization_id = p.organization_id
             UNION ALL
             SELECT d.service_id, d.depends_on_service_id, d.dependency_type, w.depth + 1,
-              w.path || d.depends_on_service_id, d.depends_on_service_id = ANY(w.path), t.name, t.business_criticality, t.operational_status
+              w.path || d.depends_on_service_id, d.depends_on_service_id = ANY(w.path), t.name, t.business_criticality, t.lifecycle
             FROM out_walk w
             JOIN business_service_dependencies d ON d.service_id = w.tgt
             JOIN dim_business_services t ON t.service_id = d.depends_on_service_id AND t.organization_id = $2
             WHERE NOT w.cycle AND w.depth <= $3
           ),
-          in_walk(src, tgt, dependency_type, depth, path, cycle, name, business_criticality, operational_status) AS (
+          in_walk(src, tgt, dependency_type, depth, path, cycle, name, business_criticality, lifecycle) AS (
             SELECT d.service_id, d.depends_on_service_id, d.dependency_type, 1,
-              ARRAY[d.depends_on_service_id, d.service_id]::varchar[], false, t.name, t.business_criticality, t.operational_status
+              ARRAY[d.depends_on_service_id, d.service_id]::varchar[], false, t.name, t.business_criticality, t.lifecycle
             FROM parent p
             JOIN business_service_dependencies d ON d.depends_on_service_id = p.service_id
             JOIN dim_business_services t ON t.service_id = d.service_id AND t.organization_id = p.organization_id
             UNION ALL
             SELECT d.service_id, d.depends_on_service_id, d.dependency_type, w.depth + 1,
-              w.path || d.service_id, d.service_id = ANY(w.path), t.name, t.business_criticality, t.operational_status
+              w.path || d.service_id, d.service_id = ANY(w.path), t.name, t.business_criticality, t.lifecycle
             FROM in_walk w
             JOIN business_service_dependencies d ON d.depends_on_service_id = w.src
             JOIN dim_business_services t ON t.service_id = d.service_id AND t.organization_id = $2
             WHERE NOT w.cycle AND w.depth <= $3
           )
-          SELECT p.service_id, p.name, p.business_criticality, p.operational_status, p.organization_id,
+          SELECT p.service_id, p.name, p.business_criticality, p.lifecycle, p.organization_id,
             COALESCE((SELECT json_agg(x) FROM (
-              SELECT src, tgt, dependency_type, depth, name, business_criticality, operational_status FROM out_walk LIMIT $4
+              SELECT src, tgt, dependency_type, depth, name, business_criticality, lifecycle FROM out_walk LIMIT $4
             ) x), '[]'::json) AS out_walk,
             COALESCE((SELECT json_agg(x) FROM (
-              SELECT src, tgt, dependency_type, depth, name, business_criticality, operational_status FROM in_walk LIMIT $4
+              SELECT src, tgt, dependency_type, depth, name, business_criticality, lifecycle FROM in_walk LIMIT $4
             ) x), '[]'::json) AS in_walk,
             COALESCE((SELECT json_agg(x) FROM (
               SELECT m.ci_id, m.mapping_type, c.ci_name, c.ci_type, c.ci_status
@@ -745,9 +878,9 @@ export class BusinessServiceController {
         const known = list.get(`${kind}:${id}`);
         if (!known || known.distance > distance) list.set(`${kind}:${id}`, { kind, id, distance });
       };
-      const serviceNode = (row: { service_id: string; name: string; business_criticality: string; operational_status: string }): ContextNode => ({
+      const serviceNode = (row: { service_id: string; name: string; business_criticality: string; lifecycle: C1Lifecycle }): ContextNode => ({
         kind: 'business_service', id: row.service_id, name: row.name,
-        criticality: row.business_criticality, lifecycle: c1Lifecycle(row.operational_status),
+        criticality: row.business_criticality, lifecycle: row.lifecycle,
       });
 
       addNode(serviceNode(root));

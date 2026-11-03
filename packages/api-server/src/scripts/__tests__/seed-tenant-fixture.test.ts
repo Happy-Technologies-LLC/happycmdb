@@ -5,7 +5,7 @@
  * Unit tests for the tenant fixture seed: CLI and target validation, the
  * PostgreSQL scratch check, and the business-service upsert against PGlite
  * (the dim_business_services CREATE TABLE block from 001_complete_schema.sql,
- * then 008 verbatim).
+ * then 008 and 043 verbatim).
  *
  * The full script (real migrator, real Neo4j users, login through the API, the
  * CLI as a real process) is exercised by
@@ -66,6 +66,7 @@ beforeAll(async () => {
   const table = sql.match(/CREATE TABLE IF NOT EXISTS dim_business_services \([\s\S]*?\n\);/);
   if (!table) throw new Error('dim_business_services DDL not found');
   await send('exec', table[0] + '\n' + readFileSync(join(MIGRATIONS_DIR, '008_business_service_organization_scope.sql'), 'utf8'));
+  await send('exec', `BEGIN;\n${readFileSync(join(MIGRATIONS_DIR, '043_business_service_record_c1.sql'), 'utf8')}\nCOMMIT;`);
 });
 
 afterAll(() => {
@@ -176,7 +177,7 @@ describe('seedBusinessServices (PGlite)', () => {
   const spec: TenantFixtureSpec = parseSpec(argv(), PASSWORDS);
   const rows = () => send(
     'query',
-    `SELECT service_id, organization_id, operational_status, name, metadata
+    `SELECT service_id, organization_id, operational_status, lifecycle, name, metadata
      FROM dim_business_services ORDER BY service_id`
   );
   const insertForeign = (serviceId: string, org: string, metadata: string | null) => send(
@@ -193,9 +194,9 @@ describe('seedBusinessServices (PGlite)', () => {
 
   const MARK = { tenant_fixture: true };
   const EXPECTED = [
-    { service_id: 'bs-co1-foreign', organization_id: ORG_B, operational_status: 'active', name: 'Fixture bs-co1-foreign', metadata: MARK },
-    { service_id: 'bs-co1-fulfillment', organization_id: ORG_A, operational_status: 'active', name: 'Fixture bs-co1-fulfillment', metadata: MARK },
-    { service_id: 'bs-co1-retired', organization_id: ORG_A, operational_status: 'inactive', name: 'Fixture bs-co1-retired', metadata: MARK },
+    { service_id: 'bs-co1-foreign', organization_id: ORG_B, operational_status: 'active', lifecycle: 'live', name: 'Fixture bs-co1-foreign', metadata: MARK },
+    { service_id: 'bs-co1-fulfillment', organization_id: ORG_A, operational_status: 'active', lifecycle: 'live', name: 'Fixture bs-co1-fulfillment', metadata: MARK },
+    { service_id: 'bs-co1-retired', organization_id: ORG_A, operational_status: 'inactive', lifecycle: 'planned', name: 'Fixture bs-co1-retired', metadata: MARK },
   ];
 
   it('creates the active and inactive org-A services and the other organization service, marked as fixtures', async () => {
@@ -210,7 +211,7 @@ describe('seedBusinessServices (PGlite)', () => {
 
   it('is idempotent and converges drifted fixture rows back to the declared state', async () => {
     await seedBusinessServices(pg, spec);
-    await send('exec', `UPDATE dim_business_services SET operational_status = 'active', name = 'Renamed'
+    await send('exec', `UPDATE dim_business_services SET operational_status = 'active', lifecycle = 'live', name = 'Renamed'
       WHERE service_id = 'bs-co1-retired'`);
 
     await seedBusinessServices(pg, spec);
@@ -231,7 +232,7 @@ describe('seedBusinessServices (PGlite)', () => {
     );
     const [untouched] = (await rows()).filter(r => r['service_id'] === 'bs-co1-retired');
     expect(untouched).toEqual({
-      service_id: 'bs-co1-retired', organization_id: org, operational_status: 'active', name: 'Real service',
+      service_id: 'bs-co1-retired', organization_id: org, operational_status: 'active', lifecycle: 'planned', name: 'Real service',
       metadata: metadata === null ? null : JSON.parse(metadata),
     });
   });

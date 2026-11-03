@@ -24,7 +24,7 @@ export { enc, dec, isStorableString } from './journal/encoding';
 export { PostgresClient, getPostgresClient } from './postgres/client';
 export { runMigrations, getMigrationStatus } from './postgres/migrator';
 export type { MigrationStatus } from './postgres/migrator';
-export { AuditService, getAuditService } from './postgres/audit.service';
+export { AuditService, getAuditService, appendAuditEntry, auditChainReady } from './postgres/audit.service';
 export {
   UnifiedCredentialService,
   getUnifiedCredentialService

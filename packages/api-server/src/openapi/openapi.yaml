@@ -3103,7 +3103,9 @@ paths:
       description: >-
         Creates a business service in the caller's organization, assigning
         service_id on the server. Rejects a supplied service_id. Requires
-        `write` permission.
+        `write` permission. lifecycle defaults to planned; version starts at
+        1. Appends one BUSINESS_SERVICE CREATE row to the hash-chained
+        audit_log in the same transaction (no ledger event).
       operationId: createBusinessService
       requestBody:
         required: true
@@ -3131,8 +3133,12 @@ paths:
           $ref: '#/components/responses/BusinessServiceUnauthorized'
         '403':
           $ref: '#/components/responses/BusinessServiceForbidden'
+        '422':
+          $ref: '#/components/responses/BusinessServiceOwnerRequired'
         '500':
           $ref: '#/components/responses/BusinessServiceServerError'
+        '503':
+          $ref: '#/components/responses/BusinessServiceWriteUnavailable'
 
   /business-services/{service_id}:
     parameters:
@@ -3143,7 +3149,7 @@ paths:
       description: >-
         The service plus its mapped-CI and dependency counts, and the Suite
         Contracts v2 C1 service-reference fields (tenant_id, owner,
-        criticality, lifecycle, dependencies). Another organization's service
+        owner_group, criticality, lifecycle, version, dependencies). Another organization's service
         answers the same 404 as a missing one; the tenant is the token's
         organization, never a request parameter.
       operationId: getBusinessService
@@ -3174,9 +3180,21 @@ paths:
       tags: [Business Services]
       summary: Update a business service
       description: >-
-        Updates the given fields and sets `updated_at`. Requires the `write`
-        permission.
+        Updates the given fields, sets `updated_at` and increments `version`
+        by one. Requires the `write` permission. Optional `If-Match: "<version>"`
+        (Proposed: optional so existing clients keep working); a stale version
+        is 409 with the current `version`. Appends one BUSINESS_SERVICE UPDATE
+        row (metadata.operation `retire` for a move to retired) to the
+        hash-chained audit_log in the same transaction (no ledger event).
       operationId: updateBusinessService
+      parameters:
+        - name: If-Match
+          in: header
+          required: false
+          description: The expected record version, quoted (`"3"`) or bare; `*` matches any.
+          schema:
+            type: string
+            example: '"3"'
       requestBody:
         required: true
         content:
@@ -3199,8 +3217,10 @@ paths:
                     $ref: '#/components/schemas/BusinessService'
         '400':
           description: >-
-            Body failed validation (middleware body), or the body has no
-            known fields (`{success: false, error: 'No fields to update'}`).
+            Body failed validation (middleware body), the body has no known
+            fields (`{success: false, error: 'No fields to update'}`), the
+            body breaks the request-shape rules (`Invalid request`), or
+            If-Match is malformed.
           content:
             application/json:
               schema:
@@ -3213,16 +3233,30 @@ paths:
           $ref: '#/components/responses/BusinessServiceForbidden'
         '404':
           $ref: '#/components/responses/BusinessServiceNotFound'
+        '409':
+          description: >-
+            Stale If-Match (`message: Version mismatch`, with the current
+            `version`), or a backward or post-retirement lifecycle move.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BusinessServiceError'
+        '422':
+          $ref: '#/components/responses/BusinessServiceOwnerRequired'
         '500':
           $ref: '#/components/responses/BusinessServiceServerError'
+        '503':
+          $ref: '#/components/responses/BusinessServiceWriteUnavailable'
 
     delete:
       tags: [Business Services]
       summary: Delete a business service
       description: >-
-        Deletes the service together with its CI mappings, the dependencies
-        from and to it, and its health metrics. Requires the `write`
-        permission.
+        Deletes a service that has no CI mappings and no dependencies from or
+        to it, together with its health metrics; otherwise 409 (retire it with
+        `lifecycle = retired` instead). Requires the `write` permission.
+        Appends one BUSINESS_SERVICE DELETE row to the hash-chained audit_log
+        in the same transaction.
       operationId: deleteBusinessService
       responses:
         '200':
@@ -3253,8 +3287,16 @@ paths:
           $ref: '#/components/responses/BusinessServiceForbidden'
         '404':
           $ref: '#/components/responses/BusinessServiceNotFound'
+        '409':
+          description: The service has CI mappings or dependencies
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BusinessServiceError'
         '500':
           $ref: '#/components/responses/BusinessServiceServerError'
+        '503':
+          $ref: '#/components/responses/BusinessServiceWriteUnavailable'
 
   /business-services/{service_id}/cis:
     parameters:
@@ -4056,6 +4098,32 @@ components:
           example:
             success: false
             error: Failed to get service costs
+
+    BusinessServiceOwnerRequired:
+      description: >-
+        A live or retiring service needs owner_principal_id, the
+        identity-provider subject of its one accountable human owner (D15).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/BusinessServiceError'
+          example:
+            success: false
+            error: Unprocessable Entity
+            message: owner_principal_id is required for a live or retiring service
+
+    BusinessServiceWriteUnavailable:
+      description: >-
+        The audit chain is unavailable (AUDIT_CHAIN_KEY unset, or the chain
+        lock timed out); nothing was written.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/BusinessServiceError'
+          example:
+            success: false
+            error: Service Unavailable
+            message: Business service write temporarily unavailable
 
     TooManyRequests:
       description: Rate limit exceeded
@@ -4997,9 +5065,10 @@ components:
     C1Lifecycle:
       type: string
       description: >-
-        C1 lifecycle, derived from operational_status: active and maintenance
-        are live, inactive is retiring, decommissioned is retired. planned is
-        not produced until the record stores its own lifecycle (HAP-1423).
+        C1 lifecycle, stored on the record (HAP-1423, migration 043) and
+        separate from operational_status. Moves only forward (planned, live,
+        retiring, retired); retired is terminal. Rows that existed before 043
+        were backfilled live when operational_status was active, else planned.
       enum: [planned, live, retiring, retired]
 
     CountValue:
@@ -5043,6 +5112,24 @@ components:
           type: string
           description: Stored operational status
           enum: [active, inactive, maintenance, decommissioned]
+        lifecycle:
+          $ref: '#/components/schemas/C1Lifecycle'
+        owner_principal_id:
+          type: string
+          nullable: true
+          maxLength: 255
+          description: >-
+            Identity-provider subject of the one accountable human owner (C1,
+            F14); HIVE uses it as the D15 tier-change approver.
+        owner_group:
+          type: string
+          nullable: true
+          maxLength: 255
+          description: Optional owning group
+        version:
+          type: integer
+          minimum: 1
+          description: Record version, 1 on create and +1 on every accepted update
         service_type:
           type: string
           nullable: true
@@ -5096,7 +5183,7 @@ components:
       allOf:
         - $ref: '#/components/schemas/BusinessService'
         - type: object
-          required: [mapped_cis_count, dependencies_count, tenant_id, owner, criticality, lifecycle, dependencies]
+          required: [mapped_cis_count, dependencies_count, tenant_id, owner, owner_group, criticality, lifecycle, version, dependencies]
           properties:
             mapped_cis_count:
               type: integer
@@ -5116,16 +5203,24 @@ components:
                   type: string
                   nullable: true
                   description: >-
-                    Identity-provider subject of the accountable owner. Always
-                    null until HAP-1423 stores it.
+                    Identity-provider subject of the one accountable human
+                    owner (the stored owner_principal_id); null until set.
                 display_name:
                   type: string
                   nullable: true
                   description: The stored owned_by
+            owner_group:
+              type: string
+              nullable: true
+              description: The stored owner_group
             criticality:
               $ref: '#/components/schemas/BusinessCriticality'
             lifecycle:
               $ref: '#/components/schemas/C1Lifecycle'
+            version:
+              type: integer
+              minimum: 1
+              description: The stored record version
             dependencies:
               type: array
               description: >-
@@ -5256,8 +5351,9 @@ components:
     BusinessServiceInput:
       type: object
       description: >-
-        service_id and organization_id are rejected with 400. The server
-        assigns a globally unique service_id; the token supplies the tenant.
+        service_id, organization_id and version are rejected with 400. The
+        server assigns a globally unique service_id; the token supplies the
+        tenant. A live or retiring lifecycle needs owner_principal_id (422).
       required: [name, service_classification, tbm_tower, business_criticality]
       properties:
         name:
@@ -5274,8 +5370,21 @@ components:
           $ref: '#/components/schemas/BusinessCriticality'
         operational_status:
           type: string
-          enum: [active, inactive]
+          enum: [active, inactive, maintenance, decommissioned]
           default: active
+        lifecycle:
+          allOf:
+            - $ref: '#/components/schemas/C1Lifecycle'
+          default: planned
+        owner_principal_id:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: Identity-provider subject of the one accountable human owner (trimmed)
+        owner_group:
+          type: string
+          minLength: 1
+          maxLength: 255
         service_type:
           type: string
           minLength: 1
@@ -5321,7 +5430,10 @@ components:
       description: >-
         At least one known field is required: unknown fields are ignored, so
         a body with none of these fields returns 400 `No fields to update`.
-        `organization_id` is rejected with 400.
+        `organization_id` and `version` are rejected with 400. lifecycle moves
+        only forward and retired is terminal (409); a move into live or
+        retiring, or clearing owner_principal_id of such a service, needs
+        owner_principal_id (422).
       properties:
         name:
           type: string
@@ -5337,7 +5449,20 @@ components:
           $ref: '#/components/schemas/BusinessCriticality'
         operational_status:
           type: string
-          enum: [active, inactive]
+          enum: [active, inactive, maintenance, decommissioned]
+        lifecycle:
+          $ref: '#/components/schemas/C1Lifecycle'
+        owner_principal_id:
+          type: string
+          nullable: true
+          minLength: 1
+          maxLength: 255
+          description: Identity-provider subject of the one accountable human owner (trimmed); null clears it
+        owner_group:
+          type: string
+          nullable: true
+          minLength: 1
+          maxLength: 255
         service_type:
           type: string
           minLength: 1

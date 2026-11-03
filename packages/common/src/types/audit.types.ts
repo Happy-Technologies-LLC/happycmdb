@@ -15,7 +15,7 @@ export type AuditAction =
   | 'RELATIONSHIP_REMOVE'
   | 'DISCOVERY_UPDATE';
 
-export type AuditEntityType = 'CI' | 'RELATIONSHIP';
+export type AuditEntityType = 'CI' | 'RELATIONSHIP' | 'BUSINESS_SERVICE';
 
 export interface AuditLogEntry {
   id: string;

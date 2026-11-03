@@ -30,7 +30,7 @@ import request from 'supertest';
 // Placeholder config so loadConfig() validates; no Neo4j/Redis/PostgreSQL server is contacted.
 // The signing secret is generated per run in memory; no literal credential.
 Object.assign(process.env, {
-  JWT_SECRET: randomBytes(32).toString('hex'),
+  JWT_SECRET: randomBytes(32).toString('hex'), AUDIT_CHAIN_KEY: randomBytes(32).toString('hex'),
   NEO4J_URI: 'bolt://127.0.0.1:1', NEO4J_USERNAME: 'unused', NEO4J_PASSWORD: 'unused',
   POSTGRES_HOST: '127.0.0.1', POSTGRES_DB: 'unused', POSTGRES_USER: 'unused', POSTGRES_PASSWORD: 'unused',
   REDIS_HOST: '127.0.0.1', KAFKA_CLIENT_ID: 'unused', KAFKA_GROUP_ID: 'unused',
@@ -113,8 +113,13 @@ const graphClient = {
 
 jest.mock('@cmdb/database', () => {
   const traversal = jest.requireActual<Record<string, unknown>>('@cmdb/database/neo4j/client');
+  // HAP-1423: portfolio writes append to the real hash-chained audit_log; the write guard checks storable strings.
+  const audit = jest.requireActual<Record<string, unknown>>('@cmdb/database/postgres/audit.service');
   return {
     ...jest.requireActual<object>('@cmdb/database/journal/journal'),
+    isStorableString: jest.requireActual<Record<string, unknown>>('@cmdb/database/journal/encoding')['isStorableString'],
+    appendAuditEntry: audit['appendAuditEntry'],
+    auditChainReady: audit['auditChainReady'],
     CITraversalLimitError: traversal['CITraversalLimitError'],
     createCITraversalWork: traversal['createCITraversalWork'],
     MAX_CI_TRAVERSAL_NODES: traversal['MAX_CI_TRAVERSAL_NODES'],
@@ -293,6 +298,12 @@ beforeAll(async () => {
   }
   await db.exec(readFileSync(join(MIGRATIONS, '019_discovery_agents_organization_scope.sql'), 'utf8'));
   ciBackfilled = await db.rows('SELECT ci_name, organization_id, org_backfilled FROM cmdb.dim_ci ORDER BY ci_key');
+  // HAP-1423: the stored C1 record (043) and the hash-chained audit_log its writes append to (001, 003, 028's column).
+  await db.exec([...schema.match(/CREATE TYPE audit_\w+ AS ENUM \([^;]*\);/g)!,
+    schema.match(/CREATE TABLE IF NOT EXISTS audit_log \([\s\S]*?\n\);/)![0],
+    readFileSync(join(MIGRATIONS, '003_audit_hash_chain.sql'), 'utf8'),
+    'ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS organization_id UUID;'].join('\n'));
+  await db.exec(`BEGIN;\n${readFileSync(join(MIGRATIONS, '043_business_service_record_c1.sql'), 'utf8')}\nCOMMIT;`);
 });
 
 afterAll(() => {
@@ -671,6 +682,9 @@ describe('two-organization isolation', () => {
     const self = await request(app).post('/api/v1/business-services/bs-b-app/dependencies').set(AS_B)
       .send({ depends_on_service_id: 'bs-b-app' });
     expect(self.status).toBe(400);
+    // HAP-1423: a service with dependencies is retired, not deleted; once unlinked, the owner deletes it.
+    expect((await request(app).delete('/api/v1/business-services/bs-b-db').set(AS_B)).status).toBe(409);
+    expect((await request(app).delete('/api/v1/business-services/bs-b-app/dependencies/bs-b-db').set(AS_B)).status).toBe(200);
     const del = await request(app).delete('/api/v1/business-services/bs-b-db').set(AS_B);
     expect(del.status).toBe(200);
     expect(await orgOf('bs-b-db')).toBeUndefined();
@@ -744,7 +758,8 @@ describe('writes take the organization from the token only', () => {
     const res = await request(app).post('/api/v1/business-services').set(AS_B)
       .send({ name: 'B New', service_classification: 'compute', tbm_tower: 'compute', business_criticality: 'low', organization_id: INTERNAL_ORG });
     expect(res.status).toBe(400);
-    expect(res.body._details).toEqual([expect.objectContaining({ _field: 'organization_id', _type: 'any.unknown' })]);
+    // HAP-443 request-shape rules (HAP-1423) refuse the reserved key before Joi.
+    expect(res.body).toEqual({ success: false, error: 'Bad Request', message: 'Invalid request' });
     expect(await orgOf('bs-b-new')).toBeUndefined();
   });
 

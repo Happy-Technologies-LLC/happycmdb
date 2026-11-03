@@ -7,12 +7,14 @@
  *   GET /api/v1/business-services/{service_id}/context  the bounded dependency and impact subgraph
  * exercised through the real businessServiceRoutes behind the real
  * AuthMiddleware (JWT verification, organization claim from the token), the
- * real Neo4jClient traversal code and the real migration 042 seed.
+ * real Neo4jClient traversal code and the real migration 042 seed. HAP-1423:
+ * migration 043 runs after the test seed, so every C1 field below is the
+ * stored, backfilled record (lifecycle live for active rows, version 1).
  *
  * SQL runs on PGlite (fixtures/pglite-host.cjs) as the application role
  * `cmdb_user`, a NOSUPERUSER role that owns the schema it migrated: the
- * CREATE TABLE blocks of 001, then 008, 011, the 028 journal tables and 042
- * verbatim, all applied after SET ROLE cmdb_user. Every request statement
+ * CREATE TABLE blocks of 001, then 008, 011, the 028 journal tables, 042 and
+ * 043 verbatim, all applied after SET ROLE cmdb_user. Every request statement
  * runs in that session as that role (asserted before any test).
  *
  * Neo4j is an in-memory graph behind a fake driver session that evaluates
@@ -282,6 +284,7 @@ beforeAll(async () => {
     ['ci_reconciliation_operations', 'ci_reconciliation_epochs']));
   await send('exec', `BEGIN;\n${migration('042_co1_access_request_fulfilment_seed.sql')}\nCOMMIT;`);
   await send('exec', TEST_SEED);
+  await send('exec', `BEGIN;\n${migration('043_business_service_record_c1.sql')}\nCOMMIT;`);
   // Every request below runs in this session; refuse to test anything as a superuser.
   const [role] = await pgClient.query(
     'SELECT current_user AS name, rolsuper FROM pg_roles WHERE rolname = current_user').then(r => r.rows) as
@@ -319,8 +322,10 @@ describe('C1 S1 happy path: the seeded service in tenant T', () => {
       service_id: SEEDED_S,
       name: 'Access request fulfilment',
       owner: { principal_id: null, display_name: 'Internal IT' },
+      owner_group: null,
       criticality: 'high',
       lifecycle: 'live',
+      version: 1,
       tenant_id: TENANT_T,
       dependencies: [{
         service_id: SEEDED_DEPENDENCY, name: 'Identity and access management',
@@ -354,6 +359,11 @@ describe('C1 S1 happy path: the seeded service in tenant T', () => {
       `business_service:${SEEDED_DEPENDENCY}@1`, 'ci:ci-t-directory@2', 'ci:ci-t-forms@1', 'ci:ci-t-workflow@1',
     ]);
     expect(ids(data.impact)).toEqual(['business_service:bs-t-portal@1', 'ci:ci-t-portal-web@2']);
+    // HAP-1423: each service node carries the stored lifecycle.
+    expect(data.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'business_service', id: SEEDED_S, lifecycle: 'live' }),
+      expect.objectContaining({ kind: 'business_service', id: SEEDED_DEPENDENCY, lifecycle: 'live' }),
+    ]));
     expect(data.edges.map((e: { from: string; to: string; type: string; mapping_type?: string }) =>
       `${e.from}>${e.to}:${e.type}${e.mapping_type ? `/${e.mapping_type}` : ''}`).sort()).toEqual([
       `${SEEDED_S}>${SEEDED_DEPENDENCY}:DEPENDS_ON`,
@@ -373,6 +383,17 @@ describe('C1 S1 happy path: the seeded service in tenant T', () => {
     expect(walkStatementTimeouts).toEqual(['5s']);
     const [after] = await send('query', `SELECT current_setting('statement_timeout') AS value`) as Array<{ value: string }>;
     expect(after!.value).toBe('0');
+  });
+
+  it('reads lifecycle from the stored record, not from operational_status (HAP-1423)', async () => {
+    await send('exec', `UPDATE dim_business_services SET lifecycle = 'retiring' WHERE service_id = 'bs-t-portal'`);
+    try {
+      const res = await readContext(SEEDED_S);
+      expect(res.body.data.nodes).toContainEqual(expect.objectContaining({ id: 'bs-t-portal', lifecycle: 'retiring' }));
+      expect((await read('bs-t-portal')).body.data).toMatchObject({ operational_status: 'active', lifecycle: 'retiring' });
+    } finally {
+      await send('exec', `UPDATE dim_business_services SET lifecycle = 'live' WHERE service_id = 'bs-t-portal'`);
+    }
   });
 
   it('refuses a subgraph over the node bound with 503, never a truncated graph', async () => {

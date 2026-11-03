@@ -6,7 +6,7 @@ HappyCMDB owns the business service record and publishes it to the other product
 - Contract: [Suite Contracts v2, "Common rules" and "C1. Service reference"](https://linear.app/happy-technologies-llc/document/suite-contracts-v2-the-seams-between-products-c1-to-c14-accepted-2026-4b4749544239). Linear is the authority; this page describes what the API serves today.
 - Machine-readable: `GET /api-docs/openapi.yaml`, paths `/business-services/{service_id}` and `/business-services/{service_id}/context`.
 
-Status (2026-11-02): implemented in HappyCMDB for CO-1 S2. Deployment and activation are not covered here.
+Status (2026-11-03): reads implemented for CO-1 S2 (HAP-1408); the stored record and audited writes for PoR S2 (HAP-1423, migration `043_business_service_record_c1.sql`). Deployment and activation are not covered here.
 
 ## Rules
 
@@ -25,8 +25,10 @@ Status (2026-11-02): implemented in HappyCMDB for CO-1 S2. Deployment and activa
     "name": "Access request fulfilment",
     "tenant_id": "00000000-0000-0000-0000-000000000000",
     "owner": { "principal_id": null, "display_name": "Internal IT" },
+    "owner_group": null,
     "criticality": "high",
     "lifecycle": "live",
+    "version": 1,
     "dependencies": [
       {
         "service_id": "bs-ea0cc18a-823a-429b-9846-470882fbdfa3",
@@ -49,16 +51,28 @@ Status (2026-11-02): implemented in HappyCMDB for CO-1 S2. Deployment and activa
 
 The response above is abbreviated: the other stored columns are also returned.
 
-| C1 field | Source today |
+| C1 field | Source |
 | -- | -- |
 | `tenant_id` | `organization_id` |
 | `owner.display_name` | `owned_by` |
-| `owner.principal_id` | always `null`. The accountable owner's identity-provider subject is not stored until HAP-1423 (PoR S2). |
+| `owner.principal_id` | `owner_principal_id`: the identity-provider subject of the one accountable human owner (F14). HIVE uses it as the D15 tier-change approver. `null` until set; the seeded service has none yet. |
+| `owner_group` | `owner_group` (optional) |
 | `criticality` | `business_criticality` (`critical`, `high`, `medium`, `low`) |
-| `lifecycle` | derived from `operational_status`: `active` and `maintenance` are `live`, `inactive` is `retiring`, `decommissioned` is `retired`. `planned` is not produced until the record stores its own lifecycle (HAP-1423). |
+| `lifecycle` | `lifecycle`, stored and separate from `operational_status`: `planned`, `live`, `retiring`, `retired`. Migration 043 backfilled rows that existed before it: `live` when `operational_status` was `active`, else `planned` (so `maintenance`, `inactive` and `decommissioned` rows read `planned`; retire them with `PATCH {"lifecycle":"retired"}`). Before 043 the value was derived from `operational_status`. |
+| `version` | `version`: 1 on create, +1 on every accepted update |
 | `dependencies[]` | the services this service depends on in the caller's organization, newest first |
 
-Not yet served: `owner_group`, `version` and `offerings[]` (C1 PoR extension, HAP-1406 / HAP-1423).
+Not yet served: `offerings[]` (PoR S3, HAP-1424).
+
+## Writes (HappyCMDB UI and migrations only)
+
+`POST`, `PATCH` and `DELETE /api/v1/business-services[/{service_id}]` need the `write` permission and follow the HAP-443 request-shape rules (a reserved key such as `id` or `organization_id` is `400 Invalid request`). HappyHive and HIVE never write.
+
+- **Lifecycle** moves only forward (`planned` → `live` → `retiring` → `retired`, skipping allowed); a backward move or any move out of `retired` is `409`. A create or move into `live` or `retiring` without `owner_principal_id`, or clearing `owner_principal_id` on such a service, is `422`. A service that was `live` before migration 043 without a principal stays editable until its lifecycle changes.
+- **`operational_status`** accepts exactly the table's values (`active`, `inactive`, `maintenance`, `decommissioned`); anything else is `400`.
+- **Version.** `PATCH` takes an optional `If-Match: "<version>"`. A stale version is `409 {"message":"Version mismatch","version":<current>}` and changes nothing. Every accepted `PATCH` increments `version` by one, with or without `If-Match`. `version` in a body is `400`.
+- **Delete** is `409` while the service has CI mappings or dependencies from or to it: retire it instead.
+- **Audit.** Each accepted create, update, retire or delete appends exactly one row to HappyCMDB's hash-chained `audit_log` in the same transaction (`entity_type = BUSINESS_SERVICE`, actor = the verified token subject, `metadata.operation` = `create`, `update`, `retire` or `delete`, `metadata.version`). A failed write appends nothing and bumps no version. Portfolio writes are not HIVE ledger events (Suite Contracts v2 F2). Without `AUDIT_CHAIN_KEY`, or on a chain-lock timeout, a write is `503` and changes nothing.
 
 ## `GET /api/v1/business-services/{service_id}/context`
 
@@ -108,7 +122,7 @@ A subgraph over a bound is refused with `503 {"success":false,"error":"CI traver
 
 Migration `042_co1_access_request_fulfilment_seed.sql` seeds the first CO-1 service into the internal organization `00000000-0000-0000-0000-000000000000`. This is also HappyHive's Default Organization, so the two products share the id. The migration seeds two rows:
 
-- `bs-11ab0f28-85c8-4494-b220-e90758c6219a`: "Access request fulfilment". Owner Internal IT, criticality `high`, lifecycle `live`.
+- `bs-11ab0f28-85c8-4494-b220-e90758c6219a`: "Access request fulfilment". Owner Internal IT, criticality `high`, lifecycle `live` (043 backfill), no owner principal yet.
 - `bs-ea0cc18a-823a-429b-9846-470882fbdfa3`: "Identity and access management". The first service depends on it (`platform`).
 
 The migration never overwrites an existing row, and it aborts if either id belongs to another organization. CIs are not seeded: a CI lives in the graph behind the reconciliation journal, which a SQL migration cannot write. Manual rollback: `rollback/042_co1_access_request_fulfilment_seed.down.sql`.
@@ -121,4 +135,6 @@ The contract tests are `packages/api-server/src/rest/routes/__tests__/business-s
 - **S2 nonexistent id:** `404` on both reads.
 - **S3 cross-tenant:** `404` identical to a missing service, and no other-tenant row in the body or the logs.
 
-The tests run against PostgreSQL as the non-superuser application role.
+The record and write rules (HAP-1423 scenarios 1 to 6, cross-tenant writes, rollback of a failed audit append) are in `business-service-record.test.ts` next to it; migration 043 and its rollback in `packages/database/src/postgres/migrations/__tests__/business-service-record-c1.test.ts`.
+
+The tests run against PostgreSQL (PGlite) as the non-superuser application role.

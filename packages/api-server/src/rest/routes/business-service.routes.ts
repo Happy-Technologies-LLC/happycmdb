@@ -12,6 +12,8 @@ import { BusinessServiceController } from '../controllers/business-service.contr
 import { validateRequest, validateOptional } from '../middleware/validation.middleware';
 import { auditMiddleware } from '../../middleware/audit.middleware';
 import { getAuthMiddleware } from '../../auth/auth-bootstrap';
+import { journalRequestGuard } from '../../journal-http';
+import { C1_LIFECYCLES } from '../../services/business-service-reference';
 
 export const businessServiceRoutes = Router();
 const controller = new BusinessServiceController();
@@ -28,6 +30,13 @@ businessServiceRoutes.use(authMiddleware.requireOrganization());
 // rejected (400) rather than silently stripped, so callers learn it is not settable.
 const organizationIdForbidden = Joi.any().forbidden();
 
+// HAP-1423: operational_status is exactly the valid_status CHECK (001), so a value the table refuses is a 400, never
+// a 500. lifecycle is the C1 vocabulary (043 valid_lifecycle). version is server-managed (If-Match on PATCH).
+// owner_principal_id is the identity-provider subject of one accountable human (C1, F14).
+const OPERATIONAL_STATUSES = ['active', 'inactive', 'maintenance', 'decommissioned'];
+const ownerPrincipalId = Joi.string().trim().min(1).max(255);
+const ownerGroup = Joi.string().trim().min(1).max(255);
+
 // Validation schemas
 const createBusinessServiceSchema = Joi.object({
   service_id: Joi.any().forbidden(),
@@ -43,8 +52,12 @@ const createBusinessServiceSchema = Joi.object({
     .valid('critical', 'high', 'medium', 'low')
     .required(),
   operational_status: Joi.string()
-    .valid('active', 'inactive', 'planned', 'retired')
+    .valid(...OPERATIONAL_STATUSES)
     .default('active'),
+  lifecycle: Joi.string().valid(...C1_LIFECYCLES).default('planned'),
+  owner_principal_id: ownerPrincipalId.optional(),
+  owner_group: ownerGroup.optional(),
+  version: Joi.any().forbidden(),
   service_type: Joi.string().optional(),
   owned_by: Joi.string().optional(),
   managed_by: Joi.string().optional(),
@@ -71,8 +84,12 @@ const updateBusinessServiceSchema = Joi.object({
     .valid('critical', 'high', 'medium', 'low')
     .optional(),
   operational_status: Joi.string()
-    .valid('active', 'inactive', 'planned', 'retired')
+    .valid(...OPERATIONAL_STATUSES)
     .optional(),
+  lifecycle: Joi.string().valid(...C1_LIFECYCLES).optional(),
+  owner_principal_id: ownerPrincipalId.allow(null).optional(),
+  owner_group: ownerGroup.allow(null).optional(),
+  version: Joi.any().forbidden(),
   service_type: Joi.string().optional(),
   owned_by: Joi.string().optional(),
   managed_by: Joi.string().optional(),
@@ -158,6 +175,11 @@ businessServiceRoutes.get(
   controller.getBusinessService.bind(controller)
 );
 
+/*
+ * Portfolio writes (HAP-1423): HAP-443's request-shape rules (journalRequestGuard, on the raw body before Joi strips
+ * unknown keys) and actor (requestActor); each accepted write appends one hash-chained audit_log row.
+ */
+
 /**
  * @route   POST /api/v1/business-services
  * @desc    Create a new business service
@@ -166,30 +188,33 @@ businessServiceRoutes.get(
 businessServiceRoutes.post(
   '/',
   authMiddleware.requirePermission('write'),
+  journalRequestGuard(),
   validateRequest(createBusinessServiceSchema, 'body'),
   controller.createBusinessService.bind(controller)
 );
 
 /**
  * @route   PATCH /api/v1/business-services/:service_id
- * @desc    Update an existing business service
+ * @desc    Update an existing business service; optional If-Match: "<version>"
  * @access  Private
  */
 businessServiceRoutes.patch(
   '/:service_id',
   authMiddleware.requirePermission('write'),
+  journalRequestGuard(),
   validateRequest(updateBusinessServiceSchema, 'body'),
   controller.updateBusinessService.bind(controller)
 );
 
 /**
  * @route   DELETE /api/v1/business-services/:service_id
- * @desc    Delete a business service
+ * @desc    Delete a business service with no CI mappings or dependencies (else 409: retire it)
  * @access  Private
  */
 businessServiceRoutes.delete(
   '/:service_id',
   authMiddleware.requirePermission('write'),
+  journalRequestGuard(),
   controller.deleteBusinessService.bind(controller)
 );
 

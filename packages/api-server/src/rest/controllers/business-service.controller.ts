@@ -73,8 +73,9 @@ const WRITE_UNAVAILABLE = {
 const UNAUDITED_COLUMNS: Record<string, true> = { organization_id: true, created_at: true, updated_at: true };
 
 /**
- * If-Match as a service version: null when absent or `*`, undefined when malformed. Accepts the strong ETag the
- * service read and writes send (`"<version>"`) and bare digits; a weak tag never matches (RFC 9110 strong comparison).
+ * If-Match as a service version: null when absent or `*`, undefined when malformed (400). Accepts the strong ETag
+ * that POST and PATCH send (`"<version>"`, also the body's `version`) and bare digits; a weak tag (`W/"<n>"`) is
+ * malformed, so 400, never a match.
  */
 function ifMatchVersion(header: string | undefined): number | null | undefined {
   if (header === undefined || header.trim() === '*') return null;
@@ -277,7 +278,9 @@ export class BusinessServiceController {
       }
 
       const { c1_dependencies: dependencies, ...row } = result.rows[0];
-      res.set('ETag', `"${row.version}"`);
+      // No version ETag here: this body also carries dependencies[] (each target's lifecycle, name, criticality) and
+      // the child counts, which change without bumping this record's version, so "<version>" would validate a stale
+      // 304. Express's default body-hash ETag stays; the body's `version` is the If-Match value.
       res.json({
         success: true,
         data: { ...row, ...serviceReference(row, dependencies as StoredDependencyRow[]) }
@@ -409,7 +412,9 @@ export class BusinessServiceController {
 
       const outcome = await this.pgClient.transaction(async (client): Promise<WriteRefusal | { row: ServiceRow }> => {
         const current: ServiceRow | undefined = (await client.query(
-          'SELECT * FROM dim_business_services WHERE service_id = $1 AND organization_id = $2 FOR UPDATE',
+          // FOR NO KEY UPDATE, unlike DELETE's FOR UPDATE: a PATCH changes no key, so it must not block the FOR KEY
+          // SHARE that mapping and dependency inserts take on this row while it waits on the audit-chain lock.
+          'SELECT * FROM dim_business_services WHERE service_id = $1 AND organization_id = $2 FOR NO KEY UPDATE',
           [service_id, organizationId]
         )).rows[0];
         if (!current) return NOT_FOUND_REFUSAL;

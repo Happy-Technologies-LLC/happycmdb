@@ -298,14 +298,33 @@ describe('a legacy live service without an owner principal (043 backfill)', () =
 });
 
 describe('ETag', () => {
-  it('the read and each write send the strong ETag "<version>", which PATCH accepts as If-Match', async () => {
+  it('POST and PATCH send the strong ETag "<version>", which PATCH accepts as If-Match (as is the read body\'s version)', async () => {
     const res = await create(BASE);
     expect(res.headers['etag']).toBe('"1"');
     const id = res.body.data.service_id as string;
     const read = await readC1(id);
-    expect(read.headers['etag']).toBe('"1"');
-    const updated = await patch(id, { description: 'x' }, read.headers['etag']);
+    const updated = await patch(id, { description: 'x' }, `"${read.body.data.version}"`);
     expect([updated.status, updated.headers['etag']]).toEqual([200, '"2"']);
+    expect((await patch(id, { description: 'y' }, updated.headers['etag'])).status).toBe(200);
+    expect((await patch(id, { description: 'z' }, 'W/"3"')).status).toBe(400);
+  });
+
+  it('a conditional GET is never a stale 304: a dependency change and a target lifecycle change both return 200 with the new body', async () => {
+    const [a, b] = [await created(), await created({ lifecycle: 'live', owner_principal_id: OWNER })];
+    const ifNoneMatch = (etag: string) => readC1(a).set('If-None-Match', etag);
+    const first = await readC1(a);
+    expect((await ifNoneMatch(first.headers['etag'])).status).toBe(304); // unchanged representation
+
+    // What POST /:id/dependencies stores; it does not bump A's version.
+    await rows(`INSERT INTO business_service_dependencies (service_id, depends_on_service_id, dependency_type)
+      VALUES ($1, $2, 'technical')`, [a, b]);
+    const afterDependency = await ifNoneMatch(first.headers['etag']);
+    expect([afterDependency.status, afterDependency.body.data?.version, afterDependency.body.data?.dependencies_count])
+      .toEqual([200, 1, 1]);
+
+    expect((await patch(b, { lifecycle: 'retired' })).status).toBe(200);
+    const afterTarget = await ifNoneMatch(afterDependency.headers['etag']);
+    expect([afterTarget.status, afterTarget.body.data?.dependencies?.[0]?.lifecycle]).toEqual([200, 'retired']);
   });
 });
 

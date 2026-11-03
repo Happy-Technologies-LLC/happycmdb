@@ -3191,7 +3191,11 @@ paths:
         - name: If-Match
           in: header
           required: false
-          description: The expected record version, quoted (`"3"`) or bare; `*` matches any.
+          description: >-
+            The expected record version: the strong ETag of a POST or PATCH
+            response, or the read body's `version`, quoted (`"3"`) or bare; `*`
+            matches any. A weak tag (`W/"3"`) is malformed (400). The GET read
+            sends no version ETag (its body also carries dependencies and counts).
           schema:
             type: string
             example: '"3"'
@@ -3220,7 +3224,7 @@ paths:
             Body failed validation (middleware body), the body has no known
             fields (`{success: false, error: 'No fields to update'}`), the
             body breaks the request-shape rules (`Invalid request`), or
-            If-Match is malformed.
+            If-Match is malformed (a weak tag included).
           content:
             application/json:
               schema:

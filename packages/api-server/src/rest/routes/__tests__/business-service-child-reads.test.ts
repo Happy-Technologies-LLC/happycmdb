@@ -22,6 +22,10 @@
  * plain tables. All rows belong to one organization; cross-organization
  * behavior is covered by business-service-org-scope.test.ts.
  *
+ * HAP-1422: the NOSUPERUSER owner `cmdb_owner` builds the schema and seeds, truncates and renames tables; every
+ * request statement runs as the app login `cmdb_user` with the migrations' grants and 044 (fixtures/app-login.ts),
+ * which is not a superuser and owns no table (asserted before every test).
+ *
  * Substitutions: Neo4jAuthRepository -> in-memory user store (one enabled
  * viewer user); getPostgresClient -> IPC client to that PGlite process;
  * TimescaleDB hypertables -> plain PostgreSQL tables.
@@ -60,12 +64,19 @@ function send(op: 'exec' | 'query', sql: string, params: unknown[] = []): Promis
   });
 }
 const db = { exec: (sql: string) => send('exec', sql) };
+/** Fixture DDL and seeding, as the table owner; the session returns to the app login after. */
+const asOwner = (sql: string) => asTableOwner(db.exec, () => db.exec(sql));
+const truncateAndSeed = async () => {
+  await asOwner(`TRUNCATE ${DDL_TABLES.join(', ')} RESTART IDENTITY CASCADE;${SEED}`);
+  await assertAppLogin(sql => send('query', sql));
+};
 
 let queryCount = 0;
 const pgClient = {
   // Plain function (not jest.fn): the unit config resets mock implementations.
   query: async (sql: string, params: unknown[] = []) => {
     queryCount++;
+    assertAppStatement(sql);
     return { rows: await send('query', sql, params) };
   },
 };
@@ -100,6 +111,10 @@ import { loadConfig } from '@cmdb/common';
 import { JWTService } from '../../../auth/jwt.service';
 import { getAuthMiddleware } from '../../../auth/auth-bootstrap';
 import { businessServiceRoutes } from '../business-service.routes';
+import {
+  APP_GRANTS_SQL, assertAppLogin, assertAppStatement, asTableOwner, createLoginRolesSql, ENTER_APP_LOGIN_SQL,
+  journalReadAclSql,
+} from './fixtures/app-login';
 
 const MIGRATION = join(__dirname, '../../../../../database/src/postgres/migrations/001_complete_schema.sql');
 // Tenant scoping (organization_id) is applied verbatim on top of 001.
@@ -197,12 +212,13 @@ function buildApp() {
 // File-scope lifecycle: both describe blocks share one PGlite process, so the
 // schema is created once and the host is killed only after the last block.
 beforeAll(async () => {
-  await db.exec(productionDdl());
+  const [{ db: database }] = await send('query', 'SELECT current_database() AS db') as Array<{ db: string }>;
+  await db.exec(createLoginRolesSql(database) + productionDdl());
   const provenance = readFileSync(join(__dirname,
     '../../../../../database/src/postgres/migrations/028_change_history_reconciliation_org_provenance.sql'), 'utf8');
   const journal = provenance.match(/CREATE TABLE IF NOT EXISTS ci_reconciliation_operations \([\s\S]*?\n\);/);
   if (!journal) throw new Error('Missing S1 journal table');
-  await db.exec(journal[0]);
+  await db.exec(journal[0] + APP_GRANTS_SQL + journalReadAclSql() + ENTER_APP_LOGIN_SQL);
 });
 
 afterAll(() => {
@@ -215,7 +231,7 @@ describe('business-service child reads: missing-parent semantics (PGlite)', () =
   const auth = { Authorization: `Bearer ${token}` };
 
   beforeEach(async () => {
-    await db.exec(`TRUNCATE ${DDL_TABLES.join(', ')} RESTART IDENTITY CASCADE;${SEED}`);
+    await truncateAndSeed();
     queryCount = 0;
   });
 
@@ -245,7 +261,7 @@ describe('business-service child reads: missing-parent semantics (PGlite)', () =
     });
 
     it('surfaces an engine failure as a generic 500, not an empty 200', async () => {
-      await db.exec(`ALTER TABLE ${CHILD_TABLE[child]} RENAME TO ${CHILD_TABLE[child]}_offline`);
+      await asOwner(`ALTER TABLE ${CHILD_TABLE[child]} RENAME TO ${CHILD_TABLE[child]}_offline`);
       try {
         const res = await request(app).get(`/api/v1/business-services/bs-app/${child}`).set(auth);
         expect(res.status).toBe(500);
@@ -253,7 +269,7 @@ describe('business-service child reads: missing-parent semantics (PGlite)', () =
         expect(res.body).toEqual({ success: false, error: expect.any(String) });
         expect(JSON.stringify(res.body)).not.toMatch(/does not exist|_offline|business_service/);
       } finally {
-        await db.exec(`ALTER TABLE ${CHILD_TABLE[child]}_offline RENAME TO ${CHILD_TABLE[child]}`);
+        await asOwner(`ALTER TABLE ${CHILD_TABLE[child]}_offline RENAME TO ${CHILD_TABLE[child]}`);
       }
     });
 
@@ -306,7 +322,7 @@ describe('business-service metric reads: missing-parent semantics (PGlite)', () 
   const auth = { Authorization: `Bearer ${token}` };
 
   beforeEach(async () => {
-    await db.exec(`TRUNCATE ${DDL_TABLES.join(', ')} RESTART IDENTITY CASCADE;${SEED}`);
+    await truncateAndSeed();
     queryCount = 0;
   });
 
@@ -336,7 +352,7 @@ describe('business-service metric reads: missing-parent semantics (PGlite)', () 
     });
 
     it('surfaces an engine failure as a generic 500, not an empty 200', async () => {
-      await db.exec(`ALTER TABLE ${METRIC_TABLE[metric]} RENAME TO ${METRIC_TABLE[metric]}_offline`);
+      await asOwner(`ALTER TABLE ${METRIC_TABLE[metric]} RENAME TO ${METRIC_TABLE[metric]}_offline`);
       try {
         const res = await request(app).get(`/api/v1/business-services/bs-app/${metric}`).set(auth);
         expect(res.status).toBe(500);
@@ -344,7 +360,7 @@ describe('business-service metric reads: missing-parent semantics (PGlite)', () 
         expect(res.body).toEqual({ success: false, error: expect.any(String) });
         expect(JSON.stringify(res.body)).not.toMatch(/does not exist|_offline|business_service/);
       } finally {
-        await db.exec(`ALTER TABLE ${METRIC_TABLE[metric]}_offline RENAME TO ${METRIC_TABLE[metric]}`);
+        await asOwner(`ALTER TABLE ${METRIC_TABLE[metric]}_offline RENAME TO ${METRIC_TABLE[metric]}`);
       }
     });
 
@@ -378,7 +394,7 @@ describe('business-service health: daily-counter windows (PGlite)', () => {
   const UTC_TODAY = `(now() AT TIME ZONE 'UTC')::date`;
 
   beforeEach(async () => {
-    await db.exec(`TRUNCATE ${DDL_TABLES.join(', ')} RESTART IDENTITY CASCADE;${SEED}`);
+    await truncateAndSeed();
   });
 
   // The schema is UNIQUE (service_id, date): one counter row per service/day.
@@ -496,7 +512,7 @@ describe('business-service costs: one CI mapped under several relationship types
   const auth = { Authorization: `Bearer ${token}` };
 
   beforeEach(async () => {
-    await db.exec(`TRUNCATE ${DDL_TABLES.join(', ')} RESTART IDENTITY CASCADE;${SEED}`);
+    await truncateAndSeed();
   });
 
   it('counts the CI once in ci_count, total_monthly_cost and cost_by_tower', async () => {

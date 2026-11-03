@@ -11,11 +11,10 @@
  * migration 043 runs after the test seed, so every C1 field below is the
  * stored, backfilled record (lifecycle live for active rows, version 1).
  *
- * SQL runs on PGlite (fixtures/pglite-host.cjs) as the application role
- * `cmdb_user`, a NOSUPERUSER role that owns the schema it migrated: the
- * CREATE TABLE blocks of 001, then 008, 011, the 028 journal tables, 042 and
- * 043 verbatim, all applied after SET ROLE cmdb_user. Every request statement
- * runs in that session as that role (asserted before any test).
+ * SQL runs on PGlite (fixtures/pglite-host.cjs). The NOSUPERUSER owner `cmdb_owner` applies the CREATE TABLE blocks
+ * of 001, then 008, 011, the 028 journal tables, 042 and 043 verbatim, plus the app grants and 044
+ * (fixtures/app-login.ts). Every request statement then runs as the app login `cmdb_user`, which is not a superuser
+ * and owns no table (HAP-1422; refused by assertAppLogin otherwise).
  *
  * Neo4j is an in-memory graph behind a fake driver session that evaluates
  * the two statements these reads issue (the owned-CI filter and the one-hop
@@ -73,7 +72,10 @@ function send(op: 'exec' | 'query', sql: string, params: unknown[] = []): Promis
 let walkStatementTimeouts: string[] = [];
 let walkFailure: Error | null = null;
 const pgClient = {
-  query: async (sql: string, params: unknown[] = []) => ({ rows: await send('query', sql, params) }),
+  query: async (sql: string, params: unknown[] = []) => {
+    assertAppStatement(sql);
+    return { rows: await send('query', sql, params) };
+  },
   transaction: async <T>(callback: (client: { query: typeof pgClient.query }) => Promise<T>): Promise<T> => {
     await send('exec', 'BEGIN');
     try {
@@ -191,6 +193,10 @@ import { loadConfig, logger } from '@cmdb/common';
 import { JWTService } from '../../../auth/jwt.service';
 import { getAuthMiddleware } from '../../../auth/auth-bootstrap';
 import { businessServiceRoutes } from '../business-service.routes';
+import {
+  APP_GRANTS_SQL, assertAppLogin, assertAppStatement, asTableOwner, createLoginRolesSql, ENTER_APP_LOGIN_SQL,
+  journalReadAclSql,
+} from './fixtures/app-login';
 
 const MIGRATIONS = join(__dirname, '../../../../../database/src/postgres/migrations');
 const migration = (name: string) => readFileSync(join(MIGRATIONS, name), 'utf8');
@@ -270,10 +276,7 @@ const LOG_METHODS = ['error', 'warn', 'info', 'http', 'verbose', 'debug', 'silly
 
 beforeAll(async () => {
   const [{ db }] = await send('query', 'SELECT current_database() AS db') as Array<{ db: string }>;
-  await send('exec', `CREATE ROLE cmdb_user NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
-    GRANT CREATE ON DATABASE "${db}" TO cmdb_user;
-    GRANT CREATE ON SCHEMA public TO cmdb_user;
-    SET ROLE cmdb_user;`);
+  await send('exec', createLoginRolesSql(db));
   const base = migration('001_complete_schema.sql');
   await send('exec', 'CREATE SCHEMA IF NOT EXISTS cmdb;\n' + tableDdl(base,
     ['dim_business_services', 'business_service_dependencies', 'ci_business_service_mappings', 'cmdb.dim_ci']));
@@ -285,11 +288,9 @@ beforeAll(async () => {
   await send('exec', `BEGIN;\n${migration('042_co1_access_request_fulfilment_seed.sql')}\nCOMMIT;`);
   await send('exec', TEST_SEED);
   await send('exec', `BEGIN;\n${migration('043_business_service_record_c1.sql')}\nCOMMIT;`);
-  // Every request below runs in this session; refuse to test anything as a superuser.
-  const [role] = await pgClient.query(
-    'SELECT current_user AS name, rolsuper FROM pg_roles WHERE rolname = current_user').then(r => r.rows) as
-    Array<{ name: string; rolsuper: boolean }>;
-  if (role?.name !== 'cmdb_user' || role.rolsuper !== false) throw new Error(`requests would not run as the app role: ${JSON.stringify(role)}`);
+  await send('exec', APP_GRANTS_SQL + journalReadAclSql() + ENTER_APP_LOGIN_SQL);
+  // Every request below runs in this session; refuse to test anything as a superuser or the table owner.
+  await assertAppLogin(sql => send('query', sql));
 });
 
 afterAll(() => {
@@ -519,8 +520,10 @@ describe('C1 S1 bounds: the context read refuses a subgraph over any bound, neve
     try {
       await run();
     } finally {
-      await send('exec', `DELETE FROM ci_business_service_mappings WHERE ci_id = ANY(ARRAY[${ids.map(id => `'${id}'`).join(',')}]);
-        DELETE FROM cmdb.dim_ci WHERE ci_id = ANY(ARRAY[${ids.map(id => `'${id}'`).join(',')}]);`);
+      // The app login may insert CIs (034) but not delete them: clean up as the owner.
+      await asTableOwner(sql => send('exec', sql), () => send('exec', `
+        DELETE FROM ci_business_service_mappings WHERE ci_id = ANY(ARRAY[${ids.map(id => `'${id}'`).join(',')}]);
+        DELETE FROM cmdb.dim_ci WHERE ci_id = ANY(ARRAY[${ids.map(id => `'${id}'`).join(',')}]);`));
     }
   }
 

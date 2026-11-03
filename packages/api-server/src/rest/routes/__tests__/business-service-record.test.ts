@@ -6,10 +6,11 @@
  * real businessServiceRoutes behind the real AuthMiddleware (JWT, organization from the token), the real
  * PostgresClient and the real hash-chained audit writer and verifier (appendAuditEntry, AuditService), on PGlite.
  *
- * Every statement runs in one PGlite session as `cmdb_user`, a NOSUPERUSER role that owns the schema it migrated
- * (asserted before any test): the 001 audit enums and the audit_log, business-service and cmdb.dim_ci tables, then
- * 003, 028's audit_log column, 008, 011 and 043 verbatim. One service is inserted before 043 so it is backfilled live
- * with no owner principal (a legacy row); scenario 7's backfill matrix is in the migration test.
+ * The NOSUPERUSER owner `cmdb_owner` migrates the schema: the 001 audit enums and the audit_log, business-service and
+ * cmdb.dim_ci tables, then 003, 028's audit_log column, 008, 011 and 043 verbatim, then the app grants
+ * (fixtures/app-login.ts). Every statement after that runs in one PGlite session as the app login `cmdb_user`, which is
+ * not a superuser and owns no table (HAP-1422; asserted before any test). One service is inserted before 043 so it is
+ * backfilled live with no owner principal (a legacy row); scenario 7's backfill matrix is in the migration test.
  */
 import { fork } from 'child_process';
 import { randomBytes } from 'crypto';
@@ -45,6 +46,8 @@ function mockSql(text: string, params: unknown[] = [], op: 'query' | 'exec' = 'q
     mockFault.auditInsert = null;
     return Promise.reject(fault);
   }
+  // The production PostgresClient's statements; the harness itself switches roles only with exec.
+  if (op === 'query') assertAppStatement(text);
   const id = serial++;
   const call = Promise.withResolvers<{ rows: Record<string, any>[]; rowCount: number }>();
   pending.set(id, call);
@@ -83,6 +86,9 @@ import { getAuditService, getPostgresClient } from '@cmdb/database';
 import { JWTService } from '../../../auth/jwt.service';
 import { getAuthMiddleware } from '../../../auth/auth-bootstrap';
 import { businessServiceRoutes } from '../business-service.routes';
+import {
+  APP_GRANTS_SQL, assertAppLogin, assertAppStatement, createLoginRolesSql, ENTER_APP_LOGIN_SQL,
+} from './fixtures/app-login';
 
 const app = express();
 app.use(express.json());
@@ -122,10 +128,7 @@ const migration = (name: string) => readFileSync(join(migrations, name), 'utf8')
 
 beforeAll(async () => {
   const [{ db }] = await rows('SELECT current_database() AS db');
-  await mockSql(`CREATE ROLE cmdb_user NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
-    GRANT CREATE ON DATABASE "${db}" TO cmdb_user;
-    GRANT CREATE ON SCHEMA public TO cmdb_user;
-    SET ROLE cmdb_user;`, [], 'exec');
+  await mockSql(createLoginRolesSql(db), [], 'exec');
   const schema = migration('001_complete_schema.sql');
   const tables = ['audit_log', 'dim_business_services', 'business_service_dependencies', 'ci_business_service_mappings',
     'cmdb.dim_ci'];
@@ -142,8 +145,8 @@ beforeAll(async () => {
     operational_status, organization_id) VALUES ($1, 'Legacy live', 'application', 'application', 'high', 'active', $2)`,
   [LEGACY, TENANT_T]);
   await mockSql(`BEGIN;\n${migration('043_business_service_record_c1.sql')}\nCOMMIT;`, [], 'exec');
-  const [role] = await rows('SELECT current_user AS name, rolsuper FROM pg_roles WHERE rolname = current_user');
-  if (role?.['name'] !== 'cmdb_user' || role['rolsuper'] !== false) throw new Error(`not the app role: ${JSON.stringify(role)}`);
+  await mockSql(APP_GRANTS_SQL + ENTER_APP_LOGIN_SQL, [], 'exec');
+  await assertAppLogin(async sql => (await rows(sql)));
 }, 60000);
 afterAll(() => { host.kill(); });
 afterEach(() => { mockFault.auditInsert = null; });

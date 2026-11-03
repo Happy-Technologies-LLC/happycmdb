@@ -6,7 +6,7 @@ HappyCMDB owns the business service record and publishes it to the other product
 - Contract: [Suite Contracts v2, "Common rules" and "C1. Service reference"](https://linear.app/happy-technologies-llc/document/suite-contracts-v2-the-seams-between-products-c1-to-c14-accepted-2026-4b4749544239). Linear is the authority; this page describes what the API serves today.
 - Machine-readable: `GET /api-docs/openapi.yaml`, paths `/business-services/{service_id}` and `/business-services/{service_id}/context`.
 
-Status (2026-11-03): reads implemented for CO-1 S2 (HAP-1408); the stored record and audited writes for PoR S2 (HAP-1423, migration `043_business_service_record_c1.sql`). Deployment and activation are not covered here.
+Status (2026-11-03): reads implemented for CO-1 S2 (HAP-1408); the stored record and audited writes for PoR S2 (HAP-1423, migration `043_business_service_record_c1.sql`). HAP-1422: migration `044_business_service_journal_read_acl.sql` grants `cmdb_user` SELECT on `ci_reconciliation_operations`, which `GET /{service_id}/cis`, `POST /{service_id}/cis` and `GET /{service_id}/context` read; without it a non-owner app login gets 500 on those routes. Deployment and activation are not covered here.
 
 ## Rules
 

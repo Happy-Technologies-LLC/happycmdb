@@ -14,6 +14,12 @@
  * are plain tables), then 008/011 and the S1 journal DDL extracted from
  * 028_change_history_reconciliation_org_provenance.sql.
  *
+ * HAP-1422: the NOSUPERUSER owner `cmdb_owner` runs that DDL, every fixture
+ * statement (db.exec, db.rows) and the migration replays; every route
+ * statement runs as the app login `cmdb_user` with the migrations' grants and
+ * 044 (fixtures/app-login.ts), which is not a superuser and owns no table
+ * (asserted before every test).
+ *
  * Substitutions: Neo4jAuthRepository -> in-memory users/API keys;
  * getPostgresClient -> IPC client to that PGlite process; Neo4j -> {} (the
  * architecture analysis only reaches Neo4j for services with mapped CIs,
@@ -53,9 +59,11 @@ function send(op: 'exec' | 'query', sql: string, params: unknown[] = []): Promis
     host.send({ id, op, sql, params });
   });
 }
+// Fixture SQL runs as the table owner, then the session returns to the app login the routes use.
+const asOwner = <T>(work: () => Promise<T>) => asTableOwner(sql => send('exec', sql), work);
 const db = {
-  exec: (sql: string) => send('exec', sql),
-  rows: <T>(sql: string, params: unknown[] = []) => send('query', sql, params) as Promise<T[]>,
+  exec: (sql: string) => asOwner(() => send('exec', sql)),
+  rows: <T>(sql: string, params: unknown[] = []) => asOwner(() => send('query', sql, params) as Promise<T[]>),
 };
 
 let queryCount = 0;
@@ -67,6 +75,7 @@ const pgClient = {
   // Plain functions: the unit config resets mock implementations.
   query: async (sql: string, params: unknown[] = []) => {
     queryCount++;
+    assertAppStatement(sql);
     const rows = await send('query', sql, params);
     if (afterParentRead !== null && sql.includes('dim_business_services')) {
       const interleave = afterParentRead;
@@ -170,6 +179,9 @@ import { getAuthMiddleware } from '../../../auth/auth-bootstrap';
 import { businessServiceRoutes } from '../business-service.routes';
 import { architectureRoutes } from '../architecture.routes';
 import { discoveryAgentRoutes } from '../discovery-agent.routes';
+import {
+  APP_GRANTS_SQL, assertAppLogin, assertAppStatement, asTableOwner, createLoginRolesSql, journalReadAclSql,
+} from './fixtures/app-login';
 
 const MIGRATIONS = join(__dirname, '../../../../../database/src/postgres/migrations');
 const DDL_TABLES = [
@@ -284,6 +296,8 @@ let dimCiSchemaBefore011: DimCiSchema;
 const UP_011 = readFileSync(join(MIGRATIONS, '011_ci_organization_scope.sql'), 'utf8');
 
 beforeAll(async () => {
+  const [{ db: database }] = await send('query', 'SELECT current_database() AS db') as Array<{ db: string }>;
+  await send('exec', createLoginRolesSql(database));
   await db.exec(baseDdl() + LEGACY_SEED);
   await db.exec(`BEGIN;\n${readFileSync(join(MIGRATIONS, '008_business_service_organization_scope.sql'), 'utf8')}\nCOMMIT;`);
   backfilled = await db.rows('SELECT service_id, organization_id FROM dim_business_services ORDER BY service_id');
@@ -304,6 +318,7 @@ beforeAll(async () => {
     readFileSync(join(MIGRATIONS, '003_audit_hash_chain.sql'), 'utf8'),
     'ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS organization_id UUID;'].join('\n'));
   await db.exec(`BEGIN;\n${readFileSync(join(MIGRATIONS, '043_business_service_record_c1.sql'), 'utf8')}\nCOMMIT;`);
+  await db.exec(APP_GRANTS_SQL + journalReadAclSql());
 });
 
 afterAll(() => {
@@ -312,16 +327,17 @@ afterAll(() => {
 
 beforeEach(async () => {
   await db.exec(`TRUNCATE ${DDL_TABLES.join(', ')} RESTART IDENTITY CASCADE;${SEED}`);
+  await assertAppLogin(sql => send('query', sql));
   queryCount = 0;
   afterParentRead = null;
 });
 
 // getMigrationStatus only calls query(). Like node-postgres, a query without
 // parameters uses the simple protocol, which accepts several statements
-// (ensureMigrationsTable sends three).
+// (ensureMigrationsTable sends three). The migrator runs as the table owner.
 const migratorClient = {
-  query: async (sql: string, params?: unknown[]) =>
-    params?.length ? pgClient.query(sql, params) : { rows: await send('exec', sql) },
+  query: (sql: string, params?: unknown[]) =>
+    asOwner(async () => ({ rows: await send(params?.length ? 'query' : 'exec', sql, params ?? []) })),
 } as unknown as PostgresClient;
 
 describe('migration 008_business_service_organization_scope', () => {
@@ -699,10 +715,15 @@ describe('two-organization isolation', () => {
   });
 
   it('scopes the architecture analysis to the caller organization', async () => {
-    const foreign = await request(app).get('/api/v1/architecture/business-services/bs-a-empty/analysis').set(AS_B);
+    const analysis = (id: string) => request(app).get(`/api/v1/architecture/business-services/${id}/analysis`);
+    const foreign = await analysis('bs-a-empty').set(AS_B);
     expect(foreign.status).toBe(404);
     expect(foreign.body).toEqual(NOT_FOUND);
-    const own = await request(app).get('/api/v1/architecture/business-services/bs-a-empty/analysis').set(AS_A);
+    // HAP-442 residual: another organization's service is indistinguishable from one that does not exist.
+    const missing = await analysis('bs-does-not-exist').set(AS_B);
+    expect([foreign.status, foreign.headers['content-type'], foreign.text])
+      .toEqual([missing.status, missing.headers['content-type'], missing.text]);
+    const own = await analysis('bs-a-empty').set(AS_A);
     expect(own.status).toBe(200);
     expect(own.body.analysis).toMatchObject({ business_service_id: 'bs-a-empty', business_service_name: 'A Empty' });
   });

@@ -19,6 +19,7 @@
     "node_modules",
     "dist",
     "**/*.test.ts",
+    "**/__tests__/**",
     "src/rest/controllers/unified.controller.ts",
     "src/rest/routes/unified.routes.ts",
     "src/scripts/**/*"

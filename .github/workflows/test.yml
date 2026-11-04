@@ -529,10 +529,59 @@ jobs:
           HAP1422_ACCEPTANCE=1 ./node_modules/.bin/jest \
             -c jest.config.integration.js "$HARNESS" --runInBand
 
+  hap1562-real-store:
+    name: HAP-1562 API queries as the staging app login cmdb_app
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    env:
+      HARNESS: tests/integration/database/hap1562-staging-app-login.integration.test.ts
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+      - name: Fail-before without the cmdb_app grants (045)
+        run: |
+          set -euo pipefail
+          if git cat-file -e "${BASE_SHA}:packages/database/src/postgres/migrations/045_staging_app_login_acl.sql" 2>/dev/null; then
+            echo 'HAP-1562 already on the base; fail-before is not applicable.'
+            exit 0
+          fi
+          git worktree add ../hap1562-base "$BASE_SHA"
+          cp "$HARNESS" "../hap1562-base/$HARNESS"
+          cd ../hap1562-base
+          npm ci
+          set +e
+          output=$(HAP1562_ACCEPTANCE=1 ./node_modules/.bin/jest \
+            -c jest.config.integration.js "$HARNESS" --runInBand 2>&1)
+          result=$?
+          set -e
+          printf '%s\n' "$output"
+          # Startup, CI and business-service queries must fail as cmdb_app; the login guard itself must still pass.
+          for marker in '✕ startup:' '✕ CI routes:' '✕ business-service routes:' '✓ the routes connect as cmdb_app'; do
+            if [ "$result" -eq 0 ] || [[ "$output" != *"$marker"* ]]; then
+              echo "Base run lacks '$marker': not the missing cmdb_app grants" >&2
+              exit 1
+            fi
+          done
+      - name: Pass-after on PR head (disposable PG15/Timescale)
+        run: |
+          npm ci
+          HAP1562_ACCEPTANCE=1 ./node_modules/.bin/jest \
+            -c jest.config.integration.js "$HARNESS" --runInBand
+
   staging-migrations:
     name: Staging Migration Contract
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 40
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -636,7 +685,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
   ci-rollup:
-    needs: [unit-tests, integration-tests, e2e-tests, staging-migrations, web-ui-build, hap630-real-store, hap644-real-store, hap668-real-store, hap835-real-store, hap1422-real-store]
+    needs: [unit-tests, integration-tests, e2e-tests, staging-migrations, web-ui-build, hap630-real-store, hap644-real-store, hap668-real-store, hap835-real-store, hap1422-real-store, hap1562-real-store]
     if: always()
     runs-on: ubuntu-latest
     permissions:
@@ -657,6 +706,7 @@ jobs:
           HAP668_RESULT: ${{ needs.hap668-real-store.result }}
           HAP835_RESULT: ${{ needs.hap835-real-store.result }}
           HAP1422_RESULT: ${{ needs.hap1422-real-store.result }}
+          HAP1562_RESULT: ${{ needs.hap1562-real-store.result }}
         run: |
           set -euo pipefail
           if [ -z "$HEAD_SHA" ]; then
@@ -672,7 +722,8 @@ jobs:
              { [ "$HAP644_RESULT" = "success" ] || { [ "${{ github.event_name }}" = "push" ] && [ "$HAP644_RESULT" = "skipped" ]; }; } &&
              { [ "$HAP668_RESULT" = "success" ] || { [ "${{ github.event_name }}" = "push" ] && [ "$HAP668_RESULT" = "skipped" ]; }; } &&
              { [ "$HAP835_RESULT" = "success" ] || { [ "${{ github.event_name }}" = "push" ] && [ "$HAP835_RESULT" = "skipped" ]; }; } &&
-             { [ "$HAP1422_RESULT" = "success" ] || { [ "${{ github.event_name }}" = "push" ] && [ "$HAP1422_RESULT" = "skipped" ]; }; }; then
+             { [ "$HAP1422_RESULT" = "success" ] || { [ "${{ github.event_name }}" = "push" ] && [ "$HAP1422_RESULT" = "skipped" ]; }; } &&
+             { [ "$HAP1562_RESULT" = "success" ] || { [ "${{ github.event_name }}" = "push" ] && [ "$HAP1562_RESULT" = "skipped" ]; }; }; then
             state=success
             description="all required gates passed"
           else
@@ -697,6 +748,9 @@ jobs:
             fi
             if [ "$HAP1422_RESULT" != "success" ] && [ "${{ github.event_name }}" != "push" ]; then
               failures+=("hap1422-real-store=$HAP1422_RESULT")
+            fi
+            if [ "$HAP1562_RESULT" != "success" ] && [ "${{ github.event_name }}" != "push" ]; then
+              failures+=("hap1562-real-store=$HAP1562_RESULT")
             fi
             description="test gates failed: ${failures[*]}"
             if [ "${#description}" -gt 140 ]; then

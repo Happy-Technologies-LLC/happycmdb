@@ -77,8 +77,9 @@ services:
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
       POSTGRES_DB: cmdb
-      POSTGRES_USER: cmdb_user
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      # HAP-1562: the API is the NOSUPERUSER, non-owner app login (app-login below); rollback: deploy/BUILD01-STAGING.md.
+      POSTGRES_USER: ${POSTGRES_APP_USER:-cmdb_app}
+      POSTGRES_PASSWORD: ${POSTGRES_APP_PASSWORD:?POSTGRES_APP_PASSWORD is required}
       POSTGRES_SSL_ENABLED: "off"
       POSTGRES_SSL_MODE: disable
       REDIS_HOST: redis
@@ -103,12 +104,35 @@ services:
       start_period: 90s
     restart: unless-stopped
 
+  # HAP-1562: one-shot, as the owner login; creates/re-asserts the API login before every migrator run (045 grants it).
+  app-login:
+    profiles: ["migrate"]
+    image: timescale/timescaledb:2.13.0-pg16
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGPORT: 5432
+      PGDATABASE: cmdb
+      PGUSER: cmdb_user
+      PGPASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      APP_LOGIN: ${POSTGRES_APP_USER:-cmdb_app}
+      APP_LOGIN_PASSWORD: ${POSTGRES_APP_PASSWORD:?POSTGRES_APP_PASSWORD is required}
+    volumes:
+      - ./build01-staging-app-login.sql:/hap1562/build01-staging-app-login.sql:ro
+      - ../packages/database/src/postgres/migrations/045_staging_app_login_acl.sql:/hap1562/045_staging_app_login_acl.sql:ro
+    command: ["psql", "-X", "-f", "/hap1562/build01-staging-app-login.sql"]
+    restart: "no"
+
   migrator:
     profiles: ["migrate"]
     image: staging-happycmdb/api-server:${IMAGE_TAG:-local}
     depends_on:
       postgres:
         condition: service_healthy
+      app-login:
+        condition: service_completed_successfully
     environment:
       NODE_ENV: production
       POSTGRES_HOST: postgres

@@ -68,8 +68,10 @@ jest.mock('pg', () => {
 });
 // The real @cmdb/database opens the BullMQ Redis connection at import; nothing here queues jobs.
 jest.mock('@cmdb/database/bullmq/queue-manager', () => ({}));
-const USERS: Record<string, { _id: string; _username: string; _role: 'operator'; _enabled: boolean; _organizationId: string }> = {
-  t: { _id: 'actor-t', _username: 'tess', _role: 'operator', _enabled: true, _organizationId: TENANT_T },
+// t is an admin (D38: only an admin sets owner_principal_id); o is a non-admin writer of the same tenant.
+const USERS: Record<string, { _id: string; _username: string; _role: 'admin' | 'operator'; _enabled: boolean; _organizationId: string }> = {
+  t: { _id: 'actor-t', _username: 'tess', _role: 'admin', _enabled: true, _organizationId: TENANT_T },
+  o: { _id: 'actor-o', _username: 'otto', _role: 'operator', _enabled: true, _organizationId: TENANT_T },
   t2: { _id: 'actor-t2', _username: 'tom', _role: 'operator', _enabled: true, _organizationId: TENANT_T2 },
 };
 jest.mock('../../../auth/neo4j-auth.repository', () => ({
@@ -176,6 +178,26 @@ describe('scenario 1: live needs an owner principal (D15)', () => {
     const id = await created({ lifecycle: 'live', owner_principal_id: OWNER });
     expect((await patch(id, { owner_principal_id: null })).status).toBe(422);
     expect(await stored(id)).toMatchObject({ lifecycle: 'live', owner_principal_id: OWNER, version: 1 });
+  });
+});
+
+describe('D38 (HAP-1565): only an admin sets or changes owner_principal_id', () => {
+  it('FAIL-FIRST: a non-admin naming itself the owner on create or PATCH is 403 and writes nothing; other PATCHes work', async () => {
+    const id = await created({}, 'o');
+    const selfOwned = "SELECT count(*)::int AS n FROM dim_business_services WHERE owner_principal_id = 'actor-o'";
+    const before = [await stored(id), await auditCount(), await rows(selfOwned)];
+    // A non-admin create leaves the owner null, never the caller.
+    expect([before[0], before[2]]).toEqual([expect.objectContaining({ owner_principal_id: null, version: 1 }), [{ n: 0 }]]);
+    const refusals = [await create({ ...BASE, owner_principal_id: 'actor-o' }, 'o'),
+      await patch(id, { owner_principal_id: 'actor-o' }, undefined, 'o'), await patch(id, { owner_principal_id: null }, undefined, 'o'),
+      // Raw JSON: an own "__proto__" member, which Joi's clone turns into an inherited owner_principal_id.
+      await request(app).patch(`/api/v1/business-services/${id}`).set(headers('o')).set('Content-Type', 'application/json')
+        .send('{"__proto__":{"owner_principal_id":"actor-o"}}')];
+    expect(refusals.map(res => [res.status, res.body])).toEqual(Array(4).fill([403, {
+      success: false, error: 'Forbidden', message: 'owner_principal_id can be set or changed only by an admin' }]));
+    expect([await stored(id), await auditCount(), await rows(selfOwned)]).toEqual(before);
+    expect((await patch(id, { description: 'no owner change' }, undefined, 'o')).status).toBe(200);
+    expect((await audit(id)).map(row => row['actor'])).toEqual(['actor-o', 'actor-o']);
   });
 });
 

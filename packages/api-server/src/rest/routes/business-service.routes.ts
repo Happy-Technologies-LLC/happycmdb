@@ -6,11 +6,13 @@
  * REST API endpoints for business service management
  */
 
-import { Router } from 'express';
+import { NextFunction, Request, Response, Router } from 'express';
 import Joi from 'joi';
 import { BusinessServiceController } from '../controllers/business-service.controller';
 import { validateRequest, validateOptional } from '../middleware/validation.middleware';
 import { auditMiddleware } from '../../middleware/audit.middleware';
+import type { AuthenticatedRequest } from '../../middleware/auth.middleware';
+import { ROLE_PERMISSIONS } from '../../auth/types';
 import { getAuthMiddleware } from '../../auth/auth-bootstrap';
 import { journalRequestGuard } from '../../journal-http';
 import { C1_LIFECYCLES } from '../../services/business-service-reference';
@@ -36,6 +38,26 @@ const organizationIdForbidden = Joi.any().forbidden();
 const OPERATIONAL_STATUSES = ['active', 'inactive', 'maintenance', 'decommissioned'];
 const ownerPrincipalId = Joi.string().trim().min(1).max(255);
 const ownerGroup = Joi.string().trim().min(1).max(255);
+
+/*
+ * D38 (HAP-1565): owner_principal_id is HIVE's D15 tier-change approver, so only a role holding the `admin` permission
+ * (ROLE_PERMISSIONS: the admin role) may set, change or clear it, on create and update alike. Any other writer naming
+ * the field, whatever its value, is refused before the handler: nothing written, no audit row. Checked on the body
+ * Joi validated, with `in` rather than an own-key test: a raw `"__proto__":{"owner_principal_id":…}` member passes
+ * an own-key test and Joi's clone then serves it as an inherited, then own, owner_principal_id.
+ * A non-admin create leaves the owner null (never the caller).
+ */
+const OWNER_PRINCIPAL_ADMIN_ONLY = {
+  success: false, error: 'Forbidden', message: 'owner_principal_id can be set or changed only by an admin',
+};
+function ownerPrincipalAdminOnly(req: Request, res: Response, next: NextFunction): void {
+  const user = (req as AuthenticatedRequest).user;
+  if ('owner_principal_id' in req.body && !(user && ROLE_PERMISSIONS[user._role]?.includes('admin'))) {
+    res.status(403).json(OWNER_PRINCIPAL_ADMIN_ONLY);
+    return;
+  }
+  next();
+}
 
 // Validation schemas
 const createBusinessServiceSchema = Joi.object({
@@ -190,6 +212,7 @@ businessServiceRoutes.post(
   authMiddleware.requirePermission('write'),
   journalRequestGuard(),
   validateRequest(createBusinessServiceSchema, 'body'),
+  ownerPrincipalAdminOnly,
   controller.createBusinessService.bind(controller)
 );
 
@@ -203,6 +226,7 @@ businessServiceRoutes.patch(
   authMiddleware.requirePermission('write'),
   journalRequestGuard(),
   validateRequest(updateBusinessServiceSchema, 'body'),
+  ownerPrincipalAdminOnly,
   controller.updateBusinessService.bind(controller)
 );
 

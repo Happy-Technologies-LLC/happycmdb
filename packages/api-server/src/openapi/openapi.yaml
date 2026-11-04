@@ -3132,7 +3132,7 @@ paths:
         '401':
           $ref: '#/components/responses/BusinessServiceUnauthorized'
         '403':
-          $ref: '#/components/responses/BusinessServiceForbidden'
+          $ref: '#/components/responses/BusinessServiceWriteForbidden'
         '422':
           $ref: '#/components/responses/BusinessServiceOwnerRequired'
         '500':
@@ -3234,7 +3234,7 @@ paths:
         '401':
           $ref: '#/components/responses/BusinessServiceUnauthorized'
         '403':
-          $ref: '#/components/responses/BusinessServiceForbidden'
+          $ref: '#/components/responses/BusinessServiceWriteForbidden'
         '404':
           $ref: '#/components/responses/BusinessServiceNotFound'
         '409':
@@ -4102,6 +4102,26 @@ components:
           example:
             success: false
             error: Failed to get service costs
+
+    BusinessServiceWriteForbidden:
+      description: >-
+        As BusinessServiceForbidden (`Organization claim required`,
+        `Permission 'write' required`, middleware body). Also (D38, HAP-1565)
+        a valid body naming owner_principal_id (on PATCH, null included)
+        from a caller whose role lacks the `admin` permission (only the admin
+        role holds it): refused after body validation (an invalid body is
+        400 first), nothing written and no audit row. A create without
+        owner_principal_id leaves it null.
+      content:
+        application/json:
+          schema:
+            oneOf:
+              - $ref: '#/components/schemas/MiddlewareError'
+              - $ref: '#/components/schemas/BusinessServiceError'
+          example:
+            success: false
+            error: Forbidden
+            message: owner_principal_id can be set or changed only by an admin
 
     BusinessServiceOwnerRequired:
       description: >-
@@ -5384,7 +5404,9 @@ components:
           type: string
           minLength: 1
           maxLength: 255
-          description: Identity-provider subject of the one accountable human owner (trimmed)
+          description: >-
+            Identity-provider subject of the one accountable human owner
+            (trimmed). Admin role only (D38); null when omitted.
         owner_group:
           type: string
           minLength: 1
@@ -5461,7 +5483,9 @@ components:
           nullable: true
           minLength: 1
           maxLength: 255
-          description: Identity-provider subject of the one accountable human owner (trimmed); null clears it
+          description: >-
+            Identity-provider subject of the one accountable human owner
+            (trimmed); null clears it. Admin role only (D38), null included.
         owner_group:
           type: string
           nullable: true

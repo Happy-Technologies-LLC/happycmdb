@@ -87,15 +87,12 @@ interface ApiResponse<T> {
   message?: string;
 }
 
-interface PaginatedResponse<T> {
+/** The C1 list envelope of GET /business-services (HAP-1425): one page, and the cursor of the next (null after the last). */
+interface ListPage<T> {
   success: boolean;
-  data: T[];
-  pagination: {
-    page: number;
-    limit: number;
-    total: number;
-    totalPages: number;
-  };
+  items: T[];
+  next_cursor: string | null;
+  as_of: string;
 }
 
 // Mapper functions to convert between UI and API formats
@@ -178,11 +175,16 @@ export const BusinessServices: React.FC = () => {
   const loadServices = async () => {
     try {
       setLoading(true);
-      const response = await apiClient.get<PaginatedResponse<BusinessServiceAPI>>(
-        '/business-services'
-      );
-      const uiServices = response.data.map(mapAPIToUI);
-      setServices(uiServices);
+      const loaded: BusinessServiceAPI[] = [];
+      let cursor: string | null = null;
+      do {
+        const page: ListPage<BusinessServiceAPI> = await apiClient.get<ListPage<BusinessServiceAPI>>(
+          '/business-services', { params: { limit: 100, ...(cursor ? { cursor } : {}) } }
+        );
+        loaded.push(...page.items);
+        cursor = page.next_cursor;
+      } while (cursor);
+      setServices(loaded.map(mapAPIToUI));
     } catch (error: any) {
       logClientError('Failed to load business services:', error);
       showToast('Failed to load business services', 'error');

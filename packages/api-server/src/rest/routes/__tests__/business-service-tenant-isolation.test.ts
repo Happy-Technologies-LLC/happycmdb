@@ -90,7 +90,8 @@ jest.mock('bcrypt', () => ({}));
 jest.mock('../../../auth/neo4j-auth.repository', () => ({
   Neo4jAuthRepository: jest.fn(() => ({
     findUserById: async (userId: string) => A1_USERS[userId] ?? null,
-    findApiKeyByKey: async () => null,
+    findApiKeyByKey: async (keyHash: string) => A1_API_KEYS[keyHash] ?? null,
+    updateApiKeyLastUsed: async () => undefined,
   })),
 }));
 
@@ -105,8 +106,9 @@ import {
   ENTER_APP_LOGIN_SQL, journalReadAclSql, migrationSql, PGLITE_SUPERUSER, TABLE_OWNER,
 } from './fixtures/app-login';
 import {
-  A1_SEED_SQL, A1_SEEDED_TABLES, A1_TRUNCATE_SQL, A1_USERS, a1GraphClient, defineA1RouteSuite, T,
+  A1_API_KEYS, A1_SEED_SQL, A1_SEEDED_TABLES, A1_TRUNCATE_SQL, A1_USERS, a1GraphClient, defineA1RouteSuite, T, T2,
 } from './fixtures/business-service-a1';
+import { defineC1ConsumerSuite } from './fixtures/business-service-c1-consumer';
 
 const app = express();
 app.use(express.json());
@@ -191,4 +193,10 @@ describe('N1: the setup guard refuses a superuser or table-owner session', () =>
 defineA1RouteSuite({
   app, router: businessServiceRoutes, offeringRouter: serviceOfferingRoutes, rows: db.rows,
   tokenForT: () => jwt.generateAccessToken('user-t', 'tess', 'operator', T),
+});
+// HAP-1425 (PoR S4): the C1 list and the consumer principals, on the same seed and login.
+defineC1ConsumerSuite({
+  app, router: businessServiceRoutes, offeringRouter: serviceOfferingRoutes, rows: db.rows,
+  tokenFor: tenant => tenant === T ? jwt.generateAccessToken('user-t', 'tess', 'operator', T)
+    : jwt.generateAccessToken('user-t2', 'tom', 'operator', T2),
 });

@@ -16,8 +16,11 @@
  * HAP-1424 (PoR S3): the same controls cover serviceOfferingRoutes (T calls each with T2's offering_id), and scenario 3
  * proves the composite (service_id, organization_id) foreign key refuses, at the database and as the app login, an
  * offering of T that names T2's service.
+ * HAP-1425 (PoR S4): the list control also proves a tenant_id or organization_id parameter is 400 (scenario 4); the
+ * viewer users and API keys of the two C1 consumers (HappyHive, HIVE) serve business-service-c1-consumer.ts.
  */
 
+import { createHash, randomBytes } from 'crypto';
 import type { Express, Router } from 'express';
 import request from 'supertest';
 
@@ -34,7 +37,18 @@ export const A1_USERS: Record<string, { _id: string; _username: string; _role: s
   _organizationId: string }> = {
   'user-t': { _id: 'user-t', _username: 'tess', _role: 'operator', _enabled: true, _organizationId: T },
   'user-t2': { _id: 'user-t2', _username: 'tom', _role: 'operator', _enabled: true, _organizationId: T2 },
+  // HAP-1425 (PoR S4): HappyHive's and HIVE's consumer principals in T, each a viewer holding a viewer API key.
+  'happyhive-t': { _id: 'happyhive-t', _username: 'happyhive', _role: 'viewer', _enabled: true, _organizationId: T },
+  'hive-t': { _id: 'hive-t', _username: 'hive', _role: 'viewer', _enabled: true, _organizationId: T },
 };
+
+/** HAP-1425: the consumer principals' API keys (generated per run), and the key records the auth repository fake returns by hash. */
+export const CONSUMER_KEYS: Record<'happyhive' | 'hive', string> = {
+  happyhive: randomBytes(32).toString('hex'), hive: randomBytes(32).toString('hex'),
+};
+export const A1_API_KEYS: Record<string, { _id: string; _userId: string; _role: string; _enabled: boolean }> = Object.fromEntries(
+  Object.entries(CONSUMER_KEYS).map(([consumer, key]) => [createHash('sha256').update(key).digest('hex'),
+    { _id: `key-${consumer}-t`, _userId: `${consumer}-t`, _role: 'viewer', _enabled: true }]));
 
 /** Neo4j fake: which tenant owns each CI (the owned-CI filter of POST /cis and the /context walk). */
 const GRAPH_OWNERS: Record<string, string> = { 'ci-t': T, 'ci-t-free': T, 'ci-t2': T2, 'ci-t2-free': T2 };
@@ -134,17 +148,19 @@ export function defineA1RouteSuite({ app, router, offeringRouter, tokenForT, row
       check: async () => {
         const list = await get('?limit=100');
         expect(list.status).toBe(200);
-        expect(list.body.data.map((s: { service_id: string }) => s.service_id).filter((id: string) => id.startsWith('bs-t'))
+        expect(list.body.items.map((s: { service_id: string }) => s.service_id).filter((id: string) => id.startsWith('bs-t'))
           .sort()).toEqual(['bs-t', 'bs-t-db', 'bs-t-solo']);
         expect(list.text).not.toContain('bs-t2');
         expect(list.text).not.toContain(T2);
-        // The tenant is never a query input: an organization_id parameter is dropped by validation, not obeyed.
-        const steered = await get(`?limit=100&organization_id=${T2}`);
-        expect(steered.status).toBe(200);
-        expect(steered.text).toBe(list.text);
+        // HAP-1425 scenario 4: the tenant is never a query input; naming it is refused (400), not ignored.
+        for (const steer of [`organization_id=${T2}`, `tenant_id=${T2}`]) {
+          const steered = await get(`?limit=100&${steer}`);
+          expect(steered.status).toBe(400);
+          expect(steered.text).not.toContain(T2_SECRET);
+        }
         const searched = await get(`?search=${encodeURIComponent(T2_SECRET)}`);
         expect(searched.status).toBe(200);
-        expect(searched.body.data).toEqual([]);
+        expect(searched.body.items).toEqual([]);
       },
     },
     'POST /': {

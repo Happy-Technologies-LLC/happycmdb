@@ -3000,13 +3000,24 @@ paths:
   /business-services:
     get:
       tags: [Business Services]
-      summary: List business services
+      summary: List business services (C1 list, cursor-paged)
       description: >-
-        Lists the caller's organization's business services, newest first.
-        Query parameters are validated only when at least one is present.
-        Unknown parameters are ignored; values that fail the parameter schema
-        (e.g. empty, non-integer or out-of-range, repeated) are rejected with
-        400.
+        HAP-1425, Suite Contracts v2 C1 list and common paging rule. Lists the
+        caller's organization's business services in a stable order
+        (created_at, then service_id, oldest first), one page per call, each
+        item the C1 service read of GET /business-services/{service_id}
+        (offerings[] included). Pass the previous page's `next_cursor` as
+        `cursor` until it is null: a service inserted or deleted between
+        page reads never repeats or skips another. The cursor is opaque and
+        bound to the token's organization; an altered, another organization's
+        or expired (1 hour) cursor is 404. The tenant is the token's
+        organization only: a `tenant_id` or `organization_id` parameter is
+        400. Query parameters are validated only when at least one is
+        present; other unknown parameters are ignored; values that fail the
+        parameter schema (e.g. empty, non-integer or out-of-range, repeated,
+        an unknown lifecycle, `page` together with `cursor`) are 400. With the
+        deprecated `page` parameter the route keeps its offset pages, newest
+        first, in the `{success, data, pagination}` envelope.
       operationId: listBusinessServices
       parameters:
         - name: search
@@ -3047,12 +3058,18 @@ paths:
           schema:
             type: string
             minLength: 1
-        - name: page
+        - name: lifecycle
           in: query
+          description: Only services in this C1 lifecycle
           schema:
-            type: integer
-            minimum: 1
-            default: 1
+            type: string
+            enum: [planned, live, retiring, retired]
+        - name: cursor
+          in: query
+          description: The previous page's `next_cursor` (opaque)
+          schema:
+            type: string
+            maxLength: 1024
         - name: limit
           in: query
           schema:
@@ -3060,40 +3077,86 @@ paths:
             minimum: 1
             maximum: 100
             default: 50
+        - name: page
+          in: query
+          deprecated: true
+          description: >-
+            Deprecated offset paging (removed in a later version): answers the
+            `{success, data, pagination}` envelope, newest first. Not combinable
+            with `cursor`.
+          schema:
+            type: integer
+            minimum: 1
       responses:
         '200':
-          description: One page of business services
+          description: >-
+            One page: the C1 list envelope, or with the deprecated `page`
+            parameter the offset envelope.
           content:
             application/json:
               schema:
-                type: object
-                required: [success, data, pagination]
-                properties:
-                  success:
-                    type: boolean
-                    enum: [true]
-                  data:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/BusinessService'
-                  pagination:
-                    type: object
-                    required: [page, limit, total, totalPages]
+                oneOf:
+                  - type: object
+                    required: [success, items, next_cursor, as_of]
                     properties:
-                      page:
-                        type: integer
-                      limit:
-                        type: integer
-                      total:
-                        type: integer
-                      totalPages:
-                        type: integer
+                      success:
+                        type: boolean
+                        enum: [true]
+                      items:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/BusinessServiceDetail'
+                      next_cursor:
+                        type: string
+                        nullable: true
+                        description: The cursor of the next page; null after the last page
+                      as_of:
+                        type: string
+                        format: date-time
+                        description: RFC 3339 UTC time the page was read
+                  - type: object
+                    deprecated: true
+                    required: [success, data, pagination]
+                    properties:
+                      success:
+                        type: boolean
+                        enum: [true]
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/BusinessService'
+                      pagination:
+                        type: object
+                        required: [page, limit, total, totalPages]
+                        properties:
+                          page:
+                            type: integer
+                          limit:
+                            type: integer
+                          total:
+                            type: integer
+                          totalPages:
+                            type: integer
         '400':
           $ref: '#/components/responses/BusinessServiceValidationError'
         '401':
           $ref: '#/components/responses/BusinessServiceUnauthorized'
         '403':
           $ref: '#/components/responses/BusinessServiceForbidden'
+        '404':
+          description: The cursor is altered, another organization's, or expired
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, error]
+                properties:
+                  success:
+                    type: boolean
+                    enum: [false]
+                  error:
+                    type: string
+                    enum: [Cursor not found]
         '500':
           $ref: '#/components/responses/BusinessServiceServerError'
 

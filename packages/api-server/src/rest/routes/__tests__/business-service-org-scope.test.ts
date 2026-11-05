@@ -516,16 +516,16 @@ describe('two-organization isolation', () => {
     });
   });
 
-  it('lists and counts only the caller organization, including under filters', async () => {
-    const a = await request(app).get('/api/v1/business-services').set(AS_A);
+  it('lists and counts only the caller organization, including under filters (deprecated offset pages)', async () => {
+    const a = await request(app).get('/api/v1/business-services?page=1').set(AS_A);
     expect(a.body.data.map((s: { service_id: string }) => s.service_id)).toEqual(['bs-a-empty', 'bs-a-app', 'bs-a-db']);
     expect(a.body.pagination.total).toBe(3);
 
-    const b = await request(app).get('/api/v1/business-services?business_criticality=critical').set(AS_B);
+    const b = await request(app).get('/api/v1/business-services?business_criticality=critical&page=1').set(AS_B);
     expect(b.body.data.map((s: { service_id: string }) => s.service_id)).toEqual(['bs-b-db']);
     expect(b.body.pagination.total).toBe(1);
 
-    const search = await request(app).get('/api/v1/business-services?search=Secret').set(AS_A);
+    const search = await request(app).get('/api/v1/business-services?search=Secret&page=1').set(AS_A);
     expect(search.body).toMatchObject({ data: [], pagination: { total: 0 } });
   });
 
@@ -715,7 +715,7 @@ describe('two-organization isolation', () => {
   it('scopes the API-key path to the key owner organization', async () => {
     const headers = { [loadConfig().auth.apiKeys.headerName]: API_KEY_B };
     const list = await request(app).get('/api/v1/business-services').set(headers);
-    expect(list.body.data.map((s: { service_id: string }) => s.service_id)).toEqual(['bs-b-app', 'bs-b-db']);
+    expect(list.body.items.map((s: { service_id: string }) => s.service_id).sort()).toEqual(['bs-b-app', 'bs-b-db']);
     const foreign = await request(app).get('/api/v1/business-services/bs-a-app').set(headers);
     expect(foreign.status).toBe(404);
   });
@@ -871,7 +871,7 @@ describe('the tenant is re-read from the user record on every request', () => {
       const own = await request(app).get('/api/v1/business-services/bs-a-app').set(AS_A);
       expect([own.status, own.body]).toEqual([404, NOT_FOUND]);
       const list = await request(app).get('/api/v1/business-services').set(AS_A);
-      expect(list.body.data.map((s: { service_id: string }) => s.service_id)).toEqual(['bs-b-app', 'bs-b-db']);
+      expect(list.body.items.map((s: { service_id: string }) => s.service_id).sort()).toEqual(['bs-b-app', 'bs-b-db']);
 
       delete userA._organizationId;
       const removed = await request(app).get('/api/v1/business-services').set(AS_A);

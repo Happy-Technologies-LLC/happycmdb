@@ -58,7 +58,8 @@ jest.mock('@cmdb/database', () => {
 jest.mock('../../../packages/api-server/src/auth/neo4j-auth.repository', () => ({
   Neo4jAuthRepository: class {
     findUserById = async (userId: string) => A1_USERS[userId] ?? null;
-    findApiKeyByKey = async () => null;
+    findApiKeyByKey = async (keyHash: string) => A1_API_KEYS[keyHash] ?? null;
+    updateApiKeyLastUsed = async () => undefined;
   },
 }));
 
@@ -72,8 +73,9 @@ import {
   APP_LOGIN, AppLoginRefused, assertAppLogin,
 } from '../../../packages/api-server/src/rest/routes/__tests__/fixtures/app-login';
 import {
-  A1_SEED_SQL, A1_TRUNCATE_SQL, A1_USERS, a1GraphClient, defineA1RouteSuite, T,
+  A1_API_KEYS, A1_SEED_SQL, A1_TRUNCATE_SQL, A1_USERS, a1GraphClient, defineA1RouteSuite, T, T2,
 } from '../../../packages/api-server/src/rest/routes/__tests__/fixtures/business-service-a1';
+import { defineC1ConsumerSuite } from '../../../packages/api-server/src/rest/routes/__tests__/fixtures/business-service-c1-consumer';
 
 const rowsOf = (client: () => PostgresClient) =>
   async (sql: string, params: unknown[] = []) => (await client().query(sql, params)).rows as unknown[];
@@ -150,5 +152,11 @@ if (process.env['HAP1422_ACCEPTANCE'] !== '1') {
   defineA1RouteSuite({
     app: server, router: businessServiceRoutes, offeringRouter: serviceOfferingRoutes, rows: appRows,
     tokenForT: () => jwt.generateAccessToken('user-t', 'tess', 'operator', T),
+  });
+  // HAP-1425 (PoR S4): the C1 list and the consumer principals, on the same seed and login.
+  defineC1ConsumerSuite({
+    app: server, router: businessServiceRoutes, offeringRouter: serviceOfferingRoutes, rows: appRows,
+    tokenFor: tenant => tenant === T ? jwt.generateAccessToken('user-t', 'tess', 'operator', T)
+      : jwt.generateAccessToken('user-t2', 'tom', 'operator', T2),
   });
 }

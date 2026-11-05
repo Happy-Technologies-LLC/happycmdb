@@ -9,6 +9,7 @@
 import { NextFunction, Request, Response, Router } from 'express';
 import Joi from 'joi';
 import { BusinessServiceController } from '../controllers/business-service.controller';
+import { ServiceOfferingController } from '../controllers/service-offering.controller';
 import { validateRequest, validateOptional } from '../middleware/validation.middleware';
 import { auditMiddleware } from '../../middleware/audit.middleware';
 import type { AuthenticatedRequest } from '../../middleware/auth.middleware';
@@ -16,9 +17,11 @@ import { ROLE_PERMISSIONS } from '../../auth/types';
 import { getAuthMiddleware } from '../../auth/auth-bootstrap';
 import { journalRequestGuard } from '../../journal-http';
 import { C1_LIFECYCLES } from '../../services/business-service-reference';
+import { createServiceOfferingSchema } from './service-offering.routes';
 
 export const businessServiceRoutes = Router();
 const controller = new BusinessServiceController();
+const offerings = new ServiceOfferingController();
 const authMiddleware = getAuthMiddleware();
 
 // Apply audit middleware to all routes
@@ -359,4 +362,27 @@ businessServiceRoutes.get(
 businessServiceRoutes.get(
   '/:service_id/costs',
   controller.getServiceCosts.bind(controller)
+);
+
+/**
+ * @route   GET /api/v1/business-services/:service_id/offerings
+ * @desc    The service's offerings (HAP-1424), each as the C1 offering read
+ * @access  Private
+ */
+businessServiceRoutes.get(
+  '/:service_id/offerings',
+  offerings.listServiceOfferings.bind(offerings)
+);
+
+/**
+ * @route   POST /api/v1/business-services/:service_id/offerings
+ * @desc    Create an offering under the service (HAP-1424; 409 under a retired service, or live under a non-live one)
+ * @access  Private (write)
+ */
+businessServiceRoutes.post(
+  '/:service_id/offerings',
+  authMiddleware.requirePermission('write'),
+  journalRequestGuard(),
+  validateRequest(createServiceOfferingSchema, 'body'),
+  offerings.createServiceOffering.bind(offerings)
 );

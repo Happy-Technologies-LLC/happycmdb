@@ -13,6 +13,9 @@
  * identical 500 caused by a missing grant cannot pass as isolation. The two routes with no :service_id (list, create)
  * prove that T2's identifiers never reach a response or a row.
  * A route added to the router without an entry in the controls fails its own test and the route-table test.
+ * HAP-1424 (PoR S3): the same controls cover serviceOfferingRoutes (T calls each with T2's offering_id), and scenario 3
+ * proves the composite (service_id, organization_id) foreign key refuses, at the database and as the app login, an
+ * offering of T that names T2's service.
  */
 
 import type { Express, Router } from 'express';
@@ -22,7 +25,9 @@ export const T = '6a1d2c3b-4e5f-4a6b-8c7d-0e1f2a3b4c5d';
 export const T2 = '9b8a7c6d-5e4f-4321-8fed-cba987654321';
 export const T2_SECRET = 'T2 Secret Payroll';
 const BASE = '/api/v1/business-services';
+const OFFERINGS = '/api/v1/service-offerings';
 const MISSING = 'bs-does-not-exist';
+const MISSING_OFFERING = 'so-does-not-exist';
 
 /** The users the auth repository fake returns; the token's organization is the only tenant input. */
 export const A1_USERS: Record<string, { _id: string; _username: string; _role: string; _enabled: boolean;
@@ -73,14 +78,17 @@ INSERT INTO ci_reconciliation_operations (id, group_id, organization_id, ci_id, 
   ('00000000-0000-4000-8000-0000000000a1', '00000000-0000-4000-8000-0000000000b1', '${T2}', 'ci-t', 'api', 'update', TRUE,
     'pending', 't2-actor', 1, NOW() + INTERVAL '1 hour'),
   ('00000000-0000-4000-8000-0000000000a2', '00000000-0000-4000-8000-0000000000b2', '${T2}', 'ci-t-free', 'api', 'update',
-    TRUE, 'pending', 't2-actor', 1, NOW() + INTERVAL '1 hour');`;
+    TRUE, 'pending', 't2-actor', 1, NOW() + INTERVAL '1 hour');
+INSERT INTO service_offerings (offering_id, service_id, organization_id, name) VALUES
+  ('so-t', 'bs-t', '${T}', 'T Desk'), ('so-t2', 'bs-t2', '${T2}', '${T2_SECRET} Desk');`;
 /** The tables the snapshot compares (all readable by the app login). */
 export const A1_SEEDED_TABLES = ['dim_business_services', 'business_service_dependencies', 'ci_business_service_mappings',
-  'fact_business_service_incidents', 'fact_business_service_changes', 'cmdb.dim_ci'];
+  'fact_business_service_incidents', 'fact_business_service_changes', 'cmdb.dim_ci', 'service_offerings'];
 /** The tables the table owner empties before A1_SEED_SQL. */
 export const A1_TRUNCATE_SQL = `TRUNCATE ${[...A1_SEEDED_TABLES, 'ci_reconciliation_operations'].join(', ')} RESTART IDENTITY CASCADE;`;
 
 type Rows = (sql: string, params?: unknown[]) => Promise<unknown[]>;
+/** `service` is the route's own id: a service_id, or an offering_id on the offering routes. */
 type Ids = { service: string; child?: string };
 type RouteControl =
   | {
@@ -109,11 +117,12 @@ export function routeTable(router: Router): string[] {
 }
 
 /**
- * Defines the A1 describe block: the route-table test and one named test per route. `app` mounts the router under
- * test at /api/v1/business-services behind the real AuthMiddleware; `rows` runs SQL as the app login the routes use.
+ * Defines the A1 describe blocks: the route-table tests and one named test per route. `app` mounts `router` at
+ * /api/v1/business-services and `offeringRouter` at /api/v1/service-offerings behind the real AuthMiddleware; `rows`
+ * runs SQL as the app login the routes use.
  */
-export function defineA1RouteSuite({ app, router, tokenForT, rows }: {
-  app: Express; router: Router; tokenForT: () => string; rows: Rows;
+export function defineA1RouteSuite({ app, router, offeringRouter, tokenForT, rows }: {
+  app: Express; router: Router; offeringRouter: Router; tokenForT: () => string; rows: Rows;
 }): void {
   const auth = () => ({ Authorization: `Bearer ${tokenForT()}` });
   const get = (path: string) => request(app).get(`${BASE}${path}`).set(auth());
@@ -210,40 +219,86 @@ export function defineA1RouteSuite({ app, router, tokenForT, rows }: {
     'GET /:service_id/costs': {
       send: ({ service }) => get(`/${service}/costs`), foreign: { service: 'bs-t2' }, own: { service: 'bs-t', status: 200 },
     },
+    'GET /:service_id/offerings': {
+      send: ({ service }) => get(`/${service}/offerings`), foreign: { service: 'bs-t2' },
+      own: { service: 'bs-t', status: 200, shows: '"so-t"' },
+    },
+    'POST /:service_id/offerings': {
+      send: ({ service }) => request(app).post(`${BASE}/${service}/offerings`).set(auth()).send({ name: 'T New Desk' }),
+      foreign: { service: 'bs-t2' }, own: { service: 'bs-t', status: 201 },
+    },
+  };
+  const offeringControls: Record<string, RouteControl> = {
+    'GET /:offering_id': {
+      send: ({ service }) => request(app).get(`${OFFERINGS}/${service}`).set(auth()), foreign: { service: 'so-t2' },
+      own: { service: 'so-t', status: 200, shows: '"bs-t"' },
+    },
+    'PATCH /:offering_id': {
+      send: ({ service }) => request(app).patch(`${OFFERINGS}/${service}`).set(auth()).set('If-Match', '"1"')
+        .send({ name: 'Renamed Desk' }),
+      foreign: { service: 'so-t2' }, own: { service: 'so-t', status: 200 },
+    },
+  };
+
+  const runControl = async (control: RouteControl | undefined, route: string, missing: string) => {
+    if (!control) throw new Error(`${route} has no cross-tenant negative control`);
+    if ('check' in control) {
+      await control.check();
+      return;
+    }
+    const before = await snapshot();
+    const foreign = await control.send(control.foreign);
+    const absent = await control.send({ ...control.foreign, service: missing });
+    expect(foreign.status).toBe(404);
+    expect(observable(foreign)).toEqual(observable(absent));
+    expect(foreign.text).not.toContain(T2_SECRET);
+    if (control.foreignChild) {
+      const ownParentForeignChild = await control.send({ service: control.own.service, child: control.foreignChild.child });
+      const ownParentMissingChild = await control.send({ service: control.own.service, child: control.foreignChild.missing });
+      expect(ownParentForeignChild.status).toBe(404);
+      expect(observable(ownParentForeignChild)).toEqual(observable(ownParentMissingChild));
+    }
+    // Neither T2's rows and children nor T's changed; no audit row was appended.
+    expect(await snapshot()).toEqual(before);
+
+    const own = await control.send(control.own);
+    expect({ status: own.status, success: own.body.success }).toEqual({ status: control.own.status, success: true });
+    if (control.own.shows !== undefined) expect(own.text).toContain(control.own.shows);
   };
   const routes = routeTable(router);
+  const offeringRoutes = routeTable(offeringRouter);
 
   describe('A1: every business-service route refuses T2\'s service_id exactly as a missing one, under the app login', () => {
     it('the route table and the negative controls name the same routes', () => {
-      expect(routes).toHaveLength(14);
+      expect(routes).toHaveLength(16);
       expect([...routes].sort()).toEqual(Object.keys(controls).sort());
     });
 
-    it.each(routes)('%s', async route => {
-      const control = controls[route];
-      if (!control) throw new Error(`${route} has no cross-tenant negative control`);
-      if ('check' in control) {
-        await control.check();
-        return;
-      }
-      const before = await snapshot();
-      const foreign = await control.send(control.foreign);
-      const missing = await control.send({ ...control.foreign, service: MISSING });
-      expect(foreign.status).toBe(404);
-      expect(observable(foreign)).toEqual(observable(missing));
-      expect(foreign.text).not.toContain(T2_SECRET);
-      if (control.foreignChild) {
-        const ownParentForeignChild = await control.send({ service: control.own.service, child: control.foreignChild.child });
-        const ownParentMissingChild = await control.send({ service: control.own.service, child: control.foreignChild.missing });
-        expect(ownParentForeignChild.status).toBe(404);
-        expect(observable(ownParentForeignChild)).toEqual(observable(ownParentMissingChild));
-      }
-      // Neither T2's rows and children nor T's changed; no audit row was appended.
-      expect(await snapshot()).toEqual(before);
+    it.each(routes)('%s', route => runControl(controls[route], route, MISSING));
+  });
 
-      const own = await control.send(control.own);
-      expect({ status: own.status, success: own.body.success }).toEqual({ status: control.own.status, success: true });
-      if (control.own.shows !== undefined) expect(own.text).toContain(control.own.shows);
+  describe('HAP-1424 scenario 4: every service-offering route refuses T2\'s offering_id exactly as a missing one', () => {
+    it('the route table and the negative controls name the same routes', () => {
+      expect([...offeringRoutes].sort()).toEqual(Object.keys(offeringControls).sort());
+    });
+
+    it.each(offeringRoutes)('%s', route => runControl(offeringControls[route], route, MISSING_OFFERING));
+  });
+
+  describe('HAP-1424 scenario 3: the database refuses an offering whose service belongs to another tenant', () => {
+    it('INSERT or UPDATE of T\'s offering naming T2\'s service fails the composite foreign key as the app login', async () => {
+      const insert = (service: string) => rows(`INSERT INTO service_offerings (offering_id, service_id, organization_id, name)
+        VALUES ($1, $2, $3, 'Steered')`, [`so-guard-${service}`, service, T]);
+      await expect(insert('bs-t2')).rejects.toMatchObject({ code: '23503' });
+      await expect(rows(`UPDATE service_offerings SET service_id = 'bs-t2' WHERE offering_id = 'so-t'`))
+        .rejects.toMatchObject({ code: '23503' });
+      // Positive control: the same login inserts under T's own service, so the refusal is the guard, not a privilege.
+      await insert('bs-t');
+      expect(await rows(`SELECT offering_id, service_id, organization_id FROM service_offerings
+        WHERE offering_id IN ('so-t', 'so-guard-bs-t', 'so-guard-bs-t2') ORDER BY 1`)).toEqual([
+        { offering_id: 'so-guard-bs-t', service_id: 'bs-t', organization_id: T },
+        { offering_id: 'so-t', service_id: 'bs-t', organization_id: T },
+      ]);
     });
   });
 }

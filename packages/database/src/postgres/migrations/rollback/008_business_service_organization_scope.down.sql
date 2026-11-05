@@ -14,9 +14,10 @@
 -- 008 later puts ALL services back in the internal organization.
 --
 -- Order: if 009_business_service_views_org_scope.sql is applied, run
--- rollback/009_business_service_views_org_scope.down.sql first. Its views
--- depend on organization_id, so the DROP COLUMN below fails and this whole
--- transaction aborts until they are restored.
+-- rollback/009_business_service_views_org_scope.down.sql first; if
+-- 046_service_offerings.sql is applied, run rollback/046_service_offerings.down.sql
+-- first. Their views and composite tenant key depend on organization_id, so the
+-- DROP COLUMN below fails and this whole transaction aborts until they are removed.
 --
 -- Run: psql -v ON_ERROR_STOP=1 -f 008_business_service_organization_scope.down.sql
 

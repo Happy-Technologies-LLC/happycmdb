@@ -5,7 +5,7 @@
  *
  * Isolated hosted real-PG acceptance: it creates a cluster role, so it has its own job (HAP1422_ACCEPTANCE=1). The
  * scratch database is built by the real migrator as the container superuser (the owner of every table); `cmdb_user`
- * exists first, so the migrations' own grants (001, 033, 034, 044) are the only privileges it has. Every statement the
+ * exists first, so the migrations' own grants (001, 033, 034, 044, 046) are the only privileges it has. Every statement the
  * routes send runs on a PostgresClient connected as that login: not a superuser, no table owner, no SET ROLE.
  * The route-table controls are packages/api-server/src/rest/routes/__tests__/fixtures/business-service-a1.ts.
  * Substitutions: Neo4jAuthRepository -> in-memory users; Neo4j -> a graph fake that knows which tenant owns each CI.
@@ -67,6 +67,7 @@ import { loadConfig } from '@cmdb/common';
 import { JWTService } from '../../../packages/api-server/src/auth/jwt.service';
 import { getAuthMiddleware } from '../../../packages/api-server/src/auth/auth-bootstrap';
 import { businessServiceRoutes } from '../../../packages/api-server/src/rest/routes/business-service.routes';
+import { serviceOfferingRoutes } from '../../../packages/api-server/src/rest/routes/service-offering.routes';
 import {
   APP_LOGIN, AppLoginRefused, assertAppLogin,
 } from '../../../packages/api-server/src/rest/routes/__tests__/fixtures/app-login';
@@ -144,9 +145,10 @@ if (process.env['HAP1422_ACCEPTANCE'] !== '1') {
   server.use(express.json());
   server.use('/api/v1', getAuthMiddleware().authenticate());
   server.use('/api/v1/business-services', businessServiceRoutes);
+  server.use('/api/v1/service-offerings', serviceOfferingRoutes);
   const jwt = new JWTService(loadConfig().auth.jwt);
   defineA1RouteSuite({
-    app: server, router: businessServiceRoutes, rows: appRows,
+    app: server, router: businessServiceRoutes, offeringRouter: serviceOfferingRoutes, rows: appRows,
     tokenForT: () => jwt.generateAccessToken('user-t', 'tess', 'operator', T),
   });
 }

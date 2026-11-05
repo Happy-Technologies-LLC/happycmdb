@@ -245,4 +245,41 @@ describe('BusinessServices page', () => {
     expect(screen.queryByText('Business service updated successfully')).not.toBeInTheDocument();
     expect(within(await rowFor('Customer Portal')).getByText('Critical')).toBeInTheDocument();
   });
+
+  it('HAP-1424: lists a service\'s offerings, adds one, and retires one with If-Match on its version', async () => {
+    const user = userEvent.setup();
+    const offering = {
+      offering_id: 'so-1', service_id: 'bs-portal', tenant_id: 'org-1', name: 'Password reset', description: null,
+      audience: 'internal', lifecycle: 'planned', service_level: {}, version: 2, updated_at: '2026-11-05T10:00:00.000Z',
+    };
+    apiClient.get.mockImplementation(async (url: string) =>
+      url === '/business-services/bs-portal/offerings' ? { success: true, data: [offering] } : listOf([apiService]));
+    apiClient.post.mockResolvedValue({
+      success: true, data: { ...offering, offering_id: 'so-2', name: 'Laptop request', audience: 'customer', version: 1 },
+    });
+    apiClient.patch.mockResolvedValue({ success: true, data: { ...offering, lifecycle: 'retired', version: 3 } });
+
+    render(<BusinessServices />);
+    await user.click(within(await rowFor('Customer Portal')).getByRole('button', { name: /offerings/i }));
+    const dialog = await screen.findByRole('dialog');
+    const listed = (await within(dialog).findByText('Password reset')).closest('li') as HTMLElement;
+
+    await user.type(within(dialog).getByLabelText(/offering name/i), 'Laptop request');
+    await choose(user, within(dialog).getByRole('combobox', { name: /^audience$/i }), 'Customer');
+    await user.type(within(dialog).getByLabelText(/availability target/i), '99.5');
+    await user.click(within(dialog).getByRole('button', { name: /add offering/i }));
+    await waitFor(() => expect(apiClient.post).toHaveBeenCalledWith('/business-services/bs-portal/offerings', {
+      name: 'Laptop request', description: '', audience: 'customer', lifecycle: 'planned',
+      service_level: { availability_target: 99.5 },
+    }));
+    expect(await within(dialog).findByText('Laptop request')).toBeInTheDocument();
+
+    await user.click(within(listed).getByRole('button', { name: /edit/i }));
+    expect(within(dialog).getByLabelText(/offering name/i)).toHaveValue('Password reset');
+    await choose(user, within(dialog).getByRole('combobox', { name: /^lifecycle$/i }), 'Retired');
+    await user.click(within(dialog).getByRole('button', { name: /save offering/i }));
+    await waitFor(() => expect(apiClient.patch).toHaveBeenCalledWith('/service-offerings/so-1',
+      expect.objectContaining({ lifecycle: 'retired' }), { headers: { 'If-Match': '"2"' } }));
+    expect(await within(listed).findByText('retired')).toBeInTheDocument();
+  });
 });

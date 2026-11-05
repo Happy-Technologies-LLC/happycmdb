@@ -11,6 +11,8 @@
  * (fixtures/app-login.ts). Every statement after that runs in one PGlite session as the app login `cmdb_user`, which is
  * not a superuser and owns no table (HAP-1422; asserted before any test). One service is inserted before 043 so it is
  * backfilled live with no owner principal (a legacy row); scenario 7's backfill matrix is in the migration test.
+ * HAP-1424 (PoR S3) scenarios 1, 2, 5 and 6 run here on 046 (verbatim) through serviceOfferingRoutes; scenarios 3 and 4
+ * are in fixtures/business-service-a1.ts.
  */
 import { fork } from 'child_process';
 import { randomBytes } from 'crypto';
@@ -68,11 +70,13 @@ jest.mock('pg', () => {
 });
 // The real @cmdb/database opens the BullMQ Redis connection at import; nothing here queues jobs.
 jest.mock('@cmdb/database/bullmq/queue-manager', () => ({}));
-// t is an admin (D38: only an admin sets owner_principal_id); o is a non-admin writer of the same tenant.
-const USERS: Record<string, { _id: string; _username: string; _role: 'admin' | 'operator'; _enabled: boolean; _organizationId: string }> = {
+// t is an admin (D38: only an admin sets owner_principal_id); o is a non-admin writer of the same tenant; v a viewer.
+const USERS: Record<string, { _id: string; _username: string; _role: 'admin' | 'operator' | 'viewer'; _enabled: boolean;
+  _organizationId: string }> = {
   t: { _id: 'actor-t', _username: 'tess', _role: 'admin', _enabled: true, _organizationId: TENANT_T },
   o: { _id: 'actor-o', _username: 'otto', _role: 'operator', _enabled: true, _organizationId: TENANT_T },
   t2: { _id: 'actor-t2', _username: 'tom', _role: 'operator', _enabled: true, _organizationId: TENANT_T2 },
+  v: { _id: 'actor-v', _username: 'vera', _role: 'viewer', _enabled: true, _organizationId: TENANT_T },
 };
 jest.mock('../../../auth/neo4j-auth.repository', () => ({
   Neo4jAuthRepository: jest.fn(() => ({
@@ -88,6 +92,7 @@ import { getAuditService, getPostgresClient } from '@cmdb/database';
 import { JWTService } from '../../../auth/jwt.service';
 import { getAuthMiddleware } from '../../../auth/auth-bootstrap';
 import { businessServiceRoutes } from '../business-service.routes';
+import { serviceOfferingRoutes } from '../service-offering.routes';
 import {
   APP_GRANTS_SQL, assertAppLogin, assertAppStatement, createLoginRolesSql, ENTER_APP_LOGIN_SQL,
 } from './fixtures/app-login';
@@ -96,6 +101,7 @@ const app = express();
 app.use(express.json());
 app.use('/api/v1', getAuthMiddleware().authenticate());
 app.use('/api/v1/business-services', businessServiceRoutes);
+app.use('/api/v1/service-offerings', serviceOfferingRoutes);
 const jwt = new JWTService(loadConfig().auth.jwt);
 // Every request also carries a forged actor header; only the verified token subject may be recorded.
 const headers = (user: string) => ({ 'x-actor': 'forged-admin', authorization: `Bearer ${jwt.generateAccessToken(
@@ -146,7 +152,9 @@ beforeAll(async () => {
   await rows(`INSERT INTO dim_business_services (service_id, name, service_classification, tbm_tower, business_criticality,
     operational_status, organization_id) VALUES ($1, 'Legacy live', 'application', 'application', 'high', 'active', $2)`,
   [LEGACY, TENANT_T]);
-  await mockSql(`BEGIN;\n${migration('043_business_service_record_c1.sql')}\nCOMMIT;`, [], 'exec');
+  for (const name of ['043_business_service_record_c1.sql', '046_service_offerings.sql']) {
+    await mockSql(`BEGIN;\n${migration(name)}\nCOMMIT;`, [], 'exec');
+  }
   await mockSql(APP_GRANTS_SQL + ENTER_APP_LOGIN_SQL, [], 'exec');
   await assertAppLogin(async sql => (await rows(sql)));
 }, 60000);
@@ -397,5 +405,87 @@ describe('tenancy: another tenant writing T\'s service', () => {
     await rows(`INSERT INTO business_service_dependencies (service_id, depends_on_service_id, dependency_type)
       VALUES ($1, $2, 'technical')`, [theirs, mine]);
     expect((await del(mine)).status).toBe(200);
+  });
+});
+
+describe('HAP-1424 (PoR S3): service offerings', () => {
+  const offer = (service: string, body: object, user = 't') =>
+    request(app).post(`/api/v1/business-services/${service}/offerings`).set(headers(user)).send(body);
+  const patchOffer = (id: string, body: object, user = 't') =>
+    request(app).patch(`/api/v1/service-offerings/${id}`).set(headers(user)).send(body);
+  const readOffer = (id: string) => request(app).get(`/api/v1/service-offerings/${id}`).set(headers('t'));
+  const offered = async (service: string, body: object = {}) => {
+    const res = await offer(service, { name: 'Access desk', ...body });
+    expect(res.status).toBe(201);
+    return res.body.data.offering_id as string;
+  };
+  const offeringRow = async (id: string) =>
+    (await rows('SELECT name, lifecycle, version FROM service_offerings WHERE offering_id = $1', [id]))[0];
+  const SERVICE_LEVEL = { availability_target: 99.9, response_target_hours: 4, support_hours: '24x7' };
+
+  it('scenario 1: an offering of live service S in T reads back with service_id S, tenant_id T, version 1; S lists it', async () => {
+    const service = await created({ lifecycle: 'live', owner_principal_id: OWNER });
+    const res = await offer(service, { name: 'Standard access request', description: 'One account', audience: 'customer',
+      lifecycle: 'live', service_level: SERVICE_LEVEL });
+    expect([res.status, res.headers['etag']]).toEqual([201, '"1"']);
+    const id = res.body.data.offering_id as string;
+    expect(id).toMatch(/^so-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    const read = await readOffer(id);
+    expect([read.status, read.body.data]).toEqual([200, {
+      offering_id: id, service_id: service, tenant_id: TENANT_T, name: 'Standard access request', description: 'One account',
+      audience: 'customer', lifecycle: 'live', service_level: SERVICE_LEVEL, version: 1, updated_at: expect.any(String),
+    }]);
+    expect((await readC1(service)).body.data.offerings).toEqual([{ offering_id: id, name: 'Standard access request', lifecycle: 'live' }]);
+    const list = await request(app).get(`/api/v1/business-services/${service}/offerings`).set(headers('t'));
+    expect([list.status, list.body.data]).toEqual([200, [read.body.data]]);
+  });
+
+  it('scenario 2: live needs a live service and a retired service takes none (409, nothing written)', async () => {
+    const [planned, retired] = [await created(), await created({ lifecycle: 'retired' })];
+    const live = await created({ lifecycle: 'live', owner_principal_id: OWNER });
+    const draft = await offered(planned);
+    const running = await offered(live, { lifecycle: 'live' });
+    const before = [await auditCount(), await offeringRow(draft), await stored(live)];
+    const refused = [await offer(planned, { name: 'Early', lifecycle: 'live' }), await offer(retired, { name: 'Late' }),
+      await patchOffer(draft, { lifecycle: 'live' }), await patchOffer(running, { lifecycle: 'planned' }),
+      // The service cannot leave live under a live offering, nor be deleted while it has offerings.
+      await patch(live, { lifecycle: 'retiring' }), await del(planned)];
+    expect(refused.map(res => [res.status, res.body.error])).toEqual(Array(6).fill([409, 'Conflict']));
+    expect([await auditCount(), await offeringRow(draft), await stored(live)]).toEqual(before);
+    expect(await rows('SELECT count(*)::int AS n FROM service_offerings WHERE service_id = ANY($1)', [[planned, retired]]))
+      .toEqual([{ n: 1 }]);
+  });
+
+  it('scenario 5: a viewer gets 403 on every offering write (create, update, retire) and nothing is written', async () => {
+    const service = await created();
+    const id = await offered(service);
+    const before = [await auditCount(), await offeringRow(id)];
+    const refused = [await offer(service, { name: 'Viewer desk' }, 'v'), await patchOffer(id, { name: 'Viewer rename' }, 'v'),
+      await patchOffer(id, { lifecycle: 'retired' }, 'v')];
+    expect(refused.map(res => res.status)).toEqual([403, 403, 403]);
+    expect([await auditCount(), await offeringRow(id)]).toEqual(before);
+    expect(await rows('SELECT count(*)::int AS n FROM service_offerings WHERE service_id = $1', [service])).toEqual([{ n: 1 }]);
+  });
+
+  it('scenario 6: create, update and retire each append one chained SERVICE_OFFERING row; the chain verifies', async () => {
+    const service = await created();
+    const start = await auditCount();
+    const id = await offered(service);
+    expect((await patchOffer(id, { name: 'Renamed desk' }).set('If-Match', '"1"')).status).toBe(200);
+    const stale = await patchOffer(id, { name: 'Lost update' }).set('If-Match', '"1"');
+    expect([stale.status, stale.body.version]).toEqual([409, 2]);
+    const retired = await patchOffer(id, { lifecycle: 'retired' });
+    expect([retired.status, retired.body.data.version, retired.headers['etag']]).toEqual([200, 3, '"3"']);
+
+    expect(await auditCount()).toBe(start + 3);
+    const entries = await audit(id);
+    expect(entries.map(row => [row['entity_type'], row['action'], row['metadata']['operation'], row['metadata']['version'],
+      row['actor'], row['organization_id']])).toEqual([
+      ['SERVICE_OFFERING', 'CREATE', 'create', 1, 'actor-t', TENANT_T],
+      ['SERVICE_OFFERING', 'UPDATE', 'update', 2, 'actor-t', TENANT_T],
+      ['SERVICE_OFFERING', 'UPDATE', 'retire', 3, 'actor-t', TENANT_T],
+    ]);
+    expect(entries[1]!['changes']).toEqual(expect.arrayContaining([{ field: 'name', old_value: 'Access desk', new_value: 'Renamed desk' }]));
+    expect(await getAuditService(getPostgresClient().pool).verifyAuditChain()).toMatchObject({ ok: true, orgBindingViolations: [] });
   });
 });

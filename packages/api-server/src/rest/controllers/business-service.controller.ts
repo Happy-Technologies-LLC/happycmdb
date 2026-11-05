@@ -10,18 +10,20 @@ import { Request, Response } from 'express';
 import { randomUUID } from 'crypto';
 import type { PoolClient } from 'pg';
 import {
-  appendAuditEntry, auditChainReady, CI_TRAVERSAL_QUERY_TIMEOUT_MS, CITraversalLimitError, createCITraversalWork,
+  auditChainReady, CI_TRAVERSAL_QUERY_TIMEOUT_MS, CITraversalLimitError, createCITraversalWork,
   getNeo4jClient, getPostgresClient, JournalUnavailableError, MAX_CI_TRAVERSAL_NODES, MAX_CI_TRAVERSAL_WORK,
 } from '@cmdb/database';
-import { logger, type AuditChange } from '@cmdb/common';
+import { logger } from '@cmdb/common';
 import { requestOrganizationId } from '../../middleware/auth.middleware';
-import { requestActor } from '../../journal-http';
 import { errorLogFields } from '../../utils/log-error';
 import { assertNoCIGap, CIGapError, CI_GAP_RESPONSE, filterOwnedDimensionRows, writeReferencedCIs } from '../../read-admission';
 import {
   C1Lifecycle, lifecycleMoveAllowed, lifecycleNeedsOwner, serviceReference, StoredDependencyRow,
 } from '../../services/business-service-reference';
 import { sendTraversalFailure } from './traversal-failure';
+import {
+  appendPortfolioAudit, ifMatchVersion, sendWriteFailure, WRITE_UNAVAILABLE, type WriteRefusal,
+} from './portfolio-write';
 
 /*
  * Tenant scoping: every handler reads the caller's organization from the
@@ -60,53 +62,17 @@ type ServiceWalkRow = {
 type ServiceRow = Record<string, unknown> & {
   service_id: string; name: string; lifecycle: C1Lifecycle; owner_principal_id: string | null; version: number;
 };
-/** A refused portfolio write: nothing written, no audit row. */
-type WriteRefusal = { status: number; body: Record<string, unknown> };
 const NOT_FOUND_REFUSAL: WriteRefusal = { status: 404, body: { success: false, error: 'Business service not found' } };
 const OWNER_REQUIRED = {
   success: false, error: 'Unprocessable Entity', message: 'owner_principal_id is required for a live or retiring service',
 };
-const WRITE_UNAVAILABLE = {
-  success: false, error: 'Service Unavailable', message: 'Business service write temporarily unavailable',
-};
-/** Not listed in a service audit row's changes: the row's organization_id column binds the org; timestamps are the row's. */
-const UNAUDITED_COLUMNS: Record<string, true> = { organization_id: true, created_at: true, updated_at: true };
 
-/**
- * If-Match as a service version: null when absent or `*`, undefined when malformed (400). Accepts the strong ETag
- * that POST and PATCH send (`"<version>"`, also the body's `version`) and bare digits; a weak tag (`W/"<n>"`) is
- * malformed, so 400, never a match.
- */
-function ifMatchVersion(header: string | undefined): number | null | undefined {
-  if (header === undefined || header.trim() === '*') return null;
-  const match = /^\s*(?:"([1-9][0-9]{0,9})"|([1-9][0-9]{0,9}))\s*$/.exec(header);
-  return match ? Number(match[1] ?? match[2]) : undefined;
-}
-
-/**
- * One BUSINESS_SERVICE audit_log row on the write's own transaction, hash-chained by appendAuditEntry (C1 rule, F2:
- * the portfolio's local chain, no ledger event). Actor: the verified token subject (requestActor, HAP-443); changes:
- * the columns whose values differ between `before` and `after`.
- */
-async function appendServiceAudit(client: PoolClient, req: Request, organizationId: string,
+/** One BUSINESS_SERVICE audit_log row on the write's own transaction (appendPortfolioAudit). */
+function appendServiceAudit(client: PoolClient, req: Request, organizationId: string,
   action: 'CREATE' | 'UPDATE' | 'DELETE', operation: 'create' | 'update' | 'retire' | 'delete',
   before: ServiceRow | null, after: ServiceRow | null): Promise<void> {
-  const row = (after ?? before)!;
-  const changes: AuditChange[] = Object.keys(row).filter(field => UNAUDITED_COLUMNS[field] !== true).flatMap(field => {
-    const old_value = before?.[field] ?? null;
-    const new_value = after?.[field] ?? null;
-    return JSON.stringify(old_value) === JSON.stringify(new_value) ? [] : [{ field, old_value, new_value }];
-  });
-  await appendAuditEntry(client, {
-    entity_type: 'BUSINESS_SERVICE', entity_id: row.service_id, action, actor: requestActor(req), actor_type: 'user',
-    changes, metadata: { operation, version: row.version },
-  }, organizationId);
-}
-
-/** A chain-lock timeout (55P03) is a 503, as for journaled CI writes; anything else a generic 500 (detail in the log). */
-function sendWriteFailure(res: Response, error: unknown, message: string): void {
-  if ((error as { code?: unknown } | null)?.code === '55P03') res.status(503).json(WRITE_UNAVAILABLE);
-  else res.status(500).json({ success: false, error: message });
+  return appendPortfolioAudit(client, req, organizationId, { type: 'BUSINESS_SERVICE', id: (after ?? before)!.service_id },
+    action, operation, before, after);
 }
 
 export class BusinessServiceController {
@@ -263,7 +229,13 @@ export class BusinessServiceController {
             JOIN dim_business_services t ON t.service_id = d.depends_on_service_id AND t.organization_id = s.organization_id
             WHERE d.service_id = s.service_id
             ORDER BY d.created_at DESC, t.service_id
-          ) x), '[]'::json) AS c1_dependencies
+          ) x), '[]'::json) AS c1_dependencies,
+          COALESCE((SELECT json_agg(x) FROM (
+            SELECT o.offering_id, o.name, o.lifecycle
+            FROM service_offerings o
+            WHERE o.service_id = s.service_id AND o.organization_id = s.organization_id
+            ORDER BY o.created_at, o.offering_id
+          ) x), '[]'::json) AS c1_offerings
         FROM dim_business_services s
         WHERE s.service_id = $1 AND s.organization_id = $2`,
         [service_id, requestOrganizationId(req)]
@@ -277,13 +249,14 @@ export class BusinessServiceController {
         return;
       }
 
-      const { c1_dependencies: dependencies, ...row } = result.rows[0];
-      // No version ETag here: this body also carries dependencies[] (each target's lifecycle, name, criticality) and
-      // the child counts, which change without bumping this record's version, so "<version>" would validate a stale
-      // 304. Express's default body-hash ETag stays; the body's `version` is the If-Match value.
+      const { c1_dependencies: dependencies, c1_offerings: offerings, ...row } = result.rows[0];
+      // No version ETag here: this body also carries dependencies[] (each target's lifecycle, name, criticality),
+      // offerings[] (HAP-1424) and the child counts, which change without bumping this record's version, so
+      // "<version>" would validate a stale 304. Express's default body-hash ETag stays; the body's `version` is the
+      // If-Match value.
       res.json({
         success: true,
-        data: { ...row, ...serviceReference(row, dependencies as StoredDependencyRow[]) }
+        data: { ...row, ...serviceReference(row, dependencies as StoredDependencyRow[]), offerings }
       });
     } catch (error) {
       logger.error('Error getting business service', { error: errorLogFields(error), service_id: req.params.service_id });
@@ -432,6 +405,15 @@ export class BusinessServiceController {
         if (lifecycleNeedsOwner(lifecycle) && !principal && (lifecycle !== current.lifecycle || 'owner_principal_id' in updates)) {
           return { status: 422, body: OWNER_REQUIRED };
         }
+        // HAP-1424: an offering is live only under a live service, so the service leaves live only once none is. A
+        // concurrent offering write holds FOR SHARE on this row, so it commits before this check or sees the move.
+        if (current.lifecycle === 'live' && lifecycle !== 'live' && (await client.query(
+          `SELECT 1 FROM service_offerings WHERE service_id = $1 AND organization_id = $2 AND lifecycle = 'live' LIMIT 1`,
+          [service_id, organizationId]
+        )).rows.length > 0) {
+          return { status: 409, body: { success: false, error: 'Conflict',
+            message: 'Business service has live offerings; move them out of live first' } };
+        }
 
         const result = await client.query(
           `UPDATE dim_business_services
@@ -494,12 +476,13 @@ export class BusinessServiceController {
                JOIN dim_business_services other ON other.organization_id = $2
                  AND other.service_id = CASE WHEN d.service_id = $1 THEN d.depends_on_service_id ELSE d.service_id END
                WHERE d.service_id = $1 OR d.depends_on_service_id = $1)
+             OR EXISTS (SELECT 1 FROM service_offerings o WHERE o.service_id = $1 AND o.organization_id = $2)
              AS linked`,
           [service_id, organizationId]
         )).rows[0];
         if (linked) {
           return { status: 409, body: { success: false, error: 'Conflict',
-            message: 'Business service has CI mappings or dependencies; retire it (lifecycle = retired) instead' } };
+            message: 'Business service has CI mappings, dependencies or offerings; retire it (lifecycle = retired) instead' } };
         }
         await client.query('DELETE FROM dim_business_services WHERE service_id = $1 AND organization_id = $2',
           [service_id, organizationId]);

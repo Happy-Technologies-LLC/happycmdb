@@ -317,7 +317,9 @@ beforeAll(async () => {
     schema.match(/CREATE TABLE IF NOT EXISTS audit_log \([\s\S]*?\n\);/)![0],
     readFileSync(join(MIGRATIONS, '003_audit_hash_chain.sql'), 'utf8'),
     'ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS organization_id UUID;'].join('\n'));
-  await db.exec(`BEGIN;\n${readFileSync(join(MIGRATIONS, '043_business_service_record_c1.sql'), 'utf8')}\nCOMMIT;`);
+  for (const name of ['043_business_service_record_c1.sql', '046_service_offerings.sql']) {
+    await db.exec(`BEGIN;\n${readFileSync(join(MIGRATIONS, name), 'utf8')}\nCOMMIT;`);
+  }
   await db.exec(APP_GRANTS_SQL + journalReadAclSql());
 });
 
@@ -385,6 +387,9 @@ describe('migration 008_business_service_organization_scope', () => {
     await getMigrationStatus(migratorClient, MIGRATIONS); // ensures cmdb.schema_migrations
     await db.exec(`INSERT INTO cmdb.schema_migrations (migration_name, checksum)
       VALUES ('008_business_service_organization_scope.sql', 'x') ON CONFLICT DO NOTHING`);
+    // As the down script says: 046's composite tenant key depends on organization_id, so 046 is rolled back first.
+    const offerings = readFileSync(join(MIGRATIONS, '046_service_offerings.sql'), 'utf8');
+    await db.exec(readFileSync(join(MIGRATIONS, 'rollback/046_service_offerings.down.sql'), 'utf8'));
     try {
       await db.exec(down);
 
@@ -398,6 +403,7 @@ describe('migration 008_business_service_organization_scope', () => {
         business_criticality, operational_status) VALUES ('bs-pre-008', 'Pre', 'compute', 'compute', 'low', 'active')`);
     } finally {
       await db.exec(up);
+      await db.exec(`BEGIN;\n${offerings}\nCOMMIT;`);
     }
     expect(await orgOf('bs-pre-008')).toBe(INTERNAL_ORG);
   });

@@ -7,8 +7,8 @@
  *
  * Every statement the routes send runs as `cmdb_user` (NOSUPERUSER, owns no table); see fixtures/app-login.ts. The
  * schema is built by the NOSUPERUSER owner `cmdb_owner` from 001's CREATE TABLE blocks, 008, 011, 028's journal
- * tables, 003 and 043, then the app grants and 044. Substitutions: Neo4jAuthRepository -> in-memory users; Neo4j -> a
- * graph fake that knows which tenant owns each CI.
+ * tables, 003, 043 and 046 (service_offerings), then the app grants and 044. Substitutions: Neo4jAuthRepository ->
+ * in-memory users; Neo4j -> a graph fake that knows which tenant owns each CI.
  */
 
 import { fork } from 'child_process';
@@ -99,6 +99,7 @@ import { loadConfig } from '@cmdb/common';
 import { JWTService } from '../../../auth/jwt.service';
 import { getAuthMiddleware } from '../../../auth/auth-bootstrap';
 import { businessServiceRoutes } from '../business-service.routes';
+import { serviceOfferingRoutes } from '../service-offering.routes';
 import {
   APP_GRANTS_SQL, APP_LOGIN, AppLoginRefused, assertAppLogin, assertAppStatement, asTableOwner, createLoginRolesSql,
   ENTER_APP_LOGIN_SQL, journalReadAclSql, migrationSql, PGLITE_SUPERUSER, TABLE_OWNER,
@@ -111,6 +112,7 @@ const app = express();
 app.use(express.json());
 app.use('/api/v1', getAuthMiddleware().authenticate());
 app.use('/api/v1/business-services', businessServiceRoutes);
+app.use('/api/v1/service-offerings', serviceOfferingRoutes);
 const jwt = new JWTService(loadConfig().auth.jwt);
 
 beforeAll(async () => {
@@ -122,7 +124,7 @@ beforeAll(async () => {
     return match[0];
   };
   await db.exec([createLoginRolesSql(name), 'CREATE SCHEMA cmdb;',
-    ...A1_SEEDED_TABLES.map(table => ddl(schema, table)),
+    ...A1_SEEDED_TABLES.filter(table => table !== 'service_offerings').map(table => ddl(schema, table)),
     ...schema.match(/CREATE TYPE audit_\w+ AS ENUM \([^;]*\);/g)!, ddl(schema, 'audit_log')].join('\n'));
   for (const file of ['008_business_service_organization_scope.sql', '011_ci_organization_scope.sql']) {
     await db.exec(`BEGIN;\n${migrationSql(file)}\nCOMMIT;`);
@@ -130,7 +132,9 @@ beforeAll(async () => {
   const journal = migrationSql('028_change_history_reconciliation_org_provenance.sql');
   await db.exec([ddl(journal, 'ci_reconciliation_operations'), ddl(journal, 'ci_reconciliation_epochs'),
     migrationSql('003_audit_hash_chain.sql'), 'ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS organization_id UUID;'].join('\n'));
-  await db.exec(`BEGIN;\n${migrationSql('043_business_service_record_c1.sql')}\nCOMMIT;`);
+  for (const file of ['043_business_service_record_c1.sql', '046_service_offerings.sql']) {
+    await db.exec(`BEGIN;\n${migrationSql(file)}\nCOMMIT;`);
+  }
   await db.exec(APP_GRANTS_SQL + journalReadAclSql() + ENTER_APP_LOGIN_SQL);
 }, 60000);
 afterAll(() => { host.kill(); });
@@ -185,6 +189,6 @@ describe('N1: the setup guard refuses a superuser or table-owner session', () =>
 });
 
 defineA1RouteSuite({
-  app, router: businessServiceRoutes, rows: db.rows,
+  app, router: businessServiceRoutes, offeringRouter: serviceOfferingRoutes, rows: db.rows,
   tokenForT: () => jwt.generateAccessToken('user-t', 'tess', 'operator', T),
 });

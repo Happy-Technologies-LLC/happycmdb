@@ -4,8 +4,10 @@
 -- Order (deploy/BUILD01-STAGING.md, "Rollback to cmdb_user"): switch the API back to the owner login FIRST. This
 -- script refuses while any session is logged in as cmdb_app, because the API would lose every privilege it uses.
 --
--- Effect: cmdb_app keeps its LOGIN but holds no privilege in the public or cmdb schemas beyond PUBLIC's. 045 and the
--- staging app-login provisioning are the only grantors to cmdb_app, so revoking everything is exactly 045's reversal.
+-- Effect: cmdb_app keeps its LOGIN but holds no privilege in the public or cmdb schemas beyond PUBLIC's. 045, 046
+-- (service_offerings) and the staging app-login provisioning are the only grantors to cmdb_app, so revoking
+-- everything reverses 045 and 046's cmdb_app grant. Both are un-recorded so the migrator re-grants on the way back
+-- (046 is idempotent and keeps its table and data).
 -- Loses no data and does not touch cmdb_user. To remove the login too, afterwards: DROP OWNED BY cmdb_app; DROP ROLE
 -- cmdb_app; (cluster-wide; run once per database that has cmdb_app grants, then drop the role).
 --
@@ -26,5 +28,6 @@ BEGIN
   REVOKE ALL ON SCHEMA public, cmdb FROM cmdb_app;
 END
 $acl$;
-DELETE FROM cmdb.schema_migrations WHERE migration_name = '045_staging_app_login_acl.sql';
+DELETE FROM cmdb.schema_migrations
+  WHERE migration_name IN ('045_staging_app_login_acl.sql', '046_service_offerings.sql');
 COMMIT;

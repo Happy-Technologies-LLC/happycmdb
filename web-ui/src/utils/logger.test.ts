@@ -130,6 +130,7 @@ const SITES = {
   'components/common/ErrorBoundary.tsx': 1, 'components/credentials/CredentialForm.tsx': 1,
   'components/discovery/AgentDashboard.tsx': 1, 'components/discovery/AgentList.tsx': 1,
   'components/discovery/AgentSelector.tsx': 2, 'hooks/useWebSocket.ts': 3, 'services/graphql.ts': 1, 'utils/token.ts': 4,
+  'components/business-services/ServiceOfferingsDialog.tsx': 2,
 };
 
 describe('every non-test web-ui/src file (HAP-1210 S2b, T2)', () => {

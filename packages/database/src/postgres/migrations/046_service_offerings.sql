@@ -12,7 +12,10 @@
 --                       service with offerings cannot be deleted (the API answers 409: retire it).
 -- audit_entity_type gains SERVICE_OFFERING: offering writes append to the hash-chained audit_log (C1, F2; no ledger).
 -- Grants: SELECT, INSERT, UPDATE (no DELETE route) to the app logins that exist: cmdb_user (the HAP-1422 non-owner
--- login) and cmdb_app (HAP-1562 staging login; 045 grants it per table, with no default privileges).
+-- login) and cmdb_app (HAP-1562 staging login; 045 grants it per table, with no default privileges). This GRANT is
+-- the only one cmdb_app holds on service_offerings: rollback/045 therefore also un-records 046 so the migrator
+-- re-grants it, and a cmdb_app re-created by the staging app-login (which re-applies only 045) lacks it until 046
+-- runs again (UNRESOLVED, deploy follow-up).
 --
 -- V2/V3 initdb ships no 001 business-service table (as 043): the DDL is skipped with a NOTICE. A wrong relation kind,
 -- or a pre-existing service_offerings without the composite tenant guard, aborts. Idempotent; the migrator records it

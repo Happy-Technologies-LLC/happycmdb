@@ -79,11 +79,13 @@ if (process.env['HAP1562_ACCEPTANCE'] !== '1') {
     const { getAuthMiddleware } = await import('../../../packages/api-server/src/auth/auth-bootstrap');
     const { ciRoutes } = await import('../../../packages/api-server/src/rest/routes/ci.routes');
     const { businessServiceRoutes } = await import('../../../packages/api-server/src/rest/routes/business-service.routes');
+    const { serviceOfferingRoutes } = await import('../../../packages/api-server/src/rest/routes/service-offering.routes');
     const app = express();
     app.use(express.json());
     app.use('/api/v1', getAuthMiddleware().authenticate());
     app.use('/api/v1/cis', ciRoutes);
     app.use('/api/v1/business-services', businessServiceRoutes);
+    app.use('/api/v1/service-offerings', serviceOfferingRoutes);
     const token = new JWTService(loadConfig().auth.jwt).generateAccessToken(USER._id, USER._username, 'admin', ORG);
     api = { app, token, database };
   }, 180000);
@@ -133,7 +135,7 @@ if (process.env['HAP1562_ACCEPTANCE'] !== '1') {
       await expect(api.database.getNeo4jClient().journal.sweep()).resolves.toBe(0);
     });
 
-    it('business-service routes: create, map a CI, list its CIs and read /context', async () => {
+    it('business-service routes: create, map a CI, list its CIs, read /context, and create and read an offering (046)', async () => {
       const created = await send('post', '/business-services', { name: 'HAP-1562 service', service_classification: 'application',
         tbm_tower: 'application', business_criticality: 'low' });
       expect(created.status).toBe(201);
@@ -146,6 +148,10 @@ if (process.env['HAP1562_ACCEPTANCE'] !== '1') {
       const cis = await send('get', `/business-services/${service}/cis`);
       expect([cis.status, cis.text.includes(ci)]).toEqual([200, true]);
       expect((await send('get', `/business-services/${service}/context`)).status).toBe(200);
+      const offering = await send('post', `/business-services/${service}/offerings`, { name: 'HAP-1562 desk' });
+      expect(offering.status).toBe(201);
+      const read = await send('get', `/service-offerings/${offering.body.data.offering_id}`);
+      expect([read.status, read.body.data.service_id]).toEqual([200, service]);
     });
   });
 }

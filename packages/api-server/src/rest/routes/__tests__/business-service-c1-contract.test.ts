@@ -287,7 +287,9 @@ beforeAll(async () => {
     ['ci_reconciliation_operations', 'ci_reconciliation_epochs']));
   await send('exec', `BEGIN;\n${migration('042_co1_access_request_fulfilment_seed.sql')}\nCOMMIT;`);
   await send('exec', TEST_SEED);
-  await send('exec', `BEGIN;\n${migration('043_business_service_record_c1.sql')}\nCOMMIT;`);
+  for (const name of ['043_business_service_record_c1.sql', '046_service_offerings.sql']) {
+    await send('exec', `BEGIN;\n${migration(name)}\nCOMMIT;`);
+  }
   await send('exec', APP_GRANTS_SQL + journalReadAclSql() + ENTER_APP_LOGIN_SQL);
   // Every request below runs in this session; refuse to test anything as a superuser or the table owner.
   await assertAppLogin(sql => send('query', sql));

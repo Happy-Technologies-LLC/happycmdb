@@ -28,6 +28,7 @@ import {
 import { apiClient } from '../lib/api-client';
 import { useToast } from '../contexts/ToastContext';
 import { logClientError } from '../utils/logger';
+import { ServiceOfferingsDialog } from '../components/business-services/ServiceOfferingsDialog';
 
 /** Canonical business criticality accepted by /api/v1/business-services. */
 type Criticality = 'critical' | 'high' | 'medium' | 'low';
@@ -158,6 +159,7 @@ export const BusinessServices: React.FC = () => {
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
   const [editingService, setEditingService] = useState<BusinessService | null>(null);
   const [saving, setSaving] = useState(false);
+  const [offeringsFor, setOfferingsFor] = useState<BusinessService | null>(null);
 
   const [formData, setFormData] = useState({
     name: '',
@@ -584,6 +586,14 @@ export const BusinessServices: React.FC = () => {
                         <Button
                           size="icon"
                           variant="ghost"
+                          aria-label={`Offerings for ${service.name}`}
+                          onClick={() => setOfferingsFor(service)}
+                        >
+                          <Icon name="package" size={16} />
+                        </Button>
+                        <Button
+                          size="icon"
+                          variant="ghost"
                           onClick={() => handleDelete(service.id)}
                         >
                           <Icon name="trash" size={16} />
@@ -597,6 +607,7 @@ export const BusinessServices: React.FC = () => {
           </table>
         </div>
       </LiquidGlass>
+      <ServiceOfferingsDialog service={offeringsFor} onClose={() => setOfferingsFor(null)} />
     </div>
   );
 };

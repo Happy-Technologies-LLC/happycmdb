@@ -302,9 +302,9 @@ SSH credential-backed execution is restored by HP1-S5.
 Scoped to the caller's organization: 403 without an organization claim; a service outside the caller's organization returns the same 404 as a missing one. Create assigns a globally unique `service_id`; supplied IDs are rejected with 400.
 - `GET /business-services` - List business services
 - `POST /business-services` - Create business service
-- `GET /business-services/{service_id}` - Get business service with mapped-CI and dependency counts, plus the Suite Contracts v2 C1 fields (`tenant_id`, `owner`, `criticality`, `lifecycle`, `dependencies[]`)
-- `PATCH /business-services/{service_id}` - Update business service
-- `DELETE /business-services/{service_id}` - Delete business service
+- `GET /business-services/{service_id}` - Get business service with mapped-CI and dependency counts, plus the Suite Contracts v2 C1 fields (`tenant_id`, `owner`, `criticality`, `lifecycle`, `dependencies[]`, `offerings[]`)
+- `PATCH /business-services/{service_id}` - Update business service (409 when moving out of live while an offering is live)
+- `DELETE /business-services/{service_id}` - Delete business service (409 when it has CI mappings, dependencies or offerings: retire it)
 - `GET /business-services/{service_id}/cis` - Mapped CIs
 - `POST /business-services/{service_id}/cis` - Map CIs
 - `DELETE /business-services/{service_id}/cis/{ci_id}` - Unmap CI
@@ -314,6 +314,13 @@ Scoped to the caller's organization: 403 without an organization claim; a servic
 - `DELETE /business-services/{service_id}/dependencies/{depends_on_service_id}` - Delete dependency
 - `GET /business-services/{service_id}/health` - Incident and change metrics (7/30-day UTC windows)
 - `GET /business-services/{service_id}/costs` - Monthly cost summary
+- `GET /business-services/{service_id}/offerings` - The service's offerings (C1 offering reads, oldest first)
+- `POST /business-services/{service_id}/offerings` - Create offering (`write`; 409 under a retired service, or live under a service that is not live)
+
+### Service Offerings (`/api/v1/service-offerings`)
+Offerings belong to one business service of the caller's organization (HAP-1424); another organization's offering returns the same 404 as a missing one, and the database refuses an offering whose service is another tenant's. Each write appends one `SERVICE_OFFERING` row to the hash-chained audit log.
+- `GET /service-offerings/{offering_id}` - C1 offering read (`offering_id`, `service_id`, `tenant_id`, `name`, `description`, `audience`, `lifecycle`, `service_level`, `version`, `updated_at`)
+- `PATCH /service-offerings/{offering_id}` - Update offering (`write`; optional `If-Match: "<version>"`; retire with `lifecycle = retired`; lifecycle moves forward only)
 
 ### Health (`/api/v1/cmdb-health`)
 - `GET /cmdb-health`, `/ready` - Public dependency status (`{ "_status": "healthy" | "unhealthy" }` or `{ "_ready": boolean }`); 200 when ready, 503 otherwise. Both routes share a five-second completion-based cache, including failures, and a two-second response deadline. At most one physical operation per dependency is outstanding, even after a timeout; no further probe begins on that dependency until it settles. No dependency details, version, uptime, timestamp, capacity or raw errors are public. `GET /alive` is a public process-only liveness probe returning 200 `{ "_alive": true }` without dependency I/O.

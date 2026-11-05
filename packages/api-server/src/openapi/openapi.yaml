@@ -3149,9 +3149,9 @@ paths:
       description: >-
         The service plus its mapped-CI and dependency counts, and the Suite
         Contracts v2 C1 service-reference fields (tenant_id, owner,
-        owner_group, criticality, lifecycle, version, dependencies). Another organization's service
-        answers the same 404 as a missing one; the tenant is the token's
-        organization, never a request parameter.
+        owner_group, criticality, lifecycle, version, dependencies, offerings).
+        Another organization's service answers the same 404 as a missing one;
+        the tenant is the token's organization, never a request parameter.
       operationId: getBusinessService
       responses:
         '200':
@@ -3240,7 +3240,8 @@ paths:
         '409':
           description: >-
             Stale If-Match (`message: Version mismatch`, with the current
-            `version`), or a backward or post-retirement lifecycle move.
+            `version`), a backward or post-retirement lifecycle move, or a move
+            out of live while the service has a live offering (HAP-1424).
           content:
             application/json:
               schema:
@@ -3256,11 +3257,11 @@ paths:
       tags: [Business Services]
       summary: Delete a business service
       description: >-
-        Deletes a service that has no CI mappings and no dependencies from or
-        to it, together with its health metrics; otherwise 409 (retire it with
-        `lifecycle = retired` instead). Requires the `write` permission.
-        Appends one BUSINESS_SERVICE DELETE row to the hash-chained audit_log
-        in the same transaction.
+        Deletes a service that has no CI mappings, no dependencies from or to
+        it and no offerings, together with its health metrics; otherwise 409
+        (retire it with `lifecycle = retired` instead). Requires the `write`
+        permission. Appends one BUSINESS_SERVICE DELETE row to the
+        hash-chained audit_log in the same transaction.
       operationId: deleteBusinessService
       responses:
         '200':
@@ -3292,7 +3293,7 @@ paths:
         '404':
           $ref: '#/components/responses/BusinessServiceNotFound'
         '409':
-          description: The service has CI mappings or dependencies
+          description: The service has CI mappings, dependencies or offerings
           content:
             application/json:
               schema:
@@ -3762,6 +3763,211 @@ paths:
         '500':
           $ref: '#/components/responses/BusinessServiceServerError'
 
+  /business-services/{service_id}/offerings:
+    parameters:
+      - $ref: '#/components/parameters/BusinessServiceId'
+    get:
+      tags: [Business Services]
+      summary: List a business service's offerings
+      description: >-
+        The service's offerings (HAP-1424), oldest first, each as the C1
+        offering read. Another organization's service answers the same 404 as
+        a missing one.
+      operationId: listServiceOfferings
+      responses:
+        '200':
+          description: The service's offerings (empty when it has none)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success:
+                    type: boolean
+                    enum: [true]
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ServiceOffering'
+        '401':
+          $ref: '#/components/responses/BusinessServiceUnauthorized'
+        '403':
+          $ref: '#/components/responses/BusinessServiceForbidden'
+        '404':
+          $ref: '#/components/responses/BusinessServiceNotFound'
+        '500':
+          $ref: '#/components/responses/BusinessServiceServerError'
+
+    post:
+      tags: [Business Services]
+      summary: Create a service offering
+      description: >-
+        Creates an offering under the caller's service (HAP-1424). Requires
+        the `write` permission. offering_id (`so-` + UUID v4), the tenant
+        (the token's organization) and version (1) are assigned by the
+        server. 409 under a retired service, or for a live offering under a
+        service that is not live. Appends one SERVICE_OFFERING CREATE row to
+        the hash-chained audit_log in the same transaction (no ledger event).
+        The response carries the strong ETag `"<version>"`.
+      operationId: createServiceOffering
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServiceOfferingInput'
+      responses:
+        '201':
+          description: Offering created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success:
+                    type: boolean
+                    enum: [true]
+                  data:
+                    $ref: '#/components/schemas/ServiceOffering'
+        '400':
+          description: >-
+            Body failed validation (middleware body; a body naming offering_id,
+            service_id, organization_id, tenant_id or version included) or
+            breaks the request-shape rules (`Invalid request`).
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/MiddlewareError'
+                  - $ref: '#/components/schemas/BusinessServiceError'
+        '401':
+          $ref: '#/components/responses/BusinessServiceUnauthorized'
+        '403':
+          $ref: '#/components/responses/BusinessServiceForbidden'
+        '404':
+          $ref: '#/components/responses/BusinessServiceNotFound'
+        '409':
+          description: The service is retired, or a live offering under a service that is not live
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BusinessServiceError'
+        '500':
+          $ref: '#/components/responses/BusinessServiceServerError'
+        '503':
+          $ref: '#/components/responses/BusinessServiceWriteUnavailable'
+
+  /service-offerings/{offering_id}:
+    parameters:
+      - $ref: '#/components/parameters/ServiceOfferingId'
+    get:
+      tags: [Business Services]
+      summary: Get a service offering (C1 offering read)
+      description: >-
+        The Suite Contracts v2 C1 offering read (HAP-1424). Another
+        organization's offering answers the same 404 as a missing one; the
+        tenant is the token's organization, never a request parameter. The
+        response carries the strong ETag `"<version>"`.
+      operationId: getServiceOffering
+      responses:
+        '200':
+          description: Offering found
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success:
+                    type: boolean
+                    enum: [true]
+                  data:
+                    $ref: '#/components/schemas/ServiceOffering'
+        '401':
+          $ref: '#/components/responses/BusinessServiceUnauthorized'
+        '403':
+          $ref: '#/components/responses/BusinessServiceForbidden'
+        '404':
+          $ref: '#/components/responses/ServiceOfferingNotFound'
+        '500':
+          $ref: '#/components/responses/BusinessServiceServerError'
+
+    patch:
+      tags: [Business Services]
+      summary: Update or retire a service offering
+      description: >-
+        Updates the given fields, sets `updated_at` and increments `version`
+        by one (HAP-1424); retire is `lifecycle = retired`. Requires the
+        `write` permission. Optional `If-Match: "<version>"`; a stale version
+        is 409 with the current `version`. service_level replaces the stored
+        object. Appends one SERVICE_OFFERING UPDATE row (metadata.operation
+        `retire` for a move to retired) to the hash-chained audit_log in the
+        same transaction (no ledger event).
+      operationId: updateServiceOffering
+      parameters:
+        - name: If-Match
+          in: header
+          required: false
+          description: >-
+            The expected offering version: the strong ETag of a read, POST or
+            PATCH response, or the body's `version`, quoted (`"3"`) or bare;
+            `*` matches any. A weak tag (`W/"3"`) is malformed (400).
+          schema:
+            type: string
+            example: '"3"'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServiceOfferingUpdate'
+      responses:
+        '200':
+          description: Offering updated
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success:
+                    type: boolean
+                    enum: [true]
+                  data:
+                    $ref: '#/components/schemas/ServiceOffering'
+        '400':
+          description: >-
+            Body failed validation (middleware body), has no known fields
+            (`{success: false, error: 'No fields to update'}`), breaks the
+            request-shape rules (`Invalid request`), or If-Match is malformed.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/MiddlewareError'
+                  - $ref: '#/components/schemas/BusinessServiceError'
+        '401':
+          $ref: '#/components/responses/BusinessServiceUnauthorized'
+        '403':
+          $ref: '#/components/responses/BusinessServiceForbidden'
+        '404':
+          $ref: '#/components/responses/ServiceOfferingNotFound'
+        '409':
+          description: >-
+            Stale If-Match (`message: Version mismatch`, with the current
+            `version`), a backward or post-retirement lifecycle move, or a move
+            to live while the service is not live.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BusinessServiceError'
+        '500':
+          $ref: '#/components/responses/BusinessServiceServerError'
+        '503':
+          $ref: '#/components/responses/BusinessServiceWriteUnavailable'
+
   # =============================================================================
   # HEALTH
   # =============================================================================
@@ -3944,6 +4150,15 @@ components:
         type: string
       example: bs-web
 
+    ServiceOfferingId:
+      name: offering_id
+      in: path
+      required: true
+      description: Service offering identifier (`so-` + UUID v4)
+      schema:
+        type: string
+      example: so-6f1c0d2e-8a4b-4c3d-9e5f-0a1b2c3d4e5f
+
   responses:
     BadRequest:
       description: Invalid request parameters
@@ -4086,6 +4301,18 @@ components:
           example:
             success: false
             error: Business service not found
+
+    ServiceOfferingNotFound:
+      description: >-
+        No service offering with this id in the caller's organization. An
+        offering owned by another organization returns the identical body.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/BusinessServiceError'
+          example:
+            success: false
+            error: Service offering not found
 
     BusinessServiceServerError:
       description: >-
@@ -5207,7 +5434,7 @@ components:
       allOf:
         - $ref: '#/components/schemas/BusinessService'
         - type: object
-          required: [mapped_cis_count, dependencies_count, tenant_id, owner, owner_group, criticality, lifecycle, version, dependencies]
+          required: [mapped_cis_count, dependencies_count, tenant_id, owner, owner_group, criticality, lifecycle, version, dependencies, offerings]
           properties:
             mapped_cis_count:
               type: integer
@@ -5264,6 +5491,118 @@ components:
                     $ref: '#/components/schemas/C1Lifecycle'
                   dependency_type:
                     type: string
+            offerings:
+              type: array
+              description: The service's offerings (HAP-1424), oldest first.
+              items:
+                type: object
+                required: [offering_id, name, lifecycle]
+                properties:
+                  offering_id:
+                    type: string
+                  name:
+                    type: string
+                  lifecycle:
+                    $ref: '#/components/schemas/C1Lifecycle'
+
+    ServiceOffering:
+      type: object
+      description: The Suite Contracts v2 C1 offering read (HAP-1424)
+      required: [offering_id, service_id, tenant_id, name, description, audience, lifecycle, service_level, version, updated_at]
+      properties:
+        offering_id:
+          type: string
+          description: '`so-` + lowercase UUID v4, assigned by the server'
+        service_id:
+          type: string
+          description: The business service the offering belongs to
+        tenant_id:
+          type: string
+          format: uuid
+          description: C1 tenant (the owning organization; always the service's)
+        name:
+          type: string
+        description:
+          type: string
+          nullable: true
+        audience:
+          type: string
+          enum: [internal, customer]
+        lifecycle:
+          $ref: '#/components/schemas/C1Lifecycle'
+        service_level:
+          $ref: '#/components/schemas/ServiceOfferingLevel'
+        version:
+          type: integer
+          minimum: 1
+        updated_at:
+          type: string
+          format: date-time
+
+    ServiceOfferingLevel:
+      type: object
+      description: The offering's service level; every member is optional, unknown members are ignored.
+      properties:
+        availability_target:
+          type: number
+          minimum: 0
+          maximum: 100
+          description: Availability target in percent
+        response_target_hours:
+          type: number
+          minimum: 0
+          maximum: 8760
+        support_hours:
+          type: string
+          maxLength: 100
+          example: 24x7
+
+    ServiceOfferingInput:
+      type: object
+      description: >-
+        offering_id, service_id, organization_id, tenant_id and version are
+        rejected with 400. Unknown fields are ignored.
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 3
+          maxLength: 255
+        description:
+          type: string
+          maxLength: 4000
+        audience:
+          type: string
+          enum: [internal, customer]
+          default: internal
+        lifecycle:
+          allOf:
+            - $ref: '#/components/schemas/C1Lifecycle'
+          default: planned
+        service_level:
+          $ref: '#/components/schemas/ServiceOfferingLevel'
+
+    ServiceOfferingUpdate:
+      type: object
+      description: >-
+        At least one known field is required; offering_id, service_id,
+        organization_id, tenant_id and version are rejected with 400. Unknown
+        fields are ignored.
+      properties:
+        name:
+          type: string
+          minLength: 3
+          maxLength: 255
+        description:
+          type: string
+          maxLength: 4000
+        audience:
+          type: string
+          enum: [internal, customer]
+        lifecycle:
+          $ref: '#/components/schemas/C1Lifecycle'
+        service_level:
+          $ref: '#/components/schemas/ServiceOfferingLevel'
 
     BusinessServiceContext:
       type: object

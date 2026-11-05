@@ -20,6 +20,7 @@ import { assertNoCIGap, CIGapError, CI_GAP_RESPONSE, filterOwnedDimensionRows, w
 import {
   C1Lifecycle, lifecycleMoveAllowed, lifecycleNeedsOwner, serviceReference, StoredDependencyRow,
 } from '../../services/business-service-reference';
+import { decodeListCursor, encodeListCursor } from '../../services/c1-list-cursor';
 import { sendTraversalFailure } from './traversal-failure';
 import {
   appendPortfolioAudit, ifMatchVersion, sendWriteFailure, WRITE_UNAVAILABLE, type WriteRefusal,
@@ -67,6 +68,65 @@ const OWNER_REQUIRED = {
   success: false, error: 'Unprocessable Entity', message: 'owner_principal_id is required for a live or retiring service',
 };
 
+/*
+ * The C1 service read of one dim_business_services row `s` (GET /:service_id and each item of the list): the child
+ * counts, dependencies[] and offerings[] (HAP-1424) are read in the same statement, so in the same snapshot, as the
+ * org-filtered parent row; a concurrent delete + recreate of a (globally unique) service_id by another organization
+ * cannot leak that organization's children into them. Dependency targets outside the parent's organization are never joined.
+ */
+const C1_SERVICE_COLUMNS = `s.*,
+  (SELECT COUNT(*) FROM ci_business_service_mappings m WHERE m.service_id = s.service_id)::int AS mapped_cis_count,
+  (SELECT COUNT(*) FROM business_service_dependencies d WHERE d.service_id = s.service_id)::int AS dependencies_count,
+  COALESCE((SELECT json_agg(x) FROM (
+    SELECT t.service_id, t.name, t.business_criticality, t.lifecycle, d.dependency_type
+    FROM business_service_dependencies d
+    JOIN dim_business_services t ON t.service_id = d.depends_on_service_id AND t.organization_id = s.organization_id
+    WHERE d.service_id = s.service_id
+    ORDER BY d.created_at DESC, t.service_id
+  ) x), '[]'::json) AS c1_dependencies,
+  COALESCE((SELECT json_agg(x) FROM (
+    SELECT o.offering_id, o.name, o.lifecycle
+    FROM service_offerings o
+    WHERE o.service_id = s.service_id AND o.organization_id = s.organization_id
+    ORDER BY o.created_at, o.offering_id
+  ) x), '[]'::json) AS c1_offerings`;
+
+function c1ServiceRead({ c1_dependencies: dependencies, c1_offerings: offerings, ...row }: Record<string, unknown>): Record<string, unknown> {
+  const service = row as unknown as Parameters<typeof serviceReference>[0];
+  return { ...row, ...serviceReference(service, dependencies as StoredDependencyRow[]), offerings };
+}
+
+/*
+ * HAP-1425: the list's keyset. created_at is never written after insert, so (created_at, service_id) is a stable total
+ * order and a service inserted or deleted between page reads never repeats or skips another. A NULL created_at sorts as
+ * the epoch. The cursor carries the key as microsecond text, never through a JS Date (milliseconds).
+ */
+const LIST_SORT_KEY = `COALESCE(s.created_at, 'epoch'::timestamp)`;
+const CURSOR_NOT_FOUND = { success: false, error: 'Cursor not found' };
+const LIST_FILTER_COLUMNS = ['service_classification', 'tbm_tower', 'business_criticality', 'operational_status', 'owned_by', 'lifecycle'];
+
+/**
+ * The list filters over `s`, appended after `s.organization_id = $1`; their values are pushed onto `params`. The query
+ * is the validated querySchema value, so each filter is a non-empty string when present.
+ */
+function listFilters(query: Record<string, string | undefined>, params: unknown[]): string {
+  let sql = '';
+  const search = query['search'];
+  if (search !== undefined) {
+    params.push(`%${search}%`);
+    sql += ` AND (s.name ILIKE $${params.length} OR s.description ILIKE $${params.length})`;
+  }
+  for (const column of LIST_FILTER_COLUMNS) {
+    const value = query[column];
+    if (value === undefined) {
+      continue;
+    }
+    params.push(value);
+    sql += ` AND s.${column} = $${params.length}`;
+  }
+  return sql;
+}
+
 /** One BUSINESS_SERVICE audit_log row on the write's own transaction (appendPortfolioAudit). */
 function appendServiceAudit(client: PoolClient, req: Request, organizationId: string,
   action: 'CREATE' | 'UPDATE' | 'DELETE', operation: 'create' | 'update' | 'retire' | 'delete',
@@ -79,123 +139,58 @@ export class BusinessServiceController {
   private pgClient = getPostgresClient();
 
   /**
-   * GET /api/v1/business-services
-   * List all business services with optional filtering
+   * GET /api/v1/business-services: the C1 list (HAP-1425; Suite Contracts v2 common paging rule).
+   * Pages by keyset in (created_at, service_id) order with an opaque cursor bound to the caller's organization:
+   * {success, items[], next_cursor|null, as_of}, each item the C1 service read. A cursor that is altered, another
+   * organization's or expired is 404. `page` (deprecated) keeps the offset pages, newest first, with their old envelope.
    */
   async listBusinessServices(req: Request, res: Response): Promise<void> {
     try {
       const organizationId = requestOrganizationId(req);
-      const {
-        search,
-        service_classification,
-        tbm_tower,
-        business_criticality,
-        operational_status,
-        owned_by,
-        page = 1,
-        limit = 50
-      } = req.query;
-
-      const offset = (Number(page) - 1) * Number(limit);
-
-      let query = 'SELECT * FROM dim_business_services WHERE organization_id = $1';
+      const query = req.query as Record<string, unknown>;
+      const limit = Number(query['limit'] ?? 50);
       const params: unknown[] = [organizationId];
-      let paramIndex = 2;
+      const filters = listFilters(query as Record<string, string | undefined>, params);
 
-      if (search) {
-        query += ` AND (name ILIKE $${paramIndex} OR description ILIKE $${paramIndex})`;
-        params.push(`%${search}%`);
-        paramIndex++;
+      if (query['page'] !== undefined) {
+        const page = Number(query['page']);
+        const result = await this.pgClient.query(
+          `SELECT s.* FROM dim_business_services s WHERE s.organization_id = $1${filters}
+           ORDER BY s.created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+          [...params, limit, (page - 1) * limit]
+        );
+        const countResult = await this.pgClient.query(
+          `SELECT COUNT(*) FROM dim_business_services s WHERE s.organization_id = $1${filters}`, params);
+        const total = parseInt(countResult.rows[0].count);
+        res.json({ success: true, data: result.rows, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } });
+        return;
       }
 
-      if (service_classification) {
-        query += ` AND service_classification = $${paramIndex}`;
-        params.push(service_classification);
-        paramIndex++;
+      let after = '';
+      if (query['cursor'] !== undefined) {
+        const position = decodeListCursor(organizationId, String(query['cursor']));
+        if (!position) {
+          res.status(404).json(CURSOR_NOT_FOUND);
+          return;
+        }
+        params.push(position.ts, position.id);
+        after = ` AND (${LIST_SORT_KEY}, s.service_id) > ($${params.length - 1}::timestamp, $${params.length})`;
       }
-
-      if (tbm_tower) {
-        query += ` AND tbm_tower = $${paramIndex}`;
-        params.push(tbm_tower);
-        paramIndex++;
-      }
-
-      if (business_criticality) {
-        query += ` AND business_criticality = $${paramIndex}`;
-        params.push(business_criticality);
-        paramIndex++;
-      }
-
-      if (operational_status) {
-        query += ` AND operational_status = $${paramIndex}`;
-        params.push(operational_status);
-        paramIndex++;
-      }
-
-      if (owned_by) {
-        query += ` AND owned_by = $${paramIndex}`;
-        params.push(owned_by);
-        paramIndex++;
-      }
-
-      query += ` ORDER BY created_at DESC LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
-      params.push(Number(limit), offset);
-
-      const result = await this.pgClient.query(query, params);
-
-      // Get total count for pagination
-      let countQuery = 'SELECT COUNT(*) FROM dim_business_services WHERE organization_id = $1';
-      const countParams: unknown[] = [organizationId];
-      let countParamIndex = 2;
-
-      if (search) {
-        countQuery += ` AND (name ILIKE $${countParamIndex} OR description ILIKE $${countParamIndex})`;
-        countParams.push(`%${search}%`);
-        countParamIndex++;
-      }
-
-      if (service_classification) {
-        countQuery += ` AND service_classification = $${countParamIndex}`;
-        countParams.push(service_classification);
-        countParamIndex++;
-      }
-
-      if (tbm_tower) {
-        countQuery += ` AND tbm_tower = $${countParamIndex}`;
-        countParams.push(tbm_tower);
-        countParamIndex++;
-      }
-
-      if (business_criticality) {
-        countQuery += ` AND business_criticality = $${countParamIndex}`;
-        countParams.push(business_criticality);
-        countParamIndex++;
-      }
-
-      if (operational_status) {
-        countQuery += ` AND operational_status = $${countParamIndex}`;
-        countParams.push(operational_status);
-        countParamIndex++;
-      }
-
-      if (owned_by) {
-        countQuery += ` AND owned_by = $${countParamIndex}`;
-        countParams.push(owned_by);
-        countParamIndex++;
-      }
-
-      const countResult = await this.pgClient.query(countQuery, countParams);
-      const total = parseInt(countResult.rows[0].count);
-
+      const asOf = new Date().toISOString();
+      params.push(limit + 1);
+      const result = await this.pgClient.query(
+        `SELECT ${C1_SERVICE_COLUMNS}, to_char(${LIST_SORT_KEY}, 'YYYY-MM-DD HH24:MI:SS.US') AS c1_sort_key
+         FROM dim_business_services s WHERE s.organization_id = $1${filters}${after}
+         ORDER BY ${LIST_SORT_KEY}, s.service_id LIMIT $${params.length}`,
+        params
+      );
+      const rows = result.rows.slice(0, limit);
+      const last = rows.at(-1);
       res.json({
         success: true,
-        data: result.rows,
-        pagination: {
-          page: Number(page),
-          limit: Number(limit),
-          total,
-          totalPages: Math.ceil(total / Number(limit))
-        }
+        items: rows.map(({ c1_sort_key: _key, ...row }) => c1ServiceRead(row)),
+        next_cursor: result.rows.length > limit ? encodeListCursor(organizationId, { ts: last.c1_sort_key, id: last.service_id }) : null,
+        as_of: asOf,
       });
     } catch (error) {
       logger.error('Error listing business services', { error: errorLogFields(error) });
@@ -214,30 +209,8 @@ export class BusinessServiceController {
     try {
       const { service_id } = req.params;
 
-      // One statement: the child counts and the C1 dependencies are read in
-      // the same snapshot as the org-filtered parent row, so a concurrent
-      // delete + recreate of this (globally unique) service_id by another
-      // organization cannot leak that organization's children into them.
-      // Dependency targets outside the parent's organization are never joined.
       const result = await this.pgClient.query(
-        `SELECT s.*,
-          (SELECT COUNT(*) FROM ci_business_service_mappings m WHERE m.service_id = s.service_id)::int AS mapped_cis_count,
-          (SELECT COUNT(*) FROM business_service_dependencies d WHERE d.service_id = s.service_id)::int AS dependencies_count,
-          COALESCE((SELECT json_agg(x) FROM (
-            SELECT t.service_id, t.name, t.business_criticality, t.lifecycle, d.dependency_type
-            FROM business_service_dependencies d
-            JOIN dim_business_services t ON t.service_id = d.depends_on_service_id AND t.organization_id = s.organization_id
-            WHERE d.service_id = s.service_id
-            ORDER BY d.created_at DESC, t.service_id
-          ) x), '[]'::json) AS c1_dependencies,
-          COALESCE((SELECT json_agg(x) FROM (
-            SELECT o.offering_id, o.name, o.lifecycle
-            FROM service_offerings o
-            WHERE o.service_id = s.service_id AND o.organization_id = s.organization_id
-            ORDER BY o.created_at, o.offering_id
-          ) x), '[]'::json) AS c1_offerings
-        FROM dim_business_services s
-        WHERE s.service_id = $1 AND s.organization_id = $2`,
+        `SELECT ${C1_SERVICE_COLUMNS} FROM dim_business_services s WHERE s.service_id = $1 AND s.organization_id = $2`,
         [service_id, requestOrganizationId(req)]
       );
 
@@ -249,15 +222,11 @@ export class BusinessServiceController {
         return;
       }
 
-      const { c1_dependencies: dependencies, c1_offerings: offerings, ...row } = result.rows[0];
       // No version ETag here: this body also carries dependencies[] (each target's lifecycle, name, criticality),
       // offerings[] (HAP-1424) and the child counts, which change without bumping this record's version, so
       // "<version>" would validate a stale 304. Express's default body-hash ETag stays; the body's `version` is the
       // If-Match value.
-      res.json({
-        success: true,
-        data: { ...row, ...serviceReference(row, dependencies as StoredDependencyRow[]), offerings }
-      });
+      res.json({ success: true, data: c1ServiceRead(result.rows[0]) });
     } catch (error) {
       logger.error('Error getting business service', { error: errorLogFields(error), service_id: req.params.service_id });
       res.status(500).json({

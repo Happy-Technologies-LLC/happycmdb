@@ -6,7 +6,7 @@
     "feature": "List business services",
     "ref": "GET /api/v1/business-services",
     "user_story": "As a service owner, I want to list and filter business services so that I can find the services I am responsible for.",
-    "expected_behavior": "Queries dim_business_services with optional case-insensitive search (name/description ILIKE) plus equality filters for service_classification, tbm_tower, business_criticality, operational_status, and owned_by. Results are ordered by created_at DESC and paginated via page/limit (default 1/50, OFFSET computed). Returns 200 {success:true, data:rows, pagination:{page,limit,total,totalPages}} using a parallel COUNT query; returns 500 {success:false} on DB error.",
+    "expected_behavior": "C1 list (HAP-1425): queries the caller organization's dim_business_services with optional case-insensitive search (name/description ILIKE) plus equality filters for service_classification, tbm_tower, business_criticality, operational_status, owned_by and lifecycle (unknown lifecycle 400; tenant_id/organization_id parameters 400). Pages by keyset on (created_at, service_id) ascending with an opaque HMAC cursor bound to the organization (1 hour; altered/foreign/expired 404 {success:false,error:'Cursor not found'}); limit 1-100, default 50. Returns 200 {success:true, items:[C1 service read], next_cursor|null, as_of}. Deprecated `page` keeps the offset envelope {success:true, data:rows, pagination:{page,limit,total,totalPages}}, created_at DESC; page with cursor is 400. Returns 500 {success:false} on DB error.",
     "issue": false,
     "severity": "",
     "issue_note": ""

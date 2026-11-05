@@ -128,6 +128,8 @@ const updateBusinessServiceSchema = Joi.object({
   organization_id: organizationIdForbidden
 });
 
+// HAP-1425 (C1 list, Suite Contracts v2): `cursor` pages; `page` (deprecated offset paging) is the old envelope and
+// cannot be combined with `cursor`. The tenant is never a query input: naming it is 400, not ignored.
 const querySchema = Joi.object({
   search: Joi.string().optional(),
   service_classification: Joi.string().optional(),
@@ -135,9 +137,13 @@ const querySchema = Joi.object({
   business_criticality: Joi.string().optional(),
   operational_status: Joi.string().optional(),
   owned_by: Joi.string().optional(),
-  page: Joi.number().integer().min(1).default(1),
-  limit: Joi.number().integer().min(1).max(100).default(50)
-});
+  lifecycle: Joi.string().valid(...C1_LIFECYCLES).optional(),
+  cursor: Joi.string().max(1024).optional(),
+  page: Joi.number().integer().min(1).optional(),
+  limit: Joi.number().integer().min(1).max(100).default(50),
+  tenant_id: Joi.any().forbidden(),
+  organization_id: organizationIdForbidden,
+}).oxor('page', 'cursor');
 
 const mapCIsSchema = Joi.object({
   // ci_id is VARCHAR(100) and UNIQUE(ci_id, service_id, mapping_type): reject

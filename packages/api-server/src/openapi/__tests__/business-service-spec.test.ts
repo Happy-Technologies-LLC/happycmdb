@@ -79,12 +79,13 @@ describe('openapi.yaml: /business-services', () => {
 
   // Every route sits behind /api/v1 authenticate() (401) and the router's
   // requireOrganization() (403); every :service_id route can answer 404, and
-  // the collection routes (no path parameter) cannot.
+  // the collection routes (no path parameter) cannot, except the list's
+  // unknown cursor (HAP-1425).
   it.each(mountedOperations())('%s documents its 401/403 (and, with a path parameter, 404) responses', op => {
     const [method, path] = op.split(' ');
     const responses = Object.keys(spec.paths[path]?.[method.toLowerCase()]?.responses ?? {});
     const expected = path.includes('{') ? ['401', '403', '404'] : ['401', '403'];
     expect(responses).toEqual(expect.arrayContaining(expected));
-    if (!path.includes('{')) expect(responses).not.toContain('404');
+    if (!path.includes('{') && op !== 'GET /business-services') expect(responses).not.toContain('404');
   });
 });

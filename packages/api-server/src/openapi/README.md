@@ -300,7 +300,7 @@ SSH credential-backed execution is restored by HP1-S5.
 
 ### Business Services (`/api/v1/business-services`)
 Scoped to the caller's organization: 403 without an organization claim; a service outside the caller's organization returns the same 404 as a missing one. Create assigns a globally unique `service_id`; supplied IDs are rejected with 400.
-- `GET /business-services` - List business services
+- `GET /business-services` - C1 list (HAP-1425): `?lifecycle=&cursor=&limit=` (limit 1-100, default 50) answers `{items[], next_cursor|null, as_of}`, each item the C1 service read below; follow `next_cursor` until null. The cursor is opaque, bound to the token's organization and valid for 1 hour: altered, foreign or expired is 404. `tenant_id`/`organization_id` parameters and an unknown `lifecycle` are 400. Read-only consumers use a `viewer` principal, which every write route refuses with 403. `page` is deprecated (old `{data, pagination}` offset envelope)
 - `POST /business-services` - Create business service
 - `GET /business-services/{service_id}` - Get business service with mapped-CI and dependency counts, plus the Suite Contracts v2 C1 fields (`tenant_id`, `owner`, `criticality`, `lifecycle`, `dependencies[]`, `offerings[]`)
 - `PATCH /business-services/{service_id}` - Update business service (409 when moving out of live while an offering is live)

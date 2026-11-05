@@ -34,8 +34,8 @@ vi.mock('../lib/api-client', () => ({ apiClient }));
 
 import BusinessServices from './BusinessServices';
 
-// Backend rows use the real REST envelope ({success, data, pagination} for
-// lists, {success, data} for writes) and the canonical business_criticality
+// Backend rows use the real REST envelope ({success, items, next_cursor, as_of}
+// for the C1 list, {success, data} for writes) and the canonical business_criticality
 // enum accepted by business-service.routes.ts: critical|high|medium|low.
 const apiService = {
   service_id: 'bs-portal',
@@ -56,10 +56,11 @@ const apiService = {
 
 const row = (overrides: Record<string, unknown>) => ({ ...apiService, ...overrides });
 
-const listOf = (data: unknown[]) => ({
+const listOf = (items: unknown[]) => ({
   success: true,
-  data,
-  pagination: { page: 1, limit: 50, total: data.length, totalPages: 1 },
+  items,
+  next_cursor: null,
+  as_of: '2026-11-05T00:00:00.000Z',
 });
 
 const rowFor = async (name: string) => {

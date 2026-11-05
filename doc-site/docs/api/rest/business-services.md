@@ -1,10 +1,10 @@
 # Business Services API: C1 service reference
 
-HappyCMDB owns the business service record and publishes it to the other products through Suite Contracts v2 **C1 (service reference)**. A request in HappyHive and a decision or receipt in HIVE name the service by its `service_id` and read everything else from these two endpoints.
+HappyCMDB owns the business service record and publishes it to the other products through Suite Contracts v2 **C1 (service reference)**. A request in HappyHive and a decision or receipt in HIVE name the service by its `service_id` and read everything else from these endpoints; a consumer that needs the portfolio pages the C1 list.
 
 - Design: [CO-1 Design Brief v1, section 3 "C1. Service reference"](https://linear.app/happy-technologies-llc/document/co-1-design-brief-v1-governed-internal-ai-service-value-stream-path-689d1d2a981f) (implementation story HAP-1408, CO-1 S2).
 - Contract: [Suite Contracts v2, "Common rules" and "C1. Service reference"](https://linear.app/happy-technologies-llc/document/suite-contracts-v2-the-seams-between-products-c1-to-c14-accepted-2026-4b4749544239). Linear is the authority; this page describes what the API serves today.
-- Machine-readable: `GET /api-docs/openapi.yaml`, paths `/business-services/{service_id}`, `/business-services/{service_id}/context`, `/business-services/{service_id}/offerings` and `/service-offerings/{offering_id}`.
+- Machine-readable: `GET /api-docs/openapi.yaml`, paths `/business-services` (list), `/business-services/{service_id}`, `/business-services/{service_id}/context`, `/business-services/{service_id}/offerings` and `/service-offerings/{offering_id}`.
 
 Status (2026-11-05): reads implemented for CO-1 S2 (HAP-1408); the stored record and audited writes for PoR S2 (HAP-1423, migration `043_business_service_record_c1.sql`); service offerings for PoR S3 (HAP-1424, migration `046_service_offerings.sql`). HAP-1422: migration `044_business_service_journal_read_acl.sql` grants `cmdb_user` SELECT on `ci_reconciliation_operations`, which `GET /{service_id}/cis`, `POST /{service_id}/cis` and `GET /{service_id}/context` read; without it a non-owner app login gets 500 on those routes. Deployment and activation are not covered here.
 
@@ -65,6 +65,26 @@ The response above is abbreviated: the other stored columns are also returned.
 | `version` | `version`: 1 on create, +1 on every accepted update |
 | `dependencies[]` | the services this service depends on in the caller's organization, newest first |
 | `offerings[]` | the service's offerings (`offering_id`, `name`, `lifecycle`), oldest first; the full record is `GET /api/v1/service-offerings/{offering_id}` |
+
+## `GET /api/v1/business-services` (C1 list)
+
+PoR S4 (HAP-1425; Suite Contracts v2 common paging rule). Parameters: `lifecycle` (`planned`, `live`, `retiring`, `retired`), `cursor`, `limit` (1 to 100, default 50).
+
+```json
+{
+  "success": true,
+  "items": [ { "service_id": "bs-…", "tenant_id": "…", "lifecycle": "live", "version": 3, "offerings": [], "…": "…" } ],
+  "next_cursor": "eyJ0cyI6…",
+  "as_of": "2026-11-05T17:30:00.000Z"
+}
+```
+
+- **Items.** Each item is the same object as `data` of `GET /api/v1/business-services/{service_id}` (C1 fields, counts, `dependencies[]`, `offerings[]`), in a stable order: `created_at`, then `service_id`, oldest first.
+- **Paging.** Pass `next_cursor` back as `cursor` until it is `null`. A service created or deleted between page reads never makes another repeat or go missing; a service created after the cursor's position appears on a later page.
+- **Cursor.** Opaque, signed with the server's token secret, bound to the token's organization and valid for one hour. An altered cursor, another organization's cursor or an expired one is `404 {"success":false,"error":"Cursor not found"}`: start again without `cursor`.
+- **Tenant.** A `tenant_id` or `organization_id` parameter is `400`, as is an unknown `lifecycle` or `page` together with `cursor`.
+- **Deprecated.** `page` keeps the old offset pages (`{success, data, pagination}`, newest first) for existing callers; it will be removed.
+- **Consumers.** HappyHive and HIVE read with a `viewer` principal (an API key or token with the `read` permission only). Every write route answers it `403` and writes nothing.
 
 ## Writes (HappyCMDB UI and migrations only)
 
@@ -178,5 +198,7 @@ The contract tests are `packages/api-server/src/rest/routes/__tests__/business-s
 - **S3 cross-tenant:** `404` identical to a missing service, and no other-tenant row in the body or the logs.
 
 The record and write rules (HAP-1423 scenarios 1 to 6, cross-tenant writes, rollback of a failed audit append) are in `business-service-record.test.ts` next to it; migration 043 and its rollback in `packages/database/src/postgres/migrations/__tests__/business-service-record-c1.test.ts`. The offering scenarios (HAP-1424 1, 2, 5 and 6) are in `business-service-record.test.ts`; the cross-tenant route controls (4) and the database guard as the app login (3) in `fixtures/business-service-a1.ts`; migration 046 and its rollback in `service-offerings-046.test.ts`.
+
+The C1 list scenarios (HAP-1425 1 to 3: paging under inserts, lifecycle filter, cursor replay/alteration/expiry) and the consumer controls (5: both `viewer` keys read, and every write route is `403` for them with nothing written) are in `fixtures/business-service-c1-consumer.ts`; the tenant-parameter control (4) is the `GET /` case in `fixtures/business-service-a1.ts`. Both run in `business-service-tenant-isolation.test.ts` and, against PostgreSQL, `tests/integration/database/hap1422-portfolio-app-login.integration.test.ts`.
 
 The tests run against PostgreSQL (PGlite) as the non-superuser application role.

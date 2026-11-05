@@ -14,11 +14,13 @@
  * chain key the API verifies with. Idempotent: a CI already in the graph is not created again (no second journal op or
  * audit row); the dim_ci sync then adds no version and the mapping upsert no row.
  *
- * Target guard, before any store or Redis connection (the modules that connect load after it): `--target scratch` needs
- * NODE_ENV other than production, a loopback POSTGRES_HOST and a direct bolt:// loopback NEO4J_URI, and then both stores
- * must carry the CO-1 tenant-fixture markers. Any other target is refused unless `--founder-approval
- * approvals/founder-<id>.go` names a regular file under SEED_CI_APPROVALS_ROOT whose first line is a `founder-GO` and
- * whose text names both `seed-ci` and the target; the summary records its sha256.
+ * Target guard, before any store or Redis connection (the modules that connect load after it): NODE_ENV=production is
+ * refused for every target. `--target` must match [A-Za-z0-9_-]+. `--target scratch` needs a loopback POSTGRES_HOST and
+ * REDIS_HOST and a direct bolt:// loopback NEO4J_URI, and then both stores must carry the CO-1 tenant-fixture markers.
+ * Any other target is refused unless `--founder-approval approvals/founder-<id>.go` names a regular file under
+ * SEED_CI_APPROVALS_ROOT whose first line is a `founder-GO` naming `seed-ci`, and which carries exactly one each of the
+ * lines `target: <--target>`, `host=<POSTGRES_HOST>` and `neo4j=<the NEO4J_URI host>`, all equal to this run's values;
+ * the summary records its sha256.
  *
  * Usage: node seed-ci.js --target scratch
  *        node seed-ci.js --target <name> --founder-approval approvals/founder-<id>.go
@@ -84,12 +86,27 @@ export function parseArgs(argv: readonly string[]): SeedArgs {
   if (target === undefined) {
     throw new Error('--target is required');
   }
+  if (!/^[A-Za-z0-9_-]+$/.test(target)) {
+    throw new Error(`--target must match [A-Za-z0-9_-]+ (got ${JSON.stringify(target)})`);
+  }
   return { target, founderApproval: values.get('--founder-approval') ?? null };
 }
 
 const FOUNDER_APPROVAL = /^approvals\/founder-[A-Za-z0-9][A-Za-z0-9._-]*\.go$/;
 
-/** A non-scratch run's founder approval: a regular file under SEED_CI_APPROVALS_ROOT naming this tool and the target. */
+/** The host of NEO4J_URI; empty when it is unset or not a URI. */
+function neo4jHost(env: NodeJS.ProcessEnv): string {
+  try {
+    return new URL(env['NEO4J_URI'] ?? '').hostname;
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * A non-scratch run's founder approval: a regular file under SEED_CI_APPROVALS_ROOT naming this tool, bound to this
+ * run by its `target:`, `host=` and `neo4j=` lines.
+ */
 function founderApprovalSha256(target: string, approval: string, env: NodeJS.ProcessEnv): string {
   const root = env['SEED_CI_APPROVALS_ROOT'] ?? '';
   if (!isAbsolute(root)) {
@@ -106,15 +123,32 @@ function founderApprovalSha256(target: string, approval: string, env: NodeJS.Pro
     throw new TargetRefusedError(`--founder-approval ${approval} is not a regular file under SEED_CI_APPROVALS_ROOT`);
   }
   // The decision is the first line (`founder-GO <stamp> ...`, the exchange/approvals convention): a NO-GO never passes.
-  const words = new Set(text.split(/[^A-Za-z0-9_-]+/));
-  if (!/^founder-GO\s/.test(text) || !words.has(SEED_ACTOR) || !words.has(target)) {
-    throw new TargetRefusedError(`--founder-approval ${approval} is not a founder-GO naming ${SEED_ACTOR} and target "${target}"`);
+  if (!/^founder-GO\s/.test(text) || !text.split(/[^A-Za-z0-9_-]+/).includes(SEED_ACTOR)) {
+    throw new TargetRefusedError(`--founder-approval ${approval} is not a founder-GO naming ${SEED_ACTOR}`);
+  }
+  // Each binding is exactly one whole line whose value equals this run's; prose never binds. A bound value is non-empty
+  // (\S+), so an unset or empty env value never matches.
+  const lines = text.split(/\r?\n/);
+  const unbound = ([
+    ['target:', /^target:[ \t]*(\S+)[ \t]*$/, target],
+    ['host=', /^host=(\S+)$/, env['POSTGRES_HOST']],
+    ['neo4j=', /^neo4j=(\S+)$/, neo4jHost(env)],
+  ] as const).filter(([, pattern, actual]) => {
+    const granted = lines.flatMap(line => pattern.exec(line)?.[1] ?? []);
+    return granted.length !== 1 || granted[0] !== actual;
+  }).map(([field]) => field);
+  if (unbound.length > 0) {
+    throw new TargetRefusedError(`--founder-approval ${approval} does not bind this run (${unbound.join(', ')}): it needs `
+      + 'one target: line equal to --target, one host= line equal to POSTGRES_HOST and one neo4j= line equal to the NEO4J_URI host');
   }
   return createHash('sha256').update(text).digest('hex');
 }
 
 /** The target guard: runs before any connection; a non-scratch target only with a founder approval (its sha256). */
 export function assertTarget(args: SeedArgs, env: NodeJS.ProcessEnv): 'scratch' | { approvalSha256: string } {
+  if (env['NODE_ENV'] === 'production') {
+    throw new TargetRefusedError(`refusing --target ${args.target} with NODE_ENV=production`);
+  }
   if (args.target !== 'scratch') {
     if (args.founderApproval === null) {
       throw new TargetRefusedError(
@@ -128,11 +162,10 @@ export function assertTarget(args: SeedArgs, env: NodeJS.ProcessEnv): 'scratch' 
   if (args.founderApproval !== null) {
     throw new TargetRefusedError('--founder-approval applies to a non-scratch target only');
   }
-  if (env['NODE_ENV'] === 'production') {
-    throw new TargetRefusedError('refusing --target scratch with NODE_ENV=production');
-  }
-  if (!LOOPBACK_HOSTS.has(env['POSTGRES_HOST'] ?? '')) {
-    throw new TargetRefusedError('refusing --target scratch: POSTGRES_HOST is not a loopback host');
+  for (const name of ['POSTGRES_HOST', 'REDIS_HOST']) {
+    if (!LOOPBACK_HOSTS.has(env[name] ?? '')) {
+      throw new TargetRefusedError(`refusing --target scratch: ${name} is not a loopback host`);
+    }
   }
   let neo4jUri: URL | null = null;
   try {

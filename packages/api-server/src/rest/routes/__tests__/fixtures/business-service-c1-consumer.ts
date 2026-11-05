@@ -33,7 +33,7 @@ export function defineC1ConsumerSuite({ app, router, offeringRouter, rows, token
   const cursorQuery = (cursor: string) => `?limit=1&cursor=${encodeURIComponent(cursor)}`;
 
   describe('HAP-1425 scenarios 1-4: the C1 list pages by an opaque cursor bound to the token\'s tenant', () => {
-    it('scenario 1: 120 services page 50/50/20 in a stable order, each exactly once, while services are inserted', async () => {
+    it('scenario 1: 120 services (121 after one POST between reads) page 50/50/21 in a stable order, each exactly once', async () => {
       // 117 more T services sharing one created_at: their order is the service_id tiebreak.
       await rows(`INSERT INTO dim_business_services (service_id, name, service_classification, tbm_tower,
           business_criticality, operational_status, organization_id, created_at)

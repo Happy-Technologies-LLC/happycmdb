@@ -14,22 +14,28 @@
  * chain key the API verifies with. Idempotent: a CI already in the graph is not created again (no second journal op or
  * audit row); the dim_ci sync then adds no version and the mapping upsert no row.
  *
- * Target guard, before any connection: `--target scratch` needs NODE_ENV other than production, a loopback
- * POSTGRES_HOST and a direct bolt:// loopback NEO4J_URI, and then both stores must carry the CO-1 tenant-fixture
- * markers. Any other target is refused unless `--founder-approval approvals/founder-<id>.go` names the approval.
+ * Target guard, before any store or Redis connection (the modules that connect load after it): `--target scratch` needs
+ * NODE_ENV other than production, a loopback POSTGRES_HOST and a direct bolt:// loopback NEO4J_URI, and then both stores
+ * must carry the CO-1 tenant-fixture markers. Any other target is refused unless `--founder-approval
+ * approvals/founder-<id>.go` names a regular file under SEED_CI_APPROVALS_ROOT whose first line is a `founder-GO` and
+ * whose text names both `seed-ci` and the target; the summary records its sha256.
  *
  * Usage: node seed-ci.js --target scratch
  *        node seed-ci.js --target <name> --founder-approval approvals/founder-<id>.go
  * Prints one JSON summary line on stdout; exits 0, or 1 with the reason on stderr.
  */
+import { createHash } from 'crypto';
+import { lstatSync, readFileSync } from 'fs';
+import { isAbsolute, join } from 'path';
+
 import type { CIType, Environment } from '@cmdb/common';
-import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
+import type * as Database from '@cmdb/database';
 import type { Request, Response } from 'express';
 
-import { extractedCI, Neo4jToPostgresJob } from '../../../etl-processor/src/jobs/neo4j-to-postgres.job';
-import { withDimCiIds } from '../../../etl-processor/src/transformers/ci-organization';
-import { assertNoCIGap, CIGapError } from '../read-admission';
-import { BusinessServiceController } from '../rest/controllers/business-service.controller';
+import type * as EtlJob from '../../../etl-processor/src/jobs/neo4j-to-postgres.job';
+import type * as CIOrganization from '../../../etl-processor/src/transformers/ci-organization';
+import type * as ReadAdmission from '../read-admission';
+import type * as BusinessServices from '../rest/controllers/business-service.controller';
 
 import { inspectGraph, inspectPostgres, LOOPBACK_HOSTS } from './seed-tenant-fixture';
 
@@ -83,8 +89,32 @@ export function parseArgs(argv: readonly string[]): SeedArgs {
 
 const FOUNDER_APPROVAL = /^approvals\/founder-[A-Za-z0-9][A-Za-z0-9._-]*\.go$/;
 
-/** The target guard: runs before any connection; `approved` only with a founder-approval reference. */
-export function assertTarget(args: SeedArgs, env: NodeJS.ProcessEnv): 'scratch' | 'approved' {
+/** A non-scratch run's founder approval: a regular file under SEED_CI_APPROVALS_ROOT naming this tool and the target. */
+function founderApprovalSha256(target: string, approval: string, env: NodeJS.ProcessEnv): string {
+  const root = env['SEED_CI_APPROVALS_ROOT'] ?? '';
+  if (!isAbsolute(root)) {
+    throw new TargetRefusedError('--founder-approval needs SEED_CI_APPROVALS_ROOT, the absolute directory that holds approvals/');
+  }
+  let text: string;
+  try {
+    const file = join(root, approval);
+    if (!lstatSync(file).isFile()) {
+      throw new Error('not a regular file');
+    }
+    text = readFileSync(file, 'utf8');
+  } catch {
+    throw new TargetRefusedError(`--founder-approval ${approval} is not a regular file under SEED_CI_APPROVALS_ROOT`);
+  }
+  // The decision is the first line (`founder-GO <stamp> ...`, the exchange/approvals convention): a NO-GO never passes.
+  const words = new Set(text.split(/[^A-Za-z0-9_-]+/));
+  if (!/^founder-GO\s/.test(text) || !words.has(SEED_ACTOR) || !words.has(target)) {
+    throw new TargetRefusedError(`--founder-approval ${approval} is not a founder-GO naming ${SEED_ACTOR} and target "${target}"`);
+  }
+  return createHash('sha256').update(text).digest('hex');
+}
+
+/** The target guard: runs before any connection; a non-scratch target only with a founder approval (its sha256). */
+export function assertTarget(args: SeedArgs, env: NodeJS.ProcessEnv): 'scratch' | { approvalSha256: string } {
   if (args.target !== 'scratch') {
     if (args.founderApproval === null) {
       throw new TargetRefusedError(
@@ -93,7 +123,7 @@ export function assertTarget(args: SeedArgs, env: NodeJS.ProcessEnv): 'scratch' 
     if (!FOUNDER_APPROVAL.test(args.founderApproval)) {
       throw new TargetRefusedError('--founder-approval must name a founder approval file: approvals/founder-<id>.go');
     }
-    return 'approved';
+    return { approvalSha256: founderApprovalSha256(args.target, args.founderApproval, env) };
   }
   if (args.founderApproval !== null) {
     throw new TargetRefusedError('--founder-approval applies to a non-scratch target only');
@@ -126,16 +156,42 @@ export interface SeededCI {
   audit_rows: number;
 }
 
-async function seedOne(ci: SeedCI): Promise<SeededCI> {
-  const [postgres, neo4j] = [getPostgresClient(), getNeo4jClient()];
+/** The modules that connect: the @cmdb/database barrel opens the BullMQ Redis connection when it loads, the others load it. */
+interface Runtime {
+  database: typeof Database;
+  etl: typeof EtlJob;
+  ciOrganization: typeof CIOrganization;
+  admission: typeof ReadAdmission;
+  services: typeof BusinessServices;
+}
+
+/** Required only after the target guard (seedCIs), never at import. */
+function loadRuntime(): Runtime {
+  /* eslint-disable @typescript-eslint/no-require-imports */
+  return {
+    database: require('@cmdb/database') as typeof Database,
+    etl: require('../../../etl-processor/src/jobs/neo4j-to-postgres.job') as typeof EtlJob,
+    ciOrganization: require('../../../etl-processor/src/transformers/ci-organization') as typeof CIOrganization,
+    admission: require('../read-admission') as typeof ReadAdmission,
+    services: require('../rest/controllers/business-service.controller') as typeof BusinessServices,
+  };
+  /* eslint-enable @typescript-eslint/no-require-imports */
+}
+
+async function seedOne(ci: SeedCI, rt: Runtime): Promise<SeededCI> {
+  const [postgres, neo4j] = [rt.database.getPostgresClient(), rt.database.getNeo4jClient()];
   const service = await postgres.query(
     'SELECT 1 FROM dim_business_services WHERE service_id = $1 AND organization_id = $2', [ci.serviceId, ci.organizationId]);
   if (service.rows.length === 0) {
     throw new Error(`business service ${ci.serviceId} is not in organization ${ci.organizationId}`);
   }
-  // A pending or failed op on the CI is the journal's to finish (its sweeper): seeding beside it could double the create.
-  await assertNoCIGap(ci.organizationId, ci.id).catch((error: unknown) => {
-    throw error instanceof CIGapError ? new Error(`CI ${ci.id} has a pending or failed journal op; re-run once it is finished`) : error;
+  // A pending op is the journal sweeper's to finish; a failed one needs the reviewed requeueFailedJournalGroup replay.
+  // Seeding beside either could double the create.
+  await rt.admission.assertNoCIGap(ci.organizationId, ci.id).catch((error: unknown) => {
+    throw error instanceof rt.admission.CIGapError
+      ? new Error(`CI ${ci.id} has a pending or failed journal op: a pending op is the journal sweeper's to finish, `
+        + 'a failed op needs the reviewed requeueFailedJournalGroup replay; then run the seed again')
+      : error;
   });
   const existing = await neo4j.getCI(ci.id, ci.organizationId);
   if (existing !== null && (existing.name !== ci.name || existing._type !== ci.type)) {
@@ -158,16 +214,16 @@ async function seedOne(ci: SeedCI): Promise<SeededCI> {
   } finally {
     await session.close();
   }
-  const extracted = props === undefined ? null : extractedCI(props, ETL_JOB);
+  const extracted = props === undefined ? null : rt.etl.extractedCI(props, ETL_JOB);
   if (extracted === null) {
     throw new Error(`CI ${ci.id} is not readable in organization ${ci.organizationId}`);
   }
-  const loaded = await new Neo4jToPostgresJob(neo4j, postgres)
-    .processBatch(withDimCiIds([extracted], row => row._id, ETL_JOB), false, ETL_JOB);
+  const loaded = await new rt.etl.Neo4jToPostgresJob(neo4j, postgres)
+    .processBatch(rt.ciOrganization.withDimCiIds([extracted], row => row._id, ETL_JOB), false, ETL_JOB);
   if (loaded.cisProcessed !== 1) {
     throw new Error(`cmdb.dim_ci sync of CI ${ci.id} failed`);
   }
-  await mapToService(ci);
+  await mapToService(ci, rt);
   const evidence = await postgres.query(`SELECT
       (SELECT count(*)::int FROM ci_reconciliation_operations WHERE organization_id = $1 AND ci_id = $2
         AND operation = 'direct_write' AND state = 'committed') AS journal_committed,
@@ -181,7 +237,7 @@ async function seedOne(ci: SeedCI): Promise<SeededCI> {
 }
 
 /** The mapping goes through the API's own handler (its gap, ownership and dim_ci checks), not a copy of its SQL. */
-async function mapToService(ci: SeedCI): Promise<void> {
+async function mapToService(ci: SeedCI, rt: Runtime): Promise<void> {
   const reply = { status: 0, body: undefined as unknown };
   const res = {
     status(code: number) {
@@ -198,22 +254,23 @@ async function mapToService(ci: SeedCI): Promise<void> {
     body: { ci_ids: [ci.id], mapping_type: ci.mappingType, confidence_score: 1 },
     user: { _userId: SEED_ACTOR, _organizationId: ci.organizationId },
   };
-  await new BusinessServiceController().mapCIsToService(req as unknown as Request, res as unknown as Response);
+  await new rt.services.BusinessServiceController().mapCIsToService(req as unknown as Request, res as unknown as Response);
   if (reply.status !== 201) {
     throw new Error(`mapping CI ${ci.id} to ${ci.serviceId} was refused (${reply.status}: ${JSON.stringify(reply.body)})`);
   }
 }
 
 export async function seedCIs(target: 'scratch' | 'approved'): Promise<SeededCI[]> {
+  const rt = loadRuntime();
   if (target === 'scratch') {
-    const stores = [await inspectPostgres(getPostgresClient()), await inspectGraph(getNeo4jClient())];
+    const stores = [await inspectPostgres(rt.database.getPostgresClient()), await inspectGraph(rt.database.getNeo4jClient())];
     if (stores.some(state => state !== 'fixture')) {
       throw new TargetRefusedError(`refusing --target scratch: the stores are not the CO-1 tenant fixture (${stores.join(', ')})`);
     }
   }
   const seeded: SeededCI[] = [];
   for (const ci of SEED_CIS) {
-    seeded.push(await seedOne(ci));
+    seeded.push(await seedOne(ci, rt));
   }
   return seeded;
 }
@@ -224,9 +281,14 @@ export async function main(
 ): Promise<number> {
   try {
     const args = parseArgs(argv);
-    const target = assertTarget(args, process.env);
-    const cis = await seedCIs(target);
-    io.stdout(JSON.stringify({ target: args.target, founder_approval: args.founderApproval, cis }));
+    const guard = assertTarget(args, process.env);
+    const cis = await seedCIs(guard === 'scratch' ? 'scratch' : 'approved');
+    io.stdout(JSON.stringify({
+      target: args.target,
+      founder_approval: args.founderApproval,
+      founder_approval_sha256: guard === 'scratch' ? null : guard.approvalSha256,
+      cis,
+    }));
     return 0;
   } catch (error) {
     io.stderr(`seed-ci: ${error instanceof Error ? error.message : String(error)}`);

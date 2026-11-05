@@ -9,7 +9,8 @@
  */
 import { fork } from 'child_process';
 import { randomBytes } from 'crypto';
-import { readFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
 import { join } from 'path';
 import express from 'express';
 import request from 'supertest';
@@ -89,7 +90,7 @@ jest.mock('@cmdb/database/bullmq/queue-manager', () => ({}));
 
 import { BusinessServiceController } from '../../rest/controllers/business-service.controller';
 import {
-  APP_GRANTS_SQL, ENTER_APP_LOGIN_SQL, assertAppLogin, createLoginRolesSql, journalReadAclSql, migrationSql,
+  APP_GRANTS_SQL, ENTER_APP_LOGIN_SQL, PGLITE_SUPERUSER, assertAppLogin, createLoginRolesSql, journalReadAclSql, migrationSql,
 } from '../../rest/routes/__tests__/fixtures/app-login';
 import { Neo4jClient } from '@cmdb/database';
 import { assertTarget, main, parseArgs, SEED_CIS, TargetRefusedError } from '../seed-ci';
@@ -150,13 +151,25 @@ afterAll(() => { host.kill(); });
 
 describe('S3 target guard', () => {
   it('refuses a non-scratch target unless founder-approved; a refused run connects to nothing and writes nothing', async () => {
-    const env = process.env;
+    const root = mkdtempSync(join(tmpdir(), 'seed-ci-approvals-'));
+    mkdirSync(join(root, 'approvals'));
+    const approval = 'approvals/founder-seed-ci-20261105.go';
+    writeFileSync(join(root, approval), 'founder-GO 20261105T120000Z (Nick): seed-ci --target staging, then production.\n');
+    writeFileSync(join(root, 'approvals/founder-other.go'), 'founder-GO 20261105T120000Z: seed-tenant-fixture --target staging\n');
+    writeFileSync(join(root, 'approvals/founder-nogo.go'), 'NO-GO 20261105T120000Z: seed-ci --target staging\n');
+    const env = { ...process.env, SEED_CI_APPROVALS_ROOT: root };
     for (const target of ['staging', 'production']) {
       expect(() => assertTarget(parseArgs(['--target', target]), env)).toThrow(TargetRefusedError);
-      expect(assertTarget(parseArgs(['--target', target, '--founder-approval', 'approvals/founder-seed-ci-20261105.go']), env))
-        .toBe('approved');
+      expect(assertTarget(parseArgs(['--target', target, '--founder-approval', approval]), env))
+        .toEqual({ approvalSha256: expect.stringMatching(/^[0-9a-f]{64}$/) });
     }
-    expect(() => assertTarget(parseArgs(['--target', 'staging', '--founder-approval', 'yes']), env)).toThrow(TargetRefusedError);
+    for (const [target, ref, approvalEnv] of [
+      ['staging', 'yes', env], ['staging', approval, process.env], ['staging', 'approvals/founder-missing.go', env],
+      ['staging', 'approvals/founder-other.go', env], ['staging', 'approvals/founder-nogo.go', env], ['qa', approval, env],
+    ] as const) {
+      expect(() => assertTarget(parseArgs(['--target', target, '--founder-approval', ref]), approvalEnv)).toThrow(TargetRefusedError);
+    }
+    rmSync(root, { recursive: true });
     for (const scratchEnv of [{ ...env, NODE_ENV: 'production' }, { ...env, POSTGRES_HOST: 'db.internal' },
       { ...env, NEO4J_URI: 'neo4j://127.0.0.1:7687' }, { ...env, NEO4J_URI: 'bolt://graph.internal:7687' }]) {
       expect(() => assertTarget(parseArgs(['--target', 'scratch']), scratchEnv)).toThrow(TargetRefusedError);
@@ -167,10 +180,18 @@ describe('S3 target guard', () => {
     expect(refused.err.join('\n')).toMatch(/--founder-approval/);
   });
 
-  it('refuses --target scratch on a graph that is not the CO-1 tenant fixture (no marker node): nothing written', async () => {
-    const refused = await run(['--target', 'scratch']);
-    expect([refused.code, mockGraph.writes, await counts()])
-      .toEqual([1, [], { ops: 0, committed: 0, audit: 0, audit_create: 0, dim: 0, mapped: 0 }]);
+  it('refuses --target scratch unless both stores carry the CO-1 tenant-fixture marker: nothing written', async () => {
+    const nothing = { ops: 0, committed: 0, audit: 0, audit_create: 0, dim: 0, mapped: 0 };
+    // The marker table is the superuser's (beforeAll): rename it as the superuser, then return to the app login.
+    const renameMarker = (from: string, to: string) =>
+      mockSql(`SET SESSION AUTHORIZATION ${PGLITE_SUPERUSER}; ALTER TABLE cmdb.${from} RENAME TO ${to}; ${ENTER_APP_LOGIN_SQL}`, [], 'exec');
+    const graphUnmarked = await run(['--target', 'scratch']);
+    mockGraph.marked = true;
+    await renameMarker('tenant_fixture_marker', 'unmarked');
+    const postgresUnmarked = await run(['--target', 'scratch']);
+    await renameMarker('unmarked', 'tenant_fixture_marker');
+    mockGraph.marked = false;
+    expect([graphUnmarked.code, postgresUnmarked.code, mockGraph.writes, await counts()]).toEqual([1, 1, [], nothing]);
   });
 });
 
@@ -210,6 +231,10 @@ it('S3: the tool holds no unjournaled :CI write (every statement is a read-only 
     if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) literals.push(node.text);
     if (ts.isTemplateExpression(node)) literals.push(node.head.text, ...node.templateSpans.map(span => span.literal.text));
     if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) imports.push(node.moduleSpecifier.text);
+    if (ts.isCallExpression(node) && (node.expression.kind === ts.SyntaxKind.ImportKeyword
+      || (ts.isIdentifier(node.expression) && node.expression.text === 'require')) && node.arguments[0] && ts.isStringLiteral(node.arguments[0])) {
+      imports.push(node.arguments[0].text);
+    }
     if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
       const name = node.expression.name.text;
       const [statement] = node.arguments;

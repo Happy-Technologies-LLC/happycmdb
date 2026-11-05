@@ -13,6 +13,7 @@ import { Server, utils, type ParsedKey } from 'ssh2';
 import { connectDiscoveryHost, logger, resolveDiscoveryHost } from '@cmdb/common';
 import { SSHDiscoveryWorker } from '../ssh-discovery.worker';
 import { ERR_HOSTKEY_MISMATCH, ERR_HOSTKEY_UNPINNED, HostKeyPin, HostKeyType } from '../ssh-host-key';
+import { wellFormedKeyPair } from './fixtures/ssh2-keys';
 
 jest.mock('@cmdb/common', () => ({
   ...jest.requireActual('@cmdb/common'), resolveDiscoveryHost: jest.fn(), connectDiscoveryHost: jest.fn(),
@@ -21,8 +22,9 @@ jest.setTimeout(20000); // a retrying mutant sleeps 2 s + 4 s before failing its
 
 const HOST = 'pinned-host.example';
 const MARKER = randomUUID();
-const [A, B, RSA] = [utils.generateKeyPairSync('ed25519'), utils.generateKeyPairSync('ed25519'),
-  utils.generateKeyPairSync('rsa', { bits: 2048 })];
+const [A, B, RSA] = [wellFormedKeyPair(() => utils.generateKeyPairSync('ed25519')),
+  wellFormedKeyPair(() => utils.generateKeyPairSync('ed25519')),
+  wellFormedKeyPair(() => utils.generateKeyPairSync('rsa', { bits: 2048 }))];
 const pinOf = (publicKey: string, keyType: HostKeyType): HostKeyPin => ({ keyType, fingerprint: `SHA256:${createHash('sha256')
   .update((utils.parseKey(publicKey) as ParsedKey).getPublicSSH()).digest('base64').replace(/=+$/, '')}` });
 const PINS = [pinOf(A.public, HostKeyType.Ed25519), pinOf(B.public, HostKeyType.Ed25519), pinOf(RSA.public, HostKeyType.Rsa)];

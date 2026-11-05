@@ -15,6 +15,7 @@ import {
   ERR_HOSTKEY_ALGORITHM, ERR_SSH_AUTH, ERR_SSH_UNREACHABLE, SSHDiscoveryWorker, SshDiscoveryError,
 } from '../ssh-discovery.worker';
 import { HostKeyType, hostKeyFingerprint } from '../ssh-host-key';
+import { wellFormedKeyPair } from './fixtures/ssh2-keys';
 
 jest.mock('dns/promises', () => ({ lookup: jest.fn() }));
 jest.mock('node-ssh', () => ({ NodeSSH: jest.fn() }));
@@ -150,7 +151,8 @@ it('(c) stores server-side counts only: no cron line, login or mount source reac
 
 it('(f1) a host unable to offer the pinned algorithm is refused once, before authentication', async () => {
   const methods: string[] = [];
-  const server = new Server({ hostKeys: [utils.generateKeyPairSync('ed25519').private] }, client => client
+  const hostKey = wellFormedKeyPair(() => utils.generateKeyPairSync('ed25519')).private;
+  const server = new Server({ hostKeys: [hostKey] }, client => client
     .on('error', () => undefined).on('authentication', context => { methods.push(context.method); context.reject(); }));
   await once(server.listen(0, '127.0.0.1'), 'listening');
   const { NodeSSH: Real } = jest.requireActual<{ NodeSSH: typeof NodeSSH }>('node-ssh');

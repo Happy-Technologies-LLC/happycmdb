@@ -70,7 +70,7 @@ const USERNAME_RE = /^[A-Za-z0-9]{3,30}$/;
 const MIN_PASSWORD_LENGTH = 8;
 /** config.schema.ts auth.bcrypt.rounds default. */
 const BCRYPT_ROUNDS = 12;
-const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', '[::1]', 'localhost']);
+export const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', '[::1]', 'localhost']);
 /** Marks a service row as created by this seed (no schema change needed). */
 const SERVICE_MARKER = '{"tenant_fixture": true}';
 

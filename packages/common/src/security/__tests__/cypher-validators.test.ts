@@ -13,7 +13,9 @@ import {
   buildSafeCypherLabel,
   containsCypherInjectionPatterns,
   escapeCypherIdentifier,
+  VALID_RELATIONSHIP_TYPES,
 } from '../cypher-validators';
+import { RELATIONSHIP_TYPES } from '../../types/ci.types';
 
 describe('Cypher Validators - Cypher Injection Prevention', () => {
   describe('validateNodeLabel', () => {
@@ -75,6 +77,11 @@ describe('Cypher Validators - Cypher Injection Prevention', () => {
       attacks.forEach(attack => {
         expect(() => validateRelationshipType(attack)).toThrow('Invalid relationship type');
       });
+    });
+
+    it('HAP-1442 S5: the TS RelationshipType values and VALID_RELATIONSHIP_TYPES list the same types, INSTANCE_OF included', () => {
+      expect([...RELATIONSHIP_TYPES].sort()).toEqual([...VALID_RELATIONSHIP_TYPES].sort());
+      expect(VALID_RELATIONSHIP_TYPES).toContain('INSTANCE_OF');
     });
   });
 

@@ -17,7 +17,11 @@ export type {
   CIInput,
   Relationship,
   RelationshipType,
+  SourceOwnedCIType,
+  AuthoritativeSource,
+  AILifecycle,
 } from './ci.types';
+export { SOURCE_OWNED_CI_TYPES, isSourceOwnedCIType, SourceOwnedError, RELATIONSHIP_TYPES } from './ci.types';
 
 // Discovery Types
 export type {

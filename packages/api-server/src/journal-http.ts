@@ -8,6 +8,7 @@
  */
 import type { NextFunction, Request, Response } from 'express';
 import { GraphQLError } from 'graphql';
+import { SourceOwnedError } from '@cmdb/common';
 import {
   isStorableString, JournalAbortedError, JournalConflictError, JournalGapError, JournalTargetMissingError,
   JournalUnavailableError, PlanUnrepresentableError, getNeo4jClient,
@@ -116,7 +117,9 @@ export const journalSchemaGate = (_req: Request, res: Response, next: NextFuncti
 
 /** Maps a journal outcome to its sanitized REST response. False when `error` is not one. */
 export function sendJournalError(res: Response, error: unknown): boolean {
-  if (error instanceof JournalGapError || error instanceof CIGapError) {
+  if (error instanceof SourceOwnedError) { // HAP-1442: refused before T1, nothing written
+    res.status(409).json({ success: false, error: 'Conflict', code: error.code, message: error.message });
+  } else if (error instanceof JournalGapError || error instanceof CIGapError) {
     res.status(409).json({ success: false, error: 'Conflict', message: 'CI is temporarily unavailable' });
   } else if (error instanceof JournalUnavailableError) {
     res.status(503).json({ success: false, error: 'Service Unavailable', message: 'CI write temporarily unavailable',
@@ -140,7 +143,8 @@ export function sendJournalError(res: Response, error: unknown): boolean {
 /** GraphQL form of sendJournalError; null when `error` is not a journal outcome. */
 export function journalGraphQLError(error: unknown): GraphQLError | null {
   const [code, message] =
-    error instanceof JournalGapError || error instanceof CIGapError ? ['CONFLICT', 'CI is temporarily unavailable']
+    error instanceof SourceOwnedError ? [error.code, error.message]
+    : error instanceof JournalGapError || error instanceof CIGapError ? ['CONFLICT', 'CI is temporarily unavailable']
     : error instanceof JournalUnavailableError ? ['SERVICE_UNAVAILABLE', 'CI write temporarily unavailable']
     : error instanceof JournalAbortedError ? ['CONFLICT', 'CI could not be reconciled']
     : error instanceof JournalConflictError ? ['CONFLICT', error.reason]

@@ -11,7 +11,8 @@ const emit = jest.fn();
 const listeners = new Map<string, (event: Record<string, unknown>) => Promise<void>>();
 const createBaseline = jest.fn();
 const detectDrift = jest.fn();
-jest.mock('@cmdb/common', () => ({ logger: { info: jest.fn(), warn: jest.fn(), debug: jest.fn(), error: jest.fn() },
+jest.mock('@cmdb/common', () => ({ ...jest.requireActual('@cmdb/common/types/ci.types'),
+  logger: { info: jest.fn(), warn: jest.fn(), debug: jest.fn(), error: jest.fn() },
   sanitizeCITypeForLabel: (s: string) => s, ciIncarnationId: jest.requireActual('@cmdb/common/utils/ci-incarnation').ciIncarnationId }));
 jest.mock('@cmdb/database', () => ({
   ...jest.requireActual('@cmdb/database/journal/journal'), enc: jest.requireActual('@cmdb/database/journal/encoding').enc,

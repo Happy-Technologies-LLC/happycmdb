@@ -5,7 +5,10 @@
 
 import neo4j, { AuthToken, Config, Driver, Session, Node, Relationship, Path, PathSegment } from 'neo4j-driver';
 import { randomUUID } from 'crypto';
-import { logger, CI, CIInput, ciIncarnationId, CIAnalyticsLimitError, MAX_CI_ANALYTICS_NODES, sanitizeCITypeForLabel, validateRelationshipType } from '@cmdb/common';
+import {
+  logger, CI, CIInput, ciIncarnationId, CIAnalyticsLimitError, MAX_CI_ANALYTICS_NODES, sanitizeCITypeForLabel, validateRelationshipType,
+  isSourceOwnedCIType, SourceOwnedError,
+} from '@cmdb/common';
 import * as fs from 'fs';
 import * as path from 'path';
 import { getPostgresClient } from '../postgres/client';
@@ -16,6 +19,14 @@ import {
   JournalUnavailableError, assertExternalIdSchema,
 } from '../journal/journal';
 import { auditChainReady } from '../postgres/audit.service';
+import { SOURCE_OWNED_WRITE, type SourceOwnedGrant } from './source-owned-grant';
+
+/** HAP-1442: a write without the sync writer's grant may not give a CI an AI class (`type`/`ci_type`, any spelling). */
+function refuseSourceOwnedType(props: Record<string, unknown>, grant: SourceOwnedGrant | undefined): void {
+  if (grant === SOURCE_OWNED_WRITE) return;
+  if (Object.entries(props).some(([key, value]) => ['type', 'ci_type'].includes(key.replace(/^_+/, '').toLowerCase())
+    && isSourceOwnedCIType(value))) throw new SourceOwnedError();
+}
 
 /**
  * Explicit opt-out of CI tenant scoping, for callers that have no request
@@ -289,6 +300,8 @@ export class Neo4jClient {
       // Handle both API format (id, type) and internal format (_id, _type)
       const ciId = (ci as any).id || ci._id;
       const ciType = (ci as any).type || ci._type;
+      // HAP-1442: an AI CI is created only by AISyncWriter (journaled), never by this pre-journal path.
+      if (isSourceOwnedCIType(ciType)) throw new SourceOwnedError();
 
       // Validate and sanitize CI type to prevent Cypher injection
       const sanitizedType = sanitizeCITypeForLabel(ciType);
@@ -349,14 +362,20 @@ export class Neo4jClient {
    * v16 §5.2 steps 5–6: schema gate, then the owned lookup. A missing or
    * foreign CI is `false` (the caller's identical 404); the caller's own
    * pending/failed operation on the id is the gap 409.
+   * HAP-1442: an owned AI CI (source-owned class) is SourceOwnedError unless the caller holds the sync writer's grant;
+   * this runs before T1, so every refused update, delete, restore, merge, resolve or relationship write writes nothing.
    */
-  private async admitOwned(organizationId: string, ids: string[]): Promise<boolean> {
+  private async admitOwned(organizationId: string, ids: string[], grant?: SourceOwnedGrant): Promise<boolean> {
     // HAP-1001 D12: every owned write commits audit rows in T2, so without the chain key it is 503 before T1 (owned,
     // foreign and missing ids alike).
     if (!auditChainReady()) throw new JournalUnavailableError();
     await assertJournalSchema(this.runJournalStatement);
     for (const id of ids) {
-      if (await this.getCI(id, organizationId, 10_000)) continue;
+      const owned = await this.getCI(id, organizationId, 10_000);
+      if (owned) {
+        if (grant !== SOURCE_OWNED_WRITE && isSourceOwnedCIType(owned._type)) throw new SourceOwnedError();
+        continue;
+      }
       const gap = await getPostgresClient().query(`SELECT 1 FROM ci_reconciliation_operations
         WHERE organization_id = $1 AND ci_id = $2 AND state IN ('pending', 'failed') LIMIT 1`, [organizationId, id]);
       if (gap.rows.length) throw new JournalGapError();
@@ -371,13 +390,17 @@ export class Neo4jClient {
    * A client `external_id` (REST create, FD17-S3) is unique per organization: 503 before any journal row until the
    * schema enforces exactly that; a same-org duplicate is the constraint abort (409, no value echoed).
    */
-  async createCI(ci: CIInput, organizationId: string, actor: string): Promise<CI> {
-    await assertJournalSchema(this.runJournalStatement);
-    if (ci.external_id !== undefined && ci.external_id !== null) await assertExternalIdSchema(this.runJournalStatement);
+  async createCI(ci: CIInput, organizationId: string, actor: string,
+    sourceOwned?: { grant: SourceOwnedGrant; properties: Record<string, unknown> }): Promise<CI> {
     const id = (ci as { id?: string }).id || ci._id || randomUUID();
     const type = (ci as { type?: string }).type || ci._type;
+    // HAP-1442: AI classes are created only by AISyncWriter, which holds the grant; refused before any journal row.
+    if (isSourceOwnedCIType(type) && sourceOwned?.grant !== SOURCE_OWNED_WRITE) throw new SourceOwnedError();
+    await assertJournalSchema(this.runJournalStatement);
+    if (ci.external_id !== undefined && ci.external_id !== null) await assertExternalIdSchema(this.runJournalStatement);
     const label = sanitizeCITypeForLabel(type);
     const props = {
+      ...sourceOwned?.properties,
       external_id: ci.external_id ?? null, name: ci.name, type, status: ci.status || 'active',
       environment: ci.environment || 'development',
       discovered_at: neo4j.types.DateTime.fromStandardDate(new Date(ci.discovered_at || Date.now())),
@@ -399,27 +422,30 @@ export class Neo4jClient {
    * Every call (updateCI, ITIL, GraphQL) adds the T2 audit row of the changed keys (HAP-784, HAP-1001).
    */
   async updateCIProperties(id: string, props: Record<string, unknown>, organizationId: string,
-    actor: string): Promise<Record<string, unknown> | null> {
+    actor: string, grant?: SourceOwnedGrant): Promise<Record<string, unknown> | null> {
     if (Object.keys(props).some(key => ['id', 'organization_id', 'organizationid', 'op_id', 'reconciliation_op_id',
       'created_at', 'incarnation_id', 'external_id'].includes(key.replace(/^_+/, '').toLowerCase()))) {
       throw new Error('CI identity and incarnation cannot be updated');
     }
+    refuseSourceOwnedType(props, grant);
     return this.reconcileOwned(id, organizationId, actor, 'direct_write', async current => {
       // A pre-incarnation node gets its marker in the same W.
       const write = typeof current['incarnation_id'] === 'string' ? props : { ...props, incarnation_id: randomUUID() };
       return { graph: { kind: 'update', label: null, params: enc({ id, props: write }) }, audit: auditUpdate(current, props) };
-    }, () => this.ownedProperties(id, organizationId));
+    }, () => this.ownedProperties(id, organizationId), grant);
   }
 
   /**
    * One journaled operation on an owned CI whose plan reads the current stored
    * properties under the slot: direct updates, restore, and the reconciliation merge,
    * hold and conflict resolve (v16 §3.1, §7). Null when missing or foreign.
+   * An AI CI is SourceOwnedError before T1 unless `grant` is the sync writer's (HAP-1442).
    */
   async reconcileOwned<T>(id: string, organizationId: string, actor: string,
     operation: 'direct_write' | 'update' | 'resolve_conflict' | 'restore',
-    plan: (current: Record<string, unknown>) => Promise<StoredPlan>, result: (groupId: string) => Promise<T>): Promise<T | null> {
-    if (!(await this.admitOwned(organizationId, [id]))) return null;
+    plan: (current: Record<string, unknown>) => Promise<StoredPlan>, result: (groupId: string) => Promise<T>,
+    grant?: SourceOwnedGrant): Promise<T | null> {
+    if (!(await this.admitOwned(organizationId, [id], grant))) return null;
     try {
       return await this.journal.run({
         organizationId, actor, operation, ciIds: [id], result,
@@ -451,6 +477,7 @@ export class Neo4jClient {
    */
   async restoreCI(id: string, props: Record<string, unknown>, createdAt: unknown, discoveredAt: unknown,
     organizationId: string, actor: string): Promise<Record<string, unknown> | null> {
+    refuseSourceOwnedType(props, undefined);
     return this.reconcileOwned(id, organizationId, actor, 'restore', async current => ({
       graph: { kind: 'restore', label: null, params: enc({ id, props, createdAt, discoveredAt }) },
       audit: auditUpdate(current, { ...props, ...Object.fromEntries(Object.entries({ created_at: createdAt,

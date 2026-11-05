@@ -7,7 +7,7 @@
  */
 
 import { createHash, randomUUID } from 'crypto';
-import { ciIncarnationId, logger, sanitizeCITypeForLabel } from '@cmdb/common';
+import { ciIncarnationId, isSourceOwnedCIType, logger, sanitizeCITypeForLabel, SourceOwnedError } from '@cmdb/common';
 import {
   enc, getNeo4jClient, getPostgresClient, JournalConflictError, PlanUnrepresentableError, type ConflictPlan, type StoredPlan,
 } from '@cmdb/database';
@@ -15,6 +15,15 @@ import { IdentificationAttributes, TransformedCI } from '@cmdb/integration-frame
 import { FieldMergeRule, MatchResult, ReconciliationConfig } from '../types/reconciliation.types';
 import * as fuzzball from 'fuzzball';
 import { getEventProducer, EventType, type CIDiscoveredEvent, type CIUpdatedEvent } from '@cmdb/event-processor';
+
+/**
+ * HAP-1442: a discovered or merged CI may not create or claim an AI class; only AISyncWriter writes them. A merge into
+ * an existing AI CI is refused by the client's owned-write admission (before T1), whatever the source's authority.
+ */
+function refuseSourceOwnedClass(ci: TransformedCI): void {
+  const attributes: Record<string, unknown> = ci.attributes ?? {};
+  if ([ci.ci_type, attributes['type'], attributes['ci_type']].some(isSourceOwnedCIType)) throw new SourceOwnedError();
+}
 
 /**
  * A CI's organization_id is written only from the caller's token organization
@@ -362,6 +371,7 @@ export class IdentityReconciliationEngine {
   async reconcileCI(discoveredCI: TransformedCI, organizationId: string, createIfMissing = true,
     actor = 'system:identity-reconciliation'): Promise<string | null> {
     const identifiers = discoveredCI.identifiers;
+    refuseSourceOwnedClass(discoveredCI);
 
     // Find existing CI
     const match = await this.findExistingCI(identifiers, discoveredCI, organizationId);
@@ -452,6 +462,7 @@ export class IdentityReconciliationEngine {
    */
   async mergeCI(discoveredCI: TransformedCI, organizationId: string, actor: string,
     createIfMissing = false): Promise<MergeOutcome | null> {
+    refuseSourceOwnedClass(discoveredCI);
     await this.neo4jClient.assertJournalReady(true); // v16 §3.2: the gate precedes identification (lineage/graph reads)
     const match = await this.findExistingCI(discoveredCI.identifiers, discoveredCI, organizationId);
     if (match) return this.mergeIntoCI(match, discoveredCI, organizationId, actor);
@@ -591,11 +602,16 @@ export class IdentityReconciliationEngine {
   async resolveConflict(organizationId: string, actor: string, conflictId: string, resolution: ConflictResolution,
     expectedRevision: string, mergedValue?: unknown): Promise<{ ci_id: string; status: string; correlation_id: string } | null> {
     await this.neo4jClient.assertJournalReady(true); // v16 §3.2: the gate precedes the owner lookup
-    const owner = (await this.postgresClient.query(`SELECT ci_id, field_name FROM reconciliation_conflicts
+    const owner = (await this.postgresClient.query(`SELECT ci_id, field_name, incoming_json FROM reconciliation_conflicts
       WHERE id = $1 AND organization_id = $2`, [conflictId, organizationId])).rows[0];
     if (!owner) return null;
     // HAP-1099: a write to a reserved field (external_id) is one fixed 422 before admission, whatever the value.
     if ((resolution === 'accept_source' || resolution === 'merge') && isReserved(owner.field_name)) throw new PlanUnrepresentableError();
+    // HAP-1442: no resolution may give a CI an AI class. The plan's revision check pins incoming_json to this read.
+    const written = resolution === 'accept_source' ? owner.incoming_json : resolution === 'merge' ? mergedValue : undefined;
+    if (['type', 'ci_type'].includes(String(owner.field_name).replace(/^_+/, '').toLowerCase()) && isSourceOwnedCIType(written)) {
+      throw new SourceOwnedError();
+    }
     const ciId: string = owner.ci_id;
     const status = resolution === 'dismiss_stale' ? 'superseded' as const : 'resolved' as const;
     return this.neo4jClient.reconcileOwned(ciId, organizationId, actor, 'resolve_conflict', async (current): Promise<StoredPlan> => {

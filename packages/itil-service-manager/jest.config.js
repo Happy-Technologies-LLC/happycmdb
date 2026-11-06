@@ -21,7 +21,7 @@ module.exports = {
     '^@happy-technologies/connector-core$':
       '<rootDir>/../../node_modules/@happy-technologies/connector-core/src/index.ts',
     '^(\\.{1,2}/.*)\\.js$': '$1',
-    '^@cmdb/(.*)$': '<rootDir>/../$1/src',
+    '^@cmdb/([^/]+)$': '<rootDir>/../$1/src', // package entry points only (HAP-1608)
   },
   // Transform connector-core's TS source (mapped above); leave the rest of node_modules
   // untransformed.

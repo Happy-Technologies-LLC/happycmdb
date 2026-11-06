@@ -25,7 +25,7 @@ module.exports = {
   },
   moduleNameMapper: {
     '^@cmdb/discovery-engine(.*)$': '<rootDir>/../discovery-engine/src$1',
-    '^@cmdb/database(.*)$': '<rootDir>/../database/src$1',
+    '^@cmdb/database$': '<rootDir>/../database/src', // entry point only: never the source-owned grant (HAP-1608)
     '^@cmdb/common(.*)$': '<rootDir>/../common/src$1',
   },
   setupFilesAfterEnv: ['<rootDir>/__tests__/setup.ts'],

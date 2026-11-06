@@ -16,7 +16,7 @@ import { enc } from '../journal/encoding';
 import type { Encoded } from '../journal/encoding';
 import {
   assertJournalSchema, JournalGapError, JournalGraphRunner, JournalTargetMissingError, ReconciliationJournal, StoredPlan,
-  JournalUnavailableError, assertExternalIdSchema,
+  JournalUnavailableError, assertExternalIdSchema, type JournalActorType,
 } from '../journal/journal';
 import { auditChainReady } from '../postgres/audit.service';
 import { SOURCE_OWNED_WRITE, type SourceOwnedGrant } from './source-owned-grant';
@@ -391,7 +391,8 @@ export class Neo4jClient {
    * schema enforces exactly that; a same-org duplicate is the constraint abort (409, no value echoed).
    */
   async createCI(ci: CIInput, organizationId: string, actor: string,
-    sourceOwned?: { grant: SourceOwnedGrant; properties: Record<string, unknown> }): Promise<CI> {
+    sourceOwned?: { grant: SourceOwnedGrant; properties: Record<string, unknown> },
+    actorType: JournalActorType = 'user'): Promise<CI> {
     const id = (ci as { id?: string }).id || ci._id || randomUUID();
     const type = (ci as { type?: string }).type || ci._type;
     // HAP-1442: AI classes are created only by AISyncWriter, which holds the grant; refused before any journal row.
@@ -408,7 +409,7 @@ export class Neo4jClient {
       metadata: JSON.stringify(ci.metadata || {}), incarnation_id: randomUUID(),
     };
     return this.journal.run({
-      organizationId, actor, operation: 'direct_write', ciIds: [id],
+      organizationId, actor, actorType, operation: 'direct_write', ciIds: [id],
       plan: async () => ({ graph: { kind: 'create', label, params: enc({ id, props }) },
         audit: { action: 'CREATE', changes: auditChanges(Object.keys(props), {}, props) } }),
       result: async () => (await this.getCI(id, organizationId))!,
@@ -422,7 +423,7 @@ export class Neo4jClient {
    * Every call (updateCI, ITIL, GraphQL) adds the T2 audit row of the changed keys (HAP-784, HAP-1001).
    */
   async updateCIProperties(id: string, props: Record<string, unknown>, organizationId: string,
-    actor: string, grant?: SourceOwnedGrant): Promise<Record<string, unknown> | null> {
+    actor: string, grant?: SourceOwnedGrant, actorType: JournalActorType = 'user'): Promise<Record<string, unknown> | null> {
     if (Object.keys(props).some(key => ['id', 'organization_id', 'organizationid', 'op_id', 'reconciliation_op_id',
       'created_at', 'incarnation_id', 'external_id'].includes(key.replace(/^_+/, '').toLowerCase()))) {
       throw new Error('CI identity and incarnation cannot be updated');
@@ -432,7 +433,7 @@ export class Neo4jClient {
       // A pre-incarnation node gets its marker in the same W.
       const write = typeof current['incarnation_id'] === 'string' ? props : { ...props, incarnation_id: randomUUID() };
       return { graph: { kind: 'update', label: null, params: enc({ id, props: write }) }, audit: auditUpdate(current, props) };
-    }, () => this.ownedProperties(id, organizationId), grant);
+    }, () => this.ownedProperties(id, organizationId), grant, actorType);
   }
 
   /**
@@ -440,15 +441,16 @@ export class Neo4jClient {
    * properties under the slot: direct updates, restore, and the reconciliation merge,
    * hold and conflict resolve (v16 §3.1, §7). Null when missing or foreign.
    * An AI CI is SourceOwnedError before T1 unless `grant` is the sync writer's (HAP-1442).
+   * `actorType` is the audit row's (HAP-1608): `system` only for a writer acting on its own behalf.
    */
   async reconcileOwned<T>(id: string, organizationId: string, actor: string,
     operation: 'direct_write' | 'update' | 'resolve_conflict' | 'restore',
     plan: (current: Record<string, unknown>) => Promise<StoredPlan>, result: (groupId: string) => Promise<T>,
-    grant?: SourceOwnedGrant): Promise<T | null> {
+    grant?: SourceOwnedGrant, actorType: JournalActorType = 'user'): Promise<T | null> {
     if (!(await this.admitOwned(organizationId, [id], grant))) return null;
     try {
       return await this.journal.run({
-        organizationId, actor, operation, ciIds: [id], result,
+        organizationId, actor, actorType, operation, ciIds: [id], result,
         plan: async () => {
           const current = await this.ownedProperties(id, organizationId);
           if (!current) throw new JournalTargetMissingError();

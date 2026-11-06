@@ -25,7 +25,7 @@ module.exports = {
   },
   moduleNameMapper: {
     '^@cmdb/unified-model(.*)$': '<rootDir>/../unified-model/src$1',
-    '^@cmdb/database(.*)$': '<rootDir>/../database/src$1',
+    '^@cmdb/database$': '<rootDir>/../database/src', // entry point only: never the source-owned grant (HAP-1608)
     '^@cmdb/event-streaming(.*)$': '<rootDir>/../event-streaming/src$1',
     '^@cmdb/common(.*)$': '<rootDir>/../common/src$1',
   },

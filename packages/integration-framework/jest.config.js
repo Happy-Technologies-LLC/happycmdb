@@ -31,7 +31,7 @@ module.exports = {
       '<rootDir>/../../node_modules/@happy-technologies/connector-core/src/view.ts',
     '^(\\.{1,2}/.*)\\.js$': '$1',
     '^@cmdb/common(.*)$': '<rootDir>/../common/src$1',
-    '^@cmdb/database(.*)$': '<rootDir>/../database/src$1',
+    '^@cmdb/database$': '<rootDir>/../database/src', // entry point only: never the source-owned grant (HAP-1608)
     '^@cmdb/event-processor(.*)$': '<rootDir>/../event-processor/src$1',
   },
   // Prefer TS source over any committed .js artifacts, and resolve the stripped

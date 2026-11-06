@@ -106,6 +106,7 @@ jest.mock('../../../middleware/audit.middleware', () => ({ auditMiddleware: (_re
 
 import { loadConfig, SourceOwnedError, type CIInput } from '@cmdb/common';
 import { AISyncWriter, AISyncWriteRefused, getAuditService, getNeo4jClient, getPostgresClient, type AISyncStream } from '@cmdb/database';
+import { getIdentityReconciliationEngine } from '@cmdb/identity-resolution';
 import { JWTService } from '../../../auth/jwt.service';
 import { getAuthMiddleware } from '../../../auth/auth-bootstrap';
 import { resolvers } from '../../../graphql/resolvers';
@@ -211,6 +212,20 @@ it('S6: every sync-writer write (create and update, each stream) appends exactly
         .toEqual([{ entity_id: ciId, action, actor: `sync:${stream}`, actor_type: 'system', organization_id: A }]);
     }
   }
+  expect(await getAuditService(getPostgresClient().pool).verifyAuditChain()).toMatchObject({ ok: true });
+});
+
+it('HAP-1608 A: audit actor_type is the writer\'s explicit type, never read from the actor id', async () => {
+  // A user whose id starts `sync:` stays a user; identity reconciliation writes as system (the sync writer: S6).
+  const plain = randomUUID();
+  await getNeo4jClient().createCI({ _id: plain, name: 'plain', _type: 'server' } as CIInput, A, 'sync:c4_releases');
+  await rows(`INSERT INTO ci_source_lineage (organization_id, ci_id, source_name, source_id) VALUES ($1, $2, 'disc', 'disc-1')`, [A, plain]);
+  const engine = getIdentityReconciliationEngine();
+  await engine.reconcileCI({ name: 'plain', ci_type: 'server', source: 'disc', source_id: 'disc-1',
+    identifiers: { external_id: 'disc-1' }, attributes: { owner: 'ops' }, confidence_score: 90 }, A);
+  expect(await rows(`SELECT action, actor, actor_type FROM audit_log WHERE entity_id = $1 ORDER BY timestamp, id`, [plain]))
+    .toEqual([{ action: 'CREATE', actor: 'sync:c4_releases', actor_type: 'user' },
+      { action: 'UPDATE', actor: 'system:identity-reconciliation', actor_type: 'system' }]);
   expect(await getAuditService(getPostgresClient().pool).verifyAuditChain()).toMatchObject({ ok: true });
 });
 

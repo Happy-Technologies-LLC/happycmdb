@@ -24,7 +24,7 @@ module.exports = {
   },
   moduleNameMapper: {
     '^@cmdb/common(.*)$': '<rootDir>/../common/src$1',
-    '^@cmdb/database(.*)$': '<rootDir>/../database/src$1',
+    '^@cmdb/database$': '<rootDir>/../database/src', // entry point only: never the source-owned grant (HAP-1608)
     '^@cmdb/event-processor(.*)$': '<rootDir>/../event-processor/src$1',
     '^@cmdb/ai-ml-engine(.*)$': '<rootDir>/src$1',
   },

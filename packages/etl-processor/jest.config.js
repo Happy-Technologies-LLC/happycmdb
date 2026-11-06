@@ -33,7 +33,7 @@ module.exports = {
       '<rootDir>/../../node_modules/@happy-technologies/connector-core/src/index.ts',
     '^(\\.{1,2}/.*)\\.js$': '$1',
     '^@cmdb/common(.*)$': '<rootDir>/../common/src$1',
-    '^@cmdb/database(.*)$': '<rootDir>/../database/src$1',
+    '^@cmdb/database$': '<rootDir>/../database/src', // entry point only: never the source-owned grant (HAP-1608)
     '^@cmdb/etl-processor(.*)$': '<rootDir>/src$1',
   },
   // Transform connector-core's TS source (mapped above); leave the rest of node_modules

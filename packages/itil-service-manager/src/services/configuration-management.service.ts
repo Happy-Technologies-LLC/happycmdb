@@ -46,12 +46,13 @@ export class ConfigurationManagementService {
    */
   async updateLifecycleStage(
     ciId: string,
+    organizationId: string,
     newStage: ITILLifecycle,
     performedBy: string,
     reason?: string
   ): Promise<ConfigurationItem> {
     // Get current CI
-    const ci = await this.ciRepository.getCI(ciId);
+    const ci = await this.ciRepository.getOwnedCI(ciId, organizationId);
     if (!ci) {
       throw new Error(`CI not found: ${ciId}`);
     }
@@ -68,7 +69,7 @@ export class ConfigurationManagementService {
     }
 
     // Update lifecycle stage
-    const updatedCI = await this.ciRepository.updateITILAttributes(ciId, {
+    const updatedCI = await this.ciRepository.updateITILAttributes(ciId, organizationId, {
       lifecycle_stage: newStage,
     });
 
@@ -104,12 +105,13 @@ export class ConfigurationManagementService {
    */
   async updateConfigurationStatus(
     ciId: string,
+    organizationId: string,
     newStatus: ITILConfigStatus,
     performedBy: string,
     reason?: string
   ): Promise<ConfigurationItem> {
     // Get current CI
-    const ci = await this.ciRepository.getCI(ciId);
+    const ci = await this.ciRepository.getOwnedCI(ciId, organizationId);
     if (!ci) {
       throw new Error(`CI not found: ${ciId}`);
     }
@@ -126,7 +128,7 @@ export class ConfigurationManagementService {
     }
 
     // Update configuration status
-    const updatedCI = await this.ciRepository.updateITILAttributes(ciId, {
+    const updatedCI = await this.ciRepository.updateITILAttributes(ciId, organizationId, {
       configuration_status: newStatus,
     });
 
@@ -160,16 +162,17 @@ export class ConfigurationManagementService {
    */
   async scheduleAudit(
     ciId: string,
+    organizationId: string,
     auditDate: Date,
     scheduledBy: string
   ): Promise<void> {
-    const ci = await this.ciRepository.getCI(ciId);
+    const ci = await this.ciRepository.getOwnedCI(ciId, organizationId);
     if (!ci) {
       throw new Error(`CI not found: ${ciId}`);
     }
 
     // Update audit metadata
-    await this.ciRepository.updateITILAttributes(ciId, {
+    await this.ciRepository.updateITILAttributes(ciId, organizationId, {
       audit_status: 'unknown',
     });
 
@@ -203,12 +206,13 @@ export class ConfigurationManagementService {
    */
   async completeAudit(
     ciId: string,
+    organizationId: string,
     auditStatus: 'compliant' | 'non_compliant',
     auditedBy: string,
     findings: string[] = [],
     recommendations: string[] = []
   ): Promise<AuditResult> {
-    const ci = await this.ciRepository.getCI(ciId);
+    const ci = await this.ciRepository.getOwnedCI(ciId, organizationId);
     if (!ci) {
       throw new Error(`CI not found: ${ciId}`);
     }
@@ -224,7 +228,7 @@ export class ConfigurationManagementService {
     nextAuditDate.setDate(nextAuditDate.getDate() + daysUntilNextAudit);
 
     // Update audit attributes
-    await this.ciRepository.updateITILAttributes(ciId, {
+    await this.ciRepository.updateITILAttributes(ciId, organizationId, {
       audit_status: auditStatus,
       last_audited: now,
     });
@@ -295,13 +299,13 @@ export class ConfigurationManagementService {
   }
 
   /**
-   * Validate CI is ready for production
+   * Validate a CI of this organization is ready for production
    */
-  async validateReadyForProduction(ciId: string): Promise<{
+  async validateReadyForProduction(ciId: string, organizationId: string): Promise<{
     ready: boolean;
     issues: string[];
   }> {
-    const ci = await this.ciRepository.getCI(ciId);
+    const ci = await this.ciRepository.getOwnedCI(ciId, organizationId);
     if (!ci) {
       throw new Error(`CI not found: ${ciId}`);
     }
@@ -344,10 +348,11 @@ export class ConfigurationManagementService {
    */
   async promoteToProduction(
     ciId: string,
+    organizationId: string,
     promotedBy: string
   ): Promise<ConfigurationItem> {
     // Validate readiness
-    const validation = await this.validateReadyForProduction(ciId);
+    const validation = await this.validateReadyForProduction(ciId, organizationId);
     if (!validation.ready) {
       throw new Error(
         `CI is not ready for production:\n${validation.issues.join('\n')}`
@@ -355,9 +360,10 @@ export class ConfigurationManagementService {
     }
 
     // Update to operate lifecycle and active status
-    await this.updateLifecycleStage(ciId, 'operate', promotedBy, 'Promoted to production');
+    await this.updateLifecycleStage(ciId, organizationId, 'operate', promotedBy, 'Promoted to production');
     const ci = await this.updateConfigurationStatus(
       ciId,
+      organizationId,
       'active',
       promotedBy,
       'Promoted to production'
@@ -370,17 +376,17 @@ export class ConfigurationManagementService {
    * Retire CI
    * Moves CI to retire lifecycle and retired status
    */
-  async retireCI(ciId: string, retiredBy: string, reason: string): Promise<ConfigurationItem> {
-    const ci = await this.ciRepository.getCI(ciId);
+  async retireCI(ciId: string, organizationId: string, retiredBy: string, reason: string): Promise<ConfigurationItem> {
+    const ci = await this.ciRepository.getOwnedCI(ciId, organizationId);
     if (!ci) {
       throw new Error(`CI not found: ${ciId}`);
     }
 
     // Update to retire lifecycle
-    await this.updateLifecycleStage(ciId, 'retire', retiredBy, reason);
+    await this.updateLifecycleStage(ciId, organizationId, 'retire', retiredBy, reason);
 
     // Update to retired status
-    const retiredCI = await this.updateConfigurationStatus(ciId, 'retired', retiredBy, reason);
+    const retiredCI = await this.updateConfigurationStatus(ciId, organizationId, 'retired', retiredBy, reason);
 
     return retiredCI;
   }

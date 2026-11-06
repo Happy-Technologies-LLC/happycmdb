@@ -92,10 +92,14 @@ function validatedProperties(stream: AISyncStream, write: AICIWrite): { key: str
     ...(write.lifecycle !== undefined ? { lifecycle: write.lifecycle } : {}) } };
 }
 
-/** A stored Neo4j value equals the value a write would set (integers come back as neo4j Integer, lists as arrays). */
+/**
+ * A stored Neo4j value equals the value a write would set (integers come back as neo4j Integer, lists as arrays, and
+ * Neo4j stores no null, so a null is equal to an absent property).
+ */
 function sameValue(stored: unknown, next: AIAttributeValue | undefined): boolean {
   if (Array.isArray(next)) return Array.isArray(stored) && stored.length === next.length && next.every((v, i) => stored[i] === v);
   if (isInt(stored)) return typeof next === 'number' && stored.toNumber() === next;
+  if (next === null) return stored === null || stored === undefined;
   return stored === next;
 }
 

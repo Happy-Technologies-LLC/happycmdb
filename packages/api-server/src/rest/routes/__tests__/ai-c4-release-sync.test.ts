@@ -77,12 +77,19 @@ jest.mock('neo4j-driver', () => {
         }
       } else if (query.startsWith('CREATE (ci:CI')) {
         if (mockGraph.nodes.has(params['id'])) throw Object.assign(new Error('ci_id_unique'), { code: 'Neo.ClientError.Schema.ConstraintValidationFailed' });
-        mockGraph.nodes.set(params['id'], { ...params['props'], id: params['id'], organization_id: params['org'] });
+        // Neo4j stores no null: `SET ci = $props` leaves a null property out and `SET ci += $props` removes it.
+        mockGraph.nodes.set(params['id'], { ...Object.fromEntries(Object.entries(params['props']).filter(([, v]) => v !== null)),
+          id: params['id'], organization_id: params['org'] });
         applied = true;
       } else {
         const node = owned(params['id'], params['org']);
         if (node && query.includes('DETACH DELETE')) mockGraph.nodes.delete(params['id']);
-        else if (node) Object.assign(node, params['props']);
+        else if (node) {
+          for (const [key, value] of Object.entries(params['props'])) {
+            if (value === null) delete node[key];
+            else node[key] = value;
+          }
+        }
         applied = !!node;
       }
       for (const fence of applied ? params['fences'] : []) {
@@ -112,6 +119,7 @@ jest.mock('neo4j-driver', () => {
 });
 jest.mock('@cmdb/database/bullmq/queue-manager', () => ({}));
 
+import { Job, type JobsOptions } from 'bullmq';
 import { getEncryptionService } from '@cmdb/common';
 import { getNeo4jClient, getPostgresClient, getUnifiedCredentialService } from '@cmdb/database';
 import { AISyncScheduler } from '../../../../../discovery-engine/src/schedulers/ai-sync-scheduler';
@@ -209,9 +217,11 @@ afterAll(async () => {
 
 const R1 = digest('1');
 const PINS = [{ model_id: 'claude-opus-4', profile: 'default' }, { model_id: 'claude-haiku-4', profile: 'fast' }];
+/** R1 is not yet signed (C4 publishes signed_by and signed_at as null), which Neo4j stores as absent properties. */
+const r1 = (status: string) => ({ ...release('1', status, PINS), signed_by: null, signed_at: null });
 
 it('A1: an approved release with two model pins becomes one agent-release CI and two ai-model CIs joined by USES, each with c4_as_of', async () => {
-  c4.records.set(R1, release('1', 'approved', PINS));
+  c4.records.set(R1, r1('approved'));
   await expect(sync(A)).resolves.toMatchObject({ success: true, created: 3, updated: 0 });
   const rel = ciOf(A, 'agent-release', 'release_digest', R1)!;
   expect(rel).toMatchObject({ name: 'release-1', version: 3, release_status: 'approved', lifecycle: 'live', c4_as_of: c4.asOf,
@@ -228,11 +238,20 @@ it('A2: a second run over unchanged C4 data changes no CI or edge and appends no
   expect(await snapshot()).toEqual(before);
 });
 
-it('A3: a release revoked in C4 is retired (release_status revoked), and the CI and its USES edges remain', async () => {
-  c4.records.set(R1, release('1', 'revoked', PINS));
+it('A3: a release revoked in C4 is retired (release_status revoked), the CI and its USES edges remain, and an older C4 snapshot cannot un-revoke it', async () => {
+  c4.records.set(R1, r1('revoked'));
   await expect(sync(A)).resolves.toMatchObject({ success: true, retired: 1 });
   expect(ciOf(A, 'agent-release', 'release_digest', R1)).toMatchObject({ lifecycle: 'retired', release_status: 'revoked' });
   expect(mockGraph.edges).toHaveLength(2);
+  const retired = { ...ciOf(A, 'agent-release', 'release_digest', R1)! };
+  const [stored, asOf] = [await cursor(A), c4.asOf];
+  c4.asOf = '2026-11-06T11:00:00Z'; // a lagging C4 that still lists R1 as approved
+  c4.records.set(R1, r1('approved'));
+  await expect(sync(A)).resolves.toMatchObject({ success: false, created: 0, updated: 0 });
+  expect(ciOf(A, 'agent-release', 'release_digest', R1)).toEqual(retired);
+  expect(await cursor(A)).toEqual({ ...stored, last_error_code: 'c4_snapshot_stale' });
+  c4.asOf = asOf;
+  c4.records.set(R1, r1('revoked'));
   expect(PINS.map(pin => ciOf(A, 'ai-model', 'model_id', pin.model_id)?.['lifecycle'])).toEqual(['live', 'live']);
 });
 
@@ -254,8 +273,9 @@ it('A5: only the brief §4 attributes are stored; skill and instruction content,
   c4.records.set(R3, { ...release('3', 'approved', [{ model_id: 'gpt-x', profile: 'strict' }]), instructions: 'SECRET INSTRUCTION TEXT',
     skill_contents: { a: 'SKILL BODY' }, manifest: { secret: TOKEN }, api_token: TOKEN });
   await sync(A);
-  const WRITER = ['id', 'organization_id', 'type', 'name', 'status', 'environment', 'external_id', 'discovered_at',
-    'discovery_provider', 'metadata', 'incarnation_id', 'authoritative_source', 'lifecycle'];
+  // createCI's core properties as Neo4j keeps them (its null external_id and discovery_provider are not stored).
+  const WRITER = ['id', 'organization_id', 'type', 'name', 'status', 'environment', 'discovered_at', 'metadata', 'incarnation_id',
+    'authoritative_source', 'lifecycle'];
   expect(Object.keys(ciOf(A, 'agent-release', 'release_digest', R3)!).sort()).toEqual([...WRITER, 'release_digest', 'version',
     'release_status', 'signed_by', 'signed_at', 'config_digest', 'instructions_digest', 'skill_digests', 'c4_as_of'].sort());
   expect(Object.keys(ciOf(A, 'ai-model', 'model_id', 'gpt-x')!).sort())
@@ -265,7 +285,16 @@ it('A5: only the brief §4 attributes are stored; skill and instruction content,
 
 it('A6: the scheduled and enqueued BullMQ job data carry no token: the fan-out is {} and each tenant job is {organizationId}', async () => {
   const added: unknown[][] = [];
-  const queue = { add: async (...args: unknown[]) => { added.push(args); return {}; } };
+  // Each job goes through BullMQ's own option check (the one Queue.add runs), without Redis.
+  class CheckedJob extends Job {
+    check() { this.validateOptions(this.asJSON()); }
+  }
+  const stub = { toKey: (key: string) => key, qualifiedName: 'bull:test', keys: {}, opts: {}, client: new Promise(() => undefined) };
+  const queue = { add: async (name: string, data: object, opts: JobsOptions) => {
+    new CheckedJob(stub as never, name, data, opts).check();
+    added.push([name, data, opts]);
+    return {};
+  } };
   await new AISyncScheduler(queue as never).start();
   await expect(enqueueC4ReleaseSyncs(queue as never, getUnifiedCredentialService(getPostgresClient().pool))).resolves.toBe(1);
   expect(added.map(([name, data]) => [name, data])).toEqual([['c4-releases-fanout', {}], ['c4-releases', { organizationId: A }]]);

@@ -8,7 +8,8 @@
  */
 import axios, { type AxiosInstance } from 'axios';
 
-export type C4ErrorCode = 'c4_unavailable' | 'c4_unauthenticated' | 'c4_not_found' | 'c4_invalid_response' | 'c4_snapshot_changed';
+export type C4ErrorCode = 'c4_unavailable' | 'c4_unauthenticated' | 'c4_not_found' | 'c4_invalid_response' | 'c4_snapshot_changed'
+  | 'c4_snapshot_stale';
 
 export class C4Error extends Error {
   constructor(readonly code: C4ErrorCode) {

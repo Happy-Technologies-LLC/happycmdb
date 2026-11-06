@@ -35,7 +35,7 @@ export async function enqueueC4ReleaseSyncs(queue: Pick<Queue, 'add'>,
   const organizations = await credentials.listC4PrincipalOrganizations();
   for (const organizationId of organizations) {
     await queue.add(C4_TENANT_JOB, { organizationId },
-      { jobId: `${C4_TENANT_JOB}:${organizationId}`, removeOnComplete: true, removeOnFail: true });
+      { jobId: `${C4_TENANT_JOB}-${organizationId}`, removeOnComplete: true, removeOnFail: true });
   }
   return organizations.length;
 }
@@ -58,6 +58,9 @@ export async function syncC4Releases(organizationId: string, deps: { neo4j: Neo4
   try {
     const listed = await c4.listApproved();
     asOf = listed.asOf;
+    // A lagging C4 serving an older snapshot than the one already applied must not undo it (e.g. un-revoke).
+    const stored = await cursors.read(organizationId, STREAM);
+    if (stored?.asOf && Date.parse(asOf) < stored.asOf.getTime()) throw new C4Error('c4_snapshot_stale');
     const apply = async (release: C4Release) => {
       if (release.status !== 'approved' && release.status !== 'revoked') {
         result.refused++;

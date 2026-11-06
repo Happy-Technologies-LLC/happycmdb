@@ -428,7 +428,7 @@ export class Neo4jClient {
    */
   async createCI(ci: CIInput, organizationId: string, actor: string,
     sourceOwned?: { grant: SourceOwnedGrant; properties: Record<string, unknown> },
-    actorType: JournalActorType = 'user'): Promise<CI> {
+    actorType: JournalActorType = 'user', auditMetadata?: Record<string, unknown>): Promise<CI> {
     const id = (ci as { id?: string }).id || ci._id || randomUUID();
     const type = (ci as { type?: string }).type || ci._type;
     // HAP-1442: AI classes are created only by AISyncWriter, which holds the grant; refused before any journal row.
@@ -445,7 +445,7 @@ export class Neo4jClient {
       metadata: JSON.stringify(ci.metadata || {}), incarnation_id: randomUUID(),
     };
     return this.journal.run({
-      organizationId, actor, actorType, operation: 'direct_write', ciIds: [id],
+      organizationId, actor, actorType, auditMetadata, operation: 'direct_write', ciIds: [id],
       plan: async () => ({ graph: { kind: 'create', label, params: enc({ id, props }) },
         audit: { action: 'CREATE', changes: auditChanges(Object.keys(props), {}, props) } }),
       result: async () => (await this.getCI(id, organizationId))!,
@@ -732,14 +732,14 @@ export class Neo4jClient {
    */
   async writeRelationship(kind: 'relationship_create' | 'relationship_delete', fromId: string, toId: string,
     type: string, organizationId: string, actor: string, props: Record<string, unknown> = {},
-    grant?: SourceOwnedGrant, actorType: JournalActorType = 'user'): Promise<boolean> {
+    grant?: SourceOwnedGrant, actorType: JournalActorType = 'user', auditMetadata?: Record<string, unknown>): Promise<boolean> {
     const label = validateRelationshipType(type);
     if (!(await this.admitOwned(organizationId, [fromId, toId], grant))) return false;
     const create = kind === 'relationship_create';
     const relationship = { type: label, from_id: fromId, to_id: toId, ...(create ? { properties: props } : {}) };
     try {
       return await this.journal.run({
-        organizationId, actor, actorType, operation: 'relationship_write', ciIds: [fromId, toId],
+        organizationId, actor, actorType, auditMetadata, operation: 'relationship_write', ciIds: [fromId, toId],
         plan: async () => ({ graph: { kind, label, params: enc({ from: fromId, to: toId, props }) },
           audit: { action: create ? 'RELATIONSHIP_ADD' : 'RELATIONSHIP_REMOVE', changes: enc([{ field: 'relationship',
             old_value: create ? null : relationship, new_value: create ? relationship : null }]) } }),

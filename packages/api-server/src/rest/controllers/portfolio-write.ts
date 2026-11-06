@@ -34,13 +34,15 @@ export function ifMatchVersion(header: string | undefined): number | null | unde
 /**
  * One audit_log row on the write's own transaction, hash-chained by appendAuditEntry (C1 rule, F2: the portfolio's
  * local chain, no ledger event). Actor: the verified token subject (requestActor, HAP-443); changes: the columns whose
- * values differ between `before` and `after`.
+ * values differ between `before` and `after`. `extra` (HAP-1426: the import's import_id and defaulted fields) joins
+ * the row's metadata; it never replaces `operation` or `version`.
  */
 export async function appendPortfolioAudit(client: PoolClient, req: Request, organizationId: string,
   entity: { type: AuditEntityType; id: string },
-  action: 'CREATE' | 'UPDATE' | 'DELETE', operation: 'create' | 'update' | 'retire' | 'delete',
+  action: 'CREATE' | 'UPDATE' | 'DELETE', operation: 'create' | 'update' | 'retire' | 'delete' | 'import',
   before: Record<string, unknown> & { version: number } | null,
-  after: Record<string, unknown> & { version: number } | null): Promise<void> {
+  after: Record<string, unknown> & { version: number } | null,
+  extra: Record<string, unknown> = {}): Promise<void> {
   const row = (after ?? before)!;
   const changes: AuditChange[] = Object.keys(row).filter(field => UNAUDITED_COLUMNS[field] !== true).flatMap(field => {
     const old_value = before?.[field] ?? null;
@@ -49,7 +51,7 @@ export async function appendPortfolioAudit(client: PoolClient, req: Request, org
   });
   await appendAuditEntry(client, {
     entity_type: entity.type, entity_id: entity.id, action, actor: requestActor(req), actor_type: 'user',
-    changes, metadata: { operation, version: row.version },
+    changes, metadata: { ...extra, operation, version: row.version },
   }, organizationId);
 }
 

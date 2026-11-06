@@ -110,13 +110,17 @@ Implement these endpoints in your backend:
 
 ### Authentication
 ```
-POST   /api/v1/auth/login           - { email, password } → { token, user }
-POST   /api/v1/auth/logout          - Logout user
+POST   /api/v1/auth/login           - { username, password } → { _accessToken, _expiresIn, _user } + cmdb_rt cookie
+POST   /api/v1/auth/refresh         - cmdb_rt cookie + X-CMDB-Auth: 1 → new access token + new cmdb_rt (full TTL, sliding, no absolute cap). An absolute 7-day session cap from login, and ending all sessions on a self-service password change, are coming in HAP-1285; until then the lifetime is as described above.
+POST   /api/v1/auth/logout          - (no header, no session) → expires only this browser's cmdb_rt; stateless (captured cookies stay renewable, see Logout)
 GET    /api/v1/auth/me              - Get current user
 PUT    /api/v1/auth/profile         - { name, avatar }
 PUT    /api/v1/auth/password        - { currentPassword, newPassword }
 DELETE /api/v1/auth/account         - Delete account
 ```
+
+The refresh token travels only in the `cmdb_rt` HttpOnly cookie (HAP-1211 H1); see
+[Refresh Token](../api/authentication.md#refresh-token) and [Logout](../api/authentication.md#logout).
 
 ### Settings
 ```

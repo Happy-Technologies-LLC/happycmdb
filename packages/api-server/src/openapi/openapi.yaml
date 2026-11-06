@@ -168,21 +168,16 @@ paths:
   /auth/refresh:
     post:
       tags: [Authentication]
-      summary: Refresh an access token
+      summary: Refresh an access token from the cmdb_rt cookie (no request body is read; HAP-1211 H1)
       security: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [refreshToken]
-              properties:
-                refreshToken:
-                  type: string
+      parameters:
+        - { name: X-CMDB-Auth, in: header, required: true, schema: { type: string, enum: ['1'] } }
+        - { name: cmdb_rt, in: cookie, required: true, schema: { type: string } }
       responses:
         '200':
-          description: Refreshed access token
+          description: New access token in the body (no refresh token); Set-Cookie renews cmdb_rt with a full TTL (sliding, no absolute cap)
+        '403':
+          description: X-CMDB-Auth missing or not exactly 1 (fixed body, checked first)
         '401':
           description: Same fixed Authentication failed response as /auth/login
           content:
@@ -197,6 +192,15 @@ paths:
                   error:
                     type: string
                     enum: [Authentication failed]
+
+  /auth/logout:
+    post:
+      tags: [Authentication]
+      summary: "Expire this browser's cmdb_rt (no header, no access token). Stateless: a captured cmdb_rt can be renewed by refresh (sliding TTL, no absolute cap) until an operator password rotation, disable or delete; a self-service password change does not end it. An absolute 7-day session cap from login, and ending all sessions on a self-service password change, are coming in HAP-1285; until then the lifetime is as described above."
+      security: []
+      responses:
+        '200':
+          description: Set-Cookie expires cmdb_rt (Max-Age=0)
 
   /auth/api-keys:
     post:

@@ -38,11 +38,25 @@ export class CIRepository {
     }
   }
 
+  /** HAP-1608 C: the CI only when it belongs to the organization; a foreign or missing CI is null alike. */
+  async getOwnedCI(ciId: string, organizationId: string): Promise<ConfigurationItem | null> {
+    const session = getNeo4jClient().getSession();
+    try {
+      const result = await session.run('MATCH (ci:CI {id: $ciId, organization_id: $organizationId}) RETURN ci',
+        { ciId, organizationId });
+      return result.records.length > 0 ? this.nodeToCI(result.records[0].get('ci')) : null;
+    } finally {
+      await session.close();
+    }
+  }
+
   /**
-   * Update CI ITIL attributes
+   * Update CI ITIL attributes of a CI of this organization (HAP-1608 C: read and write both match the organization).
+   * Not journaled or audited, and it does not check the source-owned AI classes: library-only (hp1-s4a gate).
    */
   async updateITILAttributes(
     ciId: string,
+    organizationId: string,
     updates: Partial<{
       lifecycle_stage: ITILLifecycle;
       configuration_status: ITILConfigStatus;
@@ -52,37 +66,29 @@ export class CIRepository {
       audit_status: 'compliant' | 'non_compliant' | 'unknown';
     }>
   ): Promise<ConfigurationItem> {
-    const neo4j = getNeo4jClient();
-    const session = neo4j.getSession();
-
+    const ci = await this.getOwnedCI(ciId, organizationId);
+    if (!ci) {
+      throw new Error(`CI not found: ${ciId}`);
+    }
+    const session = getNeo4jClient().getSession();
     try {
-      // Get current CI
-      const ci = await this.getCI(ciId);
-      if (!ci) {
-        throw new Error(`CI not found: ${ciId}`);
-      }
-
-      // Merge updates into itil_attributes
-      const updatedItilAttributes = {
-        ...ci.itil_attributes,
-        ...updates,
-      };
-
       const result = await session.run(
         `
-        MATCH (ci:CI {id: $ciId})
+        MATCH (ci:CI {id: $ciId, organization_id: $organizationId})
         SET ci.itil_attributes = $itilAttributes,
             ci.updated_at = datetime()
         RETURN ci
         `,
         {
           ciId,
-          itilAttributes: JSON.stringify(updatedItilAttributes),
+          organizationId,
+          itilAttributes: JSON.stringify({ ...ci.itil_attributes, ...updates }),
         }
       );
-
-      const node = result.records[0].get('ci');
-      return this.nodeToCI(node);
+      if (result.records.length === 0) {
+        throw new Error(`CI not found: ${ciId}`);
+      }
+      return this.nodeToCI(result.records[0].get('ci'));
     } finally {
       await session.close();
     }

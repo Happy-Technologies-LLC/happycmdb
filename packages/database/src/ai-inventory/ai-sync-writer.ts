@@ -3,9 +3,10 @@
 
 /**
  * HAP-1442 (AAI S1): the only writer of the source-owned AI CI classes (design brief §4, A1). Each upsert is one
- * journaled Neo4jClient write (createCI or updateCIProperties) holding SOURCE_OWNED_WRITE, by actor `sync:<stream>`,
- * so it appends exactly one hash-chained audit_log row. The CI id is derived from the organization, class and natural
- * key, so a second write of the same key updates the CI instead of creating another.
+ * journaled Neo4jClient write (createCI or updateCIProperties) holding SOURCE_OWNED_WRITE, by actor `sync:<stream>`
+ * with the explicit actor type `system` (HAP-1608), so it appends exactly one hash-chained audit_log row. The CI id is
+ * derived from the organization, class and natural key, so a second write of the same key updates the CI instead of
+ * creating another.
  */
 import { createHash } from 'crypto';
 import type { AILifecycle, AuthoritativeSource, CIInput, SourceOwnedCIType } from '@cmdb/common';
@@ -89,7 +90,7 @@ export class AISyncWriter {
       const ci: CIInput = { _id: ciId, name: write.name, _type: write.class };
       try {
         await this.neo4j.createCI(ci, organizationId, actor, { grant: SOURCE_OWNED_WRITE,
-          properties: { lifecycle: 'live', ...properties } });
+          properties: { lifecycle: 'live', ...properties } }, 'system');
         return { ciId, action: 'created' };
       } catch (error) {
         // ci_id_unique: a concurrent write of the same key created it first; this write becomes its update.
@@ -97,7 +98,7 @@ export class AISyncWriter {
       }
     }
     const updated = await this.neo4j.updateCIProperties(ciId, { name: write.name, ...properties }, organizationId, actor,
-      SOURCE_OWNED_WRITE);
+      SOURCE_OWNED_WRITE, 'system');
     if (!updated) throw new AISyncWriteRefused(`CI ${ciId} is missing`);
     return { ciId, action: 'updated' };
   }

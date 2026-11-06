@@ -69,13 +69,14 @@ export type CIType =
 
 /**
  * HAP-1442 (AAI S1): AI CI classes. They are source-owned: only the AI sync writer (`AISyncWriter`, journaled, actor
- * `sync:<stream>`) creates them or writes their source fields; the Neo4jClient write methods (REST, GraphQL, ITIL,
- * reconciliation, relationships, legacy create) refuse them with `SourceOwnedError`.
- * Residual direct Cypher writers outside Neo4jClient do not check the class and can still set their own non-source
- * fields on an AI CI (none writes release_digest, release_status or config_digest; HAP-1604 follow-up):
- * etl `ReconciliationJob.updateNeo4jStatus` (status), itil `CIRepository.updateITILAttributes` (itil_attributes; its
- * match has no organization predicate) and bsm `propagateCriticality` (business_criticality). The itil and bsm writers
- * are library-only: no deployable package reaches them (hp1-s4a-graph-write-inventory gate).
+ * `sync:<stream>`, audit actor type `system`) creates them or writes their source fields; the Neo4jClient write methods
+ * (REST, GraphQL, ITIL, reconciliation, relationships, legacy create) refuse them with `SourceOwnedError`.
+ * Accepted residual direct Cypher writers outside Neo4jClient (HAP-1608) do not check the class and can still set their
+ * own non-source fields on an AI CI; none writes release_digest, release_status or config_digest:
+ * etl `ReconciliationJob.updateNeo4jStatus` (status; org-scoped), itil `CIRepository.updateITILAttributes`
+ * (itil_attributes; org-scoped since HAP-1608) and bsm `propagateCriticality` (business_criticality along a business
+ * service's dependency edges; no organization predicate). The itil and bsm writers are library-only: no deployable
+ * package reaches them (hp1-s4a-graph-write-inventory gate).
  */
 export const SOURCE_OWNED_CI_TYPES = ['agent-release', 'ai-model', 'cell', 'ai-deployment'] as const;
 export type SourceOwnedCIType = typeof SOURCE_OWNED_CI_TYPES[number];

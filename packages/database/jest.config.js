@@ -23,7 +23,7 @@ module.exports = {
   },
   moduleNameMapper: {
     '^@cmdb/common(.*)$': '<rootDir>/../common/src$1',
-    '^@cmdb/database(.*)$': '<rootDir>/src$1',
+    '^@cmdb/database$': '<rootDir>/src', // entry point only: never the source-owned grant (HAP-1608)
   },
   transform: {
     '^.+\\.ts$': ['ts-jest', {

@@ -52,8 +52,10 @@ export interface StoredPlan {
    * HAP-784: one hash-chained audit_log row for a CI create/update/delete, appended in T2 by the
    * journal row's actor. `changes` are v16 §3.8-encoded values; on delete, T2 derives them from `history.previous`.
    * HAP-1001: also relationship rows, and one row per journal slot (a relationship: one per endpoint).
+   * HAP-1608: `actorType` is stamped by `run` from the write's explicit `actorType`, never by the plan or the actor id.
    */
-  audit?: { action: 'CREATE' | 'UPDATE' | 'DELETE' | 'RELATIONSHIP_ADD' | 'RELATIONSHIP_REMOVE'; changes?: Encoded };
+  audit?: { action: 'CREATE' | 'UPDATE' | 'DELETE' | 'RELATIONSHIP_ADD' | 'RELATIONSHIP_REMOVE'; changes?: Encoded;
+    actorType?: JournalActorType };
 }
 
 /** Graph runner for W and recovery: one auto-commit statement, records as plain objects. */
@@ -307,9 +309,8 @@ async function writeAudit(client: PoolClient, row: { group_id: string; organizat
   if (!audit) return;
   const changes = audit.changes ?? Object.entries((history?.previous ?? {}) as Record<string, Encoded>)
     .map(([field, value]) => ({ field, old_value: value, new_value: null }));
-  // An AI source sync (AISyncWriter, actor `sync:<stream>`) is a system actor, not a user (HAP-1604).
   await appendAuditEntry(client, { entity_type: 'CI', entity_id: row.ci_id, action: audit.action, actor: row.actor,
-    actor_type: row.actor.startsWith('sync:') ? 'system' : 'user', changes: changes as unknown as AuditChange[],
+    actor_type: audit.actorType ?? 'user', changes: changes as unknown as AuditChange[],
     metadata: { correlation_id: row.group_id, journal_operation: row.operation } },
   row.organization_id);
 }
@@ -335,9 +336,14 @@ async function t2(groupId: string, recovery: boolean, claimToken?: string): Prom
   });
 }
 
+/** audit_log.actor_type of a journaled write: a person or API key (`user`), or the CMDB acting on its own (`system`). */
+export type JournalActorType = 'user' | 'system';
+
 export interface JournaledWrite<T> {
   organizationId: string;
   actor: string;
+  /** HAP-1608: explicit, default `user`; only a writer acting on its own behalf (AISyncWriter, reconcileCI) says `system`. */
+  actorType?: JournalActorType;
   operation: JournalOperation;
   ciIds: string[];
   /** Runs under the slot; may throw JournalTargetMissingError, PlanUnrepresentableError or JournalConflictError. */
@@ -359,6 +365,10 @@ export class ReconciliationJournal {
     let params: Record<string, unknown>;
     try {
       plan = await write.plan();
+      // The caller's type wins over anything the plan carries, so only `actorType` can make an audit row `system`.
+      if (plan.audit !== undefined) {
+        plan = { ...plan, audit: { ...plan.audit, actorType: write.actorType ?? 'user' } };
+      }
       assertPlanRepresentable(plan as unknown as Encoded);
       // Decoded before W: an undecodable value is a definitive 422, never an unproven W.
       try { params = plan.graph ? dec(plan.graph.params) as Record<string, unknown> : {}; } catch { throw new PlanUnrepresentableError(); }

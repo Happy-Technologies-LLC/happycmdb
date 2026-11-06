@@ -12,6 +12,6 @@ module.exports = {
     '!src/**/__tests__/**'
   ],
   moduleNameMapper: {
-    '^@cmdb/(.*)$': '<rootDir>/../$1/src'
+    '^@cmdb/([^/]+)$': '<rootDir>/../$1/src' // package entry points only (HAP-1608)
   }
 };

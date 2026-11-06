@@ -28,7 +28,7 @@ module.exports = {
     '^@cmdb/tbm-cost-engine(.*)$': '<rootDir>/../tbm-cost-engine/src$1',
     '^@cmdb/itil-service-manager(.*)$': '<rootDir>/../itil-service-manager/src$1',
     '^@cmdb/unified-model(.*)$': '<rootDir>/../unified-model/src$1',
-    '^@cmdb/database(.*)$': '<rootDir>/../database/src$1',
+    '^@cmdb/database$': '<rootDir>/../database/src', // entry point only: never the source-owned grant (HAP-1608)
     '^@cmdb/common(.*)$': '<rootDir>/../common/src$1',
   },
   setupFilesAfterEnv: ['<rootDir>/__tests__/setup.ts'],

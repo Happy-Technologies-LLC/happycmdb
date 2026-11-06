@@ -66,6 +66,8 @@ interface SeedCIOptions {
 // Run-unique fixture identity: cleanup deletes only what this run created.
 const RUN = uuidv4();
 const CI_ID_PREFIX = `itil-test-${RUN}-`;
+// HAP-1608 C: the configuration writers act only on a CI of the caller's organization.
+const ORG = uuidv4();
 const BS_OWNER = `itil-itest-${RUN}`;
 const UNOWNED = `itil-itest-unowned-${RUN}`;
 const createdCiIds: string[] = [];
@@ -83,6 +85,7 @@ describe('ITIL Service Manager Integration Tests', () => {
         `
         CREATE (ci:CI {
           id: $id,
+          organization_id: $organizationId,
           name: $name,
           type: $type,
           status: $status,
@@ -97,6 +100,7 @@ describe('ITIL Service Manager Integration Tests', () => {
         `,
         {
           id: options.id,
+          organizationId: ORG,
           name: options.name ?? options.id,
           type: options.type ?? 'server',
           status: options.status ?? 'active',
@@ -225,7 +229,7 @@ describe('ITIL Service Manager Integration Tests', () => {
       });
 
       const service = new ConfigurationManagementService();
-      const updated = await service.updateLifecycleStage(ciId, 'build', 'tester', 'ready to build');
+      const updated = await service.updateLifecycleStage(ciId, ORG, 'build', 'tester', 'ready to build');
 
       expect(updated.id).toBe(ciId);
       expect(updated.itil_attributes.lifecycle_stage).toBe('build');
@@ -247,7 +251,7 @@ describe('ITIL Service Manager Integration Tests', () => {
 
       const service = new ConfigurationManagementService();
       // operate -> build is not a permitted transition (operate can only retire).
-      await expect(service.updateLifecycleStage(ciId, 'build', 'tester')).rejects.toThrow(
+      await expect(service.updateLifecycleStage(ciId, ORG, 'build', 'tester')).rejects.toThrow(
         /Invalid lifecycle transition/
       );
     });
@@ -267,6 +271,7 @@ describe('ITIL Service Manager Integration Tests', () => {
       const service = new ConfigurationManagementService();
       const result = await service.completeAudit(
         ciId,
+        ORG,
         'compliant',
         'auditor',
         ['no findings'],

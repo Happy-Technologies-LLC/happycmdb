@@ -9,7 +9,8 @@
 import { createHash, randomUUID } from 'crypto';
 import { ciIncarnationId, isSourceOwnedCIType, logger, sanitizeCITypeForLabel, SourceOwnedError } from '@cmdb/common';
 import {
-  enc, getNeo4jClient, getPostgresClient, JournalConflictError, PlanUnrepresentableError, type ConflictPlan, type StoredPlan,
+  enc, getNeo4jClient, getPostgresClient, JournalConflictError, PlanUnrepresentableError, type ConflictPlan,
+  type JournalActorType, type StoredPlan,
 } from '@cmdb/database';
 import { IdentificationAttributes, TransformedCI } from '@cmdb/integration-framework';
 import { FieldMergeRule, MatchResult, ReconciliationConfig } from '../types/reconciliation.types';
@@ -370,10 +371,10 @@ export class IdentityReconciliationEngine {
   }
 
   /**
-   * Create or update CI with reconciliation
+   * Create or update CI with reconciliation. The engine acts on its own behalf: actor `system:identity-reconciliation`,
+   * audit actor type `system` (HAP-1608).
    */
-  async reconcileCI(discoveredCI: TransformedCI, organizationId: string, createIfMissing = true,
-    actor = 'system:identity-reconciliation'): Promise<string | null> {
+  async reconcileCI(discoveredCI: TransformedCI, organizationId: string, createIfMissing = true): Promise<string | null> {
     const identifiers = discoveredCI.identifiers;
     refuseSourceOwnedClass(discoveredCI);
 
@@ -387,7 +388,8 @@ export class IdentityReconciliationEngine {
         strategy: match.match_strategy
       });
 
-      return (await this.mergeIntoCI(match, discoveredCI, organizationId, actor)) ? match.ci_id : null;
+      return (await this.mergeIntoCI(match, discoveredCI, organizationId, 'system:identity-reconciliation', 'system'))
+        ? match.ci_id : null;
     } else if (!createIfMissing) {
       return null;
     } else {
@@ -469,7 +471,7 @@ export class IdentityReconciliationEngine {
     refuseSourceOwnedClass(discoveredCI);
     await this.neo4jClient.assertJournalReady(true); // v16 §3.2: the gate precedes identification (lineage/graph reads)
     const match = await this.findExistingCI(discoveredCI.identifiers, discoveredCI, organizationId);
-    if (match) return this.mergeIntoCI(match, discoveredCI, organizationId, actor);
+    if (match) return this.mergeIntoCI(match, discoveredCI, organizationId, actor, 'user');
     return createIfMissing ? this.createFromMerge(discoveredCI, organizationId, actor) : null;
   }
 
@@ -524,7 +526,7 @@ export class IdentityReconciliationEngine {
    * Changed content against a live (non-stale) pending conflict aborts as pending_content.
    */
   private async mergeIntoCI(match: MatchResult, ci: TransformedCI, organizationId: string,
-    actor: string): Promise<MergeOutcome | null> {
+    actor: string, actorType: JournalActorType): Promise<MergeOutcome | null> {
     const { source, source_id: sourceId } = ci;
     // T2 writes both into VARCHAR(255) evidence; refusing after W would leave a permanently failed gap.
     if (typeof sourceId !== 'string' || !sourceId || sourceId.length > 255 || source.length > 255) {
@@ -581,7 +583,7 @@ export class IdentityReconciliationEngine {
           new_value: merged[field] }))) },
       };
     }, async groupId => ({ ci_id: match.ci_id, action: applied ? 'updated' as const : 'pending_review' as const,
-      correlation_id: groupId, conflict_ids: conflictIds }));
+      correlation_id: groupId, conflict_ids: conflictIds }), undefined, actorType);
     const changed: Record<string, unknown> = applied ?? {};
     if (outcome?.action === 'updated' && Object.keys(changed).length) {
       // v16 §3.3 step 7: notify after T2, best-effort; a Kafka failure cannot undo or fail the committed write.

@@ -78,9 +78,10 @@ import { ConfigurationManagementService } from '@cmdb/itil-service-manager';
 const configService = new ConfigurationManagementService();
 await configService.connect();
 
-// Update CI lifecycle stage
+// Update CI lifecycle stage (writers act only on a CI of the given organization)
 const updatedCI = await configService.updateLifecycleStage(
   'ci-web-001',
+  organizationId,
   'operate',
   'john@example.com',
   'Promoted to production'
@@ -89,6 +90,7 @@ const updatedCI = await configService.updateLifecycleStage(
 // Schedule audit
 await configService.scheduleAudit(
   'ci-web-001',
+  organizationId,
   new Date('2025-12-01'),
   'audit-team@example.com'
 );
@@ -96,6 +98,7 @@ await configService.scheduleAudit(
 // Complete audit
 const auditResult = await configService.completeAudit(
   'ci-web-001',
+  organizationId,
   'compliant',
   'auditor@example.com',
   ['All checks passed'],
@@ -110,6 +113,7 @@ console.log(`Compliance rate: ${metrics.compliancePercentage}%`);
 // Promote CI to production (validates readiness)
 const productionCI = await configService.promoteToProduction(
   'ci-web-001',
+  organizationId,
   'ops-team@example.com'
 );
 ```

@@ -34,6 +34,11 @@ export type DiscoveryCredentialResolution =
   | { ok: true; protocol: DiscoveryCredentialProtocol; credentials: Record<string, unknown> }
   | { ok: false; code: typeof ERR_CREDENTIAL_DECODE };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** HAP-1444: the tag that marks an organization's HappyLab C4 bearer principal (one per organization). */
+export const C4_PRINCIPAL_TAG = 'happylab-c4';
+export type C4PrincipalResolution =
+  | { token: string }
+  | { code: 'c4_no_credential' | 'c4_credential_ambiguous' | 'c4_credential_invalid' };
 /** HAP-444 K1: every writer (REST, GraphQL, scripts) gets the shared SSH port rule before anything is persisted. */
 function assertSshPort(protocol: unknown, credentials: Record<string, unknown> | undefined): void {
   const port = credentials?.['port'];
@@ -243,6 +248,32 @@ export class CredentialCRUDService {
     }
     logger.error('Discovery credential decode failed', { code: ERR_CREDENTIAL_DECODE });
     return { ok: false, code: ERR_CREDENTIAL_DECODE };
+  }
+
+  /**
+   * HAP-1444: this organization's HappyLab C4 bearer token, read-only. The org and tag filter in SQL; none, more than one
+   * or an undecodable/malformed row is a fixed code, and nothing (id, payload or error) is logged.
+   */
+  async resolveC4Principal(organizationId: string): Promise<C4PrincipalResolution> {
+    if (typeof organizationId !== 'string' || !UUID.test(organizationId)) return { code: 'c4_no_credential' };
+    const { rows } = await this.pool.query(`SELECT credentials FROM credentials
+      WHERE organization_id = $1 AND protocol = 'bearer' AND tags @> ARRAY[$2]::text[] LIMIT 2`, [organizationId, C4_PRINCIPAL_TAG]);
+    if (rows.length === 0) return { code: 'c4_no_credential' };
+    if (rows.length > 1) return { code: 'c4_credential_ambiguous' };
+    try {
+      const token = this.decodeStoredCredentials(rows[0].credentials)?.['token'];
+      if (typeof token === 'string' && /^[\x21-\x7e]{1,512}$/.test(token)) return { token };
+    } catch {
+      // Dropped: the error text can carry plaintext.
+    }
+    return { code: 'c4_credential_invalid' };
+  }
+
+  /** HAP-1444: the organizations that hold a HappyLab C4 principal (ids only; nothing is decoded). */
+  async listC4PrincipalOrganizations(): Promise<string[]> {
+    const { rows } = await this.pool.query(`SELECT DISTINCT organization_id FROM credentials
+      WHERE organization_id IS NOT NULL AND protocol = 'bearer' AND tags @> ARRAY[$1]::text[] ORDER BY organization_id`, [C4_PRINCIPAL_TAG]);
+    return rows.map(row => row.organization_id as string);
   }
 
   async list(

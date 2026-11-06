@@ -345,14 +345,50 @@ export class Neo4jClient {
     }
   }
 
-  /** Raw stored properties of an owned CI (metadata stays its stored string). */
-  private async ownedProperties(id: string, organizationId: string): Promise<Record<string, unknown> | null> {
+  /** Raw stored properties of an owned CI (metadata stays its stored string); null when missing or foreign. */
+  async getCIProperties(id: string, organizationId: string): Promise<Record<string, unknown> | null> {
     const session = this.getSession();
     try {
       const result = await session.run(
         'MATCH (ci:CI {id: $id}) WHERE ci.organization_id = $organizationId RETURN properties(ci) AS props',
         { id, organizationId }, { timeout: 10_000 });
       return result.records.length ? result.records[0]!.get('props') as Record<string, unknown> : null;
+    } finally {
+      await session.close();
+    }
+  }
+
+  /**
+   * HAP-1444: one page (key order, after `after`) of this organization's values of `field` on CIs of `type`, e.g. the
+   * release digests it holds. `field` is a property name, checked before it reaches the statement.
+   */
+  async listOwnedKeys(organizationId: string, type: string, field: string, after: string, limit = 500): Promise<string[]> {
+    if (!/^[a-z][a-z0-9_]{0,63}$/.test(field) || !Number.isInteger(limit) || limit < 1 || limit > 1000) {
+      throw new Error('listOwnedKeys: invalid field or limit');
+    }
+    const session = this.getSession();
+    try {
+      const result = await session.run(
+        `MATCH (ci:CI) WHERE ci.organization_id = $organizationId AND ci.type = $type AND ci[$field] > $after
+         RETURN ci[$field] AS key ORDER BY key LIMIT $rowLimit`,
+        { organizationId, type, field, after, rowLimit: neo4j.int(limit) }, { timeout: 10_000 });
+      return result.records.map(record => record.get('key') as string);
+    } finally {
+      await session.close();
+    }
+  }
+
+  /** HAP-1444: whether this organization's CI `fromId` has a `type` relationship to its CI `toId`. */
+  async relationshipExists(organizationId: string, fromId: string, type: string, toId: string): Promise<boolean> {
+    const label = validateRelationshipType(type);
+    const session = this.getSession();
+    try {
+      const result = await session.run(
+        `OPTIONAL MATCH (a:CI {id: $from})-[r:${label}]->(b:CI {id: $to})
+         WHERE a.organization_id = $organizationId AND b.organization_id = $organizationId
+         RETURN count(r) > 0 AS present`,
+        { from: fromId, to: toId, organizationId }, { timeout: 10_000 });
+      return result.records[0]?.get('present') === true;
     } finally {
       await session.close();
     }
@@ -433,7 +469,7 @@ export class Neo4jClient {
       // A pre-incarnation node gets its marker in the same W.
       const write = typeof current['incarnation_id'] === 'string' ? props : { ...props, incarnation_id: randomUUID() };
       return { graph: { kind: 'update', label: null, params: enc({ id, props: write }) }, audit: auditUpdate(current, props) };
-    }, () => this.ownedProperties(id, organizationId), grant, actorType);
+    }, () => this.getCIProperties(id, organizationId), grant, actorType);
   }
 
   /**
@@ -452,7 +488,7 @@ export class Neo4jClient {
       return await this.journal.run({
         organizationId, actor, actorType, operation, ciIds: [id], result,
         plan: async () => {
-          const current = await this.ownedProperties(id, organizationId);
+          const current = await this.getCIProperties(id, organizationId);
           if (!current) throw new JournalTargetMissingError();
           return plan(current);
         },
@@ -484,7 +520,7 @@ export class Neo4jClient {
       graph: { kind: 'restore', label: null, params: enc({ id, props, createdAt, discoveredAt }) },
       audit: auditUpdate(current, { ...props, ...Object.fromEntries(Object.entries({ created_at: createdAt,
         discovered_at: discoveredAt }).filter(([, value]) => value !== null && value !== undefined)) }),
-    }), () => this.ownedProperties(id, organizationId));
+    }), () => this.getCIProperties(id, organizationId));
   }
 
   /** Enumerate at most one bounded page; never serialize an entire tenant graph into SQL. */
@@ -670,7 +706,7 @@ export class Neo4jClient {
       return await this.journal.run({
         organizationId, actor, operation: 'delete', ciIds: [id],
         plan: async (): Promise<StoredPlan> => {
-          const props = await this.ownedProperties(id, organizationId);
+          const props = await this.getCIProperties(id, organizationId);
           if (!props) throw new JournalTargetMissingError();
           return {
             graph: { kind: 'delete', label: null, params: enc({ id }) },
@@ -692,16 +728,18 @@ export class Neo4jClient {
    * one W with two fences). False (nothing written) when either endpoint is
    * missing or foreign, or, on delete, when no such relationship exists.
    * HAP-1001: T2 appends one RELATIONSHIP_ADD/RELATIONSHIP_REMOVE audit row per endpoint.
+   * HAP-1444: an endpoint of a source-owned AI class needs the sync writer's grant (AISyncWriter.link).
    */
   async writeRelationship(kind: 'relationship_create' | 'relationship_delete', fromId: string, toId: string,
-    type: string, organizationId: string, actor: string, props: Record<string, unknown> = {}): Promise<boolean> {
+    type: string, organizationId: string, actor: string, props: Record<string, unknown> = {},
+    grant?: SourceOwnedGrant, actorType: JournalActorType = 'user'): Promise<boolean> {
     const label = validateRelationshipType(type);
-    if (!(await this.admitOwned(organizationId, [fromId, toId]))) return false;
+    if (!(await this.admitOwned(organizationId, [fromId, toId], grant))) return false;
     const create = kind === 'relationship_create';
     const relationship = { type: label, from_id: fromId, to_id: toId, ...(create ? { properties: props } : {}) };
     try {
       return await this.journal.run({
-        organizationId, actor, operation: 'relationship_write', ciIds: [fromId, toId],
+        organizationId, actor, actorType, operation: 'relationship_write', ciIds: [fromId, toId],
         plan: async () => ({ graph: { kind, label, params: enc({ from: fromId, to: toId, props }) },
           audit: { action: create ? 'RELATIONSHIP_ADD' : 'RELATIONSHIP_REMOVE', changes: enc([{ field: 'relationship',
             old_value: create ? null : relationship, new_value: create ? relationship : null }]) } }),

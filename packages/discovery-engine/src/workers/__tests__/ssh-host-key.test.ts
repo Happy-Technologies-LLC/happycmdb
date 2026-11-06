@@ -13,7 +13,7 @@ import { Server, utils, type ParsedKey } from 'ssh2';
 import { connectDiscoveryHost, logger, resolveDiscoveryHost } from '@cmdb/common';
 import { SSHDiscoveryWorker } from '../ssh-discovery.worker';
 import { ERR_HOSTKEY_MISMATCH, ERR_HOSTKEY_UNPINNED, HostKeyPin, HostKeyType } from '../ssh-host-key';
-import { wellFormedKeyPair } from './fixtures/ssh2-keys';
+import { MAX_KEYGEN_ATTEMPTS, wellFormedKeyPair } from './fixtures/ssh2-keys';
 
 jest.mock('@cmdb/common', () => ({
   ...jest.requireActual('@cmdb/common'), resolveDiscoveryHost: jest.fn(), connectDiscoveryHost: jest.fn(),
@@ -105,4 +105,10 @@ it('(e) logs no fingerprint, host or credential marker on refusal or success', a
   for (const value of [...PINS.map(pin => pin.fingerprint.slice(7)), HOST, MARKER]) {
     expect(`${refused.logged}\n${accepted.logged}`).not.toContain(value);
   }
+});
+
+it('(f) the key fixture stops after MAX_KEYGEN_ATTEMPTS when keygen never yields a parseable key', () => {
+  const generate = jest.fn(() => ({ public: 'not a key', private: 'not a key' }));
+  expect(() => wellFormedKeyPair(generate)).toThrow(Error);
+  expect(generate).toHaveBeenCalledTimes(MAX_KEYGEN_ATTEMPTS);
 });

@@ -87,6 +87,7 @@ jest.mock('neo4j-driver', () => {
     const node = owned(params['id'], params['organizationId']);
     if (query.includes('properties(ci) AS props')) return { records: node ? [record({ props: { ...node } })] : [] };
     if (query.trim().endsWith('RETURN ci')) return { records: node ? [record({ ci: { properties: node } })] : [] };
+    mockGraph.writes.push(query); // an unrecognised statement counts as a graph write
     throw new Error(`unexpected statement: ${query}`);
   };
   const driver = () => ({ session: () => ({ run, close: async () => undefined }), close: async () => undefined });
@@ -103,12 +104,13 @@ jest.mock('../../../auth/neo4j-auth.repository', () => ({
 }));
 jest.mock('../../../middleware/audit.middleware', () => ({ auditMiddleware: (_req: Request, _res: Response, next: NextFunction) => next() }));
 
-import { loadConfig } from '@cmdb/common';
-import { AISyncWriter, getAuditService, getNeo4jClient, getPostgresClient } from '@cmdb/database';
+import { loadConfig, SourceOwnedError, type CIInput } from '@cmdb/common';
+import { AISyncWriter, AISyncWriteRefused, getAuditService, getNeo4jClient, getPostgresClient, type AISyncStream } from '@cmdb/database';
 import { JWTService } from '../../../auth/jwt.service';
 import { getAuthMiddleware } from '../../../auth/auth-bootstrap';
 import { resolvers } from '../../../graphql/resolvers';
 import { ciRoutes } from '../ci.routes';
+import { itilRoutes } from '../itil.routes';
 import { reconciliationRoutes } from '../reconciliation.routes';
 import { relationshipRoutes } from '../relationship.routes';
 import { APP_GRANTS_SQL, ENTER_APP_LOGIN_SQL, assertAppLogin, createLoginRolesSql, journalReadAclSql } from './fixtures/app-login';
@@ -119,6 +121,7 @@ app.use('/api/v1', getAuthMiddleware().authenticate());
 app.use('/api/v1/cis', ciRoutes);
 app.use('/api/v1/reconciliation', reconciliationRoutes);
 app.use('/api/v1/relationships', relationshipRoutes);
+app.use('/api/v1/itil', itilRoutes);
 const bearer = `Bearer ${new JWTService(loadConfig().auth.jwt).generateAccessToken(admin._id, admin._username, admin._role, A)}`;
 const rows = async (text: string, params: unknown[] = []) => (await mockSql(text, params)).rows;
 const digest = (hex: string) => `sha256:${hex.repeat(64)}`;
@@ -154,7 +157,8 @@ beforeAll(async () => {
     ALTER TABLE ci_change_history ADD CONSTRAINT ci_change_history_organization_required CHECK (organization_id IS NOT NULL) NOT VALID;
     ${['drift_detection_results', 'baseline_snapshots', 'ci_criticality_scores'].map(table =>
     `CREATE TABLE ${table} (organization_id UUID, ci_id TEXT, ci_incarnation_id UUID);`).join(' ')}
-    CREATE TABLE impact_analyses (organization_id UUID, source_ci_id TEXT, ci_incarnation_id UUID);`,
+    CREATE TABLE impact_analyses (organization_id UUID, source_ci_id TEXT, ci_incarnation_id UUID);
+    CREATE TABLE itil_baselines (id UUID PRIMARY KEY, organization_id UUID NOT NULL, baseline_data JSONB NOT NULL);`,
   [], 'exec'); // 025, 036 (S4a); a delete's derived-row purge reads only these columns
   const [{ db }] = (await mockSql('SELECT current_database() AS db')).rows;
   // The app login holds the fixture grants plus the journal and evidence grants 045 gives the staging app login.
@@ -163,6 +167,7 @@ beforeAll(async () => {
       reconciliation_conflicts, source_authority TO cmdb_user;
     GRANT SELECT ON reconciliation_rules TO cmdb_user; GRANT SELECT, INSERT ON ci_change_history TO cmdb_user;
     GRANT SELECT, DELETE ON drift_detection_results, baseline_snapshots, ci_criticality_scores, impact_analyses TO cmdb_user;
+    GRANT SELECT, INSERT ON itil_baselines TO cmdb_user;
     GRANT USAGE ON ALL SEQUENCES IN SCHEMA public, cmdb TO cmdb_user; ${ENTER_APP_LOGIN_SQL}`, [], 'exec');
   await assertAppLogin(async text => (await mockSql(text)).rows);
   // Given one CI of each class (as a sync would leave it), so every refusal below runs against an existing AI CI.
@@ -202,8 +207,8 @@ it('S6: every sync-writer write (create and update, each stream) appends exactly
       const [before] = await rows('SELECT count(*)::int AS n FROM audit_log');
       const { ciId } = await writer.upsert(A, stream, { class: cls, name, attributes });
       expect(await rows('SELECT count(*)::int AS n FROM audit_log')).toEqual([{ n: before!['n'] + 1 }]);
-      expect(await rows(`SELECT entity_id, action, actor, organization_id FROM audit_log ORDER BY timestamp DESC, id DESC LIMIT 1`))
-        .toEqual([{ entity_id: ciId, action, actor: `sync:${stream}`, organization_id: A }]);
+      expect(await rows(`SELECT entity_id, action, actor, actor_type, organization_id FROM audit_log ORDER BY timestamp DESC, id DESC LIMIT 1`))
+        .toEqual([{ entity_id: ciId, action, actor: `sync:${stream}`, actor_type: 'system', organization_id: A }]);
     }
   }
   expect(await getAuditService(getPostgresClient().pool).verifyAuditChain()).toMatchObject({ ok: true });
@@ -299,4 +304,89 @@ it('S4: the GraphQL createCI, updateCI and deleteCI mutations on an AI class are
     ]).toEqual(['source_owned', 'source_owned', 'source_owned']);
     expect(await snapshot(ids[cls])).toEqual(before);
   }
+});
+
+it('A1: an upsert without lifecycle keeps a retired AI CI retired; only a create defaults lifecycle to live', async () => {
+  const writer = new AISyncWriter(getNeo4jClient());
+  const write = { class: 'cell' as const, name: 'cell to retire', attributes: { cell_id: 'cell-retire', cell_status: 'stopped' } };
+  const { ciId } = await writer.upsert(A, 'c8_cells', write);
+  expect(mockGraph.nodes.get(ciId)).toMatchObject({ lifecycle: 'live' });
+  await writer.upsert(A, 'c8_cells', { ...write, lifecycle: 'retired' });
+  await writer.upsert(A, 'c8_cells', { ...write, name: 'cell renamed' });
+  expect(mockGraph.nodes.get(ciId)).toMatchObject({ name: 'cell renamed', lifecycle: 'retired' });
+});
+
+it('A2: a stream named after an Object.prototype member is AISyncWriteRefused and writes nothing', async () => {
+  const writer = new AISyncWriter(getNeo4jClient());
+  const before = await snapshot(ids['cell']);
+  for (const stream of ['constructor', '__proto__', 'toString', 'hasOwnProperty']) {
+    await expect(writer.upsert(A, stream as AISyncStream, { class: 'cell', name: 'forged', attributes: { cell_id: 'cell-1' } }))
+      .rejects.toBeInstanceOf(AISyncWriteRefused);
+  }
+  expect(await snapshot(ids['cell'])).toEqual(before);
+});
+
+describe('A4: every other write path refuses an AI CI with source_owned and writes nothing', () => {
+  it('ITIL PATCH lifecycle and status of an AI CI are 409 source_owned', async () => {
+    for (const cls of CLASSES) {
+      const before = await snapshot(ids[cls]);
+      for (const [path, body] of [['lifecycle', { stage: 'RETIRE' }], ['status', { status: 'RETIRED' }]] as const) {
+        const res = await request(app).patch(`/api/v1/itil/configuration-items/${ids[cls]}/${path}`).set('authorization', bearer).send(body);
+        expect({ status: res.status, code: res.body.code }).toEqual(sourceOwned);
+      }
+      expect(await snapshot(ids[cls])).toEqual(before);
+    }
+  });
+
+  it('ITIL baseline restore onto an AI CI is 409 source_owned', async () => {
+    for (const cls of CLASSES) {
+      const baseline = randomUUID();
+      await rows('INSERT INTO itil_baselines (id, organization_id, baseline_data) VALUES ($1, $2, $3)',
+        [baseline, A, JSON.stringify({ [ids[cls]]: { name: 'forged', release_status: 'revoked' } })]);
+      const before = await snapshot(ids[cls]);
+      const res = await request(app).post(`/api/v1/itil/baselines/${baseline}/restore`).set('authorization', bearer)
+        .send({ ciId: ids[cls], performedBy: admin._id });
+      expect({ status: res.status, code: res.body.code }).toEqual(sourceOwned);
+      expect(await snapshot(ids[cls])).toEqual(before);
+    }
+  });
+
+  it('REST DELETE /api/v1/relationships with an AI endpoint is 409 source_owned', async () => {
+    const server = randomUUID();
+    mockGraph.nodes.set(server, { id: server, organization_id: A, name: 'plain', type: 'server', incarnation_id: randomUUID() });
+    const before = [await snapshot(ids['ai-deployment']), await snapshot(server)];
+    for (const [from, to, type] of [[ids['ai-deployment'], ids['agent-release'], 'INSTANCE_OF'], [server, ids['cell'], 'DEPENDS_ON']]) {
+      const res = await request(app).delete('/api/v1/relationships').query({ from_id: from, to_id: to, type }).set('authorization', bearer);
+      expect({ status: res.status, code: res.body.code }).toEqual(sourceOwned);
+    }
+    expect([await snapshot(ids['ai-deployment']), await snapshot(server)]).toEqual(before);
+  });
+
+  it('GraphQL createRelationship and deleteRelationship with an AI endpoint are source_owned', async () => {
+    const server = randomUUID();
+    mockGraph.nodes.set(server, { id: server, organization_id: A, name: 'plain', type: 'server', incarnation_id: randomUUID() });
+    const loader = { clear: () => undefined, clearAll: () => undefined };
+    const context = { _neo4jClient: getNeo4jClient(), user: { _userId: admin._id, _username: admin._username, _role: admin._role,
+      _type: 'access' as const, _organizationId: A }, _loaders: { _ciLoader: loader, _relationshipLoader: loader, _dependentLoader: loader } };
+    const code = (call: Promise<unknown>) => call.then(() => 'resolved', (error: { extensions?: { code?: string } }) => error.extensions?.code);
+    const mutation = resolvers.Mutation as Record<string, (parent: unknown, args: unknown, ctx: unknown) => Promise<unknown>>;
+    const before = [await snapshot(ids['ai-deployment']), await snapshot(server)];
+    expect([
+      await code(mutation['createRelationship']!(null, { input: { _fromId: server, _toId: ids['cell'], _type: 'DEPENDS_ON' } }, context)),
+      await code(mutation['deleteRelationship']!(null, { fromId: ids['ai-deployment'], toId: ids['agent-release'], type: 'INSTANCE_OF' },
+        context)),
+    ]).toEqual(['source_owned', 'source_owned']);
+    expect([await snapshot(ids['ai-deployment']), await snapshot(server)]).toEqual(before);
+  });
+
+  it('the legacy unjournaled create (ETL Postgres-to-Neo4j repair) refuses every AI class', async () => {
+    for (const cls of CLASSES) {
+      const id = randomUUID();
+      const before = await snapshot(id);
+      await expect(getNeo4jClient().legacyCreateCIUnjournaled({ _id: id, name: 'forged', _type: cls } as unknown as CIInput, A))
+        .rejects.toBeInstanceOf(SourceOwnedError);
+      expect(await snapshot(id)).toEqual(before);
+      expect(mockGraph.nodes.has(id)).toBe(false);
+    }
+  });
 });

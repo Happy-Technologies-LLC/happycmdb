@@ -42,7 +42,7 @@ const NATURAL_KEYS: Record<SourceOwnedCIType, readonly string[]> = {
 /** Properties the writer or createCI owns; a source attribute may not set them. */
 const RESERVED: readonly string[] = ['id', 'organization_id', 'type', 'ci_type', 'name', 'status', 'environment', 'metadata',
   'external_id', 'incarnation_id', 'created_at', 'updated_at', 'discovered_at', 'discovery_provider', 'authoritative_source',
-  'lifecycle', 'op_id', 'reconciliation_op_id'];
+  'lifecycle', 'op_id', 'reconciliation_op_id', 'organizationid'];
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
 
 export class AISyncWriteRefused extends Error {
@@ -53,7 +53,7 @@ export class AISyncWriteRefused extends Error {
 }
 
 function validatedProperties(stream: AISyncStream, write: AICIWrite): { key: string[]; properties: Record<string, AIAttributeValue> } {
-  const route = STREAMS[stream];
+  const route = Object.hasOwn(STREAMS, stream) ? STREAMS[stream] : undefined;
   if (!route?.classes.includes(write.class)) throw new AISyncWriteRefused(`stream ${String(stream)} does not write ${String(write.class)}`);
   if (typeof write.name !== 'string' || !write.name.trim() || write.name.length > 500) throw new AISyncWriteRefused('name');
   if (write.lifecycle !== undefined && write.lifecycle !== 'live' && write.lifecycle !== 'retired') throw new AISyncWriteRefused('lifecycle');
@@ -70,7 +70,9 @@ function validatedProperties(stream: AISyncStream, write: AICIWrite): { key: str
     }
     return value;
   });
-  return { key, properties: { ...write.attributes, authoritative_source: route.source, lifecycle: write.lifecycle ?? 'live' } };
+  // The lifecycle is written only when the source states it; an update without one keeps the stored value (HAP-1604 A1).
+  return { key, properties: { ...write.attributes, authoritative_source: route.source,
+    ...(write.lifecycle !== undefined ? { lifecycle: write.lifecycle } : {}) } };
 }
 
 export class AISyncWriter {
@@ -86,7 +88,8 @@ export class AISyncWriter {
     if (!existing) {
       const ci: CIInput = { _id: ciId, name: write.name, _type: write.class };
       try {
-        await this.neo4j.createCI(ci, organizationId, actor, { grant: SOURCE_OWNED_WRITE, properties });
+        await this.neo4j.createCI(ci, organizationId, actor, { grant: SOURCE_OWNED_WRITE,
+          properties: { lifecycle: 'live', ...properties } });
         return { ciId, action: 'created' };
       } catch (error) {
         // ci_id_unique: a concurrent write of the same key created it first; this write becomes its update.

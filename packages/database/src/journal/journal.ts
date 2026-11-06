@@ -307,8 +307,10 @@ async function writeAudit(client: PoolClient, row: { group_id: string; organizat
   if (!audit) return;
   const changes = audit.changes ?? Object.entries((history?.previous ?? {}) as Record<string, Encoded>)
     .map(([field, value]) => ({ field, old_value: value, new_value: null }));
+  // An AI source sync (AISyncWriter, actor `sync:<stream>`) is a system actor, not a user (HAP-1604).
   await appendAuditEntry(client, { entity_type: 'CI', entity_id: row.ci_id, action: audit.action, actor: row.actor,
-    actor_type: 'user', changes: changes as unknown as AuditChange[], metadata: { correlation_id: row.group_id, journal_operation: row.operation } },
+    actor_type: row.actor.startsWith('sync:') ? 'system' : 'user', changes: changes as unknown as AuditChange[],
+    metadata: { correlation_id: row.group_id, journal_operation: row.operation } },
   row.organization_id);
 }
 

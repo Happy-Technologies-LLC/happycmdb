@@ -61,7 +61,10 @@ module.exports = {
       '<rootDir>/node_modules/@happy-technologies/connector-core/src/index.ts',
     '^(\\.{1,2}/.*)\\.js$': '$1',
     '^@cmdb/integration-framework/dist/(.*)$': '<rootDir>/packages/integration-framework/src/$1',
-    '^@cmdb/([^/]+)/(.*)$': '<rootDir>/packages/$1/src/$2',
+    // @cmdb/database exports only "." (HAP-1604): tests may reach these internals, never the source-owned grant.
+    '^@cmdb/database/(journal/journal|journal/encoding|neo4j/client|postgres/audit\\.service|bullmq/queue-manager)$':
+      '<rootDir>/packages/database/src/$1',
+    '^@cmdb/(?!database/)([^/]+)/(.*)$': '<rootDir>/packages/$1/src/$2',
     '^@cmdb/([^/]+)$': '<rootDir>/packages/$1/src',
     '^@test/utils$': '<rootDir>/tests/utils',
   },

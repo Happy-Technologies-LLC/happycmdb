@@ -19,10 +19,14 @@ import { getEventProducer, EventType, type CIDiscoveredEvent, type CIUpdatedEven
 /**
  * HAP-1442: a discovered or merged CI may not create or claim an AI class; only AISyncWriter writes them. A merge into
  * an existing AI CI is refused by the client's owned-write admission (before T1), whatever the source's authority.
+ * Checks every key the created node's property map is built from (ci_type, attributes, identifiers), in any spelling.
  */
 function refuseSourceOwnedClass(ci: TransformedCI): void {
-  const attributes: Record<string, unknown> = ci.attributes ?? {};
-  if ([ci.ci_type, attributes['type'], attributes['ci_type']].some(isSourceOwnedCIType)) throw new SourceOwnedError();
+  const fields = [...Object.entries(ci.attributes ?? {}), ...Object.entries(ci.identifiers ?? {}), ['ci_type', ci.ci_type]];
+  if (fields.some(([key, value]) => ['type', 'ci_type'].includes(String(key).replace(/^_+/, '').toLowerCase())
+    && isSourceOwnedCIType(value))) {
+    throw new SourceOwnedError();
+  }
 }
 
 /**

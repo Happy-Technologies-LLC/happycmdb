@@ -10,6 +10,6 @@
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 SET LOCAL statement_timeout = '10s';
-DROP TABLE IF EXISTS ai_sync_cursors;
+DROP TABLE IF EXISTS public.ai_sync_cursors;
 DELETE FROM cmdb.schema_migrations WHERE migration_name = '047_ai_sync_cursors.sql';
 COMMIT;

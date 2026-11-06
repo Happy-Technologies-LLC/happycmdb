@@ -407,6 +407,14 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
       );
     });
 
+    it('refuses a create whose identifiers name an AI class (they are spread into the node) and writes nothing', async () => {
+      for (const identifiers of [{ type: 'cell' }, { _Type: 'agent-release' }, { CI_TYPE: 'ai-model' }]) {
+        const ci = { ...physicalServerDuplicates[0]!, identifiers: { ...physicalServerDuplicates[0]!.identifiers, ...identifiers } };
+        await expect(engine.reconcileCI(ci, 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa')).rejects.toMatchObject({ code: 'source_owned' });
+      }
+      expect(mockSession.run).not.toHaveBeenCalled();
+    });
+
     it('should record source lineage when creating CI', async () => {
       const ci = physicalServerDuplicates[0];
 

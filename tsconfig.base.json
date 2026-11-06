@@ -49,8 +49,8 @@
     "paths": {
       "@cmdb/common": ["./packages/common/src"],
       "@cmdb/common/*": ["./packages/common/src/*"],
+      // No "@cmdb/database/*": the package exports only "." so no other package can import its internals (HAP-1604).
       "@cmdb/database": ["./packages/database/src"],
-      "@cmdb/database/*": ["./packages/database/src/*"],
       "@cmdb/discovery-engine": ["./packages/discovery-engine/src"],
       "@cmdb/discovery-engine/*": ["./packages/discovery-engine/src/*"],
       "@cmdb/etl-processor": ["./packages/etl-processor/src"],

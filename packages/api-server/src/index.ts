@@ -15,7 +15,7 @@ export { ReconciliationController } from './rest/controllers/reconciliation.cont
 import { RestAPIServer, listenTargetFromEnv } from './rest/server';
 import { logger } from '@cmdb/common';
 import { startJournalSweeper } from '@cmdb/database';
-import { getDiscoveryOrchestrator } from '@cmdb/discovery-engine';
+import { getDiscoveryOrchestrator, startAISyncC4 } from '@cmdb/discovery-engine';
 import { getAnomalyDetectionEngine } from '@cmdb/ai-ml-engine';
 import { loadConnectorsAtStartup } from './utils/connector-loader';
 import { getWebSocketService } from './services/websocket.service';
@@ -57,6 +57,9 @@ async function startServer() {
     const discoveryOrchestrator = getDiscoveryOrchestrator();
     await discoveryOrchestrator.start();
     logger.info('Discovery workers started');
+
+    // HAP-1444: the HappyLab C4 release sync runs only when the server names C4 (an http(s) URL without userinfo).
+    await startAISyncC4(process.env['HAPPYLAB_C4_URL']);
 
     // Start anomaly detection job
     const anomalyEngine = getAnomalyDetectionEngine();

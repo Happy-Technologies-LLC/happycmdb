@@ -29,12 +29,32 @@ export class AISyncCursors {
     return rows[0] ?? null;
   }
 
-  /** Records a successful sync up to `cursor` (source time `asOf`) for this organization only; clears the error. */
-  async advance(organizationId: string, stream: AISyncCursorStream, cursor: string, asOf: Date): Promise<void> {
-    await this.db.query(`INSERT INTO ai_sync_cursors (organization_id, stream, cursor, as_of, last_success_at, updated_at)
-      VALUES ($1, $2, $3, $4, now(), now())
+  /**
+   * Records a successful sync up to `cursor` (source time `asOf`) for this organization only, with the run's soft
+   * error code (null clears it). HAP-1444: a run that read an older snapshot than the stored one changes nothing.
+   */
+  async advance(organizationId: string, stream: AISyncCursorStream, cursor: string, asOf: Date,
+    lastErrorCode: string | null = null): Promise<void> {
+    if (lastErrorCode !== null) errorCode(lastErrorCode);
+    await this.db.query(`INSERT INTO ai_sync_cursors (organization_id, stream, cursor, as_of, last_success_at, last_error_code, updated_at)
+      VALUES ($1, $2, $3, $4, now(), $5, now())
       ON CONFLICT (organization_id, stream) DO UPDATE SET cursor = EXCLUDED.cursor, as_of = EXCLUDED.as_of,
-        last_success_at = EXCLUDED.last_success_at, last_error_code = NULL, updated_at = EXCLUDED.updated_at`,
-    [organizationId, stream, cursor, asOf]);
+        last_success_at = EXCLUDED.last_success_at, last_error_code = EXCLUDED.last_error_code, updated_at = EXCLUDED.updated_at
+      WHERE ai_sync_cursors.as_of IS NULL OR EXCLUDED.as_of >= ai_sync_cursors.as_of`,
+    [organizationId, stream, cursor, asOf, lastErrorCode]);
   }
+
+  /** HAP-1444: records a failed run's error code for this organization; the cursor and its as-of stay as they were. */
+  async recordError(organizationId: string, stream: AISyncCursorStream, code: string): Promise<void> {
+    await this.db.query(`INSERT INTO ai_sync_cursors (organization_id, stream, last_error_code, updated_at)
+      VALUES ($1, $2, $3, now())
+      ON CONFLICT (organization_id, stream) DO UPDATE SET last_error_code = EXCLUDED.last_error_code,
+        updated_at = EXCLUDED.updated_at`, [organizationId, stream, errorCode(code)]);
+  }
+}
+
+/** A stored error code is a short machine code (never a message that could carry source data). */
+function errorCode(code: string): string {
+  if (!/^[a-z0-9_]{1,64}$/.test(code)) throw new Error('ai_sync_cursors: invalid error code');
+  return code;
 }

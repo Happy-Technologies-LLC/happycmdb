@@ -25,7 +25,7 @@ import {
   CredentialMatchResult,
   CredentialValidationResult,
 } from '@cmdb/common';
-import { CredentialCRUDService, CredentialFilters } from './credential-services/crud.service';
+import { C4PrincipalResolution, CredentialCRUDService, CredentialFilters } from './credential-services/crud.service';
 import { CredentialAffinityService } from './credential-services/affinity.service';
 import { CredentialValidationService } from './credential-services/validation.service';
 
@@ -76,6 +76,15 @@ export class UnifiedCredentialService {
 
   async delete(id: string, createdBy: string, organizationId: string): Promise<void> {
     return this.crudService.delete(id, createdBy, organizationId);
+  }
+
+  // HAP-1444: HappyLab C4 principal (read-only; see CredentialCRUDService)
+  async resolveC4Principal(organizationId: string): Promise<C4PrincipalResolution> {
+    return this.crudService.resolveC4Principal(organizationId);
+  }
+
+  async listC4PrincipalOrganizations(): Promise<string[]> {
+    return this.crudService.listC4PrincipalOrganizations();
   }
 
   // Affinity Matching

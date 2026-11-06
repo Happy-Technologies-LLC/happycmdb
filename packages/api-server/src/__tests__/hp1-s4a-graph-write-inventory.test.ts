@@ -93,6 +93,7 @@ const WORKERS: Record<string, { count: number; primitive?: true }> = {
   'common/src/queues/queue-manager.ts': { count: 1, primitive: true }, // registerWorker: its callers are listed below
   'database/src/bullmq/queue-manager.ts': { count: 1, primitive: true },
   'discovery-engine/src/orchestrator/discovery-orchestrator.ts': { count: 1 },
+  'discovery-engine/src/workers/ai-sync.worker.ts': { count: 1 }, // HAP-1444 C4 release sync (codedProcessor)
   'discovery-engine/src/workers/cost-sync.worker.ts': { count: 3 },
   'etl-processor/src/index.ts': { count: 4 },
   'etl-processor/src/workers/v3-etl.worker.ts': { count: 3 },

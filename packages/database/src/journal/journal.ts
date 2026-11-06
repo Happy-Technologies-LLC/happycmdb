@@ -53,9 +53,11 @@ export interface StoredPlan {
    * journal row's actor. `changes` are v16 §3.8-encoded values; on delete, T2 derives them from `history.previous`.
    * HAP-1001: also relationship rows, and one row per journal slot (a relationship: one per endpoint).
    * HAP-1608: `actorType` is stamped by `run` from the write's explicit `actorType`, never by the plan or the actor id.
+   * HAP-1426: `metadata` (from the write's `auditMetadata`, e.g. the portfolio `import_id`) is stored with the plan, so a
+   * recovered T2 writes the same row; the journal's own correlation keys always win over it.
    */
   audit?: { action: 'CREATE' | 'UPDATE' | 'DELETE' | 'RELATIONSHIP_ADD' | 'RELATIONSHIP_REMOVE'; changes?: Encoded;
-    actorType?: JournalActorType };
+    actorType?: JournalActorType; metadata?: Record<string, unknown> };
 }
 
 /** Graph runner for W and recovery: one auto-commit statement, records as plain objects. */
@@ -311,7 +313,7 @@ async function writeAudit(client: PoolClient, row: { group_id: string; organizat
     .map(([field, value]) => ({ field, old_value: value, new_value: null }));
   await appendAuditEntry(client, { entity_type: 'CI', entity_id: row.ci_id, action: audit.action, actor: row.actor,
     actor_type: audit.actorType ?? 'user', changes: changes as unknown as AuditChange[],
-    metadata: { correlation_id: row.group_id, journal_operation: row.operation } },
+    metadata: { ...audit.metadata, correlation_id: row.group_id, journal_operation: row.operation } },
   row.organization_id);
 }
 
@@ -344,6 +346,8 @@ export interface JournaledWrite<T> {
   actor: string;
   /** HAP-1608: explicit, default `user`; only a writer acting on its own behalf (AISyncWriter, reconcileCI) says `system`. */
   actorType?: JournalActorType;
+  /** HAP-1426: extra JSON metadata for the audit row (stamped by `run`, like `actorType`). */
+  auditMetadata?: Record<string, unknown>;
   operation: JournalOperation;
   ciIds: string[];
   /** Runs under the slot; may throw JournalTargetMissingError, PlanUnrepresentableError or JournalConflictError. */
@@ -367,7 +371,8 @@ export class ReconciliationJournal {
       plan = await write.plan();
       // The caller's type wins over anything the plan carries, so only `actorType` can make an audit row `system`.
       if (plan.audit !== undefined) {
-        plan = { ...plan, audit: { ...plan.audit, actorType: write.actorType ?? 'user' } };
+        plan = { ...plan, audit: { ...plan.audit, actorType: write.actorType ?? 'user',
+          ...(write.auditMetadata ? { metadata: write.auditMetadata } : {}) } };
       }
       assertPlanRepresentable(plan as unknown as Encoded);
       // Decoded before W: an undecodable value is a definitive 422, never an unproven W.

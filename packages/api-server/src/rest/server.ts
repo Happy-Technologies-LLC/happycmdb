@@ -29,6 +29,7 @@ import { swaggerRoutes } from './routes/swagger.routes';
 import { itilRoutes } from './routes/itil.routes';
 import { businessServiceRoutes } from './routes/business-service.routes';
 import { serviceOfferingRoutes } from './routes/service-offering.routes';
+import { portfolioImportRoutes } from './routes/portfolio-import.routes';
 import { architectureRoutes } from './routes/architecture.routes';
 import { createMetricsRoutes } from '../metrics/metrics.routes';
 import { tbmRoutes } from './routes/tbm.routes';
@@ -153,6 +154,7 @@ export class RestAPIServer {
     this.app.use('/api/v1/itil', itilRoutes);
     this.app.use('/api/v1/business-services', businessServiceRoutes);
     this.app.use('/api/v1/service-offerings', serviceOfferingRoutes);
+    this.app.use('/api/v1/portfolio/imports', portfolioImportRoutes);
     this.app.use('/api/v1/architecture', architectureRoutes);
     this.app.use('/api/v1/tbm', tbmRoutes);
     this.app.use('/api/v1/settings', settingsRoutes);

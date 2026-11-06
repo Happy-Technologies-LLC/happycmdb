@@ -4031,6 +4031,100 @@ paths:
         '503':
           $ref: '#/components/responses/BusinessServiceWriteUnavailable'
 
+  /portfolio/imports:
+    post:
+      tags: [Business Services]
+      summary: Import a HappyHive catalog-as-portfolio export (one-way)
+      description: >-
+        HAP-1426 (PoR S5). The body is the HappyHive export as JSONL (at most
+        1 MiB and 5,000 record lines): a header line (`kind: header`, `source_system: happyhive`,
+        `organization_id`, `exported_at`, `row_counts`), then one `service`,
+        `ci`, `relationship` or `service_ci` record per line. The tenant is the
+        token's organization only; a header naming another is 422 and a query
+        naming one is 400. Requires the `admin` permission (provisional; Suite
+        Contracts v2 C1 names the migration principal, HAP-1615). Every line is
+        planned as `create`, `match` (imported before, or a service of the same
+        name) or `skip` (with `reason`), or rejected by line number; values
+        HappyCMDB chose are listed in `defaulted`. `dry_run` returns the plan
+        and persists nothing (its `import_id` is not stored). `apply` refuses
+        the whole file while any line is rejected (422, nothing written), else
+        writes services (each with one internal offering), CIs, relationships
+        and service-CI mappings with their id map and audit rows (metadata
+        `import_id`). Re-applying a file matches what was imported and creates
+        nothing new; an interrupted apply resumes.
+      operationId: importPortfolio
+      parameters:
+        - name: mode
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [dry_run, apply]
+      requestBody:
+        required: true
+        content:
+          application/x-ndjson:
+            schema:
+              type: string
+      responses:
+        '200':
+          description: Dry run plan
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortfolioImportResult'
+        '201':
+          description: Applied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortfolioImportResult'
+        '400':
+          description: >-
+            Missing or unknown `mode`, any other query parameter
+            (`code: invalid_mode`), or a malformed header line
+            (`code: invalid_header`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortfolioImportError'
+        '401':
+          $ref: '#/components/responses/BusinessServiceUnauthorized'
+        '403':
+          $ref: '#/components/responses/BusinessServiceForbidden'
+        '409':
+          description: >-
+            A CI is mid-write, a record the plan named is gone
+            (`code: target_missing`) or another import of the same records ran
+            concurrently (`code: concurrent_import`). Records already written
+            stay; re-running the file resumes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortfolioImportError'
+        '413':
+          description: 'Body larger than 1 MiB, or more than 5,000 record lines (`code: too_many_lines`)'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortfolioImportError'
+        '415':
+          description: 'Body is not `application/x-ndjson` (`code: ndjson_required`)'
+        '422':
+          description: >-
+            The header names another organization (`code: tenant_mismatch`),
+            its `row_counts` differ from the lines (`code: row_counts_mismatch`),
+            or (apply) a line is rejected (`code: rejected_lines`); `rejected`
+            lists them. Nothing is written.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortfolioImportError'
+        '500':
+          $ref: '#/components/responses/BusinessServiceServerError'
+        '503':
+          $ref: '#/components/responses/BusinessServiceWriteUnavailable'
+
   # =============================================================================
   # HEALTH
   # =============================================================================
@@ -5357,6 +5451,89 @@ components:
         error:
           type: string
           example: Business service not found
+
+    PortfolioImportResult:
+      type: object
+      description: >-
+        HAP-1426 import plan (dry_run) or outcome (apply). Every non-header
+        line is in `mapping` or `rejected`.
+      required: [import_id, mode, mapping, rejected]
+      properties:
+        import_id:
+          type: string
+          format: uuid
+          description: Stored with the apply's records and audit rows; a dry run's is not stored.
+        mode:
+          type: string
+          enum: [dry_run, apply]
+        mapping:
+          type: array
+          items:
+            type: object
+            required: [kind, source_id, target_id, action]
+            properties:
+              kind:
+                type: string
+                enum: [service, ci, relationship, service_ci]
+              source_id:
+                type: string
+                description: The HappyHive id (service_ci `<service_source_id>/<ci_source_id>`).
+              target_id:
+                type: string
+                nullable: true
+                description: The HappyCMDB id; null for a dry run's create and for a skip.
+              action:
+                type: string
+                enum: [create, match, skip]
+              reason:
+                type: string
+                description: >-
+                  name_match, ambiguous_name, target_missing,
+                  ai_asset_source_owned, unsupported_item_type or
+                  endpoint_skipped.
+              defaulted:
+                type: array
+                description: Values HappyCMDB chose for this record (additive to C1).
+                items:
+                  type: object
+                  required: [field, value, reason]
+                  properties:
+                    field:
+                      type: string
+                    value:
+                      type: string
+                    reason:
+                      type: string
+        rejected:
+          $ref: '#/components/schemas/PortfolioImportRejections'
+
+    PortfolioImportRejections:
+      type: array
+      items:
+        type: object
+        required: [line, code]
+        properties:
+          line:
+            type: integer
+            minimum: 2
+          code:
+            type: string
+            enum: [invalid_json, invalid_shape, forbidden_key, unknown_kind, missing_field, invalid_field,
+              duplicate_source_id, unknown_reference]
+
+    PortfolioImportError:
+      type: object
+      required: [success, error]
+      properties:
+        success:
+          type: boolean
+          enum: [false]
+        error:
+          type: string
+        code:
+          type: string
+        rejected:
+          $ref: '#/components/schemas/PortfolioImportRejections'
 
     BusinessServiceMessage:
       type: object

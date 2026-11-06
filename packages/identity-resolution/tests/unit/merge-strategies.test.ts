@@ -15,6 +15,7 @@ import {
 
 // Mock dependencies
 jest.mock('@cmdb/common', () => ({
+  ...jest.requireActual('@cmdb/common/types/ci.types'),
   logger: {
     info: jest.fn(),
     warn: jest.fn(),

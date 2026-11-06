@@ -20,6 +20,10 @@ export {
 export type { JournalSeam, StoredPlan, ConflictPlan } from './journal/journal';
 export { enc, dec, isStorableString } from './journal/encoding';
 
+// HAP-1442 AI inventory: the only writer of source-owned AI CIs (its grant token is deliberately not exported)
+export { AISyncWriter, AISyncWriteRefused } from './ai-inventory/ai-sync-writer';
+export type { AISyncStream, AICIWrite, AIAttributeValue } from './ai-inventory/ai-sync-writer';
+
 // PostgreSQL exports
 export { PostgresClient, getPostgresClient } from './postgres/client';
 export { runMigrations, getMigrationStatus } from './postgres/migrator';

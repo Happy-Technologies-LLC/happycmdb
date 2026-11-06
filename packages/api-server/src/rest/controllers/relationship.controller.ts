@@ -136,6 +136,7 @@ export class RelationshipController {
         'PART_OF',
         'DEPLOYED_ON',
         'BACKED_UP_BY',
+        'INSTANCE_OF',
       ];
 
       if (!validTypes.includes(type)) {
@@ -210,7 +211,8 @@ export class RelationshipController {
         });
         return;
       }
-      const allowedTypes: string[] = ['DEPENDS_ON', 'HOSTS', 'CONNECTS_TO', 'USES', 'OWNED_BY', 'PART_OF', 'DEPLOYED_ON', 'BACKED_UP_BY'];
+      const allowedTypes: string[] = ['DEPENDS_ON', 'HOSTS', 'CONNECTS_TO', 'USES', 'OWNED_BY', 'PART_OF', 'DEPLOYED_ON', 'BACKED_UP_BY',
+        'INSTANCE_OF'];
       if (typeof from_id !== 'string' || typeof to_id !== 'string' || typeof type !== 'string' ||
         !allowedTypes.includes(type)) {
         res.status(400).json({
@@ -269,6 +271,7 @@ export class RelationshipController {
         'PART_OF',
         'DEPLOYED_ON',
         'BACKED_UP_BY',
+        'INSTANCE_OF',
       ];
 
       if (!validTypes.includes(type as RelationshipType)) {

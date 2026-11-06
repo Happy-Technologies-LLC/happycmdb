@@ -72,6 +72,10 @@ export const typeDefs = `
     STORAGE
     LOAD_BALANCER
     CLOUD_RESOURCE
+    AGENT_RELEASE
+    AI_MODEL
+    CELL
+    AI_DEPLOYMENT
   }
 
   """

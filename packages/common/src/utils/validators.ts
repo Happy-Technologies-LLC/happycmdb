@@ -10,6 +10,7 @@
  */
 
 import Joi from 'joi';
+import { SOURCE_OWNED_CI_TYPES } from '../types/ci.types';
 
 /**
  * Validation result
@@ -70,7 +71,9 @@ export const schemas = {
     'network-device',
     'storage',
     'load-balancer',
-    'cloud-resource'
+    'cloud-resource',
+    // HAP-1442 AI classes: accepted so a write path reaches its source_owned refusal (409), not a 400.
+    ...SOURCE_OWNED_CI_TYPES
   ),
 
   /** CI Status validation */
@@ -88,7 +91,8 @@ export const schemas = {
     'OWNED_BY',
     'PART_OF',
     'DEPLOYED_ON',
-    'BACKED_UP_BY'
+    'BACKED_UP_BY',
+    'INSTANCE_OF' // HAP-1442: ai-deployment INSTANCE_OF agent-release (brief §4)
   ),
 
   /** Discovery Provider validation */

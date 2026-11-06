@@ -29,10 +29,15 @@ export const VALID_NODE_LABELS = [
   'kubernetes_cluster',
   'kubernetes_node',
   'kubernetes_pod',
+  'agent_release',
+  'ai_model',
+  'cell',
+  'ai_deployment',
 ] as const;
 
 /**
- * Valid Neo4j relationship types
+ * Valid Neo4j relationship types: the same values as the TS RelationshipType (types/ci.types RELATIONSHIP_TYPES),
+ * kept as its own list here so the Cypher allowlist is explicit; a unit test compares the two.
  */
 export const VALID_RELATIONSHIP_TYPES = [
   'DEPENDS_ON',
@@ -47,6 +52,17 @@ export const VALID_RELATIONSHIP_TYPES = [
   'CONTAINS',
   'ROUTES_TO',
   'BACKED_UP_BY',
+  'LOCATED_IN',
+  'DEPLOYED_ON',
+  'DETECTED_ON',
+  'AFFECTS',
+  'INSTALLED_ON',
+  'ASSIGNED_TO',
+  'APPLIES_TO',
+  'MEMBER_OF',
+  'REQUIRED_BY',
+  'HOSTED_ON',
+  'INSTANCE_OF',
 ] as const;
 
 /**

@@ -59,12 +59,7 @@ async function startServer() {
     logger.info('Discovery workers started');
 
     // HAP-1444: the HappyLab C4 release sync runs only when the server names C4 (an http(s) URL without userinfo).
-    const c4Url = URL.parse(process.env['HAPPYLAB_C4_URL'] ?? '');
-    if (c4Url && (c4Url.protocol === 'https:' || c4Url.protocol === 'http:') && !c4Url.username && !c4Url.password) {
-      await startAISyncC4(c4Url.origin);
-    } else {
-      logger.info('C4 release sync disabled (HAPPYLAB_C4_URL is not an http(s) URL)');
-    }
+    await startAISyncC4(process.env['HAPPYLAB_C4_URL']);
 
     // Start anomaly detection job
     const anomalyEngine = getAnomalyDetectionEngine();

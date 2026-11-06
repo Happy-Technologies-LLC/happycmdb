@@ -9,6 +9,7 @@
 import { Queue, Worker, type Job } from 'bullmq';
 import { CodedJobError, codedProcessor, jobErrorCode, logger } from '@cmdb/common';
 import { getNeo4jClient, getPostgresClient, getRedisClient, getUnifiedCredentialService } from '@cmdb/database';
+import { c4Origin } from '../ai-sync/c4-client';
 import { AI_SYNC_C4_QUEUE, C4_FANOUT_JOB, C4_TENANT_JOB, enqueueC4ReleaseSyncs, syncC4Releases } from '../ai-sync/c4-release-sync';
 import { AISyncScheduler } from '../schedulers/ai-sync-scheduler';
 
@@ -18,8 +19,16 @@ const RESULT_SHAPES = [
   { success: 'flag', created: 'count', updated: 'count', unchanged: 'count', retired: 'count', refused: 'count' },
 ] as const;
 
-/** Starts the scheduler and worker for C4 at `baseUrl` (server configuration, never tenant data). */
-export async function startAISyncC4(baseUrl: string): Promise<{ close(): Promise<void> }> {
+/**
+ * Starts the scheduler and worker for the C4 named by `configuredUrl` (server configuration, never tenant data). Returns
+ * null, starting nothing, when it is unset or not an http(s) URL without userinfo.
+ */
+export async function startAISyncC4(configuredUrl: string | undefined): Promise<{ close(): Promise<void> } | null> {
+  const baseUrl = c4Origin(configuredUrl);
+  if (!baseUrl) {
+    logger.info('C4 release sync disabled (HAPPYLAB_C4_URL is not an http(s) URL)');
+    return null;
+  }
   const connection = getRedisClient().getConnection().duplicate({ maxRetriesPerRequest: null });
   const queue = new Queue(AI_SYNC_C4_QUEUE, { connection });
   const worker = new Worker(AI_SYNC_C4_QUEUE, codedProcessor(AI_SYNC_C4_QUEUE, RESULT_SHAPES, async (job: Job) => {

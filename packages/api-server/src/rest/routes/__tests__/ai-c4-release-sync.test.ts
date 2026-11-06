@@ -124,6 +124,7 @@ import { getEncryptionService } from '@cmdb/common';
 import { getNeo4jClient, getPostgresClient, getUnifiedCredentialService } from '@cmdb/database';
 import { AISyncScheduler } from '../../../../../discovery-engine/src/schedulers/ai-sync-scheduler';
 import { enqueueC4ReleaseSyncs, syncC4Releases } from '../../../../../discovery-engine/src/ai-sync/c4-release-sync';
+import { c4Origin } from '../../../../../discovery-engine/src/ai-sync/c4-client';
 import { APP_GRANTS_SQL, ENTER_APP_LOGIN_SQL, assertAppLogin, createLoginRolesSql, journalReadAclSql } from './fixtures/app-login';
 
 const rows = async (text: string, params: unknown[] = []) => (await mockSql(text, params)).rows;
@@ -322,4 +323,10 @@ it('status allowlist: an unknown status leaves a held CI unchanged and never cre
   expect(ciOf(A, 'agent-release', 'release_digest', R4)).toEqual(held);
   expect([ciOf(A, 'agent-release', 'release_digest', R5), ciOf(A, 'ai-model', 'model_id', 'never-seen')]).toEqual([undefined, undefined]);
   expect(await cursor(A)).toMatchObject({ last_error_code: 'c4_status_refused' });
+});
+
+it('env gate: the sync starts only for an http(s) HAPPYLAB_C4_URL without userinfo, and then talks only to its origin', () => {
+  expect([undefined, '', 'not a url', 'ftp://c4.internal', 'https://u:p@c4.internal', 'https://tok@c4.internal',
+    'https://c4.internal:8443/v1/releases?x=1'].map(c4Origin))
+    .toEqual([null, null, null, null, null, null, 'https://c4.internal:8443']);
 });

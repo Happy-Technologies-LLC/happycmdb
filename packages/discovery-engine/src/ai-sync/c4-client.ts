@@ -32,6 +32,20 @@ export interface C4Release {
   model_pins: { model_id: string; profile: string }[];
 }
 
+/**
+ * The C4 origin named by server configuration (`HAPPYLAB_C4_URL`): an http(s) URL without userinfo, else null (unset
+ * or invalid). `new URL` in a try, since `URL.parse` is missing before Node 20.18.
+ */
+export function c4Origin(raw: string | undefined): string | null {
+  let url: URL;
+  try {
+    url = new URL(raw ?? '');
+  } catch {
+    return null;
+  }
+  return (url.protocol === 'https:' || url.protocol === 'http:') && !url.username && !url.password ? url.origin : null;
+}
+
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
 const PAGE_LIMIT = 100;
 /** A bound on one snapshot's list pages (100 items each), so a looping cursor cannot run a sync forever. */

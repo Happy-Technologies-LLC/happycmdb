@@ -33,12 +33,19 @@ host.on('message', ({ id, rows, rowCount, error, code }: { id: number; rows: Rec
   if (error) call.reject(Object.assign(new Error(error), { code }));
   else call.resolve({ rows, rowCount: rowCount || rows.length });
 });
-/** `mapFault`: the source id whose first map-row insert fails (a crash after its record was written). */
-const mockFault = { mapFault: null as string | null };
-function mockSql(text: string, params: unknown[] = [], op: 'query' | 'exec' = 'query') {
+/**
+ * `mapFault`: the source id whose first map-row insert fails (a crash after its record was written). `preLink`: the next
+ * service-CI mapping insert is run twice, as if another writer linked the pair first.
+ */
+const mockFault = { mapFault: null as string | null, preLink: false };
+function mockSql(text: string, params: unknown[] = [], op: 'query' | 'exec' = 'query'): Promise<{ rows: Record<string, any>[]; rowCount: number }> {
   if (mockFault.mapFault && text.includes('INSERT INTO portfolio_import_map') && params[3] === mockFault.mapFault) {
     mockFault.mapFault = null;
     return Promise.reject(Object.assign(new Error('connection lost'), { code: '08006' }));
+  }
+  if (mockFault.preLink && text.includes('INSERT INTO ci_business_service_mappings')) {
+    mockFault.preLink = false;
+    return mockSql(text, params).then(() => mockSql(text, params));
   }
   const id = serial++;
   const call = Promise.withResolvers<{ rows: Record<string, any>[]; rowCount: number }>();
@@ -159,6 +166,9 @@ async function state(org: string) {
   };
 }
 const NOTHING = { services: 1, offerings: 0, mappings: 0, imports: 0, map: 0, audit: 0, journal: 0, cis: 0, relationships: 0 };
+/** The fixture applied once in tenant A: the Unassigned legacy service, 2 services, 2 CIs, 1 relationship, 2 links. */
+const APPLIED = { services: 4, offerings: 3, mappings: 2, imports: 1, map: 9, audit: 12, journal: 4, cis: 2, relationships: 1 };
+const LEGACY = 'unassigned-legacy';
 
 const SERVICE_DEFAULTED = [
   { field: 'service_classification', value: 'other_it', reason: 'classification_defaulted' },
@@ -166,13 +176,15 @@ const SERVICE_DEFAULTED = [
   { field: 'business_criticality', value: 'medium', reason: 'criticality_defaulted' },
 ];
 const DRY_RUN_MAPPING = [
+  { kind: 'service', source_id: LEGACY, target_id: null, action: 'create', defaulted: SERVICE_DEFAULTED },
   { kind: 'service', source_id: SERVICE(1), target_id: null, action: 'create',
     defaulted: [...SERVICE_DEFAULTED, { field: 'lifecycle', value: 'planned', reason: 'lifecycle_needs_owner_principal' }] },
   { kind: 'service', source_id: SERVICE(2), target_id: null, action: 'create', defaulted: SERVICE_DEFAULTED },
   { kind: 'service', source_id: SERVICE(3), target_id: SEEDED, action: 'match', reason: 'name_match' },
   { kind: 'ci', source_id: CI(1), target_id: null, action: 'create', defaulted: [] },
-  { kind: 'ci', source_id: CI(2), target_id: null, action: 'create',
-    defaulted: [{ field: 'environment', value: 'development', reason: 'environment_defaulted' }] },
+  { kind: 'ci', source_id: CI(2), target_id: null, action: 'create', defaulted: [
+    { field: 'status', value: 'active', reason: 'status_defaulted' },
+    { field: 'environment', value: 'development', reason: 'environment_defaulted' }] },
   { kind: 'ci', source_id: CI(3), target_id: null, action: 'skip', reason: 'ai_asset_source_owned' },
   { kind: 'ci', source_id: CI(4), target_id: null, action: 'skip', reason: 'unsupported_item_type' },
   { kind: 'relationship', source_id: '7e100000-0000-4000-8000-000000000001', target_id: null, action: 'create' },
@@ -243,7 +255,7 @@ it('A2/A7: apply writes the plan with its id map and audit rows (import_id, defa
   const ids = Object.fromEntries((res.body.mapping as Array<{ source_id: string; target_id: string }>)
     .map(entry => [entry.source_id, entry.target_id]));
   expect(res.body.mapping.map((entry: { action: string }) => entry.action)).toEqual(DRY_RUN_MAPPING.map(entry => entry.action));
-  expect(await state(A)).toEqual({ services: 3, offerings: 2, mappings: 2, imports: 1, map: 8, audit: 10, journal: 4, cis: 2, relationships: 1 });
+  expect(await state(A)).toEqual(APPLIED);
   expect(await rows(`SELECT name, lifecycle, service_classification, business_criticality, owned_by, source_system, source_id
     FROM dim_business_services WHERE service_id = $1`, [ids[SERVICE(1)]])).toEqual([{ name: 'Payments', lifecycle: 'planned',
     service_classification: 'other_it', business_criticality: 'medium', owned_by: 'jane.doe', source_system: 'happyhive', source_id: SERVICE(1) }]);
@@ -255,18 +267,52 @@ it('A2/A7: apply writes the plan with its id map and audit rows (import_id, defa
   expect(audit.map(row => [row['entity_type'], row['action'], row['actor'], row['metadata']['import_id']])).toEqual([
     ['BUSINESS_SERVICE', 'CREATE', 'actor-a', importId], ['SERVICE_OFFERING', 'CREATE', 'actor-a', importId],
     ['BUSINESS_SERVICE', 'CREATE', 'actor-a', importId], ['SERVICE_OFFERING', 'CREATE', 'actor-a', importId],
+    ['BUSINESS_SERVICE', 'CREATE', 'actor-a', importId], ['SERVICE_OFFERING', 'CREATE', 'actor-a', importId],
     ['CI', 'CREATE', 'actor-a', importId], ['CI', 'CREATE', 'actor-a', importId],
     ['CI', 'RELATIONSHIP_ADD', 'actor-a', importId], ['CI', 'RELATIONSHIP_ADD', 'actor-a', importId],
     ['BUSINESS_SERVICE', 'UPDATE', 'actor-a', importId], ['BUSINESS_SERVICE', 'UPDATE', 'actor-a', importId],
   ]);
-  expect([audit[0]!['metadata']['defaulted'], audit[5]!['metadata']['defaulted']])
-    .toEqual([DRY_RUN_MAPPING[0]!.defaulted, DRY_RUN_MAPPING[4]!.defaulted]);
+  expect([audit[2]!['metadata']['defaulted'], audit[7]!['metadata']['defaulted']])
+    .toEqual([DRY_RUN_MAPPING[1]!.defaulted, DRY_RUN_MAPPING[5]!.defaulted]);
 
   const again = await post('admin', '?mode=apply', FILE);
   expect([again.status, again.body.mapping.map((entry: { action: string; target_id: string | null }) => [entry.action, entry.target_id])])
     .toEqual([201, res.body.mapping.map((entry: { action: string; target_id: string | null }) =>
       [entry.action === 'create' ? 'match' : entry.action, entry.target_id])]);
-  expect(await state(A)).toEqual({ services: 3, offerings: 2, mappings: 2, imports: 2, map: 8, audit: 10, journal: 4, cis: 2, relationships: 1 });
+  expect(await state(A)).toEqual({ ...APPLIED, imports: 2 });
+});
+
+it('scenario 8: a tenant\'s first apply creates one retired "Unassigned legacy" service; re-apply, another file and a dry run add no second', async () => {
+  const legacy = (res: request.Response) => res.body.mapping.find((entry: { source_id: string }) => entry.source_id === LEGACY);
+  const empty = (org: string) => `${FILE.split('\n')[0]!.replace(/"row_counts":\{[^}]*\}/,
+    '"row_counts":{"service":0,"ci":0,"relationship":0,"service_ci":0}').replace(A, org)}\n`;
+  const dry = await post('admin', '?mode=dry_run', empty(A));
+  expect([legacy(dry), await state(A)]).toEqual([{ kind: 'service', source_id: LEGACY, target_id: null, action: 'create',
+    defaulted: SERVICE_DEFAULTED }, NOTHING]);
+  const first = await post('admin', '?mode=apply', FILE);
+  const id = legacy(first).target_id as string;
+  const runs = [await post('admin', '?mode=apply', FILE), await post('admin', '?mode=apply', empty(A)),
+    await post('admin', '?mode=dry_run', FILE)].map(res => [res.status, legacy(res)]);
+  expect(runs).toEqual([201, 201, 200].map(status => [status, { kind: 'service', source_id: LEGACY, target_id: id, action: 'match' }]));
+  const own = legacy(await post('adminB', '?mode=apply', empty(B))).target_id;
+  expect(await rows(`SELECT service_id, organization_id, name, lifecycle, source_system FROM dim_business_services
+    WHERE source_id = $1 ORDER BY organization_id`, [LEGACY])).toEqual([
+    { service_id: id, organization_id: A, name: 'Unassigned legacy', lifecycle: 'retired', source_system: 'happyhive' },
+    { service_id: own, organization_id: B, name: 'Unassigned legacy', lifecycle: 'retired', source_system: 'happyhive' }]);
+  expect(await rows(`SELECT lifecycle, metadata->>'import_id' AS import_id FROM service_offerings s JOIN audit_log a
+    ON a.entity_id = s.service_id AND a.action = 'CREATE' WHERE s.service_id = $1`, [id]))
+    .toEqual([{ lifecycle: 'retired', import_id: first.body.import_id }]);
+  // A file line may not take the reserved source id, as a record or a reference.
+  const taken = await post('admin', '?mode=dry_run', FILE.replace('"service":3,', '"service":4,') +
+    `{"kind":"service","source_id":"${LEGACY}","name":"Legacy","status":"draft"}\n`);
+  expect(taken.body.rejected).toEqual([{ line: 13, code: 'invalid_field' }]);
+});
+
+it('re-link: a service-CI pair another writer linked first is mapped with no BUSINESS_SERVICE UPDATE audit row', async () => {
+  mockFault.preLink = true;
+  expect((await post('admin', '?mode=apply', FILE)).status).toBe(201);
+  expect([await state(A), (await rows(`SELECT count(*)::int AS n FROM audit_log WHERE entity_type = 'BUSINESS_SERVICE'
+    AND action = 'UPDATE'`))[0]!['n']]).toEqual([{ ...APPLIED, audit: APPLIED.audit - 1 }, 1]);
 });
 
 it('A3: two services of the same name are ambiguous: skipped, never matched', async () => {
@@ -274,7 +320,7 @@ it('A3: two services of the same name are ambiguous: skipped, never matched', as
     business_criticality, operational_status, organization_id) VALUES ('bs-second-billing', 'billing portal', 'application',
     'application', 'high', 'active', '${A}')`));
   const res = await post('admin', '?mode=dry_run', FILE);
-  expect(res.body.mapping[2]).toEqual({ kind: 'service', source_id: SERVICE(3), target_id: null, action: 'skip', reason: 'ambiguous_name' });
+  expect(res.body.mapping[3]).toEqual({ kind: 'service', source_id: SERVICE(3), target_id: null, action: 'skip', reason: 'ambiguous_name' });
 });
 
 it('A3 re-run: a name two file services share is ambiguous for the second, on the first apply and on every re-apply', async () => {
@@ -286,17 +332,17 @@ it('A3 re-run: a name two file services share is ambiguous for the second, on th
     outcomes.push([run, res.status, res.body.mapping.find((entry: { source_id: string }) => entry.source_id === SERVICE(9))]);
   }
   const skipped = { kind: 'service', source_id: SERVICE(9), target_id: null, action: 'skip', reason: 'ambiguous_name' };
-  expect([outcomes, (await state(A)).services]).toEqual([[[1, 201, skipped], [2, 201, skipped]], 3]);
+  expect([outcomes, (await state(A)).services]).toEqual([[[1, 201, skipped], [2, 201, skipped]], 4]);
 });
 
 it('A4: an apply interrupted after a CI was created resumes on re-run: every record exactly once', async () => {
   mockFault.mapFault = CI(2);
   expect((await post('admin', '?mode=apply', FILE)).status).toBe(500);
-  expect(await state(A)).toMatchObject({ services: 3, cis: 2, relationships: 0, mappings: 0 });
+  expect(await state(A)).toMatchObject({ services: 4, cis: 2, relationships: 0, mappings: 0 });
   const res = await post('admin', '?mode=apply', FILE);
   expect([res.status, res.body.mapping.find((entry: { source_id: string }) => entry.source_id === CI(2))])
     .toEqual([201, { kind: 'ci', source_id: CI(2), target_id: importedCIId(A, CI(2)), action: 'match' }]);
-  expect(await state(A)).toEqual({ services: 3, offerings: 2, mappings: 2, imports: 2, map: 8, audit: 10, journal: 4, cis: 2, relationships: 1 });
+  expect(await state(A)).toEqual({ ...APPLIED, imports: 2 });
 });
 
 it('A5: a line with a credential-like or blob key is rejected by line number; its values reach no response, log, audit row or record', async () => {
@@ -328,11 +374,11 @@ it('tenant isolation: another tenant\'s export is 422; the same source ids in te
   expect([(await post('adminB', '?mode=apply', FILE)).status, await state(B)]).toEqual([422, NOTHING]);
   expect((await post('admin', '?mode=apply', FILE)).status).toBe(201);
   const res = await post('adminB', '?mode=apply', forTenant(FILE, B));
-  expect([res.status, res.body.mapping.slice(0, 4).map((entry: { action: string; reason?: string }) => [entry.action, entry.reason])])
-    .toEqual([201, [['match', 'name_match'], ['create', undefined], ['create', undefined], ['create', undefined]]]);
-  expect(res.body.mapping[0].target_id).toBe('bs-seeded-b');
-  expect(res.body.mapping[3].target_id).toBe(importedCIId(B, CI(1)));
-  expect(await state(B)).toMatchObject({ services: 3, cis: 2, relationships: 1, mappings: 2, map: 8 });
+  expect([res.status, res.body.mapping.slice(0, 5).map((entry: { action: string; reason?: string }) => [entry.action, entry.reason])])
+    .toEqual([201, [['create', undefined], ['match', 'name_match'], ['create', undefined], ['create', undefined], ['create', undefined]]]);
+  expect(res.body.mapping[1].target_id).toBe('bs-seeded-b');
+  expect(res.body.mapping[4].target_id).toBe(importedCIId(B, CI(1)));
+  expect(await state(B)).toMatchObject({ services: 4, cis: 2, relationships: 1, mappings: 2, map: 9 });
 });
 
 it('D4: a service-CI line naming a CI this tenant does not own (its map row points at another tenant\'s CI) is 422; nothing written', async () => {

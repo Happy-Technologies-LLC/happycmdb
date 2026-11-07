@@ -39,6 +39,8 @@ export interface ServiceRecord {
 export interface CIRecord {
   kind: 'ci'; line: number; source_id: string; item_type: typeof CI_ITEM_TYPES[number]; name: string;
   status: typeof CI_STATUSES[number]; environment: string | null;
+  /** Values the parser chose (a missing status is `active`, D3). */
+  defaulted: Defaulted[];
   /** The allow-listed descriptive fields, stored as the CI's metadata. */
   details: Record<string, unknown>;
 }
@@ -102,6 +104,8 @@ function sourceId(row: Record<string, unknown>, field: string): string {
   const value = row[field];
   if (value === undefined || value === null) throw new LineRejected('missing_field');
   if (typeof value !== 'string' || !SOURCE_ID.test(value)) throw new LineRejected('invalid_field');
+  // The import's own Unassigned legacy service: no line may name it, as a record or a reference.
+  if (value === UNASSIGNED_LEGACY.source_id) throw new LineRejected('invalid_field');
   return value;
 }
 
@@ -170,10 +174,12 @@ function ciRecord(row: Record<string, unknown>, line: number): CIRecord {
   // The journal stores the CI's metadata as one string value of at most PLAN_LIMITS.valueBytes (64 KiB, JSON-escaped);
   // 512 bytes are left for the source keys the import adds. A larger line is rejected here, not mid-apply.
   if (Buffer.byteLength(JSON.stringify(JSON.stringify(details))) > 65_536 - 512) throw new LineRejected('invalid_field');
-  const status = row['status'] === undefined || row['status'] === null ? 'active' : oneOf(row, 'status', CI_STATUSES);
+  const statusMissing = row['status'] === undefined || row['status'] === null;
   return {
     kind: 'ci', line, source_id: sourceId(row, 'source_id'), item_type: oneOf(row, 'item_type', CI_ITEM_TYPES),
-    name: text(row, 'name', 255, true)!, status, environment: text(row, 'environment', 50), details,
+    name: text(row, 'name', 255, true)!, status: statusMissing ? 'active' : oneOf(row, 'status', CI_STATUSES),
+    environment: text(row, 'environment', 50), details,
+    defaulted: statusMissing ? [{ field: 'status', value: 'active', reason: 'status_defaulted' }] : [],
   };
 }
 
@@ -274,6 +280,16 @@ export function parseImport(body: string, organizationId: string): ParsedImport 
     countsMatch: IMPORT_KINDS.every(kind => counted[kind] === header.row_counts[kind]),
   };
 }
+
+/**
+ * Story scenario 8 (HIVE Q-R4 (a)): the one retired service a tenant's first apply creates, through the service path,
+ * for legacy records no service owns. Planned ahead of every file line; its fixed source id is reserved (`sourceId`).
+ */
+export const UNASSIGNED_LEGACY: Readonly<ServiceRecord> = {
+  kind: 'service', line: 0, source_id: 'unassigned-legacy', name: 'Unassigned legacy', description: null,
+  offering_description: null, service_type: null, status: 'retired', owner: null, support_group: null,
+  expected_sla_hours: null, category: null, tags: [],
+};
 
 /** C1 lifecycle of an imported service: live/retiring need an owner principal, which HappyHive has none of (D2). */
 export function serviceLifecycle(record: ServiceRecord): { lifecycle: 'planned' | 'retired'; defaulted: Defaulted[] } {

@@ -30,8 +30,8 @@ import { requestActor } from '../../journal-http';
 import { CIGapError, CI_GAP_RESPONSE, writeReferencedCIs } from '../../read-admission';
 import {
   CI_STATUS, CI_TYPES, ciEnvironment, ciSkipReason, IMPORT_SOURCE, ImportFileError, parseImport, RELATIONSHIP_LABELS,
-  SERVICE_DEFAULTS, SERVICE_OPERATIONAL_STATUS, serviceLifecycle, type CIRecord, type Defaulted, type ImportKind,
-  type ImportRecord, type ParsedImport, type RelationshipRecord, type Rejection, type ServiceCIRecord,
+  SERVICE_DEFAULTS, SERVICE_OPERATIONAL_STATUS, serviceLifecycle, UNASSIGNED_LEGACY, type CIRecord, type Defaulted,
+  type ImportKind, type ImportRecord, type ParsedImport, type RelationshipRecord, type Rejection, type ServiceCIRecord,
   type ServiceRecord,
 } from '../../services/portfolio-import';
 import { appendPortfolioAudit, WRITE_UNAVAILABLE } from './portfolio-write';
@@ -124,15 +124,20 @@ export class PortfolioImportController {
     }
   }
 
-  /** Every record planned in line order with reads only; a line naming a record nobody has is rejected. */
-  private async plan(organizationId: string, records: ImportRecord[], rejected: Rejection[]): Promise<Planned[]> {
+  /**
+   * Every record planned in line order with reads only, after the tenant's Unassigned legacy service (created on its
+   * first apply, matched by its map row after); a line naming a record nobody has is rejected.
+   */
+  private async plan(organizationId: string, fileRecords: ImportRecord[], rejected: Rejection[]): Promise<Planned[]> {
+    const records: ImportRecord[] = [UNASSIGNED_LEGACY, ...fileRecords];
     const sourceIds = new Set<string>();
     for (const record of records) {
       sourceIds.add(record.source_id);
       if (record.kind === 'relationship') sourceIds.add(record.source_ci).add(record.target_ci);
       if (record.kind === 'service_ci') sourceIds.add(record.service_source_id).add(record.ci_source_id);
     }
-    const services = records.filter((record): record is ServiceRecord => record.kind === 'service');
+    // The file's services: the only ones a name can match.
+    const services = fileRecords.filter((record): record is ServiceRecord => record.kind === 'service');
     const { mapRows, liveServices, byName } = await getPostgresClient().transaction(async client => {
       await client.query('SET TRANSACTION READ ONLY');
       const map = (await client.query<{ kind: ImportKind; source_id: string; target_id: string }>(
@@ -185,7 +190,7 @@ export class PortfolioImportController {
             : { record, entry: entry(record, 'skip', null, { reason: 'target_missing' }), mapped: true });
           continue;
         }
-        const candidates = byName.get(nameKey(record.name)) ?? [];
+        const candidates = record === UNASSIGNED_LEGACY ? [] : byName.get(nameKey(record.name)) ?? [];
         if (candidates.length > 1) {
           add({ record, entry: entry(record, 'skip', null, { reason: 'ambiguous_name' }), mapped: false });
         } else if (candidates.length === 1) {
@@ -212,7 +217,10 @@ export class PortfolioImportController {
         const id = importedCIId(organizationId, record.source_id);
         // An interrupted run created the CI but not its map row.
         if (await ownedCI(id)) add({ record, entry: entry(record, 'match', id), mapped: false });
-        else add({ record, entry: entry(record, 'create', null, { defaulted: ciEnvironment(record).defaulted }), pending: id, mapped: false });
+        else {
+          add({ record, entry: entry(record, 'create', null, { defaulted: [...record.defaulted, ...ciEnvironment(record).defaulted] }),
+            pending: id, mapped: false });
+        }
       } else {
         const ends = record.kind === 'relationship'
           ? [await this.ciEndpoint(record.source_ci, lines, mapRows, ownedCI), await this.ciEndpoint(record.target_ci, lines, mapRows, ownedCI)]
@@ -387,11 +395,14 @@ export class PortfolioImportController {
         'SELECT version FROM dim_business_services WHERE service_id = $1 AND organization_id = $2 FOR UPDATE',
         [serviceId, organizationId])).rows[0];
       if (!service) throw new ImportTargetMissingError();
-      await client.query(
+      const linked = await client.query(
         `INSERT INTO ci_business_service_mappings (ci_id, service_id, mapping_type, confidence_score)
          VALUES ($1, $2, 'supports', 1.0) ON CONFLICT (ci_id, service_id, mapping_type) DO NOTHING`, [ciId, serviceId]);
-      await appendPortfolioAudit(client, req, organizationId, { type: 'BUSINESS_SERVICE', id: serviceId }, 'UPDATE',
-        'import', { version: service.version, ci_mapping: null }, { version: service.version, ci_mapping: ciId }, audit);
+      // A pair linked already (another writer got there first) changed nothing: no audit row.
+      if ((linked.rowCount ?? 0) > 0) {
+        await appendPortfolioAudit(client, req, organizationId, { type: 'BUSINESS_SERVICE', id: serviceId }, 'UPDATE',
+          'import', { version: service.version, ci_mapping: null }, { version: service.version, ci_mapping: ciId }, audit);
+      }
       await writeMap(client);
     });
   }

@@ -238,7 +238,8 @@ check_environment_variables() {
 
     # Check SSL mode
     if [ "$ENVIRONMENT" = "production" ]; then
-        if [ "$POSTGRES_SSL_MODE" = "verify-full" ] || [ "$POSTGRES_SSL_MODE" = "verify-ca" ]; then
+        # HAP-1380: verify-ca is refused by the client at startup; only verify-full is production-ready.
+        if [ "$POSTGRES_SSL_MODE" = "verify-full" ]; then
             print_success "POSTGRES_SSL_MODE=$POSTGRES_SSL_MODE (production-ready)"
         else
             print_warning "POSTGRES_SSL_MODE should be 'verify-full' in production (current: ${POSTGRES_SSL_MODE:-prefer})"

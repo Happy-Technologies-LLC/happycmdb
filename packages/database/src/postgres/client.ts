@@ -3,6 +3,9 @@
 
 // packages/database/src/postgres/client.ts
 
+import { readFileSync } from 'fs';
+import { isIP } from 'net';
+import { checkServerIdentity, type ConnectionOptions } from 'tls';
 import { Pool, PoolClient } from 'pg';
 import { logger } from '@cmdb/common';
 import type {
@@ -31,6 +34,57 @@ function safePgDiagnostics(error: unknown): Partial<Record<typeof PG_DIAGNOSTIC_
   return diagnostics;
 }
 
+type PostgresSslMode = boolean | 'require' | 'prefer' | 'verify-full';
+
+/** Loopback (localhost, 127.0.0.0/8, ::1) or a Unix socket directory. */
+const LOCAL_HOST = /^(localhost|127(\.\d{1,3}){3}|::1|\/.*)$/;
+
+/**
+ * HAP-1380: map the TLS mode (explicit config, else POSTGRES_SSL_MODE, else POSTGRES_SSL_ENABLED=on|off) to pg's `ssl`.
+ * Fails closed: an unsupported value, or no mode at all under NODE_ENV=production for a non-local host, throws instead
+ * of connecting in cleartext. An explicit disable stays allowed (the Build01 staging private-network choice, HAP-1643).
+ */
+function resolveSsl(explicit: PostgresSslMode | undefined, host: string, env: NodeJS.ProcessEnv): false | ConnectionOptions {
+  const enabled = env['POSTGRES_SSL_ENABLED'] || undefined;
+  const mode = explicit ?? (env['POSTGRES_SSL_MODE'] || undefined) ?? (enabled === 'on' ? 'require' : enabled);
+  if (mode === undefined) {
+    if (env['NODE_ENV'] === 'production' && !LOCAL_HOST.test(host)) {
+      throw new Error('PostgreSQL TLS mode unset in production: set POSTGRES_SSL_MODE (verify-full, require, or disable)');
+    }
+    logger.warn('PostgreSQL client initialized WITHOUT SSL encryption (development mode)');
+    return false;
+  }
+  switch (mode) {
+    case false:
+      logger.warn('PostgreSQL client initialized WITHOUT SSL encryption (ssl disabled by caller/config)');
+      return false;
+    case 'disable': case 'off': case 'false':
+      logger.warn('PostgreSQL client initialized WITHOUT SSL encryption (POSTGRES_SSL_MODE=disable)');
+      return false;
+    case true: case 'require':
+      logger.info('PostgreSQL SSL enabled (require mode - accepts self-signed certificates)');
+      return { rejectUnauthorized: false };
+    case 'prefer':
+      // pg has no cleartext fallback: a server without TLS refuses the connection.
+      logger.info('PostgreSQL SSL enabled (prefer behaves as require - TLS required, certificate not verified)');
+      return { rejectUnauthorized: false };
+    case 'verify-full': {
+      const caFile = env['POSTGRES_SSL_CA_FILE'];
+      logger.info('PostgreSQL SSL enabled (verify-full mode - verifies certificate chain and host name)');
+      // pg sets servername only for DNS hosts, so Node would check an IP literal against 'localhost'; pin the real host.
+      const verify: ConnectionOptions = isIP(host) === 0 ? { rejectUnauthorized: true }
+        : { rejectUnauthorized: true, checkServerIdentity: (_name, cert) => checkServerIdentity(host, cert) };
+      if (!caFile) return verify;
+      const ca = readFileSync(caFile, 'utf8');
+      // An empty `ca` makes Node fall back to its public trust store; refuse instead of silently widening trust.
+      if (ca.trim() === '') throw new Error('POSTGRES_SSL_CA_FILE is empty: verify-full needs a CA bundle');
+      return { ...verify, ca };
+    }
+    default:
+      throw new Error('Unsupported PostgreSQL TLS mode: POSTGRES_SSL_MODE must be disable, require, prefer, or verify-full');
+  }
+}
+
 export class PostgresClient {
   public pool: Pool; // Made public to allow access for services that need the Pool directly
 
@@ -40,33 +94,9 @@ export class PostgresClient {
     _database: string;
     _user: string;
     _password: string;
-    ssl?: boolean | 'require' | 'prefer' | 'verify-full';
+    ssl?: PostgresSslMode;
   }) {
-    // Determine SSL configuration
-    const sslMode = config.ssl ||
-                   process.env['POSTGRES_SSL_MODE'] ||
-                   (process.env['POSTGRES_SSL_ENABLED'] === 'on' ? 'require' : false);
-
-    let sslConfig: any = false;
-
-    // Check if SSL is enabled (handle all falsy values)
-    if (sslMode && sslMode !== 'off' && sslMode !== 'false') {
-      if (sslMode === 'require') {
-        sslConfig = { rejectUnauthorized: false };
-        logger.info('PostgreSQL SSL enabled (require mode - accepts self-signed certificates)');
-      } else if (sslMode === 'verify-full') {
-        sslConfig = { rejectUnauthorized: true };
-        logger.info('PostgreSQL SSL enabled (verify-full mode - requires valid CA)');
-      } else if (sslMode === 'prefer') {
-        sslConfig = { rejectUnauthorized: false };
-        logger.info('PostgreSQL SSL enabled (prefer mode - attempts SSL, falls back to unencrypted)');
-      } else if (sslMode === true) {
-        sslConfig = { rejectUnauthorized: false };
-        logger.info('PostgreSQL SSL enabled (default mode)');
-      }
-    } else {
-      logger.warn('PostgreSQL client initialized WITHOUT SSL encryption (development mode)');
-    }
+    const sslConfig = resolveSsl(config.ssl, config._host, process.env);
 
     this.pool = new Pool({
       host: config._host,

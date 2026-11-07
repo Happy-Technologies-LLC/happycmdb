@@ -63,8 +63,9 @@ NEO4J_ENCRYPTED=true
 | `POSTGRES_MAX_CONNECTIONS` | No | `20` | Maximum connection pool size |
 | `POSTGRES_IDLE_TIMEOUT` | No | `30000` | Idle connection timeout (ms) |
 | `POSTGRES_CONNECTION_TIMEOUT` | No | `5000` | Connection timeout (ms) |
-| `POSTGRES_SSL` | No | `false` | Enable SSL/TLS |
-| `POSTGRES_SSL_CA` | No | - | Path to CA certificate for SSL |
+| `POSTGRES_SSL_MODE` | Yes in production | unset (cleartext) | `disable`, `require` (TLS, certificate not verified), `prefer` (same as `require`; no cleartext fallback), or `verify-full` (certificate chain and host name). Any other value refuses to start. With `NODE_ENV=production` and a non-local host, setting neither `POSTGRES_SSL_MODE` nor `POSTGRES_SSL_ENABLED` refuses to start. |
+| `POSTGRES_SSL_ENABLED` | No | - | `on` (= `require`) or `off` (= `disable`); used only when `POSTGRES_SSL_MODE` is unset |
+| `POSTGRES_SSL_CA_FILE` | No | Node.js trust store | Path to the CA bundle that `verify-full` trusts |
 
 **Example:**
 
@@ -75,8 +76,8 @@ POSTGRES_DB=cmdb_datamart
 POSTGRES_USER=cmdb_user
 POSTGRES_PASSWORD=${POSTGRES_PASSWORD}  # From secrets
 POSTGRES_MAX_CONNECTIONS=50
-POSTGRES_SSL=true
-POSTGRES_SSL_CA=/certs/ca.crt
+POSTGRES_SSL_MODE=verify-full
+POSTGRES_SSL_CA_FILE=/certs/ca.crt
 ```
 
 ## Redis Configuration

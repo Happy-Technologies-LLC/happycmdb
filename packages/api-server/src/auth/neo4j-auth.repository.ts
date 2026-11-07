@@ -124,6 +124,7 @@ export class Neo4jAuthRepository implements AuthRepository {
       _organizationId: props._organizationId ?? props.organizationId,
       _elementId: node.elementId,
       _platformAdmin: props._platformAdmin === true || props.platformAdmin === true,
+      _scopes: props.scopes,
       _seedProvenance: props.seedProvenance ?? props._seedProvenance ?? undefined,
       _defaultPasswordSuspect: props.defaultPasswordSuspect === true || props._defaultPasswordSuspect === true,
       _credentialEpoch: mapCredentialEpoch(props.credentialEpoch),

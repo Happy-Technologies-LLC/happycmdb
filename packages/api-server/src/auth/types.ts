@@ -39,6 +39,12 @@ export interface User {
    * account (see platform-admin.ts isPlatformAdmin).
    */
   _platformAdmin?: boolean;
+  /**
+   * Dedicated scopes (HAP-1615): stored `scopes`, as stored. Only a list
+   * counts; independent of role and organization; never effective on a
+   * seeded account (see scopes.ts holdsScope).
+   */
+  _scopes?: unknown;
   /** Immutable seed provenance stamped by the seed writers / §12 inventory. */
   _seedProvenance?: string;
   /**

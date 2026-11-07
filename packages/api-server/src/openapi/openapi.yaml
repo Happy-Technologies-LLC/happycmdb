@@ -4041,8 +4041,10 @@ paths:
         `organization_id`, `exported_at`, `row_counts`), then one `service`,
         `ci`, `relationship` or `service_ci` record per line. The tenant is the
         token's organization only; a header naming another is 422 and a query
-        naming one is 400. Requires the `admin` permission (provisional; Suite
-        Contracts v2 C1 names the migration principal, HAP-1615). Every line is
+        naming one is 400. Requires the `portfolio:import` scope of the
+        migration principal (Suite Contracts v2 C1, HAP-1615); role `admin`
+        grants nothing, and a caller without the scope is 403 before the JSONL
+        export is read. Every line is
         planned as `create`, `match` (imported before, or a service of the same
         name) or `skip` (with `reason`), or rejected by line number; values
         HappyCMDB chose are listed in `defaulted`. `dry_run` returns the plan
@@ -4091,7 +4093,17 @@ paths:
         '401':
           $ref: '#/components/responses/BusinessServiceUnauthorized'
         '403':
-          $ref: '#/components/responses/BusinessServiceForbidden'
+          description: >-
+            The authenticated user has no organization (`Organization claim
+            required`) or does not hold the `portfolio:import` scope (`Scope
+            'portfolio:import' required`, whatever the role). Nothing is written.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MiddlewareError'
+              example:
+                _error: Forbidden
+                _message: Scope 'portfolio:import' required
         '409':
           description: >-
             A CI is mid-write, a record the plan named is gone

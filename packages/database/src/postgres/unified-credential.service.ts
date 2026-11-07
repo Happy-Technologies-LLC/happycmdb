@@ -44,13 +44,14 @@ export class UnifiedCredentialService {
     this.validationService = new CredentialValidationService(pool);
   }
 
-  // CRUD Operations
+  // CRUD Operations. HAP-1613: `isOrgAdmin` (required) gates the happylab-c4 principal tag; see CredentialCRUDService.
   async create(
     input: UnifiedCredentialInput,
     createdBy: string,
-    organizationId: string
+    organizationId: string,
+    isOrgAdmin: boolean
   ): Promise<UnifiedCredential> {
-    return this.crudService.create(input, createdBy, organizationId);
+    return this.crudService.create(input, createdBy, organizationId, isOrgAdmin);
   }
 
   async getById(id: string, createdBy: string, organizationId: string): Promise<UnifiedCredential | null> {
@@ -69,13 +70,14 @@ export class UnifiedCredentialService {
     id: string,
     input: UnifiedCredentialUpdateInput,
     createdBy: string,
-    organizationId: string
+    organizationId: string,
+    isOrgAdmin: boolean
   ): Promise<UnifiedCredential> {
-    return this.crudService.update(id, input, createdBy, organizationId);
+    return this.crudService.update(id, input, createdBy, organizationId, isOrgAdmin);
   }
 
-  async delete(id: string, createdBy: string, organizationId: string): Promise<void> {
-    return this.crudService.delete(id, createdBy, organizationId);
+  async delete(id: string, createdBy: string, organizationId: string, isOrgAdmin: boolean): Promise<void> {
+    return this.crudService.delete(id, createdBy, organizationId, isOrgAdmin);
   }
 
   // HAP-1444: HappyLab C4 principal (read-only; see CredentialCRUDService)

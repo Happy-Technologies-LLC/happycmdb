@@ -114,6 +114,7 @@ Create a new credential with affinity matching rules.
 - `400 Bad Request` - Invalid credential data
 - `409 Conflict` - Credential name already exists
 - `401 Unauthorized` - Missing or invalid JWT token
+- `403 Forbidden` (`code: c4_principal_admin_required`) - Non-admin sent the `happylab-c4` tag (see [The `happylab-c4` tag](#the-happylab-c4-tag))
 
 ---
 
@@ -253,6 +254,7 @@ Update credential properties (name, affinity, tags, or credentials).
 - `404 Not Found` - Credential does not exist
 - `400 Bad Request` - Invalid update data
 - `401 Unauthorized` - Missing or invalid JWT token
+- `403 Forbidden` (`code: c4_principal_admin_required`) - Non-admin added the `happylab-c4` tag or edited a credential that carries it
 
 ---
 
@@ -280,6 +282,11 @@ curl -X DELETE "http://localhost:3000/api/v1/credentials/550e8400-e29b-41d4-a716
 - `404 Not Found` - Credential does not exist
 - `409 Conflict` - Credential is in use by discovery definitions
 - `401 Unauthorized` - Missing or invalid JWT token
+- `403 Forbidden` (`code: c4_principal_admin_required`) - Non-admin deleting a credential tagged `happylab-c4`
+
+### The `happylab-c4` tag
+
+The organization's `bearer` credential tagged `happylab-c4` is its HappyLab C4 sync principal. Only org admins (role `admin`) may create a credential with this tag, add it on update, edit or rotate a credential that carries it, remove it or delete that credential. Other roles get `403` with `{"success": false, "error": "Forbidden", "code": "c4_principal_admin_required"}`; a missing or foreign credential is still `404`. Other tags (including case variants) are unaffected.
 
 ---
 

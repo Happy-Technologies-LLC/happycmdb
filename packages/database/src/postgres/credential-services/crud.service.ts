@@ -39,6 +39,13 @@ export const C4_PRINCIPAL_TAG = 'happylab-c4';
 export type C4PrincipalResolution =
   | { token: string }
   | { code: 'c4_no_credential' | 'c4_credential_ambiguous' | 'c4_credential_invalid' };
+/**
+ * HAP-1613: only an organization admin may set, keep (edit a tagged row), remove or delete the C4 principal tag;
+ * the error carries this code only (no id, name or secret).
+ */
+export const C4_PRINCIPAL_ADMIN_REQUIRED = 'c4_principal_admin_required';
+const c4AdminRequired = (): Error => Object.assign(new Error(C4_PRINCIPAL_ADMIN_REQUIRED), { code: C4_PRINCIPAL_ADMIN_REQUIRED });
+const carriesC4Tag = (tags: unknown): boolean => Array.isArray(tags) && tags.includes(C4_PRINCIPAL_TAG);
 /** HAP-444 K1: every writer (REST, GraphQL, scripts) gets the shared SSH port rule before anything is persisted. */
 function assertSshPort(protocol: unknown, credentials: Record<string, unknown> | undefined): void {
   const port = credentials?.['port'];
@@ -79,8 +86,12 @@ export class CredentialCRUDService {
   async create(
     input: UnifiedCredentialInput,
     createdBy: string,
-    organizationId: string
+    organizationId: string,
+    isOrgAdmin: boolean
   ): Promise<UnifiedCredential> {
+    if (isOrgAdmin !== true && carriesC4Tag(input.tags)) {
+      throw c4AdminRequired();
+    }
     assertSshPort(input.protocol, input.credentials);
     const client = await this.pool.connect();
     try {
@@ -347,7 +358,8 @@ export class CredentialCRUDService {
     id: string,
     input: UnifiedCredentialUpdateInput,
     createdBy: string,
-    organizationId: string
+    organizationId: string,
+    isOrgAdmin: boolean
   ): Promise<UnifiedCredential> {
     const client = await this.pool.connect();
     let inTransaction = false;
@@ -355,6 +367,26 @@ export class CredentialCRUDService {
       const updates: string[] = [];
       const params: any[] = [];
       let paramIndex = 1;
+
+      // The protocol (credentials) and the tags (non-admins, HAP-1613) are only known from the row; lock it so the
+      // checked row is the one updated.
+      if (input.credentials !== undefined || isOrgAdmin !== true) {
+        await client.query('BEGIN');
+        inTransaction = true;
+        const locked = await client.query<{ protocol: string; tags: string[] | null }>(
+          'SELECT protocol, tags FROM credentials WHERE id = $1 AND created_by = $2 AND organization_id = $3 FOR UPDATE',
+          [id, createdBy, organizationId]
+        );
+        // A missing or foreign row matches nothing here and in the UPDATE below, which reports it as not found
+        // before any tag check, so the refusal never discloses a row.
+        const row = locked.rows[0];
+        if (row !== undefined && isOrgAdmin !== true && (carriesC4Tag(row.tags) || carriesC4Tag(input.tags))) {
+          throw c4AdminRequired();
+        }
+        if (input.credentials !== undefined) {
+          assertSshPort(row?.protocol, input.credentials);
+        }
+      }
 
       if (input.name !== undefined) {
         updates.push(`name = $${paramIndex++}`);
@@ -367,15 +399,6 @@ export class CredentialCRUDService {
       }
 
       if (input.credentials !== undefined) {
-        // The protocol is only known from the row; lock it so the checked protocol is the one updated.
-        await client.query('BEGIN');
-        inTransaction = true;
-        const locked = await client.query(
-          'SELECT protocol FROM credentials WHERE id = $1 AND created_by = $2 AND organization_id = $3 FOR UPDATE',
-          [id, createdBy, organizationId]
-        );
-        // A missing or foreign row matches nothing here and in the UPDATE below, which reports it as not found.
-        assertSshPort(locked.rows[0]?.protocol, input.credentials);
         const encryptedData = this.encryptionService.encrypt(
           JSON.stringify(input.credentials)
         );
@@ -394,6 +417,10 @@ export class CredentialCRUDService {
       }
 
       if (updates.length === 0) {
+        if (inTransaction) {
+          await client.query('COMMIT');
+          inTransaction = false;
+        }
         const existing = await this.getById(id, createdBy, organizationId);
         if (!existing) {
           throw new Error(`Credential with id ${id} not found`);
@@ -459,17 +486,21 @@ export class CredentialCRUDService {
     }
   }
 
-  async delete(id: string, createdBy: string, organizationId: string): Promise<void> {
+  async delete(id: string, createdBy: string, organizationId: string, isOrgAdmin: boolean): Promise<void> {
     const client = await this.pool.connect();
     try {
       // Check ownership before examining usage: foreign and missing IDs must
       // take the same path, without disclosing whether a foreign row is in use.
-      const owned = await client.query(
-        `SELECT id FROM credentials WHERE id = $1 AND created_by = $2 AND organization_id = $3`,
+      const owned = await client.query<{ tags: string[] | null }>(
+        `SELECT tags FROM credentials WHERE id = $1 AND created_by = $2 AND organization_id = $3`,
         [id, createdBy, organizationId]
       );
       if (owned.rows.length === 0) {
         throw new Error(`Credential with id ${id} not found`);
+      }
+      // HAP-1613: deleting the C4 principal removes the tag; the final delete query repeats this check atomically.
+      if (isOrgAdmin !== true && carriesC4Tag(owned.rows[0]?.tags)) {
+        throw c4AdminRequired();
       }
       // Check usage
       const discoveryUsageResult = await client.query(
@@ -527,8 +558,9 @@ export class CredentialCRUDService {
       }
 
       const result = await client.query(
-        `DELETE FROM credentials WHERE id = $1 AND created_by = $2 AND organization_id = $3 RETURNING id, name`,
-        [id, createdBy, organizationId]
+        `DELETE FROM credentials WHERE id = $1 AND created_by = $2 AND organization_id = $3
+          AND ($4::boolean OR NOT COALESCE(tags @> ARRAY[$5]::text[], false)) RETURNING id, name`,
+        [id, createdBy, organizationId, isOrgAdmin === true, C4_PRINCIPAL_TAG]
       );
 
       if (result.rows.length === 0) {

@@ -55,7 +55,10 @@ function resolveSsl(explicit: PostgresSslMode | undefined, host: string, env: No
     return false;
   }
   switch (mode) {
-    case false: case 'disable': case 'off': case 'false':
+    case false:
+      logger.warn('PostgreSQL client initialized WITHOUT SSL encryption (ssl disabled by caller/config)');
+      return false;
+    case 'disable': case 'off': case 'false':
       logger.warn('PostgreSQL client initialized WITHOUT SSL encryption (POSTGRES_SSL_MODE=disable)');
       return false;
     case true: case 'require':
@@ -71,7 +74,11 @@ function resolveSsl(explicit: PostgresSslMode | undefined, host: string, env: No
       // pg sets servername only for DNS hosts, so Node would check an IP literal against 'localhost'; pin the real host.
       const verify: ConnectionOptions = isIP(host) === 0 ? { rejectUnauthorized: true }
         : { rejectUnauthorized: true, checkServerIdentity: (_name, cert) => checkServerIdentity(host, cert) };
-      return caFile ? { ...verify, ca: readFileSync(caFile, 'utf8') } : verify;
+      if (!caFile) return verify;
+      const ca = readFileSync(caFile, 'utf8');
+      // An empty `ca` makes Node fall back to its public trust store; refuse instead of silently widening trust.
+      if (ca.trim() === '') throw new Error('POSTGRES_SSL_CA_FILE is empty: verify-full needs a CA bundle');
+      return { ...verify, ca };
     }
     default:
       throw new Error('Unsupported PostgreSQL TLS mode: POSTGRES_SSL_MODE must be disable, require, prefer, or verify-full');

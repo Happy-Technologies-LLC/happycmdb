@@ -328,8 +328,9 @@ if [[ "$ENVIRONMENT" == "production" ]]; then
   if [[ "${POSTGRES_SSL_ENABLED:-off}" != "on" ]]; then
     print_warning "PostgreSQL SSL is not enabled in production"
   fi
-  if [[ "${POSTGRES_SSL_MODE:-prefer}" != "require" ]] && [[ "${POSTGRES_SSL_MODE:-prefer}" != "verify-ca" ]] && [[ "${POSTGRES_SSL_MODE:-prefer}" != "verify-full" ]]; then
-    print_warning "PostgreSQL SSL mode should be 'require' or stronger in production"
+  # HAP-1380: the client accepts only disable|require|prefer|verify-full; verify-ca refuses to start.
+  if [[ "${POSTGRES_SSL_MODE:-prefer}" != "require" ]] && [[ "${POSTGRES_SSL_MODE:-prefer}" != "verify-full" ]]; then
+    print_warning "PostgreSQL SSL mode should be 'require' or 'verify-full' in production"
   fi
 fi
 

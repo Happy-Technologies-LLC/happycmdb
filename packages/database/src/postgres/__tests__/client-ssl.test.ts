@@ -42,4 +42,12 @@ describe('PostgresClient TLS mode', () => {
     const localhostCert = { subject: { CN: 'localhost' }, subjectaltname: 'DNS:localhost' } as unknown as PeerCertificate;
     expect(ssl.checkServerIdentity?.('localhost', localhostCert)).toBeDefined();
   });
+
+  it('refuses verify-full with an empty CA file instead of falling back to the public trust store', () => {
+    const caFile = join(mkdtempSync(join(tmpdir(), 'hap1380-')), 'ca.crt');
+    writeFileSync(caFile, ' \n');
+    process.env['POSTGRES_SSL_MODE'] = 'verify-full';
+    process.env['POSTGRES_SSL_CA_FILE'] = caFile;
+    expect(() => open()).toThrow();
+  });
 });

@@ -11,6 +11,7 @@ import { GraphQLError } from 'graphql';
 import { logger, type ConfigSchema } from '@cmdb/common';
 import { AuthFailureError, AuthService } from '../auth/auth.service';
 import { isPlatformAdmin } from '../auth/platform-admin';
+import { holdsScope, type Scope } from '../auth/scopes';
 import { TokenPayload, Permission, ROLE_PERMISSIONS } from '../auth/types';
 
 const UNAUTHORIZED = { _error: 'Unauthorized', _message: 'Authentication failed' };
@@ -241,6 +242,37 @@ export class AuthMiddleware {
           error: 'Forbidden',
           message: 'Platform administrator required',
         });
+        return;
+      }
+
+      next();
+    };
+  }
+
+  /**
+   * Middleware to require a dedicated scope (HAP-1615). Decided on every
+   * request from the freshly re-read user record (holdsScope: stored list
+   * names it and not a seeded account), so removing the grant takes effect
+   * on the next request. A JWT session and that user's API key qualify alike.
+   * Role, organization and platform administration grant nothing. Refuses
+   * before any handler, data or queue access; a store error refuses.
+   */
+  requireScope(scope: Scope) {
+    return async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
+      if (req.user === undefined) {
+        res.status(401).json(UNAUTHORIZED);
+        return;
+      }
+
+      let allowed = false;
+      try {
+        const user = await this.authService.findEnabledUser(req.user._userId);
+        allowed = user !== null && holdsScope(user, scope);
+      } catch {
+        allowed = false;
+      }
+      if (!allowed) {
+        res.status(403).json({ _error: 'Forbidden', _message: `Scope '${scope}' required` });
         return;
       }
 

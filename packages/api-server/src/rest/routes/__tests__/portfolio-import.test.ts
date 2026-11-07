@@ -9,7 +9,7 @@
  * fixtures/happyhive-portfolio-export.jsonl is a HappyHive export of tenant A built from HappyHive's DDL.
  */
 import { fork } from 'child_process';
-import { randomBytes, randomUUID } from 'crypto';
+import { createHash, randomBytes, randomUUID } from 'crypto';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import express from 'express';
@@ -110,17 +110,34 @@ jest.mock('neo4j-driver', () => {
 });
 // The real @cmdb/database opens the BullMQ Redis connection at import; nothing here queues jobs.
 jest.mock('@cmdb/database/bullmq/queue-manager', () => ({}));
-const users: Record<string, { _id: string; _username: string; _role: string; _enabled: boolean; _organizationId: string }> = {
+type FakeUser = { _id: string; _username: string; _role: string; _enabled: boolean; _organizationId: string;
+  _scopes?: unknown; _seedProvenance?: string; _platformAdmin?: boolean };
+const SCOPE = ['portfolio:import'];
+const users: Record<string, FakeUser> = {
   admin: { _id: 'actor-a', _username: 'alice', _role: 'admin', _enabled: true, _organizationId: A },
   operator: { _id: 'actor-o', _username: 'olga', _role: 'operator', _enabled: true, _organizationId: A },
   agent: { _id: 'actor-g', _username: 'gary', _role: 'agent', _enabled: true, _organizationId: A },
   viewer: { _id: 'actor-v', _username: 'vera', _role: 'viewer', _enabled: true, _organizationId: A },
-  adminB: { _id: 'actor-b', _username: 'bob', _role: 'admin', _enabled: true, _organizationId: B },
+  // The migration principals (HAP-1615): the stored scope authorizes, the role grants nothing.
+  migrator: { _id: 'actor-m', _username: 'mia', _role: 'operator', _enabled: true, _organizationId: A, _scopes: SCOPE },
+  migratorB: { _id: 'actor-n', _username: 'nia', _role: 'viewer', _enabled: true, _organizationId: B, _scopes: SCOPE },
+  // Refused although each names the scope: a seeded account, and a scopes value that is not a list.
+  seeded: { _id: 'actor-s', _username: 'sam', _role: 'admin', _enabled: true, _organizationId: A, _scopes: SCOPE,
+    _seedProvenance: 'pre-cutover-inventory' },
+  listless: { _id: 'actor-l', _username: 'lee', _role: 'admin', _enabled: true, _organizationId: A,
+    _scopes: 'portfolio:import' },
+  platform: { _id: 'actor-p', _username: 'pat', _role: 'admin', _enabled: true, _organizationId: A, _platformAdmin: true },
 };
+/** Every fake user's API key is `key-<id>`; these call with it, everyone else with a JWT. */
+const KEY_CALLERS = ['migrator', 'migratorB', 'platform'];
 jest.mock('../../../auth/neo4j-auth.repository', () => ({
   Neo4jAuthRepository: jest.fn(() => ({
     findUserById: async (id: string) => Object.values(users).find(user => user._id === id) ?? null,
-    findApiKeyByKey: async () => null,
+    findApiKeyByKey: async (hash: string) => {
+      const user = Object.values(users).find(each => createHash('sha256').update(`key-${each._id}`).digest('hex') === hash);
+      return user ? { _id: `k-${user._id}`, _userId: user._id, _role: user._role, _enabled: true } : null;
+    },
+    updateApiKeyLastUsed: async () => undefined,
   })),
 }));
 
@@ -144,7 +161,8 @@ const token = (user: string) => `Bearer ${jwt.generateAccessToken(users[user]!._
 const FILE = readFileSync(join(__dirname, 'fixtures/happyhive-portfolio-export.jsonl'), 'utf8');
 const forTenant = (file: string, org: string) => file.replace(A, org);
 const post = (user: string, query: string, body: string) => request(app).post(`/api/v1/portfolio/imports${query}`)
-  .set({ authorization: token(user), 'content-type': 'application/x-ndjson' }).send(body);
+  .set(KEY_CALLERS.includes(user) ? { 'x-api-key': `key-${users[user]!._id}` } : { authorization: token(user) })
+  .set('content-type', 'application/x-ndjson').send(body);
 const rows = async (text: string, params: unknown[] = []) => (await mockSql(text, params)).rows;
 const db = (sql: string) => mockSql(sql, [], 'exec');
 const SERVICE = (n: number) => `5e1a0000-0000-4000-8000-00000000000${n}`;
@@ -237,19 +255,19 @@ beforeEach(async () => {
 afterEach(() => assertAppLogin(rows));
 
 it('A1: a dry run plans every line (create, match by name, skip with a reason, defaults named) and persists nothing', async () => {
-  const res = await post('admin', '?mode=dry_run', FILE);
+  const res = await post('migrator', '?mode=dry_run', FILE);
   expect([res.status, res.body]).toEqual([200, { import_id: expect.any(String), mode: 'dry_run', mapping: DRY_RUN_MAPPING, rejected: [] }]);
   expect(await state(A)).toEqual(NOTHING);
 });
 
 it('refuses a missing or unknown mode and a tenant in the query (400) before reading the file; nothing written', async () => {
-  const statuses = [(await post('admin', '', FILE)).status, (await post('admin', '?mode=commit', FILE)).status,
-    (await post('admin', `?mode=apply&organization_id=${B}`, FILE)).status, (await post('admin', `?mode=apply&tenant_id=${A}`, FILE)).status];
+  const statuses = [(await post('migrator', '', FILE)).status, (await post('migrator', '?mode=commit', FILE)).status,
+    (await post('migrator', `?mode=apply&organization_id=${B}`, FILE)).status, (await post('migrator', `?mode=apply&tenant_id=${A}`, FILE)).status];
   expect([statuses, await state(A), await state(B)]).toEqual([[400, 400, 400, 400], NOTHING, NOTHING]);
 });
 
 it('A2/A7: apply writes the plan with its id map and audit rows (import_id, defaults); re-applying creates nothing', async () => {
-  const res = await post('admin', '?mode=apply', FILE);
+  const res = await post('migrator', '?mode=apply', FILE);
   expect(res.status).toBe(201);
   const importId = res.body.import_id as string;
   const ids = Object.fromEntries((res.body.mapping as Array<{ source_id: string; target_id: string }>)
@@ -265,17 +283,17 @@ it('A2/A7: apply writes the plan with its id map and audit rows (import_id, defa
     .toEqual([importedCIId(A, CI(1)), 'development', true]);
   const audit = await rows(`SELECT entity_type, entity_id, action, actor, metadata FROM audit_log ORDER BY timestamp, id`);
   expect(audit.map(row => [row['entity_type'], row['action'], row['actor'], row['metadata']['import_id']])).toEqual([
-    ['BUSINESS_SERVICE', 'CREATE', 'actor-a', importId], ['SERVICE_OFFERING', 'CREATE', 'actor-a', importId],
-    ['BUSINESS_SERVICE', 'CREATE', 'actor-a', importId], ['SERVICE_OFFERING', 'CREATE', 'actor-a', importId],
-    ['BUSINESS_SERVICE', 'CREATE', 'actor-a', importId], ['SERVICE_OFFERING', 'CREATE', 'actor-a', importId],
-    ['CI', 'CREATE', 'actor-a', importId], ['CI', 'CREATE', 'actor-a', importId],
-    ['CI', 'RELATIONSHIP_ADD', 'actor-a', importId], ['CI', 'RELATIONSHIP_ADD', 'actor-a', importId],
-    ['BUSINESS_SERVICE', 'UPDATE', 'actor-a', importId], ['BUSINESS_SERVICE', 'UPDATE', 'actor-a', importId],
+    ['BUSINESS_SERVICE', 'CREATE', 'actor-m', importId], ['SERVICE_OFFERING', 'CREATE', 'actor-m', importId],
+    ['BUSINESS_SERVICE', 'CREATE', 'actor-m', importId], ['SERVICE_OFFERING', 'CREATE', 'actor-m', importId],
+    ['BUSINESS_SERVICE', 'CREATE', 'actor-m', importId], ['SERVICE_OFFERING', 'CREATE', 'actor-m', importId],
+    ['CI', 'CREATE', 'actor-m', importId], ['CI', 'CREATE', 'actor-m', importId],
+    ['CI', 'RELATIONSHIP_ADD', 'actor-m', importId], ['CI', 'RELATIONSHIP_ADD', 'actor-m', importId],
+    ['BUSINESS_SERVICE', 'UPDATE', 'actor-m', importId], ['BUSINESS_SERVICE', 'UPDATE', 'actor-m', importId],
   ]);
   expect([audit[2]!['metadata']['defaulted'], audit[7]!['metadata']['defaulted']])
     .toEqual([DRY_RUN_MAPPING[1]!.defaulted, DRY_RUN_MAPPING[5]!.defaulted]);
 
-  const again = await post('admin', '?mode=apply', FILE);
+  const again = await post('migrator', '?mode=apply', FILE);
   expect([again.status, again.body.mapping.map((entry: { action: string; target_id: string | null }) => [entry.action, entry.target_id])])
     .toEqual([201, res.body.mapping.map((entry: { action: string; target_id: string | null }) =>
       [entry.action === 'create' ? 'match' : entry.action, entry.target_id])]);
@@ -286,15 +304,15 @@ it('scenario 8: a tenant\'s first apply creates one retired "Unassigned legacy" 
   const legacy = (res: request.Response) => res.body.mapping.find((entry: { source_id: string }) => entry.source_id === LEGACY);
   const empty = (org: string) => `${FILE.split('\n')[0]!.replace(/"row_counts":\{[^}]*\}/,
     '"row_counts":{"service":0,"ci":0,"relationship":0,"service_ci":0}').replace(A, org)}\n`;
-  const dry = await post('admin', '?mode=dry_run', empty(A));
+  const dry = await post('migrator', '?mode=dry_run', empty(A));
   expect([legacy(dry), await state(A)]).toEqual([{ kind: 'service', source_id: LEGACY, target_id: null, action: 'create',
     defaulted: SERVICE_DEFAULTED }, NOTHING]);
-  const first = await post('admin', '?mode=apply', FILE);
+  const first = await post('migrator', '?mode=apply', FILE);
   const id = legacy(first).target_id as string;
-  const runs = [await post('admin', '?mode=apply', FILE), await post('admin', '?mode=apply', empty(A)),
-    await post('admin', '?mode=dry_run', FILE)].map(res => [res.status, legacy(res)]);
+  const runs = [await post('migrator', '?mode=apply', FILE), await post('migrator', '?mode=apply', empty(A)),
+    await post('migrator', '?mode=dry_run', FILE)].map(res => [res.status, legacy(res)]);
   expect(runs).toEqual([201, 201, 200].map(status => [status, { kind: 'service', source_id: LEGACY, target_id: id, action: 'match' }]));
-  const own = legacy(await post('adminB', '?mode=apply', empty(B))).target_id;
+  const own = legacy(await post('migratorB', '?mode=apply', empty(B))).target_id;
   expect(await rows(`SELECT service_id, organization_id, name, lifecycle, source_system FROM dim_business_services
     WHERE source_id = $1 ORDER BY organization_id`, [LEGACY])).toEqual([
     { service_id: id, organization_id: A, name: 'Unassigned legacy', lifecycle: 'retired', source_system: 'happyhive' },
@@ -303,14 +321,14 @@ it('scenario 8: a tenant\'s first apply creates one retired "Unassigned legacy" 
     ON a.entity_id = s.service_id AND a.action = 'CREATE' WHERE s.service_id = $1`, [id]))
     .toEqual([{ lifecycle: 'retired', import_id: first.body.import_id }]);
   // A file line may not take the reserved source id, as a record or a reference.
-  const taken = await post('admin', '?mode=dry_run', FILE.replace('"service":3,', '"service":4,') +
+  const taken = await post('migrator', '?mode=dry_run', FILE.replace('"service":3,', '"service":4,') +
     `{"kind":"service","source_id":"${LEGACY}","name":"Legacy","status":"draft"}\n`);
   expect(taken.body.rejected).toEqual([{ line: 13, code: 'invalid_field' }]);
 });
 
 it('re-link: a service-CI pair another writer linked first is mapped with no BUSINESS_SERVICE UPDATE audit row', async () => {
   mockFault.preLink = true;
-  expect((await post('admin', '?mode=apply', FILE)).status).toBe(201);
+  expect((await post('migrator', '?mode=apply', FILE)).status).toBe(201);
   expect([await state(A), (await rows(`SELECT count(*)::int AS n FROM audit_log WHERE entity_type = 'BUSINESS_SERVICE'
     AND action = 'UPDATE'`))[0]!['n']]).toEqual([{ ...APPLIED, audit: APPLIED.audit - 1 }, 1]);
 });
@@ -319,7 +337,7 @@ it('A3: two services of the same name are ambiguous: skipped, never matched', as
   await asTableOwner(db, () => db(`INSERT INTO dim_business_services (service_id, name, service_classification, tbm_tower,
     business_criticality, operational_status, organization_id) VALUES ('bs-second-billing', 'billing portal', 'application',
     'application', 'high', 'active', '${A}')`));
-  const res = await post('admin', '?mode=dry_run', FILE);
+  const res = await post('migrator', '?mode=dry_run', FILE);
   expect(res.body.mapping[3]).toEqual({ kind: 'service', source_id: SERVICE(3), target_id: null, action: 'skip', reason: 'ambiguous_name' });
 });
 
@@ -328,7 +346,7 @@ it('A3 re-run: a name two file services share is ambiguous for the second, on th
     `{"kind":"service","source_id":"${SERVICE(9)}","name":"Billing portal","status":"draft"}\n`;
   const outcomes = [];
   for (const run of [1, 2]) {
-    const res = await post('admin', '?mode=apply', file);
+    const res = await post('migrator', '?mode=apply', file);
     outcomes.push([run, res.status, res.body.mapping.find((entry: { source_id: string }) => entry.source_id === SERVICE(9))]);
   }
   const skipped = { kind: 'service', source_id: SERVICE(9), target_id: null, action: 'skip', reason: 'ambiguous_name' };
@@ -337,9 +355,9 @@ it('A3 re-run: a name two file services share is ambiguous for the second, on th
 
 it('A4: an apply interrupted after a CI was created resumes on re-run: every record exactly once', async () => {
   mockFault.mapFault = CI(2);
-  expect((await post('admin', '?mode=apply', FILE)).status).toBe(500);
+  expect((await post('migrator', '?mode=apply', FILE)).status).toBe(500);
   expect(await state(A)).toMatchObject({ services: 4, cis: 2, relationships: 0, mappings: 0 });
-  const res = await post('admin', '?mode=apply', FILE);
+  const res = await post('migrator', '?mode=apply', FILE);
   expect([res.status, res.body.mapping.find((entry: { source_id: string }) => entry.source_id === CI(2))])
     .toEqual([201, { kind: 'ci', source_id: CI(2), target_id: importedCIId(A, CI(2)), action: 'match' }]);
   expect(await state(A)).toEqual({ ...APPLIED, imports: 2 });
@@ -353,7 +371,7 @@ it('A5: a line with a credential-like or blob key is rejected by line number; it
     `{"kind":"ci","source_id":"${CI(9)}","item_type":"server","name":"blob","status":"active","configuration":{"note":"${SENTINEL}"}}\n` +
     `{"kind":"ci","source_id":"c1000000-0000-4000-8000-000000000010","item_type":"server","name":"pw","status":"active","attributes":{"db_pass":"${SENTINEL}"}}\n` +
     `{"kind":"ci","source_id":"c1000000-0000-4000-8000-000000000011","item_type":"server","name":"tenant","status":"active","attributes":{"x":{"organization_id":"${SENTINEL}"}}}\n`;
-  const [dry, apply] = [await post('admin', '?mode=dry_run', file), await post('admin', '?mode=apply', file)];
+  const [dry, apply] = [await post('migrator', '?mode=dry_run', file), await post('migrator', '?mode=apply', file)];
   const rejected = [{ line: 13, code: 'forbidden_key' }, { line: 14, code: 'forbidden_key' }, { line: 15, code: 'forbidden_key' },
     { line: 16, code: 'invalid_field' }];
   expect([dry.status, dry.body.rejected, apply.status, apply.body.rejected]).toEqual([200, rejected, 422, rejected]);
@@ -362,18 +380,31 @@ it('A5: a line with a credential-like or blob key is rejected by line number; it
   expect([seen.includes(SENTINEL), await state(A)]).toEqual([false, NOTHING]);
 });
 
-it('A6: only admin may import (viewer, agent, operator 403); a body over 1 MiB or 5,000 lines is 413; nothing written', async () => {
+it('A6 (HAP-1615): only the portfolio:import scope holder may import; admin, a platform admin\'s API key, every other role, a seeded account and a non-list scopes are 403 before the export is read; the holder\'s body over 1 MiB or 5,000 lines is 413; nothing written', async () => {
   const statuses = [];
-  for (const user of ['viewer', 'agent', 'operator']) statuses.push((await post(user, '?mode=apply', FILE)).status);
+  for (const user of ['admin', 'platform', 'operator', 'agent', 'viewer', 'seeded', 'listless']) {
+    statuses.push((await post(user, '?mode=dry_run', FILE)).status, (await post(user, '?mode=apply', FILE)).status);
+  }
   statuses.push((await post('admin', '?mode=apply', FILE.padEnd(1_048_577, ' '))).status);
-  statuses.push((await post('admin', '?mode=apply', FILE + '{}\n'.repeat(5_000))).status);
-  expect([statuses, await state(A)]).toEqual([[403, 403, 403, 413, 413], NOTHING]);
+  statuses.push((await post('migrator', '?mode=apply', FILE.padEnd(1_048_577, ' '))).status);
+  statuses.push((await post('migrator', '?mode=apply', FILE + '{}\n'.repeat(5_000))).status);
+  expect([statuses, await state(A)]).toEqual([[...Array(15).fill(403), 413, 413], NOTHING]);
+});
+
+it('HAP-1615: removing the holder\'s grant refuses its next request with the same API key; nothing more written', async () => {
+  const applied = (await post('migrator', '?mode=apply', FILE)).status;
+  users['migrator']!._scopes = [];
+  try {
+    expect([applied, (await post('migrator', '?mode=apply', FILE)).status, await state(A)]).toEqual([201, 403, APPLIED]);
+  } finally {
+    users['migrator']!._scopes = SCOPE;
+  }
 });
 
 it('tenant isolation: another tenant\'s export is 422; the same source ids in tenant B map only to B\'s own records', async () => {
-  expect([(await post('adminB', '?mode=apply', FILE)).status, await state(B)]).toEqual([422, NOTHING]);
-  expect((await post('admin', '?mode=apply', FILE)).status).toBe(201);
-  const res = await post('adminB', '?mode=apply', forTenant(FILE, B));
+  expect([(await post('migratorB', '?mode=apply', FILE)).status, await state(B)]).toEqual([422, NOTHING]);
+  expect((await post('migrator', '?mode=apply', FILE)).status).toBe(201);
+  const res = await post('migratorB', '?mode=apply', forTenant(FILE, B));
   expect([res.status, res.body.mapping.slice(0, 5).map((entry: { action: string; reason?: string }) => [entry.action, entry.reason])])
     .toEqual([201, [['create', undefined], ['match', 'name_match'], ['create', undefined], ['create', undefined], ['create', undefined]]]);
   expect(res.body.mapping[1].target_id).toBe('bs-seeded-b');
@@ -382,7 +413,7 @@ it('tenant isolation: another tenant\'s export is 422; the same source ids in te
 });
 
 it('D4: a service-CI line naming a CI this tenant does not own (its map row points at another tenant\'s CI) is 422; nothing written', async () => {
-  expect((await post('adminB', '?mode=apply', forTenant(FILE, B))).status).toBe(201);
+  expect((await post('migratorB', '?mode=apply', forTenant(FILE, B))).status).toBe(201);
   // A map row of tenant A that names tenant B's CI (as a forged or stale row would).
   await asTableOwner(db, () => db(`INSERT INTO portfolio_imports (import_id, organization_id, source_system, mode, file_sha256,
       row_counts, actor) VALUES ('${randomUUID()}', '${A}', 'happyhive', 'apply', '${'0'.repeat(64)}', '{}', 'seed');
@@ -394,6 +425,6 @@ it('D4: a service-CI line naming a CI this tenant does not own (its map row poin
   const file = [header, FILE.split('\n')[1],
     `{"kind":"service_ci","service_source_id":"${SERVICE(1)}","ci_source_id":"${CI(7)}"}`].join('\n');
   const before = await state(A);
-  const res = await post('admin', '?mode=apply', file);
+  const res = await post('migrator', '?mode=apply', file);
   expect([res.status, res.body.rejected, await state(A)]).toEqual([422, [{ line: 3, code: 'unknown_reference' }], before]);
 });

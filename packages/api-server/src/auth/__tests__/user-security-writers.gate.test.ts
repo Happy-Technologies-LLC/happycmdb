@@ -110,6 +110,14 @@ const RULES: Array<{ name: string; pattern: RegExp; reviewed: Record<string, num
       'packages/api-server/src/scripts/seed-tenant-fixture.ts': 1,
     },
   },
+  {
+    name: 'scopes (no writer; the HAP-1632 operator grant only)',
+    pattern: /\.\s*_?scopes\s*=(?!=)|REMOVE\s+\w+\._?scopes\b/g,
+    reviewed: {
+      // Reviewed (HAP-1615): `auth.scopes = raw.scopes` maps a connector descriptor's OAuth scopes; not a :User write.
+      'packages/integration-framework/src/descriptor-mapper.ts': 1,
+    },
+  },
 ];
 
 /** Rules that forbid an operation everywhere, whatever the file. */
@@ -119,7 +127,7 @@ const FORBIDDEN: Array<{ name: string; pattern: RegExp }> = [
   { name: 'a map write to a :User node (SET u = / SET u +=)', pattern: /MATCH\s*\(\s*(\w+)\s*:User\b[^`;]*?\bSET\s+\1\s*\+?=\s*[$\{]/g },
   {
     name: 'a :User node created or merged with a security property',
-    pattern: /(CREATE|MERGE)\s*\(\s*\w*\s*:User\b[^)]*?\b(_?passwordHash|_?platformAdmin|_?seedProvenance|_?defaultPasswordSuspect|_?credentialEpoch)\s*:/g,
+    pattern: /(CREATE|MERGE)\s*\(\s*\w*\s*:User\b[^)]*?\b(_?passwordHash|_?platformAdmin|_?seedProvenance|_?defaultPasswordSuspect|_?credentialEpoch|_?scopes)\s*:/g,
   },
 ];
 
@@ -206,6 +214,8 @@ describe('inventory gate 4: user-security property writers', () => {
     ['a second organization writer in the identity window', IDENTITY_WINDOW,
       "const AGAIN = 'MATCH (u:User) WHERE elementId(u) = $e SET u.organizationId = $org';"],
     ['an organization removal in the repository', REPOSITORY, "const R = 'MATCH (u:User) WHERE u._id = $id REMOVE u._organizationId';"],
+    ['a scopes writer in the repository (HAP-1615)', REPOSITORY,
+      "const GRANT = 'MATCH (u:User) WHERE u._id = $id SET u.scopes = $s';"],
   ])('fails on %s', (_label, file, addition) => {
     expect(violations(new Map([[file, sources.get(file)!]]))).toEqual([]);
     expect(violations(new Map([[file, `${sources.get(file)}\n${addition}\n`]]))).not.toEqual([]);

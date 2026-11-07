@@ -12,12 +12,18 @@ import {
   logger,
   CredentialProtocolAdapter,
 } from '@cmdb/common';
-import type { AuthenticatedRequest } from '../../auth/types';
+import { ROLE_PERMISSIONS, type AuthenticatedRequest } from '../../auth/types';
 import { requestOrganizationId } from '../../middleware/auth.middleware';
 
 /** What every credential read returns instead of the secret. HAP-1227: an update carrying it is refused. */
 export const REDACTED_PLACEHOLDER = '***REDACTED***';
 export const INVALID_CREDENTIALS_UPDATE = 'Invalid credentials update';
+/** HAP-1613: CredentialCRUDService's refusal code for the happylab-c4 tag; the body names the rule only (no input echo). */
+const C4_PRINCIPAL_ADMIN_REQUIRED = 'c4_principal_admin_required';
+const C4_REFUSAL = {
+  success: false, error: 'Forbidden', code: C4_PRINCIPAL_ADMIN_REQUIRED,
+  message: 'Only organization admins may manage the happylab-c4 credential tag',
+};
 
 /**
  * Unified Credential Controller
@@ -34,6 +40,18 @@ export class UnifiedCredentialController {
     if (!userId) throw new Error('Verified credential owner required');
     return [userId, requestOrganizationId(req)];
   }
+  /** HAP-1613: the effective role (an API key is already downgraded to it) decides who may manage the C4 principal tag. */
+  private isOrgAdmin(req: Request): boolean {
+    const role = (req as AuthenticatedRequest).user?._role;
+    return role !== undefined && ROLE_PERMISSIONS[role]?.includes('admin') === true;
+  }
+  private refusedC4(error: unknown, res: Response): boolean {
+    const refused = (error as { code?: unknown } | null)?.code === C4_PRINCIPAL_ADMIN_REQUIRED;
+    if (refused) {
+      res.status(403).json(C4_REFUSAL);
+    }
+    return refused;
+  }
 
   /**
    * POST /api/v1/credentials - Create credential
@@ -42,7 +60,7 @@ export class UnifiedCredentialController {
     try {
       const input: UnifiedCredentialInput = req.body;
       const [createdBy, organizationId] = this.owner(req);
-      const credential = await this.credentialService.create(input, createdBy, organizationId);
+      const credential = await this.credentialService.create(input, createdBy, organizationId, this.isOrgAdmin(req));
 
       // Redact sensitive credentials before returning
       const safeCredential = {
@@ -56,6 +74,9 @@ export class UnifiedCredentialController {
         message: 'Credential created successfully',
       });
     } catch (error) {
+      if (this.refusedC4(error, res)) {
+        return;
+      }
       logger.error('Error creating credential', { error });
 
       // Check for duplicate name error
@@ -173,7 +194,7 @@ export class UnifiedCredentialController {
 
       const input: UnifiedCredentialUpdateInput = req.body;
 
-      const credential = await this.credentialService.update(id, input, ...this.owner(req));
+      const credential = await this.credentialService.update(id, input, ...this.owner(req), this.isOrgAdmin(req));
 
       // Redact sensitive credentials before returning
       const safeCredential = {
@@ -187,6 +208,9 @@ export class UnifiedCredentialController {
         message: 'Credential updated successfully',
       });
     } catch (error) {
+      if (this.refusedC4(error, res)) {
+        return;
+      }
       // HAP-444 K1: the CRUD service refuses an invalid SSH port against the stored protocol; same fixed, value-free 400 as the route rule.
       if (error instanceof Error && error.message === CredentialProtocolAdapter.INVALID_SSH_PORT) {
         res.status(400).json({ _success: false, _error: 'Validation Error', _message: CredentialProtocolAdapter.INVALID_SSH_PORT });
@@ -238,10 +262,13 @@ export class UnifiedCredentialController {
         return;
       }
 
-      await this.credentialService.delete(id, ...this.owner(req));
+      await this.credentialService.delete(id, ...this.owner(req), this.isOrgAdmin(req));
 
       res.status(204).send();
     } catch (error) {
+      if (this.refusedC4(error, res)) {
+        return;
+      }
       logger.error('Error deleting credential', { error, id: req.params['id'] });
 
       // Check for not found error

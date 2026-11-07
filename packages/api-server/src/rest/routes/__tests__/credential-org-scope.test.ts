@@ -53,6 +53,7 @@ const identities: Record<string, { _id: string; _username: string; _role: 'opera
   d: { _id: 'd', _username: 'dana', _role: 'operator', _enabled: true, _organizationId: A },
   none: { _id: 'none', _username: 'nora', _role: 'admin', _enabled: true },
   viewer: { _id: 'viewer', _username: 'vicky', _role: 'viewer', _enabled: true, _organizationId: A },
+  admin: { _id: 'admin', _username: 'ada', _role: 'admin', _enabled: true, _organizationId: A },
   agent: { _id: 'agent', _username: 'worker', _role: 'agent', _enabled: true, _organizationId: A },
 };
 jest.mock('../../../auth/neo4j-auth.repository', () => ({
@@ -251,8 +252,8 @@ it('enforces owner and organization in SQL even when the service is called direc
   expect(await service.getById(aId, 'b', B)).toBeNull();
   expect(await service.getById(aId, 'viewer', A)).toBeNull();
   expect(await service.list('b', B)).toEqual([]);
-  await expect(service.update(aId, { credentials: { key: 'poison' } }, 'b', B)).rejects.toBeInstanceOf(Error);
-  await expect(service.delete(aId, 'b', B)).rejects.toBeInstanceOf(Error);
+  await expect(service.update(aId, { credentials: { key: 'poison' } }, 'b', B, true)).rejects.toBeInstanceOf(Error);
+  await expect(service.delete(aId, 'b', B, true)).rejects.toBeInstanceOf(Error);
   expect(await service.getById(aId, null as unknown as string, A)).toBeNull();
   expect(await service.getById(aId, 'a', null as unknown as string)).toBeNull();
   expect(await service.list(null as unknown as string, A)).toEqual([]);
@@ -266,7 +267,7 @@ it('enforces owner and organization in SQL even when the service is called direc
 it('HAP-774 C-6: discovery credentials resolve only in-org, protocol-matched and never decode on refusal', async () => {
   const seen: string[] = [];
   const crud = new CredentialCRUDService({ connect: async () => ({ query: async (text: string, params?: unknown[]) => { seen.push(text); return { rows: await sql(text, params) }; }, release: () => undefined }) } as unknown as Pool);
-  const ssh = async (name: string, protocol: 'ssh_password' | 'ssh_key', owner: string, org: string) => (await crud.create({ name, protocol, scope: 'ssh', credentials: { username: 'root', password: `pw-${name}` } }, owner, org)).id;
+  const ssh = async (name: string, protocol: 'ssh_password' | 'ssh_key', owner: string, org: string) => (await crud.create({ name, protocol, scope: 'ssh', credentials: { username: 'root', password: `pw-${name}` } }, owner, org, false)).id;
   const [own, key, foreign, nullOrg] = [await ssh('A-ssh', 'ssh_password', 'a', A), await ssh('A-key', 'ssh_key', 'a', A), await ssh('B-ssh', 'ssh_password', 'b', B), '77777777-7777-4777-8777-777777777777'];
   await sql(`INSERT INTO credentials (id, name, protocol, scope, credentials, created_by) VALUES ($1, 'A-null', 'ssh_password', 'ssh', $2, 'a')`,
     [nullOrg, JSON.stringify(getEncryptionService().encrypt('{"password":"null-org"}'))]);
@@ -312,4 +313,64 @@ it('HAP-774 C-6: a decode failure is a fixed code and logs no id, payload or err
   } finally {
     spies.forEach((spy) => spy.mockRestore());
   }
+});
+
+const C4 = 'happylab-c4';
+const bearer = (name: string, tags: string[]) => ({ name, protocol: 'bearer', scope: 'api', credentials: { token: `tok-${name}` }, tags });
+const c4Refusal = { success: false, error: 'Forbidden', code: 'c4_principal_admin_required', message: 'Only organization admins may manage the happylab-c4 credential tag' };
+const c4 = (org: string) => new CredentialCRUDService({ query: async (text: string, params?: unknown[]) => ({ rows: await sql(text, params) }) } as unknown as Pool).resolveC4Principal(org);
+// HAP-1613: no test leaves a C4 principal behind, so each scenario starts with none in either org.
+afterEach(() => sql('DELETE FROM credentials WHERE $1 = ANY(tags)', [C4]));
+
+it('HAP-1613: a non-admin cannot create a happylab-c4 credential', async () => {
+  const create = await request(app).post('/api/v1/credentials').set(as('a')).send(bearer('A-plant', ['ops', C4]));
+  expect([create.status, create.body]).toEqual([403, c4Refusal]);
+  expect(await sql('SELECT id FROM credentials WHERE $1 = ANY(tags)', [C4])).toEqual([]);
+});
+
+it('HAP-1613: a non-admin cannot add the happylab-c4 tag on update', async () => {
+  const own = await request(app).post('/api/v1/credentials').set(as('a')).send(bearer('A-own', ['ops']));
+  const add = await request(app).put(`/api/v1/credentials/${own.body.data.id}`).set(as('a')).send({ tags: ['ops', C4] });
+  expect([add.status, add.body]).toEqual([403, c4Refusal]);
+  expect(await c4(A)).toEqual({ code: 'c4_no_credential' });
+});
+
+it('HAP-1613: a non-admin owner cannot rotate, retag, rename or delete an existing happylab-c4 credential', async () => {
+  const id = '55555555-5555-4555-8555-555555555555';
+  await sql(`INSERT INTO credentials (id, name, protocol, scope, credentials, tags, created_by, organization_id) VALUES ($1, 'A-legacy-c4', 'bearer', 'api', $2, $3, 'd', $4)`,
+    [id, JSON.stringify(getEncryptionService().encrypt('{"token":"legacy-c4-token"}')), [C4], A]);
+  const before = await sql('SELECT * FROM credentials WHERE id = $1', [id]);
+  for (const body of [{ tags: [] }, { tags: ['happylab-c5'] }, { credentials: { token: 'planted-token' } }, { name: 'renamed' }]) {
+    const put = await request(app).put(`/api/v1/credentials/${id}`).set(as('d')).send(body);
+    expect([put.status, put.body]).toEqual([403, c4Refusal]);
+  }
+  const del = await request(app).delete(`/api/v1/credentials/${id}`).set(as('d'));
+  expect([del.status, del.body]).toEqual([403, c4Refusal]);
+  const foreign = await request(app).put(`/api/v1/credentials/${id}`).set(as('a')).send({ tags: [] });
+  expect(foreign.status).toBe(404);
+  expect(foreign.body).toEqual((await request(app).put(`/api/v1/credentials/${missing}`).set(as('a')).send({ tags: [] })).body);
+  expect(await sql('SELECT * FROM credentials WHERE id = $1', [id])).toEqual(before);
+  expect(await c4(A)).toEqual({ token: 'legacy-c4-token' });
+});
+
+it('HAP-1613: other tags are unaffected for non-admins', async () => {
+  const created = await request(app).post('/api/v1/credentials').set(as('a')).send(bearer('A-other-tags', ['happylab-c4-staging', 'ops']));
+  expect(created.status).toBe(201);
+  const put = await request(app).put(`/api/v1/credentials/${created.body.data.id}`).set(as('a'))
+    .send({ tags: ['HAPPYLAB-C4', 'ops'], credentials: { token: 'tok-other' } });
+  expect([put.status, put.body.data.tags]).toEqual([200, ['HAPPYLAB-C4', 'ops']]);
+  expect(await c4(A)).toEqual({ code: 'c4_no_credential' });
+});
+
+it('HAP-1613: an org admin manages the happylab-c4 credential and the C4 sync resolves it in that org only', async () => {
+  const created = await request(app).post('/api/v1/credentials').set(as('admin')).send(bearer('A-c4', [C4]));
+  expect(created.status).toBe(201);
+  const id: string = created.body.data.id;
+  expect([await c4(A), await c4(B)]).toEqual([{ token: 'tok-A-c4' }, { code: 'c4_no_credential' }]);
+  expect((await request(app).put(`/api/v1/credentials/${id}`).set(as('admin')).send({ tags: ['ops'] })).status).toBe(200);
+  expect(await c4(A)).toEqual({ code: 'c4_no_credential' });
+  expect((await request(app).put(`/api/v1/credentials/${id}`).set(as('admin')).send({ tags: [C4], credentials: { token: 'tok-rotated' } })).status).toBe(200);
+  expect(await c4(A)).toEqual({ token: 'tok-rotated' });
+  expect((await request(app).delete(`/api/v1/credentials/${id}`).set(as('admin'))).status).toBe(204);
+  expect(await c4(A)).toEqual({ code: 'c4_no_credential' });
 });

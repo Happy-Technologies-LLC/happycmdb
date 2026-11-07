@@ -69,11 +69,11 @@ it('(a) POST refuses a non-integer or out-of-range SSH port with a fixed 400, in
 });
 
 it('(b) direct CRUD create/update refuse port -1 with a fixed throw, leave the row unchanged and no transaction open', async () => {
-  await expect(crud.create({ name: 'direct', protocol: 'ssh_key', scope: 'ssh', credentials: ssh(-1) }, 'a', A)).rejects.toThrow(new Error(FIXED));
-  const { id } = await crud.create({ name: 'kept', protocol: 'ssh_password', scope: 'ssh', credentials: ssh(22) }, 'a', A);
+  await expect(crud.create({ name: 'direct', protocol: 'ssh_key', scope: 'ssh', credentials: ssh(-1) }, 'a', A, false)).rejects.toThrow(new Error(FIXED));
+  const { id } = await crud.create({ name: 'kept', protocol: 'ssh_password', scope: 'ssh', credentials: ssh(22) }, 'a', A, false);
   const [before, from] = [await row(id), seen.length];
-  await expect(crud.update(id, { name: 'renamed', credentials: ssh(-1) }, 'a', A)).rejects.toThrow(new Error(FIXED));
-  expect(seen.slice(from).some((q) => /^SELECT protocol FROM credentials WHERE id = \$1 .*FOR UPDATE$/s.test(q))).toBe(true);
+  await expect(crud.update(id, { name: 'renamed', credentials: ssh(-1) }, 'a', A, false)).rejects.toThrow(new Error(FIXED));
+  expect(seen.slice(from).some((q) => /^SELECT protocol, tags FROM credentials WHERE id = \$1 .*FOR UPDATE$/s.test(q))).toBe(true);
   expect([await row(id), (await crud.getById(id, 'a', A))?.name, (await sql('SELECT txid_current_if_assigned() AS xid'))[0].xid, await sql(`SELECT id FROM credentials WHERE name = 'direct'`)]).toEqual([before, 'kept', null, []]);
 });
 

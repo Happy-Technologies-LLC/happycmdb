@@ -5,9 +5,10 @@
 -- script refuses while any session is logged in as cmdb_app, because the API would lose every privilege it uses.
 --
 -- Effect: cmdb_app keeps its LOGIN but holds no privilege in the public or cmdb schemas beyond PUBLIC's. 045, 046
--- (service_offerings), 047 (ai_sync_cursors) and the staging app-login provisioning are the only grantors to cmdb_app,
--- so revoking everything reverses 045, 046 and 047's cmdb_app grants. All three are un-recorded so the migrator
--- re-grants on the way back (046 and 047 are idempotent and keep their tables and data).
+-- (service_offerings), 047 (ai_sync_cursors), 048 (portfolio_imports, portfolio_import_map) and the staging app-login
+-- provisioning are the only grantors to cmdb_app, so revoking everything reverses 045, 046, 047 and 048's cmdb_app
+-- grants. All four are un-recorded so the migrator re-grants on the way back (046, 047 and 048 are idempotent and keep
+-- their tables and data).
 -- Loses no data and does not touch cmdb_user. To remove the login too, afterwards: DROP OWNED BY cmdb_app; DROP ROLE
 -- cmdb_app; (cluster-wide; run once per database that has cmdb_app grants, then drop the role).
 --
@@ -29,5 +30,6 @@ BEGIN
 END
 $acl$;
 DELETE FROM cmdb.schema_migrations
-  WHERE migration_name IN ('045_staging_app_login_acl.sql', '046_service_offerings.sql', '047_ai_sync_cursors.sql');
+  WHERE migration_name IN ('045_staging_app_login_acl.sql', '046_service_offerings.sql', '047_ai_sync_cursors.sql',
+    '048_portfolio_import.sql');
 COMMIT;

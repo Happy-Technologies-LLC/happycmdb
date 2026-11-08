@@ -11,9 +11,11 @@
  * - Internal service bypass mechanism
  * - Comprehensive rate limit headers (X-RateLimit-*)
  * - Monitoring and metrics for rate limit hits
- * - Graceful degradation if Redis is unavailable
+ * - Graceful degradation if Redis is unavailable (fail-closed limiters, POST /auth/login, answer 503 instead)
+ * - Client identity is req.ip only: Express `trust proxy` (TRUST_PROXY) decides which forwarded hops count
  */
 
+import { createHash } from 'crypto';
 import { Request, Response, NextFunction } from 'express';
 import { Redis } from 'ioredis';
 import type { ConfigSchema } from '@cmdb/common';
@@ -32,6 +34,13 @@ export interface RateLimitResult {
   _remaining: number;
   _resetAt: number;
   _limit: number;
+}
+
+export interface LimitOptions {
+  /** Also limits per account + client at endpoints.authAccount; returns the raw account name (HAP-1091). */
+  account?: (req: Request) => unknown;
+  /** A limiter store error answers 503 instead of passing the request through. */
+  failClosed?: boolean;
 }
 
 export class RateLimitMiddleware {
@@ -54,7 +63,7 @@ export class RateLimitMiddleware {
   /**
    * Create rate limiter for specific endpoint
    */
-  limit(endpointType: keyof ConfigSchema['rateLimit']['endpoints']) {
+  limit(endpointType: keyof ConfigSchema['rateLimit']['endpoints'], options: LimitOptions = {}) {
     return async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
       if (!this.config.enabled) {
         return next();
@@ -80,50 +89,23 @@ export class RateLimitMiddleware {
       const tierMultiplier = this.getTierMultiplier(req);
       const effectiveMax = endpointConfig.max * tierMultiplier;
 
-      const identifier = this.getIdentifier(req);
-      const key = `rate-limit:${endpointType}:${identifier}`;
-
+      const budget = { _max: effectiveMax, _windowMs: endpointConfig.windowMs };
       try {
-        const result = await this.checkRateLimit(key, {
-          _max: effectiveMax,
-          _windowMs: endpointConfig.windowMs,
-        });
-
-        // Set rate limit headers
-        this.setRateLimitHeaders(res, result);
-
-        if (!result._allowed) {
-          // Increment metrics
-          if (this.metricsEnabled) {
-            this.incrementMetric(`${endpointType}:${this.getUserTier(req)}`);
-          }
-
-          // Log rate limit hit
-          if (this.config.monitoring.logRateLimitHits) {
-            logger.warn('Rate limit exceeded', {
-              endpoint: endpointType,
-              identifier,
-              limit: result._limit,
-              resetAt: new Date(result._resetAt).toISOString(),
-            });
-          }
-
-          return res.status(429).json({
-            _error: 'Too Many Requests',
-            _message: `Rate limit exceeded. Try again in ${Math.ceil((result._resetAt - Date.now()) / 1000)} seconds`,
-            _retryAfter: Math.ceil((result._resetAt - Date.now()) / 1000),
-            _limit: result._limit,
-            _resetAt: new Date(result._resetAt).toISOString(),
-          });
+        if (await this.admit(req, res, endpointType, budget, options)) {
+          next();
         }
-
-        next();
       } catch (error) {
+        const cause = error instanceof Error ? error : new Error(String(error));
+        if (options.failClosed === true) {
+          logger.error('Rate limit check failed - refusing request (fail closed)', cause);
+          res.status(503).json({
+            _error: 'Service Unavailable',
+            _message: 'Rate limiting is unavailable. Try again later',
+          });
+          return;
+        }
         // If Redis fails, allow request but log error (graceful degradation)
-        logger.error(
-          'Rate limit check failed - allowing request',
-          error instanceof Error ? error : new Error(String(error))
-        );
+        logger.error('Rate limit check failed - allowing request', cause);
         next();
       }
     };
@@ -214,6 +196,12 @@ export class RateLimitMiddleware {
     if (!results) {
       throw new Error('Redis pipeline failed');
     }
+    // HAP-1091: ioredis resolves exec() with a per-command [error, reply] (e.g. a connection lost after the retries);
+    // a failed command is a store error, never a count of 0.
+    const failed = results.find(([error]) => error !== null);
+    if (failed !== undefined) {
+      throw failed[0];
+    }
 
     // Get count before adding current request (index 1)
     const count = (results[1]?.[1] as number) || 0;
@@ -290,24 +278,71 @@ export class RateLimitMiddleware {
   }
 
   /**
-   * Get client IP address (handles proxies and load balancers)
+   * Checks the client bucket, then (with options.account) the account+client bucket; answers 429 and returns false
+   * on the first one exhausted. A denied client bucket leaves the account+client bucket untouched.
+   */
+  private async admit(
+    req: AuthenticatedRequest,
+    res: Response,
+    endpointType: keyof ConfigSchema['rateLimit']['endpoints'],
+    budget: RateLimitConfig,
+    options: LimitOptions
+  ): Promise<boolean> {
+    const identifier = this.getIdentifier(req);
+    const buckets = [{ key: `rate-limit:${endpointType}:${identifier}`, identifier, budget }];
+    const account = options.account?.(req);
+    if (typeof account === 'string' && account.trim() !== '') {
+      // HAP-1091: the username is stored only as an unsalted sha256 (not plain text in keys or logs); keyed with the
+      // client, so nobody can lock another client's login out of an account.
+      const digest = createHash('sha256').update(account.trim().toLowerCase()).digest('hex');
+      const { max, windowMs } = this.config.endpoints.authAccount;
+      buckets.push({
+        key: `rate-limit:${endpointType}-account:${digest}:${identifier}`,
+        identifier: `account:${digest}:${identifier}`,
+        budget: { _max: max, _windowMs: windowMs },
+      });
+    }
+
+    for (const bucket of buckets) {
+      const result = await this.checkRateLimit(bucket.key, bucket.budget);
+      this.setRateLimitHeaders(res, result);
+      if (result._allowed) {
+        continue;
+      }
+
+      // Increment metrics
+      if (this.metricsEnabled) {
+        this.incrementMetric(`${endpointType}:${this.getUserTier(req)}`);
+      }
+
+      // Log rate limit hit
+      if (this.config.monitoring.logRateLimitHits) {
+        logger.warn('Rate limit exceeded', {
+          endpoint: endpointType,
+          identifier: bucket.identifier,
+          limit: result._limit,
+          resetAt: new Date(result._resetAt).toISOString(),
+        });
+      }
+
+      res.status(429).json({
+        _error: 'Too Many Requests',
+        _message: `Rate limit exceeded. Try again in ${Math.ceil((result._resetAt - Date.now()) / 1000)} seconds`,
+        _retryAfter: Math.ceil((result._resetAt - Date.now()) / 1000),
+        _limit: result._limit,
+        _resetAt: new Date(result._resetAt).toISOString(),
+      });
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * Get client IP address: req.ip, which Express derives from X-Forwarded-For only for the hops TRUST_PROXY trusts
+   * (HAP-1091). A raw X-Forwarded-For / X-Real-IP is client-controlled and never read here.
    */
   private getClientIp(req: Request): string {
-    // Check X-Forwarded-For header (comma-separated list, first is client)
-    const forwarded = req.headers['x-forwarded-for'];
-    if (forwarded) {
-      const ips = Array.isArray(forwarded) ? forwarded[0] : forwarded;
-      return ips?.split(',')[0]?.trim() || 'unknown';
-    }
-
-    // Check X-Real-IP header
-    const realIp = req.headers['x-real-ip'];
-    if (realIp) {
-      return (Array.isArray(realIp) ? realIp[0] : realIp) || 'unknown';
-    }
-
-    // Fall back to socket address
-    return req.socket.remoteAddress || 'unknown';
+    return req.ip ?? req.socket.remoteAddress ?? 'unknown';
   }
 
   /**

@@ -16,6 +16,14 @@ The live staging Compose project is staging-happycmdb, managed by the portfolio 
 
 Kafka is optional and intentionally omitted, along with Zookeeper, test SSH, Grafana, Metabase, and Kafka UI. Published ports are loopback-only behind the host proxy.
 
+## Client address for rate limits (HAP-1091)
+
+The API keys every rate limit on `req.ip`, taken `TRUST_PROXY` hops back in X-Forwarded-For. Staging defaults to `${HAPPYCMDB_TRUST_PROXY:-2}` (operator ruling `approvals/operator-ruling-cmdb-hap1091-staging-trust-proxy-20261108T085406Z.go`). Chain: tailnet client → tailscale serve `:8449` (tailnet only; overwrites X-Forwarded-For with the peer address) → `127.0.0.1:19080` docker-proxy → web-ui nginx (appends its remote_addr, the bridge gateway 172.23.0.1) → api, which receives `<peer>, 172.23.0.1`. Two hops back is the tailnet peer, which a tailnet client cannot forge; one hop would put every staging user on 172.23.0.1.
+
+If the `:8449` serve mapping is removed, staging is loopback-only: set HAPPYCMDB_TRUST_PROXY=1.
+
+Accepted residual (LOW, host-local only): a process on Build01 calling `127.0.0.1:19080` directly can forge one hop, and one calling `127.0.0.1:19000` (the API publish) can send any X-Forwarded-For, so either can choose its own rate-limit key.
+
 ## Environment variable names
 
 Required secret/config names (Infisical /staging path /happycmdb):

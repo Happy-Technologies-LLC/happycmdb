@@ -7,8 +7,9 @@
  */
 
 import { Request, Response, Router } from 'express';
-import { ApiKeyNotFoundError, AuthService, CredentialsChangedError, PasswordNotAllowedError } from '../auth/auth.service';
+import { ApiKeyNotFoundError, AuthFailureError, AuthService, CredentialsChangedError, PasswordNotAllowedError } from '../auth/auth.service';
 import { ValidationMiddleware } from './middleware/validation.middleware';
+import { clearRefreshCookie, readRefreshCookie, requireAuthHeader, setRefreshCookie } from './middleware/refresh-cookie';
 import { authSchemas } from '../validation/schemas';
 import { AuthMiddleware, AuthenticatedRequest, logAuthFailure } from '../middleware/auth.middleware';
 import { RateLimitMiddleware } from '../middleware/rate-limit.middleware';
@@ -70,9 +71,11 @@ export class AuthController {
     /**
      * POST /api/auth/refresh
      * Refresh access token using refresh token
+     * HAP-1211 H1: read only from the cmdb_rt cookie, after X-CMDB-Auth is checked.
      */
     this.router.post(
       '/refresh',
+      requireAuthHeader,
       this.rateLimiter.limit('auth'),
       this.validator.validate(authSchemas._refreshToken),
       this.refreshToken.bind(this)
@@ -81,10 +84,10 @@ export class AuthController {
     /**
      * POST /api/auth/logout
      * Logout (client-side token invalidation)
+     * HAP-1211 H1: clears the cmdb_rt cookie. Neither X-CMDB-Auth (operator ruling Q1) nor an access token.
      */
     this.router.post(
       '/logout',
-      this.authMiddleware.authenticate(),
       this.logout.bind(this)
     );
 
@@ -173,11 +176,12 @@ export class AuthController {
    */
   private async login(req: Request, res: Response): Promise<void> {
     try {
-      const result = await this.authService.login(req.body);
+      const { _refreshToken, ...data } = await this.authService.login(req.body);
+      setRefreshCookie(res, _refreshToken);
 
       res.json({
         success: true,
-        data: result,
+        data,
       });
     } catch (error) {
       logAuthFailure('login', error);
@@ -190,11 +194,14 @@ export class AuthController {
    */
   private async refreshToken(req: Request, res: Response): Promise<void> {
     try {
-      const result = await this.authService.refreshToken(req.body);
+      const presented = readRefreshCookie(req);
+      if (presented === null) throw new AuthFailureError('invalid');
+      const { _refreshToken, ...data } = await this.authService.refreshToken({ refreshToken: presented });
+      setRefreshCookie(res, _refreshToken);
 
       res.json({
         success: true,
-        data: result,
+        data,
       });
     } catch (error) {
       logAuthFailure('refresh', error);
@@ -206,8 +213,8 @@ export class AuthController {
    * Logout endpoint
    */
   private async logout(_req: AuthenticatedRequest, res: Response): Promise<void> {
-    // Logout is primarily client-side (discarding tokens)
-    // Server-side token blacklist could be implemented here if needed
+    // Stateless (founder decision, H1b not built): nothing is stored to revoke; a captured refresh token is renewable until the credential epoch changes; see HAP-1285.
+    clearRefreshCookie(res);
 
     res.json({
       success: true,

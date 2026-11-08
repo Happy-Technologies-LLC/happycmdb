@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type React from 'react';
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor, act, within, type RenderResult } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { AuthProvider, useAuth } from './AuthContext';
@@ -34,17 +34,16 @@ declare global {
   }
 }
 
-// Builds a syntactically valid JWT-shaped string with a controllable `exp` claim.
-const createToken = (expiresInSeconds: number): string => {
+// Builds a syntactically valid JWT-shaped string; the server always signs iat and exp.
+const jwtShaped = (iat: number, exp: number): string => {
   const header = btoa(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
-  const payload = btoa(
-    JSON.stringify({
-      id: 'user-1',
-      jti: crypto.randomUUID(),
-      exp: Math.floor(Date.now() / 1000) + expiresInSeconds,
-    })
-  );
+  const payload = btoa(JSON.stringify({ id: 'user-1', jti: crypto.randomUUID(), iat, exp }));
   return `${header}.${payload}.mock-signature`;
+};
+// A token issued now (by this clock) that lives for expiresInSeconds.
+const createToken = (expiresInSeconds: number): string => {
+  const now = Math.floor(Date.now() / 1000);
+  return jwtShaped(now, now + expiresInSeconds);
 };
 
 const user = mockApiHandlers.getCurrentUser.success as unknown as User;
@@ -84,6 +83,10 @@ describe('AuthContext session (HAP-1211 H2: in-memory access token, refresh cook
     localStorage.clear();
   });
 
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('a reload restores the session from the refresh cookie, never from Web Storage, and drops the legacy copies', async () => {
     localStorage.setItem('auth_token', createToken(3600));
     localStorage.setItem('user', JSON.stringify(user));
@@ -120,15 +123,24 @@ describe('AuthContext session (HAP-1211 H2: in-memory access token, refresh cook
     expect(api.api.getCurrentUser).not.toHaveBeenCalled();
   });
 
-  it('renews the access token before it expires and exposes the new one (useWebSocket reconnects with it)', async () => {
-    const renewed = createToken(3600);
-    refreshIssues(createToken(2), renewed);
+  it('renews once per token, a minute before its server-issued 15 minutes end, even with the client clock past exp (no refresh loop)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    const server = Math.floor(Date.now() / 1000);
+    vi.setSystemTime((server + 20 * 60) * 1000); // this browser's clock runs 20 minutes ahead of the server's
+    const [first, second] = [0, 840].map((issuedAt) => jwtShaped(server + issuedAt, server + issuedAt + 900));
+    refreshIssues(first, second);
     vi.mocked(api.api.getCurrentUser).mockResolvedValue(user);
+    const after = async (ms: number) => {
+      await act(() => vi.advanceTimersByTimeAsync(ms));
+      return [vi.mocked(api.api.refresh).mock.calls.length, screen.getByTestId('token').textContent];
+    };
 
     renderAuthProbe();
 
-    await waitFor(() => expect(screen.getByTestId('token').textContent).toBe(renewed), { timeout: 3000 });
-    expect(api.api.refresh).toHaveBeenCalledTimes(2);
+    expect(await after(0)).toEqual([1, first]); // the boot restore
+    expect(await after(13 * 60_000 + 59_000)).toEqual([1, first]);
+    expect(await after(1_000)).toEqual([2, second]); // 14 minutes in: renewed, and the new token exposed
+    expect(await after(13 * 60_000)).toEqual([2, second]); // the new token is not renewed at once either
     expect(screen.getByTestId('isAuthenticated').textContent).toBe('true');
   });
 

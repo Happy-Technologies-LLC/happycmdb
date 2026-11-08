@@ -43,3 +43,20 @@ describe('ApiService login', () => {
     });
   });
 });
+
+describe('ApiService changePassword (HAP-1285)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('keeps this device signed in: the re-issued access token replaces the stored one', async () => {
+    const before = `before-${crypto.randomUUID()}`;
+    const reissued = `reissued-${crypto.randomUUID()}`;
+    localStorage.setItem('auth_token', before);
+    request.put.mockResolvedValue({ data: { success: true, data: { _accessToken: reissued, _expiresIn: 900 } } });
+    const passwords = { currentPassword: crypto.randomUUID(), newPassword: crypto.randomUUID() };
+
+    await api.changePassword(passwords);
+
+    expect(request.put).toHaveBeenCalledWith('/auth/password', passwords);
+    expect(localStorage.getItem('auth_token')).toBe(reissued);
+  });
+});

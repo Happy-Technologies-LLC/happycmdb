@@ -39,7 +39,7 @@
  *   provenance and leaves --except ids alone.
  */
 
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from '@jest/globals';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
 import * as bcrypt from 'bcrypt';
 import { readFileSync } from 'fs';
@@ -288,7 +288,7 @@ describe('guarded self-service writes and the marker setter on Neo4j (SEC16-01, 
     const rotatedHash = (await userProps())['_passwordHash'];
 
     const write = await graph.run(GUARDED_PASSWORD_CYPHER, {
-      elementId: eid, userId: USER, credentialEpoch: neo4j.int(0), readHash, newHash: 'attacker-hash',
+      elementId: eid, userId: USER, credentialEpoch: neo4j.int(0), readHash, newHash: 'attacker-hash', nextEpoch: neo4j.int(1),
     });
     const disable = await graph.run(GUARDED_DISABLE_CYPHER, { elementId: eid, userId: USER, credentialEpoch: neo4j.int(0) });
 
@@ -296,6 +296,41 @@ describe('guarded self-service writes and the marker setter on Neo4j (SEC16-01, 
     expect(neo4j.integer.toNumber(disable.records[0]!.get('n'))).toBe(0);
     expect((await userProps())['_passwordHash']).toBe(rotatedHash);
     expect((await userProps())['_enabled']).toBe(true);
+  });
+
+  it('HAP-1285: the self-service password write at the current generation advances it with the hash, as an Integer', async () => {
+    await unmark();
+    const repository = new Neo4jAuthRepository();
+    const written = await repository.updatePasswordHashGuarded({
+      userId: USER, elementId: await elementId(), credentialEpoch: 0, readHash: defaultHash, newHash: 'changed-hash', nextEpoch: 1,
+    });
+
+    expect(written).toBe(true);
+    const props = await userProps();
+    expect(props['_passwordHash']).toBe('changed-hash');
+    expect(neo4j.isInt(props['credentialEpoch'])).toBe(true); // SEC16-03: never a Float
+    expect(neo4j.integer.toNumber(props['credentialEpoch'] as never)).toBe(1);
+    // The key list carries each key's generation, so AuthService.listApiKeys can mark the pre-change key.
+    expect((await repository.listApiKeys(USER)).map(k => k._credentialEpoch)).toEqual([0]);
+  });
+
+  it('HAP-1285 (MC): the hash and the generation land in ONE guarded statement; a failure after it cannot split them', async () => {
+    await unmark();
+    const client = getNeo4jClient();
+    const open = client.getSession.bind(client);
+    let runs = 0; // every statement after the first, on any session, fails: the shape of a crash between two writes
+    jest.spyOn(client, 'getSession').mockImplementation((...args) => {
+      const session = open(...args);
+      const run = session.run.bind(session);
+      session.run = ((...a: Parameters<typeof run>) => (++runs > 1 ? Promise.reject(new Error('injected')) : run(...a))) as typeof run;
+      return session;
+    });
+    await new Neo4jAuthRepository().updatePasswordHashGuarded({
+      userId: USER, elementId: await elementId(), credentialEpoch: 0, readHash: defaultHash, newHash: 'changed-hash', nextEpoch: 1,
+    }).catch(() => false);
+    const props = await userProps();
+    // runs === 1 also proves the injection engaged (the write went through the spied client).
+    expect([runs, props['_passwordHash'], neo4j.integer.toNumber((props['credentialEpoch'] ?? 0) as never)]).toEqual([1, 'changed-hash', 1]);
   });
 
   it('the login marker setter writes only the false → true transition', async () => {
@@ -340,6 +375,7 @@ describe('guarded self-service writes and the marker setter on Neo4j (SEC16-01, 
     }
     const passwordParams = async () => ({
       elementId: await elementId(), userId: USER, credentialEpoch: neo4j.int(0), readHash: defaultHash, newHash: 'attacker-hash',
+      nextEpoch: neo4j.int(1),
     });
 
     it('contrast: the pre-fix password statement does overwrite the rotation (the race is real)', async () => {

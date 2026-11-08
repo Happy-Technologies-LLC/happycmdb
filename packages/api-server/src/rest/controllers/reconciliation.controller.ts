@@ -92,7 +92,7 @@ export class ReconciliationController {
       res.status(500).json({
         success: false,
         error: 'Failed to find matches',
-        message: error instanceof Error ? error.message : 'Unknown error'
+        message: 'Internal error'
       });
     }
   }
@@ -137,7 +137,7 @@ export class ReconciliationController {
       res.status(500).json({
         success: false,
         error: 'Failed to merge CI',
-        message: error instanceof Error ? error.message : 'Unknown error'
+        message: 'Internal error'
       });
     }
   }
@@ -183,7 +183,7 @@ export class ReconciliationController {
       res.status(500).json({
         success: false,
         error: 'Failed to list conflicts',
-        message: error instanceof Error ? error.message : 'Unknown error'
+        message: 'Internal error'
       });
     }
   }
@@ -315,7 +315,7 @@ export class ReconciliationController {
       res.status(500).json({
         success: false,
         error: 'Failed to get lineage',
-        message: error instanceof Error ? error.message : 'Unknown error'
+        message: 'Internal error'
       });
     }
   }
@@ -360,7 +360,7 @@ export class ReconciliationController {
       res.status(500).json({
         success: false,
         error: 'Failed to get field sources',
-        message: error instanceof Error ? error.message : 'Unknown error'
+        message: 'Internal error'
       });
     }
   }

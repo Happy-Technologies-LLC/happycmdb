@@ -521,3 +521,17 @@ it('HAP-1099 row 13: recovery refuses a stored pre-fix plan that sets external_i
   expect([(await journal(X)).map(row => [row.state, row.last_error]), await rows(`SELECT 1 FROM ci_field_sources WHERE ci_id = $1
     UNION ALL SELECT 1 FROM ci_change_history WHERE ci_id = $1`, [X])]).toEqual([[['failed', 'external_id_immutable']], []]);
 });
+
+it('HAP-499: REST merge create and GraphQL merge update write, record and echo only mergeable attributes', async () => {
+  const smuggled = { note: 'n', type: 'database', ci_type: 'x', discovered_at: '1970', _hidden: 'h', 'a b': 'c' };
+  const leaked = (ciId: string) => Object.keys(smuggled).filter(key => key !== 'note'
+    && mockGraph.nodes.get(ciId)![key] === smuggled[key as keyof typeof smuggled]);
+  const created = (await merge('a', `s4b-${randomUUID()}`, 'hap499', smuggled)).body.data.ci_id as string;
+  const X = await ci(A);
+  const updated = await request(app).post('/graphql').set('authorization', bearer('a')).send({ variables: { attributes: smuggled },
+    query: `mutation ($attributes: JSON) { _reconciliation { mergeCI(_name: "${X}", _ciType: "server", _source: "scan",
+      _sourceId: "scan-2", _identifiers: { _serialNumber: "${X}" }, _attributes: $attributes) { _action _mergedFields } } }` });
+  expect([leaked(created), leaked(X), updated.body.data?._reconciliation.mergeCI, (await rows(`SELECT ci_id = $1 AS created, field_name
+    FROM ci_field_sources WHERE ci_id IN ($1, $2) ORDER BY 1`, [created, X])).map(row => [row['created'], row['field_name']])])
+    .toEqual([[], [], { _action: 'updated', _mergedFields: ['note'] }, [[false, 'note'], [true, 'note']]]);
+});

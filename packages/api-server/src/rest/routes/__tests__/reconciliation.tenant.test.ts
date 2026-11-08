@@ -26,6 +26,7 @@ jest.mock('@cmdb/database', () => ({
   ...jest.requireActual<object>('@cmdb/database/journal/encoding'),
   getNeo4jClient: () => ({
     getSession: () => ({ run, close }), assertJournalReady: async () => undefined, // schema present
+    getCI: (...args: unknown[]) => run('getCI', ...args),
     // The journaled merge (journal internals run in tests/integration) plans, then replays its graph write.
     reconcileOwned: async (ciId: string, organizationId: string, _actor: string, _operation: string,
       plan: (current: Record<string, unknown>) => Promise<{ graph: { params: { props: Record<string, unknown> } } | null }>,
@@ -73,6 +74,7 @@ jest.mock('../../../middleware/rate-limit.middleware', () => {
 import { IdentityReconciliationEngine } from '../../../../../identity-resolution/src/engine/identity-reconciliation-engine';
 mockGetEngine.mockImplementation(() => IdentityReconciliationEngine.getInstance());
 import { RestAPIServer } from '../../server';
+import { logger } from '@cmdb/common';
 
 // The real server mounts authentication and reconciliation at /api/v1.
 const app = new RestAPIServer().getApp();
@@ -112,4 +114,16 @@ it('merges own CI; foreign, org-less and missing targets get the identical creat
   expect(masked(absent)).toEqual(masked(missing));
   expect(run.mock.calls.filter(([cypher]) => String(cypher).includes('SET ci += $properties'))).toHaveLength(1);
   expect(emit).toHaveBeenCalledTimes(4); // one ci.updated, three ci.discovered
+});
+
+it('HAP-499: a reconciliation 500 never reflects the database error; the detail is logged server-side', async () => {
+  const raw = new Error("Node(42) already exists with label `CI` and property `external_id` = 'secret-ext'");
+  run.mockRejectedValue(raw);
+  query.mockRejectedValue(raw);
+  const as = (test: request.Test) => test.set('authorization', 'Bearer org-a');
+  const responses = [await as(request(app).post('/api/v1/reconciliation/match')).send({ identifiers: { serial_number: 'same' } }),
+    await as(request(app).post('/api/v1/reconciliation/merge')).send(payload),
+    ...await Promise.all(['conflicts', 'lineage/target', 'field-sources/target'].map(path => as(request(app).get(`/api/v1/reconciliation/${path}`))))];
+  expect(responses.map(response => [response.status, /secret-ext|Node\(42\)/.test(response.text)])).toEqual(Array(5).fill([500, false]));
+  expect(jest.mocked(logger.error).mock.calls.filter(([, detail]) => detail === raw)).toHaveLength(5);
 });

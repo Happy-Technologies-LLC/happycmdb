@@ -6,4 +6,5 @@
  */
 
 export { IdentityReconciliationEngine, getIdentityReconciliationEngine } from './engine/identity-reconciliation-engine';
+export { isMergeable } from './engine/mergeable-attributes';
 export * from './types/reconciliation.types';

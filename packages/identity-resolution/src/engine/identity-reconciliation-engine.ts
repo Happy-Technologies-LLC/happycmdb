@@ -16,6 +16,7 @@ import { IdentificationAttributes, TransformedCI } from '@cmdb/integration-frame
 import { FieldMergeRule, MatchResult, ReconciliationConfig } from '../types/reconciliation.types';
 import * as fuzzball from 'fuzzball';
 import { getEventProducer, EventType, type CIDiscoveredEvent, type CIUpdatedEvent } from '@cmdb/event-processor';
+import { isMergeable } from './mergeable-attributes';
 
 /**
  * HAP-1442: a discovered or merged CI may not create or claim an AI class; only AISyncWriter writes them. A merge into
@@ -30,14 +31,10 @@ function refuseSourceOwnedClass(ci: TransformedCI): void {
   }
 }
 
-/**
- * A CI's organization_id is written only from the caller's token organization
- * (or the backfill), never from reconciled data. Drops that key from a property
- * map that would otherwise be SET onto a :CI node.
- */
-function withoutOrganizationId<T extends Record<string, unknown>>(properties: T): Omit<T, 'organization_id'> {
-  const { organization_id: _ignored, ...rest } = properties;
-  return rest;
+/** HAP-499: one metadata-only line per merge; attribute keys and values are caller data and never logged. */
+function logIgnoredAttributes(ci: TransformedCI): void {
+  const ignored = Object.keys(ci.attributes ?? {}).filter(key => !isMergeable(key)).length;
+  if (ignored) logger.warn('Merge ignored non-mergeable attributes', { ignored_attribute_count: ignored });
 }
 
 /** v16 §7.0 canon(v): sorted keys (UTF-16 order), no whitespace, ECMAScript JSON escaping, quoted strings. */
@@ -76,10 +73,9 @@ export interface MergeOutcome {
   ci_id: string; action: 'created' | 'updated' | 'pending_review'; correlation_id: string; conflict_ids: string[];
 }
 export type ConflictResolution = 'accept_source' | 'accept_target' | 'merge' | 'dismiss_stale';
-/** v16 §4.4 plus D17-3 (HAP-1099): never written by a merge, hold or resolve; `external_id` is set only by REST create. */
-const RESERVED_ATTRIBUTES = ['id', 'organization_id', 'organizationid', 'op_id', 'reconciliation_op_id', 'created_at',
-  'incarnation_id', 'external_id'];
-const isReserved = (field: string): boolean => RESERVED_ATTRIBUTES.includes(field.replace(/^_+/, '').toLowerCase());
+/** v16 §4.4, HAP-499: the mergeable entries of an attribute or identifier map; everything else is never written. */
+const mergeable = (map: object = {}): Record<string, unknown> => Object.fromEntries(Object.entries(map)
+  .filter(([key, value]) => value !== undefined && isMergeable(key)));
 
 export class IdentityReconciliationEngine {
   private static instance: IdentityReconciliationEngine;
@@ -377,6 +373,7 @@ export class IdentityReconciliationEngine {
   async reconcileCI(discoveredCI: TransformedCI, organizationId: string, createIfMissing = true): Promise<string | null> {
     const identifiers = discoveredCI.identifiers;
     refuseSourceOwnedClass(discoveredCI);
+    logIgnoredAttributes(discoveredCI);
 
     // Find existing CI
     const match = await this.findExistingCI(identifiers, discoveredCI, organizationId);
@@ -435,17 +432,15 @@ export class IdentityReconciliationEngine {
          RETURN ci.id as ci_id, ci.incarnation_id AS incarnation_id`,
         {
           properties: {
-            ...withoutOrganizationId({
-              name: ci.name,
-              ci_type: ci.ci_type,
-              environment: ci.environment,
-              status: ci.status || 'active',
-              ...ci.attributes,
-              ...ci.identifiers,
-              id: ciId,
-              created_at: new Date().toISOString(),
-              updated_at: new Date().toISOString(),
-            }),
+            name: ci.name,
+            ci_type: ci.ci_type,
+            environment: ci.environment,
+            status: ci.status || 'active',
+            ...mergeable(ci.attributes),
+            ...mergeable(ci.identifiers),
+            id: ciId,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
             organization_id: organizationId,
           },
         }
@@ -469,6 +464,7 @@ export class IdentityReconciliationEngine {
   async mergeCI(discoveredCI: TransformedCI, organizationId: string, actor: string,
     createIfMissing = false): Promise<MergeOutcome | null> {
     refuseSourceOwnedClass(discoveredCI);
+    logIgnoredAttributes(discoveredCI);
     await this.neo4jClient.assertJournalReady(true); // v16 §3.2: the gate precedes identification (lineage/graph reads)
     const match = await this.findExistingCI(discoveredCI.identifiers, discoveredCI, organizationId);
     if (match) return this.mergeIntoCI(match, discoveredCI, organizationId, actor, 'user');
@@ -478,18 +474,16 @@ export class IdentityReconciliationEngine {
   /**
    * v16 §3.1/§3.3, §15 H-1: one journaled `create` under the id of (O, source, source_id). W stamps the verified
    * org; T2 writes exactly one `created` history row, the lineage and the attribute field sources.
-   * `external_id` never reaches the node through any merge path (create, update, hold or resolve): a database not
-   * yet migrated by Neo4j 005 keeps a global constraint on it, so a collision would disclose another org's value.
-   * That identity is O's lineage (findByExternalId).
+   * Only mergeable attributes and identifiers reach the node (HAP-499), so `external_id` never does through any merge
+   * path (create, update, hold or resolve): a database not yet migrated by Neo4j 005 keeps a global constraint on it,
+   * so a collision would disclose another org's value. That identity is O's lineage (findByExternalId).
    */
   private async createFromMerge(ci: TransformedCI, organizationId: string, actor: string): Promise<MergeOutcome> {
     const { source, source_id: sourceId } = ci;
     if (typeof sourceId !== 'string' || !sourceId || sourceId.length > 255 || source.length > 255) throw new PlanUnrepresentableError();
-    const kept = (map: object = {}) => Object.fromEntries(Object.entries(map).filter(([key, value]) => value !== undefined
-      && !isReserved(key))); // v16 §4.4
-    const attributes = kept(ci.attributes);
+    const attributes = mergeable(ci.attributes);
     const fields = { name: ci.name, ci_type: ci.ci_type, status: ci.status || 'active',
-      ...(ci.environment ? { environment: ci.environment } : {}), ...attributes, ...kept(ci.identifiers) };
+      ...(ci.environment ? { environment: ci.environment } : {}), ...attributes, ...mergeable(ci.identifiers) };
     // One stable slot per (O, source, source_id): a retry while T2 is pending meets the in-flight gap (409), never a 2nd CI.
     const ciId = `ci_${createHash('sha256').update(JSON.stringify([organizationId, source, sourceId])).digest('hex').slice(0, 32)}`;
     const incarnationId = randomUUID();
@@ -544,9 +538,7 @@ export class IdentityReconciliationEngine {
           AND status IN ('pending', 'resolved')`, [organizationId, match.ci_id, source, sourceId])).rows;
       const merged: Record<string, unknown> = {};
       const conflicts: ConflictPlan[] = [];
-      for (const [field, value] of Object.entries(withoutOrganizationId(ci.attributes))) {
-        // v16 §4.4: reserved aliases, timestamps, the incarnation and external_id (D17-3) are dropped, never written.
-        if (isReserved(field)) continue;
+      for (const [field, value] of Object.entries(mergeable(ci.attributes))) {
         const target = stored.get(field);
         const hash = conflictHash(field, target ? { value: target.value_json } : null, { value }, source, sourceId);
         if (known.some(row => row.status === 'resolved' && row.field_name === field && row.suppression_hash === hash)) continue;
@@ -611,13 +603,13 @@ export class IdentityReconciliationEngine {
     const owner = (await this.postgresClient.query(`SELECT ci_id, field_name, incoming_json FROM reconciliation_conflicts
       WHERE id = $1 AND organization_id = $2`, [conflictId, organizationId])).rows[0];
     if (!owner) return null;
-    // HAP-1099: a write to a reserved field (external_id) is one fixed 422 before admission, whatever the value.
-    if ((resolution === 'accept_source' || resolution === 'merge') && isReserved(owner.field_name)) throw new PlanUnrepresentableError();
     // HAP-1442: no resolution may give a CI an AI class. The plan's revision check pins incoming_json to this read.
     const written = resolution === 'accept_source' ? owner.incoming_json : resolution === 'merge' ? mergedValue : undefined;
     if (['type', 'ci_type'].includes(String(owner.field_name).replace(/^_+/, '').toLowerCase()) && isSourceOwnedCIType(written)) {
       throw new SourceOwnedError();
     }
+    // HAP-1099/HAP-499: a write to a non-mergeable field (external_id, type, ...) is one fixed 422 before admission.
+    if ((resolution === 'accept_source' || resolution === 'merge') && !isMergeable(owner.field_name)) throw new PlanUnrepresentableError();
     const ciId: string = owner.ci_id;
     const status = resolution === 'dismiss_stale' ? 'superseded' as const : 'resolved' as const;
     return this.neo4jClient.reconcileOwned(ciId, organizationId, actor, 'resolve_conflict', async (current): Promise<StoredPlan> => {

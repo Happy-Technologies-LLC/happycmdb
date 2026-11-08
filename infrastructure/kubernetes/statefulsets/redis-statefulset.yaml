@@ -100,10 +100,10 @@ spec:
           livenessProbe:
             exec:
               command:
-                - redis-cli
-                - -a
-                - $(REDIS_PASSWORD)
-                - ping
+                - sh
+                - -c
+                # HAP-1666: password from the container's REDIS_PASSWORD (cmdb-secrets) via env, never argv.
+                - REDISCLI_AUTH="$REDIS_PASSWORD" exec redis-cli ping
             initialDelaySeconds: 30
             periodSeconds: 10
             timeoutSeconds: 5
@@ -111,10 +111,10 @@ spec:
           readinessProbe:
             exec:
               command:
-                - redis-cli
-                - -a
-                - $(REDIS_PASSWORD)
-                - ping
+                - sh
+                - -c
+                # HAP-1666: password from the container's REDIS_PASSWORD (cmdb-secrets) via env, never argv.
+                - REDISCLI_AUTH="$REDIS_PASSWORD" exec redis-cli ping
             initialDelaySeconds: 10
             periodSeconds: 5
             timeoutSeconds: 3
@@ -149,8 +149,8 @@ data:
       REDIS_NODES="$REDIS_NODES $POD_IP:6379"
     done
 
-    # Create cluster
-    redis-cli -a $REDIS_PASSWORD --cluster create $REDIS_NODES --cluster-replicas 1 --cluster-yes
+    # Create cluster (HAP-1666: password via REDISCLI_AUTH, never argv)
+    REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli --cluster create $REDIS_NODES --cluster-replicas 1 --cluster-yes
 ---
 apiVersion: batch/v1
 kind: Job
@@ -180,4 +180,5 @@ spec:
               for i in 0 1 2 3 4 5; do
                 REDIS_NODES="$REDIS_NODES redis-$i.redis-cluster.happycmdb-cmdb.svc.cluster.local:6379"
               done
-              redis-cli -a $REDIS_PASSWORD --cluster create $REDIS_NODES --cluster-replicas 1 --cluster-yes
+              # HAP-1666: password via REDISCLI_AUTH, never argv
+              REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli --cluster create $REDIS_NODES --cluster-replicas 1 --cluster-yes

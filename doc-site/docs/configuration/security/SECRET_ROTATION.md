@@ -44,15 +44,19 @@ The following secrets were found hardcoded in source code and should be rotated:
 **Procedure**:
 
 ```bash
-# 1. Generate new password
+# 1. Read the current password (no echo, nothing on argv) and generate the new one
+read -rsp 'Current Neo4j password: ' OLD_PASSWORD; echo
 NEW_PASSWORD=$(openssl rand -base64 32)
 
-# 2. Update Neo4j password (in running container)
-NEO4J_PASSWORD="$OLD_PASSWORD" docker exec -e NEO4J_PASSWORD cmdb-neo4j cypher-shell -u neo4j \
-  "ALTER CURRENT USER SET PASSWORD FROM '$OLD_PASSWORD' TO '$NEW_PASSWORD'"
+# 2. Update Neo4j password (in running container). The statement goes to
+#    cypher-shell on stdin, so neither password appears on any command line.
+NEO4J_PASSWORD="$OLD_PASSWORD" docker exec -i -e NEO4J_PASSWORD cmdb-neo4j cypher-shell -u neo4j <<EOF
+ALTER CURRENT USER SET PASSWORD FROM '$OLD_PASSWORD' TO '$NEW_PASSWORD';
+EOF
 
-# 3. Update .env file
-sed -i "s/NEO4J_PASSWORD=.*/NEO4J_PASSWORD=$NEW_PASSWORD/" .env
+# 3. Update .env file (awk reads the value from its environment, not argv;
+#    unlike sed it needs no escaping of "/" or "&" in the base64 value)
+(umask 077; NEW_PASSWORD="$NEW_PASSWORD" awk 'BEGIN{FS="="} $1=="NEO4J_PASSWORD"{print "NEO4J_PASSWORD=" ENVIRON["NEW_PASSWORD"]; next} {print}' .env > .env.new) && mv .env.new .env
 
 # 4. Restart affected services
 docker-compose -f infrastructure/docker/docker-compose.yml restart api-server discovery-engine etl-processor
@@ -61,12 +65,23 @@ docker-compose -f infrastructure/docker/docker-compose.yml restart api-server di
 docker-compose -f infrastructure/docker/docker-compose.yml logs api-server | grep "Neo4j connected"
 ```
 
+Notes:
+
+- Never pass a password as a `cypher-shell` argument or inside a `docker exec` command string: it would be visible in `ps` on the host, in `docker exec` and in the container's process list, and in shell history.
+- The `EOF` terminator must start at column 0 (no indentation, no trailing spaces). The shell feeds the heredoc to `docker exec` over stdin, not on the command line; history records the literal `$OLD_PASSWORD`/`$NEW_PASSWORD`, not their values. `-i` is required and `-t` must not be used.
+- Values must not contain `'` or `\` (they are embedded in a Cypher string literal). `openssl rand -base64` output is safe; escape a legacy current password that contains either character.
+- The `docker exec` client environment holds the current password while the command runs (visible only to the same user and root).
+- `mv` leaves `.env` mode 600 because of `umask 077`; confirm with `ls -l .env`.
+
 **Rollback**:
 ```bash
-# If rotation fails, revert password in Neo4j
-NEO4J_PASSWORD="$NEW_PASSWORD" docker exec -e NEO4J_PASSWORD cmdb-neo4j cypher-shell -u neo4j \
-  "ALTER CURRENT USER SET PASSWORD FROM '$NEW_PASSWORD' TO '$OLD_PASSWORD'"
+# If rotation fails, revert password in Neo4j (same stdin form as step 2)
+NEO4J_PASSWORD="$NEW_PASSWORD" docker exec -i -e NEO4J_PASSWORD cmdb-neo4j cypher-shell -u neo4j <<EOF
+ALTER CURRENT USER SET PASSWORD FROM '$NEW_PASSWORD' TO '$OLD_PASSWORD';
+EOF
 ```
+
+The `EOF` terminator must start at column 0 (no indentation, no trailing spaces). The same rules as step 2 apply: no `'` or `\` in either value, and the `docker exec` client environment holds the current password while the command runs.
 
 ### 2. PostgreSQL Password Rotation
 

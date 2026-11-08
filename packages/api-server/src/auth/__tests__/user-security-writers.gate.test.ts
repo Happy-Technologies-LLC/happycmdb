@@ -308,6 +308,15 @@ describe('inventory gate 4: user-security property writers', () => {
     ['HAP-1663 a lowercase marker REMOVE', USERS, "'MATCH (u:User {_id: $id}) remove u.seedProvenance'"],
     ['HAP-1663 the marker as the second REMOVE item', USERS, "'MATCH (u:User {_id: $id}) REMOVE u.name, u.seedProvenance'"],
     ['HAP-1663 a marker REMOVE with spaces around the dot', USERS, "'MATCH (u:User {_id: $id}) REMOVE u . seedProvenance'"],
+    // HAP-1673: the rows below passed the gate before HAP-1673.
+    ['HAP-1673 P1 a user created with an organization', USERS, "'CREATE (u:User {_id: $id, _organizationId: $org})'"],
+    ['HAP-1673 P2 a GDS write procedure', USERS, "\"CALL gds.pageRank.write('g', {writeProperty: 'platformAdmin'})\""],
+    ['HAP-1673 P3 a user created with an & label expression', USERS, "'CREATE (u:Admin&User {_id: $id, scopes: $s})'"],
+    ['HAP-1673 P3 an & label user built from a parameter map', USERS, "'CREATE (u:Admin&User $props)'"],
+    ['HAP-1673 P4 a password hash REMOVE', USERS, "'MATCH (u:User {_id: $id}) REMOVE u._passwordHash'"],
+    ['HAP-1673 P6 a REMOVE after a backticked name with a space', USERS, "'MATCH (n {_id: $id}) REMOVE n.`full name`, n.scopes'"],
+    ['HAP-1673 P6 a REMOVE through a parenthesised variable', USERS, "'MATCH (n {_id: $id}) REMOVE (n).scopes'"],
+    ['HAP-1673 I1 an uppercase marker setter', USERS, "'MATCH (u:User {_id: $id}) SET u.defaultPasswordSuspect = TRUE'"],
   ])('fails on %s', (_label, file, line) => {
     expect(violations(new Map([[file, line]]))).not.toEqual([]);
   });
@@ -328,6 +337,11 @@ describe('inventory gate 4: user-security property writers', () => {
     ['a non-user map write', "'CREATE (bs:BusinessService) SET bs = $props'"],
     ['read-only APOC calls (restore-neo4j.sh:256, graph-traversal.ts:180)',
       "\"CALL apoc.cypher.run('MATCH (n) RETURN count(n) AS c', {}) YIELD value RETURN apoc.convert.fromJsonMap(value.c)\""],
+    ['TypeScript `: User` annotations (HAP-1673)',
+      'function toUser(row: Row, passwordHash: string): User { const user: User = { ...row, scopes: [] }, n = 1; return user; }'],
+    ['an `X & User` intersection named by a module-level alias, beside a :User statement (HAP-1673)',
+      "type AdminUser = Admin & User;\nconst Q = 'MATCH (u:User {_id: $id}) RETURN u';\n" +
+      'function grant(u: AdminUser, scopes: string[]): AdminUser { return { ...u, scopes }; }'],
   ])('stays clean on %s', (_label, line) => {
     expect(violations(new Map([[USERS, line]]))).toEqual([]);
   });

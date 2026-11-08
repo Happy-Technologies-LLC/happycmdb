@@ -25,6 +25,7 @@ import {
   validate,
   ciIncarnationId,
   parseStoredMetadata,
+  logger,
 } from '@cmdb/common';
 import { analyticsResolvers } from './analytics.resolver';
 import { connectorResolvers } from './connector.resolvers';
@@ -207,8 +208,9 @@ async function requireCIInOrganization(context: GraphQLContext, id: string, orga
   try {
     ci = await context._loaders._ciLoader.load(ciKey(id, organizationId));
   } catch (error: any) {
+    logger.error('GraphQL: Error fetching CI', error);
     throw new GraphQLError('Failed to fetch CI', {
-      extensions: { code: 'INTERNAL_SERVER_ERROR', originalError: error.message },
+      extensions: { code: 'INTERNAL_SERVER_ERROR' },
     });
   }
   if (!ci) {

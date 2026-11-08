@@ -111,7 +111,7 @@ export class DriftImpactController {
       res.status(500).json({
         success: false,
         error: 'Failed to detect configuration drift',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -158,7 +158,7 @@ export class DriftImpactController {
       res.status(500).json({
         success: false,
         error: 'Failed to retrieve drift history',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -210,7 +210,7 @@ export class DriftImpactController {
       res.status(500).json({
         success: false,
         error: 'Failed to create baseline snapshot',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -253,7 +253,7 @@ export class DriftImpactController {
       res.status(500).json({
         success: false,
         error: 'Failed to approve baseline snapshot',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -299,7 +299,7 @@ export class DriftImpactController {
       res.status(500).json({
         success: false,
         error: 'Failed to retrieve approved baseline',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -347,7 +347,7 @@ export class DriftImpactController {
       res.status(500).json({
         success: false,
         error: 'Failed to predict change impact',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -394,7 +394,7 @@ export class DriftImpactController {
       res.status(500).json({
         success: false,
         error: 'Failed to build dependency graph',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -433,7 +433,7 @@ export class DriftImpactController {
       res.status(500).json({
         success: false,
         error: 'Failed to retrieve criticality score',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -473,7 +473,7 @@ export class DriftImpactController {
       res.status(500).json({
         success: false,
         error: 'Failed to retrieve impact history',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }

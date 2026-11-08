@@ -103,7 +103,7 @@ export class RelationshipController {
       res.status(500).json({
         success: false,
         error: 'Failed to list relationships',
-        message: error instanceof Error ? error.message : 'Unknown error'
+        message: 'Internal error'
       });
     }
   }
@@ -351,7 +351,7 @@ export class RelationshipController {
       res.status(500).json({
         success: false,
         error: 'Failed to retrieve relationships',
-        message: error instanceof Error ? error.message : 'Unknown error'
+        message: 'Internal error'
       });
     }
   }

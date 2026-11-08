@@ -170,7 +170,7 @@ export class AIPatternController {
       res.status(500).json({
         success: false,
         error: 'Failed to list patterns',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -202,7 +202,7 @@ export class AIPatternController {
       res.status(500).json({
         success: false,
         error: 'Failed to get pattern',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -234,7 +234,7 @@ export class AIPatternController {
       res.status(500).json({
         success: false,
         error: 'Failed to delete pattern',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -265,7 +265,7 @@ export class AIPatternController {
       res.status(500).json({
         success: false,
         error: 'Failed to submit pattern',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -292,7 +292,7 @@ export class AIPatternController {
       res.status(500).json({
         success: false,
         error: 'Failed to approve pattern',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -320,7 +320,7 @@ export class AIPatternController {
       res.status(500).json({
         success: false,
         error: 'Failed to reject pattern',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -346,7 +346,7 @@ export class AIPatternController {
       res.status(500).json({
         success: false,
         error: 'Failed to activate pattern',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -373,7 +373,7 @@ export class AIPatternController {
       res.status(500).json({
         success: false,
         error: 'Failed to deactivate pattern',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -444,7 +444,7 @@ export class AIPatternController {
       res.status(500).json({
         success: false,
         error: 'Failed to validate pattern',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -488,7 +488,7 @@ export class AIPatternController {
       res.status(500).json({
         success: false,
         error: 'Failed to get pattern usage',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -522,7 +522,7 @@ export class AIPatternController {
       res.status(500).json({
         success: false,
         error: 'Failed to get pattern history',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -546,7 +546,7 @@ export class AIPatternController {
       res.status(500).json({
         success: false,
         error: 'Failed to compile patterns',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -656,7 +656,7 @@ export class AIPatternController {
       res.status(500).json({
         success: false,
         error: 'Failed to list sessions',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -696,7 +696,7 @@ export class AIPatternController {
       res.status(500).json({
         success: false,
         error: 'Failed to get session',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -735,7 +735,7 @@ export class AIPatternController {
       res.status(500).json({
         success: false,
         error: 'Failed to analyze session',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -861,7 +861,7 @@ export class AIPatternController {
       res.status(500).json({
         success: false,
         error: 'Failed to get cost analytics',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -921,7 +921,7 @@ export class AIPatternController {
       res.status(500).json({
         success: false,
         error: 'Failed to get learning stats',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }

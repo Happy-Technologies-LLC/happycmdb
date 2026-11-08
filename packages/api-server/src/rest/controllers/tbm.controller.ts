@@ -98,7 +98,7 @@ export class TBMController {
       res.status(500).json({
         success: false,
         error: 'Failed to retrieve cost summary',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -157,7 +157,7 @@ export class TBMController {
       res.status(500).json({
         success: false,
         error: 'Failed to retrieve costs by tower',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -219,7 +219,7 @@ export class TBMController {
         res.status(503).json(CI_LIST_UNAVAILABLE_RESPONSE);
         return;
       }
-      logger.error('Error getting costs by capability');
+      logger.error('Error getting costs by capability', { error: errorLogFields(error) });
       res.status(500).json({ success: false, error: 'Failed to retrieve costs by capability' });
     }
   }
@@ -282,7 +282,7 @@ export class TBMController {
         res.status(503).json(CI_LIST_UNAVAILABLE_RESPONSE);
         return;
       }
-      logger.error('Error getting costs by business service');
+      logger.error('Error getting costs by business service', { error: errorLogFields(error) });
       res.status(500).json({ success: false, error: 'Failed to retrieve costs by business service' });
     }
   }
@@ -382,7 +382,7 @@ export class TBMController {
       res.status(500).json({
         success: false,
         error: 'Failed to allocate costs',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -407,7 +407,7 @@ export class TBMController {
       res.status(500).json({
         success: false,
         error: 'Failed to retrieve cost allocations',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -523,7 +523,7 @@ export class TBMController {
       res.status(500).json({
         success: false,
         error: 'Failed to import GL data',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }

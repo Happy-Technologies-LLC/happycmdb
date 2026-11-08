@@ -466,7 +466,7 @@ describe('AIPatternController', () => {
       await controller.compileAndSubmitPatterns(req, res);
 
       expect(statusOf(res)).toBe(500);
-      expect(bodyOf(res)).toMatchObject({ success: false, message: 'compiler exploded' });
+      expect(bodyOf(res)).toMatchObject({ success: false, message: 'Internal error' });
     });
   });
 

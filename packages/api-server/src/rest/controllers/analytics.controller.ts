@@ -38,7 +38,7 @@ export class AnalyticsController {
       res.status(500).json({
         success: false,
         error: 'Failed to retrieve CI counts',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -68,7 +68,7 @@ export class AnalyticsController {
       res.status(500).json({
         success: false,
         error: 'Failed to retrieve CI status counts',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -98,7 +98,7 @@ export class AnalyticsController {
       res.status(500).json({
         success: false,
         error: 'Failed to retrieve CI environment counts',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -129,7 +129,7 @@ export class AnalyticsController {
       res.status(500).json({
         success: false,
         error: 'Failed to retrieve relationship counts',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -199,7 +199,7 @@ export class AnalyticsController {
       res.status(500).json({
         success: false,
         error: 'Failed to retrieve discovery statistics',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -252,7 +252,7 @@ export class AnalyticsController {
       res.status(500).json({
         success: false,
         error: 'Failed to retrieve discovery timeline',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -416,7 +416,7 @@ export class AnalyticsController {
       res.status(500).json({
         success: false,
         error: 'Failed to retrieve relationship matrix',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -615,7 +615,7 @@ export class AnalyticsController {
       res.status(500).json({
         success: false,
         error: 'Failed to retrieve dashboard statistics',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     } finally {
       await session.close();

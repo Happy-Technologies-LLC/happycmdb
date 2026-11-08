@@ -186,7 +186,7 @@ export class ITILController {
       res.status(500).json({
         success: false,
         error: 'Failed to retrieve CI history',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -304,7 +304,7 @@ export class ITILController {
       res.status(500).json({
         success: false,
         error: 'Failed to create incident',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -371,7 +371,7 @@ export class ITILController {
       res.status(500).json({
         success: false,
         error: 'Failed to retrieve incidents',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -404,7 +404,7 @@ export class ITILController {
       res.status(500).json({
         success: false,
         error: 'Failed to retrieve incident',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -473,7 +473,7 @@ export class ITILController {
       res.status(500).json({
         success: false,
         error: 'Failed to update incident',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -516,7 +516,7 @@ export class ITILController {
       res.status(500).json({
         success: false,
         error: 'Failed to resolve incident',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -549,7 +549,7 @@ export class ITILController {
       res.status(500).json({
         success: false,
         error: 'Failed to retrieve incident priority',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -638,7 +638,7 @@ export class ITILController {
       res.status(500).json({
         success: false,
         error: 'Failed to create change request',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -709,7 +709,7 @@ export class ITILController {
       res.status(500).json({
         success: false,
         error: 'Failed to retrieve changes',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -742,7 +742,7 @@ export class ITILController {
       res.status(500).json({
         success: false,
         error: 'Failed to retrieve change',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -820,7 +820,7 @@ export class ITILController {
       res.status(500).json({
         success: false,
         error: 'Failed to update change',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -859,7 +859,7 @@ export class ITILController {
       res.status(500).json({
         success: false,
         error: 'Failed to assess change risk',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -899,7 +899,7 @@ export class ITILController {
       res.status(500).json({
         success: false,
         error: 'Failed to approve change',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -941,7 +941,7 @@ export class ITILController {
       res.status(500).json({
         success: false,
         error: 'Failed to implement change',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -995,7 +995,7 @@ export class ITILController {
       res.status(500).json({
         success: false,
         error: 'Failed to close change',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -1079,7 +1079,7 @@ export class ITILController {
       res.status(500).json({
         success: false,
         error: 'Failed to create baseline',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -1102,7 +1102,7 @@ export class ITILController {
       res.status(500).json({
         success: false,
         error: 'Failed to retrieve baselines',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -1135,7 +1135,7 @@ export class ITILController {
       res.status(500).json({
         success: false,
         error: 'Failed to retrieve baseline',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -1165,7 +1165,7 @@ export class ITILController {
       res.status(500).json({
         success: false,
         error: 'Failed to delete baseline',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -1204,7 +1204,7 @@ export class ITILController {
       res.status(500).json({
         success: false,
         error: 'Failed to compare to baseline',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -1307,7 +1307,7 @@ export class ITILController {
       res.status(500).json({
         success: false,
         error: 'Failed to retrieve incident summary',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -1340,7 +1340,7 @@ export class ITILController {
       res.status(500).json({
         success: false,
         error: 'Failed to retrieve change success rate',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -1370,7 +1370,7 @@ export class ITILController {
       res.status(500).json({
         success: false,
         error: 'Failed to retrieve MTTR',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -1408,7 +1408,7 @@ export class ITILController {
       res.status(500).json({
         success: false,
         error: 'Failed to retrieve MTBF',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }

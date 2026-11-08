@@ -110,7 +110,6 @@ export const UserProfile: React.FC = () => {
       });
       passwordForm.reset();
       setSuccessMessage('Password changed. All other sessions and all your API keys have been revoked; this device stays signed in.');
-      setTimeout(() => setSuccessMessage(null), 3000);
     } catch (error: any) {
       setErrorMessage(error.response?.data?.message || 'Failed to change password');
       setTimeout(() => setErrorMessage(null), 3000);

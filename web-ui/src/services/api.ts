@@ -3,7 +3,8 @@
 
 import axios, { AxiosError, AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios';
 import type { AuthToken, LoginCredentials, User } from '../types';
-import { redactAxiosError } from '../lib/redact-axios-error';
+import { AUTH_HEADER, attachSession, refreshSession } from '../lib/session';
+import { setToken } from '../utils/token';
 
 export interface UpdateProfileData {
   name?: string;
@@ -41,53 +42,33 @@ const apiClient: AxiosInstance = axios.create({
   },
 });
 
-// Request interceptor - add auth token
-apiClient.interceptors.request.use(
-  (config) => {
-    const token = localStorage.getItem('auth_token');
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
-    }
-    return config;
-  },
-  (error) => {
-    return Promise.reject(error);
-  }
-);
-
-// Response interceptor - handle errors
-apiClient.interceptors.response.use(
-  (response: AxiosResponse) => response,
-  async (error: AxiosError) => {
-    const isLoginRequest = error.config?.url?.includes('/auth/login');
-    if (error.response?.status === 401 && !isLoginRequest) {
-      // Token expired or invalid
-      localStorage.removeItem('auth_token');
-      localStorage.removeItem('user');
-      window.location.href = '/login';
-    }
-    return Promise.reject(redactAxiosError(error));
-  }
-);
+// Bearer from memory; a 401 renews the session once from the refresh cookie (HAP-1211 H2)
+attachSession(apiClient);
 
 // API Service class
 class ApiService {
   // Authentication
+  /** X-CMDB-Auth makes the server set the refresh cookie (HAP-1211 F2); the access token is held in memory. */
   async login(credentials: LoginCredentials): Promise<AuthToken> {
-    const response = await apiClient.post<{success: boolean; data: any}>('/auth/login', {
+    const response = await apiClient.post<{ success: boolean; data?: { _accessToken?: unknown; _expiresIn?: number } }>('/auth/login', {
       username: credentials.username,
       password: credentials.password,
-    });
+    }, { headers: AUTH_HEADER });
     return {
-      access_token: response.data.data._accessToken,
-      refresh_token: response.data.data._refreshToken,
-      expires_in: response.data.data._expiresIn,
+      access_token: setToken(response.data.data?._accessToken),
+      expires_in: response.data.data?._expiresIn ?? 0,
       token_type: 'Bearer',
     };
   }
 
+  /** Restores or renews the in-memory access token from the refresh cookie; rejects when the server refuses it. */
+  async refresh(): Promise<void> {
+    await refreshSession();
+  }
+
+  /** Expires the refresh cookie. The header is not required (operator ruling Q1); it is sent for a future guard. */
   async logout(): Promise<void> {
-    await apiClient.post('/auth/logout');
+    await apiClient.post('/auth/logout', undefined, { headers: AUTH_HEADER });
   }
 
   private mapUser(userData: RawUserPayload): User {
@@ -113,10 +94,10 @@ class ApiService {
     return this.mapUser(response.data.data);
   }
 
-  /** HAP-1285: the change ends every session; the server re-issues this one (new access token, new cmdb_rt cookie). */
+  /** HAP-1285: the change ends every session; the server re-issues this one (new access token, new refresh cookie). */
   async changePassword(data: ChangePasswordData): Promise<void> {
-    const response = await apiClient.put<{ success: boolean; data: { _accessToken: string } }>('/auth/password', data);
-    localStorage.setItem('auth_token', response.data.data._accessToken);
+    const response = await apiClient.put<{ success: boolean; data?: { _accessToken?: unknown } }>('/auth/password', data);
+    setToken(response.data.data?._accessToken);
   }
 
   async deleteAccount(): Promise<void> {

@@ -6,8 +6,9 @@ import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { expect, it } from 'vitest';
 const SRC = path.resolve(__dirname, '..');
-// Each sets Authorization from localStorage auth_token and sends a 401 to /login.
-const SHARED = ['lib/api-client.ts', 'services/api.ts', 'services/ci.service.ts', 'services/credential.service.ts'];
+// Each sets Authorization from the in-memory token and renews a 401 through lib/session.ts (HAP-1211 H2), whose own
+// client only calls POST /auth/refresh with the refresh cookie.
+const SHARED = ['lib/api-client.ts', 'lib/session.ts', 'services/api.ts', 'services/ci.service.ts', 'services/credential.service.ts'];
 // Existing offenders not fixed yet, one commented entry per file. Empty at 878f62d once the Agent views moved to
 // apiClient: the other candidates only call react-query refetch() or import axios types.
 const OFFENDERS: string[] = [];

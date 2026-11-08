@@ -5,6 +5,7 @@ import { inspect } from 'node:util';
 import axios, { AxiosError, AxiosHeaders } from 'axios';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { redactAxiosError } from './redact-axios-error';
+import { getToken, setToken } from '../utils/token';
 
 // Runtime-built, scanner-neutral token and body marker (HAP-1210 S3).
 const TOK = `H1210S3TOK${Date.now()}`;
@@ -34,7 +35,7 @@ const rejection = (call: () => Promise<unknown>) => call().then(() => { throw ne
 beforeEach(() => {
   status = 500;
   loc.href = '';
-  localStorage.setItem('auth_token', TOK);
+  setToken(TOK);
   vi.stubGlobal('location', loc);
 });
 
@@ -52,10 +53,10 @@ describe.each([
     expect(err.config?.headers.Authorization).toBeUndefined();
     expect([JSON.stringify(err), inspect(err, FULL), JSON.stringify(err.toJSON?.())].filter(leaks)).toEqual([]);
   });
-  it('a non-login 401 still clears the token and redirects to /login', async () => {
+  it('a non-login 401 whose renewal is refused clears the token and redirects to /login', async () => {
     status = 401;
     await rejection(call);
-    expect(localStorage.getItem('auth_token')).toBeNull();
+    expect(getToken()).toBeNull();
     expect(loc.href).toBe('/login');
   });
 });
@@ -65,7 +66,7 @@ describe('redactAxiosError', () => {
     status = 401;
     await rejection(() => api.login({ username: MARK } as never));
     expect(loc.href).toBe('');
-    expect(localStorage.getItem('auth_token')).toBe(TOK);
+    expect(getToken()).toBe(TOK);
     status = 200;
     await expect(apiClient.post('/x', { name: MARK })).resolves.toEqual({ status: 200 });
   });

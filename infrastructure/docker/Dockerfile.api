@@ -90,14 +90,16 @@ RUN npm run build
 WORKDIR /app/packages/identity-resolution
 RUN npm run build
 
-WORKDIR /app/packages/framework-integration
-RUN npm run build || echo "Warning: framework-integration build failed (non-critical)"
-
 WORKDIR /app/packages/itil-service-manager
-RUN npm run build || echo "Warning: itil-service-manager build failed (non-critical)"
+RUN npm run build
 
 WORKDIR /app/packages/tbm-cost-engine
-RUN npm run build || echo "Warning: tbm-cost-engine build failed (non-critical)"
+RUN npm run build
+
+# Built after itil-service-manager and tbm-cost-engine: it references both
+# (tsc composite references), so building it earlier fails with TS2307.
+WORKDIR /app/packages/framework-integration
+RUN npm run build
 
 WORKDIR /app/packages/api-server
 RUN npm run build
@@ -114,7 +116,7 @@ RUN apk add --no-cache dumb-init curl nmap nmap-scripts libcap
 
 # Create non-root user
 RUN addgroup -g 1001 -S nodejs && \
-    adduser -S nodejs -u 1001
+    adduser -S -G nodejs -u 1001 nodejs
 
 WORKDIR /app
 
@@ -133,7 +135,8 @@ RUN chown nodejs:nodejs /app
 
 # Give nmap capabilities for network scanning without full root
 # Note: OS detection (-O) still requires root, but basic scans will work
-RUN setcap cap_net_raw,cap_net_admin,cap_net_bind_service+eip /usr/bin/nmap || true
+RUN setcap cap_net_raw,cap_net_admin,cap_net_bind_service+eip /usr/bin/nmap \
+    || echo "WARNING: setcap failed; nmap has no file capabilities" >&2
 
 # Switch to non-root user
 USER nodejs

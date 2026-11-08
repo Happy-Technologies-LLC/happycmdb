@@ -1,0 +1,14 @@
+# Applies to every Docker build whose context is the repo root (api, web,
+# discovery, etl; deploy/build01-staging.compose.yml, infrastructure/docker/
+# docker-compose.yml, tests/e2e/docker-compose.e2e.yml). Works on the legacy
+# builder too, unlike a per-Dockerfile <name>.dockerignore (BuildKit only).
+#
+# Keep out untracked host files that must never reach an image. Do NOT ignore
+# dist: Dockerfile.discovery and Dockerfile.etl COPY packages/*/dist from the host.
+.git
+**/node_modules
+**/.env*
+**/*.log
+**/logs
+# composite TS projects: a stale host tsbuildinfo without dist makes tsc skip emit
+**/*.tsbuildinfo

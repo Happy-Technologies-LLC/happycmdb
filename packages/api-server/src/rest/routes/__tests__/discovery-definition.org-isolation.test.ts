@@ -397,6 +397,21 @@ test('credential-shaped targets are refused on write and quarantined on read and
     .toEqual({ targets: [target] });
 });
 
+test('HAP-755: a stored non-object config reads as {} on get and list, never a 500, and the row is not rewritten', async () => {
+  const [scalar, encoded, secret] = ['dddddddd-dddd-4ddd-8ddd-000000000755', 'dddddddd-dddd-4ddd-8ddd-000000000756', 'Synth3tic755'];
+  await query(`INSERT INTO discovery_definitions (id, name, provider, method, config, created_by, organization_id)
+    VALUES ($1, 'scalar', 'nmap', 'agentless', $2::jsonb, 'a', $5), ($3, 'encoded', 'nmap', 'agentless', $4::jsonb, 'a', $5)`,
+  [scalar, JSON.stringify(`root:${secret}@10.0.0.5`), encoded, JSON.stringify(JSON.stringify({ targets: ['192.0.2.7'] })), ORG_A]);
+  const detail = await request(app).get(`${url}/${scalar}`).set(headers('viewer'));
+  const listed = await request(app).get(url).set(headers('viewer'));
+  expect([detail.status, listed.status, detail.body.data?.config]).toEqual([200, 200, {}]);
+  const config = (id: string) => listed.body.data.find((row: { id: string }) => row.id === id).config;
+  expect([config(scalar), config(encoded)]).toEqual([{}, { targets: ['192.0.2.7'] }]);
+  expect(JSON.stringify([detail.body, listed.body, jest.mocked(logger.error).mock.calls])).not.toContain(secret);
+  expect((await query('SELECT config FROM discovery_definitions WHERE id = $1', [scalar])).rows[0].config).toBe(`root:${secret}@10.0.0.5`);
+  await query('DELETE FROM discovery_definitions WHERE id = ANY($1)', [[scalar, encoded]]);
+});
+
 const sshDefinition = (user: string, credential_id: string, config?: object) => request(app).post(url).set(headers(user))
   .send({ name: `ssh-${randomBytes(4).toString('hex')}`, provider: 'ssh', method: 'agentless', credential_id, config });
 const definitionRows = async () => (await query('SELECT id, provider, credential_id, config FROM discovery_definitions ORDER BY id')).rows;

@@ -26,13 +26,14 @@ vi.mock('axios', () => ({
 }));
 
 import { api } from './api';
+import { getToken, setToken } from '../utils/token';
 
 describe('ApiService login', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('sends the backend credential field names', async () => {
+  it('sends the backend credential field names and X-CMDB-Auth: 1, the only login that gets the refresh cookie (HAP-1211 F2)', async () => {
     request.post.mockResolvedValue({
-      data: { data: { _accessToken: 'access', _refreshToken: 'refresh', _expiresIn: 3600 } },
+      data: { data: { _accessToken: 'access', _expiresIn: 3600 } },
     });
 
     await api.login({ username: 'admin', password: 'password123' });
@@ -40,23 +41,34 @@ describe('ApiService login', () => {
     expect(request.post).toHaveBeenCalledWith('/auth/login', {
       username: 'admin',
       password: 'password123',
-    });
+    }, { headers: { 'X-CMDB-Auth': '1' } });
   });
 });
 
-describe('ApiService changePassword (HAP-1285)', () => {
-  beforeEach(() => vi.clearAllMocks());
+describe('ApiService changePassword (HAP-1285, HAP-1211 H2)', () => {
+  const before = `before-${crypto.randomUUID()}`;
+  const passwords = { currentPassword: crypto.randomUUID(), newPassword: crypto.randomUUID() };
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setToken(before);
+  });
 
-  it('keeps this device signed in: the re-issued access token replaces the stored one', async () => {
-    const before = `before-${crypto.randomUUID()}`;
+  it('keeps this device signed in: the re-issued access token replaces the in-memory one, never Web Storage', async () => {
     const reissued = `reissued-${crypto.randomUUID()}`;
-    localStorage.setItem('auth_token', before);
     request.put.mockResolvedValue({ data: { success: true, data: { _accessToken: reissued, _expiresIn: 900 } } });
-    const passwords = { currentPassword: crypto.randomUUID(), newPassword: crypto.randomUUID() };
 
     await api.changePassword(passwords);
 
     expect(request.put).toHaveBeenCalledWith('/auth/password', passwords);
-    expect(localStorage.getItem('auth_token')).toBe(reissued);
+    expect(getToken()).toBe(reissued);
+    expect(localStorage.getItem('auth_token')).toBeNull();
+  });
+
+  it('a 200 without an access token fails and keeps the current token (never stores "undefined")', async () => {
+    request.put.mockResolvedValue({ data: { success: true, data: {} } });
+
+    await expect(api.changePassword(passwords)).rejects.toThrow();
+
+    expect(getToken()).toBe(before);
   });
 });

@@ -75,7 +75,7 @@ created in, so they stop authenticating (`401`), are listed by `GET /api/auth/ap
 `_enabled: false`, and must be recreated. The changing device stays signed in: the `200` response
 (message "Password changed. All other sessions and all your API keys have been revoked; this device
 stays signed in.") carries `data` (`_accessToken`, `_expiresIn`, `_user`, as login) and sets a new
-`cmdb_rt` cookie, whose 7-day cap starts at the change.
+`__Secure-cmdb_rt` cookie, whose 7-day cap starts at the change.
 
 **Platform administrators** are a dedicated flag, set only by the operator command
 `scripts/identity-window.ts grant-platform-admin`. Role `admin` and organization grant nothing. A
@@ -117,7 +117,7 @@ Authenticate with username/email and password to obtain JWT tokens.
   "success": true,
   "data": {
     "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiJ1c2VyLWFkbWluLTAwMSIsInVzZXJuYW1lIjoiYWRtaW4iLCJyb2xlIjoiYWRtaW4iLCJpYXQiOjE2OTk1NTY0MDAsImV4cCI6MTY5OTY0MjgwMH0.signature",
-    "expiresIn": 86400,
+    "expiresIn": 900,
     "tokenType": "Bearer",
     "user": {
       "_id": "user-admin-001",
@@ -131,7 +131,9 @@ Authenticate with username/email and password to obtain JWT tokens.
   }
 }
 ```
-The refresh token is not in the body: it is set as `cmdb_rt=<refresh JWT>; Max-Age=<refresh TTL>; Path=/api/v1/auth; HttpOnly; Secure; SameSite=Strict` (HAP-1211 H1). Browsers do not store a `Secure` cookie from plain `http://` other than `localhost`.
+The refresh token is not in the body: with the header `X-CMDB-Auth: 1` (exactly; the web UI sends it) it is set as `__Secure-cmdb_rt=<refresh JWT>; Max-Age=<refresh TTL>; Path=/api/v1/auth; HttpOnly; Secure; SameSite=Strict` (HAP-1211 H1, renamed from `cmdb_rt` in H2). A login without that header (scripts, the CLI, or a cross-site form, which cannot add a custom header) gets the same `200` body and **no cookie** (HAP-1211 H2, login CSRF): it cannot refresh and signs in again when the access token expires. Browsers do not store a `Secure` cookie from plain `http://` other than `localhost`, and never store a `__Secure-` cookie from plain `http://`.
+
+**Web UI session (HAP-1211 H2)**: the web UI holds the access token only in memory, never in `localStorage` or `sessionStorage`. A reload or a new tab restores the session with `POST /api/auth/refresh`, the UI renews the access token about a minute before it expires, and a logout in one tab signs out the other tabs of the same browser. **Cut-over**: the first load after the upgrade signs every web UI user out once, because a session saved by an older release (a `localStorage` token, or a `cmdb_rt` cookie) is not carried over; the server does not clear an old `cmdb_rt` cookie, which expires on its own and is never read. On plain `http://` (local development without TLS) the browser refuses the `__Secure-` cookie, so a reload there always asks you to sign in again.
 
 **Token Lifetimes**:
 - **Access Token**: 15 minutes by default (`JWT_ACCESS_TOKEN_EXPIRES_IN`)
@@ -146,7 +148,7 @@ The refresh token is not in the body: it is set as `cmdb_rt=<refresh JWT>; Max-A
 
 ### Refresh Token
 
-**Endpoint**: `POST /api/auth/refresh` with the header `X-CMDB-Auth: 1` (exactly). Exchanges the `cmdb_rt` cookie (the only token source; no body is read) for a new access token and a new `cmdb_rt` cookie (same attributes, full TTL: sliding, within the 7-day absolute cap from login).
+**Endpoint**: `POST /api/auth/refresh` with the header `X-CMDB-Auth: 1` (exactly). Exchanges the `__Secure-cmdb_rt` cookie (the only token source; no body is read) for a new access token and a new `__Secure-cmdb_rt` cookie (same attributes, full TTL: sliding, within the 7-day absolute cap from login).
 
 **Error Responses** (fixed bodies): `403 Forbidden` without `X-CMDB-Auth: 1`, checked first. `401 Unauthorized` when the cookie is missing, duplicated or malformed, or the token is invalid, expired, not a refresh token, of an older credential generation (HP1-S6, including after a self-service password change), more than 7 days past its login (HAP-1285; a refresh token issued before HAP-1285 carries no login time and is refused too), or its user is disabled.
 
@@ -154,7 +156,7 @@ The refresh token is not in the body: it is set as `cmdb_rt=<refresh JWT>; Max-A
 
 ### Logout
 
-**Endpoint**: `POST /api/auth/logout` → `{ "success": true, "message": "Logged out successfully" }`. Expires the `cmdb_rt` cookie (`Max-Age=0`, past `Expires`, same attributes); no header and no access token are required.
+**Endpoint**: `POST /api/auth/logout` → `{ "success": true, "message": "Logged out successfully" }`. Expires the `__Secure-cmdb_rt` cookie (`Max-Age=0`, past `Expires`, same attributes); no header and no access token are required.
 
 **Stateless** (founder decision, HAP-1211 H1b): logout only clears this browser's cookie. A refresh cookie captured before logout can still be renewed until 7 days after the login it came from (HAP-1285 absolute cap), or earlier when the user changes their password, an operator rotation changes the user's credential generation, or the account is disabled or deleted. The access token stays valid until it expires (15 minutes by default).
 
@@ -450,7 +452,7 @@ All authentication endpoints are rate-limited to prevent abuse.
 | Endpoint | Limit | Window |
 |----------|-------|--------|
 | `POST /api/auth/login` | 20 requests | 1 hour per IP |
-| `POST /api/auth/refresh` | 20 requests | 1 hour per IP |
+| `POST /api/auth/refresh` | The REST budget (`RATE_LIMIT_REST_MAX`, default 1000; `0` = unlimited) under its own key, so renewals never use up the login limit (HAP-1211 H2) | `RATE_LIMIT_REST_WINDOW_MS` (default 1 hour) per IP |
 | `POST /api/auth/api-key` | 10 requests | 1 hour per user |
 | Other endpoints | 1000 requests | 1 hour per user |
 
@@ -480,7 +482,7 @@ X-RateLimit-Reset: 1699642800
 
 ### For JWT Tokens
 
-1. **Store Securely**: Never store tokens in localStorage (XSS vulnerable). Use httpOnly cookies or sessionStorage.
+1. **Store Securely**: Never store tokens in localStorage or sessionStorage (any script on the page can read them). Keep the access token in memory and the refresh token in the httpOnly cookie.
 2. **HTTPS Only**: Always use HTTPS in production to prevent token interception.
 3. **Token Expiration**: Implement automatic token refresh before expiration.
 4. **Logout**: Implement proper logout to clear tokens from client.
@@ -516,8 +518,8 @@ Passwords must meet these criteria:
 ### Web Application Flow
 
 1. User enters credentials on login page
-2. Frontend calls `POST /api/auth/login`
-3. Keep `accessToken` in memory; the server sets the refresh token as the `cmdb_rt` HttpOnly cookie
+2. Frontend calls `POST /api/auth/login` with `X-CMDB-Auth: 1` (without it no refresh cookie is set)
+3. Keep `accessToken` in memory; the server sets the refresh token as the `__Secure-cmdb_rt` HttpOnly cookie
 4. Include `accessToken` in Authorization header for all API calls
 5. Before token expiry, call `POST /api/auth/refresh` with `X-CMDB-Auth: 1` (the browser sends the cookie)
 6. On logout, call `POST /api/auth/logout` (expires the cookie) and discard the access token
@@ -533,7 +535,7 @@ Passwords must meet these criteria:
 
 1. User authenticates with `POST /api/auth/login`
 2. Store `accessToken` in secure storage (Keychain/Keystore)
-3. Keep the `cmdb_rt` cookie from the login response in encrypted secure storage
+3. Log in with `X-CMDB-Auth: 1` and keep the `__Secure-cmdb_rt` cookie from the response in encrypted secure storage
 4. Implement background token refresh
 5. Clear tokens on logout
 
@@ -543,7 +545,7 @@ Passwords must meet these criteria:
 
 ### "Invalid or expired token"
 
-**Cause**: Access token has expired (24-hour lifetime)
+**Cause**: Access token has expired (15-minute lifetime by default)
 
 **Solution**:
 1. Use refresh token to get new access token
@@ -551,7 +553,7 @@ Passwords must meet these criteria:
 
 **Example**:
 ```bash
-# Get new access token (cookie jar written by the login call with -c cookies.txt)
+# Get new access token (cookie jar written by a login call sent with -H "X-CMDB-Auth: 1" -c cookies.txt)
 curl -X POST "http://localhost:3000/api/v1/auth/refresh" -H "X-CMDB-Auth: 1" -b cookies.txt -c cookies.txt
 ```
 

@@ -1,11 +1,11 @@
 // Copyright 2026 Happy Technologies LLC
 // SPDX-License-Identifier: Apache-2.0
 
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '@services/api';
-import { isTokenExpired } from '../utils/token';
-import type { User, AuthState, LoginCredentials } from '../types';
+import { decodeToken, getToken, removeToken, subscribeToken } from '../utils/token';
+import type { AuthState, LoginCredentials } from '../types';
 import { logClientError } from '../utils/logger';
 
 interface AuthContextType extends AuthState {
@@ -29,6 +29,21 @@ interface AuthProviderProps {
   children: React.ReactNode;
 }
 
+const SIGNED_OUT: AuthState = { user: null, token: null, isAuthenticated: false, isLoading: false };
+/** Tabs of this origin tell each other about a logout (operator ruling D5). */
+const LOGOUT_CHANNEL = 'cmdb-auth';
+const LOGOUT_MESSAGE = 'logout';
+/** Renew the access token this long before it expires, so requests and the WebSocket never carry an expired one. */
+const RENEW_LEAD_MS = 60_000;
+/** Never renew sooner than this after a token arrives, so a malformed or zero-lifetime token cannot spin the endpoint. */
+const MIN_RENEW_MS = 30_000;
+/** setTimeout keeps its delay in a signed 32-bit integer; anything longer fires at once. */
+const MAX_TIMER_MS = 2 ** 31 - 1;
+
+/**
+ * HAP-1211 H2: the access token is held in memory (utils/token.ts) and the user only in this state; nothing goes
+ * to Web Storage. A reload or new tab restores the session from the httpOnly refresh cookie.
+ */
 export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const [state, setState] = useState<AuthState>({
     user: null,
@@ -36,66 +51,76 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     isAuthenticated: false,
     isLoading: true,
   });
+  const logoutChannel = useRef<BroadcastChannel | null>(null);
 
   const navigate = useNavigate();
 
-  // Initialize auth state from localStorage
+  // Every new access token (login, renewal, password change) reaches state.token, so useWebSocket reconnects with it.
+  useEffect(() => subscribeToken((token) => setState((prev) => ({ ...prev, token }))), []);
+
+  // Restore the session from the refresh cookie. A refused refresh (none, expired, past the HAP-1285 7-day cap) is
+  // final: signed out, no /auth/me, no retry.
   useEffect(() => {
-    const initializeAuth = async () => {
-      const token = localStorage.getItem('auth_token');
-      const userStr = localStorage.getItem('user');
-
-      if (token && userStr) {
-        if (isTokenExpired(token)) {
-          // Token is locally detectable as expired; reject immediately without
-          // calling getCurrentUser() and without ever marking the session authenticated.
-          localStorage.removeItem('auth_token');
-          localStorage.removeItem('user');
-          setState({
-            user: null,
-            token: null,
-            isAuthenticated: false,
-            isLoading: false,
-          });
-          return;
-        }
-
-        try {
-          // Do NOT optimistically mark the session as authenticated from the cached
-          // token/user. Keep isLoading:true (the initial state) while the server
-          // verifies the token, and only flip to authenticated once it succeeds.
-          const currentUser = await api.getCurrentUser();
-          setState({
-            user: currentUser,
-            token,
-            isAuthenticated: true,
-            isLoading: false,
-          });
-          localStorage.setItem('user', JSON.stringify(currentUser));
-        } catch (error) {
-          logClientError('Failed to refresh user:', error);
-          // Token is invalid, clear auth state
-          localStorage.removeItem('auth_token');
-          localStorage.removeItem('user');
-          setState({
-            user: null,
-            token: null,
-            isAuthenticated: false,
-            isLoading: false,
-          });
-        }
-      } else {
-        setState({
-          user: null,
-          token: null,
-          isAuthenticated: false,
-          isLoading: false,
-        });
+    let active = true;
+    // Pre-H2 copies of the bearer and the user are dropped unread (one forced sign-in at the cut-over, E8).
+    try {
+      localStorage.removeItem('auth_token');
+      localStorage.removeItem('user');
+    } catch {
+      // Storage unavailable: nothing to drop.
+    }
+    const restore = async () => {
+      try {
+        await api.refresh();
+        const user = await api.getCurrentUser();
+        if (active) setState({ user, token: getToken(), isAuthenticated: true, isLoading: false });
+      } catch (error) {
+        logClientError('Session restore failed', error);
+        removeToken();
+        if (active) setState(SIGNED_OUT);
       }
     };
 
-    initializeAuth();
+    restore();
+    return () => {
+      active = false;
+    };
   }, []);
+
+  // Renew before expiry. A failed renewal (refused, past the 7-day cap, rate-limited) ends the session, never retried.
+  // The delay comes from the server-issued lifetime (exp - iat), never exp against this browser's clock: a clock
+  // running ahead would see every fresh token as expired and renew it in a tight loop.
+  useEffect(() => {
+    const claims = state.isAuthenticated && state.token ? decodeToken(state.token) : null;
+    if (!claims?.exp || !claims.iat) return undefined;
+    const lifetime = (claims.exp - claims.iat) * 1000;
+    const delay = Math.min(Math.max(lifetime - RENEW_LEAD_MS, lifetime / 2, MIN_RENEW_MS), MAX_TIMER_MS);
+    const timer = setTimeout(() => {
+      api.refresh().catch((error) => {
+        logClientError('Session renewal failed', error);
+        removeToken();
+        setState(SIGNED_OUT);
+      });
+    }, delay);
+    return () => clearTimeout(timer);
+  }, [state.isAuthenticated, state.token]);
+
+  // Another tab logged out: drop this tab's token too.
+  useEffect(() => {
+    if (typeof BroadcastChannel === 'undefined') return undefined;
+    const channel = new BroadcastChannel(LOGOUT_CHANNEL);
+    channel.onmessage = (event) => {
+      if (event.data !== LOGOUT_MESSAGE) return;
+      removeToken();
+      setState(SIGNED_OUT);
+      navigate('/login');
+    };
+    logoutChannel.current = channel;
+    return () => {
+      channel.close();
+      logoutChannel.current = null;
+    };
+  }, [navigate]);
 
   const login = useCallback(async (credentials: LoginCredentials) => {
     try {
@@ -106,12 +131,9 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       // LoginForm's local error state before a failure alert could render.
       // LoginForm tracks its own `isSubmitting` state for submit-button feedback.
 
+      // Stores the access token in memory; the server sets the refresh cookie.
       const authToken = await api.login(credentials);
-      localStorage.setItem('auth_token', authToken.access_token);
-
-      // Fetch user data
       const user = await api.getCurrentUser();
-      localStorage.setItem('user', JSON.stringify(user));
 
       setState({
         user,
@@ -122,12 +144,8 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
 
       navigate('/');
     } catch (error) {
-      setState({
-        user: null,
-        token: null,
-        isAuthenticated: false,
-        isLoading: false,
-      });
+      removeToken();
+      setState(SIGNED_OUT);
       throw error;
     }
   }, [navigate]);
@@ -138,14 +156,9 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     } catch (error) {
       logClientError('Logout error:', error);
     } finally {
-      localStorage.removeItem('auth_token');
-      localStorage.removeItem('user');
-      setState({
-        user: null,
-        token: null,
-        isAuthenticated: false,
-        isLoading: false,
-      });
+      logoutChannel.current?.postMessage(LOGOUT_MESSAGE);
+      removeToken();
+      setState(SIGNED_OUT);
       navigate('/login');
     }
   }, [navigate]);
@@ -154,7 +167,6 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     try {
       const user = await api.getCurrentUser();
       setState((prev) => ({ ...prev, user }));
-      localStorage.setItem('user', JSON.stringify(user));
     } catch (error) {
       logClientError('Failed to refresh user:', error);
       throw error;

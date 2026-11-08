@@ -110,17 +110,18 @@ Implement these endpoints in your backend:
 
 ### Authentication
 ```
-POST   /api/v1/auth/login           - { username, password } → { _accessToken, _expiresIn, _user } + cmdb_rt cookie
-POST   /api/v1/auth/refresh         - cmdb_rt cookie + X-CMDB-Auth: 1 → new access token + new cmdb_rt (full TTL, sliding); refused 7 days after the login (HAP-1285 absolute cap)
-POST   /api/v1/auth/logout          - (no header, no session) → expires only this browser's cmdb_rt; stateless (captured cookies stay renewable within the 7-day cap, see Logout)
+POST   /api/v1/auth/login           - { username, password } (+ X-CMDB-Auth: 1 for the cookie) → { _accessToken, _expiresIn, _user } + __Secure-cmdb_rt cookie only with that header (HAP-1211 H2)
+POST   /api/v1/auth/refresh         - __Secure-cmdb_rt cookie + X-CMDB-Auth: 1 → new access token + new __Secure-cmdb_rt (full TTL, sliding); refused 7 days after the login (HAP-1285 absolute cap)
+POST   /api/v1/auth/logout          - (no header, no session) → expires only this browser's __Secure-cmdb_rt; stateless (captured cookies stay renewable within the 7-day cap, see Logout)
 GET    /api/v1/auth/me              - Get current user
 PUT    /api/v1/auth/profile         - { name, avatar }
-PUT    /api/v1/auth/password        - { currentPassword, newPassword } → ends every session and API key of the user; { _accessToken, _expiresIn, _user } + new cmdb_rt for this device (HAP-1285)
+PUT    /api/v1/auth/password        - { currentPassword, newPassword } → ends every session and API key of the user; { _accessToken, _expiresIn, _user } + new __Secure-cmdb_rt for this device (HAP-1285)
 DELETE /api/v1/auth/account         - Delete account
 ```
 
-The refresh token travels only in the `cmdb_rt` HttpOnly cookie (HAP-1211 H1); see
-[Refresh Token](../api/authentication.md#refresh-token) and [Logout](../api/authentication.md#logout).
+The refresh token travels only in the `__Secure-cmdb_rt` HttpOnly cookie (HAP-1211 H1, renamed from `cmdb_rt` in H2); the
+web UI keeps the 15-minute access token in memory only. See [Refresh Token](../api/authentication.md#refresh-token),
+[Logout](../api/authentication.md#logout) and the one-time sign-out at the H2 cut-over in [Login](../api/authentication.md#login).
 
 ### Settings
 ```
@@ -724,10 +725,10 @@ export const requireRole = (roles: string[]) => {
    - Navigate to `/login`
    - Enter credentials
    - Verify redirect to dashboard
-   - Verify token in localStorage
+   - Verify nothing is written to localStorage or sessionStorage (the access token stays in memory; HAP-1211 H2)
 
 2. **Test Protected Routes**:
-   - Clear localStorage
+   - Sign out, or open a private window (no refresh cookie)
    - Try accessing `/settings`
    - Verify redirect to `/login`
 
@@ -739,7 +740,7 @@ export const requireRole = (roles: string[]) => {
 4. **Test Logout**:
    - Click user menu > Logout
    - Verify redirect to `/login`
-   - Verify token removed from localStorage
+   - Verify a reload stays on `/login` (the refresh cookie is expired) and other open tabs are signed out
 
 5. **Test Token Expiration**:
    - Generate expired token

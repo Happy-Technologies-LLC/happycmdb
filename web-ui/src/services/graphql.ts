@@ -6,15 +6,16 @@ import { setContext } from '@apollo/client/link/context';
 import { onError } from '@apollo/client/link/error';
 import { gql } from '@apollo/client';
 import { logClientError, logger } from '@/utils/logger';
+import { getToken, removeToken } from '@/utils/token';
 
 // HTTP Link
 const httpLink = createHttpLink({
   uri: import.meta.env.VITE_GRAPHQL_URL || '/graphql',
 });
 
-// Auth Link - add token to headers
+// Auth Link - the in-memory access token (HAP-1211 H2), kept fresh by AuthContext's timed renewal
 const authLink = setContext((_, { headers }) => {
-  const token = localStorage.getItem('auth_token');
+  const token = getToken();
   return {
     headers: {
       ...headers,
@@ -32,8 +33,7 @@ const errorLink = onError(({ graphQLErrors, networkError }) => {
   if (networkError) {
     logClientError('GraphQL network error', networkError);
     if ('statusCode' in networkError && networkError.statusCode === 401) {
-      localStorage.removeItem('auth_token');
-      localStorage.removeItem('user');
+      removeToken();
       window.location.href = '/login';
     }
   }

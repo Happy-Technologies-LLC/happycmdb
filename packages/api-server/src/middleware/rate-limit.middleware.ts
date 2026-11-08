@@ -130,6 +130,15 @@ export class RateLimitMiddleware {
   }
 
   /**
+   * The configured budget of an endpoint type, for custom() under another key (HAP-1211 H2 ruling A: refresh uses
+   * the REST budget). A max of 0 means unlimited, as in limit(); custom() does not apply that rule, so callers skip it.
+   */
+  endpointBudget(endpointType: keyof ConfigSchema['rateLimit']['endpoints']): RateLimitConfig {
+    const { max, windowMs } = this.config.endpoints[endpointType];
+    return { _max: max, _windowMs: windowMs };
+  }
+
+  /**
    * Create custom rate limiter with specific config
    */
   custom(config: RateLimitConfig, keyPrefix = 'custom') {

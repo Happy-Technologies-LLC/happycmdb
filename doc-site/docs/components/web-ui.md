@@ -18,11 +18,10 @@ cd /path/to/happycmdb/web-ui
 # Install dependencies
 npm install
 
-# Create environment file
-cat > .env << EOF
-VITE_API_BASE_URL=http://localhost:3001
-VITE_GRAPHQL_URL=http://localhost:3001/graphql
-EOF
+# No API URL to configure: leave VITE_API_BASE_URL and VITE_GRAPHQL_URL unset.
+# The UI calls the relative /api/v1 and /graphql, and the dev server proxies both to the
+# API on http://localhost:3001, so the session stays same-origin. Cross-origin calls carry
+# no credentials, so the browser would never send or store the refresh cookie.
 
 # Start development server
 npm run dev

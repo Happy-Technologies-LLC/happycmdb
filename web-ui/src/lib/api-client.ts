@@ -6,7 +6,7 @@
  */
 
 import axios, { AxiosInstance, AxiosRequestConfig } from 'axios';
-import { redactAxiosError } from './redact-axios-error';
+import { attachSession } from './session';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api/v1';
 
@@ -22,29 +22,8 @@ class APIClient {
       },
     });
 
-    // Request interceptor for auth token
-    this.client.interceptors.request.use(
-      (config) => {
-        const token = localStorage.getItem('auth_token');
-        if (token) {
-          config.headers.Authorization = `Bearer ${token}`;
-        }
-        return config;
-      },
-      (error) => Promise.reject(error)
-    );
-
-    // Response interceptor for error handling
-    this.client.interceptors.response.use(
-      (response) => response,
-      (error) => {
-        if (error.response?.status === 401) {
-          localStorage.removeItem('auth_token');
-          window.location.href = '/login';
-        }
-        return Promise.reject(redactAxiosError(error));
-      }
-    );
+    // Bearer from memory; a 401 renews the session once from the refresh cookie (HAP-1211 H2)
+    attachSession(this.client);
   }
 
   async get<T>(url: string, config?: AxiosRequestConfig): Promise<T> {

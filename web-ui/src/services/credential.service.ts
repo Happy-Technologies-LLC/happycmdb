@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import axios, { AxiosInstance } from 'axios';
-import { redactAxiosError } from '../lib/redact-axios-error';
+import { attachSession } from '../lib/session';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api/v1';
 
@@ -251,26 +251,8 @@ class CredentialService {
       },
     });
 
-    // Add auth token interceptor
-    this.axiosInstance.interceptors.request.use((config) => {
-      const token = localStorage.getItem('auth_token');
-      if (token) {
-        config.headers.Authorization = `Bearer ${token}`;
-      }
-      return config;
-    });
-
-    // Add error interceptor
-    this.axiosInstance.interceptors.response.use(
-      (response) => response,
-      (error) => {
-        if (error.response?.status === 401) {
-          localStorage.removeItem('auth_token');
-          window.location.href = '/login';
-        }
-        return Promise.reject(redactAxiosError(error));
-      }
-    );
+    // Bearer from memory; a 401 renews the session once from the refresh cookie (HAP-1211 H2)
+    attachSession(this.axiosInstance);
   }
 
   // ============================================================================

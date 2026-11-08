@@ -1693,9 +1693,9 @@ curl http://localhost:3001/health
 - Select "Cached images and files"
 - Click "Clear data"
 
-# Check authentication token
-localStorage.getItem('auth_token')
-# If expired, log out and log back in
+# Check the session (the web UI keeps the access token in memory, not in localStorage; HAP-1211 H2)
+await fetch('/api/v1/auth/refresh', { method: 'POST', headers: { 'X-CMDB-Auth': '1' } }).then((r) => r.status)
+# 401: the session expired (or is past its 7-day cap): log back in
 ```
 
 #### 2. Charts Not Displaying
@@ -1756,8 +1756,10 @@ console.error(...);
 
 **Solution**:
 ```typescript
-// Check WebSocket connection in browser console (the upgrade needs the session's access token)
-const ws = new WebSocket('wss://happycmdb.example.com/ws', ['cmdb.v1', `bearer.${localStorage.getItem('auth_token')}`]);
+// Check WebSocket connection in browser console (the upgrade needs an access token; the web UI keeps it in memory,
+// so take a fresh one from the session's refresh cookie: HAP-1211 H2)
+const { data } = await (await fetch('/api/v1/auth/refresh', { method: 'POST', headers: { 'X-CMDB-Auth': '1' } })).json();
+const ws = new WebSocket('wss://happycmdb.example.com/ws', ['cmdb.v1', `bearer.${data._accessToken}`]);
 ws.onopen = () => console.log('✅ WebSocket connected');
 ws.onerror = (err) => console.error('❌ WebSocket error:', err);
 

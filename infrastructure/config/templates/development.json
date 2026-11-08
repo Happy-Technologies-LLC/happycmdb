@@ -54,7 +54,7 @@
   "auth": {
     "jwt": {
       "secret": "dev-secret-change-in-production-minimum-32-characters",
-      "accessTokenExpiresIn": "30m",
+      "accessTokenExpiresIn": "15m",
       "refreshTokenExpiresIn": "7d",
       "issuer": "happycmdb",
       "audience": "cmdb-api"

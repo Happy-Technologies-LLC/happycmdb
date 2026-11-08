@@ -7,6 +7,7 @@ import userEvent from '@testing-library/user-event';
 import { render } from '@/tests/utils/test-utils';
 import Login from './Login';
 import * as api from '@services/api';
+import { setToken } from '@/utils/token';
 import { mockApiHandlers } from '@/tests/mocks/handlers';
 
 // Mock the api module
@@ -14,6 +15,7 @@ vi.mock('@services/api', () => ({
   api: {
     login: vi.fn(),
     getCurrentUser: vi.fn(),
+    refresh: vi.fn(),
     logout: vi.fn(),
   },
 }));
@@ -32,9 +34,7 @@ vi.mock('react-router-dom', async () => {
   };
 });
 
-// Builds a syntactically valid JWT-shaped string with a future `exp` claim, since
-// AuthContext.initializeAuth now rejects locally-detectable-expired/malformed tokens
-// before ever calling getCurrentUser().
+// Builds a syntactically valid JWT-shaped string with a future `exp` claim, the shape the refresh endpoint issues.
 const createUnexpiredToken = (): string => {
   const header = btoa(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
   const payload = btoa(
@@ -47,6 +47,8 @@ describe('Login Page', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
+    // No refresh cookie: the session restore is refused (HAP-1211 H2).
+    vi.mocked(api.api.refresh).mockRejectedValue(new Error('no session'));
   });
 
   it('renders login form with all fields', async () => {
@@ -121,25 +123,13 @@ describe('Login Page', () => {
       });
     });
 
-    // Verify token is stored in localStorage
-    await waitFor(() => {
-      expect(localStorage.getItem('auth_token')).toBe('mock-token-12345');
-    });
-
-    // Verify user data is stored
-    await waitFor(() => {
-      const userData = localStorage.getItem('user');
-      expect(userData).toBeTruthy();
-      if (userData) {
-        const parsedUser = JSON.parse(userData);
-        expect(parsedUser.username).toBe('admin');
-      }
-    });
-
     // Verify navigation to home page
     await waitFor(() => {
       expect(mockNavigate).toHaveBeenCalledWith('/');
     });
+
+    // HAP-1211 H2: the token stays in memory and the user in React state; nothing reaches Web Storage.
+    expect([localStorage.length, sessionStorage.length]).toEqual([0, 0]);
   });
 
   it('displays error message with invalid credentials', async () => {
@@ -231,9 +221,10 @@ describe('Login Page', () => {
   });
 
   it('redirects authenticated users to home page', async () => {
-    // Set up authenticated state
-    localStorage.setItem('auth_token', createUnexpiredToken());
-    localStorage.setItem('user', JSON.stringify(mockApiHandlers.getCurrentUser.success));
+    // Set up authenticated state: the refresh cookie restores the session
+    vi.mocked(api.api.refresh).mockImplementation(async () => {
+      setToken(createUnexpiredToken());
+    });
 
     vi.mocked(api.api.getCurrentUser).mockResolvedValue(mockApiHandlers.getCurrentUser.success);
 

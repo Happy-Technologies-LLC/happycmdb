@@ -5,8 +5,9 @@ import { beforeEach, expect, it, onTestFinished, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import axios from 'axios';
 import type { InternalAxiosRequestConfig } from 'axios';
+import { setToken } from '../../utils/token';
 vi.mock('@happy-technologies/design-system', () => ({ Icon: () => null, Eyebrow: () => null }));
-// Built at runtime from neutral parts; it only has to round-trip from localStorage into the header.
+// Built at runtime from neutral parts; it only has to round-trip from the in-memory token store into the header.
 const SEEDED = ['h1234', 'agents', Date.now().toString(36)].join('-');
 const AGENTS = ['alpha', 'bravo'].map((n, i) => ({ id: n, agent_id: `agent-${n}`, hostname: `syn-${n}.example.invalid`, status: i ? 'offline' : 'active', provider_capabilities: ['nmap'], reachable_networks: ['10.0.0.0/8'], last_heartbeat_at: new Date().toISOString(), registered_at: new Date().toISOString(), total_jobs_completed: 1, total_jobs_failed: 0, total_cis_discovered: 0 }));
 const seen: InternalAxiosRequestConfig[] = [];
@@ -18,7 +19,7 @@ axios.defaults.adapter = async (config) => {
 };
 // apiClient copies axios.defaults (adapter included) when its module loads, so the views load after the adapter is set.
 const [{ AgentList }, { AgentDashboard }, { AgentSelector }] = await Promise.all([import('./AgentList'), import('./AgentDashboard'), import('./AgentSelector')]);
-beforeEach(() => { seen.length = 0; localStorage.setItem('auth_token', SEEDED); });
+beforeEach(() => { seen.length = 0; setToken(SEEDED); });
 const sent = (route: string) => seen.filter((c) => `${c.baseURL ?? ''}${c.url}` === `/api/v1${route}`);
 const expectAuthorized = async (route: string, count = 1) => {
   await waitFor(() => expect(sent(route).length).toBeGreaterThanOrEqual(count));

@@ -629,8 +629,9 @@ When technology changes:
 **Solutions:**
 1. Check WebSocket connection:
    ```javascript
-   // Browser console (the upgrade needs the session's access token; 401 without it)
-   new WebSocket('ws://localhost:3000/ws', ['cmdb.v1', `bearer.${localStorage.getItem('auth_token')}`])
+   // Browser console (the upgrade needs an access token, 401 without it; the web UI keeps it in memory: HAP-1211 H2)
+   const { data } = await (await fetch('/api/v1/auth/refresh', { method: 'POST', headers: { 'X-CMDB-Auth': '1' } })).json();
+   new WebSocket('ws://localhost:3000/ws', ['cmdb.v1', `bearer.${data._accessToken}`])
    ```
 
 2. Verify WebSocket service:

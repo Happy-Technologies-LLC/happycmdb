@@ -3,7 +3,10 @@
 
 /**
  * JWT Token utility functions
- * Handles token storage, retrieval, decoding, and validation
+ *
+ * HAP-1211 H2: the access token lives only in this module's memory, never in Web Storage, so a script injected
+ * into the origin cannot read a stored copy. A reload or a new tab restores it from the httpOnly refresh cookie
+ * (lib/session.ts). Subscribers (AuthContext, and through it useWebSocket) see every change.
  */
 
 import { logClientError } from './logger';
@@ -16,40 +19,38 @@ interface DecodedToken {
   exp: number;
 }
 
-const TOKEN_KEY = 'auth_token';
+type TokenListener = (token: string | null) => void;
 
-/**
- * Retrieves the JWT token from localStorage
- */
-export const getToken = (): string | null => {
-  try {
-    return localStorage.getItem(TOKEN_KEY);
-  } catch (error) {
-    logClientError('Token read failed', error);
-    return null;
-  }
+let accessToken: string | null = null;
+const listeners = new Set<TokenListener>();
+
+const publish = (next: string | null): void => {
+  accessToken = next;
+  listeners.forEach((listener) => listener(next));
 };
 
-/**
- * Stores the JWT token in localStorage
- */
-export const setToken = (token: string): void => {
-  try {
-    localStorage.setItem(TOKEN_KEY, token);
-  } catch (error) {
-    logClientError('Token store failed', error);
-  }
-};
+/** The current in-memory access token, or null when signed out. */
+export const getToken = (): string | null => accessToken;
 
 /**
- * Removes the JWT token from localStorage
+ * Replaces the access token with one the server issued. Anything but a non-empty string (a malformed 200) throws
+ * and leaves the current token in place.
  */
-export const removeToken = (): void => {
-  try {
-    localStorage.removeItem(TOKEN_KEY);
-  } catch (error) {
-    logClientError('Token remove failed', error);
-  }
+export const setToken = (token: unknown): string => {
+  if (typeof token !== 'string' || token.length === 0) throw new Error('Malformed access token');
+  publish(token);
+  return token;
+};
+
+/** Forgets the access token (sign-out, or a refused refresh). */
+export const removeToken = (): void => publish(null);
+
+/** Calls `listener` on every token change until the returned unsubscribe runs. */
+export const subscribeToken = (listener: TokenListener): (() => void) => {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
 };
 
 /**

@@ -23,7 +23,8 @@ services:
     networks:
       - cmdb_network
     healthcheck:
-      test: ["CMD", "cypher-shell", "-u", "neo4j", "-p", "cmdb_password_dev", "RETURN 1"]
+      # HAP-1379: password from the container's NEO4J_AUTH at check time, passed via env (never argv; `$$` defers to the shell).
+      test: ["CMD-SHELL", "NEO4J_PASSWORD=\"$${NEO4J_AUTH#*/}\" cypher-shell -u neo4j 'RETURN 1'"]
       interval: 10s
       timeout: 5s
       retries: 5

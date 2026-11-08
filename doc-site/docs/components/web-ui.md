@@ -20,8 +20,8 @@ npm install
 
 # No API URL to configure: leave VITE_API_BASE_URL and VITE_GRAPHQL_URL unset.
 # The UI calls the relative /api/v1 and /graphql, and the dev server proxies both to the
-# API on http://localhost:3001, so sign-in (X-CMDB-Auth header, SameSite=Strict refresh
-# cookie) stays same-origin. A cross-origin API URL makes sign-in fail its CORS preflight.
+# API on http://localhost:3001, so the session stays same-origin. Cross-origin calls carry
+# no credentials, so the browser would never send or store the refresh cookie.
 
 # Start development server
 npm run dev

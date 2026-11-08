@@ -35,6 +35,10 @@ const LOGOUT_CHANNEL = 'cmdb-auth';
 const LOGOUT_MESSAGE = 'logout';
 /** Renew the access token this long before it expires, so requests and the WebSocket never carry an expired one. */
 const RENEW_LEAD_MS = 60_000;
+/** Never renew sooner than this after a token arrives, so a malformed or zero-lifetime token cannot spin the endpoint. */
+const MIN_RENEW_MS = 30_000;
+/** setTimeout keeps its delay in a signed 32-bit integer; anything longer fires at once. */
+const MAX_TIMER_MS = 2 ** 31 - 1;
 
 /**
  * HAP-1211 H2: the access token is held in memory (utils/token.ts) and the user only in this state; nothing goes
@@ -84,17 +88,20 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   }, []);
 
   // Renew before expiry. A failed renewal (refused, past the 7-day cap, rate-limited) ends the session, never retried.
+  // The delay comes from the server-issued lifetime (exp - iat), never exp against this browser's clock: a clock
+  // running ahead would see every fresh token as expired and renew it in a tight loop.
   useEffect(() => {
-    const expiresAt = state.isAuthenticated && state.token ? decodeToken(state.token)?.exp : undefined;
-    if (!expiresAt) return undefined;
-    const left = expiresAt * 1000 - Date.now();
+    const claims = state.isAuthenticated && state.token ? decodeToken(state.token) : null;
+    if (!claims?.exp || !claims.iat) return undefined;
+    const lifetime = (claims.exp - claims.iat) * 1000;
+    const delay = Math.min(Math.max(lifetime - RENEW_LEAD_MS, lifetime / 2, MIN_RENEW_MS), MAX_TIMER_MS);
     const timer = setTimeout(() => {
       api.refresh().catch((error) => {
         logClientError('Session renewal failed', error);
         removeToken();
         setState(SIGNED_OUT);
       });
-    }, Math.max(left - RENEW_LEAD_MS, left / 2));
+    }, delay);
     return () => clearTimeout(timer);
   }, [state.isAuthenticated, state.token]);
 

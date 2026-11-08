@@ -3,7 +3,7 @@
 
 import axios, { AxiosError, AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios';
 import type { AuthToken, LoginCredentials, User } from '../types';
-import { AUTH_HEADER, attachSession, refreshSession } from '../lib/session';
+import { AUTH_HEADER, attachSession, endSession, refreshSession } from '../lib/session';
 import { setToken } from '../utils/token';
 
 export interface UpdateProfileData {
@@ -66,9 +66,12 @@ class ApiService {
     await refreshSession();
   }
 
-  /** Expires the refresh cookie. The header is not required (operator ruling Q1); it is sent for a future guard. */
+  /**
+   * Expires the refresh cookie, after any renewal in flight is answered (HAP-1211 H2). The header is not required
+   * (operator ruling Q1); it is sent for a future guard.
+   */
   async logout(): Promise<void> {
-    await apiClient.post('/auth/logout', undefined, { headers: AUTH_HEADER });
+    await endSession(() => apiClient.post('/auth/logout', undefined, { headers: AUTH_HEADER }));
   }
 
   private mapUser(userData: RawUserPayload): User {

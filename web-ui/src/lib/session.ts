@@ -23,16 +23,41 @@ const SESSION_ENDPOINT = /\/auth\/(login|refresh|logout)$/;
 
 const renewal = axios.create({ baseURL: import.meta.env.VITE_API_BASE_URL || '/api/v1', timeout: 30000 });
 let inFlight: Promise<string> | null = null;
+// Bumped by every sign-out: a renewal started before it must not publish its token afterwards.
+let generation = 0;
+let ending: Promise<void> | null = null;
 
 /** Exchanges the refresh cookie for a new in-memory access token. Concurrent callers share one request. */
 export function refreshSession(): Promise<string> {
+  if (ending) return Promise.reject(new Error('Signing out'));
+  const startedIn = generation;
   inFlight ??= renewal
     .post<{ data?: { _accessToken?: unknown } }>('/auth/refresh', undefined, { headers: AUTH_HEADER })
-    .then((response) => setToken(response.data?.data?._accessToken), (error) => Promise.reject(redactAxiosError(error)))
+    .then((response) => {
+      if (startedIn !== generation) throw new Error('Signed out during the renewal');
+      return setToken(response.data?.data?._accessToken);
+    }, (error) => Promise.reject(redactAxiosError(error)))
     .finally(() => {
       inFlight = null;
     });
   return inFlight;
+}
+
+/**
+ * Signs out with `logout` (POST /auth/logout). A renewal in flight is answered first: its Set-Cookie cannot be undone
+ * by the client, so the logout's cookie expiry must come after it. Its token is never published, and no renewal
+ * starts until the logout is answered. Concurrent sign-outs share one logout.
+ */
+export function endSession(logout: () => Promise<unknown>): Promise<void> {
+  generation += 1;
+  ending ??= (inFlight ?? Promise.resolve(''))
+    .then(() => undefined, () => undefined)
+    .then(logout)
+    .then(() => undefined)
+    .finally(() => {
+      ending = null;
+    });
+  return ending;
 }
 
 type ReplayableConfig = InternalAxiosRequestConfig & { _sessionReplayed?: boolean };

@@ -114,9 +114,14 @@ paths:
     post:
       tags: [Authentication]
       summary: Authenticate user
-      description: Login with username and password to receive JWT token
+      description: >-
+        Login with username and password to receive a JWT access token. With X-CMDB-Auth: 1 (the web UI) the
+        response also sets the __Secure-cmdb_rt refresh cookie; without it (scripts, a cross-site form) there is no
+        cookie (HAP-1211 H2, login CSRF).
       operationId: login
       security: []
+      parameters:
+        - { name: X-CMDB-Auth, in: header, required: false, schema: { type: string, enum: ['1'] } }
       requestBody:
         required: true
         content:
@@ -144,8 +149,9 @@ paths:
                     type: string
                     description: JWT access token
                   expiresIn:
-                    type: string
-                    example: 24h
+                    type: integer
+                    description: Access token lifetime in seconds (15 minutes by default)
+                    example: 900
                   user:
                     $ref: '#/components/schemas/User'
         '401':
@@ -168,14 +174,14 @@ paths:
   /auth/refresh:
     post:
       tags: [Authentication]
-      summary: Refresh an access token from the cmdb_rt cookie (no request body is read; HAP-1211 H1)
+      summary: Refresh an access token from the __Secure-cmdb_rt cookie (no request body is read; HAP-1211 H1)
       security: []
       parameters:
         - { name: X-CMDB-Auth, in: header, required: true, schema: { type: string, enum: ['1'] } }
-        - { name: cmdb_rt, in: cookie, required: true, schema: { type: string } }
+        - { name: __Secure-cmdb_rt, in: cookie, required: true, schema: { type: string } }
       responses:
         '200':
-          description: New access token in the body (no refresh token); Set-Cookie renews cmdb_rt with a full TTL (sliding, within the 7-day absolute cap from login; HAP-1285)
+          description: New access token in the body (no refresh token); Set-Cookie renews __Secure-cmdb_rt with a full TTL (sliding, within the 7-day absolute cap from login; HAP-1285)
         '403':
           description: X-CMDB-Auth missing or not exactly 1 (fixed body, checked first)
         '401':
@@ -196,11 +202,11 @@ paths:
   /auth/logout:
     post:
       tags: [Authentication]
-      summary: "Expire this browser's cmdb_rt (no header, no access token). Stateless: a captured cmdb_rt can be renewed by refresh until 7 days after its login (HAP-1285 absolute cap), or until a password change, operator rotation, disable or delete."
+      summary: "Expire this browser's __Secure-cmdb_rt (no header, no access token). Stateless: a captured __Secure-cmdb_rt can be renewed by refresh until 7 days after its login (HAP-1285 absolute cap), or until a password change, operator rotation, disable or delete."
       security: []
       responses:
         '200':
-          description: Set-Cookie expires cmdb_rt (Max-Age=0)
+          description: Set-Cookie expires __Secure-cmdb_rt (Max-Age=0)
 
   /auth/api-keys:
     post:
@@ -338,7 +344,7 @@ paths:
                   minLength: 8
       responses:
         '200':
-          description: Own password changed; data holds a new _accessToken, _expiresIn and _user (as login) and Set-Cookie sets a new cmdb_rt
+          description: Own password changed; data holds a new _accessToken, _expiresIn and _user (as login) and Set-Cookie sets a new __Secure-cmdb_rt
           content:
             application/json:
               schema:

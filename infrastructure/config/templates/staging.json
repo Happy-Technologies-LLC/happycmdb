@@ -48,7 +48,7 @@
   },
   "auth": {
     "jwt": {
-      "accessTokenExpiresIn": "30m",
+      "accessTokenExpiresIn": "15m",
       "refreshTokenExpiresIn": "7d",
       "issuer": "happycmdb",
       "audience": "cmdb-api"

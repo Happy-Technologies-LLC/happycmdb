@@ -85,6 +85,20 @@ const FORBIDDEN_KEY = new RegExp(['password', 'passwd', 'passphrase', '(^|[_.-])
   'api[_-]?key', 'access[_-]?key', 'private[_-]?key', 'ssh[_-]?key', 'credential', 'authorization', 'bearer', 'cookie',
   'session', 'jwt', 'pem', 'keytab', 'kubeconfig', 'community', 'dsn', 'connection[_-]?string'].join('|'), 'i');
 const BLOB_KEYS: Record<string, true> = { configuration: true, metadata: true };
+/**
+ * HAP-1625: credential words a key may hold anywhere, or only last (`key`: `encryption_key` but not `key_id`). A key's
+ * words split on every non-letter and on camelCase (`dbPass`, `APIKey`), lowercased, so `author` is not `auth`.
+ */
+const FORBIDDEN_WORDS: Record<string, true> = {
+  pass: true, passcode: true, auth: true, salt: true, setting: true, settings: true, config: true, configs: true,
+};
+const FORBIDDEN_LAST_WORDS: Record<string, true> = { key: true, keys: true };
+
+function hasForbiddenWord(key: string): boolean {
+  const words = key.replace(/([a-z])(?=[A-Z])|([A-Z])(?=[A-Z][a-z])/g, '$1$2 ').toLowerCase().split(/[^a-z]+/).filter(Boolean);
+  return words.some(word => FORBIDDEN_WORDS[word] === true) || FORBIDDEN_LAST_WORDS[words[words.length - 1] ?? ''] === true;
+}
+
 /** HappyHive ids are UUIDs; this also keeps `/` free for the service_ci composite key. */
 const SOURCE_ID = /^[A-Za-z0-9._:-]{1,120}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -93,7 +107,7 @@ function hasForbiddenKey(value: unknown): boolean {
   if (Array.isArray(value)) return value.some(hasForbiddenKey);
   if (value === null || typeof value !== 'object') return false;
   return Object.entries(value).some(([key, member]) =>
-    BLOB_KEYS[key.toLowerCase()] === true || FORBIDDEN_KEY.test(key) || hasForbiddenKey(member));
+    BLOB_KEYS[key.toLowerCase()] === true || FORBIDDEN_KEY.test(key) || hasForbiddenWord(key) || hasForbiddenKey(member));
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

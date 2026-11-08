@@ -514,7 +514,7 @@ export class DiscoveryDefinitionService {
       provider: row.provider,
       method: row.method,
       credential_id: row.credential_id,
-      config: publicDiscoveryDefinitionConfig(typeof row.config === 'string' ? JSON.parse(row.config) : row.config),
+      config: publicDiscoveryDefinitionConfig(row.config),
       schedule: row.schedule,
       is_active: row.is_active,
       tags: row.tags || [],

@@ -62,10 +62,10 @@ export function strictDiscoveryDefinitionConfig(input: unknown): SafeDiscoverySc
   }
 }
 
-/** Never project any part of unsafe historical JSON, including legacy aliases. */
+/** Never project any part of unsafe historical JSON, including legacy aliases; a stored non-JSON string reads as {}. */
 export function publicDiscoveryDefinitionConfig(input: unknown): SafeDiscoveryScanConfig {
   try {
-    return strictDiscoveryDefinitionConfig(input);
+    return strictDiscoveryDefinitionConfig(typeof input === 'string' ? JSON.parse(input) : input);
   } catch {
     return {};
   }

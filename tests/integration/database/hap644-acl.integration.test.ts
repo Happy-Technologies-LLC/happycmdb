@@ -90,6 +90,20 @@ if (process.env['HAP644_ACCEPTANCE'] !== '1') {
     });
   } else {
     describe('HAP-644 ACL after 032', () => {
+      // Runs first, on the untouched full chain (001..head): 001:2497 granted PUBLIC SELECT on every cmdb
+      // table, and only 033's dynamic per-relation loop revokes it. A grep for a literal REVOKE misses that loop.
+      it('full chain: PUBLIC holds SELECT on no cmdb relation (catalog ACL and information_schema)', async () => {
+        expect((await db.query(`SELECT to_regclass('cmdb.dim_time') IS NOT NULL AS present`)).rows[0].present)
+          .toBe(true);
+        const acl = await db.query(`SELECT c.oid::regclass::text AS relation
+          FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace CROSS JOIN LATERAL aclexplode(c.relacl) a
+          WHERE n.nspname = 'cmdb' AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
+            AND a.grantee = 0 AND a.privilege_type = 'SELECT' ORDER BY 1`);
+        expect(acl.rows.map((row) => row.relation)).toEqual([]);
+        const info = await db.query(`SELECT count(*)::int AS n FROM information_schema.role_table_grants
+          WHERE grantee = 'PUBLIC' AND table_schema = 'cmdb' AND privilege_type = 'SELECT'`);
+        expect(info.rows[0].n).toBe(0);
+      });
       it('upgrade, two-org BI reporting, owner app writes and audit inserts', async () => {
         await closed(db, 'hap644_nonowner', true);
         await db.query(`CREATE TABLE IF NOT EXISTS cmdb.schema_migrations

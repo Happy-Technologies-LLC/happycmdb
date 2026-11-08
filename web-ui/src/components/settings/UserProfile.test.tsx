@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 const { mockRefreshUser, mockLogout, mockUpdateProfile } = vi.hoisted(() => ({
@@ -89,5 +89,31 @@ describe('UserProfile avatar persistence', () => {
 
     const img = screen.getByTestId('avatar-preview') as HTMLImageElement;
     expect(img.src).toContain('data:image/png;base64,serverPersistedAfterSave');
+  });
+});
+
+describe('UserProfile password change (HAP-1285 review)', () => {
+  beforeEach(() => {
+    mockUser = { full_name: 'Alice Example', email: 'alice@example.com', avatar: undefined };
+  });
+
+  it('keeps the long "other sessions and API keys revoked" notice on screen past the 3 s auto-hide', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      render(<UserProfile />);
+      const next = `pw-${crypto.randomUUID()}`;
+      await user.type(screen.getByLabelText('Current Password'), `pw-${crypto.randomUUID()}`);
+      await user.type(screen.getByLabelText('New Password'), next);
+      await user.type(screen.getByLabelText('Confirm New Password'), next);
+      await user.click(screen.getByRole('button', { name: 'Change Password' }));
+      const notice = await screen.findByText(/API keys have been revoked/);
+
+      await act(async () => { vi.advanceTimersByTime(10_000); });
+
+      expect(notice).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

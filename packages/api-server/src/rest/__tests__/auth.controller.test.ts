@@ -19,6 +19,8 @@ import type { GuardedPasswordWrite, GuardedUserWrite } from '../../auth/auth.ser
 import { ValidationMiddleware } from '../middleware/validation.middleware';
 import { AuthMiddleware } from '../../middleware/auth.middleware';
 import { RateLimitMiddleware } from '../../middleware/rate-limit.middleware';
+import type { Redis } from 'ioredis';
+import type { ConfigSchema } from '@cmdb/common';
 import { PasswordService } from '../../auth/password.service';
 import { JWTService } from '../../auth/jwt.service';
 import { User, ApiKey } from '../../auth/types';
@@ -125,8 +127,11 @@ class InMemoryAuthRepository implements AuthRepository {
 
 /** A no-op rate limiter: profile/password/account routes don't apply it. */
 function fakeRateLimiter(): RateLimitMiddleware {
+  const pass = () => (_req: unknown, _res: unknown, next: () => void) => next();
   return {
-    limit: () => (_req: unknown, _res: unknown, next: () => void) => next(),
+    limit: pass,
+    custom: pass,
+    endpointBudget: () => ({ _max: 1, _windowMs: 1 }),
   } as unknown as RateLimitMiddleware;
 }
 
@@ -401,22 +406,34 @@ describe('AuthController profile/password/account routes', () => {
       expect(sensitive.filter(value => output.includes(value)).length).toBe(0);
     });
 
-    /** A real login of alice with a runtime-built password; its Set-Cookie is the browser jar's cmdb_rt. */
-    const login = async () => {
+    /** A real login of alice with a runtime-built password and, unless null, X-CMDB-Auth (the web-ui sends it). */
+    const login = async (header: string | null = AUTH_HEADER_VALUE) => {
       const pass = `pw-${randomUUID()}`;
       repository.users.get('user-1')!._passwordHash = await passwordService.hash(pass);
       sensitive.push(pass);
-      return request(app).post('/api/v1/auth/login').send({ username: 'alice', password: pass });
+      const call = request(app).post('/api/v1/auth/login');
+      if (header !== null) call.set(AUTH_HEADER, header);
+      return call.send({ username: 'alice', password: pass });
     };
 
-    it('login sets cmdb_rt (HttpOnly, Secure, SameSite=Strict, /api/v1/auth, refresh TTL) and no body refresh token', async () => {
+    it('login sets __Secure-cmdb_rt (HttpOnly, Secure, SameSite=Strict, /api/v1/auth, refresh TTL) and no body refresh token', async () => {
       const response = await login();
       expect(response.status).toBe(200);
       const cookie = refreshCookieOf(response);
       sensitive.push(cookie.value, response.body.data._accessToken);
+      expect(response.headers['set-cookie'][0]).toMatch(/^__Secure-cmdb_rt=/); // the wire name, written out
       expect(Object.keys(response.body.data).sort()).toEqual(['_accessToken', '_expiresIn', '_user']);
       expect(cookie.attributes).toEqual(cookieAttributes(jwtService.getTokenExpiresIn('refresh')));
       expect(jwtService.verifyToken(cookie.value)._type).toBe('refresh');
+    });
+
+    it('HAP-1211 F2: a login without exactly X-CMDB-Auth: 1 (all a cross-site form can send) gets the body token but no cookie', async () => {
+      for (const header of [null, '0']) {
+        const response = await login(header);
+        sensitive.push(response.body.data?._accessToken);
+        expect([response.status, Object.keys(response.body.data).sort(), response.headers['set-cookie']])
+          .toEqual([200, ['_accessToken', '_expiresIn', '_user'], undefined]);
+      }
     });
 
     it('refresh answers a fixed 403 without exactly X-CMDB-Auth: 1, before any token or store work', async () => {
@@ -432,13 +449,13 @@ describe('AuthController profile/password/account routes', () => {
       expect(verify).not.toHaveBeenCalled();
     });
 
-    it('refresh reads only one well-formed cmdb_rt cookie: none, malformed, duplicate, oversized or a body token is 401', async () => {
+    it('refresh reads only one well-formed __Secure-cmdb_rt: none, legacy cmdb_rt, malformed, duplicate, oversized or a body token is 401', async () => {
       const issued = jwtService.generateRefreshToken('user-1', 'alice', 'operator');
       const malformed = `bad-${randomUUID()}`;
       sensitive.push(issued, malformed);
       const lookups = jest.spyOn(repository, 'findUserById');
       for (const cookie of [
-        undefined, 'other=1', `${REFRESH_COOKIE}=${malformed}`, `${REFRESH_COOKIE}=${issued}; ${REFRESH_COOKIE}=${issued}`,
+        undefined, 'other=1', `cmdb_rt=${issued}`, `${REFRESH_COOKIE}=${malformed}`, `${REFRESH_COOKIE}=${issued}; ${REFRESH_COOKIE}=${issued}`,
         `${REFRESH_COOKIE}=${issued}; pad=${'p'.repeat(8192)}`,
       ]) {
         const response = await refresh(undefined, AUTH_HEADER_VALUE, cookie).send({ refreshToken: issued });
@@ -927,5 +944,72 @@ describe('AuthController profile/password/account routes', () => {
 
       expect(res.status).toBe(401);
     });
+  });
+});
+
+/** The sorted-set pipeline RateLimitMiddleware runs, in memory (no Redis). */
+function memoryRedis(): Redis {
+  const sets = new Map<string, number[]>();
+  const pipeline = () => {
+    const ops: Array<() => unknown> = [];
+    const chain = {
+      zremrangebyscore: (key: string, _min: string, max: string) => {
+        ops.push(() => sets.set(key, (sets.get(key) ?? []).filter(score => score > Number(max))));
+        return chain;
+      },
+      zcard: (key: string) => { ops.push(() => (sets.get(key) ?? []).length); return chain; },
+      zadd: (key: string, score: string) => {
+        ops.push(() => sets.set(key, [...(sets.get(key) ?? []), Number(score)]));
+        return chain;
+      },
+      expire: () => { ops.push(() => 1); return chain; },
+      exec: async () => ops.map(op => [null, op()]),
+    };
+    return chain;
+  };
+  return { pipeline } as unknown as Redis;
+}
+
+describe('HAP-1211 H2 ruling A: refresh has its own rate-limit bucket at the REST budget', () => {
+  const appWith = (authMax: number, restMax: number) => {
+    const rateLimit = {
+      enabled: true,
+      bypassHeader: 'X-RateLimit-Bypass',
+      tierMultipliers: { standard: 1, premium: 1, enterprise: 1 },
+      endpoints: { auth: { max: authMax, windowMs: 60_000 }, rest: { max: restMax, windowMs: 60_000 } },
+      monitoring: { enabled: false, logRateLimitHits: false },
+    } as unknown as ConfigSchema['rateLimit'];
+    const authService = new AuthService(authConfig as any, new InMemoryAuthRepository());
+    const controller = new AuthController(authService, new ValidationMiddleware(),
+      new AuthMiddleware(authService, authConfig as any), new RateLimitMiddleware(memoryRedis(), rateLimit));
+    const app = express();
+    app.use(express.json());
+    app.use('/api/v1/auth', controller.getRouter());
+    return app;
+  };
+  const statuses = async (count: number, call: () => request.Test) => {
+    const seen: number[] = [];
+    for (let i = 0; i < count; i++) seen.push((await call()).status);
+    return seen;
+  };
+  const refreshes = (app: express.Express, count: number) =>
+    statuses(count, () => request(app).post('/api/v1/auth/refresh').set(AUTH_HEADER, AUTH_HEADER_VALUE));
+  /** Failed logins of an unknown user, each with a fresh runtime-built password. */
+  const logins = (app: express.Express, count: number) => statuses(count, () => {
+    const password = randomUUID();
+    return request(app).post('/api/v1/auth/login').send({ username: 'nobody', password });
+  });
+
+  it.each([['a REST max of 10', 10], ['an unlimited REST max (0, addendum)', 0]])(
+    'with %s, refreshes past the login max never 429 and never use up login, which still 429s at its own max',
+    async (_label, restMax) => {
+      const app = appWith(2, restMax);
+      expect(await refreshes(app, 5)).toEqual([401, 401, 401, 401, 401]);
+      expect(await logins(app, 3)).toEqual([401, 401, 429]);
+    });
+
+  it('refresh 429s at the REST budget, under its own key', async () => {
+    const app = appWith(2, 3);
+    expect(await refreshes(app, 4)).toEqual([401, 401, 401, 429]);
   });
 });

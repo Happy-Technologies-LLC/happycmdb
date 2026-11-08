@@ -3,11 +3,12 @@
 
 import type React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, act } from '@testing-library/react';
+import { render, screen, waitFor, act, within, type RenderResult } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { AuthProvider, useAuth } from './AuthContext';
 import * as api from '@services/api';
 import { mockApiHandlers } from '@/tests/mocks/handlers';
+import { removeToken, setToken } from '../utils/token';
 import type { User } from '../types';
 
 // Mock the api module
@@ -16,6 +17,7 @@ vi.mock('@services/api', () => ({
     login: vi.fn(),
     getCurrentUser: vi.fn(),
     logout: vi.fn(),
+    refresh: vi.fn(),
   },
 }));
 
@@ -38,23 +40,24 @@ const createToken = (expiresInSeconds: number): string => {
   const payload = btoa(
     JSON.stringify({
       id: 'user-1',
-      email: 'admin@happycmdb.com',
-      roles: ['admin'],
+      jti: crypto.randomUUID(),
       exp: Math.floor(Date.now() / 1000) + expiresInSeconds,
     })
   );
   return `${header}.${payload}.mock-signature`;
 };
 
-const cachedUser = mockApiHandlers.getCurrentUser.success as unknown as User;
+const user = mockApiHandlers.getCurrentUser.success as unknown as User;
 
 // Renders a minimal consumer so we can observe the auth state AuthProvider exposes.
 const AuthProbe: React.FC = () => {
-  const { isAuthenticated, isLoading } = useAuth();
+  const { isAuthenticated, isLoading, token, logout } = useAuth();
   return (
     <div>
       <span data-testid="isAuthenticated">{String(isAuthenticated)}</span>
       <span data-testid="isLoading">{String(isLoading)}</span>
+      <span data-testid="token">{token ?? ''}</span>
+      <button onClick={() => void logout()}>logout</button>
     </div>
   );
 };
@@ -68,86 +71,79 @@ const renderAuthProbe = () =>
     </MemoryRouter>
   );
 
-describe('AuthContext initializeAuth (stale/invalid cached token handling)', () => {
+/** api.refresh as the real one behaves: the refresh cookie buys a new in-memory access token. */
+const refreshIssues = (...tokens: string[]) => {
+  for (const token of tokens) vi.mocked(api.api.refresh).mockImplementationOnce(async () => { setToken(token); });
+};
+
+describe('AuthContext session (HAP-1211 H2: in-memory access token, refresh cookie)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(api.api.refresh).mockReset();
+    removeToken();
     localStorage.clear();
   });
 
-  it('never optimistically authenticates from a cached token while getCurrentUser is still in flight', async () => {
+  it('a reload restores the session from the refresh cookie, never from Web Storage, and drops the legacy copies', async () => {
     localStorage.setItem('auth_token', createToken(3600));
-    localStorage.setItem('user', JSON.stringify(cachedUser));
-
-    const { promise: pending, resolve: resolveGetCurrentUser } = Promise.withResolvers<User>();
+    localStorage.setItem('user', JSON.stringify(user));
+    const restored = createToken(3600);
+    refreshIssues(restored);
+    const { promise: pending, resolve } = Promise.withResolvers<User>();
     vi.mocked(api.api.getCurrentUser).mockReturnValue(pending);
 
     renderAuthProbe();
 
-    // Synchronously after mount -- before the server verification call resolves -- the
-    // cached token/user must NOT be treated as an authenticated session.
+    // Not authenticated before the server has confirmed the session.
     expect(screen.getByTestId('isAuthenticated').textContent).toBe('false');
     expect(screen.getByTestId('isLoading').textContent).toBe('true');
-
     await act(async () => {
-      resolveGetCurrentUser(cachedUser);
+      resolve(user);
       await pending;
     });
 
-    // Only after the server confirms the token does the session become authenticated.
-    await waitFor(() => {
-      expect(screen.getByTestId('isAuthenticated').textContent).toBe('true');
-      expect(screen.getByTestId('isLoading').textContent).toBe('false');
-    });
-  });
-
-  it('rejects a cached token the server considers invalid, without ever authenticating', async () => {
-    // Not locally expired, but the server rejects it (e.g. revoked server-side).
-    localStorage.setItem('auth_token', createToken(3600));
-    localStorage.setItem('user', JSON.stringify(cachedUser));
-
-    vi.mocked(api.api.getCurrentUser).mockRejectedValue(new Error('401 Unauthorized'));
-
-    renderAuthProbe();
-
-    // Never authenticated, at any point, including before the rejection settles.
-    expect(screen.getByTestId('isAuthenticated').textContent).toBe('false');
-
-    await waitFor(() => {
-      expect(screen.getByTestId('isLoading').textContent).toBe('false');
-    });
-
-    expect(screen.getByTestId('isAuthenticated').textContent).toBe('false');
+    await waitFor(() => expect(screen.getByTestId('isAuthenticated').textContent).toBe('true'));
+    expect(screen.getByTestId('token').textContent).toBe(restored);
+    expect(api.api.refresh).toHaveBeenCalledTimes(1);
     expect(localStorage.getItem('auth_token')).toBeNull();
     expect(localStorage.getItem('user')).toBeNull();
   });
 
-  it('rejects a locally-detectable-expired token immediately, without calling getCurrentUser', async () => {
-    localStorage.setItem('auth_token', createToken(-3600)); // expired an hour ago
-    localStorage.setItem('user', JSON.stringify(cachedUser));
+  it('a refused refresh (no cookie, expired, past the HAP-1285 7-day cap) leaves the user signed out, once, without /auth/me', async () => {
+    vi.mocked(api.api.refresh).mockRejectedValue(Object.assign(new Error('refused'), { response: { status: 401 } }));
 
     renderAuthProbe();
 
-    await waitFor(() => {
-      expect(screen.getByTestId('isLoading').textContent).toBe('false');
-    });
-
+    await waitFor(() => expect(screen.getByTestId('isLoading').textContent).toBe('false'));
     expect(screen.getByTestId('isAuthenticated').textContent).toBe('false');
+    expect(api.api.refresh).toHaveBeenCalledTimes(1);
     expect(api.api.getCurrentUser).not.toHaveBeenCalled();
-    expect(localStorage.getItem('auth_token')).toBeNull();
-    expect(localStorage.getItem('user')).toBeNull();
   });
 
-  it('treats a malformed/undecodable cached token as invalid, without calling getCurrentUser', async () => {
-    localStorage.setItem('auth_token', 'not-a-real-jwt');
-    localStorage.setItem('user', JSON.stringify(cachedUser));
+  it('renews the access token before it expires and exposes the new one (useWebSocket reconnects with it)', async () => {
+    const renewed = createToken(3600);
+    refreshIssues(createToken(2), renewed);
+    vi.mocked(api.api.getCurrentUser).mockResolvedValue(user);
 
     renderAuthProbe();
 
-    await waitFor(() => {
-      expect(screen.getByTestId('isLoading').textContent).toBe('false');
-    });
+    await waitFor(() => expect(screen.getByTestId('token').textContent).toBe(renewed), { timeout: 3000 });
+    expect(api.api.refresh).toHaveBeenCalledTimes(2);
+    expect(screen.getByTestId('isAuthenticated').textContent).toBe('true');
+  });
 
-    expect(screen.getByTestId('isAuthenticated').textContent).toBe('false');
-    expect(api.api.getCurrentUser).not.toHaveBeenCalled();
+  it('logout in one tab signs the other tabs out (BroadcastChannel)', async () => {
+    refreshIssues(createToken(3600), createToken(3600));
+    vi.mocked(api.api.getCurrentUser).mockResolvedValue(user);
+    vi.mocked(api.api.logout).mockResolvedValue(undefined);
+    const tabA = renderAuthProbe();
+    const tabB = renderAuthProbe();
+    const signedIn = (tab: RenderResult) => within(tab.container).getByTestId('isAuthenticated').textContent;
+    await waitFor(() => expect([signedIn(tabA), signedIn(tabB)]).toEqual(['true', 'true']));
+
+    await act(async () => within(tabA.container).getByText('logout').click());
+
+    await waitFor(() => expect(signedIn(tabB)).toBe('false'));
+    expect(api.api.logout).toHaveBeenCalledTimes(1);
   });
 });

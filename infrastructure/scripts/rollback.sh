@@ -260,7 +260,17 @@ if [[ "$ROLLBACK_TYPE" == "full" || "$ROLLBACK_TYPE" == "database-only" ]]; then
         log_info "Restoring Neo4j database..."
 
         if [[ -f "$SCRIPT_DIR/restore-neo4j.sh" ]]; then
-            bash "$SCRIPT_DIR/restore-neo4j.sh" "$BACKUP_PATH/neo4j-backup.tar.gz" 2>&1 | tee -a "$ROLLBACK_LOG"
+            # HAP-1668: the backup goes in via --file. Never forced (no --force, and an exported
+            # RESTORE_FORCE is overridden): forcing drops the live database before the load. stdin
+            # is detached: the operator already typed ROLLBACK, and a declined second prompt would
+            # exit 0 without restoring. The restore's own status (not tee's) decides the rollback.
+            RESTORE_FORCE=false bash "$SCRIPT_DIR/restore-neo4j.sh" --file "$BACKUP_PATH/neo4j-backup.tar.gz" </dev/null 2>&1 | tee -a "$ROLLBACK_LOG"
+            neo4j_restore_status=${PIPESTATUS[0]}
+            if [[ "$neo4j_restore_status" -ne 0 ]]; then
+                log_error "Neo4j restore failed (exit $neo4j_restore_status) - Neo4j NOT restored from $BACKUP_PATH/neo4j-backup.tar.gz; the database may be left stopped"
+                send_notification "FAILED" "Rollback aborted: Neo4j restore failed (backup: $BACKUP_TIMESTAMP)"
+                exit 1
+            fi
             log_success "Neo4j restored"
         else
             log_error "restore-neo4j.sh not found - manual restore required"

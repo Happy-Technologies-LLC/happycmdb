@@ -129,6 +129,10 @@ jobs:
           rc=0; grep -rlE --include='*.html' --include='*.js' --include='*.css' 'fonts\.(googleapis|gstatic)\.com|api\.happycmdb\.io' web-ui/dist || rc=$?
           test "$rc" -eq 1 || { echo "third-party origin in web-ui/dist (or grep error $rc)" >&2; exit 1; }
           if tr '\n' ' ' < web-ui/dist/index.html | grep -oiE '<script(\s[^>]*)?>' | grep -viqE '\ssrc\s*='; then echo "inline <script> in web-ui/dist/index.html" >&2; exit 1; fi
+      - name: Verify every tracked web-ui test file is discovered by vitest (HAP-1687, fails closed)
+        run: node web-ui/scripts/check-test-discovery.mjs
+      - name: Run the whole web-ui vitest suite against the pinned design system (HAP-1687)
+        run: npm run test:run --workspace=web-ui
 
   integration-tests:
     name: Integration Tests

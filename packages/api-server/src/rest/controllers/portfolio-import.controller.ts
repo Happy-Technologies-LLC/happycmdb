@@ -14,8 +14,9 @@
  * a re-run of the same file matches what an interrupted run committed and creates only the rest.
  *
  * Audit: services and offerings through appendPortfolioAudit, CIs and relationships through the journal (one row per
- * relationship endpoint), a service-CI mapping as a BUSINESS_SERVICE UPDATE; each row's metadata names the import_id
- * and every defaulted value (D3). Only allow-listed fields reach a write, a response or a log line.
+ * relationship endpoint), a service-CI mapping and a service name match (HAP-1625) as a BUSINESS_SERVICE UPDATE; each
+ * row's metadata names the import_id and every defaulted value (D3).
+ * Only allow-listed fields reach a write, a response or a log line.
  */
 
 import { Request, Response } from 'express';
@@ -290,8 +291,8 @@ export class PortfolioImportController {
        VALUES ($1, $2, $3, 'apply', $4, $5, $6)`,
       [importId, organizationId, IMPORT_SOURCE, createHash('sha256').update(req.body as string).digest('hex'),
         JSON.stringify(parsed.header.row_counts), actor]);
-    const writeMap = (client: { query(text: string, params: unknown[]): Promise<unknown> }, row: Planned, target: string) =>
-      client.query(
+    const writeMap = (client: { query(text: string, params: unknown[]): Promise<{ rowCount: number | null }> }, row: Planned,
+      target: string) => client.query(
         `INSERT INTO portfolio_import_map (organization_id, source_system, kind, source_id, target_id, import_id)
          VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (organization_id, source_system, kind, source_id) DO NOTHING`,
         [organizationId, IMPORT_SOURCE, row.record.kind, row.record.source_id, target, importId]);
@@ -308,7 +309,12 @@ export class PortfolioImportController {
         const { entry } = row;
         if (entry.action === 'skip' || (entry.action === 'match' && row.mapped)) continue;
         if (entry.action === 'match') {
-          await writeMap(pg, row, entry.target_id!);
+          if (entry.reason === 'name_match') {
+            await this.bindService(req, organizationId, row.record.source_id, entry.target_id!, importId,
+              client => writeMap(client, row, entry.target_id!));
+          } else {
+            await writeMap(pg, row, entry.target_id!);
+          }
           continue;
         }
         const audit = { import_id: importId, ...(entry.defaulted?.length ? { defaulted: entry.defaulted } : {}) };
@@ -365,6 +371,42 @@ export class PortfolioImportController {
       await writeMap(client, serviceId);
     });
     return serviceId;
+  }
+
+  /**
+   * HAP-1625: a name match binds the file's service to a tenant service it did not create. One transaction: the
+   * service row locked FOR UPDATE (gone: ImportTargetMissingError), the map row, and, when this run wrote the map row,
+   * its BUSINESS_SERVICE UPDATE audit row (import_source_id null -> the HappyHive source id).
+   */
+  private async bindService(req: Request, organizationId: string, sourceId: string, serviceId: string, importId: string,
+    writeMap: (client: PoolClient) => Promise<{ rowCount: number | null }>): Promise<void> {
+    const client = await getPostgresClient().pool.connect();
+    let broken: Error | undefined;
+    try {
+      await client.query('BEGIN');
+      try {
+        const service = (await client.query<{ version: number }>(
+          'SELECT version FROM dim_business_services WHERE service_id = $1 AND organization_id = $2 FOR UPDATE',
+          [serviceId, organizationId])).rows[0];
+        if (service === undefined) {
+          throw new ImportTargetMissingError();
+        }
+        if (((await writeMap(client)).rowCount ?? 0) > 0) {
+          await appendPortfolioAudit(client, req, organizationId, { type: 'BUSINESS_SERVICE', id: serviceId }, 'UPDATE',
+            'import', { version: service.version, import_source_id: null }, { version: service.version, import_source_id: sourceId },
+            { import_id: importId, match: 'name_match' });
+        }
+        await client.query('COMMIT');
+      } catch (error) {
+        // A failed ROLLBACK destroys the connection: never pool it inside a transaction still holding the row lock.
+        await client.query('ROLLBACK').catch((rollbackError: Error) => {
+          broken = rollbackError;
+        });
+        throw error;
+      }
+    } finally {
+      client.release(broken);
+    }
   }
 
   /** A journaled create of the CI's derived id; another run's create of the same id is this one's match. */

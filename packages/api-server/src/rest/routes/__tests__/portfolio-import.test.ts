@@ -146,6 +146,7 @@ import { JWTService } from '../../../auth/jwt.service';
 import { getAuthMiddleware } from '../../../auth/auth-bootstrap';
 import { portfolioImportRoutes } from '../portfolio-import.routes';
 import { importedCIId } from '../../controllers/portfolio-import.controller';
+import { parseImport } from '../../../services/portfolio-import';
 import {
   APP_GRANTS_SQL, APP_LOGIN, assertAppLogin, asTableOwner, createLoginRolesSql, ENTER_APP_LOGIN_SQL, journalReadAclSql,
   migrationSql,
@@ -185,7 +186,7 @@ async function state(org: string) {
 }
 const NOTHING = { services: 1, offerings: 0, mappings: 0, imports: 0, map: 0, audit: 0, journal: 0, cis: 0, relationships: 0 };
 /** The fixture applied once in tenant A: the Unassigned legacy service, 2 services, 2 CIs, 1 relationship, 2 links. */
-const APPLIED = { services: 4, offerings: 3, mappings: 2, imports: 1, map: 9, audit: 12, journal: 4, cis: 2, relationships: 1 };
+const APPLIED = { services: 4, offerings: 3, mappings: 2, imports: 1, map: 9, audit: 13, journal: 4, cis: 2, relationships: 1 };
 const LEGACY = 'unassigned-legacy';
 
 const SERVICE_DEFAULTED = [
@@ -281,16 +282,20 @@ it('A2/A7: apply writes the plan with its id map and audit rows (import_id, defa
     .toEqual([{ service_level: { response_target_hours: 4 } }]);
   expect([ids[CI(1)], mockGraph.nodes.get(ids[CI(2)]!)?.['environment'], mockGraph.relationships.has(`${ids[CI(1)]}-DEPENDS_ON->${ids[CI(2)]}`)])
     .toEqual([importedCIId(A, CI(1)), 'development', true]);
-  const audit = await rows(`SELECT entity_type, entity_id, action, actor, metadata FROM audit_log ORDER BY timestamp, id`);
+  const audit = await rows(`SELECT entity_type, entity_id, action, actor, changes, metadata FROM audit_log ORDER BY timestamp, id`);
   expect(audit.map(row => [row['entity_type'], row['action'], row['actor'], row['metadata']['import_id']])).toEqual([
     ['BUSINESS_SERVICE', 'CREATE', 'actor-m', importId], ['SERVICE_OFFERING', 'CREATE', 'actor-m', importId],
     ['BUSINESS_SERVICE', 'CREATE', 'actor-m', importId], ['SERVICE_OFFERING', 'CREATE', 'actor-m', importId],
     ['BUSINESS_SERVICE', 'CREATE', 'actor-m', importId], ['SERVICE_OFFERING', 'CREATE', 'actor-m', importId],
+    ['BUSINESS_SERVICE', 'UPDATE', 'actor-m', importId],
     ['CI', 'CREATE', 'actor-m', importId], ['CI', 'CREATE', 'actor-m', importId],
     ['CI', 'RELATIONSHIP_ADD', 'actor-m', importId], ['CI', 'RELATIONSHIP_ADD', 'actor-m', importId],
     ['BUSINESS_SERVICE', 'UPDATE', 'actor-m', importId], ['BUSINESS_SERVICE', 'UPDATE', 'actor-m', importId],
   ]);
-  expect([audit[2]!['metadata']['defaulted'], audit[7]!['metadata']['defaulted']])
+  // HAP-1625: the name match binding SERVICE(3) to the seeded service is audited on that service.
+  expect([audit[6]!['entity_id'], audit[6]!['changes'], audit[6]!['metadata']['match']])
+    .toEqual([SEEDED, [{ field: 'import_source_id', old_value: null, new_value: SERVICE(3) }], 'name_match']);
+  expect([audit[2]!['metadata']['defaulted'], audit[8]!['metadata']['defaulted']])
     .toEqual([DRY_RUN_MAPPING[1]!.defaulted, DRY_RUN_MAPPING[5]!.defaulted]);
 
   const again = await post('migrator', '?mode=apply', FILE);
@@ -330,7 +335,7 @@ it('re-link: a service-CI pair another writer linked first is mapped with no BUS
   mockFault.preLink = true;
   expect((await post('migrator', '?mode=apply', FILE)).status).toBe(201);
   expect([await state(A), (await rows(`SELECT count(*)::int AS n FROM audit_log WHERE entity_type = 'BUSINESS_SERVICE'
-    AND action = 'UPDATE'`))[0]!['n']]).toEqual([{ ...APPLIED, audit: APPLIED.audit - 1 }, 1]);
+    AND action = 'UPDATE' AND metadata->>'match' IS NULL`))[0]!['n']]).toEqual([{ ...APPLIED, audit: APPLIED.audit - 1 }, 1]);
 });
 
 it('A3: two services of the same name are ambiguous: skipped, never matched', async () => {
@@ -378,6 +383,19 @@ it('A5: a line with a credential-like or blob key is rejected by line number; it
   const seen = JSON.stringify([dry.body, apply.body, spies.map(spy => spy.mock.calls), await rows('SELECT * FROM audit_log'),
     [...mockGraph.nodes.values()]]);
   expect([seen.includes(SENTINEL), await state(A)]).toEqual([false, NOTHING]);
+});
+
+it('A5 keys (HAP-1625): a credential-like word of a key, camelCase split, is forbidden_key; descriptive look-alikes pass', () => {
+  const forbidden = ['key', 'encryption_key', 'signingKey', 'primary_key', 'ssh_keys', 'auth', 'passcode', 'salt', 'dbPass',
+    'rootPass', 'adminPass', 'config', 'configs', 'setting', 'settings'];
+  const allowed = ['author', 'monkey', 'keyword', 'key_count', 'key_id'];
+  const keys = [...forbidden, ...allowed];
+  const header = FILE.split('\n')[0]!.replace(/"row_counts":\{[^}]*\}/,
+    `"row_counts":{"service":0,"ci":${keys.length},"relationship":0,"service_ci":0}`);
+  const parsed = parseImport([header, ...keys.map((key, index) => JSON.stringify(
+    { kind: 'ci', source_id: `c-${index}`, item_type: 'server', name: key, attributes: { [key]: 'x' } }))].join('\n'), A);
+  expect([parsed.rejected, parsed.records.map(record => 'name' in record ? record.name : null)])
+    .toEqual([forbidden.map((_, index) => ({ line: index + 2, code: 'forbidden_key' })), allowed]);
 });
 
 it('A6 (HAP-1615): only the portfolio:import scope holder may import; admin, a platform admin\'s API key, every other role, a seeded account and a non-list scopes are 403 before the export is read; the holder\'s body over 1 MiB or 5,000 lines is 413; nothing written', async () => {

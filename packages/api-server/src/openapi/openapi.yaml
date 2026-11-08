@@ -4052,8 +4052,16 @@ paths:
         the whole file while any line is rejected (422, nothing written), else
         writes services (each with one internal offering), CIs, relationships
         and service-CI mappings with their id map and audit rows (metadata
-        `import_id`). Re-applying a file matches what was imported and creates
-        nothing new; an interrupted apply resumes.
+        `import_id`); a name match is one BUSINESS_SERVICE UPDATE audit row
+        (`import_source_id`, metadata `match: name_match`). Re-applying a file
+        matches what was imported and creates nothing new; an interrupted
+        apply resumes. Each tenant has one reserved, retired "Unassigned
+        legacy" service (source_id `unassigned-legacy`), created by its first
+        apply; a file line using that source id, as a record or as a
+        reference, is rejected `invalid_field`. A record must follow every
+        record it references in the file (services and CIs before the
+        relationship and service_ci lines naming them); a reference to a
+        later line that was not imported before is `unknown_reference`.
       operationId: importPortfolio
       parameters:
         - name: mode

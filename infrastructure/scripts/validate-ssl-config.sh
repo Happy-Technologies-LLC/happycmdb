@@ -374,9 +374,11 @@ check_runtime_ssl_connections() {
     if docker ps --format '{{.Names}}' | grep -q "cmdb-neo4j"; then
         print_info "Testing Neo4j SSL configuration..."
 
-        # Check if bolt TLS is configured
-        if docker exec cmdb-neo4j bash -c "cypher-shell -u neo4j -p \$NEO4J_PASSWORD \
-            \"CALL dbms.listConfig() YIELD name, value WHERE name = 'dbms.ssl.policy.bolt.enabled' RETURN value\" 2>/dev/null" \
+        # Check if bolt TLS is configured (HAP-1647: password via the environment, never argv)
+        if [ -z "${NEO4J_PASSWORD:-}" ]; then
+            print_failure "Neo4j Bolt SSL not checked: NEO4J_PASSWORD is not set"
+        elif NEO4J_PASSWORD="$NEO4J_PASSWORD" docker exec -e NEO4J_PASSWORD cmdb-neo4j cypher-shell -u neo4j \
+            "CALL dbms.listConfig() YIELD name, value WHERE name = 'dbms.ssl.policy.bolt.enabled' RETURN value" 2>/dev/null \
             | grep -q "true"; then
             print_success "Neo4j Bolt SSL enabled in running container"
         else

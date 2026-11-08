@@ -190,8 +190,9 @@ fi
 # -----------------------------------------------------------------------------
 print_header "5. Database Connectivity"
 
-# Neo4j connectivity check
-if docker exec cmdb-neo4j cypher-shell -u neo4j -p "${NEO4J_PASSWORD:-your-neo4j-password}" "RETURN 1" >/dev/null 2>&1; then
+# Neo4j connectivity check (HAP-1647: password via the environment, never argv)
+: "${NEO4J_PASSWORD:?must be set}"
+if docker exec -e NEO4J_PASSWORD cmdb-neo4j cypher-shell -u neo4j "RETURN 1" >/dev/null 2>&1; then
     print_success "Neo4j database is accessible"
 else
     print_failure "Neo4j database connection failed"

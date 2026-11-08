@@ -41,7 +41,7 @@ POSTGRES_DB=${POSTGRES_DB:-cmdb}
 NEO4J_HOST=${NEO4J_HOST:-localhost}
 NEO4J_PORT=${NEO4J_PORT:-7687}
 NEO4J_USER=${NEO4J_USER:-neo4j}
-NEO4J_PASSWORD=${NEO4J_PASSWORD:-password}
+: "${NEO4J_PASSWORD:?must be set}"  # HAP-1647: passed via docker exec -e (environment), never argv
 
 echo "========================================"
 echo "Waiting for services..."
@@ -118,7 +118,7 @@ print_info "Creating Neo4j schema (constraints, indexes, full-text search)..."
 # Execute the init-neo4j.cypher script
 if [ -f infrastructure/scripts/init-neo4j.cypher ]; then
     # Read and execute the Cypher script
-    cat infrastructure/scripts/init-neo4j.cypher | docker exec -i $(docker ps -qf "name=neo4j") cypher-shell -u "$NEO4J_USER" -p "$NEO4J_PASSWORD" --format plain 2>&1 | while read line; do
+    cat infrastructure/scripts/init-neo4j.cypher | docker exec -i -e NEO4J_PASSWORD $(docker ps -qf "name=neo4j") cypher-shell -u "$NEO4J_USER" --format plain 2>&1 | while read line; do
         if [[ $line == *"constraint created"* ]] || [[ $line == *"index created"* ]]; then
             print_success "$line"
         elif [[ $line == *"already exists"* ]]; then
@@ -131,28 +131,28 @@ else
     print_info "Falling back to basic schema creation..."
 
     # Fallback: Create basic constraints
-    docker exec $(docker ps -qf "name=neo4j") cypher-shell -u "$NEO4J_USER" -p "$NEO4J_PASSWORD" \
+    docker exec -e NEO4J_PASSWORD $(docker ps -qf "name=neo4j") cypher-shell -u "$NEO4J_USER" \
         "CREATE CONSTRAINT ci_id_unique IF NOT EXISTS FOR (ci:CI) REQUIRE ci.id IS UNIQUE" 2>/dev/null || true
     print_success "Created constraint: ci.id UNIQUE"
 
-    docker exec $(docker ps -qf "name=neo4j") cypher-shell -u "$NEO4J_USER" -p "$NEO4J_PASSWORD" \
+    docker exec -e NEO4J_PASSWORD $(docker ps -qf "name=neo4j") cypher-shell -u "$NEO4J_USER" \
         "CREATE CONSTRAINT ci_org_external_id_unique IF NOT EXISTS FOR (ci:CI) REQUIRE (ci.organization_id, ci.external_id) IS UNIQUE" 2>/dev/null || true
     print_success "Created constraint: (ci.organization_id, ci.external_id) UNIQUE"
 
     # Create basic indexes
-    docker exec $(docker ps -qf "name=neo4j") cypher-shell -u "$NEO4J_USER" -p "$NEO4J_PASSWORD" \
+    docker exec -e NEO4J_PASSWORD $(docker ps -qf "name=neo4j") cypher-shell -u "$NEO4J_USER" \
         "CREATE INDEX ci_name_index IF NOT EXISTS FOR (ci:CI) ON (ci.name)" 2>/dev/null || true
     print_success "Created index: ci.name"
 
-    docker exec $(docker ps -qf "name=neo4j") cypher-shell -u "$NEO4J_USER" -p "$NEO4J_PASSWORD" \
+    docker exec -e NEO4J_PASSWORD $(docker ps -qf "name=neo4j") cypher-shell -u "$NEO4J_USER" \
         "CREATE INDEX ci_type_index IF NOT EXISTS FOR (ci:CI) ON (ci.type)" 2>/dev/null || true
     print_success "Created index: ci.type"
 
-    docker exec $(docker ps -qf "name=neo4j") cypher-shell -u "$NEO4J_USER" -p "$NEO4J_PASSWORD" \
+    docker exec -e NEO4J_PASSWORD $(docker ps -qf "name=neo4j") cypher-shell -u "$NEO4J_USER" \
         "CREATE INDEX ci_status_index IF NOT EXISTS FOR (ci:CI) ON (ci.status)" 2>/dev/null || true
     print_success "Created index: ci.status"
 
-    docker exec $(docker ps -qf "name=neo4j") cypher-shell -u "$NEO4J_USER" -p "$NEO4J_PASSWORD" \
+    docker exec -e NEO4J_PASSWORD $(docker ps -qf "name=neo4j") cypher-shell -u "$NEO4J_USER" \
         "CREATE INDEX ci_environment_index IF NOT EXISTS FOR (ci:CI) ON (ci.environment)" 2>/dev/null || true
     print_success "Created index: ci.environment"
 fi
@@ -160,7 +160,7 @@ fi
 # Seed Neo4j data (if seed script exists)
 if [ -f packages/graph-db/seeds/seed.cypher ]; then
     print_info "Seeding Neo4j database..."
-    cat packages/graph-db/seeds/seed.cypher | docker exec -i $(docker ps -qf "name=neo4j") cypher-shell -u "$NEO4J_USER" -p "$NEO4J_PASSWORD"
+    cat packages/graph-db/seeds/seed.cypher | docker exec -i -e NEO4J_PASSWORD $(docker ps -qf "name=neo4j") cypher-shell -u "$NEO4J_USER"
     print_success "Neo4j seeding completed"
 else
     print_info "Neo4j seed file not found, skipping seeding"

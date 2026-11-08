@@ -380,8 +380,11 @@ check_service_health "Web UI" "http://localhost:$WEB_UI_PORT" || HEALTH_CHECK_PA
 # Check databases
 log_info "Checking database connectivity..."
 
-NEO4J_PASSWORD="${NEO4J_PASSWORD:-cmdb_password_dev}"
-if docker exec cmdb-neo4j cypher-shell -u neo4j -p "$NEO4J_PASSWORD" "RETURN 1" > /dev/null 2>&1; then
+# HAP-1647: name-only -e passes the exported value via the environment, never argv.
+if [[ -z "${NEO4J_PASSWORD:-}" ]]; then
+    log_error "Neo4j connection not tested: NEO4J_PASSWORD is not set"
+    HEALTH_CHECK_PASSED=false
+elif docker exec -e NEO4J_PASSWORD cmdb-neo4j cypher-shell -u neo4j "RETURN 1" > /dev/null 2>&1; then
     log_success "Neo4j connection verified"
 else
     log_error "Neo4j connection failed"

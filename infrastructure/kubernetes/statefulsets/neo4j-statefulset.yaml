@@ -138,12 +138,10 @@ spec:
           livenessProbe:
             exec:
               command:
-                - cypher-shell
-                - -u
-                - neo4j
-                - -p
-                - "$(cat /run/secrets/neo4j-password)"
-                - "RETURN 1"
+                - sh
+                - -c
+                # HAP-1647: password from the container's NEO4J_AUTH (cmdb-secrets) via env, never argv.
+                - NEO4J_PASSWORD="${NEO4J_AUTH#*/}" exec cypher-shell -u neo4j 'RETURN 1'
             initialDelaySeconds: 120
             periodSeconds: 30
             timeoutSeconds: 10

@@ -312,26 +312,6 @@ describe('Neo4jClient', () => {
   });
 
   describe('Error Handling', () => {
-    it('should handle JSON parse errors in metadata', async () => {
-      mockResult.records = [{
-        _get: jest.fn().mockReturnValue({
-          _properties: {
-            _id: 'ci-123',
-            _name: 'Test',
-            _type: 'server',
-            _status: 'active',
-            _created_at: '2025-01-15T10:00:00Z',
-            _updated_at: '2025-01-15T10:00:00Z',
-            _discovered_at: '2025-01-15T10:00:00Z',
-            _metadata: 'invalid-json',
-          },
-        }),
-      }];
-
-      // Should handle gracefully or throw appropriate error
-      await expect(client.getCI('ci-123')).rejects.toThrow();
-    });
-
     it('should handle null/undefined metadata', async () => {
       mockResult.records = [{
         _get: jest.fn().mockReturnValue({

@@ -20,7 +20,7 @@ import { ValidationMiddleware } from '../middleware/validation.middleware';
 import { AuthMiddleware } from '../../middleware/auth.middleware';
 import { RateLimitMiddleware } from '../../middleware/rate-limit.middleware';
 import type { Redis } from 'ioredis';
-import type { ConfigSchema } from '@cmdb/common';
+import type { AuditLogEntry, ConfigSchema } from '@cmdb/common';
 import { PasswordService } from '../../auth/password.service';
 import { JWTService } from '../../auth/jwt.service';
 import { User, ApiKey } from '../../auth/types';
@@ -93,6 +93,18 @@ class InMemoryAuthRepository implements AuthRepository {
 
   async recordCredentialEvent(): Promise<void> {}
 
+  /** HAP-1368: the audit chain readiness and the audit rows written through the port. */
+  chainReady = true;
+  auditStoreDown = false;
+  audits: Array<{ entry: Omit<AuditLogEntry, 'id' | 'timestamp'>; organizationId: string }> = [];
+  auditChainReady(): boolean {
+    return this.chainReady;
+  }
+  async recordAudit(entry: Omit<AuditLogEntry, 'id' | 'timestamp'>, organizationId: string): Promise<void> {
+    if (this.auditStoreDown) throw new Error('audit store unavailable');
+    this.audits.push({ entry, organizationId });
+  }
+
   async deleteUserAccount(id: string): Promise<void> {
     this.users.delete(id);
   }
@@ -125,7 +137,7 @@ class InMemoryAuthRepository implements AuthRepository {
   }
 }
 
-/** A no-op rate limiter: profile/password/account routes don't apply it. */
+/** A pass-through rate limiter: the limiter itself is covered in login-rate-limit.test.ts. */
 function fakeRateLimiter(): RateLimitMiddleware {
   const pass = () => (_req: unknown, _res: unknown, next: () => void) => next();
   return {
@@ -890,6 +902,74 @@ describe('AuthController profile/password/account routes', () => {
         repository.users.get('user-2')?._passwordHash as string
       );
       expect(bobPasswordUnaffected).toBe(true);
+    });
+
+    describe('HAP-1368 audit', () => {
+      const ORG = '5f0c7a52-3d1e-4b8a-9c61-2f4e8d7b1a03';
+      // verifyToken takes the organization from the stored user, so the actor's record carries it.
+      beforeEach(() => {
+        repository.users.set('user-1', { ...repository.users.get('user-1')!, _organizationId: ORG });
+      });
+      const change = (token: string, currentPassword: string, newPassword: string) => request(app)
+        .put('/api/v1/auth/password').set('Authorization', `Bearer ${token}`).send({ currentPassword, newPassword });
+
+      it('a wrong current password writes one audit row (user, org, client address, outcome) with no secret', async () => {
+        const token = jwtService.generateAccessToken('user-1', 'alice', 'operator', ORG);
+        const guess = randomUUID();
+        const next = randomUUID();
+
+        expect((await change(token, guess, next)).status).toBe(400);
+
+        expect(repository.audits).toHaveLength(1);
+        expect(repository.audits[0]).toMatchObject({
+          organizationId: ORG,
+          entry: { entity_type: 'USER', entity_id: 'user-1', actor: 'user-1', actor_type: 'user',
+            ip_address: expect.stringMatching(/127\.0\.0\.1$/), metadata: { outcome: 'wrong_password' } },
+        });
+        const row = JSON.stringify(repository.audits);
+        for (const secret of [guess, next, token, repository.users.get('user-1')!._passwordHash]) {
+          expect(row).not.toContain(secret);
+        }
+      });
+
+      it('a successful change writes one audit row with outcome success', async () => {
+        const token = jwtService.generateAccessToken('user-1', 'alice', 'operator', ORG);
+
+        expect((await change(token, 'correct-horse-battery-staple', randomUUID())).status).toBe(200);
+
+        expect(repository.audits.map(({ entry, organizationId }) => [entry.entity_id, organizationId, entry.metadata?.['outcome']]))
+          .toEqual([['user-1', ORG, 'success']]);
+      });
+
+      it('with the audit chain not ready, refuses with 503 before any check and leaves the password unchanged', async () => {
+        repository.chainReady = false;
+        const token = jwtService.generateAccessToken('user-1', 'alice', 'operator', ORG);
+
+        expect((await change(token, 'correct-horse-battery-staple', randomUUID())).status).toBe(503);
+
+        expect(await passwordService.verify('correct-horse-battery-staple',
+          repository.users.get('user-1')?._passwordHash as string)).toBe(true);
+        expect(repository.audits).toEqual([]);
+      });
+
+      it('once the change is committed, a failed audit write still answers 200 with the new password in place', async () => {
+        repository.auditStoreDown = true;
+        const token = jwtService.generateAccessToken('user-1', 'alice', 'operator', ORG);
+        const next = randomUUID();
+
+        expect((await change(token, 'correct-horse-battery-staple', next)).status).toBe(200);
+
+        expect(await passwordService.verify(next, repository.users.get('user-1')?._passwordHash as string)).toBe(true);
+      });
+
+      it('an actor without an organization claim changes the password and writes no audit row', async () => {
+        repository.users.set('user-1', { ...repository.users.get('user-1')!, _organizationId: undefined });
+        const token = jwtService.generateAccessToken('user-1', 'alice', 'operator');
+
+        expect((await change(token, 'correct-horse-battery-staple', randomUUID())).status).toBe(200);
+
+        expect(repository.audits).toEqual([]);
+      });
     });
   });
 

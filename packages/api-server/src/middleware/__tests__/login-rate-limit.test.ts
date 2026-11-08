@@ -5,11 +5,13 @@
  * HAP-1091: POST /auth/login rate limiting through the real AuthController wiring and the real
  * RateLimitMiddleware over an in-memory Redis. Buckets key on req.ip (Express `trust proxy`), never on a raw
  * X-Forwarded-For; login adds an account+client bucket and fails closed when the limiter store errors.
+ * HAP-1368: PUT /auth/password gets the client bucket plus a per-user bucket across all clients, fail closed.
  */
 
 import { describe, it, expect } from '@jest/globals';
 import express from 'express';
 import request from 'supertest';
+import { randomUUID } from 'crypto';
 import type { ConfigSchema } from '@cmdb/common';
 import { AuthController } from '../../rest/auth.controller';
 import { ValidationMiddleware } from '../../rest/middleware/validation.middleware';
@@ -116,5 +118,71 @@ describe('POST /auth/login rate limiting (HAP-1091)', () => {
     redis.down = true;
     const res = await login(loginApp(redis), 'alice');
     expect(res.status).toBe(503);
+  });
+});
+
+/** Every password change reaches the service as a wrong current password (400) unless the limiter answers first. */
+function passwordApp(redis: FakeRedis) {
+  const reached: string[] = [];
+  const authService = {
+    login: async () => {
+      throw new AuthFailureError('invalid');
+    },
+    auditChainReady: () => true,
+    auditPasswordChange: async () => undefined,
+    changePassword: async (userId: string) => {
+      reached.push(userId);
+      throw new Error('Current password is incorrect');
+    },
+  } as unknown as AuthService;
+  const pass = () => (_req: unknown, _res: unknown, next: () => void) => next();
+  // The verified subject comes from the test's X-Test-User header (stands in for the JWT).
+  const authenticate = () => (req: express.Request, _res: unknown, next: () => void) => {
+    (req as express.Request & { user?: unknown }).user = { _userId: req.header('X-Test-User') };
+    next();
+  };
+  const authMiddleware = new Proxy({}, { get: (_target, name) => (name === 'authenticate' ? authenticate : pass) });
+  const limiter = new RateLimitMiddleware(redis as never, rateLimitConfig());
+  const app = express();
+  app.set('trust proxy', 1);
+  app.use(express.json());
+  app.use('/api/v1/auth', new AuthController(authService, new ValidationMiddleware(),
+    authMiddleware as unknown as AuthMiddleware, limiter).getRouter());
+  return { app, reached };
+}
+
+const changePassword = (app: express.Express, userId: string, clientAddress: string) =>
+  request(app).put('/api/v1/auth/password').set({ 'X-Test-User': userId, 'X-Forwarded-For': clientAddress })
+    .send({ currentPassword: randomUUID(), newPassword: randomUUID() });
+
+describe('PUT /auth/password rate limiting (HAP-1368)', () => {
+  it('one client address guessing for many users is refused (429) after the client budget', async () => {
+    const { app } = passwordApp(new FakeRedis());
+    const statuses: number[] = [];
+    for (let i = 0; i <= CLIENT_MAX; i++) statuses.push((await changePassword(app, `user-${i}`, '198.51.100.9')).status);
+    expect(statuses).toEqual([...Array(CLIENT_MAX).fill(400), 429]);
+  });
+
+  it('the per-user bucket holds across client addresses', async () => {
+    const { app } = passwordApp(new FakeRedis());
+    const statuses: number[] = [];
+    for (let i = 0; i <= ACCOUNT_MAX; i++) statuses.push((await changePassword(app, 'user-a', `198.51.100.${i}`)).status);
+    expect(statuses).toEqual([...Array(ACCOUNT_MAX).fill(400), 429]);
+  });
+
+  it('logins and password changes from one client address spend one shared client budget', async () => {
+    const { app } = passwordApp(new FakeRedis());
+    for (let i = 0; i < CLIENT_MAX; i++) {
+      expect((await login(app, `user${i}`, { 'X-Forwarded-For': '198.51.100.9' })).status).toBe(401);
+    }
+    expect((await changePassword(app, 'user-a', '198.51.100.9')).status).toBe(429);
+  });
+
+  it('a limiter store error fails closed with 503, never reaching the password check', async () => {
+    const redis = new FakeRedis();
+    redis.down = true;
+    const { app, reached } = passwordApp(redis);
+    expect((await changePassword(app, 'user-a', '198.51.100.1')).status).toBe(503);
+    expect(reached).toEqual([]);
   });
 });

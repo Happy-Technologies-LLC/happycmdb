@@ -11,7 +11,7 @@
  * - Internal service bypass mechanism
  * - Comprehensive rate limit headers (X-RateLimit-*)
  * - Monitoring and metrics for rate limit hits
- * - Graceful degradation if Redis is unavailable (fail-closed limiters, POST /auth/login, answer 503 instead)
+ * - Graceful degradation if Redis is unavailable (fail-closed limiters, POST /auth/login and PUT /auth/password, answer 503 instead)
  * - Client identity is req.ip only: Express `trust proxy` (TRUST_PROXY) decides which forwarded hops count
  */
 
@@ -41,6 +41,11 @@ export interface LimitOptions {
   account?: (req: Request) => unknown;
   /** A limiter store error answers 503 instead of passing the request through. */
   failClosed?: boolean;
+  /**
+   * HAP-1368 (authenticated credential checks): the client bucket keys on req.ip even for a signed-in caller, plus
+   * a bucket for the verified user across all clients at endpoints.authAccount; both at the base budget (no tier).
+   */
+  perUser?: boolean;
 }
 
 export class RateLimitMiddleware {
@@ -85,8 +90,8 @@ export class RateLimitMiddleware {
         return next();
       }
 
-      // Calculate effective rate limit based on user tier
-      const tierMultiplier = this.getTierMultiplier(req);
+      // Calculate effective rate limit based on user tier; a per-user credential check keeps login's base budget
+      const tierMultiplier = options.perUser === true ? 1 : this.getTierMultiplier(req);
       const effectiveMax = endpointConfig.max * tierMultiplier;
 
       const budget = { _max: effectiveMax, _windowMs: endpointConfig.windowMs };
@@ -278,8 +283,9 @@ export class RateLimitMiddleware {
   }
 
   /**
-   * Checks the client bucket, then (with options.account) the account+client bucket; answers 429 and returns false
-   * on the first one exhausted. A denied client bucket leaves the account+client bucket untouched.
+   * Checks the client bucket, then (with options.account) the account+client bucket or (with options.perUser) the
+   * user bucket; answers 429 and returns false on the first one exhausted. A denied client bucket leaves the other
+   * untouched.
    */
   private async admit(
     req: AuthenticatedRequest,
@@ -288,17 +294,28 @@ export class RateLimitMiddleware {
     budget: RateLimitConfig,
     options: LimitOptions
   ): Promise<boolean> {
-    const identifier = this.getIdentifier(req);
+    const identifier = options.perUser === true ? `ip:${this.getClientIp(req)}` : this.getIdentifier(req);
     const buckets = [{ key: `rate-limit:${endpointType}:${identifier}`, identifier, budget }];
     const account = options.account?.(req);
+    const { max, windowMs } = this.config.endpoints.authAccount;
     if (typeof account === 'string' && account.trim() !== '') {
       // HAP-1091: the username is stored only as an unsalted sha256 (not plain text in keys or logs); keyed with the
       // client, so nobody can lock another client's login out of an account.
       const digest = createHash('sha256').update(account.trim().toLowerCase()).digest('hex');
-      const { max, windowMs } = this.config.endpoints.authAccount;
       buckets.push({
         key: `rate-limit:${endpointType}-account:${digest}:${identifier}`,
         identifier: `account:${digest}:${identifier}`,
+        budget: { _max: max, _windowMs: windowMs },
+      });
+    }
+    if (options.perUser === true) {
+      // HAP-1368: not keyed by client, so another address cannot reset it; only a holder of the user's verified
+      // session can spend it. Mounted after authentication; a missing user throws, which failClosed answers with 503.
+      const userId = req.user?._userId;
+      if (!userId) throw new Error('perUser limiter reached without a verified user');
+      buckets.push({
+        key: `rate-limit:${endpointType}-user:${userId}`,
+        identifier: `user:${userId}`,
         budget: { _max: max, _windowMs: windowMs },
       });
     }

@@ -364,6 +364,13 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           description: JWT user session required; API keys are refused before validation
+        '429':
+          description: >-
+            HAP-1368: the client address used up login's shared per-IP budget, or the user used up the per-user budget
+            across all client addresses (login's per-account budget)
+        '503':
+          description: >-
+            HAP-1368: the rate-limit store is unreachable, or the audit chain is not ready; nothing was changed
 
   /auth/account:
     delete:

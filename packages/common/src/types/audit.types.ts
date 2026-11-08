@@ -15,7 +15,8 @@ export type AuditAction =
   | 'RELATIONSHIP_REMOVE'
   | 'DISCOVERY_UPDATE';
 
-export type AuditEntityType = 'CI' | 'RELATIONSHIP' | 'BUSINESS_SERVICE' | 'SERVICE_OFFERING';
+// USER (HAP-1368): self-service password change attempts; migration 049 adds the database value.
+export type AuditEntityType = 'CI' | 'RELATIONSHIP' | 'BUSINESS_SERVICE' | 'SERVICE_OFFERING' | 'USER';
 
 export interface AuditLogEntry {
   id: string;

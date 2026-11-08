@@ -36,6 +36,17 @@ The following secrets were found hardcoded in source code and should be rotated:
 
 ## Rotation Procedures
 
+Sections 2-5 use these shell conventions:
+
+- Run the commands in **bash** from the repository root. `read -s -p` is bash syntax (zsh's `read -p` reads from a coprocess). `.env` is the repository-root file that `docker-compose --env-file .env -f infrastructure/docker/docker-compose.yml` reads (README, Manual Setup).
+- A block that ends in `read` must be pasted on its own, then typed into: lines pasted after a `read` would be consumed as its input. A `( ... )` block is parsed as a whole before it runs, so it is safe to paste.
+- Each apply block is one `( set -eu ... )` subshell: the first failing command stops the rest, and its `umask 077` and `EXIT` trap (which removes `.env.new`) stay inside the subshell. Do not append `&&` or `||` to the closing `)`: bash ignores `set -e` inside a command that is part of such a list.
+- `.env` is rewritten by awk, which reads the new value from its environment (`ENVIRON`), never from argv, and exits non-zero when the key is missing, so the old `.env` stays in place. `mv` leaves `.env` mode 600 and owned by you; it replaces the file, so restore any other owner or group your deployment needs (compare `ls -l .env` before and after).
+- `docker-compose restart` keeps a container's old environment. `up -d --no-deps <service>` recreates the named services with the new `.env` value and leaves their dependencies running.
+- The `EOF` terminator must start at column 0. The heredoc reaches `docker exec` on stdin; shell history records the literal `$NEW_PASSWORD`, not its value. Values embedded in a SQL string literal must not contain `'` or `\` (`openssl rand -base64` output is safe).
+- While a command runs, its environment (the `docker exec` client, `node`) holds the value, visible only to the same user and root; PostgreSQL superusers can see the `ALTER USER` text in `pg_stat_activity` while it runs.
+- When rotation is finished and rollback is no longer needed, `unset` the variables the section set.
+
 ### 1. Neo4j Password Rotation
 
 **Impact**: High - All services connecting to Neo4j will be affected
@@ -91,22 +102,43 @@ The `EOF` terminator must start at column 0 (no indentation, no trailing spaces)
 **Procedure**:
 
 ```bash
-# 1. Generate new password
-NEW_PASSWORD=$(openssl rand -base64 32)
-
-# 2. Update PostgreSQL password
-docker exec cmdb-postgres psql -U postgres -c \
-  "ALTER USER cmdb_user WITH PASSWORD '$NEW_PASSWORD';"
-
-# 3. Update .env file
-sed -i "s/POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$NEW_PASSWORD/" .env
-
-# 4. Restart affected services
-docker-compose -f infrastructure/docker/docker-compose.yml restart api-server etl-processor
-
-# 5. Verify connectivity
-docker-compose -f infrastructure/docker/docker-compose.yml logs api-server | grep "PostgreSQL connected"
+# 1. Generate the new password and read the current one (no echo, nothing on argv).
+#    Paste this block on its own, then type the password.
+NEW_PG_PASSWORD=$(openssl rand -base64 32)
+IFS= read -rsp 'Current PostgreSQL password: ' OLD_PG_PASSWORD; echo
 ```
+
+```bash
+(
+set -eu
+umask 077
+trap 'rm -f .env.new' EXIT
+: "${NEW_PG_PASSWORD:?}" "${OLD_PG_PASSWORD:?}"
+# 2. Stage the new .env (fails here, before the database changes, if the key is missing)
+NEW_PG_PASSWORD="$NEW_PG_PASSWORD" awk -F= '$1=="POSTGRES_PASSWORD"{print "POSTGRES_PASSWORD=" ENVIRON["NEW_PG_PASSWORD"]; f=1; next} {print} END{exit !f}' .env > .env.new
+# 3. Update the PostgreSQL password. The SQL reaches psql on stdin; the SETs keep
+#    this session's statements out of the server log (compose logs statements
+#    slower than 1s, and failing statements by default). PGPASSWORD is only
+#    needed if pg_hba.conf requires a password for local socket connections.
+PGPASSWORD="$OLD_PG_PASSWORD" docker exec -i -e PGPASSWORD cmdb-postgres psql -X -v ON_ERROR_STOP=1 -U cmdb_user -d cmdb <<EOF
+SET log_statement = 'none';
+SET log_min_duration_statement = -1;
+SET log_min_error_statement = panic;
+ALTER USER cmdb_user WITH PASSWORD '$NEW_PG_PASSWORD';
+EOF
+# 4. Install the new .env and recreate the services that read POSTGRES_PASSWORD
+#    (grafana uses it as GF_DATABASE_PASSWORD)
+mv .env.new .env
+docker-compose --env-file .env -f infrastructure/docker/docker-compose.yml up -d --no-deps api-server grafana
+)
+```
+
+```bash
+# 5. Verify connectivity (after the block above succeeds)
+docker-compose --env-file .env -f infrastructure/docker/docker-compose.yml logs api-server | grep "PostgreSQL connected"
+```
+
+The `postgres` service is not recreated: its `POSTGRES_PASSWORD` is only used when the data directory is first initialised.
 
 ### 3. JWT Secret Rotation
 
@@ -119,14 +151,19 @@ docker-compose -f infrastructure/docker/docker-compose.yml logs api-server | gre
 # 1. Generate new JWT secret (minimum 32 characters)
 NEW_JWT_SECRET=$(openssl rand -base64 48)
 
+(
+set -eu
+umask 077
+trap 'rm -f .env.new' EXIT
+: "${NEW_JWT_SECRET:?}"
 # 2. Update .env file
-sed -i "s/JWT_SECRET=.*/JWT_SECRET=$NEW_JWT_SECRET/" .env
-
-# 3. Restart API server
-docker-compose -f infrastructure/docker/docker-compose.yml restart api-server
-
+NEW_JWT_SECRET="$NEW_JWT_SECRET" awk -F= '$1=="JWT_SECRET"{print "JWT_SECRET=" ENVIRON["NEW_JWT_SECRET"]; f=1; next} {print} END{exit !f}' .env > .env.new
+mv .env.new .env
+# 3. Recreate the API server with the new secret
+docker-compose --env-file .env -f infrastructure/docker/docker-compose.yml up -d --no-deps api-server
 # 4. Notify users
 echo "IMPORTANT: All users must log in again due to security maintenance"
+)
 ```
 
 **Considerations**:
@@ -153,21 +190,33 @@ echo "IMPORTANT: All users must log in again due to security maintenance"
 # 1. Backup current credentials
 pg_dump -U cmdb_user -t discovery_credentials cmdb > credentials_backup.sql
 
-# 2. Generate new encryption key
+# 2. Generate the new encryption key and read the current one (no echo,
+#    nothing on argv). Paste this block on its own, then type the key.
 NEW_ENCRYPTION_KEY=$(openssl rand -base64 32)
+IFS= read -rsp 'Current ENCRYPTION_KEY: ' OLD_ENCRYPTION_KEY; echo
+```
 
-# 3. Create re-encryption script (see below)
-node infrastructure/scripts/reencrypt-credentials.js \
-  --old-key="$OLD_ENCRYPTION_KEY" \
-  --new-key="$NEW_ENCRYPTION_KEY"
+```bash
+(
+set -eu
+umask 077
+trap 'rm -f .env.new' EXIT
+: "${NEW_ENCRYPTION_KEY:?}" "${OLD_ENCRYPTION_KEY:?}"
+# 3. Stage the new .env (fails here, before any credential changes, if the key is missing)
+NEW_ENCRYPTION_KEY="$NEW_ENCRYPTION_KEY" awk -F= '$1=="ENCRYPTION_KEY"{print "ENCRYPTION_KEY=" ENVIRON["NEW_ENCRYPTION_KEY"]; f=1; next} {print} END{exit !f}' .env > .env.new
+# 4. Re-encrypt with the script below. The keys reach it through its
+#    environment, never as arguments.
+OLD_ENCRYPTION_KEY="$OLD_ENCRYPTION_KEY" NEW_ENCRYPTION_KEY="$NEW_ENCRYPTION_KEY" \
+  node infrastructure/scripts/reencrypt-credentials.js
+# 5. Install the new .env and recreate the API server (it reads ENCRYPTION_KEY
+#    as CREDENTIAL_ENCRYPTION_KEY)
+mv .env.new .env
+docker-compose --env-file .env -f infrastructure/docker/docker-compose.yml up -d --no-deps api-server
+)
+```
 
-# 4. Update .env file
-sed -i "s/ENCRYPTION_KEY=.*/ENCRYPTION_KEY=$NEW_ENCRYPTION_KEY/" .env
-
-# 5. Restart services
-docker-compose -f infrastructure/docker/docker-compose.yml restart api-server discovery-engine
-
-# 6. Test credential decryption
+```bash
+# 6. Test credential decryption (after the block above succeeds)
 curl -H "Authorization: Bearer $TOKEN" \
   http://localhost:3000/api/v1/credentials/test-credential-id/test
 ```
@@ -221,13 +270,12 @@ async function reencryptCredentials(oldKey, newKey) {
   }
 }
 
-// Parse command-line arguments
-const args = process.argv.slice(2);
-const oldKey = args.find(arg => arg.startsWith('--old-key='))?.split('=')[1];
-const newKey = args.find(arg => arg.startsWith('--new-key='))?.split('=')[1];
+// Keys come from the environment, never argv (argv is visible in `ps`)
+const oldKey = process.env.OLD_ENCRYPTION_KEY;
+const newKey = process.env.NEW_ENCRYPTION_KEY;
 
 if (!oldKey || !newKey) {
-  console.error('Usage: node reencrypt-credentials.js --old-key=OLD_KEY --new-key=NEW_KEY');
+  console.error('Set OLD_ENCRYPTION_KEY and NEW_ENCRYPTION_KEY in the environment (see step 4 above)');
   process.exit(1);
 }
 
@@ -244,11 +292,17 @@ reencryptCredentials(oldKey, newKey)
 # Restore from backup
 psql -U cmdb_user cmdb < credentials_backup.sql
 
-# Revert encryption key
-sed -i "s/ENCRYPTION_KEY=.*/ENCRYPTION_KEY=$OLD_ENCRYPTION_KEY/" .env
-
-# Restart services
-docker-compose -f infrastructure/docker/docker-compose.yml restart api-server discovery-engine
+# Revert the encryption key and recreate the API server (same shell as the
+# rotation, so OLD_ENCRYPTION_KEY is still set)
+(
+set -eu
+umask 077
+trap 'rm -f .env.new' EXIT
+: "${OLD_ENCRYPTION_KEY:?}"
+OLD_ENCRYPTION_KEY="$OLD_ENCRYPTION_KEY" awk -F= '$1=="ENCRYPTION_KEY"{print "ENCRYPTION_KEY=" ENVIRON["OLD_ENCRYPTION_KEY"]; f=1; next} {print} END{exit !f}' .env > .env.new
+mv .env.new .env
+docker-compose --env-file .env -f infrastructure/docker/docker-compose.yml up -d --no-deps api-server
+)
 ```
 
 ### 5. Grafana Admin Password Rotation
@@ -259,22 +313,35 @@ docker-compose -f infrastructure/docker/docker-compose.yml restart api-server di
 **Procedure**:
 
 ```bash
-# 1. Generate new password
-NEW_PASSWORD=$(openssl rand -base64 24)
-
-# 2. Update .env file
-sed -i "s/GRAFANA_ADMIN_PASSWORD=.*/GRAFANA_ADMIN_PASSWORD=$NEW_PASSWORD/" .env
-
-# 3. Update Grafana database directly
-docker exec cmdb-postgres psql -U cmdb_user -d grafana -c \
-  "UPDATE \"user\" SET password = '*', salt = '*' WHERE login = 'admin';"
-
-# 4. Restart Grafana
-docker-compose -f infrastructure/docker/docker-compose.yml restart grafana
-
-# 5. Login with new password
-echo "New Grafana admin password: $NEW_PASSWORD"
+# 1. Read the new password from your password manager (no echo, nothing on
+#    argv, never printed). Paste this block on its own, then type the password.
+IFS= read -rsp 'New Grafana admin password: ' NEW_GRAFANA_PASSWORD; echo
 ```
+
+```bash
+(
+set -eu
+umask 077
+trap 'rm -f .env.new' EXIT
+: "${NEW_GRAFANA_PASSWORD:?}"
+# 2. Stage the new .env
+NEW_GRAFANA_PASSWORD="$NEW_GRAFANA_PASSWORD" awk -F= '$1=="GRAFANA_ADMIN_PASSWORD"{print "GRAFANA_ADMIN_PASSWORD=" ENVIRON["NEW_GRAFANA_PASSWORD"]; f=1; next} {print} END{exit !f}' .env > .env.new
+# 3. Reset the admin password in Grafana's database. The CLI reads the new
+#    password from stdin (--password-from-stdin), not from its arguments.
+docker exec -i cmdb-grafana grafana cli admin reset-admin-password --password-from-stdin <<EOF
+$NEW_GRAFANA_PASSWORD
+EOF
+# 4. Install the new .env so it matches the database (no restart needed)
+mv .env.new .env
+)
+# 5. Log in to Grafana with the password from your password manager
+```
+
+Notes:
+
+- `GF_SECURITY_ADMIN_PASSWORD` (set from `GRAFANA_ADMIN_PASSWORD`) only applies when Grafana first creates the admin user, so changing `.env` and restarting does not rotate the password; the CLI reset does.
+- The CLI resets user ID 1 (the admin created at first run). If your admin has another ID, add `--user-id <id>` after `--password-from-stdin`. The password must be a single line of at least 4 characters. Avoid `$`, `#`, quotes, `\` and leading or trailing spaces: Compose interpolates unquoted `.env` values, so such a password would differ between `.env` and the database.
+- If the CLI cannot find Grafana's home directory, run it as `grafana cli --homepath /usr/share/grafana admin reset-admin-password --password-from-stdin`.
 
 ### 6. Cloud Provider Credentials (AWS, Azure, GCP)
 

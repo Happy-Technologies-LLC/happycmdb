@@ -183,27 +183,54 @@ kubectl create namespace happycmdb
 
 #### 2. Create Secrets
 
+Each block reads the values at hidden prompts (bash `read -s`), writes them to files in a private temporary directory, and lets `kubectl` read the files (`--from-file=<directory>` makes each file a key). No value appears on a command line or in shell history, and the directory is removed when the block ends. Paste each block on its own (it is one `( ... )` command, so the pasted text is not consumed by the prompts), then type the values.
+
 ```bash
 # Database credentials
-kubectl create secret generic db-credentials \\
-  --namespace happycmdb \\
-  --from-literal=neo4j-password='your-neo4j-password' \\
-  --from-literal=postgres-password='your-postgres-password' \\
-  --from-literal=redis-password='your-redis-password'
+(
+set -eu
+umask 077
+d=$(mktemp -d)
+trap 'rm -rf "$d"' EXIT
+for k in neo4j-password postgres-password redis-password; do
+  IFS= read -rsp "db-credentials $k: " v; echo
+  [ -n "$v" ] || { echo "empty value for $k" >&2; exit 1; }
+  printf '%s' "$v" > "$d/$k"
+done
+kubectl create secret generic db-credentials --namespace happycmdb --from-file="$d"
+)
+```
 
+```bash
 # Application secrets
-kubectl create secret generic app-secrets \\
-  --namespace happycmdb \\
-  --from-literal=jwt-secret='your-jwt-secret' \\
-  --from-literal=api-key='your-api-key'
+(
+set -eu
+umask 077
+d=$(mktemp -d)
+trap 'rm -rf "$d"' EXIT
+for k in jwt-secret api-key; do
+  IFS= read -rsp "app-secrets $k: " v; echo
+  [ -n "$v" ] || { echo "empty value for $k" >&2; exit 1; }
+  printf '%s' "$v" > "$d/$k"
+done
+kubectl create secret generic app-secrets --namespace happycmdb --from-file="$d"
+)
+```
 
+```bash
 # Cloud provider credentials (if using discovery)
-kubectl create secret generic cloud-credentials \\
-  --namespace happycmdb \\
-  --from-literal=aws-access-key-id='your-aws-key' \\
-  --from-literal=aws-secret-access-key='your-aws-secret' \\
-  --from-literal=azure-client-id='your-azure-client' \\
-  --from-literal=azure-client-secret='your-azure-secret'
+(
+set -eu
+umask 077
+d=$(mktemp -d)
+trap 'rm -rf "$d"' EXIT
+for k in aws-access-key-id aws-secret-access-key azure-client-id azure-client-secret; do
+  IFS= read -rsp "cloud-credentials $k: " v; echo
+  [ -n "$v" ] || { echo "empty value for $k" >&2; exit 1; }
+  printf '%s' "$v" > "$d/$k"
+done
+kubectl create secret generic cloud-credentials --namespace happycmdb --from-file="$d"
+)
 ```
 
 #### 3. Apply Manifests

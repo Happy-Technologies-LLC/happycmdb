@@ -10,7 +10,7 @@
  */
 
 import type { Request, Response } from 'express';
-import { SECRET, loggedErrors } from '../../../__tests__/support/throwing-deps';
+import { SECRET, loggedErrors, loggedText } from '../../../__tests__/support/throwing-deps';
 
 jest.mock('@cmdb/database', () => require('../../../__tests__/support/throwing-deps').databaseModule());
 jest.mock('../../../read-admission', () => require('../../../__tests__/support/throwing-deps').readAdmissionModule());
@@ -130,7 +130,7 @@ describe.each(controllers)('%s', (name, build) => {
     const body = JSON.stringify(out.body ?? null);
     expect(body).not.toContain(SECRET);
     expect(body).not.toMatch(/"stack"|\\n\s+at |\.ts:\d+/);
-    expect(loggedErrors.length).toBeGreaterThan(0);
+    expect(loggedErrors.map(loggedText).join(' ')).toContain(SECRET);
   });
 });
 

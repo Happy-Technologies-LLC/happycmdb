@@ -41,6 +41,14 @@ export function readAdmissionModule(): Record<string, unknown> {
 /** Everything a handler logged at error level (args per call). */
 export const loggedErrors: unknown[][] = [];
 
+/**
+ * What the shared winston config would write for one logger.error call: format.errors/json keep a top-level
+ * Error's message and stack but serialize an Error nested in the metadata object as {}.
+ */
+export function loggedText(args: unknown[]): string {
+  return args.map(arg => (arg instanceof Error ? JSON.stringify({ message: arg.message, stack: arg.stack }) : JSON.stringify(arg))).join(' ');
+}
+
 /** jest.mock factory for @cmdb/common: the real module with a recording logger. */
 export function commonModule(): Record<string, unknown> {
   const actual = jest.requireActual('@cmdb/common');

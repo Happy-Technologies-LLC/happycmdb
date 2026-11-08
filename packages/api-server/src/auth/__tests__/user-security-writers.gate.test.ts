@@ -22,7 +22,8 @@
  * files (SET ${clauses} passes: each clause literal is counted by the property
  * rules); apoc.cypher.run (read-only) and Cypher strings built at runtime;
  * comments between tokens; a `;` or parenthesis inside a string value of a
- * :User statement; a label written `: User` (space) or `:(User)`.
+ * :User statement; a label written `: User` (space) or `:(User)`; label
+ * expressions such as (u:Admin|User), (u:!X&User) or (u:%&User).
  */
 
 import { afterAll, beforeAll, describe, expect, it } from '@jest/globals';
@@ -36,12 +37,12 @@ const ROOT = join(__dirname, '../../../../..');
 const RULES: Array<{ name: string; pattern: RegExp; reviewed: Record<string, number> }> = [
   {
     name: 'platformAdmin (set only by the reviewed operator grant)',
-    pattern: /\.\s*_?platformAdmin\s*=(?!=)|REMOVE\s+\w+\._?platformAdmin\b/g,
+    pattern: /\.\s*_?platformAdmin\s*=(?!=)|\bREMOVE\s+(?:\w+(?:\s*\.\s*\w+|(?:\s*:\w+)+)\s*,\s*)*\w+\s*\.\s*_?platformAdmin\b/gi,
     reviewed: { 'packages/api-server/src/scripts/identity-window.ts': 1 },
   },
   {
     name: 'seedProvenance (seed writers and the window stamp; never cleared)',
-    pattern: /\.\s*_?seedProvenance\s*=(?!=)|REMOVE\s+\w+\._?seedProvenance\b/g,
+    pattern: /\.\s*_?seedProvenance\s*=(?!=)|\bREMOVE\s+(?:\w+(?:\s*\.\s*\w+|(?:\s*:\w+)+)\s*,\s*)*\w+\s*\.\s*_?seedProvenance\b/gi,
     reviewed: {
       'infrastructure/scripts/init-neo4j.cypher': 1,
       'infrastructure/scripts/seed-data.ts': 1,
@@ -60,17 +61,17 @@ const RULES: Array<{ name: string; pattern: RegExp; reviewed: Record<string, num
   },
   {
     name: 'defaultPasswordSuspect cleared (the operator rotation only)',
-    pattern: /\.\s*defaultPasswordSuspect\s*=\s*(?!true\b)[^=\s]|REMOVE\s+\w+\.defaultPasswordSuspect\b/g,
+    pattern: /\.\s*defaultPasswordSuspect\s*=\s*(?!true\b)[^=\s]|\bREMOVE\s+(?:\w+(?:\s*\.\s*\w+|(?:\s*:\w+)+)\s*,\s*)*\w+\s*\.\s*defaultPasswordSuspect\b/gi,
     reviewed: { 'packages/api-server/src/scripts/rotate-user-password.ts': 1 },
   },
   {
     name: '_defaultPasswordSuspect (no writer; REMOVE by the rotation only)',
-    pattern: /\.\s*_defaultPasswordSuspect\s*=(?!=)|REMOVE\s+\w+\._defaultPasswordSuspect\b/g,
+    pattern: /\.\s*_defaultPasswordSuspect\s*=(?!=)|\bREMOVE\s+(?:\w+(?:\s*\.\s*\w+|(?:\s*:\w+)+)\s*,\s*)*\w+\s*\.\s*_defaultPasswordSuspect\b/gi,
     reviewed: { 'packages/api-server/src/scripts/rotate-user-password.ts': 1 },
   },
   {
     name: 'credentialEpoch (the operator rotation and the guarded self-service password change)',
-    pattern: /\.\s*_?credentialEpoch\s*=(?!=)|REMOVE\s+\w+\._?credentialEpoch\b/g,
+    pattern: /\.\s*_?credentialEpoch\s*=(?!=)|\bREMOVE\s+(?:\w+(?:\s*\.\s*\w+|(?:\s*:\w+)+)\s*,\s*)*\w+\s*\.\s*_?credentialEpoch\b/gi,
     reviewed: {
       'packages/api-server/src/auth/neo4j-auth.repository.ts': 1, // GUARDED_PASSWORD_CYPHER (HAP-1285)
       'packages/api-server/src/scripts/rotate-user-password.ts': 1,
@@ -118,7 +119,7 @@ const RULES: Array<{ name: string; pattern: RegExp; reviewed: Record<string, num
   },
   {
     name: 'organizationId (seed writers and the FD-5 operator assignment only)',
-    pattern: /\.\s*_?organizationId\s*=(?!=)|REMOVE\s+\w+\._?organizationId\b/g,
+    pattern: /\.\s*_?organizationId\s*=(?!=)|\bREMOVE\s+(?:\w+(?:\s*\.\s*\w+|(?:\s*:\w+)+)\s*,\s*)*\w+\s*\.\s*_?organizationId\b/gi,
     reviewed: {
       'infrastructure/scripts/init-neo4j.cypher': 1,
       'infrastructure/scripts/seed-data.ts': 1,
@@ -128,7 +129,7 @@ const RULES: Array<{ name: string; pattern: RegExp; reviewed: Record<string, num
   },
   {
     name: 'scopes (no writer; the HAP-1632 operator grant only)',
-    pattern: /\.\s*_?scopes\s*=(?!=)|REMOVE\s+\w+\._?scopes\b/g,
+    pattern: /\.\s*_?scopes\s*=(?!=)|\bREMOVE\s+(?:\w+(?:\s*\.\s*\w+|(?:\s*:\w+)+)\s*,\s*)*\w+\s*\.\s*_?scopes\b/gi,
     reviewed: {
       // Reviewed (HAP-1615): `auth.scopes = raw.scopes` maps a connector descriptor's OAuth scopes; not a :User write.
       'packages/integration-framework/src/descriptor-mapper.ts': 1,
@@ -139,7 +140,8 @@ const RULES: Array<{ name: string; pattern: RegExp; reviewed: Record<string, num
 /** Rules that forbid an operation everywhere, whatever the file. */
 const FORBIDDEN: Array<{ name: string; pattern: RegExp }> = [
   { name: 'mutating a rotation decision', pattern: /(MERGE|DELETE|SET|REMOVE)[^\n;`]*\(?\s*\w*:CredentialRotationDecision|MATCH\s*\(\s*(\w+):CredentialRotationDecision[^`;]*\b(SET|REMOVE|DELETE)\s+\1\b/g },
-  { name: 'an APOC procedure that can write a node', pattern: /apoc\.(?:create|merge|refactor|periodic)\.\w+|apoc\.cypher\.(?:doIt|runWrite|runMany|runFile)/gi },
+  { name: 'an APOC call outside the read-only allowlist', pattern: /\bapoc\s*\.\s*(?!convert\s*\.\s*fromJsonMap\b|cypher\s*\.\s*run\b)\w+/gi },
+  { name: 'a built-in vector property write (db.create.set*VectorProperty)', pattern: /\bdb\s*\.\s*create\s*\.\s*set\w*VectorProperty\b/gi },
 ];
 
 /**
@@ -150,6 +152,7 @@ const USER_STATEMENT: Array<{ name: string; pattern: RegExp }> = [
   { name: 'a map write (SET x = / SET x += / , x +=) in a :User statement', pattern: /(?:\bSET\s+|,\s*)(?:\w+|\\?`[^`\n]*`)\s*\+?=(?!=)/i },
   { name: 'a :User node built from a parameter map', pattern: /:User\b(?::\w+)*\s*\$/ },
   { name: 'a runtime-built property name in a :User statement', pattern: /\w\.\$\{|\b\w+\s*\[[^\][\n]*\]\s*\+?=(?!=)|\w\.['"]\s*\+|\w\.\\?`/ },
+  { name: 'adding the :User label (SET x:User) in a :User statement', pattern: /(?:\bSET\s+|,\s*)\w+(?:\s*:\w+)*\s*:User\b/i },
 ];
 
 const SECURITY_KEY = /(?:^|[{,\s])_?(?:passwordHash|platformAdmin|seedProvenance|defaultPasswordSuspect|credentialEpoch|scopes)\s*:/;

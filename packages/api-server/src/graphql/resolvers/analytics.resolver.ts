@@ -92,10 +92,7 @@ const AnalyticsQueryResolvers = {
     } catch (error: any) {
       logger.error('GraphQL: Error getting CI counts by type', error);
       throw new GraphQLError('Failed to retrieve CI counts by type', {
-        extensions: {
-          code: 'INTERNAL_SERVER_ERROR',
-          originalError: error.message,
-        },
+        extensions: { code: 'INTERNAL_SERVER_ERROR' },
       });
     }
   },
@@ -116,10 +113,7 @@ const AnalyticsQueryResolvers = {
     } catch (error: any) {
       logger.error('GraphQL: Error getting CI counts by status', error);
       throw new GraphQLError('Failed to retrieve CI counts by status', {
-        extensions: {
-          code: 'INTERNAL_SERVER_ERROR',
-          originalError: error.message,
-        },
+        extensions: { code: 'INTERNAL_SERVER_ERROR' },
       });
     }
   },
@@ -140,10 +134,7 @@ const AnalyticsQueryResolvers = {
     } catch (error: any) {
       logger.error('GraphQL: Error getting CI counts by environment', error);
       throw new GraphQLError('Failed to retrieve CI counts by environment', {
-        extensions: {
-          code: 'INTERNAL_SERVER_ERROR',
-          originalError: error.message,
-        },
+        extensions: { code: 'INTERNAL_SERVER_ERROR' },
       });
     }
   },
@@ -164,10 +155,7 @@ const AnalyticsQueryResolvers = {
     } catch (error: any) {
       logger.error('GraphQL: Error getting relationship counts', error);
       throw new GraphQLError('Failed to retrieve relationship counts', {
-        extensions: {
-          code: 'INTERNAL_SERVER_ERROR',
-          originalError: error.message,
-        },
+        extensions: { code: 'INTERNAL_SERVER_ERROR' },
       });
     }
   },
@@ -203,10 +191,7 @@ const AnalyticsQueryResolvers = {
     } catch (error: any) {
       logger.error('GraphQL: Error getting discovery stats', error);
       throw new GraphQLError('Failed to retrieve discovery statistics', {
-        extensions: {
-          code: 'INTERNAL_SERVER_ERROR',
-          originalError: error.message,
-        },
+        extensions: { code: 'INTERNAL_SERVER_ERROR' },
       });
     }
   },
@@ -235,10 +220,7 @@ const AnalyticsQueryResolvers = {
     } catch (error: any) {
       logger.error('GraphQL: Error getting discovery timeline', error);
       throw new GraphQLError('Failed to retrieve discovery timeline', {
-        extensions: {
-          code: 'INTERNAL_SERVER_ERROR',
-          originalError: error.message,
-        },
+        extensions: { code: 'INTERNAL_SERVER_ERROR' },
       });
     }
   },
@@ -420,10 +402,7 @@ const AnalyticsQueryResolvers = {
     } catch (error: any) {
       logger.error('GraphQL: Error getting dashboard stats', error);
       throw new GraphQLError('Failed to retrieve dashboard statistics', {
-        extensions: {
-          code: 'INTERNAL_SERVER_ERROR',
-          originalError: error.message,
-        },
+        extensions: { code: 'INTERNAL_SERVER_ERROR' },
       });
     }
   },
@@ -470,10 +449,7 @@ const AnalyticsQueryResolvers = {
     } catch (error: any) {
       logger.error('GraphQL: Error getting inventory report', error);
       throw new GraphQLError('Failed to retrieve inventory report', {
-        extensions: {
-          code: 'INTERNAL_SERVER_ERROR',
-          originalError: error.message,
-        },
+        extensions: { code: 'INTERNAL_SERVER_ERROR' },
       });
     }
   },

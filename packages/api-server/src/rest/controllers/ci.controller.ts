@@ -189,7 +189,7 @@ export class CIController {
       res.status(500).json({
         success: false,
         error: 'Failed to retrieve CIs',
-        message: error instanceof Error ? error.message : 'Unknown error'
+        message: 'Internal error'
       });
     }
   }
@@ -230,7 +230,7 @@ export class CIController {
       res.status(500).json({
         success: false,
         error: 'Failed to retrieve CI',
-        message: error instanceof Error ? error.message : 'Unknown error'
+        message: 'Internal error'
       });
     }
   }
@@ -377,7 +377,7 @@ export class CIController {
       res.status(500).json({
         success: false,
         error: 'Failed to retrieve relationships',
-        message: error instanceof Error ? error.message : 'Unknown error'
+        message: 'Internal error'
       });
     }
   }
@@ -429,7 +429,7 @@ export class CIController {
       res.status(500).json({
         success: false,
         error: 'Failed to retrieve dependencies',
-        message: error instanceof Error ? error.message : 'Unknown error'
+        message: 'Internal error'
       });
     }
   }
@@ -525,7 +525,7 @@ export class CIController {
       res.status(500).json({
         success: false,
         error: 'Failed to perform impact analysis',
-        message: error instanceof Error ? error.message : 'Unknown error'
+        message: 'Internal error'
       });
     }
   }
@@ -593,7 +593,7 @@ export class CIController {
       res.status(500).json({
         success: false,
         error: 'Failed to search CIs',
-        message: error instanceof Error ? error.message : 'Unknown error'
+        message: 'Internal error'
       });
     }
   }
@@ -652,7 +652,7 @@ export class CIController {
       res.status(500).json({
         success: false,
         error: 'Failed to retrieve audit history',
-        message: error instanceof Error ? error.message : 'Unknown error'
+        message: 'Internal error'
       });
     }
   }

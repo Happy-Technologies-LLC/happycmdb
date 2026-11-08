@@ -98,7 +98,7 @@ export class TBMController {
       res.status(500).json({
         success: false,
         error: 'Failed to retrieve cost summary',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -157,7 +157,7 @@ export class TBMController {
       res.status(500).json({
         success: false,
         error: 'Failed to retrieve costs by tower',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -382,7 +382,7 @@ export class TBMController {
       res.status(500).json({
         success: false,
         error: 'Failed to allocate costs',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -407,7 +407,7 @@ export class TBMController {
       res.status(500).json({
         success: false,
         error: 'Failed to retrieve cost allocations',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -523,7 +523,7 @@ export class TBMController {
       res.status(500).json({
         success: false,
         error: 'Failed to import GL data',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }

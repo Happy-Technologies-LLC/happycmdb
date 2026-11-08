@@ -28,6 +28,33 @@ import { admitGraphQLRequest, graphQLWorkCompleted, graphQLWorkStarted } from '.
 import { enforceGraphQLRequestLimits } from './request-admission';
 
 /**
+ * Client-facing shape of a GraphQL error. An INTERNAL_SERVER_ERROR (every uncaught resolver throw) carries
+ * a fixed message and only its code, in every NODE_ENV: no message, originalError or stacktrace of the
+ * underlying error. The detail stays in the log line below.
+ */
+export function formatGraphQLError(formattedError: GraphQLFormattedError): GraphQLFormattedError {
+  logger.error('GraphQL Error:', {
+    message: formattedError.message,
+    code: formattedError.extensions?.['code'],
+    path: formattedError.path,
+  });
+  if (formattedError.extensions?.['code'] === 'GRAPHQL_REQUEST_LIMIT_EXCEEDED') {
+    return {
+      message: 'GraphQL request limit exceeded',
+      extensions: { code: 'GRAPHQL_REQUEST_LIMIT_EXCEEDED' },
+    };
+  }
+  if (formattedError.extensions?.['code'] === 'INTERNAL_SERVER_ERROR') {
+    return {
+      message: 'An internal server error occurred',
+      extensions: { code: 'INTERNAL_SERVER_ERROR' },
+    };
+  }
+  const { stacktrace: _stacktrace, ...extensions } = formattedError.extensions ?? {};
+  return { ...formattedError, extensions };
+}
+
+/**
  * Create and configure Apollo Server with Express
  */
 export async function createGraphQLServer(app: express.Application) {
@@ -74,36 +101,7 @@ export async function createGraphQLServer(app: express.Application) {
             includeCookies: true,
           }),
     ],
-    // Custom error formatting
-    formatError: (formattedError: GraphQLFormattedError, _error: any) => {
-      // Log the error for debugging
-      logger.error('GraphQL Error:', {
-        message: formattedError.message,
-        code: formattedError.extensions?.['code'],
-        path: formattedError.path,
-      });
-      if (formattedError.extensions?.['code'] === 'GRAPHQL_REQUEST_LIMIT_EXCEEDED') {
-        return {
-          message: 'GraphQL request limit exceeded',
-          extensions: { code: 'GRAPHQL_REQUEST_LIMIT_EXCEEDED' },
-        };
-      }
-
-      // Don't expose internal error details in production
-      if (process.env['NODE_ENV'] === 'production') {
-        // Remove sensitive error details
-        if (formattedError.extensions?.['code'] === 'INTERNAL_SERVER_ERROR') {
-          return {
-            message: 'An internal server error occurred',
-            extensions: {
-              code: 'INTERNAL_SERVER_ERROR',
-            },
-          };
-        }
-      }
-
-      return formattedError;
-    },
+    formatError: formatGraphQLError,
     // Introspection and playground in development
     introspection: process.env['NODE_ENV'] !== 'production',
   });

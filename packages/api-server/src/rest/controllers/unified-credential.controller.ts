@@ -92,7 +92,7 @@ export class UnifiedCredentialController {
       res.status(500).json({
         success: false,
         error: 'Failed to create credential',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -123,7 +123,7 @@ export class UnifiedCredentialController {
       res.status(500).json({
         success: false,
         error: 'Failed to list credentials',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -171,7 +171,7 @@ export class UnifiedCredentialController {
       res.status(500).json({
         success: false,
         error: 'Failed to get credential',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -241,7 +241,7 @@ export class UnifiedCredentialController {
       res.status(500).json({
         success: false,
         error: 'Failed to update credential',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -294,7 +294,7 @@ export class UnifiedCredentialController {
       res.status(500).json({
         success: false,
         error: 'Failed to delete credential',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -330,7 +330,7 @@ export class UnifiedCredentialController {
       res.status(500).json({
         success: false,
         error: 'Failed to validate credential',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -371,7 +371,7 @@ export class UnifiedCredentialController {
       res.status(500).json({
         success: false,
         error: 'Failed to match credentials',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -404,7 +404,7 @@ export class UnifiedCredentialController {
       res.status(500).json({
         success: false,
         error: 'Failed to rank credentials',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }

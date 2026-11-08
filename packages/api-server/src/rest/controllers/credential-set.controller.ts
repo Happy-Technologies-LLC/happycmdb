@@ -70,7 +70,7 @@ export class CredentialSetController {
       res.status(500).json({
         success: false,
         error: 'Failed to create credential set',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -92,7 +92,7 @@ export class CredentialSetController {
       res.status(500).json({
         success: false,
         error: 'Failed to list credential sets',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -134,7 +134,7 @@ export class CredentialSetController {
       res.status(500).json({
         success: false,
         error: 'Failed to get credential set',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -200,7 +200,7 @@ export class CredentialSetController {
       res.status(500).json({
         success: false,
         error: 'Failed to update credential set',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -250,7 +250,7 @@ export class CredentialSetController {
       res.status(500).json({
         success: false,
         error: 'Failed to delete credential set',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -309,7 +309,7 @@ export class CredentialSetController {
       res.status(500).json({
         success: false,
         error: 'Failed to select credentials',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }

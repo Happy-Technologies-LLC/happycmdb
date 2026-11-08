@@ -136,7 +136,7 @@ export class AnomalyController {
       res.status(500).json({
         success: false,
         error: 'Failed to update anomaly status',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }

@@ -75,7 +75,7 @@ export class SettingsController {
       res.status(500).json({
         success: false,
         error: 'Failed to Save Settings',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -111,7 +111,7 @@ export class SettingsController {
       res.status(500).json({
         success: false,
         error: 'Failed to Save Notification Settings',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -295,7 +295,7 @@ export class SettingsController {
       res.status(500).json({
         success: false,
         error: 'Failed to Save Provider Settings',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }
@@ -335,7 +335,7 @@ export class SettingsController {
       res.status(500).json({
         success: false,
         error: 'Internal Server Error',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Internal error',
       });
     }
   }

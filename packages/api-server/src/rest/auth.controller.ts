@@ -7,6 +7,7 @@
  */
 
 import { Request, Response, Router } from 'express';
+import { logger } from '@cmdb/common';
 import {
   ApiKeyNotFoundError, AuthFailureError, AuthService, CredentialsChangedError, CurrentPasswordIncorrectError,
   PasswordNotAllowedError, type PasswordChangeOutcome,
@@ -262,10 +263,11 @@ export class AuthController {
       });
     } catch (error: any) {
       if (credentialRefusal(res, error)) return;
+      logger.error('Error generating API key', error);
       res.status(500).json({
         success: false,
         error: 'API Key Generation Failed',
-        message: error.message || 'Failed to generate API key',
+        message: 'Internal error',
       });
     }
   }
@@ -291,10 +293,11 @@ export class AuthController {
         data: apiKeys,
       });
     } catch (error: any) {
+      logger.error('Error listing API keys', error);
       res.status(500).json({
         success: false,
         error: 'Failed to List API Keys',
-        message: error.message || 'Failed to retrieve API keys',
+        message: 'Internal error',
       });
     }
   }
@@ -338,10 +341,11 @@ export class AuthController {
         return;
       }
 
+      logger.error('Error revoking API key', error);
       res.status(500).json({
         success: false,
         error: 'API Key Revocation Failed',
-        message: error instanceof Error ? error.message : 'Failed to revoke API key',
+        message: 'Internal error',
       });
     }
   }
@@ -402,10 +406,11 @@ export class AuthController {
         data: this.toRawUserPayload(profile),
       });
     } catch (error: any) {
+      logger.error('Error loading current user', error);
       res.status(500).json({
         success: false,
         error: 'Failed to Load User',
-        message: error.message || 'Failed to load current user',
+        message: 'Internal error',
       });
     }
   }
@@ -515,11 +520,12 @@ export class AuthController {
       });
     } catch (error: any) {
       if (credentialRefusal(res, error)) return;
-      const status = error.message === 'User not found' ? 404 : 500;
-      res.status(status).json({
+      const notFound = error.message === 'User not found';
+      if (!notFound) logger.error('Error deleting account', error);
+      res.status(notFound ? 404 : 500).json({
         success: false,
         error: 'Account Deletion Failed',
-        message: error.message || 'Failed to delete account',
+        message: notFound ? 'User not found' : 'Internal error',
       });
     }
   }

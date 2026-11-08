@@ -976,7 +976,11 @@ describe('HAP-1211 H2 ruling A: refresh has its own rate-limit bucket at the RES
       enabled: true,
       bypassHeader: 'X-RateLimit-Bypass',
       tierMultipliers: { standard: 1, premium: 1, enterprise: 1 },
-      endpoints: { auth: { max: authMax, windowMs: 60_000 }, rest: { max: restMax, windowMs: 60_000 } },
+      endpoints: {
+        auth: { max: authMax, windowMs: 60_000 },
+        authAccount: { max: authMax, windowMs: 60_000 }, // HAP-1091: login's account+client bucket (schema default 5)
+        rest: { max: restMax, windowMs: 60_000 },
+      },
       monitoring: { enabled: false, logRateLimitHits: false },
     } as unknown as ConfigSchema['rateLimit'];
     const authService = new AuthService(authConfig as any, new InMemoryAuthRepository());

@@ -18,7 +18,10 @@ export const configSchema = Joi.object({
   server: Joi.object({
     port: Joi.number().port().default(3000),
     host: Joi.string().default('0.0.0.0'),
-    trustProxy: Joi.boolean().default(false),
+    // HAP-1091: Express `trust proxy` = hop count N or a comma list of IP/CIDR/loopback|linklocal|uniquelocal.
+    // Unset/0/false trusts nothing (req.ip = socket address). Any shape is accepted here; the api-server resolves
+    // it and fails closed to the socket address on `true` or an invalid value, so startup never crashes on it.
+    trustProxy: Joi.alternatives().try(Joi.boolean(), Joi.number(), Joi.string().allow('')).default(false),
   }).required(),
 
   // Database Configuration
@@ -191,6 +194,12 @@ export const configSchema = Joi.object({
         windowMs: Joi.number().default(3600000), // 1 hour
       }).default(),
 
+      // POST /auth/login per account (normalized username) + client address: 5 per 15 min (HAP-1091)
+      authAccount: Joi.object({
+        max: Joi.number().default(5),
+        windowMs: Joi.number().default(900000), // 15 minutes
+      }).default(),
+
       // Discovery endpoints
       discovery: Joi.object({
         max: Joi.number().default(100),
@@ -323,7 +332,7 @@ export type ConfigSchema = {
   server: {
     port: number;
     host: string;
-    trustProxy: boolean;
+    trustProxy: boolean | number | string;
   };
   databases: {
     neo4j: {
@@ -424,6 +433,7 @@ export type ConfigSchema = {
       graphql: { max: number; windowMs: number };
       health: { max: number; windowMs: number };
       auth: { max: number; windowMs: number };
+      authAccount: { max: number; windowMs: number };
       discovery: { max: number; windowMs: number };
       admin: { max: number; windowMs: number };
     };

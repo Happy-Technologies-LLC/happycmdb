@@ -162,9 +162,10 @@ beforeAll(async () => {
 
   // Dynamic imports on purpose: the route modules create their Postgres
   // clients at load (BusinessServiceController, Neo4jAuthRepository), so
-  // POSTGRES_DB must name the scratch database first. Login is rate limited per IP.
+  // POSTGRES_DB must name the scratch database first. Login is rate limited per IP and per account+IP (HAP-1091).
   process.env.POSTGRES_DB = SCRATCH_DB;
   process.env.RATE_LIMIT_AUTH_MAX = '1000';
+  process.env.RATE_LIMIT_AUTH_ACCOUNT_MAX = '1000';
   const { authRoutes } = await import('../../src/rest/routes/auth.routes');
   const { getAuthMiddleware } = await import('../../src/auth/auth-bootstrap');
   const { businessServiceRoutes } = await import('../../src/rest/routes/business-service.routes');
@@ -185,6 +186,7 @@ afterAll(async () => {
   await getNeo4jClient().close();
   process.env.POSTGRES_DB = harnessDb;
   delete process.env.RATE_LIMIT_AUTH_MAX;
+  delete process.env.RATE_LIMIT_AUTH_ACCOUNT_MAX;
 
   const client = admin();
   await client.connect();

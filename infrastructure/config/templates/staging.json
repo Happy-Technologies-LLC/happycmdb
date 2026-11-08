@@ -3,7 +3,7 @@
   "server": {
     "port": 3000,
     "host": "0.0.0.0",
-    "trustProxy": true
+    "trustProxy": 1
   },
   "databases": {
     "neo4j": {

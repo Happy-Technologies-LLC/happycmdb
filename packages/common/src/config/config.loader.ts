@@ -125,7 +125,7 @@ export class ConfigurationLoader {
       server: {
         port: env['SERVER_PORT'] ? parseInt(env['SERVER_PORT'], 10) : fileConfig.server?.port,
         host: env['SERVER_HOST'] || fileConfig.server?.host,
-        trustProxy: env['TRUST_PROXY'] === 'true' ? true : fileConfig.server?.trustProxy,
+        trustProxy: env['TRUST_PROXY'] ?? fileConfig.server?.trustProxy,
       },
 
       databases: {
@@ -297,6 +297,14 @@ export class ConfigurationLoader {
             windowMs: env['RATE_LIMIT_AUTH_WINDOW_MS']
               ? parseInt(env['RATE_LIMIT_AUTH_WINDOW_MS'], 10)
               : fileConfig.rateLimit?.endpoints?.auth?.windowMs,
+          },
+          authAccount: {
+            max: env['RATE_LIMIT_AUTH_ACCOUNT_MAX']
+              ? parseInt(env['RATE_LIMIT_AUTH_ACCOUNT_MAX'], 10)
+              : fileConfig.rateLimit?.endpoints?.authAccount?.max,
+            windowMs: env['RATE_LIMIT_AUTH_ACCOUNT_WINDOW_MS']
+              ? parseInt(env['RATE_LIMIT_AUTH_ACCOUNT_WINDOW_MS'], 10)
+              : fileConfig.rateLimit?.endpoints?.authAccount?.windowMs,
           },
           discovery: {
             max: env['RATE_LIMIT_DISCOVERY_MAX']

@@ -20,7 +20,8 @@ import { RateLimitMiddleware } from '../rate-limit.middleware';
 const CLIENT_MAX = 4;
 const ACCOUNT_MAX = 2;
 
-/** Sorted sets as the sliding-window limiter uses them; `down` makes every pipeline fail like a lost connection. */
+/** Sorted sets as the sliding-window limiter uses them; `down` fails every command the way ioredis does after its
+ * retries: exec() resolves, each entry carrying the error. */
 class FakeRedis {
   down = false;
   private sets = new Map<string, number[]>();
@@ -34,10 +35,8 @@ class FakeRedis {
       zcard: (key: string) => ops.push(() => set(key).length),
       zadd: (key: string, score: string) => ops.push(() => set(key).push(Number(score))),
       expire: () => ops.push(() => 1),
-      exec: async () => {
-        if (this.down) throw new Error('connect ECONNREFUSED 127.0.0.1:6379');
-        return ops.map(op => [null, op()]);
-      },
+      exec: async () =>
+        this.down ? ops.map(() => [new Error('Connection is closed.'), null]) : ops.map(op => [null, op()]),
     };
     return pipe;
   }

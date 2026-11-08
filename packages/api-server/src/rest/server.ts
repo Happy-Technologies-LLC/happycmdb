@@ -39,6 +39,7 @@ import { createRateLimitMetricsRoutes } from './routes/rate-limit-metrics.routes
 import { RateLimitMiddleware } from '../middleware/rate-limit.middleware';
 import { getRedisClient } from '@cmdb/database';
 import { loadConfig } from '@cmdb/common';
+import { applyTrustProxy } from './trust-proxy';
 import { getAuthMiddleware } from '../auth/auth-bootstrap';
 
 /**
@@ -93,6 +94,16 @@ export class RestAPIServer {
   }
 
   private setupMiddleware(): void {
+    // HAP-1091: req.ip (every rate-limit key) honours only the configured proxy hops; default trusts none. A config
+    // that does not load trusts none too (the auth routes refuse to start on it anyway).
+    let trustProxy: unknown = false;
+    try {
+      trustProxy = loadConfig().server.trustProxy;
+    } catch (err) {
+      logger.warn('TRUST_PROXY not read; trusting no proxy', { error: (err as Error).message });
+    }
+    applyTrustProxy(this.app, trustProxy);
+
     // CSP configuration to allow Swagger UI
     this.app.use(
       helmet({

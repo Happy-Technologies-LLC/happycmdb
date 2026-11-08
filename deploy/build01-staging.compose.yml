@@ -68,10 +68,13 @@ services:
       - "127.0.0.1:${HAPPYCMDB_API_PORT:-19000}:3000"
     environment:
       NODE_ENV: production
-      # HAP-1091: req.ip = the client behind exactly one proxy (web-ui nginx; local caller -> 127.0.0.1:19080 -> nginx
-      # -> api). Unset would key every UI login on the web-ui container address. Raise to 2 only if a host proxy
-      # (e.g. a tailscale serve mapping to 127.0.0.1:19080) is added in front of nginx.
-      TRUST_PROXY: ${HAPPYCMDB_TRUST_PROXY:-1}
+      # HAP-1091: req.ip = the tailnet client, 2 hops back (operator ruling
+      # approvals/operator-ruling-cmdb-hap1091-staging-trust-proxy-20261108T085406Z.go). Chain: tailnet client ->
+      # tailscale serve :8449 (overwrites XFF with the peer) -> 127.0.0.1:19080 docker-proxy -> web-ui nginx (appends its
+      # remote_addr, the bridge gateway 172.23.0.1) -> api. Any caller reaching nginx through 127.0.0.1:19080, local or
+      # via serve, arrives as 172.23.0.1, so 1 hop would key every staging login on that one address.
+      # If the :8449 serve mapping is removed, staging is loopback-only: set HAPPYCMDB_TRUST_PROXY=1.
+      TRUST_PROXY: ${HAPPYCMDB_TRUST_PROXY:-2}
       PORT: 3000
       STAGING_PUBLIC_URL: ${STAGING_PUBLIC_URL:?STAGING_PUBLIC_URL is required}
       NEO4J_URI: bolt://neo4j:7687

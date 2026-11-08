@@ -220,7 +220,7 @@ it('delivers reconciled tenant provenance to the ML baseline and drift consumers
 
 // HAP-499: system and malformed keys never reach a node; the attribute keys and values are never logged.
 const smuggled = { note: 'n', type: 'secret-type', ci_type: 'x', updated_at: '1970', discovered_at: '1970', organization_id: OTHER,
-  external_id: 'secret-ext', incarnation_id: 'i', _hidden: 'h', 'a b': 'c' };
+  external_id: 'secret-ext', incarnation_id: 'i', metadata: 'x', _hidden: 'h', 'a b': 'c' };
 const leaked = (props: Record<string, unknown>) => Object.keys(smuggled).filter(key => key !== 'note'
   && props[key] === smuggled[key as keyof typeof smuggled]);
 
@@ -240,6 +240,6 @@ it('HAP-499: a merge logs one metadata-only line with the ignored-attribute coun
   await IdentityReconciliationEngine.getInstance().reconcileCI({ ...ci({ serial_number: 'same' }), attributes: smuggled }, OWN, false);
   const calls = Object.values(logger as unknown as Record<string, jest.Mock>).flatMap(log => log.mock.calls);
   expect([leaked(nodes[0] as Record<string, unknown>), calls.flat().filter(arg => typeof arg === 'object' && arg !== null
-    && 'ignored_attribute_count' in arg)]).toEqual([[], [{ ignored_attribute_count: 9 }]]);
+    && 'ignored_attribute_count' in arg)]).toEqual([[], [{ ignored_attribute_count: 10 }]]);
   expect(JSON.stringify(calls)).not.toMatch(/secret|_hidden|a b/);
 });

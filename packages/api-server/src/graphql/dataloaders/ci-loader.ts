@@ -9,7 +9,7 @@ import {
   Neo4jClient, CITraversalLimitError, MAX_CI_TRAVERSAL_NODES,
   runWithinCITraversalBudget, type CITraversalWork,
 } from '@cmdb/database';
-import { CI } from '@cmdb/common';
+import { CI, parseStoredMetadata } from '@cmdb/common';
 
 /**
  * Key of every CI dataloader: the CI id plus the caller's organization. The
@@ -60,7 +60,7 @@ function nodeToCI(node: Node): CI {
     _incarnation_id: props.incarnation_id,
     _updated_at: props.updated_at,
     _discovered_at: props.discovered_at,
-    _metadata: props.metadata ? JSON.parse(props.metadata) : {},
+    _metadata: parseStoredMetadata(props.metadata),
   };
 }
 

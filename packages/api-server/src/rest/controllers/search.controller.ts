@@ -4,7 +4,7 @@
 import { Request, Response } from 'express';
 import { getNeo4jClient } from '@cmdb/database';
 import { requestOrganizationId } from '../../middleware/auth.middleware';
-import { logger } from '@cmdb/common';
+import { logger, parseStoredMetadata } from '@cmdb/common';
 import neo4j from 'neo4j-driver';
 import { literalFulltextQuery } from './literal-fulltext-query';
 import { readCIList, CIListUnavailableError, CI_LIST_UNAVAILABLE_RESPONSE } from '../../read-admission';
@@ -78,7 +78,7 @@ export class SearchController {
               type: props.type, status: props.status, environment: props.environment,
               created_at: props.created_at, updated_at: props.updated_at,
               discovered_at: props.discovered_at,
-              metadata: props.metadata ? JSON.parse(props.metadata) : {},
+              metadata: parseStoredMetadata(props.metadata),
             };
           });
           return { cis, total };
@@ -152,7 +152,7 @@ export class SearchController {
                 status: props['status'], environment: props['environment'],
                 created_at: props['created_at'], updated_at: props['updated_at'],
                 discovered_at: props['discovered_at'],
-                metadata: typeof props['metadata'] === 'string' ? JSON.parse(props['metadata']) : {},
+                metadata: parseStoredMetadata(props['metadata']),
               }, score: row.get('score') as number };
             }) };
         } finally {
@@ -219,7 +219,7 @@ export class SearchController {
               type: props.type, status: props.status, environment: props.environment,
               created_at: props.created_at, updated_at: props.updated_at,
               discovered_at: props.discovered_at,
-              metadata: props.metadata ? JSON.parse(props.metadata) : {},
+              metadata: parseStoredMetadata(props.metadata),
             };
           });
         } finally {
@@ -276,7 +276,7 @@ export class SearchController {
               type: props.type, status: props.status, environment: props.environment,
               created_at: props.created_at, updated_at: props.updated_at,
               discovered_at: props.discovered_at,
-              metadata: props.metadata ? JSON.parse(props.metadata) : {},
+              metadata: parseStoredMetadata(props.metadata),
             };
           });
           return { cis, total };

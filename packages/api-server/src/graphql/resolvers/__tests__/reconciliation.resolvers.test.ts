@@ -16,6 +16,7 @@ import type { TokenPayload } from '../../../auth/types';
 const mockQuery = jest.fn();
 const mockGetPostgresClient = jest.fn();
 const mockReconcileCI = jest.fn();
+const mockFindExistingCI = jest.fn();
 const mockResolveConflict = jest.fn();
 const mockGetIdentityReconciliationEngine = jest.fn();
 
@@ -39,7 +40,8 @@ jest.mock('@cmdb/identity-resolution', () => ({
 // reconfigure per-test: the captured `{ query: mockQuery }` object keeps
 // referencing the same mock function identity across jest's resetMocks.
 mockGetPostgresClient.mockReturnValue({ query: mockQuery });
-mockGetIdentityReconciliationEngine.mockReturnValue({ mergeCI: mockReconcileCI, resolveConflict: mockResolveConflict });
+mockGetIdentityReconciliationEngine.mockReturnValue({ mergeCI: mockReconcileCI, resolveConflict: mockResolveConflict,
+  findExistingCI: mockFindExistingCI });
 
 // Imported after the mocks above so the module picks up the mocked
 // singletons at its own module-load time (`getPostgresClient()` and
@@ -123,6 +125,18 @@ describe('mergeCI', () => {
   it('refuses a source the T2 history column cannot hold (256 chars) before the engine', async () => {
     await expectGraphQLErrorCode(mergeCI(null, { ...args, _source: 's'.repeat(256) }, contextWith(operatorUser)), 'BAD_USER_INPUT');
     expect(mockReconcileCI).not.toHaveBeenCalled();
+  });
+
+  it('HAP-499: an internal failure never reflects the database error (mergeCI, findMatches, listConflicts)', async () => {
+    const raw = new Error("Node(42) already exists with label `CI` and property `external_id` = 'secret-ext'");
+    [mockReconcileCI, mockFindExistingCI, mockQuery].forEach(mock => mock.mockRejectedValue(raw));
+    const _neo4jClient = { assertJournalReady: async () => undefined } as unknown as GraphQLContext['_neo4jClient']; // gate open
+    const context = { ...contextWith(operatorUser), _neo4jClient };
+    const { findMatches, listConflicts } = reconciliationResolvers.ReconciliationQuery;
+    const errors = await Promise.all([mergeCI(null, args, context), findMatches(null, { _identifiers: { _serialNumber: 's' } }, context),
+      listConflicts(null, {}, context)].map(call => call.then(() => null, (error: GraphQLError) => error)));
+    expect(errors.map(error => [error?.extensions['code'], /secret-ext|Node\(42\)/.test(JSON.stringify(error?.toJSON()))]))
+      .toEqual(Array(3).fill(['INTERNAL_SERVER_ERROR', false]));
   });
 });
 

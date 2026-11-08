@@ -3,6 +3,7 @@
 
 import { IdentityReconciliationEngine } from '../../src/engine/identity-reconciliation-engine';
 import { startMLEngines } from '../../../ai-ml-engine/src/index';
+import { logger } from '@cmdb/common';
 
 const query = jest.fn();
 const run = jest.fn();
@@ -215,4 +216,30 @@ it('delivers reconciled tenant provenance to the ML baseline and drift consumers
     for (const listener of process.listeners('SIGINT')) if (!sigint.includes(listener)) process.removeListener('SIGINT', listener);
     listeners.clear();
   }
+});
+
+// HAP-499: system and malformed keys never reach a node; the attribute keys and values are never logged.
+const smuggled = { note: 'n', type: 'secret-type', ci_type: 'x', updated_at: '1970', discovered_at: '1970', organization_id: OTHER,
+  external_id: 'secret-ext', incarnation_id: 'i', _hidden: 'h', 'a b': 'c' };
+const leaked = (props: Record<string, unknown>) => Object.keys(smuggled).filter(key => key !== 'note'
+  && props[key] === smuggled[key as keyof typeof smuggled]);
+
+it('HAP-499: the legacy reconcile create writes only mergeable attributes and identifiers', async () => {
+  const created: Record<string, unknown>[] = [];
+  run.mockImplementation(async (cypher: string, params: { properties: Record<string, unknown> }) => {
+    if (cypher.includes('CREATE (ci:CI:')) created.push(params.properties);
+    return { records: cypher.includes('CREATE (ci:CI:') ? [{ get: () => params.properties.id }] : [] };
+  });
+  await IdentityReconciliationEngine.getInstance().reconcileCI({ ...ci({ serial_number: 'new', external_id: 'secret-ext' }),
+    attributes: smuggled }, OWN);
+  expect([leaked(created[0]!), created[0]!.note, created[0]!.serial_number]).toEqual([[], 'n', 'new']);
+});
+
+it('HAP-499: a merge logs one metadata-only line with the ignored-attribute count', async () => {
+  nodes = [{ id: 'target', organization_id: OWN, serial_number: 'same' }];
+  await IdentityReconciliationEngine.getInstance().reconcileCI({ ...ci({ serial_number: 'same' }), attributes: smuggled }, OWN, false);
+  const calls = Object.values(logger as unknown as Record<string, jest.Mock>).flatMap(log => log.mock.calls);
+  expect([leaked(nodes[0] as Record<string, unknown>), calls.flat().filter(arg => typeof arg === 'object' && arg !== null
+    && 'ignored_attribute_count' in arg)]).toEqual([[], [{ ignored_attribute_count: 9 }]]);
+  expect(JSON.stringify(calls)).not.toMatch(/secret|_hidden|a b/);
 });

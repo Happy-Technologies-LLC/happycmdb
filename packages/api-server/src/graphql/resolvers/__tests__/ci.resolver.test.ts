@@ -37,6 +37,7 @@ const ORG_B = '22222222-2222-4222-8222-222222222222';
 jest.mock('@cmdb/common', () => ({
   ...jest.requireActual('@cmdb/common/utils/validators'),
   ...jest.requireActual('@cmdb/common/types/ci.types'),
+  ...jest.requireActual('@cmdb/common/utils/stored-metadata'),
   logger: {
     info: jest.fn(),
     error: jest.fn(),

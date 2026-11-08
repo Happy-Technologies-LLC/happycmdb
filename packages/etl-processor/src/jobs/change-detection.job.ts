@@ -15,7 +15,7 @@
 
 import { Job } from 'bullmq';
 import { Neo4jClient, PostgresClient } from '@cmdb/database';
-import { logger, CI } from '@cmdb/common';
+import { logger, CI, parseStoredMetadata } from '@cmdb/common';
 import { subHours } from 'date-fns';
 import { DimensionTransformer } from '../transformers/dimension-transformer';
 
@@ -198,7 +198,7 @@ export class ChangeDetectionJob {
           _created_at: props.created_at,
           _updated_at: props.updated_at,
           _discovered_at: props.discovered_at,
-          _metadata: props.metadata ? JSON.parse(props.metadata) : {}
+          _metadata: parseStoredMetadata(props.metadata)
         };
       });
 

@@ -24,6 +24,7 @@ import {
   ciUpdateSchema,
   validate,
   ciIncarnationId,
+  parseStoredMetadata,
 } from '@cmdb/common';
 import { analyticsResolvers } from './analytics.resolver';
 import { connectorResolvers } from './connector.resolvers';
@@ -262,10 +263,8 @@ function convertDbEnumToGraphQL(value: string): string {
 }
 
 function parseMetadata(metadata: unknown): Record<string, unknown> {
-  if (typeof metadata === 'string') {
-    return JSON.parse(metadata) as Record<string, unknown>;
-  }
-  return metadata && typeof metadata === 'object' ? metadata as Record<string, unknown> : {};
+  return typeof metadata === 'string' ? parseStoredMetadata(metadata)
+    : metadata && typeof metadata === 'object' ? metadata as Record<string, unknown> : {};
 }
 
 /**

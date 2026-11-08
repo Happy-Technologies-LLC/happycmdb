@@ -35,6 +35,7 @@ export {
 // Export retry utilities
 export { withRetry } from './utils/retry';
 export { ciIncarnationId } from './utils/ci-incarnation';
+export { parseStoredMetadata } from './utils/stored-metadata';
 export {
   safeDiscoveryScanConfig, strictDiscoveryDefinitionConfig, publicDiscoveryDefinitionConfig,
   hasUnsafeDiscoveryDefinitionConfig, type SafeDiscoveryScanConfig,

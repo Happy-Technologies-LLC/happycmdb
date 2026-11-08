@@ -7,7 +7,7 @@ import neo4j, { AuthToken, Config, Driver, Session, Node, Relationship, Path, Pa
 import { randomUUID } from 'crypto';
 import {
   logger, CI, CIInput, ciIncarnationId, CIAnalyticsLimitError, MAX_CI_ANALYTICS_NODES, sanitizeCITypeForLabel, validateRelationshipType,
-  isSourceOwnedCIType, SourceOwnedError,
+  isSourceOwnedCIType, SourceOwnedError, parseStoredMetadata,
 } from '@cmdb/common';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -927,7 +927,7 @@ export class Neo4jClient {
       _incarnation_id: props.incarnation_id,
       _updated_at: props.updated_at,
       _discovered_at: props.discovered_at,
-      _metadata: props.metadata ? JSON.parse(props.metadata) : {},
+      _metadata: parseStoredMetadata(props.metadata),
     };
   }
 }

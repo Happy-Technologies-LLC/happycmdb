@@ -210,7 +210,10 @@ beforeAll(async () => {
   await addUsers(0, SMALL);
 
   const service = new AuthService(authConfig as never, new Neo4jAuthRepository());
-  const limiter = { limit: () => (_q: unknown, _s: unknown, next: () => void) => next() } as unknown as RateLimitMiddleware;
+  // No rate limiting in the measured path. HAP-1211 H2 ruling A: refresh asks endpointBudget('rest') at wiring, and
+  // a max of 0 (unlimited) adds no limiter. The pre-H2 base run never asks, so the extra member is harmless there.
+  const pass = () => (_q: unknown, _s: unknown, next: () => void) => next();
+  const limiter = { limit: pass, custom: pass, endpointBudget: () => ({ _max: 0, _windowMs: 0 }) } as unknown as RateLimitMiddleware;
   const app = express();
   app.use(express.json());
   app.use('/api/v1/auth', new AuthController(service, new ValidationMiddleware(), new AuthMiddleware(service, authConfig as never), limiter).getRouter());

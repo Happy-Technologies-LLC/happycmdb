@@ -72,11 +72,16 @@ export class AuthController {
      * POST /api/auth/refresh
      * Refresh access token using refresh token
      * HAP-1211 H1: read only from the refresh cookie (__Secure-cmdb_rt since H2), after X-CMDB-Auth is checked.
+     * HAP-1211 H2 ruling A: the web UI renews every session through here, so refresh has its own bucket
+     * (auth-refresh) at the configured REST budget and never uses up login's brute-force budget. REST max 0 means
+     * unlimited (as in limit()), so no limiter then (addendum).
      */
+    const refreshBudget = this.rateLimiter.endpointBudget('rest');
+    const refreshLimit = refreshBudget._max === 0 ? [] : [this.rateLimiter.custom(refreshBudget, 'auth-refresh')];
     this.router.post(
       '/refresh',
       requireAuthHeader,
-      this.rateLimiter.limit('auth'),
+      ...refreshLimit,
       this.validator.validate(authSchemas._refreshToken),
       this.refreshToken.bind(this)
     );

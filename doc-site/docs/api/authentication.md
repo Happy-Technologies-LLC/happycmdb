@@ -452,7 +452,7 @@ All authentication endpoints are rate-limited to prevent abuse.
 | Endpoint | Limit | Window |
 |----------|-------|--------|
 | `POST /api/auth/login` | 20 requests | 1 hour per IP |
-| `POST /api/auth/refresh` | 20 requests | 1 hour per IP |
+| `POST /api/auth/refresh` | The REST budget (`RATE_LIMIT_REST_MAX`, default 1000; `0` = unlimited) under its own key, so renewals never use up the login limit (HAP-1211 H2) | `RATE_LIMIT_REST_WINDOW_MS` (default 1 hour) per IP |
 | `POST /api/auth/api-key` | 10 requests | 1 hour per user |
 | Other endpoints | 1000 requests | 1 hour per user |
 

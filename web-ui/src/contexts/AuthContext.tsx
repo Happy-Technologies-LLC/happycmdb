@@ -83,14 +83,14 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     };
   }, []);
 
-  // Renew before expiry. Only a refusal (401) ends the session; a network error leaves the 401 path to decide.
+  // Renew before expiry. A failed renewal (refused, past the 7-day cap, rate-limited) ends the session, never retried.
   useEffect(() => {
     const expiresAt = state.isAuthenticated && state.token ? decodeToken(state.token)?.exp : undefined;
     if (!expiresAt) return undefined;
     const left = expiresAt * 1000 - Date.now();
     const timer = setTimeout(() => {
-      api.refresh().catch((error: { response?: { status?: number } }) => {
-        if (error.response?.status !== 401) return;
+      api.refresh().catch((error) => {
+        logClientError('Session renewal failed', error);
         removeToken();
         setState(SIGNED_OUT);
       });

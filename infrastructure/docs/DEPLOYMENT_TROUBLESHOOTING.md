@@ -421,7 +421,7 @@ docker ps --filter "name=cmdb-neo4j"
 docker logs cmdb-neo4j --tail 50
 
 # Test connection
-docker exec cmdb-neo4j cypher-shell -u neo4j -p <PASSWORD> "RETURN 1"
+docker exec -e NEO4J_PASSWORD cmdb-neo4j cypher-shell -u neo4j "RETURN 1"
 ```
 
 **Common Causes**:
@@ -668,7 +668,7 @@ sleep 60
 curl http://localhost:3000/api/v1/health
 
 # Check database connections
-docker exec cmdb-neo4j cypher-shell -u neo4j -p <PASSWORD> "RETURN 1"
+docker exec -e NEO4J_PASSWORD cmdb-neo4j cypher-shell -u neo4j "RETURN 1"
 docker exec cmdb-postgres psql -U cmdb_user -d cmdb -c "SELECT 1"
 
 # Restart API server
@@ -762,7 +762,7 @@ curl -w "Time: %{time_total}s\n" -o /dev/null -s \
   http://localhost:3000/api/v1/cis?limit=100
 
 # Check database query performance
-docker exec cmdb-neo4j cypher-shell -u neo4j -p <PASSWORD> \
+docker exec -e NEO4J_PASSWORD cmdb-neo4j cypher-shell -u neo4j \
   "PROFILE MATCH (n:CI) RETURN n LIMIT 100"
 
 # Check for slow queries
@@ -772,7 +772,7 @@ docker logs cmdb-api-server | grep "Query took"
 **Solution**:
 ```bash
 # Add database indexes
-docker exec cmdb-neo4j cypher-shell -u neo4j -p <PASSWORD> \
+docker exec -e NEO4J_PASSWORD cmdb-neo4j cypher-shell -u neo4j \
   "CREATE INDEX ci_name_index IF NOT EXISTS FOR (n:CI) ON (n.ci_name)"
 
 # Tune Neo4j memory

@@ -289,7 +289,7 @@ Neo4j requires restart to load new certificates:
 docker-compose -f infrastructure/docker/docker-compose.yml restart neo4j
 
 # Verify SSL is active
-docker exec cmdb-neo4j cypher-shell -u neo4j -p "$NEO4J_PASSWORD" \
+docker exec -e NEO4J_PASSWORD cmdb-neo4j cypher-shell -u neo4j \
   "CALL dbms.listConfig() YIELD name, value WHERE name CONTAINS 'ssl' RETURN name, value;"
 ```
 
@@ -440,7 +440,7 @@ docker-compose -f infrastructure/docker/docker-compose.yml restart postgres
 docker logs cmdb-neo4j | grep -i ssl
 
 # Verify SSL configuration
-docker exec cmdb-neo4j cypher-shell -u neo4j -p "$NEO4J_PASSWORD" \
+docker exec -e NEO4J_PASSWORD cmdb-neo4j cypher-shell -u neo4j \
   "CALL dbms.listConfig() YIELD name, value WHERE name CONTAINS 'ssl' RETURN name, value;"
 ```
 
@@ -492,7 +492,7 @@ sudo ./setup-ssl.sh
 docker exec cmdb-postgres psql "sslmode=require host=postgres user=cmdb_user dbname=cmdb"
 
 # Test Neo4j bolt+s connection
-docker exec cmdb-neo4j cypher-shell -a bolt+s://localhost:7687 -u neo4j -p "$NEO4J_PASSWORD"
+docker exec -e NEO4J_PASSWORD cmdb-neo4j cypher-shell -a bolt+s://localhost:7687 -u neo4j
 ```
 
 **Solution**:
@@ -628,7 +628,7 @@ psql "sslmode=require host=localhost port=5433 user=cmdb_user dbname=cmdb" \
   -c "SELECT ssl_is_used();"
 
 # Test Neo4j encrypted connection
-cypher-shell -a bolt+s://localhost:7687 -u neo4j -p password \
+cypher-shell -a bolt+s://localhost:7687 -u neo4j \
   "RETURN 'Connection successful' AS message;"
 ```
 

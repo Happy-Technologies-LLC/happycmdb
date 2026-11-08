@@ -266,7 +266,7 @@ curl http://localhost:3000/api/health
 
 **Neo4j**:
 ```bash
-docker exec cmdb-neo4j cypher-shell -u neo4j -p "$NEO4J_PASSWORD" \
+docker exec -e NEO4J_PASSWORD cmdb-neo4j cypher-shell -u neo4j \
   "MATCH (n) RETURN count(n) LIMIT 1;"
 ```
 

@@ -34,7 +34,7 @@ docker logs cmdb-postgres --tail=100
 docker logs cmdb-redis --tail=100
 
 # Check health status
-docker exec cmdb-neo4j cypher-shell -u neo4j -p "$NEO4J_PASSWORD" "RETURN 1;"
+docker exec -e NEO4J_PASSWORD cmdb-neo4j cypher-shell -u neo4j "RETURN 1;"
 docker exec cmdb-postgres pg_isready -U cmdb_user -d cmdb
 docker exec cmdb-redis redis-cli ping
 ```
@@ -57,7 +57,7 @@ docker exec cmdb-postgres df -h
 
 ```bash
 # Neo4j - Check active connections
-docker exec cmdb-neo4j cypher-shell -u neo4j -p "$NEO4J_PASSWORD" \
+docker exec -e NEO4J_PASSWORD cmdb-neo4j cypher-shell -u neo4j \
   "CALL dbms.listConnections() YIELD connectionId, connector, userAgent RETURN count(*) as total;"
 
 # PostgreSQL - Check connection count
@@ -120,7 +120,7 @@ docker restart cmdb-neo4j
 sleep 60
 
 # Verify connection
-docker exec cmdb-neo4j cypher-shell -u neo4j -p "$NEO4J_PASSWORD" "RETURN 1;"
+docker exec -e NEO4J_PASSWORD cmdb-neo4j cypher-shell -u neo4j "RETURN 1;"
 ```
 
 #### Step 2: Check Neo4j Memory Settings
@@ -328,7 +328,7 @@ If issue persists after 30 minutes:
 
 ```bash
 # Quick health check all databases
-docker exec cmdb-neo4j cypher-shell -u neo4j -p "$NEO4J_PASSWORD" "RETURN 'OK';"
+docker exec -e NEO4J_PASSWORD cmdb-neo4j cypher-shell -u neo4j "RETURN 'OK';"
 docker exec cmdb-postgres pg_isready
 docker exec cmdb-redis redis-cli ping
 

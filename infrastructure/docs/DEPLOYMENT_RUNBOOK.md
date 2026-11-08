@@ -501,7 +501,7 @@ time curl -X POST http://localhost:3000/graphql \
   -d '{"query":"{ cis(limit: 100) { id ci_name ci_type } }"}'
 
 # Database query performance
-docker exec cmdb-neo4j cypher-shell -u neo4j -p <PASSWORD> \
+docker exec -e NEO4J_PASSWORD cmdb-neo4j cypher-shell -u neo4j \
   "PROFILE MATCH (n:CI) RETURN count(n)"
 ```
 

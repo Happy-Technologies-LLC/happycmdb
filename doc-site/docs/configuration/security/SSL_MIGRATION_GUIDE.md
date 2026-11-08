@@ -133,7 +133,7 @@ docker exec cmdb-postgres psql -U cmdb_user -d cmdb \
 # version | TLSv1.3
 
 # Verify Neo4j SSL
-docker exec cmdb-neo4j cypher-shell -u neo4j -p "$NEO4J_PASSWORD" \
+docker exec -e NEO4J_PASSWORD cmdb-neo4j cypher-shell -u neo4j \
   "CALL dbms.listConfig() YIELD name, value
    WHERE name IN ['dbms.ssl.policy.bolt.enabled', 'dbms.connector.bolt.tls_level']
    RETURN name, value;"
@@ -392,7 +392,7 @@ psql "sslmode=require host=localhost port=5433 user=cmdb_user dbname=cmdb" \
 
 ```bash
 # Test from host machine
-cypher-shell -a bolt+s://localhost:7687 -u neo4j -p "$NEO4J_PASSWORD" \
+cypher-shell -a bolt+s://localhost:7687 -u neo4j \
   "RETURN 'SSL connection successful' AS message;"
 
 # Expected output:

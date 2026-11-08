@@ -107,7 +107,7 @@ openssl rand -base64 32  # Grafana
     ```
   - [ ] Verify Neo4j SSL:
     ```bash
-    docker exec cmdb-neo4j cypher-shell -u neo4j -p "$NEO4J_PASSWORD" \
+    docker exec -e NEO4J_PASSWORD cmdb-neo4j cypher-shell -u neo4j \
       "CALL dbms.listConfig() YIELD name, value WHERE name CONTAINS 'ssl' RETURN name, value;"
     ```
 
@@ -526,7 +526,7 @@ ls -lh /var/backups/happycmdb/
 **Solution**: Check database health and credentials:
 ```bash
 # Check Neo4j
-docker exec cmdb-neo4j cypher-shell -u neo4j -p "$NEO4J_PASSWORD" "RETURN 1"
+docker exec -e NEO4J_PASSWORD cmdb-neo4j cypher-shell -u neo4j "RETURN 1"
 
 # Check PostgreSQL
 docker exec cmdb-postgres psql -U cmdb_user -d cmdb -c "SELECT 1"

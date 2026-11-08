@@ -189,7 +189,7 @@ docker logs cmdb-api-server --follow --tail=100
 curl http://localhost:9090/api/v1/alerts | jq
 
 # Database status
-docker exec cmdb-neo4j cypher-shell -u neo4j -p "$NEO4J_PASSWORD" "RETURN 1;"
+docker exec -e NEO4J_PASSWORD cmdb-neo4j cypher-shell -u neo4j "RETURN 1;"
 docker exec cmdb-postgres pg_isready -U cmdb_user
 
 # System resources

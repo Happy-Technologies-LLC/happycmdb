@@ -424,7 +424,7 @@ node --inspect-brk node_modules/.bin/jest tests/e2e/full-discovery-flow.test.ts
 curl http://localhost:3001/health
 
 # Query Neo4j
-docker exec -it cmdb-neo4j-e2e cypher-shell -u neo4j -p test_password "MATCH (n) RETURN count(n)"
+docker exec -it -e NEO4J_PASSWORD cmdb-neo4j-e2e cypher-shell -u neo4j "MATCH (n) RETURN count(n)"
 
 # Query PostgreSQL
 docker exec -it cmdb-postgres-e2e psql -U test_user -d cmdb_test -c "SELECT COUNT(*) FROM dim_ci"

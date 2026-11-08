@@ -69,18 +69,18 @@ done
 **Neo4j**:
 ```bash
 # Check slow queries
-docker exec cmdb-neo4j cypher-shell -u neo4j -p "$NEO4J_PASSWORD" \
+docker exec -e NEO4J_PASSWORD cmdb-neo4j cypher-shell -u neo4j \
   "CALL dbms.listQueries() YIELD queryId, query, elapsedTimeMillis
    WHERE elapsedTimeMillis > 1000
    RETURN queryId, query, elapsedTimeMillis
    ORDER BY elapsedTimeMillis DESC;"
 
 # Check connection pool
-docker exec cmdb-neo4j cypher-shell -u neo4j -p "$NEO4J_PASSWORD" \
+docker exec -e NEO4J_PASSWORD cmdb-neo4j cypher-shell -u neo4j \
   "CALL dbms.listConnections();"
 
 # Check page cache hit rate
-docker exec cmdb-neo4j cypher-shell -u neo4j -p "$NEO4J_PASSWORD" \
+docker exec -e NEO4J_PASSWORD cmdb-neo4j cypher-shell -u neo4j \
   "CALL dbms.queryJmx('org.neo4j:instance=kernel#0,name=Page cache')
    YIELD attributes
    RETURN attributes.PageCacheHitRatio;"
@@ -186,12 +186,12 @@ docker exec cmdb-postgres psql -U cmdb_user -d cmdb -c \
 **Neo4j**:
 ```bash
 # List and kill slow queries
-docker exec cmdb-neo4j cypher-shell -u neo4j -p "$NEO4J_PASSWORD" \
+docker exec -e NEO4J_PASSWORD cmdb-neo4j cypher-shell -u neo4j \
   "CALL dbms.listQueries() YIELD queryId, elapsedTimeMillis
    WHERE elapsedTimeMillis > 10000
    RETURN queryId;" | \
 while read queryId; do
-  docker exec cmdb-neo4j cypher-shell -u neo4j -p "$NEO4J_PASSWORD" \
+  docker exec -e NEO4J_PASSWORD cmdb-neo4j cypher-shell -u neo4j \
     "CALL dbms.killQuery('$queryId');"
 done
 ```
@@ -215,7 +215,7 @@ docker exec cmdb-postgres psql -U cmdb_user -d cmdb -c \
   "CREATE INDEX CONCURRENTLY idx_connectors_enabled ON connectors(enabled) WHERE enabled = true;"
 
 # Neo4j - Add index on frequently searched properties
-docker exec cmdb-neo4j cypher-shell -u neo4j -p "$NEO4J_PASSWORD" \
+docker exec -e NEO4J_PASSWORD cmdb-neo4j cypher-shell -u neo4j \
   "CREATE INDEX ci_name_index IF NOT EXISTS FOR (n:CI) ON (n.name);"
 ```
 

@@ -90,7 +90,7 @@ docker stats --no-stream
 docker restart cmdb-api-server
 
 # Database health checks
-docker exec cmdb-neo4j cypher-shell -u neo4j -p "$NEO4J_PASSWORD" "RETURN 1;"
+docker exec -e NEO4J_PASSWORD cmdb-neo4j cypher-shell -u neo4j "RETURN 1;"
 docker exec cmdb-postgres pg_isready -U cmdb_user
 
 # Check active alerts

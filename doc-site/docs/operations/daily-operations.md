@@ -81,7 +81,7 @@ curl -X GET https://cmdb.example.com/api/v1/discovery/jobs?status=failed \
 
 ```bash
 # Neo4j health
-kubectl exec -n cmdb neo4j-0 -- cypher-shell -u neo4j -p <password> \
+kubectl exec -n cmdb neo4j-0 -- sh -c 'NEO4J_PASSWORD="${NEO4J_AUTH#*/}" exec cypher-shell -u neo4j "$@"' _ \
   "CALL dbms.queryJmx('org.neo4j:instance=kernel#0,name=Store sizes') YIELD attributes RETURN attributes"
 
 # PostgreSQL health
@@ -93,7 +93,7 @@ kubectl exec -n cmdb postgresql-0 -- \
   "
 
 # Redis health
-kubectl exec -n cmdb redis-0 -- redis-cli -a <password> INFO stats
+kubectl exec -n cmdb redis-0 -- sh -c 'REDISCLI_AUTH="$REDIS_PASSWORD" exec redis-cli "$@"' _ INFO stats
 ```
 
 ### 6. Storage Capacity
@@ -238,7 +238,7 @@ kubectl edit deployment/discovery-engine -n cmdb
 
 ```bash
 # Using Redis CLI
-kubectl exec -n cmdb redis-0 -- redis-cli -a <password> \
+kubectl exec -n cmdb redis-0 -- sh -c 'REDISCLI_AUTH="$REDIS_PASSWORD" exec redis-cli "$@"' _ \
   LLEN bullmq:discovery:aws:wait
 
 # Or via BullMQ Board (if deployed)
@@ -249,13 +249,13 @@ open https://cmdb.example.com/queues
 
 ```bash
 # Clear all jobs in a queue (use with caution)
-kubectl exec -n cmdb redis-0 -- redis-cli -a <password> \
+kubectl exec -n cmdb redis-0 -- sh -c 'REDISCLI_AUTH="$REDIS_PASSWORD" exec redis-cli "$@"' _ \
   DEL bullmq:discovery:aws:wait \
       bullmq:discovery:aws:active \
       bullmq:discovery:aws:completed
 
 # Or clear failed jobs only
-kubectl exec -n cmdb redis-0 -- redis-cli -a <password> \
+kubectl exec -n cmdb redis-0 -- sh -c 'REDISCLI_AUTH="$REDIS_PASSWORD" exec redis-cli "$@"' _ \
   DEL bullmq:discovery:aws:failed
 ```
 
@@ -348,7 +348,7 @@ curl -X GET https://cmdb.example.com/api/v1/etl/status \
 #### Check Database Statistics
 
 ```bash
-kubectl exec -n cmdb neo4j-0 -- cypher-shell -u neo4j -p <password> "
+kubectl exec -n cmdb neo4j-0 -- sh -c 'NEO4J_PASSWORD="${NEO4J_AUTH#*/}" exec cypher-shell -u neo4j "$@"' _ "
   CALL apoc.meta.stats()
   YIELD nodeCount, relCount, labelCount, propertyKeyCount
   RETURN nodeCount, relCount, labelCount, propertyKeyCount;
@@ -359,11 +359,11 @@ kubectl exec -n cmdb neo4j-0 -- cypher-shell -u neo4j -p <password> "
 
 ```bash
 # List all indexes
-kubectl exec -n cmdb neo4j-0 -- cypher-shell -u neo4j -p <password> \
+kubectl exec -n cmdb neo4j-0 -- sh -c 'NEO4J_PASSWORD="${NEO4J_AUTH#*/}" exec cypher-shell -u neo4j "$@"' _ \
   "SHOW INDEXES;"
 
 # Rebuild specific index
-kubectl exec -n cmdb neo4j-0 -- cypher-shell -u neo4j -p <password> "
+kubectl exec -n cmdb neo4j-0 -- sh -c 'NEO4J_PASSWORD="${NEO4J_AUTH#*/}" exec cypher-shell -u neo4j "$@"' _ "
   DROP INDEX ci_id_index IF EXISTS;
   CREATE INDEX ci_id_index FOR (n:CI) ON (n.id);
 "
@@ -403,18 +403,18 @@ kubectl exec -n cmdb postgresql-0 -- \
 #### Check Memory Usage
 
 ```bash
-kubectl exec -n cmdb redis-0 -- redis-cli -a <password> INFO memory
+kubectl exec -n cmdb redis-0 -- sh -c 'REDISCLI_AUTH="$REDIS_PASSWORD" exec redis-cli "$@"' _ INFO memory
 ```
 
 #### Clear Cache
 
 ```bash
 # Clear all cache (use with caution)
-kubectl exec -n cmdb redis-0 -- redis-cli -a <password> FLUSHDB
+kubectl exec -n cmdb redis-0 -- sh -c 'REDISCLI_AUTH="$REDIS_PASSWORD" exec redis-cli "$@"' _ FLUSHDB
 
 # Clear specific key pattern
-kubectl exec -n cmdb redis-0 -- redis-cli -a <password> \
-  --scan --pattern 'cache:ci:*' | xargs redis-cli -a <password> DEL
+kubectl exec -n cmdb redis-0 -- sh -c 'REDISCLI_AUTH="$REDIS_PASSWORD" exec redis-cli "$@"' _ \
+  --scan --pattern 'cache:ci:*' | REDISCLI_AUTH="$REDIS_PASSWORD" xargs redis-cli DEL
 ```
 
 ## Log Management
@@ -487,11 +487,11 @@ env:
 
 ```bash
 # Adjust Redis maxmemory
-kubectl exec -n cmdb redis-0 -- redis-cli -a <password> \
+kubectl exec -n cmdb redis-0 -- sh -c 'REDISCLI_AUTH="$REDIS_PASSWORD" exec redis-cli "$@"' _ \
   CONFIG SET maxmemory 8gb
 
 # Set eviction policy
-kubectl exec -n cmdb redis-0 -- redis-cli -a <password> \
+kubectl exec -n cmdb redis-0 -- sh -c 'REDISCLI_AUTH="$REDIS_PASSWORD" exec redis-cli "$@"' _ \
   CONFIG SET maxmemory-policy allkeys-lru
 ```
 

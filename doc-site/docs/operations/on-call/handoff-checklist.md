@@ -228,7 +228,7 @@ vpn-cli status
 ssh production-api-server-1
 
 # Test database access
-docker exec cmdb-neo4j cypher-shell -u neo4j -p "$NEO4J_PASSWORD" "RETURN 1;"
+docker exec -e NEO4J_PASSWORD cmdb-neo4j cypher-shell -u neo4j "RETURN 1;"
 docker exec cmdb-postgres psql -U cmdb_user -d cmdb -c "SELECT 1;"
 
 # Test monitoring access

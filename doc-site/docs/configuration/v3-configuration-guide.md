@@ -739,7 +739,7 @@ grep -E "JWT_SECRET|NEO4J_PASSWORD|POSTGRES_PASSWORD" .env
 **Check**:
 ```bash
 # Test Neo4j connection
-docker exec cmdb-neo4j cypher-shell -u neo4j -p "$NEO4J_PASSWORD" "RETURN 1;"
+docker exec -e NEO4J_PASSWORD cmdb-neo4j cypher-shell -u neo4j "RETURN 1;"
 
 # Test PostgreSQL connection
 docker exec cmdb-postgres psql -U cmdb_user -d cmdb -c "SELECT 1;"

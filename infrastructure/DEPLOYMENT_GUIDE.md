@@ -314,7 +314,7 @@ kubectl exec -it neo4j-0 -n happycmdb-cmdb -- bash
 /scripts/init-neo4j-cluster.sh
 
 # Verify Neo4j cluster
-kubectl exec neo4j-0 -n happycmdb-cmdb -- cypher-shell -u neo4j -p PASSWORD "CALL dbms.cluster.overview()"
+kubectl exec neo4j-0 -n happycmdb-cmdb -- sh -c 'NEO4J_PASSWORD="${NEO4J_AUTH#*/}" exec cypher-shell -u neo4j "$@"' _ "CALL dbms.cluster.overview()"
 
 # Kafka topics (wait for Job to complete)
 kubectl get job redis-cluster-init -n happycmdb-cmdb
@@ -617,7 +617,7 @@ ORDER BY mean_exec_time DESC
 LIMIT 10;"
 
 # Check Neo4j query performance
-kubectl exec neo4j-0 -n happycmdb-cmdb -- cypher-shell -u neo4j -p PASSWORD "
+kubectl exec neo4j-0 -n happycmdb-cmdb -- sh -c 'NEO4J_PASSWORD="${NEO4J_AUTH#*/}" exec cypher-shell -u neo4j "$@"' _ "
 CALL dbms.listQueries() YIELD query, elapsedTimeMillis
 WHERE elapsedTimeMillis > 1000
 RETURN query, elapsedTimeMillis

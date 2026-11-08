@@ -356,7 +356,7 @@ kubectl run -it --rm debug \\
   --image=neo4j:5 \\
   --namespace happycmdb \\
   --restart=Never \\
-  -- cypher-shell -u neo4j -p password -a bolt://happycmdb-neo4j:7687
+  -- cypher-shell -u neo4j -a bolt://happycmdb-neo4j:7687
 
 # Test PostgreSQL connection
 kubectl run -it --rm debug \\

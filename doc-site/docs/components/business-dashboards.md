@@ -325,7 +325,7 @@ docker logs cmdb-api-server
 **Solution:**
 ```bash
 # Check CI count in Neo4j
-docker exec cmdb-neo4j cypher-shell -u neo4j -p your-neo4j-password \
+docker exec -e NEO4J_PASSWORD cmdb-neo4j cypher-shell -u neo4j \
   "MATCH (ci:CI) WHERE ci.status = 'active' RETURN count(ci)"
 
 # Trigger discovery job

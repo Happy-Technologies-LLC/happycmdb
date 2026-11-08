@@ -411,7 +411,7 @@ open http://localhost:3002
 **Usage**:
 ```bash
 # Run via cypher-shell
-cat infrastructure/scripts/init-neo4j.cypher | docker exec -i neo4j cypher-shell -u neo4j -p cmdb_password_dev
+cat infrastructure/scripts/init-neo4j.cypher | docker exec -i -e NEO4J_PASSWORD neo4j cypher-shell -u neo4j
 
 # Or run via Neo4j Browser
 # Copy/paste the contents into Neo4j Browser and execute
@@ -755,7 +755,7 @@ kill $(lsof -t -i :8080)
 
 ```bash
 # Verify Neo4j is accessible
-docker exec -it neo4j cypher-shell -u neo4j -p cmdb_password_dev
+docker exec -it -e NEO4J_PASSWORD neo4j cypher-shell -u neo4j
 
 # Test connection
 MATCH (n) RETURN count(n) LIMIT 1;
@@ -775,7 +775,7 @@ NEO4J_PASSWORD=cmdb_password_dev \
 npx ts-node infrastructure/scripts/seed-data.ts
 
 # Clear all data and re-seed
-docker exec -it neo4j cypher-shell -u neo4j -p cmdb_password_dev \
+docker exec -it -e NEO4J_PASSWORD neo4j cypher-shell -u neo4j \
   "MATCH (n) DETACH DELETE n"
 
 npx ts-node infrastructure/scripts/seed-data.ts

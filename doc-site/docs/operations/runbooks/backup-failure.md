@@ -76,7 +76,7 @@ df -h /var/lib/postgresql
 docker ps | grep -E "neo4j|postgres"
 
 # Check if databases can be queried
-docker exec cmdb-neo4j cypher-shell -u neo4j -p "$NEO4J_PASSWORD" "RETURN 1;"
+docker exec -e NEO4J_PASSWORD cmdb-neo4j cypher-shell -u neo4j "RETURN 1;"
 docker exec cmdb-postgres pg_isready -U cmdb_user
 
 # Check for database locks
@@ -229,7 +229,7 @@ neo4j-admin database restore \
 docker start cmdb-neo4j
 
 # Verify data
-docker exec cmdb-neo4j cypher-shell -u neo4j -p "$NEO4J_PASSWORD" \
+docker exec -e NEO4J_PASSWORD cmdb-neo4j cypher-shell -u neo4j \
   "MATCH (n) RETURN count(n);"
 ```
 

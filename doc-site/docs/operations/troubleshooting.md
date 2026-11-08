@@ -30,12 +30,12 @@ echo -e "\n=== API Health ==="
 curl -f https://cmdb.example.com/health || echo "API UNHEALTHY"
 
 echo -e "\n=== Database Connectivity ==="
-kubectl exec -n cmdb neo4j-0 -- cypher-shell -u neo4j -p <password> "RETURN 1" 2>&1 | grep -q "1" && echo "Neo4j: OK" || echo "Neo4j: FAILED"
+kubectl exec -n cmdb neo4j-0 -- sh -c 'NEO4J_PASSWORD="${NEO4J_AUTH#*/}" exec cypher-shell -u neo4j "$@"' _ "RETURN 1" 2>&1 | grep -q "1" && echo "Neo4j: OK" || echo "Neo4j: FAILED"
 kubectl exec -n cmdb postgresql-0 -- psql -U cmdb_user -d cmdb_datamart -c "SELECT 1" 2>&1 | grep -q "1 row" && echo "PostgreSQL: OK" || echo "PostgreSQL: FAILED"
-kubectl exec -n cmdb redis-0 -- redis-cli -a <password> PING 2>&1 | grep -q "PONG" && echo "Redis: OK" || echo "Redis: FAILED"
+kubectl exec -n cmdb redis-0 -- sh -c 'REDISCLI_AUTH="$REDIS_PASSWORD" exec redis-cli "$@"' _ PING 2>&1 | grep -q "PONG" && echo "Redis: OK" || echo "Redis: FAILED"
 
 echo -e "\n=== Queue Status ==="
-kubectl exec -n cmdb redis-0 -- redis-cli -a <password> LLEN bullmq:discovery:aws:wait
+kubectl exec -n cmdb redis-0 -- sh -c 'REDISCLI_AUTH="$REDIS_PASSWORD" exec redis-cli "$@"' _ LLEN bullmq:discovery:aws:wait
 
 echo -e "\n=== Recent Errors ==="
 kubectl logs -n cmdb -l app=api-server --since=10m | grep -i error | tail -10
@@ -143,7 +143,7 @@ kubectl edit ingress cmdb-ingress -n cmdb
 curl https://cmdb.example.com/metrics | grep http_request_duration
 
 # Check database query performance
-kubectl exec -n cmdb neo4j-0 -- cypher-shell -u neo4j -p <password> "
+kubectl exec -n cmdb neo4j-0 -- sh -c 'NEO4J_PASSWORD="${NEO4J_AUTH#*/}" exec cypher-shell -u neo4j "$@"' _ "
   CALL dbms.listQueries()
   YIELD queryId, query, elapsedTimeMillis
   WHERE elapsedTimeMillis > 1000
@@ -165,7 +165,7 @@ kubectl edit deployment/api-server -n cmdb
 # Update resources.limits.cpu and resources.limits.memory
 
 # Solution 3: Clear cache
-kubectl exec -n cmdb redis-0 -- redis-cli -a <password> FLUSHDB
+kubectl exec -n cmdb redis-0 -- sh -c 'REDISCLI_AUTH="$REDIS_PASSWORD" exec redis-cli "$@"' _ FLUSHDB
 ```
 
 ### Issue 3: 401 Unauthorized Errors
@@ -334,7 +334,7 @@ curl -X GET https://cmdb.example.com/api/v1/discovery/jobs?status=running \
 kubectl logs -n cmdb -l app=discovery-engine -f
 
 # Check queue status
-kubectl exec -n cmdb redis-0 -- redis-cli -a <password> \
+kubectl exec -n cmdb redis-0 -- sh -c 'REDISCLI_AUTH="$REDIS_PASSWORD" exec redis-cli "$@"' _ \
   LLEN bullmq:discovery:aws:active
 ```
 
@@ -345,7 +345,7 @@ kubectl exec -n cmdb redis-0 -- redis-cli -a <password> \
 kubectl rollout restart deployment/discovery-engine -n cmdb
 
 # Solution 2: Clear stuck jobs from queue
-kubectl exec -n cmdb redis-0 -- redis-cli -a <password> \
+kubectl exec -n cmdb redis-0 -- sh -c 'REDISCLI_AUTH="$REDIS_PASSWORD" exec redis-cli "$@"' _ \
   DEL bullmq:discovery:aws:active
 
 # Solution 3: Increase job timeout
@@ -363,7 +363,7 @@ kubectl set env deployment/discovery-engine -n cmdb \
 
 ```bash
 # Check for duplicate CIs
-kubectl exec -n cmdb neo4j-0 -- cypher-shell -u neo4j -p <password> "
+kubectl exec -n cmdb neo4j-0 -- sh -c 'NEO4J_PASSWORD="${NEO4J_AUTH#*/}" exec cypher-shell -u neo4j "$@"' _ "
   MATCH (n:CI)
   WITH n.name as name, COUNT(*) as count
   WHERE count > 1
@@ -379,7 +379,7 @@ kubectl logs -n cmdb -l app=discovery-engine | grep "Creating CI"
 
 ```bash
 # Solution 2: De-duplicate existing CIs
-kubectl exec -n cmdb neo4j-0 -- cypher-shell -u neo4j -p <password> "
+kubectl exec -n cmdb neo4j-0 -- sh -c 'NEO4J_PASSWORD="${NEO4J_AUTH#*/}" exec cypher-shell -u neo4j "$@"' _ "
   MATCH (n:CI)
   WITH n.name as name, COLLECT(n) as nodes
   WHERE SIZE(nodes) > 1
@@ -387,7 +387,7 @@ kubectl exec -n cmdb neo4j-0 -- cypher-shell -u neo4j -p <password> "
 "
 
 # Solution 3: Add unique constraint
-kubectl exec -n cmdb neo4j-0 -- cypher-shell -u neo4j -p <password> "
+kubectl exec -n cmdb neo4j-0 -- sh -c 'NEO4J_PASSWORD="${NEO4J_AUTH#*/}" exec cypher-shell -u neo4j "$@"' _ "
   CREATE CONSTRAINT ci_id_unique IF NOT EXISTS
   FOR (n:CI) REQUIRE n.id IS UNIQUE;
 "
@@ -414,7 +414,7 @@ kubectl exec -n cmdb postgresql-0 -- \
 kubectl logs -n cmdb -l app=etl-processor --tail=100
 
 # Check ETL job queue
-kubectl exec -n cmdb redis-0 -- redis-cli -a <password> \
+kubectl exec -n cmdb redis-0 -- sh -c 'REDISCLI_AUTH="$REDIS_PASSWORD" exec redis-cli "$@"' _ \
   LLEN bullmq:etl:sync:wait
 ```
 
@@ -484,7 +484,7 @@ kubectl exec -n cmdb postgresql-0 -- \
 ```bash
 # Compare CI counts
 echo "Neo4j:"
-kubectl exec -n cmdb neo4j-0 -- cypher-shell -u neo4j -p <password> \
+kubectl exec -n cmdb neo4j-0 -- sh -c 'NEO4J_PASSWORD="${NEO4J_AUTH#*/}" exec cypher-shell -u neo4j "$@"' _ \
   "MATCH (n:CI) RETURN COUNT(n) as count;"
 
 echo "PostgreSQL:"
@@ -611,10 +611,10 @@ kubectl get pod redis-0 -n cmdb
 kubectl logs redis-0 -n cmdb
 
 # Test Redis connectivity
-kubectl exec -n cmdb redis-0 -- redis-cli -a <password> PING
+kubectl exec -n cmdb redis-0 -- sh -c 'REDISCLI_AUTH="$REDIS_PASSWORD" exec redis-cli "$@"' _ PING
 
 # Check connected clients
-kubectl exec -n cmdb redis-0 -- redis-cli -a <password> CLIENT LIST
+kubectl exec -n cmdb redis-0 -- sh -c 'REDISCLI_AUTH="$REDIS_PASSWORD" exec redis-cli "$@"' _ CLIENT LIST
 ```
 
 **Solutions:**
@@ -624,7 +624,7 @@ kubectl exec -n cmdb redis-0 -- redis-cli -a <password> CLIENT LIST
 kubectl delete pod redis-0 -n cmdb
 
 # Solution 2: Increase timeout
-kubectl exec -n cmdb redis-0 -- redis-cli -a <password> \
+kubectl exec -n cmdb redis-0 -- sh -c 'REDISCLI_AUTH="$REDIS_PASSWORD" exec redis-cli "$@"' _ \
   CONFIG SET timeout 300
 
 # Solution 3: Check network latency
@@ -643,7 +643,7 @@ kubectl exec -n cmdb <api-server-pod> -- ping redis
 
 ```bash
 # Check queue depths
-kubectl exec -n cmdb redis-0 -- redis-cli -a <password> <<EOF
+kubectl exec -n cmdb redis-0 -- sh -c 'REDISCLI_AUTH="$REDIS_PASSWORD" exec redis-cli "$@"' _ <<EOF
 LLEN bullmq:discovery:aws:wait
 LLEN bullmq:discovery:azure:wait
 LLEN bullmq:discovery:gcp:wait
@@ -666,7 +666,7 @@ kubectl set env deployment/discovery-engine -n cmdb \
   DISCOVERY_CONCURRENCY=10
 
 # Solution 3: Clear failed jobs
-kubectl exec -n cmdb redis-0 -- redis-cli -a <password> \
+kubectl exec -n cmdb redis-0 -- sh -c 'REDISCLI_AUTH="$REDIS_PASSWORD" exec redis-cli "$@"' _ \
   DEL bullmq:discovery:aws:failed
 ```
 
@@ -680,7 +680,7 @@ kubectl exec -n cmdb redis-0 -- redis-cli -a <password> \
 
 ```bash
 # Check active jobs
-kubectl exec -n cmdb redis-0 -- redis-cli -a <password> \
+kubectl exec -n cmdb redis-0 -- sh -c 'REDISCLI_AUTH="$REDIS_PASSWORD" exec redis-cli "$@"' _ \
   LRANGE bullmq:discovery:aws:active 0 -1
 
 # Check worker logs
@@ -691,7 +691,7 @@ kubectl logs -n cmdb -l app=discovery-engine -f
 
 ```bash
 # Solution 1: Move stuck jobs back to waiting queue
-kubectl exec -n cmdb redis-0 -- redis-cli -a <password> <<EOF
+kubectl exec -n cmdb redis-0 -- sh -c 'REDISCLI_AUTH="$REDIS_PASSWORD" exec redis-cli "$@"' _ <<EOF
 RPOPLPUSH bullmq:discovery:aws:active bullmq:discovery:aws:wait
 EOF
 
@@ -699,7 +699,7 @@ EOF
 kubectl rollout restart deployment/discovery-engine -n cmdb
 
 # Solution 3: Clear all active jobs (use with caution)
-kubectl exec -n cmdb redis-0 -- redis-cli -a <password> \
+kubectl exec -n cmdb redis-0 -- sh -c 'REDISCLI_AUTH="$REDIS_PASSWORD" exec redis-cli "$@"' _ \
   DEL bullmq:discovery:aws:active
 ```
 
@@ -763,7 +763,7 @@ kubectl scale deployment/api-server --replicas=5 -n cmdb
 
 ```bash
 # Neo4j slow queries
-kubectl exec -n cmdb neo4j-0 -- cypher-shell -u neo4j -p <password> "
+kubectl exec -n cmdb neo4j-0 -- sh -c 'NEO4J_PASSWORD="${NEO4J_AUTH#*/}" exec cypher-shell -u neo4j "$@"' _ "
   CALL dbms.listQueries()
   YIELD queryId, query, elapsedTimeMillis
   WHERE elapsedTimeMillis > 1000
@@ -785,7 +785,7 @@ kubectl exec -n cmdb postgresql-0 -- \
 
 ```bash
 # Solution 1: Add indexes
-kubectl exec -n cmdb neo4j-0 -- cypher-shell -u neo4j -p <password> "
+kubectl exec -n cmdb neo4j-0 -- sh -c 'NEO4J_PASSWORD="${NEO4J_AUTH#*/}" exec cypher-shell -u neo4j "$@"' _ "
   CREATE INDEX ci_type_index IF NOT EXISTS FOR (n:CI) ON (n.type);
 "
 
@@ -817,7 +817,7 @@ curl -X GET https://cmdb.example.com/api/v1/jobs?type=bsm_enrichment \
   -H "Authorization: Bearer <api-key>"
 
 # Check CI for BSM attributes
-kubectl exec -n cmdb neo4j-0 -- cypher-shell -u neo4j -p <password> "
+kubectl exec -n cmdb neo4j-0 -- sh -c 'NEO4J_PASSWORD="${NEO4J_AUTH#*/}" exec cypher-shell -u neo4j "$@"' _ "
   MATCH (n:CI {_id: 'vm-001'})
   RETURN n.bsm_tier, n.bsm_criticality, n.bsm_health;
 "
@@ -860,7 +860,7 @@ curl -X POST https://cmdb.example.com/api/v1/bsm/enrich \
 
 ```bash
 # Check if business services exist
-kubectl exec -n cmdb neo4j-0 -- cypher-shell -u neo4j -p <password> "
+kubectl exec -n cmdb neo4j-0 -- sh -c 'NEO4J_PASSWORD="${NEO4J_AUTH#*/}" exec cypher-shell -u neo4j "$@"' _ "
   MATCH (n:CI:BusinessService)
   RETURN n._id, n._name, n.bsm_criticality
   LIMIT 10;
@@ -884,14 +884,14 @@ curl -X POST https://cmdb.example.com/api/v1/ci \
 
 ```bash
 # Check if CIs have relationships to business services
-kubectl exec -n cmdb neo4j-0 -- cypher-shell -u neo4j -p <password> "
+kubectl exec -n cmdb neo4j-0 -- sh -c 'NEO4J_PASSWORD="${NEO4J_AUTH#*/}" exec cypher-shell -u neo4j "$@"' _ "
   MATCH (ci:CI)-[r:SUPPORTS]->(bs:BusinessService)
   RETURN ci._id, bs._id, COUNT(*) as relationships
   LIMIT 10;
 "
 
 # Solution: Create relationships
-kubectl exec -n cmdb neo4j-0 -- cypher-shell -u neo4j -p <password> "
+kubectl exec -n cmdb neo4j-0 -- sh -c 'NEO4J_PASSWORD="${NEO4J_AUTH#*/}" exec cypher-shell -u neo4j "$@"' _ "
   MATCH (vm:CI {_id: 'vm-001'})
   MATCH (bs:BusinessService {_id: 'bsvc-payment-api'})
   MERGE (vm)-[:SUPPORTS]->(bs);
@@ -914,7 +914,7 @@ kubectl exec -n cmdb neo4j-0 -- cypher-shell -u neo4j -p <password> "
 kubectl exec -n cmdb <api-server-pod> -- env | grep BSM_HEALTH_CALCULATION_SCHEDULE
 
 # Check health scores
-kubectl exec -n cmdb neo4j-0 -- cypher-shell -u neo4j -p <password> "
+kubectl exec -n cmdb neo4j-0 -- sh -c 'NEO4J_PASSWORD="${NEO4J_AUTH#*/}" exec cypher-shell -u neo4j "$@"' _ "
   MATCH (n:CI:BusinessService)
   RETURN n._id, n._name, n.bsm_health, n.bsm_status
   ORDER BY n.bsm_health ASC
@@ -998,7 +998,7 @@ curl -X GET "https://cmdb.example.com/api/v1/bsm/impact?ciId=vm-001" \
   -H "Authorization: Bearer <api-key>"
 
 # Check service dependencies
-kubectl exec -n cmdb neo4j-0 -- cypher-shell -u neo4j -p <password> "
+kubectl exec -n cmdb neo4j-0 -- sh -c 'NEO4J_PASSWORD="${NEO4J_AUTH#*/}" exec cypher-shell -u neo4j "$@"' _ "
   MATCH (ci:CI {_id: 'vm-001'})-[r*1..5]-(affected)
   RETURN ci._id, TYPE(r), affected._id, affected._type
   LIMIT 50;
@@ -1033,7 +1033,7 @@ kubectl rollout restart deployment/api-server -n cmdb
 
 ```bash
 # Create missing relationships
-kubectl exec -n cmdb neo4j-0 -- cypher-shell -u neo4j -p <password> "
+kubectl exec -n cmdb neo4j-0 -- sh -c 'NEO4J_PASSWORD="${NEO4J_AUTH#*/}" exec cypher-shell -u neo4j "$@"' _ "
   MATCH (vm:CI {_type: 'virtual-machine'})
   MATCH (app:CI {_type: 'application'})
   WHERE app.hostname = vm._name
@@ -1565,7 +1565,7 @@ kubectl exec -n cmdb postgresql-0 -- \
   "
 
 # Check if CIs have cost pool assignments
-kubectl exec -n cmdb neo4j-0 -- cypher-shell -u neo4j -p <password> "
+kubectl exec -n cmdb neo4j-0 -- sh -c 'NEO4J_PASSWORD="${NEO4J_AUTH#*/}" exec cypher-shell -u neo4j "$@"' _ "
   MATCH (n:CI)
   RETURN n.tbm_tower, n.tbm_cost_pool, COUNT(*) as count
   LIMIT 20;
@@ -1585,7 +1585,7 @@ curl -X POST https://cmdb.example.com/api/v1/financial/classify-tbm \
   -H "Authorization: Bearer <api-key>"
 
 # Verify classification
-kubectl exec -n cmdb neo4j-0 -- cypher-shell -u neo4j -p <password> "
+kubectl exec -n cmdb neo4j-0 -- sh -c 'NEO4J_PASSWORD="${NEO4J_AUTH#*/}" exec cypher-shell -u neo4j "$@"' _ "
   MATCH (n:CI)
   WHERE n.tbm_tower IS NOT NULL
   RETURN n._type, n.tbm_tower, COUNT(*) as count
@@ -1667,7 +1667,7 @@ kubectl describe networkpolicy <policy-name> -n cmdb
 
 ```bash
 # Neo4j diagnostics
-kubectl exec -n cmdb neo4j-0 -- cypher-shell -u neo4j -p <password> "
+kubectl exec -n cmdb neo4j-0 -- sh -c 'NEO4J_PASSWORD="${NEO4J_AUTH#*/}" exec cypher-shell -u neo4j "$@"' _ "
   CALL dbms.queryJmx('org.neo4j:*')
   YIELD attributes
   RETURN attributes;
@@ -1683,7 +1683,7 @@ kubectl exec -n cmdb postgresql-0 -- \
   "
 
 # Redis diagnostics
-kubectl exec -n cmdb redis-0 -- redis-cli -a <password> INFO all
+kubectl exec -n cmdb redis-0 -- sh -c 'REDISCLI_AUTH="$REDIS_PASSWORD" exec redis-cli "$@"' _ INFO all
 ```
 
 ## See Also

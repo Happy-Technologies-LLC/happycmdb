@@ -106,7 +106,7 @@ docker-compose -f infrastructure/docker/docker-compose.yml ps
 
 ```bash
 # Neo4j
-docker exec cmdb-neo4j cypher-shell -u neo4j -p <PASSWORD> "RETURN 1"
+docker exec -e NEO4J_PASSWORD cmdb-neo4j cypher-shell -u neo4j "RETURN 1"
 
 # PostgreSQL
 docker exec cmdb-postgres psql -U cmdb_user -d cmdb -c "SELECT 1"
@@ -305,7 +305,7 @@ docker-compose -f infrastructure/docker/docker-compose.yml up -d <service>
 
 ```bash
 # Neo4j shell
-docker exec -it cmdb-neo4j cypher-shell -u neo4j -p <PASSWORD>
+docker exec -it -e NEO4J_PASSWORD cmdb-neo4j cypher-shell -u neo4j
 
 # PostgreSQL shell
 docker exec -it cmdb-postgres psql -U cmdb_user -d cmdb
@@ -318,7 +318,7 @@ docker exec -it cmdb-redis redis-cli
 
 ```bash
 # CI count
-docker exec cmdb-neo4j cypher-shell -u neo4j -p <PASSWORD> \
+docker exec -e NEO4J_PASSWORD cmdb-neo4j cypher-shell -u neo4j \
   "MATCH (n:CI) RETURN count(n) as total"
 
 # Connector count

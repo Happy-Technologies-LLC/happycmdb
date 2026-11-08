@@ -392,7 +392,7 @@ docker-compose -f tests/e2e/docker-compose.e2e.yml logs <service>
 docker-compose -f tests/e2e/docker-compose.e2e.yml ps
 
 # Connect to Neo4j
-docker exec -it cmdb-neo4j-e2e cypher-shell -u neo4j -p test_password
+docker exec -it -e NEO4J_PASSWORD cmdb-neo4j-e2e cypher-shell -u neo4j
 
 # Connect to PostgreSQL
 docker exec -it cmdb-postgres-e2e psql -U test_user -d cmdb_test

@@ -4,7 +4,10 @@
 
 set -e
 
-REDIS_PASSWORD="${REDIS_PASSWORD:-redis_dev_password}"
+# HAP-1666: the password comes from the caller's environment and reaches redis-cli via
+# REDISCLI_AUTH, never argv (ps, /proc/<pid>/cmdline). No literal default.
+: "${REDIS_PASSWORD:?REDIS_PASSWORD must be set}"
+export REDISCLI_AUTH="$REDIS_PASSWORD"
 REDIS_NODES="${REDIS_NODES:-redis-1:6379 redis-2:6379 redis-3:6379 redis-4:6379 redis-5:6379 redis-6:6379}"
 
 echo "Waiting for Redis instances to be ready..."
@@ -15,7 +18,7 @@ NODES_COMMA=$(echo $REDIS_NODES | tr ' ' ',')
 
 echo "Creating Redis cluster with nodes: $NODES_COMMA"
 
-redis-cli -a "$REDIS_PASSWORD" --cluster create $REDIS_NODES \
+redis-cli --cluster create $REDIS_NODES \
   --cluster-replicas 1 \
   --cluster-yes
 
@@ -23,9 +26,9 @@ echo "Redis cluster created successfully!"
 
 # Verify cluster status
 echo "Checking cluster status..."
-redis-cli -a "$REDIS_PASSWORD" -h redis-1 -p 6379 cluster info
+redis-cli -h redis-1 -p 6379 cluster info
 
 echo "Cluster nodes:"
-redis-cli -a "$REDIS_PASSWORD" -h redis-1 -p 6379 cluster nodes
+redis-cli -h redis-1 -p 6379 cluster nodes
 
 echo "Redis cluster initialization complete!"

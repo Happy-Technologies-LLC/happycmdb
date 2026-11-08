@@ -72,7 +72,7 @@ docker exec cmdb-api-server node -e "console.log(process.memoryUsage())"
 
 ```bash
 # Neo4j heap usage
-docker exec cmdb-neo4j cypher-shell -u neo4j -p "$NEO4J_PASSWORD" \
+docker exec -e NEO4J_PASSWORD cmdb-neo4j cypher-shell -u neo4j \
   "CALL dbms.queryJmx('org.neo4j:instance=kernel#0,name=Memory Pools') YIELD attributes RETURN attributes.HeapMemoryUsage;"
 
 # PostgreSQL memory usage

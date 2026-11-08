@@ -548,7 +548,7 @@ curl http://localhost:3000/api/health
 
 # Database connections
 docker exec cmdb-postgres psql -U postgres -c "SELECT version();"
-docker exec cmdb-neo4j cypher-shell -u neo4j -p "$NEO4J_PASSWORD" "MATCH (n) RETURN count(n) LIMIT 1;"
+docker exec -e NEO4J_PASSWORD cmdb-neo4j cypher-shell -u neo4j "MATCH (n) RETURN count(n) LIMIT 1;"
 
 # Redis connection
 docker exec cmdb-redis redis-cli PING

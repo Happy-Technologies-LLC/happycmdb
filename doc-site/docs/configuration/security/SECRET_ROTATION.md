@@ -48,7 +48,7 @@ The following secrets were found hardcoded in source code and should be rotated:
 NEW_PASSWORD=$(openssl rand -base64 32)
 
 # 2. Update Neo4j password (in running container)
-docker exec cmdb-neo4j cypher-shell -u neo4j -p "$OLD_PASSWORD" \
+NEO4J_PASSWORD="$OLD_PASSWORD" docker exec -e NEO4J_PASSWORD cmdb-neo4j cypher-shell -u neo4j \
   "ALTER CURRENT USER SET PASSWORD FROM '$OLD_PASSWORD' TO '$NEW_PASSWORD'"
 
 # 3. Update .env file
@@ -64,7 +64,7 @@ docker-compose -f infrastructure/docker/docker-compose.yml logs api-server | gre
 **Rollback**:
 ```bash
 # If rotation fails, revert password in Neo4j
-docker exec cmdb-neo4j cypher-shell -u neo4j -p "$NEW_PASSWORD" \
+NEO4J_PASSWORD="$NEW_PASSWORD" docker exec -e NEO4J_PASSWORD cmdb-neo4j cypher-shell -u neo4j \
   "ALTER CURRENT USER SET PASSWORD FROM '$NEW_PASSWORD' TO '$OLD_PASSWORD'"
 ```
 

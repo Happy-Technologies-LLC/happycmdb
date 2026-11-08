@@ -296,6 +296,15 @@ describe('inventory gate 4: user-security property writers', () => {
     ['L4 a dynamic Cypher key', USERS, "'MATCH (u:User) WHERE u._id = $id SET u[$key] = $v'"],
     ['L4 an interpolated key', USERS, "`MATCH (u:User) WHERE u._id = $id SET u.${key} = $v`"],
     ['L4 a concatenated key', USERS, "'MATCH (u:User) WHERE u._id = $id SET u.' + key + ' = $v'"],
+    ['HAP-1663 the :User label added after the key', USERS, "'CREATE (u {_id: $id, scopes: $s}) SET u :User'"],
+    ['HAP-1663 the :User label added in a later statement', USERS, "'CREATE (n {_id: $id, scopes: $s}); MATCH (n {_id: $id}) SET n:User'"],
+    ['HAP-1663 the :User label as a SET list item', USERS, "'CREATE (u:Person {scopes: $s}) SET u.name = $n, u:User'"],
+    ['HAP-1663 an APOC atomic property write', USERS, "'MATCH (u:User {_id: $id}) CALL apoc.atomic.insert(u, \"scopes\", 0, $x)'"],
+    ['HAP-1663 an APOC user built from a document', USERS, "'CALL apoc.graph.fromDocument({type: \"User\", _id: $id, scopes: $s}, {write: true})'"],
+    ['HAP-1663 a built-in vector property write', USERS, "CALL db.create.setNodeVectorProperty(u, 'platformAdmin', [1.0])"],
+    ['HAP-1663 a lowercase marker REMOVE', USERS, "'MATCH (u:User {_id: $id}) remove u.seedProvenance'"],
+    ['HAP-1663 the marker as the second REMOVE item', USERS, "'MATCH (u:User {_id: $id}) REMOVE u.name, u.seedProvenance'"],
+    ['HAP-1663 a marker REMOVE with spaces around the dot', USERS, "'MATCH (u:User {_id: $id}) REMOVE u . seedProvenance'"],
   ])('fails on %s', (_label, file, line) => {
     expect(violations(new Map([[file, line]]))).not.toEqual([]);
   });

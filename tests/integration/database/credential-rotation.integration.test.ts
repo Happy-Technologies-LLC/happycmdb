@@ -39,7 +39,7 @@
  *   provenance and leaves --except ids alone.
  */
 
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from '@jest/globals';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
 import * as bcrypt from 'bcrypt';
 import { readFileSync } from 'fs';
@@ -312,6 +312,25 @@ describe('guarded self-service writes and the marker setter on Neo4j (SEC16-01, 
     expect(neo4j.integer.toNumber(props['credentialEpoch'] as never)).toBe(1);
     // The key list carries each key's generation, so AuthService.listApiKeys can mark the pre-change key.
     expect((await repository.listApiKeys(USER)).map(k => k._credentialEpoch)).toEqual([0]);
+  });
+
+  it('HAP-1285 (MC): the hash and the generation land in ONE guarded statement; a failure after it cannot split them', async () => {
+    await unmark();
+    const client = getNeo4jClient();
+    const open = client.getSession.bind(client);
+    let runs = 0; // every statement after the first, on any session, fails: the shape of a crash between two writes
+    jest.spyOn(client, 'getSession').mockImplementation((...args) => {
+      const session = open(...args);
+      const run = session.run.bind(session);
+      session.run = ((...a: Parameters<typeof run>) => (++runs > 1 ? Promise.reject(new Error('injected')) : run(...a))) as typeof run;
+      return session;
+    });
+    await new Neo4jAuthRepository().updatePasswordHashGuarded({
+      userId: USER, elementId: await elementId(), credentialEpoch: 0, readHash: defaultHash, newHash: 'changed-hash', nextEpoch: 1,
+    }).catch(() => false);
+    const props = await userProps();
+    // runs === 1 also proves the injection engaged (the write went through the spied client).
+    expect([runs, props['_passwordHash'], neo4j.integer.toNumber((props['credentialEpoch'] ?? 0) as never)]).toEqual([1, 'changed-hash', 1]);
   });
 
   it('the login marker setter writes only the false → true transition', async () => {

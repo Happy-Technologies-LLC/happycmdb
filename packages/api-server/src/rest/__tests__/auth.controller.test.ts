@@ -517,8 +517,10 @@ describe('AuthController profile/password/account routes', () => {
           sensitive.push(cookie, renewed.body.data._accessToken);
         }
         at(7 * DAY + 1);
+        const lookups = jest.spyOn(repository, 'findUserById');
         const refused = await refresh(cookie);
         expect([refused.status, refused.body, refused.headers['set-cookie']]).toEqual([401, failed, undefined]);
+        expect(lookups).not.toHaveBeenCalled(); // MB2: the 7-day comparison runs before any store read
         expect(records).toContainEqual(['Authentication failed', { credentialType: 'refresh', reason: 'expired' }]);
       });
 

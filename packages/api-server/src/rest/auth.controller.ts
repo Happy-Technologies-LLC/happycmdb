@@ -9,7 +9,7 @@
 import { Request, Response, Router } from 'express';
 import { ApiKeyNotFoundError, AuthFailureError, AuthService, CredentialsChangedError, PasswordNotAllowedError } from '../auth/auth.service';
 import { ValidationMiddleware } from './middleware/validation.middleware';
-import { clearRefreshCookie, readRefreshCookie, requireAuthHeader, setRefreshCookie } from './middleware/refresh-cookie';
+import { clearRefreshCookie, hasAuthHeader, readRefreshCookie, requireAuthHeader, setRefreshCookie } from './middleware/refresh-cookie';
 import { authSchemas } from '../validation/schemas';
 import { AuthMiddleware, AuthenticatedRequest, logAuthFailure } from '../middleware/auth.middleware';
 import { RateLimitMiddleware } from '../middleware/rate-limit.middleware';
@@ -71,7 +71,7 @@ export class AuthController {
     /**
      * POST /api/auth/refresh
      * Refresh access token using refresh token
-     * HAP-1211 H1: read only from the cmdb_rt cookie, after X-CMDB-Auth is checked.
+     * HAP-1211 H1: read only from the refresh cookie (__Secure-cmdb_rt since H2), after X-CMDB-Auth is checked.
      */
     this.router.post(
       '/refresh',
@@ -84,7 +84,7 @@ export class AuthController {
     /**
      * POST /api/auth/logout
      * Logout (client-side token invalidation)
-     * HAP-1211 H1: clears the cmdb_rt cookie. Neither X-CMDB-Auth (operator ruling Q1) nor an access token.
+     * HAP-1211 H1: clears the refresh cookie. Neither X-CMDB-Auth (operator ruling Q1, kept in H2) nor an access token.
      */
     this.router.post(
       '/logout',
@@ -173,11 +173,13 @@ export class AuthController {
 
   /**
    * Login endpoint
+   * HAP-1211 H2 (F2): the refresh cookie is set only with X-CMDB-Auth: 1 (the web-ui sends it). Without it the
+   * caller (CLI, scripts, or a cross-site form) gets the body access token and no cookie, so login CSRF cannot plant one.
    */
   private async login(req: Request, res: Response): Promise<void> {
     try {
       const { _refreshToken, ...data } = await this.authService.login(req.body);
-      setRefreshCookie(res, _refreshToken);
+      if (hasAuthHeader(req)) setRefreshCookie(res, _refreshToken);
 
       res.json({
         success: true,

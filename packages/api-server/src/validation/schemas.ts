@@ -93,7 +93,7 @@ export const authSchemas = {
   }),
 
   _refreshToken: Joi.object({
-    // HAP-1211 H1: the refresh token is read only from the cmdb_rt cookie; body keys are stripped (stripUnknown).
+    // HAP-1211 H1: the refresh token is read only from the __Secure-cmdb_rt cookie; body keys are stripped (stripUnknown).
   }),
 
   _generateApiKey: Joi.object({

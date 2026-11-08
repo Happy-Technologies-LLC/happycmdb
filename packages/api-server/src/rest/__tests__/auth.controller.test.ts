@@ -560,7 +560,7 @@ describe('AuthController profile/password/account routes', () => {
         repository.users.get('user-1')!._passwordHash = await passwordService.hash(pass);
         sensitive.push(pass, next);
         const signIn = async () => {
-          const response = await request(app).post('/api/v1/auth/login').send({ username: 'alice', password: pass });
+          const response = await request(app).post('/api/v1/auth/login').set(AUTH_HEADER, AUTH_HEADER_VALUE).send({ username: 'alice', password: pass });
           expect(response.status).toBe(200);
           const session = { access: response.body.data._accessToken as string, cookie: refreshCookieOf(response).value };
           sensitive.push(session.access, session.cookie);

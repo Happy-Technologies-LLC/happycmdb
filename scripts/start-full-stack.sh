@@ -279,7 +279,7 @@ echo ""
 echo -e "${BLUE}Database Statistics:${NC}"
 
 # Query Neo4j for statistics
-NEO4J_STATS=$(docker exec -i neo4j cypher-shell -u "$NEO4J_USERNAME" -p "$NEO4J_PASSWORD" \
+NEO4J_STATS=$(docker exec -i -e NEO4J_PASSWORD neo4j cypher-shell -u "$NEO4J_USERNAME" \
   "MATCH (n:CI) RETURN count(n) as ci_count" 2>/dev/null | grep -o '[0-9]\+' | head -1 || echo "0")
 
 echo "  Total CIs:        $NEO4J_STATS"

@@ -177,12 +177,14 @@ print_header "Database Connectivity"
 
 # Neo4j
 log_info "Testing Neo4j connection..."
-NEO4J_PASSWORD="${NEO4J_PASSWORD:-cmdb_password_dev}"
-if docker exec cmdb-neo4j cypher-shell -u neo4j -p "$NEO4J_PASSWORD" "RETURN 1 as test" > /dev/null 2>&1; then
+# HAP-1647: name-only -e passes the exported value via the environment, never argv.
+if [[ -z "${NEO4J_PASSWORD:-}" ]]; then
+    log_error "Neo4j connection not tested: NEO4J_PASSWORD is not set"
+elif docker exec -e NEO4J_PASSWORD cmdb-neo4j cypher-shell -u neo4j "RETURN 1 as test" > /dev/null 2>&1; then
     log_success "Neo4j connection successful"
 
     # Check CI count
-    CI_COUNT=$(docker exec cmdb-neo4j cypher-shell -u neo4j -p "$NEO4J_PASSWORD" \
+    CI_COUNT=$(docker exec -e NEO4J_PASSWORD cmdb-neo4j cypher-shell -u neo4j \
         "MATCH (n:CI) RETURN count(n) as count" --format plain 2>/dev/null | tail -1 || echo "0")
     log_info "Total CIs in Neo4j: $CI_COUNT"
 else

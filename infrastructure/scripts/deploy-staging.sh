@@ -111,6 +111,14 @@ else
     log_warning "pre-deploy-checklist.sh not found - skipping validation"
 fi
 
+# HAP-1647: Step 10's Neo4j check needs NEO4J_PASSWORD (from the env file Step 6 loads); fail before any deploy step.
+(
+    for env_file in "$PROJECT_ROOT/.env.staging" "$PROJECT_ROOT/.env"; do
+        if [[ -f "$env_file" ]]; then set -a; source "$env_file"; set +a; break; fi
+    done
+    : "${NEO4J_PASSWORD:?must be set}"
+) || exit 1
+
 # =============================================================================
 # STEP 2: Create Pre-Deployment Backup
 # =============================================================================
@@ -315,7 +323,8 @@ check_service_health "Web UI" "http://localhost:3001"
 log_info "Checking database connectivity..."
 
 # Neo4j
-if docker exec cmdb-neo4j cypher-shell -u neo4j -p "${NEO4J_PASSWORD}" "RETURN 1" > /dev/null 2>&1; then
+# HAP-1647: name-only -e passes the exported value via the environment, never argv.
+if docker exec -e NEO4J_PASSWORD cmdb-neo4j cypher-shell -u neo4j "RETURN 1" > /dev/null 2>&1; then
     log_success "Neo4j connection verified"
 else
     log_error "Neo4j connection failed"

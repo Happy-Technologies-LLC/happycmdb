@@ -120,8 +120,8 @@ check_container() {
 stop_database() {
     log_info "Stopping Neo4j database '${NEO4J_DATABASE}'..."
 
-    docker exec "${NEO4J_CONTAINER}" \
-        cypher-shell -u "${NEO4J_USERNAME}" -p "${NEO4J_PASSWORD}" \
+    docker exec -e NEO4J_PASSWORD "${NEO4J_CONTAINER}" \
+        cypher-shell -u "${NEO4J_USERNAME}" \
         "STOP DATABASE ${NEO4J_DATABASE};" 2>/dev/null || {
         log_warning "Database might already be stopped or does not exist"
     }
@@ -136,8 +136,8 @@ stop_database() {
 drop_database() {
     log_warning "Dropping database '${NEO4J_DATABASE}' if it exists..."
 
-    docker exec "${NEO4J_CONTAINER}" \
-        cypher-shell -u "${NEO4J_USERNAME}" -p "${NEO4J_PASSWORD}" \
+    docker exec -e NEO4J_PASSWORD "${NEO4J_CONTAINER}" \
+        cypher-shell -u "${NEO4J_USERNAME}" \
         "DROP DATABASE ${NEO4J_DATABASE} IF EXISTS;" 2>/dev/null || {
         log_warning "Database might not exist"
     }
@@ -212,8 +212,8 @@ perform_restore() {
 start_database() {
     log_info "Starting Neo4j database '${NEO4J_DATABASE}'..."
 
-    docker exec "${NEO4J_CONTAINER}" \
-        cypher-shell -u "${NEO4J_USERNAME}" -p "${NEO4J_PASSWORD}" \
+    docker exec -e NEO4J_PASSWORD "${NEO4J_CONTAINER}" \
+        cypher-shell -u "${NEO4J_USERNAME}" \
         "CREATE DATABASE ${NEO4J_DATABASE} IF NOT EXISTS;" || {
         log_error "Failed to create/start database"
         exit 1
@@ -234,13 +234,13 @@ verify_restore() {
     sleep 3
 
     # Get node count
-    local node_count=$(docker exec "${NEO4J_CONTAINER}" \
-        cypher-shell -u "${NEO4J_USERNAME}" -p "${NEO4J_PASSWORD}" -d "${NEO4J_DATABASE}" \
+    local node_count=$(docker exec -e NEO4J_PASSWORD "${NEO4J_CONTAINER}" \
+        cypher-shell -u "${NEO4J_USERNAME}" -d "${NEO4J_DATABASE}" \
         "MATCH (n) RETURN count(n) AS count;" 2>/dev/null | grep -v "count" | grep -v "^$" | tr -d ' ' || echo "0")
 
     # Get relationship count
-    local rel_count=$(docker exec "${NEO4J_CONTAINER}" \
-        cypher-shell -u "${NEO4J_USERNAME}" -p "${NEO4J_PASSWORD}" -d "${NEO4J_DATABASE}" \
+    local rel_count=$(docker exec -e NEO4J_PASSWORD "${NEO4J_CONTAINER}" \
+        cypher-shell -u "${NEO4J_USERNAME}" -d "${NEO4J_DATABASE}" \
         "MATCH ()-[r]->() RETURN count(r) AS count;" 2>/dev/null | grep -v "count" | grep -v "^$" | tr -d ' ' || echo "0")
 
     log_info "Nodes restored: ${node_count}"
@@ -251,8 +251,8 @@ verify_restore() {
 
         # Show label counts
         log_info "Node label counts:"
-        docker exec "${NEO4J_CONTAINER}" \
-            cypher-shell -u "${NEO4J_USERNAME}" -p "${NEO4J_PASSWORD}" -d "${NEO4J_DATABASE}" \
+        docker exec -e NEO4J_PASSWORD "${NEO4J_CONTAINER}" \
+            cypher-shell -u "${NEO4J_USERNAME}" -d "${NEO4J_DATABASE}" \
             "CALL db.labels() YIELD label CALL apoc.cypher.run('MATCH (n:\`' + label + '\`) RETURN count(n) as count', {}) YIELD value RETURN label, value.count ORDER BY value.count DESC LIMIT 10;" 2>/dev/null || true
     else
         log_warning "No nodes found in restored database"
@@ -328,6 +328,10 @@ main() {
         log_error "Backup file not specified. Use --file option or --list to see available backups."
         usage
     fi
+
+    # HAP-1647: cypher-shell reads it from the environment (docker exec -e NEO4J_PASSWORD), never argv.
+    : "${NEO4J_PASSWORD:?must be set}"
+    export NEO4J_PASSWORD
 
     log_info "===== HappyCMDB Neo4j Restore ====="
 

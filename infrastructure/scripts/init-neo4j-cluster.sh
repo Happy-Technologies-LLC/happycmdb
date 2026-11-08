@@ -6,7 +6,11 @@ set -e
 
 NEO4J_URI="${NEO4J_URI:-neo4j://neo4j-core-1:7687}"
 NEO4J_USER="${NEO4J_USER:-neo4j}"
-NEO4J_PASSWORD="${NEO4J_PASSWORD:-cmdb_dev_password}"
+# HAP-1647: cypher-shell reads NEO4J_PASSWORD from the environment, never argv. Run inside the Neo4j
+# container (docker/kubectl exec), fall back to that container's own NEO4J_AUTH (as the healthchecks do).
+: "${NEO4J_PASSWORD:=${NEO4J_AUTH#*/}}"
+: "${NEO4J_PASSWORD:?must be set}"
+export NEO4J_PASSWORD
 
 echo "Waiting for Neo4j cluster to be ready..."
 sleep 120
@@ -17,7 +21,7 @@ echo "Connecting to Neo4j at $NEO4J_URI"
 execute_cypher() {
   local query=$1
   echo "Executing: $query"
-  cypher-shell -a "$NEO4J_URI" -u "$NEO4J_USER" -p "$NEO4J_PASSWORD" "$query"
+  cypher-shell -a "$NEO4J_URI" -u "$NEO4J_USER" "$query"
 }
 
 echo "Creating constraints..."

@@ -118,16 +118,18 @@ RUN addgroup -g 1001 -S nodejs && \
 
 WORKDIR /app
 
-# Copy package files
-COPY package*.json ./
+# Copy package files (owned by nodejs at copy time; a recursive chown over
+# node_modules rewrote every file on the overlay FS and took 30-50+ min, HAP-1141)
+COPY --chown=nodejs:nodejs package*.json ./
 
 # Copy ALL built packages and node_modules from builder
 # This avoids workspace resolution issues in production
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/packages ./packages
+COPY --chown=nodejs:nodejs --from=builder /app/node_modules ./node_modules
+COPY --chown=nodejs:nodejs --from=builder /app/packages ./packages
 
-# Change ownership
-RUN chown -R nodejs:nodejs /app
+# /app itself must stay writable by nodejs (winston creates /app/logs in production).
+# Non-recursive: every file below it was already chowned by the COPYs above.
+RUN chown nodejs:nodejs /app
 
 # Give nmap capabilities for network scanning without full root
 # Note: OS detection (-O) still requires root, but basic scans will work

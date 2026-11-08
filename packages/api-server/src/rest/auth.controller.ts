@@ -7,14 +7,19 @@
  */
 
 import { Request, Response, Router } from 'express';
-import { ApiKeyNotFoundError, AuthFailureError, AuthService, CredentialsChangedError, PasswordNotAllowedError } from '../auth/auth.service';
+import {
+  ApiKeyNotFoundError, AuthFailureError, AuthService, CredentialsChangedError, CurrentPasswordIncorrectError,
+  PasswordNotAllowedError, type PasswordChangeOutcome,
+} from '../auth/auth.service';
 import { ValidationMiddleware } from './middleware/validation.middleware';
 import { clearRefreshCookie, hasAuthHeader, readRefreshCookie, requireAuthHeader, setRefreshCookie } from './middleware/refresh-cookie';
 import { authSchemas } from '../validation/schemas';
-import { AuthMiddleware, AuthenticatedRequest, logAuthFailure } from '../middleware/auth.middleware';
+import { AuthMiddleware, AuthenticatedRequest, logAuthFailure, optionalRequestOrganizationId } from '../middleware/auth.middleware';
 import { RateLimitMiddleware } from '../middleware/rate-limit.middleware';
 
 const AUTHENTICATION_FAILURE = { success: false, error: 'Authentication failed' };
+/** HAP-1368: a password change that could not be audited is refused before anything changes. */
+const PASSWORD_CHANGE_UNAVAILABLE = { success: false, error: 'Service Unavailable', message: 'Password change temporarily unavailable' };
 
 /** Credential generation of the credential that authorized this request (HP1-S6); NaN when absent. */
 function authorizingEpoch(req: AuthenticatedRequest): number {
@@ -156,11 +161,15 @@ export class AuthController {
     /**
      * PUT /api/auth/password
      * Change the authenticated user's password
+     * HAP-1368: per client (req.ip, login's bucket) plus per user across all clients at login's account budget; a
+     * limiter store error refuses the change (503). Mounted after authentication: the user bucket keys on the
+     * verified subject.
      */
     this.router.put(
       '/password',
       this.authMiddleware.authenticate(),
       this.authMiddleware.requireJwtSession(),
+      this.rateLimiter.limit('auth', { perUser: true, failClosed: true }),
       this.validator.validate(authSchemas._changePassword),
       this.changePassword.bind(this)
     );
@@ -435,27 +444,37 @@ export class AuthController {
 
   /**
    * Change password endpoint
+   * HAP-1368: refused (503) before anything changes while the audit chain is not ready; each success and each wrong
+   * current password then appends one audit row (best-effort once the outcome is decided).
    */
   private async changePassword(req: AuthenticatedRequest, res: Response): Promise<void> {
-    try {
-      if (!req.user?._userId) {
-        res.status(401).json({
-          success: false,
-          error: 'Unauthorized',
-          message: 'User not authenticated',
-        });
-        return;
-      }
+    if (!req.user?._userId) {
+      res.status(401).json({
+        success: false,
+        error: 'Unauthorized',
+        message: 'User not authenticated',
+      });
+      return;
+    }
+    if (!this.authService.auditChainReady()) {
+      res.status(503).json(PASSWORD_CHANGE_UNAVAILABLE);
+      return;
+    }
 
+    const userId = req.user._userId;
+    const audit = (outcome: PasswordChangeOutcome) =>
+      this.authService.auditPasswordChange(userId, optionalRequestOrganizationId(req), req.ip, outcome);
+    try {
       const { currentPassword, newPassword } = req.body as {
         currentPassword: string;
         newPassword: string;
       };
       // HAP-1285: the change ended every session of the user; this device gets a new one.
       const { _refreshToken, ...data } = await this.authService.changePassword(
-        req.user._userId, currentPassword, newPassword, authorizingEpoch(req)
+        userId, currentPassword, newPassword, authorizingEpoch(req)
       );
       setRefreshCookie(res, _refreshToken);
+      await audit('success');
 
       res.json({
         success: true,
@@ -463,6 +482,7 @@ export class AuthController {
         message: 'Password changed. All other sessions and all your API keys have been revoked; this device stays signed in.',
       });
     } catch (error: any) {
+      if (error instanceof CurrentPasswordIncorrectError) await audit('wrong_password');
       if (credentialRefusal(res, error)) return;
       const status = error.message === 'User not found' ? 404 : 400;
       res.status(status).json({

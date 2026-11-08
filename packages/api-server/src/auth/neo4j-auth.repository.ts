@@ -15,7 +15,8 @@
  * class.
  */
 
-import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
+import { appendAuditEntry, auditChainReady, getNeo4jClient, getPostgresClient } from '@cmdb/database';
+import type { AuditLogEntry } from '@cmdb/common';
 import neo4j from 'neo4j-driver';
 import type {
   AuthRepository, CredentialEventInput, GuardedPasswordWrite, GuardedUserWrite, UserProfileUpdate,
@@ -271,6 +272,15 @@ export class Neo4jAuthRepository implements AuthRepository {
       'INSERT INTO auth_credential_events (user_id, event, actor) VALUES ($1, $2, $3)',
       [event.userId, event.event, event.actor]
     );
+  }
+
+  auditChainReady(): boolean {
+    return auditChainReady();
+  }
+
+  /** HAP-1368: the shared hash-chained writer on its own transaction (as AuditService.logAudit). */
+  async recordAudit(entry: Omit<AuditLogEntry, 'id' | 'timestamp'>, organizationId: string): Promise<void> {
+    await this.postgresClient.transaction(client => appendAuditEntry(client, entry, organizationId));
   }
 
   /** Runs one guarded statement returning `count(u) AS n`; true when exactly one node was written. */

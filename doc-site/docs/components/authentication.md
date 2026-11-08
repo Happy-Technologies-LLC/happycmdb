@@ -115,7 +115,7 @@ POST   /api/v1/auth/refresh         - __Secure-cmdb_rt cookie + X-CMDB-Auth: 1 �
 POST   /api/v1/auth/logout          - (no header, no session) → expires only this browser's __Secure-cmdb_rt; stateless (captured cookies stay renewable within the 7-day cap, see Logout)
 GET    /api/v1/auth/me              - Get current user
 PUT    /api/v1/auth/profile         - { name, avatar }
-PUT    /api/v1/auth/password        - { currentPassword, newPassword } → ends every session and API key of the user; { _accessToken, _expiresIn, _user } + new __Secure-cmdb_rt for this device (HAP-1285)
+PUT    /api/v1/auth/password        - { currentPassword, newPassword } → ends every session and API key of the user; { _accessToken, _expiresIn, _user } + new __Secure-cmdb_rt for this device (HAP-1285); rate-limited per IP (login's bucket) and per user, 503 on limiter or audit-chain outage, each success/wrong current password audited (HAP-1368)
 DELETE /api/v1/auth/account         - Delete account
 ```
 

@@ -95,11 +95,13 @@ class InMemoryAuthRepository implements AuthRepository {
 
   /** HAP-1368: the audit chain readiness and the audit rows written through the port. */
   chainReady = true;
+  auditStoreDown = false;
   audits: Array<{ entry: Omit<AuditLogEntry, 'id' | 'timestamp'>; organizationId: string }> = [];
   auditChainReady(): boolean {
     return this.chainReady;
   }
   async recordAudit(entry: Omit<AuditLogEntry, 'id' | 'timestamp'>, organizationId: string): Promise<void> {
+    if (this.auditStoreDown) throw new Error('audit store unavailable');
     this.audits.push({ entry, organizationId });
   }
 
@@ -135,7 +137,7 @@ class InMemoryAuthRepository implements AuthRepository {
   }
 }
 
-/** A no-op rate limiter: profile/password/account routes don't apply it. */
+/** A pass-through rate limiter: the limiter itself is covered in login-rate-limit.test.ts. */
 function fakeRateLimiter(): RateLimitMiddleware {
   const pass = () => (_req: unknown, _res: unknown, next: () => void) => next();
   return {
@@ -904,6 +906,10 @@ describe('AuthController profile/password/account routes', () => {
 
     describe('HAP-1368 audit', () => {
       const ORG = '5f0c7a52-3d1e-4b8a-9c61-2f4e8d7b1a03';
+      // verifyToken takes the organization from the stored user, so the actor's record carries it.
+      beforeEach(() => {
+        repository.users.set('user-1', { ...repository.users.get('user-1')!, _organizationId: ORG });
+      });
       const change = (token: string, currentPassword: string, newPassword: string) => request(app)
         .put('/api/v1/auth/password').set('Authorization', `Bearer ${token}`).send({ currentPassword, newPassword });
 
@@ -943,6 +949,25 @@ describe('AuthController profile/password/account routes', () => {
 
         expect(await passwordService.verify('correct-horse-battery-staple',
           repository.users.get('user-1')?._passwordHash as string)).toBe(true);
+        expect(repository.audits).toEqual([]);
+      });
+
+      it('once the change is committed, a failed audit write still answers 200 with the new password in place', async () => {
+        repository.auditStoreDown = true;
+        const token = jwtService.generateAccessToken('user-1', 'alice', 'operator', ORG);
+        const next = randomUUID();
+
+        expect((await change(token, 'correct-horse-battery-staple', next)).status).toBe(200);
+
+        expect(await passwordService.verify(next, repository.users.get('user-1')?._passwordHash as string)).toBe(true);
+      });
+
+      it('an actor without an organization claim changes the password and writes no audit row', async () => {
+        repository.users.set('user-1', { ...repository.users.get('user-1')!, _organizationId: undefined });
+        const token = jwtService.generateAccessToken('user-1', 'alice', 'operator');
+
+        expect((await change(token, 'correct-horse-battery-staple', randomUUID())).status).toBe(200);
+
         expect(repository.audits).toEqual([]);
       });
     });

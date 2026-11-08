@@ -7,7 +7,7 @@
  */
 
 import { randomBytes, createHash } from 'crypto';
-import type { ConfigSchema } from '@cmdb/common';
+import { logger, type AuditLogEntry, type ConfigSchema } from '@cmdb/common';
 import { JWTService, TokenVerificationError } from './jwt.service';
 import { PasswordService } from './password.service';
 import { containsNul, defaultCredentialsRefused, isDefaultEquivalent, newPasswordAllowed } from './default-credentials';
@@ -75,6 +75,10 @@ export interface AuthRepository {
   markDefaultSuspect(user: User): Promise<boolean>;
   /** Appends an auth_credential_events row. */
   recordCredentialEvent(event: CredentialEventInput): Promise<void>;
+  /** HAP-1368: whether the hash-chained audit_log can be written (AUDIT_CHAIN_KEY set). */
+  auditChainReady(): boolean;
+  /** HAP-1368: appends one hash-chained audit_log row bound to the organization. */
+  recordAudit(entry: Omit<AuditLogEntry, 'id' | 'timestamp'>, organizationId: string): Promise<void>;
   findApiKeyByKey(keyHash: string): Promise<ApiKey | null>;
   createApiKey(apiKey: Omit<ApiKey, 'id' | 'createdAt'>): Promise<ApiKey>;
   updateApiKeyLastUsed(keyId: string): Promise<void>;
@@ -97,6 +101,17 @@ export class CredentialsChangedError extends Error {
     this.name = 'CredentialsChangedError';
   }
 }
+
+/** The current password of a self-service change did not match (→ 400; HAP-1368 audits it as wrong_password). */
+export class CurrentPasswordIncorrectError extends Error {
+  constructor() {
+    super('Current password is incorrect');
+    this.name = 'CurrentPasswordIncorrectError';
+  }
+}
+
+/** Audited outcome of a self-service password change attempt (HAP-1368). */
+export type PasswordChangeOutcome = 'success' | 'wrong_password';
 
 /** The user's credential generation (absent = 0; NaN when malformed). */
 function credentialEpochOf(user: Pick<User, '_credentialEpoch'>): number {
@@ -536,7 +551,7 @@ export class AuthService {
     }
 
     if (!(await this.verifyPassword(currentPassword, user._passwordHash))) {
-      throw new Error('Current password is incorrect');
+      throw new CurrentPasswordIncorrectError();
     }
 
     const newHash = await this.passwordService.hash(newPassword);
@@ -556,6 +571,34 @@ export class AuthService {
       _expiresIn: this.jwtService.getTokenExpiresIn('access'),
       _user: { _id: user._id, _username: user._username, _role: user._role },
     };
+  }
+
+  /** HAP-1368: a self-service password change is refused (503) before anything changes while it cannot be audited. */
+  auditChainReady(): boolean {
+    return this.repository.auditChainReady();
+  }
+
+  /**
+   * HAP-1368: one audit_log row for a self-service password change attempt: the verified user, the client address,
+   * the outcome and the actor's organization claim; never a password, hash or token. Best-effort: the outcome is
+   * already decided (a changed password stays changed), so a failed write or a missing organization (tenancy is
+   * never inferred) logs fixed text and returns.
+   */
+  async auditPasswordChange(
+    userId: string, organizationId: string | null, ipAddress: string | undefined, outcome: PasswordChangeOutcome
+  ): Promise<void> {
+    if (organizationId === null) {
+      logger.error('Password change not audited: the actor has no organization claim');
+      return;
+    }
+    try {
+      await this.repository.recordAudit({
+        entity_type: 'USER', entity_id: userId, action: 'UPDATE', actor: userId, actor_type: 'user', changes: [],
+        metadata: { operation: 'password_change', outcome }, ip_address: ipAddress,
+      }, organizationId);
+    } catch {
+      logger.error('Password change audit write failed');
+    }
   }
 
   /**

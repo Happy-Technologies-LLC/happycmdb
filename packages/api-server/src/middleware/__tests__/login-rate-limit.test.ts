@@ -125,6 +125,9 @@ describe('POST /auth/login rate limiting (HAP-1091)', () => {
 function passwordApp(redis: FakeRedis) {
   const reached: string[] = [];
   const authService = {
+    login: async () => {
+      throw new AuthFailureError('invalid');
+    },
     auditChainReady: () => true,
     auditPasswordChange: async () => undefined,
     changePassword: async (userId: string) => {
@@ -165,6 +168,14 @@ describe('PUT /auth/password rate limiting (HAP-1368)', () => {
     const statuses: number[] = [];
     for (let i = 0; i <= ACCOUNT_MAX; i++) statuses.push((await changePassword(app, 'user-a', `198.51.100.${i}`)).status);
     expect(statuses).toEqual([...Array(ACCOUNT_MAX).fill(400), 429]);
+  });
+
+  it('logins and password changes from one client address spend one shared client budget', async () => {
+    const { app } = passwordApp(new FakeRedis());
+    for (let i = 0; i < CLIENT_MAX; i++) {
+      expect((await login(app, `user${i}`, { 'X-Forwarded-For': '198.51.100.9' })).status).toBe(401);
+    }
+    expect((await changePassword(app, 'user-a', '198.51.100.9')).status).toBe(429);
   });
 
   it('a limiter store error fails closed with 503, never reaching the password check', async () => {

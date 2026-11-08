@@ -77,6 +77,18 @@ created in, so they stop authenticating (`401`), are listed by `GET /api/auth/ap
 stays signed in.") carries `data` (`_accessToken`, `_expiresIn`, `_user`, as login) and sets a new
 `__Secure-cmdb_rt` cookie, whose 7-day cap starts at the change.
 
+**Password changes are rate-limited and audited** (HAP-1368). `PUT /api/auth/password` shares the
+login limit per client address (`RATE_LIMIT_AUTH_MAX` per `RATE_LIMIT_AUTH_WINDOW_MS`, the same
+bucket as login) and adds a per-user limit across all client addresses at login's per-account budget
+(`RATE_LIMIT_AUTH_ACCOUNT_MAX` per `RATE_LIMIT_AUTH_ACCOUNT_WINDOW_MS`, default 5 per 15 minutes).
+Past either limit it answers `429`; while the rate-limit store is unreachable it answers `503` and
+changes nothing. Each successful change and each wrong current password appends one row to the
+hash-chained `audit_log` (entity `USER`, the user id as entity and actor, client address,
+organization, outcome `success` or `wrong_password`; never a password, hash or token). While the
+audit chain is not ready (`AUDIT_CHAIN_KEY` unset) the change is refused with `503` before the
+current password is checked. A user without an organization claim is not audited (an error is
+logged). Requires PostgreSQL migration `049_audit_entity_user.sql`.
+
 **Platform administrators** are a dedicated flag, set only by the operator command
 `scripts/identity-window.ts grant-platform-admin`. Role `admin` and organization grant nothing. A
 seeded account (the init or seed-data admin, or any account with seed provenance or a default
@@ -452,6 +464,7 @@ All authentication endpoints are rate-limited to prevent abuse.
 | Endpoint | Limit | Window |
 |----------|-------|--------|
 | `POST /api/auth/login` | 20 requests | 1 hour per IP |
+| `PUT /api/auth/password` | Login's 20 per IP (shared bucket) and 5 per user across all IPs (`RATE_LIMIT_AUTH_ACCOUNT_*`) | 1 hour per IP; 15 minutes per user |
 | `POST /api/auth/refresh` | The REST budget (`RATE_LIMIT_REST_MAX`, default 1000; `0` = unlimited) under its own key, so renewals never use up the login limit (HAP-1211 H2) | `RATE_LIMIT_REST_WINDOW_MS` (default 1 hour) per IP |
 | `POST /api/auth/api-key` | 10 requests | 1 hour per user |
 | Other endpoints | 1000 requests | 1 hour per user |

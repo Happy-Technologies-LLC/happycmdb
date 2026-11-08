@@ -577,6 +577,16 @@ organization when a CI is created through `POST /api/v1/cis` or GraphQL `createC
   ignores `attributes.external_id`, an ITIL baseline restore skips it, and resolving an
   `external_id` conflict with `merge` or `accept_source` returns the fixed **422** `CI cannot be
   changed through the audited path` whatever the value (`accept_target`/`dismiss_stale` still work).
+- The reconciliation merge writes only mergeable attributes (HAP-499). A mergeable key is a
+  plain identifier (a letter, then letters, digits or `_`, at most 64 characters) that is not a
+  system property in any case: `id`, `organization_id`, `external_id`, `op_id`,
+  `reconciliation_op_id`, `incarnation_id`, `created_at`, `updated_at`, `discovered_at`, `type`,
+  `ci_type`. Other keys are ignored and never written; one log line records how many were
+  ignored, without keys or values. GraphQL `_mergedFields` lists only mergeable keys, and
+  resolving a conflict on a non-mergeable field with `merge` or `accept_source` returns the same
+  fixed **422**. A failed reconciliation request never returns the underlying error text: REST
+  answers **500** with `message: "Internal error"`, GraphQL `INTERNAL_SERVER_ERROR` without
+  `originalError`; the detail is only logged.
 - CIs written by discovery, connectors, ETL and reconciliation carry no
   `organization_id` and are invisible to every organization through `/api/v1/cis`,
   `/api/v1/dashboards` and the GraphQL CI operations.

@@ -27,6 +27,7 @@ jest.mock('@cmdb/database', () => ({
 }));
 
 jest.mock('@cmdb/identity-resolution', () => ({
+  ...jest.requireActual<object>('@cmdb/identity-resolution/engine/mergeable-attributes'),
   getIdentityReconciliationEngine: (...args: unknown[]) => mockGetIdentityReconciliationEngine(...args),
 }));
 

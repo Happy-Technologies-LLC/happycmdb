@@ -7,7 +7,7 @@
 
 import { GraphQLError } from 'graphql';
 import { logger } from '@cmdb/common';
-import { getIdentityReconciliationEngine } from '@cmdb/identity-resolution';
+import { getIdentityReconciliationEngine, isMergeable } from '@cmdb/identity-resolution';
 import { getPostgresClient } from '@cmdb/database';
 import { TransformedCI, IdentificationAttributes } from '@cmdb/integration-framework';
 import { GraphQLContext } from './index';
@@ -89,7 +89,6 @@ const ReconciliationQuery = {
       throw new GraphQLError('Failed to find matches', {
         extensions: {
           code: 'INTERNAL_SERVER_ERROR',
-          originalError: error.message,
         },
       });
     }
@@ -135,7 +134,6 @@ const ReconciliationQuery = {
       throw new GraphQLError('Failed to list conflicts', {
         extensions: {
           code: 'INTERNAL_SERVER_ERROR',
-          originalError: error.message,
         },
       });
     }
@@ -297,7 +295,7 @@ const ReconciliationMutation = {
         _success: true,
         _ciId: outcome.ci_id,
         _action: outcome.action,
-        _mergedFields: outcome.action === 'updated' ? Object.keys(_args._attributes || {}) : [],
+        _mergedFields: outcome.action === 'updated' ? Object.keys(_args._attributes || {}).filter(isMergeable) : [],
         _conflicts: [],
         _conflictIds: outcome.conflict_ids,
         _correlationId: outcome.correlation_id
@@ -310,7 +308,6 @@ const ReconciliationMutation = {
       throw new GraphQLError('Failed to merge CI', {
         extensions: {
           code: 'INTERNAL_SERVER_ERROR',
-          originalError: error.message,
         },
       });
     }

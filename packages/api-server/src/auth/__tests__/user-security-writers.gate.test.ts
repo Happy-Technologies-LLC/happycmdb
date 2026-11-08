@@ -22,8 +22,15 @@
  * files (SET ${clauses} passes: each clause literal is counted by the property
  * rules); apoc.cypher.run (read-only) and Cypher strings built at runtime;
  * comments between tokens; a `;` or parenthesis inside a string value of a
- * :User statement; a label written `: User` (space) or `:(User)`; label
- * expressions such as (u:Admin|User), (u:!X&User) or (u:%&User).
+ * :User statement; a label written `: User` (space) or `:(User)`; MATCH-only
+ * label expressions without `:User` or `&User`, such as (u:Admin|User)
+ * (CREATE and MERGE accept only `:` and `&`; both are gated, HAP-1673).
+ *
+ * Fails closed (HAP-1673): `& User` counts as the label even in a TypeScript
+ * intersection type, so `X & User` in the same `;`-delimited text as a write
+ * shape (`, x =`, `scopes:`) fails the gate. Write such code by naming the
+ * intersection with a module-level alias (`type AdminUser = Admin & User;`)
+ * and using AdminUser everywhere else.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from '@jest/globals';
@@ -33,16 +40,23 @@ import { dirname, join, relative } from 'path';
 
 const ROOT = join(__dirname, '../../../../..');
 
+/** A REMOVE item's variable, bare or parenthesised (HAP-1673 P6). */
+const REMOVE_VARIABLE = String.raw`(?:\(\s*\w+\s*\)|\w+)`;
+/** An earlier REMOVE list item: a property (plain or backticked, HAP-1673 P6) or labels, then the comma. */
+const REMOVE_ITEM = String.raw`${REMOVE_VARIABLE}(?:\s*\.\s*(?:\w+|\\?\x60[^\x60\n]*\x60)|(?:\s*:\w+)+)\s*,\s*`;
+/** A REMOVE of `key` at any position of the list, in any keyword case (HAP-1663). */
+const removes = (key: string): string => String.raw`\bREMOVE\s+(?:${REMOVE_ITEM})*${REMOVE_VARIABLE}\s*\.\s*${key}\b`;
+
 /** Property-write patterns, each with the reviewed files and their exact number of matching writes. */
 const RULES: Array<{ name: string; pattern: RegExp; reviewed: Record<string, number> }> = [
   {
     name: 'platformAdmin (set only by the reviewed operator grant)',
-    pattern: /\.\s*_?platformAdmin\s*=(?!=)|\bREMOVE\s+(?:\w+(?:\s*\.\s*\w+|(?:\s*:\w+)+)\s*,\s*)*\w+\s*\.\s*_?platformAdmin\b/gi,
+    pattern: new RegExp(String.raw`\.\s*_?platformAdmin\s*=(?!=)|${removes('_?platformAdmin')}`, 'gi'),
     reviewed: { 'packages/api-server/src/scripts/identity-window.ts': 1 },
   },
   {
     name: 'seedProvenance (seed writers and the window stamp; never cleared)',
-    pattern: /\.\s*_?seedProvenance\s*=(?!=)|\bREMOVE\s+(?:\w+(?:\s*\.\s*\w+|(?:\s*:\w+)+)\s*,\s*)*\w+\s*\.\s*_?seedProvenance\b/gi,
+    pattern: new RegExp(String.raw`\.\s*_?seedProvenance\s*=(?!=)|${removes('_?seedProvenance')}`, 'gi'),
     reviewed: {
       'infrastructure/scripts/init-neo4j.cypher': 1,
       'infrastructure/scripts/seed-data.ts': 1,
@@ -51,7 +65,7 @@ const RULES: Array<{ name: string; pattern: RegExp; reviewed: Record<string, num
   },
   {
     name: 'defaultPasswordSuspect = true (marker setters)',
-    pattern: /\.\s*defaultPasswordSuspect\s*=\s*true\b/g,
+    pattern: /\.\s*defaultPasswordSuspect\s*=\s*true\b/gi,
     reviewed: {
       'infrastructure/scripts/init-neo4j.cypher': 1,
       'infrastructure/scripts/seed-data.ts': 1,
@@ -61,17 +75,17 @@ const RULES: Array<{ name: string; pattern: RegExp; reviewed: Record<string, num
   },
   {
     name: 'defaultPasswordSuspect cleared (the operator rotation only)',
-    pattern: /\.\s*defaultPasswordSuspect\s*=\s*(?!true\b)[^=\s]|\bREMOVE\s+(?:\w+(?:\s*\.\s*\w+|(?:\s*:\w+)+)\s*,\s*)*\w+\s*\.\s*defaultPasswordSuspect\b/gi,
+    pattern: new RegExp(String.raw`\.\s*defaultPasswordSuspect\s*=\s*(?!true\b)[^=\s]|${removes('defaultPasswordSuspect')}`, 'gi'),
     reviewed: { 'packages/api-server/src/scripts/rotate-user-password.ts': 1 },
   },
   {
     name: '_defaultPasswordSuspect (no writer; REMOVE by the rotation only)',
-    pattern: /\.\s*_defaultPasswordSuspect\s*=(?!=)|\bREMOVE\s+(?:\w+(?:\s*\.\s*\w+|(?:\s*:\w+)+)\s*,\s*)*\w+\s*\.\s*_defaultPasswordSuspect\b/gi,
+    pattern: new RegExp(String.raw`\.\s*_defaultPasswordSuspect\s*=(?!=)|${removes('_defaultPasswordSuspect')}`, 'gi'),
     reviewed: { 'packages/api-server/src/scripts/rotate-user-password.ts': 1 },
   },
   {
     name: 'credentialEpoch (the operator rotation and the guarded self-service password change)',
-    pattern: /\.\s*_?credentialEpoch\s*=(?!=)|\bREMOVE\s+(?:\w+(?:\s*\.\s*\w+|(?:\s*:\w+)+)\s*,\s*)*\w+\s*\.\s*_?credentialEpoch\b/gi,
+    pattern: new RegExp(String.raw`\.\s*_?credentialEpoch\s*=(?!=)|${removes('_?credentialEpoch')}`, 'gi'),
     reviewed: {
       'packages/api-server/src/auth/neo4j-auth.repository.ts': 1, // GUARDED_PASSWORD_CYPHER (HAP-1285)
       'packages/api-server/src/scripts/rotate-user-password.ts': 1,
@@ -79,7 +93,7 @@ const RULES: Array<{ name: string; pattern: RegExp; reviewed: Record<string, num
   },
   {
     name: 'password hash (rotation, guarded self-service change, seed writers)',
-    pattern: /\.\s*_?passwordHash\s*=(?!=)/g,
+    pattern: new RegExp(String.raw`\.\s*_?passwordHash\s*=(?!=)|${removes('_?passwordHash')}`, 'gi'),
     reviewed: {
       'infrastructure/scripts/init-neo4j.cypher': 1,
       'infrastructure/scripts/seed-data.ts': 1,
@@ -119,7 +133,7 @@ const RULES: Array<{ name: string; pattern: RegExp; reviewed: Record<string, num
   },
   {
     name: 'organizationId (seed writers and the FD-5 operator assignment only)',
-    pattern: /\.\s*_?organizationId\s*=(?!=)|\bREMOVE\s+(?:\w+(?:\s*\.\s*\w+|(?:\s*:\w+)+)\s*,\s*)*\w+\s*\.\s*_?organizationId\b/gi,
+    pattern: new RegExp(String.raw`\.\s*_?organizationId\s*=(?!=)|${removes('_?organizationId')}`, 'gi'),
     reviewed: {
       'infrastructure/scripts/init-neo4j.cypher': 1,
       'infrastructure/scripts/seed-data.ts': 1,
@@ -129,7 +143,7 @@ const RULES: Array<{ name: string; pattern: RegExp; reviewed: Record<string, num
   },
   {
     name: 'scopes (no writer; the HAP-1632 operator grant only)',
-    pattern: /\.\s*_?scopes\s*=(?!=)|\bREMOVE\s+(?:\w+(?:\s*\.\s*\w+|(?:\s*:\w+)+)\s*,\s*)*\w+\s*\.\s*_?scopes\b/gi,
+    pattern: new RegExp(String.raw`\.\s*_?scopes\s*=(?!=)|${removes('_?scopes')}`, 'gi'),
     reviewed: {
       // Reviewed (HAP-1615): `auth.scopes = raw.scopes` maps a connector descriptor's OAuth scopes; not a :User write.
       'packages/integration-framework/src/descriptor-mapper.ts': 1,
@@ -142,6 +156,7 @@ const FORBIDDEN: Array<{ name: string; pattern: RegExp }> = [
   { name: 'mutating a rotation decision', pattern: /(MERGE|DELETE|SET|REMOVE)[^\n;`]*\(?\s*\w*:CredentialRotationDecision|MATCH\s*\(\s*(\w+):CredentialRotationDecision[^`;]*\b(SET|REMOVE|DELETE)\s+\1\b/g },
   { name: 'an APOC call outside the read-only allowlist', pattern: /\bapoc\s*\.\s*(?!convert\s*\.\s*fromJsonMap\b|cypher\s*\.\s*run\b)\w+/gi },
   { name: 'a built-in vector property write (db.create.set*VectorProperty)', pattern: /\bdb\s*\.\s*create\s*\.\s*set\w*VectorProperty\b/gi },
+  { name: 'a Graph Data Science procedure (gds.*, which includes the write procedures)', pattern: /\bgds\s*\./gi },
 ];
 
 /**
@@ -150,21 +165,24 @@ const FORBIDDEN: Array<{ name: string; pattern: RegExp }> = [
  */
 const USER_STATEMENT: Array<{ name: string; pattern: RegExp }> = [
   { name: 'a map write (SET x = / SET x += / , x +=) in a :User statement', pattern: /(?:\bSET\s+|,\s*)(?:\w+|\\?`[^`\n]*`)\s*\+?=(?!=)/i },
-  { name: 'a :User node built from a parameter map', pattern: /:User\b(?::\w+)*\s*\$/ },
+  { name: 'a :User node built from a parameter map', pattern: /(?::|&\s*)User\b(?:(?::|\s*&\s*)\w+)*\s*\$/ },
   { name: 'a runtime-built property name in a :User statement', pattern: /\w\.\$\{|\b\w+\s*\[[^\][\n]*\]\s*\+?=(?!=)|\w\.['"]\s*\+|\w\.\\?`/ },
   { name: 'adding the :User label (SET x:User) in a :User statement', pattern: /(?:\bSET\s+|,\s*)\w+(?:\s*:\w+)*\s*:User\b/i },
 ];
 
-const SECURITY_KEY = /(?:^|[{,\s])_?(?:passwordHash|platformAdmin|seedProvenance|defaultPasswordSuspect|credentialEpoch|scopes)\s*:/;
+const SECURITY_KEY = /(?:^|[{,\s])_?(?:passwordHash|platformAdmin|seedProvenance|defaultPasswordSuspect|credentialEpoch|scopes|organizationId)\s*:/;
+
+/** The :User label, alone or in an `&` label expression (HAP-1673 P3). */
+const USER_LABEL = /(?::|&\s*)User/;
 
 /** Whether a :User node outside MATCH (CREATE, MERGE or a clause-less fragment) has a security key; linear: each node is read once to its closing parenthesis. */
 function createsUserWithSecurityKey(text: string): boolean {
   for (const statement of text.split(';')) {
-    const tokens = /\b(?:MATCH|CREATE|MERGE)\b|:User\b/gi;
+    const tokens = /\b(?:MATCH|CREATE|MERGE)\b|(?::|&\s*)User\b/gi;
     let clause = '';
     for (let token = tokens.exec(statement); token; token = tokens.exec(statement)) {
-      if (!token[0].startsWith(':')) clause = token[0].toUpperCase();
-      else if (token[0] === ':User' && clause !== 'MATCH') {
+      if (/^\w/.test(token[0])) clause = token[0].toUpperCase();
+      else if (token[0].endsWith('User') && clause !== 'MATCH') {
         let end = token.index;
         for (let depth = 1; end < statement.length && depth > 0; end++) depth += statement[end] === '(' ? 1 : statement[end] === ')' ? -1 : 0;
         if (SECURITY_KEY.test(statement.slice(token.index, end))) return true;
@@ -227,7 +245,7 @@ function violations(sources: Map<string, string>): string[] {
     for (const rule of FORBIDDEN) {
       if (count(rule.pattern, text) > 0) found.push(`${file}: forbidden ${rule.name}`);
     }
-    const statements = text.split(';').filter(statement => statement.includes(':User'));
+    const statements = text.split(';').filter(statement => USER_LABEL.test(statement));
     for (const rule of USER_STATEMENT) {
       if (statements.some(statement => rule.pattern.test(statement))) found.push(`${file}: forbidden ${rule.name}`);
     }

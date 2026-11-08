@@ -219,7 +219,7 @@ export class TBMController {
         res.status(503).json(CI_LIST_UNAVAILABLE_RESPONSE);
         return;
       }
-      logger.error('Error getting costs by capability');
+      logger.error('Error getting costs by capability', { error: errorLogFields(error) });
       res.status(500).json({ success: false, error: 'Failed to retrieve costs by capability' });
     }
   }
@@ -282,7 +282,7 @@ export class TBMController {
         res.status(503).json(CI_LIST_UNAVAILABLE_RESPONSE);
         return;
       }
-      logger.error('Error getting costs by business service');
+      logger.error('Error getting costs by business service', { error: errorLogFields(error) });
       res.status(500).json({ success: false, error: 'Failed to retrieve costs by business service' });
     }
   }

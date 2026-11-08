@@ -13,6 +13,7 @@ import { Response } from 'express';
 import { getNeo4jClient, getPostgresClient, getRedisClient } from '@cmdb/database';
 import { getEncryptionService, logger } from '@cmdb/common';
 import { AuthenticatedRequest } from '../../middleware/auth.middleware';
+import { errorLogFields } from '../../utils/log-error';
 import {
   DISCOVERY_PROVIDERS,
   DiscoveryProvider,
@@ -71,7 +72,7 @@ export class SettingsController {
         message: 'Settings saved successfully',
       });
     } catch (error) {
-      logger.error('Failed to save general settings', { error });
+      logger.error('Failed to save general settings', { error: errorLogFields(error) });
       res.status(500).json({
         success: false,
         error: 'Failed to Save Settings',
@@ -107,7 +108,7 @@ export class SettingsController {
         message: 'Notification settings saved successfully',
       });
     } catch (error) {
-      logger.error('Failed to save notification settings', { error });
+      logger.error('Failed to save notification settings', { error: errorLogFields(error) });
       res.status(500).json({
         success: false,
         error: 'Failed to Save Notification Settings',
@@ -145,7 +146,7 @@ export class SettingsController {
         details: { uri: process.env['NEO4J_URI'] || 'bolt://localhost:7687', version },
       });
     } catch (error) {
-      logger.error('Neo4j database status check failed', { error });
+      logger.error('Neo4j database status check failed', { error: errorLogFields(error) });
       databases.push({
         name: 'Neo4j',
         type: 'neo4j',
@@ -169,7 +170,7 @@ export class SettingsController {
         },
       });
     } catch (error) {
-      logger.error('PostgreSQL database status check failed', { error });
+      logger.error('PostgreSQL database status check failed', { error: errorLogFields(error) });
       databases.push({
         name: 'PostgreSQL',
         type: 'postgresql',
@@ -197,7 +198,7 @@ export class SettingsController {
         },
       });
     } catch (error) {
-      logger.error('Redis database status check failed', { error });
+      logger.error('Redis database status check failed', { error: errorLogFields(error) });
       databases.push({
         name: 'Redis',
         type: 'redis',
@@ -291,7 +292,7 @@ export class SettingsController {
         message: 'Discovery provider settings saved successfully',
       });
     } catch (error) {
-      logger.error('Failed to save discovery provider settings', { error, provider: req.params['provider'] });
+      logger.error('Failed to save discovery provider settings', { error: errorLogFields(error), provider: req.params['provider'] });
       res.status(500).json({
         success: false,
         error: 'Failed to Save Provider Settings',
@@ -331,7 +332,7 @@ export class SettingsController {
         res.status(400).json({ success: false, error: 'Connection Test Failed', message: result.message });
       }
     } catch (error) {
-      logger.error('Discovery connection test failed unexpectedly', { error });
+      logger.error('Discovery connection test failed unexpectedly', { error: errorLogFields(error) });
       res.status(500).json({
         success: false,
         error: 'Internal Server Error',

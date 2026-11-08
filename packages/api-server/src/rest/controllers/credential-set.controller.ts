@@ -12,6 +12,7 @@ import {
 } from '@cmdb/common';
 import type { AuthenticatedRequest } from '../../auth/types';
 import { requestOrganizationId } from '../../middleware/auth.middleware';
+import { errorLogFields } from '../../utils/log-error';
 
 /**
  * Credential Set Controller
@@ -45,7 +46,7 @@ export class CredentialSetController {
         message: 'Credential set created successfully',
       });
     } catch (error) {
-      logger.error('Error creating credential set', { error });
+      logger.error('Error creating credential set', { error: errorLogFields(error) });
 
       // Check for duplicate name error
       if (error instanceof Error && error.message.includes('already exists')) {
@@ -88,7 +89,7 @@ export class CredentialSetController {
         count: credentialSets.length,
       });
     } catch (error) {
-      logger.error('Error listing credential sets', { error });
+      logger.error('Error listing credential sets', { error: errorLogFields(error) });
       res.status(500).json({
         success: false,
         error: 'Failed to list credential sets',
@@ -130,7 +131,7 @@ export class CredentialSetController {
         data: credentialSet,
       });
     } catch (error) {
-      logger.error('Error getting credential set', { error, id: req.params['id'] });
+      logger.error('Error getting credential set', { error: errorLogFields(error), id: req.params['id'] });
       res.status(500).json({
         success: false,
         error: 'Failed to get credential set',
@@ -165,7 +166,7 @@ export class CredentialSetController {
         message: 'Credential set updated successfully',
       });
     } catch (error) {
-      logger.error('Error updating credential set', { error, id: req.params['id'] });
+      logger.error('Error updating credential set', { error: errorLogFields(error), id: req.params['id'] });
 
       // Check for not found error
       if (error instanceof Error && error.message.includes('not found')) {
@@ -225,7 +226,7 @@ export class CredentialSetController {
 
       res.status(204).send();
     } catch (error) {
-      logger.error('Error deleting credential set', { error, id: req.params['id'] });
+      logger.error('Error deleting credential set', { error: errorLogFields(error), id: req.params['id'] });
 
       // Check for not found error
       if (error instanceof Error && error.message.includes('not found')) {
@@ -294,7 +295,7 @@ export class CredentialSetController {
         count: safeCredentials.length,
       });
     } catch (error) {
-      logger.error('Error selecting credentials from set', { error, id: req.params['id'] });
+      logger.error('Error selecting credentials from set', { error: errorLogFields(error), id: req.params['id'] });
 
       // Check for not found error
       if (error instanceof Error && error.message.includes('not found')) {

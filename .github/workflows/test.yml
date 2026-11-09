@@ -26,6 +26,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Setup Node.js ${{ matrix.node-version }}
         uses: actions/setup-node@v4
@@ -96,6 +98,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Require private design-system read token
         env:
           DESIGN_SYSTEM_REPO_TOKEN: ${{ secrets.DESIGN_SYSTEM_REPO_TOKEN }}
@@ -149,6 +153,7 @@ jobs:
         with:
           # S1 acceptance loads the immutable V2 initializer at the PR base.
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Setup Node.js ${{ matrix.node-version }}
         uses: actions/setup-node@v4
@@ -193,6 +198,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Applies to this PR? (auth request path, harness or this job changed)
         id: scope
@@ -274,6 +280,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22.x
@@ -589,6 +596,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -608,6 +617,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Setup Node.js ${{ matrix.node-version }}
         uses: actions/setup-node@v4
@@ -660,6 +671,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Setup Node.js
         uses: actions/setup-node@v4

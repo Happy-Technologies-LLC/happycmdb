@@ -6,7 +6,7 @@
  */
 import { spawn, spawnSync } from 'child_process';
 import { randomBytes } from 'crypto';
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { once } from 'events';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
@@ -129,6 +129,40 @@ describe('HAP-1748: Neo4j backup and restore share one file and fail closed', ()
     const calls = readFileSync(join(dir, 'out.calls'), 'utf8').split('\n');
     expect({ status, stopped: calls.includes('docker stop cmdb-neo4j'), started: calls.includes('docker start cmdb-neo4j') }).toEqual({ status: 3, stopped: true, started: false });
     expect(out).toContain(`--replace-stopped --file ${pre}`);
+  });
+
+  // Ctrl-C or an SSH hang-up signals the whole foreground group: rollback.sh, restore-neo4j.sh, the load and the tee
+  // between them. The restore's EXIT trap then writes into a pipe whose reader is gone.
+  it.each([
+    ['SIGPIPE at its default', ''],
+    ['SIGPIPE inherited as ignored', 'trap "" PIPE; '],
+  ])('rollback.sh: an INT to the whole process group during the Neo4j load (%s) is exit 3: Neo4j stays STOPPED, the log holds the --replace-stopped command, api-server is not restarted', async (_case, ignorePipe) => {
+    writeFileSync(backup(), gzipSync('dump'));
+    const child = spawn('sh', ['-c', `${ignorePipe}exec bash ${script('rollback.sh')} T1 database-only --replace-live-neo4j`], {
+      env: env({ BLOCK_LOAD: '1' }),
+      detached: true, // its own process group, so the signal below reaches exactly the rollback's children
+    });
+    let out = '';
+    const blocked = Promise.withResolvers<void>();
+    const collect = (data: Buffer) => {
+      out += data;
+      if (out.includes('LOAD BLOCKED')) blocked.resolve();
+    };
+    child.stdout.on('data', collect);
+    child.stderr.on('data', collect);
+    child.stdin.end('ROLLBACK\nREPLACE neo4j\n');
+    const closed = once(child, 'close');
+    await blocked.promise;
+    process.kill(-child.pid!, 'SIGINT');
+    const [status] = await closed;
+    const logs = join(dir, 'root/logs');
+    const log = readdirSync(logs).map((name) => readFileSync(join(logs, name), 'utf8')).join('\n');
+    const calls = readFileSync(join(dir, 'out.calls'), 'utf8').split('\n');
+    expect(status).not.toBe(0);
+    // The restore's own status reaches rollback as 3 (not 1 "unchanged", not a SIGPIPE 141) and the log has the command.
+    expect(log).toContain('Neo4j restore failed (exit 3)');
+    expect(log).toMatch(/--replace-stopped --file \S+\/neo4j-pre-restore\.dump\.gz/);
+    expect({ neo4jStarted: calls.includes('docker start cmdb-neo4j'), apiRestarted: calls.some((line) => /^compose .* start api-server$/.test(line)) }).toEqual({ neo4jStarted: false, apiRestarted: false });
   });
 
   it.each([

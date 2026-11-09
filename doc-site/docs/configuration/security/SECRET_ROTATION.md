@@ -134,11 +134,15 @@ docker-compose --env-file .env -f infrastructure/docker/docker-compose.yml up -d
 ```
 
 ```bash
-# 5. Verify connectivity (after the block above succeeds)
-docker-compose --env-file .env -f infrastructure/docker/docker-compose.yml logs api-server | grep "PostgreSQL connected"
+# 5. Verify connectivity (after the block above succeeds). /api/v1/cmdb-health/ready
+#    answers 200 only when the API server can run SELECT 1 on PostgreSQL (and
+#    reach Neo4j and Redis), 503 otherwise; retry while the container starts.
+for i in $(seq 1 24); do curl -fsS http://localhost:3000/api/v1/cmdb-health/ready && break; sleep 5; done
 ```
 
 The `postgres` service is not recreated: its `POSTGRES_PASSWORD` is only used when the data directory is first initialised.
+
+If the block fails at `up -d` (after `mv`), the database and `.env` already hold the new password: re-run only the `docker-compose ... up -d` line. Do not re-run step 1, which would generate a different password.
 
 ### 3. JWT Secret Rotation
 
@@ -187,9 +191,19 @@ echo "IMPORTANT: All users must log in again due to security maintenance"
 **Procedure**:
 
 ```bash
-# 1. Backup current credentials
-pg_dump -U cmdb_user -t discovery_credentials cmdb > credentials_backup.sql
+# 1. Backup current credentials (file mode 600; stops if the dump fails or is
+#    empty). Paste this block on its own: pg_dump may prompt for a password.
+(
+set -eu
+umask 077
+trap 'rm -f credentials_backup.sql.tmp' EXIT
+pg_dump -U cmdb_user -t discovery_credentials cmdb > credentials_backup.sql.tmp
+test -s credentials_backup.sql.tmp
+mv credentials_backup.sql.tmp credentials_backup.sql
+)
+```
 
+```bash
 # 2. Generate the new encryption key and read the current one (no echo,
 #    nothing on argv). Paste this block on its own, then type the key.
 NEW_ENCRYPTION_KEY=$(openssl rand -base64 32)
@@ -202,6 +216,7 @@ set -eu
 umask 077
 trap 'rm -f .env.new' EXIT
 : "${NEW_ENCRYPTION_KEY:?}" "${OLD_ENCRYPTION_KEY:?}"
+test -s credentials_backup.sql
 # 3. Stage the new .env (fails here, before any credential changes, if the key is missing)
 NEW_ENCRYPTION_KEY="$NEW_ENCRYPTION_KEY" awk -F= '$1=="ENCRYPTION_KEY"{print "ENCRYPTION_KEY=" ENVIRON["NEW_ENCRYPTION_KEY"]; f=1; next} {print} END{exit !f}' .env > .env.new
 # 4. Re-encrypt with the script below. The keys reach it through its
@@ -220,6 +235,8 @@ docker-compose --env-file .env -f infrastructure/docker/docker-compose.yml up -d
 curl -H "Authorization: Bearer $TOKEN" \
   http://localhost:3000/api/v1/credentials/test-credential-id/test
 ```
+
+If the block fails at `up -d` (after `mv`), the credentials are already re-encrypted and `.env` holds the new key: re-run only the `docker-compose ... up -d` line. Do not re-run step 2 or the block, which would try to decrypt with the old key again.
 
 **Re-encryption Script** (`infrastructure/scripts/reencrypt-credentials.js`):
 

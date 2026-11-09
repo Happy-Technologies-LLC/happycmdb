@@ -845,13 +845,30 @@ describe('AuthController profile/password/account routes', () => {
         .send({ currentPassword: 'totally-wrong', newPassword: 'new-password-123' });
 
       expect(res.status).toBe(400);
-      expect(res.body.message).toMatch(/incorrect/i);
+      expect(res.body).toEqual({ success: false, error: 'Password Change Failed', message: 'Current password is incorrect' });
 
       const stillOldPassword = await passwordService.verify(
         'correct-horse-battery-staple',
         repository.users.get('user-1')?._passwordHash as string
       );
       expect(stillOldPassword).toBe(true);
+    });
+
+    it.each([
+      ['/password', { currentPassword: 'correct-horse-battery-staple', newPassword: 'new-password-123' }, 'updatePasswordHashGuarded', 'Password Change Failed'],
+      ['/profile', { name: 'Alice Updated' }, 'updateUser', 'Profile Update Failed'],
+    ])('PUT %s: a repository failure is a generic 500 with the detail only in the log', async (route, body, method, label) => {
+      const rawText = 'Failed to write: bolt://svc:hunter2@neo4j.internal:7687 ECONNREFUSED';
+      (repository as unknown as Record<string, unknown>)[method] = async () => { throw new Error(rawText); };
+      const errors = jest.spyOn(logger, 'error').mockImplementation(() => logger);
+      try {
+        const res = await request(app).put(`/api/v1/auth${route}`).set('Authorization', `Bearer ${victimToken}`).send(body);
+
+        expect([res.status, res.body]).toEqual([500, { success: false, error: label, message: 'Internal error' }]);
+        expect(JSON.stringify(errors.mock.calls)).toContain('ECONNREFUSED');
+      } finally {
+        errors.mockRestore();
+      }
     });
 
     // HP1-S6 (v16 §1.1): fixed wire contract for the new refusals.

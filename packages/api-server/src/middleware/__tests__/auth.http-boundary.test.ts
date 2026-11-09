@@ -33,7 +33,7 @@ test('mounted JWT and API-key failures have one static 401 body and static diagn
   });
   const warn = jest.spyOn(logger, 'warn').mockImplementation(() => undefined);
   try {
-    for (const headers of [{}, { authorization: 'Bearer broken' }, { 'x-api-key': 'broken' }]) {
+    for (const headers of [{}, { authorization: 'Bearer broken' }, { 'x-api-key': 'broken' }, { authorization: 'Basic abc', 'x-api-key': 'broken' }]) {
       const response = await request(app).get('/protected').set(headers);
       expect(response.status).toBe(401);
       expect(response.body).toEqual({ _error: 'Unauthorized', _message: 'Authentication failed' });
@@ -42,6 +42,7 @@ test('mounted JWT and API-key failures have one static 401 body and static diagn
     expect(warn.mock.calls).toEqual([
       ['Authentication failed', { credentialType: 'none', reason: 'invalid' }],
       ['Authentication failed', { credentialType: 'jwt', reason: 'store_error' }],
+      ['Authentication failed', { credentialType: 'api-key', reason: 'store_error' }],
       ['Authentication failed', { credentialType: 'api-key', reason: 'store_error' }],
     ]);
     expect(JSON.stringify(warn.mock.calls)).not.toContain(internalText);

@@ -265,6 +265,12 @@ describe('AuthService profile/password/account lifecycle', () => {
     });
   });
 
+  it('refuses a refresh token presented as a bearer token, reason wrong_type', async () => {
+    const { _refreshToken } = await service.login({ username: 'alice', password: 'correct-horse-battery-staple' });
+
+    await expect(service.verifyToken(_refreshToken)).rejects.toMatchObject({ message: 'Authentication failed', reason: 'wrong_type' });
+  });
+
   describe('ambiguous identity (more than one :User node for an identifier)', () => {
     it('refuses login, bearer, refresh and API key with the uniform failure, reason ambiguous_identity', async () => {
       const jwtService = new JWTService(authConfig.jwt);

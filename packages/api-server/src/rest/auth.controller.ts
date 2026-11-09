@@ -17,6 +17,7 @@ import { clearRefreshCookie, hasAuthHeader, readRefreshCookie, requireAuthHeader
 import { authSchemas } from '../validation/schemas';
 import { AuthMiddleware, AuthenticatedRequest, logAuthFailure, optionalRequestOrganizationId } from '../middleware/auth.middleware';
 import { RateLimitMiddleware } from '../middleware/rate-limit.middleware';
+import { errorLogFields } from '../utils/log-error';
 
 const AUTHENTICATION_FAILURE = { success: false, error: 'Authentication failed' };
 /** HAP-1368: a password change that could not be audited is refused before anything changes. */
@@ -438,12 +439,12 @@ export class AuthController {
         message: 'Profile updated successfully',
       });
     } catch (error: any) {
-      const status = error.message === 'User not found' ? 404 : 400;
-      res.status(status).json({
-        success: false,
-        error: 'Profile Update Failed',
-        message: error.message || 'Failed to update profile',
-      });
+      if (error instanceof Error && error.message === 'User not found') {
+        res.status(404).json({ success: false, error: 'Profile Update Failed', message: 'User not found' });
+        return;
+      }
+      logger.error('Error updating profile', { error: errorLogFields(error) });
+      res.status(500).json({ success: false, error: 'Profile Update Failed', message: 'Internal error' });
     }
   }
 
@@ -487,14 +488,18 @@ export class AuthController {
         message: 'Password changed. All other sessions and all your API keys have been revoked; this device stays signed in.',
       });
     } catch (error: any) {
-      if (error instanceof CurrentPasswordIncorrectError) await audit('wrong_password');
+      if (error instanceof CurrentPasswordIncorrectError) {
+        await audit('wrong_password');
+        res.status(400).json({ success: false, error: 'Password Change Failed', message: error.message });
+        return;
+      }
       if (credentialRefusal(res, error)) return;
-      const status = error.message === 'User not found' ? 404 : 400;
-      res.status(status).json({
-        success: false,
-        error: 'Password Change Failed',
-        message: error.message || 'Failed to change password',
-      });
+      if (error instanceof Error && error.message === 'User not found') {
+        res.status(404).json({ success: false, error: 'Password Change Failed', message: 'User not found' });
+        return;
+      }
+      logger.error('Error changing password', { error: errorLogFields(error) });
+      res.status(500).json({ success: false, error: 'Password Change Failed', message: 'Internal error' });
     }
   }
 

@@ -73,10 +73,9 @@ export class AuthMiddleware {
    */
   authenticate() {
     return async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+      const token = this.extractToken(req);
+      const apiKey = this.extractApiKey(req);
       try {
-        const token = this.extractToken(req);
-        const apiKey = this.extractApiKey(req);
-
         if (token) {
           // Verify JWT token
           const payload = await this.authService.verifyToken(token);
@@ -94,7 +93,7 @@ export class AuthMiddleware {
           res.status(401).json(UNAUTHORIZED);
         }
       } catch (error) {
-        logAuthFailure(req.headers.authorization ? 'jwt' : 'api-key', error);
+        logAuthFailure(token ? 'jwt' : 'api-key', error);
         res.status(401).json(UNAUTHORIZED);
       }
     };
@@ -105,10 +104,9 @@ export class AuthMiddleware {
    */
   optionalAuthenticate() {
     return async (req: AuthenticatedRequest, _res: Response, next: NextFunction) => {
+      const token = this.extractToken(req);
+      const apiKey = this.extractApiKey(req);
       try {
-        const token = this.extractToken(req);
-        const apiKey = this.extractApiKey(req);
-
         if (token) {
           const payload = await this.authService.verifyToken(token);
           req.user = payload;
@@ -121,7 +119,7 @@ export class AuthMiddleware {
 
         next();
       } catch (error) {
-        logAuthFailure(req.headers.authorization ? 'jwt' : 'api-key', error);
+        logAuthFailure(token ? 'jwt' : 'api-key', error);
         next();
       }
     };

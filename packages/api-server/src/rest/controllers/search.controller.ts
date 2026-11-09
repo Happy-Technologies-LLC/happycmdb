@@ -8,6 +8,7 @@ import { logger, parseStoredMetadata } from '@cmdb/common';
 import neo4j from 'neo4j-driver';
 import { literalFulltextQuery } from './literal-fulltext-query';
 import { readCIList, CIListUnavailableError, CI_LIST_UNAVAILABLE_RESPONSE } from '../../read-admission';
+import { errorLogFields } from '../../utils/log-error';
 
 export class SearchController {
   private neo4jClient = getNeo4jClient();
@@ -97,7 +98,7 @@ export class SearchController {
         res.status(503).json(CI_LIST_UNAVAILABLE_RESPONSE);
         return;
       }
-      logger.error('Error performing advanced search');
+      logger.error('Error performing advanced search', { error: errorLogFields(error) });
       res.status(500).json({ success: false, error: 'Failed to perform advanced search' });
     }
   }
@@ -166,19 +167,7 @@ export class SearchController {
         res.status(503).json(CI_LIST_UNAVAILABLE_RESPONSE);
         return;
       }
-      logger.error('Error performing full-text search');
-
-      // Check if full-text index doesn't exist
-      if (error instanceof Error && error.message.includes('ci_fulltext_idx')) {
-        res.status(500).json({
-          success: false,
-          error: 'Full-text index not configured',
-          message:
-            'The full-text search index "ci_fulltext_idx" does not exist. Please run the database initialization script.',
-        });
-        return;
-      }
-
+      logger.error('Error performing full-text search', { error: errorLogFields(error) });
       res.status(500).json({ success: false, error: 'Failed to perform full-text search' });
     }
   }
@@ -235,7 +224,7 @@ export class SearchController {
         res.status(503).json(CI_LIST_UNAVAILABLE_RESPONSE);
         return;
       }
-      logger.error('Error searching by relationship pattern');
+      logger.error('Error searching by relationship pattern', { error: errorLogFields(error) });
       res.status(500).json({ success: false, error: 'Failed to search by relationship pattern' });
     }
   }
@@ -293,7 +282,7 @@ export class SearchController {
         res.status(503).json(CI_LIST_UNAVAILABLE_RESPONSE);
         return;
       }
-      logger.error('Error getting orphaned CIs');
+      logger.error('Error getting orphaned CIs', { error: errorLogFields(error) });
       res.status(500).json({ success: false, error: 'Failed to retrieve orphaned CIs' });
     }
   }

@@ -276,24 +276,61 @@ verify_restore() {
 
 # A restore never brings back GRANT/REVOKE: backup-postgres.sh dumps with --no-acl. The restoring login owns every
 # restored object; every other login's privileges and the PUBLIC EXECUTE revokes must be re-applied from the migrations.
-# Printed for the operator, never run here.
+# Printed for the operator as a bash block that stops at the first failure; never run here.
 print_grant_step() {
-    local conn="-h ${POSTGRES_HOST} -p ${POSTGRES_PORT} -U ${POSTGRES_USER} -d ${POSTGRES_DATABASE}"
-    local acl_migrations="'032_secret_table_public_grants.sql', '033_public_business_service_audit_acl.sql', '039_recent_audit_activity_acl.sql', '044_business_service_journal_read_acl.sql', '045_staging_app_login_acl.sql', '046_service_offerings.sql', '047_ai_sync_cursors.sql', '048_portfolio_import.sql'"
+    local conn
+    printf -v conn '%q ' -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -U "${POSTGRES_USER}" -d "${POSTGRES_DATABASE}"
     cat <<EOF
 
-MANDATORY POST-RESTORE GRANT STEP - grants NOT restored (the backup was taken with --no-acl).
-  ${POSTGRES_USER} now owns every restored object. Missing until re-applied: cmdb_app (045-048), metabase_readonly
-  (032, 033, 039), cmdb_user where it is not ${POSTGRES_USER} (033, 034, 039, 044, 046-048), and the PUBLIC EXECUTE
-  revokes (010, 041). As ${POSTGRES_USER}, PGPASSWORD exported, from a checkout of the commit the backup was taken at:
-  1) Re-apply the idempotent ACL migrations that the restored ledger records:
-     for m in \$(psql -XAt ${conn} -c "SELECT migration_name FROM cmdb.schema_migrations WHERE migration_name IN (${acl_migrations}) ORDER BY 1"); do psql -X -v ON_ERROR_STOP=1 --single-transaction ${conn} -f "packages/database/src/postgres/migrations/\$m" || break; done
-  2) Re-revoke PUBLIC EXECUTE (010, 041):
-     psql -X -v ON_ERROR_STOP=1 ${conn} -c "DO \\\$g\\\$ DECLARE f text; BEGIN FOREACH f IN ARRAY ARRAY['cmdb.fn_business_service_health(uuid)', 'cmdb.fn_tbm_tower_summary(uuid)', 'discovery_definition_migrations_append_only()'] LOOP IF to_regprocedure(f) IS NOT NULL THEN EXECUTE format('REVOKE EXECUTE ON FUNCTION %s FROM PUBLIC', f); END IF; END LOOP; END \\\$g\\\$"
-  3) Only if 034 is recorded and cmdb_user is not ${POSTGRES_USER} (034 cannot be re-run: its guard table is restored):
-     psql -X -v ON_ERROR_STOP=1 --single-transaction ${conn} -c "GRANT SELECT, INSERT ON public.ci_change_history TO cmdb_user; GRANT USAGE ON ALL SEQUENCES IN SCHEMA cmdb TO cmdb_user; GRANT SELECT, INSERT ON cmdb.dim_ci, cmdb.dim_location, cmdb.dim_owner, cmdb.fact_discovery, cmdb.fact_ci_changes, cmdb.fact_ci_relationships TO cmdb_user; GRANT SELECT, INSERT, UPDATE, DELETE ON public.discovery_agents TO cmdb_user; GRANT SELECT ON public.active_discovery_agents, public.agent_network_coverage TO cmdb_user"
-  Then restart the services that log in as those roles. Runbook: infrastructure/docs/DEPLOYMENT_RUNBOOK.md, "Post-restore grants".
+# MANDATORY POST-RESTORE GRANT STEP - grants NOT restored (the backup was taken with --no-acl).
+# ${POSTGRES_USER} owns every restored object. cmdb_app, metabase_readonly and cmdb_user (when it is not ${POSTGRES_USER})
+# have no access, and functions are back to PUBLIC EXECUTE, until this block has run. Save the lines from this one
+# through "# END GRANT STEP" to a file and run it with bash as ${POSTGRES_USER} (PGPASSWORD exported) from the root of
+# a checkout of the commit the backup was taken at. It stops at the first failure, names it and exits 1: until it
+# prints GRANT STEP COMPLETE, grants are NOT restored. Runbook: infrastructure/docs/DEPLOYMENT_RUNBOOK.md, "Post-restore grants".
+# metabase_readonly: 032, 033 and 039 re-grant it where infrastructure/database/metabase-init.sql created it. The
+# staging path (deploy/build01-staging-app-login.sql + migrations) does not create it: nothing to restore there.
+(
+  conn=(${conn})
 EOF
+    cat <<'EOF'
+  mig=packages/database/src/postgres/migrations
+  fail() { echo "GRANT STEP FAILED at $1 - grants NOT restored; fix the cause, then rerun this whole block" >&2; exit 1; }
+  run() { local step="$1"; shift; echo "grant step: $step"; psql -X -q -v ON_ERROR_STOP=1 --single-transaction "${conn[@]}" "$@" || fail "$step"; }
+  # 1) PUBLIC EXECUTE revokes (010, 033, 041) first: no step below may give a non-owner login schema USAGE before them.
+  run "PUBLIC EXECUTE revokes (010, 033, 041)" -c "DO \$g\$ DECLARE f regprocedure; BEGIN FOR f IN SELECT p.oid::regprocedure FROM pg_proc p WHERE p.oid IN (to_regprocedure('cmdb.fn_business_service_health(uuid)'), to_regprocedure('cmdb.fn_tbm_tower_summary(uuid)')) OR (p.proname = 'discovery_definition_migrations_append_only' AND p.pronargs = 0) LOOP EXECUTE format('REVOKE EXECUTE ON FUNCTION %s FROM PUBLIC', f); END LOOP; END \$g\$"
+  recorded=$(psql -X -At -v ON_ERROR_STOP=1 "${conn[@]}" -c "SELECT migration_name FROM cmdb.schema_migrations") || fail "reading cmdb.schema_migrations"
+  # 2) The ACL migrations the restored ledger records, in migration order, each in its own transaction.
+  #    033 refuses a SECURITY DEFINER health function, and the dump restored the DEFINER that 033 itself set: in the
+  #    same transaction the function is reset to INVOKER, then 033 checks its owner and sets DEFINER again.
+  #    034 refuses to run while its restored cmdb.hap668_acl_prior exists (that table must keep the original ACL
+  #    snapshot): only its cmdb_user grants are replayed. Its PUBLIC revokes need nothing after a --no-acl restore.
+  for m in 032_secret_table_public_grants.sql 033_public_business_service_audit_acl.sql 034_history_sequence_discovery_acl.sql 039_recent_audit_activity_acl.sql 044_business_service_journal_read_acl.sql 045_staging_app_login_acl.sql 046_service_offerings.sql 047_ai_sync_cursors.sql 048_portfolio_import.sql; do
+    if ! grep -qxF "$m" <<< "$recorded"; then echo "grant step: $m is not in the restored ledger - skipped"; continue; fi
+    case "$m" in
+      033_*) run "$m" -c "DO \$g\$ BEGIN IF to_regprocedure('cmdb.fn_business_service_health(uuid)') IS NOT NULL THEN ALTER FUNCTION cmdb.fn_business_service_health(uuid) SECURITY INVOKER; END IF; END \$g\$" -f "$mig/$m" ;;
+      034_*) run "$m (grants replayed)" -c "DO \$g\$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'cmdb_user') THEN GRANT SELECT, INSERT ON public.ci_change_history TO cmdb_user; GRANT USAGE ON ALL SEQUENCES IN SCHEMA cmdb TO cmdb_user; GRANT SELECT, INSERT ON cmdb.dim_ci, cmdb.dim_location, cmdb.dim_owner, cmdb.fact_discovery, cmdb.fact_ci_changes, cmdb.fact_ci_relationships TO cmdb_user; GRANT SELECT, INSERT, UPDATE, DELETE ON public.discovery_agents TO cmdb_user; GRANT SELECT ON public.active_discovery_agents, public.agent_network_coverage TO cmdb_user; END IF; END \$g\$" ;;
+      *) run "$m" -f "$mig/$m" ;;
+    esac
+  done
+  echo "GRANT STEP COMPLETE - now restart the services that log in as cmdb_app or metabase_readonly"
+)
+# END GRANT STEP
+EOF
+}
+
+# Exit 1 when the local psql is older than the pg_dump that wrote the backup: an older psql can fail on the dump's
+# \restrict line, and that would happen after the DROP. A backup without the header line is not checked.
+check_client_version() {
+    local dumped client
+    dumped=$(gunzip -c "$1" 2> /dev/null | head -n 30 | sed -n 's/^-- Dumped by pg_dump version \([0-9]*\)\.\([0-9]*\).*/\1 \2/p' | head -n 1) || true
+    [[ -n "${dumped}" ]] || return 0
+    client=$(psql --version | sed -n 's/^psql (PostgreSQL) \([0-9]*\)\.\([0-9]*\).*/\1 \2/p') || true
+    local d=(${dumped}) c=(${client:-0 0})
+    if (( c[0] < d[0] || (c[0] == d[0] && c[1] < d[1]) )); then
+        log_error "Local psql ${client:+${c[0]}.${c[1]}}${client:-(unknown version)} is older than the pg_dump ${d[0]}.${d[1]} that wrote the backup - install a matching client; nothing was changed"
+        exit 1
+    fi
 }
 
 # Exit 1: refuse while any other client session is on the target. Nothing is terminated.
@@ -505,6 +542,7 @@ main() {
 
     # Verify backup file
     verify_backup_file "${backup_file}"
+    check_client_version "${backup_file}"
 
     # Check database connection
     check_connection

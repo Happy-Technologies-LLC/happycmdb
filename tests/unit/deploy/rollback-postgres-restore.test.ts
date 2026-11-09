@@ -45,6 +45,7 @@ describe('HAP-1749/HAP-1762: rollback.sh PostgreSQL restore, guarded over a live
     stub('psql', [
       'echo "psql $*" >> "$OUT.calls"',
       'case "$*" in',
+      '  --version) echo "psql (PostgreSQL) 16.15";;',
       '  *pg_database*) [ -z "$DB_EXISTS" ] || echo 1;;',
       '  *pg_stat_activity*) [ -z "$CLIENT" ] || echo "cmdb_user api-server 172.18.0.5";;',
       '  *"SELECT 1"*) [ -z "$PG_DOWN" ] || exit 2;;',
@@ -89,7 +90,7 @@ describe('HAP-1749/HAP-1762: rollback.sh PostgreSQL restore, guarded over a live
       env: stubEnv({ POSTGRES_PASSWORD: PASSWORD, ...env, OUT: join(dir, 'solo') }), input: '', encoding: 'utf8', timeout: 60_000,
     });
     const calls = existsSync(join(dir, 'solo.calls')) ? readFileSync(join(dir, 'solo.calls'), 'utf8') : '';
-    return { status: run.status, dropped: /^psql .*DROP DATABASE/m.test(calls) };
+    return { status: run.status, dropped: /^psql .*DROP DATABASE/m.test(calls), out: run.stdout };
   };
 
   const rollback = (env: Record<string, string>, optIn: boolean, mode = 'database-only', kind = LEGACY) => {
@@ -164,7 +165,7 @@ describe('HAP-1749/HAP-1762: rollback.sh PostgreSQL restore, guarded over a live
   it('an existing --pre-restore-backup file is never taken as the copy of the live database: exit 1, nothing dropped', () => {
     const stale = join(dir, 'stale.sql.gz');
     copyFileSync(join(dir, 'backups/T1/postgres-backup.sql.gz'), stale);
-    expect(restore({ DB_EXISTS: '1' }, stale)).toEqual({ status: 1, dropped: false });
+    expect(restore({ DB_EXISTS: '1' }, stale)).toMatchObject({ status: 1, dropped: false });
   });
 
   it.each([
@@ -174,6 +175,34 @@ describe('HAP-1749/HAP-1762: rollback.sh PostgreSQL restore, guarded over a live
     const { result, at } = rollback({ DB_EXISTS: '1', ...env }, true);
     expect(result).toMatchObject({ exitedZero: false, neo4jRestored: true, dropped: true, apiRestarted: false });
     expect(at(/^docker cp /)).toBeLessThan(at(/^psql .*DROP DATABASE/));
-    expect(restore({ DB_EXISTS: '1', ...env }, join(dir, 'solo-pre.sql.gz'))).toEqual({ status: code, dropped: true });
+    expect(restore({ DB_EXISTS: '1', ...env }, join(dir, 'solo-pre.sql.gz'))).toMatchObject({ status: code, dropped: true });
+  });
+
+  // The block the restore prints, run as printed with bash, against a psql that fails for one named migration file.
+  it.each([
+    ['every file succeeds', '', ['032', '033', '039', '044', '045', '046', '047', '048']],
+    ['033 fails', '033_public_business_service_audit_acl.sql', ['032', '033']],
+  ])('the printed grant step revokes PUBLIC EXECUTE first and stops non-zero, naming the file, when %s', (_case, failFile, files) => {
+    const { status, out } = restore({ DB_EXISTS: '1' }, join(dir, 'grant-pre.sql.gz'));
+    expect(status).toBe(0);
+    writeFileSync(join(dir, 'grant-step.sh'), out.slice(out.lastIndexOf('\n', out.indexOf('MANDATORY POST-RESTORE GRANT STEP')) + 1));
+    const ledger = ['032_secret_table_public_grants', '033_public_business_service_audit_acl', '034_history_sequence_discovery_acl',
+      '039_recent_audit_activity_acl', '044_business_service_journal_read_acl', '045_staging_app_login_acl', '046_service_offerings',
+      '047_ai_sync_cursors', '048_portfolio_import'].map((name) => `${name}.sql`);
+    mkdirSync(join(dir, 'grant'));
+    stub('grant/psql', [
+      'echo "psql $*" >> "$OUT.calls"',
+      `case "$*" in *schema_migrations*) printf '%s\\n' ${ledger.join(' ')}; exit 0;; esac`,
+      'case "$*" in *"$FAIL_FILE"*) [ -z "$FAIL_FILE" ] || exit 3;; esac',
+    ]);
+    const run = spawnSync('bash', [join(dir, 'grant-step.sh')], {
+      env: { PATH: `${join(dir, 'grant')}:/usr/bin:/bin`, OUT: join(dir, 'grant'), FAIL_FILE: failFile }, encoding: 'utf8', timeout: 60_000,
+    });
+    const calls = existsSync(join(dir, 'grant.calls')) ? readFileSync(join(dir, 'grant.calls'), 'utf8').split('\n') : [];
+    expect(calls.flatMap((line) => line.match(/ -f \S*\/(\d{3})_\S*\.sql/)?.[1] ?? [])).toEqual(files);
+    expect(calls.findIndex((line) => line.includes('REVOKE EXECUTE'))).toBeLessThan(calls.findIndex((line) => line.includes(' -f ')));
+    expect(calls.findIndex((line) => line.includes('REVOKE EXECUTE'))).toBeGreaterThanOrEqual(0);
+    expect(run.status === 0).toBe(failFile === '');
+    expect(run.stderr).toContain(failFile);
   });
 });

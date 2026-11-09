@@ -430,16 +430,21 @@ After a successful replace, the rollback summary says `Rollback complete - POST-
 On exit 3 or 4 the rollback leaves `api-server` stopped. Neo4j has already been restored, so it no longer matches PostgreSQL. The return command reloads the pre-restore backup and takes a fresh backup first:
 `restore-postgres.sh --database cmdb --replace-live --file <pre-restore-backup> --pre-restore-backup <new-file>`.
 
+**Client versions:** the host `psql` and `pg_dump` must be at least as new as the `pg_dump` that wrote the backup. A psql older than a 16.10+ pg_dump fails on the dump's `\restrict` line, and it would fail after the DROP. `restore-postgres.sh` reads the backup's `Dumped by pg_dump version` header and refuses (exit 1, nothing changed) when the local psql is older.
+
 #### Post-restore grants (mandatory)
 
-`backup-postgres.sh` dumps with `--no-acl`, so a restore never brings back GRANT/REVOKE. The restoring login (`cmdb_user`) owns every restored object. Other roles have no access until the grants are re-applied: `cmdb_app` (045-048), `metabase_readonly` (032, 033, 039), and `cmdb_user` when it is not the restoring login. PUBLIC EXECUTE revokes (010, 041) also revert to the defaults.
+`backup-postgres.sh` dumps with `--no-acl`, so a restore never brings back GRANT/REVOKE. The restoring login (`cmdb_user`) owns every restored object. Until the grants are re-applied, other roles have no access: `cmdb_app` (045-048), `metabase_readonly` (032, 033, 039), and `cmdb_user` when it is not the restoring login. Functions are also back to PUBLIC EXECUTE.
 
-`restore-postgres.sh` prints the exact commands after every successful restore; it never runs them. Run them as `cmdb_user` from a checkout of the commit the backup was taken at:
-1. Re-apply the idempotent ACL migrations recorded in `cmdb.schema_migrations`: 032, 033, 039, 044, 045, 046, 047, 048.
-2. Re-revoke PUBLIC EXECUTE on `cmdb.fn_business_service_health(uuid)`, `cmdb.fn_tbm_tower_summary(uuid)` and `discovery_definition_migrations_append_only()`.
-3. Only if 034 is recorded and `cmdb_user` is not the restoring login: re-apply 034's grants with the printed statement. 034 itself cannot be re-run, because its guard table `cmdb.hap668_acl_prior` is restored.
+After every successful restore, `restore-postgres.sh` prints a bash block from `# MANDATORY POST-RESTORE GRANT STEP` to `# END GRANT STEP`; it never runs it. Save the block to a file and run it with `bash` as `cmdb_user` (`PGPASSWORD` exported), from the root of a checkout of the commit the backup was taken at. Every command uses `psql -X -v ON_ERROR_STOP=1 --single-transaction`. The block stops at the first failure, prints `GRANT STEP FAILED at <step or migration file>` and exits 1. Grants are restored only when it prints `GRANT STEP COMPLETE`. In order, it:
+1. Revokes PUBLIC EXECUTE on `cmdb.fn_business_service_health(uuid)`, `cmdb.fn_tbm_tower_summary(uuid)` and `discovery_definition_migrations_append_only()` (010, 033, 041). This runs before any step gives a non-owner login schema USAGE.
+2. Re-runs each ACL migration that `cmdb.schema_migrations` records, in order: 032, 033, 034, 039, 044, 045, 046, 047, 048. Two are special:
+   - 033 refuses a SECURITY DEFINER health function, and the dump restored the DEFINER that 033 itself set. In the same transaction the block resets the function to INVOKER and then runs 033, which checks the owner and sets DEFINER again.
+   - 034 refuses to run while its restored guard table `cmdb.hap668_acl_prior` exists, and that table must keep the original ACL snapshot. Only its `cmdb_user` grants are replayed; its PUBLIC revokes need nothing after a `--no-acl` restore.
 
-Then restart the services that log in as those roles. Until this step is done, do not treat the application as working.
+`metabase_readonly` is re-granted by 032, 033 and 039 where `infrastructure/database/metabase-init.sql` created it. The staging path (`deploy/build01-staging-app-login.sql` plus migrations) does not create that role, so there is nothing to restore there.
+
+Then restart the services that log in as those roles. Until the block has printed `GRANT STEP COMPLETE`, do not treat the application as working.
 
 ### Rollback Process
 

@@ -217,6 +217,14 @@ print_header "Step 2: Creating Safety Snapshot"
 SAFETY_SNAPSHOT_DIR="$BACKUP_DIR/safety-snapshot-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$SAFETY_SNAPSHOT_DIR"
 
+# HAP-1762: a full rollback's Step 4 checks out the previous commit, which may carry a restore-postgres.sh without the
+# flags Step 5 passes. Step 5 runs this copy of the script this rollback started with.
+PG_RESTORE_SCRIPT="$SAFETY_SNAPSHOT_DIR/restore-postgres.sh"
+if [[ -f "$SCRIPT_DIR/restore-postgres.sh" ]]; then
+    cp "$SCRIPT_DIR/restore-postgres.sh" "$PG_RESTORE_SCRIPT"
+fi
+GRANTS_PENDING=false
+
 log_info "Creating safety snapshot of current state..."
 log_info "Snapshot location: $SAFETY_SNAPSHOT_DIR"
 
@@ -290,19 +298,25 @@ if [[ "$ROLLBACK_TYPE" == "full" || "$ROLLBACK_TYPE" == "database-only" ]]; then
     # overrides are pinned, so no environment value makes it --drop or load over a live database: only the argv opt-in
     # (--replace-live) replaces one. stdin is detached (no second prompt). The restore's own status (not tee's) decides.
     restore_postgres() {
-        RESTORE_DROP_DATABASE=false RESTORE_CREATE_DATABASE=true bash "$SCRIPT_DIR/restore-postgres.sh" "${PG_ARGS[@]}" "$@" </dev/null 2>&1 | tee -a "$ROLLBACK_LOG"
+        RESTORE_DROP_DATABASE=false RESTORE_CREATE_DATABASE=true bash "$PG_RESTORE_SCRIPT" "${PG_ARGS[@]}" "$@" </dev/null 2>&1 | tee -a "$ROLLBACK_LOG"
         return "${PIPESTATUS[0]}"
     }
 
     # HAP-1762: everything that can refuse the PostgreSQL restore runs before Neo4j is touched: the database exists
     # without the opt-in, the server is unreachable, another client is connected, or the pre-restore backup fails.
-    if [[ -f "$PG_BACKUP" && -f "$SCRIPT_DIR/restore-postgres.sh" ]]; then
+    if [[ -f "$PG_BACKUP" && -f "$PG_RESTORE_SCRIPT" ]]; then
         if [[ "$REPLACE_LIVE_POSTGRES" == true ]] && docker-compose -f "$PROJECT_ROOT/infrastructure/docker/docker-compose.yml" ps --services --filter status=running 2>/dev/null | grep -qx api-server; then
             log_info "Stopping api-server (the cmdb database's client) for the PostgreSQL replace..."
             docker-compose -f "$PROJECT_ROOT/infrastructure/docker/docker-compose.yml" stop api-server 2>&1 | tee -a "$ROLLBACK_LOG"
             API_STOPPED=true
         fi
-        restore_postgres --preflight && postgres_preflight_status=0 || postgres_preflight_status=$?
+        restore_postgres --preflight | tee "$SAFETY_SNAPSHOT_DIR/postgres-preflight.out"
+        postgres_preflight_status=${PIPESTATUS[0]}
+        # A script without --preflight reaches usage(), which exits 0: only the marker line proves the checks ran.
+        if [[ "$postgres_preflight_status" -eq 0 ]] && ! grep -qx "HAP-1762 PREFLIGHT OK" "$SAFETY_SNAPSHOT_DIR/postgres-preflight.out"; then
+            log_error "$PG_RESTORE_SCRIPT ran no preflight: it does not support --preflight/--replace-live"
+            postgres_preflight_status=1
+        fi
         if [[ "$postgres_preflight_status" -ne 0 ]]; then
             log_error "PostgreSQL preflight failed (exit $postgres_preflight_status) - nothing restored from $PG_BACKUP; Neo4j and PostgreSQL are untouched"
             if [[ "$API_STOPPED" == true ]]; then
@@ -312,6 +326,8 @@ if [[ "$ROLLBACK_TYPE" == "full" || "$ROLLBACK_TYPE" == "database-only" ]]; then
             send_notification "FAILED" "Rollback aborted before any restore: PostgreSQL preflight failed (backup: $BACKUP_TIMESTAMP)"
             exit 1
         fi
+        # The pre-restore backup the main call loads over the live database is the one this preflight just wrote.
+        PG_ARGS+=(--reuse-pre-restore-backup)
     fi
 
     # Restore Neo4j
@@ -345,7 +361,7 @@ if [[ "$ROLLBACK_TYPE" == "full" || "$ROLLBACK_TYPE" == "database-only" ]]; then
     if [[ -f "$PG_BACKUP" ]]; then
         log_info "Restoring PostgreSQL database..."
 
-        if [[ -f "$SCRIPT_DIR/restore-postgres.sh" ]]; then
+        if [[ -f "$PG_RESTORE_SCRIPT" ]]; then
             restore_postgres && postgres_restore_status=0 || postgres_restore_status=$?
             if [[ "$postgres_restore_status" -ne 0 ]]; then
                 case "$postgres_restore_status" in
@@ -369,6 +385,7 @@ if [[ "$ROLLBACK_TYPE" == "full" || "$ROLLBACK_TYPE" == "database-only" ]]; then
                 exit 1
             fi
             log_success "PostgreSQL restored from $PG_BACKUP - grants NOT restored: apply the post-restore grant step printed above"
+            GRANTS_PENDING=true
             if [[ "$API_STOPPED" == true ]]; then
                 docker-compose -f "$PROJECT_ROOT/infrastructure/docker/docker-compose.yml" start api-server 2>&1 | tee -a "$ROLLBACK_LOG"
                 log_info "api-server restarted"
@@ -527,13 +544,21 @@ log_info "Rollback log: $ROLLBACK_LOG"
 log_info "Safety snapshot: $SAFETY_SNAPSHOT_DIR"
 
 if [[ "$HEALTH_CHECK_PASSED" == true ]]; then
-    log_success "ROLLBACK SUCCESSFUL - System is healthy"
+    if [[ "$GRANTS_PENDING" == true ]]; then
+        log_warning 'Rollback complete - POST-RESTORE GRANTS PENDING (see runbook "Post-restore grants")'
+    else
+        log_success "ROLLBACK SUCCESSFUL - System is healthy"
+    fi
     echo ""
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo "  Rollback Complete"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
-    echo "✅ Status: SUCCESS"
+    if [[ "$GRANTS_PENDING" == true ]]; then
+        echo "⚠️  Status: COMPLETE - POST-RESTORE GRANTS PENDING"
+    else
+        echo "✅ Status: SUCCESS"
+    fi
     echo "📅 Date: $(date)"
     echo "👤 Operator: ${USER:-unknown}"
     echo "💾 Backup: $BACKUP_TIMESTAMP"
@@ -543,11 +568,15 @@ if [[ "$HEALTH_CHECK_PASSED" == true ]]; then
     docker-compose -f "$PROJECT_ROOT/infrastructure/docker/docker-compose.yml" ps
     echo ""
     echo "📝 Next Steps:"
-    echo "  1. Monitor system for 30 minutes"
-    echo "  2. Review rollback logs: $ROLLBACK_LOG"
-    echo "  3. Investigate root cause of deployment failure"
-    echo "  4. Plan remediation steps"
-    echo "  5. Notify stakeholders"
+    step=1
+    if [[ "$GRANTS_PENDING" == true ]]; then
+        echo "  $((step++)). Apply the post-restore grant step (printed in Step 5; runbook \"Post-restore grants\") before relying on the app"
+    fi
+    echo "  $((step++)). Monitor system for 30 minutes"
+    echo "  $((step++)). Review rollback logs: $ROLLBACK_LOG"
+    echo "  $((step++)). Investigate root cause of deployment failure"
+    echo "  $((step++)). Plan remediation steps"
+    echo "  $((step++)). Notify stakeholders"
     echo ""
 
     send_notification "SUCCESS" "Rollback completed successfully by ${USER:-unknown}"

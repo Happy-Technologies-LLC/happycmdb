@@ -409,13 +409,16 @@ bash infrastructure/scripts/rollback.sh <BACKUP_TIMESTAMP> database-only --repla
 ```
 
 Before Neo4j is touched, the rollback:
+- runs the copy of `restore-postgres.sh` it saved in the safety snapshot before Step 4's `git checkout`. If that script prints no preflight result (it predates `--preflight`), the rollback refuses;
 - stops `api-server` (database-only mode; full mode has already stopped it);
 - refuses if any other client session is still connected to `cmdb` (nothing is terminated);
-- writes and verifies a pre-restore backup at `<BACKUP_DIR>/safety-snapshot-<ts>/postgres-pre-restore-cmdb.sql.gz`. The check is `gzip -t` plus the pg_dump completion line.
+- writes and verifies a pre-restore backup at `<BACKUP_DIR>/safety-snapshot-<ts>/postgres-pre-restore-cmdb.sql.gz`. The check is `gzip -t` plus the pg_dump completion line (a trailing `\unrestrict` line from a newer pg_dump is accepted). Run on its own, `restore-postgres.sh` refuses a `--pre-restore-backup` path that already exists, or one that is the `--file` being restored.
 
 Any refusal at this point exits 1 with Neo4j and PostgreSQL untouched, and `api-server` is restarted.
 
 Next it restores Neo4j, re-checks the client sessions, and runs `DROP DATABASE` (no `FORCE`) and `CREATE DATABASE`. It loads the backup with `ON_ERROR_STOP=1 --single-transaction`, between `timescaledb_pre_restore()` and `timescaledb_post_restore()`. Last, it compares the row count of every table in the backup.
+
+After a successful replace, the rollback summary says `Rollback complete - POST-RESTORE GRANTS PENDING`, and its first next step is the grant step below. The exit code is still 0.
 
 | `restore-postgres.sh` exit | State | Action |
 |---|---|---|

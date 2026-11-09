@@ -22,7 +22,10 @@ RESTORE_CREATE_DATABASE="${RESTORE_CREATE_DATABASE:-true}"
 REPLACE_LIVE=false
 PRE_RESTORE_BACKUP=""
 PREFLIGHT_ONLY=false
+REUSE_PRE_RESTORE_BACKUP=false
 VERIFIED_TABLES=0
+# Printed as its own line when a preflight passes; rollback.sh refuses a restore script that does not print it.
+PREFLIGHT_MARKER="HAP-1762 PREFLIGHT OK"
 
 # Logging functions
 log_info() {
@@ -59,8 +62,9 @@ OPTIONS:
     --verify                Verify restore: every table's row count must match the backup
     --replace-live          Replace an existing database: refuse while another client is connected, take and verify
                             a pre-restore backup, DROP, CREATE, load, verify (requires --pre-restore-backup)
-    --pre-restore-backup F  Where --replace-live writes the backup of the current database (an existing F is
-                            verified and reused, never overwritten)
+    --pre-restore-backup F  Where --replace-live writes the backup of the current database; F must not exist yet
+    --reuse-pre-restore-backup  Load over the live database with the existing F instead (rollback.sh only, after
+                            its own preflight wrote F in the same run)
     --preflight             Run the checks (and with --replace-live take the pre-restore backup), change nothing
     --help                  Display this help message
 
@@ -183,11 +187,12 @@ pg_query() {
         -U "${POSTGRES_USER}" -d "$1" -c "$2" < /dev/null
 }
 
-# pg_dump's plain format ends with this line; a truncated or failed dump does not.
+# pg_dump's plain format ends with "-- PostgreSQL database dump complete"; since 13.22/14.19/15.14/16.10/17.6 it is
+# followed by a "\unrestrict <key>" line. Complete iff that line is the last one that is not blank, "--" or \unrestrict.
 dump_complete() {
     local last_lines
-    last_lines=$(gunzip -c "$1" | tail -n 4) || return 1
-    grep -qx -- '-- PostgreSQL database dump complete' <<< "${last_lines}"
+    last_lines=$(gunzip -c "$1" | tail -n 12 | grep -v -e '^$' -e '^--$' -e '^\\unrestrict ') || return 1
+    [[ "${last_lines##*$'\n'}" == '-- PostgreSQL database dump complete' ]]
 }
 
 # Load the plain dump into the target. Success is the pipeline's own status (pipefail, set above): gunzip and psql must
@@ -262,7 +267,11 @@ verify_restore() {
         return 1
     fi
     VERIFIED_TABLES=${checked}
-    log_success "Row counts match the backup for ${checked} tables"
+    if [[ "${checked}" -eq 0 ]]; then
+        log_warning "No data tables compared: the backup has no table data"
+    else
+        log_success "Row counts match the backup for ${checked} tables"
+    fi
 }
 
 # A restore never brings back GRANT/REVOKE: backup-postgres.sh dumps with --no-acl. The restoring login owns every
@@ -302,10 +311,14 @@ refuse_if_other_clients() {
 }
 
 # Exit 1 unless PRE_RESTORE_BACKUP is a complete, readable dump of the current database. An absent file is taken now
-# (mode 0600 via umask); an existing one is verified and reused, never overwritten.
+# (mode 0600 via umask). An existing F is never trusted as a copy of the current state: refused, unless rollback.sh
+# passes --reuse-pre-restore-backup for the F its own preflight wrote in this run.
 take_pre_restore_backup() {
-    if [[ -e "${PRE_RESTORE_BACKUP}" ]]; then
-        log_info "Reusing the existing pre-restore backup: ${PRE_RESTORE_BACKUP}"
+    if [[ -e "${PRE_RESTORE_BACKUP}" && "${REUSE_PRE_RESTORE_BACKUP}" != "true" ]]; then
+        log_error "Pre-restore backup ${PRE_RESTORE_BACKUP} already exists - give a new path; nothing was changed"
+        exit 1
+    elif [[ -e "${PRE_RESTORE_BACKUP}" ]]; then
+        log_info "Reusing the pre-restore backup this rollback's preflight wrote: ${PRE_RESTORE_BACKUP}"
     else
         log_info "Taking the pre-restore backup of '${POSTGRES_DATABASE}': ${PRE_RESTORE_BACKUP}"
         mkdir -p "$(dirname "${PRE_RESTORE_BACKUP}")"
@@ -349,6 +362,7 @@ replace_live() {
     fi
     if [[ "${PREFLIGHT_ONLY}" == "true" ]]; then
         log_success "Preflight passed - nothing was changed"
+        echo "${PREFLIGHT_MARKER}"
         exit 0
     fi
 
@@ -370,7 +384,9 @@ replace_live() {
     perform_restore "${backup_file}" || restore_failed 3 "the load did not complete: '${POSTGRES_DATABASE}' is empty or incomplete"
     verify_restore "${backup_file}" || restore_failed 4 "'${POSTGRES_DATABASE}' is loaded but does NOT match the backup"
 
-    log_success "Restore completed: '${POSTGRES_DATABASE}' replaced from ${backup_file}, ${VERIFIED_TABLES} tables verified - grants NOT restored"
+    local verified="${VERIFIED_TABLES} tables verified"
+    [[ "${VERIFIED_TABLES}" -eq 0 ]] && verified="no data tables compared"
+    log_success "Restore completed: '${POSTGRES_DATABASE}' replaced from ${backup_file}, ${verified} - grants NOT restored"
     print_grant_step
 }
 
@@ -449,6 +465,10 @@ main() {
                 PREFLIGHT_ONLY=true
                 shift
                 ;;
+            --reuse-pre-restore-backup)
+                REUSE_PRE_RESTORE_BACKUP=true
+                shift
+                ;;
             --list)
                 list_backups
                 ;;
@@ -469,6 +489,10 @@ main() {
     fi
     if [[ "${REPLACE_LIVE}" == "true" && -z "${PRE_RESTORE_BACKUP}" ]]; then
         log_error "--replace-live requires --pre-restore-backup FILE"
+        exit 1
+    fi
+    if [[ -n "${PRE_RESTORE_BACKUP}" && "${PRE_RESTORE_BACKUP}" -ef "${backup_file}" ]]; then
+        log_error "--pre-restore-backup must not be the backup being restored (--file) - nothing was changed"
         exit 1
     fi
     # The name is interpolated into DROP/CREATE DATABASE and the existence and session queries.
@@ -502,6 +526,7 @@ main() {
             exit 1
         fi
         log_success "Preflight passed: '${POSTGRES_DATABASE}' does not exist and will be created - nothing was changed"
+        echo "${PREFLIGHT_MARKER}"
         exit 0
     fi
 

@@ -400,6 +400,53 @@ bash infrastructure/scripts/rollback.sh <BACKUP_TIMESTAMP> database-only
 bash infrastructure/scripts/rollback.sh 20251019-143000 full
 ```
 
+#### Replacing the live PostgreSQL database (`--replace-live-postgres`)
+
+Without the flag, the rollback restores PostgreSQL only when the `cmdb` database does not exist. If it exists, the rollback refuses before Neo4j is touched, and nothing changes. To drop and replace the live database, pass the flag as the third argument and type both confirmations (`ROLLBACK`, then `REPLACE cmdb`). No environment variable enables this.
+
+```bash
+bash infrastructure/scripts/rollback.sh <BACKUP_TIMESTAMP> database-only --replace-live-postgres
+```
+
+Before Neo4j is touched, the rollback:
+- runs the copy of `restore-postgres.sh` it saved in the safety snapshot before Step 4's `git checkout`. If that script prints no preflight result (it predates `--preflight`), the rollback refuses;
+- stops `api-server` (database-only mode; full mode has already stopped it);
+- refuses if any other client session is still connected to `cmdb` (nothing is terminated);
+- writes and verifies a pre-restore backup at `<BACKUP_DIR>/safety-snapshot-<ts>/postgres-pre-restore-cmdb.sql.gz`. The check is `gzip -t` plus the pg_dump completion line (a trailing `\unrestrict` line from a newer pg_dump is accepted). Run on its own, `restore-postgres.sh` refuses a `--pre-restore-backup` path that already exists, or one that is the `--file` being restored.
+
+Any refusal at this point exits 1 with Neo4j and PostgreSQL untouched, and `api-server` is restarted.
+
+Next it restores Neo4j, re-checks the client sessions, and runs `DROP DATABASE` (no `FORCE`) and `CREATE DATABASE`. It loads the backup with `ON_ERROR_STOP=1 --single-transaction`, between `timescaledb_pre_restore()` and `timescaledb_post_restore()`. Last, it compares the row count of every table in the backup.
+
+After a successful replace, the rollback summary says `Rollback complete - POST-RESTORE GRANTS PENDING`, and its first next step is the grant step below. The exit code is still 0.
+
+| `restore-postgres.sh` exit | State | Action |
+|---|---|---|
+| 0 | Replaced and the row counts match. **Grants NOT restored.** | Run the post-restore grant step below. |
+| 1 | Nothing changed. | Fix the cause it printed and rerun. |
+| 3 | Dropped, then CREATE or the load failed: `cmdb` is absent or empty. | Keep the app stopped. Run the printed return command to load the pre-restore backup. |
+| 4 | Loaded, but the row counts differ from the backup. | Keep the app stopped. Investigate, or run the printed return command. |
+
+On exit 3 or 4 the rollback leaves `api-server` stopped. Neo4j has already been restored, so it no longer matches PostgreSQL. The return command reloads the pre-restore backup and takes a fresh backup first:
+`restore-postgres.sh --database cmdb --replace-live --file <pre-restore-backup> --pre-restore-backup <new-file>`.
+
+**Client versions:** the host `psql` and `pg_dump` must be at least as new as the `pg_dump` that wrote the backup. A psql older than a 16.10+ pg_dump fails on the dump's `\restrict` line, and it would fail after the DROP. `restore-postgres.sh` reads the backup's `Dumped by pg_dump version` header and refuses (exit 1, nothing changed) when the local psql is older.
+
+#### Post-restore grants (mandatory)
+
+`backup-postgres.sh` dumps with `--no-acl`, so a restore never brings back GRANT/REVOKE. The restoring login (`cmdb_user`) owns every restored object. Until the grants are re-applied, other roles have no access: `cmdb_app` (045-048), `metabase_readonly` (032, 033, 039), and `cmdb_user` when it is not the restoring login. Functions are also back to PUBLIC EXECUTE.
+
+After every successful restore, `restore-postgres.sh` prints a bash block from `# MANDATORY POST-RESTORE GRANT STEP` to `# END GRANT STEP`; it never runs it. Stop the API and every other client first: 046-048 take brief ACCESS EXCLUSIVE locks. Save the block to a file and run it with `bash` as `cmdb_user` (`PGPASSWORD` exported), from the root of a checkout of the commit the backup was taken at. Every command uses `psql -X -v ON_ERROR_STOP=1 --single-transaction`. The block stops at the first failure, prints `GRANT STEP FAILED at <step or migration file>` and exits 1. Grants are restored only when it prints `GRANT STEP COMPLETE`. In order, it:
+1. Revokes PUBLIC EXECUTE on `cmdb.fn_business_service_health(uuid)`, `cmdb.fn_tbm_tower_summary(uuid)` and `discovery_definition_migrations_append_only()` (010, 033, 041). This runs before any step gives a non-owner login schema USAGE.
+2. Re-runs the ACL migrations that `cmdb.schema_migrations` records, in order: 032, 033, 034, 039, 044, 045, then 046, 047 and 048 (guarded no-op migrations here, run for their grants). Three are special:
+   - 032 grants `metabase_readonly` the cross-tenant `v_business_service_health`, which 033 revokes. The same transaction as 032 revokes it again, so a failing 033 cannot leave the BI role with it.
+   - 033 refuses a SECURITY DEFINER health function, and the dump restored the DEFINER that 033 itself set. In the same transaction the block resets the function to INVOKER and then runs 033, which checks the owner and sets DEFINER again.
+   - 034 refuses to run while its restored guard table `cmdb.hap668_acl_prior` exists, and that table must keep the original ACL snapshot. Only its `cmdb_user` grants are replayed; its PUBLIC revokes need nothing after a `--no-acl` restore.
+
+Where `infrastructure/database/metabase-init.sql` created `metabase_readonly`, 032, 033 and 039 re-grant its view and function grants. Its schema USAGE and `get_fiscal_*` EXECUTE grants exist only in `metabase-init.sql`, which is not re-runnable (it creates the user), so BI may still lack them after a restore: re-apply those grants from that file by hand. The staging path (`deploy/build01-staging-app-login.sql` plus migrations) does not create that role, so there is nothing to restore there.
+
+Then restart the services that log in as those roles. Until the block has printed `GRANT STEP COMPLETE`, do not treat the application as working.
+
 ### Rollback Process
 
 The rollback script will:

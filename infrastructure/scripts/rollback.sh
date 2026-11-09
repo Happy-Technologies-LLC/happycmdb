@@ -374,10 +374,11 @@ if [[ "$ROLLBACK_TYPE" == "full" || "$ROLLBACK_TYPE" == "database-only" ]]; then
 
     # HAP-1748: everything that can refuse the Neo4j restore also runs before anything is replaced: the backup is
     # verified, the container is running and accepts the login, and the pre-restore dump path is new. --preflight
-    # changes nothing.
+    # changes nothing. `tee -i` ignores INT: a Ctrl-C signals the whole foreground group, and a tee that dies with the
+    # restore would drop the STOPPED line and the recovery command it prints while it exits 3.
     NEO4J_PRE_BACKUP="$SAFETY_SNAPSHOT_DIR/neo4j-pre-restore.dump.gz"
     restore_neo4j() {
-        bash "$NEO4J_RESTORE_SCRIPT" --file "$NEO4J_BACKUP" --replace-live --pre-restore-backup "$NEO4J_PRE_BACKUP" "$@" </dev/null 2>&1 | tee -a "$ROLLBACK_LOG"
+        bash "$NEO4J_RESTORE_SCRIPT" --file "$NEO4J_BACKUP" --replace-live --pre-restore-backup "$NEO4J_PRE_BACKUP" "$@" </dev/null 2>&1 | tee -i -a "$ROLLBACK_LOG"
         return "${PIPESTATUS[0]}"
     }
     if [[ -f "$NEO4J_BACKUP" ]]; then
@@ -406,6 +407,13 @@ if [[ "$ROLLBACK_TYPE" == "full" || "$ROLLBACK_TYPE" == "database-only" ]]; then
                 *) neo4j_state="Neo4j state UNKNOWN: check 'docker ps -a' for ${NEO4J_CONTAINER:-cmdb-neo4j} and the restore-neo4j.sh output above before starting anything" ;;
             esac
             log_error "Neo4j restore failed (exit $neo4j_restore_status) from $NEO4J_BACKUP - $neo4j_state"
+            if [[ "$neo4j_restore_status" -ne 1 ]]; then
+                # Rollback knows this path even when restore-neo4j.sh's own output was lost with its pipe.
+                log_error "Neo4j pre-restore dump: $NEO4J_PRE_BACKUP"
+                if [[ "$neo4j_restore_status" -ne 4 ]]; then
+                    log_error "If Neo4j is STOPPED (docker ps -a), put the pre-restore dump back (NEO4J_PASSWORD exported): NEO4J_CONTAINER=${NEO4J_CONTAINER:-cmdb-neo4j} bash $NEO4J_RESTORE_SCRIPT --replace-stopped --file $NEO4J_PRE_BACKUP < /dev/null"
+                fi
+            fi
             if [[ -f "$PG_PRE_BACKUP" ]]; then
                 log_info "PostgreSQL is untouched; its pre-restore backup: $PG_PRE_BACKUP"
             fi

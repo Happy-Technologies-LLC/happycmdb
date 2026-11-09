@@ -175,8 +175,19 @@ neo4j_verify_dump() {
     log_success "Neo4j backup verified: ${file} (gzip intact, neo4j-admin load --info reads it)"
 }
 
+# The EXIT trap runs under the caller's `set -e` and, when an operator's Ctrl-C or hang-up signals the whole foreground
+# group, with the reader of our stdout (rollback's tee) already gone. A write to it would then kill the trap with
+# SIGPIPE (141) or, with SIGPIPE inherited as ignored, fail with EPIPE and exit 1, which rollback reads as "Neo4j is
+# unchanged". So: no errexit, no further signals, and the exit status is decided before the first write.
 neo4j_on_exit() {
     local status=$?
+    set +e
+    trap '' INT TERM HUP PIPE
+    local left_stopped=false
+    if [[ "${NEO4J_STOPPED_BY_US}" == true && "${NEO4J_KEEP_STOPPED}" == true && ${status} -ne 4 ]]; then
+        left_stopped=true
+        status=3
+    fi
     if [[ -n "${NEO4J_ADMIN_PID}" ]]; then
         kill "${NEO4J_ADMIN_PID}" 2>/dev/null || true
     fi
@@ -186,13 +197,10 @@ neo4j_on_exit() {
     if [[ -n "${NEO4J_WORK_DIR}" ]]; then
         rm -rf "${NEO4J_WORK_DIR}"
     fi
-    if [[ "${NEO4J_STOPPED_BY_US}" == true && "${NEO4J_KEEP_STOPPED}" == true ]]; then
-        if [[ ${status} -ne 4 ]]; then
-            log_error "Neo4j container '${NEO4J_CONTAINER}' is left STOPPED and its store may be partially overwritten: do not start it as it is."
-            [[ -z "${NEO4J_STOPPED_HOOK}" ]] || "${NEO4J_STOPPED_HOOK}"
-            status=3
-        fi
-    elif [[ "${NEO4J_STOPPED_BY_US}" == true ]]; then
+    if [[ "${left_stopped}" == true ]]; then
+        log_error "Neo4j container '${NEO4J_CONTAINER}' is left STOPPED and its store may be partially overwritten: do not start it as it is."
+        [[ -z "${NEO4J_STOPPED_HOOK}" ]] || "${NEO4J_STOPPED_HOOK}"
+    elif [[ "${NEO4J_STOPPED_BY_US}" == true && "${NEO4J_KEEP_STOPPED}" != true ]]; then
         if docker start "${NEO4J_CONTAINER}" > /dev/null; then
             log_info "Neo4j container '${NEO4J_CONTAINER}' started again"
         else

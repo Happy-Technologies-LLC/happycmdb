@@ -451,7 +451,7 @@ When the backup has a Neo4j dump, the rollback stops `api-server` first (as for 
 | 3 | The load failed or was interrupted: Neo4j is STOPPED and its store may be partly overwritten. | Keep the app stopped. Run the printed command: `restore-neo4j.sh --replace-stopped --file <pre-restore dump>`. |
 | 4 | Loaded, but Neo4j is not online or the counts differ. | Keep the app stopped. Investigate, or run the printed command: it puts the pre-restore dump back (taking a fresh one first), or, when the container did not start and is STOPPED, it is the `--replace-stopped` command. |
 
-On exit 3 or 4 (and 129/130/143, an interrupted restore, which the rollback treats as 3) the rollback leaves `api-server` stopped; on exit 1 it restarts it, and after a successful restore it starts it again. Any other exit means the Neo4j state is unknown: check `docker ps -a` before starting anything.
+On exit 3 or 4 (and 129/130/143, an interrupted restore, which the rollback treats as 3) the rollback leaves `api-server` stopped; on exit 1 it restarts it, and after a successful restore it starts it again. On any exit but 1 it also prints the pre-restore dump path, and on any exit but 1 or 4 the `--replace-stopped --file <pre-restore dump>` command, itself, so the command survives a Ctrl-C or hang-up that signals the whole process group (the rollback's `tee` ignores INT; the restore's EXIT trap ignores INT, TERM, HUP and PIPE and fixes its exit status before it writes anything). Any other exit means the Neo4j state is unknown: check `docker ps -a` before starting anything.
 
 #### Post-restore grants (mandatory)
 

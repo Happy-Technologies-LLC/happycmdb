@@ -255,6 +255,8 @@ if [[ "$ROLLBACK_TYPE" == "full" || "$ROLLBACK_TYPE" == "database-only" ]]; then
     docker-compose -f "$PROJECT_ROOT/infrastructure/docker/docker-compose.yml" up -d neo4j postgres redis 2>&1 | tee -a "$ROLLBACK_LOG"
     sleep 15
 
+    NEO4J_RESTORED=false
+
     # Restore Neo4j
     if [[ -f "$BACKUP_PATH/neo4j-backup.tar.gz" ]]; then
         log_info "Restoring Neo4j database..."
@@ -272,6 +274,7 @@ if [[ "$ROLLBACK_TYPE" == "full" || "$ROLLBACK_TYPE" == "database-only" ]]; then
                 exit 1
             fi
             log_success "Neo4j restored"
+            NEO4J_RESTORED=true
         else
             log_error "restore-neo4j.sh not found - manual restore required"
             log_info "Backup location: $BACKUP_PATH/neo4j-backup.tar.gz"
@@ -283,7 +286,22 @@ if [[ "$ROLLBACK_TYPE" == "full" || "$ROLLBACK_TYPE" == "database-only" ]]; then
         log_info "Restoring PostgreSQL database..."
 
         if [[ -f "$SCRIPT_DIR/restore-postgres.sh" ]]; then
-            bash "$SCRIPT_DIR/restore-postgres.sh" "$BACKUP_PATH/postgres-backup.sql.gz" 2>&1 | tee -a "$ROLLBACK_LOG"
+            # HAP-1749: the backup goes in via --file (a bare path hits usage(), which exits 0). Never
+            # --drop, and exported overrides are pinned: RESTORE_CREATE_DATABASE=true makes CREATE
+            # DATABASE fail on an existing database before any load, so the dump is never loaded over
+            # a live one. stdin is detached (no second prompt). The restore's own status decides.
+            RESTORE_DROP_DATABASE=false RESTORE_CREATE_DATABASE=true bash "$SCRIPT_DIR/restore-postgres.sh" --file "$BACKUP_PATH/postgres-backup.sql.gz" </dev/null 2>&1 | tee -a "$ROLLBACK_LOG"
+            postgres_restore_status=${PIPESTATUS[0]}
+            if [[ "$postgres_restore_status" -ne 0 ]]; then
+                log_error "PostgreSQL restore failed (exit $postgres_restore_status) - PostgreSQL NOT restored from $BACKUP_PATH/postgres-backup.sql.gz"
+                partial_state=""
+                if [[ "$NEO4J_RESTORED" == true ]]; then
+                    log_error "Neo4j WAS already restored from $BACKUP_PATH/neo4j-backup.tar.gz - Neo4j and PostgreSQL are now from different points in time"
+                    partial_state="; Neo4j already restored, PostgreSQL not"
+                fi
+                send_notification "FAILED" "Rollback aborted: PostgreSQL restore failed (backup: $BACKUP_TIMESTAMP)$partial_state"
+                exit 1
+            fi
             log_success "PostgreSQL restored"
         else
             log_error "restore-postgres.sh not found - manual restore required"

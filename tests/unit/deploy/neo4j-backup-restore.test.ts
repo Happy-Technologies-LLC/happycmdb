@@ -46,7 +46,15 @@ describe('HAP-1748: Neo4j backup and restore share one file and fail closed', ()
       timeout: 60_000,
     });
     const calls = existsSync(join(dir, 'out.calls')) ? readFileSync(join(dir, 'out.calls'), 'utf8').split('\n') : [];
-    return { status: result.status, out: `${result.stdout}${result.stderr}`, calls, at: (re: RegExp) => calls.findIndex((line) => re.test(line)) };
+    const stop = calls.indexOf('docker stop cmdb-neo4j');
+    return {
+      status: result.status,
+      out: `${result.stdout}${result.stderr}`,
+      calls,
+      at: (re: RegExp) => calls.findIndex((line) => re.test(line)),
+      // This run stopped the live container and started it again afterwards.
+      restarted: stop >= 0 && calls.indexOf('docker start cmdb-neo4j', stop) > stop,
+    };
   };
   const rollback = (flags: string, env: Record<string, string> = {}) =>
     // Under a pty, as an operator runs it.
@@ -68,5 +76,44 @@ describe('HAP-1748: Neo4j backup and restore share one file and fail closed', ()
     expect(out).toContain('Neo4j restored');
     const order = [/^docker stop cmdb-neo4j$/, /database dump neo4j/, /database load .*--overwrite-destination=true neo4j/, /^docker start cmdb-neo4j$/].map(at);
     expect(order.every((i) => i >= 0) && order.every((i, n) => n === 0 || order[n - 1] < i)).toBe(true);
+  });
+
+  it('rollback without --replace-live-neo4j refuses when a Neo4j backup exists, before Neo4j is stopped or loaded', () => {
+    writeFileSync(backup(), gzipSync('dump'));
+    const { status, at } = rollback('');
+    expect(status).not.toBe(0);
+    expect(at(/^docker (stop|create)/)).toBe(-1);
+  });
+
+  it.each([
+    ['the pre-restore dump fails: exit 1, nothing changed, Neo4j started again', { FAIL_DUMP: '1' }, 1, true],
+    ['the load fails: exit 3, Neo4j left STOPPED with the command that loads the pre-restore dump', { FAIL_LOAD: '1' }, 3, false],
+    ['the restored counts differ from the backup\'s: exit 4, loaded, with the command that puts the old database back', { NODES: '4' }, 4, true],
+  ])('restore-neo4j.sh --replace-live: when %s', (_case, env, code, restarted) => {
+    writeFileSync(backup(), gzipSync('dump'));
+    writeFileSync(join(dir, 'backups/T1/neo4j-backup.counts'), '5 7\n');
+    const pre = join(dir, 'pre.dump.gz');
+    const result = run([script('restore-neo4j.sh'), '--file', backup(), '--replace-live', '--pre-restore-backup', pre], env);
+    expect({ status: result.status, restarted: result.restarted }).toEqual({ status: code, restarted });
+    if (code !== 3) return;
+    expect(result.out).toContain('STOPPED');
+    // The printed command loads the pre-restore dump into the stopped container and starts it.
+    rmSync(join(dir, 'out.calls'));
+    const back = run(['-c', result.out.split('\n').find((line) => line.includes('--replace-stopped --file'))!.split('): ')[1]], { NEO4J_DOWN: '1' });
+    expect({ status: back.status, started: back.calls.includes('docker start cmdb-neo4j') }).toEqual({ status: 0, started: true });
+  });
+
+  it.each([
+    ['the dump fails: no file, Neo4j started again', { FAIL_DUMP: '1' }, 'started again'],
+    ['Neo4j cannot be started again: the output says STOPPED and how to start it', { FAIL_START: '1' }, 'STOPPED: starting it again failed. Start it: docker start cmdb-neo4j'],
+  ])('backup-neo4j.sh --to: when %s', (_case, env, message) => {
+    const result = run([script('backup-neo4j.sh'), '--to', backup()], env);
+    expect({ status: result.status, written: existsSync(backup()), restarted: result.restarted }).toEqual({ status: 1, written: false, restarted: true });
+    expect(result.out).toContain(message);
+  });
+
+  it('the daily backup-neo4j.sh run refuses without BACKUP_NEO4J_OFFLINE=true and never calls docker', () => {
+    const result = run([script('backup-neo4j.sh')]);
+    expect({ status: result.status, docker: result.calls.filter(Boolean) }).toEqual({ status: 1, docker: [] });
   });
 });

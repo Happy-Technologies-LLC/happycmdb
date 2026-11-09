@@ -353,7 +353,7 @@ describe('inventory gate 4: user-security property writers', () => {
     ['a fixture user created after datetime() (seed-tenant-fixture.ts:404)',
       "'CREATE (u:User {_id: $id, _createdAt: datetime(), _tenantFixture: true})'"],
     ['a non-user map write', "'CREATE (bs:BusinessService) SET bs = $props'"],
-    ['read-only APOC calls (restore-neo4j.sh:256, graph-traversal.ts:180)',
+    ['read-only APOC calls (graph-traversal.ts:180)',
       "\"CALL apoc.cypher.run('MATCH (n) RETURN count(n) AS c', {}) YIELD value RETURN apoc.convert.fromJsonMap(value.c)\""],
     ['TypeScript `: User` annotations (HAP-1673)',
       'function toUser(row: Row, passwordHash: string): User { const user: User = { ...row, scopes: [] }, n = 1; return user; }'],

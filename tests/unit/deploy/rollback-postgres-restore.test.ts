@@ -12,8 +12,11 @@ import { randomBytes } from 'crypto';
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
+import { gzipSync } from 'zlib';
+import { NEO4J_DOCKER_STUB } from './fixtures/neo4j-docker';
 
 const REPO = resolve(__dirname, '../../..');
+const NEO4J_LOAD = /^docker create .* database load --from-path/;
 // Generated per run so no fixed credential-shaped literal lives in the repo.
 const PASSWORD = randomBytes(12).toString('hex');
 // pg_dump before 13.22/14.19/15.14/16.10/17.6 ends at the completion line; later ones add a \unrestrict line after it.
@@ -31,8 +34,9 @@ describe('HAP-1749/HAP-1762: rollback.sh PostgreSQL restore, guarded over a live
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'hap1762-'));
-    // Every call lands in one ordered log. `docker cp` is restore-neo4j.sh loading the Neo4j dump.
-    stub('docker', ['echo "docker $*" >> "$OUT.calls"', '[ "$1" = ps ] && echo cmdb-neo4j', 'exit 0']);
+    // Every call lands in one ordered log. A one-off `database load --from-path` container is restore-neo4j.sh loading
+    // the Neo4j dump (HAP-1748).
+    stub('docker', NEO4J_DOCKER_STUB);
     stub('docker-compose', ['echo "compose $*" >> "$OUT.calls"', 'case "$*" in *"ps --services"*) echo api-server;; esac', 'exit 0']);
     stub('pg_dump', [
       '[ -z "$PGDUMP_FAIL" ] || exit 1',
@@ -62,12 +66,11 @@ describe('HAP-1749/HAP-1762: rollback.sh PostgreSQL restore, guarded over a live
     stub('git', ['[ "$1" = checkout ] || exit 0', "printf '#!/bin/bash\\necho \"Usage: restore-postgres.sh\"\\nexit 0\\n' > infrastructure/scripts/restore-postgres.sh"]);
     const scripts = join(dir, 'root/infrastructure/scripts');
     mkdirSync(scripts, { recursive: true });
-    for (const script of ['rollback.sh', 'restore-neo4j.sh', 'restore-postgres.sh']) {
+    for (const script of ['rollback.sh', 'restore-neo4j.sh', 'neo4j-offline.sh', 'restore-postgres.sh']) {
       copyFileSync(join(REPO, 'infrastructure/scripts', script), join(scripts, script));
     }
     mkdirSync(join(dir, 'backups/T1'), { recursive: true });
-    writeFileSync(join(dir, 'dump'), 'dump');
-    expect(spawnSync('tar', ['-czf', join(dir, 'backups/T1/neo4j-backup.tar.gz'), '-C', dir, 'dump']).status).toBe(0);
+    writeFileSync(join(dir, 'backups/T1/neo4j-backup.dump.gz'), gzipSync('dump'));
     writeFileSync(join(dir, 'backups/T1/git-commit.txt'), '3ecb885\n');
     writeBackup(LEGACY);
   });
@@ -94,11 +97,11 @@ describe('HAP-1749/HAP-1762: rollback.sh PostgreSQL restore, guarded over a live
   };
 
   const rollback = (env: Record<string, string>, optIn: boolean, mode = 'database-only', kind = LEGACY) => {
-    const args = `T1 ${mode}${optIn ? ' --replace-live-postgres' : ''}`;
+    const args = `T1 ${mode}${optIn ? ' --replace-live-postgres' : ''} --replace-live-neo4j`;
     // Under a pty, as an operator runs it; the typed REPLACE confirmation is supplied even without the flag.
     const run = spawnSync('script', ['-qec', `bash ${join(dir, 'root/infrastructure/scripts/rollback.sh')} ${args}`, '/dev/null'], {
       env: stubEnv(env),
-      input: 'ROLLBACK\nREPLACE cmdb\n',
+      input: optIn ? 'ROLLBACK\nREPLACE cmdb\nREPLACE neo4j\n' : 'ROLLBACK\nREPLACE neo4j\nREPLACE cmdb\n',
       encoding: 'utf8',
       timeout: 60_000,
     });
@@ -113,7 +116,7 @@ describe('HAP-1749/HAP-1762: rollback.sh PostgreSQL restore, guarded over a live
       result: {
         exitedZero: run.status === 0,
         preBackupTaken: at(/^pg_dump /) >= 0,
-        neo4jRestored: at(/^docker cp /) >= 0,
+        neo4jRestored: at(NEO4J_LOAD) >= 0,
         dropped: at(/^psql .*(DROP DATABASE|pg_terminate_backend)/) >= 0,
         loaded: existsSync(join(dir, 'out.load')) && readFileSync(join(dir, 'out.load'), 'utf8') === dumpOf(kind),
         apiRestarted: at(/^compose .* start api-server/) >= 0,
@@ -147,7 +150,7 @@ describe('HAP-1749/HAP-1762: rollback.sh PostgreSQL restore, guarded over a live
     expect(result).toEqual({
       exitedZero: true, preBackupTaken: true, neo4jRestored: true, dropped: true, loaded: true, apiRestarted: true,
     });
-    const order = [/stop api-server/, /^pg_dump /, /^docker cp /, /^psql .*DROP DATABASE/, /^psql .*CREATE DATABASE/, /^LOAD /, /FROM ONLY public\.configuration_items/, /start api-server/].map(at);
+    const order = [/stop api-server/, /^pg_dump /, NEO4J_LOAD, /^psql .*DROP DATABASE/, /^psql .*CREATE DATABASE/, /^LOAD /, /FROM ONLY public\.configuration_items/, /start api-server/].map(at);
     expect(order).toEqual([...order].sort((a, b) => a - b));
     expect(at(/^LOAD .*ON_ERROR_STOP=1.*--single-transaction/)).toBeGreaterThanOrEqual(0);
     expect(spawnSync('gunzip', ['-c', preBackup], { encoding: 'utf8' }).stdout.endsWith(kind.trailer)).toBe(true);
@@ -182,7 +185,7 @@ describe('HAP-1749/HAP-1762: rollback.sh PostgreSQL restore, guarded over a live
   ])('with the opt-in, when %s after the drop the rollback fails with the API left stopped and the restore exits %d', (_case, code, env) => {
     const { result, at } = rollback({ DB_EXISTS: '1', ...env }, true);
     expect(result).toMatchObject({ exitedZero: false, neo4jRestored: true, dropped: true, apiRestarted: false });
-    expect(at(/^docker cp /)).toBeLessThan(at(/^psql .*DROP DATABASE/));
+    expect(at(NEO4J_LOAD)).toBeLessThan(at(/^psql .*DROP DATABASE/));
     expect(restore({ DB_EXISTS: '1', ...env }, join(dir, 'solo-pre.sql.gz'))).toMatchObject({ status: code, dropped: true });
   });
 

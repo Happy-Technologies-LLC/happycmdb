@@ -3,16 +3,26 @@
 # Neo4j Backup Script for HappyCMDB
 # Supports database dumps, compression, retention policies, and cloud upload
 #
+# HAP-1748: Neo4j Community Edition dumps only a stopped DBMS, so every backup stops the Neo4j container for the dump
+# and starts it again (neo4j-offline.sh). Two modes:
+#   --to FILE   The deploy backup (deploy-production.sh Step 2): writes FILE, a gzip of a neo4j-admin dump of the neo4j
+#               database, verified, plus the node/relationship counts beside it. restore-neo4j.sh reads it.
+#   (no args)   The daily layout under BACKUP_DIR with retention and upload. It stops Neo4j, so it runs only with
+#               BACKUP_NEO4J_OFFLINE=true; otherwise it refuses before touching anything.
+# Exit 0: backup written and verified. Non-zero: no backup; Neo4j was started again (if that failed, the output says
+# STOPPED and prints the docker start command).
+#
 
 set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Configuration from environment variables or defaults
 BACKUP_DIR="${BACKUP_DIR:-/var/backups/happycmdb/neo4j}"
 NEO4J_CONTAINER="${NEO4J_CONTAINER:-cmdb-neo4j}"
-NEO4J_DATABASE="${NEO4J_DATABASE:-cmdb}"
 NEO4J_USERNAME="${NEO4J_USERNAME:-neo4j}"
 NEO4J_PASSWORD="${NEO4J_PASSWORD:-}"
-NEO4J_URI="${NEO4J_URI:-bolt://localhost:7687}"
+BACKUP_NEO4J_OFFLINE="${BACKUP_NEO4J_OFFLINE:-false}"
 
 # Retention policy (days)
 RETENTION_DAILY="${BACKUP_RETENTION_DAILY:-7}"
@@ -36,9 +46,11 @@ TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 DAY_OF_WEEK=$(date +%u)  # 1-7 (Monday-Sunday)
 DAY_OF_MONTH=$(date +%d)
 
-# Backup filename
-BACKUP_FILE="neo4j_${NEO4J_DATABASE}_${TIMESTAMP}.dump"
-BACKUP_FILE_GZ="${BACKUP_FILE}.gz"
+# shellcheck source=neo4j-offline.sh
+source "${SCRIPT_DIR}/neo4j-offline.sh"
+
+# Daily backup filename
+BACKUP_FILE_GZ="neo4j_${NEO4J_DUMP_DATABASE}_${TIMESTAMP}.dump.gz"
 
 # Logging functions
 log_info() {
@@ -51,6 +63,10 @@ log_error() {
 
 log_success() {
     echo "[$(date +'%Y-%m-%d %H:%M:%S')] SUCCESS: $*"
+}
+
+log_warning() {
+    echo "[$(date +'%Y-%m-%d %H:%M:%S')] WARNING: $*"
 }
 
 # Send notification (webhook)
@@ -74,92 +90,37 @@ create_backup_dirs() {
 
 # Check if Docker container exists and is running
 check_container() {
-    if docker ps --filter "name=${NEO4J_CONTAINER}" --filter "status=running" | grep -q "${NEO4J_CONTAINER}"; then
+    if neo4j_container_running; then
         log_info "Neo4j container '${NEO4J_CONTAINER}' is running"
         return 0
-    else
-        log_error "Neo4j container '${NEO4J_CONTAINER}' is not running"
-        send_notification "FAILED" "Neo4j container not running"
-        exit 1
     fi
+    log_error "Neo4j container '${NEO4J_CONTAINER}' is not running"
+    return 1
 }
 
-# Perform Neo4j backup using neo4j-admin dump
-perform_backup() {
-    log_info "Starting Neo4j backup..."
-    log_info "Database: ${NEO4J_DATABASE}, Container: ${NEO4J_CONTAINER}"
-
-    local backup_path="${BACKUP_DIR}/daily/${BACKUP_FILE}"
-
-    # Create temporary directory for dump inside container
-    local container_backup_dir="/tmp/neo4j-backup-${TIMESTAMP}"
-
-    # Execute neo4j-admin dump inside container
-    log_info "Executing neo4j-admin dump in container..."
-    if docker exec "${NEO4J_CONTAINER}" \
-        neo4j-admin database dump \
-        --database="${NEO4J_DATABASE}" \
-        --to-path=/tmp \
-        --overwrite-destination=true 2>&1 | grep -v "^$"; then
-
-        log_success "Database dump created in container"
+# Stops Neo4j, dumps it into FILE, starts it again and verifies FILE. The counts are recorded beside FILE only when
+# they are the same before the stop and after the start, so they describe the dump.
+offline_backup() {
+    local file="$1" before after counts_file
+    counts_file="$(neo4j_counts_file "${file}")"
+    rm -f "${counts_file}"
+    log_info "Starting Neo4j backup of the '${NEO4J_DUMP_DATABASE}' database (container: ${NEO4J_CONTAINER}) to ${file}"
+    before="$(neo4j_counts)" || before=""
+    neo4j_stop || return 1
+    neo4j_dump_to "${file}" || return 1
+    neo4j_start || { rm -f "${file}"; return 1; }
+    after="$(neo4j_counts)" || after=""
+    if [[ -n "${before}" && "${before}" == "${after}" ]]; then
+        echo "${before}" > "${counts_file}"
+        log_info "Recorded counts (nodes relationships): ${before} in ${counts_file}"
     else
-        log_error "Database dump failed"
-        send_notification "FAILED" "Neo4j backup failed for ${NEO4J_DATABASE}"
-        exit 1
+        log_warning "Counts unreadable or changed around the dump ('${before}' -> '${after}'): none recorded; a restore of this backup prints its counts without comparing them"
     fi
-
-    # Copy dump file from container to host
-    log_info "Copying dump file from container to host..."
-    local container_dump_file="/tmp/${NEO4J_DATABASE}.dump"
-
-    if docker cp "${NEO4J_CONTAINER}:${container_dump_file}" "${backup_path}"; then
-        log_success "Dump file copied to: ${backup_path}"
-    else
-        log_error "Failed to copy dump file from container"
-        send_notification "FAILED" "Failed to copy Neo4j dump from container"
-        exit 1
-    fi
-
-    # Clean up dump file in container
-    docker exec "${NEO4J_CONTAINER}" rm -f "${container_dump_file}" 2>/dev/null || true
-
-    # Get backup size before compression
-    local backup_size=$(du -h "${backup_path}" | cut -f1)
-    log_info "Backup size (uncompressed): ${backup_size}"
-
-    # Compress backup
-    log_info "Compressing backup..."
-    if gzip -9 "${backup_path}"; then
-        log_success "Backup compressed: ${backup_path}.gz"
-    else
-        log_error "Compression failed"
-        send_notification "WARNING" "Neo4j backup created but compression failed"
-        exit 1
-    fi
-
-    # Get compressed size
-    local compressed_size=$(du -h "${backup_path}.gz" | cut -f1)
-    log_info "Backup size (compressed): ${compressed_size}"
-
-    echo "${backup_path}.gz"
-}
-
-# Verify backup integrity
-verify_backup() {
-    local backup_file="$1"
-
-    log_info "Verifying backup integrity..."
-
-    # Test gzip integrity
-    if gzip -t "${backup_file}"; then
-        log_success "Backup integrity verified"
-        return 0
-    else
-        log_error "Backup integrity check failed"
-        send_notification "FAILED" "Neo4j backup verification failed"
+    if ! neo4j_verify_dump "${file}"; then
+        rm -f "${file}" "${counts_file}"
         return 1
     fi
+    log_info "Backup size (compressed): $(du -h "${file}" | cut -f1)"
 }
 
 # Upload to cloud storage
@@ -236,7 +197,7 @@ apply_retention() {
 
     # Daily backups (keep last N days)
     log_info "Cleaning daily backups (keep last ${RETENTION_DAILY} days)..."
-    find "${BACKUP_DIR}/daily" -name "neo4j_*.dump.gz" -type f -mtime +${RETENTION_DAILY} -delete
+    find "${BACKUP_DIR}/daily" \( -name "neo4j_*.dump.gz" -o -name "neo4j_*.counts" \) -type f -mtime +${RETENTION_DAILY} -delete
 
     # Weekly backups (keep last N weeks)
     if [[ -d "${BACKUP_DIR}/weekly" ]]; then
@@ -261,7 +222,7 @@ generate_report() {
     local backup_size=$(du -h "${backup_file}" | cut -f1)
 
     log_info "=== Backup Report ==="
-    log_info "Database: ${NEO4J_DATABASE}"
+    log_info "Database: ${NEO4J_DUMP_DATABASE}"
     log_info "Timestamp: ${TIMESTAMP}"
     log_info "Backup file: ${backup_file}"
     log_info "Size: ${backup_size}"
@@ -278,19 +239,50 @@ generate_report() {
 
 # Main execution
 main() {
+    local target=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --to)
+                target="${2:-}"
+                [[ -n "${target}" ]] || { log_error "--to requires a FILE"; exit 1; }
+                shift 2
+                ;;
+            *)
+                log_error "Unknown argument: $1 (usage: $0 [--to FILE])"
+                exit 1
+                ;;
+        esac
+    done
+
     log_info "===== HappyCMDB Neo4j Backup ====="
 
-    # Check if container is running
-    check_container
+    if [[ -z "${target}" && "${BACKUP_NEO4J_OFFLINE}" != "true" ]]; then
+        log_error "Refusing the daily Neo4j backup: it stops the Neo4j container for the dump (Community Edition dumps only" \
+            "a stopped DBMS). Set BACKUP_NEO4J_OFFLINE=true to accept that outage. Nothing changed."
+        exit 1
+    fi
+    if [[ -n "${target}" && ( -e "${target}" || ! -d "$(dirname "${target}")" ) ]]; then
+        log_error "--to ${target}: the file must not exist and its directory must. Nothing changed."
+        exit 1
+    fi
 
-    # Create directory structure
+    # HAP-1647: cypher-shell reads it from the environment (docker exec -e NEO4J_PASSWORD), never argv.
+    : "${NEO4J_PASSWORD:?must be set}"
+    export NEO4J_PASSWORD
+
+    check_container || { send_notification "FAILED" "Neo4j container not running"; exit 1; }
+    neo4j_resolve_image || exit 1
+
+    if [[ -n "${target}" ]]; then
+        offline_backup "${target}" || exit 1
+        log_success "Neo4j backup written and verified: ${target}"
+        exit 0
+    fi
+
     create_backup_dirs
-
-    # Perform backup
-    backup_file=$(perform_backup)
-
-    # Verify backup
-    if ! verify_backup "${backup_file}"; then
+    local backup_file="${BACKUP_DIR}/daily/${BACKUP_FILE_GZ}"
+    if ! offline_backup "${backup_file}"; then
+        send_notification "FAILED" "Neo4j backup failed (${NEO4J_DUMP_DATABASE})"
         exit 1
     fi
 
@@ -310,7 +302,7 @@ main() {
     generate_report "${backup_file}"
 
     # Send success notification
-    send_notification "SUCCESS" "Neo4j backup completed successfully (${NEO4J_DATABASE})"
+    send_notification "SUCCESS" "Neo4j backup completed successfully (${NEO4J_DUMP_DATABASE})"
 
     log_success "Backup completed successfully!"
 }

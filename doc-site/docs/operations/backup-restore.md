@@ -57,7 +57,7 @@ sudo chmod 755 /var/log/happycmdb/backups
 
 # Or backup individually
 ./infrastructure/scripts/backup-postgres.sh
-./infrastructure/scripts/backup-neo4j.sh
+BACKUP_NEO4J_OFFLINE=true ./infrastructure/scripts/backup-neo4j.sh   # stops Neo4j for the dump
 ```
 
 ## Backup Scripts
@@ -71,6 +71,8 @@ Orchestrates backup of both PostgreSQL and Neo4j databases.
 ```bash
 ./infrastructure/scripts/backup-all.sh
 ```
+
+Its Neo4j backup stops Neo4j for the dump and runs only with `BACKUP_NEO4J_OFFLINE=true` in the environment; without it the Neo4j part reports FAILED and Neo4j is not touched.
 
 **Features**:
 - Runs both database backups sequentially
@@ -105,23 +107,24 @@ Creates full PostgreSQL database dump using `pg_dump`.
 
 **Script**: `/infrastructure/scripts/backup-neo4j.sh`
 
-Creates Neo4j database dump using `neo4j-admin dump`.
+Dumps the `neo4j` database with `neo4j-admin database dump`. Neo4j Community Edition dumps only a stopped DBMS, so the script stops the Neo4j container, dumps its store from a one-off container of the same image (`--volumes-from`), and starts Neo4j again. If the script fails or is interrupted while Neo4j is stopped, it starts Neo4j again; if that fails it prints `STOPPED` and the `docker start` command.
 
 ```bash
-./infrastructure/scripts/backup-neo4j.sh
+# Daily mode: refused (exit 1, nothing changed) unless the outage is accepted
+BACKUP_NEO4J_OFFLINE=true ./infrastructure/scripts/backup-neo4j.sh
+
+# One file, as the production deploy writes it (no retention or upload; the file must not exist)
+./infrastructure/scripts/backup-neo4j.sh --to /path/to/neo4j-backup.dump.gz
 ```
 
 **Process**:
-1. Executes `neo4j-admin database dump` inside Docker container
-2. Copies dump file from container to host
-3. Compresses with gzip (level 9)
-4. Verifies backup integrity
-5. Uploads to cloud storage (if enabled)
-6. Creates weekly/monthly copies
-7. Applies retention policy
-8. Sends notification
+1. Records the node and relationship counts
+2. Stops the Neo4j container, dumps the `neo4j` database, gzips it, starts Neo4j
+3. Writes the counts beside the dump (`*.counts`) only when they are the same after the restart
+4. Verifies the dump: `gzip -t`, then `neo4j-admin database load --info` reads it
+5. Daily mode only: uploads to cloud storage (if enabled), creates weekly/monthly copies, applies retention, sends a notification
 
-**Backup filename**: `neo4j_cmdb_YYYYMMDD_HHMMSS.dump.gz`
+**Backup filename** (daily mode): `neo4j_neo4j_YYYYMMDD_HHMMSS.dump.gz`
 
 ## Restore Scripts
 
@@ -175,43 +178,36 @@ Restores PostgreSQL database from compressed backup.
 
 **Script**: `/infrastructure/scripts/restore-neo4j.sh`
 
-Restores Neo4j database from compressed dump.
+Restores a `backup-neo4j.sh` dump over the `neo4j` database. Community Edition has one database, and it always exists, so every restore replaces the live database: it requires `--replace-live` and a new `--pre-restore-backup` path.
 
 ```bash
-# List available backups
-./infrastructure/scripts/restore-neo4j.sh --list
+# Verify a backup (changes nothing; no password needed)
+./infrastructure/scripts/restore-neo4j.sh --file neo4j-backup.dump.gz --check
 
-# Restore latest daily backup
+# Replace the live database
 ./infrastructure/scripts/restore-neo4j.sh \
-  --file $(ls -t /var/backups/happycmdb/neo4j/daily/*.dump.gz | head -1) \
-  --force \
-  --verify
-
-# Restore specific backup
-./infrastructure/scripts/restore-neo4j.sh \
-  --file /var/backups/happycmdb/neo4j/daily/neo4j_cmdb_20250118_020000.dump.gz \
-  --force \
-  --verify
+  --file /var/backups/happycmdb/neo4j/daily/neo4j_neo4j_20250118_020000.dump.gz \
+  --replace-live --pre-restore-backup /var/backups/happycmdb/neo4j/pre-restore-20250118.dump.gz
 ```
 
 **Options**:
 - `--file FILE` - Backup file to restore (required)
-- `--database NAME` - Target database name (default: cmdb)
 - `--container NAME` - Neo4j container name (default: cmdb-neo4j)
-- `--force` - Force restore (overwrite existing database)
-- `--verify` - Verify restore by checking node/relationship counts
+- `--check` - Verify the backup only
+- `--replace-live` - Stop Neo4j, dump it to `--pre-restore-backup`, load the backup, start Neo4j
+- `--pre-restore-backup FILE` - Where the live database is dumped first (must not exist)
+- `--preflight` - Run every check `--replace-live` runs, then stop (changes nothing)
+- `--replace-stopped` - Load into a Neo4j container that is already stopped (the command printed after exit 3)
 - `--list` - List available backups
 
-**Restore Process**:
-1. Verifies backup file integrity
-2. Checks Neo4j container is running
-3. Stops database
-4. Drops existing database (if `--force`)
-5. Decompresses backup
-6. Copies dump to container
-7. Restores using `neo4j-admin database load`
-8. Starts database
-9. Verifies restoration (if `--verify`)
+**Restore Process** (`--replace-live`):
+1. Verifies the backup (`gzip -t`, `neo4j-admin database load --info`)
+2. Checks the Neo4j container is running and the pre-restore path is new; asks for confirmation when interactive
+3. Stops Neo4j and dumps the live database to the pre-restore backup, then verifies it
+4. Loads the backup with `--overwrite-destination=true`
+5. Starts Neo4j and compares the node and relationship counts with the backup's `*.counts` file
+
+**Exit codes**: 0 replaced and verified; 1 nothing changed (Neo4j started again); 3 the load failed and Neo4j is left STOPPED (the printed command loads the pre-restore backup); 4 loaded, but Neo4j is not online or the counts differ (the printed command puts the pre-restore backup back).
 
 ## Automated Backup Scheduling
 
@@ -234,7 +230,7 @@ sudo crontab -u root /path/to/happycmdb/infrastructure/config/cron/happycmdb-bac
 
 ```cron
 # Full backup - Daily at 2:00 AM
-0 2 * * * /path/to/backup-all.sh
+0 2 * * * BACKUP_NEO4J_OFFLINE=true /path/to/backup-all.sh
 
 # Health check - Every 6 hours
 0 */6 * * * /path/to/backup-health-check.sh

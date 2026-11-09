@@ -4,9 +4,10 @@
  * database only with --replace-live-neo4j and a typed confirmation. The real scripts run against a stubbed docker
  * (fixtures/neo4j-docker.ts); nothing touches a database.
  */
-import { spawnSync } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import { randomBytes } from 'crypto';
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { once } from 'events';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 import { gzipSync } from 'zlib';
@@ -29,7 +30,9 @@ describe('HAP-1748: Neo4j backup and restore share one file and fail closed', ()
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'hap1748-'));
     stub('docker', NEO4J_DOCKER_STUB);
-    for (const name of ['docker-compose', 'sleep', 'curl']) stub(name, [':']);
+    for (const name of ['sleep', 'curl']) stub(name, [':']);
+    // api-server is running; every compose call lands in the same ordered log as docker's.
+    stub('docker-compose', ['echo "compose $*" >> "$OUT.calls"', 'case "$*" in *"ps --services"*) echo api-server;; esac', 'exit 0']);
     mkdirSync(join(dir, 'root/infrastructure/scripts'), { recursive: true });
     for (const name of SCRIPTS) {
       if (existsSync(join(REPO, 'infrastructure/scripts', name))) copyFileSync(join(REPO, 'infrastructure/scripts', name), script(name));
@@ -38,9 +41,12 @@ describe('HAP-1748: Neo4j backup and restore share one file and fail closed', ()
   });
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-  const run = (args: string[], env: Record<string, string> = {}, input = '') => {
+  const env = (extra: Record<string, string> = {}) => ({
+    PATH: `${dir}:/usr/bin:/bin`, OUT: join(dir, 'out'), TMPDIR: dir, BACKUP_DIR: join(dir, 'backups'), NEO4J_PASSWORD: PASSWORD, ...extra,
+  });
+  const run = (args: string[], extra: Record<string, string> = {}, input = '') => {
     const result = spawnSync('bash', args, {
-      env: { PATH: `${dir}:/usr/bin:/bin`, OUT: join(dir, 'out'), TMPDIR: dir, BACKUP_DIR: join(dir, 'backups'), NEO4J_PASSWORD: PASSWORD, ...env },
+      env: env(extra),
       input,
       encoding: 'utf8',
       timeout: 60_000,
@@ -69,12 +75,12 @@ describe('HAP-1748: Neo4j backup and restore share one file and fail closed', ()
     expect(run([script('restore-neo4j.sh'), '--file', backup(), '--check']).status).toBe(0);
   });
 
-  it('rollback with --replace-live-neo4j restores that file over the live database after a pre-restore dump, and restarts Neo4j', () => {
+  it('rollback with --replace-live-neo4j stops api-server, restores that file over the live database after a pre-restore dump, and restarts Neo4j then api-server', () => {
     writeFileSync(backup(), gzipSync('dump'));
     const { status, out, at } = rollback('--replace-live-neo4j');
     expect(status).toBe(0);
     expect(out).toContain('Neo4j restored');
-    const order = [/^docker stop cmdb-neo4j$/, /database dump neo4j/, /database load .*--overwrite-destination=true neo4j/, /^docker start cmdb-neo4j$/].map(at);
+    const order = [/^compose .* stop api-server$/, /^docker stop cmdb-neo4j$/, /database dump neo4j/, /database load .*--overwrite-destination=true neo4j/, /^docker start cmdb-neo4j$/, /^compose .* start api-server$/].map(at);
     expect(order.every((i) => i >= 0) && order.every((i, n) => n === 0 || order[n - 1] < i)).toBe(true);
   });
 
@@ -103,12 +109,43 @@ describe('HAP-1748: Neo4j backup and restore share one file and fail closed', ()
     expect({ status: back.status, started: back.calls.includes('docker start cmdb-neo4j') }).toEqual({ status: 0, started: true });
   });
 
+  it('restore-neo4j.sh --replace-live: a TERM during the load exits 3, leaves Neo4j STOPPED and prints the command that loads the pre-restore dump', async () => {
+    writeFileSync(backup(), gzipSync('dump'));
+    const pre = join(dir, 'pre.dump.gz');
+    const child = spawn('bash', [script('restore-neo4j.sh'), '--file', backup(), '--replace-live', '--pre-restore-backup', pre], { env: env({ BLOCK_LOAD: '1' }) });
+    // The stub prints LOAD BLOCKED once the load container runs, then blocks until it is killed.
+    let out = '';
+    const blocked = Promise.withResolvers<void>();
+    const collect = (data: Buffer) => {
+      out += data;
+      if (out.includes('LOAD BLOCKED')) blocked.resolve();
+    };
+    child.stdout.on('data', collect);
+    child.stderr.on('data', collect);
+    const closed = once(child, 'close');
+    await blocked.promise;
+    child.kill('SIGTERM');
+    const [status] = await closed;
+    const calls = readFileSync(join(dir, 'out.calls'), 'utf8').split('\n');
+    expect({ status, stopped: calls.includes('docker stop cmdb-neo4j'), started: calls.includes('docker start cmdb-neo4j') }).toEqual({ status: 3, stopped: true, started: false });
+    expect(out).toContain(`--replace-stopped --file ${pre}`);
+  });
+
   it.each([
-    ['the dump fails: no file, Neo4j started again', { FAIL_DUMP: '1' }, 'started again'],
-    ['Neo4j cannot be started again: the output says STOPPED and how to start it', { FAIL_START: '1' }, 'STOPPED: starting it again failed. Start it: docker start cmdb-neo4j'],
-  ])('backup-neo4j.sh --to: when %s', (_case, env, message) => {
+    ['backup-neo4j.sh --to', () => [script('backup-neo4j.sh'), '--to', join(dir, 'backups/T1/new.dump.gz')]],
+    ['restore-neo4j.sh --replace-live', () => [script('restore-neo4j.sh'), '--file', backup(), '--replace-live', '--pre-restore-backup', join(dir, 'pre.dump.gz')]],
+  ])('%s refuses a NEO4J_PASSWORD the running Neo4j rejects, before Neo4j is stopped', (_name, args) => {
+    writeFileSync(backup(), gzipSync('dump'));
+    const result = run(args(), { AUTH_FAIL: '1' });
+    expect({ status: result.status, stopped: result.at(/^docker stop /) >= 0 }).toEqual({ status: 1, stopped: false });
+  });
+
+  it.each([
+    ['the dump fails: no file, Neo4j started again', { FAIL_DUMP: '1' }, false, 'started again'],
+    ['Neo4j cannot be started again: the dump is kept, and the output says STOPPED and how to start it', { FAIL_START: '1' }, true, 'STOPPED: starting it again failed. Start it: docker start cmdb-neo4j'],
+  ])('backup-neo4j.sh --to: when %s', (_case, env, written, message) => {
     const result = run([script('backup-neo4j.sh'), '--to', backup()], env);
-    expect({ status: result.status, written: existsSync(backup()), restarted: result.restarted }).toEqual({ status: 1, written: false, restarted: true });
+    expect({ status: result.status, written: existsSync(backup()), restarted: result.restarted }).toEqual({ status: 1, written, restarted: true });
     expect(result.out).toContain(message);
   });
 

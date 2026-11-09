@@ -327,6 +327,21 @@ if [[ "$ROLLBACK_TYPE" == "full" || "$ROLLBACK_TYPE" == "database-only" ]]; then
         PG_ARGS+=(--replace-live --pre-restore-backup "$PG_PRE_BACKUP")
     fi
     API_STOPPED=false
+    restart_api_if_stopped() {
+        if [[ "$API_STOPPED" == true ]]; then
+            docker-compose -f "$PROJECT_ROOT/infrastructure/docker/docker-compose.yml" start api-server 2>&1 | tee -a "$ROLLBACK_LOG"
+            log_info "api-server restarted"
+            API_STOPPED=false
+        fi
+    }
+    # HAP-1762/HAP-1748: api-server (the client of both databases) is stopped before either live database is replaced,
+    # and before the preflights, so they see no client of it.
+    if [[ "$REPLACE_LIVE_POSTGRES" == true || ( "$REPLACE_LIVE_NEO4J" == true && -f "$NEO4J_BACKUP" ) ]] \
+        && docker-compose -f "$PROJECT_ROOT/infrastructure/docker/docker-compose.yml" ps --services --filter status=running 2>/dev/null | grep -qx api-server; then
+        log_info "Stopping api-server (the databases' client) for the live database replace..."
+        docker-compose -f "$PROJECT_ROOT/infrastructure/docker/docker-compose.yml" stop api-server 2>&1 | tee -a "$ROLLBACK_LOG"
+        API_STOPPED=true
+    fi
 
     # HAP-1749/HAP-1762: the backup goes in via --file (a bare path hits usage(), which exits 0). Exported RESTORE_*
     # overrides are pinned, so no environment value makes it --drop or load over a live database: only the argv opt-in
@@ -339,11 +354,7 @@ if [[ "$ROLLBACK_TYPE" == "full" || "$ROLLBACK_TYPE" == "database-only" ]]; then
     # HAP-1762: everything that can refuse the PostgreSQL restore runs before Neo4j is touched: the database exists
     # without the opt-in, the server is unreachable, another client is connected, or the pre-restore backup fails.
     if [[ -f "$PG_BACKUP" && -f "$PG_RESTORE_SCRIPT" ]]; then
-        if [[ "$REPLACE_LIVE_POSTGRES" == true ]] && docker-compose -f "$PROJECT_ROOT/infrastructure/docker/docker-compose.yml" ps --services --filter status=running 2>/dev/null | grep -qx api-server; then
-            log_info "Stopping api-server (the cmdb database's client) for the PostgreSQL replace..."
-            docker-compose -f "$PROJECT_ROOT/infrastructure/docker/docker-compose.yml" stop api-server 2>&1 | tee -a "$ROLLBACK_LOG"
-            API_STOPPED=true
-        fi
+        # api-server was stopped above when --replace-live-postgres was given.
         restore_postgres --preflight | tee "$SAFETY_SNAPSHOT_DIR/postgres-preflight.out"
         postgres_preflight_status=${PIPESTATUS[0]}
         # A script without --preflight reaches usage(), which exits 0: only the marker line proves the checks ran.
@@ -353,10 +364,7 @@ if [[ "$ROLLBACK_TYPE" == "full" || "$ROLLBACK_TYPE" == "database-only" ]]; then
         fi
         if [[ "$postgres_preflight_status" -ne 0 ]]; then
             log_error "PostgreSQL preflight failed (exit $postgres_preflight_status) - nothing restored from $PG_BACKUP; Neo4j and PostgreSQL are untouched"
-            if [[ "$API_STOPPED" == true ]]; then
-                docker-compose -f "$PROJECT_ROOT/infrastructure/docker/docker-compose.yml" start api-server 2>&1 | tee -a "$ROLLBACK_LOG"
-                log_info "api-server restarted"
-            fi
+            restart_api_if_stopped
             send_notification "FAILED" "Rollback aborted before any restore: PostgreSQL preflight failed (backup: $BACKUP_TIMESTAMP)"
             exit 1
         fi
@@ -365,17 +373,12 @@ if [[ "$ROLLBACK_TYPE" == "full" || "$ROLLBACK_TYPE" == "database-only" ]]; then
     fi
 
     # HAP-1748: everything that can refuse the Neo4j restore also runs before anything is replaced: the backup is
-    # verified, the container is running, and the pre-restore dump path is new. --preflight changes nothing.
+    # verified, the container is running and accepts the login, and the pre-restore dump path is new. --preflight
+    # changes nothing.
     NEO4J_PRE_BACKUP="$SAFETY_SNAPSHOT_DIR/neo4j-pre-restore.dump.gz"
     restore_neo4j() {
         bash "$NEO4J_RESTORE_SCRIPT" --file "$NEO4J_BACKUP" --replace-live --pre-restore-backup "$NEO4J_PRE_BACKUP" "$@" </dev/null 2>&1 | tee -a "$ROLLBACK_LOG"
         return "${PIPESTATUS[0]}"
-    }
-    restart_api_if_stopped() {
-        if [[ "$API_STOPPED" == true ]]; then
-            docker-compose -f "$PROJECT_ROOT/infrastructure/docker/docker-compose.yml" start api-server 2>&1 | tee -a "$ROLLBACK_LOG"
-            log_info "api-server restarted"
-        fi
     }
     if [[ -f "$NEO4J_BACKUP" ]]; then
         neo4j_preflight_status=1
@@ -397,9 +400,10 @@ if [[ "$ROLLBACK_TYPE" == "full" || "$ROLLBACK_TYPE" == "database-only" ]]; then
         restore_neo4j && neo4j_restore_status=0 || neo4j_restore_status=$?
         if [[ "$neo4j_restore_status" -ne 0 ]]; then
             case "$neo4j_restore_status" in
-                3) neo4j_state="Neo4j is STOPPED and its store may be partially overwritten: run the command restore-neo4j.sh printed above before starting it" ;;
+                3|129|130|143) neo4j_state="Neo4j is STOPPED and its store may be partially overwritten: run the command restore-neo4j.sh printed above (--replace-stopped) before starting it" ;;
                 4) neo4j_state="Neo4j was loaded but is not verified (not online, or the counts differ): see the command restore-neo4j.sh printed above" ;;
-                *) neo4j_state="Neo4j is unchanged (restore-neo4j.sh started it again; if it printed STOPPED, run the docker start it printed)" ;;
+                1) neo4j_state="Neo4j is unchanged (restore-neo4j.sh started it again; if it printed STOPPED, run the docker start it printed)" ;;
+                *) neo4j_state="Neo4j state UNKNOWN: check 'docker ps -a' for ${NEO4J_CONTAINER:-cmdb-neo4j} and the restore-neo4j.sh output above before starting anything" ;;
             esac
             log_error "Neo4j restore failed (exit $neo4j_restore_status) from $NEO4J_BACKUP - $neo4j_state"
             if [[ -f "$PG_PRE_BACKUP" ]]; then
@@ -446,15 +450,14 @@ if [[ "$ROLLBACK_TYPE" == "full" || "$ROLLBACK_TYPE" == "database-only" ]]; then
             fi
             log_success "PostgreSQL restored from $PG_BACKUP - grants NOT restored: apply the post-restore grant step printed above"
             GRANTS_PENDING=true
-            if [[ "$API_STOPPED" == true ]]; then
-                docker-compose -f "$PROJECT_ROOT/infrastructure/docker/docker-compose.yml" start api-server 2>&1 | tee -a "$ROLLBACK_LOG"
-                log_info "api-server restarted"
-            fi
+            restart_api_if_stopped
         else
             log_error "restore-postgres.sh not found - manual restore required"
             log_info "Backup location: $BACKUP_PATH/postgres-backup.sql.gz"
         fi
     fi
+    # A Neo4j-only replace (no PostgreSQL backup restored) restarts api-server here.
+    restart_api_if_stopped
 fi
 
 # =============================================================================

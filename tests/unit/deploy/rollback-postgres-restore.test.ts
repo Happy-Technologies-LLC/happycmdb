@@ -125,8 +125,9 @@ describe('HAP-1749/HAP-1762: rollback.sh PostgreSQL restore, guarded over a live
   };
 
   it('when the target database does not exist, it is created and loaded without the opt-in, a drop or a pre-restore backup', () => {
+    // api-server is stopped and restarted for the Neo4j replace (--replace-live-neo4j, HAP-1748), not for PostgreSQL.
     expect(rollback({}, false).result).toEqual({
-      exitedZero: true, preBackupTaken: false, neo4jRestored: true, dropped: false, loaded: true, apiRestarted: false,
+      exitedZero: true, preBackupTaken: false, neo4jRestored: true, dropped: false, loaded: true, apiRestarted: true,
     });
   });
 

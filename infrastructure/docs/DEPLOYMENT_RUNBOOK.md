@@ -434,7 +434,7 @@ On exit 3 or 4 the rollback leaves `api-server` stopped. Neo4j has already been 
 
 #### Replacing the live Neo4j database (`--replace-live-neo4j`)
 
-The deploy writes `<BACKUP_PATH>/neo4j-backup.dump.gz` (a `neo4j-admin database dump` of the `neo4j` database, gzipped) and, when the node and relationship counts were the same before and after the dump, `neo4j-backup.counts`. Neo4j Community Edition dumps and loads only a stopped DBMS, so the deploy stops the Neo4j container for the dump and starts it again.
+The deploy writes `<BACKUP_PATH>/neo4j-backup.dump.gz` (a `neo4j-admin database dump` of the `neo4j` database, gzipped) and, when the node and relationship counts were the same before and after the dump, `neo4j-backup.counts`. Neo4j Community Edition dumps and loads only a stopped DBMS, so the deploy stops the Neo4j container for the dump and starts it again. Step 2 takes `NEO4J_PASSWORD` from the environment or, if unset, from `.env.production`; when neither sets it, the deploy stops before Neo4j is touched. The backup also refuses (nothing stopped) when the running Neo4j rejects that login.
 
 Community Edition has one database, `neo4j`, and it always exists, so restoring it always replaces the live database. Without `--replace-live-neo4j` the rollback refuses (exit 1, nothing changed) whenever the backup has a Neo4j dump. With it, type `ROLLBACK`, then `REPLACE neo4j` (and `REPLACE cmdb` if `--replace-live-postgres` is also given; the two flags go in any order). No environment variable enables this.
 
@@ -442,16 +442,16 @@ Community Edition has one database, `neo4j`, and it always exists, so restoring 
 bash infrastructure/scripts/rollback.sh <BACKUP_TIMESTAMP> database-only --replace-live-neo4j
 ```
 
-Before anything is replaced, the rollback runs `restore-neo4j.sh --preflight` from the safety snapshot: the dump is verified (`gzip -t`, then `neo4j-admin database load --info` reads it), Neo4j is running, and the pre-restore dump path `<BACKUP_DIR>/safety-snapshot-<ts>/neo4j-pre-restore.dump.gz` is new. Then `restore-neo4j.sh --replace-live` stops Neo4j, dumps the live database to the pre-restore dump and verifies it, loads the backup with `--overwrite-destination=true`, starts Neo4j, and compares the counts with `neo4j-backup.counts` (without that file it prints the counts and does not compare). If the script is interrupted while it holds Neo4j stopped, it starts Neo4j again; if that start fails it prints `STOPPED` and the `docker start` command.
+When the backup has a Neo4j dump, the rollback stops `api-server` first (as for `--replace-live-postgres`). Before anything is replaced, it runs `restore-neo4j.sh --preflight` from the safety snapshot: the dump is verified (`gzip -t`, then `neo4j-admin database load --info` reads it), Neo4j is running and accepts the cypher-shell login, and the pre-restore dump path `<BACKUP_DIR>/safety-snapshot-<ts>/neo4j-pre-restore.dump.gz` is new. Then `restore-neo4j.sh --replace-live` stops Neo4j, dumps the live database to the pre-restore dump and verifies it, loads the backup with `--overwrite-destination=true`, starts Neo4j, and compares the counts with `neo4j-backup.counts` (without that file it prints the counts and does not compare). If the script is interrupted (INT, TERM, HUP) before the load, it starts Neo4j again (if that start fails it prints `STOPPED` and the `docker start` command). If it is interrupted during the load, it leaves Neo4j STOPPED, prints the `--replace-stopped` command, and exits 3.
 
 | `restore-neo4j.sh` exit | State | Action |
 |---|---|---|
 | 0 | Replaced; online, and the counts match. | None. |
 | 1 | Nothing changed; Neo4j started again. | Fix the cause it printed and rerun. |
-| 3 | The load failed: Neo4j is STOPPED and its store may be partly overwritten. | Keep the app stopped. Run the printed command: `restore-neo4j.sh --replace-stopped --file <pre-restore dump>`. |
-| 4 | Loaded, but Neo4j is not online or the counts differ. | Keep the app stopped. Investigate, or run the printed command, which puts the pre-restore dump back (taking a fresh one first). |
+| 3 | The load failed or was interrupted: Neo4j is STOPPED and its store may be partly overwritten. | Keep the app stopped. Run the printed command: `restore-neo4j.sh --replace-stopped --file <pre-restore dump>`. |
+| 4 | Loaded, but Neo4j is not online or the counts differ. | Keep the app stopped. Investigate, or run the printed command: it puts the pre-restore dump back (taking a fresh one first), or, when the container did not start and is STOPPED, it is the `--replace-stopped` command. |
 
-On exit 3 or 4 the rollback leaves `api-server` stopped; on exit 1 it restarts it.
+On exit 3 or 4 (and 129/130/143, an interrupted restore, which the rollback treats as 3) the rollback leaves `api-server` stopped; on exit 1 it restarts it, and after a successful restore it starts it again. Any other exit means the Neo4j state is unknown: check `docker ps -a` before starting anything.
 
 #### Post-restore grants (mandatory)
 

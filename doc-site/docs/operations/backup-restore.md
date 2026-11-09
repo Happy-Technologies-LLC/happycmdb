@@ -107,7 +107,7 @@ Creates full PostgreSQL database dump using `pg_dump`.
 
 **Script**: `/infrastructure/scripts/backup-neo4j.sh`
 
-Dumps the `neo4j` database with `neo4j-admin database dump`. Neo4j Community Edition dumps only a stopped DBMS, so the script stops the Neo4j container, dumps its store from a one-off container of the same image (`--volumes-from`), and starts Neo4j again. If the script fails or is interrupted while Neo4j is stopped, it starts Neo4j again; if that fails it prints `STOPPED` and the `docker start` command.
+Dumps the `neo4j` database with `neo4j-admin database dump`. Neo4j Community Edition dumps only a stopped DBMS, so the script stops the Neo4j container, dumps its store from a one-off container of the same image (`--volumes-from`), and starts Neo4j again. It first checks that the running Neo4j accepts the cypher-shell login (`NEO4J_PASSWORD`) and refuses, with nothing stopped, if not. If the script fails or is interrupted while Neo4j is stopped, it starts Neo4j again; if that fails it prints `STOPPED` and the `docker start` command. If only that restart fails after a complete dump, the dump is kept and the exit is non-zero.
 
 ```bash
 # Daily mode: refused (exit 1, nothing changed) unless the outage is accepted
@@ -207,7 +207,7 @@ Restores a `backup-neo4j.sh` dump over the `neo4j` database. Community Edition h
 4. Loads the backup with `--overwrite-destination=true`
 5. Starts Neo4j and compares the node and relationship counts with the backup's `*.counts` file
 
-**Exit codes**: 0 replaced and verified; 1 nothing changed (Neo4j started again); 3 the load failed and Neo4j is left STOPPED (the printed command loads the pre-restore backup); 4 loaded, but Neo4j is not online or the counts differ (the printed command puts the pre-restore backup back).
+**Exit codes**: 0 replaced and verified; 1 nothing changed (Neo4j started again; 129/130/143 when interrupted before the load); 3 the load failed or was interrupted (INT, TERM, HUP) and Neo4j is left STOPPED (the printed `--replace-stopped` command loads the pre-restore backup); 4 loaded, but Neo4j is not online or the counts differ (the printed command puts the pre-restore backup back).
 
 ## Automated Backup Scheduling
 

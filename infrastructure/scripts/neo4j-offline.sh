@@ -9,14 +9,18 @@
 # Sourcing installs an EXIT trap: if this process stopped the live container, it removes any one-off neo4j-admin
 # container first (two processes must never open the store) and then starts the live container again, unless the
 # caller set NEO4J_KEEP_STOPPED=true because the store may be partially overwritten. When that restart fails it says
-# the container is STOPPED and prints the docker start command.
+# the container is STOPPED and prints the docker start command. When the store may be partial (an error, INT, TERM or
+# HUP during the load) it leaves the container STOPPED, says so, runs the caller's NEO4J_STOPPED_HOOK (which prints the
+# command that loads a good dump) and exits 3. A caller that exits 4 itself has already said what to do.
 
 NEO4J_DUMP_DATABASE=neo4j
 NEO4J_IMAGE=""
 NEO4J_STOPPED_BY_US=false
 NEO4J_KEEP_STOPPED=false
+NEO4J_STOPPED_HOOK=""
 NEO4J_ADMIN_CONTAINER=""
 NEO4J_ADMIN_PID=""
+NEO4J_WORK_DIR=""
 
 # The counts file recorded next to a backup: neo4j-backup.dump.gz -> neo4j-backup.counts ("<nodes> <relationships>").
 neo4j_counts_file() {
@@ -76,6 +80,16 @@ neo4j_counts() {
     echo "${nodes} ${rels}"
 }
 
+# Refuses (before anything is stopped) when the running Neo4j rejects NEO4J_USERNAME/NEO4J_PASSWORD: a wrong password
+# would otherwise only show when the restarted DBMS cannot be checked.
+neo4j_auth_check() {
+    if ! docker exec -e NEO4J_PASSWORD "${NEO4J_CONTAINER}" cypher-shell -u "${NEO4J_USERNAME}" -d "${NEO4J_DUMP_DATABASE}" \
+        "RETURN 1;" > /dev/null 2>&1; then
+        log_error "Neo4j container '${NEO4J_CONTAINER}' rejected the cypher-shell login as '${NEO4J_USERNAME}' (check NEO4J_PASSWORD). Nothing stopped."
+        return 1
+    fi
+}
+
 neo4j_stop() {
     log_info "Stopping the Neo4j container '${NEO4J_CONTAINER}' (Community Edition dumps and loads only a stopped DBMS)..."
     NEO4J_STOPPED_BY_US=true
@@ -108,33 +122,37 @@ neo4j_start() {
 
 # Dumps the stopped DBMS's neo4j database into FILE (gzip), written whole or not at all.
 neo4j_dump_to() {
-    local file="$1" work status=0
-    work="$(mktemp -d)" || return 1
-    neo4j_admin "" "${work}/${NEO4J_DUMP_DATABASE}.dump" true dump "${NEO4J_DUMP_DATABASE}" --to-path=/tmp || status=1
+    local file="$1" status=0
+    NEO4J_WORK_DIR="$(mktemp -d)" || return 1
+    neo4j_admin "" "${NEO4J_WORK_DIR}/${NEO4J_DUMP_DATABASE}.dump" true dump "${NEO4J_DUMP_DATABASE}" --to-path=/tmp || status=1
     if [[ ${status} -eq 0 ]]; then
-        { gzip -c "${work}/${NEO4J_DUMP_DATABASE}.dump" > "${file}.partial" && mv "${file}.partial" "${file}"; } || status=1
+        # Only the owner reads a dump of the whole graph.
+        ( umask 077; gzip -c "${NEO4J_WORK_DIR}/${NEO4J_DUMP_DATABASE}.dump" > "${file}.partial" ) && mv "${file}.partial" "${file}" || status=1
     fi
-    rm -rf "${work}" "${file}.partial"
+    rm -rf "${NEO4J_WORK_DIR}" "${file}.partial"
+    NEO4J_WORK_DIR=""
     [[ ${status} -eq 0 ]] || log_error "neo4j-admin database dump failed: no backup written to ${file}"
     return ${status}
 }
 
-# Loads FILE (gzip) over the stopped DBMS's neo4j database.
+# Loads FILE (gzip) over the stopped DBMS's neo4j database. The staged dump keeps the default mode: docker cp hands it
+# to the one-off container, whose neo4j user must read it.
 neo4j_load_from() {
-    local file="$1" work status=0
-    work="$(mktemp -d)" || return 1
-    gunzip -c "${file}" > "${work}/${NEO4J_DUMP_DATABASE}.dump" || status=1
+    local file="$1" status=0
+    NEO4J_WORK_DIR="$(mktemp -d)" || return 1
+    gunzip -c "${file}" > "${NEO4J_WORK_DIR}/${NEO4J_DUMP_DATABASE}.dump" || status=1
     if [[ ${status} -eq 0 ]]; then
-        neo4j_admin "${work}/${NEO4J_DUMP_DATABASE}.dump" "" true load --from-path=/tmp --overwrite-destination=true "${NEO4J_DUMP_DATABASE}" || status=1
+        neo4j_admin "${NEO4J_WORK_DIR}/${NEO4J_DUMP_DATABASE}.dump" "" true load --from-path=/tmp --overwrite-destination=true "${NEO4J_DUMP_DATABASE}" || status=1
     fi
-    rm -rf "${work}"
+    rm -rf "${NEO4J_WORK_DIR}"
+    NEO4J_WORK_DIR=""
     return ${status}
 }
 
 # A backup is verified when it is a file, its gzip stream is intact, and neo4j-admin (the live container's image, no
 # store mounted, so it runs while Neo4j is up) reads it as a dump with `load --info`.
 neo4j_verify_dump() {
-    local file="$1" work status=0
+    local file="$1" status=0
     if [[ ! -f "${file}" ]]; then
         log_error "Neo4j backup not found: ${file}"
         return 1
@@ -143,12 +161,13 @@ neo4j_verify_dump() {
         log_error "Neo4j backup is not an intact gzip file: ${file}"
         return 1
     fi
-    work="$(mktemp -d)" || return 1
-    gunzip -c "${file}" > "${work}/${NEO4J_DUMP_DATABASE}.dump" || status=1
+    NEO4J_WORK_DIR="$(mktemp -d)" || return 1
+    gunzip -c "${file}" > "${NEO4J_WORK_DIR}/${NEO4J_DUMP_DATABASE}.dump" || status=1
     if [[ ${status} -eq 0 ]]; then
-        neo4j_admin "${work}/${NEO4J_DUMP_DATABASE}.dump" "" false load --info --from-path=/tmp "${NEO4J_DUMP_DATABASE}" || status=1
+        neo4j_admin "${NEO4J_WORK_DIR}/${NEO4J_DUMP_DATABASE}.dump" "" false load --info --from-path=/tmp "${NEO4J_DUMP_DATABASE}" || status=1
     fi
-    rm -rf "${work}"
+    rm -rf "${NEO4J_WORK_DIR}"
+    NEO4J_WORK_DIR=""
     if [[ ${status} -ne 0 ]]; then
         log_error "Neo4j backup failed verification: neo4j-admin load --info could not read ${file}"
         return 1
@@ -164,7 +183,16 @@ neo4j_on_exit() {
     if [[ -n "${NEO4J_ADMIN_CONTAINER}" ]]; then
         docker rm -f "${NEO4J_ADMIN_CONTAINER}" > /dev/null 2>&1 || true
     fi
-    if [[ "${NEO4J_STOPPED_BY_US}" == true && "${NEO4J_KEEP_STOPPED}" != true ]]; then
+    if [[ -n "${NEO4J_WORK_DIR}" ]]; then
+        rm -rf "${NEO4J_WORK_DIR}"
+    fi
+    if [[ "${NEO4J_STOPPED_BY_US}" == true && "${NEO4J_KEEP_STOPPED}" == true ]]; then
+        if [[ ${status} -ne 4 ]]; then
+            log_error "Neo4j container '${NEO4J_CONTAINER}' is left STOPPED and its store may be partially overwritten: do not start it as it is."
+            [[ -z "${NEO4J_STOPPED_HOOK}" ]] || "${NEO4J_STOPPED_HOOK}"
+            status=3
+        fi
+    elif [[ "${NEO4J_STOPPED_BY_US}" == true ]]; then
         if docker start "${NEO4J_CONTAINER}" > /dev/null; then
             log_info "Neo4j container '${NEO4J_CONTAINER}' started again"
         else
@@ -174,6 +202,7 @@ neo4j_on_exit() {
     exit "${status}"
 }
 
+trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 trap neo4j_on_exit EXIT

@@ -9,8 +9,10 @@
 #               database, verified, plus the node/relationship counts beside it. restore-neo4j.sh reads it.
 #   (no args)   The daily layout under BACKUP_DIR with retention and upload. It stops Neo4j, so it runs only with
 #               BACKUP_NEO4J_OFFLINE=true; otherwise it refuses before touching anything.
-# Exit 0: backup written and verified. Non-zero: no backup; Neo4j was started again (if that failed, the output says
-# STOPPED and prints the docker start command).
+# Before anything is stopped the running Neo4j must accept the cypher-shell login (NEO4J_USERNAME/NEO4J_PASSWORD).
+# Exit 0: backup written and verified. Non-zero: no backup, and Neo4j was started again (if that failed, the output
+# says STOPPED and prints the docker start command) - except when only the restart after the dump failed: the dump is
+# then kept and the output names it.
 #
 
 set -euo pipefail
@@ -108,7 +110,15 @@ offline_backup() {
     before="$(neo4j_counts)" || before=""
     neo4j_stop || return 1
     neo4j_dump_to "${file}" || return 1
-    neo4j_start || { rm -f "${file}"; return 1; }
+    if ! neo4j_start; then
+        # The dump was written while Neo4j was stopped, so it is good even though the restart failed: keep it.
+        if neo4j_verify_dump "${file}"; then
+            log_error "Neo4j did not come back online after the dump. The dump is kept (verified, no counts recorded): ${file}"
+        else
+            log_error "Neo4j did not come back online after the dump, and the dump kept at ${file} did not verify"
+        fi
+        return 1
+    fi
     after="$(neo4j_counts)" || after=""
     if [[ -n "${before}" && "${before}" == "${after}" ]]; then
         echo "${before}" > "${counts_file}"
@@ -272,6 +282,7 @@ main() {
 
     check_container || { send_notification "FAILED" "Neo4j container not running"; exit 1; }
     neo4j_resolve_image || exit 1
+    neo4j_auth_check || { send_notification "FAILED" "Neo4j rejected the backup login"; exit 1; }
 
     if [[ -n "${target}" ]]; then
         offline_backup "${target}" || exit 1

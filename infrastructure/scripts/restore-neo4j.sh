@@ -5,16 +5,19 @@
 # HAP-1748: restores a backup-neo4j.sh backup (a gzip of a neo4j-admin dump of the neo4j database) over the Neo4j
 # Community DBMS. Community has one standard database, neo4j, and it always exists, so a restore always replaces it:
 # that is an argv opt-in (--replace-live with --pre-restore-backup FILE); no environment variable enables it. Before
-# anything is stopped the backup is verified (gzip intact, `neo4j-admin database load --info` reads it). Then the
+# anything is stopped the backup is verified (gzip intact, `neo4j-admin database load --info` reads it) and the running
+# Neo4j must accept the cypher-shell login. Then the
 # container is stopped, the current database is dumped to the pre-restore backup and verified, the backup is loaded with
 # --overwrite-destination, the container is started and the node/relationship counts are compared.
 #
 # Exit codes:
 #   0  Replaced; Neo4j is online; the counts match the ones recorded with the backup (or none were recorded).
 #   1  Nothing changed. Neo4j was started again if this script stopped it (if that failed, the output says STOPPED).
-#   3  The load failed after it began: Neo4j is left STOPPED and its store may be partial. Run the printed command.
+#      INT/TERM/HUP before the load exit 130/143/129 the same way.
+#   3  The load failed, or INT/TERM/HUP arrived during it: Neo4j is left STOPPED and its store may be partial. Run the
+#      printed command (--replace-stopped with the pre-restore backup).
 #   4  Loaded, but Neo4j did not come online or the counts differ from the backup's. Run the printed command or
-#      investigate.
+#      investigate (a container that did not start stays STOPPED and the command is --replace-stopped).
 #
 
 set -euo pipefail
@@ -74,8 +77,8 @@ OPTIONS:
     --list                      List backups under ${BACKUP_DIR}
     --help                      Display this help message
 
-EXIT CODES: 0 replaced and verified; 1 nothing changed; 3 load failed, Neo4j left STOPPED (store may be partial);
-            4 loaded but not online or counts differ.
+EXIT CODES: 0 replaced and verified; 1 nothing changed; 3 load failed or interrupted, Neo4j left STOPPED (store may be
+            partial); 4 loaded but not online or counts differ.
 EOF
 }
 
@@ -118,12 +121,30 @@ return_command() {
     fi
 }
 
+# NEO4J_STOPPED_HOOK: the EXIT trap runs it after saying Neo4j is left STOPPED with a store that may be partial.
+print_stopped_return() {
+    if [[ -n "${PRE_RESTORE_BACKUP}" ]]; then
+        log_error "To put the previous database back (NEO4J_PASSWORD exported): $(return_command stopped)"
+    else
+        log_error "Load a verified backup with --replace-stopped before starting it."
+    fi
+}
+NEO4J_STOPPED_HOOK=print_stopped_return
+
 # Starts Neo4j after the load and compares its counts with the ones recorded next to the backup.
 start_and_verify() {
     local backup_file="$1" counts_file expected actual
     if ! neo4j_start; then
-        log_error "Loaded from ${backup_file}, but Neo4j is not online"
-        [[ -z "${PRE_RESTORE_BACKUP}" ]] || log_error "To put the previous database back (NEO4J_PASSWORD exported): $(return_command live)"
+        if neo4j_container_running; then
+            NEO4J_STOPPED_BY_US=false
+            log_error "Loaded from ${backup_file}, but Neo4j is not online"
+            [[ -z "${PRE_RESTORE_BACKUP}" ]] || log_error "To put the previous database back (NEO4J_PASSWORD exported): $(return_command live)"
+        else
+            # The load completed, but the container does not start: it stays STOPPED (no second start attempt).
+            NEO4J_KEEP_STOPPED=true
+            log_error "Loaded from ${backup_file}, but Neo4j container '${NEO4J_CONTAINER}' is STOPPED: starting it failed"
+            print_stopped_return
+        fi
         exit 4
     fi
     if ! actual="$(neo4j_counts)"; then
@@ -232,6 +253,7 @@ main() {
             log_error "Neo4j container '${NEO4J_CONTAINER}' is not running (after an exit 3 use --replace-stopped). Nothing changed."
             exit 1
         fi
+        neo4j_auth_check || exit 1
     elif neo4j_container_running; then
         log_error "--replace-stopped loads only into a stopped container; '${NEO4J_CONTAINER}' is running. Nothing changed."
         exit 1
@@ -261,20 +283,16 @@ main() {
         fi
     fi
 
-    # From here a failure may leave a partially overwritten store: never start it automatically.
+    # From here a failure or a signal may leave a partially overwritten store: the EXIT trap never starts it, says it is
+    # STOPPED, prints the command that loads a good dump (print_stopped_return) and exits 3.
+    NEO4J_STOPPED_BY_US=true
     NEO4J_KEEP_STOPPED=true
     log_info "Loading ${backup_file} over the '${NEO4J_DUMP_DATABASE}' database..."
     if ! neo4j_load_from "${backup_file}"; then
-        log_error "The load failed: Neo4j container '${NEO4J_CONTAINER}' is left STOPPED and its store may be partially overwritten."
-        if [[ -n "${PRE_RESTORE_BACKUP}" ]]; then
-            log_error "To put the previous database back (NEO4J_PASSWORD exported): $(return_command stopped)"
-        else
-            log_error "Load a verified backup with --replace-stopped before starting it."
-        fi
+        log_error "The load failed."
         exit 3
     fi
     NEO4J_KEEP_STOPPED=false
-    NEO4J_STOPPED_BY_US=true
 
     start_and_verify "${backup_file}"
     log_success "Restore completed: '${NEO4J_DUMP_DATABASE}' replaced from ${backup_file}"

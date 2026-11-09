@@ -15,7 +15,7 @@ import { randomUUID } from 'crypto';
 import type { ConfigSchema } from '@cmdb/common';
 import { AuthController } from '../../rest/auth.controller';
 import { ValidationMiddleware } from '../../rest/middleware/validation.middleware';
-import { AuthFailureError, AuthService } from '../../auth/auth.service';
+import { AuthFailureError, AuthService, CurrentPasswordIncorrectError } from '../../auth/auth.service';
 import { AuthMiddleware } from '../auth.middleware';
 import { RateLimitMiddleware } from '../rate-limit.middleware';
 
@@ -132,7 +132,7 @@ function passwordApp(redis: FakeRedis) {
     auditPasswordChange: async () => undefined,
     changePassword: async (userId: string) => {
       reached.push(userId);
-      throw new Error('Current password is incorrect');
+      throw new CurrentPasswordIncorrectError();
     },
   } as unknown as AuthService;
   const pass = () => (_req: unknown, _res: unknown, next: () => void) => next();

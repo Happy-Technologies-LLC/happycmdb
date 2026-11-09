@@ -7,7 +7,7 @@
  * call throws an Error carrying SECRET, the way a driver error quotes a URI.
  */
 
-export const SECRET = 'bolt://svc:hunter2@neo4j.internal:7687 ECONNREFUSED';
+export const SECRET = 'bolt://svc:hunter2@neo4j.internal:7687 ECONNREFUSED (index ci_fulltext_idx)';
 
 /**
  * Deep proxy: any property is another proxy, any call or construction throws Error(SECRET), except

@@ -27,6 +27,7 @@ import { TBMController } from '../tbm.controller';
 import { SettingsController } from '../settings.controller';
 import { RelationshipController } from '../relationship.controller';
 import { AnomalyController } from '../anomaly.controller';
+import { SearchController } from '../search.controller';
 import { AuthController } from '../../auth.controller';
 import { throwing } from '../../../__tests__/support/throwing-deps';
 
@@ -69,6 +70,7 @@ const controllers: Array<[string, () => object]> = [
   ['SettingsController', () => new SettingsController()],
   ['RelationshipController', () => new RelationshipController()],
   ['AnomalyController', () => new AnomalyController()],
+  ['SearchController', () => new SearchController()],
   // Constructor only wires routes; the handlers use authService alone.
   ['AuthController', () => Object.assign(Object.create(AuthController.prototype), { authService: throwing() })],
 ];
@@ -81,6 +83,9 @@ type Case = { req?: Record<string, unknown>; jsonThrows?: boolean };
 const CASES: Record<string, Case> = {
   'CIController.searchCIs': { req: { body: { query: 'x' } } },
   'AnomalyController.updateAnomalyStatus': { req: { body: { status: 'resolved' } } },
+  'SearchController.advancedSearch': { req: { body: { query: 'x' } } },
+  'SearchController.fulltextSearch': { req: { body: { query: 'x' } } },
+  'SearchController.searchByRelationship': { req: { body: { ci_type: 'server', relationship_type: 'DEPENDS_ON', related_ci_type: 'server' } } },
   'DriftImpactController.createBaseline': { req: { body: { ci_id: ID, snapshot_type: 'configuration' } } },
   'DriftImpactController.predictImpact': { req: { body: { ci_id: ID, change_type: 'restart' } } },
   'ITILController.updateIncident': { req: { body: { status: 'resolved' } } },
@@ -99,7 +104,7 @@ const CASES: Record<string, Case> = {
 const NO_5XX = [
   'AnalyticsController.getChangeHistory', 'AnalyticsController.getHealthMetrics', 'AnomalyController.queryAggregate',
   'AnomalyController.runAnomalyDetection', 'AuthController.changePassword', 'AuthController.login',
-  'AuthController.logout', 'AuthController.refreshToken', 'AuthController.updateProfile', 'CIController.createCI',
+  'AuthController.logout', 'AuthController.refreshToken', 'CIController.createCI',
   'ITILController.restoreFromBaseline', 'ITILController.scheduleAudit',
   'RelationshipController.createRelationship', 'RelationshipController.deleteRelationship',
   'SettingsController.getDatabaseStatus',
@@ -129,6 +134,7 @@ describe.each(controllers)('%s', (name, build) => {
     with5xx.set(name, (with5xx.get(name) ?? 0) + 1);
     const body = JSON.stringify(out.body ?? null);
     expect(body).not.toContain(SECRET);
+    expect(body).not.toContain('ci_fulltext_idx');
     expect(body).not.toMatch(/"stack"|\\n\s+at |\.ts:\d+/);
     expect(loggedErrors.map(loggedText).join(' ')).toContain(SECRET);
   });

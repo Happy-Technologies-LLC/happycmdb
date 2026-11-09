@@ -825,7 +825,7 @@ tar: Error is not recoverable: exiting now
 **Diagnosis**:
 ```bash
 # Verify backup integrity
-tar -tzf /var/backups/happycmdb/production/<TIMESTAMP>/neo4j-backup.tar.gz
+bash infrastructure/scripts/restore-neo4j.sh --file /var/backups/happycmdb/production/<TIMESTAMP>/neo4j-backup.dump.gz --check
 gunzip -t /var/backups/happycmdb/production/<TIMESTAMP>/postgres-backup.sql.gz
 ```
 
@@ -924,7 +924,7 @@ docker-compose -f infrastructure/docker/docker-compose.yml down -v
 ls -lt /var/backups/happycmdb/production/
 
 # Restore databases
-bash infrastructure/scripts/restore-neo4j.sh <BACKUP_PATH>/neo4j-backup.tar.gz
+bash infrastructure/scripts/restore-neo4j.sh --file <BACKUP_PATH>/neo4j-backup.dump.gz --replace-live --pre-restore-backup <NEW_FILE>.dump.gz
 bash infrastructure/scripts/restore-postgres.sh <BACKUP_PATH>/postgres-backup.sql.gz
 ```
 

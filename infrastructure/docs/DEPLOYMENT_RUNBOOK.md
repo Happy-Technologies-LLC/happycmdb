@@ -432,6 +432,27 @@ On exit 3 or 4 the rollback leaves `api-server` stopped. Neo4j has already been 
 
 **Client versions:** the host `psql` and `pg_dump` must be at least as new as the `pg_dump` that wrote the backup. A psql older than a 16.10+ pg_dump fails on the dump's `\restrict` line, and it would fail after the DROP. `restore-postgres.sh` reads the backup's `Dumped by pg_dump version` header and refuses (exit 1, nothing changed) when the local psql is older.
 
+#### Replacing the live Neo4j database (`--replace-live-neo4j`)
+
+The deploy writes `<BACKUP_PATH>/neo4j-backup.dump.gz` (a `neo4j-admin database dump` of the `neo4j` database, gzipped) and, when the node and relationship counts were the same before and after the dump, `neo4j-backup.counts`. Neo4j Community Edition dumps and loads only a stopped DBMS, so the deploy stops the Neo4j container for the dump and starts it again. Step 2 takes `NEO4J_PASSWORD` from the environment or, if unset, from `.env.production`; when neither sets it, the deploy stops before Neo4j is touched. The backup also refuses (nothing stopped) when the running Neo4j rejects that login.
+
+Community Edition has one database, `neo4j`, and it always exists, so restoring it always replaces the live database. Without `--replace-live-neo4j` the rollback refuses (exit 1, nothing changed) whenever the backup has a Neo4j dump. With it, type `ROLLBACK`, then `REPLACE neo4j` (and `REPLACE cmdb` if `--replace-live-postgres` is also given; the two flags go in any order). No environment variable enables this.
+
+```bash
+bash infrastructure/scripts/rollback.sh <BACKUP_TIMESTAMP> database-only --replace-live-neo4j
+```
+
+When the backup has a Neo4j dump, the rollback stops `api-server` first (as for `--replace-live-postgres`). Before anything is replaced, it runs `restore-neo4j.sh --preflight` from the safety snapshot: the dump is verified (`gzip -t`, then `neo4j-admin database load --info` reads it), Neo4j is running and accepts the cypher-shell login, and the pre-restore dump path `<BACKUP_DIR>/safety-snapshot-<ts>/neo4j-pre-restore.dump.gz` is new. Then `restore-neo4j.sh --replace-live` stops Neo4j, dumps the live database to the pre-restore dump and verifies it, loads the backup with `--overwrite-destination=true`, starts Neo4j, and compares the counts with `neo4j-backup.counts` (without that file it prints the counts and does not compare). If the script is interrupted (INT, TERM, HUP) before the load, it starts Neo4j again (if that start fails it prints `STOPPED` and the `docker start` command). If it is interrupted during the load, it leaves Neo4j STOPPED, prints the `--replace-stopped` command, and exits 3.
+
+| `restore-neo4j.sh` exit | State | Action |
+|---|---|---|
+| 0 | Replaced; online, and the counts match. | None. |
+| 1 | Nothing changed; Neo4j started again. | Fix the cause it printed and rerun. |
+| 3 | The load failed or was interrupted: Neo4j is STOPPED and its store may be partly overwritten. | Keep the app stopped. Run the printed command: `restore-neo4j.sh --replace-stopped --file <pre-restore dump>`. |
+| 4 | Loaded, but Neo4j is not online or the counts differ. | Keep the app stopped. Investigate, or run the printed command: it puts the pre-restore dump back (taking a fresh one first), or, when the container did not start and is STOPPED, it is the `--replace-stopped` command. |
+
+On exit 3 or 4 (and 129/130/143, an interrupted restore, which the rollback treats as 3) the rollback leaves `api-server` stopped; on exit 1 it restarts it, and after a successful restore it starts it again. On any exit but 1 it also prints the pre-restore dump path, and on any exit but 1 or 4 the `--replace-stopped --file <pre-restore dump>` command, itself, so the command survives a Ctrl-C or hang-up that signals the whole process group (the rollback's `tee` ignores INT; the restore's EXIT trap ignores INT, TERM, HUP and PIPE and fixes its exit status before it writes anything). Any other exit means the Neo4j state is unknown: check `docker ps -a` before starting anything.
+
 #### Post-restore grants (mandatory)
 
 `backup-postgres.sh` dumps with `--no-acl`, so a restore never brings back GRANT/REVOKE. The restoring login (`cmdb_user`) owns every restored object. Until the grants are re-applied, other roles have no access: `cmdb_app` (045-048), `metabase_readonly` (032, 033, 039), and `cmdb_user` when it is not the restoring login. Functions are also back to PUBLIC EXECUTE.
@@ -669,7 +690,7 @@ docker system df
 **Diagnosis**:
 ```bash
 # Verify backup integrity
-tar -tzf /var/backups/happycmdb/production/<TIMESTAMP>/neo4j-backup.tar.gz
+bash infrastructure/scripts/restore-neo4j.sh --file /var/backups/happycmdb/production/<TIMESTAMP>/neo4j-backup.dump.gz --check
 gunzip -t /var/backups/happycmdb/production/<TIMESTAMP>/postgres-backup.sql.gz
 ```
 
@@ -677,14 +698,17 @@ gunzip -t /var/backups/happycmdb/production/<TIMESTAMP>/postgres-backup.sql.gz
 1. **Backup corrupted**: Use previous backup
 2. **Manual rollback**:
    ```bash
+   # Restore Neo4j while its container exists (it stops and restarts it; see --replace-live-neo4j above)
+   bash infrastructure/scripts/restore-neo4j.sh --file <BACKUP_PATH>/neo4j-backup.dump.gz \
+     --replace-live --pre-restore-backup <NEW_FILE>.dump.gz
+
    # Stop containers
    docker-compose -f infrastructure/docker/docker-compose.yml down
 
    # Checkout previous git commit
    git checkout <PREVIOUS_COMMIT>
 
-   # Manually restore databases
-   bash infrastructure/scripts/restore-neo4j.sh <BACKUP_FILE>
+   # Manually restore PostgreSQL
    bash infrastructure/scripts/restore-postgres.sh <BACKUP_FILE>
 
    # Rebuild and start
@@ -815,12 +839,13 @@ logs/
 /var/backups/happycmdb/
 ├── staging/
 │   └── YYYYMMDD-HHMMSS/
-│       ├── neo4j-backup.tar.gz
+│       ├── neo4j-backup.dump.gz
 │       ├── postgres-backup.sql.gz
 │       └── git-commit.txt
 └── production/
     └── YYYYMMDD-HHMMSS/
-        ├── neo4j-backup.tar.gz
+        ├── neo4j-backup.dump.gz
+        ├── neo4j-backup.counts
         ├── postgres-backup.sql.gz
         ├── docker-compose-state.yml
         └── git-commit.txt

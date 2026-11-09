@@ -85,19 +85,26 @@ log_info "Operator: ${USER:-unknown}"
 # =============================================================================
 BACKUP_TIMESTAMP="${1:-}"
 ROLLBACK_TYPE="${2:-full}"  # full, containers-only, database-only
-# HAP-1762: replacing the live PostgreSQL database is an argv opt-in plus a typed confirmation; no environment variable
-# enables it.
+# HAP-1762/HAP-1748: replacing the live PostgreSQL or Neo4j database is an argv opt-in plus a typed confirmation; no
+# environment variable enables either.
 REPLACE_LIVE_POSTGRES=false
+REPLACE_LIVE_NEO4J=false
 PG_DATABASE="${POSTGRES_DATABASE:-cmdb}"
-if [[ $# -eq 3 && "$3" == "--replace-live-postgres" && "$ROLLBACK_TYPE" != "containers-only" ]]; then
-    REPLACE_LIVE_POSTGRES=true
-elif [[ $# -gt 2 ]]; then
-    log_error "Usage: $0 <backup-timestamp> [full|database-only] [--replace-live-postgres]"
+usage_error=false
+for flag in "${@:3}"; do
+    case "$flag" in
+        --replace-live-postgres) [[ "$REPLACE_LIVE_POSTGRES" == false ]] && REPLACE_LIVE_POSTGRES=true || usage_error=true ;;
+        --replace-live-neo4j) [[ "$REPLACE_LIVE_NEO4J" == false ]] && REPLACE_LIVE_NEO4J=true || usage_error=true ;;
+        *) usage_error=true ;;
+    esac
+done
+if [[ "$usage_error" == true || ( $# -gt 2 && "$ROLLBACK_TYPE" == "containers-only" ) ]]; then
+    log_error "Usage: $0 <backup-timestamp> [full|database-only] [--replace-live-postgres] [--replace-live-neo4j]"
     exit 1
 fi
 
 if [[ -z "$BACKUP_TIMESTAMP" ]]; then
-    log_error "Usage: $0 <backup-timestamp> [full|containers-only|database-only] [--replace-live-postgres]"
+    log_error "Usage: $0 <backup-timestamp> [full|containers-only|database-only] [--replace-live-postgres] [--replace-live-neo4j]"
     echo ""
     echo "Available backups:"
     ls -lh "$BACKUP_DIR" 2>/dev/null | grep "^d" | awk '{print $9}' || echo "No backups found"
@@ -105,6 +112,7 @@ if [[ -z "$BACKUP_TIMESTAMP" ]]; then
 fi
 
 BACKUP_PATH="$BACKUP_DIR/$BACKUP_TIMESTAMP"
+NEO4J_BACKUP="$BACKUP_PATH/neo4j-backup.dump.gz"
 
 if [[ ! -d "$BACKUP_PATH" ]]; then
     log_error "Backup not found: $BACKUP_PATH"
@@ -144,6 +152,9 @@ if [[ "$ROLLBACK_TYPE" == "full" || "$ROLLBACK_TYPE" == "database-only" ]]; then
     if [[ "$REPLACE_LIVE_POSTGRES" == true ]]; then
         echo "  • DROP and replace the live PostgreSQL database '$PG_DATABASE' (after a verified pre-restore backup)"
     fi
+    if [[ "$REPLACE_LIVE_NEO4J" == true ]]; then
+        echo "  • Stop Neo4j and overwrite the live Neo4j database 'neo4j' (after a verified pre-restore dump)"
+    fi
 fi
 echo ""
 echo -n "Type 'ROLLBACK' to continue: "
@@ -163,6 +174,15 @@ if [[ "$REPLACE_LIVE_POSTGRES" == true ]]; then
     fi
 fi
 
+if [[ "$REPLACE_LIVE_NEO4J" == true ]]; then
+    echo -n "Type 'REPLACE neo4j' to stop Neo4j and overwrite the live Neo4j database: "
+    read -r replace_confirmation
+    if [[ "$replace_confirmation" != "REPLACE neo4j" ]]; then
+        log_error "Rollback cancelled: Neo4j replace not confirmed"
+        exit 1
+    fi
+fi
+
 log_success "Rollback confirmed"
 send_notification "STARTED" "Rollback initiated by ${USER:-unknown} to backup: $BACKUP_TIMESTAMP"
 
@@ -175,15 +195,25 @@ print_header "Step 1: Verifying Backup Integrity"
 BACKUP_VALID=true
 
 if [[ "$ROLLBACK_TYPE" == "full" || "$ROLLBACK_TYPE" == "database-only" ]]; then
-    # Check Neo4j backup
-    if [[ -f "$BACKUP_PATH/neo4j-backup.tar.gz" ]]; then
-        log_info "Verifying Neo4j backup..."
-        if tar -tzf "$BACKUP_PATH/neo4j-backup.tar.gz" > /dev/null 2>&1; then
-            log_success "Neo4j backup is valid"
-        else
-            log_error "Neo4j backup is corrupted"
+    # HAP-1748: the deploy's Neo4j backup (backup-neo4j.sh --to). Community Edition's one database, neo4j, always
+    # exists, so restoring it always replaces the live database: without --replace-live-neo4j nothing is touched.
+    if [[ -f "$NEO4J_BACKUP" ]]; then
+        if [[ "$REPLACE_LIVE_NEO4J" != true ]]; then
+            log_error "Neo4j backup present ($NEO4J_BACKUP): restoring it overwrites the live Neo4j database - rerun with --replace-live-neo4j"
             BACKUP_VALID=false
+        else
+            log_info "Verifying Neo4j backup..."
+            bash "$SCRIPT_DIR/restore-neo4j.sh" --file "$NEO4J_BACKUP" --check </dev/null 2>&1 | tee -a "$ROLLBACK_LOG"
+            if [[ "${PIPESTATUS[0]}" -eq 0 ]]; then
+                log_success "Neo4j backup is valid"
+            else
+                log_error "Neo4j backup failed verification"
+                BACKUP_VALID=false
+            fi
         fi
+    elif [[ "$REPLACE_LIVE_NEO4J" == true ]]; then
+        log_error "--replace-live-neo4j given, but there is no Neo4j backup: $NEO4J_BACKUP"
+        BACKUP_VALID=false
     else
         log_warning "Neo4j backup not found"
     fi
@@ -217,11 +247,15 @@ print_header "Step 2: Creating Safety Snapshot"
 SAFETY_SNAPSHOT_DIR="$BACKUP_DIR/safety-snapshot-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$SAFETY_SNAPSHOT_DIR"
 
-# HAP-1762: a full rollback's Step 4 checks out the previous commit, which may carry a restore-postgres.sh without the
-# flags Step 5 passes. Step 5 runs this copy of the script this rollback started with.
+# HAP-1762/HAP-1748: a full rollback's Step 4 checks out the previous commit, which may carry restore scripts without
+# the flags Step 5 passes. Step 5 runs these copies of the scripts this rollback started with.
 PG_RESTORE_SCRIPT="$SAFETY_SNAPSHOT_DIR/restore-postgres.sh"
 if [[ -f "$SCRIPT_DIR/restore-postgres.sh" ]]; then
     cp "$SCRIPT_DIR/restore-postgres.sh" "$PG_RESTORE_SCRIPT"
+fi
+NEO4J_RESTORE_SCRIPT="$SAFETY_SNAPSHOT_DIR/restore-neo4j.sh"
+if [[ -f "$SCRIPT_DIR/restore-neo4j.sh" && -f "$SCRIPT_DIR/neo4j-offline.sh" ]]; then
+    cp "$SCRIPT_DIR/restore-neo4j.sh" "$SCRIPT_DIR/neo4j-offline.sh" "$SAFETY_SNAPSHOT_DIR/"
 fi
 GRANTS_PENDING=false
 
@@ -293,6 +327,21 @@ if [[ "$ROLLBACK_TYPE" == "full" || "$ROLLBACK_TYPE" == "database-only" ]]; then
         PG_ARGS+=(--replace-live --pre-restore-backup "$PG_PRE_BACKUP")
     fi
     API_STOPPED=false
+    restart_api_if_stopped() {
+        if [[ "$API_STOPPED" == true ]]; then
+            docker-compose -f "$PROJECT_ROOT/infrastructure/docker/docker-compose.yml" start api-server 2>&1 | tee -a "$ROLLBACK_LOG"
+            log_info "api-server restarted"
+            API_STOPPED=false
+        fi
+    }
+    # HAP-1762/HAP-1748: api-server (the client of both databases) is stopped before either live database is replaced,
+    # and before the preflights, so they see no client of it.
+    if [[ "$REPLACE_LIVE_POSTGRES" == true || ( "$REPLACE_LIVE_NEO4J" == true && -f "$NEO4J_BACKUP" ) ]] \
+        && docker-compose -f "$PROJECT_ROOT/infrastructure/docker/docker-compose.yml" ps --services --filter status=running 2>/dev/null | grep -qx api-server; then
+        log_info "Stopping api-server (the databases' client) for the live database replace..."
+        docker-compose -f "$PROJECT_ROOT/infrastructure/docker/docker-compose.yml" stop api-server 2>&1 | tee -a "$ROLLBACK_LOG"
+        API_STOPPED=true
+    fi
 
     # HAP-1749/HAP-1762: the backup goes in via --file (a bare path hits usage(), which exits 0). Exported RESTORE_*
     # overrides are pinned, so no environment value makes it --drop or load over a live database: only the argv opt-in
@@ -305,11 +354,7 @@ if [[ "$ROLLBACK_TYPE" == "full" || "$ROLLBACK_TYPE" == "database-only" ]]; then
     # HAP-1762: everything that can refuse the PostgreSQL restore runs before Neo4j is touched: the database exists
     # without the opt-in, the server is unreachable, another client is connected, or the pre-restore backup fails.
     if [[ -f "$PG_BACKUP" && -f "$PG_RESTORE_SCRIPT" ]]; then
-        if [[ "$REPLACE_LIVE_POSTGRES" == true ]] && docker-compose -f "$PROJECT_ROOT/infrastructure/docker/docker-compose.yml" ps --services --filter status=running 2>/dev/null | grep -qx api-server; then
-            log_info "Stopping api-server (the cmdb database's client) for the PostgreSQL replace..."
-            docker-compose -f "$PROJECT_ROOT/infrastructure/docker/docker-compose.yml" stop api-server 2>&1 | tee -a "$ROLLBACK_LOG"
-            API_STOPPED=true
-        fi
+        # api-server was stopped above when --replace-live-postgres was given.
         restore_postgres --preflight | tee "$SAFETY_SNAPSHOT_DIR/postgres-preflight.out"
         postgres_preflight_status=${PIPESTATUS[0]}
         # A script without --preflight reaches usage(), which exits 0: only the marker line proves the checks ran.
@@ -319,10 +364,7 @@ if [[ "$ROLLBACK_TYPE" == "full" || "$ROLLBACK_TYPE" == "database-only" ]]; then
         fi
         if [[ "$postgres_preflight_status" -ne 0 ]]; then
             log_error "PostgreSQL preflight failed (exit $postgres_preflight_status) - nothing restored from $PG_BACKUP; Neo4j and PostgreSQL are untouched"
-            if [[ "$API_STOPPED" == true ]]; then
-                docker-compose -f "$PROJECT_ROOT/infrastructure/docker/docker-compose.yml" start api-server 2>&1 | tee -a "$ROLLBACK_LOG"
-                log_info "api-server restarted"
-            fi
+            restart_api_if_stopped
             send_notification "FAILED" "Rollback aborted before any restore: PostgreSQL preflight failed (backup: $BACKUP_TIMESTAMP)"
             exit 1
         fi
@@ -330,31 +372,61 @@ if [[ "$ROLLBACK_TYPE" == "full" || "$ROLLBACK_TYPE" == "database-only" ]]; then
         PG_ARGS+=(--reuse-pre-restore-backup)
     fi
 
-    # Restore Neo4j
-    if [[ -f "$BACKUP_PATH/neo4j-backup.tar.gz" ]]; then
-        log_info "Restoring Neo4j database..."
-
-        if [[ -f "$SCRIPT_DIR/restore-neo4j.sh" ]]; then
-            # HAP-1668: the backup goes in via --file. Never forced (no --force, and an exported
-            # RESTORE_FORCE is overridden): forcing drops the live database before the load. stdin
-            # is detached: the operator already typed ROLLBACK, and a declined second prompt would
-            # exit 0 without restoring. The restore's own status (not tee's) decides the rollback.
-            RESTORE_FORCE=false bash "$SCRIPT_DIR/restore-neo4j.sh" --file "$BACKUP_PATH/neo4j-backup.tar.gz" </dev/null 2>&1 | tee -a "$ROLLBACK_LOG"
-            neo4j_restore_status=${PIPESTATUS[0]}
-            if [[ "$neo4j_restore_status" -ne 0 ]]; then
-                log_error "Neo4j restore failed (exit $neo4j_restore_status) - Neo4j NOT restored from $BACKUP_PATH/neo4j-backup.tar.gz; the database may be left stopped"
-                if [[ -f "$PG_PRE_BACKUP" ]]; then
-                    log_info "PostgreSQL is untouched; its pre-restore backup: $PG_PRE_BACKUP"
-                fi
-                send_notification "FAILED" "Rollback aborted: Neo4j restore failed (backup: $BACKUP_TIMESTAMP)"
-                exit 1
-            fi
-            log_success "Neo4j restored"
-            NEO4J_RESTORED=true
-        else
-            log_error "restore-neo4j.sh not found - manual restore required"
-            log_info "Backup location: $BACKUP_PATH/neo4j-backup.tar.gz"
+    # HAP-1748: everything that can refuse the Neo4j restore also runs before anything is replaced: the backup is
+    # verified, the container is running and accepts the login, and the pre-restore dump path is new. --preflight
+    # changes nothing. `tee -i` ignores INT: a Ctrl-C signals the whole foreground group, and a tee that dies with the
+    # restore would drop the STOPPED line and the recovery command it prints while it exits 3.
+    NEO4J_PRE_BACKUP="$SAFETY_SNAPSHOT_DIR/neo4j-pre-restore.dump.gz"
+    restore_neo4j() {
+        bash "$NEO4J_RESTORE_SCRIPT" --file "$NEO4J_BACKUP" --replace-live --pre-restore-backup "$NEO4J_PRE_BACKUP" "$@" </dev/null 2>&1 | tee -i -a "$ROLLBACK_LOG"
+        return "${PIPESTATUS[0]}"
+    }
+    if [[ -f "$NEO4J_BACKUP" ]]; then
+        neo4j_preflight_status=1
+        if [[ -f "$NEO4J_RESTORE_SCRIPT" ]]; then
+            restore_neo4j --preflight | tee "$SAFETY_SNAPSHOT_DIR/neo4j-preflight.out"
+            neo4j_preflight_status=${PIPESTATUS[0]}
         fi
+        if [[ "$neo4j_preflight_status" -eq 0 ]] && ! grep -qx "HAP-1748 PREFLIGHT OK" "$SAFETY_SNAPSHOT_DIR/neo4j-preflight.out"; then
+            neo4j_preflight_status=1
+        fi
+        if [[ "$neo4j_preflight_status" -ne 0 ]]; then
+            log_error "Neo4j preflight failed (exit $neo4j_preflight_status) - nothing restored from $NEO4J_BACKUP; Neo4j and PostgreSQL are untouched"
+            restart_api_if_stopped
+            send_notification "FAILED" "Rollback aborted before any restore: Neo4j preflight failed (backup: $BACKUP_TIMESTAMP)"
+            exit 1
+        fi
+
+        log_info "Restoring Neo4j database (Neo4j is stopped for the load)..."
+        restore_neo4j && neo4j_restore_status=0 || neo4j_restore_status=$?
+        if [[ "$neo4j_restore_status" -ne 0 ]]; then
+            case "$neo4j_restore_status" in
+                3|129|130|143) neo4j_state="Neo4j is STOPPED and its store may be partially overwritten: run the command restore-neo4j.sh printed above (--replace-stopped) before starting it" ;;
+                4) neo4j_state="Neo4j was loaded but is not verified (not online, or the counts differ): see the command restore-neo4j.sh printed above" ;;
+                1) neo4j_state="Neo4j is unchanged (restore-neo4j.sh started it again; if it printed STOPPED, run the docker start it printed)" ;;
+                *) neo4j_state="Neo4j state UNKNOWN: check 'docker ps -a' for ${NEO4J_CONTAINER:-cmdb-neo4j} and the restore-neo4j.sh output above before starting anything" ;;
+            esac
+            log_error "Neo4j restore failed (exit $neo4j_restore_status) from $NEO4J_BACKUP - $neo4j_state"
+            if [[ "$neo4j_restore_status" -ne 1 ]]; then
+                # Rollback knows this path even when restore-neo4j.sh's own output was lost with its pipe.
+                log_error "Neo4j pre-restore dump: $NEO4J_PRE_BACKUP"
+                if [[ "$neo4j_restore_status" -ne 4 ]]; then
+                    log_error "If Neo4j is STOPPED (docker ps -a), put the pre-restore dump back (NEO4J_PASSWORD exported): NEO4J_CONTAINER=${NEO4J_CONTAINER:-cmdb-neo4j} bash $NEO4J_RESTORE_SCRIPT --replace-stopped --file $NEO4J_PRE_BACKUP < /dev/null"
+                fi
+            fi
+            if [[ -f "$PG_PRE_BACKUP" ]]; then
+                log_info "PostgreSQL is untouched; its pre-restore backup: $PG_PRE_BACKUP"
+            fi
+            if [[ "$neo4j_restore_status" -eq 1 ]]; then
+                restart_api_if_stopped
+            elif [[ "$API_STOPPED" == true ]]; then
+                log_error "api-server stays stopped: start it only once Neo4j is restored"
+            fi
+            send_notification "FAILED" "Rollback aborted: Neo4j restore failed (exit $neo4j_restore_status, backup: $BACKUP_TIMESTAMP)"
+            exit 1
+        fi
+        log_success "Neo4j restored from $NEO4J_BACKUP (pre-restore dump: $NEO4J_PRE_BACKUP)"
+        NEO4J_RESTORED=true
     fi
 
     # Restore PostgreSQL
@@ -375,7 +447,7 @@ if [[ "$ROLLBACK_TYPE" == "full" || "$ROLLBACK_TYPE" == "database-only" ]]; then
                 fi
                 partial_state=""
                 if [[ "$NEO4J_RESTORED" == true ]]; then
-                    log_error "Neo4j WAS already restored from $BACKUP_PATH/neo4j-backup.tar.gz - Neo4j and PostgreSQL are now from different points in time"
+                    log_error "Neo4j WAS already restored from $NEO4J_BACKUP - Neo4j and PostgreSQL are now from different points in time (Neo4j pre-restore dump: $NEO4J_PRE_BACKUP)"
                     partial_state="; Neo4j already restored, PostgreSQL not"
                 fi
                 if [[ "$API_STOPPED" == true ]]; then
@@ -386,15 +458,14 @@ if [[ "$ROLLBACK_TYPE" == "full" || "$ROLLBACK_TYPE" == "database-only" ]]; then
             fi
             log_success "PostgreSQL restored from $PG_BACKUP - grants NOT restored: apply the post-restore grant step printed above"
             GRANTS_PENDING=true
-            if [[ "$API_STOPPED" == true ]]; then
-                docker-compose -f "$PROJECT_ROOT/infrastructure/docker/docker-compose.yml" start api-server 2>&1 | tee -a "$ROLLBACK_LOG"
-                log_info "api-server restarted"
-            fi
+            restart_api_if_stopped
         else
             log_error "restore-postgres.sh not found - manual restore required"
             log_info "Backup location: $BACKUP_PATH/postgres-backup.sql.gz"
         fi
     fi
+    # A Neo4j-only replace (no PostgreSQL backup restored) restarts api-server here.
+    restart_api_if_stopped
 fi
 
 # =============================================================================

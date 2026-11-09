@@ -211,21 +211,27 @@ mkdir -p "$BACKUP_PATH"
 
 log_info "Backup location: $BACKUP_PATH"
 
-# Backup Neo4j (with verification)
-log_info "Backing up Neo4j database..."
-if [[ -f "$SCRIPT_DIR/backup-neo4j.sh" ]]; then
-    bash "$SCRIPT_DIR/backup-neo4j.sh" "$BACKUP_PATH/neo4j-backup.tar.gz"
-
-    # Verify backup integrity
-    if [[ -f "$BACKUP_PATH/neo4j-backup.tar.gz" ]]; then
-        tar -tzf "$BACKUP_PATH/neo4j-backup.tar.gz" > /dev/null 2>&1
-        log_success "Neo4j backup verified"
-    else
-        log_error "Neo4j backup failed"
-        exit 1
-    fi
+# Backup Neo4j (with verification). HAP-1748: Community Edition dumps only a stopped DBMS, so backup-neo4j.sh stops the
+# Neo4j container for the dump and starts it again. The file is the one rollback.sh restores (--replace-live-neo4j);
+# restore-neo4j.sh --check is the check that restore runs (gzip intact, neo4j-admin load --info reads it).
+NEO4J_BACKUP="$BACKUP_PATH/neo4j-backup.dump.gz"
+# The backup's cypher-shell needs NEO4J_PASSWORD, and .env.production (Step 3 loads it whole) has it: read only that
+# variable here, the same way, or stop before Neo4j is touched.
+if [[ -z "${NEO4J_PASSWORD:-}" && -f "$PROJECT_ROOT/.env.production" ]]; then
+    NEO4J_PASSWORD="$(set -a; source "$PROJECT_ROOT/.env.production" > /dev/null 2>&1; printf '%s' "${NEO4J_PASSWORD:-}")"
+fi
+if [[ -z "${NEO4J_PASSWORD:-}" ]]; then
+    log_error "NEO4J_PASSWORD is not set and $PROJECT_ROOT/.env.production does not set it - nothing stopped, nothing deployed"
+    exit 1
+fi
+export NEO4J_PASSWORD
+log_info "Backing up Neo4j database (Neo4j is stopped for the dump)..."
+if [[ -f "$SCRIPT_DIR/backup-neo4j.sh" && -f "$SCRIPT_DIR/restore-neo4j.sh" ]]; then
+    bash "$SCRIPT_DIR/backup-neo4j.sh" --to "$NEO4J_BACKUP"
+    bash "$SCRIPT_DIR/restore-neo4j.sh" --file "$NEO4J_BACKUP" --check
+    log_success "Neo4j backup verified: $NEO4J_BACKUP"
 else
-    log_error "backup-neo4j.sh not found - cannot proceed without backup"
+    log_error "backup-neo4j.sh or restore-neo4j.sh not found - cannot proceed without a verified backup"
     exit 1
 fi
 

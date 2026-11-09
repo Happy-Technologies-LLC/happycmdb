@@ -112,7 +112,7 @@ RUN npm run test:compiled-entry
 FROM node:20-alpine
 
 # Install runtime dependencies (including nmap for network discovery)
-RUN apk add --no-cache dumb-init curl nmap nmap-scripts libcap
+RUN apk add --no-cache dumb-init curl nmap nmap-scripts
 
 # Create non-root user
 RUN addgroup -g 1001 -S nodejs && \
@@ -133,10 +133,7 @@ COPY --chown=nodejs:nodejs --from=builder /app/packages ./packages
 # Non-recursive: every file below it was already chowned by the COPYs above.
 RUN chown nodejs:nodejs /app
 
-# Give nmap capabilities for network scanning without full root
-# Note: OS detection (-O) still requires root, but basic scans will work
-RUN setcap cap_net_raw,cap_net_admin,cap_net_bind_service+eip /usr/bin/nmap \
-    || echo "WARNING: setcap failed; nmap has no file capabilities" >&2
+# nmap gets no file caps (HAP-1755): it decides "privileged" from euid/--privileged, never from file caps, so they were dead weight and +eip NET_RAW/NET_ADMIN fails exec (rc 126) under cap_drop ALL / Pod Security restricted.
 
 # Switch to non-root user
 USER nodejs

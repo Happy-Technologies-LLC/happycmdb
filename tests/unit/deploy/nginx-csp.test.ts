@@ -33,3 +33,23 @@ it.each(['web-ui/nginx.conf', 'infrastructure/docker/nginx.conf'])('%s: SPA CSP'
     expect(policy).not.toMatch(/connect-src [^;]*api\.happycmdb\.io/);
   }
 });
+
+// HAP-1230. The SPA opens ws(s)://host/ws; the shipped web-ui conf must hand that upgrade to the API.
+it('web-ui/nginx.conf: /ws forwards the WebSocket upgrade to the API and keeps the server headers', () => {
+  const conf = readFileSync(resolve(__dirname, '../../..', 'web-ui/nginx.conf'), 'utf8').replace(/#.*$/gm, '');
+  const [http, server] = conf.split(/^server\s*\{/m);
+  // conf.d/default.conf is included at http level: the map must sit outside the server block.
+  expect(http).toMatch(/\bmap\s+\$http_upgrade\s+\$connection_upgrade\s*\{\s*default\s+upgrade\s*;\s*''\s+close\s*;\s*\}/);
+  expect(server).not.toMatch(/\bmap\s/);
+  const body = (head: string) => [...server.matchAll(/\blocation\s+([^{]*?)\s*\{([^}]*)\}/g)].find(([, h]) => h === head)?.[2] ?? '';
+  const arg = (text: string, name: string) => text.match(new RegExp(`\\b${name}\\s+([^;]+);`))?.[1].trim();
+  const ws = body('= /ws');
+  expect(ws).not.toBe('');
+  expect(arg(ws, 'proxy_pass')).toBe(arg(body('/api'), 'proxy_pass'));
+  expect(arg(ws, 'proxy_http_version')).toBe('1.1');
+  expect(arg(ws, 'proxy_set_header Upgrade')).toBe('$http_upgrade');
+  expect(arg(ws, 'proxy_set_header Connection')).toBe('$connection_upgrade');
+  expect(parseInt(arg(ws, 'proxy_read_timeout')!, 10)).toBeGreaterThanOrEqual(60);
+  // A location with its own add_header would drop the server-level CSP and friends.
+  expect(ws).not.toMatch(/\badd_header\b/);
+});

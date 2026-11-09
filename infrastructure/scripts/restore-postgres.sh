@@ -288,8 +288,10 @@ print_grant_step() {
 # through "# END GRANT STEP" to a file and run it with bash as ${POSTGRES_USER} (PGPASSWORD exported) from the root of
 # a checkout of the commit the backup was taken at. It stops at the first failure, names it and exits 1: until it
 # prints GRANT STEP COMPLETE, grants are NOT restored. Runbook: infrastructure/docs/DEPLOYMENT_RUNBOOK.md, "Post-restore grants".
-# metabase_readonly: 032, 033 and 039 re-grant it where infrastructure/database/metabase-init.sql created it. The
-# staging path (deploy/build01-staging-app-login.sql + migrations) does not create it: nothing to restore there.
+# metabase_readonly: 032, 033 and 039 re-grant its view/function grants where infrastructure/database/metabase-init.sql
+# created it, but its schema USAGE and get_fiscal_* EXECUTE grants exist only in that file (not re-runnable: it
+# creates the user), so BI may still lack them. The staging path (deploy/build01-staging-app-login.sql + migrations)
+# does not create metabase_readonly: nothing to restore there.
 (
   conn=(${conn})
 EOF
@@ -305,11 +307,15 @@ EOF
   #    same transaction the function is reset to INVOKER, then 033 checks its owner and sets DEFINER again.
   #    034 refuses to run while its restored cmdb.hap668_acl_prior exists (that table must keep the original ACL
   #    snapshot): only its cmdb_user grants are replayed. Its PUBLIC revokes need nothing after a --no-acl restore.
+  #    032 grants metabase_readonly the cross-tenant v_business_service_health that 033 then revokes: the same
+  #    transaction as 032 revokes it again, so a failing 033 cannot leave the BI role with it. 033 does not re-grant it.
+  #    046-048 are guarded no-op migrations here; they take brief ACCESS EXCLUSIVE locks, so stop the API first.
   for m in 032_secret_table_public_grants.sql 033_public_business_service_audit_acl.sql 034_history_sequence_discovery_acl.sql 039_recent_audit_activity_acl.sql 044_business_service_journal_read_acl.sql 045_staging_app_login_acl.sql 046_service_offerings.sql 047_ai_sync_cursors.sql 048_portfolio_import.sql; do
     if ! grep -qxF "$m" <<< "$recorded"; then echo "grant step: $m is not in the restored ledger - skipped"; continue; fi
     case "$m" in
       033_*) run "$m" -c "DO \$g\$ BEGIN IF to_regprocedure('cmdb.fn_business_service_health(uuid)') IS NOT NULL THEN ALTER FUNCTION cmdb.fn_business_service_health(uuid) SECURITY INVOKER; END IF; END \$g\$" -f "$mig/$m" ;;
       034_*) run "$m (grants replayed)" -c "DO \$g\$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'cmdb_user') THEN GRANT SELECT, INSERT ON public.ci_change_history TO cmdb_user; GRANT USAGE ON ALL SEQUENCES IN SCHEMA cmdb TO cmdb_user; GRANT SELECT, INSERT ON cmdb.dim_ci, cmdb.dim_location, cmdb.dim_owner, cmdb.fact_discovery, cmdb.fact_ci_changes, cmdb.fact_ci_relationships TO cmdb_user; GRANT SELECT, INSERT, UPDATE, DELETE ON public.discovery_agents TO cmdb_user; GRANT SELECT ON public.active_discovery_agents, public.agent_network_coverage TO cmdb_user; END IF; END \$g\$" ;;
+      032_*) run "$m" -f "$mig/$m" -c "DO \$g\$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'metabase_readonly') THEN REVOKE SELECT ON public.v_business_service_health, public.v_tbm_tower_summary FROM metabase_readonly; END IF; END \$g\$" ;;
       *) run "$m" -f "$mig/$m" ;;
     esac
   done
@@ -322,13 +328,15 @@ EOF
 # Exit 1 when the local psql is older than the pg_dump that wrote the backup: an older psql can fail on the dump's
 # \restrict line, and that would happen after the DROP. A backup without the header line is not checked.
 check_client_version() {
-    local dumped client
+    local dumped client shown
     dumped=$(gunzip -c "$1" 2> /dev/null | head -n 30 | sed -n 's/^-- Dumped by pg_dump version \([0-9]*\)\.\([0-9]*\).*/\1 \2/p' | head -n 1) || true
     [[ -n "${dumped}" ]] || return 0
     client=$(psql --version | sed -n 's/^psql (PostgreSQL) \([0-9]*\)\.\([0-9]*\).*/\1 \2/p') || true
     local d=(${dumped}) c=(${client:-0 0})
     if (( c[0] < d[0] || (c[0] == d[0] && c[1] < d[1]) )); then
-        log_error "Local psql ${client:+${c[0]}.${c[1]}}${client:-(unknown version)} is older than the pg_dump ${d[0]}.${d[1]} that wrote the backup - install a matching client; nothing was changed"
+        shown="(unknown version)"
+        [[ -z "${client}" ]] || shown="${c[0]}.${c[1]}"
+        log_error "Local psql ${shown} is older than the pg_dump ${d[0]}.${d[1]} that wrote the backup - install a matching client; nothing was changed"
         exit 1
     fi
 }

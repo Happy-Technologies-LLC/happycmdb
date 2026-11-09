@@ -45,7 +45,7 @@ describe('HAP-1749/HAP-1762: rollback.sh PostgreSQL restore, guarded over a live
     stub('psql', [
       'echo "psql $*" >> "$OUT.calls"',
       'case "$*" in',
-      '  --version) echo "psql (PostgreSQL) 16.15";;',
+      '  --version) echo "psql (PostgreSQL) ${PSQL_VERSION:-16.15}";;',
       '  *pg_database*) [ -z "$DB_EXISTS" ] || echo 1;;',
       '  *pg_stat_activity*) [ -z "$CLIENT" ] || echo "cmdb_user api-server 172.18.0.5";;',
       '  *"SELECT 1"*) [ -z "$PG_DOWN" ] || exit 2;;',
@@ -169,6 +169,14 @@ describe('HAP-1749/HAP-1762: rollback.sh PostgreSQL restore, guarded over a live
   });
 
   it.each([
+    ['older than', '15.4', { status: 1, dropped: false }],
+    ['as new as', '16.15', { status: 0, dropped: true }],
+  ])('a local psql %s (%s) the pg_dump 16.15 that wrote the backup: refused before the drop, or restored', (_case, version, expected) => {
+    writeBackup({ ...MODERN, head: `-- Dumped by pg_dump version 16.15\n${MODERN.head}` });
+    expect(restore({ DB_EXISTS: '1', PSQL_VERSION: version }, join(dir, 'ver-pre.sql.gz'))).toMatchObject(expected);
+  });
+
+  it.each([
     ['the load fails', 3, { LOAD_FAIL: '1' }],
     ['the restored row counts do not match the backup', 4, { COUNT_MISMATCH: '1' }],
   ])('with the opt-in, when %s after the drop the rollback fails with the API left stopped and the restore exits %d', (_case, code, env) => {
@@ -202,6 +210,8 @@ describe('HAP-1749/HAP-1762: rollback.sh PostgreSQL restore, guarded over a live
     expect(calls.flatMap((line) => line.match(/ -f \S*\/(\d{3})_\S*\.sql/)?.[1] ?? [])).toEqual(files);
     expect(calls.findIndex((line) => line.includes('REVOKE EXECUTE'))).toBeLessThan(calls.findIndex((line) => line.includes(' -f ')));
     expect(calls.findIndex((line) => line.includes('REVOKE EXECUTE'))).toBeGreaterThanOrEqual(0);
+    // 032 grants metabase_readonly the cross-tenant view that 033 revokes: 032's own transaction takes it back.
+    expect(calls.find((line) => line.includes('/032_'))).toMatch(/REVOKE SELECT ON public\.v_business_service_health\b.* FROM metabase_readonly/);
     expect(run.status === 0).toBe(failFile === '');
     expect(run.stderr).toContain(failFile);
   });

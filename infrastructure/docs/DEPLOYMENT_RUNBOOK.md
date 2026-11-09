@@ -400,6 +400,44 @@ bash infrastructure/scripts/rollback.sh <BACKUP_TIMESTAMP> database-only
 bash infrastructure/scripts/rollback.sh 20251019-143000 full
 ```
 
+#### Replacing the live PostgreSQL database (`--replace-live-postgres`)
+
+Without the flag, the rollback restores PostgreSQL only when the `cmdb` database does not exist. If it exists, the rollback refuses before Neo4j is touched, and nothing changes. To drop and replace the live database, pass the flag as the third argument and type both confirmations (`ROLLBACK`, then `REPLACE cmdb`). No environment variable enables this.
+
+```bash
+bash infrastructure/scripts/rollback.sh <BACKUP_TIMESTAMP> database-only --replace-live-postgres
+```
+
+Before Neo4j is touched, the rollback:
+- stops `api-server` (database-only mode; full mode has already stopped it);
+- refuses if any other client session is still connected to `cmdb` (nothing is terminated);
+- writes and verifies a pre-restore backup at `<BACKUP_DIR>/safety-snapshot-<ts>/postgres-pre-restore-cmdb.sql.gz`. The check is `gzip -t` plus the pg_dump completion line.
+
+Any refusal at this point exits 1 with Neo4j and PostgreSQL untouched, and `api-server` is restarted.
+
+Next it restores Neo4j, re-checks the client sessions, and runs `DROP DATABASE` (no `FORCE`) and `CREATE DATABASE`. It loads the backup with `ON_ERROR_STOP=1 --single-transaction`, between `timescaledb_pre_restore()` and `timescaledb_post_restore()`. Last, it compares the row count of every table in the backup.
+
+| `restore-postgres.sh` exit | State | Action |
+|---|---|---|
+| 0 | Replaced and the row counts match. **Grants NOT restored.** | Run the post-restore grant step below. |
+| 1 | Nothing changed. | Fix the cause it printed and rerun. |
+| 3 | Dropped, then CREATE or the load failed: `cmdb` is absent or empty. | Keep the app stopped. Run the printed return command to load the pre-restore backup. |
+| 4 | Loaded, but the row counts differ from the backup. | Keep the app stopped. Investigate, or run the printed return command. |
+
+On exit 3 or 4 the rollback leaves `api-server` stopped. Neo4j has already been restored, so it no longer matches PostgreSQL. The return command reloads the pre-restore backup and takes a fresh backup first:
+`restore-postgres.sh --database cmdb --replace-live --file <pre-restore-backup> --pre-restore-backup <new-file>`.
+
+#### Post-restore grants (mandatory)
+
+`backup-postgres.sh` dumps with `--no-acl`, so a restore never brings back GRANT/REVOKE. The restoring login (`cmdb_user`) owns every restored object. Other roles have no access until the grants are re-applied: `cmdb_app` (045-048), `metabase_readonly` (032, 033, 039), and `cmdb_user` when it is not the restoring login. PUBLIC EXECUTE revokes (010, 041) also revert to the defaults.
+
+`restore-postgres.sh` prints the exact commands after every successful restore; it never runs them. Run them as `cmdb_user` from a checkout of the commit the backup was taken at:
+1. Re-apply the idempotent ACL migrations recorded in `cmdb.schema_migrations`: 032, 033, 039, 044, 045, 046, 047, 048.
+2. Re-revoke PUBLIC EXECUTE on `cmdb.fn_business_service_health(uuid)`, `cmdb.fn_tbm_tower_summary(uuid)` and `discovery_definition_migrations_append_only()`.
+3. Only if 034 is recorded and `cmdb_user` is not the restoring login: re-apply 034's grants with the printed statement. 034 itself cannot be re-run, because its guard table `cmdb.hap668_acl_prior` is restored.
+
+Then restart the services that log in as those roles. Until this step is done, do not treat the application as working.
+
 ### Rollback Process
 
 The rollback script will:

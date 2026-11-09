@@ -85,9 +85,19 @@ log_info "Operator: ${USER:-unknown}"
 # =============================================================================
 BACKUP_TIMESTAMP="${1:-}"
 ROLLBACK_TYPE="${2:-full}"  # full, containers-only, database-only
+# HAP-1762: replacing the live PostgreSQL database is an argv opt-in plus a typed confirmation; no environment variable
+# enables it.
+REPLACE_LIVE_POSTGRES=false
+PG_DATABASE="${POSTGRES_DATABASE:-cmdb}"
+if [[ $# -eq 3 && "$3" == "--replace-live-postgres" && "$ROLLBACK_TYPE" != "containers-only" ]]; then
+    REPLACE_LIVE_POSTGRES=true
+elif [[ $# -gt 2 ]]; then
+    log_error "Usage: $0 <backup-timestamp> [full|database-only] [--replace-live-postgres]"
+    exit 1
+fi
 
 if [[ -z "$BACKUP_TIMESTAMP" ]]; then
-    log_error "Usage: $0 <backup-timestamp> [full|containers-only|database-only]"
+    log_error "Usage: $0 <backup-timestamp> [full|containers-only|database-only] [--replace-live-postgres]"
     echo ""
     echo "Available backups:"
     ls -lh "$BACKUP_DIR" 2>/dev/null | grep "^d" | awk '{print $9}' || echo "No backups found"
@@ -131,6 +141,9 @@ if [[ "$ROLLBACK_TYPE" == "full" || "$ROLLBACK_TYPE" == "containers-only" ]]; th
 fi
 if [[ "$ROLLBACK_TYPE" == "full" || "$ROLLBACK_TYPE" == "database-only" ]]; then
     echo "  • Restore database backups"
+    if [[ "$REPLACE_LIVE_POSTGRES" == true ]]; then
+        echo "  • DROP and replace the live PostgreSQL database '$PG_DATABASE' (after a verified pre-restore backup)"
+    fi
 fi
 echo ""
 echo -n "Type 'ROLLBACK' to continue: "
@@ -139,6 +152,15 @@ read -r confirmation
 if [[ "$confirmation" != "ROLLBACK" ]]; then
     log_error "Rollback cancelled"
     exit 1
+fi
+
+if [[ "$REPLACE_LIVE_POSTGRES" == true ]]; then
+    echo -n "Type 'REPLACE $PG_DATABASE' to drop and replace the live PostgreSQL database: "
+    read -r replace_confirmation
+    if [[ "$replace_confirmation" != "REPLACE $PG_DATABASE" ]]; then
+        log_error "Rollback cancelled: PostgreSQL replace not confirmed"
+        exit 1
+    fi
 fi
 
 log_success "Rollback confirmed"
@@ -256,6 +278,41 @@ if [[ "$ROLLBACK_TYPE" == "full" || "$ROLLBACK_TYPE" == "database-only" ]]; then
     sleep 15
 
     NEO4J_RESTORED=false
+    PG_BACKUP="$BACKUP_PATH/postgres-backup.sql.gz"
+    PG_PRE_BACKUP="$SAFETY_SNAPSHOT_DIR/postgres-pre-restore-$PG_DATABASE.sql.gz"
+    PG_ARGS=(--file "$PG_BACKUP" --verify)
+    if [[ "$REPLACE_LIVE_POSTGRES" == true ]]; then
+        PG_ARGS+=(--replace-live --pre-restore-backup "$PG_PRE_BACKUP")
+    fi
+    API_STOPPED=false
+
+    # HAP-1749/HAP-1762: the backup goes in via --file (a bare path hits usage(), which exits 0). Exported RESTORE_*
+    # overrides are pinned, so no environment value makes it --drop or load over a live database: only the argv opt-in
+    # (--replace-live) replaces one. stdin is detached (no second prompt). The restore's own status (not tee's) decides.
+    restore_postgres() {
+        RESTORE_DROP_DATABASE=false RESTORE_CREATE_DATABASE=true bash "$SCRIPT_DIR/restore-postgres.sh" "${PG_ARGS[@]}" "$@" </dev/null 2>&1 | tee -a "$ROLLBACK_LOG"
+        return "${PIPESTATUS[0]}"
+    }
+
+    # HAP-1762: everything that can refuse the PostgreSQL restore runs before Neo4j is touched: the database exists
+    # without the opt-in, the server is unreachable, another client is connected, or the pre-restore backup fails.
+    if [[ -f "$PG_BACKUP" && -f "$SCRIPT_DIR/restore-postgres.sh" ]]; then
+        if [[ "$REPLACE_LIVE_POSTGRES" == true ]] && docker-compose -f "$PROJECT_ROOT/infrastructure/docker/docker-compose.yml" ps --services --filter status=running 2>/dev/null | grep -qx api-server; then
+            log_info "Stopping api-server (the cmdb database's client) for the PostgreSQL replace..."
+            docker-compose -f "$PROJECT_ROOT/infrastructure/docker/docker-compose.yml" stop api-server 2>&1 | tee -a "$ROLLBACK_LOG"
+            API_STOPPED=true
+        fi
+        restore_postgres --preflight && postgres_preflight_status=0 || postgres_preflight_status=$?
+        if [[ "$postgres_preflight_status" -ne 0 ]]; then
+            log_error "PostgreSQL preflight failed (exit $postgres_preflight_status) - nothing restored from $PG_BACKUP; Neo4j and PostgreSQL are untouched"
+            if [[ "$API_STOPPED" == true ]]; then
+                docker-compose -f "$PROJECT_ROOT/infrastructure/docker/docker-compose.yml" start api-server 2>&1 | tee -a "$ROLLBACK_LOG"
+                log_info "api-server restarted"
+            fi
+            send_notification "FAILED" "Rollback aborted before any restore: PostgreSQL preflight failed (backup: $BACKUP_TIMESTAMP)"
+            exit 1
+        fi
+    fi
 
     # Restore Neo4j
     if [[ -f "$BACKUP_PATH/neo4j-backup.tar.gz" ]]; then
@@ -270,6 +327,9 @@ if [[ "$ROLLBACK_TYPE" == "full" || "$ROLLBACK_TYPE" == "database-only" ]]; then
             neo4j_restore_status=${PIPESTATUS[0]}
             if [[ "$neo4j_restore_status" -ne 0 ]]; then
                 log_error "Neo4j restore failed (exit $neo4j_restore_status) - Neo4j NOT restored from $BACKUP_PATH/neo4j-backup.tar.gz; the database may be left stopped"
+                if [[ -f "$PG_PRE_BACKUP" ]]; then
+                    log_info "PostgreSQL is untouched; its pre-restore backup: $PG_PRE_BACKUP"
+                fi
                 send_notification "FAILED" "Rollback aborted: Neo4j restore failed (backup: $BACKUP_TIMESTAMP)"
                 exit 1
             fi
@@ -282,27 +342,37 @@ if [[ "$ROLLBACK_TYPE" == "full" || "$ROLLBACK_TYPE" == "database-only" ]]; then
     fi
 
     # Restore PostgreSQL
-    if [[ -f "$BACKUP_PATH/postgres-backup.sql.gz" ]]; then
+    if [[ -f "$PG_BACKUP" ]]; then
         log_info "Restoring PostgreSQL database..."
 
         if [[ -f "$SCRIPT_DIR/restore-postgres.sh" ]]; then
-            # HAP-1749: the backup goes in via --file (a bare path hits usage(), which exits 0). Never
-            # --drop, and exported overrides are pinned: RESTORE_CREATE_DATABASE=true makes CREATE
-            # DATABASE fail on an existing database before any load, so the dump is never loaded over
-            # a live one. stdin is detached (no second prompt). The restore's own status decides.
-            RESTORE_DROP_DATABASE=false RESTORE_CREATE_DATABASE=true bash "$SCRIPT_DIR/restore-postgres.sh" --file "$BACKUP_PATH/postgres-backup.sql.gz" </dev/null 2>&1 | tee -a "$ROLLBACK_LOG"
-            postgres_restore_status=${PIPESTATUS[0]}
+            restore_postgres && postgres_restore_status=0 || postgres_restore_status=$?
             if [[ "$postgres_restore_status" -ne 0 ]]; then
-                log_error "PostgreSQL restore failed (exit $postgres_restore_status) - PostgreSQL NOT restored from $BACKUP_PATH/postgres-backup.sql.gz"
+                case "$postgres_restore_status" in
+                    3) postgres_state="PostgreSQL was DROPPED and NOT restored (the database is absent or empty)" ;;
+                    4) postgres_state="PostgreSQL was loaded but does NOT match the backup" ;;
+                    *) postgres_state="PostgreSQL NOT restored" ;;
+                esac
+                log_error "PostgreSQL restore failed (exit $postgres_restore_status) - $postgres_state from $PG_BACKUP"
+                if [[ -f "$PG_PRE_BACKUP" ]]; then
+                    log_error "Pre-restore backup of the replaced database: $PG_PRE_BACKUP (restore-postgres.sh printed the command that puts it back)"
+                fi
                 partial_state=""
                 if [[ "$NEO4J_RESTORED" == true ]]; then
                     log_error "Neo4j WAS already restored from $BACKUP_PATH/neo4j-backup.tar.gz - Neo4j and PostgreSQL are now from different points in time"
                     partial_state="; Neo4j already restored, PostgreSQL not"
                 fi
-                send_notification "FAILED" "Rollback aborted: PostgreSQL restore failed (backup: $BACKUP_TIMESTAMP)$partial_state"
+                if [[ "$API_STOPPED" == true ]]; then
+                    log_error "api-server stays stopped: start it only once PostgreSQL is restored"
+                fi
+                send_notification "FAILED" "Rollback aborted: PostgreSQL restore failed (exit $postgres_restore_status, backup: $BACKUP_TIMESTAMP)$partial_state"
                 exit 1
             fi
-            log_success "PostgreSQL restored"
+            log_success "PostgreSQL restored from $PG_BACKUP - grants NOT restored: apply the post-restore grant step printed above"
+            if [[ "$API_STOPPED" == true ]]; then
+                docker-compose -f "$PROJECT_ROOT/infrastructure/docker/docker-compose.yml" start api-server 2>&1 | tee -a "$ROLLBACK_LOG"
+                log_info "api-server restarted"
+            fi
         else
             log_error "restore-postgres.sh not found - manual restore required"
             log_info "Backup location: $BACKUP_PATH/postgres-backup.sql.gz"

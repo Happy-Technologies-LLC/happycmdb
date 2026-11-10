@@ -298,45 +298,45 @@ Find the best matching credential for a given context using affinity scoring.
 
 **Permission**: `write`. It decrypts the caller's credentials server-side to score them; a `viewer` gets `403` before any lookup.
 
-**Request Body**:
+**Request Body** (field names per the route's `credentialMatchContextSchema`; all optional):
 ```json
 {
-  "_ip": "10.0.1.50",
-  "_hostname": "web-prod-01.example.com",
-  "_os_type": "linux",
-  "_environment": "production",
-  "_cloud_provider": "aws",
-  "_required_protocol": "ssh_key",
-  "_required_scope": "cloud_provider"
+  "ip": "10.0.1.50",
+  "hostname": "web-prod-01.example.com",
+  "os_type": "linux",
+  "environment": "production",
+  "cloud_provider": "aws",
+  "required_protocol": "ssh_key",
+  "required_scope": "cloud_provider"
 }
 ```
 
-**Response** (200 OK):
+**Response** (200 OK): secrets are never returned; `credential.credentials` is always `***REDACTED***`.
 ```json
 {
   "success": true,
   "data": {
     "credential": {
-      "_id": "550e8400-e29b-41d4-a716-446655440000",
-      "_name": "AWS Production SSH Key",
-      "_protocol": "ssh_key",
-      "_scope": "cloud_provider",
-      "_credentials": {
-        "username": "ec2-user",
-        "privateKey": "-----BEGIN RSA PRIVATE KEY-----\n...",
-        "passphrase": null
-      }
+      "id": "550e8400-e29b-41d4-a716-446655440000",
+      "name": "AWS Production SSH Key",
+      "description": null,
+      "protocol": "ssh_key",
+      "scope": "cloud_provider",
+      "credentials": "***REDACTED***",
+      "affinity": {},
+      "tags": ["production"],
+      "created_by": "user-id",
+      "created_at": "2025-11-15T14:30:00.000Z",
+      "updated_at": "2025-11-15T14:30:00.000Z",
+      "last_validated_at": null,
+      "validation_status": null
     },
-    "matchScore": 95,
-    "matchDetails": {
-      "networkMatch": true,
-      "hostnameMatch": true,
-      "osTypeMatch": true,
-      "cloudProviderMatch": true,
-      "environmentMatch": true,
-      "protocolMatch": true,
-      "scopeMatch": true
-    }
+    "score": 95,
+    "reasons": [
+      "Network match: 10.0.0.0/16",
+      "OS type match: linux",
+      "Environment match: production"
+    ]
   }
 }
 ```
@@ -356,48 +356,66 @@ Rank all credentials by match score for a given context.
 
 **Permission**: `write`. It decrypts the caller's credentials server-side to score them; a `viewer` gets `403` before any lookup.
 
-**Request Body**:
+**Request Body**: same fields as Match.
 ```json
 {
-  "_ip": "10.0.1.50",
-  "_hostname": "web-prod-01.example.com",
-  "_os_type": "linux",
-  "_environment": "production",
-  "_required_protocol": "ssh_key"
+  "ip": "10.0.1.50",
+  "hostname": "web-prod-01.example.com",
+  "os_type": "linux",
+  "environment": "production",
+  "required_protocol": "ssh_key"
 }
 ```
 
-**Response** (200 OK):
+**Response** (200 OK): results are sorted by `score` descending; secrets are never returned, `credential.credentials` is always `***REDACTED***`.
 ```json
 {
   "success": true,
-  "data": {
-    "rankedCredentials": [
-      {
-        "_id": "550e8400-e29b-41d4-a716-446655440000",
-        "_name": "AWS Production SSH Key",
-        "_protocol": "ssh_key",
-        "_matchScore": 95,
-        "_matchDetails": {
-          "networkMatch": true,
-          "hostnameMatch": true,
-          "osTypeMatch": true,
-          "environmentMatch": true
-        }
+  "data": [
+    {
+      "credential": {
+        "id": "550e8400-e29b-41d4-a716-446655440000",
+        "name": "AWS Production SSH Key",
+        "description": null,
+        "protocol": "ssh_key",
+        "scope": "cloud_provider",
+        "credentials": "***REDACTED***",
+        "affinity": {},
+        "tags": ["production"],
+        "created_by": "user-id",
+        "created_at": "2025-11-15T14:30:00.000Z",
+        "updated_at": "2025-11-15T14:30:00.000Z",
+        "last_validated_at": null,
+        "validation_status": null
       },
-      {
-        "_id": "660f9511-f3ac-52e5-b827-557766551111",
-        "_name": "Generic Linux SSH Key",
-        "_protocol": "ssh_key",
-        "_matchScore": 65,
-        "_matchDetails": {
-          "osTypeMatch": true,
-          "protocolMatch": true
-        }
-      }
-    ],
-    "totalMatches": 2
-  }
+      "score": 95,
+      "reasons": [
+        "Network match: 10.0.0.0/16",
+        "OS type match: linux",
+        "Environment match: production"
+      ]
+    },
+    {
+      "credential": {
+        "id": "660f9511-f3ac-52e5-b827-557766551111",
+        "name": "Generic Linux SSH Key",
+        "description": null,
+        "protocol": "ssh_key",
+        "scope": "cloud_provider",
+        "credentials": "***REDACTED***",
+        "affinity": {},
+        "tags": [],
+        "created_by": "user-id",
+        "created_at": "2025-11-15T14:30:00.000Z",
+        "updated_at": "2025-11-15T14:30:00.000Z",
+        "last_validated_at": null,
+        "validation_status": null
+      },
+      "score": 20,
+      "reasons": ["OS type match: linux"]
+    }
+  ],
+  "count": 2
 }
 ```
 
@@ -603,15 +621,15 @@ Select credentials from a set using the configured strategy and context.
 
 **Permission**: `write`. It reads the set's member secrets server-side; a `viewer` gets `403` before any lookup.
 
-**Request Body**:
+**Request Body** (field names per the route's `selectCredentialsSchema`; both optional):
 ```json
 {
-  "_context": {
-    "_hostname": "web-prod-01.example.com",
-    "_ip": "10.0.1.50",
-    "_os_type": "linux"
+  "context": {
+    "hostname": "web-prod-01.example.com",
+    "ip": "10.0.1.50",
+    "os_type": "linux"
   },
-  "_strategy": "adaptive"
+  "strategy": "adaptive"
 }
 ```
 

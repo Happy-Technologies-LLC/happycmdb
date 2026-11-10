@@ -9,6 +9,7 @@
  * HAP-1764: `trust proxy` comes from TRUST_PROXY through applyTrustProxy; login adds a per-account bucket across all
  * clients; a fail-closed refusal is fixed (body, no-store, no X-RateLimit-*) and every limiter logs a store error by
  * class only.
+ * HAP-1795: X-RateLimit-* and every 429 come from the client bucket only; an account bucket's count never shows.
  */
 
 import { describe, it, expect, jest } from '@jest/globals';
@@ -65,8 +66,10 @@ class FakeRedis {
   }
 }
 
+/** Windows as the schema defaults: an hour per client, 15 minutes per account, so a leaked account window shows. */
 function rateLimitConfig(): ConfigSchema['rateLimit'] {
-  const window = { windowMs: 60_000 };
+  const window = { windowMs: 3_600_000 };
+  const accountWindow = { windowMs: 900_000 };
   return {
     enabled: true,
     bypassHeader: 'X-Internal-Service',
@@ -76,8 +79,8 @@ function rateLimitConfig(): ConfigSchema['rateLimit'] {
       graphql: { max: 100, ...window },
       health: { max: 0, ...window },
       auth: { max: CLIENT_MAX, ...window },
-      authAccount: { max: ACCOUNT_MAX, ...window },
-      authAccountGlobal: { max: ACCOUNT_GLOBAL_MAX, ...window },
+      authAccount: { max: ACCOUNT_MAX, ...accountWindow },
+      authAccountGlobal: { max: ACCOUNT_GLOBAL_MAX, ...accountWindow },
       discovery: { max: 100, ...window },
       admin: { max: 100, ...window },
     },
@@ -204,6 +207,88 @@ describe('POST /auth/login rate limiting (HAP-1091, HAP-1764)', () => {
       expect(text).not.toContain(STORE_NEEDLE);
       expect(text).not.toContain('Connection is closed');
     });
+});
+
+/** Everything a client sees of a response except the transport's own Date header. */
+const visible = (res: request.Response) => {
+  const { date: _date, ...headers } = res.headers;
+  return { status: res.status, headers, body: res.body };
+};
+
+/** Runs `run` with Date.now frozen, so two scenarios compute the same window ends. */
+async function atFixedTime<T>(run: () => Promise<T>): Promise<T> {
+  const now = jest.spyOn(Date, 'now').mockReturnValue(1_800_000_000_000);
+  try {
+    return await run();
+  } finally {
+    now.mockRestore();
+  }
+}
+
+describe('rate limit responses never report an account bucket (HAP-1795)', () => {
+  const PROBE = { 'X-Forwarded-For': '198.51.100.50' };
+  const other = (i: number) => ({ 'X-Forwarded-For': `203.0.113.${i}` });
+
+  it('two usernames from one client get the same headers when only one had attempts from other clients', async () => {
+    const probe = (username: string) => atFixedTime(async () => {
+      const app = loginApp(new FakeRedis(), 1);
+      for (let i = 0; i < ACCOUNT_GLOBAL_MAX - 1; i++) {
+        expect((await login(app, 'alice', other(i))).status).toBe(401);
+      }
+      return visible(await login(app, username, PROBE));
+    });
+    const [alice, bob] = [await probe('alice'), await probe('bob')];
+    expect(alice.status).toBe(401);
+    expect(alice).toEqual(bob);
+    expect([alice.headers['x-ratelimit-limit'], alice.headers['x-ratelimit-remaining']])
+      .toEqual([String(CLIENT_MAX), String(CLIENT_MAX - 1)]);
+  });
+
+  /** The ordinary refusal: this client spent its whole budget on other usernames, then tries alice. */
+  const perClientRefusal = () => atFixedTime(async () => {
+    const app = loginApp(new FakeRedis(), 1);
+    for (let i = 0; i < CLIENT_MAX; i++) {
+      expect((await login(app, `user${i}`, PROBE)).status).toBe(401);
+    }
+    return visible(await login(app, 'alice', PROBE));
+  });
+
+  it.each([
+    ['the account+client bucket (this client spent alice\'s tries)', async (app: express.Express) => {
+      for (let i = 0; i < ACCOUNT_MAX; i++) expect((await login(app, 'alice', PROBE)).status).toBe(401);
+    }],
+    ['the account bucket across clients (other clients spent alice\'s tries)', async (app: express.Express) => {
+      for (let i = 0; i < ACCOUNT_GLOBAL_MAX; i++) expect((await login(app, 'alice', other(i))).status).toBe(401);
+    }],
+  ])('a login 429 from %s is identical to a per-client 429', async (_label, spend) => {
+    const expected = await perClientRefusal();
+    const actual = await atFixedTime(async () => {
+      const app = loginApp(new FakeRedis(), 1);
+      await spend(app);
+      return visible(await login(app, 'alice', PROBE));
+    });
+    expect(expected.status).toBe(429);
+    expect(expected.headers['x-ratelimit-remaining']).toBe('0');
+    expect(expected.headers['retry-after']).toBeUndefined();
+    expect(expected.body._retryAfter).toBe(3600);
+    expect(actual).toEqual(expected);
+  });
+
+  it('a password-change 429 from the per-user bucket is identical to a per-client 429', async () => {
+    const refusal = (spend: (app: express.Express) => Promise<void>) => atFixedTime(async () => {
+      const { app } = passwordApp(new FakeRedis());
+      await spend(app);
+      return visible(await changePassword(app, 'user-a', '198.51.100.50'));
+    });
+    const perClient = await refusal(async app => {
+      for (let i = 0; i < CLIENT_MAX; i++) expect((await changePassword(app, `user-${i}`, '198.51.100.50')).status).toBe(400);
+    });
+    const perUser = await refusal(async app => {
+      for (let i = 0; i < ACCOUNT_MAX; i++) expect((await changePassword(app, 'user-a', `203.0.113.${i}`)).status).toBe(400);
+    });
+    expect(perClient.status).toBe(429);
+    expect(perUser).toEqual(perClient);
+  });
 });
 
 describe('limiter store errors outside login (HAP-1764)', () => {

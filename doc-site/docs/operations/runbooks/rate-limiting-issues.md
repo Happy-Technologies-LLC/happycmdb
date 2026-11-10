@@ -368,7 +368,7 @@ rate(http_requests_total{status="429"}[5m]) / rate(http_requests_total[5m])
 
 ## Rate Limit Headers
 
-HappyCMDB API returns standard rate limit headers:
+Only the auth endpoints (`POST /api/v1/auth/login`, `POST /api/v1/auth/refresh`, `PUT /api/v1/auth/password`) return rate limit headers, on allowed and on `429` responses. Other routes send none, and the `429` responses from the analysis, impact and GraphQL concurrency gates carry none:
 
 ```
 X-RateLimit-Limit: 100

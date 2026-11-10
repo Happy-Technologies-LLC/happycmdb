@@ -191,12 +191,23 @@ POSTGRES_PASSWORD=<strong-random-password>
 POSTGRES_MAX_CONNECTIONS=100  # Small: 50, Medium: 100, Large: 200
 
 # SSL/TLS (CRITICAL for production)
+# Server side (compose): POSTGRES_SSL_ENABLED=on starts postgres with `-c ssl=on`.
 POSTGRES_SSL_ENABLED=on
-POSTGRES_SSL_MODE=require
-POSTGRES_SSL_CERT_PATH=/ssl/server.crt
-POSTGRES_SSL_KEY_PATH=/ssl/server.key
-POSTGRES_SSL_CA_PATH=/ssl/ca.crt
+# Client side: POSTGRES_SSL_MODE = disable | require | prefer | verify-full.
+#   require / prefer: TLS, server certificate NOT verified (pg has no cleartext fallback).
+#   verify-full: verifies the certificate chain and host name.
+POSTGRES_SSL_MODE=verify-full
+# verify-full only: CA bundle to trust (default: the Node.js trust store). Must be readable by the api-server process.
+POSTGRES_SSL_CA_FILE=/ssl/ca.crt
 ```
+
+The Postgres client reads only `POSTGRES_SSL_MODE`, `POSTGRES_SSL_ENABLED` (client mode only when `POSTGRES_SSL_MODE`
+is unset: `on` = `require`, `off` = `disable`) and `POSTGRES_SSL_CA_FILE`. It does not present a client certificate or
+key, and no other `POSTGRES_SSL_*` variable is honored (there are no client certificate, client key or CA-path settings;
+use `POSTGRES_SSL_CA_FILE` for the CA). The server certificate and key are the postgres `ssl_cert_file` / `ssl_key_file`
+flags shown under Docker Compose Configuration below.
+With `NODE_ENV=production` and a non-local host, leaving both `POSTGRES_SSL_MODE` and `POSTGRES_SSL_ENABLED` unset, or
+setting an unsupported mode, refuses to start. See `environment-variables.md` for the full table.
 
 #### Docker Compose Configuration
 

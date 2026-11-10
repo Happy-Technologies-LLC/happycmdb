@@ -43,7 +43,7 @@ export class CredentialValidationService {
       logger.error('Failed to validate credential', { error, id });
       return {
         valid: false,
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Credential validation failed',
         validated_at: new Date(),
       };
     } finally {
@@ -237,9 +237,10 @@ export class CredentialValidationService {
         },
       };
     } catch (error) {
+      logger.error('Credential structure validation threw', { error, id: credential.id });
       return {
         valid: false,
-        message: error instanceof Error ? error.message : 'Validation failed',
+        message: 'Validation failed',
         validated_at: new Date(),
       };
     }

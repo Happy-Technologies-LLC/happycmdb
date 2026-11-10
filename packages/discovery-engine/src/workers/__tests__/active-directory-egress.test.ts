@@ -122,7 +122,7 @@ it('logs LDAP unbind failures with error class only and still resolves cleanup',
   warn.mockRestore();
 });
 
-it('logs LDAP search errors with class only, rejects with the original error, and keeps discoverAll clean', async () => {
+it('logs LDAP search errors with class only, rejects with fixed text, and keeps discoverAll clean', async () => {
   const markers = ['error-host.invalid', '192.0.2.77', 'cn=svc-synthetic,ou=people,dc=example,dc=invalid'];
   const payload = `search ldaps://${markers[0]} (${markers[1]}) failed for ${markers[2]}`;
   class SyntheticLdapError extends Error {}
@@ -142,12 +142,12 @@ it('logs LDAP search errors with class only, rejects with the original error, an
   const original = new SyntheticLdapError(payload);
   const privateWorker = worker as unknown as { searchLDAP(client: unknown, base: string, opts: unknown): Promise<unknown> };
   await expect(privateWorker.searchLDAP({ search: failingSearch(() => original) }, 'DC=example,DC=com', {}))
-    .rejects.toBe(original);
+    .rejects.toMatchObject({ message: 'LDAP search stream error' });
   expect(spies[3]).toHaveBeenCalledWith('LDAP search error', { errorClass: 'SyntheticLdapError' });
   // Real ldapjs result-code errors have anonymous constructors; their fixed `name` names the class.
   const { NoSuchObjectError } = jest.requireActual<typeof ldap>('ldapjs');
   await expect(privateWorker.searchLDAP({ search: failingSearch(() => new NoSuchObjectError(payload)) },
-    'DC=example,DC=com', {})).rejects.toThrow(NoSuchObjectError);
+    'DC=example,DC=com', {})).rejects.toMatchObject({ message: 'LDAP search stream error' });
   expect(spies[3]).toHaveBeenLastCalledWith('LDAP search error', { errorClass: 'NoSuchObjectError' });
 
   mockedLookup.mockResolvedValue([{ address: '8.8.8.8', family: 4 }] as never);
@@ -171,5 +171,45 @@ it('logs LDAP search errors with class only, rejects with the original error, an
     }
   } finally {
     jest.useRealTimers();
+  }
+});
+
+it('rejects searchLDAP with fixed text on the callback and stream error paths, never the raw ldapjs error', async () => {
+  const host = 'dc-sentinel.synthetic-directory.invalid';
+  const dn = 'CN=sentinel-svc,OU=Sentinel,DC=synthetic-directory,DC=invalid';
+  const payload = `connect ECONNRESET ldaps://${host}:636 while searching ${dn}`;
+  const { NoSuchObjectError } = jest.requireActual<typeof ldap>('ldapjs');
+  const spies = (['debug', 'info', 'warn', 'error'] as const)
+    .map(level => jest.spyOn(logger, level).mockImplementation(() => logger));
+  const worker = new ActiveDirectoryDiscoveryWorker('public.example', 'DC=example,DC=com', credential);
+  const privateWorker = worker as unknown as { searchLDAP(client: unknown, base: string, opts: unknown): Promise<unknown> };
+  const callbackError = { search: jest.fn((_base: string, _opts: unknown, callback: (err: Error) => void) =>
+    callback(new NoSuchObjectError(payload))) };
+  const streamError = { search: jest.fn((_base: string, _opts: unknown,
+    callback: (err: Error | null, res: EventEmitter) => void) => {
+    const res = new EventEmitter();
+    callback(null, res);
+    res.emit('error', new NoSuchObjectError(payload));
+  }) };
+  try {
+    const expected = [[callbackError, 'LDAP search failed'], [streamError, 'LDAP search stream error']] as const;
+    for (const [client, message] of expected) {
+      const rejection = await privateWorker.searchLDAP(client, dn, {}).then(
+        () => { throw new Error('searchLDAP resolved'); }, (error: unknown) => error);
+      expect(rejection).toBeInstanceOf(Error);
+      expect(rejection).not.toBeInstanceOf(NoSuchObjectError);
+      expect((rejection as Error).message).toBe(message);
+      expect((rejection as Error & { cause?: unknown }).cause).toBeUndefined();
+      for (const sentinel of [host, dn, payload]) {
+        expect((rejection as Error).message).not.toContain(sentinel);
+        expect(String((rejection as Error).stack)).not.toContain(sentinel);
+      }
+    }
+    const logged = JSON.stringify(spies.flatMap(spy => spy.mock.calls));
+    for (const sentinel of [host, dn, payload]) {
+      expect(logged).not.toContain(sentinel);
+    }
+  } finally {
+    spies.forEach(spy => spy.mockRestore());
   }
 });

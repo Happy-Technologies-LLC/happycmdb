@@ -820,7 +820,8 @@ export class ActiveDirectoryDiscoveryWorker {
 
       client.search(base, options, (err, res) => {
         if (err) {
-          reject(err);
+          // ldapjs error text can carry the endpoint and DN; never forward it.
+          reject(new Error('LDAP search failed'));
           return;
         }
 
@@ -833,7 +834,7 @@ export class ActiveDirectoryDiscoveryWorker {
             // ldapjs result-code errors have anonymous constructors; their fixed `name` is the class.
             errorClass: err instanceof Error ? (err.constructor.name !== '' ? err.constructor.name : err.name) : typeof err,
           });
-          reject(err);
+          reject(new Error('LDAP search stream error'));
         });
 
         res.on('end', (result) => {

@@ -81,12 +81,14 @@ API requests are rate-limited to prevent abuse:
 - **Authenticated requests**: 1000 requests per hour
 - **Unauthenticated requests**: 100 requests per hour
 
-Rate limit headers are included in responses:
+Only the auth endpoints (`POST /api/v1/auth/login`, `POST /api/v1/auth/refresh`, `PUT /api/v1/auth/password`) send rate limit headers; other routes send none, and their `429` responses carry none either:
 ```
 X-RateLimit-Limit: 1000
 X-RateLimit-Remaining: 999
-X-RateLimit-Reset: 1625097600
+X-RateLimit-Reset: 1625097600000
 ```
+
+`X-RateLimit-Reset` is the reset time in Unix epoch milliseconds, not seconds.
 
 ## Error Handling
 
@@ -109,7 +111,7 @@ Common error codes:
 - `FORBIDDEN`: Insufficient permissions
 - `RESOURCE_NOT_FOUND`: Resource doesn't exist
 - `VALIDATION_ERROR`: Invalid request data
-- `RATE_LIMIT_EXCEEDED`: Too many requests
+- `429` (rate limited): REST responses carry no error code (auth endpoints send `_error: "Too Many Requests"`; analysis and impact endpoints send `error: "... rate limit exceeded"`); GraphQL sends `extensions.code: "TOO_MANY_REQUESTS"`
 - `INTERNAL_ERROR`: Server error
 
 ## Next Steps

@@ -584,7 +584,7 @@ curl -X POST "http://localhost:3000/api/v1/auth/refresh" -H "X-CMDB-Auth: 1" -b 
 
 **Cause**: Too many authentication attempts from same IP
 
-**Solution**: Wait for rate limit window to reset (shown in `retryAfter` seconds)
+**Solution**: Wait for rate limit window to reset (shown in `_retryAfter` seconds)
 
 **Prevention**: Implement exponential backoff in client code
 

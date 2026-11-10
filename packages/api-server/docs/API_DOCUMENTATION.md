@@ -164,31 +164,37 @@ The API implements rate limiting to ensure fair usage and system stability.
 
 ### Rate Limit Headers
 
-Every API response includes rate limit information:
+Only the auth rate limiter sends `X-RateLimit-*` headers: `POST /api/v1/auth/login`, `POST /api/v1/auth/refresh` and `PUT /api/v1/auth/password`, on allowed and on `429` responses (`auth.controller.ts:88,102,188`; `rate-limit.middleware.ts:248-250`). No other route sends them, and the `429` responses from the analysis, impact and GraphQL concurrency gates carry none.
 
 ```http
 X-RateLimit-Limit: 1000
 X-RateLimit-Remaining: 999
-X-RateLimit-Reset: 1640995200
+X-RateLimit-Reset: 1640995200000
 ```
+
+`X-RateLimit-Reset` is the time the window ends, in Unix epoch milliseconds (here 2022-01-01T00:00:00.000Z), not seconds. The API does not send a `Retry-After` header.
 
 ### Rate Limit Exceeded Response
 
 ```json
 {
-  "success": false,
-  "error": {
-    "code": "RATE_LIMIT_EXCEEDED",
-    "message": "Rate limit exceeded. Please retry after 60 seconds.",
-    "details": {
-      "limit": 1000,
-      "remaining": 0,
-      "resetAt": "2025-01-15T10:35:00Z",
-      "retryAfter": 60
-    }
-  }
+  "_error": "Too Many Requests",
+  "_message": "Rate limit exceeded. Try again in 60 seconds",
+  "_retryAfter": 60,
+  "_limit": 1000,
+  "_resetAt": "2022-01-01T00:00:00.000Z"
 }
 ```
+
+`_retryAfter` is in seconds; `_resetAt` is the same instant as `X-RateLimit-Reset`, as an ISO 8601 string.
+
+This flat body is sent only by the auth rate limiter (`rate-limit.middleware.ts:170-176`, `:381-387`). Other `429` responses use a different body and no `X-RateLimit-*` headers:
+
+| Source | Body | Headers |
+|--------|------|---------|
+| Analysis gates (`analysis-admission.ts:147`) | `{ "success": false, "error": "<Scope> analysis rate limit exceeded" }` | none |
+| Impact dependency graph (`drift-impact.routes.ts:160`) | `{ "success": false, "error": "Impact analysis rate limit exceeded" }` | none |
+| GraphQL concurrency gate (`analysis-admission.ts:93`) | `{ "errors": [{ "message": "GraphQL concurrent request limit exceeded", "extensions": { "code": "TOO_MANY_REQUESTS" } }] }` | none |
 
 **HTTP Status Code:** `429 Too Many Requests`
 
@@ -202,13 +208,33 @@ X-RateLimit-Reset: 1640995200
 **Example with retry logic:**
 
 ```javascript
+// Delay before retrying a 429, in milliseconds. Order of preference:
+//   1. body `_retryAfter`, in seconds (auth rate limiter only)
+//   2. `X-RateLimit-Reset` header, Unix epoch milliseconds (auth rate limiter only)
+//   3. 60 seconds (analysis, impact and GraphQL gates send neither)
+async function retryDelayMs(response) {
+  const body = await response.clone().json().catch(() => null);
+  const retryAfter = body?._retryAfter;
+  if (typeof retryAfter === 'number' && Number.isFinite(retryAfter)) {
+    return Math.max(0, retryAfter * 1000);
+  }
+
+  // Headers.get() returns null when absent; Number(null) and Number('') are 0, so treat both as missing.
+  const raw = response.headers.get('X-RateLimit-Reset');
+  const reset = raw === null || raw.trim() === '' ? NaN : Number(raw);
+  if (Number.isFinite(reset)) {
+    return Math.max(0, reset - Date.now());
+  }
+
+  return 60000;
+}
+
 async function apiCallWithRetry(url, options, maxRetries = 3) {
   for (let i = 0; i < maxRetries; i++) {
     const response = await fetch(url, options);
 
     if (response.status === 429) {
-      const retryAfter = parseInt(response.headers.get('X-RateLimit-Reset'));
-      await sleep((retryAfter || 60) * 1000);
+      await sleep(await retryDelayMs(response));
       continue;
     }
 
@@ -269,7 +295,7 @@ All error responses follow this structure:
 | `NOT_FOUND` | 404 | Resource not found |
 | `VALIDATION_ERROR` | 422 | Request validation failed |
 | `DUPLICATE_RESOURCE` | 409 | Resource already exists |
-| `RATE_LIMIT_EXCEEDED` | 429 | Too many requests |
+| `TOO_MANY_REQUESTS` | 429 | GraphQL concurrency gate only (`extensions.code`); REST `429` responses carry no code field, see [Rate Limit Exceeded Response](#rate-limit-exceeded-response) |
 | `DATABASE_ERROR` | 500 | Database operation failed |
 | `INTERNAL_ERROR` | 500 | Unexpected server error |
 | `SERVICE_UNAVAILABLE` | 503 | Service temporarily down |
@@ -1905,12 +1931,14 @@ API requests are rate-limited to prevent abuse:
 - **GraphQL API**: 100 queries per minute per IP
 - **Heavy queries** (impact analysis, dependencies): 10 per minute
 
-Rate limit headers:
+Rate limit headers (sent only by `POST /api/v1/auth/login`, `POST /api/v1/auth/refresh` and `PUT /api/v1/auth/password`; no other route sends them):
 ```
 X-RateLimit-Limit: 1000
 X-RateLimit-Remaining: 999
-X-RateLimit-Reset: 1705316400
+X-RateLimit-Reset: 1705316400000
 ```
+
+`X-RateLimit-Reset` is the reset time in Unix epoch milliseconds (compare with `Date.now()`).
 
 ---
 

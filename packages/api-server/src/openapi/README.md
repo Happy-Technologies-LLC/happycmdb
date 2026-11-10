@@ -369,10 +369,10 @@ curl -H "X-API-Key: YOUR_API_KEY" \
 - **Standard**: 1000 requests/hour
 - **Burst**: 100 requests/minute
 
-Rate limit headers in responses:
+Rate limit headers (sent only by the auth endpoints `POST /api/v1/auth/login`, `POST /api/v1/auth/refresh` and `PUT /api/v1/auth/password`; no other route sends them):
 - `X-RateLimit-Limit`: Maximum requests
 - `X-RateLimit-Remaining`: Remaining requests
-- `X-RateLimit-Reset`: Reset timestamp
+- `X-RateLimit-Reset`: Unix epoch milliseconds when the limit resets
 
 ## Common Response Codes
 

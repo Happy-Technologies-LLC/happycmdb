@@ -368,13 +368,14 @@ rate(http_requests_total{status="429"}[5m]) / rate(http_requests_total[5m])
 
 ## Rate Limit Headers
 
-HappyCMDB API returns standard rate limit headers:
+Only the auth endpoints (`POST /api/v1/auth/login`, `POST /api/v1/auth/refresh`, `PUT /api/v1/auth/password`) return rate limit headers, on allowed and on `429` responses. Other routes send none, and the `429` responses from the analysis, impact and GraphQL concurrency gates carry none:
 
 ```
 X-RateLimit-Limit: 100
 X-RateLimit-Remaining: 87
-X-RateLimit-Reset: 1678901234
-Retry-After: 45
+X-RateLimit-Reset: 1678901234000
 ```
 
-Clients should respect these headers and implement exponential backoff.
+`X-RateLimit-Reset` is the window end in Unix epoch milliseconds. Seconds left = `(X-RateLimit-Reset - Date.now()) / 1000`. The API sends no `Retry-After` header; a `429` body carries `_retryAfter` (seconds) and `_resetAt` (ISO 8601).
+
+Clients should respect these values and implement exponential backoff.

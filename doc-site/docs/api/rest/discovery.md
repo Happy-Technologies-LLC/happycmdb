@@ -797,13 +797,15 @@ API endpoints are rate limited to prevent abuse:
 - **Authenticated**: 1000 requests per hour
 - **Admin**: 10000 requests per hour
 
-Rate limit headers are included in all responses:
+Only the auth endpoints (`POST /api/v1/auth/login`, `POST /api/v1/auth/refresh`, `PUT /api/v1/auth/password`) send rate limit headers; other routes send none, and their `429` responses carry none either:
 
 ```
 X-RateLimit-Limit: 1000
 X-RateLimit-Remaining: 995
-X-RateLimit-Reset: 1633444800
+X-RateLimit-Reset: 1633444800000
 ```
+
+`X-RateLimit-Reset` is the reset time in Unix epoch milliseconds, not seconds.
 
 ---
 

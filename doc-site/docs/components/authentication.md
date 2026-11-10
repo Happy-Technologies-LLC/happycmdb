@@ -770,13 +770,13 @@ describe('useAuth', () => {
 
     await act(async () => {
       await result.current.login({
-        email: 'admin@example.com',
+        username: 'admin',
         password: 'password123',
       });
     });
 
     expect(result.current.isAuthenticated).toBe(true);
-    expect(result.current.user?.email).toBe('admin@example.com');
+    expect(result.current.user?.username).toBe('admin');
   });
 });
 ```
@@ -835,7 +835,7 @@ export const Login: React.FC = () => {
 
   const onSubmit = async (data: any) => {
     try {
-      await login(data.email, data.password);
+      await login({ username: data.username, password: data.password });
     } catch (error) {
       console.error('Login failed:', error);
     }
@@ -847,11 +847,11 @@ export const Login: React.FC = () => {
         <form onSubmit={handleSubmit(onSubmit)}>
           <TextField
             fullWidth
-            label="Email"
+            label="Username"
             margin="normal"
-            {...register('email', { required: 'Email is required' })}
-            error={!!errors.email}
-            helperText={errors.email?.message}
+            {...register('username', { required: 'Username is required' })}
+            error={!!errors.username}
+            helperText={errors.username?.message}
           />
           <TextField
             fullWidth
@@ -883,10 +883,10 @@ const router = express.Router();
 
 router.post('/login', async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { username, password } = req.body;
 
     // Find user in database
-    const user = await db.users.findOne({ email });
+    const user = await db.users.findOne({ username });
     if (!user) {
       return res.status(401).json({ message: 'Invalid credentials' });
     }

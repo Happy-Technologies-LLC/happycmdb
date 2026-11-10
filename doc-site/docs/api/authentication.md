@@ -103,7 +103,7 @@ administrators yet: global TBM and connector controls still refuse every caller.
 
 ### Login
 
-Authenticate with username/email and password to obtain JWT tokens.
+Authenticate with username and password to obtain JWT tokens. `username` is alphanumeric, 3-30 characters; `password` is at least 8 characters. Email is not accepted as a login identifier.
 
 **Endpoint**: `POST /api/v1/auth/login`
 
@@ -115,13 +115,7 @@ Authenticate with username/email and password to obtain JWT tokens.
 }
 ```
 
-**Alternative (email-based)**:
-```json
-{
-  "email": "admin@happycmdb.local",
-  "password": "Admin123!"
-}
-```
+A body with `email` instead of `username` fails validation (`username` is required); `email` alongside `username` is ignored (unknown fields are stripped).
 
 **Response** (200 OK):
 ```json

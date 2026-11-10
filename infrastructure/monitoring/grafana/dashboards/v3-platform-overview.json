@@ -1,214 +1,297 @@
 {
-  "dashboard": {
-    "title": "HappyCMDB v3.0 - Platform Overview",
-    "uid": "v3-platform-overview",
-    "tags": ["happycmdb", "v3.0", "overview"],
-    "timezone": "browser",
-    "schemaVersion": 38,
-    "version": 1,
-    "refresh": "30s",
-    "panels": [
-      {
-        "id": 1,
-        "title": "Platform Health Status",
-        "type": "stat",
-        "gridPos": {"x": 0, "y": 0, "w": 24, "h": 4},
-        "targets": [
-          {
-            "expr": "up{job=~\"cmdb-.*\"}",
-            "legendFormat": "{{service}}"
-          }
-        ],
-        "options": {
-          "graphMode": "none",
-          "colorMode": "value",
-          "reduceOptions": {
-            "values": false,
-            "calcs": ["lastNotNull"]
-          }
-        },
-        "fieldConfig": {
-          "defaults": {
-            "thresholds": {
-              "mode": "absolute",
-              "steps": [
-                {"value": 0, "color": "red"},
-                {"value": 1, "color": "green"}
-              ]
-            }
-          }
+  "title": "HappyCMDB v3.0 - Platform Overview",
+  "uid": "v3-platform-overview",
+  "tags": [
+    "happycmdb",
+    "v3.0",
+    "overview"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "30s",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Platform Health Status",
+      "type": "stat",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "up{job=~\"cmdb-.*\"}",
+          "legendFormat": "{{service}}"
+        }
+      ],
+      "options": {
+        "graphMode": "none",
+        "colorMode": "value",
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ]
         }
       },
-      {
-        "id": 2,
-        "title": "ITIL Incidents by Priority (24h)",
-        "type": "piechart",
-        "gridPos": {"x": 0, "y": 4, "w": 8, "h": 8},
-        "targets": [
-          {
-            "expr": "sum by (priority) (increase(cmdb_itil_incidents_created_total[24h]))",
-            "legendFormat": "{{priority}}"
-          }
-        ]
-      },
-      {
-        "id": 3,
-        "title": "TBM Total IT Spend by Tower",
-        "type": "bargauge",
-        "gridPos": {"x": 8, "y": 4, "w": 8, "h": 8},
-        "targets": [
-          {
-            "expr": "tower:cmdb_tbm_total_cost:sum",
-            "legendFormat": "{{tower}}"
-          }
-        ],
-        "options": {
-          "orientation": "horizontal",
-          "displayMode": "gradient"
-        }
-      },
-      {
-        "id": 4,
-        "title": "BSM Critical Services (Tier 0-1)",
-        "type": "stat",
-        "gridPos": {"x": 16, "y": 4, "w": 8, "h": 8},
-        "targets": [
-          {
-            "expr": "tier:cmdb_bsm_services:count{tier=~\"Tier-[01]\"}",
-            "legendFormat": "{{tier}}"
-          }
-        ],
-        "options": {
-          "graphMode": "area",
-          "colorMode": "value"
-        }
-      },
-      {
-        "id": 5,
-        "title": "AI Discovery Cost Trend (7d)",
-        "type": "timeseries",
-        "gridPos": {"x": 0, "y": 12, "w": 12, "h": 8},
-        "targets": [
-          {
-            "expr": "provider:cmdb_ai_discovery_cost_daily:sum",
-            "legendFormat": "{{provider}}"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "currencyUSD"
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 0,
+                "color": "red"
+              },
+              {
+                "value": 1,
+                "color": "green"
+              }
+            ]
           }
         }
-      },
-      {
-        "id": 6,
-        "title": "Kafka Event Throughput",
-        "type": "timeseries",
-        "gridPos": {"x": 12, "y": 12, "w": 12, "h": 8},
-        "targets": [
-          {
-            "expr": "topic:cmdb_kafka_events:rate5m",
-            "legendFormat": "{{topic}}"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "ops"
-          }
-        }
-      },
-      {
-        "id": 7,
-        "title": "Change Success Rate by Risk Level",
-        "type": "gauge",
-        "gridPos": {"x": 0, "y": 20, "w": 8, "h": 6},
-        "targets": [
-          {
-            "expr": "risk:cmdb_itil_changes_success_rate:rate5m",
-            "legendFormat": "{{risk_level}}"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "percent",
-            "min": 0,
-            "max": 100,
-            "thresholds": {
-              "mode": "absolute",
-              "steps": [
-                {"value": 0, "color": "red"},
-                {"value": 90, "color": "yellow"},
-                {"value": 95, "color": "green"}
-              ]
-            }
-          }
-        }
-      },
-      {
-        "id": 8,
-        "title": "Revenue at Risk ($)",
-        "type": "stat",
-        "gridPos": {"x": 8, "y": 20, "w": 8, "h": 6},
-        "targets": [
-          {
-            "expr": "cmdb_bsm_revenue_at_risk:sum",
-            "legendFormat": "Revenue at Risk"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "currencyUSD",
-            "color": {
-              "mode": "thresholds"
-            },
-            "thresholds": {
-              "mode": "absolute",
-              "steps": [
-                {"value": 0, "color": "green"},
-                {"value": 100000, "color": "yellow"},
-                {"value": 500000, "color": "red"}
-              ]
-            }
-          }
-        }
-      },
-      {
-        "id": 9,
-        "title": "Configuration Drift Detected",
-        "type": "timeseries",
-        "gridPos": {"x": 16, "y": 20, "w": 8, "h": 6},
-        "targets": [
-          {
-            "expr": "cmdb_itil_drift_detection_rate:rate5m",
-            "legendFormat": "Drift Detection Rate"
-          }
-        ]
-      },
-      {
-        "id": 10,
-        "title": "Kafka Consumer Lag",
-        "type": "table",
-        "gridPos": {"x": 0, "y": 26, "w": 12, "h": 8},
-        "targets": [
-          {
-            "expr": "consumer_group:cmdb_kafka_consumer_lag:max",
-            "legendFormat": "",
-            "format": "table"
-          }
-        ]
-      },
-      {
-        "id": 11,
-        "title": "AI Anomalies Detected by Severity",
-        "type": "bargauge",
-        "gridPos": {"x": 12, "y": 26, "w": 12, "h": 8},
-        "targets": [
-          {
-            "expr": "severity:cmdb_ai_anomalies_detected:rate5m",
-            "legendFormat": "{{severity}}"
-          }
-        ]
       }
-    ]
-  }
+    },
+    {
+      "id": 2,
+      "title": "ITIL Incidents by Priority (24h)",
+      "type": "piechart",
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum by (priority) (increase(cmdb_itil_incidents_created_total[24h]))",
+          "legendFormat": "{{priority}}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "TBM Total IT Spend by Tower",
+      "type": "bargauge",
+      "gridPos": {
+        "x": 8,
+        "y": 4,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "tower:cmdb_tbm_total_cost:sum",
+          "legendFormat": "{{tower}}"
+        }
+      ],
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "gradient"
+      }
+    },
+    {
+      "id": 4,
+      "title": "BSM Critical Services (Tier 0-1)",
+      "type": "stat",
+      "gridPos": {
+        "x": 16,
+        "y": 4,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "tier:cmdb_bsm_services:count{tier=~\"Tier-[01]\"}",
+          "legendFormat": "{{tier}}"
+        }
+      ],
+      "options": {
+        "graphMode": "area",
+        "colorMode": "value"
+      }
+    },
+    {
+      "id": 5,
+      "title": "AI Discovery Cost Trend (7d)",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 12,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "provider:cmdb_ai_discovery_cost_daily:sum",
+          "legendFormat": "{{provider}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD"
+        }
+      }
+    },
+    {
+      "id": 6,
+      "title": "Kafka Event Throughput",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 12,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "topic:cmdb_kafka_events:rate5m",
+          "legendFormat": "{{topic}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        }
+      }
+    },
+    {
+      "id": 7,
+      "title": "Change Success Rate by Risk Level",
+      "type": "gauge",
+      "gridPos": {
+        "x": 0,
+        "y": 20,
+        "w": 8,
+        "h": 6
+      },
+      "targets": [
+        {
+          "expr": "risk:cmdb_itil_changes_success_rate:rate5m",
+          "legendFormat": "{{risk_level}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 0,
+                "color": "red"
+              },
+              {
+                "value": 90,
+                "color": "yellow"
+              },
+              {
+                "value": 95,
+                "color": "green"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 8,
+      "title": "Revenue at Risk ($)",
+      "type": "stat",
+      "gridPos": {
+        "x": 8,
+        "y": 20,
+        "w": 8,
+        "h": 6
+      },
+      "targets": [
+        {
+          "expr": "cmdb_bsm_revenue_at_risk:sum",
+          "legendFormat": "Revenue at Risk"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 0,
+                "color": "green"
+              },
+              {
+                "value": 100000,
+                "color": "yellow"
+              },
+              {
+                "value": 500000,
+                "color": "red"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 9,
+      "title": "Configuration Drift Detected",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 16,
+        "y": 20,
+        "w": 8,
+        "h": 6
+      },
+      "targets": [
+        {
+          "expr": "cmdb_itil_drift_detection_rate:rate5m",
+          "legendFormat": "Drift Detection Rate"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "title": "Kafka Consumer Lag",
+      "type": "table",
+      "gridPos": {
+        "x": 0,
+        "y": 26,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "consumer_group:cmdb_kafka_consumer_lag:max",
+          "legendFormat": "",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "title": "AI Anomalies Detected by Severity",
+      "type": "bargauge",
+      "gridPos": {
+        "x": 12,
+        "y": 26,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "severity:cmdb_ai_anomalies_detected:rate5m",
+          "legendFormat": "{{severity}}"
+        }
+      ]
+    }
+  ]
 }

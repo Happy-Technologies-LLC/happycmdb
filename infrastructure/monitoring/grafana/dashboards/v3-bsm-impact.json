@@ -1,243 +1,345 @@
 {
-  "dashboard": {
-    "title": "HappyCMDB v3.0 - BSM Business Impact",
-    "uid": "v3-bsm-impact",
-    "tags": ["happycmdb", "v3.0", "bsm", "business"],
-    "timezone": "browser",
-    "schemaVersion": 38,
-    "version": 1,
-    "refresh": "30s",
-    "panels": [
-      {
-        "id": 1,
-        "title": "Services by Business Criticality Tier",
-        "type": "piechart",
-        "gridPos": {"x": 0, "y": 0, "w": 8, "h": 8},
-        "targets": [
-          {
-            "expr": "tier:cmdb_bsm_services:count",
-            "legendFormat": "{{tier}}"
-          }
-        ]
+  "title": "HappyCMDB v3.0 - BSM Business Impact",
+  "uid": "v3-bsm-impact",
+  "tags": [
+    "happycmdb",
+    "v3.0",
+    "bsm",
+    "business"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "30s",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Services by Business Criticality Tier",
+      "type": "piechart",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 8,
+        "h": 8
       },
-      {
-        "id": 2,
-        "title": "Total Revenue at Risk",
-        "type": "stat",
-        "gridPos": {"x": 8, "y": 0, "w": 8, "h": 8},
-        "targets": [
-          {
-            "expr": "cmdb_bsm_revenue_at_risk:sum",
-            "legendFormat": "Revenue at Risk"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "currencyUSD",
-            "color": {
-              "mode": "thresholds"
-            },
-            "thresholds": {
-              "mode": "absolute",
-              "steps": [
-                {"value": 0, "color": "green"},
-                {"value": 100000, "color": "yellow"},
-                {"value": 500000, "color": "orange"},
-                {"value": 1000000, "color": "red"}
-              ]
-            }
-          }
-        },
-        "options": {
-          "graphMode": "area"
+      "targets": [
+        {
+          "expr": "tier:cmdb_bsm_services:count",
+          "legendFormat": "{{tier}}"
         }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Total Revenue at Risk",
+      "type": "stat",
+      "gridPos": {
+        "x": 8,
+        "y": 0,
+        "w": 8,
+        "h": 8
       },
-      {
-        "id": 3,
-        "title": "Blast Radius Calculation Performance",
-        "type": "stat",
-        "gridPos": {"x": 16, "y": 0, "w": 8, "h": 8},
-        "targets": [
-          {
-            "expr": "histogram_quantile(0.95, rate(cmdb_bsm_blast_radius_duration_seconds_bucket[5m]))",
-            "legendFormat": "p95 Calculation Time"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "s",
-            "thresholds": {
-              "mode": "absolute",
-              "steps": [
-                {"value": 0, "color": "green"},
-                {"value": 120, "color": "yellow"},
-                {"value": 300, "color": "red"}
-              ]
-            }
+      "targets": [
+        {
+          "expr": "cmdb_bsm_revenue_at_risk:sum",
+          "legendFormat": "Revenue at Risk"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 0,
+                "color": "green"
+              },
+              {
+                "value": 100000,
+                "color": "yellow"
+              },
+              {
+                "value": 500000,
+                "color": "orange"
+              },
+              {
+                "value": 1000000,
+                "color": "red"
+              }
+            ]
           }
         }
       },
-      {
-        "id": 4,
-        "title": "Business Impact Score by Service (Top 10)",
-        "type": "bargauge",
-        "gridPos": {"x": 0, "y": 8, "w": 12, "h": 8},
-        "targets": [
-          {
-            "expr": "topk(10, cmdb_bsm_impact_score)",
-            "legendFormat": "{{service_name}}"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "min": 0,
-            "max": 100,
-            "unit": "short"
-          }
-        },
-        "options": {
-          "orientation": "horizontal",
-          "displayMode": "gradient"
-        }
-      },
-      {
-        "id": 5,
-        "title": "Customer Impact (Users Affected)",
-        "type": "timeseries",
-        "gridPos": {"x": 12, "y": 8, "w": 12, "h": 8},
-        "targets": [
-          {
-            "expr": "sum(cmdb_bsm_customers_affected)",
-            "legendFormat": "Customers Affected"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "short"
-          }
-        }
-      },
-      {
-        "id": 6,
-        "title": "Compliance Risk by Framework",
-        "type": "bargauge",
-        "gridPos": {"x": 0, "y": 16, "w": 12, "h": 8},
-        "targets": [
-          {
-            "expr": "sum by (framework) (cmdb_bsm_compliance_penalty_risk_dollars)",
-            "legendFormat": "{{framework}}"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "currencyUSD"
-          }
-        },
-        "options": {
-          "orientation": "horizontal"
-        }
-      },
-      {
-        "id": 7,
-        "title": "Risk Rating Distribution",
-        "type": "piechart",
-        "gridPos": {"x": 12, "y": 16, "w": 6, "h": 8},
-        "targets": [
-          {
-            "expr": "count by (risk_level) (cmdb_bsm_service_risk_rating)",
-            "legendFormat": "{{risk_level}}"
-          }
-        ]
-      },
-      {
-        "id": 8,
-        "title": "Tier 0 Service Health",
-        "type": "stat",
-        "gridPos": {"x": 18, "y": 16, "w": 6, "h": 8},
-        "targets": [
-          {
-            "expr": "avg(cmdb_bsm_service_health_score{tier=\"Tier-0\"})",
-            "legendFormat": "Tier 0 Health"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "percent",
-            "min": 0,
-            "max": 100,
-            "thresholds": {
-              "mode": "absolute",
-              "steps": [
-                {"value": 0, "color": "red"},
-                {"value": 70, "color": "yellow"},
-                {"value": 90, "color": "green"}
-              ]
-            }
-          }
-        }
-      },
-      {
-        "id": 9,
-        "title": "Downtime Cost per Hour (Top Services)",
-        "type": "table",
-        "gridPos": {"x": 0, "y": 24, "w": 12, "h": 8},
-        "targets": [
-          {
-            "expr": "topk(10, cmdb_bsm_downtime_cost_per_hour_dollars)",
-            "legendFormat": "",
-            "format": "table"
-          }
-        ]
-      },
-      {
-        "id": 10,
-        "title": "Single Point of Failure Detection",
-        "type": "timeseries",
-        "gridPos": {"x": 12, "y": 24, "w": 12, "h": 8},
-        "targets": [
-          {
-            "expr": "rate(cmdb_bsm_spof_detected_total[5m])",
-            "legendFormat": "SPOF Detection Rate"
-          }
-        ]
-      },
-      {
-        "id": 11,
-        "title": "Mean Time to Recovery (MTTR) by Criticality",
-        "type": "bargauge",
-        "gridPos": {"x": 0, "y": 32, "w": 12, "h": 8},
-        "targets": [
-          {
-            "expr": "avg by (tier) (cmdb_bsm_mttr_minutes)",
-            "legendFormat": "{{tier}}"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "m",
-            "thresholds": {
-              "mode": "absolute",
-              "steps": [
-                {"value": 0, "color": "green"},
-                {"value": 30, "color": "yellow"},
-                {"value": 60, "color": "red"}
-              ]
-            }
-          }
-        }
-      },
-      {
-        "id": 12,
-        "title": "Blast Radius Calculation Rate",
-        "type": "timeseries",
-        "gridPos": {"x": 12, "y": 32, "w": 12, "h": 8},
-        "targets": [
-          {
-            "expr": "cmdb_bsm_blast_radius_calculations:rate5m",
-            "legendFormat": "Calculations/sec"
-          }
-        ]
+      "options": {
+        "graphMode": "area"
       }
-    ]
-  }
+    },
+    {
+      "id": 3,
+      "title": "Blast Radius Calculation Performance",
+      "type": "stat",
+      "gridPos": {
+        "x": 16,
+        "y": 0,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, rate(cmdb_bsm_blast_radius_duration_seconds_bucket[5m]))",
+          "legendFormat": "p95 Calculation Time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 0,
+                "color": "green"
+              },
+              {
+                "value": 120,
+                "color": "yellow"
+              },
+              {
+                "value": 300,
+                "color": "red"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 4,
+      "title": "Business Impact Score by Service (Top 10)",
+      "type": "bargauge",
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "topk(10, cmdb_bsm_impact_score)",
+          "legendFormat": "{{service_name}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 100,
+          "unit": "short"
+        }
+      },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "gradient"
+      }
+    },
+    {
+      "id": 5,
+      "title": "Customer Impact (Users Affected)",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum(cmdb_bsm_customers_affected)",
+          "legendFormat": "Customers Affected"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        }
+      }
+    },
+    {
+      "id": 6,
+      "title": "Compliance Risk by Framework",
+      "type": "bargauge",
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum by (framework) (cmdb_bsm_compliance_penalty_risk_dollars)",
+          "legendFormat": "{{framework}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD"
+        }
+      },
+      "options": {
+        "orientation": "horizontal"
+      }
+    },
+    {
+      "id": 7,
+      "title": "Risk Rating Distribution",
+      "type": "piechart",
+      "gridPos": {
+        "x": 12,
+        "y": 16,
+        "w": 6,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "count by (risk_level) (cmdb_bsm_service_risk_rating)",
+          "legendFormat": "{{risk_level}}"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Tier 0 Service Health",
+      "type": "stat",
+      "gridPos": {
+        "x": 18,
+        "y": 16,
+        "w": 6,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "avg(cmdb_bsm_service_health_score{tier=\"Tier-0\"})",
+          "legendFormat": "Tier 0 Health"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 0,
+                "color": "red"
+              },
+              {
+                "value": 70,
+                "color": "yellow"
+              },
+              {
+                "value": 90,
+                "color": "green"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 9,
+      "title": "Downtime Cost per Hour (Top Services)",
+      "type": "table",
+      "gridPos": {
+        "x": 0,
+        "y": 24,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "topk(10, cmdb_bsm_downtime_cost_per_hour_dollars)",
+          "legendFormat": "",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "title": "Single Point of Failure Detection",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 24,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "rate(cmdb_bsm_spof_detected_total[5m])",
+          "legendFormat": "SPOF Detection Rate"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "title": "Mean Time to Recovery (MTTR) by Criticality",
+      "type": "bargauge",
+      "gridPos": {
+        "x": 0,
+        "y": 32,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "avg by (tier) (cmdb_bsm_mttr_minutes)",
+          "legendFormat": "{{tier}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "m",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 0,
+                "color": "green"
+              },
+              {
+                "value": 30,
+                "color": "yellow"
+              },
+              {
+                "value": 60,
+                "color": "red"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 12,
+      "title": "Blast Radius Calculation Rate",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 32,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "cmdb_bsm_blast_radius_calculations:rate5m",
+          "legendFormat": "Calculations/sec"
+        }
+      ]
+    }
+  ]
 }

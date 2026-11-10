@@ -1,255 +1,345 @@
 {
-  "dashboard": {
-    "title": "HappyCMDB v3.0 - TBM Cost Transparency",
-    "uid": "v3-tbm-cost",
-    "tags": ["happycmdb", "v3.0", "tbm", "finops"],
-    "timezone": "browser",
-    "schemaVersion": 38,
-    "version": 1,
-    "refresh": "1m",
-    "panels": [
-      {
-        "id": 1,
-        "title": "Total IT Spend by Resource Tower",
-        "type": "piechart",
-        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 10},
-        "targets": [
-          {
-            "expr": "tower:cmdb_tbm_total_cost:sum",
-            "legendFormat": "{{tower}}"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "currencyUSD"
-          }
+  "title": "HappyCMDB v3.0 - TBM Cost Transparency",
+  "uid": "v3-tbm-cost",
+  "tags": [
+    "happycmdb",
+    "v3.0",
+    "tbm",
+    "finops"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "1m",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Total IT Spend by Resource Tower",
+      "type": "piechart",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 10
+      },
+      "targets": [
+        {
+          "expr": "tower:cmdb_tbm_total_cost:sum",
+          "legendFormat": "{{tower}}"
         }
-      },
-      {
-        "id": 2,
-        "title": "Monthly IT Spend Trend",
-        "type": "timeseries",
-        "gridPos": {"x": 12, "y": 0, "w": 12, "h": 10},
-        "targets": [
-          {
-            "expr": "sum(cmdb_tbm_resource_cost_monthly)",
-            "legendFormat": "Total Monthly Cost"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "currencyUSD",
-            "custom": {
-              "fillOpacity": 20
-            }
-          }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD"
         }
-      },
-      {
-        "id": 3,
-        "title": "Cloud Cost by Provider",
-        "type": "bargauge",
-        "gridPos": {"x": 0, "y": 10, "w": 8, "h": 8},
-        "targets": [
-          {
-            "expr": "sum by (provider) (cmdb_tbm_cloud_cost_monthly)",
-            "legendFormat": "{{provider}}"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "currencyUSD"
-          }
-        },
-        "options": {
-          "orientation": "horizontal",
-          "displayMode": "gradient"
-        }
-      },
-      {
-        "id": 4,
-        "title": "On-Prem vs Cloud Cost Split",
-        "type": "piechart",
-        "gridPos": {"x": 8, "y": 10, "w": 8, "h": 8},
-        "targets": [
-          {
-            "expr": "sum(cmdb_tbm_cloud_cost_monthly)",
-            "legendFormat": "Cloud"
-          },
-          {
-            "expr": "sum(cmdb_tbm_onprem_cost_monthly)",
-            "legendFormat": "On-Premise"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "currencyUSD"
-          }
-        }
-      },
-      {
-        "id": 5,
-        "title": "Cost Allocation Efficiency",
-        "type": "gauge",
-        "gridPos": {"x": 16, "y": 10, "w": 8, "h": 8},
-        "targets": [
-          {
-            "expr": "cmdb_tbm_allocation_efficiency:ratio",
-            "legendFormat": "Allocation %"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "percent",
-            "min": 0,
-            "max": 100,
-            "thresholds": {
-              "mode": "absolute",
-              "steps": [
-                {"value": 0, "color": "red"},
-                {"value": 70, "color": "yellow"},
-                {"value": 90, "color": "green"}
-              ]
-            }
-          }
-        }
-      },
-      {
-        "id": 6,
-        "title": "Top 10 Cost Drivers",
-        "type": "bargauge",
-        "gridPos": {"x": 0, "y": 18, "w": 12, "h": 10},
-        "targets": [
-          {
-            "expr": "topk(10, cmdb_tbm_ci_cost_monthly)",
-            "legendFormat": "{{ci_name}}"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "currencyUSD"
-          }
-        },
-        "options": {
-          "orientation": "horizontal"
-        }
-      },
-      {
-        "id": 7,
-        "title": "Cost by Business Capability",
-        "type": "bargauge",
-        "gridPos": {"x": 12, "y": 18, "w": 12, "h": 10},
-        "targets": [
-          {
-            "expr": "sum by (capability) (cmdb_tbm_capability_cost_monthly)",
-            "legendFormat": "{{capability}}"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "currencyUSD"
-          }
-        },
-        "options": {
-          "orientation": "horizontal",
-          "displayMode": "gradient"
-        }
-      },
-      {
-        "id": 8,
-        "title": "License Renewal Alert (Next 90 Days)",
-        "type": "table",
-        "gridPos": {"x": 0, "y": 28, "w": 12, "h": 8},
-        "targets": [
-          {
-            "expr": "cmdb_tbm_license_renewal_days_remaining < 90",
-            "legendFormat": "",
-            "format": "table"
-          }
-        ]
-      },
-      {
-        "id": 9,
-        "title": "Underutilized Resources ($)",
-        "type": "stat",
-        "gridPos": {"x": 12, "y": 28, "w": 6, "h": 8},
-        "targets": [
-          {
-            "expr": "sum(cmdb_tbm_underutilized_cost_monthly)",
-            "legendFormat": "Wasted Spend"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "currencyUSD",
-            "color": {
-              "mode": "thresholds"
-            },
-            "thresholds": {
-              "mode": "absolute",
-              "steps": [
-                {"value": 0, "color": "green"},
-                {"value": 10000, "color": "yellow"},
-                {"value": 50000, "color": "red"}
-              ]
-            }
-          }
-        }
-      },
-      {
-        "id": 10,
-        "title": "Budget Variance %",
-        "type": "stat",
-        "gridPos": {"x": 18, "y": 28, "w": 6, "h": 8},
-        "targets": [
-          {
-            "expr": "(sum(cmdb_tbm_actual_cost_monthly) - sum(cmdb_tbm_budget_monthly)) / sum(cmdb_tbm_budget_monthly) * 100",
-            "legendFormat": "Variance"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "percent",
-            "thresholds": {
-              "mode": "absolute",
-              "steps": [
-                {"value": -10, "color": "green"},
-                {"value": 0, "color": "yellow"},
-                {"value": 10, "color": "red"}
-              ]
-            }
-          }
-        }
-      },
-      {
-        "id": 11,
-        "title": "Depreciation by Asset Type",
-        "type": "timeseries",
-        "gridPos": {"x": 0, "y": 36, "w": 12, "h": 8},
-        "targets": [
-          {
-            "expr": "sum by (asset_type) (cmdb_tbm_depreciation_monthly)",
-            "legendFormat": "{{asset_type}}"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "currencyUSD"
-          }
-        }
-      },
-      {
-        "id": 12,
-        "title": "Cloud Cost Anomaly Detection",
-        "type": "timeseries",
-        "gridPos": {"x": 12, "y": 36, "w": 12, "h": 8},
-        "targets": [
-          {
-            "expr": "rate(cmdb_tbm_cost_anomalies_detected_total[1h])",
-            "legendFormat": "Anomalies Detected"
-          }
-        ]
       }
-    ]
-  }
+    },
+    {
+      "id": 2,
+      "title": "Monthly IT Spend Trend",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 10
+      },
+      "targets": [
+        {
+          "expr": "sum(cmdb_tbm_resource_cost_monthly)",
+          "legendFormat": "Total Monthly Cost"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "custom": {
+            "fillOpacity": 20
+          }
+        }
+      }
+    },
+    {
+      "id": 3,
+      "title": "Cloud Cost by Provider",
+      "type": "bargauge",
+      "gridPos": {
+        "x": 0,
+        "y": 10,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum by (provider) (cmdb_tbm_cloud_cost_monthly)",
+          "legendFormat": "{{provider}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD"
+        }
+      },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "gradient"
+      }
+    },
+    {
+      "id": 4,
+      "title": "On-Prem vs Cloud Cost Split",
+      "type": "piechart",
+      "gridPos": {
+        "x": 8,
+        "y": 10,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum(cmdb_tbm_cloud_cost_monthly)",
+          "legendFormat": "Cloud"
+        },
+        {
+          "expr": "sum(cmdb_tbm_onprem_cost_monthly)",
+          "legendFormat": "On-Premise"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD"
+        }
+      }
+    },
+    {
+      "id": 5,
+      "title": "Cost Allocation Efficiency",
+      "type": "gauge",
+      "gridPos": {
+        "x": 16,
+        "y": 10,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "cmdb_tbm_allocation_efficiency:ratio",
+          "legendFormat": "Allocation %"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 0,
+                "color": "red"
+              },
+              {
+                "value": 70,
+                "color": "yellow"
+              },
+              {
+                "value": 90,
+                "color": "green"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 6,
+      "title": "Top 10 Cost Drivers",
+      "type": "bargauge",
+      "gridPos": {
+        "x": 0,
+        "y": 18,
+        "w": 12,
+        "h": 10
+      },
+      "targets": [
+        {
+          "expr": "topk(10, cmdb_tbm_ci_cost_monthly)",
+          "legendFormat": "{{ci_name}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD"
+        }
+      },
+      "options": {
+        "orientation": "horizontal"
+      }
+    },
+    {
+      "id": 7,
+      "title": "Cost by Business Capability",
+      "type": "bargauge",
+      "gridPos": {
+        "x": 12,
+        "y": 18,
+        "w": 12,
+        "h": 10
+      },
+      "targets": [
+        {
+          "expr": "sum by (capability) (cmdb_tbm_capability_cost_monthly)",
+          "legendFormat": "{{capability}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD"
+        }
+      },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "gradient"
+      }
+    },
+    {
+      "id": 8,
+      "title": "License Renewal Alert (Next 90 Days)",
+      "type": "table",
+      "gridPos": {
+        "x": 0,
+        "y": 28,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "cmdb_tbm_license_renewal_days_remaining < 90",
+          "legendFormat": "",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "Underutilized Resources ($)",
+      "type": "stat",
+      "gridPos": {
+        "x": 12,
+        "y": 28,
+        "w": 6,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum(cmdb_tbm_underutilized_cost_monthly)",
+          "legendFormat": "Wasted Spend"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 0,
+                "color": "green"
+              },
+              {
+                "value": 10000,
+                "color": "yellow"
+              },
+              {
+                "value": 50000,
+                "color": "red"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 10,
+      "title": "Budget Variance %",
+      "type": "stat",
+      "gridPos": {
+        "x": 18,
+        "y": 28,
+        "w": 6,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "(sum(cmdb_tbm_actual_cost_monthly) - sum(cmdb_tbm_budget_monthly)) / sum(cmdb_tbm_budget_monthly) * 100",
+          "legendFormat": "Variance"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": -10,
+                "color": "green"
+              },
+              {
+                "value": 0,
+                "color": "yellow"
+              },
+              {
+                "value": 10,
+                "color": "red"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 11,
+      "title": "Depreciation by Asset Type",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 36,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum by (asset_type) (cmdb_tbm_depreciation_monthly)",
+          "legendFormat": "{{asset_type}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD"
+        }
+      }
+    },
+    {
+      "id": 12,
+      "title": "Cloud Cost Anomaly Detection",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 36,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "rate(cmdb_tbm_cost_anomalies_detected_total[1h])",
+          "legendFormat": "Anomalies Detected"
+        }
+      ]
+    }
+  ]
 }

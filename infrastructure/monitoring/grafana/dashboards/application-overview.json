@@ -1,300 +1,309 @@
 {
-  "dashboard": {
-    "title": "CMDB Application Overview",
-    "tags": ["cmdb", "application", "overview"],
-    "timezone": "browser",
-    "schemaVersion": 16,
-    "version": 0,
-    "refresh": "30s",
-    "panels": [
-      {
-        "id": 1,
-        "title": "Request Rate (req/s)",
-        "type": "graph",
-        "gridPos": {
-          "x": 0,
-          "y": 0,
-          "w": 8,
-          "h": 8
-        },
-        "targets": [
-          {
-            "expr": "rate(cmdb_http_requests_total[5m])",
-            "legendFormat": "{{method}} {{route}}",
-            "refId": "A"
-          }
-        ],
-        "yaxes": [
-          {
-            "label": "requests/sec",
-            "format": "reqps"
-          }
-        ]
+  "title": "CMDB Application Overview",
+  "tags": [
+    "cmdb",
+    "application",
+    "overview"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 16,
+  "version": 0,
+  "refresh": "30s",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Request Rate (req/s)",
+      "type": "graph",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 8,
+        "h": 8
       },
-      {
-        "id": 2,
-        "title": "Error Rate (%)",
-        "type": "graph",
-        "gridPos": {
-          "x": 8,
-          "y": 0,
-          "w": 8,
-          "h": 8
-        },
-        "targets": [
-          {
-            "expr": "sum(rate(cmdb_http_requests_total{status_code=~\"5..\"}[5m])) / sum(rate(cmdb_http_requests_total[5m])) * 100",
-            "legendFormat": "Error Rate",
-            "refId": "A"
-          }
-        ],
-        "yaxes": [
-          {
-            "label": "error %",
-            "format": "percent"
-          }
-        ],
-        "alert": {
-          "conditions": [
-            {
-              "evaluator": {
-                "params": [5],
-                "type": "gt"
-              },
-              "operator": {
-                "type": "and"
-              },
-              "query": {
-                "params": ["A", "5m", "now"]
-              },
-              "reducer": {
-                "params": [],
-                "type": "avg"
-              },
-              "type": "query"
-            }
-          ]
+      "targets": [
+        {
+          "expr": "rate(cmdb_http_requests_total[5m])",
+          "legendFormat": "{{method}} {{route}}",
+          "refId": "A"
         }
+      ],
+      "yaxes": [
+        {
+          "label": "requests/sec",
+          "format": "reqps"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Error Rate (%)",
+      "type": "graph",
+      "gridPos": {
+        "x": 8,
+        "y": 0,
+        "w": 8,
+        "h": 8
       },
-      {
-        "id": 3,
-        "title": "Request Latency (p95, p99)",
-        "type": "graph",
-        "gridPos": {
-          "x": 16,
-          "y": 0,
-          "w": 8,
-          "h": 8
-        },
-        "targets": [
+      "targets": [
+        {
+          "expr": "sum(rate(cmdb_http_requests_total{status_code=~\"5..\"}[5m])) / sum(rate(cmdb_http_requests_total[5m])) * 100",
+          "legendFormat": "Error Rate",
+          "refId": "A"
+        }
+      ],
+      "yaxes": [
+        {
+          "label": "error %",
+          "format": "percent"
+        }
+      ],
+      "alert": {
+        "conditions": [
           {
-            "expr": "histogram_quantile(0.95, rate(cmdb_http_request_duration_seconds_bucket[5m]))",
-            "legendFormat": "p95",
-            "refId": "A"
-          },
-          {
-            "expr": "histogram_quantile(0.99, rate(cmdb_http_request_duration_seconds_bucket[5m]))",
-            "legendFormat": "p99",
-            "refId": "B"
-          }
-        ],
-        "yaxes": [
-          {
-            "label": "latency",
-            "format": "s"
+            "evaluator": {
+              "params": [
+                5
+              ],
+              "type": "gt"
+            },
+            "operator": {
+              "type": "and"
+            },
+            "query": {
+              "params": [
+                "A",
+                "5m",
+                "now"
+              ]
+            },
+            "reducer": {
+              "params": [],
+              "type": "avg"
+            },
+            "type": "query"
           }
         ]
+      }
+    },
+    {
+      "id": 3,
+      "title": "Request Latency (p95, p99)",
+      "type": "graph",
+      "gridPos": {
+        "x": 16,
+        "y": 0,
+        "w": 8,
+        "h": 8
       },
-      {
-        "id": 4,
-        "title": "Active HTTP Connections",
-        "type": "graph",
-        "gridPos": {
-          "x": 0,
-          "y": 8,
-          "w": 12,
-          "h": 8
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, rate(cmdb_http_request_duration_seconds_bucket[5m]))",
+          "legendFormat": "p95",
+          "refId": "A"
         },
-        "targets": [
-          {
-            "expr": "cmdb_http_active_connections",
-            "legendFormat": "Active Connections",
-            "refId": "A"
-          }
-        ],
-        "yaxes": [
-          {
-            "label": "connections",
-            "format": "short"
-          }
-        ]
+        {
+          "expr": "histogram_quantile(0.99, rate(cmdb_http_request_duration_seconds_bucket[5m]))",
+          "legendFormat": "p99",
+          "refId": "B"
+        }
+      ],
+      "yaxes": [
+        {
+          "label": "latency",
+          "format": "s"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Active HTTP Connections",
+      "type": "graph",
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 12,
+        "h": 8
       },
-      {
-        "id": 5,
-        "title": "Top Endpoints by Traffic",
-        "type": "table",
-        "gridPos": {
-          "x": 12,
-          "y": 8,
-          "w": 12,
-          "h": 8
-        },
-        "targets": [
-          {
-            "expr": "topk(10, sum by (route, method) (rate(cmdb_http_requests_total[5m])))",
-            "format": "table",
-            "instant": true,
-            "refId": "A"
-          }
-        ],
-        "transformations": [
-          {
-            "id": "organize",
-            "options": {
-              "excludeByName": {
-                "Time": true
-              },
-              "indexByName": {
-                "route": 0,
-                "method": 1,
-                "Value": 2
-              },
-              "renameByName": {
-                "route": "Endpoint",
-                "method": "Method",
-                "Value": "Requests/sec"
-              }
+      "targets": [
+        {
+          "expr": "cmdb_http_active_connections",
+          "legendFormat": "Active Connections",
+          "refId": "A"
+        }
+      ],
+      "yaxes": [
+        {
+          "label": "connections",
+          "format": "short"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Top Endpoints by Traffic",
+      "type": "table",
+      "gridPos": {
+        "x": 12,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "topk(10, sum by (route, method) (rate(cmdb_http_requests_total[5m])))",
+          "format": "table",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "indexByName": {
+              "route": 0,
+              "method": 1,
+              "Value": 2
+            },
+            "renameByName": {
+              "route": "Endpoint",
+              "method": "Method",
+              "Value": "Requests/sec"
             }
           }
-        ]
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "GraphQL Operations Rate",
+      "type": "graph",
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 12,
+        "h": 8
       },
-      {
-        "id": 6,
-        "title": "GraphQL Operations Rate",
-        "type": "graph",
-        "gridPos": {
-          "x": 0,
-          "y": 16,
-          "w": 12,
-          "h": 8
-        },
-        "targets": [
-          {
-            "expr": "sum by (operation_type) (rate(cmdb_graphql_operations_total[5m]))",
-            "legendFormat": "{{operation_type}}",
-            "refId": "A"
-          }
-        ],
-        "yaxes": [
-          {
-            "label": "operations/sec",
-            "format": "ops"
-          }
-        ]
+      "targets": [
+        {
+          "expr": "sum by (operation_type) (rate(cmdb_graphql_operations_total[5m]))",
+          "legendFormat": "{{operation_type}}",
+          "refId": "A"
+        }
+      ],
+      "yaxes": [
+        {
+          "label": "operations/sec",
+          "format": "ops"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "GraphQL Error Rate",
+      "type": "graph",
+      "gridPos": {
+        "x": 12,
+        "y": 16,
+        "w": 12,
+        "h": 8
       },
-      {
-        "id": 7,
-        "title": "GraphQL Error Rate",
-        "type": "graph",
-        "gridPos": {
-          "x": 12,
-          "y": 16,
-          "w": 12,
-          "h": 8
-        },
-        "targets": [
-          {
-            "expr": "sum(rate(cmdb_graphql_errors_total[5m]))",
-            "legendFormat": "Errors/sec",
-            "refId": "A"
-          }
-        ],
-        "yaxes": [
-          {
-            "label": "errors/sec",
-            "format": "short"
-          }
-        ]
+      "targets": [
+        {
+          "expr": "sum(rate(cmdb_graphql_errors_total[5m]))",
+          "legendFormat": "Errors/sec",
+          "refId": "A"
+        }
+      ],
+      "yaxes": [
+        {
+          "label": "errors/sec",
+          "format": "short"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Process Uptime",
+      "type": "singlestat",
+      "gridPos": {
+        "x": 0,
+        "y": 24,
+        "w": 6,
+        "h": 4
       },
-      {
-        "id": 8,
-        "title": "Process Uptime",
-        "type": "singlestat",
-        "gridPos": {
-          "x": 0,
-          "y": 24,
-          "w": 6,
-          "h": 4
-        },
-        "targets": [
-          {
-            "expr": "cmdb_process_uptime_seconds",
-            "refId": "A"
-          }
-        ],
-        "format": "s",
-        "valueName": "current"
+      "targets": [
+        {
+          "expr": "cmdb_process_uptime_seconds",
+          "refId": "A"
+        }
+      ],
+      "format": "s",
+      "valueName": "current"
+    },
+    {
+      "id": 9,
+      "title": "Memory Usage",
+      "type": "singlestat",
+      "gridPos": {
+        "x": 6,
+        "y": 24,
+        "w": 6,
+        "h": 4
       },
-      {
-        "id": 9,
-        "title": "Memory Usage",
-        "type": "singlestat",
-        "gridPos": {
-          "x": 6,
-          "y": 24,
-          "w": 6,
-          "h": 4
-        },
-        "targets": [
-          {
-            "expr": "cmdb_heap_memory_usage_bytes{type=\"used\"} / cmdb_heap_memory_usage_bytes{type=\"total\"} * 100",
-            "refId": "A"
-          }
-        ],
-        "format": "percent",
-        "valueName": "current",
-        "thresholds": "80,90"
+      "targets": [
+        {
+          "expr": "cmdb_heap_memory_usage_bytes{type=\"used\"} / cmdb_heap_memory_usage_bytes{type=\"total\"} * 100",
+          "refId": "A"
+        }
+      ],
+      "format": "percent",
+      "valueName": "current",
+      "thresholds": "80,90"
+    },
+    {
+      "id": 10,
+      "title": "Event Loop Lag",
+      "type": "singlestat",
+      "gridPos": {
+        "x": 12,
+        "y": 24,
+        "w": 6,
+        "h": 4
       },
-      {
-        "id": 10,
-        "title": "Event Loop Lag",
-        "type": "singlestat",
-        "gridPos": {
-          "x": 12,
-          "y": 24,
-          "w": 6,
-          "h": 4
-        },
-        "targets": [
-          {
-            "expr": "cmdb_event_loop_lag_seconds * 1000",
-            "refId": "A"
-          }
-        ],
-        "format": "ms",
-        "valueName": "current",
-        "thresholds": "50,100"
+      "targets": [
+        {
+          "expr": "cmdb_event_loop_lag_seconds * 1000",
+          "refId": "A"
+        }
+      ],
+      "format": "ms",
+      "valueName": "current",
+      "thresholds": "50,100"
+    },
+    {
+      "id": 11,
+      "title": "CPU Usage",
+      "type": "singlestat",
+      "gridPos": {
+        "x": 18,
+        "y": 24,
+        "w": 6,
+        "h": 4
       },
-      {
-        "id": 11,
-        "title": "CPU Usage",
-        "type": "singlestat",
-        "gridPos": {
-          "x": 18,
-          "y": 24,
-          "w": 6,
-          "h": 4
-        },
-        "targets": [
-          {
-            "expr": "cmdb_cpu_usage_percent",
-            "refId": "A"
-          }
-        ],
-        "format": "percent",
-        "valueName": "current",
-        "thresholds": "70,85"
-      }
-    ]
-  }
+      "targets": [
+        {
+          "expr": "cmdb_cpu_usage_percent",
+          "refId": "A"
+        }
+      ],
+      "format": "percent",
+      "valueName": "current",
+      "thresholds": "70,85"
+    }
+  ],
+  "uid": "application-overview"
 }

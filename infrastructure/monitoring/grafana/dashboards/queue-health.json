@@ -1,368 +1,378 @@
 {
-  "dashboard": {
-    "title": "CMDB Queue Health",
-    "tags": ["cmdb", "queue", "bullmq", "workers"],
-    "timezone": "browser",
-    "schemaVersion": 16,
-    "version": 0,
-    "refresh": "30s",
-    "panels": [
-      {
-        "id": 1,
-        "title": "Jobs Waiting in Queue",
-        "type": "graph",
-        "gridPos": {
-          "x": 0,
-          "y": 0,
-          "w": 12,
-          "h": 8
-        },
-        "targets": [
-          {
-            "expr": "cmdb_queue_jobs_waiting",
-            "legendFormat": "{{queue}}",
-            "refId": "A"
-          }
-        ],
-        "yaxes": [
-          {
-            "label": "waiting jobs",
-            "format": "short"
-          }
-        ],
-        "alert": {
-          "conditions": [
-            {
-              "evaluator": {
-                "params": [1000],
-                "type": "gt"
-              },
-              "query": {
-                "params": ["A", "5m", "now"]
-              }
-            }
-          ],
-          "name": "Queue Backlog Alert"
+  "title": "CMDB Queue Health",
+  "tags": [
+    "cmdb",
+    "queue",
+    "bullmq",
+    "workers"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 16,
+  "version": 0,
+  "refresh": "30s",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Jobs Waiting in Queue",
+      "type": "graph",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "cmdb_queue_jobs_waiting",
+          "legendFormat": "{{queue}}",
+          "refId": "A"
         }
-      },
-      {
-        "id": 2,
-        "title": "Jobs Being Processed",
-        "type": "graph",
-        "gridPos": {
-          "x": 12,
-          "y": 0,
-          "w": 12,
-          "h": 8
-        },
-        "targets": [
+      ],
+      "yaxes": [
+        {
+          "label": "waiting jobs",
+          "format": "short"
+        }
+      ],
+      "alert": {
+        "conditions": [
           {
-            "expr": "cmdb_queue_jobs_active",
-            "legendFormat": "{{queue}}",
-            "refId": "A"
-          }
-        ],
-        "yaxes": [
-          {
-            "label": "active jobs",
-            "format": "short"
-          }
-        ]
-      },
-      {
-        "id": 3,
-        "title": "Job Completion Rate",
-        "type": "graph",
-        "gridPos": {
-          "x": 0,
-          "y": 8,
-          "w": 12,
-          "h": 8
-        },
-        "targets": [
-          {
-            "expr": "sum by (queue) (rate(cmdb_queue_jobs_total{status=\"completed\"}[5m]))",
-            "legendFormat": "{{queue}} - completed",
-            "refId": "A"
-          },
-          {
-            "expr": "sum by (queue) (rate(cmdb_queue_jobs_total{status=\"failed\"}[5m]))",
-            "legendFormat": "{{queue}} - failed",
-            "refId": "B"
-          }
-        ],
-        "yaxes": [
-          {
-            "label": "jobs/sec",
-            "format": "short"
-          }
-        ]
-      },
-      {
-        "id": 4,
-        "title": "Job Success Rate",
-        "type": "gauge",
-        "gridPos": {
-          "x": 12,
-          "y": 8,
-          "w": 6,
-          "h": 8
-        },
-        "targets": [
-          {
-            "expr": "sum(rate(cmdb_queue_jobs_total{status=\"completed\"}[5m])) / sum(rate(cmdb_queue_jobs_total[5m])) * 100",
-            "refId": "A"
-          }
-        ],
-        "options": {
-          "showThresholdLabels": true,
-          "showThresholdMarkers": true
-        },
-        "fieldConfig": {
-          "defaults": {
-            "unit": "percent",
-            "min": 0,
-            "max": 100,
-            "thresholds": {
-              "steps": [
-                {
-                  "value": 0,
-                  "color": "red"
-                },
-                {
-                  "value": 90,
-                  "color": "yellow"
-                },
-                {
-                  "value": 95,
-                  "color": "green"
-                }
+            "evaluator": {
+              "params": [
+                1000
+              ],
+              "type": "gt"
+            },
+            "query": {
+              "params": [
+                "A",
+                "5m",
+                "now"
               ]
             }
           }
-        }
-      },
-      {
-        "id": 5,
-        "title": "Queue Throughput",
-        "type": "stat",
-        "gridPos": {
-          "x": 18,
-          "y": 8,
-          "w": 6,
-          "h": 8
-        },
-        "targets": [
-          {
-            "expr": "cmdb_queue_throughput_jobs_per_second",
-            "legendFormat": "{{queue}}",
-            "refId": "A"
-          }
         ],
-        "options": {
-          "colorMode": "value",
-          "graphMode": "area"
-        },
-        "fieldConfig": {
-          "defaults": {
-            "unit": "jobs/sec"
-          }
-        }
-      },
-      {
-        "id": 6,
-        "title": "Job Processing Duration (p50, p95, p99)",
-        "type": "graph",
-        "gridPos": {
-          "x": 0,
-          "y": 16,
-          "w": 12,
-          "h": 8
-        },
-        "targets": [
-          {
-            "expr": "histogram_quantile(0.50, sum by (queue, le) (rate(cmdb_queue_job_duration_seconds_bucket[5m])))",
-            "legendFormat": "{{queue}} p50",
-            "refId": "A"
-          },
-          {
-            "expr": "histogram_quantile(0.95, sum by (queue, le) (rate(cmdb_queue_job_duration_seconds_bucket[5m])))",
-            "legendFormat": "{{queue}} p95",
-            "refId": "B"
-          },
-          {
-            "expr": "histogram_quantile(0.99, sum by (queue, le) (rate(cmdb_queue_job_duration_seconds_bucket[5m])))",
-            "legendFormat": "{{queue}} p99",
-            "refId": "C"
-          }
-        ],
-        "yaxes": [
-          {
-            "label": "duration",
-            "format": "s"
-          }
-        ]
-      },
-      {
-        "id": 7,
-        "title": "Job Wait Time (p95)",
-        "type": "graph",
-        "gridPos": {
-          "x": 12,
-          "y": 16,
-          "w": 12,
-          "h": 8
-        },
-        "targets": [
-          {
-            "expr": "histogram_quantile(0.95, sum by (queue, le) (rate(cmdb_queue_job_wait_time_seconds_bucket[5m])))",
-            "legendFormat": "{{queue}}",
-            "refId": "A"
-          }
-        ],
-        "yaxes": [
-          {
-            "label": "wait time",
-            "format": "s"
-          }
-        ]
-      },
-      {
-        "id": 8,
-        "title": "Active Workers",
-        "type": "stat",
-        "gridPos": {
-          "x": 0,
-          "y": 24,
-          "w": 12,
-          "h": 4
-        },
-        "targets": [
-          {
-            "expr": "cmdb_queue_workers_active",
-            "legendFormat": "{{queue}}",
-            "refId": "A"
-          }
-        ],
-        "options": {
-          "colorMode": "value",
-          "graphMode": "none"
-        }
-      },
-      {
-        "id": 9,
-        "title": "Failed Jobs",
-        "type": "stat",
-        "gridPos": {
-          "x": 12,
-          "y": 24,
-          "w": 12,
-          "h": 4
-        },
-        "targets": [
-          {
-            "expr": "cmdb_queue_jobs_failed",
-            "legendFormat": "{{queue}}",
-            "refId": "A"
-          }
-        ],
-        "options": {
-          "colorMode": "value",
-          "graphMode": "area"
-        },
-        "fieldConfig": {
-          "defaults": {
-            "thresholds": {
-              "steps": [
-                {
-                  "value": 0,
-                  "color": "green"
-                },
-                {
-                  "value": 10,
-                  "color": "yellow"
-                },
-                {
-                  "value": 100,
-                  "color": "red"
-                }
-              ]
-            }
-          }
-        }
-      },
-      {
-        "id": 10,
-        "title": "Job Retries",
-        "type": "graph",
-        "gridPos": {
-          "x": 0,
-          "y": 28,
-          "w": 12,
-          "h": 8
-        },
-        "targets": [
-          {
-            "expr": "sum by (queue, job_name) (rate(cmdb_queue_job_retries_total[5m]))",
-            "legendFormat": "{{queue}} - {{job_name}}",
-            "refId": "A"
-          }
-        ],
-        "yaxes": [
-          {
-            "label": "retries/sec",
-            "format": "short"
-          }
-        ]
-      },
-      {
-        "id": 11,
-        "title": "Stalled Jobs",
-        "type": "graph",
-        "gridPos": {
-          "x": 12,
-          "y": 28,
-          "w": 12,
-          "h": 8
-        },
-        "targets": [
-          {
-            "expr": "sum by (queue) (rate(cmdb_queue_jobs_stalled_total[5m]))",
-            "legendFormat": "{{queue}}",
-            "refId": "A"
-          }
-        ],
-        "yaxes": [
-          {
-            "label": "stalled jobs/sec",
-            "format": "short"
-          }
-        ]
-      },
-      {
-        "id": 12,
-        "title": "Queue Errors",
-        "type": "graph",
-        "gridPos": {
-          "x": 0,
-          "y": 36,
-          "w": 24,
-          "h": 8
-        },
-        "targets": [
-          {
-            "expr": "sum by (queue, error_type) (rate(cmdb_queue_errors_total[5m]))",
-            "legendFormat": "{{queue}} - {{error_type}}",
-            "refId": "A"
-          }
-        ],
-        "yaxes": [
-          {
-            "label": "errors/sec",
-            "format": "short"
-          }
-        ]
+        "name": "Queue Backlog Alert"
       }
-    ]
-  }
+    },
+    {
+      "id": 2,
+      "title": "Jobs Being Processed",
+      "type": "graph",
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "cmdb_queue_jobs_active",
+          "legendFormat": "{{queue}}",
+          "refId": "A"
+        }
+      ],
+      "yaxes": [
+        {
+          "label": "active jobs",
+          "format": "short"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Job Completion Rate",
+      "type": "graph",
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum by (queue) (rate(cmdb_queue_jobs_total{status=\"completed\"}[5m]))",
+          "legendFormat": "{{queue}} - completed",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (queue) (rate(cmdb_queue_jobs_total{status=\"failed\"}[5m]))",
+          "legendFormat": "{{queue}} - failed",
+          "refId": "B"
+        }
+      ],
+      "yaxes": [
+        {
+          "label": "jobs/sec",
+          "format": "short"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Job Success Rate",
+      "type": "gauge",
+      "gridPos": {
+        "x": 12,
+        "y": 8,
+        "w": 6,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(cmdb_queue_jobs_total{status=\"completed\"}[5m])) / sum(rate(cmdb_queue_jobs_total[5m])) * 100",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "showThresholdLabels": true,
+        "showThresholdMarkers": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "steps": [
+              {
+                "value": 0,
+                "color": "red"
+              },
+              {
+                "value": 90,
+                "color": "yellow"
+              },
+              {
+                "value": 95,
+                "color": "green"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 5,
+      "title": "Queue Throughput",
+      "type": "stat",
+      "gridPos": {
+        "x": 18,
+        "y": 8,
+        "w": 6,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "cmdb_queue_throughput_jobs_per_second",
+          "legendFormat": "{{queue}}",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "jobs/sec"
+        }
+      }
+    },
+    {
+      "id": 6,
+      "title": "Job Processing Duration (p50, p95, p99)",
+      "type": "graph",
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (queue, le) (rate(cmdb_queue_job_duration_seconds_bucket[5m])))",
+          "legendFormat": "{{queue}} p50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (queue, le) (rate(cmdb_queue_job_duration_seconds_bucket[5m])))",
+          "legendFormat": "{{queue}} p95",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (queue, le) (rate(cmdb_queue_job_duration_seconds_bucket[5m])))",
+          "legendFormat": "{{queue}} p99",
+          "refId": "C"
+        }
+      ],
+      "yaxes": [
+        {
+          "label": "duration",
+          "format": "s"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Job Wait Time (p95)",
+      "type": "graph",
+      "gridPos": {
+        "x": 12,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (queue, le) (rate(cmdb_queue_job_wait_time_seconds_bucket[5m])))",
+          "legendFormat": "{{queue}}",
+          "refId": "A"
+        }
+      ],
+      "yaxes": [
+        {
+          "label": "wait time",
+          "format": "s"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Active Workers",
+      "type": "stat",
+      "gridPos": {
+        "x": 0,
+        "y": 24,
+        "w": 12,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "cmdb_queue_workers_active",
+          "legendFormat": "{{queue}}",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 9,
+      "title": "Failed Jobs",
+      "type": "stat",
+      "gridPos": {
+        "x": 12,
+        "y": 24,
+        "w": 12,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "cmdb_queue_jobs_failed",
+          "legendFormat": "{{queue}}",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "steps": [
+              {
+                "value": 0,
+                "color": "green"
+              },
+              {
+                "value": 10,
+                "color": "yellow"
+              },
+              {
+                "value": 100,
+                "color": "red"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 10,
+      "title": "Job Retries",
+      "type": "graph",
+      "gridPos": {
+        "x": 0,
+        "y": 28,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum by (queue, job_name) (rate(cmdb_queue_job_retries_total[5m]))",
+          "legendFormat": "{{queue}} - {{job_name}}",
+          "refId": "A"
+        }
+      ],
+      "yaxes": [
+        {
+          "label": "retries/sec",
+          "format": "short"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "title": "Stalled Jobs",
+      "type": "graph",
+      "gridPos": {
+        "x": 12,
+        "y": 28,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum by (queue) (rate(cmdb_queue_jobs_stalled_total[5m]))",
+          "legendFormat": "{{queue}}",
+          "refId": "A"
+        }
+      ],
+      "yaxes": [
+        {
+          "label": "stalled jobs/sec",
+          "format": "short"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "title": "Queue Errors",
+      "type": "graph",
+      "gridPos": {
+        "x": 0,
+        "y": 36,
+        "w": 24,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum by (queue, error_type) (rate(cmdb_queue_errors_total[5m]))",
+          "legendFormat": "{{queue}} - {{error_type}}",
+          "refId": "A"
+        }
+      ],
+      "yaxes": [
+        {
+          "label": "errors/sec",
+          "format": "short"
+        }
+      ]
+    }
+  ],
+  "uid": "queue-health"
 }

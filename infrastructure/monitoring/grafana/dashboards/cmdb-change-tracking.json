@@ -1,594 +1,603 @@
 {
-  "dashboard": {
-    "title": "CMDB Change Tracking",
-    "tags": ["cmdb", "changes", "audit", "tracking"],
-    "timezone": "browser",
-    "schemaVersion": 38,
-    "version": 1,
-    "refresh": "1m",
-    "time": {
-      "from": "now-7d",
-      "to": "now"
-    },
-    "panels": [
-      {
-        "id": 1,
-        "title": "CI Changes by Type (Last 7 Days)",
-        "type": "barchart",
-        "gridPos": {
-          "x": 0,
-          "y": 0,
-          "w": 12,
-          "h": 10
-        },
-        "datasource": "HappyCMDB",
-        "targets": [
-          {
-            "rawSql": "SELECT ch.change_type AS metric, COUNT(*) AS value FROM cmdb.fact_ci_changes ch WHERE ch.changed_at >= NOW() - INTERVAL '7 days' GROUP BY ch.change_type ORDER BY value DESC;",
-            "format": "table",
-            "refId": "A"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "color": {
-              "mode": "palette-classic"
-            },
-            "unit": "short"
-          }
-        },
-        "options": {
-          "orientation": "vertical",
-          "xTickLabelRotation": -45,
-          "legend": {
-            "displayMode": "hidden"
-          }
-        }
+  "title": "CMDB Change Tracking",
+  "tags": [
+    "cmdb",
+    "changes",
+    "audit",
+    "tracking"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "1m",
+  "time": {
+    "from": "now-7d",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "CI Changes by Type (Last 7 Days)",
+      "type": "barchart",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 10
       },
-      {
-        "id": 2,
-        "title": "Total Changes (Last 24h)",
-        "type": "stat",
-        "gridPos": {
-          "x": 12,
-          "y": 0,
-          "w": 6,
-          "h": 5
-        },
-        "datasource": "HappyCMDB",
-        "targets": [
-          {
-            "rawSql": "SELECT COUNT(*) AS \"Total Changes\" FROM cmdb.fact_ci_changes WHERE changed_at >= NOW() - INTERVAL '24 hours';",
-            "format": "table",
-            "refId": "A"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "short",
-            "color": {
-              "mode": "thresholds"
-            },
-            "thresholds": {
-              "mode": "absolute",
-              "steps": [
-                {
-                  "value": 0,
-                  "color": "blue"
-                }
-              ]
-            }
-          }
-        },
-        "options": {
-          "textMode": "value_and_name",
-          "graphMode": "area",
-          "colorMode": "background"
+      "datasource": "HappyCMDB",
+      "targets": [
+        {
+          "rawSql": "SELECT ch.change_type AS metric, COUNT(*) AS value FROM cmdb.fact_ci_changes ch WHERE ch.changed_at >= NOW() - INTERVAL '7 days' GROUP BY ch.change_type ORDER BY value DESC;",
+          "format": "table",
+          "refId": "A"
         }
-      },
-      {
-        "id": 3,
-        "title": "Total Changes (Last 7 Days)",
-        "type": "stat",
-        "gridPos": {
-          "x": 18,
-          "y": 0,
-          "w": 6,
-          "h": 5
-        },
-        "datasource": "HappyCMDB",
-        "targets": [
-          {
-            "rawSql": "SELECT COUNT(*) AS \"Total Changes\" FROM cmdb.fact_ci_changes WHERE changed_at >= NOW() - INTERVAL '7 days';",
-            "format": "table",
-            "refId": "A"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "short",
-            "color": {
-              "mode": "thresholds"
-            },
-            "thresholds": {
-              "mode": "absolute",
-              "steps": [
-                {
-                  "value": 0,
-                  "color": "green"
-                }
-              ]
-            }
-          }
-        },
-        "options": {
-          "textMode": "value_and_name",
-          "graphMode": "area",
-          "colorMode": "background"
-        }
-      },
-      {
-        "id": 4,
-        "title": "Change Velocity - Last 24 Hours",
-        "type": "stat",
-        "gridPos": {
-          "x": 12,
-          "y": 5,
-          "w": 6,
-          "h": 5
-        },
-        "datasource": "HappyCMDB",
-        "targets": [
-          {
-            "rawSql": "SELECT ROUND(COUNT(*) / 24.0, 2) AS \"Changes Per Hour\" FROM cmdb.fact_ci_changes WHERE changed_at >= NOW() - INTERVAL '24 hours';",
-            "format": "table",
-            "refId": "A"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "short",
-            "decimals": 2,
-            "color": {
-              "mode": "thresholds"
-            },
-            "thresholds": {
-              "mode": "absolute",
-              "steps": [
-                {
-                  "value": 0,
-                  "color": "green"
-                },
-                {
-                  "value": 50,
-                  "color": "yellow"
-                },
-                {
-                  "value": 100,
-                  "color": "red"
-                }
-              ]
-            }
-          }
-        },
-        "options": {
-          "textMode": "value_and_name",
-          "graphMode": "area",
-          "colorMode": "background"
-        }
-      },
-      {
-        "id": 5,
-        "title": "Change Velocity - Last 7 Days",
-        "type": "stat",
-        "gridPos": {
-          "x": 18,
-          "y": 5,
-          "w": 6,
-          "h": 5
-        },
-        "datasource": "HappyCMDB",
-        "targets": [
-          {
-            "rawSql": "SELECT ROUND(COUNT(*) / 7.0, 2) AS \"Changes Per Day\" FROM cmdb.fact_ci_changes WHERE changed_at >= NOW() - INTERVAL '7 days';",
-            "format": "table",
-            "refId": "A"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "short",
-            "decimals": 2,
-            "color": {
-              "mode": "thresholds"
-            },
-            "thresholds": {
-              "mode": "absolute",
-              "steps": [
-                {
-                  "value": 0,
-                  "color": "green"
-                },
-                {
-                  "value": 500,
-                  "color": "yellow"
-                },
-                {
-                  "value": 1000,
-                  "color": "red"
-                }
-              ]
-            }
-          }
-        },
-        "options": {
-          "textMode": "value_and_name",
-          "graphMode": "area",
-          "colorMode": "background"
-        }
-      },
-      {
-        "id": 6,
-        "title": "Change Rate Over Time (Hourly - Last 7 Days)",
-        "type": "timeseries",
-        "gridPos": {
-          "x": 0,
-          "y": 10,
-          "w": 24,
-          "h": 10
-        },
-        "datasource": "HappyCMDB",
-        "targets": [
-          {
-            "rawSql": "SELECT time_bucket('1 hour', changed_at) AS time, COUNT(*) AS \"Changes\" FROM cmdb.fact_ci_changes WHERE changed_at >= NOW() - INTERVAL '7 days' GROUP BY time_bucket('1 hour', changed_at) ORDER BY time;",
-            "format": "time_series",
-            "refId": "A"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "color": {
-              "mode": "palette-classic"
-            },
-            "custom": {
-              "drawStyle": "bars",
-              "fillOpacity": 80,
-              "showPoints": "never"
-            },
-            "unit": "short"
-          }
-        },
-        "options": {
-          "tooltip": {
-            "mode": "single"
-          },
-          "legend": {
-            "displayMode": "list",
-            "placement": "bottom"
-          }
-        }
-      },
-      {
-        "id": 7,
-        "title": "Most Frequently Changed CIs (Last 7 Days)",
-        "type": "table",
-        "gridPos": {
-          "x": 0,
-          "y": 20,
-          "w": 12,
-          "h": 12
-        },
-        "datasource": "HappyCMDB",
-        "targets": [
-          {
-            "rawSql": "SELECT c.ci_name AS \"CI Name\", c.ci_type AS \"Type\", c.environment AS \"Environment\", COUNT(ch.change_key) AS \"Change Count\", MAX(ch.changed_at) AS \"Last Changed\" FROM cmdb.fact_ci_changes ch INNER JOIN cmdb.dim_ci c ON ch.ci_key = c.ci_key WHERE ch.changed_at >= NOW() - INTERVAL '7 days' AND c.is_current = TRUE GROUP BY c.ci_name, c.ci_type, c.environment ORDER BY \"Change Count\" DESC LIMIT 25;",
-            "format": "table",
-            "refId": "A"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "custom": {
-              "align": "left",
-              "filterable": true
-            }
-          },
-          "overrides": [
-            {
-              "matcher": {
-                "id": "byName",
-                "options": "Change Count"
-              },
-              "properties": [
-                {
-                  "id": "custom.width",
-                  "value": 120
-                },
-                {
-                  "id": "color",
-                  "value": {
-                    "mode": "thresholds"
-                  }
-                },
-                {
-                  "id": "thresholds",
-                  "value": {
-                    "mode": "absolute",
-                    "steps": [
-                      {
-                        "value": 0,
-                        "color": "green"
-                      },
-                      {
-                        "value": 10,
-                        "color": "yellow"
-                      },
-                      {
-                        "value": 25,
-                        "color": "red"
-                      }
-                    ]
-                  }
-                }
-              ]
-            }
-          ]
-        },
-        "options": {
-          "showHeader": true,
-          "sortBy": [
-            {
-              "displayName": "Change Count",
-              "desc": true
-            }
-          ]
-        }
-      },
-      {
-        "id": 8,
-        "title": "Changes by Source (Last 7 Days)",
-        "type": "piechart",
-        "gridPos": {
-          "x": 12,
-          "y": 20,
-          "w": 12,
-          "h": 12
-        },
-        "datasource": "HappyCMDB",
-        "targets": [
-          {
-            "rawSql": "SELECT COALESCE(change_source, 'unknown') AS metric, COUNT(*) AS value FROM cmdb.fact_ci_changes WHERE changed_at >= NOW() - INTERVAL '7 days' GROUP BY COALESCE(change_source, 'unknown') ORDER BY value DESC;",
-            "format": "table",
-            "refId": "A"
-          }
-        ],
-        "options": {
-          "pieType": "donut",
-          "legend": {
-            "displayMode": "table",
-            "placement": "right",
-            "values": ["value", "percent"]
-          },
-          "tooltip": {
-            "mode": "single"
-          }
-        },
-        "fieldConfig": {
-          "defaults": {
-            "unit": "short"
-          }
-        }
-      },
-      {
-        "id": 9,
-        "title": "Change Impact Analysis - Heat Map (by CI Type and Day)",
-        "type": "heatmap",
-        "gridPos": {
-          "x": 0,
-          "y": 32,
-          "w": 24,
-          "h": 10
-        },
-        "datasource": "HappyCMDB",
-        "targets": [
-          {
-            "rawSql": "SELECT time_bucket('1 day', ch.changed_at) AS time, c.ci_type, COUNT(*) AS count FROM cmdb.fact_ci_changes ch INNER JOIN cmdb.dim_ci c ON ch.ci_key = c.ci_key WHERE ch.changed_at >= NOW() - INTERVAL '30 days' AND c.is_current = TRUE GROUP BY time_bucket('1 day', ch.changed_at), c.ci_type ORDER BY time, c.ci_type;",
-            "format": "table",
-            "refId": "A"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "custom": {
-              "hideFrom": {
-                "tooltip": false,
-                "viz": false,
-                "legend": false
-              }
-            },
-            "color": {
-              "mode": "continuous-GrYlRd"
-            }
-          }
-        },
-        "options": {
-          "calculate": false,
-          "cellGap": 2,
+      ],
+      "fieldConfig": {
+        "defaults": {
           "color": {
-            "scheme": "Oranges",
-            "steps": 128
+            "mode": "palette-classic"
           },
-          "yAxis": {
-            "reverse": false
-          },
-          "legend": {
-            "show": true
-          }
+          "unit": "short"
         }
       },
-      {
-        "id": 10,
-        "title": "Recent Changes with Field Details",
-        "type": "table",
-        "gridPos": {
-          "x": 0,
-          "y": 42,
-          "w": 24,
-          "h": 12
-        },
-        "datasource": "HappyCMDB",
-        "targets": [
-          {
-            "rawSql": "SELECT c.ci_name AS \"CI Name\", c.ci_type AS \"Type\", ch.change_type AS \"Change Type\", ch.field_name AS \"Field\", ch.old_value AS \"Old Value\", ch.new_value AS \"New Value\", ch.changed_by AS \"Changed By\", ch.change_source AS \"Source\", ch.changed_at AS \"Changed At\" FROM cmdb.fact_ci_changes ch INNER JOIN cmdb.dim_ci c ON ch.ci_key = c.ci_key WHERE ch.changed_at >= NOW() - INTERVAL '24 hours' AND c.is_current = TRUE ORDER BY ch.changed_at DESC LIMIT 100;",
-            "format": "table",
-            "refId": "A"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "custom": {
-              "align": "left",
-              "filterable": true
-            }
-          },
-          "overrides": [
-            {
-              "matcher": {
-                "id": "byName",
-                "options": "Old Value"
-              },
-              "properties": [
-                {
-                  "id": "custom.width",
-                  "value": 150
-                }
-              ]
-            },
-            {
-              "matcher": {
-                "id": "byName",
-                "options": "New Value"
-              },
-              "properties": [
-                {
-                  "id": "custom.width",
-                  "value": 150
-                }
-              ]
-            }
-          ]
-        },
-        "options": {
-          "showHeader": true,
-          "sortBy": [
-            {
-              "displayName": "Changed At",
-              "desc": true
-            }
-          ]
-        }
-      },
-      {
-        "id": 11,
-        "title": "Change Types Distribution (Last 30 Days)",
-        "type": "piechart",
-        "gridPos": {
-          "x": 0,
-          "y": 54,
-          "w": 12,
-          "h": 10
-        },
-        "datasource": "HappyCMDB",
-        "targets": [
-          {
-            "rawSql": "SELECT change_type AS metric, COUNT(*) AS value FROM cmdb.fact_ci_changes WHERE changed_at >= NOW() - INTERVAL '30 days' GROUP BY change_type ORDER BY value DESC;",
-            "format": "table",
-            "refId": "A"
-          }
-        ],
-        "options": {
-          "pieType": "pie",
-          "legend": {
-            "displayMode": "table",
-            "placement": "right",
-            "values": ["value", "percent"]
-          }
-        },
-        "fieldConfig": {
-          "defaults": {
-            "unit": "short"
-          }
-        }
-      },
-      {
-        "id": 12,
-        "title": "Top Changed Fields (Last 7 Days)",
-        "type": "barchart",
-        "gridPos": {
-          "x": 12,
-          "y": 54,
-          "w": 12,
-          "h": 10
-        },
-        "datasource": "HappyCMDB",
-        "targets": [
-          {
-            "rawSql": "SELECT COALESCE(field_name, 'multiple') AS metric, COUNT(*) AS value FROM cmdb.fact_ci_changes WHERE changed_at >= NOW() - INTERVAL '7 days' AND field_name IS NOT NULL GROUP BY COALESCE(field_name, 'multiple') ORDER BY value DESC LIMIT 15;",
-            "format": "table",
-            "refId": "A"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "color": {
-              "mode": "palette-classic"
-            },
-            "unit": "short"
-          }
-        },
-        "options": {
-          "orientation": "horizontal",
-          "xTickLabelRotation": 0,
-          "legend": {
-            "displayMode": "hidden"
-          }
-        }
-      },
-      {
-        "id": 13,
-        "title": "Change Activity by Hour of Day (Last 7 Days)",
-        "type": "barchart",
-        "gridPos": {
-          "x": 0,
-          "y": 64,
-          "w": 24,
-          "h": 10
-        },
-        "datasource": "HappyCMDB",
-        "targets": [
-          {
-            "rawSql": "SELECT EXTRACT(HOUR FROM changed_at) AS metric, COUNT(*) AS value FROM cmdb.fact_ci_changes WHERE changed_at >= NOW() - INTERVAL '7 days' GROUP BY EXTRACT(HOUR FROM changed_at) ORDER BY metric;",
-            "format": "table",
-            "refId": "A"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "color": {
-              "mode": "continuous-GrYlRd"
-            },
-            "unit": "short"
-          }
-        },
-        "options": {
-          "orientation": "vertical",
-          "xTickLabelRotation": 0,
-          "legend": {
-            "displayMode": "hidden"
-          }
+      "options": {
+        "orientation": "vertical",
+        "xTickLabelRotation": -45,
+        "legend": {
+          "displayMode": "hidden"
         }
       }
-    ]
-  },
-  "overwrite": true
+    },
+    {
+      "id": 2,
+      "title": "Total Changes (Last 24h)",
+      "type": "stat",
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 6,
+        "h": 5
+      },
+      "datasource": "HappyCMDB",
+      "targets": [
+        {
+          "rawSql": "SELECT COUNT(*) AS \"Total Changes\" FROM cmdb.fact_ci_changes WHERE changed_at >= NOW() - INTERVAL '24 hours';",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 0,
+                "color": "blue"
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "textMode": "value_and_name",
+        "graphMode": "area",
+        "colorMode": "background"
+      }
+    },
+    {
+      "id": 3,
+      "title": "Total Changes (Last 7 Days)",
+      "type": "stat",
+      "gridPos": {
+        "x": 18,
+        "y": 0,
+        "w": 6,
+        "h": 5
+      },
+      "datasource": "HappyCMDB",
+      "targets": [
+        {
+          "rawSql": "SELECT COUNT(*) AS \"Total Changes\" FROM cmdb.fact_ci_changes WHERE changed_at >= NOW() - INTERVAL '7 days';",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 0,
+                "color": "green"
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "textMode": "value_and_name",
+        "graphMode": "area",
+        "colorMode": "background"
+      }
+    },
+    {
+      "id": 4,
+      "title": "Change Velocity - Last 24 Hours",
+      "type": "stat",
+      "gridPos": {
+        "x": 12,
+        "y": 5,
+        "w": 6,
+        "h": 5
+      },
+      "datasource": "HappyCMDB",
+      "targets": [
+        {
+          "rawSql": "SELECT ROUND(COUNT(*) / 24.0, 2) AS \"Changes Per Hour\" FROM cmdb.fact_ci_changes WHERE changed_at >= NOW() - INTERVAL '24 hours';",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 2,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 0,
+                "color": "green"
+              },
+              {
+                "value": 50,
+                "color": "yellow"
+              },
+              {
+                "value": 100,
+                "color": "red"
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "textMode": "value_and_name",
+        "graphMode": "area",
+        "colorMode": "background"
+      }
+    },
+    {
+      "id": 5,
+      "title": "Change Velocity - Last 7 Days",
+      "type": "stat",
+      "gridPos": {
+        "x": 18,
+        "y": 5,
+        "w": 6,
+        "h": 5
+      },
+      "datasource": "HappyCMDB",
+      "targets": [
+        {
+          "rawSql": "SELECT ROUND(COUNT(*) / 7.0, 2) AS \"Changes Per Day\" FROM cmdb.fact_ci_changes WHERE changed_at >= NOW() - INTERVAL '7 days';",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 2,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 0,
+                "color": "green"
+              },
+              {
+                "value": 500,
+                "color": "yellow"
+              },
+              {
+                "value": 1000,
+                "color": "red"
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "textMode": "value_and_name",
+        "graphMode": "area",
+        "colorMode": "background"
+      }
+    },
+    {
+      "id": 6,
+      "title": "Change Rate Over Time (Hourly - Last 7 Days)",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 10,
+        "w": 24,
+        "h": 10
+      },
+      "datasource": "HappyCMDB",
+      "targets": [
+        {
+          "rawSql": "SELECT time_bucket('1 hour', changed_at) AS time, COUNT(*) AS \"Changes\" FROM cmdb.fact_ci_changes WHERE changed_at >= NOW() - INTERVAL '7 days' GROUP BY time_bucket('1 hour', changed_at) ORDER BY time;",
+          "format": "time_series",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 80,
+            "showPoints": "never"
+          },
+          "unit": "short"
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "single"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 7,
+      "title": "Most Frequently Changed CIs (Last 7 Days)",
+      "type": "table",
+      "gridPos": {
+        "x": 0,
+        "y": 20,
+        "w": 12,
+        "h": 12
+      },
+      "datasource": "HappyCMDB",
+      "targets": [
+        {
+          "rawSql": "SELECT c.ci_name AS \"CI Name\", c.ci_type AS \"Type\", c.environment AS \"Environment\", COUNT(ch.change_key) AS \"Change Count\", MAX(ch.changed_at) AS \"Last Changed\" FROM cmdb.fact_ci_changes ch INNER JOIN cmdb.dim_ci c ON ch.ci_key = c.ci_key WHERE ch.changed_at >= NOW() - INTERVAL '7 days' AND c.is_current = TRUE GROUP BY c.ci_name, c.ci_type, c.environment ORDER BY \"Change Count\" DESC LIMIT 25;",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "left",
+            "filterable": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Change Count"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 120
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "thresholds"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "value": 0,
+                      "color": "green"
+                    },
+                    {
+                      "value": 10,
+                      "color": "yellow"
+                    },
+                    {
+                      "value": 25,
+                      "color": "red"
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "displayName": "Change Count",
+            "desc": true
+          }
+        ]
+      }
+    },
+    {
+      "id": 8,
+      "title": "Changes by Source (Last 7 Days)",
+      "type": "piechart",
+      "gridPos": {
+        "x": 12,
+        "y": 20,
+        "w": 12,
+        "h": 12
+      },
+      "datasource": "HappyCMDB",
+      "targets": [
+        {
+          "rawSql": "SELECT COALESCE(change_source, 'unknown') AS metric, COUNT(*) AS value FROM cmdb.fact_ci_changes WHERE changed_at >= NOW() - INTERVAL '7 days' GROUP BY COALESCE(change_source, 'unknown') ORDER BY value DESC;",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "pieType": "donut",
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "values": [
+            "value",
+            "percent"
+          ]
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        }
+      }
+    },
+    {
+      "id": 9,
+      "title": "Change Impact Analysis - Heat Map (by CI Type and Day)",
+      "type": "heatmap",
+      "gridPos": {
+        "x": 0,
+        "y": 32,
+        "w": 24,
+        "h": 10
+      },
+      "datasource": "HappyCMDB",
+      "targets": [
+        {
+          "rawSql": "SELECT time_bucket('1 day', ch.changed_at) AS time, c.ci_type, COUNT(*) AS count FROM cmdb.fact_ci_changes ch INNER JOIN cmdb.dim_ci c ON ch.ci_key = c.ci_key WHERE ch.changed_at >= NOW() - INTERVAL '30 days' AND c.is_current = TRUE GROUP BY time_bucket('1 day', ch.changed_at), c.ci_type ORDER BY time, c.ci_type;",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            }
+          },
+          "color": {
+            "mode": "continuous-GrYlRd"
+          }
+        }
+      },
+      "options": {
+        "calculate": false,
+        "cellGap": 2,
+        "color": {
+          "scheme": "Oranges",
+          "steps": 128
+        },
+        "yAxis": {
+          "reverse": false
+        },
+        "legend": {
+          "show": true
+        }
+      }
+    },
+    {
+      "id": 10,
+      "title": "Recent Changes with Field Details",
+      "type": "table",
+      "gridPos": {
+        "x": 0,
+        "y": 42,
+        "w": 24,
+        "h": 12
+      },
+      "datasource": "HappyCMDB",
+      "targets": [
+        {
+          "rawSql": "SELECT c.ci_name AS \"CI Name\", c.ci_type AS \"Type\", ch.change_type AS \"Change Type\", ch.field_name AS \"Field\", ch.old_value AS \"Old Value\", ch.new_value AS \"New Value\", ch.changed_by AS \"Changed By\", ch.change_source AS \"Source\", ch.changed_at AS \"Changed At\" FROM cmdb.fact_ci_changes ch INNER JOIN cmdb.dim_ci c ON ch.ci_key = c.ci_key WHERE ch.changed_at >= NOW() - INTERVAL '24 hours' AND c.is_current = TRUE ORDER BY ch.changed_at DESC LIMIT 100;",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "left",
+            "filterable": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Old Value"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 150
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "New Value"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 150
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "displayName": "Changed At",
+            "desc": true
+          }
+        ]
+      }
+    },
+    {
+      "id": 11,
+      "title": "Change Types Distribution (Last 30 Days)",
+      "type": "piechart",
+      "gridPos": {
+        "x": 0,
+        "y": 54,
+        "w": 12,
+        "h": 10
+      },
+      "datasource": "HappyCMDB",
+      "targets": [
+        {
+          "rawSql": "SELECT change_type AS metric, COUNT(*) AS value FROM cmdb.fact_ci_changes WHERE changed_at >= NOW() - INTERVAL '30 days' GROUP BY change_type ORDER BY value DESC;",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "pieType": "pie",
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "values": [
+            "value",
+            "percent"
+          ]
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        }
+      }
+    },
+    {
+      "id": 12,
+      "title": "Top Changed Fields (Last 7 Days)",
+      "type": "barchart",
+      "gridPos": {
+        "x": 12,
+        "y": 54,
+        "w": 12,
+        "h": 10
+      },
+      "datasource": "HappyCMDB",
+      "targets": [
+        {
+          "rawSql": "SELECT COALESCE(field_name, 'multiple') AS metric, COUNT(*) AS value FROM cmdb.fact_ci_changes WHERE changed_at >= NOW() - INTERVAL '7 days' AND field_name IS NOT NULL GROUP BY COALESCE(field_name, 'multiple') ORDER BY value DESC LIMIT 15;",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "short"
+        }
+      },
+      "options": {
+        "orientation": "horizontal",
+        "xTickLabelRotation": 0,
+        "legend": {
+          "displayMode": "hidden"
+        }
+      }
+    },
+    {
+      "id": 13,
+      "title": "Change Activity by Hour of Day (Last 7 Days)",
+      "type": "barchart",
+      "gridPos": {
+        "x": 0,
+        "y": 64,
+        "w": 24,
+        "h": 10
+      },
+      "datasource": "HappyCMDB",
+      "targets": [
+        {
+          "rawSql": "SELECT EXTRACT(HOUR FROM changed_at) AS metric, COUNT(*) AS value FROM cmdb.fact_ci_changes WHERE changed_at >= NOW() - INTERVAL '7 days' GROUP BY EXTRACT(HOUR FROM changed_at) ORDER BY metric;",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "continuous-GrYlRd"
+          },
+          "unit": "short"
+        }
+      },
+      "options": {
+        "orientation": "vertical",
+        "xTickLabelRotation": 0,
+        "legend": {
+          "displayMode": "hidden"
+        }
+      }
+    }
+  ],
+  "uid": "cmdb-change-tracking"
 }

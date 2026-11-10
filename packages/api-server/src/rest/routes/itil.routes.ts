@@ -157,6 +157,11 @@ const ciFiltersSchema = Joi.object({
   limit: Joi.number().integer().min(1).max(1000).default(50),
 });
 
+/** Rows per CI history page; the GraphQL `ciHistory`/`CI.history` resolver clamps to the same 500. */
+const ciHistoryQuerySchema = Joi.object({
+  limit: Joi.number().integer().min(1).max(500).default(100),
+});
+
 const incidentFiltersSchema = Joi.object({
   status: Joi.string()
     .valid('NEW', 'ASSIGNED', 'IN_PROGRESS', 'RESOLVED', 'CLOSED')
@@ -208,6 +213,7 @@ itilRoutes.patch(
 
 itilRoutes.get(
   '/configuration-items/:id/history',
+  validateOptional(ciHistoryQuerySchema, 'query'),
   controller.getCIHistory.bind(controller)
 );
 

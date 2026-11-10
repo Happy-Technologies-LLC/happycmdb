@@ -830,6 +830,52 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+  /itil/configuration-items/{id}/history:
+    get:
+      tags: [Configuration Items]
+      summary: Get ITIL CI change history
+      description: >-
+        Change history rows (`ci_change_history`) of the CI's current graph
+        incarnation in the caller's organization, newest first. `limit` is an
+        integer in 1–500 (default 100); a non-integer or out-of-range value is
+        rejected with 400 before any query runs.
+      operationId: getITILCIHistory
+      parameters:
+        - $ref: '#/components/parameters/CIId'
+        - name: limit
+          in: query
+          description: Maximum rows returned
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 100
+      responses:
+        '200':
+          description: History rows
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+                  count:
+                    type: integer
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/CIForbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
   # =============================================================================
   # RELATIONSHIPS
   # =============================================================================

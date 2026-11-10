@@ -892,7 +892,7 @@ async function itilHistory(context: GraphQLContext, id: string, limit: number) {
       change_type: string; changed_fields: string[] | null;
       previous_values: unknown; new_values: unknown;
     }) => ({
-      id: row.id, ciId: row.ci_id, changedAt: row.changed_at,
+      id: row.id, ciId: row.ci_id, changedAt: row.changed_at.toISOString(),
       changedBy: row.changed_by, changeType: row.change_type,
       attributeName: row.changed_fields?.join(', ') ?? '',
       oldValue: row.previous_values === null ? null : JSON.stringify(row.previous_values),

@@ -153,15 +153,6 @@ export class ConfigurationLoader {
           maxConnections: env['POSTGRES_MAX_CONNECTIONS']
             ? parseInt(env['POSTGRES_MAX_CONNECTIONS'], 10)
             : fileConfig.databases?.postgres?.maxConnections,
-          ssl: {
-            enabled: env['POSTGRES_SSL'] === 'true' || fileConfig.databases?.postgres?.ssl?.enabled,
-            rejectUnauthorized:
-              env['POSTGRES_SSL_REJECT_UNAUTHORIZED'] === 'true' ||
-              fileConfig.databases?.postgres?.ssl?.rejectUnauthorized,
-            ca: env['POSTGRES_SSL_CA'] || fileConfig.databases?.postgres?.ssl?.ca,
-            cert: env['POSTGRES_SSL_CERT'] || fileConfig.databases?.postgres?.ssl?.cert,
-            key: env['POSTGRES_SSL_KEY'] || fileConfig.databases?.postgres?.ssl?.key,
-          },
         },
 
         redis: {

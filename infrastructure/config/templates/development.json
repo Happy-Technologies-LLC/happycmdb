@@ -90,12 +90,6 @@
       }
     }
   },
-  "cors": {
-    "enabled": true,
-    "origins": ["http://localhost:3000", "http://localhost:3001", "http://localhost:5173"],
-    "credentials": true,
-    "maxAge": 86400
-  },
   "ssl": {
     "enabled": false,
     "redirectHttp": false

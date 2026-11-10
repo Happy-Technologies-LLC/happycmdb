@@ -281,15 +281,6 @@ check_api_security() {
     check_fail "Authentication middleware not found"
   fi
 
-  # Check for CORS configuration
-  API_TOTAL=$((API_TOTAL + 1))
-  if [ -f "packages/api-server/src/middleware/cors.middleware.ts" ]; then
-    API_PASSED=$((API_PASSED + 1))
-    check_pass "CORS middleware exists"
-  else
-    check_warning "CORS middleware not found"
-  fi
-
   # Check for dangerous functions (eval, exec)
   API_TOTAL=$((API_TOTAL + 1))
   if grep -r "\beval(\|exec(" packages/ --include="*.ts" &> /dev/null; then

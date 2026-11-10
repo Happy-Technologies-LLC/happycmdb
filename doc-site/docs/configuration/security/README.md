@@ -190,7 +190,6 @@ All security middleware is located in `/packages/api-server/src/middleware/`:
 | `rate-limit.middleware.ts` | Adaptive rate limiting | ✅ Implemented |
 | `auth.middleware.ts` | JWT authentication | ✅ Implemented |
 | `audit.middleware.ts` | Audit logging | ✅ Implemented |
-| `cors.middleware.ts` | CORS controls | ✅ Implemented |
 
 ---
 
